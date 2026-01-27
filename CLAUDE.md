@@ -32,9 +32,9 @@ git status && git branch
 
 **Alpha NextGen V2** is a multi-strategy algorithmic trading system built on QuantConnect (LEAN engine) for deployment on Interactive Brokers. The system implements a **Core-Satellite** architecture with three engines:
 
-- **Core (70%)**: Trend Engine - MA200 + ADX confirmation
+- **Core (70%)**: Trend Engine - MA200 + ADX confirmation, BB compression breakout
 - **Satellite (0-10%)**: Mean Reversion Engine - RSI oversold bounce with VIX filter
-- **Satellite (planned)**: Options Engine - 4-factor entry scoring (20-30%)
+- **Satellite (20-30%)**: Options Engine - 4-factor entry scoring, Greeks monitoring
 
 Forked from V1 v1.0.0 on 2026-01-26. See `docs/v2-specs/` for V2.1 specifications.
 
@@ -42,7 +42,7 @@ Forked from V1 v1.0.0 on 2026-01-26. See `docs/v2-specs/` for V2.1 specification
 
 ```
 alpha-nextgen/
-├── main.py                     # QCAlgorithm entry point (1,332 lines - Phase 6 Complete)
+├── main.py                     # QCAlgorithm entry point (1,638 lines - V2.1 Complete)
 ├── config.py                   # ALL tunable parameters
 ├── requirements.txt            # Python dependencies
 ├── requirements.lock           # Locked versions for reproducibility
@@ -85,7 +85,8 @@ alpha-nextgen/
 │   └── satellite/              # Conditional engines
 │       ├── mean_reversion_engine.py # Intraday bounce (0-10%)
 │       ├── hedge_engine.py     # TMF/PSQ overlay
-│       └── yield_sleeve.py     # SHV cash management
+│       ├── yield_sleeve.py     # SHV cash management
+│       └── options_engine.py   # QQQ options (20-30%)
 ├── portfolio/                  # Router, exposure groups, positions
 ├── execution/                  # Order management
 ├── data/                       # Symbols, indicators, validation
@@ -123,6 +124,7 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 | **Mean Reversion Engine** | `engines/satellite/mean_reversion_engine.py` | `docs/08-mean-reversion-engine.md` | Intraday oversold bounce signals for TQQQ/SOXL (0-10%) |
 | **Hedge Engine** | `engines/satellite/hedge_engine.py` | `docs/09-hedge-engine.md` | Regime-based TMF/PSQ allocation signals |
 | **Yield Sleeve** | `engines/satellite/yield_sleeve.py` | `docs/10-yield-sleeve.md` | SHV cash management signals |
+| **Options Engine** | `engines/satellite/options_engine.py` | `docs/18-options-engine.md` | QQQ options with 4-factor scoring (20-30%) |
 
 ### Infrastructure
 
@@ -130,6 +132,7 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 |-----------|------|---------------|-------------|
 | **Portfolio Router** | `portfolio/portfolio_router.py` | `docs/11-portfolio-router.md` | Central coordination, order authorization |
 | **Execution Engine** | `execution/execution_engine.py` | `docs/13-execution-engine.md` | Order submission to broker |
+| **OCO Manager** | `execution/oco_manager.py` | `docs/19-oco-manager.md` | One-Cancels-Other order pairs for options |
 | **Position Manager** | `portfolio/position_manager.py` | `docs/15-state-persistence.md` | Entry prices, stops, highest highs |
 | **State Manager** | `persistence/state_manager.py` | `docs/15-state-persistence.md` | ObjectStore save/load |
 
@@ -140,6 +143,7 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 | `docs/14-daily-operations.md` | Complete daily timeline and event schedule |
 | `docs/16-appendix-parameters.md` | All tunable parameters in one place |
 | `docs/17-appendix-glossary.md` | Terms, abbreviations, formulas |
+| `docs/v2-specs/` | V2.1 specifications and architecture guides |
 
 ---
 

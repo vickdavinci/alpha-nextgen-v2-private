@@ -82,14 +82,20 @@ QuantConnect handles timezone conversion automatically.
 
     EVERY MINUTE:
     │
-    ├── STEP 1: Risk Engine Checks (ALWAYS FIRST)
-    │   ├── Kill switch: Compare equity vs prior_close AND sod
+    ├── STEP 1: Risk Engine Checks (ALWAYS FIRST) [V2.1 5-Level Circuit Breaker]
+    │   ├── Level 1 - Daily Loss: Compare equity vs prior_close AND sod (3% trigger)
+    │   ├── Level 2 - Weekly Loss: Check WTD P&L vs 5% threshold
+    │   ├── Level 3 - Portfolio Volatility: Check 20-day rolling vol vs 25% annualized
+    │   ├── Level 4 - Correlation Spike: Check cross-asset correlation > 0.8
+    │   ├── Level 5 - Greeks Exposure: Check portfolio delta/gamma/vega limits
     │   ├── Panic mode: Check SPY intraday drop vs 4%
     │   ├── Vol shock: Check SPY 1-min bar range vs 3×ATR
     │   └── If ANY triggered → Immediate action, skip other processing
     │
     ├── STEP 2: Mean Reversion Scanning (if safeguards clear)
+    │   ├── Check VIX regime filter (NORMAL/CAUTION/HIGH_RISK/CRASH)
     │   ├── For each MR symbol (TQQQ, SOXL):
+    │   │   ├── Apply VIX-adjusted parameters (allocation, RSI threshold, stop)
     │   │   ├── Check entry conditions (RSI, drop, volume, time)
     │   │   └── Check exit conditions (target, stop, time)
     │   └── Emit TargetWeight objects (urgency: IMMEDIATE)
@@ -145,10 +151,17 @@ QuantConnect handles timezone conversion automatically.
     │   └── Output: CapitalState with tradeable equity
     │
     ├── TREND ENGINE (EOD signals)
-    │   ├── Check BB compression/breakout for QLD, SSO
-    │   ├── Check band basis exit for existing positions
-    │   ├── Check regime exit condition
+    │   ├── Check MA200 + ADX confirmation for QLD, SSO (price > MA200, ADX >= 25)
+    │   ├── Check MA200 cross below exit for existing positions
+    │   ├── Check ADX weakness exit (ADX < 20)
+    │   ├── Check regime exit condition (regime < 30)
     │   └── Emit TargetWeight objects (urgency: EOD)
+    │
+    ├── OPTIONS ENGINE (EOD signals) [V2.1]
+    │   ├── Calculate 4-factor entry score (ADX, momentum, IV rank, liquidity)
+    │   ├── Select direction (CALL if price > MA200, PUT if below)
+    │   ├── Check for existing options positions
+    │   └── Emit TargetWeight for QQQ options (urgency: EOD)
     │
     ├── HEDGE ENGINE
     │   ├── Compare current hedge vs regime-required levels
@@ -227,17 +240,20 @@ gantt
 
 ### Which Engines Are Active When?
 
-| Time Window | Regime | Capital | Risk | Cold Start | Trend | MR | Hedge | Yield |
-|-------------|:------:|:-------:|:----:|:----------:|:-----:|:--:|:-----:|:-----:|
-| 09:00–09:30 | Preview | Load | — | Check | — | — | — | — |
-| 09:30–09:33 | — | — | ✅ | — | — | — | — | — |
-| 09:33–10:00 | — | — | ✅ | — | Monitor | — | — | — |
-| 10:00–13:55 | — | — | ✅ | ✅ | Monitor | ✅ | — | — |
-| 13:55–14:10 | — | — | ✅ | — | Monitor | ❌ | — | — |
-| 14:10–15:00 | — | — | ✅ | — | Monitor | ✅ | — | — |
-| 15:00–15:45 | — | — | ✅ | — | Monitor | Exit only | — | — |
-| 15:45–16:00 | ✅ | ✅ | ✅ | — | ✅ | Exit | ✅ | ✅ |
-| 16:00+ | — | — | — | — | — | — | — | — |
+| Time Window | Regime | Capital | Risk | Cold Start | Trend | MR | Hedge | Yield | Options |
+|-------------|:------:|:-------:|:----:|:----------:|:-----:|:--:|:-----:|:-----:|:-------:|
+| 09:00–09:30 | Preview | Load | — | Check | — | — | — | — | — |
+| 09:30–09:33 | — | — | ✅ | — | — | — | — | — | — |
+| 09:33–10:00 | — | — | ✅ | — | Monitor | — | — | — | — |
+| 10:00–13:55 | — | — | ✅ | ✅ | Monitor | ✅ | — | — | ✅ |
+| 13:55–14:10 | — | — | ✅ | — | Monitor | ❌ | — | — | ❌ |
+| 14:10–14:30 | — | — | ✅ | — | Monitor | ✅ | — | — | ✅ |
+| 14:30–15:00 | — | — | ✅ | — | Monitor | ✅ | — | — | Exit only |
+| 15:00–15:45 | — | — | ✅ | — | Monitor | Exit only | — | — | Exit only |
+| 15:45–16:00 | ✅ | ✅ | ✅ | — | ✅ | Exit | ✅ | ✅ | Exit |
+| 16:00+ | — | — | — | — | — | — | — | — | — |
+
+**Note:** Options Engine entries close at 14:30 (late day constraint), force close at 15:45.
 
 **Legend:**
 - ✅ = Active (generating signals)
@@ -255,11 +271,13 @@ gantt
 | Event Name | Time | Days | Function |
 |------------|------|------|----------|
 | `PreMarketSetup` | 09:25 | Mon-Fri | Set baselines, load state |
-| `SODBaseline` | 09:33 | Mon-Fri | Set equity_sod, check gap |
+| `SODBaseline` | 09:33 | Mon-Fri | Set equity_sod, check gap, check VIX |
 | `WarmEntryCheck` | 10:00 | Mon-Fri | Cold start warm entry |
 | `TimeGuardStart` | 13:55 | Mon-Fri | Block entries |
 | `TimeGuardEnd` | 14:10 | Mon-Fri | Resume entries |
+| `OptionsLateDayStart` | 14:30 | Mon-Fri | Force tight stops on options |
 | `MRForceClose` | 15:45 | Mon-Fri | Close MR positions |
+| `OptionsForceClose` | 15:45 | Mon-Fri | Close options positions |
 | `EODProcessing` | 15:45 | Mon-Fri | Run all EOD logic |
 | `WeeklyReset` | 09:30 | Mon | Reset weekly breaker |
 
@@ -304,15 +322,29 @@ Yesterday's Daily Bars
 ### 14.6.2 Market Hours Data Flow
 
 ```
-Minute Bars (SPY, TQQQ, SOXL, QLD, SSO, TMF, PSQ, SHV)
+Minute Bars (SPY, TQQQ, SOXL, QLD, SSO, TMF, PSQ, SHV, QQQ)
     │
     ├──→ Risk Engine (SPY for panic, vol shock)
     ├──→ MR Engine (TQQQ, SOXL for RSI, price, volume)
+    ├──→ Options Engine (QQQ options Greeks, price)
     └──→ Position Manager (all for stop monitoring)
 
-Portfolio Value
+VIX Data [V2.1]
     │
-    └──→ Risk Engine (kill switch calculation)
+    └──→ MR Engine (regime filter: NORMAL/CAUTION/HIGH_RISK/CRASH)
+            │
+            ├── VIX < 20:  10% allocation, RSI < 30, 8% stop
+            ├── VIX 20-30: 5% allocation, RSI < 25, 6% stop
+            ├── VIX 30-40: 2% allocation, RSI < 20, 4% stop
+            └── VIX > 40:  DISABLED
+
+Portfolio Value + Greeks [V2.1]
+    │
+    └──→ Risk Engine (kill switch, Greeks exposure limits)
+            │
+            ├── Portfolio Delta < MAX_DELTA
+            ├── Portfolio Gamma < MAX_GAMMA
+            └── Portfolio Vega < MAX_VEGA
 ```
 
 ### 14.6.3 EOD Data Flow
@@ -337,12 +369,27 @@ Finalized Daily Bars (QLD, SSO)
     │
     └──→ Trend Engine
             │
-            ├──→ Bollinger Bands
+            ├──→ MA200 (trend direction)
+            ├──→ ADX (momentum confirmation)
             └──→ Entry/Exit Signals
                     │
                     └──→ Portfolio Router
                             │
                             └──→ MOO Orders
+
+Finalized Daily Bars (QQQ) [V2.1]
+    │
+    └──→ Options Engine
+            │
+            ├──→ ADX Factor (trend strength)
+            ├──→ Momentum Factor (MA200 position)
+            ├──→ IV Rank Factor (implied volatility)
+            ├──→ Liquidity Factor (bid-ask spread)
+            └──→ 4-Factor Entry Score
+                    │
+                    └──→ OCO Manager (stop/profit pairs)
+                            │
+                            └──→ Portfolio Router
 ```
 
 ---
@@ -383,15 +430,18 @@ stateDiagram-v2
 
 | State | Description | Activities |
 |-------|-------------|------------|
-| **PRE_MARKET** | Before market open | Load state, set baselines |
+| **PRE_MARKET** | Before market open | Load state, set baselines, check VIX |
 | **MARKET_OPEN** | Opening auction | Process MOO fills |
 | **TRADING** | Normal market hours | All scanning and monitoring |
 | **TIME_GUARD** | Fed window | Entries blocked |
+| **OPTIONS_LATE_DAY** | After 14:30 | Options force tight stops (V2.1) |
 | **EOD_PROCESSING** | End of day batch | Regime calc, MOO submission |
 | **MARKET_CLOSED** | After hours | State persistence |
 | **KILL_SWITCH** | Emergency state | All liquidated, trading disabled |
 | **PANIC_MODE** | Flash crash response | Longs liquidated, hedges kept |
 | **VOL_SHOCK** | Temporary pause | Entries paused 15 min |
+| **GREEKS_ALERT** | Portfolio Greeks exceeded | Reduce options exposure (V2.1) |
+| **VIX_CRASH** | VIX > 40 | MR engine disabled (V2.1) |
 
 ---
 
@@ -583,13 +633,19 @@ flowchart TD
 |----------|-----------|
 | **09:25 baseline (not 09:30)** | Captures true prior close before any fills |
 | **09:33 SOD baseline** | Allows MOO fills to settle before measurement |
+| **09:33 VIX check** | Sets regime filter for MR engine (V2.1) |
 | **10:00 warm entry** | Avoids opening volatility |
 | **Minute-by-minute risk checks** | Immediate response to adverse conditions |
+| **5-level circuit breaker** | Graduated response to different risk types (V2.1) |
 | **13:55-14:10 time guard** | Protects against Fed announcement volatility |
+| **14:30 options late day** | Force tight stops on options before close |
 | **15:45 EOD processing** | Complete daily bars available |
 | **15:45 MR force close** | Ensures no 3× overnight exposure |
+| **15:45 options force close** | No overnight options exposure (theta decay) |
 | **State persistence at 16:00** | All daily data finalized |
 | **Risk checks ALWAYS first** | Safety before opportunity |
+| **MA200+ADX for trend** | More reliable than BB compression breakout (V2) |
+| **VIX-adjusted MR sizing** | Reduces exposure in high volatility (V2.1) |
 
 ---
 

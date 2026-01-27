@@ -1,7 +1,7 @@
 # Alpha NextGen - Project File Structure
 
-> **Last Updated:** January 2026
-> **Status:** Phase 6 complete (v0.6.0) - All phases implemented, ready for backtesting
+> **Last Updated:** 26 January 2026
+> **Status:** V2.1 Complete - Core-Satellite architecture with Options Engine, ready for backtesting
 
 ---
 
@@ -29,14 +29,19 @@ flowchart TD
 
     subgraph ENGINES["engines/"]
         E_INIT["__init__.py"]
-        E_REGIME["regime_engine.py<br/><i>Market state 0-100</i>"]
-        E_CAPITAL["capital_engine.py<br/><i>Phase mgmt, lockbox</i>"]
-        E_RISK["risk_engine.py<br/><i>Circuit breakers</i>"]
-        E_COLD["cold_start_engine.py<br/><i>Days 1-5 warm entry</i>"]
-        E_TREND["trend_engine.py<br/><i>BB breakout QLD/SSO</i>"]
-        E_MR["mean_reversion_engine.py<br/><i>Intraday TQQQ/SOXL</i>"]
-        E_HEDGE["hedge_engine.py<br/><i>TMF/PSQ allocation</i>"]
-        E_YIELD["yield_sleeve.py<br/><i>SHV cash mgmt</i>"]
+        subgraph CORE["core/ (always active)"]
+            E_REGIME["regime_engine.py<br/><i>Market state 0-100</i>"]
+            E_CAPITAL["capital_engine.py<br/><i>Phase mgmt, lockbox</i>"]
+            E_RISK["risk_engine.py<br/><i>Circuit breakers, Greeks</i>"]
+            E_COLD["cold_start_engine.py<br/><i>Days 1-5 warm entry</i>"]
+            E_TREND["trend_engine.py<br/><i>BB breakout QLD/SSO 70%</i>"]
+        end
+        subgraph SATELLITE["satellite/ (conditional)"]
+            E_MR["mean_reversion_engine.py<br/><i>Intraday TQQQ/SOXL 0-10%</i>"]
+            E_HEDGE["hedge_engine.py<br/><i>TMF/PSQ allocation</i>"]
+            E_YIELD["yield_sleeve.py<br/><i>SHV cash mgmt</i>"]
+            E_OPTIONS["options_engine.py<br/><i>QQQ options 20-30%</i>"]
+        end
     end
 
     subgraph PORTFOLIO["portfolio/"]
@@ -49,8 +54,9 @@ flowchart TD
     subgraph EXECUTION["execution/"]
         X_INIT["__init__.py"]
         X_ENGINE["execution_engine.py<br/><i>Order submission</i>"]
-        X_ORDER["order_manager.py<br/><i>Order tracking</i>"]
-        X_FILL["fill_handler.py<br/><i>Fill processing</i>"]
+        X_OCO["oco_manager.py<br/><i>OCO order pairs</i>"]
+        X_ORDER["order_manager.py<br/><i>Order tracking (stub)</i>"]
+        X_FILL["fill_handler.py<br/><i>Fill processing (stub)</i>"]
     end
 
     subgraph INFRA["Infrastructure"]
@@ -91,7 +97,7 @@ flowchart TD
 ```
 alpha_nextgen/
 │
-├── main.py                              # QCAlgorithm entry point (1,332 lines - Complete)
+├── main.py                              # QCAlgorithm entry point (1,638 lines - V2.1 Complete)
 ├── config.py                            # All tunable parameters
 ├── requirements.txt                     # Python dependencies (pytest, lean, etc.)
 ├── requirements.lock                    # Locked versions for reproducibility
@@ -127,16 +133,21 @@ alpha_nextgen/
 │   ├── validate_config.py               # Validate config.py against specs
 │   └── check_spec_parity.py             # Code-to-spec update warning
 │
-├── engines/
+├── engines/                             # V2 Core-Satellite architecture
 │   ├── __init__.py
-│   ├── regime_engine.py                 # 4-factor market state (0-100 score)
-│   ├── capital_engine.py                # SEED/GROWTH phases, virtual lockbox
-│   ├── risk_engine.py                   # Kill switch, panic mode, all safeguards
-│   ├── cold_start_engine.py             # Days 1-5 warm entry logic
-│   ├── trend_engine.py                  # BB compression breakout (QLD, SSO)
-│   ├── mean_reversion_engine.py         # Intraday oversold bounce (TQQQ, SOXL)
-│   ├── hedge_engine.py                  # Regime-based TMF/PSQ allocation
-│   └── yield_sleeve.py                  # SHV idle cash management
+│   ├── core/                            # Foundational engines (always active)
+│   │   ├── __init__.py
+│   │   ├── regime_engine.py             # 4-factor market state (0-100 score)
+│   │   ├── capital_engine.py            # SEED/GROWTH phases, virtual lockbox
+│   │   ├── risk_engine.py               # Kill switch, panic mode, Greeks monitoring
+│   │   ├── cold_start_engine.py         # Days 1-5 warm entry logic
+│   │   └── trend_engine.py              # BB compression breakout (QLD, SSO) - 70%
+│   └── satellite/                       # Conditional engines
+│       ├── __init__.py
+│       ├── mean_reversion_engine.py     # Intraday oversold bounce (TQQQ, SOXL) - 0-10%
+│       ├── hedge_engine.py              # Regime-based TMF/PSQ allocation
+│       ├── yield_sleeve.py              # SHV idle cash management
+│       └── options_engine.py            # QQQ options, 4-factor scoring - 20-30%
 │
 ├── portfolio/
 │   ├── __init__.py
@@ -147,8 +158,9 @@ alpha_nextgen/
 ├── execution/
 │   ├── __init__.py
 │   ├── execution_engine.py              # Market/MOO order submission
-│   ├── order_manager.py                 # Order tracking, status, fallback
-│   └── fill_handler.py                  # Fill confirmation, partial fills
+│   ├── oco_manager.py                   # One-Cancels-Other order pairs (options)
+│   ├── order_manager.py                 # Order tracking, status, fallback (stub)
+│   └── fill_handler.py                  # Fill confirmation, partial fills (stub)
 │
 ├── data/
 │   ├── __init__.py

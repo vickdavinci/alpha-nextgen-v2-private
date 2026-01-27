@@ -40,21 +40,41 @@
 
 ## Source Code Directories
 
+### Core Engines (engines/core/)
+
 | Changed File/Directory | Documentation to Update |
 |------------------------|-------------------------|
-| `engines/*.py` (new file) | `CLAUDE.md` → Component Map, `PROJECT-STRUCTURE.md` |
-| `engines/regime_engine.py` | `docs/04-regime-engine.md` |
-| `engines/capital_engine.py` | `docs/05-capital-engine.md` |
-| `engines/cold_start_engine.py` | `docs/06-cold-start-engine.md` |
-| `engines/trend_engine.py` | `docs/07-trend-engine.md` |
-| `engines/mean_reversion_engine.py` | `docs/08-mean-reversion-engine.md` |
-| `engines/hedge_engine.py` | `docs/09-hedge-engine.md` |
-| `engines/yield_sleeve.py` | `docs/10-yield-sleeve.md` |
-| `engines/risk_engine.py` | `docs/12-risk-engine.md` |
+| `engines/core/*.py` (new file) | `CLAUDE.md` → Component Map, `PROJECT-STRUCTURE.md` |
+| `engines/core/regime_engine.py` | `docs/04-regime-engine.md` |
+| `engines/core/capital_engine.py` | `docs/05-capital-engine.md` |
+| `engines/core/cold_start_engine.py` | `docs/06-cold-start-engine.md` |
+| `engines/core/trend_engine.py` | `docs/07-trend-engine.md` |
+| `engines/core/risk_engine.py` | `docs/12-risk-engine.md` |
+
+### Satellite Engines (engines/satellite/)
+
+| Changed File/Directory | Documentation to Update |
+|------------------------|-------------------------|
+| `engines/satellite/*.py` (new file) | `CLAUDE.md` → Component Map, `PROJECT-STRUCTURE.md` |
+| `engines/satellite/mean_reversion_engine.py` | `docs/08-mean-reversion-engine.md` |
+| `engines/satellite/hedge_engine.py` | `docs/09-hedge-engine.md` |
+| `engines/satellite/yield_sleeve.py` | `docs/10-yield-sleeve.md` |
+| `engines/satellite/options_engine.py` | `docs/18-options-engine.md` |
+
+### Portfolio & Execution
+
+| Changed File/Directory | Documentation to Update |
+|------------------------|-------------------------|
 | `portfolio/portfolio_router.py` | `docs/11-portfolio-router.md` |
 | `execution/execution_engine.py` | `docs/13-execution-engine.md` |
+| `execution/oco_manager.py` | `docs/19-oco-manager.md` |
 | `persistence/*.py` | `docs/15-state-persistence.md` |
 | `scheduling/daily_scheduler.py` | `docs/14-daily-operations.md` |
+
+### Models
+
+| Changed File/Directory | Documentation to Update |
+|------------------------|-------------------------|
 | `models/*.py` (new file) | `CLAUDE.md` → Component Map, `PROJECT-STRUCTURE.md` |
 | `models/target_weight.py` | `CLAUDE.md` → Critical Rules |
 | `models/enums.py` | `docs/17-appendix-glossary.md` |
@@ -134,4 +154,4 @@ This map should be updated when:
 - New documentation files are created
 - New patterns of code-to-doc relationships emerge
 
-**Last Updated:** 25 January 2026 (Phase 6 Complete - main.py implemented)
+**Last Updated:** 26 January 2026 (V2.1 Complete - Core-Satellite architecture, Options Engine, OCO Manager)

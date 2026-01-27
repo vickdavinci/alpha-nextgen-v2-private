@@ -11,6 +11,7 @@
 | [README](README.md) | Documentation overview and quick reference |
 | [Documentation Map](DOCUMENTATION-MAP.md) | Code-to-documentation mapping (for Claude) |
 | [main.py Implementation](MAIN_PY_IMPLEMENTATION.md) | Phase 6 entry point implementation summary |
+| [V2 Test Plan](V2_TEST_PLAN.md) | Comprehensive test strategy for V2.1 |
 | [QC Coding Rules](../QC_RULES.md) | QuantConnect-specific patterns |
 | [Common Errors](../ERRORS.md) | Troubleshooting guide |
 
@@ -52,6 +53,7 @@
 | [08](08-mean-reversion-engine.md) | **Mean Reversion Engine** | RSI oversold detection, intraday-only, +2%/-2% exits, time-based force close | Mean Reversion Detail |
 | [09](09-hedge-engine.md) | **Hedge Engine** | Regime-based TMF/PSQ allocation, tail risk protection, rebalancing rules | Hedge Engine Detail |
 | [10](10-yield-sleeve.md) | **Yield Sleeve** | SHV for idle cash, LIFO liquidation, lockbox investment | None |
+| [18](18-options-engine.md) | **Options Engine** | 4-factor entry scoring, QQQ options, tiered stops, Greeks monitoring | Options Flow |
 
 ---
 
@@ -61,6 +63,7 @@
 |:-:|---------|-------------|--------------|
 | [11](11-portfolio-router.md) | **Portfolio Router** | TargetWeight aggregation, exposure validation, urgency routing, netting | Router Workflow, Position Sizing |
 | [13](13-execution-engine.md) | **Execution Engine** | Market orders, MOO orders, fallback handling, fill processing | Order State Machine |
+| [19](19-oco-manager.md) | **OCO Manager** | One-Cancels-Other order pairs for options stop/profit exits | OCO State Machine |
 
 ---
 
@@ -234,7 +237,9 @@ Every section includes:
 | Version | Date | Changes |
 |---------|------|---------|
 | 1.0 | January 2026 | Initial specification |
-| 1.1 | 25 January 2026 | Phase 6 complete - main.py implemented (1,332 lines) |
+| 1.1 | 25 January 2026 | Phase 6 complete - main.py implemented |
+| 2.0 | 26 January 2026 | V2 fork with Core-Satellite architecture |
+| 2.1 | 26 January 2026 | Options Engine, OCO Manager, Greeks monitoring, VIX filter |
 
 ---
 
@@ -260,3 +265,5 @@ Every section includes:
 | 💾 Persistence | [15 - State Persistence](15-state-persistence.md) |
 | ⚙️ Parameters | [16 - Appendix: Parameters](16-appendix-parameters.md) |
 | 📖 Glossary | [17 - Appendix: Glossary](17-appendix-glossary.md) |
+| 🎰 Options | [18 - Options Engine](18-options-engine.md) |
+| 🔗 OCO | [19 - OCO Manager](19-oco-manager.md) |

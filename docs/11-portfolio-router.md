@@ -63,13 +63,14 @@ Step 6: EXECUTE    → Pass to Execution Engine
 
 Gather all TargetWeight objects from all strategy engines:
 
-| Engine | Typical Weights | Symbols |
-|--------|-----------------|---------|
-| **Trend Engine** | 0-2 weights | QLD, SSO |
-| **Mean Reversion Engine** | 0-2 weights | TQQQ, SOXL |
-| **Hedge Engine** | 2 weights | TMF, PSQ |
-| **Yield Sleeve** | 0-1 weight | SHV |
-| **Cold Start Engine** | 0-1 weight | QLD or SSO |
+| Engine | Typical Weights | Symbols | Urgency |
+|--------|-----------------|---------|---------|
+| **Trend Engine** | 0-2 weights | QLD, SSO | EOD |
+| **Mean Reversion Engine** | 0-2 weights | TQQQ, SOXL | IMMEDIATE |
+| **Options Engine** (V2.1) | 0-1 weight | QQQ options | IMMEDIATE |
+| **Hedge Engine** | 2 weights | TMF, PSQ | EOD |
+| **Yield Sleeve** | 0-1 weight | SHV | EOD |
+| **Cold Start Engine** | 0-1 weight | QLD or SSO | IMMEDIATE |
 
 ### 11.3.2 TargetWeight Structure
 
@@ -89,16 +90,19 @@ Each TargetWeight includes:
 Collected TargetWeights at 15:45 ET:
 
 From Trend Engine:
-  • TargetWeight(QLD, 0.30, "TREND", EOD, "BB Breakout")
-  
+  • TargetWeight(QLD, 0.30, "TREND", EOD, "MA200_ADX_ENTRY")
+
+From Options Engine (V2.1):
+  • TargetWeight(QQQ_CALL, 0.20, "OPTIONS", IMMEDIATE, "Entry Score=3.5")
+
 From Hedge Engine:
   • TargetWeight(TMF, 0.10, "HEDGE", EOD, "Regime=38")
   • TargetWeight(PSQ, 0.00, "HEDGE", EOD, "Regime=38")
-  
-From Yield Sleeve:
-  • TargetWeight(SHV, 0.55, "YIELD", EOD, "Unallocated $55k")
 
-Total: 4 TargetWeights collected
+From Yield Sleeve:
+  • TargetWeight(SHV, 0.45, "YIELD", EOD, "Unallocated $45k")
+
+Total: 5 TargetWeights collected
 ```
 
 ---

@@ -113,26 +113,36 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 ---
 
-## 16.5 Trend Engine Parameters
+## 16.5 Trend Engine Parameters (V2)
 
-### Bollinger Band Parameters
+### MA200 + ADX Entry Parameters
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `BB_PERIOD` | 20 | Moving average period |
-| `BB_STD_DEV` | 2.0 | Standard deviation multiplier |
-| `COMPRESSION_THRESHOLD` | 0.10 | Bandwidth threshold (10%) |
+| `TREND_MA_PERIOD` | 200 | Moving average period for trend direction |
+| `ADX_PERIOD` | 14 | ADX period for momentum strength |
+| `ADX_ENTRY_MIN` | 25 | Minimum ADX for entry (score >= 0.50) |
+| `ADX_EXIT_MIN` | 20 | ADX below this triggers exit consideration |
 
-### Chandelier Stop Parameters
+### ADX Scoring Tiers
+
+| ADX Range | Score | Interpretation |
+|:---------:|:-----:|----------------|
+| < 20 | 0.25 | Weak trend, avoid entry |
+| 20-25 | 0.50 | Moderate trend, minimum for entry |
+| 25-35 | 0.75 | Strong trend, favorable |
+| >= 35 | 1.00 | Very strong trend, ideal |
+
+### Chandelier Stop Parameters (V2.1)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `ATR_PERIOD` | 14 | ATR calculation period |
-| `CHANDELIER_BASE_MULT` | 3.0 | Initial multiplier (profit < 15%) |
-| `CHANDELIER_TIGHT_MULT` | 2.0 | Medium multiplier (profit 15-25%) |
-| `CHANDELIER_TIGHTER_MULT` | 1.5 | Tight multiplier (profit > 25%) |
-| `PROFIT_TIGHT_PCT` | 0.15 | First tightening threshold (15%) |
-| `PROFIT_TIGHTER_PCT` | 0.25 | Second tightening threshold (25%) |
+| `CHANDELIER_BASE_MULT` | 3.0 | Initial multiplier (profit < 10%) |
+| `CHANDELIER_TIGHT_MULT` | 2.5 | Medium multiplier (profit 10-20%) |
+| `CHANDELIER_TIGHTER_MULT` | 2.0 | Tight multiplier (profit > 20%) |
+| `PROFIT_TIGHT_PCT` | 0.10 | First tightening threshold (10%) |
+| `PROFIT_TIGHTER_PCT` | 0.20 | Second tightening threshold (20%) |
 
 ### Entry/Exit Thresholds
 
@@ -141,16 +151,33 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `TREND_ENTRY_REGIME_MIN` | 40 | Minimum regime for entry |
 | `TREND_EXIT_REGIME` | 30 | Regime score forcing exit |
 
+### V2 Entry Conditions Summary
+
+| Condition | Requirement |
+|-----------|-------------|
+| Price vs MA200 | Close > MA200 |
+| ADX Score | ADX >= 25 (score >= 0.50) |
+| Regime | Score >= 40 |
+
+### V2 Exit Conditions Summary
+
+| Condition | Trigger |
+|-----------|---------|
+| MA200 Cross | Close < MA200 |
+| ADX Weakness | ADX < 20 |
+| Chandelier Stop | Price < Highest High − (ATR × multiplier) |
+| Regime Exit | Score < 30 |
+
 ---
 
-## 16.6 Mean Reversion Engine Parameters
+## 16.6 Mean Reversion Engine Parameters (V2.1)
 
 ### RSI Parameters
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `RSI_PERIOD` | 5 | Fast RSI period |
-| `RSI_THRESHOLD` | 25 | Oversold threshold |
+| `RSI_THRESHOLD` | VIX-adjusted | Oversold threshold (20-30) |
 
 ### Entry Conditions
 
@@ -167,8 +194,25 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `MR_TARGET_PCT` | 0.02 | +2% profit target |
-| `MR_STOP_PCT` | 0.02 | −2% stop loss |
+| `MR_STOP_PCT` | VIX-adjusted | 4-8% stop loss |
 | `MR_FORCE_EXIT_TIME` | 15:45 ET | Mandatory close time |
+
+### VIX Regime Filter Parameters (V2.1)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `VIX_NORMAL_THRESHOLD` | 20 | Below = NORMAL regime |
+| `VIX_CAUTION_THRESHOLD` | 30 | 20-30 = CAUTION regime |
+| `VIX_HIGH_RISK_THRESHOLD` | 40 | 30-40 = HIGH_RISK regime |
+
+### VIX-Adjusted Parameters Table
+
+| VIX Level | Regime | Allocation | RSI Threshold | Stop Loss |
+|:---------:|--------|:----------:|:-------------:|:---------:|
+| < 20 | NORMAL | 10% | RSI < 30 | 8% |
+| 20-30 | CAUTION | 5% | RSI < 25 | 6% |
+| 30-40 | HIGH_RISK | 2% | RSI < 20 | 4% |
+| > 40 | CRASH | **0%** (disabled) | — | — |
 
 ---
 
@@ -211,6 +255,92 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 |-----------|:-----:|-------------|
 | `SHV_MIN_TRADE` | $2,000 | Minimum cash for SHV purchase |
 | `SHV_MAX_ALLOCATION` | None | No maximum (fills available cash) |
+
+---
+
+## 16.8.1 Options Engine Parameters (V2.1)
+
+### Allocation
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `OPTIONS_ALLOCATION_PCT` | 0.20 | Max allocation to options (20%) |
+| `OPTIONS_MAX_ALLOCATION_PCT` | 0.30 | Absolute max (30%) |
+
+### 4-Factor Entry Scoring
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `OPTIONS_ADX_PERIOD` | 14 | ADX lookback period |
+| `OPTIONS_MA_PERIOD` | 200 | Moving average for momentum |
+| `OPTIONS_IV_LOOKBACK` | 252 | IV rank lookback (1 year) |
+| `OPTIONS_MAX_SPREAD_PCT` | 0.10 | Max bid-ask spread (10%) |
+| `OPTIONS_ENTRY_SCORE_MIN` | 3.0 | Minimum score for entry (out of 4.0) |
+
+### ADX Scoring (Factor 1)
+
+| ADX Value | Score |
+|:---------:|:-----:|
+| < 20 | 0.00 |
+| 20-25 | 0.50 |
+| 25-30 | 0.75 |
+| > 30 | 1.00 |
+
+### IV Rank Scoring (Factor 3)
+
+| IV Rank | Score |
+|:-------:|:-----:|
+| 0-20% | 0.25 |
+| 20-40% | 0.50 |
+| 40-60% | 0.75 |
+| 60-80% | 1.00 |
+| 80-100% | 0.75 |
+
+### Tiered Stop Losses
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `OPTIONS_STOP_TIER_1` | 0.20 | Score 3.0-3.25: 20% stop |
+| `OPTIONS_STOP_TIER_2` | 0.22 | Score 3.25-3.5: 22% stop |
+| `OPTIONS_STOP_TIER_3` | 0.25 | Score 3.5-3.75: 25% stop |
+| `OPTIONS_STOP_TIER_4` | 0.30 | Score 3.75-4.0: 30% stop |
+| `OPTIONS_PROFIT_TARGET_PCT` | 0.50 | +50% profit target |
+
+### Time Constraints
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `OPTIONS_ENTRY_START` | 10:00 ET | Earliest entry time |
+| `OPTIONS_ENTRY_END` | 14:30 ET | Latest entry time |
+| `OPTIONS_LATE_DAY_TIME` | 14:30 ET | Force tight stops after this |
+| `OPTIONS_FORCE_EXIT_TIME` | 15:45 ET | Mandatory close time |
+
+### Greeks Monitoring
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `OPTIONS_MAX_DELTA` | 0.70 | Delta alert threshold |
+| `OPTIONS_MAX_GAMMA` | 0.10 | Gamma alert threshold |
+| `OPTIONS_MIN_THETA` | -0.15 | Theta alert threshold |
+
+### Contract Selection
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `OPTIONS_DTE_MIN` | 0 | Minimum days to expiry |
+| `OPTIONS_DTE_MAX` | 1 | Maximum days to expiry |
+| `OPTIONS_DELTA_TARGET` | 0.45-0.55 | Near ATM |
+| `OPTIONS_MIN_PREMIUM` | 0.50 | Minimum premium per contract |
+
+---
+
+## 16.8.2 OCO Manager Parameters (V2.1)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `OCO_STATE_KEY` | "oco_state" | ObjectStore key for persistence |
+| `OCO_RECONCILE_ON_START` | True | Verify orders on restart |
+| `OCO_CANCEL_TIMEOUT_SEC` | 30 | Timeout for cancel confirmation |
 
 ---
 
@@ -443,33 +573,39 @@ WARM_QLD_THRESHOLD = 60
 WARM_MIN_SIZE = 2_000
 
 # =============================================================================
-# TREND ENGINE
+# TREND ENGINE (V2 - MA200 + ADX)
 # =============================================================================
 
-# Bollinger Bands
-BB_PERIOD = 20
-BB_STD_DEV = 2.0
-COMPRESSION_THRESHOLD = 0.10
+# MA200 + ADX Entry
+TREND_MA_PERIOD = 200
+ADX_PERIOD = 14
+ADX_ENTRY_MIN = 25  # Minimum ADX for entry (score >= 0.50)
+ADX_EXIT_MIN = 20   # ADX below this triggers exit
 
-# Chandelier Stop
+# ADX Scoring Tiers
+ADX_SCORE_WEAK = 20      # Below = 0.25
+ADX_SCORE_MODERATE = 25  # 20-25 = 0.50
+ADX_SCORE_STRONG = 35    # 25-35 = 0.75, above = 1.0
+
+# Chandelier Stop (V2.1 tiers)
 ATR_PERIOD = 14
-CHANDELIER_BASE_MULT = 3.0
-CHANDELIER_TIGHT_MULT = 2.0
-CHANDELIER_TIGHTER_MULT = 1.5
-PROFIT_TIGHT_PCT = 0.15
-PROFIT_TIGHTER_PCT = 0.25
+CHANDELIER_BASE_MULT = 3.0    # Profit < 10%
+CHANDELIER_TIGHT_MULT = 2.5   # Profit 10-20%
+CHANDELIER_TIGHTER_MULT = 2.0 # Profit > 20%
+PROFIT_TIGHT_PCT = 0.10       # First tightening at 10%
+PROFIT_TIGHTER_PCT = 0.20     # Second tightening at 20%
 
 # Entry/Exit
 TREND_ENTRY_REGIME_MIN = 40
 TREND_EXIT_REGIME = 30
 
 # =============================================================================
-# MEAN REVERSION ENGINE
+# MEAN REVERSION ENGINE (V2.1 - VIX Filter)
 # =============================================================================
 
 # RSI
 RSI_PERIOD = 5
-RSI_THRESHOLD = 25
+# RSI_THRESHOLD is VIX-adjusted (see VIX_MR_PARAMS below)
 
 # Entry Conditions
 MR_DROP_THRESHOLD = 0.025
@@ -480,8 +616,21 @@ MR_REGIME_MIN = 40
 
 # Exit Conditions
 MR_TARGET_PCT = 0.02
-MR_STOP_PCT = 0.02
+# MR_STOP_PCT is VIX-adjusted (see VIX_MR_PARAMS below)
 MR_FORCE_EXIT_TIME = "15:45"
+
+# VIX Regime Filter (V2.1)
+VIX_NORMAL_THRESHOLD = 20
+VIX_CAUTION_THRESHOLD = 30
+VIX_HIGH_RISK_THRESHOLD = 40
+
+# VIX-Adjusted MR Parameters
+VIX_MR_PARAMS = {
+    "NORMAL":    {"allocation": 0.10, "rsi_threshold": 30, "stop_pct": 0.08},  # VIX < 20
+    "CAUTION":   {"allocation": 0.05, "rsi_threshold": 25, "stop_pct": 0.06},  # VIX 20-30
+    "HIGH_RISK": {"allocation": 0.02, "rsi_threshold": 20, "stop_pct": 0.04},  # VIX 30-40
+    "CRASH":     {"allocation": 0.00, "rsi_threshold": 0,  "stop_pct": 0.00},  # VIX > 40 (disabled)
+}
 
 # =============================================================================
 # HEDGE ENGINE
@@ -509,6 +658,54 @@ HEDGE_REBAL_THRESHOLD = 0.02
 # =============================================================================
 
 SHV_MIN_TRADE = 2_000
+
+# =============================================================================
+# OPTIONS ENGINE (V2.1)
+# =============================================================================
+
+# Allocation
+OPTIONS_ALLOCATION_PCT = 0.20
+OPTIONS_MAX_ALLOCATION_PCT = 0.30
+
+# 4-Factor Entry Scoring
+OPTIONS_ADX_PERIOD = 14
+OPTIONS_MA_PERIOD = 200
+OPTIONS_IV_LOOKBACK = 252
+OPTIONS_MAX_SPREAD_PCT = 0.10
+OPTIONS_ENTRY_SCORE_MIN = 3.0
+
+# Tiered Stop Losses
+OPTIONS_STOP_TIER_1 = 0.20  # Score 3.0-3.25
+OPTIONS_STOP_TIER_2 = 0.22  # Score 3.25-3.5
+OPTIONS_STOP_TIER_3 = 0.25  # Score 3.5-3.75
+OPTIONS_STOP_TIER_4 = 0.30  # Score 3.75-4.0
+OPTIONS_PROFIT_TARGET_PCT = 0.50
+
+# Time Constraints
+OPTIONS_ENTRY_START = "10:00"
+OPTIONS_ENTRY_END = "14:30"
+OPTIONS_LATE_DAY_TIME = "14:30"
+OPTIONS_FORCE_EXIT_TIME = "15:45"
+
+# Greeks Monitoring
+OPTIONS_MAX_DELTA = 0.70
+OPTIONS_MAX_GAMMA = 0.10
+OPTIONS_MIN_THETA = -0.15
+
+# Contract Selection
+OPTIONS_DTE_MIN = 0
+OPTIONS_DTE_MAX = 1
+OPTIONS_DELTA_TARGET_MIN = 0.45
+OPTIONS_DELTA_TARGET_MAX = 0.55
+OPTIONS_MIN_PREMIUM = 0.50
+
+# =============================================================================
+# OCO MANAGER (V2.1)
+# =============================================================================
+
+OCO_STATE_KEY = "oco_state"
+OCO_RECONCILE_ON_START = True
+OCO_CANCEL_TIMEOUT_SEC = 30
 
 # =============================================================================
 # PORTFOLIO ROUTER

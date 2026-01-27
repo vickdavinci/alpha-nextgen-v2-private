@@ -750,12 +750,31 @@ def calculate_stop(self, entry_price: float, atr: float) -> float:
 | **Architecture Tests** | `tests/test_architecture_boundaries.py` | Enforce architecture rules | ✅ Now |
 | **Contract Tests** | `tests/test_target_weight_contract.py` | Ensure TargetWeight schema stability | ✅ Now |
 | **Smoke Tests** | `tests/test_smoke_integration.py` | Verify components wire together | ✅ Now |
-| **Unit Tests** | `tests/test_*.py` | Test individual functions/classes | Phased |
+| **Unit Tests** | `tests/test_*.py` | Test individual functions/classes | ✅ Now |
+| **Integration Tests** | `tests/integration/` | Multi-component interactions | ✅ V2.1 |
 | **Scenario Tests** | `tests/scenarios/` | Test complete workflows | Phase 5+ |
+
+### Integration Tests (V2.1)
+
+Integration tests verify that multiple components work together without conflicts:
+
+| Test File | Purpose |
+|-----------|---------|
+| `test_options_integration.py` | Options + OCO lifecycle, Greeks monitoring |
+| `test_multi_engine_conflict.py` | Engine conflict detection, allocation limits |
+| `test_state_recovery.py` | Restart recovery, state persistence |
+
+**Why Integration Tests Matter:**
+- Options Engine is new and interacts with OCO Manager, Risk Engine, and Router
+- Multiple engines compete for allocation - conflicts must be detected
+- System must survive restarts with state intact
+
+See `docs/V2_TEST_PLAN.md` for comprehensive test strategy.
 
 ### Test Status
 
 - **Critical tests** (architecture, contract, smoke) must always pass
+- **Integration tests** must pass - they verify component interactions
 - **Unit tests** may have `@pytest.mark.skip` for unimplemented components
 - **Scenario tests** are skipped until Phase 5+ integration
 
@@ -771,8 +790,15 @@ make test-critical
 # Run specific test file
 pytest tests/test_trend_engine.py -v
 
+# Run integration tests only (V2.1)
+pytest tests/integration/ -v
+
+# Run options-related tests
+pytest tests/ -v -m options
+pytest tests/test_options_engine.py tests/test_oco_manager.py tests/integration/test_options_integration.py -v
+
 # Run with coverage
-pytest tests/ --cov=engines --cov=portfolio --cov=models --cov-report=term-missing
+pytest tests/ --cov=engines --cov=portfolio --cov=models --cov=execution --cov-report=term-missing
 
 # Run only non-skipped tests
 pytest tests/ -v -m "not skip"
@@ -781,6 +807,7 @@ pytest tests/ -v -m "not skip"
 pytest tests/ -v -m architecture
 pytest tests/ -v -m contract
 pytest tests/ -v -m smoke
+pytest tests/ -v -m integration
 ```
 
 ### Understanding Skipped Tests

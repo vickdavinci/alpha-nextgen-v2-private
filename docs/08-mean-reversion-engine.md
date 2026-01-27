@@ -63,32 +63,86 @@ Unlike trend trading, mean reversion is **intraday only**—no overnight holds. 
 
 ## 8.3 Entry Conditions
 
-**All seven conditions must be satisfied simultaneously** for entry.
+**All eight conditions must be satisfied simultaneously** for entry.
 
 ### Entry Conditions Summary Table
 
 | # | Condition | Requirement | Rationale |
 |:-:|-----------|-------------|-----------|
-| 1 | RSI Oversold | RSI(5) < 25 | Extreme oversold reading |
+| 1 | RSI Oversold | RSI(5) < threshold (VIX-adjusted) | Extreme oversold reading |
 | 2 | Price Drop | > 2.5% from open | Meaningful decline, not noise |
 | 3 | Volume Confirmation | > 1.2× average | Genuine selling pressure |
 | 4 | Time Window | 10:00 AM – 3:00 PM | Avoid open chaos, allow time for bounce |
 | 5 | Regime Requirement | Score ≥ 40 | Don't buy dips in bad environments |
-| 6 | Not Cold Start | Days ≥ 5 | Need sufficient intraday history |
-| 7 | Safeguards Clear | No gap/vol shock/time guard | Safety checks pass |
+| 6 | VIX Regime Filter | VIX < 40 (see table below) | Adjust exposure in high volatility |
+| 7 | Not Cold Start | Days ≥ 5 | Need sufficient intraday history |
+| 8 | Safeguards Clear | No gap/vol shock/time guard | Safety checks pass |
 
 ---
 
-### 8.3.1 RSI Oversold (RSI < 25)
+## 8.3.0 VIX Regime Filter (V2.1)
 
-**Requirement:** 5-period RSI must be below 25.
+**The VIX level determines allocation, RSI threshold, and stop loss percentage.** This is a key V2.1 enhancement that reduces risk in high-volatility environments.
 
-This is an **extremely oversold** reading:
+### VIX Regime Tiers
 
-| Parameter | Standard | MR Engine |
-|-----------|:--------:|:---------:|
+| VIX Level | Regime | Max Allocation | RSI Threshold | Stop Loss |
+|:---------:|--------|:--------------:|:-------------:|:---------:|
+| < 20 | NORMAL | 10% | RSI < 30 | 8% |
+| 20-30 | CAUTION | 5% | RSI < 25 | 6% |
+| 30-40 | HIGH_RISK | 2% | RSI < 20 | 4% |
+| > 40 | CRASH | **DISABLED** | — | — |
+
+### Why VIX Matters for Mean Reversion
+
+| VIX State | Market Behavior | MR Adjustment |
+|-----------|-----------------|---------------|
+| **Low VIX** | Normal conditions, bounces reliable | Full allocation, standard thresholds |
+| **Elevated VIX** | Increased fear, larger swings | Reduced size, tighter entry |
+| **High VIX** | Fear dominant, momentum persists | Minimal exposure, extreme oversold only |
+| **Crash VIX** | Panic selling, no mean reversion | **Engine disabled entirely** |
+
+### VIX Check Implementation
+
+```python
+def get_vix_adjusted_params(self, vix: float) -> dict:
+    """Return VIX-adjusted parameters for MR entry."""
+    if vix >= 40:
+        return {"enabled": False, "allocation": 0, "rsi_threshold": 0, "stop_pct": 0}
+    elif vix >= 30:
+        return {"enabled": True, "allocation": 0.02, "rsi_threshold": 20, "stop_pct": 0.04}
+    elif vix >= 20:
+        return {"enabled": True, "allocation": 0.05, "rsi_threshold": 25, "stop_pct": 0.06}
+    else:
+        return {"enabled": True, "allocation": 0.10, "rsi_threshold": 30, "stop_pct": 0.08}
+```
+
+### VIX is Checked at SOD
+
+VIX regime is determined at **09:33 ET** (SOD baseline) and remains fixed for the day:
+- Prevents whipsaw from intraday VIX spikes
+- Provides predictable behavior throughout the session
+- VIX tends to spike early if there's trouble
+
+---
+
+### 8.3.1 RSI Oversold (VIX-Adjusted)
+
+**Requirement:** 5-period RSI must be below the VIX-adjusted threshold.
+
+The threshold varies based on VIX regime (see 8.3.0):
+
+| VIX Level | RSI Threshold | Meaning |
+|:---------:|:-------------:|---------|
+| VIX < 20 | RSI < 30 | Standard oversold |
+| VIX 20-30 | RSI < 25 | More extreme required |
+| VIX 30-40 | RSI < 20 | Only deep panic |
+| VIX > 40 | **DISABLED** | No entries allowed |
+
+| Parameter | Standard | MR Engine (VIX < 20) |
+|-----------|:--------:|:--------------------:|
 | RSI Period | 14 | **5** (faster) |
-| Oversold Threshold | 30 | **25** (more extreme) |
+| Oversold Threshold | 30 | **20-30** (VIX-adjusted) |
 
 This combination identifies **genuine panic selling**, not minor pullbacks.
 
@@ -202,8 +256,18 @@ Mean reversion positions **must be closed the same day**. Three exit triggers en
 | Exit Type | Trigger | Action |
 |-----------|---------|--------|
 | **Target Exit** | +2% from entry OR return to VWAP | Take profit |
-| **Stop Exit** | −2% from entry | Cut losses |
+| **Stop Exit** | VIX-adjusted stop (4-8%) | Cut losses |
 | **Time Exit** | 3:45 PM | Force close regardless of P&L |
+
+### VIX-Adjusted Stop Loss (V2.1)
+
+Stop loss varies based on VIX at SOD:
+
+| VIX Level | Stop Loss | Rationale |
+|:---------:|:---------:|-----------|
+| VIX < 20 | 8% | Wide stop in calm markets |
+| VIX 20-30 | 6% | Tighter in elevated vol |
+| VIX 30-40 | 4% | Very tight in high vol |
 
 ---
 
@@ -232,21 +296,28 @@ Returning to VWAP means reversion is complete—the oversold condition has norma
 
 ---
 
-### 8.4.2 Stop Exit (−2%)
+### 8.4.2 Stop Exit (VIX-Adjusted)
 
-**Trigger:** Close the position if price falls **2% below entry price**.
+**Trigger:** Close the position if price falls below the VIX-adjusted stop level.
 
 ```
-Stop Price = Entry Price × 0.98
+Stop Price = Entry Price × (1 - stop_pct)
+
+Where stop_pct is based on VIX at SOD:
+  VIX < 20:  stop_pct = 0.08 (8%)
+  VIX 20-30: stop_pct = 0.06 (6%)
+  VIX 30-40: stop_pct = 0.04 (4%)
 ```
 
 #### Rationale
 
-| Property | Value |
-|----------|-------|
-| Risk/Reward | 1:1 initial (symmetric with target) |
-| Purpose | Quick cut if bounce thesis fails |
-| Protection | Prevents small loss → large loss |
+| VIX Level | Stop % | Risk/Reward | Purpose |
+|:---------:|:------:|:-----------:|---------|
+| Low (< 20) | 8% | 1:4 | Wide stop, expect reversion |
+| Elevated (20-30) | 6% | 1:3 | Moderate stop |
+| High (30-40) | 4% | 1:2 | Tight stop, protect capital |
+
+The tighter stops in high-VIX environments reflect that momentum may persist longer in volatile markets.
 
 ---
 
@@ -530,7 +601,7 @@ Router will scale MR entry to fit within limit:
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `RSI_PERIOD` | 5 | Fast RSI for intraday |
-| `RSI_THRESHOLD` | 25 | Oversold threshold |
+| `RSI_THRESHOLD` | VIX-adjusted | Oversold threshold (20-30) |
 
 ### Entry Parameters
 
@@ -546,7 +617,7 @@ Router will scale MR entry to fit within limit:
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `TARGET_PCT` | 0.02 | +2% profit target |
-| `STOP_PCT` | 0.02 | −2% stop loss |
+| `STOP_PCT` | VIX-adjusted | 4-8% stop loss |
 | `FORCE_EXIT_TIME` | 3:45 PM | Mandatory close time |
 
 ### Regime Threshold
@@ -554,6 +625,22 @@ Router will scale MR entry to fit within limit:
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | Entry minimum | 40 | Regime score required |
+
+### VIX Regime Parameters (V2.1)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `VIX_NORMAL_THRESHOLD` | 20 | Below = NORMAL regime |
+| `VIX_CAUTION_THRESHOLD` | 30 | 20-30 = CAUTION regime |
+| `VIX_HIGH_RISK_THRESHOLD` | 40 | 30-40 = HIGH_RISK regime |
+| `VIX_CRASH_THRESHOLD` | 40 | Above = CRASH (disabled) |
+
+| VIX Regime | Allocation | RSI Threshold | Stop |
+|------------|:----------:|:-------------:|:----:|
+| NORMAL | 10% | 30 | 8% |
+| CAUTION | 5% | 25 | 6% |
+| HIGH_RISK | 2% | 20 | 4% |
+| CRASH | **0%** | — | — |
 
 ---
 

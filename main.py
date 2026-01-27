@@ -15,6 +15,10 @@ from engines.core.trend_engine import TrendEngine
 from engines.satellite.mean_reversion_engine import MeanReversionEngine
 from engines.satellite.hedge_engine import HedgeEngine
 from engines.satellite.yield_sleeve import YieldSleeve
+from engines.satellite.options_engine import OptionsEngine, OptionContract, OptionDirection
+
+# OCO Manager for Options exits
+from execution.oco_manager import OCOManager
 
 # Portfolio & Execution
 from portfolio.portfolio_router import PortfolioRouter
@@ -102,6 +106,7 @@ class AlphaNextGen(QCAlgorithm):
     rsp: Symbol
     hyg: Symbol
     ief: Symbol
+    vix: Symbol  # V2.1: VIX for MR regime filter
 
     # Symbol references (traded)
     tqqq: Symbol
@@ -111,6 +116,7 @@ class AlphaNextGen(QCAlgorithm):
     tmf: Symbol
     psq: Symbol
     shv: Symbol
+    qqq: Symbol  # V2.1: QQQ for options
 
     # Symbol collections
     traded_symbols: List[Symbol]
@@ -125,6 +131,8 @@ class AlphaNextGen(QCAlgorithm):
     mr_engine: MeanReversionEngine
     hedge_engine: HedgeEngine
     yield_sleeve: YieldSleeve
+    options_engine: OptionsEngine  # V2.1: Options Engine
+    oco_manager: OCOManager  # V2.1: OCO Manager for options exits
 
     # Infrastructure
     portfolio_router: PortfolioRouter
@@ -335,11 +343,24 @@ class AlphaNextGen(QCAlgorithm):
         # Traded symbols - Yield
         self.shv = self.AddEquity("SHV", Resolution.Minute).Symbol
 
+        # V2.1: QQQ for options trading
+        self.qqq = self.AddEquity("QQQ", Resolution.Minute).Symbol
+
+        # V2.1: Add QQQ options chain
+        qqq_option = self.AddOption("QQQ", Resolution.Minute)
+        qqq_option.SetFilter(-5, 5, timedelta(days=30), timedelta(days=45))
+        self._qqq_option_symbol = qqq_option.Symbol
+
         # Proxy symbols - For regime calculation
         self.spy = self.AddEquity("SPY", Resolution.Minute).Symbol
         self.rsp = self.AddEquity("RSP", Resolution.Minute).Symbol
         self.hyg = self.AddEquity("HYG", Resolution.Minute).Symbol
         self.ief = self.AddEquity("IEF", Resolution.Minute).Symbol
+
+        # V2.1: VIX for Mean Reversion regime filter
+        # Add CBOE VIX index data for regime classification
+        self.vix = self.AddData(CBOE, "VIX", Resolution.Daily).Symbol
+        self._current_vix = 15.0  # Default to normal regime until data arrives
 
         # Store collections for iteration
         self.traded_symbols = [
@@ -402,6 +423,12 @@ class AlphaNextGen(QCAlgorithm):
         self.soxl_rsi = self.RSI(self.soxl, config.RSI_PERIOD, MovingAverageType.Wilders, Resolution.Minute)
 
         # ---------------------------------------------------------------------
+        # V2.1: Options Engine Indicators (QQQ for options trading)
+        # ---------------------------------------------------------------------
+        self.qqq_adx = self.ADX(self.qqq, config.ADX_PERIOD, Resolution.Daily)
+        self.qqq_sma200 = self.SMA(self.qqq, config.SMA_SLOW, Resolution.Daily)
+
+        # ---------------------------------------------------------------------
         # Rolling Windows for Historical Price Access (Regime Engine needs 21+ days)
         # ---------------------------------------------------------------------
         lookback = (
@@ -457,6 +484,10 @@ class AlphaNextGen(QCAlgorithm):
         self.mr_engine = MeanReversionEngine(self)
         self.hedge_engine = HedgeEngine(self)
         self.yield_sleeve = YieldSleeve(self)
+
+        # V2.1: Options Engine and OCO Manager
+        self.options_engine = OptionsEngine(self)
+        self.oco_manager = OCOManager(self)
 
         self.Log("INIT: All engines initialized")
 
@@ -569,6 +600,12 @@ class AlphaNextGen(QCAlgorithm):
             self.hyg_closes.Add(self.Securities[self.hyg].Close)
         if data.Bars.ContainsKey(self.ief):
             self.ief_closes.Add(self.Securities[self.ief].Close)
+
+        # V2.1: Update VIX value for MR regime filter
+        if data.ContainsKey(self.vix):
+            vix_data = data[self.vix]
+            if vix_data is not None:
+                self._current_vix = float(vix_data.Close)
 
         # Update volume rolling windows for MR symbols (daily volume)
         if data.Bars.ContainsKey(self.tqqq):
@@ -776,10 +813,14 @@ class AlphaNextGen(QCAlgorithm):
         # 3. Generate Trend signals (EOD)
         self._generate_trend_signals_eod(regime_state)
 
-        # 4. Generate Hedge signals
+        # 4. V2.1: Generate Options signals (if regime allows)
+        if regime_state.smoothed_score >= 40:
+            self._generate_options_signals(regime_state, capital_state)
+
+        # 5. Generate Hedge signals
         self._generate_hedge_signals(regime_state)
 
-        # 5. Generate Yield signals
+        # 6. Generate Yield signals
         self._generate_yield_signals(capital_state)
 
         # 6. Store capital state for MOO submission at 16:00
@@ -868,6 +909,15 @@ class AlphaNextGen(QCAlgorithm):
             # Update position tracking
             self._on_fill(symbol, fill_price, fill_qty, orderEvent)
 
+            # V2.1: Check if this is an OCO order fill
+            if self.oco_manager.has_order(orderEvent.OrderId):
+                self.oco_manager.on_order_fill(
+                    broker_order_id=orderEvent.OrderId,
+                    fill_price=fill_price,
+                    fill_quantity=fill_qty,
+                    fill_time=str(self.Time),
+                )
+
             # Forward to execution engine for tracking
             self.execution_engine.on_order_event(
                 broker_order_id=orderEvent.OrderId,
@@ -924,6 +974,16 @@ class AlphaNextGen(QCAlgorithm):
                 cold_start_engine=self.cold_start_engine,
                 risk_engine=self.risk_engine,
             )
+
+            # V2.1: Save options engine and OCO manager state
+            if hasattr(self, 'options_engine'):
+                opt_state = self.options_engine.get_state_for_persistence()
+                self.ObjectStore.Save("options_engine_state", str(opt_state))
+
+            if hasattr(self, 'oco_manager'):
+                oco_state = self.oco_manager.get_state_for_persistence()
+                self.ObjectStore.Save("oco_manager_state", str(oco_state))
+
         except Exception as e:
             self.Log(f"STATE_ERROR: Failed to save state - {e}")
 
@@ -1132,6 +1192,144 @@ class AlphaNextGen(QCAlgorithm):
                 if signal:
                     self.portfolio_router.receive_signal(signal)
 
+    def _generate_options_signals(
+        self, regime_state: RegimeState, capital_state: CapitalState
+    ) -> None:
+        """
+        Generate Options Engine signals at end of day.
+
+        V2.1: 4-factor entry scoring for QQQ options.
+
+        Args:
+            regime_state: Current regime state.
+            capital_state: Current capital state.
+        """
+        # Skip if indicators not ready
+        if not self.qqq_adx.IsReady or not self.qqq_sma200.IsReady:
+            return
+
+        # Skip if already have options position
+        if self.options_engine.has_position():
+            return
+
+        # Get options chain
+        chain = self.OptionChains.get(self._qqq_option_symbol)
+        if chain is None:
+            return
+
+        # Select best contract (ATM call, 30-45 DTE)
+        best_contract = self._select_best_option_contract(chain)
+        if best_contract is None:
+            return
+
+        # Get current values
+        qqq_price = self.Securities[self.qqq].Price
+        adx_value = self.qqq_adx.Current.Value
+        ma200_value = self.qqq_sma200.Current.Value
+
+        # Estimate IV rank (simplified - would need historical IV data for accuracy)
+        # Using a placeholder value in the optimal range
+        iv_rank = 50.0  # TODO: Implement proper IV rank calculation
+
+        # Check for entry signal
+        signal = self.options_engine.check_entry_signal(
+            adx_value=adx_value,
+            current_price=qqq_price,
+            ma200_value=ma200_value,
+            iv_rank=iv_rank,
+            best_contract=best_contract,
+            current_hour=self.Time.hour,
+            current_minute=self.Time.minute,
+            current_date=str(self.Time.date()),
+            portfolio_value=self.Portfolio.TotalPortfolioValue,
+            gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
+            vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
+            time_guard_active=self.scheduler.is_time_guard_active(),
+        )
+
+        if signal:
+            self.portfolio_router.receive_signal(signal)
+
+    def _select_best_option_contract(self, chain) -> Optional[OptionContract]:
+        """
+        Select the best QQQ option contract for trading.
+
+        Criteria:
+        - ATM or slightly ITM call
+        - 30-45 DTE
+        - Sufficient open interest
+        - Tight bid-ask spread
+
+        Args:
+            chain: QuantConnect options chain.
+
+        Returns:
+            OptionContract or None if no suitable contract found.
+        """
+        if chain is None:
+            return None
+
+        qqq_price = self.Securities[self.qqq].Price
+
+        # Filter for calls, ATM±2 strikes, 30-45 DTE
+        candidates = []
+        for contract in chain:
+            if contract.Right != OptionRight.Call:
+                continue
+
+            # Check DTE (30-45 days)
+            dte = (contract.Expiry - self.Time).days
+            if dte < 30 or dte > 45:
+                continue
+
+            # Check if ATM±2 strikes
+            strike_diff = abs(contract.Strike - qqq_price)
+            if strike_diff > qqq_price * 0.02:  # Within 2% of ATM
+                continue
+
+            # Check liquidity
+            if contract.OpenInterest < config.OPTIONS_MIN_OPEN_INTEREST:
+                continue
+
+            # Check spread
+            if contract.BidPrice <= 0 or contract.AskPrice <= 0:
+                continue
+
+            mid_price = (contract.BidPrice + contract.AskPrice) / 2
+            spread_pct = (contract.AskPrice - contract.BidPrice) / mid_price
+
+            if spread_pct > config.OPTIONS_SPREAD_WARNING_PCT:
+                continue
+
+            # Create OptionContract object
+            opt_contract = OptionContract(
+                symbol=str(contract.Symbol),
+                underlying="QQQ",
+                direction=OptionDirection.CALL,
+                strike=contract.Strike,
+                expiry=str(contract.Expiry.date()),
+                delta=contract.Greeks.Delta if hasattr(contract, 'Greeks') else 0.5,
+                gamma=contract.Greeks.Gamma if hasattr(contract, 'Greeks') else 0.0,
+                vega=contract.Greeks.Vega if hasattr(contract, 'Greeks') else 0.0,
+                theta=contract.Greeks.Theta if hasattr(contract, 'Greeks') else 0.0,
+                bid=contract.BidPrice,
+                ask=contract.AskPrice,
+                mid_price=mid_price,
+                open_interest=contract.OpenInterest,
+                days_to_expiry=dte,
+            )
+
+            # Score by: proximity to ATM + liquidity
+            score = (1.0 / (1.0 + strike_diff)) * (1.0 - spread_pct)
+            candidates.append((score, opt_contract))
+
+        if not candidates:
+            return None
+
+        # Return best candidate
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+
     def _generate_hedge_signals(self, regime_state: RegimeState) -> None:
         """
         Generate Hedge Engine signals at end of day.
@@ -1325,6 +1523,7 @@ class AlphaNextGen(QCAlgorithm):
                 time_guard_active=time_guard,
                 current_hour=self.Time.hour,
                 current_minute=self.Time.minute,
+                vix_value=self._current_vix,  # V2.1: Pass VIX for regime filter
             )
             if signal:
                 self.portfolio_router.receive_signal(signal)
@@ -1352,6 +1551,7 @@ class AlphaNextGen(QCAlgorithm):
                 time_guard_active=time_guard,
                 current_hour=self.Time.hour,
                 current_minute=self.Time.minute,
+                vix_value=self._current_vix,  # V2.1: Pass VIX for regime filter
             )
             if signal:
                 self.portfolio_router.receive_signal(signal)
@@ -1577,6 +1777,44 @@ class AlphaNextGen(QCAlgorithm):
                     self.mr_engine.remove_position()
             except Exception as e:
                 self.Log(f"MR_TRACK_ERROR: {symbol}: {e}")
+
+        # V2.1: Update Options engine if QQQ option
+        if "QQQ" in symbol and ("C" in symbol or "P" in symbol):
+            try:
+                if fill_qty > 0:
+                    # Register entry with options engine
+                    position = self.options_engine.register_entry(
+                        fill_price=fill_price,
+                        fill_quantity=int(fill_qty),
+                        fill_time=str(self.Time),
+                    )
+
+                    if position:
+                        # Create OCO pair for stop and profit exits
+                        oco_pair = self.oco_manager.create_oco_pair(
+                            symbol=symbol,
+                            entry_price=fill_price,
+                            stop_price=position.stop_price,
+                            target_price=position.target_price,
+                            quantity=int(fill_qty),
+                            current_date=str(self.Time.date()),
+                        )
+
+                        if oco_pair:
+                            # Submit OCO orders
+                            self.oco_manager.submit_oco_pair(
+                                oco_pair, current_time=str(self.Time)
+                            )
+                            self.Log(
+                                f"OPT: OCO pair created | "
+                                f"Stop=${position.stop_price:.2f} | "
+                                f"Target=${position.target_price:.2f}"
+                            )
+                else:
+                    # Exit - remove position
+                    self.options_engine.remove_position()
+            except Exception as e:
+                self.Log(f"OPT_TRACK_ERROR: {symbol}: {e}")
 
     def _get_average_volume(self, volume_window: RollingWindow) -> float:
         """

@@ -126,7 +126,24 @@ class PortfolioRouter:
     4. Net against current positions
     5. Prioritize by urgency
     6. Execute orders
+
+    V2.1 Core-Satellite Architecture:
+    - Core (TREND): 70% max allocation
+    - Satellite (OPT): 20-30% max allocation
+    - Satellite (MR): 0-10% max allocation
     """
+
+    # V2.1: Source-based allocation limits (Core-Satellite)
+    SOURCE_ALLOCATION_LIMITS: Dict[str, float] = {
+        "TREND": 0.70,       # Core: 70% max
+        "OPT": 0.30,         # Satellite (Options): 30% max
+        "MR": 0.10,          # Satellite (MR): 10% max
+        "HEDGE": 0.30,       # Hedge: 30% max (TMF 20% + PSQ 10%)
+        "YIELD": 0.50,       # Yield (SHV): 50% max
+        "COLD_START": 0.35,  # Cold Start: 35% max (subset of TREND)
+        "RISK": 1.00,        # Risk: No limit (emergency liquidations)
+        "ROUTER": 1.00,      # Router: No limit (SHV liquidations)
+    }
 
     def __init__(self, algorithm: Optional["QCAlgorithm"] = None):
         """Initialize Portfolio Router."""
@@ -247,6 +264,71 @@ class PortfolioRouter:
                 agg.urgency = Urgency.IMMEDIATE
 
         return aggregated
+
+    # =========================================================================
+    # Step 2.5: ENFORCE SOURCE LIMITS (V2.1)
+    # =========================================================================
+
+    def _enforce_source_limits(
+        self,
+        weights: List[TargetWeight],
+    ) -> List[TargetWeight]:
+        """
+        Enforce Core-Satellite allocation limits by source.
+
+        V2.1: Caps total allocation per source engine:
+        - TREND (Core): 70% max
+        - OPT (Options): 30% max
+        - MR (Mean Reversion): 10% max
+
+        Args:
+            weights: List of TargetWeight objects.
+
+        Returns:
+            List with weights scaled down if source exceeds limit.
+        """
+        # Group weights by source
+        by_source: Dict[str, List[TargetWeight]] = {}
+        for w in weights:
+            if w.source not in by_source:
+                by_source[w.source] = []
+            by_source[w.source].append(w)
+
+        adjusted_weights: List[TargetWeight] = []
+
+        for source, source_weights in by_source.items():
+            # Get limit for this source
+            limit = self.SOURCE_ALLOCATION_LIMITS.get(source, 0.50)
+
+            # Calculate total requested by this source
+            total_requested = sum(w.target_weight for w in source_weights)
+
+            if total_requested <= limit:
+                # Under limit - keep as-is
+                adjusted_weights.extend(source_weights)
+            else:
+                # Over limit - scale down proportionally
+                scale_factor = limit / total_requested if total_requested > 0 else 1.0
+
+                for w in source_weights:
+                    scaled_weight = w.target_weight * scale_factor
+                    adjusted_weights.append(
+                        TargetWeight(
+                            symbol=w.symbol,
+                            target_weight=scaled_weight,
+                            source=w.source,
+                            urgency=w.urgency,
+                            reason=f"{w.reason} [scaled {scale_factor:.0%}]",
+                        )
+                    )
+
+                self.log(
+                    f"ROUTER: SOURCE_LIMIT | {source} | "
+                    f"Requested {total_requested:.1%} > Limit {limit:.1%} | "
+                    f"Scaled by {scale_factor:.0%}"
+                )
+
+        return adjusted_weights
 
     # =========================================================================
     # Step 3: VALIDATE
@@ -514,6 +596,9 @@ class PortfolioRouter:
         # Remove processed weights from pending
         self._pending_weights = [w for w in self._pending_weights if w.urgency != Urgency.IMMEDIATE]
 
+        # V2.1: Enforce source limits first (Core-Satellite)
+        immediate_weights = self._enforce_source_limits(immediate_weights)
+
         # Process through workflow
         aggregated = self.aggregate_weights(immediate_weights)
         validated = self.validate_weights(aggregated, max_single_position)
@@ -581,6 +666,9 @@ class PortfolioRouter:
         # Process all pending weights
         weights = self._pending_weights.copy()
         self._pending_weights.clear()
+
+        # V2.1: Enforce source limits first (Core-Satellite)
+        weights = self._enforce_source_limits(weights)
 
         # Process through workflow
         aggregated = self.aggregate_weights(weights)
@@ -707,6 +795,147 @@ class PortfolioRouter:
             urgency=Urgency.IMMEDIATE,
             reason=reason,
         )
+
+    # =========================================================================
+    # V2.1: REBALANCING (ORC-2)
+    # =========================================================================
+
+    # Drift threshold for rebalancing
+    REBALANCE_DRIFT_THRESHOLD: float = 0.05  # 5% drift triggers rebalance
+
+    def check_rebalancing_needed(
+        self,
+        target_allocations: Dict[str, float],
+        current_positions: Dict[str, float],
+        tradeable_equity: float,
+    ) -> List[TargetWeight]:
+        """
+        Check if portfolio rebalancing is needed due to drift.
+
+        V2.1: Triggers rebalancing when any position drifts > 5% from target.
+
+        Args:
+            target_allocations: Dict of symbol -> target weight (0-1).
+            current_positions: Dict of symbol -> current value.
+            tradeable_equity: Total tradeable equity.
+
+        Returns:
+            List of TargetWeight signals for rebalancing.
+        """
+        rebalance_signals: List[TargetWeight] = []
+
+        if tradeable_equity <= 0:
+            return rebalance_signals
+
+        # Calculate current allocations
+        current_allocations: Dict[str, float] = {}
+        for symbol, value in current_positions.items():
+            current_allocations[symbol] = value / tradeable_equity
+
+        # Check each target for drift
+        all_symbols = set(target_allocations.keys()) | set(current_allocations.keys())
+
+        for symbol in all_symbols:
+            target = target_allocations.get(symbol, 0.0)
+            current = current_allocations.get(symbol, 0.0)
+
+            drift = abs(target - current)
+
+            if drift > self.REBALANCE_DRIFT_THRESHOLD:
+                # Drift exceeds threshold - add rebalancing signal
+                self.log(
+                    f"ROUTER: REBALANCE | {symbol} | "
+                    f"Target={target:.1%} | Current={current:.1%} | "
+                    f"Drift={drift:.1%} > {self.REBALANCE_DRIFT_THRESHOLD:.1%}"
+                )
+
+                rebalance_signals.append(
+                    TargetWeight(
+                        symbol=symbol,
+                        target_weight=target,
+                        source="ROUTER",
+                        urgency=Urgency.EOD,
+                        reason=f"REBALANCE: Drift {drift:.1%} > {self.REBALANCE_DRIFT_THRESHOLD:.1%}",
+                    )
+                )
+
+        return rebalance_signals
+
+    def get_target_allocations(self) -> Dict[str, float]:
+        """
+        Get current target allocations based on pending signals.
+
+        This provides a snapshot of target allocations for drift calculation.
+
+        Returns:
+            Dict of symbol -> target weight.
+        """
+        # Aggregate pending weights to get targets
+        if not self._pending_weights:
+            return {}
+
+        aggregated = self.aggregate_weights(self._pending_weights)
+        return {sym: agg.target_weight for sym, agg in aggregated.items()}
+
+    def calculate_portfolio_drift(
+        self,
+        target_allocations: Dict[str, float],
+        current_positions: Dict[str, float],
+        tradeable_equity: float,
+    ) -> Dict[str, float]:
+        """
+        Calculate drift for each position.
+
+        Args:
+            target_allocations: Dict of symbol -> target weight.
+            current_positions: Dict of symbol -> current value.
+            tradeable_equity: Total tradeable equity.
+
+        Returns:
+            Dict of symbol -> drift (absolute difference from target).
+        """
+        drift_map: Dict[str, float] = {}
+
+        if tradeable_equity <= 0:
+            return drift_map
+
+        all_symbols = set(target_allocations.keys()) | set(current_positions.keys())
+
+        for symbol in all_symbols:
+            target = target_allocations.get(symbol, 0.0)
+            current_value = current_positions.get(symbol, 0.0)
+            current_weight = current_value / tradeable_equity
+
+            drift_map[symbol] = abs(target - current_weight)
+
+        return drift_map
+
+    def get_max_drift(
+        self,
+        target_allocations: Dict[str, float],
+        current_positions: Dict[str, float],
+        tradeable_equity: float,
+    ) -> tuple:
+        """
+        Get the maximum drift symbol and value.
+
+        Args:
+            target_allocations: Dict of symbol -> target weight.
+            current_positions: Dict of symbol -> current value.
+            tradeable_equity: Total tradeable equity.
+
+        Returns:
+            Tuple of (symbol, drift_value) for the highest drift position.
+        """
+        drift_map = self.calculate_portfolio_drift(
+            target_allocations, current_positions, tradeable_equity
+        )
+
+        if not drift_map:
+            return (None, 0.0)
+
+        max_symbol = max(drift_map, key=drift_map.get)
+        return (max_symbol, drift_map[max_symbol])
 
     # =========================================================================
     # State and Utilities
