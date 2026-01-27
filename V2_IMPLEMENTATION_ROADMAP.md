@@ -29,18 +29,18 @@ V2 Engine Allocation:
 
 **Priority**: HIGH
 **Allocation**: 20-30% of portfolio
-**Status**: Not Started
+**Status**: ✅ COMPLETE (v2.1.2)
 
 ### Tickets
 
 #### OPT-1: Options Engine Core
 **Description**: Implement 4-factor entry scoring system for QQQ options
 **Acceptance Criteria**:
-- [ ] Entry Score calculation: ADX + Momentum + IV + Liquidity
-- [ ] Score threshold >= 3.0 for entry
-- [ ] Position sizing: 1% risk per trade (inverse stop/size relationship)
-- [ ] +50% profit target (mathematically optimal)
-- [ ] 2:30 PM late-day constraint (only 20% stops after 2:30)
+- [x] Entry Score calculation: ADX + Momentum + IV + Liquidity
+- [x] Score threshold >= 3.0 for entry
+- [x] Position sizing: 1% risk per trade (inverse stop/size relationship)
+- [x] +50% profit target (mathematically optimal)
+- [x] 2:30 PM late-day constraint (only 20% stops after 2:30)
 
 **Dependencies**: None
 **Spec Reference**: V2_1_COMPLETE_ARCHITECTURE.txt (Part 2, Engine 3)
@@ -48,21 +48,21 @@ V2 Engine Allocation:
 #### OPT-2: Entry Score Model
 **Description**: Implement 4-factor scoring
 **Acceptance Criteria**:
-- [ ] ADX factor (25 threshold, higher = stronger trend)
-- [ ] Momentum factor (above 200 SMA)
-- [ ] IV Rank factor (IV percentile 20-80 optimal)
-- [ ] Liquidity factor (bid-ask spread check)
-- [ ] Total score range: 0-4, threshold >= 3.0
+- [x] ADX factor (25 threshold, higher = stronger trend)
+- [x] Momentum factor (above 200 SMA)
+- [x] IV Rank factor (IV percentile 20-80 optimal)
+- [x] Liquidity factor (bid-ask spread check)
+- [x] Total score range: 0-4, threshold >= 3.0
 
 **Dependencies**: OPT-1
 
 #### OPT-3: OCO Order Management
 **Description**: Implement One-Cancels-Other order pairs
 **Acceptance Criteria**:
-- [ ] Atomic execution (both legs submitted together)
-- [ ] Stop and profit target linked
-- [ ] No "ghost orders" after one fills
-- [ ] Error handling for partial fills
+- [x] Atomic execution (both legs submitted together)
+- [x] Stop and profit target linked
+- [x] No "ghost orders" after one fills
+- [x] Error handling for partial fills
 
 **Dependencies**: OPT-1
 **Spec Reference**: V2-1-FINAL-SYNTHESIS.md (Modification #3)
@@ -70,11 +70,11 @@ V2 Engine Allocation:
 #### OPT-4: Options Engine Tests
 **Description**: TDD test suite for options engine
 **Acceptance Criteria**:
-- [ ] Entry score calculation tests
-- [ ] Position sizing inverse relationship tests
-- [ ] OCO order atomicity tests
-- [ ] 2:30 PM constraint tests
-- [ ] Integration tests with Portfolio Router
+- [x] Entry score calculation tests
+- [x] Position sizing inverse relationship tests
+- [x] OCO order atomicity tests
+- [x] 2:30 PM constraint tests
+- [x] Integration tests with Portfolio Router
 
 **Dependencies**: OPT-1, OPT-2, OPT-3
 
@@ -84,17 +84,17 @@ V2 Engine Allocation:
 
 **Priority**: HIGH
 **Allocation**: 70% of portfolio
-**Status**: V1 Complete, V2 Enhancement Needed
+**Status**: ✅ COMPLETE (v2.1.0)
 
 ### Tickets
 
 #### TRE-1: MA200 + ADX Signal
 **Description**: Replace BB compression with MA200 + ADX confirmation
 **Acceptance Criteria**:
-- [ ] Entry: Price > MA200 AND ADX > 25
-- [ ] Exit: Price < MA200 OR ADX < 20
-- [ ] Kelly position sizing (based on win rate)
-- [ ] Volatility targeting (15% annual vol)
+- [x] Entry: Price > MA200 AND ADX > 25
+- [x] Exit: Price < MA200 OR ADX < 20
+- [x] Kelly position sizing (based on win rate)
+- [x] Volatility targeting (15% annual vol)
 
 **Dependencies**: None
 **Spec Reference**: V2_1_COMPLETE_ARCHITECTURE.txt (Part 2, Engine 1)
@@ -102,20 +102,20 @@ V2 Engine Allocation:
 #### TRE-2: Trailing Stop Enhancement
 **Description**: Chandelier stop with ATR multiplier tiers
 **Acceptance Criteria**:
-- [ ] 3.0× ATR for profit 0-10%
-- [ ] 2.5× ATR for profit 10-20%
-- [ ] 2.0× ATR for profit 20%+
-- [ ] Stop never moves down rule
+- [x] 3.0× ATR for profit 0-10%
+- [x] 2.5× ATR for profit 10-20%
+- [x] 2.0× ATR for profit 20%+
+- [x] Stop never moves down rule
 
 **Dependencies**: TRE-1
 
 #### TRE-3: Trend Engine V2 Tests
 **Description**: TDD test suite for enhanced trend engine
 **Acceptance Criteria**:
-- [ ] MA200 + ADX entry tests
-- [ ] ADX strength threshold tests
-- [ ] Kelly sizing tests
-- [ ] Trailing stop tier tests
+- [x] MA200 + ADX entry tests
+- [x] ADX strength threshold tests
+- [x] Kelly sizing tests
+- [x] Trailing stop tier tests
 
 **Dependencies**: TRE-1, TRE-2
 
@@ -125,17 +125,17 @@ V2 Engine Allocation:
 
 **Priority**: HIGH
 **Allocation**: 0-10% of portfolio
-**Status**: V1 Complete, V2 Enhancement Needed
+**Status**: ✅ COMPLETE (v2.1.0)
 
 ### Tickets
 
 #### MRE-1: VIX Regime Classification
 **Description**: Implement VIX-based regime filter to prevent catching falling knives
 **Acceptance Criteria**:
-- [ ] VIX < 20: NORMAL → 10% allocation
-- [ ] VIX 20-30: CAUTION → 5% allocation
-- [ ] VIX 30-40: HIGH_RISK → 2% allocation
-- [ ] VIX > 40: CRASH → 0% allocation (DISABLED)
+- [x] VIX < 20: NORMAL → 10% allocation
+- [x] VIX 20-30: CAUTION → 5% allocation
+- [x] VIX 30-40: HIGH_RISK → 2% allocation
+- [x] VIX > 40: CRASH → 0% allocation (DISABLED)
 
 **Dependencies**: None
 **Spec Reference**: V2-1-Critical-Fixes-Guide.md (Fix #2)
@@ -143,28 +143,28 @@ V2 Engine Allocation:
 #### MRE-2: Regime-Adjusted Parameters
 **Description**: Adjust entry thresholds by VIX regime
 **Acceptance Criteria**:
-- [ ] RSI threshold: 30 (normal), 25 (caution), 20 (high risk)
-- [ ] Bollinger width: 2.0σ (normal), 2.2σ (caution), 2.5σ (high risk)
-- [ ] Stop loss: 8% (normal), 6% (caution), 4% (high risk)
+- [x] RSI threshold: 30 (normal), 25 (caution), 20 (high risk)
+- [x] Bollinger width: 2.0σ (normal), 2.2σ (caution), 2.5σ (high risk)
+- [x] Stop loss: 8% (normal), 6% (caution), 4% (high risk)
 
 **Dependencies**: MRE-1
 
 #### MRE-3: VIX Data Feed
 **Description**: Add ^VIX data feed integration
 **Acceptance Criteria**:
-- [ ] Daily VIX data from CBOE
-- [ ] Validate range (normal 10-20, elevated 20-30, crisis 30+)
-- [ ] Store in state for persistence
+- [x] Daily VIX data from CBOE
+- [x] Validate range (normal 10-20, elevated 20-30, crisis 30+)
+- [x] Store in state for persistence
 
 **Dependencies**: None
 
 #### MRE-4: Mean Reversion V2 Tests
 **Description**: TDD test suite for VIX filter
 **Acceptance Criteria**:
-- [ ] VIX regime classification tests
-- [ ] March 2020 crash simulation (VIX 82)
-- [ ] Feb 2018 spike test (VIX 50)
-- [ ] Allocation scaling tests
+- [x] VIX regime classification tests
+- [x] March 2020 crash simulation (VIX 82)
+- [x] Feb 2018 spike test (VIX 50)
+- [x] Allocation scaling tests
 
 **Dependencies**: MRE-1, MRE-2, MRE-3
 

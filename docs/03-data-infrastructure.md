@@ -57,6 +57,8 @@ flowchart TB
         direction TB
         DAILY["Daily Bars<br/>───────────<br/>SPY, RSP, HYG, IEF<br/>Updated: EOD"]
         MINUTE["Minute Bars<br/>───────────<br/>All Traded Symbols<br/>Updated: Real-time"]
+        VIX_DATA["VIX Data<br/>───────────<br/>IV Rank/Percentile<br/>Updated: Real-time"]
+        OPTIONS_DATA["Options Chains<br/>───────────<br/>QQQ Options<br/>Greeks, IV, Spreads"]
     end
 
     subgraph INDICATORS["INDICATOR LAYER"]
@@ -70,9 +72,16 @@ flowchart TB
         subgraph TREND_IND["Trend Indicators"]
             BB["Bollinger Bands<br/>(20, 2.0)"]
             ATR_T["ATR(14)<br/>Daily"]
+            ADX["ADX(14)<br/>Trend Strength"]
         end
         subgraph MR_IND["Mean Reversion Indicators"]
             RSI["RSI(5)<br/>Minute"]
+            VIX_IND["VIX Filter<br/>Regime-Adjusted"]
+        end
+        subgraph OPTIONS_IND["Options Indicators"]
+            IV_RANK["IV Rank<br/>Percentile"]
+            GREEKS["Greeks<br/>Delta, Gamma, Theta"]
+            LIQUIDITY["Bid-Ask Spread<br/>Liquidity Score"]
         end
         subgraph RISK_IND["Risk Indicators"]
             ATR_M["ATR(14)<br/>Minute"]
@@ -82,20 +91,24 @@ flowchart TB
     subgraph CONSUMERS["DATA CONSUMERS"]
         direction TB
         REGIME["Regime Engine"]
-        TREND["Trend Engine"]
-        MR["Mean Reversion Engine"]
+        TREND["Trend Engine (70%)"]
+        OPTIONS["Options Engine (20-30%)"]
+        MR["Mean Reversion Engine (0-10%)"]
         RISK["Risk Engine"]
     end
 
     DAILY --> SMA20 & SMA50 & SMA200 & RVOL
-    DAILY --> BB & ATR_T
+    DAILY --> BB & ATR_T & ADX
     MINUTE --> RSI
     MINUTE --> ATR_M
+    VIX_DATA --> VIX_IND & IV_RANK
+    OPTIONS_DATA --> GREEKS & LIQUIDITY
 
     SMA20 & SMA50 & SMA200 & RVOL --> REGIME
-    BB & ATR_T --> TREND
-    RSI --> MR
-    ATR_M --> RISK
+    BB & ATR_T & ADX --> TREND
+    IV_RANK & GREEKS & LIQUIDITY & ADX --> OPTIONS
+    RSI & VIX_IND --> MR
+    ATR_M & GREEKS --> RISK
 ```
 
 ---

@@ -349,29 +349,50 @@ except Exception as e:
 ## Data Flow Architecture
 
 ```
-┌─────────────────┐
-│   Regime Engine │ ─── Calculates market state (0-100)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐     ┌─────────────────┐
-│  Trend Engine   │     │    MR Engine    │
-│  (Emits Target  │     │  (Emits Target  │
-│    Weights)     │     │    Weights)     │
-└────────┬────────┘     └────────┬────────┘
-         │                       │
-         ▼                       ▼
-┌─────────────────────────────────────────┐
-│           Portfolio Router              │
-│  (ONLY component authorized to place    │
-│   orders via MarketOrder/MOO)           │
-└────────────────────┬────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────┐
-│           Execution Engine              │
-│      (Submits orders to broker)         │
-└─────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│                         CORE ENGINES                              │
+├─────────────────┬─────────────────┬─────────────────┬─────────────┤
+│  Regime Engine  │  Capital Engine │   Risk Engine   │ Cold Start  │
+│  (Score 0-100)  │  (Phase/Lockbox)│  (Circuit Break)│ (Days 1-5)  │
+└────────┬────────┴────────┬────────┴────────┬────────┴──────┬──────┘
+         │                 │                 │               │
+         ▼                 ▼                 ▼               ▼
+┌───────────────────────────────────────────────────────────────────┐
+│                       STRATEGY ENGINES                            │
+├─────────────────┬─────────────────┬─────────────────┬─────────────┤
+│  Trend Engine   │ Options Engine  │    MR Engine    │Hedge/Yield  │
+│   (Core 70%)    │(Satellite 20-30%)│(Satellite 0-10%)│  (Overlay)  │
+│   QLD, SSO      │   QQQ Options   │  TQQQ, SOXL     │ TMF,PSQ,SHV │
+│  Urgency: EOD   │ Urgency: IMMED  │ Urgency: IMMED  │Urgency: EOD │
+└────────┬────────┴────────┬────────┴────────┬────────┴──────┬──────┘
+         │                 │                 │               │
+         └─────────────────┴─────────────────┴───────────────┘
+                                   │
+                          TargetWeight Objects
+                                   │
+                                   ▼
+┌───────────────────────────────────────────────────────────────────┐
+│                      PORTFOLIO ROUTER                             │
+│  1. Collect → 2. Aggregate → 3. Validate → 4. Net → 5. Execute   │
+│        (ONLY component authorized to place orders)                │
+└──────────────────────────────┬────────────────────────────────────┘
+                               │
+                               ▼
+┌───────────────────────────────────────────────────────────────────┐
+│                      EXECUTION ENGINE                             │
+├───────────────────────────────┬───────────────────────────────────┤
+│         Market Orders         │           MOO Orders              │
+│    (MR, Options, Stops)       │    (Trend, Hedge, Yield)          │
+├───────────────────────────────┼───────────────────────────────────┤
+│         OCO Manager           │        Fill Handler               │
+│   (Options profit/stop pairs) │    (Position tracking)            │
+└───────────────────────────────┴───────────────────────────────────┘
+                               │
+                               ▼
+                         ┌───────────┐
+                         │   IBKR    │
+                         │  Broker   │
+                         └───────────┘
 ```
 
 ---
