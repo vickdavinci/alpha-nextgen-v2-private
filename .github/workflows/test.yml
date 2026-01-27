@@ -132,8 +132,33 @@ jobs:
       - name: Run all unit tests
         run: |
           # Run tests, allowing skipped tests but failing on actual failures
-          pytest tests/ -v --tb=short --ignore=tests/scenarios/ \
+          # Exclude integration and scenario tests (separate phases)
+          pytest tests/ -v --tb=short \
+            --ignore=tests/scenarios/ \
+            --ignore=tests/integration/ \
             -W ignore::pytest.PytestCollectionWarning
+
+      # =========================================
+      # PHASE 4.5: Integration Tests (V2.1)
+      # =========================================
+      # These tests verify multi-component interactions
+      # Critical for Options Engine and engine conflict detection
+
+      - name: Run integration tests
+        run: |
+          # Integration tests must pass - they verify component interactions
+          if [ -d "tests/integration" ]; then
+            pytest tests/integration/ -v --tb=short \
+              -W ignore::pytest.PytestCollectionWarning \
+              -m "integration or not integration"
+          else
+            echo "::notice::No integration tests directory yet - skipping"
+          fi
+
+      # =========================================
+      # PHASE 5: Scenario Tests
+      # =========================================
+      # End-to-end workflow tests
 
       - name: Run scenario tests
         run: |
@@ -142,21 +167,21 @@ jobs:
             -W ignore::pytest.PytestCollectionWarning
 
       # =========================================
-      # PHASE 5: Coverage Report (Informational)
+      # PHASE 6: Coverage Report (Informational)
       # =========================================
 
       - name: Run tests with coverage
         run: |
           # Coverage is informational - don't fail the build
           # --cov-fail-under=0 means any coverage is acceptable
-          pytest tests/ --cov=engines --cov=portfolio --cov=models \
+          pytest tests/ --cov=engines --cov=portfolio --cov=models --cov=execution \
             --cov-report=term-missing --cov-fail-under=0 \
             --ignore=tests/scenarios/ \
             -W ignore::pytest.PytestCollectionWarning || true
         continue-on-error: true
 
       # =========================================
-      # PHASE 6: Documentation Validation
+      # PHASE 7: Documentation Validation
       # =========================================
 
       - name: Documentation Parity Check
@@ -164,14 +189,14 @@ jobs:
           python scripts/check_spec_parity.py
 
       # =========================================
-      # PHASE 7: Summary
+      # PHASE 8: Summary
       # =========================================
 
       - name: Test Summary
         if: always()
         run: |
           echo "=============================================="
-          echo "CI Pipeline Summary"
+          echo "CI Pipeline Summary (V2.1)"
           echo "=============================================="
           echo ""
           echo "Critical Tests (must pass):"
@@ -179,9 +204,15 @@ jobs:
           echo "  - Contract tests (TargetWeight)"
           echo "  - Smoke integration tests"
           echo ""
+          echo "Integration Tests (V2.1):"
+          echo "  - Options + OCO lifecycle"
+          echo "  - Multi-engine conflict detection"
+          echo "  - State recovery tests"
+          echo ""
           echo "Unit Tests:"
           echo "  - Skipped tests are expected during development"
           echo "  - Actual test failures will fail the build"
           echo ""
+          echo "See docs/V2_TEST_PLAN.md for test strategy."
           echo "See CONTRIBUTING.md for development workflow."
           echo "=============================================="

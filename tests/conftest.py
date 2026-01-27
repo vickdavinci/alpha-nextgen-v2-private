@@ -219,3 +219,154 @@ def pytest_configure(config):
     )
     config.addinivalue_line("markers", "integration: marks tests as integration tests")
     config.addinivalue_line("markers", "architecture: marks tests that enforce architecture rules")
+    config.addinivalue_line("markers", "options: marks tests related to options engine")
+    config.addinivalue_line("markers", "oco: marks tests related to OCO manager")
+    config.addinivalue_line("markers", "scenario: marks end-to-end scenario tests")
+
+
+# =============================================================================
+# INTEGRATION TEST FIXTURES (V2.1)
+# =============================================================================
+
+
+@pytest.fixture
+def market_data_normal() -> Dict[str, Any]:
+    """
+    Normal market conditions for testing.
+
+    VIX=15, SPY trending up, regime NEUTRAL.
+    """
+    return {
+        "vix": 15.0,
+        "spy_price": 450.0,
+        "spy_change_pct": 0.005,  # +0.5%
+        "regime_score": 65,
+        "regime_state": "NEUTRAL",
+        "adx": 28,
+        "ma200": 440.0,
+        "rsi": 55,
+    }
+
+
+@pytest.fixture
+def market_data_high_vix() -> Dict[str, Any]:
+    """
+    High VIX conditions for testing.
+
+    VIX=35, SPY volatile, regime CAUTIOUS.
+    """
+    return {
+        "vix": 35.0,
+        "spy_price": 435.0,
+        "spy_change_pct": -0.015,  # -1.5%
+        "regime_score": 42,
+        "regime_state": "CAUTIOUS",
+        "adx": 32,
+        "ma200": 440.0,
+        "rsi": 38,
+    }
+
+
+@pytest.fixture
+def market_data_crash() -> Dict[str, Any]:
+    """
+    Crash conditions for testing.
+
+    VIX=50, SPY crashing, regime RISK_OFF.
+    """
+    return {
+        "vix": 50.0,
+        "spy_price": 410.0,
+        "spy_change_pct": -0.045,  # -4.5%
+        "regime_score": 18,
+        "regime_state": "RISK_OFF",
+        "adx": 45,
+        "ma200": 440.0,
+        "rsi": 22,
+    }
+
+
+@pytest.fixture
+def mock_algorithm_with_options(mock_algorithm):
+    """
+    Mock algorithm with options position for integration tests.
+
+    Includes:
+    - QQQ call position
+    - Active OCO pair
+    - Greeks data
+    """
+    # Add options position
+    options_position = MagicMock()
+    options_position.Invested = True
+    options_position.Quantity = 10
+    options_position.AveragePrice = 2.50
+    options_position.HoldingsValue = 2500.0
+    options_position.Symbol = "QQQ 260126C00450000"
+
+    original_getitem = mock_algorithm.Portfolio.__getitem__
+
+    def get_position_with_options(symbol):
+        if "QQQ" in str(symbol) and "C" in str(symbol):
+            return options_position
+        return original_getitem(symbol)
+
+    mock_algorithm.Portfolio.__getitem__ = MagicMock(side_effect=get_position_with_options)
+
+    # Add Greeks
+    mock_algorithm.current_greeks = {
+        "delta": 0.55,
+        "gamma": 0.08,
+        "theta": -0.12,
+        "vega": 0.15,
+        "iv": 0.25,
+    }
+
+    return mock_algorithm
+
+
+@pytest.fixture
+def multi_engine_signals() -> list:
+    """
+    Sample signals from multiple engines for aggregation testing.
+    """
+    from models.target_weight import TargetWeight
+    from models.enums import Urgency
+
+    return [
+        TargetWeight(
+            symbol="QLD",
+            target_weight=0.35,
+            source="TREND",
+            urgency=Urgency.EOD,
+            reason="MA200_ADX_ENTRY"
+        ),
+        TargetWeight(
+            symbol="TQQQ",
+            target_weight=0.05,
+            source="MR",
+            urgency=Urgency.IMMEDIATE,
+            reason="RSI Oversold"
+        ),
+        TargetWeight(
+            symbol="QQQ_CALL",
+            target_weight=0.20,
+            source="OPT",
+            urgency=Urgency.IMMEDIATE,
+            reason="Entry Score=3.5"
+        ),
+        TargetWeight(
+            symbol="TMF",
+            target_weight=0.10,
+            source="HEDGE",
+            urgency=Urgency.EOD,
+            reason="Regime=42"
+        ),
+        TargetWeight(
+            symbol="SHV",
+            target_weight=0.25,
+            source="YIELD",
+            urgency=Urgency.EOD,
+            reason="Unallocated Cash"
+        ),
+    ]

@@ -11,6 +11,7 @@
 | [README](README.md) | Documentation overview and quick reference |
 | [Documentation Map](DOCUMENTATION-MAP.md) | Code-to-documentation mapping (for Claude) |
 | [main.py Implementation](MAIN_PY_IMPLEMENTATION.md) | Phase 6 entry point implementation summary |
+| [V2 Test Plan](V2_TEST_PLAN.md) | Comprehensive test strategy for V2.1 |
 | [QC Coding Rules](../QC_RULES.md) | QuantConnect-specific patterns |
 | [Common Errors](../ERRORS.md) | Troubleshooting guide |
 
