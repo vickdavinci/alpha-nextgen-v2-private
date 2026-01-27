@@ -185,7 +185,7 @@ MIN_SHARE_DELTA = 1
 # RISK ENGINE
 # =============================================================================
 
-# Kill Switch
+# Kill Switch (V1: Nuclear option - liquidate ALL)
 KILL_SWITCH_PCT = 0.03
 
 # Panic Mode
@@ -205,6 +205,36 @@ VOL_SHOCK_PAUSE_MIN = 15
 # Time Guard
 TIME_GUARD_START = "13:55"
 TIME_GUARD_END = "14:10"
+
+# =============================================================================
+# V2.1 CIRCUIT BREAKER SYSTEM (5 Levels)
+# =============================================================================
+# These are graduated responses BEFORE the nuclear kill switch
+
+# Level 1: Daily Loss Circuit Breaker
+# At -2% daily loss, reduce sizing but don't liquidate
+CB_DAILY_LOSS_THRESHOLD = 0.02  # -2% daily loss
+CB_DAILY_SIZE_REDUCTION = 0.50  # Reduce to 50% sizing
+
+# Level 2: Weekly Loss Circuit Breaker (same as V1 WEEKLY_BREAKER_PCT)
+# Already defined above: WEEKLY_BREAKER_PCT = 0.05
+
+# Level 3: Portfolio Volatility Circuit Breaker
+# If portfolio volatility exceeds threshold, block new entries
+CB_PORTFOLIO_VOL_THRESHOLD = 0.015  # 1.5% daily portfolio volatility
+CB_PORTFOLIO_VOL_LOOKBACK = 20  # Days for volatility calculation
+
+# Level 4: Correlation Circuit Breaker
+# If correlation between positions exceeds threshold, reduce exposure
+CB_CORRELATION_THRESHOLD = 0.60  # Correlation > 60%
+CB_CORRELATION_REDUCTION = 0.50  # Reduce exposure by 50%
+
+# Level 5: Greeks Breach Circuit Breaker (for Options Engine)
+# Thresholds for options risk monitoring
+CB_DELTA_MAX = 0.80  # Max delta exposure per position
+CB_GAMMA_WARNING = 0.05  # Gamma warning threshold near expiry
+CB_VEGA_MAX = 0.50  # Max vega exposure
+CB_THETA_WARNING = -0.02  # Daily theta decay warning (-2%)
 
 # =============================================================================
 # EXECUTION ENGINE

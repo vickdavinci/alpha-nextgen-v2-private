@@ -1,10 +1,16 @@
 """
 Risk Engine - Circuit breakers and safeguards.
 
-Implements defense-in-depth protection:
+V2.1 5-Level Circuit Breaker System (graduated responses):
+- Level 1: Daily loss -2% → reduce sizing 50%
+- Level 2: Weekly loss -5% → reduce sizing 50%
+- Level 3: Portfolio vol > 1.5% → block new entries
+- Level 4: Correlation > 0.60 → reduce exposure
+- Level 5: Greeks breach → close options positions
+
+V1 Safeguards (still active):
 - Kill Switch: -3% daily loss → liquidate ALL, reset cold start
 - Panic Mode: SPY -4% intraday → liquidate longs only, keep hedges
-- Weekly Breaker: -5% WTD → reduce sizing by 50%
 - Gap Filter: SPY -1.5% gap → block intraday entries
 - Vol Shock: 3× ATR bar → pause entries 15 min
 - Time Guard: 13:55-14:10 → block all entries
@@ -12,7 +18,7 @@ Implements defense-in-depth protection:
 
 Risk Engine operates at Level 2 in authority hierarchy (overrides all strategy signals).
 
-Spec: docs/12-risk-engine.md
+Spec: docs/12-risk-engine.md, V2_1_COMPLETE_ARCHITECTURE.txt
 """
 
 from dataclasses import dataclass, field
@@ -29,6 +35,7 @@ if TYPE_CHECKING:
 class SafeguardType(Enum):
     """Types of risk safeguards."""
 
+    # V1 Safeguards
     KILL_SWITCH = "KILL_SWITCH"
     PANIC_MODE = "PANIC_MODE"
     WEEKLY_BREAKER = "WEEKLY_BREAKER"
@@ -36,6 +43,12 @@ class SafeguardType(Enum):
     VOL_SHOCK = "VOL_SHOCK"
     TIME_GUARD = "TIME_GUARD"
     SPLIT_GUARD = "SPLIT_GUARD"
+
+    # V2.1 Circuit Breaker Levels
+    CB_DAILY_LOSS = "CB_DAILY_LOSS"  # Level 1: -2% daily
+    CB_PORTFOLIO_VOL = "CB_PORTFOLIO_VOL"  # Level 3: Vol > 1.5%
+    CB_CORRELATION = "CB_CORRELATION"  # Level 4: Correlation > 0.60
+    CB_GREEKS_BREACH = "CB_GREEKS_BREACH"  # Level 5: Greeks breach
 
 
 # Symbol classifications for liquidation
@@ -76,6 +89,33 @@ class SafeguardStatus:
 
 
 @dataclass
+class GreeksSnapshot:
+    """
+    Snapshot of options Greeks for risk monitoring.
+
+    Attributes:
+        delta: Delta exposure (-1 to +1).
+        gamma: Gamma (rate of delta change).
+        vega: Vega (IV sensitivity).
+        theta: Theta (daily time decay).
+    """
+
+    delta: float = 0.0
+    gamma: float = 0.0
+    vega: float = 0.0
+    theta: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize for logging."""
+        return {
+            "delta": self.delta,
+            "gamma": self.gamma,
+            "vega": self.vega,
+            "theta": self.theta,
+        }
+
+
+@dataclass
 class RiskCheckResult:
     """
     Result of a risk check.
@@ -83,28 +123,40 @@ class RiskCheckResult:
     Attributes:
         can_enter_positions: Whether new entries are allowed.
         can_enter_intraday: Whether intraday (MR) entries are allowed.
+        can_enter_options: Whether options entries are allowed (V2.1).
         sizing_multiplier: Position sizing multiplier (1.0 normal, 0.5 reduced).
+        exposure_multiplier: Exposure multiplier for correlation risk (V2.1).
         symbols_to_liquidate: List of symbols to liquidate immediately.
+        options_to_close: List of options positions to close (V2.1 Greeks breach).
         active_safeguards: List of currently active safeguards.
         reset_cold_start: Whether to reset days_running to 0.
+        circuit_breaker_level: Highest active circuit breaker level (0-5).
     """
 
     can_enter_positions: bool = True
     can_enter_intraday: bool = True
+    can_enter_options: bool = True
     sizing_multiplier: float = 1.0
+    exposure_multiplier: float = 1.0
     symbols_to_liquidate: List[str] = field(default_factory=list)
+    options_to_close: List[str] = field(default_factory=list)
     active_safeguards: List[SafeguardType] = field(default_factory=list)
     reset_cold_start: bool = False
+    circuit_breaker_level: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for logging/persistence."""
         return {
             "can_enter_positions": self.can_enter_positions,
             "can_enter_intraday": self.can_enter_intraday,
+            "can_enter_options": self.can_enter_options,
             "sizing_multiplier": self.sizing_multiplier,
+            "exposure_multiplier": self.exposure_multiplier,
             "symbols_to_liquidate": self.symbols_to_liquidate,
+            "options_to_close": self.options_to_close,
             "active_safeguards": [s.value for s in self.active_safeguards],
             "reset_cold_start": self.reset_cold_start,
+            "circuit_breaker_level": self.circuit_breaker_level,
         }
 
 
@@ -140,7 +192,7 @@ class RiskEngine:
         self._spy_open: float = 0.0
         self._spy_atr: float = 0.0  # 14-period ATR on 1-min bars
 
-        # Safeguard states
+        # V1 Safeguard states
         self._kill_switch_active: bool = False
         self._panic_mode_active: bool = False
         self._weekly_breaker_active: bool = False
@@ -148,10 +200,22 @@ class RiskEngine:
         self._vol_shock_until: Optional[datetime] = None
         self._split_frozen_symbols: Set[str] = set()
 
+        # V2.1 Circuit Breaker states
+        self._cb_daily_loss_active: bool = False
+        self._cb_portfolio_vol_active: bool = False
+        self._cb_correlation_active: bool = False
+        self._cb_greeks_breach_active: bool = False
+        self._current_circuit_breaker_level: int = 0
+
+        # V2.1 Circuit Breaker data
+        self._daily_returns: List[float] = []  # For portfolio vol calculation
+        self._position_correlations: Dict[str, float] = {}  # Symbol -> correlation
+        self._current_greeks: Optional[GreeksSnapshot] = None
+
         # Persisted state
         self._last_kill_date: Optional[str] = None
 
-        # Config parameters
+        # V1 Config parameters
         self._kill_switch_pct = config.KILL_SWITCH_PCT
         self._panic_mode_pct = config.PANIC_MODE_PCT
         self._weekly_breaker_pct = config.WEEKLY_BREAKER_PCT
@@ -160,6 +224,18 @@ class RiskEngine:
         self._vol_shock_pause_min = config.VOL_SHOCK_PAUSE_MIN
         self._time_guard_start = self._parse_time(config.TIME_GUARD_START)
         self._time_guard_end = self._parse_time(config.TIME_GUARD_END)
+
+        # V2.1 Circuit Breaker config parameters
+        self._cb_daily_loss_threshold = config.CB_DAILY_LOSS_THRESHOLD
+        self._cb_daily_size_reduction = config.CB_DAILY_SIZE_REDUCTION
+        self._cb_portfolio_vol_threshold = config.CB_PORTFOLIO_VOL_THRESHOLD
+        self._cb_portfolio_vol_lookback = config.CB_PORTFOLIO_VOL_LOOKBACK
+        self._cb_correlation_threshold = config.CB_CORRELATION_THRESHOLD
+        self._cb_correlation_reduction = config.CB_CORRELATION_REDUCTION
+        self._cb_delta_max = config.CB_DELTA_MAX
+        self._cb_gamma_warning = config.CB_GAMMA_WARNING
+        self._cb_vega_max = config.CB_VEGA_MAX
+        self._cb_theta_warning = config.CB_THETA_WARNING
 
     def _parse_time(self, time_str: str) -> Tuple[int, int]:
         """Parse time string 'HH:MM' into (hour, minute) tuple."""
@@ -376,12 +452,17 @@ class RiskEngine:
         """
         Get position sizing multiplier.
 
+        Combines V1 Weekly Breaker and V2.1 Level 1 Daily Loss CB.
+
         Returns:
-            1.0 for normal sizing, 0.5 if weekly breaker active.
+            1.0 for normal sizing, 0.5 if either breaker active.
         """
+        multiplier = 1.0
+        if self._cb_daily_loss_active:
+            multiplier = min(multiplier, self._cb_daily_size_reduction)
         if self._weekly_breaker_active:
-            return 0.5
-        return 1.0
+            multiplier = min(multiplier, 0.5)
+        return multiplier
 
     def get_weekly_breaker_status(self) -> SafeguardStatus:
         """Get current weekly breaker status."""
@@ -567,6 +648,320 @@ class RiskEngine:
         )
 
     # =========================================================================
+    # V2.1 Circuit Breaker Level 1: Daily Loss (-2%)
+    # =========================================================================
+
+    def check_cb_daily_loss(self, current_equity: float) -> bool:
+        """
+        Check if Level 1 circuit breaker should trigger.
+
+        This is a softer check than Kill Switch. At -2% daily loss,
+        reduce sizing but don't liquidate.
+
+        Args:
+            current_equity: Current portfolio value.
+
+        Returns:
+            True if Level 1 circuit breaker is active.
+        """
+        if self._cb_daily_loss_active:
+            return True  # Already triggered today
+
+        # Check vs prior close (primary baseline)
+        if self._equity_prior_close > 0:
+            loss_from_prior = (self._equity_prior_close - current_equity) / self._equity_prior_close
+            if loss_from_prior >= self._cb_daily_loss_threshold:
+                self._cb_daily_loss_active = True
+                self._current_circuit_breaker_level = max(
+                    self._current_circuit_breaker_level, 1
+                )
+                self.log(
+                    f"CB_LEVEL_1: TRIGGERED | "
+                    f"Daily loss={loss_from_prior:.2%} >= {self._cb_daily_loss_threshold:.2%} | "
+                    f"Sizing reduced to {self._cb_daily_size_reduction:.0%}"
+                )
+                return True
+
+        # Check vs SOD
+        if self._equity_sod > 0:
+            loss_from_sod = (self._equity_sod - current_equity) / self._equity_sod
+            if loss_from_sod >= self._cb_daily_loss_threshold:
+                self._cb_daily_loss_active = True
+                self._current_circuit_breaker_level = max(
+                    self._current_circuit_breaker_level, 1
+                )
+                self.log(
+                    f"CB_LEVEL_1: TRIGGERED | "
+                    f"SOD loss={loss_from_sod:.2%} >= {self._cb_daily_loss_threshold:.2%} | "
+                    f"Sizing reduced to {self._cb_daily_size_reduction:.0%}"
+                )
+                return True
+
+        return False
+
+    def get_cb_daily_loss_status(self) -> SafeguardStatus:
+        """Get current Level 1 circuit breaker status."""
+        return SafeguardStatus(
+            safeguard_type=SafeguardType.CB_DAILY_LOSS,
+            is_active=self._cb_daily_loss_active,
+            details=f"Sizing reduced to {self._cb_daily_size_reduction:.0%}"
+            if self._cb_daily_loss_active
+            else "",
+        )
+
+    # =========================================================================
+    # V2.1 Circuit Breaker Level 3: Portfolio Volatility (>1.5%)
+    # =========================================================================
+
+    def update_daily_return(self, daily_return: float) -> None:
+        """
+        Add a daily return for portfolio volatility calculation.
+
+        Args:
+            daily_return: Daily portfolio return as decimal (e.g., 0.01 = 1%).
+        """
+        self._daily_returns.append(daily_return)
+        # Keep only lookback period
+        if len(self._daily_returns) > self._cb_portfolio_vol_lookback:
+            self._daily_returns = self._daily_returns[-self._cb_portfolio_vol_lookback :]
+
+    def calculate_portfolio_volatility(self) -> float:
+        """
+        Calculate portfolio volatility from recent daily returns.
+
+        Returns:
+            Daily volatility as decimal (e.g., 0.015 = 1.5%).
+        """
+        if len(self._daily_returns) < 5:
+            return 0.0  # Not enough data
+
+        import statistics
+
+        try:
+            return statistics.stdev(self._daily_returns)
+        except statistics.StatisticsError:
+            return 0.0
+
+    def check_cb_portfolio_vol(self) -> bool:
+        """
+        Check if Level 3 circuit breaker should trigger.
+
+        If portfolio volatility exceeds threshold, block new entries.
+
+        Returns:
+            True if Level 3 circuit breaker is active.
+        """
+        if self._cb_portfolio_vol_active:
+            return True  # Already triggered
+
+        portfolio_vol = self.calculate_portfolio_volatility()
+        if portfolio_vol > self._cb_portfolio_vol_threshold:
+            self._cb_portfolio_vol_active = True
+            self._current_circuit_breaker_level = max(
+                self._current_circuit_breaker_level, 3
+            )
+            self.log(
+                f"CB_LEVEL_3: TRIGGERED | "
+                f"Portfolio vol={portfolio_vol:.4f} > {self._cb_portfolio_vol_threshold:.4f} | "
+                f"New entries blocked"
+            )
+            return True
+
+        # Reset if volatility drops back below threshold
+        if self._cb_portfolio_vol_active and portfolio_vol < self._cb_portfolio_vol_threshold * 0.8:
+            self._cb_portfolio_vol_active = False
+            self.log(
+                f"CB_LEVEL_3: RESET | "
+                f"Portfolio vol={portfolio_vol:.4f} < {self._cb_portfolio_vol_threshold * 0.8:.4f}"
+            )
+
+        return self._cb_portfolio_vol_active
+
+    def get_cb_portfolio_vol_status(self) -> SafeguardStatus:
+        """Get current Level 3 circuit breaker status."""
+        vol = self.calculate_portfolio_volatility()
+        return SafeguardStatus(
+            safeguard_type=SafeguardType.CB_PORTFOLIO_VOL,
+            is_active=self._cb_portfolio_vol_active,
+            details=f"Portfolio vol={vol:.4f}, threshold={self._cb_portfolio_vol_threshold:.4f}"
+            if self._cb_portfolio_vol_active
+            else f"Current vol={vol:.4f}",
+        )
+
+    # =========================================================================
+    # V2.1 Circuit Breaker Level 4: Correlation (>0.60)
+    # =========================================================================
+
+    def update_correlation(self, symbol: str, correlation: float) -> None:
+        """
+        Update correlation data for a symbol.
+
+        Args:
+            symbol: Symbol to update.
+            correlation: Correlation coefficient with portfolio (-1 to 1).
+        """
+        self._position_correlations[symbol] = correlation
+
+    def check_cb_correlation(self) -> bool:
+        """
+        Check if Level 4 circuit breaker should trigger.
+
+        If average correlation between positions exceeds threshold,
+        reduce exposure to prevent correlated drawdowns.
+
+        Returns:
+            True if Level 4 circuit breaker is active.
+        """
+        if not self._position_correlations:
+            return False  # No correlation data
+
+        # Calculate average absolute correlation
+        correlations = list(self._position_correlations.values())
+        avg_correlation = sum(abs(c) for c in correlations) / len(correlations)
+
+        if avg_correlation > self._cb_correlation_threshold:
+            if not self._cb_correlation_active:
+                self._cb_correlation_active = True
+                self._current_circuit_breaker_level = max(
+                    self._current_circuit_breaker_level, 4
+                )
+                self.log(
+                    f"CB_LEVEL_4: TRIGGERED | "
+                    f"Avg correlation={avg_correlation:.2f} > {self._cb_correlation_threshold:.2f} | "
+                    f"Exposure reduced by {1 - self._cb_correlation_reduction:.0%}"
+                )
+            return True
+
+        # Reset if correlation drops
+        if self._cb_correlation_active and avg_correlation < self._cb_correlation_threshold * 0.8:
+            self._cb_correlation_active = False
+            self.log(
+                f"CB_LEVEL_4: RESET | "
+                f"Avg correlation={avg_correlation:.2f} < {self._cb_correlation_threshold * 0.8:.2f}"
+            )
+
+        return self._cb_correlation_active
+
+    def get_correlation_exposure_multiplier(self) -> float:
+        """
+        Get exposure multiplier based on correlation circuit breaker.
+
+        Returns:
+            1.0 if normal, reduced if Level 4 active.
+        """
+        if self._cb_correlation_active:
+            return self._cb_correlation_reduction
+        return 1.0
+
+    def get_cb_correlation_status(self) -> SafeguardStatus:
+        """Get current Level 4 circuit breaker status."""
+        correlations = list(self._position_correlations.values())
+        avg_corr = (
+            sum(abs(c) for c in correlations) / len(correlations)
+            if correlations
+            else 0.0
+        )
+        return SafeguardStatus(
+            safeguard_type=SafeguardType.CB_CORRELATION,
+            is_active=self._cb_correlation_active,
+            details=f"Avg correlation={avg_corr:.2f}, exposure reduced"
+            if self._cb_correlation_active
+            else f"Avg correlation={avg_corr:.2f}",
+        )
+
+    # =========================================================================
+    # V2.1 Circuit Breaker Level 5: Greeks Breach (Options)
+    # =========================================================================
+
+    def update_greeks(self, greeks: GreeksSnapshot) -> None:
+        """
+        Update current options Greeks for risk monitoring.
+
+        Args:
+            greeks: Current Greeks snapshot.
+        """
+        self._current_greeks = greeks
+
+    def check_cb_greeks_breach(self) -> Tuple[bool, List[str]]:
+        """
+        Check if Level 5 circuit breaker should trigger.
+
+        Monitors options Greeks for risk breaches:
+        - Delta > max threshold
+        - Gamma warning near expiry
+        - Vega > max threshold
+        - Theta decay warning
+
+        Returns:
+            Tuple of (is_breach, list of options to close).
+        """
+        options_to_close: List[str] = []
+
+        if not self._current_greeks:
+            return False, options_to_close
+
+        greeks = self._current_greeks
+        breach_reasons: List[str] = []
+
+        # Check delta breach
+        if abs(greeks.delta) > self._cb_delta_max:
+            breach_reasons.append(f"Delta={greeks.delta:.2f} > {self._cb_delta_max}")
+
+        # Check gamma warning
+        if abs(greeks.gamma) > self._cb_gamma_warning:
+            breach_reasons.append(f"Gamma={greeks.gamma:.2f} > {self._cb_gamma_warning}")
+
+        # Check vega breach
+        if abs(greeks.vega) > self._cb_vega_max:
+            breach_reasons.append(f"Vega={greeks.vega:.2f} > {self._cb_vega_max}")
+
+        # Check theta warning
+        if greeks.theta < self._cb_theta_warning:
+            breach_reasons.append(f"Theta={greeks.theta:.2f} < {self._cb_theta_warning}")
+
+        if breach_reasons:
+            if not self._cb_greeks_breach_active:
+                self._cb_greeks_breach_active = True
+                self._current_circuit_breaker_level = max(
+                    self._current_circuit_breaker_level, 5
+                )
+                self.log(
+                    f"CB_LEVEL_5: TRIGGERED | "
+                    f"Greeks breach: {', '.join(breach_reasons)} | "
+                    f"Close options positions"
+                )
+            # When Greeks breach, close all options (caller determines specifics)
+            options_to_close.append("ALL_OPTIONS")
+            return True, options_to_close
+
+        # Reset if all Greeks are within limits
+        if self._cb_greeks_breach_active:
+            self._cb_greeks_breach_active = False
+            self.log("CB_LEVEL_5: RESET | All Greeks within limits")
+
+        return False, options_to_close
+
+    def get_cb_greeks_status(self) -> SafeguardStatus:
+        """Get current Level 5 circuit breaker status."""
+        if self._current_greeks:
+            greeks = self._current_greeks
+            details = (
+                f"D={greeks.delta:.2f}, G={greeks.gamma:.2f}, "
+                f"V={greeks.vega:.2f}, T={greeks.theta:.2f}"
+            )
+        else:
+            details = "No Greeks data"
+        return SafeguardStatus(
+            safeguard_type=SafeguardType.CB_GREEKS_BREACH,
+            is_active=self._cb_greeks_breach_active,
+            details=details,
+        )
+
+    def get_current_circuit_breaker_level(self) -> int:
+        """Get the highest active circuit breaker level (0-5)."""
+        return self._current_circuit_breaker_level
+
+    # =========================================================================
     # Combined Risk Check
     # =========================================================================
 
@@ -580,7 +975,17 @@ class RiskEngine:
         """
         Run all risk checks and return combined result.
 
-        Checks are run in priority order.
+        Checks are run in priority order:
+        1. V1 Kill Switch (nuclear - liquidate ALL)
+        2. V1 Panic Mode (SPY -4%)
+        3. V2.1 Circuit Breaker Level 1 (Daily -2%)
+        4. V2.1 Circuit Breaker Level 2 / V1 Weekly Breaker (-5% WTD)
+        5. V2.1 Circuit Breaker Level 3 (Portfolio Vol)
+        6. V2.1 Circuit Breaker Level 4 (Correlation)
+        7. V2.1 Circuit Breaker Level 5 (Greeks Breach)
+        8. V1 Vol Shock (3× ATR bar)
+        9. V1 Gap Filter
+        10. V1 Time Guard
 
         Args:
             current_equity: Current portfolio value.
@@ -594,46 +999,81 @@ class RiskEngine:
         result = RiskCheckResult()
         active_safeguards: List[SafeguardType] = []
 
-        # 1. Kill Switch (highest priority)
+        # 1. Kill Switch (highest priority - V1 nuclear option)
         if self.check_kill_switch(current_equity):
             result.can_enter_positions = False
             result.can_enter_intraday = False
+            result.can_enter_options = False
             result.symbols_to_liquidate = ALL_TRADED_SYMBOLS.copy()
             result.reset_cold_start = True
+            result.circuit_breaker_level = 5  # Treat as max level
             active_safeguards.append(SafeguardType.KILL_SWITCH)
             result.active_safeguards = active_safeguards
             return result  # Kill switch overrides everything
 
-        # 2. Panic Mode
+        # 2. Panic Mode (V1 - SPY -4%)
         if self.check_panic_mode(spy_price):
             result.can_enter_positions = False
             result.can_enter_intraday = False
+            result.can_enter_options = False
             result.symbols_to_liquidate = LEVERAGED_LONG_SYMBOLS.copy()
             active_safeguards.append(SafeguardType.PANIC_MODE)
 
-        # 3. Weekly Breaker
+        # 3. V2.1 Circuit Breaker Level 1: Daily Loss (-2%)
+        if self.check_cb_daily_loss(current_equity):
+            # Level 1: Reduce sizing, don't liquidate
+            result.sizing_multiplier = min(
+                result.sizing_multiplier, self._cb_daily_size_reduction
+            )
+            result.circuit_breaker_level = max(result.circuit_breaker_level, 1)
+            active_safeguards.append(SafeguardType.CB_DAILY_LOSS)
+
+        # 4. Weekly Breaker / V2.1 Circuit Breaker Level 2
         if self.check_weekly_breaker(current_equity):
-            result.sizing_multiplier = 0.5
+            result.sizing_multiplier = min(result.sizing_multiplier, 0.5)
+            result.circuit_breaker_level = max(result.circuit_breaker_level, 2)
             active_safeguards.append(SafeguardType.WEEKLY_BREAKER)
 
-        # 4. Vol Shock
+        # 5. V2.1 Circuit Breaker Level 3: Portfolio Volatility
+        if self.check_cb_portfolio_vol():
+            result.can_enter_positions = False
+            result.can_enter_intraday = False
+            result.can_enter_options = False
+            result.circuit_breaker_level = max(result.circuit_breaker_level, 3)
+            active_safeguards.append(SafeguardType.CB_PORTFOLIO_VOL)
+
+        # 6. V2.1 Circuit Breaker Level 4: Correlation
+        if self.check_cb_correlation():
+            result.exposure_multiplier = self.get_correlation_exposure_multiplier()
+            result.circuit_breaker_level = max(result.circuit_breaker_level, 4)
+            active_safeguards.append(SafeguardType.CB_CORRELATION)
+
+        # 7. V2.1 Circuit Breaker Level 5: Greeks Breach
+        greeks_breach, options_to_close = self.check_cb_greeks_breach()
+        if greeks_breach:
+            result.can_enter_options = False
+            result.options_to_close = options_to_close
+            result.circuit_breaker_level = max(result.circuit_breaker_level, 5)
+            active_safeguards.append(SafeguardType.CB_GREEKS_BREACH)
+
+        # 8. Vol Shock (V1)
         if self.check_vol_shock(spy_bar_range, current_time):
             result.can_enter_positions = False
             result.can_enter_intraday = False
             active_safeguards.append(SafeguardType.VOL_SHOCK)
 
-        # 5. Gap Filter (already set earlier in the day)
+        # 9. Gap Filter (V1 - already set earlier in the day)
         if self._gap_filter_active:
             result.can_enter_intraday = False
             active_safeguards.append(SafeguardType.GAP_FILTER)
 
-        # 6. Time Guard
+        # 10. Time Guard (V1)
         if self.is_time_guard_active(current_time):
             result.can_enter_positions = False
             result.can_enter_intraday = False
             active_safeguards.append(SafeguardType.TIME_GUARD)
 
-        # 7. Split Guard (handled per-symbol, not in combined check)
+        # 11. Split Guard (handled per-symbol, not in combined check)
 
         result.active_safeguards = active_safeguards
         return result
@@ -688,11 +1128,18 @@ class RiskEngine:
 
         Called at start of new trading day.
         """
+        # V1 safeguard resets
         self._kill_switch_active = False
         self._panic_mode_active = False
         self._gap_filter_active = False
         self._vol_shock_until = None
         self._split_frozen_symbols.clear()
+
+        # V2.1 Circuit Breaker resets (daily)
+        self._cb_daily_loss_active = False
+        self._cb_greeks_breach_active = False
+        self._current_circuit_breaker_level = 0
+        # Note: Portfolio vol and correlation persist across days
 
         # Reset baselines (will be set by scheduling)
         self._equity_prior_close = 0.0
@@ -700,7 +1147,7 @@ class RiskEngine:
         self._spy_prior_close = 0.0
         self._spy_open = 0.0
 
-        self.log("RISK: Daily state reset")
+        self.log("RISK: Daily state reset (V1 safeguards + V2.1 daily CBs)")
 
     # =========================================================================
     # State Persistence
@@ -714,9 +1161,15 @@ class RiskEngine:
             Dict with all state that should be persisted.
         """
         return {
+            # V1 state
             "last_kill_date": self._last_kill_date,
             "week_start_equity": self._week_start_equity,
             "weekly_breaker_active": self._weekly_breaker_active,
+            # V2.1 state
+            "daily_returns": self._daily_returns,
+            "position_correlations": self._position_correlations,
+            "cb_portfolio_vol_active": self._cb_portfolio_vol_active,
+            "cb_correlation_active": self._cb_correlation_active,
         }
 
     def load_state(self, state: Dict[str, Any]) -> None:
@@ -726,14 +1179,24 @@ class RiskEngine:
         Args:
             state: Previously saved state dict.
         """
+        # V1 state
         self._last_kill_date = state.get("last_kill_date")
         self._week_start_equity = state.get("week_start_equity", 0.0)
         self._weekly_breaker_active = state.get("weekly_breaker_active", False)
+
+        # V2.1 state
+        self._daily_returns = state.get("daily_returns", [])
+        self._position_correlations = state.get("position_correlations", {})
+        self._cb_portfolio_vol_active = state.get("cb_portfolio_vol_active", False)
+        self._cb_correlation_active = state.get("cb_correlation_active", False)
+
         self.log(
             f"RISK: State loaded | "
             f"last_kill_date={self._last_kill_date} | "
             f"week_start_equity=${self._week_start_equity:,.2f} | "
-            f"weekly_breaker={self._weekly_breaker_active}"
+            f"weekly_breaker={self._weekly_breaker_active} | "
+            f"portfolio_vol_cb={self._cb_portfolio_vol_active} | "
+            f"correlation_cb={self._cb_correlation_active}"
         )
 
     def set_last_kill_date(self, date_str: str) -> None:
@@ -765,6 +1228,7 @@ class RiskEngine:
             Dict mapping safeguard name to its status.
         """
         return {
+            # V1 Safeguards
             "kill_switch": self.get_kill_switch_status(),
             "panic_mode": self.get_panic_mode_status(),
             "weekly_breaker": self.get_weekly_breaker_status(),
@@ -772,4 +1236,27 @@ class RiskEngine:
             "vol_shock": self.get_vol_shock_status(current_time),
             "time_guard": self.get_time_guard_status(current_time),
             "split_guard": self.get_split_guard_status(),
+            # V2.1 Circuit Breaker Levels
+            "cb_daily_loss": self.get_cb_daily_loss_status(),
+            "cb_portfolio_vol": self.get_cb_portfolio_vol_status(),
+            "cb_correlation": self.get_cb_correlation_status(),
+            "cb_greeks": self.get_cb_greeks_status(),
         }
+
+    def can_enter_options(self, current_time: datetime) -> bool:
+        """
+        Quick check if options entries are allowed.
+
+        Args:
+            current_time: Current algorithm time.
+
+        Returns:
+            True if options entries are allowed.
+        """
+        if not self.can_enter_new_positions(current_time):
+            return False
+        if self._cb_portfolio_vol_active:
+            return False
+        if self._cb_greeks_breach_active:
+            return False
+        return True

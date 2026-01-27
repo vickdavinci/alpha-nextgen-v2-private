@@ -8,14 +8,25 @@ The Risk Engine implements all **circuit breakers and safeguards**. Its job is t
 
 Multiple layers of protection address different risk scenarios:
 
+**V2.1 Circuit Breaker System (5 Levels - Graduated Responses):**
+
+| Level | Trigger | Action | Reset |
+|:-----:|---------|--------|-------|
+| 1 | Daily loss -2% | Reduce sizing 50% | Daily reset |
+| 2 | Weekly loss -5% | Reduce sizing 50% | Monday open |
+| 3 | Portfolio vol > 1.5% | Block new entries | Auto when vol drops |
+| 4 | Correlation > 0.60 | Reduce exposure 50% | Auto when corr drops |
+| 5 | Greeks breach | Close options | Auto when within limits |
+
+**V1 Safeguards (Still Active):**
+
 | Safeguard | Threat Addressed |
 |-----------|------------------|
-| **Kill Switch** | Single-day catastrophic loss |
-| **Panic Mode** | Flash crash / market meltdown |
-| **Weekly Breaker** | Prolonged bleeding drawdown |
-| **Gap Filter** | Gap-down morning weakness |
-| **Vol Shock** | Extreme short-term volatility |
-| **Time Guard** | Fed announcement volatility |
+| **Kill Switch** | Single-day catastrophic loss (-3%) |
+| **Panic Mode** | Flash crash / market meltdown (SPY -4%) |
+| **Gap Filter** | Gap-down morning weakness (-1.5%) |
+| **Vol Shock** | Extreme short-term volatility (3× ATR) |
+| **Time Guard** | Fed announcement volatility (13:55-14:10) |
 | **Split Guard** | Corporate action data errors |
 
 Some safeguards will never trigger in normal conditions, but they're ready if needed.
@@ -744,6 +755,107 @@ When multiple safeguards could apply, they're checked in order:
 | **Daily time guard** | Simpler than tracking Fed calendar; minimal cost |
 | **All liquidations via market orders** | Certainty of execution during crisis |
 | **Kill switch resets cold start** | After significant loss, restart conservatively |
+
+---
+
+---
+
+## 12.17 V2.1 Circuit Breaker System
+
+The V2.1 Circuit Breaker System provides graduated responses to risk events, allowing the system to reduce exposure incrementally rather than always going nuclear.
+
+### 12.17.1 Circuit Breaker Levels
+
+**Level 1: Daily Loss (-2%)**
+
+| Property | Value |
+|----------|-------|
+| Trigger | Portfolio loss ≥ 2% from prior close or SOD |
+| Action | Reduce position sizing to 50% |
+| Duration | Rest of trading day |
+| Reset | Next trading day (daily reset) |
+
+This is a "soft warning" level that reduces risk before the nuclear kill switch at 3%.
+
+**Level 2: Weekly Loss (-5%)**
+
+Same as V1 Weekly Breaker - reduces sizing 50% for remainder of week.
+
+**Level 3: Portfolio Volatility (>1.5%)**
+
+| Property | Value |
+|----------|-------|
+| Trigger | 20-day portfolio volatility > 1.5% daily |
+| Action | Block all new entries |
+| Duration | Until volatility drops below 1.2% (0.8× threshold) |
+| Reset | Automatic when conditions normalize |
+
+High portfolio volatility indicates unstable conditions where new entries are risky.
+
+**Level 4: Correlation (>0.60)**
+
+| Property | Value |
+|----------|-------|
+| Trigger | Average position correlation > 0.60 |
+| Action | Reduce exposure multiplier to 50% |
+| Duration | Until correlation drops below 0.48 (0.8× threshold) |
+| Reset | Automatic when conditions normalize |
+
+High correlation means positions will move together during drawdowns.
+
+**Level 5: Greeks Breach (Options)**
+
+| Property | Value |
+|----------|-------|
+| Trigger | Any Greeks breach: Delta > 0.80, Gamma > 0.05, Vega > 0.50, Theta < -2% |
+| Action | Close all options positions |
+| Duration | Until all Greeks are within limits |
+| Reset | Automatic when conditions normalize |
+
+Greeks breaches indicate options positions have become too risky.
+
+### 12.17.2 Circuit Breaker Priority
+
+Circuit breakers are checked in order of severity:
+
+```
+1. Kill Switch (V1) - Overrides everything
+2. Panic Mode (V1)
+3. Level 1: Daily Loss CB (V2.1)
+4. Level 2: Weekly Loss / Weekly Breaker
+5. Level 3: Portfolio Vol CB (V2.1)
+6. Level 4: Correlation CB (V2.1)
+7. Level 5: Greeks Breach CB (V2.1)
+8. Vol Shock (V1)
+9. Gap Filter (V1)
+10. Time Guard (V1)
+```
+
+### 12.17.3 Level Tracking
+
+The system tracks the highest active circuit breaker level (0-5):
+
+- Level 0: No circuit breakers active
+- Level 1: Daily loss CB active
+- Level 2: Weekly breaker active
+- Level 3: Portfolio vol CB active
+- Level 4: Correlation CB active
+- Level 5: Greeks breach active OR Kill Switch triggered
+
+### 12.17.4 Parameter Reference
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `CB_DAILY_LOSS_THRESHOLD` | 0.02 | -2% daily loss triggers Level 1 |
+| `CB_DAILY_SIZE_REDUCTION` | 0.50 | 50% sizing reduction |
+| `CB_PORTFOLIO_VOL_THRESHOLD` | 0.015 | 1.5% daily vol triggers Level 3 |
+| `CB_PORTFOLIO_VOL_LOOKBACK` | 20 | Days for vol calculation |
+| `CB_CORRELATION_THRESHOLD` | 0.60 | 60% correlation triggers Level 4 |
+| `CB_CORRELATION_REDUCTION` | 0.50 | 50% exposure reduction |
+| `CB_DELTA_MAX` | 0.80 | Max delta for Level 5 |
+| `CB_GAMMA_WARNING` | 0.05 | Gamma warning threshold |
+| `CB_VEGA_MAX` | 0.50 | Max vega for Level 5 |
+| `CB_THETA_WARNING` | -0.02 | Theta decay warning (-2% daily) |
 
 ---
 

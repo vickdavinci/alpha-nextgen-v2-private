@@ -47,16 +47,21 @@
 
 | Ticket | Component | Size | Spec |
 |--------|-----------|:----:|------|
-| TRE-1 | MA200 + ADX Signal | L | V2_1_COMPLETE_ARCHITECTURE.txt |
-| TRE-2 | Trailing Stop Enhancement | M | V2_1_COMPLETE_ARCHITECTURE.txt |
-| RSK-1 | 5-Level Circuit Breaker | L | V2_1_COMPLETE_ARCHITECTURE.txt |
 | MRE-3 | VIX Data Feed | S | V2-1-Critical-Fixes-Guide.md |
+| RSK-3 | Risk Engine V2 Tests | M | V2_1_COMPLETE_ARCHITECTURE.txt |
 
 ### In Progress
 
 | Component | Owner | Branch | Started | Spec |
 |-----------|-------|--------|---------|------|
-| _None_ | | | | |
+| RSK-1 | VA | feature/RSK-1-five-level-circuit-breaker | 2026-01-26 | V2_1_COMPLETE_ARCHITECTURE.txt |
+
+### Done (V2 Phase 1)
+
+| Ticket | Component | Owner | Commit | Merged |
+|--------|-----------|-------|--------|--------|
+| TRE-1 | MA200 + ADX Signal | VA | develop | 2026-01-26 |
+| TRE-2 | Trailing Stop Enhancement | VA | develop | 2026-01-26 |
 
 ### In Review
 
