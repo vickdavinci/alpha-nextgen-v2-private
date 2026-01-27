@@ -499,12 +499,9 @@ class OptionsEngine:
             return None
 
         # Late day constraint: only 20% stops after 2:30 PM
-        is_late_day = (
-            current_hour > config.OPTIONS_LATE_DAY_HOUR
-            or (
-                current_hour == config.OPTIONS_LATE_DAY_HOUR
-                and current_minute >= config.OPTIONS_LATE_DAY_MINUTE
-            )
+        is_late_day = current_hour > config.OPTIONS_LATE_DAY_HOUR or (
+            current_hour == config.OPTIONS_LATE_DAY_HOUR
+            and current_minute >= config.OPTIONS_LATE_DAY_MINUTE
         )
 
         if is_late_day:
@@ -762,8 +759,7 @@ class OptionsEngine:
         self._position.contract.theta = theta
 
         self.log(
-            f"OPT: Greeks updated | "
-            f"D={delta:.3f} G={gamma:.4f} V={vega:.3f} T={theta:.4f}"
+            f"OPT: Greeks updated | " f"D={delta:.3f} G={gamma:.4f} V={vega:.3f} T={theta:.4f}"
         )
 
     def check_greeks_breach(

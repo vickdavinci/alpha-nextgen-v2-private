@@ -672,9 +672,7 @@ class RiskEngine:
             loss_from_prior = (self._equity_prior_close - current_equity) / self._equity_prior_close
             if loss_from_prior >= self._cb_daily_loss_threshold:
                 self._cb_daily_loss_active = True
-                self._current_circuit_breaker_level = max(
-                    self._current_circuit_breaker_level, 1
-                )
+                self._current_circuit_breaker_level = max(self._current_circuit_breaker_level, 1)
                 self.log(
                     f"CB_LEVEL_1: TRIGGERED | "
                     f"Daily loss={loss_from_prior:.2%} >= {self._cb_daily_loss_threshold:.2%} | "
@@ -687,9 +685,7 @@ class RiskEngine:
             loss_from_sod = (self._equity_sod - current_equity) / self._equity_sod
             if loss_from_sod >= self._cb_daily_loss_threshold:
                 self._cb_daily_loss_active = True
-                self._current_circuit_breaker_level = max(
-                    self._current_circuit_breaker_level, 1
-                )
+                self._current_circuit_breaker_level = max(self._current_circuit_breaker_level, 1)
                 self.log(
                     f"CB_LEVEL_1: TRIGGERED | "
                     f"SOD loss={loss_from_sod:.2%} >= {self._cb_daily_loss_threshold:.2%} | "
@@ -757,9 +753,7 @@ class RiskEngine:
         portfolio_vol = self.calculate_portfolio_volatility()
         if portfolio_vol > self._cb_portfolio_vol_threshold:
             self._cb_portfolio_vol_active = True
-            self._current_circuit_breaker_level = max(
-                self._current_circuit_breaker_level, 3
-            )
+            self._current_circuit_breaker_level = max(self._current_circuit_breaker_level, 3)
             self.log(
                 f"CB_LEVEL_3: TRIGGERED | "
                 f"Portfolio vol={portfolio_vol:.4f} > {self._cb_portfolio_vol_threshold:.4f} | "
@@ -822,9 +816,7 @@ class RiskEngine:
         if avg_correlation > self._cb_correlation_threshold:
             if not self._cb_correlation_active:
                 self._cb_correlation_active = True
-                self._current_circuit_breaker_level = max(
-                    self._current_circuit_breaker_level, 4
-                )
+                self._current_circuit_breaker_level = max(self._current_circuit_breaker_level, 4)
                 self.log(
                     f"CB_LEVEL_4: TRIGGERED | "
                     f"Avg correlation={avg_correlation:.2f} > {self._cb_correlation_threshold:.2f} | "
@@ -856,11 +848,7 @@ class RiskEngine:
     def get_cb_correlation_status(self) -> SafeguardStatus:
         """Get current Level 4 circuit breaker status."""
         correlations = list(self._position_correlations.values())
-        avg_corr = (
-            sum(abs(c) for c in correlations) / len(correlations)
-            if correlations
-            else 0.0
-        )
+        avg_corr = sum(abs(c) for c in correlations) / len(correlations) if correlations else 0.0
         return SafeguardStatus(
             safeguard_type=SafeguardType.CB_CORRELATION,
             is_active=self._cb_correlation_active,
@@ -922,9 +910,7 @@ class RiskEngine:
         if breach_reasons:
             if not self._cb_greeks_breach_active:
                 self._cb_greeks_breach_active = True
-                self._current_circuit_breaker_level = max(
-                    self._current_circuit_breaker_level, 5
-                )
+                self._current_circuit_breaker_level = max(self._current_circuit_breaker_level, 5)
                 self.log(
                     f"CB_LEVEL_5: TRIGGERED | "
                     f"Greeks breach: {', '.join(breach_reasons)} | "
@@ -1022,9 +1008,7 @@ class RiskEngine:
         # 3. V2.1 Circuit Breaker Level 1: Daily Loss (-2%)
         if self.check_cb_daily_loss(current_equity):
             # Level 1: Reduce sizing, don't liquidate
-            result.sizing_multiplier = min(
-                result.sizing_multiplier, self._cb_daily_size_reduction
-            )
+            result.sizing_multiplier = min(result.sizing_multiplier, self._cb_daily_size_reduction)
             result.circuit_breaker_level = max(result.circuit_breaker_level, 1)
             active_safeguards.append(SafeguardType.CB_DAILY_LOSS)
 
