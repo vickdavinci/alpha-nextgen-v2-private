@@ -1,0 +1,3 @@
+"""
+Time constants, magic numbers
+"""

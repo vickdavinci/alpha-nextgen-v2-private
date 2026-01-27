@@ -1,0 +1,6 @@
+# Development dependencies for Alpha NextGen
+# Install with: pip install -r requirements-dev.txt
+
+# QuantConnect type stubs for IDE validation (Pylance/PyCharm)
+# Provides autocomplete and type checking for QC API methods
+quantconnect-stubs

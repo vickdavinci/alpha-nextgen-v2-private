@@ -1,0 +1,187 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    # This is the status check name for branch protection
+    # Configure branch protection to require: "test"
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ['3.11']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Required for git diff in spec parity check
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.lock', 'requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Use lockfile if available for reproducibility
+          if [ -f requirements.lock ]; then
+            pip install -r requirements.lock
+          else
+            pip install -r requirements.txt
+          fi
+
+      # =========================================
+      # PHASE 1: Config & Spec Validation
+      # =========================================
+
+      - name: Validate config against specs
+        run: |
+          python scripts/validate_config.py
+
+      # =========================================
+      # PHASE 2: Code Quality (Conditional)
+      # =========================================
+      # These checks only run if source files exist.
+      # They FAIL if files exist but have issues.
+
+      - name: Run linting (black)
+        run: |
+          # Find Python files in source directories
+          SOURCE_FILES=$(find engines/ portfolio/ models/ utils/ -name "*.py" -type f 2>/dev/null | grep -v __pycache__ | grep -v "^$" || true)
+
+          if [ -z "$SOURCE_FILES" ]; then
+            echo "::notice::No source files to lint yet - skipping"
+          else
+            # Count non-empty files (more than just docstring/imports)
+            NON_EMPTY=$(for f in $SOURCE_FILES; do
+              if [ $(wc -l < "$f") -gt 5 ]; then echo "$f"; fi
+            done)
+
+            if [ -z "$NON_EMPTY" ]; then
+              echo "::notice::Source files are stubs only - skipping lint"
+            else
+              echo "Linting files:"
+              echo "$NON_EMPTY"
+              black --check --diff $NON_EMPTY
+            fi
+          fi
+
+      - name: Run type checking (mypy)
+        run: |
+          # Find Python files with actual content
+          # NOTE: engines/ is excluded because it uses TYPE_CHECKING guards with
+          # quantconnect-stubs which have incomplete method coverage for mypy.
+          # See CONTRIBUTING.md "QuantConnect API Validation" section.
+          SOURCE_FILES=$(find portfolio/ models/ -name "*.py" -type f 2>/dev/null | grep -v __pycache__ || true)
+
+          if [ -z "$SOURCE_FILES" ]; then
+            echo "::notice::No source files for type checking yet - skipping"
+          else
+            # Only run mypy if we have substantial files
+            NON_EMPTY=$(for f in $SOURCE_FILES; do
+              if [ $(wc -l < "$f") -gt 10 ]; then echo "$f"; fi
+            done)
+
+            if [ -z "$NON_EMPTY" ]; then
+              echo "::notice::Source files are stubs only - skipping type check"
+            else
+              echo "Type checking files:"
+              echo "$NON_EMPTY"
+              echo "::notice::engines/ excluded from mypy (uses TYPE_CHECKING with QC stubs)"
+              mypy $NON_EMPTY --ignore-missing-imports
+            fi
+          fi
+
+      # =========================================
+      # PHASE 3: Architecture & Contract Tests
+      # =========================================
+      # These tests are CRITICAL and must always pass
+
+      - name: Run architecture boundary tests
+        run: |
+          pytest tests/test_architecture_boundaries.py -v --tb=short
+
+      - name: Run contract tests (TargetWeight)
+        run: |
+          pytest tests/test_target_weight_contract.py -v --tb=short
+
+      - name: Run smoke integration tests
+        run: |
+          pytest tests/test_smoke_integration.py -v --tb=short
+
+      # =========================================
+      # PHASE 4: Unit Tests
+      # =========================================
+      # Run all unit tests - skipped tests are OK, failures are not
+
+      - name: Run all unit tests
+        run: |
+          # Run tests, allowing skipped tests but failing on actual failures
+          pytest tests/ -v --tb=short --ignore=tests/scenarios/ \
+            -W ignore::pytest.PytestCollectionWarning
+
+      - name: Run scenario tests
+        run: |
+          # Scenario tests - skipped tests are OK, failures are not
+          pytest tests/scenarios/ -v --tb=short \
+            -W ignore::pytest.PytestCollectionWarning
+
+      # =========================================
+      # PHASE 5: Coverage Report (Informational)
+      # =========================================
+
+      - name: Run tests with coverage
+        run: |
+          # Coverage is informational - don't fail the build
+          # --cov-fail-under=0 means any coverage is acceptable
+          pytest tests/ --cov=engines --cov=portfolio --cov=models \
+            --cov-report=term-missing --cov-fail-under=0 \
+            --ignore=tests/scenarios/ \
+            -W ignore::pytest.PytestCollectionWarning || true
+        continue-on-error: true
+
+      # =========================================
+      # PHASE 6: Documentation Validation
+      # =========================================
+
+      - name: Documentation Parity Check
+        run: |
+          python scripts/check_spec_parity.py
+
+      # =========================================
+      # PHASE 7: Summary
+      # =========================================
+
+      - name: Test Summary
+        if: always()
+        run: |
+          echo "=============================================="
+          echo "CI Pipeline Summary"
+          echo "=============================================="
+          echo ""
+          echo "Critical Tests (must pass):"
+          echo "  - Architecture boundary tests"
+          echo "  - Contract tests (TargetWeight)"
+          echo "  - Smoke integration tests"
+          echo ""
+          echo "Unit Tests:"
+          echo "  - Skipped tests are expected during development"
+          echo "  - Actual test failures will fail the build"
+          echo ""
+          echo "See CONTRIBUTING.md for development workflow."
+          echo "=============================================="

@@ -1,0 +1,3 @@
+"""
+CapitalState dataclass
+"""

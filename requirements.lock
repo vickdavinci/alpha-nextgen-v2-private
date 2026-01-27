@@ -1,0 +1,49 @@
+# Alpha NextGen - Pinned Dependencies
+# Generated for reproducibility across all development machines
+#
+# IMPORTANT: This file ensures everyone uses the same package versions.
+# To update: pip freeze > requirements.lock (then review changes)
+#
+# Last updated: 2025-01
+# Python version: 3.11
+
+# =============================================================================
+# Testing
+# =============================================================================
+pytest==7.4.3
+pytest-cov==4.1.0
+coverage==7.3.2
+iniconfig==2.0.0
+packaging==23.2
+pluggy==1.3.0
+
+# =============================================================================
+# Code Quality
+# =============================================================================
+black==23.12.1
+click==8.1.7
+mypy-extensions==1.0.0
+pathspec==0.12.1
+platformdirs==4.1.0
+isort==5.13.2
+mypy==1.8.0
+typing_extensions==4.9.0
+
+# =============================================================================
+# QuantConnect Lean CLI
+# =============================================================================
+lean==1.0.182
+
+# =============================================================================
+# Lean CLI Dependencies (auto-installed)
+# =============================================================================
+# Note: lean pulls in many dependencies, these are the key ones
+requests>=2.28.0
+docker>=6.0.0
+pyyaml>=6.0
+click>=8.0.0
+
+# =============================================================================
+# Note: Do NOT install QuantConnect packages locally
+# The AlgorithmImports are only available in the QC cloud/LEAN engine environment
+# =============================================================================

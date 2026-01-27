@@ -1,0 +1,5 @@
+# CODEOWNERS - Defines required reviewers for pull requests
+# See: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for all files - required reviewer for PRs to main
+* @vickdavinci

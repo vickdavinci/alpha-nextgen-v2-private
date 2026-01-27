@@ -1,0 +1,17 @@
+# Alpha NextGen Development Dependencies
+# QuantConnect uses its own environment - these are for LOCAL development/testing only
+
+# Testing
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Code Quality
+black>=23.0.0
+isort>=5.12.0
+mypy>=1.0.0
+
+# QuantConnect Lean CLI
+lean
+
+# Note: Do NOT install QuantConnect packages locally
+# The AlgorithmImports are only available in the QC cloud/LEAN engine environment

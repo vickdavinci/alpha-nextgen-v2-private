@@ -1,0 +1,35 @@
+{
+  "project_name": "alpha_nextgen",
+  "language": "python",
+  "framework": "quantconnect",
+  "documentation_path": "./docs",
+  "test_command": "pytest tests/ -v",
+  "lint_command": "black --check . && isort --check .",
+  "type_check_command": "mypy engines/ portfolio/ --ignore-missing-imports",
+  "conventions": {
+    "docstring_style": "google",
+    "max_line_length": 100,
+    "use_type_hints": true,
+    "imports": "from AlgorithmImports import *"
+  },
+  "critical_files": [
+    "CLAUDE.md",
+    "ERRORS.md",
+    "QC_RULES.md",
+    "config.py",
+    "developer-guide-claude.md"
+  ],
+  "build_phases": {
+    "phase_1": ["config.py", "models/", "utils/"],
+    "phase_2": ["engines/regime_engine.py", "engines/capital_engine.py"],
+    "phase_3": ["engines/cold_start_engine.py", "engines/trend_engine.py", "engines/mean_reversion_engine.py", "engines/hedge_engine.py", "engines/yield_sleeve.py"],
+    "phase_4": ["portfolio/portfolio_router.py", "engines/risk_engine.py"],
+    "phase_5": ["execution/execution_engine.py", "persistence/state_manager.py", "scheduling/daily_scheduler.py"],
+    "phase_6": ["main.py"]
+  },
+  "authority_rules": {
+    "order_placement": "Only portfolio_router.py may call MarketOrder(), MarketOnOpenOrder(), Liquidate()",
+    "strategy_engines": "Emit TargetWeight objects only - never place orders directly",
+    "risk_checks": "Always run risk_engine checks BEFORE strategy logic in OnData()"
+  }
+}

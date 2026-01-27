@@ -1,0 +1,998 @@
+"""
+Alpha NextGen Calculation Utilities
+
+Pure calculation functions used across multiple engines.
+All functions are stateless and have no side effects.
+"""
+
+import math
+from typing import List, Optional, Tuple
+
+# =============================================================================
+# HELPER UTILITIES
+# =============================================================================
+
+
+def clamp(value: float, min_val: float, max_val: float) -> float:
+    """Clamp a value within a specified range.
+
+    Args:
+        value: The value to clamp.
+        min_val: Minimum allowed value.
+        max_val: Maximum allowed value.
+
+    Returns:
+        Value constrained to [min_val, max_val].
+
+    Example:
+        >>> clamp(105, 0, 100)
+        100
+        >>> clamp(-5, 0, 100)
+        0
+    """
+    return max(min_val, min(value, max_val))
+
+
+def safe_divide(numerator: float, denominator: float, default: float = 0.0) -> float:
+    """Safely divide two numbers, returning default if denominator is zero.
+
+    Args:
+        numerator: The dividend.
+        denominator: The divisor.
+        default: Value to return if denominator is zero.
+
+    Returns:
+        Result of division or default if division by zero.
+
+    Example:
+        >>> safe_divide(10, 2)
+        5.0
+        >>> safe_divide(10, 0)
+        0.0
+    """
+    if denominator == 0:
+        return default
+    return numerator / denominator
+
+
+def rolling_mean(values: List[float]) -> float:
+    """Calculate mean of a list of values.
+
+    Args:
+        values: List of numeric values.
+
+    Returns:
+        Arithmetic mean, or 0.0 if empty list.
+
+    Example:
+        >>> rolling_mean([1, 2, 3, 4, 5])
+        3.0
+    """
+    if not values:
+        return 0.0
+    return sum(values) / len(values)
+
+
+def rolling_std_dev(values: List[float]) -> float:
+    """Calculate population standard deviation of a list of values.
+
+    Args:
+        values: List of numeric values.
+
+    Returns:
+        Standard deviation, or 0.0 if fewer than 2 values.
+
+    Example:
+        >>> rolling_std_dev([2, 4, 4, 4, 5, 5, 7, 9])
+        2.0
+    """
+    if len(values) < 2:
+        return 0.0
+    mean = rolling_mean(values)
+    variance = sum((x - mean) ** 2 for x in values) / len(values)
+    return math.sqrt(variance)
+
+
+# =============================================================================
+# LOSS / PERCENTAGE CALCULATIONS
+# =============================================================================
+
+
+def daily_loss_pct(baseline_equity: float, current_equity: float) -> float:
+    """Calculate daily loss percentage from baseline.
+
+    Args:
+        baseline_equity: Equity at start of day (SOD baseline).
+        current_equity: Current portfolio equity.
+
+    Returns:
+        Loss as positive decimal (0.03 = 3% loss).
+        Returns 0 if no loss (current >= baseline).
+
+    Example:
+        >>> daily_loss_pct(100000, 97000)
+        0.03
+        >>> daily_loss_pct(100000, 102000)
+        0.0
+    """
+    if current_equity >= baseline_equity:
+        return 0.0
+    return safe_divide(baseline_equity - current_equity, baseline_equity)
+
+
+def week_to_date_loss_pct(week_start_equity: float, current_equity: float) -> float:
+    """Calculate week-to-date loss percentage.
+
+    Args:
+        week_start_equity: Equity at Monday open.
+        current_equity: Current portfolio equity.
+
+    Returns:
+        Loss as positive decimal (0.05 = 5% WTD loss).
+        Returns 0 if no loss.
+
+    Example:
+        >>> week_to_date_loss_pct(100000, 95000)
+        0.05
+    """
+    if current_equity >= week_start_equity:
+        return 0.0
+    return safe_divide(week_start_equity - current_equity, week_start_equity)
+
+
+def intraday_drop_pct(open_price: float, current_price: float) -> float:
+    """Calculate intraday drop percentage from open.
+
+    Used for gap filter and panic mode detection.
+
+    Args:
+        open_price: Price at market open.
+        current_price: Current price.
+
+    Returns:
+        Drop as positive decimal (0.04 = 4% drop).
+        Returns 0 if price is above open.
+
+    Example:
+        >>> intraday_drop_pct(100.0, 96.0)
+        0.04
+    """
+    if current_price >= open_price:
+        return 0.0
+    return safe_divide(open_price - current_price, open_price)
+
+
+def profit_pct(entry_price: float, current_price: float) -> float:
+    """Calculate profit percentage from entry.
+
+    Args:
+        entry_price: Original entry price.
+        current_price: Current price.
+
+    Returns:
+        Profit as decimal (0.15 = 15% profit, -0.10 = 10% loss).
+
+    Example:
+        >>> profit_pct(100.0, 115.0)
+        0.15
+        >>> profit_pct(100.0, 90.0)
+        -0.1
+    """
+    return safe_divide(current_price - entry_price, entry_price)
+
+
+def period_return(start_price: float, end_price: float) -> float:
+    """Calculate return over a period.
+
+    Args:
+        start_price: Price at start of period.
+        end_price: Price at end of period.
+
+    Returns:
+        Return as decimal (0.05 = 5% gain).
+
+    Example:
+        >>> period_return(100.0, 105.0)
+        0.05
+    """
+    return safe_divide(end_price - start_price, start_price)
+
+
+# =============================================================================
+# VOLATILITY CALCULATIONS
+# =============================================================================
+
+
+def realized_volatility(daily_returns: List[float], annualize: bool = True) -> float:
+    """Calculate realized volatility from daily returns.
+
+    Args:
+        daily_returns: List of daily returns as decimals.
+        annualize: If True, annualize using sqrt(252).
+
+    Returns:
+        Volatility as decimal (0.20 = 20% annualized vol).
+
+    Example:
+        >>> returns = [0.01, -0.005, 0.008, -0.003, 0.012]
+        >>> vol = realized_volatility(returns)
+    """
+    if len(daily_returns) < 2:
+        return 0.0
+    std_dev = rolling_std_dev(daily_returns)
+    if annualize:
+        return std_dev * math.sqrt(252)
+    return std_dev
+
+
+def volatility_percentile(current_vol: float, historical_vols: List[float]) -> float:
+    """Calculate percentile rank of current volatility.
+
+    Args:
+        current_vol: Current realized volatility.
+        historical_vols: List of historical volatility readings.
+
+    Returns:
+        Percentile as decimal (0.80 = 80th percentile).
+
+    Example:
+        >>> vols = [0.10, 0.12, 0.15, 0.18, 0.20]
+        >>> volatility_percentile(0.16, vols)
+        0.6
+    """
+    if not historical_vols:
+        return 0.5  # Default to median
+    count_below = sum(1 for v in historical_vols if v < current_vol)
+    return count_below / len(historical_vols)
+
+
+# =============================================================================
+# RELATIVE PERFORMANCE (BREADTH / CREDIT)
+# =============================================================================
+
+
+def breadth_spread(rsp_return: float, spy_return: float) -> float:
+    """Calculate breadth spread (equal-weight vs cap-weight).
+
+    Positive spread indicates broad market participation.
+    Negative spread indicates narrow leadership.
+
+    Args:
+        rsp_return: RSP (equal-weight S&P) return over period.
+        spy_return: SPY (cap-weight S&P) return over period.
+
+    Returns:
+        Spread as decimal (0.02 = RSP outperforming by 2%).
+
+    Example:
+        >>> breadth_spread(0.05, 0.03)
+        0.02
+    """
+    return rsp_return - spy_return
+
+
+def credit_spread(hyg_return: float, ief_return: float) -> float:
+    """Calculate credit spread (high yield vs treasuries).
+
+    Positive spread indicates risk-on sentiment.
+    Negative spread indicates flight to safety.
+
+    Args:
+        hyg_return: HYG (high yield bonds) return over period.
+        ief_return: IEF (7-10yr treasuries) return over period.
+
+    Returns:
+        Spread as decimal (0.02 = HYG outperforming by 2%).
+
+    Example:
+        >>> credit_spread(0.03, 0.01)
+        0.02
+    """
+    return hyg_return - ief_return
+
+
+# =============================================================================
+# MOVING AVERAGE & PRICE POSITION
+# =============================================================================
+
+
+def bollinger_bandwidth(upper: float, lower: float, middle: float) -> float:
+    """Calculate Bollinger Band bandwidth.
+
+    Bandwidth indicates volatility compression/expansion.
+    Values < 0.10 indicate compression (potential breakout).
+
+    Args:
+        upper: Upper Bollinger Band value.
+        lower: Lower Bollinger Band value.
+        middle: Middle Bollinger Band (SMA) value.
+
+    Returns:
+        Bandwidth as decimal (0.10 = 10% width).
+
+    Example:
+        >>> bollinger_bandwidth(105, 95, 100)
+        0.1
+    """
+    return safe_divide(upper - lower, middle)
+
+
+# Alias for backward compatibility and convenience
+bandwidth = bollinger_bandwidth
+
+
+def price_to_sma_ratio(price: float, sma: float) -> float:
+    """Calculate ratio of price to moving average.
+
+    Used to detect extended or oversold conditions.
+
+    Args:
+        price: Current price.
+        sma: Simple moving average value.
+
+    Returns:
+        Ratio (1.05 = price 5% above SMA).
+
+    Example:
+        >>> price_to_sma_ratio(105, 100)
+        1.05
+    """
+    return safe_divide(price, sma, default=1.0)
+
+
+def is_extended(price: float, sma200: float, threshold: float = 1.05) -> bool:
+    """Check if price is extended above SMA200.
+
+    Args:
+        price: Current price.
+        sma200: 200-day simple moving average.
+        threshold: Extension threshold (default 1.05 = 5% above).
+
+    Returns:
+        True if price is extended above threshold.
+
+    Example:
+        >>> is_extended(110, 100, 1.05)
+        True
+    """
+    ratio = price_to_sma_ratio(price, sma200)
+    return ratio > threshold
+
+
+def is_oversold(price: float, sma200: float, threshold: float = 0.95) -> bool:
+    """Check if price is oversold below SMA200.
+
+    Args:
+        price: Current price.
+        sma200: 200-day simple moving average.
+        threshold: Oversold threshold (default 0.95 = 5% below).
+
+    Returns:
+        True if price is below threshold.
+
+    Example:
+        >>> is_oversold(90, 100, 0.95)
+        True
+    """
+    ratio = price_to_sma_ratio(price, sma200)
+    return ratio < threshold
+
+
+def ma_alignment_bullish(sma20: float, sma50: float, sma200: float) -> bool:
+    """Check for bullish moving average alignment.
+
+    Args:
+        sma20: 20-day SMA.
+        sma50: 50-day SMA.
+        sma200: 200-day SMA.
+
+    Returns:
+        True if SMA20 > SMA50 > SMA200.
+
+    Example:
+        >>> ma_alignment_bullish(110, 105, 100)
+        True
+    """
+    return sma20 > sma50 > sma200
+
+
+def ma_alignment_bearish(sma20: float, sma50: float, sma200: float) -> bool:
+    """Check for bearish moving average alignment.
+
+    Args:
+        sma20: 20-day SMA.
+        sma50: 50-day SMA.
+        sma200: 200-day SMA.
+
+    Returns:
+        True if SMA20 < SMA50 < SMA200.
+
+    Example:
+        >>> ma_alignment_bearish(90, 95, 100)
+        True
+    """
+    return sma20 < sma50 < sma200
+
+
+# =============================================================================
+# ATR-BASED CALCULATIONS
+# =============================================================================
+
+
+def atr_multiplier_for_profit(
+    profit_pct_value: float,
+    profit_tight_threshold: float = 0.15,
+    profit_tighter_threshold: float = 0.25,
+    base_mult: float = 3.0,
+    tight_mult: float = 2.0,
+    tighter_mult: float = 1.5,
+) -> float:
+    """Get ATR multiplier based on current profit level.
+
+    Used to tighten trailing stops as profit increases.
+
+    Args:
+        profit_pct_value: Current profit as decimal (0.15 = 15%).
+        profit_tight_threshold: Profit level to tighten (default 0.15).
+        profit_tighter_threshold: Profit level to tighten more (default 0.25).
+        base_mult: Multiplier for <15% profit (default 3.0).
+        tight_mult: Multiplier for 15-25% profit (default 2.0).
+        tighter_mult: Multiplier for >25% profit (default 1.5).
+
+    Returns:
+        ATR multiplier to use for stop calculation.
+
+    Example:
+        >>> atr_multiplier_for_profit(0.10)  # <15% profit
+        3.0
+        >>> atr_multiplier_for_profit(0.20)  # 15-25% profit
+        2.0
+        >>> atr_multiplier_for_profit(0.30)  # >25% profit
+        1.5
+    """
+    if profit_pct_value >= profit_tighter_threshold:
+        return tighter_mult
+    elif profit_pct_value >= profit_tight_threshold:
+        return tight_mult
+    else:
+        return base_mult
+
+
+def chandelier_stop(highest_high: float, atr: float, multiplier: float) -> float:
+    """Calculate Chandelier trailing stop level.
+
+    Simple version: highest_high - (multiplier * ATR).
+
+    Args:
+        highest_high: Highest high since entry.
+        atr: Current ATR(14) value.
+        multiplier: ATR multiplier (use atr_multiplier_for_profit to get this).
+
+    Returns:
+        Stop price level.
+
+    Example:
+        >>> chandelier_stop(100, 2.0, 3.0)  # Base multiplier
+        94.0
+        >>> chandelier_stop(100, 2.0, 2.0)  # Tight multiplier
+        96.0
+        >>> chandelier_stop(100, 2.0, 1.5)  # Tighter multiplier
+        97.0
+    """
+    return highest_high - (multiplier * atr)
+
+
+def vol_shock_threshold(atr: float, multiplier: float = 3.0) -> float:
+    """Calculate vol shock detection threshold.
+
+    A bar range exceeding this threshold triggers vol shock pause.
+
+    Args:
+        atr: Current ATR value.
+        multiplier: Shock multiplier (default 3.0).
+
+    Returns:
+        Threshold value for bar range (high - low).
+
+    Example:
+        >>> vol_shock_threshold(2.0)
+        6.0
+    """
+    return atr * multiplier
+
+
+def is_vol_shock(bar_high: float, bar_low: float, atr: float, multiplier: float = 3.0) -> bool:
+    """Check if a bar represents a volatility shock.
+
+    Args:
+        bar_high: Bar high price.
+        bar_low: Bar low price.
+        atr: Current ATR value.
+        multiplier: Shock multiplier (default 3.0).
+
+    Returns:
+        True if bar range exceeds threshold.
+
+    Example:
+        >>> is_vol_shock(106, 100, 2.0)  # Range 6, threshold 6
+        False
+        >>> is_vol_shock(107, 100, 2.0)  # Range 7, threshold 6
+        True
+    """
+    bar_range = bar_high - bar_low
+    threshold = vol_shock_threshold(atr, multiplier)
+    return bar_range > threshold
+
+
+# =============================================================================
+# VOLUME CALCULATIONS
+# =============================================================================
+
+
+def volume_ratio(current_volume: float, avg_volume: float) -> float:
+    """Calculate volume ratio vs average.
+
+    Args:
+        current_volume: Current bar/period volume.
+        avg_volume: Average volume (e.g., 20-day SMA).
+
+    Returns:
+        Ratio (1.5 = 50% above average).
+
+    Example:
+        >>> volume_ratio(1500000, 1000000)
+        1.5
+    """
+    return safe_divide(current_volume, avg_volume, default=1.0)
+
+
+def volume_confirmation(current_volume: float, avg_volume: float, min_ratio: float = 1.2) -> bool:
+    """Check if volume confirms a move (above average threshold).
+
+    Used for mean reversion entry validation.
+
+    Args:
+        current_volume: Current volume.
+        avg_volume: Average volume.
+        min_ratio: Minimum ratio required (default 1.2 = 20% above).
+
+    Returns:
+        True if volume exceeds threshold.
+
+    Example:
+        >>> volume_confirmation(1200000, 1000000)
+        True
+    """
+    return volume_ratio(current_volume, avg_volume) >= min_ratio
+
+
+# =============================================================================
+# POSITION & CAPITAL CALCULATIONS
+# =============================================================================
+
+
+def tradeable_equity(total_equity: float, locked_amount: float) -> float:
+    """Calculate tradeable equity excluding lockbox.
+
+    Args:
+        total_equity: Total portfolio value.
+        locked_amount: Amount locked in lockbox.
+
+    Returns:
+        Equity available for trading.
+
+    Example:
+        >>> tradeable_equity(100000, 10000)
+        90000
+    """
+    return max(0.0, total_equity - locked_amount)
+
+
+def calculate_lockbox_amount(
+    current_equity: float,
+    milestones_reached: List[float],
+    lock_pct: float = 0.10,
+) -> float:
+    """Calculate total locked amount from reached milestones.
+
+    Args:
+        current_equity: Current total equity.
+        milestones_reached: List of milestone values that have been reached.
+        lock_pct: Percentage to lock at each milestone (default 0.10).
+
+    Returns:
+        Total locked amount.
+
+    Example:
+        >>> calculate_lockbox_amount(150000, [100000])
+        10000.0
+        >>> calculate_lockbox_amount(250000, [100000, 200000])
+        30000.0
+    """
+    locked = 0.0
+    for milestone in milestones_reached:
+        # Lock percentage of the milestone value
+        locked += milestone * lock_pct
+    return locked
+
+
+def max_position_size(tradeable_eq: float, max_position_pct: float) -> float:
+    """Calculate maximum single position size.
+
+    Args:
+        tradeable_eq: Tradeable equity (excluding lockbox).
+        max_position_pct: Maximum position as decimal (0.50 = 50%).
+
+    Returns:
+        Maximum position value in dollars.
+
+    Example:
+        >>> max_position_size(100000, 0.50)
+        50000.0
+    """
+    return tradeable_eq * max_position_pct
+
+
+def shares_from_value(target_value: float, price: float) -> int:
+    """Calculate whole shares from target dollar value.
+
+    Args:
+        target_value: Target position value in dollars.
+        price: Current share price.
+
+    Returns:
+        Number of whole shares (rounded down).
+
+    Example:
+        >>> shares_from_value(10000, 45.50)
+        219
+    """
+    if price <= 0:
+        return 0
+    return int(target_value / price)
+
+
+def position_value(shares: int, price: float) -> float:
+    """Calculate position value from shares.
+
+    Args:
+        shares: Number of shares held.
+        price: Current share price.
+
+    Returns:
+        Position value in dollars.
+
+    Example:
+        >>> position_value(100, 45.50)
+        4550.0
+    """
+    return shares * price
+
+
+# =============================================================================
+# REGIME SCORE COMPONENTS
+# =============================================================================
+
+
+def trend_factor_score(
+    price: float,
+    sma20: float,
+    sma50: float,
+    sma200: float,
+    extended_threshold: float = 1.05,
+    oversold_threshold: float = 0.95,
+) -> float:
+    """Calculate trend factor score (0-100).
+
+    Args:
+        price: Current price.
+        sma20: 20-day SMA.
+        sma50: 50-day SMA.
+        sma200: 200-day SMA.
+        extended_threshold: Ratio above SMA200 considered extended.
+        oversold_threshold: Ratio below SMA200 considered oversold.
+
+    Returns:
+        Trend score clamped to 0-100.
+
+    Example:
+        >>> trend_factor_score(110, 108, 105, 100)  # Bullish alignment
+        95
+    """
+    score = 50.0  # Base score
+
+    # Price above moving averages
+    if price > sma20:
+        score += 10
+    if price > sma50:
+        score += 10
+    if price > sma200:
+        score += 15
+
+    # Moving average alignment
+    if ma_alignment_bullish(sma20, sma50, sma200):
+        score += 10
+    elif ma_alignment_bearish(sma20, sma50, sma200):
+        score -= 15
+
+    # Extended/Oversold adjustments
+    if is_extended(price, sma200, extended_threshold):
+        score -= 10  # Extended markets are risky
+    if is_oversold(price, sma200, oversold_threshold):
+        score += 5  # Potential bounce opportunity
+
+    return clamp(score, 0, 100)
+
+
+def volatility_factor_score(
+    vol_percentile: float,
+    current_vol: float,
+    low_vol_threshold: float = 0.12,
+    high_vol_threshold: float = 0.25,
+) -> float:
+    """Calculate volatility factor score (0-100).
+
+    Lower volatility = higher score (more favorable).
+
+    Args:
+        vol_percentile: Current vol percentile (0-1).
+        current_vol: Current realized volatility.
+        low_vol_threshold: Vol below this adds points.
+        high_vol_threshold: Vol above this subtracts points.
+
+    Returns:
+        Volatility score clamped to 0-100.
+
+    Example:
+        >>> volatility_factor_score(0.30, 0.15)  # Low percentile
+        65
+    """
+    score = 50.0  # Base score
+
+    # Percentile-based scoring
+    if vol_percentile < 0.20:
+        score += 25  # Very calm
+    elif vol_percentile < 0.40:
+        score += 15  # Calm
+    elif vol_percentile < 0.60:
+        score += 0  # Normal
+    elif vol_percentile < 0.80:
+        score -= 15  # Elevated
+    else:
+        score -= 25  # High fear
+
+    # Absolute level adjustments
+    if current_vol < low_vol_threshold:
+        score += 10
+    if current_vol > high_vol_threshold:
+        score -= 10
+
+    return clamp(score, 0, 100)
+
+
+def breadth_factor_score(spread: float) -> float:
+    """Calculate breadth factor score (0-100).
+
+    Positive spread (RSP > SPY) = broad participation = higher score.
+
+    Args:
+        spread: Breadth spread (RSP return - SPY return).
+
+    Returns:
+        Breadth score clamped to 0-100.
+
+    Example:
+        >>> breadth_factor_score(0.02)  # RSP outperforming by 2%
+        75
+    """
+    score = 50.0  # Base score
+
+    if spread > 0.02:
+        score += 25
+    elif spread > 0.01:
+        score += 15
+    elif spread > 0.00:
+        score += 5
+    elif spread > -0.01:
+        score += 0
+    elif spread > -0.02:
+        score -= 10
+    else:
+        score -= 20
+
+    return clamp(score, 0, 100)
+
+
+def credit_factor_score(spread: float) -> float:
+    """Calculate credit factor score (0-100).
+
+    Positive spread (HYG > IEF) = risk-on sentiment = higher score.
+
+    Args:
+        spread: Credit spread (HYG return - IEF return).
+
+    Returns:
+        Credit score clamped to 0-100.
+
+    Example:
+        >>> credit_factor_score(0.02)  # HYG outperforming by 2%
+        75
+    """
+    score = 50.0  # Base score
+
+    if spread > 0.02:
+        score += 25
+    elif spread > 0.01:
+        score += 15
+    elif spread > 0.00:
+        score += 5
+    elif spread > -0.01:
+        score -= 5
+    elif spread > -0.02:
+        score -= 15
+    else:
+        score -= 25
+
+    return clamp(score, 0, 100)
+
+
+def aggregate_regime_score(
+    trend_score: float,
+    vol_score: float,
+    breadth_score: float,
+    credit_score: float,
+    weight_trend: float = 0.35,
+    weight_vol: float = 0.25,
+    weight_breadth: float = 0.25,
+    weight_credit: float = 0.15,
+) -> float:
+    """Calculate weighted aggregate regime score.
+
+    Args:
+        trend_score: Trend factor score (0-100).
+        vol_score: Volatility factor score (0-100).
+        breadth_score: Breadth factor score (0-100).
+        credit_score: Credit factor score (0-100).
+        weight_trend: Weight for trend factor.
+        weight_vol: Weight for volatility factor.
+        weight_breadth: Weight for breadth factor.
+        weight_credit: Weight for credit factor.
+
+    Returns:
+        Aggregate score (0-100).
+
+    Example:
+        >>> aggregate_regime_score(70, 60, 55, 50)
+        60.75
+    """
+    raw = (
+        trend_score * weight_trend
+        + vol_score * weight_vol
+        + breadth_score * weight_breadth
+        + credit_score * weight_credit
+    )
+    return clamp(raw, 0, 100)
+
+
+def smooth_regime_score(raw_score: float, previous_smoothed: float, alpha: float = 0.30) -> float:
+    """Apply exponential smoothing to regime score.
+
+    Args:
+        raw_score: Current raw regime score.
+        previous_smoothed: Previous smoothed score.
+        alpha: Smoothing factor (0-1). Higher = more responsive.
+
+    Returns:
+        Smoothed regime score.
+
+    Example:
+        >>> smooth_regime_score(70, 60, 0.30)
+        63.0
+    """
+    return (alpha * raw_score) + ((1 - alpha) * previous_smoothed)
+
+
+# =============================================================================
+# HEDGE ALLOCATION
+# =============================================================================
+
+
+def calculate_hedge_allocation(
+    regime_score: float,
+    tradeable_eq: float,
+    level_1: float = 40,
+    level_2: float = 30,
+    level_3: float = 20,
+    tmf_light: float = 0.10,
+    tmf_medium: float = 0.15,
+    tmf_full: float = 0.20,
+    psq_medium: float = 0.05,
+    psq_full: float = 0.10,
+) -> Tuple[float, float]:
+    """Calculate hedge allocations based on regime score.
+
+    Args:
+        regime_score: Current smoothed regime score (0-100).
+        tradeable_eq: Tradeable equity for sizing.
+        level_1: Score threshold for light hedge.
+        level_2: Score threshold for medium hedge.
+        level_3: Score threshold for full hedge.
+        tmf_light: TMF allocation at level 1.
+        tmf_medium: TMF allocation at level 2.
+        tmf_full: TMF allocation at level 3.
+        psq_medium: PSQ allocation at level 2.
+        psq_full: PSQ allocation at level 3.
+
+    Returns:
+        Tuple of (TMF allocation $, PSQ allocation $).
+
+    Example:
+        >>> calculate_hedge_allocation(35, 100000)
+        (10000.0, 0.0)
+        >>> calculate_hedge_allocation(25, 100000)
+        (15000.0, 5000.0)
+    """
+    if regime_score >= level_1:
+        # Risk-on: no hedges
+        tmf_pct = 0.0
+        psq_pct = 0.0
+    elif regime_score >= level_2:
+        # Level 1: Light TMF only
+        tmf_pct = tmf_light
+        psq_pct = 0.0
+    elif regime_score >= level_3:
+        # Level 2: Medium TMF + PSQ
+        tmf_pct = tmf_medium
+        psq_pct = psq_medium
+    else:
+        # Level 3: Full hedge
+        tmf_pct = tmf_full
+        psq_pct = psq_full
+
+    return (tradeable_eq * tmf_pct, tradeable_eq * psq_pct)
+
+
+# =============================================================================
+# YIELD SLEEVE
+# =============================================================================
+
+
+def calculate_unallocated_cash(
+    total_equity: float,
+    non_shv_positions_value: float,
+    current_shv_value: float,
+) -> float:
+    """Calculate unallocated cash available for SHV.
+
+    Args:
+        total_equity: Total portfolio equity.
+        non_shv_positions_value: Sum of all non-SHV position values.
+        current_shv_value: Current SHV holdings value.
+
+    Returns:
+        Unallocated cash that could be deployed to SHV.
+
+    Example:
+        >>> calculate_unallocated_cash(100000, 60000, 30000)
+        10000
+    """
+    return total_equity - non_shv_positions_value - current_shv_value
+
+
+def should_adjust_shv(unallocated: float, min_trade: float = 2000) -> bool:
+    """Check if SHV adjustment is warranted.
+
+    Args:
+        unallocated: Unallocated cash amount.
+        min_trade: Minimum trade size (default $2000).
+
+    Returns:
+        True if adjustment exceeds minimum threshold.
+
+    Example:
+        >>> should_adjust_shv(2500)
+        True
+        >>> should_adjust_shv(1500)
+        False
+    """
+    return abs(unallocated) >= min_trade
