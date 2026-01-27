@@ -677,12 +677,9 @@ class OptionsEngine:
             return None
 
         # Check if it's force exit time (15:45 ET)
-        force_exit_time = (
-            current_hour > config.OPTIONS_FORCE_EXIT_HOUR
-            or (
-                current_hour == config.OPTIONS_FORCE_EXIT_HOUR
-                and current_minute >= config.OPTIONS_FORCE_EXIT_MINUTE
-            )
+        force_exit_time = current_hour > config.OPTIONS_FORCE_EXIT_HOUR or (
+            current_hour == config.OPTIONS_FORCE_EXIT_HOUR
+            and current_minute >= config.OPTIONS_FORCE_EXIT_MINUTE
         )
 
         if not force_exit_time:

@@ -35,6 +35,8 @@ def _is_valid_float(value: float) -> bool:
         return not (math.isnan(value) or math.isinf(value))
     except (TypeError, ValueError):
         return False
+
+
 from models.enums import Urgency
 from models.target_weight import TargetWeight
 from utils.calculations import (
