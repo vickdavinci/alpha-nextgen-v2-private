@@ -694,3 +694,223 @@ class TestOptionsPosition:
         assert restored.entry_price == position.entry_price
         assert restored.entry_score == position.entry_score
         assert restored.contract.symbol == position.contract.symbol
+
+
+# =============================================================================
+# GREEKS MONITORING TESTS (V2.1 RSK-2)
+# =============================================================================
+
+
+class TestGreeksMonitoring:
+    """Tests for Greeks monitoring integration with risk engine."""
+
+    def test_contract_greeks_fields(self, sample_contract):
+        """Test contract includes Greeks fields."""
+        # Update sample contract with Greeks
+        sample_contract.delta = 0.50
+        sample_contract.gamma = 0.03
+        sample_contract.vega = 0.15
+        sample_contract.theta = -0.02
+
+        assert sample_contract.delta == 0.50
+        assert sample_contract.gamma == 0.03
+        assert sample_contract.vega == 0.15
+        assert sample_contract.theta == -0.02
+
+    def test_contract_greeks_serialization(self):
+        """Test Greeks serialize/deserialize correctly."""
+        contract = OptionContract(
+            symbol="QQQ 260126C00450000",
+            delta=0.50,
+            gamma=0.03,
+            vega=0.15,
+            theta=-0.02,
+            strike=450.0,
+            expiry="2026-01-26",
+            mid_price=1.50,
+            open_interest=1000,
+        )
+
+        data = contract.to_dict()
+        assert data["gamma"] == 0.03
+        assert data["vega"] == 0.15
+        assert data["theta"] == -0.02
+
+        restored = OptionContract.from_dict(data)
+        assert restored.gamma == 0.03
+        assert restored.vega == 0.15
+        assert restored.theta == -0.02
+
+    def test_contract_greeks_backwards_compat(self):
+        """Test Greeks default to 0 for old serialized data."""
+        # Simulate old data without Greeks
+        old_data = {
+            "symbol": "QQQ 260126C00450000",
+            "underlying": "QQQ",
+            "direction": "CALL",
+            "strike": 450.0,
+            "expiry": "2026-01-26",
+            "delta": 0.50,
+            # No gamma, vega, theta
+            "bid": 1.45,
+            "ask": 1.55,
+            "mid_price": 1.50,
+            "open_interest": 1000,
+            "days_to_expiry": 1,
+        }
+
+        restored = OptionContract.from_dict(old_data)
+        assert restored.gamma == 0.0
+        assert restored.vega == 0.0
+        assert restored.theta == 0.0
+
+    def test_calculate_position_greeks_no_position(self, engine):
+        """Test Greeks calculation returns None with no position."""
+        result = engine.calculate_position_greeks()
+        assert result is None
+
+    def test_calculate_position_greeks_with_position(self):
+        """Test Greeks calculation returns per-contract values."""
+        from engines.satellite.options_engine import OptionsEngine, OptionContract
+
+        engine = OptionsEngine()
+        contract = OptionContract(
+            symbol="QQQ 260126C00450000",
+            delta=0.50,
+            gamma=0.03,
+            vega=0.15,
+            theta=-0.02,
+            strike=450.0,
+            expiry="2026-01-26",
+            mid_price=1.50,
+            open_interest=1000,
+        )
+
+        # Register entry
+        engine._pending_contract = contract
+        engine._pending_entry_score = 3.5
+        engine._pending_num_contracts = 10  # 10 contracts
+        engine._pending_stop_pct = 0.25
+        engine.register_entry(1.45, "10:30:00", "2026-01-26")
+
+        greeks = engine.calculate_position_greeks()
+        assert greeks is not None
+        # Per-contract Greeks (not scaled) for risk limit checking
+        assert greeks.delta == 0.50
+        assert greeks.gamma == 0.03
+        assert greeks.vega == 0.15
+        assert greeks.theta == -0.02
+
+    def test_update_position_greeks(self):
+        """Test updating position Greeks."""
+        from engines.satellite.options_engine import OptionsEngine, OptionContract
+
+        engine = OptionsEngine()
+        contract = OptionContract(
+            symbol="QQQ 260126C00450000",
+            delta=0.50,
+            gamma=0.03,
+            vega=0.15,
+            theta=-0.02,
+            strike=450.0,
+            expiry="2026-01-26",
+            mid_price=1.50,
+            open_interest=1000,
+        )
+
+        engine._pending_contract = contract
+        engine._pending_entry_score = 3.5
+        engine._pending_num_contracts = 10
+        engine._pending_stop_pct = 0.25
+        engine.register_entry(1.45, "10:30:00", "2026-01-26")
+
+        # Update Greeks
+        engine.update_position_greeks(
+            delta=0.55,
+            gamma=0.04,
+            vega=0.18,
+            theta=-0.03,
+        )
+
+        position = engine.get_position()
+        assert position.contract.delta == 0.55
+        assert position.contract.gamma == 0.04
+        assert position.contract.vega == 0.18
+        assert position.contract.theta == -0.03
+
+    def test_update_position_greeks_no_position(self, engine):
+        """Test update Greeks does nothing with no position."""
+        # Should not raise
+        engine.update_position_greeks(0.50, 0.03, 0.15, -0.02)
+        assert not engine.has_position()
+
+    def test_check_greeks_breach_no_position(self, engine):
+        """Test Greeks breach check with no position."""
+        from engines.core.risk_engine import RiskEngine
+
+        risk_engine = RiskEngine()
+        is_breach, symbols = engine.check_greeks_breach(risk_engine)
+
+        assert is_breach is False
+        assert len(symbols) == 0
+
+    def test_check_greeks_breach_within_limits(self):
+        """Test Greeks breach check when within limits."""
+        from engines.satellite.options_engine import OptionsEngine, OptionContract
+        from engines.core.risk_engine import RiskEngine
+
+        engine = OptionsEngine()
+        risk_engine = RiskEngine()
+
+        contract = OptionContract(
+            symbol="QQQ 260126C00450000",
+            delta=0.50,  # Within limits
+            gamma=0.02,  # Within limits
+            vega=0.10,  # Within limits
+            theta=-0.01,  # Within limits
+            strike=450.0,
+            expiry="2026-01-26",
+            mid_price=1.50,
+            open_interest=1000,
+        )
+
+        engine._pending_contract = contract
+        engine._pending_entry_score = 3.5
+        engine._pending_num_contracts = 5  # Small position
+        engine._pending_stop_pct = 0.25
+        engine.register_entry(1.45, "10:30:00", "2026-01-26")
+
+        is_breach, symbols = engine.check_greeks_breach(risk_engine)
+        assert is_breach is False
+
+    def test_check_greeks_breach_delta_exceeded(self):
+        """Test Greeks breach when delta exceeds limit."""
+        from engines.satellite.options_engine import OptionsEngine, OptionContract
+        from engines.core.risk_engine import RiskEngine
+
+        engine = OptionsEngine()
+        risk_engine = RiskEngine()
+
+        # Deep ITM contract with high delta (> 0.80 threshold)
+        contract = OptionContract(
+            symbol="QQQ 260126C00450000",
+            delta=0.85,  # Deep ITM, exceeds CB_DELTA_MAX=0.80
+            gamma=0.01,
+            vega=0.10,
+            theta=-0.01,
+            strike=450.0,
+            expiry="2026-01-26",
+            mid_price=1.50,
+            open_interest=1000,
+        )
+
+        engine._pending_contract = contract
+        engine._pending_entry_score = 3.5
+        engine._pending_num_contracts = 10
+        engine._pending_stop_pct = 0.25
+        engine.register_entry(1.45, "10:30:00", "2026-01-26")
+
+        # Per-contract delta 0.85 > threshold 0.80 triggers breach
+        is_breach, symbols = engine.check_greeks_breach(risk_engine)
+        assert is_breach is True
+        assert "ALL_OPTIONS" in symbols

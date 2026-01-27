@@ -25,12 +25,14 @@ Spec: docs/v2-specs/V2_1_COMPLETE_ARCHITECTURE.txt (Part 2, Engine 3)
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from AlgorithmImports import QCAlgorithm
+    from engines.core.risk_engine import RiskEngine
 
 import config
+from engines.core.risk_engine import GreeksSnapshot
 from models.enums import Urgency
 from models.target_weight import TargetWeight
 
@@ -92,6 +94,9 @@ class OptionContract:
     strike: float = 0.0
     expiry: str = ""  # Date string "YYYY-MM-DD"
     delta: float = 0.0
+    gamma: float = 0.0  # V2.1: Greeks monitoring
+    vega: float = 0.0  # V2.1: Greeks monitoring
+    theta: float = 0.0  # V2.1: Greeks monitoring (daily decay)
     bid: float = 0.0
     ask: float = 0.0
     mid_price: float = 0.0
@@ -114,6 +119,9 @@ class OptionContract:
             "strike": self.strike,
             "expiry": self.expiry,
             "delta": self.delta,
+            "gamma": self.gamma,
+            "vega": self.vega,
+            "theta": self.theta,
             "bid": self.bid,
             "ask": self.ask,
             "mid_price": self.mid_price,
@@ -131,6 +139,9 @@ class OptionContract:
             strike=data["strike"],
             expiry=data["expiry"],
             delta=data["delta"],
+            gamma=data.get("gamma", 0.0),  # V2.1: Default for backwards compat
+            vega=data.get("vega", 0.0),  # V2.1: Default for backwards compat
+            theta=data.get("theta", 0.0),  # V2.1: Default for backwards compat
             bid=data["bid"],
             ask=data["ask"],
             mid_price=data["mid_price"],
@@ -694,6 +705,103 @@ class OptionsEngine:
     def get_position(self) -> Optional[OptionsPosition]:
         """Get current position."""
         return self._position
+
+    # =========================================================================
+    # GREEKS MONITORING (V2.1 RSK-2)
+    # =========================================================================
+
+    def calculate_position_greeks(self) -> Optional[GreeksSnapshot]:
+        """
+        Calculate Greeks for current position.
+
+        Returns per-contract Greeks for risk limit checking.
+        Risk limits are per-contract (e.g., delta 0.80 = too deep ITM).
+
+        Returns:
+            GreeksSnapshot for risk engine, or None if no position.
+        """
+        if self._position is None:
+            return None
+
+        contract = self._position.contract
+
+        # Return per-contract Greeks for risk limit checking
+        # Thresholds (CB_DELTA_MAX=0.80, etc.) are per-contract values
+        return GreeksSnapshot(
+            delta=contract.delta,
+            gamma=contract.gamma,
+            vega=contract.vega,
+            theta=contract.theta,
+        )
+
+    def update_position_greeks(
+        self,
+        delta: float,
+        gamma: float,
+        vega: float,
+        theta: float,
+    ) -> None:
+        """
+        Update Greeks on current position's contract.
+
+        Called when new Greeks data is received from broker/data feed.
+
+        Args:
+            delta: Current delta (-1 to +1 for puts/calls).
+            gamma: Current gamma.
+            vega: Current vega.
+            theta: Current theta (daily decay, typically negative).
+        """
+        if self._position is None:
+            return
+
+        # Update the contract's Greeks
+        self._position.contract.delta = delta
+        self._position.contract.gamma = gamma
+        self._position.contract.vega = vega
+        self._position.contract.theta = theta
+
+        self.log(
+            f"OPT: Greeks updated | "
+            f"D={delta:.3f} G={gamma:.4f} V={vega:.3f} T={theta:.4f}"
+        )
+
+    def check_greeks_breach(
+        self,
+        risk_engine: "RiskEngine",
+    ) -> Tuple[bool, List[str]]:
+        """
+        Check if current position Greeks breach risk limits.
+
+        Updates risk engine with current Greeks and checks for breach.
+
+        Args:
+            risk_engine: Risk engine instance.
+
+        Returns:
+            Tuple of (is_breach, list of symbols to close).
+        """
+        greeks = self.calculate_position_greeks()
+
+        if greeks is None:
+            # No position, clear risk engine Greeks state
+            risk_engine.update_greeks(GreeksSnapshot())
+            return False, []
+
+        # Update risk engine with current Greeks
+        risk_engine.update_greeks(greeks)
+
+        # Check for breach
+        is_breach, options_to_close = risk_engine.check_cb_greeks_breach()
+
+        if is_breach:
+            self.log(
+                f"OPT: GREEKS_BREACH | "
+                f"D={greeks.delta:.2f} G={greeks.gamma:.4f} "
+                f"V={greeks.vega:.2f} T={greeks.theta:.4f}"
+            )
+
+        return is_breach, options_to_close
 
     # =========================================================================
     # STATE PERSISTENCE

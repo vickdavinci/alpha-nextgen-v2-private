@@ -47,7 +47,7 @@
 
 | Ticket | Component | Size | Spec |
 |--------|-----------|:----:|------|
-| RSK-2 | Greeks Monitoring | M | V2_1_COMPLETE_ARCHITECTURE.txt |
+| _V2.1 Phase Complete - See Ideas Backlog_ | | | |
 
 ### In Progress
 
@@ -77,6 +77,7 @@
 | Ticket | Component | Owner | Commit | Merged |
 |--------|-----------|-------|--------|--------|
 | OPT-1 | Options Engine Core | VA | develop | 2026-01-26 |
+| RSK-2 | Greeks Monitoring | VA | develop | 2026-01-26 |
 
 ### In Review
 
