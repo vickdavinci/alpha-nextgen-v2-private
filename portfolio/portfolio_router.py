@@ -135,14 +135,14 @@ class PortfolioRouter:
 
     # V2.1: Source-based allocation limits (Core-Satellite)
     SOURCE_ALLOCATION_LIMITS: Dict[str, float] = {
-        "TREND": 0.70,       # Core: 70% max
-        "OPT": 0.30,         # Satellite (Options): 30% max
-        "MR": 0.10,          # Satellite (MR): 10% max
-        "HEDGE": 0.30,       # Hedge: 30% max (TMF 20% + PSQ 10%)
-        "YIELD": 0.50,       # Yield (SHV): 50% max
+        "TREND": 0.70,  # Core: 70% max
+        "OPT": 0.30,  # Satellite (Options): 30% max
+        "MR": 0.10,  # Satellite (MR): 10% max
+        "HEDGE": 0.30,  # Hedge: 30% max (TMF 20% + PSQ 10%)
+        "YIELD": 0.50,  # Yield (SHV): 50% max
         "COLD_START": 0.35,  # Cold Start: 35% max (subset of TREND)
-        "RISK": 1.00,        # Risk: No limit (emergency liquidations)
-        "ROUTER": 1.00,      # Router: No limit (SHV liquidations)
+        "RISK": 1.00,  # Risk: No limit (emergency liquidations)
+        "ROUTER": 1.00,  # Router: No limit (SHV liquidations)
     }
 
     def __init__(self, algorithm: Optional["QCAlgorithm"] = None):
