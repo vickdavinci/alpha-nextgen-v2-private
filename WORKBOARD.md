@@ -55,7 +55,7 @@
 
 | Component | Owner | Branch | Started | Spec |
 |-----------|-------|--------|---------|------|
-| MRE-3 | VA | feature/MRE-3-vix-data-feed | 2026-01-26 | V2-1-Critical-Fixes-Guide.md |
+| _None_ | | | | |
 
 ### Done (V2 Phase 1)
 
@@ -64,6 +64,12 @@
 | TRE-1 | MA200 + ADX Signal | VA | develop | 2026-01-26 |
 | TRE-2 | Trailing Stop Enhancement | VA | develop | 2026-01-26 |
 | RSK-1 | 5-Level Circuit Breaker | VA | develop | 2026-01-26 |
+
+### Done (V2 Phase 2)
+
+| Ticket | Component | Owner | Commit | Merged |
+|--------|-----------|-------|--------|--------|
+| MRE-3 | VIX Data Feed | VA | develop | 2026-01-26 |
 
 ### In Review
 
