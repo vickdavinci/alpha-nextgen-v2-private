@@ -271,6 +271,70 @@ CB_VEGA_MAX = 0.50  # Max vega exposure
 CB_THETA_WARNING = -0.02  # Daily theta decay warning (-2%)
 
 # =============================================================================
+# OPTIONS ENGINE (V2.1)
+# =============================================================================
+# Harvests daily volatility on QQQ options with 4-factor entry scoring
+
+# Underlying Symbol
+OPTIONS_UNDERLYING = "QQQ"
+
+# Allocation
+OPTIONS_ALLOCATION_MIN = 0.20  # 20% minimum
+OPTIONS_ALLOCATION_MAX = 0.30  # 30% maximum
+
+# Entry Score Thresholds
+OPTIONS_ENTRY_SCORE_MIN = 3.0  # Minimum score for entry (0-4 scale)
+OPTIONS_ADX_THRESHOLD = 25  # ADX >= 25 for full score
+
+# Entry Score Component Weights (each 0-1, total 0-4)
+# ADX Factor
+OPTIONS_ADX_WEAK = 20  # ADX < 20 → 0.25
+OPTIONS_ADX_MODERATE = 25  # ADX 20-25 → 0.50
+OPTIONS_ADX_STRONG = 35  # ADX 25-35 → 0.75, >= 35 → 1.0
+
+# Momentum Factor (price relative to MA200)
+OPTIONS_MOMENTUM_MA_PERIOD = 200
+
+# IV Rank Factor
+OPTIONS_IV_RANK_LOW = 20  # IV rank < 20 → 0.25
+OPTIONS_IV_RANK_HIGH = 80  # IV rank > 80 → 0.25
+# IV rank 20-80 → full score
+
+# Liquidity Factor
+OPTIONS_SPREAD_MAX_PCT = 0.05  # Max 5% bid-ask spread
+OPTIONS_SPREAD_WARNING_PCT = 0.10  # Avoid > 10% spread
+OPTIONS_MIN_OPEN_INTEREST = 5000  # Minimum open interest
+
+# Confidence-Weighted Tiered Stops
+# Higher entry score → wider stops, fewer contracts
+OPTIONS_STOP_TIERS = {
+    3.00: {"stop_pct": 0.20, "contracts": 34},  # Score 3.0-3.25
+    3.25: {"stop_pct": 0.22, "contracts": 31},  # Score 3.25-3.5
+    3.50: {"stop_pct": 0.25, "contracts": 27},  # Score 3.5-3.75
+    3.75: {"stop_pct": 0.30, "contracts": 23},  # Score 3.75-4.0
+}
+
+# Profit Target
+OPTIONS_PROFIT_TARGET_PCT = 0.50  # +50% profit target
+
+# Contract Selection
+OPTIONS_DTE_MIN = 1  # Minimum days to expiration
+OPTIONS_DTE_MAX = 4  # Maximum days to expiration
+OPTIONS_DELTA_MIN = 0.40  # Minimum delta (ATM range)
+OPTIONS_DELTA_MAX = 0.60  # Maximum delta (ATM range)
+
+# Position Sizing
+OPTIONS_RISK_PER_TRADE = 0.01  # 1% portfolio risk per trade
+
+# Time Constraints
+OPTIONS_LATE_DAY_HOUR = 14  # 2 PM
+OPTIONS_LATE_DAY_MINUTE = 30  # 2:30 PM
+OPTIONS_LATE_DAY_MAX_STOP = 0.20  # Only 20% stops after 2:30 PM
+
+# Max Trades Per Day
+OPTIONS_MAX_TRADES_PER_DAY = 1
+
+# =============================================================================
 # EXECUTION ENGINE
 # =============================================================================
 
