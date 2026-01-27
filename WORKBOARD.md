@@ -216,6 +216,55 @@
 
 ---
 
+## Feature Branches (Not Merged)
+
+> **Purpose:** Track self-contained features developed on separate branches, intentionally kept out of `develop` to avoid complexity in the core trading logic.
+
+### `feat/backtest-reporting` — Backtest Analysis Module
+
+**Branch:** `feat/backtest-reporting` (pushed to origin)
+
+**Why Separate?** Reporting/monitoring adds complexity that's not needed for core trading logic. Keeping it isolated allows backtesting the trading system without the overhead, and merging later when ready for production monitoring.
+
+**Contents (7 files, 1,974 lines, 20 tests):**
+
+| File | Purpose |
+|------|---------|
+| `reporting/__init__.py` | Module exports |
+| `reporting/trade_record.py` | `TradeRecord`, `DailyEquity` dataclasses |
+| `reporting/performance_metrics.py` | `PerformanceMetrics` with 30+ fields |
+| `reporting/metrics_engine.py` | Core engine: Sharpe, Sortino, drawdown, win rate |
+| `reporting/chart_manager.py` | QC charting: equity curve, drawdown, regime |
+| `reporting/csv_exporter.py` | Trade history export to CSV |
+| `tests/test_metrics_engine.py` | 20 unit tests for all components |
+
+**Capabilities:**
+- Sharpe/Sortino ratio calculation (annualized)
+- Continuous drawdown tracking (max, current, average)
+- Win rate, profit factor, expectancy
+- Trade entry/exit recording with P&L
+- Daily equity snapshots
+- CSV export for external analysis (Excel, etc.)
+- State persistence via ObjectStore
+- QC RuntimeStatistics panel integration
+
+**To Use:**
+```bash
+git checkout feat/backtest-reporting   # Get the module
+git checkout develop                    # Return to clean trading logic
+```
+
+**To Merge (when ready):**
+```bash
+git checkout develop
+git merge feat/backtest-reporting
+# Then integrate into main.py per plan in .claude/plans/
+```
+
+**Created:** 2026-01-27 | **Tests:** 20 passed | **Status:** Complete, awaiting integration decision
+
+---
+
 ## Ideas Backlog
 
 > **Purpose:** Capture ideas, enhancements, and "nice-to-haves" that are out of scope for current phases but worth remembering.
@@ -471,4 +520,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 27 January 2026 (v2.1.2 - Options Wiring Audit Complete! DTE fix, intraday scanning, Greeks monitoring - 965 tests passing)*
+*Last Updated: 27 January 2026 (v2.1.3 - Backtest Reporting module on feat/backtest-reporting branch - 1010 tests passing)*
