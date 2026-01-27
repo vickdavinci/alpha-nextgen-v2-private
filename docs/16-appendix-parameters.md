@@ -327,8 +327,8 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `OPTIONS_DTE_MIN` | 0 | Minimum days to expiry |
-| `OPTIONS_DTE_MAX` | 1 | Maximum days to expiry |
+| `OPTIONS_DTE_MIN` | 1 | Minimum days to expiry |
+| `OPTIONS_DTE_MAX` | 4 | Maximum days to expiry |
 | `OPTIONS_DELTA_TARGET` | 0.45-0.55 | Near ATM |
 | `OPTIONS_MIN_PREMIUM` | 0.50 | Minimum premium per contract |
 
@@ -693,8 +693,8 @@ OPTIONS_MAX_GAMMA = 0.10
 OPTIONS_MIN_THETA = -0.15
 
 # Contract Selection
-OPTIONS_DTE_MIN = 0
-OPTIONS_DTE_MAX = 1
+OPTIONS_DTE_MIN = 1
+OPTIONS_DTE_MAX = 4
 OPTIONS_DELTA_TARGET_MIN = 0.45
 OPTIONS_DELTA_TARGET_MAX = 0.55
 OPTIONS_MIN_PREMIUM = 0.50
