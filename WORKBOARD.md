@@ -33,7 +33,7 @@
 > - `engines/satellite/` - Conditional engines (0-30%)
 > - `docs/v2-specs/` - V2.1 specifications
 >
-> **Tests:** 786 passed, 27 skipped
+> **Tests:** 842 passed, 27 skipped
 
 ---
 
@@ -47,7 +47,10 @@
 
 | Ticket | Component | Size | Spec |
 |--------|-----------|:----:|------|
-| _V2.1 MR Engine Complete - See Phase 3 below_ | | | |
+| OPT-2 | Entry Score Model Refinement | S | V2_1_COMPLETE_ARCHITECTURE.txt |
+| OPT-3 | OCO Order Management | M | V2-1-FINAL-SYNTHESIS.md |
+| OPT-4 | Options Engine Tests | M | V2_1_COMPLETE_ARCHITECTURE.txt |
+| RSK-2 | Greeks Monitoring | M | V2_1_COMPLETE_ARCHITECTURE.txt |
 
 ### In Progress
 
@@ -71,6 +74,12 @@
 | MRE-1 | VIX Regime Integration | VA | develop | 2026-01-26 |
 | MRE-2 | Regime-Adjusted Parameters | VA | develop | 2026-01-26 |
 | MRE-4 | Mean Reversion V2 Tests | VA | develop | 2026-01-26 |
+
+### Done (V2 Phase 3 - Options Engine)
+
+| Ticket | Component | Owner | Commit | Merged |
+|--------|-----------|-------|--------|--------|
+| OPT-1 | Options Engine Core | VA | develop | 2026-01-26 |
 
 ### In Review
 
