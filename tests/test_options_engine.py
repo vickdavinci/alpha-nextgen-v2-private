@@ -535,6 +535,113 @@ class TestEntrySignals:
         )
         assert result is None
 
+    def test_entry_blocked_regime_below_40(self, engine, sample_contract):
+        """Test entry blocked when regime score < 40 (V2.1 spec GAP #1)."""
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=105.0,
+            ma200_value=100.0,
+            iv_rank=50.0,
+            best_contract=sample_contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+            regime_score=35.0,  # Below 40 threshold
+        )
+        assert result is None
+
+    def test_entry_allowed_regime_at_40(self, engine, sample_contract):
+        """Test entry allowed when regime score = 40 (boundary)."""
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=105.0,
+            ma200_value=100.0,
+            iv_rank=50.0,
+            best_contract=sample_contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+            regime_score=40.0,  # At threshold
+        )
+        assert result is not None
+
+    def test_entry_allowed_regime_above_40(self, engine, sample_contract):
+        """Test entry allowed when regime score > 40."""
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=105.0,
+            ma200_value=100.0,
+            iv_rank=50.0,
+            best_contract=sample_contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+            regime_score=65.0,  # Above threshold
+        )
+        assert result is not None
+
+    def test_entry_blocked_premium_below_minimum(self, engine):
+        """Test entry blocked when premium < $0.50 (V2.1 spec GAP #3)."""
+        # Create contract with low premium
+        low_premium_contract = OptionContract(
+            symbol="QQQ 260126C00480000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=480.0,  # Far OTM
+            expiry="2026-01-28",
+            delta=0.45,
+            bid=0.20,
+            ask=0.30,
+            mid_price=0.25,  # Below $0.50 minimum
+            open_interest=10000,
+            days_to_expiry=3,
+        )
+
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=456.0,
+            ma200_value=430.0,
+            iv_rank=50.0,
+            best_contract=low_premium_contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+        )
+        assert result is None
+
+    def test_entry_allowed_premium_at_minimum(self, engine):
+        """Test entry allowed when premium = $0.50 (boundary)."""
+        contract = OptionContract(
+            symbol="QQQ 260126C00460000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=460.0,
+            expiry="2026-01-28",
+            delta=0.50,
+            bid=0.45,
+            ask=0.55,
+            mid_price=0.50,  # Exactly at minimum
+            open_interest=10000,
+            days_to_expiry=3,
+        )
+
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=456.0,
+            ma200_value=430.0,
+            iv_rank=50.0,
+            best_contract=contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+        )
+        assert result is not None
+
 
 # =============================================================================
 # EXIT SIGNAL TESTS
@@ -569,6 +676,76 @@ class TestExitSignals:
         """Test no exit when no position."""
         result = engine.check_exit_signals(current_price=2.00)
         assert result is None
+
+
+# =============================================================================
+# FORCE EXIT TESTS (V2.1 spec GAP #2)
+# =============================================================================
+
+
+class TestForceExit:
+    """Tests for force exit at 3:45 PM."""
+
+    def test_force_exit_at_1545(self, engine_with_position):
+        """Test force exit triggered at 15:45 ET (V2.1 spec GAP #2)."""
+        result = engine_with_position.check_force_exit(
+            current_hour=15,
+            current_minute=45,
+            current_price=1.60,
+        )
+        assert result is not None
+        assert result.target_weight == 0.0
+        assert result.urgency == Urgency.IMMEDIATE
+        assert "TIME_EXIT_1545" in result.reason
+
+    def test_force_exit_after_1545(self, engine_with_position):
+        """Test force exit triggered after 15:45 ET."""
+        result = engine_with_position.check_force_exit(
+            current_hour=15,
+            current_minute=50,
+            current_price=1.60,
+        )
+        assert result is not None
+        assert "TIME_EXIT_1545" in result.reason
+
+    def test_no_force_exit_before_1545(self, engine_with_position):
+        """Test no force exit before 15:45 ET."""
+        result = engine_with_position.check_force_exit(
+            current_hour=15,
+            current_minute=44,
+            current_price=1.60,
+        )
+        assert result is None
+
+    def test_no_force_exit_morning(self, engine_with_position):
+        """Test no force exit in the morning."""
+        result = engine_with_position.check_force_exit(
+            current_hour=10,
+            current_minute=30,
+            current_price=1.60,
+        )
+        assert result is None
+
+    def test_no_force_exit_no_position(self, engine):
+        """Test no force exit when no position exists."""
+        result = engine.check_force_exit(
+            current_hour=15,
+            current_minute=45,
+            current_price=1.60,
+        )
+        assert result is None
+
+    def test_force_exit_includes_pnl(self, engine_with_position):
+        """Test force exit reason includes PnL percentage."""
+        # Entry was at $1.45, current at $1.75 = +20.7%
+        result = engine_with_position.check_force_exit(
+            current_hour=15,
+            current_minute=45,
+            current_price=1.75,
+        )
+        assert result is not None
+        assert "+" in result.reason  # Positive PnL indicator
+        assert "20" in result.reason or "21" in result.reason  # Approximate % gain
 
 
 # =============================================================================
