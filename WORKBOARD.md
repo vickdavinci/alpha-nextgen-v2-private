@@ -1,4 +1,4 @@
-# WORKBOARD.md - Alpha NextGen Task & Ownership Board
+# WORKBOARD.md - Alpha NextGen V2 Task & Ownership Board
 
 > **Single source of truth for:** Who owns what, what's in progress, what's next.
 >
@@ -18,28 +18,39 @@
 
 ---
 
-## Current Sprint: Phase 6 - Integration (Complete!)
+## V2 Fork Status
 
-> **Phase 6 Complete!** (2026-01-25) - main.py Implemented
+> **V2 Forked from V1 v1.0.0** (2026-01-26)
 >
-> **QCAlgorithm Entry Point Implemented:**
-> - `main.py` - 1,332 lines, 35 methods, wires all components together
-> - `docs/MAIN_PY_IMPLEMENTATION.md` - Implementation summary and issues resolved
+> **Completed:**
+> - PHASE 0: V1 Structural Audit ✅
+> - PHASE 1: Repository Hard Fork ✅
+> - PHASE 2: Core-Satellite Refactoring ✅
+> - PHASE 3: Master Plan (`V2_IMPLEMENTATION_ROADMAP.md`) ✅
 >
-> **Key Components in main.py:**
-> - Initialize(): Setup securities, indicators, engines, infrastructure, schedules
-> - OnData(): Minute-by-minute processing with split/risk checks first
-> - OnOrderEvent(): Fill, reject, cancel handling
-> - 10 scheduled event handlers (09:25 through Monday 09:30)
-> - State management (load, save, reconcile positions)
-> - Signal processing (immediate and EOD)
+> **Architecture:**
+> - `engines/core/` - Foundational engines (70%)
+> - `engines/satellite/` - Conditional engines (0-30%)
+> - `docs/v2-specs/` - V2.1 specifications
 >
-> **Tests:** 710 passed, 25 skipped (scenario tests for integration)
+> **Tests:** 694 passed, 27 skipped
+
+---
+
+## Current Sprint: V2 Phase 1 - Foundation
+
+> **Goal:** Enhanced Trend Engine + 5-Level Circuit Breakers
 >
-> **Next Steps:**
-> - Enable scenario tests for full integration testing
-> - Run backtests on QuantConnect (2020-2024)
-> - Paper trading deployment
+> See `V2_IMPLEMENTATION_ROADMAP.md` for full roadmap.
+
+### Ready to Start
+
+| Ticket | Component | Size | Spec |
+|--------|-----------|:----:|------|
+| TRE-1 | MA200 + ADX Signal | L | V2_1_COMPLETE_ARCHITECTURE.txt |
+| TRE-2 | Trailing Stop Enhancement | M | V2_1_COMPLETE_ARCHITECTURE.txt |
+| RSK-1 | 5-Level Circuit Breaker | L | V2_1_COMPLETE_ARCHITECTURE.txt |
+| MRE-3 | VIX Data Feed | S | V2-1-Critical-Fixes-Guide.md |
 
 ### In Progress
 
