@@ -76,22 +76,37 @@ WARM_MIN_SIZE = 2_000
 # TREND ENGINE
 # =============================================================================
 
-# Bollinger Bands
+# V2 Entry: MA200 + ADX Confirmation
+MA200_PERIOD = 200  # Long-term trend baseline
+ADX_PERIOD = 14  # Average Directional Index for momentum confirmation
+ADX_ENTRY_THRESHOLD = 25  # Minimum ADX for entry (score_adx >= 0.50)
+ADX_STRONG_THRESHOLD = 35  # ADX for highest confidence
+
+# ADX Scoring Thresholds (V2.1 spec)
+# ADX < 20: 0.25 (weak)
+# ADX 20-25: 0.50 (moderate)
+# ADX 25-35: 0.75 (strong)
+# ADX >= 35: 1.00 (very strong)
+ADX_WEAK_THRESHOLD = 20
+ADX_MODERATE_THRESHOLD = 25
+
+# V1 Legacy: Bollinger Bands (kept for backwards compatibility)
 BB_PERIOD = 20
 BB_STD_DEV = 2.0
-COMPRESSION_THRESHOLD = 0.10  # Original value - selects for best breakout setups
+COMPRESSION_THRESHOLD = 0.10
 
 # Chandelier Stop
 ATR_PERIOD = 14
 CHANDELIER_BASE_MULT = 3.0
-CHANDELIER_TIGHT_MULT = 2.0
-CHANDELIER_TIGHTER_MULT = 1.5
-PROFIT_TIGHT_PCT = 0.15
-PROFIT_TIGHTER_PCT = 0.25
+CHANDELIER_TIGHT_MULT = 2.5  # Updated per V2.1: 2.5x for profit 10-20%
+CHANDELIER_TIGHTER_MULT = 2.0  # Updated per V2.1: 2.0x for profit 20%+
+PROFIT_TIGHT_PCT = 0.10  # Updated per V2.1: tighten at 10%
+PROFIT_TIGHTER_PCT = 0.20  # Updated per V2.1: tighten more at 20%
 
 # Entry/Exit
 TREND_ENTRY_REGIME_MIN = 40
 TREND_EXIT_REGIME = 30
+TREND_ADX_EXIT_THRESHOLD = 20  # Exit if ADX drops below this
 
 # =============================================================================
 # MEAN REVERSION ENGINE
