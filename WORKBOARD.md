@@ -33,7 +33,7 @@
 > - `engines/satellite/` - Conditional engines (0-30%)
 > - `docs/v2-specs/` - V2.1 specifications
 >
-> **Tests:** 694 passed, 27 skipped
+> **Tests:** 786 passed, 27 skipped
 
 ---
 
@@ -47,8 +47,6 @@
 
 | Ticket | Component | Size | Spec |
 |--------|-----------|:----:|------|
-| MRE-1 | VIX Regime Classification | M | V2-1-Critical-Fixes-Guide.md |
-| MRE-2 | Regime-Adjusted Parameters | M | V2-1-Critical-Fixes-Guide.md |
 | MRE-4 | Mean Reversion V2 Tests | M | V2_1_COMPLETE_ARCHITECTURE.txt |
 
 ### In Progress
@@ -70,6 +68,8 @@
 | Ticket | Component | Owner | Commit | Merged |
 |--------|-----------|-------|--------|--------|
 | MRE-3 | VIX Data Feed | VA | develop | 2026-01-26 |
+| MRE-1 | VIX Regime Integration | VA | develop | 2026-01-26 |
+| MRE-2 | Regime-Adjusted Parameters | VA | develop | 2026-01-26 |
 
 ### In Review
 
