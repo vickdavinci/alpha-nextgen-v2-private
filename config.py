@@ -129,6 +129,40 @@ MR_STOP_PCT = 0.02
 MR_FORCE_EXIT_TIME = "15:45"
 
 # =============================================================================
+# VIX REGIME CLASSIFICATION (V2.1)
+# =============================================================================
+# VIX-based filter to prevent catching falling knives in crashes
+
+# VIX Thresholds
+VIX_NORMAL_MAX = 20  # VIX < 20: Normal market
+VIX_CAUTION_MAX = 30  # VIX 20-30: Elevated caution
+VIX_HIGH_RISK_MAX = 40  # VIX 30-40: High risk
+# VIX > 40: Crash mode - MR disabled
+
+# MR Allocation by VIX Regime
+MR_ALLOC_NORMAL = 0.10  # 10% allocation in normal VIX
+MR_ALLOC_CAUTION = 0.05  # 5% allocation in caution
+MR_ALLOC_HIGH_RISK = 0.02  # 2% allocation in high risk
+MR_ALLOC_CRASH = 0.00  # 0% allocation in crash (disabled)
+
+# MR Parameters by VIX Regime (V2.1 spec adjustments)
+# RSI Thresholds (lower = more conservative in high VIX)
+MR_RSI_NORMAL = 30  # RSI < 30 in normal
+MR_RSI_CAUTION = 25  # RSI < 25 in caution
+MR_RSI_HIGH_RISK = 20  # RSI < 20 in high risk
+
+# Stop Loss by Regime (tighter stops in high VIX)
+MR_STOP_NORMAL = 0.08  # 8% stop in normal
+MR_STOP_CAUTION = 0.06  # 6% stop in caution
+MR_STOP_HIGH_RISK = 0.04  # 4% stop in high risk
+
+# Max MR Exposure by Regime
+MR_MAX_EXPOSURE_NORMAL = 0.15  # 15% max in normal
+MR_MAX_EXPOSURE_CAUTION = 0.10  # 10% max in caution
+MR_MAX_EXPOSURE_HIGH_RISK = 0.05  # 5% max in high risk
+MR_MAX_EXPOSURE_CRASH = 0.00  # 0% in crash
+
+# =============================================================================
 # HEDGE ENGINE
 # =============================================================================
 

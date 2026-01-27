@@ -47,14 +47,15 @@
 
 | Ticket | Component | Size | Spec |
 |--------|-----------|:----:|------|
-| MRE-3 | VIX Data Feed | S | V2-1-Critical-Fixes-Guide.md |
-| RSK-3 | Risk Engine V2 Tests | M | V2_1_COMPLETE_ARCHITECTURE.txt |
+| MRE-1 | VIX Regime Classification | M | V2-1-Critical-Fixes-Guide.md |
+| MRE-2 | Regime-Adjusted Parameters | M | V2-1-Critical-Fixes-Guide.md |
+| MRE-4 | Mean Reversion V2 Tests | M | V2_1_COMPLETE_ARCHITECTURE.txt |
 
 ### In Progress
 
 | Component | Owner | Branch | Started | Spec |
 |-----------|-------|--------|---------|------|
-| _None_ | | | | |
+| MRE-3 | VA | feature/MRE-3-vix-data-feed | 2026-01-26 | V2-1-Critical-Fixes-Guide.md |
 
 ### Done (V2 Phase 1)
 
