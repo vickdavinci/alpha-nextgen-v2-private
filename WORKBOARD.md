@@ -47,7 +47,7 @@
 
 | Ticket | Component | Size | Spec |
 |--------|-----------|:----:|------|
-| MRE-4 | Mean Reversion V2 Tests | M | V2_1_COMPLETE_ARCHITECTURE.txt |
+| _V2.1 MR Engine Complete - See Phase 3 below_ | | | |
 
 ### In Progress
 
@@ -70,6 +70,7 @@
 | MRE-3 | VIX Data Feed | VA | develop | 2026-01-26 |
 | MRE-1 | VIX Regime Integration | VA | develop | 2026-01-26 |
 | MRE-2 | Regime-Adjusted Parameters | VA | develop | 2026-01-26 |
+| MRE-4 | Mean Reversion V2 Tests | VA | develop | 2026-01-26 |
 
 ### In Review
 
