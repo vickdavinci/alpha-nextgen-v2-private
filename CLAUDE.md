@@ -11,7 +11,7 @@
 
 ```bash
 # 1. Activate environment and verify Python version
-cd /Users/vigneshwaranarumugam/Documents/Trading\ Github/alpha-nextgen && source venv/bin/activate && python --version
+cd /Users/vigneshwaranarumugam/Documents/Trading\ Github/alpha-nextgen-v2-private && source venv/bin/activate && python --version
 # Expected: Python 3.11.x (NOT 3.14)
 
 # 2. Check current task state
@@ -30,7 +30,13 @@ git status && git branch
 
 ## Project Overview
 
-**Alpha NextGen** is a multi-strategy algorithmic trading system built on QuantConnect (LEAN engine) for deployment on Interactive Brokers. The system trades leveraged ETFs using trend-following, mean reversion, and hedging strategies.
+**Alpha NextGen V2** is a multi-strategy algorithmic trading system built on QuantConnect (LEAN engine) for deployment on Interactive Brokers. The system implements a **Core-Satellite** architecture with three engines:
+
+- **Core (70%)**: Trend Engine - MA200 + ADX confirmation
+- **Satellite (0-10%)**: Mean Reversion Engine - RSI oversold bounce with VIX filter
+- **Satellite (planned)**: Options Engine - 4-factor entry scoring (20-30%)
+
+Forked from V1 v1.0.0 on 2026-01-26. See `docs/v2-specs/` for V2.1 specifications.
 
 ## Repository Structure
 
@@ -69,7 +75,17 @@ alpha-nextgen/
 ├── archive/
 │   └── main_old.py.bak         # Archived original implementation
 │
-├── engines/                    # Strategy and core engines
+├── engines/                    # V2 Core-Satellite architecture
+│   ├── core/                   # Foundational engines (always active)
+│   │   ├── regime_engine.py    # Market state detection
+│   │   ├── capital_engine.py   # Position sizing
+│   │   ├── risk_engine.py      # Circuit breakers
+│   │   ├── cold_start_engine.py # Startup handling
+│   │   └── trend_engine.py     # Primary alpha (70%)
+│   └── satellite/              # Conditional engines
+│       ├── mean_reversion_engine.py # Intraday bounce (0-10%)
+│       ├── hedge_engine.py     # TMF/PSQ overlay
+│       └── yield_sleeve.py     # SHV cash management
 ├── portfolio/                  # Router, exposure groups, positions
 ├── execution/                  # Order management
 ├── data/                       # Symbols, indicators, validation
@@ -90,23 +106,23 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 
 **This is the single index for the entire system.** When debugging or modifying any component, read the corresponding spec file first.
 
-### Strategy Engines
+### Core Engines (engines/core/)
 
 | Component | File | Spec Document | Description |
 |-----------|------|---------------|-------------|
-| **Trend Engine** | `engines/trend_engine.py` | `docs/07-trend-engine.md` | BB compression breakout signals for QLD/SSO |
-| **Mean Reversion Engine** | `engines/mean_reversion_engine.py` | `docs/08-mean-reversion-engine.md` | Intraday oversold bounce signals for TQQQ/SOXL |
-| **Hedge Engine** | `engines/hedge_engine.py` | `docs/09-hedge-engine.md` | Regime-based TMF/PSQ allocation signals |
-| **Yield Sleeve** | `engines/yield_sleeve.py` | `docs/10-yield-sleeve.md` | SHV cash management signals |
+| **Regime Engine** | `engines/core/regime_engine.py` | `docs/04-regime-engine.md` | 4-factor market state scoring (0-100) |
+| **Capital Engine** | `engines/core/capital_engine.py` | `docs/05-capital-engine.md` | Phase management, lockbox, tradeable equity |
+| **Risk Engine** | `engines/core/risk_engine.py` | `docs/12-risk-engine.md` | All circuit breakers and safeguards |
+| **Cold Start Engine** | `engines/core/cold_start_engine.py` | `docs/06-cold-start-engine.md` | Days 1-5 warm entry logic |
+| **Trend Engine** | `engines/core/trend_engine.py` | `docs/07-trend-engine.md` | BB compression breakout signals for QLD/SSO (70%) |
 
-### Core Engines
+### Satellite Engines (engines/satellite/)
 
 | Component | File | Spec Document | Description |
 |-----------|------|---------------|-------------|
-| **Regime Engine** | `engines/regime_engine.py` | `docs/04-regime-engine.md` | 4-factor market state scoring (0-100) |
-| **Capital Engine** | `engines/capital_engine.py` | `docs/05-capital-engine.md` | Phase management, lockbox, tradeable equity |
-| **Risk Engine** | `engines/risk_engine.py` | `docs/12-risk-engine.md` | All circuit breakers and safeguards |
-| **Cold Start Engine** | `engines/cold_start_engine.py` | `docs/06-cold-start-engine.md` | Days 1-5 warm entry logic |
+| **Mean Reversion Engine** | `engines/satellite/mean_reversion_engine.py` | `docs/08-mean-reversion-engine.md` | Intraday oversold bounce signals for TQQQ/SOXL (0-10%) |
+| **Hedge Engine** | `engines/satellite/hedge_engine.py` | `docs/09-hedge-engine.md` | Regime-based TMF/PSQ allocation signals |
+| **Yield Sleeve** | `engines/satellite/yield_sleeve.py` | `docs/10-yield-sleeve.md` | SHV cash management signals |
 
 ### Infrastructure
 

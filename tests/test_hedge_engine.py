@@ -15,7 +15,7 @@ Spec: docs/09-hedge-engine.md
 import pytest
 
 import config
-from engines.hedge_engine import HedgeAllocation, HedgeEngine
+from engines.satellite.hedge_engine import HedgeAllocation, HedgeEngine
 from models.enums import Urgency
 from models.target_weight import TargetWeight
 

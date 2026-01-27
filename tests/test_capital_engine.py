@@ -14,7 +14,7 @@ Spec: docs/05-capital-engine.md
 import pytest
 
 import config
-from engines.capital_engine import CapitalEngine, CapitalState
+from engines.core.capital_engine import CapitalEngine, CapitalState
 from models.enums import Phase
 
 

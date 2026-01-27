@@ -4,15 +4,17 @@ from AlgorithmImports import *
 # Configuration
 import config
 
-# Engines
-from engines.regime_engine import RegimeEngine, RegimeState
-from engines.capital_engine import CapitalEngine, CapitalState
-from engines.risk_engine import RiskEngine, RiskCheckResult, SafeguardType
-from engines.cold_start_engine import ColdStartEngine
-from engines.trend_engine import TrendEngine
-from engines.mean_reversion_engine import MeanReversionEngine
-from engines.hedge_engine import HedgeEngine
-from engines.yield_sleeve import YieldSleeve
+# Core Engines
+from engines.core.regime_engine import RegimeEngine, RegimeState
+from engines.core.capital_engine import CapitalEngine, CapitalState
+from engines.core.risk_engine import RiskEngine, RiskCheckResult, SafeguardType
+from engines.core.cold_start_engine import ColdStartEngine
+from engines.core.trend_engine import TrendEngine
+
+# Satellite Engines
+from engines.satellite.mean_reversion_engine import MeanReversionEngine
+from engines.satellite.hedge_engine import HedgeEngine
+from engines.satellite.yield_sleeve import YieldSleeve
 
 # Portfolio & Execution
 from portfolio.portfolio_router import PortfolioRouter

@@ -12,7 +12,7 @@ Spec: docs/04-regime-engine.md
 
 import pytest
 
-from engines.regime_engine import RegimeEngine, RegimeState
+from engines.core.regime_engine import RegimeEngine, RegimeState
 from models.enums import RegimeLevel
 
 

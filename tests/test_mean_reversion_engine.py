@@ -15,7 +15,7 @@ Spec: docs/08-mean-reversion-engine.md
 import pytest
 
 import config
-from engines.mean_reversion_engine import MeanReversionEngine, MRPosition
+from engines.satellite.mean_reversion_engine import MeanReversionEngine, MRPosition
 from models.enums import Urgency
 from models.target_weight import TargetWeight
 

@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from engines.risk_engine import (
+from engines.core.risk_engine import (
     ALL_TRADED_SYMBOLS,
     HEDGE_SYMBOLS,
     LEVERAGED_LONG_SYMBOLS,

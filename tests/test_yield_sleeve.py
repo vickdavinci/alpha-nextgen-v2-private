@@ -14,7 +14,7 @@ Spec: docs/10-yield-sleeve.md
 import pytest
 
 import config
-from engines.yield_sleeve import YieldSleeve, YieldState
+from engines.satellite.yield_sleeve import YieldSleeve, YieldState
 from models.enums import Urgency
 from models.target_weight import TargetWeight
 

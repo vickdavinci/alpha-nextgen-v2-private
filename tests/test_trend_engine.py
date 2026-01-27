@@ -16,7 +16,7 @@ Spec: docs/07-trend-engine.md
 import pytest
 
 import config
-from engines.trend_engine import TrendEngine, TrendPosition
+from engines.core.trend_engine import TrendEngine, TrendPosition
 from models.enums import Urgency
 from models.target_weight import TargetWeight
 

@@ -15,7 +15,7 @@ Spec: docs/06-cold-start-engine.md
 import pytest
 
 import config
-from engines.cold_start_engine import ColdStartEngine, ColdStartState
+from engines.core.cold_start_engine import ColdStartEngine, ColdStartState
 from models.enums import Urgency
 
 
