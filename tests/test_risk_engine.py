@@ -1,7 +1,7 @@
 """
 Unit tests for Risk Engine.
 
-Tests all circuit breakers and safeguards:
+V1 Safeguards:
 - Kill switch (-3% daily loss)
 - Panic mode (SPY -4% intraday)
 - Weekly breaker (-5% WTD)
@@ -10,7 +10,14 @@ Tests all circuit breakers and safeguards:
 - Time guard (13:55-14:10)
 - Split guard
 
-Spec: docs/12-risk-engine.md
+V2.1 Circuit Breaker System (5 Levels):
+- Level 1: Daily loss -2% → reduce sizing 50%
+- Level 2: Weekly loss -5% → reduce sizing 50%
+- Level 3: Portfolio vol > 1.5% → block new entries
+- Level 4: Correlation > 0.60 → reduce exposure
+- Level 5: Greeks breach → close options positions
+
+Spec: docs/12-risk-engine.md, V2_1_COMPLETE_ARCHITECTURE.txt
 """
 
 from datetime import datetime, timedelta
@@ -22,6 +29,7 @@ from engines.core.risk_engine import (
     HEDGE_SYMBOLS,
     LEVERAGED_LONG_SYMBOLS,
     YIELD_SYMBOLS,
+    GreeksSnapshot,
     RiskCheckResult,
     RiskEngine,
     SafeguardStatus,
@@ -764,3 +772,346 @@ class TestEdgeCases:
         assert SafeguardType.VOL_SHOCK.value == "VOL_SHOCK"
         assert SafeguardType.TIME_GUARD.value == "TIME_GUARD"
         assert SafeguardType.SPLIT_GUARD.value == "SPLIT_GUARD"
+        # V2.1 Circuit Breaker types
+        assert SafeguardType.CB_DAILY_LOSS.value == "CB_DAILY_LOSS"
+        assert SafeguardType.CB_PORTFOLIO_VOL.value == "CB_PORTFOLIO_VOL"
+        assert SafeguardType.CB_CORRELATION.value == "CB_CORRELATION"
+        assert SafeguardType.CB_GREEKS_BREACH.value == "CB_GREEKS_BREACH"
+
+
+# =============================================================================
+# V2.1 Circuit Breaker Tests
+# =============================================================================
+
+
+class TestCBLevel1DailyLoss:
+    """Tests for V2.1 Circuit Breaker Level 1: Daily Loss (-2%)."""
+
+    def test_cb_daily_loss_triggers_at_2_percent(self, risk_engine):
+        """Test Level 1 CB triggers at -2% daily loss."""
+        risk_engine.set_equity_prior_close(100_000.0)
+
+        # 1.9% loss - should not trigger
+        assert risk_engine.check_cb_daily_loss(98_100.0) is False
+
+        # Exactly 2% loss - should trigger
+        assert risk_engine.check_cb_daily_loss(98_000.0) is True
+
+    def test_cb_daily_loss_reduces_sizing(self, risk_engine):
+        """Test Level 1 CB reduces sizing to 50%."""
+        risk_engine.set_equity_prior_close(100_000.0)
+        risk_engine.check_cb_daily_loss(98_000.0)
+
+        assert risk_engine.get_sizing_multiplier() == 0.5
+
+    def test_cb_daily_loss_before_kill_switch(self, configured_engine):
+        """Test Level 1 CB (-2%) triggers before Kill Switch (-3%)."""
+        # At 2.5% loss: Level 1 should trigger, Kill Switch should not
+        result = configured_engine.check_all(
+            current_equity=97_500.0,
+            spy_price=450.0,
+            spy_bar_range=0.5,
+            current_time=datetime(2024, 1, 15, 10, 30),
+        )
+
+        assert SafeguardType.CB_DAILY_LOSS in result.active_safeguards
+        assert SafeguardType.KILL_SWITCH not in result.active_safeguards
+        assert result.circuit_breaker_level == 1
+
+    def test_cb_daily_loss_stays_active(self, risk_engine):
+        """Test Level 1 CB stays active once triggered."""
+        risk_engine.set_equity_prior_close(100_000.0)
+        risk_engine.check_cb_daily_loss(98_000.0)
+
+        # Even with equity recovery, stays active
+        assert risk_engine.check_cb_daily_loss(99_000.0) is True
+
+    def test_cb_daily_loss_resets_daily(self, configured_engine):
+        """Test Level 1 CB resets on daily reset."""
+        configured_engine.check_cb_daily_loss(98_000.0)
+        assert configured_engine._cb_daily_loss_active is True
+
+        configured_engine.reset_daily_state()
+        assert configured_engine._cb_daily_loss_active is False
+
+
+class TestCBLevel3PortfolioVol:
+    """Tests for V2.1 Circuit Breaker Level 3: Portfolio Volatility (>1.5%)."""
+
+    def test_portfolio_vol_calculation(self, risk_engine):
+        """Test portfolio volatility calculation."""
+        # Add daily returns (1.5% volatility threshold)
+        returns = [0.01, -0.02, 0.015, -0.01, 0.005]  # Varied returns
+        for r in returns:
+            risk_engine.update_daily_return(r)
+
+        vol = risk_engine.calculate_portfolio_volatility()
+        assert vol > 0  # Should have positive volatility
+
+    def test_cb_portfolio_vol_triggers_above_threshold(self, risk_engine):
+        """Test Level 3 CB triggers when vol exceeds 1.5%."""
+        # Add high volatility returns
+        high_vol_returns = [0.03, -0.03, 0.04, -0.04, 0.05, -0.05, 0.03, -0.03]
+        for r in high_vol_returns:
+            risk_engine.update_daily_return(r)
+
+        assert risk_engine.check_cb_portfolio_vol() is True
+
+    def test_cb_portfolio_vol_blocks_entries(self, risk_engine):
+        """Test Level 3 CB blocks all new entries."""
+        # Trigger portfolio vol CB
+        high_vol_returns = [0.03, -0.03, 0.04, -0.04, 0.05, -0.05, 0.03, -0.03]
+        for r in high_vol_returns:
+            risk_engine.update_daily_return(r)
+        risk_engine.check_cb_portfolio_vol()
+
+        current_time = datetime(2024, 1, 15, 10, 30)
+        assert risk_engine.can_enter_options(current_time) is False
+
+    def test_cb_portfolio_vol_in_check_all(self, configured_engine):
+        """Test Level 3 CB is included in check_all result."""
+        # Trigger portfolio vol CB
+        high_vol_returns = [0.03, -0.03, 0.04, -0.04, 0.05, -0.05, 0.03, -0.03]
+        for r in high_vol_returns:
+            configured_engine.update_daily_return(r)
+
+        result = configured_engine.check_all(
+            current_equity=100_000.0,
+            spy_price=450.0,
+            spy_bar_range=0.5,
+            current_time=datetime(2024, 1, 15, 10, 30),
+        )
+
+        assert SafeguardType.CB_PORTFOLIO_VOL in result.active_safeguards
+        assert result.can_enter_positions is False
+        assert result.circuit_breaker_level == 3
+
+
+class TestCBLevel4Correlation:
+    """Tests for V2.1 Circuit Breaker Level 4: Correlation (>0.60)."""
+
+    def test_correlation_triggers_above_threshold(self, risk_engine):
+        """Test Level 4 CB triggers when correlation exceeds 0.60."""
+        # Add high correlation data
+        risk_engine.update_correlation("QLD", 0.7)
+        risk_engine.update_correlation("SSO", 0.75)
+        risk_engine.update_correlation("TQQQ", 0.8)
+
+        assert risk_engine.check_cb_correlation() is True
+
+    def test_correlation_reduces_exposure(self, risk_engine):
+        """Test Level 4 CB reduces exposure multiplier."""
+        risk_engine.update_correlation("QLD", 0.7)
+        risk_engine.update_correlation("SSO", 0.75)
+        risk_engine.check_cb_correlation()
+
+        assert risk_engine.get_correlation_exposure_multiplier() == 0.5
+
+    def test_correlation_does_not_trigger_below_threshold(self, risk_engine):
+        """Test Level 4 CB doesn't trigger below 0.60."""
+        risk_engine.update_correlation("QLD", 0.4)
+        risk_engine.update_correlation("SSO", 0.5)
+
+        assert risk_engine.check_cb_correlation() is False
+        assert risk_engine.get_correlation_exposure_multiplier() == 1.0
+
+    def test_correlation_in_check_all(self, configured_engine):
+        """Test Level 4 CB is included in check_all result."""
+        configured_engine.update_correlation("QLD", 0.7)
+        configured_engine.update_correlation("SSO", 0.75)
+
+        result = configured_engine.check_all(
+            current_equity=100_000.0,
+            spy_price=450.0,
+            spy_bar_range=0.5,
+            current_time=datetime(2024, 1, 15, 10, 30),
+        )
+
+        assert SafeguardType.CB_CORRELATION in result.active_safeguards
+        assert result.exposure_multiplier == 0.5
+        assert result.circuit_breaker_level == 4
+
+
+class TestCBLevel5GreeksBreach:
+    """Tests for V2.1 Circuit Breaker Level 5: Greeks Breach."""
+
+    def test_greeks_breach_delta(self, risk_engine):
+        """Test Level 5 CB triggers on delta breach."""
+        # GreeksSnapshot imported at module level
+
+        greeks = GreeksSnapshot(delta=0.9, gamma=0.01, vega=0.1, theta=-0.01)
+        risk_engine.update_greeks(greeks)
+
+        is_breach, options = risk_engine.check_cb_greeks_breach()
+        assert is_breach is True
+        assert "ALL_OPTIONS" in options
+
+    def test_greeks_breach_gamma(self, risk_engine):
+        """Test Level 5 CB triggers on gamma warning."""
+        # GreeksSnapshot imported at module level
+
+        greeks = GreeksSnapshot(delta=0.5, gamma=0.1, vega=0.1, theta=-0.01)
+        risk_engine.update_greeks(greeks)
+
+        is_breach, options = risk_engine.check_cb_greeks_breach()
+        assert is_breach is True
+
+    def test_greeks_breach_theta(self, risk_engine):
+        """Test Level 5 CB triggers on theta warning."""
+        # GreeksSnapshot imported at module level
+
+        greeks = GreeksSnapshot(delta=0.5, gamma=0.01, vega=0.1, theta=-0.05)
+        risk_engine.update_greeks(greeks)
+
+        is_breach, options = risk_engine.check_cb_greeks_breach()
+        assert is_breach is True
+
+    def test_greeks_no_breach_within_limits(self, risk_engine):
+        """Test Level 5 CB doesn't trigger when Greeks within limits."""
+        # GreeksSnapshot imported at module level
+
+        greeks = GreeksSnapshot(delta=0.5, gamma=0.02, vega=0.2, theta=-0.01)
+        risk_engine.update_greeks(greeks)
+
+        is_breach, options = risk_engine.check_cb_greeks_breach()
+        assert is_breach is False
+        assert len(options) == 0
+
+    def test_greeks_breach_in_check_all(self, configured_engine):
+        """Test Level 5 CB is included in check_all result."""
+        # GreeksSnapshot imported at module level
+
+        greeks = GreeksSnapshot(delta=0.9, gamma=0.01, vega=0.1, theta=-0.01)
+        configured_engine.update_greeks(greeks)
+
+        result = configured_engine.check_all(
+            current_equity=100_000.0,
+            spy_price=450.0,
+            spy_bar_range=0.5,
+            current_time=datetime(2024, 1, 15, 10, 30),
+        )
+
+        assert SafeguardType.CB_GREEKS_BREACH in result.active_safeguards
+        assert result.can_enter_options is False
+        assert len(result.options_to_close) > 0
+        assert result.circuit_breaker_level == 5
+
+
+class TestCircuitBreakerLevelTracking:
+    """Tests for circuit breaker level tracking."""
+
+    def test_level_tracking_increases(self, configured_engine):
+        """Test circuit breaker level increases with severity."""
+        # Level 1: Daily loss
+        configured_engine.check_cb_daily_loss(98_000.0)
+        assert configured_engine.get_current_circuit_breaker_level() == 1
+
+        # Level 3: Portfolio vol
+        high_vol_returns = [0.03, -0.03, 0.04, -0.04, 0.05, -0.05, 0.03, -0.03]
+        for r in high_vol_returns:
+            configured_engine.update_daily_return(r)
+        configured_engine.check_cb_portfolio_vol()
+        assert configured_engine.get_current_circuit_breaker_level() == 3
+
+        # Level 4: Correlation
+        configured_engine.update_correlation("QLD", 0.7)
+        configured_engine.update_correlation("SSO", 0.75)
+        configured_engine.check_cb_correlation()
+        assert configured_engine.get_current_circuit_breaker_level() == 4
+
+    def test_level_resets_daily(self, configured_engine):
+        """Test circuit breaker level resets on daily reset."""
+        configured_engine.check_cb_daily_loss(98_000.0)
+        assert configured_engine.get_current_circuit_breaker_level() == 1
+
+        configured_engine.reset_daily_state()
+        assert configured_engine.get_current_circuit_breaker_level() == 0
+
+
+class TestCBStatePersistence:
+    """Tests for V2.1 circuit breaker state persistence."""
+
+    def test_v2_state_persistence(self, risk_engine):
+        """Test V2.1 state is included in persistence."""
+        # Set up V2.1 state
+        risk_engine.update_daily_return(0.01)
+        risk_engine.update_daily_return(-0.02)
+        risk_engine.update_correlation("QLD", 0.7)
+        risk_engine._cb_portfolio_vol_active = True
+        risk_engine._cb_correlation_active = True
+
+        state = risk_engine.get_state_for_persistence()
+
+        assert "daily_returns" in state
+        assert "position_correlations" in state
+        assert "cb_portfolio_vol_active" in state
+        assert "cb_correlation_active" in state
+
+    def test_v2_state_load(self, risk_engine):
+        """Test V2.1 state is loaded correctly."""
+        state = {
+            "last_kill_date": None,
+            "week_start_equity": 100_000.0,
+            "weekly_breaker_active": False,
+            "daily_returns": [0.01, -0.02, 0.015],
+            "position_correlations": {"QLD": 0.7, "SSO": 0.6},
+            "cb_portfolio_vol_active": True,
+            "cb_correlation_active": True,
+        }
+
+        risk_engine.load_state(state)
+
+        assert len(risk_engine._daily_returns) == 3
+        assert risk_engine._position_correlations["QLD"] == 0.7
+        assert risk_engine._cb_portfolio_vol_active is True
+        assert risk_engine._cb_correlation_active is True
+
+
+class TestCBStatusReporting:
+    """Tests for V2.1 circuit breaker status reporting."""
+
+    def test_get_all_statuses_includes_v2(self, risk_engine):
+        """Test get_all_statuses includes V2.1 circuit breakers."""
+        current_time = datetime(2024, 1, 15, 10, 30)
+        statuses = risk_engine.get_all_statuses(current_time)
+
+        assert "cb_daily_loss" in statuses
+        assert "cb_portfolio_vol" in statuses
+        assert "cb_correlation" in statuses
+        assert "cb_greeks" in statuses
+
+    def test_cb_daily_loss_status(self, risk_engine):
+        """Test CB daily loss status reporting."""
+        risk_engine.set_equity_prior_close(100_000.0)
+        risk_engine.check_cb_daily_loss(98_000.0)
+
+        status = risk_engine.get_cb_daily_loss_status()
+        assert status.safeguard_type == SafeguardType.CB_DAILY_LOSS
+        assert status.is_active is True
+        assert "50%" in status.details
+
+    def test_cb_portfolio_vol_status(self, risk_engine):
+        """Test CB portfolio vol status reporting."""
+        status = risk_engine.get_cb_portfolio_vol_status()
+        assert status.safeguard_type == SafeguardType.CB_PORTFOLIO_VOL
+        # Should include current vol in details
+        assert "vol" in status.details.lower()
+
+    def test_cb_correlation_status(self, risk_engine):
+        """Test CB correlation status reporting."""
+        risk_engine.update_correlation("QLD", 0.5)
+        status = risk_engine.get_cb_correlation_status()
+        assert status.safeguard_type == SafeguardType.CB_CORRELATION
+        assert "correlation" in status.details.lower()
+
+    def test_cb_greeks_status(self, risk_engine):
+        """Test CB Greeks status reporting."""
+        # GreeksSnapshot imported at module level
+
+        greeks = GreeksSnapshot(delta=0.5, gamma=0.02, vega=0.2, theta=-0.01)
+        risk_engine.update_greeks(greeks)
+
+        status = risk_engine.get_cb_greeks_status()
+        assert status.safeguard_type == SafeguardType.CB_GREEKS_BREACH
+        # Should include Greeks values in details
+        assert "D=" in status.details or "delta" in status.details.lower()

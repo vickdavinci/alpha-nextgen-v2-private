@@ -1,14 +1,20 @@
 """
-Trend Engine - Bollinger Band compression breakout strategy.
+Trend Engine - V2 MA200 + ADX trend-following strategy.
 
 Captures multi-day momentum moves in 2× leveraged ETFs (QLD, SSO).
-Identifies periods of low volatility (compression) followed by
-directional breakouts, then rides the trend with trailing stops.
+Uses MA200 for trend direction and ADX for momentum confirmation.
+Rides trends with tiered Chandelier trailing stops.
 
-Entry: Bandwidth < 10% AND Close > Upper Band AND Regime >= 40
-Exit: Close < Middle Band OR Chandelier Stop Hit OR Regime < 30
+V2 Entry: Close > MA200 AND ADX >= 25 (score_adx >= 0.50) AND Regime >= 40
+V2 Exit: Close < MA200 OR ADX < 20 OR Chandelier Stop Hit OR Regime < 30
 
-Spec: docs/07-trend-engine.md
+ADX Scoring (V2.1):
+- ADX < 20:    0.25 (weak/choppy - LOW confidence)
+- ADX 20-25:   0.50 (moderate - MEDIUM confidence)
+- ADX 25-35:   0.75 (strong - HIGH confidence)
+- ADX >= 35:   1.00 (very strong - BEST confidence)
+
+Spec: docs/07-trend-engine.md, docs/v2-specs/V2_1_COMPLETE_ARCHITECTURE.txt
 """
 
 from dataclasses import dataclass, field
@@ -22,10 +28,29 @@ from models.enums import Urgency
 from models.target_weight import TargetWeight
 from utils.calculations import (
     atr_multiplier_for_profit,
-    bandwidth,
     chandelier_stop,
     profit_pct,
 )
+
+
+def adx_score(adx_value: float) -> float:
+    """
+    Calculate ADX confidence score per V2.1 specification.
+
+    Args:
+        adx_value: Current ADX(14) value (0-100 scale).
+
+    Returns:
+        Confidence score: 0.25 (weak) to 1.0 (very strong).
+    """
+    if adx_value >= config.ADX_STRONG_THRESHOLD:  # >= 35
+        return 1.0
+    elif adx_value >= config.ADX_MODERATE_THRESHOLD:  # >= 25
+        return 0.75
+    elif adx_value >= config.ADX_WEAK_THRESHOLD:  # >= 20
+        return 0.50
+    else:  # < 20
+        return 0.25
 
 
 @dataclass
@@ -73,19 +98,31 @@ class TrendSignal:
     is_exit: bool = False
     exit_reason: Optional[str] = None
     urgency: Urgency = Urgency.EOD
-    bandwidth_value: Optional[float] = None
     close_price: Optional[float] = None
-    upper_band: Optional[float] = None
-    middle_band: Optional[float] = None
+    ma200_value: Optional[float] = None
+    adx_value: Optional[float] = None
+    adx_score: Optional[float] = None
     stop_level: Optional[float] = None
 
 
 class TrendEngine:
     """
-    Bollinger Band compression breakout engine.
+    V2 MA200 + ADX trend-following engine.
 
-    Trades QLD and SSO based on BB compression followed by
-    breakout. Uses Chandelier trailing stops for exit protection.
+    Trades QLD and SSO based on MA200 trend direction with ADX
+    momentum confirmation. Uses Chandelier trailing stops for exit.
+
+    V2 Entry Logic:
+    1. Close > MA200 (bullish trend)
+    2. ADX >= 25 (score >= 0.50, sufficient momentum)
+    3. Regime score >= 40 (favorable market)
+    4. Not in cold start (unless warm entry)
+
+    V2 Exit Logic:
+    1. Close < MA200 (trend reversal)
+    2. ADX < 20 (momentum exhaustion)
+    3. Chandelier stop hit (risk management)
+    4. Regime < 30 (deteriorating market)
 
     Note: This engine does NOT place orders. It only provides
     signals via TargetWeight objects for the Portfolio Router.
@@ -108,9 +145,8 @@ class TrendEngine:
         self,
         symbol: str,
         close: float,
-        upper_band: float,
-        middle_band: float,
-        lower_band: float,
+        ma200: float,
+        adx: float,
         regime_score: float,
         is_cold_start_active: bool,
         has_warm_entry: bool,
@@ -118,14 +154,13 @@ class TrendEngine:
         current_date: str,
     ) -> Optional[TargetWeight]:
         """
-        Check for trend entry signal.
+        Check for V2 trend entry signal (MA200 + ADX confirmation).
 
         Args:
             symbol: Symbol to check (QLD or SSO).
             close: Current closing price.
-            upper_band: Bollinger upper band value.
-            middle_band: Bollinger middle band (SMA).
-            lower_band: Bollinger lower band value.
+            ma200: 200-period Simple Moving Average.
+            adx: Current ADX(14) value.
             regime_score: Current smoothed regime score.
             is_cold_start_active: True if in cold start period.
             has_warm_entry: True if warm entry position exists.
@@ -143,15 +178,16 @@ class TrendEngine:
         if symbol in self._positions:
             return None
 
-        # Calculate bandwidth
-        bw = bandwidth(upper_band, lower_band, middle_band)
+        # Calculate ADX score
+        score = adx_score(adx)
 
-        # Condition 1: Compression (bandwidth < threshold)
-        if bw >= config.COMPRESSION_THRESHOLD:
+        # Condition 1: Price above MA200 (bullish trend)
+        if close <= ma200:
             return None
 
-        # Condition 2: Breakout (close > upper band)
-        if close <= upper_band:
+        # Condition 2: ADX >= 25 (score >= 0.50, sufficient momentum)
+        if score < 0.50:
+            self.log(f"TREND: {symbol} entry blocked - ADX {adx:.1f} too weak (score={score:.2f})")
             return None
 
         # Condition 3: Regime score >= 40
@@ -167,9 +203,10 @@ class TrendEngine:
             return None
 
         # All conditions passed - generate entry signal
+        confidence = "STRONG" if score >= 0.75 else "MODERATE"
         reason = (
-            f"BB Compression Breakout: Bandwidth={bw:.3f}, "
-            f"Close={close:.2f} > Upper={upper_band:.2f}"
+            f"MA200+ADX Entry: Close={close:.2f} > MA200={ma200:.2f}, "
+            f"ADX={adx:.1f} (score={score:.2f}, {confidence})"
         )
 
         self.log(f"TREND: ENTRY_SIGNAL {symbol} | {reason} | Regime={regime_score:.1f}")
@@ -187,21 +224,23 @@ class TrendEngine:
         symbol: str,
         close: float,
         high: float,
-        middle_band: float,
+        ma200: float,
+        adx: float,
         regime_score: float,
         atr: float,
     ) -> Optional[TargetWeight]:
         """
-        Check for trend exit signals (band basis, regime).
+        Check for V2 trend exit signals (MA200, ADX, regime).
 
-        This is the EOD check for band basis and regime exits.
+        This is the EOD check for MA200, ADX, and regime exits.
         Chandelier stop is checked separately via check_stop_hit.
 
         Args:
             symbol: Symbol to check.
             close: Current closing price.
             high: Current day's high price.
-            middle_band: Bollinger middle band (SMA).
+            ma200: 200-period Simple Moving Average.
+            adx: Current ADX(14) value.
             regime_score: Current smoothed regime score.
             atr: Current 14-period ATR.
 
@@ -221,9 +260,9 @@ class TrendEngine:
         self._update_chandelier_stop(position, atr)
 
         # Check exit conditions
-        # Exit 1: Band basis - close < middle band
-        if close < middle_band:
-            reason = f"BAND_EXIT: Close (${close:.2f}) < Middle Band (${middle_band:.2f})"
+        # Exit 1: MA200 exit - close < MA200 (trend reversal)
+        if close < ma200:
+            reason = f"MA200_EXIT: Close (${close:.2f}) < MA200 (${ma200:.2f})"
             self.log(f"TREND: EXIT_SIGNAL {symbol} | {reason}")
             return TargetWeight(
                 symbol=symbol,
@@ -233,7 +272,19 @@ class TrendEngine:
                 reason=reason,
             )
 
-        # Exit 2: Regime exit - score < 30
+        # Exit 2: ADX exit - momentum exhaustion
+        if adx < config.TREND_ADX_EXIT_THRESHOLD:
+            reason = f"ADX_EXIT: ADX ({adx:.1f}) < {config.TREND_ADX_EXIT_THRESHOLD}"
+            self.log(f"TREND: EXIT_SIGNAL {symbol} | {reason}")
+            return TargetWeight(
+                symbol=symbol,
+                target_weight=0.0,
+                source="TREND",
+                urgency=Urgency.EOD,
+                reason=reason,
+            )
+
+        # Exit 3: Regime exit - score < 30
         if regime_score < config.TREND_EXIT_REGIME:
             reason = f"REGIME_EXIT: Score ({regime_score:.1f}) < {config.TREND_EXIT_REGIME}"
             self.log(f"TREND: EXIT_SIGNAL {symbol} | {reason}")

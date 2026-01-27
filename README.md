@@ -13,10 +13,19 @@
 
 Alpha NextGen V2 is a systematic trading system that combines **regime detection**, **multiple trading strategies**, and **comprehensive risk management** to trade leveraged ETFs on the QuantConnect (LEAN) platform with Interactive Brokers.
 
+**V2 Core-Satellite Architecture:**
+- **Core (70%)**: Trend Engine - MA200 + ADX confirmation
+- **Satellite (20-30%)**: Options Engine - 4-factor entry scoring *(NEW)*
+- **Satellite (0-10%)**: Mean Reversion Engine - RSI + VIX filter
+
+**Target Performance**: 18-25% annual return (vs V1's 10-12%)
+
+> Forked from V1 v1.0.0 on 2026-01-26. See `docs/v2-specs/` for V2.1 specifications.
+
 The system adapts its behavior based on market conditions:
-- **Favorable markets**: Deploy leverage through trend-following and mean reversion
+- **Favorable markets**: Deploy leverage through trend-following and options
 - **Deteriorating markets**: Reduce exposure and activate hedges
-- **Dangerous markets**: Maximum defense with full hedge allocation
+- **Dangerous markets**: Disable mean reversion (VIX > 40), maximum defense
 
 ---
 

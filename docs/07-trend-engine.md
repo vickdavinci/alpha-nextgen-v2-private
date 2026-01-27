@@ -504,10 +504,10 @@ All position tracking data is persisted to ObjectStore and survives algorithm re
 |-----------|:-----:|-------------|
 | `ATR_PERIOD` | 14 | ATR calculation period |
 | `CHANDELIER_BASE_MULT` | 3.0 | Initial multiplier (profit < 15%) |
-| `CHANDELIER_TIGHT_MULT` | 2.0 | Medium multiplier (profit 15-25%) |
-| `CHANDELIER_TIGHTER_MULT` | 1.5 | Tight multiplier (profit > 25%) |
-| `PROFIT_TIGHT_PCT` | 0.15 | Profit level for first tightening |
-| `PROFIT_TIGHTER_PCT` | 0.25 | Profit level for second tightening |
+| `CHANDELIER_TIGHT_MULT` | 2.5 | Medium multiplier (profit 10-20%) - V2.1 |
+| `CHANDELIER_TIGHTER_MULT` | 2.0 | Tight multiplier (profit > 20%) - V2.1 |
+| `PROFIT_TIGHT_PCT` | 0.10 | Profit level for first tightening (10%) - V2.1 |
+| `PROFIT_TIGHTER_PCT` | 0.20 | Profit level for second tightening (20%) - V2.1 |
 
 ### Regime Thresholds
 

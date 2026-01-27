@@ -72,7 +72,7 @@ class TargetWeight:
             )
 
         # Validate source
-        valid_sources = {"TREND", "MR", "HEDGE", "YIELD", "COLD_START", "RISK", "ROUTER"}
+        valid_sources = {"TREND", "MR", "HEDGE", "YIELD", "COLD_START", "RISK", "ROUTER", "OPT"}
         if self.source not in valid_sources:
             raise ValueError(f"source must be one of {valid_sources}, got: {self.source}")
 

@@ -33,7 +33,7 @@
 > - `engines/satellite/` - Conditional engines (0-30%)
 > - `docs/v2-specs/` - V2.1 specifications
 >
-> **Tests:** 694 passed, 27 skipped
+> **Tests:** 842 passed, 27 skipped
 
 ---
 
@@ -47,16 +47,37 @@
 
 | Ticket | Component | Size | Spec |
 |--------|-----------|:----:|------|
-| TRE-1 | MA200 + ADX Signal | L | V2_1_COMPLETE_ARCHITECTURE.txt |
-| TRE-2 | Trailing Stop Enhancement | M | V2_1_COMPLETE_ARCHITECTURE.txt |
-| RSK-1 | 5-Level Circuit Breaker | L | V2_1_COMPLETE_ARCHITECTURE.txt |
-| MRE-3 | VIX Data Feed | S | V2-1-Critical-Fixes-Guide.md |
+| _V2.1 Phase Complete - See Ideas Backlog_ | | | |
 
 ### In Progress
 
 | Component | Owner | Branch | Started | Spec |
 |-----------|-------|--------|---------|------|
 | _None_ | | | | |
+
+### Done (V2 Phase 1)
+
+| Ticket | Component | Owner | Commit | Merged |
+|--------|-----------|-------|--------|--------|
+| TRE-1 | MA200 + ADX Signal | VA | develop | 2026-01-26 |
+| TRE-2 | Trailing Stop Enhancement | VA | develop | 2026-01-26 |
+| RSK-1 | 5-Level Circuit Breaker | VA | develop | 2026-01-26 |
+
+### Done (V2 Phase 2)
+
+| Ticket | Component | Owner | Commit | Merged |
+|--------|-----------|-------|--------|--------|
+| MRE-3 | VIX Data Feed | VA | develop | 2026-01-26 |
+| MRE-1 | VIX Regime Integration | VA | develop | 2026-01-26 |
+| MRE-2 | Regime-Adjusted Parameters | VA | develop | 2026-01-26 |
+| MRE-4 | Mean Reversion V2 Tests | VA | develop | 2026-01-26 |
+
+### Done (V2 Phase 3 - Options Engine)
+
+| Ticket | Component | Owner | Commit | Merged |
+|--------|-----------|-------|--------|--------|
+| OPT-1 | Options Engine Core | VA | develop | 2026-01-26 |
+| RSK-2 | Greeks Monitoring | VA | develop | 2026-01-26 |
 
 ### In Review
 
