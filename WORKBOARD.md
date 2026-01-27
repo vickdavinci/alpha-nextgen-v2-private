@@ -47,9 +47,6 @@
 
 | Ticket | Component | Size | Spec |
 |--------|-----------|:----:|------|
-| OPT-2 | Entry Score Model Refinement | S | V2_1_COMPLETE_ARCHITECTURE.txt |
-| OPT-3 | OCO Order Management | M | V2-1-FINAL-SYNTHESIS.md |
-| OPT-4 | Options Engine Tests | M | V2_1_COMPLETE_ARCHITECTURE.txt |
 | RSK-2 | Greeks Monitoring | M | V2_1_COMPLETE_ARCHITECTURE.txt |
 
 ### In Progress
