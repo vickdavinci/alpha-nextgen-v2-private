@@ -33,7 +33,7 @@
 > - `engines/satellite/` - Conditional engines (0-30%)
 > - `docs/v2-specs/` - V2.1 specifications
 >
-> **Tests:** 948 passed (as of 2026-01-26)
+> **Tests:** 965 passed (as of 2026-01-27)
 
 ---
 
@@ -96,6 +96,7 @@
 | OPT-3 | OCO Order Manager (`execution/oco_manager.py`) | VA | develop | 2026-01-26 |
 | OPT-4 | Options Engine Tests (comprehensive suite) | VA | develop | 2026-01-26 |
 | RSK-2 | Greeks Monitoring Integration | VA | develop | 2026-01-26 |
+| OPT-5 | Options Wiring Audit (DTE fix, intraday scan, Greeks monitor) | VA | v2.1.2 | 2026-01-27 |
 
 ### Done (V2 Phase 4 - Integration & Orchestration)
 
@@ -468,4 +469,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 26 January 2026 (V2.1 Phases 1-3 Complete! Options Engine + OCO + Greeks Monitoring - Ready for backtesting)*
+*Last Updated: 27 January 2026 (v2.1.2 - Options Wiring Audit Complete! DTE fix, intraday scanning, Greeks monitoring - 965 tests passing)*
