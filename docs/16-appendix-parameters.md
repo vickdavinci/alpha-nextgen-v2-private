@@ -119,19 +119,18 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `TREND_MA_PERIOD` | 200 | Moving average period for trend direction |
+| `MA200_PERIOD` | 200 | Moving average period for trend direction |
 | `ADX_PERIOD` | 14 | ADX period for momentum strength |
-| `ADX_ENTRY_MIN` | 25 | Minimum ADX for entry (score >= 0.50) |
-| `ADX_EXIT_MIN` | 20 | ADX below this triggers exit consideration |
+| `ADX_ENTRY_THRESHOLD` | 25 | Minimum ADX for entry (score >= 0.50) |
+| `TREND_ADX_EXIT_THRESHOLD` | 20 | ADX below this triggers exit consideration |
 
-### ADX Scoring Tiers
+### ADX Scoring Thresholds
 
-| ADX Range | Score | Interpretation |
-|:---------:|:-----:|----------------|
-| < 20 | 0.25 | Weak trend, avoid entry |
-| 20-25 | 0.50 | Moderate trend, minimum for entry |
-| 25-35 | 0.75 | Strong trend, favorable |
-| >= 35 | 1.00 | Very strong trend, ideal |
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `ADX_WEAK_THRESHOLD` | 20 | Below = 0.25 score |
+| `ADX_MODERATE_THRESHOLD` | 25 | 20-25 = 0.50 score |
+| `ADX_STRONG_THRESHOLD` | 35 | 25-35 = 0.75, above = 1.0 score |
 
 ### Chandelier Stop Parameters (V2.1)
 
@@ -264,8 +263,8 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `OPTIONS_ALLOCATION_PCT` | 0.20 | Max allocation to options (20%) |
-| `OPTIONS_MAX_ALLOCATION_PCT` | 0.30 | Absolute max (30%) |
+| `OPTIONS_ALLOCATION_MIN` | 0.20 | Minimum allocation to options (20%) |
+| `OPTIONS_ALLOCATION_MAX` | 0.30 | Maximum allocation to options (30%) |
 
 ### 4-Factor Entry Scoring
 
@@ -316,13 +315,14 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `OPTIONS_FORCE_EXIT_HOUR` | 15 | Force close hour (3 PM ET) |
 | `OPTIONS_FORCE_EXIT_MINUTE` | 45 | Force close minute (:45) |
 
-### Greeks Monitoring
+### Greeks Monitoring (Circuit Breaker Level 5)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `OPTIONS_MAX_DELTA` | 0.70 | Delta alert threshold |
-| `OPTIONS_MAX_GAMMA` | 0.10 | Gamma alert threshold |
-| `OPTIONS_MIN_THETA` | -0.15 | Theta alert threshold |
+| `CB_DELTA_MAX` | 0.80 | Max delta exposure per position |
+| `CB_GAMMA_WARNING` | 0.05 | Gamma warning threshold near expiry |
+| `CB_VEGA_MAX` | 0.50 | Max vega exposure |
+| `CB_THETA_WARNING` | -0.02 | Daily theta decay warning (-2%) |
 
 ### Contract Selection
 
@@ -456,11 +456,11 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 |-----------|:-----------:|-------------|
 | SMA(20) | 20 | Fast moving average |
 | SMA(50) | 50 | Medium moving average |
-| SMA(200) | 200 | Slow moving average |
-| BB(20,2) | 20 | Bollinger Bands |
-| RSI(5) | 10 | Fast RSI (extra warmup) |
-| ATR(14) | 14 | Average True Range |
-| Realized Vol | 252 | For percentile ranking |
+| SMA(200) | 200 | Slow moving average (MA200 for Trend Engine) |
+| ADX(14) | 14 | Average Directional Index (Trend Engine entry) |
+| RSI(5) | 10 | Fast RSI (Mean Reversion) |
+| ATR(14) | 14 | Average True Range (Chandelier stops) |
+| Realized Vol | 252 | For percentile ranking (Regime Engine) |
 
 **Minimum warmup period: 252 trading days** to ensure all indicators are fully populated.
 
@@ -578,28 +578,32 @@ WARM_MIN_SIZE = 2_000
 # TREND ENGINE (V2 - MA200 + ADX)
 # =============================================================================
 
-# MA200 + ADX Entry
-TREND_MA_PERIOD = 200
-ADX_PERIOD = 14
-ADX_ENTRY_MIN = 25  # Minimum ADX for entry (score >= 0.50)
-ADX_EXIT_MIN = 20   # ADX below this triggers exit
+# V2 Entry: MA200 + ADX Confirmation
+MA200_PERIOD = 200  # Long-term trend baseline
+ADX_PERIOD = 14  # Average Directional Index for momentum confirmation
+ADX_ENTRY_THRESHOLD = 25  # Minimum ADX for entry (score_adx >= 0.50)
+ADX_STRONG_THRESHOLD = 35  # ADX for highest confidence
 
-# ADX Scoring Tiers
-ADX_SCORE_WEAK = 20      # Below = 0.25
-ADX_SCORE_MODERATE = 25  # 20-25 = 0.50
-ADX_SCORE_STRONG = 35    # 25-35 = 0.75, above = 1.0
+# ADX Scoring Thresholds (V2.1 spec)
+# ADX < 20: 0.25 (weak)
+# ADX 20-25: 0.50 (moderate)
+# ADX 25-35: 0.75 (strong)
+# ADX >= 35: 1.00 (very strong)
+ADX_WEAK_THRESHOLD = 20
+ADX_MODERATE_THRESHOLD = 25
 
-# Chandelier Stop (V2.1 tiers)
+# Chandelier Stop
 ATR_PERIOD = 14
-CHANDELIER_BASE_MULT = 3.0    # Profit < 10%
-CHANDELIER_TIGHT_MULT = 2.5   # Profit 10-20%
-CHANDELIER_TIGHTER_MULT = 2.0 # Profit > 20%
-PROFIT_TIGHT_PCT = 0.10       # First tightening at 10%
-PROFIT_TIGHTER_PCT = 0.20     # Second tightening at 20%
+CHANDELIER_BASE_MULT = 3.0
+CHANDELIER_TIGHT_MULT = 2.5  # Updated per V2.1: 2.5x for profit 10-20%
+CHANDELIER_TIGHTER_MULT = 2.0  # Updated per V2.1: 2.0x for profit 20%+
+PROFIT_TIGHT_PCT = 0.10  # Updated per V2.1: tighten at 10%
+PROFIT_TIGHTER_PCT = 0.20  # Updated per V2.1: tighten more at 20%
 
 # Entry/Exit
 TREND_ENTRY_REGIME_MIN = 40
 TREND_EXIT_REGIME = 30
+TREND_ADX_EXIT_THRESHOLD = 20  # Exit if ADX drops below this
 
 # =============================================================================
 # MEAN REVERSION ENGINE (V2.1 - VIX Filter)
@@ -666,8 +670,8 @@ SHV_MIN_TRADE = 2_000
 # =============================================================================
 
 # Allocation
-OPTIONS_ALLOCATION_PCT = 0.20
-OPTIONS_MAX_ALLOCATION_PCT = 0.30
+OPTIONS_ALLOCATION_MIN = 0.20  # 20% minimum
+OPTIONS_ALLOCATION_MAX = 0.30  # 30% maximum
 
 # 4-Factor Entry Scoring
 OPTIONS_ADX_PERIOD = 14
@@ -690,10 +694,13 @@ OPTIONS_LATE_DAY_TIME = "14:30"
 OPTIONS_FORCE_EXIT_HOUR = 15    # 3 PM ET
 OPTIONS_FORCE_EXIT_MINUTE = 45  # 3:45 PM ET
 
-# Greeks Monitoring
-OPTIONS_MAX_DELTA = 0.70
-OPTIONS_MAX_GAMMA = 0.10
-OPTIONS_MIN_THETA = -0.15
+# Greeks Monitoring (Circuit Breaker Level 5)
+# Note: These use CB_ prefix as they're part of the circuit breaker system
+# See Risk Engine section (12-risk-engine.md) for integration
+CB_DELTA_MAX = 0.80  # Max delta exposure per position
+CB_GAMMA_WARNING = 0.05  # Gamma warning threshold near expiry
+CB_VEGA_MAX = 0.50  # Max vega exposure
+CB_THETA_WARNING = -0.02  # Daily theta decay warning (-2%)
 
 # Contract Selection
 OPTIONS_DTE_MIN = 1
@@ -760,6 +767,35 @@ VOL_SHOCK_PAUSE_MIN = 15
 # Time Guard
 TIME_GUARD_START = "13:55"
 TIME_GUARD_END = "14:10"
+
+# =============================================================================
+# V2.1 CIRCUIT BREAKER SYSTEM (5 Levels)
+# =============================================================================
+# These are graduated responses BEFORE the nuclear kill switch
+
+# Level 1: Daily Loss Circuit Breaker
+# At -2% daily loss, reduce sizing but don't liquidate
+CB_DAILY_LOSS_THRESHOLD = 0.02  # -2% daily loss
+CB_DAILY_SIZE_REDUCTION = 0.50  # Reduce to 50% sizing
+
+# Level 2: Weekly Loss Circuit Breaker (same as WEEKLY_BREAKER_PCT above)
+
+# Level 3: Portfolio Volatility Circuit Breaker
+# If portfolio volatility exceeds threshold, block new entries
+CB_PORTFOLIO_VOL_THRESHOLD = 0.015  # 1.5% daily portfolio volatility
+CB_PORTFOLIO_VOL_LOOKBACK = 20  # Days for volatility calculation
+
+# Level 4: Correlation Circuit Breaker
+# If correlation between positions exceeds threshold, reduce exposure
+CB_CORRELATION_THRESHOLD = 0.60  # Correlation > 60%
+CB_CORRELATION_REDUCTION = 0.50  # Reduce exposure by 50%
+
+# Level 5: Greeks Breach Circuit Breaker (for Options Engine)
+# Thresholds for options risk monitoring
+CB_DELTA_MAX = 0.80  # Max delta exposure per position
+CB_GAMMA_WARNING = 0.05  # Gamma warning threshold near expiry
+CB_VEGA_MAX = 0.50  # Max vega exposure
+CB_THETA_WARNING = -0.02  # Daily theta decay warning (-2%)
 
 # =============================================================================
 # EXECUTION ENGINE

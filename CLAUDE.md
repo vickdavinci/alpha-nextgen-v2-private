@@ -218,8 +218,8 @@ Only the **Portfolio Router** is authorized to call:
 # CORRECT - Strategy engine emits intention
 class TrendEngine:
     def generate_signals(self) -> List[TargetWeight]:
-        if self.is_breakout():
-            return [TargetWeight("QLD", 0.30, "TREND", Urgency.EOD, "BB Breakout")]
+        if self.has_entry_signal():  # MA200 + ADX confirmation
+            return [TargetWeight("QLD", 0.30, "TREND", Urgency.EOD, "MA200_ADX Entry")]
         return []
 
 # WRONG - Strategy engine placing orders directly
@@ -580,7 +580,7 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | Weekly breaker | 5% WTD loss | 50% sizing reduction |
 | Gap filter | SPY -1.5% gap | Block MR entries |
 | Vol shock | 3× ATR bar | 15-min pause |
-| ADX momentum | ADX >= 25 | Trend entry eligible |
+| Trend entry (V2) | Price > MA200 + ADX >= 25 | Trend entry eligible |
 | Oversold | RSI(5) < 25 | MR entry eligible |
 
 ### Overnight Holdings
