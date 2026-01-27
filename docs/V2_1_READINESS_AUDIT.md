@@ -183,18 +183,16 @@ MOO logic tested in parts, not end-to-end:
 
 ---
 
-### GAP #9: BB Compression Logic Status Unclear (Trend Engine)
-**Severity**: HIGH
+### GAP #9: BB Compression Logic Status Unclear (Trend Engine) ✅ FIXED
+**Severity**: HIGH → **RESOLVED**
 **Component**: Trend Engine
 
-Config defines BB parameters but code doesn't use them:
-```python
-BB_PERIOD = 20
-BB_STD_DEV = 2.0
-COMPRESSION_THRESHOLD = 0.10  # Never referenced in trend_engine.py
-```
+**Fix Applied**:
+- Removed unused BB config values (`BB_PERIOD`, `BB_STD_DEV`, `COMPRESSION_THRESHOLD`)
+- Updated main.py to use MA200 + ADX indicators for QLD/SSO (V2 architecture)
+- Fixed critical mismatch between main.py and trend_engine.py signatures
 
-**Action Required**: Clarify if BB compression is a fallback or removed. If fallback, implement and test. If removed, delete from config.
+**Confirmed**: V2 Trend Engine uses MA200 + ADX, NOT Bollinger Bands.
 
 ---
 

@@ -65,7 +65,7 @@ make branch name=feature/va/my-feature
 
 **Alpha NextGen V2** is a multi-strategy algorithmic trading system built on QuantConnect (LEAN engine) for deployment on Interactive Brokers. The system implements a **Core-Satellite** architecture with three engines:
 
-- **Core (70%)**: Trend Engine - MA200 + ADX confirmation, BB compression breakout
+- **Core (70%)**: Trend Engine - MA200 + ADX confirmation
 - **Satellite (0-10%)**: Mean Reversion Engine - RSI oversold bounce with VIX filter
 - **Satellite (20-30%)**: Options Engine - 4-factor entry scoring, Greeks monitoring
 
@@ -148,7 +148,7 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 | **Capital Engine** | `engines/core/capital_engine.py` | `docs/05-capital-engine.md` | Phase management, lockbox, tradeable equity |
 | **Risk Engine** | `engines/core/risk_engine.py` | `docs/12-risk-engine.md` | All circuit breakers and safeguards |
 | **Cold Start Engine** | `engines/core/cold_start_engine.py` | `docs/06-cold-start-engine.md` | Days 1-5 warm entry logic |
-| **Trend Engine** | `engines/core/trend_engine.py` | `docs/07-trend-engine.md` | BB compression breakout signals for QLD/SSO (70%) |
+| **Trend Engine** | `engines/core/trend_engine.py` | `docs/07-trend-engine.md` | MA200 + ADX trend signals for QLD/SSO (70%) |
 
 ### Satellite Engines (engines/satellite/)
 
@@ -327,7 +327,7 @@ import pandas    # ❌ Use from AlgorithmImports import *
 
 ```python
 # CORRECT
-from config import KILL_SWITCH_PCT, BB_PERIOD
+from config import KILL_SWITCH_PCT, ADX_PERIOD
 
 if loss_pct >= KILL_SWITCH_PCT:
     self.trigger_kill_switch()
@@ -580,7 +580,7 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | Weekly breaker | 5% WTD loss | 50% sizing reduction |
 | Gap filter | SPY -1.5% gap | Block MR entries |
 | Vol shock | 3× ATR bar | 15-min pause |
-| Compression | Bandwidth < 10% | Trend entry eligible |
+| ADX momentum | ADX >= 25 | Trend entry eligible |
 | Oversold | RSI(5) < 25 | MR entry eligible |
 
 ### Overnight Holdings

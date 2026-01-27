@@ -90,11 +90,6 @@ ADX_STRONG_THRESHOLD = 35  # ADX for highest confidence
 ADX_WEAK_THRESHOLD = 20
 ADX_MODERATE_THRESHOLD = 25
 
-# V1 Legacy: Bollinger Bands (kept for backwards compatibility)
-BB_PERIOD = 20
-BB_STD_DEV = 2.0
-COMPRESSION_THRESHOLD = 0.10
-
 # Chandelier Stop
 ATR_PERIOD = 14
 CHANDELIER_BASE_MULT = 3.0
