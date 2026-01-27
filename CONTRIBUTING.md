@@ -1,6 +1,9 @@
-# Contributing to Alpha NextGen
+# Contributing to Alpha NextGen V2
 
-This document outlines the coding rules and development workflow for Alpha NextGen.
+This document outlines the coding rules and development workflow for Alpha NextGen V2.
+
+> **V2 Fork Note**: This repository was forked from V1 v1.0.0 on 2026-01-26.
+> Uses Core-Satellite architecture. See `V2_IMPLEMENTATION_ROADMAP.md` for roadmap.
 
 ---
 
@@ -35,7 +38,7 @@ This document outlines the coding rules and development workflow for Alpha NextG
 ```bash
 # 1. Clone the repository
 git clone <repo-url>
-cd alpha-nextgen
+cd alpha-nextgen-v2-private
 
 # 2. Create virtual environment (REQUIRED)
 python3.11 -m venv venv
