@@ -48,7 +48,7 @@ flowchart TB
 
     subgraph STRATEGIES["STRATEGY ENGINES"]
         direction LR
-        TREND["TREND<br/>─────────<br/>QLD/SSO<br/>BB Breakout<br/>Chandelier Stop<br/>Urgency: EOD"]
+        TREND["TREND<br/>─────────<br/>QLD/SSO<br/>MA200+ADX<br/>Chandelier Stop<br/>Urgency: EOD"]
         MR["MEAN REV<br/>─────────<br/>TQQQ/SOXL<br/>RSI < 25<br/>Drop > 2.5%<br/>Urgency: IMMED"]
         HEDGE["HEDGE<br/>─────────<br/>TMF/PSQ<br/>Regime < 40<br/>Scaled Alloc<br/>Urgency: EOD"]
         YIELD["YIELD<br/>─────────<br/>SHV<br/>Cash > $2k<br/>LIFO Liquidate<br/>Urgency: EOD"]
@@ -108,13 +108,14 @@ Provide context that governs all trading decisions.
 
 Generate trading signals based on their specific logic.
 
-| Strategy | Style | Holding Period | Urgency |
-|----------|-------|:---------------|:-------:|
-| **Trend** | Swing breakouts | Days to weeks | EOD |
-| **Mean Reversion** | Intraday fades | Minutes to hours | IMMEDIATE |
-| **Hedge** | Tail protection | As needed | EOD |
-| **Yield** | Cash management | Ongoing | EOD |
-| **Cold Start** | Safe deployment | Days 1-5 | IMMEDIATE |
+| Strategy | Style | Holding Period | Urgency | Allocation |
+|----------|-------|:---------------|:-------:|:----------:|
+| **Trend** | MA200+ADX swing | Days to weeks | EOD | 70% (Core) |
+| **Mean Reversion** | RSI oversold + VIX | Minutes to hours | IMMEDIATE | 0-10% |
+| **Options** | 4-factor QQQ | Intraday | IMMEDIATE | 20-30% |
+| **Hedge** | Tail protection | As needed | EOD | Per regime |
+| **Yield** | Cash management | Ongoing | EOD | Remainder |
+| **Cold Start** | Safe deployment | Days 1-5 | IMMEDIATE | 50% sizing |
 
 ### Layer 4: Portfolio Router
 
@@ -149,10 +150,11 @@ flowchart TB
 
     subgraph INDICATORS["INDICATORS"]
         IND1["SMA 20/50/200"]
-        IND2["Bollinger Bands"]
+        IND2["ADX 14 (Trend Strength)"]
         IND3["ATR 14"]
         IND4["RSI 5"]
         IND5["Realized Vol"]
+        IND6["VIX (MR Filter)"]
     end
 
     subgraph REGIME["REGIME ENGINE"]
@@ -274,14 +276,16 @@ flowchart TB
 |--------|---------------|----------|
 | **Regime** | Data Layer (proxy symbols) | All Strategy Engines, Risk Engine |
 | **Capital** | Portfolio state | All Strategy Engines, Router |
-| **Risk** | Portfolio state, SPY minute data | Router (GO/NO-GO) |
+| **Risk** | Portfolio state, SPY minute data, Greeks | Router (GO/NO-GO) |
 | **Cold Start** | Regime, Capital, Risk | Router |
-| **Trend** | Data Layer, Regime, Capital | Router |
-| **Mean Reversion** | Data Layer, Regime, Risk | Router |
+| **Trend** | Data Layer (MA200, ADX), Regime, Capital | Router |
+| **Mean Reversion** | Data Layer, Regime, Risk, VIX | Router |
+| **Options** | Data Layer (QQQ), IV, Greeks, Regime | Router, OCO Manager |
 | **Hedge** | Regime | Router |
 | **Yield** | Portfolio cash | Router |
 | **Router** | All Strategies, Risk | Execution Engine |
-| **Execution** | Router | Broker |
+| **OCO Manager** | Options Engine | Execution Engine |
+| **Execution** | Router, OCO Manager | Broker |
 
 ---
 
@@ -303,7 +307,7 @@ Symbol: QLD
 Weight: 0.40 (40% of portfolio)
 Strategy: TREND
 Urgency: EOD
-Reason: BB_BREAKOUT_ENTRY
+Reason: MA200_ADX_ENTRY
 ```
 
 ---
@@ -329,11 +333,18 @@ Reason: BB_BREAKOUT_ENTRY
 
 ### What the System Does NOT Do
 
-- Trade options (no Vol Harvest strategy)
 - Trade futures or forex
 - Use margin beyond ETF leverage
-- Hold 3x leveraged products overnight
+- Hold 3x leveraged products overnight (except TMF hedge)
 - Trade during pre-market or after-hours
+- Hold options overnight (closed by 15:45)
+
+### V2.1 Additions
+
+- **Options Engine**: Trades QQQ options (20-30% allocation) using 4-factor entry scoring
+- **VIX Regime Filter**: Adjusts MR parameters based on VIX level
+- **5-Level Circuit Breaker**: Graduated risk response system
+- **Greeks Monitoring**: Portfolio delta/gamma/vega limits
 
 ---
 
