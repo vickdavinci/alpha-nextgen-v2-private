@@ -58,6 +58,7 @@ def make_entry_params(
     time_guard_active=False,
     current_hour=10,
     current_minute=47,
+    vix_value=15.0,  # V2.1: Default to NORMAL regime
 ):
     """Helper to create entry signal parameters."""
     return {
@@ -75,6 +76,7 @@ def make_entry_params(
         "time_guard_active": time_guard_active,
         "current_hour": current_hour,
         "current_minute": current_minute,
+        "vix_value": vix_value,
     }
 
 
@@ -112,6 +114,7 @@ class TestMRPosition:
             vwap_at_entry=29.00,
             target_price=29.07,
             stop_price=27.93,
+            vix_regime="CAUTION",
         )
         data = position.to_dict()
 
@@ -121,9 +124,29 @@ class TestMRPosition:
         assert data["vwap_at_entry"] == 29.00
         assert data["target_price"] == 29.07
         assert data["stop_price"] == 27.93
+        assert data["vix_regime"] == "CAUTION"
 
     def test_from_dict_deserialization(self):
         """Test deserialization from dictionary."""
+        data = {
+            "symbol": "TQQQ",
+            "entry_price": 45.00,
+            "entry_time": "10:47:00",
+            "vwap_at_entry": 46.50,
+            "target_price": 45.90,
+            "stop_price": 44.10,
+            "vix_regime": "HIGH_RISK",
+        }
+        position = MRPosition.from_dict(data)
+
+        assert position.symbol == "TQQQ"
+        assert position.entry_price == 45.00
+        assert position.target_price == 45.90
+        assert position.vix_regime == "HIGH_RISK"
+
+    def test_from_dict_backwards_compatibility(self):
+        """Test deserialization from old format without vix_regime."""
+        # V2.1: Old persisted data won't have vix_regime
         data = {
             "symbol": "TQQQ",
             "entry_price": 45.00,
@@ -135,8 +158,7 @@ class TestMRPosition:
         position = MRPosition.from_dict(data)
 
         assert position.symbol == "TQQQ"
-        assert position.entry_price == 45.00
-        assert position.target_price == 45.90
+        assert position.vix_regime == "NORMAL"  # Default value
 
     def test_roundtrip_serialization(self):
         """Test that to_dict/from_dict roundtrip preserves data."""
@@ -212,18 +234,48 @@ class TestEntrySignals:
         assert result is None
 
     def test_entry_blocked_rsi_too_high(self, engine):
-        """Test entry blocked when RSI >= 25."""
-        params = make_entry_params(rsi_value=25.0)  # Exactly at threshold
+        """Test entry blocked when RSI >= regime-adjusted threshold.
+
+        V2.1: RSI thresholds are now regime-adjusted:
+        - NORMAL (VIX < 20): RSI < 30
+        - CAUTION (VIX 20-30): RSI < 25
+        - HIGH_RISK (VIX 30-40): RSI < 20
+        """
+        # NORMAL regime: RSI threshold is 30
+        params = make_entry_params(rsi_value=30.0, vix_value=15.0)  # At threshold
         result = engine.check_entry_signal(**params)
         assert result is None
 
-        params = make_entry_params(rsi_value=30.0)  # Above threshold
+        params = make_entry_params(rsi_value=35.0, vix_value=15.0)  # Above threshold
+        result = engine.check_entry_signal(**params)
+        assert result is None
+
+        # CAUTION regime: RSI threshold is 25
+        params = make_entry_params(rsi_value=25.0, vix_value=25.0)  # At threshold
+        result = engine.check_entry_signal(**params)
+        assert result is None
+
+        # HIGH_RISK regime: RSI threshold is 20
+        params = make_entry_params(rsi_value=20.0, vix_value=35.0)  # At threshold
         result = engine.check_entry_signal(**params)
         assert result is None
 
     def test_entry_allowed_rsi_below_threshold(self, engine):
-        """Test entry allowed when RSI < 25."""
-        params = make_entry_params(rsi_value=24.9)
+        """Test entry allowed when RSI < regime-adjusted threshold."""
+        # NORMAL regime: RSI < 30
+        params = make_entry_params(rsi_value=29.9, vix_value=15.0)
+        result = engine.check_entry_signal(**params)
+        assert result is not None
+
+        # CAUTION regime: RSI < 25
+        engine.reset()  # Clear previous entry
+        params = make_entry_params(rsi_value=24.9, vix_value=25.0)
+        result = engine.check_entry_signal(**params)
+        assert result is not None
+
+        # HIGH_RISK regime: RSI < 20
+        engine.reset()
+        params = make_entry_params(rsi_value=19.9, vix_value=35.0)
         result = engine.check_entry_signal(**params)
         assert result is not None
 
@@ -334,6 +386,83 @@ class TestEntrySignals:
         result = engine.check_entry_signal(**params)
         assert result is not None
         assert result.symbol == "SOXL"
+
+    # -------------------------------------------------------------------------
+    # V2.1 VIX Regime Tests
+    # -------------------------------------------------------------------------
+
+    def test_entry_blocked_crash_regime(self, engine):
+        """Test entry blocked in CRASH regime (VIX > 40).
+
+        V2.1: When VIX > 40, MR is completely disabled.
+        """
+        # VIX at 41 - just above CRASH threshold
+        params = make_entry_params(vix_value=41.0, rsi_value=15.0)
+        result = engine.check_entry_signal(**params)
+        assert result is None
+
+        # VIX at 50 - deep in crash territory
+        params = make_entry_params(vix_value=50.0, rsi_value=10.0)
+        result = engine.check_entry_signal(**params)
+        assert result is None
+
+        # VIX at 80 - March 2020 levels
+        params = make_entry_params(vix_value=80.0, rsi_value=5.0)
+        result = engine.check_entry_signal(**params)
+        assert result is None
+
+    def test_entry_allowed_high_risk_regime(self, engine):
+        """Test entry allowed in HIGH_RISK regime with strict RSI.
+
+        V2.1: VIX 30-40 allows MR with RSI < 20.
+        """
+        # VIX at 35, RSI at 19.9 (just below 20)
+        params = make_entry_params(vix_value=35.0, rsi_value=19.9)
+        result = engine.check_entry_signal(**params)
+        assert result is not None
+        assert "VIX=HIGH_RISK" in result.reason
+
+    def test_entry_blocked_high_risk_rsi_insufficient(self, engine):
+        """Test entry blocked in HIGH_RISK when RSI >= 20."""
+        # VIX at 35, RSI at 20 (at threshold)
+        params = make_entry_params(vix_value=35.0, rsi_value=20.0)
+        result = engine.check_entry_signal(**params)
+        assert result is None
+
+    def test_entry_allowed_caution_regime(self, engine):
+        """Test entry allowed in CAUTION regime with moderate RSI.
+
+        V2.1: VIX 20-30 allows MR with RSI < 25.
+        """
+        # VIX at 25, RSI at 24.9
+        params = make_entry_params(vix_value=25.0, rsi_value=24.9)
+        result = engine.check_entry_signal(**params)
+        assert result is not None
+        assert "VIX=CAUTION" in result.reason
+
+    def test_entry_allowed_normal_regime(self, engine):
+        """Test entry allowed in NORMAL regime with standard RSI.
+
+        V2.1: VIX < 20 allows MR with RSI < 30.
+        """
+        # VIX at 15, RSI at 29.9
+        params = make_entry_params(vix_value=15.0, rsi_value=29.9)
+        result = engine.check_entry_signal(**params)
+        assert result is not None
+        assert "VIX=NORMAL" in result.reason
+
+    def test_vix_boundary_40(self, engine):
+        """Test VIX boundary at 40 (HIGH_RISK vs CRASH)."""
+        # VIX at 39.9 - HIGH_RISK, MR allowed
+        params = make_entry_params(vix_value=39.9, rsi_value=19.0)
+        result = engine.check_entry_signal(**params)
+        assert result is not None
+
+        # VIX at 40.0 - CRASH, MR disabled
+        engine.reset()
+        params = make_entry_params(vix_value=40.0, rsi_value=19.0)
+        result = engine.check_entry_signal(**params)
+        assert result is None
 
 
 # =============================================================================
@@ -493,7 +622,7 @@ class TestPositionManagement:
     """Tests for position registration and management."""
 
     def test_register_entry(self, engine):
-        """Test position registration."""
+        """Test position registration with default (NORMAL) VIX regime."""
         position = engine.register_entry(
             symbol="TQQQ",
             entry_price=45.00,
@@ -506,7 +635,54 @@ class TestPositionManagement:
         assert position.entry_time == "10:47:00"
         assert position.vwap_at_entry == 46.50
         assert position.target_price == 45.90  # 45.00 * 1.02
+        # Default stop uses config.MR_STOP_PCT (0.02 = 2%) if no signal pending
         assert position.stop_price == 44.10  # 45.00 * 0.98
+        assert position.vix_regime == "NORMAL"
+
+    def test_register_entry_with_vix_value(self, engine):
+        """Test position registration with explicit VIX value.
+
+        V2.1: Stop loss is regime-adjusted:
+        - NORMAL: 8%
+        - CAUTION: 6%
+        - HIGH_RISK: 4%
+        """
+        # NORMAL regime (VIX=15): 8% stop
+        position = engine.register_entry(
+            symbol="TQQQ",
+            entry_price=100.00,
+            entry_time="10:47:00",
+            vwap=102.00,
+            vix_value=15.0,
+        )
+        assert position.stop_price == 92.00  # 100 * 0.92 (8% stop)
+        assert position.vix_regime == "NORMAL"
+
+        engine.reset()
+
+        # CAUTION regime (VIX=25): 6% stop
+        position = engine.register_entry(
+            symbol="SOXL",
+            entry_price=100.00,
+            entry_time="11:00:00",
+            vwap=102.00,
+            vix_value=25.0,
+        )
+        assert position.stop_price == 94.00  # 100 * 0.94 (6% stop)
+        assert position.vix_regime == "CAUTION"
+
+        engine.reset()
+
+        # HIGH_RISK regime (VIX=35): 4% stop
+        position = engine.register_entry(
+            symbol="TQQQ",
+            entry_price=100.00,
+            entry_time="11:30:00",
+            vwap=102.00,
+            vix_value=35.0,
+        )
+        assert position.stop_price == 96.00  # 100 * 0.96 (4% stop)
+        assert position.vix_regime == "HIGH_RISK"
 
     def test_has_position(self, engine):
         """Test has_position check."""

@@ -4,12 +4,18 @@ Mean Reversion Engine - Intraday oversold bounce strategy.
 Captures intraday bounces in 3× leveraged ETFs (TQQQ, SOXL) when
 panic selling drives prices to extreme oversold levels.
 
-Entry: RSI(5) < 25 AND Drop > 2.5% AND Volume > 1.2× AND Regime >= 40
-Exit: +2% target OR -2% stop OR 3:45 PM time exit
+V2.1 VIX Regime Filter:
+- NORMAL (VIX < 20): 10% allocation, RSI < 30, 8% stop
+- CAUTION (VIX 20-30): 5% allocation, RSI < 25, 6% stop
+- HIGH_RISK (VIX 30-40): 2% allocation, RSI < 20, 4% stop
+- CRASH (VIX > 40): MR DISABLED (0% allocation)
+
+Entry: RSI < threshold AND Drop > 2.5% AND Volume > 1.2× AND Regime >= 40 AND VIX regime allows
+Exit: +2% target OR regime-adjusted stop OR 3:45 PM time exit
 
 CRITICAL: All positions must be closed by 3:45 PM. No overnight holds.
 
-Spec: docs/08-mean-reversion-engine.md
+Spec: docs/08-mean-reversion-engine.md, docs/v2-specs/V2-1-Critical-Fixes-Guide.md
 """
 
 from dataclasses import dataclass
@@ -19,6 +25,7 @@ if TYPE_CHECKING:
     from AlgorithmImports import QCAlgorithm
 
 import config
+from data.vix_regime import VIXRegime, VIXRegimeState, get_vix_regime_state
 from models.enums import Urgency
 from models.target_weight import TargetWeight
 
@@ -33,6 +40,7 @@ class MRPosition:
     vwap_at_entry: float
     target_price: float
     stop_price: float
+    vix_regime: str = "NORMAL"  # VIX regime at entry (V2.1)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for persistence."""
@@ -43,6 +51,7 @@ class MRPosition:
             "vwap_at_entry": self.vwap_at_entry,
             "target_price": self.target_price,
             "stop_price": self.stop_price,
+            "vix_regime": self.vix_regime,
         }
 
     @classmethod
@@ -55,6 +64,7 @@ class MRPosition:
             vwap_at_entry=data["vwap_at_entry"],
             target_price=data["target_price"],
             stop_price=data["stop_price"],
+            vix_regime=data.get("vix_regime", "NORMAL"),
         )
 
 
@@ -76,6 +86,9 @@ class MeanReversionEngine:
         """Initialize Mean Reversion Engine."""
         self.algorithm = algorithm
         self._position: Optional[MRPosition] = None
+        # V2.1: Pending VIX regime state for register_entry
+        self._pending_vix_regime: str = "NORMAL"
+        self._pending_stop_pct: float = config.MR_STOP_PCT
 
     def log(self, message: str) -> None:
         """Log via algorithm or skip for testing."""
@@ -98,6 +111,7 @@ class MeanReversionEngine:
         time_guard_active: bool,
         current_hour: int,
         current_minute: int,
+        vix_value: float = 15.0,
     ) -> Optional[TargetWeight]:
         """
         Check for mean reversion entry signal.
@@ -117,12 +131,24 @@ class MeanReversionEngine:
             time_guard_active: True if time guard (Fed window) is active.
             current_hour: Current hour (0-23) Eastern.
             current_minute: Current minute (0-59).
+            vix_value: Current VIX value for regime classification (V2.1).
 
         Returns:
             TargetWeight for entry, or None if no signal.
         """
         # Check if symbol is valid for this engine
         if symbol not in self.INSTRUMENTS:
+            return None
+
+        # V2.1: Get VIX regime state - check FIRST before other conditions
+        vix_state = get_vix_regime_state(vix_value)
+
+        # V2.1: CRASH regime (VIX > 40) - MR DISABLED
+        if not vix_state.mr_enabled:
+            self.log(
+                f"MR: {symbol} entry blocked - VIX CRASH regime "
+                f"(VIX={vix_value:.1f} > 40) - MR DISABLED"
+            )
             return None
 
         # Only one MR position at a time
@@ -157,8 +183,10 @@ class MeanReversionEngine:
             self.log(f"MR: {symbol} entry blocked - time guard active")
             return None
 
-        # Condition 3: RSI oversold (RSI < 25)
-        if rsi_value >= config.RSI_THRESHOLD:
+        # Condition 3: RSI oversold - use REGIME-ADJUSTED threshold (V2.1)
+        # NORMAL: RSI < 30, CAUTION: RSI < 25, HIGH_RISK: RSI < 20
+        rsi_threshold = vix_state.rsi_threshold
+        if rsi_value >= rsi_threshold:
             return None
 
         # Condition 4: Price drop > 2.5% from open
@@ -191,13 +219,20 @@ class MeanReversionEngine:
 
         # All conditions passed - generate entry signal
         reason = (
-            f"MR Entry: RSI={rsi_value:.1f}, " f"Drop={drop_pct:.1%}, Volume={volume_ratio:.1f}x"
+            f"MR Entry: RSI={rsi_value:.1f}<{rsi_threshold:.0f}, "
+            f"Drop={drop_pct:.1%}, Volume={volume_ratio:.1f}x, "
+            f"VIX={vix_state.regime.value}"
         )
 
         self.log(
             f"MR: ENTRY_SIGNAL {symbol} | {reason} | "
-            f"Price=${current_price:.2f} | Regime={regime_score:.1f}"
+            f"Price=${current_price:.2f} | Regime={regime_score:.1f} | "
+            f"VIX={vix_value:.1f} ({vix_state.regime.value})"
         )
+
+        # Store VIX regime in engine for register_entry to use
+        self._pending_vix_regime = vix_state.regime.value
+        self._pending_stop_pct = vix_state.stop_loss_pct
 
         return TargetWeight(
             symbol=symbol,
@@ -337,6 +372,7 @@ class MeanReversionEngine:
         entry_price: float,
         entry_time: str,
         vwap: float,
+        vix_value: Optional[float] = None,
     ) -> MRPosition:
         """
         Register a new mean reversion position after fill.
@@ -346,13 +382,24 @@ class MeanReversionEngine:
             entry_price: Fill price.
             entry_time: Entry timestamp string.
             vwap: VWAP at entry time.
+            vix_value: Current VIX value (optional, uses pending state if not provided).
 
         Returns:
             Created MRPosition.
         """
+        # V2.1: Use regime-adjusted stop loss
+        # Get from pending state (set during check_entry_signal) or recalculate
+        if vix_value is not None:
+            vix_state = get_vix_regime_state(vix_value)
+            stop_pct = vix_state.stop_loss_pct
+            vix_regime = vix_state.regime.value
+        else:
+            stop_pct = self._pending_stop_pct
+            vix_regime = self._pending_vix_regime
+
         # Calculate target and stop prices
         target_price = entry_price * (1 + config.MR_TARGET_PCT)
-        stop_price = entry_price * (1 - config.MR_STOP_PCT)
+        stop_price = entry_price * (1 - stop_pct)
 
         position = MRPosition(
             symbol=symbol,
@@ -361,6 +408,7 @@ class MeanReversionEngine:
             vwap_at_entry=vwap,
             target_price=target_price,
             stop_price=stop_price,
+            vix_regime=vix_regime,
         )
 
         self._position = position
@@ -368,10 +416,15 @@ class MeanReversionEngine:
         self.log(
             f"MR: POSITION_REGISTERED {symbol} | "
             f"Entry=${entry_price:.2f} | "
-            f"Target=${target_price:.2f} | "
-            f"Stop=${stop_price:.2f} | "
-            f"VWAP=${vwap:.2f}"
+            f"Target=${target_price:.2f} (+{config.MR_TARGET_PCT:.0%}) | "
+            f"Stop=${stop_price:.2f} (-{stop_pct:.0%}) | "
+            f"VWAP=${vwap:.2f} | "
+            f"VIX_Regime={vix_regime}"
         )
+
+        # Reset pending state
+        self._pending_vix_regime = "NORMAL"
+        self._pending_stop_pct = config.MR_STOP_PCT
 
         return position
 
@@ -418,6 +471,8 @@ class MeanReversionEngine:
     def reset(self) -> None:
         """Reset engine state (clear position)."""
         self._position = None
+        self._pending_vix_regime = "NORMAL"
+        self._pending_stop_pct = config.MR_STOP_PCT
         self.log("MR: Engine reset - position cleared")
 
     def _parse_time(self, time_str: str) -> tuple:
@@ -440,3 +495,7 @@ class MeanReversionEngine:
     def get_vwap_at_entry(self) -> Optional[float]:
         """Get VWAP at entry time."""
         return self._position.vwap_at_entry if self._position else None
+
+    def get_vix_regime_at_entry(self) -> Optional[str]:
+        """Get VIX regime at entry time (V2.1)."""
+        return self._position.vix_regime if self._position else None
