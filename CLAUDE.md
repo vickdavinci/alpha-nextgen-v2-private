@@ -11,7 +11,7 @@
 
 ```bash
 # 1. Activate environment and verify Python version
-cd /Users/vigneshwaranarumugam/Documents/Trading\ Github/alpha-nextgen-v2-private && source venv/bin/activate && python --version
+source venv/bin/activate && python --version
 # Expected: Python 3.11.x (NOT 3.14)
 
 # 2. Check current task state
@@ -28,11 +28,44 @@ git status && git branch
 
 ---
 
+## Build & Test Commands
+
+```bash
+# Setup (first time)
+make setup                    # Create venv, install deps, pre-commit hooks
+
+# Run all tests
+make test                     # or: pytest
+
+# Run single test file
+pytest tests/test_regime_engine.py -v
+
+# Run single test function
+pytest tests/test_regime_engine.py::test_regime_score_boundaries -v
+
+# Run scenario tests only
+pytest tests/scenarios/ -v
+
+# Run tests matching pattern
+pytest -k "kill_switch" -v
+
+# Lint and format
+make lint                     # Black + isort
+
+# Validate config against spec
+make validate-config
+
+# Create feature branch
+make branch name=feature/va/my-feature
+```
+
+---
+
 ## Project Overview
 
 **Alpha NextGen V2** is a multi-strategy algorithmic trading system built on QuantConnect (LEAN engine) for deployment on Interactive Brokers. The system implements a **Core-Satellite** architecture with three engines:
 
-- **Core (70%)**: Trend Engine - MA200 + ADX confirmation, BB compression breakout
+- **Core (70%)**: Trend Engine - MA200 + ADX confirmation
 - **Satellite (0-10%)**: Mean Reversion Engine - RSI oversold bounce with VIX filter
 - **Satellite (20-30%)**: Options Engine - 4-factor entry scoring, Greeks monitoring
 
@@ -42,7 +75,7 @@ Forked from V1 v1.0.0 on 2026-01-26. See `docs/v2-specs/` for V2.1 specification
 
 ```
 alpha-nextgen/
-├── main.py                     # QCAlgorithm entry point (1,638 lines - V2.1 Complete)
+├── main.py                     # QCAlgorithm entry point (V2.1 Complete)
 ├── config.py                   # ALL tunable parameters
 ├── requirements.txt            # Python dependencies
 ├── requirements.lock           # Locked versions for reproducibility
@@ -115,7 +148,7 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 | **Capital Engine** | `engines/core/capital_engine.py` | `docs/05-capital-engine.md` | Phase management, lockbox, tradeable equity |
 | **Risk Engine** | `engines/core/risk_engine.py` | `docs/12-risk-engine.md` | All circuit breakers and safeguards |
 | **Cold Start Engine** | `engines/core/cold_start_engine.py` | `docs/06-cold-start-engine.md` | Days 1-5 warm entry logic |
-| **Trend Engine** | `engines/core/trend_engine.py` | `docs/07-trend-engine.md` | BB compression breakout signals for QLD/SSO (70%) |
+| **Trend Engine** | `engines/core/trend_engine.py` | `docs/07-trend-engine.md` | MA200 + ADX trend signals for QLD/SSO (70%) |
 
 ### Satellite Engines (engines/satellite/)
 
@@ -144,6 +177,29 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 | `docs/16-appendix-parameters.md` | All tunable parameters in one place |
 | `docs/17-appendix-glossary.md` | Terms, abbreviations, formulas |
 | `docs/v2-specs/` | V2.1 specifications and architecture guides |
+
+---
+
+## Feature Branches (Not on develop)
+
+Some features are developed on separate branches to keep core trading logic clean:
+
+| Branch | Contents | Status |
+|--------|----------|--------|
+| `feat/backtest-reporting` | Metrics engine (Sharpe, Sortino, drawdown), CSV export, QC charts | Complete, not integrated |
+
+```bash
+# Access feature branch
+git checkout feat/backtest-reporting
+
+# Return to main development
+git checkout develop
+
+# Merge when ready for production
+git checkout develop && git merge feat/backtest-reporting
+```
+
+See `WORKBOARD.md` → "Feature Branches" section for full details.
 
 ---
 
@@ -271,7 +327,7 @@ import pandas    # ❌ Use from AlgorithmImports import *
 
 ```python
 # CORRECT
-from config import KILL_SWITCH_PCT, BB_PERIOD
+from config import KILL_SWITCH_PCT, ADX_PERIOD
 
 if loss_pct >= KILL_SWITCH_PCT:
     self.trigger_kill_switch()
@@ -349,29 +405,50 @@ except Exception as e:
 ## Data Flow Architecture
 
 ```
-┌─────────────────┐
-│   Regime Engine │ ─── Calculates market state (0-100)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐     ┌─────────────────┐
-│  Trend Engine   │     │    MR Engine    │
-│  (Emits Target  │     │  (Emits Target  │
-│    Weights)     │     │    Weights)     │
-└────────┬────────┘     └────────┬────────┘
-         │                       │
-         ▼                       ▼
-┌─────────────────────────────────────────┐
-│           Portfolio Router              │
-│  (ONLY component authorized to place    │
-│   orders via MarketOrder/MOO)           │
-└────────────────────┬────────────────────┘
-                     │
-                     ▼
-┌─────────────────────────────────────────┐
-│           Execution Engine              │
-│      (Submits orders to broker)         │
-└─────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│                         CORE ENGINES                              │
+├─────────────────┬─────────────────┬─────────────────┬─────────────┤
+│  Regime Engine  │  Capital Engine │   Risk Engine   │ Cold Start  │
+│  (Score 0-100)  │  (Phase/Lockbox)│  (Circuit Break)│ (Days 1-5)  │
+└────────┬────────┴────────┬────────┴────────┬────────┴──────┬──────┘
+         │                 │                 │               │
+         ▼                 ▼                 ▼               ▼
+┌───────────────────────────────────────────────────────────────────┐
+│                       STRATEGY ENGINES                            │
+├─────────────────┬─────────────────┬─────────────────┬─────────────┤
+│  Trend Engine   │ Options Engine  │    MR Engine    │Hedge/Yield  │
+│   (Core 70%)    │(Satellite 20-30%)│(Satellite 0-10%)│  (Overlay)  │
+│   QLD, SSO      │   QQQ Options   │  TQQQ, SOXL     │ TMF,PSQ,SHV │
+│  Urgency: EOD   │ Urgency: IMMED  │ Urgency: IMMED  │Urgency: EOD │
+└────────┬────────┴────────┬────────┴────────┬────────┴──────┬──────┘
+         │                 │                 │               │
+         └─────────────────┴─────────────────┴───────────────┘
+                                   │
+                          TargetWeight Objects
+                                   │
+                                   ▼
+┌───────────────────────────────────────────────────────────────────┐
+│                      PORTFOLIO ROUTER                             │
+│  1. Collect → 2. Aggregate → 3. Validate → 4. Net → 5. Execute   │
+│        (ONLY component authorized to place orders)                │
+└──────────────────────────────┬────────────────────────────────────┘
+                               │
+                               ▼
+┌───────────────────────────────────────────────────────────────────┐
+│                      EXECUTION ENGINE                             │
+├───────────────────────────────┬───────────────────────────────────┤
+│         Market Orders         │           MOO Orders              │
+│    (MR, Options, Stops)       │    (Trend, Hedge, Yield)          │
+├───────────────────────────────┼───────────────────────────────────┤
+│         OCO Manager           │        Fill Handler               │
+│   (Options profit/stop pairs) │    (Position tracking)            │
+└───────────────────────────────┴───────────────────────────────────┘
+                               │
+                               ▼
+                         ┌───────────┐
+                         │   IBKR    │
+                         │  Broker   │
+                         └───────────┘
 ```
 
 ---
@@ -503,7 +580,7 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | Weekly breaker | 5% WTD loss | 50% sizing reduction |
 | Gap filter | SPY -1.5% gap | Block MR entries |
 | Vol shock | 3× ATR bar | 15-min pause |
-| Compression | Bandwidth < 10% | Trend entry eligible |
+| ADX momentum | ADX >= 25 | Trend entry eligible |
 | Oversold | RSI(5) < 25 | MR entry eligible |
 
 ### Overnight Holdings

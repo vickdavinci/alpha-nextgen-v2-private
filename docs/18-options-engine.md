@@ -113,10 +113,17 @@ contracts = floor(allocation / (entry_price * 100 * stop_pct))
 
 ### Contract Selection
 
-1. **Expiry**: 0-1 DTE (today or tomorrow)
+1. **Expiry**: 1-4 DTE (per V2.1 spec)
 2. **Strike**: ATM or first OTM strike
-3. **Delta Target**: 0.45-0.55 (near ATM)
+3. **Delta Range**: 0.40-0.60 (near ATM, absolute value for puts)
 4. **Minimum Premium**: $0.50 per contract
+
+**Config Parameters:**
+- `OPTIONS_DTE_MIN` (default: 1)
+- `OPTIONS_DTE_MAX` (default: 4)
+- `OPTIONS_DELTA_MIN` (default: 0.40)
+- `OPTIONS_DELTA_MAX` (default: 0.60)
+- `OPTIONS_MIN_PREMIUM` (default: 0.50)
 
 ---
 
@@ -156,9 +163,11 @@ if current_time >= "14:30" and stop_pct > 0.20:
 
 ### Time Exit
 
-Force close by **3:45 PM ET** if still holding.
+Force close by **3:45 PM ET** if still holding. This aligns with the Mean Reversion Engine's forced close time to ensure no intraday positions are held overnight.
 
-**Config Parameter:** `OPTIONS_FORCE_EXIT_TIME` (default: "15:45")
+**Config Parameters:**
+- `OPTIONS_FORCE_EXIT_HOUR` (default: 15)
+- `OPTIONS_FORCE_EXIT_MINUTE` (default: 45)
 
 ---
 
@@ -270,7 +279,8 @@ See [19 - OCO Manager](19-oco-manager.md) for implementation details.
 | `OPTIONS_STOP_TIER_3` | 0.25 | Stop for score 3.5-3.75 |
 | `OPTIONS_STOP_TIER_4` | 0.30 | Widest stop (score 3.75-4.0) |
 | `OPTIONS_LATE_DAY_TIME` | "14:30" | Force tight stops after this |
-| `OPTIONS_FORCE_EXIT_TIME` | "15:45" | Force close time |
+| `OPTIONS_FORCE_EXIT_HOUR` | 15 | Force close hour (3 PM) |
+| `OPTIONS_FORCE_EXIT_MINUTE` | 45 | Force close minute (3:45 PM) |
 | `OPTIONS_MAX_DELTA` | 0.70 | Delta alert threshold |
 | `OPTIONS_MAX_GAMMA` | 0.10 | Gamma alert threshold |
 | `OPTIONS_MIN_THETA` | -0.15 | Theta alert threshold |

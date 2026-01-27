@@ -895,8 +895,12 @@ pre-commit install
 | `end-of-file-fixer` | Ensures files end with newline |
 | `check-yaml` | Validates YAML syntax |
 | `check-json` | Validates JSON syntax |
+| `check-added-large-files` | Blocks files > 500KB |
+| `check-merge-conflict` | Detects merge conflict markers |
+| `detect-private-key` | Prevents accidental credential commits |
 | `black` | Formats Python code |
 | `isort` | Sorts imports |
+| `protect-branches` | **Blocks direct commits to `main`/`develop`** |
 | `no-print-statements` | Blocks `print()` in source files |
 | `no-datetime-now` | Blocks `datetime.now()` usage |
 | `no-time-sleep` | Blocks `time.sleep()` usage |

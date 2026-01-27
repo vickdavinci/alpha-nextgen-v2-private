@@ -313,7 +313,8 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `OPTIONS_ENTRY_START` | 10:00 ET | Earliest entry time |
 | `OPTIONS_ENTRY_END` | 14:30 ET | Latest entry time |
 | `OPTIONS_LATE_DAY_TIME` | 14:30 ET | Force tight stops after this |
-| `OPTIONS_FORCE_EXIT_TIME` | 15:45 ET | Mandatory close time |
+| `OPTIONS_FORCE_EXIT_HOUR` | 15 | Force close hour (3 PM ET) |
+| `OPTIONS_FORCE_EXIT_MINUTE` | 45 | Force close minute (:45) |
 
 ### Greeks Monitoring
 
@@ -329,8 +330,9 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 |-----------|:-----:|-------------|
 | `OPTIONS_DTE_MIN` | 1 | Minimum days to expiry |
 | `OPTIONS_DTE_MAX` | 4 | Maximum days to expiry |
-| `OPTIONS_DELTA_TARGET` | 0.45-0.55 | Near ATM |
-| `OPTIONS_MIN_PREMIUM` | 0.50 | Minimum premium per contract |
+| `OPTIONS_DELTA_MIN` | 0.40 | Minimum delta (ATM range) |
+| `OPTIONS_DELTA_MAX` | 0.60 | Maximum delta (ATM range) |
+| `OPTIONS_MIN_PREMIUM` | 0.50 | Minimum premium per contract ($0.50) |
 
 ---
 
@@ -685,7 +687,8 @@ OPTIONS_PROFIT_TARGET_PCT = 0.50
 OPTIONS_ENTRY_START = "10:00"
 OPTIONS_ENTRY_END = "14:30"
 OPTIONS_LATE_DAY_TIME = "14:30"
-OPTIONS_FORCE_EXIT_TIME = "15:45"
+OPTIONS_FORCE_EXIT_HOUR = 15    # 3 PM ET
+OPTIONS_FORCE_EXIT_MINUTE = 45  # 3:45 PM ET
 
 # Greeks Monitoring
 OPTIONS_MAX_DELTA = 0.70
@@ -695,8 +698,8 @@ OPTIONS_MIN_THETA = -0.15
 # Contract Selection
 OPTIONS_DTE_MIN = 1
 OPTIONS_DTE_MAX = 4
-OPTIONS_DELTA_TARGET_MIN = 0.45
-OPTIONS_DELTA_TARGET_MAX = 0.55
+OPTIONS_DELTA_MIN = 0.40
+OPTIONS_DELTA_MAX = 0.60
 OPTIONS_MIN_PREMIUM = 0.50
 
 # =============================================================================

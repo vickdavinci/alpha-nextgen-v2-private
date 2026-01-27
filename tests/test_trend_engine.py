@@ -1115,3 +1115,134 @@ class TestLogging:
         )
         engine.remove_position("QLD")
         engine.reset()
+
+
+# =============================================================================
+# INDICATOR READINESS TESTS (Blocker #2 fix)
+# =============================================================================
+
+
+class TestIndicatorReadiness:
+    """Tests for indicator readiness validation (None/NaN handling)."""
+
+    def test_entry_blocked_ma200_none(self, engine):
+        """Test entry blocked when MA200 is None."""
+        result = engine.check_entry_signal(
+            symbol="QLD",
+            close=105.0,
+            ma200=None,  # Not ready
+            adx=28.0,
+            regime_score=60.0,
+            is_cold_start_active=False,
+            has_warm_entry=False,
+            atr=2.0,
+            current_date="2024-01-15",
+        )
+        assert result is None
+
+    def test_entry_blocked_adx_none(self, engine):
+        """Test entry blocked when ADX is None."""
+        result = engine.check_entry_signal(
+            symbol="QLD",
+            close=105.0,
+            ma200=100.0,
+            adx=None,  # Not ready
+            regime_score=60.0,
+            is_cold_start_active=False,
+            has_warm_entry=False,
+            atr=2.0,
+            current_date="2024-01-15",
+        )
+        assert result is None
+
+    def test_entry_blocked_atr_none(self, engine):
+        """Test entry blocked when ATR is None."""
+        result = engine.check_entry_signal(
+            symbol="QLD",
+            close=105.0,
+            ma200=100.0,
+            adx=28.0,
+            regime_score=60.0,
+            is_cold_start_active=False,
+            has_warm_entry=False,
+            atr=None,  # Not ready
+            current_date="2024-01-15",
+        )
+        assert result is None
+
+    def test_entry_blocked_atr_zero(self, engine):
+        """Test entry blocked when ATR is zero."""
+        result = engine.check_entry_signal(
+            symbol="QLD",
+            close=105.0,
+            ma200=100.0,
+            adx=28.0,
+            regime_score=60.0,
+            is_cold_start_active=False,
+            has_warm_entry=False,
+            atr=0.0,  # Invalid - zero ATR
+            current_date="2024-01-15",
+        )
+        assert result is None
+
+    def test_entry_blocked_ma200_nan(self, engine):
+        """Test entry blocked when MA200 is NaN."""
+        import math
+
+        result = engine.check_entry_signal(
+            symbol="QLD",
+            close=105.0,
+            ma200=float("nan"),  # NaN
+            adx=28.0,
+            regime_score=60.0,
+            is_cold_start_active=False,
+            has_warm_entry=False,
+            atr=2.0,
+            current_date="2024-01-15",
+        )
+        assert result is None
+
+    def test_entry_blocked_close_none(self, engine):
+        """Test entry blocked when close price is None."""
+        result = engine.check_entry_signal(
+            symbol="QLD",
+            close=None,  # Not ready
+            ma200=100.0,
+            adx=28.0,
+            regime_score=60.0,
+            is_cold_start_active=False,
+            has_warm_entry=False,
+            atr=2.0,
+            current_date="2024-01-15",
+        )
+        assert result is None
+
+    def test_exit_safe_with_none_indicators(self, engine):
+        """Test exit check returns None safely when indicators not ready."""
+        engine.register_entry("QLD", 100.0, "2024-01-15", 2.0)
+
+        result = engine.check_exit_signals(
+            symbol="QLD",
+            close=None,  # Not ready
+            high=110.0,
+            ma200=100.0,
+            adx=30.0,
+            regime_score=60.0,
+            atr=2.0,
+        )
+        assert result is None  # No crash, returns None
+
+    def test_exit_safe_with_nan_ma200(self, engine):
+        """Test exit check handles NaN MA200 gracefully."""
+        engine.register_entry("QLD", 100.0, "2024-01-15", 2.0)
+
+        result = engine.check_exit_signals(
+            symbol="QLD",
+            close=110.0,
+            high=112.0,
+            ma200=float("nan"),  # NaN
+            adx=30.0,
+            regime_score=60.0,
+            atr=2.0,
+        )
+        assert result is None  # No crash, returns None

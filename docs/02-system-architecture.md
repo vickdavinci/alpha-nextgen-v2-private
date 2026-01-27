@@ -37,22 +37,27 @@ flowchart TB
             SHV["SHV"]
             SPY_M["SPY"]
         end
+        subgraph OPTIONS_DATA["Options Data"]
+            QQQ_OPT["QQQ Options<br/>Chains"]
+            VIX["VIX<br/>(IV Rank)"]
+        end
     end
 
     subgraph CORE["CORE ENGINES"]
         direction LR
         REGIME["REGIME ENGINE<br/>─────────────<br/>4 Proxy Factors<br/>Score 0-100<br/>Smoothing α=0.3<br/>State Classification"]
         CAPITAL["CAPITAL ENGINE<br/>─────────────<br/>SEED/GROWTH Phase<br/>Virtual Lockbox<br/>Tradeable Equity<br/>Position Limits"]
-        RISK["RISK ENGINE<br/>─────────────<br/>Kill Switch -3%<br/>Panic Mode -4%<br/>Weekly Breaker<br/>Gap/Vol/Time Guard"]
+        RISK["RISK ENGINE<br/>─────────────<br/>Kill Switch -3%<br/>Panic Mode -4%<br/>Weekly Breaker<br/>Gap/Vol/Time Guard<br/>Greeks Monitor"]
     end
 
-    subgraph STRATEGIES["STRATEGY ENGINES"]
+    subgraph STRATEGIES["STRATEGY ENGINES (Core-Satellite)"]
         direction LR
-        TREND["TREND<br/>─────────<br/>QLD/SSO<br/>MA200+ADX<br/>Chandelier Stop<br/>Urgency: EOD"]
-        MR["MEAN REV<br/>─────────<br/>TQQQ/SOXL<br/>RSI < 25<br/>Drop > 2.5%<br/>Urgency: IMMED"]
+        TREND["TREND (70%)<br/>─────────<br/>QLD/SSO<br/>MA200+ADX<br/>Chandelier Stop<br/>Urgency: EOD"]
+        OPTIONS["OPTIONS (20-30%)<br/>─────────<br/>QQQ Options<br/>4-Factor Score<br/>+50% Target<br/>Urgency: IMMED"]
+        MR["MEAN REV (0-10%)<br/>─────────<br/>TQQQ/SOXL<br/>RSI < 25 + VIX<br/>Drop > 2.5%<br/>Urgency: IMMED"]
         HEDGE["HEDGE<br/>─────────<br/>TMF/PSQ<br/>Regime < 40<br/>Scaled Alloc<br/>Urgency: EOD"]
         YIELD["YIELD<br/>─────────<br/>SHV<br/>Cash > $2k<br/>LIFO Liquidate<br/>Urgency: EOD"]
-        COLD["COLD START<br/>─────────<br/>Days 1-5<br/>Regime > 50<br/>50% Size<br/>Urgency: IMMED"]
+        COLD["COLD START<br/>─────────<br/>Days 1-5<br/>Regime > 50<br/>25% Size<br/>Urgency: IMMED"]
     end
 
     subgraph ROUTER["PORTFOLIO ROUTER (HUB)"]
@@ -68,14 +73,15 @@ flowchart TB
 
     subgraph EXECUTION["EXECUTION ENGINE"]
         direction LR
-        MARKET["MARKET ORDERS<br/>─────────────<br/>MR Entry/Exit<br/>Stop Losses<br/>Kill Switch<br/>Panic Mode"]
+        MARKET["MARKET ORDERS<br/>─────────────<br/>MR Entry/Exit<br/>Options Entry<br/>Stop Losses<br/>Kill Switch"]
         MOO["MOO ORDERS<br/>─────────────<br/>Trend Entry/Exit<br/>Hedge Rebalance<br/>Yield Sleeve<br/>Submit @ 15:45"]
+        OCO["OCO MANAGER<br/>─────────────<br/>Options Pairs<br/>Profit +50%<br/>Stop Loss<br/>Auto-Cancel"]
     end
 
     DATA --> CORE
     CORE --> STRATEGIES
     STRATEGIES -->|"TargetWeight Objects"| ROUTER
-    RISK -.->|"GO/NO-GO"| ROUTER
+    RISK -.->|"GO/NO-GO + Greeks"| ROUTER
     ROUTER --> EXECUTION
     EXECUTION --> BROKER["BROKER<br/>(IBKR)"]
 ```

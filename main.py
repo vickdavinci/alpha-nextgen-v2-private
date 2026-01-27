@@ -76,7 +76,8 @@ class AlphaNextGen(QCAlgorithm):
         Indicators (registered with QC):
             spy_sma20, spy_sma50, spy_sma200: SimpleMovingAverage - Trend factor
             spy_atr: AverageTrueRange - Vol shock detection
-            qld_bb, sso_bb: BollingerBands - Compression breakout
+            qld_ma200, sso_ma200: SMA(200) - Trend direction
+            qld_adx, sso_adx: ADX(14) - Momentum confirmation
             qld_atr, sso_atr: AverageTrueRange - Chandelier stops
             tqqq_rsi, soxl_rsi: RelativeStrengthIndex - MR oversold
 
@@ -400,7 +401,8 @@ class AlphaNextGen(QCAlgorithm):
         Indicators:
             - SPY SMAs (20/50/200): Trend factor for regime engine
             - SPY ATR: Vol shock detection (minute resolution)
-            - QLD/SSO Bollinger Bands: Compression breakout for trend engine
+            - QLD/SSO MA200: Trend direction for trend engine
+            - QLD/SSO ADX: Momentum confirmation for trend engine
             - QLD/SSO ATR: Chandelier stop calculation
             - TQQQ/SOXL RSI(5): Mean reversion oversold detection
 
@@ -424,21 +426,12 @@ class AlphaNextGen(QCAlgorithm):
         # ---------------------------------------------------------------------
         # Trend Engine Indicators (Daily resolution for EOD signals)
         # ---------------------------------------------------------------------
-        # Bollinger Bands for compression breakout detection
-        self.qld_bb = self.BB(
-            self.qld,
-            config.BB_PERIOD,
-            config.BB_STD_DEV,
-            MovingAverageType.Simple,
-            Resolution.Daily,
-        )
-        self.sso_bb = self.BB(
-            self.sso,
-            config.BB_PERIOD,
-            config.BB_STD_DEV,
-            MovingAverageType.Simple,
-            Resolution.Daily,
-        )
+        # V2: MA200 for trend direction + ADX for momentum confirmation
+        self.qld_ma200 = self.SMA(self.qld, config.SMA_SLOW, Resolution.Daily)
+        self.sso_ma200 = self.SMA(self.sso, config.SMA_SLOW, Resolution.Daily)
+
+        self.qld_adx = self.ADX(self.qld, config.ADX_PERIOD, Resolution.Daily)
+        self.sso_adx = self.ADX(self.sso, config.ADX_PERIOD, Resolution.Daily)
 
         # ATR for Chandelier stop calculation
         self.qld_atr = self.ATR(
@@ -1155,26 +1148,19 @@ class AlphaNextGen(QCAlgorithm):
         current_date = str(self.Time.date())
 
         # Check QLD
-        if self.qld_bb.IsReady and self.qld_atr.IsReady:
+        if self.qld_ma200.IsReady and self.qld_adx.IsReady and self.qld_atr.IsReady:
             qld_close = self.Securities[self.qld].Close
             qld_high = self.Securities[self.qld].High
-            qld_upper = self.qld_bb.UpperBand.Current.Value
-            qld_middle = self.qld_bb.MiddleBand.Current.Value
-            qld_lower = self.qld_bb.LowerBand.Current.Value
-            qld_bw = (qld_upper - qld_lower) / qld_middle if qld_middle > 0 else 0
-
-            # DEBUG: Disabled to save log space
-            # if self.Time.weekday() == 0:
-            #     self.Log(f"TREND_DEBUG QLD: close={qld_close:.2f} upper={qld_upper:.2f} bw={qld_bw:.3f} regime={regime_state.smoothed_score:.1f}")
+            qld_ma200 = self.qld_ma200.Current.Value
+            qld_adx = self.qld_adx.Current.Value
 
             # Check entry if not invested
             if not self.Portfolio[self.qld].Invested:
                 signal = self.trend_engine.check_entry_signal(
                     symbol="QLD",
                     close=qld_close,
-                    upper_band=self.qld_bb.UpperBand.Current.Value,
-                    middle_band=self.qld_bb.MiddleBand.Current.Value,
-                    lower_band=self.qld_bb.LowerBand.Current.Value,
+                    ma200=qld_ma200,
+                    adx=qld_adx,
                     regime_score=regime_state.smoothed_score,
                     is_cold_start_active=is_cold_start,
                     has_warm_entry=has_warm_entry,
@@ -1189,7 +1175,8 @@ class AlphaNextGen(QCAlgorithm):
                     symbol="QLD",
                     close=qld_close,
                     high=qld_high,
-                    middle_band=self.qld_bb.MiddleBand.Current.Value,
+                    ma200=qld_ma200,
+                    adx=qld_adx,
                     regime_score=regime_state.smoothed_score,
                     atr=self.qld_atr.Current.Value,
                 )
@@ -1197,18 +1184,19 @@ class AlphaNextGen(QCAlgorithm):
                     self.portfolio_router.receive_signal(signal)
 
         # Check SSO
-        if self.sso_bb.IsReady and self.sso_atr.IsReady:
+        if self.sso_ma200.IsReady and self.sso_adx.IsReady and self.sso_atr.IsReady:
             sso_close = self.Securities[self.sso].Close
             sso_high = self.Securities[self.sso].High
+            sso_ma200 = self.sso_ma200.Current.Value
+            sso_adx = self.sso_adx.Current.Value
 
             # Check entry if not invested
             if not self.Portfolio[self.sso].Invested:
                 signal = self.trend_engine.check_entry_signal(
                     symbol="SSO",
                     close=sso_close,
-                    upper_band=self.sso_bb.UpperBand.Current.Value,
-                    middle_band=self.sso_bb.MiddleBand.Current.Value,
-                    lower_band=self.sso_bb.LowerBand.Current.Value,
+                    ma200=sso_ma200,
+                    adx=sso_adx,
                     regime_score=regime_state.smoothed_score,
                     is_cold_start_active=is_cold_start,
                     has_warm_entry=has_warm_entry,
@@ -1223,7 +1211,8 @@ class AlphaNextGen(QCAlgorithm):
                     symbol="SSO",
                     close=sso_close,
                     high=sso_high,
-                    middle_band=self.sso_bb.MiddleBand.Current.Value,
+                    ma200=sso_ma200,
+                    adx=sso_adx,
                     regime_score=regime_state.smoothed_score,
                     atr=self.sso_atr.Current.Value,
                 )

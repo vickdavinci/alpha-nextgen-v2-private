@@ -434,6 +434,7 @@ class OptionsEngine:
         current_minute: int,
         current_date: str,
         portfolio_value: float,
+        regime_score: float = 50.0,
         gap_filter_triggered: bool = False,
         vol_shock_active: bool = False,
         time_guard_active: bool = False,
@@ -451,6 +452,7 @@ class OptionsEngine:
             current_minute: Current minute (0-59).
             current_date: Current date string.
             portfolio_value: Total portfolio value.
+            regime_score: Market regime score (0-100). Must be >= 40.
             gap_filter_triggered: True if gap filter is active.
             vol_shock_active: True if vol shock pause is active.
             time_guard_active: True if time guard is active.
@@ -467,6 +469,11 @@ class OptionsEngine:
             if self._trades_today >= config.OPTIONS_MAX_TRADES_PER_DAY:
                 return None
 
+        # GAP #1 FIX: Check regime score (must be >= 40 per V2.1 spec)
+        if regime_score < 40:
+            self.log(f"OPT: Entry blocked - regime score {regime_score:.1f} < 40 (RISK_OFF)")
+            return None
+
         # Check safeguards
         if gap_filter_triggered:
             self.log("OPT: Entry blocked - gap filter active")
@@ -482,6 +489,45 @@ class OptionsEngine:
 
         # Check if we have a valid contract
         if best_contract is None:
+            return None
+
+        # GAP #3 FIX: Minimum premium validation ($0.50 per spec)
+        if best_contract.mid_price < config.OPTIONS_MIN_PREMIUM:
+            self.log(
+                f"OPT: Entry blocked - premium ${best_contract.mid_price:.2f} < "
+                f"min ${config.OPTIONS_MIN_PREMIUM:.2f}"
+            )
+            return None
+
+        # Validate DTE range (1-4 days per spec)
+        if best_contract.days_to_expiry < config.OPTIONS_DTE_MIN:
+            self.log(
+                f"OPT: Entry blocked - DTE {best_contract.days_to_expiry} < "
+                f"min {config.OPTIONS_DTE_MIN}"
+            )
+            return None
+
+        if best_contract.days_to_expiry > config.OPTIONS_DTE_MAX:
+            self.log(
+                f"OPT: Entry blocked - DTE {best_contract.days_to_expiry} > "
+                f"max {config.OPTIONS_DTE_MAX}"
+            )
+            return None
+
+        # Validate delta range (0.40-0.60 for ATM contracts per spec)
+        contract_delta = abs(best_contract.delta)  # Use absolute value
+        if contract_delta < config.OPTIONS_DELTA_MIN:
+            self.log(
+                f"OPT: Entry blocked - Delta {contract_delta:.2f} < "
+                f"min {config.OPTIONS_DELTA_MIN} (too far OTM)"
+            )
+            return None
+
+        if contract_delta > config.OPTIONS_DELTA_MAX:
+            self.log(
+                f"OPT: Entry blocked - Delta {contract_delta:.2f} > "
+                f"max {config.OPTIONS_DELTA_MAX} (too deep ITM)"
+            )
             return None
 
         # Calculate entry score
@@ -606,6 +652,55 @@ class OptionsEngine:
             )
 
         return None
+
+    def check_force_exit(
+        self,
+        current_hour: int,
+        current_minute: int,
+        current_price: float,
+    ) -> Optional[TargetWeight]:
+        """
+        Check for forced exit at 3:45 PM ET.
+
+        Per V2.1 spec, options positions must be closed by 3:45 PM
+        to avoid overnight theta decay and regulatory risk.
+
+        Args:
+            current_hour: Current hour (0-23) Eastern.
+            current_minute: Current minute (0-59).
+            current_price: Current option price.
+
+        Returns:
+            TargetWeight for forced exit, or None if no position or not time yet.
+        """
+        if self._position is None:
+            return None
+
+        # Check if it's force exit time (15:45 ET)
+        force_exit_time = current_hour > config.OPTIONS_FORCE_EXIT_HOUR or (
+            current_hour == config.OPTIONS_FORCE_EXIT_HOUR
+            and current_minute >= config.OPTIONS_FORCE_EXIT_MINUTE
+        )
+
+        if not force_exit_time:
+            return None
+
+        symbol = self._position.contract.symbol
+        entry_price = self._position.entry_price
+
+        # Calculate P&L percentage
+        pnl_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0
+
+        reason = f"TIME_EXIT_1545 {pnl_pct:+.1%} (Price: ${current_price:.2f})"
+        self.log(f"OPT: FORCE_EXIT {symbol} | {reason}")
+
+        return TargetWeight(
+            symbol=symbol,
+            target_weight=0.0,
+            source="OPT",
+            urgency=Urgency.IMMEDIATE,
+            reason=reason,
+        )
 
     # =========================================================================
     # POSITION MANAGEMENT

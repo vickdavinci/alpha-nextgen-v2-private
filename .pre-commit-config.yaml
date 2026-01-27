@@ -72,7 +72,21 @@ repos:
       # CRITICAL: Block commits to protected branches
       - id: protect-branches
         name: Block commits to protected branches
-        entry: bash -c 'branch=$(git branch --show-current); if [ "$branch" = "main" ] || [ "$branch" = "develop" ]; then echo ""; echo "========================================"; echo "ERROR: Direct commits to $branch blocked"; echo "========================================"; echo ""; echo "Create a feature branch first:"; echo "  git checkout -b feature/<initials>/<description>"; echo ""; exit 1; fi'
+        entry: |
+          bash -c '
+          branch=$(git branch --show-current)
+          if [ "$branch" = "main" ] || [ "$branch" = "develop" ]; then
+            echo ""
+            echo "========================================"
+            echo "ERROR - Direct commits to $branch blocked"
+            echo "========================================"
+            echo ""
+            echo "Create a feature branch first:"
+            echo "  git checkout -b feature/<initials>/<description>"
+            echo ""
+            exit 1
+          fi
+          '
         language: system
         always_run: true
         pass_filenames: false

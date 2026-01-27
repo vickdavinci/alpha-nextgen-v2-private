@@ -17,6 +17,7 @@ ADX Scoring (V2.1):
 Spec: docs/07-trend-engine.md, docs/v2-specs/V2_1_COMPLETE_ARCHITECTURE.txt
 """
 
+import math
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -24,6 +25,18 @@ if TYPE_CHECKING:
     from AlgorithmImports import QCAlgorithm
 
 import config
+
+
+def _is_valid_float(value: float) -> bool:
+    """Check if a float value is valid (not None, NaN, or infinite)."""
+    if value is None:
+        return False
+    try:
+        return not (math.isnan(value) or math.isinf(value))
+    except (TypeError, ValueError):
+        return False
+
+
 from models.enums import Urgency
 from models.target_weight import TargetWeight
 from utils.calculations import (
@@ -178,6 +191,19 @@ class TrendEngine:
         if symbol in self._positions:
             return None
 
+        # Validate indicator inputs (prevent crashes from None/NaN)
+        if not _is_valid_float(close) or not _is_valid_float(ma200):
+            self.log(f"TREND: {symbol} entry blocked - MA200/price not ready")
+            return None
+
+        if not _is_valid_float(adx):
+            self.log(f"TREND: {symbol} entry blocked - ADX not ready")
+            return None
+
+        if not _is_valid_float(atr) or atr <= 0:
+            self.log(f"TREND: {symbol} entry blocked - ATR not ready or zero")
+            return None
+
         # Calculate ADX score
         score = adx_score(adx)
 
@@ -249,6 +275,19 @@ class TrendEngine:
         """
         if symbol not in self._positions:
             return None
+
+        # Validate indicator inputs (prevent crashes from None/NaN)
+        if not _is_valid_float(close) or not _is_valid_float(high):
+            self.log(f"TREND: {symbol} exit check skipped - price data not ready")
+            return None
+
+        if not _is_valid_float(ma200) or not _is_valid_float(adx):
+            self.log(f"TREND: {symbol} exit check skipped - indicators not ready")
+            return None
+
+        if not _is_valid_float(atr) or atr <= 0:
+            # ATR not ready, skip stop update but still check other exits
+            atr = 0.0  # Will skip stop update
 
         position = self._positions[symbol]
 
@@ -339,6 +378,10 @@ class TrendEngine:
 
         The stop only moves up, never down.
         """
+        # Skip if ATR not valid
+        if not _is_valid_float(atr) or atr <= 0:
+            return
+
         # Calculate current profit
         current_profit = profit_pct(position.entry_price, position.highest_high)
 

@@ -90,33 +90,40 @@
 flowchart TB
     S01[01 Executive Summary] --> S02[02 System Architecture]
     S02 --> S03[03 Data Infrastructure]
-    
+
     S03 --> S04[04 Regime Engine]
     S03 --> S05[05 Capital Engine]
     S03 --> S12[12 Risk Engine]
-    
+
     S04 --> S06[06 Cold Start Engine]
     S04 --> S07[07 Trend Engine]
     S04 --> S08[08 Mean Reversion Engine]
     S04 --> S09[09 Hedge Engine]
-    
+    S04 --> S18[18 Options Engine]
+
     S05 --> S06
     S05 --> S07
     S05 --> S08
     S05 --> S10[10 Yield Sleeve]
-    
+    S05 --> S18
+
     S12 --> S06
     S12 --> S08
-    
+    S12 --> S18
+
     S06 --> S11[11 Portfolio Router]
     S07 --> S11
     S08 --> S11
     S09 --> S11
     S10 --> S11
-    
+    S18 --> S11
+
     S11 --> S13[13 Execution Engine]
     S12 --> S11
-    
+
+    S13 --> S19[19 OCO Manager]
+    S18 --> S19
+
     S13 --> S14[14 Daily Operations]
     S14 --> S15[15 State Persistence]
 ```

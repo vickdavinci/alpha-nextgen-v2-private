@@ -90,11 +90,6 @@ ADX_STRONG_THRESHOLD = 35  # ADX for highest confidence
 ADX_WEAK_THRESHOLD = 20
 ADX_MODERATE_THRESHOLD = 25
 
-# V1 Legacy: Bollinger Bands (kept for backwards compatibility)
-BB_PERIOD = 20
-BB_STD_DEV = 2.0
-COMPRESSION_THRESHOLD = 0.10
-
 # Chandelier Stop
 ATR_PERIOD = 14
 CHANDELIER_BASE_MULT = 3.0
@@ -322,6 +317,11 @@ OPTIONS_DTE_MIN = 1  # Minimum days to expiration
 OPTIONS_DTE_MAX = 4  # Maximum days to expiration
 OPTIONS_DELTA_MIN = 0.40  # Minimum delta (ATM range)
 OPTIONS_DELTA_MAX = 0.60  # Maximum delta (ATM range)
+OPTIONS_MIN_PREMIUM = 0.50  # Minimum premium per contract ($0.50)
+
+# Force Exit Time (V2.1: close options by 3:45 PM like MR)
+OPTIONS_FORCE_EXIT_HOUR = 15  # 3 PM
+OPTIONS_FORCE_EXIT_MINUTE = 45  # 3:45 PM
 
 # Position Sizing
 OPTIONS_RISK_PER_TRADE = 0.01  # 1% portfolio risk per trade

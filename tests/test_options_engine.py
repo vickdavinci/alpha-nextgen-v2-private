@@ -535,6 +535,113 @@ class TestEntrySignals:
         )
         assert result is None
 
+    def test_entry_blocked_regime_below_40(self, engine, sample_contract):
+        """Test entry blocked when regime score < 40 (V2.1 spec GAP #1)."""
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=105.0,
+            ma200_value=100.0,
+            iv_rank=50.0,
+            best_contract=sample_contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+            regime_score=35.0,  # Below 40 threshold
+        )
+        assert result is None
+
+    def test_entry_allowed_regime_at_40(self, engine, sample_contract):
+        """Test entry allowed when regime score = 40 (boundary)."""
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=105.0,
+            ma200_value=100.0,
+            iv_rank=50.0,
+            best_contract=sample_contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+            regime_score=40.0,  # At threshold
+        )
+        assert result is not None
+
+    def test_entry_allowed_regime_above_40(self, engine, sample_contract):
+        """Test entry allowed when regime score > 40."""
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=105.0,
+            ma200_value=100.0,
+            iv_rank=50.0,
+            best_contract=sample_contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+            regime_score=65.0,  # Above threshold
+        )
+        assert result is not None
+
+    def test_entry_blocked_premium_below_minimum(self, engine):
+        """Test entry blocked when premium < $0.50 (V2.1 spec GAP #3)."""
+        # Create contract with low premium
+        low_premium_contract = OptionContract(
+            symbol="QQQ 260126C00480000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=480.0,  # Far OTM
+            expiry="2026-01-28",
+            delta=0.45,
+            bid=0.20,
+            ask=0.30,
+            mid_price=0.25,  # Below $0.50 minimum
+            open_interest=10000,
+            days_to_expiry=3,
+        )
+
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=456.0,
+            ma200_value=430.0,
+            iv_rank=50.0,
+            best_contract=low_premium_contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+        )
+        assert result is None
+
+    def test_entry_allowed_premium_at_minimum(self, engine):
+        """Test entry allowed when premium = $0.50 (boundary)."""
+        contract = OptionContract(
+            symbol="QQQ 260126C00460000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=460.0,
+            expiry="2026-01-28",
+            delta=0.50,
+            bid=0.45,
+            ask=0.55,
+            mid_price=0.50,  # Exactly at minimum
+            open_interest=10000,
+            days_to_expiry=3,
+        )
+
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=456.0,
+            ma200_value=430.0,
+            iv_rank=50.0,
+            best_contract=contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+        )
+        assert result is not None
+
 
 # =============================================================================
 # EXIT SIGNAL TESTS
@@ -569,6 +676,76 @@ class TestExitSignals:
         """Test no exit when no position."""
         result = engine.check_exit_signals(current_price=2.00)
         assert result is None
+
+
+# =============================================================================
+# FORCE EXIT TESTS (V2.1 spec GAP #2)
+# =============================================================================
+
+
+class TestForceExit:
+    """Tests for force exit at 3:45 PM."""
+
+    def test_force_exit_at_1545(self, engine_with_position):
+        """Test force exit triggered at 15:45 ET (V2.1 spec GAP #2)."""
+        result = engine_with_position.check_force_exit(
+            current_hour=15,
+            current_minute=45,
+            current_price=1.60,
+        )
+        assert result is not None
+        assert result.target_weight == 0.0
+        assert result.urgency == Urgency.IMMEDIATE
+        assert "TIME_EXIT_1545" in result.reason
+
+    def test_force_exit_after_1545(self, engine_with_position):
+        """Test force exit triggered after 15:45 ET."""
+        result = engine_with_position.check_force_exit(
+            current_hour=15,
+            current_minute=50,
+            current_price=1.60,
+        )
+        assert result is not None
+        assert "TIME_EXIT_1545" in result.reason
+
+    def test_no_force_exit_before_1545(self, engine_with_position):
+        """Test no force exit before 15:45 ET."""
+        result = engine_with_position.check_force_exit(
+            current_hour=15,
+            current_minute=44,
+            current_price=1.60,
+        )
+        assert result is None
+
+    def test_no_force_exit_morning(self, engine_with_position):
+        """Test no force exit in the morning."""
+        result = engine_with_position.check_force_exit(
+            current_hour=10,
+            current_minute=30,
+            current_price=1.60,
+        )
+        assert result is None
+
+    def test_no_force_exit_no_position(self, engine):
+        """Test no force exit when no position exists."""
+        result = engine.check_force_exit(
+            current_hour=15,
+            current_minute=45,
+            current_price=1.60,
+        )
+        assert result is None
+
+    def test_force_exit_includes_pnl(self, engine_with_position):
+        """Test force exit reason includes PnL percentage."""
+        # Entry was at $1.45, current at $1.75 = +20.7%
+        result = engine_with_position.check_force_exit(
+            current_hour=15,
+            current_minute=45,
+            current_price=1.75,
+        )
+        assert result is not None
+        assert "+" in result.reason  # Positive PnL indicator
+        assert "20" in result.reason or "21" in result.reason  # Approximate % gain
 
 
 # =============================================================================
@@ -914,3 +1091,349 @@ class TestGreeksMonitoring:
         is_breach, symbols = engine.check_greeks_breach(risk_engine)
         assert is_breach is True
         assert "ALL_OPTIONS" in symbols
+
+
+# =============================================================================
+# DTE AND DELTA FILTERING TESTS (Blockers #3, #4 fix)
+# =============================================================================
+
+
+class TestDTEDeltaFiltering:
+    """Tests for DTE and Delta range filtering."""
+
+    @pytest.fixture
+    def engine(self):
+        """Create fresh OptionsEngine."""
+        return OptionsEngine()
+
+    @pytest.fixture
+    def valid_contract(self):
+        """Create a valid contract within DTE and delta ranges."""
+        return OptionContract(
+            symbol="QQQ 260126C00455000",
+            strike=455.0,
+            expiry="2026-01-28",
+            delta=0.50,  # Within 0.40-0.60 range
+            gamma=0.02,
+            vega=0.15,
+            theta=-0.01,
+            bid=1.40,
+            ask=1.50,
+            mid_price=1.45,
+            open_interest=5000,
+            days_to_expiry=3,  # Within 1-4 DTE range
+        )
+
+    def test_entry_blocked_dte_too_low(self, engine):
+        """Test entry blocked when DTE < 1."""
+        contract = OptionContract(
+            symbol="QQQ 260126C00455000",
+            strike=455.0,
+            expiry="2026-01-26",
+            delta=0.50,
+            mid_price=1.45,
+            open_interest=5000,
+            days_to_expiry=0,  # 0 DTE - too low
+        )
+
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=456.0,
+            ma200_value=430.0,
+            iv_rank=50.0,
+            best_contract=contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+        )
+        assert result is None
+
+    def test_entry_blocked_dte_too_high(self, engine):
+        """Test entry blocked when DTE > 4."""
+        contract = OptionContract(
+            symbol="QQQ 260205C00455000",
+            strike=455.0,
+            expiry="2026-02-05",
+            delta=0.50,
+            mid_price=2.50,
+            open_interest=5000,
+            days_to_expiry=10,  # 10 DTE - too high
+        )
+
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=456.0,
+            ma200_value=430.0,
+            iv_rank=50.0,
+            best_contract=contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+        )
+        assert result is None
+
+    def test_entry_allowed_dte_at_min(self, engine, valid_contract):
+        """Test entry allowed when DTE = 1 (minimum)."""
+        valid_contract.days_to_expiry = 1  # At minimum
+
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=456.0,
+            ma200_value=430.0,
+            iv_rank=50.0,
+            best_contract=valid_contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+        )
+        assert result is not None
+
+    def test_entry_allowed_dte_at_max(self, engine, valid_contract):
+        """Test entry allowed when DTE = 4 (maximum)."""
+        valid_contract.days_to_expiry = 4  # At maximum
+
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=456.0,
+            ma200_value=430.0,
+            iv_rank=50.0,
+            best_contract=valid_contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+        )
+        assert result is not None
+
+    def test_entry_blocked_delta_too_low(self, engine):
+        """Test entry blocked when delta < 0.40 (too far OTM)."""
+        contract = OptionContract(
+            symbol="QQQ 260126C00480000",
+            strike=480.0,  # Far OTM
+            expiry="2026-01-28",
+            delta=0.30,  # Too low - far OTM
+            mid_price=0.50,
+            open_interest=5000,
+            days_to_expiry=3,
+        )
+
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=456.0,
+            ma200_value=430.0,
+            iv_rank=50.0,
+            best_contract=contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+        )
+        assert result is None
+
+    def test_entry_blocked_delta_too_high(self, engine):
+        """Test entry blocked when delta > 0.60 (too deep ITM)."""
+        contract = OptionContract(
+            symbol="QQQ 260126C00430000",
+            strike=430.0,  # Deep ITM
+            expiry="2026-01-28",
+            delta=0.75,  # Too high - deep ITM
+            mid_price=28.0,
+            open_interest=5000,
+            days_to_expiry=3,
+        )
+
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=456.0,
+            ma200_value=430.0,
+            iv_rank=50.0,
+            best_contract=contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+        )
+        assert result is None
+
+    def test_entry_allowed_delta_at_min(self, engine, valid_contract):
+        """Test entry allowed when delta = 0.40 (minimum)."""
+        valid_contract.delta = 0.40  # At minimum
+
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=456.0,
+            ma200_value=430.0,
+            iv_rank=50.0,
+            best_contract=valid_contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+        )
+        assert result is not None
+
+    def test_entry_allowed_delta_at_max(self, engine, valid_contract):
+        """Test entry allowed when delta = 0.60 (maximum)."""
+        valid_contract.delta = 0.60  # At maximum
+
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=456.0,
+            ma200_value=430.0,
+            iv_rank=50.0,
+            best_contract=valid_contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+        )
+        assert result is not None
+
+    def test_entry_uses_absolute_delta_for_puts(self, engine, valid_contract):
+        """Test that delta validation uses absolute value for puts."""
+        valid_contract.delta = -0.50  # Put with negative delta
+        valid_contract.direction = OptionDirection.PUT
+
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=456.0,
+            ma200_value=430.0,
+            iv_rank=50.0,
+            best_contract=valid_contract,
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+        )
+        assert result is not None  # Should allow since abs(-0.50) = 0.50 is valid
+
+
+# =============================================================================
+# GREEKS GAMMA/VEGA/THETA BREACH TESTS (Blocker #5 fix)
+# =============================================================================
+
+
+class TestGreeksBreachThresholds:
+    """Tests for all Greeks breach thresholds (gamma, vega, theta)."""
+
+    def test_check_greeks_breach_gamma_exceeded(self):
+        """Test Greeks breach when gamma exceeds limit (0.05)."""
+        from engines.core.risk_engine import RiskEngine
+
+        engine = OptionsEngine()
+        risk_engine = RiskEngine()
+
+        contract = OptionContract(
+            symbol="QQQ 260126C00455000",
+            delta=0.50,  # Within limits
+            gamma=0.06,  # Exceeds CB_GAMMA_WARNING=0.05
+            vega=0.10,
+            theta=-0.01,
+            strike=455.0,
+            expiry="2026-01-26",
+            mid_price=1.50,
+            open_interest=1000,
+        )
+
+        engine._pending_contract = contract
+        engine._pending_entry_score = 3.5
+        engine._pending_num_contracts = 10
+        engine._pending_stop_pct = 0.25
+        engine.register_entry(1.45, "10:30:00", "2026-01-26")
+
+        # Gamma 0.06 > threshold 0.05 triggers breach
+        is_breach, symbols = engine.check_greeks_breach(risk_engine)
+        assert is_breach is True
+        assert "ALL_OPTIONS" in symbols
+
+    def test_check_greeks_breach_vega_exceeded(self):
+        """Test Greeks breach when vega exceeds limit (0.50)."""
+        from engines.core.risk_engine import RiskEngine
+
+        engine = OptionsEngine()
+        risk_engine = RiskEngine()
+
+        contract = OptionContract(
+            symbol="QQQ 260126C00455000",
+            delta=0.50,  # Within limits
+            gamma=0.02,  # Within limits
+            vega=0.60,  # Exceeds CB_VEGA_MAX=0.50
+            theta=-0.01,
+            strike=455.0,
+            expiry="2026-01-26",
+            mid_price=1.50,
+            open_interest=1000,
+        )
+
+        engine._pending_contract = contract
+        engine._pending_entry_score = 3.5
+        engine._pending_num_contracts = 10
+        engine._pending_stop_pct = 0.25
+        engine.register_entry(1.45, "10:30:00", "2026-01-26")
+
+        # Vega 0.60 > threshold 0.50 triggers breach
+        is_breach, symbols = engine.check_greeks_breach(risk_engine)
+        assert is_breach is True
+        assert "ALL_OPTIONS" in symbols
+
+    def test_check_greeks_breach_theta_exceeded(self):
+        """Test Greeks breach when theta exceeds limit (-0.02)."""
+        from engines.core.risk_engine import RiskEngine
+
+        engine = OptionsEngine()
+        risk_engine = RiskEngine()
+
+        contract = OptionContract(
+            symbol="QQQ 260126C00455000",
+            delta=0.50,  # Within limits
+            gamma=0.02,  # Within limits
+            vega=0.10,  # Within limits
+            theta=-0.03,  # Exceeds CB_THETA_WARNING=-0.02 (more negative)
+            strike=455.0,
+            expiry="2026-01-26",
+            mid_price=1.50,
+            open_interest=1000,
+        )
+
+        engine._pending_contract = contract
+        engine._pending_entry_score = 3.5
+        engine._pending_num_contracts = 10
+        engine._pending_stop_pct = 0.25
+        engine.register_entry(1.45, "10:30:00", "2026-01-26")
+
+        # Theta -0.03 < threshold -0.02 triggers breach
+        is_breach, symbols = engine.check_greeks_breach(risk_engine)
+        assert is_breach is True
+        assert "ALL_OPTIONS" in symbols
+
+    def test_check_greeks_all_within_limits(self):
+        """Test no breach when all Greeks are within limits."""
+        from engines.core.risk_engine import RiskEngine
+
+        engine = OptionsEngine()
+        risk_engine = RiskEngine()
+
+        contract = OptionContract(
+            symbol="QQQ 260126C00455000",
+            delta=0.50,  # Within CB_DELTA_MAX=0.80
+            gamma=0.03,  # Within CB_GAMMA_WARNING=0.05
+            vega=0.30,  # Within CB_VEGA_MAX=0.50
+            theta=-0.01,  # Within CB_THETA_WARNING=-0.02
+            strike=455.0,
+            expiry="2026-01-26",
+            mid_price=1.50,
+            open_interest=1000,
+        )
+
+        engine._pending_contract = contract
+        engine._pending_entry_score = 3.5
+        engine._pending_num_contracts = 10
+        engine._pending_stop_pct = 0.25
+        engine.register_entry(1.45, "10:30:00", "2026-01-26")
+
+        is_breach, symbols = engine.check_greeks_breach(risk_engine)
+        assert is_breach is False
+        assert len(symbols) == 0
