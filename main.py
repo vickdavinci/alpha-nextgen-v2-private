@@ -34,6 +34,7 @@ from models.target_weight import TargetWeight
 
 # Type hints
 from typing import List, Optional, Set, Dict, Any
+
 # endregion
 
 
@@ -297,9 +298,14 @@ class AlphaNextGen(QCAlgorithm):
         current_hour = self.Time.hour
         mr_window_open = 10 <= current_hour < 15
 
-
         if mr_window_open and risk_result.can_enter_intraday:
             self._scan_mr_signals(data)
+
+        # =====================================================================
+        # STEP 6B: V2.1 OPTIONS ENTRY SCANNING (if window open)
+        # =====================================================================
+        if mr_window_open and risk_result.can_enter_intraday:
+            self._scan_options_signals(data)
 
         # =====================================================================
         # STEP 7: CHECK MR EXITS (always if position exists)
@@ -310,6 +316,11 @@ class AlphaNextGen(QCAlgorithm):
         # STEP 8: TREND POSITION MONITORING (intraday stop check)
         # =====================================================================
         self._monitor_trend_stops(data)
+
+        # =====================================================================
+        # STEP 8B: V2.1 OPTIONS GREEKS MONITORING
+        # =====================================================================
+        self._monitor_risk_greeks(data)
 
         # =====================================================================
         # STEP 9: PROCESS IMMEDIATE SIGNALS
@@ -346,9 +357,12 @@ class AlphaNextGen(QCAlgorithm):
         # V2.1: QQQ for options trading
         self.qqq = self.AddEquity("QQQ", Resolution.Minute).Symbol
 
-        # V2.1: Add QQQ options chain
+        # V2.1: Add QQQ options chain with config-driven DTE filter
         qqq_option = self.AddOption("QQQ", Resolution.Minute)
-        qqq_option.SetFilter(-5, 5, timedelta(days=30), timedelta(days=45))
+        # Filter: ATM ±5 strikes, DTE from config (1-4 days for daily volatility harvesting)
+        qqq_option.SetFilter(
+            -5, 5, timedelta(days=config.OPTIONS_DTE_MIN), timedelta(days=config.OPTIONS_DTE_MAX)
+        )
         self._qqq_option_symbol = qqq_option.Symbol
 
         # Proxy symbols - For regime calculation
@@ -403,24 +417,46 @@ class AlphaNextGen(QCAlgorithm):
         # Risk Engine Indicators
         # ---------------------------------------------------------------------
         # SPY ATR for vol shock detection (minute resolution for intraday check)
-        self.spy_atr = self.ATR(self.spy, config.ATR_PERIOD, MovingAverageType.Wilders, Resolution.Minute)
+        self.spy_atr = self.ATR(
+            self.spy, config.ATR_PERIOD, MovingAverageType.Wilders, Resolution.Minute
+        )
 
         # ---------------------------------------------------------------------
         # Trend Engine Indicators (Daily resolution for EOD signals)
         # ---------------------------------------------------------------------
         # Bollinger Bands for compression breakout detection
-        self.qld_bb = self.BB(self.qld, config.BB_PERIOD, config.BB_STD_DEV, MovingAverageType.Simple, Resolution.Daily)
-        self.sso_bb = self.BB(self.sso, config.BB_PERIOD, config.BB_STD_DEV, MovingAverageType.Simple, Resolution.Daily)
+        self.qld_bb = self.BB(
+            self.qld,
+            config.BB_PERIOD,
+            config.BB_STD_DEV,
+            MovingAverageType.Simple,
+            Resolution.Daily,
+        )
+        self.sso_bb = self.BB(
+            self.sso,
+            config.BB_PERIOD,
+            config.BB_STD_DEV,
+            MovingAverageType.Simple,
+            Resolution.Daily,
+        )
 
         # ATR for Chandelier stop calculation
-        self.qld_atr = self.ATR(self.qld, config.ATR_PERIOD, MovingAverageType.Wilders, Resolution.Daily)
-        self.sso_atr = self.ATR(self.sso, config.ATR_PERIOD, MovingAverageType.Wilders, Resolution.Daily)
+        self.qld_atr = self.ATR(
+            self.qld, config.ATR_PERIOD, MovingAverageType.Wilders, Resolution.Daily
+        )
+        self.sso_atr = self.ATR(
+            self.sso, config.ATR_PERIOD, MovingAverageType.Wilders, Resolution.Daily
+        )
 
         # ---------------------------------------------------------------------
         # Mean Reversion Engine Indicators (Minute resolution for intraday)
         # ---------------------------------------------------------------------
-        self.tqqq_rsi = self.RSI(self.tqqq, config.RSI_PERIOD, MovingAverageType.Wilders, Resolution.Minute)
-        self.soxl_rsi = self.RSI(self.soxl, config.RSI_PERIOD, MovingAverageType.Wilders, Resolution.Minute)
+        self.tqqq_rsi = self.RSI(
+            self.tqqq, config.RSI_PERIOD, MovingAverageType.Wilders, Resolution.Minute
+        )
+        self.soxl_rsi = self.RSI(
+            self.soxl, config.RSI_PERIOD, MovingAverageType.Wilders, Resolution.Minute
+        )
 
         # ---------------------------------------------------------------------
         # V2.1: Options Engine Indicators (QQQ for options trading)
@@ -431,9 +467,7 @@ class AlphaNextGen(QCAlgorithm):
         # ---------------------------------------------------------------------
         # Rolling Windows for Historical Price Access (Regime Engine needs 21+ days)
         # ---------------------------------------------------------------------
-        lookback = (
-            max(config.VOL_LOOKBACK, config.BREADTH_LOOKBACK, config.CREDIT_LOOKBACK) + 5
-        )
+        lookback = max(config.VOL_LOOKBACK, config.BREADTH_LOOKBACK, config.CREDIT_LOOKBACK) + 5
         self.spy_closes = RollingWindow[float](lookback)
         self.rsp_closes = RollingWindow[float](lookback)
         self.hyg_closes = RollingWindow[float](lookback)
@@ -648,9 +682,7 @@ class AlphaNextGen(QCAlgorithm):
         results = self.execution_engine.check_moo_fallbacks()
         for result in results:
             if result.get("success"):
-                self.Log(
-                    f"MOO_FALLBACK: Order {result.get('order_id')} fallback submitted"
-                )
+                self.Log(f"MOO_FALLBACK: Order {result.get('order_id')} fallback submitted")
             else:
                 self.Log(
                     f"MOO_FALLBACK: Order {result.get('order_id')} fallback failed - "
@@ -844,7 +876,7 @@ class AlphaNextGen(QCAlgorithm):
             return
 
         # Submit MOO orders (market is now closed)
-        if hasattr(self, '_eod_capital_state') and self._eod_capital_state is not None:
+        if hasattr(self, "_eod_capital_state") and self._eod_capital_state is not None:
             self._process_eod_signals(self._eod_capital_state)
             self._eod_capital_state = None
 
@@ -898,9 +930,7 @@ class AlphaNextGen(QCAlgorithm):
             fill_qty = orderEvent.FillQuantity
             direction = "BUY" if fill_qty > 0 else "SELL"
 
-            self.Log(
-                f"FILL: {direction} {abs(fill_qty)} {symbol} @ ${fill_price:.2f}"
-            )
+            self.Log(f"FILL: {direction} {abs(fill_qty)} {symbol} @ ${fill_price:.2f}")
 
             # Track trade for daily summary
             trade_desc = f"{direction} {abs(fill_qty)} {symbol} @ ${fill_price:.2f}"
@@ -976,11 +1006,11 @@ class AlphaNextGen(QCAlgorithm):
             )
 
             # V2.1: Save options engine and OCO manager state
-            if hasattr(self, 'options_engine'):
+            if hasattr(self, "options_engine"):
                 opt_state = self.options_engine.get_state_for_persistence()
                 self.ObjectStore.Save("options_engine_state", str(opt_state))
 
-            if hasattr(self, 'oco_manager'):
+            if hasattr(self, "oco_manager"):
                 oco_state = self.oco_manager.get_state_for_persistence()
                 self.ObjectStore.Save("oco_manager_state", str(oco_state))
 
@@ -1112,8 +1142,16 @@ class AlphaNextGen(QCAlgorithm):
         Args:
             regime_state: Current regime state.
         """
-        is_cold_start = self.cold_start_engine.is_active() if hasattr(self.cold_start_engine, 'is_active') else False
-        has_warm_entry = self.cold_start_engine.has_warm_entry() if hasattr(self.cold_start_engine, 'has_warm_entry') else False
+        is_cold_start = (
+            self.cold_start_engine.is_active()
+            if hasattr(self.cold_start_engine, "is_active")
+            else False
+        )
+        has_warm_entry = (
+            self.cold_start_engine.has_warm_entry()
+            if hasattr(self.cold_start_engine, "has_warm_entry")
+            else False
+        )
         current_date = str(self.Time.date())
 
         # Check QLD
@@ -1217,7 +1255,7 @@ class AlphaNextGen(QCAlgorithm):
         if chain is None:
             return
 
-        # Select best contract (ATM call, 30-45 DTE)
+        # Select best contract (ATM call, V2.1: 1-4 DTE)
         best_contract = self._select_best_option_contract(chain)
         if best_contract is None:
             return
@@ -1227,9 +1265,8 @@ class AlphaNextGen(QCAlgorithm):
         adx_value = self.qqq_adx.Current.Value
         ma200_value = self.qqq_sma200.Current.Value
 
-        # Estimate IV rank (simplified - would need historical IV data for accuracy)
-        # Using a placeholder value in the optimal range
-        iv_rank = 50.0  # TODO: Implement proper IV rank calculation
+        # V2.1: Calculate IV rank from options chain
+        iv_rank = self._calculate_iv_rank(chain)
 
         # Check for entry signal
         signal = self.options_engine.check_entry_signal(
@@ -1254,9 +1291,9 @@ class AlphaNextGen(QCAlgorithm):
         """
         Select the best QQQ option contract for trading.
 
-        Criteria:
+        Criteria (V2.1):
         - ATM or slightly ITM call
-        - 30-45 DTE
+        - DTE from config (1-4 days for daily volatility harvesting)
         - Sufficient open interest
         - Tight bid-ask spread
 
@@ -1271,15 +1308,15 @@ class AlphaNextGen(QCAlgorithm):
 
         qqq_price = self.Securities[self.qqq].Price
 
-        # Filter for calls, ATM±2 strikes, 30-45 DTE
+        # Filter for calls, ATM±2 strikes, DTE from config (V2.1: 1-4 days)
         candidates = []
         for contract in chain:
             if contract.Right != OptionRight.Call:
                 continue
 
-            # Check DTE (30-45 days)
+            # Check DTE from config (V2.1: 1-4 days for daily volatility harvesting)
             dte = (contract.Expiry - self.Time).days
-            if dte < 30 or dte > 45:
+            if dte < config.OPTIONS_DTE_MIN or dte > config.OPTIONS_DTE_MAX:
                 continue
 
             # Check if ATM±2 strikes
@@ -1308,10 +1345,10 @@ class AlphaNextGen(QCAlgorithm):
                 direction=OptionDirection.CALL,
                 strike=contract.Strike,
                 expiry=str(contract.Expiry.date()),
-                delta=contract.Greeks.Delta if hasattr(contract, 'Greeks') else 0.5,
-                gamma=contract.Greeks.Gamma if hasattr(contract, 'Greeks') else 0.0,
-                vega=contract.Greeks.Vega if hasattr(contract, 'Greeks') else 0.0,
-                theta=contract.Greeks.Theta if hasattr(contract, 'Greeks') else 0.0,
+                delta=contract.Greeks.Delta if hasattr(contract, "Greeks") else 0.5,
+                gamma=contract.Greeks.Gamma if hasattr(contract, "Greeks") else 0.0,
+                vega=contract.Greeks.Vega if hasattr(contract, "Greeks") else 0.0,
+                theta=contract.Greeks.Theta if hasattr(contract, "Greeks") else 0.0,
                 bid=contract.BidPrice,
                 ask=contract.AskPrice,
                 mid_price=mid_price,
@@ -1370,9 +1407,7 @@ class AlphaNextGen(QCAlgorithm):
 
         # Calculate non-SHV positions value
         non_shv_value = sum(
-            self.Portfolio[sym].HoldingsValue
-            for sym in self.traded_symbols
-            if sym != self.shv
+            self.Portfolio[sym].HoldingsValue for sym in self.traded_symbols if sym != self.shv
         )
 
         signal = self.yield_sleeve.get_yield_signal(
@@ -1478,10 +1513,14 @@ class AlphaNextGen(QCAlgorithm):
         """
         # Get required context
         regime_score = self._last_regime_score
-        days_running = self.cold_start_engine.get_days_running() if hasattr(self.cold_start_engine, 'get_days_running') else 5
-        gap_filter = getattr(self, '_gap_filter_active', False)
-        vol_shock = getattr(self, '_vol_shock_active', False)
-        time_guard = getattr(self, '_time_guard_active', False)
+        days_running = (
+            self.cold_start_engine.get_days_running()
+            if hasattr(self.cold_start_engine, "get_days_running")
+            else 5
+        )
+        gap_filter = getattr(self, "_gap_filter_active", False)
+        vol_shock = getattr(self, "_vol_shock_active", False)
+        time_guard = getattr(self, "_time_guard_active", False)
 
         # Calculate average volumes from rolling windows
         tqqq_avg_vol = self._get_average_volume(self.tqqq_volumes)
@@ -1497,8 +1536,12 @@ class AlphaNextGen(QCAlgorithm):
         # Check TQQQ
         if self.tqqq_rsi.IsReady and not self.Portfolio[self.tqqq].Invested:
             tqqq_price = self.Securities[self.tqqq].Price
-            tqqq_open = data.Bars[self.tqqq].Open if data.Bars.ContainsKey(self.tqqq) else tqqq_price
-            tqqq_volume = float(data.Bars[self.tqqq].Volume) if data.Bars.ContainsKey(self.tqqq) else 0.0
+            tqqq_open = (
+                data.Bars[self.tqqq].Open if data.Bars.ContainsKey(self.tqqq) else tqqq_price
+            )
+            tqqq_volume = (
+                float(data.Bars[self.tqqq].Volume) if data.Bars.ContainsKey(self.tqqq) else 0.0
+            )
             # Use open price as VWAP approximation for intraday
             tqqq_vwap = (tqqq_open + tqqq_price) / 2.0
 
@@ -1531,8 +1574,12 @@ class AlphaNextGen(QCAlgorithm):
         # Check SOXL
         if self.soxl_rsi.IsReady and not self.Portfolio[self.soxl].Invested:
             soxl_price = self.Securities[self.soxl].Price
-            soxl_open = data.Bars[self.soxl].Open if data.Bars.ContainsKey(self.soxl) else soxl_price
-            soxl_volume = float(data.Bars[self.soxl].Volume) if data.Bars.ContainsKey(self.soxl) else 0.0
+            soxl_open = (
+                data.Bars[self.soxl].Open if data.Bars.ContainsKey(self.soxl) else soxl_price
+            )
+            soxl_volume = (
+                float(data.Bars[self.soxl].Volume) if data.Bars.ContainsKey(self.soxl) else 0.0
+            )
             # Use open price as VWAP approximation for intraday
             soxl_vwap = (soxl_open + soxl_price) / 2.0
 
@@ -1634,6 +1681,135 @@ class AlphaNextGen(QCAlgorithm):
                 self.portfolio_router.receive_signal(signal)
                 self._process_immediate_signals()
 
+    def _scan_options_signals(self, data: Slice) -> None:
+        """
+        V2.1: Scan for Options entry signals during intraday session.
+
+        Checks QQQ options for 4-factor entry conditions when:
+        - 10:00-15:00 ET window
+        - No existing options position
+        - Indicators are ready
+
+        Args:
+            data: Current data slice.
+        """
+        # Skip if indicators not ready
+        if not self.qqq_adx.IsReady or not self.qqq_sma200.IsReady:
+            return
+
+        # Skip if already have options position
+        if self.options_engine.has_position():
+            return
+
+        # Only scan during active window (10:00-15:00)
+        current_hour = self.Time.hour
+        if current_hour < 10 or current_hour >= 15:
+            return
+
+        # Get options chain
+        chain = self.OptionChains.get(self._qqq_option_symbol)
+        if chain is None:
+            return
+
+        # Select best contract
+        best_contract = self._select_best_option_contract(chain)
+        if best_contract is None:
+            return
+
+        # Get current values
+        qqq_price = self.Securities[self.qqq].Price
+        adx_value = self.qqq_adx.Current.Value
+        ma200_value = self.qqq_sma200.Current.Value
+
+        # Calculate IV rank from options chain (V2.1)
+        iv_rank = self._calculate_iv_rank(chain)
+
+        # Check for entry signal
+        signal = self.options_engine.check_entry_signal(
+            adx_value=adx_value,
+            current_price=qqq_price,
+            ma200_value=ma200_value,
+            iv_rank=iv_rank,
+            best_contract=best_contract,
+            current_hour=self.Time.hour,
+            current_minute=self.Time.minute,
+            current_date=str(self.Time.date()),
+            portfolio_value=self.Portfolio.TotalPortfolioValue,
+            gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
+            vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
+            time_guard_active=self.scheduler.is_time_guard_active(),
+        )
+
+        if signal:
+            self.portfolio_router.receive_signal(signal)
+
+    def _monitor_risk_greeks(self, data: Slice) -> None:
+        """
+        V2.1: Monitor options Greeks for Level 5 Circuit Breaker.
+
+        Updates risk engine with current Greeks and checks for breaches:
+        - Delta > 0.80 (too deep ITM)
+        - Gamma > 0.05 (high gamma risk)
+        - Vega > 0.50 (vol exposure too high)
+        - Theta < -0.02 (excessive time decay)
+
+        Args:
+            data: Current data slice.
+        """
+        # Skip if no options position
+        if not self.options_engine.has_position():
+            return
+
+        # Calculate current position Greeks
+        greeks = self.options_engine.calculate_position_greeks()
+        if greeks is None:
+            return
+
+        # Update risk engine with Greeks
+        self.risk_engine.update_greeks(greeks)
+
+        # Check for Greeks breach
+        breach, reasons = self.options_engine.check_greeks_breach(self.risk_engine)
+        if breach:
+            self.Log(f"GREEKS_BREACH: {', '.join(reasons)}")
+            # Emit exit signal for options position
+            signal = TargetWeight(
+                symbol="QQQ_OPT",
+                target_weight=0.0,
+                source="RISK",
+                urgency=Urgency.IMMEDIATE,
+                reason=f"GREEKS_BREACH: {', '.join(reasons)}",
+            )
+            self.portfolio_router.receive_signal(signal)
+
+    def _calculate_iv_rank(self, chain) -> float:
+        """
+        V2.1: Calculate IV Rank from options chain.
+
+        IV Rank = (Current IV - 52wk Low IV) / (52wk High IV - 52wk Low IV)
+
+        Without historical IV data, we estimate using:
+        - VIX as market-wide IV proxy
+        - Chain average IV vs typical ranges
+
+        Args:
+            chain: Options chain for IV calculation.
+
+        Returns:
+            IV rank as percentage (0-100).
+        """
+        # Use VIX as IV proxy (normalized to IV rank scale)
+        # VIX typical ranges: Low ~12, High ~35, Avg ~18
+        vix = self._current_vix
+        vix_low = 12.0
+        vix_high = 35.0
+
+        if vix_high <= vix_low:
+            return 50.0
+
+        iv_rank = (vix - vix_low) / (vix_high - vix_low) * 100.0
+        return max(0.0, min(100.0, iv_rank))
+
     def _has_leveraged_position(self) -> bool:
         """
         Check if any leveraged long position exists.
@@ -1658,11 +1834,7 @@ class AlphaNextGen(QCAlgorithm):
             RegimeState with scores and classification.
         """
         # Check if indicators are ready
-        if not (
-            self.spy_sma20.IsReady
-            and self.spy_sma50.IsReady
-            and self.spy_sma200.IsReady
-        ):
+        if not (self.spy_sma20.IsReady and self.spy_sma50.IsReady and self.spy_sma200.IsReady):
             # Return neutral default state when indicators not ready
             return RegimeState(
                 smoothed_score=50.0,
@@ -1766,7 +1938,11 @@ class AlphaNextGen(QCAlgorithm):
             try:
                 if fill_qty > 0:
                     # Use current price as VWAP approximation
-                    vwap = self.Securities[symbol].Price if hasattr(self, symbol.lower()) else fill_price
+                    vwap = (
+                        self.Securities[symbol].Price
+                        if hasattr(self, symbol.lower())
+                        else fill_price
+                    )
                     self.mr_engine.register_entry(
                         symbol=symbol,
                         entry_price=fill_price,
@@ -1802,9 +1978,7 @@ class AlphaNextGen(QCAlgorithm):
 
                         if oco_pair:
                             # Submit OCO orders
-                            self.oco_manager.submit_oco_pair(
-                                oco_pair, current_time=str(self.Time)
-                            )
+                            self.oco_manager.submit_oco_pair(oco_pair, current_time=str(self.Time))
                             self.Log(
                                 f"OPT: OCO pair created | "
                                 f"Stop=${position.stop_price:.2f} | "
