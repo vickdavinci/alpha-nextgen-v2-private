@@ -934,7 +934,7 @@ class PortfolioRouter:
         if not drift_map:
             return (None, 0.0)
 
-        max_symbol = max(drift_map, key=drift_map.get)
+        max_symbol = max(drift_map.keys(), key=lambda k: drift_map[k])
         return (max_symbol, drift_map[max_symbol])
 
     # =========================================================================
