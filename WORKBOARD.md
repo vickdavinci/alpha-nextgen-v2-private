@@ -54,7 +54,7 @@
 
 | Component | Owner | Branch | Started | Spec |
 |-----------|-------|--------|---------|------|
-| RSK-1 | VA | feature/RSK-1-five-level-circuit-breaker | 2026-01-26 | V2_1_COMPLETE_ARCHITECTURE.txt |
+| _None_ | | | | |
 
 ### Done (V2 Phase 1)
 
@@ -62,6 +62,7 @@
 |--------|-----------|-------|--------|--------|
 | TRE-1 | MA200 + ADX Signal | VA | develop | 2026-01-26 |
 | TRE-2 | Trailing Stop Enhancement | VA | develop | 2026-01-26 |
+| RSK-1 | 5-Level Circuit Breaker | VA | develop | 2026-01-26 |
 
 ### In Review
 
