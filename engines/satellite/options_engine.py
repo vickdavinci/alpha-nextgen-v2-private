@@ -484,6 +484,37 @@ class OptionsEngine:
         if best_contract is None:
             return None
 
+        # Validate DTE range (1-4 days per spec)
+        if best_contract.days_to_expiry < config.OPTIONS_DTE_MIN:
+            self.log(
+                f"OPT: Entry blocked - DTE {best_contract.days_to_expiry} < "
+                f"min {config.OPTIONS_DTE_MIN}"
+            )
+            return None
+
+        if best_contract.days_to_expiry > config.OPTIONS_DTE_MAX:
+            self.log(
+                f"OPT: Entry blocked - DTE {best_contract.days_to_expiry} > "
+                f"max {config.OPTIONS_DTE_MAX}"
+            )
+            return None
+
+        # Validate delta range (0.40-0.60 for ATM contracts per spec)
+        contract_delta = abs(best_contract.delta)  # Use absolute value
+        if contract_delta < config.OPTIONS_DELTA_MIN:
+            self.log(
+                f"OPT: Entry blocked - Delta {contract_delta:.2f} < "
+                f"min {config.OPTIONS_DELTA_MIN} (too far OTM)"
+            )
+            return None
+
+        if contract_delta > config.OPTIONS_DELTA_MAX:
+            self.log(
+                f"OPT: Entry blocked - Delta {contract_delta:.2f} > "
+                f"max {config.OPTIONS_DELTA_MAX} (too deep ITM)"
+            )
+            return None
+
         # Calculate entry score
         entry_score = self.calculate_entry_score(
             adx_value=adx_value,
