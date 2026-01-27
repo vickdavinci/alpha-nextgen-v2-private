@@ -11,7 +11,7 @@
 
 ```bash
 # 1. Activate environment and verify Python version
-cd /Users/vigneshwaranarumugam/Documents/Trading\ Github/alpha-nextgen-v2-private && source venv/bin/activate && python --version
+source venv/bin/activate && python --version
 # Expected: Python 3.11.x (NOT 3.14)
 
 # 2. Check current task state
@@ -25,6 +25,39 @@ git status && git branch
 - System default is Python 3.14, but project requires 3.11
 - WORKBOARD.md tracks what task is in progress
 - You may have uncommitted changes from before compaction
+
+---
+
+## Build & Test Commands
+
+```bash
+# Setup (first time)
+make setup                    # Create venv, install deps, pre-commit hooks
+
+# Run all tests
+make test                     # or: pytest
+
+# Run single test file
+pytest tests/test_regime_engine.py -v
+
+# Run single test function
+pytest tests/test_regime_engine.py::test_regime_score_boundaries -v
+
+# Run scenario tests only
+pytest tests/scenarios/ -v
+
+# Run tests matching pattern
+pytest -k "kill_switch" -v
+
+# Lint and format
+make lint                     # Black + isort
+
+# Validate config against spec
+make validate-config
+
+# Create feature branch
+make branch name=feature/va/my-feature
+```
 
 ---
 
@@ -42,7 +75,7 @@ Forked from V1 v1.0.0 on 2026-01-26. See `docs/v2-specs/` for V2.1 specification
 
 ```
 alpha-nextgen/
-├── main.py                     # QCAlgorithm entry point (1,638 lines - V2.1 Complete)
+├── main.py                     # QCAlgorithm entry point (V2.1 Complete)
 ├── config.py                   # ALL tunable parameters
 ├── requirements.txt            # Python dependencies
 ├── requirements.lock           # Locked versions for reproducibility
@@ -144,6 +177,29 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 | `docs/16-appendix-parameters.md` | All tunable parameters in one place |
 | `docs/17-appendix-glossary.md` | Terms, abbreviations, formulas |
 | `docs/v2-specs/` | V2.1 specifications and architecture guides |
+
+---
+
+## Feature Branches (Not on develop)
+
+Some features are developed on separate branches to keep core trading logic clean:
+
+| Branch | Contents | Status |
+|--------|----------|--------|
+| `feat/backtest-reporting` | Metrics engine (Sharpe, Sortino, drawdown), CSV export, QC charts | Complete, not integrated |
+
+```bash
+# Access feature branch
+git checkout feat/backtest-reporting
+
+# Return to main development
+git checkout develop
+
+# Merge when ready for production
+git checkout develop && git merge feat/backtest-reporting
+```
+
+See `WORKBOARD.md` → "Feature Branches" section for full details.
 
 ---
 
