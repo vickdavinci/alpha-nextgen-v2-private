@@ -33,13 +33,13 @@
 > - `engines/satellite/` - Conditional engines (0-30%)
 > - `docs/v2-specs/` - V2.1 specifications
 >
-> **Tests:** 912 collected (as of 2026-01-26)
+> **Tests:** 948 passed (as of 2026-01-26)
 
 ---
 
 ## Current Sprint: V2.1 Implementation
 
-> **Status:** V2.1 Phases 1-3 COMPLETE ✅
+> **Status:** V2.1 Phases 1-4 COMPLETE ✅ — Ready for Backtest
 >
 > See `V2_IMPLEMENTATION_ROADMAP.md` for full roadmap.
 
@@ -50,6 +50,7 @@
 | V2.1 Phase 1 | Trend Engine V2 + 5-Level Circuit Breakers | ✅ Complete |
 | V2.1 Phase 2 | Mean Reversion VIX Filter | ✅ Complete |
 | V2.1 Phase 3 | Options Engine (4-factor scoring, OCO) | ✅ Complete |
+| V2.1 Phase 4 | Integration & Orchestration (Core-Satellite) | ✅ Complete |
 
 ### Ready to Start (Remaining from Roadmap)
 
@@ -58,8 +59,6 @@
 | YLD-1 | SHV Ladder Strategy | M | V2-1-Critical-Fixes-Guide.md | Medium |
 | YLD-2 | Daily Cash Sweep | S | V2-1-Critical-Fixes-Guide.md | Medium |
 | YLD-3 | Monthly Interest Harvest | S | V2-1-Critical-Fixes-Guide.md | Low |
-| ORC-1 | Signal Aggregation (70/20-30/0-10 weights) | M | V2_IMPLEMENTATION_ROADMAP.md | Medium |
-| ORC-2 | Rebalancing Logic (drift > 5%) | M | V2_IMPLEMENTATION_ROADMAP.md | Medium |
 | — | 10-Year Backtest (2015-2024) | L | — | **HIGH** |
 | — | Crisis Period Validation (2020, 2018, 2022) | M | — | **HIGH** |
 
@@ -97,6 +96,17 @@
 | OPT-3 | OCO Order Manager (`execution/oco_manager.py`) | VA | develop | 2026-01-26 |
 | OPT-4 | Options Engine Tests (comprehensive suite) | VA | develop | 2026-01-26 |
 | RSK-2 | Greeks Monitoring Integration | VA | develop | 2026-01-26 |
+
+### Done (V2 Phase 4 - Integration & Orchestration)
+
+| Ticket | Component | Owner | Commit | Merged |
+|--------|-----------|-------|--------|--------|
+| INT-1 | VIX Data Feed wired to main.py | VA | 60ebf55 | 2026-01-26 |
+| INT-2 | Options Engine wired to main.py | VA | 60ebf55 | 2026-01-26 |
+| INT-3 | OCO Manager wired to main.py | VA | 60ebf55 | 2026-01-26 |
+| ORC-1 | Signal Aggregation (70/20-30/0-10 Core-Satellite) | VA | 60ebf55 | 2026-01-26 |
+| ORC-2 | Rebalancing Logic (drift > 5%) | VA | 60ebf55 | 2026-01-26 |
+| TST-1 | V2 Test Plan + Integration Tests (63 new tests) | VA | 381ac7c | 2026-01-26 |
 
 ### In Review
 
