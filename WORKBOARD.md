@@ -37,13 +37,14 @@
 
 ---
 
-## Current Sprint: V2.1 Implementation
+## Current Sprint: V2.1.1 Options Engine Redesign
 
-> **Status:** V2.1 Phases 1-4 COMPLETE ✅ — Ready for Backtest
+> **Status:** V2.1.1 COMPLETE ✅ — Options Engine Dual-Mode + Micro Regime Engine
 >
 > See `V2_IMPLEMENTATION_ROADMAP.md` for full roadmap.
+> See `docs/v2-specs/V2_1_OPTIONS_ENGINE_DESIGN.txt` for complete specification.
 
-### V2.1 Completion Summary
+### V2.1.1 Completion Summary
 
 | Phase | Focus | Status |
 |-------|-------|--------|
@@ -51,6 +52,18 @@
 | V2.1 Phase 2 | Mean Reversion VIX Filter | ✅ Complete |
 | V2.1 Phase 3 | Options Engine (4-factor scoring, OCO) | ✅ Complete |
 | V2.1 Phase 4 | Integration & Orchestration (Core-Satellite) | ✅ Complete |
+| V2.1.1 | Options Engine Redesign (Dual-Mode + Micro Regime) | ✅ Complete |
+
+### V2.1.1 Options Engine Redesign (Jan 28, 2026)
+
+| Component | Description | Status |
+|-----------|-------------|--------|
+| Dual-Mode Architecture | Swing (15%) + Intraday (5%) modes | ✅ Designed |
+| Micro Regime Engine | VIX Level × VIX Direction = 21 regimes | ✅ Designed |
+| VIX Direction Classification | 7 categories (FALLING_FAST to WHIPSAW) | ✅ Designed |
+| Tiered VIX Monitoring | 5min/15min/30min/60min layers | ✅ Designed |
+| VIX1D Evaluation | Rejected (0.95 correlation during trading hours) | ✅ Complete |
+| Documentation | V2_1_OPTIONS_ENGINE_DESIGN.txt (2,135 lines) | ✅ Complete |
 
 ### Ready to Start (Remaining from Roadmap)
 
@@ -520,4 +533,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 27 January 2026 (v2.1.3 - Backtest Reporting module on feat/backtest-reporting branch - 1010 tests passing)*
+*Last Updated: 28 January 2026 (v2.1.1 - Options Engine Redesign: Dual-Mode + Micro Regime Engine)*

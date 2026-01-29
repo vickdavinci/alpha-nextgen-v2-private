@@ -13,10 +13,14 @@
 
 Alpha NextGen V2 is a systematic trading system that combines **regime detection**, **multiple trading strategies**, and **comprehensive risk management** to trade leveraged ETFs on the QuantConnect (LEAN) platform with Interactive Brokers.
 
-**V2 Core-Satellite Architecture:**
+**V2.1.1 Core-Satellite Architecture:**
 - **Core (70%)**: Trend Engine - MA200 + ADX confirmation
-- **Satellite (20-30%)**: Options Engine - 4-factor entry scoring *(NEW)*
+- **Satellite (20%)**: Options Engine - Dual-Mode (Swing 15% + Intraday 5%) *(V2.1.1)*
 - **Satellite (0-10%)**: Mean Reversion Engine - RSI + VIX filter
+
+**Options Engine V2.1.1 Features:**
+- Swing Mode (5-45 DTE): Debit spreads, credit spreads, ITM long options
+- Intraday Mode (0-2 DTE): Micro Regime Engine (VIX Level × VIX Direction = 21 regimes)
 
 **Target Performance**: 18-25% annual return (vs V1's 10-12%)
 
@@ -87,8 +91,10 @@ The system adapts its behavior based on market conditions:
 
 | Strategy | Instruments | Style | Holding Period | Entry Signal |
 |----------|-------------|-------|----------------|--------------|
-| **Trend** | QLD, SSO | Swing | Days to weeks | BB compression breakout |
-| **Mean Reversion** | TQQQ, SOXL | Intraday | Minutes to hours | RSI < 25, -2.5% drop |
+| **Trend** | QLD, SSO | Swing | Days to weeks | MA200 + ADX confirmation |
+| **Options (Swing)** | QQQ Options | Swing | Days | 4-factor score, spreads |
+| **Options (Intraday)** | QQQ Options | Intraday | Hours | Micro Regime (VIX × Direction) |
+| **Mean Reversion** | TQQQ, SOXL | Intraday | Minutes to hours | RSI < 25, VIX filter |
 | **Hedge** | TMF, PSQ | Defensive | As needed | Regime < 40 |
 | **Yield** | SHV | Cash mgmt | Ongoing | Idle cash > $2k |
 | **Cold Start** | QLD, SSO | Safe deploy | Days 1-5 | Regime > 50, 50% size |
@@ -358,7 +364,7 @@ SMOOTHING_ALPHA = 0.30          # Regime score EMA smoothing
 
 ## Status
 
-**v0.6.0 Released** - Phase 6 Complete (All Phases Done - Ready for Backtesting)
+**v2.1.1 Released** - Options Engine Redesign Complete (Dual-Mode + Micro Regime)
 
 | Phase | Status | Description |
 |:-----:|:------:|-------------|
@@ -369,6 +375,12 @@ SMOOTHING_ALPHA = 0.30          # Regime score EMA smoothing
 | 4 | ✅ Done | Coordination (exposure_groups, portfolio_router, risk_engine) |
 | 5 | ✅ Done | Execution & state (execution_engine, state_manager, daily_scheduler) |
 | 6 | ✅ Done | Integration (main.py - 1,332 lines, 35 methods) |
+| V2.1.1 | ✅ Done | Options Engine Redesign (Dual-Mode + Micro Regime Engine) |
+
+**V2.1.1 Highlights:**
+- Dual-Mode Options: Swing (15%) + Intraday (5%)
+- Micro Regime Engine: VIX Level × VIX Direction = 21 trading regimes
+- VIX-only monitoring (VIX1D evaluated and rejected)
 
 **Next Steps:** Run full backtests (2020-2024), paper trading, then live deployment.
 

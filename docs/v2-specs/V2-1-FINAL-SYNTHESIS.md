@@ -1,18 +1,19 @@
 # V2.1 Complete System: Final Synthesis & Validation
 
-**Date**: January 26, 2026  
-**Status**: PRODUCTION READY  
+**Date**: January 28, 2026
+**Status**: PRODUCTION READY (V2.1.1 - Options Engine Redesign)
 **Scope**: Complete trading system specification with architectural justification
 
 ---
 
 ## EXECUTIVE SUMMARY
 
-You now have a **complete, production-ready trading system** that answers all architectural questions through a three-document foundation:
+You now have a **complete, production-ready trading system** that answers all architectural questions through a five-document foundation:
 
 1. **Alpha-V2-Comprehensive-Architecture-Review** - The WHY (problems with V1, solutions in V2)
-2. **V2_1_CRITICAL_MODIFICATIONS** - The HOW (three specific changes, implementation details)
+2. **V2_1_CRITICAL_MODIFICATIONS** - The HOW (four specific changes, implementation details)
 3. **V2_1_COMPLETE_ARCHITECTURE** + **V2_1_MATHEMATICAL_FOUNDATION** - The WHAT (complete specifications, proofs)
+4. **V2_1_OPTIONS_ENGINE_DESIGN** - The OPTIONS (dual-mode architecture: Swing + Intraday with Micro Regime Engine)
 
 ### Key Validation Points
 
@@ -27,6 +28,9 @@ You now have a **complete, production-ready trading system** that answers all ar
 | Why OCO orders? | Critical Modifications (Mod #3) | ✅ Prevents ghost order race conditions |
 | Why remove volatility scale? | Critical Modifications (Mod #1) | ✅ Eliminates double-dipping penalty |
 | Why 18-25% return forecast? | Complete Architecture (Part 5) | ✅ 2015-2024 backtest with 70/30 blend |
+| Why dual-mode options? | Options Engine Design | ✅ Different DTE need different strategies |
+| Why VIX direction matters? | Critical Modifications (Mod #4) | ✅ Same VIX level can mean opposite strategies |
+| Why VIX-only (not VIX1D)? | Options Engine Design | ✅ VIX1D only diverges before our trading window |
 
 ---
 
@@ -556,10 +560,19 @@ A: Diversification + non-correlation. Trend catches sustained moves, Options cap
 **Q: Why not regime engine like V1?**  
 A: Overengineered. Regime is a risk filter (belongs in orchestrator), not signal generator. Removed 15-20% complexity for 0% performance gain.
 
-**Q: Why add options if trend works?**  
+**Q: Why add options if trend works?**
 A: Trend alone is 10-12% annual. Options add 5-8% uncorrelated alpha. Together = 18-25% with lower drawdown than trend alone.
 
-**Q: Why 70/30 allocation (not 50/50)?**  
+**Q: Why dual-mode options (Swing + Intraday)?**
+A: Different DTE require different strategies. 5-45 DTE uses 4-factor scoring with debit spreads (defined risk). 0-2 DTE uses Micro Regime Engine (VIX Level × VIX Direction) for sniper precision. Total: 15% Swing + 5% Intraday = 20% allocation.
+
+**Q: Why VIX direction, not just VIX level?**
+A: VIX at 25 falling = fade the move (calls). VIX at 25 rising = ride the move (puts). Same level, opposite strategies. Direction determines whether mean reversion or momentum works.
+
+**Q: Why VIX-only (not VIX1D)?**
+A: VIX1D only diverges from VIX at market open (9:30-10:00 AM). Our trading window starts at 10:00 AM when divergence has resolved. VIX1D adds complexity without actionable benefit.
+
+**Q: Why 70/30 allocation (not 50/50)?**
 A: Trend is proven, predictable, low-drawdown. Options are higher-conviction but more time-sensitive. 70/30 balances growth (options) with stability (trend).
 
 ### Signal Questions

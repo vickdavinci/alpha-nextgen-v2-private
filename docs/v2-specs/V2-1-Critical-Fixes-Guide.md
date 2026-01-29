@@ -1,5 +1,7 @@
 # V2.1 CRITICAL FIXES: IMPLEMENTATION GUIDE
 
+**Updated**: January 28, 2026 (V2.1.1)
+
 ## Executive Summary
 
 You received feedback on two critical architectural issues in V2.1:
@@ -8,6 +10,8 @@ You received feedback on two critical architectural issues in V2.1:
 2. **Falling Knife Risk**: Mean Reversion engine catches knives in crashes = $8,750+ losses per crash event
 
 Both fixes are **non-negotiable before live deployment**. Combined impact: +$55,000 improvement on $100k portfolio.
+
+**V2.1.1 Enhancement**: The VIX Filter has been extended with a **Micro Regime Engine** for intraday options (0-2 DTE). See `V2_1_OPTIONS_ENGINE_DESIGN.txt` for the full dual-mode architecture using VIX Level × VIX Direction = 21 micro-regimes.
 
 ---
 
@@ -87,6 +91,8 @@ First business day of each month:
 ---
 
 ## FIX #2: VIX FILTER FOR MEAN REVERSION
+
+> **V2.1.1 Enhancement**: This basic VIX filter has been extended with a **Micro Regime Engine** for options trading. The Micro Regime uses VIX Level × VIX Direction to create 21 distinct trading regimes. See `V2_1_OPTIONS_ENGINE_DESIGN.txt` for details.
 
 ### The Problem
 
@@ -180,6 +186,55 @@ RSI Threshold       <30         <25         <20         DISABLED
 - **Savings: $8,050 per crash event**
 
 At 1 major crash per 5-10 years = $25,000-50,000 saved over decade.
+
+---
+
+## V2.1.1 ENHANCEMENT: VIX DIRECTION (FOR OPTIONS)
+
+### Why VIX Level Alone Is Insufficient
+
+The basic VIX filter works well for Mean Reversion (equity positions), but **intraday options (0-2 DTE) need more precision**.
+
+**The Key Insight**: VIX DIRECTION matters as much as VIX LEVEL
+
+```
+VIX at 25 and FALLING = Recovery starting, FADE the move (buy calls)
+VIX at 25 and RISING = Fear building, RIDE the move (buy puts)
+
+Same VIX level → OPPOSITE strategies!
+```
+
+### VIX Direction Classification
+
+```
+Direction        | VIX Change (15min) | Score | Implication
+─────────────────────────────────────────────────────────────
+FALLING_FAST     | < -2.0%           |  +2   | Strong recovery
+FALLING          | -0.5% to -2.0%    |  +1   | Recovery starting
+STABLE           | -0.5% to +0.5%    |   0   | Range-bound
+RISING           | +0.5% to +2.0%    |  -1   | Fear building
+RISING_FAST      | +2.0% to +5.0%    |  -2   | Panic emerging
+SPIKING          | > +5.0%           |  -3   | Crash mode
+WHIPSAW          | 5+ reversals/hour |   0   | No direction
+```
+
+### 21 Micro-Regime Matrix
+
+Combining 3 VIX Levels × 7 VIX Directions = 21 distinct trading regimes.
+
+For the complete matrix and strategy mapping, see:
+- `V2_1_OPTIONS_ENGINE_DESIGN.txt` (full specification)
+- `V2_1_CRITICAL_MODIFICATIONS.txt` (Modification #4)
+
+### Why VIX-Only (Not VIX1D)
+
+**VIX1D was evaluated and REJECTED**:
+1. VIX and VIX1D move together during trading hours (0.95 correlation)
+2. VIX1D only diverges at market open (9:30-10:00 AM)
+3. Our trading window starts at 10:00 AM - divergence already resolved
+4. Adding VIX1D increases complexity without actionable benefit
+
+**Use VIX only for all VIX-based decisions.**
 
 ---
 

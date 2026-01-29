@@ -63,13 +63,16 @@ make branch name=feature/va/my-feature
 
 ## Project Overview
 
-**Alpha NextGen V2** is a multi-strategy algorithmic trading system built on QuantConnect (LEAN engine) for deployment on Interactive Brokers. The system implements a **Core-Satellite** architecture with three engines:
+**Alpha NextGen V2** is a multi-strategy algorithmic trading system built on QuantConnect (LEAN engine) for deployment on Interactive Brokers. The system implements a **Core-Satellite** architecture:
 
 - **Core (70%)**: Trend Engine - MA200 + ADX confirmation
 - **Satellite (0-10%)**: Mean Reversion Engine - RSI oversold bounce with VIX filter
-- **Satellite (20-30%)**: Options Engine - 4-factor entry scoring, Greeks monitoring
+- **Satellite (20%)**: Options Engine - Dual-Mode Architecture (V2.1.1)
+  - **Swing Mode (15%)**: Debit spreads, credit spreads, ITM long options (5-45 DTE)
+  - **Intraday Mode (5%)**: Micro Regime Engine - VIX Level × VIX Direction (0-2 DTE)
 
 Forked from V1 v1.0.0 on 2026-01-26. See `docs/v2-specs/` for V2.1 specifications.
+See `docs/v2-specs/V2_1_OPTIONS_ENGINE_DESIGN.txt` for complete Options Engine V2.1.1 specification.
 
 ## Repository Structure
 
@@ -119,7 +122,7 @@ alpha-nextgen/
 │       ├── mean_reversion_engine.py # Intraday bounce (0-10%)
 │       ├── hedge_engine.py     # TMF/PSQ overlay
 │       ├── yield_sleeve.py     # SHV cash management
-│       └── options_engine.py   # QQQ options (20-30%)
+│       └── options_engine.py   # QQQ options (20%) - Dual-Mode + Micro Regime
 ├── portfolio/                  # Router, exposure groups, positions
 ├── execution/                  # Order management
 ├── data/                       # Symbols, indicators, validation
@@ -157,7 +160,7 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 | **Mean Reversion Engine** | `engines/satellite/mean_reversion_engine.py` | `docs/08-mean-reversion-engine.md` | Intraday oversold bounce signals for TQQQ/SOXL (0-10%) |
 | **Hedge Engine** | `engines/satellite/hedge_engine.py` | `docs/09-hedge-engine.md` | Regime-based TMF/PSQ allocation signals |
 | **Yield Sleeve** | `engines/satellite/yield_sleeve.py` | `docs/10-yield-sleeve.md` | SHV cash management signals |
-| **Options Engine** | `engines/satellite/options_engine.py` | `docs/18-options-engine.md` | QQQ options with 4-factor scoring (20-30%) |
+| **Options Engine** | `engines/satellite/options_engine.py` | `docs/18-options-engine.md` | QQQ options Dual-Mode (20%): Swing 15% + Intraday 5% (Micro Regime) |
 
 ### Infrastructure
 
@@ -177,6 +180,7 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 | `docs/16-appendix-parameters.md` | All tunable parameters in one place |
 | `docs/17-appendix-glossary.md` | Terms, abbreviations, formulas |
 | `docs/v2-specs/` | V2.1 specifications and architecture guides |
+| `docs/v2-specs/V2_1_OPTIONS_ENGINE_DESIGN.txt` | Options Engine V2.1.1 (Dual-Mode + Micro Regime) |
 
 ---
 
@@ -417,9 +421,9 @@ except Exception as e:
 │                       STRATEGY ENGINES                            │
 ├─────────────────┬─────────────────┬─────────────────┬─────────────┤
 │  Trend Engine   │ Options Engine  │    MR Engine    │Hedge/Yield  │
-│   (Core 70%)    │(Satellite 20-30%)│(Satellite 0-10%)│  (Overlay)  │
-│   QLD, SSO      │   QQQ Options   │  TQQQ, SOXL     │ TMF,PSQ,SHV │
-│  Urgency: EOD   │ Urgency: IMMED  │ Urgency: IMMED  │Urgency: EOD │
+│   (Core 70%)    │ (Satellite 20%) │(Satellite 0-10%)│  (Overlay)  │
+│   QLD, SSO      │ Dual-Mode V2.1.1│  TQQQ, SOXL     │ TMF,PSQ,SHV │
+│  Urgency: EOD   │ Swing + Intraday│ Urgency: IMMED  │Urgency: EOD │
 └────────┬────────┴────────┬────────┴────────┬────────┴──────┬──────┘
          │                 │                 │               │
          └─────────────────┴─────────────────┴───────────────┘

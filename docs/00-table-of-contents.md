@@ -53,7 +53,7 @@
 | [08](08-mean-reversion-engine.md) | **Mean Reversion Engine** | RSI oversold detection, intraday-only, +2%/-2% exits, time-based force close | Mean Reversion Detail |
 | [09](09-hedge-engine.md) | **Hedge Engine** | Regime-based TMF/PSQ allocation, tail risk protection, rebalancing rules | Hedge Engine Detail |
 | [10](10-yield-sleeve.md) | **Yield Sleeve** | SHV for idle cash, LIFO liquidation, lockbox investment | None |
-| [18](18-options-engine.md) | **Options Engine** | 4-factor entry scoring, QQQ options, tiered stops, Greeks monitoring | Options Flow |
+| [18](18-options-engine.md) | **Options Engine** | Dual-Mode (Swing + Intraday), Micro Regime Engine, VIX direction | Options Flow |
 
 ---
 
@@ -247,6 +247,7 @@ Every section includes:
 | 1.1 | 25 January 2026 | Phase 6 complete - main.py implemented |
 | 2.0 | 26 January 2026 | V2 fork with Core-Satellite architecture |
 | 2.1 | 26 January 2026 | Options Engine, OCO Manager, Greeks monitoring, VIX filter |
+| 2.1.1 | 28 January 2026 | Options Engine Redesign: Dual-Mode + Micro Regime Engine |
 
 ---
 
@@ -272,5 +273,5 @@ Every section includes:
 | 💾 Persistence | [15 - State Persistence](15-state-persistence.md) |
 | ⚙️ Parameters | [16 - Appendix: Parameters](16-appendix-parameters.md) |
 | 📖 Glossary | [17 - Appendix: Glossary](17-appendix-glossary.md) |
-| 🎰 Options | [18 - Options Engine](18-options-engine.md) |
+| 🎰 Options | [18 - Options Engine](18-options-engine.md) (Dual-Mode V2.1.1) |
 | 🔗 OCO | [19 - OCO Manager](19-oco-manager.md) |
