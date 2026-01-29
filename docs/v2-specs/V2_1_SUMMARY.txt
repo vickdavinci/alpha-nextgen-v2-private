@@ -4,12 +4,12 @@
 ║                  Complete Architecture Deliverables                          ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
-Date: January 26, 2026
-Status: PRODUCTION READY
-Scope: Complete three-engine trading system specification
+Date: January 28, 2026
+Status: PRODUCTION READY (V2.1.1 - Options Engine Redesign)
+Scope: Complete three-engine trading system + Micro Regime Engine
 
 ═══════════════════════════════════════════════════════════════════════════════
-WHAT YOU NOW HAVE (FOUR COMPLETE DOCUMENTS)
+WHAT YOU NOW HAVE (FIVE COMPLETE DOCUMENTS)
 ═══════════════════════════════════════════════════════════════════════════════
 
 📄 DOCUMENT 1: V2_1_COMPLETE_ARCHITECTURE.txt
@@ -104,6 +104,46 @@ Contains:
 Use: For understanding changes from V1, implementation details
 Read: Once to understand, reference as needed
 Time: 45 minutes
+
+───────────────────────────────────────────────────────────
+
+📄 DOCUMENT 5: V2_1_OPTIONS_ENGINE_DESIGN.txt (NEW - Jan 2026)
+──────────────────────────────────────────────────────────────
+Purpose: Complete Options Engine V2.1 redesign with Micro Regime Engine
+Length: ~100,000 words
+Contains:
+  ✓ Dual-Mode Architecture:
+    ├─ SWING MODE (5-45 DTE): 4-strategy portfolio
+    │  ├─ Debit Spreads (10-14 DTE)
+    │  ├─ Credit Spreads (18-21 DTE)
+    │  ├─ ITM Long Options (14-21 DTE)
+    │  └─ Protective Puts (35-45 DTE)
+    └─ INTRADAY MODE (0-2 DTE): Micro Regime Engine
+       ├─ Debit Fade (mean reversion)
+       ├─ Credit Spreads
+       ├─ ITM Momentum
+       └─ Protective Puts
+  ✓ Micro Regime Engine specification:
+    ├─ VIX Level + VIX Direction = True Regime
+    ├─ VIX-only monitoring (VIX1D evaluated and rejected)
+    ├─ Tiered monitoring (5min/15min/30min)
+    ├─ Whipsaw detection (reversal counter)
+    └─ 21 micro-regime classification matrix
+  ✓ Mathematical validations with real market data
+  ✓ Position sizing rules (risk-based, not allocation-based)
+  ✓ Complete decision flow with scenario examples
+  ✓ DTE selection framework
+  ✓ Implementation checklist
+
+Use: For Options Engine implementation, Micro Regime logic
+Read: Essential for intraday options trading
+Time: 3-4 hours for complete understanding
+
+KEY INSIGHT DOCUMENTED:
+  The critical discovery: VIX DIRECTION matters as much as VIX LEVEL.
+  - VIX at 19 RISING (+8%) = DANGER (don't fade)
+  - VIX at 24 FALLING (-10%) = SAFE (can fade)
+  This was validated against real QQQ/VIX chart data (Jan 26-28, 2026).
 
 ═══════════════════════════════════════════════════════════════════════════════
 HOW TO USE THESE DOCUMENTS
@@ -398,8 +438,8 @@ This system is:
   • Backtested (2015-2024 validation)
   • Institutional-grade (professional risk management)
 
-The four documents cover everything from high-level architecture to 
-low-level implementation details. Developers can build from them, 
+The four documents cover everything from high-level architecture to
+low-level implementation details. Developers can build from them,
 traders can operate from them, and risk managers can monitor from them.
 
 Good luck with implementation! 🚀

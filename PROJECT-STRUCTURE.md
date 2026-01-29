@@ -1,7 +1,7 @@
 # Alpha NextGen - Project File Structure
 
-> **Last Updated:** 26 January 2026
-> **Status:** V2.1 Complete - Core-Satellite architecture with Options Engine, ready for backtesting
+> **Last Updated:** 28 January 2026
+> **Status:** V2.1.1 Complete - Options Engine Redesign (Dual-Mode + Micro Regime Engine)
 
 ---
 
@@ -40,7 +40,7 @@ flowchart TD
             E_MR["mean_reversion_engine.py<br/><i>Intraday TQQQ/SOXL 0-10%</i>"]
             E_HEDGE["hedge_engine.py<br/><i>TMF/PSQ allocation</i>"]
             E_YIELD["yield_sleeve.py<br/><i>SHV cash mgmt</i>"]
-            E_OPTIONS["options_engine.py<br/><i>QQQ options 20-30%</i>"]
+            E_OPTIONS["options_engine.py<br/><i>QQQ options 20%<br/>Dual-Mode + Micro Regime</i>"]
         end
     end
 
@@ -147,7 +147,9 @@ alpha_nextgen/
 │       ├── mean_reversion_engine.py     # Intraday oversold bounce (TQQQ, SOXL) - 0-10%
 │       ├── hedge_engine.py              # Regime-based TMF/PSQ allocation
 │       ├── yield_sleeve.py              # SHV idle cash management
-│       └── options_engine.py            # QQQ options, 4-factor scoring - 20-30%
+│       └── options_engine.py            # QQQ options - 20% (V2.1.1 Dual-Mode)
+│                                        #   Swing Mode (15%): Debit/Credit spreads, ITM long
+│                                        #   Intraday Mode (5%): Micro Regime Engine (21 regimes)
 │
 ├── portfolio/
 │   ├── __init__.py
@@ -353,5 +355,6 @@ flowchart LR
 | **Phase 4** | portfolio_router, risk_engine, exposure_groups | ✅ Complete |
 | **Phase 5** | execution_engine, state_manager, daily_scheduler | ✅ Complete |
 | **Phase 6** | main.py (1,332 lines - wires all components) | ✅ Complete |
+| **V2.1.1** | Options Engine Redesign (Dual-Mode + Micro Regime) | ✅ Complete |
 
 See [developer-guide-claude.md](developer-guide-claude.md) for detailed build workflow.

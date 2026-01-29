@@ -35,31 +35,64 @@ MEAN REVERSION ENGINE
 ├─ Active Hours: All day, but limited if Trend dominant
 └─ Expected: 2-3% annual return (opportunistic)
 
-OPTIONS ENGINE
-├─ Allocation: 20-30% of portfolio
-├─ Instrument: QQQ daily options (1-4 DTE)
-├─ Signal: Entry Score >= 3.0 (1-4 points from 4 factors)
-├─ Entry Scoring:
-│  ├─ Factor 1: ADX trend strength (0-1)
-│  ├─ Factor 2: Intraday momentum (0-1)
-│  ├─ Factor 3: IV Rank cheap (0-1)
-│  └─ Factor 4: Liquidity (OI, spread) (0-1)
-├─ Position Sizing: 1% risk per trade (based on stop width)
-├─ Stop Loss: By score
-│  ├─ 3.0-3.25 → 20% stop (34 contracts per $100k @ $1.45)
-│  ├─ 3.25-3.5 → 22% stop (31 contracts)
-│  ├─ 3.5-3.75 → 25% stop (27 contracts)
-│  └─ 3.75-4.0 → 30% stop (23 contracts)
-├─ Profit Target: +50% premium gain (fixed, all scores)
-├─ Hold Time: 1-4 days max (exits 3:45 PM EOD)
-├─ Max Open Trades: 1 per day (strict limit)
-├─ Active Hours: 10 AM - 3 PM ET (2:30 PM late constraint)
+OPTIONS ENGINE (V2.1 DUAL-MODE ARCHITECTURE)
+├─ Total Allocation: 20% of portfolio ($10,000 on $50k)
+├─ TWO OPERATING MODES:
+│
+│  ┌─ MODE 1: SWING MODE (5-45 DTE) ─────────────────────────────────────┐
+│  │  Allocation: 15% ($7,500)                                           │
+│  │  Strategies:                                                        │
+│  │  ├─ Debit Spreads (10-14 DTE): Directional, defined risk            │
+│  │  ├─ Credit Spreads (18-21 DTE): Premium collection                  │
+│  │  ├─ ITM Long Options (14-21 DTE): High conviction, 0.70 delta       │
+│  │  └─ Protective Puts (35-45 DTE): Portfolio hedge                    │
+│  │  Direction: Uses Macro Regime (daily score 0-100)                   │
+│  │  Filters: Simple intraday (time window, gap, extreme move)          │
+│  │  Hold: Multi-day positions OK                                       │
+│  └──────────────────────────────────────────────────────────────────────┘
+│
+│  ┌─ MODE 2: INTRADAY MODE (0-2 DTE) - MICRO REGIME ENGINE ─────────────┐
+│  │  Allocation: 5% ($2,500)                                            │
+│  │  Strategies:                                                        │
+│  │  ├─ Debit Fade: Mean reversion when VIX normal + QQQ extended       │
+│  │  ├─ Credit Spreads: Premium collection in choppy conditions         │
+│  │  ├─ ITM Momentum: Ride trends when VIX elevated                     │
+│  │  └─ Protective Puts: Intraday hedge                                 │
+│  │  Direction: Uses Micro Regime (VIX Level + VIX Direction)           │
+│  │  Entry: Same-day exit mandatory (by 3:30 PM)                        │
+│  │  Key: VIX Direction is the differentiator (not VIX1D)               │
+│  └──────────────────────────────────────────────────────────────────────┘
+│
+├─ VIX MONITORING (Micro Regime - Intraday Mode):
+│  ├─ Layer 1: Spike Detection (every 5 min) - VIX > 5% move = PAUSE
+│  ├─ Layer 2: Direction Assessment (every 15 min) - Multi-timeframe
+│  ├─ Layer 3: Whipsaw Detection (rolling 1-hour) - Reversal count
+│  └─ Layer 4: Regime Classification (every 30 min) - Final decision
+│
+├─ VIX DIRECTION SCORING (Micro Regime):
+│  ├─ FALLING_FAST (< -5%):  +20 pts → Prime mean reversion
+│  ├─ FALLING (-5% to -2%):  +15 pts → Good mean reversion
+│  ├─ STABLE (±2%):          +10 pts → Normal operations
+│  ├─ RISING (+2% to +5%):   +5 pts  → Caution, reduce size
+│  ├─ RISING_FAST (+5-10%):  0 pts   → Skip mean reversion
+│  ├─ SPIKING (> +10%):      -5 pts  → Momentum only or NO TRADE
+│  └─ WHIPSAW (range >> net): -10 pts → Credit spreads only
+│
+├─ REGIME MATRIX (VIX Level × VIX Direction):
+│  │            │ VIX FALLING │ VIX STABLE │ VIX RISING │
+│  │ VIX < 20   │ Fade OK     │ Fade OK    │ Skip fade  │
+│  │ VIX 20-25  │ Half size   │ Credits    │ ITM puts   │
+│  │ VIX > 25   │ Small fade  │ ITM mom    │ NO TRADE   │
+│
+├─ Position Sizing: Risk-based (2% per trade = $1,000 max loss)
+├─ Active Hours: 10 AM - 2:30 PM ET
 ├─ Constraints:
-│  ├─ Daily loss > -2% → STOP all trading
-│  ├─ IV > 80th percentile → Skip (too expensive)
-│  ├─ Allocation >= 30% → Skip until closed
-│  └─ After 2:30 PM: Only 20% stops allowed
-└─ Expected: 4-5% annual return, 60% win rate, 2.5:1 R/R
+│  ├─ Daily options loss > -1% → Pause entries for day
+│  ├─ Weekly options loss > -2% → Reduce size 50%
+│  ├─ Monthly options loss > -4% → Pause 5 trading days
+│  ├─ IV Rank > 80% → Skip buying (credit spreads OK)
+│  └─ VIX > 50 → NO options trading
+└─ Expected: 6-8% annual return (Swing 4% + Intraday 2-4%)
 
 
 ═══════════════════════════════════════════════════════════════════════════════

@@ -59,7 +59,7 @@
 | `engines/satellite/mean_reversion_engine.py` | `docs/08-mean-reversion-engine.md` |
 | `engines/satellite/hedge_engine.py` | `docs/09-hedge-engine.md` |
 | `engines/satellite/yield_sleeve.py` | `docs/10-yield-sleeve.md` |
-| `engines/satellite/options_engine.py` | `docs/18-options-engine.md` |
+| `engines/satellite/options_engine.py` | `docs/18-options-engine.md`, `docs/v2-specs/V2_1_OPTIONS_ENGINE_DESIGN.txt` |
 
 ### Portfolio & Execution
 

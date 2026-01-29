@@ -8,28 +8,76 @@ Forked from V1 v1.0.0 with Core-Satellite architecture in place.
 **Target Performance**: 18-25% annual return (vs V1's 10-12%)
 **Timeline**: 8-12 weeks
 **Source Specs**: `docs/v2-specs/`
+**Current Version**: V2.1.1 (Options Engine Redesign - Jan 28, 2026)
 
 ---
 
 ## Architecture Summary
 
 ```
-V2 Engine Allocation:
+V2.1.1 Engine Allocation:
 ├── Core (70%)
 │   └── Trend Engine - MA200 + ADX confirmation
-├── Satellite (20-30%)
-│   └── Options Engine - 4-factor entry scoring (NEW)
+├── Satellite (20%)
+│   └── Options Engine - Dual-Mode Architecture (V2.1.1)
+│       ├── Swing Mode (15%) - Debit spreads, credit spreads, ITM long
+│       └── Intraday Mode (5%) - Micro Regime Engine (21 regimes)
 └── Satellite (0-10%)
     └── Mean Reversion Engine - RSI + VIX filter
 ```
 
 ---
 
-## Epic 1: Options Engine (NEW)
+## Epic 0: Options Engine V2.1.1 Redesign (NEW)
+
+**Priority**: HIGH
+**Allocation**: 20% of portfolio (Swing 15% + Intraday 5%)
+**Status**: ✅ COMPLETE (v2.1.1 - Jan 28, 2026)
+
+### Overview
+
+Complete redesign of Options Engine with dual-mode architecture and Micro Regime Engine for intraday trading.
+
+### Key Deliverables
+
+| Component | Description | Status |
+|-----------|-------------|--------|
+| Dual-Mode Architecture | Swing (5-45 DTE) + Intraday (0-2 DTE) | ✅ Designed |
+| Micro Regime Engine | VIX Level × VIX Direction = 21 trading regimes | ✅ Designed |
+| VIX Direction Classification | 7 categories (FALLING_FAST to WHIPSAW) | ✅ Designed |
+| Tiered VIX Monitoring | 5min/15min/30min/60min layers | ✅ Designed |
+| VIX1D Evaluation | Rejected (0.95 correlation during trading hours) | ✅ Complete |
+| Documentation | V2_1_OPTIONS_ENGINE_DESIGN.txt (2,135 lines) | ✅ Complete |
+
+### Micro Regime Matrix (21 Regimes)
+
+```
+VIX Level × VIX Direction:
+- VIX Levels: LOW (<20), MEDIUM (20-30), HIGH (>30)
+- VIX Directions: FALLING_FAST, FALLING, STABLE, RISING, RISING_FAST, SPIKING, WHIPSAW
+- Result: 21 distinct trading regimes with specific strategies
+```
+
+### Swing Mode Strategies (5-45 DTE)
+- Debit Spreads (10-14 DTE) - Defined risk
+- Credit Spreads (18-21 DTE) - Premium collection
+- ITM Long Options (14-21 DTE) - Directional
+- Protective Puts (35-45 DTE) - Insurance
+
+### Intraday Mode Strategies (0-2 DTE)
+- Long Calls (VIX falling, momentum up)
+- Long Puts (VIX rising, momentum down)
+- Iron Condors (VIX stable or whipsaw)
+
+**Spec Reference**: `docs/v2-specs/V2_1_OPTIONS_ENGINE_DESIGN.txt`
+
+---
+
+## Epic 1: Options Engine (Original - Superseded by Epic 0)
 
 **Priority**: HIGH
 **Allocation**: 20-30% of portfolio
-**Status**: ✅ COMPLETE (v2.1.2)
+**Status**: ✅ COMPLETE (v2.1.2) - Superseded by V2.1.1 Redesign
 
 ### Tickets
 
@@ -389,11 +437,14 @@ For each ticket:
 ## References
 
 - `docs/v2-specs/V2_1_COMPLETE_ARCHITECTURE.txt` - Master specification
+- `docs/v2-specs/V2_1_OPTIONS_ENGINE_DESIGN.txt` - Options Engine V2.1.1 (Dual-Mode + Micro Regime)
 - `docs/v2-specs/V2-1-Critical-Fixes-Guide.md` - Critical fixes (yield, VIX)
 - `docs/v2-specs/V2-1-FINAL-SYNTHESIS.md` - Mathematical proofs
 - `docs/v2-specs/V2_1_QUICK_REFERENCE.txt` - Quick reference guide
+- `docs/v2-specs/V2_1_CRITICAL_MODIFICATIONS.txt` - 4 critical modifications
 
 ---
 
 *Generated: 2026-01-26*
-*Version: V2.0.0-dev*
+*Updated: 2026-01-28 (V2.1.1 Options Engine Redesign)*
+*Version: V2.1.1*

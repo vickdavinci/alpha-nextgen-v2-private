@@ -1415,6 +1415,74 @@ class OptionsEngine:
         else: return 0.20
 ```
 
+2.3.10 VIX MONITORING SYSTEM (V2.1 INTRADAY OPTIONS)
+
+For 0-2 DTE intraday options, the Micro Regime Engine uses VIX monitoring
+to determine optimal strategy deployment.
+
+IMPORTANT: VIX ONLY (NOT VIX1D)
+
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │  VIX1D EVALUATED AND REJECTED                                            │
+  │  ────────────────────────────────────────────────────────────────────    │
+  │                                                                          │
+  │  After chart analysis and validation, VIX1D was rejected because:       │
+  │                                                                          │
+  │  1. VIX and VIX1D move together during trading hours (0.95 correlation) │
+  │  2. VIX1D only diverges at market open (9:30-10:00 AM)                  │
+  │  3. Our trading window starts at 10:00 AM - divergence already resolved │
+  │  4. Adding VIX1D increases complexity without actionable benefit         │
+  │                                                                          │
+  │  CONCLUSION: VIX alone is sufficient for the strategy.                  │
+  │                                                                          │
+  └──────────────────────────────────────────────────────────────────────────┘
+
+VIX DIRECTION CLASSIFICATION:
+
+  VIX Change    | Classification | Score Pts | Action
+  --------------|----------------|-----------|---------------------------
+  < -5%         | FALLING_FAST   | +20       | Prime mean reversion
+  -5% to -2%    | FALLING        | +15       | Good mean reversion
+  ±2%           | STABLE         | +10       | Normal operations
+  +2% to +5%    | RISING         | +5        | Caution, reduce size
+  +5% to +10%   | RISING_FAST    | 0         | Skip mean reversion
+  > +10%        | SPIKING        | -5        | Momentum only or no trade
+  Range >> Net  | WHIPSAW        | -10       | Credit spreads only
+
+TIERED VIX MONITORING:
+
+  Layer 1: SPIKE DETECTION (Every 5 minutes)
+    - Check if VIX moved > 5% in 5 minutes
+    - If YES: Pause entries, wait 10 minutes
+
+  Layer 2: DIRECTION ASSESSMENT (Every 15 minutes)
+    - Multi-timeframe analysis (from open, last 30min, last 15min)
+    - Consensus direction (2 of 3 must agree)
+    - Update Micro Regime Score
+
+  Layer 3: WHIPSAW DETECTION (Rolling 1-hour)
+    - Track VIX every 5 min (12 data points)
+    - Count direction reversals
+    - 0-2 reversals: TRENDING → Normal trading
+    - 3-4 reversals: CHOPPY → Reduce size 50%
+    - 5+ reversals: WHIPSAW → No directional trades
+
+VIX LEVEL + VIX DIRECTION = REGIME:
+
+                  │ VIX FALLING   │ VIX STABLE    │ VIX RISING
+  ────────────────┼───────────────┼───────────────┼───────────────
+  VIX < 20        │ CALM          │ NORMAL        │ TRANSITIONING
+  (Normal)        │ Fade OK       │ Fade OK       │ Skip fade
+  ────────────────┼───────────────┼───────────────┼───────────────
+  VIX 20-25       │ RECOVERING    │ CAUTIOUS      │ DETERIORATING
+  (Caution)       │ Half size     │ Credits only  │ Momentum puts
+  ────────────────┼───────────────┼───────────────┼───────────────
+  VIX > 25        │ PANIC FADING  │ ELEVATED      │ PANIC BUILDING
+  (Elevated)      │ Small fade    │ ITM momentum  │ No trade
+  ────────────────┴───────────────┴───────────────┴───────────────
+
+For complete specification, see: V2_1_OPTIONS_ENGINE_DESIGN.txt
+
 
 ═══════════════════════════════════════════════════════════════════════════════
 PART 3: ORCHESTRATION & RISK MANAGEMENT

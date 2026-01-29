@@ -6,14 +6,54 @@
 
 ## Overview
 
-The **Options Engine** implements daily volatility harvesting on QQQ options using a 4-factor entry scoring system. This is a **satellite engine** (20-30% allocation) that trades ATM/near-ATM QQQ calls and puts based on market conditions.
+The **Options Engine** implements a dual-mode architecture for QQQ options trading. This is a **satellite engine** (20% allocation) with two distinct operating modes based on DTE (days to expiration).
+
+> **V2.1.1 Redesign**: Complete architectural redesign with Micro Regime Engine for intraday trading.
+> Full specification: `docs/v2-specs/V2_1_OPTIONS_ENGINE_DESIGN.txt`
 
 **Key Characteristics:**
 - **Underlying**: QQQ (Nasdaq 100 ETF)
-- **Strategy**: Intraday directional options
-- **Entry**: 4-factor scoring system (minimum 3.0/4.0)
-- **Exit**: +50% profit target, tiered stop losses
-- **Position Sizing**: Confidence-weighted (higher score = wider stops, fewer contracts)
+- **Total Allocation**: 20% of portfolio
+- **Dual-Mode Architecture**:
+  - **Swing Mode (15%)**: 5-45 DTE, spread strategies
+  - **Intraday Mode (5%)**: 0-2 DTE, Micro Regime Engine
+
+---
+
+## Dual-Mode Architecture (V2.1.1)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    OPTIONS ENGINE DUAL-MODE                          │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  ┌─────────────────────────┐     ┌─────────────────────────────┐  │
+│  │     SWING MODE          │     │     INTRADAY MODE           │  │
+│  │     (5-45 DTE)          │     │       (0-2 DTE)             │  │
+│  ├─────────────────────────┤     ├─────────────────────────────┤  │
+│  │ Allocation: 15%         │     │ Allocation: 5%              │  │
+│  │                         │     │                             │  │
+│  │ Strategies:             │     │ Decision Engine:            │  │
+│  │ • Debit Spreads (10-14) │     │ MICRO REGIME ENGINE         │  │
+│  │ • Credit Spreads (18-21)│     │ (VIX Level × VIX Direction) │  │
+│  │ • ITM Long (14-21)      │     │                             │  │
+│  │ • Protective Puts (35-45)│    │ 21 Trading Regimes          │  │
+│  │                         │     │                             │  │
+│  │ Entry: 4-Factor Score   │     │ Strategies:                 │  │
+│  │ Exit: OCO pairs         │     │ • Long Calls (momentum up)  │  │
+│  └─────────────────────────┘     │ • Long Puts (momentum down) │
+│                                  │ • Iron Condors (range/whip) │
+│                                  └─────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Swing Mode (5-45 DTE)
+
+### Allocation: 15% of Portfolio
+
+Swing Mode uses the original 4-factor entry scoring system with spread-based strategies for defined risk.
 
 ---
 
@@ -310,12 +350,83 @@ See [19 - OCO Manager](19-oco-manager.md) for implementation details.
 
 ---
 
+---
+
+## Intraday Mode (0-2 DTE) - Micro Regime Engine
+
+### Allocation: 5% of Portfolio
+
+Intraday Mode uses the **Micro Regime Engine** to determine optimal strategy based on VIX conditions.
+
+### Why VIX Direction Matters
+
+**Key Insight**: VIX level alone is insufficient. VIX direction determines whether mean reversion or momentum works.
+
+```
+VIX at 25 and FALLING = Recovery starting, FADE the move (buy calls)
+VIX at 25 and RISING = Fear building, RIDE the move (buy puts)
+
+Same VIX level → OPPOSITE strategies!
+```
+
+### VIX Direction Classification
+
+| Direction | VIX Change (15min) | Score | Implication |
+|-----------|:------------------:|:-----:|-------------|
+| FALLING_FAST | < -2.0% | +2 | Strong recovery |
+| FALLING | -0.5% to -2.0% | +1 | Recovery starting |
+| STABLE | -0.5% to +0.5% | 0 | Range-bound |
+| RISING | +0.5% to +2.0% | -1 | Fear building |
+| RISING_FAST | +2.0% to +5.0% | -2 | Panic emerging |
+| SPIKING | > +5.0% | -3 | Crash mode |
+| WHIPSAW | 5+ reversals/hour | 0 | No direction |
+
+### 21 Micro-Regime Matrix
+
+VIX Level × VIX Direction = 21 distinct trading regimes.
+
+| VIX Level | VIX Direction | Micro Regime | Strategy | Allocation |
+|-----------|---------------|--------------|----------|:----------:|
+| LOW (<20) | FALLING_FAST | COMPLACENT_BULL | Long Calls | 5% |
+| LOW (<20) | STABLE | GOLDILOCKS | Iron Condors | 3% |
+| LOW (<20) | RISING_FAST | SURPRISE_FEAR | Long Puts | 3% |
+| MED (20-30) | FALLING | FEAR_FADING | Call Spreads | 3% |
+| MED (20-30) | STABLE | ELEVATED_RANGE | Iron Condors | 2% |
+| MED (20-30) | RISING | FEAR_BUILDING | Put Spreads | 3% |
+| HIGH (>30) | FALLING_FAST | CRISIS_ENDING | Long Calls | 3% |
+| HIGH (>30) | STABLE | CRISIS_PLATEAU | NO TRADE | 0% |
+| HIGH (>30) | RISING | CRISIS_WORSENING | NO TRADE | 0% |
+
+*Full 21-regime matrix in `docs/v2-specs/V2_1_OPTIONS_ENGINE_DESIGN.txt`*
+
+### VIX Monitoring System
+
+**IMPORTANT**: We use VIX only, NOT VIX1D.
+
+VIX1D was evaluated and rejected because:
+1. VIX and VIX1D move together during trading hours (0.95 correlation)
+2. VIX1D only diverges at market open (9:30-10:00 AM)
+3. Our trading window starts at 10:00 AM - divergence already resolved
+4. Adding VIX1D increases complexity without actionable benefit
+
+### Tiered VIX Monitoring
+
+| Layer | Check Frequency | Purpose |
+|-------|-----------------|---------|
+| Layer 1 | 5 minutes | Spike detection (VIX change > 3%) |
+| Layer 2 | 15 minutes | Direction confirmation |
+| Layer 3 | 60 minutes | Whipsaw detection (5+ reversals) |
+| Layer 4 | 30 minutes | Full regime recalculation |
+
+---
+
 ## Related Sections
 
 - [12 - Risk Engine](12-risk-engine.md) - Greeks monitoring integration
 - [19 - OCO Manager](19-oco-manager.md) - Exit order management
 - [11 - Portfolio Router](11-portfolio-router.md) - Order authorization
 - [16 - Appendix: Parameters](16-appendix-parameters.md) - All config values
+- [v2-specs/V2_1_OPTIONS_ENGINE_DESIGN.txt](v2-specs/V2_1_OPTIONS_ENGINE_DESIGN.txt) - Full V2.1.1 specification
 
 ---
 
