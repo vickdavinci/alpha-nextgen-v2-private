@@ -1,31 +1,39 @@
 """
-Options Engine - Daily volatility harvesting on QQQ options.
+Options Engine V2.1.1 - Dual-Mode Architecture for QQQ Options.
 
-Implements 4-factor entry scoring system for QQQ options:
-- ADX Factor: Trend strength confirmation
-- Momentum Factor: Price above/below MA200
-- IV Rank Factor: Implied volatility percentile
-- Liquidity Factor: Bid-ask spread quality
+V2.1.1 COMPLETE REDESIGN with two distinct operating modes:
 
-Entry Score Range: 0-4, Minimum threshold: 3.0
+MODE 1: SWING MODE (5-45 DTE)
+- 15% allocation of portfolio
+- Multi-day positions (hold overnight allowed)
+- Uses macro regime for direction
+- 4-strategy portfolio: Debit Spreads, Credit Spreads, ITM Long, Protective Puts
+- Simple intraday filters (not Micro Regime)
 
-Confidence-Weighted Tiered Stops:
-- Score 3.0-3.25: 20% stop, 34 contracts (tight stops, more volume)
-- Score 3.25-3.5: 22% stop, 31 contracts
-- Score 3.5-3.75: 25% stop, 27 contracts
-- Score 3.75-4.0: 30% stop, 23 contracts (wide stops, fewer contracts)
+MODE 2: INTRADAY MODE (0-2 DTE)
+- 5% allocation of portfolio
+- Same-day entry and exit (must close by 3:30 PM)
+- Uses MICRO REGIME ENGINE for decision making
+- VIX Level × VIX Direction = 21 distinct trading regimes
+- Strategies: Debit Fade, Credit Spreads, ITM Momentum, Protective Puts
 
-Exit Rules:
-- Profit target: +50%
-- Stop loss: Tiered based on entry score
-- Late day constraint: Only 20% stops allowed after 2:30 PM
+KEY INSIGHT: VIX Direction is THE key differentiator.
+Same VIX level + different direction = OPPOSITE strategies!
 
-Spec: docs/v2-specs/V2_1_COMPLETE_ARCHITECTURE.txt (Part 2, Engine 3)
+VIX at 25 and FALLING = Recovery starting, FADE the move (buy calls)
+VIX at 25 and RISING = Fear building, RIDE the move (buy puts)
+
+ENTRY TIMING MATTERS MORE FOR SHORTER DTE:
+- 2 DTE: 2-hour window = 15% of option's life → Micro Regime ESSENTIAL
+- 14 DTE: 2-hour window = 2% of option's life → Simple filters sufficient
+
+Spec: docs/v2-specs/V2_1_OPTIONS_ENGINE_DESIGN.txt
 """
 
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Deque, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from AlgorithmImports import QCAlgorithm
@@ -33,7 +41,15 @@ if TYPE_CHECKING:
 
 import config
 from engines.core.risk_engine import GreeksSnapshot
-from models.enums import Urgency
+from models.enums import (
+    IntradayStrategy,
+    MicroRegime,
+    OptionsMode,
+    Urgency,
+    VIXDirection,
+    VIXLevel,
+    WhipsawState,
+)
 from models.target_weight import TargetWeight
 
 
@@ -195,23 +211,614 @@ class OptionsPosition:
         )
 
 
+# =============================================================================
+# V2.1.1 MICRO REGIME ENGINE (Intraday Decision Brain)
+# =============================================================================
+
+
+@dataclass
+class VIXSnapshot:
+    """VIX data point for monitoring."""
+
+    timestamp: str
+    value: float
+    change_from_open_pct: float = 0.0
+
+
+@dataclass
+class MicroRegimeState:
+    """Current state of the Micro Regime Engine."""
+
+    vix_level: VIXLevel = VIXLevel.LOW
+    vix_direction: VIXDirection = VIXDirection.STABLE
+    micro_regime: MicroRegime = MicroRegime.NORMAL
+    micro_score: float = 50.0
+    whipsaw_state: WhipsawState = WhipsawState.TRENDING
+    recommended_strategy: IntradayStrategy = IntradayStrategy.NO_TRADE
+    qqq_move_pct: float = 0.0
+    vix_current: float = 15.0
+    vix_open: float = 15.0
+    last_update: str = ""
+    spike_cooldown_until: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize for persistence."""
+        return {
+            "vix_level": self.vix_level.value,
+            "vix_direction": self.vix_direction.value,
+            "micro_regime": self.micro_regime.value,
+            "micro_score": self.micro_score,
+            "whipsaw_state": self.whipsaw_state.value,
+            "recommended_strategy": self.recommended_strategy.value,
+            "qqq_move_pct": self.qqq_move_pct,
+            "vix_current": self.vix_current,
+            "vix_open": self.vix_open,
+            "last_update": self.last_update,
+            "spike_cooldown_until": self.spike_cooldown_until,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MicroRegimeState":
+        """Deserialize from persistence."""
+        return cls(
+            vix_level=VIXLevel(data.get("vix_level", "LOW")),
+            vix_direction=VIXDirection(data.get("vix_direction", "STABLE")),
+            micro_regime=MicroRegime(data.get("micro_regime", "NORMAL")),
+            micro_score=data.get("micro_score", 50.0),
+            whipsaw_state=WhipsawState(data.get("whipsaw_state", "TRENDING")),
+            recommended_strategy=IntradayStrategy(data.get("recommended_strategy", "NO_TRADE")),
+            qqq_move_pct=data.get("qqq_move_pct", 0.0),
+            vix_current=data.get("vix_current", 15.0),
+            vix_open=data.get("vix_open", 15.0),
+            last_update=data.get("last_update", ""),
+            spike_cooldown_until=data.get("spike_cooldown_until", ""),
+        )
+
+
+class MicroRegimeEngine:
+    """
+    Micro Regime Engine - The "brain" for intraday options trading (0-2 DTE).
+
+    Combines VIX Level × VIX Direction to determine one of 21 trading regimes.
+    Each regime has specific strategy deployment rules.
+
+    Key insight: VIX Direction is THE key differentiator.
+    Same VIX level + different direction = OPPOSITE strategies!
+
+    Tiered VIX Monitoring:
+    - Layer 1 (5 min): Spike detection
+    - Layer 2 (15 min): Direction assessment
+    - Layer 3 (1 hour): Whipsaw detection
+    - Layer 4 (30 min): Full regime recalculation
+    """
+
+    def __init__(self, log_func=None):
+        """Initialize Micro Regime Engine."""
+        self._log_func = log_func
+        self._state = MicroRegimeState()
+        # Rolling 1-hour VIX history (12 data points at 5-min intervals)
+        self._vix_history: Deque[VIXSnapshot] = deque(maxlen=12)
+        self._vix_15min_ago: float = 0.0
+        self._vix_30min_ago: float = 0.0
+        self._qqq_open: float = 0.0
+
+    def log(self, message: str) -> None:
+        """Log via provided function or skip."""
+        if self._log_func:
+            self._log_func(f"MICRO: {message}")
+
+    # =========================================================================
+    # VIX DIRECTION CLASSIFICATION
+    # =========================================================================
+
+    def classify_vix_direction(
+        self, vix_current: float, vix_open: float
+    ) -> Tuple[VIXDirection, float]:
+        """
+        Classify VIX direction based on change from open.
+
+        VIX direction tells us WHERE we're going, not just where we are.
+        This is THE key differentiator for intraday strategies.
+
+        Args:
+            vix_current: Current VIX value.
+            vix_open: VIX value at market open.
+
+        Returns:
+            Tuple of (VIXDirection enum, direction score for micro score).
+        """
+        if vix_open <= 0:
+            return VIXDirection.STABLE, config.MICRO_SCORE_DIR_STABLE
+
+        vix_change_pct = (vix_current - vix_open) / vix_open * 100
+
+        # Check for whipsaw first (if we have history)
+        if len(self._vix_history) >= 6:
+            whipsaw_state, reversals = self._detect_whipsaw()
+            if whipsaw_state == WhipsawState.WHIPSAW:
+                return VIXDirection.WHIPSAW, config.MICRO_SCORE_DIR_WHIPSAW
+
+        # Classify by change percentage
+        if vix_change_pct < config.VIX_DIRECTION_FALLING_FAST:
+            return VIXDirection.FALLING_FAST, config.MICRO_SCORE_DIR_FALLING_FAST
+        elif vix_change_pct < config.VIX_DIRECTION_FALLING:
+            return VIXDirection.FALLING, config.MICRO_SCORE_DIR_FALLING
+        elif vix_change_pct <= config.VIX_DIRECTION_STABLE_HIGH:
+            return VIXDirection.STABLE, config.MICRO_SCORE_DIR_STABLE
+        elif vix_change_pct <= config.VIX_DIRECTION_RISING:
+            return VIXDirection.RISING, config.MICRO_SCORE_DIR_RISING
+        elif vix_change_pct <= config.VIX_DIRECTION_RISING_FAST:
+            return VIXDirection.RISING_FAST, config.MICRO_SCORE_DIR_RISING_FAST
+        else:
+            return VIXDirection.SPIKING, config.MICRO_SCORE_DIR_SPIKING
+
+    def classify_vix_level(self, vix_value: float) -> Tuple[VIXLevel, float]:
+        """
+        Classify VIX level and return score component.
+
+        Args:
+            vix_value: Current VIX value.
+
+        Returns:
+            Tuple of (VIXLevel enum, level score for micro score).
+        """
+        if vix_value < 15:
+            return VIXLevel.LOW, config.MICRO_SCORE_VIX_VERY_CALM
+        elif vix_value < 18:
+            return VIXLevel.LOW, config.MICRO_SCORE_VIX_CALM
+        elif vix_value < config.VIX_LEVEL_LOW_MAX:
+            return VIXLevel.LOW, config.MICRO_SCORE_VIX_NORMAL
+        elif vix_value < 23:
+            return VIXLevel.MEDIUM, config.MICRO_SCORE_VIX_ELEVATED
+        elif vix_value < config.VIX_LEVEL_MEDIUM_MAX:
+            return VIXLevel.MEDIUM, config.MICRO_SCORE_VIX_HIGH
+        else:
+            return VIXLevel.HIGH, config.MICRO_SCORE_VIX_EXTREME
+
+    # =========================================================================
+    # WHIPSAW DETECTION
+    # =========================================================================
+
+    def _detect_whipsaw(self) -> Tuple[WhipsawState, int]:
+        """
+        Detect whipsaw using direction reversal count.
+
+        Analyzes rolling 1-hour VIX history for direction reversals.
+        5+ reversals indicates chaotic market where both MR and momentum fail.
+
+        Returns:
+            Tuple of (WhipsawState, reversal count).
+        """
+        if len(self._vix_history) < 6:
+            return WhipsawState.TRENDING, 0
+
+        reversals = 0
+        prev_direction = None
+
+        history_list = list(self._vix_history)
+        for i in range(1, len(history_list)):
+            change = history_list[i].value - history_list[i - 1].value
+
+            # Ignore tiny moves (noise)
+            if abs(change) < config.VIX_REVERSAL_THRESHOLD:
+                continue
+
+            current_direction = "UP" if change > 0 else "DOWN"
+
+            if prev_direction and current_direction != prev_direction:
+                reversals += 1
+
+            prev_direction = current_direction
+
+        # Classify based on reversal count
+        if reversals <= config.VIX_REVERSAL_TRENDING:
+            return WhipsawState.TRENDING, reversals
+        elif reversals <= config.VIX_REVERSAL_CHOPPY:
+            return WhipsawState.CHOPPY, reversals
+        else:
+            return WhipsawState.WHIPSAW, reversals
+
+    # =========================================================================
+    # MICRO REGIME CLASSIFICATION (21 REGIMES)
+    # =========================================================================
+
+    def classify_micro_regime(
+        self, vix_level: VIXLevel, vix_direction: VIXDirection
+    ) -> MicroRegime:
+        """
+        Classify micro regime using VIX Level × VIX Direction matrix.
+
+        21 distinct regimes, each with specific strategy deployment rules.
+
+        Args:
+            vix_level: Current VIX level classification.
+            vix_direction: Current VIX direction classification.
+
+        Returns:
+            MicroRegime enum value.
+        """
+        # VIX LOW (< 20) regimes
+        if vix_level == VIXLevel.LOW:
+            regime_map = {
+                VIXDirection.FALLING_FAST: MicroRegime.PERFECT_MR,
+                VIXDirection.FALLING: MicroRegime.GOOD_MR,
+                VIXDirection.STABLE: MicroRegime.NORMAL,
+                VIXDirection.RISING: MicroRegime.CAUTION_LOW,
+                VIXDirection.RISING_FAST: MicroRegime.TRANSITION,
+                VIXDirection.SPIKING: MicroRegime.RISK_OFF_LOW,
+                VIXDirection.WHIPSAW: MicroRegime.CHOPPY_LOW,
+            }
+        # VIX MEDIUM (20-25) regimes
+        elif vix_level == VIXLevel.MEDIUM:
+            regime_map = {
+                VIXDirection.FALLING_FAST: MicroRegime.RECOVERING,
+                VIXDirection.FALLING: MicroRegime.IMPROVING,
+                VIXDirection.STABLE: MicroRegime.CAUTIOUS,
+                VIXDirection.RISING: MicroRegime.WORSENING,
+                VIXDirection.RISING_FAST: MicroRegime.DETERIORATING,
+                VIXDirection.SPIKING: MicroRegime.BREAKING,
+                VIXDirection.WHIPSAW: MicroRegime.UNSTABLE,
+            }
+        # VIX HIGH (> 25) regimes
+        else:
+            regime_map = {
+                VIXDirection.FALLING_FAST: MicroRegime.PANIC_EASING,
+                VIXDirection.FALLING: MicroRegime.CALMING,
+                VIXDirection.STABLE: MicroRegime.ELEVATED,
+                VIXDirection.RISING: MicroRegime.WORSENING_HIGH,
+                VIXDirection.RISING_FAST: MicroRegime.FULL_PANIC,
+                VIXDirection.SPIKING: MicroRegime.CRASH,
+                VIXDirection.WHIPSAW: MicroRegime.VOLATILE,
+            }
+
+        return regime_map.get(vix_direction, MicroRegime.NORMAL)
+
+    # =========================================================================
+    # MICRO SCORE CALCULATION
+    # =========================================================================
+
+    def calculate_micro_score(
+        self,
+        vix_current: float,
+        vix_open: float,
+        qqq_current: float,
+        qqq_open: float,
+        move_duration_minutes: int = 120,
+    ) -> float:
+        """
+        Calculate Micro Regime Score (range: -15 to 100).
+
+        Components:
+        1. VIX Level (0-25 pts)
+        2. VIX Direction (-10 to +20 pts)
+        3. QQQ Move Magnitude (0-20 pts)
+        4. Move Velocity (0-15 pts)
+
+        Higher scores favor mean reversion, lower favor momentum.
+
+        Args:
+            vix_current: Current VIX value.
+            vix_open: VIX at market open.
+            qqq_current: Current QQQ price.
+            qqq_open: QQQ price at market open.
+            move_duration_minutes: How long the move took.
+
+        Returns:
+            Micro score (-15 to 100).
+        """
+        score = 0.0
+
+        # Component 1: VIX Level
+        _, level_score = self.classify_vix_level(vix_current)
+        score += level_score
+
+        # Component 2: VIX Direction
+        _, direction_score = self.classify_vix_direction(vix_current, vix_open)
+        score += direction_score
+
+        # Component 3: QQQ Move Magnitude
+        if qqq_open > 0:
+            qqq_move_pct = abs((qqq_current - qqq_open) / qqq_open * 100)
+            score += self._score_qqq_move(qqq_move_pct)
+
+        # Component 4: Move Velocity
+        score += self._score_move_velocity(move_duration_minutes)
+
+        return score
+
+    def _score_qqq_move(self, move_pct: float) -> float:
+        """Score QQQ move magnitude (0-20 points)."""
+        if move_pct < 0.3:
+            return config.MICRO_SCORE_MOVE_TINY
+        elif move_pct < 0.5:
+            return config.MICRO_SCORE_MOVE_BUILDING
+        elif move_pct < 0.8:
+            return config.MICRO_SCORE_MOVE_APPROACHING
+        elif move_pct <= 1.25:
+            return config.MICRO_SCORE_MOVE_TRIGGER
+        else:
+            return config.MICRO_SCORE_MOVE_EXTENDED
+
+    def _score_move_velocity(self, duration_minutes: int) -> float:
+        """Score move velocity (0-15 points)."""
+        if duration_minutes > 120:
+            return config.MICRO_SCORE_VELOCITY_GRADUAL
+        elif duration_minutes > 60:
+            return config.MICRO_SCORE_VELOCITY_MODERATE
+        elif duration_minutes > 30:
+            return config.MICRO_SCORE_VELOCITY_FAST
+        else:
+            return config.MICRO_SCORE_VELOCITY_SPIKE
+
+    # =========================================================================
+    # STRATEGY RECOMMENDATION
+    # =========================================================================
+
+    def recommend_strategy(
+        self,
+        micro_regime: MicroRegime,
+        micro_score: float,
+        vix_current: float,
+        qqq_move_pct: float,
+    ) -> IntradayStrategy:
+        """
+        Recommend intraday strategy based on regime and score.
+
+        Args:
+            micro_regime: Current micro regime classification.
+            micro_score: Current micro score.
+            vix_current: Current VIX value.
+            qqq_move_pct: QQQ move from open (absolute).
+
+        Returns:
+            Recommended IntradayStrategy.
+        """
+        # Danger regimes: No trade or protective only
+        danger_regimes = {
+            MicroRegime.RISK_OFF_LOW,
+            MicroRegime.BREAKING,
+            MicroRegime.UNSTABLE,
+            MicroRegime.FULL_PANIC,
+            MicroRegime.CRASH,
+            MicroRegime.VOLATILE,
+        }
+        if micro_regime in danger_regimes:
+            if micro_score < 0:
+                return IntradayStrategy.PROTECTIVE_PUTS
+            return IntradayStrategy.NO_TRADE
+
+        # Whipsaw/choppy: Credits only
+        choppy_regimes = {
+            MicroRegime.CHOPPY_LOW,
+            MicroRegime.CAUTIOUS,
+            MicroRegime.WORSENING,
+        }
+        if micro_regime in choppy_regimes:
+            if vix_current >= config.INTRADAY_CREDIT_MIN_VIX:
+                return IntradayStrategy.CREDIT_SPREAD
+            return IntradayStrategy.NO_TRADE
+
+        # Prime/Good MR: Debit Fade
+        mr_regimes = {
+            MicroRegime.PERFECT_MR,
+            MicroRegime.GOOD_MR,
+            MicroRegime.NORMAL,
+            MicroRegime.RECOVERING,
+            MicroRegime.IMPROVING,
+        }
+        if micro_regime in mr_regimes:
+            if micro_score >= config.MICRO_SCORE_PRIME_MR:
+                return IntradayStrategy.DEBIT_FADE
+            elif micro_score >= config.MICRO_SCORE_GOOD_MR:
+                return IntradayStrategy.DEBIT_FADE
+            elif micro_score >= config.MICRO_SCORE_MODERATE:
+                if vix_current >= config.INTRADAY_CREDIT_MIN_VIX:
+                    return IntradayStrategy.CREDIT_SPREAD
+                return IntradayStrategy.DEBIT_FADE
+            else:
+                return IntradayStrategy.CREDIT_SPREAD
+
+        # Transition/Caution: Reduced activity
+        caution_regimes = {
+            MicroRegime.CAUTION_LOW,
+            MicroRegime.TRANSITION,
+        }
+        if micro_regime in caution_regimes:
+            if micro_score >= config.MICRO_SCORE_MODERATE:
+                return IntradayStrategy.CREDIT_SPREAD
+            return IntradayStrategy.NO_TRADE
+
+        # Momentum regimes: ITM options or puts
+        momentum_regimes = {
+            MicroRegime.DETERIORATING,
+            MicroRegime.ELEVATED,
+            MicroRegime.WORSENING_HIGH,
+            MicroRegime.PANIC_EASING,
+            MicroRegime.CALMING,
+        }
+        if micro_regime in momentum_regimes:
+            if vix_current > config.INTRADAY_ITM_MIN_VIX:
+                if qqq_move_pct >= config.INTRADAY_ITM_MIN_MOVE:
+                    return IntradayStrategy.ITM_MOMENTUM
+            if vix_current >= config.INTRADAY_CREDIT_MIN_VIX:
+                return IntradayStrategy.CREDIT_SPREAD
+            return IntradayStrategy.NO_TRADE
+
+        return IntradayStrategy.NO_TRADE
+
+    # =========================================================================
+    # FULL UPDATE CYCLE
+    # =========================================================================
+
+    def update(
+        self,
+        vix_current: float,
+        vix_open: float,
+        qqq_current: float,
+        qqq_open: float,
+        current_time: str,
+        move_duration_minutes: int = 120,
+    ) -> MicroRegimeState:
+        """
+        Full update cycle for Micro Regime Engine.
+
+        Should be called every 15-30 minutes during intraday trading.
+
+        Args:
+            vix_current: Current VIX value.
+            vix_open: VIX at market open.
+            qqq_current: Current QQQ price.
+            qqq_open: QQQ at market open.
+            current_time: Current timestamp string.
+            move_duration_minutes: How long the current move has taken.
+
+        Returns:
+            Updated MicroRegimeState.
+        """
+        # Store open values
+        self._state.vix_open = vix_open
+        self._state.vix_current = vix_current
+        self._qqq_open = qqq_open
+
+        # Add to VIX history
+        vix_change_pct = (vix_current - vix_open) / vix_open * 100 if vix_open > 0 else 0
+        self._vix_history.append(
+            VIXSnapshot(
+                timestamp=current_time,
+                value=vix_current,
+                change_from_open_pct=vix_change_pct,
+            )
+        )
+
+        # Classify VIX level and direction
+        self._state.vix_level, _ = self.classify_vix_level(vix_current)
+        self._state.vix_direction, _ = self.classify_vix_direction(vix_current, vix_open)
+
+        # Detect whipsaw
+        self._state.whipsaw_state, _ = self._detect_whipsaw()
+
+        # Classify micro regime
+        self._state.micro_regime = self.classify_micro_regime(
+            self._state.vix_level, self._state.vix_direction
+        )
+
+        # Calculate micro score
+        self._state.micro_score = self.calculate_micro_score(
+            vix_current, vix_open, qqq_current, qqq_open, move_duration_minutes
+        )
+
+        # Calculate QQQ move
+        if qqq_open > 0:
+            self._state.qqq_move_pct = abs((qqq_current - qqq_open) / qqq_open * 100)
+
+        # Recommend strategy
+        self._state.recommended_strategy = self.recommend_strategy(
+            self._state.micro_regime,
+            self._state.micro_score,
+            vix_current,
+            self._state.qqq_move_pct,
+        )
+
+        self._state.last_update = current_time
+
+        self.log(
+            f"Update: VIX={vix_current:.1f} ({self._state.vix_direction.value}) | "
+            f"Regime={self._state.micro_regime.value} | "
+            f"Score={self._state.micro_score:.0f} | "
+            f"Strategy={self._state.recommended_strategy.value}"
+        )
+
+        return self._state
+
+    def get_state(self) -> MicroRegimeState:
+        """Get current state."""
+        return self._state
+
+    def check_spike_alert(self, vix_current: float, vix_5min_ago: float, current_time: str) -> bool:
+        """
+        Layer 1: Spike detection (every 5 minutes).
+
+        Args:
+            vix_current: Current VIX value.
+            vix_5min_ago: VIX value 5 minutes ago.
+            current_time: Current timestamp.
+
+        Returns:
+            True if spike detected (should pause entries).
+        """
+        if vix_5min_ago <= 0:
+            return False
+
+        change_pct = abs((vix_current - vix_5min_ago) / vix_5min_ago * 100)
+
+        if change_pct > config.VIX_MONITOR_SPIKE_THRESHOLD:
+            self.log(f"SPIKE_ALERT: VIX moved {change_pct:.1f}% in 5 min")
+            # Set cooldown (would need proper time handling in real implementation)
+            self._state.spike_cooldown_until = current_time
+            return True
+
+        return False
+
+    def reset_daily(self) -> None:
+        """Reset state at start of new trading day."""
+        self._state = MicroRegimeState()
+        self._vix_history.clear()
+        self._vix_15min_ago = 0.0
+        self._vix_30min_ago = 0.0
+        self._qqq_open = 0.0
+        self.log("Daily reset complete")
+
+
 class OptionsEngine:
     """
-    Options Engine - Daily volatility harvesting.
+    Options Engine V2.1.1 - Dual-Mode Architecture.
 
-    Trades QQQ options using 4-factor entry scoring.
-    Max 1 trade per day with confidence-weighted position sizing.
+    Operates in TWO DISTINCT MODES based on DTE:
+
+    MODE 1: SWING MODE (5-45 DTE)
+    - 15% allocation, multi-day positions
+    - Uses macro regime for direction
+    - 4-factor entry scoring (ADX, Momentum, IV, Liquidity)
+    - Simple intraday filters (not Micro Regime)
+
+    MODE 2: INTRADAY MODE (0-2 DTE)
+    - 5% allocation, same-day trades
+    - Uses MICRO REGIME ENGINE for decision making
+    - VIX Level × VIX Direction = 21 regimes
+    - Strategies: Debit Fade, Credit Spreads, ITM Momentum
 
     Note: This engine does NOT place orders. It only provides
     signals via TargetWeight objects for the Portfolio Router.
+
+    Spec: docs/v2-specs/V2_1_OPTIONS_ENGINE_DESIGN.txt
     """
 
     def __init__(self, algorithm: Optional["QCAlgorithm"] = None):
-        """Initialize Options Engine."""
+        """Initialize Options Engine with dual-mode support."""
         self.algorithm = algorithm
+
+        # Position tracking (separate for each mode)
+        self._swing_position: Optional[OptionsPosition] = None
+        self._intraday_position: Optional[OptionsPosition] = None
+
+        # Legacy single position (for backwards compatibility)
         self._position: Optional[OptionsPosition] = None
+
+        # Trade counters
         self._trades_today: int = 0
+        self._intraday_trades_today: int = 0
         self._last_trade_date: Optional[str] = None
+
+        # Current operating mode
+        self._current_mode: OptionsMode = OptionsMode.SWING
+
+        # V2.1.1: Micro Regime Engine for intraday trading
+        self._micro_regime_engine = MicroRegimeEngine(log_func=self.log)
+
+        # V2.1.1: VIX tracking for simple intraday filters (Swing Mode)
+        self._vix_at_open: float = 0.0
+        self._spy_at_open: float = 0.0
+        self._spy_gap_pct: float = 0.0
 
     def log(self, message: str) -> None:
         """Log via algorithm or skip for testing."""
@@ -703,6 +1310,303 @@ class OptionsEngine:
         )
 
     # =========================================================================
+    # V2.1.1 DUAL-MODE ARCHITECTURE
+    # =========================================================================
+
+    def determine_mode(self, dte: int) -> OptionsMode:
+        """
+        Determine operating mode based on DTE.
+
+        Critical insight: Entry timing matters more for shorter DTE.
+        - 2 DTE: 2-hour window = 15% of option's life → Micro Regime ESSENTIAL
+        - 14 DTE: 2-hour window = 2% of option's life → Simple filters sufficient
+
+        Args:
+            dte: Days to expiration.
+
+        Returns:
+            OptionsMode.SWING or OptionsMode.INTRADAY.
+        """
+        if dte <= config.OPTIONS_INTRADAY_DTE_MAX:
+            return OptionsMode.INTRADAY
+        return OptionsMode.SWING
+
+    def get_mode_allocation(self, mode: OptionsMode, portfolio_value: float) -> float:
+        """
+        Get allocation for a specific mode.
+
+        Args:
+            mode: Operating mode.
+            portfolio_value: Total portfolio value.
+
+        Returns:
+            Dollar allocation for the mode.
+        """
+        if mode == OptionsMode.INTRADAY:
+            return portfolio_value * config.OPTIONS_INTRADAY_ALLOCATION
+        return portfolio_value * config.OPTIONS_SWING_ALLOCATION
+
+    # =========================================================================
+    # V2.1.1 SIMPLE INTRADAY FILTERS (FOR SWING MODE)
+    # =========================================================================
+
+    def check_swing_filters(
+        self,
+        direction: OptionDirection,
+        spy_gap_pct: float,
+        spy_intraday_change_pct: float,
+        vix_intraday_change_pct: float,
+        current_hour: int,
+        current_minute: int,
+    ) -> Tuple[bool, str]:
+        """
+        Check simple intraday filters for Swing Mode (5+ DTE).
+
+        For Swing Mode, we use simple filters instead of Micro Regime.
+        These are lightweight, rule-based checks.
+
+        Args:
+            direction: CALL or PUT.
+            spy_gap_pct: SPY gap from prior close (%).
+            spy_intraday_change_pct: SPY change since open (%).
+            vix_intraday_change_pct: VIX change since open (%).
+            current_hour: Current hour (0-23) Eastern.
+            current_minute: Current minute (0-59).
+
+        Returns:
+            Tuple of (can_enter, reason_if_blocked).
+        """
+        # Filter 1: Time Window (10:00 AM - 2:30 PM ET)
+        time_minutes = current_hour * 60 + current_minute
+        window_start = 10 * 60  # 10:00 AM
+        window_end = 14 * 60 + 30  # 2:30 PM
+
+        if not (window_start <= time_minutes <= window_end):
+            return False, "Outside Swing time window (10:00-14:30)"
+
+        # Filter 2: Gap Filter
+        if abs(spy_gap_pct) > config.SWING_GAP_THRESHOLD:
+            if direction == OptionDirection.CALL and spy_gap_pct > 0:
+                return False, f"Gap up {spy_gap_pct:.1f}% - reversal risk for calls"
+            if direction == OptionDirection.PUT and spy_gap_pct < 0:
+                return False, f"Gap down {spy_gap_pct:.1f}% - bounce risk for puts"
+
+        # Filter 3: Extreme Move Filter
+        if spy_intraday_change_pct < config.SWING_EXTREME_SPY_DROP:
+            return False, f"SPY extreme drop {spy_intraday_change_pct:.1f}% - pause entries"
+
+        if vix_intraday_change_pct > config.SWING_EXTREME_VIX_SPIKE:
+            return False, f"VIX spike +{vix_intraday_change_pct:.1f}% - pause entries"
+
+        return True, ""
+
+    # =========================================================================
+    # V2.1.1 INTRADAY MODE ENTRY (MICRO REGIME ENGINE)
+    # =========================================================================
+
+    def check_intraday_entry_signal(
+        self,
+        vix_current: float,
+        vix_open: float,
+        qqq_current: float,
+        qqq_open: float,
+        current_hour: int,
+        current_minute: int,
+        current_time: str,
+        portfolio_value: float,
+        best_contract: Optional[OptionContract] = None,
+    ) -> Optional[TargetWeight]:
+        """
+        Check for intraday mode entry signal using Micro Regime Engine.
+
+        V2.1.1: Uses VIX Level × VIX Direction = 21 trading regimes.
+
+        Args:
+            vix_current: Current VIX value.
+            vix_open: VIX at market open.
+            qqq_current: Current QQQ price.
+            qqq_open: QQQ at market open.
+            current_hour: Current hour (0-23) Eastern.
+            current_minute: Current minute (0-59).
+            current_time: Timestamp string.
+            portfolio_value: Total portfolio value.
+            best_contract: Best available contract for the signal.
+
+        Returns:
+            TargetWeight for intraday entry, or None.
+        """
+        # Check if already have intraday position
+        if self._intraday_position is not None:
+            return None
+
+        # Update Micro Regime Engine
+        state = self._micro_regime_engine.update(
+            vix_current=vix_current,
+            vix_open=vix_open,
+            qqq_current=qqq_current,
+            qqq_open=qqq_open,
+            current_time=current_time,
+        )
+
+        # Check if strategy is NO_TRADE
+        if state.recommended_strategy == IntradayStrategy.NO_TRADE:
+            return None
+
+        # Check if strategy is PROTECTIVE_PUTS (hedge, not directional)
+        if state.recommended_strategy == IntradayStrategy.PROTECTIVE_PUTS:
+            self.log(f"INTRADAY: Protective mode - regime={state.micro_regime.value}")
+            return None  # Would emit hedge signal separately
+
+        # Determine direction based on QQQ move and strategy
+        qqq_move = qqq_current - qqq_open
+        qqq_up = qqq_move > 0
+
+        # Debit Fade: Fade the move
+        if state.recommended_strategy == IntradayStrategy.DEBIT_FADE:
+            direction = OptionDirection.PUT if qqq_up else OptionDirection.CALL
+            strategy_name = "DEBIT_FADE"
+
+        # ITM Momentum: Ride the move
+        elif state.recommended_strategy == IntradayStrategy.ITM_MOMENTUM:
+            direction = OptionDirection.CALL if qqq_up else OptionDirection.PUT
+            strategy_name = "ITM_MOM"
+
+        # Credit Spread: Contrarian if score > 50, else momentum
+        elif state.recommended_strategy == IntradayStrategy.CREDIT_SPREAD:
+            if state.micro_score > 50:
+                direction = OptionDirection.PUT if qqq_up else OptionDirection.CALL
+            else:
+                direction = OptionDirection.CALL if qqq_up else OptionDirection.PUT
+            strategy_name = "CREDIT"
+
+        else:
+            return None
+
+        # Check time windows based on strategy
+        time_minutes = current_hour * 60 + current_minute
+
+        if state.recommended_strategy == IntradayStrategy.DEBIT_FADE:
+            start_time = 10 * 60 + 30  # 10:30 AM
+            end_time = 14 * 60  # 2:00 PM
+            if not (start_time <= time_minutes <= end_time):
+                return None
+
+        elif state.recommended_strategy == IntradayStrategy.ITM_MOMENTUM:
+            start_time = 10 * 60  # 10:00 AM
+            end_time = 13 * 60 + 30  # 1:30 PM
+            if not (start_time <= time_minutes <= end_time):
+                return None
+
+        # Check if we have a valid contract
+        if best_contract is None:
+            self.log(f"INTRADAY: {strategy_name} signal but no contract available")
+            return None
+
+        # Calculate allocation based on micro score
+        allocation = self.get_mode_allocation(OptionsMode.INTRADAY, portfolio_value)
+
+        # Adjust size based on score
+        if state.micro_score >= config.MICRO_SCORE_PRIME_MR:
+            size_mult = 1.0  # Full size
+        elif state.micro_score >= config.MICRO_SCORE_GOOD_MR:
+            size_mult = 1.0  # Full size
+        elif state.micro_score >= config.MICRO_SCORE_MODERATE:
+            size_mult = 0.5  # Half size
+        else:
+            size_mult = 0.5  # Half size
+
+        reason = (
+            f"INTRADAY_{strategy_name}: Regime={state.micro_regime.value} | "
+            f"Score={state.micro_score:.0f} | VIX={vix_current:.1f} "
+            f"({state.vix_direction.value}) | QQQ {'+' if qqq_up else ''}"
+            f"{state.qqq_move_pct:.2f}% | {direction.value}"
+        )
+
+        self.log(f"INTRADAY_SIGNAL: {reason}")
+
+        return TargetWeight(
+            symbol=best_contract.symbol,
+            target_weight=size_mult,
+            source="OPT_INTRADAY",
+            urgency=Urgency.IMMEDIATE,
+            reason=reason,
+        )
+
+    def check_intraday_force_exit(
+        self,
+        current_hour: int,
+        current_minute: int,
+        current_price: float,
+    ) -> Optional[TargetWeight]:
+        """
+        Check for forced exit of intraday position at 3:30 PM ET.
+
+        Intraday mode positions MUST be closed by 3:30 PM.
+
+        Args:
+            current_hour: Current hour (0-23) Eastern.
+            current_minute: Current minute (0-59).
+            current_price: Current option price.
+
+        Returns:
+            TargetWeight for forced exit, or None.
+        """
+        if self._intraday_position is None:
+            return None
+
+        # Force exit at 15:30 (3:30 PM)
+        force_exit_time = current_hour > 15 or (current_hour == 15 and current_minute >= 30)
+
+        if not force_exit_time:
+            return None
+
+        symbol = self._intraday_position.contract.symbol
+        entry_price = self._intraday_position.entry_price
+
+        pnl_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0
+
+        reason = f"INTRADAY_TIME_EXIT_1530 {pnl_pct:+.1%} (Price: ${current_price:.2f})"
+        self.log(f"INTRADAY_FORCE_EXIT {symbol} | {reason}")
+
+        return TargetWeight(
+            symbol=symbol,
+            target_weight=0.0,
+            source="OPT_INTRADAY",
+            urgency=Urgency.IMMEDIATE,
+            reason=reason,
+        )
+
+    def get_micro_regime_state(self) -> MicroRegimeState:
+        """Get current Micro Regime Engine state."""
+        return self._micro_regime_engine.get_state()
+
+    def update_market_open_data(
+        self, vix_open: float, spy_open: float, spy_prior_close: float
+    ) -> None:
+        """
+        Update market open data for simple filters.
+
+        Should be called at market open (9:30-9:33 AM).
+
+        Args:
+            vix_open: VIX value at open.
+            spy_open: SPY price at open.
+            spy_prior_close: SPY prior close price.
+        """
+        self._vix_at_open = vix_open
+        self._spy_at_open = spy_open
+
+        if spy_prior_close > 0:
+            self._spy_gap_pct = (spy_open - spy_prior_close) / spy_prior_close * 100
+        else:
+            self._spy_gap_pct = 0.0
+
+        self.log(
+            f"Market open data: VIX={vix_open:.1f} | "
+            f"SPY={spy_open:.2f} | Gap={self._spy_gap_pct:+.2f}%"
+        )
+
+    # =========================================================================
     # POSITION MANAGEMENT
     # =========================================================================
 
@@ -901,13 +1805,27 @@ class OptionsEngine:
     def get_state_for_persistence(self) -> Dict[str, Any]:
         """Get state for ObjectStore."""
         return {
+            # Legacy position (backwards compatibility)
             "position": self._position.to_dict() if self._position else None,
             "trades_today": self._trades_today,
             "last_trade_date": self._last_trade_date,
+            # V2.1.1 dual-mode state
+            "swing_position": (self._swing_position.to_dict() if self._swing_position else None),
+            "intraday_position": (
+                self._intraday_position.to_dict() if self._intraday_position else None
+            ),
+            "intraday_trades_today": self._intraday_trades_today,
+            "current_mode": self._current_mode.value,
+            "micro_regime_state": self._micro_regime_engine.get_state().to_dict(),
+            # Market open data
+            "vix_at_open": self._vix_at_open,
+            "spy_at_open": self._spy_at_open,
+            "spy_gap_pct": self._spy_gap_pct,
         }
 
     def restore_state(self, state: Dict[str, Any]) -> None:
         """Restore state from ObjectStore."""
+        # Legacy position (backwards compatibility)
         position_data = state.get("position")
         if position_data:
             self._position = OptionsPosition.from_dict(position_data)
@@ -917,15 +1835,65 @@ class OptionsEngine:
         self._trades_today = state.get("trades_today", 0)
         self._last_trade_date = state.get("last_trade_date")
 
+        # V2.1.1 dual-mode state
+        swing_data = state.get("swing_position")
+        if swing_data:
+            self._swing_position = OptionsPosition.from_dict(swing_data)
+        else:
+            self._swing_position = None
+
+        intraday_data = state.get("intraday_position")
+        if intraday_data:
+            self._intraday_position = OptionsPosition.from_dict(intraday_data)
+        else:
+            self._intraday_position = None
+
+        self._intraday_trades_today = state.get("intraday_trades_today", 0)
+
+        mode_value = state.get("current_mode", "SWING")
+        self._current_mode = OptionsMode(mode_value)
+
+        micro_state_data = state.get("micro_regime_state")
+        if micro_state_data:
+            self._micro_regime_engine._state = MicroRegimeState.from_dict(micro_state_data)
+
+        # Market open data
+        self._vix_at_open = state.get("vix_at_open", 0.0)
+        self._spy_at_open = state.get("spy_at_open", 0.0)
+        self._spy_gap_pct = state.get("spy_gap_pct", 0.0)
+
     def reset(self) -> None:
         """Reset engine state."""
+        # Legacy
         self._position = None
         self._trades_today = 0
         self._last_trade_date = None
-        self.log("OPT: Engine reset - position cleared")
+
+        # V2.1.1
+        self._swing_position = None
+        self._intraday_position = None
+        self._intraday_trades_today = 0
+        self._current_mode = OptionsMode.SWING
+        self._micro_regime_engine.reset_daily()
+        self._vix_at_open = 0.0
+        self._spy_at_open = 0.0
+        self._spy_gap_pct = 0.0
+
+        self.log("OPT: Engine reset - all positions cleared")
 
     def reset_daily(self, current_date: str) -> None:
         """Reset daily trade counter at start of new day."""
         if current_date != self._last_trade_date:
             self._trades_today = 0
+            self._intraday_trades_today = 0
             self._last_trade_date = current_date
+
+            # Reset Micro Regime Engine for new day
+            self._micro_regime_engine.reset_daily()
+
+            # Clear intraday position (should not exist overnight)
+            if self._intraday_position is not None:
+                self.log("OPT: WARNING - Intraday position found at daily reset, clearing")
+                self._intraday_position = None
+
+            self.log(f"OPT: Daily reset for {current_date}")

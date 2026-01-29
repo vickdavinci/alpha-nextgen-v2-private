@@ -266,14 +266,23 @@ CB_VEGA_MAX = 0.50  # Max vega exposure
 CB_THETA_WARNING = -0.02  # Daily theta decay warning (-2%)
 
 # =============================================================================
-# OPTIONS ENGINE (V2.1)
+# OPTIONS ENGINE (V2.1.1) - DUAL-MODE ARCHITECTURE
 # =============================================================================
-# Harvests daily volatility on QQQ options with 4-factor entry scoring
+# V2.1.1 Complete Redesign: Two distinct modes based on DTE
+# - SWING MODE (5-45 DTE): 15% allocation, spread strategies, macro regime
+# - INTRADAY MODE (0-2 DTE): 5% allocation, Micro Regime Engine
 
 # Underlying Symbol
 OPTIONS_UNDERLYING = "QQQ"
 
-# Allocation
+# -----------------------------------------------------------------------------
+# DUAL-MODE ALLOCATION
+# -----------------------------------------------------------------------------
+OPTIONS_TOTAL_ALLOCATION = 0.20  # 20% total options budget
+OPTIONS_SWING_ALLOCATION = 0.15  # 15% for Swing Mode (5-45 DTE)
+OPTIONS_INTRADAY_ALLOCATION = 0.05  # 5% for Intraday Mode (0-2 DTE)
+
+# Legacy compatibility (combined min/max)
 OPTIONS_ALLOCATION_MIN = 0.20  # 20% minimum
 OPTIONS_ALLOCATION_MAX = 0.30  # 30% maximum
 
@@ -333,6 +342,170 @@ OPTIONS_LATE_DAY_MAX_STOP = 0.20  # Only 20% stops after 2:30 PM
 
 # Max Trades Per Day
 OPTIONS_MAX_TRADES_PER_DAY = 1
+
+# -----------------------------------------------------------------------------
+# V2.1.1 DUAL-MODE DTE BOUNDARIES
+# -----------------------------------------------------------------------------
+OPTIONS_SWING_DTE_MIN = 5  # Minimum DTE for Swing Mode
+OPTIONS_SWING_DTE_MAX = 45  # Maximum DTE for Swing Mode
+OPTIONS_INTRADAY_DTE_MIN = 0  # Minimum DTE for Intraday Mode
+OPTIONS_INTRADAY_DTE_MAX = 2  # Maximum DTE for Intraday Mode
+
+# -----------------------------------------------------------------------------
+# V2.1.1 VIX DIRECTION THRESHOLDS (Micro Regime Engine)
+# -----------------------------------------------------------------------------
+# VIX direction is THE key differentiator for intraday trading
+# Same VIX level + different direction = OPPOSITE strategies
+
+VIX_DIRECTION_FALLING_FAST = -5.0  # VIX change < -5%: Strong recovery
+VIX_DIRECTION_FALLING = -2.0  # VIX change -5% to -2%: Recovery
+VIX_DIRECTION_STABLE_LOW = -2.0  # VIX stable range lower bound
+VIX_DIRECTION_STABLE_HIGH = 2.0  # VIX stable range upper bound
+VIX_DIRECTION_RISING = 5.0  # VIX change +2% to +5%: Fear building
+VIX_DIRECTION_RISING_FAST = 10.0  # VIX change +5% to +10%: Panic
+VIX_DIRECTION_SPIKING = 10.0  # VIX change > +10%: Crash mode
+
+# Whipsaw detection: Range > threshold × net change
+VIX_WHIPSAW_RATIO = 3.0  # Range/NetChange threshold
+VIX_WHIPSAW_MIN_RANGE = 5.0  # Minimum range % to consider whipsaw
+
+# -----------------------------------------------------------------------------
+# V2.1.1 VIX LEVEL THRESHOLDS
+# -----------------------------------------------------------------------------
+VIX_LEVEL_LOW_MAX = 20  # VIX < 20: Normal, mean reversion works
+VIX_LEVEL_MEDIUM_MAX = 25  # VIX 20-25: Caution zone
+# VIX > 25: Elevated, momentum dominates
+
+# -----------------------------------------------------------------------------
+# V2.1.1 MICRO REGIME SCORE COMPONENTS
+# -----------------------------------------------------------------------------
+# Score range: -15 to 100
+
+# VIX Level Score (0-25 points)
+MICRO_SCORE_VIX_VERY_CALM = 25  # VIX < 15
+MICRO_SCORE_VIX_CALM = 20  # VIX 15-18
+MICRO_SCORE_VIX_NORMAL = 15  # VIX 18-20
+MICRO_SCORE_VIX_ELEVATED = 10  # VIX 20-23
+MICRO_SCORE_VIX_HIGH = 5  # VIX 23-25
+MICRO_SCORE_VIX_EXTREME = 0  # VIX > 25
+
+# VIX Direction Score (-10 to +20 points)
+MICRO_SCORE_DIR_FALLING_FAST = 20  # Fear easing rapidly
+MICRO_SCORE_DIR_FALLING = 15  # Fear easing
+MICRO_SCORE_DIR_STABLE = 10  # Neutral
+MICRO_SCORE_DIR_RISING = 5  # Fear building
+MICRO_SCORE_DIR_RISING_FAST = 0  # Fear accelerating
+MICRO_SCORE_DIR_SPIKING = -5  # Panic mode penalty
+MICRO_SCORE_DIR_WHIPSAW = -10  # Chaos penalty
+
+# QQQ Move Magnitude Score (0-20 points)
+MICRO_SCORE_MOVE_TINY = 5  # |Move| < 0.3%: No signal
+MICRO_SCORE_MOVE_BUILDING = 10  # |Move| 0.3-0.5%
+MICRO_SCORE_MOVE_APPROACHING = 15  # |Move| 0.5-0.8%
+MICRO_SCORE_MOVE_TRIGGER = 20  # |Move| 0.8-1.25%: Sweet spot
+MICRO_SCORE_MOVE_EXTENDED = 15  # |Move| > 1.25%: Caution
+
+# Move Velocity Score (0-15 points)
+MICRO_SCORE_VELOCITY_GRADUAL = 15  # > 2 hours: Sustainable
+MICRO_SCORE_VELOCITY_MODERATE = 10  # 1-2 hours: Normal
+MICRO_SCORE_VELOCITY_FAST = 5  # 30-60 min: Exhaustion risk
+MICRO_SCORE_VELOCITY_SPIKE = 0  # < 30 min: News-driven
+
+# Score Thresholds for Strategy Selection
+MICRO_SCORE_PRIME_MR = 80  # 80+: Prime mean reversion
+MICRO_SCORE_GOOD_MR = 60  # 60-79: Good mean reversion
+MICRO_SCORE_MODERATE = 40  # 40-59: Moderate/mixed
+MICRO_SCORE_WEAK = 20  # 20-39: Momentum leaning
+MICRO_SCORE_MOMENTUM = 0  # 0-19: Strong momentum
+# < 0: Chaos/danger
+
+# -----------------------------------------------------------------------------
+# V2.1.1 TIERED VIX MONITORING SYSTEM
+# -----------------------------------------------------------------------------
+VIX_MONITOR_SPIKE_INTERVAL = 5  # Layer 1: Spike detection every 5 minutes
+VIX_MONITOR_SPIKE_THRESHOLD = 5.0  # VIX move > 5% in 5 min = spike alert
+VIX_MONITOR_SPIKE_COOLDOWN = 10  # Wait 10 min after spike before entries
+
+VIX_MONITOR_DIRECTION_INTERVAL = 15  # Layer 2: Direction every 15 min
+VIX_MONITOR_WHIPSAW_INTERVAL = 60  # Layer 3: Whipsaw rolling 1-hour window
+VIX_MONITOR_REGIME_INTERVAL = 30  # Layer 4: Regime classification every 30 min
+
+# Whipsaw reversal thresholds
+VIX_REVERSAL_THRESHOLD = 0.1  # Ignore VIX moves < 0.1 (noise)
+VIX_REVERSAL_TRENDING = 2  # 0-2 reversals: Trending
+VIX_REVERSAL_CHOPPY = 4  # 3-4 reversals: Choppy
+# 5+ reversals: Whipsaw
+
+# -----------------------------------------------------------------------------
+# V2.1.1 INTRADAY STRATEGY PARAMETERS
+# -----------------------------------------------------------------------------
+
+# Debit Fade (Mean Reversion)
+INTRADAY_DEBIT_FADE_MIN_SCORE = 50  # Micro score >= 50
+INTRADAY_DEBIT_FADE_MIN_MOVE = 1.0  # QQQ move >= 1.0%
+INTRADAY_DEBIT_FADE_VIX_MAX = 25  # VIX < 25
+INTRADAY_DEBIT_FADE_START = "10:30"  # Entry window start
+INTRADAY_DEBIT_FADE_END = "14:00"  # Entry window end
+INTRADAY_DEBIT_SPREAD_WIDTH = 2.00  # $2.00 spread width
+INTRADAY_DEBIT_FULL_SIZE = 4  # Full size: 4 spreads
+INTRADAY_DEBIT_HALF_SIZE = 2  # Half size: 2 spreads
+
+# Credit Spreads (Premium Collection)
+INTRADAY_CREDIT_MIN_VIX = 18  # VIX >= 18 for rich premium
+INTRADAY_CREDIT_MAX_MOVE = 1.5  # QQQ move < 1.5%
+INTRADAY_CREDIT_START = "10:00"  # Entry window start
+INTRADAY_CREDIT_END = "14:30"  # Entry window end
+INTRADAY_CREDIT_SPREAD_WIDTH = 2.00  # $2.00 spread width
+INTRADAY_CREDIT_TARGET = 0.50  # 50% of max profit target
+INTRADAY_CREDIT_STOP = 1.0  # Stop if spread doubles
+
+# ITM Momentum
+INTRADAY_ITM_MIN_VIX = 25  # VIX > 25 for momentum
+INTRADAY_ITM_MIN_MOVE = 0.8  # QQQ move >= 0.8%
+INTRADAY_ITM_MIN_SCORE = 50  # Micro score >= 50
+INTRADAY_ITM_DELTA = 0.70  # ITM delta target
+INTRADAY_ITM_START = "10:00"  # Entry window start
+INTRADAY_ITM_END = "13:30"  # Entry window end (need time)
+INTRADAY_ITM_TARGET = 0.40  # +40% profit target
+INTRADAY_ITM_STOP = 0.50  # -50% stop (wider for momentum)
+INTRADAY_ITM_TRAIL_TRIGGER = 0.20  # Trail after +20%
+INTRADAY_ITM_TRAIL_PCT = 0.50  # Trail at 50% of gains
+
+# Protective Puts (Intraday Hedge)
+INTRADAY_PROTECT_MIN_VIX = 20  # VIX > 20: Add protection
+INTRADAY_PROTECT_STRIKE_OTM = 0.03  # 3% OTM strike
+INTRADAY_PROTECT_DTE_MIN = 3  # Minimum 3 DTE
+INTRADAY_PROTECT_DTE_MAX = 7  # Maximum 7 DTE
+
+# Force close time for intraday
+INTRADAY_FORCE_EXIT_TIME = "15:30"  # Must close by 3:30 PM
+
+# -----------------------------------------------------------------------------
+# V2.1.1 SWING MODE SIMPLE FILTERS
+# -----------------------------------------------------------------------------
+# For Swing Mode (5+ DTE), use simple filters instead of Micro Regime
+
+SWING_TIME_WINDOW_START = "10:00"  # Entry window start
+SWING_TIME_WINDOW_END = "14:30"  # Entry window end
+
+# Gap Filter for Swing Mode
+SWING_GAP_THRESHOLD = 1.0  # Skip if SPY gaps > 1.0%
+
+# Extreme Move Filter
+SWING_EXTREME_SPY_DROP = -2.0  # Pause if SPY drops > 2% intraday
+SWING_EXTREME_VIX_SPIKE = 15.0  # Pause if VIX spikes > 15% intraday
+
+# -----------------------------------------------------------------------------
+# V2.1.1 QQQ MOVE TRIGGER THRESHOLDS BY REGIME
+# -----------------------------------------------------------------------------
+# Trigger thresholds vary based on VIX level and direction
+
+QQQ_TRIGGER_NORMAL_FALLING = 0.8  # VIX normal + falling: 0.8%
+QQQ_TRIGGER_NORMAL_STABLE = 1.0  # VIX normal + stable: 1.0%
+QQQ_TRIGGER_NORMAL_RISING = 1.25  # VIX normal + rising: 1.25% (extra caution)
+QQQ_TRIGGER_CAUTION_FALLING = 1.0  # VIX caution + falling: 1.0%
+QQQ_TRIGGER_CAUTION_RISING = 0.8  # VIX caution + rising: 0.8% puts only
+QQQ_TRIGGER_ELEVATED = 0.8  # VIX elevated: 0.8% for momentum
 
 # =============================================================================
 # EXECUTION ENGINE

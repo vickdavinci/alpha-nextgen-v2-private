@@ -334,6 +334,83 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `OPTIONS_DELTA_MAX` | 0.60 | Maximum delta (ATM range) |
 | `OPTIONS_MIN_PREMIUM` | 0.50 | Minimum premium per contract ($0.50) |
 
+### V2.1.1 Dual-Mode Architecture
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `OPTIONS_TOTAL_ALLOCATION` | 0.20 | Total options budget (20%) |
+| `OPTIONS_SWING_ALLOCATION` | 0.15 | Swing Mode allocation (15%) |
+| `OPTIONS_INTRADAY_ALLOCATION` | 0.05 | Intraday Mode allocation (5%) |
+
+### V2.1.1 DTE Boundaries
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `OPTIONS_SWING_DTE_MIN` | 5 | Minimum DTE for Swing Mode |
+| `OPTIONS_SWING_DTE_MAX` | 45 | Maximum DTE for Swing Mode |
+| `OPTIONS_INTRADAY_DTE_MIN` | 0 | Minimum DTE for Intraday Mode |
+| `OPTIONS_INTRADAY_DTE_MAX` | 2 | Maximum DTE for Intraday Mode |
+
+### V2.1.1 VIX Direction Thresholds (Micro Regime Engine)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `VIX_DIRECTION_FALLING_FAST` | -5.0% | Strong recovery threshold |
+| `VIX_DIRECTION_FALLING` | -2.0% | Recovery threshold |
+| `VIX_DIRECTION_STABLE_LOW` | -2.0% | Stable range lower bound |
+| `VIX_DIRECTION_STABLE_HIGH` | 2.0% | Stable range upper bound |
+| `VIX_DIRECTION_RISING` | 5.0% | Fear building threshold |
+| `VIX_DIRECTION_RISING_FAST` | 10.0% | Panic emerging threshold |
+| `VIX_DIRECTION_SPIKING` | 10.0% | Crash mode threshold |
+
+### V2.1.1 VIX Level Thresholds
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `VIX_LEVEL_LOW_MAX` | 20 | VIX < 20: Normal, mean reversion works |
+| `VIX_LEVEL_MEDIUM_MAX` | 25 | VIX 20-25: Caution zone |
+| (VIX > 25) | — | Elevated, momentum dominates |
+
+### V2.1.1 Micro Regime Score Components
+
+| Component | Score Range | Description |
+|-----------|:-----------:|-------------|
+| VIX Level | 0-25 | Lower VIX = higher score |
+| VIX Direction | -10 to +20 | Falling = higher, Spiking/Whipsaw = penalty |
+| QQQ Move | 0-20 | Sweet spot at 0.8-1.25% |
+| Move Velocity | 0-15 | Gradual moves score higher |
+
+### V2.1.1 Tiered VIX Monitoring
+
+| Layer | Interval | Purpose |
+|-------|:--------:|---------|
+| Layer 1 | 5 min | Spike detection (VIX > 5% change) |
+| Layer 2 | 15 min | Direction assessment |
+| Layer 3 | 60 min | Whipsaw detection (reversal count) |
+| Layer 4 | 30 min | Full regime classification |
+
+### V2.1.1 Intraday Strategy Parameters
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `INTRADAY_DEBIT_FADE_MIN_SCORE` | 50 | Minimum micro score for debit fade |
+| `INTRADAY_DEBIT_FADE_MIN_MOVE` | 1.0% | Minimum QQQ move |
+| `INTRADAY_DEBIT_FADE_VIX_MAX` | 25 | Maximum VIX for debit fade |
+| `INTRADAY_CREDIT_MIN_VIX` | 18 | Minimum VIX for credit spreads |
+| `INTRADAY_ITM_MIN_VIX` | 25 | Minimum VIX for ITM momentum |
+| `INTRADAY_ITM_MIN_MOVE` | 0.8% | Minimum QQQ move for ITM |
+| `INTRADAY_FORCE_EXIT_TIME` | 15:30 ET | Intraday positions must close |
+
+### V2.1.1 Swing Mode Simple Filters
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `SWING_TIME_WINDOW_START` | 10:00 ET | Swing entry window start |
+| `SWING_TIME_WINDOW_END` | 14:30 ET | Swing entry window end |
+| `SWING_GAP_THRESHOLD` | 1.0% | Skip if SPY gaps > 1.0% |
+| `SWING_EXTREME_SPY_DROP` | -2.0% | Pause if SPY drops > 2% |
+| `SWING_EXTREME_VIX_SPIKE` | 15.0% | Pause if VIX spikes > 15% |
+
 ---
 
 ## 16.8.2 OCO Manager Parameters (V2.1)
