@@ -32,6 +32,8 @@ flowchart TB
             SOXL["SOXL"]
             QLD["QLD"]
             SSO["SSO"]
+            TNA["TNA"]
+            FAS["FAS"]
             TMF["TMF"]
             PSQ["PSQ"]
             SHV["SHV"]
@@ -52,9 +54,9 @@ flowchart TB
 
     subgraph STRATEGIES["STRATEGY ENGINES (Core-Satellite)"]
         direction LR
-        TREND["TREND (70%)<br/>─────────<br/>QLD/SSO<br/>MA200+ADX<br/>Chandelier Stop<br/>Urgency: EOD"]
-        OPTIONS["OPTIONS (20-30%)<br/>─────────<br/>QQQ Options<br/>4-Factor Score<br/>+50% Target<br/>Urgency: IMMED"]
-        MR["MEAN REV (0-10%)<br/>─────────<br/>TQQQ/SOXL<br/>RSI < 25 + VIX<br/>Drop > 2.5%<br/>Urgency: IMMED"]
+        TREND["TREND (55%)<br/>─────────<br/>QLD 20%/SSO 15%<br/>TNA 12%/FAS 8%<br/>MA200+ADX<br/>Urgency: EOD"]
+        OPTIONS["OPTIONS (25%)<br/>─────────<br/>QQQ Options<br/>Swing 20%<br/>Intraday 5%<br/>Urgency: IMMED"]
+        MR["MEAN REV (10%)<br/>─────────<br/>TQQQ 5%/SOXL 5%<br/>RSI < 25 + VIX<br/>Drop > 2.5%<br/>Urgency: IMMED"]
         HEDGE["HEDGE<br/>─────────<br/>TMF/PSQ<br/>Regime < 40<br/>Scaled Alloc<br/>Urgency: EOD"]
         YIELD["YIELD<br/>─────────<br/>SHV<br/>Cash > $2k<br/>LIFO Liquidate<br/>Urgency: EOD"]
         COLD["COLD START<br/>─────────<br/>Days 1-5<br/>Regime > 50<br/>25% Size<br/>Urgency: IMMED"]
@@ -114,14 +116,14 @@ Provide context that governs all trading decisions.
 
 Generate trading signals based on their specific logic.
 
-| Strategy | Style | Holding Period | Urgency | Allocation |
-|----------|-------|:---------------|:-------:|:----------:|
-| **Trend** | MA200+ADX swing | Days to weeks | EOD | 70% (Core) |
-| **Mean Reversion** | RSI oversold + VIX | Minutes to hours | IMMEDIATE | 0-10% |
-| **Options** | 4-factor QQQ | Intraday | IMMEDIATE | 20-30% |
-| **Hedge** | Tail protection | As needed | EOD | Per regime |
-| **Yield** | Cash management | Ongoing | EOD | Remainder |
-| **Cold Start** | Safe deployment | Days 1-5 | IMMEDIATE | 50% sizing |
+| Strategy | Style | Symbols | Urgency | Allocation |
+|----------|-------|---------|:-------:|:----------:|
+| **Trend** | MA200+ADX swing | QLD 20%, SSO 15%, TNA 12%, FAS 8% | EOD | 55% (Core) |
+| **Options** | 4-factor QQQ | QQQ options (Swing 20% + Intraday 5%) | IMMEDIATE | 25% |
+| **Mean Reversion** | RSI oversold + VIX | TQQQ 5%, SOXL 5% | IMMEDIATE | 10% |
+| **Hedge** | Tail protection | TMF, PSQ | EOD | 0-30% |
+| **Yield** | Cash management | SHV | EOD | Remainder |
+| **Cold Start** | Safe deployment | QLD, SSO | IMMEDIATE | 25% sizing |
 
 ### Layer 4: Portfolio Router
 

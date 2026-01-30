@@ -29,15 +29,19 @@ Used exclusively for Regime Engine calculations. These symbols are NEVER traded.
 
 Instruments the system actively trades, monitored at minute resolution for precise entry/exit.
 
-| Symbol | Name | Leverage | Primary Strategy | Overnight Hold |
-|--------|------|:--------:|------------------|:--------------:|
-| **TQQQ** | ProShares UltraPro QQQ | 3x | Mean Reversion | ❌ Never |
-| **SOXL** | Direxion Semiconductor Bull | 3x | Mean Reversion | ❌ Never |
-| **QLD** | ProShares Ultra QQQ | 2x | Trend, Cold Start | ✅ Yes |
-| **SSO** | ProShares Ultra S&P 500 | 2x | Trend, Cold Start | ✅ Yes |
-| **TMF** | Direxion 20+ Year Treasury Bull | 3x | Hedge | ✅ Yes |
-| **PSQ** | ProShares Short QQQ | 1x | Hedge | ✅ Yes |
-| **SHV** | iShares Short Treasury Bond | 1x | Yield | ✅ Yes |
+| Symbol | Name | Leverage | Primary Strategy | Allocation | Overnight Hold |
+|--------|------|:--------:|------------------|:----------:|:--------------:|
+| **QLD** | ProShares Ultra QQQ | 2x | Trend, Cold Start | 20% | ✅ Yes |
+| **SSO** | ProShares Ultra S&P 500 | 2x | Trend, Cold Start | 15% | ✅ Yes |
+| **TNA** | Direxion Small Cap Bull 3X | 3x | Trend | 12% | ✅ Yes |
+| **FAS** | Direxion Financial Bull 3X | 3x | Trend | 8% | ✅ Yes |
+| **TQQQ** | ProShares UltraPro QQQ | 3x | Mean Reversion | 5% | ❌ Never |
+| **SOXL** | Direxion Semiconductor Bull | 3x | Mean Reversion | 5% | ❌ Never |
+| **TMF** | Direxion 20+ Year Treasury Bull | 3x | Hedge | 0-20% | ✅ Yes |
+| **PSQ** | ProShares Short QQQ | 1x | Hedge | 0-10% | ✅ Yes |
+| **SHV** | iShares Short Treasury Bond | 1x | Yield | Remainder | ✅ Yes |
+
+**Note:** TNA and FAS are 3× leveraged but allowed overnight for Trend Engine swing trades. Unlike TQQQ/SOXL used for Mean Reversion (intraday only), TNA/FAS are used for multi-day trend positions where the MA200+ADX strategy provides sufficient time horizon to absorb decay.
 
 ### Dual Resolution: SPY
 
@@ -130,6 +134,14 @@ flowchart TB
         S1["SSO<br/>2x Long"]
     end
 
+    subgraph SMALL_CAP["SMALL_CAP_BETA Group"]
+        SC1["TNA<br/>3x Russell 2000"]
+    end
+
+    subgraph FINANCIALS["FINANCIALS_BETA Group"]
+        F1["FAS<br/>3x Financials"]
+    end
+
     subgraph RATES["RATES Group"]
         direction LR
         R1["TMF<br/>3x Treasury"]
@@ -138,6 +150,8 @@ flowchart TB
 
     NASDAQ --> N_LIMITS["Limits:<br/>Max Net: 50%<br/>Max Gross: 75%"]
     SPY_GROUP --> S_LIMITS["Limits:<br/>Max Net: 40%<br/>Max Gross: 40%"]
+    SMALL_CAP --> SC_LIMITS["Limits:<br/>Max Net: 25%<br/>Max Gross: 25%"]
+    FINANCIALS --> F_LIMITS["Limits:<br/>Max Net: 15%<br/>Max Gross: 15%"]
     RATES --> R_LIMITS["Limits:<br/>Max Net: 40%<br/>Max Gross: 40%"]
 ```
 
@@ -147,6 +161,8 @@ flowchart TB
 |-------|---------|:------------:|:-------------:|:---------:|
 | **NASDAQ_BETA** | TQQQ, QLD, SOXL, PSQ | 50% | 30% | 75% |
 | **SPY_BETA** | SSO | 40% | 0% | 40% |
+| **SMALL_CAP_BETA** | TNA | 25% | 0% | 25% |
+| **FINANCIALS_BETA** | FAS | 15% | 0% | 15% |
 | **RATES** | TMF, SHV | 40% | 0% | 40% |
 
 ### Exposure Calculation Examples
@@ -206,11 +222,12 @@ All calculated on **SPY daily** data:
 
 ### Trend Engine Indicators
 
-Calculated on **QLD and SSO daily** data:
+Calculated on **QLD, SSO, TNA, and FAS daily** data:
 
 | Indicator | Parameters | Purpose | Warmup |
 |-----------|------------|---------|:------:|
-| Bollinger Bands | Period: 20, StdDev: 2.0 | Compression/Breakout | 20 days |
+| MA200 | Period: 200 | Trend direction | 200 days |
+| ADX | Period: 14 | Trend strength confirmation | 14 days |
 | ATR | Period: 14 | Chandelier stop calculation | 14 days |
 
 ### Mean Reversion Engine Indicators
@@ -303,9 +320,9 @@ Resolution.Minute  → Real-time bars, used for trading
 | Group Variable | Symbols | Purpose |
 |----------------|---------|---------|
 | `proxy_symbols` | SPY, RSP, HYG, IEF | Regime calculation |
-| `traded_symbols` | TQQQ, SOXL, QLD, SSO, TMF, PSQ, SHV | All tradeable |
+| `traded_symbols` | QLD, SSO, TNA, FAS, TQQQ, SOXL, TMF, PSQ, SHV | All tradeable |
 | `mr_symbols` | TQQQ, SOXL | Mean reversion candidates |
-| `trend_symbols` | QLD, SSO | Trend candidates |
+| `trend_symbols` | QLD, SSO, TNA, FAS | Trend candidates |
 | `hedge_symbols` | TMF, PSQ | Hedge instruments |
 | `yield_symbols` | SHV | Cash management |
 
@@ -370,17 +387,19 @@ Always check data availability before accessing:
 
 ### Leveraged ETF Behavior
 
-| Symbol | Leverage | Daily Reset | Decay Risk | Overnight Hold |
-|--------|:--------:|:-----------:|:----------:|:--------------:|
-| TQQQ | 3x | Yes | High | ❌ |
-| SOXL | 3x | Yes | High | ❌ |
-| QLD | 2x | Yes | Medium | ✅ |
-| SSO | 2x | Yes | Medium | ✅ |
-| TMF | 3x | Yes | Medium* | ✅ |
-| PSQ | 1x | No | Low | ✅ |
-| SHV | 1x | No | None | ✅ |
+| Symbol | Leverage | Daily Reset | Decay Risk | Overnight Hold | Rationale |
+|--------|:--------:|:-----------:|:----------:|:--------------:|-----------|
+| QLD | 2x | Yes | Medium | ✅ | Trend swing trades (days-weeks) |
+| SSO | 2x | Yes | Medium | ✅ | Trend swing trades (days-weeks) |
+| TNA | 3x | Yes | High | ✅ | Trend swing trades with MA200 filter* |
+| FAS | 3x | Yes | High | ✅ | Trend swing trades with MA200 filter* |
+| TQQQ | 3x | Yes | High | ❌ | Mean reversion intraday only |
+| SOXL | 3x | Yes | High | ❌ | Mean reversion intraday only |
+| TMF | 3x | Yes | Medium | ✅ | Hedge (not for growth) |
+| PSQ | 1x | No | Low | ✅ | Hedge |
+| SHV | 1x | No | None | ✅ | Cash management |
 
-*TMF decay is acceptable for hedge purposes as it's not held for growth.
+*TNA/FAS are 3× but allowed overnight for Trend Engine. The MA200+ADX strategy holds positions for days-to-weeks, providing sufficient time horizon for trends to develop. Decay is partially offset by the strong momentum filter requiring ADX ≥ 25.
 
 ### Why 3x Intraday Only
 
@@ -409,10 +428,10 @@ Net:   Underlying 0%, 3x ETF -9%
 
 | Parameter | Value | Section Reference |
 |-----------|:-----:|-------------------|
-| Daily Warmup | 220 days | Warmup Requirements |
+| Daily Warmup | 252 days | Warmup Requirements |
 | SMA Periods | 20, 50, 200 | Regime Indicators |
-| BB Period | 20 | Trend Indicators |
-| BB StdDev | 2.0 | Trend Indicators |
+| MA200 Period | 200 | Trend Indicators |
+| ADX Period | 14 | Trend Indicators |
 | ATR Period | 14 | Trend/Risk Indicators |
 | RSI Period | 5 | MR Indicators |
 | Vol Lookback | 20 days | Regime Indicators |
@@ -420,6 +439,8 @@ Net:   Underlying 0%, 3x ETF -9%
 | NASDAQ_BETA Max Net | 50% | Exposure Groups |
 | NASDAQ_BETA Max Gross | 75% | Exposure Groups |
 | SPY_BETA Max | 40% | Exposure Groups |
+| SMALL_CAP_BETA Max | 25% | Exposure Groups |
+| FINANCIALS_BETA Max | 15% | Exposure Groups |
 | RATES Max | 40% | Exposure Groups |
 
 ---

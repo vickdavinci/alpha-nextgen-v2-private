@@ -431,19 +431,23 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 |-------|:------------:|:-------------:|:---------:|
 | `NASDAQ_BETA` | 50% | 30% | 75% |
 | `SPY_BETA` | 40% | 0% | 40% |
+| `SMALL_CAP_BETA` | 25% | 0% | 25% |
+| `FINANCIALS_BETA` | 15% | 0% | 15% |
 | `RATES` | 40% | 0% | 40% |
 
 ### Group Membership
 
-| Symbol | Group | Type |
-|--------|-------|------|
-| TQQQ | NASDAQ_BETA | 3× Long Nasdaq |
-| QLD | NASDAQ_BETA | 2× Long Nasdaq |
-| SOXL | NASDAQ_BETA | 3× Long Semi |
-| PSQ | NASDAQ_BETA | 1× Inverse Nasdaq |
-| SSO | SPY_BETA | 2× Long S&P |
-| TMF | RATES | 3× Long Treasury |
-| SHV | RATES | Short Treasury |
+| Symbol | Group | Type | Allocation |
+|--------|-------|------|:----------:|
+| TQQQ | NASDAQ_BETA | 3× Long Nasdaq | 5% (MR) |
+| QLD | NASDAQ_BETA | 2× Long Nasdaq | 20% (Trend) |
+| SOXL | NASDAQ_BETA | 3× Long Semi | 5% (MR) |
+| PSQ | NASDAQ_BETA | 1× Inverse Nasdaq | (Hedge) |
+| SSO | SPY_BETA | 2× Long S&P | 15% (Trend) |
+| TNA | SMALL_CAP_BETA | 3× Long Russell 2000 | 12% (Trend) |
+| FAS | FINANCIALS_BETA | 3× Long Financials | 8% (Trend) |
+| TMF | RATES | 3× Long Treasury | (Hedge) |
+| SHV | RATES | Short Treasury | (Yield) |
 
 ### Trade Thresholds
 
@@ -547,15 +551,28 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 ### Traded Symbols
 
-| Symbol | Description | Strategy |
-|--------|-------------|----------|
-| TQQQ | 3× Nasdaq | Mean Reversion |
-| SOXL | 3× Semiconductor | Mean Reversion |
-| QLD | 2× Nasdaq | Trend, Warm Entry |
-| SSO | 2× S&P 500 | Trend, Warm Entry |
-| TMF | 3× Treasury | Hedge |
-| PSQ | 1× Inverse Nasdaq | Hedge |
-| SHV | Short Treasury | Yield |
+| Symbol | Description | Strategy | Allocation |
+|--------|-------------|----------|:----------:|
+| QLD | 2× Nasdaq | Trend, Warm Entry | 20% |
+| SSO | 2× S&P 500 | Trend, Warm Entry | 15% |
+| TNA | 3× Russell 2000 | Trend | 12% |
+| FAS | 3× Financials | Trend | 8% |
+| TQQQ | 3× Nasdaq | Mean Reversion | 5% |
+| SOXL | 3× Semiconductor | Mean Reversion | 5% |
+| TMF | 3× Treasury | Hedge | 0-20% |
+| PSQ | 1× Inverse Nasdaq | Hedge | 0-10% |
+| SHV | Short Treasury | Yield | Remainder |
+
+### Symbol Liquidity Requirements
+
+| Symbol | AUM | Daily Volume | Max Bid-Ask Spread |
+|--------|:---:|:------------:|:------------------:|
+| QLD | $4.2B | High | 0.03% |
+| SSO | $3.8B | High | 0.03% |
+| TNA | $2.16B | $472M | 0.05% |
+| FAS | $2.55B | ~374K shares | 0.05% |
+| TQQQ | $19B | Very High | 0.02% |
+| SOXL | $8B | Very High | 0.03% |
 
 ### Proxy Symbols (Data Only)
 
@@ -802,6 +819,8 @@ OCO_CANCEL_TIMEOUT_SEC = 30
 EXPOSURE_LIMITS = {
     "NASDAQ_BETA": {"max_net_long": 0.50, "max_net_short": 0.30, "max_gross": 0.75},
     "SPY_BETA": {"max_net_long": 0.40, "max_net_short": 0.00, "max_gross": 0.40},
+    "SMALL_CAP_BETA": {"max_net_long": 0.25, "max_net_short": 0.00, "max_gross": 0.25},
+    "FINANCIALS_BETA": {"max_net_long": 0.15, "max_net_short": 0.00, "max_gross": 0.15},
     "RATES": {"max_net_long": 0.40, "max_net_short": 0.00, "max_gross": 0.40}
 }
 
@@ -812,9 +831,27 @@ SYMBOL_GROUPS = {
     "SOXL": "NASDAQ_BETA",
     "PSQ": "NASDAQ_BETA",  # Inverse
     "SSO": "SPY_BETA",
+    "TNA": "SMALL_CAP_BETA",
+    "FAS": "FINANCIALS_BETA",
     "TMF": "RATES",
     "SHV": "RATES"
 }
+
+# Trend Engine Allocations (V2.2 Balanced Model)
+TREND_SYMBOL_ALLOCATIONS = {
+    "QLD": 0.20,  # 20% - 2× Nasdaq
+    "SSO": 0.15,  # 15% - 2× S&P 500
+    "TNA": 0.12,  # 12% - 3× Russell 2000
+    "FAS": 0.08,  # 8% - 3× Financials
+}
+TREND_TOTAL_ALLOCATION = 0.55  # 55% total to Trend Engine
+
+# Mean Reversion Allocations
+MR_SYMBOL_ALLOCATIONS = {
+    "TQQQ": 0.05,  # 5% - 3× Nasdaq
+    "SOXL": 0.05,  # 5% - 3× Semiconductor
+}
+MR_TOTAL_ALLOCATION = 0.10  # 10% total to MR Engine
 
 # Trade Thresholds
 MIN_TRADE_VALUE = 2_000
@@ -907,7 +944,7 @@ INDICATOR_WARMUP_DAYS = 252  # Max of all indicator requirements
 # SYMBOLS
 # =============================================================================
 
-TRADED_SYMBOLS = ["TQQQ", "SOXL", "QLD", "SSO", "TMF", "PSQ", "SHV"]
+TRADED_SYMBOLS = ["TQQQ", "SOXL", "QLD", "SSO", "TNA", "FAS", "TMF", "PSQ", "SHV"]
 PROXY_SYMBOLS = ["SPY", "RSP", "HYG", "IEF"]
 ALL_SYMBOLS = TRADED_SYMBOLS + PROXY_SYMBOLS
 ```

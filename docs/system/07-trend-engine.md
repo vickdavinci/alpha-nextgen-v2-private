@@ -60,7 +60,9 @@ The Trend Engine holds positions **overnight**, sometimes for multiple days or w
 
 ## 7.2 Instruments
 
-### 7.2.1 QLD (ProShares Ultra QQQ)
+The Trend Engine trades four diversified leveraged ETFs to maximize entry opportunities while maintaining risk controls:
+
+### 7.2.1 QLD (ProShares Ultra QQQ) — 20% Allocation
 
 **Primary trend instrument.** 2× leveraged Nasdaq-100 exposure.
 
@@ -68,11 +70,12 @@ The Trend Engine holds positions **overnight**, sometimes for multiple days or w
 |----------------|-------------|
 | Underlying | Nasdaq-100 Index |
 | Leverage | 2× |
+| Allocation | 20% of portfolio |
 | Beta | Higher than SSO (tech-heavy) |
 | Best for | Strong risk-on regimes |
-| Liquidity | Excellent |
+| Liquidity | Excellent ($4.2B AUM) |
 
-### 7.2.2 SSO (ProShares Ultra S&P 500)
+### 7.2.2 SSO (ProShares Ultra S&P 500) — 15% Allocation
 
 **Secondary trend instrument.** 2× leveraged S&P 500 exposure.
 
@@ -80,9 +83,61 @@ The Trend Engine holds positions **overnight**, sometimes for multiple days or w
 |----------------|-------------|
 | Underlying | S&P 500 Index |
 | Leverage | 2× |
+| Allocation | 15% of portfolio |
 | Beta | Lower than QLD (diversified sectors) |
 | Best for | Moderate regimes |
-| Liquidity | Very high |
+| Liquidity | Very high ($3.8B AUM) |
+
+### 7.2.3 TNA (Direxion Daily Small Cap Bull 3X) — 12% Allocation
+
+**V2.2 Addition: Small-cap diversification.** 3× leveraged Russell 2000 exposure.
+
+| Characteristic | Description |
+|----------------|-------------|
+| Underlying | Russell 2000 Index |
+| Leverage | 3× |
+| Allocation | 12% of portfolio |
+| Correlation to QLD | 0.65-0.75 (moderate) |
+| Best for | Small-cap rallies, sector rotation |
+| Liquidity | Strong ($2.16B AUM, $472M daily volume) |
+
+**Rationale for TNA:** Russell 2000 often leads or diverges from mega-cap tech. Adding TNA provides:
+- Exposure to domestic small-caps underweighted in QLD/SSO
+- Lower correlation to Nasdaq during sector rotation periods
+- Higher entry frequency (small-caps trend independently)
+
+### 7.2.4 FAS (Direxion Daily Financial Bull 3X) — 8% Allocation
+
+**V2.2 Addition: Sector diversification.** 3× leveraged Financial sector exposure.
+
+| Characteristic | Description |
+|----------------|-------------|
+| Underlying | Russell 1000 Financial Services Index |
+| Leverage | 3× |
+| Allocation | 8% of portfolio |
+| Correlation to QLD | 0.55-0.70 (moderate) |
+| Best for | Rate cycle plays, financial sector strength |
+| Liquidity | Strong ($2.55B AUM, ~374K shares daily) |
+
+**Rationale for FAS:** Financial sector has distinct drivers (interest rates, credit spreads) from tech:
+- Diversifies beyond tech-heavy Nasdaq exposure
+- Provides opportunities during rate-driven market environments
+- Lower correlation improves portfolio diversification
+
+### 7.2.5 Allocation Summary
+
+| Symbol | Allocation | Index | Leverage | Correlation to QLD |
+|--------|:----------:|-------|:--------:|:------------------:|
+| QLD | 20% | Nasdaq-100 | 2× | 1.00 |
+| SSO | 15% | S&P 500 | 2× | 0.85-0.95 |
+| TNA | 12% | Russell 2000 | 3× | 0.65-0.75 |
+| FAS | 8% | Financials | 3× | 0.55-0.70 |
+| **Total** | **55%** | | |
+
+**Liquidity Requirements for All Trend Symbols:**
+- Minimum AUM: $2 billion
+- Minimum daily volume: $300 million
+- Maximum bid-ask spread: 0.05%
 
 ---
 

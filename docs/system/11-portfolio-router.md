@@ -65,7 +65,7 @@ Gather all TargetWeight objects from all strategy engines:
 
 | Engine | Typical Weights | Symbols | Urgency |
 |--------|-----------------|---------|---------|
-| **Trend Engine** | 0-2 weights | QLD, SSO | EOD |
+| **Trend Engine** | 0-4 weights | QLD (20%), SSO (15%), TNA (12%), FAS (8%) | EOD |
 | **Mean Reversion Engine** | 0-2 weights | TQQQ, SOXL | IMMEDIATE |
 | **Options Engine** (V2.1) | 0-1 weight | QQQ options | IMMEDIATE |
 | **Hedge Engine** | 2 weights | TMF, PSQ | EOD |
@@ -177,6 +177,8 @@ Apply portfolio-level constraints to aggregated weights.
 |-------|---------|:------------:|:-------------:|:---------:|
 | **NASDAQ_BETA** | TQQQ, QLD, SOXL, PSQ | 50% | 30% | 75% |
 | **SPY_BETA** | SSO | 40% | 0% | 40% |
+| **SMALL_CAP_BETA** | TNA | 25% | 0% | 25% |
+| **FINANCIALS_BETA** | FAS | 15% | 0% | 15% |
 | **RATES** | TMF, SHV | 40% | 0% | 40% |
 
 #### Calculating Group Exposure
@@ -661,6 +663,8 @@ Level 6: Execution Preferences ← Router decides
 |-------|:------------:|:-------------:|:---------:|
 | NASDAQ_BETA | 50% | 30% | 75% |
 | SPY_BETA | 40% | 0% | 40% |
+| SMALL_CAP_BETA | 25% | 0% | 25% |
+| FINANCIALS_BETA | 15% | 0% | 15% |
 | RATES | 40% | 0% | 40% |
 
 ### Position Limits
