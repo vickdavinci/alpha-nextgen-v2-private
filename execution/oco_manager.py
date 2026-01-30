@@ -510,6 +510,10 @@ class OCOManager:
         """Check if symbol has an active OCO pair."""
         return symbol in self._symbol_to_oco
 
+    def has_order(self, broker_order_id: int) -> bool:
+        """Check if a broker order ID is part of any OCO pair."""
+        return broker_order_id in self._order_to_oco
+
     def get_all_active_pairs(self) -> List[OCOPair]:
         """Get all active OCO pairs."""
         return list(self._active_pairs.values())
@@ -521,9 +525,7 @@ class OCOManager:
     def get_state_for_persistence(self) -> Dict[str, Any]:
         """Get state for ObjectStore."""
         return {
-            "active_pairs": {
-                oco_id: pair.to_dict() for oco_id, pair in self._active_pairs.items()
-            },
+            "active_pairs": {oco_id: pair.to_dict() for oco_id, pair in self._active_pairs.items()},
             "next_oco_number": self._next_oco_number,
         }
 

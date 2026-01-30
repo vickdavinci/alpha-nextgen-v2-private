@@ -857,6 +857,16 @@ class AlphaNextGen(QCAlgorithm):
         # Process the signals immediately
         self._process_immediate_signals()
 
+        # CRITICAL FAILSAFE: Direct Liquidate() call to ensure 3x ETFs are closed
+        # This runs AFTER signal processing as a belt-and-suspenders safety measure
+        # 3x ETFs held overnight can suffer catastrophic losses from gaps
+        if self.Portfolio[self.tqqq].Invested:
+            self.Log("MR_FAILSAFE: Force liquidating TQQQ via direct Liquidate()")
+            self.Liquidate(self.tqqq, tag="MR_FAILSAFE_15:45")
+        if self.Portfolio[self.soxl].Invested:
+            self.Log("MR_FAILSAFE: Force liquidating SOXL via direct Liquidate()")
+            self.Liquidate(self.soxl, tag="MR_FAILSAFE_15:45")
+
     def _on_eod_processing(self) -> None:
         """
         End of day processing at 15:45 ET.
@@ -1381,9 +1391,18 @@ class AlphaNextGen(QCAlgorithm):
         if chain is None:
             return
 
+        # CRITICAL: Verify chain has valid contracts (not empty)
+        # Chain can exist but be empty on first trading day, holidays, or data issues
+        if not hasattr(chain, "__iter__") or len(list(chain)) == 0:
+            return
+
         # Select best contract (ATM call, V2.1: 1-4 DTE)
         best_contract = self._select_best_option_contract(chain)
         if best_contract is None:
+            return
+
+        # CRITICAL: Verify contract has valid bid/ask (not stale/zero data)
+        if best_contract.BidPrice <= 0 or best_contract.AskPrice <= 0:
             return
 
         # Get current values
@@ -1922,6 +1941,10 @@ class AlphaNextGen(QCAlgorithm):
         if chain is None:
             return
 
+        # CRITICAL: Verify chain has valid contracts (not empty)
+        if not hasattr(chain, "__iter__") or len(list(chain)) == 0:
+            return
+
         # Get current values
         qqq_price = self.Securities[self.qqq].Price
         adx_value = self.qqq_adx.Current.Value
@@ -1930,7 +1953,12 @@ class AlphaNextGen(QCAlgorithm):
         # V2.1.1: Check for INTRADAY mode entry (0-2 DTE) using Micro Regime Engine
         if self._qqq_at_open > 0:  # Only if we have market open data
             intraday_contract = self._select_intraday_option_contract(chain)
-            if intraday_contract is not None:
+            # Verify contract has valid bid/ask before proceeding
+            if (
+                intraday_contract is not None
+                and intraday_contract.BidPrice > 0
+                and intraday_contract.AskPrice > 0
+            ):
                 intraday_signal = self.options_engine.check_intraday_entry_signal(
                     vix_current=self._current_vix,
                     vix_open=self._vix_at_open,
@@ -1949,6 +1977,10 @@ class AlphaNextGen(QCAlgorithm):
         # V2.1: Check for SWING mode entry (5-45 DTE) using 4-factor scoring
         swing_contract = self._select_best_option_contract(chain)
         if swing_contract is None:
+            return
+
+        # CRITICAL: Verify contract has valid bid/ask (not stale/zero data)
+        if swing_contract.BidPrice <= 0 or swing_contract.AskPrice <= 0:
             return
 
         # Calculate IV rank from options chain (V2.1)

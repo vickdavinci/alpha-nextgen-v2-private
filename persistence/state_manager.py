@@ -232,7 +232,8 @@ class StateManager:
             return wrapped.get("data", {})
 
         except json.JSONDecodeError as e:
-            self.log(f"STATE: CORRUPT | {key} | JSON error: {e}")
+            self.log(f"STATE: CORRUPT | {key} | JSON error: {e} | Deleting corrupted file")
+            self._object_store_delete(key)  # Delete corrupted state to prevent zombie state
             return None
         except Exception as e:
             self.log(f"STATE: LOAD_ERROR | {key} | {e}")
