@@ -230,6 +230,8 @@ class AlphaNextGen(QCAlgorithm):
         self.today_trades = []
         self.today_safeguards = []
         self.symbols_to_skip = set()
+        self._splits_logged_today = set()  # Log throttle: only log each split once/day
+        self._greeks_breach_logged = False  # Log throttle: only log Greeks breach once/position
 
         self.Log(
             f"INIT: Complete | "
@@ -378,6 +380,7 @@ class AlphaNextGen(QCAlgorithm):
         self._current_vix = 15.0  # Default to normal regime until data arrives
         self._vix_at_open = 15.0  # V2.1.1: VIX at market open for micro regime
         self._vix_5min_ago = 15.0  # V2.1.1: VIX 5 minutes ago for spike detection
+        self._last_vix_spike_log = None  # Log throttle: last VIX spike log time
         self._qqq_at_open = 0.0  # V2.1.1: QQQ at market open
 
         # Store collections for iteration
@@ -622,7 +625,11 @@ class AlphaNextGen(QCAlgorithm):
         # Check proxy symbols - freeze EVERYTHING if any split
         for proxy in self.proxy_symbols:
             if data.Splits.ContainsKey(proxy):
-                self.Log(f"SPLIT: {proxy} (proxy) - freezing all")
+                # Only log split once per symbol per day
+                proxy_str = str(proxy)
+                if proxy_str not in self._splits_logged_today:
+                    self.Log(f"SPLIT: {proxy_str} (proxy) - freezing all")
+                    self._splits_logged_today.add(proxy_str)
                 return True
 
         # Check traded symbols - freeze only that symbol
@@ -632,6 +639,10 @@ class AlphaNextGen(QCAlgorithm):
                 self.symbols_to_skip.add(symbol_str)
                 # Register with risk engine for tracking
                 self.risk_engine.register_split(symbol_str)
+                # Only log split once per symbol per day
+                if symbol_str not in self._splits_logged_today:
+                    self.Log(f"SPLIT: {symbol_str} - freezing symbol")
+                    self._splits_logged_today.add(symbol_str)
 
         return False
 
@@ -920,6 +931,8 @@ class AlphaNextGen(QCAlgorithm):
         self.today_trades.clear()
         self.today_safeguards.clear()
         self.symbols_to_skip.clear()
+        self._splits_logged_today.clear()
+        self._greeks_breach_logged = False
 
     def _on_weekly_reset(self) -> None:
         """
@@ -983,7 +996,17 @@ class AlphaNextGen(QCAlgorithm):
         )
 
         if spike_alert:
-            self.Log(f"VIX_SPIKE: {self._vix_5min_ago:.1f} -> {self._current_vix:.1f}")
+            # Throttle VIX spike logs: 1 per LOG_THROTTLE_MINUTES OR if move > threshold
+            vix_move = abs(self._current_vix - self._vix_5min_ago)
+            should_log = (
+                not hasattr(self, "_last_vix_spike_log")
+                or (self.Time - self._last_vix_spike_log).total_seconds() / 60
+                > config.LOG_THROTTLE_MINUTES
+                or vix_move >= config.LOG_VIX_SPIKE_MIN_MOVE
+            )
+            if should_log:
+                self.Log(f"VIX_SPIKE: {self._vix_5min_ago:.1f} -> {self._current_vix:.1f}")
+                self._last_vix_spike_log = self.Time
 
         # Update 5-min ago value for next check
         self._vix_5min_ago = self._current_vix
@@ -1978,7 +2001,10 @@ class AlphaNextGen(QCAlgorithm):
         # Check for Greeks breach
         breach, reasons = self.options_engine.check_greeks_breach(self.risk_engine)
         if breach:
-            self.Log(f"GREEKS_BREACH: {', '.join(reasons)}")
+            # Only log Greeks breach once per position to prevent log overflow
+            if not self._greeks_breach_logged:
+                self.Log(f"GREEKS_BREACH: {', '.join(reasons)}")
+                self._greeks_breach_logged = True
             # Emit exit signal for options position
             signal = TargetWeight(
                 symbol="QQQ_OPT",
@@ -2194,6 +2220,7 @@ class AlphaNextGen(QCAlgorithm):
                 else:
                     # Exit - remove position
                     self.options_engine.remove_position()
+                    self._greeks_breach_logged = False  # Reset for next position
             except Exception as e:
                 self.Log(f"OPT_TRACK_ERROR: {symbol}: {e}")
 

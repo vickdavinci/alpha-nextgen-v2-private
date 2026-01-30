@@ -517,6 +517,14 @@ MARKET_ORDER_TIMEOUT_SEC = 60
 CONNECTION_TIMEOUT_MIN = 5
 
 # =============================================================================
+# LOG THROTTLING (Pre-QC Local Testing)
+# =============================================================================
+# QC has 100KB log limit per backtest - throttle high-frequency logs
+
+LOG_THROTTLE_MINUTES = 15  # VIX spike log throttle interval
+LOG_VIX_SPIKE_MIN_MOVE = 2.0  # Minimum VIX move to bypass throttle
+
+# =============================================================================
 # SCHEDULING
 # =============================================================================
 
