@@ -65,10 +65,16 @@ make branch name=feature/va/my-feature
 
 **Alpha NextGen V2** is a multi-strategy algorithmic trading system built on QuantConnect (LEAN engine) for deployment on Interactive Brokers. The system implements a **Core-Satellite** architecture:
 
-- **Core (70%)**: Trend Engine - MA200 + ADX confirmation
-- **Satellite (0-10%)**: Mean Reversion Engine - RSI oversold bounce with VIX filter
-- **Satellite (20%)**: Options Engine - Dual-Mode Architecture (V2.1.1)
-  - **Swing Mode (15%)**: Debit spreads, credit spreads, ITM long options (5-45 DTE)
+- **Core (55%)**: Trend Engine - MA200 + ADX confirmation across diversified indices
+  - QLD (20%) - 2× Nasdaq
+  - SSO (15%) - 2× S&P 500
+  - TNA (12%) - 3× Russell 2000 (small-cap diversification)
+  - FAS (8%) - 3× Financials (sector diversification)
+- **Satellite (10%)**: Mean Reversion Engine - RSI oversold bounce with VIX filter
+  - TQQQ (5%) - 3× Nasdaq
+  - SOXL (5%) - 3× Semiconductor
+- **Satellite (25%)**: Options Engine - Dual-Mode Architecture (V2.1.1)
+  - **Swing Mode (20%)**: Debit spreads, credit spreads, ITM long options (5-45 DTE)
   - **Intraday Mode (5%)**: Micro Regime Engine - VIX Level × VIX Direction (0-2 DTE)
 
 Forked from V1 v1.0.0 on 2026-01-26. See `docs/v2-specs/` for V2.1 specifications.
@@ -151,7 +157,7 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 | **Capital Engine** | `engines/core/capital_engine.py` | `docs/05-capital-engine.md` | Phase management, lockbox, tradeable equity |
 | **Risk Engine** | `engines/core/risk_engine.py` | `docs/12-risk-engine.md` | All circuit breakers and safeguards |
 | **Cold Start Engine** | `engines/core/cold_start_engine.py` | `docs/06-cold-start-engine.md` | Days 1-5 warm entry logic |
-| **Trend Engine** | `engines/core/trend_engine.py` | `docs/07-trend-engine.md` | MA200 + ADX trend signals for QLD/SSO (70%) |
+| **Trend Engine** | `engines/core/trend_engine.py` | `docs/07-trend-engine.md` | MA200 + ADX trend signals for QLD/SSO/TNA/FAS (55%) |
 
 ### Satellite Engines (engines/satellite/)
 
@@ -257,16 +263,20 @@ def OnData(self, data):
 
 ### 3. Overnight Safety
 
-**MUST liquidate by 15:45 ET (Mean Reversion / High-Volatility 3×):**
+**MUST liquidate by 15:45 ET (Mean Reversion intraday only):**
 - `TQQQ` — 3× Nasdaq (Mean Reversion)
 - `SOXL` — 3× Semiconductor (Mean Reversion)
 
-**Allowed overnight holds:**
+**Allowed overnight holds (Trend Engine swing trades + Hedges):**
 - `QLD` — 2× Nasdaq (Trend/Swing)
 - `SSO` — 2× S&P 500 (Trend/Swing)
+- `TNA` — 3× Russell 2000 (Trend/Swing)*
+- `FAS` — 3× Financials (Trend/Swing)*
 - `TMF` — 3× Treasury (Strategic Hedge)
 - `PSQ` — 1× Inverse Nasdaq (Strategic Hedge)
 - `SHV` — Short Treasury (Yield)
+
+*TNA/FAS are 3× but allowed overnight for Trend Engine. The MA200+ADX strategy requires strong momentum (ADX ≥ 25), which historically offsets decay risk during sustained trends.
 
 ```python
 # In Mean Reversion Engine - enforced at 15:45
@@ -421,8 +431,8 @@ except Exception as e:
 │                       STRATEGY ENGINES                            │
 ├─────────────────┬─────────────────┬─────────────────┬─────────────┤
 │  Trend Engine   │ Options Engine  │    MR Engine    │Hedge/Yield  │
-│   (Core 70%)    │ (Satellite 20%) │(Satellite 0-10%)│  (Overlay)  │
-│   QLD, SSO      │ Dual-Mode V2.1.1│  TQQQ, SOXL     │ TMF,PSQ,SHV │
+│   (Core 55%)    │ (Satellite 25%) │ (Satellite 10%) │  (Overlay)  │
+│ QLD,SSO,TNA,FAS │ Dual-Mode V2.1.1│  TQQQ, SOXL     │ TMF,PSQ,SHV │
 │  Urgency: EOD   │ Swing + Intraday│ Urgency: IMMED  │Urgency: EOD │
 └────────┬────────┴────────┬────────┴────────┬────────┴──────┬──────┘
          │                 │                 │               │
@@ -593,6 +603,8 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 |--------|------|:----------:|
 | QLD | 2× Nasdaq (Trend) | ✅ Yes |
 | SSO | 2× S&P 500 (Trend) | ✅ Yes |
+| TNA | 3× Russell 2000 (Trend) | ✅ Yes |
+| FAS | 3× Financials (Trend) | ✅ Yes |
 | TMF | 3× Treasury (Hedge) | ✅ Yes |
 | PSQ | 1× Inverse Nasdaq (Hedge) | ✅ Yes |
 | SHV | Short Treasury (Yield) | ✅ Yes |
@@ -605,4 +617,6 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 |-------|:------------:|:---------:|
 | NASDAQ_BETA | 50% | 75% |
 | SPY_BETA | 40% | 40% |
+| SMALL_CAP_BETA | 25% | 25% |
+| FINANCIALS_BETA | 15% | 15% |
 | RATES | 40% | 40% |

@@ -141,6 +141,8 @@ When conditions deteriorate:
 |-------|:-------:|:---------:|
 | NASDAQ_BETA (TQQQ, QLD, SOXL, PSQ) | 50% | 75% |
 | SPY_BETA (SSO) | 40% | 40% |
+| SMALL_CAP_BETA (TNA) | 25% | 25% |
+| FINANCIALS_BETA (FAS) | 15% | 15% |
 | RATES (TMF, SHV) | 40% | 40% |
 
 ---
@@ -176,13 +178,14 @@ Profit protection mechanism:
 
 ### Strategy Engines (Conditionally Active)
 
-| Strategy | Instruments | When Active |
-|----------|-------------|-------------|
-| **Cold Start** | QLD, SSO | Days 1-5 only |
-| **Trend** | QLD, SSO | After cold start, Regime ≥ 40 |
-| **Mean Reversion** | TQQQ, SOXL | After cold start, Regime ≥ 40, Intraday |
-| **Hedge** | TMF, PSQ | Regime < 40 |
-| **Yield** | SHV | Always (for idle cash) |
+| Strategy | Instruments | Allocation | When Active |
+|----------|-------------|:----------:|-------------|
+| **Cold Start** | QLD, SSO | 25% sizing | Days 1-5 only |
+| **Trend** | QLD (20%), SSO (15%), TNA (12%), FAS (8%) | 55% | After cold start, Regime ≥ 40 |
+| **Options** | QQQ options | 25% | After cold start, 4-factor score ≥ 3.0 |
+| **Mean Reversion** | TQQQ (5%), SOXL (5%) | 10% | After cold start, Regime ≥ 40, Intraday |
+| **Hedge** | TMF, PSQ | 0-30% | Regime < 40 |
+| **Yield** | SHV | Remainder | Always (for idle cash) |
 
 ### Coordination Layer
 
