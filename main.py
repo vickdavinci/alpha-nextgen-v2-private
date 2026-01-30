@@ -53,9 +53,10 @@ class AlphaNextGen(QCAlgorithm):
     Attributes:
         Symbol References:
             spy, rsp, hyg, ief: Symbol - Proxy symbols for regime calculation
-            tqqq, soxl, qld, sso, tmf, psq, shv: Symbol - Traded symbols
+            tqqq, soxl, qld, sso, tna, fas, tmf, psq, shv: Symbol - Traded symbols
             traded_symbols: List[Symbol] - All traded symbols
             proxy_symbols: List[Symbol] - All proxy symbols
+            trend_symbols: List[Symbol] - Trend engine symbols (QLD, SSO, TNA, FAS)
 
         Engines:
             regime_engine: RegimeEngine - Market state scoring
@@ -76,9 +77,9 @@ class AlphaNextGen(QCAlgorithm):
         Indicators (registered with QC):
             spy_sma20, spy_sma50, spy_sma200: SimpleMovingAverage - Trend factor
             spy_atr: AverageTrueRange - Vol shock detection
-            qld_ma200, sso_ma200: SMA(200) - Trend direction
-            qld_adx, sso_adx: ADX(14) - Momentum confirmation
-            qld_atr, sso_atr: AverageTrueRange - Chandelier stops
+            qld_ma200, sso_ma200, tna_ma200, fas_ma200: SMA(200) - Trend direction
+            qld_adx, sso_adx, tna_adx, fas_adx: ADX(14) - Momentum confirmation
+            qld_atr, sso_atr, tna_atr, fas_atr: AverageTrueRange - Chandelier stops
             tqqq_rsi, soxl_rsi: RelativeStrengthIndex - MR oversold
 
         Rolling Windows:
@@ -115,6 +116,8 @@ class AlphaNextGen(QCAlgorithm):
     soxl: Symbol
     qld: Symbol
     sso: Symbol
+    tna: Symbol  # V2.2: 3× Russell 2000 (Trend)
+    fas: Symbol  # V2.2: 3× Financials (Trend)
     tmf: Symbol
     psq: Symbol
     shv: Symbol
@@ -344,11 +347,15 @@ class AlphaNextGen(QCAlgorithm):
 
         Stores symbol references as instance attributes for easy access.
         """
-        # Traded symbols - Leveraged longs
+        # Traded symbols - Leveraged longs (Trend Engine)
         self.tqqq = self.AddEquity("TQQQ", Resolution.Minute).Symbol
         self.soxl = self.AddEquity("SOXL", Resolution.Minute).Symbol
         self.qld = self.AddEquity("QLD", Resolution.Minute).Symbol
         self.sso = self.AddEquity("SSO", Resolution.Minute).Symbol
+
+        # V2.2: New Trend symbols for diversification
+        self.tna = self.AddEquity("TNA", Resolution.Minute).Symbol  # 3× Russell 2000
+        self.fas = self.AddEquity("FAS", Resolution.Minute).Symbol  # 3× Financials
 
         # Traded symbols - Hedges
         self.tmf = self.AddEquity("TMF", Resolution.Minute).Symbol
@@ -393,11 +400,16 @@ class AlphaNextGen(QCAlgorithm):
             self.soxl,
             self.qld,
             self.sso,
+            self.tna,  # V2.2
+            self.fas,  # V2.2
             self.tmf,
             self.psq,
             self.shv,
         ]
         self.proxy_symbols = [self.spy, self.rsp, self.hyg, self.ief]
+
+        # V2.2: Trend symbols for easy iteration
+        self.trend_symbols = [self.qld, self.sso, self.tna, self.fas]
 
         self.Log(
             f"INIT: Added {len(self.traded_symbols)} traded symbols, "
@@ -449,6 +461,20 @@ class AlphaNextGen(QCAlgorithm):
         )
         self.sso_atr = self.ATR(
             self.sso, config.ATR_PERIOD, MovingAverageType.Wilders, Resolution.Daily
+        )
+
+        # V2.2: TNA indicators (3× Russell 2000)
+        self.tna_ma200 = self.SMA(self.tna, config.SMA_SLOW, Resolution.Daily)
+        self.tna_adx = self.ADX(self.tna, config.ADX_PERIOD, Resolution.Daily)
+        self.tna_atr = self.ATR(
+            self.tna, config.ATR_PERIOD, MovingAverageType.Wilders, Resolution.Daily
+        )
+
+        # V2.2: FAS indicators (3× Financials)
+        self.fas_ma200 = self.SMA(self.fas, config.SMA_SLOW, Resolution.Daily)
+        self.fas_adx = self.ADX(self.fas, config.ADX_PERIOD, Resolution.Daily)
+        self.fas_atr = self.ATR(
+            self.fas, config.ATR_PERIOD, MovingAverageType.Wilders, Resolution.Daily
         )
 
         # ---------------------------------------------------------------------
@@ -1370,6 +1396,78 @@ class AlphaNextGen(QCAlgorithm):
                 if signal:
                     self.portfolio_router.receive_signal(signal)
 
+        # V2.2: Check TNA (3× Russell 2000)
+        if self.tna_ma200.IsReady and self.tna_adx.IsReady and self.tna_atr.IsReady:
+            tna_close = self.Securities[self.tna].Close
+            tna_high = self.Securities[self.tna].High
+            tna_ma200 = self.tna_ma200.Current.Value
+            tna_adx = self.tna_adx.Current.Value
+
+            # Check entry if not invested
+            if not self.Portfolio[self.tna].Invested:
+                signal = self.trend_engine.check_entry_signal(
+                    symbol="TNA",
+                    close=tna_close,
+                    ma200=tna_ma200,
+                    adx=tna_adx,
+                    regime_score=regime_state.smoothed_score,
+                    is_cold_start_active=is_cold_start,
+                    has_warm_entry=has_warm_entry,
+                    atr=self.tna_atr.Current.Value,
+                    current_date=current_date,
+                )
+                if signal:
+                    self.portfolio_router.receive_signal(signal)
+            else:
+                # Check exit if invested
+                signal = self.trend_engine.check_exit_signals(
+                    symbol="TNA",
+                    close=tna_close,
+                    high=tna_high,
+                    ma200=tna_ma200,
+                    adx=tna_adx,
+                    regime_score=regime_state.smoothed_score,
+                    atr=self.tna_atr.Current.Value,
+                )
+                if signal:
+                    self.portfolio_router.receive_signal(signal)
+
+        # V2.2: Check FAS (3× Financials)
+        if self.fas_ma200.IsReady and self.fas_adx.IsReady and self.fas_atr.IsReady:
+            fas_close = self.Securities[self.fas].Close
+            fas_high = self.Securities[self.fas].High
+            fas_ma200 = self.fas_ma200.Current.Value
+            fas_adx = self.fas_adx.Current.Value
+
+            # Check entry if not invested
+            if not self.Portfolio[self.fas].Invested:
+                signal = self.trend_engine.check_entry_signal(
+                    symbol="FAS",
+                    close=fas_close,
+                    ma200=fas_ma200,
+                    adx=fas_adx,
+                    regime_score=regime_state.smoothed_score,
+                    is_cold_start_active=is_cold_start,
+                    has_warm_entry=has_warm_entry,
+                    atr=self.fas_atr.Current.Value,
+                    current_date=current_date,
+                )
+                if signal:
+                    self.portfolio_router.receive_signal(signal)
+            else:
+                # Check exit if invested
+                signal = self.trend_engine.check_exit_signals(
+                    symbol="FAS",
+                    close=fas_close,
+                    high=fas_high,
+                    ma200=fas_ma200,
+                    adx=fas_adx,
+                    regime_score=regime_state.smoothed_score,
+                    atr=self.fas_atr.Current.Value,
+                )
+                if signal:
+                    self.portfolio_router.receive_signal(signal)
+
     def _generate_options_signals(
         self, regime_state: RegimeState, capital_state: CapitalState
     ) -> None:
@@ -1902,7 +2000,7 @@ class AlphaNextGen(QCAlgorithm):
         """
         Monitor Trend positions for intraday stop triggers.
 
-        Checks Chandelier trailing stops for QLD and SSO.
+        Checks Chandelier trailing stops for QLD, SSO, TNA, and FAS.
 
         Args:
             data: Current data slice.
@@ -1922,6 +2020,26 @@ class AlphaNextGen(QCAlgorithm):
             signal = self.trend_engine.check_stop_hit(
                 symbol="SSO",
                 current_price=self.Securities[self.sso].Price,
+            )
+            if signal:
+                self.portfolio_router.receive_signal(signal)
+                self._process_immediate_signals()
+
+        # V2.2: Check TNA
+        if self.Portfolio[self.tna].Invested:
+            signal = self.trend_engine.check_stop_hit(
+                symbol="TNA",
+                current_price=self.Securities[self.tna].Price,
+            )
+            if signal:
+                self.portfolio_router.receive_signal(signal)
+                self._process_immediate_signals()
+
+        # V2.2: Check FAS
+        if self.Portfolio[self.fas].Invested:
+            signal = self.trend_engine.check_stop_hit(
+                symbol="FAS",
+                current_price=self.Securities[self.fas].Price,
             )
             if signal:
                 self.portfolio_router.receive_signal(signal)

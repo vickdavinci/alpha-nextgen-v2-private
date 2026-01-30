@@ -1,7 +1,12 @@
 """
-Trend Engine - V2 MA200 + ADX trend-following strategy.
+Trend Engine - V2.2 MA200 + ADX trend-following strategy.
 
-Captures multi-day momentum moves in 2× leveraged ETFs (QLD, SSO).
+Captures multi-day momentum moves in leveraged ETFs:
+- QLD (20%) - 2× Nasdaq
+- SSO (15%) - 2× S&P 500
+- TNA (12%) - 3× Russell 2000 (small-cap diversification)
+- FAS (8%)  - 3× Financials (sector diversification)
+
 Uses MA200 for trend direction and ADX for momentum confirmation.
 Rides trends with tiered Chandelier trailing stops.
 
@@ -13,6 +18,12 @@ ADX Scoring (V2.1):
 - ADX 20-25:   0.50 (moderate - MEDIUM confidence)
 - ADX 25-35:   0.75 (strong - HIGH confidence)
 - ADX >= 35:   1.00 (very strong - BEST confidence)
+
+V2.2 Changes:
+- Added TNA (3× Russell 2000) for small-cap diversification
+- Added FAS (3× Financials) for sector diversification
+- Total allocation: 55% (down from 70%)
+- Rationale: Lower QLD-SSO correlation benefits, more entry opportunities
 
 Spec: docs/07-trend-engine.md, docs/v2-specs/V2_1_COMPLETE_ARCHITECTURE.txt
 """
@@ -39,11 +50,7 @@ def _is_valid_float(value: float) -> bool:
 
 from models.enums import Urgency
 from models.target_weight import TargetWeight
-from utils.calculations import (
-    atr_multiplier_for_profit,
-    chandelier_stop,
-    profit_pct,
-)
+from utils.calculations import atr_multiplier_for_profit, chandelier_stop, profit_pct
 
 
 def adx_score(adx_value: float) -> float:
@@ -120,10 +127,16 @@ class TrendSignal:
 
 class TrendEngine:
     """
-    V2 MA200 + ADX trend-following engine.
+    V2.2 MA200 + ADX trend-following engine.
 
-    Trades QLD and SSO based on MA200 trend direction with ADX
+    Trades QLD, SSO, TNA, and FAS based on MA200 trend direction with ADX
     momentum confirmation. Uses Chandelier trailing stops for exit.
+
+    V2.2 Instruments (55% total allocation):
+    - QLD (20%) - 2× Nasdaq
+    - SSO (15%) - 2× S&P 500
+    - TNA (12%) - 3× Russell 2000 (small-cap diversification)
+    - FAS (8%)  - 3× Financials (sector diversification)
 
     V2 Entry Logic:
     1. Close > MA200 (bullish trend)
@@ -141,8 +154,8 @@ class TrendEngine:
     signals via TargetWeight objects for the Portfolio Router.
     """
 
-    # Instruments traded by this engine
-    INSTRUMENTS: List[str] = ["QLD", "SSO"]
+    # V2.2: Instruments traded by this engine (expanded for diversification)
+    INSTRUMENTS: List[str] = ["QLD", "SSO", "TNA", "FAS"]
 
     def __init__(self, algorithm: Optional["QCAlgorithm"] = None):
         """Initialize Trend Engine."""

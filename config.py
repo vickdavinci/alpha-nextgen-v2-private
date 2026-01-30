@@ -192,6 +192,8 @@ SHV_MIN_TRADE = 2_000
 EXPOSURE_LIMITS = {
     "NASDAQ_BETA": {"max_net_long": 0.50, "max_net_short": 0.30, "max_gross": 0.75},
     "SPY_BETA": {"max_net_long": 0.40, "max_net_short": 0.00, "max_gross": 0.40},
+    "SMALL_CAP_BETA": {"max_net_long": 0.25, "max_net_short": 0.00, "max_gross": 0.25},
+    "FINANCIALS_BETA": {"max_net_long": 0.15, "max_net_short": 0.00, "max_gross": 0.15},
     "RATES": {"max_net_long": 0.40, "max_net_short": 0.00, "max_gross": 0.40},
 }
 
@@ -202,9 +204,34 @@ SYMBOL_GROUPS = {
     "SOXL": "NASDAQ_BETA",
     "PSQ": "NASDAQ_BETA",  # Inverse
     "SSO": "SPY_BETA",
+    "TNA": "SMALL_CAP_BETA",  # V2.2: 3× Russell 2000
+    "FAS": "FINANCIALS_BETA",  # V2.2: 3× Financials
     "TMF": "RATES",
     "SHV": "RATES",
 }
+
+# =============================================================================
+# V2.2 BALANCED ALLOCATION MODEL
+# =============================================================================
+# Addresses capital utilization problem from V1 testing:
+# - Trend Engine entry probability ~13.3% (very conservative)
+# - Adding TNA/FAS increases diversification and entry opportunities
+
+# Trend Engine Allocations (55% total)
+TREND_SYMBOL_ALLOCATIONS = {
+    "QLD": 0.20,  # 20% - 2× Nasdaq (primary)
+    "SSO": 0.15,  # 15% - 2× S&P 500 (secondary)
+    "TNA": 0.12,  # 12% - 3× Russell 2000 (small-cap diversification)
+    "FAS": 0.08,  # 8% - 3× Financials (sector diversification)
+}
+TREND_TOTAL_ALLOCATION = 0.55  # 55% total to Trend Engine
+
+# Mean Reversion Allocations (10% total)
+MR_SYMBOL_ALLOCATIONS = {
+    "TQQQ": 0.05,  # 5% - 3× Nasdaq
+    "SOXL": 0.05,  # 5% - 3× Semiconductor
+}
+MR_TOTAL_ALLOCATION = 0.10  # 10% total to MR Engine
 
 # Trade Thresholds
 MIN_TRADE_VALUE = 2_000
@@ -548,6 +575,12 @@ INDICATOR_WARMUP_DAYS = 252  # Max of all indicator requirements
 # SYMBOLS
 # =============================================================================
 
-TRADED_SYMBOLS = ["TQQQ", "SOXL", "QLD", "SSO", "TMF", "PSQ", "SHV"]
+TRADED_SYMBOLS = ["TQQQ", "SOXL", "QLD", "SSO", "TNA", "FAS", "TMF", "PSQ", "SHV"]
 PROXY_SYMBOLS = ["SPY", "RSP", "HYG", "IEF"]
 ALL_SYMBOLS = TRADED_SYMBOLS + PROXY_SYMBOLS
+
+# Trend symbols (overnight hold allowed)
+TREND_SYMBOLS = ["QLD", "SSO", "TNA", "FAS"]
+
+# Mean Reversion symbols (intraday only, must close by 15:45)
+MR_SYMBOLS = ["TQQQ", "SOXL"]

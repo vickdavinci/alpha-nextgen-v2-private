@@ -21,7 +21,6 @@ from engines.core.trend_engine import TrendEngine, TrendPosition, adx_score
 from models.enums import Urgency
 from models.target_weight import TargetWeight
 
-
 # =============================================================================
 # ADX SCORING FUNCTION TESTS
 # =============================================================================
@@ -207,16 +206,20 @@ class TestTrendEngineInit:
     """Tests for TrendEngine initialization."""
 
     def test_instruments_list(self, engine):
-        """Test INSTRUMENTS class variable."""
+        """Test INSTRUMENTS class variable (V2.2: 4 symbols for diversification)."""
         assert "QLD" in TrendEngine.INSTRUMENTS
         assert "SSO" in TrendEngine.INSTRUMENTS
-        assert len(TrendEngine.INSTRUMENTS) == 2
+        assert "TNA" in TrendEngine.INSTRUMENTS  # V2.2: 3× Russell 2000
+        assert "FAS" in TrendEngine.INSTRUMENTS  # V2.2: 3× Financials
+        assert len(TrendEngine.INSTRUMENTS) == 4
 
     def test_initial_state_empty(self, engine):
         """Test engine starts with no positions."""
         assert len(engine.get_all_positions()) == 0
         assert not engine.has_position("QLD")
         assert not engine.has_position("SSO")
+        assert not engine.has_position("TNA")
+        assert not engine.has_position("FAS")
 
 
 # =============================================================================
