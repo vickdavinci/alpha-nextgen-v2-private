@@ -381,23 +381,95 @@ Same VIX level → OPPOSITE strategies!
 | SPIKING | > +5.0% | -3 | Crash mode |
 | WHIPSAW | 5+ reversals/hour | 0 | No direction |
 
-### 21 Micro-Regime Matrix
+### 21 Micro-Regime Matrix (Complete)
 
-VIX Level × VIX Direction = 21 distinct trading regimes.
+VIX Level × VIX Direction = **21 distinct trading regimes**. Each regime maps to a specific strategy and allocation.
 
-| VIX Level | VIX Direction | Micro Regime | Strategy | Allocation |
-|-----------|---------------|--------------|----------|:----------:|
-| LOW (<20) | FALLING_FAST | COMPLACENT_BULL | Long Calls | 5% |
-| LOW (<20) | STABLE | GOLDILOCKS | Iron Condors | 3% |
-| LOW (<20) | RISING_FAST | SURPRISE_FEAR | Long Puts | 3% |
-| MED (20-30) | FALLING | FEAR_FADING | Call Spreads | 3% |
-| MED (20-30) | STABLE | ELEVATED_RANGE | Iron Condors | 2% |
-| MED (20-30) | RISING | FEAR_BUILDING | Put Spreads | 3% |
-| HIGH (>30) | FALLING_FAST | CRISIS_ENDING | Long Calls | 3% |
-| HIGH (>30) | STABLE | CRISIS_PLATEAU | NO TRADE | 0% |
-| HIGH (>30) | RISING | CRISIS_WORSENING | NO TRADE | 0% |
+#### VIX LOW Regimes (VIX < 20) - Normal Market Conditions
 
-*Full 21-regime matrix in `docs/v2-specs/V2_1_OPTIONS_ENGINE_DESIGN.txt`*
+| VIX Direction | Micro Regime | Strategy | Allocation | Rationale |
+|---------------|--------------|----------|:----------:|-----------|
+| FALLING_FAST | COMPLACENT_BULL | Long Calls | 5% | Strong recovery, ride momentum |
+| FALLING | CALM_BULL | Debit Spreads | 4% | Recovery starting, defined risk |
+| STABLE | GOLDILOCKS | Iron Condors | 3% | Range-bound, collect premium |
+| RISING | WAKING_UP | Protective Puts | 2% | Fear emerging, hedge longs |
+| RISING_FAST | SURPRISE_FEAR | Long Puts | 3% | Unexpected selloff, ride down |
+| SPIKING | FLASH_CRASH | Emergency Puts | 2% | Sudden crash, protective only |
+| WHIPSAW | CONFUSED_LOW | Iron Condors | 2% | No direction, small range bets |
+
+#### VIX MEDIUM Regimes (VIX 20-30) - Elevated Fear
+
+| VIX Direction | Micro Regime | Strategy | Allocation | Rationale |
+|---------------|--------------|----------|:----------:|-----------|
+| FALLING_FAST | RELIEF_RALLY | Long Calls | 4% | Fear unwinding fast |
+| FALLING | FEAR_FADING | Call Spreads | 3% | Recovery starting |
+| STABLE | ELEVATED_RANGE | Iron Condors | 2% | High premium, tight range |
+| RISING | FEAR_BUILDING | Put Spreads | 3% | Momentum down continuing |
+| RISING_FAST | PANIC_STARTING | Long Puts | 4% | Accelerating selloff |
+| SPIKING | CRISIS_FORMING | Defensive Only | 2% | Potential crash forming |
+| WHIPSAW | CONFUSED_MED | Small Condors | 1% | Chaos, minimal exposure |
+
+#### VIX HIGH Regimes (VIX > 30) - Crisis Conditions
+
+| VIX Direction | Micro Regime | Strategy | Allocation | Rationale |
+|---------------|--------------|----------|:----------:|-----------|
+| FALLING_FAST | CRISIS_ENDING | Long Calls | 3% | Crisis resolution, bounce |
+| FALLING | RECOVERY_START | Call Spreads | 2% | Early recovery signs |
+| STABLE | CRISIS_PLATEAU | **NO TRADE** | 0% | Uncertainty too high |
+| RISING | CRISIS_WORSENING | Protective Only | 1% | Crisis deepening |
+| RISING_FAST | FULL_PANIC | **NO TRADE** | 0% | Max fear, stay out |
+| SPIKING | CAPITULATION | **NO TRADE** | 0% | Capitulation phase |
+| WHIPSAW | CHAOS | **NO TRADE** | 0% | Complete chaos, no edge |
+
+**Key Insight**: 4 of 21 regimes result in **NO TRADE** (all HIGH VIX with non-recovery direction). This is by design—some market conditions have no edge.
+
+### Micro Score Calculation
+
+The Micro Regime Engine calculates a **composite score** (range: -15 to 80) to determine trade eligibility and sizing.
+
+#### Score Components
+
+| Component | Score Range | Calculation |
+|-----------|:-----------:|-------------|
+| **VIX Level** | 0-25 pts | Lower VIX = higher score |
+| **VIX Direction** | -10 to +20 pts | Falling = positive, Spiking = negative |
+| **QQQ Move** | 0-20 pts | Sweet spot at 0.8-1.25% move |
+| **Move Velocity** | 0-15 pts | Gradual moves score higher than spikes |
+
+#### VIX Level Scoring
+
+```
+VIX < 15:     25 points (ideal conditions)
+VIX 15-20:    20 points
+VIX 20-25:    15 points
+VIX 25-30:    10 points
+VIX 30-40:     5 points
+VIX > 40:      0 points
+```
+
+#### VIX Direction Scoring
+
+```
+FALLING_FAST:  +20 points (strong recovery)
+FALLING:       +10 points (recovery)
+STABLE:         0 points (neutral)
+RISING:        -5 points (fear building)
+RISING_FAST:  -10 points (panic)
+SPIKING:      -10 points + DANGER FLAG
+WHIPSAW:       -5 points + WHIPSAW FLAG
+```
+
+#### Score Interpretation
+
+| Score Range | Action | Allocation Multiplier |
+|:-----------:|--------|:---------------------:|
+| 60+ | Strong entry | 100% of regime allocation |
+| 40-59 | Normal entry | 75% of regime allocation |
+| 20-39 | Cautious entry | 50% of regime allocation |
+| 0-19 | Skip or minimal | 25% or skip |
+| < 0 | **NO TRADE** | 0% |
+
+---
 
 ### VIX Monitoring System
 
@@ -417,6 +489,71 @@ VIX1D was evaluated and rejected because:
 | Layer 2 | 15 minutes | Direction confirmation |
 | Layer 3 | 60 minutes | Whipsaw detection (5+ reversals) |
 | Layer 4 | 30 minutes | Full regime recalculation |
+
+---
+
+### Intraday Strategy Deployment
+
+Based on micro regime, deploy one of four intraday strategies:
+
+#### Strategy 1: Debit Fade (Mean Reversion)
+
+**When**: VIX FALLING + QQQ oversold
+**Setup**: Buy OTM call/put debit spread
+**Target**: Fade the extreme move, exit at VWAP
+**Max Allocation**: 3%
+
+```
+Trigger: micro_score >= 50 AND qqqMove >= 1.0% AND vix < 25
+Strategy: ATM debit spread, 0-1 DTE
+Exit: +30% profit OR return to VWAP OR 15:30 time stop
+```
+
+#### Strategy 2: Credit Spreads (Range-Bound)
+
+**When**: VIX STABLE or WHIPSAW regimes
+**Setup**: Sell OTM credit spread (iron condor)
+**Target**: Collect theta decay in range
+**Max Allocation**: 2%
+
+```
+Trigger: vixDirection in (STABLE, WHIPSAW) AND vix >= 18
+Strategy: 10-delta wings, 0-1 DTE
+Exit: 50% of max profit OR breach of short strike
+```
+
+#### Strategy 3: ITM Momentum
+
+**When**: VIX RISING + clear directional move
+**Setup**: Buy ITM option (0.70 delta)
+**Target**: Ride momentum continuation
+**Max Allocation**: 3%
+
+```
+Trigger: vixDirection in (RISING, RISING_FAST) AND qqqMove >= 0.8% AND vix >= 25
+Strategy: ITM put (delta 0.70), 0-1 DTE
+Exit: +25% profit OR trailing stop after +15%
+```
+
+#### Strategy 4: Protective Puts
+
+**When**: VIX SPIKING or CRISIS conditions
+**Setup**: Buy OTM puts for portfolio protection
+**Target**: Hedge existing long exposure
+**Max Allocation**: 2%
+
+```
+Trigger: vixDirection in (SPIKING, RISING_FAST) AND vix >= 30
+Strategy: 5% OTM puts, 1-2 DTE
+Exit: Crisis resolution OR expiry
+```
+
+### Intraday Force Exit (15:30 ET)
+
+**All intraday options positions MUST close by 15:30 ET** (not 15:45 like Mean Reversion). This gives:
+- 30 minutes before market close
+- Time to handle any execution issues
+- Avoids overnight gamma risk on 0-DTE
 
 ---
 

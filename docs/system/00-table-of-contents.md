@@ -8,12 +8,12 @@
 
 | Resource | Description |
 |----------|-------------|
-| [README](README.md) | Documentation overview and quick reference |
-| [Documentation Map](DOCUMENTATION-MAP.md) | Code-to-documentation mapping (for Claude) |
-| [main.py Implementation](MAIN_PY_IMPLEMENTATION.md) | Phase 6 entry point implementation summary |
-| [V2 Test Plan](V2_TEST_PLAN.md) | Comprehensive test strategy for V2.1 |
-| [QC Coding Rules](../QC_RULES.md) | QuantConnect-specific patterns |
-| [Common Errors](../ERRORS.md) | Troubleshooting guide |
+| [README](../README.md) | Documentation overview and quick reference |
+| [Documentation Map](../internal/documentation-map.md) | Code-to-documentation mapping (for Claude) |
+| [main.py Implementation](../guides/main-py-implementation.md) | Phase 6 entry point implementation summary |
+| [V2 Test Plan](../audits/v2-test-plan.md) | Comprehensive test strategy for V2.1 |
+| [QC Coding Rules](../../QC_RULES.md) | QuantConnect-specific patterns |
+| [Common Errors](../../ERRORS.md) | Troubleshooting guide |
 
 ---
 
@@ -255,7 +255,7 @@ Every section includes:
 
 | Jump To | Section |
 |---------|---------|
-| 🏠 Home | [README](README.md) |
+| 🏠 Home | [README](../README.md) |
 | 🎯 Start | [01 - Executive Summary](01-executive-summary.md) |
 | 🏗️ Architecture | [02 - System Architecture](02-system-architecture.md) |
 | 📊 Data | [03 - Data Infrastructure](03-data-infrastructure.md) |

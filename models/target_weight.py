@@ -10,7 +10,7 @@ Schema Version History:
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, ClassVar
+from typing import Any, ClassVar, Dict, Optional
 
 from models.enums import Urgency
 
@@ -72,7 +72,17 @@ class TargetWeight:
             )
 
         # Validate source
-        valid_sources = {"TREND", "MR", "HEDGE", "YIELD", "COLD_START", "RISK", "ROUTER", "OPT"}
+        valid_sources = {
+            "TREND",
+            "MR",
+            "HEDGE",
+            "YIELD",
+            "COLD_START",
+            "RISK",
+            "ROUTER",
+            "OPT",
+            "OPT_INTRADAY",
+        }
         if self.source not in valid_sources:
             raise ValueError(f"source must be one of {valid_sources}, got: {self.source}")
 
