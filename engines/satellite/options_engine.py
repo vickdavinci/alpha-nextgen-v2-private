@@ -1824,7 +1824,13 @@ class OptionsEngine:
         }
 
     def restore_state(self, state: Dict[str, Any]) -> None:
-        """Restore state from ObjectStore."""
+        """
+        Restore state from ObjectStore.
+
+        CRITICAL: Intraday positions (0-2 DTE) should NEVER be held overnight.
+        If we're restoring state and find an intraday position, it's likely
+        a critical failure that needs immediate attention.
+        """
         # Legacy position (backwards compatibility)
         position_data = state.get("position")
         if position_data:
@@ -1844,7 +1850,15 @@ class OptionsEngine:
 
         intraday_data = state.get("intraday_position")
         if intraday_data:
-            self._intraday_position = OptionsPosition.from_dict(intraday_data)
+            # CRITICAL FIX: Intraday positions should NEVER exist overnight
+            # If found, it means position wasn't closed at 15:30 (critical failure)
+            # Force clear and log warning - the position is likely expired or at extreme risk
+            self.log(
+                "OPT: CRITICAL - Intraday position found on state restore! "
+                "0-2 DTE options should close by 15:30. "
+                "Position may be expired or at extreme gap risk. Clearing."
+            )
+            self._intraday_position = None
         else:
             self._intraday_position = None
 

@@ -1878,17 +1878,25 @@ class TestV211StatePersistence:
         assert new_engine._swing_position.entry_price == 3.50
         assert new_engine._swing_position.num_contracts == 10
 
-    def test_intraday_position_persists(self, engine_with_full_v211_state):
-        """Test intraday position round-trip persistence."""
+    def test_intraday_position_cleared_on_restore(self, engine_with_full_v211_state):
+        """
+        Test intraday position is CLEARED on restore (not persisted).
+
+        CRITICAL: Intraday positions (0-2 DTE) should NEVER be held overnight.
+        If an intraday position exists in persisted state, it means the position
+        wasn't properly closed at 15:30 (critical failure). On restore, we must
+        clear it to prevent holding 0-2 DTE options overnight (extreme gap risk).
+        """
         state = engine_with_full_v211_state.get_state_for_persistence()
+
+        # Verify intraday position was in the state
+        assert state.get("intraday_position") is not None
 
         new_engine = OptionsEngine()
         new_engine.restore_state(state)
 
-        assert new_engine._intraday_position is not None
-        assert new_engine._intraday_position.contract.symbol == "QQQ 260127C00455000"
-        assert new_engine._intraday_position.entry_price == 1.00
-        assert new_engine._intraday_position.num_contracts == 20
+        # CRITICAL: Intraday position should be cleared, NOT restored
+        assert new_engine._intraday_position is None
 
     def test_intraday_trades_today_persists(self, engine_with_full_v211_state):
         """Test intraday_trades_today round-trip persistence."""
@@ -1959,7 +1967,13 @@ class TestV211StatePersistence:
         assert micro_state.last_update == "2026-01-27 11:00:00"
 
     def test_full_v211_state_round_trip(self, engine_with_full_v211_state):
-        """Test complete V2.1.1 state survives round-trip."""
+        """
+        Test complete V2.1.1 state survives round-trip.
+
+        Note: Intraday positions are intentionally cleared on restore because
+        0-2 DTE options should never be held overnight. See
+        test_intraday_position_cleared_on_restore for details.
+        """
         from models.enums import OptionsMode
 
         # Get state for persistence
@@ -1969,9 +1983,10 @@ class TestV211StatePersistence:
         new_engine = OptionsEngine()
         new_engine.restore_state(state)
 
-        # Verify all fields
+        # Verify all fields (except intraday_position which is cleared)
         assert new_engine._swing_position is not None
-        assert new_engine._intraday_position is not None
+        # CRITICAL: Intraday position is cleared on restore (0-2 DTE can't be held overnight)
+        assert new_engine._intraday_position is None
         assert new_engine._intraday_trades_today == 3
         assert new_engine._current_mode == OptionsMode.INTRADAY
         assert new_engine._vix_at_open == 18.5
