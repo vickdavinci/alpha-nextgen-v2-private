@@ -25,7 +25,6 @@ from engines.satellite.options_engine import (
 )
 from models.enums import Urgency
 
-
 # =============================================================================
 # FIXTURES
 # =============================================================================
@@ -948,7 +947,7 @@ class TestGreeksMonitoring:
 
     def test_calculate_position_greeks_with_position(self):
         """Test Greeks calculation returns per-contract values."""
-        from engines.satellite.options_engine import OptionsEngine, OptionContract
+        from engines.satellite.options_engine import OptionContract, OptionsEngine
 
         engine = OptionsEngine()
         contract = OptionContract(
@@ -980,7 +979,7 @@ class TestGreeksMonitoring:
 
     def test_update_position_greeks(self):
         """Test updating position Greeks."""
-        from engines.satellite.options_engine import OptionsEngine, OptionContract
+        from engines.satellite.options_engine import OptionContract, OptionsEngine
 
         engine = OptionsEngine()
         contract = OptionContract(
@@ -1033,8 +1032,8 @@ class TestGreeksMonitoring:
 
     def test_check_greeks_breach_within_limits(self):
         """Test Greeks breach check when within limits."""
-        from engines.satellite.options_engine import OptionsEngine, OptionContract
         from engines.core.risk_engine import RiskEngine
+        from engines.satellite.options_engine import OptionContract, OptionsEngine
 
         engine = OptionsEngine()
         risk_engine = RiskEngine()
@@ -1062,8 +1061,8 @@ class TestGreeksMonitoring:
 
     def test_check_greeks_breach_delta_exceeded(self):
         """Test Greeks breach when delta exceeds limit."""
-        from engines.satellite.options_engine import OptionsEngine, OptionContract
         from engines.core.risk_engine import RiskEngine
+        from engines.satellite.options_engine import OptionContract, OptionsEngine
 
         engine = OptionsEngine()
         risk_engine = RiskEngine()
@@ -1437,3 +1436,790 @@ class TestGreeksBreachThresholds:
         is_breach, symbols = engine.check_greeks_breach(risk_engine)
         assert is_breach is False
         assert len(symbols) == 0
+
+
+# =============================================================================
+# V2.1.1 DUAL POSITION TRACKING TESTS (GAP #3)
+# =============================================================================
+
+
+class TestDualPositionTracking:
+    """Tests for V2.1.1 dual position tracking (swing + intraday)."""
+
+    @pytest.fixture
+    def engine(self):
+        """Create fresh OptionsEngine."""
+        return OptionsEngine()
+
+    @pytest.fixture
+    def swing_contract(self):
+        """Create a swing mode contract (5+ DTE)."""
+        return OptionContract(
+            symbol="QQQ 260205C00455000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=455.0,
+            expiry="2026-02-05",
+            delta=0.50,
+            gamma=0.02,
+            vega=0.15,
+            theta=-0.01,
+            bid=3.40,
+            ask=3.60,
+            mid_price=3.50,
+            open_interest=10000,
+            days_to_expiry=10,  # Swing mode (5+ DTE)
+        )
+
+    @pytest.fixture
+    def intraday_contract(self):
+        """Create an intraday mode contract (0-2 DTE)."""
+        return OptionContract(
+            symbol="QQQ 260127C00455000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=455.0,
+            expiry="2026-01-27",
+            delta=0.50,
+            gamma=0.05,
+            vega=0.08,
+            theta=-0.02,
+            bid=0.90,
+            ask=1.10,
+            mid_price=1.00,
+            open_interest=8000,
+            days_to_expiry=1,  # Intraday mode (0-2 DTE)
+        )
+
+    def test_swing_and_intraday_positions_are_separate_fields(self, engine):
+        """Verify swing and intraday positions are distinct attributes."""
+        assert hasattr(engine, "_swing_position")
+        assert hasattr(engine, "_intraday_position")
+        assert engine._swing_position is None
+        assert engine._intraday_position is None
+
+    def test_swing_position_does_not_affect_intraday(self, engine, swing_contract):
+        """Setting swing position should not affect intraday position."""
+        # Directly set swing position
+        from engines.satellite.options_engine import OptionsPosition
+
+        engine._swing_position = OptionsPosition(
+            contract=swing_contract,
+            entry_price=3.50,
+            entry_time="10:30:00",
+            entry_score=3.5,
+            num_contracts=10,
+            stop_price=2.80,
+            target_price=5.25,
+            stop_pct=0.20,
+        )
+
+        assert engine._swing_position is not None
+        assert engine._intraday_position is None  # Should remain None
+
+    def test_intraday_position_does_not_affect_swing(self, engine, intraday_contract):
+        """Setting intraday position should not affect swing position."""
+        from engines.satellite.options_engine import OptionsPosition
+
+        engine._intraday_position = OptionsPosition(
+            contract=intraday_contract,
+            entry_price=1.00,
+            entry_time="10:45:00",
+            entry_score=3.2,
+            num_contracts=20,
+            stop_price=0.80,
+            target_price=1.50,
+            stop_pct=0.20,
+        )
+
+        assert engine._intraday_position is not None
+        assert engine._swing_position is None  # Should remain None
+
+    def test_both_positions_can_coexist(self, engine, swing_contract, intraday_contract):
+        """Both swing and intraday positions can exist simultaneously."""
+        from engines.satellite.options_engine import OptionsPosition
+
+        # Set swing position
+        engine._swing_position = OptionsPosition(
+            contract=swing_contract,
+            entry_price=3.50,
+            entry_time="10:30:00",
+            entry_score=3.5,
+            num_contracts=10,
+            stop_price=2.80,
+            target_price=5.25,
+            stop_pct=0.20,
+        )
+
+        # Set intraday position
+        engine._intraday_position = OptionsPosition(
+            contract=intraday_contract,
+            entry_price=1.00,
+            entry_time="10:45:00",
+            entry_score=3.2,
+            num_contracts=20,
+            stop_price=0.80,
+            target_price=1.50,
+            stop_pct=0.20,
+        )
+
+        # Both should exist
+        assert engine._swing_position is not None
+        assert engine._intraday_position is not None
+        assert engine._swing_position.contract.symbol != engine._intraday_position.contract.symbol
+
+    def test_intraday_trades_counter_separate_from_swing(self, engine):
+        """Intraday trades counter should be separate from swing trades counter."""
+        engine._trades_today = 1
+        engine._intraday_trades_today = 2
+
+        assert engine._trades_today == 1
+        assert engine._intraday_trades_today == 2
+
+
+class TestDualModeArchitecture:
+    """Tests for V2.1.1 dual-mode architecture methods."""
+
+    @pytest.fixture
+    def engine(self):
+        """Create fresh OptionsEngine."""
+        return OptionsEngine()
+
+    def test_determine_mode_intraday_0_dte(self, engine):
+        """Test 0 DTE returns INTRADAY mode."""
+        from models.enums import OptionsMode
+
+        mode = engine.determine_mode(dte=0)
+        assert mode == OptionsMode.INTRADAY
+
+    def test_determine_mode_intraday_1_dte(self, engine):
+        """Test 1 DTE returns INTRADAY mode."""
+        from models.enums import OptionsMode
+
+        mode = engine.determine_mode(dte=1)
+        assert mode == OptionsMode.INTRADAY
+
+    def test_determine_mode_intraday_2_dte(self, engine):
+        """Test 2 DTE returns INTRADAY mode."""
+        from models.enums import OptionsMode
+
+        mode = engine.determine_mode(dte=2)
+        assert mode == OptionsMode.INTRADAY
+
+    def test_determine_mode_swing_3_dte(self, engine):
+        """Test 3 DTE returns SWING mode (boundary)."""
+        from models.enums import OptionsMode
+
+        mode = engine.determine_mode(dte=3)
+        assert mode == OptionsMode.SWING
+
+    def test_determine_mode_swing_5_dte(self, engine):
+        """Test 5 DTE returns SWING mode."""
+        from models.enums import OptionsMode
+
+        mode = engine.determine_mode(dte=5)
+        assert mode == OptionsMode.SWING
+
+    def test_determine_mode_swing_45_dte(self, engine):
+        """Test 45 DTE returns SWING mode."""
+        from models.enums import OptionsMode
+
+        mode = engine.determine_mode(dte=45)
+        assert mode == OptionsMode.SWING
+
+    def test_get_mode_allocation_intraday(self, engine):
+        """Test intraday mode allocation is 5%."""
+        from models.enums import OptionsMode
+
+        allocation = engine.get_mode_allocation(OptionsMode.INTRADAY, portfolio_value=100000)
+        # 5% of $100,000 = $5,000
+        assert allocation == 5000.0
+
+    def test_get_mode_allocation_swing(self, engine):
+        """Test swing mode allocation is 15%."""
+        from models.enums import OptionsMode
+
+        allocation = engine.get_mode_allocation(OptionsMode.SWING, portfolio_value=100000)
+        # 15% of $100,000 = $15,000
+        assert allocation == 15000.0
+
+    def test_check_intraday_entry_blocked_existing_position(self, engine):
+        """Intraday entry blocked when intraday position exists."""
+        from engines.satellite.options_engine import OptionContract, OptionsPosition
+
+        # Set intraday position
+        contract = OptionContract(
+            symbol="QQQ 260127C00455000",
+            strike=455.0,
+            expiry="2026-01-27",
+            delta=0.50,
+            mid_price=1.00,
+            open_interest=5000,
+            days_to_expiry=1,
+        )
+
+        engine._intraday_position = OptionsPosition(
+            contract=contract,
+            entry_price=1.00,
+            entry_time="10:00:00",
+            entry_score=3.2,
+            num_contracts=10,
+            stop_price=0.80,
+            target_price=1.50,
+            stop_pct=0.20,
+        )
+
+        # Try to enter again
+        result = engine.check_intraday_entry_signal(
+            vix_current=18.0,
+            vix_open=17.0,
+            qqq_current=450.0,
+            qqq_open=448.0,
+            current_hour=11,
+            current_minute=0,
+            current_time="2026-01-27 11:00:00",
+            portfolio_value=100000,
+        )
+
+        assert result is None  # Blocked due to existing position
+
+
+class TestIntradayForceExit:
+    """Tests for V2.1.1 intraday force exit at 3:30 PM."""
+
+    @pytest.fixture
+    def engine_with_intraday_position(self):
+        """Create engine with an intraday position."""
+        from engines.satellite.options_engine import OptionContract, OptionsEngine, OptionsPosition
+
+        engine = OptionsEngine()
+
+        contract = OptionContract(
+            symbol="QQQ 260127C00455000",
+            strike=455.0,
+            expiry="2026-01-27",
+            delta=0.50,
+            mid_price=1.00,
+            open_interest=5000,
+            days_to_expiry=1,
+        )
+
+        engine._intraday_position = OptionsPosition(
+            contract=contract,
+            entry_price=1.00,
+            entry_time="10:30:00",
+            entry_score=3.2,
+            num_contracts=10,
+            stop_price=0.80,
+            target_price=1.50,
+            stop_pct=0.20,
+        )
+
+        return engine
+
+    def test_intraday_force_exit_at_1530(self, engine_with_intraday_position):
+        """Test intraday force exit at 15:30 ET."""
+        result = engine_with_intraday_position.check_intraday_force_exit(
+            current_hour=15,
+            current_minute=30,
+            current_price=1.10,
+        )
+
+        assert result is not None
+        assert result.target_weight == 0.0
+        assert "INTRADAY_TIME_EXIT_1530" in result.reason
+
+    def test_intraday_force_exit_after_1530(self, engine_with_intraday_position):
+        """Test intraday force exit after 15:30 ET."""
+        result = engine_with_intraday_position.check_intraday_force_exit(
+            current_hour=15,
+            current_minute=35,
+            current_price=1.10,
+        )
+
+        assert result is not None
+        assert "INTRADAY_TIME_EXIT_1530" in result.reason
+
+    def test_no_intraday_force_exit_before_1530(self, engine_with_intraday_position):
+        """Test no force exit before 15:30 ET."""
+        result = engine_with_intraday_position.check_intraday_force_exit(
+            current_hour=15,
+            current_minute=29,
+            current_price=1.10,
+        )
+
+        assert result is None
+
+    def test_no_intraday_force_exit_no_position(self):
+        """Test no force exit when no intraday position."""
+        engine = OptionsEngine()
+        result = engine.check_intraday_force_exit(
+            current_hour=15,
+            current_minute=30,
+            current_price=1.10,
+        )
+
+        assert result is None
+
+
+# =============================================================================
+# V2.1.1 STATE PERSISTENCE TESTS (GAP #4)
+# =============================================================================
+
+
+class TestV211StatePersistence:
+    """Tests for V2.1.1 state persistence round-trip."""
+
+    @pytest.fixture
+    def engine_with_full_v211_state(self):
+        """Create engine with complete V2.1.1 state for persistence testing."""
+        from engines.satellite.options_engine import (
+            MicroRegimeState,
+            OptionContract,
+            OptionsEngine,
+            OptionsPosition,
+        )
+        from models.enums import (
+            IntradayStrategy,
+            MicroRegime,
+            OptionsMode,
+            VIXDirection,
+            VIXLevel,
+            WhipsawState,
+        )
+
+        engine = OptionsEngine()
+
+        # Create swing position
+        swing_contract = OptionContract(
+            symbol="QQQ 260205C00455000",
+            strike=455.0,
+            expiry="2026-02-05",
+            delta=0.50,
+            gamma=0.02,
+            vega=0.15,
+            theta=-0.01,
+            mid_price=3.50,
+            open_interest=10000,
+            days_to_expiry=10,
+        )
+
+        engine._swing_position = OptionsPosition(
+            contract=swing_contract,
+            entry_price=3.50,
+            entry_time="10:30:00",
+            entry_score=3.5,
+            num_contracts=10,
+            stop_price=2.80,
+            target_price=5.25,
+            stop_pct=0.20,
+        )
+
+        # Create intraday position
+        intraday_contract = OptionContract(
+            symbol="QQQ 260127C00455000",
+            strike=455.0,
+            expiry="2026-01-27",
+            delta=0.50,
+            gamma=0.05,
+            vega=0.08,
+            theta=-0.02,
+            mid_price=1.00,
+            open_interest=8000,
+            days_to_expiry=1,
+        )
+
+        engine._intraday_position = OptionsPosition(
+            contract=intraday_contract,
+            entry_price=1.00,
+            entry_time="10:45:00",
+            entry_score=3.2,
+            num_contracts=20,
+            stop_price=0.80,
+            target_price=1.50,
+            stop_pct=0.20,
+        )
+
+        # Set V2.1.1 state fields
+        engine._intraday_trades_today = 3
+        engine._current_mode = OptionsMode.INTRADAY
+
+        # Set market open data
+        engine._vix_at_open = 18.5
+        engine._spy_at_open = 500.25
+        engine._spy_gap_pct = -0.75
+
+        # Set micro regime state
+        engine._micro_regime_engine._state = MicroRegimeState(
+            vix_level=VIXLevel.LOW,
+            vix_direction=VIXDirection.FALLING,
+            micro_regime=MicroRegime.GOOD_MR,
+            micro_score=65.0,
+            whipsaw_state=WhipsawState.TRENDING,
+            recommended_strategy=IntradayStrategy.DEBIT_FADE,
+            qqq_move_pct=0.45,
+            vix_current=17.8,
+            vix_open=18.5,
+            last_update="2026-01-27 11:00:00",
+            spike_cooldown_until="",
+        )
+
+        return engine
+
+    def test_swing_position_persists(self, engine_with_full_v211_state):
+        """Test swing position round-trip persistence."""
+        state = engine_with_full_v211_state.get_state_for_persistence()
+
+        new_engine = OptionsEngine()
+        new_engine.restore_state(state)
+
+        assert new_engine._swing_position is not None
+        assert new_engine._swing_position.contract.symbol == "QQQ 260205C00455000"
+        assert new_engine._swing_position.entry_price == 3.50
+        assert new_engine._swing_position.num_contracts == 10
+
+    def test_intraday_position_persists(self, engine_with_full_v211_state):
+        """Test intraday position round-trip persistence."""
+        state = engine_with_full_v211_state.get_state_for_persistence()
+
+        new_engine = OptionsEngine()
+        new_engine.restore_state(state)
+
+        assert new_engine._intraday_position is not None
+        assert new_engine._intraday_position.contract.symbol == "QQQ 260127C00455000"
+        assert new_engine._intraday_position.entry_price == 1.00
+        assert new_engine._intraday_position.num_contracts == 20
+
+    def test_intraday_trades_today_persists(self, engine_with_full_v211_state):
+        """Test intraday_trades_today round-trip persistence."""
+        state = engine_with_full_v211_state.get_state_for_persistence()
+
+        new_engine = OptionsEngine()
+        new_engine.restore_state(state)
+
+        assert new_engine._intraday_trades_today == 3
+
+    def test_current_mode_persists(self, engine_with_full_v211_state):
+        """Test current_mode round-trip persistence."""
+        from models.enums import OptionsMode
+
+        state = engine_with_full_v211_state.get_state_for_persistence()
+
+        new_engine = OptionsEngine()
+        new_engine.restore_state(state)
+
+        assert new_engine._current_mode == OptionsMode.INTRADAY
+
+    def test_vix_at_open_persists(self, engine_with_full_v211_state):
+        """Test vix_at_open round-trip persistence."""
+        state = engine_with_full_v211_state.get_state_for_persistence()
+
+        new_engine = OptionsEngine()
+        new_engine.restore_state(state)
+
+        assert new_engine._vix_at_open == 18.5
+
+    def test_spy_at_open_persists(self, engine_with_full_v211_state):
+        """Test spy_at_open round-trip persistence."""
+        state = engine_with_full_v211_state.get_state_for_persistence()
+
+        new_engine = OptionsEngine()
+        new_engine.restore_state(state)
+
+        assert new_engine._spy_at_open == 500.25
+
+    def test_spy_gap_pct_persists(self, engine_with_full_v211_state):
+        """Test spy_gap_pct round-trip persistence."""
+        state = engine_with_full_v211_state.get_state_for_persistence()
+
+        new_engine = OptionsEngine()
+        new_engine.restore_state(state)
+
+        assert new_engine._spy_gap_pct == -0.75
+
+    def test_micro_regime_state_persists(self, engine_with_full_v211_state):
+        """Test micro_regime_state round-trip persistence."""
+        from models.enums import IntradayStrategy, MicroRegime, VIXDirection, VIXLevel, WhipsawState
+
+        state = engine_with_full_v211_state.get_state_for_persistence()
+
+        new_engine = OptionsEngine()
+        new_engine.restore_state(state)
+
+        micro_state = new_engine._micro_regime_engine.get_state()
+        assert micro_state.vix_level == VIXLevel.LOW
+        assert micro_state.vix_direction == VIXDirection.FALLING
+        assert micro_state.micro_regime == MicroRegime.GOOD_MR
+        assert micro_state.micro_score == 65.0
+        assert micro_state.whipsaw_state == WhipsawState.TRENDING
+        assert micro_state.recommended_strategy == IntradayStrategy.DEBIT_FADE
+        assert micro_state.qqq_move_pct == 0.45
+        assert micro_state.vix_current == 17.8
+        assert micro_state.vix_open == 18.5
+        assert micro_state.last_update == "2026-01-27 11:00:00"
+
+    def test_full_v211_state_round_trip(self, engine_with_full_v211_state):
+        """Test complete V2.1.1 state survives round-trip."""
+        from models.enums import OptionsMode
+
+        # Get state for persistence
+        state = engine_with_full_v211_state.get_state_for_persistence()
+
+        # Restore to new engine
+        new_engine = OptionsEngine()
+        new_engine.restore_state(state)
+
+        # Verify all fields
+        assert new_engine._swing_position is not None
+        assert new_engine._intraday_position is not None
+        assert new_engine._intraday_trades_today == 3
+        assert new_engine._current_mode == OptionsMode.INTRADAY
+        assert new_engine._vix_at_open == 18.5
+        assert new_engine._spy_at_open == 500.25
+        assert new_engine._spy_gap_pct == -0.75
+
+        micro_state = new_engine._micro_regime_engine.get_state()
+        assert micro_state.micro_score == 65.0
+
+    def test_state_empty_positions_persists(self):
+        """Test persistence when positions are None."""
+        engine = OptionsEngine()
+        engine._vix_at_open = 20.0
+        engine._spy_at_open = 495.0
+        engine._spy_gap_pct = 0.5
+
+        state = engine.get_state_for_persistence()
+
+        assert state["swing_position"] is None
+        assert state["intraday_position"] is None
+
+        new_engine = OptionsEngine()
+        new_engine.restore_state(state)
+
+        assert new_engine._swing_position is None
+        assert new_engine._intraday_position is None
+        assert new_engine._vix_at_open == 20.0
+
+    def test_backwards_compatible_state_restore(self):
+        """Test restoring old state (pre-V2.1.1) doesn't break engine."""
+        # Simulate old state without V2.1.1 fields
+        old_state = {
+            "position": None,
+            "trades_today": 1,
+            "last_trade_date": "2026-01-25",
+            # No swing_position, intraday_position, etc.
+        }
+
+        engine = OptionsEngine()
+        engine.restore_state(old_state)
+
+        # Should restore without error, using defaults
+        assert engine._swing_position is None
+        assert engine._intraday_position is None
+        assert engine._intraday_trades_today == 0
+        assert engine._vix_at_open == 0.0
+
+
+class TestUpdateMarketOpenData:
+    """Tests for V2.1.1 update_market_open_data method."""
+
+    @pytest.fixture
+    def engine(self):
+        """Create fresh OptionsEngine."""
+        return OptionsEngine()
+
+    def test_update_market_open_data_sets_vix(self, engine):
+        """Test VIX at open is set correctly."""
+        engine.update_market_open_data(
+            vix_open=19.5,
+            spy_open=502.0,
+            spy_prior_close=500.0,
+        )
+
+        assert engine._vix_at_open == 19.5
+
+    def test_update_market_open_data_sets_spy(self, engine):
+        """Test SPY at open is set correctly."""
+        engine.update_market_open_data(
+            vix_open=19.5,
+            spy_open=502.0,
+            spy_prior_close=500.0,
+        )
+
+        assert engine._spy_at_open == 502.0
+
+    def test_update_market_open_data_calculates_gap(self, engine):
+        """Test gap percentage is calculated correctly."""
+        engine.update_market_open_data(
+            vix_open=19.5,
+            spy_open=502.0,  # +2 from prior
+            spy_prior_close=500.0,
+        )
+
+        # Gap = (502 - 500) / 500 * 100 = 0.4%
+        assert abs(engine._spy_gap_pct - 0.4) < 0.01
+
+    def test_update_market_open_data_negative_gap(self, engine):
+        """Test negative gap is calculated correctly."""
+        engine.update_market_open_data(
+            vix_open=22.0,
+            spy_open=495.0,  # -5 from prior
+            spy_prior_close=500.0,
+        )
+
+        # Gap = (495 - 500) / 500 * 100 = -1.0%
+        assert abs(engine._spy_gap_pct - (-1.0)) < 0.01
+
+    def test_update_market_open_data_zero_prior_close(self, engine):
+        """Test zero prior close doesn't cause division error."""
+        engine.update_market_open_data(
+            vix_open=19.5,
+            spy_open=502.0,
+            spy_prior_close=0.0,
+        )
+
+        assert engine._spy_gap_pct == 0.0
+
+
+class TestSwingFilters:
+    """Tests for V2.1.1 swing mode simple intraday filters."""
+
+    @pytest.fixture
+    def engine(self):
+        """Create fresh OptionsEngine."""
+        return OptionsEngine()
+
+    def test_swing_filter_blocks_outside_time_window_early(self, engine):
+        """Test swing filter blocks before 10:00 AM."""
+        can_enter, reason = engine.check_swing_filters(
+            direction=OptionDirection.CALL,
+            spy_gap_pct=0.0,
+            spy_intraday_change_pct=0.0,
+            vix_intraday_change_pct=0.0,
+            current_hour=9,
+            current_minute=45,  # Before 10:00
+        )
+
+        assert can_enter is False
+        assert "time window" in reason.lower()
+
+    def test_swing_filter_blocks_outside_time_window_late(self, engine):
+        """Test swing filter blocks after 2:30 PM."""
+        can_enter, reason = engine.check_swing_filters(
+            direction=OptionDirection.CALL,
+            spy_gap_pct=0.0,
+            spy_intraday_change_pct=0.0,
+            vix_intraday_change_pct=0.0,
+            current_hour=14,
+            current_minute=45,  # After 14:30
+        )
+
+        assert can_enter is False
+        assert "time window" in reason.lower()
+
+    def test_swing_filter_allows_within_time_window(self, engine):
+        """Test swing filter allows within 10:00-14:30."""
+        can_enter, reason = engine.check_swing_filters(
+            direction=OptionDirection.CALL,
+            spy_gap_pct=0.0,
+            spy_intraday_change_pct=0.0,
+            vix_intraday_change_pct=0.0,
+            current_hour=11,
+            current_minute=30,
+        )
+
+        assert can_enter is True
+        assert reason == ""
+
+    def test_swing_filter_blocks_extreme_spy_drop(self, engine):
+        """Test swing filter blocks on extreme SPY drop."""
+        can_enter, reason = engine.check_swing_filters(
+            direction=OptionDirection.CALL,
+            spy_gap_pct=0.0,
+            spy_intraday_change_pct=-3.0,  # Extreme drop
+            vix_intraday_change_pct=0.0,
+            current_hour=11,
+            current_minute=30,
+        )
+
+        assert can_enter is False
+        assert "extreme drop" in reason.lower()
+
+    def test_swing_filter_blocks_vix_spike(self, engine):
+        """Test swing filter blocks on VIX spike."""
+        can_enter, reason = engine.check_swing_filters(
+            direction=OptionDirection.CALL,
+            spy_gap_pct=0.0,
+            spy_intraday_change_pct=0.0,
+            vix_intraday_change_pct=25.0,  # VIX spike > 20%
+            current_hour=11,
+            current_minute=30,
+        )
+
+        assert can_enter is False
+        assert "vix spike" in reason.lower()
+
+
+class TestDailyResetV211:
+    """Tests for V2.1.1 daily reset functionality."""
+
+    @pytest.fixture
+    def engine_with_intraday_position(self):
+        """Create engine with intraday position for reset testing."""
+        from engines.satellite.options_engine import OptionContract, OptionsEngine, OptionsPosition
+
+        engine = OptionsEngine()
+
+        contract = OptionContract(
+            symbol="QQQ 260127C00455000",
+            strike=455.0,
+            expiry="2026-01-27",
+            delta=0.50,
+            mid_price=1.00,
+            open_interest=5000,
+            days_to_expiry=1,
+        )
+
+        engine._intraday_position = OptionsPosition(
+            contract=contract,
+            entry_price=1.00,
+            entry_time="15:00:00",
+            entry_score=3.2,
+            num_contracts=10,
+            stop_price=0.80,
+            target_price=1.50,
+            stop_pct=0.20,
+        )
+
+        engine._intraday_trades_today = 2
+        engine._last_trade_date = "2026-01-26"
+
+        return engine
+
+    def test_daily_reset_clears_intraday_trades(self, engine_with_intraday_position):
+        """Test daily reset clears intraday trades counter."""
+        engine_with_intraday_position.reset_daily("2026-01-27")
+
+        assert engine_with_intraday_position._intraday_trades_today == 0
+
+    def test_daily_reset_clears_orphan_intraday_position(self, engine_with_intraday_position):
+        """Test daily reset clears any orphan intraday position."""
+        # Intraday positions should never exist overnight
+        engine_with_intraday_position.reset_daily("2026-01-27")
+
+        assert engine_with_intraday_position._intraday_position is None
+
+    def test_daily_reset_resets_micro_regime_engine(self, engine_with_intraday_position):
+        """Test daily reset resets Micro Regime Engine."""
+        from models.enums import MicroRegime, VIXDirection, VIXLevel
+
+        # Set some micro regime state
+        engine_with_intraday_position._micro_regime_engine._state.vix_level = VIXLevel.HIGH
+        engine_with_intraday_position._micro_regime_engine._state.micro_score = 80.0
+
+        engine_with_intraday_position.reset_daily("2026-01-27")
+
+        # Check reset to defaults
+        state = engine_with_intraday_position._micro_regime_engine.get_state()
+        assert state.vix_level == VIXLevel.LOW
+        assert state.micro_score == 50.0

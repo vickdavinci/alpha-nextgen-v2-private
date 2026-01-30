@@ -1,39 +1,39 @@
 # region imports
+# Type hints
+from typing import Any, Dict, List, Optional, Set
+
 from AlgorithmImports import *
 
 # Configuration
 import config
+from engines.core.capital_engine import CapitalEngine, CapitalState
+from engines.core.cold_start_engine import ColdStartEngine
 
 # Core Engines
 from engines.core.regime_engine import RegimeEngine, RegimeState
-from engines.core.capital_engine import CapitalEngine, CapitalState
-from engines.core.risk_engine import RiskEngine, RiskCheckResult, SafeguardType
-from engines.core.cold_start_engine import ColdStartEngine
+from engines.core.risk_engine import RiskCheckResult, RiskEngine, SafeguardType
 from engines.core.trend_engine import TrendEngine
+from engines.satellite.hedge_engine import HedgeEngine
 
 # Satellite Engines
 from engines.satellite.mean_reversion_engine import MeanReversionEngine
-from engines.satellite.hedge_engine import HedgeEngine
+from engines.satellite.options_engine import OptionContract, OptionDirection, OptionsEngine
 from engines.satellite.yield_sleeve import YieldSleeve
-from engines.satellite.options_engine import OptionsEngine, OptionContract, OptionDirection
+from execution.execution_engine import ExecutionEngine
 
 # OCO Manager for Options exits
 from execution.oco_manager import OCOManager
 
-# Portfolio & Execution
-from portfolio.portfolio_router import PortfolioRouter
-from execution.execution_engine import ExecutionEngine
+# Models
+from models.enums import Phase, RegimeLevel, Urgency
+from models.target_weight import TargetWeight
 
 # Infrastructure
 from persistence.state_manager import StateManager
+
+# Portfolio & Execution
+from portfolio.portfolio_router import PortfolioRouter
 from scheduling.daily_scheduler import DailyScheduler
-
-# Models
-from models.enums import Urgency, Phase, RegimeLevel
-from models.target_weight import TargetWeight
-
-# Type hints
-from typing import List, Optional, Set, Dict, Any
 
 # endregion
 
@@ -376,6 +376,9 @@ class AlphaNextGen(QCAlgorithm):
         # Add CBOE VIX index data for regime classification
         self.vix = self.AddData(CBOE, "VIX", Resolution.Daily).Symbol
         self._current_vix = 15.0  # Default to normal regime until data arrives
+        self._vix_at_open = 15.0  # V2.1.1: VIX at market open for micro regime
+        self._vix_5min_ago = 15.0  # V2.1.1: VIX 5 minutes ago for spike detection
+        self._qqq_at_open = 0.0  # V2.1.1: QQQ at market open
 
         # Store collections for iteration
         self.traded_symbols = [
@@ -570,6 +573,32 @@ class AlphaNextGen(QCAlgorithm):
         self.scheduler.on_market_close(self._on_market_close)
         self.scheduler.on_weekly_reset(self._on_weekly_reset)
 
+        # V2.1.1: Add intraday options force exit at 15:30
+        self.Schedule.On(
+            self.DateRules.EveryDay(),
+            self.TimeRules.At(15, 30),
+            self._on_intraday_options_force_close,
+        )
+
+        # V2.1.1: Tiered VIX Monitoring schedules
+        # Layer 1: Spike detection every 5 minutes (10:00 - 15:00)
+        for hour in range(10, 15):
+            for minute in [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]:
+                self.Schedule.On(
+                    self.DateRules.EveryDay(),
+                    self.TimeRules.At(hour, minute),
+                    self._on_vix_spike_check,
+                )
+
+        # Layer 2 & 4: Direction + Regime update every 15 minutes (10:00 - 15:00)
+        for hour in range(10, 15):
+            for minute in [0, 15, 30, 45]:
+                self.Schedule.On(
+                    self.DateRules.EveryDay(),
+                    self.TimeRules.At(hour, minute),
+                    self._on_micro_regime_update,
+                )
+
         self.Log("INIT: Scheduled events and callbacks registered")
 
     # =========================================================================
@@ -707,6 +736,15 @@ class AlphaNextGen(QCAlgorithm):
             gap_activated = self.risk_engine.check_gap_filter(self.spy_open)
             if gap_activated:
                 self.today_safeguards.append("GAP_FILTER")
+
+        # V2.1.1: Update market open data for Options Engine Micro Regime
+        self._vix_at_open = self._current_vix
+        self._qqq_at_open = self.Securities[self.qqq].Open
+        self.options_engine.update_market_open_data(
+            vix_open=self._vix_at_open,
+            spy_open=self.spy_open,
+            spy_prior_close=self.spy_prior_close,
+        )
 
         # Reconcile positions with broker
         self._reconcile_positions()
@@ -895,6 +933,82 @@ class AlphaNextGen(QCAlgorithm):
 
         equity = self.Portfolio.TotalPortfolioValue
         self.risk_engine.set_week_start_equity(equity)
+
+    def _on_intraday_options_force_close(self) -> None:
+        """
+        V2.1.1: Intraday options force close at 15:30 ET.
+
+        Forces close of all intraday mode options positions (0-2 DTE).
+        These must close 30 minutes before market close.
+        """
+        # Skip during warmup
+        if self.IsWarmingUp:
+            return
+
+        # Check for intraday position to close
+        if self.options_engine._intraday_position is not None:
+            # Get current option price
+            intraday_pos = self.options_engine._intraday_position
+            symbol = intraday_pos.contract.symbol
+
+            # Get current price (best effort)
+            current_price = intraday_pos.entry_price  # Fallback
+
+            signal = self.options_engine.check_intraday_force_exit(
+                current_hour=self.Time.hour,
+                current_minute=self.Time.minute,
+                current_price=current_price,
+            )
+
+            if signal:
+                self.portfolio_router.receive_signal(signal)
+                self._process_immediate_signals()
+
+    def _on_vix_spike_check(self) -> None:
+        """
+        V2.1.1: Layer 1 VIX spike detection (every 5 minutes).
+
+        Checks for sudden VIX spikes (>3% in 5 minutes).
+        Sets spike alert cooldown if triggered.
+        """
+        # Skip during warmup
+        if self.IsWarmingUp:
+            return
+
+        # Check for spike
+        spike_alert = self.options_engine._micro_regime_engine.check_spike_alert(
+            vix_current=self._current_vix,
+            vix_5min_ago=self._vix_5min_ago,
+            current_time=str(self.Time),
+        )
+
+        if spike_alert:
+            self.Log(f"VIX_SPIKE: {self._vix_5min_ago:.1f} -> {self._current_vix:.1f}")
+
+        # Update 5-min ago value for next check
+        self._vix_5min_ago = self._current_vix
+
+    def _on_micro_regime_update(self) -> None:
+        """
+        V2.1.1: Layer 2 & 4 - Direction + Regime update (every 15 minutes).
+
+        Updates the Micro Regime Engine with current market data.
+        """
+        # Skip during warmup
+        if self.IsWarmingUp:
+            return
+
+        # Get current QQQ price
+        qqq_current = self.Securities[self.qqq].Price
+
+        # Update micro regime engine
+        state = self.options_engine._micro_regime_engine.update(
+            vix_current=self._current_vix,
+            vix_open=self._vix_at_open,
+            qqq_current=qqq_current,
+            qqq_open=self._qqq_at_open,
+            current_time=str(self.Time),
+        )
 
     # =========================================================================
     # ORDER EVENT HANDLER
@@ -1356,6 +1470,92 @@ class AlphaNextGen(QCAlgorithm):
         candidates.sort(key=lambda x: x[0], reverse=True)
         return candidates[0][1]
 
+    def _select_intraday_option_contract(self, chain) -> Optional[OptionContract]:
+        """
+        V2.1.1: Select QQQ option contract for intraday mode (0-2 DTE).
+
+        Criteria:
+        - ATM or slightly ITM call/put
+        - DTE 0-2 days (intraday mode)
+        - Sufficient open interest
+        - Tight bid-ask spread
+
+        Args:
+            chain: QuantConnect options chain.
+
+        Returns:
+            OptionContract or None if no suitable contract found.
+        """
+        if chain is None:
+            return None
+
+        qqq_price = self.Securities[self.qqq].Price
+
+        # Filter for ATM, 0-2 DTE
+        candidates = []
+        for contract in chain:
+            # Accept both calls and puts for intraday
+            # Check DTE (0-2 days for intraday mode)
+            dte = (contract.Expiry - self.Time).days
+            if dte < 0 or dte > 2:
+                continue
+
+            # Check if ATM±2 strikes
+            strike_diff = abs(contract.Strike - qqq_price)
+            if strike_diff > qqq_price * 0.02:  # Within 2% of ATM
+                continue
+
+            # Check liquidity
+            if contract.OpenInterest < config.OPTIONS_MIN_OPEN_INTEREST:
+                continue
+
+            # Check spread
+            if contract.BidPrice <= 0 or contract.AskPrice <= 0:
+                continue
+
+            mid_price = (contract.BidPrice + contract.AskPrice) / 2
+            spread_pct = (contract.AskPrice - contract.BidPrice) / mid_price
+
+            if spread_pct > config.OPTIONS_SPREAD_WARNING_PCT:
+                continue
+
+            # Determine direction
+            direction = (
+                OptionDirection.CALL if contract.Right == OptionRight.Call else OptionDirection.PUT
+            )
+
+            # Create OptionContract object
+            opt_contract = OptionContract(
+                symbol=str(contract.Symbol),
+                underlying="QQQ",
+                direction=direction,
+                strike=contract.Strike,
+                expiry=str(contract.Expiry.date()),
+                delta=contract.Greeks.Delta if hasattr(contract, "Greeks") else 0.5,
+                gamma=contract.Greeks.Gamma if hasattr(contract, "Greeks") else 0.0,
+                vega=contract.Greeks.Vega if hasattr(contract, "Greeks") else 0.0,
+                theta=contract.Greeks.Theta if hasattr(contract, "Greeks") else 0.0,
+                bid=contract.BidPrice,
+                ask=contract.AskPrice,
+                mid_price=mid_price,
+                open_interest=contract.OpenInterest,
+                days_to_expiry=dte,
+            )
+
+            # Score: proximity to ATM + liquidity + lower DTE preferred for intraday
+            dte_score = 1.0 / (1.0 + dte)  # Prefer lower DTE
+            atm_score = 1.0 / (1.0 + strike_diff)
+            spread_score = 1.0 - spread_pct
+            score = dte_score * atm_score * spread_score
+            candidates.append((score, opt_contract))
+
+        if not candidates:
+            return None
+
+        # Return best candidate
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+
     def _generate_hedge_signals(self, regime_state: RegimeState) -> None:
         """
         Generate Hedge Engine signals at end of day.
@@ -1672,12 +1872,11 @@ class AlphaNextGen(QCAlgorithm):
 
     def _scan_options_signals(self, data: Slice) -> None:
         """
-        V2.1: Scan for Options entry signals during intraday session.
+        V2.1.1: Scan for Options entry signals during intraday session.
 
-        Checks QQQ options for 4-factor entry conditions when:
-        - 10:00-15:00 ET window
-        - No existing options position
-        - Indicators are ready
+        Dual-Mode Architecture:
+        - Swing Mode (5-45 DTE): 4-factor entry scoring
+        - Intraday Mode (0-2 DTE): Micro Regime Engine
 
         Args:
             data: Current data slice.
@@ -1686,7 +1885,7 @@ class AlphaNextGen(QCAlgorithm):
         if not self.qqq_adx.IsReady or not self.qqq_sma200.IsReady:
             return
 
-        # Skip if already have options position
+        # Skip if already have options position (either mode)
         if self.options_engine.has_position():
             return
 
@@ -1700,26 +1899,45 @@ class AlphaNextGen(QCAlgorithm):
         if chain is None:
             return
 
-        # Select best contract
-        best_contract = self._select_best_option_contract(chain)
-        if best_contract is None:
-            return
-
         # Get current values
         qqq_price = self.Securities[self.qqq].Price
         adx_value = self.qqq_adx.Current.Value
         ma200_value = self.qqq_sma200.Current.Value
 
+        # V2.1.1: Check for INTRADAY mode entry (0-2 DTE) using Micro Regime Engine
+        if self._qqq_at_open > 0:  # Only if we have market open data
+            intraday_contract = self._select_intraday_option_contract(chain)
+            if intraday_contract is not None:
+                intraday_signal = self.options_engine.check_intraday_entry_signal(
+                    vix_current=self._current_vix,
+                    vix_open=self._vix_at_open,
+                    qqq_current=qqq_price,
+                    qqq_open=self._qqq_at_open,
+                    current_hour=self.Time.hour,
+                    current_minute=self.Time.minute,
+                    current_time=str(self.Time),
+                    portfolio_value=self.Portfolio.TotalPortfolioValue,
+                    best_contract=intraday_contract,
+                )
+                if intraday_signal:
+                    self.portfolio_router.receive_signal(intraday_signal)
+                    return  # Only one entry per scan
+
+        # V2.1: Check for SWING mode entry (5-45 DTE) using 4-factor scoring
+        swing_contract = self._select_best_option_contract(chain)
+        if swing_contract is None:
+            return
+
         # Calculate IV rank from options chain (V2.1)
         iv_rank = self._calculate_iv_rank(chain)
 
-        # Check for entry signal
+        # Check for swing entry signal
         signal = self.options_engine.check_entry_signal(
             adx_value=adx_value,
             current_price=qqq_price,
             ma200_value=ma200_value,
             iv_rank=iv_rank,
-            best_contract=best_contract,
+            best_contract=swing_contract,
             current_hour=self.Time.hour,
             current_minute=self.Time.minute,
             current_date=str(self.Time.date()),
