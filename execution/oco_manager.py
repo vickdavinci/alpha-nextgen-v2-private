@@ -530,21 +530,48 @@ class OCOManager:
         }
 
     def restore_state(self, state: Dict[str, Any]) -> None:
-        """Restore state from ObjectStore."""
+        """
+        Restore state from ObjectStore.
+
+        CRITICAL FIX: Broker order IDs are SESSION-SPECIFIC and invalid after restart.
+        We restore the OCO pairs but NOT the broker_order_id mappings.
+        The orders will need to be re-placed or the pairs marked as stale.
+
+        After restart, any pending OCO orders from previous session are likely
+        cancelled by the broker. We restore pair metadata for position tracking
+        but clear order mappings since they won't match new session IDs.
+        """
         self._next_oco_number = state.get("next_oco_number", 1)
 
+        # CRITICAL: Clear order-to-OCO mappings - broker IDs are session-specific
+        # Previous session's broker_order_ids will NOT match this session's IDs
+        self._order_to_oco.clear()
+
         pairs_data = state.get("active_pairs", {})
+        restored_pairs = 0
+        stale_pairs = 0
+
         for oco_id, pair_data in pairs_data.items():
             pair = OCOPair.from_dict(pair_data)
+
+            # CRITICAL: Clear broker_order_ids as they're invalid after restart
+            # The broker assigns NEW IDs each session
+            if pair.stop_leg.broker_order_id or pair.profit_leg.broker_order_id:
+                pair.stop_leg.broker_order_id = None
+                pair.profit_leg.broker_order_id = None
+                stale_pairs += 1
+
             self._active_pairs[oco_id] = pair
             self._symbol_to_oco[pair.symbol] = oco_id
+            restored_pairs += 1
 
-            if pair.stop_leg.broker_order_id:
-                self._order_to_oco[pair.stop_leg.broker_order_id] = oco_id
-            if pair.profit_leg.broker_order_id:
-                self._order_to_oco[pair.profit_leg.broker_order_id] = oco_id
+        if stale_pairs > 0:
+            self.log(
+                f"OCO: WARNING - {stale_pairs} pairs had stale broker IDs cleared. "
+                f"Orders may need to be re-placed."
+            )
 
-        self.log(f"OCO: Restored {len(self._active_pairs)} active pairs")
+        self.log(f"OCO: Restored {restored_pairs} pairs (broker IDs cleared for new session)")
 
     def reset(self) -> None:
         """Reset manager state."""

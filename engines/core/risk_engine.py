@@ -1144,6 +1144,16 @@ class RiskEngine:
         Returns:
             Dict with all state that should be persisted.
         """
+        # CRITICAL FIX: Persist Greeks state for risk monitoring continuity
+        greeks_data = None
+        if self._current_greeks is not None:
+            greeks_data = {
+                "delta": self._current_greeks.delta,
+                "gamma": self._current_greeks.gamma,
+                "vega": self._current_greeks.vega,
+                "theta": self._current_greeks.theta,
+            }
+
         return {
             # V1 state
             "last_kill_date": self._last_kill_date,
@@ -1154,6 +1164,9 @@ class RiskEngine:
             "position_correlations": self._position_correlations,
             "cb_portfolio_vol_active": self._cb_portfolio_vol_active,
             "cb_correlation_active": self._cb_correlation_active,
+            # CRITICAL: Greeks state for Level 5 CB continuity
+            "current_greeks": greeks_data,
+            "cb_greeks_breach_active": self._cb_greeks_breach_active,
         }
 
     def load_state(self, state: Dict[str, Any]) -> None:
@@ -1174,13 +1187,29 @@ class RiskEngine:
         self._cb_portfolio_vol_active = state.get("cb_portfolio_vol_active", False)
         self._cb_correlation_active = state.get("cb_correlation_active", False)
 
+        # CRITICAL FIX: Restore Greeks state for Level 5 CB continuity
+        # Without this, Greeks monitoring is disabled for first few minutes after restart
+        greeks_data = state.get("current_greeks")
+        if greeks_data is not None:
+            self._current_greeks = GreeksSnapshot(
+                delta=greeks_data.get("delta", 0.0),
+                gamma=greeks_data.get("gamma", 0.0),
+                vega=greeks_data.get("vega", 0.0),
+                theta=greeks_data.get("theta", 0.0),
+            )
+        else:
+            self._current_greeks = None
+
+        self._cb_greeks_breach_active = state.get("cb_greeks_breach_active", False)
+
         self.log(
             f"RISK: State loaded | "
             f"last_kill_date={self._last_kill_date} | "
             f"week_start_equity=${self._week_start_equity:,.2f} | "
             f"weekly_breaker={self._weekly_breaker_active} | "
             f"portfolio_vol_cb={self._cb_portfolio_vol_active} | "
-            f"correlation_cb={self._cb_correlation_active}"
+            f"correlation_cb={self._cb_correlation_active} | "
+            f"greeks_restored={'Yes' if self._current_greeks else 'No'}"
         )
 
     def set_last_kill_date(self, date_str: str) -> None:

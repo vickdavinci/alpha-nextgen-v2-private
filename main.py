@@ -11,7 +11,7 @@ from engines.core.cold_start_engine import ColdStartEngine
 
 # Core Engines
 from engines.core.regime_engine import RegimeEngine, RegimeState
-from engines.core.risk_engine import RiskCheckResult, RiskEngine, SafeguardType
+from engines.core.risk_engine import GreeksSnapshot, RiskCheckResult, RiskEngine, SafeguardType
 from engines.core.trend_engine import TrendEngine
 from engines.satellite.hedge_engine import HedgeEngine
 
@@ -367,6 +367,10 @@ class AlphaNextGen(QCAlgorithm):
             -5, 5, timedelta(days=config.OPTIONS_DTE_MIN), timedelta(days=config.OPTIONS_DTE_MAX)
         )
         self._qqq_option_symbol = qqq_option.Symbol
+        # CRITICAL FIX: Track if options symbol has been validated (first successful chain access)
+        # Symbol may not be fully resolved until data arrives
+        self._qqq_options_validated = False
+        self._qqq_options_validation_attempts = 0
 
         # Proxy symbols - For regime calculation
         self.spy = self.AddEquity("SPY", Resolution.Minute).Symbol
@@ -1386,6 +1390,11 @@ class AlphaNextGen(QCAlgorithm):
         if self.options_engine.has_position():
             return
 
+        # CRITICAL FIX: Validate options symbol is resolved before use
+        # Symbol may not be fully resolved on first trading day or after gaps
+        if not self._validate_options_symbol():
+            return
+
         # Get options chain
         chain = self.OptionChains.get(self._qqq_option_symbol)
         if chain is None:
@@ -1393,7 +1402,13 @@ class AlphaNextGen(QCAlgorithm):
 
         # CRITICAL: Verify chain has valid contracts (not empty)
         # Chain can exist but be empty on first trading day, holidays, or data issues
-        if not hasattr(chain, "__iter__") or len(list(chain)) == 0:
+        # Wrap in try-catch to handle malformed chain data gracefully
+        try:
+            chain_list = list(chain)
+            if not chain_list:
+                return
+        except Exception as e:
+            self.Log(f"OPTIONS_CHAIN_ERROR: Failed to iterate chain: {e}")
             return
 
         # Select best contract (ATM call, V2.1: 1-4 DTE)
@@ -1936,13 +1951,23 @@ class AlphaNextGen(QCAlgorithm):
         if current_hour < 10 or current_hour >= 15:
             return
 
+        # CRITICAL FIX: Validate options symbol is resolved before use
+        if not self._validate_options_symbol():
+            return
+
         # Get options chain
         chain = self.OptionChains.get(self._qqq_option_symbol)
         if chain is None:
             return
 
         # CRITICAL: Verify chain has valid contracts (not empty)
-        if not hasattr(chain, "__iter__") or len(list(chain)) == 0:
+        # Wrap in try-catch to handle malformed chain data gracefully
+        try:
+            chain_list = list(chain)
+            if not chain_list:
+                return
+        except Exception as e:
+            self.Log(f"OPTIONS_CHAIN_ERROR: Failed to iterate chain: {e}")
             return
 
         # Get current values
@@ -2009,6 +2034,10 @@ class AlphaNextGen(QCAlgorithm):
         """
         V2.1: Monitor options Greeks for Level 5 Circuit Breaker.
 
+        CRITICAL FIX: Fetches FRESH Greeks from OptionChain each bar.
+        Greeks change rapidly for short-dated options (0-2 DTE) and stale
+        Greeks can miss critical risk breaches.
+
         Updates risk engine with current Greeks and checks for breaches:
         - Delta > 0.80 (too deep ITM)
         - Gamma > 0.05 (high gamma risk)
@@ -2022,10 +2051,14 @@ class AlphaNextGen(QCAlgorithm):
         if not self.options_engine.has_position():
             return
 
-        # Calculate current position Greeks
-        greeks = self.options_engine.calculate_position_greeks()
+        # CRITICAL: Fetch FRESH Greeks from OptionChain (not cached values)
+        # Greeks change rapidly, especially for 0-2 DTE options
+        greeks = self._get_fresh_position_greeks()
         if greeks is None:
-            return
+            # Fall back to cached Greeks if chain not available
+            greeks = self.options_engine.calculate_position_greeks()
+            if greeks is None:
+                return
 
         # Update risk engine with Greeks
         self.risk_engine.update_greeks(greeks)
@@ -2046,6 +2079,111 @@ class AlphaNextGen(QCAlgorithm):
                 reason=f"GREEKS_BREACH: {', '.join(reasons)}",
             )
             self.portfolio_router.receive_signal(signal)
+
+    def _get_fresh_position_greeks(self) -> Optional[GreeksSnapshot]:
+        """
+        Fetch fresh Greeks from OptionChain for current position.
+
+        CRITICAL: Greeks cached at entry become stale within minutes.
+        For 0-2 DTE options, Greeks can change 50%+ in an hour.
+        This method fetches live Greeks from the data feed.
+
+        Returns:
+            Fresh GreeksSnapshot or None if chain/contract not available.
+        """
+        # Get current position symbol
+        position = self.options_engine.get_position()
+        if position is None:
+            return None
+
+        position_symbol = position.contract.symbol
+
+        # Get options chain
+        chain = self.OptionChains.get(self._qqq_option_symbol)
+        if chain is None:
+            return None
+
+        # CRITICAL: Wrap chain iteration in try-catch to handle malformed data
+        try:
+            # Find our contract in the chain and get fresh Greeks
+            for contract in chain:
+                if str(contract.Symbol) == position_symbol:
+                    # Found our contract - extract fresh Greeks
+                    delta = contract.Greeks.Delta if hasattr(contract, "Greeks") else None
+                    gamma = contract.Greeks.Gamma if hasattr(contract, "Greeks") else None
+                    vega = contract.Greeks.Vega if hasattr(contract, "Greeks") else None
+                    theta = contract.Greeks.Theta if hasattr(contract, "Greeks") else None
+
+                    if delta is not None:
+                        # Update position with fresh Greeks
+                        self.options_engine.update_position_greeks(delta, gamma, vega, theta)
+
+                        return GreeksSnapshot(
+                            delta=delta,
+                            gamma=gamma or 0.0,
+                            vega=vega or 0.0,
+                            theta=theta or 0.0,
+                        )
+                    break
+        except Exception as e:
+            # Chain iteration failed - log and continue with cached Greeks
+            self.Log(f"GREEKS_REFRESH_ERROR: {e}")
+
+        return None
+
+    def _validate_options_symbol(self) -> bool:
+        """
+        Validate that the QQQ options symbol is resolved and accessible.
+
+        CRITICAL FIX: Symbol may not be fully resolved on first trading day,
+        after market gaps, or during data issues. We validate by:
+        1. Checking if symbol is set
+        2. Attempting to get the options chain
+        3. Verifying chain has at least one valid contract
+
+        Returns:
+            True if options symbol is valid and accessible, False otherwise.
+        """
+        # Already validated in this session
+        if self._qqq_options_validated:
+            return True
+
+        # Check if symbol is set
+        if self._qqq_option_symbol is None:
+            return False
+
+        # Track validation attempts (log only periodically to avoid spam)
+        self._qqq_options_validation_attempts += 1
+
+        # Try to get the options chain
+        try:
+            chain = self.OptionChains.get(self._qqq_option_symbol)
+            if chain is None:
+                # Chain not available yet - retry next bar
+                if self._qqq_options_validation_attempts == 1:
+                    self.Log("OPTIONS_VALIDATION: Chain not available, will retry")
+                return False
+
+            # Try to iterate chain (catches malformed data)
+            chain_list = list(chain)
+            if not chain_list:
+                if self._qqq_options_validation_attempts == 1:
+                    self.Log("OPTIONS_VALIDATION: Chain empty, will retry")
+                return False
+
+            # Validation successful
+            self._qqq_options_validated = True
+            self.Log(
+                f"OPTIONS_VALIDATION: Symbol validated after "
+                f"{self._qqq_options_validation_attempts} attempts, "
+                f"{len(chain_list)} contracts available"
+            )
+            return True
+
+        except Exception as e:
+            if self._qqq_options_validation_attempts == 1:
+                self.Log(f"OPTIONS_VALIDATION: Error validating symbol: {e}")
+            return False
 
     def _calculate_iv_rank(self, chain) -> float:
         """
