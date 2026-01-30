@@ -165,11 +165,17 @@ def check_no_datetime_now() -> Tuple[bool, float]:
 
 
 def check_imports() -> Tuple[bool, float]:
-    """Verify all imports work."""
+    """Verify config and engine imports work.
+
+    Note: main.py requires QCAlgorithm which is only available in QC environment.
+    We check config.py and engine modules that can be imported locally.
+    """
     start = time.time()
     try:
+        # main.py can't be imported locally (requires QCAlgorithm)
+        # Check config and models which work locally
         result = subprocess.run(
-            "python -c 'import main; import config; print(\"Imports OK\")'",
+            "python -c 'import config; from models.enums import Phase, Urgency; print(\"Imports OK\")'",
             shell=True,
             capture_output=True,
             text=True,
