@@ -1,7 +1,7 @@
 # Alpha NextGen - Project File Structure
 
-> **Last Updated:** 28 January 2026
-> **Status:** V2.1.1 Complete - Options Engine Redesign (Dual-Mode + Micro Regime Engine)
+> **Last Updated:** 31 January 2026
+> **Status:** V2.3.6 Complete - Spread Order Protection + Sniper Window + Trailing Stops
 
 ---
 
@@ -34,7 +34,7 @@ flowchart TD
             E_CAPITAL["capital_engine.py<br/><i>Phase mgmt, lockbox</i>"]
             E_RISK["risk_engine.py<br/><i>Circuit breakers, Greeks</i>"]
             E_COLD["cold_start_engine.py<br/><i>Days 1-5 warm entry</i>"]
-            E_TREND["trend_engine.py<br/><i>BB breakout QLD/SSO 70%</i>"]
+            E_TREND["trend_engine.py<br/><i>MA200+ADX QLD/SSO/TNA/FAS 55%</i>"]
         end
         subgraph SATELLITE["satellite/ (conditional)"]
             E_MR["mean_reversion_engine.py<br/><i>Intraday TQQQ/SOXL 0-10%</i>"]
@@ -141,7 +141,7 @@ alpha_nextgen/
 │   │   ├── capital_engine.py            # SEED/GROWTH phases, virtual lockbox
 │   │   ├── risk_engine.py               # Kill switch, panic mode, Greeks monitoring
 │   │   ├── cold_start_engine.py         # Days 1-5 warm entry logic
-│   │   └── trend_engine.py              # BB compression breakout (QLD, SSO) - 70%
+│   │   └── trend_engine.py              # MA200+ADX (QLD 20%, SSO 15%, TNA 12%, FAS 8%) - 55%
 │   └── satellite/                       # Conditional engines
 │       ├── __init__.py
 │       ├── mean_reversion_engine.py     # Intraday oversold bounce (TQQQ, SOXL) - 0-10%
@@ -356,5 +356,6 @@ flowchart LR
 | **Phase 5** | execution_engine, state_manager, daily_scheduler | ✅ Complete |
 | **Phase 6** | main.py (1,332 lines - wires all components) | ✅ Complete |
 | **V2.1.1** | Options Engine Redesign (Dual-Mode + Micro Regime) | ✅ Complete |
+| **V2.3.6** | Spread Order Protection, Sniper Window 10:00-15:00, Trailing Stops | ✅ Complete |
 
 See [developer-guide-claude.md](developer-guide-claude.md) for detailed build workflow.

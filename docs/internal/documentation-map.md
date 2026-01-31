@@ -4,7 +4,7 @@
 
 ---
 
-## Documentation Structure (Updated 2026-01-29)
+## Documentation Structure (Updated 2026-01-31)
 
 ```
 docs/
@@ -172,4 +172,4 @@ This map should be updated when:
 - New documentation files are created
 - New patterns of code-to-doc relationships emerge
 
-**Last Updated:** 30 January 2026 (V2.3 - Added VIX to Regime Engine)
+**Last Updated:** 31 January 2026 (V2.3.6 - Spread Order Protection, Sniper Window, Trailing Stops)
