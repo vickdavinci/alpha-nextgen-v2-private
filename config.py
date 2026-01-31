@@ -360,7 +360,9 @@ OPTIONS_IV_RANK_HIGH = 80  # IV rank > 80 → 0.25
 # Liquidity Factor
 OPTIONS_SPREAD_MAX_PCT = 0.05  # Max 5% bid-ask spread
 OPTIONS_SPREAD_WARNING_PCT = 0.10  # Avoid > 10% spread
-OPTIONS_MIN_OPEN_INTEREST = 1000  # V2.3.4: Relaxed from 5000 for spread short leg availability
+OPTIONS_MIN_OPEN_INTEREST = (
+    500  # V2.3.5: Lowered from 1000 per PART 9 - 5000 filtered out 80% of contracts
+)
 
 # Confidence-Weighted Tiered Stops
 # Higher entry score → wider stops, fewer contracts
@@ -387,7 +389,9 @@ OPTIONS_MIN_PREMIUM = 0.50  # Minimum premium per contract ($0.50)
 # Intraday mode targets 0.3 delta (slightly OTM) for faster gamma/premium moves
 OPTIONS_SWING_DELTA_TARGET = 0.70  # Target delta for Swing mode (macro)
 OPTIONS_INTRADAY_DELTA_TARGET = 0.30  # Target delta for Intraday mode (micro)
-OPTIONS_DELTA_TOLERANCE = 0.15  # Accept contracts within ±0.15 of target
+OPTIONS_DELTA_TOLERANCE = (
+    0.20  # V2.3.5: Widened from 0.15 per PART 9 - allows 0.10-0.50 for 0.30 target
+)
 
 # Force Exit Time (V2.1: close options by 3:45 PM like MR)
 OPTIONS_FORCE_EXIT_HOUR = 15  # 3 PM
@@ -445,8 +449,8 @@ SPREAD_REGIME_EXIT_BULL = 45  # Exit Bull Call if regime drops below 45
 SPREAD_REGIME_EXIT_BEAR = 60  # Exit Bear Put if regime rises above 60
 
 # Delta targets for spread legs
-SPREAD_LONG_LEG_DELTA_MIN = 0.45  # Long leg: ATM (near 0.50 delta)
-SPREAD_LONG_LEG_DELTA_MAX = 0.55  # Long leg: ATM (near 0.50 delta)
+SPREAD_LONG_LEG_DELTA_MIN = 0.40  # V2.3.5: Widened from 0.45 per PART 9 - ATM ±0.10
+SPREAD_LONG_LEG_DELTA_MAX = 0.60  # V2.3.5: Widened from 0.55 per PART 9 - ATM ±0.10
 SPREAD_SHORT_LEG_DELTA_MIN = 0.15  # V2.3.4: Relaxed from 0.25 for more OTM options
 SPREAD_SHORT_LEG_DELTA_MAX = 0.45  # V2.3.4: Relaxed from 0.40 for wider range
 
