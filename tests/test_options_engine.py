@@ -230,17 +230,19 @@ class TestLiquidityScoring:
 
     def test_liquidity_low_oi(self, engine):
         """Test low open interest reduces score."""
+        # V2.3.4: OI thresholds changed (MIN_OI now 1000, half is 500)
         score = engine._score_liquidity(
             spread_pct=0.03,
-            open_interest=3000,  # 2500-5000
+            open_interest=750,  # 500-1000 (low OI range)
         )
         assert score == 0.75  # (1.0 + 0.5) / 2
 
     def test_liquidity_very_low_oi(self, engine):
         """Test very low OI reduces score significantly."""
+        # V2.3.4: OI thresholds changed (MIN_OI now 1000, half is 500)
         score = engine._score_liquidity(
             spread_pct=0.03,
-            open_interest=500,  # < 2500
+            open_interest=300,  # < 500
         )
         assert score == 0.5  # (1.0 + 0.0) / 2
 
@@ -1609,26 +1611,26 @@ class TestDualModeArchitecture:
         mode = engine.determine_mode(dte=1)
         assert mode == OptionsMode.INTRADAY
 
-    def test_determine_mode_intraday_2_dte(self, engine):
-        """Test 2 DTE returns INTRADAY mode."""
+    def test_determine_mode_swing_2_dte(self, engine):
+        """Test 2 DTE returns SWING mode (V2.3.4: 0-1 DTE is true intraday)."""
         from models.enums import OptionsMode
 
         mode = engine.determine_mode(dte=2)
-        assert mode == OptionsMode.INTRADAY
+        assert mode == OptionsMode.SWING  # V2.3.4: 2 DTE is SWING
 
-    def test_determine_mode_intraday_3_dte(self, engine):
-        """Test 3 DTE returns INTRADAY mode (V2.3.2: expanded to 0-5 DTE)."""
+    def test_determine_mode_swing_3_dte(self, engine):
+        """Test 3 DTE returns SWING mode (V2.3.4: 0-1 DTE is true intraday)."""
         from models.enums import OptionsMode
 
         mode = engine.determine_mode(dte=3)
-        assert mode == OptionsMode.INTRADAY  # V2.3.2: 0-5 DTE is INTRADAY
+        assert mode == OptionsMode.SWING  # V2.3.4: 3 DTE is SWING
 
-    def test_determine_mode_intraday_5_dte(self, engine):
-        """Test 5 DTE returns INTRADAY mode (V2.3.2: expanded boundary)."""
+    def test_determine_mode_swing_5_dte(self, engine):
+        """Test 5 DTE returns SWING mode (V2.3.4: true intraday is 0-1 DTE)."""
         from models.enums import OptionsMode
 
         mode = engine.determine_mode(dte=5)
-        assert mode == OptionsMode.INTRADAY  # V2.3.2: 0-5 DTE is INTRADAY
+        assert mode == OptionsMode.SWING  # V2.3.4: 5 DTE is SWING
 
     def test_determine_mode_swing_45_dte(self, engine):
         """Test 45 DTE returns SWING mode."""

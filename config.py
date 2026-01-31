@@ -360,7 +360,7 @@ OPTIONS_IV_RANK_HIGH = 80  # IV rank > 80 → 0.25
 # Liquidity Factor
 OPTIONS_SPREAD_MAX_PCT = 0.05  # Max 5% bid-ask spread
 OPTIONS_SPREAD_WARNING_PCT = 0.10  # Avoid > 10% spread
-OPTIONS_MIN_OPEN_INTEREST = 5000  # Minimum open interest
+OPTIONS_MIN_OPEN_INTEREST = 1000  # V2.3.4: Relaxed from 5000 for spread short leg availability
 
 # Confidence-Weighted Tiered Stops
 # Higher entry score → wider stops, fewer contracts
@@ -410,9 +410,7 @@ OPTIONS_MAX_TRADES_PER_DAY = 1
 OPTIONS_SWING_DTE_MIN = 5  # Minimum DTE for Swing Mode
 OPTIONS_SWING_DTE_MAX = 45  # Maximum DTE for Swing Mode
 OPTIONS_INTRADAY_DTE_MIN = 0  # Minimum DTE for Intraday Mode
-OPTIONS_INTRADAY_DTE_MAX = (
-    5  # Maximum DTE for Intraday Mode (expanded from 2 for backtest data availability)
-)
+OPTIONS_INTRADAY_DTE_MAX = 1  # V2.3.4: True 0DTE intraday (0-1 DTE only)
 
 # -----------------------------------------------------------------------------
 # V2.3 DEBIT SPREAD CONFIGURATION
@@ -449,8 +447,8 @@ SPREAD_REGIME_EXIT_BEAR = 60  # Exit Bear Put if regime rises above 60
 # Delta targets for spread legs
 SPREAD_LONG_LEG_DELTA_MIN = 0.45  # Long leg: ATM (near 0.50 delta)
 SPREAD_LONG_LEG_DELTA_MAX = 0.55  # Long leg: ATM (near 0.50 delta)
-SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg: OTM (lower delta)
-SPREAD_SHORT_LEG_DELTA_MAX = 0.40  # Short leg: OTM (lower delta)
+SPREAD_SHORT_LEG_DELTA_MIN = 0.15  # V2.3.4: Relaxed from 0.25 for more OTM options
+SPREAD_SHORT_LEG_DELTA_MAX = 0.45  # V2.3.4: Relaxed from 0.40 for wider range
 
 # -----------------------------------------------------------------------------
 # V2.1.1 VIX DIRECTION THRESHOLDS (Micro Regime Engine)

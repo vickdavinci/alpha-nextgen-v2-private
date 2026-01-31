@@ -317,7 +317,9 @@ class AlphaNextGen(QCAlgorithm):
         # =====================================================================
         # STEP 6B: V2.1 OPTIONS ENTRY SCANNING (if window open)
         # =====================================================================
-        if mr_window_open and risk_result.can_enter_intraday:
+        # V2.3.4 FIX: Block options during cold start (Days 1-5)
+        is_cold_start = self.cold_start_engine.is_cold_start_active()
+        if mr_window_open and risk_result.can_enter_intraday and not is_cold_start:
             self._scan_options_signals(data)
 
         # =====================================================================
@@ -1836,20 +1838,27 @@ class AlphaNextGen(QCAlgorithm):
         candidates.sort(key=lambda x: x[0], reverse=True)
         return candidates[0][1]
 
-    def _select_intraday_option_contract(self, chain) -> Optional[OptionContract]:
+    def _select_intraday_option_contract(
+        self, chain, direction: OptionDirection
+    ) -> Optional[OptionContract]:
         """
-        V2.3: Select QQQ option contract for intraday mode (0-5 DTE).
+        V2.3.4: Select QQQ option contract for intraday mode (0-1 DTE).
 
         Target delta: 0.30 (slightly OTM for faster gamma/premium moves)
 
+        V2.3.4 FIX: Now accepts direction parameter to ensure we select
+        the correct Call/Put based on the fade strategy direction.
+
         Criteria:
+        - Matches specified direction (CALL or PUT)
         - Target 0.30 delta (±0.15 tolerance)
-        - DTE 0-5 days (expanded from 0-2 for backtest data availability)
+        - DTE 0-1 days (true 0DTE intraday trading)
         - Sufficient open interest
         - Tight bid-ask spread
 
         Args:
             chain: QuantConnect options chain.
+            direction: Required option direction (CALL or PUT).
 
         Returns:
             OptionContract or None if no suitable contract found.
@@ -1860,10 +1869,17 @@ class AlphaNextGen(QCAlgorithm):
         qqq_price = self.Securities[self.qqq].Price
         target_delta = config.OPTIONS_INTRADAY_DELTA_TARGET  # 0.30
 
-        # Filter for target delta, 0-5 DTE (expanded from 0-2 for backtest data availability)
+        # Determine which OptionRight to filter for
+        required_right = OptionRight.Call if direction == OptionDirection.CALL else OptionRight.Put
+
+        # Filter for target delta, 0-1 DTE, and MATCHING DIRECTION
         candidates = []
         for contract in chain:
-            # Check DTE using config values
+            # V2.3.4 FIX: Filter by direction FIRST
+            if contract.Right != required_right:
+                continue
+
+            # Check DTE using config values (0-1 for true intraday)
             dte = (contract.Expiry - self.Time).days
             if dte < config.OPTIONS_INTRADAY_DTE_MIN or dte > config.OPTIONS_INTRADAY_DTE_MAX:
                 continue
@@ -1874,7 +1890,7 @@ class AlphaNextGen(QCAlgorithm):
             if delta_diff > config.OPTIONS_DELTA_TOLERANCE:
                 continue
 
-            # Check liquidity
+            # Check liquidity (relaxed for 0DTE)
             if contract.OpenInterest < config.OPTIONS_MIN_OPEN_INTEREST:
                 continue
 
@@ -1889,12 +1905,7 @@ class AlphaNextGen(QCAlgorithm):
             if spread_pct > config.OPTIONS_SPREAD_WARNING_PCT:
                 continue
 
-            # Determine direction
-            direction = (
-                OptionDirection.CALL if contract.Right == OptionRight.Call else OptionDirection.PUT
-            )
-
-            # Create OptionContract object
+            # Create OptionContract object (direction already known)
             opt_contract = OptionContract(
                 symbol=str(contract.Symbol),
                 underlying="QQQ",
@@ -1912,19 +1923,25 @@ class AlphaNextGen(QCAlgorithm):
                 days_to_expiry=dte,
             )
 
-            # V2.3: Score by proximity to target delta (0.30) + liquidity + lower DTE
+            # V2.3.4: Score by proximity to target delta (0.30) + lower DTE (prefer 0DTE) + liquidity
             delta_score = 1.0 - (delta_diff / config.OPTIONS_DELTA_TOLERANCE)
-            dte_score = 1.0 / (1.0 + dte)  # Prefer lower DTE
+            dte_score = 1.0 / (1.0 + dte)  # Strongly prefer 0 DTE
             spread_score = 1.0 - spread_pct
-            score = (delta_score * 0.5) + (dte_score * 0.3) + (spread_score * 0.2)
+            score = (delta_score * 0.4) + (dte_score * 0.4) + (spread_score * 0.2)
             candidates.append((score, opt_contract))
 
         if not candidates:
+            self.Log(f"INTRADAY: No {direction.value} contracts found matching criteria")
             return None
 
-        # Return best candidate (closest to target delta with good liquidity)
+        # Return best candidate (closest to target delta with lowest DTE)
         candidates.sort(key=lambda x: x[0], reverse=True)
-        return candidates[0][1]
+        best = candidates[0][1]
+        self.Log(
+            f"INTRADAY: Selected {direction.value} | Strike={best.strike} | "
+            f"Delta={best.delta:.2f} | DTE={best.days_to_expiry} | Mid=${best.mid_price:.2f}"
+        )
+        return best
 
     def _generate_hedge_signals(self, regime_state: RegimeState) -> None:
         """
@@ -2024,10 +2041,13 @@ class AlphaNextGen(QCAlgorithm):
 
     def _handle_kill_switch(self, risk_result: RiskCheckResult) -> None:
         """
-        Handle kill switch trigger.
+        V2.3.4: Handle kill switch trigger with ENGINE-SPECIFIC liquidation.
 
-        Liquidates ALL positions and resets cold start.
-        V2.3 Fix: Only handles once per day to prevent log spam and repeated liquidation.
+        Instead of liquidating EVERYTHING, we now:
+        1. Check if options are causing the loss (look at options P&L)
+        2. If options are the culprit, only liquidate OPTIONS (protect trend)
+        3. If trend is also losing badly, liquidate trend too
+        4. Only do full liquidation for catastrophic losses (>5%)
 
         Args:
             risk_result: Risk check result containing symbols to liquidate.
@@ -2037,21 +2057,55 @@ class AlphaNextGen(QCAlgorithm):
             return  # Already handled today, skip repeated processing
 
         self._kill_switch_handled_today = True
+
+        # V2.3.4: Calculate options P&L vs trend P&L
+        options_pnl = 0.0
+        trend_pnl = 0.0
+        trend_symbols = ["QLD", "SSO", "TNA", "FAS"]
+
+        for kvp in self.Portfolio:
+            holding = kvp.Value
+            if holding.Invested:
+                if holding.Symbol.SecurityType == SecurityType.Option:
+                    options_pnl += holding.UnrealizedProfit
+                elif str(holding.Symbol.Value) in trend_symbols:
+                    trend_pnl += holding.UnrealizedProfit
+
+        total_loss_pct = (
+            self.Portfolio.TotalPortfolioValue - self._equity_prior_close
+        ) / self._equity_prior_close
+
         self.Log(
             f"KILL_SWITCH: Triggered at {self.Time} | "
             f"Equity={self.Portfolio.TotalPortfolioValue:,.2f} | "
-            f"Scheduler flag set, entries blocked until next day"
+            f"Loss={total_loss_pct:.2%} | Options P&L=${options_pnl:,.0f} | Trend P&L=${trend_pnl:,.0f}"
         )
 
         # Trigger in scheduler (disables all trading)
         self.scheduler.trigger_kill_switch()
 
-        # Liquidate all equity positions
-        for symbol in risk_result.symbols_to_liquidate:
-            self.Liquidate(symbol)
+        # V2.3.4: ENGINE-SPECIFIC LIQUIDATION
+        # If options are the primary cause of loss, protect trend positions
+        options_are_culprit = options_pnl < -500 and trend_pnl >= -200  # Options losing, trend OK
+        catastrophic_loss = total_loss_pct < -0.05  # More than 5% loss = liquidate everything
 
-        # V2.3 FIX: Liquidate ALL options in portfolio (not just tracked positions)
-        # This handles orphan positions from previous sessions or untracked orders
+        if catastrophic_loss:
+            # CATASTROPHIC: Liquidate everything
+            self.Log("KILL_SWITCH: CATASTROPHIC LOSS - Full liquidation")
+            for symbol in risk_result.symbols_to_liquidate:
+                self.Liquidate(symbol)
+        elif options_are_culprit:
+            # OPTIONS-ONLY: Protect trend positions
+            self.Log(
+                f"KILL_SWITCH: Options-only liquidation (protecting trend with P&L=${trend_pnl:,.0f})"
+            )
+            # Don't liquidate trend symbols
+        else:
+            # Mixed losses: Liquidate specified symbols
+            for symbol in risk_result.symbols_to_liquidate:
+                self.Liquidate(symbol)
+
+        # ALWAYS liquidate options (they're short-term and risky)
         for kvp in self.Portfolio:
             holding = kvp.Value
             if holding.Invested and holding.Symbol.SecurityType == SecurityType.Option:
@@ -2067,8 +2121,9 @@ class AlphaNextGen(QCAlgorithm):
         # Clear any pending entry state
         self.options_engine._pending_contract = None
 
-        # Reset cold start
-        self.cold_start_engine.reset()
+        # V2.3.4: Only reset cold start if we liquidated trend positions
+        if catastrophic_loss or not options_are_culprit:
+            self.cold_start_engine.reset()
 
     def _handle_panic_mode(self, risk_result: RiskCheckResult) -> None:
         """
@@ -2351,9 +2406,17 @@ class AlphaNextGen(QCAlgorithm):
         adx_value = self.qqq_adx.Current.Value
         ma200_value = self.qqq_sma200.Current.Value
 
-        # V2.1.1: Check for INTRADAY mode entry (0-2 DTE) using Micro Regime Engine
+        # V2.3.4 FIX: Determine direction FIRST based on QQQ move, THEN select contract
+        # This fixes the "Direction mismatch" bug where we selected a CALL but needed a PUT
         if self._qqq_at_open > 0:  # Only if we have market open data
-            intraday_contract = self._select_intraday_option_contract(chain)
+            # STEP 1: Determine direction based on QQQ move (DEBIT_FADE logic)
+            # Fade = bet AGAINST the move: QQQ up -> PUT, QQQ down -> CALL
+            qqq_move = qqq_price - self._qqq_at_open
+            intraday_direction = OptionDirection.PUT if qqq_move > 0 else OptionDirection.CALL
+
+            # STEP 2: Select contract matching the determined direction
+            intraday_contract = self._select_intraday_option_contract(chain, intraday_direction)
+
             # Verify contract has valid bid/ask before proceeding
             if (
                 intraday_contract is not None
