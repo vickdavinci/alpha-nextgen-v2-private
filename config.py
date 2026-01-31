@@ -105,11 +105,11 @@ ADX_MODERATE_THRESHOLD = 25
 
 # Chandelier Stop
 ATR_PERIOD = 14
-CHANDELIER_BASE_MULT = 3.0
-CHANDELIER_TIGHT_MULT = 2.5  # Updated per V2.1: 2.5x for profit 10-20%
-CHANDELIER_TIGHTER_MULT = 2.0  # Updated per V2.1: 2.0x for profit 20%+
-PROFIT_TIGHT_PCT = 0.10  # Updated per V2.1: tighten at 10%
-PROFIT_TIGHTER_PCT = 0.20  # Updated per V2.1: tighten more at 20%
+CHANDELIER_BASE_MULT = 3.5  # V2.3.6: Widened from 3.0 - allow more room in choppy markets
+CHANDELIER_TIGHT_MULT = 3.0  # V2.3.6: Widened from 2.5 - less aggressive tightening
+CHANDELIER_TIGHTER_MULT = 2.5  # V2.3.6: Widened from 2.0 - hold winners longer
+PROFIT_TIGHT_PCT = 0.15  # V2.3.6: Raised from 0.10 - don't tighten too early
+PROFIT_TIGHTER_PCT = 0.25  # V2.3.6: Raised from 0.20 - let trends run
 
 # Entry/Exit
 TREND_ENTRY_REGIME_MIN = 40
@@ -205,7 +205,7 @@ HEDGE_REBAL_THRESHOLD = 0.02
 # YIELD SLEEVE
 # =============================================================================
 
-SHV_MIN_TRADE = 2_000
+SHV_MIN_TRADE = 10_000  # V2.3.6: Raised from 2000 - reduce SHV churn on small fluctuations
 
 # =============================================================================
 # PORTFOLIO ROUTER
@@ -359,9 +359,9 @@ OPTIONS_IV_RANK_HIGH = 80  # IV rank > 80 → 0.25
 
 # Liquidity Factor
 OPTIONS_SPREAD_MAX_PCT = 0.05  # Max 5% bid-ask spread
-OPTIONS_SPREAD_WARNING_PCT = 0.10  # Avoid > 10% spread
+OPTIONS_SPREAD_WARNING_PCT = 0.15  # V2.3.6: Widened from 10% - 0DTE spreads are naturally wider
 OPTIONS_MIN_OPEN_INTEREST = (
-    500  # V2.3.5: Lowered from 1000 per PART 9 - 5000 filtered out 80% of contracts
+    200  # V2.3.6: Lowered from 500 - 0DTE contracts have lower OI, especially PUTs on up days
 )
 
 # Confidence-Weighted Tiered Stops

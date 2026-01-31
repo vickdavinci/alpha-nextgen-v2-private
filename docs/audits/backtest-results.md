@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-01-31 (V2.3.5 PART 9 Liquidity + Delta Tolerance Fixes)
+> **Last Updated:** 2026-01-31 (V2.3.6 Spread Order + Sniper Window Fixes)
 
 ---
 
@@ -29,7 +29,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 |:-----:|----------|---------|:------:|
 | 1 | 1 day (Jan 2, 2024) | Basic validation - no errors, Initialize() completes | **PASS** ✅ |
 | 2 | 7 days (Jan 2-8, 2024) | Short-term behavior, actual trades | **V2.3.4 FIXES APPLIED** 🟢 |
-| 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | **V2.3.5 COMPLETE** ✅ |
+| 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | **V2.3.6 READY** 🟡 |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
 
@@ -142,6 +142,62 @@ _on_micro_regime_update (every 15 min)
 - `OPTIONS_DELTA_TOLERANCE = 0.20` (was 0.15)
 
 **Impact:** Options engine now finds 88 more contracts (95 orders vs 7).
+
+### V2.3.6 Spread Order + Sniper Window Fixes (2026-01-31)
+
+**Audit Reference:** `docs/audits/stage2-codeaudit.md` (PART 10) + "Upgraded Blue Whale" log analysis
+
+| # | Fix | Severity | Description | Status |
+|:-:|-----|:--------:|-------------|:------:|
+| 1 | Spread Orphaned Long Leg | CRITICAL | IBKR rejects short leg (margin), long leg fills | ✅ |
+| 2 | Margin Pre-Check Missing | HIGH | No validation before spread submission | ✅ |
+| 3 | Intraday OI Too High | HIGH | 500 OI filters out most 0DTE PUTs on up days | ✅ |
+| 4 | Intraday Spread Too Tight | HIGH | 10% rejects normal 0DTE spreads | ✅ |
+| 5 | 10:30 Gatekeeper Blocking | HIGH | Hardcoded block kills 10:00-10:30 momentum window | ✅ |
+| 6 | Trend Stops Too Tight | MEDIUM | ATR×3.0 suffocating trades in choppy markets | ✅ |
+| 7 | SHV Churn | LOW | $2K threshold causing excessive rebalancing | ✅ |
+
+**Root Causes Identified:**
+
+1. **Spread Orders (CRITICAL):** IBKR treats spread legs as separate orders requiring naked short margin (~$343K) instead of spread margin (~$11K). Without margin check, long leg fills but short leg fails, leaving orphaned position.
+
+2. **Intraday Filters (HIGH):** 0DTE PUTs on up days have lower OI and wider spreads. Cascade of filters (DTE→Direction→Delta→OI→Spread) left 0 contracts passing.
+
+3. **Sniper Window (HIGH):** Config defined ITM Momentum and Credit Spreads to start at 10:00 AM, but main.py had hardcoded `if current_hour == 10 and current_minute < 30: return` blocking the first 30 minutes.
+
+**Code Changes (V2.3.6):**
+
+1. **Spread Order Protection** (`main.py`):
+   - Added `_pending_spread_orders: Dict[str, str]` to track spread order pairs
+   - Pre-submission margin check blocks spread if short leg would fail ($10K/contract estimate)
+   - OnOrderEvent detects short leg `Invalid` status and liquidates orphaned long leg
+   - Successful fill cleanup removes spread from tracking
+
+2. **Intraday Filter Relaxation** (`config.py`):
+   - `OPTIONS_MIN_OPEN_INTEREST = 200` (was 500)
+   - `OPTIONS_SPREAD_WARNING_PCT = 0.15` (was 0.10)
+
+4. **Trend Trailing Stop Loosening** (`config.py`):
+   - `CHANDELIER_BASE_MULT = 3.5` (was 3.0)
+   - `CHANDELIER_TIGHT_MULT = 3.0` (was 2.5)
+   - `CHANDELIER_TIGHTER_MULT = 2.5` (was 2.0)
+   - `PROFIT_TIGHT_PCT = 0.15` (was 0.10)
+   - `PROFIT_TIGHTER_PCT = 0.25` (was 0.20)
+
+5. **SHV Churn Reduction** (`config.py`):
+   - `SHV_MIN_TRADE = 10_000` (was 2_000)
+
+3. **Sniper Window Opened** (`main.py`):
+   - Removed hardcoded 10:30 block
+   - Intraday window now 10:00-15:00 (was 10:30-15:00)
+   - Momentum and Credit strategies can now capture early volatility
+
+**Expected Impact:**
+- Spread orders: No more orphaned long legs causing unexpected losses
+- Intraday: +50% more PUT contracts eligible on up days
+- Sniper: +30 minutes of high-gamma trading opportunity
+
+**Next Step:** Run Stage 3 backtest to validate V2.3.6 fixes.
 
 ---
 

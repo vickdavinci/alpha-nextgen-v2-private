@@ -146,6 +146,35 @@
 
 **Status:** V2.3.5 Stage 3 complete - Options finding contracts, 88 more trades
 
+**V2.3.6 Fixes from "Upgraded Blue Whale" Analysis (2026-01-31):**
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **Spread Orphaned Long Leg** - IBKR rejects short leg (margin), long leg fills | CRITICAL | ✅ FIXED |
+| 2 | **Margin Pre-Check Missing** - No validation before spread submission | HIGH | ✅ FIXED |
+| 3 | **Intraday OI Too High** - 500 OI filters out most 0DTE PUTs on up days | HIGH | ✅ FIXED (→200) |
+| 4 | **Intraday Spread Too Tight** - 10% rejects normal 0DTE spreads | HIGH | ✅ FIXED (→15%) |
+| 5 | **10:30 Gatekeeper Blocking** - Hardcoded block kills 10:00-10:30 momentum window | HIGH | ✅ FIXED (removed) |
+| 6 | **Trend Stops Too Tight** - ATR×3.0 suffocating trades in choppy markets | MEDIUM | ✅ FIXED (→3.5) |
+| 7 | **SHV Churn** - $2K threshold causing excessive rebalancing | LOW | ✅ FIXED (→$10K) |
+
+**V2.3.6 Key Changes:**
+- Added `_pending_spread_orders` dictionary to track spread order pairs (short→long)
+- Pre-submission margin check blocks spread if short leg would fail ($10K/contract estimate)
+- OnOrderEvent detects short leg `Invalid` status and liquidates orphaned long leg
+- Successful fill cleanup removes spread from tracking
+- Relaxed intraday filters: OI 500→200, Spread 10%→15% (0DTE reality)
+- Removed 10:30 gatekeeper - intraday window now 10:00-15:00 (was 10:30-15:00)
+- Widened Chandelier stops: BASE 3.0→3.5, TIGHT 2.5→3.0, TIGHTER 2.0→2.5
+- Raised profit thresholds: TIGHT 10%→15%, TIGHTER 20%→25%
+- Raised SHV_MIN_TRADE: $2K→$10K (reduce rebalancing churn)
+- Logs: `SPREAD: BLOCKED`, `SPREAD: Tracking order pair`, `SPREAD: LIQUIDATING orphaned long leg`
+
+**Root Cause (Spread):** IBKR treats spread legs as separate orders requiring naked short margin (~$343K) instead of spread margin (~$11K). Without margin check, long leg fills but short leg fails, leaving orphaned position.
+
+**Root Cause (Intraday):** 0DTE PUTs on up days have lower OI and wider spreads. Cascade of filters (DTE→Direction→Delta→OI→Spread) left 0 contracts passing.
+
+**Status:** V2.3.6 fixes complete - Ready for backtest validation
+
 ### Stage 2 Bugs - Prioritized Fix List
 
 #### 🔴 CRITICAL - V2.3.2 Architect Audit Fixes ✅

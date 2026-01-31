@@ -243,6 +243,10 @@ class AlphaNextGen(QCAlgorithm):
         self._greeks_breach_logged = False  # Log throttle: only log Greeks breach once/position
         self._kill_switch_handled_today = False  # V2.3: Only handle kill switch once per day
 
+        # V2.3.6: Track pending spread orders to handle leg failures
+        # Maps short leg symbol -> long leg symbol (to liquidate long if short fails)
+        self._pending_spread_orders: Dict[str, str] = {}
+
         self.Log(
             f"INIT: Complete | "
             f"Cash=${config.PHASE_SEED_MIN:,} | "
@@ -1203,6 +1207,11 @@ class AlphaNextGen(QCAlgorithm):
                 fill_quantity=fill_qty,
             )
 
+            # V2.3.6: Clean up spread tracking when short leg fills successfully
+            if symbol in self._pending_spread_orders:
+                long_leg = self._pending_spread_orders.pop(symbol)
+                self.Log(f"SPREAD: Both legs filled successfully | Short={symbol} Long={long_leg}")
+
         elif orderEvent.Status == OrderStatus.Invalid:
             self.Log(f"INVALID: {orderEvent.Symbol} - {orderEvent.Message}")
             self.execution_engine.on_order_event(
@@ -1210,6 +1219,37 @@ class AlphaNextGen(QCAlgorithm):
                 status="Invalid",
                 rejection_reason=orderEvent.Message,
             )
+
+            # V2.3.6 FIX: Handle spread leg failure - liquidate orphaned long leg
+            failed_symbol = str(orderEvent.Symbol)
+            if failed_symbol in self._pending_spread_orders:
+                long_leg_symbol = self._pending_spread_orders.pop(failed_symbol)
+                self.Log(
+                    f"SPREAD: Short leg FAILED - checking long leg | "
+                    f"Short={failed_symbol} | Long={long_leg_symbol}"
+                )
+
+                # Check if we have a position in the long leg that needs liquidating
+                try:
+                    # Get the security for the long leg
+                    if long_leg_symbol in [str(s) for s in self.Securities.Keys]:
+                        holding = self.Portfolio[long_leg_symbol]
+                        if holding.Invested:
+                            qty = holding.Quantity
+                            self.Log(
+                                f"SPREAD: LIQUIDATING orphaned long leg | "
+                                f"{long_leg_symbol} x{qty}"
+                            )
+                            self.MarketOrder(long_leg_symbol, -qty)
+                        else:
+                            self.Log(
+                                f"SPREAD: No position in long leg - no cleanup needed | "
+                                f"{long_leg_symbol}"
+                            )
+                except Exception as e:
+                    self.Log(
+                        f"SPREAD: ERROR liquidating orphaned long leg | " f"{long_leg_symbol} | {e}"
+                    )
 
         elif orderEvent.Status == OrderStatus.Canceled:
             self.execution_engine.on_order_event(
@@ -1606,6 +1646,45 @@ class AlphaNextGen(QCAlgorithm):
         )
 
         if signal:
+            # V2.3.6 FIX: Check margin BEFORE submitting spread
+            # IBKR treats spread legs as separate orders and requires naked short margin
+            # for the short leg. If we don't have enough margin, skip the spread entirely
+            # to avoid "orphaned long leg" situation.
+            if signal.metadata and signal.metadata.get("spread_short_leg_quantity"):
+                short_qty = signal.metadata.get("spread_short_leg_quantity", 0)
+                short_symbol = signal.metadata.get("spread_short_leg_symbol", "")
+
+                # Estimate required margin for naked short (conservative: $10K per contract)
+                # IBKR typically requires 20-30% of notional for naked options
+                estimated_margin_per_contract = 10000  # $10K per contract (conservative)
+                required_margin = abs(short_qty) * estimated_margin_per_contract
+
+                # Get current free margin
+                free_margin = self.Portfolio.MarginRemaining
+
+                if required_margin > free_margin:
+                    self.Log(
+                        f"SPREAD: BLOCKED - Insufficient margin for short leg | "
+                        f"Required=${required_margin:,.0f} | Free=${free_margin:,.0f} | "
+                        f"Short={short_symbol} x{short_qty}"
+                    )
+                    # Skip this spread - don't submit orphaned long leg
+                    return
+
+                self.Log(
+                    f"SPREAD: Margin check passed | Required=${required_margin:,.0f} | "
+                    f"Free=${free_margin:,.0f}"
+                )
+
+                # V2.3.6: Track spread order pair for failure handling
+                # Map short leg symbol -> long leg symbol
+                long_symbol = str(signal.symbol) if signal.symbol else ""
+                if short_symbol and long_symbol:
+                    self._pending_spread_orders[short_symbol] = long_symbol
+                    self.Log(
+                        f"SPREAD: Tracking order pair | Short={short_symbol} -> Long={long_symbol}"
+                    )
+
             self.portfolio_router.receive_signal(signal)
 
     def _build_spread_candidate_contracts(
@@ -2410,15 +2489,14 @@ class AlphaNextGen(QCAlgorithm):
                 self.Log("OPT_SCAN: Blocked - Kill switch handled today")
             return
 
-        # V2.3 FIX: Only scan during active window (10:30-15:00)
-        # 30-minute delay allows market to settle after open volatility
+        # V2.3.6 FIX: Scan during active window (10:00-15:00)
+        # Removed 10:30 delay - momentum/credit strategies need 10:00-10:30 window
+        # Strategy-specific timing (if needed) should be handled in Options Engine
         current_hour = self.Time.hour
         current_minute = self.Time.minute
-        # Before 10:30 or after 15:00 -> skip
+        # Before 10:00 or after 15:00 -> skip
         if current_hour < 10 or current_hour >= 15:
             return
-        if current_hour == 10 and current_minute < 30:
-            return  # 10:00-10:29 -> skip, wait for market settling
 
         # CRITICAL FIX: Validate options symbol is resolved before use
         if not self._validate_options_symbol():
