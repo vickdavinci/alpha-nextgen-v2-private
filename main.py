@@ -181,7 +181,7 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
         self.SetStartDate(2024, 1, 2)
-        self.SetEndDate(2024, 1, 31)
+        self.SetEndDate(2024, 1, 8)  # 1 week for focused options debugging
         self.SetCash(config.PHASE_SEED_MIN)  # $50,000 seed capital
 
         # All times are Eastern
@@ -1725,14 +1725,7 @@ class AlphaNextGen(QCAlgorithm):
 
         # Return best candidate (closest to target delta with good liquidity)
         candidates.sort(key=lambda x: x[0], reverse=True)
-        best = candidates[0][1]
-
-        # V2.3: Minimal logging for debugging
-        self.Log(
-            f"SWING_SELECT: {best.direction.value} Δ={best.delta:.2f} K={best.strike} DTE={best.days_to_expiry}"
-        )
-
-        return best
+        return candidates[0][1]
 
     def _select_intraday_option_contract(self, chain) -> Optional[OptionContract]:
         """
@@ -1822,14 +1815,7 @@ class AlphaNextGen(QCAlgorithm):
 
         # Return best candidate (closest to target delta with good liquidity)
         candidates.sort(key=lambda x: x[0], reverse=True)
-        best = candidates[0][1]
-
-        # V2.3: Minimal logging for debugging
-        self.Log(
-            f"INTRADAY_SELECT: {best.direction.value} Δ={best.delta:.2f} K={best.strike} DTE={best.days_to_expiry}"
-        )
-
-        return best
+        return candidates[0][1]
 
     def _generate_hedge_signals(self, regime_state: RegimeState) -> None:
         """

@@ -1224,8 +1224,8 @@ class OptionsEngine:
 
         self.log(
             f"OPT: ENTRY_SIGNAL | {reason} | "
-            f"Premium=${premium:.2f} | Target=${target_price:.2f} | "
-            f"Stop=${stop_price:.2f}",
+            f"Δ={best_contract.delta:.2f} DTE={best_contract.days_to_expiry} | "
+            f"Premium=${premium:.2f} | Target=${target_price:.2f} | Stop=${stop_price:.2f}",
             trades_only=True,
         )
 
@@ -1568,7 +1568,10 @@ class OptionsEngine:
         # V2.3 FIX: Mark that we attempted entry today (prevents retry spam)
         self._entry_attempted_today = True
 
-        self.log(f"INTRADAY_SIGNAL: {reason}", trades_only=False)
+        self.log(
+            f"INTRADAY_SIGNAL: {reason} | Δ={best_contract.delta:.2f} K={best_contract.strike} DTE={best_contract.days_to_expiry}",
+            trades_only=True,
+        )
 
         return TargetWeight(
             symbol=best_contract.symbol,
