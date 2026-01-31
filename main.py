@@ -181,7 +181,7 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
         self.SetStartDate(2024, 1, 1)
-        self.SetEndDate(2024, 3, 31)  # Stage 3: 3 months (Q1 2024)
+        self.SetEndDate(2024, 2, 29)  # V2.3.11: 2 months (Jan-Feb 2024)
         self.SetCash(config.PHASE_SEED_MIN)  # $50,000 seed capital
 
         # All times are Eastern
