@@ -8,6 +8,11 @@
 
 The **Options Engine** implements a dual-mode architecture for QQQ options trading. This is a **satellite engine** (20% allocation) with two distinct operating modes based on DTE (days to expiration).
 
+> **V2.3.6 Revision** (Latest):
+> - Spread order protection (margin pre-check, orphan leg cleanup)
+> - Intraday filters relaxed: OI 500→200, Spread 10%→15%
+> - Sniper window opened: 10:30→10:00 start
+>
 > **V2.3 Revision**: Simplified Swing Mode to Debit Spreads only. Added VIX to macro regime score.
 > Full specification: `docs/specs/v2-1-options-engine-design.txt`
 
@@ -116,9 +121,12 @@ Implied Volatility percentile over the past year.
 | < 2% | 1.00 | Excellent liquidity |
 | 2-5% | 0.75 | Good liquidity |
 | 5-10% | 0.50 | Acceptable |
-| > 10% | 0.00 | Too wide, avoid |
+| 10-15% | 0.25 | Wide but acceptable for 0DTE |
+| > 15% | 0.00 | Too wide, avoid |
 
-**Config Parameter:** `OPTIONS_MAX_SPREAD_PCT` (default: 0.10)
+**Config Parameter:** `OPTIONS_SPREAD_WARNING_PCT` (default: 0.15)
+
+> **V2.3.6 Change:** Widened from 10% to 15% to accommodate 0DTE options which naturally have wider spreads.
 
 ---
 
@@ -164,19 +172,31 @@ contracts = floor(allocation / (entry_price * 100 * stop_pct))
 | Price < MA200, RSI > 30 | PUT | Bearish momentum, not oversold |
 | Otherwise | NONE | Wait for clearer signal |
 
-### Contract Selection
+### Contract Selection (V2.3.6)
 
-1. **Expiry**: 1-4 DTE (per V2.1 spec)
-2. **Strike**: ATM or first OTM strike
-3. **Delta Range**: 0.40-0.60 (near ATM, absolute value for puts)
-4. **Minimum Premium**: $0.50 per contract
+**Intraday Mode (0DTE):**
+1. **Expiry**: 0-1 DTE (true 0DTE trading)
+2. **Delta Target**: 0.30 (OTM for faster gamma/premium moves)
+3. **Delta Tolerance**: ±0.20 (allows 0.10-0.50 range)
+4. **Minimum OI**: 200 (V2.3.6: lowered from 500 for 0DTE liquidity)
+5. **Max Spread**: 15% (V2.3.6: widened from 10%)
+
+**Swing Mode (Spreads):**
+1. **Expiry**: 10-21 DTE
+2. **Long Leg Delta**: 0.40-0.60 (ATM)
+3. **Short Leg Delta**: 0.15-0.45 (OTM for credit)
+4. **Spread Width**: $2-$5
 
 **Config Parameters:**
-- `OPTIONS_DTE_MIN` (default: 1)
-- `OPTIONS_DTE_MAX` (default: 4)
-- `OPTIONS_DELTA_MIN` (default: 0.40)
-- `OPTIONS_DELTA_MAX` (default: 0.60)
-- `OPTIONS_MIN_PREMIUM` (default: 0.50)
+- `OPTIONS_INTRADAY_DTE_MIN` (default: 0)
+- `OPTIONS_INTRADAY_DTE_MAX` (default: 1)
+- `OPTIONS_INTRADAY_DELTA_TARGET` (default: 0.30)
+- `OPTIONS_SWING_DELTA_TARGET` (default: 0.70)
+- `OPTIONS_DELTA_TOLERANCE` (default: 0.20)
+- `OPTIONS_MIN_OPEN_INTEREST` (default: 200)
+- `OPTIONS_SPREAD_WARNING_PCT` (default: 0.15)
+
+> **V2.3.6 Changes:** Lowered OI from 500 to 200 (0DTE contracts have less liquidity), widened spread tolerance from 10% to 15% (0DTE spreads are naturally wider).
 
 ---
 
@@ -278,6 +298,60 @@ All options positions use **One-Cancels-Other (OCO)** order pairs for exit manag
 3. **On either fill**: Cancel the other leg
 
 See [19 - OCO Manager](19-oco-manager.md) for implementation details.
+
+---
+
+## Spread Order Protection (V2.3.6)
+
+Debit spreads consist of two legs (long and short). IBKR treats these as **separate orders**, which can cause issues:
+
+### The Problem
+When submitting a spread:
+1. Long leg order submitted → Fills successfully
+2. Short leg order submitted → **Rejected** (insufficient margin for naked short)
+3. Result: **Orphaned long leg** (naked option position)
+
+IBKR requires ~$10K/contract margin for naked shorts, not spread margin (~$300/contract).
+
+### V2.3.6 Solution
+
+**Pre-Submission Margin Check:**
+```python
+# Estimate required margin for naked short leg
+required_margin = abs(short_qty) * 10_000  # $10K per contract
+if required_margin > free_margin:
+    self.Log("SPREAD: BLOCKED - Insufficient margin")
+    return  # Skip spread entirely
+```
+
+**Orphan Leg Cleanup:**
+If short leg fails despite margin check:
+```python
+# In OnOrderEvent when short leg is Invalid
+if failed_symbol in self._pending_spread_orders:
+    long_leg = self._pending_spread_orders[failed_symbol]
+    if self.Portfolio[long_leg].Invested:
+        self.MarketOrder(long_leg, -quantity)  # Liquidate orphan
+```
+
+**Order Pair Tracking:**
+- `_pending_spread_orders: Dict[str, str]` maps short leg → long leg
+- On short leg fill: remove from tracking (success)
+- On short leg failure: liquidate long leg (cleanup)
+
+---
+
+## Intraday "Sniper" Window (V2.3.6)
+
+The intraday options scanning window was adjusted:
+
+| Parameter | Before V2.3.6 | After V2.3.6 |
+|-----------|:-------------:|:------------:|
+| Start Time | 10:30 | **10:00** |
+| End Time | 15:00 | 15:00 |
+| Force Exit | 15:30 | 15:30 |
+
+**Rationale:** The 10:00-10:30 window has highest gamma opportunities. Config defined strategy start times at 10:00, but a hardcoded gatekeeper blocked until 10:30. Removed to capture early momentum.
 
 ---
 

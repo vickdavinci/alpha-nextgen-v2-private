@@ -309,15 +309,17 @@ Where:
 
 ATR measures typical daily range, so the stop is calibrated to the instrument's normal volatility.
 
-### 7.6.3 Tiered Multipliers (V2.1)
+### 7.6.3 Tiered Multipliers (V2.3.6)
 
 The ATR multiplier **tightens as profit increases**, locking in more gains on winning trades:
 
 | Profit Level | ATR Multiplier | Stop Distance | Rationale |
 |:------------:|:--------------:|:-------------:|-----------|
-| < 10% | **3.0** | Widest | Initial phase, give room to work |
-| 10% – 20% | **2.5** | Medium | Solid gain, protect more |
-| > 20% | **2.0** | Tightest | Large gain, protect aggressively |
+| < 15% | **3.5** | Widest | Initial phase, give room to work |
+| 15% – 25% | **3.0** | Medium | Solid gain, protect more |
+| > 25% | **2.5** | Tightest | Large gain, protect aggressively |
+
+> **V2.3.6 Change:** Widened all multipliers (3.0→3.5, 2.5→3.0, 2.0→2.5) and raised thresholds (10%→15%, 20%→25%). In choppy markets like Q1 2024, tight stops were suffocating trades, cutting +2-3% winners short instead of holding for +20% moves.
 
 ### 7.6.4 Example Progression
 
@@ -329,36 +331,36 @@ The ATR multiplier **tightens as profit increases**, locking in more gains on wi
 | Entry price | $100.00 |
 | Highest high | $100.00 |
 | Profit | 0% |
-| Multiplier | 3.0 |
-| **Initial stop** | **$91.00** ($100 − $9) |
+| Multiplier | 3.5 |
+| **Initial stop** | **$89.50** ($100 − $10.50) |
 
 #### Day 3: Price rises to $108 (8% profit)
 | Component | Value |
 |-----------|------:|
 | Highest high | $108.00 |
-| Profit | 8% (< 10%) |
-| Multiplier | 3.0 |
-| **New stop** | **$99.00** ($108 − $9) |
+| Profit | 8% (< 15%) |
+| Multiplier | 3.5 |
+| **New stop** | **$97.50** ($108 − $10.50) |
 
-Stop raised from $91 to $99 (now protecting most of capital).
+Stop raised from $89.50 to $97.50 (now protecting most of capital).
 
-#### Day 7: Price rises to $115 (15% profit)
+#### Day 7: Price rises to $118 (18% profit)
 | Component | Value |
 |-----------|------:|
-| Highest high | $115.00 |
-| Profit | 15% (> 10%) |
-| Multiplier | **2.5** (tightened) |
-| **New stop** | **$107.50** ($115 − $7.50) |
+| Highest high | $118.00 |
+| Profit | 18% (> 15%) |
+| Multiplier | **3.0** (tightened) |
+| **New stop** | **$109.00** ($118 − $9) |
 
-Multiplier tightened from 3.0 to 2.5 due to profit level.
+Multiplier tightened from 3.5 to 3.0 due to profit level.
 
-#### Day 12: Price rises to $125 (25% profit)
+#### Day 12: Price rises to $130 (30% profit)
 | Component | Value |
 |-----------|------:|
-| Highest high | $125.00 |
-| Profit | 25% (> 20%) |
-| Multiplier | **2.0** (tightest) |
-| **New stop** | **$119.00** ($125 − $6) |
+| Highest high | $130.00 |
+| Profit | 30% (> 25%) |
+| Multiplier | **2.5** (tightest) |
+| **New stop** | **$122.50** ($130 − $7.50) |
 
 Maximum protection engaged.
 
@@ -613,16 +615,16 @@ All position tracking data is persisted to ObjectStore and survives algorithm re
 | `TREND_EXIT_REGIME` | 30 | Regime score that forces exit |
 | `TREND_ADX_EXIT_THRESHOLD` | 20 | ADX level that forces exit |
 
-### Chandelier Stop Parameters (V2.1)
+### Chandelier Stop Parameters (V2.3.6)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `ATR_PERIOD` | 14 | ATR calculation period |
-| `CHANDELIER_BASE_MULT` | 3.0 | Initial multiplier (profit < 10%) |
-| `CHANDELIER_TIGHT_MULT` | 2.5 | Medium multiplier (profit 10-20%) |
-| `CHANDELIER_TIGHTER_MULT` | 2.0 | Tight multiplier (profit > 20%) |
-| `PROFIT_TIGHT_PCT` | 0.10 | Profit level for first tightening (10%) |
-| `PROFIT_TIGHTER_PCT` | 0.20 | Profit level for second tightening (20%) |
+| `CHANDELIER_BASE_MULT` | 3.5 | Initial multiplier (profit < 15%) - V2.3.6: widened from 3.0 |
+| `CHANDELIER_TIGHT_MULT` | 3.0 | Medium multiplier (profit 15-25%) - V2.3.6: widened from 2.5 |
+| `CHANDELIER_TIGHTER_MULT` | 2.5 | Tight multiplier (profit > 25%) - V2.3.6: widened from 2.0 |
+| `PROFIT_TIGHT_PCT` | 0.15 | Profit level for first tightening (15%) - V2.3.6: raised from 10% |
+| `PROFIT_TIGHTER_PCT` | 0.25 | Profit level for second tightening (25%) - V2.3.6: raised from 20% |
 
 ---
 

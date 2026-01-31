@@ -1,5 +1,7 @@
 # Section 8: Mean Reversion Engine
 
+> **V2.3.7 Planned:** Bidirectional Mean Reversion with SQQQ/SOXS (inverse ETFs) to capture "rally fade" when market is overbought (RSI > 75, rally > 2.5%). Currently long-only; will add short-side logic after V2.3.6 backtest validates current fixes.
+
 ## 8.1 Purpose and Philosophy
 
 The Mean Reversion Engine captures **intraday oversold bounces** in 3× leveraged ETFs. When panic selling drives prices to extreme levels, a snap-back toward the mean often follows.

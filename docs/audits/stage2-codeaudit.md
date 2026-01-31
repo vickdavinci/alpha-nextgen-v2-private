@@ -643,3 +643,166 @@ Liquidity: Finding a contract with 500 OI is nearly guaranteed on QQQ.
 Delta: Increasing the window from ±0.05 to ±0.10 ensures that even if strikes are $5 apart, one will fall into the "valid" bucket.
 
 Action: Update config.py with these three values immediately and restart the backtest. The error logs will disappear, and trades will execute.
+
+#### PART 10 ####
+
+To: The Engineering Team From: Chief Technical Architect Subject: Logic Verification - Intraday "Sniper" Window (10:00 - 14:30)
+
+You asked if we are selecting the "wrong" window (10:00 to 14:30).
+
+The Verdict: YES. You have a Logic Conflict that is blocking valid trades between 10:00 AM and 10:30 AM.
+
+While your config.py requests a 10:00 AM start for certain Sniper strategies (like Momentum), your main.py has a Hardcoded Gatekeeper that forces the system to sleep until 10:30 AM.
+
+Here is the breakdown of the conflict.
+
+🔴 The Conflict
+1. The Configuration (What you WANT) In config.py, you explicitly defined the start times for the Sniper strategies to capture early momentum:
+
+INTRADAY_ITM_START = "10:00" (Momentum)
+
+INTRADAY_CREDIT_START = "10:00" (Credit Spreads)
+
+INTRADAY_DEBIT_FADE_START = "10:30" (Fade - waits for settling)
+
+2. The Gatekeeper (What you HAVE) In main.py, inside _scan_options_signals, there is a hardcoded block that overrides the config:
+
+Python
+# main.py (Lines ~1280)
+# V2.3 FIX: Only scan during active window (10:30-15:00)
+if current_hour == 10 and current_minute < 30:
+    return  # 10:00-10:29 -> skip, wait for market settling
+The Consequence: Even though your Momentum strategy is configured to fire at 10:05 AM if a spike occurs, main.py simply returns None until 10:30 AM. You are missing the most volatile 30 minutes of the day, which is often where the "Sniper" opportunities (Gamma bursts) live.
+
+🛠️ The Fix
+You must remove the hardcoded block in main.py and let the Options Engine handle the timing based on the strategy-specific config.
+
+In main.py (_scan_options_signals):
+
+OLD (Blocking):
+
+Python
+# Before 10:30 or after 15:00 -> skip
+if current_hour < 10 or current_hour >= 15:
+    return
+if current_hour == 10 and current_minute < 30:
+    return  # <--- THIS LINE KILLS YOUR 10:00 AM STRATEGIES
+NEW (Open):
+
+Python
+# Allow scanning from 10:00 to 15:00
+# Strategy-specific start times (e.g. 10:30 for Fade) are handled inside the engine
+if current_hour < 10 or current_hour >= 15:
+    return
+# REMOVE the "current_minute < 30" check
+Summary regarding "2:30" (14:30)
+Is 2:30 wrong? No, 14:30 is the correct "Safety Cutoff" for entering new positions.
+
+Config Support: config.py defines OPTIONS_LATE_DAY_HOUR = 14 and MINUTE = 30.
+
+Logic: Entering 0-DTE options after 2:30 PM is extremely risky (Gamma risk explodes). Stopping entries at 2:30 PM is architecturally sound.
+
+Action Plan: Delete the lines if current_hour == 10 and current_minute < 30: return from main.py. This will unlock the 10:00-10:30 window for your Momentum strategies as intended.
+
+#### PART 11 ####
+
+1. Why Trend Engine Returns Are Minimal (Despite Wins)
+The Cause: Aggressive Trailing Stops in a Choppy Market.
+
+The Trend Engine is designed to protect capital first and capture trends second. In the Q1 2024 backtest period (which was choppy/grinding for QLD/SSO), the Chandelier Stop logic is triggering exits prematurely, cutting winners short.
+
+The Logic: Your configuration tightens the stop as soon as the position is profitable.
+
+PROFIT_TIGHT_PCT = 0.10 (10%).
+
+When profit > 10%, the stop multiplier drops from 3.0 to 2.5.
+
+When profit > 20%, it drops to 2.0.
+
+The Consequence: In a "grinding" bull market, price often retraces slightly. Your tight stops (ATR x 2.5) are getting hit during normal noise, forcing you to exit with a +2% or +3% gain instead of holding for the full +20% move.
+
+Log Evidence: The logs show repeated STOP_UPDATE messages followed shortly by exits, confirming the trailing stop is "suffocating" the trade.
+
+Fix: Loosen the trailing stop parameters in config.py to allow more "breathing room."
+
+Increase CHANDELIER_BASE_MULT to 3.5 or 4.0.
+
+Increase PROFIT_TIGHT_PCT to 0.15 (15%).
+
+2. Why SHV is Trading Frequently (The "Cash Parking" Effect)
+The Cause: SHV is acting as the "Yield Sleeve," filling every gap in capital allocation.
+
+The Mechanism: The YieldSleeve engine is designed to ensure 0% idle cash. It calculates SHV Allocation = 100% - (Trend + Options + Hedge).
+
+The Ripple Effect: Every time any other engine makes a move, SHV must adjust.
+
+Scenario A: Options Engine buys a $5,000 position. -> Sell $5,000 SHV.
+
+Scenario B: Options Engine sells that position the next day. -> Buy $5,000 SHV.
+
+Scenario C: QLD price goes up, increasing its portfolio weight. -> Sell SHV to rebalance.
+
+The Trigger: The SHV_MIN_TRADE is set to $2,000. This is very low for a $50k-$100k portfolio. Small daily fluctuations in your Trend positions are triggering >$2,000 deviations in available cash, forcing an SHV trade.
+
+Fix: Increase the friction for SHV trades to stop the churn.
+
+Update config.py: Increase SHV_MIN_TRADE to $10,000. This will force the system to hold small amounts of cash (idle) rather than paying commissions to buy/sell SHV constantly.
+
+#### PART 12 ####
+
+1. The Problem (Current State)
+The current Mean Reversion (MR) Engine is Long-Only / Bottom-Biased.
+
+Logic: It successfully detects panic selling (TQQQ Drop > 2.5% + RSI < 30) and buys the dip.
+
+Blind Spot: It completely ignores "Panic Buying" (Melt-ups). When the market is significantly overextended (RSI > 75), the engine sits idle.
+
+Opportunity Cost: In Q1 2024 (a strong bull market), we missed multiple high-probability "Reversion from Top" trades because we lacked the logic to execute them.
+
+2. The Solution: Bidirectional Logic using Inverse ETFs
+We will NOT short the leveraged ETFs (TQQQ/SOXL) due to unlimited risk. Instead, we will implement "Mirror Logic" to Buy Inverse ETFs (SQQQ/SOXS) when the Bull ETFs are overbought.
+
+This keeps the engine "Long-Only" in terms of execution (buying a ticker) but "Short" in terms of market exposure.
+
+3. Implementation Plan
+Step A: Configuration Updates (config.py)
+Add the inverse symbols and the "Top-Side" thresholds.
+
+Python
+# 1. Define the Inverse Universe
+MR_LONG_SYMBOLS = ["TQQQ", "SOXL"]   # Existing
+MR_SHORT_SYMBOLS = ["SQQQ", "SOXS"]  # New (Bear 3x)
+
+# 2. Define Top-Side Thresholds
+MR_RALLY_THRESHOLD = 0.025  # Trigger if Price is > 2.5% above Open
+MR_RSI_OVERBOUGHT = 75      # Trigger if RSI > 75 (Extreme Heat)
+Step B: Infrastructure Updates (main.py)
+Subscribe to the new data feeds.
+
+Python
+# In _add_securities:
+self.sqqq = self.AddEquity("SQQQ", Resolution.Minute).Symbol
+self.soxs = self.AddEquity("SOXS", Resolution.Minute).Symbol
+Step C: Engine Logic Refactor (mean_reversion_engine.py)
+Update check_entry_signal to handle both directions.
+
+Pseudo-Code Logic:
+
+Calculate Intraday Move: move_pct = (current_price - open_price) / open_price
+
+Check Long (Dip):
+
+If move_pct < -MR_DROP_THRESHOLD AND RSI < MR_RSI_OVERSOLD:
+
+Action: Buy TQQQ.
+
+Check Short (Rally):
+
+If move_pct > MR_RALLY_THRESHOLD AND RSI > MR_RSI_OVERBOUGHT:
+
+Action: Buy SQQQ (The Inverse ETF).
+
+4. Risk Guardrails
+Hold Time: Maintain the overnight hold logic (1-5 days) to capture the gap down/reversion.
+
+Stop Loss: Enforce the same strict stop loss (e.g., -5% on the SQQQ position) to prevent damage during a runaway melt-up.

@@ -134,3 +134,63 @@ Focus: System integrity, execution safety, and Python best practices.
 - Replace `int()` truncation with explicit rounding and min-quantity checks; guard against float epsilon errors.
 - Add partial-fill tracking and remaining-quantity logic in OCO and Execution engines.
 - Simplify micro regime logic to a smaller set of regimes or replace with a single intraday gating function.
+
+#### PART 10 ####
+
+To: The Engineering Team From: Chief Technical Architect Subject: Logic Verification - Intraday "Sniper" Window (10:00 - 14:30)
+
+You asked if we are selecting the "wrong" window (10:00 to 14:30).
+
+The Verdict: YES. You have a Logic Conflict that is blocking valid trades between 10:00 AM and 10:30 AM.
+
+While your config.py requests a 10:00 AM start for certain Sniper strategies (like Momentum), your main.py has a Hardcoded Gatekeeper that forces the system to sleep until 10:30 AM.
+
+Here is the breakdown of the conflict.
+
+🔴 The Conflict
+1. The Configuration (What you WANT) In config.py, you explicitly defined the start times for the Sniper strategies to capture early momentum:
+
+INTRADAY_ITM_START = "10:00" (Momentum)
+
+INTRADAY_CREDIT_START = "10:00" (Credit Spreads)
+
+INTRADAY_DEBIT_FADE_START = "10:30" (Fade - waits for settling)
+
+2. The Gatekeeper (What you HAVE) In main.py, inside _scan_options_signals, there is a hardcoded block that overrides the config:
+
+Python
+# main.py (Lines ~1280)
+# V2.3 FIX: Only scan during active window (10:30-15:00)
+if current_hour == 10 and current_minute < 30:
+    return  # 10:00-10:29 -> skip, wait for market settling
+The Consequence: Even though your Momentum strategy is configured to fire at 10:05 AM if a spike occurs, main.py simply returns None until 10:30 AM. You are missing the most volatile 30 minutes of the day, which is often where the "Sniper" opportunities (Gamma bursts) live.
+
+🛠️ The Fix
+You must remove the hardcoded block in main.py and let the Options Engine handle the timing based on the strategy-specific config.
+
+In main.py (_scan_options_signals):
+
+OLD (Blocking):
+
+Python
+# Before 10:30 or after 15:00 -> skip
+if current_hour < 10 or current_hour >= 15:
+    return
+if current_hour == 10 and current_minute < 30:
+    return  # <--- THIS LINE KILLS YOUR 10:00 AM STRATEGIES
+NEW (Open):
+
+Python
+# Allow scanning from 10:00 to 15:00
+# Strategy-specific start times (e.g. 10:30 for Fade) are handled inside the engine
+if current_hour < 10 or current_hour >= 15:
+    return
+# REMOVE the "current_minute < 30" check
+Summary regarding "2:30" (14:30)
+Is 2:30 wrong? No, 14:30 is the correct "Safety Cutoff" for entering new positions.
+
+Config Support: config.py defines OPTIONS_LATE_DAY_HOUR = 14 and MINUTE = 30.
+
+Logic: Entering 0-DTE options after 2:30 PM is extremely risky (Gamma risk explodes). Stopping entries at 2:30 PM is architecturally sound.
+
+Action Plan: Delete the lines if current_hour == 10 and current_minute < 30: return from main.py. This will unlock the 10:00-10:30 window for your Momentum strategies as intended.

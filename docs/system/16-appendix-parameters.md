@@ -154,16 +154,18 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `ADX_MODERATE_THRESHOLD` | 25 | 20-25 = 0.50 score |
 | `ADX_STRONG_THRESHOLD` | 35 | 25-35 = 0.75, above = 1.0 score |
 
-### Chandelier Stop Parameters (V2.1)
+### Chandelier Stop Parameters (V2.3.6)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `ATR_PERIOD` | 14 | ATR calculation period |
-| `CHANDELIER_BASE_MULT` | 3.0 | Initial multiplier (profit < 10%) |
-| `CHANDELIER_TIGHT_MULT` | 2.5 | Medium multiplier (profit 10-20%) |
-| `CHANDELIER_TIGHTER_MULT` | 2.0 | Tight multiplier (profit > 20%) |
-| `PROFIT_TIGHT_PCT` | 0.10 | First tightening threshold (10%) |
-| `PROFIT_TIGHTER_PCT` | 0.20 | Second tightening threshold (20%) |
+| `CHANDELIER_BASE_MULT` | 3.5 | Initial multiplier (profit < 15%) - V2.3.6: widened from 3.0 |
+| `CHANDELIER_TIGHT_MULT` | 3.0 | Medium multiplier (profit 15-25%) - V2.3.6: widened from 2.5 |
+| `CHANDELIER_TIGHTER_MULT` | 2.5 | Tight multiplier (profit > 25%) - V2.3.6: widened from 2.0 |
+| `PROFIT_TIGHT_PCT` | 0.15 | First tightening threshold (15%) - V2.3.6: raised from 10% |
+| `PROFIT_TIGHTER_PCT` | 0.25 | Second tightening threshold (25%) - V2.3.6: raised from 20% |
+
+> **V2.3.6 Rationale:** In choppy markets (like Q1 2024), tight stops were suffocating trades, cutting +2-3% winners short instead of holding for +20% moves. Widened multipliers give trends more breathing room.
 
 ### Entry/Exit Thresholds
 
@@ -274,12 +276,14 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `SHV_MIN_TRADE` | $2,000 | Minimum cash for SHV purchase |
+| `SHV_MIN_TRADE` | $10,000 | Minimum cash for SHV purchase - V2.3.6: raised from $2K to reduce churn |
 | `SHV_MAX_ALLOCATION` | None | No maximum (fills available cash) |
+
+> **V2.3.6 Rationale:** Small daily fluctuations in Trend positions triggered excessive SHV rebalancing. Raising threshold from $2K to $10K reduces trading costs and churn.
 
 ---
 
-## 16.8.1 Options Engine Parameters (V2.1)
+## 16.8.1 Options Engine Parameters (V2.3.6)
 
 ### Allocation
 
@@ -288,6 +292,14 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `OPTIONS_ALLOCATION_MIN` | 0.20 | Minimum allocation to options (20%) |
 | `OPTIONS_ALLOCATION_MAX` | 0.30 | Maximum allocation to options (30%) |
 
+### Contract Selection (V2.3.6)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `OPTIONS_MIN_OPEN_INTEREST` | 200 | Minimum OI - V2.3.6: lowered from 500 for 0DTE liquidity |
+| `OPTIONS_SPREAD_WARNING_PCT` | 0.15 | Max bid-ask spread - V2.3.6: widened from 10% for 0DTE reality |
+| `OPTIONS_DELTA_TOLERANCE` | 0.20 | Delta tolerance from target - V2.3.5: widened from 0.15 |
+
 ### 4-Factor Entry Scoring
 
 | Parameter | Value | Description |
@@ -295,8 +307,17 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `OPTIONS_ADX_PERIOD` | 14 | ADX lookback period |
 | `OPTIONS_MA_PERIOD` | 200 | Moving average for momentum |
 | `OPTIONS_IV_LOOKBACK` | 252 | IV rank lookback (1 year) |
-| `OPTIONS_MAX_SPREAD_PCT` | 0.10 | Max bid-ask spread (10%) |
 | `OPTIONS_ENTRY_SCORE_MIN` | 3.0 | Minimum score for entry (out of 4.0) |
+
+### Intraday "Sniper" Window (V2.3.6)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| Start Time | 10:00 | V2.3.6: Opened from 10:30 to capture early momentum |
+| End Time | 15:00 | Stop scanning for new entries |
+| Force Exit | 15:30 | Close all intraday positions |
+
+> **V2.3.6 Rationale:** The 10:00-10:30 window has highest gamma opportunities for momentum strategies. Removed hardcoded gatekeeper that was blocking this window.
 
 ### ADX Scoring (Factor 1)
 
