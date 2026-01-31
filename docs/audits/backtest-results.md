@@ -112,10 +112,37 @@ self.SetCash(50_000)  # PHASE_SEED_MIN
 ## Stage 2: 30-Day Validation (V2.3)
 
 **Date:** 2026-01-30
-**Status:** **FAIL** 🔴
+**Status:** **IN PROGRESS** 🟡
 **Backtest Period:** January 2-31, 2024 (with 300-day warmup)
 **Branch:** `testing/va/stage2-backtest`
-**Backtest Name:** Formal Blue Dragonfly
+
+### V2.3 Fix Summary (Latest - 2026-01-30)
+
+| Issue | Fix | Config Change |
+|-------|-----|---------------|
+| 300+ Invalid orders/day | `_entry_attempted_today` flag | - |
+| Log spam after 14:30 | `_swing_time_warning_logged` flag | - |
+| Kill switch not blocking options | Check in `_scan_for_options_signals` | - |
+| Wrong delta (ATM instead of ITM/OTM) | Swing=0.70δ, Intraday=0.30δ | `OPTIONS_SWING_DELTA_TARGET=0.70`, `OPTIONS_INTRADAY_DELTA_TARGET=0.30` |
+
+### Delta Selection Configuration (V2.3)
+
+| Mode | Target Delta | Tolerance | Rationale |
+|------|:------------:|:---------:|-----------|
+| Swing (5-45 DTE) | **0.70** | ±0.15 | ITM for higher directional exposure |
+| Intraday (0-2 DTE) | **0.30** | ±0.15 | OTM for faster gamma/premium moves |
+
+### Backtest History
+
+| Run | Name | Result | Issues |
+|-----|------|--------|--------|
+| 1 | Formal Blue Dragonfly | -6.76% | Kill switch never reset, 29 days blocked |
+| 2 | Casual Yellow Chicken | -13.61% | 300+ Invalid orders, wrong delta, log spam |
+| 3 | TBD | TBD | Pending with V2.3 fixes |
+
+---
+
+### Previous Backtest: Formal Blue Dragonfly
 
 ### Configuration
 

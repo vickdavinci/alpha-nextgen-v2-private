@@ -99,6 +99,10 @@
 | Swing direction hardcoded CALL | HIGH | ✅ FIXED | Direction now uses regime score |
 | VIX missing from regime score | HIGH | ✅ FIXED | V2.3: Added VIX as 20% weight |
 | 4-Strategy complexity | HIGH | ✅ SIMPLIFIED | V2.3: Debit Spreads only |
+| 300+ Invalid orders per day | 🔴 CRITICAL | ✅ FIXED | Added `_entry_attempted_today` flag |
+| Log spam after 14:30 | 🟡 MEDIUM | ✅ FIXED | Time window warning logged once |
+| Kill switch not blocking options | 🔴 CRITICAL | ✅ FIXED | Check `_kill_switch_handled_today` in scan |
+| Wrong delta selection (ATM) | 🟠 HIGH | ✅ FIXED | Swing=0.70δ, Intraday=0.30δ |
 
 ### V2.3 Regime + Options Simplification (2026-01-30)
 

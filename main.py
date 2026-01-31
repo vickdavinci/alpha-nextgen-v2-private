@@ -1636,11 +1636,10 @@ class AlphaNextGen(QCAlgorithm):
         """
         V2.3: Select QQQ option contract for SWING mode (5-45 DTE).
 
-        Uses SWING-specific DTE range to avoid 0-2 DTE contracts which
-        require Micro Regime Engine (intraday mode only).
+        Target delta: 0.70 (slightly ITM for higher directional exposure)
 
         Criteria:
-        - ATM or slightly ITM option (call or put based on direction)
+        - Target 0.70 delta (±0.15 tolerance)
         - DTE 5-45 days (swing mode only)
         - Sufficient open interest
         - Tight bid-ask spread
@@ -1660,11 +1659,12 @@ class AlphaNextGen(QCAlgorithm):
             direction = OptionDirection.CALL
 
         qqq_price = self.Securities[self.qqq].Price
+        target_delta = config.OPTIONS_SWING_DELTA_TARGET  # 0.70
 
         # Determine which option right to filter for
         target_right = OptionRight.Call if direction == OptionDirection.CALL else OptionRight.Put
 
-        # Filter for target direction, ATM±2 strikes, SWING DTE (5-45 days)
+        # Filter for target direction, target delta, SWING DTE (5-45 days)
         candidates = []
         for contract in chain:
             if contract.Right != target_right:
@@ -1675,9 +1675,10 @@ class AlphaNextGen(QCAlgorithm):
             if dte < config.OPTIONS_SWING_DTE_MIN or dte > config.OPTIONS_SWING_DTE_MAX:
                 continue
 
-            # Check if ATM±2 strikes
-            strike_diff = abs(contract.Strike - qqq_price)
-            if strike_diff > qqq_price * 0.02:  # Within 2% of ATM
+            # V2.3: Get delta and check if within tolerance of target
+            contract_delta = abs(contract.Greeks.Delta) if hasattr(contract, "Greeks") else 0.0
+            delta_diff = abs(contract_delta - target_delta)
+            if delta_diff > config.OPTIONS_DELTA_TOLERANCE:
                 continue
 
             # Check liquidity
@@ -1702,7 +1703,7 @@ class AlphaNextGen(QCAlgorithm):
                 direction=direction,  # V2.3: Use direction parameter
                 strike=contract.Strike,
                 expiry=str(contract.Expiry.date()),
-                delta=contract.Greeks.Delta if hasattr(contract, "Greeks") else 0.5,
+                delta=contract_delta,
                 gamma=contract.Greeks.Gamma if hasattr(contract, "Greeks") else 0.0,
                 vega=contract.Greeks.Vega if hasattr(contract, "Greeks") else 0.0,
                 theta=contract.Greeks.Theta if hasattr(contract, "Greeks") else 0.0,
@@ -1713,25 +1714,34 @@ class AlphaNextGen(QCAlgorithm):
                 days_to_expiry=dte,
             )
 
-            # Score by: proximity to ATM + liquidity
-            score = (1.0 / (1.0 + strike_diff)) * (1.0 - spread_pct)
+            # V2.3: Score by proximity to target delta (0.70) + liquidity
+            delta_score = 1.0 - (delta_diff / config.OPTIONS_DELTA_TOLERANCE)
+            liquidity_score = 1.0 - spread_pct
+            score = (delta_score * 0.7) + (liquidity_score * 0.3)
             candidates.append((score, opt_contract))
 
         if not candidates:
-            self.Log(f"SWING: No {direction.value} contracts found meeting criteria")
             return None
 
-        # Return best candidate
+        # Return best candidate (closest to target delta with good liquidity)
         candidates.sort(key=lambda x: x[0], reverse=True)
-        # Note: Contract selection log removed - entry signal logs the details
-        return candidates[0][1]
+        best = candidates[0][1]
+
+        # V2.3: Minimal logging for debugging
+        self.Log(
+            f"SWING_SELECT: {best.direction.value} Δ={best.delta:.2f} K={best.strike} DTE={best.days_to_expiry}"
+        )
+
+        return best
 
     def _select_intraday_option_contract(self, chain) -> Optional[OptionContract]:
         """
-        V2.1.1: Select QQQ option contract for intraday mode (0-2 DTE).
+        V2.3: Select QQQ option contract for intraday mode (0-2 DTE).
+
+        Target delta: 0.30 (slightly OTM for faster gamma/premium moves)
 
         Criteria:
-        - ATM or slightly ITM call/put
+        - Target 0.30 delta (±0.15 tolerance)
         - DTE 0-2 days (intraday mode)
         - Sufficient open interest
         - Tight bid-ask spread
@@ -1746,19 +1756,20 @@ class AlphaNextGen(QCAlgorithm):
             return None
 
         qqq_price = self.Securities[self.qqq].Price
+        target_delta = config.OPTIONS_INTRADAY_DELTA_TARGET  # 0.30
 
-        # Filter for ATM, 0-2 DTE
+        # Filter for target delta, 0-2 DTE
         candidates = []
         for contract in chain:
-            # Accept both calls and puts for intraday
             # Check DTE (0-2 days for intraday mode)
             dte = (contract.Expiry - self.Time).days
             if dte < 0 or dte > 2:
                 continue
 
-            # Check if ATM±2 strikes
-            strike_diff = abs(contract.Strike - qqq_price)
-            if strike_diff > qqq_price * 0.02:  # Within 2% of ATM
+            # V2.3: Get delta and check if within tolerance of target
+            contract_delta = abs(contract.Greeks.Delta) if hasattr(contract, "Greeks") else 0.0
+            delta_diff = abs(contract_delta - target_delta)
+            if delta_diff > config.OPTIONS_DELTA_TOLERANCE:
                 continue
 
             # Check liquidity
@@ -1788,7 +1799,7 @@ class AlphaNextGen(QCAlgorithm):
                 direction=direction,
                 strike=contract.Strike,
                 expiry=str(contract.Expiry.date()),
-                delta=contract.Greeks.Delta if hasattr(contract, "Greeks") else 0.5,
+                delta=contract_delta,
                 gamma=contract.Greeks.Gamma if hasattr(contract, "Greeks") else 0.0,
                 vega=contract.Greeks.Vega if hasattr(contract, "Greeks") else 0.0,
                 theta=contract.Greeks.Theta if hasattr(contract, "Greeks") else 0.0,
@@ -1799,19 +1810,26 @@ class AlphaNextGen(QCAlgorithm):
                 days_to_expiry=dte,
             )
 
-            # Score: proximity to ATM + liquidity + lower DTE preferred for intraday
+            # V2.3: Score by proximity to target delta (0.30) + liquidity + lower DTE
+            delta_score = 1.0 - (delta_diff / config.OPTIONS_DELTA_TOLERANCE)
             dte_score = 1.0 / (1.0 + dte)  # Prefer lower DTE
-            atm_score = 1.0 / (1.0 + strike_diff)
             spread_score = 1.0 - spread_pct
-            score = dte_score * atm_score * spread_score
+            score = (delta_score * 0.5) + (dte_score * 0.3) + (spread_score * 0.2)
             candidates.append((score, opt_contract))
 
         if not candidates:
             return None
 
-        # Return best candidate
+        # Return best candidate (closest to target delta with good liquidity)
         candidates.sort(key=lambda x: x[0], reverse=True)
-        return candidates[0][1]
+        best = candidates[0][1]
+
+        # V2.3: Minimal logging for debugging
+        self.Log(
+            f"INTRADAY_SELECT: {best.direction.value} Δ={best.delta:.2f} K={best.strike} DTE={best.days_to_expiry}"
+        )
+
+        return best
 
     def _generate_hedge_signals(self, regime_state: RegimeState) -> None:
         """

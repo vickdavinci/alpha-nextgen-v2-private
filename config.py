@@ -378,9 +378,16 @@ OPTIONS_PROFIT_TARGET_PCT = 0.50  # +50% profit target
 # Options chain filter (must cover BOTH Intraday 0-2 DTE AND Swing 5-45 DTE)
 OPTIONS_DTE_MIN = 0  # Minimum days to expiration (Intraday mode)
 OPTIONS_DTE_MAX = 45  # Maximum days to expiration (Swing mode)
-OPTIONS_DELTA_MIN = 0.40  # Minimum delta (ATM range)
-OPTIONS_DELTA_MAX = 0.60  # Maximum delta (ATM range)
+OPTIONS_DELTA_MIN = 0.40  # Minimum delta (ATM range) - for validation only
+OPTIONS_DELTA_MAX = 0.60  # Maximum delta (ATM range) - for validation only
 OPTIONS_MIN_PREMIUM = 0.50  # Minimum premium per contract ($0.50)
+
+# V2.3: Delta Targets by Mode (per trading firm spec)
+# Swing mode targets 0.7 delta (slightly ITM) for higher directional exposure
+# Intraday mode targets 0.3 delta (slightly OTM) for faster gamma/premium moves
+OPTIONS_SWING_DELTA_TARGET = 0.70  # Target delta for Swing mode (macro)
+OPTIONS_INTRADAY_DELTA_TARGET = 0.30  # Target delta for Intraday mode (micro)
+OPTIONS_DELTA_TOLERANCE = 0.15  # Accept contracts within ±0.15 of target
 
 # Force Exit Time (V2.1: close options by 3:45 PM like MR)
 OPTIONS_FORCE_EXIT_HOUR = 15  # 3 PM
