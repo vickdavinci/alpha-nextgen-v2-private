@@ -820,6 +820,14 @@ class OptionsEngine:
         self._spy_at_open: float = 0.0
         self._spy_gap_pct: float = 0.0
 
+        # Pending entry state (set by check_entry_signal, used by register_entry)
+        self._pending_contract: Optional[OptionContract] = None
+        self._pending_entry_score: Optional[float] = None
+        self._pending_num_contracts: Optional[int] = None
+        self._pending_stop_pct: Optional[float] = None
+        self._pending_stop_price: Optional[float] = None
+        self._pending_target_price: Optional[float] = None
+
     def log(self, message: str, trades_only: bool = False) -> None:
         """
         Log via algorithm with LiveMode awareness.
