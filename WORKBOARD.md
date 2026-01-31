@@ -99,7 +99,14 @@
 | 2 | **Closing Trade Bypass** - MIN_TRADE_VALUE check skips worthless option closes | MEDIUM | ✅ FIXED |
 | 3 | **Exit Race Condition** - Duplicate close orders if fill delayed | LOW | ✅ FIXED |
 
-**Status:** V2.3.3 fixes complete - Ready for backtest
+**V2.3.3 Fixes from Architect Audit Part 4 (2026-01-31):**
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **Traffic Jam** - Swing spreads blocked by intraday early return in `_scan_options_signals` | CRITICAL | ✅ FIXED |
+| 2 | **Trend Throttling** - `MAX_CONCURRENT_TREND_POSITIONS=2` blocking TNA/FAS | HIGH | ✅ FIXED (→4) |
+| 3 | **Minified Files Desync** - `main_minified.py` had old single-leg options code | CRITICAL | ✅ REMOVED |
+
+**Status:** V2.3.3 Part 3+4 fixes complete - Ready for backtest with FULL main.py
 
 ### Stage 2 Bugs - Prioritized Fix List
 

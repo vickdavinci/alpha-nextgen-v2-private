@@ -181,7 +181,7 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
         self.SetStartDate(2024, 1, 2)
-        self.SetEndDate(2024, 1, 8)  # 1 week for focused options debugging
+        self.SetEndDate(2024, 1, 15)  # 2 weeks for V2.3.3 validation with full options logging
         self.SetCash(config.PHASE_SEED_MIN)  # $50,000 seed capital
 
         # All times are Eastern
@@ -2373,7 +2373,8 @@ class AlphaNextGen(QCAlgorithm):
                 )
                 if intraday_signal:
                     self.portfolio_router.receive_signal(intraday_signal)
-                    return  # Only one entry per scan
+                    # V2.3.3 FIX: Don't return here - allow swing check to run too
+                    # Previously returned early, blocking swing spreads entirely
 
         # V2.3: Check for SWING mode entry using DEBIT SPREADS
         # Direction based on regime score (not Price/MA200/RSI)

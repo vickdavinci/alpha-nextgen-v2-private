@@ -929,9 +929,9 @@ class OptionsEngine:
                         If False, only log in LiveMode (for diagnostics).
         """
         if self.algorithm:
-            # Only show diagnostic logs in LiveMode, always show trade logs
-            if trades_only or self.algorithm.LiveMode:
-                self.algorithm.Log(message)
+            # V2.3.3 DEBUG: Enable all options logging for backtest diagnostics
+            # TODO: Revert to LiveMode check after debugging complete
+            self.algorithm.Log(message)
 
     # =========================================================================
     # ENTRY SCORE CALCULATION

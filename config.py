@@ -116,11 +116,11 @@ TREND_ENTRY_REGIME_MIN = 40
 TREND_EXIT_REGIME = 30
 TREND_ADX_EXIT_THRESHOLD = 20  # Exit if ADX drops below this
 
-# V2.3 Position Limits (addresses simultaneous entry issue)
+# V2.3.3 Position Limits (Part 4 audit fix)
 # In bull markets, all 4 tickers (QLD/SSO/TNA/FAS) may trigger together
 # because they're all correlated to US equity market (0.70-0.95 correlation)
-# Limiting to 2 positions ensures capital remains for options allocation
-MAX_CONCURRENT_TREND_POSITIONS = 2  # Max trend positions at any time
+# V2.3.3: Changed from 2 to 4 to allow full trend allocation (55% total)
+MAX_CONCURRENT_TREND_POSITIONS = 4  # Max trend positions at any time
 
 # Priority order when multiple entries trigger simultaneously
 # Higher priority symbols get capital first

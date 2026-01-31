@@ -305,3 +305,63 @@ Check regime_state object. It has smoothed_score.
 In main.py, _log_daily_summary passes regime_score=regime_state.smoothed_score.
 
 Verified: The "AttributeError" from the previous audit should be resolved by this implementation in main.py.
+
+#### PART 4 ####
+
+1. The "Traffic Jam" Bug (Why Swing Spreads were silent)
+The Issue: The OptionsEngine is designed to run Dual Modes (Intraday + Swing). The Bug: In the code, the check is likely implemented as an if/else or an early return.
+
+Current Behavior: The engine checks Intraday. If Intraday is active (which is true every day at 15:30), it returns the Intraday signals (or empty list) and stops. It never executes the lines of code that check for Swing Spreads.
+
+Result: The Swing Strategy is being "starved" by the Intraday Strategy.
+
+Fix: You must force Sequential Execution in options_engine.py.
+
+Python
+# BROKEN (Likely Current State):
+if self._current_mode == OptionsMode.INTRADAY:
+    return self.check_intraday_signals() # <--- Kills the process here
+# ... Swing code never runs ...
+
+# FIXED:
+signals = []
+if self.is_intraday_window_open():
+    signals.extend(self.check_intraday_signals())
+
+# ALWAYS run Swing Check (do not use 'else' or 'return' above)
+swing_signals = self.check_swing_signals() 
+signals.extend(swing_signals)
+return signals
+2. The "Naked" Execution Bug (Why the Jan 2 trade failed)
+The Issue: On Jan 2, the system did enter a Swing trade (QQQ 240119C, 17 DTE). The Bug: It entered a Naked Call, not a Spread.
+
+Evidence: The trade log shows only ONE symbol. A spread would show TWO orders (Buy Call + Sell Call).
+
+Result: Without the Short Leg (Hedge) to offset cost, the position had 100% risk exposure. It likely hit a stop loss or panic exit immediately.
+
+Fix: The PortfolioRouter is failing to process the metadata={'spread_short_leg_symbol': ...}. You must verify the Router iterates through the metadata and generates the second order guaranteed.
+
+3. The Trend Throttling (Why Trend didn't scale)
+The Issue: The logs explicitly say: TREND: Position limit check | Current=3 | Max=2. The Bug: Your config.py has TREND_MAX_POSITIONS = 2.
+
+Result: The bot bought QLD and SSO (2 positions). When it tried to buy TNA or FAS, the config blocked it.
+
+Fix: Change TREND_MAX_POSITIONS to 5 in config.py.
+
+Immediate Fix Instructions
+Step 1: Unblock the Options Engine (engines/satellite/options_engine.py) Find the get_entry_signals (or scan) method. Remove the return after the Intraday check. Ensure both check_intraday AND check_swing run sequentially.
+
+Step 2: Update Config Limits (config.py)
+
+Python
+# Update these values
+TREND_MAX_POSITIONS = 5  # Was 2
+Step 3: Fix Router Spread Logic (portfolio/portfolio_router.py) Ensure the "Closing Trade" check doesn't block the Short Leg.
+
+Python
+# In calculate_order_intents:
+# Allow closing trades even if value is small ($0.01 option)
+is_closing = (target_weight == 0.0)
+if abs(delta_value) < config.MIN_TRADE_VALUE and not is_closing:
+    continue # Skip ONLY if opening a tiny position
+Apply these three fixes and run the backtest. You will see the Trend Engine fill up to 4-5 positions, and you will see Swing Spreads (Pairs) appearing in the trade logs.
