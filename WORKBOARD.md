@@ -175,21 +175,46 @@
 
 **Status:** V2.3.6 fixes complete - Backtest "Pensive Red Rabbit" running
 
-**V2.3.7 Planned: Bidirectional Mean Reversion (PART 12)**
+**V2.3.7 Fixes from "Pensive Red Rabbit" Analysis (2026-01-31):**
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **Cash Death Spiral** - YieldSleeve orders $26K SHV with $430 margin | CRITICAL | ✅ FIXED |
+| 2 | **Intraday Filters Too Tight** - OI 200 + Spread 15% still filtering valid contracts | HIGH | ✅ FIXED (OI→100, Spread→25%) |
+| 3 | **Spread Short Leg Failures** - 4,578 "No valid OTM contract" errors | HIGH | ✅ FIXED (width $2-5, delta 0.10-0.50) |
+| 4 | **ADX Blocking Early Trends** - 71 entries blocked by lagging ADX indicator | MEDIUM | ✅ FIXED (threshold 25→20) |
+
+**V2.3.7 Key Changes:**
+- Added margin cap in `yield_sleeve.py`: `min(unallocated, MarginRemaining * 0.95)`
+- Widened intraday filters: OI 200→100, Spread 15%→25%
+- Relaxed spread short leg: SPREAD_WIDTH_MIN 3→2, SPREAD_WIDTH_TARGET 5→3
+- Relaxed spread delta: SHORT_LEG_DELTA_MIN 0.15→0.10, MAX 0.45→0.50
+- Lowered ADX thresholds: ENTRY 25→20, WEAK 20→15, MODERATE 25→20
+
+**Root Cause (Cash Death Spiral):** YieldSleeve calculated target from TotalPortfolioValue but didn't check MarginRemaining. Pending orders from other engines consumed margin before SHV order executed.
+
+**Root Cause (Filters):** 0DTE contracts in volatile markets have lower OI and wider spreads. Previous thresholds (OI=200, Spread=15%) filtered out most tradeable contracts.
+
+**Root Cause (ADX):** ADX is lagging - by time it reaches 25, the trend move is often half over. Lowering to 20 captures earlier entries.
+
+**Status:** V2.3.7 fixes complete - Ready for backtest validation
+
+---
+
+**V2.3.8 Planned: Bidirectional Mean Reversion (PART 12)**
 | # | Feature | Severity | Status |
 |:-:|---------|:--------:|:------:|
-| 1 | **Add SQQQ/SOXS inverse ETFs** - Capture "rally fade" when RSI > 75 | ENHANCEMENT | 🟡 AFTER BACKTEST |
-| 2 | **Mutual exclusivity** - Block TQQQ entry if SQQQ held (and vice versa) | HIGH | 🟡 AFTER BACKTEST |
-| 3 | **MR allocation cap** - Ensure Long + Short ≤ 10% total | HIGH | 🟡 AFTER BACKTEST |
+| 1 | **Add SQQQ/SOXS inverse ETFs** - Capture "rally fade" when RSI > 75 | ENHANCEMENT | 🟡 AFTER V2.3.7 |
+| 2 | **Mutual exclusivity** - Block TQQQ entry if SQQQ held (and vice versa) | HIGH | 🟡 AFTER V2.3.7 |
+| 3 | **MR allocation cap** - Ensure Long + Short ≤ 10% total | HIGH | 🟡 AFTER V2.3.7 |
 
-**V2.3.7 Scope:**
+**V2.3.8 Scope:**
 - Add MR_SHORT_SYMBOLS = ["SQQQ", "SOXS"] to config.py
 - Add MR_RALLY_THRESHOLD = 0.025, MR_RSI_OVERBOUGHT = 75
 - Subscribe to SQQQ, SOXS in main.py
 - Update mean_reversion_engine.py with bidirectional logic
 - Enforce mutual exclusivity (no simultaneous long + short)
 
-**Rationale for Deferral:** V2.3.6 made 7 significant changes. Need to isolate their performance impact before adding a new strategy direction. Bidirectional MR is a strategy enhancement, not a bug fix.
+**Rationale for Deferral:** V2.3.7 made 4 critical fixes. Need to isolate their performance impact before adding a new strategy direction. Bidirectional MR is a strategy enhancement, not a bug fix.
 
 ### Stage 2 Bugs - Prioritized Fix List
 

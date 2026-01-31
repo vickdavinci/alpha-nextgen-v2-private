@@ -806,3 +806,171 @@ Action: Buy SQQQ (The Inverse ETF).
 Hold Time: Maintain the overnight hold logic (1-5 days) to capture the gap down/reversion.
 
 Stop Loss: Enforce the same strict stop loss (e.g., -5% on the SQQQ position) to prevent damage during a runaway melt-up.
+
+#### PART 13 ####
+
+Executive Verdict: The logic is partially broken. While the "Strategy" (Brain) is generating signals, the "Execution" (Hands) is clumsy and error-prone. The algorithm is fighting itself—specifically regarding Capital Management (SHV) and Option Selection.
+
+The backtest ended with a Critical Margin Failure on March 28th, indicating a math error in your cash management logic.
+
+Here are the 4 Critical Pitfalls identified in the logs.
+
+🚨 Pitfall 1: The "Cash Death Spiral" (Critical Order Failure)
+Location: End of Log File (March 28, 16:00:00) Evidence: INVALID: SHV - Order Error: ids: [296], Insufficient buying power to complete orders (Value:[26358.5730]), Reason: Id: 296, Initial Margin: 13180.58... Free Margin: 430.05
+
+The Logic Fail: The YieldSleeve (SHV) calculated it needed to buy $26k worth of SHV to hit its target. However, the account only had $430 of Free Margin.
+
+Why? The System likely placed a Trend or Options order milliseconds before the SHV order. The SHV engine calculated its target based on Total Equity, failing to subtract the Locked Capital from the pending orders of other engines.
+
+Consequence: The algorithm crashed or failed to fill the order, leaving uninvested cash and throwing exceptions.
+
+🚨 Pitfall 2: The "Filter Wall" is Still Active (Options Engine)
+Evidence: Repeated blocks of: INTRADAY: No PUT contracts found matching criteria (Jan 8, 11:51 - 11:56).
+
+The Logic Fail: Despite our previous discussions about lowering Open Interest (OI) to 200, the logs prove the filter is still too aggressive.
+
+Observation: The engine tried for 5 consecutive minutes to find a Put and failed every single time.
+
+Implication: You missed the entire move. If the "Sniper" cannot find a bullet, it cannot shoot.
+
+Root Cause: It is highly likely that OPTIONS_SPREAD_WARNING_PCT (Spread Filter) is rejecting the contracts. In a fast-moving market (when you want to enter), spreads widen. If you filter out spreads > 10% or 15%, you filter out the tradeable reality.
+
+🚨 Pitfall 3: The "Legging Out" Failure (Swing Spreads)
+Evidence: SPREAD: No valid OTM contract for short leg.
+
+The Logic Fail: The Swing Engine found a Long Leg (Call/Put) but could not find a Short Leg to hedge it (creating the Vertical Spread).
+
+Current Behavior: The code aborts the trade if the short leg isn't found. This is "Safe" (better than naked buying), but it results in Zero Trades.
+
+Cause: The SPREAD_SHORT_LEG_DELTA or SPREAD_WIDTH constraints are too rigid. The market doesn't always offer a perfect $5-wide strike with exactly 0.15 delta.
+
+🚨 Pitfall 4: Trend Engine "Suffocation" (ADX Filter)
+Evidence: TREND: QLD entry blocked - ADX 14.6 too weak (score=0.25).
+
+The Logic Fail: The Trend Engine is correctly identifying a Buy Signal, but the ADX Filter is blocking it because the trend isn't "Strong Enough" yet.
+
+The Trap: ADX is a lagging indicator. By the time ADX rises above 20 or 25, the move is often half-over.
+
+Result: You are staying in Cash (or SHV) while the market rallies, waiting for a "Perfect Trend" confirmation that arrives too late.
+
+🛠️ Remediation Plan
+You must implement these fixes to stabilize the codebase before adding the Mean Reversion updates.
+
+1. Fix the Cash Crash (Priority: Critical)
+In main.py -> _rebalance_yield_sleeve: You must calculate buying_power dynamically by checking the Margin Remaining, not just Portfolio.TotalPortfolioValue.
+
+Python
+# CURRENT FLAWED LOGIC:
+# target_value = total_equity * target_percent
+
+# NEW ROBUST LOGIC:
+margin_remaining = self.Portfolio.MarginRemaining
+target_value = min(total_equity * target_percent, margin_remaining * 0.95) 
+# The 0.95 buffer prevents "Insufficient Buying Power" due to price fluctuations
+2. Widen Option Filters (Priority: High)
+Your logs prove the current settings are choking the system.
+
+Spread: Increase to 0.20 (20%) or even 0.25 for Intraday. Capturing the move > Paying the spread.
+
+Delta Tolerance: Ensure OPTIONS_DELTA_TOLERANCE is at least 0.20.
+
+3. Loosen ADX Filter (Priority: Medium)
+If you want to catch earlier trends, lower the ADX threshold in config.py.
+
+Change: TREND_ADX_MIN = 10 (or remove the block entirely for re-entries).
+
+4. Stop the SHV Churn
+Your trade list shows SHV being bought/sold constantly for small amounts.
+
+Verify: Ensure SHV_MIN_TRADE in config.py is set to at least $5,000. Do not trade SHV for $500 adjustments.
+
+Summary: The logic is "working" (it runs), but it is brittle. The cash management bug at the end is a showstopper that must be fixed immediately.
+
+#### PART 14 ####
+
+Based on a forensic review of the Pensive Red Rabbit logs and trade files, I have identified 4 Hidden Pitfalls that are silently draining your returns or blocking valid trades. These go beyond the obvious "Cash Crash" and "Filter" issues we discussed earlier.
+
+Here is the breakdown of these logic gaps and how to fix them.
+
+🚨 Pitfall 1: The "Negative Yield" Trap (SHV Churn)
+Evidence: Pensive Red Rabbit_trades.csv
+
+The Trade: You often buy SHV and sell it 1-2 days later (e.g., Jan 9 -> Jan 10).
+
+The Math:
+
+Profit: +$1.50 (Interest for 1 day on ~$5k).
+
+Fee: -$2.23 (Commission).
+
+Net Result: -$0.73 Loss.
+
+The Problem: Your YieldSleeve is hyper-active. It tries to invest "idle cash" every single day. If the Trend Engine adjusts a position by $500, the Yield Sleeve sells $500 of SHV to match. You are paying commissions to lose money.
+
+The Fix: In config.py, increase SHV_MIN_TRADE from $2,000 to $10,000.
+
+Logic: "If I have less than $10k idle cash, just leave it as Cash. Do not buy SHV." This stops the commission bleed.
+
+🚨 Pitfall 2: The "Stop Loss" Slippage (Option Burn)
+Evidence: Pensive Red Rabbit_trades.csv (Row 23)
+
+The Trade: Jan 8, QQQ 240109P (Put).
+
+Execution: Entry @ $0.49. Exit @ $0.20.
+
+The Loss: -59.2%.
+
+The Problem: Your Intraday Stop Loss is likely set to 20% or 30%, but you took a 60% hit.
+
+Why: 0-DTE options move faster than your algorithm's "Heartbeat." If you scan for exits every 5 minutes (or even 1 minute), a 0-DTE option can drop from $0.50 to $0.20 in 30 seconds during a reversal. The bot reacts too late.
+
+The Fix:
+
+Switch to Resolution.Second for Options data in main.py (if supported by your tier).
+
+Use Limit Orders for exits or implement a "Hard Stop" order at the broker level immediately after entry, rather than a "Mental Stop" managed by the code.
+
+🚨 Pitfall 3: The "Volatility Trap" (TNA 3x ETF)
+Evidence: Pensive Red Rabbit_trades.csv (Row 5)
+
+The Trade: Jan 2 - Jan 17, TNA (Small Cap 3x Bull).
+
+Execution: Entry @ $37.86. Exit @ $31.24.
+
+The Loss: -17.5% on the position.
+
+The Problem: You are applying the same Stop Loss logic (e.g., 3x ATR) to QLD (2x Nasdaq) and TNA (3x Small Cap).
+
+TNA is explosive. A normal daily swing is 5-7%. A 3x ATR stop on TNA is so wide (~15-20%) that by the time it hits, you've lost a huge chunk of capital.
+
+The Fix: Create a specific "High Volatility Multiplier" in config.py.
+
+If Symbol is TNA or SOXL, use ATR x 2.0 instead of ATR x 3.0. Tighten the leash on the wild dogs.
+
+🚨 Pitfall 4: The "Conflict of Constraints" (Spread Logic)
+Evidence: logs.txt -> SPREAD: No valid OTM contract for short leg.
+
+The Problem: You are asking for the Impossible Triangle.
+
+Constraint A: Spread Width must be $5.
+
+Constraint B: Short Leg Delta must be 0.15.
+
+Reality: On many days, the $5 wide strike has a delta of 0.10, and the 0.15 delta strike is $10 wide. The engine checks both, finds no match, and aborts.
+
+The Fix: Prioritize Delta over Width.
+
+Remove the fixed SPREAD_WIDTH check.
+
+Let the engine find the contract closest to 0.15 Delta (the Hedge) regardless of whether it is $5 or $10 wide.
+
+Code Adjustment: In options_engine.py, find the line checking width_diff and relax or remove it.
+
+Summary Checklist for Dev Team
+Stop SHV Churn: Set SHV_MIN_TRADE = 10000.
+
+Tame TNA: Lower Stop Multiplier for 3x ETFs.
+
+Fix Spreads: Remove strict "Strike Width" constraints; rely on Delta.
+
+Fix Options Data: Ensure option exit logic runs on faster resolution or triggers immediately.
