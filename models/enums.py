@@ -179,3 +179,21 @@ class WhipsawState(Enum):
     TRENDING = "TRENDING"  # 0-2 reversals: Normal trading
     CHOPPY = "CHOPPY"  # 3-4 reversals: Reduce size 50%
     WHIPSAW = "WHIPSAW"  # 5+ reversals: Credits only or no trade
+
+
+class QQQMove(Enum):
+    """
+    V2.3.4: QQQ price move classification for Micro Regime Engine.
+
+    QQQ move direction is critical for determining option direction:
+    - QQQ UP + VIX FALLING = Strong fade setup (buy PUT)
+    - QQQ DOWN + VIX FALLING = Recovery bounce (buy CALL)
+    - QQQ UP + VIX RISING = Momentum, don't fade
+    - QQQ FLAT = No edge, no trade
+    """
+
+    UP_STRONG = "UP_STRONG"  # QQQ > +0.8% from open
+    UP = "UP"  # QQQ +0.3% to +0.8% from open
+    FLAT = "FLAT"  # QQQ ±0.3% from open
+    DOWN = "DOWN"  # QQQ -0.3% to -0.8% from open
+    DOWN_STRONG = "DOWN_STRONG"  # QQQ < -0.8% from open

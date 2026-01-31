@@ -395,11 +395,14 @@ class AlphaNextGen(QCAlgorithm):
         self.ief = self.AddEquity("IEF", Resolution.Minute).Symbol
 
         # V2.1: VIX for Mean Reversion regime filter
-        # Add CBOE VIX index data for regime classification
-        self.vix = self.AddData(CBOE, "VIX", Resolution.Daily).Symbol
+        # V2.3.4 FIX: Changed from Resolution.Daily to Resolution.Minute
+        # Daily resolution only updates once per day (at close), making VIX direction
+        # classification useless for intraday trading. Minute resolution gives live updates.
+        self.vix = self.AddData(CBOE, "VIX", Resolution.Minute).Symbol
         self._current_vix = 15.0  # Default to normal regime until data arrives
         self._vix_at_open = 15.0  # V2.1.1: VIX at market open for micro regime
         self._vix_5min_ago = 15.0  # V2.1.1: VIX 5 minutes ago for spike detection
+        self._vix_15min_ago = 15.0  # V2.3.4: VIX 15 minutes ago for short-term trend
         self._last_vix_spike_log = None  # Log throttle: last VIX spike log time
         self._qqq_at_open = 0.0  # V2.1.1: QQQ at market open
 
@@ -960,7 +963,9 @@ class AlphaNextGen(QCAlgorithm):
         self._generate_trend_signals_eod(regime_state)
 
         # 4. V2.1: Generate Options signals (if regime allows)
-        if regime_state.smoothed_score >= 40:
+        # V2.3.4 FIX: Block swing options during cold start (Days 1-5)
+        is_cold_start = self.cold_start_engine.is_cold_start_active()
+        if regime_state.smoothed_score >= 40 and not is_cold_start:
             self._generate_options_signals(regime_state, capital_state)
 
         # 5. Generate Hedge signals
@@ -1091,10 +1096,17 @@ class AlphaNextGen(QCAlgorithm):
         V2.1.1: Layer 2 & 4 - Direction + Regime update (every 15 minutes).
 
         Updates the Micro Regime Engine with current market data.
+        V2.3.4: Now tracks 15-minute VIX changes for short-term trend detection.
         """
         # Skip during warmup
         if self.IsWarmingUp:
             return
+
+        # V2.3.4: Calculate 15-minute VIX change for short-term trend
+        vix_change_15m = self._current_vix - self._vix_15min_ago
+        vix_change_15m_pct = (
+            (vix_change_15m / self._vix_15min_ago * 100) if self._vix_15min_ago > 0 else 0
+        )
 
         # Get current QQQ price
         qqq_current = self.Securities[self.qqq].Price
@@ -1107,6 +1119,16 @@ class AlphaNextGen(QCAlgorithm):
             qqq_open=self._qqq_at_open,
             current_time=str(self.Time),
         )
+
+        # V2.3.4: Log 15-minute VIX trend for debugging
+        self.Log(
+            f"MICRO_UPDATE: VIX={self._current_vix:.2f} | "
+            f"15m_ago={self._vix_15min_ago:.2f} ({vix_change_15m_pct:+.1f}%) | "
+            f"Regime={state.micro_regime.value} | Dir={state.recommended_direction.value if state.recommended_direction else 'NONE'}"
+        )
+
+        # V2.3.4: Update the 15-minute tracker for the NEXT check
+        self._vix_15min_ago = self._current_vix
 
     # =========================================================================
     # ORDER EVENT HANDLER

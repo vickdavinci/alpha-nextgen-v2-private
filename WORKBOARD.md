@@ -106,7 +106,27 @@
 | 2 | **Trend Throttling** - `MAX_CONCURRENT_TREND_POSITIONS=2` blocking TNA/FAS | HIGH | ✅ FIXED (→4) |
 | 3 | **Minified Files Desync** - `main_minified.py` had old single-leg options code | CRITICAL | ✅ REMOVED |
 
-**Status:** V2.3.3 Part 3+4 fixes complete - Ready for backtest with FULL main.py
+**V2.3.4 Fixes from Architect Audit Part 5-7 (2026-01-31):**
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **Cold Start Bypass** - Options entering on Day 1 during cold start | CRITICAL | ✅ FIXED |
+| 2 | **Direction Mismatch** - Contract selected BEFORE direction determined | CRITICAL | ✅ FIXED |
+| 3 | **Inverted Trade** - Bought CALL when should have bought PUT for fade | CRITICAL | ✅ FIXED |
+| 4 | **Global Kill Switch** - Options loss liquidating healthy trend positions | HIGH | ✅ FIXED (engine-specific) |
+| 5 | **Spread Criteria Too Tight** - OI 5000, delta 0.25-0.40 too restrictive | HIGH | ✅ FIXED (OI→1000, delta 0.15-0.45) |
+| 6 | **DTE Too Wide** - 0-5 DTE not true 0DTE trading | MEDIUM | ✅ FIXED (→0-1 DTE) |
+| 7 | **VIX Resolution Daily** - VIX only updated once/day, not intraday | CRITICAL | ✅ FIXED (→Minute) |
+| 8 | **QQQ Move Not in Regime** - Direction determined separately from regime | HIGH | ✅ FIXED (incorporated) |
+
+**V2.3.4 Key Changes:**
+- VIX subscribed at `Resolution.Minute` (was Daily) - live intraday updates
+- Added `_vix_15min_ago` tracker for short-term trend detection
+- Added `QQQMove` enum (UP_STRONG, UP, FLAT, DOWN, DOWN_STRONG)
+- Created `recommend_strategy_and_direction()` - combined decision in Micro Regime
+- Direction now determined INSIDE regime assessment, not separately
+- Data gathered every minute, processed every 15 minutes (no log spam)
+
+**Status:** V2.3.4 fixes complete - Ready for backtest
 
 ### Stage 2 Bugs - Prioritized Fix List
 
@@ -704,4 +724,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 31 January 2026 (V2.3.3 Architect Audit Part 3 Fixes Complete)*
+*Last Updated: 31 January 2026 (V2.3.4 Micro Regime + VIX Resolution Fixes Complete)*

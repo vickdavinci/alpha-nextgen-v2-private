@@ -475,15 +475,16 @@ class TestRecommendStrategy:
         )
         assert strategy == IntradayStrategy.PROTECTIVE_PUTS
 
-    def test_choppy_regime_recommends_credit(self, micro_engine):
-        """CHOPPY_LOW with sufficient VIX -> CREDIT_SPREAD."""
+    def test_choppy_regime_recommends_no_trade(self, micro_engine):
+        """V2.3.4: CHOPPY_LOW is caution regime -> NO_TRADE."""
         strategy = micro_engine.recommend_strategy(
             micro_regime=MicroRegime.CHOPPY_LOW,
             micro_score=40,
-            vix_current=20.0,  # Above credit min VIX
+            vix_current=20.0,
             qqq_move_pct=0.5,
         )
-        assert strategy == IntradayStrategy.CREDIT_SPREAD
+        # V2.3.4: Choppy regimes are avoided, not traded
+        assert strategy == IntradayStrategy.NO_TRADE
 
     def test_full_panic_recommends_no_trade(self, micro_engine):
         """FULL_PANIC -> NO_TRADE."""

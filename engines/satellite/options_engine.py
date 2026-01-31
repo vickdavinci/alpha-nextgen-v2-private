@@ -45,6 +45,7 @@ from models.enums import (
     IntradayStrategy,
     MicroRegime,
     OptionsMode,
+    QQQMove,
     Urgency,
     VIXDirection,
     VIXLevel,
@@ -310,6 +311,9 @@ class MicroRegimeState:
     vix_open: float = 15.0
     last_update: str = ""
     spike_cooldown_until: str = ""
+    # V2.3.4: QQQ move direction and recommended option direction
+    qqq_direction: "QQQMove" = None  # UP/DOWN/FLAT
+    recommended_direction: "OptionDirection" = None  # PUT or CALL
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for persistence."""
@@ -325,12 +329,21 @@ class MicroRegimeState:
             "vix_open": self.vix_open,
             "last_update": self.last_update,
             "spike_cooldown_until": self.spike_cooldown_until,
+            # V2.3.4: New fields
+            "qqq_direction": self.qqq_direction.value if self.qqq_direction else None,
+            "recommended_direction": self.recommended_direction.value
+            if self.recommended_direction
+            else None,
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "MicroRegimeState":
         """Deserialize from persistence."""
-        return cls(
+        # V2.3.4: Handle new fields
+        qqq_dir = data.get("qqq_direction")
+        rec_dir = data.get("recommended_direction")
+
+        state = cls(
             vix_level=VIXLevel(data.get("vix_level", "LOW")),
             vix_direction=VIXDirection(data.get("vix_direction", "STABLE")),
             micro_regime=MicroRegime(data.get("micro_regime", "NORMAL")),
@@ -343,6 +356,14 @@ class MicroRegimeState:
             last_update=data.get("last_update", ""),
             spike_cooldown_until=data.get("spike_cooldown_until", ""),
         )
+        # Set new fields if present
+        if qqq_dir:
+            state.qqq_direction = QQQMove(qqq_dir)
+        if rec_dir:
+            from engines.satellite.options_engine import OptionDirection
+
+            state.recommended_direction = OptionDirection(rec_dir)
+        return state
 
 
 class MicroRegimeEngine:
@@ -444,6 +465,43 @@ class MicroRegimeEngine:
             return VIXLevel.MEDIUM, config.MICRO_SCORE_VIX_HIGH
         else:
             return VIXLevel.HIGH, config.MICRO_SCORE_VIX_EXTREME
+
+    # =========================================================================
+    # V2.3.4: QQQ MOVE CLASSIFICATION
+    # =========================================================================
+
+    def classify_qqq_move(self, qqq_current: float, qqq_open: float) -> Tuple[QQQMove, float]:
+        """
+        V2.3.4: Classify QQQ move direction and magnitude.
+
+        This is critical for determining option direction:
+        - QQQ UP → Consider PUT (fade) or CALL (momentum)
+        - QQQ DOWN → Consider CALL (fade) or PUT (momentum)
+        - QQQ FLAT → No edge, skip trade
+
+        Args:
+            qqq_current: Current QQQ price.
+            qqq_open: QQQ price at market open.
+
+        Returns:
+            Tuple of (QQQMove enum, move percentage).
+        """
+        if qqq_open <= 0:
+            return QQQMove.FLAT, 0.0
+
+        move_pct = (qqq_current - qqq_open) / qqq_open * 100
+
+        # Classify move direction and magnitude
+        if move_pct > 0.8:
+            return QQQMove.UP_STRONG, move_pct
+        elif move_pct > 0.3:
+            return QQQMove.UP, move_pct
+        elif move_pct < -0.8:
+            return QQQMove.DOWN_STRONG, move_pct
+        elif move_pct < -0.3:
+            return QQQMove.DOWN, move_pct
+        else:
+            return QQQMove.FLAT, move_pct
 
     # =========================================================================
     # WHIPSAW DETECTION
@@ -621,29 +679,51 @@ class MicroRegimeEngine:
             return config.MICRO_SCORE_VELOCITY_SPIKE
 
     # =========================================================================
-    # STRATEGY RECOMMENDATION
+    # V2.3.4: STRATEGY & DIRECTION RECOMMENDATION (Combined Decision)
     # =========================================================================
 
-    def recommend_strategy(
+    def recommend_strategy_and_direction(
         self,
         micro_regime: MicroRegime,
         micro_score: float,
         vix_current: float,
+        vix_direction: VIXDirection,
+        qqq_move: QQQMove,
         qqq_move_pct: float,
-    ) -> IntradayStrategy:
+    ) -> Tuple[IntradayStrategy, Optional[OptionDirection], str]:
         """
-        Recommend intraday strategy based on regime and score.
+        V2.3.4: Recommend intraday strategy AND direction based on regime + QQQ move.
+
+        This is the core decision engine that combines:
+        - VIX Level × VIX Direction (market fear state)
+        - QQQ Move Direction (what to fade or ride)
+
+        Key Logic:
+        - FADE: QQQ up + VIX falling = Buy PUT (fade the up move)
+        - FADE: QQQ down + VIX falling = Buy CALL (fade the down move)
+        - MOMENTUM: QQQ up + VIX rising = Buy CALL (ride momentum)
+        - NO TRADE: QQQ flat OR VIX whipsawing
 
         Args:
             micro_regime: Current micro regime classification.
             micro_score: Current micro score.
             vix_current: Current VIX value.
-            qqq_move_pct: QQQ move from open (absolute).
+            vix_direction: VIX direction (FALLING, STABLE, RISING, etc.)
+            qqq_move: QQQ move classification (UP, DOWN, FLAT).
+            qqq_move_pct: QQQ move percentage (signed).
 
         Returns:
-            Recommended IntradayStrategy.
+            Tuple of (IntradayStrategy, OptionDirection or None, reason string).
         """
-        # Danger regimes: No trade or protective only
+        # =====================================================================
+        # RULE 1: No trade if QQQ is flat (no edge)
+        # =====================================================================
+        if qqq_move == QQQMove.FLAT:
+            return IntradayStrategy.NO_TRADE, None, "QQQ flat - no edge"
+
+        # =====================================================================
+        # RULE 2: Danger regimes - No trade or protective only
+        # =====================================================================
         danger_regimes = {
             MicroRegime.RISK_OFF_LOW,
             MicroRegime.BREAKING,
@@ -654,51 +734,68 @@ class MicroRegimeEngine:
         }
         if micro_regime in danger_regimes:
             if micro_score < 0:
-                return IntradayStrategy.PROTECTIVE_PUTS
-            return IntradayStrategy.NO_TRADE
+                return IntradayStrategy.PROTECTIVE_PUTS, OptionDirection.PUT, "Crisis protection"
+            return IntradayStrategy.NO_TRADE, None, f"Danger regime: {micro_regime.value}"
 
-        # Whipsaw/choppy: Credits only
-        choppy_regimes = {
-            MicroRegime.CHOPPY_LOW,
-            MicroRegime.CAUTIOUS,
-            MicroRegime.WORSENING,
-        }
-        if micro_regime in choppy_regimes:
-            if vix_current >= config.INTRADAY_CREDIT_MIN_VIX:
-                return IntradayStrategy.CREDIT_SPREAD
-            return IntradayStrategy.NO_TRADE
+        # =====================================================================
+        # RULE 3: Whipsaw/choppy - Skip (direction unclear)
+        # =====================================================================
+        if vix_direction == VIXDirection.WHIPSAW:
+            return IntradayStrategy.NO_TRADE, None, "VIX whipsawing - direction unclear"
 
-        # Prime/Good MR: Debit Fade
-        mr_regimes = {
+        # =====================================================================
+        # RULE 4: Determine if this is a FADE or MOMENTUM setup
+        # =====================================================================
+        qqq_is_up = qqq_move in (QQQMove.UP, QQQMove.UP_STRONG)
+        qqq_is_down = qqq_move in (QQQMove.DOWN, QQQMove.DOWN_STRONG)
+        vix_is_falling = vix_direction in (VIXDirection.FALLING, VIXDirection.FALLING_FAST)
+        vix_is_rising = vix_direction in (
+            VIXDirection.RISING,
+            VIXDirection.RISING_FAST,
+            VIXDirection.SPIKING,
+        )
+
+        # =====================================================================
+        # RULE 5: FADE SETUP (Mean Reversion)
+        # Best setup: QQQ moved + VIX falling = market calming, fade the move
+        # =====================================================================
+        fade_regimes = {
             MicroRegime.PERFECT_MR,
             MicroRegime.GOOD_MR,
             MicroRegime.NORMAL,
             MicroRegime.RECOVERING,
             MicroRegime.IMPROVING,
         }
-        if micro_regime in mr_regimes:
-            if micro_score >= config.MICRO_SCORE_PRIME_MR:
-                return IntradayStrategy.DEBIT_FADE
-            elif micro_score >= config.MICRO_SCORE_GOOD_MR:
-                return IntradayStrategy.DEBIT_FADE
-            elif micro_score >= config.MICRO_SCORE_MODERATE:
-                if vix_current >= config.INTRADAY_CREDIT_MIN_VIX:
-                    return IntradayStrategy.CREDIT_SPREAD
-                return IntradayStrategy.DEBIT_FADE
-            else:
-                return IntradayStrategy.CREDIT_SPREAD
+        if micro_regime in fade_regimes and micro_score >= config.MICRO_SCORE_MODERATE:
+            # VIX falling = safe to fade
+            if vix_is_falling or vix_direction == VIXDirection.STABLE:
+                if qqq_is_up:
+                    # QQQ up + VIX falling/stable = Buy PUT (fade the rally)
+                    return (
+                        IntradayStrategy.DEBIT_FADE,
+                        OptionDirection.PUT,
+                        f"Fade rally: QQQ +{qqq_move_pct:.2f}%, VIX {vix_direction.value}",
+                    )
+                elif qqq_is_down:
+                    # QQQ down + VIX falling/stable = Buy CALL (fade the dip)
+                    return (
+                        IntradayStrategy.DEBIT_FADE,
+                        OptionDirection.CALL,
+                        f"Fade dip: QQQ {qqq_move_pct:.2f}%, VIX {vix_direction.value}",
+                    )
 
-        # Transition/Caution: Reduced activity
-        caution_regimes = {
-            MicroRegime.CAUTION_LOW,
-            MicroRegime.TRANSITION,
-        }
-        if micro_regime in caution_regimes:
-            if micro_score >= config.MICRO_SCORE_MODERATE:
-                return IntradayStrategy.CREDIT_SPREAD
-            return IntradayStrategy.NO_TRADE
+            # VIX rising = DON'T fade, momentum might continue
+            if vix_is_rising:
+                return (
+                    IntradayStrategy.NO_TRADE,
+                    None,
+                    f"VIX rising ({vix_direction.value}) - don't fade",
+                )
 
-        # Momentum regimes: ITM options or puts
+        # =====================================================================
+        # RULE 6: MOMENTUM SETUP (Ride the move)
+        # VIX rising + QQQ moving = fear/greed, ride momentum
+        # =====================================================================
         momentum_regimes = {
             MicroRegime.DETERIORATING,
             MicroRegime.ELEVATED,
@@ -708,13 +805,69 @@ class MicroRegimeEngine:
         }
         if micro_regime in momentum_regimes:
             if vix_current > config.INTRADAY_ITM_MIN_VIX:
-                if qqq_move_pct >= config.INTRADAY_ITM_MIN_MOVE:
-                    return IntradayStrategy.ITM_MOMENTUM
-            if vix_current >= config.INTRADAY_CREDIT_MIN_VIX:
-                return IntradayStrategy.CREDIT_SPREAD
-            return IntradayStrategy.NO_TRADE
+                if abs(qqq_move_pct) >= config.INTRADAY_ITM_MIN_MOVE:
+                    if qqq_is_up:
+                        # QQQ up strongly = ride momentum with CALL
+                        return (
+                            IntradayStrategy.ITM_MOMENTUM,
+                            OptionDirection.CALL,
+                            f"Momentum up: QQQ +{qqq_move_pct:.2f}%",
+                        )
+                    elif qqq_is_down:
+                        # QQQ down strongly = ride momentum with PUT
+                        return (
+                            IntradayStrategy.ITM_MOMENTUM,
+                            OptionDirection.PUT,
+                            f"Momentum down: QQQ {qqq_move_pct:.2f}%",
+                        )
 
-        return IntradayStrategy.NO_TRADE
+        # =====================================================================
+        # RULE 7: Caution regimes - smaller moves, credits only
+        # =====================================================================
+        caution_regimes = {
+            MicroRegime.CAUTION_LOW,
+            MicroRegime.TRANSITION,
+            MicroRegime.CHOPPY_LOW,
+            MicroRegime.CAUTIOUS,
+            MicroRegime.WORSENING,
+        }
+        if micro_regime in caution_regimes:
+            return IntradayStrategy.NO_TRADE, None, f"Caution regime: {micro_regime.value}"
+
+        return IntradayStrategy.NO_TRADE, None, "No matching setup"
+
+    def recommend_strategy(
+        self,
+        micro_regime: MicroRegime,
+        micro_score: float,
+        vix_current: float,
+        qqq_move_pct: float,
+    ) -> IntradayStrategy:
+        """
+        Legacy method for backwards compatibility.
+        Use recommend_strategy_and_direction() for new code.
+        """
+        # Create QQQMove from percentage
+        if qqq_move_pct > 0.8:
+            qqq_move = QQQMove.UP_STRONG
+        elif qqq_move_pct > 0.3:
+            qqq_move = QQQMove.UP
+        elif qqq_move_pct < -0.8:
+            qqq_move = QQQMove.DOWN_STRONG
+        elif qqq_move_pct < -0.3:
+            qqq_move = QQQMove.DOWN
+        else:
+            qqq_move = QQQMove.FLAT
+
+        strategy, _, _ = self.recommend_strategy_and_direction(
+            micro_regime=micro_regime,
+            micro_score=micro_score,
+            vix_current=vix_current,
+            vix_direction=VIXDirection.STABLE,  # Default for legacy
+            qqq_move=qqq_move,
+            qqq_move_pct=qqq_move_pct,
+        )
+        return strategy
 
     # =========================================================================
     # FULL UPDATE CYCLE
@@ -777,25 +930,34 @@ class MicroRegimeEngine:
             vix_current, vix_open, qqq_current, qqq_open, move_duration_minutes
         )
 
-        # Calculate QQQ move
-        if qqq_open > 0:
-            self._state.qqq_move_pct = abs((qqq_current - qqq_open) / qqq_open * 100)
+        # V2.3.4: Classify QQQ move direction (not just magnitude)
+        self._state.qqq_direction, signed_move_pct = self.classify_qqq_move(qqq_current, qqq_open)
+        self._state.qqq_move_pct = abs(signed_move_pct)
 
-        # Recommend strategy
-        self._state.recommended_strategy = self.recommend_strategy(
-            self._state.micro_regime,
-            self._state.micro_score,
-            vix_current,
-            self._state.qqq_move_pct,
+        # V2.3.4: Recommend strategy AND direction together
+        strategy, direction, reason = self.recommend_strategy_and_direction(
+            micro_regime=self._state.micro_regime,
+            micro_score=self._state.micro_score,
+            vix_current=vix_current,
+            vix_direction=self._state.vix_direction,
+            qqq_move=self._state.qqq_direction,
+            qqq_move_pct=signed_move_pct,
         )
+        self._state.recommended_strategy = strategy
+        self._state.recommended_direction = direction
 
         self._state.last_update = current_time
 
+        # V2.3.4: Log includes QQQ direction and recommended option direction
+        dir_str = (
+            self._state.recommended_direction.value if self._state.recommended_direction else "NONE"
+        )
+        qqq_dir_str = self._state.qqq_direction.value if self._state.qqq_direction else "NONE"
         self.log(
             f"Update: VIX={vix_current:.1f} ({self._state.vix_direction.value}) | "
-            f"Regime={self._state.micro_regime.value} | "
-            f"Score={self._state.micro_score:.0f} | "
-            f"Strategy={self._state.recommended_strategy.value}"
+            f"QQQ={qqq_dir_str} ({self._state.qqq_move_pct:+.2f}%) | "
+            f"Regime={self._state.micro_regime.value} | Score={self._state.micro_score:.0f} | "
+            f"Strategy={self._state.recommended_strategy.value} | Direction={dir_str}"
         )
 
         return self._state
@@ -2021,30 +2183,19 @@ class OptionsEngine:
             self.log(f"INTRADAY: Protective mode - regime={state.micro_regime.value}")
             return None  # Would emit hedge signal separately
 
-        # Determine direction based on QQQ move and strategy
-        qqq_move = qqq_current - qqq_open
-        qqq_up = qqq_move > 0
-
-        # Debit Fade: Fade the move
-        if state.recommended_strategy == IntradayStrategy.DEBIT_FADE:
-            direction = OptionDirection.PUT if qqq_up else OptionDirection.CALL
-            strategy_name = "DEBIT_FADE"
-
-        # ITM Momentum: Ride the move
-        elif state.recommended_strategy == IntradayStrategy.ITM_MOMENTUM:
-            direction = OptionDirection.CALL if qqq_up else OptionDirection.PUT
-            strategy_name = "ITM_MOM"
-
-        # Credit Spread: Contrarian if score > 50, else momentum
-        elif state.recommended_strategy == IntradayStrategy.CREDIT_SPREAD:
-            if state.micro_score > 50:
-                direction = OptionDirection.PUT if qqq_up else OptionDirection.CALL
-            else:
-                direction = OptionDirection.CALL if qqq_up else OptionDirection.PUT
-            strategy_name = "CREDIT"
-
-        else:
+        # V2.3.4: Use direction from state (determined by recommend_strategy_and_direction)
+        direction = state.recommended_direction
+        if direction is None:
+            self.log(f"INTRADAY: No direction recommended for {state.recommended_strategy.value}")
             return None
+
+        # Map strategy to name for logging
+        strategy_names = {
+            IntradayStrategy.DEBIT_FADE: "DEBIT_FADE",
+            IntradayStrategy.ITM_MOMENTUM: "ITM_MOM",
+            IntradayStrategy.CREDIT_SPREAD: "CREDIT",
+        }
+        strategy_name = strategy_names.get(state.recommended_strategy, "UNKNOWN")
 
         # Check time windows based on strategy
         time_minutes = current_hour * 60 + current_minute

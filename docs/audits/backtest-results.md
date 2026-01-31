@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-01-31
+> **Last Updated:** 2026-01-31 (V2.3.4 Micro Regime + VIX Resolution Fixes)
 
 ---
 
@@ -28,7 +28,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | Stage | Duration | Purpose | Status |
 |:-----:|----------|---------|:------:|
 | 1 | 1 day (Jan 2, 2024) | Basic validation - no errors, Initialize() completes | **PASS** ✅ |
-| 2 | 7 days (Jan 2-8, 2024) | Short-term behavior, actual trades | **V2.3.2 FIXES APPLIED** 🟢 |
+| 2 | 7 days (Jan 2-8, 2024) | Short-term behavior, actual trades | **V2.3.4 FIXES APPLIED** 🟢 |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
@@ -64,7 +64,66 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 - Options sizing: ✅ FIXED (Phase A)
 - Naked options vs Debit Spreads: ✅ FIXED (Phase B)
 
-**Next Step:** Re-run Stage 2 backtest with V2.3.3 fixes.
+### V2.3.4 Micro Regime + VIX Resolution Fixes (2026-01-31)
+
+**Audit Reference:** `docs/audits/stage2-codeaudit.md` (Parts 5-7)
+
+| # | Fix | Severity | Description | Status |
+|:-:|-----|:--------:|-------------|:------:|
+| 1 | Cold Start Bypass | CRITICAL | Options entering on Day 1 during cold start period | ✅ |
+| 2 | Direction Mismatch | CRITICAL | Contract selected BEFORE direction determined | ✅ |
+| 3 | Inverted Trade | CRITICAL | Bought CALL when should have bought PUT for fade | ✅ |
+| 4 | Global Kill Switch | HIGH | Options loss liquidating healthy trend positions | ✅ |
+| 5 | Spread Criteria Tight | HIGH | OI 5000, delta 0.25-0.40 too restrictive | ✅ |
+| 6 | DTE Too Wide | MEDIUM | 0-5 DTE not true 0DTE trading | ✅ |
+| 7 | VIX Resolution Daily | CRITICAL | VIX only updated once/day, not intraday | ✅ |
+| 8 | QQQ Move Not in Regime | HIGH | Direction determined separately from regime | ✅ |
+
+**Key Implementation Changes:**
+
+1. **VIX Resolution Fix** (`main.py`):
+   - Changed from `Resolution.Daily` to `Resolution.Minute`
+   - VIX now updates every minute (gathered silently, processed every 15 min)
+   - Added `_vix_15min_ago` tracker for short-term trend detection
+
+2. **QQQ Move in Micro Regime** (`options_engine.py`):
+   - Added `QQQMove` enum (UP_STRONG, UP, FLAT, DOWN, DOWN_STRONG)
+   - Created `recommend_strategy_and_direction()` - combined decision
+   - Direction determined INSIDE regime assessment, not separately
+   - `state.recommended_direction` now set by Micro Regime Engine
+
+3. **Direction-First Contract Selection** (`main.py`):
+   - Determine direction based on QQQ move FIRST
+   - Pass direction to `_select_intraday_option_contract()`
+   - Filter contracts by direction before other criteria
+
+4. **Engine-Specific Kill Switch** (`main.py`):
+   - Analyze which engine caused the loss
+   - Only liquidate options if options are the culprit
+   - Protect healthy trend positions from options-triggered kill switch
+
+5. **Config Changes** (`config.py`):
+   - `OPTIONS_MIN_OPEN_INTEREST = 1000` (was 5000)
+   - `OPTIONS_INTRADAY_DTE_MAX = 1` (was 5, true 0DTE)
+   - `SPREAD_SHORT_LEG_DELTA_MIN = 0.15` (was 0.25)
+   - `SPREAD_SHORT_LEG_DELTA_MAX = 0.45` (was 0.40)
+
+**Data Flow (V2.3.4):**
+```
+OnData (every minute)
+  └── VIX updates self._current_vix (NO LOG)
+  └── QQQ price available via Securities
+
+_on_micro_regime_update (every 15 min)
+  └── Calculate 15-min VIX change
+  └── micro_engine.update() with VIX + QQQ data
+        ├── Classify VIX level + direction
+        ├── Classify QQQ move direction
+        └── recommend_strategy_and_direction()
+              └── Returns (strategy, direction, reason)
+```
+
+**Next Step:** Re-run Stage 2 backtest with V2.3.4 fixes.
 
 ---
 
@@ -194,7 +253,8 @@ self.SetCash(50_000)  # PHASE_SEED_MIN
 | 5 | Retrospective Apricot Leopard | -6.92% | 15 | Kill switch reset working, options sizing wrong |
 | 6 | Smooth Magenta Bat | -8.33% | 9 | Account killer bug (471 contracts instead of 58) |
 | 7 | **Casual Orange Cobra** | **-6.98%** | 14 | V2.3.2 fixes applied, improved from -8.33% |
-| 8 | TBD (V2.3.3) | — | — | **V2.3.3 Part 3 Fixes In Progress** |
+| 8 | Pensive Magenta Chicken | -12.47% | 29 | V2.3.3 applied, kill switch cascade issue |
+| 9 | TBD (V2.3.4) | — | — | **V2.3.4 Micro Regime + VIX Resolution Fixes Ready** |
 
 ### V2.3.1 Fixes (Post Ugly Tan Lemur)
 
@@ -575,4 +635,4 @@ lean cloud backtest AlphaNextGen
 
 ---
 
-*Document created: 2026-01-30*
+*Document created: 2026-01-30 | Last updated: 2026-01-31 (V2.3.4)*
