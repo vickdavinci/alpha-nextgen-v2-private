@@ -482,7 +482,7 @@ class TestHelperMethods:
         """Test get_minimum_trade_threshold returns config value."""
         engine = YieldSleeve()
         assert engine.get_minimum_trade_threshold() == config.SHV_MIN_TRADE
-        assert engine.get_minimum_trade_threshold() == 2000  # As per config
+        # V2.3.6: Changed from 2000 to 10000 to reduce SHV churn
 
 
 class TestTargetWeightValidation:

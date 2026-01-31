@@ -92,16 +92,16 @@ WARM_MIN_SIZE = 2_000
 # V2 Entry: MA200 + ADX Confirmation
 MA200_PERIOD = 200  # Long-term trend baseline
 ADX_PERIOD = 14  # Average Directional Index for momentum confirmation
-ADX_ENTRY_THRESHOLD = 25  # Minimum ADX for entry (score_adx >= 0.50)
+ADX_ENTRY_THRESHOLD = 20  # V2.3.7: Lowered from 25 - enter on emerging trends (ADX is lagging)
 ADX_STRONG_THRESHOLD = 35  # ADX for highest confidence
 
-# ADX Scoring Thresholds (V2.1 spec)
-# ADX < 20: 0.25 (weak)
-# ADX 20-25: 0.50 (moderate)
-# ADX 25-35: 0.75 (strong)
+# ADX Scoring Thresholds (V2.3.7 adjusted)
+# ADX < 15: 0.25 (weak)
+# ADX 15-20: 0.50 (moderate)
+# ADX 20-35: 0.75 (strong)
 # ADX >= 35: 1.00 (very strong)
-ADX_WEAK_THRESHOLD = 20
-ADX_MODERATE_THRESHOLD = 25
+ADX_WEAK_THRESHOLD = 15  # V2.3.7: Lowered from 20 - allow weaker trends
+ADX_MODERATE_THRESHOLD = 20  # V2.3.7: Lowered from 25
 
 # Chandelier Stop
 ATR_PERIOD = 14
@@ -359,9 +359,9 @@ OPTIONS_IV_RANK_HIGH = 80  # IV rank > 80 → 0.25
 
 # Liquidity Factor
 OPTIONS_SPREAD_MAX_PCT = 0.05  # Max 5% bid-ask spread
-OPTIONS_SPREAD_WARNING_PCT = 0.15  # V2.3.6: Widened from 10% - 0DTE spreads are naturally wider
+OPTIONS_SPREAD_WARNING_PCT = 0.25  # V2.3.7: Widened from 15% - fast markets have wide spreads
 OPTIONS_MIN_OPEN_INTEREST = (
-    200  # V2.3.6: Lowered from 500 - 0DTE contracts have lower OI, especially PUTs on up days
+    100  # V2.3.7: Lowered from 200 - 0DTE contracts have even lower OI in practice
 )
 
 # Confidence-Weighted Tiered Stops
@@ -434,9 +434,9 @@ SPREAD_VIX_MAX_BULL = 30  # Max VIX for Bull Call Spread entry
 SPREAD_VIX_MAX_BEAR = 35  # Max VIX for Bear Put Spread entry (allow higher)
 
 # Spread width (strike difference between legs)
-SPREAD_WIDTH_MIN = 3.0  # Minimum $3 wide
+SPREAD_WIDTH_MIN = 2.0  # V2.3.7: Accept $2 spreads (was $3) - more flexibility
 SPREAD_WIDTH_MAX = 5.0  # Maximum $5 wide
-SPREAD_WIDTH_TARGET = 5.0  # Target $5 wide for better risk/reward
+SPREAD_WIDTH_TARGET = 3.0  # V2.3.7: Target $3 (was $5) - matches market reality
 
 # DTE for debit spreads (per V2.3 spec)
 SPREAD_DTE_MIN = 10  # Minimum 10 DTE (avoid gamma acceleration)
@@ -451,8 +451,8 @@ SPREAD_REGIME_EXIT_BEAR = 60  # Exit Bear Put if regime rises above 60
 # Delta targets for spread legs
 SPREAD_LONG_LEG_DELTA_MIN = 0.40  # V2.3.5: Widened from 0.45 per PART 9 - ATM ±0.10
 SPREAD_LONG_LEG_DELTA_MAX = 0.60  # V2.3.5: Widened from 0.55 per PART 9 - ATM ±0.10
-SPREAD_SHORT_LEG_DELTA_MIN = 0.15  # V2.3.4: Relaxed from 0.25 for more OTM options
-SPREAD_SHORT_LEG_DELTA_MAX = 0.45  # V2.3.4: Relaxed from 0.40 for wider range
+SPREAD_SHORT_LEG_DELTA_MIN = 0.10  # V2.3.7: Accept more OTM (was 0.15)
+SPREAD_SHORT_LEG_DELTA_MAX = 0.50  # V2.3.7: Accept closer to ATM (was 0.45)
 
 # -----------------------------------------------------------------------------
 # V2.1.1 VIX DIRECTION THRESHOLDS (Micro Regime Engine)

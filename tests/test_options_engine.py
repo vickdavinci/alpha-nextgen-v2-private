@@ -221,28 +221,28 @@ class TestLiquidityScoring:
         assert score == 0.75  # (0.5 + 1.0) / 2
 
     def test_liquidity_wide_spread(self, engine):
-        """Test wide spread (> 10%) reduces score significantly."""
+        """Test wide spread (> 25%) reduces score significantly. V2.3.7 threshold."""
         score = engine._score_liquidity(
-            spread_pct=0.15,  # > 10%
+            spread_pct=0.30,  # > 25% (V2.3.7 warning threshold)
             open_interest=10000,
         )
         assert score == 0.5  # (0.0 + 1.0) / 2
 
     def test_liquidity_low_oi(self, engine):
         """Test low open interest reduces score."""
-        # V2.3.4: OI thresholds changed (MIN_OI now 1000, half is 500)
+        # V2.3.7: OI thresholds changed (MIN_OI now 100, half is 50)
         score = engine._score_liquidity(
             spread_pct=0.03,
-            open_interest=750,  # 500-1000 (low OI range)
+            open_interest=75,  # 50-100 (low OI range)
         )
         assert score == 0.75  # (1.0 + 0.5) / 2
 
     def test_liquidity_very_low_oi(self, engine):
         """Test very low OI reduces score significantly."""
-        # V2.3.4: OI thresholds changed (MIN_OI now 1000, half is 500)
+        # V2.3.7: OI thresholds changed (MIN_OI now 100, half is 50)
         score = engine._score_liquidity(
             spread_pct=0.03,
-            open_interest=300,  # < 500
+            open_interest=30,  # < 50
         )
         assert score == 0.5  # (1.0 + 0.0) / 2
 

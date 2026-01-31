@@ -196,10 +196,10 @@ class TestOptionsChainFiltering:
         """
         # Max bid-ask spread
         assert config.OPTIONS_SPREAD_MAX_PCT == 0.05  # 5%
-        assert config.OPTIONS_SPREAD_WARNING_PCT == 0.10  # 10%
+        assert config.OPTIONS_SPREAD_WARNING_PCT == 0.25  # V2.3.7: Widened from 10% to 25%
 
-        # Min open interest (V2.3.4: Relaxed from 5000 to 1000)
-        assert config.OPTIONS_MIN_OPEN_INTEREST == 1000
+        # Min open interest (V2.3.7: Relaxed from 200 to 100)
+        assert config.OPTIONS_MIN_OPEN_INTEREST == 100
 
     def test_min_premium_filter(self):
         """

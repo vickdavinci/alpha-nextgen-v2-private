@@ -151,6 +151,24 @@ class YieldSleeve:
             current_shv_value=current_shv_value,
         )
 
+        # V2.3.7 FIX: Cap unallocated to available margin to prevent "Insufficient buying power"
+        # This fixes the "Cash Death Spiral" bug where SHV orders fail due to pending orders
+        # consuming margin before SHV order executes
+        if self.algorithm and hasattr(self.algorithm, "Portfolio"):
+            try:
+                margin_remaining = float(self.algorithm.Portfolio.MarginRemaining)
+                # Use 95% of margin as buffer for price fluctuations
+                max_buyable = margin_remaining * 0.95 if margin_remaining > 0 else 0
+                if unallocated > max_buyable:
+                    self.log(
+                        f"YIELD: MARGIN_CAP | Unallocated ${unallocated:,.0f} "
+                        f"capped to ${max_buyable:,.0f} (MarginRemaining=${margin_remaining:,.0f})"
+                    )
+                    unallocated = max_buyable
+            except (TypeError, AttributeError):
+                # Skip margin check if Portfolio is mocked in tests
+                pass
+
         # Calculate available SHV (excluding lockbox)
         available_shv = self.get_available_shv(current_shv_value, locked_amount)
 
