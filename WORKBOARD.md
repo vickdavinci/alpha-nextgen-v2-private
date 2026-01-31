@@ -70,7 +70,7 @@
 | Stage | Duration | Purpose | Status | Date |
 |:-----:|----------|---------|:------:|------|
 | 1 | 1 day | Basic validation | **PASS** ✅ | 2026-01-30 |
-| 2 | 30 days | Short-term behavior | **FAIL** 🔴 | 2026-01-30 |
+| 2 | 30 days | Short-term behavior | **LOGIC OK** 🟡 | 2026-01-30 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
@@ -383,8 +383,8 @@ git merge feat/backtest-reporting
 | Stage | Duration | Status | Next Action |
 |:-----:|----------|:------:|-------------|
 | 1 | 1 day | ✅ PASS | Complete |
-| 2 | 30 days | ✅ PASS | Complete |
-| 3 | 3 months | ⏳ | Run next |
+| 2 | 30 days | 🟡 LOGIC OK | Analyze logs for performance tuning |
+| 3 | 3 months | ⏳ | Run after Stage 2 analysis |
 | 4 | 1 year | — | After Stage 3 |
 | 5 | 5 years + crisis | — | After Stage 4 |
 
@@ -404,7 +404,7 @@ git merge feat/backtest-reporting
 | Task | Status | Notes |
 |------|--------|-------|
 | Stage 1 backtest (1 day) | ✅ | PASS - 2026-01-30 |
-| Stage 2 backtest (30 days) | ✅ | PASS - 2026-01-30 (+0.20%, SHV only) |
+| Stage 2 backtest (30 days) | 🟡 | Logic OK (-9.67%, 8 orders) - needs perf tuning |
 | Stage 3 backtest (3 months) | ⏳ | Required |
 | Stage 4 backtest (1 year) | ⏳ | Required |
 | Stage 5 backtest (5 years + crisis) | ⏳ | Required |

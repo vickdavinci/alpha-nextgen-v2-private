@@ -28,18 +28,22 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | Stage | Duration | Purpose | Status |
 |:-----:|----------|---------|:------:|
 | 1 | 1 day (Jan 2, 2024) | Basic validation - no errors, Initialize() completes | **PASS** ✅ |
-| 2 | 30 days (Jan 2024) | Short-term behavior, actual trades | **BLOCKED** 🔴 |
+| 2 | 30 days (Jan 2024) | Short-term behavior, actual trades | **LOGIC OK** 🟡 |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
 
-### Stage 2 Blockers (2026-01-30)
+### Stage 2 Summary (2026-01-30)
 
-| Issue | Description | Fix | Status |
-|-------|-------------|-----|:------:|
-| API Mismatch | `RegimeEngine.calculate()` called with wrong params | Fixed `spy_close` → `spy_closes` | ✅ Fixed |
-| Log Spam | 410 `INTRADAY_SIGNAL` logs/day | Changed `trades_only=False` | ✅ Fixed |
-| No Options Trades | Signals generated but no orders | Under investigation | 🔴 Open |
+**Latest Run:** Geeky Yellow-Green Buffalo | **Result:** -9.67% | **Orders:** 8
+
+**Logic Validation:** All V2.3 fixes verified working:
+- Order spam: 371 → 8 orders ✅
+- Delta targeting: Now selecting 0.70δ/0.30δ ✅
+- Kill switch blocking: Prevents entries after trigger ✅
+- Log spam: Reduced to 1 warning/day ✅
+
+**Next Step:** Analyze logs to understand trade behavior and tune performance.
 
 ---
 
@@ -112,11 +116,35 @@ self.SetCash(50_000)  # PHASE_SEED_MIN
 ## Stage 2: 30-Day Validation (V2.3)
 
 **Date:** 2026-01-30
-**Status:** **IN PROGRESS** 🟡
+**Status:** **LOGIC OK** 🟡
 **Backtest Period:** January 2-31, 2024 (with 300-day warmup)
 **Branch:** `testing/va/stage2-backtest`
 
-### V2.3 Fix Summary (Latest - 2026-01-30)
+### Latest Results: Geeky Yellow-Green Buffalo
+
+| Metric | Value |
+|--------|-------|
+| **Start Equity** | $50,000 |
+| **End Equity** | $45,163.36 |
+| **Net Profit** | -9.67% |
+| **Total Orders** | 8 |
+| **Fees** | $621.91 |
+| **Max Drawdown** | 16.5% |
+| **Win Rate** | 33% |
+| **Loss Rate** | 67% |
+
+**Backtest URL:** https://www.quantconnect.com/project/27678023/cf12ec2635b6958b1edac7e752d15aea
+
+### V2.3 Fix Validation
+
+| Fix | Before | After | Status |
+|-----|--------|-------|:------:|
+| Order spam prevention | 371 orders | 8 orders | ✅ Fixed |
+| Log spam after 14:30 | 100+ logs/day | 1 log/day | ✅ Fixed |
+| Kill switch blocking options | Not blocked | Blocked | ✅ Fixed |
+| Delta targeting | ATM (0.50δ) | Swing=0.70δ, Intraday=0.30δ | ✅ Fixed |
+
+### V2.3 Fix Summary
 
 | Issue | Fix | Config Change |
 |-------|-----|---------------|
@@ -134,11 +162,11 @@ self.SetCash(50_000)  # PHASE_SEED_MIN
 
 ### Backtest History
 
-| Run | Name | Result | Issues |
-|-----|------|--------|--------|
-| 1 | Formal Blue Dragonfly | -6.76% | Kill switch never reset, 29 days blocked |
-| 2 | Casual Yellow Chicken | -13.61% | 300+ Invalid orders, wrong delta, log spam |
-| 3 | TBD | TBD | Pending with V2.3 fixes |
+| Run | Name | Result | Orders | Issues |
+|-----|------|--------|:------:|--------|
+| 1 | Formal Blue Dragonfly | -6.76% | 5 | Kill switch never reset, 29 days blocked |
+| 2 | Casual Yellow Chicken | -13.61% | 371 | 300+ Invalid orders, wrong delta, log spam |
+| 3 | Geeky Yellow-Green Buffalo | -9.67% | 8 | **Logic OK** - ready for perf analysis |
 
 ---
 
