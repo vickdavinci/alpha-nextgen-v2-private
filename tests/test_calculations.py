@@ -422,12 +422,12 @@ class TestRegimeScoreCalculations:
         assert abs(result - 50) < 0.0001
 
     def test_aggregate_regime_score_weighted(self):
-        """Weights applied correctly."""
-        # Trend=70 (35%), Vol=60 (25%), Breadth=55 (25%), Credit=50 (15%)
-        # = 70*0.35 + 60*0.25 + 55*0.25 + 50*0.15
-        # = 24.5 + 15 + 13.75 + 7.5 = 60.75
-        result = aggregate_regime_score(70, 60, 55, 50)
-        assert abs(result - 60.75) < 0.0001
+        """V2.3 weights applied correctly (includes VIX factor)."""
+        # V2.3 Formula: Trend=70 (30%), VIX=50 (20%), Vol=60 (15%), Breadth=55 (20%), Credit=50 (15%)
+        # = 70*0.30 + 50*0.20 + 60*0.15 + 55*0.20 + 50*0.15
+        # = 21.0 + 10.0 + 9.0 + 11.0 + 7.5 = 58.5
+        result = aggregate_regime_score(70, 60, 55, 50)  # vix_score defaults to 50
+        assert abs(result - 58.5) < 0.0001
 
     def test_smooth_regime_score(self):
         """Exponential smoothing applied correctly."""
