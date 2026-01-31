@@ -151,17 +151,17 @@ class TestObjectStoreSimulation:
 class TestWarmupCompletion:
     """Test warmup period behavior."""
 
-    def test_warmup_252_days_required(self):
+    def test_warmup_300_days_required(self):
         """
-        Verify all indicators require 252 days warmup.
+        Verify all indicators require 300 calendar days warmup.
 
-        MA200 is the longest indicator (200 days + buffer = 252).
+        MA200 is the longest indicator (200 trading days + buffer = 300 calendar days).
         """
-        assert config.INDICATOR_WARMUP_DAYS == 252
+        assert config.INDICATOR_WARMUP_DAYS == 300
 
     def test_indicators_ready_after_warmup(self):
         """
-        Verify all indicators are ready after 252 days of data.
+        Verify all indicators are ready after 300 days of data.
         """
         algo = create_test_algorithm()
 
@@ -171,8 +171,8 @@ class TestWarmupCompletion:
         atr = MockATR(14)
         rsi = MockRSI(5)
 
-        # Feed 252 days of data
-        for i in range(252):
+        # Feed 300 days of data (calendar days, not trading days)
+        for i in range(300):
             price = 450.0 + (i % 10)
             time = datetime(2024, 1, 1) + timedelta(days=i)
             sma200.Update(time, price)

@@ -100,14 +100,14 @@ class TestEntryScore:
         assert score.is_valid is True
 
     def test_is_valid_below_threshold(self):
-        """Test score < 3.0 is invalid."""
+        """Test score < OPTIONS_ENTRY_SCORE_MIN (2.0) is invalid."""
         score = EntryScore(
-            score_adx=0.50,
-            score_momentum=0.75,
-            score_iv=0.75,
-            score_liquidity=0.75,
+            score_adx=0.25,
+            score_momentum=0.50,
+            score_iv=0.50,
+            score_liquidity=0.50,
         )
-        assert score.total == 2.75
+        assert score.total == 1.75
         assert score.is_valid is False
 
     def test_to_dict(self):
@@ -971,11 +971,13 @@ class TestGreeksMonitoring:
 
         greeks = engine.calculate_position_greeks()
         assert greeks is not None
-        # Per-contract Greeks (not scaled) for risk limit checking
+        # Per-contract Greeks for delta/gamma/vega, normalized theta (% of position value)
         assert greeks.delta == 0.50
         assert greeks.gamma == 0.03
         assert greeks.vega == 0.15
-        assert greeks.theta == -0.02
+        # theta normalized: (raw_theta × num_contracts) / (num_contracts × mid_price × 100)
+        # = (-0.02 × 10) / (10 × 1.50 × 100) = -0.2 / 1500 ≈ -0.000133
+        assert abs(greeks.theta - (-0.000133333)) < 0.0001
 
     def test_update_position_greeks(self):
         """Test updating position Greeks."""
@@ -1123,8 +1125,8 @@ class TestDTEDeltaFiltering:
             days_to_expiry=3,  # Within 1-4 DTE range
         )
 
-    def test_entry_blocked_dte_too_low(self, engine):
-        """Test entry blocked when DTE < 1."""
+    def test_entry_allowed_dte_at_zero(self, engine):
+        """Test entry allowed when DTE = 0 (minimum per config.OPTIONS_DTE_MIN=0)."""
         contract = OptionContract(
             symbol="QQQ 260126C00455000",
             strike=455.0,
@@ -1132,7 +1134,7 @@ class TestDTEDeltaFiltering:
             delta=0.50,
             mid_price=1.45,
             open_interest=5000,
-            days_to_expiry=0,  # 0 DTE - too low
+            days_to_expiry=0,  # 0 DTE - allowed in Intraday mode
         )
 
         result = engine.check_entry_signal(
@@ -1146,18 +1148,19 @@ class TestDTEDeltaFiltering:
             current_date="2026-01-26",
             portfolio_value=100000,
         )
-        assert result is None
+        # DTE=0 is within allowed range (0-45), so entry is allowed
+        assert result is not None
 
     def test_entry_blocked_dte_too_high(self, engine):
-        """Test entry blocked when DTE > 4."""
+        """Test entry blocked when DTE > 45 (config.OPTIONS_DTE_MAX)."""
         contract = OptionContract(
-            symbol="QQQ 260205C00455000",
+            symbol="QQQ 260320C00455000",
             strike=455.0,
-            expiry="2026-02-05",
+            expiry="2026-03-20",
             delta=0.50,
             mid_price=2.50,
             open_interest=5000,
-            days_to_expiry=10,  # 10 DTE - too high
+            days_to_expiry=50,  # 50 DTE - exceeds max of 45
         )
 
         result = engine.check_entry_signal(
@@ -1379,7 +1382,13 @@ class TestGreeksBreachThresholds:
         assert "ALL_OPTIONS" in symbols
 
     def test_check_greeks_breach_theta_exceeded(self):
-        """Test Greeks breach when theta exceeds limit (-0.02)."""
+        """Test Greeks breach when normalized theta exceeds limit (-0.02 = -2%/day).
+
+        Theta is normalized: theta_pct = (raw_theta × num_contracts) / position_value
+        With mid_price=1.50 and num_contracts=10, position_value = 10 × 1.50 × 100 = 1500
+        For theta_pct < -0.02: raw_theta × 10 / 1500 < -0.02
+        raw_theta must be < -3.0
+        """
         from engines.core.risk_engine import RiskEngine
 
         engine = OptionsEngine()
@@ -1390,7 +1399,7 @@ class TestGreeksBreachThresholds:
             delta=0.50,  # Within limits
             gamma=0.02,  # Within limits
             vega=0.10,  # Within limits
-            theta=-0.03,  # Exceeds CB_THETA_WARNING=-0.02 (more negative)
+            theta=-5.00,  # Raw theta that will exceed normalized threshold
             strike=455.0,
             expiry="2026-01-26",
             mid_price=1.50,
@@ -1403,7 +1412,8 @@ class TestGreeksBreachThresholds:
         engine._pending_stop_pct = 0.25
         engine.register_entry(1.45, "10:30:00", "2026-01-26")
 
-        # Theta -0.03 < threshold -0.02 triggers breach
+        # Normalized theta = (-5.00 × 10) / (10 × 1.50 × 100) = -50 / 1500 = -0.0333
+        # -0.0333 < -0.02 triggers breach
         is_breach, symbols = engine.check_greeks_breach(risk_engine)
         assert is_breach is True
         assert "ALL_OPTIONS" in symbols
@@ -1628,20 +1638,20 @@ class TestDualModeArchitecture:
         assert mode == OptionsMode.SWING
 
     def test_get_mode_allocation_intraday(self, engine):
-        """Test intraday mode allocation is 5%."""
+        """Test intraday mode allocation is 6.25% (config.OPTIONS_INTRADAY_ALLOCATION)."""
         from models.enums import OptionsMode
 
         allocation = engine.get_mode_allocation(OptionsMode.INTRADAY, portfolio_value=100000)
-        # 5% of $100,000 = $5,000
-        assert allocation == 5000.0
+        # 6.25% of $100,000 = $6,250
+        assert allocation == 6250.0
 
     def test_get_mode_allocation_swing(self, engine):
-        """Test swing mode allocation is 15%."""
+        """Test swing mode allocation is 18.75% (config.OPTIONS_SWING_ALLOCATION)."""
         from models.enums import OptionsMode
 
         allocation = engine.get_mode_allocation(OptionsMode.SWING, portfolio_value=100000)
-        # 15% of $100,000 = $15,000
-        assert allocation == 15000.0
+        # 18.75% of $100,000 = $18,750
+        assert allocation == 18750.0
 
     def test_check_intraday_entry_blocked_existing_position(self, engine):
         """Intraday entry blocked when intraday position exists."""
