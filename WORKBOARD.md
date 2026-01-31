@@ -224,23 +224,41 @@
 
 **Status:** V2.3.8 fixes complete - Ready for backtest validation
 
+**V2.3.9 Fix: ComboMarketOrder for Spreads (CTA Memo 2026-01-31):**
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **$729K Margin Rejection** - Sequential spread legs treated as naked short | CRITICAL | ✅ FIXED |
+
+**V2.3.9 Key Changes:**
+- Added `submit_combo_order()` to execution_engine.py
+- Added `is_combo`, `combo_short_symbol`, `combo_short_quantity` to OrderIntent
+- Updated `_generate_orders` to create single combo order for spreads
+- Updated `execute_orders` to use `ComboMarketOrder` for combo orders
+- Both legs submitted in single ticket = broker sees NET risk
+
+**Root Cause:** Broker treats sequential spread legs as separate orders. Selling short leg first = naked short requiring $729K margin. Broker doesn't "know" we plan to buy protection 100ms later.
+
+**Solution (per CTA Memo):** "Using Combo Orders will automatically calculate the multi-leg margin instead of classical one." ComboMarketOrder submits both legs atomically → broker calculates spread margin (~$42K) not naked margin (~$729K).
+
+**Status:** V2.3.9 fixes complete - Ready for backtest validation
+
 ---
 
-**V2.3.9 Planned: Bidirectional Mean Reversion (PART 12)**
+**V2.4.0 Planned: Bidirectional Mean Reversion (PART 12)**
 | # | Feature | Severity | Status |
 |:-:|---------|:--------:|:------:|
-| 1 | **Add SQQQ/SOXS inverse ETFs** - Capture "rally fade" when RSI > 75 | ENHANCEMENT | 🟡 AFTER V2.3.8 |
-| 2 | **Mutual exclusivity** - Block TQQQ entry if SQQQ held (and vice versa) | HIGH | 🟡 AFTER V2.3.8 |
-| 3 | **MR allocation cap** - Ensure Long + Short ≤ 10% total | HIGH | 🟡 AFTER V2.3.8 |
+| 1 | **Add SQQQ/SOXS inverse ETFs** - Capture "rally fade" when RSI > 75 | ENHANCEMENT | 🟡 AFTER V2.3.9 |
+| 2 | **Mutual exclusivity** - Block TQQQ entry if SQQQ held (and vice versa) | HIGH | 🟡 AFTER V2.3.9 |
+| 3 | **MR allocation cap** - Ensure Long + Short ≤ 10% total | HIGH | 🟡 AFTER V2.3.9 |
 
-**V2.3.9 Scope:**
+**V2.4.0 Scope:**
 - Add MR_SHORT_SYMBOLS = ["SQQQ", "SOXS"] to config.py
 - Add MR_RALLY_THRESHOLD = 0.025, MR_RSI_OVERBOUGHT = 75
 - Subscribe to SQQQ, SOXS in main.py
 - Update mean_reversion_engine.py with bidirectional logic
 - Enforce mutual exclusivity (no simultaneous long + short)
 
-**Rationale for Deferral:** V2.3.8 made 3 risk management fixes. Need to isolate their performance impact before adding a new strategy direction. Bidirectional MR is a strategy enhancement, not a bug fix.
+**Rationale for Deferral:** V2.3.9 fixed the critical margin issue. Need to isolate performance impact before adding a new strategy direction. Bidirectional MR is a strategy enhancement, not a bug fix.
 
 ### Stage 2 Bugs - Prioritized Fix List
 
