@@ -1235,6 +1235,7 @@ class OptionsEngine:
             source="OPT",
             urgency=Urgency.IMMEDIATE,
             reason=reason,
+            requested_quantity=num_contracts,  # V2.3.2: Pass risk-calculated contracts
         )
 
     # =========================================================================
@@ -1558,11 +1559,27 @@ class OptionsEngine:
         else:
             size_mult = 0.5  # Half size
 
+        # V2.3.2: Calculate actual number of contracts based on allocation
+        adjusted_allocation = allocation * size_mult
+        premium = best_contract.mid_price
+        if premium <= 0:
+            self.log("INTRADAY: Entry blocked - invalid premium price")
+            return None
+
+        # Calculate contracts: allocation / (premium * 100 shares per contract)
+        num_contracts = int(adjusted_allocation / (premium * 100))
+        if num_contracts <= 0:
+            self.log(
+                f"INTRADAY: Entry blocked - allocation ${adjusted_allocation:.0f} "
+                f"too small for premium ${premium:.2f}"
+            )
+            return None
+
         reason = (
             f"INTRADAY_{strategy_name}: Regime={state.micro_regime.value} | "
             f"Score={state.micro_score:.0f} | VIX={vix_current:.1f} "
             f"({state.vix_direction.value}) | QQQ {'+' if qqq_up else ''}"
-            f"{state.qqq_move_pct:.2f}% | {direction.value}"
+            f"{state.qqq_move_pct:.2f}% | {direction.value} x{num_contracts}"
         )
 
         # V2.3 FIX: Mark that we attempted entry today (prevents retry spam)
@@ -1579,6 +1596,7 @@ class OptionsEngine:
             source="OPT_INTRADAY",
             urgency=Urgency.IMMEDIATE,
             reason=reason,
+            requested_quantity=num_contracts,  # V2.3.2: Pass calculated contracts
         )
 
     def check_intraday_force_exit(

@@ -53,6 +53,7 @@ class AggregatedWeight:
         sources: List of source engines that contributed.
         urgency: Highest urgency from all sources (IMMEDIATE > EOD).
         reasons: Combined reasons from all sources.
+        requested_quantity: Optional explicit quantity for options (V2.3.2).
     """
 
     symbol: str
@@ -60,6 +61,7 @@ class AggregatedWeight:
     sources: List[str] = field(default_factory=list)
     urgency: Urgency = Urgency.EOD
     reasons: List[str] = field(default_factory=list)
+    requested_quantity: Optional[int] = None  # V2.3.2: For options risk-based sizing
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for logging."""
@@ -268,6 +270,10 @@ class PortfolioRouter:
             if weight.urgency == Urgency.IMMEDIATE:
                 agg.urgency = Urgency.IMMEDIATE
 
+            # V2.3.2: Preserve requested_quantity for options
+            if weight.requested_quantity is not None:
+                agg.requested_quantity = weight.requested_quantity
+
         return aggregated
 
     # =========================================================================
@@ -467,9 +473,22 @@ class PortfolioRouter:
             is_option = len(symbol) > 10 and ("C0" in symbol or "P0" in symbol)
 
             if is_option:
-                # Options: 1 contract = 100 shares, so cost = price * 100
-                # delta_contracts = delta_value / (price * 100)
-                delta_shares = int(delta_value / (price * 100))
+                # V2.3.2: Use requested_quantity if provided (risk-based sizing)
+                if agg.requested_quantity is not None and agg.requested_quantity > 0:
+                    # Options engine calculated the correct contract count
+                    delta_shares = agg.requested_quantity
+                    self.log(
+                        f"ROUTER: OPTIONS_SIZING | {symbol} | "
+                        f"Using requested_quantity={agg.requested_quantity} contracts"
+                    )
+                else:
+                    # Fallback: calculate from target_weight (legacy behavior)
+                    # Options: 1 contract = 100 shares, so cost = price * 100
+                    delta_shares = int(delta_value / (price * 100))
+                    self.log(
+                        f"ROUTER: OPTIONS_SIZING | {symbol} | "
+                        f"Fallback to weight-based: {delta_shares} contracts"
+                    )
             else:
                 # Equities: 1 share = 1 share
                 delta_shares = int(delta_value / price)
@@ -582,20 +601,24 @@ class PortfolioRouter:
                 self.log(f"ROUTER: SKIP_DUPLICATE | {order_key} already executed this minute")
                 continue
 
-            # V2.3 FIX: Check buying power before placing BUY orders
+            # V2.3.2 FIX: Check buying power before placing BUY orders
             if order.side == OrderSide.BUY:
                 try:
                     current_price = self.algorithm.Securities[order.symbol].Price  # type: ignore[attr-defined]
-                    order_value = (
-                        order.quantity * current_price * 100
-                        if "QQQ" in order.symbol and len(order.symbol) > 10
-                        else order.quantity * current_price
+                    # Detect options by symbol pattern (C0 or P0 for calls/puts)
+                    is_option = len(order.symbol) > 10 and (
+                        "C0" in order.symbol or "P0" in order.symbol
                     )
+                    # Options: 1 contract = 100 shares
+                    multiplier = 100 if is_option else 1
+                    order_value = order.quantity * current_price * multiplier
+
                     margin_remaining = self.algorithm.Portfolio.MarginRemaining  # type: ignore[attr-defined]
                     if order_value > margin_remaining:
                         self.log(
                             f"ROUTER: INSUFFICIENT_MARGIN | {order.symbol} | "
-                            f"Order=${order_value:,.0f} > Margin=${margin_remaining:,.0f}"
+                            f"Order=${order_value:,.0f} > Margin=${margin_remaining:,.0f} | "
+                            f"Qty={order.quantity} @ ${current_price:.2f}"
                         )
                         continue
                 except Exception:

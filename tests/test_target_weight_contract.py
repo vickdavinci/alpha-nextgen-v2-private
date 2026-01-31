@@ -13,8 +13,9 @@ Contract Rules:
 """
 
 import pytest
-from models.target_weight import TargetWeight
+
 from models.enums import Urgency
+from models.target_weight import TargetWeight
 
 
 class TestTargetWeightContract:
@@ -27,9 +28,10 @@ class TestTargetWeightContract:
 
     # Golden payloads - these represent the "expected" format
     # Each payload represents a real-world signal from a strategy engine
+    # V2.3.2: Updated to schema 1.1 with requested_quantity field
     GOLDEN_PAYLOADS = [
         {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "symbol": "QLD",
             "target_weight": 0.30,
             "source": "TREND",
@@ -37,9 +39,10 @@ class TestTargetWeightContract:
             "reason": "BB Breakout detected",
             "timestamp": None,
             "metadata": {},
+            "requested_quantity": None,
         },
         {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "symbol": "TQQQ",
             "target_weight": 0.15,
             "source": "MR",
@@ -47,9 +50,10 @@ class TestTargetWeightContract:
             "reason": "RSI oversold bounce",
             "timestamp": None,
             "metadata": {},
+            "requested_quantity": None,
         },
         {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "symbol": "TMF",
             "target_weight": 0.10,
             "source": "HEDGE",
@@ -57,9 +61,10 @@ class TestTargetWeightContract:
             "reason": "Regime CAUTIOUS, adding hedge",
             "timestamp": None,
             "metadata": {},
+            "requested_quantity": None,
         },
         {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "symbol": "SHV",
             "target_weight": 0.40,
             "source": "YIELD",
@@ -67,9 +72,10 @@ class TestTargetWeightContract:
             "reason": "Park idle cash",
             "timestamp": None,
             "metadata": {},
+            "requested_quantity": None,
         },
         {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "symbol": "TQQQ",
             "target_weight": 0.0,
             "source": "MR",
@@ -77,13 +83,15 @@ class TestTargetWeightContract:
             "reason": "TIME_EXIT_15:45",
             "timestamp": None,
             "metadata": {},
+            "requested_quantity": None,
         },
     ]
 
     def test_schema_version_matches(self):
         """Ensure current schema version matches golden payloads."""
-        assert TargetWeight.SCHEMA_VERSION == "1.0", (
-            f"Schema version mismatch! Expected 1.0, got {TargetWeight.SCHEMA_VERSION}. "
+        # V2.3.2: Updated to 1.1 for requested_quantity field
+        assert TargetWeight.SCHEMA_VERSION == "1.1", (
+            f"Schema version mismatch! Expected 1.1, got {TargetWeight.SCHEMA_VERSION}. "
             "If intentional, update all GOLDEN_PAYLOADS and notify all engine maintainers."
         )
 
@@ -108,6 +116,7 @@ class TestTargetWeightContract:
         assert result["source"] == payload["source"]
         assert result["urgency"] == payload["urgency"]
         assert result["reason"] == payload["reason"]
+        assert result["requested_quantity"] == payload["requested_quantity"]
 
     @pytest.mark.parametrize("payload", GOLDEN_PAYLOADS)
     def test_round_trip_serialization(self, payload):
@@ -151,6 +160,7 @@ class TestTargetWeightContract:
             "source",
             "urgency",
             "reason",
+            "requested_quantity",  # V2.3.2: Added for options sizing
         ]
         for field in required_fields:
             assert field in result, f"Missing required field: {field}"
@@ -231,7 +241,18 @@ class TestTargetWeightValidation:
 
     def test_valid_sources(self):
         """Accept all valid sources."""
-        valid_sources = ["TREND", "MR", "HEDGE", "YIELD", "COLD_START", "RISK", "ROUTER"]
+        # V2.3.2: Added OPT and OPT_INTRADAY sources
+        valid_sources = [
+            "TREND",
+            "MR",
+            "HEDGE",
+            "YIELD",
+            "COLD_START",
+            "RISK",
+            "ROUTER",
+            "OPT",
+            "OPT_INTRADAY",
+        ]
 
         for source in valid_sources:
             tw = TargetWeight(
