@@ -92,13 +92,13 @@
 
 ### Stage 2 Bugs - Prioritized Fix List
 
-#### 🔴 CRITICAL - Must Fix Before Next Backtest
+#### 🔴 CRITICAL - Phase A Complete ✅
 
 | # | Bug | Status | Description |
 |:-:|-----|:------:|-------------|
-| 1 | **Options sizing uses full portfolio** | 🔧 TODO | Day 1: 471 contracts ($25K) instead of 5% ($2.5K). 6× intended risk. |
-| 2 | **`_pending_num_contracts` ignored** | 🔧 TODO | Risk-based sizing calculated but discarded. `target_weight=1.0` passed to router. |
-| 3 | **Insufficient margin for options** | 🔧 TODO | Options orders fail when TNA/FAS/QLD already consume margin. |
+| 1 | **Options sizing uses full portfolio** | ✅ FIXED | Added `requested_quantity` to TargetWeight, router uses it for options |
+| 2 | **`_pending_num_contracts` ignored** | ✅ FIXED | Now passed via `requested_quantity` field in TargetWeight |
+| 3 | **Insufficient margin for options** | ✅ FIXED | Margin check improved for all options (not just QQQ) |
 
 #### 🟠 HIGH - Architecture Decision Required
 

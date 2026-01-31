@@ -263,13 +263,13 @@ The V2.3 design documentation confirms:
 
 ### Prioritized Fix Plan
 
-#### Phase A: Make Backtest Runnable (CRITICAL)
+#### Phase A: Make Backtest Runnable ✅ COMPLETE
 
-| # | Fix | Description |
-|:-:|-----|-------------|
-| 1 | Fix `target_weight` calculation | Pass calculated `num_contracts` to router instead of 1.0 |
-| 2 | Add `requested_quantity` to TargetWeight | Router uses it if present, else fallback to % |
-| 3 | Add margin check before options orders | Skip order if insufficient buying power |
+| # | Fix | Status |
+|:-:|-----|:------:|
+| 1 | Fix `target_weight` calculation | ✅ OptionsEngine now passes `num_contracts` via `requested_quantity` |
+| 2 | Add `requested_quantity` to TargetWeight | ✅ Schema 1.1 with optional `requested_quantity: int` field |
+| 3 | Add margin check before options orders | ✅ Router checks margin for all options before order |
 
 #### Phase B: Architecture Decision (HIGH)
 
