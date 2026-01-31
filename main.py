@@ -1932,22 +1932,22 @@ class AlphaNextGen(QCAlgorithm):
         for symbol in risk_result.symbols_to_liquidate:
             self.Liquidate(symbol)
 
-        # V2.3 FIX: Also liquidate options positions
-        if self.options_engine.has_position():
-            position = self.options_engine.get_position()
-            if position and position.contract:
-                symbol_str = position.contract.symbol
-                self.Log(f"KILL_SWITCH: Liquidating options position {symbol_str}")
-                # Liquidate the actual option contract via broker
-                # Note: May need to resolve symbol for QC
+        # V2.3 FIX: Liquidate ALL options in portfolio (not just tracked positions)
+        # This handles orphan positions from previous sessions or untracked orders
+        for kvp in self.Portfolio:
+            holding = kvp.Value
+            if holding.Invested and holding.Symbol.SecurityType == SecurityType.Option:
+                self.Log(f"KILL_SWITCH: Liquidating option {holding.Symbol}")
                 try:
-                    self.Liquidate(symbol_str)
+                    self.Liquidate(holding.Symbol)
                 except Exception as e:
                     self.Log(f"KILL_SWITCH: Options liquidation error: {e}")
-            # Clear internal position state
+
+        # Clear tracked position state if any
+        if self.options_engine.has_position():
             self.options_engine.remove_position()
-            # Clear any pending entry state
-            self.options_engine._pending_contract = None
+        # Clear any pending entry state
+        self.options_engine._pending_contract = None
 
         # Reset cold start
         self.cold_start_engine.reset()

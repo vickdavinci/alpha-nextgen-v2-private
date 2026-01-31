@@ -1520,6 +1520,15 @@ class OptionsEngine:
             self.log(f"INTRADAY: {strategy_name} signal but no contract available")
             return None
 
+        # V2.3 FIX: Validate contract direction matches signal direction
+        # The contract was selected before direction was determined, so we must verify
+        if best_contract.direction != direction:
+            self.log(
+                f"INTRADAY: Direction mismatch - signal wants {direction.value} "
+                f"but contract is {best_contract.direction.value}, skipping"
+            )
+            return None
+
         # Calculate allocation based on micro score
         allocation = self.get_mode_allocation(OptionsMode.INTRADAY, portfolio_value)
 
