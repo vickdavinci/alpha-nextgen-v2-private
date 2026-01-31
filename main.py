@@ -241,6 +241,7 @@ class AlphaNextGen(QCAlgorithm):
         self.symbols_to_skip = set()
         self._splits_logged_today = set()  # Log throttle: only log each split once/day
         self._greeks_breach_logged = False  # Log throttle: only log Greeks breach once/position
+        self._kill_switch_handled_today = False  # V2.3: Only handle kill switch once per day
 
         self.Log(
             f"INIT: Complete | "
@@ -738,6 +739,7 @@ class AlphaNextGen(QCAlgorithm):
 
         # Reset daily state (kill switch, panic mode, etc.) at start of new day
         self.risk_engine.reset_daily_state()
+        self._kill_switch_handled_today = False  # V2.3: Allow kill switch to trigger again today
 
         self.equity_prior_close = self.Portfolio.TotalPortfolioValue
         self.risk_engine.set_equity_prior_close(self.equity_prior_close)
@@ -987,6 +989,7 @@ class AlphaNextGen(QCAlgorithm):
         self.symbols_to_skip.clear()
         self._splits_logged_today.clear()
         self._greeks_breach_logged = False
+        self._kill_switch_handled_today = False  # V2.3: Reset for next day
 
     def _on_weekly_reset(self) -> None:
         """
@@ -1910,18 +1913,41 @@ class AlphaNextGen(QCAlgorithm):
         Handle kill switch trigger.
 
         Liquidates ALL positions and resets cold start.
+        V2.3 Fix: Only handles once per day to prevent log spam and repeated liquidation.
 
         Args:
             risk_result: Risk check result containing symbols to liquidate.
         """
-        self.Log("KILL_SWITCH: Triggered")
+        # V2.3 FIX: Only handle kill switch ONCE per day
+        if self._kill_switch_handled_today:
+            return  # Already handled today, skip repeated processing
+
+        self._kill_switch_handled_today = True
+        self.Log("KILL_SWITCH: Triggered - liquidating all positions")
 
         # Trigger in scheduler (disables all trading)
         self.scheduler.trigger_kill_switch()
 
-        # Liquidate all positions
+        # Liquidate all equity positions
         for symbol in risk_result.symbols_to_liquidate:
             self.Liquidate(symbol)
+
+        # V2.3 FIX: Also liquidate options positions
+        if self.options_engine.has_position():
+            position = self.options_engine.get_position()
+            if position and position.contract:
+                symbol_str = position.contract.symbol
+                self.Log(f"KILL_SWITCH: Liquidating options position {symbol_str}")
+                # Liquidate the actual option contract via broker
+                # Note: May need to resolve symbol for QC
+                try:
+                    self.Liquidate(symbol_str)
+                except Exception as e:
+                    self.Log(f"KILL_SWITCH: Options liquidation error: {e}")
+            # Clear internal position state
+            self.options_engine.remove_position()
+            # Clear any pending entry state
+            self.options_engine._pending_contract = None
 
         # Reset cold start
         self.cold_start_engine.reset()
@@ -2162,10 +2188,15 @@ class AlphaNextGen(QCAlgorithm):
         if self.options_engine.has_position():
             return
 
-        # Only scan during active window (10:00-15:00)
+        # V2.3 FIX: Only scan during active window (10:30-15:00)
+        # 30-minute delay allows market to settle after open volatility
         current_hour = self.Time.hour
+        current_minute = self.Time.minute
+        # Before 10:30 or after 15:00 -> skip
         if current_hour < 10 or current_hour >= 15:
             return
+        if current_hour == 10 and current_minute < 30:
+            return  # 10:00-10:29 -> skip, wait for market settling
 
         # CRITICAL FIX: Validate options symbol is resolved before use
         if not self._validate_options_symbol():

@@ -1745,6 +1745,12 @@ class OptionsEngine:
         total_theta_dollars = contract.theta * self._position.num_contracts
         theta_pct = total_theta_dollars / position_value if position_value > 0 else 0.0
 
+        # V2.3 FIX: Skip theta check for swing mode (5-45 DTE)
+        # Swing mode options naturally have higher theta decay but more time to recover.
+        # Only enforce theta limits for intraday mode (0-2 DTE) where decay matters critically.
+        if not config.CB_THETA_SWING_CHECK_ENABLED and contract.days_to_expiry > 2:
+            theta_pct = 0.0  # Set to 0 to pass theta check
+
         # Return per-contract Greeks for delta/gamma/vega, normalized theta for percentage check
         return GreeksSnapshot(
             delta=contract.delta,

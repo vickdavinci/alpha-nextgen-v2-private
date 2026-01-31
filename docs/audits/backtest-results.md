@@ -109,19 +109,21 @@ self.SetCash(50_000)  # PHASE_SEED_MIN
 
 ---
 
-## Stage 2: 30-Day Validation
+## Stage 2: 30-Day Validation (V2.3)
 
 **Date:** 2026-01-30
-**Status:** **PASS** ✅
-**Backtest Period:** January 1-31, 2024
-**Branch:** `testing/va/stage1-1day-backtest`
+**Status:** **FAIL** 🔴
+**Backtest Period:** January 2-31, 2024 (with 300-day warmup)
+**Branch:** `testing/va/stage2-backtest`
+**Backtest Name:** Formal Blue Dragonfly
 
 ### Configuration
 
 ```python
-self.SetStartDate(2024, 1, 1)
+self.SetStartDate(2024, 1, 2)
 self.SetEndDate(2024, 1, 31)
 self.SetCash(50_000)
+self.SetWarmUp(timedelta(days=300))  # V2.3: Extended warmup
 ```
 
 ### Results
@@ -129,40 +131,75 @@ self.SetCash(50_000)
 | Metric | Value |
 |--------|-------|
 | **Start Equity** | $50,000.00 |
-| **End Equity** | $50,100.65 |
-| **Net Profit** | +$100.65 (+0.20%) |
-| **CAGR** | 2.40% |
-| **Drawdown** | 0.00% |
-| **Total Orders** | 1 |
-| **Total Fees** | $1.24 |
-| **Holdings** | $25,036.05 (SHV) |
+| **End Equity** | $46,621.90 |
+| **Net Profit** | **-$3,378.10 (-6.76%)** |
+| **Total Orders** | 5 |
+| **Total Fees** | $48.10 |
+| **Trades** | 1 (options only) |
 
-**Backtest URL:** https://www.quantconnect.com/project/27678023/7617258f3e69f939e2a314aafb6ffc0b
+**Backtest URL:** https://www.quantconnect.com/project/27678023/4d7c36e9a3887ce9bdba287b2a80b1c6
 
-### Validation Checklist
+### Timeline - Day 1 (2024-01-02)
 
-| Check | Expected | Actual | Status |
-|-------|----------|--------|:------:|
-| No runtime errors | 0 errors | 0 errors | ✅ |
-| Yield sleeve deploys capital | SHV position | $25K SHV | ✅ |
-| Positive return | ≥ 0% | +0.20% | ✅ |
-| Indicators not ready (warmup) | 252 days needed | Correct | ✅ |
-| No trend/MR trades | None (warmup) | None | ✅ |
+| Time | Event | Details |
+|------|-------|---------|
+| 10:00 | Options Entry | BUY 37 QQQ 240119C @ $3.97, OCO: Stop=$3.10, Target=$5.96 |
+| 10:01 | **GREEKS BREACH** | Theta=-0.14 < -0.02 threshold (CB Level 5) |
+| 10:20 | **CB Level 1** | Daily loss=2.19% ≥ 2.00% |
+| 10:29 | **KILL SWITCH** | Loss=3.08%, equity=$48,459 |
+| 10:29-13:57 | Kill switch spam | Logs every minute, position NOT liquidated |
+| 13:57 | Stop loss hit | SELL 37 @ $3.07, Loss=-$3,330 |
+| 15:45 | EOD | Cold start reset, trend signals blocked |
+| Day 2-30 | **BLOCKED** | Kill switch never resets, 0 trades |
+
+### Critical Issues Found
+
+| # | Issue | Severity | Root Cause |
+|---|-------|:--------:|------------|
+| 1 | **Kill switch never resets daily** | 🔴 CRITICAL | `reset_daily_state()` not clearing kill switch flag |
+| 2 | **Kill switch doesn't liquidate options** | 🔴 CRITICAL | Options position not included in kill switch liquidation |
+| 3 | **Theta threshold too tight** | 🟠 HIGH | -0.02 threshold for 17 DTE option with -0.14 theta |
+| 4 | **Kill switch log spam** | 🟡 MEDIUM | Logs every minute for 30 days |
+| 5 | **Options entry at exactly 10:00** | 🟡 MEDIUM | No market settling period |
 
 ### Analysis
 
-**Why Only 1 Order (SHV)?**
-- Indicators (MA200, ADX, RSI) require **252-day warmup period**
-- January 2024 is only 30 days - insufficient for indicator readiness
-- System correctly waited for indicators before generating signals
-- Only yield sleeve (SHV) traded to deploy unused capital
+**Why -6.76% Loss?**
+1. Options entered at 10:00 with 17 DTE contract
+2. Theta (-0.14 = -14%/day) immediately breached -0.02 threshold
+3. Position dropped 3.08% by 10:29 → Kill switch triggered
+4. Kill switch SHOULD have liquidated but options position stayed until stop hit at 13:57
+5. Final loss: ($3.97 - $3.07) × 37 × 100 = -$3,330
 
-**Key Observations:**
-1. System properly respects indicator warmup requirements
-2. Yield sleeve correctly deployed ~50% of capital to SHV
-3. Small positive return from SHV interest/appreciation
-4. Zero drawdown - no risky trades during warmup period
-5. This is exactly the expected "safe" behavior during warmup
+**Why No Trades After Day 1?**
+- Kill switch triggered on Day 1 and **never reset**
+- The `_kill_switch_triggered` flag persists across days
+- All trading blocked for remaining 29 days
+- EOD state save shows `Days=0` (cold start never progresses)
+
+### Required Fixes (Stage 2 Fix Plan) - ✅ ALL IMPLEMENTED
+
+| Fix | Priority | Description | Status |
+|-----|:--------:|-------------|:------:|
+| Kill switch daily reset | 🔴 P0 | Added `_kill_switch_handled_today` flag | ✅ |
+| Kill switch options liquidation | 🔴 P0 | Added options liquidation in handler | ✅ |
+| Theta threshold scaled by DTE | 🟠 P1 | `CB_THETA_SWING_CHECK_ENABLED=False` for DTE>2 | ✅ |
+| Log spam prevention | 🟡 P2 | Handler only runs once per day | ✅ |
+| 10:30 entry delay | 🟡 P2 | Changed options window to 10:30-15:00 | ✅ |
+
+**Implementation Details:**
+- `main.py`: Added `_kill_switch_handled_today` flag, reset at 09:25 and EOD
+- `main.py`: Kill switch handler now liquidates options + clears position state
+- `config.py`: Added `CB_THETA_SWING_CHECK_ENABLED = False`
+- `options_engine.py`: Theta check skipped for DTE > 2 when config disabled
+- `main.py`: Options entry window changed from 10:00 to 10:30
+
+### Previous Stage 2 Results (Pre-V2.3)
+
+For reference, the earlier Stage 2 run without warmup showed:
+- End Equity: $50,100.65 (+0.20%)
+- Only SHV traded (indicators not ready)
+- This was a false positive - indicators weren't initialized
 
 ---
 

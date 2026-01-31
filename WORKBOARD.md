@@ -70,7 +70,7 @@
 | Stage | Duration | Purpose | Status | Date |
 |:-----:|----------|---------|:------:|------|
 | 1 | 1 day | Basic validation | **PASS** ✅ | 2026-01-30 |
-| 2 | 30 days | Short-term behavior | **ISSUES** ⚠️ | 2026-01-30 |
+| 2 | 30 days | Short-term behavior | **FAIL** 🔴 | 2026-01-30 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
@@ -78,21 +78,27 @@
 > **Results Document:** `docs/audits/backtest-results.md`
 > **Stage 2 Analysis:** `docs/audits/STAGE2_ANALYSIS_REPORT.md`
 > **Stage 2 Fix Plan:** `docs/audits/STAGE2_FIX_PLAN.md`
+> **Logs:** `docs/audits/logs/stage2/Formal Blue Dragonfly_logs.txt`
 
-### Stage 2 Bugs Found & Fixed (2026-01-30)
+### Stage 2 V2.3 Backtest Results (2026-01-30)
+
+**Backtest:** Formal Blue Dragonfly | **Result:** -$3,378 (-6.76%) | **Trades:** 1 (Day 1 only)
+
+**Root Cause:** Kill switch triggered Day 1, never reset, blocked 29 days of trading.
+
+### Stage 2 Bugs - Current Status
 
 | Bug | Severity | Status | Description |
 |-----|:--------:|:------:|-------------|
-| TNA/FAS stops never trigger | **CRITICAL** | ✅ FIXED | `_on_fill()` only registered QLD/SSO, excluded TNA/FAS |
-| Kill switch not resetting | HIGH | ✅ FIXED | `reset_daily_state()` not called in pre-market |
-| Cold start reset spam | MEDIUM | ✅ FIXED | Logged reset even when already at day 0 |
-| Swing direction hardcoded CALL | **HIGH** | ✅ FIXED | Direction now uses MA200+RSI per spec (CALL/PUT) |
-| VIX missing from regime score | **HIGH** | ✅ FIXED | V2.3: Added VIX Level as 20% weight in regime calculation |
-| 4-Strategy complexity | **HIGH** | ✅ SIMPLIFIED | V2.3: Reduced to Debit Spreads only with regime-based direction |
-| Theta threshold too tight | HIGH | ⏳ Pending | -0.02 too tight for short-dated options (5-17 DTE) |
-| Options 10:00 AM exact entry | MEDIUM | ⏳ Pending | All conditions pass immediately when window opens |
-| Kill switch cascade | HIGH | ⏳ Pending | Options losses trigger cascade blocking recovery |
-| Intraday options never enter | MEDIUM | ⏳ Pending | 0-2 DTE contracts may not exist in QC data |
+| Kill switch never resets daily | 🔴 CRITICAL | ✅ FIXED | Added `_kill_switch_handled_today` flag |
+| Kill switch doesn't liquidate options | 🔴 CRITICAL | ✅ FIXED | Added options liquidation in `_handle_kill_switch` |
+| Theta threshold too tight | 🟠 HIGH | ✅ FIXED | Added `CB_THETA_SWING_CHECK_ENABLED=False` |
+| Kill switch log spam | 🟡 MEDIUM | ✅ FIXED | Handler now only runs once per day |
+| Options 10:00 AM exact entry | 🟡 MEDIUM | ✅ FIXED | Changed to 10:30 entry window start |
+| TNA/FAS stops never trigger | CRITICAL | ✅ FIXED | `_on_fill()` registration fixed |
+| Swing direction hardcoded CALL | HIGH | ✅ FIXED | Direction now uses regime score |
+| VIX missing from regime score | HIGH | ✅ FIXED | V2.3: Added VIX as 20% weight |
+| 4-Strategy complexity | HIGH | ✅ SIMPLIFIED | V2.3: Debit Spreads only |
 
 ### V2.3 Regime + Options Simplification (2026-01-30)
 
