@@ -242,6 +242,50 @@
 
 **Status:** V2.3.9 fixes complete - Ready for backtest validation
 
+**V2.3.10 Fixes from PART 15 Forensics (2026-01-31):**
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **ADX Entry/Exit Churn** - Entry at ADX >= 15 but exit at ADX < 20 = immediate churn | HIGH | ✅ FIXED |
+| 2 | **Spread Filter 100% Broken** - 5% bid-ask threshold rejects all ATM contracts | CRITICAL | ✅ FIXED (→15%) |
+| 3 | **Orphaned Options** - `_pending_contract` not set in intraday signal | CRITICAL | ✅ FIXED |
+| 4 | **No DTE Exit** - Single-leg options held to expiration → auto-exercise | CRITICAL | ✅ FIXED (→2 DTE) |
+| 5 | **Exit Signals Not Checked** - Single-leg profit target/stop/DTE exit missing | HIGH | ✅ FIXED |
+
+**V2.3.10 Key Changes:**
+- Restored ADX thresholds: ADX_WEAK_THRESHOLD 15→20, ADX_MODERATE_THRESHOLD 20→25
+- Widened spread filter: OPTIONS_SPREAD_MAX_PCT 5%→15%
+- Set `_pending_contract` in `check_intraday_entry_signal()` before `register_entry()`
+- Added OPTIONS_SINGLE_LEG_DTE_EXIT = 2 (close by 2 DTE)
+- Added `check_exit_signals()` call in `_monitor_risk_greeks()`
+
+**Root Cause (ADX Churn):** Entry allowed at ADX=15 but exit triggers at ADX<20. Position opens, ADX is 15.5, next bar ADX is 15.2, exit triggers immediately.
+
+**Root Cause (Spread Filter):** ATM contracts have wider bid-ask spreads than OTM. 5% threshold rejected all valid contracts - logs showed "No valid ATM contract" 100% of the time.
+
+**Root Cause (Orphaned Options):** `check_intraday_entry_signal()` returned signal but didn't set `_pending_contract`. When `register_entry()` was called, it found no pending contract.
+
+**Status:** V2.3.10 fixes complete - Ready for backtest validation
+
+**V2.3.11 Fixes: SNIPER 0DTE Enhancement + Expiring Options Safety (2026-01-31):**
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **Auto-Exercise Risk** - ITM options held past 4 PM get exercised → stock position | CRITICAL | ✅ FIXED |
+| 2 | **VIX Barrier Too High** - VIX < 15 required for VERY_CALM, blocking calm market trades | HIGH | ✅ FIXED (→11.5) |
+| 3 | **VIX Levels Misaligned** - Thresholds not matching market reality | MEDIUM | ✅ FIXED |
+
+**V2.3.11 Key Changes:**
+- Added `check_expiring_options_force_exit()` - closes options expiring TODAY at 15:45
+- Added config: `OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_HOUR = 15, _MINUTE = 45`
+- Added `_get_option_expiry_date()` helper in main.py
+- Lowered VIX barriers: VIX_LEVEL_VERY_CALM_MAX 15→11.5, CALM_MAX 18→15, NORMAL_MAX 20→18
+- Updated VIX level classification in `classify_vix_level()` to use config constants
+
+**Root Cause (Auto-Exercise):** V2.3.9 backtest held ITM QQQ calls into Friday close. Saturday 5 AM broker auto-exercised → 800 shares assigned = $360K on $50K account (7:1 leverage). Lucky market gap up saved the account.
+
+**Root Cause (VIX Barrier):** VIX typically ranges 12-18 in calm markets. Requiring VIX < 15 for VERY_CALM blocked most normal trading days from firing SNIPER 0DTEs.
+
+**Status:** V2.3.11 fixes complete - Ready for backtest validation
+
 ---
 
 **V2.4.0 Planned: Bidirectional Mean Reversion (PART 12)**

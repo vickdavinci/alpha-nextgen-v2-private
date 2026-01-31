@@ -2680,9 +2680,32 @@ class AlphaNextGen(QCAlgorithm):
             self.portfolio_router.receive_signal(signal)
             return  # Exit already triggered, don't check other exits
 
+        # V2.3.11: Check expiring options force exit (15:45 for 0 DTE)
+        # CRITICAL: Prevents auto-exercise of ITM options held into close
+        position = self.options_engine.get_position()
+        intraday_position = self.options_engine._intraday_position
+        any_position = position or intraday_position
+
+        if any_position is not None:
+            # Get contract expiry date
+            contract_expiry = self._get_option_expiry_date(any_position.contract.symbol, data)
+            current_date = str(self.Time.date())
+            current_price = self._get_option_current_price(any_position.contract.symbol, data)
+
+            if current_price is not None and contract_expiry is not None:
+                signal = self.options_engine.check_expiring_options_force_exit(
+                    current_date=current_date,
+                    current_hour=self.Time.hour,
+                    current_minute=self.Time.minute,
+                    current_price=current_price,
+                    contract_expiry_date=contract_expiry,
+                )
+                if signal is not None:
+                    self.portfolio_router.receive_signal(signal)
+                    return  # Force exit takes priority, skip other exit checks
+
         # V2.3.10: Check single-leg exit signals (profit target, stop, DTE exit)
         # This prevents options from being held to expiration/exercise
-        position = self.options_engine.get_position()
         if position is not None:
             # Get current option price from chain
             current_price = self._get_option_current_price(position.contract.symbol, data)
@@ -2821,6 +2844,40 @@ class AlphaNextGen(QCAlgorithm):
                     current_date = self.Time.date()
                     dte = (expiry.date() - current_date).days
                     return max(0, dte)  # Ensure non-negative
+        except Exception:
+            pass
+
+        return None
+
+    def _get_option_expiry_date(self, symbol: str, data: Slice) -> Optional[str]:
+        """
+        V2.3.11: Get expiry date for an option as a string (YYYY-MM-DD).
+
+        Used for expiring options force exit check.
+
+        Args:
+            symbol: Option symbol string.
+            data: Current data slice.
+
+        Returns:
+            Expiry date as string (YYYY-MM-DD) or None if not available.
+        """
+        if self._qqq_option_symbol is None:
+            return None
+
+        chain = (
+            data.OptionChains[self._qqq_option_symbol]
+            if self._qqq_option_symbol in data.OptionChains
+            else None
+        )
+        if chain is None:
+            return None
+
+        try:
+            for contract in chain:
+                if str(contract.Symbol) == symbol:
+                    # Return expiry date as string
+                    return str(contract.Expiry.date())
         except Exception:
             pass
 

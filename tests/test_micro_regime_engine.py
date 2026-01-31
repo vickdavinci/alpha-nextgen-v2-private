@@ -144,32 +144,32 @@ class TestClassifyVIXLevel:
     """Tests for classify_vix_level() method."""
 
     def test_very_low_vix(self, micro_engine):
-        """VIX < 15 is LOW with highest score."""
-        level, score = micro_engine.classify_vix_level(12.0)
+        """V2.3.11: VIX < 11.5 is LOW with highest score (VERY_CALM)."""
+        level, score = micro_engine.classify_vix_level(10.0)  # V2.3.11: < 11.5
         assert level == VIXLevel.LOW
         assert score == config.MICRO_SCORE_VIX_VERY_CALM
 
     def test_low_vix(self, micro_engine):
-        """VIX 15-18 is LOW with calm score."""
-        level, score = micro_engine.classify_vix_level(16.0)
+        """V2.3.11: VIX 11.5-15 is LOW with calm score."""
+        level, score = micro_engine.classify_vix_level(13.0)  # V2.3.11: 11.5-15
         assert level == VIXLevel.LOW
         assert score == config.MICRO_SCORE_VIX_CALM
 
     def test_normal_low_vix(self, micro_engine):
-        """VIX 18-20 is LOW with normal score."""
-        level, score = micro_engine.classify_vix_level(19.0)
+        """V2.3.11: VIX 15-18 is LOW with normal score."""
+        level, score = micro_engine.classify_vix_level(16.0)  # V2.3.11: 15-18
         assert level == VIXLevel.LOW
         assert score == config.MICRO_SCORE_VIX_NORMAL
 
     def test_elevated_medium_vix(self, micro_engine):
-        """VIX 20-23 is MEDIUM with elevated score."""
-        level, score = micro_engine.classify_vix_level(21.0)
+        """V2.3.11: VIX 18-22 is MEDIUM with elevated score."""
+        level, score = micro_engine.classify_vix_level(20.0)  # V2.3.11: 18-22
         assert level == VIXLevel.MEDIUM
         assert score == config.MICRO_SCORE_VIX_ELEVATED
 
     def test_high_medium_vix(self, micro_engine):
-        """VIX 23-25 is MEDIUM with high score."""
-        level, score = micro_engine.classify_vix_level(24.0)
+        """V2.3.11: VIX 22-25 is MEDIUM with high score."""
+        level, score = micro_engine.classify_vix_level(23.0)  # V2.3.11: 22-25
         assert level == VIXLevel.MEDIUM
         assert score == config.MICRO_SCORE_VIX_HIGH
 
@@ -186,11 +186,11 @@ class TestClassifyVIXLevel:
 
     # Boundary tests
     def test_boundary_low_to_medium(self, micro_engine):
-        """Test boundary at VIX = 20 (LOW to MEDIUM)."""
-        level_19, _ = micro_engine.classify_vix_level(19.9)
-        level_20, _ = micro_engine.classify_vix_level(20.0)
-        assert level_19 == VIXLevel.LOW
-        assert level_20 == VIXLevel.MEDIUM
+        """V2.3.11: Test boundary at VIX = 18 (LOW to MEDIUM)."""
+        level_17, _ = micro_engine.classify_vix_level(17.9)  # V2.3.11: < 18 = LOW
+        level_18, _ = micro_engine.classify_vix_level(18.0)  # V2.3.11: >= 18 = MEDIUM
+        assert level_17 == VIXLevel.LOW
+        assert level_18 == VIXLevel.MEDIUM
 
     def test_boundary_medium_to_high(self, micro_engine):
         """Test boundary at VIX = 25 (MEDIUM to HIGH)."""

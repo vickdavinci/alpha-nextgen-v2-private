@@ -453,13 +453,15 @@ class MicroRegimeEngine:
         Returns:
             Tuple of (VIXLevel enum, level score for micro score).
         """
-        if vix_value < 15:
+        # V2.3.11: Use config constants for VIX level boundaries
+        # Lowered VERY_CALM from 15 → 11.5 to fire more SNIPER 0DTEs
+        if vix_value < config.VIX_LEVEL_VERY_CALM_MAX:  # V2.3.11: < 11.5 (was 15)
             return VIXLevel.LOW, config.MICRO_SCORE_VIX_VERY_CALM
-        elif vix_value < 18:
+        elif vix_value < config.VIX_LEVEL_CALM_MAX:  # V2.3.11: < 15 (was 18)
             return VIXLevel.LOW, config.MICRO_SCORE_VIX_CALM
-        elif vix_value < config.VIX_LEVEL_LOW_MAX:
+        elif vix_value < config.VIX_LEVEL_NORMAL_MAX:  # V2.3.11: < 18 (unchanged)
             return VIXLevel.LOW, config.MICRO_SCORE_VIX_NORMAL
-        elif vix_value < 23:
+        elif vix_value < 22:  # V2.3.11: < 22 (was 23)
             return VIXLevel.MEDIUM, config.MICRO_SCORE_VIX_ELEVATED
         elif vix_value < config.VIX_LEVEL_MEDIUM_MAX:
             return VIXLevel.MEDIUM, config.MICRO_SCORE_VIX_HIGH
@@ -2368,6 +2370,80 @@ class OptionsEngine:
             symbol=symbol,
             target_weight=0.0,
             source="OPT_INTRADAY",
+            urgency=Urgency.IMMEDIATE,
+            reason=reason,
+        )
+
+    def check_expiring_options_force_exit(
+        self,
+        current_date: str,
+        current_hour: int,
+        current_minute: int,
+        current_price: float,
+        contract_expiry_date: str,
+    ) -> Optional[TargetWeight]:
+        """
+        V2.3.11: Check for forced exit of options expiring TODAY at 15:45.
+
+        CRITICAL SAFETY: ITM options held past 4 PM get auto-exercised by the broker,
+        creating massive stock positions that can cause margin crises.
+
+        Example from V2.3.9 backtest:
+        - Friday close: Held ITM QQQ calls into close
+        - Saturday 5 AM: Broker auto-exercised → 800 shares QQQ assigned
+        - Notional: $360,000 on $50,000 account (7:1 leverage overnight)
+        - Result: Lucky market gap up saved the account
+
+        Args:
+            current_date: Current date as string (YYYY-MM-DD).
+            current_hour: Current hour (0-23) Eastern.
+            current_minute: Current minute (0-59).
+            current_price: Current option price.
+            contract_expiry_date: Contract expiry date as string (YYYY-MM-DD).
+
+        Returns:
+            TargetWeight for forced exit, or None.
+        """
+        # Check if option expires TODAY
+        if current_date != contract_expiry_date:
+            return None
+
+        # Check if ANY position exists (swing or intraday)
+        position = self._position or self._intraday_position
+        if position is None:
+            return None
+
+        # Check force close time (15:45 by default)
+        force_close_hour = config.OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_HOUR
+        force_close_minute = config.OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE
+
+        force_exit_time = current_hour > force_close_hour or (
+            current_hour == force_close_hour and current_minute >= force_close_minute
+        )
+
+        if not force_exit_time:
+            return None
+
+        symbol = position.contract.symbol
+        entry_price = position.entry_price
+        source = "OPT_INTRADAY" if self._intraday_position else "OPT_SWING"
+
+        pnl_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0
+
+        reason = (
+            f"EXPIRING_TODAY_FORCE_EXIT_1545 {pnl_pct:+.1%} "
+            f"(Price: ${current_price:.2f}, Expiry: {contract_expiry_date})"
+        )
+        self.log(
+            f"EXPIRING_OPTIONS_FORCE_EXIT {symbol} | {reason} | "
+            f"CRITICAL: Preventing auto-exercise of ITM options",
+            trades_only=True,
+        )
+
+        return TargetWeight(
+            symbol=symbol,
+            target_weight=0.0,
+            source=source,
             urgency=Urgency.IMMEDIATE,
             reason=reason,
         )

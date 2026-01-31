@@ -66,6 +66,12 @@ VIX_NORMAL_THRESHOLD = 22  # Below this = normal environment
 VIX_HIGH_THRESHOLD = 30  # Above this = expensive options
 VIX_EXTREME_THRESHOLD = 40  # Above this = crisis, avoid buying
 
+# V2.3.11: VIX Level Boundaries for Micro Regime Engine
+# Lowered VERY_CALM from 15 → 11.5 to fire more SNIPER 0DTEs
+VIX_LEVEL_VERY_CALM_MAX = 11.5  # V2.3.11: VIX < 11.5 = VERY_CALM (was 15)
+VIX_LEVEL_CALM_MAX = 15.0  # VIX 11.5-15 = CALM (shifted down)
+VIX_LEVEL_NORMAL_MAX = 18.0  # VIX 15-18 = NORMAL (unchanged)
+
 # Volatility Factor (Realized)
 VOL_LOOKBACK = 20
 VOL_PERCENTILE_LOOKBACK = 252
@@ -397,6 +403,13 @@ OPTIONS_PROFIT_TARGET_PCT = 0.50  # +50% profit target
 # - ITM being auto-exercised (creating stock position, margin crisis)
 OPTIONS_SINGLE_LEG_DTE_EXIT = 2  # Close by 2 DTE (before expiration week gamma)
 
+# V2.3.11: EOD Force Close for Options Expiring TODAY
+# Critical safety: Prevent auto-exercise of ITM options held into close
+# ITM options held past 4 PM get auto-exercised → stock position → margin crisis
+# Example from V2.3.9: 800 shares of QQQ assigned = $360K on $50K account (7:1 leverage)
+OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_HOUR = 15  # Force close expiring options at 15:45
+OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE = 45
+
 # Contract Selection
 # Options chain filter (must cover BOTH Intraday 0-2 DTE AND Swing 5-45 DTE)
 OPTIONS_DTE_MIN = 0  # Minimum days to expiration (Intraday mode)
@@ -509,11 +522,12 @@ VIX_LEVEL_MEDIUM_MAX = 25  # VIX 20-25: Caution zone
 # Score range: -15 to 100
 
 # VIX Level Score (0-25 points)
-MICRO_SCORE_VIX_VERY_CALM = 25  # VIX < 15
-MICRO_SCORE_VIX_CALM = 20  # VIX 15-18
-MICRO_SCORE_VIX_NORMAL = 15  # VIX 18-20
-MICRO_SCORE_VIX_ELEVATED = 10  # VIX 20-23
-MICRO_SCORE_VIX_HIGH = 5  # VIX 23-25
+# V2.3.11: Adjusted thresholds - VIX_LEVEL_VERY_CALM_MAX lowered from 15 → 11.5
+MICRO_SCORE_VIX_VERY_CALM = 25  # VIX < 11.5 (V2.3.11: was < 15)
+MICRO_SCORE_VIX_CALM = 20  # VIX 11.5-15 (V2.3.11: was 15-18)
+MICRO_SCORE_VIX_NORMAL = 15  # VIX 15-18 (V2.3.11: shifted from 18-20)
+MICRO_SCORE_VIX_ELEVATED = 10  # VIX 18-22
+MICRO_SCORE_VIX_HIGH = 5  # VIX 22-25
 MICRO_SCORE_VIX_EXTREME = 0  # VIX > 25
 
 # VIX Direction Score (-10 to +20 points)

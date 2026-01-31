@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-01-31 (V2.3.9 ComboMarketOrder for Spreads)
+> **Last Updated:** 2026-01-31 (V2.3.11 SNIPER 0DTE + Expiring Options Safety)
 
 ---
 
@@ -341,6 +341,101 @@ _on_micro_regime_update (every 15 min)
 - Margin utilization reduced ~95%
 
 **Next Step:** Run V2.3.9 backtest to validate combo order execution.
+
+### V2.3.10 Critical Pitfalls Fix (2026-01-31)
+
+**Audit Reference:** `docs/audits/stage2-codeaudit.md` (PART 15 Forensics)
+
+**V2.3.9 Backtest Analysis Results:**
+- Account up +$12,079 BUT $20,900 came from accidental stock assignment (lucky)
+- ITM calls held into Friday close → auto-exercised Saturday 5 AM
+- 800 shares QQQ assigned = $360K notional on $50K account (7:1 leverage)
+- Market gap up saved the account - if gap down 2%, account wiped
+
+| # | Fix | Severity | Description | Status |
+|:-:|-----|:--------:|-------------|:------:|
+| 1 | ADX Entry/Exit Alignment | HIGH | Entry at ADX >= 15 but exit at ADX < 20 = churn | ✅ |
+| 2 | Spread Filter Widened | HIGH | ATM contracts need 15% spread (was 5%) | ✅ |
+| 3 | Pending Contract Intraday | CRITICAL | `_pending_contract` not set in intraday signal | ✅ |
+| 4 | DTE Exit Single-Leg | CRITICAL | Close by 2 DTE to prevent expiration/exercise | ✅ |
+| 5 | Single-Leg Exit Checking | HIGH | check_exit_signals call added to _monitor_risk_greeks | ✅ |
+
+**Code Changes (V2.3.10):**
+
+1. **ADX Thresholds Aligned** (`config.py`):
+   ```python
+   ADX_WEAK_THRESHOLD = 20    # V2.3.10: Restored (was 15)
+   ADX_MODERATE_THRESHOLD = 25  # V2.3.10: Restored (was 20)
+   ```
+
+2. **Spread Filter Widened** (`config.py`):
+   ```python
+   OPTIONS_SPREAD_MAX_PCT = 0.15  # V2.3.10: 15% (was 5%)
+   ```
+
+3. **Pending Contract for Intraday** (`options_engine.py`):
+   ```python
+   # In check_intraday_entry_signal():
+   self._pending_contract = best_contract
+   self._pending_num_contracts = num_contracts
+   self._pending_stop_pct = config.OPTIONS_0DTE_STOP_PCT
+   ```
+
+4. **DTE Exit for Single-Leg** (`config.py`, `options_engine.py`):
+   ```python
+   OPTIONS_SINGLE_LEG_DTE_EXIT = 2  # Close by 2 DTE
+   ```
+
+### V2.3.11 SNIPER 0DTE Enhancement + Expiring Options Safety (2026-01-31)
+
+**Audit Reference:** `docs/audits/stage2-codeaudit.md` (PART 15 - Remaining Issues)
+
+**Root Causes from PART 15:**
+1. EOD Force Close missing for expiring (0 DTE) options → auto-exercise risk
+2. VIX barrier at 15 too high → blocking SNIPER 0DTE entries during calm markets
+3. SHV_MIN_TRADE already at $10K (fixed in V2.3.6)
+
+| # | Fix | Severity | Description | Status |
+|:-:|-----|:--------:|-------------|:------:|
+| 1 | EOD Force Close 15:45 | CRITICAL | Force liquidate options expiring TODAY at 15:45 | ✅ |
+| 2 | VIX Barrier Lowered | HIGH | VIX_LEVEL_VERY_CALM_MAX: 15 → 11.5 for more 0DTEs | ✅ |
+| 3 | VIX Level Boundaries | MEDIUM | Shifted all VIX level thresholds down | ✅ |
+
+**Code Changes (V2.3.11):**
+
+1. **VIX Level Boundaries Shifted** (`config.py`):
+   ```python
+   # V2.3.11: Fire more SNIPER 0DTEs by lowering VIX barrier
+   VIX_LEVEL_VERY_CALM_MAX = 11.5  # VIX < 11.5 = VERY_CALM (was 15)
+   VIX_LEVEL_CALM_MAX = 15.0       # VIX 11.5-15 = CALM (was 15-18)
+   VIX_LEVEL_NORMAL_MAX = 18.0     # VIX 15-18 = NORMAL (was 18-20)
+   # VIX 18-22 = ELEVATED (was 20-23)
+   # VIX 22-25 = HIGH (was 23-25)
+   ```
+
+2. **EOD Force Close for Expiring Options** (`config.py`, `options_engine.py`, `main.py`):
+   ```python
+   # config.py
+   OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_HOUR = 15
+   OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE = 45
+
+   # options_engine.py - new function
+   def check_expiring_options_force_exit(
+       self, current_date, current_hour, current_minute,
+       current_price, contract_expiry_date
+   ) -> Optional[TargetWeight]:
+       # If option expires TODAY and time >= 15:45, force close
+   ```
+
+3. **Main.py Integration**:
+   - Added `_get_option_expiry_date()` helper
+   - Call `check_expiring_options_force_exit()` in `_monitor_risk_greeks()`
+   - Force exit takes priority over other exit signals
+
+**Expected Impact:**
+- More SNIPER 0DTE trades in calm markets (VIX 11.5-15)
+- No more accidental stock assignments from ITM options held to close
+- Eliminates 7:1 leverage overnight risk from auto-exercise
 
 ### V2.4.0 Planned: Bidirectional Mean Reversion (Post-Backtest)
 
