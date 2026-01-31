@@ -395,16 +395,20 @@ class AlphaNextGen(QCAlgorithm):
         self.ief = self.AddEquity("IEF", Resolution.Minute).Symbol
 
         # V2.1: VIX for Mean Reversion regime filter
-        # V2.3.4 FIX: Changed from Resolution.Daily to Resolution.Minute
-        # Daily resolution only updates once per day (at close), making VIX direction
-        # classification useless for intraday trading. Minute resolution gives live updates.
-        self.vix = self.AddData(CBOE, "VIX", Resolution.Minute).Symbol
+        # NOTE: CBOE VIX only supports Daily resolution in QC backtests
+        # For intraday VIX direction, we use UVXY (1.5x VIX ETF) as proxy
+        self.vix = self.AddData(CBOE, "VIX", Resolution.Daily).Symbol
         self._current_vix = 15.0  # Default to normal regime until data arrives
         self._vix_at_open = 15.0  # V2.1.1: VIX at market open for micro regime
         self._vix_5min_ago = 15.0  # V2.1.1: VIX 5 minutes ago for spike detection
         self._vix_15min_ago = 15.0  # V2.3.4: VIX 15 minutes ago for short-term trend
         self._last_vix_spike_log = None  # Log throttle: last VIX spike log time
         self._qqq_at_open = 0.0  # V2.1.1: QQQ at market open
+
+        # V2.3.4: UVXY as intraday VIX proxy (Minute resolution for direction tracking)
+        # UVXY tracks ~1.5x daily VIX moves, so we use % change as direction signal
+        self.uvxy = self.AddEquity("UVXY", Resolution.Minute).Symbol
+        self._uvxy_at_open = 0.0  # UVXY price at market open
 
         # Store collections for iteration
         self.traded_symbols = [
@@ -811,6 +815,8 @@ class AlphaNextGen(QCAlgorithm):
         # V2.1.1: Update market open data for Options Engine Micro Regime
         self._vix_at_open = self._current_vix
         self._qqq_at_open = self.Securities[self.qqq].Open
+        # V2.3.4: Track UVXY at open for intraday VIX direction proxy
+        self._uvxy_at_open = self.Securities[self.uvxy].Open
         self.options_engine.update_market_open_data(
             vix_open=self._vix_at_open,
             spy_open=self.spy_open,
@@ -1060,23 +1066,33 @@ class AlphaNextGen(QCAlgorithm):
         """
         V2.1.1: Layer 1 VIX spike detection (every 5 minutes).
 
-        Checks for sudden VIX spikes (>3% in 5 minutes).
+        V2.3.4: Uses UVXY as intraday proxy since CBOE VIX only supports Daily.
+        Checks for sudden VIX spikes (>3% in 5 minutes via UVXY).
         Sets spike alert cooldown if triggered.
         """
         # Skip during warmup
         if self.IsWarmingUp:
             return
 
-        # Check for spike
+        # V2.3.4: Use UVXY for intraday spike detection
+        uvxy_current = self.Securities[self.uvxy].Price
+        if self._uvxy_at_open > 0:
+            uvxy_change_pct = (uvxy_current - self._uvxy_at_open) / self._uvxy_at_open * 100
+            # Derive VIX proxy from UVXY change
+            vix_intraday_proxy = self._vix_at_open * (1 + uvxy_change_pct / 150)
+        else:
+            vix_intraday_proxy = self._current_vix
+
+        # Check for spike using intraday proxy
         spike_alert = self.options_engine._micro_regime_engine.check_spike_alert(
-            vix_current=self._current_vix,
+            vix_current=vix_intraday_proxy,
             vix_5min_ago=self._vix_5min_ago,
             current_time=str(self.Time),
         )
 
         if spike_alert:
             # Throttle VIX spike logs: 1 per LOG_THROTTLE_MINUTES OR if move > threshold
-            vix_move = abs(self._current_vix - self._vix_5min_ago)
+            vix_move = abs(vix_intraday_proxy - self._vix_5min_ago)
             should_log = (
                 not hasattr(self, "_last_vix_spike_log")
                 or self._last_vix_spike_log is None
@@ -1085,50 +1101,54 @@ class AlphaNextGen(QCAlgorithm):
                 or vix_move >= config.LOG_VIX_SPIKE_MIN_MOVE
             )
             if should_log:
-                self.Log(f"VIX_SPIKE: {self._vix_5min_ago:.1f} -> {self._current_vix:.1f}")
+                self.Log(
+                    f"VIX_SPIKE: {self._vix_5min_ago:.1f} -> {vix_intraday_proxy:.1f} (via UVXY)"
+                )
                 self._last_vix_spike_log = self.Time
 
-        # Update 5-min ago value for next check
-        self._vix_5min_ago = self._current_vix
+        # Update 5-min ago value for next check (using proxy)
+        self._vix_5min_ago = vix_intraday_proxy
 
     def _on_micro_regime_update(self) -> None:
         """
         V2.1.1: Layer 2 & 4 - Direction + Regime update (every 15 minutes).
 
         Updates the Micro Regime Engine with current market data.
-        V2.3.4: Now tracks 15-minute VIX changes for short-term trend detection.
+        V2.3.4: Uses UVXY as intraday VIX proxy since CBOE VIX only supports Daily.
         """
         # Skip during warmup
         if self.IsWarmingUp:
             return
 
-        # V2.3.4: Calculate 15-minute VIX change for short-term trend
-        vix_change_15m = self._current_vix - self._vix_15min_ago
-        vix_change_15m_pct = (
-            (vix_change_15m / self._vix_15min_ago * 100) if self._vix_15min_ago > 0 else 0
-        )
+        # V2.3.4: Use UVXY % change as intraday VIX direction proxy
+        # UVXY tracks ~1.5x daily VIX moves, so direction is reliable
+        uvxy_current = self.Securities[self.uvxy].Price
+        if self._uvxy_at_open > 0:
+            uvxy_change_pct = (uvxy_current - self._uvxy_at_open) / self._uvxy_at_open * 100
+            # Derive synthetic "intraday VIX" from UVXY change applied to VIX open
+            # If UVXY is up 3%, VIX is approximately up 2% (UVXY is ~1.5x)
+            vix_intraday_proxy = self._vix_at_open * (1 + uvxy_change_pct / 150)
+        else:
+            uvxy_change_pct = 0.0
+            vix_intraday_proxy = self._current_vix
 
         # Get current QQQ price
         qqq_current = self.Securities[self.qqq].Price
 
-        # Update micro regime engine
+        # Update micro regime engine with intraday VIX proxy
         state = self.options_engine._micro_regime_engine.update(
-            vix_current=self._current_vix,
+            vix_current=vix_intraday_proxy,  # Use UVXY-derived intraday proxy
             vix_open=self._vix_at_open,
             qqq_current=qqq_current,
             qqq_open=self._qqq_at_open,
             current_time=str(self.Time),
         )
 
-        # V2.3.4: Log 15-minute VIX trend for debugging
+        # V2.3.4: Log with UVXY proxy info
         self.Log(
-            f"MICRO_UPDATE: VIX={self._current_vix:.2f} | "
-            f"15m_ago={self._vix_15min_ago:.2f} ({vix_change_15m_pct:+.1f}%) | "
+            f"MICRO_UPDATE: VIX_proxy={vix_intraday_proxy:.2f} (UVXY {uvxy_change_pct:+.1f}%) | "
             f"Regime={state.micro_regime.value} | Dir={state.recommended_direction.value if state.recommended_direction else 'NONE'}"
         )
-
-        # V2.3.4: Update the 15-minute tracker for the NEXT check
-        self._vix_15min_ago = self._current_vix
 
     # =========================================================================
     # ORDER EVENT HANDLER
