@@ -85,16 +85,38 @@ self.log("INTRADAY_SIGNAL: ...", trades_only=False)  # Silent in backtests
 
 **Without this pattern:** 400+ logs/day kills backtests. See `docs/guides/backtest-workflow.md`.
 
-### Deployment Commands
+### QuantConnect Backtest Workflow
+
+**Workspace Location:** `~/Desktop/lean-cli-workspace/`
 
 ```bash
-# Sync to lean-workspace (use minified if on lower tier)
-cp main_minified.py ../lean-workspace/AlphaNextGen/main.py
-cp engines/satellite/options_engine_minified.py ../lean-workspace/AlphaNextGen/engines/satellite/options_engine.py
+# 1. Navigate to lean workspace
+cd ~/Desktop/lean-cli-workspace
 
-# Push and backtest
-cd ../lean-workspace && lean cloud push --project AlphaNextGen && lean cloud backtest AlphaNextGen
+# 2. Copy updated files from project to lean workspace
+cp /Users/vigneshwaranarumugam/Documents/Trading\ Github/alpha-nextgen-v2-private/main.py AlphaNextGen/main.py
+cp /Users/vigneshwaranarumugam/Documents/Trading\ Github/alpha-nextgen-v2-private/config.py AlphaNextGen/config.py
+
+# 3. Push to QuantConnect cloud
+lean cloud push --project AlphaNextGen
+
+# 4. Start backtest
+lean cloud backtest AlphaNextGen --name "Descriptive-Name-Here"
+
+# 5. Check backtest status (if needed)
+lean cloud status
 ```
+
+**Quick One-Liner (from project root):**
+```bash
+cd ~/Desktop/lean-cli-workspace && cp "/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private/main.py" AlphaNextGen/main.py && cp "/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private/config.py" AlphaNextGen/config.py && lean cloud push --project AlphaNextGen && lean cloud backtest AlphaNextGen
+```
+
+**Notes:**
+- lean CLI is already installed globally
+- Trading Firm plan allows 256KB files (no minification needed)
+- Use B4-12 nodes for options backtests (requires more memory)
+- Results viewable at: https://www.quantconnect.com/terminal
 
 ---
 
@@ -114,8 +136,8 @@ cd ../lean-workspace && lean cloud push --project AlphaNextGen && lean cloud bac
   - **Swing Mode (20%)**: Debit spreads, credit spreads, ITM long options (5-45 DTE)
   - **Intraday Mode (5%)**: Micro Regime Engine - VIX Level × VIX Direction (0-2 DTE)
 
-Forked from V1 v1.0.0 on 2026-01-26. See `docs/v2-specs/` for V2.1 specifications.
-See `docs/v2-specs/V2_1_OPTIONS_ENGINE_DESIGN.txt` for complete Options Engine V2.1.1 specification.
+Forked from V1 v1.0.0 on 2026-01-26. See `docs/specs/v2.1/` for V2.1 specifications (archived).
+See `docs/specs/v2.1/v2-1-options-engine-design.txt` for Options Engine V2.1.1 design reference.
 
 ## Repository Structure
 
@@ -151,8 +173,8 @@ alpha-nextgen/
 │   ├── validate_config.py      # Spec compliance checker
 │   └── check_spec_parity.py    # Code-to-spec update warning
 │
-├── archive/
-│   └── main_old.py.bak         # Archived original implementation
+├── historical/
+│   └── V2_IMPLEMENTATION_ROADMAP.md  # Historical roadmap (archived)
 │
 ├── engines/                    # V2 Core-Satellite architecture
 │   ├── core/                   # Foundational engines (always active)
@@ -160,12 +182,12 @@ alpha-nextgen/
 │   │   ├── capital_engine.py   # Position sizing
 │   │   ├── risk_engine.py      # Circuit breakers
 │   │   ├── cold_start_engine.py # Startup handling
-│   │   └── trend_engine.py     # Primary alpha (70%)
+│   │   └── trend_engine.py     # MA200+ADX (55%)
 │   └── satellite/              # Conditional engines
 │       ├── mean_reversion_engine.py # Intraday bounce (0-10%)
 │       ├── hedge_engine.py     # TMF/PSQ overlay
 │       ├── yield_sleeve.py     # SHV cash management
-│       └── options_engine.py   # QQQ options (20%) - Dual-Mode + Micro Regime
+│       └── options_engine.py   # QQQ options (25%) - Dual-Mode + Micro Regime
 ├── portfolio/                  # Router, exposure groups, positions
 ├── execution/                  # Order management
 ├── data/                       # Symbols, indicators, validation
@@ -174,8 +196,12 @@ alpha-nextgen/
 ├── scheduling/                 # Timed events
 ├── utils/                      # Helper functions
 ├── tests/                      # Unit and scenario tests
-└── docs/                       # Full specification (17 sections)
-    └── DOCUMENTATION-MAP.md    # Code-to-documentation mapping (for Claude)
+└── docs/
+    ├── system/                 # Core system docs (00-19)
+    ├── specs/v2.1/             # V2.1 design specs (archived)
+    ├── audits/                 # Backtest results, code audits
+    │   └── v2.1/               # V2.1 audits (archived)
+    └── internal/               # Documentation map
 ```
 
 See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with Mermaid diagrams.
