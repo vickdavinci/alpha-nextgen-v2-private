@@ -28,22 +28,25 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | Stage | Duration | Purpose | Status |
 |:-----:|----------|---------|:------:|
 | 1 | 1 day (Jan 2, 2024) | Basic validation - no errors, Initialize() completes | **PASS** ✅ |
-| 2 | 30 days (Jan 2024) | Short-term behavior, actual trades | **LOGIC OK** 🟡 |
+| 2 | 7 days (Jan 2-8, 2024) | Short-term behavior, actual trades | **SIZING BUG** 🔴 |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
 
 ### Stage 2 Summary (2026-01-30)
 
-**Latest Run:** Geeky Yellow-Green Buffalo | **Result:** -9.67% | **Orders:** 8
+**Latest Run:** Retrospective Apricot Leopard | **Result:** -6.92% | **Orders:** 15
 
-**Logic Validation:** All V2.3 fixes verified working:
-- Order spam: 371 → 8 orders ✅
-- Delta targeting: Now selecting 0.70δ/0.30δ ✅
-- Kill switch blocking: Prevents entries after trigger ✅
-- Log spam: Reduced to 1 warning/day ✅
+**Progress:**
+- Kill switch daily reset: ✅ FIXED (scheduler.reset_daily())
+- Order spam: 371 → 15 orders ✅
+- Cold start progression: Day 1 → Day 2 → Day 3 → Day 4 ✅
 
-**Next Step:** Analyze logs to understand trade behavior and tune performance.
+**Remaining Issues:**
+- Options sizing uses full portfolio ($25K) instead of 5% allocation ($2.5K) 🔴
+- Insufficient buying power when trend positions consume margin 🔴
+
+**Next Step:** Fix options position sizing to use `get_mode_allocation()` properly.
 
 ---
 
@@ -120,20 +123,22 @@ self.SetCash(50_000)  # PHASE_SEED_MIN
 **Backtest Period:** January 2-31, 2024 (with 300-day warmup)
 **Branch:** `testing/va/stage2-backtest`
 
-### Latest Results: Geeky Yellow-Green Buffalo
+### Latest Results: Retrospective Apricot Leopard
 
 | Metric | Value |
 |--------|-------|
 | **Start Equity** | $50,000 |
-| **End Equity** | $45,163.36 |
-| **Net Profit** | -9.67% |
-| **Total Orders** | 8 |
-| **Fees** | $621.91 |
-| **Max Drawdown** | 16.5% |
-| **Win Rate** | 33% |
-| **Loss Rate** | 67% |
+| **End Equity** | $45,391 |
+| **Net Profit** | -6.92% |
+| **Total Orders** | 15 |
+| **Fees** | $616.84 |
+| **Max Drawdown** | 11% |
+| **Win Rate** | 0% |
+| **Loss Rate** | 100% |
 
-**Backtest URL:** https://www.quantconnect.com/project/27678023/cf12ec2635b6958b1edac7e752d15aea
+**Backtest URL:** https://www.quantconnect.com/project/27678023/f72f9fe7da3387805c00eeb40227b3bb
+
+**Key Progress:** Kill switch daily reset is NOW WORKING. Cold start progresses correctly.
 
 ### V2.3 Fix Validation
 
@@ -166,7 +171,51 @@ self.SetCash(50_000)  # PHASE_SEED_MIN
 |-----|------|--------|:------:|--------|
 | 1 | Formal Blue Dragonfly | -6.76% | 5 | Kill switch never reset, 29 days blocked |
 | 2 | Casual Yellow Chicken | -13.61% | 371 | 300+ Invalid orders, wrong delta, log spam |
-| 3 | Geeky Yellow-Green Buffalo | -9.67% | 8 | **Logic OK** - ready for perf analysis |
+| 3 | Geeky Yellow-Green Buffalo | -9.67% | 8 | Logic OK - selection spam fixed |
+| 4 | Ugly Tan Lemur | TBD | 5 | Scheduler kill switch not reset daily |
+| 5 | Retrospective Apricot Leopard | -6.92% | 15 | **Kill switch reset working!** But options sizing wrong |
+
+### V2.3.1 Fixes (Post Ugly Tan Lemur)
+
+**Issue Found:** Cold start blocked entries every day with "kill switch active" because:
+- `scheduler.is_kill_switch_triggered()` returned True after Day 1
+- Called wrong method `scheduler.reset_daily_state()` (doesn't exist)
+- Should be `scheduler.reset_daily()`
+
+**Fixes Applied:**
+1. Changed to `self.scheduler.reset_daily()` at 09:25 pre-market reset
+2. Added `self.options_engine.reset_daily()` at 09:25 pre-market reset
+
+### V2.3.2 Issues Found (Retrospective Apricot Leopard)
+
+**Kill Switch Reset: ✅ WORKING**
+- Days progress correctly: Day 1 → Day 2 → Day 3 → Day 4
+- Cold start advances when no kill switch trigger
+
+**Options Position Sizing: 🔴 BROKEN**
+- Day 1: BUY 471 contracts @ $0.54 = **$25,434** (51% of $50K portfolio!)
+- Should be 5% intraday allocation = **$2,500 max** = ~46 contracts
+- Position sizing using full portfolio value, not mode allocation
+
+**Insufficient Buying Power: 🔴 NEW BUG**
+- Jan 5, 10:30: `Order Error: Insufficient buying power (Value:22050, Free Margin:16523)`
+- Jan 8, 10:30: `Order Error: Insufficient buying power (Value:21805, Free Margin:16292)`
+- Trend positions (TNA, FAS, QLD) consume margin, leaving too little for options
+
+**Timeline Analysis (Jan 2-8, 2024):**
+| Day | Event | Outcome |
+|-----|-------|---------|
+| Jan 2 | Options entry 471 contracts, kill switch at 10:31 | -6.26% loss, liquidated |
+| Jan 3 | MOO fills TNA/FAS, cold start adds SSO, kill switch at 15:51 | -3.16% loss |
+| Jan 4 | Cold start adds QLD, options entry 24 contracts, kill switch at 12:46 | -3.47% loss |
+| Jan 5 | Cold start adds QLD, options **REJECTED** (insufficient margin) | No kill switch |
+| Jan 6-7 | Weekend (no trading) | - |
+| Jan 8 | Options **REJECTED** (insufficient margin) | No kill switch |
+
+**Required Fixes:**
+1. Options position sizing must use `get_mode_allocation()` (5% for intraday)
+2. Add buying power check before placing options orders
+3. Consider reducing options contracts when margin is limited
 
 ---
 

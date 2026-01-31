@@ -82,15 +82,19 @@
 
 ### Stage 2 V2.3 Backtest Results (2026-01-30)
 
-**Backtest:** Formal Blue Dragonfly | **Result:** -$3,378 (-6.76%) | **Trades:** 1 (Day 1 only)
+**Latest Backtest:** Retrospective Apricot Leopard | **Result:** -6.92% | **Orders:** 15
 
-**Root Cause:** Kill switch triggered Day 1, never reset, blocked 29 days of trading.
+**Key Findings:**
+1. ✅ Kill switch daily reset is NOW WORKING (scheduler.reset_daily() fix applied)
+2. 🔴 Options position sizing ignores allocation - using full portfolio instead of 5%
+3. 🔴 Insufficient buying power when trend positions (TNA/FAS/QLD) already held
 
 ### Stage 2 Bugs - Current Status
 
 | Bug | Severity | Status | Description |
 |-----|:--------:|:------:|-------------|
 | Kill switch never resets daily | 🔴 CRITICAL | ✅ FIXED | Added `_kill_switch_handled_today` flag |
+| Scheduler kill switch not reset | 🔴 CRITICAL | ✅ FIXED | Added `scheduler.reset_daily()` at 09:25 |
 | Kill switch doesn't liquidate options | 🔴 CRITICAL | ✅ FIXED | Added options liquidation in `_handle_kill_switch` |
 | Theta threshold too tight | 🟠 HIGH | ✅ FIXED | Added `CB_THETA_SWING_CHECK_ENABLED=False` |
 | Kill switch log spam | 🟡 MEDIUM | ✅ FIXED | Handler now only runs once per day |
@@ -103,6 +107,8 @@
 | Log spam after 14:30 | 🟡 MEDIUM | ✅ FIXED | Time window warning logged once |
 | Kill switch not blocking options | 🔴 CRITICAL | ✅ FIXED | Check `_kill_switch_handled_today` in scan |
 | Wrong delta selection (ATM) | 🟠 HIGH | ✅ FIXED | Swing=0.70δ, Intraday=0.30δ |
+| **Options sizing uses full portfolio** | 🔴 CRITICAL | 🔧 TODO | Day 1: 471 contracts ($25K) instead of 5% ($2.5K) |
+| **Insufficient margin for options** | 🟠 HIGH | 🔧 TODO | Need buying power check before order |
 
 ### V2.3 Regime + Options Simplification (2026-01-30)
 

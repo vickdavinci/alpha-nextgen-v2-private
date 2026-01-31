@@ -739,7 +739,16 @@ class AlphaNextGen(QCAlgorithm):
 
         # Reset daily state (kill switch, panic mode, etc.) at start of new day
         self.risk_engine.reset_daily_state()
+        self.scheduler.reset_daily()  # V2.3 FIX: Reset scheduler kill switch flag
         self._kill_switch_handled_today = False  # V2.3: Allow kill switch to trigger again today
+
+        # V2.3 FIX: Reset options engine daily state (entry flags, trade counters)
+        current_date_str = str(self.Time.date())
+        self.options_engine.reset_daily(current_date_str)
+
+        # V2.3 DEBUG: Log daily reset confirmation (only in live mode)
+        if self.LiveMode:
+            self.Log(f"DAILY_RESET: All flags cleared at {self.Time}")
 
         self.equity_prior_close = self.Portfolio.TotalPortfolioValue
         self.risk_engine.set_equity_prior_close(self.equity_prior_close)
@@ -829,11 +838,16 @@ class AlphaNextGen(QCAlgorithm):
         # Get capital state
         capital_state = self.capital_engine.calculate(self.Portfolio.TotalPortfolioValue)
 
+        # V2.3 DEBUG: Log cold start check state (only in live mode)
+        scheduler_kill_flag = self.scheduler.is_kill_switch_triggered()
+        if scheduler_kill_flag and self.LiveMode:
+            self.Log(f"COLD_START_CHECK: scheduler.is_kill_switch_triggered()=True at {self.Time}")
+
         # Check warm entry conditions
         signal = self.cold_start_engine.check_warm_entry(
             regime_score=regime_score,
             has_leveraged_position=has_leveraged,
-            kill_switch_triggered=self.scheduler.is_kill_switch_triggered(),
+            kill_switch_triggered=scheduler_kill_flag,
             gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
             vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
             tradeable_equity=capital_state.tradeable_eq,
@@ -1928,7 +1942,11 @@ class AlphaNextGen(QCAlgorithm):
             return  # Already handled today, skip repeated processing
 
         self._kill_switch_handled_today = True
-        self.Log("KILL_SWITCH: Triggered - liquidating all positions")
+        self.Log(
+            f"KILL_SWITCH: Triggered at {self.Time} | "
+            f"Equity={self.Portfolio.TotalPortfolioValue:,.2f} | "
+            f"Scheduler flag set, entries blocked until next day"
+        )
 
         # Trigger in scheduler (disables all trading)
         self.scheduler.trigger_kill_switch()
@@ -2195,6 +2213,9 @@ class AlphaNextGen(QCAlgorithm):
 
         # V2.3 FIX: Skip if kill switch triggered (prevents new entries after liquidation)
         if self._kill_switch_handled_today:
+            # V2.3 DEBUG: Log once per day when options blocked by kill switch (live only)
+            if self.Time.hour == 10 and self.Time.minute == 30 and self.LiveMode:
+                self.Log("OPT_SCAN: Blocked - Kill switch handled today")
             return
 
         # V2.3 FIX: Only scan during active window (10:30-15:00)

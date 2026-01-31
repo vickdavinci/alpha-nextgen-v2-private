@@ -582,6 +582,25 @@ class PortfolioRouter:
                 self.log(f"ROUTER: SKIP_DUPLICATE | {order_key} already executed this minute")
                 continue
 
+            # V2.3 FIX: Check buying power before placing BUY orders
+            if order.side == OrderSide.BUY:
+                try:
+                    current_price = self.algorithm.Securities[order.symbol].Price  # type: ignore[attr-defined]
+                    order_value = (
+                        order.quantity * current_price * 100
+                        if "QQQ" in order.symbol and len(order.symbol) > 10
+                        else order.quantity * current_price
+                    )
+                    margin_remaining = self.algorithm.Portfolio.MarginRemaining  # type: ignore[attr-defined]
+                    if order_value > margin_remaining:
+                        self.log(
+                            f"ROUTER: INSUFFICIENT_MARGIN | {order.symbol} | "
+                            f"Order=${order_value:,.0f} > Margin=${margin_remaining:,.0f}"
+                        )
+                        continue
+                except Exception:
+                    pass  # Continue with order if price lookup fails
+
             try:
                 quantity = order.quantity if order.side == OrderSide.BUY else -order.quantity
 
