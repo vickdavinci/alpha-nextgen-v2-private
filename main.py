@@ -2380,7 +2380,7 @@ class AlphaNextGen(QCAlgorithm):
         # - Regime > 60: Bull Call Spread
         # - Regime < 45: Bear Put Spread
         # - Regime 45-60: No trade (neutral)
-        regime_score = self.regime_engine.get_current_score()
+        regime_score = self.regime_engine.get_previous_score()
 
         if regime_score > config.SPREAD_REGIME_BULLISH:
             direction = OptionDirection.CALL
@@ -2602,7 +2602,7 @@ class AlphaNextGen(QCAlgorithm):
             current_dte = spread.long_leg.days_to_expiry  # Fallback
 
         # Get current regime score
-        regime_score = self.regime_engine.get_current_score()
+        regime_score = self.regime_engine.get_previous_score()
 
         # Check for exit signals
         exit_signals = self.options_engine.check_spread_exit_signals(
@@ -2951,7 +2951,7 @@ class AlphaNextGen(QCAlgorithm):
                 short_leg_fill_price=short_fill,
                 entry_time=str(self.Time),
                 current_date=str(self.Time.date()),
-                regime_score=self.regime_engine.get_current_score(),
+                regime_score=self.regime_engine.get_previous_score(),
             )
 
             if spread:
