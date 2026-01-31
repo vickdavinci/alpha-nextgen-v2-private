@@ -2255,11 +2255,13 @@ class OptionsEngine:
             )
             return None
 
+        # V2.3.4: Use QQQ direction from state
+        qqq_dir_str = state.qqq_direction.value if state.qqq_direction else "UNKNOWN"
         reason = (
             f"INTRADAY_{strategy_name}: Regime={state.micro_regime.value} | "
             f"Score={state.micro_score:.0f} | VIX={vix_current:.1f} "
-            f"({state.vix_direction.value}) | QQQ {'+' if qqq_up else ''}"
-            f"{state.qqq_move_pct:.2f}% | {direction.value} x{num_contracts}"
+            f"({state.vix_direction.value}) | QQQ={qqq_dir_str} "
+            f"({state.qqq_move_pct:+.2f}%) | {direction.value} x{num_contracts}"
         )
 
         # V2.3 FIX: Mark that we attempted entry today (prevents retry spam)
