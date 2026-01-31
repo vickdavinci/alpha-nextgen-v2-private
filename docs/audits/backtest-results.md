@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-01-31 (V2.3.6 Spread Order + Sniper Window Fixes)
+> **Last Updated:** 2026-01-31 (V2.3.9 ComboMarketOrder for Spreads)
 
 ---
 
@@ -199,7 +199,150 @@ _on_micro_regime_update (every 15 min)
 
 **Next Step:** Run Stage 3 backtest to validate V2.3.6 fixes.
 
-### V2.3.7 Planned: Bidirectional Mean Reversion (Post-Backtest)
+### V2.3.7 Cash Margin + Intraday Filter Fixes (2026-01-31)
+
+**Audit Reference:** `docs/audits/stage2-codeaudit.md` (PART 11)
+
+| # | Fix | Severity | Description | Status |
+|:-:|-----|:--------:|-------------|:------:|
+| 1 | Cash Death Spiral | CRITICAL | Margin cap at 50% prevents over-leverage | ✅ |
+| 2 | Intraday Filters Too Tight | HIGH | Relaxed for 0DTE market conditions | ✅ |
+| 3 | Spread Short Leg Selection | HIGH | Delta-first selection, wider delta range | ✅ |
+| 4 | ADX Threshold High | MEDIUM | Reduced from 25 to 20 for more entries | ✅ |
+
+**Code Changes (V2.3.7):**
+
+1. **Cash Margin Cap** (`portfolio_router.py`):
+   - Added `MARGIN_UTILIZATION_CAP = 0.50` (50% max margin)
+   - Portfolio equity capped at `cash * 2` to prevent death spiral
+   - Prevents broker margin calls triggering liquidation cascade
+
+2. **Intraday Filter Relaxation** (`config.py`):
+   - `OPTIONS_SPREAD_WARNING_PCT = 0.20` (was 0.15)
+   - `OPTIONS_MIN_OPEN_INTEREST = 100` (was 200)
+   - Allows more 0DTE contracts to qualify
+
+3. **Spread Short Leg** (`config.py`):
+   - `SPREAD_SHORT_LEG_DELTA_MIN = 0.10` (was 0.15)
+   - `SPREAD_SHORT_LEG_DELTA_MAX = 0.50` (was 0.45)
+   - Wider delta range for short leg selection
+
+4. **ADX Threshold** (`config.py`):
+   - `TREND_ADX_THRESHOLD = 20` (was 25)
+   - More trend entries qualify
+
+### V2.3.8 PART14 Volatility + Delta Selection Fixes (2026-01-31)
+
+**Audit Reference:** `docs/audits/stage2-codeaudit.md` (PART 14)
+
+| # | Fix | Severity | Description | Status |
+|:-:|-----|:--------:|-------------|:------:|
+| 1 | 3× ETF Volatility | HIGH | TNA/FAS tighter stops (2.5× vs 3.5× ATR) | ✅ |
+| 2 | Spread Width Filter | HIGH | Delta-first selection, width as tiebreaker | ✅ |
+| 3 | 0DTE Stop Too Wide | MEDIUM | 15% stop for 0DTE (was 20-30%) | ✅ |
+
+**Code Changes (V2.3.8):**
+
+1. **3× ETF Symbol-Specific Stops** (`config.py`, `trend_engine.py`):
+   ```python
+   # config.py
+   TREND_3X_SYMBOLS = ["TNA", "FAS"]
+   CHANDELIER_3X_BASE_MULT = 2.5    # vs 3.5 for 2×
+   CHANDELIER_3X_TIGHT_MULT = 2.0   # vs 3.0 for 2×
+   CHANDELIER_3X_TIGHTER_MULT = 1.5 # vs 2.5 for 2×
+   ```
+   - `get_chandelier_multipliers()` returns symbol-specific multipliers
+   - TNA/FAS swing 5-7% daily vs 2-3% for QLD/SSO, need tighter stops
+
+2. **Delta-First Spread Selection** (`options_engine.py`):
+   - Removed width filter from `_find_spread_legs()`
+   - Sort by delta proximity to target (0.15-0.20), not width
+   - Width used only as tiebreaker, not filter
+
+3. **0DTE Tight Stops** (`config.py`, `options_engine.py`):
+   ```python
+   OPTIONS_0DTE_STOP_PCT = 0.15  # 15% stop for 0DTE
+   ```
+   - `calculate_position_size()` accepts `days_to_expiry` parameter
+   - 0DTE uses 15% stop (limits max loss to ~30% with slippage)
+
+**Backtest Results: V2.3.8-PART14-Fixes**
+
+| Metric | Value |
+|--------|-------|
+| **Start Equity** | $50,000 |
+| **End Equity** | $45,382.80 |
+| **Net Profit** | **-$5,946.19 (-9.23%)** |
+| **Total Orders** | 141 |
+| **Fees** | $465.85 |
+| **Max Drawdown** | 17.30% |
+| **Win Rate** | 55% |
+| **Loss Rate** | 45% |
+| **Sharpe Ratio** | -1.02 |
+| **Sortino Ratio** | -1.609 |
+
+**Backtest URL:** https://www.quantconnect.com/project/27678023/d6b80fd2d6e288fea94bf9315c36cbc6
+
+**Analysis:**
+- **141 orders** vs 95 (V2.3.5) - delta-first selection finding more spreads
+- **Win Rate 55%** - improved from 43% (V2.3.5)
+- **Drawdown 17.3%** - higher, investigating spread leg fills
+- **Sharpe -1.02** - negative due to drawdown, but system functioning
+
+### V2.3.9 ComboMarketOrder for Spreads (2026-01-31)
+
+**Root Cause Analysis:** CTA Technical Memo identified why spread orders rejected with $729K margin:
+- IBKR treats sequential leg orders as separate positions
+- Selling short leg first = naked short requiring huge margin
+- Solution: `ComboMarketOrder` for atomic multi-leg execution
+
+| # | Fix | Severity | Description | Status |
+|:-:|-----|:--------:|-------------|:------:|
+| 1 | Spread Atomic Execution | CRITICAL | ComboMarketOrder instead of sequential legs | ✅ |
+| 2 | Leg.Create API | HIGH | Proper QC combo order construction | ✅ |
+
+**Code Changes (V2.3.9):**
+
+1. **Combo Order Method** (`execution_engine.py`):
+   ```python
+   def submit_combo_order(
+       self,
+       long_symbol: str,
+       long_quantity: int,
+       short_symbol: str,
+       short_quantity: int,
+       ...
+   ) -> ExecutionResult:
+       from AlgorithmImports import Leg
+       legs = [
+           Leg.Create(long_symbol, long_quantity),
+           Leg.Create(short_symbol, short_quantity),
+       ]
+       tickets = self.algorithm.ComboMarketOrder(legs, abs(long_quantity))
+   ```
+
+2. **OrderIntent Combo Fields** (`portfolio_router.py`):
+   ```python
+   @dataclass
+   class OrderIntent:
+       is_combo: bool = False
+       combo_short_symbol: Optional[str] = None
+       combo_short_quantity: Optional[int] = None
+   ```
+
+3. **Router Combo Execution** (`portfolio_router.py`):
+   - `_generate_orders()` creates single combo order for spreads
+   - `execute_orders()` uses `ComboMarketOrder` for combo orders
+   - Spread margin: ~$42K vs $729K for sequential legs
+
+**Expected Impact:**
+- Spreads now execute atomically with proper spread margin
+- No more orphaned long legs from rejected short legs
+- Margin utilization reduced ~95%
+
+**Next Step:** Run V2.3.9 backtest to validate combo order execution.
+
+### V2.4.0 Planned: Bidirectional Mean Reversion (Post-Backtest)
 
 **Audit Reference:** `docs/audits/stage2-codeaudit.md` (PART 12)
 
@@ -217,9 +360,9 @@ _on_micro_regime_update (every 15 min)
 4. `portfolio_router.py`: Verify MR allocation cap enforces total exposure
 
 **Rationale for Deferral:**
-- V2.3.6 made 7 significant changes - need to isolate performance impact
+- V2.3.9 fixes critical margin issue - need to validate first
 - Bidirectional MR is a strategy enhancement, not a bug fix
-- Will implement after V2.3.6 backtest validates current fixes
+- Will implement after V2.3.9 backtest validates combo orders
 
 ---
 
@@ -766,4 +909,4 @@ lean cloud backtest AlphaNextGen
 
 ---
 
-*Document created: 2026-01-30 | Last updated: 2026-01-31 (V2.3.4)*
+*Document created: 2026-01-30 | Last updated: 2026-01-31 (V2.3.9)*

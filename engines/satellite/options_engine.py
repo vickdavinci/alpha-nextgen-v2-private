@@ -1948,12 +1948,16 @@ class OptionsEngine:
     def check_exit_signals(
         self,
         current_price: float,
+        current_dte: Optional[int] = None,
     ) -> Optional[TargetWeight]:
         """
         Check for options exit signals.
 
+        V2.3.10: Added DTE exit to prevent options being held to expiration.
+
         Args:
             current_price: Current option price.
+            current_dte: Optional current days to expiration.
 
         Returns:
             TargetWeight for exit, or None if no exit signal.
@@ -1982,6 +1986,21 @@ class OptionsEngine:
         # Exit 2: Stop hit
         if current_price <= self._position.stop_price:
             reason = f"STOP_HIT {pnl_pct:.1%} (Price: ${current_price:.2f})"
+            self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
+            return TargetWeight(
+                symbol=symbol,
+                target_weight=0.0,
+                source="OPT",
+                urgency=Urgency.IMMEDIATE,
+                reason=reason,
+            )
+
+        # V2.3.10: Exit 3 - DTE exit (prevent expiration/exercise)
+        # Close single-leg options before expiration to avoid:
+        # - OTM expiring worthless (100% loss)
+        # - ITM being auto-exercised (creates stock position, margin crisis)
+        if current_dte is not None and current_dte <= config.OPTIONS_SINGLE_LEG_DTE_EXIT:
+            reason = f"DTE_EXIT ({current_dte} DTE <= {config.OPTIONS_SINGLE_LEG_DTE_EXIT}) P&L={pnl_pct:.1%}"
             self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
             return TargetWeight(
                 symbol=symbol,
@@ -2281,6 +2300,12 @@ class OptionsEngine:
 
         # V2.3.2 FIX #4: Mark this as intraday entry for correct position tracking
         self._pending_intraday_entry = True
+
+        # V2.3.10 FIX: Set pending contract for register_entry
+        # Without this, register_entry fails with "no pending contract"
+        self._pending_contract = best_contract
+        self._pending_num_contracts = num_contracts
+        self._pending_stop_pct = config.OPTIONS_0DTE_STOP_PCT  # Use 0DTE stop
 
         self.log(
             f"INTRADAY_SIGNAL: {reason} | Δ={best_contract.delta:.2f} K={best_contract.strike} DTE={best_contract.days_to_expiry}",

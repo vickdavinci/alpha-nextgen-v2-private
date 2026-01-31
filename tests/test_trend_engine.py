@@ -36,23 +36,22 @@ class TestADXScore:
         assert adx_score(50.0) == 1.0
 
     def test_adx_strong(self):
-        """Test ADX 20-35 returns score 0.75 (strong). V2.3.7: lowered from 25."""
-        assert adx_score(20.0) == 0.75
+        """Test ADX 25-35 returns score 0.75 (strong). V2.3.10: restored to 25."""
         assert adx_score(25.0) == 0.75
         assert adx_score(30.0) == 0.75
         assert adx_score(34.9) == 0.75
 
     def test_adx_moderate(self):
-        """Test ADX 15-20 returns score 0.50 (moderate). V2.3.7: lowered from 20."""
-        assert adx_score(15.0) == 0.50
-        assert adx_score(17.0) == 0.50
-        assert adx_score(19.9) == 0.50
+        """Test ADX 20-25 returns score 0.50 (moderate). V2.3.10: restored to 20."""
+        assert adx_score(20.0) == 0.50
+        assert adx_score(22.0) == 0.50
+        assert adx_score(24.9) == 0.50
 
     def test_adx_weak(self):
-        """Test ADX < 15 returns score 0.25 (weak). V2.3.7: lowered from 20."""
-        assert adx_score(14.9) == 0.25
+        """Test ADX < 20 returns score 0.25 (weak). V2.3.10: restored to 20."""
+        assert adx_score(19.9) == 0.25
+        assert adx_score(15.0) == 0.25
         assert adx_score(10.0) == 0.25
-        assert adx_score(5.0) == 0.25
         assert adx_score(0.0) == 0.25
 
 
@@ -257,12 +256,12 @@ class TestEntrySignals:
         assert "STRONG" in result.reason
 
     def test_entry_moderate_adx(self, engine):
-        """Test entry with moderate ADX (15-20, score = 0.50). V2.3.7 thresholds."""
+        """Test entry with moderate ADX (20-25, score = 0.50). V2.3.10: restored thresholds."""
         result = engine.check_entry_signal(
             symbol="QLD",
             close=105.0,
             ma200=100.0,
-            adx=17.0,  # V2.3.7: Moderate (score = 0.50) - was 22.0
+            adx=22.0,  # V2.3.10: Moderate (score = 0.50) - restored to 20-25 range
             regime_score=55.0,
             is_cold_start_active=False,
             has_warm_entry=False,

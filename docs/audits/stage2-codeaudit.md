@@ -974,3 +974,74 @@ Tame TNA: Lower Stop Multiplier for 3x ETFs.
 Fix Spreads: Remove strict "Strike Width" constraints; rely on Delta.
 
 Fix Options Data: Ensure option exit logic runs on faster resolution or triggers immediately.
+
+#### PART 15 ####
+
+To: The Engineering Team From: Chief Technical Architect Subject: Forensics of V2.3.9 - The "Lucky Accident" & The Assignment Risk
+
+I have reviewed the V2_3_9_ComboOrder logs. The good news is the account is up +$12,079. The bad news is that $20,900 of that profit came from a dangerous "Accidental Assignment" of stock, not from the strategy itself.
+
+Here is the breakdown of the pitfalls you asked to identify.
+
+1. The "Big Profit" Anomaly (Trades #40 & #41)
+You noticed "Options wins are big." They are NOT Option wins. They are Stock wins from a failed exit.
+
+The Event: On March 1 (Friday), the bot held QQQ Call contracts into the close.
+
+The Failure: It failed to sell them before 4:00 PM.
+
+The Consequence: The broker Exercised these ITM calls on Saturday morning (2024-03-02 05:00:00).
+
+The Risk: You were assigned 800+ shares of QQQ (Trade #40).
+
+Notional Value: ~$360,000.
+
+Account Size: ~$50,000.
+
+Margin Impact: You were leveraged 7:1 on overnight stock.
+
+The Result: Pure luck. The market gapped up the next week, and the system sold the stock for a $20k gain. If the market had gapped down 2%, you would have wiped out the account.
+
+Fix: You MUST implement an "EOD Liquidation" for expiring options.
+
+Code Update: In options_engine.py, check if contract.Expiry == today and time > 15:45: Liquidate.
+
+2. Is the Combo Order Working?
+YES, partially.
+
+Evidence: We no longer see the massive "$700k Margin Requirement" errors for the Options entries. This means the "Legging In" or "Combo" logic is successfully proving to the broker that the trade is covered.
+
+Remaining Issue: orders.csv still shows 39 Invalid Orders, but they are now mostly SHV (Cash) and TNA.
+
+Why: The Options strategy uses up buying power, and then the YieldSleeve tries to buy SHV with money you don't have.
+
+Fix: Increase SHV_MIN_TRADE to $10,000 to stop it from fighting for scraps.
+
+3. Why is the Trend Engine "Not Trending"?
+The Trend Engine is active (27 trades), but it is Choked.
+
+The Choke Point: TREND: QLD entry blocked - ADX 14.6 too weak.
+
+Observation: Late March was a "Grinding Rally" (low volatility upward drift). In this regime, ADX often stays below 20.
+
+Impact: Your filter (ADX > 20 or 25) is telling the bot "No Trend Exists" while the market hits All-Time Highs.
+
+The Fix: Lower TREND_ADX_MIN to 10 or 15 in config.py. Let the price action (High/Low) dictate the entry, not the lagging ADX.
+
+4. Intraday & Micro Regime
+Status: Functional.
+
+Evidence: The logs show DEBIT_FADE and INTRADAY logic firing correctly.
+
+Performance: The losses in the "Options Trades" list (e.g., -$1,827, -$2,232) show that the Stop Loss is still reacting too slowly (50-80% losses).
+
+Recommendation: Verify that you are using StopMarketOrder (Server Side) and not a logical check (Code Side) for these 0-DTE trades.
+
+Summary of Pitfalls to Fix
+Critical: Add EOD Force Close for expiring options (Prevent Assignment).
+
+Logic: Lower ADX Threshold (Unblock Trend Engine).
+
+Hygiene: increase SHV Min Trade (Stop "Invalid" order spam).
+
+The system is profitable, but currently relying on a margin-call lucky break. Secure the exits before running this live.

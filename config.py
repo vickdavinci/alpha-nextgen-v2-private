@@ -95,13 +95,13 @@ ADX_PERIOD = 14  # Average Directional Index for momentum confirmation
 ADX_ENTRY_THRESHOLD = 20  # V2.3.7: Lowered from 25 - enter on emerging trends (ADX is lagging)
 ADX_STRONG_THRESHOLD = 35  # ADX for highest confidence
 
-# ADX Scoring Thresholds (V2.3.7 adjusted)
-# ADX < 15: 0.25 (weak)
-# ADX 15-20: 0.50 (moderate)
-# ADX 20-35: 0.75 (strong)
+# ADX Scoring Thresholds (V2.3.10 aligned with exit threshold)
+# ADX < 20: 0.25 (weak) - matches exit threshold to prevent churning
+# ADX 20-25: 0.50 (moderate)
+# ADX 25-35: 0.75 (strong)
 # ADX >= 35: 1.00 (very strong)
-ADX_WEAK_THRESHOLD = 15  # V2.3.7: Lowered from 20 - allow weaker trends
-ADX_MODERATE_THRESHOLD = 20  # V2.3.7: Lowered from 25
+ADX_WEAK_THRESHOLD = 20  # V2.3.10: Restored to 20 - must match TREND_ADX_EXIT_THRESHOLD
+ADX_MODERATE_THRESHOLD = 25  # V2.3.10: Restored to 25 - prevent entry/exit churn
 
 # Chandelier Stop
 ATR_PERIOD = 14
@@ -366,7 +366,7 @@ OPTIONS_IV_RANK_HIGH = 80  # IV rank > 80 → 0.25
 # IV rank 20-80 → full score
 
 # Liquidity Factor
-OPTIONS_SPREAD_MAX_PCT = 0.05  # Max 5% bid-ask spread
+OPTIONS_SPREAD_MAX_PCT = 0.15  # V2.3.10: Widened from 5% to 15% - ATM contracts have wider spreads
 OPTIONS_SPREAD_WARNING_PCT = 0.25  # V2.3.7: Widened from 15% - fast markets have wide spreads
 OPTIONS_MIN_OPEN_INTEREST = (
     100  # V2.3.7: Lowered from 200 - 0DTE contracts have even lower OI in practice
@@ -390,6 +390,12 @@ OPTIONS_0DTE_STOP_PCT = 0.15  # V2.3.8: 15% stop for 0DTE (was using 20-30% tier
 
 # Profit Target
 OPTIONS_PROFIT_TARGET_PCT = 0.50  # +50% profit target
+
+# V2.3.10: DTE Exit for Single-Leg Options (prevents exercise/expiration)
+# Close single-leg options when DTE <= this value to avoid:
+# - OTM expiring worthless (100% loss)
+# - ITM being auto-exercised (creating stock position, margin crisis)
+OPTIONS_SINGLE_LEG_DTE_EXIT = 2  # Close by 2 DTE (before expiration week gamma)
 
 # Contract Selection
 # Options chain filter (must cover BOTH Intraday 0-2 DTE AND Swing 5-45 DTE)

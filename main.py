@@ -2678,6 +2678,23 @@ class AlphaNextGen(QCAlgorithm):
                 reason=f"GREEKS_BREACH: {', '.join(reasons)}",
             )
             self.portfolio_router.receive_signal(signal)
+            return  # Exit already triggered, don't check other exits
+
+        # V2.3.10: Check single-leg exit signals (profit target, stop, DTE exit)
+        # This prevents options from being held to expiration/exercise
+        position = self.options_engine.get_position()
+        if position is not None:
+            # Get current option price from chain
+            current_price = self._get_option_current_price(position.contract.symbol, data)
+            current_dte = self._get_option_current_dte(position.contract.symbol, data)
+
+            if current_price is not None:
+                signal = self.options_engine.check_exit_signals(
+                    current_price=current_price,
+                    current_dte=current_dte,
+                )
+                if signal is not None:
+                    self.portfolio_router.receive_signal(signal)
 
     def _get_fresh_position_greeks(self) -> Optional[GreeksSnapshot]:
         """
@@ -2733,6 +2750,79 @@ class AlphaNextGen(QCAlgorithm):
         except Exception as e:
             # Chain iteration failed - log and continue with cached Greeks
             self.Log(f"GREEKS_REFRESH_ERROR: {e}")
+
+        return None
+
+    def _get_option_current_price(self, symbol: str, data: Slice) -> Optional[float]:
+        """
+        V2.3.10: Get current price for an option from the chain.
+
+        Args:
+            symbol: Option symbol string.
+            data: Current data slice.
+
+        Returns:
+            Current mid price or None if not available.
+        """
+        if self._qqq_option_symbol is None:
+            return None
+
+        chain = (
+            data.OptionChains[self._qqq_option_symbol]
+            if self._qqq_option_symbol in data.OptionChains
+            else None
+        )
+        if chain is None:
+            return None
+
+        try:
+            for contract in chain:
+                if str(contract.Symbol) == symbol:
+                    # Return mid price
+                    bid = contract.BidPrice
+                    ask = contract.AskPrice
+                    if bid > 0 and ask > 0:
+                        return (bid + ask) / 2
+                    elif contract.LastPrice > 0:
+                        return contract.LastPrice
+                    break
+        except Exception:
+            pass
+
+        return None
+
+    def _get_option_current_dte(self, symbol: str, data: Slice) -> Optional[int]:
+        """
+        V2.3.10: Get current days to expiration for an option.
+
+        Args:
+            symbol: Option symbol string.
+            data: Current data slice.
+
+        Returns:
+            Days to expiration or None if not available.
+        """
+        if self._qqq_option_symbol is None:
+            return None
+
+        chain = (
+            data.OptionChains[self._qqq_option_symbol]
+            if self._qqq_option_symbol in data.OptionChains
+            else None
+        )
+        if chain is None:
+            return None
+
+        try:
+            for contract in chain:
+                if str(contract.Symbol) == symbol:
+                    # Calculate DTE from expiry
+                    expiry = contract.Expiry
+                    current_date = self.Time.date()
+                    dte = (expiry.date() - current_date).days
+                    return max(0, dte)  # Ensure non-negative
+        except Exception:
+            pass
 
         return None
 

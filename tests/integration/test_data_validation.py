@@ -194,8 +194,8 @@ class TestOptionsChainFiltering:
         """
         Test liquidity filters (spread, open interest).
         """
-        # Max bid-ask spread
-        assert config.OPTIONS_SPREAD_MAX_PCT == 0.05  # 5%
+        # Max bid-ask spread - V2.3.10: Widened from 5% to 15% for ATM contracts
+        assert config.OPTIONS_SPREAD_MAX_PCT == 0.15  # V2.3.10: 15% (was 5%)
         assert config.OPTIONS_SPREAD_WARNING_PCT == 0.25  # V2.3.7: Widened from 10% to 25%
 
         # Min open interest (V2.3.7: Relaxed from 200 to 100)

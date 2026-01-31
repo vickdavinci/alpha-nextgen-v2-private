@@ -213,12 +213,12 @@ class TestLiquidityScoring:
         assert score == 1.0
 
     def test_liquidity_moderate_spread(self, engine):
-        """Test moderate spread reduces score."""
+        """Test moderate spread (within threshold) gets full score. V2.3.10: threshold widened to 15%."""
         score = engine._score_liquidity(
-            spread_pct=0.08,  # 5-10%
+            spread_pct=0.08,  # 8% is now within 15% threshold (V2.3.10)
             open_interest=10000,
         )
-        assert score == 0.75  # (0.5 + 1.0) / 2
+        assert score == 1.0  # (1.0 + 1.0) / 2 - both excellent
 
     def test_liquidity_wide_spread(self, engine):
         """Test wide spread (> 25%) reduces score significantly. V2.3.7 threshold."""
