@@ -1257,14 +1257,20 @@ class OptionsEngine:
         entry_score: float,
         premium: float,
         portfolio_value: float,
+        days_to_expiry: int = None,
     ) -> tuple:
         """
         Calculate position size based on entry score and 1% risk.
+
+        V2.3.8: Uses tighter stops for 0DTE options to limit slippage damage.
+        0DTE options move extremely fast - StopMarketOrder can fill at much
+        worse prices due to slippage. Using 15% stops limits max loss to ~30%.
 
         Args:
             entry_score: Total entry score (3.0-4.0).
             premium: Option premium per contract.
             portfolio_value: Total portfolio value.
+            days_to_expiry: Days to expiration (0 for 0DTE).
 
         Returns:
             Tuple of (num_contracts, stop_pct, stop_price, target_price).
@@ -1273,6 +1279,12 @@ class OptionsEngine:
         tier = self.get_stop_tier(entry_score)
         stop_pct = tier["stop_pct"]
         base_contracts = tier["contracts"]
+
+        # V2.3.8: Use tighter stops for 0DTE (PART 14 Pitfall 2)
+        # 0DTE options move fast - slippage can double the intended loss
+        if days_to_expiry is not None and days_to_expiry <= 1:
+            stop_pct = config.OPTIONS_0DTE_STOP_PCT
+            self.log(f"POSITION_SIZE: Using 0DTE tight stop {stop_pct:.0%} (DTE={days_to_expiry})")
 
         # Calculate risk-adjusted contracts
         # Risk = contracts × premium × stop_pct
@@ -1388,24 +1400,25 @@ class OptionsEngine:
             ):
                 continue
 
-            # Check width
+            # V2.3.8: Removed width filter - let delta drive selection (PART 14 Pitfall 4)
+            # Width is calculated for P/L but no longer filters contracts
             width = abs(c.strike - long_leg.strike)
-            if not (config.SPREAD_WIDTH_MIN <= width <= config.SPREAD_WIDTH_MAX):
-                continue
 
             # Check liquidity
             if (
                 c.open_interest >= config.OPTIONS_MIN_OPEN_INTEREST // 2
             ):  # Slightly looser for short leg
                 if c.spread_pct <= config.OPTIONS_SPREAD_WARNING_PCT:
-                    short_candidates.append((c, width))
+                    short_candidates.append((c, width, delta_abs))
 
         if not short_candidates:
             self.log("SPREAD: No valid OTM contract for short leg")
             return None
 
-        # Sort by width proximity to target
-        short_candidates.sort(key=lambda x: abs(x[1] - target_width))
+        # V2.3.8: Sort by delta proximity to target (0.15-0.20), not width
+        # This prioritizes finding the best hedge rather than a specific width
+        target_delta = (config.SPREAD_SHORT_LEG_DELTA_MIN + config.SPREAD_SHORT_LEG_DELTA_MAX) / 2
+        short_candidates.sort(key=lambda x: abs(x[2] - target_delta))
         short_leg = short_candidates[0][0]
         actual_width = abs(short_leg.strike - long_leg.strike)
 
@@ -1561,11 +1574,13 @@ class OptionsEngine:
                 return None
 
         # Calculate position size
+        # V2.3.8: Pass DTE for 0DTE-specific tighter stops
         premium = best_contract.mid_price
         num_contracts, stop_pct, stop_price, target_price = self.calculate_position_size(
             entry_score=entry_score.total,
             premium=premium,
             portfolio_value=portfolio_value,
+            days_to_expiry=best_contract.days_to_expiry,
         )
 
         if num_contracts <= 0:
@@ -1753,14 +1768,9 @@ class OptionsEngine:
             )
             return None
 
-        # Calculate spread width
+        # V2.3.8: Calculate spread width (for P/L calculation only, not filtering)
+        # Removed width validation - delta drives selection now (PART 14 Pitfall 4)
         width = abs(short_leg_contract.strike - long_leg_contract.strike)
-        if width < config.SPREAD_WIDTH_MIN or width > config.SPREAD_WIDTH_MAX:
-            self.log(
-                f"SPREAD: Entry blocked - width ${width:.0f} outside "
-                f"${config.SPREAD_WIDTH_MIN}-${config.SPREAD_WIDTH_MAX} range"
-            )
-            return None
 
         # Calculate entry score
         entry_score = self.calculate_entry_score(

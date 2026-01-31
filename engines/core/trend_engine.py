@@ -73,6 +73,35 @@ def adx_score(adx_value: float) -> float:
         return 0.25
 
 
+def get_chandelier_multipliers(symbol: str) -> tuple:
+    """
+    Get Chandelier stop multipliers for a symbol.
+
+    V2.3.8: 3x ETFs (TNA/FAS) use tighter stops because they swing 5-7% daily.
+    2x ETFs (QLD/SSO) use standard multipliers.
+
+    Args:
+        symbol: Symbol to get multipliers for.
+
+    Returns:
+        Tuple of (base_mult, tight_mult, tighter_mult).
+    """
+    if symbol in config.TREND_3X_SYMBOLS:
+        # 3x ETFs: Tighter stops to control volatility (PART 14 Pitfall 3)
+        return (
+            config.CHANDELIER_3X_BASE_MULT,
+            config.CHANDELIER_3X_TIGHT_MULT,
+            config.CHANDELIER_3X_TIGHTER_MULT,
+        )
+    else:
+        # 2x ETFs: Standard multipliers
+        return (
+            config.CHANDELIER_BASE_MULT,
+            config.CHANDELIER_TIGHT_MULT,
+            config.CHANDELIER_TIGHTER_MULT,
+        )
+
+
 @dataclass
 class TrendPosition:
     """Tracks an active trend position."""
@@ -394,6 +423,9 @@ class TrendEngine:
         Update the Chandelier trailing stop for a position.
 
         The stop only moves up, never down.
+
+        V2.3.8: Uses symbol-specific multipliers - 3x ETFs (TNA/FAS) get
+        tighter stops because they swing 5-7% daily.
         """
         # Skip if ATR not valid
         if not _is_valid_float(atr) or atr <= 0:
@@ -402,14 +434,17 @@ class TrendEngine:
         # Calculate current profit
         current_profit = profit_pct(position.entry_price, position.highest_high)
 
+        # V2.3.8: Get symbol-specific multipliers (3x ETFs use tighter stops)
+        base_mult, tight_mult, tighter_mult = get_chandelier_multipliers(position.symbol)
+
         # Get appropriate ATR multiplier based on profit level
         multiplier = atr_multiplier_for_profit(
             current_profit,
             config.PROFIT_TIGHT_PCT,
             config.PROFIT_TIGHTER_PCT,
-            config.CHANDELIER_BASE_MULT,
-            config.CHANDELIER_TIGHT_MULT,
-            config.CHANDELIER_TIGHTER_MULT,
+            base_mult,
+            tight_mult,
+            tighter_mult,
         )
 
         # Calculate new stop level
@@ -436,6 +471,9 @@ class TrendEngine:
         """
         Register a new trend position after fill.
 
+        V2.3.8: Uses symbol-specific multipliers - 3x ETFs (TNA/FAS) get
+        tighter initial stops because they swing 5-7% daily.
+
         Args:
             symbol: Symbol entered.
             entry_price: Fill price.
@@ -446,8 +484,11 @@ class TrendEngine:
         Returns:
             Created TrendPosition.
         """
+        # V2.3.8: Get symbol-specific multiplier (3x ETFs use tighter stops)
+        base_mult, _, _ = get_chandelier_multipliers(symbol)
+
         # Calculate initial stop
-        initial_stop = chandelier_stop(entry_price, atr, config.CHANDELIER_BASE_MULT)
+        initial_stop = chandelier_stop(entry_price, atr, base_mult)
 
         position = TrendPosition(
             symbol=symbol,
@@ -463,7 +504,7 @@ class TrendEngine:
         self.log(
             f"TREND: POSITION_REGISTERED {symbol} | "
             f"Entry=${entry_price:.2f} | Stop=${initial_stop:.2f} | "
-            f"Tag={strategy_tag}"
+            f"Mult={base_mult} | Tag={strategy_tag}"
         )
 
         return position

@@ -111,6 +111,14 @@ CHANDELIER_TIGHTER_MULT = 2.5  # V2.3.6: Widened from 2.0 - hold winners longer
 PROFIT_TIGHT_PCT = 0.15  # V2.3.6: Raised from 0.10 - don't tighten too early
 PROFIT_TIGHTER_PCT = 0.25  # V2.3.6: Raised from 0.20 - let trends run
 
+# V2.3.8: 3x ETF Volatility Multipliers (PART 14 Pitfall 3)
+# TNA/FAS swing 5-7% daily - tighter stops to limit damage
+# Use ATR×2.5 instead of ATR×3.5 for 3x ETFs
+TREND_3X_SYMBOLS = ["TNA", "FAS"]  # 3× leveraged symbols needing tighter stops
+CHANDELIER_3X_BASE_MULT = 2.5  # V2.3.8: Tighter than 2x (3.5) - control 3x volatility
+CHANDELIER_3X_TIGHT_MULT = 2.0  # V2.3.8: Tighter than 2x (3.0)
+CHANDELIER_3X_TIGHTER_MULT = 1.5  # V2.3.8: Tighter than 2x (2.5)
+
 # Entry/Exit
 TREND_ENTRY_REGIME_MIN = 40
 TREND_EXIT_REGIME = 30
@@ -373,6 +381,13 @@ OPTIONS_STOP_TIERS = {
     3.75: {"stop_pct": 0.30, "contracts": 23},  # Score 3.75-4.0
 }
 
+# V2.3.8: 0DTE-specific stop override (PART 14 Pitfall 2)
+# 0DTE options move extremely fast - by time stop triggers, slippage can double the loss
+# Use tighter stops (15%) to limit max loss even with slippage to ~30%
+# NOTE: StopMarketOrder fills at next available price after trigger, not the stop price
+# For 0DTE, accept smaller position sizes in exchange for tighter risk control
+OPTIONS_0DTE_STOP_PCT = 0.15  # V2.3.8: 15% stop for 0DTE (was using 20-30% tiers)
+
 # Profit Target
 OPTIONS_PROFIT_TARGET_PCT = 0.50  # +50% profit target
 
@@ -434,9 +449,12 @@ SPREAD_VIX_MAX_BULL = 30  # Max VIX for Bull Call Spread entry
 SPREAD_VIX_MAX_BEAR = 35  # Max VIX for Bear Put Spread entry (allow higher)
 
 # Spread width (strike difference between legs)
-SPREAD_WIDTH_MIN = 2.0  # V2.3.7: Accept $2 spreads (was $3) - more flexibility
-SPREAD_WIDTH_MAX = 5.0  # Maximum $5 wide
-SPREAD_WIDTH_TARGET = 3.0  # V2.3.7: Target $3 (was $5) - matches market reality
+# V2.3.8: Relaxed width constraints - let delta drive selection (PART 14 Pitfall 4)
+# The "impossible triangle" of width + delta + liquidity was blocking valid spreads
+# Now: Delta is the primary selection criterion, width is just for P/L calculation
+SPREAD_WIDTH_MIN = 1.0  # V2.3.8: Accept $1 spreads (was $2) - don't filter by width
+SPREAD_WIDTH_MAX = 15.0  # V2.3.8: Accept up to $15 wide (was $5) - let delta drive
+SPREAD_WIDTH_TARGET = 5.0  # V2.3.8: Target $5 (was $3) - for sorting only, not filtering
 
 # DTE for debit spreads (per V2.3 spec)
 SPREAD_DTE_MIN = 10  # Minimum 10 DTE (avoid gamma acceleration)
