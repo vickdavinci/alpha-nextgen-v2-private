@@ -2114,8 +2114,8 @@ class AlphaNextGen(QCAlgorithm):
                     trend_pnl += holding.UnrealizedProfit
 
         total_loss_pct = (
-            self.Portfolio.TotalPortfolioValue - self._equity_prior_close
-        ) / self._equity_prior_close
+            self.Portfolio.TotalPortfolioValue - self.equity_prior_close
+        ) / self.equity_prior_close
 
         self.Log(
             f"KILL_SWITCH: Triggered at {self.Time} | "
