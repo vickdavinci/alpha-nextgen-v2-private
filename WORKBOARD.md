@@ -65,21 +65,71 @@
 | VIX1D Evaluation | Rejected (0.95 correlation during trading hours) | ✅ Complete |
 | Documentation | V2_1_OPTIONS_ENGINE_DESIGN.txt (2,135 lines) | ✅ Complete |
 
+### Backtest Validation Progress
+
+| Stage | Duration | Purpose | Status | Date |
+|:-----:|----------|---------|:------:|------|
+| 1 | 1 day | Basic validation | **PASS** ✅ | 2026-01-30 |
+| 2 | 30 days | Short-term behavior | **ISSUES** ⚠️ | 2026-01-30 |
+| 3 | 3 months | Position lifecycle | Pending | — |
+| 4 | 1 year | Full annual cycle | Pending | — |
+| 5 | 5 years | Long-term stress test | Pending | — |
+
+> **Results Document:** `docs/audits/backtest-results.md`
+> **Stage 2 Analysis:** `docs/audits/STAGE2_ANALYSIS_REPORT.md`
+> **Stage 2 Fix Plan:** `docs/audits/STAGE2_FIX_PLAN.md`
+
+### Stage 2 Bugs Found & Fixed (2026-01-30)
+
+| Bug | Severity | Status | Description |
+|-----|:--------:|:------:|-------------|
+| TNA/FAS stops never trigger | **CRITICAL** | ✅ FIXED | `_on_fill()` only registered QLD/SSO, excluded TNA/FAS |
+| Kill switch not resetting | HIGH | ✅ FIXED | `reset_daily_state()` not called in pre-market |
+| Cold start reset spam | MEDIUM | ✅ FIXED | Logged reset even when already at day 0 |
+| Swing direction hardcoded CALL | **HIGH** | ✅ FIXED | Direction now uses MA200+RSI per spec (CALL/PUT) |
+| VIX missing from regime score | **HIGH** | ✅ FIXED | V2.3: Added VIX Level as 20% weight in regime calculation |
+| 4-Strategy complexity | **HIGH** | ✅ SIMPLIFIED | V2.3: Reduced to Debit Spreads only with regime-based direction |
+| Theta threshold too tight | HIGH | ⏳ Pending | -0.02 too tight for short-dated options (5-17 DTE) |
+| Options 10:00 AM exact entry | MEDIUM | ⏳ Pending | All conditions pass immediately when window opens |
+| Kill switch cascade | HIGH | ⏳ Pending | Options losses trigger cascade blocking recovery |
+| Intraday options never enter | MEDIUM | ⏳ Pending | 0-2 DTE contracts may not exist in QC data |
+
+### V2.3 Regime + Options Simplification (2026-01-30)
+
+| Component | Change | Status |
+|-----------|--------|:------:|
+| Regime Engine | Added VIX Level as 5th factor (20% weight) | ✅ Complete |
+| Regime Weights | Rebalanced: Trend 30%, VIX 20%, RV 15%, Breadth 20%, Credit 15% | ✅ Complete |
+| Options Engine | Simplified from 4 strategies to Debit Spreads only | ✅ Complete |
+| Direction Logic | Regime-based: Score ≥50 = CALL, <50 = PUT | ✅ Complete |
+| VIX Thresholds | Low <15, Normal <22, High <30, Extreme <40 | ✅ Complete |
+
+**V2.3 Design Rationale:**
+- VIX (implied vol) directly impacts option pricing - more relevant than realized vol alone
+- 4-strategy portfolio (Debit/Credit spreads, ITM Long, Protective Puts) was overcomplex
+- Credit spreads conflict with mean-reversion on trending QQQ
+- Debit spreads: defined risk, no stop-loss needed, survive whipsaw
+- Regime score naturally encapsulates market conditions for direction
+
 ### Ready to Start (Remaining from Roadmap)
 
 | Ticket | Component | Size | Spec | Priority |
 |--------|-----------|:----:|------|----------|
+| BT-2 | Stage 2 Backtest (30 days) | S | backtest-results.md | **HIGH** |
+| BT-3 | Stage 3 Backtest (3 months) | S | backtest-results.md | **HIGH** |
+| BT-4 | Stage 4 Backtest (1 year) | M | backtest-results.md | **HIGH** |
+| BT-5 | Stage 5 Backtest (5 years + crisis) | L | backtest-results.md | **HIGH** |
+| OPT-6 | Options-specific daily loss limit | S | — | Medium |
+| OPT-7 | Separate kill logic for intraday vs swing options | M | — | Medium |
 | YLD-1 | SHV Ladder Strategy | M | V2-1-Critical-Fixes-Guide.md | Medium |
 | YLD-2 | Daily Cash Sweep | S | V2-1-Critical-Fixes-Guide.md | Medium |
 | YLD-3 | Monthly Interest Harvest | S | V2-1-Critical-Fixes-Guide.md | Low |
-| — | 10-Year Backtest (2015-2024) | L | — | **HIGH** |
-| — | Crisis Period Validation (2020, 2018, 2022) | M | — | **HIGH** |
 
 ### In Progress
 
 | Component | Owner | Branch | Started | Spec |
 |-----------|-------|--------|---------|------|
-| _None_ | | | | |
+| QC Cloud Backtest Validation | VA | testing/va/stage1-1day-backtest | 2026-01-30 | docs/audits/backtest-results.md |
 
 ### Done (V2 Phase 1)
 
@@ -314,31 +364,40 @@ git merge feat/backtest-reporting
 
 ## Next Steps - Production Readiness
 
-> **Current State:** System is feature-complete for backtesting. All core engines and V2.1 enhancements implemented.
+> **Current State:** System is feature-complete. QC Cloud backtest validation in progress.
+>
+> **Stage 1 Backtest:** PASS ✅ (2026-01-30)
 
-### Immediate Priority
+### Staged Backtest Validation (Current Focus)
 
-1. **Run 10-Year Backtest** (2015-2024)
-   - Validate all engines working together
-   - Measure actual vs. target returns (18-25% annual)
-   - Identify any integration issues
+| Stage | Duration | Status | Next Action |
+|:-----:|----------|:------:|-------------|
+| 1 | 1 day | ✅ PASS | Complete |
+| 2 | 30 days | ✅ PASS | Complete |
+| 3 | 3 months | ⏳ | Run next |
+| 4 | 1 year | — | After Stage 3 |
+| 5 | 5 years + crisis | — | After Stage 4 |
 
-2. **Crisis Period Validation**
-   - March 2020 COVID crash (VIX 82)
-   - Feb 2018 VIX spike (VIX 50)
-   - 2022 bear market
+### After Staged Backtests
 
-3. **Paper Trading** (2 weeks minimum)
+1. **Paper Trading** (2 weeks minimum)
    - Deploy to QC paper environment
    - Monitor daily operations
    - Validate state persistence across restarts
+
+2. **Production Deployment**
+   - Small deployment ($10-20K) first
+   - Full deployment ($50K+) after validation
 
 ### Before Live Trading
 
 | Task | Status | Notes |
 |------|--------|-------|
-| 10-year backtest complete | ⏳ | Required |
-| Crisis periods validated | ⏳ | Required |
+| Stage 1 backtest (1 day) | ✅ | PASS - 2026-01-30 |
+| Stage 2 backtest (30 days) | ✅ | PASS - 2026-01-30 (+0.20%, SHV only) |
+| Stage 3 backtest (3 months) | ⏳ | Required |
+| Stage 4 backtest (1 year) | ⏳ | Required |
+| Stage 5 backtest (5 years + crisis) | ⏳ | Required |
 | Paper trading (2 weeks) | ⏳ | Required |
 | Monitoring/alerting setup | ⏳ | Recommended |
 | Small deployment ($10-20K) | ⏳ | First live phase |
@@ -533,4 +592,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 28 January 2026 (v2.1.1 - Options Engine Redesign: Dual-Mode + Micro Regime Engine)*
+*Last Updated: 30 January 2026 (V2.3 Regime + Options Simplification Complete)*

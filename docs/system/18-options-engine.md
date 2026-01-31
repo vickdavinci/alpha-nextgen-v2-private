@@ -8,52 +8,65 @@
 
 The **Options Engine** implements a dual-mode architecture for QQQ options trading. This is a **satellite engine** (20% allocation) with two distinct operating modes based on DTE (days to expiration).
 
-> **V2.1.1 Redesign**: Complete architectural redesign with Micro Regime Engine for intraday trading.
-> Full specification: `docs/v2-specs/V2_1_OPTIONS_ENGINE_DESIGN.txt`
+> **V2.3 Revision**: Simplified Swing Mode to Debit Spreads only. Added VIX to macro regime score.
+> Full specification: `docs/specs/v2-1-options-engine-design.txt`
 
 **Key Characteristics:**
 - **Underlying**: QQQ (Nasdaq 100 ETF)
 - **Total Allocation**: 20% of portfolio
 - **Dual-Mode Architecture**:
-  - **Swing Mode (15%)**: 5-45 DTE, spread strategies
+  - **Swing Mode (15%)**: 10-21 DTE, **Debit Spreads only** (regime-based direction)
   - **Intraday Mode (5%)**: 0-2 DTE, Micro Regime Engine
 
 ---
 
-## Dual-Mode Architecture (V2.1.1)
+## Dual-Mode Architecture (V2.3)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    OPTIONS ENGINE DUAL-MODE                          │
+│                    OPTIONS ENGINE V2.3 DUAL-MODE                     │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                     │
 │  ┌─────────────────────────┐     ┌─────────────────────────────┐  │
 │  │     SWING MODE          │     │     INTRADAY MODE           │  │
-│  │     (5-45 DTE)          │     │       (0-2 DTE)             │  │
+│  │     (10-21 DTE)         │     │       (0-2 DTE)             │  │
 │  ├─────────────────────────┤     ├─────────────────────────────┤  │
 │  │ Allocation: 15%         │     │ Allocation: 5%              │  │
 │  │                         │     │                             │  │
-│  │ Strategies:             │     │ Decision Engine:            │  │
-│  │ • Debit Spreads (10-14) │     │ MICRO REGIME ENGINE         │  │
-│  │ • Credit Spreads (18-21)│     │ (VIX Level × VIX Direction) │  │
-│  │ • ITM Long (14-21)      │     │                             │  │
-│  │ • Protective Puts (35-45)│    │ 21 Trading Regimes          │  │
-│  │                         │     │                             │  │
-│  │ Entry: 4-Factor Score   │     │ Strategies:                 │  │
-│  │ Exit: OCO pairs         │     │ • Long Calls (momentum up)  │  │
-│  └─────────────────────────┘     │ • Long Puts (momentum down) │
-│                                  │ • Iron Condors (range/whip) │
-│                                  └─────────────────────────────┘  │
+│  │ Strategy: DEBIT SPREADS │     │ Decision Engine:            │  │
+│  │ (Simplified V2.3)       │     │ MICRO REGIME ENGINE         │  │
+│  │                         │     │ (VIX Level × VIX Direction) │  │
+│  │ Direction by Regime:    │     │                             │  │
+│  │ • Regime > 60: Bull Call│     │ Strategies:                 │  │
+│  │ • Regime < 45: Bear Put │     │ • Debit Fade (MR)           │  │
+│  │ • 45-60: NO TRADE       │     │ • ITM Momentum              │  │
+│  │                         │     │ • Protective Puts           │  │
+│  │ Regime < 30: Hedge Only │     │                             │  │
+│  │ (Protective Puts)       │     │                             │  │
+│  └─────────────────────────┘     └─────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Swing Mode (5-45 DTE)
+## V2.3 Changes: Why Simplified
+
+The original 4-strategy portfolio (Debit Spreads, Credit Spreads, ITM Long, Protective Puts) was simplified due to:
+
+1. **Missing VIX in Regime**: Options are priced off implied volatility, but regime used only realized vol
+2. **Over-Engineering**: 4 strategies with different DTE ranges created excessive complexity
+3. **Credit Spreads Poor Fit**: QQQ trends strongly; credit spreads lose on breakouts
+4. **Always-On Protective Puts**: 3-4% annual drag, mostly wasted in bull markets
+
+**Solution**: Single strategy (Debit Spreads) with regime-based direction, VIX added to regime score.
+
+---
+
+## Swing Mode (10-21 DTE)
 
 ### Allocation: 15% of Portfolio
 
-Swing Mode uses the original 4-factor entry scoring system with spread-based strategies for defined risk.
+Swing Mode uses **Debit Spreads** as the primary strategy with direction determined by the macro regime score (which now includes VIX).
 
 ---
 

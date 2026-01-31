@@ -2273,19 +2273,264 @@ LOW PRIORITY (Polish):
   11. Full test suite
 
 ================================================================================
+                    V2.3 REVISION: SIMPLIFIED SWING MODE
+================================================================================
+
+Date: January 2026
+Status: APPROVED - Replaces 4-Strategy Portfolio
+
+================================================================================
+                    RATIONALE FOR SIMPLIFICATION
+================================================================================
+
+After critical review, the 4-strategy portfolio (Debit Spreads, Credit Spreads,
+ITM Long, Protective Puts) was found to have significant pitfalls:
+
+PITFALL 1: MISSING VIX IN REGIME SCORE
+--------------------------------------------------------------------------------
+The macro regime score uses REALIZED volatility (historical), not IMPLIED
+volatility (VIX). Options are priced off implied volatility, so the regime
+score doesn't account for whether options are cheap or expensive.
+
+  Current Regime Components:
+    Trend (35%)      → Price vs MA200
+    Volatility (25%) → REALIZED vol percentile (backward-looking)
+    Breadth (25%)    → RSP/SPY ratio
+    Credit (15%)     → HYG/IEF ratio
+    VIX              → NOT INCLUDED (!)
+
+  Problem: High VIX = expensive options = lower expected returns
+  The regime score ignores this completely.
+
+PITFALL 2: OVER-ENGINEERING
+--------------------------------------------------------------------------------
+Managing 4 strategies with different DTE ranges, entry criteria, and exit rules
+creates excessive complexity:
+  - Spread execution risk (legging)
+  - Position tracking complexity
+  - Regime transition handling undefined
+  - Strategy overlap conditions ambiguous
+
+PITFALL 3: PROTECTIVE PUTS DRAG
+--------------------------------------------------------------------------------
+Always-on protective puts create 3-4% annual drag. In sustained bull markets
+(2019-2024), this is mostly pure cost with rare payoff.
+
+PITFALL 4: CREDIT SPREADS IN TRENDING MARKETS
+--------------------------------------------------------------------------------
+Credit spreads profit from range-bound conditions. QQQ trends strongly, making
+credit spreads a poor fit. They lose big on breakouts.
+
+================================================================================
+                    V2.3 SIMPLIFIED APPROACH
+================================================================================
+
+STEP 1: ADD VIX TO MACRO REGIME SCORE
+--------------------------------------------------------------------------------
+
+New Regime Components (rebalanced):
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                    REGIME SCORE V2.3 COMPONENTS                         │
+  ├────────────────┬────────────┬───────────────────────────────────────────┤
+  │ Component      │ Weight     │ Purpose                                   │
+  ├────────────────┼────────────┼───────────────────────────────────────────┤
+  │ Trend          │ 30%        │ Price vs MA200 (direction)                │
+  │ VIX Level      │ 20%        │ IMPLIED volatility (option pricing)  NEW  │
+  │ Realized Vol   │ 15%        │ Historical volatility (stability)         │
+  │ Breadth        │ 20%        │ RSP/SPY ratio (market participation)      │
+  │ Credit         │ 15%        │ HYG/IEF ratio (risk appetite)             │
+  └────────────────┴────────────┴───────────────────────────────────────────┘
+
+VIX Scoring (20% weight):
+
+  VIX Level    │ Score (0-100) │ Interpretation
+  ─────────────┼───────────────┼─────────────────────────────────────
+  < 15         │ 100           │ Complacent, cheap options, ideal
+  15-18        │ 85            │ Low fear, good for buying
+  18-22        │ 70            │ Normal volatility
+  22-26        │ 50            │ Elevated, options getting expensive
+  26-30        │ 30            │ High fear, expensive premiums
+  30-40        │ 15            │ Very high, avoid buying options
+  > 40         │ 0             │ Crisis, options extremely expensive
+
+STEP 2: SIMPLIFIED STRATEGY SELECTION
+--------------------------------------------------------------------------------
+
+Remove 4-strategy complexity. Use DEBIT SPREADS as primary structure with
+regime-based direction selection:
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                    V2.3 STRATEGY SELECTION MATRIX                       │
+  ├─────────────────────────────────────────────────────────────────────────┤
+  │                                                                         │
+  │   REGIME > 60 (Bullish)    ──────►  DEBIT SPREAD: Bull Call Spread     │
+  │                                     DTE: 10-21 days                     │
+  │                                     Defined risk, no stop needed        │
+  │                                                                         │
+  │   REGIME 45-60 (Neutral)   ──────►  NO OPTIONS TRADE                   │
+  │                                     No directional edge                 │
+  │                                     Preserve capital                    │
+  │                                                                         │
+  │   REGIME < 45 (Bearish)    ──────►  DEBIT SPREAD: Bear Put Spread      │
+  │                                     DTE: 10-21 days                     │
+  │                                     Defined risk, no stop needed        │
+  │                                                                         │
+  │   REGIME < 30 (Crisis)     ──────►  PROTECTIVE PUTS ONLY               │
+  │                                     DTE: 21-35 days                     │
+  │                                     Hedge, not speculation              │
+  │                                                                         │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+STEP 3: VIX FILTER (NOT REGIME COMPONENT)
+--------------------------------------------------------------------------------
+
+VIX Direction used as FILTER, not score component:
+
+  if vix_change_1hr > +10%:
+      BLOCK all new CALL entries ("VIX spiking, avoid long calls")
+
+  if vix_change_1hr < -10%:
+      BLOCK all new PUT entries ("VIX collapsing, avoid long puts")
+
+This prevents fighting strong VIX moves without over-complicating regime score.
+
+================================================================================
+                    V2.3 DEBIT SPREAD SPECIFICATION
+================================================================================
+
+WHY DEBIT SPREADS ONLY:
+--------------------------------------------------------------------------------
+
+  1. DEFINED RISK: Max loss = debit paid, no stop loss needed
+  2. SURVIVES WHIPSAW: Can't get stopped out by normal noise
+  3. SIMPLER EXECUTION: One spread structure, two directions
+  4. PROVEN MATH: Solves the -0.36% stop-out vulnerability
+
+BULL CALL SPREAD (Regime > 60):
+--------------------------------------------------------------------------------
+
+  Structure:
+    Buy: ATM Call
+    Sell: OTM Call ($3-5 wide)
+
+  Example:
+    QQQ @ $500
+    Buy: QQQ 500 Call @ $6.00
+    Sell: QQQ 505 Call @ $3.50
+    Net Debit: $2.50
+    Max Profit: $5.00 - $2.50 = $2.50 (100% return)
+    Max Loss: $2.50 (capped at entry)
+
+  Entry Criteria:
+    1. Regime Score > 60
+    2. VIX < 30 (options not overpriced)
+    3. Time: 10:00 AM - 2:30 PM ET
+    4. No position already open
+    5. DTE: 10-21 days
+
+  Exit Criteria:
+    1. Take profit at +50% of max profit
+    2. Close by 5 DTE (avoid gamma acceleration)
+    3. Close if regime drops below 45
+
+BEAR PUT SPREAD (Regime < 45):
+--------------------------------------------------------------------------------
+
+  Structure:
+    Buy: ATM Put
+    Sell: OTM Put ($3-5 wide)
+
+  Example:
+    QQQ @ $500
+    Buy: QQQ 500 Put @ $5.50
+    Sell: QQQ 495 Put @ $3.00
+    Net Debit: $2.50
+    Max Profit: $5.00 - $2.50 = $2.50 (100% return)
+    Max Loss: $2.50 (capped at entry)
+
+  Entry Criteria:
+    1. Regime Score < 45
+    2. VIX < 35 (allow higher for bearish)
+    3. Time: 10:00 AM - 2:30 PM ET
+    4. No position already open
+    5. DTE: 10-21 days
+
+  Exit Criteria:
+    1. Take profit at +50% of max profit
+    2. Close by 5 DTE
+    3. Close if regime rises above 60
+
+PROTECTIVE PUTS (Regime < 30):
+--------------------------------------------------------------------------------
+
+  When regime enters RISK_OFF (<30), shift from speculation to hedging.
+
+  Structure:
+    Buy: 5% OTM Put on QQQ
+    DTE: 21-35 days
+    Roll at 10 DTE remaining
+
+  Sizing:
+    Notional coverage: 30-50% of portfolio equity
+
+  Purpose:
+    Insurance, not profit center. Expected to lose slowly.
+
+================================================================================
+                    V2.3 IMPLEMENTATION CHECKLIST
+================================================================================
+
+PHASE 1: REGIME ENGINE UPDATE
+--------------------------------------------------------------------------------
+
+[x] Add VIX to regime score calculation:
+    [x] Add VIX Level component (20% weight)
+    [x] Rebalance other weights (Trend 30%, RV 15%, Breadth 20%, Credit 15%)
+    [x] Add VIX scoring function
+    [x] Update config.py with VIX thresholds
+
+PHASE 2: OPTIONS ENGINE SIMPLIFICATION
+--------------------------------------------------------------------------------
+
+[ ] Remove 4-strategy complexity:
+    [ ] Remove Credit Spread logic
+    [ ] Remove ITM Long logic
+    [ ] Simplify to Debit Spread only
+
+[ ] Implement Debit Spread logic:
+    [ ] Bull Call Spread entry (Regime > 60)
+    [ ] Bear Put Spread entry (Regime < 45)
+    [ ] Spread order execution (2-leg)
+    [ ] Max profit/loss calculation
+
+[ ] Implement VIX filter:
+    [ ] Track VIX 1-hour change
+    [ ] Block entries on VIX spike/collapse
+
+PHASE 3: PROTECTIVE PUTS
+--------------------------------------------------------------------------------
+
+[ ] Implement regime-triggered protective puts:
+    [ ] Activate only when regime < 30
+    [ ] Deactivate when regime > 40
+    [ ] Roll management at 10 DTE
+
+================================================================================
                         END OF DOCUMENT
 ================================================================================
 
-Document Version: 2.0
+Document Version: 2.3
 Document Author: Claude (AI Assistant)
-Review Status: Awaiting user approval
-Next Steps: User to confirm design, then proceed to implementation
+Review Status: APPROVED
+Last Updated: January 2026
 
-Key Changes in V2.0:
-  - Added Dual-Mode Architecture (Swing + Intraday)
-  - Added complete Micro Regime Engine specification
-  - Added VIX Direction as key differentiator
-  - Added 21 micro-regime classification matrix
-  - Updated implementation checklist for both modes
+Key Changes in V2.3:
+  - Added VIX Level to macro regime score (20% weight)
+  - Simplified from 4-strategy to Debit Spread primary
+  - Removed Credit Spreads (poor fit for trending QQQ)
+  - Removed ITM Long Options (spreads are safer)
+  - Made Protective Puts regime-triggered (<30) not always-on
+  - Added VIX direction as filter (not regime component)
 
 ================================================================================

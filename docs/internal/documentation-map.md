@@ -172,4 +172,4 @@ This map should be updated when:
 - New documentation files are created
 - New patterns of code-to-doc relationships emerge
 
-**Last Updated:** 29 January 2026 (V2.1.1 - Documentation Reorganization)
+**Last Updated:** 30 January 2026 (V2.3 - Added VIX to Regime Engine)

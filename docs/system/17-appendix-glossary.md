@@ -84,7 +84,7 @@ This glossary provides definitions for all acronyms, system-specific terms, math
 
 | Term | Definition |
 |------|------------|
-| **Regime Engine** | Core engine calculating market state score (0-100) from four factors |
+| **Regime Engine** | Core engine calculating market state score (0-100) from five factors (V2.3: added VIX) |
 | **Regime Score** | Composite 0-100 value indicating market conditions; drives hedge and entry decisions |
 | **Regime State** | Categorical classification: RISK_ON, NEUTRAL, CAUTIOUS, DEFENSIVE, RISK_OFF |
 | **Risk Engine** | Core engine implementing all circuit breakers and safeguards |
@@ -143,9 +143,9 @@ Multiplier Selection:
 Rule: Stop NEVER moves down
 ```
 
-### Regime Score
+### Regime Score (V2.3)
 ```
-Raw Score = (Trend x 0.35) + (Volatility x 0.25) + (Breadth x 0.25) + (Credit x 0.15)
+Raw Score = (Trend x 0.30) + (VIX x 0.20) + (Volatility x 0.15) + (Breadth x 0.20) + (Credit x 0.15)
 
 Smoothed Score = (0.30 x Raw) + (0.70 x Previous Smoothed)
 ```

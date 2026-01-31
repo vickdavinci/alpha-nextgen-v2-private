@@ -93,7 +93,7 @@ docs/
 
 | Doc | Engine | Purpose |
 |-----|--------|---------|
-| [04](system/04-regime-engine.md) | **Regime Engine** | 4-factor market state scoring (0-100) |
+| [04](system/04-regime-engine.md) | **Regime Engine** | 5-factor market state scoring (0-100) - V2.3 |
 | [05](system/05-capital-engine.md) | **Capital Engine** | Phase management, lockbox, tradeable equity |
 | [06](system/06-cold-start-engine.md) | **Cold Start Engine** | Days 1-5 warm entry logic |
 | [12](system/12-risk-engine.md) | **Risk Engine** | Circuit breakers and safeguards |

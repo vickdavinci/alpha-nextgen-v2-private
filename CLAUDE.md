@@ -61,6 +61,43 @@ make branch name=feature/va/my-feature
 
 ---
 
+## QuantConnect Infrastructure
+
+> **Plan:** Trading Firm ($48/mo) + 2× B4-12 nodes ($48/mo) = **$96/mo**
+
+| Resource | Limit | Notes |
+|----------|------:|-------|
+| File Size | 256 KB | No minification needed |
+| Backtest Log | 5 MB | Use `trades_only=True` for essential logs |
+| Daily Log | 50 MB | Multiple debug runs allowed |
+| Plot Points | 32,000 | ~14K for 5-year backtest |
+| Backtest Nodes | 2× B4-12 | 4 cores, 12GB RAM - required for options data |
+
+### Logging Pattern (CRITICAL)
+
+```python
+# ALWAYS log (trades_only=True): fills, entries, exits, errors, kill switch
+self.log("FILL: BUY 100 QLD", trades_only=True)
+
+# LIVE ONLY (trades_only=False): signals, diagnostics, regime updates
+self.log("INTRADAY_SIGNAL: ...", trades_only=False)  # Silent in backtests
+```
+
+**Without this pattern:** 400+ logs/day kills backtests. See `docs/guides/backtest-workflow.md`.
+
+### Deployment Commands
+
+```bash
+# Sync to lean-workspace (use minified if on lower tier)
+cp main_minified.py ../lean-workspace/AlphaNextGen/main.py
+cp engines/satellite/options_engine_minified.py ../lean-workspace/AlphaNextGen/engines/satellite/options_engine.py
+
+# Push and backtest
+cd ../lean-workspace && lean cloud push --project AlphaNextGen && lean cloud backtest AlphaNextGen
+```
+
+---
+
 ## Project Overview
 
 **Alpha NextGen V2** is a multi-strategy algorithmic trading system built on QuantConnect (LEAN engine) for deployment on Interactive Brokers. The system implements a **Core-Satellite** architecture:
@@ -596,6 +633,10 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | Vol shock | 3× ATR bar | 15-min pause |
 | Trend entry (V2) | Price > MA200 + ADX >= 25 | Trend entry eligible |
 | Oversold | RSI(5) < 25 | MR entry eligible |
+| VIX Low (V2.3) | VIX < 15 | Complacent market, cheap options |
+| VIX Normal (V2.3) | VIX 15-22 | Normal volatility |
+| VIX High (V2.3) | VIX 22-30 | Elevated fear |
+| VIX Extreme (V2.3) | VIX > 40 | Crisis mode |
 
 ### Overnight Holdings
 

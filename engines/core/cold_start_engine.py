@@ -270,10 +270,12 @@ class ColdStartEngine:
 
     def reset(self) -> None:
         """Reset cold start state (called after kill switch)."""
+        # Only log if actually resetting (not already at day 0)
+        if self._days_running > 0:
+            self.log("COLD_START: Reset to day 0")
         self._days_running = 0
         self._warm_entry_executed = False
         self._warm_entry_symbol = None
-        self.log("COLD_START: Reset to day 0")
 
     def get_state_for_persistence(self) -> Dict[str, Any]:
         """Get state for ObjectStore."""

@@ -17,40 +17,43 @@ Markets cycle through distinct phases:
 
 A static strategy that works well in one regime may fail catastrophically in another. The Regime Engine provides the adaptability to survive all conditions.
 
-### 4.1.2 Why Proxy-Based Instead of VIX?
+### 4.1.2 VIX in Regime Score (V2.3 Update)
 
-Previous system versions used VIX and VIX3M directly for volatility and term structure signals. This caused **live deployment failures**:
+> **V2.3 Change**: VIX Level is now included as a regime factor (20% weight) for options strategy selection.
 
-| Problem | Description |
-|---------|-------------|
-| **Non-Tradeable Index** | VIX is a calculated index, not a tradeable security |
-| **Data Subscription Cost** | IBKR requires separate, expensive data subscriptions for CBOE indices |
-| **Data Quality Issues** | Stale quotes, missing data, delayed updates in live environment |
-| **Backtest/Live Mismatch** | QuantConnect backtest data doesn't match live IBKR data |
+**Why VIX Was Added:**
 
-**The Solution:** Use only tradeable ETF proxies (SPY, RSP, HYG, IEF) that have reliable, consistent data across both backtest and live environments.
+Options are priced off **implied volatility** (VIX), not realized volatility. The previous regime score used only realized volatility, which meant:
+- High VIX = expensive options = lower expected returns (not captured)
+- Low VIX = cheap options = better entry opportunities (not captured)
+
+**Data Source:** VIX is obtained via CBOE subscription. For live trading, ensure VIX data feed is enabled.
 
 | Proxy Symbol | Purpose | Why This Proxy |
 |--------------|---------|----------------|
-| **SPY** | Trend & Volatility | Most liquid, most representative broad market proxy available |
-| **RSP** | Breadth | Equal-weight S&P 500; outperformance vs SPY indicates broad participation |
-| **HYG** | Credit (Risk Appetite) | High-yield bonds are sensitive to credit risk and risk sentiment |
-| **IEF** | Credit (Safe Haven) | 7-10 Year Treasuries represent risk-free rate; HYG-IEF spread indicates credit premium |
+| **SPY** | Trend & Volatility | Most liquid, most representative broad market proxy |
+| **RSP** | Breadth | Equal-weight S&P 500; outperformance indicates broad participation |
+| **HYG** | Credit (Risk Appetite) | High-yield bonds sensitive to credit risk |
+| **IEF** | Credit (Safe Haven) | 7-10 Year Treasuries; HYG-IEF spread indicates credit premium |
+| **VIX** | Implied Volatility | Market's expectation of future volatility (V2.3) |
 
 ---
 
-## 4.2 The Four Factors
+## 4.2 The Five Factors (V2.3)
 
-The regime score combines four distinct market factors, each measuring a different aspect of market health.
+The regime score combines five distinct market factors, each measuring a different aspect of market health.
 
-### Factor Weight Summary
+### Factor Weight Summary (V2.3)
 
 | Factor | Weight | What It Measures |
 |--------|:------:|------------------|
-| **Trend** | 35% | Price position relative to moving averages and trend structure |
-| **Volatility** | 25% | Current market fear/complacency via realized price movement |
-| **Breadth** | 25% | Market health via equal-weight vs cap-weight performance divergence |
-| **Credit** | 15% | Credit market stress via high-yield bond performance relative to treasuries |
+| **Trend** | 30% | Price position relative to moving averages and trend structure |
+| **VIX Level** | 20% | Implied volatility - options pricing environment (V2.3 NEW) |
+| **Realized Vol** | 15% | Historical price movement - market stability |
+| **Breadth** | 20% | Market health via equal-weight vs cap-weight performance |
+| **Credit** | 15% | Credit market stress via high-yield bond performance |
+
+> **V2.3 Change**: Weights rebalanced to include VIX. Trend reduced from 35% to 30%, Realized Vol from 25% to 15%, Breadth from 25% to 20%.
 
 ---
 
@@ -90,11 +93,40 @@ The result is **clamped to range 0-100**.
 
 ---
 
-### 4.2.2 Volatility Factor (25% Weight)
+### 4.2.2 VIX Level Factor (20% Weight) - V2.3 NEW
 
-**What It Measures:** Current market fear/complacency via realized price movement.
+**What It Measures:** Market's implied volatility expectations via VIX index.
 
-**Why It Matters:** Low volatility environments are ideal for leveraged positions. High volatility indicates fear, uncertainty, and potential for large adverse moves.
+**Why It Matters:** Options are priced off implied volatility. High VIX means expensive options with lower expected returns. Low VIX means cheap options with better entry opportunities.
+
+#### Calculation Logic
+
+**VIX Level Scoring:**
+
+| VIX Level | Score (0-100) | Interpretation |
+|:---------:|:-------------:|----------------|
+| < 15 | 100 | Complacent market, cheap options |
+| 15-18 | 85 | Low fear, good for buying options |
+| 18-22 | 70 | Normal volatility environment |
+| 22-26 | 50 | Elevated fear, options getting expensive |
+| 26-30 | 30 | High fear, expensive premiums |
+| 30-40 | 15 | Very high fear, avoid buying options |
+| > 40 | 0 | Crisis mode, options extremely expensive |
+
+**Config Parameters:**
+- `VIX_REGIME_WEIGHT` (default: 0.20)
+- `VIX_LOW_THRESHOLD` (default: 15)
+- `VIX_NORMAL_THRESHOLD` (default: 22)
+- `VIX_HIGH_THRESHOLD` (default: 30)
+- `VIX_EXTREME_THRESHOLD` (default: 40)
+
+---
+
+### 4.2.3 Realized Volatility Factor (15% Weight)
+
+**What It Measures:** Current market stability via historical price movement.
+
+**Why It Matters:** Low realized volatility indicates stable conditions ideal for leveraged positions. High realized volatility indicates uncertainty and potential for large adverse moves.
 
 #### Calculation Logic
 
@@ -185,21 +217,22 @@ Starting from **base score of 50**:
 
 ### 4.3.1 Weighted Combination Formula
 
-The four factor scores are combined using fixed weights:
+The five factor scores are combined using fixed weights (V2.3):
 
 ```
-Raw Score = (Trend × 0.35) + (Volatility × 0.25) + (Breadth × 0.25) + (Credit × 0.15)
+Raw Score = (Trend × 0.30) + (VIX × 0.20) + (Volatility × 0.15) + (Breadth × 0.20) + (Credit × 0.15)
 ```
 
-#### Example Calculation
+#### Example Calculation (V2.3)
 
 | Factor | Score | Weight | Contribution |
 |--------|:-----:|:------:|:------------:|
-| Trend | 72 | 35% | 25.20 |
-| Volatility | 65 | 25% | 16.25 |
-| Breadth | 58 | 25% | 14.50 |
+| Trend | 72 | 30% | 21.60 |
+| VIX | 70 | 20% | 14.00 |
+| Volatility | 65 | 15% | 9.75 |
+| Breadth | 58 | 20% | 11.60 |
 | Credit | 45 | 15% | 6.75 |
-| **Raw Score** | | | **62.70** |
+| **Raw Score** | | | **63.70** |
 
 ---
 
@@ -441,7 +474,7 @@ The regime score is calculated **once per day** in the `OnEndOfDay` event, using
 
 ```
 15:45 ET — OnEndOfDay Event Fires
-    ├── Calculate all four factor scores
+    ├── Calculate all five factor scores (V2.3)
     ├── Aggregate using weighted formula
     ├── Apply exponential smoothing
     ├── Classify regime state
@@ -549,9 +582,9 @@ flowchart TD
 
 | Decision | Rationale |
 |----------|-----------|
-| **Four-factor model** | Captures trend, volatility, breadth, and credit dimensions of market health |
-| **Proxy-based (no VIX)** | Ensures data consistency between backtest and live trading |
-| **35% trend weight** | Trend is the most predictive factor for leveraged ETF returns |
+| **Five-factor model (V2.3)** | Captures trend, VIX, volatility, breadth, and credit dimensions of market health |
+| **VIX included (V2.3)** | Implied volatility directly impacts options pricing and market fear |
+| **30% trend weight (V2.3)** | Trend remains important but balanced with VIX for options strategy |
 | **Exponential smoothing (α=0.30)** | Prevents whipsaw around threshold boundaries |
 | **Five regime states** | Provides granular response without excessive complexity |
 | **Graduated hedge scaling** | Matches hedge intensity to severity of conditions |

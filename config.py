@@ -27,14 +27,21 @@ KILL_SWITCH_PCT_BY_PHASE = {"SEED": 0.03, "GROWTH": 0.03}
 LOCKBOX_MILESTONES = [100_000, 200_000]
 LOCKBOX_LOCK_PCT = 0.10
 
+# V2.3 Capital Reservation (addresses options buying power issue)
+# When all 4 trend tickers trigger simultaneously, they consume ~196% of capital
+# via margin, leaving no buying power for options (25% allocation)
+# This reserves capital BEFORE trend positions are sized
+RESERVED_OPTIONS_PCT = 0.25  # Reserve 25% for options allocation
+
 # =============================================================================
 # REGIME ENGINE
 # =============================================================================
 
-# Factor Weights (adjusted to reduce breadth sensitivity during narrow rallies)
-WEIGHT_TREND = 0.45  # Increased from 0.35 - follow price trend even if breadth lags
-WEIGHT_VOLATILITY = 0.25
-WEIGHT_BREADTH = 0.15  # Reduced from 0.25 - prevents blocking during mega-cap rallies
+# Factor Weights (V2.3: Added VIX, rebalanced)
+WEIGHT_TREND = 0.30  # V2.3: Reduced from 0.45 to make room for VIX
+WEIGHT_VIX = 0.20  # V2.3 NEW: Implied volatility for options pricing
+WEIGHT_VOLATILITY = 0.15  # V2.3: Reduced from 0.25 (realized vol)
+WEIGHT_BREADTH = 0.20  # V2.3: Increased from 0.15
 WEIGHT_CREDIT = 0.15
 
 # Smoothing
@@ -53,7 +60,13 @@ SMA_SLOW = 200
 EXTENDED_THRESHOLD = 1.05
 OVERSOLD_THRESHOLD = 0.95
 
-# Volatility Factor
+# VIX Factor (V2.3 NEW)
+VIX_LOW_THRESHOLD = 15  # Below this = complacent, cheap options
+VIX_NORMAL_THRESHOLD = 22  # Below this = normal environment
+VIX_HIGH_THRESHOLD = 30  # Above this = expensive options
+VIX_EXTREME_THRESHOLD = 40  # Above this = crisis, avoid buying
+
+# Volatility Factor (Realized)
 VOL_LOOKBACK = 20
 VOL_PERCENTILE_LOOKBACK = 252
 
@@ -102,6 +115,16 @@ PROFIT_TIGHTER_PCT = 0.20  # Updated per V2.1: tighten more at 20%
 TREND_ENTRY_REGIME_MIN = 40
 TREND_EXIT_REGIME = 30
 TREND_ADX_EXIT_THRESHOLD = 20  # Exit if ADX drops below this
+
+# V2.3 Position Limits (addresses simultaneous entry issue)
+# In bull markets, all 4 tickers (QLD/SSO/TNA/FAS) may trigger together
+# because they're all correlated to US equity market (0.70-0.95 correlation)
+# Limiting to 2 positions ensures capital remains for options allocation
+MAX_CONCURRENT_TREND_POSITIONS = 2  # Max trend positions at any time
+
+# Priority order when multiple entries trigger simultaneously
+# Higher priority symbols get capital first
+TREND_PRIORITY_ORDER = ["QLD", "SSO", "TNA", "FAS"]  # Nasdaq > S&P > Russell > Financials
 
 # =============================================================================
 # MEAN REVERSION ENGINE
@@ -296,25 +319,25 @@ CB_THETA_WARNING = -0.02  # Daily theta decay warning (-2%)
 # OPTIONS ENGINE (V2.1.1) - DUAL-MODE ARCHITECTURE
 # =============================================================================
 # V2.1.1 Complete Redesign: Two distinct modes based on DTE
-# - SWING MODE (5-45 DTE): 15% allocation, spread strategies, macro regime
-# - INTRADAY MODE (0-2 DTE): 5% allocation, Micro Regime Engine
+# - SWING MODE (5-45 DTE): 75% of options budget, spread strategies, macro regime
+# - INTRADAY MODE (0-2 DTE): 25% of options budget, Micro Regime Engine
 
 # Underlying Symbol
 OPTIONS_UNDERLYING = "QQQ"
 
 # -----------------------------------------------------------------------------
-# DUAL-MODE ALLOCATION
+# V2.3 DUAL-MODE ALLOCATION (25% total, 75/25 split)
 # -----------------------------------------------------------------------------
-OPTIONS_TOTAL_ALLOCATION = 0.20  # 20% total options budget
-OPTIONS_SWING_ALLOCATION = 0.15  # 15% for Swing Mode (5-45 DTE)
-OPTIONS_INTRADAY_ALLOCATION = 0.05  # 5% for Intraday Mode (0-2 DTE)
+OPTIONS_TOTAL_ALLOCATION = 0.25  # 25% total options budget (increased from 20%)
+OPTIONS_SWING_ALLOCATION = 0.1875  # 18.75% for Swing Mode (75% of 25%)
+OPTIONS_INTRADAY_ALLOCATION = 0.0625  # 6.25% for Intraday Mode (25% of 25%)
 
 # Legacy compatibility (combined min/max)
-OPTIONS_ALLOCATION_MIN = 0.20  # 20% minimum
+OPTIONS_ALLOCATION_MIN = 0.25  # 25% minimum
 OPTIONS_ALLOCATION_MAX = 0.30  # 30% maximum
 
 # Entry Score Thresholds
-OPTIONS_ENTRY_SCORE_MIN = 3.0  # Minimum score for entry (0-4 scale)
+OPTIONS_ENTRY_SCORE_MIN = 2.0  # Minimum score for entry (0-4 scale) - lowered from 3.0 for testing
 OPTIONS_ADX_THRESHOLD = 25  # ADX >= 25 for full score
 
 # Entry Score Component Weights (each 0-1, total 0-4)
@@ -349,8 +372,9 @@ OPTIONS_STOP_TIERS = {
 OPTIONS_PROFIT_TARGET_PCT = 0.50  # +50% profit target
 
 # Contract Selection
-OPTIONS_DTE_MIN = 1  # Minimum days to expiration
-OPTIONS_DTE_MAX = 4  # Maximum days to expiration
+# Options chain filter (must cover BOTH Intraday 0-2 DTE AND Swing 5-45 DTE)
+OPTIONS_DTE_MIN = 0  # Minimum days to expiration (Intraday mode)
+OPTIONS_DTE_MAX = 45  # Maximum days to expiration (Swing mode)
 OPTIONS_DELTA_MIN = 0.40  # Minimum delta (ATM range)
 OPTIONS_DELTA_MAX = 0.60  # Maximum delta (ATM range)
 OPTIONS_MIN_PREMIUM = 0.50  # Minimum premium per contract ($0.50)
@@ -569,7 +593,8 @@ SCHEDULED_EVENTS = {
 # INDICATORS
 # =============================================================================
 
-INDICATOR_WARMUP_DAYS = 252  # Max of all indicator requirements
+# SMA200 needs 200 trading days. 200 × (7/5) + holidays buffer ≈ 300 calendar days
+INDICATOR_WARMUP_DAYS = 300  # Calendar days (not trading days)
 
 # =============================================================================
 # SYMBOLS

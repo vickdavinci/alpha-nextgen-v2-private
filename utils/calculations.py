@@ -836,40 +836,91 @@ def credit_factor_score(spread: float) -> float:
     return clamp(score, 0, 100)
 
 
+def vix_factor_score(
+    vix_level: float,
+    low_threshold: float = 15.0,
+    normal_threshold: float = 22.0,
+    high_threshold: float = 30.0,
+    extreme_threshold: float = 40.0,
+) -> float:
+    """Calculate VIX factor score for regime calculation (V2.3).
+
+    Options are priced off implied volatility (VIX). Low VIX means cheap options
+    with better expected returns. High VIX means expensive options.
+
+    Args:
+        vix_level: Current VIX value.
+        low_threshold: VIX below this is complacent (default 15).
+        normal_threshold: VIX below this is normal (default 22).
+        high_threshold: VIX above this is elevated (default 30).
+        extreme_threshold: VIX above this is crisis (default 40).
+
+    Returns:
+        VIX score (0-100). Higher score = better for buying options.
+
+    Example:
+        >>> vix_factor_score(15)  # Low VIX
+        100
+        >>> vix_factor_score(25)  # Elevated
+        40
+        >>> vix_factor_score(45)  # Crisis
+        0
+    """
+    if vix_level < low_threshold:
+        return 100.0  # Complacent, cheap options
+    elif vix_level < 18:
+        return 85.0  # Low fear
+    elif vix_level < normal_threshold:
+        return 70.0  # Normal
+    elif vix_level < 26:
+        return 50.0  # Elevated
+    elif vix_level < high_threshold:
+        return 30.0  # High fear
+    elif vix_level < extreme_threshold:
+        return 15.0  # Very high
+    else:
+        return 0.0  # Crisis mode
+
+
 def aggregate_regime_score(
     trend_score: float,
     vol_score: float,
     breadth_score: float,
     credit_score: float,
-    weight_trend: float = 0.35,
-    weight_vol: float = 0.25,
-    weight_breadth: float = 0.25,
+    weight_trend: float = 0.30,
+    weight_vol: float = 0.15,
+    weight_breadth: float = 0.20,
     weight_credit: float = 0.15,
+    vix_score: float = 50.0,
+    weight_vix: float = 0.20,
 ) -> float:
-    """Calculate weighted aggregate regime score.
+    """Calculate weighted aggregate regime score (V2.3: includes VIX).
 
     Args:
         trend_score: Trend factor score (0-100).
-        vol_score: Volatility factor score (0-100).
+        vol_score: Realized volatility factor score (0-100).
         breadth_score: Breadth factor score (0-100).
         credit_score: Credit factor score (0-100).
-        weight_trend: Weight for trend factor.
-        weight_vol: Weight for volatility factor.
-        weight_breadth: Weight for breadth factor.
-        weight_credit: Weight for credit factor.
+        weight_trend: Weight for trend factor (V2.3: 0.30).
+        weight_vol: Weight for realized volatility factor (V2.3: 0.15).
+        weight_breadth: Weight for breadth factor (V2.3: 0.20).
+        weight_credit: Weight for credit factor (0.15).
+        vix_score: VIX factor score (0-100) - V2.3 NEW.
+        weight_vix: Weight for VIX factor (V2.3: 0.20).
 
     Returns:
         Aggregate score (0-100).
 
     Example:
-        >>> aggregate_regime_score(70, 60, 55, 50)
-        60.75
+        >>> aggregate_regime_score(70, 60, 55, 50, vix_score=80)
+        64.0
     """
     raw = (
         trend_score * weight_trend
         + vol_score * weight_vol
         + breadth_score * weight_breadth
         + credit_score * weight_credit
+        + vix_score * weight_vix
     )
     return clamp(raw, 0, 100)
 

@@ -820,10 +820,19 @@ class OptionsEngine:
         self._spy_at_open: float = 0.0
         self._spy_gap_pct: float = 0.0
 
-    def log(self, message: str) -> None:
-        """Log via algorithm or skip for testing."""
+    def log(self, message: str, trades_only: bool = False) -> None:
+        """
+        Log via algorithm with LiveMode awareness.
+
+        Args:
+            message: Log message to output.
+            trades_only: If True, always log (for trade entries/exits).
+                        If False, only log in LiveMode (for diagnostics).
+        """
         if self.algorithm:
-            self.algorithm.Log(message)
+            # Only show diagnostic logs in LiveMode, always show trade logs
+            if trades_only or self.algorithm.LiveMode:
+                self.algorithm.Log(message)
 
     # =========================================================================
     # ENTRY SCORE CALCULATION
@@ -1197,7 +1206,8 @@ class OptionsEngine:
         self.log(
             f"OPT: ENTRY_SIGNAL | {reason} | "
             f"Premium=${premium:.2f} | Target=${target_price:.2f} | "
-            f"Stop=${stop_price:.2f}"
+            f"Stop=${stop_price:.2f}",
+            trades_only=True,
         )
 
         return TargetWeight(
@@ -1237,7 +1247,7 @@ class OptionsEngine:
         # Exit 1: Profit target hit (+50%)
         if current_price >= self._position.target_price:
             reason = f"TARGET_HIT +{pnl_pct:.1%} (Price: ${current_price:.2f})"
-            self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}")
+            self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
             return TargetWeight(
                 symbol=symbol,
                 target_weight=0.0,
@@ -1249,7 +1259,7 @@ class OptionsEngine:
         # Exit 2: Stop hit
         if current_price <= self._position.stop_price:
             reason = f"STOP_HIT {pnl_pct:.1%} (Price: ${current_price:.2f})"
-            self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}")
+            self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
             return TargetWeight(
                 symbol=symbol,
                 target_weight=0.0,
@@ -1299,7 +1309,7 @@ class OptionsEngine:
         pnl_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0
 
         reason = f"TIME_EXIT_1545 {pnl_pct:+.1%} (Price: ${current_price:.2f})"
-        self.log(f"OPT: FORCE_EXIT {symbol} | {reason}")
+        self.log(f"OPT: FORCE_EXIT {symbol} | {reason}", trades_only=True)
 
         return TargetWeight(
             symbol=symbol,
@@ -1522,7 +1532,7 @@ class OptionsEngine:
             f"{state.qqq_move_pct:.2f}% | {direction.value}"
         )
 
-        self.log(f"INTRADAY_SIGNAL: {reason}")
+        self.log(f"INTRADAY_SIGNAL: {reason}", trades_only=False)
 
         return TargetWeight(
             symbol=best_contract.symbol,
@@ -1566,7 +1576,7 @@ class OptionsEngine:
         pnl_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0
 
         reason = f"INTRADAY_TIME_EXIT_1530 {pnl_pct:+.1%} (Price: ${current_price:.2f})"
-        self.log(f"INTRADAY_FORCE_EXIT {symbol} | {reason}")
+        self.log(f"INTRADAY_FORCE_EXIT {symbol} | {reason}", trades_only=True)
 
         return TargetWeight(
             symbol=symbol,
@@ -1690,7 +1700,7 @@ class OptionsEngine:
         if self._position is not None:
             position = self._position
             self._position = None
-            self.log(f"OPT: POSITION_REMOVED {position.contract.symbol}")
+            self.log(f"OPT: POSITION_REMOVED {position.contract.symbol}", trades_only=True)
             return position
         return None
 
@@ -1712,6 +1722,7 @@ class OptionsEngine:
 
         Returns per-contract Greeks for risk limit checking.
         Risk limits are per-contract (e.g., delta 0.80 = too deep ITM).
+        Theta is normalized to percentage of position value for threshold comparison.
 
         Returns:
             GreeksSnapshot for risk engine, or None if no position.
@@ -1721,13 +1732,25 @@ class OptionsEngine:
 
         contract = self._position.contract
 
-        # Return per-contract Greeks for risk limit checking
-        # Thresholds (CB_DELTA_MAX=0.80, etc.) are per-contract values
+        # Calculate position value for theta normalization
+        # Position value = num_contracts × mid_price × 100 (shares per contract)
+        position_value = self._position.num_contracts * contract.mid_price * 100
+        if position_value <= 0:
+            # Fallback to entry price if mid_price not available
+            position_value = self._position.num_contracts * self._position.entry_price * 100
+
+        # Normalize theta to percentage of position value
+        # Raw theta is in dollars/day, threshold CB_THETA_WARNING=-0.02 means -2%/day max
+        # Total theta = per-contract theta × num_contracts
+        total_theta_dollars = contract.theta * self._position.num_contracts
+        theta_pct = total_theta_dollars / position_value if position_value > 0 else 0.0
+
+        # Return per-contract Greeks for delta/gamma/vega, normalized theta for percentage check
         return GreeksSnapshot(
             delta=contract.delta,
             gamma=contract.gamma,
             vega=contract.vega,
-            theta=contract.theta,
+            theta=theta_pct,  # Now expressed as percentage (e.g., -0.01 = -1%/day)
         )
 
     def update_position_greeks(

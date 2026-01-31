@@ -140,7 +140,7 @@ QuantConnect handles timezone conversion automatically.
 15:45 ET ─── EOD Processing Begins
 
     ├── REGIME ENGINE
-    │   ├── Calculate all 4 factors (trend, vol, breadth, credit)
+    │   ├── Calculate all 5 factors (V2.3: trend, VIX, vol, breadth, credit)
     │   ├── Aggregate weighted score
     │   ├── Apply exponential smoothing
     │   └── Output: RegimeState with hedge targets

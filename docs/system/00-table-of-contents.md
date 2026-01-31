@@ -38,7 +38,7 @@
 
 | # | Section | Description | Key Diagrams |
 |:-:|---------|-------------|--------------|
-| [04](04-regime-engine.md) | **Regime Engine** | Four-factor market state scoring, smoothing, state classification (RISK_ON to RISK_OFF) | Regime Engine Detail |
+| [04](04-regime-engine.md) | **Regime Engine** | Five-factor market state scoring (V2.3), smoothing, state classification (RISK_ON to RISK_OFF) | Regime Engine Detail |
 | [05](05-capital-engine.md) | **Capital Engine** | SEED/GROWTH phases, position limits, virtual lockbox profit protection | Capital Engine Detail |
 | [12](12-risk-engine.md) | **Risk Engine** | Kill switch, panic mode, weekly breaker, gap filter, vol shock, time guard, split guard | Risk Engine Safeguards |
 

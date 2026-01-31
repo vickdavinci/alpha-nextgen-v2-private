@@ -133,17 +133,22 @@ class PortfolioRouter:
     - Satellite (MR): 0-10% max allocation
     """
 
-    # V2.1: Source-based allocation limits (Core-Satellite)
+    # V2.3: Source-based allocation limits (Core-Satellite)
+    # Updated to use config values and reserve capital for options
+    # RESERVED_OPTIONS_PCT (25%) ensures buying power is available for options
     SOURCE_ALLOCATION_LIMITS: Dict[str, float] = {
-        "TREND": 0.70,  # Core: 70% max
-        "OPT": 0.30,  # Satellite (Options): 30% max
-        "MR": 0.10,  # Satellite (MR): 10% max
+        "TREND": config.TREND_TOTAL_ALLOCATION,  # 55% max (was 70%)
+        "OPT": config.OPTIONS_ALLOCATION_MAX,  # 30% max (reserved)
+        "MR": config.MR_TOTAL_ALLOCATION,  # 10% max
         "HEDGE": 0.30,  # Hedge: 30% max (TMF 20% + PSQ 10%)
         "YIELD": 0.50,  # Yield (SHV): 50% max
         "COLD_START": 0.35,  # Cold Start: 35% max (subset of TREND)
         "RISK": 1.00,  # Risk: No limit (emergency liquidations)
         "ROUTER": 1.00,  # Router: No limit (SHV liquidations)
     }
+
+    # V2.3: Non-options sources that must respect reserved options capital
+    NON_OPTIONS_SOURCES = {"TREND", "MR", "HEDGE", "COLD_START"}
 
     def __init__(self, algorithm: Optional["QCAlgorithm"] = None):
         """Initialize Portfolio Router."""
@@ -276,10 +281,11 @@ class PortfolioRouter:
         """
         Enforce Core-Satellite allocation limits by source.
 
-        V2.1: Caps total allocation per source engine:
-        - TREND (Core): 70% max
-        - OPT (Options): 30% max
+        V2.3: Caps total allocation per source engine AND reserves capital for options:
+        - TREND (Core): 55% max (config.TREND_TOTAL_ALLOCATION)
+        - OPT (Options): 30% max (reserved via RESERVED_OPTIONS_PCT)
         - MR (Mean Reversion): 10% max
+        - Total non-options: capped at (1.0 - RESERVED_OPTIONS_PCT) = 75%
 
         Args:
             weights: List of TargetWeight objects.
@@ -327,6 +333,39 @@ class PortfolioRouter:
                     f"Requested {total_requested:.1%} > Limit {limit:.1%} | "
                     f"Scaled by {scale_factor:.0%}"
                 )
+
+        # V2.3: Enforce total non-options cap (reserve capital for options)
+        # This ensures TREND + MR + HEDGE never consume all buying power
+        max_non_options = 1.0 - config.RESERVED_OPTIONS_PCT  # 75%
+
+        non_options_total = sum(
+            w.target_weight for w in adjusted_weights if w.source in self.NON_OPTIONS_SOURCES
+        )
+
+        if non_options_total > max_non_options:
+            scale_factor = max_non_options / non_options_total
+            final_weights = []
+
+            for w in adjusted_weights:
+                if w.source in self.NON_OPTIONS_SOURCES:
+                    scaled_weight = w.target_weight * scale_factor
+                    final_weights.append(
+                        TargetWeight(
+                            symbol=w.symbol,
+                            target_weight=scaled_weight,
+                            source=w.source,
+                            urgency=w.urgency,
+                            reason=f"{w.reason} [options reserve scaled {scale_factor:.0%}]",
+                        )
+                    )
+                else:
+                    final_weights.append(w)
+
+            self.log(
+                f"ROUTER: OPTIONS_RESERVE | Non-options total {non_options_total:.1%} > "
+                f"Max {max_non_options:.1%} | Scaled by {scale_factor:.0%}"
+            )
+            return final_weights
 
         return adjusted_weights
 
@@ -422,7 +461,18 @@ class PortfolioRouter:
 
             # Calculate delta
             delta_value = target_value - current_value
-            delta_shares = int(delta_value / price)
+
+            # Check if this is an options contract (contains C or P with strike price pattern)
+            # Options symbols look like "QQQ 260126C00455000" or similar
+            is_option = len(symbol) > 10 and ("C0" in symbol or "P0" in symbol)
+
+            if is_option:
+                # Options: 1 contract = 100 shares, so cost = price * 100
+                # delta_contracts = delta_value / (price * 100)
+                delta_shares = int(delta_value / (price * 100))
+            else:
+                # Equities: 1 share = 1 share
+                delta_shares = int(delta_value / price)
 
             # Skip if delta is below minimum
             if abs(delta_shares) < config.MIN_SHARE_DELTA:

@@ -44,14 +44,36 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 ## 16.3 Regime Engine Parameters
 
-### Factor Weights
+### Factor Weights (V2.3: Added VIX)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `WEIGHT_TREND` | 0.45 | Trend factor weight (45%) - increased to follow price trend during narrow rallies |
-| `WEIGHT_VOLATILITY` | 0.25 | Volatility factor weight (25%) |
-| `WEIGHT_BREADTH` | 0.15 | Breadth factor weight (15%) - reduced to prevent blocking during mega-cap rallies |
+| `WEIGHT_TREND` | 0.30 | Trend factor weight (30%) - V2.3: reduced from 0.45 |
+| `WEIGHT_VIX` | 0.20 | VIX (implied vol) factor weight (20%) - V2.3 NEW |
+| `WEIGHT_VOLATILITY` | 0.15 | Realized volatility factor weight (15%) - V2.3: reduced from 0.25 |
+| `WEIGHT_BREADTH` | 0.20 | Breadth factor weight (20%) - V2.3: increased from 0.15 |
 | `WEIGHT_CREDIT` | 0.15 | Credit factor weight (15%) |
+
+### VIX Level Factor (V2.3 NEW)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `VIX_LOW_THRESHOLD` | 15 | Below = complacent market, cheap options |
+| `VIX_NORMAL_THRESHOLD` | 22 | 15-22 = normal volatility |
+| `VIX_HIGH_THRESHOLD` | 30 | 22-30 = elevated fear |
+| `VIX_EXTREME_THRESHOLD` | 40 | Above = crisis mode |
+
+### VIX Factor Scoring
+
+| VIX Level | Score | Market State |
+|:---------:|:-----:|--------------|
+| < 15 | 100 | Complacent, cheap options |
+| 15-18 | 85 | Low normal |
+| 18-22 | 70 | Normal |
+| 22-26 | 50 | Mild fear |
+| 26-30 | 30 | Elevated |
+| 30-40 | 15 | High fear |
+| > 40 | 0 | Crisis mode |
 
 ### Smoothing
 
@@ -627,11 +649,18 @@ LOCKBOX_LOCK_PCT = 0.10
 # REGIME ENGINE
 # =============================================================================
 
-# Factor Weights (adjusted to reduce breadth sensitivity during narrow rallies)
-WEIGHT_TREND = 0.45      # Increased from 0.35
-WEIGHT_VOLATILITY = 0.25
-WEIGHT_BREADTH = 0.15    # Reduced from 0.25
+# Factor Weights (V2.3: Added VIX, rebalanced)
+WEIGHT_TREND = 0.30      # V2.3: Reduced from 0.45
+WEIGHT_VIX = 0.20        # V2.3 NEW: Implied volatility
+WEIGHT_VOLATILITY = 0.15 # V2.3: Reduced from 0.25 (realized vol)
+WEIGHT_BREADTH = 0.20    # V2.3: Increased from 0.15
 WEIGHT_CREDIT = 0.15
+
+# VIX Level Factor Thresholds (V2.3 NEW)
+VIX_LOW_THRESHOLD = 15       # Below = complacent
+VIX_NORMAL_THRESHOLD = 22    # Normal volatility
+VIX_HIGH_THRESHOLD = 30      # Elevated fear
+VIX_EXTREME_THRESHOLD = 40   # Crisis mode
 
 # Smoothing
 REGIME_SMOOTHING_ALPHA = 0.30
@@ -960,11 +989,11 @@ Validate all parameters are within acceptable ranges:
 ```python
 def validate_config():
     """Validate configuration parameters."""
-    
+
     errors = []
-    
-    # Factor weights must sum to 1.0
-    weight_sum = WEIGHT_TREND + WEIGHT_VOLATILITY + WEIGHT_BREADTH + WEIGHT_CREDIT
+
+    # Factor weights must sum to 1.0 (V2.3: includes VIX)
+    weight_sum = WEIGHT_TREND + WEIGHT_VIX + WEIGHT_VOLATILITY + WEIGHT_BREADTH + WEIGHT_CREDIT
     if abs(weight_sum - 1.0) > 0.001:
         errors.append(f"Factor weights sum to {weight_sum}, must equal 1.0")
     
