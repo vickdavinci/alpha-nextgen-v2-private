@@ -989,7 +989,8 @@ class AlphaNextGen(QCAlgorithm):
         self.symbols_to_skip.clear()
         self._splits_logged_today.clear()
         self._greeks_breach_logged = False
-        self._kill_switch_handled_today = False  # V2.3: Reset for next day
+        # NOTE: _kill_switch_handled_today is NOT reset here - it resets at 09:25 pre-market
+        # Resetting here causes double-trigger since OnData runs at 16:00 after EOD handler
 
     def _on_weekly_reset(self) -> None:
         """
@@ -1722,7 +1723,7 @@ class AlphaNextGen(QCAlgorithm):
 
         # Return best candidate
         candidates.sort(key=lambda x: x[0], reverse=True)
-        self.Log(f"SWING: Selected {direction.value} contract {candidates[0][1].symbol}")
+        # Note: Contract selection log removed - entry signal logs the details
         return candidates[0][1]
 
     def _select_intraday_option_contract(self, chain) -> Optional[OptionContract]:
@@ -2263,14 +2264,10 @@ class AlphaNextGen(QCAlgorithm):
         direction = None  # Will be set based on conditions
         if qqq_price > ma200_value and rsi_value < 70:
             direction = OptionDirection.CALL
-            self.Log(
-                f"SWING: Direction=CALL | QQQ={qqq_price:.2f} > MA200={ma200_value:.2f} | RSI={rsi_value:.1f} < 70"
-            )
+            # Note: Direction log moved to entry signal to reduce spam
         elif qqq_price < ma200_value and rsi_value > 30:
             direction = OptionDirection.PUT
-            self.Log(
-                f"SWING: Direction=PUT | QQQ={qqq_price:.2f} < MA200={ma200_value:.2f} | RSI={rsi_value:.1f} > 30"
-            )
+            # Note: Direction log moved to entry signal to reduce spam
         else:
             # No clear signal - skip entry
             return
