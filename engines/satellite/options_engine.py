@@ -492,13 +492,15 @@ class MicroRegimeEngine:
         move_pct = (qqq_current - qqq_open) / qqq_open * 100
 
         # Classify move direction and magnitude
+        # V2.3.4: Lowered thresholds from 0.3% to 0.15% to allow more trades
+        # 0.3% was too restrictive - most intraday moves stayed "FLAT"
         if move_pct > 0.8:
             return QQQMove.UP_STRONG, move_pct
-        elif move_pct > 0.3:
+        elif move_pct > 0.15:
             return QQQMove.UP, move_pct
         elif move_pct < -0.8:
             return QQQMove.DOWN_STRONG, move_pct
-        elif move_pct < -0.3:
+        elif move_pct < -0.15:
             return QQQMove.DOWN, move_pct
         else:
             return QQQMove.FLAT, move_pct
@@ -847,14 +849,14 @@ class MicroRegimeEngine:
         Legacy method for backwards compatibility.
         Use recommend_strategy_and_direction() for new code.
         """
-        # Create QQQMove from percentage
+        # Create QQQMove from percentage (V2.3.4: lowered from 0.3% to 0.15%)
         if qqq_move_pct > 0.8:
             qqq_move = QQQMove.UP_STRONG
-        elif qqq_move_pct > 0.3:
+        elif qqq_move_pct > 0.15:
             qqq_move = QQQMove.UP
         elif qqq_move_pct < -0.8:
             qqq_move = QQQMove.DOWN_STRONG
-        elif qqq_move_pct < -0.3:
+        elif qqq_move_pct < -0.15:
             qqq_move = QQQMove.DOWN
         else:
             qqq_move = QQQMove.FLAT

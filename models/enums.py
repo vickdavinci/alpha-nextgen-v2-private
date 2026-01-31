@@ -193,7 +193,7 @@ class QQQMove(Enum):
     """
 
     UP_STRONG = "UP_STRONG"  # QQQ > +0.8% from open
-    UP = "UP"  # QQQ +0.3% to +0.8% from open
-    FLAT = "FLAT"  # QQQ ±0.3% from open
-    DOWN = "DOWN"  # QQQ -0.3% to -0.8% from open
+    UP = "UP"  # QQQ +0.15% to +0.8% from open (V2.3.4: lowered from 0.3%)
+    FLAT = "FLAT"  # QQQ ±0.15% from open (V2.3.4: lowered from 0.3%)
+    DOWN = "DOWN"  # QQQ -0.15% to -0.8% from open (V2.3.4: lowered from 0.3%)
     DOWN_STRONG = "DOWN_STRONG"  # QQQ < -0.8% from open
