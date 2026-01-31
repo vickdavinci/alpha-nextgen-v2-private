@@ -198,23 +198,49 @@
 
 **Status:** V2.3.7 fixes complete - Ready for backtest validation
 
+**V2.3.8 Fixes from PART 14 Analysis (2026-01-31):**
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **TNA/FAS Volatility Trap** - Same ATR×3.5 stops for 2x and 3x ETFs | HIGH | ✅ FIXED (3x→ATR×2.5) |
+| 2 | **Spread "Impossible Triangle"** - Width + Delta + Liquidity blocking all spreads | HIGH | ✅ FIXED (delta drives selection) |
+| 3 | **0DTE Stop Slippage** - 20-30% stops slip to 60% loss on fast 0DTE moves | HIGH | ✅ FIXED (0DTE→15% stops) |
+
+**V2.3.8 Key Changes:**
+- Added `TREND_3X_SYMBOLS = ["TNA", "FAS"]` for 3× leveraged ETFs
+- Added tighter 3× Chandelier multipliers: BASE 2.5, TIGHT 2.0, TIGHTER 1.5
+- Updated trend_engine with `get_chandelier_multipliers()` for symbol-specific stops
+- Removed strict width filter from spread selection - delta now primary criterion
+- Widened `SPREAD_WIDTH_MAX` from $5 to $15 (width no longer blocks trades)
+- Changed short leg sort from width proximity to delta proximity (target delta ~0.30)
+- Added `OPTIONS_0DTE_STOP_PCT = 0.15` for tighter 0DTE stops
+- Updated `calculate_position_size()` to accept `days_to_expiry` parameter
+- Hard stops already placed via OCO Manager `StopMarketOrder` (confirmed working)
+
+**Root Cause (3x Volatility):** TNA/FAS swing 5-7% daily vs 2-3% for QLD/SSO. Same ATR×3.5 stop was too wide for 3× leverage, allowing 17%+ losses.
+
+**Root Cause (Spread Triangle):** Fixed width ($3-5) + fixed delta (0.15-0.45) + OI (100+) = rarely all satisfied together. Market offers $10 wide at 0.15 delta OR $5 wide at 0.30 delta, not both.
+
+**Root Cause (0DTE Slippage):** StopMarketOrder fills at next available price after trigger. 0DTE options can gap from $0.50 to $0.20 in 30 seconds. 15% stop limits max loss to ~30% even with slippage.
+
+**Status:** V2.3.8 fixes complete - Ready for backtest validation
+
 ---
 
-**V2.3.8 Planned: Bidirectional Mean Reversion (PART 12)**
+**V2.3.9 Planned: Bidirectional Mean Reversion (PART 12)**
 | # | Feature | Severity | Status |
 |:-:|---------|:--------:|:------:|
-| 1 | **Add SQQQ/SOXS inverse ETFs** - Capture "rally fade" when RSI > 75 | ENHANCEMENT | 🟡 AFTER V2.3.7 |
-| 2 | **Mutual exclusivity** - Block TQQQ entry if SQQQ held (and vice versa) | HIGH | 🟡 AFTER V2.3.7 |
-| 3 | **MR allocation cap** - Ensure Long + Short ≤ 10% total | HIGH | 🟡 AFTER V2.3.7 |
+| 1 | **Add SQQQ/SOXS inverse ETFs** - Capture "rally fade" when RSI > 75 | ENHANCEMENT | 🟡 AFTER V2.3.8 |
+| 2 | **Mutual exclusivity** - Block TQQQ entry if SQQQ held (and vice versa) | HIGH | 🟡 AFTER V2.3.8 |
+| 3 | **MR allocation cap** - Ensure Long + Short ≤ 10% total | HIGH | 🟡 AFTER V2.3.8 |
 
-**V2.3.8 Scope:**
+**V2.3.9 Scope:**
 - Add MR_SHORT_SYMBOLS = ["SQQQ", "SOXS"] to config.py
 - Add MR_RALLY_THRESHOLD = 0.025, MR_RSI_OVERBOUGHT = 75
 - Subscribe to SQQQ, SOXS in main.py
 - Update mean_reversion_engine.py with bidirectional logic
 - Enforce mutual exclusivity (no simultaneous long + short)
 
-**Rationale for Deferral:** V2.3.7 made 4 critical fixes. Need to isolate their performance impact before adding a new strategy direction. Bidirectional MR is a strategy enhancement, not a bug fix.
+**Rationale for Deferral:** V2.3.8 made 3 risk management fixes. Need to isolate their performance impact before adding a new strategy direction. Bidirectional MR is a strategy enhancement, not a bug fix.
 
 ### Stage 2 Bugs - Prioritized Fix List
 
