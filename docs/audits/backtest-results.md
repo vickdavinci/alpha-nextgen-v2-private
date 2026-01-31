@@ -199,6 +199,28 @@ _on_micro_regime_update (every 15 min)
 
 **Next Step:** Run Stage 3 backtest to validate V2.3.6 fixes.
 
+### V2.3.7 Planned: Bidirectional Mean Reversion (Post-Backtest)
+
+**Audit Reference:** `docs/audits/stage2-codeaudit.md` (PART 12)
+
+| # | Feature | Description | Status |
+|:-:|---------|-------------|:------:|
+| 1 | Add Inverse ETFs | SQQQ (3× inverse Nasdaq), SOXS (3× inverse Semis) | 🟡 Planned |
+| 2 | Rally Fade Logic | Buy SQQQ when TQQQ RSI > 75 + rally > 2.5% | 🟡 Planned |
+| 3 | Mutual Exclusivity | Block long entry if short held (and vice versa) | 🟡 Planned |
+| 4 | Allocation Cap | Ensure MR total (long + short) ≤ 10% | 🟡 Planned |
+
+**Implementation Plan:**
+1. `config.py`: Add MR_SHORT_SYMBOLS, MR_RALLY_THRESHOLD, MR_RSI_OVERBOUGHT
+2. `main.py`: Subscribe to SQQQ, SOXS
+3. `mean_reversion_engine.py`: Bidirectional logic with mutual exclusivity
+4. `portfolio_router.py`: Verify MR allocation cap enforces total exposure
+
+**Rationale for Deferral:**
+- V2.3.6 made 7 significant changes - need to isolate performance impact
+- Bidirectional MR is a strategy enhancement, not a bug fix
+- Will implement after V2.3.6 backtest validates current fixes
+
 ---
 
 ## Stage 1: Single Day Validation

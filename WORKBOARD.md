@@ -173,7 +173,23 @@
 
 **Root Cause (Intraday):** 0DTE PUTs on up days have lower OI and wider spreads. Cascade of filters (DTE→Direction→Delta→OI→Spread) left 0 contracts passing.
 
-**Status:** V2.3.6 fixes complete - Ready for backtest validation
+**Status:** V2.3.6 fixes complete - Backtest "Pensive Red Rabbit" running
+
+**V2.3.7 Planned: Bidirectional Mean Reversion (PART 12)**
+| # | Feature | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **Add SQQQ/SOXS inverse ETFs** - Capture "rally fade" when RSI > 75 | ENHANCEMENT | 🟡 AFTER BACKTEST |
+| 2 | **Mutual exclusivity** - Block TQQQ entry if SQQQ held (and vice versa) | HIGH | 🟡 AFTER BACKTEST |
+| 3 | **MR allocation cap** - Ensure Long + Short ≤ 10% total | HIGH | 🟡 AFTER BACKTEST |
+
+**V2.3.7 Scope:**
+- Add MR_SHORT_SYMBOLS = ["SQQQ", "SOXS"] to config.py
+- Add MR_RALLY_THRESHOLD = 0.025, MR_RSI_OVERBOUGHT = 75
+- Subscribe to SQQQ, SOXS in main.py
+- Update mean_reversion_engine.py with bidirectional logic
+- Enforce mutual exclusivity (no simultaneous long + short)
+
+**Rationale for Deferral:** V2.3.6 made 7 significant changes. Need to isolate their performance impact before adding a new strategy direction. Bidirectional MR is a strategy enhancement, not a bug fix.
 
 ### Stage 2 Bugs - Prioritized Fix List
 
