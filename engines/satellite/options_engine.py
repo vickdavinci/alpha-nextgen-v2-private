@@ -1634,7 +1634,7 @@ class OptionsEngine:
         entry_time: str,
         current_date: str,
         contract: Optional[OptionContract] = None,
-    ) -> OptionsPosition:
+    ) -> Optional[OptionsPosition]:
         """
         Register a new options position after fill.
 
@@ -1645,11 +1645,17 @@ class OptionsEngine:
             contract: Option contract (uses pending if not provided).
 
         Returns:
-            Created OptionsPosition.
+            Created OptionsPosition, or None if no pending contract exists.
         """
         # Use pending values from check_entry_signal
         if contract is None:
             contract = self._pending_contract
+
+        # Guard: If no pending contract exists, we can't register entry
+        # This can happen if fill occurs for an order placed outside our signal flow
+        if contract is None:
+            self.log("OPT: register_entry called but no pending contract - skipping")
+            return None
 
         # Use pending values if set, otherwise defaults
         # Note: getattr defaults don't work when attr exists but is None
