@@ -6,7 +6,7 @@
 
 set -e
 
-SRC="/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen"
+SRC="/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private"
 DST="/Users/vigneshwaranarumugam/Documents/Trading Github/lean-workspace/AlphaNextGen"
 
 echo "=== Alpha NextGen Sync Tool ==="
