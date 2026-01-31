@@ -36,8 +36,9 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 ### Stage 2 Summary (2026-01-31)
 
 **Previous Run:** Smooth Magenta Bat | **Result:** -8.33% | **Orders:** 9
+**Latest Run:** Casual Orange Cobra | **Result:** -6.98% | **Orders:** 14 | **Fees:** $171.51
 
-**V2.3.2 Architect Audit Fixes Applied:**
+**V2.3.2 Architect Audit Fixes Applied (Part 1-2):**
 
 | # | Fix | File(s) | Status |
 |:-:|-----|---------|:------:|
@@ -48,6 +49,14 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | 5 | 15:30 force exit uses correct position | `options_engine.py`, `main.py` | ✅ |
 | 6 | Intraday DTE expanded (0-5 vs 0-2) | `config.py`, `main.py` | ✅ |
 
+**V2.3.3 Architect Audit Fixes (Part 3) - COMPLETE:**
+
+| # | Finding | Severity | Fix | Status |
+|:-:|---------|:--------:|-----|:------:|
+| 1 | Trend Allocation Flattening | CRITICAL | `target_weight=1.0` → `config.TREND_SYMBOL_ALLOCATIONS.get(symbol)` | ✅ |
+| 2 | Closing Trade Bypass | MEDIUM | Skip MIN_TRADE_VALUE check for `target_weight=0.0` closes | ✅ |
+| 3 | Exit Race Condition | LOW | `_pending_intraday_exit` flag prevents duplicate signals | ✅ |
+
 **Previous Issues Fixed:**
 - Kill switch daily reset: ✅ FIXED (scheduler.reset_daily())
 - Order spam: 371 → 9 orders ✅
@@ -55,7 +64,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 - Options sizing: ✅ FIXED (Phase A)
 - Naked options vs Debit Spreads: ✅ FIXED (Phase B)
 
-**Next Step:** Re-run Stage 2 backtest to validate V2.3.2 fixes.
+**Next Step:** Re-run Stage 2 backtest with V2.3.3 fixes.
 
 ---
 
@@ -184,7 +193,8 @@ self.SetCash(50_000)  # PHASE_SEED_MIN
 | 4 | Ugly Tan Lemur | TBD | 5 | Scheduler kill switch not reset daily |
 | 5 | Retrospective Apricot Leopard | -6.92% | 15 | Kill switch reset working, options sizing wrong |
 | 6 | Smooth Magenta Bat | -8.33% | 9 | Account killer bug (471 contracts instead of 58) |
-| 7 | TBD (V2.3.2) | — | — | **V2.3.2 Architect Audit Fixes Applied** |
+| 7 | **Casual Orange Cobra** | **-6.98%** | 14 | V2.3.2 fixes applied, improved from -8.33% |
+| 8 | TBD (V2.3.3) | — | — | **V2.3.3 Part 3 Fixes In Progress** |
 
 ### V2.3.1 Fixes (Post Ugly Tan Lemur)
 

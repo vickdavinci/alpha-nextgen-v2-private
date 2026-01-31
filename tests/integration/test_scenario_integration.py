@@ -805,13 +805,14 @@ class TestFullScenarioIntegration:
 
         engine = OptionsEngine()
 
-        # Filter for valid swing mode contracts (3-45 DTE, delta 0.40-0.60)
+        # V2.3.2: Filter for valid swing mode contracts (6-45 DTE, delta 0.40-0.60)
+        # Note: 0-5 DTE is now INTRADAY mode after expanding for backtest data availability
         valid_contracts = []
         for opt in options:
             dte = int(opt["days_to_expiry"])
             delta = abs(float(opt["delta"]))
 
-            if 3 <= dte <= 45 and 0.40 <= delta <= 0.60:
+            if 6 <= dte <= 45 and 0.40 <= delta <= 0.60:
                 valid_contracts.append(opt)
 
         assert len(valid_contracts) > 0, "Should have valid contracts for selection"
@@ -837,4 +838,4 @@ class TestFullScenarioIntegration:
 
         # Verify contract is valid for entry
         mode = engine.determine_mode(contract.days_to_expiry)
-        assert mode == OptionsMode.SWING, "Should be swing mode contract"
+        assert mode == OptionsMode.SWING, "Should be swing mode contract (6+ DTE)"

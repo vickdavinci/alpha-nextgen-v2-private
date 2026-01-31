@@ -82,8 +82,9 @@
 ### Stage 2 V2.3.2 Backtest Validation (2026-01-31)
 
 **Previous Backtest:** Smooth Magenta Bat | **Result:** -8.33% | **Orders:** 9
+**Latest Backtest:** Casual Orange Cobra | **Result:** -6.98% | **Orders:** 14 | **Fees:** $171.51
 
-**V2.3.2 Critical Fixes Applied (All 5 from Architect Audit):**
+**V2.3.2 Critical Fixes Applied (All 5 from Architect Audit Part 1-2):**
 1. ✅ **OPT_INTRADAY source limit** - Added to SOURCE_ALLOCATION_LIMITS (5% max)
 2. ✅ **Requested quantity enforced** - Router now uses `requested_quantity` from engine
 3. ✅ **RegimeState.score fixed** - Changed to `smoothed_score`
@@ -91,7 +92,14 @@
 5. ✅ **Intraday 15:30 exit working** - Force close now checks correct position variable
 6. ✅ **Intraday DTE expanded** - 0-5 DTE for backtest data availability (was 0-2)
 
-**Status:** Ready for backtest re-run to validate fixes
+**V2.3.3 Fixes from Architect Audit Part 3 (2026-01-31):**
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **Trend Allocation Flattening** - TrendEngine returns `target_weight=1.0` for all symbols | CRITICAL | ✅ FIXED |
+| 2 | **Closing Trade Bypass** - MIN_TRADE_VALUE check skips worthless option closes | MEDIUM | ✅ FIXED |
+| 3 | **Exit Race Condition** - Duplicate close orders if fill delayed | LOW | ✅ FIXED |
+
+**Status:** V2.3.3 fixes complete - Ready for backtest
 
 ### Stage 2 Bugs - Prioritized Fix List
 
@@ -120,6 +128,14 @@
 |:-:|-----|:------:|-------------|
 | 4 | **Naked options vs Debit Spreads** | ✅ FIXED | V2.3 Debit Spreads implemented (Bull Call/Bear Put based on regime) |
 | 5 | **Intraday mode strategy mismatch** | ✅ FIXED | Intraday=single-leg (0-5 DTE), Swing=debit spreads (10-21 DTE) |
+
+#### 🔴 CRITICAL - V2.3.3 Part 3 Fixes ✅ COMPLETE
+
+| # | Bug | Status | Description |
+|:-:|-----|:------:|-------------|
+| 1 | **Trend Allocation Flattening** | ✅ FIXED | TrendEngine now uses `config.TREND_SYMBOL_ALLOCATIONS.get(symbol)` |
+| 2 | **Closing Trade Bypass** | ✅ FIXED | MIN_TRADE_VALUE bypassed for `target_weight=0.0` closes |
+| 3 | **Exit Race Condition** | ✅ FIXED | `_pending_intraday_exit` flag prevents duplicate signals |
 
 #### 🟡 MEDIUM - After Architecture Stable
 
@@ -681,4 +697,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 31 January 2026 (V2.3.2 Architect Audit Fixes Complete)*
+*Last Updated: 31 January 2026 (V2.3.3 Architect Audit Part 3 Fixes Complete)*

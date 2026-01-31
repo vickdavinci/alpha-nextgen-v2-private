@@ -916,6 +916,9 @@ class OptionsEngine:
         # V2.3.2 FIX #4: Track if pending entry is intraday (for correct position registration)
         self._pending_intraday_entry: bool = False
 
+        # V2.3.3 FIX #3: Prevent duplicate exit signals while waiting for fill
+        self._pending_intraday_exit: bool = False
+
     def log(self, message: str, trades_only: bool = False) -> None:
         """
         Log via algorithm with LiveMode awareness.
@@ -2150,6 +2153,10 @@ class OptionsEngine:
         if self._intraday_position is None:
             return None
 
+        # V2.3.3 FIX #3: Prevent duplicate exit signals while waiting for fill
+        if self._pending_intraday_exit:
+            return None
+
         # Force exit at 15:30 (3:30 PM)
         force_exit_time = current_hour > 15 or (current_hour == 15 and current_minute >= 30)
 
@@ -2163,6 +2170,9 @@ class OptionsEngine:
 
         reason = f"INTRADAY_TIME_EXIT_1530 {pnl_pct:+.1%} (Price: ${current_price:.2f})"
         self.log(f"INTRADAY_FORCE_EXIT {symbol} | {reason}", trades_only=True)
+
+        # V2.3.3: Set pending exit flag to prevent duplicate signals
+        self._pending_intraday_exit = True
 
         return TargetWeight(
             symbol=symbol,
@@ -2316,6 +2326,9 @@ class OptionsEngine:
         Returns:
             Removed intraday position, or None if no position existed.
         """
+        # V2.3.3: Clear pending exit flag when position is removed
+        self._pending_intraday_exit = False
+
         if self._intraday_position is not None:
             position = self._intraday_position
             self._intraday_position = None
@@ -2669,6 +2682,9 @@ class OptionsEngine:
         # V2.3.2: Reset pending intraday entry flag
         self._pending_intraday_entry = False
 
+        # V2.3.3: Reset pending intraday exit flag
+        self._pending_intraday_exit = False
+
         self.log("OPT: Engine reset - all positions cleared")
 
     def reset_daily(self, current_date: str) -> None:
@@ -2684,6 +2700,9 @@ class OptionsEngine:
 
             # V2.3.2: Reset pending intraday entry flag
             self._pending_intraday_entry = False
+
+            # V2.3.3: Reset pending intraday exit flag
+            self._pending_intraday_exit = False
 
             # Reset Micro Regime Engine for new day
             self._micro_regime_engine.reset_daily()

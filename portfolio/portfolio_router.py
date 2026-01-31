@@ -507,8 +507,12 @@ class PortfolioRouter:
             if abs(delta_shares) < config.MIN_SHARE_DELTA:
                 continue
 
-            # Skip if position value below minimum trade size
-            if abs(delta_value) < config.MIN_TRADE_VALUE:
+            # V2.3.3: Check if this is a closing trade (going to 0)
+            # Allow closing trades even if value is small (e.g., worthless options)
+            is_closing = agg.target_weight == 0.0
+
+            # Skip if position value below minimum trade size (unless closing)
+            if abs(delta_value) < config.MIN_TRADE_VALUE and not is_closing:
                 self.log(
                     f"ROUTER: SKIP | {symbol} | "
                     f"Delta ${delta_value:,.0f} < min ${config.MIN_TRADE_VALUE:,}"

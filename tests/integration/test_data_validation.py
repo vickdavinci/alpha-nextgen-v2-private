@@ -142,11 +142,13 @@ class TestOptionsChainFiltering:
 
     def test_dte_filter_intraday_mode(self):
         """
-        Test DTE filter for Intraday Mode (0-2 DTE).
+        Test DTE filter for Intraday Mode (0-5 DTE).
+
+        V2.3.2: Expanded from 0-2 to 0-5 for backtest data availability.
         """
-        # Intraday mode DTE range
+        # Intraday mode DTE range (V2.3.2: expanded to 0-5)
         assert config.OPTIONS_INTRADAY_DTE_MIN == 0
-        assert config.OPTIONS_INTRADAY_DTE_MAX == 2
+        assert config.OPTIONS_INTRADAY_DTE_MAX == 5
 
     def test_atm_strike_filter(self):
         """

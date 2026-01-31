@@ -560,13 +560,15 @@ class TestOptionsIntegration:
         """Test options mode determination."""
         engine = OptionsEngine()
 
-        # Intraday: 0-2 DTE
+        # V2.3.2: Intraday mode expanded to 0-5 DTE for backtest data availability
         assert engine.determine_mode(0).value == "INTRADAY"
         assert engine.determine_mode(1).value == "INTRADAY"
         assert engine.determine_mode(2).value == "INTRADAY"
+        assert engine.determine_mode(3).value == "INTRADAY"  # V2.3.2: now intraday
+        assert engine.determine_mode(5).value == "INTRADAY"  # V2.3.2: boundary
 
-        # Swing: 3+ DTE
-        assert engine.determine_mode(3).value == "SWING"
+        # Swing: 6+ DTE
+        assert engine.determine_mode(6).value == "SWING"
         assert engine.determine_mode(10).value == "SWING"
 
     def test_micro_regime_updates_during_simulation(self):

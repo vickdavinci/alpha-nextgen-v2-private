@@ -248,7 +248,8 @@ class TestEntrySignals:
         assert result is not None
         assert isinstance(result, TargetWeight)
         assert result.symbol == "QLD"
-        assert result.target_weight == 1.0
+        # V2.3.3: TrendEngine now uses symbol-specific allocations from config
+        assert result.target_weight == 0.20  # QLD gets 20% (config.TREND_SYMBOL_ALLOCATIONS)
         assert result.source == "TREND"
         assert result.urgency == Urgency.EOD
         assert "MA200+ADX Entry" in result.reason

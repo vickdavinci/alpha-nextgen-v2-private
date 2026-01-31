@@ -250,9 +250,13 @@ class TrendEngine:
 
         self.log(f"TREND: ENTRY_SIGNAL {symbol} | {reason} | Regime={regime_score:.1f}")
 
+        # V2.3.3: Use symbol-specific allocation from config (not 1.0)
+        # This ensures QLD gets 20%, SSO 15%, TNA 12%, FAS 8% as designed
+        symbol_weight = config.TREND_SYMBOL_ALLOCATIONS.get(symbol, 0.20)
+
         return TargetWeight(
             symbol=symbol,
-            target_weight=1.0,  # Full allocation to trend budget
+            target_weight=symbol_weight,  # V2.3.3: Symbol-specific allocation
             source="TREND",
             urgency=Urgency.EOD,
             reason=reason,

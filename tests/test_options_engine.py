@@ -1616,19 +1616,19 @@ class TestDualModeArchitecture:
         mode = engine.determine_mode(dte=2)
         assert mode == OptionsMode.INTRADAY
 
-    def test_determine_mode_swing_3_dte(self, engine):
-        """Test 3 DTE returns SWING mode (boundary)."""
+    def test_determine_mode_intraday_3_dte(self, engine):
+        """Test 3 DTE returns INTRADAY mode (V2.3.2: expanded to 0-5 DTE)."""
         from models.enums import OptionsMode
 
         mode = engine.determine_mode(dte=3)
-        assert mode == OptionsMode.SWING
+        assert mode == OptionsMode.INTRADAY  # V2.3.2: 0-5 DTE is INTRADAY
 
-    def test_determine_mode_swing_5_dte(self, engine):
-        """Test 5 DTE returns SWING mode."""
+    def test_determine_mode_intraday_5_dte(self, engine):
+        """Test 5 DTE returns INTRADAY mode (V2.3.2: expanded boundary)."""
         from models.enums import OptionsMode
 
         mode = engine.determine_mode(dte=5)
-        assert mode == OptionsMode.SWING
+        assert mode == OptionsMode.INTRADAY  # V2.3.2: 0-5 DTE is INTRADAY
 
     def test_determine_mode_swing_45_dte(self, engine):
         """Test 45 DTE returns SWING mode."""
