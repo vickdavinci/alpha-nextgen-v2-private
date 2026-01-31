@@ -381,6 +381,110 @@ class ExecutionEngine:
             )
 
     # =========================================================================
+    # V2.3.9: Combo Order Handling (Spread Orders)
+    # =========================================================================
+
+    def submit_combo_order(
+        self,
+        long_symbol: str,
+        long_quantity: int,
+        short_symbol: str,
+        short_quantity: int,
+        strategy: str = "",
+        signal_type: str = "",
+        reason: str = "",
+    ) -> ExecutionResult:
+        """
+        V2.3.9: Submit a combo market order for spread trades.
+
+        Uses ComboMarketOrder to submit both legs atomically. This ensures
+        the broker calculates multi-leg margin (~$42K) instead of naked
+        short margin (~$729K).
+
+        Per CTA guidance: "Using Combo Orders will automatically calculate
+        the multi-leg margin instead of classical one."
+
+        Args:
+            long_symbol: Long leg contract symbol (BUY).
+            long_quantity: Number of long contracts (positive).
+            short_symbol: Short leg contract symbol (SELL).
+            short_quantity: Number of short contracts (negative).
+            strategy: Source engine.
+            signal_type: ENTRY, EXIT, etc.
+            reason: Human-readable reason.
+
+        Returns:
+            ExecutionResult with submission status.
+        """
+        # Validate quantities
+        if long_quantity <= 0:
+            self.log(f"EXEC: COMBO_REJECTED | Long quantity must be positive: {long_quantity}")
+            return ExecutionResult(
+                order_id="",
+                success=False,
+                state=OrderState.REJECTED,
+                error_message="Long quantity must be positive",
+            )
+
+        if short_quantity >= 0:
+            self.log(f"EXEC: COMBO_REJECTED | Short quantity must be negative: {short_quantity}")
+            return ExecutionResult(
+                order_id="",
+                success=False,
+                state=OrderState.REJECTED,
+                error_message="Short quantity must be negative",
+            )
+
+        # Create order record for tracking (combo orders are logged as single unit)
+        order_id = self._generate_order_id()
+        combo_reason = f"SPREAD: {long_symbol}(+{long_quantity}) / {short_symbol}({short_quantity})"
+
+        if not self.algorithm:
+            # Testing mode - simulate success
+            self.log(f"EXEC: COMBO_SUBMITTED (test) | {order_id} | {combo_reason} | {reason}")
+            return ExecutionResult(
+                order_id=order_id,
+                success=True,
+                state=OrderState.SUBMITTED,
+            )
+
+        try:
+            # Import Leg class for combo orders
+            from AlgorithmImports import Leg
+
+            # Create legs: positive quantity = BUY, negative quantity = SELL
+            legs = [
+                Leg.Create(long_symbol, long_quantity),
+                Leg.Create(short_symbol, short_quantity),
+            ]
+
+            # Submit combo order - broker calculates NET margin (spread margin)
+            tickets = self.algorithm.ComboMarketOrder(legs, abs(long_quantity))
+
+            # Log success
+            self.log(
+                f"EXEC: COMBO_SUBMITTED | {order_id} | "
+                f"BUY {long_quantity} {long_symbol} + SELL {abs(short_quantity)} {short_symbol} | "
+                f"{reason}"
+            )
+
+            return ExecutionResult(
+                order_id=order_id,
+                success=True,
+                state=OrderState.SUBMITTED,
+            )
+
+        except Exception as e:
+            self.log(f"EXEC: COMBO_ERROR | {order_id} | {combo_reason} | {e}")
+
+            return ExecutionResult(
+                order_id=order_id,
+                success=False,
+                state=OrderState.REJECTED,
+                error_message=str(e),
+            )
+
+    # =========================================================================
     # MOO Order Handling
     # =========================================================================
 

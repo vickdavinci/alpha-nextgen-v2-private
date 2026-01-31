@@ -91,6 +91,9 @@ class OrderIntent:
         reason: Combined reason for the order.
         target_weight: Target weight that generated this order.
         current_weight: Current weight before order.
+        is_combo: V2.3.9 - True if this is a combo/spread order.
+        combo_short_symbol: V2.3.9 - Short leg symbol for combo orders.
+        combo_short_quantity: V2.3.9 - Short leg quantity (negative) for combo orders.
     """
 
     symbol: str
@@ -101,10 +104,14 @@ class OrderIntent:
     reason: str
     target_weight: float
     current_weight: float
+    # V2.3.9: Combo order support for spreads
+    is_combo: bool = False
+    combo_short_symbol: Optional[str] = None
+    combo_short_quantity: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for logging."""
-        return {
+        result = {
             "symbol": self.symbol,
             "quantity": self.quantity,
             "side": self.side.value,
@@ -114,6 +121,12 @@ class OrderIntent:
             "target_weight": self.target_weight,
             "current_weight": self.current_weight,
         }
+        # V2.3.9: Include combo order fields if present
+        if self.is_combo:
+            result["is_combo"] = self.is_combo
+            result["combo_short_symbol"] = self.combo_short_symbol
+            result["combo_short_quantity"] = self.combo_short_quantity
+        return result
 
 
 class PortfolioRouter:
@@ -538,39 +551,52 @@ class PortfolioRouter:
                 )
             )
 
-            # V2.3: Handle spread short leg if metadata present
+            # V2.3.9: Handle spread orders as COMBO (atomic execution)
+            # Per CTA guidance: ComboMarketOrder calculates multi-leg margin (~$42K)
+            # instead of naked short margin (~$729K)
             if agg.metadata is not None:
                 short_leg_symbol = agg.metadata.get("spread_short_leg_symbol")
                 short_leg_qty = agg.metadata.get("spread_short_leg_quantity")
                 spread_close_short = agg.metadata.get("spread_close_short", False)
 
                 if short_leg_symbol and short_leg_qty:
-                    # For entry: SELL short leg (write the option)
-                    # For exit: BUY short leg back (close the written option)
+                    # Remove the separate long leg order we just added
+                    # Replace with a combo order that includes both legs
+                    if orders and orders[-1].symbol == symbol:
+                        orders.pop()  # Remove the long leg
+
+                    # Determine quantities for combo order
+                    # Entry: BUY long (positive), SELL short (negative)
+                    # Exit: SELL long (negative), BUY short (positive)
                     if spread_close_short:
-                        # Closing spread - buy back the short leg
-                        short_side = OrderSide.BUY
-                        short_reason = f"[OPT] Close spread short leg: {reason}"
+                        # Closing spread - sell long, buy short
+                        long_qty = -abs(delta_shares)
+                        short_qty = abs(short_leg_qty)  # Positive = BUY back
+                        combo_reason = f"[OPT] COMBO Close Spread: {reason}"
                     else:
-                        # Opening spread - sell the short leg
-                        short_side = OrderSide.SELL
-                        short_reason = f"[OPT] Spread short leg: {reason}"
+                        # Opening spread - buy long, sell short
+                        long_qty = abs(delta_shares)
+                        short_qty = -abs(short_leg_qty)  # Negative = SELL
+                        combo_reason = f"[OPT] COMBO Open Spread: {reason}"
 
                     orders.append(
                         OrderIntent(
-                            symbol=short_leg_symbol,
-                            quantity=short_leg_qty,
-                            side=short_side,
+                            symbol=symbol,  # Long leg symbol
+                            quantity=abs(long_qty),
+                            side=OrderSide.BUY if long_qty > 0 else OrderSide.SELL,
                             order_type=order_type,
                             urgency=agg.urgency,
-                            reason=short_reason,
-                            target_weight=0.0,  # Short leg has no target weight
-                            current_weight=0.0,
+                            reason=combo_reason,
+                            target_weight=agg.target_weight,
+                            current_weight=current_weight,
+                            is_combo=True,
+                            combo_short_symbol=short_leg_symbol,
+                            combo_short_quantity=short_qty,
                         )
                     )
                     self.log(
-                        f"ROUTER: SPREAD_ORDER | {short_side.value} {short_leg_qty} "
-                        f"{short_leg_symbol} (short leg of spread)"
+                        f"ROUTER: COMBO_ORDER | Long={symbol} x{long_qty} + "
+                        f"Short={short_leg_symbol} x{short_qty}"
                     )
 
         return orders
@@ -676,7 +702,27 @@ class PortfolioRouter:
             try:
                 quantity = order.quantity if order.side == OrderSide.BUY else -order.quantity
 
-                if order.order_type == OrderType.MARKET:
+                # V2.3.9: Handle combo orders for spreads
+                if order.is_combo and order.combo_short_symbol and order.combo_short_quantity:
+                    # Import Leg class for combo orders
+                    from AlgorithmImports import Leg
+
+                    # Create legs for combo order
+                    # Long leg: symbol with quantity (positive=BUY, negative=SELL)
+                    # Short leg: combo_short_symbol with combo_short_quantity
+                    legs = [
+                        Leg.Create(order.symbol, quantity),
+                        Leg.Create(order.combo_short_symbol, order.combo_short_quantity),
+                    ]
+
+                    # Submit combo order - broker calculates NET margin (spread margin)
+                    self.algorithm.ComboMarketOrder(legs, abs(order.quantity))  # type: ignore[attr-defined]
+                    self.log(
+                        f"ROUTER: COMBO_MARKET_ORDER | "
+                        f"Long={order.symbol} x{quantity} + "
+                        f"Short={order.combo_short_symbol} x{order.combo_short_quantity}"
+                    )
+                elif order.order_type == OrderType.MARKET:
                     self.algorithm.MarketOrder(order.symbol, quantity)  # type: ignore[attr-defined]
                     self.log(
                         f"ROUTER: MARKET_ORDER | {order.side.value} {order.quantity} {order.symbol}"
