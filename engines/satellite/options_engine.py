@@ -828,6 +828,10 @@ class OptionsEngine:
         self._pending_stop_price: Optional[float] = None
         self._pending_target_price: Optional[float] = None
 
+        # V2.3 FIX: Prevent order spam - track failed entry attempts
+        self._entry_attempted_today: bool = False
+        self._swing_time_warning_logged: bool = False
+
     def log(self, message: str, trades_only: bool = False) -> None:
         """
         Log via algorithm with LiveMode awareness.
@@ -1088,6 +1092,10 @@ class OptionsEngine:
         if self._position is not None:
             return None
 
+        # V2.3 FIX: Check if entry already attempted today (prevents order spam)
+        if self._entry_attempted_today:
+            return None
+
         # Check max trades per day
         if current_date == self._last_trade_date:
             if self._trades_today >= config.OPTIONS_MAX_TRADES_PER_DAY:
@@ -1202,6 +1210,9 @@ class OptionsEngine:
         self._pending_stop_pct = stop_pct
         self._pending_stop_price = stop_price
         self._pending_target_price = target_price
+
+        # V2.3 FIX: Mark that we attempted entry today (prevents retry spam)
+        self._entry_attempted_today = True
 
         reason = (
             f"OPT Entry: Score={entry_score.total:.2f} "
@@ -1400,7 +1411,8 @@ class OptionsEngine:
         window_end = 14 * 60 + 30  # 2:30 PM
 
         if not (window_start <= time_minutes <= window_end):
-            return False, "Outside Swing time window (10:00-14:30)"
+            # V2.3 FIX: Only return the message, don't log here (caller logs once)
+            return False, "TIME_WINDOW"
 
         # Filter 2: Gap Filter
         if abs(spy_gap_pct) > config.SWING_GAP_THRESHOLD:
@@ -1455,6 +1467,10 @@ class OptionsEngine:
         """
         # Check if already have intraday position
         if self._intraday_position is not None:
+            return None
+
+        # V2.3 FIX: Check if entry already attempted today (prevents order spam)
+        if self._entry_attempted_today:
             return None
 
         # Update Micro Regime Engine
@@ -1548,6 +1564,9 @@ class OptionsEngine:
             f"({state.vix_direction.value}) | QQQ {'+' if qqq_up else ''}"
             f"{state.qqq_move_pct:.2f}% | {direction.value}"
         )
+
+        # V2.3 FIX: Mark that we attempted entry today (prevents retry spam)
+        self._entry_attempted_today = True
 
         self.log(f"INTRADAY_SIGNAL: {reason}", trades_only=False)
 
@@ -1949,6 +1968,10 @@ class OptionsEngine:
         self._spy_at_open = 0.0
         self._spy_gap_pct = 0.0
 
+        # V2.3: Reset spam prevention flags
+        self._entry_attempted_today = False
+        self._swing_time_warning_logged = False
+
         self.log("OPT: Engine reset - all positions cleared")
 
     def reset_daily(self, current_date: str) -> None:
@@ -1957,6 +1980,10 @@ class OptionsEngine:
             self._trades_today = 0
             self._intraday_trades_today = 0
             self._last_trade_date = current_date
+
+            # V2.3 FIX: Reset entry attempt flag for new day
+            self._entry_attempted_today = False
+            self._swing_time_warning_logged = False
 
             # Reset Micro Regime Engine for new day
             self._micro_regime_engine.reset_daily()

@@ -2189,6 +2189,10 @@ class AlphaNextGen(QCAlgorithm):
         if self.options_engine.has_position():
             return
 
+        # V2.3 FIX: Skip if kill switch triggered (prevents new entries after liquidation)
+        if self._kill_switch_handled_today:
+            return
+
         # V2.3 FIX: Only scan during active window (10:30-15:00)
         # 30-minute delay allows market to settle after open volatility
         current_hour = self.Time.hour
@@ -2306,7 +2310,13 @@ class AlphaNextGen(QCAlgorithm):
         )
 
         if not can_enter:
-            self.Log(f"SWING: Entry blocked - {block_reason}")
+            # V2.3 FIX: Only log time window warning once per day to reduce spam
+            if block_reason == "TIME_WINDOW":
+                if not self.options_engine._swing_time_warning_logged:
+                    self.Log("SWING: Entry blocked - Outside Swing time window (10:00-14:30)")
+                    self.options_engine._swing_time_warning_logged = True
+            else:
+                self.Log(f"SWING: Entry blocked - {block_reason}")
             return
 
         # Calculate IV rank from options chain (V2.1)
