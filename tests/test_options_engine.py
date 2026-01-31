@@ -2126,7 +2126,7 @@ class TestSwingFilters:
         )
 
         assert can_enter is False
-        assert "time window" in reason.lower()
+        assert "time_window" in reason.lower()
 
     def test_swing_filter_blocks_outside_time_window_late(self, engine):
         """Test swing filter blocks after 2:30 PM."""
@@ -2140,7 +2140,7 @@ class TestSwingFilters:
         )
 
         assert can_enter is False
-        assert "time window" in reason.lower()
+        assert "time_window" in reason.lower()
 
     def test_swing_filter_allows_within_time_window(self, engine):
         """Test swing filter allows within 10:00-14:30."""

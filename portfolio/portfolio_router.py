@@ -143,7 +143,8 @@ class PortfolioRouter:
     # RESERVED_OPTIONS_PCT (25%) ensures buying power is available for options
     SOURCE_ALLOCATION_LIMITS: Dict[str, float] = {
         "TREND": config.TREND_TOTAL_ALLOCATION,  # 55% max (was 70%)
-        "OPT": config.OPTIONS_ALLOCATION_MAX,  # 30% max (reserved)
+        "OPT": config.OPTIONS_ALLOCATION_MAX,  # 30% max (reserved for swing spreads)
+        "OPT_INTRADAY": 0.05,  # 5% max for intraday "Sniper" mode
         "MR": config.MR_TOTAL_ALLOCATION,  # 10% max
         "HEDGE": 0.30,  # Hedge: 30% max (TMF 20% + PSQ 10%)
         "YIELD": 0.50,  # Yield (SHV): 50% max
@@ -338,6 +339,8 @@ class PortfolioRouter:
                             source=w.source,
                             urgency=w.urgency,
                             reason=f"{w.reason} [scaled {scale_factor:.0%}]",
+                            requested_quantity=w.requested_quantity,  # V2.3.2: Preserve risk-based sizing
+                            metadata=w.metadata,  # V2.3: Preserve spread metadata
                         )
                     )
 

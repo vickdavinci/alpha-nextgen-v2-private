@@ -913,6 +913,9 @@ class OptionsEngine:
         self._entry_attempted_today: bool = False
         self._swing_time_warning_logged: bool = False
 
+        # V2.3.2 FIX #4: Track if pending entry is intraday (for correct position registration)
+        self._pending_intraday_entry: bool = False
+
     def log(self, message: str, trades_only: bool = False) -> None:
         """
         Log via algorithm with LiveMode awareness.
@@ -2108,6 +2111,9 @@ class OptionsEngine:
         # V2.3 FIX: Mark that we attempted entry today (prevents retry spam)
         self._entry_attempted_today = True
 
+        # V2.3.2 FIX #4: Mark this as intraday entry for correct position tracking
+        self._pending_intraday_entry = True
+
         self.log(
             f"INTRADAY_SIGNAL: {reason} | Δ={best_contract.delta:.2f} K={best_contract.strike} DTE={best_contract.days_to_expiry}",
             trades_only=True,
@@ -2252,7 +2258,16 @@ class OptionsEngine:
             stop_pct=stop_pct,
         )
 
-        self._position = position
+        # V2.3.2 FIX #4: Track position in correct variable based on mode
+        if self._pending_intraday_entry:
+            self._intraday_position = position
+            self._pending_intraday_entry = False  # Clear flag
+            self.log(
+                f"OPT: INTRADAY position registered (will force-close at 15:30)",
+                trades_only=True,
+            )
+        else:
+            self._position = position
 
         # Update trade counter
         if current_date != self._last_trade_date:
@@ -2291,6 +2306,23 @@ class OptionsEngine:
             position = self._position
             self._position = None
             self.log(f"OPT: POSITION_REMOVED {position.contract.symbol}", trades_only=True)
+            return position
+        return None
+
+    def remove_intraday_position(self) -> Optional[OptionsPosition]:
+        """
+        V2.3.2: Remove the current intraday position after exit.
+
+        Returns:
+            Removed intraday position, or None if no position existed.
+        """
+        if self._intraday_position is not None:
+            position = self._intraday_position
+            self._intraday_position = None
+            self.log(
+                f"OPT: INTRADAY_POSITION_REMOVED {position.contract.symbol}",
+                trades_only=True,
+            )
             return position
         return None
 
@@ -2400,9 +2432,21 @@ class OptionsEngine:
         """V2.3: Get current spread position."""
         return self._spread_position
 
+    def has_intraday_position(self) -> bool:
+        """V2.3.2: Check if an intraday position exists (tracked separately for 15:30 force close)."""
+        return self._intraday_position is not None
+
+    def get_intraday_position(self) -> Optional[OptionsPosition]:
+        """V2.3.2: Get current intraday position."""
+        return self._intraday_position
+
     def has_position(self) -> bool:
-        """Check if a position exists (single-leg or spread)."""
-        return self._position is not None or self._spread_position is not None
+        """Check if any position exists (single-leg, spread, or intraday)."""
+        return (
+            self._position is not None
+            or self._spread_position is not None
+            or self._intraday_position is not None
+        )
 
     def get_position(self) -> Optional[OptionsPosition]:
         """Get current position."""
@@ -2622,6 +2666,9 @@ class OptionsEngine:
         self._entry_attempted_today = False
         self._swing_time_warning_logged = False
 
+        # V2.3.2: Reset pending intraday entry flag
+        self._pending_intraday_entry = False
+
         self.log("OPT: Engine reset - all positions cleared")
 
     def reset_daily(self, current_date: str) -> None:
@@ -2634,6 +2681,9 @@ class OptionsEngine:
             # V2.3 FIX: Reset entry attempt flag for new day
             self._entry_attempted_today = False
             self._swing_time_warning_logged = False
+
+            # V2.3.2: Reset pending intraday entry flag
+            self._pending_intraday_entry = False
 
             # Reset Micro Regime Engine for new day
             self._micro_regime_engine.reset_daily()

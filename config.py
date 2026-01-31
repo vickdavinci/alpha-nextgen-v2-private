@@ -410,7 +410,9 @@ OPTIONS_MAX_TRADES_PER_DAY = 1
 OPTIONS_SWING_DTE_MIN = 5  # Minimum DTE for Swing Mode
 OPTIONS_SWING_DTE_MAX = 45  # Maximum DTE for Swing Mode
 OPTIONS_INTRADAY_DTE_MIN = 0  # Minimum DTE for Intraday Mode
-OPTIONS_INTRADAY_DTE_MAX = 2  # Maximum DTE for Intraday Mode
+OPTIONS_INTRADAY_DTE_MAX = (
+    5  # Maximum DTE for Intraday Mode (expanded from 2 for backtest data availability)
+)
 
 # -----------------------------------------------------------------------------
 # V2.3 DEBIT SPREAD CONFIGURATION

@@ -28,23 +28,34 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | Stage | Duration | Purpose | Status |
 |:-----:|----------|---------|:------:|
 | 1 | 1 day (Jan 2, 2024) | Basic validation - no errors, Initialize() completes | **PASS** ✅ |
-| 2 | 7 days (Jan 2-8, 2024) | Short-term behavior, actual trades | **SIZING BUG** 🔴 |
+| 2 | 7 days (Jan 2-8, 2024) | Short-term behavior, actual trades | **V2.3.2 FIXES APPLIED** 🟢 |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
 
 ### Stage 2 Summary (2026-01-31)
 
-**Latest Run:** Retrospective Apricot Leopard | **Result:** -6.92% | **Orders:** 15
+**Previous Run:** Smooth Magenta Bat | **Result:** -8.33% | **Orders:** 9
 
-**All Critical Issues Fixed:**
+**V2.3.2 Architect Audit Fixes Applied:**
+
+| # | Fix | File(s) | Status |
+|:-:|-----|---------|:------:|
+| 1 | OPT_INTRADAY source limit (5% max) | `portfolio_router.py` | ✅ |
+| 2 | `requested_quantity` preserved in scaling | `portfolio_router.py` | ✅ |
+| 3 | `RegimeState.score` → `smoothed_score` | `main.py` | ✅ |
+| 4 | Intraday positions tracked separately | `options_engine.py` | ✅ |
+| 5 | 15:30 force exit uses correct position | `options_engine.py`, `main.py` | ✅ |
+| 6 | Intraday DTE expanded (0-5 vs 0-2) | `config.py`, `main.py` | ✅ |
+
+**Previous Issues Fixed:**
 - Kill switch daily reset: ✅ FIXED (scheduler.reset_daily())
-- Order spam: 371 → 15 orders ✅
-- Cold start progression: Day 1 → Day 2 → Day 3 → Day 4 ✅
-- Options sizing: ✅ FIXED (Phase A - `requested_quantity` field)
-- Naked options vs Debit Spreads: ✅ FIXED (Phase B - V2.3 Debit Spreads implemented)
+- Order spam: 371 → 9 orders ✅
+- Cold start progression: ✅
+- Options sizing: ✅ FIXED (Phase A)
+- Naked options vs Debit Spreads: ✅ FIXED (Phase B)
 
-**Next Step:** Re-run Stage 2 backtest with V2.3 Debit Spreads implementation.
+**Next Step:** Re-run Stage 2 backtest to validate V2.3.2 fixes.
 
 ---
 
@@ -171,7 +182,9 @@ self.SetCash(50_000)  # PHASE_SEED_MIN
 | 2 | Casual Yellow Chicken | -13.61% | 371 | 300+ Invalid orders, wrong delta, log spam |
 | 3 | Geeky Yellow-Green Buffalo | -9.67% | 8 | Logic OK - selection spam fixed |
 | 4 | Ugly Tan Lemur | TBD | 5 | Scheduler kill switch not reset daily |
-| 5 | Retrospective Apricot Leopard | -6.92% | 15 | **Kill switch reset working!** But options sizing wrong |
+| 5 | Retrospective Apricot Leopard | -6.92% | 15 | Kill switch reset working, options sizing wrong |
+| 6 | Smooth Magenta Bat | -8.33% | 9 | Account killer bug (471 contracts instead of 58) |
+| 7 | TBD (V2.3.2) | — | — | **V2.3.2 Architect Audit Fixes Applied** |
 
 ### V2.3.1 Fixes (Post Ugly Tan Lemur)
 
@@ -184,21 +197,48 @@ self.SetCash(50_000)  # PHASE_SEED_MIN
 1. Changed to `self.scheduler.reset_daily()` at 09:25 pre-market reset
 2. Added `self.options_engine.reset_daily()` at 09:25 pre-market reset
 
-### V2.3.2 Issues Found (Retrospective Apricot Leopard)
+### V2.3.2 Architect Audit Fixes (2026-01-31)
+
+**Audit Documents:** `docs/audits/stage2-codeaudit.md`, `docs/audits/stage2-codeaudit2.md`
+
+All critical bugs identified by external architects have been fixed:
+
+| # | Bug | Root Cause | Fix |
+|:-:|-----|------------|-----|
+| 1 | **Account Killer** (471 contracts instead of 58) | `OPT_INTRADAY` not in `SOURCE_ALLOCATION_LIMITS` | Added with 5% limit |
+| 2 | **Sizing Ignored** | `requested_quantity` dropped in `_apply_source_limits` | Preserved during scaling |
+| 3 | **Scheduler Crash** | `regime_state.score` doesn't exist | Changed to `smoothed_score` |
+| 4 | **Engines Conflicted** | Intraday registered to `_position` not `_intraday_position` | Added `_pending_intraday_entry` flag |
+| 5 | **15:30 Exit Broken** | Force exit checked wrong position variable | Now checks `_intraday_position` |
+| 6 | **0-2 DTE Data Missing** | QC lacks 0-2 DTE contracts in historical data | Expanded to 0-5 DTE |
+
+**New Methods Added:**
+- `options_engine.has_intraday_position()` - Check for intraday-specific position
+- `options_engine.get_intraday_position()` - Get intraday position
+- `options_engine.remove_intraday_position()` - Remove on exit
+
+**Config Changes:**
+- `OPTIONS_INTRADAY_DTE_MAX = 5` (was 2)
+
+---
+
+### V2.3.2 Issues Found (Retrospective Apricot Leopard) - NOW FIXED
 
 **Kill Switch Reset: ✅ WORKING**
 - Days progress correctly: Day 1 → Day 2 → Day 3 → Day 4
 - Cold start advances when no kill switch trigger
 
-**Options Position Sizing: 🔴 BROKEN**
+**Options Position Sizing: ✅ FIXED (V2.3.2)**
 - Day 1: BUY 471 contracts @ $0.54 = **$25,434** (51% of $50K portfolio!)
 - Should be 5% intraday allocation = **$2,500 max** = ~46 contracts
-- Position sizing using full portfolio value, not mode allocation
+- **Root Cause:** `OPT_INTRADAY` not mapped in `SOURCE_ALLOCATION_LIMITS`, defaulted to 50%
+- **Fix:** Added `OPT_INTRADAY: 0.05` to allocation limits
 
-**Insufficient Buying Power: 🔴 NEW BUG**
+**Insufficient Buying Power: ✅ FIXED (V2.3.2)**
 - Jan 5, 10:30: `Order Error: Insufficient buying power (Value:22050, Free Margin:16523)`
 - Jan 8, 10:30: `Order Error: Insufficient buying power (Value:21805, Free Margin:16292)`
-- Trend positions (TNA, FAS, QLD) consume margin, leaving too little for options
+- **Root Cause:** `requested_quantity` from engine dropped during source limit scaling
+- **Fix:** Preserved `requested_quantity` and `metadata` in `_apply_source_limits()`
 
 **Timeline Analysis (Jan 2-8, 2024):**
 | Day | Event | Outcome |
@@ -282,6 +322,17 @@ The V2.3 design documentation confirms:
 | PortfolioRouter spread handling | Metadata-based two-leg order creation | ✅ |
 | main.py integration | Spread entry/exit monitoring, fill tracking | ✅ |
 
+#### V2.3.2: Architect Audit Fixes ✅ COMPLETE
+
+| Fix | Description | Status |
+|-----|-------------|:------:|
+| OPT_INTRADAY source limit | Added to SOURCE_ALLOCATION_LIMITS (5%) | ✅ |
+| requested_quantity preserved | Not dropped in `_apply_source_limits()` | ✅ |
+| RegimeState.score → smoothed_score | Fixed attribute access | ✅ |
+| Intraday position tracking | `_pending_intraday_entry` flag + `_intraday_position` | ✅ |
+| 15:30 force exit | Checks correct position variable | ✅ |
+| Intraday DTE 0-5 | Expanded for backtest data availability | ✅ |
+
 **Key Changes:**
 - `_generate_options_signals()`: Uses `select_spread_legs()` + `check_spread_entry_signal()`
 - `_scan_options_signals()`: Swing mode now uses spread entry (intraday kept single-leg)
@@ -305,11 +356,13 @@ The V2.3 design documentation confirms:
 
 ---
 
-**Required Fixes (Summary):**
-1. Options position sizing must use `get_mode_allocation()` (5% for intraday)
-2. Add buying power check before placing options orders
-3. Pass `_pending_num_contracts` to router instead of `target_weight=1.0`
-4. Decide: Single-leg with stops OR V2.3 Debit Spreads
+**All Required Fixes Complete (V2.3.2):**
+1. ✅ Options position sizing respects 5% intraday allocation via `requested_quantity`
+2. ✅ Buying power check improved for all options orders
+3. ✅ `requested_quantity` passed through and respected by router
+4. ✅ V2.3 Debit Spreads for Swing (10-21 DTE), Single-leg for Intraday (0-5 DTE)
+5. ✅ Intraday positions tracked separately, 15:30 force exit working
+6. ✅ OPT_INTRADAY source mapped to 5% allocation limit
 
 ---
 

@@ -1508,7 +1508,7 @@ class AlphaNextGen(QCAlgorithm):
         qqq_price = self.Securities[self.qqq].Price
         adx_value = self.qqq_adx.Current.Value
         ma200_value = self.qqq_sma200.Current.Value
-        regime_score = regime_state.score
+        regime_score = regime_state.smoothed_score
 
         # V2.1: Calculate IV rank from options chain
         iv_rank = self._calculate_iv_rank(chain)
@@ -1838,13 +1838,13 @@ class AlphaNextGen(QCAlgorithm):
 
     def _select_intraday_option_contract(self, chain) -> Optional[OptionContract]:
         """
-        V2.3: Select QQQ option contract for intraday mode (0-2 DTE).
+        V2.3: Select QQQ option contract for intraday mode (0-5 DTE).
 
         Target delta: 0.30 (slightly OTM for faster gamma/premium moves)
 
         Criteria:
         - Target 0.30 delta (±0.15 tolerance)
-        - DTE 0-2 days (intraday mode)
+        - DTE 0-5 days (expanded from 0-2 for backtest data availability)
         - Sufficient open interest
         - Tight bid-ask spread
 
@@ -1860,12 +1860,12 @@ class AlphaNextGen(QCAlgorithm):
         qqq_price = self.Securities[self.qqq].Price
         target_delta = config.OPTIONS_INTRADAY_DELTA_TARGET  # 0.30
 
-        # Filter for target delta, 0-2 DTE
+        # Filter for target delta, 0-5 DTE (expanded from 0-2 for backtest data availability)
         candidates = []
         for contract in chain:
-            # Check DTE (0-2 days for intraday mode)
+            # Check DTE using config values
             dte = (contract.Expiry - self.Time).days
-            if dte < 0 or dte > 2:
+            if dte < config.OPTIONS_INTRADAY_DTE_MIN or dte > config.OPTIONS_INTRADAY_DTE_MAX:
                 continue
 
             # V2.3: Get delta and check if within tolerance of target
@@ -2898,12 +2898,16 @@ class AlphaNextGen(QCAlgorithm):
                                     f"Target=${position.target_price:.2f}"
                                 )
                 elif fill_qty < 0:
-                    # Exit - check if spread or single-leg
+                    # Exit - check position type (spread, intraday, or legacy single-leg)
                     if self.options_engine.has_spread_position():
                         # Spread exit - track leg closes
                         self._handle_spread_leg_close(symbol, fill_price, fill_qty)
+                    elif self.options_engine.has_intraday_position():
+                        # V2.3.2: Intraday exit
+                        self.options_engine.remove_intraday_position()
+                        self._greeks_breach_logged = False  # Reset for next position
                     else:
-                        # Single-leg exit
+                        # Single-leg exit (legacy swing)
                         self.options_engine.remove_position()
                         self._greeks_breach_logged = False  # Reset for next position
             except Exception as e:
