@@ -58,7 +58,7 @@ flowchart TB
         OPTIONS["OPTIONS (25%)<br/>─────────<br/>QQQ Options<br/>Swing 20%<br/>Intraday 5%<br/>Urgency: IMMED"]
         MR["MEAN REV (10%)<br/>─────────<br/>TQQQ 5%/SOXL 5%<br/>RSI < 25 + VIX<br/>Drop > 2.5%<br/>Urgency: IMMED"]
         HEDGE["HEDGE<br/>─────────<br/>TMF/PSQ<br/>Regime < 40<br/>Scaled Alloc<br/>Urgency: EOD"]
-        YIELD["YIELD<br/>─────────<br/>SHV<br/>Cash > $2k<br/>LIFO Liquidate<br/>Urgency: EOD"]
+        YIELD["YIELD<br/>─────────<br/>SHV<br/>Cash > $10k<br/>LIFO Liquidate<br/>Urgency: EOD"]
         COLD["COLD START<br/>─────────<br/>Days 1-5<br/>Regime > 50<br/>25% Size<br/>Urgency: IMMED"]
     end
 
@@ -246,7 +246,7 @@ flowchart TB
         L4A["Phase Position Limits"]
         L4B["Group Exposure Caps"]
         L4C["Lockbox Reservations"]
-        L4D["Min Trade Size $2k"]
+        L4D["Min Trade Size $10k"]
     end
 
     subgraph L5["LEVEL 5: STRATEGY SIGNALS"]
