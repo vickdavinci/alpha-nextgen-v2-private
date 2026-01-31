@@ -103,13 +103,13 @@ ADX_ENTRY_THRESHOLD = (
 )
 ADX_STRONG_THRESHOLD = 35  # ADX for highest confidence
 
-# ADX Scoring Thresholds (V2.3.10 aligned with exit threshold)
-# ADX < 20: 0.25 (weak) - matches exit threshold to prevent churning
-# ADX 20-25: 0.50 (moderate)
+# ADX Scoring Thresholds (V2.3.12: lowered to catch grinding trends)
+# ADX < 15: 0.25 (weak) - matches exit threshold to prevent churning
+# ADX 15-25: 0.50 (moderate) - grinding trends still valid
 # ADX 25-35: 0.75 (strong)
 # ADX >= 35: 1.00 (very strong)
-ADX_WEAK_THRESHOLD = 20  # V2.3.10: Restored to 20 - must match TREND_ADX_EXIT_THRESHOLD
-ADX_MODERATE_THRESHOLD = 25  # V2.3.10: Restored to 25 - prevent entry/exit churn
+ADX_WEAK_THRESHOLD = 15  # V2.3.12: Lowered to 15 - catch grinding trends (aligned with exit)
+ADX_MODERATE_THRESHOLD = 25  # Upper bound of moderate range
 
 # Chandelier Stop
 ATR_PERIOD = 14
@@ -130,7 +130,7 @@ CHANDELIER_3X_TIGHTER_MULT = 1.5  # V2.3.8: Tighter than 2x (2.5)
 # Entry/Exit
 TREND_ENTRY_REGIME_MIN = 40
 TREND_EXIT_REGIME = 30
-TREND_ADX_EXIT_THRESHOLD = 20  # Exit if ADX drops below this
+TREND_ADX_EXIT_THRESHOLD = 10  # V2.3.12: Lowered to 10 - allow holding during low momentum grind
 
 # V2.3.3 Position Limits (Part 4 audit fix)
 # In bull markets, all 4 tickers (QLD/SSO/TNA/FAS) may trigger together

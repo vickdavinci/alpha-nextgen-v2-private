@@ -42,16 +42,17 @@ class TestADXScore:
         assert adx_score(34.9) == 0.75
 
     def test_adx_moderate(self):
-        """Test ADX 20-25 returns score 0.50 (moderate). V2.3.10: restored to 20."""
+        """Test ADX 15-25 returns score 0.50 (moderate). V2.3.12: lowered to 15."""
+        assert adx_score(15.0) == 0.50
+        assert adx_score(17.0) == 0.50
         assert adx_score(20.0) == 0.50
-        assert adx_score(22.0) == 0.50
         assert adx_score(24.9) == 0.50
 
     def test_adx_weak(self):
-        """Test ADX < 20 returns score 0.25 (weak). V2.3.10: restored to 20."""
-        assert adx_score(19.9) == 0.25
-        assert adx_score(15.0) == 0.25
+        """Test ADX < 15 returns score 0.25 (weak). V2.3.12: lowered to 15."""
+        assert adx_score(14.9) == 0.25
         assert adx_score(10.0) == 0.25
+        assert adx_score(5.0) == 0.25
         assert adx_score(0.0) == 0.25
 
 
@@ -464,13 +465,13 @@ class TestExitSignals:
         assert result is None
 
     def test_exit_adx_exhaustion(self, engine_with_position):
-        """Test exit when ADX < 20 (momentum exhaustion)."""
+        """Test exit when ADX < 10 (momentum exhaustion). V2.3.12: lowered to 10."""
         result = engine_with_position.check_exit_signals(
             symbol="QLD",
             close=105.0,  # Above MA200
             high=106.0,
             ma200=100.0,
-            adx=18.0,  # Below 20 - momentum exhaustion
+            adx=9.0,  # V2.3.12: Below 10 - momentum exhaustion (was 18, then 14)
             regime_score=60.0,
             atr=2.0,
         )

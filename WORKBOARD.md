@@ -295,10 +295,14 @@
 **V2.3.12 Key Changes:**
 - INTRADAY_ITM_MIN_VIX: 25 → 11.5 (enable 0-DTE ITM momentum in calm markets)
 - ADX_ENTRY_THRESHOLD: 20 → 15 (catch trends earlier, ADX is lagging indicator)
+- ADX_WEAK_THRESHOLD: 20 → 15 (allow entering on grinding trends)
+- TREND_ADX_EXIT_THRESHOLD: 20 → 10 (allow holding during low momentum grind)
 
 **Root Cause (ITM VIX):** ITM momentum strategy required VIX > 25, which only occurs during high volatility. Normal VIX range is 12-20, so ITM momentum was blocked 90%+ of the time.
 
 **Root Cause (ADX Choke):** Late March 2024 was a "grinding rally" with low ADX. Market hit ATH but ADX stayed below 20, blocking all trend entries. ADX is lagging - by time it reaches 20, the move is often half over.
+
+**Root Cause (ADX Exit Churn):** Entry at ADX >= 15 but exit at ADX < 20 caused immediate churn. Lowering exit to ADX < 10 allows holding positions during grinding periods.
 
 **Status:** V2.3.12 fixes complete - Ready for backtest validation
 

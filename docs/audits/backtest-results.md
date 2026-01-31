@@ -449,19 +449,24 @@ _on_micro_regime_update (every 15 min)
 |:-:|-----|:--------:|-------------|:------:|
 | 1 | INTRADAY_ITM_MIN_VIX | HIGH | 25 → 11.5 (enable 0-DTE ITM in calm markets) | ✅ |
 | 2 | ADX_ENTRY_THRESHOLD | HIGH | 20 → 15 (catch trends earlier, ADX lags) | ✅ |
+| 3 | ADX_WEAK_THRESHOLD | HIGH | 20 → 15 (allow entering on grinding trends) | ✅ |
+| 4 | TREND_ADX_EXIT_THRESHOLD | CRITICAL | 20 → 10 (allow holding during low momentum) | ✅ |
 
 **Code Changes (V2.3.12):**
 
 ```python
 # config.py
-INTRADAY_ITM_MIN_VIX = 11.5  # V2.3.12: was 25
-ADX_ENTRY_THRESHOLD = 15     # V2.3.12: was 20
+INTRADAY_ITM_MIN_VIX = 11.5        # V2.3.12: was 25
+ADX_ENTRY_THRESHOLD = 15           # V2.3.12: was 20
+ADX_WEAK_THRESHOLD = 15            # V2.3.12: was 20
+TREND_ADX_EXIT_THRESHOLD = 10      # V2.3.12: was 20 - CRITICAL for grind
 ```
 
 **Expected Impact:**
 - ITM momentum trades now fire when VIX > 11.5 (vs 25) - ~90% more opportunities
 - Trend engine enters on ADX >= 15 (vs 20) - catches earlier trend starts
-- March 2024 grinding rally would now generate entries instead of "ADX too weak" blocks
+- Positions held during grinding periods (exit only when ADX < 10)
+- March 2024 grinding rally would now generate AND hold entries
 
 ### V2.4.0 Planned: Bidirectional Mean Reversion (Post-Backtest)
 
