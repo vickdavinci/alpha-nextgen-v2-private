@@ -1651,9 +1651,13 @@ class OptionsEngine:
         if contract is None:
             contract = self._pending_contract
 
-        entry_score = getattr(self, "_pending_entry_score", 3.0)
-        num_contracts = getattr(self, "_pending_num_contracts", 1)
-        stop_pct = getattr(self, "_pending_stop_pct", 0.20)
+        # Use pending values if set, otherwise defaults
+        # Note: getattr defaults don't work when attr exists but is None
+        entry_score = self._pending_entry_score if self._pending_entry_score is not None else 3.0
+        num_contracts = (
+            self._pending_num_contracts if self._pending_num_contracts is not None else 1
+        )
+        stop_pct = self._pending_stop_pct if self._pending_stop_pct is not None else 0.20
 
         # Recalculate stop and target based on actual fill price
         stop_price = fill_price * (1 - stop_pct)
