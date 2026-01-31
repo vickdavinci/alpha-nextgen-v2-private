@@ -88,27 +88,78 @@
 1. ✅ Kill switch daily reset is NOW WORKING (scheduler.reset_daily() fix applied)
 2. 🔴 Options position sizing ignores allocation - using full portfolio instead of 5%
 3. 🔴 Insufficient buying power when trend positions (TNA/FAS/QLD) already held
+4. 🔴 Architect audit: Code trades naked options, V2.3 design mandates debit spreads
 
-### Stage 2 Bugs - Current Status
+### Stage 2 Bugs - Prioritized Fix List
 
-| Bug | Severity | Status | Description |
-|-----|:--------:|:------:|-------------|
-| Kill switch never resets daily | 🔴 CRITICAL | ✅ FIXED | Added `_kill_switch_handled_today` flag |
-| Scheduler kill switch not reset | 🔴 CRITICAL | ✅ FIXED | Added `scheduler.reset_daily()` at 09:25 |
-| Kill switch doesn't liquidate options | 🔴 CRITICAL | ✅ FIXED | Added options liquidation in `_handle_kill_switch` |
-| Theta threshold too tight | 🟠 HIGH | ✅ FIXED | Added `CB_THETA_SWING_CHECK_ENABLED=False` |
-| Kill switch log spam | 🟡 MEDIUM | ✅ FIXED | Handler now only runs once per day |
-| Options 10:00 AM exact entry | 🟡 MEDIUM | ✅ FIXED | Changed to 10:30 entry window start |
-| TNA/FAS stops never trigger | CRITICAL | ✅ FIXED | `_on_fill()` registration fixed |
-| Swing direction hardcoded CALL | HIGH | ✅ FIXED | Direction now uses regime score |
-| VIX missing from regime score | HIGH | ✅ FIXED | V2.3: Added VIX as 20% weight |
-| 4-Strategy complexity | HIGH | ✅ SIMPLIFIED | V2.3: Debit Spreads only |
-| 300+ Invalid orders per day | 🔴 CRITICAL | ✅ FIXED | Added `_entry_attempted_today` flag |
-| Log spam after 14:30 | 🟡 MEDIUM | ✅ FIXED | Time window warning logged once |
-| Kill switch not blocking options | 🔴 CRITICAL | ✅ FIXED | Check `_kill_switch_handled_today` in scan |
-| Wrong delta selection (ATM) | 🟠 HIGH | ✅ FIXED | Swing=0.70δ, Intraday=0.30δ |
-| **Options sizing uses full portfolio** | 🔴 CRITICAL | 🔧 TODO | Day 1: 471 contracts ($25K) instead of 5% ($2.5K) |
-| **Insufficient margin for options** | 🟠 HIGH | 🔧 TODO | Need buying power check before order |
+#### 🔴 CRITICAL - Must Fix Before Next Backtest
+
+| # | Bug | Status | Description |
+|:-:|-----|:------:|-------------|
+| 1 | **Options sizing uses full portfolio** | 🔧 TODO | Day 1: 471 contracts ($25K) instead of 5% ($2.5K). 6× intended risk. |
+| 2 | **`_pending_num_contracts` ignored** | 🔧 TODO | Risk-based sizing calculated but discarded. `target_weight=1.0` passed to router. |
+| 3 | **Insufficient margin for options** | 🔧 TODO | Options orders fail when TNA/FAS/QLD already consume margin. |
+
+#### 🟠 HIGH - Architecture Decision Required
+
+| # | Bug | Status | Description |
+|:-:|-----|:------:|-------------|
+| 4 | **Naked options vs Debit Spreads** | 📋 DECISION | Code trades single-leg. V2.3 design mandates two-leg spreads. |
+| 5 | **Intraday mode strategy mismatch** | 📋 DECISION | Code has credit/ITM logic. Design: single VIX-based directional strategy. |
+
+#### 🟡 MEDIUM - After Architecture Stable
+
+| # | Bug | Status | Description |
+|:-:|-----|:------:|-------------|
+| 6 | Greeks monitoring checks single leg | ⏳ LATER | L5 circuit breaker sees unhedged delta/theta - may trigger too often. |
+| 7 | VIX direction uses open gap | ⏳ LATER | Uses `vix_current - vix_open`. Design implies intraday trend. |
+| 8 | Option chain validation race | ⏳ LATER | Empty chain during warm-up silently skips entries. |
+
+#### ✅ Previously Fixed
+
+| Bug | Severity | Description |
+|-----|:--------:|-------------|
+| Kill switch never resets daily | 🔴 CRITICAL | Added `_kill_switch_handled_today` flag |
+| Scheduler kill switch not reset | 🔴 CRITICAL | Added `scheduler.reset_daily()` at 09:25 |
+| Kill switch doesn't liquidate options | 🔴 CRITICAL | Added options liquidation in `_handle_kill_switch` |
+| Theta threshold too tight | 🟠 HIGH | Added `CB_THETA_SWING_CHECK_ENABLED=False` |
+| Kill switch log spam | 🟡 MEDIUM | Handler now only runs once per day |
+| Options 10:00 AM exact entry | 🟡 MEDIUM | Changed to 10:30 entry window start |
+| TNA/FAS stops never trigger | 🔴 CRITICAL | `_on_fill()` registration fixed |
+| Swing direction hardcoded CALL | 🟠 HIGH | Direction now uses regime score |
+| VIX missing from regime score | 🟠 HIGH | V2.3: Added VIX as 20% weight |
+| 4-Strategy complexity | 🟠 HIGH | V2.3: Debit Spreads only |
+| 300+ Invalid orders per day | 🔴 CRITICAL | Added `_entry_attempted_today` flag |
+| Log spam after 14:30 | 🟡 MEDIUM | Time window warning logged once |
+| Kill switch not blocking options | 🔴 CRITICAL | Check `_kill_switch_handled_today` in scan |
+| Wrong delta selection (ATM) | 🟠 HIGH | Swing=0.70δ, Intraday=0.30δ |
+
+### Architect Audit Summary (2026-01-30)
+
+**Document:** `docs/audits/stage2-codeaudit.md`
+
+| Finding | Assessment | Action |
+|---------|:----------:|--------|
+| "Naked Options" vs "Debit Spreads" | ✅ Correct | Architecture decision needed |
+| "Sizing Disconnect" (`_pending_num_contracts` ignored) | ✅ Correct | Fix in Phase A |
+| "Intraday Mode Mismatch" | ⚠️ Partial | Verify V2.3 intraday design |
+| Greeks Monitoring Failure | ✅ Correct | Lower priority than sizing |
+| Option Chain Validation | ✅ Correct | Minor issue |
+| VIX Direction Logic | ⚠️ Minor | Functional but not optimal |
+
+### Recommended Fix Order
+
+**Phase A: Make Backtest Runnable (Issues 1-3)**
+1. Fix `target_weight` calculation - pass calculated `num_contracts` to router
+2. Add `requested_quantity` field to TargetWeight - router uses it if present
+3. Add margin check before options orders - skip if insufficient
+
+**Phase B: Architecture Decision (Issues 4-5)**
+- Option A: Keep single-leg, fix sizing → Quick validation
+- Option B: Implement V2.3 debit spreads → Full design compliance
+
+**Phase C: Polish (Issues 6-8)**
+After architecture is stable.
 
 ### V2.3 Regime + Options Simplification (2026-01-30)
 
@@ -608,4 +659,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 30 January 2026 (V2.3 Regime + Options Simplification Complete)*
+*Last Updated: 31 January 2026 (Architect Audit Review + Prioritized Fix Plan)*

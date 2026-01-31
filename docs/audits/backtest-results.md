@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-01-30
+> **Last Updated:** 2026-01-31
 
 ---
 
@@ -212,10 +212,87 @@ self.SetCash(50_000)  # PHASE_SEED_MIN
 | Jan 6-7 | Weekend (no trading) | - |
 | Jan 8 | Options **REJECTED** (insufficient margin) | No kill switch |
 
-**Required Fixes:**
+---
+
+### Architect Audit Review (2026-01-30)
+
+**Audit Document:** `docs/audits/stage2-codeaudit.md`
+
+An external architect reviewed the codebase and identified fundamental design-implementation gaps:
+
+#### Critical Findings
+
+| Finding | Severity | Assessment |
+|---------|:--------:|:----------:|
+| **Naked Options vs Debit Spreads** | 🔴 CRITICAL | ✅ Correct |
+| **Sizing Disconnect** | 🔴 CRITICAL | ✅ Correct |
+| Intraday Mode Mismatch | 🟠 HIGH | ⚠️ Partial |
+| Greeks Monitoring Failure | 🟡 MEDIUM | ✅ Correct |
+| Option Chain Validation | 🟡 MEDIUM | ✅ Correct |
+| VIX Direction Logic | 🟡 MEDIUM | ⚠️ Minor |
+
+#### 1. Naked Options vs Debit Spreads (Architecture Failure)
+
+**Design Doc (V2.3):** Mandates DEBIT SPREADS - Bull Call Spread (Regime > 60), Bear Put Spread (Regime < 45)
+
+**Current Code:** Selects ONE contract in `_select_swing_option_contract`, registers ONE contract, returns `TargetWeight` for ONE symbol.
+
+**Impact:** Naked long calls/puts get stopped out at -0.36% move. Spreads would survive -1.0% whipsaw. Missing the "hedge" (short leg).
+
+#### 2. Sizing Disconnect (Risk Logic Ignored)
+
+**Design Doc:** `contracts = floor(allocation / (entry_price * 100 * stop_pct))` - risk-based sizing.
+
+**Current Code:**
+- `calculate_position_size` correctly calculates `num_contracts` → stores in `_pending_num_contracts`
+- Then **discards it** and returns `TargetWeight(target_weight=1.0)`
+- Router applies source limit (25%) → calculates `(Total Equity * 25%) / Option Price`
+
+**Impact:** Risk Engine calculates 4 contracts safe. Router calculates 25 contracts. Taking 6× intended risk.
+
+#### V2.3 Design Verification
+
+The V2.3 design documentation confirms:
+
+1. **5-Factor Regime** including VIX at 20% weight ✅
+2. **Simplified from 4 strategies to Debit Spreads only** ✅
+3. **Neutral regime (45-60) = NO OPTIONS TRADE** (skip whipsaw) ✅
+4. **Protective Puts only in crisis (Regime < 30)** ✅
+
+---
+
+### Prioritized Fix Plan
+
+#### Phase A: Make Backtest Runnable (CRITICAL)
+
+| # | Fix | Description |
+|:-:|-----|-------------|
+| 1 | Fix `target_weight` calculation | Pass calculated `num_contracts` to router instead of 1.0 |
+| 2 | Add `requested_quantity` to TargetWeight | Router uses it if present, else fallback to % |
+| 3 | Add margin check before options orders | Skip order if insufficient buying power |
+
+#### Phase B: Architecture Decision (HIGH)
+
+| Option | Approach | Pros | Cons |
+|--------|----------|------|------|
+| A | Keep single-leg, fix sizing | Quick validation | Not V2.3 compliant |
+| B | Implement V2.3 debit spreads | Full design compliance | More complex |
+
+#### Phase C: Polish (MEDIUM)
+
+| # | Fix | Description |
+|:-:|-----|-------------|
+| 6 | Greeks monitoring | Adjust for spread vs single-leg |
+| 7 | VIX direction logic | Use intraday trend (30min) not gap |
+| 8 | Option chain validation | Handle empty chains with retry |
+
+---
+
+**Required Fixes (Summary):**
 1. Options position sizing must use `get_mode_allocation()` (5% for intraday)
 2. Add buying power check before placing options orders
-3. Consider reducing options contracts when margin is limited
+3. Pass `_pending_num_contracts` to router instead of `target_weight=1.0`
+4. Decide: Single-leg with stops OR V2.3 Debit Spreads
 
 ---
 
