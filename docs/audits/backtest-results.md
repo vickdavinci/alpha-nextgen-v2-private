@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-01-31 (V2.3.11 SNIPER 0DTE + Expiring Options Safety)
+> **Last Updated:** 2026-01-31 (V2.3.12 Enable More 0DTEs + Unchoke Trend Engine)
 
 ---
 
@@ -436,6 +436,32 @@ _on_micro_regime_update (every 15 min)
 - More SNIPER 0DTE trades in calm markets (VIX 11.5-15)
 - No more accidental stock assignments from ITM options held to close
 - Eliminates 7:1 leverage overnight risk from auto-exercise
+
+### V2.3.12 Enable More 0DTEs + Unchoke Trend Engine (2026-01-31)
+
+**Audit Reference:** `docs/audits/stage2-codeaudit.md` (PART 15 - Trend Engine Choking)
+
+**Root Causes:**
+1. ITM momentum strategy required VIX > 25 - only met during high vol events
+2. ADX entry threshold at 20 blocked trend entries during grinding rallies (March 2024)
+
+| # | Fix | Severity | Description | Status |
+|:-:|-----|:--------:|-------------|:------:|
+| 1 | INTRADAY_ITM_MIN_VIX | HIGH | 25 → 11.5 (enable 0-DTE ITM in calm markets) | ✅ |
+| 2 | ADX_ENTRY_THRESHOLD | HIGH | 20 → 15 (catch trends earlier, ADX lags) | ✅ |
+
+**Code Changes (V2.3.12):**
+
+```python
+# config.py
+INTRADAY_ITM_MIN_VIX = 11.5  # V2.3.12: was 25
+ADX_ENTRY_THRESHOLD = 15     # V2.3.12: was 20
+```
+
+**Expected Impact:**
+- ITM momentum trades now fire when VIX > 11.5 (vs 25) - ~90% more opportunities
+- Trend engine enters on ADX >= 15 (vs 20) - catches earlier trend starts
+- March 2024 grinding rally would now generate entries instead of "ADX too weak" blocks
 
 ### V2.4.0 Planned: Bidirectional Mean Reversion (Post-Backtest)
 

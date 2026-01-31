@@ -98,7 +98,9 @@ WARM_MIN_SIZE = 2_000
 # V2 Entry: MA200 + ADX Confirmation
 MA200_PERIOD = 200  # Long-term trend baseline
 ADX_PERIOD = 14  # Average Directional Index for momentum confirmation
-ADX_ENTRY_THRESHOLD = 20  # V2.3.7: Lowered from 25 - enter on emerging trends (ADX is lagging)
+ADX_ENTRY_THRESHOLD = (
+    15  # V2.3.12: Lowered from 20 - avoid choking trend engine in grinding rallies
+)
 ADX_STRONG_THRESHOLD = 35  # ADX for highest confidence
 
 # ADX Scoring Thresholds (V2.3.10 aligned with exit threshold)
@@ -601,7 +603,7 @@ INTRADAY_CREDIT_TARGET = 0.50  # 50% of max profit target
 INTRADAY_CREDIT_STOP = 1.0  # Stop if spread doubles
 
 # ITM Momentum
-INTRADAY_ITM_MIN_VIX = 25  # VIX > 25 for momentum
+INTRADAY_ITM_MIN_VIX = 11.5  # V2.3.12: Lowered from 25 - enable more 0-DTE ITM momentum trades
 INTRADAY_ITM_MIN_MOVE = 0.8  # QQQ move >= 0.8%
 INTRADAY_ITM_MIN_SCORE = 50  # Micro score >= 50
 INTRADAY_ITM_DELTA = 0.70  # ITM delta target

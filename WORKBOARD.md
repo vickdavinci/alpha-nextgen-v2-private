@@ -286,6 +286,22 @@
 
 **Status:** V2.3.11 fixes complete - Ready for backtest validation
 
+**V2.3.12 Fixes: Enable More 0DTEs + Unchoke Trend Engine (2026-01-31):**
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **ITM VIX Barrier Too High** - VIX > 25 required for ITM momentum, blocking most days | HIGH | ✅ FIXED (→11.5) |
+| 2 | **ADX Choking Trend Engine** - ADX >= 20 blocking entries during grinding rallies | HIGH | ✅ FIXED (→15) |
+
+**V2.3.12 Key Changes:**
+- INTRADAY_ITM_MIN_VIX: 25 → 11.5 (enable 0-DTE ITM momentum in calm markets)
+- ADX_ENTRY_THRESHOLD: 20 → 15 (catch trends earlier, ADX is lagging indicator)
+
+**Root Cause (ITM VIX):** ITM momentum strategy required VIX > 25, which only occurs during high volatility. Normal VIX range is 12-20, so ITM momentum was blocked 90%+ of the time.
+
+**Root Cause (ADX Choke):** Late March 2024 was a "grinding rally" with low ADX. Market hit ATH but ADX stayed below 20, blocking all trend entries. ADX is lagging - by time it reaches 20, the move is often half over.
+
+**Status:** V2.3.12 fixes complete - Ready for backtest validation
+
 ---
 
 **V2.4.0 Planned: Bidirectional Mean Reversion (PART 12)**
