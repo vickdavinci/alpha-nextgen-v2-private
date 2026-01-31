@@ -1460,7 +1460,10 @@ class AlphaNextGen(QCAlgorithm):
         """
         Generate Options Engine signals at end of day.
 
-        V2.1: 4-factor entry scoring for QQQ options.
+        V2.3: Debit spread entry using regime-based direction.
+        - Regime > 60: Bull Call Spread
+        - Regime < 45: Bear Put Spread
+        - Regime 45-60: No trade (neutral)
 
         Args:
             regime_state: Current regime state.
@@ -1470,7 +1473,7 @@ class AlphaNextGen(QCAlgorithm):
         if not self.qqq_adx.IsReady or not self.qqq_sma200.IsReady:
             return
 
-        # Skip if already have options position
+        # Skip if already have options position (single-leg or spread)
         if self.options_engine.has_position():
             return
 
@@ -1501,41 +1504,133 @@ class AlphaNextGen(QCAlgorithm):
             self.Log(f"OPTIONS_CHAIN_ERROR: Failed to iterate chain: {e}")
             return
 
-        # V2.3: Select SWING contract (5-45 DTE) for EOD entry
-        best_contract = self._select_swing_option_contract(chain)
-        if best_contract is None:
-            return
-
-        # CRITICAL: Verify contract has valid bid/ask (not stale/zero data)
-        if best_contract.bid <= 0 or best_contract.ask <= 0:
-            return
-
         # Get current values
         qqq_price = self.Securities[self.qqq].Price
         adx_value = self.qqq_adx.Current.Value
         ma200_value = self.qqq_sma200.Current.Value
+        regime_score = regime_state.score
 
         # V2.1: Calculate IV rank from options chain
         iv_rank = self._calculate_iv_rank(chain)
 
-        # Check for entry signal
-        signal = self.options_engine.check_entry_signal(
+        # V2.3: Determine spread direction from regime score
+        if regime_score > config.SPREAD_REGIME_BULLISH:
+            direction = OptionDirection.CALL
+        elif regime_score < config.SPREAD_REGIME_BEARISH:
+            direction = OptionDirection.PUT
+        else:
+            # Neutral regime (45-60): No trade
+            return
+
+        # V2.3: Build list of candidate contracts for spread selection
+        candidate_contracts = self._build_spread_candidate_contracts(chain, direction)
+        if len(candidate_contracts) < 2:
+            return
+
+        # V2.3: Select spread legs (ATM long + OTM short)
+        spread_legs = self.options_engine.select_spread_legs(
+            contracts=candidate_contracts,
+            direction=direction,
+        )
+        if spread_legs is None:
+            return
+
+        long_leg, short_leg = spread_legs
+
+        # CRITICAL: Verify both legs have valid bid/ask
+        if long_leg.bid <= 0 or long_leg.ask <= 0:
+            return
+        if short_leg.bid <= 0 or short_leg.ask <= 0:
+            return
+
+        # V2.3: Check for spread entry signal
+        signal = self.options_engine.check_spread_entry_signal(
+            regime_score=regime_score,
+            vix_current=self._current_vix,
             adx_value=adx_value,
             current_price=qqq_price,
             ma200_value=ma200_value,
             iv_rank=iv_rank,
-            best_contract=best_contract,
             current_hour=self.Time.hour,
             current_minute=self.Time.minute,
             current_date=str(self.Time.date()),
             portfolio_value=self.Portfolio.TotalPortfolioValue,
+            long_leg_contract=long_leg,
+            short_leg_contract=short_leg,
             gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
             vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
-            time_guard_active=self.scheduler.is_time_guard_active(),
         )
 
         if signal:
             self.portfolio_router.receive_signal(signal)
+
+    def _build_spread_candidate_contracts(
+        self, chain, direction: OptionDirection
+    ) -> List[OptionContract]:
+        """
+        V2.3: Build list of candidate OptionContract objects for spread selection.
+
+        Filters chain for appropriate DTE range and direction, converting QC
+        contracts to our OptionContract dataclass.
+
+        Args:
+            chain: QuantConnect options chain.
+            direction: CALL or PUT direction.
+
+        Returns:
+            List of OptionContract objects for spread leg selection.
+        """
+        candidates = []
+        qqq_price = self.Securities[self.qqq].Price
+
+        for contract in chain:
+            # Check direction
+            if direction == OptionDirection.CALL:
+                if contract.Right != OptionRight.Call:
+                    continue
+            else:
+                if contract.Right != OptionRight.Put:
+                    continue
+
+            # Check DTE range for spreads (10-21 days per V2.3 spec)
+            dte = (contract.Expiry - self.Time).days
+            if dte < config.SPREAD_DTE_MIN or dte > config.SPREAD_DTE_MAX:
+                continue
+
+            # Get bid/ask safely
+            bid, ask = self._get_contract_prices(contract)
+            if bid <= 0 or ask <= 0:
+                continue
+
+            mid_price = (bid + ask) / 2
+
+            # Get Greeks if available
+            delta = getattr(contract, "Greeks", None)
+            delta_val = delta.Delta if delta else 0.0
+            gamma_val = delta.Gamma if delta else 0.0
+            theta_val = delta.Theta if delta else 0.0
+            vega_val = delta.Vega if delta else 0.0
+
+            # Build OptionContract
+            opt_contract = OptionContract(
+                symbol=str(contract.Symbol),
+                underlying="QQQ",
+                direction=direction,
+                strike=float(contract.Strike),
+                expiry=str(contract.Expiry.date()),
+                delta=delta_val,
+                gamma=gamma_val,
+                theta=theta_val,
+                vega=vega_val,
+                bid=bid,
+                ask=ask,
+                mid_price=mid_price,
+                open_interest=int(contract.OpenInterest),
+                days_to_expiry=dte,
+            )
+            candidates.append(opt_contract)
+
+        return candidates
 
     def _get_contract_prices(self, contract) -> Tuple[float, float]:
         """
@@ -2280,87 +2375,61 @@ class AlphaNextGen(QCAlgorithm):
                     self.portfolio_router.receive_signal(intraday_signal)
                     return  # Only one entry per scan
 
-        # V2.3: Check for SWING mode entry (5-45 DTE) using 4-factor scoring + Simple Filters
-        # STEP 1: Determine direction based on Price vs MA200 and RSI (per spec)
-        # - Price > MA200 AND RSI < 70 → CALL (bullish momentum, not overbought)
-        # - Price < MA200 AND RSI > 30 → PUT (bearish momentum, not oversold)
-        # - Otherwise → No clear signal, skip entry
-        from engines.satellite.options_engine import OptionDirection
+        # V2.3: Check for SWING mode entry using DEBIT SPREADS
+        # Direction based on regime score (not Price/MA200/RSI)
+        # - Regime > 60: Bull Call Spread
+        # - Regime < 45: Bear Put Spread
+        # - Regime 45-60: No trade (neutral)
+        regime_score = self.regime_engine.get_current_score()
 
-        # Get RSI value (default to 50 if not ready)
-        rsi_value = self.qqq_rsi.Current.Value if self.qqq_rsi.IsReady else 50.0
-
-        direction = None  # Will be set based on conditions
-        if qqq_price > ma200_value and rsi_value < 70:
+        if regime_score > config.SPREAD_REGIME_BULLISH:
             direction = OptionDirection.CALL
-            # Note: Direction log moved to entry signal to reduce spam
-        elif qqq_price < ma200_value and rsi_value > 30:
+        elif regime_score < config.SPREAD_REGIME_BEARISH:
             direction = OptionDirection.PUT
-            # Note: Direction log moved to entry signal to reduce spam
         else:
-            # No clear signal - skip entry
+            # Neutral regime (45-60): No trade
             return
 
-        # STEP 2: Select contract based on direction
-        swing_contract = self._select_swing_option_contract(chain, direction)
-        if swing_contract is None:
+        # Build candidate contracts for spread selection
+        candidate_contracts = self._build_spread_candidate_contracts(chain, direction)
+        if len(candidate_contracts) < 2:
             return
 
-        # CRITICAL: Verify contract has valid bid/ask (not stale/zero data)
-        if swing_contract.bid <= 0 or swing_contract.ask <= 0:
-            return
-
-        # STEP 3: Apply Simple Intraday Filters before swing entry (per design spec)
-        # Calculate filter inputs
-        spy_price = self.Securities[self.spy].Price
-        spy_gap_pct = 0.0
-        spy_intraday_pct = 0.0
-        vix_intraday_pct = 0.0
-
-        if self.spy_prior_close > 0 and self.spy_open > 0:
-            spy_gap_pct = ((self.spy_open - self.spy_prior_close) / self.spy_prior_close) * 100
-            spy_intraday_pct = ((spy_price - self.spy_open) / self.spy_open) * 100
-
-        if self._vix_at_open > 0:
-            vix_intraday_pct = ((self._current_vix - self._vix_at_open) / self._vix_at_open) * 100
-
-        # Apply swing filters
-        can_enter, block_reason = self.options_engine.check_swing_filters(
+        # Select spread legs (ATM long + OTM short)
+        spread_legs = self.options_engine.select_spread_legs(
+            contracts=candidate_contracts,
             direction=direction,
-            spy_gap_pct=spy_gap_pct,
-            spy_intraday_change_pct=spy_intraday_pct,
-            vix_intraday_change_pct=vix_intraday_pct,
-            current_hour=self.Time.hour,
-            current_minute=self.Time.minute,
         )
+        if spread_legs is None:
+            return
 
-        if not can_enter:
-            # V2.3 FIX: Only log time window warning once per day to reduce spam
-            if block_reason == "TIME_WINDOW":
-                if not self.options_engine._swing_time_warning_logged:
-                    self.Log("SWING: Entry blocked - Outside Swing time window (10:00-14:30)")
-                    self.options_engine._swing_time_warning_logged = True
-            else:
-                self.Log(f"SWING: Entry blocked - {block_reason}")
+        long_leg, short_leg = spread_legs
+
+        # Verify both legs have valid bid/ask
+        if long_leg.bid <= 0 or long_leg.ask <= 0:
+            return
+        if short_leg.bid <= 0 or short_leg.ask <= 0:
             return
 
         # Calculate IV rank from options chain (V2.1)
         iv_rank = self._calculate_iv_rank(chain)
 
-        # Check for swing entry signal
-        signal = self.options_engine.check_entry_signal(
+        # V2.3: Check for spread entry signal
+        signal = self.options_engine.check_spread_entry_signal(
+            regime_score=regime_score,
+            vix_current=self._current_vix,
             adx_value=adx_value,
             current_price=qqq_price,
             ma200_value=ma200_value,
             iv_rank=iv_rank,
-            best_contract=swing_contract,
             current_hour=self.Time.hour,
             current_minute=self.Time.minute,
             current_date=str(self.Time.date()),
             portfolio_value=self.Portfolio.TotalPortfolioValue,
+            long_leg_contract=long_leg,
+            short_leg_contract=short_leg,
             gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
             vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
-            time_guard_active=self.scheduler.is_time_guard_active(),
         )
 
         if signal:
@@ -2368,11 +2437,16 @@ class AlphaNextGen(QCAlgorithm):
 
     def _monitor_risk_greeks(self, data: Slice) -> None:
         """
-        V2.1: Monitor options Greeks for Level 5 Circuit Breaker.
+        V2.1/V2.3: Monitor options Greeks and spread exit conditions.
 
         CRITICAL FIX: Fetches FRESH Greeks from OptionChain each bar.
         Greeks change rapidly for short-dated options (0-2 DTE) and stale
         Greeks can miss critical risk breaches.
+
+        V2.3: Also checks spread exit conditions:
+        - Take profit at 50% of max profit
+        - Close by 5 DTE (avoid gamma acceleration)
+        - Regime reversal
 
         Updates risk engine with current Greeks and checks for breaches:
         - Delta > 0.80 (too deep ITM)
@@ -2386,6 +2460,11 @@ class AlphaNextGen(QCAlgorithm):
         # Skip if no options position
         if not self.options_engine.has_position():
             return
+
+        # V2.3: Check spread exit conditions if we have a spread position
+        if self.options_engine.has_spread_position():
+            self._check_spread_exit(data)
+            return  # Spread exit handling is separate from single-leg Greeks
 
         # CRITICAL: Fetch FRESH Greeks from OptionChain (not cached values)
         # Greeks change rapidly, especially for 0-2 DTE options
@@ -2472,6 +2551,71 @@ class AlphaNextGen(QCAlgorithm):
             self.Log(f"GREEKS_REFRESH_ERROR: {e}")
 
         return None
+
+    def _check_spread_exit(self, data: Slice) -> None:
+        """
+        V2.3: Check for spread exit conditions.
+
+        Exit conditions:
+        1. Take profit at 50% of max profit
+        2. Close by 5 DTE (avoid gamma acceleration)
+        3. Regime reversal (Bull exit if < 45, Bear exit if > 60)
+
+        Args:
+            data: Current data slice.
+        """
+        spread = self.options_engine.get_spread_position()
+        if spread is None:
+            return
+
+        # Get current prices for both legs from chain
+        chain = (
+            data.OptionChains[self._qqq_option_symbol]
+            if self._qqq_option_symbol in data.OptionChains
+            else None
+        )
+        if chain is None:
+            return
+
+        long_leg_price = None
+        short_leg_price = None
+        current_dte = None
+
+        try:
+            for contract in chain:
+                contract_symbol = str(contract.Symbol)
+                if contract_symbol == spread.long_leg.symbol:
+                    bid, ask = self._get_contract_prices(contract)
+                    long_leg_price = (bid + ask) / 2 if bid > 0 and ask > 0 else None
+                    current_dte = (contract.Expiry - self.Time).days
+                elif contract_symbol == spread.short_leg.symbol:
+                    bid, ask = self._get_contract_prices(contract)
+                    short_leg_price = (bid + ask) / 2 if bid > 0 and ask > 0 else None
+        except Exception as e:
+            self.Log(f"SPREAD_EXIT_ERROR: Failed to get prices: {e}")
+            return
+
+        # Skip if we couldn't get both prices
+        if long_leg_price is None or short_leg_price is None:
+            return
+        if current_dte is None:
+            current_dte = spread.long_leg.days_to_expiry  # Fallback
+
+        # Get current regime score
+        regime_score = self.regime_engine.get_current_score()
+
+        # Check for exit signals
+        exit_signals = self.options_engine.check_spread_exit_signals(
+            long_leg_price=long_leg_price,
+            short_leg_price=short_leg_price,
+            regime_score=regime_score,
+            current_dte=current_dte,
+        )
+
+        if exit_signals:
+            # Send both exit signals (long leg and short leg)
+            for signal in exit_signals:
+                self.portfolio_router.receive_signal(signal)
 
     def _validate_options_symbol(self) -> bool:
         """
@@ -2716,42 +2860,148 @@ class AlphaNextGen(QCAlgorithm):
             except Exception as e:
                 self.Log(f"MR_TRACK_ERROR: {symbol}: {e}")
 
-        # V2.1: Update Options engine if QQQ option
+        # V2.1/V2.3: Update Options engine if QQQ option
         if "QQQ" in symbol and ("C" in symbol or "P" in symbol):
             try:
                 if fill_qty > 0:
-                    # Register entry with options engine
-                    position = self.options_engine.register_entry(
-                        fill_price=fill_price,
-                        entry_time=str(self.Time),
-                        current_date=str(self.Time.date()),
-                    )
-
-                    if position:
-                        # Create OCO pair for stop and profit exits
-                        oco_pair = self.oco_manager.create_oco_pair(
-                            symbol=symbol,
-                            entry_price=fill_price,
-                            stop_price=position.stop_price,
-                            target_price=position.target_price,
-                            quantity=int(fill_qty),
+                    # V2.3: Check if this is a spread leg fill
+                    if self.options_engine._pending_spread_long_leg is not None:
+                        # This is a spread entry - track leg fills
+                        self._handle_spread_leg_fill(symbol, fill_price, fill_qty)
+                    else:
+                        # Single-leg entry (legacy or intraday)
+                        position = self.options_engine.register_entry(
+                            fill_price=fill_price,
+                            entry_time=str(self.Time),
                             current_date=str(self.Time.date()),
                         )
 
-                        if oco_pair:
-                            # Submit OCO orders
-                            self.oco_manager.submit_oco_pair(oco_pair, current_time=str(self.Time))
-                            self.Log(
-                                f"OPT: OCO pair created | "
-                                f"Stop=${position.stop_price:.2f} | "
-                                f"Target=${position.target_price:.2f}"
+                        if position:
+                            # Create OCO pair for stop and profit exits
+                            oco_pair = self.oco_manager.create_oco_pair(
+                                symbol=symbol,
+                                entry_price=fill_price,
+                                stop_price=position.stop_price,
+                                target_price=position.target_price,
+                                quantity=int(fill_qty),
+                                current_date=str(self.Time.date()),
                             )
-                else:
-                    # Exit - remove position
-                    self.options_engine.remove_position()
-                    self._greeks_breach_logged = False  # Reset for next position
+
+                            if oco_pair:
+                                # Submit OCO orders
+                                self.oco_manager.submit_oco_pair(
+                                    oco_pair, current_time=str(self.Time)
+                                )
+                                self.Log(
+                                    f"OPT: OCO pair created | "
+                                    f"Stop=${position.stop_price:.2f} | "
+                                    f"Target=${position.target_price:.2f}"
+                                )
+                elif fill_qty < 0:
+                    # Exit - check if spread or single-leg
+                    if self.options_engine.has_spread_position():
+                        # Spread exit - track leg closes
+                        self._handle_spread_leg_close(symbol, fill_price, fill_qty)
+                    else:
+                        # Single-leg exit
+                        self.options_engine.remove_position()
+                        self._greeks_breach_logged = False  # Reset for next position
             except Exception as e:
                 self.Log(f"OPT_TRACK_ERROR: {symbol}: {e}")
+
+    def _handle_spread_leg_fill(self, symbol: str, fill_price: float, fill_qty: float) -> None:
+        """
+        V2.3: Handle a spread leg fill.
+
+        Tracks both leg fills and registers spread position when both complete.
+
+        Args:
+            symbol: Filled option symbol.
+            fill_price: Fill price.
+            fill_qty: Fill quantity.
+        """
+        # Track which leg filled
+        pending_long = self.options_engine._pending_spread_long_leg
+        pending_short = self.options_engine._pending_spread_short_leg
+
+        if pending_long and pending_long.symbol == symbol:
+            # Long leg filled
+            if not hasattr(self, "_spread_long_fill_price"):
+                self._spread_long_fill_price = None
+                self._spread_short_fill_price = None
+            self._spread_long_fill_price = fill_price
+            self.Log(f"SPREAD: Long leg filled | {symbol} @ ${fill_price:.2f}")
+
+        elif pending_short and pending_short.symbol == symbol:
+            # Short leg filled
+            if not hasattr(self, "_spread_short_fill_price"):
+                self._spread_long_fill_price = None
+                self._spread_short_fill_price = None
+            self._spread_short_fill_price = fill_price
+            self.Log(f"SPREAD: Short leg filled | {symbol} @ ${fill_price:.2f}")
+
+        # Check if both legs filled
+        long_fill = getattr(self, "_spread_long_fill_price", None)
+        short_fill = getattr(self, "_spread_short_fill_price", None)
+
+        if long_fill is not None and short_fill is not None:
+            # Both legs filled - register spread position
+            spread = self.options_engine.register_spread_entry(
+                long_leg_fill_price=long_fill,
+                short_leg_fill_price=short_fill,
+                entry_time=str(self.Time),
+                current_date=str(self.Time.date()),
+                regime_score=self.regime_engine.get_current_score(),
+            )
+
+            if spread:
+                self.Log(
+                    f"SPREAD: Position registered | {spread.spread_type} | "
+                    f"Debit=${spread.net_debit:.2f} | Max Profit=${spread.max_profit:.2f}"
+                )
+
+            # Clear tracking
+            self._spread_long_fill_price = None
+            self._spread_short_fill_price = None
+
+    def _handle_spread_leg_close(self, symbol: str, fill_price: float, fill_qty: float) -> None:
+        """
+        V2.3: Handle a spread leg close.
+
+        Tracks both leg closes and removes spread position when both complete.
+
+        Args:
+            symbol: Closed option symbol.
+            fill_price: Fill price.
+            fill_qty: Fill quantity.
+        """
+        spread = self.options_engine.get_spread_position()
+        if spread is None:
+            return
+
+        # Track which leg closed
+        if not hasattr(self, "_spread_long_closed"):
+            self._spread_long_closed = False
+            self._spread_short_closed = False
+
+        if spread.long_leg.symbol == symbol:
+            self._spread_long_closed = True
+            self.Log(f"SPREAD: Long leg closed | {symbol} @ ${fill_price:.2f}")
+        elif spread.short_leg.symbol == symbol:
+            self._spread_short_closed = True
+            self.Log(f"SPREAD: Short leg closed | {symbol} @ ${fill_price:.2f}")
+
+        # Check if both legs closed
+        if self._spread_long_closed and self._spread_short_closed:
+            # Both legs closed - remove spread position
+            self.options_engine.remove_spread_position()
+            self._greeks_breach_logged = False  # Reset for next position
+
+            # Clear tracking
+            self._spread_long_closed = False
+            self._spread_short_closed = False
+
+            self.Log("SPREAD: Position removed - both legs closed")
 
     def _get_average_volume(self, volume_window: RollingWindow) -> float:
         """

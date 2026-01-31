@@ -212,6 +212,76 @@ class OptionsPosition:
 
 
 # =============================================================================
+# V2.3 DEBIT SPREAD POSITION
+# =============================================================================
+
+
+@dataclass
+class SpreadPosition:
+    """
+    V2.3: Tracks a debit spread position (two-leg).
+
+    Debit spreads have defined risk (max loss = net debit).
+    No stop loss needed - position survives whipsaw.
+    """
+
+    long_leg: OptionContract  # Bought leg (ATM)
+    short_leg: OptionContract  # Sold leg (OTM)
+    spread_type: str  # "BULL_CALL" or "BEAR_PUT"
+    net_debit: float  # Cost to open spread
+    max_profit: float  # Width - net debit
+    width: float  # Strike difference ($3-5)
+    entry_time: str
+    entry_score: float
+    num_spreads: int  # Number of spread contracts
+    regime_at_entry: float  # Regime score at entry
+
+    @property
+    def profit_target(self) -> float:
+        """50% of max profit per V2.3 spec."""
+        return self.net_debit + (self.max_profit * 0.5)
+
+    @property
+    def breakeven(self) -> float:
+        """Breakeven price (long strike +/- net debit)."""
+        if self.spread_type == "BULL_CALL":
+            return self.long_leg.strike + self.net_debit
+        else:  # BEAR_PUT
+            return self.long_leg.strike - self.net_debit
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize for persistence."""
+        return {
+            "long_leg": self.long_leg.to_dict(),
+            "short_leg": self.short_leg.to_dict(),
+            "spread_type": self.spread_type,
+            "net_debit": self.net_debit,
+            "max_profit": self.max_profit,
+            "width": self.width,
+            "entry_time": self.entry_time,
+            "entry_score": self.entry_score,
+            "num_spreads": self.num_spreads,
+            "regime_at_entry": self.regime_at_entry,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SpreadPosition":
+        """Deserialize from persistence."""
+        return cls(
+            long_leg=OptionContract.from_dict(data["long_leg"]),
+            short_leg=OptionContract.from_dict(data["short_leg"]),
+            spread_type=data["spread_type"],
+            net_debit=data["net_debit"],
+            max_profit=data["max_profit"],
+            width=data["width"],
+            entry_time=data["entry_time"],
+            entry_score=data["entry_score"],
+            num_spreads=data["num_spreads"],
+            regime_at_entry=data["regime_at_entry"],
+        )
+
+
+# =============================================================================
 # V2.1.1 MICRO REGIME ENGINE (Intraday Decision Brain)
 # =============================================================================
 
@@ -801,6 +871,9 @@ class OptionsEngine:
         self._swing_position: Optional[OptionsPosition] = None
         self._intraday_position: Optional[OptionsPosition] = None
 
+        # V2.3: Spread position tracking (replaces single-leg for swing mode)
+        self._spread_position: Optional[SpreadPosition] = None
+
         # Legacy single position (for backwards compatibility)
         self._position: Optional[OptionsPosition] = None
 
@@ -827,6 +900,14 @@ class OptionsEngine:
         self._pending_stop_pct: Optional[float] = None
         self._pending_stop_price: Optional[float] = None
         self._pending_target_price: Optional[float] = None
+
+        # V2.3: Pending spread entry state
+        self._pending_spread_long_leg: Optional[OptionContract] = None
+        self._pending_spread_short_leg: Optional[OptionContract] = None
+        self._pending_spread_type: Optional[str] = None
+        self._pending_net_debit: Optional[float] = None
+        self._pending_max_profit: Optional[float] = None
+        self._pending_spread_width: Optional[float] = None
 
         # V2.3 FIX: Prevent order spam - track failed entry attempts
         self._entry_attempted_today: bool = False
@@ -1048,6 +1129,124 @@ class OptionsEngine:
         return (num_contracts, stop_pct, stop_price, target_price)
 
     # =========================================================================
+    # V2.3: SPREAD LEG SELECTION
+    # =========================================================================
+
+    def select_spread_legs(
+        self,
+        contracts: List[OptionContract],
+        direction: OptionDirection,
+        target_width: float = None,
+    ) -> Optional[tuple]:
+        """
+        V2.3: Select long and short leg contracts for a debit spread.
+
+        For Bull Call Spread:
+        - Long leg: ATM call (delta 0.45-0.55)
+        - Short leg: OTM call ($3-5 higher strike, delta 0.25-0.40)
+
+        For Bear Put Spread:
+        - Long leg: ATM put (delta -0.45 to -0.55)
+        - Short leg: OTM put ($3-5 lower strike, delta -0.25 to -0.40)
+
+        Args:
+            contracts: List of available OptionContract objects.
+            direction: CALL for Bull Call Spread, PUT for Bear Put Spread.
+            target_width: Target spread width (default from config).
+
+        Returns:
+            Tuple of (long_leg, short_leg) or None if no valid spread found.
+        """
+        if not contracts:
+            self.log("SPREAD: No contracts available for spread selection")
+            return None
+
+        if target_width is None:
+            target_width = config.SPREAD_WIDTH_TARGET
+
+        # Filter contracts by direction
+        filtered = [c for c in contracts if c.direction == direction]
+
+        if len(filtered) < 2:
+            self.log(f"SPREAD: Not enough {direction.value} contracts for spread")
+            return None
+
+        # For puts, delta is negative so we need to handle that
+        is_call = direction == OptionDirection.CALL
+
+        # Find ATM long leg (delta 0.45-0.55 for calls, -0.45 to -0.55 for puts)
+        long_candidates = []
+        for c in filtered:
+            delta_abs = abs(c.delta)
+            if config.SPREAD_LONG_LEG_DELTA_MIN <= delta_abs <= config.SPREAD_LONG_LEG_DELTA_MAX:
+                # Check liquidity
+                if c.open_interest >= config.OPTIONS_MIN_OPEN_INTEREST:
+                    if c.spread_pct <= config.OPTIONS_SPREAD_MAX_PCT:
+                        long_candidates.append(c)
+
+        if not long_candidates:
+            self.log("SPREAD: No valid ATM contract for long leg")
+            return None
+
+        # Sort by delta proximity to 0.50 (most ATM)
+        long_candidates.sort(key=lambda c: abs(abs(c.delta) - 0.50))
+        long_leg = long_candidates[0]
+
+        # Find OTM short leg
+        # For calls: higher strike, delta 0.25-0.40
+        # For puts: lower strike, delta -0.25 to -0.40
+        short_candidates = []
+        for c in filtered:
+            # Skip same strike as long leg
+            if c.strike == long_leg.strike:
+                continue
+
+            # Check direction-specific strike requirement
+            if is_call:
+                # Short leg must be higher strike (OTM)
+                if c.strike <= long_leg.strike:
+                    continue
+            else:
+                # Short leg must be lower strike (OTM)
+                if c.strike >= long_leg.strike:
+                    continue
+
+            # Check delta range
+            delta_abs = abs(c.delta)
+            if not (
+                config.SPREAD_SHORT_LEG_DELTA_MIN <= delta_abs <= config.SPREAD_SHORT_LEG_DELTA_MAX
+            ):
+                continue
+
+            # Check width
+            width = abs(c.strike - long_leg.strike)
+            if not (config.SPREAD_WIDTH_MIN <= width <= config.SPREAD_WIDTH_MAX):
+                continue
+
+            # Check liquidity
+            if (
+                c.open_interest >= config.OPTIONS_MIN_OPEN_INTEREST // 2
+            ):  # Slightly looser for short leg
+                if c.spread_pct <= config.OPTIONS_SPREAD_WARNING_PCT:
+                    short_candidates.append((c, width))
+
+        if not short_candidates:
+            self.log("SPREAD: No valid OTM contract for short leg")
+            return None
+
+        # Sort by width proximity to target
+        short_candidates.sort(key=lambda x: abs(x[1] - target_width))
+        short_leg = short_candidates[0][0]
+        actual_width = abs(short_leg.strike - long_leg.strike)
+
+        self.log(
+            f"SPREAD: Selected legs | Long={long_leg.strike} (delta={long_leg.delta:.2f}) | "
+            f"Short={short_leg.strike} (delta={short_leg.delta:.2f}) | Width=${actual_width:.0f}"
+        )
+
+        return (long_leg, short_leg)
+
+    # =========================================================================
     # ENTRY SIGNAL
     # =========================================================================
 
@@ -1237,6 +1436,330 @@ class OptionsEngine:
             reason=reason,
             requested_quantity=num_contracts,  # V2.3.2: Pass risk-calculated contracts
         )
+
+    # =========================================================================
+    # V2.3 DEBIT SPREAD ENTRY SIGNAL
+    # =========================================================================
+
+    def check_spread_entry_signal(
+        self,
+        regime_score: float,
+        vix_current: float,
+        adx_value: float,
+        current_price: float,
+        ma200_value: float,
+        iv_rank: float,
+        current_hour: int,
+        current_minute: int,
+        current_date: str,
+        portfolio_value: float,
+        long_leg_contract: Optional[OptionContract] = None,
+        short_leg_contract: Optional[OptionContract] = None,
+        gap_filter_triggered: bool = False,
+        vol_shock_active: bool = False,
+    ) -> Optional[TargetWeight]:
+        """
+        V2.3: Check for debit spread entry signal.
+
+        Debit Spreads have defined risk (max loss = net debit).
+        Direction determined by regime score:
+        - Regime > 60: Bull Call Spread
+        - Regime < 45: Bear Put Spread
+        - Regime 45-60: NO TRADE (neutral, no edge)
+        - Regime < 30: No spread (protective puts only mode)
+
+        Args:
+            regime_score: Market regime score (0-100).
+            vix_current: Current VIX level.
+            adx_value: Current ADX(14) value.
+            current_price: Current QQQ price.
+            ma200_value: 200-day moving average value.
+            iv_rank: IV percentile (0-100).
+            current_hour: Current hour (0-23) Eastern.
+            current_minute: Current minute (0-59).
+            current_date: Current date string.
+            portfolio_value: Total portfolio value.
+            long_leg_contract: ATM contract for long leg.
+            short_leg_contract: OTM contract for short leg.
+            gap_filter_triggered: True if gap filter is active.
+            vol_shock_active: True if vol shock pause is active.
+
+        Returns:
+            TargetWeight for spread entry (with short leg in metadata), or None.
+        """
+        # Check if already have a spread position
+        if self._spread_position is not None:
+            return None
+
+        # V2.3 FIX: Check if entry already attempted today
+        if self._entry_attempted_today:
+            return None
+
+        # Check max trades per day
+        if current_date == self._last_trade_date:
+            if self._trades_today >= config.OPTIONS_MAX_TRADES_PER_DAY:
+                return None
+
+        # Determine spread direction based on regime
+        if regime_score < config.SPREAD_REGIME_CRISIS:
+            # Regime < 30: Crisis mode - no spreads, protective puts only
+            self.log(
+                f"SPREAD: No entry - regime {regime_score:.1f} < {config.SPREAD_REGIME_CRISIS} (crisis mode)"
+            )
+            return None
+
+        if config.SPREAD_REGIME_BEARISH <= regime_score <= config.SPREAD_REGIME_BULLISH:
+            # Neutral regime (45-60): NO TRADE
+            self.log(
+                f"SPREAD: No entry - regime {regime_score:.1f} is neutral "
+                f"({config.SPREAD_REGIME_BEARISH}-{config.SPREAD_REGIME_BULLISH})"
+            )
+            return None
+
+        # Determine spread type and direction
+        if regime_score > config.SPREAD_REGIME_BULLISH:
+            spread_type = "BULL_CALL"
+            direction = OptionDirection.CALL
+            vix_max = config.SPREAD_VIX_MAX_BULL
+        else:  # regime_score < config.SPREAD_REGIME_BEARISH
+            spread_type = "BEAR_PUT"
+            direction = OptionDirection.PUT
+            vix_max = config.SPREAD_VIX_MAX_BEAR
+
+        # VIX filter
+        if vix_current > vix_max:
+            self.log(f"SPREAD: No entry - VIX {vix_current:.1f} > max {vix_max} for {spread_type}")
+            return None
+
+        # Check safeguards
+        if gap_filter_triggered:
+            self.log("SPREAD: Entry blocked - gap filter active")
+            return None
+
+        if vol_shock_active:
+            self.log("SPREAD: Entry blocked - vol shock active")
+            return None
+
+        # Check time window (10:00 AM - 2:30 PM ET)
+        time_minutes = current_hour * 60 + current_minute
+        if not (10 * 60 <= time_minutes <= 14 * 60 + 30):
+            if not self._swing_time_warning_logged:
+                self.log("SPREAD: Entry blocked - outside time window (10:00-14:30)")
+                self._swing_time_warning_logged = True
+            return None
+
+        # Validate contracts
+        if long_leg_contract is None or short_leg_contract is None:
+            self.log("SPREAD: Entry blocked - missing contract legs")
+            return None
+
+        # Validate contract directions match spread type
+        if long_leg_contract.direction != direction:
+            self.log(
+                f"SPREAD: Entry blocked - long leg direction {long_leg_contract.direction.value} "
+                f"doesn't match spread type {spread_type}"
+            )
+            return None
+
+        if short_leg_contract.direction != direction:
+            self.log(
+                f"SPREAD: Entry blocked - short leg direction {short_leg_contract.direction.value} "
+                f"doesn't match spread type {spread_type}"
+            )
+            return None
+
+        # Validate DTE range (10-21 days per V2.3 spec)
+        if long_leg_contract.days_to_expiry < config.SPREAD_DTE_MIN:
+            self.log(
+                f"SPREAD: Entry blocked - DTE {long_leg_contract.days_to_expiry} < "
+                f"min {config.SPREAD_DTE_MIN}"
+            )
+            return None
+
+        if long_leg_contract.days_to_expiry > config.SPREAD_DTE_MAX:
+            self.log(
+                f"SPREAD: Entry blocked - DTE {long_leg_contract.days_to_expiry} > "
+                f"max {config.SPREAD_DTE_MAX}"
+            )
+            return None
+
+        # Calculate spread width
+        width = abs(short_leg_contract.strike - long_leg_contract.strike)
+        if width < config.SPREAD_WIDTH_MIN or width > config.SPREAD_WIDTH_MAX:
+            self.log(
+                f"SPREAD: Entry blocked - width ${width:.0f} outside "
+                f"${config.SPREAD_WIDTH_MIN}-${config.SPREAD_WIDTH_MAX} range"
+            )
+            return None
+
+        # Calculate entry score
+        entry_score = self.calculate_entry_score(
+            adx_value=adx_value,
+            current_price=current_price,
+            ma200_value=ma200_value,
+            iv_rank=iv_rank,
+            bid_ask_spread_pct=long_leg_contract.spread_pct,
+            open_interest=long_leg_contract.open_interest,
+        )
+
+        if not entry_score.is_valid:
+            self.log(
+                f"SPREAD: Entry blocked - score {entry_score.total:.2f} < "
+                f"{config.OPTIONS_ENTRY_SCORE_MIN}"
+            )
+            return None
+
+        # Calculate net debit and max profit
+        net_debit = long_leg_contract.mid_price - short_leg_contract.mid_price
+        if net_debit <= 0:
+            self.log(f"SPREAD: Entry blocked - net debit ${net_debit:.2f} <= 0")
+            return None
+
+        max_profit = width - net_debit
+        if max_profit <= 0:
+            self.log(f"SPREAD: Entry blocked - max profit ${max_profit:.2f} <= 0")
+            return None
+
+        # Calculate position size based on allocation
+        allocation = self.get_mode_allocation(OptionsMode.SWING, portfolio_value)
+        # For spreads, risk = net_debit per spread (max loss = net_debit)
+        cost_per_spread = net_debit * 100  # 100 shares per contract
+        num_spreads = int(allocation / cost_per_spread)
+
+        if num_spreads <= 0:
+            self.log(
+                f"SPREAD: Entry blocked - allocation ${allocation:.0f} too small "
+                f"for debit ${net_debit:.2f}"
+            )
+            return None
+
+        # Store pending spread entry details
+        self._pending_spread_long_leg = long_leg_contract
+        self._pending_spread_short_leg = short_leg_contract
+        self._pending_spread_type = spread_type
+        self._pending_net_debit = net_debit
+        self._pending_max_profit = max_profit
+        self._pending_spread_width = width
+        self._pending_num_contracts = num_spreads
+        self._pending_entry_score = entry_score.total
+
+        # Mark entry attempted
+        self._entry_attempted_today = True
+
+        reason = (
+            f"{spread_type}: Regime={regime_score:.0f} | VIX={vix_current:.1f} | "
+            f"Long={long_leg_contract.strike} Short={short_leg_contract.strike} | "
+            f"Debit=${net_debit:.2f} MaxProfit=${max_profit:.2f} | x{num_spreads}"
+        )
+
+        self.log(
+            f"SPREAD: ENTRY_SIGNAL | {reason} | "
+            f"DTE={long_leg_contract.days_to_expiry} Score={entry_score.total:.2f}",
+            trades_only=True,
+        )
+
+        # Return TargetWeight for long leg, with short leg info in metadata
+        return TargetWeight(
+            symbol=long_leg_contract.symbol,
+            target_weight=1.0,
+            source="OPT",
+            urgency=Urgency.IMMEDIATE,
+            reason=reason,
+            requested_quantity=num_spreads,
+            metadata={
+                "spread_type": spread_type,
+                "spread_short_leg_symbol": short_leg_contract.symbol,
+                "spread_short_leg_quantity": num_spreads,
+                "spread_net_debit": net_debit,
+                "spread_max_profit": max_profit,
+                "spread_width": width,
+            },
+        )
+
+    # =========================================================================
+    # V2.3 SPREAD EXIT SIGNALS
+    # =========================================================================
+
+    def check_spread_exit_signals(
+        self,
+        long_leg_price: float,
+        short_leg_price: float,
+        regime_score: float,
+        current_dte: int,
+    ) -> Optional[List[TargetWeight]]:
+        """
+        V2.3: Check for spread exit signals.
+
+        Exit conditions:
+        1. Take profit at 50% of max profit
+        2. Close by 5 DTE (avoid gamma acceleration)
+        3. Regime reversal (Bull exit if < 45, Bear exit if > 60)
+
+        Args:
+            long_leg_price: Current price of long leg.
+            short_leg_price: Current price of short leg.
+            regime_score: Current regime score.
+            current_dte: Current days to expiration.
+
+        Returns:
+            List of TargetWeights for both legs exit, or None.
+        """
+        if self._spread_position is None:
+            return None
+
+        spread = self._spread_position
+        current_spread_value = long_leg_price - short_leg_price
+        entry_debit = spread.net_debit
+        pnl = current_spread_value - entry_debit
+        pnl_pct = pnl / entry_debit if entry_debit > 0 else 0
+
+        exit_reason = None
+
+        # Exit 1: Profit target (50% of max profit)
+        profit_target = spread.max_profit * config.SPREAD_PROFIT_TARGET_PCT
+        if pnl >= profit_target:
+            exit_reason = f"PROFIT_TARGET +{pnl_pct:.1%} (${pnl:.2f} >= ${profit_target:.2f})"
+
+        # Exit 2: DTE exit (close by 5 DTE)
+        elif current_dte <= config.SPREAD_DTE_EXIT:
+            exit_reason = f"DTE_EXIT ({current_dte} DTE <= {config.SPREAD_DTE_EXIT})"
+
+        # Exit 3: Regime reversal
+        elif spread.spread_type == "BULL_CALL" and regime_score < config.SPREAD_REGIME_EXIT_BULL:
+            exit_reason = f"REGIME_REVERSAL (Bull exit: {regime_score:.0f} < {config.SPREAD_REGIME_EXIT_BULL})"
+        elif spread.spread_type == "BEAR_PUT" and regime_score > config.SPREAD_REGIME_EXIT_BEAR:
+            exit_reason = f"REGIME_REVERSAL (Bear exit: {regime_score:.0f} > {config.SPREAD_REGIME_EXIT_BEAR})"
+
+        if exit_reason is None:
+            return None
+
+        self.log(
+            f"SPREAD: EXIT_SIGNAL | {exit_reason} | "
+            f"Long=${long_leg_price:.2f} Short=${short_leg_price:.2f} | "
+            f"P&L={pnl_pct:.1%}",
+            trades_only=True,
+        )
+
+        # Return exit signals for both legs
+        return [
+            # Close long leg (sell to close)
+            TargetWeight(
+                symbol=spread.long_leg.symbol,
+                target_weight=0.0,
+                source="OPT",
+                urgency=Urgency.IMMEDIATE,
+                reason=f"SPREAD_EXIT_LONG: {exit_reason}",
+            ),
+            # Close short leg (buy to close)
+            TargetWeight(
+                symbol=spread.short_leg.symbol,
+                target_weight=0.0,
+                source="OPT",
+                urgency=Urgency.IMMEDIATE,
+                reason=f"SPREAD_EXIT_SHORT: {exit_reason}",
+                metadata={"spread_close_short": True},  # Router: buy to close
+            ),
+        ]
 
     # =========================================================================
     # EXIT SIGNALS
@@ -1771,9 +2294,115 @@ class OptionsEngine:
             return position
         return None
 
+    # =========================================================================
+    # V2.3 SPREAD POSITION MANAGEMENT
+    # =========================================================================
+
+    def register_spread_entry(
+        self,
+        long_leg_fill_price: float,
+        short_leg_fill_price: float,
+        entry_time: str,
+        current_date: str,
+        regime_score: float,
+    ) -> Optional[SpreadPosition]:
+        """
+        V2.3: Register a new spread position after both legs fill.
+
+        Args:
+            long_leg_fill_price: Actual fill price for long leg.
+            short_leg_fill_price: Actual fill price for short leg.
+            entry_time: Entry timestamp string.
+            current_date: Current date string.
+            regime_score: Regime score at entry.
+
+        Returns:
+            Created SpreadPosition, or None if no pending spread exists.
+        """
+        if self._pending_spread_long_leg is None or self._pending_spread_short_leg is None:
+            self.log("SPREAD: register_spread_entry called but no pending spread - skipping")
+            return None
+
+        # Calculate actual net debit from fills
+        net_debit = long_leg_fill_price - short_leg_fill_price
+        width = self._pending_spread_width or abs(
+            self._pending_spread_short_leg.strike - self._pending_spread_long_leg.strike
+        )
+        max_profit = width - net_debit
+
+        num_spreads = self._pending_num_contracts or 1
+        entry_score = self._pending_entry_score or 3.0
+
+        spread = SpreadPosition(
+            long_leg=self._pending_spread_long_leg,
+            short_leg=self._pending_spread_short_leg,
+            spread_type=self._pending_spread_type or "UNKNOWN",
+            net_debit=net_debit,
+            max_profit=max_profit,
+            width=width,
+            entry_time=entry_time,
+            entry_score=entry_score,
+            num_spreads=num_spreads,
+            regime_at_entry=regime_score,
+        )
+
+        self._spread_position = spread
+
+        # Update trade counter
+        if current_date != self._last_trade_date:
+            self._trades_today = 1
+            self._last_trade_date = current_date
+        else:
+            self._trades_today += 1
+
+        self.log(
+            f"SPREAD: POSITION_REGISTERED | {spread.spread_type} | "
+            f"Long={spread.long_leg.strike} @ ${long_leg_fill_price:.2f} | "
+            f"Short={spread.short_leg.strike} @ ${short_leg_fill_price:.2f} | "
+            f"Net Debit=${net_debit:.2f} | Max Profit=${max_profit:.2f} | "
+            f"x{num_spreads} | Target=${spread.profit_target:.2f}",
+            trades_only=True,
+        )
+
+        # Clear pending state
+        self._pending_spread_long_leg = None
+        self._pending_spread_short_leg = None
+        self._pending_spread_type = None
+        self._pending_net_debit = None
+        self._pending_max_profit = None
+        self._pending_spread_width = None
+
+        return spread
+
+    def remove_spread_position(self) -> Optional[SpreadPosition]:
+        """
+        V2.3: Remove the current spread position after exit.
+
+        Returns:
+            Removed spread position, or None if no spread existed.
+        """
+        if self._spread_position is not None:
+            spread = self._spread_position
+            self._spread_position = None
+            self.log(
+                f"SPREAD: POSITION_REMOVED | {spread.spread_type} | "
+                f"Long={spread.long_leg.symbol} Short={spread.short_leg.symbol}",
+                trades_only=True,
+            )
+            return spread
+        return None
+
+    def has_spread_position(self) -> bool:
+        """V2.3: Check if a spread position exists."""
+        return self._spread_position is not None
+
+    def get_spread_position(self) -> Optional[SpreadPosition]:
+        """V2.3: Get current spread position."""
+        return self._spread_position
+
     def has_position(self) -> bool:
-        """Check if a position exists."""
-        return self._position is not None
+        """Check if a position exists (single-leg or spread)."""
+        return self._position is not None or self._spread_position is not None
 
     def get_position(self) -> Optional[OptionsPosition]:
         """Get current position."""

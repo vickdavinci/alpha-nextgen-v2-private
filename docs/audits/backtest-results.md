@@ -33,20 +33,18 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
 
-### Stage 2 Summary (2026-01-30)
+### Stage 2 Summary (2026-01-31)
 
 **Latest Run:** Retrospective Apricot Leopard | **Result:** -6.92% | **Orders:** 15
 
-**Progress:**
+**All Critical Issues Fixed:**
 - Kill switch daily reset: ✅ FIXED (scheduler.reset_daily())
 - Order spam: 371 → 15 orders ✅
 - Cold start progression: Day 1 → Day 2 → Day 3 → Day 4 ✅
+- Options sizing: ✅ FIXED (Phase A - `requested_quantity` field)
+- Naked options vs Debit Spreads: ✅ FIXED (Phase B - V2.3 Debit Spreads implemented)
 
-**Remaining Issues:**
-- Options sizing uses full portfolio ($25K) instead of 5% allocation ($2.5K) 🔴
-- Insufficient buying power when trend positions consume margin 🔴
-
-**Next Step:** Fix options position sizing to use `get_mode_allocation()` properly.
+**Next Step:** Re-run Stage 2 backtest with V2.3 Debit Spreads implementation.
 
 ---
 
@@ -271,12 +269,31 @@ The V2.3 design documentation confirms:
 | 2 | Add `requested_quantity` to TargetWeight | ✅ Schema 1.1 with optional `requested_quantity: int` field |
 | 3 | Add margin check before options orders | ✅ Router checks margin for all options before order |
 
-#### Phase B: Architecture Decision (HIGH)
+#### Phase B: Architecture Decision ✅ COMPLETE
 
-| Option | Approach | Pros | Cons |
-|--------|----------|------|------|
-| A | Keep single-leg, fix sizing | Quick validation | Not V2.3 compliant |
-| B | Implement V2.3 debit spreads | Full design compliance | More complex |
+**Decision:** Option B - Implement V2.3 Debit Spreads
+
+| Component | Implementation | Status |
+|-----------|----------------|:------:|
+| `SpreadPosition` dataclass | Two-leg position tracking (long + short) | ✅ |
+| `select_spread_legs()` | ATM long (0.45-0.55δ) + OTM short (0.25-0.40δ) | ✅ |
+| `check_spread_entry_signal()` | Regime-based: >60 Bull Call, <45 Bear Put, 45-60 NO TRADE | ✅ |
+| `check_spread_exit_signals()` | 50% profit target, 5 DTE exit, regime reversal | ✅ |
+| PortfolioRouter spread handling | Metadata-based two-leg order creation | ✅ |
+| main.py integration | Spread entry/exit monitoring, fill tracking | ✅ |
+
+**Key Changes:**
+- `_generate_options_signals()`: Uses `select_spread_legs()` + `check_spread_entry_signal()`
+- `_scan_options_signals()`: Swing mode now uses spread entry (intraday kept single-leg)
+- `_monitor_risk_greeks()`: Added `_check_spread_exit()` for spread position monitoring
+- `_on_fill()`: Added `_handle_spread_leg_fill()` + `_handle_spread_leg_close()` for two-leg fill tracking
+
+**Config Added:**
+- `SPREAD_REGIME_BULLISH = 60` (Regime > 60: Bull Call Spread)
+- `SPREAD_REGIME_BEARISH = 45` (Regime < 45: Bear Put Spread)
+- `SPREAD_WIDTH_TARGET = 5.0` ($5 spread width)
+- `SPREAD_DTE_MIN/MAX = 10/21` (DTE range for spreads)
+- `SPREAD_PROFIT_TARGET_PCT = 0.50` (50% of max profit)
 
 #### Phase C: Polish (MEDIUM)
 

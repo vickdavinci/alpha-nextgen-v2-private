@@ -413,6 +413,44 @@ OPTIONS_INTRADAY_DTE_MIN = 0  # Minimum DTE for Intraday Mode
 OPTIONS_INTRADAY_DTE_MAX = 2  # Maximum DTE for Intraday Mode
 
 # -----------------------------------------------------------------------------
+# V2.3 DEBIT SPREAD CONFIGURATION
+# -----------------------------------------------------------------------------
+# Debit spreads: defined risk, survives whipsaw, no stop loss needed
+# Bull Call Spread: Regime > 60 (bullish)
+# Bear Put Spread: Regime < 45 (bearish)
+# No Trade: Regime 45-60 (neutral, no edge)
+
+# Regime thresholds for spread direction
+SPREAD_REGIME_BULLISH = 60  # Regime > 60: Bull Call Spread
+SPREAD_REGIME_BEARISH = 45  # Regime < 45: Bear Put Spread
+SPREAD_REGIME_CRISIS = 30  # Regime < 30: Protective Puts only (no spreads)
+
+# VIX filters for entry
+SPREAD_VIX_MAX_BULL = 30  # Max VIX for Bull Call Spread entry
+SPREAD_VIX_MAX_BEAR = 35  # Max VIX for Bear Put Spread entry (allow higher)
+
+# Spread width (strike difference between legs)
+SPREAD_WIDTH_MIN = 3.0  # Minimum $3 wide
+SPREAD_WIDTH_MAX = 5.0  # Maximum $5 wide
+SPREAD_WIDTH_TARGET = 5.0  # Target $5 wide for better risk/reward
+
+# DTE for debit spreads (per V2.3 spec)
+SPREAD_DTE_MIN = 10  # Minimum 10 DTE (avoid gamma acceleration)
+SPREAD_DTE_MAX = 21  # Maximum 21 DTE (reasonable theta)
+SPREAD_DTE_EXIT = 5  # Close by 5 DTE remaining
+
+# Exit targets
+SPREAD_PROFIT_TARGET_PCT = 0.50  # Take profit at 50% of max profit
+SPREAD_REGIME_EXIT_BULL = 45  # Exit Bull Call if regime drops below 45
+SPREAD_REGIME_EXIT_BEAR = 60  # Exit Bear Put if regime rises above 60
+
+# Delta targets for spread legs
+SPREAD_LONG_LEG_DELTA_MIN = 0.45  # Long leg: ATM (near 0.50 delta)
+SPREAD_LONG_LEG_DELTA_MAX = 0.55  # Long leg: ATM (near 0.50 delta)
+SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg: OTM (lower delta)
+SPREAD_SHORT_LEG_DELTA_MAX = 0.40  # Short leg: OTM (lower delta)
+
+# -----------------------------------------------------------------------------
 # V2.1.1 VIX DIRECTION THRESHOLDS (Micro Regime Engine)
 # -----------------------------------------------------------------------------
 # VIX direction is THE key differentiator for intraday trading

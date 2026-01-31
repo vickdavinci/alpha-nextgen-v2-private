@@ -100,12 +100,12 @@
 | 2 | **`_pending_num_contracts` ignored** | ✅ FIXED | Now passed via `requested_quantity` field in TargetWeight |
 | 3 | **Insufficient margin for options** | ✅ FIXED | Margin check improved for all options (not just QQQ) |
 
-#### 🟠 HIGH - Architecture Decision Required
+#### 🟠 HIGH - Phase B Complete ✅
 
 | # | Bug | Status | Description |
 |:-:|-----|:------:|-------------|
-| 4 | **Naked options vs Debit Spreads** | 📋 DECISION | Code trades single-leg. V2.3 design mandates two-leg spreads. |
-| 5 | **Intraday mode strategy mismatch** | 📋 DECISION | Code has credit/ITM logic. Design: single VIX-based directional strategy. |
+| 4 | **Naked options vs Debit Spreads** | ✅ FIXED | V2.3 Debit Spreads implemented (Bull Call/Bear Put based on regime) |
+| 5 | **Intraday mode strategy mismatch** | ⏳ LATER | Intraday kept as single-leg. Swing uses debit spreads. |
 
 #### 🟡 MEDIUM - After Architecture Stable
 
@@ -154,9 +154,17 @@
 2. Add `requested_quantity` field to TargetWeight - router uses it if present
 3. Add margin check before options orders - skip if insufficient
 
-**Phase B: Architecture Decision (Issues 4-5)**
-- Option A: Keep single-leg, fix sizing → Quick validation
-- Option B: Implement V2.3 debit spreads → Full design compliance
+**Phase B: Architecture Decision (Issues 4-5) ✅ COMPLETE**
+- ~~Option A: Keep single-leg, fix sizing → Quick validation~~
+- **Option B: Implement V2.3 debit spreads → Full design compliance** ✅ SELECTED
+
+V2.3 Debit Spreads Implementation (2026-01-31):
+- `SpreadPosition` dataclass for two-leg position tracking
+- `select_spread_legs()` - ATM long leg + OTM short leg selection
+- `check_spread_entry_signal()` - Regime-based direction (>60 Bull Call, <45 Bear Put)
+- `check_spread_exit_signals()` - 50% profit target, 5 DTE exit, regime reversal
+- `PortfolioRouter` spread metadata handling - creates two orders for spread legs
+- `main.py` integration - spread entry/exit monitoring
 
 **Phase C: Polish (Issues 6-8)**
 After architecture is stable.

@@ -54,6 +54,7 @@ class AggregatedWeight:
         urgency: Highest urgency from all sources (IMMEDIATE > EOD).
         reasons: Combined reasons from all sources.
         requested_quantity: Optional explicit quantity for options (V2.3.2).
+        metadata: Optional metadata for spread orders (V2.3).
     """
 
     symbol: str
@@ -62,6 +63,7 @@ class AggregatedWeight:
     urgency: Urgency = Urgency.EOD
     reasons: List[str] = field(default_factory=list)
     requested_quantity: Optional[int] = None  # V2.3.2: For options risk-based sizing
+    metadata: Optional[Dict[str, Any]] = None  # V2.3: For spread order info
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for logging."""
@@ -71,6 +73,7 @@ class AggregatedWeight:
             "sources": self.sources,
             "urgency": self.urgency.value,
             "reasons": self.reasons,
+            "metadata": self.metadata,
         }
 
 
@@ -273,6 +276,10 @@ class PortfolioRouter:
             # V2.3.2: Preserve requested_quantity for options
             if weight.requested_quantity is not None:
                 agg.requested_quantity = weight.requested_quantity
+
+            # V2.3: Preserve metadata for spread orders
+            if weight.metadata is not None:
+                agg.metadata = weight.metadata
 
         return aggregated
 
@@ -523,6 +530,41 @@ class PortfolioRouter:
                     current_weight=current_weight,
                 )
             )
+
+            # V2.3: Handle spread short leg if metadata present
+            if agg.metadata is not None:
+                short_leg_symbol = agg.metadata.get("spread_short_leg_symbol")
+                short_leg_qty = agg.metadata.get("spread_short_leg_quantity")
+                spread_close_short = agg.metadata.get("spread_close_short", False)
+
+                if short_leg_symbol and short_leg_qty:
+                    # For entry: SELL short leg (write the option)
+                    # For exit: BUY short leg back (close the written option)
+                    if spread_close_short:
+                        # Closing spread - buy back the short leg
+                        short_side = OrderSide.BUY
+                        short_reason = f"[OPT] Close spread short leg: {reason}"
+                    else:
+                        # Opening spread - sell the short leg
+                        short_side = OrderSide.SELL
+                        short_reason = f"[OPT] Spread short leg: {reason}"
+
+                    orders.append(
+                        OrderIntent(
+                            symbol=short_leg_symbol,
+                            quantity=short_leg_qty,
+                            side=short_side,
+                            order_type=order_type,
+                            urgency=agg.urgency,
+                            reason=short_reason,
+                            target_weight=0.0,  # Short leg has no target weight
+                            current_weight=0.0,
+                        )
+                    )
+                    self.log(
+                        f"ROUTER: SPREAD_ORDER | {short_side.value} {short_leg_qty} "
+                        f"{short_leg_symbol} (short leg of spread)"
+                    )
 
         return orders
 
