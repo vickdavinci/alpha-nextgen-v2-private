@@ -160,7 +160,8 @@ class PortfolioRouter:
         "OPT_INTRADAY": 0.05,  # 5% max for intraday "Sniper" mode
         "MR": config.MR_TOTAL_ALLOCATION,  # 10% max
         "HEDGE": 0.30,  # Hedge: 30% max (TMF 20% + PSQ 10%)
-        "YIELD": 0.50,  # Yield (SHV): 50% max
+        # V2.3.17: YIELD raised from 0.50 to 0.99 to allow near-full SHV post-kill-switch
+        "YIELD": 0.99,  # Yield (SHV): 99% max (absorb idle cash after kill switch)
         "COLD_START": 0.35,  # Cold Start: 35% max (subset of TREND)
         "RISK": 1.00,  # Risk: No limit (emergency liquidations)
         "ROUTER": 1.00,  # Router: No limit (SHV liquidations)

@@ -91,16 +91,29 @@ class YieldSleeve:
         """
         Calculate unallocated cash that could be deployed to SHV.
 
+        V2.3.17: Reserves CASH_BUFFER_PCT (10%) as "petty cash" to fund small trades
+        without touching SHV. This reduces churn from Sniper (5%) and MR (5-10%) trades.
+
         Args:
             total_equity: Total portfolio equity.
             non_shv_positions_value: Sum of all non-SHV position values.
             current_shv_value: Current SHV holdings value.
 
         Returns:
-            Unallocated cash amount.
+            Unallocated cash amount (after reserving cash buffer).
         """
-        # Unallocated = Total - All Positions (including SHV)
-        unallocated = total_equity - non_shv_positions_value - current_shv_value
+        # V2.3.17: Reserve cash buffer to fund small trades without SHV liquidation
+        cash_buffer = total_equity * config.CASH_BUFFER_PCT
+
+        # Unallocated = Total - All Positions (including SHV) - Cash Buffer
+        unallocated = total_equity - non_shv_positions_value - current_shv_value - cash_buffer
+
+        if unallocated < 0:
+            self.log(
+                f"YIELD: BUFFER_ACTIVE | Buffer=${cash_buffer:,.0f} absorbing "
+                f"${abs(unallocated):,.0f} shortfall"
+            )
+
         return max(0.0, unallocated)
 
     def get_available_shv(

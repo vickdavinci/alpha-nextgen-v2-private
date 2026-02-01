@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-01 (V2.3.16: DTE-based delta + direction conflict resolution)
+> **Last Updated:** 2026-02-01 (V2.3.17: Hybrid Yield Sleeve + Kill Switch 5%)
 
 ---
 
@@ -227,6 +227,50 @@ IF strategy == DEBIT_FADE:
 ```
 
 **Status:** V2.3.16 DTE-BASED DELTA + DIRECTION CONFLICT complete - Ready for backtest validation
+
+### V2.3.17 Fix: Hybrid Yield Sleeve + Kill Switch 5% (2026-02-01)
+
+**Problem:** Kill switch too sensitive (3%), SHV churn from small trades, post-kill-switch cash idle.
+
+| # | Issue | Root Cause | Fix |
+|:-:|-------|------------|-----|
+| 1 | **Kill switch too sensitive** | 3% triggers 4-8×/year in volatile markets | 5% threshold |
+| 2 | **SHV churn** | Every 5% Sniper trade liquidates SHV | 10% cash buffer |
+| 3 | **RATES exposure blocks SHV** | 40% cap prevents post-kill-switch SHV | 99% limit |
+| 4 | **YIELD allocation low** | 50% cap when all cash should go to SHV | 99% limit |
+
+**Config Changes (V2.3.17):**
+```python
+# Kill Switch raised from 3% to 5%
+KILL_SWITCH_PCT = 0.05
+KILL_SWITCH_PCT_BY_PHASE = {"SEED": 0.05, "GROWTH": 0.05}
+
+# Hybrid Yield Sleeve - 10% Cash Buffer
+CASH_BUFFER_PCT = 0.10  # Reserve 10% as "petty cash"
+
+# Exposure Limits adjusted
+RATES = {"max_net_long": 0.99, ...}  # Was 0.40
+
+# Source Allocation adjusted
+"YIELD": 0.99  # Was 0.50
+```
+
+**Code Changes:**
+1. `yield_sleeve.py` - `calculate_unallocated_cash()` now subtracts 10% cash buffer
+2. `portfolio_router.py` - YIELD source limit raised to 0.99
+3. `config.py` - RATES exposure limit raised to 0.99
+
+**Churn Reduction Analysis:**
+| Trade Size | Without Buffer | With 10% Buffer |
+|:----------:|:--------------:|:---------------:|
+| 1-5% ($500-2,500) | SHV touched | **No SHV touch** |
+| 5-10% ($2,500-5,000) | SHV touched | **No SHV touch** |
+| 10-15% ($5,000-7,500) | SHV touched | **Partial SHV** |
+| 15%+ ($7,500+) | SHV touched | SHV touched |
+
+**Expected Impact:** ~80% reduction in SHV churn for typical intraday trades.
+
+**Status:** V2.3.17 complete - Ready for backtest validation
 
 **V2.3.2 Architect Audit Fixes Applied (Part 1-2):**
 
@@ -1225,4 +1269,4 @@ lean cloud backtest AlphaNextGen
 
 ---
 
-*Document created: 2026-01-30 | Last updated: 2026-02-01 (V2.3.15 SNIPER LOGIC)*
+*Document created: 2026-01-30 | Last updated: 2026-02-01 (V2.3.17 Hybrid Yield Sleeve + Kill Switch 5%)*

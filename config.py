@@ -21,7 +21,8 @@ DOWNWARD_TRANSITION_DAYS = 1  # Immediate
 MAX_SINGLE_POSITION_PCT = {"SEED": 0.50, "GROWTH": 0.40}
 
 TARGET_VOLATILITY = 0.20
-KILL_SWITCH_PCT_BY_PHASE = {"SEED": 0.03, "GROWTH": 0.03}
+# V2.3.17: Kill switch raised from 3% to 5% (reduces false triggers in volatile markets)
+KILL_SWITCH_PCT_BY_PHASE = {"SEED": 0.05, "GROWTH": 0.05}
 
 # Lockbox
 LOCKBOX_MILESTONES = [100_000, 200_000]
@@ -223,6 +224,11 @@ HEDGE_REBAL_THRESHOLD = 0.02
 
 SHV_MIN_TRADE = 10_000  # V2.3.6: Raised from 2000 - reduce SHV churn on small fluctuations
 
+# V2.3.17: Hybrid Yield Sleeve - Cash Buffer
+# Reserve 10% of equity as "petty cash" to fund small trades without touching SHV
+# This prevents churn from small Sniper trades (5%) and MR entries (5-10%)
+CASH_BUFFER_PCT = 0.10
+
 # =============================================================================
 # PORTFOLIO ROUTER
 # =============================================================================
@@ -233,7 +239,9 @@ EXPOSURE_LIMITS = {
     "SPY_BETA": {"max_net_long": 0.40, "max_net_short": 0.00, "max_gross": 0.40},
     "SMALL_CAP_BETA": {"max_net_long": 0.25, "max_net_short": 0.00, "max_gross": 0.25},
     "FINANCIALS_BETA": {"max_net_long": 0.15, "max_net_short": 0.00, "max_gross": 0.15},
-    "RATES": {"max_net_long": 0.40, "max_net_short": 0.00, "max_gross": 0.40},
+    # V2.3.17: RATES limit raised to 0.99 to allow near-full SHV allocation post-kill-switch
+    # When kill switch fires and all positions liquidate, SHV can absorb up to 99% of portfolio
+    "RATES": {"max_net_long": 0.99, "max_net_short": 0.00, "max_gross": 0.99},
 }
 
 # Group Membership
@@ -281,7 +289,8 @@ MIN_SHARE_DELTA = 1
 # =============================================================================
 
 # Kill Switch (V1: Nuclear option - liquidate ALL)
-KILL_SWITCH_PCT = 0.03
+# V2.3.17: Raised from 3% to 5% to reduce false triggers in volatile markets
+KILL_SWITCH_PCT = 0.05
 
 # Panic Mode
 PANIC_MODE_PCT = 0.04

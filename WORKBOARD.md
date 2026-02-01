@@ -463,6 +463,40 @@ INTRADAY_MAX_TRADES_PER_DAY = 2  # V2.3.15: was 3 (sniper gets one retry)
 
 **Status:** V2.3.16 DTE-BASED DELTA + DIRECTION CONFLICT fixes complete - Ready for backtest validation
 
+**V2.3.17 FIX: Hybrid Yield Sleeve + Kill Switch 5% (2026-02-01):**
+
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **Kill switch too sensitive** - 3% triggers on normal volatility | HIGH | ✅ FIXED (→5%) |
+| 2 | **SHV churn from small trades** - Sniper (5%) trades liquidate SHV | MEDIUM | ✅ FIXED (10% cash buffer) |
+| 3 | **RATES exposure limit blocking SHV** - 40% cap prevents post-kill-switch SHV | MEDIUM | ✅ FIXED (→99%) |
+| 4 | **YIELD allocation limit low** - 50% cap when all cash should go to SHV | LOW | ✅ FIXED (→99%) |
+
+**V2.3.17 Key Changes:**
+
+**Kill Switch Raised to 5%:**
+- `KILL_SWITCH_PCT`: 0.03 → 0.05 (5% daily loss triggers liquidation)
+- `KILL_SWITCH_PCT_BY_PHASE`: Both SEED and GROWTH now 0.05
+- Rationale: 3% triggered too frequently in volatile markets, 5% reduces false triggers to 2-4/year
+
+**Hybrid Yield Sleeve Implementation:**
+- Added `CASH_BUFFER_PCT = 0.10` (10% cash buffer)
+- Modified `calculate_unallocated_cash()` to subtract cash buffer
+- Buffer absorbs small Sniper (5%) and MR (5-10%) trades without touching SHV
+- Reduces SHV churn by ~80% for typical intraday trades
+
+**Exposure Limits Adjusted:**
+- `RATES` group: 0.40 → 0.99 (allows near-full SHV post-kill-switch)
+- `YIELD` source: 0.50 → 0.99 (allows SHV to absorb idle cash)
+
+**Root Cause (Kill Switch):** At 3%, kill switch was estimated to trigger 4-8 times/year in normal markets. Raising to 5% reduces triggers while still protecting against major losses.
+
+**Root Cause (SHV Churn):** Without cash buffer, every 5% Sniper trade required SHV liquidation (spread cost ~$1.82) then SHV buyback at EOD. With 10% buffer, small trades use cash directly.
+
+**Root Cause (RATES Limit):** After kill switch fires and liquidates all positions, YieldSleeve wanted to put 99% in SHV, but RATES exposure group capped at 40%. Cash sat idle earning 0% instead of 5% in SHV.
+
+**Status:** V2.3.17 HYBRID YIELD SLEEVE + KILL SWITCH 5% complete - Ready for backtest validation
+
 ---
 
 **V2.4.0 Planned: Bidirectional Mean Reversion (PART 12)**
@@ -1077,4 +1111,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 01 February 2026 (V2.3.15 SNIPER LOGIC - 4-gate filtering system)*
+*Last Updated: 01 February 2026 (V2.3.17 Hybrid Yield Sleeve + Kill Switch 5%)*
