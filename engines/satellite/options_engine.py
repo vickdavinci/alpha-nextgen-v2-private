@@ -2269,18 +2269,24 @@ class OptionsEngine:
         }
         strategy_name = strategy_names.get(state.recommended_strategy, "UNKNOWN")
 
-        # Check time windows based on strategy
+        # Check time windows based on strategy (V2.3.19: use config values)
         time_minutes = current_hour * 60 + current_minute
 
         if state.recommended_strategy == IntradayStrategy.DEBIT_FADE:
-            start_time = 10 * 60 + 30  # 10:30 AM
-            end_time = 14 * 60  # 2:00 PM
+            # Parse config time strings (e.g., "10:30" -> 630 minutes)
+            fade_start = config.INTRADAY_DEBIT_FADE_START.split(":")
+            fade_end = config.INTRADAY_DEBIT_FADE_END.split(":")
+            start_time = int(fade_start[0]) * 60 + int(fade_start[1])
+            end_time = int(fade_end[0]) * 60 + int(fade_end[1])
             if not (start_time <= time_minutes <= end_time):
                 return None
 
         elif state.recommended_strategy == IntradayStrategy.ITM_MOMENTUM:
-            start_time = 10 * 60  # 10:00 AM
-            end_time = 13 * 60 + 30  # 1:30 PM
+            # V2.3.19: Use config values instead of hardcoded
+            itm_start = config.INTRADAY_ITM_START.split(":")
+            itm_end = config.INTRADAY_ITM_END.split(":")
+            start_time = int(itm_start[0]) * 60 + int(itm_start[1])
+            end_time = int(itm_end[0]) * 60 + int(itm_end[1])
             if not (start_time <= time_minutes <= end_time):
                 return None
 

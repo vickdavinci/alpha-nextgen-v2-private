@@ -640,6 +640,9 @@ INTRADAY_CREDIT_STOP = 1.0  # Stop if spread doubles
 INTRADAY_ITM_MIN_VIX = 11.5  # V2.3.12: Lowered from 25 - enable more 0-DTE ITM momentum trades
 INTRADAY_ITM_MIN_MOVE = 0.8  # QQQ move >= 0.8%
 INTRADAY_ITM_MIN_SCORE = 50  # Micro score >= 50
+# V2.3.19: Time window moved from hardcoded to config
+INTRADAY_ITM_START = "10:00"  # Entry window start
+INTRADAY_ITM_END = "13:30"  # Entry window end (earlier than FADE - momentum fades after lunch)
 INTRADAY_ITM_DELTA = 0.70  # ITM delta target
 INTRADAY_ITM_START = "10:00"  # Entry window start
 INTRADAY_ITM_END = "13:30"  # Entry window end (need time)
