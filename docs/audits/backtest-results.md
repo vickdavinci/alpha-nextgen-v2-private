@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-01 (V2.3.18: Gamma Trap Fix - Single-Leg DTE Exit)
+> **Last Updated:** 2026-02-01 (V2.3.19: ITM_MOMENTUM Time Window Config)
 
 ---
 
@@ -28,7 +28,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | Stage | Duration | Purpose | Status |
 |:-----:|----------|---------|:------:|
 | 1 | 1 day (Jan 2, 2024) | Basic validation - no errors, Initialize() completes | **PASS** ✅ |
-| 2 | 2 months (Jan-Feb 2024) | Short-term behavior, actual trades | **V2.3.18 READY** 🟡 |
+| 2 | 2 months (Jan-Feb 2024) | Short-term behavior, actual trades | **V2.3.19 READY** 🟡 |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
@@ -40,6 +40,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 **V2.3.16 Run:** Pending | **Expected:** DTE-based delta + direction conflict fixes enable proper swing/intraday trades
 **V2.3.17 Run:** Pending | **Expected:** Kill switch 5% + 10% cash buffer reduces false triggers and SHV churn
 **V2.3.18 Run:** Pending | **Expected:** Gamma trap fix (exit 4 DTE) + swing entry 6 DTE ensures 2+ day hold
+**V2.3.19 Run:** Pending | **Expected:** ITM_MOMENTUM time window now configurable (10:00-13:30)
 
 #### V2.3.12 Backtest Results (Jan 1 - Feb 29, 2024)
 
@@ -296,6 +297,25 @@ OPTIONS_SWING_DTE_MIN = 6        # Raised from 5 (ensures 2+ day hold)
 **Root Cause (1-Day Hold):** With entry at DTE=5 and exit at DTE=4, "swing" trades had only 1-day holding period. Raising entry to DTE=6 ensures minimum 2-day hold.
 
 **Status:** V2.3.18 complete - Ready for backtest validation
+
+### V2.3.19 Fix: ITM_MOMENTUM Time Window Config (2026-02-01)
+
+**Problem:** ITM_MOMENTUM time window was hardcoded (10:00-13:30) while DEBIT_FADE used config values.
+
+**Config Added (V2.3.19):**
+```python
+INTRADAY_ITM_START = "10:00"  # Entry window start
+INTRADAY_ITM_END = "13:30"    # Entry window end
+```
+
+**Intraday Time Windows (Final):**
+| Strategy | Start | End | Config Keys |
+|----------|:-----:|:---:|-------------|
+| DEBIT_FADE | 10:30 | 14:00 | `INTRADAY_DEBIT_FADE_START/END` |
+| ITM_MOMENTUM | 10:00 | 13:30 | `INTRADAY_ITM_START/END` |
+| CREDIT_SPREAD | 10:00 | 14:30 | `INTRADAY_CREDIT_START/END` |
+
+**Status:** V2.3.19 complete - Ready for backtest validation
 
 **V2.3.2 Architect Audit Fixes Applied (Part 1-2):**
 
@@ -1294,4 +1314,4 @@ lean cloud backtest AlphaNextGen
 
 ---
 
-*Document created: 2026-01-30 | Last updated: 2026-02-01 (V2.3.18 Gamma Trap Fix)*
+*Document created: 2026-01-30 | Last updated: 2026-02-01 (V2.3.19 ITM_MOMENTUM Time Window)*

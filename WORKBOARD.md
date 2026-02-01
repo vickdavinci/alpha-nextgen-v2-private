@@ -70,7 +70,7 @@
 | Stage | Duration | Purpose | Status | Date |
 |:-----:|----------|---------|:------:|------|
 | 1 | 1 day | Basic validation | **PASS** ✅ | 2026-01-30 |
-| 2 | 2 months | Short-term behavior | **V2.3.18 READY** 🟡 | 2026-02-01 |
+| 2 | 2 months | Short-term behavior | **V2.3.19 READY** 🟡 | 2026-02-01 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
@@ -528,6 +528,31 @@ INTRADAY_MAX_TRADES_PER_DAY = 2  # V2.3.15: was 3 (sniper gets one retry)
 **Root Cause (1-Day Hold):** With entry at DTE=5 and exit at DTE=4, swing trades could have only 1-day holding period - not a true swing trade.
 
 **Status:** V2.3.18 GAMMA TRAP + SWING DTE complete - Ready for backtest validation
+
+**V2.3.19 FIX: ITM_MOMENTUM Time Window Config (2026-02-01):**
+
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **ITM_MOMENTUM time window hardcoded** - Not configurable like DEBIT_FADE | LOW | ✅ FIXED |
+
+**V2.3.19 Key Changes:**
+
+**Config Values Added:**
+- `INTRADAY_ITM_START = "10:00"` - ITM Momentum entry window start
+- `INTRADAY_ITM_END = "13:30"` - ITM Momentum entry window end
+
+**Code Updated:**
+- `check_intraday_entry_signal()` now parses time windows from config
+- Both DEBIT_FADE and ITM_MOMENTUM use config values consistently
+
+**Intraday Time Windows (Final):**
+| Strategy | Start | End | Config |
+|----------|:-----:|:---:|--------|
+| DEBIT_FADE | 10:30 | 14:00 | `INTRADAY_DEBIT_FADE_START/END` |
+| ITM_MOMENTUM | 10:00 | 13:30 | `INTRADAY_ITM_START/END` |
+| CREDIT_SPREAD | 10:00 | 14:30 | `INTRADAY_CREDIT_START/END` |
+
+**Status:** V2.3.19 TIME WINDOW CONFIG complete - Ready for backtest validation
 
 ---
 
@@ -1143,4 +1168,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 01 February 2026 (V2.3.18 Gamma Trap Fix - Single-Leg DTE Exit)*
+*Last Updated: 01 February 2026 (V2.3.19 ITM_MOMENTUM Time Window Config)*
