@@ -70,7 +70,7 @@
 | Stage | Duration | Purpose | Status | Date |
 |:-----:|----------|---------|:------:|------|
 | 1 | 1 day | Basic validation | **PASS** ✅ | 2026-01-30 |
-| 2 | 2 months | Short-term behavior | **V2.3.15 READY** 🟡 | 2026-02-01 |
+| 2 | 2 months | Short-term behavior | **V2.3.16 READY** 🟡 | 2026-02-01 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
@@ -425,6 +425,43 @@ INTRADAY_MAX_TRADES_PER_DAY = 2  # V2.3.15: was 3 (sniper gets one retry)
 **Documentation:** `docs/v2-specs/SNIPER_LOGIC_V2.3.15.md` - Complete specification with flowchart
 
 **Status:** V2.3.15 SNIPER LOGIC complete - Ready for backtest validation
+
+**V2.3.16 FIX: PART 17 Delta + Direction Conflict (2026-02-01):**
+
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **Delta 0.70 > max 0.60** - Swing mode targeting 0.70 but validation caps at 0.60 | CRITICAL | ✅ FIXED |
+| 2 | **Direction conflict** - FADE PUT vs regime bullish (>65) = opposing bets | HIGH | ✅ FIXED |
+| 3 | **FADE max cap missing** - No upper bound on fade moves (runaway trends) | MEDIUM | ✅ FIXED |
+
+**V2.3.16 Key Changes:**
+
+**Fix 1: DTE-Based Delta Validation**
+- Added `OPTIONS_SWING_DTE_THRESHOLD = 5` - DTE > 5 uses swing bounds
+- Added `OPTIONS_SWING_DELTA_MIN = 0.55`, `OPTIONS_SWING_DELTA_MAX = 0.85`
+- Added `OPTIONS_INTRADAY_DELTA_MIN = 0.40`, `OPTIONS_INTRADAY_DELTA_MAX = 0.60`
+- Updated `check_entry_signal()` to use DTE-based validation
+
+**Fix 2: Direction Conflict Resolution (Centralized in Options Engine)**
+- Added `DIRECTION_CONFLICT_BULLISH_THRESHOLD = 65`
+- Added `DIRECTION_CONFLICT_BEARISH_THRESHOLD = 40`
+- Updated `get_intraday_direction()` to accept `regime_score` parameter
+- Conflict check now inside options_engine (single source of truth)
+- Skip FADE PUT when regime > 65 (strong bullish)
+- Skip FADE CALL when regime < 40 (strong bearish)
+
+**Fix 3: FADE Sniper Window (Max Cap)**
+- Added `INTRADAY_FADE_MAX_MOVE = 1.20` - Don't fade runaway trends/crashes
+- Renamed `INTRADAY_DEBIT_FADE_MIN_MOVE` → `INTRADAY_FADE_MIN_MOVE` (0.50%)
+- FADE now requires: 0.50% <= |QQQ move| <= 1.20%
+
+**Root Cause (Delta 0.70):** V2.3.14 swing fallback calls `_select_swing_option_contract()` which targets 0.70 delta, but `check_entry_signal()` validates against `OPTIONS_DELTA_MAX = 0.60`. All swing fallback trades were rejected.
+
+**Root Cause (Direction Conflict):** Intraday FADE recommends PUT when QQQ is up (mean reversion). But if regime is 70+ (strong bull), fading the rally goes against the macro trend. V2.3.15 backtest lost $469 fading a bullish day with PUTs.
+
+**Root Cause (Runaway Trend):** Without max cap, FADE would fire on 2%+ moves that are unlikely to mean-revert. Adding 1.20% cap prevents fading runaway trends/crashes.
+
+**Status:** V2.3.16 DTE-BASED DELTA + DIRECTION CONFLICT fixes complete - Ready for backtest validation
 
 ---
 

@@ -1231,3 +1231,126 @@ if qqq_is_up: ...
 if qqq_is_up and abs(qqq_move_pct) > 0.50:
     return (IntradayStrategy.DEBIT_FADE, ...)
 Summary for your Developer: "The signal flood is caused by classify_qqq_move triggering QQQMove.UP at only 0.15%. This causes the DEBIT_FADE strategy to fire on market noise. Please revert the QQQ threshold to 0.35% and enforce a minimum move of 0.5% inside the Fade logic block. Keep OPTIONS_MAX_TRADES_PER_DAY = 1."
+
+#### PART 17 ####
+1. Context & Background (Why we are doing this)
+Issue A: The "Runaway Train" Problem (Fade Cap) On Jan 8, the bot tried to "Fade" (short) a market rally that was up +1.55%. This resulted in a loss because the market wasn't mean-reverting; it was a runaway trend day.
+
+The Fix: We are introducing a "Sniper Window" for the Fade Strategy. We will only fade moves between 0.50% (minimum exhaustion) and 1.20% (maximum safety). Anything > 1.20% is considered a "Breakout/Crash" and must NOT be faded. This applies symmetrically to both Up and Down moves.
+
+Issue B: The Delta Validation Conflict Our Swing strategy targets 0.70 Delta (ITM) options, but our global config enforces a strict 0.60 Delta (ATM) limit. This logic conflict is blocking 100% of Swing trades.
+
+The Fix: We will make the delta validation "Context-Aware" so it allows higher deltas for Swing trades (5+ DTE) while keeping strict limits for Intraday trades (0 DTE).
+
+2. Implementation Instructions
+Step 1: Update config.py
+Add the new Sniper thresholds to define the trading window.
+
+Python
+# FILE: config.py
+
+# -----------------------------------------------------------------------------
+# SNIPER LOGIC THRESHOLDS (V2.3.16)
+# -----------------------------------------------------------------------------
+# Noise Filter (Gate 1)
+QQQ_NOISE_THRESHOLD = 0.35  # Ignore moves < 0.35% (Wake up threshold)
+
+# Fade Strategy (Gate 3a) - The Sniper Window
+# ONLY fade moves within this specific band.
+# < 0.50% = Too weak (Noise)
+# > 1.20% = Too strong (Runaway Trend)
+INTRADAY_FADE_MIN_MOVE = 0.50  
+INTRADAY_FADE_MAX_MOVE = 1.20  # CRITICAL: Cap to prevent fading runaway trends/crashes
+
+# Momentum Strategy (Gate 3b)
+INTRADAY_MOMENTUM_MIN_MOVE = 0.80  # Requires strong move to chase
+Step 2: Patch options_engine.py (Fix Delta Validation)
+In check_entry_signal, replace the static delta check with this dynamic logic that adapts to the strategy mode.
+
+Location: engines/satellite/options_engine.py -> check_entry_signal (approx line 1250)
+
+Python
+        # V2.3.16 FIX: Dynamic Delta Validation
+        # Swing Mode (5+ DTE) targets ITM (0.70), Legacy/Intraday targets ATM/OTM
+        contract_delta = abs(best_contract.delta)
+        
+        # Check DTE to determine which rule to apply
+        if best_contract.days_to_expiry > config.OPTIONS_INTRADAY_DTE_MAX:
+            # SWING MODE RULE: Target 0.70 +/- Tolerance (e.g., 0.50 to 0.90)
+            target = config.OPTIONS_SWING_DELTA_TARGET
+            tolerance = config.OPTIONS_DELTA_TOLERANCE
+            min_delta = target - tolerance
+            max_delta = target + tolerance
+            delta_mode = "SWING (ITM)"
+        else:
+            # INTRADAY MODE RULE: Use Global Config (ATM) (e.g., 0.40 to 0.60)
+            min_delta = config.OPTIONS_DELTA_MIN
+            max_delta = config.OPTIONS_DELTA_MAX
+            delta_mode = "INTRADAY (ATM)"
+
+        if contract_delta < min_delta:
+            self.log(
+                f"OPT: Entry blocked - {delta_mode} Delta {contract_delta:.2f} < "
+                f"min {min_delta:.2f} (too far OTM)"
+            )
+            return None
+
+        if contract_delta > max_delta:
+            self.log(
+                f"OPT: Entry blocked - {delta_mode} Delta {contract_delta:.2f} > "
+                f"max {max_delta:.2f} (too deep ITM)"
+            )
+            return None
+Step 3: Patch options_engine.py (Implement Fade Cap)
+Update the strategy logic to enforce the 1.20% hard cap on both Up and Down moves.
+
+Location: engines/satellite/options_engine.py -> recommend_strategy_and_direction -> RULE 5 Block
+
+Python
+        # =====================================================================
+        # RULE 5: FADE SETUP (Mean Reversion)
+        # Best setup: QQQ moved + VIX falling = market calming, fade the move
+        # =====================================================================
+        fade_regimes = {
+            MicroRegime.PERFECT_MR,
+            MicroRegime.GOOD_MR,
+            MicroRegime.NORMAL,
+            MicroRegime.RECOVERING,
+            MicroRegime.IMPROVING,
+        }
+        
+        if micro_regime in fade_regimes and micro_score >= config.MICRO_SCORE_MODERATE:
+            # GATE 3a: Check Move Magnitude (The Sniper Window)
+            abs_move = abs(qqq_move_pct)
+            
+            # Check Min Threshold (Must be extended enough to fade)
+            if abs_move < config.INTRADAY_FADE_MIN_MOVE:
+                return IntradayStrategy.NO_TRADE, None, f"Fade blocked: Move {abs_move:.2f}% < {config.INTRADAY_FADE_MIN_MOVE}%"
+
+            # Check Max Threshold (Runaway Train Guardrail)
+            # If move is > 1.2%, it is a Trend Day. DO NOT FADE.
+            if abs_move > config.INTRADAY_FADE_MAX_MOVE:
+                return IntradayStrategy.NO_TRADE, None, f"Fade blocked: Runaway Trend {abs_move:.2f}% > {config.INTRADAY_FADE_MAX_MOVE}%"
+
+            # VIX falling/stable = safe to fade
+            if vix_is_falling or vix_direction == VIXDirection.STABLE:
+                if qqq_is_up:
+                    return (
+                        IntradayStrategy.DEBIT_FADE,
+                        OptionDirection.PUT,
+                        f"Fade rally: QQQ +{qqq_move_pct:.2f}%, VIX {vix_direction.value}",
+                    )
+                elif qqq_is_down:
+                    return (
+                        IntradayStrategy.DEBIT_FADE,
+                        OptionDirection.CALL,
+                        f"Fade dip: QQQ {qqq_move_pct:.2f}%, VIX {vix_direction.value}",
+                    )
+
+            # VIX rising = DON'T fade, momentum might continue
+            if vix_is_rising:
+                return (
+                    IntradayStrategy.NO_TRADE,
+                    None,
+                    f"VIX rising ({vix_direction.value}) - don't fade",
+                )

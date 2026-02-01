@@ -777,11 +777,20 @@ class MicroRegimeEngine:
             if vix_is_falling or vix_direction == VIXDirection.STABLE:
                 # V2.3.15 SNIPER: Gate 3a - FADE requires minimum move (0.50%)
                 # This prevents fading tiny moves that are just noise
-                if abs(qqq_move_pct) < config.INTRADAY_DEBIT_FADE_MIN_MOVE:
+                if abs(qqq_move_pct) < config.INTRADAY_FADE_MIN_MOVE:
                     return (
                         IntradayStrategy.NO_TRADE,
                         None,
-                        f"FADE blocked: |{qqq_move_pct:.2f}%| < {config.INTRADAY_DEBIT_FADE_MIN_MOVE}% min",
+                        f"FADE blocked: |{qqq_move_pct:.2f}%| < {config.INTRADAY_FADE_MIN_MOVE}% min",
+                    )
+
+                # V2.3.16: FADE max cap - don't fade runaway trends/crashes
+                # When move exceeds 1.20%, trend is too strong to mean-revert
+                if abs(qqq_move_pct) > config.INTRADAY_FADE_MAX_MOVE:
+                    return (
+                        IntradayStrategy.NO_TRADE,
+                        None,
+                        f"FADE blocked: |{qqq_move_pct:.2f}%| > {config.INTRADAY_FADE_MAX_MOVE}% max (runaway trend)",
                     )
 
                 if qqq_is_up:
@@ -1542,19 +1551,35 @@ class OptionsEngine:
             )
             return None
 
-        # Validate delta range (0.40-0.60 for ATM contracts per spec)
+        # V2.3.16: DTE-based delta validation
+        # Swing mode (DTE > 5): Allows higher delta (0.70 target) for directional trades
+        # Intraday mode (DTE <= 5): Narrower ATM range (0.40-0.60) for quick scalps
         contract_delta = abs(best_contract.delta)  # Use absolute value
-        if contract_delta < config.OPTIONS_DELTA_MIN:
+        dte = best_contract.days_to_expiry
+        is_swing_dte = dte > config.OPTIONS_SWING_DTE_THRESHOLD
+
+        if is_swing_dte:
+            # Swing mode: Use wider delta bounds (0.55-0.85)
+            delta_min = config.OPTIONS_SWING_DELTA_MIN
+            delta_max = config.OPTIONS_SWING_DELTA_MAX
+            mode_label = "Swing"
+        else:
+            # Intraday mode: Use ATM delta bounds (0.40-0.60)
+            delta_min = config.OPTIONS_INTRADAY_DELTA_MIN
+            delta_max = config.OPTIONS_INTRADAY_DELTA_MAX
+            mode_label = "Intraday"
+
+        if contract_delta < delta_min:
             self.log(
                 f"OPT: Entry blocked - Delta {contract_delta:.2f} < "
-                f"min {config.OPTIONS_DELTA_MIN} (too far OTM)"
+                f"min {delta_min} ({mode_label} mode, DTE={dte})"
             )
             return None
 
-        if contract_delta > config.OPTIONS_DELTA_MAX:
+        if contract_delta > delta_max:
             self.log(
                 f"OPT: Entry blocked - Delta {contract_delta:.2f} > "
-                f"max {config.OPTIONS_DELTA_MAX} (too deep ITM)"
+                f"max {delta_max} ({mode_label} mode, DTE={dte})"
             )
             return None
 
@@ -2474,13 +2499,20 @@ class OptionsEngine:
         qqq_current: float,
         qqq_open: float,
         current_time: str,
+        regime_score: float = 50.0,
     ) -> Optional[OptionDirection]:
         """
         V2.3.14: Get recommended intraday direction from Micro Regime Engine.
+        V2.3.16: Added direction conflict resolution (centralized).
 
         Updates the engine state and returns the recommended direction.
         This should be called BEFORE selecting the contract to avoid
         direction mismatch (hardcoded fade vs engine momentum recommendation).
+
+        Direction Conflict Resolution (V2.3.16):
+        - If FADE strategy + strong bullish regime (>65) + PUT direction → skip
+        - If FADE strategy + strong bearish regime (<40) + CALL direction → skip
+        This prevents counter-trend trades in strongly trending markets.
 
         Args:
             vix_current: Current VIX value.
@@ -2488,9 +2520,10 @@ class OptionsEngine:
             qqq_current: Current QQQ price.
             qqq_open: QQQ at market open.
             current_time: Timestamp string.
+            regime_score: Macro regime score (0-100) for direction conflict check.
 
         Returns:
-            Recommended OptionDirection (CALL or PUT), or None if NO_TRADE.
+            Recommended OptionDirection (CALL or PUT), or None if NO_TRADE or conflict.
         """
         # Update Micro Regime Engine
         state = self._micro_regime_engine.update(
@@ -2501,8 +2534,48 @@ class OptionsEngine:
             current_time=current_time,
         )
 
-        # Return the engine's recommended direction
-        return state.recommended_direction
+        direction = state.recommended_direction
+
+        # If no direction recommended, return None
+        if direction is None:
+            return None
+
+        # V2.3.16: Direction conflict resolution for FADE strategies
+        # Skip intraday FADE when macro regime strongly disagrees with direction
+        # This prevents counter-trend trades in strongly trending markets
+        if state.recommended_strategy == IntradayStrategy.DEBIT_FADE:
+            # Strong bullish regime + FADE PUT (fading rally) = conflict
+            if (
+                regime_score > config.DIRECTION_CONFLICT_BULLISH_THRESHOLD
+                and direction == OptionDirection.PUT
+            ):
+                self.log(
+                    f"DIRECTION_CONFLICT: Skipping FADE PUT - regime {regime_score:.1f} "
+                    f"> {config.DIRECTION_CONFLICT_BULLISH_THRESHOLD} (strong bullish)"
+                )
+                return None
+
+            # Strong bearish regime + FADE CALL (fading dip) = conflict
+            if (
+                regime_score < config.DIRECTION_CONFLICT_BEARISH_THRESHOLD
+                and direction == OptionDirection.CALL
+            ):
+                self.log(
+                    f"DIRECTION_CONFLICT: Skipping FADE CALL - regime {regime_score:.1f} "
+                    f"< {config.DIRECTION_CONFLICT_BEARISH_THRESHOLD} (strong bearish)"
+                )
+                return None
+
+        return direction
+
+    def get_last_intraday_strategy(self) -> IntradayStrategy:
+        """
+        V2.3.16: Get the last recommended intraday strategy.
+
+        Returns:
+            IntradayStrategy enum (DEBIT_FADE, ITM_MOMENTUM, NO_TRADE, etc.)
+        """
+        return self._micro_regime_engine.get_state().recommended_strategy
 
     def update_market_open_data(
         self, vix_open: float, spy_open: float, spy_prior_close: float

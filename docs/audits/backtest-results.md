@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-01 (V2.3.15: SNIPER LOGIC - 4-gate filtering system)
+> **Last Updated:** 2026-02-01 (V2.3.16: DTE-based delta + direction conflict resolution)
 
 ---
 
@@ -28,7 +28,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | Stage | Duration | Purpose | Status |
 |:-----:|----------|---------|:------:|
 | 1 | 1 day (Jan 2, 2024) | Basic validation - no errors, Initialize() completes | **PASS** ✅ |
-| 2 | 2 months (Jan-Feb 2024) | Short-term behavior, actual trades | **V2.3.15 READY** 🟡 |
+| 2 | 2 months (Jan-Feb 2024) | Short-term behavior, actual trades | **V2.3.16 READY** 🟡 |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
@@ -36,7 +36,8 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 ### Stage 2 Summary (2026-02-01)
 
 **V2.3.12 Run:** V2.3.12-ComboFix-2month | **Result:** +4.09% | **Orders:** 143 (but only 7 options!)
-**V2.3.15 Run:** Pending | **Expected:** Higher-quality options trades via Sniper Logic (4-gate filtering)
+**V2.3.15 Run:** V2.3.15-SniperLogic-1week | **Result:** -1.23% | **Analysis:** Delta 0.70 blocked, direction conflict
+**V2.3.16 Run:** Pending | **Expected:** DTE-based delta + direction conflict fixes enable proper swing/intraday trades
 
 #### V2.3.12 Backtest Results (Jan 1 - Feb 29, 2024)
 
@@ -160,6 +161,72 @@ QQQ MOVE FROM OPEN
 **Documentation:** Created `docs/v2-specs/SNIPER_LOGIC_V2.3.15.md` - Complete specification with flowchart
 
 **Status:** V2.3.15 SNIPER LOGIC complete - Ready for backtest validation
+
+### V2.3.16 Fix: PART 17 Delta + Direction Conflict (2026-02-01)
+
+**Problem:** V2.3.15 1-week backtest showed:
+1. Swing fallback blocked by delta validation (0.70 > max 0.60)
+2. FADE PUT trades losing on bullish days (regime > 65)
+
+**Root Cause Analysis (from 1-week backtest logs):**
+```
+Jan 8, 2024 (regime score = 70.5, strong bullish):
+  10:00-10:29: "Delta 0.70 > max 0.6" - Swing fallback blocked!
+  10:30: FADE PUT fires @ $0.49 (fading rally = wrong direction)
+  10:33: STOP @ $0.42 (-14%)
+  10:33: FADE PUT fires @ $0.43 (same mistake)
+  10:50: STOP @ $0.36 (-16%)
+  Result: -$469 on bullish day by fading the trend
+```
+
+**3 Issues Fixed:**
+
+| # | Issue | Root Cause | Fix |
+|:-:|-------|------------|-----|
+| 1 | **Delta 0.70 blocked** | Swing targets 0.70 but validation caps at 0.60 | DTE-based validation |
+| 2 | **Direction conflict** | FADE PUT vs regime 70+ = opposing bets | Skip FADE when regime strongly disagrees |
+| 3 | **No FADE max cap** | Fading runaway trends/crashes | Add 1.20% upper bound |
+
+**Config Changes (V2.3.16):**
+```python
+# DTE-Based Delta Validation
+OPTIONS_SWING_DTE_THRESHOLD = 5    # DTE > 5 uses swing bounds
+OPTIONS_SWING_DELTA_MIN = 0.55     # Swing min (0.70 target - tolerance)
+OPTIONS_SWING_DELTA_MAX = 0.85     # Swing max (0.70 target + tolerance)
+OPTIONS_INTRADAY_DELTA_MIN = 0.40  # Intraday min (ATM)
+OPTIONS_INTRADAY_DELTA_MAX = 0.60  # Intraday max (ATM)
+
+# Direction Conflict Resolution
+DIRECTION_CONFLICT_BULLISH_THRESHOLD = 65  # Skip FADE PUT if regime > 65
+DIRECTION_CONFLICT_BEARISH_THRESHOLD = 40  # Skip FADE CALL if regime < 40
+
+# FADE Sniper Window (min + max)
+INTRADAY_FADE_MIN_MOVE = 0.50   # Min: don't fade noise
+INTRADAY_FADE_MAX_MOVE = 1.20   # Max: don't fade runaway trends
+```
+
+**Code Changes:**
+1. `check_entry_signal()` - DTE-based delta validation (DTE > 5 → swing bounds, else intraday bounds)
+2. `recommend_strategy_and_direction()` - FADE max cap (1.20%)
+3. `get_intraday_direction()` - Now accepts `regime_score` param, conflict check centralized here
+4. `_scan_options_signals()` - Passes regime_score to options engine (decision-making centralized)
+
+**FADE Sniper Window:**
+```
+QQQ MOVE FROM OPEN
+0%        0.35%       0.50%              1.20%              2%+
+│  NOISE   │  WATCHING  │   FADE ZONE      │   RUNAWAY         │
+│  (block) │  (no edge) │  (sniper fires)  │   (don't fade!)   │
+```
+
+**Direction Conflict Logic:**
+```
+IF strategy == DEBIT_FADE:
+  IF regime > 65 AND direction == PUT: SKIP (strong bull, don't fade rally)
+  IF regime < 40 AND direction == CALL: SKIP (strong bear, don't fade dip)
+```
+
+**Status:** V2.3.16 DTE-BASED DELTA + DIRECTION CONFLICT complete - Ready for backtest validation
 
 **V2.3.2 Architect Audit Fixes Applied (Part 1-2):**
 

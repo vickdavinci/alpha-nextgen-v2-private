@@ -420,9 +420,21 @@ OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE = 45
 # Options chain filter (must cover BOTH Intraday 0-2 DTE AND Swing 5-45 DTE)
 OPTIONS_DTE_MIN = 0  # Minimum days to expiration (Intraday mode)
 OPTIONS_DTE_MAX = 45  # Maximum days to expiration (Swing mode)
+OPTIONS_MIN_PREMIUM = 0.50  # Minimum premium per contract ($0.50)
+
+# V2.3.16: DTE-Based Delta Validation
+# Intraday mode (DTE <= 5): Narrower ATM range for quick scalps
+OPTIONS_INTRADAY_DELTA_MIN = 0.40  # Intraday min delta (ATM)
+OPTIONS_INTRADAY_DELTA_MAX = 0.60  # Intraday max delta (ATM)
+# Swing mode (DTE > 5): Wider range to allow 0.70 target with tolerance
+OPTIONS_SWING_DELTA_MIN = 0.55  # Swing min delta (slightly ITM)
+OPTIONS_SWING_DELTA_MAX = 0.85  # Swing max delta (0.70 target + 0.15 tolerance)
+# Threshold for switching between intraday/swing delta validation
+OPTIONS_SWING_DTE_THRESHOLD = 5  # DTE > 5 uses swing delta bounds
+
+# Legacy constants (kept for backward compatibility)
 OPTIONS_DELTA_MIN = 0.40  # Minimum delta (ATM range) - for validation only
 OPTIONS_DELTA_MAX = 0.60  # Maximum delta (ATM range) - for validation only
-OPTIONS_MIN_PREMIUM = 0.50  # Minimum premium per contract ($0.50)
 
 # V2.3: Delta Targets by Mode (per trading firm spec)
 # Swing mode targets 0.7 delta (slightly ITM) for higher directional exposure
@@ -587,12 +599,13 @@ VIX_REVERSAL_CHOPPY = 4  # 3-4 reversals: Choppy
 # V2.1.1 INTRADAY STRATEGY PARAMETERS
 # -----------------------------------------------------------------------------
 
-# V2.3.15: Sniper Logic - Noise Filter (Gate 1)
+# V2.3.16: Sniper Logic - Noise Filter (Gate 1)
 QQQ_NOISE_THRESHOLD = 0.35  # Minimum QQQ move to consider trading (was 0.15%)
 
-# Debit Fade (Mean Reversion) - Gate 3a
+# Debit Fade (Mean Reversion) - Gate 3a - The Sniper Window
 INTRADAY_DEBIT_FADE_MIN_SCORE = 45  # Micro score >= 45 (MICRO_SCORE_MODERATE)
-INTRADAY_DEBIT_FADE_MIN_MOVE = 0.50  # V2.3.15: QQQ move >= 0.50% for FADE (was 1.0%)
+INTRADAY_FADE_MIN_MOVE = 0.50  # V2.3.16: Min move for FADE (was INTRADAY_DEBIT_FADE_MIN_MOVE)
+INTRADAY_FADE_MAX_MOVE = 1.20  # V2.3.16: Max move - don't fade runaway trends/crashes
 INTRADAY_DEBIT_FADE_VIX_MAX = 25  # VIX < 25
 INTRADAY_DEBIT_FADE_START = "10:30"  # Entry window start
 INTRADAY_DEBIT_FADE_END = "14:00"  # Entry window end
@@ -629,6 +642,11 @@ INTRADAY_PROTECT_DTE_MAX = 7  # Maximum 7 DTE
 
 # Force close time for intraday
 INTRADAY_FORCE_EXIT_TIME = "15:30"  # Must close by 3:30 PM
+
+# V2.3.16: Direction Conflict Resolution
+# Skip intraday FADE when main regime strongly disagrees
+DIRECTION_CONFLICT_BULLISH_THRESHOLD = 65  # Regime > 65 = strong bullish, don't fade rallies
+DIRECTION_CONFLICT_BEARISH_THRESHOLD = 40  # Regime < 40 = strong bearish, don't fade dips
 
 # -----------------------------------------------------------------------------
 # V2.1.1 SWING MODE SIMPLE FILTERS

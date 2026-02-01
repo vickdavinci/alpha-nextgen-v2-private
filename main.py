@@ -181,7 +181,7 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
         self.SetStartDate(2024, 1, 1)
-        self.SetEndDate(2024, 2, 29)  # V2.3.11: 2 months (Jan-Feb 2024)
+        self.SetEndDate(2024, 1, 8)  # V2.3.15: 1 week test for Sniper Logic
         self.SetCash(config.PHASE_SEED_MIN)  # $50,000 seed capital
 
         # All times are Eastern
@@ -2530,17 +2530,23 @@ class AlphaNextGen(QCAlgorithm):
         # OLD CODE hardcoded "fade" direction (QQQ up -> PUT, QQQ down -> CALL)
         # This blocked all MOMENTUM trades where engine recommends SAME direction as move
         # (e.g., QQQ up + VIX rising = engine recommends CALL to ride momentum)
+        # V2.3.16: Direction conflict resolution now centralized in options_engine
         if self._qqq_at_open > 0:  # Only if we have market open data
+            # Get macro regime score for direction conflict check
+            regime_score = self.regime_engine.get_previous_score()
+
             # STEP 1: Get engine recommendation (updates micro regime state)
+            # V2.3.16: Now includes direction conflict resolution internally
             intraday_direction = self.options_engine.get_intraday_direction(
                 vix_current=self._current_vix,
                 vix_open=self._vix_at_open,
                 qqq_current=qqq_price,
                 qqq_open=self._qqq_at_open,
                 current_time=str(self.Time),
+                regime_score=regime_score,
             )
 
-            # If engine recommends NO_TRADE, skip contract selection
+            # If engine recommends NO_TRADE or conflict detected, skip contract selection
             if intraday_direction is None:
                 intraday_contract = None
             else:
