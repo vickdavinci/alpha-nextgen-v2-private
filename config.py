@@ -474,7 +474,10 @@ OPTIONS_MAX_TRADES_PER_DAY = 1
 # -----------------------------------------------------------------------------
 # V2.1.1 DUAL-MODE DTE BOUNDARIES
 # -----------------------------------------------------------------------------
-OPTIONS_SWING_DTE_MIN = 5  # Minimum DTE for Swing Mode
+# V2.3.18: Raised from 5 to 6 to ensure minimum 2-day holding period
+# With single-leg exit at DTE=4, entering at DTE=5 gave only 1 day hold
+# Also aligns with OPTIONS_SWING_DTE_THRESHOLD=5 (DTE > 5 uses swing delta bounds)
+OPTIONS_SWING_DTE_MIN = 6  # Minimum DTE for Swing Mode (exit at DTE=4 → 2+ days)
 OPTIONS_SWING_DTE_MAX = 45  # Maximum DTE for Swing Mode
 OPTIONS_INTRADAY_DTE_MIN = 0  # Minimum DTE for Intraday Mode
 OPTIONS_INTRADAY_DTE_MAX = 1  # V2.3.4: True 0DTE intraday (0-1 DTE only)
