@@ -497,11 +497,12 @@ INTRADAY_MAX_TRADES_PER_DAY = 2  # V2.3.15: was 3 (sniper gets one retry)
 
 **Status:** V2.3.17 HYBRID YIELD SLEEVE + KILL SWITCH 5% complete - Ready for backtest validation
 
-**V2.3.18 FIX: Gamma Trap - Single-Leg DTE Exit (2026-02-01):**
+**V2.3.18 FIX: Gamma Trap + Swing DTE Alignment (2026-02-01):**
 
 | # | Finding | Severity | Status |
 |:-:|---------|:--------:|:------:|
 | 1 | **Single-leg exits after spreads** - 2 DTE vs spreads at 5 DTE | HIGH | ✅ FIXED (→4 DTE) |
+| 2 | **Swing DTE min too low** - Entry at DTE=5, exit at DTE=4 = 1-day hold | HIGH | ✅ FIXED (→6 DTE) |
 
 **V2.3.18 Key Changes:**
 
@@ -510,15 +511,23 @@ INTRADAY_MAX_TRADES_PER_DAY = 2  # V2.3.15: was 3 (sniper gets one retry)
 - Single legs now exit BEFORE spreads (4 DTE vs 5 DTE)
 - Avoids gamma explosion in final week of expiration
 
-**Risk Comparison:**
-| Position Type | DTE Exit | Risk Profile |
-|---------------|:--------:|--------------|
-| Spreads (defined risk) | 5 DTE | Safe, max loss capped |
-| Single Legs (undefined risk) | **4 DTE** | Riskier, gamma explodes near expiry |
+**Swing DTE Alignment Fix:**
+- `OPTIONS_SWING_DTE_MIN`: 5 → 6 DTE
+- Ensures minimum 2-day holding period (enter at 6, exit at 4)
+- Aligns with `OPTIONS_SWING_DTE_THRESHOLD=5` (DTE > 5 uses swing delta bounds)
 
-**Root Cause (Gamma Trap):** Gamma risk explodes in the last week before expiration. A small move against you can wipe 50%+ of option value in hours. Holding risky single-leg options (undefined risk) closer to expiration than safe spreads (defined risk) was backwards.
+**DTE Configuration (Final):**
+| Mode | Entry DTE | Exit DTE | Min Hold |
+|------|:---------:|:--------:|:--------:|
+| Spreads | 10-21 | 5 | 5+ days |
+| Single-Leg Swing | **6-45** | **4** | **2+ days** |
+| Intraday | 0-1 | 3:30 PM | Same day |
 
-**Status:** V2.3.18 GAMMA TRAP FIX complete - Ready for backtest validation
+**Root Cause (Gamma Trap):** Gamma risk explodes in the last week before expiration. A small move against you can wipe 50%+ of option value in hours.
+
+**Root Cause (1-Day Hold):** With entry at DTE=5 and exit at DTE=4, swing trades could have only 1-day holding period - not a true swing trade.
+
+**Status:** V2.3.18 GAMMA TRAP + SWING DTE complete - Ready for backtest validation
 
 ---
 

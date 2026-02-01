@@ -39,7 +39,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 **V2.3.15 Run:** V2.3.15-SniperLogic-1week | **Result:** -1.23% | **Analysis:** Delta 0.70 blocked, direction conflict
 **V2.3.16 Run:** Pending | **Expected:** DTE-based delta + direction conflict fixes enable proper swing/intraday trades
 **V2.3.17 Run:** Pending | **Expected:** Kill switch 5% + 10% cash buffer reduces false triggers and SHV churn
-**V2.3.18 Run:** Pending | **Expected:** Single-leg DTE exit at 4 (vs 2) avoids gamma trap near expiration
+**V2.3.18 Run:** Pending | **Expected:** Gamma trap fix (exit 4 DTE) + swing entry 6 DTE ensures 2+ day hold
 
 #### V2.3.12 Backtest Results (Jan 1 - Feb 29, 2024)
 
@@ -274,21 +274,26 @@ RATES = {"max_net_long": 0.99, ...}  # Was 0.40
 
 **Status:** V2.3.17 complete - Ready for backtest validation
 
-### V2.3.18 Fix: Gamma Trap - Single-Leg DTE Exit (2026-02-01)
+### V2.3.18 Fix: Gamma Trap + Swing DTE Alignment (2026-02-01)
 
-**Problem:** Single-leg options (undefined risk) were held closer to expiration than spreads (defined risk).
+**Problem 1:** Single-leg options (undefined risk) were held closer to expiration than spreads (defined risk).
 
-| Position Type | Old DTE Exit | New DTE Exit | Risk Profile |
-|---------------|:------------:|:------------:|--------------|
-| Spreads | 5 DTE | 5 DTE | Defined risk, max loss capped |
-| Single Legs | 2 DTE | **4 DTE** | Undefined risk, gamma explodes |
+**Problem 2:** Swing entry at DTE=5 with exit at DTE=4 gave only 1-day holding period.
 
-**Config Change (V2.3.18):**
+| Position Type | Old Entry | New Entry | Old Exit | New Exit | Min Hold |
+|---------------|:---------:|:---------:|:--------:|:--------:|:--------:|
+| Spreads | 10-21 | 10-21 | 5 | 5 | 5+ days |
+| Single Legs | 5-45 | **6-45** | 2 | **4** | **2+ days** |
+
+**Config Changes (V2.3.18):**
 ```python
 OPTIONS_SINGLE_LEG_DTE_EXIT = 4  # Raised from 2 (exit BEFORE spreads)
+OPTIONS_SWING_DTE_MIN = 6        # Raised from 5 (ensures 2+ day hold)
 ```
 
-**Root Cause (Gamma Trap):** Gamma risk explodes in the final week before expiration. A small adverse move can wipe 50%+ of option value in hours. It makes no sense to hold risky single-leg options longer than safe spreads.
+**Root Cause (Gamma Trap):** Gamma risk explodes in the final week before expiration. A small adverse move can wipe 50%+ of option value in hours.
+
+**Root Cause (1-Day Hold):** With entry at DTE=5 and exit at DTE=4, "swing" trades had only 1-day holding period. Raising entry to DTE=6 ensures minimum 2-day hold.
 
 **Status:** V2.3.18 complete - Ready for backtest validation
 
