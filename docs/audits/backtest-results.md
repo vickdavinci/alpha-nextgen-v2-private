@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-01-31 (V2.3.12 Enable More 0DTEs + Unchoke Trend Engine)
+> **Last Updated:** 2026-01-31 (V2.3.12 Backtest SUCCESS: +4.09% Return, 143 Orders)
 
 ---
 
@@ -28,15 +28,40 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | Stage | Duration | Purpose | Status |
 |:-----:|----------|---------|:------:|
 | 1 | 1 day (Jan 2, 2024) | Basic validation - no errors, Initialize() completes | **PASS** ✅ |
-| 2 | 7 days (Jan 2-8, 2024) | Short-term behavior, actual trades | **V2.3.4 FIXES APPLIED** 🟢 |
-| 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | **V2.3.6 READY** 🟡 |
+| 2 | 2 months (Jan-Feb 2024) | Short-term behavior, actual trades | **V2.3.12 PASS** ✅ |
+| 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | **READY** 🟡 |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
 
 ### Stage 2 Summary (2026-01-31)
 
 **Previous Run:** Smooth Magenta Bat | **Result:** -8.33% | **Orders:** 9
-**Latest Run:** Casual Orange Cobra | **Result:** -6.98% | **Orders:** 14 | **Fees:** $171.51
+**V2.3.12 Run:** V2.3.12-ComboFix-2month | **Result:** **+4.09%** ✅ | **Orders:** 143 | **Fees:** $120.49
+
+#### V2.3.12 Backtest Results (Jan 1 - Feb 29, 2024)
+
+| Metric | Value | Notes |
+|--------|------:|-------|
+| **Return** | **+4.09%** | First positive backtest! |
+| **Equity** | $50,000 → $52,047 | +$2,047 net profit |
+| **Total Orders** | 143 | Up from 9-14 (system trading!) |
+| **Sharpe Ratio** | 0.656 | Positive risk-adjusted return |
+| **Sortino Ratio** | 0.905 | Good downside protection |
+| **Win Rate** | 42% | Room for improvement |
+| **Avg Win** | +1.45% | |
+| **Avg Loss** | -1.44% | Balanced risk/reward |
+| **Drawdown** | 9.10% | Manageable |
+| **Fees** | $120.49 | |
+| **Compounding Annual Return** | 27.65% | Projected |
+
+**Backtest URL:** https://www.quantconnect.com/project/27678023/99384af2cd3dfa3219d6f95ba2f584fd
+
+**Key Fixes That Enabled This Result:**
+1. ✅ **ComboMarketOrder** (V2.3.9) - No more $729K margin errors
+2. ✅ **ADX Entry Threshold** (V2.3.12) - 20 → 15 catches grinding trends
+3. ✅ **ADX Exit Threshold** (V2.3.12) - 20 → 10 holds during consolidation
+4. ✅ **VIX Barriers Lowered** (V2.3.11/12) - More 0DTE opportunities
+5. ✅ **Expiring Options Safety** (V2.3.11) - 15:45 force close prevents auto-exercise
 
 **V2.3.2 Architect Audit Fixes Applied (Part 1-2):**
 

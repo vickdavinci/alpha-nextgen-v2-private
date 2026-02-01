@@ -70,8 +70,8 @@
 | Stage | Duration | Purpose | Status | Date |
 |:-----:|----------|---------|:------:|------|
 | 1 | 1 day | Basic validation | **PASS** ✅ | 2026-01-30 |
-| 2 | 7 days | Short-term behavior | **FIXES APPLIED** 🟢 | 2026-01-31 |
-| 3 | 3 months | Position lifecycle | **COMPLETE** ✅ | 2026-01-31 |
+| 2 | 2 months | Short-term behavior | **V2.3.12 PASS** ✅ | 2026-01-31 |
+| 3 | 3 months | Position lifecycle | **READY** 🟡 | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
 
@@ -79,7 +79,23 @@
 > **Stage 2 Code Audits:** `docs/audits/stage2-codeaudit.md`, `docs/audits/stage2-codeaudit2.md`
 > **Logs:** `docs/audits/logs/stage2/`
 
-### Stage 2 V2.3.2 Backtest Validation (2026-01-31)
+### 🎉 V2.3.12 Backtest SUCCESS (2026-01-31)
+
+**Backtest:** V2.3.12-ComboFix-2month | **Result:** **+4.09%** ✅ | **Orders:** 143 | **Fees:** $120.49
+
+| Metric | Value |
+|--------|------:|
+| Return | **+4.09%** |
+| Equity | $50,000 → $52,047 |
+| Orders | 143 |
+| Sharpe | 0.656 |
+| Sortino | 0.905 |
+| Win Rate | 42% |
+| Drawdown | 9.10% |
+
+**URL:** https://www.quantconnect.com/project/27678023/99384af2cd3dfa3219d6f95ba2f584fd
+
+### Stage 2 V2.3.2 Backtest Validation (Historical)
 
 **Previous Backtest:** Smooth Magenta Bat | **Result:** -8.33% | **Orders:** 9
 **Latest Backtest:** Casual Orange Cobra | **Result:** -6.98% | **Orders:** 14 | **Fees:** $171.51
@@ -304,7 +320,7 @@
 
 **Root Cause (ADX Exit Churn):** Entry at ADX >= 15 but exit at ADX < 20 caused immediate churn. Lowering exit to ADX < 10 allows holding positions during grinding periods.
 
-**Status:** V2.3.12 fixes complete - Ready for backtest validation
+**Status:** V2.3.12 BACKTEST PASSED ✅ - +4.09% Return, 143 Orders, Sharpe 0.656
 
 ---
 
