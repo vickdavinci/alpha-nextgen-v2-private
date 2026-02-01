@@ -70,7 +70,7 @@
 | Stage | Duration | Purpose | Status | Date |
 |:-----:|----------|---------|:------:|------|
 | 1 | 1 day | Basic validation | **PASS** ✅ | 2026-01-30 |
-| 2 | 2 months | Short-term behavior | **V2.3.17 READY** 🟡 | 2026-02-01 |
+| 2 | 2 months | Short-term behavior | **V2.3.18 READY** 🟡 | 2026-02-01 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
@@ -496,6 +496,29 @@ INTRADAY_MAX_TRADES_PER_DAY = 2  # V2.3.15: was 3 (sniper gets one retry)
 **Root Cause (RATES Limit):** After kill switch fires and liquidates all positions, YieldSleeve wanted to put 99% in SHV, but RATES exposure group capped at 40%. Cash sat idle earning 0% instead of 5% in SHV.
 
 **Status:** V2.3.17 HYBRID YIELD SLEEVE + KILL SWITCH 5% complete - Ready for backtest validation
+
+**V2.3.18 FIX: Gamma Trap - Single-Leg DTE Exit (2026-02-01):**
+
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **Single-leg exits after spreads** - 2 DTE vs spreads at 5 DTE | HIGH | ✅ FIXED (→4 DTE) |
+
+**V2.3.18 Key Changes:**
+
+**Gamma Trap Fix:**
+- `OPTIONS_SINGLE_LEG_DTE_EXIT`: 2 → 4 DTE
+- Single legs now exit BEFORE spreads (4 DTE vs 5 DTE)
+- Avoids gamma explosion in final week of expiration
+
+**Risk Comparison:**
+| Position Type | DTE Exit | Risk Profile |
+|---------------|:--------:|--------------|
+| Spreads (defined risk) | 5 DTE | Safe, max loss capped |
+| Single Legs (undefined risk) | **4 DTE** | Riskier, gamma explodes near expiry |
+
+**Root Cause (Gamma Trap):** Gamma risk explodes in the last week before expiration. A small move against you can wipe 50%+ of option value in hours. Holding risky single-leg options (undefined risk) closer to expiration than safe spreads (defined risk) was backwards.
+
+**Status:** V2.3.18 GAMMA TRAP FIX complete - Ready for backtest validation
 
 ---
 
@@ -1111,4 +1134,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 01 February 2026 (V2.3.17 Hybrid Yield Sleeve + Kill Switch 5%)*
+*Last Updated: 01 February 2026 (V2.3.18 Gamma Trap Fix - Single-Leg DTE Exit)*

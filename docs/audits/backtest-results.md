@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-01 (V2.3.17: Hybrid Yield Sleeve + Kill Switch 5%)
+> **Last Updated:** 2026-02-01 (V2.3.18: Gamma Trap Fix - Single-Leg DTE Exit)
 
 ---
 
@@ -28,7 +28,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | Stage | Duration | Purpose | Status |
 |:-----:|----------|---------|:------:|
 | 1 | 1 day (Jan 2, 2024) | Basic validation - no errors, Initialize() completes | **PASS** ✅ |
-| 2 | 2 months (Jan-Feb 2024) | Short-term behavior, actual trades | **V2.3.17 READY** 🟡 |
+| 2 | 2 months (Jan-Feb 2024) | Short-term behavior, actual trades | **V2.3.18 READY** 🟡 |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
@@ -39,6 +39,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 **V2.3.15 Run:** V2.3.15-SniperLogic-1week | **Result:** -1.23% | **Analysis:** Delta 0.70 blocked, direction conflict
 **V2.3.16 Run:** Pending | **Expected:** DTE-based delta + direction conflict fixes enable proper swing/intraday trades
 **V2.3.17 Run:** Pending | **Expected:** Kill switch 5% + 10% cash buffer reduces false triggers and SHV churn
+**V2.3.18 Run:** Pending | **Expected:** Single-leg DTE exit at 4 (vs 2) avoids gamma trap near expiration
 
 #### V2.3.12 Backtest Results (Jan 1 - Feb 29, 2024)
 
@@ -272,6 +273,24 @@ RATES = {"max_net_long": 0.99, ...}  # Was 0.40
 **Expected Impact:** ~80% reduction in SHV churn for typical intraday trades.
 
 **Status:** V2.3.17 complete - Ready for backtest validation
+
+### V2.3.18 Fix: Gamma Trap - Single-Leg DTE Exit (2026-02-01)
+
+**Problem:** Single-leg options (undefined risk) were held closer to expiration than spreads (defined risk).
+
+| Position Type | Old DTE Exit | New DTE Exit | Risk Profile |
+|---------------|:------------:|:------------:|--------------|
+| Spreads | 5 DTE | 5 DTE | Defined risk, max loss capped |
+| Single Legs | 2 DTE | **4 DTE** | Undefined risk, gamma explodes |
+
+**Config Change (V2.3.18):**
+```python
+OPTIONS_SINGLE_LEG_DTE_EXIT = 4  # Raised from 2 (exit BEFORE spreads)
+```
+
+**Root Cause (Gamma Trap):** Gamma risk explodes in the final week before expiration. A small adverse move can wipe 50%+ of option value in hours. It makes no sense to hold risky single-leg options longer than safe spreads.
+
+**Status:** V2.3.18 complete - Ready for backtest validation
 
 **V2.3.2 Architect Audit Fixes Applied (Part 1-2):**
 
@@ -1270,4 +1289,4 @@ lean cloud backtest AlphaNextGen
 
 ---
 
-*Document created: 2026-01-30 | Last updated: 2026-02-01 (V2.3.17 Hybrid Yield Sleeve + Kill Switch 5%)*
+*Document created: 2026-01-30 | Last updated: 2026-02-01 (V2.3.18 Gamma Trap Fix)*
