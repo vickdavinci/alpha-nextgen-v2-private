@@ -893,11 +893,11 @@ class PortfolioRouter:
         tradeable_equity: float,
     ) -> List[OrderIntent]:
         """
-        Ensure SELL orders execute before BUY orders.
+        V2.3.20: Calculate shortfall and generate SHV SELL order if needed.
 
-        NOTE: SHV liquidation is handled by _presell_shv_for_pending_buys() at 15:45
-        which executes a MARKET order while the market is still open.
-        This method no longer adds SHV orders to avoid duplicate liquidation.
+        When BUY orders require more cash than available, automatically liquidate
+        SHV to fund the purchase. This prevents "Insufficient Buying Power" errors
+        for options and other immediate trades.
 
         Args:
             orders: List of orders to execute.
@@ -908,11 +908,75 @@ class PortfolioRouter:
             tradeable_equity: Total tradeable equity.
 
         Returns:
-            Orders with SELL orders first, then BUY orders.
+            Orders with SHV SELL first (if needed), then other SELLs, then BUYs.
         """
-        # Separate sells and buys, ensure sells execute first
+        # Separate sells and buys
         sells = [o for o in orders if o.side == OrderSide.SELL]
         buys = [o for o in orders if o.side == OrderSide.BUY]
+
+        # V2.3.20: Calculate total BUY value needed (quantity × price)
+        def get_order_value(order: OrderIntent) -> float:
+            price = current_prices.get(order.symbol, 0.0)
+            return abs(order.quantity) * price
+
+        buy_value = sum(get_order_value(o) for o in buys)
+
+        if buy_value <= 0:
+            return sells + buys
+
+        # Calculate cash that will be available after existing sells
+        sell_proceeds = sum(get_order_value(o) for o in sells)
+        projected_cash = available_cash + sell_proceeds
+
+        # Calculate shortfall
+        shortfall = buy_value - projected_cash
+
+        if shortfall > 0:
+            # Need to liquidate SHV to cover shortfall
+            current_shv_value = current_positions.get("SHV", 0.0)
+            available_shv = max(0.0, current_shv_value - locked_amount)
+
+            if available_shv > 0:
+                # Calculate how much SHV to sell (with 5% buffer for slippage)
+                shv_sell_amount = min(shortfall * 1.05, available_shv)
+                remaining_shv = current_shv_value - shv_sell_amount
+
+                if tradeable_equity > 0:
+                    target_weight = remaining_shv / tradeable_equity
+                else:
+                    target_weight = 0.0
+
+                # Create SHV sell order
+                shv_price = current_prices.get("SHV", 110.0)  # Default ~$110
+                shv_shares = int(shv_sell_amount / shv_price) if shv_price > 0 else 0
+
+                if shv_shares > 0:
+                    current_shv_weight = (
+                        current_shv_value / tradeable_equity if tradeable_equity > 0 else 0.0
+                    )
+                    shv_order = OrderIntent(
+                        symbol="SHV",
+                        quantity=-shv_shares,  # Negative for SELL
+                        side=OrderSide.SELL,
+                        order_type=OrderType.MARKET,
+                        urgency=Urgency.IMMEDIATE,
+                        reason=f"AUTO_LIQUIDATE: ${shortfall:,.0f} shortfall for pending buys",
+                        target_weight=target_weight,
+                        current_weight=current_shv_weight,
+                    )
+                    self.log(
+                        f"SHV_AUTO_LIQUIDATE: Selling ${shv_sell_amount:,.0f} SHV "
+                        f"({shv_shares} shares) to fund ${buy_value:,.0f} in buys | "
+                        f"Available cash=${available_cash:,.0f} | Shortfall=${shortfall:,.0f}"
+                    )
+                    # Insert SHV sell at the beginning
+                    sells.insert(0, shv_order)
+            else:
+                self.log(
+                    f"SHV_SHORTFALL_WARNING: Need ${shortfall:,.0f} but no SHV available "
+                    f"(locked=${locked_amount:,.0f})"
+                )
+
         return sells + buys
 
     # =========================================================================

@@ -496,14 +496,14 @@ class TestSignalFlow:
         assert hasattr(engine, "calculate")
 
     def test_risk_engine_kill_switch_check(self):
-        """Test risk engine kill switch detection."""
+        """Test risk engine kill switch detection (V2.3.17: 5% threshold)."""
         engine = RiskEngine()
         engine.set_equity_prior_close(100000)
 
-        # Simulate 3% loss
-        result = engine.check_kill_switch(current_equity=97000)
+        # Simulate 5% loss (V2.3.17: raised from 3%)
+        result = engine.check_kill_switch(current_equity=95000)
 
-        assert result is True, "3% loss should trigger kill switch"
+        assert result is True, "5% loss should trigger kill switch"
 
     def test_risk_engine_panic_mode_check(self):
         """Test risk engine panic mode detection."""

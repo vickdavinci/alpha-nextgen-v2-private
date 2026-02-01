@@ -49,7 +49,7 @@ flowchart TB
         direction LR
         REGIME["REGIME ENGINE<br/>─────────────<br/>5 Factors (V2.3)<br/>Score 0-100<br/>Smoothing α=0.3<br/>State Classification"]
         CAPITAL["CAPITAL ENGINE<br/>─────────────<br/>SEED/GROWTH Phase<br/>Virtual Lockbox<br/>Tradeable Equity<br/>Position Limits"]
-        RISK["RISK ENGINE<br/>─────────────<br/>Kill Switch -3%<br/>Panic Mode -4%<br/>Weekly Breaker<br/>Gap/Vol/Time Guard<br/>Greeks Monitor"]
+        RISK["RISK ENGINE<br/>─────────────<br/>Kill Switch -5%<br/>Panic Mode -4%<br/>Weekly Breaker<br/>Gap/Vol/Time Guard<br/>Greeks Monitor"]
     end
 
     subgraph STRATEGIES["STRATEGY ENGINES (Core-Satellite)"]

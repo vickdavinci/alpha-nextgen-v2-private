@@ -92,6 +92,11 @@ WARM_REGIME_MIN = 50
 WARM_QLD_THRESHOLD = 60
 WARM_MIN_SIZE = 2_000
 
+# V2.3.20: Allow options during cold start with reduced sizing
+# During Days 1-5, options positions are sized at 50% to reduce risk
+# while still participating in opportunities
+OPTIONS_COLD_START_MULTIPLIER = 0.50
+
 # =============================================================================
 # TREND ENGINE
 # =============================================================================

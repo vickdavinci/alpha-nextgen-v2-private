@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-01 (V2.3.19: ITM_MOMENTUM Time Window Config)
+> **Last Updated:** 2026-02-01 (V2.3.20: Cold Start Options + SHV Auto-Liquidation)
 
 ---
 
@@ -28,7 +28,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | Stage | Duration | Purpose | Status |
 |:-----:|----------|---------|:------:|
 | 1 | 1 day (Jan 2, 2024) | Basic validation - no errors, Initialize() completes | **PASS** ✅ |
-| 2 | 2 months (Jan-Feb 2024) | Short-term behavior, actual trades | **V2.3.19 READY** 🟡 |
+| 2 | 2 months (Jan-Feb 2024) | Short-term behavior, actual trades | **V2.3.20 READY** 🟡 |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
@@ -41,6 +41,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 **V2.3.17 Run:** Pending | **Expected:** Kill switch 5% + 10% cash buffer reduces false triggers and SHV churn
 **V2.3.18 Run:** Pending | **Expected:** Gamma trap fix (exit 4 DTE) + swing entry 6 DTE ensures 2+ day hold
 **V2.3.19 Run:** Pending | **Expected:** ITM_MOMENTUM time window now configurable (10:00-13:30)
+**V2.3.20 Run:** Pending | **Expected:** Cold start options (50% sizing) + SHV auto-liquidation prevents buying power errors
 
 #### V2.3.12 Backtest Results (Jan 1 - Feb 29, 2024)
 
@@ -316,6 +317,57 @@ INTRADAY_ITM_END = "13:30"    # Entry window end
 | CREDIT_SPREAD | 10:00 | 14:30 | `INTRADAY_CREDIT_START/END` |
 
 **Status:** V2.3.19 complete - Ready for backtest validation
+
+### V2.3.20 Fix: Cold Start Options + SHV Auto-Liquidation (2026-02-01)
+
+**Critical Issues Fixed:**
+
+| # | Finding | Severity | Fix |
+|:-:|---------|:--------:|-----|
+| 1 | SHV Auto-Liquidation missing | CRITICAL | Calculate shortfall, generate SHV SELL |
+| 2 | Cold Start blocks ALL options | HIGH | Allow with 50% sizing |
+
+**Fix 1: SHV Auto-Liquidation**
+
+**Problem:** `_add_shv_liquidation_if_needed()` only reordered sells/buys but never calculated shortfall or generated SHV sell orders. Immediate BUY orders failed with "Insufficient Buying Power".
+
+**Solution:**
+```python
+# portfolio_router.py - _add_shv_liquidation_if_needed()
+buy_value = sum(get_order_value(o) for o in buys)
+sell_proceeds = sum(get_order_value(o) for o in sells)
+projected_cash = available_cash + sell_proceeds
+shortfall = buy_value - projected_cash
+
+if shortfall > 0:
+    shv_sell_amount = min(shortfall * 1.05, available_shv)  # 5% buffer
+    # Generate OrderIntent for SHV SELL, insert at beginning of sells
+```
+
+**Fix 2: Cold Start Options with 50% Sizing**
+
+**Problem:** Old logic blocked ALL options during cold start (Days 1-5). Too conservative - missing opportunities.
+
+**Solution:**
+- Added `OPTIONS_COLD_START_MULTIPLIER = 0.50` to config.py
+- Modified main.py to allow options during cold start
+- Added `size_multiplier` parameter to:
+  - `get_mode_allocation()` - base allocation calculation
+  - `check_spread_entry_signal()` - swing spread entries
+  - `check_intraday_entry_signal()` - intraday entries
+  - `check_entry_signal()` - single-leg swing fallback
+
+**Config Changes:**
+```python
+OPTIONS_COLD_START_MULTIPLIER = 0.50  # 50% sizing during Days 1-5
+```
+
+**Impact:**
+- Options can now trade during cold start at reduced risk (50% size)
+- SHV auto-liquidation ensures buying power for immediate trades
+- Tests updated: 1349 passed, 2 skipped
+
+**Status:** V2.3.20 complete - Ready for backtest validation
 
 **V2.3.2 Architect Audit Fixes Applied (Part 1-2):**
 
@@ -1314,4 +1366,4 @@ lean cloud backtest AlphaNextGen
 
 ---
 
-*Document created: 2026-01-30 | Last updated: 2026-02-01 (V2.3.19 ITM_MOMENTUM Time Window)*
+*Document created: 2026-01-30 | Last updated: 2026-02-01 (V2.3.20 Cold Start Options + SHV Auto-Liquidation)*

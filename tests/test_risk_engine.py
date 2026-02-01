@@ -36,7 +36,6 @@ from engines.core.risk_engine import (
     SafeguardType,
 )
 
-
 # =============================================================================
 # Test Fixtures
 # =============================================================================
@@ -95,41 +94,41 @@ class TestSymbolClassifications:
 class TestKillSwitch:
     """Tests for Kill Switch circuit breaker."""
 
-    def test_kill_switch_triggers_at_3_percent_from_prior_close(self, risk_engine):
-        """Test kill switch triggers at exactly -3% from prior close."""
+    def test_kill_switch_triggers_at_5_percent_from_prior_close(self, risk_engine):
+        """Test kill switch triggers at exactly -5% from prior close (V2.3.17)."""
         risk_engine.set_equity_prior_close(100_000.0)
 
-        # 2.9% loss - should not trigger
-        assert risk_engine.check_kill_switch(97_100.0) is False
+        # 4.9% loss - should not trigger
+        assert risk_engine.check_kill_switch(95_100.0) is False
 
-        # Exactly 3% loss - should trigger
-        assert risk_engine.check_kill_switch(97_000.0) is True
+        # Exactly 5% loss - should trigger
+        assert risk_engine.check_kill_switch(95_000.0) is True
 
-    def test_kill_switch_triggers_at_3_percent_from_sod(self, risk_engine):
-        """Test kill switch triggers at exactly -3% from SOD."""
+    def test_kill_switch_triggers_at_5_percent_from_sod(self, risk_engine):
+        """Test kill switch triggers at exactly -5% from SOD (V2.3.17)."""
         risk_engine.set_equity_sod(100_000.0)
 
-        # 2.9% loss - should not trigger
-        assert risk_engine.check_kill_switch(97_100.0) is False
+        # 4.9% loss - should not trigger
+        assert risk_engine.check_kill_switch(95_100.0) is False
 
-        # Exactly 3% loss - should trigger
-        assert risk_engine.check_kill_switch(97_000.0) is True
+        # Exactly 5% loss - should trigger
+        assert risk_engine.check_kill_switch(95_000.0) is True
 
     def test_kill_switch_uses_either_baseline(self, risk_engine):
         """Test kill switch triggers from either baseline."""
         risk_engine.set_equity_prior_close(100_000.0)
-        risk_engine.set_equity_sod(98_000.0)
+        risk_engine.set_equity_sod(96_000.0)
 
-        # No loss from SOD but 3%+ from prior close
-        current = 96_900.0  # 3.1% from prior, 1.1% from SOD
+        # No loss from SOD but 5%+ from prior close
+        current = 94_900.0  # 5.1% from prior, 1.1% from SOD
         assert risk_engine.check_kill_switch(current) is True
 
     def test_kill_switch_stays_active_once_triggered(self, risk_engine):
         """Test kill switch stays active once triggered."""
         risk_engine.set_equity_prior_close(100_000.0)
 
-        # Trigger
-        assert risk_engine.check_kill_switch(97_000.0) is True
+        # Trigger (5% loss)
+        assert risk_engine.check_kill_switch(95_000.0) is True
 
         # Should still return True even if equity recovers
         assert risk_engine.check_kill_switch(100_000.0) is True
@@ -137,7 +136,7 @@ class TestKillSwitch:
     def test_kill_switch_liquidates_all_positions(self, configured_engine):
         """Test kill switch includes all symbols in liquidation."""
         result = configured_engine.check_all(
-            current_equity=97_000.0,  # 3% loss
+            current_equity=95_000.0,  # 5% loss (V2.3.17)
             spy_price=450.0,
             spy_bar_range=0.5,
             current_time=datetime(2024, 1, 15, 10, 30),
@@ -148,10 +147,10 @@ class TestKillSwitch:
 
     def test_kill_switch_blocks_new_entries(self, configured_engine):
         """Test no new entries allowed after kill switch."""
-        configured_engine.check_kill_switch(97_000.0)  # Trigger
+        configured_engine.check_kill_switch(95_000.0)  # Trigger (5% loss)
 
         result = configured_engine.check_all(
-            current_equity=97_000.0,
+            current_equity=95_000.0,
             spy_price=450.0,
             spy_bar_range=0.5,
             current_time=datetime(2024, 1, 15, 10, 30),
@@ -163,7 +162,7 @@ class TestKillSwitch:
     def test_kill_switch_resets_cold_start(self, configured_engine):
         """Test kill switch resets days_running to 0."""
         result = configured_engine.check_all(
-            current_equity=97_000.0,  # 3% loss
+            current_equity=95_000.0,  # 5% loss (V2.3.17)
             spy_price=450.0,
             spy_bar_range=0.5,
             current_time=datetime(2024, 1, 15, 10, 30),
@@ -180,8 +179,8 @@ class TestKillSwitch:
         assert status.is_active is False
         assert status.safeguard_type == SafeguardType.KILL_SWITCH
 
-        # After trigger
-        risk_engine.check_kill_switch(97_000.0)
+        # After trigger (5% loss)
+        risk_engine.check_kill_switch(95_000.0)
         status = risk_engine.get_kill_switch_status()
         assert status.is_active is True
         assert "liquidated" in status.details.lower()
@@ -547,7 +546,7 @@ class TestCombinedRiskCheck:
     def test_kill_switch_overrides_other_safeguards(self, configured_engine):
         """Test kill switch overrides all other safeguards."""
         result = configured_engine.check_all(
-            current_equity=97_000.0,  # 3% loss triggers kill switch
+            current_equity=95_000.0,  # 5% loss triggers kill switch (V2.3.17)
             spy_price=432.0,  # 4% drop would trigger panic mode too
             spy_bar_range=0.5,
             current_time=datetime(2024, 1, 15, 14, 0),  # Time guard window
@@ -599,7 +598,7 @@ class TestQuickCheckMethods:
     def test_can_enter_new_positions_blocked_by_kill_switch(self, risk_engine):
         """Test kill switch blocks can_enter_new_positions."""
         risk_engine.set_equity_prior_close(100_000.0)
-        risk_engine.check_kill_switch(97_000.0)
+        risk_engine.check_kill_switch(95_000.0)  # 5% loss (V2.3.17)
 
         current_time = datetime(2024, 1, 15, 10, 30)
         assert risk_engine.can_enter_new_positions(current_time) is False
@@ -625,7 +624,7 @@ class TestDailyReset:
     def test_reset_clears_all_flags(self, configured_engine):
         """Test daily reset clears all safeguard flags."""
         # Trigger various safeguards
-        configured_engine.check_kill_switch(97_000.0)
+        configured_engine.check_kill_switch(95_000.0)  # 5% loss (V2.3.17)
         configured_engine.check_panic_mode(432.0)
         configured_engine.check_gap_filter(443.0)
         configured_engine.register_split("QLD")

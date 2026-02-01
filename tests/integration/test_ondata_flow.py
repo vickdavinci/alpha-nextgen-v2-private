@@ -17,18 +17,19 @@ These tests verify:
 - Split guard detection
 """
 
-import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
 from datetime import datetime, time, timedelta
 from typing import Dict, List
+from unittest.mock import MagicMock, PropertyMock, patch
 
+import pytest
+
+import config
 from engines.core.risk_engine import RiskEngine
 from engines.core.trend_engine import TrendEngine
 from engines.satellite.mean_reversion_engine import MeanReversionEngine
 from engines.satellite.options_engine import OptionsEngine
-from portfolio.portfolio_router import PortfolioRouter
 from models.enums import Urgency
-import config
+from portfolio.portfolio_router import PortfolioRouter
 
 
 @pytest.fixture
@@ -60,7 +61,7 @@ class TestRiskEngineRunsFirst:
         """
         Test: Kill switch triggered -> All other processing blocked.
 
-        When kill switch triggers (3% daily loss), OnData must:
+        When kill switch triggers (5% daily loss, V2.3.17), OnData must:
         1. Run risk check
         2. Detect kill switch
         3. Return early without running any strategy logic
@@ -76,8 +77,8 @@ class TestRiskEngineRunsFirst:
         risk_engine.set_equity_sod(equity_sod)
         risk_engine.set_equity_prior_close(equity_sod)
 
-        # Simulate kill switch condition: 3.5% daily loss
-        current_equity = 96500.0  # -3.5%
+        # Simulate kill switch condition: 5.5% daily loss (V2.3.17: raised from 3%)
+        current_equity = 94500.0  # -5.5%
 
         # Kill switch check
         is_kill_switch = risk_engine.check_kill_switch(current_equity)
@@ -121,7 +122,7 @@ class TestRiskEngineRunsFirst:
         Test: Circuit breakers checked in priority order.
 
         Order should be:
-        1. Kill Switch (3% daily)
+        1. Kill Switch (5% daily - V2.3.17: raised from 3%)
         2. Panic Mode (SPY -4%)
         3. CB Level 1 (Daily Loss -2%)
         4. CB Level 2 (Weekly -5%) - via check_weekly_breaker
@@ -137,22 +138,22 @@ class TestRiskEngineRunsFirst:
 
         # Each check should be independent
         # Kill switch has highest priority
-        assert hasattr(risk_engine, 'check_kill_switch')
+        assert hasattr(risk_engine, "check_kill_switch")
 
         # Panic mode second
-        assert hasattr(risk_engine, 'check_panic_mode')
+        assert hasattr(risk_engine, "check_panic_mode")
 
         # Circuit breakers
-        assert hasattr(risk_engine, 'check_cb_daily_loss')
-        assert hasattr(risk_engine, 'check_weekly_breaker')  # V1 weekly breaker
-        assert hasattr(risk_engine, 'check_cb_portfolio_vol')
-        assert hasattr(risk_engine, 'check_cb_correlation')
-        assert hasattr(risk_engine, 'check_cb_greeks_breach')
+        assert hasattr(risk_engine, "check_cb_daily_loss")
+        assert hasattr(risk_engine, "check_weekly_breaker")  # V1 weekly breaker
+        assert hasattr(risk_engine, "check_cb_portfolio_vol")
+        assert hasattr(risk_engine, "check_cb_correlation")
+        assert hasattr(risk_engine, "check_cb_greeks_breach")
 
         # V1 safeguards
-        assert hasattr(risk_engine, 'check_vol_shock')
-        assert hasattr(risk_engine, 'check_gap_filter')
-        assert hasattr(risk_engine, 'is_time_guard_active')  # Different name
+        assert hasattr(risk_engine, "check_vol_shock")
+        assert hasattr(risk_engine, "check_gap_filter")
+        assert hasattr(risk_engine, "is_time_guard_active")  # Different name
 
 
 class TestTimeBasedProcessing:
@@ -503,10 +504,10 @@ class TestOptionsIntegrationFlow:
         risk_engine = RiskEngine(mock_algorithm_with_time)
 
         # Risk engine should have Greeks check
-        assert hasattr(risk_engine, 'check_cb_greeks_breach')
+        assert hasattr(risk_engine, "check_cb_greeks_breach")
 
         # And should accept Greeks updates
-        assert hasattr(risk_engine, 'update_greeks')
+        assert hasattr(risk_engine, "update_greeks")
 
 
 # =============================================================================

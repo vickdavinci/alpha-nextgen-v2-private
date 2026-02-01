@@ -1471,9 +1471,12 @@ class OptionsEngine:
         gap_filter_triggered: bool = False,
         vol_shock_active: bool = False,
         time_guard_active: bool = False,
+        size_multiplier: float = 1.0,
     ) -> Optional[TargetWeight]:
         """
         Check for options entry signal.
+
+        V2.3.20: Added size_multiplier for cold start reduced sizing.
 
         Args:
             adx_value: Current ADX(14) value.
@@ -1489,6 +1492,8 @@ class OptionsEngine:
             gap_filter_triggered: True if gap filter is active.
             vol_shock_active: True if vol shock pause is active.
             time_guard_active: True if time guard is active.
+            size_multiplier: Position size multiplier (default 1.0). V2.3.20: Set to 0.5
+                during cold start to reduce risk.
 
         Returns:
             TargetWeight for entry, or None if no signal.
@@ -1622,6 +1627,13 @@ class OptionsEngine:
             days_to_expiry=best_contract.days_to_expiry,
         )
 
+        # V2.3.20: Apply cold start size multiplier
+        if size_multiplier < 1.0:
+            num_contracts = max(1, int(num_contracts * size_multiplier))
+            self.log(
+                f"OPT: Cold start sizing - reduced to {num_contracts} contracts (×{size_multiplier})"
+            )
+
         if num_contracts <= 0:
             self.log("OPT: Entry blocked - cannot calculate position size")
             return None
@@ -1681,6 +1693,7 @@ class OptionsEngine:
         short_leg_contract: Optional[OptionContract] = None,
         gap_filter_triggered: bool = False,
         vol_shock_active: bool = False,
+        size_multiplier: float = 1.0,
     ) -> Optional[TargetWeight]:
         """
         V2.3: Check for debit spread entry signal.
@@ -1707,6 +1720,8 @@ class OptionsEngine:
             short_leg_contract: OTM contract for short leg.
             gap_filter_triggered: True if gap filter is active.
             vol_shock_active: True if vol shock pause is active.
+            size_multiplier: Position size multiplier (default 1.0). V2.3.20: Set to 0.5
+                during cold start to reduce risk.
 
         Returns:
             TargetWeight for spread entry (with short leg in metadata), or None.
@@ -1840,7 +1855,8 @@ class OptionsEngine:
             return None
 
         # Calculate position size based on allocation
-        allocation = self.get_mode_allocation(OptionsMode.SWING, portfolio_value)
+        # V2.3.20: Apply size_multiplier (0.5 during cold start)
+        allocation = self.get_mode_allocation(OptionsMode.SWING, portfolio_value, size_multiplier)
         # For spreads, risk = net_debit per spread (max loss = net_debit)
         cost_per_spread = net_debit * 100  # 100 shares per contract
         num_spreads = int(allocation / cost_per_spread)
@@ -2122,20 +2138,28 @@ class OptionsEngine:
             return OptionsMode.INTRADAY
         return OptionsMode.SWING
 
-    def get_mode_allocation(self, mode: OptionsMode, portfolio_value: float) -> float:
+    def get_mode_allocation(
+        self, mode: OptionsMode, portfolio_value: float, size_multiplier: float = 1.0
+    ) -> float:
         """
         Get allocation for a specific mode.
+
+        V2.3.20: Added size_multiplier parameter for cold start sizing.
 
         Args:
             mode: Operating mode.
             portfolio_value: Total portfolio value.
+            size_multiplier: Optional multiplier for position sizing (default 1.0).
+                During cold start, this is 0.5 to reduce risk.
 
         Returns:
-            Dollar allocation for the mode.
+            Dollar allocation for the mode (adjusted by size_multiplier).
         """
         if mode == OptionsMode.INTRADAY:
-            return portfolio_value * config.OPTIONS_INTRADAY_ALLOCATION
-        return portfolio_value * config.OPTIONS_SWING_ALLOCATION
+            base_allocation = portfolio_value * config.OPTIONS_INTRADAY_ALLOCATION
+        else:
+            base_allocation = portfolio_value * config.OPTIONS_SWING_ALLOCATION
+        return base_allocation * size_multiplier
 
     # =========================================================================
     # V2.1.1 SIMPLE INTRADAY FILTERS (FOR SWING MODE)
@@ -2207,11 +2231,13 @@ class OptionsEngine:
         current_time: str,
         portfolio_value: float,
         best_contract: Optional[OptionContract] = None,
+        size_multiplier: float = 1.0,
     ) -> Optional[TargetWeight]:
         """
         Check for intraday mode entry signal using Micro Regime Engine.
 
         V2.1.1: Uses VIX Level × VIX Direction = 21 trading regimes.
+        V2.3.20: Added size_multiplier for cold start reduced sizing.
 
         Args:
             vix_current: Current VIX value.
@@ -2223,6 +2249,8 @@ class OptionsEngine:
             current_time: Timestamp string.
             portfolio_value: Total portfolio value.
             best_contract: Best available contract for the signal.
+            size_multiplier: Position size multiplier (default 1.0). V2.3.20: Set to 0.5
+                during cold start to reduce risk.
 
         Returns:
             TargetWeight for intraday entry, or None.
@@ -2305,7 +2333,10 @@ class OptionsEngine:
             return None
 
         # Calculate allocation based on micro score
-        allocation = self.get_mode_allocation(OptionsMode.INTRADAY, portfolio_value)
+        # V2.3.20: Apply size_multiplier (0.5 during cold start)
+        allocation = self.get_mode_allocation(
+            OptionsMode.INTRADAY, portfolio_value, size_multiplier
+        )
 
         # Adjust size based on score
         if state.micro_score >= config.MICRO_SCORE_PRIME_MR:

@@ -70,7 +70,7 @@
 | Stage | Duration | Purpose | Status | Date |
 |:-----:|----------|---------|:------:|------|
 | 1 | 1 day | Basic validation | **PASS** ✅ | 2026-01-30 |
-| 2 | 2 months | Short-term behavior | **V2.3.19 READY** 🟡 | 2026-02-01 |
+| 2 | 2 months | Short-term behavior | **V2.3.20 READY** 🟡 | 2026-02-01 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
@@ -553,6 +553,43 @@ INTRADAY_MAX_TRADES_PER_DAY = 2  # V2.3.15: was 3 (sniper gets one retry)
 | CREDIT_SPREAD | 10:00 | 14:30 | `INTRADAY_CREDIT_START/END` |
 
 **Status:** V2.3.19 TIME WINDOW CONFIG complete - Ready for backtest validation
+
+**V2.3.20 FIX: Cold Start Options + SHV Auto-Liquidation (2026-02-01):**
+
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **SHV Auto-Liquidation missing** - "Insufficient Buying Power" for immediate buys | CRITICAL | ✅ FIXED |
+| 2 | **Cold Start blocks ALL options** - 5-day blackout too conservative | HIGH | ✅ FIXED (50% sizing) |
+
+**V2.3.20 Key Changes:**
+
+**Fix 1: SHV Auto-Liquidation (Critical)**
+- Updated `_add_shv_liquidation_if_needed()` in portfolio_router.py
+- Calculates shortfall: `buy_value - (available_cash + sell_proceeds)`
+- Generates SHV SELL order when shortfall > 0
+- 5% buffer for slippage: `min(shortfall * 1.05, available_shv)`
+- Logs: `SHV_AUTO_LIQUIDATE: Selling $X SHV to fund $Y in buys`
+
+**Fix 2: Cold Start Options with 50% Sizing**
+- Added `OPTIONS_COLD_START_MULTIPLIER = 0.50` to config.py
+- Modified main.py to allow options during cold start (was blocked)
+- Added `size_multiplier` parameter to `get_mode_allocation()`
+- Added `size_multiplier` parameter to `check_spread_entry_signal()`
+- Added `size_multiplier` parameter to `check_intraday_entry_signal()`
+- Added `size_multiplier` parameter to `check_entry_signal()`
+- During cold start (Days 1-5), options trade at 50% normal size
+
+**Config Changes:**
+```python
+# Cold Start Engine
+OPTIONS_COLD_START_MULTIPLIER = 0.50  # V2.3.20: 50% sizing during cold start
+```
+
+**Root Cause (SHV):** `_add_shv_liquidation_if_needed()` only reordered sells/buys but never calculated shortfall or generated SHV sell orders. Immediate buys failed with "Insufficient Buying Power".
+
+**Root Cause (Cold Start):** Old logic blocked ALL options during cold start (Days 1-5). This was too conservative - missing opportunities. 50% sizing reduces risk while allowing participation.
+
+**Status:** V2.3.20 COLD START OPTIONS + SHV AUTO-LIQUIDATION complete - Ready for backtest validation
 
 ---
 
@@ -1168,4 +1205,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 01 February 2026 (V2.3.19 ITM_MOMENTUM Time Window Config)*
+*Last Updated: 01 February 2026 (V2.3.20 Cold Start Options + SHV Auto-Liquidation)*

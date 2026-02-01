@@ -220,14 +220,15 @@ class TestExposureCalculatorInit:
         assert group.max_gross == 0.40
 
     def test_rates_limits(self):
-        """Test RATES has correct limits."""
+        """Test RATES has correct limits (V2.3.17: 0.99 for post-kill-switch SHV)."""
         calc = ExposureCalculator()
 
         group = calc.get_group("RATES")
 
-        assert group.max_net_long == 0.40
+        # V2.3.17: Raised from 0.40 to 0.99 to allow near-full SHV allocation post-kill-switch
+        assert group.max_net_long == 0.99
         assert group.max_net_short == 0.00
-        assert group.max_gross == 0.40
+        assert group.max_gross == 0.99
 
     def test_psq_is_inverse(self):
         """Test PSQ is marked as inverse in NASDAQ_BETA."""

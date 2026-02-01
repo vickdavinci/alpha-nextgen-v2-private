@@ -2,7 +2,7 @@
 Scenario tests for Kill Switch behavior.
 
 Tests the complete kill switch workflow:
-1. Portfolio experiences -3% daily loss
+1. Portfolio experiences -5% daily loss (V2.3.17: raised from 3%)
 2. Kill switch triggers
 3. All positions liquidated
 4. New entries blocked
@@ -11,13 +11,14 @@ Tests the complete kill switch workflow:
 Spec: docs/12-risk-engine.md
 """
 
-import pytest
-from unittest.mock import MagicMock
 from datetime import datetime
+from unittest.mock import MagicMock
 
-from engines.core.risk_engine import RiskEngine, SafeguardType
-from engines.core.cold_start_engine import ColdStartEngine
+import pytest
+
 import config
+from engines.core.cold_start_engine import ColdStartEngine
+from engines.core.risk_engine import RiskEngine, SafeguardType
 
 
 @pytest.fixture
@@ -28,7 +29,7 @@ def mock_algorithm():
     algo.Log = MagicMock()
     algo.Debug = MagicMock()
     algo.Portfolio = MagicMock()
-    algo.Portfolio.TotalPortfolioValue = 48500.0
+    algo.Portfolio.TotalPortfolioValue = 47500.0  # V2.3.17: 5% loss from $50000
     algo.Portfolio.Invested = True
     return algo
 
@@ -59,16 +60,16 @@ class TestKillSwitchScenario:
     @pytest.mark.scenario
     def test_scenario_kill_switch_full_liquidation(self, risk_engine):
         """
-        SCENARIO: Portfolio drops 3%, kill switch liquidates all.
+        SCENARIO: Portfolio drops 5%, kill switch liquidates all (V2.3.17).
 
         Given: Portfolio has positions in QLD, TQQQ, SHV
-        When: Daily P&L drops to -3%
+        When: Daily P&L drops to -5%
         Then: Kill switch triggers
         And: All positions are liquidated
         And: No new entries allowed for rest of day
         """
-        # Setup: Prior close was $50,000, current is $48,500 (-3%)
-        current_equity = 48500.0
+        # Setup: Prior close was $50,000, current is $47,500 (-5%)
+        current_equity = 47500.0
 
         # Act: Check kill switch
         triggered = risk_engine.check_kill_switch(current_equity)
@@ -78,9 +79,7 @@ class TestKillSwitchScenario:
         assert risk_engine._kill_switch_active is True
 
     @pytest.mark.scenario
-    def test_scenario_kill_switch_resets_cold_start(
-        self, risk_engine, cold_start_engine
-    ):
+    def test_scenario_kill_switch_resets_cold_start(self, risk_engine, cold_start_engine):
         """
         SCENARIO: Kill switch resets cold start counter.
 
@@ -93,8 +92,8 @@ class TestKillSwitchScenario:
         cold_start_engine._days_running = 10
         assert cold_start_engine.is_cold_start_active() is False
 
-        # Act: Kill switch triggers
-        risk_engine.check_kill_switch(48500.0)  # -3% triggers kill switch
+        # Act: Kill switch triggers (V2.3.17: 5% threshold)
+        risk_engine.check_kill_switch(47500.0)  # -5% triggers kill switch
 
         # Apply to cold start (as main.py would do)
         cold_start_engine.end_of_day_update(kill_switch_triggered=True)
@@ -152,8 +151,8 @@ class TestKillSwitchScenario:
         Then: Kill switch state is cleared
         And: Trading allowed (in cold start mode)
         """
-        # Trigger kill switch
-        risk_engine.check_kill_switch(48500.0)
+        # Trigger kill switch (V2.3.17: 5% threshold)
+        risk_engine.check_kill_switch(47500.0)
         assert risk_engine._kill_switch_active is True
 
         # New day - reset daily state
@@ -163,40 +162,40 @@ class TestKillSwitchScenario:
         assert risk_engine._kill_switch_active is False
 
         # Set new baseline and check - no trigger with 0% loss
-        risk_engine.set_equity_prior_close(48500.0)
-        triggered = risk_engine.check_kill_switch(48500.0)
+        risk_engine.set_equity_prior_close(47500.0)
+        triggered = risk_engine.check_kill_switch(47500.0)
         assert triggered is False
 
     @pytest.mark.scenario
     def test_scenario_kill_switch_threshold_boundary(self, mock_algorithm):
         """
-        SCENARIO: Kill switch triggers at exactly -3%, not before.
+        SCENARIO: Kill switch triggers at exactly -5%, not before (V2.3.17).
 
-        Given: Portfolio at -2.99% loss
-        When: Loss increases to -3.00%
+        Given: Portfolio at -4.99% loss
+        When: Loss increases to -5.00%
         Then: Kill switch triggers immediately
         """
         # Fresh engine for each test
         engine = RiskEngine(mock_algorithm)
         engine.set_equity_prior_close(50000.0)
 
-        # Test: -2.99% should NOT trigger
-        current_below = 50000.0 * (1 - 0.0299)  # $48,505
+        # Test: -4.99% should NOT trigger
+        current_below = 50000.0 * (1 - 0.0499)  # $47,505
         triggered_below = engine.check_kill_switch(current_below)
         assert triggered_below is False
 
         # Reset
         engine._kill_switch_active = False
 
-        # Test: -3.00% SHOULD trigger
-        current_at = 50000.0 * (1 - 0.03)  # $48,500
+        # Test: -5.00% SHOULD trigger (V2.3.17)
+        current_at = 50000.0 * (1 - 0.05)  # $47,500
         triggered_at = engine.check_kill_switch(current_at)
         assert triggered_at is True
 
         # Reset
         engine._kill_switch_active = False
 
-        # Test: -3.01% should also trigger
-        current_above = 50000.0 * (1 - 0.0301)  # $48,495
+        # Test: -5.01% should also trigger
+        current_above = 50000.0 * (1 - 0.0501)  # $47,495
         triggered_above = engine.check_kill_switch(current_above)
         assert triggered_above is True

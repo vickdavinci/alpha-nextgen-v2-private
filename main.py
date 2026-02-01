@@ -973,10 +973,11 @@ class AlphaNextGen(QCAlgorithm):
         self._generate_trend_signals_eod(regime_state)
 
         # 4. V2.1: Generate Options signals (if regime allows)
-        # V2.3.4 FIX: Block swing options during cold start (Days 1-5)
+        # V2.3.20: Allow options during cold start with 50% sizing (was blocked entirely)
         is_cold_start = self.cold_start_engine.is_cold_start_active()
-        if regime_state.smoothed_score >= 40 and not is_cold_start:
-            self._generate_options_signals(regime_state, capital_state)
+        options_size_mult = config.OPTIONS_COLD_START_MULTIPLIER if is_cold_start else 1.0
+        if regime_state.smoothed_score >= 40:
+            self._generate_options_signals(regime_state, capital_state, options_size_mult)
 
         # 5. Generate Hedge signals
         self._generate_hedge_signals(regime_state)
@@ -1539,7 +1540,10 @@ class AlphaNextGen(QCAlgorithm):
                 )
 
     def _generate_options_signals(
-        self, regime_state: RegimeState, capital_state: CapitalState
+        self,
+        regime_state: RegimeState,
+        capital_state: CapitalState,
+        size_multiplier: float = 1.0,
     ) -> None:
         """
         Generate Options Engine signals at end of day.
@@ -1549,9 +1553,13 @@ class AlphaNextGen(QCAlgorithm):
         - Regime < 45: Bear Put Spread
         - Regime 45-60: No trade (neutral)
 
+        V2.3.20: Added size_multiplier for cold start reduced sizing.
+
         Args:
             regime_state: Current regime state.
             capital_state: Current capital state.
+            size_multiplier: Position size multiplier (default 1.0). Set to 0.5
+                during cold start to reduce risk while still participating.
         """
         # Skip if indicators not ready
         if not self.qqq_adx.IsReady or not self.qqq_sma200.IsReady:
@@ -1628,6 +1636,7 @@ class AlphaNextGen(QCAlgorithm):
             return
 
         # V2.3: Check for spread entry signal
+        # V2.3.20: Pass size_multiplier for cold start reduced sizing
         signal = self.options_engine.check_spread_entry_signal(
             regime_score=regime_score,
             vix_current=self._current_vix,
@@ -1643,6 +1652,7 @@ class AlphaNextGen(QCAlgorithm):
             short_leg_contract=short_leg,
             gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
             vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
+            size_multiplier=size_multiplier,
         )
 
         if signal:
@@ -2471,9 +2481,15 @@ class AlphaNextGen(QCAlgorithm):
         - Swing Mode (5-45 DTE): 4-factor entry scoring
         - Intraday Mode (0-2 DTE): Micro Regime Engine
 
+        V2.3.20: Now allows options during cold start with 50% sizing.
+
         Args:
             data: Current data slice.
         """
+        # V2.3.20: Calculate size multiplier for cold start
+        is_cold_start = self.cold_start_engine.is_cold_start_active()
+        size_multiplier = config.OPTIONS_COLD_START_MULTIPLIER if is_cold_start else 1.0
+
         # Skip if indicators not ready
         if not self.qqq_adx.IsReady or not self.qqq_sma200.IsReady:
             return
@@ -2559,6 +2575,7 @@ class AlphaNextGen(QCAlgorithm):
                 and intraday_contract.bid > 0
                 and intraday_contract.ask > 0
             ):
+                # V2.3.20: Pass size_multiplier for cold start reduced sizing
                 intraday_signal = self.options_engine.check_intraday_entry_signal(
                     vix_current=self._current_vix,
                     vix_open=self._vix_at_open,
@@ -2569,6 +2586,7 @@ class AlphaNextGen(QCAlgorithm):
                     current_time=str(self.Time),
                     portfolio_value=self.Portfolio.TotalPortfolioValue,
                     best_contract=intraday_contract,
+                    size_multiplier=size_multiplier,
                 )
                 if intraday_signal:
                     self.portfolio_router.receive_signal(intraday_signal)
@@ -2613,6 +2631,7 @@ class AlphaNextGen(QCAlgorithm):
             # Verify both legs have valid bid/ask
             if long_leg.bid > 0 and long_leg.ask > 0 and short_leg.bid > 0 and short_leg.ask > 0:
                 # V2.3: Check for spread entry signal
+                # V2.3.20: Pass size_multiplier for cold start reduced sizing
                 signal = self.options_engine.check_spread_entry_signal(
                     regime_score=regime_score,
                     vix_current=self._current_vix,
@@ -2628,6 +2647,7 @@ class AlphaNextGen(QCAlgorithm):
                     short_leg_contract=short_leg,
                     gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
                     vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
+                    size_multiplier=size_multiplier,
                 )
 
                 if signal:
@@ -2641,6 +2661,7 @@ class AlphaNextGen(QCAlgorithm):
         if not self.options_engine.has_position():
             best_contract = self._select_swing_option_contract(chain, direction)
             if best_contract is not None and best_contract.bid > 0 and best_contract.ask > 0:
+                # V2.3.20: Pass size_multiplier for cold start reduced sizing
                 signal = self.options_engine.check_entry_signal(
                     adx_value=adx_value,
                     current_price=qqq_price,
@@ -2654,6 +2675,7 @@ class AlphaNextGen(QCAlgorithm):
                     regime_score=regime_score,
                     gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
                     vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
+                    size_multiplier=size_multiplier,
                 )
 
                 if signal:
