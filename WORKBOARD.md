@@ -70,7 +70,7 @@
 | Stage | Duration | Purpose | Status | Date |
 |:-----:|----------|---------|:------:|------|
 | 1 | 1 day | Basic validation | **PASS** ✅ | 2026-01-30 |
-| 2 | 2 months | Short-term behavior | **V2.3.16 READY** 🟡 | 2026-02-01 |
+| 2 | 2 months | Short-term behavior | **V2.3.17 READY** 🟡 | 2026-02-01 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
