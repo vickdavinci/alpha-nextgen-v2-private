@@ -416,7 +416,9 @@ OPTIONS_PROFIT_TARGET_PCT = 0.50  # +50% profit target
 # Close single-leg options when DTE <= this value to avoid:
 # - OTM expiring worthless (100% loss)
 # - ITM being auto-exercised (creating stock position, margin crisis)
-OPTIONS_SINGLE_LEG_DTE_EXIT = 2  # Close by 2 DTE (before expiration week gamma)
+# V2.3.18: Raised from 2 to 4 DTE - gamma risk explodes in final week
+# Single legs have undefined risk, should exit BEFORE spreads (5 DTE), not after
+OPTIONS_SINGLE_LEG_DTE_EXIT = 4  # Close by 4 DTE (avoid expiration gamma trap)
 
 # V2.3.11: EOD Force Close for Options Expiring TODAY
 # Critical safety: Prevent auto-exercise of ITM options held into close
