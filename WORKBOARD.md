@@ -70,8 +70,8 @@
 | Stage | Duration | Purpose | Status | Date |
 |:-----:|----------|---------|:------:|------|
 | 1 | 1 day | Basic validation | **PASS** ✅ | 2026-01-30 |
-| 2 | 2 months | Short-term behavior | **V2.3.12 PASS** ✅ | 2026-01-31 |
-| 3 | 3 months | Position lifecycle | **READY** 🟡 | — |
+| 2 | 2 months | Short-term behavior | **V2.3.14 READY** 🟡 | 2026-02-01 |
+| 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
 
@@ -79,21 +79,23 @@
 > **Stage 2 Code Audits:** `docs/audits/stage2-codeaudit.md`, `docs/audits/stage2-codeaudit2.md`
 > **Logs:** `docs/audits/logs/stage2/`
 
-### 🎉 V2.3.12 Backtest SUCCESS (2026-01-31)
+### V2.3.12 Backtest Results (2026-01-31)
 
-**Backtest:** V2.3.12-ComboFix-2month | **Result:** **+4.09%** ✅ | **Orders:** 143 | **Fees:** $120.49
+**Backtest:** V2.3.12-ComboFix-2month | **Result:** +4.09% | **Orders:** 143 | **Options:** 7 only!
 
-| Metric | Value |
-|--------|------:|
-| Return | **+4.09%** |
-| Equity | $50,000 → $52,047 |
-| Orders | 143 |
-| Sharpe | 0.656 |
-| Sortino | 0.905 |
-| Win Rate | 42% |
-| Drawdown | 9.10% |
+| Metric | Value | Notes |
+|--------|------:|-------|
+| Return | +4.09% | First profitable backtest |
+| Equity | $50,000 → $52,047 | |
+| Orders | 143 | But only 7 options trades! |
+| Sharpe | 0.656 | |
+| Sortino | 0.905 | |
+| Win Rate | 42% | |
+| Drawdown | 9.10% | |
 
 **URL:** https://www.quantconnect.com/project/27678023/99384af2cd3dfa3219d6f95ba2f584fd
+
+**Issue Found:** PART 16 analysis revealed 99% of options signals were blocked by `_entry_attempted_today` throttle. V2.3.14 fixes this - expecting significantly more options trades.
 
 ### Stage 2 V2.3.2 Backtest Validation (Historical)
 

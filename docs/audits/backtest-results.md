@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-01 (V2.3.13: Options orders not executing - CRITICAL BUG FIX)
+> **Last Updated:** 2026-02-01 (V2.3.14: PART 16 architect fixes - 99% signal recovery)
 
 ---
 
@@ -28,15 +28,15 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | Stage | Duration | Purpose | Status |
 |:-----:|----------|---------|:------:|
 | 1 | 1 day (Jan 2, 2024) | Basic validation - no errors, Initialize() completes | **PASS** ✅ |
-| 2 | 2 months (Jan-Feb 2024) | Short-term behavior, actual trades | **V2.3.12 PASS** ✅ |
-| 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | **READY** 🟡 |
+| 2 | 2 months (Jan-Feb 2024) | Short-term behavior, actual trades | **V2.3.14 READY** 🟡 |
+| 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
 
-### Stage 2 Summary (2026-01-31)
+### Stage 2 Summary (2026-02-01)
 
-**Previous Run:** Smooth Magenta Bat | **Result:** -8.33% | **Orders:** 9
-**V2.3.12 Run:** V2.3.12-ComboFix-2month | **Result:** **+4.09%** ✅ | **Orders:** 143 | **Fees:** $120.49
+**V2.3.12 Run:** V2.3.12-ComboFix-2month | **Result:** +4.09% | **Orders:** 143 (but only 7 options!)
+**V2.3.14 Run:** Pending | **Expected:** Significantly more options trades (99% were blocked)
 
 #### V2.3.12 Backtest Results (Jan 1 - Feb 29, 2024)
 
