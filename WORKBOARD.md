@@ -345,6 +345,44 @@ SPREAD: No valid OTM contract for short leg                   ← Swing mode fai
 
 **Status:** V2.3.13 fixes complete - Ready for backtest validation
 
+**V2.3.14 FIX: PART 16 Architect Recommendations (2026-02-01):**
+
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **Entry throttle blocking 99% of signals** - `_entry_attempted_today` blocked ALL after first signal | CRITICAL | ✅ FIXED |
+| 2 | **Hardcoded fade kills momentum** - Direction determined BEFORE engine recommendation | HIGH | ✅ FIXED |
+| 3 | **Swing spreads fail, no fallback** - "No valid ATM contract" with no single-leg option | HIGH | ✅ FIXED |
+
+**V2.3.14 Key Changes:**
+
+**Fix 1: Entry Throttle (Critical)**
+- Removed `_entry_attempted_today` flag check from `check_intraday_entry_signal()`
+- Added `INTRADAY_MAX_TRADES_PER_DAY = 3` config (was implicit 1)
+- Increment `_intraday_trades_today` when position is registered (after fill)
+- Evidence: 639 DEBIT_FADE recommendations → 7 signals (99% blocked by old throttle)
+
+**Fix 2: Momentum Direction**
+- Added `get_intraday_direction()` method to OptionsEngine
+- main.py now gets engine recommendation FIRST, then selects matching contract
+- OLD: Hardcoded fade (QQQ up → PUT) blocked all momentum trades
+- NEW: Engine decides direction based on VIX Level × VIX Direction regime
+
+**Fix 3: Single-Leg Swing Fallback**
+- When spread selection fails ("No valid ATM contract"), now falls back to single-leg ITM
+- Uses existing `_select_swing_option_contract()` (0.70 delta, 5-45 DTE)
+- Logs `SWING_FALLBACK: Single-leg {direction} after spread failure`
+
+**Root Cause Analysis (from V2.3.12 logs):**
+```
+Jan 8: 52 DEBIT_FADE recommendations → 1 signal fired
+  10:00-10:29: Blocked by time window (DEBIT_FADE starts 10:30)
+  10:30: First signal fires, _entry_attempted_today = True
+  10:33: Trade stops out
+  10:34+: ALL subsequent signals blocked by _entry_attempted_today
+```
+
+**Status:** V2.3.14 fixes complete - Ready for backtest validation
+
 ---
 
 **V2.4.0 Planned: Bidirectional Mean Reversion (PART 12)**

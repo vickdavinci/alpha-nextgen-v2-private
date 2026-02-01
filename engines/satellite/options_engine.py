@@ -2194,8 +2194,10 @@ class OptionsEngine:
         if self._intraday_position is not None:
             return None
 
-        # V2.3 FIX: Check if entry already attempted today (prevents order spam)
-        if self._entry_attempted_today:
+        # V2.3.14 FIX: Use trades count instead of entry_attempted flag
+        # The old flag blocked ALL subsequent attempts after first signal,
+        # even after trade exited. Now we allow multiple intraday trades.
+        if self._intraday_trades_today >= config.INTRADAY_MAX_TRADES_PER_DAY:
             return None
 
         # Update Micro Regime Engine
@@ -2297,8 +2299,9 @@ class OptionsEngine:
             f"({state.qqq_move_pct:+.2f}%) | {direction.value} x{num_contracts}"
         )
 
-        # V2.3 FIX: Mark that we attempted entry today (prevents retry spam)
-        self._entry_attempted_today = True
+        # V2.3.14: Removed _entry_attempted_today flag - was blocking ALL subsequent
+        # attempts after first signal even after trade exited. Now using _intraday_trades_today
+        # counter which is incremented when position is registered (after fill).
 
         # V2.3.2 FIX #4: Mark this as intraday entry for correct position tracking
         self._pending_intraday_entry = True
@@ -2452,6 +2455,43 @@ class OptionsEngine:
         """Get current Micro Regime Engine state."""
         return self._micro_regime_engine.get_state()
 
+    def get_intraday_direction(
+        self,
+        vix_current: float,
+        vix_open: float,
+        qqq_current: float,
+        qqq_open: float,
+        current_time: str,
+    ) -> Optional[OptionDirection]:
+        """
+        V2.3.14: Get recommended intraday direction from Micro Regime Engine.
+
+        Updates the engine state and returns the recommended direction.
+        This should be called BEFORE selecting the contract to avoid
+        direction mismatch (hardcoded fade vs engine momentum recommendation).
+
+        Args:
+            vix_current: Current VIX value.
+            vix_open: VIX at market open.
+            qqq_current: Current QQQ price.
+            qqq_open: QQQ at market open.
+            current_time: Timestamp string.
+
+        Returns:
+            Recommended OptionDirection (CALL or PUT), or None if NO_TRADE.
+        """
+        # Update Micro Regime Engine
+        state = self._micro_regime_engine.update(
+            vix_current=vix_current,
+            vix_open=vix_open,
+            qqq_current=qqq_current,
+            qqq_open=qqq_open,
+            current_time=current_time,
+        )
+
+        # Return the engine's recommended direction
+        return state.recommended_direction
+
     def update_market_open_data(
         self, vix_open: float, spy_open: float, spy_prior_close: float
     ) -> None:
@@ -2538,8 +2578,10 @@ class OptionsEngine:
         if self._pending_intraday_entry:
             self._intraday_position = position
             self._pending_intraday_entry = False  # Clear flag
+            # V2.3.14: Increment intraday trade counter (allows multiple trades per day)
+            self._intraday_trades_today += 1
             self.log(
-                f"OPT: INTRADAY position registered (will force-close at 15:30)",
+                f"OPT: INTRADAY position registered (trade #{self._intraday_trades_today}, force-close at 15:30)",
                 trades_only=True,
             )
         else:

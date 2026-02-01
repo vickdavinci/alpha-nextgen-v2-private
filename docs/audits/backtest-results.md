@@ -84,6 +84,34 @@ SPREAD: No valid OTM contract for short leg                   ← Swing mode fai
 
 **Status:** Ready for V2.3.13 backtest validation
 
+### V2.3.14 Fix: PART 16 Architect Recommendations (2026-02-01)
+
+**Based on analysis of V2.3.12 logs (V2_3_12_ComboFix_2month_logs.txt)**
+
+| Issue | Evidence | Impact | Fix |
+|-------|----------|--------|-----|
+| Entry throttle too aggressive | 639 DEBIT_FADE → 7 signals | 99% signal loss | Use trades count, not attempt flag |
+| Hardcoded fade direction | 0 ITM_MOMENTUM signals | 100% momentum loss | Get engine direction first |
+| No single-leg fallback | "No valid ATM" thousands of times | 100% swing spread loss | Add single-leg fallback |
+
+**Key Evidence from Logs:**
+```
+Jan 8, 2024:
+  10:00-10:29: DEBIT_FADE recommended (52 times) but blocked by time window
+  10:30:00: INTRADAY_SIGNAL fires! Entry @ $0.49
+  10:33:00: STOP_TRIGGERED! Exit @ $0.42 (-15%)
+  10:34+: ALL subsequent DEBIT_FADE blocked by _entry_attempted_today
+```
+
+**Fixes Applied:**
+1. Replaced `_entry_attempted_today` with `_intraday_trades_today >= INTRADAY_MAX_TRADES_PER_DAY`
+2. Added `get_intraday_direction()` - engine decides direction, not hardcoded fade
+3. Added single-leg swing fallback when spread selection fails
+
+**Config Change:** `INTRADAY_MAX_TRADES_PER_DAY = 3` (allows 3 intraday trades per day)
+
+**Status:** Ready for V2.3.14 backtest validation
+
 **V2.3.2 Architect Audit Fixes Applied (Part 1-2):**
 
 | # | Fix | File(s) | Status |

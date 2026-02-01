@@ -2526,16 +2526,26 @@ class AlphaNextGen(QCAlgorithm):
         adx_value = self.qqq_adx.Current.Value
         ma200_value = self.qqq_sma200.Current.Value
 
-        # V2.3.4 FIX: Determine direction FIRST based on QQQ move, THEN select contract
-        # This fixes the "Direction mismatch" bug where we selected a CALL but needed a PUT
+        # V2.3.14 FIX: Get direction from Micro Regime Engine FIRST, then select contract
+        # OLD CODE hardcoded "fade" direction (QQQ up -> PUT, QQQ down -> CALL)
+        # This blocked all MOMENTUM trades where engine recommends SAME direction as move
+        # (e.g., QQQ up + VIX rising = engine recommends CALL to ride momentum)
         if self._qqq_at_open > 0:  # Only if we have market open data
-            # STEP 1: Determine direction based on QQQ move (DEBIT_FADE logic)
-            # Fade = bet AGAINST the move: QQQ up -> PUT, QQQ down -> CALL
-            qqq_move = qqq_price - self._qqq_at_open
-            intraday_direction = OptionDirection.PUT if qqq_move > 0 else OptionDirection.CALL
+            # STEP 1: Get engine recommendation (updates micro regime state)
+            intraday_direction = self.options_engine.get_intraday_direction(
+                vix_current=self._current_vix,
+                vix_open=self._vix_at_open,
+                qqq_current=qqq_price,
+                qqq_open=self._qqq_at_open,
+                current_time=str(self.Time),
+            )
 
-            # STEP 2: Select contract matching the determined direction
-            intraday_contract = self._select_intraday_option_contract(chain, intraday_direction)
+            # If engine recommends NO_TRADE, skip contract selection
+            if intraday_direction is None:
+                intraday_contract = None
+            else:
+                # STEP 2: Select contract matching ENGINE recommendation (not hardcoded fade)
+                intraday_contract = self._select_intraday_option_contract(chain, intraday_direction)
 
             # Verify contract has valid bid/ask before proceeding
             if (
@@ -2587,42 +2597,63 @@ class AlphaNextGen(QCAlgorithm):
             contracts=candidate_contracts,
             direction=direction,
         )
-        if spread_legs is None:
-            return
-
-        long_leg, short_leg = spread_legs
-
-        # Verify both legs have valid bid/ask
-        if long_leg.bid <= 0 or long_leg.ask <= 0:
-            return
-        if short_leg.bid <= 0 or short_leg.ask <= 0:
-            return
 
         # Calculate IV rank from options chain (V2.1)
         iv_rank = self._calculate_iv_rank(chain)
 
-        # V2.3: Check for spread entry signal
-        signal = self.options_engine.check_spread_entry_signal(
-            regime_score=regime_score,
-            vix_current=self._current_vix,
-            adx_value=adx_value,
-            current_price=qqq_price,
-            ma200_value=ma200_value,
-            iv_rank=iv_rank,
-            current_hour=self.Time.hour,
-            current_minute=self.Time.minute,
-            current_date=str(self.Time.date()),
-            portfolio_value=self.Portfolio.TotalPortfolioValue,
-            long_leg_contract=long_leg,
-            short_leg_contract=short_leg,
-            gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
-            vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
-        )
+        if spread_legs is not None:
+            long_leg, short_leg = spread_legs
 
-        if signal:
-            self.portfolio_router.receive_signal(signal)
-            # V2.3.13 FIX: MUST process immediately - spread signals use IMMEDIATE urgency
-            self._process_immediate_signals()
+            # Verify both legs have valid bid/ask
+            if long_leg.bid > 0 and long_leg.ask > 0 and short_leg.bid > 0 and short_leg.ask > 0:
+                # V2.3: Check for spread entry signal
+                signal = self.options_engine.check_spread_entry_signal(
+                    regime_score=regime_score,
+                    vix_current=self._current_vix,
+                    adx_value=adx_value,
+                    current_price=qqq_price,
+                    ma200_value=ma200_value,
+                    iv_rank=iv_rank,
+                    current_hour=self.Time.hour,
+                    current_minute=self.Time.minute,
+                    current_date=str(self.Time.date()),
+                    portfolio_value=self.Portfolio.TotalPortfolioValue,
+                    long_leg_contract=long_leg,
+                    short_leg_contract=short_leg,
+                    gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
+                    vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
+                )
+
+                if signal:
+                    self.portfolio_router.receive_signal(signal)
+                    # V2.3.13 FIX: MUST process immediately - spread signals use IMMEDIATE urgency
+                    self._process_immediate_signals()
+                    return  # Spread trade placed, don't try single-leg
+
+        # V2.3.14 FIX: Single-leg swing fallback when spread selection fails
+        # Spread often fails due to tight delta/OI/spread filters - fall back to ITM single-leg
+        if not self.options_engine.has_position():
+            best_contract = self._select_swing_option_contract(chain, direction)
+            if best_contract is not None and best_contract.bid > 0 and best_contract.ask > 0:
+                signal = self.options_engine.check_entry_signal(
+                    adx_value=adx_value,
+                    current_price=qqq_price,
+                    ma200_value=ma200_value,
+                    iv_rank=iv_rank,
+                    best_contract=best_contract,
+                    current_hour=self.Time.hour,
+                    current_minute=self.Time.minute,
+                    current_date=str(self.Time.date()),
+                    portfolio_value=self.Portfolio.TotalPortfolioValue,
+                    regime_score=regime_score,
+                    gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
+                    vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
+                )
+
+                if signal:
+                    self.Log(f"SWING_FALLBACK: Single-leg {direction.value} after spread failure")
+                    self.portfolio_router.receive_signal(signal)
+                    self._process_immediate_signals()
 
     def _monitor_risk_greeks(self, data: Slice) -> None:
         """

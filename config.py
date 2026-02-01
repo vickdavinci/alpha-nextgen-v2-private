@@ -351,6 +351,9 @@ OPTIONS_TOTAL_ALLOCATION = 0.25  # 25% total options budget (increased from 20%)
 OPTIONS_SWING_ALLOCATION = 0.1875  # 18.75% for Swing Mode (75% of 25%)
 OPTIONS_INTRADAY_ALLOCATION = 0.0625  # 6.25% for Intraday Mode (25% of 25%)
 
+# V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
+INTRADAY_MAX_TRADES_PER_DAY = 3  # Allow up to 3 intraday trades per day
+
 # Legacy compatibility (combined min/max)
 OPTIONS_ALLOCATION_MIN = 0.25  # 25% minimum
 OPTIONS_ALLOCATION_MAX = 0.30  # 30% maximum
