@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-01-31 (V2.3.12 Backtest SUCCESS: +4.09% Return, 143 Orders)
+> **Last Updated:** 2026-02-01 (V2.3.13: Options orders not executing - CRITICAL BUG FIX)
 
 ---
 
@@ -62,6 +62,27 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 3. ✅ **ADX Exit Threshold** (V2.3.12) - 20 → 10 holds during consolidation
 4. ✅ **VIX Barriers Lowered** (V2.3.11/12) - More 0DTE opportunities
 5. ✅ **Expiring Options Safety** (V2.3.11) - 15:45 force close prevents auto-exercise
+
+### V2.3.13 Critical Fix: Options Orders Not Executing (2026-02-01)
+
+**Problem:** Micro regime engine was selecting contracts but orders never fired.
+
+**Root Cause:** In `_scan_options_signals()` (main.py), intraday signals were added to `_pending_weights` via `receive_signal()` but `_process_immediate_signals()` was NEVER called. The function returned early via swing spread path, and by the time `OnData` step 9 ran, the signal was lost.
+
+**Evidence from logs:**
+```
+INTRADAY: Selected PUT | Strike=425.0 | Delta=0.24 | DTE=0   ← Contract selected OK
+SPREAD: No valid OTM contract for short leg                   ← Swing mode fails (separate issue)
+                                                              ← No order fired! Signal lost.
+```
+
+**Comparison:** Every other place in the codebase calls `_process_immediate_signals()` after receiving IMMEDIATE urgency signals (MR entries, stop hits, force exits). Only options signals were missing this call.
+
+**Fix Applied:**
+- Added `_process_immediate_signals()` after intraday signal reception (main.py line 2561)
+- Added `_process_immediate_signals()` after spread signal reception (main.py line 2626)
+
+**Status:** Ready for V2.3.13 backtest validation
 
 **V2.3.2 Architect Audit Fixes Applied (Part 1-2):**
 

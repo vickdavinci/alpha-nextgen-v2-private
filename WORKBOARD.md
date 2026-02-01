@@ -322,6 +322,29 @@
 
 **Status:** V2.3.12 BACKTEST PASSED ✅ - +4.09% Return, 143 Orders, Sharpe 0.656
 
+**V2.3.13 FIX: Options Orders Not Executing (2026-02-01):**
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **Intraday signals queued but never processed** - Missing `_process_immediate_signals()` call | CRITICAL | ✅ FIXED |
+| 2 | **Spread signals also missing processing** - Same bug for swing spread orders | CRITICAL | ✅ FIXED |
+
+**V2.3.13 Key Changes:**
+- Added `_process_immediate_signals()` after intraday signal reception (main.py line 2561)
+- Added `_process_immediate_signals()` after spread signal reception (main.py line 2626)
+
+**Root Cause (Intraday):** In `_scan_options_signals()`, intraday signal was added to `_pending_weights` via `receive_signal()` but NEVER processed. Every other place in the codebase calls `_process_immediate_signals()` after receiving an IMMEDIATE signal. The function returned early via swing spread path (line 2575), and by the time `OnData` step 9 ran, the signal was lost.
+
+**Root Cause (Spread):** Same bug - spread signals also use `Urgency.IMMEDIATE` but were not being processed immediately.
+
+**Evidence from logs:**
+```
+INTRADAY: Selected PUT | Strike=425.0 | Delta=0.24 | DTE=0  ← Contract selected
+SPREAD: No valid OTM contract for short leg                   ← Swing mode fails (different issue)
+                                                              ← No order fired!
+```
+
+**Status:** V2.3.13 fixes complete - Ready for backtest validation
+
 ---
 
 **V2.4.0 Planned: Bidirectional Mean Reversion (PART 12)**

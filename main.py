@@ -2556,6 +2556,9 @@ class AlphaNextGen(QCAlgorithm):
                 )
                 if intraday_signal:
                     self.portfolio_router.receive_signal(intraday_signal)
+                    # V2.3.13 FIX: MUST process immediately - signal was being queued but never executed!
+                    # The function returns early via swing spread path, so signal was lost
+                    self._process_immediate_signals()
                     # V2.3.3 FIX: Don't return here - allow swing check to run too
                     # Previously returned early, blocking swing spreads entirely
 
@@ -2618,6 +2621,8 @@ class AlphaNextGen(QCAlgorithm):
 
         if signal:
             self.portfolio_router.receive_signal(signal)
+            # V2.3.13 FIX: MUST process immediately - spread signals use IMMEDIATE urgency
+            self._process_immediate_signals()
 
     def _monitor_risk_greeks(self, data: Slice) -> None:
         """
