@@ -494,15 +494,16 @@ class MicroRegimeEngine:
         move_pct = (qqq_current - qqq_open) / qqq_open * 100
 
         # Classify move direction and magnitude
-        # V2.3.4: Lowered thresholds from 0.3% to 0.15% to allow more trades
-        # 0.3% was too restrictive - most intraday moves stayed "FLAT"
+        # V2.3.15 SNIPER LOGIC: Raised threshold from 0.15% to 0.35%
+        # 0.15% was market noise causing excessive signals (PART 17 finding)
+        # Gate 1: QQQ_NOISE_THRESHOLD filters out noise before strategy logic
         if move_pct > 0.8:
             return QQQMove.UP_STRONG, move_pct
-        elif move_pct > 0.15:
+        elif move_pct > config.QQQ_NOISE_THRESHOLD:  # V2.3.15: 0.35% (was 0.15%)
             return QQQMove.UP, move_pct
         elif move_pct < -0.8:
             return QQQMove.DOWN_STRONG, move_pct
-        elif move_pct < -0.15:
+        elif move_pct < -config.QQQ_NOISE_THRESHOLD:  # V2.3.15: -0.35% (was -0.15%)
             return QQQMove.DOWN, move_pct
         else:
             return QQQMove.FLAT, move_pct
@@ -762,6 +763,7 @@ class MicroRegimeEngine:
         # =====================================================================
         # RULE 5: FADE SETUP (Mean Reversion)
         # Best setup: QQQ moved + VIX falling = market calming, fade the move
+        # V2.3.15 SNIPER LOGIC: Added Gate 3a minimum move check (0.50%)
         # =====================================================================
         fade_regimes = {
             MicroRegime.PERFECT_MR,
@@ -773,6 +775,15 @@ class MicroRegimeEngine:
         if micro_regime in fade_regimes and micro_score >= config.MICRO_SCORE_MODERATE:
             # VIX falling = safe to fade
             if vix_is_falling or vix_direction == VIXDirection.STABLE:
+                # V2.3.15 SNIPER: Gate 3a - FADE requires minimum move (0.50%)
+                # This prevents fading tiny moves that are just noise
+                if abs(qqq_move_pct) < config.INTRADAY_DEBIT_FADE_MIN_MOVE:
+                    return (
+                        IntradayStrategy.NO_TRADE,
+                        None,
+                        f"FADE blocked: |{qqq_move_pct:.2f}%| < {config.INTRADAY_DEBIT_FADE_MIN_MOVE}% min",
+                    )
+
                 if qqq_is_up:
                     # QQQ up + VIX falling/stable = Buy PUT (fade the rally)
                     return (
@@ -851,14 +862,15 @@ class MicroRegimeEngine:
         Legacy method for backwards compatibility.
         Use recommend_strategy_and_direction() for new code.
         """
-        # Create QQQMove from percentage (V2.3.4: lowered from 0.3% to 0.15%)
+        # Create QQQMove from percentage
+        # V2.3.15 SNIPER LOGIC: Use config threshold (0.35%) not hardcoded 0.15%
         if qqq_move_pct > 0.8:
             qqq_move = QQQMove.UP_STRONG
-        elif qqq_move_pct > 0.15:
+        elif qqq_move_pct > config.QQQ_NOISE_THRESHOLD:
             qqq_move = QQQMove.UP
         elif qqq_move_pct < -0.8:
             qqq_move = QQQMove.DOWN_STRONG
-        elif qqq_move_pct < -0.15:
+        elif qqq_move_pct < -config.QQQ_NOISE_THRESHOLD:
             qqq_move = QQQMove.DOWN
         else:
             qqq_move = QQQMove.FLAT

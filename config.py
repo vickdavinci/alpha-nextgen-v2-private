@@ -352,7 +352,8 @@ OPTIONS_SWING_ALLOCATION = 0.1875  # 18.75% for Swing Mode (75% of 25%)
 OPTIONS_INTRADAY_ALLOCATION = 0.0625  # 6.25% for Intraday Mode (25% of 25%)
 
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
-INTRADAY_MAX_TRADES_PER_DAY = 3  # Allow up to 3 intraday trades per day
+# V2.3.15: Sniper Logic - allow one retry, not machine gun
+INTRADAY_MAX_TRADES_PER_DAY = 2  # Sniper gets one retry per day
 
 # Legacy compatibility (combined min/max)
 OPTIONS_ALLOCATION_MIN = 0.25  # 25% minimum
@@ -586,9 +587,12 @@ VIX_REVERSAL_CHOPPY = 4  # 3-4 reversals: Choppy
 # V2.1.1 INTRADAY STRATEGY PARAMETERS
 # -----------------------------------------------------------------------------
 
-# Debit Fade (Mean Reversion)
-INTRADAY_DEBIT_FADE_MIN_SCORE = 50  # Micro score >= 50
-INTRADAY_DEBIT_FADE_MIN_MOVE = 1.0  # QQQ move >= 1.0%
+# V2.3.15: Sniper Logic - Noise Filter (Gate 1)
+QQQ_NOISE_THRESHOLD = 0.35  # Minimum QQQ move to consider trading (was 0.15%)
+
+# Debit Fade (Mean Reversion) - Gate 3a
+INTRADAY_DEBIT_FADE_MIN_SCORE = 45  # Micro score >= 45 (MICRO_SCORE_MODERATE)
+INTRADAY_DEBIT_FADE_MIN_MOVE = 0.50  # V2.3.15: QQQ move >= 0.50% for FADE (was 1.0%)
 INTRADAY_DEBIT_FADE_VIX_MAX = 25  # VIX < 25
 INTRADAY_DEBIT_FADE_START = "10:30"  # Entry window start
 INTRADAY_DEBIT_FADE_END = "14:00"  # Entry window end

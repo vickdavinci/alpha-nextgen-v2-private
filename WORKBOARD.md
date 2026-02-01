@@ -70,7 +70,7 @@
 | Stage | Duration | Purpose | Status | Date |
 |:-----:|----------|---------|:------:|------|
 | 1 | 1 day | Basic validation | **PASS** ✅ | 2026-01-30 |
-| 2 | 2 months | Short-term behavior | **V2.3.14 READY** 🟡 | 2026-02-01 |
+| 2 | 2 months | Short-term behavior | **V2.3.15 READY** 🟡 | 2026-02-01 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
@@ -384,6 +384,47 @@ Jan 8: 52 DEBIT_FADE recommendations → 1 signal fired
 ```
 
 **Status:** V2.3.14 fixes complete - Ready for backtest validation
+
+**V2.3.15 FIX: SNIPER LOGIC - PART 17 Architect Recommendations (2026-02-01):**
+
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **QQQ threshold too loose** - 0.15% threshold treating noise as signals | HIGH | ✅ FIXED (→0.35%) |
+| 2 | **FADE missing min move check** - MOMENTUM has 0.80% but FADE had none | HIGH | ✅ FIXED (→0.50%) |
+| 3 | **Max trades too high** - 3 trades/day is machine-gunner, not sniper | MEDIUM | ✅ FIXED (→2) |
+
+**V2.3.15 Sniper Logic Key Changes:**
+
+**Philosophy:** "Sniper, not Machine Gunner" - Wait for high-conviction setups, filter noise
+
+**4-Gate System:**
+| Gate | Purpose | Threshold |
+|------|---------|-----------|
+| Gate 0 | Pre-flight checks | Position, trades, time window |
+| Gate 1 | Noise filter | QQQ move >= 0.35% |
+| Gate 2 | VIX context | Direction determines strategy |
+| Gate 3 | Strategy qualification | FADE >= 0.50%, MOMENTUM >= 0.80% |
+| Gate 4 | Contract selection | DTE, delta, OI, spread |
+
+**Config Changes:**
+```python
+# Gate 1: Noise Filter
+QQQ_NOISE_THRESHOLD = 0.35  # V2.3.15: was 0.15%
+
+# Gate 3a: FADE Strategy
+INTRADAY_DEBIT_FADE_MIN_MOVE = 0.50  # V2.3.15: new threshold
+
+# Trade Management
+INTRADAY_MAX_TRADES_PER_DAY = 2  # V2.3.15: was 3 (sniper gets one retry)
+```
+
+**Code Changes:**
+1. `classify_qqq_move()` - Uses `config.QQQ_NOISE_THRESHOLD` (0.35%) for UP/DOWN classification
+2. `recommend_strategy_and_direction()` - Added Gate 3a FADE min move check (0.50%)
+
+**Documentation:** `docs/v2-specs/SNIPER_LOGIC_V2.3.15.md` - Complete specification with flowchart
+
+**Status:** V2.3.15 SNIPER LOGIC complete - Ready for backtest validation
 
 ---
 
@@ -999,4 +1040,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 31 January 2026 (V2.3.4 Micro Regime + VIX Resolution Fixes Complete)*
+*Last Updated: 01 February 2026 (V2.3.15 SNIPER LOGIC - 4-gate filtering system)*

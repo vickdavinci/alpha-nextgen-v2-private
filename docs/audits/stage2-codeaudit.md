@@ -1045,3 +1045,189 @@ Logic: Lower ADX Threshold (Unblock Trend Engine).
 Hygiene: increase SHV Min Trade (Stop "Invalid" order spam).
 
 The system is profitable, but currently relying on a margin-call lucky break. Secure the exits before running this live.
+
+#### PART 16 ####
+
+Based on a review of your logs (V2_3_12_ComboFix) and the codebase (main.py, options_engine.py), I have identified why the options are not firing.
+
+You are correct that the DTE selection logic is too rigid, but the bigger issue is a Logic Conflict in main.py that is killing 50% of your valid 0DTE signals, and a Missing Implementation that is killing your Swing (Macro) single-leg trades.
+
+Here is the breakdown of why trades are not happening.
+
+1. The 0DTE "Momentum" Killer (Logic Bug)
+The Symptom: Your Micro Regime Engine correctly identifies "Momentum" opportunities, but main.py blocks them. The Cause: In main.py, you force the direction to be a "Fade" (Reversal) before asking the engine what strategy to run.
+
+Step 1 (main.py): You calculate intraday_direction. If QQQ is UP, you set direction to PUT (betting it goes down).
+
+Python
+# main.py lines 1410+
+qqq_move = qqq_price - self._qqq_at_open
+# HARDCODED FADE LOGIC:
+intraday_direction = OptionDirection.PUT if qqq_move > 0 else OptionDirection.CALL
+Step 2 (options_engine.py): The engine sees a Momentum setup (QQQ UP + VIX Rising) and recommends CALL (betting it continues up).
+
+Python
+# options_engine.py
+if state.recommended_strategy == IntradayStrategy.ITM_MOMENTUM:
+    # returns OptionDirection.CALL
+Step 3 (The Crash): The engine compares your forced PUT (from Step 1) with its recommended CALL (from Step 2).
+
+Python
+# options_engine.py
+if best_contract.direction != direction:
+    self.log(f"INTRADAY: Direction mismatch... skipping")
+    return None
+The Result: You can ONLY trade Mean Reversion (Fade). All Momentum trades are instantly rejected as "Direction Mismatch."
+
+2. The Macro (Swing) Engine is "Spread Only"
+The Symptom: You are seeing zero single-leg Swing trades (e.g., buying a Call for a 10-day hold). The Cause: You implemented _select_swing_option_contract, but you never call it.
+
+In main.py -> _generate_options_signals, the logic only builds candidates for Spreads (_build_spread_candidate_contracts) and calls check_spread_entry_signal.
+
+There is zero code in that function to trigger a single-leg Swing entry. The Swing logic is currently hard-locked to Spreads only.
+
+3. The DTE Selection Logic is "Passive" (Not "Active")
+The Symptom: You suspect the code doesn't select "Correct DTEs." The Reality: The code selects any DTE in the allowed window, rather than the best DTE.
+
+Swing Mode: config.SPREAD_DTE_MIN = 10, MAX = 21. The code grabs all contracts in this range and sorts them by Delta, not DTE.
+
+Risk: It might pick a 21-day option when a 14-day option was better, or vice versa, purely because the 21-day option had a delta closer to 0.50.
+
+Intraday Mode: It correctly prioritizes 0DTE because _select_intraday_option_contract uses a score that penalizes higher DTE (1.0 / (1.0 + dte)).
+
+🚀 The Fixes
+Fix 1: Enable Momentum Trades (0DTE)
+Modify main.py to let the Engine decide the direction, not the main.py loop.
+
+In main.py -> _scan_options_signals:
+
+Current: Determine direction -> Select Contract -> Call Engine.
+
+New: Get Strategy from Engine -> Determine Direction -> Select Contract -> Call Engine.
+
+Since you cannot easily query the strategy without running the update, a simpler fix is to pass BOTH directions to the contract selector if you don't know the strategy yet, or iterate both.
+
+Recommended Fix: remove the hardcoded fade logic in main.py.
+
+Python
+# OLD (Broken):
+# intraday_direction = OptionDirection.PUT if qqq_move > 0 else OptionDirection.CALL
+# intraday_contract = self._select_intraday_option_contract(chain, intraday_direction)
+
+# NEW (Correct):
+# 1. Ask Engine for current state/recommendation FIRST
+micro_state = self.options_engine.get_micro_regime_state()
+recommended_dir = micro_state.recommended_direction
+
+if recommended_dir:
+    # 2. Select contract based on ENGINE recommendation
+    intraday_contract = self._select_intraday_option_contract(chain, recommended_dir)
+Fix 2: Enable Single-Leg Swing Trades
+In main.py -> _generate_options_signals, add the missing block to handle single-leg entries if Spreads are not selected.
+
+Python
+# Inside _generate_options_signals, after Spread logic...
+
+# If no spread selected, try single leg
+if not self.options_engine.has_position():
+    # 1. Select Contract (using the unused _select_swing_option_contract)
+    best_contract = self._select_swing_option_contract(chain, direction)
+    
+    # 2. Call Check Entry
+    if best_contract:
+        signal = self.options_engine.check_entry_signal(
+            ...,
+            best_contract=best_contract,
+            ...
+        )
+        if signal:
+            self.portfolio_router.receive_signal(signal)
+Fix 3: Target Specific DTEs
+Update options_engine.py -> select_spread_legs to sort by DTE proximity to target (e.g., 14 days) instead of just Delta.
+
+Python
+# In select_spread_legs
+# TARGET: 14 DTE
+long_candidates.sort(key=lambda c: (
+    abs(c.days_to_expiry - 14), # Primary sort: Close to 2 weeks
+    abs(abs(c.delta) - 0.50)    # Secondary sort: Close to ATM
+))
+Apply Fix 1 immediately to unblock your 0DTE Momentum trades.
+
+#### PART 17 ####
+
+Based on the code analysis, your intuition is correct. The system is generating "too many signals" because the sensitivity thresholds were drastically lowered, specifically for the "Fade" (Reversion) strategy.
+
+Increasing the daily trade limit to 3 is a mistake if your goal is "Sniper" logic. That is treating the symptom (too many signals), not the root cause (loose triggers).
+
+Here is the exact location of the logic, the specific lines causing the signal flood, and the recommended fix to restore "Sniper" status.
+
+1. Where Directions Are Finalized (The "Brains")
+The direction logic is calculated inside engines/satellite/options_engine.py within the MicroRegimeEngine class.
+
+A. VIX Direction (The Context)
+
+Location: classify_vix_direction (Lines 575–608)
+
+Logic: It compares Current VIX vs Open VIX.
+
+Status: Robust. It checks for "Whipsaw" (chaos) and categorizes moves as Rising, Falling, or Stable.
+
+B. QQQ Direction (The Signal Trigger)
+
+Location: classify_qqq_move (Lines 636–660)
+
+Logic: It compares Current Price vs Open Price.
+
+THE LEAK: The threshold was lowered to 0.15%.
+
+Python
+# V2.3.4: Lowered thresholds from 0.3% to 0.15% to allow more trades
+elif move_pct > 0.15:
+    return QQQMove.UP, move_pct
+Impact: A 0.15% move is essentially market noise. This classifies almost any movement as a valid "Trend," causing the engine to try and trade it.
+
+2. The Trigger Logic (Where it fires)
+The actual decision to trade happens in recommend_strategy_and_direction (Lines 780–890).
+
+There are two main strategies, and one is "protected" while the other is "loose":
+
+Strategy 1: MOMENTUM (Ride the move)
+
+Status: PROTECTED.
+
+It has an explicit guardrail: if abs(qqq_move_pct) >= config.INTRADAY_ITM_MIN_MOVE:
+
+In config.py, this is set to 0.8%. It acts like a sniper.
+
+Strategy 2: FADE (Mean Reversion)
+
+Status: LEAKING.
+
+The Logic:
+
+Python
+if qqq_is_up: # Defined as > 0.15% in classify_qqq_move
+     return (IntradayStrategy.DEBIT_FADE, OptionDirection.PUT, ...)
+The Problem: Because classify_qqq_move flags "UP" at only 0.15%, the Fade strategy tries to "short the top" of tiny, insignificant intraday ripples. This generates the flood of signals.
+
+3. Recommendation: Restore Sniper Logic
+Do NOT allow 3 trades per day. That turns your "Sniper" into a "Machine Gunner" spraying at noise.
+
+Fix 1: Tighten the QQQ Definition In engines/satellite/options_engine.py, modify classify_qqq_move to restore the 0.3% or 0.4% threshold. 0.15% is too noisy.
+
+Python
+# RESTORE SNIPER THRESHOLD
+elif move_pct > 0.35: # Was 0.15
+    return QQQMove.UP, move_pct
+Fix 2: Add Minimum Move Check to Fade Strategy In engines/satellite/options_engine.py -> recommend_strategy_and_direction, add a hard check for the Fade strategy, similar to the Momentum strategy.
+
+Python
+# CURRENT (Loose)
+if qqq_is_up: ...
+
+# PROPOSED (Sniper)
+# Only fade if the move is actually extended (> 0.5%)
+if qqq_is_up and abs(qqq_move_pct) > 0.50:
+    return (IntradayStrategy.DEBIT_FADE, ...)
+Summary for your Developer: "The signal flood is caused by classify_qqq_move triggering QQQMove.UP at only 0.15%. This causes the DEBIT_FADE strategy to fire on market noise. Please revert the QQQ threshold to 0.35% and enforce a minimum move of 0.5% inside the Fade logic block. Keep OPTIONS_MAX_TRADES_PER_DAY = 1."

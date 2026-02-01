@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-01 (V2.3.14: PART 16 architect fixes - 99% signal recovery)
+> **Last Updated:** 2026-02-01 (V2.3.15: SNIPER LOGIC - 4-gate filtering system)
 
 ---
 
@@ -28,7 +28,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | Stage | Duration | Purpose | Status |
 |:-----:|----------|---------|:------:|
 | 1 | 1 day (Jan 2, 2024) | Basic validation - no errors, Initialize() completes | **PASS** ✅ |
-| 2 | 2 months (Jan-Feb 2024) | Short-term behavior, actual trades | **V2.3.14 READY** 🟡 |
+| 2 | 2 months (Jan-Feb 2024) | Short-term behavior, actual trades | **V2.3.15 READY** 🟡 |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
@@ -36,7 +36,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 ### Stage 2 Summary (2026-02-01)
 
 **V2.3.12 Run:** V2.3.12-ComboFix-2month | **Result:** +4.09% | **Orders:** 143 (but only 7 options!)
-**V2.3.14 Run:** Pending | **Expected:** Significantly more options trades (99% were blocked)
+**V2.3.15 Run:** Pending | **Expected:** Higher-quality options trades via Sniper Logic (4-gate filtering)
 
 #### V2.3.12 Backtest Results (Jan 1 - Feb 29, 2024)
 
@@ -111,6 +111,55 @@ Jan 8, 2024:
 **Config Change:** `INTRADAY_MAX_TRADES_PER_DAY = 3` (allows 3 intraday trades per day)
 
 **Status:** Ready for V2.3.14 backtest validation
+
+### V2.3.15 Fix: SNIPER LOGIC - PART 17 Architect Recommendations (2026-02-01)
+
+**Problem:** V2.3.14 may fire too many options orders - micro engine needs to be a sniper, not machine gunner.
+
+**Root Cause Analysis (from PART 17):**
+1. QQQ threshold at 0.15% was too loose - treating market noise as tradeable signals
+2. FADE strategy had no minimum move check (unlike MOMENTUM which has 0.80%)
+3. 3 trades/day allows too much churn - sniper gets one shot + one retry
+
+**Sniper Philosophy:** "Wait for high-conviction setups, filter noise"
+
+**4-Gate Filtering System:**
+| Gate | Purpose | Threshold |
+|------|---------|-----------|
+| Gate 0 | Pre-flight checks | Position, trades, time window |
+| Gate 1 | Noise filter | QQQ move >= 0.35% |
+| Gate 2 | VIX context | Direction determines strategy |
+| Gate 3 | Strategy qualification | FADE >= 0.50%, MOMENTUM >= 0.80% |
+| Gate 4 | Contract selection | DTE, delta, OI, spread |
+
+**Config Changes (V2.3.15):**
+```python
+# Gate 1: Noise Filter
+QQQ_NOISE_THRESHOLD = 0.35  # V2.3.15: was 0.15%
+
+# Gate 3a: FADE Strategy
+INTRADAY_DEBIT_FADE_MIN_MOVE = 0.50  # V2.3.15: new (QQQ must move >= 0.50% for FADE)
+
+# Trade Management
+INTRADAY_MAX_TRADES_PER_DAY = 2  # V2.3.15: was 3 (sniper gets one retry)
+```
+
+**Code Changes:**
+1. `classify_qqq_move()` - Now uses `config.QQQ_NOISE_THRESHOLD` (0.35%) for UP/DOWN classification
+2. `recommend_strategy_and_direction()` - Added Gate 3a FADE min move check:
+   - If `abs(qqq_move_pct) < 0.50%`, returns `NO_TRADE` with reason "FADE blocked"
+
+**Zone Classification:**
+```
+QQQ MOVE FROM OPEN
+0%        0.35%           0.50%                   0.80%
+│  NOISE   │   WATCHING    │      FADE ZONE        │    MOMENTUM ZONE
+│  (block) │   (no edge)   │  (if VIX calm)        │   (if VIX rising)
+```
+
+**Documentation:** Created `docs/v2-specs/SNIPER_LOGIC_V2.3.15.md` - Complete specification with flowchart
+
+**Status:** V2.3.15 SNIPER LOGIC complete - Ready for backtest validation
 
 **V2.3.2 Architect Audit Fixes Applied (Part 1-2):**
 
@@ -1109,4 +1158,4 @@ lean cloud backtest AlphaNextGen
 
 ---
 
-*Document created: 2026-01-30 | Last updated: 2026-01-31 (V2.3.9)*
+*Document created: 2026-01-30 | Last updated: 2026-02-01 (V2.3.15 SNIPER LOGIC)*
