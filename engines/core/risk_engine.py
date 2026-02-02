@@ -370,6 +370,10 @@ class RiskEngine:
             else "",
         )
 
+    def is_kill_switch_active(self) -> bool:
+        """V2.4.1: Quick check if kill switch is currently active."""
+        return self._kill_switch_active
+
     # =========================================================================
     # Panic Mode (SPY -4% Intraday)
     # =========================================================================
