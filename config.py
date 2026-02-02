@@ -598,6 +598,27 @@ FRIDAY_FIREWALL_VIX_CLOSE_ALL = 25  # VIX > 25: Close ALL swing options
 FRIDAY_FIREWALL_VIX_KEEP_FRESH = 15  # VIX < 15: Calm enough to keep fresh Friday trades
 
 # -----------------------------------------------------------------------------
+# V2.6 SPREAD FILL TRACKING & SAFETY (Bug Fixes #1-16)
+# -----------------------------------------------------------------------------
+
+# Fill tracking timeout - abort spread if not fully filled within this time
+SPREAD_FILL_TIMEOUT_MINUTES = 5  # Bug #7: Stale fill prices timeout
+
+# Action when leg quantities don't match expected
+SPREAD_FILL_QTY_MISMATCH_ACTION = "LOG_AND_CLOSE"  # or "LOG_ONLY"
+
+# Post-trade margin cooldown - wait for settlement before new entry
+OPTIONS_POST_TRADE_COOLDOWN_MINUTES = 2  # Bug #16: T+1 margin ghost
+
+# Exit order retry settings for gamma decay (0DTE)
+EXIT_ORDER_RETRY_COUNT = 3  # Bug #14: Retry failed exits
+EXIT_ORDER_RETRY_DELAY_SECONDS = 5  # Delay between retries
+
+# 0DTE forced exit time (3:30 PM ET = 30 min before close)
+ZERO_DTE_FORCE_EXIT_HOUR = 15
+ZERO_DTE_FORCE_EXIT_MINUTE = 30
+
+# -----------------------------------------------------------------------------
 # V2.1.1 VIX DIRECTION THRESHOLDS (Micro Regime Engine)
 # -----------------------------------------------------------------------------
 # VIX direction is THE key differentiator for intraday trading

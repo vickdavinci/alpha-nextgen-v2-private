@@ -283,6 +283,188 @@ class SpreadPosition:
 
 
 # =============================================================================
+# V2.6 SPREAD FILL TRACKER (Bug Fix Foundation)
+# =============================================================================
+
+
+@dataclass
+class SpreadFillTracker:
+    """
+    V2.6: Atomic tracking of spread leg fills with timeout and quantity validation.
+
+    Fixes multiple bugs:
+    - Bug #1: Race condition in fill tracking (pending legs cleared too early)
+    - Bug #6: No quantity tracking on fills
+    - Bug #7: Stale fill prices no timeout
+
+    Usage:
+        tracker = SpreadFillTracker(
+            long_leg_symbol="QQQ 240118C00500000",
+            short_leg_symbol="QQQ 240118C00505000",
+            expected_quantity=5,
+            created_at="2024-01-15 10:30:00",
+        )
+        tracker.record_long_fill(2.50, 5, "2024-01-15 10:30:01")
+        tracker.record_short_fill(1.20, 5, "2024-01-15 10:30:02")
+        if tracker.is_complete() and tracker.quantities_match():
+            # Safe to register spread position
+    """
+
+    # Symbols stored at creation (before they can be cleared elsewhere)
+    long_leg_symbol: str
+    short_leg_symbol: str
+    expected_quantity: int
+    timeout_minutes: int = 5
+
+    # Fill tracking - None means not yet filled
+    long_fill_price: Optional[float] = None
+    long_fill_qty: Optional[int] = None
+    long_fill_time: Optional[str] = None
+    short_fill_price: Optional[float] = None
+    short_fill_qty: Optional[int] = None
+    short_fill_time: Optional[str] = None
+
+    # Tracker metadata
+    created_at: Optional[str] = None
+    spread_type: Optional[str] = None  # "BULL_CALL" or "BEAR_PUT"
+
+    def record_long_fill(self, price: float, qty: int, time: str) -> None:
+        """Record long leg fill (accumulates for partial fills)."""
+        if self.long_fill_qty is None:
+            self.long_fill_price = price
+            self.long_fill_qty = qty
+        else:
+            # VWAP for multiple partials
+            total_qty = self.long_fill_qty + qty
+            old_value = self.long_fill_price * self.long_fill_qty
+            new_value = price * qty
+            self.long_fill_price = (old_value + new_value) / total_qty
+            self.long_fill_qty = total_qty
+        self.long_fill_time = time
+
+    def record_short_fill(self, price: float, qty: int, time: str) -> None:
+        """Record short leg fill (accumulates for partial fills)."""
+        if self.short_fill_qty is None:
+            self.short_fill_price = price
+            self.short_fill_qty = qty
+        else:
+            # VWAP for multiple partials
+            total_qty = self.short_fill_qty + qty
+            old_value = self.short_fill_price * self.short_fill_qty
+            new_value = price * qty
+            self.short_fill_price = (old_value + new_value) / total_qty
+            self.short_fill_qty = total_qty
+        self.short_fill_time = time
+
+    def is_long_filled(self) -> bool:
+        """Check if long leg has any fills."""
+        return self.long_fill_price is not None and self.long_fill_qty is not None
+
+    def is_short_filled(self) -> bool:
+        """Check if short leg has any fills."""
+        return self.short_fill_price is not None and self.short_fill_qty is not None
+
+    def is_complete(self) -> bool:
+        """Check if both legs have fills with expected quantity."""
+        if not self.is_long_filled() or not self.is_short_filled():
+            return False
+        return (
+            self.long_fill_qty >= self.expected_quantity
+            and self.short_fill_qty >= self.expected_quantity
+        )
+
+    def quantities_match(self) -> bool:
+        """Check if both leg quantities match expected."""
+        if not self.is_complete():
+            return False
+        return self.long_fill_qty == self.short_fill_qty == self.expected_quantity
+
+    def is_expired(self, current_time_str: str) -> bool:
+        """
+        Check if tracker has timed out.
+
+        Args:
+            current_time_str: Current time as string (format: "YYYY-MM-DD HH:MM:SS")
+
+        Returns:
+            True if (current_time - created_at) > timeout_minutes
+        """
+        if not self.created_at:
+            return True
+
+        try:
+            # Parse timestamps
+            from datetime import datetime
+
+            created = datetime.strptime(self.created_at[:19], "%Y-%m-%d %H:%M:%S")
+            current = datetime.strptime(current_time_str[:19], "%Y-%m-%d %H:%M:%S")
+
+            elapsed_minutes = (current - created).total_seconds() / 60
+            return elapsed_minutes > self.timeout_minutes
+        except (ValueError, TypeError):
+            # If parsing fails, consider expired (safe default)
+            return True
+
+    def reset(self) -> None:
+        """Clear all fill data (for retry or cleanup)."""
+        self.long_fill_price = None
+        self.long_fill_qty = None
+        self.long_fill_time = None
+        self.short_fill_price = None
+        self.short_fill_qty = None
+        self.short_fill_time = None
+
+    def get_net_debit(self) -> Optional[float]:
+        """Calculate net debit from fill prices (long - short)."""
+        if not self.is_complete():
+            return None
+        return self.long_fill_price - self.short_fill_price
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize for logging/debugging."""
+        return {
+            "long_leg_symbol": self.long_leg_symbol,
+            "short_leg_symbol": self.short_leg_symbol,
+            "expected_quantity": self.expected_quantity,
+            "long_fill": f"${self.long_fill_price:.2f} x{self.long_fill_qty}"
+            if self.is_long_filled()
+            else "PENDING",
+            "short_fill": f"${self.short_fill_price:.2f} x{self.short_fill_qty}"
+            if self.is_short_filled()
+            else "PENDING",
+            "complete": self.is_complete(),
+            "quantities_match": self.quantities_match() if self.is_complete() else False,
+            "created_at": self.created_at,
+        }
+
+
+@dataclass
+class ExitOrderTracker:
+    """
+    V2.6: Track exit order state for retry logic (Bug #14).
+
+    When 0DTE gamma causes rapid price moves, exit orders may be rejected.
+    This tracker enables retry with updated prices.
+    """
+
+    symbol: str
+    order_id: Optional[int] = None
+    retry_count: int = 0
+    last_attempt_time: Optional[str] = None
+    reason: str = ""
+    spread_id: Optional[str] = None  # Link to spread position
+
+    def should_retry(self, max_retries: int = 3) -> bool:
+        """Check if another retry is allowed."""
+        return self.retry_count < max_retries
+
+    def record_attempt(self, time_str: str) -> None:
+        """Record a retry attempt."""
+        self.retry_count += 1
+        self.last_attempt_time = time_str
+
+
+# =============================================================================
 # V2.1.1 MICRO REGIME ENGINE (Intraday Decision Brain)
 # =============================================================================
 
@@ -1145,6 +1327,10 @@ class OptionsEngine:
         # V2.3.3 FIX #3: Prevent duplicate exit signals while waiting for fill
         self._pending_intraday_exit: bool = False
 
+        # V2.6 Bug #16: Post-trade margin cooldown tracking
+        # After closing a spread, wait before new entry (T+1 settlement)
+        self._last_spread_exit_time: Optional[str] = None
+
     def log(self, message: str, trades_only: bool = False) -> None:
         """
         Log via algorithm with LiveMode awareness.
@@ -1893,6 +2079,34 @@ class OptionsEngine:
         if self._entry_attempted_today:
             return None
 
+        # V2.6 Bug #16: Post-trade margin cooldown
+        # After closing a spread, broker takes time to settle - wait before new entry
+        if self._last_spread_exit_time is not None:
+            try:
+                from datetime import datetime
+
+                exit_time = datetime.strptime(self._last_spread_exit_time[:19], "%Y-%m-%d %H:%M:%S")
+                current_time_dt = datetime.strptime(current_date + " 12:00:00", "%Y-%m-%d %H:%M:%S")
+                # Use current_hour/minute if available
+                if current_hour is not None and current_minute is not None:
+                    current_time_dt = current_time_dt.replace(
+                        hour=current_hour, minute=current_minute
+                    )
+
+                elapsed_minutes = (current_time_dt - exit_time).total_seconds() / 60
+                if elapsed_minutes < config.OPTIONS_POST_TRADE_COOLDOWN_MINUTES:
+                    self.log(
+                        f"SPREAD: Entry blocked - margin cooldown | "
+                        f"Elapsed={elapsed_minutes:.1f}m < {config.OPTIONS_POST_TRADE_COOLDOWN_MINUTES}m"
+                    )
+                    return None
+                else:
+                    # Cooldown expired, clear the tracking
+                    self._last_spread_exit_time = None
+            except (ValueError, TypeError):
+                # If parsing fails, clear the tracking and proceed
+                self._last_spread_exit_time = None
+
         # Check max trades per day
         if current_date == self._last_trade_date:
             if self._trades_today >= config.OPTIONS_MAX_TRADES_PER_DAY:
@@ -1980,6 +2194,51 @@ class OptionsEngine:
                 f"max {config.SPREAD_DTE_MAX}"
             )
             return None
+
+        # V2.6 Bug #4: Validate short leg DTE matches long leg (within 1 day tolerance)
+        dte_diff = abs(long_leg_contract.days_to_expiry - short_leg_contract.days_to_expiry)
+        if dte_diff > 1:
+            self.log(
+                f"SPREAD: Entry blocked - DTE mismatch | "
+                f"Long={long_leg_contract.days_to_expiry} Short={short_leg_contract.days_to_expiry} | "
+                f"Diff={dte_diff} > 1 day"
+            )
+            return None
+
+        # V2.6 Bug #9: Re-validate delta bounds before entry (delta can drift after selection)
+        # This is a defensive check - legs were already filtered during selection
+        long_delta_abs = abs(long_leg_contract.delta) if long_leg_contract.delta else 0
+        short_delta_abs = abs(short_leg_contract.delta) if short_leg_contract.delta else 0
+
+        if long_delta_abs < config.SPREAD_LONG_LEG_DELTA_MIN:
+            self.log(
+                f"SPREAD: Entry blocked - long leg delta drift | "
+                f"Delta={long_delta_abs:.2f} < min {config.SPREAD_LONG_LEG_DELTA_MIN}"
+            )
+            return None
+
+        if long_delta_abs > config.SPREAD_LONG_LEG_DELTA_MAX:
+            self.log(
+                f"SPREAD: Entry blocked - long leg delta drift | "
+                f"Delta={long_delta_abs:.2f} > max {config.SPREAD_LONG_LEG_DELTA_MAX}"
+            )
+            return None
+
+        # Short leg delta validation (only if not using width-based selection)
+        if not config.SPREAD_SHORT_LEG_BY_WIDTH:
+            if short_delta_abs < config.SPREAD_SHORT_LEG_DELTA_MIN:
+                self.log(
+                    f"SPREAD: Entry blocked - short leg delta drift | "
+                    f"Delta={short_delta_abs:.2f} < min {config.SPREAD_SHORT_LEG_DELTA_MIN}"
+                )
+                return None
+
+            if short_delta_abs > config.SPREAD_SHORT_LEG_DELTA_MAX:
+                self.log(
+                    f"SPREAD: Entry blocked - short leg delta drift | "
+                    f"Delta={short_delta_abs:.2f} > max {config.SPREAD_SHORT_LEG_DELTA_MAX}"
+                )
+                return None
 
         # V2.3.8: Calculate spread width (for P/L calculation only, not filtering)
         # Removed width validation - delta drives selection now (PART 14 Pitfall 4)
@@ -3183,6 +3442,7 @@ class OptionsEngine:
     def remove_spread_position(self) -> Optional[SpreadPosition]:
         """
         V2.3: Remove the current spread position after exit.
+        V2.6 Bug #16: Records exit time for post-trade margin cooldown.
 
         Returns:
             Removed spread position, or None if no spread existed.
@@ -3190,9 +3450,20 @@ class OptionsEngine:
         if self._spread_position is not None:
             spread = self._spread_position
             self._spread_position = None
+
+            # V2.6 Bug #16: Record exit time for margin cooldown
+            # After closing a spread, broker takes T+1 to settle margin
+            # Use algorithm.Time for QC compliance (not system time)
+            if self.algorithm is not None and hasattr(self.algorithm, "Time"):
+                self._last_spread_exit_time = self.algorithm.Time.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                # Fallback for testing without algorithm context
+                self._last_spread_exit_time = "1970-01-01 00:00:00"
+
             self.log(
                 f"SPREAD: POSITION_REMOVED | {spread.spread_type} | "
-                f"Long={spread.long_leg.symbol} Short={spread.short_leg.symbol}",
+                f"Long={spread.long_leg.symbol} Short={spread.short_leg.symbol} | "
+                f"Cooldown until {config.OPTIONS_POST_TRADE_COOLDOWN_MINUTES}min after exit",
                 trades_only=True,
             )
             return spread

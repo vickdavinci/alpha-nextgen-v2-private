@@ -17,7 +17,13 @@ from engines.satellite.hedge_engine import HedgeEngine
 
 # Satellite Engines
 from engines.satellite.mean_reversion_engine import MeanReversionEngine
-from engines.satellite.options_engine import OptionContract, OptionDirection, OptionsEngine
+from engines.satellite.options_engine import (
+    ExitOrderTracker,
+    OptionContract,
+    OptionDirection,
+    OptionsEngine,
+    SpreadFillTracker,
+)
 from execution.execution_engine import ExecutionEngine
 
 # OCO Manager for Options exits
@@ -242,6 +248,21 @@ class AlphaNextGen(QCAlgorithm):
         # V2.3.6: Track pending spread orders to handle leg failures
         # Maps short leg symbol -> long leg symbol (to liquidate long if short fails)
         self._pending_spread_orders: Dict[str, str] = {}
+        # V2.6 Bug #5: Add reverse mapping for long leg rejection handling
+        self._pending_spread_orders_reverse: Dict[str, str] = {}  # long -> short
+
+        # V2.6: Atomic spread fill tracking (Bugs #1, #6, #7)
+        self._spread_fill_tracker: Optional[SpreadFillTracker] = None
+
+        # V2.6 Bug #12: Initialize close tracking flags (not lazy)
+        self._spread_long_closed = False
+        self._spread_short_closed = False
+        self._spread_close_qty_long = 0
+        self._spread_close_qty_short = 0
+        self._spread_close_expected_qty = 0
+
+        # V2.6 Bug #14: Exit order retry tracking
+        self._pending_exit_orders: Dict[str, ExitOrderTracker] = {}
 
         # V2.4.4 P0: Margin call circuit breaker tracking
         # Prevents 2765+ margin call spam seen in V2.4.3 backtest
@@ -1337,6 +1358,35 @@ class AlphaNextGen(QCAlgorithm):
         Args:
             orderEvent: Order event from QuantConnect.
         """
+        # V2.6 Bug #2: Handle partial fills for spread orders
+        if orderEvent.Status == OrderStatus.PartiallyFilled:
+            symbol = str(orderEvent.Symbol)
+            fill_price = orderEvent.FillPrice
+            fill_qty = orderEvent.FillQuantity
+
+            self.Log(
+                f"PARTIAL_FILL: {symbol[-20:]} | Qty={fill_qty} @ ${fill_price:.2f} | "
+                f"Remaining={orderEvent.Quantity - orderEvent.FillQuantity}"
+            )
+
+            # Route partial fills to spread handler if applicable
+            if "QQQ" in symbol and ("C" in symbol or "P" in symbol):
+                if (
+                    self._spread_fill_tracker is not None
+                    or self.options_engine._pending_spread_long_leg is not None
+                ):
+                    # This is a spread fill - accumulate in tracker
+                    self._handle_spread_leg_fill(symbol, fill_price, abs(fill_qty))
+
+            # Notify execution engine
+            self.execution_engine.on_order_event(
+                broker_order_id=orderEvent.OrderId,
+                status="PartiallyFilled",
+                fill_price=fill_price,
+                fill_quantity=fill_qty,
+            )
+            return  # Don't fall through to other handlers
+
         if orderEvent.Status == OrderStatus.Filled:
             symbol = str(orderEvent.Symbol)
             fill_price = orderEvent.FillPrice
@@ -1439,36 +1489,87 @@ class AlphaNextGen(QCAlgorithm):
                 # Reset counter on non-margin invalid
                 self._margin_call_consecutive_count = 0
 
-            # V2.3.6 FIX: Handle spread leg failure - liquidate orphaned long leg
+            # V2.3.6 FIX: Handle spread leg failure - liquidate orphaned leg
             failed_symbol = str(orderEvent.Symbol)
+
+            # Case 1: Short leg failed - liquidate orphaned long leg
             if failed_symbol in self._pending_spread_orders:
                 long_leg_symbol = self._pending_spread_orders.pop(failed_symbol)
+                self._pending_spread_orders_reverse.pop(
+                    long_leg_symbol, None
+                )  # V2.6: Clean reverse
                 self.Log(
                     f"SPREAD: Short leg FAILED - checking long leg | "
-                    f"Short={failed_symbol} | Long={long_leg_symbol}"
+                    f"Short={failed_symbol[-15:]} | Long={long_leg_symbol[-15:]}"
                 )
 
                 # Check if we have a position in the long leg that needs liquidating
                 try:
-                    # Get the security for the long leg
                     if long_leg_symbol in [str(s) for s in self.Securities.Keys]:
                         holding = self.Portfolio[long_leg_symbol]
                         if holding.Invested:
                             qty = holding.Quantity
                             self.Log(
                                 f"SPREAD: LIQUIDATING orphaned long leg | "
-                                f"{long_leg_symbol} x{qty}"
+                                f"{long_leg_symbol[-20:]} x{qty}"
                             )
-                            self.MarketOrder(long_leg_symbol, -qty)
+                            self.MarketOrder(long_leg_symbol, -qty, tag="ORPHAN_LONG")
                         else:
                             self.Log(
                                 f"SPREAD: No position in long leg - no cleanup needed | "
-                                f"{long_leg_symbol}"
+                                f"{long_leg_symbol[-20:]}"
                             )
                 except Exception as e:
+                    self.Log(f"SPREAD: ERROR liquidating orphaned long leg | {e}")
+
+            # V2.6 Bug #5: Case 2: Long leg failed - liquidate orphaned short leg
+            elif failed_symbol in self._pending_spread_orders_reverse:
+                short_leg_symbol = self._pending_spread_orders_reverse.pop(failed_symbol)
+                self._pending_spread_orders.pop(short_leg_symbol, None)  # Clean forward mapping
+                self.Log(
+                    f"SPREAD: Long leg FAILED - checking short leg | "
+                    f"Long={failed_symbol[-15:]} | Short={short_leg_symbol[-15:]}"
+                )
+
+                # Check if we have a position in the short leg that needs closing
+                try:
+                    if short_leg_symbol in [str(s) for s in self.Securities.Keys]:
+                        holding = self.Portfolio[short_leg_symbol]
+                        if holding.Invested:
+                            qty = holding.Quantity
+                            self.Log(
+                                f"SPREAD: BUYING BACK orphaned short leg | "
+                                f"{short_leg_symbol[-20:]} x{abs(qty)}"
+                            )
+                            # Short leg is negative qty, buy back means positive order
+                            self.MarketOrder(short_leg_symbol, -qty, tag="ORPHAN_SHORT")
+                        else:
+                            self.Log(
+                                f"SPREAD: No position in short leg - no cleanup needed | "
+                                f"{short_leg_symbol[-20:]}"
+                            )
+                except Exception as e:
+                    self.Log(f"SPREAD: ERROR buying back orphaned short leg | {e}")
+
+            # V2.6 Bug #14: Check if this is a failed exit order that needs retry
+            if failed_symbol in self._pending_exit_orders:
+                exit_tracker = self._pending_exit_orders[failed_symbol]
+                if exit_tracker.should_retry(config.EXIT_ORDER_RETRY_COUNT):
+                    exit_tracker.record_attempt(str(self.Time))
                     self.Log(
-                        f"SPREAD: ERROR liquidating orphaned long leg | " f"{long_leg_symbol} | {e}"
+                        f"EXIT_RETRY: {failed_symbol[-20:]} attempt "
+                        f"{exit_tracker.retry_count}/{config.EXIT_ORDER_RETRY_COUNT}"
                     )
+                    # Schedule retry after delay
+                    self._schedule_exit_retry(failed_symbol)
+                else:
+                    # All retries exhausted - emergency close
+                    self.Log(
+                        f"EXIT_EMERGENCY: {failed_symbol[-20:]} all retries failed - "
+                        f"forcing market close"
+                    )
+                    self._force_market_close(failed_symbol)
+                    self._pending_exit_orders.pop(failed_symbol, None)
 
         elif orderEvent.Status == OrderStatus.Canceled:
             self.execution_engine.on_order_event(
@@ -1895,12 +1996,13 @@ class AlphaNextGen(QCAlgorithm):
                 )
 
                 # V2.3.6: Track spread order pair for failure handling
-                # Map short leg symbol -> long leg symbol
+                # Map short leg symbol -> long leg symbol (and reverse for Bug #5 fix)
                 long_symbol = str(signal.symbol) if signal.symbol else ""
                 if short_symbol and long_symbol:
                     self._pending_spread_orders[short_symbol] = long_symbol
+                    self._pending_spread_orders_reverse[long_symbol] = short_symbol  # V2.6 Bug #5
                     self.Log(
-                        f"SPREAD: Tracking order pair | Short={short_symbol} -> Long={long_symbol}"
+                        f"SPREAD: Tracking order pair | Short={short_symbol[-15:]} <-> Long={long_symbol[-15:]}"
                     )
 
             self.portfolio_router.receive_signal(signal)
@@ -1973,6 +2075,21 @@ class AlphaNextGen(QCAlgorithm):
 
         return candidates
 
+    def _normalize_option_symbol(self, symbol) -> str:
+        """
+        V2.6 Bug #13: Normalize option symbol for consistent comparison.
+
+        Handles different symbol formats from QC (Symbol objects vs strings)
+        and ensures consistent string representation.
+
+        Args:
+            symbol: QC Symbol object, string, or any object with str() representation.
+
+        Returns:
+            Normalized symbol string (stripped, uppercase).
+        """
+        return str(symbol).strip().upper()
+
     def _get_contract_prices(self, contract) -> Tuple[float, float]:
         """
         Safely get bid/ask prices from an option contract.
@@ -1993,9 +2110,18 @@ class AlphaNextGen(QCAlgorithm):
         if bid <= 0 or ask <= 0:
             last = getattr(contract, "LastPrice", 0) or 0
             if last > 0:
-                # Estimate bid/ask from last price (assume 1% spread)
-                bid = last * 0.995
-                ask = last * 1.005
+                # V2.6 Bug #11: Dynamic spread estimate based on premium
+                # Lower-priced options have wider spreads (% wise)
+                if last < 1.0:
+                    spread_pct = 0.10  # 10% spread for < $1 options
+                elif last < 5.0:
+                    spread_pct = 0.05  # 5% spread for $1-$5 options
+                else:
+                    spread_pct = 0.02  # 2% spread for > $5 options
+
+                half_spread = spread_pct / 2
+                bid = last * (1 - half_spread)
+                ask = last * (1 + half_spread)
 
         return (bid, ask)
 
@@ -3184,36 +3310,85 @@ class AlphaNextGen(QCAlgorithm):
         if spread is None:
             return
 
+        # V2.6 Bug #14: Force exit 30 min before close for 0DTE positions
+        current_dte = spread.long_leg.days_to_expiry  # Initial estimate
+        if (
+            current_dte <= 0
+            and self.Time.hour == config.ZERO_DTE_FORCE_EXIT_HOUR
+            and self.Time.minute >= config.ZERO_DTE_FORCE_EXIT_MINUTE
+        ):
+            self.Log(
+                f"0DTE_FIREWALL: Forcing exit 30 min before close | "
+                f"Time={self.Time.strftime('%H:%M')}"
+            )
+            self._force_spread_exit("0DTE_TIME_DECAY")
+            return
+
         # Get current prices for both legs from chain
         chain = (
             data.OptionChains[self._qqq_option_symbol]
             if self._qqq_option_symbol in data.OptionChains
             else None
         )
-        if chain is None:
-            return
 
         long_leg_price = None
         short_leg_price = None
-        current_dte = None
 
-        try:
-            for contract in chain:
-                contract_symbol = str(contract.Symbol)
-                if contract_symbol == spread.long_leg.symbol:
-                    bid, ask = self._get_contract_prices(contract)
-                    long_leg_price = (bid + ask) / 2 if bid > 0 and ask > 0 else None
-                    current_dte = (contract.Expiry - self.Time).days
-                elif contract_symbol == spread.short_leg.symbol:
-                    bid, ask = self._get_contract_prices(contract)
-                    short_leg_price = (bid + ask) / 2 if bid > 0 and ask > 0 else None
-        except Exception as e:
-            self.Log(f"SPREAD_EXIT_ERROR: Failed to get prices: {e}")
-            return
+        if chain is not None:
+            try:
+                for contract in chain:
+                    contract_symbol = str(contract.Symbol)
+                    if contract_symbol == spread.long_leg.symbol:
+                        bid, ask = self._get_contract_prices(contract)
+                        long_leg_price = (bid + ask) / 2 if bid > 0 and ask > 0 else None
+                        current_dte = (contract.Expiry - self.Time).days
+                    elif contract_symbol == spread.short_leg.symbol:
+                        bid, ask = self._get_contract_prices(contract)
+                        short_leg_price = (bid + ask) / 2 if bid > 0 and ask > 0 else None
+            except Exception as e:
+                self.Log(f"SPREAD_EXIT_ERROR: Failed to get prices from chain: {e}")
 
-        # Skip if we couldn't get both prices
+        # V2.6 Bug #3: Fallback to Security price when chain data missing
+        if long_leg_price is None:
+            try:
+                long_sec = self.Securities.get(spread.long_leg.symbol)
+                if long_sec and long_sec.Price > 0:
+                    long_leg_price = long_sec.Price
+                    self.Log(
+                        f"SPREAD_EXIT: Using Security price for long leg: ${long_leg_price:.2f}"
+                    )
+            except Exception:
+                pass
+
+        if short_leg_price is None:
+            try:
+                short_sec = self.Securities.get(spread.short_leg.symbol)
+                if short_sec and short_sec.Price > 0:
+                    short_leg_price = short_sec.Price
+                    self.Log(
+                        f"SPREAD_EXIT: Using Security price for short leg: ${short_leg_price:.2f}"
+                    )
+            except Exception:
+                pass
+
+        # V2.6 Bug #3: Force exit if near expiration and no price data
         if long_leg_price is None or short_leg_price is None:
+            if current_dte is not None and current_dte <= 2:
+                self.Log(
+                    f"SPREAD_EXIT: EMERGENCY - No price data but DTE={current_dte} <= 2 | "
+                    f"Forcing exit to avoid expiration risk"
+                )
+                self._force_spread_exit("NO_PRICE_DATA_NEAR_EXPIRY")
+                return
+
+            # Still no prices - log but continue checking on next tick
+            self.Log(
+                f"SPREAD_EXIT_WARNING: Missing price data | "
+                f"Long={long_leg_price} Short={short_leg_price} | "
+                f"Will retry next tick"
+            )
             return
+
         if current_dte is None:
             current_dte = spread.long_leg.days_to_expiry  # Fallback
 
@@ -3549,44 +3724,96 @@ class AlphaNextGen(QCAlgorithm):
 
     def _handle_spread_leg_fill(self, symbol: str, fill_price: float, fill_qty: float) -> None:
         """
-        V2.3: Handle a spread leg fill.
+        V2.6: Handle a spread leg fill with atomic tracking.
 
-        Tracks both leg fills and registers spread position when both complete.
+        Fixes Bug #1 (race condition), Bug #6 (quantity tracking), Bug #7 (timeout).
+
+        Uses SpreadFillTracker to store symbols at creation time, preventing race
+        condition where options_engine pending legs are cleared before second fill.
 
         Args:
             symbol: Filled option symbol.
             fill_price: Fill price.
-            fill_qty: Fill quantity.
+            fill_qty: Fill quantity (absolute value).
         """
-        # Track which leg filled
-        pending_long = self.options_engine._pending_spread_long_leg
-        pending_short = self.options_engine._pending_spread_short_leg
+        fill_qty = int(abs(fill_qty))  # Ensure positive integer
 
-        if pending_long and pending_long.symbol == symbol:
-            # Long leg filled
-            if not hasattr(self, "_spread_long_fill_price"):
-                self._spread_long_fill_price = None
-                self._spread_short_fill_price = None
-            self._spread_long_fill_price = fill_price
-            self.Log(f"SPREAD: Long leg filled | {symbol} @ ${fill_price:.2f}")
+        # Initialize tracker on FIRST leg fill (capture symbols now, before they can be cleared)
+        if self._spread_fill_tracker is None:
+            pending_long = self.options_engine._pending_spread_long_leg
+            pending_short = self.options_engine._pending_spread_short_leg
 
-        elif pending_short and pending_short.symbol == symbol:
-            # Short leg filled
-            if not hasattr(self, "_spread_short_fill_price"):
-                self._spread_long_fill_price = None
-                self._spread_short_fill_price = None
-            self._spread_short_fill_price = fill_price
-            self.Log(f"SPREAD: Short leg filled | {symbol} @ ${fill_price:.2f}")
+            if pending_long is None or pending_short is None:
+                self.Log(f"SPREAD_ERROR: Fill received but no pending spread | {symbol}")
+                return
 
-        # Check if both legs filled
-        long_fill = getattr(self, "_spread_long_fill_price", None)
-        short_fill = getattr(self, "_spread_short_fill_price", None)
+            # Get expected quantity from pending state
+            expected_qty = getattr(self.options_engine, "_pending_num_contracts", 1) or 1
 
-        if long_fill is not None and short_fill is not None:
+            self._spread_fill_tracker = SpreadFillTracker(
+                long_leg_symbol=pending_long.symbol,
+                short_leg_symbol=pending_short.symbol,
+                expected_quantity=expected_qty,
+                timeout_minutes=config.SPREAD_FILL_TIMEOUT_MINUTES,
+                created_at=str(self.Time),
+                spread_type=getattr(self.options_engine, "_pending_spread_type", None),
+            )
+            self.Log(
+                f"SPREAD: Fill tracker created | "
+                f"Long={pending_long.symbol[-15:]} Short={pending_short.symbol[-15:]} "
+                f"Expected={expected_qty}"
+            )
+
+        tracker = self._spread_fill_tracker
+
+        # Check for timeout
+        if tracker.is_expired(str(self.Time)):
+            self.Log(
+                f"SPREAD_ERROR: Fill tracker expired | "
+                f"Created={tracker.created_at} Current={self.Time}"
+            )
+            self._cleanup_stale_spread_state()
+            return
+
+        # Record fill by symbol match (using tracker's stored symbols)
+        if tracker.long_leg_symbol == symbol:
+            tracker.record_long_fill(fill_price, fill_qty, str(self.Time))
+            self.Log(
+                f"SPREAD: Long leg filled | {symbol[-20:]} @ ${fill_price:.2f} x{fill_qty} | "
+                f"Total={tracker.long_fill_qty}"
+            )
+
+        elif tracker.short_leg_symbol == symbol:
+            tracker.record_short_fill(fill_price, fill_qty, str(self.Time))
+            self.Log(
+                f"SPREAD: Short leg filled | {symbol[-20:]} @ ${fill_price:.2f} x{fill_qty} | "
+                f"Total={tracker.short_fill_qty}"
+            )
+        else:
+            self.Log(
+                f"SPREAD_WARNING: Unknown fill symbol | {symbol} | "
+                f"Expected Long={tracker.long_leg_symbol[-15:]} Short={tracker.short_leg_symbol[-15:]}"
+            )
+            return
+
+        # Check if both legs filled with expected quantity
+        if tracker.is_complete():
+            # Validate quantities match (Bug #6 fix)
+            if not tracker.quantities_match():
+                self.Log(
+                    f"SPREAD_ERROR: Quantity mismatch | "
+                    f"Long={tracker.long_fill_qty} Short={tracker.short_fill_qty} "
+                    f"Expected={tracker.expected_quantity}"
+                )
+                if config.SPREAD_FILL_QTY_MISMATCH_ACTION == "LOG_AND_CLOSE":
+                    self._emergency_close_spread_legs()
+                    self._spread_fill_tracker = None
+                    return
+
             # Both legs filled - register spread position
             spread = self.options_engine.register_spread_entry(
-                long_leg_fill_price=long_fill,
-                short_leg_fill_price=short_fill,
+                long_leg_fill_price=tracker.long_fill_price,
+                short_leg_fill_price=tracker.short_fill_price,
                 entry_time=str(self.Time),
                 current_date=str(self.Time.date()),
                 regime_score=self.regime_engine.get_previous_score(),
@@ -3595,42 +3822,67 @@ class AlphaNextGen(QCAlgorithm):
             if spread:
                 self.Log(
                     f"SPREAD: Position registered | {spread.spread_type} | "
-                    f"Debit=${spread.net_debit:.2f} | Max Profit=${spread.max_profit:.2f}"
+                    f"Debit=${spread.net_debit:.2f} | Max Profit=${spread.max_profit:.2f} | "
+                    f"Qty={tracker.expected_quantity}"
                 )
 
-            # Clear tracking
-            self._spread_long_fill_price = None
-            self._spread_short_fill_price = None
+            # Clear tracker
+            self._spread_fill_tracker = None
 
     def _handle_spread_leg_close(self, symbol: str, fill_price: float, fill_qty: float) -> None:
         """
-        V2.3: Handle a spread leg close.
+        V2.6: Handle a spread leg close with quantity validation.
 
-        Tracks both leg closes and removes spread position when both complete.
+        Fixes Bug #8 (no qty validation on close).
 
         Args:
             symbol: Closed option symbol.
             fill_price: Fill price.
-            fill_qty: Fill quantity.
+            fill_qty: Fill quantity (negative for sells).
         """
         spread = self.options_engine.get_spread_position()
         if spread is None:
             return
 
-        # Track which leg closed
-        if not hasattr(self, "_spread_long_closed"):
-            self._spread_long_closed = False
-            self._spread_short_closed = False
+        fill_qty_abs = int(abs(fill_qty))
 
+        # Initialize close tracking if this is first close fill
+        if not self._spread_long_closed and not self._spread_short_closed:
+            self._spread_close_expected_qty = spread.num_spreads
+            self._spread_close_qty_long = 0
+            self._spread_close_qty_short = 0
+
+        # Track which leg closed and accumulate quantity
         if spread.long_leg.symbol == symbol:
             self._spread_long_closed = True
-            self.Log(f"SPREAD: Long leg closed | {symbol} @ ${fill_price:.2f}")
+            self._spread_close_qty_long += fill_qty_abs
+            self.Log(
+                f"SPREAD: Long leg closed | {symbol[-20:]} @ ${fill_price:.2f} x{fill_qty_abs} | "
+                f"Total closed={self._spread_close_qty_long}/{self._spread_close_expected_qty}"
+            )
         elif spread.short_leg.symbol == symbol:
             self._spread_short_closed = True
-            self.Log(f"SPREAD: Short leg closed | {symbol} @ ${fill_price:.2f}")
+            self._spread_close_qty_short += fill_qty_abs
+            self.Log(
+                f"SPREAD: Short leg closed | {symbol[-20:]} @ ${fill_price:.2f} x{fill_qty_abs} | "
+                f"Total closed={self._spread_close_qty_short}/{self._spread_close_expected_qty}"
+            )
 
         # Check if both legs closed
         if self._spread_long_closed and self._spread_short_closed:
+            # Validate quantities (Bug #8 fix)
+            if self._spread_close_qty_long != self._spread_close_expected_qty:
+                self.Log(
+                    f"SPREAD_WARNING: Long leg quantity mismatch | "
+                    f"Closed={self._spread_close_qty_long} Expected={self._spread_close_expected_qty}"
+                )
+
+            if self._spread_close_qty_short != self._spread_close_expected_qty:
+                self.Log(
+                    f"SPREAD_WARNING: Short leg quantity mismatch | "
+                    f"Closed={self._spread_close_qty_short} Expected={self._spread_close_expected_qty}"
+                )
+
             # Both legs closed - remove spread position
             self.options_engine.remove_spread_position()
             self._greeks_breach_logged = False  # Reset for next position
@@ -3638,8 +3890,197 @@ class AlphaNextGen(QCAlgorithm):
             # Clear tracking
             self._spread_long_closed = False
             self._spread_short_closed = False
+            self._spread_close_qty_long = 0
+            self._spread_close_qty_short = 0
+            self._spread_close_expected_qty = 0
 
             self.Log("SPREAD: Position removed - both legs closed")
+
+    def _cleanup_stale_spread_state(self) -> None:
+        """
+        V2.6: Clean up stale spread tracking state (Bug #7 fix).
+
+        Called when fill tracker times out or needs reset.
+        """
+        self.Log("SPREAD: Cleaning up stale tracking state")
+
+        # Clear fill tracker
+        self._spread_fill_tracker = None
+
+        # Clear pending orders mappings
+        self._pending_spread_orders.clear()
+        self._pending_spread_orders_reverse.clear()
+
+        # Clear options engine pending state
+        self.options_engine._pending_spread_long_leg = None
+        self.options_engine._pending_spread_short_leg = None
+        self.options_engine._pending_spread_type = None
+        self.options_engine._pending_net_debit = None
+        self.options_engine._pending_max_profit = None
+        self.options_engine._pending_spread_width = None
+
+    def _emergency_close_spread_legs(self) -> None:
+        """
+        V2.6: Emergency close spread legs when quantity mismatch detected.
+
+        Liquidates whatever is in the portfolio to prevent orphaned positions.
+        """
+        self.Log("SPREAD: EMERGENCY - Closing mismatched legs")
+
+        if self._spread_fill_tracker is None:
+            return
+
+        tracker = self._spread_fill_tracker
+
+        # Try to close any filled legs
+        try:
+            # Check long leg
+            if tracker.long_leg_symbol:
+                long_holding = self.Portfolio.get(tracker.long_leg_symbol)
+                if long_holding and long_holding.Invested:
+                    qty = long_holding.Quantity
+                    self.MarketOrder(tracker.long_leg_symbol, -qty, tag="EMERG_QTY_MISMATCH")
+                    self.Log(
+                        f"SPREAD: Emergency closed long leg | {tracker.long_leg_symbol} x{qty}"
+                    )
+
+            # Check short leg
+            if tracker.short_leg_symbol:
+                short_holding = self.Portfolio.get(tracker.short_leg_symbol)
+                if short_holding and short_holding.Invested:
+                    qty = short_holding.Quantity
+                    self.MarketOrder(tracker.short_leg_symbol, -qty, tag="EMERG_QTY_MISMATCH")
+                    self.Log(
+                        f"SPREAD: Emergency closed short leg | {tracker.short_leg_symbol} x{qty}"
+                    )
+
+        except Exception as e:
+            self.Log(f"SPREAD_ERROR: Emergency close failed | {e}")
+
+    def _force_spread_exit(self, reason: str) -> None:
+        """
+        V2.6 Bug #3/#14: Force exit spread when normal price data unavailable or 0DTE.
+
+        Args:
+            reason: Reason for forced exit (for logging).
+        """
+        spread = self.options_engine.get_spread_position()
+        if spread is None:
+            return
+
+        self.Log(f"SPREAD: FORCE_EXIT | Reason={reason}")
+
+        # Track exit orders for potential retry (Bug #14)
+        self._pending_exit_orders[spread.long_leg.symbol] = ExitOrderTracker(
+            symbol=spread.long_leg.symbol,
+            reason=reason,
+            spread_id=f"{spread.spread_type}_{spread.entry_time}",
+        )
+        self._pending_exit_orders[spread.short_leg.symbol] = ExitOrderTracker(
+            symbol=spread.short_leg.symbol,
+            reason=reason,
+            spread_id=f"{spread.spread_type}_{spread.entry_time}",
+        )
+
+        try:
+            # Close long leg (sell)
+            self.MarketOrder(
+                spread.long_leg.symbol,
+                -spread.num_spreads,
+                tag=f"FORCE_{reason}",
+            )
+            self.Log(
+                f"SPREAD: Force exit long leg | {spread.long_leg.symbol[-20:]} x{spread.num_spreads}"
+            )
+
+            # Close short leg (buy back)
+            self.MarketOrder(
+                spread.short_leg.symbol,
+                spread.num_spreads,
+                tag=f"FORCE_{reason}",
+            )
+            self.Log(
+                f"SPREAD: Force exit short leg | {spread.short_leg.symbol[-20:]} x{spread.num_spreads}"
+            )
+        except Exception as e:
+            self.Log(f"SPREAD_ERROR: Force exit failed | {e}")
+
+    def _schedule_exit_retry(self, symbol: str) -> None:
+        """
+        V2.6 Bug #14: Schedule a retry for a failed exit order.
+
+        Args:
+            symbol: Symbol that failed to exit.
+        """
+        try:
+            # Schedule retry after delay using QC's scheduling
+            retry_seconds = config.EXIT_ORDER_RETRY_DELAY_SECONDS
+
+            # Use Schedule.On for proper scheduling
+            def retry_action():
+                self._retry_exit_order(symbol)
+
+            # Schedule for N seconds from now
+            self.Schedule.On(
+                self.DateRules.Today,
+                self.TimeRules.At(
+                    self.Time.hour,
+                    self.Time.minute,
+                    self.Time.second + retry_seconds,
+                ),
+                retry_action,
+            )
+            self.Log(f"EXIT_RETRY: Scheduled retry for {symbol[-20:]} in {retry_seconds}s")
+        except Exception as e:
+            self.Log(f"EXIT_RETRY_ERROR: Failed to schedule retry | {e}")
+            # Fallback: immediate retry
+            self._retry_exit_order(symbol)
+
+    def _retry_exit_order(self, symbol: str) -> None:
+        """
+        V2.6 Bug #14: Retry a failed exit order.
+
+        Args:
+            symbol: Symbol to retry exit for.
+        """
+        if symbol not in self._pending_exit_orders:
+            return
+
+        tracker = self._pending_exit_orders[symbol]
+        self.Log(f"EXIT_RETRY: Retrying exit for {symbol[-20:]} (attempt {tracker.retry_count})")
+
+        try:
+            holding = self.Portfolio.get(symbol)
+            if holding and holding.Invested:
+                qty = holding.Quantity
+                self.MarketOrder(symbol, -qty, tag=f"RETRY_{tracker.reason}")
+                self.Log(f"EXIT_RETRY: Submitted market order | {symbol[-20:]} x{qty}")
+            else:
+                # Position already closed
+                self._pending_exit_orders.pop(symbol, None)
+                self.Log(f"EXIT_RETRY: Position already closed | {symbol[-20:]}")
+        except Exception as e:
+            self.Log(f"EXIT_RETRY_ERROR: Retry failed | {symbol[-20:]} | {e}")
+
+    def _force_market_close(self, symbol: str) -> None:
+        """
+        V2.6 Bug #14: Emergency market close when all retries exhausted.
+
+        Args:
+            symbol: Symbol to force close.
+        """
+        self.Log(f"EXIT_EMERGENCY: Force market close | {symbol[-20:]}")
+        try:
+            holding = self.Portfolio.get(symbol)
+            if holding and holding.Invested:
+                qty = holding.Quantity
+                # Use Liquidate for absolute closure
+                self.Liquidate(symbol, tag="EMERG_ALL_RETRIES_FAILED")
+                self.Log(f"EXIT_EMERGENCY: Liquidated | {symbol[-20:]} x{qty}")
+            else:
+                self.Log(f"EXIT_EMERGENCY: No position to close | {symbol[-20:]}")
+        except Exception as e:
+            self.Log(f"EXIT_EMERGENCY_ERROR: Liquidate failed | {e}")
 
     def _get_average_volume(self, volume_window: RollingWindow) -> float:
         """
