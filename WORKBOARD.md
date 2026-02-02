@@ -83,7 +83,7 @@
 
 ---
 
-### V2.16-BT: Backtest State Persistence Fixes (2026-02-02) — P0 COMPLETE ✅
+### V2.16-BT: Backtest State Persistence Fixes (2026-02-02) — ALL COMPLETE ✅
 
 **Goal:** Fix 5 critical bugs affecting multi-day backtest accuracy.
 
@@ -92,22 +92,34 @@
 | 1 | **clear_all_positions()** - Add _swing_position clearing | P0 | ✅ |
 | 2 | **Swing expiry check** - ZOMBIE_CLEAR on expired positions | P0 | ✅ |
 | 3 | **Spread persistence** - Save/restore _spread_position | P0 | ✅ |
-| 4 | **Kill switch -4% preemptive** - Hedge exposure gap | P1 | ⏳ |
-| 5 | **Commission-aware profit** - 45% vs 50% target | P1 | ⏳ |
+| 4 | **Kill switch -4% preemptive** - Hedge exposure gap | P1 | ✅ |
+| 5 | **Commission-aware profit** - Net profit meets target | P1 | ✅ |
 
-**Key Changes:**
+**P0 Fixes (State Persistence):**
 1. `clear_all_positions()` now clears `_swing_position` (was missing)
 2. `restore_state()` validates expiry for legacy, swing, and spread positions
 3. `_spread_position` persisted to ObjectStore for multi-day backtests
 4. Defensive coding for tests where `_algorithm` not initialized
 
+**P1 Fixes (Risk & Profit):**
+4. **Preemptive Kill Switch:** When panic mode active AND loss >= 4.5%, trigger kill switch
+   - Closes gap between panic mode (4%) and kill switch (5%)
+   - Config: `KILL_SWITCH_PREEMPTIVE_PCT = 0.045`
+5. **Commission-Aware Profit Target:** Gross P&L required = target + commission
+   - Ensures NET profit after commission meets target (not just gross)
+   - Config: `SPREAD_COMMISSION_PER_CONTRACT = $2.60`
+
 **Files Modified:**
-- `engines/satellite/options_engine.py` - All 3 P0 fixes
+- `engines/satellite/options_engine.py` - P0 state fixes + P1 commission fix
+- `engines/core/risk_engine.py` - P1 preemptive kill switch
+- `config.py` - New config values
 - `tests/test_options_engine.py` - Updated fixture expiry dates
 
-**Commit:** `178d55b` - `fix(options): V2.16-BT backtest state persistence and zombie position fixes`
+**Commits:**
+- `178d55b` - P0 fixes (state persistence, zombie clearing)
+- `fc44648` - P1 fixes (preemptive kill switch, commission-aware profit)
 
-**Tests:** 131 passed, 6 failed (pre-existing StopTier failures)
+**Tests:** 211 passed, 6 failed (pre-existing StopTier failures)
 
 ---
 
