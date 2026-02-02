@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-01 (V2.4: SMA50 Structural Trend - 2 Month Backtest)
+> **Last Updated:** 2026-02-02 (V2.4.2: AAP Audit Fixes - Dancing Green Bison)
 
 ---
 
@@ -30,6 +30,8 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | 1 | 1 day (Jan 2, 2024) | Basic validation - no errors, Initialize() completes | **PASS** ✅ |
 | 2 | 1 month (Jan 2025) | Short-term behavior, actual trades | **V2.3.22 +0.93%** ✅ |
 | 2b | 2 months (Jan-Feb 2025) | V2.4 SMA50 exit validation | **V2.4 -17.98%** 🔴 |
+| 2c | 1 month (Jan 2025) | V2.4.1 AAP Audit | **V2.4.1 -4.64%** 🔴 |
+| 2d | 1 month (Jan 2025) | V2.4.2 AAP Fixes | Pending |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
@@ -658,6 +660,189 @@ if is_option and fill_qty > 0:  # Only check BUY fills (new positions)
         )
         self.MarketOrder(orderEvent.Symbol, -fill_qty)
 ```
+
+---
+
+## V2.4.2 AAP Audit Fixes - Dancing Green Bison (2026-02-02)
+
+**Backtest Audited:** V2.4.1-1month-DancingGreenBison | **Result:** -4.64% | **Win Rate:** 57%
+**AAP Audit:** `docs/audits/AAP_Dancing_Green_Bison_V2.4.1.md`
+
+### Why 57% Win Rate = Loss?
+
+**Asymmetric P&L Distribution:**
+- Wins: 24 trades averaging +$350 (small profits)
+- Losses: 18 trades with catastrophic single losses up to -$25,116
+
+**Root Cause:** Long legs of spreads held to expiration, options traded during kill switch chaos.
+
+### V2.4.2 Fixes (7 Total)
+
+| # | Fix | Severity | File | Description | Status |
+|:-:|-----|:--------:|------|-------------|:------:|
+| 1 | Kill switch double-trade | P1 | `main.py` | BUY-to-close short options triggered KILL_SWITCH_ON_FILL which re-sold | ✅ |
+| 2 | Kill switch margin order | P1 | `main.py` | QC margin bug - must close SHORT options before LONG | ✅ |
+| 3 | ADX threshold | P2 | `trend_engine.py` | Score 0.50 = ADX 15-24 (weak), changed to 0.75 = ADX 25-34 | ✅ |
+| 4 | Spread stop-loss | P2 | `options_engine.py` | Exit at 50% loss of entry debit (was no stop) | ✅ |
+| 5 | Stop tier contracts | P2 | `config.py` | Reduced from 23-34 to 8-15 contracts per tier | ✅ |
+| 6 | Expiration Hammer | P2 | `config.py` | Force close at 2:00 PM (was 3:45 PM) | ✅ |
+| 7 | Trend MOC timing | P2 | `trend_engine.py`, `portfolio_router.py` | Same-day close with MOC (was next-day open MOO) | ✅ |
+
+### Fix Details
+
+#### Fix #1: Kill Switch Double-Trade Bug
+
+**Problem:** When kill switch triggered, it tried to close ALL positions. BUY-to-close of a SHORT option (credit spread short leg) triggered `KILL_SWITCH_ON_FILL` which immediately re-SOLD the just-bought position, creating an infinite loop.
+
+**Fix (main.py OnOrderEvent):**
+```python
+# V2.4.2 FIX: Only for OPENING buys, not closing buys
+if is_option and fill_qty > 0:  # BUY fills
+    current_position = self.Portfolio[orderEvent.Symbol].Quantity
+    is_opening_trade = current_position > 0  # After fill, still long = was opening
+    if is_opening_trade and self.risk_engine.is_kill_switch_active():
+        self.MarketOrder(orderEvent.Symbol, -fill_qty)
+```
+
+#### Fix #2: Kill Switch Margin Order Bug
+
+**Problem:** QC has margin calculation bugs. When closing options during kill switch, closing LONG legs first causes margin violation because the SHORT legs add theoretical risk.
+
+**Fix (main.py _handle_kill_switch):**
+```python
+# V2.4.2 FIX: Close SHORT options first, then LONG options
+short_options = []
+long_options = []
+for kvp in self.Portfolio:
+    holding = kvp.Value
+    if holding.Invested and holding.Symbol.SecurityType == SecurityType.Option:
+        if holding.Quantity < 0:
+            short_options.append(holding)
+        else:
+            long_options.append(holding)
+
+# Close shorts first (reduces margin requirement)
+for holding in short_options:
+    self.MarketOrder(holding.Symbol, -holding.Quantity)
+
+# Then close longs
+for holding in long_options:
+    self.MarketOrder(holding.Symbol, -holding.Quantity)
+```
+
+#### Fix #3: ADX Threshold Fix
+
+**Problem:** `ADX_WEAK_THRESHOLD = 15` made score 0.50 correspond to ADX 15-24 (weak trends). Entries happening at ADX 18-22 had 29% win rate.
+
+**Fix (trend_engine.py):**
+```python
+# Condition 2: ADX >= 25 (score >= 0.75, sufficient momentum)
+# V2.4.2 FIX: Changed from 0.50 to 0.75
+if score < 0.75:
+    self.log(f"TREND: {symbol} entry blocked - ADX {adx:.1f} too weak (score={score:.2f} < 0.75)")
+    return None
+```
+
+#### Fix #4: Spread Stop-Loss
+
+**Problem:** No stop-loss on spreads. Long legs of debit spreads held to expiration, losing 100% of entry debit.
+
+**Fix (config.py + options_engine.py):**
+```python
+# config.py
+SPREAD_STOP_LOSS_PCT = 0.50  # V2.4.2: Stop loss at 50% of entry debit
+
+# options_engine.py check_spread_exit_conditions()
+elif pnl_pct < -config.SPREAD_STOP_LOSS_PCT:
+    exit_reason = f"STOP_LOSS {pnl_pct:.1%} (lost > {config.SPREAD_STOP_LOSS_PCT:.0%} of entry)"
+```
+
+#### Fix #5: Stop Tier Contracts
+
+**Problem:** `OPTIONS_STOP_TIERS` allowed 23-34 contracts per trade. Single losses reached -$25,116.
+
+**Fix (config.py):**
+```python
+OPTIONS_STOP_TIERS = {
+    # V2.4.2 FIX: Reduced contract limits from 23-34 to 8-15
+    3.00: {"stop_pct": 0.20, "contracts": 15},  # Score 3.0-3.25
+    3.25: {"stop_pct": 0.22, "contracts": 12},  # Score 3.25-3.5
+    3.50: {"stop_pct": 0.25, "contracts": 10},  # Score 3.5-3.75
+    3.75: {"stop_pct": 0.30, "contracts": 8},   # Score 3.75-4.0
+}
+```
+
+#### Fix #6: Expiration Hammer (14:00)
+
+**Problem:** 3:45 PM force close for expiring options was too late. Options lose most extrinsic value in final hours, and last-minute exits face wide spreads + slippage.
+
+**Fix (config.py):**
+```python
+# V2.4.2: Expiration Hammer - Moved from 3:45 PM to 2:00 PM
+OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_HOUR = 14
+OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE = 0
+```
+
+**Rationale:**
+- 2:00 PM gives 1h55m buffer before close
+- Theta decay accelerates after 2 PM
+- Better liquidity for exit fills
+- Aligns with institutional "no 0DTE after 2 PM" risk rules
+
+#### Fix #7: Trend MOC Timing
+
+**Problem:** Trend entries used `Urgency.EOD` → `OrderType.MOO` for next-day open fills. Overnight gaps caused entries at unfavorable prices.
+
+**Fix (trend_engine.py, models/enums.py, portfolio_router.py):**
+```python
+# models/enums.py - Added new urgency
+class Urgency(Enum):
+    IMMEDIATE = "IMMEDIATE"
+    EOD = "EOD"
+    MOC = "MOC"  # V2.4.2: Market-On-Close for same-day trend entries
+
+# trend_engine.py - All entry signals now use:
+urgency=Urgency.MOC,  # V2.4.2: Same-day close (was EOD/next-day open)
+
+# portfolio_router.py - MOC order handling:
+class OrderType(Enum):
+    MARKET = "MARKET"
+    MOO = "MOO"
+    MOC = "MOC"  # V2.4.2
+
+# Order execution:
+elif order.order_type == OrderType.MOC:
+    self.algorithm.MarketOnCloseOrder(order.symbol, quantity)
+```
+
+**Rationale:**
+- Entries fill same day at market close
+- Avoids overnight gap risk
+- More predictable fill prices
+- Matches institutional execution patterns
+
+### Commits
+
+- `0f1d7a5` - `fix(kill-switch): V2.4.2 - double-trade and margin order bugs`
+- `c58e35e` - `fix(options): V2.4.2 - ADX threshold, spread stop-loss, contract limits`
+- `30a095a` - `feat(timing): V2.4.2 - Expiration Hammer 14:00 + Trend MOC orders`
+
+### Expected Impact
+
+| Issue | Before V2.4.2 | After V2.4.2 |
+|-------|---------------|--------------|
+| Kill switch chaos | Double-trades, margin errors | Clean single liquidation |
+| Weak trend entries | ADX 15-24 allowed (29% win rate) | ADX 25+ required |
+| Spread losses | Held to 100% loss | Capped at 50% loss |
+| Single trade loss | Up to $25,116 | Max ~$8,000 (15 contracts × $5.30) |
+| Expiring options | Exit 3:45 PM (theta decay) | Exit 2:00 PM (better fills) |
+| Trend entry gaps | Overnight gap risk (MOO) | Same-day fills (MOC) |
+
+### Next Steps
+
+1. Sync V2.4.2 to QC cloud
+2. Run 1-month backtest (Jan 2025)
+3. Compare metrics to V2.4.1 Dancing Green Bison
 
 ---
 
@@ -2062,4 +2247,4 @@ lean cloud backtest AlphaNextGen
 
 ---
 
-*Document created: 2026-01-30 | Last updated: 2026-02-01 (V2.4.1 Consolidated Fix List - 8 Bugs)*
+*Document created: 2026-01-30 | Last updated: 2026-02-02 (V2.4.2 AAP Audit Fixes - 7 Bugs)*

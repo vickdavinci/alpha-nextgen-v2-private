@@ -250,6 +250,47 @@ TREND_HARD_STOP_PCT = {"QLD": 0.15, "SSO": 0.15, "TNA": 0.12, "FAS": 0.12}
 
 **Fix #8 Details:** In `OnOrderEvent`, after options BUY fill, check `risk_engine.is_kill_switch_active()`. If active, immediately liquidate the new position.
 
+### V2.4.2: AAP Audit Comprehensive Fixes (2026-02-02)
+
+**Goal:** Fix all bugs identified in AAP (Algorithmic Audit Protocol) analysis of Dancing Green Bison backtest.
+
+| # | Fix | File(s) | Description | Status |
+|:-:|-----|---------|-------------|:------:|
+| 1 | Kill switch double-trade | `main.py` | BUY-to-close was triggering re-SELL | ✅ |
+| 2 | Kill switch margin order | `main.py` | Close SHORT options before LONG | ✅ |
+| 3 | Trend ADX threshold | `trend_engine.py` | Require score ≥ 0.75 (ADX ≥ 25) | ✅ |
+| 4 | Spread stop-loss | `options_engine.py`, `config.py` | Exit at 50% loss of entry debit | ✅ |
+| 5 | Stop tier contracts | `config.py` | Reduced from 23-34 to 8-15 | ✅ |
+| 6 | Expiration Hammer | `config.py` | Force close at 2:00 PM (was 3:45 PM) | ✅ |
+| 7 | Trend MOC timing | `trend_engine.py`, `portfolio_router.py` | Same-day close (was next-day open) | ✅ |
+
+**Key Changes:**
+
+1. **Kill Switch Double-Trade:** `OnOrderEvent` now checks if BUY fill is opening (new long) vs closing (covering short). Only liquidates opening trades.
+
+2. **Kill Switch Margin Order:** Options liquidation now closes SHORT options first, then LONG, avoiding QC margin calculation bugs.
+
+3. **Trend ADX Threshold:** Changed from `score < 0.50` to `score < 0.75`. Now requires ADX ≥ 25 (was allowing 15-24).
+
+4. **Spread Stop-Loss:** Added `SPREAD_STOP_LOSS_PCT = 0.50`. Spreads exit if they lose 50% of entry debit. Prevents holding to expiration.
+
+5. **Stop Tier Contracts:** `OPTIONS_STOP_TIERS` contracts reduced:
+   - 3.00: 34 → 15
+   - 3.25: 31 → 12
+   - 3.50: 27 → 10
+   - 3.75: 23 → 8
+
+6. **Expiration Hammer:** Force close moved from 3:45 PM to 2:00 PM. Gives 2-hour buffer for retries.
+
+7. **Trend MOC Timing:** Added `Urgency.MOC` and `OrderType.MOC`. Trend entries now use `MarketOnCloseOrder` (same day) instead of `MarketOnOpenOrder` (next day).
+
+**Commits:**
+- `0f1d7a5` - Kill switch double-trade and margin bugs
+- `c58e35e` - ADX threshold, spread stop-loss, stop tier contracts
+- `30a095a` - Expiration Hammer + Trend MOC timing
+
+**Tests:** 1348 passed, 2 skipped
+
 ---
 
 ## Planned Features (V2.5+)
