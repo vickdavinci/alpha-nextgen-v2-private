@@ -2659,6 +2659,29 @@ class OptionsEngine:
             return None
 
         # Calculate net debit and max profit
+        # V2.14 Fix #22: Use conservative pricing (ASK/BID) to prevent tier cap violations
+        # Evidence: Trade #20 sized at mid $2.75 but filled at $3.96 (44% slippage)
+        # For debit spreads: BUY long (pay ASK), SELL short (receive BID)
+        conservative_long = (
+            long_leg_contract.ask if long_leg_contract.ask > 0 else long_leg_contract.mid_price
+        )
+        conservative_short = (
+            short_leg_contract.bid if short_leg_contract.bid > 0 else short_leg_contract.mid_price
+        )
+        conservative_net_debit = conservative_long - conservative_short
+
+        # Apply slippage buffer for worst-case sizing
+        slippage_buffer = getattr(config, "SPREAD_SIZING_SLIPPAGE_BUFFER", 0.10)
+        net_debit_for_sizing = conservative_net_debit * (1 + slippage_buffer)
+
+        # Log conservative sizing calculation
+        self.log(
+            f"SPREAD_SIZE: Conservative=${net_debit_for_sizing:.2f} | "
+            f"LongASK=${conservative_long:.2f} ShortBID=${conservative_short:.2f} | "
+            f"Buffer={slippage_buffer:.0%}"
+        )
+
+        # Use mid price for max profit calculation (actual fill determines P&L)
         net_debit = long_leg_contract.mid_price - short_leg_contract.mid_price
         if net_debit <= 0:
             self.log(f"SPREAD: Entry blocked - net debit ${net_debit:.2f} <= 0")
@@ -2672,8 +2695,8 @@ class OptionsEngine:
         # Calculate position size based on allocation
         # V2.3.20: Apply size_multiplier (0.5 during cold start)
         allocation = self.get_mode_allocation(OptionsMode.SWING, portfolio_value, size_multiplier)
-        # For spreads, risk = net_debit per spread (max loss = net_debit)
-        cost_per_spread = net_debit * 100  # 100 shares per contract
+        # V2.14: Use conservative net debit for sizing (prevents tier cap violations)
+        cost_per_spread = net_debit_for_sizing * 100  # 100 shares per contract
         num_spreads = int(allocation / cost_per_spread)
 
         if num_spreads <= 0:

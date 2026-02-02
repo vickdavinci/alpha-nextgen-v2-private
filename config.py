@@ -712,6 +712,11 @@ SETTLEMENT_HALT_UNTIL_MINUTE = 30
 # Evidence: V2.11 backtest showed qty=-80 (5× intended) from exit signal bug
 SPREAD_MAX_CONTRACTS = 20  # Hard cap per spread position
 
+# V2.14 Fix #22: Conservative spread sizing to prevent tier cap violations
+# Evidence: Trade #20 sized at mid price $2.75 but filled at $3.96 (44% slippage)
+# Solution: Use ASK/BID prices + buffer for worst-case sizing
+SPREAD_SIZING_SLIPPAGE_BUFFER = 0.10  # 10% buffer on top of ASK/BID pricing
+
 # -----------------------------------------------------------------------------
 # V2.1.1 VIX DIRECTION THRESHOLDS (Micro Regime Engine)
 # -----------------------------------------------------------------------------
@@ -810,7 +815,7 @@ INTRADAY_DEBIT_FADE_MIN_SCORE = 45  # Micro score >= 45 (MICRO_SCORE_MODERATE)
 INTRADAY_FADE_MIN_MOVE = 0.50  # V2.3.16: Min move for FADE (was INTRADAY_DEBIT_FADE_MIN_MOVE)
 INTRADAY_FADE_MAX_MOVE = 1.20  # V2.3.16: Max move - don't fade runaway trends/crashes
 INTRADAY_DEBIT_FADE_VIX_MAX = 25  # VIX < 25
-INTRADAY_DEBIT_FADE_START = "10:30"  # Entry window start
+INTRADAY_DEBIT_FADE_START = "10:15"  # V2.14: Widened from 10:30 to capture more signals
 INTRADAY_DEBIT_FADE_END = "14:00"  # Entry window end
 INTRADAY_DEBIT_SPREAD_WIDTH = 2.00  # $2.00 spread width
 INTRADAY_DEBIT_FULL_SIZE = 4  # Full size: 4 spreads

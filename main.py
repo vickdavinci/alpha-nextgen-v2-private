@@ -2867,7 +2867,52 @@ class AlphaNextGen(QCAlgorithm):
                 self.Liquidate(symbol)
 
         # ALWAYS liquidate options (they're short-term and risky)
-        # V2.4.2 FIX: Close SHORT options first (buy to close), then LONG options (sell to close)
+        # V2.14 Fix #21: Use atomic combo orders for spreads to prevent ghost losses
+        # Sequential liquidation can cause losses > max spread loss due to timing gaps
+        spread_closed_atomically = False
+        spread = self.options_engine._spread_position
+
+        if spread is not None and spread.num_spreads > 0 and not spread.is_closing:
+            try:
+                # Get the actual QC Symbol objects for the spread legs
+                long_symbol = None
+                short_symbol = None
+
+                for kvp in self.Portfolio:
+                    holding = kvp.Value
+                    if holding.Invested and holding.Symbol.SecurityType == SecurityType.Option:
+                        # Match by checking if symbol string contains the spread leg symbol
+                        symbol_str = str(holding.Symbol)
+                        if spread.long_leg.symbol in symbol_str and holding.Quantity > 0:
+                            long_symbol = holding.Symbol
+                        elif spread.short_leg.symbol in symbol_str and holding.Quantity < 0:
+                            short_symbol = holding.Symbol
+
+                if long_symbol is not None and short_symbol is not None:
+                    self.Log(
+                        f"KILL_SWITCH_COMBO: Closing {spread.spread_type} x{spread.num_spreads} atomically | "
+                        f"Long={long_symbol} Short={short_symbol}"
+                    )
+
+                    # Create combo legs for atomic execution
+                    legs = [
+                        Leg.Create(long_symbol, -spread.num_spreads),  # Sell long
+                        Leg.Create(short_symbol, spread.num_spreads),  # Buy short
+                    ]
+
+                    tickets = self.ComboMarketOrder(legs)
+                    self.Log(f"KILL_SWITCH_COMBO: Submitted atomic close | Orders={len(tickets)}")
+                    spread_closed_atomically = True
+                else:
+                    self.Log(
+                        f"KILL_SWITCH_COMBO_MISS: Could not match spread legs | "
+                        f"Long={spread.long_leg.symbol} Short={spread.short_leg.symbol}"
+                    )
+            except Exception as e:
+                self.Log(f"KILL_SWITCH_COMBO_FAIL: {e} | Falling back to sequential")
+
+        # V2.4.2 FIX: Close remaining options (non-spread or if combo failed)
+        # Close SHORT options first (buy to close), then LONG options (sell to close)
         # This avoids margin issues where QC incorrectly calculates margin for selling longs
         # when shorts are still open
         short_options = []
@@ -2880,23 +2925,46 @@ class AlphaNextGen(QCAlgorithm):
                 else:
                     long_options.append(holding)
 
-        # Close shorts first (buy to close)
-        for holding in short_options:
-            self.Log(f"KILL_SWITCH: Closing SHORT option {holding.Symbol} (qty={holding.Quantity})")
-            try:
-                # Use MarketOrder with explicit quantity to avoid Liquidate() margin quirks
-                self.MarketOrder(holding.Symbol, -int(holding.Quantity))
-            except Exception as e:
-                self.Log(f"KILL_SWITCH: Short option close error: {e}")
+        # Only process remaining options if spread wasn't closed atomically
+        if not spread_closed_atomically:
+            # Close shorts first (buy to close)
+            for holding in short_options:
+                self.Log(
+                    f"KILL_SWITCH: Closing SHORT option {holding.Symbol} (qty={holding.Quantity})"
+                )
+                try:
+                    # Use MarketOrder with explicit quantity to avoid Liquidate() margin quirks
+                    self.MarketOrder(holding.Symbol, -int(holding.Quantity))
+                except Exception as e:
+                    self.Log(f"KILL_SWITCH: Short option close error: {e}")
 
-        # Then close longs (sell to close)
-        for holding in long_options:
-            self.Log(f"KILL_SWITCH: Closing LONG option {holding.Symbol} (qty={holding.Quantity})")
-            try:
-                # Use MarketOrder with explicit quantity
-                self.MarketOrder(holding.Symbol, -int(holding.Quantity))
-            except Exception as e:
-                self.Log(f"KILL_SWITCH: Long option close error: {e}")
+            # Then close longs (sell to close)
+            for holding in long_options:
+                self.Log(
+                    f"KILL_SWITCH: Closing LONG option {holding.Symbol} (qty={holding.Quantity})"
+                )
+                try:
+                    # Use MarketOrder with explicit quantity
+                    self.MarketOrder(holding.Symbol, -int(holding.Quantity))
+                except Exception as e:
+                    self.Log(f"KILL_SWITCH: Long option close error: {e}")
+        else:
+            # Close any single-leg options that weren't part of the spread
+            # (e.g., protective puts, ITM longs)
+            for holding in short_options + long_options:
+                # Skip if this was part of the spread we just closed
+                symbol_str = str(holding.Symbol)
+                if spread and (
+                    spread.long_leg.symbol in symbol_str or spread.short_leg.symbol in symbol_str
+                ):
+                    continue
+                self.Log(
+                    f"KILL_SWITCH: Closing single-leg {holding.Symbol} (qty={holding.Quantity})"
+                )
+                try:
+                    self.MarketOrder(holding.Symbol, -int(holding.Quantity))
+                except Exception as e:
+                    self.Log(f"KILL_SWITCH: Single-leg close error: {e}")
 
         # V2.5 PART 19 FIX: Clear ALL options engine position state
         # This prevents "zombie state" where internal trackers remain set
