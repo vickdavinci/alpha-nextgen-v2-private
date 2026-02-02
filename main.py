@@ -410,9 +410,11 @@ class AlphaNextGen(QCAlgorithm):
 
         # V2.1: Add QQQ options chain with config-driven DTE filter
         qqq_option = self.AddOption("QQQ", Resolution.Minute)
-        # Filter: ATM ±5 strikes, DTE from config (1-4 days for daily volatility harvesting)
+        # V2.12 Fix #7: Asymmetric filter to capture more OTM PUTs for bear protection
+        # PUT with delta 0.30 at QQQ $510 is around $505 strike
+        # Old filter (-5, 5) was too narrow, missing ideal PUT deltas
         qqq_option.SetFilter(
-            -5, 5, timedelta(days=config.OPTIONS_DTE_MIN), timedelta(days=config.OPTIONS_DTE_MAX)
+            -8, 5, timedelta(days=config.OPTIONS_DTE_MIN), timedelta(days=config.OPTIONS_DTE_MAX)
         )
         self._qqq_option_symbol = qqq_option.Symbol
         # CRITICAL FIX: Track if options symbol has been validated (first successful chain access)
@@ -1106,25 +1108,27 @@ class AlphaNextGen(QCAlgorithm):
         """
         V2.9: Detect if this is the first bar after a multi-day market closure.
 
-        Uses exchange calendar (not weekday()) to handle:
-        - Regular weekends (Sat-Sun)
-        - Monday holidays (MLK, Presidents Day, etc.)
-        - Friday holidays (Good Friday)
-        - Multi-day closures (Thanksgiving week)
+        V2.12 Fix #8: Use simpler weekday check instead of GetPreviousMarketClose
+        which doesn't exist in all QC SDK versions.
+
+        Handles:
+        - Regular weekends (Sat-Sun) → Monday = gap
+        - Does NOT detect holiday gaps (acceptable limitation)
 
         Returns:
-            True if previous market close was more than 24 hours ago.
+            True if today is Monday (gap after weekend).
         """
         if not config.SETTLEMENT_AWARE_TRADING:
             return False
 
         try:
-            exchange = self.Securities[config.SETTLEMENT_CHECK_SYMBOL].Exchange.Hours
-            previous_close = exchange.GetPreviousMarketClose(self.Time, extendedMarket=False)
-
-            # If previous close was more than 24 hours ago, we had a gap
-            hours_since_close = (self.Time - previous_close).total_seconds() / 3600
-            return hours_since_close > 24
+            # V2.12: Simple weekday check - Monday (0) after weekend gap
+            # This is sufficient for most settlement timing issues
+            # Holiday gaps are rare and not worth the API complexity
+            is_monday = self.Time.weekday() == 0
+            if is_monday:
+                self.Log("SETTLEMENT: Monday detected (post-weekend gap)")
+            return is_monday
         except Exception as e:
             self.Log(f"SETTLEMENT: Error checking market gap - {e}")
             return False
@@ -1673,14 +1677,49 @@ class AlphaNextGen(QCAlgorithm):
             if "Margin" in str(orderEvent.Message):
                 self._margin_call_consecutive_count += 1
                 if self._margin_call_consecutive_count >= config.MARGIN_CALL_MAX_CONSECUTIVE:
+                    # V2.12 Fix #5: LIQUIDATE positions, not just cooldown
+                    # Evidence: V2.11 showed positions held overnight into gap → kill switch
+                    self.Log(
+                        f"MARGIN_CB_LIQUIDATE: {self._margin_call_consecutive_count} consecutive "
+                        f"margin calls | Force closing all options positions"
+                    )
+
+                    # Cancel all pending options orders
+                    try:
+                        for order in self.Transactions.GetOpenOrders():
+                            order_symbol = str(order.Symbol)
+                            if "QQQ" in order_symbol and (
+                                "C0" in order_symbol or "P0" in order_symbol
+                            ):
+                                self.Transactions.CancelOrder(order.Id)
+                                self.Log(f"MARGIN_CB_LIQUIDATE: Cancelled order {order.Id}")
+                    except Exception as e:
+                        self.Log(f"MARGIN_CB_LIQUIDATE: Error cancelling orders | {e}")
+
+                    # Liquidate all QQQ options positions
+                    try:
+                        for symbol in self.Portfolio.Keys:
+                            symbol_str = str(symbol)
+                            if "QQQ" in symbol_str and ("C0" in symbol_str or "P0" in symbol_str):
+                                holding = self.Portfolio[symbol]
+                                if holding.Invested:
+                                    qty = holding.Quantity
+                                    self.MarketOrder(symbol, -qty, tag="MARGIN_CB_LIQUIDATE")
+                                    self.Log(
+                                        f"MARGIN_CB_LIQUIDATE: Closed {symbol_str[-21:]} x{qty}"
+                                    )
+                    except Exception as e:
+                        self.Log(f"MARGIN_CB_LIQUIDATE: Error liquidating | {e}")
+
+                    # Clear spread tracking
+                    if self.options_engine:
+                        self.options_engine.clear_spread_position()
+
                     # Enter cooldown
                     cooldown_hours = config.MARGIN_CALL_COOLDOWN_HOURS
                     cooldown_until = self.Time + timedelta(hours=cooldown_hours)
                     self._margin_call_cooldown_until = str(cooldown_until)
-                    self.Log(
-                        f"MARGIN_CALL_CIRCUIT_BREAKER: {self._margin_call_consecutive_count} consecutive "
-                        f"margin calls | COOLDOWN until {self._margin_call_cooldown_until}"
-                    )
+                    self.Log(f"MARGIN_CB_COOLDOWN: Until {self._margin_call_cooldown_until}")
             else:
                 # Reset counter on non-margin invalid
                 self._margin_call_consecutive_count = 0
@@ -2451,7 +2490,10 @@ class AlphaNextGen(QCAlgorithm):
                 continue
 
             # V2.3: Get delta and check if within tolerance of target
-            contract_delta = abs(contract.Greeks.Delta) if hasattr(contract, "Greeks") else 0.0
+            # V2.12 Fix #7: Skip contracts with missing or zero Greeks (backtest data gaps)
+            if not hasattr(contract, "Greeks") or contract.Greeks.Delta == 0:
+                continue  # Skip contracts without valid Greeks data
+            contract_delta = abs(contract.Greeks.Delta)
             delta_diff = abs(contract_delta - target_delta)
             if delta_diff > config.OPTIONS_DELTA_TOLERANCE:
                 continue
@@ -2549,7 +2591,10 @@ class AlphaNextGen(QCAlgorithm):
                 continue
 
             # V2.3: Get delta and check if within tolerance of target
-            contract_delta = abs(contract.Greeks.Delta) if hasattr(contract, "Greeks") else 0.0
+            # V2.12 Fix #7: Skip contracts with missing or zero Greeks (backtest data gaps)
+            if not hasattr(contract, "Greeks") or contract.Greeks.Delta == 0:
+                continue  # Skip contracts without valid Greeks data
+            contract_delta = abs(contract.Greeks.Delta)
             delta_diff = abs(contract_delta - target_delta)
             if delta_diff > config.OPTIONS_DELTA_TOLERANCE:
                 continue

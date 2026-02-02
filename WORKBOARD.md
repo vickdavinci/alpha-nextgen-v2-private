@@ -71,6 +71,8 @@
 |:-----:|----------|---------|:------:|------|
 | 1 | 1 day | Basic validation | **PASS** ✅ | 2026-01-30 |
 | 2 | 1 month (Jan 2025) | Short-term behavior | **V2.3.22 +0.93%** ✅ | 2026-02-01 |
+| 2b | 3 months (Q1 2025) | Capital Test | **V2.11 -62%** 🔴 | 2026-02-02 |
+| 2c | 3 months (Q1 2025) | AAP Bug Fixes | **V2.12 Pending** ⏳ | 2026-02-02 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
@@ -78,6 +80,40 @@
 > **Results Document:** `docs/audits/backtest-results.md`
 > **Stage 2 Code Audits:** `docs/audits/stage2-codeaudit.md`, `docs/audits/stage2-codeaudit2.md`
 > **Logs:** `docs/audits/logs/stage2/`
+
+---
+
+### V2.12 AAP Audit Bug Fixes (2026-02-02) — COMPLETE ✅
+
+**Root Cause:** V2.11 3-month backtest showed -62% loss due to **exit signal bug** (not strategy failure):
+- Exit signals fired without checking if position existed
+- Each "exit" OPENED new positions in reverse direction
+- Position accumulated from 16 to 80 contracts (5× intended)
+
+**All 8 Fixes Implemented:**
+
+| # | Fix | Priority | Status |
+|:-:|-----|:--------:|:------:|
+| 1 | **SPREAD_EXIT_POSITION_CHECK** - Check `num_spreads > 0` before exit | P0 | ✅ |
+| 2 | **SPREAD_EXIT_LOCK** - `is_closing` flag prevents duplicates | P0 | ✅ |
+| 3 | **SPREAD_MAX_POSITION** - Hard cap at 20 contracts | P0 | ✅ |
+| 4 | **MARGIN_GUARD_INCREASE** - Raised from $5K to $10K | P1 | ✅ |
+| 5 | **MARGIN_CB_LIQUIDATE** - Circuit breaker now liquidates | P1 | ✅ |
+| 6 | **COMBO_ORDER_DIRECTION** - Fixed by #1/#2 position check | P1 | ✅ |
+| 7 | **PUT_UNIVERSE** - Widened filter `-8, +5`, handle missing Greeks | P1 | ✅ |
+| 8 | **SCHEDULER_ERROR** - Simple weekday check (not GetPreviousMarketClose) | P2 | ✅ |
+
+**Files Modified:**
+- `engines/satellite/options_engine.py` - Fixes #1, #2, #5
+- `config.py` - Fixes #3, #4
+- `main.py` - Fixes #5, #7, #8
+
+**Next Step:** Run V2.12 backtest to validate fixes
+```bash
+./scripts/qc_backtest.sh "V2.12-AllFixes" --open
+```
+
+---
 
 ### V2.3.22 Backtest Results (2026-02-01) — PROFITABLE RUN ✅
 

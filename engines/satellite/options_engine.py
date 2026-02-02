@@ -251,6 +251,7 @@ class SpreadPosition:
     entry_score: float
     num_spreads: int  # Number of spread contracts
     regime_at_entry: float  # Regime score at entry
+    is_closing: bool = False  # V2.12 Fix #2: Prevent duplicate exit signals
 
     @property
     def profit_target(self) -> float:
@@ -278,6 +279,7 @@ class SpreadPosition:
             "entry_score": self.entry_score,
             "num_spreads": self.num_spreads,
             "regime_at_entry": self.regime_at_entry,
+            "is_closing": self.is_closing,
         }
 
     @classmethod
@@ -294,6 +296,7 @@ class SpreadPosition:
             entry_score=data["entry_score"],
             num_spreads=data["num_spreads"],
             regime_at_entry=data["regime_at_entry"],
+            is_closing=data.get("is_closing", False),  # V2.12: Default False for backwards compat
         )
 
 
@@ -2680,6 +2683,15 @@ class OptionsEngine:
             )
             return None
 
+        # V2.12 Fix #3: Enforce SPREAD_MAX_CONTRACTS hard cap
+        # Evidence from V2.11: Position accumulated to 80 contracts (5× intended)
+        # This cap prevents runaway position accumulation from exit signal bugs
+        if num_spreads > config.SPREAD_MAX_CONTRACTS:
+            self.log(
+                f"SPREAD_LIMIT: Capped contracts | Requested={num_spreads} > Max={config.SPREAD_MAX_CONTRACTS}"
+            )
+            num_spreads = config.SPREAD_MAX_CONTRACTS
+
         # Store pending spread entry details
         self._pending_spread_long_leg = long_leg_contract
         self._pending_spread_short_leg = short_leg_contract
@@ -2764,6 +2776,18 @@ class OptionsEngine:
             return None
 
         spread = self._spread_position
+
+        # V2.12 Fix #1: Must have contracts to exit
+        if spread.num_spreads <= 0:
+            self.log(
+                f"SPREAD_EXIT_SKIP: No contracts to exit | num_spreads={spread.num_spreads}",
+                trades_only=True,
+            )
+            return None
+
+        # V2.12 Fix #2: Don't fire duplicate exit signals while closing
+        if spread.is_closing:
+            return None
 
         # V2.8: Determine if credit or debit spread
         is_credit_spread = spread.spread_type in (
@@ -2864,6 +2888,9 @@ class OptionsEngine:
             f"P&L={pnl_pct:.1%}",
             trades_only=True,
         )
+
+        # V2.12 Fix #2: Lock the position to prevent duplicate exit signals
+        spread.is_closing = True
 
         # V2.5 FIX: Return SINGLE exit signal with combo metadata
         # (Same structure as entry, so router creates atomic ComboMarketOrder)
@@ -4235,6 +4262,23 @@ class OptionsEngine:
     def get_spread_position(self) -> Optional[SpreadPosition]:
         """V2.3: Get current spread position."""
         return self._spread_position
+
+    def clear_spread_position(self) -> None:
+        """
+        V2.12 Fix #5: Force clear spread position tracking.
+
+        Used by margin circuit breaker to reset tracking after forced liquidation.
+        Does NOT place orders - just clears internal state.
+        """
+        if self._spread_position is not None:
+            self.log(
+                f"SPREAD: FORCE_CLEARED | {self._spread_position.spread_type} | "
+                f"Margin CB liquidation",
+                trades_only=True,
+            )
+            self._spread_position = None
+            self._last_spread_exit_time = None
+            self._entry_attempted_today = True  # Prevent re-entry today
 
     def has_intraday_position(self) -> bool:
         """V2.3.2: Check if an intraday position exists (tracked separately for 15:30 force close)."""

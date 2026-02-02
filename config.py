@@ -694,13 +694,21 @@ VASS_LOG_REJECTION_INTERVAL_MINUTES = 15  # Log rejections every 15 min (not eve
 # -----------------------------------------------------------------------------
 # Pitfall #6: Margin Collateral Lock-Out
 # Options sizing must cap by actual available margin, not just portfolio %
-OPTIONS_MAX_MARGIN_CAP = 5000  # $5K max margin reserved for all options combined
+# V2.12 Fix #4: Raised from $5K to $10K - 8-lot spread requires ~$8K margin
+OPTIONS_MAX_MARGIN_CAP = 10000  # $10K max margin reserved for all options combined
 
 # Pitfall #8: Settlement Ghost - Smarter threshold-based gate
 # Only halt if UnsettledCash is material (>10% of portfolio)
 SETTLEMENT_UNSETTLED_THRESHOLD_PCT = 0.10  # 10% threshold to trigger halt
 SETTLEMENT_HALT_UNTIL_HOUR = 10  # Halt until 10:30 AM (not arbitrary 60 min)
 SETTLEMENT_HALT_UNTIL_MINUTE = 30
+
+# -----------------------------------------------------------------------------
+# V2.12: SPREAD EXIT BUG FIXES (Pitfalls #5-9 from AAP Audit)
+# -----------------------------------------------------------------------------
+# V2.12 Fix #3: Hard cap on spread contracts to prevent position accumulation
+# Evidence: V2.11 backtest showed qty=-80 (5× intended) from exit signal bug
+SPREAD_MAX_CONTRACTS = 20  # Hard cap per spread position
 
 # -----------------------------------------------------------------------------
 # V2.1.1 VIX DIRECTION THRESHOLDS (Micro Regime Engine)

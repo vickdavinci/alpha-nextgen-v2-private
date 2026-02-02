@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-02 (V2.4.2: AAP Audit Fixes - Dancing Green Bison)
+> **Last Updated:** 2026-02-02 (V2.12: AAP Audit Bug Fixes - 8 Critical Fixes)
 
 ---
 
@@ -2520,6 +2520,244 @@ CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.40
 
 ---
 
+## V2.9: Settlement-Aware Trading (2026-02-02)
+
+### Overview
+
+V2.9 implements smart settlement handling to avoid trading with unsettled cash after weekends and holidays.
+
+### Components
+
+| Component | Description |
+|-----------|-------------|
+| `SETTLEMENT_AWARE_TRADING` | Master switch for settlement logic |
+| `_is_first_bar_after_market_gap()` | Detects post-weekend/holiday opens |
+| `_check_settlement_cooldown()` | Sets cooldown if unsettled cash > 10% |
+| `SETTLEMENT_HALT_UNTIL_HOUR/MINUTE` | Specific halt time (10:30 AM) |
+
+### Config Parameters
+
+```python
+SETTLEMENT_AWARE_TRADING = True
+SETTLEMENT_COOLDOWN_MINUTES = 60
+SETTLEMENT_CHECK_SYMBOL = "SPY"
+SETTLEMENT_UNSETTLED_THRESHOLD_PCT = 0.10  # 10%
+SETTLEMENT_HALT_UNTIL_HOUR = 10
+SETTLEMENT_HALT_UNTIL_MINUTE = 30
+```
+
+---
+
+## V2.10: Credit Spread Safety Enhancements (2026-02-02)
+
+### Pitfalls Addressed
+
+| Pitfall | Description | Fix |
+|---------|-------------|-----|
+| #1: Mid-Price Slippage | Bid-ask spread eats into profit | `SLIPPAGE_BUFFER_PCT = 0.02` |
+| #4: VASS Rejection Spam | Silent rejections every candle | `VASS_LOG_REJECTION_INTERVAL_MINUTES = 15` |
+| #5: Gamma Pin at Expiry | Price near short strike → early exit | `GAMMA_PIN_CHECK_ENABLED = True` |
+
+### Config Parameters
+
+```python
+SLIPPAGE_BUFFER_PCT = 0.02
+CREDIT_SPREAD_MIN_CREDIT_ADJUSTED = 0.35
+GAMMA_PIN_CHECK_ENABLED = True
+GAMMA_PIN_BUFFER_PCT = 0.005  # 0.5%
+GAMMA_PIN_EARLY_EXIT_DTE = 2
+VASS_LOG_REJECTION_INTERVAL_MINUTES = 15
+```
+
+---
+
+## V2.11: Pre-Backtest Safety Fixes (2026-02-02)
+
+### Pitfalls Addressed
+
+| Pitfall | Description | Fix |
+|---------|-------------|-----|
+| #6: Margin Collateral Lock-Out | Options blocked by margin | `OPTIONS_MAX_MARGIN_CAP = 5000` |
+| #8: Settlement Ghost | Unsettled cash threshold | Smart 10% threshold gate |
+
+### Stage 2 Capital Test Backtest (V2.11_CapitalTest3)
+
+**Backtest:** Jan 1 - Mar 31, 2025 | $50K Starting Capital
+
+| Metric | Value | Notes |
+|--------|------:|-------|
+| **Return** | **-62.41%** | Catastrophic loss |
+| Ending Equity | $18,792.66 | |
+| Kill Switch Triggers | 12 | Repeated triggers |
+| Root Cause | Exit signal bug | Exits OPENED new positions |
+
+**Critical Finding:** The -62% loss was caused by a **software bug**, not strategy failure:
+1. Exit signals fired without checking if position existed
+2. Each "exit" OPENED new positions in reverse direction
+3. Position accumulated from 16 to 80 contracts (5× intended)
+4. Margin exhausted → held overnight → gap → kill switch
+5. Repeated 12 times over 3 months
+
+---
+
+## V2.12: AAP Audit Bug Fixes (2026-02-02)
+
+### Overview
+
+V2.12 implements all fixes identified in the Algorithmic Audit Protocol (AAP) analysis of the V2.11 backtest. These are critical bug fixes addressing the -62% loss root causes.
+
+### Pitfalls Fixed (8 Total)
+
+| Priority | Pitfall | Description | Fix |
+|:--------:|---------|-------------|-----|
+| **P0** | #5: Exit Signal Without Position Check | Exit signals fired when no position existed | Check `num_spreads > 0` before exit |
+| **P0** | #5b: Duplicate Exit Signals | Multiple exits for same position | `is_closing` flag locks position |
+| **P0** | #6: No Position Accumulation Limit | 80 contracts accumulated (5× intended) | `SPREAD_MAX_CONTRACTS = 20` cap |
+| **P1** | #7: Margin Guard Too Low | $5K cap insufficient for 8-lot spreads | Raised to `$10K` |
+| **P1** | #8: Margin CB No Liquidation | Circuit breaker only cooled down | Now liquidates all options |
+| **P1** | #9: Order Direction Confusion | Exit orders opened new positions | Fixed by #5 position check |
+| **P1** | #10: PUT Universe Missing | 50+ "No PUT contracts found" | Widened filter to `-8, +5` |
+| **P2** | #11: Scheduler Error | `GetPreviousMarketClose` not found | Simple weekday check |
+
+### Implementation Details
+
+#### Fix #1 & #2: Spread Exit Position Check + Lock (P0)
+
+**File:** `engines/satellite/options_engine.py`
+
+```python
+# In check_spread_exit_signals():
+
+# V2.12 Fix #1: Must have contracts to exit
+if spread.num_spreads <= 0:
+    self.log("SPREAD_EXIT_SKIP: No contracts to exit")
+    return None
+
+# V2.12 Fix #2: Don't fire duplicate exit signals
+if spread.is_closing:
+    return None
+
+# ... generate exit signal ...
+
+# V2.12 Fix #2: Lock the position
+spread.is_closing = True
+```
+
+#### Fix #3: Spread Max Position Limit (P0)
+
+**Files:** `config.py`, `options_engine.py`
+
+```python
+# config.py
+SPREAD_MAX_CONTRACTS = 20  # Hard cap per spread position
+
+# options_engine.py - check_spread_entry_signal()
+if num_spreads > config.SPREAD_MAX_CONTRACTS:
+    self.log(f"SPREAD_LIMIT: Capped | Requested={num_spreads} > Max={config.SPREAD_MAX_CONTRACTS}")
+    num_spreads = config.SPREAD_MAX_CONTRACTS
+```
+
+#### Fix #4: Margin Guard Increase (P1)
+
+**File:** `config.py`
+
+```python
+# V2.12: Raised from $5K to $10K
+OPTIONS_MAX_MARGIN_CAP = 10000
+```
+
+#### Fix #5: Margin CB Liquidation (P1)
+
+**File:** `main.py`, `options_engine.py`
+
+```python
+# In OnOrderEvent - margin call circuit breaker:
+if self._margin_call_consecutive_count >= config.MARGIN_CALL_MAX_CONSECUTIVE:
+    self.Log("MARGIN_CB_LIQUIDATE: Force closing all options positions")
+
+    # Cancel pending orders
+    for order in self.Transactions.GetOpenOrders():
+        if "QQQ" in str(order.Symbol):
+            self.Transactions.CancelOrder(order.Id)
+
+    # Liquidate all options
+    for symbol in self.Portfolio.Keys:
+        if "QQQ" in str(symbol) and self.Portfolio[symbol].Invested:
+            self.MarketOrder(symbol, -self.Portfolio[symbol].Quantity, tag="MARGIN_CB_LIQUIDATE")
+
+    # Clear tracking
+    self.options_engine.clear_spread_position()
+
+    # Then cooldown
+    self._margin_call_cooldown_until = str(self.Time + timedelta(hours=4))
+```
+
+#### Fix #7: PUT Universe (P1)
+
+**File:** `main.py`
+
+```python
+# Widened strike filter for better PUT coverage
+qqq_option.SetFilter(
+    -8, 5,  # Was -5, 5 - now asymmetric for OTM PUTs
+    timedelta(days=config.OPTIONS_DTE_MIN),
+    timedelta(days=config.OPTIONS_DTE_MAX)
+)
+
+# Skip contracts with missing/zero Greeks
+if not hasattr(contract, "Greeks") or contract.Greeks.Delta == 0:
+    continue  # Skip contracts without valid Greeks data
+```
+
+#### Fix #8: Scheduler Error (P2)
+
+**File:** `main.py`
+
+```python
+def _is_first_bar_after_market_gap(self) -> bool:
+    # V2.12: Simple weekday check instead of GetPreviousMarketClose
+    try:
+        is_monday = self.Time.weekday() == 0
+        if is_monday:
+            self.Log("SETTLEMENT: Monday detected (post-weekend gap)")
+        return is_monday
+    except Exception as e:
+        return False
+```
+
+### Files Modified
+
+| File | Fixes Applied |
+|------|---------------|
+| `engines/satellite/options_engine.py` | #1, #2, #5 (position check, lock, clear method) |
+| `config.py` | #3, #4 (max contracts, margin cap) |
+| `main.py` | #5, #7, #8 (margin CB, PUT filter, scheduler) |
+
+### Expected Impact
+
+| Metric | V2.11 (Broken) | V2.12 (Target) |
+|--------|:--------------:|:--------------:|
+| Max spread contracts | 80 | ≤ 20 |
+| Kill switch triggers | 12 | 0-2 |
+| Duplicate exit signals | ~100 | 0 |
+| Portfolio drawdown | 62% | < 20% |
+| PUT contracts found | 0% | > 50% |
+
+### Validation Command
+
+```bash
+./scripts/qc_backtest.sh "V2.12-AllFixes" --open
+```
+
+**Verify in logs:**
+- No "Total closed=128/14" impossible counts
+- SPREAD_LIMIT logs when cap hit
+- SPREAD_EXIT_SKIP when no position
+- Max position ≤ 20
+- No KILL_SWITCH from position accumulation
+
+---
+
 ## Sync Workflow
 
 ```bash
@@ -2540,4 +2778,4 @@ lean cloud backtest AlphaNextGen
 
 ---
 
-*Document created: 2026-01-30 | Last updated: 2026-02-02 (V2.8 VASS - Volatility-Adaptive Strategy Selection)*
+*Document created: 2026-01-30 | Last updated: 2026-02-02 (V2.12 AAP Audit Bug Fixes - 8 Critical Fixes)*
