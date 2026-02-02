@@ -1320,9 +1320,16 @@ class AlphaNextGen(QCAlgorithm):
             # V2.4.1 FIX #8: Kill switch check on options fills
             # Kill switch may trip between signal generation and fill.
             # If active, immediately liquidate the new options position.
+            # V2.4.2 FIX: Only for OPENING buys, not closing buys (buying back shorts)
             is_option = orderEvent.Symbol.SecurityType == SecurityType.Option
-            if is_option and fill_qty > 0:  # Only check BUY fills (new positions)
-                if self.risk_engine.is_kill_switch_active():
+            if is_option and fill_qty > 0:  # BUY fills
+                # Check current position AFTER fill to determine if this was opening or closing
+                current_position = self.Portfolio[orderEvent.Symbol].Quantity
+                # If position is now positive, this was an opening buy (new long)
+                # If position is 0 or negative, this was a closing buy (covering short)
+                is_opening_trade = current_position > 0
+
+                if is_opening_trade and self.risk_engine.is_kill_switch_active():
                     self.Log(
                         f"KILL_SWITCH_ON_FILL: Options position opened while kill switch active | "
                         f"{symbol} x{fill_qty} @ ${fill_price:.2f} | LIQUIDATING IMMEDIATELY"
@@ -2364,14 +2371,36 @@ class AlphaNextGen(QCAlgorithm):
                 self.Liquidate(symbol)
 
         # ALWAYS liquidate options (they're short-term and risky)
+        # V2.4.2 FIX: Close SHORT options first (buy to close), then LONG options (sell to close)
+        # This avoids margin issues where QC incorrectly calculates margin for selling longs
+        # when shorts are still open
+        short_options = []
+        long_options = []
         for kvp in self.Portfolio:
             holding = kvp.Value
             if holding.Invested and holding.Symbol.SecurityType == SecurityType.Option:
-                self.Log(f"KILL_SWITCH: Liquidating option {holding.Symbol}")
-                try:
-                    self.Liquidate(holding.Symbol)
-                except Exception as e:
-                    self.Log(f"KILL_SWITCH: Options liquidation error: {e}")
+                if holding.Quantity < 0:
+                    short_options.append(holding)
+                else:
+                    long_options.append(holding)
+
+        # Close shorts first (buy to close)
+        for holding in short_options:
+            self.Log(f"KILL_SWITCH: Closing SHORT option {holding.Symbol} (qty={holding.Quantity})")
+            try:
+                # Use MarketOrder with explicit quantity to avoid Liquidate() margin quirks
+                self.MarketOrder(holding.Symbol, -int(holding.Quantity))
+            except Exception as e:
+                self.Log(f"KILL_SWITCH: Short option close error: {e}")
+
+        # Then close longs (sell to close)
+        for holding in long_options:
+            self.Log(f"KILL_SWITCH: Closing LONG option {holding.Symbol} (qty={holding.Quantity})")
+            try:
+                # Use MarketOrder with explicit quantity
+                self.MarketOrder(holding.Symbol, -int(holding.Quantity))
+            except Exception as e:
+                self.Log(f"KILL_SWITCH: Long option close error: {e}")
 
         # Clear tracked position state if any
         if self.options_engine.has_position():
