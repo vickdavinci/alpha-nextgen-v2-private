@@ -177,7 +177,7 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
         self.SetStartDate(2023, 1, 1)
-        self.SetEndDate(2024, 12, 31)  # V2.5 Jan 2023 - Dec 2024 backtest (2 years)
+        self.SetEndDate(2023, 3, 31)  # V2.5 Jan-Mar 2023 backtest (3 months)
         self.SetCash(config.PHASE_SEED_MIN)  # $50,000 seed capital
 
         # All times are Eastern
@@ -3497,40 +3497,40 @@ class AlphaNextGen(QCAlgorithm):
         # V2.1/V2.3: Update Options engine if QQQ option
         if "QQQ" in symbol and ("C" in symbol or "P" in symbol):
             try:
-                if fill_qty > 0:
-                    # V2.3: Check if this is a spread leg fill
-                    if self.options_engine._pending_spread_long_leg is not None:
-                        # This is a spread entry - track leg fills
-                        self._handle_spread_leg_fill(symbol, fill_price, fill_qty)
-                    else:
-                        # Single-leg entry (legacy or intraday)
-                        position = self.options_engine.register_entry(
-                            fill_price=fill_price,
-                            entry_time=str(self.Time),
+                # V2.5 FIX: Check spread mode FIRST (before fill_qty sign check)
+                # Bull Call Spread: Long leg = BUY (qty > 0), Short leg = SELL (qty < 0)
+                # The bug was: "if fill_qty > 0" excluded short leg fills entirely!
+                if self.options_engine._pending_spread_long_leg is not None:
+                    # Spread mode: track ANY leg fill (long=positive, short=negative)
+                    # Use abs(fill_qty) because _handle_spread_leg_fill expects positive qty
+                    self._handle_spread_leg_fill(symbol, fill_price, abs(fill_qty))
+                elif fill_qty > 0:
+                    # Single-leg entry (legacy or intraday)
+                    position = self.options_engine.register_entry(
+                        fill_price=fill_price,
+                        entry_time=str(self.Time),
+                        current_date=str(self.Time.date()),
+                    )
+
+                    if position:
+                        # Create OCO pair for stop and profit exits
+                        oco_pair = self.oco_manager.create_oco_pair(
+                            symbol=symbol,
+                            entry_price=fill_price,
+                            stop_price=position.stop_price,
+                            target_price=position.target_price,
+                            quantity=int(fill_qty),
                             current_date=str(self.Time.date()),
                         )
 
-                        if position:
-                            # Create OCO pair for stop and profit exits
-                            oco_pair = self.oco_manager.create_oco_pair(
-                                symbol=symbol,
-                                entry_price=fill_price,
-                                stop_price=position.stop_price,
-                                target_price=position.target_price,
-                                quantity=int(fill_qty),
-                                current_date=str(self.Time.date()),
+                        if oco_pair:
+                            # Submit OCO orders
+                            self.oco_manager.submit_oco_pair(oco_pair, current_time=str(self.Time))
+                            self.Log(
+                                f"OPT: OCO pair created | "
+                                f"Stop=${position.stop_price:.2f} | "
+                                f"Target=${position.target_price:.2f}"
                             )
-
-                            if oco_pair:
-                                # Submit OCO orders
-                                self.oco_manager.submit_oco_pair(
-                                    oco_pair, current_time=str(self.Time)
-                                )
-                                self.Log(
-                                    f"OPT: OCO pair created | "
-                                    f"Stop=${position.stop_price:.2f} | "
-                                    f"Target=${position.target_price:.2f}"
-                                )
                 elif fill_qty < 0:
                     # Exit - check position type (spread, intraday, or legacy single-leg)
                     if self.options_engine.has_spread_position():
