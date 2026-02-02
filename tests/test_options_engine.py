@@ -275,34 +275,34 @@ class TestStopTiers:
     """Tests for confidence-weighted stop tiers."""
 
     def test_tier_3_0(self, engine):
-        """Test score 3.0-3.25 gets 20% stop. V2.4.2: Reduced contracts."""
+        """Test score 3.0-3.25: Low confidence = small bet, tight stop."""
         tier = engine.get_stop_tier(3.0)
-        assert tier["stop_pct"] == 0.20
-        assert tier["contracts"] == 15  # V2.4.2: Reduced from 34
+        assert tier["stop_pct"] == 0.15  # V2.4.3: Tight stop for low confidence
+        assert tier["contracts"] == 5  # V2.4.3: Small position for low confidence
 
     def test_tier_3_25(self, engine):
-        """Test score 3.25-3.5 gets 22% stop. V2.4.2: Reduced contracts."""
+        """Test score 3.25-3.5: Medium-low confidence."""
         tier = engine.get_stop_tier(3.25)
-        assert tier["stop_pct"] == 0.22
-        assert tier["contracts"] == 12  # V2.4.2: Reduced from 31
+        assert tier["stop_pct"] == 0.18  # V2.4.3: Corrected
+        assert tier["contracts"] == 8  # V2.4.3: Corrected
 
     def test_tier_3_5(self, engine):
-        """Test score 3.5-3.75 gets 25% stop. V2.4.2: Reduced contracts."""
+        """Test score 3.5-3.75: Medium-high confidence."""
         tier = engine.get_stop_tier(3.5)
-        assert tier["stop_pct"] == 0.25
-        assert tier["contracts"] == 10  # V2.4.2: Reduced from 27
+        assert tier["stop_pct"] == 0.22  # V2.4.3: Corrected
+        assert tier["contracts"] == 10  # V2.4.3: Corrected
 
     def test_tier_3_75(self, engine):
-        """Test score 3.75-4.0 gets 30% stop. V2.4.2: Reduced contracts."""
+        """Test score 3.75-4.0: High confidence = bigger bet, wider stop."""
         tier = engine.get_stop_tier(3.75)
-        assert tier["stop_pct"] == 0.30
-        assert tier["contracts"] == 8  # V2.4.2: Reduced from 23
+        assert tier["stop_pct"] == 0.25  # V2.4.3: Wider stop for high confidence
+        assert tier["contracts"] == 12  # V2.4.3: Larger position for high confidence
 
     def test_tier_4_0(self, engine):
-        """Test score 4.0 gets highest tier. V2.4.2: Reduced contracts."""
+        """Test score 4.0 gets highest tier."""
         tier = engine.get_stop_tier(4.0)
-        assert tier["stop_pct"] == 0.30
-        assert tier["contracts"] == 8  # V2.4.2: Reduced from 23
+        assert tier["stop_pct"] == 0.25  # V2.4.3: Highest tier
+        assert tier["contracts"] == 12  # V2.4.3: Highest tier
 
 
 class TestPositionSizing:
@@ -315,12 +315,13 @@ class TestPositionSizing:
             premium=1.45,
             portfolio_value=100000,
         )
+        # V2.4.3: Score 3.5 tier now has stop_pct=0.22, contracts=10
         # 1% risk = $1000
-        # Risk per contract = $1.45 × 0.25 × 100 = $36.25
-        # Max contracts = $1000 / $36.25 = 27.6 → capped at tier max 27
-        assert num_contracts <= 27
-        assert stop_pct == 0.25
-        assert stop_price == 1.45 * (1 - 0.25)  # $1.0875
+        # Risk per contract = $1.45 × 0.22 × 100 = $31.90
+        # Max contracts = $1000 / $31.90 = 31.3 → capped at tier max 10
+        assert num_contracts <= 10  # V2.4.3: Tier cap is 10 contracts
+        assert stop_pct == 0.22  # V2.4.3: Corrected stop for score 3.5
+        assert stop_price == pytest.approx(1.45 * (1 - 0.22), rel=0.01)  # $1.131
         assert target_price == 1.45 * (1 + 0.50)  # $2.175
 
     def test_minimum_one_contract(self, engine):

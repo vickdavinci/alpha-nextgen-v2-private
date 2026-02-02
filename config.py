@@ -452,15 +452,15 @@ OPTIONS_MIN_OPEN_INTEREST = (
 )
 
 # Confidence-Weighted Tiered Stops
-# Higher entry score → wider stops, fewer contracts
+# V2.4.3 FIX: CORRECTED - Higher confidence = MORE contracts (was inverted!)
+# Logic: Bet big on high-conviction signals, bet small on low-conviction
 OPTIONS_STOP_TIERS = {
-    # V2.4.2 FIX: Reduced contract limits from 23-34 to 8-15
-    # Old limits caused $25K+ exposure per position on $50K account
-    # New limits cap max exposure to ~$15K (30% of account)
-    3.00: {"stop_pct": 0.20, "contracts": 15},  # Score 3.0-3.25
-    3.25: {"stop_pct": 0.22, "contracts": 12},  # Score 3.25-3.5
-    3.50: {"stop_pct": 0.25, "contracts": 10},  # Score 3.5-3.75
-    3.75: {"stop_pct": 0.30, "contracts": 8},  # Score 3.75-4.0 (tighter stop = fewer contracts)
+    # Low confidence = small position, tight stop (cut losses fast)
+    # High confidence = larger position, wider stop (give it room)
+    3.00: {"stop_pct": 0.15, "contracts": 5},  # Low confidence: small bet, tight stop
+    3.25: {"stop_pct": 0.18, "contracts": 8},  # Medium-low confidence
+    3.50: {"stop_pct": 0.22, "contracts": 10},  # Medium-high confidence
+    3.75: {"stop_pct": 0.25, "contracts": 12},  # High confidence: biggest bet, wider stop
 }
 
 # V2.3.8: 0DTE-specific stop override (PART 14 Pitfall 2)
@@ -565,12 +565,13 @@ SPREAD_VIX_MAX_BULL = 30  # Max VIX for Bull Call Spread entry
 SPREAD_VIX_MAX_BEAR = 35  # Max VIX for Bear Put Spread entry (allow higher)
 
 # Spread width (strike difference between legs)
-# V2.3.8: Relaxed width constraints - let delta drive selection (PART 14 Pitfall 4)
-# The "impossible triangle" of width + delta + liquidity was blocking valid spreads
-# Now: Delta is the primary selection criterion, width is just for P/L calculation
-SPREAD_WIDTH_MIN = 1.0  # V2.3.8: Accept $1 spreads (was $2) - don't filter by width
-SPREAD_WIDTH_MAX = 15.0  # V2.3.8: Accept up to $15 wide (was $5) - let delta drive
-SPREAD_WIDTH_TARGET = 5.0  # V2.3.8: Target $5 (was $3) - for sorting only, not filtering
+# V2.4.3: WIDTH-BASED short leg selection (fixes "delta trap" in backtesting)
+# Problem: Delta values jump (0.45 → 0.25) leaving gaps where no "perfect" delta exists
+# Solution: Select short leg by STRIKE WIDTH, not delta. Delta is soft preference only.
+SPREAD_SHORT_LEG_BY_WIDTH = True  # V2.4.3: Use strike width for short leg (not delta)
+SPREAD_WIDTH_MIN = 2.0  # V2.4.3: Minimum $2 spread (ensures meaningful max profit)
+SPREAD_WIDTH_MAX = 10.0  # V2.4.3: Maximum $10 spread (caps risk)
+SPREAD_WIDTH_TARGET = 5.0  # V2.4.3: Target $5 width (primary selection criterion)
 
 # DTE for debit spreads (per V2.3 spec)
 # V2.3.22: Raised from 10 to 14 - spreads need same gap cushion as single-leg

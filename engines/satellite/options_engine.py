@@ -1432,9 +1432,9 @@ class OptionsEngine:
         long_candidates.sort(key=lambda c: abs(abs(c.delta) - 0.70))
         long_leg = long_candidates[0]
 
-        # Find OTM short leg
-        # For calls: higher strike, delta 0.25-0.40
-        # For puts: lower strike, delta -0.25 to -0.40
+        # V2.4.3: WIDTH-BASED short leg selection (fixes "delta trap" in backtesting)
+        # Problem: Delta values jump (0.45 → 0.25) - no "perfect" delta exists
+        # Solution: Find short leg by STRIKE WIDTH, use delta only as tiebreaker
         short_candidates = []
         for c in filtered:
             # Skip same strike as long leg
@@ -1451,32 +1451,42 @@ class OptionsEngine:
                 if c.strike >= long_leg.strike:
                     continue
 
-            # Check delta range
-            delta_abs = abs(c.delta)
-            if not (
-                config.SPREAD_SHORT_LEG_DELTA_MIN <= delta_abs <= config.SPREAD_SHORT_LEG_DELTA_MAX
-            ):
-                continue
-
-            # V2.3.8: Removed width filter - let delta drive selection (PART 14 Pitfall 4)
-            # Width is calculated for P/L but no longer filters contracts
+            # Calculate width
             width = abs(c.strike - long_leg.strike)
 
-            # Check liquidity
-            if (
-                c.open_interest >= config.OPTIONS_MIN_OPEN_INTEREST // 2
-            ):  # Slightly looser for short leg
+            # V2.4.3: Filter by WIDTH, not delta
+            if config.SPREAD_SHORT_LEG_BY_WIDTH:
+                # Width-based selection: must be within min/max width bounds
+                if width < config.SPREAD_WIDTH_MIN or width > config.SPREAD_WIDTH_MAX:
+                    continue
+                # Delta is soft preference only (no hard filter)
+                delta_abs = abs(c.delta) if c.delta else 0.30  # Default if missing
+            else:
+                # Legacy: Hard delta filter (kept for backwards compatibility)
+                delta_abs = abs(c.delta)
+                if not (
+                    config.SPREAD_SHORT_LEG_DELTA_MIN
+                    <= delta_abs
+                    <= config.SPREAD_SHORT_LEG_DELTA_MAX
+                ):
+                    continue
+
+            # Check liquidity (relaxed for short leg)
+            if c.open_interest >= config.OPTIONS_MIN_OPEN_INTEREST // 2:
                 if c.spread_pct <= config.OPTIONS_SPREAD_WARNING_PCT:
                     short_candidates.append((c, width, delta_abs))
 
         if not short_candidates:
-            self.log("SPREAD: No valid OTM contract for short leg")
+            self.log(
+                f"SPREAD: No valid short leg | LongStrike={long_leg.strike} | "
+                f"WidthRange=${config.SPREAD_WIDTH_MIN}-${config.SPREAD_WIDTH_MAX}"
+            )
             return None
 
-        # V2.3.8: Sort by delta proximity to target (0.15-0.20), not width
-        # This prioritizes finding the best hedge rather than a specific width
-        target_delta = (config.SPREAD_SHORT_LEG_DELTA_MIN + config.SPREAD_SHORT_LEG_DELTA_MAX) / 2
-        short_candidates.sort(key=lambda x: abs(x[2] - target_delta))
+        # V2.4.3: Sort by WIDTH proximity to target, then by delta as tiebreaker
+        # Primary: closest to $5 target width
+        # Secondary: prefer lower delta (more OTM = cheaper credit)
+        short_candidates.sort(key=lambda x: (abs(x[1] - config.SPREAD_WIDTH_TARGET), x[2]))
         short_leg = short_candidates[0][0]
         actual_width = abs(short_leg.strike - long_leg.strike)
 
