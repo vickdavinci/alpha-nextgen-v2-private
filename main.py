@@ -2153,7 +2153,9 @@ class AlphaNextGen(QCAlgorithm):
             current_hour=self.Time.hour,
             current_minute=self.Time.minute,
             current_date=str(self.Time.date()),
-            portfolio_value=self.capital_engine.get_tradeable_equity(),
+            portfolio_value=self.capital_engine.calculate(
+                self.Portfolio.TotalPortfolioValue
+            ).tradeable_eq,
             long_leg_contract=long_leg,
             short_leg_contract=short_leg,
             gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
@@ -3058,7 +3060,9 @@ class AlphaNextGen(QCAlgorithm):
 
         # Calculate effective portfolio value capped by available margin
         # Leave OPTIONS_MAX_MARGIN_CAP buffer for margin fluctuations
-        base_tradeable = self.capital_engine.get_tradeable_equity()
+        base_tradeable = self.capital_engine.calculate(
+            self.Portfolio.TotalPortfolioValue
+        ).tradeable_eq
         margin_available_for_options = margin_remaining - config.OPTIONS_MAX_MARGIN_CAP
         # max_portfolio_from_margin = margin_available / OPTIONS_SWING_ALLOCATION
         # This ensures: effective_portfolio * OPTIONS_SWING_ALLOCATION <= margin_available
