@@ -302,7 +302,7 @@ class TrendEngine:
             symbol=symbol,
             target_weight=symbol_weight,  # V2.3.3: Symbol-specific allocation
             source="TREND",
-            urgency=Urgency.EOD,
+            urgency=Urgency.MOC,  # V2.4.2: Same-day close (was EOD/next-day open)
             reason=reason,
         )
 
@@ -392,7 +392,7 @@ class TrendEngine:
                 symbol=symbol,
                 target_weight=0.0,
                 source="TREND",
-                urgency=Urgency.EOD,
+                urgency=Urgency.MOC,  # V2.4.2: Same-day close (was EOD/next-day open)
                 reason=reason,
             )
 
@@ -422,7 +422,7 @@ class TrendEngine:
                 symbol=symbol,
                 target_weight=0.0,
                 source="TREND",
-                urgency=Urgency.EOD,
+                urgency=Urgency.MOC,  # V2.4.2: Same-day close (was EOD/next-day open)
                 reason=reason,
             )
 
@@ -467,7 +467,7 @@ class TrendEngine:
                 symbol=symbol,
                 target_weight=0.0,
                 source="TREND",
-                urgency=Urgency.EOD,
+                urgency=Urgency.MOC,  # V2.4.2: Same-day close (was EOD/next-day open)
                 reason=reason,
             )
 
@@ -479,7 +479,7 @@ class TrendEngine:
                 symbol=symbol,
                 target_weight=0.0,
                 source="TREND",
-                urgency=Urgency.EOD,
+                urgency=Urgency.MOC,  # V2.4.2: Same-day close (was EOD/next-day open)
                 reason=reason,
             )
 
@@ -491,7 +491,7 @@ class TrendEngine:
                 symbol=symbol,
                 target_weight=0.0,
                 source="TREND",
-                urgency=Urgency.EOD,
+                urgency=Urgency.MOC,  # V2.4.2: Same-day close (was EOD/next-day open)
                 reason=reason,
             )
 

@@ -16,11 +16,14 @@ class Urgency(Enum):
     Order execution urgency.
 
     IMMEDIATE: Execute now via MarketOrder (used by Mean Reversion, Risk events)
-    EOD: Execute at next open via MarketOnOpenOrder (used by Trend, Hedge)
+    EOD: Execute at next open via MarketOnOpenOrder (used by Hedge)
+    MOC: Execute at today's close via MarketOnCloseOrder (used by Trend)
+         V2.4.2: Added to eliminate overnight gap risk on trend entries
     """
 
     IMMEDIATE = "IMMEDIATE"
     EOD = "EOD"
+    MOC = "MOC"  # V2.4.2: Market-On-Close for same-day trend entries
 
 
 class Phase(Enum):

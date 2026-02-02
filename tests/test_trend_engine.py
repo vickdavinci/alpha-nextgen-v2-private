@@ -252,7 +252,7 @@ class TestEntrySignals:
         # V2.3.3: TrendEngine now uses symbol-specific allocations from config
         assert result.target_weight == 0.20  # QLD gets 20% (config.TREND_SYMBOL_ALLOCATIONS)
         assert result.source == "TREND"
-        assert result.urgency == Urgency.EOD
+        assert result.urgency == Urgency.MOC  # V2.4.2: MOC for same-day trend
         assert "MA200+ADX Entry" in result.reason
         assert "STRONG" in result.reason
 
@@ -448,7 +448,7 @@ class TestExitSignals:
         assert result is not None
         assert result.symbol == "QLD"
         assert result.target_weight == 0.0
-        assert result.urgency == Urgency.EOD
+        assert result.urgency == Urgency.MOC  # V2.4.2: MOC for same-day trend
         assert "MA200_EXIT" in result.reason
 
     def test_no_exit_close_above_ma200(self, engine_with_position):

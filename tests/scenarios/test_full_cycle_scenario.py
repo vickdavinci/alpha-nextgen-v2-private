@@ -11,22 +11,23 @@ Tests a complete trading day workflow:
 Spec: docs/14-daily-operations.md
 """
 
-import pytest
-from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
 
-from engines.core.regime_engine import RegimeEngine, RegimeState
+import pytest
+
+import config
 from engines.core.capital_engine import CapitalEngine, CapitalState
+from engines.core.regime_engine import RegimeEngine, RegimeState
 from engines.core.risk_engine import RiskEngine
 from engines.core.trend_engine import TrendEngine
-from engines.satellite.mean_reversion_engine import MeanReversionEngine
 from engines.satellite.hedge_engine import HedgeEngine
+from engines.satellite.mean_reversion_engine import MeanReversionEngine
 from engines.satellite.yield_sleeve import YieldSleeve
-from portfolio.portfolio_router import PortfolioRouter
-from portfolio.exposure_groups import ExposureCalculator
-from models.target_weight import TargetWeight
 from models.enums import Urgency
-import config
+from models.target_weight import TargetWeight
+from portfolio.exposure_groups import ExposureCalculator
+from portfolio.portfolio_router import PortfolioRouter
 
 
 @pytest.fixture
@@ -126,7 +127,7 @@ class TestFullCycleScenario:
         assert trend_signal is not None
         assert trend_signal.symbol == "QLD"
         assert trend_signal.source == "TREND"
-        assert trend_signal.urgency == Urgency.EOD
+        assert trend_signal.urgency == Urgency.MOC  # V2.4.2: MOC for same-day trend
 
         # EOD processing (15:45) would queue MOO order
         # State persisted at 16:00

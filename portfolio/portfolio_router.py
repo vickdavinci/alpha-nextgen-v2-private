@@ -40,6 +40,7 @@ class OrderType(Enum):
 
     MARKET = "MARKET"  # For IMMEDIATE urgency
     MOO = "MOO"  # Market-on-Open for EOD urgency
+    MOC = "MOC"  # V2.4.2: Market-on-Close for MOC urgency (Trend entries)
 
 
 @dataclass
@@ -594,7 +595,13 @@ class PortfolioRouter:
 
             # Determine side and order type
             side = OrderSide.BUY if delta_shares > 0 else OrderSide.SELL
-            order_type = OrderType.MARKET if agg.urgency == Urgency.IMMEDIATE else OrderType.MOO
+            # V2.4.2: Added MOC for same-day trend entries
+            if agg.urgency == Urgency.IMMEDIATE:
+                order_type = OrderType.MARKET
+            elif agg.urgency == Urgency.MOC:
+                order_type = OrderType.MOC
+            else:  # EOD
+                order_type = OrderType.MOO
 
             reason = "; ".join(agg.reasons) if agg.reasons else "No reason provided"
 
@@ -828,7 +835,13 @@ class PortfolioRouter:
                     self.log(
                         f"ROUTER: MARKET_ORDER | {order.side.value} {order.quantity} {order.symbol}"
                     )
-                else:
+                elif order.order_type == OrderType.MOC:
+                    # V2.4.2: Market-On-Close for same-day trend entries
+                    self.algorithm.MarketOnCloseOrder(order.symbol, quantity)  # type: ignore[attr-defined]
+                    self.log(
+                        f"ROUTER: MOC_ORDER | {order.side.value} {order.quantity} {order.symbol}"
+                    )
+                else:  # MOO
                     self.algorithm.MarketOnOpenOrder(order.symbol, quantity)  # type: ignore[attr-defined]
                     self.log(
                         f"ROUTER: MOO_ORDER | {order.side.value} {order.quantity} {order.symbol}"

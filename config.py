@@ -485,8 +485,10 @@ OPTIONS_SINGLE_LEG_DTE_EXIT = 4  # Close by 4 DTE (avoid expiration gamma trap)
 # Critical safety: Prevent auto-exercise of ITM options held into close
 # ITM options held past 4 PM get auto-exercised → stock position → margin crisis
 # Example from V2.3.9: 800 shares of QQQ assigned = $360K on $50K account (7:1 leverage)
-OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_HOUR = 15  # Force close expiring options at 15:45
-OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE = 45
+# V2.4.2: Expiration Hammer - Moved from 3:45 PM to 2:00 PM
+# Gives 2 hours buffer before close for retries and avoids end-of-day volatility
+OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_HOUR = 14  # Force close expiring options at 14:00
+OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE = 0
 
 # Contract Selection
 # Options chain filter (must cover BOTH Intraday 0-2 DTE AND Swing 5-45 DTE)
