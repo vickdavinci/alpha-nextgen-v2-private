@@ -31,7 +31,7 @@ from execution.execution_engine import ExecutionEngine
 from execution.oco_manager import OCOManager
 
 # Models
-from models.enums import Phase, RegimeLevel, Urgency
+from models.enums import IntradayStrategy, Phase, RegimeLevel, Urgency
 from models.target_weight import TargetWeight
 
 # Infrastructure
@@ -2546,26 +2546,29 @@ class AlphaNextGen(QCAlgorithm):
         return candidates[0][1]
 
     def _select_intraday_option_contract(
-        self, chain, direction: OptionDirection
+        self, chain, direction: OptionDirection, strategy: IntradayStrategy = None
     ) -> Optional[OptionContract]:
         """
-        V2.3.4: Select QQQ option contract for intraday mode (0-1 DTE).
+        V2.3.4: Select QQQ option contract for intraday mode (1-5 DTE).
 
-        Target delta: 0.30 (slightly OTM for faster gamma/premium moves)
+        V2.14 FIX: Now strategy-aware delta selection:
+        - DEBIT_FADE: Target 0.30 delta (OTM for gamma moves)
+        - ITM_MOMENTUM: Target 0.70 delta (ITM for stock replacement)
 
         V2.3.4 FIX: Now accepts direction parameter to ensure we select
         the correct Call/Put based on the fade strategy direction.
 
         Criteria:
         - Matches specified direction (CALL or PUT)
-        - Target 0.30 delta (±0.15 tolerance)
-        - DTE 0-1 days (true 0DTE intraday trading)
+        - Strategy-appropriate delta (0.30 for OTM, 0.70 for ITM)
+        - DTE 1-5 days (V2.13: Weekly expiration)
         - Sufficient open interest
         - Tight bid-ask spread
 
         Args:
             chain: QuantConnect options chain.
             direction: Required option direction (CALL or PUT).
+            strategy: V2.14 - Intraday strategy (DEBIT_FADE or ITM_MOMENTUM).
 
         Returns:
             OptionContract or None if no suitable contract found.
@@ -2574,7 +2577,13 @@ class AlphaNextGen(QCAlgorithm):
             return None
 
         qqq_price = self.Securities[self.qqq].Price
-        target_delta = config.OPTIONS_INTRADAY_DELTA_TARGET  # 0.30
+
+        # V2.14 Fix #20: Strategy-aware delta selection
+        if strategy == IntradayStrategy.ITM_MOMENTUM:
+            target_delta = config.INTRADAY_ITM_DELTA  # 0.70 for stock replacement
+            self.Log(f"INTRADAY_DELTA: ITM_MOMENTUM using delta={target_delta}")
+        else:
+            target_delta = config.OPTIONS_INTRADAY_DELTA_TARGET  # 0.30 for DEBIT_FADE
 
         # Determine which OptionRight to filter for
         required_right = OptionRight.Call if direction == OptionDirection.CALL else OptionRight.Put
@@ -3234,7 +3243,11 @@ class AlphaNextGen(QCAlgorithm):
                 intraday_contract = None
             else:
                 # STEP 2: Select contract matching ENGINE recommendation (not hardcoded fade)
-                intraday_contract = self._select_intraday_option_contract(chain, intraday_direction)
+                # V2.14 Fix #20: Pass strategy for delta-aware contract selection
+                intraday_strategy = self.options_engine.get_last_intraday_strategy()
+                intraday_contract = self._select_intraday_option_contract(
+                    chain, intraday_direction, strategy=intraday_strategy
+                )
 
             # V2.13 Fix #18: Log bid/ask rejection (was silent)
             if intraday_contract is not None and (
