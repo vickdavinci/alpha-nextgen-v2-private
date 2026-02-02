@@ -261,9 +261,13 @@ class TrendEngine:
         if close <= ma200:
             return None
 
-        # Condition 2: ADX >= 25 (score >= 0.50, sufficient momentum)
-        if score < 0.50:
-            self.log(f"TREND: {symbol} entry blocked - ADX {adx:.1f} too weak (score={score:.2f})")
+        # Condition 2: ADX >= 25 (score >= 0.75, sufficient momentum)
+        # V2.4.2 FIX: Changed from 0.50 to 0.75 - ADX_WEAK_THRESHOLD was lowered to 15,
+        # causing entries at ADX 15-24. Requiring score >= 0.75 enforces ADX >= 25.
+        if score < 0.75:
+            self.log(
+                f"TREND: {symbol} entry blocked - ADX {adx:.1f} too weak (score={score:.2f} < 0.75)"
+            )
             return None
 
         # Condition 3: Regime score >= 40

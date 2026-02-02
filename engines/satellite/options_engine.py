@@ -1993,11 +1993,19 @@ class OptionsEngine:
         if pnl >= profit_target:
             exit_reason = f"PROFIT_TARGET +{pnl_pct:.1%} (${pnl:.2f} >= ${profit_target:.2f})"
 
-        # Exit 2: DTE exit (close by 5 DTE)
+        # Exit 2: STOP LOSS (V2.4.2 FIX: Max loss = 50% of entry debit)
+        # This prevents catastrophic losses from holding spreads to expiration
+        # Example: $4 debit spread exits if value drops to $2 (50% loss)
+        elif pnl_pct < -config.SPREAD_STOP_LOSS_PCT:
+            exit_reason = (
+                f"STOP_LOSS {pnl_pct:.1%} (lost > {config.SPREAD_STOP_LOSS_PCT:.0%} of entry)"
+            )
+
+        # Exit 3: DTE exit (close by 5 DTE)
         elif current_dte <= config.SPREAD_DTE_EXIT:
             exit_reason = f"DTE_EXIT ({current_dte} DTE <= {config.SPREAD_DTE_EXIT})"
 
-        # Exit 3: Regime reversal
+        # Exit 4: Regime reversal
         elif spread.spread_type == "BULL_CALL" and regime_score < config.SPREAD_REGIME_EXIT_BULL:
             exit_reason = f"REGIME_REVERSAL (Bull exit: {regime_score:.0f} < {config.SPREAD_REGIME_EXIT_BULL})"
         elif spread.spread_type == "BEAR_PUT" and regime_score > config.SPREAD_REGIME_EXIT_BEAR:

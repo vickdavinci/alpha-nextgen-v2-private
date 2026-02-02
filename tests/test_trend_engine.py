@@ -257,21 +257,21 @@ class TestEntrySignals:
         assert "STRONG" in result.reason
 
     def test_entry_moderate_adx(self, engine):
-        """Test entry with moderate ADX (20-25, score = 0.50). V2.3.10: restored thresholds."""
+        """Test entry with moderate ADX (25-35, score = 0.75). V2.4.2: Require ADX >= 25."""
         result = engine.check_entry_signal(
             symbol="QLD",
             close=105.0,
             ma200=100.0,
-            adx=22.0,  # V2.3.10: Moderate (score = 0.50) - restored to 20-25 range
+            adx=28.0,  # V2.4.2: Moderate ADX (25-35) - score 0.75 required for entry
             regime_score=55.0,
             is_cold_start_active=False,
             has_warm_entry=False,
             atr=2.0,
             current_date="2024-01-15",
         )
-        # Score 0.50 meets threshold
+        # V2.4.2: Score 0.75 (ADX >= 25) required for entry
         assert result is not None
-        assert "MODERATE" in result.reason
+        assert "STRONG" in result.reason  # ADX 28 is in 25-35 range (STRONG)
 
     def test_entry_blocked_below_ma200(self, engine):
         """Test entry blocked when close <= MA200."""
@@ -985,14 +985,14 @@ class TestEdgeCases:
         )
         assert result is not None
 
-    def test_adx_exactly_at_moderate_threshold(self, engine):
-        """Test ADX exactly at moderate threshold (20)."""
-        # ADX = 20 should give score 0.50 which is exactly at threshold
+    def test_adx_exactly_at_entry_threshold(self, engine):
+        """Test ADX exactly at entry threshold (25). V2.4.2: Require ADX >= 25."""
+        # ADX = 25 should give score 0.75 which is exactly at threshold
         result = engine.check_entry_signal(
             symbol="QLD",
             close=105.0,
             ma200=100.0,
-            adx=20.0,  # Exactly at moderate threshold
+            adx=25.0,  # V2.4.2: Exactly at entry threshold (score = 0.75)
             regime_score=60.0,
             is_cold_start_active=False,
             has_warm_entry=False,

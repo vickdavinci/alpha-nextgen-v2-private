@@ -275,34 +275,34 @@ class TestStopTiers:
     """Tests for confidence-weighted stop tiers."""
 
     def test_tier_3_0(self, engine):
-        """Test score 3.0-3.25 gets 20% stop."""
+        """Test score 3.0-3.25 gets 20% stop. V2.4.2: Reduced contracts."""
         tier = engine.get_stop_tier(3.0)
         assert tier["stop_pct"] == 0.20
-        assert tier["contracts"] == 34
+        assert tier["contracts"] == 15  # V2.4.2: Reduced from 34
 
     def test_tier_3_25(self, engine):
-        """Test score 3.25-3.5 gets 22% stop."""
+        """Test score 3.25-3.5 gets 22% stop. V2.4.2: Reduced contracts."""
         tier = engine.get_stop_tier(3.25)
         assert tier["stop_pct"] == 0.22
-        assert tier["contracts"] == 31
+        assert tier["contracts"] == 12  # V2.4.2: Reduced from 31
 
     def test_tier_3_5(self, engine):
-        """Test score 3.5-3.75 gets 25% stop."""
+        """Test score 3.5-3.75 gets 25% stop. V2.4.2: Reduced contracts."""
         tier = engine.get_stop_tier(3.5)
         assert tier["stop_pct"] == 0.25
-        assert tier["contracts"] == 27
+        assert tier["contracts"] == 10  # V2.4.2: Reduced from 27
 
     def test_tier_3_75(self, engine):
-        """Test score 3.75-4.0 gets 30% stop."""
+        """Test score 3.75-4.0 gets 30% stop. V2.4.2: Reduced contracts."""
         tier = engine.get_stop_tier(3.75)
         assert tier["stop_pct"] == 0.30
-        assert tier["contracts"] == 23
+        assert tier["contracts"] == 8  # V2.4.2: Reduced from 23
 
     def test_tier_4_0(self, engine):
-        """Test score 4.0 gets highest tier."""
+        """Test score 4.0 gets highest tier. V2.4.2: Reduced contracts."""
         tier = engine.get_stop_tier(4.0)
         assert tier["stop_pct"] == 0.30
-        assert tier["contracts"] == 23
+        assert tier["contracts"] == 8  # V2.4.2: Reduced from 23
 
 
 class TestPositionSizing:

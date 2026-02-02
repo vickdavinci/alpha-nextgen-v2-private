@@ -454,10 +454,13 @@ OPTIONS_MIN_OPEN_INTEREST = (
 # Confidence-Weighted Tiered Stops
 # Higher entry score → wider stops, fewer contracts
 OPTIONS_STOP_TIERS = {
-    3.00: {"stop_pct": 0.20, "contracts": 34},  # Score 3.0-3.25
-    3.25: {"stop_pct": 0.22, "contracts": 31},  # Score 3.25-3.5
-    3.50: {"stop_pct": 0.25, "contracts": 27},  # Score 3.5-3.75
-    3.75: {"stop_pct": 0.30, "contracts": 23},  # Score 3.75-4.0
+    # V2.4.2 FIX: Reduced contract limits from 23-34 to 8-15
+    # Old limits caused $25K+ exposure per position on $50K account
+    # New limits cap max exposure to ~$15K (30% of account)
+    3.00: {"stop_pct": 0.20, "contracts": 15},  # Score 3.0-3.25
+    3.25: {"stop_pct": 0.22, "contracts": 12},  # Score 3.25-3.5
+    3.50: {"stop_pct": 0.25, "contracts": 10},  # Score 3.5-3.75
+    3.75: {"stop_pct": 0.30, "contracts": 8},  # Score 3.75-4.0 (tighter stop = fewer contracts)
 }
 
 # V2.3.8: 0DTE-specific stop override (PART 14 Pitfall 2)
@@ -575,6 +578,7 @@ SPREAD_DTE_EXIT = 5  # Close by 5 DTE remaining
 
 # Exit targets
 SPREAD_PROFIT_TARGET_PCT = 0.50  # Take profit at 50% of max profit
+SPREAD_STOP_LOSS_PCT = 0.50  # V2.4.2: Stop loss at 50% of entry debit (max loss = 50% of net debit)
 SPREAD_REGIME_EXIT_BULL = 45  # Exit Bull Call if regime drops below 45
 SPREAD_REGIME_EXIT_BEAR = 60  # Exit Bear Put if regime rises above 60
 
