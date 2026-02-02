@@ -578,7 +578,7 @@ class PortfolioRouter:
             # V2.3.24: Use lower threshold for intraday options
             # Single option contracts often $500-1,500, below the $2,000 MIN_TRADE_VALUE
             min_trade_value = config.MIN_TRADE_VALUE
-            if is_option and agg.source in ("OPT_INTRADAY", "OPT"):
+            if is_option and any(s in ("OPT_INTRADAY", "OPT") for s in agg.sources):
                 min_trade_value = config.MIN_INTRADAY_OPTIONS_TRADE_VALUE
 
             # Skip if position value below minimum trade size (unless closing)
