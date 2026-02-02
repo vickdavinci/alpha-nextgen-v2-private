@@ -36,17 +36,18 @@ class TestADXScore:
         assert adx_score(50.0) == 1.0
 
     def test_adx_strong(self):
-        """Test ADX 25-35 returns score 0.75 (strong). V2.3.10: restored to 25."""
+        """Test ADX 22-35 returns score 0.75 (strong). V2.5: lowered to 22."""
+        assert adx_score(22.0) == 0.75  # V2.5: New threshold
         assert adx_score(25.0) == 0.75
         assert adx_score(30.0) == 0.75
         assert adx_score(34.9) == 0.75
 
     def test_adx_moderate(self):
-        """Test ADX 15-25 returns score 0.50 (moderate). V2.3.12: lowered to 15."""
+        """Test ADX 15-22 returns score 0.50 (moderate). V2.5: threshold lowered to 22."""
         assert adx_score(15.0) == 0.50
         assert adx_score(17.0) == 0.50
         assert adx_score(20.0) == 0.50
-        assert adx_score(24.9) == 0.50
+        assert adx_score(21.9) == 0.50  # V2.5: Below 22 is still moderate
 
     def test_adx_weak(self):
         """Test ADX < 15 returns score 0.25 (weak). V2.3.12: lowered to 15."""

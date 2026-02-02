@@ -695,9 +695,11 @@ class MicroRegimeEngine:
         vix_direction: VIXDirection,
         qqq_move: QQQMove,
         qqq_move_pct: float,
+        macro_regime_score: float = 50.0,
     ) -> Tuple[IntradayStrategy, Optional[OptionDirection], str]:
         """
         V2.3.4: Recommend intraday strategy AND direction based on regime + QQQ move.
+        V2.5: Added Grind-Up Override for CAUTIOUS regime.
 
         This is the core decision engine that combines:
         - VIX Level × VIX Direction (market fear state)
@@ -708,6 +710,7 @@ class MicroRegimeEngine:
         - FADE: QQQ down + VIX falling = Buy CALL (fade the down move)
         - MOMENTUM: QQQ up + VIX rising = Buy CALL (ride momentum)
         - NO TRADE: QQQ flat OR VIX whipsawing
+        - V2.5 GRIND-UP: CAUTIOUS + QQQ strong rally + macro safe = Buy CALL (ride grind)
 
         Args:
             micro_regime: Current micro regime classification.
@@ -716,6 +719,7 @@ class MicroRegimeEngine:
             vix_direction: VIX direction (FALLING, STABLE, RISING, etc.)
             qqq_move: QQQ move classification (UP, DOWN, FLAT).
             qqq_move_pct: QQQ move percentage (signed).
+            macro_regime_score: V2.5 - Macro regime score for Grind-Up Override (default 50).
 
         Returns:
             Tuple of (IntradayStrategy, OptionDirection or None, reason string).
@@ -847,6 +851,7 @@ class MicroRegimeEngine:
 
         # =====================================================================
         # RULE 7: Caution regimes - smaller moves, credits only
+        # V2.5: Added Grind-Up Override for strong rallies in safe macro conditions
         # =====================================================================
         caution_regimes = {
             MicroRegime.CAUTION_LOW,
@@ -856,6 +861,29 @@ class MicroRegimeEngine:
             MicroRegime.WORSENING,
         }
         if micro_regime in caution_regimes:
+            # V2.5: Grind-Up Override - capture strong rallies even in CAUTIOUS regime
+            # Only triggers when: (1) CAUTIOUS regime, (2) QQQ UP > 0.50%, (3) macro safe
+            grind_up_enabled = getattr(config, "GRIND_UP_OVERRIDE_ENABLED", False)
+            grind_up_min_move = getattr(config, "GRIND_UP_MIN_MOVE", 0.50)
+            grind_up_macro_safe = getattr(config, "GRIND_UP_MACRO_SAFE_MIN", 40)
+
+            if grind_up_enabled and micro_regime == MicroRegime.CAUTIOUS:
+                is_strong_rally = qqq_move_pct > grind_up_min_move  # Positive only, not abs()
+                is_macro_safe = macro_regime_score > grind_up_macro_safe
+
+                if is_strong_rally and is_macro_safe:
+                    # Override: Ride the grind-up with CALL
+                    return (
+                        IntradayStrategy.ITM_MOMENTUM,
+                        OptionDirection.CALL,
+                        f"GRIND_UP_OVERRIDE: QQQ +{qqq_move_pct:.2f}% > {grind_up_min_move}% | Macro={macro_regime_score:.1f} > {grind_up_macro_safe}",
+                    )
+                elif is_strong_rally and not is_macro_safe:
+                    # Bear trap protection - log and skip
+                    self.log(
+                        f"MICRO: Grind-Up Rejected (Bear Market Trap Risk) | QQQ +{qqq_move_pct:.2f}% but Macro={macro_regime_score:.1f} <= {grind_up_macro_safe}"
+                    )
+
             return IntradayStrategy.NO_TRADE, None, f"Caution regime: {micro_regime.value}"
 
         return IntradayStrategy.NO_TRADE, None, "No matching setup"
@@ -906,6 +934,7 @@ class MicroRegimeEngine:
         qqq_open: float,
         current_time: str,
         move_duration_minutes: int = 120,
+        macro_regime_score: float = 50.0,
     ) -> MicroRegimeState:
         """
         Full update cycle for Micro Regime Engine.
@@ -919,6 +948,7 @@ class MicroRegimeEngine:
             qqq_open: QQQ at market open.
             current_time: Current timestamp string.
             move_duration_minutes: How long the current move has taken.
+            macro_regime_score: V2.5 - Macro regime score for Grind-Up Override (default 50).
 
         Returns:
             Updated MicroRegimeState.
@@ -960,6 +990,7 @@ class MicroRegimeEngine:
         self._state.qqq_move_pct = abs(signed_move_pct)
 
         # V2.3.4: Recommend strategy AND direction together
+        # V2.5: Pass macro_regime_score for Grind-Up Override
         strategy, direction, reason = self.recommend_strategy_and_direction(
             micro_regime=self._state.micro_regime,
             micro_score=self._state.micro_score,
@@ -967,6 +998,7 @@ class MicroRegimeEngine:
             vix_direction=self._state.vix_direction,
             qqq_move=self._state.qqq_direction,
             qqq_move_pct=signed_move_pct,
+            macro_regime_score=macro_regime_score,
         )
         self._state.recommended_strategy = strategy
         self._state.recommended_direction = direction
@@ -2518,12 +2550,14 @@ class OptionsEngine:
         portfolio_value: float,
         best_contract: Optional[OptionContract] = None,
         size_multiplier: float = 1.0,
+        macro_regime_score: float = 50.0,
     ) -> Optional[TargetWeight]:
         """
         Check for intraday mode entry signal using Micro Regime Engine.
 
         V2.1.1: Uses VIX Level × VIX Direction = 21 trading regimes.
         V2.3.20: Added size_multiplier for cold start reduced sizing.
+        V2.5: Added macro_regime_score for Grind-Up Override logic.
 
         Args:
             vix_current: Current VIX value.
@@ -2537,6 +2571,7 @@ class OptionsEngine:
             best_contract: Best available contract for the signal.
             size_multiplier: Position size multiplier (default 1.0). V2.3.20: Set to 0.5
                 during cold start to reduce risk.
+            macro_regime_score: Macro regime score (0-100) for Grind-Up Override. V2.5.
 
         Returns:
             TargetWeight for intraday entry, or None.
@@ -2551,13 +2586,14 @@ class OptionsEngine:
         if self._intraday_trades_today >= config.INTRADAY_MAX_TRADES_PER_DAY:
             return None
 
-        # Update Micro Regime Engine
+        # Update Micro Regime Engine (V2.5: pass macro_regime_score for Grind-Up Override)
         state = self._micro_regime_engine.update(
             vix_current=vix_current,
             vix_open=vix_open,
             qqq_current=qqq_current,
             qqq_open=qqq_open,
             current_time=current_time,
+            macro_regime_score=macro_regime_score,
         )
 
         # Check if strategy is NO_TRADE
@@ -2751,16 +2787,21 @@ class OptionsEngine:
         contract_expiry_date: str,
     ) -> Optional[TargetWeight]:
         """
-        V2.3.11: Check for forced exit of options expiring TODAY at 15:45.
+        V2.4.4 P0: EXPIRATION HAMMER V2 - Force close ALL options expiring TODAY.
 
         CRITICAL SAFETY: ITM options held past 4 PM get auto-exercised by the broker,
         creating massive stock positions that can cause margin crises.
 
-        Example from V2.3.9 backtest:
-        - Friday close: Held ITM QQQ calls into close
-        - Saturday 5 AM: Broker auto-exercised → 800 shares QQQ assigned
-        - Notional: $360,000 on $50,000 account (7:1 leverage overnight)
-        - Result: Lucky market gap up saved the account
+        V2.4.4 Change: Close ALL options on expiration day at 2:00 PM, regardless of
+        whether they are ITM/OTM or any other condition. This prevents:
+        - Auto-exercise of ITM options creating stock positions
+        - OTM options expiring worthless (100% loss)
+        - Any exercise-related margin disasters
+
+        Example from V2.4.3 backtest:
+        - 3 option exercises created $700K QQQ position on $50K account
+        - 2,765 margin call orders, 2,786 invalid orders
+        - Kill switch couldn't close options during margin crisis
 
         Args:
             current_date: Current date as string (YYYY-MM-DD).
@@ -2781,7 +2822,9 @@ class OptionsEngine:
         if position is None:
             return None
 
-        # Check force close time (15:45 by default)
+        # V2.4.4 P0: Expiration Hammer V2 - ALWAYS close at 2:00 PM on expiration day
+        # Old behavior: Only closed based on conditions/VIX
+        # New behavior: UNCONDITIONALLY close ALL options expiring today
         force_close_hour = config.OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_HOUR
         force_close_minute = config.OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE
 
@@ -2798,13 +2841,15 @@ class OptionsEngine:
 
         pnl_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0
 
+        # V2.4.4: Stronger messaging - this is a mandatory close
         reason = (
-            f"EXPIRING_TODAY_FORCE_EXIT_1545 {pnl_pct:+.1%} "
-            f"(Price: ${current_price:.2f}, Expiry: {contract_expiry_date})"
+            f"EXPIRATION_HAMMER_V2 {pnl_pct:+.1%} | "
+            f"MANDATORY CLOSE - Option expires TODAY ({contract_expiry_date}) | "
+            f"Price: ${current_price:.2f}"
         )
         self.log(
-            f"EXPIRING_OPTIONS_FORCE_EXIT {symbol} | {reason} | "
-            f"CRITICAL: Preventing auto-exercise of ITM options",
+            f"EXPIRATION_HAMMER_V2: FORCE CLOSE {symbol} | {reason} | "
+            f"P0 FIX: Unconditionally closing ALL expiring options at 2:00 PM",
             trades_only=True,
         )
 
@@ -2853,13 +2898,14 @@ class OptionsEngine:
         Returns:
             Recommended OptionDirection (CALL or PUT), or None if NO_TRADE or conflict.
         """
-        # Update Micro Regime Engine
+        # Update Micro Regime Engine (V2.5: pass macro_regime_score for Grind-Up Override)
         state = self._micro_regime_engine.update(
             vix_current=vix_current,
             vix_open=vix_open,
             qqq_current=qqq_current,
             qqq_open=qqq_open,
             current_time=current_time,
+            macro_regime_score=regime_score,
         )
 
         direction = state.recommended_direction

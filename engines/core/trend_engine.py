@@ -112,6 +112,9 @@ class TrendPosition:
     highest_high: float
     current_stop: float
     strategy_tag: str = "TREND"
+    # V2.5: Track consecutive days below SMA50 for confirmation exit
+    days_below_sma50: int = 0
+    last_sma50_check_date: str = ""  # Prevent multiple increments on same day
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for persistence."""
@@ -122,6 +125,8 @@ class TrendPosition:
             "highest_high": self.highest_high,
             "current_stop": self.current_stop,
             "strategy_tag": self.strategy_tag,
+            "days_below_sma50": self.days_below_sma50,
+            "last_sma50_check_date": self.last_sma50_check_date,
         }
 
     @classmethod
@@ -134,6 +139,8 @@ class TrendPosition:
             highest_high=data["highest_high"],
             current_stop=data["current_stop"],
             strategy_tag=data.get("strategy_tag", "TREND"),
+            days_below_sma50=data.get("days_below_sma50", 0),
+            last_sma50_check_date=data.get("last_sma50_check_date", ""),
         )
 
 
@@ -369,32 +376,61 @@ class TrendEngine:
         sma50: float,
         position: TrendPosition,
         regime_score: float,
+        current_date: Optional[str] = None,
     ) -> Optional[TargetWeight]:
         """
         V2.4: SMA50 + Hard Stop exit logic.
+        V2.5: Added 2-day confirmation for SMA50 break to prevent whipsaw exits.
 
         Exit Conditions:
-        1. Close < SMA50 * (1 - buffer) - Structural trend break
+        1. Close < SMA50 * (1 - buffer) for N consecutive days - Structural trend break
         2. Loss from entry >= Hard Stop % - Risk management
         3. Regime < 30 - Market deterioration (kept from V2.2)
 
         Allows minor volatility (3% drops) without exit if price stays above SMA50.
         """
-        # Exit 1: SMA50 structural trend break
+        # Get current date for tracking (default to empty string if not provided)
+        today = current_date or ""
+        if self.algorithm and hasattr(self.algorithm, "Time"):
+            today = str(self.algorithm.Time.date())
+
+        # Exit 1: SMA50 structural trend break (V2.5: with confirmation days)
         sma50_exit_level = sma50 * (1 - config.TREND_SMA_EXIT_BUFFER)
+        confirm_days = getattr(config, "TREND_SMA_CONFIRM_DAYS", 1)
+
         if close < sma50_exit_level:
-            reason = (
-                f"SMA50_BREAK: Close ${close:.2f} < SMA50 ${sma50:.2f} * "
-                f"(1 - {config.TREND_SMA_EXIT_BUFFER:.0%}) = ${sma50_exit_level:.2f}"
-            )
-            self.log(f"TREND: EXIT_SIGNAL {symbol} | {reason}")
-            return TargetWeight(
-                symbol=symbol,
-                target_weight=0.0,
-                source="TREND",
-                urgency=Urgency.MOC,  # V2.4.2: Same-day close (was EOD/next-day open)
-                reason=reason,
-            )
+            # V2.5: Only increment counter once per day
+            if today and today != position.last_sma50_check_date:
+                position.days_below_sma50 += 1
+                position.last_sma50_check_date = today
+                self.log(
+                    f"TREND: {symbol} below SMA50 for {position.days_below_sma50}/{confirm_days} days"
+                )
+
+            # V2.5: Only exit after N consecutive days below SMA50
+            if position.days_below_sma50 >= confirm_days:
+                reason = (
+                    f"SMA50_BREAK: Close ${close:.2f} < SMA50 ${sma50:.2f} * "
+                    f"(1 - {config.TREND_SMA_EXIT_BUFFER:.0%}) = ${sma50_exit_level:.2f} "
+                    f"| {position.days_below_sma50} consecutive days"
+                )
+                self.log(f"TREND: EXIT_SIGNAL {symbol} | {reason}")
+                return TargetWeight(
+                    symbol=symbol,
+                    target_weight=0.0,
+                    source="TREND",
+                    urgency=Urgency.MOC,  # V2.4.2: Same-day close (was EOD/next-day open)
+                    reason=reason,
+                )
+            # Not enough days yet - hold position
+            return None
+        else:
+            # V2.5: Price recovered above SMA50, reset counter
+            if position.days_below_sma50 > 0:
+                self.log(
+                    f"TREND: {symbol} recovered above SMA50, resetting counter from {position.days_below_sma50}"
+                )
+                position.days_below_sma50 = 0
 
         # Exit 2: Hard stop from entry (asset-specific)
         hard_stop_pct = config.TREND_HARD_STOP_PCT.get(symbol, 0.15)

@@ -18,7 +18,6 @@ from engines.satellite.hedge_engine import HedgeEngine
 # Satellite Engines
 from engines.satellite.mean_reversion_engine import MeanReversionEngine
 from engines.satellite.options_engine import OptionContract, OptionDirection, OptionsEngine
-from engines.satellite.yield_sleeve import YieldSleeve
 from execution.execution_engine import ExecutionEngine
 
 # OCO Manager for Options exits
@@ -53,7 +52,7 @@ class AlphaNextGen(QCAlgorithm):
     Attributes:
         Symbol References:
             spy, rsp, hyg, ief: Symbol - Proxy symbols for regime calculation
-            tqqq, soxl, qld, sso, tna, fas, tmf, psq, shv: Symbol - Traded symbols
+            tqqq, soxl, qld, sso, tna, fas, tmf, psq: Symbol - Traded symbols
             traded_symbols: List[Symbol] - All traded symbols
             proxy_symbols: List[Symbol] - All proxy symbols
             trend_symbols: List[Symbol] - Trend engine symbols (QLD, SSO, TNA, FAS)
@@ -66,7 +65,6 @@ class AlphaNextGen(QCAlgorithm):
             trend_engine: TrendEngine - BB compression breakout signals
             mr_engine: MeanReversionEngine - Intraday oversold bounce signals
             hedge_engine: HedgeEngine - Regime-based hedge allocation
-            yield_sleeve: YieldSleeve - SHV cash management
 
         Infrastructure:
             portfolio_router: PortfolioRouter - Central coordination, order placement
@@ -120,7 +118,6 @@ class AlphaNextGen(QCAlgorithm):
     fas: Symbol  # V2.2: 3× Financials (Trend)
     tmf: Symbol
     psq: Symbol
-    shv: Symbol
     qqq: Symbol  # V2.1: QQQ for options
 
     # Symbol collections
@@ -135,7 +132,6 @@ class AlphaNextGen(QCAlgorithm):
     trend_engine: TrendEngine
     mr_engine: MeanReversionEngine
     hedge_engine: HedgeEngine
-    yield_sleeve: YieldSleeve
     options_engine: OptionsEngine  # V2.1: Options Engine
     oco_manager: OCOManager  # V2.1: OCO Manager for options exits
 
@@ -180,8 +176,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2025, 1, 1)
-        self.SetEndDate(2025, 2, 28)  # Jan-Feb 2025 backtest (2 months)
+        self.SetStartDate(2025, 3, 1)
+        self.SetEndDate(2025, 5, 31)  # Mar-May 2025 backtest (3 months)
         self.SetCash(config.PHASE_SEED_MIN)  # $50,000 seed capital
 
         # All times are Eastern
@@ -247,6 +243,11 @@ class AlphaNextGen(QCAlgorithm):
         # Maps short leg symbol -> long leg symbol (to liquidate long if short fails)
         self._pending_spread_orders: Dict[str, str] = {}
 
+        # V2.4.4 P0: Margin call circuit breaker tracking
+        # Prevents 2765+ margin call spam seen in V2.4.3 backtest
+        self._margin_call_consecutive_count: int = 0
+        self._margin_call_cooldown_until: Optional[str] = None
+
         self.Log(
             f"INIT: Complete | "
             f"Cash=${config.PHASE_SEED_MIN:,} | "
@@ -293,6 +294,13 @@ class AlphaNextGen(QCAlgorithm):
         # STEP 3: RISK ENGINE CHECKS (ALWAYS FIRST AFTER SPLITS)
         # =====================================================================
         risk_result = self._run_risk_checks(data)
+
+        # =====================================================================
+        # STEP 3B: V2.4.4 P0 - EXPIRATION HAMMER V2 (runs every minute after 2 PM)
+        # =====================================================================
+        # This runs BEFORE kill switch to ensure expiring options are closed
+        # even if the account is in margin crisis
+        self._check_expiration_hammer_v2()
 
         # =====================================================================
         # STEP 4: HANDLE KILL SWITCH
@@ -374,9 +382,6 @@ class AlphaNextGen(QCAlgorithm):
         self.tmf = self.AddEquity("TMF", Resolution.Minute).Symbol
         self.psq = self.AddEquity("PSQ", Resolution.Minute).Symbol
 
-        # Traded symbols - Yield
-        self.shv = self.AddEquity("SHV", Resolution.Minute).Symbol
-
         # V2.1: QQQ for options trading
         self.qqq = self.AddEquity("QQQ", Resolution.Minute).Symbol
 
@@ -428,7 +433,6 @@ class AlphaNextGen(QCAlgorithm):
             self.fas,  # V2.2
             self.tmf,
             self.psq,
-            self.shv,
         ]
         self.proxy_symbols = [self.spy, self.rsp, self.hyg, self.ief]
 
@@ -567,7 +571,6 @@ class AlphaNextGen(QCAlgorithm):
             - TrendEngine: BB compression breakout signals
             - MeanReversionEngine: Intraday oversold bounce signals
             - HedgeEngine: Regime-based hedge allocation
-            - YieldSleeve: SHV cash management
 
         All engines receive reference to self (QCAlgorithm) for logging and data access.
         """
@@ -581,7 +584,6 @@ class AlphaNextGen(QCAlgorithm):
         self.trend_engine = TrendEngine(self)
         self.mr_engine = MeanReversionEngine(self)
         self.hedge_engine = HedgeEngine(self)
-        self.yield_sleeve = YieldSleeve(self)
 
         # V2.1: Options Engine and OCO Manager
         self.options_engine = OptionsEngine(self)
@@ -1009,9 +1011,6 @@ class AlphaNextGen(QCAlgorithm):
         # 5. Generate Hedge signals
         self._generate_hedge_signals(regime_state)
 
-        # 6. Generate Yield signals
-        self._generate_yield_signals(capital_state)
-
         # 6. Store capital state for MOO submission at 16:00
         # (MOO orders can't be submitted while market is open)
         self._eod_capital_state = capital_state
@@ -1064,6 +1063,59 @@ class AlphaNextGen(QCAlgorithm):
         equity = self.Portfolio.TotalPortfolioValue
         self.risk_engine.set_week_start_equity(equity)
 
+    def _check_expiration_hammer_v2(self) -> None:
+        """
+        V2.4.4 P0: Expiration Hammer V2 - Close ALL options expiring TODAY.
+
+        This is called every minute during trading hours and checks ALL broker
+        positions for options expiring today. If found and it's past 2:00 PM,
+        immediately liquidate them.
+
+        This is a CRITICAL safety check that runs independently of the options
+        engine's tracked positions. It catches any options that slipped through.
+        """
+        if self.IsWarmingUp:
+            return
+
+        # Only check at 2:00 PM or later
+        if self.Time.hour < config.OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_HOUR:
+            return
+        if (
+            self.Time.hour == config.OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_HOUR
+            and self.Time.minute < config.OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE
+        ):
+            return
+
+        current_date = self.Time.strftime("%Y-%m-%d")
+
+        # Scan ALL portfolio positions for expiring options
+        for holding in self.Portfolio.Values:
+            if not holding.Invested:
+                continue
+
+            # Check if this is an option
+            if holding.Symbol.SecurityType != SecurityType.Option:
+                continue
+
+            # Get expiry date from the symbol
+            try:
+                expiry = holding.Symbol.ID.Date
+                expiry_date = expiry.strftime("%Y-%m-%d")
+
+                if expiry_date == current_date:
+                    # EXPIRING TODAY - LIQUIDATE IMMEDIATELY
+                    qty = holding.Quantity
+                    symbol = str(holding.Symbol)
+                    self.Log(
+                        f"EXPIRATION_HAMMER_V2: LIQUIDATING {symbol} | "
+                        f"Qty={qty} | Expires TODAY ({expiry_date}) | "
+                        f"Time={self.Time.strftime('%H:%M')} | "
+                        f"P0 FIX: Preventing auto-exercise"
+                    )
+                    self.Liquidate(holding.Symbol, tag="EXPIRATION_HAMMER_V2")
+            except Exception as e:
+                self.Log(f"EXPIRATION_HAMMER_V2: Error checking {holding.Symbol} - {e}")
+
     def _on_intraday_options_force_close(self) -> None:
         """
         V2.1.1: Intraday options force close at 15:30 ET.
@@ -1074,6 +1126,9 @@ class AlphaNextGen(QCAlgorithm):
         # Skip during warmup
         if self.IsWarmingUp:
             return
+
+        # V2.4.4 P0: Run Expiration Hammer V2 as part of force close
+        self._check_expiration_hammer_v2()
 
         # Check for intraday position to close
         if self.options_engine._intraday_position is not None:
@@ -1205,12 +1260,14 @@ class AlphaNextGen(QCAlgorithm):
         qqq_current = self.Securities[self.qqq].Price
 
         # Update micro regime engine with intraday VIX proxy
+        # V2.5: Pass macro_regime_score for Grind-Up Override
         state = self.options_engine._micro_regime_engine.update(
             vix_current=vix_intraday_proxy,  # Use UVXY-derived intraday proxy
             vix_open=self._vix_at_open,
             qqq_current=qqq_current,
             qqq_open=self._qqq_at_open,
             current_time=str(self.Time),
+            macro_regime_score=self._last_regime_score,
         )
 
         # V2.3.4: Log with UVXY proxy info
@@ -1337,6 +1394,26 @@ class AlphaNextGen(QCAlgorithm):
                     # Immediately liquidate the options position
                     self.MarketOrder(orderEvent.Symbol, -fill_qty)
 
+        # V2.4.4 P0 Fix #3: Handle Option Exercise events
+        # ITM options get auto-exercised, creating massive stock positions
+        # Detect and immediately liquidate the resulting stock position
+        elif orderEvent.Status == OrderStatus.Filled and "Exercise" in str(orderEvent.Message):
+            symbol = str(orderEvent.Symbol)
+            fill_qty = orderEvent.FillQuantity
+            self.Log(
+                f"EXERCISE_DETECTED: {symbol} | Qty={fill_qty} | "
+                f"CRITICAL: Option was exercised - checking for stock position"
+            )
+            # After exercise, we have stock. Liquidate it immediately.
+            # The underlying symbol is QQQ for our options
+            qqq_holding = self.Portfolio[self.qqq]
+            if qqq_holding.Invested and abs(qqq_holding.Quantity) > 0:
+                self.Log(
+                    f"EXERCISE_LIQUIDATE: QQQ position from exercise | "
+                    f"Qty={qqq_holding.Quantity} | Value=${qqq_holding.HoldingsValue:,.2f}"
+                )
+                self.Liquidate(self.qqq, tag="EXERCISE_LIQUIDATE")
+
         elif orderEvent.Status == OrderStatus.Invalid:
             self.Log(f"INVALID: {orderEvent.Symbol} - {orderEvent.Message}")
             self.execution_engine.on_order_event(
@@ -1344,6 +1421,23 @@ class AlphaNextGen(QCAlgorithm):
                 status="Invalid",
                 rejection_reason=orderEvent.Message,
             )
+
+            # V2.4.4 P0 Fix #4: Margin Call Circuit Breaker
+            # Track consecutive margin calls and enter cooldown after hitting limit
+            if "Margin" in str(orderEvent.Message):
+                self._margin_call_consecutive_count += 1
+                if self._margin_call_consecutive_count >= config.MARGIN_CALL_MAX_CONSECUTIVE:
+                    # Enter cooldown
+                    cooldown_hours = config.MARGIN_CALL_COOLDOWN_HOURS
+                    cooldown_until = self.Time + timedelta(hours=cooldown_hours)
+                    self._margin_call_cooldown_until = str(cooldown_until)
+                    self.Log(
+                        f"MARGIN_CALL_CIRCUIT_BREAKER: {self._margin_call_consecutive_count} consecutive "
+                        f"margin calls | COOLDOWN until {self._margin_call_cooldown_until}"
+                    )
+            else:
+                # Reset counter on non-margin invalid
+                self._margin_call_consecutive_count = 0
 
             # V2.3.6 FIX: Handle spread leg failure - liquidate orphaned long leg
             failed_symbol = str(orderEvent.Symbol)
@@ -1461,8 +1555,6 @@ class AlphaNextGen(QCAlgorithm):
         try:
             # Calculate max single position in dollars from percentage
             max_single_position = capital_state.tradeable_eq * capital_state.max_single_position_pct
-            # V2.3.21 FIX: Pass available_cash and locked_amount for SHV auto-liquidation
-            # Without these, router cannot calculate shortfall to sell SHV for BUY orders
             self.portfolio_router.process_immediate(
                 tradeable_equity=capital_state.tradeable_eq,
                 current_positions=current_positions,
@@ -1506,24 +1598,9 @@ class AlphaNextGen(QCAlgorithm):
                 if agg.target_weight > max_single_position_pct:
                     agg.target_weight = max_single_position_pct
 
-            # Calculate total allocation from signals (excluding SHV)
-            total_non_shv_allocation = sum(
-                agg.target_weight for sym, agg in aggregated.items() if sym != "SHV"
-            )
-
-            # Calculate SHV target weight (remaining allocation)
-            # This ensures SHV is reduced when other positions are added
-            shv_target_weight = max(0.0, 1.0 - total_non_shv_allocation)
-
-            # If SHV signal exists, use the lower of calculated vs signal
-            if "SHV" in aggregated:
-                shv_target_weight = min(shv_target_weight, aggregated["SHV"].target_weight)
-
             # Build list of portfolio targets for SetHoldings
             targets = []
             for symbol, agg in aggregated.items():
-                if symbol == "SHV":
-                    continue  # Handle SHV separately
                 # Get the actual Symbol object
                 symbol_obj = None
                 for s in self.traded_symbols:
@@ -1533,9 +1610,6 @@ class AlphaNextGen(QCAlgorithm):
 
                 if symbol_obj and agg.target_weight >= 0:
                     targets.append(PortfolioTarget(symbol_obj, agg.target_weight))
-
-            # Add SHV target (this ensures SHV is sold to make room)
-            targets.append(PortfolioTarget(self.shv, shv_target_weight))
 
             if targets:
                 # Log what we're doing (limited to avoid log overflow)
@@ -2234,33 +2308,6 @@ class AlphaNextGen(QCAlgorithm):
         for signal in signals:
             self.portfolio_router.receive_signal(signal)
 
-    def _generate_yield_signals(self, capital_state: CapitalState) -> None:
-        """
-        Generate Yield Sleeve signals at end of day.
-
-        Manages SHV (cash) allocation based on available capital.
-
-        Args:
-            capital_state: Current capital state.
-        """
-        total_equity = self.Portfolio.TotalPortfolioValue
-        shv_value = self.Portfolio[self.shv].HoldingsValue
-
-        # Calculate non-SHV positions value
-        non_shv_value = sum(
-            self.Portfolio[sym].HoldingsValue for sym in self.traded_symbols if sym != self.shv
-        )
-
-        signal = self.yield_sleeve.get_yield_signal(
-            total_equity=total_equity,
-            tradeable_equity=capital_state.tradeable_eq,
-            non_shv_positions_value=non_shv_value,
-            current_shv_value=shv_value,
-            locked_amount=capital_state.locked_amount,
-        )
-        if signal:
-            self.portfolio_router.receive_signal(signal)
-
     # =========================================================================
     # UTILITY HELPERS
     # =========================================================================
@@ -2735,6 +2782,7 @@ class AlphaNextGen(QCAlgorithm):
             ):
                 # V2.3.20: Pass size_multiplier for cold start reduced sizing
                 # V2.4.1: Pass UVXY-derived VIX proxy
+                # V2.5: Pass macro_regime_score for Grind-Up Override
                 intraday_signal = self.options_engine.check_intraday_entry_signal(
                     vix_current=vix_intraday,  # V2.4.1: UVXY proxy
                     vix_open=self._vix_at_open,
@@ -2746,6 +2794,7 @@ class AlphaNextGen(QCAlgorithm):
                     portfolio_value=self.Portfolio.TotalPortfolioValue,
                     best_contract=intraday_contract,
                     size_multiplier=size_multiplier,
+                    macro_regime_score=self._last_regime_score,
                 )
                 if intraday_signal:
                     self.portfolio_router.receive_signal(intraday_signal)

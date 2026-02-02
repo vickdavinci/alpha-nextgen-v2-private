@@ -45,7 +45,6 @@ SYMBOL_LEVERAGE = {
     "SOXL": 3.0,  # 3× Semiconductor (MR)
     "TMF": 3.0,  # 3× Treasury (Hedge)
     "PSQ": 1.0,  # 1× Inverse Nasdaq (Hedge)
-    "SHV": 1.0,  # Short Treasury (Yield)
 }
 
 # V2.3.24: Minimum contracts for scaled spreads
@@ -133,7 +132,9 @@ ADX_STRONG_THRESHOLD = 35  # ADX for highest confidence
 # ADX 25-35: 0.75 (strong)
 # ADX >= 35: 1.00 (very strong)
 ADX_WEAK_THRESHOLD = 15  # V2.3.12: Lowered to 15 - catch grinding trends (aligned with exit)
-ADX_MODERATE_THRESHOLD = 25  # Upper bound of moderate range
+# V2.5: Lowered from 25 to 22 - ADX 22+ is sufficient for trend confirmation
+# Evidence: Jan-May 2025 backtests showed QLD/SSO blocked at ADX 17-24
+ADX_MODERATE_THRESHOLD = 22  # Upper bound of moderate range (V2.5: was 25)
 
 # Chandelier Stop
 ATR_PERIOD = 14
@@ -242,24 +243,6 @@ PSQ_FULL = 0.10
 HEDGE_REBAL_THRESHOLD = 0.02
 
 # =============================================================================
-# YIELD SLEEVE
-# =============================================================================
-
-SHV_MIN_TRADE = 10_000  # V2.3.6: Raised from 2000 - reduce SHV churn on small fluctuations
-
-# V2.3.17: Hybrid Yield Sleeve - Cash Buffer
-# Reserve 10% of equity as "petty cash" to fund small trades without touching SHV
-# This prevents churn from small Sniper trades (5%) and MR entries (5-10%)
-CASH_BUFFER_PCT = 0.10
-
-# V2.4.3: Hard Cash Reserve for Options (separate from cash buffer)
-# This cash is NEVER deployed to SHV - it stays as actual cash that options can always access
-# Fixes SHV_MARGIN_LOCK issue where SHV becomes collateral for leveraged positions
-# V2.4.3: Increased from 10% to 25% to match OPTIONS_TOTAL_ALLOCATION
-# Now options always have their full 25% allocation available as actual cash
-OPTIONS_HARD_CASH_RESERVE_PCT = 0.25  # 25% hard cash reserve for options
-
-# =============================================================================
 # PORTFOLIO ROUTER
 # =============================================================================
 
@@ -269,9 +252,7 @@ EXPOSURE_LIMITS = {
     "SPY_BETA": {"max_net_long": 0.40, "max_net_short": 0.00, "max_gross": 0.40},
     "SMALL_CAP_BETA": {"max_net_long": 0.25, "max_net_short": 0.00, "max_gross": 0.25},
     "FINANCIALS_BETA": {"max_net_long": 0.15, "max_net_short": 0.00, "max_gross": 0.15},
-    # V2.3.17: RATES limit raised to 0.99 to allow near-full SHV allocation post-kill-switch
-    # When kill switch fires and all positions liquidate, SHV can absorb up to 99% of portfolio
-    "RATES": {"max_net_long": 0.99, "max_net_short": 0.00, "max_gross": 0.99},
+    "RATES": {"max_net_long": 0.40, "max_net_short": 0.00, "max_gross": 0.40},  # TMF only
 }
 
 # Group Membership
@@ -284,7 +265,6 @@ SYMBOL_GROUPS = {
     "TNA": "SMALL_CAP_BETA",  # V2.2: 3× Russell 2000
     "FAS": "FINANCIALS_BETA",  # V2.2: 3× Financials
     "TMF": "RATES",
-    "SHV": "RATES",
 }
 
 # =============================================================================
@@ -312,12 +292,15 @@ TREND_TOTAL_ALLOCATION = 0.55  # 55% total to Trend Engine
 # - Longer holding periods (30-90 days vs 5-15 days)
 # - Cleaner logic than tiered ATR multipliers
 #
-# Entry: MA200 + ADX >= 25 (unchanged)
-# Exit: Close < SMA50 * (1 - buffer) OR Hard Stop Hit
+# Entry: MA200 + ADX >= 22 (V2.5: lowered from 25)
+# Exit: Close < SMA50 * (1 - buffer) for 2 consecutive days (V2.5) OR Hard Stop Hit
 
 TREND_USE_SMA50_EXIT = True  # V2.4: Use SMA50 exit instead of Chandelier
 TREND_SMA_PERIOD = 50  # 50-day SMA for structural trend
 TREND_SMA_EXIT_BUFFER = 0.02  # Exit when close < SMA50 * (1 - 2%)
+# V2.5: Require 2 consecutive days below SMA50 before exit
+# Prevents whipsaw exits in choppy markets (Jan-Mar 2025 showed 1-day exits)
+TREND_SMA_CONFIRM_DAYS = 2  # Days below SMA50 required before exit
 
 # Hard Stop Percentages (asset-specific, from entry price)
 # 3× ETFs need tighter stops due to higher daily volatility (5-7% swings)
@@ -758,6 +741,13 @@ INTRADAY_FORCE_EXIT_TIME = "15:30"  # Must close by 3:30 PM
 DIRECTION_CONFLICT_BULLISH_THRESHOLD = 65  # Regime > 65 = strong bullish, don't fade rallies
 DIRECTION_CONFLICT_BEARISH_THRESHOLD = 40  # Regime < 40 = strong bearish, don't fade dips
 
+# V2.5: Grind-Up Override - capture rallies missed in CAUTIOUS regime
+# Problem: Feb 4 missed +1.2% rally because VIX was STABLE (CAUTIOUS regime = NO_TRADE)
+# Solution: In CAUTIOUS regime, if QQQ is UP_STRONG and macro score is safe, ride the rally
+GRIND_UP_OVERRIDE_ENABLED = True
+GRIND_UP_MIN_MOVE = 0.50  # Minimum QQQ move to trigger override (0.50% = UP_STRONG)
+GRIND_UP_MACRO_SAFE_MIN = 40  # Macro regime score must be > 40 to avoid bear traps
+
 # -----------------------------------------------------------------------------
 # V2.1.1 SWING MODE SIMPLE FILTERS
 # -----------------------------------------------------------------------------
@@ -811,6 +801,35 @@ SPREAD_SCAN_THROTTLE_MINUTES = 15
 # Solution: After failure, enter 4-hour cooldown (market conditions won't change that fast)
 SPREAD_FAILURE_COOLDOWN_HOURS = 4
 
+# V2.5: Max concurrent spreads - limit exposure from spread positions
+# Problem: Mar 25-26 had two spreads open simultaneously ($19K exposure)
+# Solution: Only allow 1 active spread at a time
+MAX_CONCURRENT_SPREADS = 1
+
+# =============================================================================
+# V2.4.4 P0 FIXES - CRITICAL OPTIONS SAFETY
+# =============================================================================
+
+# P0 Fix #1: Margin Call Circuit Breaker
+# After N consecutive margin call rejects, stop attempting orders for 4 hours
+# Prevents 2765+ margin call spam seen in V2.4.3 backtest
+MARGIN_CALL_MAX_CONSECUTIVE = 5  # Stop after 5 margin call rejects
+MARGIN_CALL_COOLDOWN_HOURS = 4  # 4-hour cooldown after hitting limit
+
+# P0 Fix #2: Margin Pre-Check Buffer
+# Before placing any order, verify MarginRemaining > order_cost * buffer
+# Buffer accounts for potential price movement during execution
+MARGIN_PRE_CHECK_BUFFER = 1.20  # Require 20% extra margin buffer
+
+# P0 Fix #3: Options Exercise Detection
+# Handle exercise events in OnOrderEvent to prevent margin disasters
+OPTIONS_HANDLE_EXERCISE_EVENTS = True
+
+# P0 Fix #4: Expiration Hammer V2 - Force close ALL options on expiration day
+# Close at 2:00 PM (not just ITM or VIX-based) to prevent ANY exercise risk
+# V2.4.2 only closed based on VIX threshold; V2.4.4 closes unconditionally
+EXPIRATION_HAMMER_CLOSE_ALL = True  # Close ALL options expiring today at 2 PM
+
 # V2.3.24: Rejection log throttle to reduce log spam
 # Only log MIN_TRADE_VALUE rejections once per interval
 REJECTION_LOG_THROTTLE_MINUTES = 15
@@ -840,7 +859,7 @@ INDICATOR_WARMUP_DAYS = 300  # Calendar days (not trading days)
 # SYMBOLS
 # =============================================================================
 
-TRADED_SYMBOLS = ["TQQQ", "SOXL", "QLD", "SSO", "TNA", "FAS", "TMF", "PSQ", "SHV"]
+TRADED_SYMBOLS = ["TQQQ", "SOXL", "QLD", "SSO", "TNA", "FAS", "TMF", "PSQ"]
 PROXY_SYMBOLS = ["SPY", "RSP", "HYG", "IEF"]
 ALL_SYMBOLS = TRADED_SYMBOLS + PROXY_SYMBOLS
 
