@@ -1596,6 +1596,26 @@ class AlphaNextGen(QCAlgorithm):
 
             self.Log(f"FILL: {direction} {abs(fill_qty)} {symbol} @ ${fill_price:.2f}")
 
+            # V2.14 Fix #12: SLIPPAGE_EXCEEDED check
+            # Compare fill price to expected market price (bid for sells, ask for buys)
+            try:
+                security = self.Securities[orderEvent.Symbol]
+                if fill_qty > 0:  # BUY - compare to ask
+                    expected_price = security.AskPrice
+                else:  # SELL - compare to bid
+                    expected_price = security.BidPrice
+
+                if expected_price > 0:
+                    slippage_pct = abs(fill_price - expected_price) / expected_price
+                    if slippage_pct > config.SLIPPAGE_BUFFER_PCT:
+                        self.Log(
+                            f"SLIPPAGE_EXCEEDED: {symbol} | "
+                            f"Expected=${expected_price:.2f} Actual=${fill_price:.2f} | "
+                            f"Slippage={slippage_pct:.2%} > {config.SLIPPAGE_BUFFER_PCT:.0%}"
+                        )
+            except Exception:
+                pass  # Skip slippage check if price lookup fails
+
             # Track trade for daily summary
             trade_desc = f"{direction} {abs(fill_qty)} {symbol} @ ${fill_price:.2f}"
             self.today_trades.append(trade_desc)
@@ -2135,6 +2155,11 @@ class AlphaNextGen(QCAlgorithm):
         try:
             chain_list = list(chain)
             if not chain_list:
+                # V2.14 Fix #10: Log VASS_REJECTION_GHOST when chain is empty
+                self.Log(
+                    "VASS_REJECTION_GHOST: No contracts in SWING chain | "
+                    "Strike range may be too narrow or data gap"
+                )
                 return
         except Exception as e:
             self.Log(f"OPTIONS_CHAIN_ERROR: Failed to iterate chain: {e}")
@@ -3206,6 +3231,11 @@ class AlphaNextGen(QCAlgorithm):
         try:
             chain_list = list(chain)
             if not chain_list:
+                # V2.14 Fix #10: Log VASS_REJECTION_GHOST when chain is empty
+                self.Log(
+                    "VASS_REJECTION_GHOST: No contracts in INTRADAY chain | "
+                    "Strike range may be too narrow or data gap"
+                )
                 return
         except Exception as e:
             self.Log(f"OPTIONS_CHAIN_ERROR: Failed to iterate chain: {e}")

@@ -3805,8 +3805,9 @@ class OptionsEngine:
             return None
 
         # GAMMA PIN DETECTED - exit early
+        # V2.14 Fix #13: Align keyword with AAP protocol (was GAMMA_PIN:)
         self.log(
-            f"GAMMA_PIN: Early exit triggered | "
+            f"GAMMA_PIN_EXIT: Early exit triggered | "
             f"Price=${current_price:.2f} Strike=${short_strike:.0f} "
             f"Distance={distance_pct:.2%} < {config.GAMMA_PIN_BUFFER_PCT:.2%} | "
             f"DTE={current_dte}",
