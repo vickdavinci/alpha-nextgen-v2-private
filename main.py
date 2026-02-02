@@ -667,6 +667,22 @@ class AlphaNextGen(QCAlgorithm):
                     self._on_micro_regime_update,
                 )
 
+        # V2.4.1: Friday Firewall - close swing options before weekend
+        # Runs only on Fridays at configured time (default 3:45 PM)
+        if config.FRIDAY_FIREWALL_ENABLED:
+            self.Schedule.On(
+                self.DateRules.Every(DayOfWeek.Friday),
+                self.TimeRules.At(
+                    config.FRIDAY_FIREWALL_TIME_HOUR,
+                    config.FRIDAY_FIREWALL_TIME_MINUTE,
+                ),
+                self._on_friday_firewall,
+            )
+            self.Log(
+                f"INIT: Friday Firewall enabled at "
+                f"{config.FRIDAY_FIREWALL_TIME_HOUR}:{config.FRIDAY_FIREWALL_TIME_MINUTE:02d}"
+            )
+
         self.Log("INIT: Scheduled events and callbacks registered")
 
     # =========================================================================
@@ -1077,6 +1093,43 @@ class AlphaNextGen(QCAlgorithm):
             if signal:
                 self.portfolio_router.receive_signal(signal)
                 self._process_immediate_signals()
+
+    def _on_friday_firewall(self) -> None:
+        """
+        V2.4.1: Friday Firewall - close swing options before weekend.
+
+        Runs only on Fridays at configured time (default 3:45 PM).
+
+        Rules:
+        1. VIX > 25: Close ALL swing options (high volatility weekend risk)
+        2. Fresh trade (opened today) AND VIX >= 15: Close it (gambling protection)
+        3. Fresh trade AND VIX < 15: Keep it (calm market exception)
+        4. Older trades: Keep them (already survived initial risk)
+        """
+        # Skip during warmup
+        if self.IsWarmingUp:
+            return
+
+        # Get current VIX
+        vix_current = self._current_vix
+
+        # Check if we have any swing positions
+        swing_signals = self.options_engine.check_friday_firewall_exit(
+            current_vix=vix_current,
+            current_date=str(self.Time.date()),
+            vix_close_all_threshold=config.FRIDAY_FIREWALL_VIX_CLOSE_ALL,
+            vix_keep_fresh_threshold=config.FRIDAY_FIREWALL_VIX_KEEP_FRESH,
+        )
+
+        if swing_signals:
+            for signal in swing_signals:
+                self.Log(f"FRIDAY_FIREWALL: {signal.reason} | VIX={vix_current:.1f}")
+                self.portfolio_router.receive_signal(signal)
+
+            # Process immediately
+            self._process_immediate_signals()
+        else:
+            self.Log(f"FRIDAY_FIREWALL: No action needed | VIX={vix_current:.1f}")
 
     def _on_vix_spike_check(self) -> None:
         """
@@ -2734,9 +2787,10 @@ class AlphaNextGen(QCAlgorithm):
                     self._process_immediate_signals()
                     return  # Spread trade placed, don't try single-leg
 
-        # V2.3.14 FIX: Single-leg swing fallback when spread selection fails
-        # Spread often fails due to tight delta/OI/spread filters - fall back to ITM single-leg
-        if not self.options_engine.has_position():
+        # V2.4.1: Single-leg swing fallback - DISABLED by default for safety
+        # Single-leg has higher delta exposure and full premium at risk
+        # If spread fails, stay cash (Safety First approach)
+        if config.SWING_FALLBACK_ENABLED and not self.options_engine.has_position():
             best_contract = self._select_swing_option_contract(chain, direction)
             if best_contract is not None and best_contract.bid > 0 and best_contract.ask > 0:
                 # V2.3.20: Pass size_multiplier for cold start reduced sizing
@@ -2760,6 +2814,8 @@ class AlphaNextGen(QCAlgorithm):
                     self.Log(f"SWING_FALLBACK: Single-leg {direction.value} after spread failure")
                     self.portfolio_router.receive_signal(signal)
                     self._process_immediate_signals()
+        elif not config.SWING_FALLBACK_ENABLED and not self.options_engine.has_position():
+            self.Log("SWING: Spread construction failed - staying cash (fallback disabled)")
 
     def _monitor_risk_greeks(self, data: Slice) -> None:
         """

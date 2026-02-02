@@ -587,6 +587,28 @@ SPREAD_SHORT_LEG_DELTA_MIN = 0.10  # V2.3.7: Accept more OTM (was 0.15)
 SPREAD_SHORT_LEG_DELTA_MAX = 0.50  # V2.3.7: Accept closer to ATM (was 0.45)
 
 # -----------------------------------------------------------------------------
+# V2.4.1 SWING SAFETY RULES
+# -----------------------------------------------------------------------------
+# "Safety First" system - protect capital over trying to get filled
+
+# No Naked Fallback: If spread can't be formed, stay cash
+# Single-leg fallback has higher delta exposure and full premium at risk
+SWING_FALLBACK_ENABLED = False  # V2.4.1: Disabled - if spread fails, stay cash
+
+# Friday Firewall: Close swing options before weekend
+# Weekend gaps can be catastrophic for options (theta + gap risk)
+FRIDAY_FIREWALL_ENABLED = True  # V2.4.1: Close swing options on Friday
+FRIDAY_FIREWALL_TIME_HOUR = 15  # 3:45 PM ET
+FRIDAY_FIREWALL_TIME_MINUTE = 45
+
+# VIX Filter: If VIX > threshold, close everything regardless of day
+FRIDAY_FIREWALL_VIX_CLOSE_ALL = 25  # VIX > 25: Close ALL swing options
+
+# Fresh Trade Protection: Trades opened same Friday must close (unless VIX < threshold)
+# Holding a brand new trade over the weekend is gambling
+FRIDAY_FIREWALL_VIX_KEEP_FRESH = 15  # VIX < 15: Calm enough to keep fresh Friday trades
+
+# -----------------------------------------------------------------------------
 # V2.1.1 VIX DIRECTION THRESHOLDS (Micro Regime Engine)
 # -----------------------------------------------------------------------------
 # VIX direction is THE key differentiator for intraday trading

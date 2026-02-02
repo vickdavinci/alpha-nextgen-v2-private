@@ -2035,6 +2035,156 @@ class OptionsEngine:
         ]
 
     # =========================================================================
+    # V2.4.1 FRIDAY FIREWALL
+    # =========================================================================
+
+    def check_friday_firewall_exit(
+        self,
+        current_vix: float,
+        current_date: str,
+        vix_close_all_threshold: float = 25.0,
+        vix_keep_fresh_threshold: float = 15.0,
+    ) -> Optional[List[TargetWeight]]:
+        """
+        V2.4.1: Friday Firewall - close swing options before weekend.
+
+        Safety-first approach to weekend risk management:
+        1. VIX > 25: Close ALL swing options (high volatility = high gap risk)
+        2. Fresh trade (opened today) AND VIX >= 15: Close it (gambling protection)
+        3. Fresh trade AND VIX < 15: Keep it (calm market exception)
+        4. Older trades AND VIX <= 25: Keep them (already survived initial risk)
+
+        Args:
+            current_vix: Current VIX level.
+            current_date: Current date string (YYYY-MM-DD format).
+            vix_close_all_threshold: VIX level above which ALL positions close (default 25).
+            vix_keep_fresh_threshold: VIX level below which fresh trades can stay (default 15).
+
+        Returns:
+            List of TargetWeights for positions to close, or None if no action needed.
+        """
+        exit_signals = []
+
+        # Check spread position
+        if self._spread_position is not None:
+            spread = self._spread_position
+            entry_date = (
+                spread.entry_time.split()[0] if " " in spread.entry_time else spread.entry_time[:10]
+            )
+            is_fresh_trade = entry_date == current_date
+
+            should_close = False
+            close_reason = ""
+
+            # Rule 1: VIX > threshold - close ALL
+            if current_vix > vix_close_all_threshold:
+                should_close = True
+                close_reason = f"VIX_HIGH ({current_vix:.1f} > {vix_close_all_threshold})"
+
+            # Rule 2: Fresh trade + VIX >= 15 - close (gambling protection)
+            elif is_fresh_trade and current_vix >= vix_keep_fresh_threshold:
+                should_close = True
+                close_reason = (
+                    f"FRESH_TRADE_PROTECTION (VIX={current_vix:.1f} >= {vix_keep_fresh_threshold})"
+                )
+
+            # Rule 3: Fresh trade + VIX < 15 - keep (calm market)
+            elif is_fresh_trade and current_vix < vix_keep_fresh_threshold:
+                self.log(
+                    f"FRIDAY_FIREWALL: Keeping fresh spread (calm market) | "
+                    f"VIX={current_vix:.1f} < {vix_keep_fresh_threshold}"
+                )
+
+            # Rule 4: Older trade + VIX <= 25 - keep
+            else:
+                self.log(
+                    f"FRIDAY_FIREWALL: Keeping spread (established trade) | "
+                    f"Entry={entry_date} | VIX={current_vix:.1f}"
+                )
+
+            if should_close:
+                self.log(
+                    f"FRIDAY_FIREWALL: Closing spread | {close_reason} | "
+                    f"Entry={entry_date} Fresh={is_fresh_trade}",
+                    trades_only=True,
+                )
+                # Close both legs
+                exit_signals.extend(
+                    [
+                        TargetWeight(
+                            symbol=spread.long_leg.symbol,
+                            target_weight=0.0,
+                            source="OPT",
+                            urgency=Urgency.IMMEDIATE,
+                            reason=f"FRIDAY_FIREWALL_LONG: {close_reason}",
+                        ),
+                        TargetWeight(
+                            symbol=spread.short_leg.symbol,
+                            target_weight=0.0,
+                            source="OPT",
+                            urgency=Urgency.IMMEDIATE,
+                            reason=f"FRIDAY_FIREWALL_SHORT: {close_reason}",
+                            metadata={"spread_close_short": True},
+                        ),
+                    ]
+                )
+
+        # Check single-leg position
+        if self._position is not None:
+            position = self._position
+            entry_date = (
+                position.entry_time.split()[0]
+                if " " in position.entry_time
+                else position.entry_time[:10]
+            )
+            is_fresh_trade = entry_date == current_date
+
+            should_close = False
+            close_reason = ""
+
+            # Rule 1: VIX > threshold - close ALL
+            if current_vix > vix_close_all_threshold:
+                should_close = True
+                close_reason = f"VIX_HIGH ({current_vix:.1f} > {vix_close_all_threshold})"
+
+            # Rule 2: Fresh trade + VIX >= 15 - close
+            elif is_fresh_trade and current_vix >= vix_keep_fresh_threshold:
+                should_close = True
+                close_reason = (
+                    f"FRESH_TRADE_PROTECTION (VIX={current_vix:.1f} >= {vix_keep_fresh_threshold})"
+                )
+
+            # Rule 3 & 4: Keep if calm or established
+            elif is_fresh_trade and current_vix < vix_keep_fresh_threshold:
+                self.log(
+                    f"FRIDAY_FIREWALL: Keeping fresh single-leg (calm market) | "
+                    f"VIX={current_vix:.1f} < {vix_keep_fresh_threshold}"
+                )
+            else:
+                self.log(
+                    f"FRIDAY_FIREWALL: Keeping single-leg (established trade) | "
+                    f"Entry={entry_date} | VIX={current_vix:.1f}"
+                )
+
+            if should_close:
+                self.log(
+                    f"FRIDAY_FIREWALL: Closing single-leg | {close_reason} | "
+                    f"Entry={entry_date} Fresh={is_fresh_trade}",
+                    trades_only=True,
+                )
+                exit_signals.append(
+                    TargetWeight(
+                        symbol=position.contract.symbol,
+                        target_weight=0.0,
+                        source="OPT",
+                        urgency=Urgency.IMMEDIATE,
+                        reason=f"FRIDAY_FIREWALL: {close_reason}",
+                    )
+                )
+
+        return exit_signals if exit_signals else None
+
+    # =========================================================================
     # EXIT SIGNALS
     # =========================================================================
 
