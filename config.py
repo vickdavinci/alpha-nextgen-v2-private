@@ -446,7 +446,8 @@ OPTIONS_INTRADAY_DELTA_MAX = 0.60  # Intraday max delta (ATM)
 OPTIONS_SWING_DELTA_MIN = 0.55  # Swing min delta (slightly ITM)
 OPTIONS_SWING_DELTA_MAX = 0.85  # Swing max delta (0.70 target + 0.15 tolerance)
 # Threshold for switching between intraday/swing delta validation
-OPTIONS_SWING_DTE_THRESHOLD = 5  # DTE > 5 uses swing delta bounds
+# V2.3.22: Raised from 5 to 14 to align with OPTIONS_SWING_DTE_MIN
+OPTIONS_SWING_DTE_THRESHOLD = 14  # DTE > 14 uses swing delta bounds
 
 # Legacy constants (kept for backward compatibility)
 OPTIONS_DELTA_MIN = 0.40  # Minimum delta (ATM range) - for validation only
@@ -479,10 +480,11 @@ OPTIONS_MAX_TRADES_PER_DAY = 1
 # -----------------------------------------------------------------------------
 # V2.1.1 DUAL-MODE DTE BOUNDARIES
 # -----------------------------------------------------------------------------
-# V2.3.18: Raised from 5 to 6 to ensure minimum 2-day holding period
-# With single-leg exit at DTE=4, entering at DTE=5 gave only 1 day hold
-# Also aligns with OPTIONS_SWING_DTE_THRESHOLD=5 (DTE > 5 uses swing delta bounds)
-OPTIONS_SWING_DTE_MIN = 6  # Minimum DTE for Swing Mode (exit at DTE=4 → 2+ days)
+# V2.3.22: Hard Swing Floor - raised from 6 to 14 DTE
+# Evidence from V2.3.20 backtest: 6 DTE lost 90% vs 28 DTE lost 60%
+# 14 DTE options react less violently to overnight gaps
+# With single-leg exit at DTE=4, entering at DTE=14 gives 10+ days hold
+OPTIONS_SWING_DTE_MIN = 14  # Minimum DTE for Swing Mode (reduces gap risk)
 OPTIONS_SWING_DTE_MAX = 45  # Maximum DTE for Swing Mode
 OPTIONS_INTRADAY_DTE_MIN = 0  # Minimum DTE for Intraday Mode
 OPTIONS_INTRADAY_DTE_MAX = 1  # V2.3.4: True 0DTE intraday (0-1 DTE only)
@@ -513,7 +515,8 @@ SPREAD_WIDTH_MAX = 15.0  # V2.3.8: Accept up to $15 wide (was $5) - let delta dr
 SPREAD_WIDTH_TARGET = 5.0  # V2.3.8: Target $5 (was $3) - for sorting only, not filtering
 
 # DTE for debit spreads (per V2.3 spec)
-SPREAD_DTE_MIN = 10  # Minimum 10 DTE (avoid gamma acceleration)
+# V2.3.22: Raised from 10 to 14 - spreads need same gap cushion as single-leg
+SPREAD_DTE_MIN = 14  # Minimum 14 DTE (avoid gamma acceleration + gap risk)
 SPREAD_DTE_MAX = 21  # Maximum 21 DTE (reasonable theta)
 SPREAD_DTE_EXIT = 5  # Close by 5 DTE remaining
 
