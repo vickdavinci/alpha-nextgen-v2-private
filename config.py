@@ -441,18 +441,18 @@ OPTIONS_MIN_OPEN_INTEREST = (
 OPTIONS_STOP_TIERS = {
     # Low confidence = small position, tight stop (cut losses fast)
     # High confidence = larger position, wider stop (give it room)
-    3.00: {"stop_pct": 0.15, "contracts": 5},  # Low confidence: small bet, tight stop
-    3.25: {"stop_pct": 0.18, "contracts": 8},  # Medium-low confidence
-    3.50: {"stop_pct": 0.22, "contracts": 10},  # Medium-high confidence
-    3.75: {"stop_pct": 0.25, "contracts": 12},  # High confidence: biggest bet, wider stop
+    # V2.5: Widened all stops by +5% to let trades breathe
+    3.00: {"stop_pct": 0.20, "contracts": 5},  # Low confidence: 15% → 20%
+    3.25: {"stop_pct": 0.23, "contracts": 8},  # Medium-low: 18% → 23%
+    3.50: {"stop_pct": 0.27, "contracts": 10},  # Medium-high: 22% → 27%
+    3.75: {"stop_pct": 0.30, "contracts": 12},  # High confidence: 25% → 30%
 }
 
 # V2.3.8: 0DTE-specific stop override (PART 14 Pitfall 2)
 # 0DTE options move extremely fast - by time stop triggers, slippage can double the loss
-# Use tighter stops (15%) to limit max loss even with slippage to ~30%
 # NOTE: StopMarketOrder fills at next available price after trigger, not the stop price
-# For 0DTE, accept smaller position sizes in exchange for tighter risk control
-OPTIONS_0DTE_STOP_PCT = 0.15  # V2.3.8: 15% stop for 0DTE (was using 20-30% tiers)
+# V2.5: Widened from 15% to 20% - too tight was causing premature exits on normal swings
+OPTIONS_0DTE_STOP_PCT = 0.20  # V2.5: 15% → 20% to let 0DTE breathe
 
 # Profit Target
 OPTIONS_PROFIT_TARGET_PCT = 0.50  # +50% profit target
@@ -723,7 +723,7 @@ INTRADAY_ITM_DELTA = 0.70  # ITM delta target
 INTRADAY_ITM_START = "10:00"  # Entry window start
 INTRADAY_ITM_END = "13:30"  # Entry window end (need time)
 INTRADAY_ITM_TARGET = 0.40  # +40% profit target
-INTRADAY_ITM_STOP = 0.50  # -50% stop (wider for momentum)
+INTRADAY_ITM_STOP = 0.60  # V2.5: -60% stop (was 50%, widened to let momentum trades breathe)
 INTRADAY_ITM_TRAIL_TRIGGER = 0.20  # Trail after +20%
 INTRADAY_ITM_TRAIL_PCT = 0.50  # Trail at 50% of gains
 
