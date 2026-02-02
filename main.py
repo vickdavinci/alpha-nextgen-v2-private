@@ -3250,7 +3250,7 @@ class AlphaNextGen(QCAlgorithm):
             )
             if should_log:
                 iv_env = (
-                    self.options_engine._iv_sensor.get_environment()
+                    self.options_engine._iv_sensor.classify()
                     if hasattr(self.options_engine, "_iv_sensor")
                     else "UNKNOWN"
                 )
