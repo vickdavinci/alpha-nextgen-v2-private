@@ -714,6 +714,21 @@ class PortfolioRouter:
                         short_qty = -abs(short_leg_qty)  # Negative = SELL
                         combo_reason = f"[OPT] COMBO Open Spread: {reason}"
 
+                    # V2.14 Fix #11: SIGN_MISMATCH validation
+                    # A valid spread must have one BUY and one SELL (opposite signs)
+                    if long_qty > 0 and short_qty > 0:
+                        self.log(
+                            f"SIGN_MISMATCH: Spread has two BUYS | "
+                            f"Long={long_qty} Short={short_qty} | BLOCKED"
+                        )
+                        continue  # Skip this malformed spread
+                    if long_qty < 0 and short_qty < 0:
+                        self.log(
+                            f"SIGN_MISMATCH: Spread has two SELLS | "
+                            f"Long={long_qty} Short={short_qty} | BLOCKED"
+                        )
+                        continue  # Skip this malformed spread
+
                     orders.append(
                         OrderIntent(
                             symbol=symbol,  # Long leg symbol
@@ -888,6 +903,21 @@ class PortfolioRouter:
                                 f"ROUTER: INSUFFICIENT_MARGIN | {order.symbol} | "
                                 f"Order=${order_value:,.0f} > Margin=${margin_remaining:,.0f} | "
                                 f"Qty={order.quantity} @ ${current_price:.2f}"
+                            )
+                            continue
+
+                    # V2.14 Fix #14: MARGIN_ERROR_TREND - Check trend orders don't exceed
+                    # margin after reserving OPTIONS_MAX_MARGIN_CAP for options engine
+                    trend_symbols = ["QLD", "SSO", "TNA", "FAS"]
+                    symbol_str = str(order.symbol)
+                    if symbol_str in trend_symbols:
+                        options_reserve = getattr(config, "OPTIONS_MAX_MARGIN_CAP", 10000)
+                        margin_after_reserve = margin_remaining - options_reserve
+                        if order_value > margin_after_reserve and margin_after_reserve > 0:
+                            self.log(
+                                f"MARGIN_ERROR_TREND: {symbol_str} x{order.quantity} = ${order_value:,.0f} "
+                                f"exceeds available ${margin_after_reserve:,.0f} "
+                                f"(reserved ${options_reserve:,.0f} for options)"
                             )
                             continue
                 except Exception:
