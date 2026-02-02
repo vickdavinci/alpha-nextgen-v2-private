@@ -195,6 +195,14 @@ class ColdStartEngine:
             reason=reason,
         )
 
+        # V2.3.23: Mark warm entry as executed IMMEDIATELY to prevent duplicates
+        # This is critical because MOO orders don't fill until next market open,
+        # and check_warm_entry() may be called multiple times (weekends, holidays)
+        # before the order fills. Previously we waited for confirm_warm_entry()
+        # which caused duplicate orders on Jan 18-20, 2025 (weekend + MLK holiday).
+        self._warm_entry_executed = True
+        self._warm_entry_symbol = symbol
+
         self.log(
             f"COLD_START: WARM_ENTRY {symbol} | Weight={weight:.2%} | "
             f"Value=${position_value:,.0f} | Regime={regime_score:.1f}"
@@ -204,16 +212,21 @@ class ColdStartEngine:
 
     def confirm_warm_entry(self, symbol: str) -> None:
         """
-        Confirm warm entry was executed.
+        Confirm warm entry order was filled.
 
-        Call this after the warm entry order is filled.
+        Note: As of V2.3.23, warm entry is marked as executed immediately
+        when the signal is generated (in check_warm_entry) to prevent
+        duplicate orders during weekends/holidays. This method is now
+        only used for logging confirmation of the actual fill.
 
         Args:
             symbol: Symbol that was entered (QLD or SSO).
         """
-        self._warm_entry_executed = True
-        self._warm_entry_symbol = symbol
-        self.log(f"COLD_START: Warm entry confirmed for {symbol}")
+        # State already set in check_warm_entry(), just log confirmation
+        if not self._warm_entry_executed:
+            self._warm_entry_executed = True
+            self._warm_entry_symbol = symbol
+        self.log(f"COLD_START: Warm entry fill confirmed for {symbol}")
 
     def _select_instrument(self, regime_score: float) -> str:
         """Select instrument based on regime score."""
