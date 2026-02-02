@@ -539,6 +539,71 @@ OPTIONS_DOLLAR_CAP_TIER_2 = 10_000
 
 ---
 
+### V2.8: VASS - Volatility-Adaptive Strategy Selection (2026-02-02)
+
+**Goal:** Implement dynamic strategy selection based on IV environment to optimize spread type and expiration.
+
+**Strategy Matrix (Phase 1 - Defined Risk Only):**
+
+| IV Environment | VIX Range | Direction | Strategy | Expiration |
+|----------------|:---------:|-----------|----------|------------|
+| **Low** | < 15 | Bullish | Bull Call Debit | Monthly (30-45 DTE) |
+| **Low** | < 15 | Bearish | Bear Put Debit | Monthly (30-45 DTE) |
+| **Medium** | 15-25 | Bullish | Bull Call Debit | Weekly (7-21 DTE) |
+| **Medium** | 15-25 | Bearish | Bear Put Debit | Weekly (7-21 DTE) |
+| **High** | > 25 | Bullish | Bull Put Credit | Weekly (7-14 DTE) |
+| **High** | > 25 | Bearish | Bear Call Credit | Weekly (7-14 DTE) |
+
+**Key Components:**
+
+| Component | Description | Status |
+|-----------|-------------|:------:|
+| IVSensor | 30-min VIX SMA for IV classification | ✅ Complete |
+| SpreadStrategy Enum | 4 types: BULL_CALL_DEBIT, BEAR_PUT_DEBIT, BULL_PUT_CREDIT, BEAR_CALL_CREDIT | ✅ Complete |
+| Strategy Factory | Maps (direction, IV) → (strategy, DTE range) | ✅ Complete |
+| Credit Spread Leg Selection | select_credit_spread_legs() for Bull Put/Bear Call | ✅ Complete |
+| Credit Spread Sizing | Margin-based sizing (not premium) | ✅ Complete |
+| Credit Spread Exit Logic | P&L calculation with sign inversion for credits | ✅ Complete |
+| Safety Checks | Atomic combo orders + margin validation | ✅ Complete |
+
+**Files Modified:**
+
+| File | Changes |
+|------|---------|
+| `config.py` | ~15 VASS parameters (IV thresholds, DTE ranges, credit constraints) |
+| `options_engine.py` | IVSensor class, SpreadStrategy enum, _select_strategy(), select_credit_spread_legs(), _calculate_credit_spread_size(), updated exit logic |
+| `portfolio_router.py` | Credit spread margin validation before execution |
+
+**Config Additions:**
+```python
+# V2.8: VASS - IV Environment Classification
+VASS_ENABLED = True
+VASS_IV_LOW_THRESHOLD = 15      # VIX < 15 = Low IV
+VASS_IV_HIGH_THRESHOLD = 25     # VIX > 25 = High IV
+VASS_IV_SMOOTHING_MINUTES = 30  # SMA to prevent flickering
+
+# V2.8: DTE Ranges by IV Environment
+VASS_LOW_IV_DTE_MIN = 30        # Monthly
+VASS_LOW_IV_DTE_MAX = 45
+VASS_MEDIUM_IV_DTE_MIN = 7      # Weekly
+VASS_MEDIUM_IV_DTE_MAX = 21
+VASS_HIGH_IV_DTE_MIN = 7        # Weekly (credit)
+VASS_HIGH_IV_DTE_MAX = 14
+
+# V2.8: Credit Spread Constraints
+CREDIT_SPREAD_MIN_CREDIT = 0.30
+CREDIT_SPREAD_WIDTH_TARGET = 5.0
+CREDIT_SPREAD_PROFIT_TARGET = 0.50
+CREDIT_SPREAD_STOP_MULTIPLIER = 2.0
+```
+
+**Credit Spread Safety:**
+- Sizing: `max_contracts = allocation / ((width - credit) × 100)` (NOT premium!)
+- Example: $5 width, $0.50 credit → $450 margin per spread → 11 contracts max with $5K cap
+- Execution: Atomic ComboMarketOrder (no leg risk)
+
+---
+
 ## Planned Features (V2.5+)
 
 > **Roadmap Document:** `docs/v2-specs/V2_5_ROADMAP.md`

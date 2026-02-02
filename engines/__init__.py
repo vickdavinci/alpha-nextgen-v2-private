@@ -15,26 +15,21 @@
 # Satellite Engines (conditional, opportunistic):
 #   - MeanReversionEngine: Intraday oversold bounce (0-10% allocation)
 #   - HedgeEngine: Regime-based TMF/PSQ overlay
-#   - YieldSleeve: SHV cash management
+#   - OptionsEngine: QQQ options (20-30% allocation)
 #
 # =============================================================================
 
+from engines.core.capital_engine import CapitalEngine, CapitalState
+from engines.core.cold_start_engine import ColdStartEngine, ColdStartState
+
 # Core engine re-exports
 from engines.core.regime_engine import RegimeEngine, RegimeState
-from engines.core.capital_engine import CapitalEngine, CapitalState
-from engines.core.risk_engine import (
-    RiskEngine,
-    RiskCheckResult,
-    SafeguardType,
-    SafeguardStatus,
-)
-from engines.core.cold_start_engine import ColdStartEngine, ColdStartState
+from engines.core.risk_engine import RiskCheckResult, RiskEngine, SafeguardStatus, SafeguardType
 from engines.core.trend_engine import TrendEngine, TrendPosition
+from engines.satellite.hedge_engine import HedgeAllocation, HedgeEngine
 
 # Satellite engine re-exports
 from engines.satellite.mean_reversion_engine import MeanReversionEngine, MRPosition
-from engines.satellite.hedge_engine import HedgeEngine, HedgeAllocation
-from engines.satellite.yield_sleeve import YieldSleeve, YieldState
 
 __all__ = [
     # Core
@@ -55,6 +50,4 @@ __all__ = [
     "MRPosition",
     "HedgeEngine",
     "HedgeAllocation",
-    "YieldSleeve",
-    "YieldState",
 ]

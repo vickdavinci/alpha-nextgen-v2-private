@@ -8,7 +8,7 @@
 #   make branch name=feature/va/my-feature  - Create new branch
 # =============================================================================
 
-.PHONY: help setup test lint format check branch commit clean validate-config phase1-check verify
+.PHONY: help setup test lint format check branch commit clean validate-config phase1-check verify backtest
 
 # Default target
 help:
@@ -36,6 +36,10 @@ help:
 	@echo "Git:"
 	@echo "  make status         - Show git status and branch"
 	@echo "  make pr             - Create PR to develop"
+	@echo ""
+	@echo "QuantConnect:"
+	@echo "  make backtest       - Sync, push, and run QC backtest"
+	@echo "  make backtest name=X - Run backtest with custom name"
 	@echo ""
 	@echo "Cleanup:"
 	@echo "  make clean          - Remove Python cache files"
@@ -157,6 +161,14 @@ status:
 pr: _check-branch
 	@echo "Creating PR to develop..."
 	gh pr create --base develop
+
+# =============================================================================
+# QuantConnect Backtest
+# =============================================================================
+
+backtest:
+	@echo "Running QC backtest..."
+	./scripts/qc_backtest.sh $(name)
 
 # =============================================================================
 # Cleanup

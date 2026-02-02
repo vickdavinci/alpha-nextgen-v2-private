@@ -411,6 +411,33 @@ OPTIONS_DOLLAR_CAP_TIER_1 = 5_000  # Max $5K per spread when equity < $60K
 OPTIONS_DOLLAR_CAP_TIER_2 = 10_000  # Max $10K per spread when equity $60K-$100K
 # Above $100K: No dollar cap, use raw percentage-based sizing
 
+# -----------------------------------------------------------------------------
+# V2.8: VASS (Volatility-Adaptive Strategy Selection)
+# Dynamically selects spread strategy based on IV environment
+# -----------------------------------------------------------------------------
+VASS_ENABLED = True  # Master switch for VASS
+
+# IV Environment Classification Thresholds
+VASS_IV_LOW_THRESHOLD = 15  # VIX < 15 = Low IV (use debit spreads, monthly DTE)
+VASS_IV_HIGH_THRESHOLD = 25  # VIX > 25 = High IV (use credit spreads, weekly DTE)
+VASS_IV_SMOOTHING_MINUTES = 30  # SMA window to prevent strategy flickering
+
+# DTE Ranges by IV Environment (Swing Mode)
+VASS_LOW_IV_DTE_MIN = 30  # Low IV: Monthly expiration
+VASS_LOW_IV_DTE_MAX = 45
+VASS_MEDIUM_IV_DTE_MIN = 7  # Medium IV: Weekly expiration
+VASS_MEDIUM_IV_DTE_MAX = 21
+VASS_HIGH_IV_DTE_MIN = 7  # High IV: Weekly expiration (credit spreads)
+VASS_HIGH_IV_DTE_MAX = 14
+
+# Credit Spread Constraints
+CREDIT_SPREAD_MIN_CREDIT = 0.30  # Min $0.30 credit to justify margin risk
+CREDIT_SPREAD_WIDTH_TARGET = 5.0  # $5 width for credit spreads
+CREDIT_SPREAD_PROFIT_TARGET = 0.50  # Exit at 50% of max profit
+CREDIT_SPREAD_STOP_MULTIPLIER = 2.0  # Stop if spread value doubles (100% loss)
+CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg delta range (OTM)
+CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.40
+
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
 # V2.3.15: Sniper Logic - allow one retry, not machine gun
 INTRADAY_MAX_TRADES_PER_DAY = 2  # Sniper gets one retry per day

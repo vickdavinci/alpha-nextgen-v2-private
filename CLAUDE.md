@@ -87,58 +87,47 @@ self.log("INTRADAY_SIGNAL: ...", trades_only=False)  # Silent in backtests
 
 ### QuantConnect Backtest Workflow
 
-> **CRITICAL: Always sync ALL files before pushing to QC cloud!**
-> The project has a modular structure (engines/, portfolio/, etc.).
-> Pushing only main.py and config.py will cause runtime errors.
+> **Use the automated script!** Do NOT manually sync files.
 
-**Workspace Location:** `~/Desktop/lean-cli-workspace/`
-**Cloud Project:** `AlphaNextGen 2` (cloud-id: 27678023)
+**Cloud Project:** `AlphaNextGen` (cloud-id: 27678023)
+**Lean Workspace:** `~/Documents/Trading Github/lean-workspace/AlphaNextGen`
 
 ```bash
-# 1. Navigate to lean workspace
-cd ~/Desktop/lean-cli-workspace
+# Run backtest with auto-generated name (git branch + timestamp):
+./scripts/qc_backtest.sh
 
-# 2. Copy ALL files from project to lean workspace (not just main.py/config.py)
-SRC="/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private"
-DEST="AlphaNextGen 2"
-cp "$SRC/main.py" "$SRC/config.py" "$DEST/"
-cp -r "$SRC/engines" "$SRC/portfolio" "$SRC/execution" "$SRC/models" \
-      "$SRC/persistence" "$SRC/scheduling" "$SRC/utils" "$SRC/data" "$DEST/"
-
-# 3. Push to QuantConnect cloud
-lean cloud push --project "AlphaNextGen 2"
-
-# 4. Start backtest
-lean cloud backtest "AlphaNextGen 2" --name "Descriptive-Name-Here"
-
-# 5. Check backtest status (if needed)
-lean cloud status "AlphaNextGen 2"
+# Run backtest with custom name:
+./scripts/qc_backtest.sh "V2.4.4-MyFeature"
 ```
 
-**Quick One-Liner (sync + push + backtest):**
-```bash
-cd ~/Desktop/lean-cli-workspace && \
-SRC="/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private" && \
-cp "$SRC/main.py" "$SRC/config.py" "AlphaNextGen 2/" && \
-cp -r "$SRC/engines" "$SRC/portfolio" "$SRC/execution" "$SRC/models" \
-      "$SRC/persistence" "$SRC/scheduling" "$SRC/utils" "$SRC/data" "AlphaNextGen 2/" && \
-lean cloud push --project "AlphaNextGen 2" && \
-lean cloud backtest "AlphaNextGen 2" --name "backtest-name"
-```
+**What the script does:**
+1. Syncs ALL project files (main.py, config.py, engines/, portfolio/, etc.) to lean-workspace
+2. Pushes to QuantConnect cloud via `lean cloud push`
+3. Starts the backtest with specified name
+4. Prints the backtest URL for viewing results
 
-**Checklist before running backtest:**
-- [ ] All engine files synced (engines/core/, engines/satellite/)
-- [ ] All infrastructure synced (portfolio/, execution/, models/, persistence/)
-- [ ] Supporting files synced (scheduling/, utils/, data/)
-- [ ] main.py and config.py synced
-- [ ] `lean cloud push` completed successfully
+**Example output:**
+```
+╔═══════════════════════════════════════════════════════════════╗
+║           QC BACKTEST - AlphaNextGen V2                       ║
+╚═══════════════════════════════════════════════════════════════╝
+
+Backtest Name: V2.4.4-P0-Fixes
+[1/3] Syncing files to lean workspace...
+   ✓ Synced 47 Python files
+[2/3] Pushing to QuantConnect cloud...
+   ✓ Push complete
+[3/3] Starting backtest...
+   ✓ Backtest started
+
+URL:  https://www.quantconnect.com/project/27678023/...
+```
 
 **Notes:**
 - lean CLI is already installed globally
 - Trading Firm plan allows 256KB files (no minification needed)
 - Use B4-12 nodes for options backtests (requires more memory)
 - Results viewable at: https://www.quantconnect.com/terminal
-- Project must be quoted ("AlphaNextGen 2") due to space in name
 
 ---
 
@@ -685,6 +674,9 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | VIX Normal (V2.3) | VIX 15-22 | Normal volatility |
 | VIX High (V2.3) | VIX 22-30 | Elevated fear |
 | VIX Extreme (V2.3) | VIX > 40 | Crisis mode |
+| VASS Low IV (V2.8) | VIX < 15 | Debit spreads, monthly DTE |
+| VASS Medium IV (V2.8) | VIX 15-25 | Debit spreads, weekly DTE |
+| VASS High IV (V2.8) | VIX > 25 | Credit spreads, weekly DTE |
 
 ### Overnight Holdings
 

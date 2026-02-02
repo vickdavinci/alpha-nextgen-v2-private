@@ -2429,6 +2429,97 @@ OPTIONS_DOLLAR_CAP_TIER_2 = 10_000
 
 ---
 
+## V2.8: VASS - Volatility-Adaptive Strategy Selection (2026-02-02)
+
+### Overview
+
+VASS (Volatility-Adaptive Strategy Selection) dynamically selects the optimal spread strategy and expiration based on the current IV environment. This addresses the limitation of using a single strategy type regardless of market conditions.
+
+### Strategy Matrix (Phase 1 - Defined Risk)
+
+| IV Environment | VIX Range | Bullish Strategy | Bearish Strategy | DTE |
+|----------------|:---------:|------------------|------------------|-----|
+| **Low** | < 15 | Bull Call Debit | Bear Put Debit | Monthly (30-45) |
+| **Medium** | 15-25 | Bull Call Debit | Bear Put Debit | Weekly (7-21) |
+| **High** | > 25 | Bull Put Credit | Bear Call Credit | Weekly (7-14) |
+
+**Rationale:**
+- **Low IV**: Long premium (debit spreads) benefits from IV expansion → use Monthly for time to develop
+- **Medium IV**: Balanced approach → use Weekly for faster theta/gamma balance
+- **High IV**: Short premium (credit spreads) captures IV crush → use Weekly for rapid decay
+
+### Components Implemented
+
+| Component | Location | Description |
+|-----------|----------|-------------|
+| `IVSensor` | options_engine.py:481-560 | 30-min VIX SMA for smooth IV classification |
+| `SpreadStrategy` enum | options_engine.py:70-81 | BULL_CALL_DEBIT, BEAR_PUT_DEBIT, BULL_PUT_CREDIT, BEAR_CALL_CREDIT |
+| `_select_strategy()` | options_engine.py:2960-3040 | Maps (direction, IV) → (strategy, DTE range) |
+| `select_credit_spread_legs()` | options_engine.py:1920-2120 | Selects legs for Bull Put and Bear Call credit spreads |
+| `_calculate_credit_spread_size()` | options_engine.py:3077-3150 | Margin-based sizing for credit spreads |
+| Credit exit logic | options_engine.py:2700-2790 | P&L calculation with sign inversion for credits |
+| Margin validation | portfolio_router.py:828-848 | Pre-execution margin check for credit spreads |
+
+### Credit Spread Sizing Safety
+
+**Critical Formula:**
+```
+max_contracts = allocation / ((width - credit) × 100)
+```
+
+**Example:**
+- Width: $5.00
+- Credit received: $0.50
+- Margin per spread: ($5.00 - $0.50) × 100 = $450
+- With $5K cap: $5,000 / $450 = 11 contracts max
+
+**NOT:**
+```
+❌ WRONG: $5,000 / $50 premium = 100 contracts (DANGEROUS!)
+```
+
+### Config Parameters Added
+
+```python
+# V2.8: VASS - IV Environment Classification
+VASS_ENABLED = True
+VASS_IV_LOW_THRESHOLD = 15
+VASS_IV_HIGH_THRESHOLD = 25
+VASS_IV_SMOOTHING_MINUTES = 30
+
+# V2.8: DTE Ranges by IV Environment
+VASS_LOW_IV_DTE_MIN = 30
+VASS_LOW_IV_DTE_MAX = 45
+VASS_MEDIUM_IV_DTE_MIN = 7
+VASS_MEDIUM_IV_DTE_MAX = 21
+VASS_HIGH_IV_DTE_MIN = 7
+VASS_HIGH_IV_DTE_MAX = 14
+
+# V2.8: Credit Spread Constraints
+CREDIT_SPREAD_MIN_CREDIT = 0.30
+CREDIT_SPREAD_WIDTH_TARGET = 5.0
+CREDIT_SPREAD_PROFIT_TARGET = 0.50
+CREDIT_SPREAD_STOP_MULTIPLIER = 2.0
+CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25
+CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.40
+```
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `config.py` | ~15 new VASS parameters |
+| `engines/satellite/options_engine.py` | IVSensor, SpreadStrategy, strategy factory, credit spread selection/sizing/exit |
+| `portfolio/portfolio_router.py` | Credit spread margin validation |
+
+### Next Steps
+
+1. **Backtest Validation**: Run Stage 2 backtest with VASS enabled across different IV periods
+2. **High IV Period Testing**: Focus on Oct 2023, Mar 2020 for credit spread behavior
+3. **Phase 2**: Full credit spread entry integration in check_spread_entry_signal()
+
+---
+
 ## Sync Workflow
 
 ```bash
@@ -2449,4 +2540,4 @@ lean cloud backtest AlphaNextGen
 
 ---
 
-*Document created: 2026-01-30 | Last updated: 2026-02-02 (V2.7 Options Engine Capital Synchronization)*
+*Document created: 2026-01-30 | Last updated: 2026-02-02 (V2.8 VASS - Volatility-Adaptive Strategy Selection)*

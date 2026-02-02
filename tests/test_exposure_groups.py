@@ -197,7 +197,6 @@ class TestExposureCalculatorInit:
 
         assert group is not None
         assert "TMF" in group.symbols
-        assert "SHV" in group.symbols
 
     def test_nasdaq_beta_limits(self):
         """Test NASDAQ_BETA has correct limits."""
@@ -220,15 +219,14 @@ class TestExposureCalculatorInit:
         assert group.max_gross == 0.40
 
     def test_rates_limits(self):
-        """Test RATES has correct limits (V2.3.17: 0.99 for post-kill-switch SHV)."""
+        """Test RATES has correct limits (TMF only)."""
         calc = ExposureCalculator()
 
         group = calc.get_group("RATES")
 
-        # V2.3.17: Raised from 0.40 to 0.99 to allow near-full SHV allocation post-kill-switch
-        assert group.max_net_long == 0.99
+        assert group.max_net_long == 0.40
         assert group.max_net_short == 0.00
-        assert group.max_gross == 0.99
+        assert group.max_gross == 0.40
 
     def test_psq_is_inverse(self):
         """Test PSQ is marked as inverse in NASDAQ_BETA."""
@@ -282,7 +280,7 @@ class TestExposureCalculation:
         """Test calculating exposure for all groups."""
         calc = ExposureCalculator()
 
-        weights = {"QLD": 0.30, "SSO": 0.20, "TMF": 0.15, "SHV": 0.25}
+        weights = {"QLD": 0.30, "SSO": 0.20, "TMF": 0.15}
         exposures = calc.calculate_all_exposures(weights)
 
         assert "NASDAQ_BETA" in exposures
@@ -291,7 +289,7 @@ class TestExposureCalculation:
 
         assert exposures["NASDAQ_BETA"].long_exposure == 0.30
         assert exposures["SPY_BETA"].long_exposure == 0.20
-        assert exposures["RATES"].long_exposure == 0.40  # TMF + SHV
+        assert exposures["RATES"].long_exposure == 0.15  # TMF only
 
     def test_calculate_empty_weights(self):
         """Test calculating exposure with no positions."""

@@ -161,11 +161,9 @@ class PortfolioRouter:
         "OPT_INTRADAY": 0.05,  # 5% max for intraday "Sniper" mode
         "MR": config.MR_TOTAL_ALLOCATION,  # 10% max
         "HEDGE": 0.30,  # Hedge: 30% max (TMF 20% + PSQ 10%)
-        # V2.3.17: YIELD raised from 0.50 to 0.99 to allow near-full SHV post-kill-switch
-        "YIELD": 0.99,  # Yield (SHV): 99% max (absorb idle cash after kill switch)
         "COLD_START": 0.35,  # Cold Start: 35% max (subset of TREND)
         "RISK": 1.00,  # Risk: No limit (emergency liquidations)
-        "ROUTER": 1.00,  # Router: No limit (SHV liquidations)
+        "ROUTER": 1.00,  # Router: No limit
     }
 
     # V2.3: Non-options sources that must respect reserved options capital
@@ -727,6 +725,30 @@ class PortfolioRouter:
             self.log("ROUTER: BLOCKED | Risk engine NO-GO status")
             return []
 
+        # V2.4.4 P0: Check margin call cooldown before executing any orders
+        # This prevents 2765+ margin call spam seen in V2.4.3 backtest
+        if hasattr(self.algorithm, "_margin_call_cooldown_until"):
+            cooldown = getattr(self.algorithm, "_margin_call_cooldown_until", None)
+            if cooldown and isinstance(cooldown, str):
+                try:
+                    current_time = str(self.algorithm.Time)  # type: ignore[attr-defined]
+                    # Only compare if we got a valid timestamp string
+                    if isinstance(current_time, str) and len(current_time) > 10:
+                        if current_time < cooldown:
+                            self.log(
+                                f"ROUTER: MARGIN_COOLDOWN_ACTIVE | "
+                                f"Blocked until {cooldown} | Current={current_time}"
+                            )
+                            return []
+                        else:
+                            # Cooldown expired, reset
+                            self.algorithm._margin_call_cooldown_until = None  # type: ignore[attr-defined]
+                            self.algorithm._margin_call_consecutive_count = 0  # type: ignore[attr-defined]
+                            self.log("ROUTER: MARGIN_COOLDOWN_EXPIRED | Trading resumed")
+                except (TypeError, AttributeError):
+                    # In test environments, Time may be mocked - skip cooldown check
+                    pass
+
         # Reset idempotency tracking when minute changes
         if current_minute and current_minute != self._last_execution_minute:
             self._executed_this_minute.clear()
@@ -804,7 +826,31 @@ class PortfolioRouter:
                 quantity = order.quantity if order.side == OrderSide.BUY else -order.quantity
 
                 # V2.3.9: Handle combo orders for spreads
+                # V2.8: Add credit spread margin validation
                 if order.is_combo and order.combo_short_symbol and order.combo_short_quantity:
+                    # V2.8 SAFETY: Validate credit spread margin before execution
+                    if hasattr(order, "metadata") and order.metadata:
+                        if order.metadata.get("spread_type") == "CREDIT":
+                            width = order.metadata.get("spread_width", 5.0)
+                            credit = abs(order.metadata.get("spread_cost_or_credit", 0))
+                            num_spreads = abs(order.quantity)
+                            margin_per_spread = (width - credit) * 100
+                            total_margin = margin_per_spread * num_spreads
+
+                            # SAFETY CHECK: Total margin must not exceed available
+                            if total_margin > margin_remaining:
+                                self.log(
+                                    f"SAFETY BLOCK: Credit spread margin ${total_margin:.0f} "
+                                    f"exceeds available ${margin_remaining:.0f} | "
+                                    f"Spreads={num_spreads} @ ${margin_per_spread:.0f}/spread"
+                                )
+                                continue  # Skip this order
+
+                            self.log(
+                                f"SAFETY: Credit spread margin validated | "
+                                f"Total=${total_margin:.0f} <= Available=${margin_remaining:.0f}"
+                            )
+
                     # Import Leg class for combo orders
                     from AlgorithmImports import Leg
 
@@ -908,16 +954,6 @@ class PortfolioRouter:
         )
         immediate_orders, _ = self.prioritize_orders(orders)
 
-        # Check if we need to liquidate SHV to fund BUY orders
-        immediate_orders = self._add_shv_liquidation_if_needed(
-            immediate_orders,
-            current_positions,
-            current_prices,
-            available_cash,
-            locked_amount,
-            tradeable_equity,
-        )
-
         # Extract minute from timestamp for idempotency (e.g., "2021-05-10 09:31:00" -> "2021-05-10 09:31")
         current_minute = current_time[:16] if current_time and len(current_time) >= 16 else None
         executed = self.execute_orders(immediate_orders, current_minute)
@@ -979,133 +1015,12 @@ class PortfolioRouter:
         )
         _, eod_orders = self.prioritize_orders(orders)
 
-        # Check if we need to liquidate SHV to fund BUY orders
-        eod_orders = self._add_shv_liquidation_if_needed(
-            eod_orders,
-            current_positions,
-            current_prices,
-            available_cash,
-            locked_amount,
-            tradeable_equity,
-        )
-
         # Extract minute from timestamp for idempotency (e.g., "2021-05-10 09:31:00" -> "2021-05-10 09:31")
         current_minute = current_time[:16] if current_time and len(current_time) >= 16 else None
         executed = self.execute_orders(eod_orders, current_minute)
 
         self._last_orders = executed
         return executed
-
-    def _add_shv_liquidation_if_needed(
-        self,
-        orders: List[OrderIntent],
-        current_positions: Dict[str, float],
-        current_prices: Dict[str, float],
-        available_cash: float,
-        locked_amount: float,
-        tradeable_equity: float,
-    ) -> List[OrderIntent]:
-        """
-        V2.3.20: Calculate shortfall and generate SHV SELL order if needed.
-
-        When BUY orders require more cash than available, automatically liquidate
-        SHV to fund the purchase. This prevents "Insufficient Buying Power" errors
-        for options and other immediate trades.
-
-        Args:
-            orders: List of orders to execute.
-            current_positions: Dict of symbol -> current value.
-            current_prices: Dict of symbol -> current price.
-            available_cash: Current available cash.
-            locked_amount: Amount locked in lockbox.
-            tradeable_equity: Total tradeable equity.
-
-        Returns:
-            Orders with SHV SELL first (if needed), then other SELLs, then BUYs.
-        """
-        # Separate sells and buys
-        sells = [o for o in orders if o.side == OrderSide.SELL]
-        buys = [o for o in orders if o.side == OrderSide.BUY]
-
-        # V2.3.20: Calculate total BUY value needed (quantity × price)
-        def get_order_value(order: OrderIntent) -> float:
-            price = current_prices.get(order.symbol, 0.0)
-            return abs(order.quantity) * price
-
-        buy_value = sum(get_order_value(o) for o in buys)
-
-        if buy_value <= 0:
-            return sells + buys
-
-        # Calculate cash that will be available after existing sells
-        sell_proceeds = sum(get_order_value(o) for o in sells)
-        projected_cash = available_cash + sell_proceeds
-
-        # Calculate shortfall
-        shortfall = buy_value - projected_cash
-
-        if shortfall > 0:
-            # Need to liquidate SHV to cover shortfall
-            current_shv_value = current_positions.get("SHV", 0.0)
-            available_shv = max(0.0, current_shv_value - locked_amount)
-
-            if available_shv > 0:
-                # V2.3.24: Check if SHV is margin-locked before attempting to sell
-                # SHV acts as collateral for leveraged positions - IBKR rejects sell if
-                # selling would violate margin requirements
-                if self.algorithm:
-                    margin_remaining = self.algorithm.Portfolio.MarginRemaining  # type: ignore[attr-defined]
-                    shv_sell_amount_requested = min(shortfall * 1.05, available_shv)
-
-                    if shv_sell_amount_requested > margin_remaining:
-                        self.log(
-                            f"SHV_MARGIN_LOCK: Cannot sell ${shv_sell_amount_requested:,.0f} SHV | "
-                            f"Margin locked (remaining=${margin_remaining:,.0f}) | "
-                            f"SHV is collateral for leveraged positions"
-                        )
-                        return sells + buys  # Skip SHV liquidation - would fail anyway
-
-                # Calculate how much SHV to sell (with 5% buffer for slippage)
-                shv_sell_amount = min(shortfall * 1.05, available_shv)
-                remaining_shv = current_shv_value - shv_sell_amount
-
-                if tradeable_equity > 0:
-                    target_weight = remaining_shv / tradeable_equity
-                else:
-                    target_weight = 0.0
-
-                # Create SHV sell order
-                shv_price = current_prices.get("SHV", 110.0)  # Default ~$110
-                shv_shares = int(shv_sell_amount / shv_price) if shv_price > 0 else 0
-
-                if shv_shares > 0:
-                    current_shv_weight = (
-                        current_shv_value / tradeable_equity if tradeable_equity > 0 else 0.0
-                    )
-                    shv_order = OrderIntent(
-                        symbol="SHV",
-                        quantity=-shv_shares,  # Negative for SELL
-                        side=OrderSide.SELL,
-                        order_type=OrderType.MARKET,
-                        urgency=Urgency.IMMEDIATE,
-                        reason=f"AUTO_LIQUIDATE: ${shortfall:,.0f} shortfall for pending buys",
-                        target_weight=target_weight,
-                        current_weight=current_shv_weight,
-                    )
-                    self.log(
-                        f"SHV_AUTO_LIQUIDATE: Selling ${shv_sell_amount:,.0f} SHV "
-                        f"({shv_shares} shares) to fund ${buy_value:,.0f} in buys | "
-                        f"Available cash=${available_cash:,.0f} | Shortfall=${shortfall:,.0f}"
-                    )
-                    # Insert SHV sell at the beginning
-                    sells.insert(0, shv_order)
-            else:
-                self.log(
-                    f"SHV_SHORTFALL_WARNING: Need ${shortfall:,.0f} but no SHV available "
-                    f"(locked=${locked_amount:,.0f})"
-                )
-
-        return sells + buys
 
     # =========================================================================
     # Risk Engine Integration
@@ -1125,56 +1040,6 @@ class PortfolioRouter:
     def get_risk_status(self) -> bool:
         """Get current risk engine status."""
         return self._risk_engine_go
-
-    # =========================================================================
-    # SHV Liquidation Support
-    # =========================================================================
-
-    def calculate_shv_liquidation(
-        self,
-        cash_needed: float,
-        current_shv_value: float,
-        locked_amount: float,
-        tradeable_equity: float,
-    ) -> Optional[TargetWeight]:
-        """
-        Calculate SHV liquidation needed for cash.
-
-        Called when new positions require cash and SHV should be
-        liquidated first.
-
-        Args:
-            cash_needed: Amount of cash required.
-            current_shv_value: Current SHV holdings value.
-            locked_amount: Amount locked in lockbox.
-            tradeable_equity: Total tradeable equity.
-
-        Returns:
-            TargetWeight for SHV liquidation, or None if not needed.
-        """
-        available_shv = max(0.0, current_shv_value - locked_amount)
-
-        if available_shv <= 0:
-            return None
-
-        # Calculate how much to sell
-        sell_amount = min(cash_needed, available_shv)
-        remaining_shv = current_shv_value - sell_amount
-
-        if tradeable_equity <= 0:
-            target_weight = 0.0
-        else:
-            target_weight = remaining_shv / tradeable_equity
-
-        reason = f"Liquidation for ${cash_needed:,.0f} needed, selling ${sell_amount:,.0f}"
-
-        return TargetWeight(
-            symbol="SHV",
-            target_weight=target_weight,
-            source="ROUTER",
-            urgency=Urgency.IMMEDIATE,
-            reason=reason,
-        )
 
     # =========================================================================
     # V2.1: REBALANCING (ORC-2)

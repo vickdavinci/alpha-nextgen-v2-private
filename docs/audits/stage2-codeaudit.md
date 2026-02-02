@@ -1434,3 +1434,59 @@ Implement the Dev's 5 fixes for Trend/Risk.
 Apply the Spread Delta fix in options_engine.py.
 
 Apply the Auto-Liquidation fix in portfolio_router.py.
+
+#### PART 19 ####
+
+Based on the logs you provided, I have found the exact bug. It is not a logic issue; it is a "Zombie State" Bug.
+
+🛑 The Smoking Gun
+Look at this line from your log file on May 30, 2025: 2025-05-30 15:45:00 FRIDAY_FIREWALL: Keeping spread (established trade) | Entry=2025-01-06
+
+The Problem:
+
+The bot thinks it still holds the Option position from January 6th five months later.
+
+In reality, that option expired in January.
+
+Because the bot thinks it is "holding" a position, it marks that Portfolio Slot as OCCUPIED.
+
+Result: The Options Engine checks available slots, sees "0 Slots Available" (blocked by the ghost trade), and refuses to open anything new for the rest of the year.
+
+🔧 The Fix: Switch to "Stateless" Tracking
+Your code currently relies on Manual Counters (e.g., self.current_positions += 1). This is dangerous because if an option expires or is assigned, the counter doesn't get decremented, and the bot stays "full" forever.
+
+Do this immediately:
+
+Replace your CheckOpenPositions or HasSlotsAvailable logic with this Stateless Code. This forces the bot to count what is actually in the portfolio, not what it remembers buying.
+
+In main.py (inside your OnData or execution logic):
+
+Python
+def GetActiveOptionCount(self):
+    # DYNAMIC COUNT: Count only options that are actually in the portfolio right now
+    real_option_count = 0
+    for kvp in self.Portfolio:
+        symbol = kvp.Key
+        holding = kvp.Value
+        
+        # Only count Options that are Invested (Quantity != 0)
+        if symbol.SecurityType == SecurityType.Option and holding.Invested:
+            real_option_count += 1
+            
+    return real_option_count
+
+# UPDATE YOUR ENTRY CHECK TO USE THIS:
+# Old way: if self.open_positions < self.MAX_POSITIONS:  <-- DELETE THIS
+# New way:
+if self.GetActiveOptionCount() < self.MAX_OPTION_POSITIONS:
+    # Safe to trade
+Why this fixes it
+January: Bot buys Option. GetActiveOptionCount() returns 1.
+
+Expiration Day: The Option disappears from your Portfolio.
+
+Next Day: GetActiveOptionCount() returns 0 (automatically).
+
+Result: The slot opens up, and the bot starts trading again immediately.
+
+Implementation Note: Tell your dev to delete any variables named self.active_spreads or self.open_positions_count. They are the source of the drift. Use the self.Portfolio truth only.

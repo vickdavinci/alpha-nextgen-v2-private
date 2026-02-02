@@ -61,6 +61,20 @@ class OptionDirection(Enum):
     PUT = "PUT"
 
 
+class SpreadStrategy(Enum):
+    """
+    V2.8: Spread strategy types for VASS (Volatility-Adaptive Strategy Selection).
+
+    Debit spreads: Pay premium, max loss = debit paid
+    Credit spreads: Collect premium, max loss = width - credit
+    """
+
+    BULL_CALL_DEBIT = "BULL_CALL_DEBIT"  # Long call + short higher call (bullish)
+    BEAR_PUT_DEBIT = "BEAR_PUT_DEBIT"  # Long put + short lower put (bearish)
+    BULL_PUT_CREDIT = "BULL_PUT_CREDIT"  # Short put + long lower put (bullish)
+    BEAR_CALL_CREDIT = "BEAR_CALL_CREDIT"  # Short call + long higher call (bearish)
+
+
 @dataclass
 class EntryScore:
     """
@@ -462,6 +476,108 @@ class ExitOrderTracker:
         """Record a retry attempt."""
         self.retry_count += 1
         self.last_attempt_time = time_str
+
+
+# =============================================================================
+# V2.8: IV SENSOR (Volatility-Adaptive Strategy Selection)
+# =============================================================================
+
+
+class IVSensor:
+    """
+    V2.8: Smoothed IV classification to prevent strategy flickering.
+
+    Uses 30-minute SMA of VIX to classify IV environment into three tiers:
+    - LOW (< 15): Use debit spreads with monthly expiration
+    - MEDIUM (15-25): Use debit spreads with weekly expiration
+    - HIGH (> 25): Use credit spreads with weekly expiration
+
+    The smoothing prevents rapid strategy switching when VIX hovers near thresholds.
+    """
+
+    def __init__(self, smoothing_minutes: int = 30, log_func=None):
+        """
+        Initialize IV Sensor.
+
+        Args:
+            smoothing_minutes: SMA window size (default 30 minutes)
+            log_func: Logging function (optional)
+        """
+        self._vix_history: Deque[float] = deque(
+            maxlen=smoothing_minutes or config.VASS_IV_SMOOTHING_MINUTES
+        )
+        self._last_classification: Optional[str] = None
+        self._log = log_func or (lambda x: None)
+
+    def update(self, vix_value: float) -> None:
+        """
+        Add VIX reading (called every minute from OnData).
+
+        Args:
+            vix_value: Current VIX value
+        """
+        if vix_value > 0:  # Sanity check
+            self._vix_history.append(vix_value)
+
+    def get_smoothed_vix(self) -> float:
+        """
+        Return 30-min SMA of VIX.
+
+        Returns:
+            Smoothed VIX value, or 20.0 (medium IV default) if no history
+        """
+        if not self._vix_history:
+            return 20.0  # Default to medium IV
+        return sum(self._vix_history) / len(self._vix_history)
+
+    def classify(self) -> str:
+        """
+        Classify IV environment: LOW, MEDIUM, HIGH.
+
+        Returns:
+            IV environment classification string
+        """
+        if not self._vix_history or len(self._vix_history) < 5:
+            # FALLBACK: Assume MEDIUM IV if insufficient data
+            self._log("VASS: Insufficient VIX data, defaulting to MEDIUM")
+            return "MEDIUM"
+
+        smoothed = self.get_smoothed_vix()
+
+        if smoothed < config.VASS_IV_LOW_THRESHOLD:
+            classification = "LOW"
+        elif smoothed > config.VASS_IV_HIGH_THRESHOLD:
+            classification = "HIGH"
+        else:
+            classification = "MEDIUM"
+
+        # Log classification changes
+        if self._last_classification != classification:
+            self._log(
+                f"VASS: IV environment changed {self._last_classification} → {classification} "
+                f"(VIX SMA={smoothed:.1f})"
+            )
+            self._last_classification = classification
+
+        return classification
+
+    def is_ready(self) -> bool:
+        """
+        True if enough history for reliable smoothing.
+
+        Returns:
+            True if at least 10 minutes of VIX data collected
+        """
+        return len(self._vix_history) >= 10
+
+    def get_history_length(self) -> int:
+        """Return current history length (for debugging)."""
+        return len(self._vix_history)
+
+    def reset(self) -> None:
+        """Clear history (for testing or session reset)."""
+        self._vix_history.clear()
+        self._last_classification = None
 
 
 # =============================================================================
@@ -1331,6 +1447,12 @@ class OptionsEngine:
         # After closing a spread, wait before new entry (T+1 settlement)
         self._last_spread_exit_time: Optional[str] = None
 
+        # V2.8: VASS (Volatility-Adaptive Strategy Selection)
+        self._iv_sensor = IVSensor(
+            smoothing_minutes=config.VASS_IV_SMOOTHING_MINUTES,
+            log_func=self.log,
+        )
+
     def log(self, message: str, trades_only: bool = False) -> None:
         """
         Log via algorithm with LiveMode awareness.
@@ -1796,6 +1918,206 @@ class OptionsEngine:
         return (long_leg, short_leg)
 
     # =========================================================================
+    # V2.8: CREDIT SPREAD LEG SELECTION (VASS)
+    # =========================================================================
+
+    def select_credit_spread_legs(
+        self,
+        contracts: List[OptionContract],
+        strategy: SpreadStrategy,
+        dte_min: int,
+        dte_max: int,
+        current_time: Optional[str] = None,
+    ) -> Optional[Tuple[OptionContract, OptionContract]]:
+        """
+        V2.8: Select legs for credit spread (sell short leg, buy long leg for protection).
+
+        Credit spreads collect premium upfront and have defined max loss (width - credit).
+
+        Bull Put Credit: Sell OTM put (higher strike), Buy further OTM put (lower strike)
+            - Bullish bias: Profit if underlying stays above short strike
+            - Max profit = credit received
+            - Max loss = width - credit
+
+        Bear Call Credit: Sell OTM call (lower strike), Buy further OTM call (higher strike)
+            - Bearish bias: Profit if underlying stays below short strike
+            - Max profit = credit received
+            - Max loss = width - credit
+
+        Args:
+            contracts: List of available option contracts
+            strategy: SpreadStrategy (BULL_PUT_CREDIT or BEAR_CALL_CREDIT)
+            dte_min: Minimum days to expiration
+            dte_max: Maximum days to expiration
+            current_time: Current time string (optional, for logging)
+
+        Returns:
+            (short_leg, long_leg) tuple - NOTE: short leg is the one we SELL
+            Returns None if no valid spread can be constructed
+        """
+        if not contracts:
+            self.log("VASS: No contracts provided for credit spread selection")
+            return None
+
+        # Filter by DTE
+        dte_filtered = [c for c in contracts if dte_min <= c.days_to_expiry <= dte_max]
+
+        if not dte_filtered:
+            self.log(
+                f"VASS: No contracts in DTE range {dte_min}-{dte_max} "
+                f"(available: {[c.days_to_expiry for c in contracts[:5]]}...)"
+            )
+            return None
+
+        if strategy == SpreadStrategy.BULL_PUT_CREDIT:
+            # BULL PUT CREDIT: Sell higher put, buy lower put
+            # Profit if underlying stays ABOVE short strike
+            puts = [c for c in dte_filtered if c.direction == OptionDirection.PUT]
+
+            if not puts:
+                self.log("VASS: No PUT contracts available for Bull Put Credit")
+                return None
+
+            # Short leg: Delta -0.25 to -0.40 (OTM but decent premium)
+            # Must have sufficient bid (premium) to collect
+            short_candidates = [
+                p
+                for p in puts
+                if config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN
+                <= abs(p.delta)
+                <= config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX
+                and p.bid >= config.CREDIT_SPREAD_MIN_CREDIT
+            ]
+
+            if not short_candidates:
+                self.log(
+                    f"VASS: No short put candidates | "
+                    f"Delta range: {config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN}-"
+                    f"{config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX} | "
+                    f"Min credit: ${config.CREDIT_SPREAD_MIN_CREDIT}"
+                )
+                return None
+
+            # Sort by premium (highest first) - we want max credit
+            short_candidates.sort(key=lambda x: x.bid, reverse=True)
+            short_leg = short_candidates[0]
+
+            # Long leg: $5 below short strike (for defined risk)
+            target_long_strike = short_leg.strike - config.CREDIT_SPREAD_WIDTH_TARGET
+            long_candidates = [
+                p for p in puts if p.strike == target_long_strike and p.expiry == short_leg.expiry
+            ]
+
+            if not long_candidates:
+                # Fallback: closest strike below (within width range)
+                long_candidates = [
+                    p
+                    for p in puts
+                    if p.strike < short_leg.strike
+                    and p.expiry == short_leg.expiry
+                    and config.SPREAD_WIDTH_MIN
+                    <= (short_leg.strike - p.strike)
+                    <= config.SPREAD_WIDTH_MAX
+                ]
+                if long_candidates:
+                    long_candidates.sort(key=lambda x: x.strike, reverse=True)
+
+            if not long_candidates:
+                self.log(
+                    f"VASS: No long put candidates for protection | "
+                    f"Short strike={short_leg.strike} | Target=${target_long_strike}"
+                )
+                return None
+
+            long_leg = long_candidates[0]
+            width = short_leg.strike - long_leg.strike
+            credit = short_leg.bid - long_leg.ask  # Conservative: bid for sell, ask for buy
+
+            self.log(
+                f"VASS: BULL_PUT_CREDIT selected | "
+                f"Sell {short_leg.strike}P @ ${short_leg.bid:.2f} | "
+                f"Buy {long_leg.strike}P @ ${long_leg.ask:.2f} | "
+                f"Width=${width:.0f} | Credit=${credit:.2f}"
+            )
+
+            return (short_leg, long_leg)
+
+        elif strategy == SpreadStrategy.BEAR_CALL_CREDIT:
+            # BEAR CALL CREDIT: Sell lower call, buy higher call
+            # Profit if underlying stays BELOW short strike
+            calls = [c for c in dte_filtered if c.direction == OptionDirection.CALL]
+
+            if not calls:
+                self.log("VASS: No CALL contracts available for Bear Call Credit")
+                return None
+
+            # Short leg: Delta 0.25-0.40 (OTM but decent premium)
+            short_candidates = [
+                c
+                for c in calls
+                if config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN
+                <= abs(c.delta)
+                <= config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX
+                and c.bid >= config.CREDIT_SPREAD_MIN_CREDIT
+            ]
+
+            if not short_candidates:
+                self.log(
+                    f"VASS: No short call candidates | "
+                    f"Delta range: {config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN}-"
+                    f"{config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX} | "
+                    f"Min credit: ${config.CREDIT_SPREAD_MIN_CREDIT}"
+                )
+                return None
+
+            short_candidates.sort(key=lambda x: x.bid, reverse=True)
+            short_leg = short_candidates[0]
+
+            # Long leg: $5 above short strike (for defined risk)
+            target_long_strike = short_leg.strike + config.CREDIT_SPREAD_WIDTH_TARGET
+            long_candidates = [
+                c for c in calls if c.strike == target_long_strike and c.expiry == short_leg.expiry
+            ]
+
+            if not long_candidates:
+                # Fallback: closest strike above (within width range)
+                long_candidates = [
+                    c
+                    for c in calls
+                    if c.strike > short_leg.strike
+                    and c.expiry == short_leg.expiry
+                    and config.SPREAD_WIDTH_MIN
+                    <= (c.strike - short_leg.strike)
+                    <= config.SPREAD_WIDTH_MAX
+                ]
+                if long_candidates:
+                    long_candidates.sort(key=lambda x: x.strike)
+
+            if not long_candidates:
+                self.log(
+                    f"VASS: No long call candidates for protection | "
+                    f"Short strike={short_leg.strike} | Target=${target_long_strike}"
+                )
+                return None
+
+            long_leg = long_candidates[0]
+            width = long_leg.strike - short_leg.strike
+            credit = short_leg.bid - long_leg.ask
+
+            self.log(
+                f"VASS: BEAR_CALL_CREDIT selected | "
+                f"Sell {short_leg.strike}C @ ${short_leg.bid:.2f} | "
+                f"Buy {long_leg.strike}C @ ${long_leg.ask:.2f} | "
+                f"Width=${width:.0f} | Credit=${credit:.2f}"
+            )
+
+            return (short_leg, long_leg)
+
+        else:
+            self.log(f"VASS: Strategy {strategy} is not a credit spread")
+            return None
+
+    # =========================================================================
     # ENTRY SIGNAL
     # =========================================================================
 
@@ -2071,6 +2393,9 @@ class OptionsEngine:
         Returns:
             TargetWeight for spread entry (with short leg in metadata), or None.
         """
+        # V2.8: Update IV sensor with current VIX (for smoothing)
+        self._iv_sensor.update(vix_current)
+
         # Check if already have a spread position
         if self._spread_position is not None:
             return None
@@ -2327,6 +2652,14 @@ class OptionsEngine:
                 "spread_net_debit": net_debit,
                 "spread_max_profit": max_profit,
                 "spread_width": width,
+                # V2.8: VASS metadata
+                "vass_iv_environment": self._iv_sensor.classify()
+                if self._iv_sensor.is_ready()
+                else "MEDIUM",
+                "vass_smoothed_vix": self._iv_sensor.get_smoothed_vix(),
+                "vass_strategy": SpreadStrategy.BULL_CALL_DEBIT.value
+                if spread_type == "BULL_CALL"
+                else SpreadStrategy.BEAR_PUT_DEBIT.value,
             },
         )
 
@@ -2362,35 +2695,96 @@ class OptionsEngine:
             return None
 
         spread = self._spread_position
-        current_spread_value = long_leg_price - short_leg_price
-        entry_debit = spread.net_debit
-        pnl = current_spread_value - entry_debit
-        pnl_pct = pnl / entry_debit if entry_debit > 0 else 0
+
+        # V2.8: Determine if credit or debit spread
+        is_credit_spread = spread.spread_type in (
+            "BULL_PUT_CREDIT",
+            "BEAR_CALL_CREDIT",
+            SpreadStrategy.BULL_PUT_CREDIT.value,
+            SpreadStrategy.BEAR_CALL_CREDIT.value,
+        )
 
         exit_reason = None
 
-        # Exit 1: Profit target (50% of max profit)
-        profit_target = spread.max_profit * config.SPREAD_PROFIT_TARGET_PCT
-        if pnl >= profit_target:
-            exit_reason = f"PROFIT_TARGET +{pnl_pct:.1%} (${pnl:.2f} >= ${profit_target:.2f})"
+        if is_credit_spread:
+            # CREDIT SPREAD P&L: Profit when spread value DECREASES
+            # Entry: Received credit (stored as negative net_debit)
+            # Current: Cost to buy back spread (short - long)
+            current_spread_value = short_leg_price - long_leg_price  # Cost to close
+            entry_credit = abs(spread.net_debit)  # Credit received (stored as negative)
 
-        # Exit 2: STOP LOSS (V2.4.2 FIX: Max loss = 50% of entry debit)
-        # This prevents catastrophic losses from holding spreads to expiration
-        # Example: $4 debit spread exits if value drops to $2 (50% loss)
-        elif pnl_pct < -config.SPREAD_STOP_LOSS_PCT:
-            exit_reason = (
-                f"STOP_LOSS {pnl_pct:.1%} (lost > {config.SPREAD_STOP_LOSS_PCT:.0%} of entry)"
-            )
+            # Profit = credit_received - current_spread_cost
+            pnl = entry_credit - current_spread_value
+            pnl_pct = pnl / spread.max_profit if spread.max_profit > 0 else 0
 
-        # Exit 3: DTE exit (close by 5 DTE)
-        elif current_dte <= config.SPREAD_DTE_EXIT:
-            exit_reason = f"DTE_EXIT ({current_dte} DTE <= {config.SPREAD_DTE_EXIT})"
+            # Exit 1: Credit Profit Target (50% of max profit)
+            profit_target = spread.max_profit * config.CREDIT_SPREAD_PROFIT_TARGET
+            if pnl >= profit_target:
+                exit_reason = (
+                    f"CREDIT_PROFIT_TARGET +{pnl_pct:.1%} "
+                    f"(P&L ${pnl:.2f} >= ${profit_target:.2f})"
+                )
 
-        # Exit 4: Regime reversal
-        elif spread.spread_type == "BULL_CALL" and regime_score < config.SPREAD_REGIME_EXIT_BULL:
-            exit_reason = f"REGIME_REVERSAL (Bull exit: {regime_score:.0f} < {config.SPREAD_REGIME_EXIT_BULL})"
-        elif spread.spread_type == "BEAR_PUT" and regime_score > config.SPREAD_REGIME_EXIT_BEAR:
-            exit_reason = f"REGIME_REVERSAL (Bear exit: {regime_score:.0f} > {config.SPREAD_REGIME_EXIT_BEAR})"
+            # Exit 2: Credit Stop Loss (spread value exceeds max loss threshold)
+            # Max loss = width - credit received
+            max_loss = spread.width - entry_credit
+            if (
+                exit_reason is None
+                and current_spread_value >= max_loss * config.CREDIT_SPREAD_STOP_MULTIPLIER
+            ):
+                loss_pct = (current_spread_value - entry_credit) / max_loss if max_loss > 0 else 0
+                exit_reason = (
+                    f"CREDIT_STOP_LOSS {loss_pct:.1%} "
+                    f"(spread value ${current_spread_value:.2f} >= ${max_loss * config.CREDIT_SPREAD_STOP_MULTIPLIER:.2f})"
+                )
+
+            # Exit 3: DTE exit (close by 5 DTE)
+            if exit_reason is None and current_dte <= config.SPREAD_DTE_EXIT:
+                exit_reason = f"DTE_EXIT ({current_dte} DTE <= {config.SPREAD_DTE_EXIT})"
+
+            # Exit 4: Credit Regime reversal
+            if exit_reason is None:
+                if spread.spread_type in ("BULL_PUT_CREDIT", SpreadStrategy.BULL_PUT_CREDIT.value):
+                    if regime_score < config.SPREAD_REGIME_EXIT_BULL:
+                        exit_reason = f"REGIME_REVERSAL (Bull Put exit: {regime_score:.0f} < {config.SPREAD_REGIME_EXIT_BULL})"
+                elif spread.spread_type in (
+                    "BEAR_CALL_CREDIT",
+                    SpreadStrategy.BEAR_CALL_CREDIT.value,
+                ):
+                    if regime_score > config.SPREAD_REGIME_EXIT_BEAR:
+                        exit_reason = f"REGIME_REVERSAL (Bear Call exit: {regime_score:.0f} > {config.SPREAD_REGIME_EXIT_BEAR})"
+
+        else:
+            # DEBIT SPREAD P&L: Original logic
+            current_spread_value = long_leg_price - short_leg_price
+            entry_debit = spread.net_debit
+            pnl = current_spread_value - entry_debit
+            pnl_pct = pnl / entry_debit if entry_debit > 0 else 0
+
+            # Exit 1: Profit target (50% of max profit)
+            profit_target = spread.max_profit * config.SPREAD_PROFIT_TARGET_PCT
+            if pnl >= profit_target:
+                exit_reason = f"PROFIT_TARGET +{pnl_pct:.1%} (${pnl:.2f} >= ${profit_target:.2f})"
+
+            # Exit 2: STOP LOSS (V2.4.2 FIX: Max loss = 50% of entry debit)
+            # This prevents catastrophic losses from holding spreads to expiration
+            # Example: $4 debit spread exits if value drops to $2 (50% loss)
+            elif pnl_pct < -config.SPREAD_STOP_LOSS_PCT:
+                exit_reason = (
+                    f"STOP_LOSS {pnl_pct:.1%} (lost > {config.SPREAD_STOP_LOSS_PCT:.0%} of entry)"
+                )
+
+            # Exit 3: DTE exit (close by 5 DTE)
+            elif current_dte <= config.SPREAD_DTE_EXIT:
+                exit_reason = f"DTE_EXIT ({current_dte} DTE <= {config.SPREAD_DTE_EXIT})"
+
+            # Exit 4: Regime reversal
+            elif (
+                spread.spread_type == "BULL_CALL" and regime_score < config.SPREAD_REGIME_EXIT_BULL
+            ):
+                exit_reason = f"REGIME_REVERSAL (Bull exit: {regime_score:.0f} < {config.SPREAD_REGIME_EXIT_BULL})"
+            elif spread.spread_type == "BEAR_PUT" and regime_score > config.SPREAD_REGIME_EXIT_BEAR:
+                exit_reason = f"REGIME_REVERSAL (Bear exit: {regime_score:.0f} > {config.SPREAD_REGIME_EXIT_BEAR})"
 
         if exit_reason is None:
             return None
@@ -2749,6 +3143,98 @@ class OptionsEngine:
             # Tier 3: Large account - percentage-based only
             return raw_allocation
 
+    def _calculate_credit_spread_size(
+        self,
+        short_leg: OptionContract,
+        long_leg: OptionContract,
+        allocation: float,
+    ) -> Tuple[int, float, float, float]:
+        """
+        V2.8 SAFETY: Calculate credit spread size based on MARGIN REQUIREMENT.
+
+        CRITICAL: Size based on MAX LOSS, not premium received!
+        Sizing on premium would create positions that exceed risk limits.
+
+        Example:
+            Width = $5.00, Credit = $0.50
+            WRONG: $5,000 / $50 = 100 contracts (DANGEROUS - $50K risk!)
+            CORRECT: $5,000 / $450 = 11 contracts (defined $4,950 max loss)
+
+        Args:
+            short_leg: Contract we SELL (collect premium)
+            long_leg: Contract we BUY (protection)
+            allocation: Maximum dollar amount to risk ($5K cap)
+
+        Returns:
+            Tuple of (num_spreads, credit_per_spread, max_loss_per_spread, total_margin)
+            Returns (0, 0, 0, 0) if invalid spread
+        """
+        # Calculate width (always positive)
+        if short_leg.direction == OptionDirection.PUT:
+            # Bull Put: short strike > long strike
+            width = short_leg.strike - long_leg.strike
+        else:
+            # Bear Call: long strike > short strike
+            width = long_leg.strike - short_leg.strike
+
+        if width <= 0:
+            self.log(f"SAFETY: Invalid spread width: {width}")
+            return (0, 0.0, 0.0, 0.0)
+
+        # Credit = what we receive (conservative: bid for sell, ask for buy)
+        credit_received = short_leg.bid - long_leg.ask
+
+        # SAFETY CHECK: Validate credit is positive
+        if credit_received <= 0:
+            self.log(
+                f"SAFETY: Invalid credit spread - no positive credit | "
+                f"Short bid={short_leg.bid} | Long ask={long_leg.ask}"
+            )
+            return (0, 0.0, 0.0, 0.0)
+
+        # MARGIN REQUIREMENT = (Width - Credit) × 100
+        # This is the MAX LOSS per spread
+        margin_per_spread = (width - credit_received) * 100
+
+        # SAFETY CHECK: Margin must be positive
+        if margin_per_spread <= 0:
+            self.log(
+                f"SAFETY: Invalid margin calculation | "
+                f"Width={width} | Credit={credit_received} | Margin={margin_per_spread}"
+            )
+            return (0, 0.0, 0.0, 0.0)
+
+        # SIZE BASED ON MARGIN, NOT PREMIUM
+        # $5,000 / $450 margin = 11 contracts max
+        max_contracts = int(allocation / margin_per_spread)
+
+        if max_contracts <= 0:
+            self.log(
+                f"SAFETY: Allocation too small for even 1 spread | "
+                f"Allocation=${allocation:.0f} | MarginPerSpread=${margin_per_spread:.0f}"
+            )
+            return (0, 0.0, 0.0, 0.0)
+
+        total_margin = max_contracts * margin_per_spread
+
+        # SAFETY CHECK: Never exceed allocation
+        if total_margin > allocation:
+            self.log(
+                f"SAFETY: Reducing contracts - margin {total_margin:.0f} > allocation {allocation:.0f}"
+            )
+            max_contracts = int(allocation / margin_per_spread)
+            total_margin = max_contracts * margin_per_spread
+
+        self.log(
+            f"SAFETY: Credit spread sizing | "
+            f"Width=${width:.2f} | Credit=${credit_received:.2f} | "
+            f"MarginPerSpread=${margin_per_spread:.0f} | "
+            f"Allocation=${allocation:.0f} | MaxContracts={max_contracts} | "
+            f"TotalMargin=${total_margin:.0f}"
+        )
+
+        return (max_contracts, credit_received, margin_per_spread, total_margin)
+
     def get_mode_allocation(
         self, mode: OptionsMode, portfolio_value: float, size_multiplier: float = 1.0
     ) -> float:
@@ -2778,6 +3264,102 @@ class OptionsEngine:
         capped_allocation = self._apply_tiered_dollar_cap(raw_allocation, portfolio_value)
 
         return capped_allocation
+
+    # =========================================================================
+    # V2.8: VASS (Volatility-Adaptive Strategy Selection)
+    # =========================================================================
+
+    def _select_strategy(
+        self,
+        direction: str,  # "BULLISH" or "BEARISH"
+        iv_environment: str,  # "LOW", "MEDIUM", "HIGH"
+        is_intraday: bool = False,
+    ) -> Tuple[SpreadStrategy, int, int]:
+        """
+        V2.8: Select spread strategy based on direction + IV environment.
+
+        Strategy Matrix:
+        - LOW IV + BULLISH → Bull Call Debit (Monthly 30-45 DTE)
+        - LOW IV + BEARISH → Bear Put Debit (Monthly 30-45 DTE)
+        - MEDIUM IV + BULLISH → Bull Call Debit (Weekly 7-21 DTE)
+        - MEDIUM IV + BEARISH → Bear Put Debit (Weekly 7-21 DTE)
+        - HIGH IV + BULLISH → Bull Put Credit (Weekly 7-14 DTE)
+        - HIGH IV + BEARISH → Bear Call Credit (Weekly 7-14 DTE)
+
+        For intraday trades, strategy type comes from matrix but DTE is always
+        nearest weekly (0-5 DTE).
+
+        Args:
+            direction: Market direction ("BULLISH" or "BEARISH")
+            iv_environment: IV tier ("LOW", "MEDIUM", "HIGH")
+            is_intraday: If True, use nearest weekly expiration
+
+        Returns:
+            Tuple of (SpreadStrategy, dte_min, dte_max)
+        """
+        # Strategy Matrix Lookup
+        matrix = {
+            ("BULLISH", "LOW"): (
+                SpreadStrategy.BULL_CALL_DEBIT,
+                config.VASS_LOW_IV_DTE_MIN,
+                config.VASS_LOW_IV_DTE_MAX,
+            ),
+            ("BULLISH", "MEDIUM"): (
+                SpreadStrategy.BULL_CALL_DEBIT,
+                config.VASS_MEDIUM_IV_DTE_MIN,
+                config.VASS_MEDIUM_IV_DTE_MAX,
+            ),
+            ("BULLISH", "HIGH"): (
+                SpreadStrategy.BULL_PUT_CREDIT,
+                config.VASS_HIGH_IV_DTE_MIN,
+                config.VASS_HIGH_IV_DTE_MAX,
+            ),
+            ("BEARISH", "LOW"): (
+                SpreadStrategy.BEAR_PUT_DEBIT,
+                config.VASS_LOW_IV_DTE_MIN,
+                config.VASS_LOW_IV_DTE_MAX,
+            ),
+            ("BEARISH", "MEDIUM"): (
+                SpreadStrategy.BEAR_PUT_DEBIT,
+                config.VASS_MEDIUM_IV_DTE_MIN,
+                config.VASS_MEDIUM_IV_DTE_MAX,
+            ),
+            ("BEARISH", "HIGH"): (
+                SpreadStrategy.BEAR_CALL_CREDIT,
+                config.VASS_HIGH_IV_DTE_MIN,
+                config.VASS_HIGH_IV_DTE_MAX,
+            ),
+        }
+
+        key = (direction, iv_environment)
+        if key in matrix:
+            strategy, dte_min, dte_max = matrix[key]
+
+            # For intraday: use strategy type from matrix but nearest weekly DTE
+            if is_intraday:
+                dte_min = 0
+                dte_max = 5  # Nearest weekly expiration
+
+            self.log(
+                f"VASS: {direction} + {iv_environment} IV → {strategy.value} | "
+                f"DTE={dte_min}-{dte_max} | Intraday={is_intraday}"
+            )
+            return (strategy, dte_min, dte_max)
+
+        # Fallback: Medium IV debit spread
+        self.log(f"VASS: Unknown key {key}, defaulting to MEDIUM debit spread")
+        if direction == "BULLISH":
+            return (SpreadStrategy.BULL_CALL_DEBIT, 7, 21)
+        else:
+            return (SpreadStrategy.BEAR_PUT_DEBIT, 7, 21)
+
+    def is_credit_strategy(self, strategy: SpreadStrategy) -> bool:
+        """Check if strategy is a credit spread (collects premium)."""
+        return strategy in (SpreadStrategy.BULL_PUT_CREDIT, SpreadStrategy.BEAR_CALL_CREDIT)
+
+    def is_debit_strategy(self, strategy: SpreadStrategy) -> bool:
+        """Check if strategy is a debit spread (pays premium)."""
+        return strategy in (SpreadStrategy.BULL_CALL_DEBIT, SpreadStrategy.BEAR_PUT_DEBIT)
 
     # =========================================================================
     # V2.1.1 SIMPLE INTRADAY FILTERS (FOR SWING MODE)
