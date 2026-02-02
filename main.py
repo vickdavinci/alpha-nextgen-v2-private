@@ -352,9 +352,9 @@ class AlphaNextGen(QCAlgorithm):
         # =====================================================================
         # STEP 6B: V2.1 OPTIONS ENTRY SCANNING (if window open)
         # =====================================================================
-        # V2.3.4 FIX: Block options during cold start (Days 1-5)
-        is_cold_start = self.cold_start_engine.is_cold_start_active()
-        if mr_window_open and risk_result.can_enter_intraday and not is_cold_start:
+        # V2.11 TEST: Allow options during cold start to test capital competition
+        # Note: Cold start still applies 50% size multiplier (OPTIONS_COLD_START_MULTIPLIER)
+        if mr_window_open and risk_result.can_enter_intraday:
             self._scan_options_signals(data)
 
         # =====================================================================
