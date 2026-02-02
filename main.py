@@ -183,8 +183,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2025, 1, 1)
-        self.SetEndDate(2025, 3, 31)  # V2.10 Jan-Mar 2025 backtest (3 months)
+        self.SetStartDate(2024, 1, 1)
+        self.SetEndDate(2024, 3, 31)  # V2.12 Jan-Mar 2024 backtest (3 months)
         self.SetCash(config.PHASE_SEED_MIN)  # $50,000 seed capital
 
         # All times are Eastern
@@ -1209,7 +1209,8 @@ class AlphaNextGen(QCAlgorithm):
                         self._last_settlement_log_minute = self.Time.minute
                     return False
             else:
-                # Cooldown expired
+                # V2.13 Fix #9: Log AAP keyword when settlement gate opens
+                self.Log("SETTLEMENT_GATE_OPEN: Trading resumed after settlement cooldown")
                 self._settlement_cooldown_until = None
 
         return True
@@ -2578,40 +2579,61 @@ class AlphaNextGen(QCAlgorithm):
         # Determine which OptionRight to filter for
         required_right = OptionRight.Call if direction == OptionDirection.CALL else OptionRight.Put
 
-        # Filter for target delta, 0-1 DTE, and MATCHING DIRECTION
+        # V2.13 Fix #16: Add filter diagnostics to track why contracts are rejected
+        filter_counts = {
+            "direction": 0,
+            "dte": 0,
+            "greeks": 0,
+            "delta": 0,
+            "oi": 0,
+            "prices": 0,
+            "spread": 0,
+        }
+        total_contracts = 0
+
+        # Filter for target delta, 1-5 DTE, and MATCHING DIRECTION
         candidates = []
         for contract in chain:
+            total_contracts += 1
+
             # V2.3.4 FIX: Filter by direction FIRST
             if contract.Right != required_right:
+                filter_counts["direction"] += 1
                 continue
 
-            # Check DTE using config values (0-1 for true intraday)
+            # Check DTE using config values (1-5 for intraday, V2.13)
             dte = (contract.Expiry - self.Time).days
             if dte < config.OPTIONS_INTRADAY_DTE_MIN or dte > config.OPTIONS_INTRADAY_DTE_MAX:
+                filter_counts["dte"] += 1
                 continue
 
             # V2.3: Get delta and check if within tolerance of target
             # V2.12 Fix #7: Skip contracts with missing or zero Greeks (backtest data gaps)
             if not hasattr(contract, "Greeks") or contract.Greeks.Delta == 0:
+                filter_counts["greeks"] += 1
                 continue  # Skip contracts without valid Greeks data
             contract_delta = abs(contract.Greeks.Delta)
             delta_diff = abs(contract_delta - target_delta)
             if delta_diff > config.OPTIONS_DELTA_TOLERANCE:
+                filter_counts["delta"] += 1
                 continue
 
             # Check liquidity (relaxed for 0DTE)
             if contract.OpenInterest < config.OPTIONS_MIN_OPEN_INTEREST:
+                filter_counts["oi"] += 1
                 continue
 
             # Check spread - use safe price getter
             bid, ask = self._get_contract_prices(contract)
             if bid <= 0 or ask <= 0:
+                filter_counts["prices"] += 1
                 continue
 
             mid_price = (bid + ask) / 2
             spread_pct = (ask - bid) / mid_price if mid_price > 0 else 1.0
 
             if spread_pct > config.OPTIONS_SPREAD_WARNING_PCT:
+                filter_counts["spread"] += 1
                 continue
 
             # Create OptionContract object (direction already known)
@@ -2640,7 +2662,14 @@ class AlphaNextGen(QCAlgorithm):
             candidates.append((score, opt_contract))
 
         if not candidates:
-            self.Log(f"INTRADAY: No {direction.value} contracts found matching criteria")
+            # V2.13 Fix #16: Log filter diagnostics to identify Black Hole causes
+            self.Log(
+                f"INTRADAY_FILTER_FAIL: {direction.value} | Total={total_contracts} | "
+                f"Dir={filter_counts['direction']} DTE={filter_counts['dte']} "
+                f"Greeks={filter_counts['greeks']} Delta={filter_counts['delta']} "
+                f"OI={filter_counts['oi']} Prices={filter_counts['prices']} "
+                f"Spread={filter_counts['spread']}"
+            )
             return None
 
         # Return best candidate (closest to target delta with lowest DTE)
@@ -2741,7 +2770,10 @@ class AlphaNextGen(QCAlgorithm):
         self._kill_switch_handled_today = True
 
         # V2.3.4: Calculate options P&L vs trend P&L
-        options_pnl = 0.0
+        # V2.13: Add spread netting diagnostics (Fix #15)
+        options_gross_pnl = 0.0
+        options_long_pnl = 0.0
+        options_short_pnl = 0.0
         trend_pnl = 0.0
         trend_symbols = ["QLD", "SSO", "TNA", "FAS"]
 
@@ -2749,9 +2781,22 @@ class AlphaNextGen(QCAlgorithm):
             holding = kvp.Value
             if holding.Invested:
                 if holding.Symbol.SecurityType == SecurityType.Option:
-                    options_pnl += holding.UnrealizedProfit
+                    options_gross_pnl += holding.UnrealizedProfit
+                    if holding.Quantity > 0:
+                        options_long_pnl += holding.UnrealizedProfit
+                    else:
+                        options_short_pnl += holding.UnrealizedProfit
                 elif str(holding.Symbol.Value) in trend_symbols:
                     trend_pnl += holding.UnrealizedProfit
+
+        # V2.13: Log spread netting diagnostics
+        self.Log(
+            f"SPREAD_PNL_DIAG: Long={options_long_pnl:+,.0f} Short={options_short_pnl:+,.0f} "
+            f"Net={options_gross_pnl:+,.0f} | Trend={trend_pnl:+,.0f}"
+        )
+
+        # Use net options P&L for kill switch logic (was: options_pnl)
+        options_pnl = options_gross_pnl
 
         total_loss_pct = (
             self.Portfolio.TotalPortfolioValue - self.equity_prior_close
@@ -3191,12 +3236,18 @@ class AlphaNextGen(QCAlgorithm):
                 # STEP 2: Select contract matching ENGINE recommendation (not hardcoded fade)
                 intraday_contract = self._select_intraday_option_contract(chain, intraday_direction)
 
-            # Verify contract has valid bid/ask before proceeding
-            if (
-                intraday_contract is not None
-                and intraday_contract.bid > 0
-                and intraday_contract.ask > 0
+            # V2.13 Fix #18: Log bid/ask rejection (was silent)
+            if intraday_contract is not None and (
+                intraday_contract.bid <= 0 or intraday_contract.ask <= 0
             ):
+                self.Log(
+                    f"INTRADAY_PRICE_REJECT: {intraday_contract.symbol} | "
+                    f"Bid={intraday_contract.bid} Ask={intraday_contract.ask}"
+                )
+                intraday_contract = None  # Clear invalid contract
+
+            # Verify contract has valid bid/ask before proceeding
+            if intraday_contract is not None:
                 # V2.3.20: Pass size_multiplier for cold start reduced sizing
                 # V2.4.1: Pass UVXY-derived VIX proxy
                 # V2.5: Pass macro_regime_score for Grind-Up Override

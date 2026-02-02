@@ -567,8 +567,10 @@ OPTIONS_MAX_TRADES_PER_DAY = 1
 # With single-leg exit at DTE=4, entering at DTE=14 gives 10+ days hold
 OPTIONS_SWING_DTE_MIN = 14  # Minimum DTE for Swing Mode (reduces gap risk)
 OPTIONS_SWING_DTE_MAX = 45  # Maximum DTE for Swing Mode
-OPTIONS_INTRADAY_DTE_MIN = 0  # Minimum DTE for Intraday Mode
-OPTIONS_INTRADAY_DTE_MAX = 1  # V2.3.4: True 0DTE intraday (0-1 DTE only)
+OPTIONS_INTRADAY_DTE_MIN = 1  # V2.13: Skip 0DTE (QC backtest data gaps)
+OPTIONS_INTRADAY_DTE_MAX = (
+    5  # V2.13: Match VASS "nearest weekly" (was 1, caused 306 silent failures)
+)
 
 # -----------------------------------------------------------------------------
 # V2.3 DEBIT SPREAD CONFIGURATION

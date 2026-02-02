@@ -1612,26 +1612,26 @@ class TestDualModeArchitecture:
         mode = engine.determine_mode(dte=1)
         assert mode == OptionsMode.INTRADAY
 
-    def test_determine_mode_swing_2_dte(self, engine):
-        """Test 2 DTE returns SWING mode (V2.3.4: 0-1 DTE is true intraday)."""
+    def test_determine_mode_intraday_2_dte(self, engine):
+        """Test 2 DTE returns INTRADAY mode (V2.13: 1-5 DTE for micro regime)."""
         from models.enums import OptionsMode
 
         mode = engine.determine_mode(dte=2)
-        assert mode == OptionsMode.SWING  # V2.3.4: 2 DTE is SWING
+        assert mode == OptionsMode.INTRADAY  # V2.13: 2 DTE is INTRADAY
 
-    def test_determine_mode_swing_3_dte(self, engine):
-        """Test 3 DTE returns SWING mode (V2.3.4: 0-1 DTE is true intraday)."""
+    def test_determine_mode_intraday_3_dte(self, engine):
+        """Test 3 DTE returns INTRADAY mode (V2.13: 1-5 DTE for micro regime)."""
         from models.enums import OptionsMode
 
         mode = engine.determine_mode(dte=3)
-        assert mode == OptionsMode.SWING  # V2.3.4: 3 DTE is SWING
+        assert mode == OptionsMode.INTRADAY  # V2.13: 3 DTE is INTRADAY
 
-    def test_determine_mode_swing_5_dte(self, engine):
-        """Test 5 DTE returns SWING mode (V2.3.4: true intraday is 0-1 DTE)."""
+    def test_determine_mode_intraday_5_dte(self, engine):
+        """Test 5 DTE returns INTRADAY mode (V2.13: 1-5 DTE for micro regime)."""
         from models.enums import OptionsMode
 
         mode = engine.determine_mode(dte=5)
-        assert mode == OptionsMode.SWING  # V2.3.4: 5 DTE is SWING
+        assert mode == OptionsMode.INTRADAY  # V2.13: 5 DTE is INTRADAY
 
     def test_determine_mode_swing_45_dte(self, engine):
         """Test 45 DTE returns SWING mode."""

@@ -3606,6 +3606,11 @@ class OptionsEngine:
             start_time = int(fade_start[0]) * 60 + int(fade_start[1])
             end_time = int(fade_end[0]) * 60 + int(fade_end[1])
             if not (start_time <= time_minutes <= end_time):
+                # V2.13 Fix #17: Log time window rejection (was silent)
+                self.log(
+                    f"INTRADAY_TIME_REJECT: DEBIT_FADE at {current_hour}:{current_minute:02d} "
+                    f"outside window {config.INTRADAY_DEBIT_FADE_START}-{config.INTRADAY_DEBIT_FADE_END}"
+                )
                 return None
 
         elif state.recommended_strategy == IntradayStrategy.ITM_MOMENTUM:
@@ -3615,6 +3620,11 @@ class OptionsEngine:
             start_time = int(itm_start[0]) * 60 + int(itm_start[1])
             end_time = int(itm_end[0]) * 60 + int(itm_end[1])
             if not (start_time <= time_minutes <= end_time):
+                # V2.13 Fix #17: Log time window rejection (was silent)
+                self.log(
+                    f"INTRADAY_TIME_REJECT: ITM_MOMENTUM at {current_hour}:{current_minute:02d} "
+                    f"outside window {config.INTRADAY_ITM_START}-{config.INTRADAY_ITM_END}"
+                )
                 return None
 
         # Check if we have a valid contract
