@@ -604,6 +604,101 @@ CREDIT_SPREAD_STOP_MULTIPLIER = 2.0
 
 ---
 
+### V2.9: Credit Spread Safety Audit - Bug Fixes (2026-02-02)
+
+**Goal:** Fix 6 critical bugs identified when transitioning to credit spreads in V2.8 VASS implementation.
+
+**Bug Analysis Summary:**
+
+| Bug | Description | Status | Severity |
+|:---:|-------------|:------:|:--------:|
+| 1 | Buying Power Lock-Out (Margin Interaction) | ✅ FIXED | HIGH |
+| 2 | Atomic Exit Failure (Leg Risk) | ✅ ALREADY FIXED | - |
+| 3 | Intraday Firewall Conflict | ✅ FIXED | MEDIUM |
+| 4 | Over-Trading / Signal Noise | ✅ FIXED | MEDIUM |
+| 5 | Ghost Positions (Quantity Check) | ✅ ALREADY FIXED | - |
+| 6 | Settlement Lag (Monday Morning Freeze) | ✅ FIXED | CRITICAL |
+
+**Bug #1: Buying Power Lock-Out (Margin Interaction)**
+
+*Issue:* Trend engine attempts position but gets "Limited Buying Power" rejection because credit spread margin isn't tracked.
+
+*Fix:* Track open spread margin reservation.
+
+| Change | File |
+|--------|------|
+| Added `_open_spread_margin` dict to track reserved margin | `portfolio_router.py` |
+| Added `register_spread_margin()` / `unregister_spread_margin()` | `portfolio_router.py` |
+| Added `get_effective_margin_remaining()` | `portfolio_router.py` |
+| Updated margin check to use effective margin | `portfolio_router.py` |
+
+**Bug #3: Intraday Firewall Conflict**
+
+*Issue:* Friday firewall doesn't handle holiday weeks (e.g., Good Friday when Thursday is expiration day).
+
+*Fix:* Holiday-aware expiration firewall.
+
+| Change | File |
+|--------|------|
+| Added `get_expiration_firewall_day()` using exchange calendar | `options_engine.py` |
+| Added `is_expiration_firewall_day()` for dynamic day detection | `options_engine.py` |
+| Updated Friday firewall to run daily with holiday check | `main.py` |
+
+**Bug #4: Over-Trading / Signal Noise**
+
+*Issue:* VIX flickering around thresholds can cause excessive trades (10 opens/closes per day).
+
+*Fix:* Comprehensive trade counter with daily limits.
+
+| Change | File |
+|--------|------|
+| Added `MAX_OPTIONS_TRADES_PER_DAY = 4` | `config.py` |
+| Added `MAX_SWING_TRADES_PER_DAY = 2` | `config.py` |
+| Added `_swing_trades_today`, `_total_options_trades_today` counters | `options_engine.py` |
+| Added `_can_trade_options()` comprehensive limit check | `options_engine.py` |
+| Added `_increment_trade_counter()` to track all trade types | `options_engine.py` |
+| Updated entry methods to enforce limits | `options_engine.py` |
+
+**Bug #6: Settlement Lag (Monday Morning Freeze)**
+
+*Issue:* Bot tries to trade with Friday's unsettled cash on Monday morning, causing "Insufficient Funds" errors.
+
+*Fix:* Holiday-aware settlement detection with `Portfolio.UnsettledCash` subtraction.
+
+| Change | File |
+|--------|------|
+| Added `SETTLEMENT_AWARE_TRADING = True` | `config.py` |
+| Added `SETTLEMENT_COOLDOWN_MINUTES = 60` | `config.py` |
+| Added `_is_first_bar_after_market_gap()` using exchange calendar | `main.py` |
+| Added `_check_settlement_cooldown()` triggered at SOD | `main.py` |
+| Added `_can_trade_options_settlement_aware()` | `main.py` |
+| Added `get_tradeable_equity_settlement_aware()` | `capital_engine.py` |
+
+**Config Additions:**
+```python
+# V2.9: Settlement-Aware Trading (Bug #6 Fix)
+SETTLEMENT_AWARE_TRADING = True
+SETTLEMENT_COOLDOWN_MINUTES = 60
+SETTLEMENT_CHECK_SYMBOL = "SPY"
+FRIDAY_HOLIDAY_CHECK_ENABLED = True
+
+# V2.9: Global Options Trade Limits (Bug #4 Fix)
+MAX_OPTIONS_TRADES_PER_DAY = 4
+MAX_SWING_TRADES_PER_DAY = 2
+```
+
+**Files Modified:**
+
+| File | Changes |
+|------|---------|
+| `config.py` | Settlement and trade limit parameters |
+| `main.py` | Settlement detection, holiday-aware firewall, trade limit integration |
+| `engines/core/capital_engine.py` | Settlement-aware tradeable equity |
+| `engines/satellite/options_engine.py` | Trade counters, holiday-aware expiration detection |
+| `portfolio/portfolio_router.py` | Spread margin tracking |
+
+---
+
 ## Planned Features (V2.5+)
 
 > **Roadmap Document:** `docs/v2-specs/V2_5_ROADMAP.md`

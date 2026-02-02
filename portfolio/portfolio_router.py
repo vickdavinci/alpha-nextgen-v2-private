@@ -185,6 +185,10 @@ class PortfolioRouter:
         self._last_rejection_log_time: Optional[Any] = None
         self._rejection_log_count: int = 0
 
+        # V2.9: Track open spread margin (Bug #1 fix)
+        # Stores {spread_id: margin_reserved} for each open spread
+        self._open_spread_margin: Dict[str, float] = {}
+
     def log(self, message: str) -> None:
         """Log via algorithm or skip for testing."""
         # V2.3.21: Re-enabled logging for SHV auto-liquidation visibility
@@ -229,6 +233,72 @@ class PortfolioRouter:
             # Within throttle period - count but don't log
             self._rejection_log_count += 1
             return False
+
+    # =========================================================================
+    # V2.9: SPREAD MARGIN TRACKING (Bug #1 Fix)
+    # =========================================================================
+
+    def register_spread_margin(self, spread_id: str, margin_reserved: float) -> None:
+        """
+        V2.9: Register margin reserved by an open spread position.
+
+        Called when a spread fills to track margin locked by open positions.
+        This prevents Trend engine from overcommitting margin.
+
+        Args:
+            spread_id: Unique identifier for the spread (e.g., long_leg_symbol).
+            margin_reserved: Margin requirement for this spread (width × 100 × num_spreads).
+        """
+        self._open_spread_margin[spread_id] = margin_reserved
+        self.log(
+            f"MARGIN_TRACK: Registered spread | ID={spread_id} | Reserved=${margin_reserved:,.0f}"
+        )
+
+    def unregister_spread_margin(self, spread_id: str) -> None:
+        """
+        V2.9: Unregister margin when a spread position is closed.
+
+        Args:
+            spread_id: Unique identifier for the spread being closed.
+        """
+        if spread_id in self._open_spread_margin:
+            freed = self._open_spread_margin.pop(spread_id)
+            self.log(f"MARGIN_TRACK: Unregistered spread | ID={spread_id} | Freed=${freed:,.0f}")
+
+    def get_reserved_spread_margin(self) -> float:
+        """
+        V2.9: Get total margin reserved by all open spread positions.
+
+        Returns:
+            Sum of margin requirements for all tracked open spreads.
+        """
+        return sum(self._open_spread_margin.values())
+
+    def get_effective_margin_remaining(self) -> float:
+        """
+        V2.9: Get effective margin remaining after subtracting spread reservations.
+
+        This prevents 'Buying Power Lock-Out' where Trend positions are rejected
+        because credit spreads have locked up margin.
+
+        Returns:
+            Portfolio.MarginRemaining minus spread reservations.
+        """
+        if not self.algorithm:
+            return 0.0
+
+        margin_remaining = self.algorithm.Portfolio.MarginRemaining  # type: ignore[attr-defined]
+        spread_reserved = self.get_reserved_spread_margin()
+        effective = max(0.0, margin_remaining - spread_reserved)
+
+        if spread_reserved > 0:
+            self.log(
+                f"MARGIN_TRACK: Effective margin | "
+                f"Raw=${margin_remaining:,.0f} | SpreadReserved=${spread_reserved:,.0f} | "
+                f"Effective=${effective:,.0f}"
+            )
+
+        return effective
 
     # =========================================================================
     # Step 1: COLLECT
@@ -778,7 +848,8 @@ class PortfolioRouter:
                     multiplier = 100 if is_option else 1
                     order_value = order.quantity * current_price * multiplier
 
-                    margin_remaining = self.algorithm.Portfolio.MarginRemaining  # type: ignore[attr-defined]
+                    # V2.9: Use effective margin (accounts for open spread reservations)
+                    margin_remaining = self.get_effective_margin_remaining()
                     if order_value > margin_remaining:
                         # V2.3.24: For combo orders, try to scale contracts to fit margin
                         if order.is_combo and is_option:
@@ -876,6 +947,20 @@ class PortfolioRouter:
                         f"Long={order.symbol} x{num_spreads} (ratio={long_ratio}) + "
                         f"Short={order.combo_short_symbol} x{num_spreads} (ratio={short_ratio})"
                     )
+
+                    # V2.9: Register spread margin reservation (Bug #1 fix)
+                    # Track margin locked by this spread to prevent Trend overcommitment
+                    if hasattr(order, "metadata") and order.metadata:
+                        spread_width = order.metadata.get("spread_width", 5.0)
+                        spread_margin = spread_width * 100 * num_spreads
+                        is_exit = order.metadata.get("spread_close_short", False)
+
+                        if is_exit:
+                            # Closing spread - unregister margin
+                            self.unregister_spread_margin(order.symbol)
+                        else:
+                            # Opening spread - register margin
+                            self.register_spread_margin(order.symbol, spread_margin)
                 elif order.order_type == OrderType.MARKET:
                     self.algorithm.MarketOrder(order.symbol, quantity)  # type: ignore[attr-defined]
                     self.log(
