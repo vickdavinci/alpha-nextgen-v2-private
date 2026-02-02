@@ -163,6 +163,10 @@ The fundamental issue was **Allocation Reservation ≠ Margin Reservation**:
 - SHV margin lock errors reduced (skipped early instead of failing at broker)
 - Log spam reduced from 44 rejections to ~3 per day
 
+**Commit:** `b14c6dc` - `fix(router): V2.3.24 - hard margin reservation + 4 bug fixes`
+
+**Tests:** 1349 passed, 2 skipped
+
 ### V2.3.12 Backtest Results (2026-01-31) — Historical
 
 **Backtest:** V2.3.12-ComboFix-2month | **Result:** +4.09% | **Orders:** 143 | **Options:** 7 only!

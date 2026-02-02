@@ -129,6 +129,8 @@ All remaining V2.3.22 bugs have been fixed in V2.3.24:
 
 **Tests:** All 1349 tests pass.
 
+**Commit:** `b14c6dc` - `fix(router): V2.3.24 - hard margin reservation + 4 bug fixes`
+
 ---
 
 ## V2.3.22 Remaining Bugs - Detailed Analysis (Historical)
