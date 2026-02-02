@@ -95,10 +95,11 @@ class TestUnallocatedCashCalculation:
         # V2.3.17: Cash buffer = $120k * 10% = $12,000
         # V2.4.1: Options reserve = $120k * 10% = $12,000
         # Total reserved = $24,000
-        # Unallocated = $120,000 - $47,000 - $40,000 - $24,000 = $9,000
+        # V2.4.3: Reserve = 35% (10% buffer + 25% options)
+        # Unallocated = $120,000 - $29,000 - $40,000 - $42,000 = $9,000
         unallocated = engine.calculate_unallocated_cash(
             total_equity=120000.0,
-            non_shv_positions_value=47000.0,
+            non_shv_positions_value=29000.0,  # V2.4.3: Reduced from $47k
             current_shv_value=40000.0,
         )
         assert unallocated == 9000.0
@@ -125,15 +126,15 @@ class TestUnallocatedCashCalculation:
     def test_all_cash_no_positions(self, engine):
         """Test when portfolio is all cash (algorithm start)."""
         # V2.3.17: Cash buffer = $50k * 10% = $5,000 reserved
-        # V2.4.1: Options reserve = $50k * 10% = $5,000 reserved
-        # Total reserved = $10,000
-        # Unallocated = $50k - $0 - $0 - $10k = $40,000
+        # V2.4.3: Options reserve = $50k * 25% = $12,500 reserved
+        # Total reserved = $17,500
+        # Unallocated = $50k - $0 - $0 - $17.5k = $32,500
         unallocated = engine.calculate_unallocated_cash(
             total_equity=50000.0,
             non_shv_positions_value=0.0,
             current_shv_value=0.0,
         )
-        assert unallocated == 40000.0
+        assert unallocated == 32500.0
 
 
 class TestAvailableSHV:
@@ -188,19 +189,17 @@ class TestYieldSignal:
 
     def test_signal_above_threshold(self, engine):
         """Test signal generated when unallocated > $10,000 (V2.3.6 threshold)."""
+        # V2.4.3: Reserve = 35% (10% buffer + 25% options) = $35k on $100k
+        # Unallocated = $100k - $45k - $5k - $35k = $15k
+        # Target SHV = $5k + $15k = $20k
+        # Target weight = $20k / $100k = 20%
         signal = engine.get_yield_signal(
             total_equity=100000.0,
             tradeable_equity=100000.0,
-            non_shv_positions_value=60000.0,
+            non_shv_positions_value=45000.0,  # V2.4.3: Reduced from $60k
             current_shv_value=5000.0,
             locked_amount=0.0,
         )
-        # V2.3.17: Cash buffer = $100k * 10% = $10k reserved
-        # V2.4.1: Options reserve = $100k * 10% = $10k reserved
-        # Total reserved = $20k
-        # Unallocated = $100k - $60k - $5k - $20k = $15k
-        # Target SHV = $5k + $15k = $20k
-        # Target weight = $20k / $100k = 20%
         assert signal is not None
         assert signal.symbol == "SHV"
         assert signal.target_weight == 0.20
@@ -231,15 +230,13 @@ class TestYieldSignal:
 
     def test_signal_with_lockbox(self, engine):
         """Test signal generation with lockbox."""
-        # V2.3.17: Cash buffer = $150k * 10% = $15k reserved
-        # V2.4.1: Options reserve = $150k * 10% = $15k reserved
-        # Total reserved = $30k
-        # Unallocated = $150k - $45k - $59.5k - $30k = $15.5k (above $10k threshold)
+        # V2.4.3: Reserve = 35% (10% buffer + 25% options) = $52.5k on $150k
+        # Unallocated = $150k - $30k - $52k - $52.5k = $15.5k (above $10k threshold)
         signal = engine.get_yield_signal(
             total_equity=150000.0,
             tradeable_equity=139500.0,  # After lockbox
-            non_shv_positions_value=45000.0,  # Reduced to allow signal with 20% reserve
-            current_shv_value=59500.0,
+            non_shv_positions_value=30000.0,  # V2.4.3: Reduced from $45k
+            current_shv_value=52000.0,  # V2.4.3: Adjusted
             locked_amount=10500.0,
         )
         assert signal is not None
@@ -273,19 +270,17 @@ class TestYieldSignal:
     def test_stores_last_state(self, engine):
         """Test that get_yield_signal stores state."""
         assert engine._last_state is None
+        # V2.4.3: Reserve = 35% (10% buffer + 25% options) = $35k on $100k
+        # Unallocated = $100k - $35k - $10k - $35k = $20k
         engine.get_yield_signal(
             total_equity=100000.0,
             tradeable_equity=100000.0,
-            non_shv_positions_value=50000.0,
+            non_shv_positions_value=35000.0,  # V2.4.3: Reduced from $50k
             current_shv_value=10000.0,
             locked_amount=0.0,
         )
         state = engine.get_last_state()
         assert state is not None
-        # V2.3.17: Cash buffer = $100k * 10% = $10k reserved
-        # V2.4.1: Options reserve = $100k * 10% = $10k reserved
-        # Total reserved = $20k
-        # Unallocated = $100k - $50k - $10k - $20k = $20k
         assert state.unallocated_cash == 20000.0
 
 
@@ -424,16 +419,14 @@ class TestPersistence:
         engine.get_yield_signal(
             total_equity=100000.0,
             tradeable_equity=100000.0,
-            non_shv_positions_value=50000.0,
+            non_shv_positions_value=35000.0,  # V2.4.3: Reduced from $50k
             current_shv_value=10000.0,
             locked_amount=0.0,
         )
         state = engine.get_state_for_persistence()
         assert state["last_state"] is not None
-        # V2.3.17: Cash buffer = $100k * 10% = $10k reserved
-        # V2.4.1: Options reserve = $100k * 10% = $10k reserved
-        # Total reserved = $20k
-        # Unallocated = $100k - $50k - $10k - $20k = $20k
+        # V2.4.3: Reserve = 35% (10% buffer + 25% options) = $35k on $100k
+        # Unallocated = $100k - $35k - $10k - $35k = $20k
         assert state["last_state"]["unallocated_cash"] == 20000.0
 
     def test_restore_state(self, engine):
@@ -516,10 +509,11 @@ class TestTargetWeightValidation:
 
     def test_target_weight_valid_source(self, engine):
         """Test signal uses valid YIELD source."""
+        # V2.4.3: Reserve = 35%, need lower positions to get unallocated cash
         signal = engine.get_yield_signal(
             total_equity=100000.0,
             tradeable_equity=100000.0,
-            non_shv_positions_value=50000.0,
+            non_shv_positions_value=35000.0,  # V2.4.3: Reduced from $50k
             current_shv_value=10000.0,
             locked_amount=0.0,
         )
@@ -528,10 +522,11 @@ class TestTargetWeightValidation:
 
     def test_target_weight_valid_symbol(self, engine):
         """Test signal uses SHV symbol."""
+        # V2.4.3: Reserve = 35%, need lower positions to get unallocated cash
         signal = engine.get_yield_signal(
             total_equity=100000.0,
             tradeable_equity=100000.0,
-            non_shv_positions_value=50000.0,
+            non_shv_positions_value=35000.0,  # V2.4.3: Reduced from $50k
             current_shv_value=10000.0,
             locked_amount=0.0,
         )
@@ -560,6 +555,9 @@ class TestRiskOffScenario:
     def test_high_allocation_risk_off(self, engine):
         """Test high SHV allocation in RISK_OFF (all longs closed)."""
         # Only hedges active, rest goes to SHV
+        # V2.4.3: Reserve = 35% (10% buffer + 25% options) = $35k on $100k
+        # Unallocated = $100k - $30k - $5k - $35k = $30k
+        # Target = ($5k + $30k) / $100k = 35%
         signal = engine.get_yield_signal(
             total_equity=100000.0,
             tradeable_equity=100000.0,
@@ -567,16 +565,14 @@ class TestRiskOffScenario:
             current_shv_value=5000.0,
             locked_amount=0.0,
         )
-        # V2.3.17: Cash buffer = $100k * 10% = $10k reserved
-        # V2.4.1: Options reserve = $100k * 10% = $10k reserved
-        # Total reserved = $20k
-        # Unallocated = $100k - $30k - $5k - $20k = $45k
-        # Target = ($5k + $45k) / $100k = 50%
         assert signal is not None
-        assert signal.target_weight == pytest.approx(0.50)
+        assert signal.target_weight == pytest.approx(0.35)
 
     def test_algorithm_start_all_cash(self, engine):
         """Test algorithm start with all cash goes to SHV."""
+        # V2.4.3: Reserve = 35% (10% buffer + 25% options) = $17.5k on $50k
+        # Unallocated = $50k - $0 - $0 - $17.5k = $32.5k
+        # Target SHV = ($0 + $32.5k) / $50k = 65%
         signal = engine.get_yield_signal(
             total_equity=50000.0,
             tradeable_equity=50000.0,
@@ -584,13 +580,8 @@ class TestRiskOffScenario:
             current_shv_value=0.0,
             locked_amount=0.0,
         )
-        # V2.3.17: Cash buffer = $50k * 10% = $5k reserved
-        # V2.4.1: Options reserve = $50k * 10% = $5k reserved
-        # Total reserved = $10k
-        # Unallocated = $50k - $0 - $0 - $10k = $40k
-        # Target SHV = ($0 + $40k) / $50k = 80%
         assert signal is not None
-        assert signal.target_weight == 0.8
+        assert signal.target_weight == 0.65
 
 
 class TestEdgeCases:
