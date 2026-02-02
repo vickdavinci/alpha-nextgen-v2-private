@@ -88,28 +88,38 @@ self.log("INTRADAY_SIGNAL: ...", trades_only=False)  # Silent in backtests
 ### QuantConnect Backtest Workflow
 
 **Workspace Location:** `~/Desktop/lean-cli-workspace/`
+**Cloud Project:** `AlphaNextGen 2` (cloud-id: 27678023)
 
 ```bash
 # 1. Navigate to lean workspace
 cd ~/Desktop/lean-cli-workspace
 
-# 2. Copy updated files from project to lean workspace
-cp /Users/vigneshwaranarumugam/Documents/Trading\ Github/alpha-nextgen-v2-private/main.py AlphaNextGen/main.py
-cp /Users/vigneshwaranarumugam/Documents/Trading\ Github/alpha-nextgen-v2-private/config.py AlphaNextGen/config.py
+# 2. Copy ALL files from project to lean workspace (not just main.py/config.py)
+SRC="/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private"
+DEST="AlphaNextGen 2"
+cp "$SRC/main.py" "$SRC/config.py" "$DEST/"
+cp -r "$SRC/engines" "$SRC/portfolio" "$SRC/execution" "$SRC/models" \
+      "$SRC/persistence" "$SRC/scheduling" "$SRC/utils" "$SRC/data" "$DEST/"
 
 # 3. Push to QuantConnect cloud
-lean cloud push --project AlphaNextGen
+lean cloud push --project "AlphaNextGen 2"
 
 # 4. Start backtest
-lean cloud backtest AlphaNextGen --name "Descriptive-Name-Here"
+lean cloud backtest "AlphaNextGen 2" --name "Descriptive-Name-Here"
 
 # 5. Check backtest status (if needed)
-lean cloud status
+lean cloud status "AlphaNextGen 2"
 ```
 
-**Quick One-Liner (from project root):**
+**Quick One-Liner (sync + push + backtest):**
 ```bash
-cd ~/Desktop/lean-cli-workspace && cp "/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private/main.py" AlphaNextGen/main.py && cp "/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private/config.py" AlphaNextGen/config.py && lean cloud push --project AlphaNextGen && lean cloud backtest AlphaNextGen
+cd ~/Desktop/lean-cli-workspace && \
+SRC="/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private" && \
+cp "$SRC/main.py" "$SRC/config.py" "AlphaNextGen 2/" && \
+cp -r "$SRC/engines" "$SRC/portfolio" "$SRC/execution" "$SRC/models" \
+      "$SRC/persistence" "$SRC/scheduling" "$SRC/utils" "$SRC/data" "AlphaNextGen 2/" && \
+lean cloud push --project "AlphaNextGen 2" && \
+lean cloud backtest "AlphaNextGen 2" --name "backtest-name"
 ```
 
 **Notes:**
@@ -117,6 +127,7 @@ cd ~/Desktop/lean-cli-workspace && cp "/Users/vigneshwaranarumugam/Documents/Tra
 - Trading Firm plan allows 256KB files (no minification needed)
 - Use B4-12 nodes for options backtests (requires more memory)
 - Results viewable at: https://www.quantconnect.com/terminal
+- Project must be quoted ("AlphaNextGen 2") due to space in name
 
 ---
 
