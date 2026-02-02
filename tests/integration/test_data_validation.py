@@ -143,13 +143,14 @@ class TestOptionsChainFiltering:
 
     def test_dte_filter_intraday_mode(self):
         """
-        Test DTE filter for Intraday Mode (0-1 DTE).
+        Test DTE filter for Intraday Mode (1-5 DTE).
 
-        V2.3.4: Changed to 0-1 for true 0DTE intraday trading.
+        V2.13: Changed from 0-1 to 1-5 to match VASS strategy and improve data quality.
+        0DTE has poor Greeks coverage in QC backtest data, causing 306 silent failures.
         """
-        # Intraday mode DTE range (V2.3.4: 0-1 DTE for true intraday)
-        assert config.OPTIONS_INTRADAY_DTE_MIN == 0
-        assert config.OPTIONS_INTRADAY_DTE_MAX == 1
+        # Intraday mode DTE range (V2.13: 1-5 DTE for VASS alignment)
+        assert config.OPTIONS_INTRADAY_DTE_MIN == 1
+        assert config.OPTIONS_INTRADAY_DTE_MAX == 5
 
     def test_atm_strike_filter(self):
         """
