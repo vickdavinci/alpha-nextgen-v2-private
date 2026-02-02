@@ -2875,11 +2875,11 @@ class OptionsEngine:
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
                 reason=f"SPREAD_EXIT: {exit_reason}",
-                requested_quantity=spread.num_contracts,
+                requested_quantity=spread.num_spreads,
                 metadata={
                     "spread_close_short": True,  # Tells router this is an exit
                     "spread_short_leg_symbol": spread.short_leg.symbol,
-                    "spread_short_leg_quantity": spread.num_contracts,
+                    "spread_short_leg_quantity": spread.num_spreads,
                 },
             ),
         ]
@@ -2966,11 +2966,11 @@ class OptionsEngine:
                         source="OPT",
                         urgency=Urgency.IMMEDIATE,
                         reason=f"FRIDAY_FIREWALL: {close_reason}",
-                        requested_quantity=spread.num_contracts,
+                        requested_quantity=spread.num_spreads,
                         metadata={
                             "spread_close_short": True,
                             "spread_short_leg_symbol": spread.short_leg.symbol,
-                            "spread_short_leg_quantity": spread.num_contracts,
+                            "spread_short_leg_quantity": spread.num_spreads,
                         },
                     )
                 )
