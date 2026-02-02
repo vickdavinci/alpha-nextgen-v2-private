@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-01 (V2.3.23: Cold Start Duplicate Orders Fix)
+> **Last Updated:** 2026-02-01 (V2.3.24: Hard Margin Reservation + Bug Fixes)
 
 ---
 
@@ -73,10 +73,10 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | Bug | Impact | Status |
 |-----|--------|:------:|
 | Cold Start duplicate MOO orders | -$2,553 | ✅ FIXED (V2.3.23) |
-| SHV margin lock | Capital starvation | 🟡 TODO |
-| Swing delta too restrictive (0.55-0.85) | Missing entries | 🟡 TODO |
-| Combo orders not filling | No spreads traded | 🟡 TODO |
-| Intraday signal spam | Log noise | 🟡 TODO |
+| SHV margin lock | Capital starvation | ✅ FIXED (V2.3.24) |
+| Swing delta too restrictive (0.55-0.85) | Missing entries | ✅ FIXED (V2.3.24) |
+| Combo orders not filling | No spreads traded | ✅ FIXED (V2.3.24) |
+| Intraday signal spam | Log noise | ✅ FIXED (V2.3.24) |
 
 ### V2.3.23 Fix: Cold Start Duplicate Orders (2026-02-01)
 
@@ -91,6 +91,230 @@ Four separate QLD MOO orders were queued and all filled on Jan 21 = 922 shares i
 **Commit:** `05140be` - `fix(cold-start): prevent duplicate warm entry orders on weekends/holidays`
 
 **Impact:** Eliminates -$2,553 excess loss from 4× position sizing.
+
+### V2.3.24 Fix: Hard Margin Reservation + Bug Fixes (2026-02-01)
+
+All remaining V2.3.22 bugs have been fixed in V2.3.24:
+
+| Priority | Bug | Fix | Status |
+|:--------:|-----|-----|:------:|
+| **P1** | Combo orders rejected | Hard margin reservation + contract scaling | ✅ FIXED |
+| **P1** | SHV margin lock | Pre-check `MarginRemaining` before sell | ✅ FIXED |
+| **P1** | Swing delta too restrictive | Widened from 0.55-0.85 → 0.50-0.85 | ✅ FIXED |
+| **P2** | Intraday signal spam | Lower threshold $500 + 15-min throttle | ✅ FIXED |
+
+**Implementation Details:**
+
+1. **Hard Margin Reservation** (`portfolio_router.py`):
+   - Added `SYMBOL_LEVERAGE` config to calculate actual margin consumption
+   - `_enforce_source_limits()` now uses margin-weighted allocation
+   - Example: 55% trend × 2.4× leverage = 132% margin → scaled down to fit 75%
+
+2. **Combo Contract Scaling** (`portfolio_router.py`):
+   - When combo order exceeds margin, scale contracts to fit available margin
+   - Minimum 2 contracts (`MIN_SPREAD_CONTRACTS`) or skip trade entirely
+
+3. **SHV Margin Lock Check** (`portfolio_router.py`):
+   - Before SHV sell, check if `shv_sell_amount > MarginRemaining`
+   - If margin locked, skip SHV liquidation (would fail at broker anyway)
+
+4. **Config Changes** (`config.py`):
+   ```python
+   MIN_INTRADAY_OPTIONS_TRADE_VALUE = 500  # Lower threshold for options
+   SPREAD_LONG_LEG_DELTA_MIN = 0.50        # Was 0.55
+   REJECTION_LOG_THROTTLE_MINUTES = 15     # Reduce log spam
+   SYMBOL_LEVERAGE = {"QLD": 2.0, "SSO": 2.0, "TNA": 3.0, "FAS": 3.0, ...}
+   MIN_SPREAD_CONTRACTS = 2                # Minimum viable spread size
+   ```
+
+**Tests:** All 1349 tests pass.
+
+---
+
+## V2.3.22 Remaining Bugs - Detailed Analysis (Historical)
+
+### Bug Overview
+
+| Priority | Bug | Evidence | Root Cause | Remediation |
+|:--------:|-----|----------|------------|-------------|
+| **P1** | Combo orders rejected | 4 INSUFFICIENT_MARGIN: Order=$24K > Margin=$2.5K | Spread value > available margin; margin consumed by trend+SHV | Scale contracts to fit OR hard margin reservation |
+| **P1** | SHV margin lock | 10 INVALID: Initial Margin > Free Margin | SHV is collateral for leveraged positions, can't be sold | Check `MarginRemaining` before SHV sell |
+| **P1** | Swing delta too restrictive | "No valid ITM contract (delta 0.55-0.85)" | Range misses delta 0.50-0.54 | Widen to 0.50-0.85 |
+| **P2** | Intraday signal spam | 44 "Delta $X < min $2,000" | No throttle, `MIN_TRADE_VALUE` too high | Add throttle, lower threshold |
+
+---
+
+### P1-A: Combo Orders Rejected (INSUFFICIENT_MARGIN)
+
+**Evidence from logs:**
+```
+2025-01-07 10:01:00 SPREAD: ENTRY_SIGNAL | BULL_CALL | x26 | DTE=16
+2025-01-07 10:01:00 ROUTER: COMBO_ORDER | Long=QQQ 250124C00521000 x26 + Short=QQQ 250124C00527500 x-26
+2025-01-07 10:01:00 ROUTER: INSUFFICIENT_MARGIN | Order=$24,362 > Margin=$2,539
+```
+
+**Root Cause: Allocation Reservation ≠ Margin Reservation**
+
+The current architecture has a **fundamental disconnect** between allocation limits and margin consumption:
+
+1. **Config says:** Reserve 25% for options (`RESERVED_OPTIONS_PCT = 0.25`)
+2. **Router enforces:** Non-options capped at 75% (`_enforce_source_limits()` at portfolio_router.py:367-398)
+3. **BUT:** This reservation happens at the **TargetWeight level**, not the **margin level**
+
+**The Math Problem:**
+
+| Component | Allocation | Leverage | Margin Consumed |
+|-----------|:----------:|:--------:|:---------------:|
+| QLD (Trend) | 20% | 2× | 40% |
+| SSO (Trend) | 15% | 2× | 30% |
+| TNA (Trend) | 12% | 3× | 36% |
+| FAS (Trend) | 8% | 3× | 24% |
+| **Total Trend** | **55%** | — | **~130%** |
+| SHV (Yield) | Variable | 1× | Variable |
+| **Remaining for Options** | 25% | — | **~0%** |
+
+When all 4 trend tickers trigger simultaneously (which they do in bull markets since they're 0.70-0.95 correlated), they consume **more margin than their allocation** due to leverage.
+
+**Why SHV Makes It Worse:**
+
+SHV acts as collateral for leveraged positions. When SHV is held:
+- It provides buying power for leveraged ETFs
+- But it also **locks up margin** - you can't sell it without releasing the leverage first
+- This creates a death spiral: more SHV = more trend positions = more margin locked = less margin for options
+
+**Remediation Options:**
+
+| Option | Description | Pros | Cons |
+|--------|-------------|------|------|
+| **A: Hard Margin Reservation** | Before trend entries, calculate: `margin_for_options = 25% × equity`. Block trend if it would consume this. | Guarantees options capacity | Reduces trend participation |
+| **B: Leverage-Adjusted Allocation** | Calculate `margin_adjusted_weight = allocation × leverage`. Cap total at 100%. | More accurate | Complex calculation |
+| **C: Scale Combo Contracts** | If margin insufficient, scale down from 26 to N contracts that fit | No architecture change | May result in tiny positions |
+| **D: Sequential Entry** | Enter options FIRST (day 1), then trend (day 2+) | Simple | Delays trend participation |
+
+**Recommended Fix (V2.3.24):**
+
+Implement **Option C + A hybrid**:
+1. In `execute_orders()`, if combo order > margin, scale contracts to fit (minimum 2 contracts)
+2. In `_enforce_source_limits()`, calculate margin consumption not just allocation %
+
+---
+
+### P1-B: SHV Margin Lock (10 Invalid Orders)
+
+**Evidence from logs:**
+```
+2025-01-XX: SHV | INVALID | Initial Margin > Free Margin
+```
+
+**Root Cause:**
+
+SHV auto-liquidation (`_add_shv_liquidation_if_needed()`) tries to sell SHV to fund option buys, but:
+1. SHV is acting as **collateral** for leveraged trend positions
+2. IBKR rejects the sell because selling SHV would violate margin requirements
+3. This is a margin safety check by the broker, not a bug
+
+**Why This Happens:**
+
+```
+Portfolio State:
+- Cash: $2,000
+- SHV: $15,000 (collateral for $45K in leveraged positions)
+- Margin Requirement: $12,000
+- Free Margin: $2,000 (not enough to sell SHV)
+
+Options wants: $5,000
+Router tries: SELL $5,000 SHV
+IBKR says: REJECTED (Initial Margin $12K > Free Margin $2K)
+```
+
+**Remediation (V2.3.24):**
+
+Before generating SHV sell order, check:
+```python
+# In _add_shv_liquidation_if_needed():
+if shv_sell_value > self.algorithm.Portfolio.MarginRemaining:
+    self.log(f"SHV_MARGIN_LOCK: Cannot sell ${shv_sell_value:,.0f} SHV, margin locked")
+    return sells + buys  # Skip SHV liquidation
+```
+
+---
+
+### P1-C: Swing Delta Too Restrictive (0.55-0.85)
+
+**Evidence from logs:**
+```
+2025-01-XX: No valid ITM contract (delta 0.55-0.85) for CALL
+```
+
+**Root Cause:**
+
+Current config:
+```python
+SPREAD_LONG_LEG_DELTA_MIN = 0.55  # V2.3.21: ITM range
+SPREAD_LONG_LEG_DELTA_MAX = 0.85  # V2.3.21: ITM range
+```
+
+This misses delta 0.50-0.54 which is often the "sweet spot" for ATM-to-slightly-ITM contracts.
+
+**Remediation (V2.3.24):**
+
+```python
+SPREAD_LONG_LEG_DELTA_MIN = 0.50  # Include ATM (delta 0.50)
+SPREAD_LONG_LEG_DELTA_MAX = 0.85  # Keep upper bound
+```
+
+---
+
+### P2: Intraday Signal Spam (44 Rejections)
+
+**Evidence from logs:**
+```
+2025-01-XX 10:15: INTRADAY: Delta $847 < min $2,000
+2025-01-XX 10:16: INTRADAY: Delta $923 < min $2,000
+... (44 times)
+```
+
+**Root Cause:**
+
+1. `MIN_TRADE_VALUE = 2,000` too high for intraday options (single contracts often $500-1,500)
+2. No throttle on rejection logging - logs every minute even when conditions haven't changed
+
+**Remediation (V2.3.24):**
+
+1. Lower intraday minimum: `MIN_INTRADAY_TRADE_VALUE = 500`
+2. Add throttle: Only log rejection once per 15 minutes
+3. Or: Use contract count threshold instead of dollar value for options
+
+---
+
+### Architecture Recommendation: Hard Allocation vs Soft Allocation
+
+**Current State (Soft Allocation):**
+- `RESERVED_OPTIONS_PCT = 0.25` caps non-options at 75% of **target weights**
+- Leveraged ETFs consume **more margin** than their weight suggests
+- Options get starved despite "having" 25% allocation
+
+**Proposed State (Hard Allocation):**
+- Reserve 25% of **actual margin**, not just weight
+- Before any trend entry, calculate: `available_margin - 25%`
+- Trend can only use margin up to that limit
+
+**Implementation Sketch:**
+```python
+# In process_immediate() or process_eod():
+total_margin = self.algorithm.Portfolio.MarginRemaining
+reserved_for_options = total_margin * config.RESERVED_OPTIONS_PCT
+margin_for_non_options = total_margin - reserved_for_options
+
+# Scale non-options orders to fit in margin_for_non_options
+for order in non_options_orders:
+    if cumulative_margin > margin_for_non_options:
+        # Scale down or skip
+```
+
+This would ensure options **always** have 25% margin available, regardless of trend leverage.
+
+---
 
 ### Historical Runs
 

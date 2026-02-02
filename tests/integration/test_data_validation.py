@@ -110,11 +110,11 @@ class TestOptionsChainFiltering:
 
     def test_dte_filter_swing_mode(self):
         """
-        Test DTE filter for Swing Mode (6-45 DTE).
-        V2.3.18: Raised from 5 to 6 to ensure minimum 2-day holding period.
+        Test DTE filter for Swing Mode (14-45 DTE).
+        V2.3.22: Raised from 6 to 14 to reduce overnight gap risk.
         """
         # Swing mode DTE range
-        assert config.OPTIONS_SWING_DTE_MIN == 6  # V2.3.18: Raised from 5 to 6
+        assert config.OPTIONS_SWING_DTE_MIN == 14  # V2.3.22: Raised from 6 to 14
         assert config.OPTIONS_SWING_DTE_MAX == 45
 
         # Test filtering
@@ -122,14 +122,14 @@ class TestOptionsChainFiltering:
 
         # Valid swing contracts
         valid_expiries = [
-            current_date + timedelta(days=6),  # Min (V2.3.18: was 5)
-            current_date + timedelta(days=20),  # Middle
+            current_date + timedelta(days=14),  # Min (V2.3.22: raised to 14)
+            current_date + timedelta(days=28),  # Middle
             current_date + timedelta(days=45),  # Max
         ]
 
         # Invalid swing contracts
         invalid_expiries = [
-            current_date + timedelta(days=2),  # Too soon
+            current_date + timedelta(days=7),  # Too soon (< 14 DTE)
             current_date + timedelta(days=50),  # Too far
         ]
 

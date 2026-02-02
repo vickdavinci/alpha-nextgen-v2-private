@@ -118,6 +118,51 @@
 
 **Commit:** `05140be` - `fix(cold-start): prevent duplicate warm entry orders on weekends/holidays`
 
+### V2.3.24 FIX: Hard Margin Reservation + Bug Fixes (2026-02-01)
+
+| # | Bug | Severity | Fix | Status |
+|:-:|-----|:--------:|-----|:------:|
+| 1 | **Combo orders rejected (INSUFFICIENT_MARGIN)** | P1 | Hard margin reservation + contract scaling | ✅ FIXED |
+| 2 | **SHV margin lock** | P1 | Pre-check `MarginRemaining` before SHV sell | ✅ FIXED |
+| 3 | **Swing delta too restrictive (0.55-0.85)** | P1 | Widened to 0.50-0.85 | ✅ FIXED |
+| 4 | **Intraday signal spam (44 rejections)** | P2 | Lower threshold $500 + log throttle | ✅ FIXED |
+
+**Root Cause Analysis:**
+
+The fundamental issue was **Allocation Reservation ≠ Margin Reservation**:
+- Config says reserve 25% for options (`RESERVED_OPTIONS_PCT = 0.25`)
+- But leveraged ETFs consume MORE margin than their allocation:
+  - 55% trend allocation × 2.4× avg leverage = ~132% margin consumed
+- Result: Options got rejected with `Order=$24K > Margin=$2.5K`
+
+**V2.3.24 Fixes:**
+
+1. **Hard Margin Reservation** (`portfolio_router.py`):
+   - Added `SYMBOL_LEVERAGE` config for margin calculation
+   - `_enforce_source_limits()` now calculates margin-weighted allocation
+   - Non-options scaled down based on actual margin consumption, not just weight
+
+2. **Combo Contract Scaling** (`portfolio_router.py`):
+   - When combo order exceeds margin, scale contracts to fit
+   - Minimum 2 contracts (`MIN_SPREAD_CONTRACTS`) or skip trade
+
+3. **SHV Margin Lock Check** (`portfolio_router.py`):
+   - Before SHV sell, check if `shv_sell_amount > MarginRemaining`
+   - If locked, skip liquidation (would fail anyway at broker)
+
+4. **Config Changes** (`config.py`):
+   - `MIN_INTRADAY_OPTIONS_TRADE_VALUE = 500` (lower threshold for options)
+   - `SPREAD_LONG_LEG_DELTA_MIN = 0.50` (was 0.55)
+   - `REJECTION_LOG_THROTTLE_MINUTES = 15`
+   - `SYMBOL_LEVERAGE = {...}` for margin calculation
+   - `MIN_SPREAD_CONTRACTS = 2`
+
+**Expected Impact:**
+- Options can now enter despite trend consuming leverage margin
+- Combo spreads scale to available margin instead of being rejected
+- SHV margin lock errors reduced (skipped early instead of failing at broker)
+- Log spam reduced from 44 rejections to ~3 per day
+
 ### V2.3.12 Backtest Results (2026-01-31) — Historical
 
 **Backtest:** V2.3.12-ComboFix-2month | **Result:** +4.09% | **Orders:** 143 | **Options:** 7 only!

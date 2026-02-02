@@ -182,12 +182,54 @@ class PortfolioRouter:
         self._executed_this_minute: Set[str] = set()  # "SYMBOL:SIDE:QTY" keys
         # Process-level idempotency: prevent process_eod running twice on same day
         self._last_eod_date: Optional[str] = None
+        # V2.3.24: Rejection log throttle to reduce spam
+        self._last_rejection_log_time: Optional[Any] = None
+        self._rejection_log_count: int = 0
 
     def log(self, message: str) -> None:
         """Log via algorithm or skip for testing."""
         # V2.3.21: Re-enabled logging for SHV auto-liquidation visibility
         if self.algorithm:
             self.algorithm.Log(message)  # type: ignore[attr-defined]
+
+    def _should_log_rejection(self) -> bool:
+        """
+        V2.3.24: Throttle rejection logging to reduce spam.
+
+        Only log MIN_TRADE_VALUE rejections once per REJECTION_LOG_THROTTLE_MINUTES.
+        Returns True if we should log, False to skip.
+        """
+        if not self.algorithm:
+            return True
+
+        current_time = self.algorithm.Time  # type: ignore[attr-defined]
+
+        # First rejection - always log
+        if self._last_rejection_log_time is None:
+            self._last_rejection_log_time = current_time
+            self._rejection_log_count = 1
+            return True
+
+        # Check if throttle interval has passed
+        from datetime import timedelta
+
+        throttle_minutes = getattr(config, "REJECTION_LOG_THROTTLE_MINUTES", 15)
+        time_since_last = current_time - self._last_rejection_log_time
+
+        if time_since_last >= timedelta(minutes=throttle_minutes):
+            # Throttle period passed - log summary and reset
+            if self._rejection_log_count > 1:
+                self.log(
+                    f"ROUTER: REJECTION_SUMMARY | {self._rejection_log_count} orders skipped "
+                    f"(below min trade value) in last {throttle_minutes} min"
+                )
+            self._last_rejection_log_time = current_time
+            self._rejection_log_count = 1
+            return True
+        else:
+            # Within throttle period - count but don't log
+            self._rejection_log_count += 1
+            return False
 
     # =========================================================================
     # Step 1: COLLECT
@@ -309,11 +351,11 @@ class PortfolioRouter:
         """
         Enforce Core-Satellite allocation limits by source.
 
-        V2.3: Caps total allocation per source engine AND reserves capital for options:
-        - TREND (Core): 55% max (config.TREND_TOTAL_ALLOCATION)
-        - OPT (Options): 30% max (reserved via RESERVED_OPTIONS_PCT)
-        - MR (Mean Reversion): 10% max
-        - Total non-options: capped at (1.0 - RESERVED_OPTIONS_PCT) = 75%
+        V2.3.24: Hard Margin Reservation - caps based on MARGIN, not just weight:
+        - Allocation reservation (25% weight) ≠ Margin reservation
+        - 2× and 3× ETFs consume more margin than their allocation suggests
+        - Example: 55% trend allocation × 2.4× avg leverage = 132% margin
+        - This version calculates margin-adjusted weights to truly reserve options capacity
 
         Args:
             weights: List of TargetWeight objects.
@@ -364,36 +406,44 @@ class PortfolioRouter:
                     f"Scaled by {scale_factor:.0%}"
                 )
 
-        # V2.3: Enforce total non-options cap (reserve capital for options)
-        # This ensures TREND + MR + HEDGE never consume all buying power
-        max_non_options = 1.0 - config.RESERVED_OPTIONS_PCT  # 75%
+        # V2.3.24: HARD MARGIN RESERVATION
+        # Calculate margin-adjusted allocation for non-options sources
+        # This accounts for leverage: 2× ETF at 20% allocation = 40% margin consumption
+        max_non_options_margin = 1.0 - config.RESERVED_OPTIONS_PCT  # 75% of margin
 
-        non_options_total = sum(
-            w.target_weight for w in adjusted_weights if w.source in self.NON_OPTIONS_SOURCES
-        )
+        # Calculate margin-weighted total for non-options
+        margin_weighted_total = 0.0
+        for w in adjusted_weights:
+            if w.source in self.NON_OPTIONS_SOURCES:
+                leverage = config.SYMBOL_LEVERAGE.get(w.symbol, 1.0)
+                margin_weighted_total += w.target_weight * leverage
 
-        if non_options_total > max_non_options:
-            scale_factor = max_non_options / non_options_total
+        # If margin-weighted total exceeds limit, scale down
+        if margin_weighted_total > max_non_options_margin:
+            margin_scale_factor = max_non_options_margin / margin_weighted_total
             final_weights = []
 
             for w in adjusted_weights:
                 if w.source in self.NON_OPTIONS_SOURCES:
-                    scaled_weight = w.target_weight * scale_factor
+                    # Scale by margin factor to respect hard margin reservation
+                    scaled_weight = w.target_weight * margin_scale_factor
                     final_weights.append(
                         TargetWeight(
                             symbol=w.symbol,
                             target_weight=scaled_weight,
                             source=w.source,
                             urgency=w.urgency,
-                            reason=f"{w.reason} [options reserve scaled {scale_factor:.0%}]",
+                            reason=f"{w.reason} [margin reserve scaled {margin_scale_factor:.0%}]",
+                            requested_quantity=w.requested_quantity,
+                            metadata=w.metadata,
                         )
                     )
                 else:
                     final_weights.append(w)
 
             self.log(
-                f"ROUTER: OPTIONS_RESERVE | Non-options total {non_options_total:.1%} > "
-                f"Max {max_non_options:.1%} | Scaled by {scale_factor:.0%}"
+                f"ROUTER: HARD_MARGIN_RESERVE | Margin-weighted total {margin_weighted_total:.1%} > "
+                f"Max {max_non_options_margin:.1%} | Scaled by {margin_scale_factor:.0%}"
             )
             return final_weights
 
@@ -525,12 +575,21 @@ class PortfolioRouter:
             # Allow closing trades even if value is small (e.g., worthless options)
             is_closing = agg.target_weight == 0.0
 
+            # V2.3.24: Use lower threshold for intraday options
+            # Single option contracts often $500-1,500, below the $2,000 MIN_TRADE_VALUE
+            min_trade_value = config.MIN_TRADE_VALUE
+            if is_option and agg.source in ("OPT_INTRADAY", "OPT"):
+                min_trade_value = config.MIN_INTRADAY_OPTIONS_TRADE_VALUE
+
             # Skip if position value below minimum trade size (unless closing)
-            if abs(delta_value) < config.MIN_TRADE_VALUE and not is_closing:
-                self.log(
-                    f"ROUTER: SKIP | {symbol} | "
-                    f"Delta ${delta_value:,.0f} < min ${config.MIN_TRADE_VALUE:,}"
-                )
+            if abs(delta_value) < min_trade_value and not is_closing:
+                # V2.3.24: Throttle rejection logging to reduce spam
+                should_log = self._should_log_rejection()
+                if should_log:
+                    self.log(
+                        f"ROUTER: SKIP | {symbol} | "
+                        f"Delta ${delta_value:,.0f} < min ${min_trade_value:,}"
+                    )
                 continue
 
             # Determine side and order type
@@ -678,6 +737,7 @@ class PortfolioRouter:
                 continue
 
             # V2.3.2 FIX: Check buying power before placing BUY orders
+            # V2.3.24: For combo orders, scale contracts to fit margin instead of rejecting
             if order.side == OrderSide.BUY:
                 try:
                     current_price = self.algorithm.Securities[order.symbol].Price  # type: ignore[attr-defined]
@@ -691,12 +751,45 @@ class PortfolioRouter:
 
                     margin_remaining = self.algorithm.Portfolio.MarginRemaining  # type: ignore[attr-defined]
                     if order_value > margin_remaining:
-                        self.log(
-                            f"ROUTER: INSUFFICIENT_MARGIN | {order.symbol} | "
-                            f"Order=${order_value:,.0f} > Margin=${margin_remaining:,.0f} | "
-                            f"Qty={order.quantity} @ ${current_price:.2f}"
-                        )
-                        continue
+                        # V2.3.24: For combo orders, try to scale contracts to fit margin
+                        if order.is_combo and is_option:
+                            # Calculate max contracts that fit in available margin
+                            per_contract_cost = current_price * multiplier
+                            if per_contract_cost > 0:
+                                max_contracts = int(margin_remaining / per_contract_cost)
+                                min_contracts = getattr(config, "MIN_SPREAD_CONTRACTS", 2)
+
+                                if max_contracts >= min_contracts:
+                                    # Scale down the order
+                                    scale_ratio = max_contracts / order.quantity
+                                    order.quantity = max_contracts
+                                    # Scale short leg proportionally
+                                    if order.combo_short_quantity:
+                                        order.combo_short_quantity = int(
+                                            order.combo_short_quantity * scale_ratio
+                                        )
+                                    self.log(
+                                        f"ROUTER: COMBO_SCALED | {order.symbol} | "
+                                        f"Scaled from original to {max_contracts} contracts | "
+                                        f"Margin=${margin_remaining:,.0f}"
+                                    )
+                                else:
+                                    self.log(
+                                        f"ROUTER: COMBO_SKIP | {order.symbol} | "
+                                        f"Max {max_contracts} < min {min_contracts} contracts | "
+                                        f"Margin=${margin_remaining:,.0f}"
+                                    )
+                                    continue
+                            else:
+                                continue  # Can't calculate, skip
+                        else:
+                            # Non-combo order - reject as before
+                            self.log(
+                                f"ROUTER: INSUFFICIENT_MARGIN | {order.symbol} | "
+                                f"Order=${order_value:,.0f} > Margin=${margin_remaining:,.0f} | "
+                                f"Qty={order.quantity} @ ${current_price:.2f}"
+                            )
+                            continue
                 except Exception:
                     pass  # Continue with order if price lookup fails
 
@@ -937,6 +1030,21 @@ class PortfolioRouter:
             available_shv = max(0.0, current_shv_value - locked_amount)
 
             if available_shv > 0:
+                # V2.3.24: Check if SHV is margin-locked before attempting to sell
+                # SHV acts as collateral for leveraged positions - IBKR rejects sell if
+                # selling would violate margin requirements
+                if self.algorithm:
+                    margin_remaining = self.algorithm.Portfolio.MarginRemaining  # type: ignore[attr-defined]
+                    shv_sell_amount_requested = min(shortfall * 1.05, available_shv)
+
+                    if shv_sell_amount_requested > margin_remaining:
+                        self.log(
+                            f"SHV_MARGIN_LOCK: Cannot sell ${shv_sell_amount_requested:,.0f} SHV | "
+                            f"Margin locked (remaining=${margin_remaining:,.0f}) | "
+                            f"SHV is collateral for leveraged positions"
+                        )
+                        return sells + buys  # Skip SHV liquidation - would fail anyway
+
                 # Calculate how much SHV to sell (with 5% buffer for slippage)
                 shv_sell_amount = min(shortfall * 1.05, available_shv)
                 remaining_shv = current_shv_value - shv_sell_amount
@@ -1213,4 +1321,7 @@ class PortfolioRouter:
         self._last_execution_minute = None
         self._executed_this_minute.clear()
         self._last_eod_date = None
+        # V2.3.24: Reset rejection log throttle
+        self._last_rejection_log_time = None
+        self._rejection_log_count = 0
         self.log("ROUTER: RESET")

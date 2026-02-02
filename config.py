@@ -34,6 +34,24 @@ LOCKBOX_LOCK_PCT = 0.10
 # This reserves capital BEFORE trend positions are sized
 RESERVED_OPTIONS_PCT = 0.25  # Reserve 25% for options allocation
 
+# V2.3.24: Leverage multipliers for margin calculation
+# Used by portfolio_router to calculate actual margin consumption, not just allocation %
+SYMBOL_LEVERAGE = {
+    "QLD": 2.0,  # 2× Nasdaq
+    "SSO": 2.0,  # 2× S&P 500
+    "TNA": 3.0,  # 3× Russell 2000
+    "FAS": 3.0,  # 3× Financials
+    "TQQQ": 3.0,  # 3× Nasdaq (MR)
+    "SOXL": 3.0,  # 3× Semiconductor (MR)
+    "TMF": 3.0,  # 3× Treasury (Hedge)
+    "PSQ": 1.0,  # 1× Inverse Nasdaq (Hedge)
+    "SHV": 1.0,  # Short Treasury (Yield)
+}
+
+# V2.3.24: Minimum contracts for scaled spreads
+# If margin check would reduce spread below this, skip the trade entirely
+MIN_SPREAD_CONTRACTS = 2
+
 # =============================================================================
 # REGIME ENGINE
 # =============================================================================
@@ -289,6 +307,9 @@ MR_TOTAL_ALLOCATION = 0.10  # 10% total to MR Engine
 MIN_TRADE_VALUE = 2_000
 MIN_SHARE_DELTA = 1
 
+# V2.3.24: Lower threshold for intraday options (single contracts often $500-1,500)
+MIN_INTRADAY_OPTIONS_TRADE_VALUE = 500
+
 # =============================================================================
 # RISK ENGINE
 # =============================================================================
@@ -527,7 +548,8 @@ SPREAD_REGIME_EXIT_BEAR = 60  # Exit Bear Put if regime rises above 60
 
 # Delta targets for spread legs - V2.3.21 "Smart Swing" Strategy
 # ITM Long Leg / OTM Short Leg: Prioritize execution with wider delta range
-SPREAD_LONG_LEG_DELTA_MIN = 0.55  # V2.3.21: ITM range (was 0.40 ATM)
+# V2.3.24: Widened DELTA_MIN from 0.55 → 0.50 to include ATM contracts
+SPREAD_LONG_LEG_DELTA_MIN = 0.50  # V2.3.24: Include ATM (was 0.55)
 SPREAD_LONG_LEG_DELTA_MAX = 0.85  # V2.3.21: ITM range (was 0.60 ATM)
 SPREAD_SHORT_LEG_DELTA_MIN = 0.10  # V2.3.7: Accept more OTM (was 0.15)
 SPREAD_SHORT_LEG_DELTA_MAX = 0.50  # V2.3.7: Accept closer to ATM (was 0.45)
@@ -721,6 +743,10 @@ LOG_VIX_SPIKE_MIN_MOVE = 2.0  # Minimum VIX move to bypass throttle
 # V2.3.21: Spread scan throttle to reduce log noise
 # Only attempt spread selection every 15 minutes (not every minute)
 SPREAD_SCAN_THROTTLE_MINUTES = 15
+
+# V2.3.24: Rejection log throttle to reduce log spam
+# Only log MIN_TRADE_VALUE rejections once per interval
+REJECTION_LOG_THROTTLE_MINUTES = 15
 
 # =============================================================================
 # SCHEDULING
