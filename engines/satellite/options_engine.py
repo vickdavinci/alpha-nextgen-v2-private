@@ -1471,10 +1471,23 @@ class OptionsEngine:
         # For puts, delta is negative so we need to handle that
         is_call = direction == OptionDirection.CALL
 
+        # V2.4.3 FIX: Filter by DTE FIRST, then delta
+        # Problem: Chain filter (OPTIONS_SWING_DTE_MAX=45) retrieves 14-45 DTE contracts
+        # But spread validation (SPREAD_DTE_MAX=21) rejects anything over 21 DTE
+        # If we sort by delta first, a 35 DTE with perfect delta beats 18 DTE with good delta
+        # Then the trade gets rejected later for DTE > 21
+        # Solution: Filter by SPREAD_DTE_MIN/MAX before considering delta
+
         # V2.3.21: Find ITM long leg (delta 0.55-0.85 for calls, -0.55 to -0.85 for puts)
         # "Smart Swing" strategy prioritizes ITM for better execution and directional exposure
         long_candidates = []
         for c in filtered:
+            # V2.4.3: DTE filter FIRST - must be within spread DTE range
+            if c.days_to_expiry < config.SPREAD_DTE_MIN:
+                continue
+            if c.days_to_expiry > config.SPREAD_DTE_MAX:
+                continue
+
             delta_abs = abs(c.delta)
             if config.SPREAD_LONG_LEG_DELTA_MIN <= delta_abs <= config.SPREAD_LONG_LEG_DELTA_MAX:
                 # Check liquidity
@@ -1483,7 +1496,10 @@ class OptionsEngine:
                         long_candidates.append(c)
 
         if not long_candidates:
-            self.log("SPREAD: No valid ITM contract for long leg (delta 0.55-0.85)")
+            self.log(
+                f"SPREAD: No valid long leg | DTE={config.SPREAD_DTE_MIN}-{config.SPREAD_DTE_MAX} | "
+                f"Delta={config.SPREAD_LONG_LEG_DELTA_MIN}-{config.SPREAD_LONG_LEG_DELTA_MAX}"
+            )
             self._set_spread_failure_cooldown(current_time)
             return None
 
@@ -1498,6 +1514,10 @@ class OptionsEngine:
         for c in filtered:
             # Skip same strike as long leg
             if c.strike == long_leg.strike:
+                continue
+
+            # V2.4.3: Short leg must be same expiration as long leg (standard spread)
+            if c.days_to_expiry != long_leg.days_to_expiry:
                 continue
 
             # Check direction-specific strike requirement
