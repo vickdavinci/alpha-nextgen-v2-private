@@ -1946,6 +1946,7 @@ class AlphaNextGen(QCAlgorithm):
 
         # V2.3: Check for spread entry signal
         # V2.3.20: Pass size_multiplier for cold start reduced sizing
+        # V2.7: Use tradeable equity (not total portfolio) for cash-only sizing
         signal = self.options_engine.check_spread_entry_signal(
             regime_score=regime_score,
             vix_current=self._current_vix,
@@ -1956,7 +1957,7 @@ class AlphaNextGen(QCAlgorithm):
             current_hour=self.Time.hour,
             current_minute=self.Time.minute,
             current_date=str(self.Time.date()),
-            portfolio_value=self.Portfolio.TotalPortfolioValue,
+            portfolio_value=self.capital_engine.get_tradeable_equity(),
             long_leg_contract=long_leg,
             short_leg_contract=short_leg,
             gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
@@ -2918,6 +2919,7 @@ class AlphaNextGen(QCAlgorithm):
                 # V2.3.20: Pass size_multiplier for cold start reduced sizing
                 # V2.4.1: Pass UVXY-derived VIX proxy
                 # V2.5: Pass macro_regime_score for Grind-Up Override
+                # V2.7: Use tradeable equity (not total portfolio) for cash-only sizing
                 intraday_signal = self.options_engine.check_intraday_entry_signal(
                     vix_current=vix_intraday,  # V2.4.1: UVXY proxy
                     vix_open=self._vix_at_open,
@@ -2926,7 +2928,7 @@ class AlphaNextGen(QCAlgorithm):
                     current_hour=self.Time.hour,
                     current_minute=self.Time.minute,
                     current_time=str(self.Time),
-                    portfolio_value=self.Portfolio.TotalPortfolioValue,
+                    portfolio_value=self.capital_engine.get_tradeable_equity(),
                     best_contract=intraday_contract,
                     size_multiplier=size_multiplier,
                     macro_regime_score=self._last_regime_score,
@@ -2976,6 +2978,7 @@ class AlphaNextGen(QCAlgorithm):
             if long_leg.bid > 0 and long_leg.ask > 0 and short_leg.bid > 0 and short_leg.ask > 0:
                 # V2.3: Check for spread entry signal
                 # V2.3.20: Pass size_multiplier for cold start reduced sizing
+                # V2.7: Use tradeable equity (not total portfolio) for cash-only sizing
                 signal = self.options_engine.check_spread_entry_signal(
                     regime_score=regime_score,
                     vix_current=self._current_vix,
@@ -2986,7 +2989,7 @@ class AlphaNextGen(QCAlgorithm):
                     current_hour=self.Time.hour,
                     current_minute=self.Time.minute,
                     current_date=str(self.Time.date()),
-                    portfolio_value=self.Portfolio.TotalPortfolioValue,
+                    portfolio_value=self.capital_engine.get_tradeable_equity(),
                     long_leg_contract=long_leg,
                     short_leg_contract=short_leg,
                     gap_filter_triggered=self.risk_engine.is_gap_filter_active(),

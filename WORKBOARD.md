@@ -493,6 +493,52 @@ ZERO_DTE_FORCE_EXIT_MINUTE = 30
 
 ---
 
+### V2.7: Options Engine Capital Synchronization (2026-02-02)
+
+**Goal:** Synchronize Options Engine with Trend Engine's safety protocols and prevent over-leveraging.
+
+**Issues Fixed:**
+
+| # | Issue | Root Cause | Fix |
+|:-:|-------|------------|-----|
+| 1 | **Options uses phantom margin** | `TotalPortfolioValue` includes margin buying power | Switch to `get_tradeable_equity()` |
+| 2 | **No dollar caps** | Flat % is volatile for small accounts | Tiered caps: $5K/$10K/uncapped |
+| 3 | **Short leg fills ignored** | `fill_qty > 0` check excluded sells | Already fixed in V2.5 (verified) |
+| 4 | **Non-atomic exits** | Separate leg orders cause leg risk | Already fixed in V2.5 (verified) |
+
+**Tiered Dollar Caps (The $5K Scale):**
+
+| Tier | Tradeable Equity | Max Per Spread |
+|:----:|:----------------:|:--------------:|
+| 1 | < $60,000 | $5,000 |
+| 2 | $60,000 - $100,000 | $10,000 |
+| 3 | > $100,000 | No cap (% only) |
+
+**Files Modified:**
+
+| File | Changes |
+|------|---------|
+| `config.py` | 4 new tiered cap parameters |
+| `options_engine.py` | `_apply_tiered_dollar_cap()` method, updated `get_mode_allocation()` |
+| `main.py` | Lines 1950, 2922, 2990: Use `get_tradeable_equity()` |
+
+**Config Additions:**
+```python
+# V2.7: Tiered Options Dollar Caps
+OPTIONS_DOLLAR_CAP_TIER_1_THRESHOLD = 60_000
+OPTIONS_DOLLAR_CAP_TIER_2_THRESHOLD = 100_000
+OPTIONS_DOLLAR_CAP_TIER_1 = 5_000
+OPTIONS_DOLLAR_CAP_TIER_2 = 10_000
+```
+
+**Impact on $50K Account:**
+- Before: Options sizes on $50K (oversized, uses margin)
+- After: Options sizes on $45K tradeable equity, capped at $5K per spread
+
+**Tests:** 1298 passed, 6 failed (pre-existing stop tier mismatches)
+
+---
+
 ## Planned Features (V2.5+)
 
 > **Roadmap Document:** `docs/v2-specs/V2_5_ROADMAP.md`

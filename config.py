@@ -402,6 +402,15 @@ OPTIONS_TOTAL_ALLOCATION = 0.25  # 25% total options budget (increased from 20%)
 OPTIONS_SWING_ALLOCATION = 0.1875  # 18.75% for Swing Mode (75% of 25%)
 OPTIONS_INTRADAY_ALLOCATION = 0.0625  # 6.25% for Intraday Mode (25% of 25%)
 
+# V2.7: Tiered Options Dollar Caps
+# Prevents oversizing on small accounts while allowing growth on larger accounts
+# Uses min(percentage_allocation, dollar_cap) logic
+OPTIONS_DOLLAR_CAP_TIER_1_THRESHOLD = 60_000  # Below this: Tier 1 cap applies
+OPTIONS_DOLLAR_CAP_TIER_2_THRESHOLD = 100_000  # Below this: Tier 2 cap applies
+OPTIONS_DOLLAR_CAP_TIER_1 = 5_000  # Max $5K per spread when equity < $60K
+OPTIONS_DOLLAR_CAP_TIER_2 = 10_000  # Max $10K per spread when equity $60K-$100K
+# Above $100K: No dollar cap, use raw percentage-based sizing
+
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
 # V2.3.15: Sniper Logic - allow one retry, not machine gun
 INTRADAY_MAX_TRADES_PER_DAY = 2  # Sniper gets one retry per day

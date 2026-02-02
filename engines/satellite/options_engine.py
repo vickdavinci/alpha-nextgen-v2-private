@@ -2709,28 +2709,75 @@ class OptionsEngine:
             return OptionsMode.INTRADAY
         return OptionsMode.SWING
 
+    def _apply_tiered_dollar_cap(self, raw_allocation: float, tradeable_equity: float) -> float:
+        """
+        V2.7: Apply tiered dollar cap to options allocation.
+
+        Prevents oversizing on small accounts while allowing growth on larger accounts.
+        Uses min(percentage_allocation, dollar_cap) logic.
+
+        Tier 1 (<$60K): Cap at $5,000 per spread
+        Tier 2 ($60K-$100K): Cap at $10,000 per spread
+        Tier 3 (>$100K): No cap, use raw percentage
+
+        Args:
+            raw_allocation: Percentage-based allocation in dollars.
+            tradeable_equity: Current tradeable equity (settled cash - lockbox).
+
+        Returns:
+            Capped allocation amount.
+        """
+        if tradeable_equity < config.OPTIONS_DOLLAR_CAP_TIER_1_THRESHOLD:
+            # Tier 1: Small account protection
+            capped = min(raw_allocation, config.OPTIONS_DOLLAR_CAP_TIER_1)
+            if capped < raw_allocation:
+                self.log(
+                    f"SPREAD: Allocation capped at ${capped:,.0f} (Tier 1) | "
+                    f"Raw=${raw_allocation:,.0f} | Equity=${tradeable_equity:,.0f}"
+                )
+            return capped
+        elif tradeable_equity < config.OPTIONS_DOLLAR_CAP_TIER_2_THRESHOLD:
+            # Tier 2: Medium account
+            capped = min(raw_allocation, config.OPTIONS_DOLLAR_CAP_TIER_2)
+            if capped < raw_allocation:
+                self.log(
+                    f"SPREAD: Allocation capped at ${capped:,.0f} (Tier 2) | "
+                    f"Raw=${raw_allocation:,.0f} | Equity=${tradeable_equity:,.0f}"
+                )
+            return capped
+        else:
+            # Tier 3: Large account - percentage-based only
+            return raw_allocation
+
     def get_mode_allocation(
         self, mode: OptionsMode, portfolio_value: float, size_multiplier: float = 1.0
     ) -> float:
         """
-        Get allocation for a specific mode.
+        Get allocation for a specific mode with tiered dollar cap.
 
         V2.3.20: Added size_multiplier parameter for cold start sizing.
+        V2.7: Added tiered dollar cap to prevent oversizing.
 
         Args:
             mode: Operating mode.
-            portfolio_value: Total portfolio value.
+            portfolio_value: Tradeable equity (settled cash - lockbox).
             size_multiplier: Optional multiplier for position sizing (default 1.0).
                 During cold start, this is 0.5 to reduce risk.
 
         Returns:
-            Dollar allocation for the mode (adjusted by size_multiplier).
+            Dollar allocation for the mode (adjusted by size_multiplier and tier cap).
         """
         if mode == OptionsMode.INTRADAY:
             base_allocation = portfolio_value * config.OPTIONS_INTRADAY_ALLOCATION
         else:
             base_allocation = portfolio_value * config.OPTIONS_SWING_ALLOCATION
-        return base_allocation * size_multiplier
+
+        raw_allocation = base_allocation * size_multiplier
+
+        # V2.7: Apply tiered dollar cap
+        capped_allocation = self._apply_tiered_dollar_cap(raw_allocation, portfolio_value)
+
+        return capped_allocation
 
     # =========================================================================
     # V2.1.1 SIMPLE INTRADAY FILTERS (FOR SWING MODE)

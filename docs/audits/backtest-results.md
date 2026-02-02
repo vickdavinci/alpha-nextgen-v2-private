@@ -2328,6 +2328,107 @@ ZERO_DTE_FORCE_EXIT_MINUTE = 30
 
 ---
 
+## V2.7: Options Engine Capital Synchronization (2026-02-02)
+
+### Summary
+
+Synchronize Options Engine with Trend Engine's safety protocols to prevent over-leveraging and position amnesia.
+
+### Issues Addressed
+
+| # | Issue | Root Cause | Fix |
+|:-:|-------|------------|-----|
+| 1 | Options uses phantom margin | `TotalPortfolioValue` includes margin buying power | Switch to `get_tradeable_equity()` |
+| 2 | No dollar caps | Flat % is volatile for small accounts | Tiered caps: $5K/$10K/uncapped |
+| 3 | Short leg fills ignored | `fill_qty > 0` check excluded sells | Verified fixed in V2.5 |
+| 4 | Non-atomic exits | Separate leg orders | Verified fixed in V2.5 |
+
+### Issue 1: Cash-Only Sizing
+
+**Problem:** Options Engine used `TotalPortfolioValue` (includes margin) instead of `Tradeable Equity` (settled cash - lockbox).
+
+**Locations Fixed:**
+- `main.py:1950` - Spread entry signal
+- `main.py:2922` - Intraday entry signal
+- `main.py:2990` - Spread entry signal (second location)
+
+**Before:**
+```python
+portfolio_value=self.Portfolio.TotalPortfolioValue  # BUG: Uses margin
+```
+
+**After:**
+```python
+portfolio_value=self.capital_engine.get_tradeable_equity()  # FIX: Cash only
+```
+
+### Issue 2: Tiered Dollar Caps
+
+**Problem:** Flat percentage is too volatile for small accounts, too restrictive for large accounts.
+
+**Solution:** Implement `min(percentage_allocation, dollar_cap)` with tiered scaling:
+
+| Tier | Tradeable Equity | Max Per Spread |
+|:----:|:----------------:|:--------------:|
+| 1 | < $60,000 | $5,000 |
+| 2 | $60,000 - $100,000 | $10,000 |
+| 3 | > $100,000 | No cap (% only) |
+
+**Implementation:**
+
+```python
+def _apply_tiered_dollar_cap(self, raw_allocation: float, tradeable_equity: float) -> float:
+    if tradeable_equity < config.OPTIONS_DOLLAR_CAP_TIER_1_THRESHOLD:
+        return min(raw_allocation, config.OPTIONS_DOLLAR_CAP_TIER_1)  # $5K
+    elif tradeable_equity < config.OPTIONS_DOLLAR_CAP_TIER_2_THRESHOLD:
+        return min(raw_allocation, config.OPTIONS_DOLLAR_CAP_TIER_2)  # $10K
+    else:
+        return raw_allocation  # No cap
+```
+
+**Example ($50K account):**
+- Raw allocation: $50K × 18.75% = $9,375
+- Tier 1 cap: $5,000
+- Final: min($9,375, $5,000) = **$5,000**
+
+### Issues 3 & 4: Verification
+
+**Multi-Leg Fill Tracking (V2.5):**
+- Confirmed `abs(fill_qty)` used in 4 locations
+- Spread mode check happens BEFORE sign check
+- Both legs captured regardless of positive/negative qty
+
+**Atomic Combo Exits (V2.5):**
+- `check_spread_exit_signals()` returns single signal with combo metadata
+- `check_friday_firewall_exit()` returns single signal with combo metadata
+- Router creates `ComboMarketOrder` for atomic execution
+
+### Config Additions
+
+```python
+# V2.7: Tiered Options Dollar Caps
+OPTIONS_DOLLAR_CAP_TIER_1_THRESHOLD = 60_000
+OPTIONS_DOLLAR_CAP_TIER_2_THRESHOLD = 100_000
+OPTIONS_DOLLAR_CAP_TIER_1 = 5_000
+OPTIONS_DOLLAR_CAP_TIER_2 = 10_000
+```
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `config.py` | 4 new tiered cap parameters |
+| `engines/satellite/options_engine.py` | `_apply_tiered_dollar_cap()`, updated `get_mode_allocation()` |
+| `main.py` | 3 locations: Use `get_tradeable_equity()` instead of `TotalPortfolioValue` |
+
+### Test Results
+
+- **1298 passed**, 6 failed (pre-existing stop tier mismatches, unrelated to V2.7)
+- All V2.7 changes compile successfully
+- QC compliance tests pass
+
+---
+
 ## Sync Workflow
 
 ```bash
@@ -2348,4 +2449,4 @@ lean cloud backtest AlphaNextGen
 
 ---
 
-*Document created: 2026-01-30 | Last updated: 2026-02-02 (V2.6 Spread Engine Bug Fixes - 16 Bugs)*
+*Document created: 2026-01-30 | Last updated: 2026-02-02 (V2.7 Options Engine Capital Synchronization)*
