@@ -93,18 +93,24 @@ self.log("INTRADAY_SIGNAL: ...", trades_only=False)  # Silent in backtests
 **Lean Workspace:** `~/Documents/Trading Github/lean-workspace/AlphaNextGen`
 
 ```bash
-# Run backtest with auto-generated name (git branch + timestamp):
-./scripts/qc_backtest.sh
+# RECOMMENDED: Wait for completion and see results (use this!)
+./scripts/qc_backtest.sh "V2.11-MyFeature" --open
 
-# Run backtest with custom name:
+# Fire-and-forget (async, just starts the backtest):
 ./scripts/qc_backtest.sh "V2.4.4-MyFeature"
+
+# Auto-generated name from git branch:
+./scripts/qc_backtest.sh --open
 ```
+
+**IMPORTANT FOR CLAUDE:** Always use `--open` flag to wait for backtest completion and access results directly. Without `--open`, the backtest runs async and you cannot see the results.
 
 **What the script does:**
 1. Syncs ALL project files (main.py, config.py, engines/, portfolio/, etc.) to lean-workspace
 2. Pushes to QuantConnect cloud via `lean cloud push`
 3. Starts the backtest with specified name
-4. Prints the backtest URL for viewing results
+4. With `--open`: Waits for completion and streams results to terminal
+5. Prints the backtest URL for viewing results
 
 **Example output:**
 ```

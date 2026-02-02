@@ -3,14 +3,17 @@
 # QC Backtest Script - Automated sync, push, and backtest for QuantConnect
 # =============================================================================
 # Usage:
-#   ./scripts/qc_backtest.sh                    # Uses git branch name as backtest name
-#   ./scripts/qc_backtest.sh "My-Backtest-Name" # Custom backtest name
+#   ./scripts/qc_backtest.sh                         # Fire-and-forget (async)
+#   ./scripts/qc_backtest.sh "My-Backtest-Name"      # Custom name (async)
+#   ./scripts/qc_backtest.sh --open                  # Wait for completion
+#   ./scripts/qc_backtest.sh "My-Name" --open        # Custom name + wait
 #
 # What it does:
 #   1. Syncs ALL project files to lean-workspace/AlphaNextGen
 #   2. Pushes to QuantConnect cloud
 #   3. Starts a backtest with the specified name
-#   4. Prints the backtest URL
+#   4. With --open: Waits for completion and outputs results
+#   5. Prints the backtest URL
 # =============================================================================
 
 set -e  # Exit on any error
@@ -28,11 +31,20 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Get backtest name from argument or generate from git branch
-if [ -n "$1" ]; then
-    BACKTEST_NAME="$1"
-else
-    # Get current git branch and clean it up for backtest name
+# Parse arguments
+BACKTEST_NAME=""
+OPEN_FLAG=""
+
+for arg in "$@"; do
+    if [ "$arg" == "--open" ]; then
+        OPEN_FLAG="--open"
+    elif [ -z "$BACKTEST_NAME" ]; then
+        BACKTEST_NAME="$arg"
+    fi
+done
+
+# Generate backtest name if not provided
+if [ -z "$BACKTEST_NAME" ]; then
     cd "$SRC"
     BRANCH=$(git branch --show-current)
     # Replace slashes with dashes, remove "testing/" prefix
@@ -45,6 +57,11 @@ echo -e "${BLUE}║           QC BACKTEST - AlphaNextGen V2                     
 echo -e "${BLUE}╚═══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "${YELLOW}Backtest Name:${NC} $BACKTEST_NAME"
+if [ -n "$OPEN_FLAG" ]; then
+    echo -e "${YELLOW}Mode:${NC} Wait for completion (--open)"
+else
+    echo -e "${YELLOW}Mode:${NC} Fire-and-forget (async)"
+fi
 echo ""
 
 # Step 1: Sync files
@@ -73,19 +90,33 @@ echo -e "${GREEN}   ✓ Push complete${NC}"
 
 # Step 3: Start backtest
 echo -e "${BLUE}[3/3]${NC} Starting backtest..."
-OUTPUT=$(lean cloud backtest "$PROJECT_NAME" --name "$BACKTEST_NAME" 2>&1)
 
-# Extract URL from output
-BACKTEST_URL=$(echo "$OUTPUT" | grep -o 'https://www.quantconnect.com/project/[^ ]*' | head -1)
+if [ -n "$OPEN_FLAG" ]; then
+    # --open mode: Wait for completion and show results
+    echo -e "${YELLOW}   Waiting for backtest to complete...${NC}"
+    lean cloud backtest "$PROJECT_NAME" --name "$BACKTEST_NAME" --open 2>&1
+    BACKTEST_STATUS=$?
 
-echo -e "${GREEN}   ✓ Backtest started${NC}"
-echo ""
-echo -e "${BLUE}╔═══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║                      BACKTEST STARTED                         ║${NC}"
-echo -e "${BLUE}╚═══════════════════════════════════════════════════════════════╝${NC}"
-echo ""
-echo -e "${YELLOW}Name:${NC} $BACKTEST_NAME"
-echo -e "${YELLOW}URL:${NC}  $BACKTEST_URL"
-echo ""
-echo -e "${GREEN}View results at:${NC}"
-echo "$BACKTEST_URL"
+    echo ""
+    echo -e "${BLUE}╔═══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║                    BACKTEST COMPLETED                         ║${NC}"
+    echo -e "${BLUE}╚═══════════════════════════════════════════════════════════════╝${NC}"
+else
+    # Async mode: Fire and forget
+    OUTPUT=$(lean cloud backtest "$PROJECT_NAME" --name "$BACKTEST_NAME" 2>&1)
+
+    # Extract URL from output
+    BACKTEST_URL=$(echo "$OUTPUT" | grep -o 'https://www.quantconnect.com/project/[^ ]*' | head -1)
+
+    echo -e "${GREEN}   ✓ Backtest started${NC}"
+    echo ""
+    echo -e "${BLUE}╔═══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║                      BACKTEST STARTED                         ║${NC}"
+    echo -e "${BLUE}╚═══════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${YELLOW}Name:${NC} $BACKTEST_NAME"
+    echo -e "${YELLOW}URL:${NC}  $BACKTEST_URL"
+    echo ""
+    echo -e "${GREEN}View results at:${NC}"
+    echo "$BACKTEST_URL"
+fi
