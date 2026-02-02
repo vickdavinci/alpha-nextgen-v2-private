@@ -83,6 +83,34 @@
 
 ---
 
+### V2.16-BT: Backtest State Persistence Fixes (2026-02-02) — P0 COMPLETE ✅
+
+**Goal:** Fix 5 critical bugs affecting multi-day backtest accuracy.
+
+| # | Fix | Priority | Status |
+|:-:|-----|:--------:|:------:|
+| 1 | **clear_all_positions()** - Add _swing_position clearing | P0 | ✅ |
+| 2 | **Swing expiry check** - ZOMBIE_CLEAR on expired positions | P0 | ✅ |
+| 3 | **Spread persistence** - Save/restore _spread_position | P0 | ✅ |
+| 4 | **Kill switch -4% preemptive** - Hedge exposure gap | P1 | ⏳ |
+| 5 | **Commission-aware profit** - 45% vs 50% target | P1 | ⏳ |
+
+**Key Changes:**
+1. `clear_all_positions()` now clears `_swing_position` (was missing)
+2. `restore_state()` validates expiry for legacy, swing, and spread positions
+3. `_spread_position` persisted to ObjectStore for multi-day backtests
+4. Defensive coding for tests where `_algorithm` not initialized
+
+**Files Modified:**
+- `engines/satellite/options_engine.py` - All 3 P0 fixes
+- `tests/test_options_engine.py` - Updated fixture expiry dates
+
+**Commit:** `178d55b` - `fix(options): V2.16-BT backtest state persistence and zombie position fixes`
+
+**Tests:** 131 passed, 6 failed (pre-existing StopTier failures)
+
+---
+
 ### V2.12 AAP Audit Bug Fixes (2026-02-02) — COMPLETE ✅
 
 **Root Cause:** V2.11 3-month backtest showed -62% loss due to **exit signal bug** (not strategy failure):
@@ -1994,4 +2022,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 01 February 2026 (V2.3.23 Cold Start Duplicate Orders Fix)*
+*Last Updated: 02 February 2026 (V2.16-BT Backtest State Persistence Fixes)*
