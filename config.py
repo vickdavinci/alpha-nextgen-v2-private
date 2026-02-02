@@ -296,6 +296,32 @@ TREND_SYMBOL_ALLOCATIONS = {
 }
 TREND_TOTAL_ALLOCATION = 0.55  # 55% total to Trend Engine
 
+# =============================================================================
+# V2.4 STRUCTURAL TREND - SMA50 + HARD STOP
+# =============================================================================
+# V2.4 replaces Chandelier trailing stops with simpler SMA50 structural trend.
+# Benefits:
+# - Allows 3% minor volatility without exit (if above SMA50)
+# - Longer holding periods (30-90 days vs 5-15 days)
+# - Cleaner logic than tiered ATR multipliers
+#
+# Entry: MA200 + ADX >= 25 (unchanged)
+# Exit: Close < SMA50 * (1 - buffer) OR Hard Stop Hit
+
+TREND_USE_SMA50_EXIT = True  # V2.4: Use SMA50 exit instead of Chandelier
+TREND_SMA_PERIOD = 50  # 50-day SMA for structural trend
+TREND_SMA_EXIT_BUFFER = 0.02  # Exit when close < SMA50 * (1 - 2%)
+
+# Hard Stop Percentages (asset-specific, from entry price)
+# 3× ETFs need tighter stops due to higher daily volatility (5-7% swings)
+# 2× ETFs can tolerate wider stops (2-3% daily swings)
+TREND_HARD_STOP_PCT = {
+    "QLD": 0.15,  # 15% hard stop (2× ETF)
+    "SSO": 0.15,  # 15% hard stop (2× ETF)
+    "TNA": 0.12,  # 12% hard stop (3× ETF - more volatile)
+    "FAS": 0.12,  # 12% hard stop (3× ETF - more volatile)
+}
+
 # Mean Reversion Allocations (10% total)
 MR_SYMBOL_ALLOCATIONS = {
     "TQQQ": 0.05,  # 5% - 3× Nasdaq

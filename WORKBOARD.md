@@ -167,6 +167,74 @@ The fundamental issue was **Allocation Reservation ≠ Margin Reservation**:
 
 **Tests:** 1349 passed, 2 skipped
 
+### V2.4: Structural Trend - SMA50 + Hard Stop (2026-02-01)
+
+**Goal:** Replace Chandelier trailing stops with simpler SMA50 structural trend exit.
+
+| Feature | Description | Status |
+|---------|-------------|:------:|
+| SMA50 Exit Logic | Exit when close < SMA50 * (1 - 2%) | ✅ Implemented |
+| Hard Stop | Asset-specific: 15% (2×), 12% (3×) | ✅ Implemented |
+| Backward Compatible | `TREND_USE_SMA50_EXIT = True/False` switch | ✅ Implemented |
+| SMA50 Indicators | Added for QLD, SSO, TNA, FAS | ✅ Implemented |
+
+**Benefits:**
+- Allows 3% minor volatility without exit (if above SMA50)
+- Longer holding periods (30-90 days vs 5-15 days)
+- Cleaner logic than tiered ATR multipliers
+
+**Config:**
+```python
+TREND_USE_SMA50_EXIT = True
+TREND_SMA_PERIOD = 50
+TREND_SMA_EXIT_BUFFER = 0.02  # 2%
+TREND_HARD_STOP_PCT = {"QLD": 0.15, "SSO": 0.15, "TNA": 0.12, "FAS": 0.12}
+```
+
+**Files Changed:**
+- `config.py` - SMA50 config, hard stop percentages
+- `main.py` - SMA50 indicators, pass to trend engine
+- `trend_engine.py` - `_check_sma50_exit()`, `_check_chandelier_exit()`
+
+**Validation Criteria:**
+- [ ] QLD NOT sold during 3% drops if above SMA50
+- [ ] Hard stops trigger at 12%/15% thresholds
+- [ ] No whipsaws in choppy markets
+- [ ] Holding periods extend to 30+ days
+
+---
+
+## Planned Features (V2.5+)
+
+> **Roadmap Document:** `docs/v2-specs/V2_5_ROADMAP.md`
+
+### V2.5: Multi-Asset Basket (Q2 2026)
+
+| Symbol | Description | Allocation | Status |
+|--------|-------------|:----------:|:------:|
+| TMF | 3× Treasury Bond | 10% | 📋 Planned |
+| UGL | 2× Gold | 10% | 📋 Planned |
+
+**Changes:**
+- Add TMF, UGL to Trend Engine
+- Remove TNA, FAS (or reconfigure)
+- Total allocation: 55% → 65%
+- Resolve TMF conflict with Hedge Engine
+
+### V2.6: Mean Reversion Bidirectional (Q3 2026)
+
+| Symbol | Description | Direction | Status |
+|--------|-------------|-----------|:------:|
+| SQQQ | 3× Inverse Nasdaq | SHORT | 📋 Planned |
+| SOXS | 3× Inverse Semiconductor | SHORT | 📋 Planned |
+
+**Logic:**
+- Short entry: RSI > 75 + Rally > 2.5%
+- Mutual exclusivity: block long if short held
+- Total MR allocation (long + short) ≤ 10%
+
+---
+
 ### V2.3.12 Backtest Results (2026-01-31) — Historical
 
 **Backtest:** V2.3.12-ComboFix-2month | **Result:** +4.09% | **Orders:** 143 | **Options:** 7 only!

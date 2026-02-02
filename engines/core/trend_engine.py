@@ -311,12 +311,18 @@ class TrendEngine:
         adx: float,
         regime_score: float,
         atr: float,
+        sma50: Optional[float] = None,
     ) -> Optional[TargetWeight]:
         """
-        Check for V2 trend exit signals (MA200, ADX, regime).
+        Check for trend exit signals.
 
-        This is the EOD check for MA200, ADX, and regime exits.
-        Chandelier stop is checked separately via check_stop_hit.
+        V2.4: If TREND_USE_SMA50_EXIT is True, uses SMA50 + Hard Stop logic.
+        Otherwise, uses original MA200/ADX/Regime + Chandelier stop logic.
+
+        SMA50 Benefits:
+        - Allows 3% minor volatility without exit (if above SMA50)
+        - Longer holding periods (30-90 days vs 5-15 days)
+        - Cleaner logic than tiered ATR multipliers
 
         Args:
             symbol: Symbol to check.
@@ -326,6 +332,7 @@ class TrendEngine:
             adx: Current ADX(14) value.
             regime_score: Current smoothed regime score.
             atr: Current 14-period ATR.
+            sma50: V2.4 - 50-period SMA for structural trend exit (optional).
 
         Returns:
             TargetWeight for exit, or None if no exit signal.
@@ -338,24 +345,116 @@ class TrendEngine:
             self.log(f"TREND: {symbol} exit check skipped - price data not ready")
             return None
 
+        position = self._positions[symbol]
+
+        # Update highest high (used by both exit modes)
+        if high > position.highest_high:
+            position.highest_high = high
+
+        # V2.4: SMA50 + Hard Stop exit mode
+        if config.TREND_USE_SMA50_EXIT and sma50 is not None and _is_valid_float(sma50):
+            return self._check_sma50_exit(symbol, close, sma50, position, regime_score)
+
+        # V2.2: Original Chandelier exit mode (fallback)
+        return self._check_chandelier_exit(symbol, close, ma200, adx, regime_score, atr, position)
+
+    def _check_sma50_exit(
+        self,
+        symbol: str,
+        close: float,
+        sma50: float,
+        position: TrendPosition,
+        regime_score: float,
+    ) -> Optional[TargetWeight]:
+        """
+        V2.4: SMA50 + Hard Stop exit logic.
+
+        Exit Conditions:
+        1. Close < SMA50 * (1 - buffer) - Structural trend break
+        2. Loss from entry >= Hard Stop % - Risk management
+        3. Regime < 30 - Market deterioration (kept from V2.2)
+
+        Allows minor volatility (3% drops) without exit if price stays above SMA50.
+        """
+        # Exit 1: SMA50 structural trend break
+        sma50_exit_level = sma50 * (1 - config.TREND_SMA_EXIT_BUFFER)
+        if close < sma50_exit_level:
+            reason = (
+                f"SMA50_BREAK: Close ${close:.2f} < SMA50 ${sma50:.2f} * "
+                f"(1 - {config.TREND_SMA_EXIT_BUFFER:.0%}) = ${sma50_exit_level:.2f}"
+            )
+            self.log(f"TREND: EXIT_SIGNAL {symbol} | {reason}")
+            return TargetWeight(
+                symbol=symbol,
+                target_weight=0.0,
+                source="TREND",
+                urgency=Urgency.EOD,
+                reason=reason,
+            )
+
+        # Exit 2: Hard stop from entry (asset-specific)
+        hard_stop_pct = config.TREND_HARD_STOP_PCT.get(symbol, 0.15)
+        if position.entry_price > 0:
+            loss_pct = (position.entry_price - close) / position.entry_price
+            if loss_pct >= hard_stop_pct:
+                reason = (
+                    f"HARD_STOP: Loss {loss_pct:.1%} >= {hard_stop_pct:.0%} | "
+                    f"Entry ${position.entry_price:.2f} -> ${close:.2f}"
+                )
+                self.log(f"TREND: EXIT_SIGNAL {symbol} | {reason}")
+                return TargetWeight(
+                    symbol=symbol,
+                    target_weight=0.0,
+                    source="TREND",
+                    urgency=Urgency.IMMEDIATE,  # Hard stop is urgent
+                    reason=reason,
+                )
+
+        # Exit 3: Regime deterioration (kept from V2.2)
+        if regime_score < config.TREND_EXIT_REGIME:
+            reason = f"REGIME_EXIT: Score ({regime_score:.1f}) < {config.TREND_EXIT_REGIME}"
+            self.log(f"TREND: EXIT_SIGNAL {symbol} | {reason}")
+            return TargetWeight(
+                symbol=symbol,
+                target_weight=0.0,
+                source="TREND",
+                urgency=Urgency.EOD,
+                reason=reason,
+            )
+
+        return None  # Hold position - above SMA50, no hard stop hit
+
+    def _check_chandelier_exit(
+        self,
+        symbol: str,
+        close: float,
+        ma200: float,
+        adx: float,
+        regime_score: float,
+        atr: float,
+        position: TrendPosition,
+    ) -> Optional[TargetWeight]:
+        """
+        V2.2: Original Chandelier trailing stop exit logic.
+
+        Exit Conditions:
+        1. Close < MA200 - Trend reversal
+        2. ADX < threshold - Momentum exhaustion
+        3. Regime < 30 - Market deterioration
+
+        Note: Chandelier stop hit is checked separately via check_stop_hit().
+        """
+        # Validate indicators for Chandelier mode
         if not _is_valid_float(ma200) or not _is_valid_float(adx):
             self.log(f"TREND: {symbol} exit check skipped - indicators not ready")
             return None
 
         if not _is_valid_float(atr) or atr <= 0:
-            # ATR not ready, skip stop update but still check other exits
             atr = 0.0  # Will skip stop update
-
-        position = self._positions[symbol]
-
-        # Update highest high
-        if high > position.highest_high:
-            position.highest_high = high
 
         # Update trailing stop
         self._update_chandelier_stop(position, atr)
 
-        # Check exit conditions
         # Exit 1: MA200 exit - close < MA200 (trend reversal)
         if close < ma200:
             reason = f"MA200_EXIT: Close (${close:.2f}) < MA200 (${ma200:.2f})"

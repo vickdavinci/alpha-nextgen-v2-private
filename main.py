@@ -497,6 +497,13 @@ class AlphaNextGen(QCAlgorithm):
             self.fas, config.ATR_PERIOD, MovingAverageType.Wilders, Resolution.Daily
         )
 
+        # V2.4: SMA50 for Structural Trend exit (replaces Chandelier trailing stops)
+        # SMA50 allows minor volatility (3% drops) without exit if above trend line
+        self.qld_sma50 = self.SMA(self.qld, config.TREND_SMA_PERIOD, Resolution.Daily)
+        self.sso_sma50 = self.SMA(self.sso, config.TREND_SMA_PERIOD, Resolution.Daily)
+        self.tna_sma50 = self.SMA(self.tna, config.TREND_SMA_PERIOD, Resolution.Daily)
+        self.fas_sma50 = self.SMA(self.fas, config.TREND_SMA_PERIOD, Resolution.Daily)
+
         # ---------------------------------------------------------------------
         # Mean Reversion Engine Indicators (Minute resolution for intraday)
         # ---------------------------------------------------------------------
@@ -1471,18 +1478,19 @@ class AlphaNextGen(QCAlgorithm):
         entry_candidates = []
 
         # Build symbol data map for cleaner iteration
+        # V2.4: Added SMA50 for structural trend exit
         symbol_data = {
-            "QLD": (self.qld, self.qld_ma200, self.qld_adx, self.qld_atr),
-            "SSO": (self.sso, self.sso_ma200, self.sso_adx, self.sso_atr),
-            "TNA": (self.tna, self.tna_ma200, self.tna_adx, self.tna_atr),
-            "FAS": (self.fas, self.fas_ma200, self.fas_adx, self.fas_atr),
+            "QLD": (self.qld, self.qld_ma200, self.qld_adx, self.qld_atr, self.qld_sma50),
+            "SSO": (self.sso, self.sso_ma200, self.sso_adx, self.sso_atr, self.sso_sma50),
+            "TNA": (self.tna, self.tna_ma200, self.tna_adx, self.tna_atr, self.tna_sma50),
+            "FAS": (self.fas, self.fas_ma200, self.fas_adx, self.fas_atr, self.fas_sma50),
         }
 
         # Process each symbol in priority order
         for symbol in trend_symbols:
-            security, ma200_ind, adx_ind, atr_ind = symbol_data[symbol]
+            security, ma200_ind, adx_ind, atr_ind, sma50_ind = symbol_data[symbol]
 
-            # Skip if indicators not ready
+            # Skip if indicators not ready (SMA50 needs 50 days warmup)
             if not (ma200_ind.IsReady and adx_ind.IsReady and atr_ind.IsReady):
                 continue
 
@@ -1491,6 +1499,8 @@ class AlphaNextGen(QCAlgorithm):
             ma200 = ma200_ind.Current.Value
             adx = adx_ind.Current.Value
             atr = atr_ind.Current.Value
+            # V2.4: SMA50 for structural trend exit (may not be ready during warmup)
+            sma50 = sma50_ind.Current.Value if sma50_ind.IsReady else None
 
             # ALWAYS check exit signals for invested positions
             if self.Portfolio[security].Invested:
@@ -1502,6 +1512,7 @@ class AlphaNextGen(QCAlgorithm):
                     adx=adx,
                     regime_score=regime_state.smoothed_score,
                     atr=atr,
+                    sma50=sma50,  # V2.4: Pass SMA50 for structural trend exit
                 )
                 if signal:
                     self.portfolio_router.receive_signal(signal)
