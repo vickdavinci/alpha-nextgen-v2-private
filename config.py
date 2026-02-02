@@ -805,6 +805,11 @@ LOG_VIX_SPIKE_MIN_MOVE = 2.0  # Minimum VIX move to bypass throttle
 # Only attempt spread selection every 15 minutes (not every minute)
 SPREAD_SCAN_THROTTLE_MINUTES = 15
 
+# V2.4.3: Spread FAILURE cooldown - if spread construction fails, don't retry for 4 hours
+# Problem: Engine retried 340 times when no valid contracts existed
+# Solution: After failure, enter 4-hour cooldown (market conditions won't change that fast)
+SPREAD_FAILURE_COOLDOWN_HOURS = 4
+
 # V2.3.24: Rejection log throttle to reduce log spam
 # Only log MIN_TRADE_VALUE rejections once per interval
 REJECTION_LOG_THROTTLE_MINUTES = 15

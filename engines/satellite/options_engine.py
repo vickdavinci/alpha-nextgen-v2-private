@@ -1103,6 +1103,10 @@ class OptionsEngine:
         # V2.3.21: Spread scan throttle - only attempt every 15 minutes to reduce log noise
         self._last_spread_scan_time: Optional[str] = None
 
+        # V2.4.3: Spread FAILURE cooldown - don't retry for 4 hours after construction fails
+        # Prevents 340+ retries when no valid contracts exist
+        self._spread_failure_cooldown_until: Optional[str] = None
+
         # V2.3.2 FIX #4: Track if pending entry is intraday (for correct position registration)
         self._pending_intraday_entry: bool = False
 
@@ -1122,6 +1126,46 @@ class OptionsEngine:
             # V2.3.3 DEBUG: Enable all options logging for backtest diagnostics
             # TODO: Revert to LiveMode check after debugging complete
             self.algorithm.Log(message)
+
+    def _set_spread_failure_cooldown(self, current_time: Optional[str]) -> None:
+        """
+        V2.4.3: Set cooldown after spread construction fails.
+
+        Prevents 340+ retries when no valid contracts exist.
+        Cooldown = 4 hours (SPREAD_FAILURE_COOLDOWN_HOURS).
+
+        Args:
+            current_time: Current timestamp in "YYYY-MM-DD HH:MM:SS" format.
+        """
+        if not current_time:
+            return
+
+        try:
+            # Parse current time
+            # Format: "YYYY-MM-DD HH:MM:SS"
+            date_part = current_time[:10]  # "YYYY-MM-DD"
+            time_part = current_time[11:19]  # "HH:MM:SS"
+            hour = int(time_part[:2])
+            minute = int(time_part[3:5])
+            second = int(time_part[6:8])
+
+            # Add cooldown hours
+            cooldown_hours = config.SPREAD_FAILURE_COOLDOWN_HOURS
+            new_hour = hour + cooldown_hours
+
+            # Handle day overflow (if cooldown pushes past midnight)
+            if new_hour >= 24:
+                # Just set to end of day - will reset tomorrow anyway
+                cooldown_until = f"{date_part} 23:59:59"
+            else:
+                cooldown_until = f"{date_part} {new_hour:02d}:{minute:02d}:{second:02d}"
+
+            self._spread_failure_cooldown_until = cooldown_until
+            self.log(
+                f"SPREAD: Construction failed - entering {cooldown_hours}h cooldown until {cooldown_until}"
+            )
+        except (ValueError, IndexError) as e:
+            self.log(f"SPREAD: Failed to set cooldown: {e}")
 
     # =========================================================================
     # ENTRY SCORE CALCULATION
@@ -1371,6 +1415,19 @@ class OptionsEngine:
         Returns:
             Tuple of (long_leg, short_leg) or None if no valid spread found.
         """
+        # V2.4.3: Check FAILURE cooldown first (4-hour penalty after failed construction)
+        if current_time and self._spread_failure_cooldown_until:
+            try:
+                # Compare timestamps (format: "YYYY-MM-DD HH:MM:SS")
+                if current_time < self._spread_failure_cooldown_until:
+                    # Still in cooldown - silently skip (don't spam logs)
+                    return None
+                else:
+                    # Cooldown expired - clear it and proceed
+                    self._spread_failure_cooldown_until = None
+            except (ValueError, TypeError):
+                pass  # If comparison fails, proceed with scan
+
         # V2.3.21: Throttle spread scanning to reduce log noise
         # Only scan every 15 minutes (config.SPREAD_SCAN_THROTTLE_MINUTES)
         if current_time and self._last_spread_scan_time:
@@ -1408,6 +1465,7 @@ class OptionsEngine:
 
         if len(filtered) < 2:
             self.log(f"SPREAD: Not enough {direction.value} contracts for spread")
+            self._set_spread_failure_cooldown(current_time)
             return None
 
         # For puts, delta is negative so we need to handle that
@@ -1426,6 +1484,7 @@ class OptionsEngine:
 
         if not long_candidates:
             self.log("SPREAD: No valid ITM contract for long leg (delta 0.55-0.85)")
+            self._set_spread_failure_cooldown(current_time)
             return None
 
         # V2.3.21: Sort by delta proximity to 0.70 (ITM target for Smart Swing)
@@ -1481,6 +1540,7 @@ class OptionsEngine:
                 f"SPREAD: No valid short leg | LongStrike={long_leg.strike} | "
                 f"WidthRange=${config.SPREAD_WIDTH_MIN}-${config.SPREAD_WIDTH_MAX}"
             )
+            self._set_spread_failure_cooldown(current_time)
             return None
 
         # V2.4.3: Sort by WIDTH proximity to target, then by delta as tiebreaker
@@ -3347,6 +3407,10 @@ class OptionsEngine:
 
             # Reset Micro Regime Engine for new day
             self._micro_regime_engine.reset_daily()
+
+            # V2.4.3: Clear spread failure cooldown for new day
+            self._spread_failure_cooldown_until = None
+            self._last_spread_scan_time = None
 
             # Clear intraday position (should not exist overnight)
             if self._intraday_position is not None:
