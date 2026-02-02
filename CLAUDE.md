@@ -87,6 +87,10 @@ self.log("INTRADAY_SIGNAL: ...", trades_only=False)  # Silent in backtests
 
 ### QuantConnect Backtest Workflow
 
+> **CRITICAL: Always sync ALL files before pushing to QC cloud!**
+> The project has a modular structure (engines/, portfolio/, etc.).
+> Pushing only main.py and config.py will cause runtime errors.
+
 **Workspace Location:** `~/Desktop/lean-cli-workspace/`
 **Cloud Project:** `AlphaNextGen 2` (cloud-id: 27678023)
 
@@ -121,6 +125,13 @@ cp -r "$SRC/engines" "$SRC/portfolio" "$SRC/execution" "$SRC/models" \
 lean cloud push --project "AlphaNextGen 2" && \
 lean cloud backtest "AlphaNextGen 2" --name "backtest-name"
 ```
+
+**Checklist before running backtest:**
+- [ ] All engine files synced (engines/core/, engines/satellite/)
+- [ ] All infrastructure synced (portfolio/, execution/, models/, persistence/)
+- [ ] Supporting files synced (scheduling/, utils/, data/)
+- [ ] main.py and config.py synced
+- [ ] `lean cloud push` completed successfully
 
 **Notes:**
 - lean CLI is already installed globally
