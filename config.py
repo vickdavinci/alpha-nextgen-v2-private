@@ -522,9 +522,10 @@ SPREAD_PROFIT_TARGET_PCT = 0.50  # Take profit at 50% of max profit
 SPREAD_REGIME_EXIT_BULL = 45  # Exit Bull Call if regime drops below 45
 SPREAD_REGIME_EXIT_BEAR = 60  # Exit Bear Put if regime rises above 60
 
-# Delta targets for spread legs
-SPREAD_LONG_LEG_DELTA_MIN = 0.40  # V2.3.5: Widened from 0.45 per PART 9 - ATM ±0.10
-SPREAD_LONG_LEG_DELTA_MAX = 0.60  # V2.3.5: Widened from 0.55 per PART 9 - ATM ±0.10
+# Delta targets for spread legs - V2.3.21 "Smart Swing" Strategy
+# ITM Long Leg / OTM Short Leg: Prioritize execution with wider delta range
+SPREAD_LONG_LEG_DELTA_MIN = 0.55  # V2.3.21: ITM range (was 0.40 ATM)
+SPREAD_LONG_LEG_DELTA_MAX = 0.85  # V2.3.21: ITM range (was 0.60 ATM)
 SPREAD_SHORT_LEG_DELTA_MIN = 0.10  # V2.3.7: Accept more OTM (was 0.15)
 SPREAD_SHORT_LEG_DELTA_MAX = 0.50  # V2.3.7: Accept closer to ATM (was 0.45)
 
@@ -713,6 +714,10 @@ CONNECTION_TIMEOUT_MIN = 5
 
 LOG_THROTTLE_MINUTES = 15  # VIX spike log throttle interval
 LOG_VIX_SPIKE_MIN_MOVE = 2.0  # Minimum VIX move to bypass throttle
+
+# V2.3.21: Spread scan throttle to reduce log noise
+# Only attempt spread selection every 15 minutes (not every minute)
+SPREAD_SCAN_THROTTLE_MINUTES = 15
 
 # =============================================================================
 # SCHEDULING

@@ -180,8 +180,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2024, 1, 1)
-        self.SetEndDate(2024, 1, 8)  # V2.3.15: 1 week test for Sniper Logic
+        self.SetStartDate(2025, 1, 1)
+        self.SetEndDate(2025, 1, 31)  # January 2025 backtest
         self.SetCash(config.PHASE_SEED_MIN)  # $50,000 seed capital
 
         # All times are Eastern
@@ -1337,11 +1337,16 @@ class AlphaNextGen(QCAlgorithm):
         try:
             # Calculate max single position in dollars from percentage
             max_single_position = capital_state.tradeable_eq * capital_state.max_single_position_pct
+            # V2.3.21 FIX: Pass available_cash and locked_amount for SHV auto-liquidation
+            # Without these, router cannot calculate shortfall to sell SHV for BUY orders
             self.portfolio_router.process_immediate(
                 tradeable_equity=capital_state.tradeable_eq,
                 current_positions=current_positions,
                 current_prices=current_prices,
                 max_single_position=max_single_position,
+                available_cash=self.Portfolio.Cash,
+                locked_amount=capital_state.locked_amount,
+                current_time=str(self.Time),
             )
         except Exception as e:
             self.Log(f"SIGNAL_ERROR: Failed to process immediate signals - {e}")
@@ -1619,10 +1624,11 @@ class AlphaNextGen(QCAlgorithm):
         if len(candidate_contracts) < 2:
             return
 
-        # V2.3: Select spread legs (ATM long + OTM short)
+        # V2.3.21: Select spread legs (ITM long + OTM short) with 15-min throttle
         spread_legs = self.options_engine.select_spread_legs(
             contracts=candidate_contracts,
             direction=direction,
+            current_time=str(self.Time),
         )
         if spread_legs is None:
             return
@@ -2616,10 +2622,11 @@ class AlphaNextGen(QCAlgorithm):
         if len(candidate_contracts) < 2:
             return
 
-        # Select spread legs (ATM long + OTM short)
+        # V2.3.21: Select spread legs (ITM long + OTM short) with 15-min throttle
         spread_legs = self.options_engine.select_spread_legs(
             contracts=candidate_contracts,
             direction=direction,
+            current_time=str(self.Time),
         )
 
         # Calculate IV rank from options chain (V2.1)

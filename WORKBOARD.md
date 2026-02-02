@@ -591,6 +591,80 @@ OPTIONS_COLD_START_MULTIPLIER = 0.50  # V2.3.20: 50% sizing during cold start
 
 **Status:** V2.3.20 COLD START OPTIONS + SHV AUTO-LIQUIDATION complete - Ready for backtest validation
 
+**V2.3.21 FIX: PART 18 Options Engine + Router Fixes (2026-02-01):**
+
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **SHV auto-liquidation not triggered** - `_process_immediate_signals` missing cash params | CRITICAL | 🟡 IN PROGRESS |
+| 2 | **Router logging disabled** - `pass # Logging disabled` silences all router logs | HIGH | 🟡 IN PROGRESS |
+| 3 | **Spread delta mismatch** - Code uses ATM (0.40-0.60) but strategy needs ITM (0.70) | HIGH | 🟡 IN PROGRESS |
+| 4 | **Trend ignores pending MOO orders** - Generates duplicate signals for same symbol | HIGH | 🟡 IN PROGRESS |
+| 5 | **Cold Start + Trend conflict** - Both engines signal same symbols | HIGH | 🟡 IN PROGRESS |
+| 6 | **Position registered twice** - Duplicate `POSITION_REGISTERED` for same symbol | HIGH | 🟡 IN PROGRESS |
+| 7 | **452 "No valid contract" errors** - No throttling on spread scan (runs every minute) | HIGH | 🟡 IN PROGRESS |
+| 8 | **Kill switch loss % inconsistency** - Logs show two different loss percentages | LOW | 🟡 IN PROGRESS |
+
+**V2.3.21 Key Changes:**
+
+**Fix 1: SHV Auto-Liquidation Cash Params (CRITICAL)**
+- `_process_immediate_signals()` in main.py now passes `available_cash` and `locked_amount`
+- Without these, shortfall calculation used `available_cash=0.0` (default), breaking the logic
+- Fix: `available_cash=self.Portfolio.Cash`, `locked_amount=capital_state.locked_amount`
+
+**Fix 2: Enable Router Logging**
+- Removed `pass # Logging disabled` from `portfolio_router.py`
+- Fixed `if False and self.algorithm:` → `if self.algorithm:`
+- Now logs: `ROUTER: RECEIVED`, `SHV_AUTO_LIQUIDATE`, etc.
+
+**Fix 3: Spread Delta Range (ITM Long / OTM Short)**
+- Changed `SPREAD_LONG_LEG_DELTA_MIN` from 0.40 → 0.55
+- Changed `SPREAD_LONG_LEG_DELTA_MAX` from 0.60 → 0.85
+- Strategy: ITM long leg (delta ~0.70) + OTM short leg = "Smart Swing"
+- Wider range (0.55-0.85) prioritizes execution over precision
+
+**Fix 4: Trend Pending MOO Tracking**
+- Added `_pending_moo_symbols: Set[str]` to trend_engine.py
+- Check pending set before generating new `ENTRY_APPROVED` signals
+- Clear symbols from set after MOO orders execute
+
+**Fix 5: Cold Start + Trend Coordination**
+- Skip Trend entry signal if Cold Start already signaled same symbol
+- Prevents duplicate orders (e.g., BUY 194 QLD + BUY 243 QLD → immediate reversal)
+
+**Fix 6: Position Duplication Prevention**
+- Check if symbol already registered before calling `register_position()`
+- Log warning if duplicate registration attempted
+
+**Fix 7: Spread Scan Throttling (15-minute timer)**
+- Added `_last_spread_scan_time: Optional[datetime]` to main.py
+- Skip `select_spread_legs()` if < 15 minutes since last scan
+- Reduces log spam from 452 errors to ~30 per day
+
+**Fix 8: Kill Switch Logging Consistency**
+- Ensure single loss percentage logged (not two conflicting values)
+- Use `loss_from_sod` consistently
+
+**Config Changes:**
+```python
+# options_engine.py - ITM Long / OTM Short "Smart Swing"
+SPREAD_LONG_LEG_DELTA_MIN = 0.55  # Was 0.40 (ATM)
+SPREAD_LONG_LEG_DELTA_MAX = 0.85  # Was 0.60 (ATM)
+```
+
+**Evidence from V2.3.20 Backtest (Jan 2025):**
+- 452 "No valid ATM/OTM contract" errors
+- Spread ENTRY_SIGNAL generated but never filled (Jan 14)
+- Duplicate QLD orders: BUY 194 + BUY 243 → immediate SELL 243 (Jan 21)
+- No `SHV_AUTO_LIQUIDATE` or `ROUTER:` logs (logging disabled)
+
+**Root Cause (SHV):** `_process_immediate_signals()` called `process_immediate()` without `available_cash` or `locked_amount` parameters. These defaulted to 0.0, so shortfall calculation was always wrong.
+
+**Root Cause (Spread Delta):** V2.3 strategy targets ITM (delta 0.70) for directional exposure, but code used ATM range (0.40-0.60). Contracts with delta 0.70 were rejected as "not ATM".
+
+**Root Cause (Duplicate Orders):** Trend Engine generates `ENTRY_APPROVED` every EOD even when MOO order already pending. Weekend/holiday closure queues multiple MOO orders for same symbol.
+
+**Status:** V2.3.21 PART 18 FIXES in progress
+
 ---
 
 **V2.4.0 Planned: Bidirectional Mean Reversion (PART 12)**

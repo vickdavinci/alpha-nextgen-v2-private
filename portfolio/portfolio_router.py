@@ -185,8 +185,8 @@ class PortfolioRouter:
 
     def log(self, message: str) -> None:
         """Log via algorithm or skip for testing."""
-        pass  # Logging disabled
-        if False and self.algorithm:
+        # V2.3.21: Re-enabled logging for SHV auto-liquidation visibility
+        if self.algorithm:
             self.algorithm.Log(message)  # type: ignore[attr-defined]
 
     # =========================================================================

@@ -190,6 +190,10 @@ class TrendEngine:
         """Initialize Trend Engine."""
         self.algorithm = algorithm
         self._positions: Dict[str, TrendPosition] = {}
+        # V2.3.21: Track symbols with pending MOO orders to prevent duplicates
+        # When MOO signal generated at 15:45, symbol added here
+        # When fill received (9:30 next day), symbol moved to _positions
+        self._pending_moo_symbols: set = set()
 
     def log(self, message: str) -> None:
         """Log via algorithm or skip for testing."""
@@ -231,6 +235,10 @@ class TrendEngine:
 
         # Check if position already exists
         if symbol in self._positions:
+            return None
+
+        # V2.3.21: Check if MOO order already pending (submitted at 15:45, fills at 9:30)
+        if symbol in self._pending_moo_symbols:
             return None
 
         # Validate indicator inputs (prevent crashes from None/NaN)
@@ -278,6 +286,9 @@ class TrendEngine:
         )
 
         self.log(f"TREND: ENTRY_SIGNAL {symbol} | {reason} | Regime={regime_score:.1f}")
+
+        # V2.3.21: Mark symbol as pending MOO to prevent duplicate signals
+        self._pending_moo_symbols.add(symbol)
 
         # V2.3.3: Use symbol-specific allocation from config (not 1.0)
         # This ensures QLD gets 20%, SSO 15%, TNA 12%, FAS 8% as designed
@@ -501,6 +512,9 @@ class TrendEngine:
 
         self._positions[symbol] = position
 
+        # V2.3.21: Clear pending MOO flag now that position is registered
+        self._pending_moo_symbols.discard(symbol)
+
         self.log(
             f"TREND: POSITION_REGISTERED {symbol} | "
             f"Entry=${entry_price:.2f} | Stop=${initial_stop:.2f} | "
@@ -519,11 +533,27 @@ class TrendEngine:
         Returns:
             Removed position, or None if not found.
         """
+        # V2.3.21: Also clear any pending MOO for this symbol
+        self._pending_moo_symbols.discard(symbol)
+
         if symbol in self._positions:
             position = self._positions.pop(symbol)
             self.log(f"TREND: POSITION_REMOVED {symbol}")
             return position
         return None
+
+    def cancel_pending_moo(self, symbol: str) -> None:
+        """
+        V2.3.21: Cancel pending MOO tracking for a symbol.
+
+        Called when MOO order is cancelled or rejected.
+
+        Args:
+            symbol: Symbol to cancel pending MOO for.
+        """
+        if symbol in self._pending_moo_symbols:
+            self._pending_moo_symbols.discard(symbol)
+            self.log(f"TREND: PENDING_MOO_CANCELLED {symbol}")
 
     def has_position(self, symbol: str) -> bool:
         """Check if a position exists for symbol."""

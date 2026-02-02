@@ -1354,3 +1354,83 @@ Python
                     None,
                     f"VIX rising ({vix_direction.value}) - don't fade",
                 )
+#### PART 18 ####
+
+🟢 Part 1: Validation of Proposed Fixes (Trend/Risk)
+The 5 fixes provided by the developer are VALID and APPROVED. They correctly address the "double-signaling" and "logging" issues we saw in the logs.
+
+#1, #2 (Trend Pending Orders): Prevents duplicate entries. GO.
+
+#3 (Cold Start Conflict): Prevents Trend and Cold Start from fighting over the same symbol. GO.
+
+#4 (Position Duplication): Essential hygiene. GO.
+
+#5 (Risk Logging): Low impact, but good for debugging. GO.
+
+🔴 Part 2: The Critical Missing Piece (Options & Liquidity)
+The developer completely missed the root causes of the Options Engine failure. The logs showed 292 "No valid ATM contract" errors and 0 options trades for most of the month. The proposed fixes do nothing to solve this.
+
+You must implement these two specific patches immediately to fix the Options Engine and Yield Sleeve integration.
+
+1. Fix Spread Selection Logic (options_engine.py)
+The Bug: The code in select_spread_legs is hardcoded to find "ATM" contracts (Delta ~0.50) using SPREAD_LONG_LEG_DELTA_MIN. However, your V2.3 Swing Strategy is configured to target ITM contracts (Delta 0.70).
+
+Result: The engine rejects the 0.70 Delta contracts because they aren't "ATM".
+
+The Fix: Modify engines/satellite/options_engine.py (approx lines 700-710). We need to verify against the Swing Target delta, not the ATM range.
+
+Python
+    # In select_spread_legs method:
+    
+    # OLD (The Bug - hardcoded ATM check):
+    # if config.SPREAD_LONG_LEG_DELTA_MIN <= delta_abs <= config.SPREAD_LONG_LEG_DELTA_MAX:
+    
+    # NEW (The Fix - Use Swing Targets):
+    # Use the 0.70 target defined for Swing mode (+/- tolerance)
+    target = config.OPTIONS_SWING_DELTA_TARGET # 0.70
+    tolerance = 0.10
+    if (target - tolerance) <= delta_abs <= (target + tolerance):
+         # ... existing logic ...
+2. Fix Auto-Liquidation (portfolio_router.py)
+The Bug: The method _add_shv_liquidation_if_needed has been disabled/neutered.
+
+Evidence: The code comment explicitly says: "This method no longer adds SHV orders to avoid duplicate liquidation."
+
+The Consequence: When an Intraday or Swing trade fires at 10:30 AM, the Router sees "Insufficient Cash" (because it's all in SHV) and REJECTS the trade. It does not sell SHV to free up the cash until 15:45.
+
+The Fix: Restore the logic in portfolio_router.py to allow Immediate Liquidation when a trade requires it.
+
+Python
+    # In portfolio_router.py -> _add_shv_liquidation_if_needed
+    
+    # RESTORE THIS LOGIC:
+    if cash_needed > available_cash:
+        shortfall = cash_needed - available_cash
+        
+        # Check SHV balance
+        shv_balance = current_positions.get("SHV", 0)
+        
+        if shv_balance > shortfall:
+            # Create SELL order for SHV
+            quantity = int(shortfall / current_prices["SHV"]) + 1 # Buffer
+            
+            shv_sell = OrderIntent(
+                symbol="SHV",
+                quantity=quantity,
+                side=OrderSide.SELL,
+                order_type=OrderType.MARKET,
+                urgency=Urgency.IMMEDIATE,
+                reason="Auto-Liquidation for Trade Entry",
+                target_weight=0.0,
+                current_weight=0.0
+            )
+            
+            # Prepend to orders list so it executes FIRST
+            orders.insert(0, shv_sell)
+            self.log(f"ROUTER: Auto-liquidating {quantity} SHV for liquidity")
+Summary of Next Steps
+Implement the Dev's 5 fixes for Trend/Risk.
+
+Apply the Spread Delta fix in options_engine.py.
+
+Apply the Auto-Liquidation fix in portfolio_router.py.

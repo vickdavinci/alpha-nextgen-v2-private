@@ -369,6 +369,74 @@ OPTIONS_COLD_START_MULTIPLIER = 0.50  # 50% sizing during Days 1-5
 
 **Status:** V2.3.20 complete - Ready for backtest validation
 
+### V2.3.21 Fix: PART 18 Options Engine + Router Fixes (2026-02-01)
+
+**Based on analysis of V2.3.20 backtest logs (V2_3_20_Jan2025_1month_logs.txt)**
+
+**Critical Issues Found:**
+
+| # | Finding | Severity | Root Cause |
+|:-:|---------|:--------:|------------|
+| 1 | SHV auto-liquidation never triggered | CRITICAL | `_process_immediate_signals` missing `available_cash`, `locked_amount` params |
+| 2 | Router logging completely disabled | HIGH | `pass # Logging disabled` + `if False and` blocks all logs |
+| 3 | Spread delta mismatch (ATM vs ITM) | HIGH | Code uses 0.40-0.60 (ATM) but strategy needs 0.55-0.85 (ITM) |
+| 4 | Trend ignores pending MOO orders | HIGH | No tracking of pending symbols → duplicate ENTRY_APPROVED |
+| 5 | Cold Start + Trend signal same symbols | HIGH | Both engines generate signals for QLD → wasteful roundtrip |
+| 6 | Position registered twice | HIGH | Duplicate `POSITION_REGISTERED` for same symbol on same bar |
+| 7 | 452 "No valid contract" errors | HIGH | Spread scan runs every minute with no throttling |
+| 8 | Kill switch logs inconsistent % | LOW | Two different loss percentages logged for same event |
+
+**Fix 1: SHV Auto-Liquidation Cash Params (CRITICAL)**
+
+Problem: `_process_immediate_signals()` called `process_immediate()` without cash parameters.
+
+```python
+# AFTER (fixed) - main.py _process_immediate_signals():
+self.portfolio_router.process_immediate(
+    tradeable_equity=capital_state.tradeable_eq,
+    current_positions=current_positions,
+    current_prices=current_prices,
+    max_single_position=max_single_position,
+    available_cash=self.Portfolio.Cash,           # NEW
+    locked_amount=capital_state.locked_amount,    # NEW
+)
+```
+
+**Fix 2: Enable Router Logging**
+
+```python
+# AFTER (fixed) - portfolio_router.py:
+def log(self, message: str) -> None:
+    if self.algorithm:
+        self.algorithm.Log(message)
+```
+
+**Fix 3: Spread Delta Range - ITM Long / OTM Short ("Smart Swing")**
+
+```python
+# config.py - Widened for better execution
+SPREAD_LONG_LEG_DELTA_MIN = 0.55  # Was 0.40 (ATM)
+SPREAD_LONG_LEG_DELTA_MAX = 0.85  # Was 0.60 (ATM)
+```
+
+**Fix 4-6: Trend Pending MOO Tracking + Cold Start Coordination + Position Duplication**
+
+- Add `_pending_moo_symbols: Set[str]` to track pending MOO orders
+- Skip Trend entry if Cold Start already signaled same symbol
+- Check if position already registered before `register_position()`
+
+**Fix 7: Spread Scan Throttling (15-minute timer)**
+
+- Add `_last_spread_scan_time` tracker
+- Skip `select_spread_legs()` if < 15 minutes since last scan
+- Reduces 452 errors/day to ~30 errors/day
+
+**Fix 8: Kill Switch Logging Consistency**
+
+- Use single consistent loss calculation (`loss_from_sod`)
+
+**Status:** V2.3.21 in progress
+
 **V2.3.2 Architect Audit Fixes Applied (Part 1-2):**
 
 | # | Fix | File(s) | Status |

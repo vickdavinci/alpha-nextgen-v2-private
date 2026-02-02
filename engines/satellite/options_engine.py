@@ -1100,6 +1100,9 @@ class OptionsEngine:
         self._entry_attempted_today: bool = False
         self._swing_time_warning_logged: bool = False
 
+        # V2.3.21: Spread scan throttle - only attempt every 15 minutes to reduce log noise
+        self._last_spread_scan_time: Optional[str] = None
+
         # V2.3.2 FIX #4: Track if pending entry is intraday (for correct position registration)
         self._pending_intraday_entry: bool = False
 
@@ -1342,26 +1345,57 @@ class OptionsEngine:
         contracts: List[OptionContract],
         direction: OptionDirection,
         target_width: float = None,
+        current_time: str = None,
     ) -> Optional[tuple]:
         """
-        V2.3: Select long and short leg contracts for a debit spread.
+        V2.3.21: Select long and short leg contracts for a debit spread.
+
+        "Smart Swing" Strategy (V2.3.21):
+        - Long leg: ITM (delta 0.55-0.85) - prioritize execution
+        - Short leg: OTM (delta 0.10-0.50) - reduce cost basis
 
         For Bull Call Spread:
-        - Long leg: ATM call (delta 0.45-0.55)
-        - Short leg: OTM call ($3-5 higher strike, delta 0.25-0.40)
+        - Long leg: ITM call (delta 0.55-0.85)
+        - Short leg: OTM call (higher strike, delta 0.10-0.50)
 
         For Bear Put Spread:
-        - Long leg: ATM put (delta -0.45 to -0.55)
-        - Short leg: OTM put ($3-5 lower strike, delta -0.25 to -0.40)
+        - Long leg: ITM put (delta -0.55 to -0.85)
+        - Short leg: OTM put (lower strike, delta -0.10 to -0.50)
 
         Args:
             contracts: List of available OptionContract objects.
             direction: CALL for Bull Call Spread, PUT for Bear Put Spread.
             target_width: Target spread width (default from config).
+            current_time: Current timestamp for throttle check.
 
         Returns:
             Tuple of (long_leg, short_leg) or None if no valid spread found.
         """
+        # V2.3.21: Throttle spread scanning to reduce log noise
+        # Only scan every 15 minutes (config.SPREAD_SCAN_THROTTLE_MINUTES)
+        if current_time and self._last_spread_scan_time:
+            # Extract hour:minute from timestamps (format: "YYYY-MM-DD HH:MM:SS")
+            try:
+                current_min_str = current_time[11:16]  # "HH:MM"
+                last_min_str = self._last_spread_scan_time[11:16]
+                # Parse to minutes since midnight
+                curr_h, curr_m = int(current_min_str[:2]), int(current_min_str[3:5])
+                last_h, last_m = int(last_min_str[:2]), int(last_min_str[3:5])
+                curr_total = curr_h * 60 + curr_m
+                last_total = last_h * 60 + last_m
+                # Check if same day (compare dates)
+                if current_time[:10] == self._last_spread_scan_time[:10]:
+                    elapsed = curr_total - last_total
+                    if elapsed < config.SPREAD_SCAN_THROTTLE_MINUTES:
+                        # Skip scan, throttled
+                        return None
+            except (ValueError, IndexError):
+                pass  # If parsing fails, proceed with scan
+
+        # Update last scan time
+        if current_time:
+            self._last_spread_scan_time = current_time
+
         if not contracts:
             self.log("SPREAD: No contracts available for spread selection")
             return None
@@ -1379,7 +1413,8 @@ class OptionsEngine:
         # For puts, delta is negative so we need to handle that
         is_call = direction == OptionDirection.CALL
 
-        # Find ATM long leg (delta 0.45-0.55 for calls, -0.45 to -0.55 for puts)
+        # V2.3.21: Find ITM long leg (delta 0.55-0.85 for calls, -0.55 to -0.85 for puts)
+        # "Smart Swing" strategy prioritizes ITM for better execution and directional exposure
         long_candidates = []
         for c in filtered:
             delta_abs = abs(c.delta)
@@ -1390,11 +1425,11 @@ class OptionsEngine:
                         long_candidates.append(c)
 
         if not long_candidates:
-            self.log("SPREAD: No valid ATM contract for long leg")
+            self.log("SPREAD: No valid ITM contract for long leg (delta 0.55-0.85)")
             return None
 
-        # Sort by delta proximity to 0.50 (most ATM)
-        long_candidates.sort(key=lambda c: abs(abs(c.delta) - 0.50))
+        # V2.3.21: Sort by delta proximity to 0.70 (ITM target for Smart Swing)
+        long_candidates.sort(key=lambda c: abs(abs(c.delta) - 0.70))
         long_leg = long_candidates[0]
 
         # Find OTM short leg
