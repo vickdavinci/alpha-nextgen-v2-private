@@ -845,6 +845,15 @@ INTRADAY_ITM_STOP = 0.50  # -50% stop
 INTRADAY_ITM_TRAIL_TRIGGER = 0.20  # Trail after +20%
 INTRADAY_ITM_TRAIL_PCT = 0.50  # Trail at 50% of gains
 
+# V2.15: Strategy-aware intraday delta bounds
+# DEBIT_FADE: Mean reversion needs OTM options (delta 0.20-0.50)
+INTRADAY_DEBIT_FADE_DELTA_MIN = 0.20  # OTM for mean reversion
+INTRADAY_DEBIT_FADE_DELTA_MAX = 0.50  # Near ATM max
+
+# ITM_MOMENTUM: Stock replacement needs ITM options (delta 0.60-0.85)
+INTRADAY_ITM_DELTA_MIN = 0.60  # ITM for momentum
+INTRADAY_ITM_DELTA_MAX = 0.85  # Deep ITM max
+
 # Protective Puts (Intraday Hedge)
 INTRADAY_PROTECT_MIN_VIX = 20  # VIX > 20: Add protection
 INTRADAY_PROTECT_STRIKE_OTM = 0.03  # 3% OTM strike

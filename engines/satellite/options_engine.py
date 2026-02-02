@@ -2307,10 +2307,26 @@ class OptionsEngine:
             delta_max = config.OPTIONS_SWING_DELTA_MAX
             mode_label = "Swing"
         else:
-            # Intraday mode: Use ATM delta bounds (0.40-0.60)
-            delta_min = config.OPTIONS_INTRADAY_DELTA_MIN
-            delta_max = config.OPTIONS_INTRADAY_DELTA_MAX
-            mode_label = "Intraday"
+            # V2.15: Strategy-aware delta bounds for intraday
+            # Use defensive coding in case _state is not initialized (tests)
+            state = getattr(self, "_state", None)
+            current_strategy = getattr(state, "recommended_strategy", None) if state else None
+
+            if current_strategy == IntradayStrategy.ITM_MOMENTUM:
+                # ITM_MOMENTUM: Stock replacement needs ITM (0.60-0.85)
+                delta_min = config.INTRADAY_ITM_DELTA_MIN
+                delta_max = config.INTRADAY_ITM_DELTA_MAX
+                mode_label = "Intraday-ITM"
+            elif current_strategy == IntradayStrategy.DEBIT_FADE:
+                # DEBIT_FADE: Mean reversion needs OTM (0.20-0.50)
+                delta_min = config.INTRADAY_DEBIT_FADE_DELTA_MIN
+                delta_max = config.INTRADAY_DEBIT_FADE_DELTA_MAX
+                mode_label = "Intraday-FADE"
+            else:
+                # Default for other strategies (CREDIT_SPREAD, etc.)
+                delta_min = config.OPTIONS_INTRADAY_DELTA_MIN
+                delta_max = config.OPTIONS_INTRADAY_DELTA_MAX
+                mode_label = "Intraday"
 
         if contract_delta < delta_min:
             self.log(
