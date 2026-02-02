@@ -160,7 +160,7 @@ TREND_ADX_EXIT_THRESHOLD = 10  # V2.3.12: Lowered to 10 - allow holding during l
 # In bull markets, all 4 tickers (QLD/SSO/TNA/FAS) may trigger together
 # because they're all correlated to US equity market (0.70-0.95 correlation)
 # V2.3.3: Changed from 2 to 4 to allow full trend allocation (55% total)
-MAX_CONCURRENT_TREND_POSITIONS = 4  # Max trend positions at any time
+MAX_CONCURRENT_TREND_POSITIONS = 2  # Max trend positions at any time (reduced for options testing)
 
 # Priority order when multiple entries trigger simultaneously
 # Higher priority symbols get capital first
