@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-01 (V2.3.24: Hard Margin Reservation + Bug Fixes)
+> **Last Updated:** 2026-02-01 (V2.4: SMA50 Structural Trend - 2 Month Backtest)
 
 ---
 
@@ -29,6 +29,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 |:-----:|----------|---------|:------:|
 | 1 | 1 day (Jan 2, 2024) | Basic validation - no errors, Initialize() completes | **PASS** ✅ |
 | 2 | 1 month (Jan 2025) | Short-term behavior, actual trades | **V2.3.22 +0.93%** ✅ |
+| 2b | 2 months (Jan-Feb 2025) | V2.4 SMA50 exit validation | **V2.4 -17.98%** 🔴 |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
@@ -130,6 +131,140 @@ All remaining V2.3.22 bugs have been fixed in V2.3.24:
 **Tests:** All 1349 tests pass.
 
 **Commit:** `b14c6dc` - `fix(router): V2.3.24 - hard margin reservation + 4 bug fixes`
+
+---
+
+## V2.4 SMA50 Structural Trend - 2 Month Backtest (2026-02-01)
+
+**Backtest:** V2.4-SMA50-2month-Jan-Feb-2025-fix1 | **Result:** -17.98% | **Status:** 🔴 FAIL
+
+**Backtest URL:** https://www.quantconnect.com/project/27678023/0262c1949be5618254d1f79d977924e0
+
+### V2.4 Changes Tested
+
+| Feature | Config | Purpose |
+|---------|--------|---------|
+| SMA50 Exit | `TREND_USE_SMA50_EXIT = True` | Replace Chandelier with structural trend |
+| SMA50 Buffer | `TREND_SMA_EXIT_BUFFER = 0.02` | Exit when Close < SMA50 × 98% |
+| Hard Stops | `TREND_HARD_STOP_PCT = {QLD: 15%, SSO: 15%, TNA: 12%, FAS: 12%}` | Asset-specific stop losses |
+
+### AAP Audit Results
+
+#### Phase 1: Three-Way Match (Funnel Analysis)
+
+| Funnel Stage | Metric | Count | Status |
+|--------------|--------|------:|--------|
+| 1. Signal Generation | ENTRY_SIGNAL | 50 | ✅ |
+| 2. Router Processing | ROUTER: logs | 1,109 | ✅ |
+| 3. SHV Liquidation | SHV SELL orders | 13 | ✅ |
+| 4. Execution | Filled trades | 82 | ✅ |
+
+**Diagnosis:** Funnel is flowing - signals generating, orders processing, trades executing.
+
+#### Phase 2: Logic Integrity Checks
+
+**A. Trend Engine (SMA50 Exit Logic)**
+
+| Exit Type | Count | Status |
+|-----------|------:|--------|
+| SMA50_BREAK | 24 | ✅ Working |
+| HARD_STOP | 0 | ⚠️ Never triggered |
+| REGIME_EXIT | 0 | ⚠️ Never triggered |
+
+**Sample SMA50 Exits (working correctly):**
+```
+2025-01-02 TREND: EXIT_SIGNAL SSO | SMA50_BREAK: Close $45.59 < SMA50 $47.11 * 98% = $46.16
+2025-01-06 TREND: EXIT_SIGNAL TNA | SMA50_BREAK: Close $43.42 < SMA50 $47.83 * 98% = $46.88
+```
+
+**B. Options Engine**
+
+| Check | Status |
+|-------|--------|
+| ORDER_ERROR (combo format) | 🔴 15 errors |
+
+**Issue:** Combo orders rejected due to incorrect quantity format.
+
+**C. Risk Engine**
+
+| Check | Count | Status |
+|-------|------:|--------|
+| KILL_SWITCH triggers | 4 | 🔴 CRITICAL |
+| CATASTROPHIC liquidations | 3 | 🔴 CRITICAL |
+
+**Kill Switch Events:**
+
+| Date | Loss | Action |
+|------|------|--------|
+| 2025-01-07 | 5.13% | Options-only liquidation |
+| 2025-01-16 | **8.43%** | CATASTROPHIC - Full liquidation |
+| 2025-01-27 | 5.29% | CATASTROPHIC - Full liquidation |
+| 2025-02-20 | 5.22% | CATASTROPHIC - Full liquidation |
+
+#### Phase 3: Critical Failure Flags
+
+| Severity | Keyword | Count | Status |
+|----------|---------|------:|--------|
+| 🔴 CRITICAL | INSUFFICIENT_MARGIN | 0 | ✅ PASS |
+| 🔴 CRITICAL | ZeroDivisionError | 0 | ✅ PASS |
+| 🟡 WARN | Order rejected | 0 | ✅ PASS |
+| 🟡 WARN | No data for | 0 | ✅ PASS |
+| 🟢 INFO | SHV_AUTO_LIQUIDATE | 5 | ✅ PASS |
+| 🔴 CRITICAL | ORDER_ERROR | 15 | 🔴 FAIL |
+| 🔴 CRITICAL | KILL_SWITCH | 23 | 🔴 FAIL |
+
+#### Phase 4: Performance Reality Check
+
+| Metric | Value |
+|--------|-------|
+| **Total P&L** | **-$8,988.24** |
+| **Return** | **-17.98%** |
+| Win Rate | 46.9% (38/81) |
+| Trend P&L | -$1,351.07 (25 trades) |
+| **Options P&L** | **-$7,814.00 (27 trades)** |
+| SHV P&L | +$176.83 (29 trades) |
+
+**Largest Single Losses:**
+
+| Symbol | P&L | Date |
+|--------|----:|------|
+| QQQ 250207C00522500 | -$1,093 | 2025-01-22 |
+| QLD | -$1,001 | 2025-02-21 |
+| QQQ 250221C00530000 | -$955 | 2025-01-24 |
+
+### V2.4 Findings Summary
+
+| Area | Status | Finding |
+|------|--------|---------|
+| SMA50 Exit Logic | ✅ PASS | Working correctly (24 exits triggered) |
+| Hard Stop Logic | ⚠️ UNTESTED | No positions dropped 12-15% from entry |
+| Kill Switch | 🔴 FAIL | Triggered 4 times, 3 catastrophic full liquidations |
+| Options Engine | 🔴 FAIL | Combo order errors, -$7,814 P&L (main loss driver) |
+| Trend Engine | ⚠️ WARN | -$1,351 P&L, frequent SMA50 exits in choppy market |
+
+### Root Cause Analysis
+
+**Primary Issue: Options Engine Bleeding**
+- Options lost -$7,814 (87% of total loss)
+- 15 combo ORDER_ERROR events (spread orders rejected)
+- Kill switches triggered by options losses, not trend losses
+
+**Secondary Issue: SMA50 Too Sensitive in Choppy Markets**
+- 24 SMA50_BREAK exits in 2 months = frequent whipsaws
+- TNA/FAS repeatedly entering/exiting (below SMA50 most of the period)
+- Consider: wider buffer (3% instead of 2%) or regime filter
+
+### Bugs to Fix (V2.4.1)
+
+| Priority | Bug | Evidence | Remediation |
+|:--------:|-----|----------|-------------|
+| **P1** | Combo order format | 15 ORDER_ERROR | Fix combo quantity format (global qty × ratio) |
+| **P2** | Options over-trading | 27 trades, -$7,814 | Review intraday signal throttling |
+| **P2** | SMA50 whipsaw | 24 exits in 2 months | Consider wider buffer or ADX filter |
+
+**Commits:**
+- `0896796` - `feat(trend): V2.4 - SMA50 structural trend exit + hard stops`
+- `8647e82` - `fix(router): use agg.sources instead of agg.source in options check`
 
 ---
 
@@ -1719,4 +1854,4 @@ lean cloud backtest AlphaNextGen
 
 ---
 
-*Document created: 2026-01-30 | Last updated: 2026-02-01 (V2.3.23 Cold Start Duplicate Orders Fix)*
+*Document created: 2026-01-30 | Last updated: 2026-02-01 (V2.4 SMA50 2-Month Backtest AAP Audit)*
