@@ -32,6 +32,7 @@ Spec: docs/v2-specs/V2_1_OPTIONS_ENGINE_DESIGN.txt
 
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Deque, Dict, List, Optional, Tuple
 
@@ -578,6 +579,67 @@ class IVSensor:
         """Clear history (for testing or session reset)."""
         self._vix_history.clear()
         self._last_classification = None
+
+
+# =============================================================================
+# V2.9: HOLIDAY-AWARE EXPIRATION DETECTION
+# =============================================================================
+
+
+def get_expiration_firewall_day(algorithm: Any) -> int:
+    """
+    V2.9: Get the day to apply expiration firewall (Friday or Thursday if holiday).
+
+    During Friday holiday weeks (like Good Friday), options expire on Thursday.
+    This function checks the exchange calendar to determine the correct day.
+
+    Args:
+        algorithm: QCAlgorithm instance for exchange calendar access.
+
+    Returns:
+        4 = Friday (normal weeks)
+        3 = Thursday (Friday holiday weeks like Good Friday)
+    """
+    if not config.FRIDAY_HOLIDAY_CHECK_ENABLED:
+        return 4  # Friday
+
+    try:
+        exchange = algorithm.Securities[config.SETTLEMENT_CHECK_SYMBOL].Exchange.Hours
+
+        # Find this week's Friday
+        current_date = algorithm.Time.date()
+        days_until_friday = (4 - current_date.weekday()) % 7
+        if days_until_friday == 0 and current_date.weekday() == 4:
+            # Today is Friday
+            friday = current_date
+        else:
+            friday = current_date + timedelta(days=days_until_friday)
+
+        # Check if Friday is a market holiday
+        friday_datetime = datetime.combine(friday, datetime.min.time())
+        if not exchange.IsOpen(friday_datetime, extendedMarket=False):
+            # Friday is closed - use Thursday
+            return 3  # Thursday
+
+        return 4  # Friday
+    except Exception:
+        # Default to Friday if check fails
+        return 4
+
+
+def is_expiration_firewall_day(algorithm: Any) -> bool:
+    """
+    V2.9: Check if today is the expiration firewall day.
+
+    Returns True if today is Friday (normal weeks) or Thursday (Friday holiday weeks).
+
+    Args:
+        algorithm: QCAlgorithm instance.
+
+    Returns:
+        True if today is the expiration firewall day.
+    """
+    return algorithm.Time.weekday() == get_expiration_firewall_day(algorithm)
 
 
 # =============================================================================
@@ -1397,6 +1459,8 @@ class OptionsEngine:
         # Trade counters
         self._trades_today: int = 0
         self._intraday_trades_today: int = 0
+        self._swing_trades_today: int = 0  # V2.9: Swing mode counter
+        self._total_options_trades_today: int = 0  # V2.9: Global counter (Bug #4 fix)
         self._last_trade_date: Optional[str] = None
 
         # Current operating mode
@@ -2171,10 +2235,9 @@ class OptionsEngine:
         if self._entry_attempted_today:
             return None
 
-        # Check max trades per day
-        if current_date == self._last_trade_date:
-            if self._trades_today >= config.OPTIONS_MAX_TRADES_PER_DAY:
-                return None
+        # V2.9: Check trade limits (Bug #4 fix) - Uses comprehensive counter
+        if not self._can_trade_options(OptionsMode.SWING):
+            return None
 
         # GAP #1 FIX: Check regime score (must be >= 40 per V2.1 spec)
         if regime_score < 40:
@@ -2432,10 +2495,9 @@ class OptionsEngine:
                 # If parsing fails, clear the tracking and proceed
                 self._last_spread_exit_time = None
 
-        # Check max trades per day
-        if current_date == self._last_trade_date:
-            if self._trades_today >= config.OPTIONS_MAX_TRADES_PER_DAY:
-                return None
+        # V2.9: Check trade limits (Bug #4 fix) - Uses comprehensive counter
+        if not self._can_trade_options(OptionsMode.SWING):
+            return None
 
         # Determine spread direction based on regime
         if regime_score < config.SPREAD_REGIME_CRISIS:
@@ -3462,10 +3524,9 @@ class OptionsEngine:
         if self._intraday_position is not None:
             return None
 
-        # V2.3.14 FIX: Use trades count instead of entry_attempted flag
-        # The old flag blocked ALL subsequent attempts after first signal,
-        # even after trade exited. Now we allow multiple intraday trades.
-        if self._intraday_trades_today >= config.INTRADAY_MAX_TRADES_PER_DAY:
+        # V2.9: Check trade limits (Bug #4 fix) - Uses comprehensive counter
+        # Replaces V2.3.14 intraday-only check to also enforce global limit
+        if not self._can_trade_options(OptionsMode.INTRADAY):
             return None
 
         # Update Micro Regime Engine (V2.5: pass macro_regime_score for Grind-Up Override)
@@ -3580,7 +3641,8 @@ class OptionsEngine:
         # V2.4.1 FIX: Increment counter IMMEDIATELY on signal generation, not on fill
         # This fixes the race condition where multiple signals are generated before
         # the first fill increments the counter (resulted in 4 fills when limit=2)
-        self._intraday_trades_today += 1
+        # V2.9: Use comprehensive counter to also track global limit
+        self._increment_trade_counter(OptionsMode.INTRADAY)
 
         # V2.3.2 FIX #4: Mark this as intraday entry for correct position tracking
         self._pending_intraday_entry = True
@@ -3659,6 +3721,72 @@ class OptionsEngine:
             urgency=Urgency.IMMEDIATE,
             reason=reason,
         )
+
+    def check_gamma_pin_exit(
+        self,
+        current_price: float,
+        current_dte: int,
+    ) -> Optional[List[TargetWeight]]:
+        """
+        V2.10 (Pitfall #5): Exit early if price is within buffer zone of short strike.
+
+        Prevents broker auto-liquidation during gamma acceleration near expiration.
+        When underlying price pins near the short strike within 2 DTE, gamma explodes
+        and the broker may force-liquidate at terrible prices to avoid assignment risk.
+
+        Args:
+            current_price: Current underlying (QQQ) price.
+            current_dte: Days to expiration for the spread.
+
+        Returns:
+            List[TargetWeight] for spread exit if gamma pin detected, else None.
+        """
+        if not config.GAMMA_PIN_CHECK_ENABLED:
+            return None
+
+        # Only check spread positions (credit or debit)
+        spread = self._spread_position or self._credit_spread_position
+        if spread is None:
+            return None
+
+        # Only activate within GAMMA_PIN_EARLY_EXIT_DTE
+        if current_dte > config.GAMMA_PIN_EARLY_EXIT_DTE:
+            return None
+
+        # Get short strike from spread
+        short_strike = spread.short_leg.strike
+        distance_pct = abs(current_price - short_strike) / short_strike
+
+        if distance_pct >= config.GAMMA_PIN_BUFFER_PCT:
+            return None
+
+        # GAMMA PIN DETECTED - exit early
+        self.log(
+            f"GAMMA_PIN: Early exit triggered | "
+            f"Price=${current_price:.2f} Strike=${short_strike:.0f} "
+            f"Distance={distance_pct:.2%} < {config.GAMMA_PIN_BUFFER_PCT:.2%} | "
+            f"DTE={current_dte}",
+            trades_only=True,
+        )
+
+        # Return spread exit signal (same format as spread exit)
+        return [
+            TargetWeight(
+                symbol=spread.long_leg.symbol,
+                target_weight=0.0,
+                source="OPT",
+                urgency=Urgency.IMMEDIATE,
+                reason=f"GAMMA_PIN_BUFFER (price within {distance_pct:.2%} of strike ${short_strike})",
+                requested_quantity=getattr(
+                    spread, "num_spreads", getattr(spread, "num_contracts", 1)
+                ),
+                metadata={
+                    "spread_close_short": True,
+                    "spread_short_leg_symbol": spread.short_leg.symbol,
+                    "exit_type": "GAMMA_PIN",
+                },
+            )
+        ]
 
     def check_expiring_options_force_exit(
         self,
@@ -3927,13 +4055,12 @@ class OptionsEngine:
             )
         else:
             self._position = position
+            # V2.9: Increment swing counter (Bug #4 fix)
+            # Intraday already counted on signal generation to prevent race condition
+            self._increment_trade_counter(OptionsMode.SWING)
 
-        # Update trade counter
-        if current_date != self._last_trade_date:
-            self._trades_today = 1
-            self._last_trade_date = current_date
-        else:
-            self._trades_today += 1
+        # Update last trade date for backward compatibility
+        self._last_trade_date = current_date
 
         self.log(
             f"OPT: POSITION_REGISTERED {contract.symbol} | "
@@ -4042,12 +4169,8 @@ class OptionsEngine:
 
         self._spread_position = spread
 
-        # Update trade counter
-        if current_date != self._last_trade_date:
-            self._trades_today = 1
-            self._last_trade_date = current_date
-        else:
-            self._trades_today += 1
+        # V2.9: Update trade counter (Bug #4 fix) - Spreads are always swing mode
+        self._increment_trade_counter(OptionsMode.SWING)
 
         self.log(
             f"SPREAD: POSITION_REGISTERED | {spread.spread_type} | "
@@ -4394,6 +4517,8 @@ class OptionsEngine:
         if current_date != self._last_trade_date:
             self._trades_today = 0
             self._intraday_trades_today = 0
+            self._swing_trades_today = 0  # V2.9
+            self._total_options_trades_today = 0  # V2.9
             self._last_trade_date = current_date
 
             # V2.3 FIX: Reset entry attempt flag for new day
@@ -4419,3 +4544,73 @@ class OptionsEngine:
                 self._intraday_position = None
 
             self.log(f"OPT: Daily reset for {current_date}")
+
+    # =========================================================================
+    # V2.9: TRADE COUNTER ENFORCEMENT (Bug #4 Fix)
+    # =========================================================================
+
+    def _increment_trade_counter(self, mode: OptionsMode) -> None:
+        """
+        V2.9: Increment trade counters when a trade is executed.
+
+        Called from register_spread_position() and register_entry() after fills.
+
+        Args:
+            mode: The trading mode (SWING or INTRADAY).
+        """
+        # Increment new counters (V2.9)
+        self._total_options_trades_today += 1
+
+        # Backward compatibility: Also increment old counter used by state persistence
+        self._trades_today += 1
+
+        if mode == OptionsMode.INTRADAY:
+            self._intraday_trades_today += 1
+            self.log(
+                f"TRADE_COUNTER: Intraday={self._intraday_trades_today}/{config.INTRADAY_MAX_TRADES_PER_DAY} | "
+                f"Total={self._total_options_trades_today}/{config.MAX_OPTIONS_TRADES_PER_DAY}"
+            )
+        else:
+            self._swing_trades_today += 1
+            self.log(
+                f"TRADE_COUNTER: Swing={self._swing_trades_today}/{config.MAX_SWING_TRADES_PER_DAY} | "
+                f"Total={self._total_options_trades_today}/{config.MAX_OPTIONS_TRADES_PER_DAY}"
+            )
+
+    def _can_trade_options(self, mode: OptionsMode) -> bool:
+        """
+        V2.9: Check if trading is allowed based on daily limits.
+
+        Prevents over-trading when VIX flickers around strategy thresholds.
+
+        Args:
+            mode: The trading mode to check.
+
+        Returns:
+            True if trading is allowed, False if limits exceeded.
+        """
+        # Check global limit
+        if self._total_options_trades_today >= config.MAX_OPTIONS_TRADES_PER_DAY:
+            self.log(
+                f"TRADE_LIMIT: Global limit reached | "
+                f"{self._total_options_trades_today}/{config.MAX_OPTIONS_TRADES_PER_DAY}"
+            )
+            return False
+
+        # Check mode-specific limits
+        if mode == OptionsMode.INTRADAY:
+            if self._intraday_trades_today >= config.INTRADAY_MAX_TRADES_PER_DAY:
+                self.log(
+                    f"TRADE_LIMIT: Intraday limit reached | "
+                    f"{self._intraday_trades_today}/{config.INTRADAY_MAX_TRADES_PER_DAY}"
+                )
+                return False
+        else:  # SWING
+            if self._swing_trades_today >= config.MAX_SWING_TRADES_PER_DAY:
+                self.log(
+                    f"TRADE_LIMIT: Swing limit reached | "
+                    f"{self._swing_trades_today}/{config.MAX_SWING_TRADES_PER_DAY}"
+                )
+                return False
+
+        return True

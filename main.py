@@ -23,6 +23,7 @@ from engines.satellite.options_engine import (
     OptionDirection,
     OptionsEngine,
     SpreadFillTracker,
+    is_expiration_firewall_day,
 )
 from execution.execution_engine import ExecutionEngine
 
@@ -244,6 +245,7 @@ class AlphaNextGen(QCAlgorithm):
         self._splits_logged_today = set()  # Log throttle: only log each split once/day
         self._greeks_breach_logged = False  # Log throttle: only log Greeks breach once/position
         self._kill_switch_handled_today = False  # V2.3: Only handle kill switch once per day
+        self._last_vass_rejection_log = None  # V2.10: Throttle VASS rejection logs
 
         # V2.3.6: Track pending spread orders to handle leg failures
         # Maps short leg symbol -> long leg symbol (to liquidate long if short fails)
@@ -443,6 +445,12 @@ class AlphaNextGen(QCAlgorithm):
         # V2.4.1: Intraday scan throttle - only scan every 15 minutes
         # Fixes 95 scans/hour → 4 scans/hour
         self._last_intraday_scan = None
+
+        # V2.9: Settlement-aware trading (Bug #6 fix)
+        # Options settle T+1. Friday closes don't settle until Monday morning.
+        # Uses exchange calendar (not weekday()) to handle holidays correctly.
+        self._settlement_cooldown_until: Optional[datetime] = None
+        self._last_market_close_check: Optional[datetime] = None
 
         # Store collections for iteration
         self.traded_symbols = [
@@ -691,10 +699,12 @@ class AlphaNextGen(QCAlgorithm):
                 )
 
         # V2.4.1: Friday Firewall - close swing options before weekend
-        # Runs only on Fridays at configured time (default 3:45 PM)
+        # V2.9: Holiday-aware expiration firewall (Bug #3 fix)
+        # Runs every day at configured time, but only executes on expiration firewall days
+        # (Friday normally, Thursday if Friday is a holiday like Good Friday)
         if config.FRIDAY_FIREWALL_ENABLED:
             self.Schedule.On(
-                self.DateRules.Every(DayOfWeek.Friday),
+                self.DateRules.EveryDay(),
                 self.TimeRules.At(
                     config.FRIDAY_FIREWALL_TIME_HOUR,
                     config.FRIDAY_FIREWALL_TIME_MINUTE,
@@ -702,8 +712,8 @@ class AlphaNextGen(QCAlgorithm):
                 self._on_friday_firewall,
             )
             self.Log(
-                f"INIT: Friday Firewall enabled at "
-                f"{config.FRIDAY_FIREWALL_TIME_HOUR}:{config.FRIDAY_FIREWALL_TIME_MINUTE:02d}"
+                f"INIT: Expiration Firewall enabled at "
+                f"{config.FRIDAY_FIREWALL_TIME_HOUR}:{config.FRIDAY_FIREWALL_TIME_MINUTE:02d} (holiday-aware)"
             )
 
         self.Log("INIT: Scheduled events and callbacks registered")
@@ -876,6 +886,10 @@ class AlphaNextGen(QCAlgorithm):
             spy_open=self.spy_open,
             spy_prior_close=self.spy_prior_close,
         )
+
+        # V2.9: Check settlement cooldown (Bug #6 fix)
+        # Sets cooldown if this is first bar after market gap with unsettled cash
+        self._check_settlement_cooldown()
 
         # Reconcile positions with broker
         self._reconcile_positions()
@@ -1084,6 +1098,116 @@ class AlphaNextGen(QCAlgorithm):
         equity = self.Portfolio.TotalPortfolioValue
         self.risk_engine.set_week_start_equity(equity)
 
+    # =========================================================================
+    # V2.9: SETTLEMENT-AWARE TRADING (Bug #6 Fix)
+    # =========================================================================
+
+    def _is_first_bar_after_market_gap(self) -> bool:
+        """
+        V2.9: Detect if this is the first bar after a multi-day market closure.
+
+        Uses exchange calendar (not weekday()) to handle:
+        - Regular weekends (Sat-Sun)
+        - Monday holidays (MLK, Presidents Day, etc.)
+        - Friday holidays (Good Friday)
+        - Multi-day closures (Thanksgiving week)
+
+        Returns:
+            True if previous market close was more than 24 hours ago.
+        """
+        if not config.SETTLEMENT_AWARE_TRADING:
+            return False
+
+        try:
+            exchange = self.Securities[config.SETTLEMENT_CHECK_SYMBOL].Exchange.Hours
+            previous_close = exchange.GetPreviousMarketClose(self.Time, extendedMarket=False)
+
+            # If previous close was more than 24 hours ago, we had a gap
+            hours_since_close = (self.Time - previous_close).total_seconds() / 3600
+            return hours_since_close > 24
+        except Exception as e:
+            self.Log(f"SETTLEMENT: Error checking market gap - {e}")
+            return False
+
+    def _get_unsettled_cash(self) -> float:
+        """
+        V2.9: Get Portfolio.UnsettledCash - QC's built-in T+1 tracking.
+
+        Returns:
+            Unsettled cash amount from previous session trades.
+        """
+        try:
+            return self.Portfolio.UnsettledCash
+        except Exception:
+            return 0.0
+
+    def _check_settlement_cooldown(self) -> None:
+        """
+        V2.9: Check and set settlement cooldown at market open.
+
+        Called at SOD baseline (09:33) to set settlement cooldown if:
+        1. This is the first bar after a market gap (weekend/holiday)
+        2. There is unsettled cash from previous session
+
+        The cooldown prevents options trading until settlement clears.
+        """
+        if not config.SETTLEMENT_AWARE_TRADING:
+            return
+
+        if self._is_first_bar_after_market_gap():
+            unsettled = self._get_unsettled_cash()
+            if unsettled > 0:
+                self._settlement_cooldown_until = self.Time + timedelta(
+                    minutes=config.SETTLEMENT_COOLDOWN_MINUTES
+                )
+                self.Log(
+                    f"SETTLEMENT: Gap detected | UnsettledCash=${unsettled:,.0f} | "
+                    f"Cooldown until {self._settlement_cooldown_until.strftime('%H:%M')}"
+                )
+            else:
+                self.Log("SETTLEMENT: Gap detected but no unsettled cash, no cooldown needed")
+
+    def _can_trade_options_settlement_aware(self) -> bool:
+        """
+        V2.9: Check if options trading is allowed based on settlement status.
+
+        Returns:
+            False during the first hour after any post-gap market open
+            if there is unsettled cash. True otherwise.
+        """
+        if not config.SETTLEMENT_AWARE_TRADING:
+            return True
+
+        # Check if we're in settlement cooldown
+        if self._settlement_cooldown_until is not None:
+            if self.Time < self._settlement_cooldown_until:
+                unsettled = self._get_unsettled_cash()
+                if unsettled > 0:
+                    # Only log once per minute to avoid spam
+                    if self.Time.minute != getattr(self, "_last_settlement_log_minute", -1):
+                        self.Log(f"SETTLEMENT: Cooldown active | UnsettledCash=${unsettled:,.0f}")
+                        self._last_settlement_log_minute = self.Time.minute
+                    return False
+            else:
+                # Cooldown expired
+                self._settlement_cooldown_until = None
+
+        return True
+
+    def _get_tradeable_equity_settlement_aware(self) -> float:
+        """
+        V2.9: Get tradeable equity minus unsettled cash.
+
+        This prevents 'Insufficient Funds' errors on post-holiday opens
+        by subtracting Portfolio.UnsettledCash from tradeable equity.
+
+        Returns:
+            Tradeable equity adjusted for unsettled cash.
+        """
+        capital_state = self.capital_engine.calculate(self.Portfolio.TotalPortfolioValue)
+        unsettled = self._get_unsettled_cash()
+        return max(0.0, capital_state.tradeable_eq - unsettled)
+
     def _check_expiration_hammer_v2(self) -> None:
         """
         V2.4.4 P0: Expiration Hammer V2 - Close ALL options expiring TODAY.
@@ -1174,7 +1298,9 @@ class AlphaNextGen(QCAlgorithm):
         """
         V2.4.1: Friday Firewall - close swing options before weekend.
 
-        Runs only on Fridays at configured time (default 3:45 PM).
+        V2.9: Holiday-aware (Bug #3 fix). Runs on:
+        - Friday (normal weeks)
+        - Thursday (when Friday is a holiday like Good Friday)
 
         Rules:
         1. VIX > 25: Close ALL swing options (high volatility weekend risk)
@@ -1184,6 +1310,10 @@ class AlphaNextGen(QCAlgorithm):
         """
         # Skip during warmup
         if self.IsWarmingUp:
+            return
+
+        # V2.9: Holiday-aware check - only run on expiration firewall days
+        if not is_expiration_firewall_day(self):
             return
 
         # Get current VIX
@@ -2844,6 +2974,10 @@ class AlphaNextGen(QCAlgorithm):
                 self.Log("OPT_SCAN: Blocked - Kill switch handled today")
             return
 
+        # V2.9: Skip if in settlement cooldown (Bug #6 fix)
+        if not self._can_trade_options_settlement_aware():
+            return
+
         # V2.3.6 FIX: Scan during active window (10:00-15:00)
         # Removed 10:30 delay - momentum/credit strategies need 10:00-10:30 window
         # Strategy-specific timing (if needed) should be handled in Options Engine
@@ -3002,6 +3136,28 @@ class AlphaNextGen(QCAlgorithm):
                     # V2.3.13 FIX: MUST process immediately - spread signals use IMMEDIATE urgency
                     self._process_immediate_signals()
                     return  # Spread trade placed, don't try single-leg
+        else:
+            # V2.10 (Pitfall #4): Throttled VASS rejection logging
+            # Log rejections every 15 min for visibility, not every candle to avoid spam
+            should_log = (
+                self._last_vass_rejection_log is None
+                or (self.Time - self._last_vass_rejection_log).total_seconds() / 60
+                >= config.VASS_LOG_REJECTION_INTERVAL_MINUTES
+            )
+            if should_log:
+                iv_env = (
+                    self.options_engine._iv_sensor.get_environment()
+                    if hasattr(self.options_engine, "_iv_sensor")
+                    else "UNKNOWN"
+                )
+                self.Log(
+                    f"VASS_REJECTION: Direction={direction.value} | "
+                    f"IV_Env={iv_env} | VIX={self._current_vix:.1f} | "
+                    f"Regime={regime_score:.0f} | "
+                    f"Contracts_checked={len(candidate_contracts)} | "
+                    f"Reason=No contracts met spread criteria (DTE/delta/credit)"
+                )
+                self._last_vass_rejection_log = self.Time
 
         # V2.4.1: Single-leg swing fallback - DISABLED by default for safety
         # Single-leg has higher delta exposure and full premium at risk
@@ -3394,6 +3550,19 @@ class AlphaNextGen(QCAlgorithm):
 
         if current_dte is None:
             current_dte = spread.long_leg.days_to_expiry  # Fallback
+
+        # V2.10 (Pitfall #5): Check gamma pin exit BEFORE other exit signals
+        # This exits early if underlying price is within buffer zone of short strike
+        # near expiration, preventing broker auto-liquidation at bad prices
+        underlying_price = self.Securities["QQQ"].Price
+        gamma_pin_signals = self.options_engine.check_gamma_pin_exit(
+            current_price=underlying_price,
+            current_dte=current_dte,
+        )
+        if gamma_pin_signals:
+            for signal in gamma_pin_signals:
+                self.portfolio_router.receive_signal(signal)
+            return  # Gamma pin exit takes priority
 
         # Get current regime score
         regime_score = self.regime_engine.get_previous_score()

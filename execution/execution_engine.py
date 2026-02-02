@@ -460,7 +460,11 @@ class ExecutionEngine:
             # OLD BUG: Passing quantity (e.g., 26) as ratio meant 26 × 26 = 676 contracts!
             num_spreads = abs(long_quantity)
             long_ratio = 1 if long_quantity > 0 else -1
-            short_ratio = 1 if short_quantity > 0 else -1
+            # V2.10 FIX (Pitfall #3): Short leg ratio must ALWAYS be opposite of long leg
+            # OLD BUG: `short_ratio = 1 if short_quantity > 0 else -1` failed when both
+            # quantities had the same sign (e.g., both negative), creating naked positions
+            # instead of proper spreads. A spread by definition has one BUY and one SELL.
+            short_ratio = -long_ratio
 
             legs = [
                 Leg.Create(long_symbol, long_ratio),

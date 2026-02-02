@@ -442,6 +442,11 @@ CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.40
 # V2.3.15: Sniper Logic - allow one retry, not machine gun
 INTRADAY_MAX_TRADES_PER_DAY = 2  # Sniper gets one retry per day
 
+# V2.9: Global options trade limits (Bug #4 fix)
+# Prevents over-trading when VIX flickers around strategy thresholds
+MAX_OPTIONS_TRADES_PER_DAY = 4  # All options combined (swing + intraday)
+MAX_SWING_TRADES_PER_DAY = 2  # Swing mode limit
+
 # Legacy compatibility (combined min/max)
 OPTIONS_ALLOCATION_MIN = 0.25  # 25% minimum
 OPTIONS_ALLOCATION_MAX = 0.30  # 30% maximum
@@ -646,6 +651,20 @@ SPREAD_FILL_QTY_MISMATCH_ACTION = "LOG_AND_CLOSE"  # or "LOG_ONLY"
 # Post-trade margin cooldown - wait for settlement before new entry
 OPTIONS_POST_TRADE_COOLDOWN_MINUTES = 2  # Bug #16: T+1 margin ghost
 
+# -----------------------------------------------------------------------------
+# V2.9: SETTLEMENT-AWARE TRADING (Bug #6 Fix)
+# -----------------------------------------------------------------------------
+# Options settle T+1. Friday closes don't settle until Monday morning.
+# Holiday-aware: Uses exchange calendar, not weekday() - handles MLK, Presidents Day, etc.
+# Key insight: Post-holiday Tuesday has same settlement lag as Monday after weekends.
+SETTLEMENT_AWARE_TRADING = True  # Master switch for settlement logic
+SETTLEMENT_COOLDOWN_MINUTES = 60  # Wait 1 hour after any post-gap market open
+SETTLEMENT_CHECK_SYMBOL = "SPY"  # Use SPY for market calendar (most reliable)
+
+# Thursday Expiration Handling (Friday Holiday Weeks)
+# Good Friday, etc. = market closed Friday, options expire Thursday
+FRIDAY_HOLIDAY_CHECK_ENABLED = True  # Enable Thursday expiration detection
+
 # Exit order retry settings for gamma decay (0DTE)
 EXIT_ORDER_RETRY_COUNT = 3  # Bug #14: Retry failed exits
 EXIT_ORDER_RETRY_DELAY_SECONDS = 5  # Delay between retries
@@ -653,6 +672,22 @@ EXIT_ORDER_RETRY_DELAY_SECONDS = 5  # Delay between retries
 # 0DTE forced exit time (3:30 PM ET = 30 min before close)
 ZERO_DTE_FORCE_EXIT_HOUR = 15
 ZERO_DTE_FORCE_EXIT_MINUTE = 30
+
+# -----------------------------------------------------------------------------
+# V2.10: CREDIT SPREAD SAFETY ENHANCEMENTS
+# -----------------------------------------------------------------------------
+# Pitfall #1: Mid-Price Slippage - Buffer for bid-ask spread slippage
+SLIPPAGE_BUFFER_PCT = 0.02  # 2% assumed slippage per leg
+CREDIT_SPREAD_MIN_CREDIT_ADJUSTED = 0.35  # Increased from 0.30 to cover exit slippage
+
+# Pitfall #5: Gamma Pin at Expiry - Buffer zone around short strike
+# Exit early if underlying price is within buffer zone of short strike near expiration
+GAMMA_PIN_CHECK_ENABLED = True  # Master switch for gamma pin protection
+GAMMA_PIN_BUFFER_PCT = 0.005  # 0.5% buffer zone around short strike
+GAMMA_PIN_EARLY_EXIT_DTE = 2  # Activate within 2 DTE
+
+# Pitfall #4: VASS Rejection Logging - Throttled logging for silent rejections
+VASS_LOG_REJECTION_INTERVAL_MINUTES = 15  # Log rejections every 15 min (not every candle)
 
 # -----------------------------------------------------------------------------
 # V2.1.1 VIX DIRECTION THRESHOLDS (Micro Regime Engine)
