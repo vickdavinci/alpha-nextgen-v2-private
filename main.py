@@ -181,7 +181,7 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
         self.SetStartDate(2025, 1, 1)
-        self.SetEndDate(2025, 1, 31)  # January 2025 backtest
+        self.SetEndDate(2025, 2, 28)  # Jan-Feb 2025 backtest (2 months)
         self.SetCash(config.PHASE_SEED_MIN)  # $50,000 seed capital
 
         # All times are Eastern
@@ -413,6 +413,10 @@ class AlphaNextGen(QCAlgorithm):
         # UVXY tracks ~1.5x daily VIX moves, so we use % change as direction signal
         self.uvxy = self.AddEquity("UVXY", Resolution.Minute).Symbol
         self._uvxy_at_open = 0.0  # UVXY price at market open
+
+        # V2.4.1: Intraday scan throttle - only scan every 15 minutes
+        # Fixes 95 scans/hour → 4 scans/hour
+        self._last_intraday_scan = None
 
         # Store collections for iteration
         self.traded_symbols = [
@@ -1161,6 +1165,46 @@ class AlphaNextGen(QCAlgorithm):
             f"MICRO_UPDATE: VIX_proxy={vix_intraday_proxy:.2f} (UVXY {uvxy_change_pct:+.1f}%) | "
             f"Regime={state.micro_regime.value} | Dir={state.recommended_direction.value if state.recommended_direction else 'NONE'}"
         )
+
+    def _get_vix_intraday_proxy(self) -> float:
+        """
+        V2.4.1: Get UVXY-derived VIX proxy for intraday direction.
+
+        Calculates synthetic intraday VIX from UVXY % change applied to VIX open.
+        This is needed because CBOE VIX only supports Daily resolution in QC.
+        UVXY tracks ~1.5x daily VIX moves, so we derive VIX from UVXY change.
+
+        Returns:
+            Estimated intraday VIX value derived from UVXY price change.
+        """
+        uvxy_current = self.Securities[self.uvxy].Price
+        if self._uvxy_at_open > 0:
+            uvxy_change_pct = (uvxy_current - self._uvxy_at_open) / self._uvxy_at_open * 100
+            # Derive synthetic "intraday VIX" from UVXY change applied to VIX open
+            # If UVXY is up 3%, VIX is approximately up 2% (UVXY is ~1.5x)
+            return self._vix_at_open * (1 + uvxy_change_pct / 150)
+        return self._current_vix
+
+    def _should_scan_intraday(self) -> bool:
+        """
+        V2.4.1: Check if enough time passed since last intraday scan.
+
+        Implements 15-minute throttle to reduce intraday scanning from
+        95 scans/hour (every minute) to 4 scans/hour (every 15 minutes).
+
+        Returns:
+            True if throttle allows scanning, False otherwise.
+        """
+        if self._last_intraday_scan is None:
+            self._last_intraday_scan = self.Time
+            return True
+
+        elapsed_seconds = (self.Time - self._last_intraday_scan).total_seconds()
+        if elapsed_seconds >= 900:  # 15 minutes = 900 seconds
+            self._last_intraday_scan = self.Time
+            return True
+
+        return False
 
     # =========================================================================
     # ORDER EVENT HANDLER
@@ -2559,19 +2603,21 @@ class AlphaNextGen(QCAlgorithm):
         adx_value = self.qqq_adx.Current.Value
         ma200_value = self.qqq_sma200.Current.Value
 
-        # V2.3.14 FIX: Get direction from Micro Regime Engine FIRST, then select contract
-        # OLD CODE hardcoded "fade" direction (QQQ up -> PUT, QQQ down -> CALL)
-        # This blocked all MOMENTUM trades where engine recommends SAME direction as move
-        # (e.g., QQQ up + VIX rising = engine recommends CALL to ride momentum)
-        # V2.3.16: Direction conflict resolution now centralized in options_engine
-        if self._qqq_at_open > 0:  # Only if we have market open data
+        # V2.4.1: Throttle intraday scanning to every 15 minutes (was every minute)
+        # This reduces 95 scans/hour to 4 scans/hour
+        if self._should_scan_intraday() and self._qqq_at_open > 0:
+            # V2.4.1 FIX: Use UVXY-derived VIX proxy instead of stale daily VIX
+            # self._current_vix is daily close and doesn't change intraday
+            vix_intraday = self._get_vix_intraday_proxy()
+
             # Get macro regime score for direction conflict check
             regime_score = self.regime_engine.get_previous_score()
 
             # STEP 1: Get engine recommendation (updates micro regime state)
             # V2.3.16: Now includes direction conflict resolution internally
+            # V2.4.1: Pass UVXY-derived VIX proxy, not stale daily VIX
             intraday_direction = self.options_engine.get_intraday_direction(
-                vix_current=self._current_vix,
+                vix_current=vix_intraday,  # V2.4.1: UVXY proxy
                 vix_open=self._vix_at_open,
                 qqq_current=qqq_price,
                 qqq_open=self._qqq_at_open,
@@ -2593,8 +2639,9 @@ class AlphaNextGen(QCAlgorithm):
                 and intraday_contract.ask > 0
             ):
                 # V2.3.20: Pass size_multiplier for cold start reduced sizing
+                # V2.4.1: Pass UVXY-derived VIX proxy
                 intraday_signal = self.options_engine.check_intraday_entry_signal(
-                    vix_current=self._current_vix,
+                    vix_current=vix_intraday,  # V2.4.1: UVXY proxy
                     vix_open=self._vix_at_open,
                     qqq_current=qqq_price,
                     qqq_open=self._qqq_at_open,

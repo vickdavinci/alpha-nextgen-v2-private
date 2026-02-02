@@ -94,23 +94,36 @@ class YieldSleeve:
         V2.3.17: Reserves CASH_BUFFER_PCT (10%) as "petty cash" to fund small trades
         without touching SHV. This reduces churn from Sniper (5%) and MR (5-10%) trades.
 
+        V2.4.1: Additionally reserves OPTIONS_HARD_CASH_RESERVE_PCT (10%) as hard cash
+        that is NEVER deployed to SHV. This cash stays as actual cash that options can
+        always access, fixing SHV_MARGIN_LOCK where SHV becomes collateral for leveraged
+        positions and cannot be sold.
+
         Args:
             total_equity: Total portfolio equity.
             non_shv_positions_value: Sum of all non-SHV position values.
             current_shv_value: Current SHV holdings value.
 
         Returns:
-            Unallocated cash amount (after reserving cash buffer).
+            Unallocated cash amount (after reserving buffers).
         """
         # V2.3.17: Reserve cash buffer to fund small trades without SHV liquidation
         cash_buffer = total_equity * config.CASH_BUFFER_PCT
 
-        # Unallocated = Total - All Positions (including SHV) - Cash Buffer
-        unallocated = total_equity - non_shv_positions_value - current_shv_value - cash_buffer
+        # V2.4.1: Reserve hard cash for options - NEVER deployed to SHV
+        # This ensures options always have funds available regardless of margin state
+        options_hard_cash = total_equity * config.OPTIONS_HARD_CASH_RESERVE_PCT
+
+        # Total reserved = cash buffer + options hard cash
+        total_reserved = cash_buffer + options_hard_cash
+
+        # Unallocated = Total - All Positions (including SHV) - Reserved Cash
+        unallocated = total_equity - non_shv_positions_value - current_shv_value - total_reserved
 
         if unallocated < 0:
             self.log(
-                f"YIELD: BUFFER_ACTIVE | Buffer=${cash_buffer:,.0f} absorbing "
+                f"YIELD: RESERVE_ACTIVE | CashBuffer=${cash_buffer:,.0f} + "
+                f"OptionsReserve=${options_hard_cash:,.0f} absorbing "
                 f"${abs(unallocated):,.0f} shortfall"
             )
 

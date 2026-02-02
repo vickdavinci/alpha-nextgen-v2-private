@@ -1699,9 +1699,11 @@ class OptionsEngine:
             trades_only=True,
         )
 
+        # V2.4.1 FIX: Use actual allocation value, not 1.0
+        # Was returning 1.0 instead of actual allocation (0.1875)
         return TargetWeight(
             symbol=best_contract.symbol,
-            target_weight=1.0,  # Full allocation to options budget
+            target_weight=config.OPTIONS_SWING_ALLOCATION,  # V2.4.1: Actual allocation
             source="OPT",
             urgency=Urgency.IMMEDIATE,
             reason=reason,
@@ -1929,9 +1931,10 @@ class OptionsEngine:
         )
 
         # Return TargetWeight for long leg, with short leg info in metadata
+        # V2.4.1 FIX: Use actual allocation value, not 1.0
         return TargetWeight(
             symbol=long_leg_contract.symbol,
-            target_weight=1.0,
+            target_weight=config.OPTIONS_SWING_ALLOCATION,  # V2.4.1: Actual allocation
             source="OPT",
             urgency=Urgency.IMMEDIATE,
             reason=reason,
@@ -2408,9 +2411,10 @@ class OptionsEngine:
             f"({state.qqq_move_pct:+.2f}%) | {direction.value} x{num_contracts}"
         )
 
-        # V2.3.14: Removed _entry_attempted_today flag - was blocking ALL subsequent
-        # attempts after first signal even after trade exited. Now using _intraday_trades_today
-        # counter which is incremented when position is registered (after fill).
+        # V2.4.1 FIX: Increment counter IMMEDIATELY on signal generation, not on fill
+        # This fixes the race condition where multiple signals are generated before
+        # the first fill increments the counter (resulted in 4 fills when limit=2)
+        self._intraday_trades_today += 1
 
         # V2.3.2 FIX #4: Mark this as intraday entry for correct position tracking
         self._pending_intraday_entry = True
@@ -2422,13 +2426,17 @@ class OptionsEngine:
         self._pending_stop_pct = config.OPTIONS_0DTE_STOP_PCT  # Use 0DTE stop
 
         self.log(
-            f"INTRADAY_SIGNAL: {reason} | Δ={best_contract.delta:.2f} K={best_contract.strike} DTE={best_contract.days_to_expiry}",
+            f"INTRADAY_SIGNAL: {reason} | Δ={best_contract.delta:.2f} K={best_contract.strike} DTE={best_contract.days_to_expiry} | TradeCount={self._intraday_trades_today}/{config.INTRADAY_MAX_TRADES_PER_DAY}",
             trades_only=True,
         )
 
+        # V2.4.1 FIX: Use config allocation value, not size_mult
+        # Was returning 1.0/0.5 instead of actual allocation (0.0625)
+        actual_target_weight = config.OPTIONS_INTRADAY_ALLOCATION * size_mult
+
         return TargetWeight(
             symbol=best_contract.symbol,
-            target_weight=size_mult,
+            target_weight=actual_target_weight,  # V2.4.1: Actual allocation, not 1.0
             source="OPT_INTRADAY",
             urgency=Urgency.IMMEDIATE,
             reason=reason,
@@ -2735,8 +2743,8 @@ class OptionsEngine:
         if self._pending_intraday_entry:
             self._intraday_position = position
             self._pending_intraday_entry = False  # Clear flag
-            # V2.3.14: Increment intraday trade counter (allows multiple trades per day)
-            self._intraday_trades_today += 1
+            # V2.4.1: Counter now incremented on signal generation (check_intraday_entry_signal)
+            # to prevent race condition. Do NOT increment again here.
             self.log(
                 f"OPT: INTRADAY position registered (trade #{self._intraday_trades_today}, force-close at 15:30)",
                 trades_only=True,

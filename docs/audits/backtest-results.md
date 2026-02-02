@@ -453,6 +453,196 @@ This would ensure options **always** have 25% margin available, regardless of tr
 
 ---
 
+## V2.4.1 Consolidated Fix List (2026-02-01)
+
+Based on AAP audit of V2.4 SMA50 2-Month Backtest (Jan-Feb 2025). Total Loss: **-$8,988.24 (-17.98%)**, Options P&L: **-$7,814 (87% of loss)**.
+
+| # | Fix | Severity | File | Description | Status |
+|:-:|-----|:--------:|------|-------------|:------:|
+| 1 | Intraday counter race | P1 | `options_engine.py` | 4 fills when limit=2 - counter increments AFTER fill, not on signal | ✅ |
+| 2 | Intraday scan throttle | P1 | `main.py` | 95 scans/hour instead of 4 - no 15-min throttle before calling intraday check | ✅ |
+| 3 | Wrong `target_weight` | P1 | `options_engine.py` | Returns `1.0`/`0.5` instead of actual allocation (0.1875/0.0625) | ✅ |
+| 4 | SHV cash reserve | P1 | `yield_sleeve.py` + `config.py` | 25% reserved for options BUT deployed as yield → now 10% hard cash reserve | ✅ |
+| 5 | UVXY proxy not in scanning | P1 | `main.py` | Scanning passes `self._current_vix` (stale daily) instead of UVXY-derived proxy | ✅ |
+| 6 | Combo order format | P2 | `portfolio_router.py` | 15 ORDER_ERROR "does not support this order type" | ⏳ |
+| 7 | Naked call fallback | P2 | `options_engine.py` | SWING_FALLBACK to single ITM CALL creates unlimited loss exposure | ⏳ |
+| 8 | Kill switch on fills | P2 | `main.py` | After options fill, check if kill switch already tripped → immediate exit | ⏳ |
+
+### Fix #1: Intraday Counter Race Condition
+
+**Problem:** `_intraday_trades_today` counter incremented on FILL, not on signal. Multiple signals fired before first fill incremented counter.
+
+**Evidence:**
+```
+2025-01-21: 4 fills when limit=2
+  10:30:00 INTRADAY_SIGNAL (counter=0)
+  10:30:01 INTRADAY_SIGNAL (counter=0 still!)
+  10:30:15 FILL (now counter=1)
+  10:30:16 FILL (now counter=2)
+  ... 2 more fills leaked through
+```
+
+**Fix (options_engine.py ~line 2300):**
+```python
+# BEFORE
+if self._intraday_trades_today >= config.INTRADAY_MAX_TRADES_PER_DAY:
+    return None
+# Counter only incremented after broker fill!
+
+# AFTER
+if self._intraday_trades_today >= config.INTRADAY_MAX_TRADES_PER_DAY:
+    return None
+# Increment counter IMMEDIATELY on signal generation
+self._intraday_trades_today += 1
+# In on_fill(), do NOT increment again
+```
+
+### Fix #2: Intraday Scan Throttle
+
+**Problem:** No throttle in main.py before calling `get_intraday_direction()` and `check_intraday_entry_signal()`. Engine scans every minute (95 scans/hour).
+
+**Evidence:**
+```
+Logs show MICRO_UPDATE 95 times per trading hour (every minute)
+Should be 4 times per hour (every 15 minutes)
+```
+
+**Fix (main.py ~line 2567):**
+```python
+# Add throttle check before intraday scanning
+if not self._should_scan_intraday():  # 15-min throttle
+    return
+
+def _should_scan_intraday(self) -> bool:
+    """Check if enough time passed since last intraday scan."""
+    if self._last_intraday_scan is None:
+        self._last_intraday_scan = self.Time
+        return True
+    if (self.Time - self._last_intraday_scan).total_seconds() >= 900:  # 15 min
+        self._last_intraday_scan = self.Time
+        return True
+    return False
+```
+
+### Fix #3: Wrong target_weight Values
+
+**Problem:** Options signals return `target_weight=1.0` or `target_weight=size_mult` instead of actual allocation.
+
+**Evidence:**
+```python
+# options_engine.py line 1704 (swing)
+target_weight=1.0,  # Should be config.OPTIONS_SWING_ALLOCATION (0.1875)
+
+# options_engine.py line 2431 (intraday)
+target_weight=size_mult,  # Should be config.OPTIONS_INTRADAY_ALLOCATION * size_mult (0.0625)
+```
+
+**Fix:**
+```python
+# Swing (line 1704)
+target_weight=config.OPTIONS_SWING_ALLOCATION,  # 0.1875
+
+# Intraday (line 2431)
+target_weight=config.OPTIONS_INTRADAY_ALLOCATION * size_mult,  # 0.0625 * 0.5
+```
+
+### Fix #4: SHV Cash Reserve (Architecture Change)
+
+**Problem:** 25% reserved at allocation level, but SHV deployed as yield becomes margin collateral for leveraged positions. When options need funds, SHV can't be sold.
+
+**Evidence:**
+```
+34 SHV_MARGIN_LOCK events in logs
+Router tries to sell SHV → IBKR rejects (margin violation)
+```
+
+**Fix (yield_sleeve.py, portfolio_router.py):**
+```python
+# Option A: Hard Cash Reserve (no yield on reserved portion)
+HARD_CASH_RESERVE_PCT = 0.10  # 10% stays as CASH, not SHV
+# This cash is never deployed, always available for options
+
+# Option B: Options Priority Queue
+# Before any trend entry, ensure 25% margin remains available
+available_margin = Portfolio.MarginRemaining * (1 - RESERVED_OPTIONS_PCT)
+# Scale trend orders to fit within available_margin
+```
+
+### Fix #5: UVXY Proxy Not in Scanning Function (NEW)
+
+**Problem:** `_update_micro_regime()` correctly calculates `vix_intraday_proxy` from UVXY. But scanning loop passes `self._current_vix` (stale daily close), overwriting the correct state.
+
+**Evidence:**
+```python
+# main.py line 1142 (_update_micro_regime)
+vix_intraday_proxy = self._vix_at_open * (1 + uvxy_change_pct / 150)  # Correct!
+
+# main.py line 2574 (scanning loop)
+vix_current=self._current_vix,  # WRONG! Uses stale daily VIX
+```
+
+**Impact:** SNIPER sees daily VIX (unchanged all day), not live intraday VIX changes from UVXY proxy.
+
+**Fix (main.py ~line 2570):**
+```python
+# Create shared helper
+def _get_vix_intraday_proxy(self) -> float:
+    """Get UVXY-derived VIX proxy for intraday direction."""
+    uvxy_current = self.Securities[self.uvxy].Price
+    if self._uvxy_at_open > 0:
+        uvxy_change_pct = (uvxy_current - self._uvxy_at_open) / self._uvxy_at_open * 100
+        return self._vix_at_open * (1 + uvxy_change_pct / 150)
+    return self._current_vix
+
+# In scanning loop (line 2574)
+intraday_direction = self.options_engine.get_intraday_direction(
+    vix_current=self._get_vix_intraday_proxy(),  # Use UVXY proxy!
+    vix_open=self._vix_at_open,
+    ...
+)
+
+# Also update check_intraday_entry_signal (line 2597)
+intraday_signal = self.options_engine.check_intraday_entry_signal(
+    vix_current=self._get_vix_intraday_proxy(),  # Use UVXY proxy!
+    ...
+)
+```
+
+### Fix #6: Combo Order Format
+
+**Problem:** 15 `ORDER_ERROR: Order type does not support this order type` for combo/spread orders.
+
+**Fix:** Use `ComboMarketOrder` for spreads, not individual leg orders.
+
+### Fix #7: Disable Naked Call Fallback
+
+**Problem:** SWING_FALLBACK creates single ITM CALL on failed spread construction → unlimited loss potential.
+
+**Fix (options_engine.py):**
+```python
+# Disable naked call fallback
+if config.DISABLE_SWING_NAKED_FALLBACK:
+    self.log("SWING: Spread construction failed, skipping (naked fallback disabled)")
+    return None
+```
+
+### Fix #8: Kill Switch Check on Fills
+
+**Problem:** Kill switch may trip between signal generation and fill. Options continue trading when account should be frozen.
+
+**Fix (main.py OnOrderEvent):**
+```python
+def OnOrderEvent(self, orderEvent):
+    if orderEvent.Status == OrderStatus.Filled:
+        # Check if kill switch already active
+        if self.risk_engine.is_kill_switch_active():
+            # Immediately exit any new position
+            self.Liquidate(orderEvent.Symbol)
+            return
+```
+
+---
+
 ### Historical Runs
 
 **V2.3.12 Run:** V2.3.12-ComboFix-2month | **Result:** +4.09% | **Orders:** 143 (but only 7 options!)
@@ -1854,4 +2044,4 @@ lean cloud backtest AlphaNextGen
 
 ---
 
-*Document created: 2026-01-30 | Last updated: 2026-02-01 (V2.4 SMA50 2-Month Backtest AAP Audit)*
+*Document created: 2026-01-30 | Last updated: 2026-02-01 (V2.4.1 Consolidated Fix List - 8 Bugs)*

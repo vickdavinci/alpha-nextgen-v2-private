@@ -252,6 +252,12 @@ SHV_MIN_TRADE = 10_000  # V2.3.6: Raised from 2000 - reduce SHV churn on small f
 # This prevents churn from small Sniper trades (5%) and MR entries (5-10%)
 CASH_BUFFER_PCT = 0.10
 
+# V2.4.1: Hard Cash Reserve for Options (separate from cash buffer)
+# This cash is NEVER deployed to SHV - it stays as actual cash that options can always access
+# Fixes SHV_MARGIN_LOCK issue where SHV becomes collateral for leveraged positions
+# Options can always access this cash regardless of margin state
+OPTIONS_HARD_CASH_RESERVE_PCT = 0.10  # 10% hard cash reserve for options
+
 # =============================================================================
 # PORTFOLIO ROUTER
 # =============================================================================
