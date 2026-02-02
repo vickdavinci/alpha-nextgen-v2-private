@@ -176,8 +176,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2025, 3, 1)
-        self.SetEndDate(2025, 5, 31)  # Mar-May 2025 backtest (3 months)
+        self.SetStartDate(2023, 1, 1)
+        self.SetEndDate(2024, 12, 31)  # V2.5 Jan 2023 - Dec 2024 backtest (2 years)
         self.SetCash(config.PHASE_SEED_MIN)  # $50,000 seed capital
 
         # All times are Eastern
@@ -2449,11 +2449,10 @@ class AlphaNextGen(QCAlgorithm):
             except Exception as e:
                 self.Log(f"KILL_SWITCH: Long option close error: {e}")
 
-        # Clear tracked position state if any
-        if self.options_engine.has_position():
-            self.options_engine.remove_position()
-        # Clear any pending entry state
-        self.options_engine._pending_contract = None
+        # V2.5 PART 19 FIX: Clear ALL options engine position state
+        # This prevents "zombie state" where internal trackers remain set
+        # after broker positions are closed, blocking future trades for months
+        self.options_engine.clear_all_positions()
 
         # V2.3.4: Only reset cold start if we liquidated trend positions
         if catastrophic_loss or not options_are_culprit:
@@ -2697,9 +2696,19 @@ class AlphaNextGen(QCAlgorithm):
         if not self.qqq_adx.IsReady or not self.qqq_sma200.IsReady:
             return
 
-        # Skip if already have options position (either mode)
+        # V2.5 PART 19 FIX: Stateless reconciliation - detect zombie state
+        # If internal tracker thinks we have a position, but portfolio is empty,
+        # clear the zombie state to unblock trading
         if self.options_engine.has_position():
-            return
+            actual_option_count = self._get_actual_option_count()
+            if actual_option_count == 0:
+                self.Log(
+                    "OPT_ZOMBIE_FIX: Internal state shows position but portfolio empty - clearing zombie state"
+                )
+                self.options_engine.clear_all_positions()
+            else:
+                # Real position exists, skip scanning
+                return
 
         # V2.3 FIX: Skip if kill switch triggered (prevents new entries after liquidation)
         if self._kill_switch_handled_today:
@@ -3223,6 +3232,24 @@ class AlphaNextGen(QCAlgorithm):
             # Send both exit signals (long leg and short leg)
             for signal in exit_signals:
                 self.portfolio_router.receive_signal(signal)
+
+    def _get_actual_option_count(self) -> int:
+        """
+        V2.5 PART 19 FIX: Count actual option positions in portfolio (stateless).
+
+        This bypasses internal state trackers and counts what is actually
+        held in the broker portfolio. Used to detect "zombie state" where
+        internal trackers are set but positions don't exist.
+
+        Returns:
+            Number of option positions currently held.
+        """
+        count = 0
+        for kvp in self.Portfolio:
+            holding = kvp.Value
+            if holding.Invested and holding.Symbol.SecurityType == SecurityType.Option:
+                count += 1
+        return count
 
     def _validate_options_symbol(self) -> bool:
         """

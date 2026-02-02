@@ -3232,6 +3232,47 @@ class OptionsEngine:
         """Get current position."""
         return self._position
 
+    def clear_all_positions(self) -> None:
+        """
+        V2.5 PART 19 FIX: Clear ALL position tracking state.
+
+        This is called by kill switch to prevent "zombie state" where
+        internal position trackers remain set after broker positions are closed.
+
+        The bug: If a spread is entered and then kill switch liquidates it,
+        the internal _spread_position variable stays set, blocking ALL future
+        spread entries for months.
+
+        Solution: Use stateless tracking - clear all internal state when
+        positions are forcibly closed by kill switch.
+        """
+        cleared = []
+
+        if self._position is not None:
+            self._position = None
+            cleared.append("single-leg")
+
+        if self._spread_position is not None:
+            self._spread_position = None
+            cleared.append("spread")
+
+        if self._intraday_position is not None:
+            self._intraday_position = None
+            cleared.append("intraday")
+
+        # Also clear pending state
+        self._pending_contract = None
+        self._pending_intraday_entry = False
+        self._pending_spread_long = None
+        self._pending_spread_short = None
+        self._pending_spread_width = None
+
+        if cleared:
+            self.log(
+                f"OPT: CLEAR_ALL_POSITIONS (kill switch) | Cleared: {', '.join(cleared)}",
+                trades_only=True,
+            )
+
     # =========================================================================
     # GREEKS MONITORING (V2.1 RSK-2)
     # =========================================================================

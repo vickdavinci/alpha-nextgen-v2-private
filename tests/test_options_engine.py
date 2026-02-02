@@ -2251,3 +2251,71 @@ class TestDailyResetV211:
         state = engine_with_intraday_position._micro_regime_engine.get_state()
         assert state.vix_level == VIXLevel.LOW
         assert state.micro_score == 50.0
+
+
+class TestClearAllPositions:
+    """V2.5 PART 19 FIX: Test clear_all_positions for zombie state prevention."""
+
+    def test_clear_all_positions_clears_spread(self, engine):
+        """Test clear_all_positions clears spread position (zombie state fix)."""
+        # Simulate a zombie spread position by setting internal state directly
+        # This mimics what happens when kill switch closes positions but state isn't cleared
+        engine._spread_position = "ZOMBIE_SPREAD"  # Any non-None value
+
+        assert engine.has_spread_position() is True
+
+        # Clear all positions (kill switch scenario)
+        engine.clear_all_positions()
+
+        assert engine.has_spread_position() is False
+        assert engine._spread_position is None
+
+    def test_clear_all_positions_clears_intraday(self, engine):
+        """Test clear_all_positions clears intraday position."""
+        # Simulate a zombie intraday position
+        engine._intraday_position = "ZOMBIE_INTRADAY"  # Any non-None value
+
+        assert engine.has_intraday_position() is True
+
+        engine.clear_all_positions()
+
+        assert engine.has_intraday_position() is False
+        assert engine._intraday_position is None
+
+    def test_clear_all_positions_clears_single_leg(self, engine):
+        """Test clear_all_positions clears single-leg position."""
+        # Simulate a zombie single-leg position
+        engine._position = "ZOMBIE_POSITION"  # Any non-None value
+
+        assert engine.has_position() is True
+
+        engine.clear_all_positions()
+
+        assert engine._position is None
+
+    def test_clear_all_positions_clears_pending_state(self, engine):
+        """Test clear_all_positions clears all pending entry state."""
+        # Set up pending state
+        engine._pending_contract = "PENDING"
+        engine._pending_intraday_entry = True
+        engine._pending_spread_long = "LONG"
+        engine._pending_spread_short = "SHORT"
+        engine._pending_spread_width = 5.0
+
+        engine.clear_all_positions()
+
+        assert engine._pending_contract is None
+        assert engine._pending_intraday_entry is False
+        assert engine._pending_spread_long is None
+        assert engine._pending_spread_short is None
+        assert engine._pending_spread_width is None
+
+    def test_clear_all_positions_idempotent(self, engine):
+        """Test clear_all_positions is safe to call when no positions exist."""
+        # Should not raise any errors
+        engine.clear_all_positions()
+        engine.clear_all_positions()  # Call twice
+
+        assert engine._position is None
+        assert engine._spread_position is None
+        assert engine._intraday_position is None
