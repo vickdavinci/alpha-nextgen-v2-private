@@ -333,6 +333,9 @@ MIN_INTRADAY_OPTIONS_TRADE_VALUE = 500
 # Kill Switch (V1: Nuclear option - liquidate ALL)
 # V2.3.17: Raised from 3% to 5% to reduce false triggers in volatile markets
 KILL_SWITCH_PCT = 0.05
+# V2.16-BT: Preemptive kill switch when panic mode active AND approaching threshold
+# Closes gap between panic mode (4%) and kill switch (5%) where hedges could lose value
+KILL_SWITCH_PREEMPTIVE_PCT = 0.045  # 4.5% - triggers kill switch when in panic mode
 
 # Panic Mode
 PANIC_MODE_PCT = 0.04
@@ -609,6 +612,11 @@ SPREAD_PROFIT_TARGET_PCT = 0.50  # Take profit at 50% of max profit
 SPREAD_STOP_LOSS_PCT = 0.50  # V2.4.2: Stop loss at 50% of entry debit (max loss = 50% of net debit)
 SPREAD_REGIME_EXIT_BULL = 45  # Exit Bull Call if regime drops below 45
 SPREAD_REGIME_EXIT_BEAR = 60  # Exit Bear Put if regime rises above 60
+
+# V2.16-BT: Commission-aware profit targets
+# Round-trip commission estimate per spread (entry + exit, both legs)
+# IBKR: ~$0.65/contract × 2 legs × 2 (entry+exit) = $2.60/spread
+SPREAD_COMMISSION_PER_CONTRACT = 2.60  # Estimated round-trip commission per spread
 
 # Delta targets for spread legs - V2.3.21 "Smart Swing" Strategy
 # ITM Long Leg / OTM Short Leg: Prioritize execution with wider delta range

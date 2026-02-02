@@ -2894,9 +2894,18 @@ class OptionsEngine:
             pnl_pct = pnl / entry_debit if entry_debit > 0 else 0
 
             # Exit 1: Profit target (50% of max profit)
-            profit_target = spread.max_profit * config.SPREAD_PROFIT_TARGET_PCT
+            # V2.16-BT: Commission-aware profit target
+            # Require NET profit (after commission) to meet the target, not just gross
+            commission_cost = spread.num_spreads * config.SPREAD_COMMISSION_PER_CONTRACT
+            raw_profit_target = spread.max_profit * config.SPREAD_PROFIT_TARGET_PCT
+            # Gross P&L needed = raw_target + commission (ensures net profit meets target)
+            profit_target = raw_profit_target + commission_cost
+            net_pnl = pnl - commission_cost
             if pnl >= profit_target:
-                exit_reason = f"PROFIT_TARGET +{pnl_pct:.1%} (${pnl:.2f} >= ${profit_target:.2f})"
+                exit_reason = (
+                    f"PROFIT_TARGET +{pnl_pct:.1%} (Net ${net_pnl:.2f} >= ${raw_profit_target:.2f}) | "
+                    f"Gross ${pnl:.2f} - Commission ${commission_cost:.2f}"
+                )
 
             # Exit 2: STOP LOSS (V2.4.2 FIX: Max loss = 50% of entry debit)
             # This prevents catastrophic losses from holding spreads to expiration

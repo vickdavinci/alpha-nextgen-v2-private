@@ -346,6 +346,18 @@ class RiskEngine:
                 self._trigger_kill_switch(current_equity, "sod", self._equity_sod, loss_from_sod)
                 return True
 
+            # V2.16-BT: Preemptive kill switch when panic mode active AND approaching threshold
+            # Closes gap between panic mode (4%) and kill switch (5%) where hedges could lose value
+            if self._panic_mode_active and loss_from_sod >= config.KILL_SWITCH_PREEMPTIVE_PCT:
+                self._trigger_kill_switch(
+                    current_equity, "preemptive_sod", self._equity_sod, loss_from_sod
+                )
+                self.log(
+                    f"KILL_SWITCH_PREEMPTIVE: Panic mode + {loss_from_sod:.2%} loss >= "
+                    f"{config.KILL_SWITCH_PREEMPTIVE_PCT:.1%} | Hedges at risk"
+                )
+                return True
+
         return False
 
     def _trigger_kill_switch(
