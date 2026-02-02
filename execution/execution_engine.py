@@ -452,19 +452,29 @@ class ExecutionEngine:
             # Import Leg class for combo orders
             from AlgorithmImports import Leg
 
-            # Create legs: positive quantity = BUY, negative quantity = SELL
+            # V2.4.1 FIX: Leg.Create takes RATIO, not absolute quantity
+            # For a standard 1:1 spread:
+            #   - Long leg ratio = 1 (BUY 1 per spread)
+            #   - Short leg ratio = -1 (SELL 1 per spread)
+            #   - ComboMarketOrder quantity = number of spreads
+            # OLD BUG: Passing quantity (e.g., 26) as ratio meant 26 × 26 = 676 contracts!
+            num_spreads = abs(long_quantity)
+            long_ratio = 1 if long_quantity > 0 else -1
+            short_ratio = 1 if short_quantity > 0 else -1
+
             legs = [
-                Leg.Create(long_symbol, long_quantity),
-                Leg.Create(short_symbol, short_quantity),
+                Leg.Create(long_symbol, long_ratio),
+                Leg.Create(short_symbol, short_ratio),
             ]
 
             # Submit combo order - broker calculates NET margin (spread margin)
-            tickets = self.algorithm.ComboMarketOrder(legs, abs(long_quantity))
+            tickets = self.algorithm.ComboMarketOrder(legs, num_spreads)
 
             # Log success
             self.log(
                 f"EXEC: COMBO_SUBMITTED | {order_id} | "
-                f"BUY {long_quantity} {long_symbol} + SELL {abs(short_quantity)} {short_symbol} | "
+                f"Long {long_symbol} x{num_spreads} (ratio={long_ratio}) + "
+                f"Short {short_symbol} x{num_spreads} (ratio={short_ratio}) | "
                 f"{reason}"
             )
 

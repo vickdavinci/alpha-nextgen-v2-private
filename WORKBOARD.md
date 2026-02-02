@@ -202,6 +202,54 @@ TREND_HARD_STOP_PCT = {"QLD": 0.15, "SSO": 0.15, "TNA": 0.12, "FAS": 0.12}
 - [ ] No whipsaws in choppy markets
 - [ ] Holding periods extend to 30+ days
 
+### V2.4 Backtest Results (2026-02-01) — AAP Audit
+
+**Backtest:** V2.4-SMA50-2month (Jan-Feb 2025) | **Result:** -17.98% | **Options P&L:** -$7,814 (87% of loss)
+
+**AAP Audit Findings:** See `docs/audits/backtest-results.md` § V2.4.1 Consolidated Fix List
+
+### V2.4.1: Options Engine P1 Fixes (2026-02-01)
+
+**Goal:** Fix 5 P1 bugs causing -$7,814 options loss in V2.4 backtest.
+
+| # | Fix | File | Description | Status |
+|:-:|-----|------|-------------|:------:|
+| 1 | Intraday counter race | `options_engine.py` | Counter increments on signal, not fill | ✅ |
+| 2 | Intraday scan throttle | `main.py` | 15-min throttle (was 95 scans/hour) | ✅ |
+| 3 | Wrong `target_weight` | `options_engine.py` | Use config allocations (was 1.0/0.5) | ✅ |
+| 4 | SHV hard cash reserve | `yield_sleeve.py`, `config.py` | 10% hard cash never deployed to SHV | ✅ |
+| 5 | UVXY proxy in scanning | `main.py` | Use live UVXY proxy (was stale daily VIX) | ✅ |
+
+**Key Changes:**
+
+1. **Counter Race Fix:** `_intraday_trades_today` incremented immediately on signal generation (line 2417), removed duplicate increment in `register_entry()`.
+
+2. **Scan Throttle:** Added `_should_scan_intraday()` helper with 15-min throttle. Reduces 95 scans/hour → 4 scans/hour.
+
+3. **Target Weight Fix:**
+   - Swing: `config.OPTIONS_SWING_ALLOCATION` (0.1875) instead of `1.0`
+   - Intraday: `config.OPTIONS_INTRADAY_ALLOCATION * size_mult` instead of `size_mult`
+
+4. **SHV Hard Cash Reserve:** Added `OPTIONS_HARD_CASH_RESERVE_PCT = 0.10` in config. Yield sleeve now reserves 20% total (10% cash buffer + 10% options reserve). Options always have 10% portfolio as actual cash.
+
+5. **UVXY Proxy:** Added `_get_vix_intraday_proxy()` helper. Scanning loop now uses UVXY-derived VIX instead of stale daily close.
+
+**Commit:** `9a7d99d` - `fix(options): V2.4.1 P1 fixes for options engine reliability`
+
+**Tests:** 1349 passed, 2 skipped
+
+### V2.4.1: P2 Fixes (2026-02-01)
+
+| # | Fix | File | Description | Status |
+|:-:|-----|------|-------------|:------:|
+| 6 | Combo order format | `portfolio_router.py`, `execution_engine.py` | Leg.Create takes RATIO, not quantity | ✅ |
+| 7 | Naked call fallback | `options_engine.py` | Disable SWING_FALLBACK to naked ITM CALL | ⏳ |
+| 8 | Kill switch on fills | `main.py` | Check kill switch after options fill | ✅ |
+
+**Fix #6 Details:** `Leg.Create(symbol, ratio)` - ratio is 1/-1 for standard spreads, NOT absolute contract count. Old bug: passing quantity (26) as ratio caused 26×26=676 contracts!
+
+**Fix #8 Details:** In `OnOrderEvent`, after options BUY fill, check `risk_engine.is_kill_switch_active()`. If active, immediately liquidate the new position.
+
 ---
 
 ## Planned Features (V2.5+)

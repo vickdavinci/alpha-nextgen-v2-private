@@ -801,20 +801,27 @@ class PortfolioRouter:
                     # Import Leg class for combo orders
                     from AlgorithmImports import Leg
 
-                    # Create legs for combo order
-                    # Long leg: symbol with quantity (positive=BUY, negative=SELL)
-                    # Short leg: combo_short_symbol with combo_short_quantity
+                    # V2.4.1 FIX: Leg.Create takes RATIO, not absolute quantity
+                    # For a standard 1:1 spread:
+                    #   - Long leg ratio = 1 (BUY 1 per spread)
+                    #   - Short leg ratio = -1 (SELL 1 per spread)
+                    #   - ComboMarketOrder quantity = number of spreads
+                    # OLD BUG: Passing quantity (e.g., 26) as ratio meant 26 × 26 = 676 contracts!
+                    num_spreads = abs(order.quantity)
+                    long_ratio = 1 if order.side == OrderSide.BUY else -1
+                    short_ratio = -1 if order.side == OrderSide.BUY else 1  # Opposite of long
+
                     legs = [
-                        Leg.Create(order.symbol, quantity),
-                        Leg.Create(order.combo_short_symbol, order.combo_short_quantity),
+                        Leg.Create(order.symbol, long_ratio),
+                        Leg.Create(order.combo_short_symbol, short_ratio),
                     ]
 
                     # Submit combo order - broker calculates NET margin (spread margin)
-                    self.algorithm.ComboMarketOrder(legs, abs(order.quantity))  # type: ignore[attr-defined]
+                    self.algorithm.ComboMarketOrder(legs, num_spreads)  # type: ignore[attr-defined]
                     self.log(
                         f"ROUTER: COMBO_MARKET_ORDER | "
-                        f"Long={order.symbol} x{quantity} + "
-                        f"Short={order.combo_short_symbol} x{order.combo_short_quantity}"
+                        f"Long={order.symbol} x{num_spreads} (ratio={long_ratio}) + "
+                        f"Short={order.combo_short_symbol} x{num_spreads} (ratio={short_ratio})"
                     )
                 elif order.order_type == OrderType.MARKET:
                     self.algorithm.MarketOrder(order.symbol, quantity)  # type: ignore[attr-defined]

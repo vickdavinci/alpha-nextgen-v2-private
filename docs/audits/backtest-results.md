@@ -464,9 +464,9 @@ Based on AAP audit of V2.4 SMA50 2-Month Backtest (Jan-Feb 2025). Total Loss: **
 | 3 | Wrong `target_weight` | P1 | `options_engine.py` | Returns `1.0`/`0.5` instead of actual allocation (0.1875/0.0625) | ✅ |
 | 4 | SHV cash reserve | P1 | `yield_sleeve.py` + `config.py` | 25% reserved for options BUT deployed as yield → now 10% hard cash reserve | ✅ |
 | 5 | UVXY proxy not in scanning | P1 | `main.py` | Scanning passes `self._current_vix` (stale daily) instead of UVXY-derived proxy | ✅ |
-| 6 | Combo order format | P2 | `portfolio_router.py` | 15 ORDER_ERROR "does not support this order type" | ⏳ |
+| 6 | Combo order format | P2 | `portfolio_router.py`, `execution_engine.py` | Leg.Create takes RATIO (1/-1), not quantity - was causing 26×26=676 contracts! | ✅ |
 | 7 | Naked call fallback | P2 | `options_engine.py` | SWING_FALLBACK to single ITM CALL creates unlimited loss exposure | ⏳ |
-| 8 | Kill switch on fills | P2 | `main.py` | After options fill, check if kill switch already tripped → immediate exit | ⏳ |
+| 8 | Kill switch on fills | P2 | `main.py` | After options fill, check if kill switch already tripped → immediate exit | ✅ |
 
 ### Fix #1: Intraday Counter Race Condition
 
@@ -608,13 +608,29 @@ intraday_signal = self.options_engine.check_intraday_entry_signal(
 )
 ```
 
-### Fix #6: Combo Order Format
+### Fix #6: Combo Order Format ✅ IMPLEMENTED
 
 **Problem:** 15 `ORDER_ERROR: Order type does not support this order type` for combo/spread orders.
 
-**Fix:** Use `ComboMarketOrder` for spreads, not individual leg orders.
+**Root Cause:** `Leg.Create(symbol, quantity)` takes a **RATIO**, not absolute quantity. For a standard 1:1 spread, ratio should be 1 (long) and -1 (short). Old code passed quantity (e.g., 26), so `ComboMarketOrder(legs, 26)` tried to create 26 × 26 = 676 contracts!
 
-### Fix #7: Disable Naked Call Fallback
+**Fix (portfolio_router.py, execution_engine.py):**
+```python
+# V2.4.1 FIX: Leg.Create takes RATIO, not absolute quantity
+num_spreads = abs(order.quantity)
+long_ratio = 1 if order.side == OrderSide.BUY else -1
+short_ratio = -1 if order.side == OrderSide.BUY else 1
+
+legs = [
+    Leg.Create(order.symbol, long_ratio),        # Ratio = 1
+    Leg.Create(order.combo_short_symbol, short_ratio),  # Ratio = -1
+]
+
+# ComboMarketOrder multiplies ratios by num_spreads
+self.algorithm.ComboMarketOrder(legs, num_spreads)
+```
+
+### Fix #7: Disable Naked Call Fallback ⏳ PENDING
 
 **Problem:** SWING_FALLBACK creates single ITM CALL on failed spread construction → unlimited loss potential.
 
@@ -626,19 +642,21 @@ if config.DISABLE_SWING_NAKED_FALLBACK:
     return None
 ```
 
-### Fix #8: Kill Switch Check on Fills
+### Fix #8: Kill Switch Check on Fills ✅ IMPLEMENTED
 
 **Problem:** Kill switch may trip between signal generation and fill. Options continue trading when account should be frozen.
 
 **Fix (main.py OnOrderEvent):**
 ```python
-def OnOrderEvent(self, orderEvent):
-    if orderEvent.Status == OrderStatus.Filled:
-        # Check if kill switch already active
-        if self.risk_engine.is_kill_switch_active():
-            # Immediately exit any new position
-            self.Liquidate(orderEvent.Symbol)
-            return
+# V2.4.1 FIX #8: Kill switch check on options fills
+is_option = orderEvent.Symbol.SecurityType == SecurityType.Option
+if is_option and fill_qty > 0:  # Only check BUY fills (new positions)
+    if self.risk_engine.is_kill_switch_active():
+        self.Log(
+            f"KILL_SWITCH_ON_FILL: Options position opened while kill switch active | "
+            f"{symbol} x{fill_qty} @ ${fill_price:.2f} | LIQUIDATING IMMEDIATELY"
+        )
+        self.MarketOrder(orderEvent.Symbol, -fill_qty)
 ```
 
 ---

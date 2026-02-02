@@ -1264,6 +1264,19 @@ class AlphaNextGen(QCAlgorithm):
                 long_leg = self._pending_spread_orders.pop(symbol)
                 self.Log(f"SPREAD: Both legs filled successfully | Short={symbol} Long={long_leg}")
 
+            # V2.4.1 FIX #8: Kill switch check on options fills
+            # Kill switch may trip between signal generation and fill.
+            # If active, immediately liquidate the new options position.
+            is_option = orderEvent.Symbol.SecurityType == SecurityType.Option
+            if is_option and fill_qty > 0:  # Only check BUY fills (new positions)
+                if self.risk_engine.is_kill_switch_active():
+                    self.Log(
+                        f"KILL_SWITCH_ON_FILL: Options position opened while kill switch active | "
+                        f"{symbol} x{fill_qty} @ ${fill_price:.2f} | LIQUIDATING IMMEDIATELY"
+                    )
+                    # Immediately liquidate the options position
+                    self.MarketOrder(orderEvent.Symbol, -fill_qty)
+
         elif orderEvent.Status == OrderStatus.Invalid:
             self.Log(f"INVALID: {orderEvent.Symbol} - {orderEvent.Message}")
             self.execution_engine.on_order_event(
