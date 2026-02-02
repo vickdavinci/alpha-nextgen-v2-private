@@ -40,17 +40,17 @@ def engine():
 def sample_contract():
     """Create a sample option contract."""
     return OptionContract(
-        symbol="QQQ 260126C00450000",
+        symbol="QQQ 271231C00450000",
         underlying="QQQ",
         direction=OptionDirection.CALL,
         strike=450.0,
-        expiry="2026-01-26",
+        expiry="2027-12-31",  # V2.16-BT: Use future date for state restore tests
         delta=0.50,
         bid=1.40,
         ask=1.50,
         mid_price=1.45,
         open_interest=10000,
-        days_to_expiry=3,
+        days_to_expiry=5,  # V2.16-BT: Keep DTE in intraday range for tests
     )
 
 
@@ -350,7 +350,7 @@ class TestOptionContract:
     def test_to_dict(self, sample_contract):
         """Test serialization."""
         data = sample_contract.to_dict()
-        assert data["symbol"] == "QQQ 260126C00450000"
+        assert data["symbol"] == "QQQ 271231C00450000"  # V2.16-BT: Updated fixture
         assert data["direction"] == "CALL"
         assert data["strike"] == 450.0
 

@@ -4378,6 +4378,11 @@ class OptionsEngine:
             self._intraday_position = None
             cleared.append("intraday")
 
+        # V2.16-BT: Also clear swing position (V2.1.1 dual-mode)
+        if self._swing_position is not None:
+            self._swing_position = None
+            cleared.append("swing")
+
         # Also clear pending state
         self._pending_contract = None
         self._pending_intraday_entry = False
@@ -4525,6 +4530,8 @@ class OptionsEngine:
             "intraday_trades_today": self._intraday_trades_today,
             "current_mode": self._current_mode.value,
             "micro_regime_state": self._micro_regime_engine.get_state().to_dict(),
+            # V2.16-BT: Persist spread position for multi-day backtests
+            "spread_position": (self._spread_position.to_dict() if self._spread_position else None),
             # Market open data
             "vix_at_open": self._vix_at_open,
             "spy_at_open": self._spy_at_open,
@@ -4539,10 +4546,29 @@ class OptionsEngine:
         If we're restoring state and find an intraday position, it's likely
         a critical failure that needs immediate attention.
         """
+        # V2.16-BT: Get current date for expiry validation (defensive for tests)
+        algorithm = getattr(self, "_algorithm", None)
+        if algorithm and hasattr(algorithm, "Time"):
+            current_date = algorithm.Time.strftime("%Y-%m-%d")
+        else:
+            # Fallback for tests where _algorithm not initialized
+            # Use far-past date so positions in tests are never considered expired
+            current_date = "2020-01-01"
+
         # Legacy position (backwards compatibility)
         position_data = state.get("position")
         if position_data:
-            self._position = OptionsPosition.from_dict(position_data)
+            position = OptionsPosition.from_dict(position_data)
+            # V2.16-BT: Validate legacy position hasn't expired
+            contract_expiry = position.contract.expiry if position.contract else None
+            if contract_expiry and contract_expiry < current_date:
+                self.log(
+                    f"OPT: ZOMBIE_CLEAR - Legacy position expired {contract_expiry} < {current_date}. "
+                    "Clearing stale position."
+                )
+                self._position = None
+            else:
+                self._position = position
         else:
             self._position = None
 
@@ -4552,7 +4578,17 @@ class OptionsEngine:
         # V2.1.1 dual-mode state
         swing_data = state.get("swing_position")
         if swing_data:
-            self._swing_position = OptionsPosition.from_dict(swing_data)
+            position = OptionsPosition.from_dict(swing_data)
+            # V2.16-BT: Validate swing position hasn't expired
+            contract_expiry = position.contract.expiry if position.contract else None
+            if contract_expiry and contract_expiry < current_date:
+                self.log(
+                    f"OPT: ZOMBIE_CLEAR - Swing position expired {contract_expiry} < {current_date}. "
+                    "Clearing stale position."
+                )
+                self._swing_position = None
+            else:
+                self._swing_position = position
         else:
             self._swing_position = None
 
@@ -4571,6 +4607,26 @@ class OptionsEngine:
             self._intraday_position = None
 
         self._intraday_trades_today = state.get("intraday_trades_today", 0)
+
+        # V2.16-BT: Restore spread position with expiry validation
+        spread_data = state.get("spread_position")
+        if spread_data:
+            spread = SpreadPosition.from_dict(spread_data)
+            # Check if spread has expired (use long leg expiry)
+            if spread.long_leg.expiry and spread.long_leg.expiry < current_date:
+                self.log(
+                    f"OPT: ZOMBIE_CLEAR - Spread position expired {spread.long_leg.expiry} < {current_date}. "
+                    "Clearing stale spread."
+                )
+                self._spread_position = None
+            else:
+                self._spread_position = spread
+                self.log(
+                    f"OPT: STATE_RESTORE - Spread position restored | "
+                    f"{spread.spread_type} x{spread.num_spreads} | Expiry={spread.long_leg.expiry}"
+                )
+        else:
+            self._spread_position = None
 
         mode_value = state.get("current_mode", "SWING")
         self._current_mode = OptionsMode(mode_value)
