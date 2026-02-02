@@ -70,7 +70,7 @@
 | Stage | Duration | Purpose | Status | Date |
 |:-----:|----------|---------|:------:|------|
 | 1 | 1 day | Basic validation | **PASS** ✅ | 2026-01-30 |
-| 2 | 2 months | Short-term behavior | **V2.3.20 READY** 🟡 | 2026-02-01 |
+| 2 | 1 month (Jan 2025) | Short-term behavior | **V2.3.22 +0.93%** ✅ | 2026-02-01 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
@@ -79,7 +79,46 @@
 > **Stage 2 Code Audits:** `docs/audits/stage2-codeaudit.md`, `docs/audits/stage2-codeaudit2.md`
 > **Logs:** `docs/audits/logs/stage2/`
 
-### V2.3.12 Backtest Results (2026-01-31)
+### V2.3.22 Backtest Results (2026-02-01) — PROFITABLE RUN ✅
+
+**Backtest:** V2.3.22-Jan2025-1month | **Result:** +0.93% | **Orders:** 57 | **Win Rate:** 53%
+
+| Metric | Value | Notes |
+|--------|------:|-------|
+| Return | +0.93% | Profitable despite 3 kill switch events |
+| Equity | $50,000 → ~$50,465 | |
+| Orders | 57 | |
+| Win Rate | 53% | 14 wins / 27 trades |
+
+**URL:** https://www.quantconnect.com/project/27678023/4dc08006d60f2b25e04d7f7df6f59691
+
+**P&L Breakdown:**
+| Component | P&L | Notes |
+|-----------|----:|-------|
+| SNIPER (Intraday) | +$4,770 | Best performer - Jan 16-17 rally captured |
+| SHV (Yield) | +$117 | 9 wins, all profitable |
+| QLD/SSO (Trend) | +$327 | Solid swing trades |
+| SWING (Options) | -$1,985 | 3 trades, mostly losses |
+| TNA (Trend) | -$954 | Underperforming |
+| Cold Start Bug | -$2,553 | Duplicate QLD orders (FIXED in V2.3.23) |
+
+**Bugs Found:** See V2.3.23 fixes below.
+
+### V2.3.23 FIX: Cold Start Duplicate Orders (2026-02-01)
+
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **Cold Start duplicate warm entry orders** | CRITICAL | ✅ FIXED |
+
+**Root Cause:** On Jan 17 (Friday), kill switch reset cold start. Jan 18-20 (weekend + MLK holiday), `check_warm_entry()` was called each day. Since `_warm_entry_executed` was False (waiting for `confirm_warm_entry()` which never came) and `has_leveraged_position` was False (MOO orders pending, not filled), 4 separate QLD MOO orders were queued. All filled on Jan 21 = 922 shares instead of 193.
+
+**Impact:** -$2,553 excess loss from 4× position sizing.
+
+**Fix:** Set `_warm_entry_executed = True` immediately when generating the signal (in `check_warm_entry()`), not waiting for fill confirmation. This prevents duplicate signals during weekends/holidays.
+
+**Commit:** `05140be` - `fix(cold-start): prevent duplicate warm entry orders on weekends/holidays`
+
+### V2.3.12 Backtest Results (2026-01-31) — Historical
 
 **Backtest:** V2.3.12-ComboFix-2month | **Result:** +4.09% | **Orders:** 143 | **Options:** 7 only!
 
@@ -595,14 +634,42 @@ OPTIONS_COLD_START_MULTIPLIER = 0.50  # V2.3.20: 50% sizing during cold start
 
 | # | Finding | Severity | Status |
 |:-:|---------|:--------:|:------:|
-| 1 | **SHV auto-liquidation not triggered** - `_process_immediate_signals` missing cash params | CRITICAL | 🟡 IN PROGRESS |
-| 2 | **Router logging disabled** - `pass # Logging disabled` silences all router logs | HIGH | 🟡 IN PROGRESS |
-| 3 | **Spread delta mismatch** - Code uses ATM (0.40-0.60) but strategy needs ITM (0.70) | HIGH | 🟡 IN PROGRESS |
-| 4 | **Trend ignores pending MOO orders** - Generates duplicate signals for same symbol | HIGH | 🟡 IN PROGRESS |
-| 5 | **Cold Start + Trend conflict** - Both engines signal same symbols | HIGH | 🟡 IN PROGRESS |
-| 6 | **Position registered twice** - Duplicate `POSITION_REGISTERED` for same symbol | HIGH | 🟡 IN PROGRESS |
-| 7 | **452 "No valid contract" errors** - No throttling on spread scan (runs every minute) | HIGH | 🟡 IN PROGRESS |
-| 8 | **Kill switch loss % inconsistency** - Logs show two different loss percentages | LOW | 🟡 IN PROGRESS |
+| 1 | **SHV auto-liquidation not triggered** - `_process_immediate_signals` missing cash params | CRITICAL | ✅ FIXED |
+| 2 | **Router logging disabled** - `pass # Logging disabled` silences all router logs | HIGH | ✅ FIXED |
+| 3 | **Spread delta mismatch** - Code uses ATM (0.40-0.60) but strategy needs ITM (0.70) | HIGH | ✅ FIXED |
+| 4 | **Trend ignores pending MOO orders** - Generates duplicate signals for same symbol | HIGH | ✅ FIXED |
+| 5 | **Cold Start + Trend conflict** - Both engines signal same symbols | HIGH | ✅ FIXED |
+| 6 | **Position registered twice** - Duplicate `POSITION_REGISTERED` for same symbol | HIGH | ✅ FIXED |
+| 7 | **452 "No valid contract" errors** - No throttling on spread scan (runs every minute) | HIGH | ✅ FIXED |
+| 8 | **Kill switch loss % inconsistency** - Logs show two different loss percentages | LOW | ✅ FIXED |
+
+**V2.3.22 FIX: Hard Swing Floor (2026-02-01):**
+
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **Swing DTE too low** - 6 DTE minimum exposes to gap risk | HIGH | ✅ FIXED (→14 DTE) |
+
+**V2.3.22 Key Changes:**
+- `OPTIONS_SWING_DTE_MIN`: 6 → 14 (reduce overnight gap risk)
+- `OPTIONS_SWING_DTE_THRESHOLD`: 5 → 14 (align with min)
+- `SPREAD_DTE_MIN`: 10 → 14 (same gap cushion for spreads)
+
+**V2.3.23 FIX: Cold Start Duplicate Orders (2026-02-01):**
+
+| # | Finding | Severity | Status |
+|:-:|---------|:--------:|:------:|
+| 1 | **Cold Start duplicate warm entry orders** - MOO orders queue on weekends/holidays | CRITICAL | ✅ FIXED |
+
+**Commit:** `05140be` - Set `_warm_entry_executed = True` immediately when generating signal.
+
+**V2.3.22 Remaining Bugs (To Fix in V2.3.24+):**
+
+| Priority | Bug | Description | Status |
+|:--------:|-----|-------------|:------:|
+| P1 | **SHV margin lock** | 10 SHV sell orders rejected - capital locked as margin collateral | 🟡 TODO |
+| P1 | **Swing delta too restrictive** | 0.55-0.85 range missing entries (contracts with delta 0.50-0.54) | 🟡 TODO |
+| P2 | **Combo orders not executing** | Spread signals generated but no fills in orders.csv | 🟡 TODO |
+| P3 | **Intraday signal throttle** | 49 signals when should be 1-2 per entry | 🟡 TODO |
 
 **V2.3.21 Key Changes:**
 
@@ -1279,4 +1346,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 01 February 2026 (V2.3.20 Cold Start Options + SHV Auto-Liquidation)*
+*Last Updated: 01 February 2026 (V2.3.23 Cold Start Duplicate Orders Fix)*

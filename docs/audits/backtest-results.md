@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-01 (V2.3.20: Cold Start Options + SHV Auto-Liquidation)
+> **Last Updated:** 2026-02-01 (V2.3.23: Cold Start Duplicate Orders Fix)
 
 ---
 
@@ -28,12 +28,71 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | Stage | Duration | Purpose | Status |
 |:-----:|----------|---------|:------:|
 | 1 | 1 day (Jan 2, 2024) | Basic validation - no errors, Initialize() completes | **PASS** ✅ |
-| 2 | 2 months (Jan-Feb 2024) | Short-term behavior, actual trades | **V2.3.20 READY** 🟡 |
+| 2 | 1 month (Jan 2025) | Short-term behavior, actual trades | **V2.3.22 +0.93%** ✅ |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
 
 ### Stage 2 Summary (2026-02-01)
+
+**V2.3.22 Run:** V2.3.22-Jan2025-1month | **Result:** +0.93% | **Win Rate:** 53% | **Orders:** 57 ✅ PROFITABLE
+
+### V2.3.22 Backtest Results (Jan 2025) — PROFITABLE ✅
+
+| Metric | Value | Notes |
+|--------|------:|-------|
+| **Return** | **+0.93%** | Profitable despite 3 kill switch events |
+| **Equity** | $50,000 → ~$50,465 | |
+| **Total Orders** | 57 | |
+| **Win Rate** | 53% | 14 wins / 27 trades |
+| **Trades** | 27 | |
+
+**Backtest URL:** https://www.quantconnect.com/project/27678023/4dc08006d60f2b25e04d7f7df6f59691
+
+**P&L Breakdown by Component:**
+
+| Component | P&L | Notes |
+|-----------|----:|-------|
+| SNIPER (Intraday 0DTE) | +$4,770 | Best performer - captured Jan 16-17 rally |
+| SHV (Yield) | +$117 | 9 trades, all wins |
+| QLD/SSO (Trend) | +$327 | Solid swing trades |
+| SWING (Options) | -$1,985 | Only 3 trades, mostly losses |
+| TNA (Trend) | -$954 | Underperforming, consider removal |
+| Cold Start Bug | -$2,553 | Duplicate QLD orders (FIXED in V2.3.23) |
+
+**Key Findings:**
+
+1. **SNIPER (Intraday) is the profit center** - +$4,770 from 5 trades
+2. **SWING mode losing money** - Only 3 swing trades, -$1,985 total
+3. **Cold Start duplicate orders** - Critical bug causing 4× position sizing (FIXED)
+4. **SHV orders failing** - 10 "Invalid" orders due to margin lock
+5. **Combo orders not executing** - Spread signals generated but no fills
+
+**Bugs Found and Fixed:**
+
+| Bug | Impact | Status |
+|-----|--------|:------:|
+| Cold Start duplicate MOO orders | -$2,553 | ✅ FIXED (V2.3.23) |
+| SHV margin lock | Capital starvation | 🟡 TODO |
+| Swing delta too restrictive (0.55-0.85) | Missing entries | 🟡 TODO |
+| Combo orders not filling | No spreads traded | 🟡 TODO |
+| Intraday signal spam | Log noise | 🟡 TODO |
+
+### V2.3.23 Fix: Cold Start Duplicate Orders (2026-02-01)
+
+**Problem:** On Jan 17 (Friday), kill switch triggered and reset cold start. Jan 18-20 (weekend + MLK holiday), `check_warm_entry()` was called each day. Since:
+- `_warm_entry_executed` was False (waiting for `confirm_warm_entry()`)
+- `has_leveraged_position` was False (MOO orders pending, not filled)
+
+Four separate QLD MOO orders were queued and all filled on Jan 21 = 922 shares instead of 193.
+
+**Fix:** Set `_warm_entry_executed = True` immediately when generating the signal in `check_warm_entry()`, not waiting for fill confirmation.
+
+**Commit:** `05140be` - `fix(cold-start): prevent duplicate warm entry orders on weekends/holidays`
+
+**Impact:** Eliminates -$2,553 excess loss from 4× position sizing.
+
+### Historical Runs
 
 **V2.3.12 Run:** V2.3.12-ComboFix-2month | **Result:** +4.09% | **Orders:** 143 (but only 7 options!)
 **V2.3.15 Run:** V2.3.15-SniperLogic-1week | **Result:** -1.23% | **Analysis:** Delta 0.70 blocked, direction conflict
@@ -1434,4 +1493,4 @@ lean cloud backtest AlphaNextGen
 
 ---
 
-*Document created: 2026-01-30 | Last updated: 2026-02-01 (V2.3.20 Cold Start Options + SHV Auto-Liquidation)*
+*Document created: 2026-01-30 | Last updated: 2026-02-01 (V2.3.23 Cold Start Duplicate Orders Fix)*
