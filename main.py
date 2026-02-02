@@ -183,8 +183,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2023, 1, 1)
-        self.SetEndDate(2023, 3, 31)  # V2.5 Jan-Mar 2023 backtest (3 months)
+        self.SetStartDate(2025, 1, 1)
+        self.SetEndDate(2025, 3, 31)  # V2.10 Jan-Mar 2025 backtest (3 months)
         self.SetCash(config.PHASE_SEED_MIN)  # $50,000 seed capital
 
         # All times are Eastern
@@ -1143,29 +1143,45 @@ class AlphaNextGen(QCAlgorithm):
 
     def _check_settlement_cooldown(self) -> None:
         """
-        V2.9: Check and set settlement cooldown at market open.
+        V2.11: Smart settlement cooldown with threshold gate.
 
         Called at SOD baseline (09:33) to set settlement cooldown if:
         1. This is the first bar after a market gap (weekend/holiday)
-        2. There is unsettled cash from previous session
+        2. UnsettledCash > 10% of portfolio (material amount)
 
-        The cooldown prevents options trading until settlement clears.
+        V2.11 Change: Only halt if UnsettledCash is material (>10% of portfolio),
+        and halt until 10:30 AM specifically (not arbitrary 60 min from now).
+        This prevents unnecessary halts for small UnsettledCash amounts.
         """
         if not config.SETTLEMENT_AWARE_TRADING:
             return
 
         if self._is_first_bar_after_market_gap():
             unsettled = self._get_unsettled_cash()
-            if unsettled > 0:
-                self._settlement_cooldown_until = self.Time + timedelta(
-                    minutes=config.SETTLEMENT_COOLDOWN_MINUTES
-                )
+            portfolio_value = self.Portfolio.TotalPortfolioValue
+            unsettled_pct = unsettled / portfolio_value if portfolio_value > 0 else 0
+
+            # V2.11: Only trigger if UnsettledCash > threshold (10% of portfolio)
+            if unsettled_pct < config.SETTLEMENT_UNSETTLED_THRESHOLD_PCT:
                 self.Log(
-                    f"SETTLEMENT: Gap detected | UnsettledCash=${unsettled:,.0f} | "
-                    f"Cooldown until {self._settlement_cooldown_until.strftime('%H:%M')}"
+                    f"SETTLEMENT: Gap detected | UnsettledCash=${unsettled:,.0f} "
+                    f"({unsettled_pct:.1%}) below {config.SETTLEMENT_UNSETTLED_THRESHOLD_PCT:.0%} threshold | "
+                    f"Trading allowed"
                 )
-            else:
-                self.Log("SETTLEMENT: Gap detected but no unsettled cash, no cooldown needed")
+                return
+
+            # V2.11: Halt until 10:30 AM (not 60 min from now)
+            self._settlement_cooldown_until = self.Time.replace(
+                hour=config.SETTLEMENT_HALT_UNTIL_HOUR,
+                minute=config.SETTLEMENT_HALT_UNTIL_MINUTE,
+                second=0,
+                microsecond=0,
+            )
+            self.Log(
+                f"SETTLEMENT_HALT: UnsettledCash=${unsettled:,.0f} ({unsettled_pct:.1%}) > "
+                f"{config.SETTLEMENT_UNSETTLED_THRESHOLD_PCT:.0%} threshold | "
+                f"Halting until {self._settlement_cooldown_until.strftime('%H:%M')}"
+            )
 
     def _can_trade_options_settlement_aware(self) -> bool:
         """
@@ -1410,20 +1426,26 @@ class AlphaNextGen(QCAlgorithm):
         # Get current QQQ price
         qqq_current = self.Securities[self.qqq].Price
 
+        # V2.11 (Pitfall #7): Separate VIX Level from VIX Direction
+        # - Level: Use CBOE VIX (daily) - prevents false level spikes from UVXY contango
+        # - Direction: Use UVXY proxy (vix_intraday_proxy) - UVXY tracks direction reliably
+        vix_level_cboe = self._get_vix_level()  # CBOE VIX for level classification
+
         # Update micro regime engine with intraday VIX proxy
         # V2.5: Pass macro_regime_score for Grind-Up Override
         state = self.options_engine._micro_regime_engine.update(
-            vix_current=vix_intraday_proxy,  # Use UVXY-derived intraday proxy
+            vix_current=vix_intraday_proxy,  # Use UVXY-derived for direction
             vix_open=self._vix_at_open,
             qqq_current=qqq_current,
             qqq_open=self._qqq_at_open,
             current_time=str(self.Time),
             macro_regime_score=self._last_regime_score,
+            vix_level_override=vix_level_cboe,  # V2.11: Use CBOE VIX for level
         )
 
-        # V2.3.4: Log with UVXY proxy info
+        # V2.11: Log shows both CBOE level and UVXY direction
         self.Log(
-            f"MICRO_UPDATE: VIX_proxy={vix_intraday_proxy:.2f} (UVXY {uvxy_change_pct:+.1f}%) | "
+            f"MICRO_UPDATE: VIX_level={vix_level_cboe:.1f}(CBOE) VIX_dir_proxy={vix_intraday_proxy:.2f} (UVXY {uvxy_change_pct:+.1f}%) | "
             f"Regime={state.micro_regime.value} | Dir={state.recommended_direction.value if state.recommended_direction else 'NONE'}"
         )
 
@@ -1445,6 +1467,50 @@ class AlphaNextGen(QCAlgorithm):
             # If UVXY is up 3%, VIX is approximately up 2% (UVXY is ~1.5x)
             return self._vix_at_open * (1 + uvxy_change_pct / 150)
         return self._current_vix
+
+    def _get_vix_level(self) -> float:
+        """
+        V2.11 (Pitfall #7): Get VIX LEVEL from CBOE VIX (daily).
+
+        Uses the actual CBOE VIX for level classification (Low/Medium/High).
+        Do NOT derive synthetic VIX level from UVXY - UVXY can gap up while
+        VIX is stable due to contango, causing false level spikes.
+
+        Returns:
+            CBOE VIX daily value for level classification.
+        """
+        return self._current_vix  # Use daily CBOE VIX, NOT UVXY-derived proxy
+
+    def _get_vix_direction(self) -> str:
+        """
+        V2.11 (Pitfall #7): Get VIX DIRECTION from raw UVXY percentage change.
+
+        Uses UVXY percentage change directly for direction classification.
+        This is valid because UVXY tracks VIX direction reliably (~1.5x).
+        Do NOT derive synthetic VIX level for direction - use raw UVXY %.
+
+        Returns:
+            Direction string: FALLING_FAST, FALLING, STABLE, RISING, RISING_FAST, SPIKING
+        """
+        if self._uvxy_at_open <= 0:
+            return "STABLE"
+
+        uvxy_current = self.Securities[self.uvxy].Price
+        uvxy_change_pct = (uvxy_current - self._uvxy_at_open) / self._uvxy_at_open * 100
+
+        # Use raw UVXY % for direction (NOT synthetic VIX level)
+        if uvxy_change_pct < config.VIX_DIRECTION_FALLING_FAST:
+            return "FALLING_FAST"
+        elif uvxy_change_pct < config.VIX_DIRECTION_FALLING:
+            return "FALLING"
+        elif uvxy_change_pct <= config.VIX_DIRECTION_STABLE_HIGH:
+            return "STABLE"
+        elif uvxy_change_pct <= config.VIX_DIRECTION_RISING:
+            return "RISING"
+        elif uvxy_change_pct <= config.VIX_DIRECTION_RISING_FAST:
+            return "RISING_FAST"
+        else:
+            return "SPIKING"
 
     def _should_scan_intraday(self) -> bool:
         """
@@ -2978,6 +3044,38 @@ class AlphaNextGen(QCAlgorithm):
         if not self._can_trade_options_settlement_aware():
             return
 
+        # V2.11 (Pitfall #6): Margin-aware sizing guard
+        # Check available margin BEFORE calculating any allocation
+        margin_remaining = self.portfolio_router.get_effective_margin_remaining()
+        if margin_remaining < config.OPTIONS_MAX_MARGIN_CAP:
+            # Insufficient margin buffer - skip all options trades
+            if self.Time.minute == 0:  # Log once per hour to avoid spam
+                self.Log(
+                    f"OPT_MARGIN_GUARD: Margin ${margin_remaining:,.0f} < "
+                    f"${config.OPTIONS_MAX_MARGIN_CAP:,.0f} cap | Options blocked"
+                )
+            return
+
+        # Calculate effective portfolio value capped by available margin
+        # Leave OPTIONS_MAX_MARGIN_CAP buffer for margin fluctuations
+        base_tradeable = self.capital_engine.get_tradeable_equity()
+        margin_available_for_options = margin_remaining - config.OPTIONS_MAX_MARGIN_CAP
+        # max_portfolio_from_margin = margin_available / OPTIONS_SWING_ALLOCATION
+        # This ensures: effective_portfolio * OPTIONS_SWING_ALLOCATION <= margin_available
+        max_portfolio_from_margin = (
+            margin_available_for_options / config.OPTIONS_SWING_ALLOCATION
+            if config.OPTIONS_SWING_ALLOCATION > 0
+            else base_tradeable
+        )
+        effective_portfolio_value = min(base_tradeable, max_portfolio_from_margin)
+
+        if effective_portfolio_value < base_tradeable:
+            self.Log(
+                f"OPT_MARGIN_CAP: Sizing capped by margin | "
+                f"Base=${base_tradeable:,.0f} | Effective=${effective_portfolio_value:,.0f} | "
+                f"Margin_remaining=${margin_remaining:,.0f}"
+            )
+
         # V2.3.6 FIX: Scan during active window (10:00-15:00)
         # Removed 10:30 delay - momentum/credit strategies need 10:00-10:30 window
         # Strategy-specific timing (if needed) should be handled in Options Engine
@@ -3054,6 +3152,7 @@ class AlphaNextGen(QCAlgorithm):
                 # V2.4.1: Pass UVXY-derived VIX proxy
                 # V2.5: Pass macro_regime_score for Grind-Up Override
                 # V2.7: Use tradeable equity (not total portfolio) for cash-only sizing
+                # V2.11: Use margin-capped effective_portfolio_value (Pitfall #6)
                 intraday_signal = self.options_engine.check_intraday_entry_signal(
                     vix_current=vix_intraday,  # V2.4.1: UVXY proxy
                     vix_open=self._vix_at_open,
@@ -3062,7 +3161,7 @@ class AlphaNextGen(QCAlgorithm):
                     current_hour=self.Time.hour,
                     current_minute=self.Time.minute,
                     current_time=str(self.Time),
-                    portfolio_value=self.capital_engine.get_tradeable_equity(),
+                    portfolio_value=effective_portfolio_value,  # V2.11: Margin-capped
                     best_contract=intraday_contract,
                     size_multiplier=size_multiplier,
                     macro_regime_score=self._last_regime_score,
@@ -3113,6 +3212,7 @@ class AlphaNextGen(QCAlgorithm):
                 # V2.3: Check for spread entry signal
                 # V2.3.20: Pass size_multiplier for cold start reduced sizing
                 # V2.7: Use tradeable equity (not total portfolio) for cash-only sizing
+                # V2.11: Use margin-capped effective_portfolio_value (Pitfall #6)
                 signal = self.options_engine.check_spread_entry_signal(
                     regime_score=regime_score,
                     vix_current=self._current_vix,
@@ -3123,7 +3223,7 @@ class AlphaNextGen(QCAlgorithm):
                     current_hour=self.Time.hour,
                     current_minute=self.Time.minute,
                     current_date=str(self.Time.date()),
-                    portfolio_value=self.capital_engine.get_tradeable_equity(),
+                    portfolio_value=effective_portfolio_value,  # V2.11: Margin-capped
                     long_leg_contract=long_leg,
                     short_leg_contract=short_leg,
                     gap_filter_triggered=self.risk_engine.is_gap_filter_active(),

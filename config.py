@@ -690,6 +690,19 @@ GAMMA_PIN_EARLY_EXIT_DTE = 2  # Activate within 2 DTE
 VASS_LOG_REJECTION_INTERVAL_MINUTES = 15  # Log rejections every 15 min (not every candle)
 
 # -----------------------------------------------------------------------------
+# V2.11: PRE-BACKTEST SAFETY FIXES (Pitfalls #6-8)
+# -----------------------------------------------------------------------------
+# Pitfall #6: Margin Collateral Lock-Out
+# Options sizing must cap by actual available margin, not just portfolio %
+OPTIONS_MAX_MARGIN_CAP = 5000  # $5K max margin reserved for all options combined
+
+# Pitfall #8: Settlement Ghost - Smarter threshold-based gate
+# Only halt if UnsettledCash is material (>10% of portfolio)
+SETTLEMENT_UNSETTLED_THRESHOLD_PCT = 0.10  # 10% threshold to trigger halt
+SETTLEMENT_HALT_UNTIL_HOUR = 10  # Halt until 10:30 AM (not arbitrary 60 min)
+SETTLEMENT_HALT_UNTIL_MINUTE = 30
+
+# -----------------------------------------------------------------------------
 # V2.1.1 VIX DIRECTION THRESHOLDS (Micro Regime Engine)
 # -----------------------------------------------------------------------------
 # VIX direction is THE key differentiator for intraday trading

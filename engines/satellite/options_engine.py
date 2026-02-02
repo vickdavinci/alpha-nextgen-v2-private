@@ -1295,6 +1295,7 @@ class MicroRegimeEngine:
         current_time: str,
         move_duration_minutes: int = 120,
         macro_regime_score: float = 50.0,
+        vix_level_override: Optional[float] = None,
     ) -> MicroRegimeState:
         """
         Full update cycle for Micro Regime Engine.
@@ -1302,13 +1303,16 @@ class MicroRegimeEngine:
         Should be called every 15-30 minutes during intraday trading.
 
         Args:
-            vix_current: Current VIX value.
+            vix_current: Current VIX value (UVXY-derived proxy for direction).
             vix_open: VIX at market open.
             qqq_current: Current QQQ price.
             qqq_open: QQQ at market open.
             current_time: Current timestamp string.
             move_duration_minutes: How long the current move has taken.
             macro_regime_score: V2.5 - Macro regime score for Grind-Up Override (default 50).
+            vix_level_override: V2.11 - If provided, use this for LEVEL classification
+                               instead of vix_current. This allows using CBOE VIX for
+                               level while using UVXY proxy for direction.
 
         Returns:
             Updated MicroRegimeState.
@@ -1328,8 +1332,11 @@ class MicroRegimeEngine:
             )
         )
 
-        # Classify VIX level and direction
-        self._state.vix_level, _ = self.classify_vix_level(vix_current)
+        # V2.11 (Pitfall #7): Separate VIX Level from VIX Direction
+        # Level: Use CBOE VIX (vix_level_override) if provided, prevents false spikes
+        # Direction: Use UVXY-derived proxy (vix_current) for accurate direction
+        vix_for_level = vix_level_override if vix_level_override is not None else vix_current
+        self._state.vix_level, _ = self.classify_vix_level(vix_for_level)
         self._state.vix_direction, _ = self.classify_vix_direction(vix_current, vix_open)
 
         # Detect whipsaw
