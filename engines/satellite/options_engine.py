@@ -2143,24 +2143,22 @@ class OptionsEngine:
             trades_only=True,
         )
 
-        # Return exit signals for both legs
+        # V2.5 FIX: Return SINGLE exit signal with combo metadata
+        # (Same structure as entry, so router creates atomic ComboMarketOrder)
+        # Previously returned TWO signals which executed as separate orders!
         return [
-            # Close long leg (sell to close)
             TargetWeight(
                 symbol=spread.long_leg.symbol,
                 target_weight=0.0,
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
-                reason=f"SPREAD_EXIT_LONG: {exit_reason}",
-            ),
-            # Close short leg (buy to close)
-            TargetWeight(
-                symbol=spread.short_leg.symbol,
-                target_weight=0.0,
-                source="OPT",
-                urgency=Urgency.IMMEDIATE,
-                reason=f"SPREAD_EXIT_SHORT: {exit_reason}",
-                metadata={"spread_close_short": True},  # Router: buy to close
+                reason=f"SPREAD_EXIT: {exit_reason}",
+                requested_quantity=spread.num_contracts,
+                metadata={
+                    "spread_close_short": True,  # Tells router this is an exit
+                    "spread_short_leg_symbol": spread.short_leg.symbol,
+                    "spread_short_leg_quantity": spread.num_contracts,
+                },
             ),
         ]
 
@@ -2238,25 +2236,21 @@ class OptionsEngine:
                     f"Entry={entry_date} Fresh={is_fresh_trade}",
                     trades_only=True,
                 )
-                # Close both legs
-                exit_signals.extend(
-                    [
-                        TargetWeight(
-                            symbol=spread.long_leg.symbol,
-                            target_weight=0.0,
-                            source="OPT",
-                            urgency=Urgency.IMMEDIATE,
-                            reason=f"FRIDAY_FIREWALL_LONG: {close_reason}",
-                        ),
-                        TargetWeight(
-                            symbol=spread.short_leg.symbol,
-                            target_weight=0.0,
-                            source="OPT",
-                            urgency=Urgency.IMMEDIATE,
-                            reason=f"FRIDAY_FIREWALL_SHORT: {close_reason}",
-                            metadata={"spread_close_short": True},
-                        ),
-                    ]
+                # V2.5 FIX: Close both legs via COMBO order (atomic execution)
+                exit_signals.append(
+                    TargetWeight(
+                        symbol=spread.long_leg.symbol,
+                        target_weight=0.0,
+                        source="OPT",
+                        urgency=Urgency.IMMEDIATE,
+                        reason=f"FRIDAY_FIREWALL: {close_reason}",
+                        requested_quantity=spread.num_contracts,
+                        metadata={
+                            "spread_close_short": True,
+                            "spread_short_leg_symbol": spread.short_leg.symbol,
+                            "spread_short_leg_quantity": spread.num_contracts,
+                        },
+                    )
                 )
 
         # Check single-leg position
