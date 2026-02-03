@@ -1522,6 +1522,8 @@ class OptionsEngine:
 
         # V2.3 FIX: Prevent order spam - track failed entry attempts
         self._entry_attempted_today: bool = False
+        # V2.21: Post-rejection margin cap for adaptive retry sizing
+        self._rejection_margin_cap: Optional[float] = None
         self._swing_time_warning_logged: bool = False
 
         # V2.3.21: Spread scan throttle - only attempt every 15 minutes to reduce log noise
@@ -2475,6 +2477,7 @@ class OptionsEngine:
         gap_filter_triggered: bool = False,
         vol_shock_active: bool = False,
         size_multiplier: float = 1.0,
+        margin_remaining: Optional[float] = None,
     ) -> Optional[TargetWeight]:
         """
         V2.3: Check for debit spread entry signal.
@@ -2503,6 +2506,8 @@ class OptionsEngine:
             vol_shock_active: True if vol shock pause is active.
             size_multiplier: Position size multiplier (default 1.0). V2.3.20: Set to 0.5
                 during cold start to reduce risk.
+            margin_remaining: Available margin from portfolio router. V2.21: Used for
+                pre-submission margin estimation to prevent broker rejections.
 
         Returns:
             TargetWeight for spread entry (with short leg in metadata), or None.
@@ -2743,6 +2748,43 @@ class OptionsEngine:
         self.log(
             f"SIZING: SWING | Cap=${swing_max_dollars} | Cost/spread=${cost_per_spread:.2f} | Qty={num_spreads}"
         )
+
+        # V2.21 Layer 1: Pre-submission margin estimation
+        # Scale num_spreads down to fit within available margin
+        if margin_remaining is not None and margin_remaining > 0 and width > 0:
+            safety_factor = getattr(config, "SPREAD_MARGIN_SAFETY_FACTOR", 0.80)
+            usable_margin = margin_remaining * safety_factor
+
+            # V2.21 Layer 2: Apply post-rejection cap if available
+            if self._rejection_margin_cap is not None:
+                usable_margin = min(usable_margin, self._rejection_margin_cap)
+                self.log(
+                    f"SIZING: Rejection cap active | Cap=${self._rejection_margin_cap:,.0f} | "
+                    f"Usable=${usable_margin:,.0f}",
+                    trades_only=True,
+                )
+
+            estimated_margin_per_spread = width * 100
+            if estimated_margin_per_spread > 0:
+                max_by_margin = int(usable_margin / estimated_margin_per_spread)
+                if max_by_margin < num_spreads:
+                    self.log(
+                        f"SIZING: MARGIN_SCALE | {num_spreads} -> {max_by_margin} spreads | "
+                        f"Margin=${margin_remaining:,.0f} x{safety_factor:.0%}=${usable_margin:,.0f} | "
+                        f"Per-spread=${estimated_margin_per_spread:,.0f}",
+                        trades_only=True,
+                    )
+                    num_spreads = max_by_margin
+
+        # V2.21: Floor at MIN_SPREAD_CONTRACTS — skip without consuming daily attempt
+        min_contracts = getattr(config, "MIN_SPREAD_CONTRACTS", 2)
+        if 0 < num_spreads < min_contracts:
+            self.log(
+                f"SPREAD: Entry skipped — {num_spreads} < min {min_contracts} | "
+                f"Insufficient margin for minimum position",
+                trades_only=True,
+            )
+            return None  # Does NOT set _entry_attempted_today → retry preserved
 
         if num_spreads <= 0:
             self.log(
@@ -4313,6 +4355,7 @@ class OptionsEngine:
         self._pending_net_debit = None
         self._pending_max_profit = None
         self._pending_spread_width = None
+        self._rejection_margin_cap = None  # V2.21: Clear on successful fill
 
         return spread
 
@@ -4821,6 +4864,8 @@ class OptionsEngine:
             # V2.3 FIX: Reset entry attempt flag for new day
             self._entry_attempted_today = False
             self._swing_time_warning_logged = False
+            # V2.21: Clear rejection margin cap for new day
+            self._rejection_margin_cap = None
 
             # V2.3.2: Reset pending intraday entry flag
             self._pending_intraday_entry = False

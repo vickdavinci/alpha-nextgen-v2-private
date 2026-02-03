@@ -2360,6 +2360,7 @@ class AlphaNextGen(QCAlgorithm):
             gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
             vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
             size_multiplier=size_multiplier,
+            margin_remaining=self.portfolio_router.get_effective_margin_remaining(),  # V2.21
         )
 
         if signal:
@@ -3564,6 +3565,7 @@ class AlphaNextGen(QCAlgorithm):
                     gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
                     vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
                     size_multiplier=size_multiplier,
+                    margin_remaining=margin_remaining,  # V2.21: Already calculated above
                 )
 
                 if signal:
@@ -4266,6 +4268,8 @@ class AlphaNextGen(QCAlgorithm):
         elif "QQQ" in symbol and ("C" in symbol or "P" in symbol):
             # Check pending state to determine sub-mode (most specific first)
             if self.options_engine._pending_spread_long_leg is not None:
+                # V2.21: Parse broker margin for adaptive retry sizing
+                self._parse_and_store_rejection_margin(order_event)
                 self.options_engine.cancel_pending_spread_entry()
                 if self.portfolio_router:
                     self.portfolio_router.clear_all_spread_margins()
@@ -4291,6 +4295,32 @@ class AlphaNextGen(QCAlgorithm):
                     f"OPT_SWING_RECOVERY: Swing rejected | Pending cleared | "
                     f"Cooldown 30min until {self._options_swing_cooldown_until}"
                 )
+
+    def _parse_and_store_rejection_margin(self, order_event) -> None:
+        """
+        V2.21: Parse broker Free Margin from rejection message for adaptive retry.
+
+        Broker message format:
+        "Insufficient buying power... Free Margin: 48927, Maintenance Margin Delta: 56172"
+
+        Stores safety_factor * Free Margin as options_engine._rejection_margin_cap.
+        """
+        import re
+
+        try:
+            msg = str(order_event.Message) if hasattr(order_event, "Message") else ""
+            match = re.search(r"Free Margin:\s*([\d.]+)", msg)
+            if match:
+                free_margin = float(match.group(1))
+                safety = getattr(config, "SPREAD_REJECTION_MARGIN_SAFETY", 0.80)
+                cap = free_margin * safety
+                self.options_engine._rejection_margin_cap = cap
+                self.Log(
+                    f"REJECTION_MARGIN: Free=${free_margin:,.0f} | "
+                    f"Cap=${cap:,.0f} (x{safety:.0%})"
+                )
+        except Exception as e:
+            self.Log(f"REJECTION_MARGIN: Parse error: {e}")
 
     def _on_fill(
         self,

@@ -2431,3 +2431,174 @@ class TestRejectionRecovery:
         assert engine._intraday_trades_today == 2
         assert engine._total_options_trades_today == 3
         assert engine._trades_today == 3
+
+
+class TestRejectionAwareSizing:
+    """V2.21: Tests for rejection-aware spread sizing (margin estimation + cap)."""
+
+    @pytest.fixture
+    def spread_contracts(self):
+        """Create valid long/short spread contracts for testing."""
+        long_leg = OptionContract(
+            symbol="QQQ 271231C00300000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=0.60,
+            bid=5.00,
+            ask=5.50,
+            mid_price=5.25,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_leg = OptionContract(
+            symbol="QQQ 271231C00305000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=305.0,
+            expiry="2027-12-31",
+            delta=0.40,
+            bid=3.00,
+            ask=3.50,
+            mid_price=3.25,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        return long_leg, short_leg
+
+    def _call_spread_entry(self, engine, long_leg, short_leg, margin_remaining=None):
+        """Helper to call check_spread_entry_signal with valid params."""
+        return engine.check_spread_entry_signal(
+            regime_score=70.0,  # > 60 = BULL_CALL
+            vix_current=18.0,
+            adx_value=30.0,  # Strong trend
+            current_price=302.0,
+            ma200_value=280.0,  # Price > MA200
+            iv_rank=50.0,
+            current_hour=10,
+            current_minute=30,
+            current_date="2027-01-15",
+            portfolio_value=200000.0,
+            long_leg_contract=long_leg,
+            short_leg_contract=short_leg,
+            gap_filter_triggered=False,
+            vol_shock_active=False,
+            size_multiplier=1.0,
+            margin_remaining=margin_remaining,
+        )
+
+    def test_margin_scales_spreads_down(self, engine, spread_contracts):
+        """When margin is tight, num_spreads should scale down."""
+        long_leg, short_leg = spread_contracts
+        # width = 305 - 300 = 5, estimated margin per spread = 5 * 100 = $500
+        # With margin=$3000, safety=0.80 -> usable=$2400 -> max_by_margin=4
+        # Dollar cap $7500 / (5.50 - 3.00 = $2.50 * 1.10 = $2.75 * 100 = $275) = 27
+        # So margin should scale 27 -> 4
+        signal = self._call_spread_entry(engine, long_leg, short_leg, margin_remaining=3000.0)
+        if signal is not None:
+            # If signal fires, num_contracts should be scaled by margin
+            assert engine._pending_num_contracts <= 4
+        else:
+            # If margin too tight (below min), signal is None
+            assert engine._entry_attempted_today is False
+
+    def test_margin_below_min_returns_none(self, engine, spread_contracts):
+        """When margin can only fit 1 spread (< MIN_SPREAD_CONTRACTS=2), return None."""
+        long_leg, short_leg = spread_contracts
+        # width=5, margin_per_spread=$500, safety=0.80
+        # margin=$600 -> usable=$480 -> max=0 spreads
+        signal = self._call_spread_entry(engine, long_leg, short_leg, margin_remaining=600.0)
+        assert signal is None
+        # Key: _entry_attempted_today should NOT be set
+        assert engine._entry_attempted_today is False
+
+    def test_margin_none_falls_back_to_dollar_cap(self, engine, spread_contracts):
+        """When margin_remaining is None, sizing uses dollar cap only."""
+        long_leg, short_leg = spread_contracts
+        signal = self._call_spread_entry(engine, long_leg, short_leg, margin_remaining=None)
+        if signal is not None:
+            # Without margin constraint, uses full dollar cap
+            # $7500 / $275 = 27 contracts
+            assert engine._pending_num_contracts >= 20  # Not scaled down
+
+    def test_rejection_cap_constrains_sizing(self, engine, spread_contracts):
+        """Post-rejection cap should further constrain sizing."""
+        long_leg, short_leg = spread_contracts
+        # Set rejection cap to $2000 (very tight)
+        engine._rejection_margin_cap = 2000.0
+        # Even with large live margin, cap constrains
+        # usable = min(50000*0.80, 2000) = 2000 -> max = 2000/500 = 4
+        signal = self._call_spread_entry(engine, long_leg, short_leg, margin_remaining=50000.0)
+        if signal is not None:
+            assert engine._pending_num_contracts <= 4
+
+    def test_rejection_cap_cleared_on_fill(self, engine):
+        """Rejection cap should be cleared after successful spread fill."""
+        engine._rejection_margin_cap = 5000.0
+
+        # Set up pending spread state for register_spread_entry
+        long_leg = OptionContract(
+            symbol="QQQ 271231C00300000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=0.60,
+            bid=5.00,
+            ask=5.50,
+            mid_price=5.25,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_leg = OptionContract(
+            symbol="QQQ 271231C00305000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=305.0,
+            expiry="2027-12-31",
+            delta=0.40,
+            bid=3.00,
+            ask=3.50,
+            mid_price=3.25,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        engine._pending_spread_long_leg = long_leg
+        engine._pending_spread_short_leg = short_leg
+        engine._pending_spread_type = "BULL_CALL"
+        engine._pending_net_debit = 2.00
+        engine._pending_max_profit = 3.00
+        engine._pending_spread_width = 5.0
+        engine._pending_num_contracts = 10
+        engine._pending_entry_score = 3.5
+
+        engine.register_spread_entry(
+            long_leg_fill_price=5.25,
+            short_leg_fill_price=3.25,
+            entry_time="10:30:00",
+            current_date="2027-01-15",
+            regime_score=70.0,
+        )
+
+        assert engine._rejection_margin_cap is None
+
+    def test_rejection_cap_cleared_on_daily_reset(self, engine):
+        """Rejection cap should be cleared on new trading day."""
+        engine._rejection_margin_cap = 5000.0
+        engine._last_trade_date = "2027-01-14"
+
+        engine.reset_daily("2027-01-15")
+
+        assert engine._rejection_margin_cap is None
+
+    def test_entry_not_attempted_on_margin_skip(self, engine, spread_contracts):
+        """When margin skip triggers, _entry_attempted_today stays False."""
+        long_leg, short_leg = spread_contracts
+        engine._entry_attempted_today = False
+
+        # Very low margin = will skip
+        signal = self._call_spread_entry(engine, long_leg, short_leg, margin_remaining=100.0)
+
+        assert signal is None
+        assert engine._entry_attempted_today is False

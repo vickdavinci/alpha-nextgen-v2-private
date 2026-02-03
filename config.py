@@ -742,6 +742,12 @@ OPTIONS_MAX_MARGIN_CAP = 10000  # $10K max margin reserved for all options combi
 SWING_SPREAD_MAX_DOLLARS = 7500  # $7,500 hard cap for swing spreads (14-21 DTE)
 INTRADAY_SPREAD_MAX_DOLLARS = 4000  # $4,000 hard cap for intraday (1-5 DTE)
 
+# V2.21: Rejection-aware spread sizing
+# Pre-submission: use 80% of reported margin (20% buffer for broker calc differences)
+SPREAD_MARGIN_SAFETY_FACTOR = 0.80
+# Post-rejection: apply to broker-reported Free Margin for adaptive retry cap
+SPREAD_REJECTION_MARGIN_SAFETY = 0.80
+
 # Pitfall #8: Settlement Ghost - Smarter threshold-based gate
 # Only halt if UnsettledCash is material (>10% of portfolio)
 SETTLEMENT_UNSETTLED_THRESHOLD_PCT = 0.10  # 10% threshold to trigger halt
