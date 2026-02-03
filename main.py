@@ -2138,6 +2138,8 @@ class AlphaNextGen(QCAlgorithm):
                     f"Slot {current_trend_positions + 1}/{max_positions}"
                 )
                 self.portfolio_router.receive_signal(signal)
+                # V2.19: Mark pending ONLY after approval (not in check_entry_signal)
+                self.trend_engine.mark_pending_moo(signal.symbol)
                 current_trend_positions += 1
 
             # Log blocked entries

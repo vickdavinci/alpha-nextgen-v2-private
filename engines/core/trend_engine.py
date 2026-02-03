@@ -298,8 +298,9 @@ class TrendEngine:
 
         self.log(f"TREND: ENTRY_SIGNAL {symbol} | {reason} | Regime={regime_score:.1f}")
 
-        # V2.3.21: Mark symbol as pending MOO to prevent duplicate signals
-        self._pending_moo_symbols.add(symbol)
+        # V2.19: DO NOT add to _pending_moo_symbols here!
+        # The signal may be BLOCKED by position limit in main.py.
+        # main.py will call mark_pending_moo() ONLY for approved signals.
 
         # V2.3.3: Use symbol-specific allocation from config (not 1.0)
         # This ensures QLD gets 20%, SSO 15%, TNA 12%, FAS 8% as designed
@@ -693,6 +694,19 @@ class TrendEngine:
         if symbol in self._pending_moo_symbols:
             self._pending_moo_symbols.discard(symbol)
             self.log(f"TREND: PENDING_MOO_CANCELLED {symbol}")
+
+    def mark_pending_moo(self, symbol: str) -> None:
+        """
+        V2.19: Mark symbol as having a pending MOO order.
+
+        Called by main.py ONLY for signals that pass the position limit filter.
+        This ensures blocked candidates don't pollute the pending set.
+
+        Args:
+            symbol: Symbol to mark as pending MOO.
+        """
+        self._pending_moo_symbols.add(symbol)
+        self.log(f"TREND: PENDING_MOO_MARKED {symbol}")
 
     def has_position(self, symbol: str) -> bool:
         """Check if a position exists for symbol."""
