@@ -79,6 +79,8 @@
 | 2g | 1 month (Jan 2025) | V2.21 Rejection-Aware Sizing | **Ready to Run** ⏳ | 2026-02-03 |
 | 2h | 1 month (Jan 2025) | V2.22 Neutrality Exit | **Ready to Run** ⏳ | 2026-02-03 |
 | 2i | 1 month (Jan 2025) | V2.23 VASS Credit Spread Integration | **Ready to Run** ⏳ | 2026-02-03 |
+| 2j | 1 month (Jan 2025) | V2.24 Zero-Trade Diagnostic Fixes | **Ready to Run** ⏳ | 2026-02-03 |
+| 2k | 1 month (Jan 2025) | V2.24.1 Hardening (Price Discovery + Elastic Delta) | **Ready to Run** ⏳ | 2026-02-03 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
@@ -560,9 +562,115 @@ QQQ options      → Options (spread > intraday > swing by pending state priorit
 
 **Tests:** 1349 passed, 2 skipped (12 new tests)
 
-**Next Step:** Run V2.23 backtest
+**Next Step:** ~~Run V2.23 backtest~~ → Completed APVP audit first (see below)
+
+### V2.23.1: APVP Audit Fixes (2026-02-03) — COMPLETE ✅
+
+**Trigger:** Ran Algorithmic Pre-Backtest Validation Protocol (`docs/audits/algoauditprotocol-prebacktest.md`).
+
+**CRITICAL finding:** Credit spread `check_credit_spread_entry_signal()` used reversed TargetWeight convention from router — primary symbol was short leg with negative quantity, causing router's `requested_quantity > 0` check to fail and combo order to malform (BUY short_leg + SELL short_leg = same symbol).
+
+**Fixes:**
+1. **Credit TargetWeight convention** — Long leg (protection) as primary symbol, positive `requested_quantity` (matches debit convention)
+2. **VIX threshold extraction** — Hardcoded `VIX < 22` → `config.VIX_LEVEL_ELEVATED_MAX = 22.0`
+3. **Test assertions** — Verify long leg as primary, positive quantity
+
+**Files changed:**
+- `engines/satellite/options_engine.py` — Fixed TargetWeight + VIX threshold
+- `config.py` — Added `VIX_LEVEL_ELEVATED_MAX = 22.0`
+- `tests/test_options_engine.py` — Added convention assertions
+- `docs/audits/V2_23_audit_report.md` — Full APVP audit report
+
+**Commit:** `d6bcf1d` - `fix(options): V2.23.1 APVP audit — credit spread router convention + VIX extraction`
+
+**Tests:** 1349 passed, 2 skipped
+
+**Next Step:** ~~Run V2.23.1 backtest~~ → Superseded by V2.24
+
+---
+
+### V2.24: Zero-Trade Diagnostic Fixes (2026-02-03) — COMPLETE ✅
+
+**Problem:** Backtests produced zero options trades despite full options infrastructure. Three root causes identified:
+
+| # | Root Cause | Fix |
+|---|-----------|-----|
+| 1 | **Router price failsafe skip** — Options symbols missing from `current_prices` dict caused immediate SKIP, even when `metadata['contract_price']` existed | Added 2-layer price fallback: try `current_prices` → try `metadata['contract_price']` → SKIP |
+| 2 | **Spread filter silent rejections** — `select_spread_legs()` and `select_credit_spread_legs()` returned `None` with no diagnostic logging when DTE/delta/bid filters eliminated all candidates | Added per-stage rejection counters and diagnostic logging (DTE, delta, width, bid filters) |
+| 3 | **Pending MOO ghost signals** — `_pending_moo_dates` dict accumulated stale entries that blocked new MOO submissions for symbols already invested | Added timestamp tracking, cleanup on fill/cancel/expiry, and invested-but-pending detection |
+
+**Files Modified:**
+- `main.py` — V2.19 price injection for OPT signals, 30→15 min throttle, pending MOO timestamps
+- `portfolio/portfolio_router.py` — 2-layer price fallback in `calculate_order_intents()`
+- `engines/satellite/options_engine.py` — Spread filter diagnostic logging with rejection counters
+- `engines/core/trend_engine.py` — `_pending_moo_dates` cleanup in all code paths
+
+**Commits:**
+- `4df0918` - `fix(trend): V2.19 position limit enforcement bug - mark pending MOO only after approval`
+- `fd327e7` - `perf(main): V2.19 fix 20K loop timeout - iterate Portfolio.Values not Keys`
+- `f8292fe` - `fix(execution): V2.19 emergency execution patch - limit orders + VIX filter`
+
+**Tests:** 1349 passed, 2 skipped
+
+---
+
+### V2.24.1: V2.23.2 Hardening — Price Discovery + Elastic Delta Bands (2026-02-03) — COMPLETE ✅
+
+**Purpose:** Implement two remaining items from the "Zoom Checklist" V2.23.2 Hardening audit. Third item (Broadened Universe Filter) was already fully implemented.
+
+#### Item 1: Hybrid Price Discovery — 3rd Fallback (Bid/Ask Mid-Price)
+
+**Problem:** When both `current_prices` and `metadata['contract_price']` fail, router SKIPs the order. No attempt to use QC Securities Bid/Ask data.
+
+**Solution:** Added `_try_bid_ask_mid_price()` method to `portfolio_router.py` as 3rd fallback layer:
+
+```
+Price Discovery Chain (V2.24.1):
+1. current_prices[symbol] (held options + equities)
+2. metadata['contract_price'] (from options engine chain data)
+3. (bid + ask) / 2 from Securities  ← NEW
+4. SKIP (only if all three fail)
+```
+
+**Files:**
+- `portfolio/portfolio_router.py` — New `_try_bid_ask_mid_price()` method + integration in `calculate_order_intents()`
+
+#### Item 2: Elastic Delta Bands — Progressive Widening
+
+**Problem:** All delta filtering used fixed ranges with no retry. When zero contracts matched, a 4-hour cooldown was set. No progressive widening.
+
+**Solution:** Wrapped candidate selection in retry loops with progressive widening steps:
+
+| Config | Value | Purpose |
+|--------|-------|---------|
+| `ELASTIC_DELTA_STEPS` | `[0.0, 0.03, 0.07, 0.12]` | Progressive widening increments |
+| `ELASTIC_DELTA_FLOOR` | `0.10` | Minimum delta (prevent near-zero delta) |
+| `ELASTIC_DELTA_CEILING` | `0.95` | Maximum delta (prevent deep ITM) |
+
+Applied to 3 paths:
+1. **Debit long leg** (`select_spread_legs()`) — delta 0.50-0.85 base
+2. **Credit BULL_PUT short leg** (`select_credit_spread_legs()`) — delta 0.25-0.40 base, credit minimum enforced inside loop
+3. **Credit BEAR_CALL short leg** (`select_credit_spread_legs()`) — delta 0.25-0.40 base, credit minimum enforced inside loop
+
+**Files:**
+- `config.py` — Added `ELASTIC_DELTA_STEPS`, `ELASTIC_DELTA_FLOOR`, `ELASTIC_DELTA_CEILING`
+- `engines/satellite/options_engine.py` — Elastic loops in all 3 selection paths
+
+#### Item 3: Broadened Universe Filter — Already Implemented ✅
+
+Confirmed: `SetFilter(-25, 25, 0, 60)` — exceeds spec requirement of ±20 strikes, 0-60 DTE.
+
+**Commit:** `d2d2f73` — V2.24.1 changes
+
+**Tests:** 1349 passed, 2 skipped
+
+#### Production Readiness Note
+
+**Stale Metadata Risk** identified during architecture review — not a bug in backtest (same-bar processing) but a risk in live trading where signal metadata prices could be seconds/minutes old. Documented in `docs/guides/production-readiness.md` for pre-live implementation.
+
+**Next Step:** Run V2.24.1 backtest
 ```bash
-./scripts/qc_backtest.sh "V2.23-VASS-Credit" --open
+./scripts/qc_backtest.sh "V2.24.1-Hardening" --open
 ```
 
 ---
@@ -2478,4 +2586,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 03 February 2026 (V2.23 VASS Credit Spread Integration)*
+*Last Updated: 03 February 2026 (V2.24.1 Hardening — Price Discovery + Elastic Delta Bands)*
