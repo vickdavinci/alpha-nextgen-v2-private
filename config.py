@@ -624,6 +624,11 @@ SPREAD_STOP_LOSS_PCT = 0.50  # V2.4.2: Stop loss at 50% of entry debit (max loss
 SPREAD_REGIME_EXIT_BULL = 45  # Exit Bull Call if regime drops below 45
 SPREAD_REGIME_EXIT_BEAR = 60  # Exit Bear Put if regime rises above 60
 
+# V2.22: Neutrality Exit (Hysteresis Shield)
+# Close flat spreads when regime enters dead zone (45-60) — no directional edge
+SPREAD_NEUTRALITY_EXIT_ENABLED = True
+SPREAD_NEUTRALITY_EXIT_PNL_BAND = 0.10  # ±10% P&L considered "flat"
+
 # V2.16-BT: Commission-aware profit targets
 # Round-trip commission estimate per spread (entry + exit, both legs)
 # IBKR: ~$0.65/contract × 2 legs × 2 (entry+exit) = $2.60/spread

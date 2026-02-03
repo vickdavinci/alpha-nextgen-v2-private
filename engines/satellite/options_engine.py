@@ -2873,8 +2873,10 @@ class OptionsEngine:
 
         Exit conditions:
         1. Take profit at 50% of max profit
-        2. Close by 5 DTE (avoid gamma acceleration)
-        3. Regime reversal (Bull exit if < 45, Bear exit if > 60)
+        2. Stop loss at 50% of entry debit
+        3. Close by 5 DTE (avoid gamma acceleration)
+        4. V2.22 Neutrality exit (regime in dead zone 45-60 with flat P&L)
+        5. Regime reversal (Bull exit if < 45, Bear exit if > 60)
 
         Args:
             long_leg_price: Current price of long leg.
@@ -2948,7 +2950,22 @@ class OptionsEngine:
             if exit_reason is None and current_dte <= config.SPREAD_DTE_EXIT:
                 exit_reason = f"DTE_EXIT ({current_dte} DTE <= {config.SPREAD_DTE_EXIT})"
 
-            # Exit 4: Credit Regime reversal
+            # Exit 4: V2.22 Neutrality Exit (Hysteresis Shield)
+            # Close flat spreads in dead zone — directional bet with no direction
+            if (
+                exit_reason is None
+                and getattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", True)
+                and config.SPREAD_REGIME_EXIT_BULL <= regime_score <= config.SPREAD_REGIME_EXIT_BEAR
+            ):
+                neutrality_band = getattr(config, "SPREAD_NEUTRALITY_EXIT_PNL_BAND", 0.10)
+                if -neutrality_band <= pnl_pct <= neutrality_band:
+                    exit_reason = (
+                        f"NEUTRALITY_EXIT: Score {regime_score:.0f} in dead zone "
+                        f"({config.SPREAD_REGIME_EXIT_BULL}-{config.SPREAD_REGIME_EXIT_BEAR}) "
+                        f"with flat P&L ({pnl_pct:+.1%})"
+                    )
+
+            # Exit 5: Credit Regime reversal
             if exit_reason is None:
                 if spread.spread_type in ("BULL_PUT_CREDIT", SpreadStrategy.BULL_PUT_CREDIT.value):
                     if regime_score < config.SPREAD_REGIME_EXIT_BULL:
@@ -2993,7 +3010,21 @@ class OptionsEngine:
             elif current_dte <= config.SPREAD_DTE_EXIT:
                 exit_reason = f"DTE_EXIT ({current_dte} DTE <= {config.SPREAD_DTE_EXIT})"
 
-            # Exit 4: Regime reversal
+            # Exit 4: V2.22 Neutrality Exit (Hysteresis Shield)
+            # Close flat spreads in dead zone — directional bet with no direction
+            elif (
+                getattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", True)
+                and config.SPREAD_REGIME_EXIT_BULL <= regime_score <= config.SPREAD_REGIME_EXIT_BEAR
+            ):
+                neutrality_band = getattr(config, "SPREAD_NEUTRALITY_EXIT_PNL_BAND", 0.10)
+                if -neutrality_band <= pnl_pct <= neutrality_band:
+                    exit_reason = (
+                        f"NEUTRALITY_EXIT: Score {regime_score:.0f} in dead zone "
+                        f"({config.SPREAD_REGIME_EXIT_BULL}-{config.SPREAD_REGIME_EXIT_BEAR}) "
+                        f"with flat P&L ({pnl_pct:+.1%})"
+                    )
+
+            # Exit 5: Regime reversal
             elif (
                 spread.spread_type == "BULL_CALL" and regime_score < config.SPREAD_REGIME_EXIT_BULL
             ):

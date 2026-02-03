@@ -22,6 +22,7 @@ from engines.satellite.options_engine import (
     OptionDirection,
     OptionsEngine,
     OptionsPosition,
+    SpreadPosition,
 )
 from models.enums import Urgency
 
@@ -2602,3 +2603,200 @@ class TestRejectionAwareSizing:
 
         assert signal is None
         assert engine._entry_attempted_today is False
+
+
+# =============================================================================
+# V2.22: NEUTRALITY EXIT (HYSTERESIS SHIELD) TESTS
+# =============================================================================
+
+
+class TestNeutralityExit:
+    """V2.22: Tests for symmetric neutrality exit — close flat spreads in dead zone."""
+
+    @pytest.fixture
+    def long_leg(self):
+        """Long leg contract for spread."""
+        return OptionContract(
+            symbol="QQQ 271231C00300000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=0.60,
+            bid=5.00,
+            ask=5.50,
+            mid_price=5.25,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+
+    @pytest.fixture
+    def short_leg(self):
+        """Short leg contract for spread."""
+        return OptionContract(
+            symbol="QQQ 271231C00305000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=305.0,
+            expiry="2027-12-31",
+            delta=0.40,
+            bid=3.00,
+            ask=3.50,
+            mid_price=3.25,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+
+    def _make_spread(self, engine, spread_type, net_debit, long_leg, short_leg):
+        """Helper: set up a spread position on the engine."""
+        engine._spread_position = SpreadPosition(
+            long_leg=long_leg,
+            short_leg=short_leg,
+            spread_type=spread_type,
+            net_debit=net_debit,
+            max_profit=5.0 - net_debit,  # width=5, max_profit = width - debit
+            width=5.0,
+            entry_time="10:00:00",
+            entry_score=4.0,
+            num_spreads=3,
+            regime_at_entry=40.0,
+        )
+
+    def test_neutrality_exit_fires_in_dead_zone_flat_pnl(self, engine, long_leg, short_leg):
+        """Bear Put in dead zone with flat P&L should trigger neutrality exit."""
+        self._make_spread(engine, "BEAR_PUT", 2.50, long_leg, short_leg)
+        # Current value = long - short; entry debit = 2.50
+        # pnl_pct = (current - entry) / entry
+        # For +3%: current = 2.50 * 1.03 = 2.575 → long=5.575, short=3.00
+        long_price = 5.575
+        short_price = 3.00  # current_value = 5.575 - 3.00 = 2.575 → pnl_pct = +3%
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=long_price,
+            short_leg_price=short_price,
+            regime_score=52.0,  # Dead zone (45-60)
+            current_dte=15,  # Not near expiry
+        )
+
+        assert result is not None
+        assert len(result) > 0
+
+    def test_neutrality_exit_spares_winners(self, engine, long_leg, short_leg):
+        """Spread with +20% P&L in dead zone should NOT trigger neutrality exit."""
+        self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
+        # +20%: current = 2.50 * 1.20 = 3.00
+        long_price = 6.00
+        short_price = 3.00  # value = 3.00, pnl_pct = +20%
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=long_price,
+            short_leg_price=short_price,
+            regime_score=55.0,  # Dead zone
+            current_dte=15,
+        )
+
+        # Should be None — +20% exceeds ±10% band, no exit trigger
+        assert result is None
+
+    def test_neutrality_exit_spares_losers(self, engine, long_leg, short_leg):
+        """Spread with -25% P&L in dead zone should NOT trigger neutrality exit."""
+        self._make_spread(engine, "BEAR_PUT", 2.50, long_leg, short_leg)
+        # -25%: current = 2.50 * 0.75 = 1.875
+        long_price = 4.875
+        short_price = 3.00  # value = 1.875, pnl_pct = -25%
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=long_price,
+            short_leg_price=short_price,
+            regime_score=50.0,  # Dead zone
+            current_dte=15,
+        )
+
+        # Should be None — -25% outside ±10% band, let stop loss handle it
+        assert result is None
+
+    def test_neutrality_exit_not_triggered_outside_dead_zone(self, engine, long_leg, short_leg):
+        """Spread with flat P&L outside dead zone should NOT trigger neutrality exit."""
+        self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
+        # Flat P&L (+2%): current = 2.55
+        long_price = 5.55
+        short_price = 3.00  # value = 2.55, pnl_pct = +2%
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=long_price,
+            short_leg_price=short_price,
+            regime_score=65.0,  # Outside dead zone — bullish conviction
+            current_dte=15,
+        )
+
+        # Should be None — regime has directional conviction
+        assert result is None
+
+    def test_neutrality_exit_credit_spread_in_dead_zone(self, engine, long_leg, short_leg):
+        """Credit spread in dead zone with flat P&L should trigger neutrality exit."""
+        # Credit spread: net_debit is negative (credit received)
+        engine._spread_position = SpreadPosition(
+            long_leg=long_leg,
+            short_leg=short_leg,
+            spread_type="BULL_PUT_CREDIT",
+            net_debit=-1.50,  # Received $1.50 credit
+            max_profit=1.50,  # Max profit = credit received
+            width=5.0,
+            entry_time="10:00:00",
+            entry_score=4.0,
+            num_spreads=3,
+            regime_at_entry=65.0,
+        )
+        # Credit P&L: pnl = credit - current_cost; pnl_pct = pnl / max_profit
+        # For flat (+2%): pnl = 0.03, pnl_pct = 0.03/1.50 = 2%
+        # current_spread_value = short - long; pnl = 1.50 - current_value
+        # pnl_pct = +2% → pnl = 0.03 → current_value = 1.50 - 0.03 = 1.47
+        short_price = 4.47
+        long_price = 3.00  # short - long = 1.47
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=long_price,
+            short_leg_price=short_price,
+            regime_score=50.0,  # Dead zone
+            current_dte=15,
+        )
+
+        assert result is not None
+        assert len(result) > 0
+
+    def test_neutrality_exit_disabled_by_config(self, engine, long_leg, short_leg):
+        """Neutrality exit should not fire when disabled in config."""
+        self._make_spread(engine, "BEAR_PUT", 2.50, long_leg, short_leg)
+        long_price = 5.575
+        short_price = 3.00  # +3% P&L, dead zone
+
+        original = config.SPREAD_NEUTRALITY_EXIT_ENABLED
+        try:
+            config.SPREAD_NEUTRALITY_EXIT_ENABLED = False
+            result = engine.check_spread_exit_signals(
+                long_leg_price=long_price,
+                short_leg_price=short_price,
+                regime_score=52.0,
+                current_dte=15,
+            )
+            # Should be None — feature disabled
+            assert result is None
+        finally:
+            config.SPREAD_NEUTRALITY_EXIT_ENABLED = original
+
+    def test_neutrality_exit_boundary_pnl_10pct(self, engine, long_leg, short_leg):
+        """P&L at exactly +10% boundary should trigger neutrality exit (inclusive)."""
+        self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
+        # +10%: current = 2.50 * 1.10 = 2.75
+        long_price = 5.75
+        short_price = 3.00  # value = 2.75, pnl_pct = +10%
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=long_price,
+            short_leg_price=short_price,
+            regime_score=50.0,  # Dead zone
+            current_dte=15,
+        )
+
+        assert result is not None
+        assert len(result) > 0
