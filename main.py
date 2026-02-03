@@ -183,8 +183,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2024, 1, 1)
-        self.SetEndDate(2024, 3, 31)  # V2.12 Jan-Mar 2024 backtest (3 months)
+        self.SetStartDate(2022, 1, 1)
+        self.SetEndDate(2022, 3, 31)  # V2.19 Q1 2022 backtest - options engine test
         self.SetCash(config.PHASE_SEED_MIN)  # $50,000 seed capital
 
         # All times are Eastern
@@ -246,6 +246,7 @@ class AlphaNextGen(QCAlgorithm):
         self._greeks_breach_logged = False  # Log throttle: only log Greeks breach once/position
         self._kill_switch_handled_today = False  # V2.3: Only handle kill switch once per day
         self._last_vass_rejection_log = None  # V2.10: Throttle VASS rejection logs
+        self._last_swing_scan_time = None  # V2.19: Throttle swing spread scans (1/hour)
 
         # V2.3.6: Track pending spread orders to handle leg failures
         # Maps short leg symbol -> long leg symbol (to liquidate long if short fails)
@@ -893,6 +894,28 @@ class AlphaNextGen(QCAlgorithm):
         # Sets cooldown if this is first bar after market gap with unsettled cash
         self._check_settlement_cooldown()
 
+        # V2.19 FIX: Clear stale pending MOO symbols
+        # If a symbol was marked pending at 15:45 yesterday but is NOT invested
+        # by 09:33 today, the MOO order didn't fill. Clear the stale pending
+        # to prevent permanently blocking position limit slots.
+        if hasattr(self.trend_engine, "_pending_moo_symbols"):
+            stale_symbols = set()
+            for sym in self.trend_engine._pending_moo_symbols:
+                # Check if this pending symbol is actually invested
+                lean_sym = (
+                    getattr(self, sym.lower(), None)
+                    if sym in ["QLD", "SSO", "TNA", "FAS"]
+                    else None
+                )
+                if lean_sym and not self.Portfolio[lean_sym].Invested:
+                    stale_symbols.add(sym)
+            for sym in stale_symbols:
+                self.trend_engine._pending_moo_symbols.discard(sym)
+                self.Log(
+                    f"TREND: STALE_MOO_CLEARED {sym} | "
+                    f"Pending but not invested at 09:33 - clearing slot"
+                )
+
         # Reconcile positions with broker
         self._reconcile_positions()
 
@@ -937,8 +960,29 @@ class AlphaNextGen(QCAlgorithm):
         )
 
         if signal:
-            self.portfolio_router.receive_signal(signal)
-            self._process_immediate_signals()
+            # V2.19 FIX: Warm entry must respect position limit
+            # Cold start SSO entry was bypassing the trend position limit,
+            # pushing invested count above MAX_CONCURRENT_TREND_POSITIONS
+            trend_symbols = config.TREND_PRIORITY_ORDER  # ["QLD", "SSO", "TNA", "FAS"]
+            current_trend_count = sum(
+                1 for sym in trend_symbols if self.Portfolio[getattr(self, sym.lower())].Invested
+            )
+            pending_moo_count = (
+                len(self.trend_engine._pending_moo_symbols)
+                if hasattr(self.trend_engine, "_pending_moo_symbols")
+                else 0
+            )
+            total_committed = current_trend_count + pending_moo_count
+
+            if total_committed >= config.MAX_CONCURRENT_TREND_POSITIONS:
+                self.Log(
+                    f"COLD_START: Warm entry blocked by position limit | "
+                    f"Invested={current_trend_count} | Pending={pending_moo_count} | "
+                    f"Max={config.MAX_CONCURRENT_TREND_POSITIONS}"
+                )
+            else:
+                self.portfolio_router.receive_signal(signal)
+                self._process_immediate_signals()
 
     def _on_time_guard_start(self) -> None:
         """
@@ -1944,6 +1988,15 @@ class AlphaNextGen(QCAlgorithm):
         capital_state = self.capital_engine.calculate(self.Portfolio.TotalPortfolioValue)
         current_positions = self._get_current_positions()
         current_prices = self._get_current_prices()
+
+        # V2.19 FIX: Inject option prices from pending signal metadata
+        # _get_current_prices() only includes HELD options (V2.19 perf fix),
+        # but NEW entries aren't held yet. Use price from chain data stored in metadata.
+        for signal in self.portfolio_router._pending_weights:
+            if signal.source in ("OPT", "OPT_INTRADAY") and signal.symbol not in current_prices:
+                price = signal.metadata.get("contract_price", 0) if signal.metadata else 0
+                if price > 0:
+                    current_prices[signal.symbol] = price
 
         try:
             # Calculate max single position in dollars from percentage
@@ -3393,6 +3446,13 @@ class AlphaNextGen(QCAlgorithm):
         # - Regime > 60: Bull Call Spread
         # - Regime < 45: Bear Put Spread
         # - Regime 45-60: No trade (neutral)
+        # V2.19 FIX: Throttle swing spread scans to once per hour (was every minute = 6,919 attempts)
+        if hasattr(self, "_last_swing_scan_time") and self._last_swing_scan_time is not None:
+            minutes_since = (self.Time - self._last_swing_scan_time).total_seconds() / 60
+            if minutes_since < 60:
+                return
+        self._last_swing_scan_time = self.Time
+
         regime_score = self.regime_engine.get_previous_score()
 
         if regime_score > config.SPREAD_REGIME_BULLISH:

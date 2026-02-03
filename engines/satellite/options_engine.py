@@ -2451,6 +2451,7 @@ class OptionsEngine:
             urgency=Urgency.IMMEDIATE,
             reason=reason,
             requested_quantity=num_contracts,  # V2.3.2: Pass risk-calculated contracts
+            metadata={"contract_price": best_contract.mid_price},  # V2.19: For router price lookup
         )
 
     # =========================================================================
@@ -2808,6 +2809,9 @@ class OptionsEngine:
                 "vass_strategy": SpreadStrategy.BULL_CALL_DEBIT.value
                 if spread_type == "BULL_CALL"
                 else SpreadStrategy.BEAR_PUT_DEBIT.value,
+                # V2.19: Store prices for router lookup (_get_current_prices fix)
+                "contract_price": long_leg_contract.mid_price,
+                "short_leg_price": short_leg_contract.mid_price,
             },
         )
 

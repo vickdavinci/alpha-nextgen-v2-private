@@ -265,8 +265,8 @@ class ColdStartEngine:
             # Kill switch resets everything
             self.log("COLD_START: Kill switch triggered - resetting to day 0")
             self.reset()
-        else:
-            # Increment days running
+        elif self._days_running < config.COLD_START_DAYS:
+            # V2.19 FIX: Only increment during cold start period (was counting forever)
             self._days_running += 1
             if self._days_running == config.COLD_START_DAYS:
                 self.log(

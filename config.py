@@ -615,7 +615,7 @@ SPREAD_WIDTH_TARGET = 5.0  # V2.4.3: Target $5 width (primary selection criterio
 # DTE for debit spreads (per V2.3 spec)
 # V2.3.22: Raised from 10 to 14 - spreads need same gap cushion as single-leg
 SPREAD_DTE_MIN = 14  # Minimum 14 DTE (avoid gamma acceleration + gap risk)
-SPREAD_DTE_MAX = 21  # Maximum 21 DTE (reasonable theta)
+SPREAD_DTE_MAX = 45  # V2.19: Widened from 21 to 45 to align with VASS_LOW_IV_DTE (30-45)
 SPREAD_DTE_EXIT = 5  # Close by 5 DTE remaining
 
 # Exit targets
