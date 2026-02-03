@@ -1377,16 +1377,25 @@ class MicroRegimeEngine:
 
         # V2.3.4: Log includes QQQ direction and recommended option direction
         # V2.18: Use MICRO_REGIME: prefix for easy log verification (Fix #6)
+        # V2.18.1: Only log on strategy CHANGE to avoid backtest timeout (was logging every update)
         dir_str = (
             self._state.recommended_direction.value if self._state.recommended_direction else "NONE"
         )
         qqq_dir_str = self._state.qqq_direction.value if self._state.qqq_direction else "NONE"
-        self.log(
-            f"MICRO_REGIME: VIX={vix_current:.1f} ({self._state.vix_direction.value}) | "
-            f"QQQ={qqq_dir_str} ({self._state.qqq_move_pct:+.2f}%) | "
-            f"Regime={self._state.micro_regime.value} | Score={self._state.micro_score:.0f} | "
-            f"Strategy={self._state.recommended_strategy.value} | Direction={dir_str}"
+
+        # Only log if strategy changed from previous update (reduces log volume 95%)
+        strategy_changed = (
+            not hasattr(self, "_prev_strategy")
+            or self._prev_strategy != self._state.recommended_strategy
         )
+        if strategy_changed:
+            self.log(
+                f"MICRO_REGIME: VIX={vix_current:.1f} ({self._state.vix_direction.value}) | "
+                f"QQQ={qqq_dir_str} ({self._state.qqq_move_pct:+.2f}%) | "
+                f"Regime={self._state.micro_regime.value} | Score={self._state.micro_score:.0f} | "
+                f"Strategy={self._state.recommended_strategy.value} | Direction={dir_str}"
+            )
+            self._prev_strategy = self._state.recommended_strategy
 
         return self._state
 
