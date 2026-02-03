@@ -73,7 +73,8 @@
 | 2 | 1 month (Jan 2025) | Short-term behavior | **V2.3.22 +0.93%** ✅ | 2026-02-01 |
 | 2b | 3 months (Q1 2025) | Capital Test | **V2.11 -62%** 🔴 | 2026-02-02 |
 | 2c | 3 months (Q1 2025) | AAP Bug Fixes | **V2.12 Complete** ✅ | 2026-02-02 |
-| 2d | 1 month (Jan 2025) | V2.18 Architectural Fixes | **Ready to Run** ⏳ | 2026-02-02 |
+| 2d | 1 month (Jan 2025) | V2.18 Architectural Fixes | **Timeout** 🔴 | 2026-02-02 |
+| 2e | 1 month (Jan 2025) | V2.19 Execution Patch | **Ready to Run** ⏳ | 2026-02-02 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
@@ -238,9 +239,76 @@ INTRADAY_SPREAD_MAX_DOLLARS = 4000
 
 **Tests:** 1304 passed, 2 skipped (updated tests for new config values)
 
-**Next Step:** Run V2.18 backtest to validate architectural fixes
+**Backtest Result:** V2.18/V2.18.1/V2.18.2 all hit 10-minute timeout on single time loop
+- Root cause: Excessive logging (fixed in V2.18.1)
+- Ghost margin bug discovered (fixed in V2.18.2)
+
+---
+
+### V2.19: Emergency Execution Patch (2026-02-02) — COMPLETE ✅
+
+**Goal:** Bundle 3 critical execution layer fixes before next backtest.
+
+**Executive Summary:** V2.18 backtests revealed execution layer issues, not strategy failures:
+1. **Ghost Margin Bug** - Intraday trades blocked after margin CB (FIXED in V2.18.2)
+2. **Market Order Slippage** - Filled at crazy Ask/Bid prices on illiquid options
+3. **VIX Apathy Trap** - DEBIT_FADE firing in low VIX (<13.5) where mean reversion fails
+
+| # | Fix | Priority | Status |
+|:-:|-----|:--------:|:------:|
+| 1 | **Ghost Margin Fix** - Clear router margin reservations on CB | CRITICAL | ✅ V2.18.2 |
+| 2 | **Limit Order Logic** - Marketable limits with 5% slippage tolerance | CRITICAL | ✅ |
+| 3 | **VIX Filter** - Block DEBIT_FADE when VIX < 13.5 | HIGH | ✅ |
+
+**Fix 1: Ghost Margin (COMPLETE - V2.18.2)**
+
+**Root Cause:** `clear_spread_position()` cleared OptionsEngine state but NOT the Router's margin reservation. Result: "Ghost" reservations blocked all future intraday trades.
+
+**Solution:** Added `clear_all_spread_margins()` to PortfolioRouter, called from main.py during margin CB.
+
+**Commit:** `4640182`
+
+**Fix 2: Limit Order Logic (COMPLETE)**
+
+**Problem:** Market orders on illiquid options filled at crazy prices (Short at Ask, Long at Bid = immediate loss).
+
+**Solution:** Marketable limit orders with slippage tolerance.
+
+**Config:**
+```python
+OPTIONS_USE_LIMIT_ORDERS = True           # Enable limit orders for options
+OPTIONS_LIMIT_SLIPPAGE_PCT = 0.05         # 5% of spread (ensures fills)
+OPTIONS_MAX_SPREAD_PCT = 0.20             # Block if spread > 20% of mid
+```
+
+**New Methods in `portfolio_router.py`:**
+- `validate_options_spread()` - Bad tick guard + illiquidity check
+- `calculate_limit_price()` - Ask + 5% slippage for BUY, Bid - 5% for SELL
+- `execute_options_limit_order()` - Unified limit order execution
+
+**Fix 3: VIX Filter (COMPLETE)**
+
+**Problem:** DEBIT_FADE fires in low VIX (<13.5) "apathy" markets where mean reversion fails.
+
+**Solution:** Block DEBIT_FADE when VIX < 13.5.
+
+**Config:**
+```python
+INTRADAY_DEBIT_FADE_VIX_MIN = 13.5  # Disable in "apathy" market
+```
+
+**Options Engine Change:** Added VIX floor check in `recommend_strategy_and_direction()` before returning DEBIT_FADE.
+
+**Files Modified:**
+- `config.py` - Limit order config + VIX floor
+- `portfolio/portfolio_router.py` - Limit order methods + spread validation
+- `engines/satellite/options_engine.py` - VIX filter check
+
+**Tests:** 1304 passed, 2 skipped
+
+**Next Step:** Run V2.19 comprehensive backtest
 ```bash
-./scripts/qc_backtest.sh "V2.18-ArchitecturalFix" --open
+./scripts/qc_backtest.sh "V2.19-ExecutionPatch" --open
 ```
 
 ---

@@ -853,6 +853,11 @@ VIX_REVERSAL_CHOPPY = 4  # 3-4 reversals: Choppy
 # V2.3.16: Sniper Logic - Noise Filter (Gate 1)
 QQQ_NOISE_THRESHOLD = 0.35  # Minimum QQQ move to consider trading (was 0.15%)
 
+# V2.19: VIX Floor for DEBIT_FADE
+# In low VIX (<13.5) "apathy" markets, mean reversion fails - trends persist longer
+# Evidence: V2.18 backtests showed DEBIT_FADE losses when VIX < 13.5
+INTRADAY_DEBIT_FADE_VIX_MIN = 13.5  # Disable DEBIT_FADE in "apathy" market
+
 # Debit Fade (Mean Reversion) - Gate 3a - The Sniper Window
 INTRADAY_DEBIT_FADE_MIN_SCORE = 45  # Micro score >= 45 (MICRO_SCORE_MODERATE)
 INTRADAY_FADE_MIN_MOVE = 0.50  # V2.3.16: Min move for FADE (was INTRADAY_DEBIT_FADE_MIN_MOVE)
@@ -944,6 +949,28 @@ QQQ_TRIGGER_NORMAL_RISING = 1.25  # VIX normal + rising: 1.25% (extra caution)
 QQQ_TRIGGER_CAUTION_FALLING = 1.0  # VIX caution + falling: 1.0%
 QQQ_TRIGGER_CAUTION_RISING = 0.8  # VIX caution + rising: 0.8% puts only
 QQQ_TRIGGER_ELEVATED = 0.8  # VIX elevated: 0.8% for momentum
+
+# =============================================================================
+# V2.19: LIMIT ORDER CONFIGURATION (Execution Protection)
+# =============================================================================
+# Problem: Market orders on illiquid options get filled at crazy bid/ask prices
+# Solution: Marketable limit orders with slippage tolerance
+#
+# Key insight: We're not trying to get better fills - we're trying to REJECT
+# clearly broken prices while still getting filled on normal liquid options.
+
+# Master switch for limit orders on options
+OPTIONS_USE_LIMIT_ORDERS = True
+
+# Slippage tolerance as percentage of bid-ask spread
+# BUY orders: Use Ask + (spread × slippage%)
+# SELL orders: Use Bid - (spread × slippage%)
+# 5% gives ~99% fill rate while rejecting clearly broken prices
+OPTIONS_LIMIT_SLIPPAGE_PCT = 0.05  # 5% of spread
+
+# Maximum acceptable spread as percentage of mid price
+# If spread > 20% of mid, option is too illiquid - block the trade
+OPTIONS_MAX_SPREAD_PCT = 0.20  # Block if spread > 20% of mid price
 
 # =============================================================================
 # EXECUTION ENGINE

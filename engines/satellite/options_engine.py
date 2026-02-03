@@ -1131,6 +1131,7 @@ class MicroRegimeEngine:
         # RULE 5: FADE SETUP (Mean Reversion)
         # Best setup: QQQ moved + VIX falling = market calming, fade the move
         # V2.3.15 SNIPER LOGIC: Added Gate 3a minimum move check (0.50%)
+        # V2.19: Added VIX Floor - block DEBIT_FADE when VIX < 13.5 (apathy market)
         # =====================================================================
         fade_regimes = {
             MicroRegime.PERFECT_MR,
@@ -1140,6 +1141,15 @@ class MicroRegimeEngine:
             MicroRegime.IMPROVING,
         }
         if micro_regime in fade_regimes and micro_score >= config.MICRO_SCORE_MODERATE:
+            # V2.19: VIX Floor Check - Block DEBIT_FADE in "apathy" market
+            # Low VIX (<13.5) markets don't mean-revert - trends persist longer
+            vix_floor = getattr(config, "INTRADAY_DEBIT_FADE_VIX_MIN", 13.5)
+            if vix_current < vix_floor:
+                return (
+                    IntradayStrategy.NO_TRADE,
+                    None,
+                    f"DEBIT_FADE_BLOCKED: VIX {vix_current:.1f} < {vix_floor} (apathy market)",
+                )
             # VIX falling = safe to fade
             if vix_is_falling or vix_direction == VIXDirection.STABLE:
                 # V2.3.15 SNIPER: Gate 3a - FADE requires minimum move (0.50%)

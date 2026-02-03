@@ -721,6 +721,199 @@ class PortfolioRouter:
             self.unregister_spread_margin(spread_id)
 
     # =========================================================================
+    # V2.19: LIMIT ORDER EXECUTION (Slippage Protection)
+    # =========================================================================
+
+    def validate_options_spread(
+        self,
+        long_bid: float,
+        long_ask: float,
+        short_bid: float,
+        short_ask: float,
+        direction: str = "DEBIT",
+    ) -> tuple[bool, str]:
+        """
+        V2.19: Validate spread prices before execution.
+
+        Checks for:
+        1. Invalid prices (zero or negative)
+        2. Spread too wide (illiquid)
+        3. Bad tick / inverted pricing
+
+        Args:
+            long_bid: Bid price of long leg.
+            long_ask: Ask price of long leg.
+            short_bid: Bid price of short leg.
+            short_ask: Ask price of short leg.
+            direction: "DEBIT" or "CREDIT".
+
+        Returns:
+            Tuple of (is_valid, reason).
+        """
+        # Check for invalid prices
+        if long_bid <= 0 or long_ask <= 0:
+            return False, f"BAD_TICK: Long leg invalid prices | Bid={long_bid} Ask={long_ask}"
+
+        if short_bid <= 0 or short_ask <= 0:
+            return False, f"BAD_TICK: Short leg invalid prices | Bid={short_bid} Ask={short_ask}"
+
+        # Check spread width (illiquidity check)
+        max_spread_pct = getattr(config, "OPTIONS_MAX_SPREAD_PCT", 0.20)
+
+        long_mid = (long_bid + long_ask) / 2
+        long_spread_pct = (long_ask - long_bid) / long_mid if long_mid > 0 else 1.0
+        if long_spread_pct > max_spread_pct:
+            return (
+                False,
+                f"ILLIQUID: Long leg spread {long_spread_pct:.1%} > {max_spread_pct:.0%} | "
+                f"Bid={long_bid:.2f} Ask={long_ask:.2f}",
+            )
+
+        short_mid = (short_bid + short_ask) / 2
+        short_spread_pct = (short_ask - short_bid) / short_mid if short_mid > 0 else 1.0
+        if short_spread_pct > max_spread_pct:
+            return (
+                False,
+                f"ILLIQUID: Short leg spread {short_spread_pct:.1%} > {max_spread_pct:.0%} | "
+                f"Bid={short_bid:.2f} Ask={short_ask:.2f}",
+            )
+
+        # Bad tick guard: Check for inverted pricing on debit spreads
+        # For debit spreads: Long should be more expensive than Short
+        # If Short premium > Long premium, prices are broken
+        if direction == "DEBIT":
+            # We're BUYING long (pay Ask) and SELLING short (receive Bid)
+            # Net debit = Long_Ask - Short_Bid
+            # If Short_Bid > Long_Ask, we'd get a CREDIT for a DEBIT spread = bad tick
+            if short_bid > long_ask:
+                return (
+                    False,
+                    f"BAD_TICK_GUARD: Inverted spread pricing | "
+                    f"Short_Bid=${short_bid:.2f} > Long_Ask=${long_ask:.2f} | BLOCKING",
+                )
+
+        return True, "VALIDATED"
+
+    def calculate_limit_price(
+        self,
+        symbol: str,
+        quantity: int,
+    ) -> tuple[Optional[float], str]:
+        """
+        V2.19: Calculate marketable limit price for options order.
+
+        Uses Ask + slippage for BUYs, Bid - slippage for SELLs.
+        This ensures high fill rate while rejecting clearly broken prices.
+
+        Args:
+            symbol: Option symbol.
+            quantity: Order quantity (positive = BUY, negative = SELL).
+
+        Returns:
+            Tuple of (limit_price or None if blocked, reason).
+        """
+        if not self.algorithm:
+            return None, "NO_ALGORITHM"
+
+        try:
+            security = self.algorithm.Securities.get(symbol)
+            if security is None:
+                return None, f"SYMBOL_NOT_FOUND: {symbol}"
+
+            bid = security.BidPrice
+            ask = security.AskPrice
+
+            # Check for invalid prices
+            if bid <= 0 or ask <= 0:
+                return None, f"BAD_TICK: Invalid prices | Bid={bid} Ask={ask}"
+
+            spread = ask - bid
+            mid = (bid + ask) / 2
+
+            # Check spread width (illiquidity)
+            max_spread_pct = getattr(config, "OPTIONS_MAX_SPREAD_PCT", 0.20)
+            spread_pct = spread / mid if mid > 0 else 1.0
+            if spread_pct > max_spread_pct:
+                return (
+                    None,
+                    f"ILLIQUID: Spread {spread_pct:.1%} > {max_spread_pct:.0%} | "
+                    f"Bid={bid:.2f} Ask={ask:.2f}",
+                )
+
+            # Calculate limit price with slippage tolerance
+            slippage_pct = getattr(config, "OPTIONS_LIMIT_SLIPPAGE_PCT", 0.05)
+            slippage = spread * slippage_pct
+
+            if quantity > 0:  # BUY - willing to pay up to Ask + slippage
+                limit_price = ask + slippage
+            else:  # SELL - willing to sell down to Bid - slippage
+                limit_price = max(0.01, bid - slippage)  # Never negative
+
+            self.log(
+                f"LIMIT_PRICE: {symbol} | Qty={quantity} | "
+                f"Bid={bid:.2f} | Ask={ask:.2f} | Limit={limit_price:.2f} | "
+                f"Slippage={slippage_pct:.0%}"
+            )
+
+            return limit_price, "OK"
+
+        except Exception as e:
+            return None, f"ERROR: {e}"
+
+    def execute_options_limit_order(
+        self,
+        symbol: str,
+        quantity: int,
+        reason: str = "OPTIONS_ORDER",
+    ) -> bool:
+        """
+        V2.19: Execute options order using marketable limit.
+
+        Uses Ask + slippage for BUYs, Bid - slippage for SELLs.
+        This ensures high fill rate while rejecting clearly broken prices.
+
+        Args:
+            symbol: Option symbol.
+            quantity: Order quantity (positive = BUY, negative = SELL).
+            reason: Reason for order (for logging).
+
+        Returns:
+            True if order was submitted, False if blocked.
+        """
+        if not self.algorithm:
+            self.log(f"LIMIT_ORDER_FAIL: {reason} | No algorithm")
+            return False
+
+        # Check if limit orders are enabled
+        use_limits = getattr(config, "OPTIONS_USE_LIMIT_ORDERS", True)
+        if not use_limits:
+            # Fall back to market order
+            try:
+                self.algorithm.MarketOrder(symbol, quantity)
+                self.log(f"MARKET_ORDER: {symbol} | Qty={quantity} | {reason}")
+                return True
+            except Exception as e:
+                self.log(f"MARKET_ORDER_FAIL: {symbol} | {e}")
+                return False
+
+        # Calculate limit price
+        limit_price, calc_reason = self.calculate_limit_price(symbol, quantity)
+
+        if limit_price is None:
+            self.log(f"LIMIT_ORDER_BLOCKED: {symbol} | {calc_reason} | {reason}")
+            return False
+
+        try:
+            self.algorithm.LimitOrder(symbol, quantity, limit_price)
+            self.log(
+                f"LIMIT_ORDER: {symbol} | Qty={quantity} | " f"Limit=${limit_price:.2f} | {reason}"
+            )
+            return True
+        except Exception as e:
+            self.log(f"LIMIT_ORDER_FAIL: {symbol} | {e}")
+            return False
+
+    # =========================================================================
     # Step 1: COLLECT
     # =========================================================================
 
