@@ -259,6 +259,7 @@ INTRADAY_SPREAD_MAX_DOLLARS = 4000
 | 1 | **Ghost Margin Fix** - Clear router margin reservations on CB | CRITICAL | ✅ V2.18.2 |
 | 2 | **Limit Order Logic** - Marketable limits with 5% slippage tolerance | CRITICAL | ✅ |
 | 3 | **VIX Filter** - Block DEBIT_FADE when VIX < 13.5 | HIGH | ✅ |
+| 4 | **20K Loop Fix** - Stop iterating all 20K+ options in Securities/Portfolio | CRITICAL | ✅ |
 
 **Fix 1: Ghost Margin (COMPLETE - V2.18.2)**
 
@@ -299,10 +300,36 @@ INTRADAY_DEBIT_FADE_VIX_MIN = 13.5  # Disable in "apathy" market
 
 **Options Engine Change:** Added VIX floor check in `recommend_strategy_and_direction()` before returning DEBIT_FADE.
 
+**Fix 4: 20K Loop Performance Bug (COMPLETE)**
+
+**Root Cause:** V2.18.1/V2.18.2 backtests timed out with "Algorithm took longer than 10 minutes on a single time loop". The issue was loops iterating through ALL 20,000+ options contracts in `self.Securities` or `self.Portfolio.Keys`.
+
+**Offending Code (4 locations in main.py):**
+```python
+# Line 1736: Iterates ALL 20K+ securities during margin CB
+for symbol in self.Portfolio.Keys:
+    if "QQQ" in symbol_str...  # ALL 20K options have "QQQ"!
+
+# Lines 1788, 1816: Creates 20K+ element list for membership check
+if symbol in [str(s) for s in self.Securities.Keys]:
+
+# Line 4633: Iterates ALL securities for price lookup
+for kvp in self.Securities:
+```
+
+**Solution:** Iterate `Portfolio.Values` with `Invested` check first:
+```python
+# Fixed: Only iterate holdings we actually have (typically <10)
+for holding in self.Portfolio.Values:
+    if not holding.Invested:
+        continue  # Skip immediately - O(1) vs O(20K)
+```
+
 **Files Modified:**
 - `config.py` - Limit order config + VIX floor
 - `portfolio/portfolio_router.py` - Limit order methods + spread validation
 - `engines/satellite/options_engine.py` - VIX filter check
+- `main.py` - 20K loop performance fixes (4 locations)
 
 **Tests:** 1304 passed, 2 skipped
 

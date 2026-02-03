@@ -1732,17 +1732,19 @@ class AlphaNextGen(QCAlgorithm):
                         self.Log(f"MARGIN_CB_LIQUIDATE: Error cancelling orders | {e}")
 
                     # Liquidate all QQQ options positions
+                    # V2.19 FIX: Iterate Portfolio.Values not Keys to avoid 20K+ loop
+                    # Portfolio.Keys includes ALL subscribed securities (20K+ options)
+                    # Portfolio.Values lets us check Invested FIRST, then filter
                     try:
-                        for symbol in self.Portfolio.Keys:
+                        for holding in self.Portfolio.Values:
+                            if not holding.Invested:
+                                continue  # Skip non-invested immediately
+                            symbol = holding.Symbol
                             symbol_str = str(symbol)
                             if "QQQ" in symbol_str and ("C0" in symbol_str or "P0" in symbol_str):
-                                holding = self.Portfolio[symbol]
-                                if holding.Invested:
-                                    qty = holding.Quantity
-                                    self.MarketOrder(symbol, -qty, tag="MARGIN_CB_LIQUIDATE")
-                                    self.Log(
-                                        f"MARGIN_CB_LIQUIDATE: Closed {symbol_str[-21:]} x{qty}"
-                                    )
+                                qty = holding.Quantity
+                                self.MarketOrder(symbol, -qty, tag="MARGIN_CB_LIQUIDATE")
+                                self.Log(f"MARGIN_CB_LIQUIDATE: Closed {symbol_str[-21:]} x{qty}")
                     except Exception as e:
                         self.Log(f"MARGIN_CB_LIQUIDATE: Error liquidating | {e}")
 
@@ -1780,21 +1782,22 @@ class AlphaNextGen(QCAlgorithm):
                 )
 
                 # Check if we have a position in the long leg that needs liquidating
+                # V2.19 FIX: Don't iterate Securities.Keys (20K+ loop)
+                # Just try to access Portfolio directly - returns default if not found
                 try:
-                    if long_leg_symbol in [str(s) for s in self.Securities.Keys]:
-                        holding = self.Portfolio[long_leg_symbol]
-                        if holding.Invested:
-                            qty = holding.Quantity
-                            self.Log(
-                                f"SPREAD: LIQUIDATING orphaned long leg | "
-                                f"{long_leg_symbol[-20:]} x{qty}"
-                            )
-                            self.MarketOrder(long_leg_symbol, -qty, tag="ORPHAN_LONG")
-                        else:
-                            self.Log(
-                                f"SPREAD: No position in long leg - no cleanup needed | "
-                                f"{long_leg_symbol[-20:]}"
-                            )
+                    holding = self.Portfolio.get(long_leg_symbol)
+                    if holding and holding.Invested:
+                        qty = holding.Quantity
+                        self.Log(
+                            f"SPREAD: LIQUIDATING orphaned long leg | "
+                            f"{long_leg_symbol[-20:]} x{qty}"
+                        )
+                        self.MarketOrder(long_leg_symbol, -qty, tag="ORPHAN_LONG")
+                    else:
+                        self.Log(
+                            f"SPREAD: No position in long leg - no cleanup needed | "
+                            f"{long_leg_symbol[-20:]}"
+                        )
                 except Exception as e:
                     self.Log(f"SPREAD: ERROR liquidating orphaned long leg | {e}")
 
@@ -1808,22 +1811,23 @@ class AlphaNextGen(QCAlgorithm):
                 )
 
                 # Check if we have a position in the short leg that needs closing
+                # V2.19 FIX: Don't iterate Securities.Keys (20K+ loop)
+                # Just try to access Portfolio directly - returns default if not found
                 try:
-                    if short_leg_symbol in [str(s) for s in self.Securities.Keys]:
-                        holding = self.Portfolio[short_leg_symbol]
-                        if holding.Invested:
-                            qty = holding.Quantity
-                            self.Log(
-                                f"SPREAD: BUYING BACK orphaned short leg | "
-                                f"{short_leg_symbol[-20:]} x{abs(qty)}"
-                            )
-                            # Short leg is negative qty, buy back means positive order
-                            self.MarketOrder(short_leg_symbol, -qty, tag="ORPHAN_SHORT")
-                        else:
-                            self.Log(
-                                f"SPREAD: No position in short leg - no cleanup needed | "
-                                f"{short_leg_symbol[-20:]}"
-                            )
+                    holding = self.Portfolio.get(short_leg_symbol)
+                    if holding and holding.Invested:
+                        qty = holding.Quantity
+                        self.Log(
+                            f"SPREAD: BUYING BACK orphaned short leg | "
+                            f"{short_leg_symbol[-20:]} x{abs(qty)}"
+                        )
+                        # Short leg is negative qty, buy back means positive order
+                        self.MarketOrder(short_leg_symbol, -qty, tag="ORPHAN_SHORT")
+                    else:
+                        self.Log(
+                            f"SPREAD: No position in short leg - no cleanup needed | "
+                            f"{short_leg_symbol[-20:]}"
+                        )
                 except Exception as e:
                     self.Log(f"SPREAD: ERROR buying back orphaned short leg | {e}")
 
@@ -4621,19 +4625,26 @@ class AlphaNextGen(QCAlgorithm):
         """
         Get current prices for all traded symbols including options.
 
+        V2.19 FIX: Don't iterate all Securities (20K+ options).
+        Only get prices for symbols we actually hold or are tracking.
+
         Returns:
             Dict of symbol -> current price.
         """
         prices = {}
-        # Equity prices
+        # Equity prices - these are the symbols we actually care about
         for symbol in self.traded_symbols:
             prices[str(symbol.Value)] = self.Securities[symbol].Price
 
-        # Options prices - get from Securities for any option we're tracking
-        for kvp in self.Securities:
-            symbol = kvp.Key
-            security = kvp.Value
-            if symbol.SecurityType == SecurityType.Option and security.Price > 0:
-                prices[str(symbol.Value)] = security.Price
+        # Options prices - only for options we actually HOLD (not all 20K+ subscribed)
+        # V2.19 FIX: Iterate Portfolio.Values, not Securities
+        for holding in self.Portfolio.Values:
+            if not holding.Invested:
+                continue
+            symbol = holding.Symbol
+            if symbol.SecurityType == SecurityType.Option:
+                price = self.Securities[symbol].Price if symbol in self.Securities else 0
+                if price > 0:
+                    prices[str(symbol.Value)] = price
 
         return prices
