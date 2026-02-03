@@ -99,8 +99,8 @@
 | RPT-2 | Config | Slippage threshold mismatch (2% vs 10%) | 🔴 CRITICAL | Open | V2.16-PROD |
 | RPT-3 | State | Spread position not persisted to ObjectStore | 🔴 CRITICAL | ✅ FIXED | V2.16-BT |
 | RPT-4 | State | clear_all_positions() uses wrong variables | 🔴 CRITICAL | ✅ FIXED | V2.16-BT |
-| RPT-5 | Timing | No market close timing guard (15:58-16:00) | 🔴 CRITICAL | Open | V2.16-PROD |
-| RPT-6 | Margin | No pre-check before orders | 🟡 HIGH | Open | V2.16-PROD |
+| RPT-5 | Timing | No market close timing guard (15:58-16:00) | 🔴 CRITICAL | ✅ FIXED | V2.18 |
+| RPT-6 | Margin | No pre-check before orders | 🟡 HIGH | ✅ FIXED | V2.18 |
 | RPT-7 | Dead Code | Circuit Breaker Level 4 never triggers | 🟢 LOW | Open | V2.17 |
 | RPT-8 | Profit | Profit target ignores commission costs | 🟡 HIGH | ✅ FIXED | V2.16-BT |
 | RPT-9 | Fallback | ComboMarketOrder has no retry before fallback | 🟡 HIGH | ✅ FIXED | V2.17-BT |
@@ -110,8 +110,8 @@
 | RPT-13 | Config | Magic numbers in time checks | 🟢 LOW | Open | V2.17 |
 
 **Summary:**
-- ✅ **10 FIXED** (USER-1, USER-2, USER-3, USER-4, RPT-1, RPT-3, RPT-4, RPT-8, RPT-9, RPT-10 partial)
-- 🔴 **3 CRITICAL Open** (RPT-2, RPT-5, RPT-6)
+- ✅ **12 FIXED** (USER-1, USER-2, USER-3, USER-4, RPT-1, RPT-3, RPT-4, RPT-5, RPT-6, RPT-8, RPT-9, RPT-10 partial)
+- 🔴 **1 CRITICAL Open** (RPT-2 - slippage threshold)
 - 🟢 **4 LOW Open** (RPT-7, RPT-11, RPT-12, RPT-13)
 
 ---
@@ -184,6 +184,63 @@
 - **URL:** https://www.quantconnect.com/project/27678023/c9cc8ea6c2993fb47dbb6a08dd870e42
 
 **Tests:** 174 passed, 6 failed (pre-existing StopTier failures)
+
+---
+
+### V2.18: Consolidated Audit Fixes (2026-02-02) — COMPLETE ✅
+
+**Goal:** Fix 8 architectural and performance issues identified in V2.17 AAP audit.
+
+**Executive Summary:** V2.17 backtest achieved +0.93% return, but masked serious issues:
+- Trend Engine violated position limits (3 positions when max=2)
+- Options Engine starved (only 2 intraday signals vs 49 expected)
+- Leverage overflow possible (196% margin when all Trend tickers fire)
+
+| # | Fix | Priority | File | Status |
+|:-:|-----|:--------:|------|:------:|
+| 1 | **Position Limit Enforcement** - Check BEFORE MOO submission | CRITICAL | `main.py` | ✅ |
+| 2 | **Capital Firewall 50/50** - Hard partition Trend=50%, Options=50% | CRITICAL | `portfolio_router.py`, `config.py` | ✅ |
+| 3 | **Leverage Cap 90%** - Block entries if margin > 90% | CRITICAL | `portfolio_router.py` | ✅ |
+| 4 | **RPT-5: Market Close Guard** - Block orders 15:58-16:00 ET | CRITICAL | `main.py` | ✅ |
+| 5 | **RPT-6: Margin Pre-Check** - Verify margin before order submission | CRITICAL | `portfolio_router.py` | ✅ |
+| 6 | **Enable Intraday Signals** - Add MICRO_REGIME: log prefix for tracking | HIGH | `options_engine.py` | ✅ |
+| 7 | **Reduce Trend Allocations** - QLD 20%→15%, TNA 12%→8%, SSO 15%→12%, FAS 8%→5% | HIGH | `config.py` | ✅ |
+| 8 | **Hardcoded Sizing Caps** - SWING=$7,500, INTRADAY=$4,000 (absolute caps) | HIGH | `config.py`, `options_engine.py` | ✅ |
+
+**Config Changes (V2.18):**
+```python
+# Capital Partition (50/50 hard firewall)
+CAPITAL_PARTITION_TREND = 0.50    # Was 55%
+CAPITAL_PARTITION_OPTIONS = 0.50  # Was 25%
+
+# Leverage Cap
+MAX_MARGIN_WEIGHTED_ALLOCATION = 0.90  # Never exceed 90%
+
+# Trend Allocations (40% total, was 55%)
+TREND_SYMBOL_ALLOCATIONS = {
+    "QLD": 0.15,  # Was 0.20
+    "SSO": 0.12,  # Was 0.15
+    "TNA": 0.08,  # Was 0.12
+    "FAS": 0.05,  # Was 0.08
+}
+
+# Hardcoded Sizing Caps (replaces MarginBuyingPower-based sizing)
+SWING_SPREAD_MAX_DOLLARS = 7500
+INTRADAY_SPREAD_MAX_DOLLARS = 4000
+```
+
+**Files Modified:**
+- `main.py` - Position limit check before MOO, market close blackout
+- `config.py` - Capital partition, leverage cap, reduced allocations, sizing caps
+- `portfolio/portfolio_router.py` - `get_trend_capital()`, `get_options_capital()`, `check_leverage_cap()`, `verify_margin_available()`
+- `engines/satellite/options_engine.py` - MICRO_REGIME logging, hardcoded sizing caps
+
+**Tests:** 1304 passed, 2 skipped (updated tests for new config values)
+
+**Next Step:** Run V2.18 backtest to validate architectural fixes
+```bash
+./scripts/qc_backtest.sh "V2.18-ArchitecturalFix" --open
+```
 
 ---
 

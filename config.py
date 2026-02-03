@@ -34,6 +34,15 @@ LOCKBOX_LOCK_PCT = 0.10
 # This reserves capital BEFORE trend positions are sized
 RESERVED_OPTIONS_PCT = 0.25  # Reserve 25% for options allocation
 
+# V2.18: Capital Firewall - Hard partition between engines to prevent starvation
+# Previously Trend could consume all capital, leaving Options with "Entries allowed=-1"
+CAPITAL_PARTITION_TREND = 0.50  # 50% reserved for Trend Engine (was 55%)
+CAPITAL_PARTITION_OPTIONS = 0.50  # 50% reserved for Options Engine (was 25%)
+
+# V2.18: Leverage Cap - Prevent margin overflow (was hitting 196% with all 4 trend tickers)
+# Block entries if projected margin exceeds this threshold
+MAX_MARGIN_WEIGHTED_ALLOCATION = 0.90  # Never exceed 90% margin consumption
+
 # V2.3.24: Leverage multipliers for margin calculation
 # Used by portfolio_router to calculate actual margin consumption, not just allocation %
 SYMBOL_LEVERAGE = {
@@ -274,14 +283,16 @@ SYMBOL_GROUPS = {
 # - Trend Engine entry probability ~13.3% (very conservative)
 # - Adding TNA/FAS increases diversification and entry opportunities
 
-# Trend Engine Allocations (55% total)
+# Trend Engine Allocations (40% total - V2.18 reduced from 55%)
+# V2.18: Reduced to prevent margin overflow (was 196% when all 4 triggered)
+# Margin impact: 15%×2 + 12%×2 + 8%×3 + 5%×3 = 30% + 24% + 24% + 15% = 93%
 TREND_SYMBOL_ALLOCATIONS = {
-    "QLD": 0.20,  # 20% - 2× Nasdaq (primary)
-    "SSO": 0.15,  # 15% - 2× S&P 500 (secondary)
-    "TNA": 0.12,  # 12% - 3× Russell 2000 (small-cap diversification)
-    "FAS": 0.08,  # 8% - 3× Financials (sector diversification)
+    "QLD": 0.15,  # V2.18: 15% (was 20%) - 2× Nasdaq (primary)
+    "SSO": 0.12,  # V2.18: 12% (was 15%) - 2× S&P 500 (secondary)
+    "TNA": 0.08,  # V2.18: 8% (was 12%) - 3× Russell 2000 (small-cap diversification)
+    "FAS": 0.05,  # V2.18: 5% (was 8%) - 3× Financials (sector diversification)
 }
-TREND_TOTAL_ALLOCATION = 0.55  # 55% total to Trend Engine
+TREND_TOTAL_ALLOCATION = 0.40  # V2.18: 40% total (was 55%)
 
 # =============================================================================
 # V2.4 STRUCTURAL TREND - SMA50 + HARD STOP
@@ -724,6 +735,12 @@ VASS_LOG_REJECTION_INTERVAL_MINUTES = 15  # Log rejections every 15 min (not eve
 # Options sizing must cap by actual available margin, not just portfolio %
 # V2.12 Fix #4: Raised from $5K to $10K - 8-lot spread requires ~$8K margin
 OPTIONS_MAX_MARGIN_CAP = 10000  # $10K max margin reserved for all options combined
+
+# V2.18: Hardcoded Sizing Caps (Fix for MarginBuyingPower sizing bug)
+# Evidence: Architect found $14K trade vs $5K expected - sizing used MarginBuyingPower
+# Solution: Absolute dollar caps, not percentage-based
+SWING_SPREAD_MAX_DOLLARS = 7500  # $7,500 hard cap for swing spreads (14-21 DTE)
+INTRADAY_SPREAD_MAX_DOLLARS = 4000  # $4,000 hard cap for intraday (1-5 DTE)
 
 # Pitfall #8: Settlement Ghost - Smarter threshold-based gate
 # Only halt if UnsettledCash is material (>10% of portfolio)

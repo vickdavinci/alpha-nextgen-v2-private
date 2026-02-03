@@ -251,7 +251,8 @@ class TestEntrySignals:
         assert isinstance(result, TargetWeight)
         assert result.symbol == "QLD"
         # V2.3.3: TrendEngine now uses symbol-specific allocations from config
-        assert result.target_weight == 0.20  # QLD gets 20% (config.TREND_SYMBOL_ALLOCATIONS)
+        # V2.18: Reduced from 20% to 15% to prevent margin overflow
+        assert result.target_weight == 0.15  # QLD gets 15% (config.TREND_SYMBOL_ALLOCATIONS)
         assert result.source == "TREND"
         assert result.urgency == Urgency.MOC  # V2.4.2: MOC for same-day trend
         assert "MA200+ADX Entry" in result.reason

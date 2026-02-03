@@ -1376,12 +1376,13 @@ class MicroRegimeEngine:
         self._state.last_update = current_time
 
         # V2.3.4: Log includes QQQ direction and recommended option direction
+        # V2.18: Use MICRO_REGIME: prefix for easy log verification (Fix #6)
         dir_str = (
             self._state.recommended_direction.value if self._state.recommended_direction else "NONE"
         )
         qqq_dir_str = self._state.qqq_direction.value if self._state.qqq_direction else "NONE"
         self.log(
-            f"Update: VIX={vix_current:.1f} ({self._state.vix_direction.value}) | "
+            f"MICRO_REGIME: VIX={vix_current:.1f} ({self._state.vix_direction.value}) | "
             f"QQQ={qqq_dir_str} ({self._state.qqq_move_pct:+.2f}%) | "
             f"Regime={self._state.micro_regime.value} | Score={self._state.micro_score:.0f} | "
             f"Strategy={self._state.recommended_strategy.value} | Direction={dir_str}"
@@ -2708,16 +2709,20 @@ class OptionsEngine:
             self.log(f"SPREAD: Entry blocked - max profit ${max_profit:.2f} <= 0")
             return None
 
-        # Calculate position size based on allocation
-        # V2.3.20: Apply size_multiplier (0.5 during cold start)
-        allocation = self.get_mode_allocation(OptionsMode.SWING, portfolio_value, size_multiplier)
+        # V2.18: Use hardcoded sizing cap (Fix for MarginBuyingPower sizing bug)
+        # Evidence: Architect found $14K trade vs $5K expected when using allocation-based sizing
+        # Solution: Absolute dollar cap of $7,500 for swing spreads
+        swing_max_dollars = getattr(config, "SWING_SPREAD_MAX_DOLLARS", 7500)
         # V2.14: Use conservative net debit for sizing (prevents tier cap violations)
         cost_per_spread = net_debit_for_sizing * 100  # 100 shares per contract
-        num_spreads = int(allocation / cost_per_spread)
+        num_spreads = int(swing_max_dollars / cost_per_spread)
+        self.log(
+            f"SIZING: SWING | Cap=${swing_max_dollars} | Cost/spread=${cost_per_spread:.2f} | Qty={num_spreads}"
+        )
 
         if num_spreads <= 0:
             self.log(
-                f"SPREAD: Entry blocked - allocation ${allocation:.0f} too small "
+                f"SPREAD: Entry blocked - cap ${swing_max_dollars} too small "
                 f"for debit ${net_debit:.2f}"
             )
             return None
@@ -3689,13 +3694,11 @@ class OptionsEngine:
             )
             return None
 
-        # Calculate allocation based on micro score
-        # V2.3.20: Apply size_multiplier (0.5 during cold start)
-        allocation = self.get_mode_allocation(
-            OptionsMode.INTRADAY, portfolio_value, size_multiplier
-        )
+        # V2.18: Use hardcoded sizing cap (Fix for MarginBuyingPower sizing bug)
+        # Solution: Absolute dollar cap of $4,000 for intraday
+        intraday_max_dollars = getattr(config, "INTRADAY_SPREAD_MAX_DOLLARS", 4000)
 
-        # Adjust size based on score
+        # Adjust size based on micro score
         if state.micro_score >= config.MICRO_SCORE_PRIME_MR:
             size_mult = 1.0  # Full size
         elif state.micro_score >= config.MICRO_SCORE_GOOD_MR:
@@ -3705,18 +3708,20 @@ class OptionsEngine:
         else:
             size_mult = 0.5  # Half size
 
-        # V2.3.2: Calculate actual number of contracts based on allocation
-        adjusted_allocation = allocation * size_mult
+        adjusted_cap = intraday_max_dollars * size_mult
         premium = best_contract.mid_price
         if premium <= 0:
             self.log("INTRADAY: Entry blocked - invalid premium price")
             return None
 
-        # Calculate contracts: allocation / (premium * 100 shares per contract)
-        num_contracts = int(adjusted_allocation / (premium * 100))
+        # V2.18: Calculate contracts using hardcoded cap / (premium * 100)
+        num_contracts = int(adjusted_cap / (premium * 100))
+        self.log(
+            f"SIZING: INTRADAY | Cap=${adjusted_cap:.0f} | Premium=${premium:.2f} | Qty={num_contracts}"
+        )
         if num_contracts <= 0:
             self.log(
-                f"INTRADAY: Entry blocked - allocation ${adjusted_allocation:.0f} "
+                f"INTRADAY: Entry blocked - cap ${adjusted_cap:.0f} "
                 f"too small for premium ${premium:.2f}"
             )
             return None

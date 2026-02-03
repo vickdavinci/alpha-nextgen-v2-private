@@ -302,6 +302,150 @@ class PortfolioRouter:
         return effective
 
     # =========================================================================
+    # V2.18: CAPITAL PARTITION (Fix for Trend/Options starvation)
+    # =========================================================================
+
+    def get_trend_capital(self) -> float:
+        """
+        V2.18: Get capital reserved for Trend Engine (hard partition).
+
+        Prevents Trend from consuming all capital and starving Options.
+
+        Returns:
+            50% of tradeable equity reserved for Trend.
+        """
+        if not self.algorithm:
+            return 0.0
+
+        total_equity = self.algorithm.Portfolio.TotalPortfolioValue
+        return total_equity * config.CAPITAL_PARTITION_TREND
+
+    def get_options_capital(self) -> float:
+        """
+        V2.18: Get capital reserved for Options Engine (hard partition).
+
+        Returns:
+            50% of tradeable equity reserved for Options.
+        """
+        if not self.algorithm:
+            return 0.0
+
+        total_equity = self.algorithm.Portfolio.TotalPortfolioValue
+        return total_equity * config.CAPITAL_PARTITION_OPTIONS
+
+    def check_capital_partition(self, source: str, order_value: float) -> bool:
+        """
+        V2.18: Check if order would exceed capital partition for source.
+
+        Args:
+            source: Signal source ("TREND", "OPTIONS", etc.)
+            order_value: Dollar value of proposed order.
+
+        Returns:
+            True if order is within partition limits, False if blocked.
+        """
+        if source == "TREND":
+            available = self.get_trend_capital()
+            # Subtract current trend holdings
+            if self.algorithm:
+                trend_holdings = sum(
+                    self.algorithm.Portfolio[getattr(self.algorithm, sym.lower())].HoldingsValue
+                    for sym in config.TREND_PRIORITY_ORDER
+                    if hasattr(self.algorithm, sym.lower())
+                )
+                available = available - trend_holdings
+
+            if order_value > available:
+                self.log(
+                    f"PARTITION_BLOCK: TREND | Requested=${order_value:,.0f} > Available=${available:,.0f}"
+                )
+                return False
+
+        elif source == "OPTIONS":
+            available = self.get_options_capital() - self.get_reserved_spread_margin()
+            if order_value > available:
+                self.log(
+                    f"PARTITION_BLOCK: OPTIONS | Requested=${order_value:,.0f} > Available=${available:,.0f}"
+                )
+                return False
+
+        return True
+
+    # =========================================================================
+    # V2.18: LEVERAGE CAP (Fix for 196% margin overflow)
+    # =========================================================================
+
+    def check_leverage_cap(self, projected_margin_pct: float) -> bool:
+        """
+        V2.18: Check if projected margin exceeds leverage cap.
+
+        Args:
+            projected_margin_pct: Projected margin as percentage of equity (0.0-1.0+).
+
+        Returns:
+            True if within cap, False if would exceed.
+        """
+        max_margin = config.MAX_MARGIN_WEIGHTED_ALLOCATION
+
+        if projected_margin_pct > max_margin:
+            self.log(
+                f"LEVERAGE_CAP: Blocked | Projected={projected_margin_pct:.1%} > Max={max_margin:.0%}"
+            )
+            return False
+
+        return True
+
+    def get_current_margin_usage(self) -> float:
+        """
+        V2.18: Get current margin usage as percentage of equity.
+
+        Returns:
+            Margin used / Total equity (0.0-1.0+).
+        """
+        if not self.algorithm:
+            return 0.0
+
+        total_equity = self.algorithm.Portfolio.TotalPortfolioValue
+        margin_used = self.algorithm.Portfolio.TotalMarginUsed
+
+        if total_equity <= 0:
+            return 0.0
+
+        return margin_used / total_equity
+
+    # =========================================================================
+    # V2.18: MARGIN PRE-CHECK (RPT-6 Fix)
+    # =========================================================================
+
+    def verify_margin_available(self, order_value: float) -> bool:
+        """
+        V2.18: Pre-check margin before order submission (RPT-6 fix).
+
+        Verifies sufficient margin with 20% buffer to prevent rejections.
+
+        Args:
+            order_value: Dollar value of proposed order.
+
+        Returns:
+            True if sufficient margin, False if insufficient.
+        """
+        if not self.algorithm:
+            return True
+
+        margin_remaining = self.algorithm.Portfolio.MarginRemaining
+        buffer = getattr(config, "MARGIN_PRE_CHECK_BUFFER", 1.20)
+        required_with_buffer = order_value * buffer
+
+        if required_with_buffer > margin_remaining:
+            self.log(
+                f"MARGIN_PRECHECK_FAIL: Required=${required_with_buffer:,.0f} (with {buffer:.0%} buffer) "
+                f"> Available=${margin_remaining:,.0f}"
+            )
+            return False
+
+        return True
+
+    # =========================================================================
     # V2.17: UNIFIED SPREAD CLOSE (Fixes USER-1, USER-3, RPT-9)
     # =========================================================================
 

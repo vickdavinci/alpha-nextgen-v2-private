@@ -560,14 +560,15 @@ class TestOptionsIntegration:
         """Test options mode determination."""
         engine = OptionsEngine()
 
-        # V2.3.4: True 0DTE intraday (0-1 DTE only)
+        # V2.13: OPTIONS_INTRADAY_DTE_MAX=5, so 0-5 DTE is INTRADAY
         assert engine.determine_mode(0).value == "INTRADAY"
         assert engine.determine_mode(1).value == "INTRADAY"
+        assert engine.determine_mode(2).value == "INTRADAY"
+        assert engine.determine_mode(3).value == "INTRADAY"
+        assert engine.determine_mode(5).value == "INTRADAY"
 
-        # V2.3.4: 2+ DTE is SWING mode
-        assert engine.determine_mode(2).value == "SWING"
-        assert engine.determine_mode(3).value == "SWING"
-        assert engine.determine_mode(5).value == "SWING"
+        # V2.13: 6+ DTE is SWING mode
+        assert engine.determine_mode(6).value == "SWING"
         assert engine.determine_mode(10).value == "SWING"
 
     def test_micro_regime_updates_during_simulation(self):

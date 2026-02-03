@@ -1538,6 +1538,20 @@ class AlphaNextGen(QCAlgorithm):
 
         return False
 
+    def _is_market_close_blackout(self) -> bool:
+        """
+        V2.18: Check if in market close blackout window (RPT-5 fix).
+
+        Orders submitted 15:58-16:00 may not fill properly due to
+        end-of-day auction mechanics. Block orders during this window.
+
+        Returns:
+            True if in blackout window, False otherwise.
+        """
+        if self.Time.hour == 15 and self.Time.minute >= 58:
+            return True
+        return False
+
     # =========================================================================
     # ORDER EVENT HANDLER
     # =========================================================================
@@ -1900,6 +1914,18 @@ class AlphaNextGen(QCAlgorithm):
 
         Routes to PortfolioRouter which validates and executes via MarketOrder.
         """
+        # V2.18: Block immediate orders in market close blackout window (RPT-5 fix)
+        if self._is_market_close_blackout():
+            pending_count = self.portfolio_router.get_pending_count()
+            if pending_count > 0:
+                self.Log(
+                    f"MARKET_CLOSE_GUARD: {pending_count} immediate orders blocked | "
+                    f"Time={self.Time.strftime('%H:%M')} in 15:58-16:00 blackout"
+                )
+                # Clear pending to prevent them executing at wrong time
+                self.portfolio_router.clear_pending()
+            return
+
         # Skip if no pending signals
         if self.portfolio_router.get_pending_count() == 0:
             return
@@ -2007,18 +2033,27 @@ class AlphaNextGen(QCAlgorithm):
         )
         current_date = str(self.Time.date())
 
-        # V2.3: Count current trend positions for position limit enforcement
+        # V2.18: Count current trend positions AND pending MOO orders for position limit enforcement
+        # Fix: Previously only counted invested positions, missing pending MOOs that would fill next day
         trend_symbols = config.TREND_PRIORITY_ORDER  # ["QLD", "SSO", "TNA", "FAS"]
         current_trend_positions = sum(
             1 for sym in trend_symbols if self.Portfolio[getattr(self, sym.lower())].Invested
         )
+        # V2.18: Also count pending MOO orders to prevent exceeding limit
+        pending_moo_count = (
+            len(self.trend_engine._pending_moo_symbols)
+            if hasattr(self.trend_engine, "_pending_moo_symbols")
+            else 0
+        )
+        total_committed_positions = current_trend_positions + pending_moo_count
         max_positions = config.MAX_CONCURRENT_TREND_POSITIONS  # Default: 2
-        entries_allowed = max_positions - current_trend_positions
+        entries_allowed = max_positions - total_committed_positions
 
-        # Log position status
-        if entries_allowed < len(trend_symbols):
+        # Log position status (V2.18: Include pending MOO count)
+        if entries_allowed < len(trend_symbols) or pending_moo_count > 0:
             self.Log(
-                f"TREND: Position limit check | Current={current_trend_positions} | "
+                f"TREND: Position limit check | Invested={current_trend_positions} | "
+                f"Pending MOO={pending_moo_count} | Total={total_committed_positions} | "
                 f"Max={max_positions} | Entries allowed={entries_allowed}"
             )
 

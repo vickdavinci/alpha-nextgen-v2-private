@@ -141,7 +141,8 @@ class TestTrendEntryToFill:
         assert signal.symbol == "QLD"
         assert signal.source == "TREND"
         # V2.3.3: TrendEngine now uses symbol-specific allocations from config
-        assert signal.target_weight == 0.20  # QLD gets 20%
+        # V2.18: Reduced from 20% to 15% to prevent margin overflow
+        assert signal.target_weight == 0.15  # QLD gets 15%
 
         # Router receives signal
         router.receive_signal(signal)
