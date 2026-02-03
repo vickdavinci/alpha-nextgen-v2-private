@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-02 (V2.17-BT: Atomic Spread Exit & Kill Switch Coordination)
+> **Last Updated:** 2026-02-02 (V2.18: Consolidated Audit Fixes - 8 architectural + performance fixes)
 
 ---
 
@@ -32,6 +32,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | 2b | 2 months (Jan-Feb 2025) | V2.4 SMA50 exit validation | **V2.4 -17.98%** 🔴 |
 | 2c | 1 month (Jan 2025) | V2.4.1 AAP Audit | **V2.4.1 -4.64%** 🔴 |
 | 2d | 1 month (Jan 2025) | V2.4.2 AAP Fixes | Pending |
+| 2e | 1 month (Jan 2025) | V2.18 Architectural Fixes | **Ready to Run** ⏳ |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
@@ -843,6 +844,127 @@ elif order.order_type == OrderType.MOC:
 1. Sync V2.4.2 to QC cloud
 2. Run 1-month backtest (Jan 2025)
 3. Compare metrics to V2.4.1 Dancing Green Bison
+
+---
+
+## V2.18 Consolidated Audit Fixes (2026-02-02)
+
+**Purpose:** Fix 8 architectural and performance issues identified in V2.17 AAP audit.
+
+**Background:** V2.17 backtest achieved +0.93% return, but masked serious architectural issues:
+- Trend Engine violated position limits (3 positions when max=2)
+- Options Engine starved (only 2 intraday signals vs 49 expected)
+- Leverage overflow possible (196% margin when all Trend tickers fire)
+
+### V2.18 Fix Summary
+
+| # | Fix | Priority | File | Description | Status |
+|:-:|-----|:--------:|------|-------------|:------:|
+| 1 | **Position Limit Enforcement** | CRITICAL | `main.py` | Check before MOO submission (not after fill) | ✅ |
+| 2 | **Capital Firewall 50/50** | CRITICAL | `portfolio_router.py`, `config.py` | Hard partition Trend=50%, Options=50% | ✅ |
+| 3 | **Leverage Cap 90%** | CRITICAL | `portfolio_router.py` | Block entries if margin > 90% | ✅ |
+| 4 | **RPT-5: Market Close Guard** | CRITICAL | `main.py` | Block orders 15:58-16:00 ET | ✅ |
+| 5 | **RPT-6: Margin Pre-Check** | CRITICAL | `portfolio_router.py` | Verify margin before order submission | ✅ |
+| 6 | **Enable Intraday Signals** | HIGH | `options_engine.py` | Add MICRO_REGIME: log prefix for tracking | ✅ |
+| 7 | **Reduce Trend Allocations** | HIGH | `config.py` | QLD 20%→15%, SSO 15%→12%, TNA 12%→8%, FAS 8%→5% | ✅ |
+| 8 | **Hardcoded Sizing Caps** | HIGH | `config.py`, `options_engine.py` | SWING=$7,500, INTRADAY=$4,000 (absolute caps) | ✅ |
+
+### Config Changes (V2.18)
+
+```python
+# Capital Partition (50/50 hard firewall)
+CAPITAL_PARTITION_TREND = 0.50    # Was 55%
+CAPITAL_PARTITION_OPTIONS = 0.50  # Was 25%
+
+# Leverage Cap
+MAX_MARGIN_WEIGHTED_ALLOCATION = 0.90  # Never exceed 90%
+
+# Trend Allocations (40% total, was 55%)
+TREND_SYMBOL_ALLOCATIONS = {
+    "QLD": 0.15,  # Was 0.20
+    "SSO": 0.12,  # Was 0.15
+    "TNA": 0.08,  # Was 0.12
+    "FAS": 0.05,  # Was 0.08
+}
+
+# Hardcoded Sizing Caps (replaces MarginBuyingPower-based sizing)
+SWING_SPREAD_MAX_DOLLARS = 7500
+INTRADAY_SPREAD_MAX_DOLLARS = 4000
+```
+
+### New Methods Added (portfolio_router.py)
+
+```python
+def get_trend_capital(self) -> float:
+    """V2.18: Get capital reserved for Trend Engine (hard partition)."""
+    return total_equity * config.CAPITAL_PARTITION_TREND
+
+def get_options_capital(self) -> float:
+    """V2.18: Get capital reserved for Options Engine (hard partition)."""
+    return total_equity * config.CAPITAL_PARTITION_OPTIONS
+
+def check_leverage_cap(self, projected_margin_pct: float) -> bool:
+    """V2.18: Check if projected margin exceeds leverage cap."""
+    return projected_margin_pct <= config.MAX_MARGIN_WEIGHTED_ALLOCATION
+
+def verify_margin_available(self, order_value: float) -> bool:
+    """V2.18: Pre-check margin before order submission (RPT-6 fix)."""
+    return required_with_buffer <= margin_remaining
+```
+
+### Expected Impact
+
+| Issue | Before V2.18 | After V2.18 |
+|-------|--------------|-------------|
+| Position limit violation | 3 positions when max=2 | Enforced at signal generation |
+| Options starvation | 2 intraday signals | Capital guaranteed by partition |
+| Leverage overflow | 196% possible | Capped at 90% |
+| Market close orders | Submitted 15:58-16:00 | Blocked (15:58+ blackout) |
+| Margin errors | Orders fail at broker | Pre-checked with 20% buffer |
+| Sizing bugs | $14K trades (MarginBuyingPower) | $7,500/$4,000 hard caps |
+| Trend margin consumption | 55% × 2.4x = 132% | 40% × 2.4x = 96% |
+
+### V2.18 Verification Patterns
+
+After running V2.18 backtest, verify these log patterns appear:
+
+```
+# Fix 1: Position limit enforced
+TREND: Position limit check | Current=2 | Max=2 | Entries allowed=0
+
+# Fix 2: Capital partition working
+PARTITION_BLOCK: TREND | Requested=$X > Available=$Y
+
+# Fix 3: Leverage cap active
+LEVERAGE_CAP: Blocked | Projected=95% > Max=90%
+
+# Fix 4: Market close guard active
+MARKET_CLOSE_GUARD: Order blocked | Time=15:58
+
+# Fix 5: Margin pre-check working
+MARGIN_PRECHECK_FAIL: Required=$X > Available=$Y
+
+# Fix 6: Micro regime scanning
+MICRO_REGIME: VIX=18 | Dir=FALLING | Strategy=DEBIT_FADE
+
+# Fix 8: Hardcoded sizing
+SIZING: SWING | Cap=$7500 | Cost/spread=$250 | Qty=30
+SIZING: INTRADAY | Cap=$4000 | Premium=$1.50 | Qty=26
+```
+
+### Commits
+
+- `571a825` - `fix(arch): V2.18 - consolidated audit fixes (8 architectural + performance)`
+
+### Next Steps
+
+1. Run V2.18 backtest:
+   ```bash
+   ./scripts/qc_backtest.sh "V2.18-ArchitecturalFix" --open
+   ```
+2. Verify position limit, capital partition, and leverage cap patterns in logs
+3. Compare intraday signal count to V2.17 (expecting ≥20 vs 2)
+4. Confirm no margin pre-check failures
 
 ---
 

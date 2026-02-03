@@ -72,7 +72,8 @@
 | 1 | 1 day | Basic validation | **PASS** ✅ | 2026-01-30 |
 | 2 | 1 month (Jan 2025) | Short-term behavior | **V2.3.22 +0.93%** ✅ | 2026-02-01 |
 | 2b | 3 months (Q1 2025) | Capital Test | **V2.11 -62%** 🔴 | 2026-02-02 |
-| 2c | 3 months (Q1 2025) | AAP Bug Fixes | **V2.12 Pending** ⏳ | 2026-02-02 |
+| 2c | 3 months (Q1 2025) | AAP Bug Fixes | **V2.12 Complete** ✅ | 2026-02-02 |
+| 2d | 1 month (Jan 2025) | V2.18 Architectural Fixes | **Ready to Run** ⏳ | 2026-02-02 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
