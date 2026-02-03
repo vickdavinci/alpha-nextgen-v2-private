@@ -76,6 +76,7 @@
 | 2d | 1 month (Jan 2025) | V2.18 Architectural Fixes | **Timeout** 🔴 | 2026-02-02 |
 | 2e | 1 month (Jan 2025) | V2.19 Execution Patch | **Ready to Run** ⏳ | 2026-02-02 |
 | 2f | 1 month (Jan 2025) | V2.20 Rejection Recovery | **Ready to Run** ⏳ | 2026-02-03 |
+| 2g | 1 month (Jan 2025) | V2.21 Rejection-Aware Sizing | **Ready to Run** ⏳ | 2026-02-03 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
@@ -424,6 +425,53 @@ QQQ options      → Options (spread > intraday > swing by pending state priorit
 **Next Step:** Run V2.20 backtest
 ```bash
 ./scripts/qc_backtest.sh "V2.20-RejectionRecovery" --open
+```
+
+---
+
+### V2.21: Rejection-Aware Spread Sizing (2026-02-03) — COMPLETE ✅
+
+**Goal:** Eliminate repeated "Insufficient buying power" rejections by adding margin-aware sizing to MACRO spread entries.
+
+**Problem:** V2.20 enables same-day retry after spread rejection (clears `_entry_attempted_today`, 30-min cooldown), but retries with the **same position size**. The broker rejects again because capital hasn't changed. V2.5 evidence: 74 INVALID orders over 2 years, ALL "Insufficient buying power" — same spread retried 3–5 consecutive days at the same failing size. Zero cases where identical sizing succeeded on retry.
+
+**Root Cause:** `check_spread_entry_signal()` sizes to `SWING_SPREAD_MAX_DOLLARS = $7,500` regardless of available margin. The broker's margin requirement (for the naked short leg) far exceeds $7,500, but the engine never checks this before submitting.
+
+**Architecture: Two Layers**
+
+| Layer | Type | Mechanism |
+|:-----:|------|-----------|
+| 1 | **Proactive** | Pre-submission margin estimation scales `num_spreads` down to fit `margin_remaining × 0.80` |
+| 2 | **Reactive** | Parses `Free Margin: XXXXX` from broker rejection message, stores adaptive cap for next retry |
+
+**Key Behaviors:**
+- When margin too tight for `MIN_SPREAD_CONTRACTS` (2): returns `None` **without** setting `_entry_attempted_today` → retry preserved when capital frees up mid-day
+- Layer 2 cap: `min(live_margin, rejection_cap)` — broker's actual number constrains next attempt
+- Cap clears on successful fill or daily reset
+
+| # | Component | Description | Status |
+|:-:|-----------|-------------|:------:|
+| 1 | **Config Parameters** | `SPREAD_MARGIN_SAFETY_FACTOR`, `SPREAD_REJECTION_MARGIN_SAFETY` (both 0.80) | ✅ |
+| 2 | **State Field** | `_rejection_margin_cap` on options engine | ✅ |
+| 3 | **Margin-Aware Sizing** | Pre-submission estimation in `check_spread_entry_signal()` | ✅ |
+| 4 | **Rejection Parser** | `_parse_and_store_rejection_margin()` extracts broker Free Margin | ✅ |
+| 5 | **Wiring** | `margin_remaining` passed at both call sites + parser wired into handler | ✅ |
+| 6 | **Cap Lifecycle** | Cleared in `register_spread_entry()` (fill) + `reset_daily()` | ✅ |
+| 7 | **Unit Tests** | 7 new tests in `TestRejectionAwareSizing` | ✅ |
+
+**Files Modified:**
+- `config.py` — 2 new parameters (`SPREAD_MARGIN_SAFETY_FACTOR`, `SPREAD_REJECTION_MARGIN_SAFETY`)
+- `engines/satellite/options_engine.py` — `_rejection_margin_cap` field + margin-aware sizing block + cap clearing
+- `main.py` — `margin_remaining` at both call sites + `_parse_and_store_rejection_margin()` + handler wiring
+- `tests/test_options_engine.py` — 7 new tests
+
+**Commit:** `56c3dbb` - `feat(options): V2.21 rejection-aware spread sizing with margin estimation`
+
+**Tests:** 1330 passed, 2 skipped (7 new tests)
+
+**Next Step:** Run V2.21 backtest
+```bash
+./scripts/qc_backtest.sh "V2.21-RejectionAwareSizing" --open
 ```
 
 ---
@@ -2339,4 +2387,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 03 February 2026 (V2.20 Event-Driven State Recovery)*
+*Last Updated: 03 February 2026 (V2.21 Rejection-Aware Spread Sizing)*

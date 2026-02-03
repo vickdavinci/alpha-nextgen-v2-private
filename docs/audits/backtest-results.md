@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-03 (V2.20: Event-Driven State Recovery - rejection listener + scoped cooldowns)
+> **Last Updated:** 2026-02-03 (V2.21: Rejection-Aware Spread Sizing - margin estimation + adaptive retry cap)
 
 ---
 
@@ -34,6 +34,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | 2d | 1 month (Jan 2025) | V2.4.2 AAP Fixes | Pending |
 | 2e | 1 month (Jan 2025) | V2.18 Architectural Fixes | **Ready to Run** ⏳ |
 | 2f | 1 month (Jan 2025) | V2.19 Execution Patch + V2.20 Rejection Recovery | **Ready to Run** ⏳ |
+| 2g | 1 month (Jan 2025) | V2.21 Rejection-Aware Spread Sizing | **Ready to Run** ⏳ |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
@@ -1121,6 +1122,114 @@ TREND: Entries blocked by rejection cooldown | Until ...
 2. Verify rejection recovery log patterns appear for any Invalid/Canceled orders
 3. Confirm cooldown gatekeepers prevent retry within cooldown window
 4. Verify no regressions in fill handling (`_on_fill` unchanged)
+
+---
+
+## V2.21: Rejection-Aware Spread Sizing (2026-02-03)
+
+**Purpose:** Eliminate repeated "Insufficient buying power" rejections by adding margin-aware sizing to MACRO spread entries. V2.20 enables same-day retry after rejection, but retries with the same failing position size.
+
+### Problem
+
+V2.5 backtest evidence: 74 INVALID orders over 2 years, ALL "Insufficient buying power." Same spread retried 3–5 consecutive days at the same failing size. Zero cases where identical sizing succeeded on retry.
+
+**Root cause:** `check_spread_entry_signal()` sizes to `SWING_SPREAD_MAX_DOLLARS = $7,500` regardless of available margin. The broker's margin requirement for the naked short leg far exceeds the net debit, but the engine never checks margin before submitting.
+
+### Solution: Two-Layer Architecture
+
+| Layer | Type | Mechanism |
+|:-----:|------|-----------|
+| 1 | **Proactive** | Pre-submission: estimate margin per spread (`width × 100`), scale `num_spreads` down to fit `margin_remaining × 0.80` |
+| 2 | **Reactive** | Post-rejection: parse `Free Margin: XXXXX` from broker message, store `free_margin × 0.80` as adaptive cap for next retry |
+
+**Sizing formula (Layer 1):**
+```
+usable_margin = margin_remaining × SPREAD_MARGIN_SAFETY_FACTOR (0.80)
+if rejection_cap exists: usable_margin = min(usable_margin, rejection_cap)
+max_by_margin = int(usable_margin / (width × 100))
+num_spreads = min(num_spreads, max_by_margin)
+```
+
+**Adaptive cap formula (Layer 2):**
+```
+On rejection with "Free Margin: 48927":
+  rejection_cap = 48927 × SPREAD_REJECTION_MARGIN_SAFETY (0.80) = $39,142
+  Next retry: usable_margin = min(live_margin × 0.80, $39,142)
+```
+
+### Key Behaviors
+
+| Scenario | Behavior |
+|----------|----------|
+| Margin too tight for min position (< 2 spreads) | Returns `None` WITHOUT setting `_entry_attempted_today` → retry preserved |
+| Capital frees up mid-day (trend stop fires) | Next 30-min scan re-evaluates with new margin → can enter |
+| Rejection message format changes | Parse fails silently, Layer 1 still works using live margin |
+| Multiple rejections same day | Each updates cap with latest broker value |
+| Successful fill | Cap clears → fresh start |
+| Daily reset | Cap clears → fresh start |
+| `margin_remaining` is None (tests) | Layer 1 skipped entirely, falls back to dollar cap only |
+
+### Config Parameters Added
+
+```python
+SPREAD_MARGIN_SAFETY_FACTOR = 0.80    # Pre-submission: use 80% of reported margin
+SPREAD_REJECTION_MARGIN_SAFETY = 0.80  # Post-rejection: 80% of broker Free Margin
+```
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `config.py` | 2 new parameters |
+| `engines/satellite/options_engine.py` | `_rejection_margin_cap` field + margin-aware sizing block + cap clearing in `register_spread_entry()` and `reset_daily()` |
+| `main.py` | `margin_remaining` passed at both call sites + `_parse_and_store_rejection_margin()` + wired into `_handle_order_rejection()` |
+| `tests/test_options_engine.py` | 7 new tests (`TestRejectionAwareSizing`) |
+
+### Tests (7 new)
+
+| # | Test | Validates |
+|:-:|------|-----------|
+| 1 | `test_margin_scales_spreads_down` | Layer 1 scales 27→4 spreads when margin=$3K |
+| 2 | `test_margin_below_min_returns_none` | Returns None when margin < 2 spreads, `_entry_attempted_today` stays False |
+| 3 | `test_margin_none_falls_back_to_dollar_cap` | None margin uses full `SWING_SPREAD_MAX_DOLLARS` cap |
+| 4 | `test_rejection_cap_constrains_sizing` | Layer 2 cap=$2K constrains even with $50K live margin |
+| 5 | `test_rejection_cap_cleared_on_fill` | Cap clears after `register_spread_entry()` |
+| 6 | `test_rejection_cap_cleared_on_daily_reset` | Cap clears on `reset_daily()` |
+| 7 | `test_entry_not_attempted_on_margin_skip` | Margin=$100 → None, `_entry_attempted_today` stays False |
+
+### Commits
+
+- `56c3dbb` - `feat(options): V2.21 rejection-aware spread sizing with margin estimation`
+
+**Tests:** 1330 passed, 2 skipped (7 new tests)
+
+### Verification Patterns
+
+After running V2.21 backtest, verify these log patterns:
+```
+# Layer 1: Pre-submission margin scaling
+SIZING: MARGIN_SCALE | 50 -> 24 spreads | Margin=$15,000 x80%=$12,000 | Per-spread=$500
+
+# Layer 2: Rejection cap active on retry
+SIZING: Rejection cap active | Cap=$39,142 | Usable=$39,142
+
+# Margin-skip (below minimum, retry preserved)
+SPREAD: Entry skipped — 1 < min 2 | Insufficient margin for minimum position
+
+# Rejection parser
+REJECTION_MARGIN: Free=$48,927 | Cap=$39,142 (x80%)
+```
+
+### Next Steps
+
+1. Run V2.21 backtest:
+   ```bash
+   ./scripts/qc_backtest.sh "V2.21-RejectionAwareSizing" --open
+   ```
+2. Verify Layer 1 MARGIN_SCALE logs appear when spreads are downsized
+3. Verify rejection parser extracts Free Margin from INVALID orders
+4. Confirm `_entry_attempted_today` is NOT set on margin-skip path
+5. Check that spread entries still fire normally when margin is ample
 
 ---
 
