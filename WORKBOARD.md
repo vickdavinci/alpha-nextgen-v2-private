@@ -78,6 +78,7 @@
 | 2f | 1 month (Jan 2025) | V2.20 Rejection Recovery | **Ready to Run** ⏳ | 2026-02-03 |
 | 2g | 1 month (Jan 2025) | V2.21 Rejection-Aware Sizing | **Ready to Run** ⏳ | 2026-02-03 |
 | 2h | 1 month (Jan 2025) | V2.22 Neutrality Exit | **Ready to Run** ⏳ | 2026-02-03 |
+| 2i | 1 month (Jan 2025) | V2.23 VASS Credit Spread Integration | **Ready to Run** ⏳ | 2026-02-03 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
@@ -516,6 +517,52 @@ QQQ options      → Options (spread > intraday > swing by pending state priorit
 **Next Step:** Run V2.22 backtest
 ```bash
 ./scripts/qc_backtest.sh "V2.22-NeutralityExit" --open
+```
+
+---
+
+### V2.23: VASS Credit Spread Integration + Strike/DTE Fix (2026-02-03) — COMPLETE ✅
+
+**Problem:** Entire credit spread infrastructure was built but orphaned — zero callers from `main.py`:
+- `_select_strategy()` — VASS matrix (strategy + DTE range) never called
+- `select_credit_spread_legs()` — full credit leg selection never called
+- `_calculate_credit_spread_size()` — margin-based sizing never called
+- `IVSensor.classify()` — VIX smoothing + LOW/MEDIUM/HIGH classification never used
+- Strike filter `(-8, 5)` too narrow for credit spread OTM short legs
+- `OPTIONS_DTE_MAX = 45` too short for VASS Low IV monthly expirations (30-45 DTE)
+
+**Solution:** Three surgical changes:
+
+| # | Change | Detail | Status |
+|---|--------|--------|:------:|
+| 1 | **Strike filter widened** | `(-8, 5)` → `(-25, 25)` in SetFilter | ✅ |
+| 2 | **DTE horizon extended** | `OPTIONS_DTE_MAX`: 45 → 60 | ✅ |
+| 3 | **VASS routing wired** | `_route_vass_strategy()` → credit/debit branch in both call sites | ✅ |
+| 4 | **Credit entry method** | New `check_credit_spread_entry_signal()` with margin-based sizing | ✅ |
+| 5 | **DTE params** | `_build_spread_candidate_contracts()` accepts VASS DTE overrides | ✅ |
+| 6 | **Unit Tests** | 12 new tests in `TestVASSCreditSpreadEntry` | ✅ |
+
+**VASS Strategy Matrix (now active):**
+
+| Direction | Low IV (VIX<15) | Medium IV (15-25) | High IV (VIX>25) |
+|-----------|-----------------|-------------------|-------------------|
+| Bullish | Bull Call Debit (30-45 DTE) | Bull Call Debit (7-21 DTE) | **Bull Put Credit (7-14 DTE)** |
+| Bearish | Bear Put Debit (30-45 DTE) | Bear Put Debit (7-21 DTE) | **Bear Call Credit (7-14 DTE)** |
+
+**Files Modified:**
+- `config.py` — `OPTIONS_DTE_MAX` 45 → 60
+- `main.py` — SetFilter widened, `_route_vass_strategy()` helper, VASS routing in both call sites, `SpreadStrategy` import
+- `engines/satellite/options_engine.py` — New `check_credit_spread_entry_signal()` (~200 lines)
+- `tests/test_options_engine.py` — 12 new tests
+- `tests/integration/test_options_flow.py` — Updated DTE assertion
+
+**Commit:** `a5918e5` - `feat(options): V2.23 VASS credit spread integration + strike/DTE fix`
+
+**Tests:** 1349 passed, 2 skipped (12 new tests)
+
+**Next Step:** Run V2.23 backtest
+```bash
+./scripts/qc_backtest.sh "V2.23-VASS-Credit" --open
 ```
 
 ---
@@ -2431,4 +2478,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 03 February 2026 (V2.22 Symmetric Neutrality Exit)*
+*Last Updated: 03 February 2026 (V2.23 VASS Credit Spread Integration)*

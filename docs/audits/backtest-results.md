@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-03 (V2.22: Symmetric Neutrality Exit - close flat spreads in regime dead zone)
+> **Last Updated:** 2026-02-03 (V2.23: VASS Credit Spread Integration + Strike/DTE Fix)
 
 ---
 
@@ -36,6 +36,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | 2f | 1 month (Jan 2025) | V2.19 Execution Patch + V2.20 Rejection Recovery | **Ready to Run** ⏳ |
 | 2g | 1 month (Jan 2025) | V2.21 Rejection-Aware Spread Sizing | **Ready to Run** ⏳ |
 | 2h | 1 month (Jan 2025) | V2.22 Neutrality Exit | **Ready to Run** ⏳ |
+| 2i | 1 month (Jan 2025) | V2.23 VASS Credit Spread Integration | **Ready to Run** ⏳ |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
@@ -1318,6 +1319,96 @@ SPREAD: EXIT_SIGNAL | STOP_LOSS -51.2% ...
 2. Verify NEUTRALITY_EXIT log patterns appear for spreads in dead zone
 3. Confirm winners and losers are NOT affected (handled by profit target / stop loss)
 4. Compare capital utilization vs V2.21 — freed margin should enable more spread entries
+
+---
+
+## V2.23: VASS Credit Spread Integration + Strike/DTE Fix (2026-02-03)
+
+**Purpose:** Wire orphaned credit spread infrastructure into the live entry flow. Enable VASS (Volatility-Adaptive Strategy Selection) to route to credit spreads when VIX > 25, and widen the options chain filter for credit spread short legs.
+
+### Problem
+
+Three issues prevented credit spread trades:
+1. **Dead code:** `_select_strategy()`, `select_credit_spread_legs()`, `_calculate_credit_spread_size()`, `IVSensor.classify()` — all fully implemented but zero callers from `main.py`
+2. **Strike filter too narrow:** `SetFilter(-8, 5)` missed OTM strikes needed for credit spread short legs (delta 0.25-0.40)
+3. **DTE horizon too short:** `OPTIONS_DTE_MAX = 45` insufficient for VASS Low IV monthly expirations (30-45 DTE needs 60-day horizon)
+
+### Solution
+
+| Change | Before | After |
+|--------|--------|-------|
+| Strike filter | `SetFilter(-8, 5)` | `SetFilter(-25, 25)` |
+| DTE horizon | `OPTIONS_DTE_MAX = 45` | `OPTIONS_DTE_MAX = 60` |
+| VASS routing | Debit spreads only | Credit/debit branch via `_route_vass_strategy()` |
+| Credit entry | Not wired | `check_credit_spread_entry_signal()` with margin-based sizing |
+| DTE override | Hardcoded `SPREAD_DTE_MIN/MAX` | `_build_spread_candidate_contracts()` accepts VASS DTE params |
+
+### VASS Strategy Matrix (Now Active)
+
+| Direction | Low IV (VIX<15) | Medium IV (15-25) | High IV (VIX>25) |
+|-----------|-----------------|-------------------|-------------------|
+| Bullish | Bull Call Debit (30-45 DTE) | Bull Call Debit (7-21 DTE) | Bull Put Credit (7-14 DTE) |
+| Bearish | Bear Put Debit (30-45 DTE) | Bear Put Debit (7-21 DTE) | Bear Call Credit (7-14 DTE) |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `config.py` | `OPTIONS_DTE_MAX` 45 → 60 |
+| `main.py` | SetFilter widened, `_route_vass_strategy()` helper, VASS routing in both call sites, `SpreadStrategy` import |
+| `engines/satellite/options_engine.py` | New `check_credit_spread_entry_signal()` (~200 lines) |
+| `tests/test_options_engine.py` | 12 new tests (`TestVASSCreditSpreadEntry`) |
+| `tests/integration/test_options_flow.py` | Updated DTE assertion 45 → 60 |
+
+### Tests (12 new)
+
+| # | Test | Validates |
+|:-:|------|-----------|
+| 1 | `test_select_strategy_high_iv_bullish` | HIGH IV + BULLISH → Bull Put Credit, DTE 7-14 |
+| 2 | `test_select_strategy_low_iv_bearish` | LOW IV + BEARISH → Bear Put Debit, DTE 30-45 |
+| 3 | `test_select_strategy_medium_iv_bullish` | MEDIUM IV + BULLISH → Bull Call Debit, DTE 7-21 |
+| 4 | `test_credit_entry_signal_bull_put` | Bull Put Credit generates TargetWeight with credit metadata |
+| 5 | `test_credit_entry_blocked_low_credit` | Credit < $0.30 → rejected |
+| 6 | `test_credit_entry_margin_sizing` | Margin-based sizing: $7500 / $360 margin = 20 spreads |
+| 7 | `test_credit_entry_blocked_regime_crisis` | Regime < 30 → blocked |
+| 8 | `test_iv_sensor_classification_high` | VIX avg=28 → HIGH |
+| 9 | `test_iv_sensor_classification_low` | VIX avg=12 → LOW |
+| 10 | `test_iv_sensor_classification_medium` | VIX avg=20 → MEDIUM |
+| 11 | `test_is_credit_strategy` | Credit strategy classifier |
+| 12 | `test_is_debit_strategy` | Debit strategy classifier |
+
+### Commits
+
+- `a5918e5` - `feat(options): V2.23 VASS credit spread integration + strike/DTE fix`
+
+**Tests:** 1349 passed, 2 skipped (12 new tests)
+
+### Verification Patterns
+
+After running V2.23 backtest, verify these log patterns:
+```
+# VASS selecting credit strategy (VIX > 25)
+VASS: BULLISH + HIGH IV → BULL_PUT_CREDIT | DTE=7-14 | Intraday=False
+
+# Credit spread entry signal
+CREDIT_SPREAD: ENTRY_SIGNAL | BULL_PUT_CREDIT: Regime=65 | VIX=28.5 | Sell 500P Buy 495P | Credit=$1.40 Width=$5 | x20
+
+# Credit sizing via margin (not premium)
+SAFETY: Credit spread sizing | Width=$5.00 | Credit=$1.40 | MarginPerSpread=$360 | Allocation=$7500 | MaxContracts=20
+
+# Debit spreads still work in low/medium IV
+VASS: BULLISH + MEDIUM IV → BULL_CALL_DEBIT | DTE=7-21 | Intraday=False
+```
+
+### Next Steps
+
+1. Run V2.23 backtest:
+   ```bash
+   ./scripts/qc_backtest.sh "V2.23-VASS-Credit" --open
+   ```
+2. Verify credit spread entries appear when VIX > 25 with regime conviction
+3. Verify debit spread behavior identical to V2.22 when VIX < 25
+4. Check IVSensor classification changes in logs (LOW → MEDIUM → HIGH transitions)
 
 ---
 
