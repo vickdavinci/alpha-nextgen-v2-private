@@ -75,6 +75,7 @@
 | 2c | 3 months (Q1 2025) | AAP Bug Fixes | **V2.12 Complete** ✅ | 2026-02-02 |
 | 2d | 1 month (Jan 2025) | V2.18 Architectural Fixes | **Timeout** 🔴 | 2026-02-02 |
 | 2e | 1 month (Jan 2025) | V2.19 Execution Patch | **Ready to Run** ⏳ | 2026-02-02 |
+| 2f | 1 month (Jan 2025) | V2.20 Rejection Recovery | **Ready to Run** ⏳ | 2026-02-03 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
@@ -333,9 +334,96 @@ for holding in self.Portfolio.Values:
 
 **Tests:** 1304 passed, 2 skipped
 
+**V2.19 Six Critical Bugs (2026-02-02):**
+
+| # | Fix | Priority | Status |
+|:-:|-----|:--------:|:------:|
+| 1 | **Swing scan throttle 30 min** - Spread construction scans every minute | HIGH | ✅ |
+| 2 | **Daily reset for swing scan timer** - `_last_swing_scan_time` not cleared at EOD | HIGH | ✅ |
+| 3 | **Margin sizing min()** - Subtraction could yield negative allocation | CRITICAL | ✅ |
+| 4 | **Options entry score guard** - Missing guard on `_pending_entry_score` access | HIGH | ✅ |
+| 5 | **Trend pending MOO after approval** - Mark pending before router approval | CRITICAL | ✅ |
+| 6 | **20K loop timeout** - Iterating all 20K+ options in Portfolio.Keys | CRITICAL | ✅ |
+
+**Commits:**
+- `f8292fe` - Execution patch: limit orders + VIX filter
+- `fd327e7` - 20K loop timeout fix
+- `4df0918` - Trend pending MOO fix
+- `d40e475` - Margin sizing min() fix
+- `ad8306d` - Six critical bugs blocking options and trend entries
+
+**Tests:** 1304 passed, 2 skipped
+
 **Next Step:** Run V2.19 comprehensive backtest
 ```bash
 ./scripts/qc_backtest.sh "V2.19-ExecutionPatch" --open
+```
+
+---
+
+### V2.20: Event-Driven State Recovery (Rejection Listener) (2026-02-03) — COMPLETE ✅
+
+**Goal:** Prevent "zombie pending locks" when broker rejects/cancels orders. Without this, internal pending flags remain set forever, blocking future entries.
+
+**Problem:** When broker rejects an order, `OnOrderEvent` notifies the `ExecutionEngine` but NOT the originating strategy engine. Internal pending locks remain set:
+- **Trend**: `_pending_moo_symbols` — slot consumed permanently
+- **Cold Start**: `_warm_entry_executed = True` — blocks all warm entries
+- **Mean Reversion**: `_pending_vix_regime` / `_pending_stop_pct` — stale VIX data
+- **Options Swing**: `_pending_contract`, `_entry_attempted_today` — blocks swing entries
+- **Options Spread**: `_pending_spread_long_leg`, etc. — blocks spreads, leaks ghost margin
+- **Options Intraday**: `_pending_intraday_entry`, pre-incremented counter — wastes trade slot
+
+**Architecture:** Centralized `_handle_order_rejection(symbol, order_event)` in `main.py` routes rejection events to the correct engine using symbol-based matching, called from both `OrderStatus.Invalid` and `OrderStatus.Canceled` branches in `OnOrderEvent`.
+
+| # | Component | Description | Status |
+|:-:|-----------|-------------|:------:|
+| 1 | **Engine Cancel Methods** | `cancel_warm_entry()`, `cancel_pending_entry()`, 3× options cancel methods | ✅ |
+| 2 | **Central Rejection Handler** | `_handle_order_rejection()` with symbol-based routing | ✅ |
+| 3 | **Scoped Cooldowns** | Per-strategy time penalties (Trend 18h, MR 15m, Swing/Spread 30m, Intraday 15m) | ✅ |
+| 4 | **Gatekeeper Checks** | Cooldown validation at all scanner entry points | ✅ |
+| 5 | **Ghost Code Fix** | `clear_all_positions()` had wrong field names (`_pending_spread_long` → `_pending_spread_long_leg`) | ✅ |
+| 6 | **Unit Tests** | 14 new tests across 4 engine test files | ✅ |
+| 7 | **Scenario Tests** | 5 end-to-end rejection recovery tests | ✅ |
+
+**Routing Logic:**
+```
+QLD/SSO/TNA/FAS → Trend cancel_pending_moo + Cold Start cancel_warm_entry (both if)
+TQQQ/SOXL       → MR cancel_pending_entry
+QQQ options      → Options (spread > intraday > swing by pending state priority)
+```
+
+**Scoped Cooldowns (prevents infinite retry loops):**
+| Strategy | Cooldown | Gatekeeper |
+|----------|----------|------------|
+| Trend | 18 hours (next EOD) | Empties `entry_candidates` |
+| MR | 15 min | Early `return` in scanner |
+| Options Intraday | 15 min | Blocks scan condition |
+| Options Spread | 30 min | Blocks spread entry path |
+| Options Swing | 30 min | Blocks swing fallback path |
+
+**Pitfall Audit (3/3 addressed):**
+1. ✅ **Infinite Loop Trap** — Scoped cooldowns prevent immediate retry
+2. ✅ **Order Routing Ambiguity** — Symbol sets mutually exclusive; dual routing for Trend+ColdStart uses sequential `if`
+3. ✅ **Partial Spread State Cleanup** — All 9 fields + `_entry_attempted_today` + ghost margin cleared
+
+**Files Modified:**
+- `engines/core/cold_start_engine.py` - Added `cancel_warm_entry()`
+- `engines/satellite/mean_reversion_engine.py` - Added `cancel_pending_entry()`
+- `engines/satellite/options_engine.py` - Added 3 cancel methods + ghost code fix in `clear_all_positions()`
+- `main.py` - `_handle_order_rejection()`, cooldown variables, gatekeeper checks, OnOrderEvent wiring
+- `tests/test_cold_start_engine.py` - 3 new tests
+- `tests/test_options_engine.py` - 7 new tests + `clear_all_positions` test fix
+- `tests/test_trend_engine.py` - 2 new tests
+- `tests/test_mean_reversion_engine.py` - 2 new tests
+- `tests/scenarios/test_rejection_recovery_scenario.py` - 5 new scenario tests (NEW file)
+
+**Commit:** `4a12785` - `feat(recovery): V2.20 event-driven state recovery for broker rejections`
+
+**Tests:** 1323 passed, 2 skipped (19 new tests)
+
+**Next Step:** Run V2.20 backtest
+```bash
+./scripts/qc_backtest.sh "V2.20-RejectionRecovery" --open
 ```
 
 ---
@@ -2251,4 +2339,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 02 February 2026 (V2.16-BT Backtest State Persistence Fixes)*
+*Last Updated: 03 February 2026 (V2.20 Event-Driven State Recovery)*

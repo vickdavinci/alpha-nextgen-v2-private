@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-02 (V2.18: Consolidated Audit Fixes - 8 architectural + performance fixes)
+> **Last Updated:** 2026-02-03 (V2.20: Event-Driven State Recovery - rejection listener + scoped cooldowns)
 
 ---
 
@@ -33,6 +33,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | 2c | 1 month (Jan 2025) | V2.4.1 AAP Audit | **V2.4.1 -4.64%** 🔴 |
 | 2d | 1 month (Jan 2025) | V2.4.2 AAP Fixes | Pending |
 | 2e | 1 month (Jan 2025) | V2.18 Architectural Fixes | **Ready to Run** ⏳ |
+| 2f | 1 month (Jan 2025) | V2.19 Execution Patch + V2.20 Rejection Recovery | **Ready to Run** ⏳ |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
@@ -965,6 +966,161 @@ SIZING: INTRADAY | Cap=$4000 | Premium=$1.50 | Qty=26
 2. Verify position limit, capital partition, and leverage cap patterns in logs
 3. Compare intraday signal count to V2.17 (expecting ≥20 vs 2)
 4. Confirm no margin pre-check failures
+
+---
+
+## V2.19: Emergency Execution Patch + Six Critical Bugs (2026-02-02)
+
+**Purpose:** Bundle execution layer fixes discovered during V2.18 backtest timeouts + 6 additional critical bugs blocking options and trend entries.
+
+### V2.19 Execution Fixes
+
+| # | Fix | Priority | Status |
+|:-:|-----|:--------:|:------:|
+| 1 | **Ghost Margin Fix** - Clear router margin reservations on margin CB | CRITICAL | ✅ V2.18.2 |
+| 2 | **Limit Order Logic** - Marketable limits with 5% slippage tolerance | CRITICAL | ✅ |
+| 3 | **VIX Filter** - Block DEBIT_FADE when VIX < 13.5 | HIGH | ✅ |
+| 4 | **20K Loop Fix** - Iterate `Portfolio.Values` with `Invested` check, not `Portfolio.Keys` | CRITICAL | ✅ |
+
+### V2.19 Six Critical Bugs
+
+| # | Fix | Priority | Status |
+|:-:|-----|:--------:|:------:|
+| 5 | **Swing scan throttle** - 30-min cooldown for spread construction scans | HIGH | ✅ |
+| 6 | **Daily reset for swing timer** - `_last_swing_scan_time` cleared at EOD | HIGH | ✅ |
+| 7 | **Margin sizing min()** - Subtraction could yield negative allocation | CRITICAL | ✅ |
+| 8 | **Entry score guard** - Missing guard on `_pending_entry_score` access | HIGH | ✅ |
+| 9 | **Trend pending MOO** - Mark pending only after router approval (not before) | CRITICAL | ✅ |
+| 10 | **20K loop timeout** - 4 locations iterating all 20K+ options contracts | CRITICAL | ✅ |
+
+### Commits
+
+- `f8292fe` - `fix(execution): V2.19 emergency execution patch - limit orders + VIX filter`
+- `fd327e7` - `perf(main): V2.19 fix 20K loop timeout - iterate Portfolio.Values not Keys`
+- `4df0918` - `fix(trend): V2.19 position limit enforcement bug - mark pending MOO only after approval`
+- `d40e475` - `fix(options): V2.19 margin sizing bugs - use min() instead of subtraction`
+- `ad8306d` - `fix(options+trend): V2.19 six critical bugs blocking options and trend entries`
+
+**Tests:** 1304 passed, 2 skipped
+
+---
+
+## V2.20: Event-Driven State Recovery (Rejection Listener) (2026-02-03)
+
+**Purpose:** Prevent "zombie pending locks" when broker rejects/cancels orders. Without rejection recovery, internal pending flags remain set forever, blocking all future entries for the affected engine.
+
+### Problem
+
+When the broker rejects or cancels an order, `OnOrderEvent` notifies the `ExecutionEngine` but NOT the originating strategy engine. Internal locks remain set:
+
+| Engine | Zombie State | Impact |
+|--------|-------------|--------|
+| **Trend** | `_pending_moo_symbols` | Position slot consumed permanently |
+| **Cold Start** | `_warm_entry_executed = True` | Blocks all warm entries for the period |
+| **Mean Reversion** | `_pending_vix_regime` / `_pending_stop_pct` | Stale VIX data corrupts next entry |
+| **Options Swing** | `_pending_contract`, `_entry_attempted_today` | Blocks swing entries for the day |
+| **Options Spread** | `_pending_spread_long_leg`, etc. | Blocks spreads, leaks ghost margin |
+| **Options Intraday** | `_pending_intraday_entry` + pre-incremented counter | Blocks intraday, wastes trade slot |
+
+### Solution
+
+Centralized `_handle_order_rejection(symbol, order_event)` in `main.py` routes rejection events to the correct engine using symbol-based matching. Called from both `OrderStatus.Invalid` and `OrderStatus.Canceled` in `OnOrderEvent`.
+
+**Routing:**
+```
+QLD/SSO/TNA/FAS  → Trend cancel_pending_moo + Cold Start cancel_warm_entry
+TQQQ/SOXL        → MR cancel_pending_entry
+QQQ options       → Options (spread > intraday > swing by pending state)
+```
+
+### Engine Cancel Methods Added
+
+| Engine | Method | Fields Cleared | Counter Decrement? |
+|--------|--------|---------------|--------------------|
+| Cold Start | `cancel_warm_entry()` | `_warm_entry_executed`, `_warm_entry_symbol` | No |
+| Mean Reversion | `cancel_pending_entry()` | `_pending_vix_regime`, `_pending_stop_pct` (reset to defaults) | No |
+| Options Swing | `cancel_pending_swing_entry()` | 7 fields + `_entry_attempted_today` | No (counter on fill only) |
+| Options Spread | `cancel_pending_spread_entry()` | 9 fields + `_entry_attempted_today` | No (counter on fill only) |
+| Options Intraday | `cancel_pending_intraday_entry()` | 4 fields + 3 counters decremented | Yes (pre-incremented at signal) |
+
+### Scoped Cooldowns (Anti-Retry)
+
+Per-strategy time penalties prevent "machine gun" retries after rejection while allowing other strategies to continue:
+
+| Strategy | Cooldown | Rationale |
+|----------|----------|-----------|
+| Trend | 18 hours | MOO signals only fire at 15:45 EOD; skip to next cycle |
+| MR | 15 min | Intraday strategy, allow same-day retry |
+| Options Intraday | 15 min | Quick micro-regime trades, fast retry |
+| Options Swing | 30 min | Slower retry for swing positions |
+| Options Spread | 30 min | Complex multi-leg, moderate retry |
+
+Gatekeepers check cooldowns at scanner entry points. All cooldowns clear daily at EOD.
+
+### Additional Fix: Ghost Code in `clear_all_positions()`
+
+`clear_all_positions()` referenced wrong field names (`_pending_spread_long` instead of `_pending_spread_long_leg`). During kill switch, spread pending state was NOT being cleared — fixed.
+
+### Pitfall Audit
+
+| Pitfall | Status | Evidence |
+|---------|--------|----------|
+| **Infinite Loop Trap** — clearing locks enables immediate retry | ✅ Addressed | 5 scoped cooldowns with gatekeepers at all scanners |
+| **Order Routing Ambiguity** — same symbol in multiple engines | ✅ Addressed | Symbol sets mutually exclusive; Trend+ColdStart uses sequential `if` |
+| **Partial Spread Cleanup** — clearing one flag insufficient | ✅ Addressed | All 9 fields + `_entry_attempted_today` + ghost margin cleared |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `engines/core/cold_start_engine.py` | Added `cancel_warm_entry()` |
+| `engines/satellite/mean_reversion_engine.py` | Added `cancel_pending_entry()` |
+| `engines/satellite/options_engine.py` | 3 cancel methods + ghost code fix in `clear_all_positions()` |
+| `main.py` | `_handle_order_rejection()`, 5 cooldown vars, gatekeeper checks, OnOrderEvent wiring |
+| `tests/test_cold_start_engine.py` | 3 new tests (TestWarmEntryRejection) |
+| `tests/test_options_engine.py` | 7 new tests (TestRejectionRecovery) + `clear_all_positions` fix |
+| `tests/test_trend_engine.py` | 2 new tests (TestPendingMooRejection) |
+| `tests/test_mean_reversion_engine.py` | 2 new tests (TestMRRejectionRecovery) |
+| `tests/scenarios/test_rejection_recovery_scenario.py` | 5 new scenario tests (NEW file) |
+
+### Commits
+
+- `4a12785` - `feat(recovery): V2.20 event-driven state recovery for broker rejections`
+
+**Tests:** 1323 passed, 2 skipped (19 new tests)
+
+### Verification Patterns
+
+After running V2.20 backtest, verify these log patterns:
+```
+# Trend rejection recovery
+TREND_RECOVERY: QLD rejected | Pending MOO cleared | Cooldown until next EOD
+
+# MR rejection recovery
+MR_RECOVERY: TQQQ rejected | Pending state reset | Cooldown 15min
+
+# Options spread rejection recovery
+OPT_MACRO_RECOVERY: Spread rejected | Pending + margin cleared | Cooldown 30min
+
+# Options intraday rejection recovery
+OPT_MICRO_RECOVERY: Intraday rejected | Pending + counter cleared | Cooldown 15min
+
+# Options swing rejection recovery
+OPT_SWING_RECOVERY: Swing rejected | Pending cleared | Cooldown 30min
+
+# Cooldown gatekeeper active
+TREND: Entries blocked by rejection cooldown | Until ...
+```
+
+### Next Steps
+
+1. Run V2.20 backtest:
+   ```bash
+   ./scripts/qc_backtest.sh "V2.20-RejectionRecovery" --open
+   ```
+2. Verify rejection recovery log patterns appear for any Invalid/Canceled orders
+3. Confirm cooldown gatekeepers prevent retry within cooldown window
+4. Verify no regressions in fill handling (`_on_fill` unchanged)
 
 ---
 
