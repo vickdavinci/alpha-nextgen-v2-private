@@ -83,6 +83,39 @@
 
 ---
 
+### Master Bug List (All Identified)
+
+> **Complete Bug Registry** - Updated 2026-02-02
+>
+> Status reflects actual fixes in codebase (commits `178d55b`, `fc44648`)
+
+| ID | Category | Bug | Severity | Status | Target |
+|:--:|:--------:|-----|:--------:|:------:|:------:|
+| USER-1 | Kill Switch | Sequential spread liquidation creates naked exposure | 🔴 CRITICAL | ✅ FIXED | V2.17-BT |
+| USER-2 | Config | Delta Wall (0.30 target vs 0.40 min) | 🔴 CRITICAL | ✅ FIXED | V2.15 |
+| USER-3 | Architecture | Kill switch bypasses ExecutionEngine/Router | 🔴 CRITICAL | ✅ FIXED | V2.17-BT |
+| USER-4 | State | Swing position expiry not checked on restore | 🟡 HIGH | ✅ FIXED | V2.16-BT |
+| RPT-1 | Kill Switch | No preemptive trigger at -4% (gap to -5%) | 🟡 HIGH | ✅ FIXED | V2.16-BT |
+| RPT-2 | Config | Slippage threshold mismatch (2% vs 10%) | 🔴 CRITICAL | Open | V2.16-PROD |
+| RPT-3 | State | Spread position not persisted to ObjectStore | 🔴 CRITICAL | ✅ FIXED | V2.16-BT |
+| RPT-4 | State | clear_all_positions() uses wrong variables | 🔴 CRITICAL | ✅ FIXED | V2.16-BT |
+| RPT-5 | Timing | No market close timing guard (15:58-16:00) | 🔴 CRITICAL | Open | V2.16-PROD |
+| RPT-6 | Margin | No pre-check before orders | 🟡 HIGH | Open | V2.16-PROD |
+| RPT-7 | Dead Code | Circuit Breaker Level 4 never triggers | 🟢 LOW | Open | V2.17 |
+| RPT-8 | Profit | Profit target ignores commission costs | 🟡 HIGH | ✅ FIXED | V2.16-BT |
+| RPT-9 | Fallback | ComboMarketOrder has no retry before fallback | 🟡 HIGH | ✅ FIXED | V2.17-BT |
+| RPT-10 | Greeks | Same thresholds for all strategies | 🟡 HIGH | Partial | V2.15 |
+| RPT-11 | Scheduler | GetPreviousMarketClose attribute error | 🟢 LOW | Open | V2.17 |
+| RPT-12 | Logging | Duplicate log messages per bar | 🟢 LOW | Open | V2.17 |
+| RPT-13 | Config | Magic numbers in time checks | 🟢 LOW | Open | V2.17 |
+
+**Summary:**
+- ✅ **10 FIXED** (USER-1, USER-2, USER-3, USER-4, RPT-1, RPT-3, RPT-4, RPT-8, RPT-9, RPT-10 partial)
+- 🔴 **3 CRITICAL Open** (RPT-2, RPT-5, RPT-6)
+- 🟢 **4 LOW Open** (RPT-7, RPT-11, RPT-12, RPT-13)
+
+---
+
 ### V2.16-BT: Backtest State Persistence Fixes (2026-02-02) — ALL COMPLETE ✅
 
 **Goal:** Fix 5 critical bugs affecting multi-day backtest accuracy.
@@ -120,6 +153,37 @@
 - `fc44648` - P1 fixes (preemptive kill switch, commission-aware profit)
 
 **Tests:** 211 passed, 6 failed (pre-existing StopTier failures)
+
+---
+
+### V2.17-BT: Atomic Spread Exit & Kill Switch Coordination (2026-02-02) — COMPLETE ✅
+
+**Goal:** Fix 3 interconnected bugs affecting spread close reliability and kill switch coordination.
+
+| # | Fix | Bug ID | Priority | Status |
+|:-:|-----|:------:|:--------:|:------:|
+| 1 | **ComboMarketOrder retry** - 3 attempts before fallback | RPT-9 | P0 | ✅ |
+| 2 | **Sequential close order** - SHORT first to prevent naked exposure | USER-1 | P0 | ✅ |
+| 3 | **Kill switch routing** - Use Router instead of direct broker calls | USER-3 | P0 | ✅ |
+
+**Root Cause:** Kill switch in `main.py` directly called `self.ComboMarketOrder()` and `self.Liquidate()`, bypassing Router's coordination. When combo orders failed, there was no retry, and sequential fallback could create naked short exposure.
+
+**Solution:** Unified `execute_spread_close()` method in Router with:
+- 3-attempt retry loop for `ComboMarketOrder`
+- Margin-safe sequential fallback (SHORT first, then LONG)
+- Lock management with `is_closing` flag
+
+**Files Modified:**
+- `config.py` - Added `COMBO_ORDER_MAX_RETRIES`, `COMBO_ORDER_FALLBACK_TO_SEQUENTIAL`, `SPREAD_LOCK_CLEAR_ON_FAILURE`
+- `portfolio/portfolio_router.py` - Added `execute_spread_close()`, `_try_combo_close()`, `_execute_sequential_close()`
+- `main.py` - Kill switch now calls `portfolio_router.execute_spread_close()`
+- `engines/satellite/options_engine.py` - Added `reset_spread_closing_lock()`
+
+**Backtest Validation:** V2.17-AtomicSpreadFix
+- **Result:** +0.93% | **Equity:** $50,463.48 | **Orders:** 42
+- **URL:** https://www.quantconnect.com/project/27678023/c9cc8ea6c2993fb47dbb6a08dd870e42
+
+**Tests:** 174 passed, 6 failed (pre-existing StopTier failures)
 
 ---
 

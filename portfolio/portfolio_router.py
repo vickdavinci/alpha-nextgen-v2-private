@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set
 
 if TYPE_CHECKING:
     from AlgorithmImports import QCAlgorithm
+    from engines.satellite.options_engine import SpreadPosition
 
 import config
 from models.enums import Urgency
@@ -299,6 +300,260 @@ class PortfolioRouter:
             )
 
         return effective
+
+    # =========================================================================
+    # V2.17: UNIFIED SPREAD CLOSE (Fixes USER-1, USER-3, RPT-9)
+    # =========================================================================
+
+    def execute_spread_close(
+        self,
+        spread: "SpreadPosition",
+        reason: str = "SPREAD_CLOSE",
+        is_emergency: bool = False,
+    ) -> bool:
+        """
+        V2.17: Unified spread close with retry and sequential fallback.
+
+        This is the SINGLE point for spread exits. Used by:
+        - Normal spread exit (options_engine check_spread_exit_conditions)
+        - Kill switch spread liquidation
+        - Friday firewall
+        - DTE exit
+
+        Args:
+            spread: SpreadPosition to close (from options_engine._spread_position).
+            reason: Reason for exit (for logging).
+            is_emergency: If True, skip retries and go straight to sequential.
+
+        Returns:
+            True if spread was closed (combo or sequential), False if all failed.
+        """
+        if not self.algorithm:
+            self.log("ROUTER: NO_ALGORITHM | Cannot execute spread close")
+            return False
+
+        if spread is None or spread.num_spreads <= 0:
+            self.log(f"ROUTER: SPREAD_CLOSE_SKIP | No spread to close | Reason={reason}")
+            return True  # Nothing to close = success
+
+        # Mark spread as closing to prevent duplicate signals
+        spread.is_closing = True
+
+        long_symbol = spread.long_leg.symbol
+        short_symbol = spread.short_leg.symbol
+        num_spreads = spread.num_spreads
+
+        self.log(
+            f"ROUTER: SPREAD_CLOSE_START | {reason} | "
+            f"Type={spread.spread_type} x{num_spreads} | "
+            f"Long={long_symbol} Short={short_symbol}"
+        )
+
+        # Try atomic ComboMarketOrder first (unless emergency)
+        if not is_emergency:
+            combo_success = self._try_combo_close(long_symbol, short_symbol, num_spreads, reason)
+            if combo_success:
+                self._unregister_spread_margin_if_tracked(long_symbol)
+                return True
+
+        # Fallback to sequential close (margin-safe: short first, then long)
+        self.log(
+            f"ROUTER: SEQUENTIAL_FALLBACK | {reason} | "
+            f"Closing short first (buy back), then long (sell)"
+        )
+
+        sequential_success = self._execute_sequential_close(
+            long_symbol, short_symbol, num_spreads, reason
+        )
+
+        if sequential_success:
+            self._unregister_spread_margin_if_tracked(long_symbol)
+            return True
+
+        # All close attempts failed - clear the lock to allow retry
+        if config.SPREAD_LOCK_CLEAR_ON_FAILURE:
+            spread.is_closing = False
+            self.log(
+                f"ROUTER: SPREAD_LOCK_CLEARED | {reason} | "
+                f"All close attempts failed - position remains open for retry"
+            )
+
+        return False
+
+    def _try_combo_close(
+        self,
+        long_symbol: str,
+        short_symbol: str,
+        num_spreads: int,
+        reason: str,
+    ) -> bool:
+        """
+        V2.17: Attempt atomic combo close with retries.
+
+        Args:
+            long_symbol: Symbol of the long leg to sell.
+            short_symbol: Symbol of the short leg to buy back.
+            num_spreads: Number of spreads to close.
+            reason: Reason for close (for logging).
+
+        Returns:
+            True if combo order succeeded, False if all retries exhausted.
+        """
+        if not self.algorithm:
+            return False
+
+        try:
+            from AlgorithmImports import Leg
+
+            # Find actual QC Symbol objects from portfolio
+            long_qc_symbol = None
+            short_qc_symbol = None
+
+            for kvp in self.algorithm.Portfolio:  # type: ignore[attr-defined]
+                holding = kvp.Value
+                if not holding.Invested:
+                    continue
+                symbol_str = str(holding.Symbol)
+                if long_symbol in symbol_str and holding.Quantity > 0:
+                    long_qc_symbol = holding.Symbol
+                elif short_symbol in symbol_str and holding.Quantity < 0:
+                    short_qc_symbol = holding.Symbol
+
+            if long_qc_symbol is None or short_qc_symbol is None:
+                self.log(
+                    f"ROUTER: COMBO_CLOSE_MISS | {reason} | "
+                    f"Cannot find spread legs in portfolio | "
+                    f"Long={long_symbol} Short={short_symbol}"
+                )
+                return False
+
+            # Retry loop
+            for attempt in range(1, config.COMBO_ORDER_MAX_RETRIES + 1):
+                try:
+                    legs = [
+                        Leg.Create(long_qc_symbol, -1),  # Sell long (ratio -1)
+                        Leg.Create(short_qc_symbol, 1),  # Buy short (ratio +1)
+                    ]
+
+                    self.algorithm.ComboMarketOrder(legs, num_spreads)  # type: ignore[attr-defined]
+                    self.log(
+                        f"ROUTER: COMBO_CLOSE_SUCCESS | {reason} | "
+                        f"Attempt {attempt}/{config.COMBO_ORDER_MAX_RETRIES} | "
+                        f"Spreads={num_spreads}"
+                    )
+                    return True
+
+                except Exception as e:
+                    self.log(
+                        f"ROUTER: COMBO_CLOSE_RETRY | {reason} | "
+                        f"Attempt {attempt}/{config.COMBO_ORDER_MAX_RETRIES} | "
+                        f"Error: {e}"
+                    )
+                    # Continue to next retry
+
+            self.log(
+                f"ROUTER: COMBO_CLOSE_EXHAUSTED | {reason} | "
+                f"All {config.COMBO_ORDER_MAX_RETRIES} retries failed"
+            )
+            return False
+
+        except Exception as e:
+            self.log(f"ROUTER: COMBO_CLOSE_ERROR | {reason} | {e}")
+            return False
+
+    def _execute_sequential_close(
+        self,
+        long_symbol: str,
+        short_symbol: str,
+        num_spreads: int,
+        reason: str,
+    ) -> bool:
+        """
+        V2.17: Execute sequential close: SHORT first (buy back), then LONG (sell).
+
+        This order prevents naked short exposure during the close.
+        Worst case: long leg remains open temporarily.
+
+        Args:
+            long_symbol: Symbol of the long leg to sell.
+            short_symbol: Symbol of the short leg to buy back.
+            num_spreads: Number of spreads to close.
+            reason: Reason for close (for logging).
+
+        Returns:
+            True if at least short leg was closed, False if both failed.
+        """
+        if not self.algorithm:
+            return False
+
+        # Find actual QC Symbol objects
+        long_qc_symbol = None
+        short_qc_symbol = None
+
+        for kvp in self.algorithm.Portfolio:  # type: ignore[attr-defined]
+            holding = kvp.Value
+            if not holding.Invested:
+                continue
+            symbol_str = str(holding.Symbol)
+            if long_symbol in symbol_str and holding.Quantity > 0:
+                long_qc_symbol = holding.Symbol
+            elif short_symbol in symbol_str and holding.Quantity < 0:
+                short_qc_symbol = holding.Symbol
+
+        short_closed = False
+        long_closed = False
+
+        # Step 1: Buy back short leg first (eliminates short exposure)
+        if short_qc_symbol is not None:
+            try:
+                self.algorithm.MarketOrder(short_qc_symbol, num_spreads)  # BUY (positive)
+                short_closed = True
+                self.log(
+                    f"ROUTER: SEQUENTIAL_SHORT_CLOSED | {reason} | "
+                    f"Bought back {num_spreads} @ {short_symbol}"
+                )
+            except Exception as e:
+                self.log(f"ROUTER: SEQUENTIAL_SHORT_FAIL | {reason} | {e}")
+        else:
+            self.log(f"ROUTER: SEQUENTIAL_SHORT_NOTFOUND | {reason} | {short_symbol}")
+
+        # Step 2: Sell long leg (after short is closed)
+        if long_qc_symbol is not None:
+            try:
+                self.algorithm.MarketOrder(long_qc_symbol, -num_spreads)  # SELL (negative)
+                long_closed = True
+                self.log(
+                    f"ROUTER: SEQUENTIAL_LONG_CLOSED | {reason} | "
+                    f"Sold {num_spreads} @ {long_symbol}"
+                )
+            except Exception as e:
+                self.log(f"ROUTER: SEQUENTIAL_LONG_FAIL | {reason} | {e}")
+        else:
+            self.log(f"ROUTER: SEQUENTIAL_LONG_NOTFOUND | {reason} | {long_symbol}")
+
+        # Log final state
+        if short_closed and long_closed:
+            self.log(f"ROUTER: SEQUENTIAL_COMPLETE | {reason}")
+            return True
+        elif short_closed:
+            self.log(
+                f"ROUTER: SEQUENTIAL_PARTIAL | {reason} | "
+                f"SHORT closed, LONG failed - long exposure remains"
+            )
+            return True  # Partial success - at least no naked short
+        else:
+            self.log(f"ROUTER: SEQUENTIAL_FAILED | {reason} | Both legs failed")
+            return False
+
+    def _unregister_spread_margin_if_tracked(self, spread_id: str) -> None:
+        """
+        V2.17: Helper to safely unregister spread margin if it was tracked.
+
+        Args:
+            spread_id: Spread identifier (usually long_leg_symbol).
+        """
+        if spread_id in self._open_spread_margin:
+            self.unregister_spread_margin(spread_id)
 
     # =========================================================================
     # Step 1: COLLECT

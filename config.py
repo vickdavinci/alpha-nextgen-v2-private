@@ -618,6 +618,24 @@ SPREAD_REGIME_EXIT_BEAR = 60  # Exit Bear Put if regime rises above 60
 # IBKR: ~$0.65/contract × 2 legs × 2 (entry+exit) = $2.60/spread
 SPREAD_COMMISSION_PER_CONTRACT = 2.60  # Estimated round-trip commission per spread
 
+# -----------------------------------------------------------------------------
+# V2.17-BT: COMBO ORDER RETRY & KILL SWITCH COORDINATION
+# -----------------------------------------------------------------------------
+# Fixes: USER-1 (naked exposure), USER-3 (kill switch bypass), RPT-9 (no retry)
+# All spread closes now go through Router with retry + sequential fallback
+
+# Combo order retry settings
+COMBO_ORDER_MAX_RETRIES = 3  # Try atomic ComboMarketOrder up to 3 times
+COMBO_ORDER_FALLBACK_TO_SEQUENTIAL = True  # If all retries fail, use sequential close
+
+# Sequential fallback: close SHORT leg first (buy back), then LONG leg (sell)
+# This prevents naked short exposure - worst case is holding a long temporarily
+
+# State management for stuck spreads
+SPREAD_LOCK_CLEAR_ON_FAILURE = True  # Clear is_closing lock if all close attempts fail
+# When True: Spread becomes available for retry on next iteration
+# When False: Spread stays locked, requires manual intervention
+
 # Delta targets for spread legs - V2.3.21 "Smart Swing" Strategy
 # ITM Long Leg / OTM Short Leg: Prioritize execution with wider delta range
 # V2.3.24: Widened DELTA_MIN from 0.55 → 0.50 to include ATM contracts

@@ -4339,6 +4339,25 @@ class OptionsEngine:
             self._last_spread_exit_time = None
             self._entry_attempted_today = True  # Prevent re-entry today
 
+    def reset_spread_closing_lock(self) -> None:
+        """
+        V2.17: Clear the is_closing lock if all close attempts failed.
+
+        Called by PortfolioRouter when both combo order retries and
+        sequential fallback fail. This allows the spread to be retried
+        on subsequent iterations instead of staying permanently locked.
+
+        Does NOT clear the spread position - just resets the lock flag.
+        """
+        if self._spread_position is not None and self._spread_position.is_closing:
+            self._spread_position.is_closing = False
+            self.log(
+                f"SPREAD: LOCK_RESET | Position remains open | "
+                f"Type={self._spread_position.spread_type} x{self._spread_position.num_spreads} | "
+                f"Will retry on next check",
+                trades_only=True,
+            )
+
     def has_intraday_position(self) -> bool:
         """V2.3.2: Check if an intraday position exists (tracked separately for 15:30 force close)."""
         return self._intraday_position is not None
