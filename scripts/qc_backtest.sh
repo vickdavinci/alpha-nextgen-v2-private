@@ -78,14 +78,33 @@ for dir in engines portfolio execution models persistence scheduling utils data;
     fi
 done
 
+# Clean __pycache__ and non-essential files from destination
+find "$DEST" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+find "$DEST" -name ".DS_Store" -delete 2>/dev/null || true
+find "$DEST" -name "*.pyc" -delete 2>/dev/null || true
+
 # Count synced files
 FILE_COUNT=$(find "$DEST" -type f -name "*.py" | wc -l | tr -d ' ')
 echo -e "${GREEN}   ✓ Synced $FILE_COUNT Python files${NC}"
 
+# Minify workspace files (strip comments/docstrings to reduce upload size)
+echo -e "${BLUE}[1b/3]${NC} Minifying workspace files..."
+python3.11 "$SRC/scripts/minify_workspace.py"
+echo -e "${GREEN}   ✓ Minified${NC}"
+
 # Step 2: Push to QC
 echo -e "${BLUE}[2/3]${NC} Pushing to QuantConnect cloud..."
 cd "$LEAN_WORKSPACE"
-lean cloud push --project "$PROJECT_NAME" 2>/dev/null
+PUSH_OUTPUT=$(lean cloud push --project "$PROJECT_NAME" 2>&1)
+PUSH_EXIT=$?
+echo "$PUSH_OUTPUT"
+if echo "$PUSH_OUTPUT" | grep -q "413\|exceed.*size\|failed"; then
+    echo -e "${RED}   ✗ Push FAILED — files exceed QC size limit${NC}"
+    TOTAL_SIZE=$(find "$DEST" -type f \( -name "*.py" -o -name "*.json" -o -name "*.ipynb" \) -exec wc -c {} + | tail -1 | awk '{print $1}')
+    echo -e "${RED}   Total project size: ${TOTAL_SIZE} bytes${NC}"
+    echo -e "${RED}   QC Trading Firm limit: ~500KB total${NC}"
+    exit 1
+fi
 echo -e "${GREEN}   ✓ Push complete${NC}"
 
 # Step 3: Start backtest

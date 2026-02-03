@@ -916,8 +916,7 @@ class AlphaNextGen(QCAlgorithm):
                 )
                 self.Log(
                     f"TREND: PENDING_MOO_CHECK | Count={len(self.trend_engine._pending_moo_symbols)} | "
-                    f"Symbols=[{pending_info}]",
-                    trades_only=False,
+                    f"Symbols=[{pending_info}]"
                 )
 
             stale_symbols = set()
@@ -2043,8 +2042,7 @@ class AlphaNextGen(QCAlgorithm):
                 self.Log(
                     f"V2.19_INJECT: {signal.symbol} | price={price} | "
                     f"has_meta={bool(signal.metadata)} | "
-                    f"meta_keys={list(signal.metadata.keys()) if signal.metadata else 'None'}",
-                    trades_only=False,
+                    f"meta_keys={list(signal.metadata.keys()) if signal.metadata else 'None'}"
                 )
                 if price > 0:
                     current_prices[signal.symbol] = price
@@ -2406,10 +2404,13 @@ class AlphaNextGen(QCAlgorithm):
             )
         else:
             # Existing debit spread path
+            # V2.24.2: Pass VASS DTE range to prevent double-filter bug
             spread_legs = self.options_engine.select_spread_legs(
                 contracts=candidate_contracts,
                 direction=direction,
                 current_time=str(self.Time),
+                dte_min=vass_dte_min,
+                dte_max=vass_dte_max,
             )
             if spread_legs is None:
                 return
@@ -2442,6 +2443,8 @@ class AlphaNextGen(QCAlgorithm):
                 vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
                 size_multiplier=size_multiplier,
                 margin_remaining=margin_remaining,
+                dte_min=vass_dte_min,
+                dte_max=vass_dte_max,
             )
 
         if signal:
@@ -3695,10 +3698,13 @@ class AlphaNextGen(QCAlgorithm):
                         )
             else:
                 # Existing debit spread path
+                # V2.24.2: Pass VASS DTE range to prevent double-filter bug
                 spread_legs = self.options_engine.select_spread_legs(
                     contracts=candidate_contracts,
                     direction=direction,
                     current_time=str(self.Time),
+                    dte_min=vass_dte_min,
+                    dte_max=vass_dte_max,
                 )
                 if spread_legs is not None:
                     long_leg, short_leg = spread_legs
@@ -3725,6 +3731,8 @@ class AlphaNextGen(QCAlgorithm):
                             vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
                             size_multiplier=size_multiplier,
                             margin_remaining=margin_remaining,
+                            dte_min=vass_dte_min,
+                            dte_max=vass_dte_max,
                         )
 
             if signal:

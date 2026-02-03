@@ -1830,6 +1830,8 @@ class OptionsEngine:
         direction: OptionDirection,
         target_width: float = None,
         current_time: str = None,
+        dte_min: int = None,
+        dte_max: int = None,
     ) -> Optional[tuple]:
         """
         V2.3.21: Select long and short leg contracts for a debit spread.
@@ -1925,10 +1927,11 @@ class OptionsEngine:
         elastic_widen_used = 0.0
 
         # Pre-filter by DTE (doesn't change with elastic widening)
+        # V2.24.2: Use VASS-aware DTE range if provided, else global config
+        effective_dte_min = dte_min if dte_min is not None else config.SPREAD_DTE_MIN
+        effective_dte_max = dte_max if dte_max is not None else config.SPREAD_DTE_MAX
         dte_filtered = [
-            c
-            for c in filtered
-            if config.SPREAD_DTE_MIN <= c.days_to_expiry <= config.SPREAD_DTE_MAX
+            c for c in filtered if effective_dte_min <= c.days_to_expiry <= effective_dte_max
         ]
         dte_pass = len(dte_filtered)
 
@@ -1965,7 +1968,7 @@ class OptionsEngine:
 
         if not long_candidates:
             self.log(
-                f"SPREAD: No valid long leg | DTE={config.SPREAD_DTE_MIN}-{config.SPREAD_DTE_MAX} | "
+                f"SPREAD: No valid long leg | DTE={effective_dte_min}-{effective_dte_max} | "
                 f"Delta={config.SPREAD_LONG_LEG_DELTA_MIN}-{config.SPREAD_LONG_LEG_DELTA_MAX} | "
                 f"Elastic steps tried={len(config.ELASTIC_DELTA_STEPS)}"
             )
@@ -2570,6 +2573,8 @@ class OptionsEngine:
         vol_shock_active: bool = False,
         size_multiplier: float = 1.0,
         margin_remaining: Optional[float] = None,
+        dte_min: int = None,
+        dte_max: int = None,
     ) -> Optional[TargetWeight]:
         """
         V2.3: Check for debit spread entry signal.
@@ -2715,18 +2720,20 @@ class OptionsEngine:
             )
             return None
 
-        # Validate DTE range (10-21 days per V2.3 spec)
-        if long_leg_contract.days_to_expiry < config.SPREAD_DTE_MIN:
+        # Validate DTE range — use VASS-aware bounds if provided
+        effective_dte_min = dte_min if dte_min is not None else config.SPREAD_DTE_MIN
+        effective_dte_max = dte_max if dte_max is not None else config.SPREAD_DTE_MAX
+        if long_leg_contract.days_to_expiry < effective_dte_min:
             self.log(
                 f"SPREAD: Entry blocked - DTE {long_leg_contract.days_to_expiry} < "
-                f"min {config.SPREAD_DTE_MIN}"
+                f"min {effective_dte_min}"
             )
             return None
 
-        if long_leg_contract.days_to_expiry > config.SPREAD_DTE_MAX:
+        if long_leg_contract.days_to_expiry > effective_dte_max:
             self.log(
                 f"SPREAD: Entry blocked - DTE {long_leg_contract.days_to_expiry} > "
-                f"max {config.SPREAD_DTE_MAX}"
+                f"max {effective_dte_max}"
             )
             return None
 
