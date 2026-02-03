@@ -1543,13 +1543,17 @@ class OptionsEngine:
 
         Args:
             message: Log message to output.
-            trades_only: If True, always log (for trade entries/exits).
+            trades_only: If True, always log (for trade entries/exits/errors).
                         If False, only log in LiveMode (for diagnostics).
         """
         if self.algorithm:
-            # V2.3.3 DEBUG: Enable all options logging for backtest diagnostics
-            # TODO: Revert to LiveMode check after debugging complete
-            self.algorithm.Log(message)
+            # V2.18.1: Fixed - was logging everything in debug mode, causing backtest timeout
+            # Only log if: trades_only=True OR we're in LiveMode
+            if trades_only:
+                self.algorithm.Log(message)
+            elif hasattr(self.algorithm, "LiveMode") and self.algorithm.LiveMode:
+                self.algorithm.Log(message)
+            # In backtest mode with trades_only=False, skip logging (silent)
 
     def _set_spread_failure_cooldown(self, current_time: Optional[str]) -> None:
         """
