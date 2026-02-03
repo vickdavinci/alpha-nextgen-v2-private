@@ -1189,6 +1189,43 @@ class PortfolioRouter:
     # Step 4: NET
     # =========================================================================
 
+    def _try_bid_ask_mid_price(self, symbol_str: str) -> float:
+        """
+        V2.24.1: Try to get Bid/Ask mid-price from QC Securities.
+
+        Last-resort fallback when both current_prices and metadata fail.
+        Searches Securities for a matching symbol string and computes
+        (BidPrice + AskPrice) / 2.
+
+        Args:
+            symbol_str: Symbol string to look up.
+
+        Returns:
+            Mid-price if Bid/Ask available, 0.0 otherwise.
+        """
+        if not self.algorithm:
+            return 0.0
+        try:
+            # For equities, QC Securities can be accessed by string ticker
+            # For options, we need to search by matching the symbol string
+            for kvp in self.algorithm.Securities:  # type: ignore[attr-defined]
+                sec_symbol = kvp.Key
+                if str(sec_symbol.Value) == symbol_str or str(sec_symbol) == symbol_str:
+                    security = kvp.Value
+                    bid = float(security.BidPrice)
+                    ask = float(security.AskPrice)
+                    if bid > 0 and ask > 0:
+                        mid = (bid + ask) / 2.0
+                        self.log(
+                            f"ROUTER: BIDASK_INJECT | {symbol_str} | "
+                            f"mid=${mid:.4f} (bid=${bid:.4f} ask=${ask:.4f})"
+                        )
+                        return mid
+                    break  # Found symbol but no valid bid/ask
+        except Exception as e:
+            self.log(f"ROUTER: BIDASK_LOOKUP_FAIL | {symbol_str} | {e}")
+        return 0.0
+
     def calculate_order_intents(
         self,
         aggregated: Dict[str, AggregatedWeight],
@@ -1213,8 +1250,25 @@ class PortfolioRouter:
         for symbol, agg in aggregated.items():
             # Skip if no price available
             if symbol not in current_prices or current_prices[symbol] <= 0:
-                self.log(f"ROUTER: SKIP | {symbol} | No price available")
-                continue
+                # V2.24: Failsafe — use metadata price for options entries
+                # The V2.19 injection in main.py should have added this price,
+                # but as a belt-and-suspenders, check metadata directly.
+                if agg.metadata and agg.metadata.get("contract_price", 0) > 0:
+                    price_from_meta = agg.metadata["contract_price"]
+                    current_prices[symbol] = price_from_meta
+                    self.log(
+                        f"ROUTER: PRICE_INJECT | {symbol} | "
+                        f"Using metadata contract_price=${price_from_meta:.2f}"
+                    )
+                else:
+                    # V2.24.1: Third fallback — Bid/Ask mid-price from Securities
+                    # Only fires when both current_prices and metadata fail (rare).
+                    bid_ask_price = self._try_bid_ask_mid_price(symbol)
+                    if bid_ask_price > 0:
+                        current_prices[symbol] = bid_ask_price
+                    else:
+                        self.log(f"ROUTER: SKIP | {symbol} | No price available")
+                        continue
 
             price = current_prices[symbol]
             target_value = tradeable_equity * agg.target_weight

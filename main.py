@@ -908,7 +908,20 @@ class AlphaNextGen(QCAlgorithm):
         # by 09:33 today, the MOO order didn't fill. Clear the stale pending
         # to prevent permanently blocking position limit slots.
         if hasattr(self.trend_engine, "_pending_moo_symbols"):
+            # V2.24: Log pending state for diagnostics
+            if self.trend_engine._pending_moo_symbols:
+                pending_info = ", ".join(
+                    f"{sym}(since={self.trend_engine._pending_moo_dates.get(sym, '?')})"
+                    for sym in self.trend_engine._pending_moo_symbols
+                )
+                self.Log(
+                    f"TREND: PENDING_MOO_CHECK | Count={len(self.trend_engine._pending_moo_symbols)} | "
+                    f"Symbols=[{pending_info}]",
+                    trades_only=False,
+                )
+
             stale_symbols = set()
+            current_date_str = str(self.Time.date())
             for sym in self.trend_engine._pending_moo_symbols:
                 # Check if this pending symbol is actually invested
                 lean_sym = (
@@ -918,8 +931,16 @@ class AlphaNextGen(QCAlgorithm):
                 )
                 if lean_sym and not self.Portfolio[lean_sym].Invested:
                     stale_symbols.add(sym)
+                elif lean_sym and self.Portfolio[lean_sym].Invested:
+                    # V2.24: Symbol filled but pending wasn't cleared — fix it
+                    stale_symbols.add(sym)
+                    self.Log(
+                        f"TREND: PENDING_MOO_INVESTED {sym} | "
+                        f"Already invested but still in pending set — clearing"
+                    )
             for sym in stale_symbols:
                 self.trend_engine._pending_moo_symbols.discard(sym)
+                self.trend_engine._pending_moo_dates.pop(sym, None)
                 self.Log(
                     f"TREND: STALE_MOO_CLEARED {sym} | "
                     f"Pending but not invested at 09:33 - clearing slot"
@@ -2018,6 +2039,13 @@ class AlphaNextGen(QCAlgorithm):
         for signal in self.portfolio_router._pending_weights:
             if signal.source in ("OPT", "OPT_INTRADAY") and signal.symbol not in current_prices:
                 price = signal.metadata.get("contract_price", 0) if signal.metadata else 0
+                # V2.24: Diagnostic logging to trace why injection might fail
+                self.Log(
+                    f"V2.19_INJECT: {signal.symbol} | price={price} | "
+                    f"has_meta={bool(signal.metadata)} | "
+                    f"meta_keys={list(signal.metadata.keys()) if signal.metadata else 'None'}",
+                    trades_only=False,
+                )
                 if price > 0:
                     current_prices[signal.symbol] = price
 
@@ -2227,7 +2255,7 @@ class AlphaNextGen(QCAlgorithm):
                 )
                 self.portfolio_router.receive_signal(signal)
                 # V2.19: Mark pending ONLY after approval (not in check_entry_signal)
-                self.trend_engine.mark_pending_moo(signal.symbol)
+                self.trend_engine.mark_pending_moo(signal.symbol, current_date)
                 current_trend_positions += 1
 
             # Log blocked entries
@@ -3591,10 +3619,10 @@ class AlphaNextGen(QCAlgorithm):
         # - Regime > 60: Bull (Call Debit or Put Credit depending on IV)
         # - Regime < 45: Bear (Put Debit or Call Credit depending on IV)
         # - Regime 45-60: No trade (neutral)
-        # V2.19 FIX: Throttle swing spread scans to once per 30min (was every minute = 6,919 attempts)
+        # V2.24: Throttle swing spread scans to once per 15min (was 30min V2.19, was every minute before)
         if hasattr(self, "_last_swing_scan_time") and self._last_swing_scan_time is not None:
             minutes_since = (self.Time - self._last_swing_scan_time).total_seconds() / 60
-            if minutes_since < 30:
+            if minutes_since < 15:
                 return
         self._last_swing_scan_time = self.Time
 

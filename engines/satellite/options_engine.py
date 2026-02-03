@@ -1920,25 +1920,54 @@ class OptionsEngine:
 
         # V2.3.21: Find ITM long leg (delta 0.55-0.85 for calls, -0.55 to -0.85 for puts)
         # "Smart Swing" strategy prioritizes ITM for better execution and directional exposure
+        # V2.24.1: Elastic Delta Bands — progressively widen if no candidates found
         long_candidates = []
-        for c in filtered:
-            # V2.4.3: DTE filter FIRST - must be within spread DTE range
-            if c.days_to_expiry < config.SPREAD_DTE_MIN:
-                continue
-            if c.days_to_expiry > config.SPREAD_DTE_MAX:
-                continue
+        elastic_widen_used = 0.0
 
-            delta_abs = abs(c.delta)
-            if config.SPREAD_LONG_LEG_DELTA_MIN <= delta_abs <= config.SPREAD_LONG_LEG_DELTA_MAX:
-                # Check liquidity
-                if c.open_interest >= config.OPTIONS_MIN_OPEN_INTEREST:
-                    if c.spread_pct <= config.OPTIONS_SPREAD_MAX_PCT:
-                        long_candidates.append(c)
+        # Pre-filter by DTE (doesn't change with elastic widening)
+        dte_filtered = [
+            c
+            for c in filtered
+            if config.SPREAD_DTE_MIN <= c.days_to_expiry <= config.SPREAD_DTE_MAX
+        ]
+        dte_pass = len(dte_filtered)
+
+        for widen in config.ELASTIC_DELTA_STEPS:
+            delta_min = max(config.ELASTIC_DELTA_FLOOR, config.SPREAD_LONG_LEG_DELTA_MIN - widen)
+            delta_max = min(config.ELASTIC_DELTA_CEILING, config.SPREAD_LONG_LEG_DELTA_MAX + widen)
+
+            delta_pass = 0
+            oi_pass = 0
+            spread_pass = 0
+            long_candidates = []
+
+            for c in dte_filtered:
+                delta_abs = abs(c.delta)
+                if delta_min <= delta_abs <= delta_max:
+                    delta_pass += 1
+                    if c.open_interest >= config.OPTIONS_MIN_OPEN_INTEREST:
+                        oi_pass += 1
+                        if c.spread_pct <= config.OPTIONS_SPREAD_MAX_PCT:
+                            spread_pass += 1
+                            long_candidates.append(c)
+
+            if long_candidates:
+                elastic_widen_used = widen
+                break
+
+        # V2.24: Log filter funnel for debugging
+        self.log(
+            f"SPREAD_FILTER: LongLeg | Total={len(filtered)} | "
+            f"DTE_pass={dte_pass} | Delta_pass={delta_pass} | "
+            f"OI_pass={oi_pass} | Spread_pass={spread_pass}"
+            + (f" | Elastic_widen=±{elastic_widen_used:.2f}" if elastic_widen_used > 0 else "")
+        )
 
         if not long_candidates:
             self.log(
                 f"SPREAD: No valid long leg | DTE={config.SPREAD_DTE_MIN}-{config.SPREAD_DTE_MAX} | "
-                f"Delta={config.SPREAD_LONG_LEG_DELTA_MIN}-{config.SPREAD_LONG_LEG_DELTA_MAX}"
+                f"Delta={config.SPREAD_LONG_LEG_DELTA_MIN}-{config.SPREAD_LONG_LEG_DELTA_MAX} | "
+                f"Elastic steps tried={len(config.ELASTIC_DELTA_STEPS)}"
             )
             self._set_spread_failure_cooldown(current_time)
             return None
@@ -2062,6 +2091,13 @@ class OptionsEngine:
         # Filter by DTE
         dte_filtered = [c for c in contracts if dte_min <= c.days_to_expiry <= dte_max]
 
+        # V2.24: Diagnostic logging for credit spread filter funnel
+        self.log(
+            f"SPREAD_FILTER: CreditSpread | Total={len(contracts)} | "
+            f"DTE_pass={len(dte_filtered)} (range={dte_min}-{dte_max}) | "
+            f"Strategy={strategy.value}"
+        )
+
         if not dte_filtered:
             self.log(
                 f"VASS: No contracts in DTE range {dte_min}-{dte_max} "
@@ -2080,20 +2116,48 @@ class OptionsEngine:
 
             # Short leg: Delta -0.25 to -0.40 (OTM but decent premium)
             # Must have sufficient bid (premium) to collect
-            short_candidates = [
-                p
-                for p in puts
-                if config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN
-                <= abs(p.delta)
-                <= config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX
-                and p.bid >= config.CREDIT_SPREAD_MIN_CREDIT
-            ]
+            # V2.24.1: Elastic Delta Bands — progressively widen if no candidates
+            short_candidates = []
+            delta_pass_count = 0
+            elastic_widen_used = 0.0
+
+            for widen in config.ELASTIC_DELTA_STEPS:
+                delta_min = max(
+                    config.ELASTIC_DELTA_FLOOR,
+                    config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN - widen,
+                )
+                delta_max = min(
+                    config.ELASTIC_DELTA_CEILING,
+                    config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX + widen,
+                )
+
+                delta_pass_count = sum(1 for p in puts if delta_min <= abs(p.delta) <= delta_max)
+                short_candidates = [
+                    p
+                    for p in puts
+                    if delta_min <= abs(p.delta) <= delta_max
+                    and p.bid >= config.CREDIT_SPREAD_MIN_CREDIT
+                ]
+
+                if short_candidates:
+                    elastic_widen_used = widen
+                    break
+
+            self.log(
+                f"SPREAD_FILTER: BullPut ShortLeg | Puts={len(puts)} | "
+                f"Delta_pass={delta_pass_count} | Credit_pass={len(short_candidates)} | "
+                f"Delta_range={config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN}-"
+                f"{config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX}"
+                + (f" | Elastic_widen=±{elastic_widen_used:.2f}" if elastic_widen_used > 0 else "")
+                + f" | Min_credit=${config.CREDIT_SPREAD_MIN_CREDIT}"
+            )
 
             if not short_candidates:
                 self.log(
                     f"VASS: No short put candidates | "
                     f"Delta range: {config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN}-"
                     f"{config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX} | "
+                    f"Elastic steps tried={len(config.ELASTIC_DELTA_STEPS)} | "
                     f"Min credit: ${config.CREDIT_SPREAD_MIN_CREDIT}"
                 )
                 return None
@@ -2152,20 +2216,48 @@ class OptionsEngine:
                 return None
 
             # Short leg: Delta 0.25-0.40 (OTM but decent premium)
-            short_candidates = [
-                c
-                for c in calls
-                if config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN
-                <= abs(c.delta)
-                <= config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX
-                and c.bid >= config.CREDIT_SPREAD_MIN_CREDIT
-            ]
+            # V2.24.1: Elastic Delta Bands — progressively widen if no candidates
+            short_candidates = []
+            delta_pass_count = 0
+            elastic_widen_used = 0.0
+
+            for widen in config.ELASTIC_DELTA_STEPS:
+                delta_min = max(
+                    config.ELASTIC_DELTA_FLOOR,
+                    config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN - widen,
+                )
+                delta_max = min(
+                    config.ELASTIC_DELTA_CEILING,
+                    config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX + widen,
+                )
+
+                delta_pass_count = sum(1 for c in calls if delta_min <= abs(c.delta) <= delta_max)
+                short_candidates = [
+                    c
+                    for c in calls
+                    if delta_min <= abs(c.delta) <= delta_max
+                    and c.bid >= config.CREDIT_SPREAD_MIN_CREDIT
+                ]
+
+                if short_candidates:
+                    elastic_widen_used = widen
+                    break
+
+            self.log(
+                f"SPREAD_FILTER: BearCall ShortLeg | Calls={len(calls)} | "
+                f"Delta_pass={delta_pass_count} | Credit_pass={len(short_candidates)} | "
+                f"Delta_range={config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN}-"
+                f"{config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX}"
+                + (f" | Elastic_widen=±{elastic_widen_used:.2f}" if elastic_widen_used > 0 else "")
+                + f" | Min_credit=${config.CREDIT_SPREAD_MIN_CREDIT}"
+            )
 
             if not short_candidates:
                 self.log(
                     f"VASS: No short call candidates | "
                     f"Delta range: {config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN}-"
                     f"{config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX} | "
+                    f"Elastic steps tried={len(config.ELASTIC_DELTA_STEPS)} | "
                     f"Min credit: ${config.CREDIT_SPREAD_MIN_CREDIT}"
                 )
                 return None

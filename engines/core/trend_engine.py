@@ -201,6 +201,8 @@ class TrendEngine:
         # When MOO signal generated at 15:45, symbol added here
         # When fill received (9:30 next day), symbol moved to _positions
         self._pending_moo_symbols: set = set()
+        # V2.24: Track when each pending MOO was created for stale detection
+        self._pending_moo_dates: Dict[str, str] = {}
 
     def log(self, message: str) -> None:
         """Log via algorithm or skip for testing."""
@@ -654,6 +656,7 @@ class TrendEngine:
 
         # V2.3.21: Clear pending MOO flag now that position is registered
         self._pending_moo_symbols.discard(symbol)
+        self._pending_moo_dates.pop(symbol, None)
 
         self.log(
             f"TREND: POSITION_REGISTERED {symbol} | "
@@ -675,6 +678,7 @@ class TrendEngine:
         """
         # V2.3.21: Also clear any pending MOO for this symbol
         self._pending_moo_symbols.discard(symbol)
+        self._pending_moo_dates.pop(symbol, None)
 
         if symbol in self._positions:
             position = self._positions.pop(symbol)
@@ -693,9 +697,10 @@ class TrendEngine:
         """
         if symbol in self._pending_moo_symbols:
             self._pending_moo_symbols.discard(symbol)
+            self._pending_moo_dates.pop(symbol, None)
             self.log(f"TREND: PENDING_MOO_CANCELLED {symbol}")
 
-    def mark_pending_moo(self, symbol: str) -> None:
+    def mark_pending_moo(self, symbol: str, current_date: str = "") -> None:
         """
         V2.19: Mark symbol as having a pending MOO order.
 
@@ -704,9 +709,13 @@ class TrendEngine:
 
         Args:
             symbol: Symbol to mark as pending MOO.
+            current_date: Current date string for stale tracking.
         """
         self._pending_moo_symbols.add(symbol)
-        self.log(f"TREND: PENDING_MOO_MARKED {symbol}")
+        # V2.24: Track creation date for stale detection
+        if current_date:
+            self._pending_moo_dates[symbol] = current_date
+        self.log(f"TREND: PENDING_MOO_MARKED {symbol} | Date={current_date}")
 
     def has_position(self, symbol: str) -> bool:
         """Check if a position exists for symbol."""
@@ -734,6 +743,8 @@ class TrendEngine:
     def reset(self) -> None:
         """Reset engine state (clear all positions)."""
         self._positions.clear()
+        self._pending_moo_symbols.clear()
+        self._pending_moo_dates.clear()
         self.log("TREND: Engine reset - all positions cleared")
 
     def get_stop_level(self, symbol: str) -> Optional[float]:

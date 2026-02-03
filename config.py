@@ -453,6 +453,14 @@ CREDIT_SPREAD_STOP_MULTIPLIER = 2.0  # Stop if spread value doubles (100% loss)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg delta range (OTM)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.40
 
+# V2.24.1: Elastic Delta Bands — progressive widening when no candidates found
+# Each step widens the delta range by ± the step value (e.g., [0.0, 0.03, 0.07, 0.12])
+# Step 0 = original range, Step 1 = ±0.03 wider, etc.
+# Capped at ELASTIC_DELTA_FLOOR (min delta) and ELASTIC_DELTA_CEILING (max delta)
+ELASTIC_DELTA_STEPS = [0.0, 0.03, 0.07, 0.12]
+ELASTIC_DELTA_FLOOR = 0.10  # Never search below this delta (too far OTM)
+ELASTIC_DELTA_CEILING = 0.95  # Never search above this delta (deep ITM)
+
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
 # V2.3.15: Sniper Logic - allow one retry, not machine gun
 INTRADAY_MAX_TRADES_PER_DAY = 2  # Sniper gets one retry per day
