@@ -248,6 +248,14 @@ class AlphaNextGen(QCAlgorithm):
         self._last_vass_rejection_log = None  # V2.10: Throttle VASS rejection logs
         self._last_swing_scan_time = None  # V2.19: Throttle swing spread scans (1/hour)
 
+        # V2.20: Scoped rejection cooldowns — per-strategy penalty after broker rejection
+        # Prevents "machine gun" retries while allowing other strategies to continue
+        self._trend_rejection_cooldown_until = None  # Trend: skip until next EOD cycle
+        self._options_swing_cooldown_until = None  # Options Swing: 30 min cooldown
+        self._options_intraday_cooldown_until = None  # Options Intraday: 15 min cooldown
+        self._options_spread_cooldown_until = None  # Options Spread: 30 min cooldown
+        self._mr_rejection_cooldown_until = None  # Mean Reversion: 15 min cooldown
+
         # V2.3.6: Track pending spread orders to handle leg failures
         # Maps short leg symbol -> long leg symbol (to liquidate long if short fails)
         self._pending_spread_orders: Dict[str, str] = {}
@@ -1128,6 +1136,13 @@ class AlphaNextGen(QCAlgorithm):
         self.symbols_to_skip.clear()
         self._splits_logged_today.clear()
         self._greeks_breach_logged = False
+        self._last_swing_scan_time = None  # V2.19: Allow fresh swing scan next trading day
+        # V2.20: Clear all rejection cooldowns at end of day
+        self._trend_rejection_cooldown_until = None
+        self._options_swing_cooldown_until = None
+        self._options_intraday_cooldown_until = None
+        self._options_spread_cooldown_until = None
+        self._mr_rejection_cooldown_until = None
         # NOTE: _kill_switch_handled_today is NOT reset here - it resets at 09:25 pre-market
         # Resetting here causes double-trigger since OnData runs at 16:00 after EOD handler
 
@@ -1895,11 +1910,18 @@ class AlphaNextGen(QCAlgorithm):
                     self._force_market_close(failed_symbol)
                     self._pending_exit_orders.pop(failed_symbol, None)
 
+            # V2.20: Event-driven state recovery — notify source engine
+            # Runs AFTER existing handlers (margin CB, orphan legs, exit retry)
+            self._handle_order_rejection(failed_symbol, orderEvent)
+
         elif orderEvent.Status == OrderStatus.Canceled:
             self.execution_engine.on_order_event(
                 broker_order_id=orderEvent.OrderId,
                 status="Canceled",
             )
+            # V2.20: Event-driven state recovery — notify source engine
+            canceled_symbol = str(orderEvent.Symbol)
+            self._handle_order_rejection(canceled_symbol, orderEvent)
 
     # =========================================================================
     # STATE MANAGEMENT HELPERS
@@ -2178,6 +2200,18 @@ class AlphaNextGen(QCAlgorithm):
                 if signal:
                     # Store with ADX for sorting (higher ADX = stronger trend)
                     entry_candidates.append((signal, adx))
+
+        # V2.20: Respect rejection cooldown for trend entries
+        if (
+            self._trend_rejection_cooldown_until is not None
+            and self.Time < self._trend_rejection_cooldown_until
+        ):
+            if entry_candidates:
+                self.Log(
+                    f"TREND: Entries blocked by rejection cooldown | "
+                    f"Until {self._trend_rejection_cooldown_until}"
+                )
+            entry_candidates = []
 
         # V2.3: Apply position limit - only send top N entry signals
         if entry_candidates and entries_allowed > 0:
@@ -3057,6 +3091,13 @@ class AlphaNextGen(QCAlgorithm):
         Args:
             data: Current data slice.
         """
+        # V2.20: Respect rejection cooldown before scanning
+        if (
+            self._mr_rejection_cooldown_until is not None
+            and self.Time < self._mr_rejection_cooldown_until
+        ):
+            return
+
         # Get required context
         regime_score = self._last_regime_score
         days_running = (
@@ -3372,7 +3413,12 @@ class AlphaNextGen(QCAlgorithm):
 
         # V2.4.1: Throttle intraday scanning to every 15 minutes (was every minute)
         # This reduces 95 scans/hour to 4 scans/hour
-        if self._should_scan_intraday() and self._qqq_at_open > 0:
+        # V2.20: Also check rejection cooldown for intraday mode
+        intraday_cooldown_active = (
+            self._options_intraday_cooldown_until is not None
+            and self.Time < self._options_intraday_cooldown_until
+        )
+        if self._should_scan_intraday() and self._qqq_at_open > 0 and not intraday_cooldown_active:
             # V2.4.1 FIX: Use UVXY-derived VIX proxy instead of stale daily VIX
             # self._current_vix is daily close and doesn't change intraday
             vix_intraday = self._get_vix_intraday_proxy()
@@ -3441,15 +3487,30 @@ class AlphaNextGen(QCAlgorithm):
                     # V2.3.3 FIX: Don't return here - allow swing check to run too
                     # Previously returned early, blocking swing spreads entirely
 
+        # V2.20: Check rejection cooldowns for swing/spread modes
+        swing_cooldown_active = (
+            self._options_swing_cooldown_until is not None
+            and self.Time < self._options_swing_cooldown_until
+        )
+        spread_cooldown_active = (
+            self._options_spread_cooldown_until is not None
+            and self.Time < self._options_spread_cooldown_until
+        )
+        if swing_cooldown_active and spread_cooldown_active:
+            return  # Both modes in cooldown, skip entire swing/spread scan
+        if spread_cooldown_active:
+            # Only spread is in cooldown — skip spread path but allow single-leg swing
+            pass  # Will be checked again below before spread entry
+
         # V2.3: Check for SWING mode entry using DEBIT SPREADS
         # Direction based on regime score (not Price/MA200/RSI)
         # - Regime > 60: Bull Call Spread
         # - Regime < 45: Bear Put Spread
         # - Regime 45-60: No trade (neutral)
-        # V2.19 FIX: Throttle swing spread scans to once per hour (was every minute = 6,919 attempts)
+        # V2.19 FIX: Throttle swing spread scans to once per 30min (was every minute = 6,919 attempts)
         if hasattr(self, "_last_swing_scan_time") and self._last_swing_scan_time is not None:
             minutes_since = (self.Time - self._last_swing_scan_time).total_seconds() / 60
-            if minutes_since < 60:
+            if minutes_since < 30:
                 return
         self._last_swing_scan_time = self.Time
 
@@ -3478,7 +3539,7 @@ class AlphaNextGen(QCAlgorithm):
         # Calculate IV rank from options chain (V2.1)
         iv_rank = self._calculate_iv_rank(chain)
 
-        if spread_legs is not None:
+        if spread_legs is not None and not spread_cooldown_active:
             long_leg, short_leg = spread_legs
 
             # Verify both legs have valid bid/ask
@@ -3536,7 +3597,12 @@ class AlphaNextGen(QCAlgorithm):
         # V2.4.1: Single-leg swing fallback - DISABLED by default for safety
         # Single-leg has higher delta exposure and full premium at risk
         # If spread fails, stay cash (Safety First approach)
-        if config.SWING_FALLBACK_ENABLED and not self.options_engine.has_position():
+        # V2.20: Also check swing cooldown
+        if (
+            config.SWING_FALLBACK_ENABLED
+            and not self.options_engine.has_position()
+            and not swing_cooldown_active
+        ):
             best_contract = self._select_swing_option_contract(chain, direction)
             if best_contract is not None and best_contract.bid > 0 and best_contract.ask > 0:
                 # V2.3.20: Pass size_multiplier for cold start reduced sizing
@@ -4152,6 +4218,79 @@ class AlphaNextGen(QCAlgorithm):
         )
 
         self.Log(summary)
+
+    def _handle_order_rejection(self, symbol: str, order_event) -> None:
+        """
+        V2.20: Event-driven state recovery on order rejection/cancellation.
+
+        Mirrors _on_fill() pattern — routes rejection events to the correct
+        engine using symbol-based matching to clear pending locks ("zombie states").
+
+        Called from OnOrderEvent for both OrderStatus.Invalid and OrderStatus.Canceled,
+        AFTER existing specific handlers (margin CB, orphan legs, exit retry).
+
+        Args:
+            symbol: String symbol of the rejected/canceled order.
+            order_event: Original OrderEvent from broker.
+        """
+        # Route 1: Trend symbols (QLD, SSO, TNA, FAS)
+        if symbol in ["QLD", "SSO", "TNA", "FAS"]:
+            # Trend MOO recovery — clear stuck pending slot
+            if symbol in self.trend_engine._pending_moo_symbols:
+                self.trend_engine.cancel_pending_moo(symbol)
+                # Cooldown: skip until next EOD cycle (trend signals only fire at 15:45)
+                self._trend_rejection_cooldown_until = self.Time + timedelta(hours=18)
+                self.Log(
+                    f"TREND_RECOVERY: {symbol} rejected | Pending MOO cleared | "
+                    f"Cooldown until next EOD"
+                )
+            # Cold start warm entry recovery (both checks run, not elif)
+            if (
+                self.cold_start_engine.is_cold_start_active()
+                and self.cold_start_engine.has_warm_entry_executed()
+                and self.cold_start_engine.get_warm_entry_symbol() == symbol
+            ):
+                self.cold_start_engine.cancel_warm_entry()
+
+        # Route 2: MR symbols (TQQQ, SOXL)
+        elif symbol in ["TQQQ", "SOXL"]:
+            self.mr_engine.cancel_pending_entry()
+            # Cooldown: 15 minutes before MR can retry
+            self._mr_rejection_cooldown_until = self.Time + timedelta(minutes=15)
+            self.Log(
+                f"MR_RECOVERY: {symbol} rejected | Pending state reset | "
+                f"Cooldown 15min until {self._mr_rejection_cooldown_until}"
+            )
+
+        # Route 3: QQQ options
+        elif "QQQ" in symbol and ("C" in symbol or "P" in symbol):
+            # Check pending state to determine sub-mode (most specific first)
+            if self.options_engine._pending_spread_long_leg is not None:
+                self.options_engine.cancel_pending_spread_entry()
+                if self.portfolio_router:
+                    self.portfolio_router.clear_all_spread_margins()
+                # Cooldown: 30 minutes before spread can retry
+                self._options_spread_cooldown_until = self.Time + timedelta(minutes=30)
+                self.Log(
+                    f"OPT_MACRO_RECOVERY: Spread rejected | Pending + margin cleared | "
+                    f"Cooldown 30min until {self._options_spread_cooldown_until}"
+                )
+            elif self.options_engine._pending_intraday_entry:
+                self.options_engine.cancel_pending_intraday_entry()
+                # Cooldown: 15 minutes before intraday can retry
+                self._options_intraday_cooldown_until = self.Time + timedelta(minutes=15)
+                self.Log(
+                    f"OPT_MICRO_RECOVERY: Intraday rejected | Pending + counter cleared | "
+                    f"Cooldown 15min until {self._options_intraday_cooldown_until}"
+                )
+            elif self.options_engine._pending_contract is not None:
+                self.options_engine.cancel_pending_swing_entry()
+                # Cooldown: 30 minutes before swing can retry
+                self._options_swing_cooldown_until = self.Time + timedelta(minutes=30)
+                self.Log(
+                    f"OPT_SWING_RECOVERY: Swing rejected | Pending cleared | "
+                    f"Cooldown 30min until {self._options_swing_cooldown_until}"
+                )
 
     def _on_fill(
         self,

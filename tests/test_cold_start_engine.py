@@ -664,3 +664,47 @@ class TestEdgeCases:
         engine.end_of_day_update()
         assert engine.get_days_running() == config.COLD_START_DAYS
         assert engine.is_cold_start_active() is False
+
+
+# =============================================================================
+# V2.20: WARM ENTRY REJECTION RECOVERY TESTS
+# =============================================================================
+
+
+class TestWarmEntryRejection:
+    """V2.20: Tests for cold start warm entry rejection recovery."""
+
+    def test_cancel_warm_entry_resets_state(self):
+        """Test rejection resets warm entry to allow retry."""
+        engine = ColdStartEngine(algorithm=None)
+        engine._warm_entry_executed = True
+        engine._warm_entry_symbol = "QLD"
+
+        engine.cancel_warm_entry()
+
+        assert engine._warm_entry_executed is False
+        assert engine._warm_entry_symbol is None
+
+    def test_cancel_warm_entry_when_not_executed(self):
+        """Test calling cancel when no warm entry is safe (no-op)."""
+        engine = ColdStartEngine(algorithm=None)
+        engine.cancel_warm_entry()  # Should not raise
+        assert engine._warm_entry_executed is False
+        assert engine._warm_entry_symbol is None
+
+    def test_warm_entry_retryable_after_rejection(self):
+        """Test that after rejection, check_warm_entry can fire again."""
+        engine = ColdStartEngine(algorithm=None)
+        engine._days_running = 2  # Active cold start
+        engine._warm_entry_executed = True
+        engine._warm_entry_symbol = "SSO"
+
+        # Simulate rejection
+        engine.cancel_warm_entry()
+
+        # Verify the guard in check_warm_entry would allow retry
+        assert engine._warm_entry_executed is False
+        assert engine.has_warm_entry_executed() is False
+        # get_state should show warm_entry_allowed = True
+        state = engine.get_state()
+        assert state.warm_entry_allowed is True

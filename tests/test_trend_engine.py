@@ -1255,3 +1255,27 @@ class TestIndicatorReadiness:
             atr=2.0,
         )
         assert result is None  # No crash, returns None
+
+
+# =============================================================================
+# V2.20: PENDING MOO REJECTION RECOVERY TESTS
+# =============================================================================
+
+
+class TestPendingMooRejection:
+    """V2.20: Tests for trend engine MOO rejection recovery."""
+
+    def test_cancel_pending_moo_clears_symbol(self):
+        """Test cancel_pending_moo removes symbol from pending set."""
+        engine = TrendEngine(algorithm=None)
+        engine.mark_pending_moo("TNA")
+        assert "TNA" in engine._pending_moo_symbols
+
+        engine.cancel_pending_moo("TNA")
+        assert "TNA" not in engine._pending_moo_symbols
+
+    def test_cancel_pending_moo_idempotent(self):
+        """Test cancel for non-pending symbol is safe (no error)."""
+        engine = TrendEngine(algorithm=None)
+        engine.cancel_pending_moo("FAS")  # Not in set
+        assert "FAS" not in engine._pending_moo_symbols

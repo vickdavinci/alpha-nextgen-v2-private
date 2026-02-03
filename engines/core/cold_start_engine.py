@@ -228,6 +228,20 @@ class ColdStartEngine:
             self._warm_entry_symbol = symbol
         self.log(f"COLD_START: Warm entry fill confirmed for {symbol}")
 
+    def cancel_warm_entry(self) -> None:
+        """
+        V2.20: Cancel warm entry after broker rejection.
+
+        Resets warm entry state so cold start can retry on the
+        next favorable check. Called by main._handle_order_rejection()
+        when a warm entry order is rejected or canceled by the broker.
+        """
+        if self._warm_entry_executed:
+            symbol = self._warm_entry_symbol
+            self._warm_entry_executed = False
+            self._warm_entry_symbol = None
+            self.log(f"COLD_START_RECOVERY: Warm entry cancelled for {symbol} | Retry allowed")
+
     def _select_instrument(self, regime_score: float) -> str:
         """Select instrument based on regime score."""
         if regime_score > config.WARM_QLD_THRESHOLD:

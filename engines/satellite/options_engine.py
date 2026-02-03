@@ -4316,6 +4316,86 @@ class OptionsEngine:
 
         return spread
 
+    # =========================================================================
+    # V2.20: REJECTION RECOVERY METHODS
+    # =========================================================================
+
+    def cancel_pending_swing_entry(self) -> None:
+        """
+        V2.20: Clear pending swing entry state after broker rejection.
+
+        Resets all swing single-leg pending fields and allows retry.
+        No counter decrement needed — swing counter is only incremented
+        in register_entry() on fill, not on signal generation.
+        Called by main._handle_order_rejection().
+        """
+        self._pending_contract = None
+        self._pending_entry_score = None
+        self._pending_num_contracts = None
+        self._pending_stop_pct = None
+        self._pending_stop_price = None
+        self._pending_target_price = None
+        self._entry_attempted_today = False
+        self.log(
+            "OPT_SWING_RECOVERY: Pending swing entry cancelled | Retry allowed",
+            trades_only=True,
+        )
+
+    def cancel_pending_spread_entry(self) -> None:
+        """
+        V2.20: Clear pending spread entry state after broker rejection.
+
+        Resets all spread pending fields and allows retry. No counter
+        decrement needed — spread counter is only incremented in
+        register_spread_entry() on fill, not on signal generation.
+        Caller must also call portfolio_router.clear_all_spread_margins()
+        to free ghost margin reservations.
+        Called by main._handle_order_rejection().
+        """
+        self._pending_spread_long_leg = None
+        self._pending_spread_short_leg = None
+        self._pending_spread_type = None
+        self._pending_net_debit = None
+        self._pending_max_profit = None
+        self._pending_spread_width = None
+        self._pending_num_contracts = None
+        self._pending_entry_score = None
+        self._entry_attempted_today = False
+        self.log(
+            "OPT_MACRO_RECOVERY: Pending spread entry cancelled | Retry allowed",
+            trades_only=True,
+        )
+
+    def cancel_pending_intraday_entry(self) -> None:
+        """
+        V2.20: Clear pending intraday entry state after broker rejection.
+
+        Resets intraday pending fields and DECREMENTS the pre-incremented
+        trade counter. V2.4.1 pre-increments at signal generation (line 3769)
+        to prevent race conditions; on rejection the counter must roll back.
+        Guard: only decrements if _pending_intraday_entry was True to
+        prevent double-decrement on repeated calls.
+        Called by main._handle_order_rejection().
+        """
+        if self._pending_intraday_entry:
+            self._pending_intraday_entry = False
+            self._pending_contract = None
+            self._pending_num_contracts = None
+            self._pending_stop_pct = None
+            # Decrement pre-incremented counters (guard against underflow)
+            if self._intraday_trades_today > 0:
+                self._intraday_trades_today -= 1
+            if self._total_options_trades_today > 0:
+                self._total_options_trades_today -= 1
+            if self._trades_today > 0:
+                self._trades_today -= 1
+            self.log(
+                f"OPT_MICRO_RECOVERY: Pending intraday entry cancelled | "
+                f"Counter decremented | Intraday={self._intraday_trades_today} | "
+                f"Total={self._total_options_trades_today} | Retry allowed",
+                trades_only=True,
+            )
+
     def remove_spread_position(self) -> Optional[SpreadPosition]:
         """
         V2.3: Remove the current spread position after exit.
@@ -4446,8 +4526,8 @@ class OptionsEngine:
         # Also clear pending state
         self._pending_contract = None
         self._pending_intraday_entry = False
-        self._pending_spread_long = None
-        self._pending_spread_short = None
+        self._pending_spread_long_leg = None
+        self._pending_spread_short_leg = None
         self._pending_spread_width = None
 
         if cleared:

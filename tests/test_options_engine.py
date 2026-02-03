@@ -2298,16 +2298,16 @@ class TestClearAllPositions:
         # Set up pending state
         engine._pending_contract = "PENDING"
         engine._pending_intraday_entry = True
-        engine._pending_spread_long = "LONG"
-        engine._pending_spread_short = "SHORT"
+        engine._pending_spread_long_leg = "LONG"
+        engine._pending_spread_short_leg = "SHORT"
         engine._pending_spread_width = 5.0
 
         engine.clear_all_positions()
 
         assert engine._pending_contract is None
         assert engine._pending_intraday_entry is False
-        assert engine._pending_spread_long is None
-        assert engine._pending_spread_short is None
+        assert engine._pending_spread_long_leg is None
+        assert engine._pending_spread_short_leg is None
         assert engine._pending_spread_width is None
 
     def test_clear_all_positions_idempotent(self, engine):
@@ -2319,3 +2319,115 @@ class TestClearAllPositions:
         assert engine._position is None
         assert engine._spread_position is None
         assert engine._intraday_position is None
+
+
+# =============================================================================
+# V2.20: REJECTION RECOVERY TESTS
+# =============================================================================
+
+
+class TestRejectionRecovery:
+    """V2.20: Tests for options engine pending state recovery on rejection."""
+
+    def test_cancel_pending_swing_entry_clears_all_fields(self, engine):
+        """Test swing rejection clears all pending fields."""
+        engine._pending_contract = "PENDING"
+        engine._pending_entry_score = 4.5
+        engine._pending_num_contracts = 3
+        engine._pending_stop_pct = 0.15
+        engine._pending_stop_price = 1.20
+        engine._pending_target_price = 2.00
+        engine._entry_attempted_today = True
+
+        engine.cancel_pending_swing_entry()
+
+        assert engine._pending_contract is None
+        assert engine._pending_entry_score is None
+        assert engine._pending_num_contracts is None
+        assert engine._pending_stop_pct is None
+        assert engine._pending_stop_price is None
+        assert engine._pending_target_price is None
+        assert engine._entry_attempted_today is False
+
+    def test_cancel_pending_swing_entry_idempotent(self, engine):
+        """Test calling cancel when no pending state is safe."""
+        engine.cancel_pending_swing_entry()  # Should not raise
+        assert engine._pending_contract is None
+        assert engine._entry_attempted_today is False
+
+    def test_cancel_pending_spread_entry_clears_all_fields(self, engine):
+        """Test spread rejection clears all spread pending fields."""
+        engine._pending_spread_long_leg = "LONG"
+        engine._pending_spread_short_leg = "SHORT"
+        engine._pending_spread_type = "BULL_CALL"
+        engine._pending_net_debit = 1.50
+        engine._pending_max_profit = 3.50
+        engine._pending_spread_width = 5.0
+        engine._pending_num_contracts = 2
+        engine._pending_entry_score = 3.8
+        engine._entry_attempted_today = True
+
+        engine.cancel_pending_spread_entry()
+
+        assert engine._pending_spread_long_leg is None
+        assert engine._pending_spread_short_leg is None
+        assert engine._pending_spread_type is None
+        assert engine._pending_net_debit is None
+        assert engine._pending_max_profit is None
+        assert engine._pending_spread_width is None
+        assert engine._pending_num_contracts is None
+        assert engine._pending_entry_score is None
+        assert engine._entry_attempted_today is False
+
+    def test_cancel_pending_spread_entry_idempotent(self, engine):
+        """Test calling cancel when no spread pending is safe."""
+        engine.cancel_pending_spread_entry()  # Should not raise
+        assert engine._pending_spread_long_leg is None
+        assert engine._entry_attempted_today is False
+
+    def test_cancel_pending_intraday_entry_clears_and_decrements(self, engine):
+        """Test intraday rejection clears state and decrements counter."""
+        engine._pending_intraday_entry = True
+        engine._pending_contract = "PENDING"
+        engine._pending_num_contracts = 1
+        engine._pending_stop_pct = 0.50
+        engine._intraday_trades_today = 1
+        engine._total_options_trades_today = 1
+        engine._trades_today = 1
+
+        engine.cancel_pending_intraday_entry()
+
+        assert engine._pending_intraday_entry is False
+        assert engine._pending_contract is None
+        assert engine._pending_num_contracts is None
+        assert engine._pending_stop_pct is None
+        assert engine._intraday_trades_today == 0
+        assert engine._total_options_trades_today == 0
+        assert engine._trades_today == 0
+
+    def test_cancel_pending_intraday_no_underflow(self, engine):
+        """Test intraday counter decrement does not go below 0."""
+        engine._pending_intraday_entry = True
+        engine._intraday_trades_today = 0
+        engine._total_options_trades_today = 0
+        engine._trades_today = 0
+
+        engine.cancel_pending_intraday_entry()
+
+        assert engine._intraday_trades_today == 0
+        assert engine._total_options_trades_today == 0
+        assert engine._trades_today == 0
+
+    def test_cancel_pending_intraday_when_not_pending_no_decrement(self, engine):
+        """Test calling cancel when not pending does NOT decrement counters."""
+        engine._pending_intraday_entry = False
+        engine._intraday_trades_today = 2
+        engine._total_options_trades_today = 3
+        engine._trades_today = 3
+
+        engine.cancel_pending_intraday_entry()
+
+        # Counters should NOT change because _pending_intraday_entry was False
+        assert engine._intraday_trades_today == 2
+        assert engine._total_options_trades_today == 3
+        assert engine._trades_today == 3

@@ -19,7 +19,6 @@ from engines.satellite.mean_reversion_engine import MeanReversionEngine, MRPosit
 from models.enums import Urgency
 from models.target_weight import TargetWeight
 
-
 # =============================================================================
 # FIXTURES
 # =============================================================================
@@ -907,3 +906,28 @@ class TestLogging:
         engine.check_exit_signals(45.95, 11, 30)
         engine.remove_position()
         engine.reset()
+
+
+# =============================================================================
+# V2.20: MR REJECTION RECOVERY TESTS
+# =============================================================================
+
+
+class TestMRRejectionRecovery:
+    """V2.20: Tests for mean reversion engine rejection recovery."""
+
+    def test_cancel_pending_entry_resets_state(self, engine):
+        """Test rejection resets pending VIX regime and stop to defaults."""
+        engine._pending_vix_regime = "CRASH"
+        engine._pending_stop_pct = 0.50
+
+        engine.cancel_pending_entry()
+
+        assert engine._pending_vix_regime == "NORMAL"
+        assert engine._pending_stop_pct == config.MR_STOP_PCT
+
+    def test_cancel_pending_entry_idempotent(self, engine):
+        """Test cancel on clean state keeps defaults."""
+        engine.cancel_pending_entry()
+        assert engine._pending_vix_regime == "NORMAL"
+        assert engine._pending_stop_pct == config.MR_STOP_PCT
