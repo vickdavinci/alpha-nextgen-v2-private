@@ -77,6 +77,7 @@
 | 2e | 1 month (Jan 2025) | V2.19 Execution Patch | **Ready to Run** ⏳ | 2026-02-02 |
 | 2f | 1 month (Jan 2025) | V2.20 Rejection Recovery | **Ready to Run** ⏳ | 2026-02-03 |
 | 2g | 1 month (Jan 2025) | V2.21 Rejection-Aware Sizing | **Ready to Run** ⏳ | 2026-02-03 |
+| 2h | 1 month (Jan 2025) | V2.22 Neutrality Exit | **Ready to Run** ⏳ | 2026-02-03 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
@@ -472,6 +473,49 @@ QQQ options      → Options (spread > intraday > swing by pending state priorit
 **Next Step:** Run V2.21 backtest
 ```bash
 ./scripts/qc_backtest.sh "V2.21-RejectionAwareSizing" --open
+```
+
+---
+
+### V2.22: Symmetric Neutrality Exit (Hysteresis Shield) (2026-02-03) — COMPLETE ✅
+
+**Goal:** Close flat spreads trapped in the regime dead zone (45–60) to free capital and stop theta bleed.
+
+**Problem:** When a spread drifts into the neutral dead zone, no exit trigger fires:
+- Bear Put entered at regime 40, regime climbs to 55 → no regime reversal exit (needs > 60)
+- Bull Call entered at regime 65, regime drops to 50 → no regime reversal exit (needs < 45)
+- Spread sits idle bleeding theta with no directional edge
+
+**Solution:** New Exit 4 in `check_spread_exit_signals()` — fires when:
+1. Regime in dead zone: `45 ≤ regime ≤ 60`
+2. P&L is flat: `±10%` (configurable)
+
+**P&L Filter Behavior:**
+| P&L Range | Action | Rationale |
+|-----------|--------|-----------|
+| > +10% | **Hold** | Let profit target manage the winner |
+| -10% to +10% | **Exit** | Dead money — no edge, theta bleeding |
+| < -10% | **Hold** | Let stop loss manage the loser |
+
+| # | Component | Description | Status |
+|:-:|-----------|-------------|:------:|
+| 1 | **Config Parameters** | `SPREAD_NEUTRALITY_EXIT_ENABLED`, `SPREAD_NEUTRALITY_EXIT_PNL_BAND` (0.10) | ✅ |
+| 2 | **Credit Branch** | Neutrality exit after DTE exit, before regime reversal | ✅ |
+| 3 | **Debit Branch** | Neutrality exit after DTE exit, before regime reversal | ✅ |
+| 4 | **Unit Tests** | 7 new tests in `TestNeutralityExit` | ✅ |
+
+**Files Modified:**
+- `config.py` — 2 new parameters
+- `engines/satellite/options_engine.py` — Neutrality exit in both credit and debit branches + docstring update
+- `tests/test_options_engine.py` — 7 new tests
+
+**Commit:** `e81039e` - `feat(options): V2.22 neutrality exit — close flat spreads in regime dead zone`
+
+**Tests:** 1337 passed, 2 skipped (7 new tests)
+
+**Next Step:** Run V2.22 backtest
+```bash
+./scripts/qc_backtest.sh "V2.22-NeutralityExit" --open
 ```
 
 ---
@@ -2387,4 +2431,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 03 February 2026 (V2.21 Rejection-Aware Spread Sizing)*
+*Last Updated: 03 February 2026 (V2.22 Symmetric Neutrality Exit)*

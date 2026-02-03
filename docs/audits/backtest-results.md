@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-03 (V2.21: Rejection-Aware Spread Sizing - margin estimation + adaptive retry cap)
+> **Last Updated:** 2026-02-03 (V2.22: Symmetric Neutrality Exit - close flat spreads in regime dead zone)
 
 ---
 
@@ -35,6 +35,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | 2e | 1 month (Jan 2025) | V2.18 Architectural Fixes | **Ready to Run** ⏳ |
 | 2f | 1 month (Jan 2025) | V2.19 Execution Patch + V2.20 Rejection Recovery | **Ready to Run** ⏳ |
 | 2g | 1 month (Jan 2025) | V2.21 Rejection-Aware Spread Sizing | **Ready to Run** ⏳ |
+| 2h | 1 month (Jan 2025) | V2.22 Neutrality Exit | **Ready to Run** ⏳ |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
@@ -1230,6 +1231,93 @@ REJECTION_MARGIN: Free=$48,927 | Cap=$39,142 (x80%)
 3. Verify rejection parser extracts Free Margin from INVALID orders
 4. Confirm `_entry_attempted_today` is NOT set on margin-skip path
 5. Check that spread entries still fire normally when margin is ample
+
+---
+
+## V2.22: Symmetric Neutrality Exit (Hysteresis Shield) (2026-02-03)
+
+**Purpose:** Close flat spreads trapped in the regime dead zone (45–60) to free capital and stop theta bleed on directionless positions.
+
+### Problem
+
+When a spread drifts into the neutral dead zone, no exit trigger fires:
+- Bear Put entered at regime 40, regime climbs to 55 → regime reversal needs > 60
+- Bull Call entered at regime 65, regime drops to 50 → regime reversal needs < 45
+
+The spread sits idle bleeding theta. Capital is locked in a directional bet with no directional edge.
+
+### Solution
+
+New **Exit 4** in `check_spread_exit_signals()` — fires when both conditions are met:
+1. Regime in dead zone: `SPREAD_REGIME_EXIT_BULL (45) ≤ regime ≤ SPREAD_REGIME_EXIT_BEAR (60)`
+2. P&L is flat: `-10% ≤ pnl_pct ≤ +10%`
+
+The P&L filter prevents premature exits on positions with momentum:
+
+| P&L Range | Action | Rationale |
+|-----------|--------|-----------|
+| > +10% | **Hold** | Winner — let profit target (50%) manage |
+| -10% to +10% | **Exit** | Dead money — no edge, theta bleeding |
+| < -10% | **Hold** | Loser — let stop loss (50%) manage |
+
+Priority order in exit logic: Profit Target → Stop Loss → DTE → **Neutrality Exit** → Regime Reversal
+
+### Config Parameters Added
+
+```python
+SPREAD_NEUTRALITY_EXIT_ENABLED = True     # Feature toggle
+SPREAD_NEUTRALITY_EXIT_PNL_BAND = 0.10    # ±10% P&L considered "flat"
+```
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `config.py` | 2 new parameters |
+| `engines/satellite/options_engine.py` | Neutrality exit in both credit and debit branches + docstring update |
+| `tests/test_options_engine.py` | 7 new tests (`TestNeutralityExit`) |
+
+### Tests (7 new)
+
+| # | Test | Validates |
+|:-:|------|-----------|
+| 1 | `test_neutrality_exit_fires_in_dead_zone_flat_pnl` | Bear Put at regime 52, +3% P&L → exits |
+| 2 | `test_neutrality_exit_spares_winners` | Bull Call at regime 55, +20% P&L → holds |
+| 3 | `test_neutrality_exit_spares_losers` | Bear Put at regime 50, -25% P&L → holds |
+| 4 | `test_neutrality_exit_not_triggered_outside_dead_zone` | Bull Call at regime 65, +5% P&L → holds |
+| 5 | `test_neutrality_exit_credit_spread_in_dead_zone` | Bull Put Credit at regime 50, +2% P&L → exits |
+| 6 | `test_neutrality_exit_disabled_by_config` | Feature disabled → no exit |
+| 7 | `test_neutrality_exit_boundary_pnl_10pct` | Exactly +10% P&L → exits (inclusive band) |
+
+### Commits
+
+- `e81039e` - `feat(options): V2.22 neutrality exit — close flat spreads in regime dead zone`
+
+**Tests:** 1337 passed, 2 skipped (7 new tests)
+
+### Verification Patterns
+
+After running V2.22 backtest, verify these log patterns:
+```
+# Neutrality exit firing
+SPREAD: EXIT_SIGNAL | NEUTRALITY_EXIT: Score 53 in dead zone (45-60) with flat P&L (+3.2%)
+
+# Winners NOT exited (profit target handles them)
+SPREAD: EXIT_SIGNAL | PROFIT_TARGET +52.3% ...
+
+# Losers NOT exited (stop loss handles them)
+SPREAD: EXIT_SIGNAL | STOP_LOSS -51.2% ...
+```
+
+### Next Steps
+
+1. Run V2.22 backtest:
+   ```bash
+   ./scripts/qc_backtest.sh "V2.22-NeutralityExit" --open
+   ```
+2. Verify NEUTRALITY_EXIT log patterns appear for spreads in dead zone
+3. Confirm winners and losers are NOT affected (handled by profit target / stop loss)
+4. Compare capital utilization vs V2.21 — freed margin should enable more spread entries
 
 ---
 
