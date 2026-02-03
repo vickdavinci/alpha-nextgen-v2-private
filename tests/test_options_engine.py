@@ -2933,6 +2933,13 @@ class TestVASSCreditSpreadEntry:
         assert signal.metadata["is_credit_spread"] is True
         assert signal.metadata["spread_credit_received"] > 0
         assert signal.urgency == Urgency.IMMEDIATE
+        # V2.23.1 APVP: Primary symbol must be LONG leg (protection) for router combo convention
+        assert (
+            signal.symbol == credit_long_leg.symbol
+        ), "Primary symbol must be long leg (protection)"
+        assert signal.requested_quantity > 0, "Quantity must be positive for router combo logic"
+        # Short leg goes in metadata for combo order
+        assert signal.metadata["spread_short_leg_symbol"] == credit_short_leg.symbol
 
     def test_credit_entry_blocked_low_credit(self, engine, credit_long_leg):
         """Credit spread with insufficient premium should be rejected."""

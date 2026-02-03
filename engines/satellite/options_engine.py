@@ -824,7 +824,7 @@ class MicroRegimeEngine:
             return VIXLevel.LOW, config.MICRO_SCORE_VIX_CALM
         elif vix_value < config.VIX_LEVEL_NORMAL_MAX:  # V2.3.11: < 18 (unchanged)
             return VIXLevel.LOW, config.MICRO_SCORE_VIX_NORMAL
-        elif vix_value < 22:  # V2.3.11: < 22 (was 23)
+        elif vix_value < config.VIX_LEVEL_ELEVATED_MAX:  # V2.23.1: < 22 (was hardcoded)
             return VIXLevel.MEDIUM, config.MICRO_SCORE_VIX_ELEVATED
         elif vix_value < config.VIX_LEVEL_MEDIUM_MAX:
             return VIXLevel.MEDIUM, config.MICRO_SCORE_VIX_HIGH
@@ -3131,20 +3131,20 @@ class OptionsEngine:
             trades_only=True,
         )
 
-        # Return TargetWeight — use short leg as primary symbol (we sell it)
-        # Long leg (protection) goes in metadata
+        # V2.23.1 APVP Fix: Use LONG leg (protection) as primary symbol to match
+        # router combo convention. Router expects: primary=BUY leg, metadata=SELL leg.
+        # Broker handles credit/debit mechanics through ComboMarketOrder.
         return TargetWeight(
-            symbol=short_leg_contract.symbol,
+            symbol=long_leg_contract.symbol,
             target_weight=config.OPTIONS_SWING_ALLOCATION,
             source="OPT",
             urgency=Urgency.IMMEDIATE,
             reason=reason,
-            requested_quantity=-num_spreads,  # Negative = SELL
+            requested_quantity=num_spreads,  # Positive (matches debit convention)
             metadata={
                 "spread_type": spread_type,
                 "spread_short_leg_symbol": short_leg_contract.symbol,
                 "spread_short_leg_quantity": num_spreads,
-                "spread_long_leg_symbol": long_leg_contract.symbol,
                 "spread_net_debit": -credit_received,  # Negative = credit
                 "spread_credit_received": credit_received,
                 "spread_max_profit": credit_received,
@@ -3157,9 +3157,9 @@ class OptionsEngine:
                 else "HIGH",
                 "vass_smoothed_vix": self._iv_sensor.get_smoothed_vix(),
                 "vass_strategy": strategy.value,
-                # Prices for router lookup
-                "contract_price": short_leg_contract.mid_price,
-                "short_leg_price": long_leg_contract.mid_price,
+                # Prices for router lookup (long leg = primary)
+                "contract_price": long_leg_contract.mid_price,
+                "short_leg_price": short_leg_contract.mid_price,
             },
         )
 

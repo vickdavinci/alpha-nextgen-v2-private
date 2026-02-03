@@ -98,6 +98,7 @@ VIX_EXTREME_THRESHOLD = 40  # Above this = crisis, avoid buying
 VIX_LEVEL_VERY_CALM_MAX = 11.5  # V2.3.11: VIX < 11.5 = VERY_CALM (was 15)
 VIX_LEVEL_CALM_MAX = 15.0  # VIX 11.5-15 = CALM (shifted down)
 VIX_LEVEL_NORMAL_MAX = 18.0  # VIX 15-18 = NORMAL (unchanged)
+VIX_LEVEL_ELEVATED_MAX = 22.0  # V2.23.1: VIX 18-22 = ELEVATED (was hardcoded)
 
 # Volatility Factor (Realized)
 VOL_LOOKBACK = 20
