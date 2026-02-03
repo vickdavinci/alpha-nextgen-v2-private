@@ -3243,21 +3243,22 @@ class AlphaNextGen(QCAlgorithm):
         # V2.11 (Pitfall #6): Margin-aware sizing guard
         # Check available margin BEFORE calculating any allocation
         margin_remaining = self.portfolio_router.get_effective_margin_remaining()
-        if margin_remaining < config.OPTIONS_MAX_MARGIN_CAP:
-            # Insufficient margin buffer - skip all options trades
+        # V2.19 FIX: Only block if margin < $1000 (minimum viable for options)
+        # The cap is a LIMIT on usage, not a minimum requirement
+        if margin_remaining < 1000:
             if self.Time.minute == 0:  # Log once per hour to avoid spam
                 self.Log(
-                    f"OPT_MARGIN_GUARD: Margin ${margin_remaining:,.0f} < "
-                    f"${config.OPTIONS_MAX_MARGIN_CAP:,.0f} cap | Options blocked"
+                    f"OPT_MARGIN_GUARD: Margin ${margin_remaining:,.0f} < $1,000 min | Options blocked"
                 )
             return
 
         # Calculate effective portfolio value capped by available margin
-        # Leave OPTIONS_MAX_MARGIN_CAP buffer for margin fluctuations
+        # V2.19 FIX: Use min() to cap at OPTIONS_MAX_MARGIN_CAP (not subtract it)
         base_tradeable = self.capital_engine.calculate(
             self.Portfolio.TotalPortfolioValue
         ).tradeable_eq
-        margin_available_for_options = margin_remaining - config.OPTIONS_MAX_MARGIN_CAP
+        # Cap margin used for options at OPTIONS_MAX_MARGIN_CAP
+        margin_available_for_options = min(margin_remaining, config.OPTIONS_MAX_MARGIN_CAP)
         # max_portfolio_from_margin = margin_available / OPTIONS_SWING_ALLOCATION
         # This ensures: effective_portfolio * OPTIONS_SWING_ALLOCATION <= margin_available
         max_portfolio_from_margin = (
