@@ -18,11 +18,13 @@ import pytest
 import config
 from engines.satellite.options_engine import (
     EntryScore,
+    IVSensor,
     OptionContract,
     OptionDirection,
     OptionsEngine,
     OptionsPosition,
     SpreadPosition,
+    SpreadStrategy,
 )
 from models.enums import Urgency
 
@@ -2800,3 +2802,249 @@ class TestNeutralityExit:
 
         assert result is not None
         assert len(result) > 0
+
+
+# =============================================================================
+# V2.23: VASS CREDIT SPREAD ENTRY TESTS
+# =============================================================================
+
+
+class TestVASSCreditSpreadEntry:
+    """Tests for VASS credit spread strategy selection and entry signals."""
+
+    @pytest.fixture
+    def engine(self):
+        """Create an OptionsEngine instance for testing."""
+        return OptionsEngine(algorithm=None)
+
+    @pytest.fixture
+    def credit_short_leg(self):
+        """Create a short leg (we SELL) for Bull Put Credit."""
+        return OptionContract(
+            symbol="QQQ 270315P00500000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=500.0,
+            expiry="2027-03-15",
+            delta=-0.30,
+            bid=3.50,
+            ask=3.80,
+            mid_price=3.65,
+            open_interest=5000,
+            days_to_expiry=10,
+        )
+
+    @pytest.fixture
+    def credit_long_leg(self):
+        """Create a long leg (we BUY for protection) for Bull Put Credit."""
+        return OptionContract(
+            symbol="QQQ 270315P00495000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=495.0,
+            expiry="2027-03-15",
+            delta=-0.20,
+            bid=1.80,
+            ask=2.10,
+            mid_price=1.95,
+            open_interest=4000,
+            days_to_expiry=10,
+        )
+
+    @pytest.fixture
+    def bear_call_short_leg(self):
+        """Create a short leg for Bear Call Credit."""
+        return OptionContract(
+            symbol="QQQ 270315C00520000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=520.0,
+            expiry="2027-03-15",
+            delta=0.30,
+            bid=3.20,
+            ask=3.50,
+            mid_price=3.35,
+            open_interest=4500,
+            days_to_expiry=10,
+        )
+
+    @pytest.fixture
+    def bear_call_long_leg(self):
+        """Create a long leg for Bear Call Credit."""
+        return OptionContract(
+            symbol="QQQ 270315C00525000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=525.0,
+            expiry="2027-03-15",
+            delta=0.20,
+            bid=1.60,
+            ask=1.90,
+            mid_price=1.75,
+            open_interest=3500,
+            days_to_expiry=10,
+        )
+
+    # --- VASS Strategy Selection Tests ---
+
+    def test_select_strategy_high_iv_bullish(self, engine):
+        """HIGH IV + BULLISH should select Bull Put Credit with weekly DTE."""
+        strategy, dte_min, dte_max = engine._select_strategy("BULLISH", "HIGH")
+        assert strategy == SpreadStrategy.BULL_PUT_CREDIT
+        assert dte_min == config.VASS_HIGH_IV_DTE_MIN
+        assert dte_max == config.VASS_HIGH_IV_DTE_MAX
+
+    def test_select_strategy_low_iv_bearish(self, engine):
+        """LOW IV + BEARISH should select Bear Put Debit with monthly DTE."""
+        strategy, dte_min, dte_max = engine._select_strategy("BEARISH", "LOW")
+        assert strategy == SpreadStrategy.BEAR_PUT_DEBIT
+        assert dte_min == config.VASS_LOW_IV_DTE_MIN
+        assert dte_max == config.VASS_LOW_IV_DTE_MAX
+
+    def test_select_strategy_medium_iv_bullish(self, engine):
+        """MEDIUM IV + BULLISH should select Bull Call Debit with weekly DTE."""
+        strategy, dte_min, dte_max = engine._select_strategy("BULLISH", "MEDIUM")
+        assert strategy == SpreadStrategy.BULL_CALL_DEBIT
+        assert dte_min == config.VASS_MEDIUM_IV_DTE_MIN
+        assert dte_max == config.VASS_MEDIUM_IV_DTE_MAX
+
+    # --- Credit Entry Signal Tests ---
+
+    def test_credit_entry_signal_bull_put(self, engine, credit_short_leg, credit_long_leg):
+        """Bull Put Credit entry should generate TargetWeight with credit metadata."""
+        signal = engine.check_credit_spread_entry_signal(
+            regime_score=65.0,  # Bullish
+            vix_current=28.0,  # High IV
+            adx_value=30.0,
+            current_price=510.0,
+            ma200_value=480.0,
+            iv_rank=70.0,
+            current_hour=11,
+            current_minute=0,
+            current_date="2027-03-05",
+            portfolio_value=100_000,
+            short_leg_contract=credit_short_leg,
+            long_leg_contract=credit_long_leg,
+            strategy=SpreadStrategy.BULL_PUT_CREDIT,
+        )
+
+        assert signal is not None
+        assert signal.metadata["spread_type"] == "BULL_PUT_CREDIT"
+        assert signal.metadata["is_credit_spread"] is True
+        assert signal.metadata["spread_credit_received"] > 0
+        assert signal.urgency == Urgency.IMMEDIATE
+
+    def test_credit_entry_blocked_low_credit(self, engine, credit_long_leg):
+        """Credit spread with insufficient premium should be rejected."""
+        # Create short leg with very low bid (credit < $0.30)
+        low_premium_short = OptionContract(
+            symbol="QQQ 270315P00500000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=500.0,
+            expiry="2027-03-15",
+            delta=-0.30,
+            bid=2.20,  # bid - long_leg.ask = 2.20 - 2.10 = $0.10 < $0.30 min
+            ask=2.50,
+            mid_price=2.35,
+            open_interest=5000,
+            days_to_expiry=10,
+        )
+
+        signal = engine.check_credit_spread_entry_signal(
+            regime_score=65.0,
+            vix_current=28.0,
+            adx_value=30.0,
+            current_price=510.0,
+            ma200_value=480.0,
+            iv_rank=70.0,
+            current_hour=11,
+            current_minute=0,
+            current_date="2027-03-05",
+            portfolio_value=100_000,
+            short_leg_contract=low_premium_short,
+            long_leg_contract=credit_long_leg,
+            strategy=SpreadStrategy.BULL_PUT_CREDIT,
+        )
+
+        assert signal is None
+
+    def test_credit_entry_margin_sizing(self, engine, credit_short_leg, credit_long_leg):
+        """Credit spread sizing should use margin-based calculation."""
+        # Width = $5.00 (500 - 495), Credit = $1.40 (3.50 - 2.10)
+        # Margin per spread = (5.00 - 1.40) * 100 = $360
+        # $7500 cap / $360 = 20 spreads
+        num_spreads, credit_per, max_loss_per, total_margin = engine._calculate_credit_spread_size(
+            credit_short_leg, credit_long_leg, 7500
+        )
+
+        assert num_spreads > 0
+        assert credit_per > 0  # Positive credit received
+        assert max_loss_per > 0  # Defined max loss
+        assert total_margin <= 7500  # Never exceeds allocation
+
+    def test_credit_entry_blocked_regime_crisis(self, engine, credit_short_leg, credit_long_leg):
+        """Credit spread should be blocked when regime < 30 (crisis)."""
+        signal = engine.check_credit_spread_entry_signal(
+            regime_score=25.0,  # Crisis mode
+            vix_current=28.0,
+            adx_value=30.0,
+            current_price=510.0,
+            ma200_value=480.0,
+            iv_rank=70.0,
+            current_hour=11,
+            current_minute=0,
+            current_date="2027-03-05",
+            portfolio_value=100_000,
+            short_leg_contract=credit_short_leg,
+            long_leg_contract=credit_long_leg,
+            strategy=SpreadStrategy.BULL_PUT_CREDIT,
+        )
+
+        assert signal is None
+
+    # --- IVSensor Tests ---
+
+    def test_iv_sensor_classification_high(self):
+        """IVSensor with VIX avg=28 should classify as HIGH."""
+        sensor = IVSensor(smoothing_minutes=30)
+        # Feed 15 readings of VIX=28
+        for _ in range(15):
+            sensor.update(28.0)
+
+        assert sensor.is_ready()
+        assert sensor.classify() == "HIGH"
+
+    def test_iv_sensor_classification_low(self):
+        """IVSensor with VIX avg=12 should classify as LOW."""
+        sensor = IVSensor(smoothing_minutes=30)
+        for _ in range(15):
+            sensor.update(12.0)
+
+        assert sensor.is_ready()
+        assert sensor.classify() == "LOW"
+
+    def test_iv_sensor_classification_medium(self):
+        """IVSensor with VIX avg=20 should classify as MEDIUM."""
+        sensor = IVSensor(smoothing_minutes=30)
+        for _ in range(15):
+            sensor.update(20.0)
+
+        assert sensor.is_ready()
+        assert sensor.classify() == "MEDIUM"
+
+    # --- is_credit_strategy / is_debit_strategy ---
+
+    def test_is_credit_strategy(self, engine):
+        """Verify credit strategy classification."""
+        assert engine.is_credit_strategy(SpreadStrategy.BULL_PUT_CREDIT) is True
+        assert engine.is_credit_strategy(SpreadStrategy.BEAR_CALL_CREDIT) is True
+        assert engine.is_credit_strategy(SpreadStrategy.BULL_CALL_DEBIT) is False
+        assert engine.is_credit_strategy(SpreadStrategy.BEAR_PUT_DEBIT) is False
+
+    def test_is_debit_strategy(self, engine):
+        """Verify debit strategy classification."""
+        assert engine.is_debit_strategy(SpreadStrategy.BULL_CALL_DEBIT) is True
+        assert engine.is_debit_strategy(SpreadStrategy.BEAR_PUT_DEBIT) is True
+        assert engine.is_debit_strategy(SpreadStrategy.BULL_PUT_CREDIT) is False
+        assert engine.is_debit_strategy(SpreadStrategy.BEAR_CALL_CREDIT) is False

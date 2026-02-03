@@ -530,7 +530,9 @@ OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE = 0
 # Contract Selection
 # Options chain filter (must cover BOTH Intraday 0-2 DTE AND Swing 5-45 DTE)
 OPTIONS_DTE_MIN = 0  # Minimum days to expiration (Intraday mode)
-OPTIONS_DTE_MAX = 45  # Maximum days to expiration (Swing mode)
+OPTIONS_DTE_MAX = (
+    60  # V2.23: Extended for VASS Low IV monthly expirations (30-45 DTE needs 60-day horizon)
+)
 OPTIONS_MIN_PREMIUM = 0.50  # Minimum premium per contract ($0.50)
 
 # V2.3.16: DTE-Based Delta Validation

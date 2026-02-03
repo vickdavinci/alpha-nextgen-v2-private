@@ -2858,6 +2858,312 @@ class OptionsEngine:
         )
 
     # =========================================================================
+    # V2.23 CREDIT SPREAD ENTRY SIGNAL
+    # =========================================================================
+
+    def check_credit_spread_entry_signal(
+        self,
+        regime_score: float,
+        vix_current: float,
+        adx_value: float,
+        current_price: float,
+        ma200_value: float,
+        iv_rank: float,
+        current_hour: int,
+        current_minute: int,
+        current_date: str,
+        portfolio_value: float,
+        short_leg_contract: Optional[OptionContract] = None,
+        long_leg_contract: Optional[OptionContract] = None,
+        strategy: Optional[SpreadStrategy] = None,
+        gap_filter_triggered: bool = False,
+        vol_shock_active: bool = False,
+        size_multiplier: float = 1.0,
+        margin_remaining: Optional[float] = None,
+    ) -> Optional[TargetWeight]:
+        """
+        V2.23: Check for credit spread entry signal.
+
+        Credit spreads collect premium upfront and profit from time decay.
+        Selected by VASS when IV environment is HIGH (VIX > 25).
+
+        Strategy Matrix:
+        - HIGH IV + BULLISH → Bull Put Credit (sell OTM put, buy further OTM put)
+        - HIGH IV + BEARISH → Bear Call Credit (sell OTM call, buy further OTM call)
+
+        Sizing is based on MAX LOSS (width - credit), not premium received.
+        This method mirrors check_spread_entry_signal() validation gates but
+        uses _calculate_credit_spread_size() for margin-based sizing.
+
+        Args:
+            regime_score: Market regime score (0-100).
+            vix_current: Current VIX level.
+            adx_value: Current ADX(14) value.
+            current_price: Current QQQ price.
+            ma200_value: 200-day moving average value.
+            iv_rank: IV percentile (0-100).
+            current_hour: Current hour (0-23) Eastern.
+            current_minute: Current minute (0-59).
+            current_date: Current date string.
+            portfolio_value: Total portfolio value.
+            short_leg_contract: Contract we SELL (collect premium).
+            long_leg_contract: Contract we BUY (protection).
+            strategy: SpreadStrategy (BULL_PUT_CREDIT or BEAR_CALL_CREDIT).
+            gap_filter_triggered: True if gap filter is active.
+            vol_shock_active: True if vol shock pause is active.
+            size_multiplier: Position size multiplier (default 1.0).
+            margin_remaining: Available margin from portfolio router.
+
+        Returns:
+            TargetWeight for credit spread entry, or None.
+        """
+        # V2.8: Update IV sensor with current VIX (for smoothing)
+        self._iv_sensor.update(vix_current)
+
+        # Check if already have a spread position
+        if self._spread_position is not None:
+            return None
+
+        # Check if entry already attempted today
+        if self._entry_attempted_today:
+            return None
+
+        # Post-trade margin cooldown
+        if self._last_spread_exit_time is not None:
+            try:
+                from datetime import datetime
+
+                exit_time = datetime.strptime(self._last_spread_exit_time[:19], "%Y-%m-%d %H:%M:%S")
+                current_time_dt = datetime.strptime(current_date + " 12:00:00", "%Y-%m-%d %H:%M:%S")
+                if current_hour is not None and current_minute is not None:
+                    current_time_dt = current_time_dt.replace(
+                        hour=current_hour, minute=current_minute
+                    )
+
+                elapsed_minutes = (current_time_dt - exit_time).total_seconds() / 60
+                if elapsed_minutes < config.OPTIONS_POST_TRADE_COOLDOWN_MINUTES:
+                    self.log(
+                        f"CREDIT_SPREAD: Entry blocked - margin cooldown | "
+                        f"Elapsed={elapsed_minutes:.1f}m < {config.OPTIONS_POST_TRADE_COOLDOWN_MINUTES}m"
+                    )
+                    return None
+                else:
+                    self._last_spread_exit_time = None
+            except (ValueError, TypeError):
+                self._last_spread_exit_time = None
+
+        # Check trade limits
+        if not self._can_trade_options(OptionsMode.SWING):
+            return None
+
+        # Regime crisis check
+        if regime_score < config.SPREAD_REGIME_CRISIS:
+            self.log(
+                f"CREDIT_SPREAD: No entry - regime {regime_score:.1f} < "
+                f"{config.SPREAD_REGIME_CRISIS} (crisis mode)"
+            )
+            return None
+
+        # Neutral regime check
+        if config.SPREAD_REGIME_BEARISH <= regime_score <= config.SPREAD_REGIME_BULLISH:
+            self.log(
+                f"CREDIT_SPREAD: No entry - regime {regime_score:.1f} is neutral "
+                f"({config.SPREAD_REGIME_BEARISH}-{config.SPREAD_REGIME_BULLISH})"
+            )
+            return None
+
+        # Check safeguards
+        if gap_filter_triggered:
+            self.log("CREDIT_SPREAD: Entry blocked - gap filter active")
+            return None
+
+        if vol_shock_active:
+            self.log("CREDIT_SPREAD: Entry blocked - vol shock active")
+            return None
+
+        # Check time window (10:00 AM - 2:30 PM ET)
+        time_minutes = current_hour * 60 + current_minute
+        if not (10 * 60 <= time_minutes <= 14 * 60 + 30):
+            return None
+
+        # Validate contracts
+        if short_leg_contract is None or long_leg_contract is None:
+            self.log("CREDIT_SPREAD: Entry blocked - missing contract legs")
+            return None
+
+        # Validate strategy
+        if strategy is None or not self.is_credit_strategy(strategy):
+            self.log(f"CREDIT_SPREAD: Entry blocked - invalid strategy {strategy}")
+            return None
+
+        # Determine spread type from strategy
+        spread_type = strategy.value  # "BULL_PUT_CREDIT" or "BEAR_CALL_CREDIT"
+
+        # Calculate width
+        width = abs(short_leg_contract.strike - long_leg_contract.strike)
+        if width <= 0:
+            self.log(f"CREDIT_SPREAD: Entry blocked - invalid width {width}")
+            return None
+
+        # Calculate credit received (conservative: bid for sell, ask for buy)
+        credit_received = short_leg_contract.bid - long_leg_contract.ask
+        if credit_received < config.CREDIT_SPREAD_MIN_CREDIT:
+            self.log(
+                f"CREDIT_SPREAD: Entry blocked - credit ${credit_received:.2f} < "
+                f"min ${config.CREDIT_SPREAD_MIN_CREDIT}"
+            )
+            return None
+
+        # Calculate entry score (same scoring as debit)
+        entry_score = self.calculate_entry_score(
+            adx_value=adx_value,
+            current_price=current_price,
+            ma200_value=ma200_value,
+            iv_rank=iv_rank,
+            bid_ask_spread_pct=short_leg_contract.spread_pct,
+            open_interest=short_leg_contract.open_interest,
+        )
+
+        if not entry_score.is_valid:
+            self.log(
+                f"CREDIT_SPREAD: Entry blocked - score {entry_score.total:.2f} < "
+                f"{config.OPTIONS_ENTRY_SCORE_MIN}"
+            )
+            return None
+
+        # Size using margin-based calculator
+        swing_max_dollars = getattr(config, "SWING_SPREAD_MAX_DOLLARS", 7500)
+        num_spreads, _credit_per, _max_loss_per, _total_margin = self._calculate_credit_spread_size(
+            short_leg_contract, long_leg_contract, swing_max_dollars
+        )
+
+        if num_spreads <= 0:
+            return None
+
+        # V2.3.20: Apply cold start size multiplier
+        if size_multiplier < 1.0:
+            num_spreads = max(1, int(num_spreads * size_multiplier))
+            self.log(
+                f"CREDIT_SPREAD: Cold start sizing - reduced to {num_spreads} spreads "
+                f"(x{size_multiplier})"
+            )
+
+        # V2.21: Pre-submission margin estimation
+        if margin_remaining is not None and margin_remaining > 0 and width > 0:
+            safety_factor = getattr(config, "SPREAD_MARGIN_SAFETY_FACTOR", 0.80)
+            usable_margin = margin_remaining * safety_factor
+
+            if self._rejection_margin_cap is not None:
+                usable_margin = min(usable_margin, self._rejection_margin_cap)
+                self.log(
+                    f"CREDIT_SIZING: Rejection cap active | Cap=${self._rejection_margin_cap:,.0f} | "
+                    f"Usable=${usable_margin:,.0f}",
+                    trades_only=True,
+                )
+
+            estimated_margin_per_spread = width * 100
+            if estimated_margin_per_spread > 0:
+                max_by_margin = int(usable_margin / estimated_margin_per_spread)
+                if max_by_margin < num_spreads:
+                    self.log(
+                        f"CREDIT_SIZING: MARGIN_SCALE | {num_spreads} -> {max_by_margin} spreads | "
+                        f"Margin=${margin_remaining:,.0f} x{safety_factor:.0%}=${usable_margin:,.0f} | "
+                        f"Per-spread=${estimated_margin_per_spread:,.0f}",
+                        trades_only=True,
+                    )
+                    num_spreads = max_by_margin
+
+        # V2.21: Floor at MIN_SPREAD_CONTRACTS
+        min_contracts = getattr(config, "MIN_SPREAD_CONTRACTS", 2)
+        if 0 < num_spreads < min_contracts:
+            self.log(
+                f"CREDIT_SPREAD: Entry skipped - {num_spreads} < min {min_contracts} | "
+                f"Insufficient margin for minimum position",
+                trades_only=True,
+            )
+            return None  # Does NOT set _entry_attempted_today → retry preserved
+
+        if num_spreads <= 0:
+            self.log(
+                f"CREDIT_SPREAD: Entry blocked - cannot size position | "
+                f"Width=${width:.2f} Credit=${credit_received:.2f}"
+            )
+            return None
+
+        # Enforce hard cap
+        if num_spreads > config.SPREAD_MAX_CONTRACTS:
+            self.log(
+                f"CREDIT_SPREAD_LIMIT: Capped | Requested={num_spreads} > "
+                f"Max={config.SPREAD_MAX_CONTRACTS}"
+            )
+            num_spreads = config.SPREAD_MAX_CONTRACTS
+
+        # Calculate max profit and max loss for metadata
+        max_profit = credit_received * 100 * num_spreads  # Credit × 100 × contracts
+        max_loss = (width - credit_received) * 100 * num_spreads
+
+        # Store pending spread entry details
+        # NOTE: For credit spreads, the "long leg" in our naming convention is the
+        # protection leg (cheaper), and "short leg" is the one we sell (more expensive).
+        # We store them matching the debit convention for register_spread_entry compatibility.
+        self._pending_spread_long_leg = long_leg_contract
+        self._pending_spread_short_leg = short_leg_contract
+        self._pending_spread_type = spread_type
+        self._pending_net_debit = -credit_received  # Negative = credit received
+        self._pending_max_profit = credit_received  # Max profit per spread = credit
+        self._pending_spread_width = width
+        self._pending_num_contracts = num_spreads
+        self._pending_entry_score = entry_score.total
+
+        # Mark entry attempted
+        self._entry_attempted_today = True
+
+        reason = (
+            f"{spread_type}: Regime={regime_score:.0f} | VIX={vix_current:.1f} | "
+            f"Sell {short_leg_contract.strike} Buy {long_leg_contract.strike} | "
+            f"Credit=${credit_received:.2f} Width=${width:.0f} | x{num_spreads}"
+        )
+
+        self.log(
+            f"CREDIT_SPREAD: ENTRY_SIGNAL | {reason} | "
+            f"DTE={short_leg_contract.days_to_expiry} Score={entry_score.total:.2f} | "
+            f"MaxProfit=${max_profit:.0f} MaxLoss=${max_loss:.0f}",
+            trades_only=True,
+        )
+
+        # Return TargetWeight — use short leg as primary symbol (we sell it)
+        # Long leg (protection) goes in metadata
+        return TargetWeight(
+            symbol=short_leg_contract.symbol,
+            target_weight=config.OPTIONS_SWING_ALLOCATION,
+            source="OPT",
+            urgency=Urgency.IMMEDIATE,
+            reason=reason,
+            requested_quantity=-num_spreads,  # Negative = SELL
+            metadata={
+                "spread_type": spread_type,
+                "spread_short_leg_symbol": short_leg_contract.symbol,
+                "spread_short_leg_quantity": num_spreads,
+                "spread_long_leg_symbol": long_leg_contract.symbol,
+                "spread_net_debit": -credit_received,  # Negative = credit
+                "spread_credit_received": credit_received,
+                "spread_max_profit": credit_received,
+                "spread_max_loss_per_spread": width - credit_received,
+                "spread_width": width,
+                "is_credit_spread": True,
+                # VASS metadata
+                "vass_iv_environment": self._iv_sensor.classify()
+                if self._iv_sensor.is_ready()
+                else "HIGH",
+                "vass_smoothed_vix": self._iv_sensor.get_smoothed_vix(),
+                "vass_strategy": strategy.value,
+                # Prices for router lookup
+                "contract_price": short_leg_contract.mid_price,
+                "short_leg_price": long_leg_contract.mid_price,
+            },
+        )
+
+    # =========================================================================
     # V2.3 SPREAD EXIT SIGNALS
     # =========================================================================
 

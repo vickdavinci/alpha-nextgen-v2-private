@@ -23,6 +23,7 @@ from engines.satellite.options_engine import (
     OptionDirection,
     OptionsEngine,
     SpreadFillTracker,
+    SpreadStrategy,
     is_expiration_firewall_day,
 )
 from execution.execution_engine import ExecutionEngine
@@ -419,11 +420,11 @@ class AlphaNextGen(QCAlgorithm):
 
         # V2.1: Add QQQ options chain with config-driven DTE filter
         qqq_option = self.AddOption("QQQ", Resolution.Minute)
-        # V2.12 Fix #7: Asymmetric filter to capture more OTM PUTs for bear protection
-        # PUT with delta 0.30 at QQQ $510 is around $505 strike
-        # Old filter (-5, 5) was too narrow, missing ideal PUT deltas
+        # V2.23: Wide filter for VASS credit spread short legs at any VIX level
+        # Covers OTM strikes needed for delta 0.25-0.40 credit spread short legs
+        # Previous: (-8, 5) missed credit spread candidates at high VIX
         qqq_option.SetFilter(
-            -8, 5, timedelta(days=config.OPTIONS_DTE_MIN), timedelta(days=config.OPTIONS_DTE_MAX)
+            -25, 25, timedelta(days=config.OPTIONS_DTE_MIN), timedelta(days=config.OPTIONS_DTE_MAX)
         )
         self._qqq_option_symbol = qqq_option.Symbol
         # CRITICAL FIX: Track if options symbol has been validated (first successful chain access)
@@ -2308,60 +2309,112 @@ class AlphaNextGen(QCAlgorithm):
         # V2.1: Calculate IV rank from options chain
         iv_rank = self._calculate_iv_rank(chain)
 
+        # V2.23: Update IVSensor BEFORE strategy selection
+        self.options_engine._iv_sensor.update(self._current_vix)
+
         # V2.3: Determine spread direction from regime score
         if regime_score > config.SPREAD_REGIME_BULLISH:
             direction = OptionDirection.CALL
+            direction_str = "BULLISH"
         elif regime_score < config.SPREAD_REGIME_BEARISH:
             direction = OptionDirection.PUT
+            direction_str = "BEARISH"
         else:
             # Neutral regime (45-60): No trade
             return
 
-        # V2.3: Build list of candidate contracts for spread selection
-        candidate_contracts = self._build_spread_candidate_contracts(chain, direction)
+        # V2.23: VASS strategy selection — routes to credit or debit
+        strategy, vass_dte_min, vass_dte_max, is_credit = self._route_vass_strategy(direction_str)
+
+        # V2.23: Build candidate contracts with VASS-aware DTE range
+        candidate_contracts = self._build_spread_candidate_contracts(
+            chain, direction, dte_min=vass_dte_min, dte_max=vass_dte_max
+        )
         if len(candidate_contracts) < 2:
             return
 
-        # V2.3.21: Select spread legs (ITM long + OTM short) with 15-min throttle
-        spread_legs = self.options_engine.select_spread_legs(
-            contracts=candidate_contracts,
-            direction=direction,
-            current_time=str(self.Time),
-        )
-        if spread_legs is None:
-            return
+        tradeable_eq = self.capital_engine.calculate(
+            self.Portfolio.TotalPortfolioValue
+        ).tradeable_eq
+        margin_remaining = self.portfolio_router.get_effective_margin_remaining()
 
-        long_leg, short_leg = spread_legs
+        if is_credit:
+            # V2.23: Credit spread path
+            spread_legs = self.options_engine.select_credit_spread_legs(
+                contracts=candidate_contracts,
+                strategy=strategy,
+                dte_min=vass_dte_min,
+                dte_max=vass_dte_max,
+                current_time=str(self.Time),
+            )
+            if spread_legs is None:
+                return
+            short_leg, long_leg = spread_legs  # Credit returns (short, long)
 
-        # CRITICAL: Verify both legs have valid bid/ask
-        if long_leg.bid <= 0 or long_leg.ask <= 0:
-            return
-        if short_leg.bid <= 0 or short_leg.ask <= 0:
-            return
+            # CRITICAL: Verify both legs have valid bid/ask
+            if short_leg.bid <= 0 or short_leg.ask <= 0:
+                return
+            if long_leg.bid <= 0 or long_leg.ask <= 0:
+                return
 
-        # V2.3: Check for spread entry signal
-        # V2.3.20: Pass size_multiplier for cold start reduced sizing
-        # V2.7: Use tradeable equity (not total portfolio) for cash-only sizing
-        signal = self.options_engine.check_spread_entry_signal(
-            regime_score=regime_score,
-            vix_current=self._current_vix,
-            adx_value=adx_value,
-            current_price=qqq_price,
-            ma200_value=ma200_value,
-            iv_rank=iv_rank,
-            current_hour=self.Time.hour,
-            current_minute=self.Time.minute,
-            current_date=str(self.Time.date()),
-            portfolio_value=self.capital_engine.calculate(
-                self.Portfolio.TotalPortfolioValue
-            ).tradeable_eq,
-            long_leg_contract=long_leg,
-            short_leg_contract=short_leg,
-            gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
-            vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
-            size_multiplier=size_multiplier,
-            margin_remaining=self.portfolio_router.get_effective_margin_remaining(),  # V2.21
-        )
+            signal = self.options_engine.check_credit_spread_entry_signal(
+                regime_score=regime_score,
+                vix_current=self._current_vix,
+                adx_value=adx_value,
+                current_price=qqq_price,
+                ma200_value=ma200_value,
+                iv_rank=iv_rank,
+                current_hour=self.Time.hour,
+                current_minute=self.Time.minute,
+                current_date=str(self.Time.date()),
+                portfolio_value=tradeable_eq,
+                short_leg_contract=short_leg,
+                long_leg_contract=long_leg,
+                strategy=strategy,
+                gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
+                vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
+                size_multiplier=size_multiplier,
+                margin_remaining=margin_remaining,
+            )
+        else:
+            # Existing debit spread path
+            spread_legs = self.options_engine.select_spread_legs(
+                contracts=candidate_contracts,
+                direction=direction,
+                current_time=str(self.Time),
+            )
+            if spread_legs is None:
+                return
+
+            long_leg, short_leg = spread_legs
+
+            # CRITICAL: Verify both legs have valid bid/ask
+            if long_leg.bid <= 0 or long_leg.ask <= 0:
+                return
+            if short_leg.bid <= 0 or short_leg.ask <= 0:
+                return
+
+            # V2.3: Check for spread entry signal
+            # V2.3.20: Pass size_multiplier for cold start reduced sizing
+            # V2.7: Use tradeable equity (not total portfolio) for cash-only sizing
+            signal = self.options_engine.check_spread_entry_signal(
+                regime_score=regime_score,
+                vix_current=self._current_vix,
+                adx_value=adx_value,
+                current_price=qqq_price,
+                ma200_value=ma200_value,
+                iv_rank=iv_rank,
+                current_hour=self.Time.hour,
+                current_minute=self.Time.minute,
+                current_date=str(self.Time.date()),
+                portfolio_value=tradeable_eq,
+                long_leg_contract=long_leg,
+                short_leg_contract=short_leg,
+                gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
+                vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
+                size_multiplier=size_multiplier,
+                margin_remaining=margin_remaining,
+            )
 
         if signal:
             # V2.3.6 FIX: Check margin BEFORE submitting spread
@@ -2407,7 +2460,11 @@ class AlphaNextGen(QCAlgorithm):
             self.portfolio_router.receive_signal(signal)
 
     def _build_spread_candidate_contracts(
-        self, chain, direction: OptionDirection
+        self,
+        chain,
+        direction: OptionDirection,
+        dte_min: int = None,
+        dte_max: int = None,
     ) -> List[OptionContract]:
         """
         V2.3: Build list of candidate OptionContract objects for spread selection.
@@ -2418,6 +2475,8 @@ class AlphaNextGen(QCAlgorithm):
         Args:
             chain: QuantConnect options chain.
             direction: CALL or PUT direction.
+            dte_min: Minimum DTE override (defaults to config.SPREAD_DTE_MIN).
+            dte_max: Maximum DTE override (defaults to config.SPREAD_DTE_MAX).
 
         Returns:
             List of OptionContract objects for spread leg selection.
@@ -2434,9 +2493,11 @@ class AlphaNextGen(QCAlgorithm):
                 if contract.Right != OptionRight.Put:
                     continue
 
-            # Check DTE range for spreads (10-21 days per V2.3 spec)
+            # Check DTE range for spreads (V2.23: VASS-aware DTE override)
             dte = (contract.Expiry - self.Time).days
-            if dte < config.SPREAD_DTE_MIN or dte > config.SPREAD_DTE_MAX:
+            effective_dte_min = dte_min if dte_min is not None else config.SPREAD_DTE_MIN
+            effective_dte_max = dte_max if dte_max is not None else config.SPREAD_DTE_MAX
+            if dte < effective_dte_min or dte > effective_dte_max:
                 continue
 
             # Get bid/ask safely
@@ -2473,6 +2534,28 @@ class AlphaNextGen(QCAlgorithm):
             candidates.append(opt_contract)
 
         return candidates
+
+    def _route_vass_strategy(self, direction_str: str) -> tuple:
+        """
+        V2.23: Route to credit or debit strategy based on IV environment.
+
+        Uses IVSensor classification to select strategy from VASS matrix.
+        Falls back to debit spread with default DTE if IVSensor not ready or VASS disabled.
+
+        Args:
+            direction_str: "BULLISH" or "BEARISH"
+
+        Returns:
+            Tuple of (strategy: Optional[SpreadStrategy], dte_min: int, dte_max: int, is_credit: bool)
+        """
+        if getattr(config, "VASS_ENABLED", True) and self.options_engine._iv_sensor.is_ready():
+            iv_environment = self.options_engine._iv_sensor.classify()
+            strategy, dte_min, dte_max = self.options_engine._select_strategy(
+                direction_str, iv_environment
+            )
+            is_credit = self.options_engine.is_credit_strategy(strategy)
+            return (strategy, dte_min, dte_max, is_credit)
+        return (None, config.SPREAD_DTE_MIN, config.SPREAD_DTE_MAX, False)
 
     def _normalize_option_symbol(self, symbol) -> str:
         """
@@ -3503,10 +3586,10 @@ class AlphaNextGen(QCAlgorithm):
             # Only spread is in cooldown — skip spread path but allow single-leg swing
             pass  # Will be checked again below before spread entry
 
-        # V2.3: Check for SWING mode entry using DEBIT SPREADS
-        # Direction based on regime score (not Price/MA200/RSI)
-        # - Regime > 60: Bull Call Spread
-        # - Regime < 45: Bear Put Spread
+        # V2.3: Check for SWING mode entry using SPREADS
+        # V2.23: VASS routes to credit or debit based on IV environment
+        # - Regime > 60: Bull (Call Debit or Put Credit depending on IV)
+        # - Regime < 45: Bear (Put Debit or Call Credit depending on IV)
         # - Regime 45-60: No trade (neutral)
         # V2.19 FIX: Throttle swing spread scans to once per 30min (was every minute = 6,919 attempts)
         if hasattr(self, "_last_swing_scan_time") and self._last_swing_scan_time is not None:
@@ -3515,65 +3598,114 @@ class AlphaNextGen(QCAlgorithm):
                 return
         self._last_swing_scan_time = self.Time
 
+        # V2.23: Update IVSensor BEFORE strategy selection
+        self.options_engine._iv_sensor.update(self._current_vix)
+
         regime_score = self.regime_engine.get_previous_score()
 
         if regime_score > config.SPREAD_REGIME_BULLISH:
             direction = OptionDirection.CALL
+            direction_str = "BULLISH"
         elif regime_score < config.SPREAD_REGIME_BEARISH:
             direction = OptionDirection.PUT
+            direction_str = "BEARISH"
         else:
             # Neutral regime (45-60): No trade
             return
 
-        # Build candidate contracts for spread selection
-        candidate_contracts = self._build_spread_candidate_contracts(chain, direction)
+        # V2.23: VASS strategy selection — routes to credit or debit
+        strategy, vass_dte_min, vass_dte_max, is_credit = self._route_vass_strategy(direction_str)
+
+        # V2.23: Build candidate contracts with VASS-aware DTE range
+        candidate_contracts = self._build_spread_candidate_contracts(
+            chain, direction, dte_min=vass_dte_min, dte_max=vass_dte_max
+        )
         if len(candidate_contracts) < 2:
             return
-
-        # V2.3.21: Select spread legs (ITM long + OTM short) with 15-min throttle
-        spread_legs = self.options_engine.select_spread_legs(
-            contracts=candidate_contracts,
-            direction=direction,
-            current_time=str(self.Time),
-        )
 
         # Calculate IV rank from options chain (V2.1)
         iv_rank = self._calculate_iv_rank(chain)
 
-        if spread_legs is not None and not spread_cooldown_active:
-            long_leg, short_leg = spread_legs
+        signal = None
 
-            # Verify both legs have valid bid/ask
-            if long_leg.bid > 0 and long_leg.ask > 0 and short_leg.bid > 0 and short_leg.ask > 0:
-                # V2.3: Check for spread entry signal
-                # V2.3.20: Pass size_multiplier for cold start reduced sizing
-                # V2.7: Use tradeable equity (not total portfolio) for cash-only sizing
-                # V2.11: Use margin-capped effective_portfolio_value (Pitfall #6)
-                signal = self.options_engine.check_spread_entry_signal(
-                    regime_score=regime_score,
-                    vix_current=self._current_vix,
-                    adx_value=adx_value,
-                    current_price=qqq_price,
-                    ma200_value=ma200_value,
-                    iv_rank=iv_rank,
-                    current_hour=self.Time.hour,
-                    current_minute=self.Time.minute,
-                    current_date=str(self.Time.date()),
-                    portfolio_value=effective_portfolio_value,  # V2.11: Margin-capped
-                    long_leg_contract=long_leg,
-                    short_leg_contract=short_leg,
-                    gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
-                    vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
-                    size_multiplier=size_multiplier,
-                    margin_remaining=margin_remaining,  # V2.21: Already calculated above
+        if not spread_cooldown_active:
+            if is_credit:
+                # V2.23: Credit spread path
+                spread_legs = self.options_engine.select_credit_spread_legs(
+                    contracts=candidate_contracts,
+                    strategy=strategy,
+                    dte_min=vass_dte_min,
+                    dte_max=vass_dte_max,
+                    current_time=str(self.Time),
                 )
+                if spread_legs is not None:
+                    short_leg, long_leg = spread_legs  # Credit returns (short, long)
+                    if (
+                        short_leg.bid > 0
+                        and short_leg.ask > 0
+                        and long_leg.bid > 0
+                        and long_leg.ask > 0
+                    ):
+                        signal = self.options_engine.check_credit_spread_entry_signal(
+                            regime_score=regime_score,
+                            vix_current=self._current_vix,
+                            adx_value=adx_value,
+                            current_price=qqq_price,
+                            ma200_value=ma200_value,
+                            iv_rank=iv_rank,
+                            current_hour=self.Time.hour,
+                            current_minute=self.Time.minute,
+                            current_date=str(self.Time.date()),
+                            portfolio_value=effective_portfolio_value,
+                            short_leg_contract=short_leg,
+                            long_leg_contract=long_leg,
+                            strategy=strategy,
+                            gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
+                            vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
+                            size_multiplier=size_multiplier,
+                            margin_remaining=margin_remaining,
+                        )
+            else:
+                # Existing debit spread path
+                spread_legs = self.options_engine.select_spread_legs(
+                    contracts=candidate_contracts,
+                    direction=direction,
+                    current_time=str(self.Time),
+                )
+                if spread_legs is not None:
+                    long_leg, short_leg = spread_legs
+                    if (
+                        long_leg.bid > 0
+                        and long_leg.ask > 0
+                        and short_leg.bid > 0
+                        and short_leg.ask > 0
+                    ):
+                        signal = self.options_engine.check_spread_entry_signal(
+                            regime_score=regime_score,
+                            vix_current=self._current_vix,
+                            adx_value=adx_value,
+                            current_price=qqq_price,
+                            ma200_value=ma200_value,
+                            iv_rank=iv_rank,
+                            current_hour=self.Time.hour,
+                            current_minute=self.Time.minute,
+                            current_date=str(self.Time.date()),
+                            portfolio_value=effective_portfolio_value,
+                            long_leg_contract=long_leg,
+                            short_leg_contract=short_leg,
+                            gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
+                            vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
+                            size_multiplier=size_multiplier,
+                            margin_remaining=margin_remaining,
+                        )
 
-                if signal:
-                    self.portfolio_router.receive_signal(signal)
-                    # V2.3.13 FIX: MUST process immediately - spread signals use IMMEDIATE urgency
-                    self._process_immediate_signals()
-                    return  # Spread trade placed, don't try single-leg
-        else:
+            if signal:
+                self.portfolio_router.receive_signal(signal)
+                # V2.3.13 FIX: MUST process immediately - spread signals use IMMEDIATE urgency
+                self._process_immediate_signals()
+                return  # Spread trade placed, don't try single-leg
+
+        if signal is None and not spread_cooldown_active:
             # V2.10 (Pitfall #4): Throttled VASS rejection logging
             # Log rejections every 15 min for visibility, not every candle to avoid spam
             should_log = (
@@ -3592,6 +3724,7 @@ class AlphaNextGen(QCAlgorithm):
                     f"IV_Env={iv_env} | VIX={self._current_vix:.1f} | "
                     f"Regime={regime_score:.0f} | "
                     f"Contracts_checked={len(candidate_contracts)} | "
+                    f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
                     f"Reason=No contracts met spread criteria (DTE/delta/credit)"
                 )
                 self._last_vass_rejection_log = self.Time
