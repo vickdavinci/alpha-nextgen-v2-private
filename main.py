@@ -1750,6 +1750,12 @@ class AlphaNextGen(QCAlgorithm):
                     if self.options_engine:
                         self.options_engine.clear_spread_position()
 
+                    # V2.18.2: Clear ghost margin reservations in router
+                    # Bug fix: clear_spread_position() only clears OptionsEngine state,
+                    # but leaves margin reservation in router causing permanent lockout
+                    if self.portfolio_router:
+                        self.portfolio_router.clear_all_spread_margins()
+
                     # Enter cooldown
                     cooldown_hours = config.MARGIN_CALL_COOLDOWN_HOURS
                     cooldown_until = self.Time + timedelta(hours=cooldown_hours)

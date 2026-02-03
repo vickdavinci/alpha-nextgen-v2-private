@@ -266,6 +266,27 @@ class PortfolioRouter:
             freed = self._open_spread_margin.pop(spread_id)
             self.log(f"MARGIN_TRACK: Unregistered spread | ID={spread_id} | Freed=${freed:,.0f}")
 
+    def clear_all_spread_margins(self) -> None:
+        """
+        V2.18.2: Clear all spread margin reservations.
+
+        Called during margin circuit breaker liquidation to prevent
+        "Ghost Margin" lockout where cleared positions still have
+        margin reserved in the router.
+
+        Bug Fix: When clear_spread_position() is called, it only clears
+        OptionsEngine state but NOT the router's margin tracking. This
+        leaves "ghost" reservations that block all future options trades.
+        """
+        if self._open_spread_margin:
+            total_freed = sum(self._open_spread_margin.values())
+            count = len(self._open_spread_margin)
+            self._open_spread_margin.clear()
+            self.log(
+                f"MARGIN_TRACK: Cleared ALL spread margins | "
+                f"Count={count} | Freed=${total_freed:,.0f}"
+            )
+
     def get_reserved_spread_margin(self) -> float:
         """
         V2.9: Get total margin reserved by all open spread positions.
