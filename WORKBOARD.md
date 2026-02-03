@@ -81,6 +81,7 @@
 | 2i | 1 month (Jan 2025) | V2.23 VASS Credit Spread Integration | **Ready to Run** ⏳ | 2026-02-03 |
 | 2j | 1 month (Jan 2025) | V2.24 Zero-Trade Diagnostic Fixes | **Ready to Run** ⏳ | 2026-02-03 |
 | 2k | 1 month (Jan 2025) | V2.24.1 Hardening (Price Discovery + Elastic Delta) | **Ready to Run** ⏳ | 2026-02-03 |
+| 2l | 1 month (Jan 2025) | V2.24.2 Runtime Error + DTE Double-Filter + Push Fix | **Ready to Run** ⏳ | 2026-02-03 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
@@ -668,9 +669,38 @@ Confirmed: `SetFilter(-25, 25, 0, 60)` — exceeds spec requirement of ±20 stri
 
 **Stale Metadata Risk** identified during architecture review — not a bug in backtest (same-bar processing) but a risk in live trading where signal metadata prices could be seconds/minutes old. Documented in `docs/guides/production-readiness.md` for pre-live implementation.
 
-**Next Step:** Run V2.24.1 backtest
+**Next Step:** ~~Run V2.24.1 backtest~~ → Superseded by V2.24.2
+
+---
+
+### V2.24.2: Runtime Error + DTE Double-Filter + Push 413 Fix (2026-02-03) — COMPLETE ✅
+
+**Trigger:** V2.24.1 backtest showed zero options trades and a runtime error:
+```
+Runtime Error: TypeError at _process_immediate_signals → self.Log(... trades_only=False)
+```
+
+**Three critical bugs found and fixed:**
+
+| # | Bug | Root Cause | Fix |
+|---|-----|-----------|-----|
+| 1 | **Runtime crash** | `self.Log(msg, trades_only=False)` — QC native `Log()` doesn't accept kwargs. Crashed before price injection could run. | Removed `trades_only` param from 2 `self.Log()` calls in main.py |
+| 2 | **DTE double-filter** | `select_spread_legs()` re-applied `SPREAD_DTE_MIN=14` after `_build_spread_candidate_contracts()` already filtered to VASS range (7-21 DTE for MEDIUM IV). All 7-13 DTE contracts silently rejected. Elastic delta bands fired on empty list. | Added `dte_min`/`dte_max` params to `select_spread_legs()` and `check_spread_entry_signal()`. Callers pass VASS-aware DTE bounds. |
+| 3 | **Push 413 error** | Total project 848KB exceeded QC HTTP POST body limit. Script silently swallowed error (`2>/dev/null`), so backtests ran on stale code. | Added `minify_workspace.py` (strips comments/docstrings, 848KB→529KB). Updated script to detect 413 errors and clean `__pycache__`. |
+
+**Files Modified:**
+- `main.py` — Removed `trades_only=False` from 2 `self.Log()` calls, pass `vass_dte_min`/`vass_dte_max` to spread leg selection and entry signal
+- `engines/satellite/options_engine.py` — Added `dte_min`/`dte_max` params to `select_spread_legs()` and `check_spread_entry_signal()`, use effective DTE bounds in filter and validation
+- `scripts/qc_backtest.sh` — Clean `__pycache__`, run minifier, detect 413 errors
+- `scripts/minify_workspace.py` — New: strips comments/docstrings from lean workspace
+
+**Commit:** `cfa99a2` - `fix(options): V2.24.2 three critical bugs — runtime error, DTE double-filter, push 413`
+
+**Tests:** 1349 passed, 2 skipped
+
+**Next Step:** Run V2.24.2 backtest
 ```bash
-./scripts/qc_backtest.sh "V2.24.1-Hardening" --open
+./scripts/qc_backtest.sh "V2.24.2-DTE-Fix" --open
 ```
 
 ---
@@ -2586,4 +2616,4 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 03 February 2026 (V2.24.1 Hardening — Price Discovery + Elastic Delta Bands)*
+*Last Updated: 03 February 2026 (V2.24.2 Runtime Error + DTE Double-Filter + Push 413 Fix)*

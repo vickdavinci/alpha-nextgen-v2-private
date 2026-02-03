@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-03 (V2.24.1: Hardening — Price Discovery + Elastic Delta Bands)
+> **Last Updated:** 2026-02-03 (V2.24.2: Runtime Error + DTE Double-Filter + Push 413 Fix)
 
 ---
 
@@ -39,6 +39,7 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | 2i | 1 month (Jan 2025) | V2.23 VASS Credit Spread Integration | **Ready to Run** ⏳ |
 | 2j | 1 month (Jan 2025) | V2.24 Zero-Trade Diagnostic Fixes | **Ready to Run** ⏳ |
 | 2k | 1 month (Jan 2025) | V2.24.1 Hardening (Price Discovery + Elastic Delta) | **Ready to Run** ⏳ |
+| 2l | 1 month (Jan 2025) | V2.24.2 Runtime Error + DTE Double-Filter + Push Fix | **Ready to Run** ⏳ |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
@@ -3582,4 +3583,59 @@ SPREAD_FILTER: Elastic widen +/-0.03 found X candidates
 
 ---
 
-*Document created: 2026-01-30 | Last updated: 2026-02-03 (V2.24.1 Hardening — Price Discovery + Elastic Delta Bands)*
+## V2.24.2: Runtime Error + DTE Double-Filter + Push 413 Fix (2026-02-03)
+
+**Purpose:** Fix three critical bugs discovered when running V2.24.1 backtest — runtime crash, silent DTE filter conflict, and stale code deployment.
+
+### Bug 1: Runtime Crash — `self.Log(trades_only=False)`
+
+QC's native `self.Log()` only accepts a string. Two diagnostic calls in main.py passed `trades_only=False` as a keyword argument, causing a TypeError that crashed `_process_immediate_signals()` before the V2.19 price injection could complete. This is why the router logged "No price available" — the injection code never finished.
+
+**Fix:** Removed `trades_only` parameter from both `self.Log()` calls in main.py (lines 917 and 2043).
+
+### Bug 2: DTE Double-Filter Killing VASS MEDIUM IV Trades
+
+VASS routes MEDIUM IV (VIX 15-25) trades to 7-21 DTE contracts. `_build_spread_candidate_contracts()` correctly filtered to that range (44 contracts). But `select_spread_legs()` then re-applied `SPREAD_DTE_MIN=14` from global config, silently rejecting all 7-13 DTE weekly contracts. Elastic delta bands fired on an empty list — technically correct but useless.
+
+**Fix:** Added `dte_min`/`dte_max` parameters to `select_spread_legs()` and `check_spread_entry_signal()`. Main.py callers now pass VASS-aware DTE bounds (`vass_dte_min`, `vass_dte_max`). When not provided, falls back to global config defaults.
+
+### Bug 3: QC Cloud Push 413 Error
+
+Total project was 848KB of Python files. `lean cloud push` sends all files in one HTTP POST request which exceeded QC's request body size limit. The backtest script swallowed the error via `2>/dev/null` and reported "Push complete" — so backtests were running on whatever stale code was last successfully pushed.
+
+**Fix:**
+- New `scripts/minify_workspace.py` strips comments and docstrings (848KB → 529KB)
+- Updated `scripts/qc_backtest.sh` to run minifier after sync, clean `__pycache__`/`.DS_Store`, and detect 413 errors with explicit failure
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `main.py` | Removed `trades_only=False` from 2 `self.Log()` calls; pass `vass_dte_min`/`vass_dte_max` to `select_spread_legs()` and `check_spread_entry_signal()` |
+| `engines/satellite/options_engine.py` | Added `dte_min`/`dte_max` params to `select_spread_legs()` and `check_spread_entry_signal()`; use effective DTE bounds in filter and validation |
+| `scripts/qc_backtest.sh` | Clean `__pycache__`, run minifier, detect 413 errors |
+| `scripts/minify_workspace.py` | New: strips comments/docstrings from lean workspace Python files |
+
+### Commit
+
+- `cfa99a2` — `fix(options): V2.24.2 three critical bugs — runtime error, DTE double-filter, push 413`
+
+**Tests:** 1349 passed, 2 skipped
+
+### Verification Patterns
+
+After running V2.24.2 backtest, verify:
+```
+# Price injection working (no more runtime crash)
+V2.19_INJECT: QQQ... | price=X.XX | has_meta=True | meta_keys=['contract_price', ...]
+
+# VASS MEDIUM IV trades executing (7-13 DTE no longer rejected)
+SPREAD: ENTRY_SIGNAL | BULL_CALL: ... DTE=10 ...
+
+# Push succeeds (no more 413)
+Successfully updated name, files, and libraries for 'AlphaNextGen'
+```
+
+---
+
+*Document created: 2026-01-30 | Last updated: 2026-02-03 (V2.24.2 Runtime Error + DTE Double-Filter + Push 413 Fix)*
