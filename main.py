@@ -381,11 +381,12 @@ class AlphaNextGen(QCAlgorithm):
         # V2.11 TEST: Allow options during cold start to test capital competition
         # Note: Cold start still applies 50% size multiplier (OPTIONS_COLD_START_MULTIPLIER)
         # V2.27: Also check can_enter_options (Tier 1 blocks new options)
+        # V2.28: Require governor >= 0.75 for intraday options (was > 0.0)
         if (
             mr_window_open
             and risk_result.can_enter_intraday
             and risk_result.can_enter_options
-            and self._governor_scale > 0.0
+            and self._governor_scale >= config.GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE
         ):
             self._scan_options_signals(data)
 
@@ -872,12 +873,46 @@ class AlphaNextGen(QCAlgorithm):
                 f"GOVERNOR: SHUTDOWN — Liquidating all positions | "
                 f"Equity=${self.equity_prior_close:,.0f}"
             )
-            self.Liquidate()
+            self._liquidate_all_spread_aware("GOVERNOR_SHUTDOWN")  # V2.28: Spread-aware
             self.portfolio_router._pending_weights.clear()
 
         # Set SPY prior close for gap filter
         self.spy_prior_close = self.Securities[self.spy].Close
         self.risk_engine.set_spy_prior_close(self.spy_prior_close)
+
+    def _liquidate_all_spread_aware(self, reason: str = "GOVERNOR_SHUTDOWN") -> None:
+        """
+        V2.28: Spread-aware liquidation. Close short leg first to avoid naked margin.
+
+        Standard self.Liquidate() iterates portfolio in unpredictable order. For bull call
+        spreads, if the long leg sells first, QC sees a naked short call → margin rejection.
+        This helper closes the short leg first (buys it back), then the long leg.
+        """
+        # Step 1: Close spread if one exists (short leg first to avoid naked margin)
+        if self.options_engine and self.options_engine.has_spread_position():
+            spread = self.options_engine.get_spread_position()
+            if spread:
+                try:
+                    short_sym = spread.short_leg.symbol
+                    long_sym = spread.long_leg.symbol
+                    qty = spread.num_spreads
+                    # Buy back short leg first (eliminates short exposure)
+                    self.MarketOrder(short_sym, qty, tag=reason)
+                    self.Log(f"{reason}: Closed short leg {str(short_sym)[-21:]} x{qty}")
+                    # Then sell long leg (now safe — no naked short)
+                    self.MarketOrder(long_sym, -qty, tag=reason)
+                    self.Log(f"{reason}: Closed long leg {str(long_sym)[-21:]} x{qty}")
+                except Exception as e:
+                    self.Log(f"{reason}: Spread close error | {e} | Falling back to Liquidate()")
+                    self.Liquidate(tag=reason)
+                # Clear spread tracking regardless of success
+                self.options_engine.clear_spread_position()
+                if self.portfolio_router:
+                    self.portfolio_router.clear_all_spread_margins()
+
+        # Step 2: Liquidate everything else (equity, single-leg options, etc.)
+        if self.Portfolio.Invested:
+            self.Liquidate(tag=reason)
 
     def _on_moo_fallback(self) -> None:
         """
@@ -1396,6 +1431,30 @@ class AlphaNextGen(QCAlgorithm):
                         f"P0 FIX: Preventing auto-exercise"
                     )
                     self.Liquidate(holding.Symbol, tag="EXPIRATION_HAMMER_V2")
+
+                # V2.28: Early exercise guard — close ITM single-leg options near expiry
+                # Prevents costly early exercise (Q1 2022: 2 exercises cost -$5,614)
+                # Only for single-leg options (spreads have their own DTE exit)
+                elif not self.options_engine.has_spread_position():
+                    days_to_expiry = (expiry - self.Time).days
+                    if days_to_expiry <= config.EARLY_EXERCISE_GUARD_DTE:
+                        # Check if option is ITM
+                        underlying_price = self.Securities[self.qqq].Price
+                        strike = holding.Symbol.ID.StrikePrice
+                        is_call = holding.Symbol.ID.OptionRight == OptionRight.Call
+                        itm_buffer = config.EARLY_EXERCISE_GUARD_ITM_BUFFER
+                        is_itm = (is_call and underlying_price > strike * (1 + itm_buffer)) or (
+                            not is_call and underlying_price < strike * (1 - itm_buffer)
+                        )
+                        if is_itm:
+                            qty = holding.Quantity
+                            symbol = str(holding.Symbol)
+                            self.Log(
+                                f"EARLY_EXERCISE_GUARD: CLOSING {symbol} | "
+                                f"Qty={qty} | DTE={days_to_expiry} | ITM | "
+                                f"Strike={strike} Underlying={underlying_price:.2f}"
+                            )
+                            self.Liquidate(holding.Symbol, tag="EARLY_EXERCISE_GUARD")
             except Exception as e:
                 self.Log(f"EXPIRATION_HAMMER_V2: Error checking {holding.Symbol} - {e}")
 
@@ -1888,22 +1947,10 @@ class AlphaNextGen(QCAlgorithm):
                     except Exception as e:
                         self.Log(f"MARGIN_CB_LIQUIDATE: Error cancelling orders | {e}")
 
-                    # Liquidate all QQQ options positions
-                    # V2.19 FIX: Iterate Portfolio.Values not Keys to avoid 20K+ loop
-                    # Portfolio.Keys includes ALL subscribed securities (20K+ options)
-                    # Portfolio.Values lets us check Invested FIRST, then filter
-                    try:
-                        for holding in self.Portfolio.Values:
-                            if not holding.Invested:
-                                continue  # Skip non-invested immediately
-                            symbol = holding.Symbol
-                            symbol_str = str(symbol)
-                            if "QQQ" in symbol_str and ("C0" in symbol_str or "P0" in symbol_str):
-                                qty = holding.Quantity
-                                self.MarketOrder(symbol, -qty, tag="MARGIN_CB_LIQUIDATE")
-                                self.Log(f"MARGIN_CB_LIQUIDATE: Closed {symbol_str[-21:]} x{qty}")
-                    except Exception as e:
-                        self.Log(f"MARGIN_CB_LIQUIDATE: Error liquidating | {e}")
+                    # V2.28: Use spread-aware liquidation instead of blind iteration
+                    # Previous code iterated Portfolio.Values in unpredictable order,
+                    # which could sell long leg first → naked short → margin rejection
+                    self._liquidate_all_spread_aware("MARGIN_CB_LIQUIDATE")
 
                     self._margin_cb_in_progress = False
 
@@ -4748,8 +4795,17 @@ class AlphaNextGen(QCAlgorithm):
                         # Spread exit - track leg closes
                         self._handle_spread_leg_close(symbol, fill_price, fill_qty)
                     elif self.options_engine.has_intraday_position():
-                        # V2.3.2: Intraday exit
-                        self.options_engine.remove_intraday_position()
+                        # V2.28: Record result for win rate gate before removing
+                        removed_position = self.options_engine.remove_intraday_position()
+                        if removed_position and removed_position.entry_price > 0:
+                            is_win = fill_price > removed_position.entry_price
+                            self.options_engine.record_spread_result(is_win)
+                            result_str = "WIN" if is_win else "LOSS"
+                            self.Log(
+                                f"INTRADAY_RESULT: {result_str} | "
+                                f"Entry=${removed_position.entry_price:.2f} | Exit=${fill_price:.2f} | "
+                                f"P&L={((fill_price - removed_position.entry_price) / removed_position.entry_price):.1%}"
+                            )
                         self._greeks_breach_logged = False  # Reset for next position
                     else:
                         # Single-leg exit (legacy swing)

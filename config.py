@@ -405,7 +405,11 @@ DRAWDOWN_GOVERNOR_LEVELS = {
     0.15: 0.25,  # At -15% from peak → 25% allocation
     0.20: 0.00,  # At -20% from peak → CASH ONLY (SHV + hedges)
 }
-DRAWDOWN_GOVERNOR_RECOVERY_PCT = 0.05  # Must recover 5% from trough before stepping up
+DRAWDOWN_GOVERNOR_RECOVERY_PCT = 0.10  # V2.28: Was 0.05, raised to prevent premature re-entry
+
+# V2.28: Minimum governor scale for intraday options entry
+# At 50% or below, intraday options are fully blocked (capital preservation mode)
+GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE = 0.75
 
 # =============================================================================
 # V2.1 CIRCUIT BREAKER SYSTEM (5 Levels)
@@ -580,6 +584,11 @@ OPTIONS_SINGLE_LEG_DTE_EXIT = 4  # Close by 4 DTE (avoid expiration gamma trap)
 # Gives 2 hours buffer before close for retries and avoids end-of-day volatility
 OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_HOUR = 14  # Force close expiring options at 14:00
 OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE = 0
+
+# V2.28: Early exercise guard — force close ITM single-leg options near expiry
+# Prevents costly early exercise (Q1 2022: 2 exercises cost -$5,614)
+EARLY_EXERCISE_GUARD_DTE = 2  # Close if DTE <= 2 and ITM
+EARLY_EXERCISE_GUARD_ITM_BUFFER = 0.01  # 1% ITM buffer (strike vs underlying)
 
 # Contract Selection
 # Options chain filter (must cover BOTH Intraday 0-2 DTE AND Swing 5-45 DTE)
