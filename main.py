@@ -247,6 +247,7 @@ class AlphaNextGen(QCAlgorithm):
         self.spy_prior_close = 0.0
         self.spy_open = 0.0
         self._governor_scale = 1.0  # V2.26: Drawdown Governor allocation multiplier
+        self._last_risk_result = None  # V2.27: Last risk check result for EOD access
         self.today_trades = []
         self.today_safeguards = []
         self.symbols_to_skip = set()
@@ -337,6 +338,7 @@ class AlphaNextGen(QCAlgorithm):
         # STEP 3: RISK ENGINE CHECKS (ALWAYS FIRST AFTER SPLITS)
         # =====================================================================
         risk_result = self._run_risk_checks(data)
+        self._last_risk_result = risk_result  # V2.27: Store for EOD signal access
 
         # =====================================================================
         # STEP 3B: V2.4.4 P0 - EXPIRATION HAMMER V2 (runs every minute after 2 PM)
@@ -369,7 +371,7 @@ class AlphaNextGen(QCAlgorithm):
         current_hour = self.Time.hour
         mr_window_open = 10 <= current_hour < 15
 
-        if mr_window_open and risk_result.can_enter_intraday:
+        if mr_window_open and risk_result.can_enter_intraday and self._governor_scale > 0.0:
             self._scan_mr_signals(data)
 
         # =====================================================================
@@ -377,7 +379,13 @@ class AlphaNextGen(QCAlgorithm):
         # =====================================================================
         # V2.11 TEST: Allow options during cold start to test capital competition
         # Note: Cold start still applies 50% size multiplier (OPTIONS_COLD_START_MULTIPLIER)
-        if mr_window_open and risk_result.can_enter_intraday:
+        # V2.27: Also check can_enter_options (Tier 1 blocks new options)
+        if (
+            mr_window_open
+            and risk_result.can_enter_intraday
+            and risk_result.can_enter_options
+            and self._governor_scale > 0.0
+        ):
             self._scan_options_signals(data)
 
         # =====================================================================
@@ -856,6 +864,15 @@ class AlphaNextGen(QCAlgorithm):
 
         # V2.26: Drawdown Governor — check cumulative DD from peak, scale allocations
         self._governor_scale = self.risk_engine.check_drawdown_governor(self.equity_prior_close)
+
+        # V2.26: Governor at 0% = full shutdown — liquidate all positions
+        if self._governor_scale == 0.0 and self.Portfolio.Invested:
+            self.Log(
+                f"GOVERNOR: SHUTDOWN — Liquidating all positions | "
+                f"Equity=${self.equity_prior_close:,.0f}"
+            )
+            self.Liquidate()
+            self.portfolio_router._pending_weights.clear()
 
         # Set SPY prior close for gap filter
         self.spy_prior_close = self.Securities[self.spy].Close
@@ -2141,6 +2158,16 @@ class AlphaNextGen(QCAlgorithm):
             # Aggregate weights by symbol (take highest weight for same symbol)
             aggregated = self.portfolio_router.aggregate_weights(weights)
 
+            # V2.26: Apply Drawdown Governor scaling to ALL allocations
+            if self._governor_scale < 1.0:
+                for symbol, agg in aggregated.items():
+                    if agg.target_weight > 0:  # Only scale entries/holds, not exits (weight=0)
+                        agg.target_weight *= self._governor_scale
+                if self._governor_scale == 0.0:
+                    self.Log("GOVERNOR: SHUTDOWN | All EOD allocations zeroed")
+                else:
+                    self.Log(f"GOVERNOR: Scaling all EOD weights by {self._governor_scale:.0%}")
+
             # Validate against max position size
             max_single_position_pct = capital_state.max_single_position_pct
             for symbol, agg in aggregated.items():
@@ -2310,6 +2337,17 @@ class AlphaNextGen(QCAlgorithm):
 
             # Send only as many entries as allowed
             for signal, adx in entry_candidates[:entries_allowed]:
+                # V2.27: Apply KS Tier 1 sizing reduction to trend entries
+                if (
+                    self._last_risk_result is not None
+                    and self._last_risk_result.sizing_multiplier < 1.0
+                ):
+                    original_weight = signal.target_weight
+                    signal.target_weight *= self._last_risk_result.sizing_multiplier
+                    self.Log(
+                        f"TREND: Tier1 sizing | {signal.symbol} weight "
+                        f"{original_weight:.2f} → {signal.target_weight:.2f}"
+                    )
                 self.Log(
                     f"TREND: ENTRY_APPROVED {signal.symbol} | ADX={adx:.1f} | "
                     f"Slot {current_trend_positions + 1}/{max_positions}"
@@ -2351,6 +2389,11 @@ class AlphaNextGen(QCAlgorithm):
         """
         # Skip if indicators not ready
         if not self.qqq_adx.IsReady or not self.qqq_sma200.IsReady:
+            return
+
+        # V2.27: Tier 1 blocks new options entries
+        if self._last_risk_result is not None and not self._last_risk_result.can_enter_options:
+            self.Log("OPTIONS_EOD: Blocked by KS Tier 1 (REDUCE)")
             return
 
         # V2.27: Skip-day enforcement after Tier 2+ kill switch
