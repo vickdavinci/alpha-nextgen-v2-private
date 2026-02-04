@@ -25,6 +25,7 @@ from engines.core.cold_start_engine import ColdStartEngine, ColdStartState
 # Core engine re-exports
 from engines.core.regime_engine import RegimeEngine, RegimeState
 from engines.core.risk_engine import RiskCheckResult, RiskEngine, SafeguardStatus, SafeguardType
+from engines.core.startup_gate import StartupGate
 from engines.core.trend_engine import TrendEngine, TrendPosition
 from engines.satellite.hedge_engine import HedgeAllocation, HedgeEngine
 
@@ -43,6 +44,7 @@ __all__ = [
     "SafeguardStatus",
     "ColdStartEngine",
     "ColdStartState",
+    "StartupGate",
     "TrendEngine",
     "TrendPosition",
     # Satellite

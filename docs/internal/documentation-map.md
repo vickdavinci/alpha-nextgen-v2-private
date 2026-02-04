@@ -75,6 +75,7 @@ docs/
 | `engines/core/cold_start_engine.py` | `docs/system/06-cold-start-engine.md` |
 | `engines/core/trend_engine.py` | `docs/system/07-trend-engine.md` |
 | `engines/core/risk_engine.py` | `docs/system/12-risk-engine.md` |
+| `engines/core/startup_gate.py` | `docs/system/06-cold-start-engine.md` § 6.15, `docs/system/14-daily-operations.md`, `docs/system/ENGINE_LOGIC_REFERENCE.md` § StartupGate |
 
 ### Satellite Engines (engines/satellite/)
 
@@ -184,4 +185,4 @@ This map should be updated when:
 - New documentation files are created
 - New patterns of code-to-doc relationships emerge
 
-**Last Updated:** 3 February 2026 (V2.24.2 — Added scripts/ mapping, updated structure)
+**Last Updated:** 4 February 2026 (V2.29 — Added startup_gate.py mapping)

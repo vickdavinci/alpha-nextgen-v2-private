@@ -84,6 +84,9 @@
 | 2l | 1 month (Jan 2025) | V2.24.2 Runtime Error + DTE Double-Filter + Push Fix | **Ready to Run** ⏳ | 2026-02-03 |
 | 2m | 1 year (2015) | V2.26 Drawdown Governor + Chop Detector | **Ready to Run** ⏳ | 2026-02-03 |
 | 2n | 1 year (2015) | V2.27 Graduated KS + Win Rate Gate | **Ready to Run** ⏳ | 2026-02-03 |
+| 2o | 1 year (2015) | V2.28.1 Tightened Governor | **-9.07%, -9.3% DD** ✅ | 2026-02-04 |
+| 2p | 1 year (2015) | V2.29 Strike Force (Ghost Flush + Dynamic Recovery + StartupGate) | **Ready to Run** ⏳ | 2026-02-04 |
+| 2q | 1 year (2015) | V2.30 All-Weather StartupGate + Bearish Options Path Fix | **Ready to Run** ⏳ | 2026-02-04 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
@@ -736,6 +739,106 @@ Runtime Error: TypeError at _process_immediate_signals → self.Log(... trades_o
 | Period | Version | Return | Sharpe | Max DD | Status |
 |--------|---------|-------:|-------:|-------:|:------:|
 | 2015 Full Year | V2.27 | | | | ⏳ Pending |
+
+---
+
+### V2.29: "Strike Force" — Ghost Spread Flush + Dynamic Recovery + StartupGate (2026-02-04) — COMPLETE ✅
+
+**Source:** `docs/audits/V2_28_1_2015_FullYear_audit_report.md` — Forensic audit of 2015 full-year backtest.
+**Branch:** `testing/va/stage2-backtest`
+
+**Root Cause Analysis:** V2.28.1 2015 backtest revealed 3 critical issues:
+1. Ghost spread state persisted for 12 months (43,291 SPREAD_EXIT_WARNING logs)
+2. Governor recovery trap — 50% allocation for 358 days (12% threshold unreachable)
+3. Cold Start oversizing — 25% SSO + 10.8% spread risk in first 5 days
+
+| # | Fix | Priority | Status |
+|:-:|-----|:--------:|:------:|
+| P0 | **Ghost Spread State Flush** — 3-layer reconciliation (OnOrderEvent, portfolio check, Friday safety net) | P0 | ✅ |
+| P1 | **Dynamic Governor Recovery** — `effective_recovery = base × scale` (8% base). At 50% governor → 4% threshold. Config: `DRAWDOWN_GOVERNOR_RECOVERY_BASE = 0.08` | P1 | ✅ |
+| P2+P3 | **StartupGate** — One-time arming sequence (REGIME_GATE → OBSERVATION → REDUCED → FULLY_ARMED). Separate from ColdStart, never resets on kill switch. | P2 | ✅ |
+| — | **State Cleanup Audit** — Fixed 2 gaps: governor shutdown missing `cancel_pending_spread_entry()`, kill switch `clear_all_positions()` missing 6 fields | P0 | ✅ |
+
+**P0: Ghost Spread State Flush (3 layers):**
+- **Layer A:** `OnOrderEvent` — Clear spread state after both legs fill
+- **Layer B:** `OnOrderEvent` — Portfolio-based check after any option fill (neither leg held → clear)
+- **Layer C:** `_on_friday_firewall()` → `_reconcile_spread_state()` — Weekly safety net
+
+**P1: Dynamic Governor Recovery:**
+```
+effective_recovery = DRAWDOWN_GOVERNOR_RECOVERY_BASE × governor_scale
+At 100% scale → 8% recovery needed
+At 50% scale → 4% recovery needed (was 12% flat — unreachable)
+At 25% scale → 2% recovery needed
+```
+
+**P2+P3: StartupGate (NEW CLASS: `engines/core/startup_gate.py`):**
+```
+Launch → REGIME_GATE (100% cash, wait 10 consecutive days regime > 60)
+       → OBSERVATION (10 days, no trades)
+       → REDUCED (10 days, 10% max per position)
+       → FULLY_ARMED (permanent, no restrictions)
+```
+- Independent from ColdStartEngine (ColdStart unchanged)
+- Persisted via StateManager (key: `ALPHA_NEXTGEN_STARTUP_GATE`)
+- Config: 6 new `STARTUP_GATE_*` params
+
+**Files Modified:**
+- `main.py` — P0 (3 reconciliation layers), P2+P3 (init, EOD gate, warm entry block, intraday block, persistence)
+- `config.py` — P1 (`DRAWDOWN_GOVERNOR_RECOVERY_BASE`), P2+P3 (6 new `STARTUP_GATE_*` params)
+- `engines/core/risk_engine.py` — P1 (dynamic recovery formula)
+- `engines/core/startup_gate.py` — **NEW FILE** (StartupGate class)
+- `engines/__init__.py` — StartupGate re-export
+- `persistence/state_manager.py` — StartupGate save/load, `save_all`/`load_all` updated
+- `engines/satellite/options_engine.py` — `clear_all_positions()` completeness fix (6 missing fields)
+
+**Files NOT Modified:**
+- `engines/core/cold_start_engine.py` — ZERO changes (by design)
+
+**Tests:** 1344 passed, 1 failed (pre-existing KS threshold test from V2.28.1)
+
+---
+
+### V2.30: "All-Weather" — StartupGate Redesign + Bearish Options Path Fix (2026-02-04) — COMPLETE ✅
+
+**Source:** V2.29 backtest analysis — StartupGate regime dependency blocked hedges/bearish options during bear markets, defeating the purpose of an "all-weather" system.
+**Branch:** `testing/va/stage2-backtest`
+
+**Root Cause Analysis:** V2.29 StartupGate had 3 design problems:
+1. REGIME_GATE required 10 consecutive regime > 60 days — impossible in bear markets, blocking ALL engines including hedges
+2. OBSERVATION/REDUCED phases blocked ALL engines — hedges should never be gated
+3. Options outer `if regime >= 40` gate blocked PUT spreads in regime < 40, limiting bearish window to only 40-44
+
+| # | Fix | Priority | Status |
+|:-:|-----|:--------:|:------:|
+| P0 | **StartupGate Rewrite** — Time-based phases: INDICATOR_WARMUP (5d) → OBSERVATION (5d) → REDUCED (5d) → FULLY_ARMED. 15 days total, no regime dependency. | P0 | ✅ |
+| P1 | **Granular Engine Gating** — `allows_hedges()` (always), `allows_yield()` (always), `allows_bearish_options()` (OBSERVATION+), `allows_directional_longs()` (REDUCED+) | P1 | ✅ |
+| P2 | **Bearish Options Path Fix** — Removed outer `regime >= 40` gate. New `_generate_options_signals_gated()` routes by direction. Bearish needs `allows_bearish_options()`, bullish needs `allows_directional_longs()`. | P2 | ✅ |
+| P3 | **State Cleanup** — `clear_all_positions()` now clears 16 fields (was 13). Added: `_pending_stop_price`, `_pending_target_price`, `_pending_intraday_exit` | P3 | ✅ |
+
+**Design Principle:** "The gate controls HOW MUCH capital to deploy. The regime controls WHAT to deploy it in."
+
+**StartupGate V2.30 Phases:**
+```
+Launch → INDICATOR_WARMUP (5 days, hedges + yield only)
+       → OBSERVATION (5 days, hedges + yield + bearish options at 50%)
+       → REDUCED (5 days, all engines at 50%)
+       → FULLY_ARMED (permanent, no restrictions)
+```
+
+**Config Changes:**
+- Removed: `STARTUP_GATE_REGIME_DAYS`, `STARTUP_GATE_REGIME_MIN_SCORE`, `STARTUP_GATE_REDUCED_MAX_WEIGHT`
+- Added: `STARTUP_GATE_WARMUP_DAYS = 5`, `STARTUP_GATE_REDUCED_SIZE_MULT = 0.50`
+- Changed: `STARTUP_GATE_OBSERVATION_DAYS` 10→5, `STARTUP_GATE_REDUCED_DAYS` 10→5
+
+**Files Modified:**
+- `engines/core/startup_gate.py` — Complete rewrite: time-based phases, granular API
+- `main.py` — EOD: hedges always run, direction-aware options gating. Intraday: `_scan_options_signals_gated()`
+- `config.py` — 3 params removed, 2 added, 2 changed
+- `engines/satellite/options_engine.py` — `clear_all_positions()` +3 fields (16 total)
+- `persistence/state_manager.py` — State shape: `{phase, days_in_phase}`, backward compat
+
+**Persistence:** State key `ALPHA_NEXTGEN_STARTUP_GATE` unchanged. Shape changed to `{phase, days_in_phase}`. `restore_state()` maps `REGIME_GATE` → `INDICATOR_WARMUP`, reads `arming_days` as fallback for `days_in_phase`.
 
 ---
 
@@ -2730,4 +2833,67 @@ pytest tests/test_smoke_integration.py -v
 
 ---
 
-*Last Updated: 03 February 2026 (V2.24.2 Runtime Error + DTE Double-Filter + Push 413 Fix)*
+---
+
+## V2.28 Risk Tuning Log (2026-02-04)
+
+> **Purpose:** Track all governor/kill switch threshold changes across backtest runs.
+> Use this to optimize for different market regimes without losing history.
+
+### V2.28.0 — Initial Bug Fixes (Commit: `2527f4f`)
+
+**5 bugs fixed from V2.27 Q1 2022 diagnosis (-33.1% DD):**
+
+1. Spread-aware Governor SHUTDOWN liquidation (close short leg first)
+2. Gate intraday options when governor < threshold
+3. Early exercise guard (ITM single-leg at DTE ≤ 2)
+4. Record intraday option results for Win Rate Gate
+5. Raise governor recovery threshold
+
+### Threshold History
+
+| Parameter | V2.27 (original) | V2.28.0 | V2.28.1 (tightened) | Notes |
+|-----------|:-:|:-:|:-:|-------|
+| **KS Tier 1** | 3% | 3% | **2%** | Daily loss → REDUCE |
+| **KS Tier 2** | 5% | 5% | **4%** | Daily loss → TREND_EXIT |
+| **KS Tier 3** | 8% | 8% | **6%** | Daily loss → FULL_EXIT |
+| **Governor -75%** | -5% | -5% | **-3%** | First scaling step |
+| **Governor -50%** | -10% | -10% | **-6%** | Half allocation |
+| **Governor -25%** | -15% | -15% | **-10%** | Quarter allocation |
+| **Governor SHUTDOWN** | -20% | -20% | **-15%** | Full cash mode |
+| **Governor Recovery** | 5% | 10% | **12%** | Recovery from trough before step-up |
+| **Intraday Options Gate** | > 0% | ≥ 0.75 | **= 1.0** | Governor scale needed for intraday options |
+
+### Backtest Results by Configuration
+
+| Config | Period | Return | Max DD | Orders | Verdict |
+|--------|--------|:------:|:------:|:------:|---------|
+| V2.27 | Q1 2022 | -10.4% | **-33.1%** | 209 | Spreads stuck, governor didn't protect |
+| V2.28.0 | Q1 2022 | -10.4% | **-10.4%** | 22 | DD cut by 22pp, governor working |
+| V2.25 | 2015 Full | ~-42% | **-42%** | ~285 | 19 kill switches, options bled capital |
+| V2.28.0 | 2015 Full | -78.9% | **-82.3%** | 222 | Governor blocked recovery, worse than V2.25 |
+| V2.28.0 | 2025 Full | -37.2% | **-71.3%** | 443 | Bull market, still losing — core spread problem |
+| V2.28.1 | Q1 2022 | -9.3% | **-9.3%** | 15 | Marginal improvement over V2.28.0, fewer trades |
+| V2.28.1 | 2015 Full | -9.1% | **-9.3%** | 22 | DD cut from -82% to -9.3%, governor keeping algo in cash |
+| V2.28.1 | 2025 Full | -4.9% | **-6.5%** | 31 | DD cut from -71% to -6.5%, but missed bull rally (QQQ +25%) |
+
+### Key Insight
+
+The governor/KS **trade off bear protection vs bull recovery:**
+- Tight triggers → great in bear (Q1 2022: -10% DD) but cripple bull recovery (2015: -79%)
+- Loose triggers → allow bull profits but amplify bear losses (V2.27 Q1 2022: -33% DD)
+- **The core problem may be the spread strategy itself**, not the safety triggers. Spreads show 94% loss rate in 2015 and net-negative in all tested periods.
+
+### Regime-Specific Optimization Notes
+
+| Regime | Ideal KS Tier 1 | Ideal Governor Start | Notes |
+|--------|:---:|:---:|-------|
+| Bear (Q1 2022) | 2-3% | -3% to -5% | Cut losses early, go to cash |
+| Choppy/Flat (2015) | 5%+ | -10%+ | Avoid whipsaw, let positions breathe |
+| Bull (2024-2025) | 5%+ | -10%+ | Stay invested, ride momentum |
+| Crisis (Aug 2015) | 2-3% | -3% | Immediate protection |
+
+> **Next Steps:** Consider regime-adaptive thresholds — use VIX level or regime score
+> to dynamically adjust KS/governor sensitivity instead of static values.
+
+*Last Updated: 04 February 2026 (V2.30 All-Weather StartupGate)*

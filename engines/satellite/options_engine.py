@@ -5156,12 +5156,24 @@ class OptionsEngine:
             self._swing_position = None
             cleared.append("swing")
 
-        # Also clear pending state
+        # Clear ALL pending state — every _pending_* and _entry_* field from __init__
+        # V2.30: Complete list (V2.29 missed _pending_stop_price, _pending_target_price,
+        # _pending_intraday_exit). Stale pending state = zombie bugs.
         self._pending_contract = None
         self._pending_intraday_entry = False
+        self._pending_intraday_exit = False
         self._pending_spread_long_leg = None
         self._pending_spread_short_leg = None
         self._pending_spread_width = None
+        self._pending_spread_type = None
+        self._pending_net_debit = None
+        self._pending_max_profit = None
+        self._pending_num_contracts = None
+        self._pending_entry_score = None
+        self._pending_stop_pct = None
+        self._pending_stop_price = None
+        self._pending_target_price = None
+        self._entry_attempted_today = False
 
         if cleared:
             self.log(

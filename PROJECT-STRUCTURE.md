@@ -1,7 +1,7 @@
 # Alpha NextGen - Project File Structure
 
-> **Last Updated:** 3 February 2026
-> **Status:** V2.24.2 — DTE Double-Filter Fix, Runtime Error Fix, Push 413 Fix
+> **Last Updated:** 4 February 2026
+> **Status:** V2.30 — All-Weather StartupGate, Bearish Options Path Fix
 
 ---
 
@@ -34,6 +34,7 @@ flowchart TD
             E_CAPITAL["capital_engine.py<br/><i>Phase mgmt, lockbox</i>"]
             E_RISK["risk_engine.py<br/><i>Circuit breakers, Greeks</i>"]
             E_COLD["cold_start_engine.py<br/><i>Days 1-5 warm entry</i>"]
+            E_GATE["startup_gate.py<br/><i>V2.30: All-weather time-based arming</i>"]
             E_TREND["trend_engine.py<br/><i>MA200+ADX QLD/SSO/TNA/FAS 40%</i>"]
         end
         subgraph SATELLITE["satellite/ (conditional)"]

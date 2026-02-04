@@ -200,7 +200,8 @@ alpha-nextgen/
 │   │   ├── regime_engine.py    # Market state detection
 │   │   ├── capital_engine.py   # Position sizing
 │   │   ├── risk_engine.py      # Circuit breakers
-│   │   ├── cold_start_engine.py # Startup handling
+│   │   ├── cold_start_engine.py # Startup handling (resets on kill switch)
+│   │   ├── startup_gate.py     # V2.30: All-weather time-based arming (permanent)
 │   │   └── trend_engine.py     # MA200+ADX (40%)
 │   └── satellite/              # Conditional engines
 │       ├── mean_reversion_engine.py # Intraday bounce (0-10%)
@@ -239,6 +240,7 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 | **Capital Engine** | `engines/core/capital_engine.py` | `docs/05-capital-engine.md` | Phase management, lockbox, tradeable equity |
 | **Risk Engine** | `engines/core/risk_engine.py` | `docs/12-risk-engine.md` | All circuit breakers and safeguards |
 | **Cold Start Engine** | `engines/core/cold_start_engine.py` | `docs/06-cold-start-engine.md` | Days 1-5 warm entry logic |
+| **Startup Gate** | `engines/core/startup_gate.py` | `docs/system/ENGINE_LOGIC_REFERENCE.md` | V2.30: All-weather time-based arming (INDICATOR_WARMUP → OBSERVATION → REDUCED → FULLY_ARMED). 15 days, no regime dependency. |
 | **Trend Engine** | `engines/core/trend_engine.py` | `docs/07-trend-engine.md` | MA200 + ADX trend signals for QLD/SSO/TNA/FAS (55%) |
 
 ### Satellite Engines (engines/satellite/)

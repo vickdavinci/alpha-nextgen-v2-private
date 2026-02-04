@@ -6,11 +6,19 @@
 
 ## Overview
 
-> **Last Updated**: 3 February 2026 (V2.24.2)
+> **Last Updated**: 4 February 2026 (V2.30)
 
 The **Options Engine** implements a dual-mode architecture for QQQ options trading. This is a **satellite engine** (25% allocation) with two distinct operating modes based on DTE (days to expiration).
 
-> **V2.24.2 Revision** (Latest):
+> **V2.30 Revision** (Latest):
+> - Bearish Options Path Fix: Removed outer `regime >= 40` gate that blocked PUT spreads below regime 40
+> - Direction-aware gating: `_generate_options_signals_gated()` routes bullish vs bearish separately
+> - Bullish options (regime > 60) require StartupGate `allows_directional_longs()`
+> - Bearish options (regime < 45) require StartupGate `allows_bearish_options()` (available from OBSERVATION phase)
+> - Intraday gating via `_scan_options_signals_gated()` (same direction-aware logic)
+> - `clear_all_positions()` now clears 16 fields (was 13): added `_pending_stop_price`, `_pending_target_price`, `_pending_intraday_exit`
+>
+> **V2.24.2 Revision**:
 > - DTE Double-Filter Fix: `select_spread_legs()` and `check_spread_entry_signal()` accept `dte_min`/`dte_max` params
 > - Elastic Delta Bands (V2.24.1): Progressive widening when no candidates found
 > - VASS-routed DTE ranges now properly override `config.SPREAD_DTE_MIN`/`SPREAD_DTE_MAX`
@@ -998,6 +1006,41 @@ Exit: Crisis resolution OR expiry
 - 30 minutes before market close
 - Time to handle any execution issues
 - Avoids overnight gamma risk on 0-DTE
+
+---
+
+## 18.1 State Cleanup Completeness (V2.29/V2.30)
+
+### 18.1.1 clear_all_positions()
+
+The `clear_all_positions()` method now clears ALL pending entry state fields (16 total). V2.29 added 6 fields, V2.30 added 3 more, preventing ghost pending state after kill switch or governor shutdown:
+
+**Complete field list cleared (16 fields):**
+- `_spread_position` → None
+- `_swing_position` → None
+- `_pending_spread_long_leg` → None
+- `_pending_spread_short_leg` → None
+- `_pending_spread_orders` → {}
+- `_pending_intraday_entry` → None
+- `_pending_spread_type` → None (V2.29 fix)
+- `_pending_net_debit` → None (V2.29 fix)
+- `_pending_max_profit` → None (V2.29 fix)
+- `_pending_num_contracts` → None (V2.29 fix)
+- `_pending_entry_score` → None (V2.29 fix)
+- `_pending_stop_pct` → None (V2.29 fix)
+- `_entry_attempted_today` → False (V2.29 fix)
+- `_pending_stop_price` → None (V2.30 fix)
+- `_pending_target_price` → None (V2.30 fix)
+- `_pending_intraday_exit` → None (V2.30 fix)
+
+### 18.1.2 cancel_pending_spread_entry() and cancel_pending_intraday_entry()
+
+These two methods are now called in ALL liquidation paths:
+- Kill switch Tier 3 (full liquidation)
+- Governor shutdown (`_liquidate_all_spread_aware`)
+- Margin call circuit breaker
+
+This prevents stale pending state from blocking new entries after a crisis recovery.
 
 ---
 

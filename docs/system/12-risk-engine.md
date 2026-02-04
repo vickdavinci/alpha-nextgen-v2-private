@@ -859,6 +859,97 @@ The system tracks the highest active circuit breaker level (0-5):
 
 ---
 
+## 12.18 Drawdown Governor (V2.26)
+
+The Drawdown Governor provides cumulative high-watermark-based drawdown protection. It scales all engine allocations based on how far equity has fallen from peak.
+
+### 12.18.1 Governor Levels
+
+| Drawdown from HWM | Governor Scale | Effect |
+|:------------------:|:--------------:|--------|
+| < 3% | 100% | Full allocation |
+| 3-6% | 75% | Moderate reduction |
+| 6-10% | 50% | Significant reduction |
+| 10-15% | 25% | Severe restriction |
+| > 15% | 0% | Full shutdown |
+
+### 12.18.2 Dynamic Recovery (V2.29)
+
+The recovery threshold scales with the current governor level to prevent the "recovery trap" — where reduced allocations make it impossible to earn back to the recovery threshold.
+
+**Formula:**
+```
+effective_recovery = DRAWDOWN_GOVERNOR_RECOVERY_BASE × governor_scale
+```
+
+| Governor Scale | Recovery Base | Effective Recovery |
+|:--------------:|:------------:|:------------------:|
+| 100% | 8% | 8% |
+| 75% | 8% | 6% |
+| 50% | 8% | 4% |
+| 25% | 8% | 2% |
+
+**Config:** `DRAWDOWN_GOVERNOR_RECOVERY_BASE = 0.08` (defined in `config.py`, not hardcoded)
+
+When `recovery_pct >= effective_recovery`, the governor steps up one level.
+
+### 12.18.3 Persistence
+
+Governor state is persisted via `StateManager`:
+- `_equity_high_watermark`
+- `_governor_scale`
+- `_dd_trough`
+
+---
+
+## 12.19 Ghost Spread State Flush (V2.29 P0)
+
+### 12.19.1 Problem
+
+When both legs of a spread are filled, `OnOrderEvent` tracked fill status but never called `remove_spread_position()`. This left a "ghost" spread state that generated `SPREAD_EXIT_WARNING` logs every minute indefinitely (43,291 warnings in the 2015 backtest).
+
+### 12.19.2 Three-Layer Reconciliation
+
+| Layer | Location | Trigger | Purpose |
+|:-----:|----------|---------|--------|
+| A | `OnOrderEvent` | Both legs filled | Immediate cleanup after fill |
+| B | `OnOrderEvent` | Any option fill | Portfolio-based verification |
+| C | `_on_friday_firewall()` | Weekly | Catch any remaining ghost states |
+
+**Layer A:** After both entry legs are confirmed filled, immediately clear spread state and router margins.
+
+**Layer B:** After any option fill, check if spread state exists but neither leg is held in the portfolio — if so, clear the ghost state.
+
+**Layer C:** Every Friday, `_reconcile_spread_state()` checks if spread state exists but no options are held in the portfolio. Serves as a weekly safety net.
+
+### 12.19.3 State Cleanup in Liquidation Paths
+
+All liquidation paths now clear pending options entry state:
+
+| Path | Clears |
+|------|--------|
+| Kill Switch (`clear_all_positions`) | All pending spread + intraday fields |
+| Governor Shutdown (`_liquidate_all_spread_aware`) | `cancel_pending_spread_entry()` + `cancel_pending_intraday_entry()` |
+| Margin CB Shutdown | Same as Governor |
+
+---
+
+## 12.20 Kill Switch Tiered Thresholds (V2.28.1)
+
+V2.28.1 introduced graduated kill switch thresholds:
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `KS_TIER_1_PCT` | 0.02 | 2% — First warning, reduce sizing 50% |
+| `KS_TIER_2_PCT` | 0.04 | 4% — Block all new entries |
+| `KS_TIER_3_PCT` | 0.06 | 6% — Full liquidation + cold start reset |
+
+**Note:** The `KILL_SWITCH_PCT` config value (0.05) is now overridden by the tiered system. Tier 3 at 6% is the actual full liquidation trigger.
+
+---
+
+*Last updated: 04 February 2026 (V2.30)*
+
 *Next Section: [13 - Execution Engine](13-execution-engine.md)*
 
 *Previous Section: [11 - Portfolio Router](11-portfolio-router.md)*

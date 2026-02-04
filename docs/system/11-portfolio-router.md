@@ -1,6 +1,6 @@
 # Section 11: Portfolio Router
 
-*Last Updated: 3 February 2026 (V2.24.2)*
+*Last Updated: 4 February 2026 (V2.30)*
 
 ## 11.1 Purpose and Philosophy
 
@@ -1027,6 +1027,37 @@ At 15:45 ET:
 | **Atomic spread close with fallback** | Combo order first, then sequential (short-first) if needed | V2.17-BT |
 | **Ghost margin cleanup** | Keeps router margin state in sync after force-clear events | V2.18.2 |
 | **Leverage-adjusted source limits** | Accounts for 2x/3x ETF margin consumption, not just allocation weight | V2.3.24 |
+| **Ghost spread state reconciliation** | Multi-layer cleanup prevents orphaned margin reservations and stale pending state | V2.29 |
+
+---
+
+## 11.25 Ghost Spread State Management (V2.29)
+
+### 11.25.1 Problem
+
+When spread positions are closed (both legs filled), the options engine's internal `_spread_position` state was not being cleared, creating a "ghost" state. This ghost state:
+- Generated continuous `SPREAD_EXIT_WARNING` logs (43,291 in 2015 backtest)
+- May have blocked new spread entries
+- Consumed log bandwidth causing truncation
+
+### 11.25.2 Reconciliation Layers
+
+The Portfolio Router participates in ghost spread cleanup via `clear_all_spread_margins()`:
+
+| Layer | Trigger | Router Action |
+|:-----:|---------|---------------|
+| A | Both spread legs fill | `clear_all_spread_margins()` |
+| B | Portfolio check (no legs held) | `clear_all_spread_margins()` |
+| C | Friday firewall | `clear_all_spread_margins()` |
+
+### 11.25.3 State Cleanup in Liquidation
+
+All liquidation paths (`_liquidate_all_spread_aware`) now call:
+1. `options_engine.cancel_pending_spread_entry()`
+2. `options_engine.cancel_pending_intraday_entry()`
+3. `portfolio_router.clear_all_spread_margins()`
+
+This ensures no orphaned margin reservations or pending entry state survives a governor shutdown or kill switch.
 
 ---
 

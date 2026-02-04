@@ -611,6 +611,31 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 ---
 
+## 16.9.1 Startup Gate Parameters (V2.30)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `STARTUP_GATE_ENABLED` | True | Master toggle for startup gate |
+| `STARTUP_GATE_WARMUP_DAYS` | 5 | Indicator warmup phase duration |
+| `STARTUP_GATE_OBSERVATION_DAYS` | 5 | Observation phase duration (V2.30: was 10) |
+| `STARTUP_GATE_REDUCED_DAYS` | 5 | Reduced phase duration (V2.30: was 10) |
+| `STARTUP_GATE_REDUCED_SIZE_MULT` | 0.50 | Size multiplier during OBSERVATION/REDUCED phases |
+
+### Phase Progression
+
+| Phase | Duration | Hedges/Yield | Bearish Options | Directional Longs | Size Mult |
+|-------|:--------:|:------------:|:---------------:|:-----------------:|:---------:|
+| INDICATOR_WARMUP | 5 days | Allowed | Blocked | Blocked | 0% |
+| OBSERVATION | 5 days | Allowed | Allowed (50%) | Blocked | 50% |
+| REDUCED | 5 days | Allowed | Allowed (50%) | Allowed (50%) | 50% |
+| FULLY_ARMED | Permanent | Allowed | Allowed | Allowed | 100% |
+
+> **V2.30 Design:** All-weather time-based system. No regime dependency. 15 days total. Hedges/yield never gated. Bearish options available from OBSERVATION. One-time and permanent. Never resets on kill switch. Separate from ColdStartEngine.
+>
+> **V2.30 Removed:** `STARTUP_GATE_REGIME_DAYS`, `STARTUP_GATE_REGIME_MIN_SCORE`, `STARTUP_GATE_REDUCED_MAX_WEIGHT`
+
+---
+
 ## 16.10 Risk Engine Parameters
 
 ### Kill Switch
@@ -659,6 +684,37 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 |-----------|:-----:|-------------|
 | `TIME_GUARD_START` | 13:55 ET | Start of blocked window |
 | `TIME_GUARD_END` | 14:10 ET | End of blocked window |
+
+### Drawdown Governor (V2.26)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `DRAWDOWN_GOVERNOR_LEVELS` | [(0.03, 0.75), (0.06, 0.50), (0.10, 0.25), (0.15, 0.0)] | DD% → scale pairs |
+
+### Dynamic Governor Recovery (V2.29)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `DRAWDOWN_GOVERNOR_RECOVERY_BASE` | 0.08 | Base recovery threshold (scaled by governor level) |
+
+**Formula:** `effective_recovery = DRAWDOWN_GOVERNOR_RECOVERY_BASE × governor_scale`
+
+| Governor Scale | Effective Recovery |
+|:--------------:|:------------------:|
+| 100% | 8% |
+| 75% | 6% |
+| 50% | 4% |
+| 25% | 2% |
+
+> **V2.29 change:** Replaced flat `DRAWDOWN_GOVERNOR_RECOVERY_PCT = 0.12` with dynamic formula. Prevents "recovery trap" at reduced allocations.
+
+### Kill Switch Tiers (V2.28.1)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `KS_TIER_1_PCT` | 0.02 | 2% — Reduce sizing 50% |
+| `KS_TIER_2_PCT` | 0.04 | 4% — Block all new entries |
+| `KS_TIER_3_PCT` | 0.06 | 6% — Full liquidation + cold start reset |
 
 ---
 
@@ -1082,6 +1138,25 @@ VOL_SHOCK_PAUSE_MIN = 15
 # Time Guard
 TIME_GUARD_START = "13:55"
 TIME_GUARD_END = "14:10"
+
+# Drawdown Governor (V2.26)
+DRAWDOWN_GOVERNOR_LEVELS = [(0.03, 0.75), (0.06, 0.50), (0.10, 0.25), (0.15, 0.0)]
+
+# V2.29 P1: Dynamic recovery — scales with governor level
+# Effective = base × current_scale: 100%→8%, 75%→6%, 50%→4%, 25%→2%
+DRAWDOWN_GOVERNOR_RECOVERY_BASE = 0.08
+
+# Kill Switch Tiers (V2.28.1)
+KS_TIER_1_PCT = 0.02   # 2% — Reduce sizing 50%
+KS_TIER_2_PCT = 0.04   # 4% — Block all new entries
+KS_TIER_3_PCT = 0.06   # 6% — Full liquidation + cold start reset
+
+# V2.30: All-Weather Startup Gate (time-based, no regime dependency, never resets on kill switch)
+STARTUP_GATE_ENABLED = True
+STARTUP_GATE_WARMUP_DAYS = 5            # 5 days indicator warmup (hedges + yield only)
+STARTUP_GATE_OBSERVATION_DAYS = 5       # 5 days observation (+ bearish options at 50%)
+STARTUP_GATE_REDUCED_DAYS = 5           # 5 days reduced (all engines at 50%)
+STARTUP_GATE_REDUCED_SIZE_MULT = 0.50   # 50% sizing during OBSERVATION/REDUCED phases
 
 # =============================================================================
 # V2.1 CIRCUIT BREAKER SYSTEM (5 Levels)

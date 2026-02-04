@@ -383,19 +383,22 @@ class RiskEngine:
             if dd_pct >= threshold:
                 target_scale = scale
 
-        # Hysteresis: only step UP when equity recovers RECOVERY_PCT from trough
+        # Hysteresis: only step UP when equity recovers dynamically from trough
         if target_scale > self._governor_scale:
             # Attempting to step UP — check recovery from trough
             if self._trough_equity > 0:
                 recovery_pct = (current_equity - self._trough_equity) / self._trough_equity
-                if recovery_pct < config.DRAWDOWN_GOVERNOR_RECOVERY_PCT:
+                # V2.29 P1: Dynamic recovery — lower bar at reduced allocations
+                dynamic_recovery = config.DRAWDOWN_GOVERNOR_RECOVERY_BASE * self._governor_scale
+                if recovery_pct < dynamic_recovery:
                     # Not enough recovery yet — hold current scale
                     target_scale = self._governor_scale
                 else:
                     # Recovery confirmed — step up and reset trough
                     self.log(
                         f"DRAWDOWN_GOVERNOR: STEP_UP | "
-                        f"Recovery={recovery_pct:.1%} >= {config.DRAWDOWN_GOVERNOR_RECOVERY_PCT:.0%} | "
+                        f"Recovery={recovery_pct:.1%} >= {dynamic_recovery:.1%} "
+                        f"(base={config.DRAWDOWN_GOVERNOR_RECOVERY_BASE:.0%} × scale={self._governor_scale:.0%}) | "
                         f"Scale {self._governor_scale:.0%} → {target_scale:.0%}"
                     )
                     self._trough_equity = current_equity

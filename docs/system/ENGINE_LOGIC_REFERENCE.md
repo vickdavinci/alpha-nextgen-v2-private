@@ -3,7 +3,7 @@
 > **Purpose:** Complete reference for all engine logic, conditions, and config values.
 > This document enables developers to understand the entire trading system flow.
 >
-> **Last Updated:** 3 February 2026 (V2.24.2)
+> **Last Updated:** 04 February 2026 (V2.30)
 
 ---
 
@@ -14,13 +14,14 @@
 3. [Capital Engine](#capital-engine)
 4. [Risk Engine](#risk-engine)
 5. [Cold Start Engine](#cold-start-engine)
-6. [Trend Engine](#trend-engine)
-7. [Mean Reversion Engine](#mean-reversion-engine)
-8. [Options Engine](#options-engine)
-9. [Hedge Engine](#hedge-engine)
-10. [Yield Sleeve](#yield-sleeve)
-11. [Portfolio Router](#portfolio-router)
-12. [Key Thresholds Quick Reference](#key-thresholds-quick-reference)
+6. [Startup Gate (V2.30)](#startup-gate-v230)
+7. [Trend Engine](#trend-engine)
+8. [Mean Reversion Engine](#mean-reversion-engine)
+9. [Options Engine](#options-engine)
+10. [Hedge Engine](#hedge-engine)
+11. [Yield Sleeve](#yield-sleeve)
+12. [Portfolio Router](#portfolio-router)
+13. [Key Thresholds Quick Reference](#key-thresholds-quick-reference)
 
 ---
 
@@ -40,10 +41,10 @@
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                            CORE ENGINES                                     │
 ├──────────────────┬────────────────────┬─────────────────────────────────────┤
-│  REGIME ENGINE   │   CAPITAL ENGINE   │          RISK ENGINE                │
-│  Score 0-100     │   Phase: SEED/     │   Kill Switch: 5% loss              │
-│  5-Factor V2.3   │   GROWTH/MATURE    │   Panic Mode: SPY -4%               │
-│  Smoothing 0.3   │   Lockbox          │   Weekly Breaker: 5%                │
+│  REGIME ENGINE   │   CAPITAL ENGINE   │   RISK ENGINE     │  STARTUP GATE   │
+│  Score 0-100     │   Phase: SEED/     │   Kill Switch     │  V2.30          │
+│  5-Factor V2.3   │   GROWTH/MATURE    │   Governor V2.26  │  All-Weather    │
+│  Smoothing 0.3   │   Lockbox          │   Ghost Flush P0  │  4 phases 15d   │
 └──────────────────┴────────────────────┴─────────────────────────────────────┘
                                     │
                                     ▼
@@ -275,6 +276,26 @@ When the system detects `MARGIN_CALL_MAX_CONSECUTIVE` (5) consecutive margin cal
 7. **Vol Shock** - 15-minute pause
 8. **Time Guard** - Block entries 13:55-14:10
 
+### Drawdown Governor (V2.26) + Dynamic Recovery (V2.29)
+
+| Drawdown from HWM | Scale | Recovery Threshold |
+|:------------------:|:-----:|:------------------:|
+| < 3% | 100% | 8% |
+| 3-6% | 75% | 6% |
+| 6-10% | 50% | 4% |
+| 10-15% | 25% | 2% |
+| > 15% | 0% | — |
+
+**V2.29 Dynamic Recovery:** `effective_recovery = DRAWDOWN_GOVERNOR_RECOVERY_BASE × governor_scale`
+Config: `DRAWDOWN_GOVERNOR_RECOVERY_BASE = 0.08`
+
+### Ghost Spread State Flush (V2.29 P0)
+
+Three-layer reconciliation to prevent ghost spread state:
+1. **OnOrderEvent** — Clear spread after both legs fill
+2. **Portfolio check** — Clear if neither leg held after any option fill
+3. **Friday safety net** — Weekly reconciliation clears any ghost state
+
 ---
 
 ## Cold Start Engine
@@ -311,6 +332,74 @@ flowchart TD
 | `WARM_ENTRY_TIME` | "10:00" | Earliest warm entry time |
 | `WARM_REGIME_MIN` | 50 | Minimum regime score for warm entry |
 | `OPTIONS_COLD_START_MULTIPLIER` | 0.50 | V2.3.20: 50% options sizing during cold start |
+
+---
+
+## Startup Gate (V2.30)
+
+**File:** `engines/core/startup_gate.py`
+**Purpose:** All-weather time-based arming sequence. Separate from Cold Start (which resets on kill switch). Once fully armed, stays armed permanently. No regime dependency.
+
+**V2.30 Design Principle:** "The gate controls HOW MUCH capital to deploy. The regime controls WHAT to deploy it in."
+
+### Flowchart
+
+```mermaid
+flowchart TD
+    START[Algorithm Launch] --> P0[Phase 0: INDICATOR_WARMUP<br/>5 days, hedges + yield only]
+
+    P0 -->|5 days complete| P1[Phase 1: OBSERVATION<br/>5 days, + bearish options at 50%]
+
+    P1 -->|5 days complete| P2[Phase 2: REDUCED<br/>5 days, all engines at 50%]
+    P2 -->|5 days complete| P3[Phase 3: FULLY_ARMED<br/>Permanent, no restrictions]
+
+    P3 --> DONE[StartupGate complete<br/>Never checked again]
+```
+
+### Phase Summary
+
+| Phase | Duration | Hedges/Yield | Bearish Options | Directional Longs | Size Multiplier |
+|-------|:--------:|:------------:|:---------------:|:-----------------:|:---------------:|
+| INDICATOR_WARMUP | 5 days | Allowed | Blocked | Blocked | 0% |
+| OBSERVATION | 5 days | Allowed | Allowed (50%) | Blocked | 50% |
+| REDUCED | 5 days | Allowed | Allowed (50%) | Allowed (50%) | 50% |
+| FULLY_ARMED | Permanent | Allowed | Allowed | Allowed | 100% |
+
+### Granular API
+
+| Method | Returns | Purpose |
+|--------|:-------:|---------|
+| `allows_hedges()` | Always True | Hedges are never gated |
+| `allows_yield()` | Always True | Yield sleeve is never gated |
+| `allows_bearish_options()` | OBSERVATION+ | PUT spreads in bear markets |
+| `allows_directional_longs()` | REDUCED+ | Trend entries, MR, bullish options |
+| `get_size_multiplier()` | 0.0 / 0.50 / 1.0 | Capital scaling factor |
+
+### Config Values
+
+| Parameter | Value | Description |
+|-----------|------:|-------------|
+| `STARTUP_GATE_ENABLED` | True | Master toggle |
+| `STARTUP_GATE_WARMUP_DAYS` | 5 | Indicator warmup phase duration |
+| `STARTUP_GATE_OBSERVATION_DAYS` | 5 | Observation phase duration |
+| `STARTUP_GATE_REDUCED_DAYS` | 5 | Reduced phase duration |
+| `STARTUP_GATE_REDUCED_SIZE_MULT` | 0.50 | Size multiplier during OBSERVATION/REDUCED |
+
+### Relationship with Cold Start
+
+- **StartupGate** is one-time and permanent. Never resets on kill switch.
+- **ColdStartEngine** resets on kill switch (5-day warmup).
+- StartupGate runs FIRST. While it gates directional longs, ColdStart still counts days silently.
+- Once FULLY_ARMED, StartupGate is permanently out of the picture.
+- No cross-dependencies between the two.
+
+### Persistence
+
+Persisted via `StateManager` with key `ALPHA_NEXTGEN_STARTUP_GATE`:
+- `phase`: Current phase name
+- `days_in_phase`: Days spent in current phase
+
+Backward compatible: `restore_state()` maps `REGIME_GATE` to `INDICATOR_WARMUP`, reads `arming_days` as fallback for `days_in_phase`.
 
 ---
 
@@ -795,6 +884,10 @@ if shortfall > 0:
 | V2.23 | 2026-02-02 | Universe filter +/-25 strikes, 0-60 DTE |
 | V2.24 | 2026-02-03 | Router price failsafe, spread filter diagnostics |
 | V2.24.2 | 2026-02-03 | Runtime error fix, DTE double-filter fix, push 413 fix |
+| V2.26 | 2026-02-03 | Drawdown governor, chop detector |
+| V2.28.1 | 2026-02-04 | Graduated KS tiers (2/4/6%), tightened governor |
+| V2.29 | 2026-02-04 | Ghost spread flush, dynamic governor recovery, StartupGate |
+| V2.30 | 2026-02-04 | All-Weather StartupGate redesign, bearish options path fix |
 
 ---
 

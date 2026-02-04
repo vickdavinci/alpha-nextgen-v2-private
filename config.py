@@ -133,6 +133,18 @@ WARM_MIN_SIZE = 2_000
 OPTIONS_COLD_START_MULTIPLIER = 0.50
 
 # =============================================================================
+# V2.30: STARTUP GATE — All-Weather (one-time arming, never resets on kill switch)
+# =============================================================================
+# Separate from Cold Start. Ramps capital over 15 days while allowing defensive
+# engines (hedges, bearish options) from day 1. Regime controls WHAT trades,
+# gate controls HOW MUCH. Once FULLY_ARMED, stays armed permanently.
+STARTUP_GATE_ENABLED = True
+STARTUP_GATE_WARMUP_DAYS = 5  # Phase 0: Indicators warming up (hedges only)
+STARTUP_GATE_OBSERVATION_DAYS = 5  # Phase 1: Add bearish options (50% size)
+STARTUP_GATE_REDUCED_DAYS = 5  # Phase 2: All engines at 50% sizing
+STARTUP_GATE_REDUCED_SIZE_MULT = 0.50  # Position size multiplier during OBSERVATION + REDUCED
+
+# =============================================================================
 # TREND ENGINE
 # =============================================================================
 
@@ -360,9 +372,9 @@ KILL_SWITCH_PREEMPTIVE_PCT = 0.045  # 4.5% - triggers kill switch when in panic 
 # V2.27: Graduated Kill Switch (replaces binary -5% nuclear option)
 # 3-tier response: REDUCE → TREND_EXIT → FULL_EXIT
 KS_GRADUATED_ENABLED = True
-KS_TIER_1_PCT = 0.03  # -3% daily loss → REDUCE (halve trend, block new options)
-KS_TIER_2_PCT = 0.05  # -5% daily loss → TREND_EXIT (liquidate trend, keep spreads)
-KS_TIER_3_PCT = 0.08  # -8% daily loss → FULL_EXIT (liquidate everything)
+KS_TIER_1_PCT = 0.02  # -2% daily loss → REDUCE (halve trend, block new options)
+KS_TIER_2_PCT = 0.04  # -4% daily loss → TREND_EXIT (liquidate trend, keep spreads)
+KS_TIER_3_PCT = 0.06  # -6% daily loss → FULL_EXIT (liquidate everything)
 KS_TIER_1_TREND_REDUCTION = 0.50  # Reduce trend allocation by 50% at Tier 1
 KS_TIER_1_BLOCK_NEW_OPTIONS = True  # Block new option entries at Tier 1
 KS_SKIP_DAYS = 1  # Block new entries for 1 day after Tier 2+
@@ -400,16 +412,19 @@ TIME_GUARD_END = "14:10"
 # Bull market impact: zero drag (HWM rises continuously, governor never fires).
 DRAWDOWN_GOVERNOR_ENABLED = True
 DRAWDOWN_GOVERNOR_LEVELS = {
-    0.05: 0.75,  # At -5% from peak → 75% allocation
-    0.10: 0.50,  # At -10% from peak → 50% allocation
-    0.15: 0.25,  # At -15% from peak → 25% allocation
-    0.20: 0.00,  # At -20% from peak → CASH ONLY (SHV + hedges)
+    0.03: 0.75,  # At -3% from peak → 75% allocation
+    0.06: 0.50,  # At -6% from peak → 50% allocation
+    0.10: 0.25,  # At -10% from peak → 25% allocation
+    0.15: 0.00,  # At -15% from peak → CASH ONLY (SHV + hedges)
 }
-DRAWDOWN_GOVERNOR_RECOVERY_PCT = 0.10  # V2.28: Was 0.05, raised to prevent premature re-entry
+# V2.29 P1: Dynamic recovery — scales with governor level
+# Effective = base × current_scale: 100%→8%, 75%→6%, 50%→4%, 25%→2%
+# Replaces flat 12% threshold that trapped governor at 50% for 358 days in 2015
+DRAWDOWN_GOVERNOR_RECOVERY_BASE = 0.08
 
 # V2.28: Minimum governor scale for intraday options entry
 # At 50% or below, intraday options are fully blocked (capital preservation mode)
-GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE = 0.75
+GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE = 1.0  # Only allow intraday options at full governor scale
 
 # =============================================================================
 # V2.1 CIRCUIT BREAKER SYSTEM (5 Levels)

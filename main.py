@@ -18,6 +18,7 @@ from engines.core.risk_engine import (
     RiskEngine,
     SafeguardType,
 )
+from engines.core.startup_gate import StartupGate
 from engines.core.trend_engine import TrendEngine
 from engines.satellite.hedge_engine import HedgeEngine
 
@@ -190,8 +191,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2022, 1, 1)
-        self.SetEndDate(2022, 3, 31)  # V2.27 Q1 2022 backtest
+        self.SetStartDate(2017, 1, 1)
+        self.SetEndDate(2017, 12, 31)  # V2.28.1 2017 Full Year backtest
         self.SetCash(config.PHASE_SEED_MIN)  # $50,000 seed capital
 
         # All times are Eastern
@@ -372,14 +373,19 @@ class AlphaNextGen(QCAlgorithm):
         current_hour = self.Time.hour
         mr_window_open = 10 <= current_hour < 15
 
-        if mr_window_open and risk_result.can_enter_intraday and self._governor_scale > 0.0:
+        # V2.30: MR requires directional longs permission (REDUCED+ phase)
+        if (
+            mr_window_open
+            and risk_result.can_enter_intraday
+            and self._governor_scale > 0.0
+            and self.startup_gate.allows_directional_longs()
+        ):
             self._scan_mr_signals(data)
 
         # =====================================================================
         # STEP 6B: V2.1 OPTIONS ENTRY SCANNING (if window open)
         # =====================================================================
-        # V2.11 TEST: Allow options during cold start to test capital competition
-        # Note: Cold start still applies 50% size multiplier (OPTIONS_COLD_START_MULTIPLIER)
+        # V2.30: Direction-aware gating — bearish options unlock before bullish
         # V2.27: Also check can_enter_options (Tier 1 blocks new options)
         # V2.28: Require governor >= 0.75 for intraday options (was > 0.0)
         if (
@@ -388,7 +394,7 @@ class AlphaNextGen(QCAlgorithm):
             and risk_result.can_enter_options
             and self._governor_scale >= config.GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE
         ):
-            self._scan_options_signals(data)
+            self._scan_options_signals_gated(data)
 
         # =====================================================================
         # STEP 7: CHECK MR EXITS (always if position exists)
@@ -646,6 +652,7 @@ class AlphaNextGen(QCAlgorithm):
         self.capital_engine = CapitalEngine(self)
         self.risk_engine = RiskEngine(self)
         self.cold_start_engine = ColdStartEngine(self)
+        self.startup_gate = StartupGate(self)
 
         # Strategy Engines
         self.trend_engine = TrendEngine(self)
@@ -910,6 +917,12 @@ class AlphaNextGen(QCAlgorithm):
                 if self.portfolio_router:
                     self.portfolio_router.clear_all_spread_margins()
 
+        # V2.29: Clear all pending options entry state
+        # Governor shutdown at 09:25 has no subsequent rejection event to clean up,
+        # so pending state (spread legs, intraday entry) must be cleared here.
+        self.options_engine.cancel_pending_spread_entry()
+        self.options_engine.cancel_pending_intraday_entry()
+
         # Step 2: Liquidate everything else (equity, single-leg options, etc.)
         if self.Portfolio.Invested:
             self.Liquidate(tag=reason)
@@ -1029,6 +1042,10 @@ class AlphaNextGen(QCAlgorithm):
         """
         # Skip during warmup
         if self.IsWarmingUp:
+            return
+
+        # V2.30: Warm entry is a directional long — requires REDUCED+ phase
+        if not self.startup_gate.allows_directional_longs():
             return
 
         if not self.cold_start_engine.is_cold_start_active():
@@ -1177,20 +1194,27 @@ class AlphaNextGen(QCAlgorithm):
         # Store for intraday MR scanning
         self._last_regime_score = regime_state.smoothed_score
 
-        # 2. Update Capital Engine
+        # V2.30: Update Startup Gate (time-based, no regime dependency)
+        if not self.startup_gate.is_fully_armed():
+            self.startup_gate.end_of_day_update()
+            self.Log(
+                f"STARTUP_GATE: {self.startup_gate.get_phase()} | "
+                f"Hedges={'YES' if self.startup_gate.allows_hedges() else 'NO'} | "
+                f"BearishOpt={'YES' if self.startup_gate.allows_bearish_options() else 'NO'} | "
+                f"Longs={'YES' if self.startup_gate.allows_directional_longs() else 'NO'}"
+            )
+
+        # 2. Update Capital Engine (always — hedges need tradeable equity)
         capital_state = self.capital_engine.end_of_day_update(total_equity)
 
-        # 3. Generate Trend signals (EOD)
-        self._generate_trend_signals_eod(regime_state)
+        # 3. Generate Trend signals (if gate allows directional longs)
+        if self.startup_gate.allows_directional_longs():
+            self._generate_trend_signals_eod(regime_state)
 
-        # 4. V2.1: Generate Options signals (if regime allows)
-        # V2.3.20: Allow options during cold start with 50% sizing (was blocked entirely)
-        is_cold_start = self.cold_start_engine.is_cold_start_active()
-        options_size_mult = config.OPTIONS_COLD_START_MULTIPLIER if is_cold_start else 1.0
-        if regime_state.smoothed_score >= 40:
-            self._generate_options_signals(regime_state, capital_state, options_size_mult)
+        # 4. V2.30: Generate Options signals (direction-aware gating)
+        self._generate_options_signals_gated(regime_state, capital_state)
 
-        # 5. Generate Hedge signals
+        # 5. Generate Hedge signals (ALWAYS — never gated, defensive by nature)
         self._generate_hedge_signals(regime_state)
 
         # 6. Store capital state for MOO submission at 16:00
@@ -1561,6 +1585,24 @@ class AlphaNextGen(QCAlgorithm):
         else:
             self.Log(f"FRIDAY_FIREWALL: No action needed | VIX={vix_current:.1f}")
 
+        # V2.29 P0: Weekly reconciliation — clear ghost spread if no options held
+        self._reconcile_spread_state()
+
+    def _reconcile_spread_state(self) -> None:
+        """V2.29 P0: Weekly reconciliation — clear ghost spread if no options held."""
+        if not self.options_engine.has_spread_position():
+            return
+        has_options = any(
+            kvp.Value.Invested
+            for kvp in self.Portfolio
+            if kvp.Value.Symbol.SecurityType == SecurityType.Option
+        )
+        if not has_options:
+            self.Log("SPREAD_RECONCILE: Friday check — no options held, clearing ghost spread")
+            self.options_engine.clear_spread_position()
+            if self.portfolio_router:
+                self.portfolio_router.clear_all_spread_margins()
+
     def _on_vix_spike_check(self) -> None:
         """
         V2.1.1: Layer 1 VIX spike detection (every 5 minutes).
@@ -1862,6 +1904,15 @@ class AlphaNextGen(QCAlgorithm):
                 long_leg = self._pending_spread_orders.pop(symbol)
                 self.Log(f"SPREAD: Both legs filled successfully | Short={symbol} Long={long_leg}")
 
+                # V2.29 P0: Clear spread state when both entry legs filled
+                # Without this, ghost spread state persists and fires SPREAD_EXIT_WARNING
+                # every minute for the lifetime of the backtest (43,291 warnings in 2015)
+                if self.options_engine.has_spread_position():
+                    self.options_engine.remove_spread_position()
+                    self.Log("SPREAD_RECONCILE: Cleared spread state after both legs filled")
+                    if self.portfolio_router:
+                        self.portfolio_router.clear_all_spread_margins()
+
             # V2.4.1 FIX #8: Kill switch check on options fills
             # Kill switch may trip between signal generation and fill.
             # If active, immediately liquidate the new options position.
@@ -1881,6 +1932,19 @@ class AlphaNextGen(QCAlgorithm):
                     )
                     # Immediately liquidate the options position
                     self.MarketOrder(orderEvent.Symbol, -fill_qty)
+
+            # V2.29 P0: Reconcile ghost spread after any option fill
+            # Safety net: if spread state exists but neither leg is held, clear it
+            if is_option and self.options_engine.has_spread_position():
+                spread = self.options_engine.get_spread_position()
+                if spread:
+                    long_held = self.Portfolio[spread.long_leg.symbol].Invested
+                    short_held = self.Portfolio[spread.short_leg.symbol].Invested
+                    if not long_held and not short_held:
+                        self.options_engine.remove_spread_position()
+                        self.Log("SPREAD_RECONCILE: Both legs flat — cleared ghost state")
+                        if self.portfolio_router:
+                            self.portfolio_router.clear_all_spread_margins()
 
             # V2.25 Fix #1: Exercise/Assignment Detection
             # Was unreachable dead code (elif after if Filled:). Moved inside.
@@ -2084,9 +2148,12 @@ class AlphaNextGen(QCAlgorithm):
             - Risk Engine state (baselines, safeguards)
             - Trend Engine state (positions, stops)
             - Regime Engine state (previous score)
+            - Startup Gate state (V2.29)
         """
         try:
-            self.state_manager.load_all()
+            self.state_manager.load_all(
+                startup_gate=self.startup_gate,
+            )
         except Exception as e:
             self.Log(f"STATE_ERROR: Failed to load state - {e}")
 
@@ -2103,6 +2170,7 @@ class AlphaNextGen(QCAlgorithm):
                 capital_engine=self.capital_engine,
                 cold_start_engine=self.cold_start_engine,
                 risk_engine=self.risk_engine,
+                startup_gate=self.startup_gate,
             )
 
             # V2.1: Save options engine and OCO manager state
@@ -3130,6 +3198,43 @@ class AlphaNextGen(QCAlgorithm):
         )
         return best
 
+    def _generate_options_signals_gated(
+        self, regime_state: RegimeState, capital_state: CapitalState
+    ) -> None:
+        """V2.30: Direction-aware EOD options gating.
+
+        Replaces the old `if regime >= 40` outer gate that blocked bearish PUTs.
+        Now routes based on regime direction with startup gate permissions:
+        - Bullish (regime > 60): Requires allows_directional_longs()
+        - Bearish (regime < 45): Requires allows_bearish_options()
+        - Neutral (45-60): No trade (by design)
+        """
+        is_cold_start = self.cold_start_engine.is_cold_start_active()
+        size_mult = config.OPTIONS_COLD_START_MULTIPLIER if is_cold_start else 1.0
+
+        # V2.30: Apply startup gate size multiplier during ramp-up
+        if not self.startup_gate.is_fully_armed():
+            gate_mult = self.startup_gate.get_size_multiplier()
+            if gate_mult <= 0.0:
+                return  # INDICATOR_WARMUP — no options at all
+            size_mult *= gate_mult
+
+        regime_score = regime_state.smoothed_score
+
+        # Bullish path (CALL spreads): regime > 60
+        if regime_score > config.SPREAD_REGIME_BULLISH:
+            if self.startup_gate.allows_directional_longs():
+                self._generate_options_signals(regime_state, capital_state, size_mult)
+            return
+
+        # Bearish path (PUT spreads): regime < 45
+        if regime_score < config.SPREAD_REGIME_BEARISH:
+            if self.startup_gate.allows_bearish_options():
+                self._generate_options_signals(regime_state, capital_state, size_mult)
+            return
+
+        # Neutral (45-60): No options trade (by design)
+
     def _generate_hedge_signals(self, regime_state: RegimeState) -> None:
         """
         Generate Hedge Engine signals at end of day.
@@ -3591,6 +3696,36 @@ class AlphaNextGen(QCAlgorithm):
             if signal:
                 self.portfolio_router.receive_signal(signal)
                 self._process_immediate_signals()
+
+    def _scan_options_signals_gated(self, data: Slice) -> None:
+        """V2.30: Direction-aware intraday options gating.
+
+        Routes to _scan_options_signals only if the startup gate permits
+        the current regime direction. Bearish options unlock before bullish.
+        Intraday micro regime (VIX-driven) is allowed if either permission is granted.
+        """
+        regime_score = self.regime_engine.get_previous_score()
+
+        # Check if current regime direction is allowed by startup gate
+        if regime_score > config.SPREAD_REGIME_BULLISH:
+            # Bullish direction — requires directional longs permission
+            if not self.startup_gate.allows_directional_longs():
+                return
+        elif regime_score < config.SPREAD_REGIME_BEARISH:
+            # Bearish direction — requires bearish options permission
+            if not self.startup_gate.allows_bearish_options():
+                return
+        else:
+            # Neutral (45-60) — swing spreads won't fire (internal no-trade),
+            # but intraday micro regime is VIX-driven and may still trade.
+            # Allow if either bearish or directional permission is granted.
+            if not (
+                self.startup_gate.allows_bearish_options()
+                or self.startup_gate.allows_directional_longs()
+            ):
+                return
+
+        self._scan_options_signals(data)
 
     def _scan_options_signals(self, data: Slice) -> None:
         """
