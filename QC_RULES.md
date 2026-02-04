@@ -645,7 +645,29 @@ self.Debug("Debug message")
 self.Error("Error message")
 ```
 
-### 9.2 Logging Best Practices
+### 9.2 CRITICAL: self.Log() Only Accepts a String
+
+**QC's `self.Log()` does NOT accept keyword arguments.** Passing any kwargs (like `trades_only=False`) causes a **TypeError that crashes the entire calling function**.
+
+```python
+# ❌ WRONG — causes TypeError at runtime, crashes the function
+self.Log(f"INJECT: {symbol} | price={price}", trades_only=False)
+
+# ✅ CORRECT — plain string only
+self.Log(f"INJECT: {symbol} | price={price}")
+```
+
+**Why this is critical:** The TypeError does not show as a compile error — it only crashes at runtime. If the Log call is inside a critical path (e.g., price injection), everything after it silently fails.
+
+**If you need conditional logging**, use a wrapper:
+```python
+def log(self, message: str, trades_only: bool = False):
+    """Custom wrapper — trades_only controls live vs backtest logging."""
+    if trades_only or not self.LiveMode:
+        self.Log(message)
+```
+
+### 9.3 Logging Best Practices
 
 ```python
 # Use structured format for parseability

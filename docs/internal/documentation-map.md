@@ -42,6 +42,17 @@ docs/
 
 ---
 
+## Scripts
+
+| Changed File/Directory | Documentation to Update |
+|------------------------|-------------------------|
+| `scripts/qc_backtest.sh` | `CLAUDE.md` → QC Backtest Workflow section |
+| `scripts/minify_workspace.py` | `CLAUDE.md` → QC Backtest Workflow, `PROJECT-STRUCTURE.md` |
+| `scripts/validate_config.py` | `docs/system/16-appendix-parameters.md` |
+| `scripts/*.py` (new file) | `CLAUDE.md` → Repository Structure, `PROJECT-STRUCTURE.md` |
+
+---
+
 ## Root-Level Files
 
 | Changed File/Directory | Documentation to Update |
@@ -162,6 +173,7 @@ If you modify **config.py values**:
 1. Update `docs/system/16-appendix-parameters.md`
 2. Update `CLAUDE.md` → Key Thresholds table
 3. Update relevant engine spec doc
+4. Update `docs/system/ENGINE_LOGIC_REFERENCE.md` → Config Values table for affected engine
 
 ---
 
@@ -172,4 +184,4 @@ This map should be updated when:
 - New documentation files are created
 - New patterns of code-to-doc relationships emerge
 
-**Last Updated:** 31 January 2026 (V2.3.6 - Spread Order Protection, Sniper Window, Trailing Stops)
+**Last Updated:** 3 February 2026 (V2.24.2 — Added scripts/ mapping, updated structure)

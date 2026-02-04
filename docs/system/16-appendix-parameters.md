@@ -30,7 +30,7 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 |-----------|:----:|:------:|-------------|
 | `MAX_SINGLE_POSITION_PCT` | 50% | 40% | Maximum single position size |
 | `TARGET_VOLATILITY` | 20% | 20% | Target annualized volatility |
-| `KILL_SWITCH_PCT` | 3% | 3% | Daily loss threshold |
+| `KILL_SWITCH_PCT` | 5% | 5% | Daily loss threshold (V2.3.17: raised from 3%) |
 
 ### Lockbox Parameters
 
@@ -143,16 +143,16 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 |-----------|:-----:|-------------|
 | `MA200_PERIOD` | 200 | Moving average period for trend direction |
 | `ADX_PERIOD` | 14 | ADX period for momentum strength |
-| `ADX_ENTRY_THRESHOLD` | 25 | Minimum ADX for entry (score >= 0.50) |
-| `TREND_ADX_EXIT_THRESHOLD` | 20 | ADX below this triggers exit consideration |
+| `ADX_ENTRY_THRESHOLD` | 15 | Minimum ADX for entry (V2.3.12: lowered from 25) |
+| `TREND_ADX_EXIT_THRESHOLD` | 10 | ADX below this triggers exit (V2.3.12: lowered from 20) |
 
 ### ADX Scoring Thresholds
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `ADX_WEAK_THRESHOLD` | 20 | Below = 0.25 score |
-| `ADX_MODERATE_THRESHOLD` | 25 | 20-25 = 0.50 score |
-| `ADX_STRONG_THRESHOLD` | 35 | 25-35 = 0.75, above = 1.0 score |
+| `ADX_WEAK_THRESHOLD` | 15 | Below = 0.25 score (V2.3.12: lowered from 20) |
+| `ADX_MODERATE_THRESHOLD` | 22 | 15-22 = 0.50 score (V2.5: tuned from 25) |
+| `ADX_STRONG_THRESHOLD` | 35 | 22-35 = 0.75, above = 1.0 score |
 
 ### Chandelier Stop Parameters (V2.3.6)
 
@@ -182,13 +182,31 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | ADX Score | ADX >= 25 (score >= 0.50) |
 | Regime | Score >= 40 |
 
+### SMA50 Structural Exit (V2.4)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `TREND_USE_SMA50_EXIT` | True | Enable SMA50 structural exit |
+| `TREND_SMA50_PERIOD` | 50 | SMA50 period |
+| `TREND_SMA50_BUFFER` | 0.02 | 2% below SMA50 = structural exit |
+| `TREND_SMA_CONFIRM_DAYS` | 2 | Days below SMA50 before exit fires |
+
+### Hard Stop Parameters (V2.4)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `TREND_HARD_STOP_QLD_SSO` | 0.15 | 15% hard stop for 2× ETFs |
+| `TREND_HARD_STOP_TNA_FAS` | 0.12 | 12% hard stop for 3× ETFs |
+
 ### V2 Exit Conditions Summary
 
 | Condition | Trigger |
 |-----------|---------|
 | MA200 Cross | Close < MA200 |
-| ADX Weakness | ADX < 20 |
+| SMA50 Structural | Close < SMA50 - 2% for 2 days (V2.4) |
+| ADX Weakness | ADX < 10 (V2.3.12: lowered from 20) |
 | Chandelier Stop | Price < Highest High − (ATR × multiplier) |
+| Hard Stop | 15% QLD/SSO, 12% TNA/FAS (V2.4) |
 | Regime Exit | Score < 30 |
 
 ---
@@ -283,14 +301,17 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 ---
 
-## 16.8.1 Options Engine Parameters (V2.3.6)
+## 16.8.1 Options Engine Parameters (V2.24.2)
 
-### Allocation
+### Allocation (V2.3/V2.18)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `OPTIONS_ALLOCATION_MIN` | 0.20 | Minimum allocation to options (20%) |
-| `OPTIONS_ALLOCATION_MAX` | 0.30 | Maximum allocation to options (30%) |
+| `OPTIONS_TOTAL_ALLOCATION` | 0.25 | Total options budget (25% — V2.3: raised from 20%) |
+| `OPTIONS_SWING_ALLOCATION` | 0.1875 | Swing Mode (18.75% — 75% of 25%) |
+| `OPTIONS_INTRADAY_ALLOCATION` | 0.0625 | Intraday Mode (6.25% — 25% of 25%) |
+| `OPTIONS_ALLOCATION_MIN` | 0.20 | Floor for options allocation |
+| `OPTIONS_ALLOCATION_MAX` | 0.30 | Ceiling for options allocation |
 
 ### Contract Selection (V2.3.6)
 
@@ -371,28 +392,109 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `OPTIONS_DTE_MIN` | 1 | Minimum days to expiry |
-| `OPTIONS_DTE_MAX` | 4 | Maximum days to expiry |
+| `OPTIONS_DTE_MIN` | 0 | Minimum days to expiry (global) |
+| `OPTIONS_DTE_MAX` | 60 | Maximum days to expiry (V2.23: raised from 30) |
 | `OPTIONS_DELTA_MIN` | 0.40 | Minimum delta (ATM range) |
 | `OPTIONS_DELTA_MAX` | 0.60 | Maximum delta (ATM range) |
 | `OPTIONS_MIN_PREMIUM` | 0.50 | Minimum premium per contract ($0.50) |
+
+### Universe Filter (V2.23)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| Strike range | -25 to +25 | 50 strikes total (V2.23: was -8 to +5) |
+| DTE range | 0 to 60 | Full DTE range (V2.23: was 0 to 30) |
 
 ### V2.1.1 Dual-Mode Architecture
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `OPTIONS_TOTAL_ALLOCATION` | 0.20 | Total options budget (20%) |
-| `OPTIONS_SWING_ALLOCATION` | 0.15 | Swing Mode allocation (15%) |
-| `OPTIONS_INTRADAY_ALLOCATION` | 0.05 | Intraday Mode allocation (5%) |
+| `OPTIONS_TOTAL_ALLOCATION` | 0.25 | Total options budget (25% — V2.3) |
+| `OPTIONS_SWING_ALLOCATION` | 0.1875 | Swing Mode (18.75%) |
+| `OPTIONS_INTRADAY_ALLOCATION` | 0.0625 | Intraday Mode (6.25%) |
 
 ### V2.1.1 DTE Boundaries
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `OPTIONS_SWING_DTE_MIN` | 5 | Minimum DTE for Swing Mode |
-| `OPTIONS_SWING_DTE_MAX` | 45 | Maximum DTE for Swing Mode |
-| `OPTIONS_INTRADAY_DTE_MIN` | 0 | Minimum DTE for Intraday Mode |
-| `OPTIONS_INTRADAY_DTE_MAX` | 2 | Maximum DTE for Intraday Mode |
+| `SPREAD_DTE_MIN` | 14 | Minimum DTE for Swing spreads (V2.24.2: raised from 6) |
+| `SPREAD_DTE_MAX` | 45 | Maximum DTE for Swing spreads |
+| `OPTIONS_INTRADAY_DTE_MIN` | 1 | Minimum DTE for Intraday Mode |
+| `OPTIONS_INTRADAY_DTE_MAX` | 5 | Maximum DTE for Intraday Mode |
+
+> **V2.24.2 NOTE:** VASS overrides `SPREAD_DTE_MIN`/`SPREAD_DTE_MAX` per IV environment. Callers must pass `dte_min`/`dte_max` to `select_spread_legs()` and `check_spread_entry_signal()` to avoid the DTE double-filter bug.
+
+### VASS (VIX-Adaptive Strategy Selection) — V2.8
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `VASS_IV_LOW_THRESHOLD` | 15 | Below = Low IV environment |
+| `VASS_IV_HIGH_THRESHOLD` | 25 | Above = High IV environment |
+| `VASS_IV_SMOOTHING_MINUTES` | 30 | VIX smoothing window (minutes) |
+
+| IV Environment | VIX Range | Strategy | DTE Range |
+|----------------|-----------|----------|-----------|
+| Low IV | < 15 | Debit Spreads | 30-45 (Monthly) |
+| Medium IV | 15-25 | Debit Spreads | 7-21 (Weekly) |
+| High IV | > 25 | Credit Spreads | 7-14 (Weekly) |
+
+### Credit Spread Parameters (V2.8/V2.10)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `CREDIT_SPREAD_MIN_CREDIT` | 0.30 | Minimum credit received ($0.30) |
+| `CREDIT_SPREAD_WIDTH_TARGET` | 5.0 | Target spread width ($5) |
+| `CREDIT_SPREAD_SHORT_LEG_DELTA_MIN` | 0.25 | Short leg minimum delta |
+| `CREDIT_SPREAD_SHORT_LEG_DELTA_MAX` | 0.40 | Short leg maximum delta |
+| `CREDIT_SPREAD_PROFIT_TARGET` | 0.50 | 50% of max profit |
+| `CREDIT_SPREAD_STOP_MULTIPLIER` | 2.0 | Stop = spread doubles |
+
+### Elastic Delta Bands (V2.24.1)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `ELASTIC_DELTA_STEPS` | [0.0, 0.03, 0.07, 0.12] | Progressive widening steps |
+| `ELASTIC_DELTA_FLOOR` | 0.10 | Absolute minimum delta |
+| `ELASTIC_DELTA_CEILING` | 0.95 | Absolute maximum delta |
+
+### Width-Based Short Leg Selection (V2.4.3)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `SPREAD_SHORT_LEG_BY_WIDTH` | True | Use strike width instead of delta |
+| `SPREAD_WIDTH_MIN` | 2.0 | Minimum spread width ($2) |
+| `SPREAD_WIDTH_MAX` | 10.0 | Maximum spread width ($10) |
+| `SPREAD_WIDTH_TARGET` | 5.0 | Target spread width ($5) |
+
+### Sizing Caps (V2.18)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `SWING_SPREAD_MAX_DOLLARS` | 7,500 | Max $ per swing spread |
+| `INTRADAY_SPREAD_MAX_DOLLARS` | 4,000 | Max $ per intraday spread |
+
+### Limit Order Execution (V2.19)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `OPTIONS_USE_LIMIT_ORDERS` | True | Use marketable limit orders |
+| `OPTIONS_LIMIT_SLIPPAGE_PCT` | 0.05 | 5% slippage tolerance |
+| `OPTIONS_MAX_SPREAD_PCT` | 0.20 | Max bid-ask spread % (block if wider) |
+
+### Safety Rules (V2.4.1)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `SWING_FALLBACK_ENABLED` | False | No naked single-leg fallback |
+| Friday Firewall | Active | Close swing options before weekend |
+| VIX > 25 | Active | Close ALL swing options in high VIX |
+
+### Neutrality Exit (V2.22)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `SPREAD_NEUTRALITY_EXIT_ENABLED` | True | Exit flat spreads in neutral regime |
+| `SPREAD_NEUTRALITY_EXIT_PNL_BAND` | 0.10 | Within ±10% of breakeven = flat |
 
 ### V2.1.1 VIX Direction Thresholds (Micro Regime Engine)
 
@@ -483,14 +585,22 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | Symbol | Group | Type | Allocation |
 |--------|-------|------|:----------:|
 | TQQQ | NASDAQ_BETA | 3× Long Nasdaq | 5% (MR) |
-| QLD | NASDAQ_BETA | 2× Long Nasdaq | 20% (Trend) |
+| QLD | NASDAQ_BETA | 2× Long Nasdaq | 15% (Trend — V2.18: was 20%) |
 | SOXL | NASDAQ_BETA | 3× Long Semi | 5% (MR) |
 | PSQ | NASDAQ_BETA | 1× Inverse Nasdaq | (Hedge) |
-| SSO | SPY_BETA | 2× Long S&P | 15% (Trend) |
-| TNA | SMALL_CAP_BETA | 3× Long Russell 2000 | 12% (Trend) |
-| FAS | FINANCIALS_BETA | 3× Long Financials | 8% (Trend) |
+| SSO | SPY_BETA | 2× Long S&P | 12% (Trend — V2.18: was 15%) |
+| TNA | SMALL_CAP_BETA | 3× Long Russell 2000 | 8% (Trend — V2.18: was 12%) |
+| FAS | FINANCIALS_BETA | 3× Long Financials | 5% (Trend — V2.18: was 8%) |
 | TMF | RATES | 3× Long Treasury | (Hedge) |
 | SHV | RATES | Short Treasury | (Yield) |
+
+### Capital Firewall (V2.18)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `CAPITAL_PARTITION_TREND` | 0.50 | 50% of tradeable equity for Trend |
+| `CAPITAL_PARTITION_OPTIONS` | 0.50 | 50% of tradeable equity for Options |
+| `MAX_MARGIN_WEIGHTED_ALLOCATION` | 0.90 | Block entries if margin > 90% |
 
 ### Trade Thresholds
 
@@ -507,7 +617,15 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `KILL_SWITCH_PCT` | 0.03 | 3% daily loss threshold |
+| `KILL_SWITCH_PCT` | 0.05 | 5% daily loss threshold (V2.3.17: raised from 3%) |
+| `KILL_SWITCH_PREEMPTIVE_PCT` | 0.045 | 4.5% preemptive warning threshold |
+
+### Margin Call Circuit Breaker (V2.4.4)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `MARGIN_CALL_MAX_CONSECUTIVE` | 5 | Max consecutive margin calls before cooldown |
+| Cooldown | 4 hours | Cooldown period after margin call streak |
 
 ### Panic Mode
 
@@ -596,12 +714,13 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 | Symbol | Description | Strategy | Allocation |
 |--------|-------------|----------|:----------:|
-| QLD | 2× Nasdaq | Trend, Warm Entry | 20% |
-| SSO | 2× S&P 500 | Trend, Warm Entry | 15% |
-| TNA | 3× Russell 2000 | Trend | 12% |
-| FAS | 3× Financials | Trend | 8% |
+| QLD | 2× Nasdaq | Trend, Warm Entry | 15% (V2.18: was 20%) |
+| SSO | 2× S&P 500 | Trend, Warm Entry | 12% (V2.18: was 15%) |
+| TNA | 3× Russell 2000 | Trend | 8% (V2.18: was 12%) |
+| FAS | 3× Financials | Trend | 5% (V2.18: was 8%) |
 | TQQQ | 3× Nasdaq | Mean Reversion | 5% |
 | SOXL | 3× Semiconductor | Mean Reversion | 5% |
+| QQQ Options | Options chain | Options (VASS) | 25% (V2.3: was 20%) |
 | TMF | 3× Treasury | Hedge | 0-20% |
 | PSQ | 1× Inverse Nasdaq | Hedge | 0-10% |
 | SHV | Short Treasury | Yield | Remainder |
@@ -810,12 +929,15 @@ HEDGE_REBAL_THRESHOLD = 0.02
 SHV_MIN_TRADE = 2_000
 
 # =============================================================================
-# OPTIONS ENGINE (V2.1)
+# OPTIONS ENGINE (V2.24.2)
 # =============================================================================
 
-# Allocation
-OPTIONS_ALLOCATION_MIN = 0.20  # 20% minimum
-OPTIONS_ALLOCATION_MAX = 0.30  # 30% maximum
+# Allocation (V2.3/V2.18)
+OPTIONS_TOTAL_ALLOCATION = 0.25  # 25% total (V2.3: was 20%)
+OPTIONS_SWING_ALLOCATION = 0.1875  # 18.75% (75% of 25%)
+OPTIONS_INTRADAY_ALLOCATION = 0.0625  # 6.25% (25% of 25%)
+OPTIONS_ALLOCATION_MIN = 0.20  # Floor
+OPTIONS_ALLOCATION_MAX = 0.30  # Ceiling
 
 # 4-Factor Entry Scoring
 OPTIONS_ADX_PERIOD = 14
@@ -846,12 +968,41 @@ CB_GAMMA_WARNING = 0.05  # Gamma warning threshold near expiry
 CB_VEGA_MAX = 0.50  # Max vega exposure
 CB_THETA_WARNING = -0.02  # Daily theta decay warning (-2%)
 
-# Contract Selection
-OPTIONS_DTE_MIN = 1
-OPTIONS_DTE_MAX = 4
+# Contract Selection (V2.23 Universe)
+OPTIONS_DTE_MIN = 0
+OPTIONS_DTE_MAX = 60  # V2.23: was 4
+SPREAD_DTE_MIN = 14  # V2.24.2: swing spread minimum
+SPREAD_DTE_MAX = 45  # Swing spread maximum
 OPTIONS_DELTA_MIN = 0.40
 OPTIONS_DELTA_MAX = 0.60
 OPTIONS_MIN_PREMIUM = 0.50
+
+# VASS (V2.8)
+VASS_IV_LOW_THRESHOLD = 15
+VASS_IV_HIGH_THRESHOLD = 25
+VASS_IV_SMOOTHING_MINUTES = 30
+
+# Credit Spreads (V2.8/V2.10)
+CREDIT_SPREAD_MIN_CREDIT = 0.30
+CREDIT_SPREAD_WIDTH_TARGET = 5.0
+CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25
+CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.40
+CREDIT_SPREAD_PROFIT_TARGET = 0.50
+CREDIT_SPREAD_STOP_MULTIPLIER = 2.0
+
+# Elastic Delta Bands (V2.24.1)
+ELASTIC_DELTA_STEPS = [0.0, 0.03, 0.07, 0.12]
+ELASTIC_DELTA_FLOOR = 0.10
+ELASTIC_DELTA_CEILING = 0.95
+
+# Sizing Caps (V2.18)
+SWING_SPREAD_MAX_DOLLARS = 7500
+INTRADAY_SPREAD_MAX_DOLLARS = 4000
+
+# Limit Orders (V2.19)
+OPTIONS_USE_LIMIT_ORDERS = True
+OPTIONS_LIMIT_SLIPPAGE_PCT = 0.05
+OPTIONS_MAX_SPREAD_PCT = 0.20
 
 # =============================================================================
 # OCO MANAGER (V2.1)
@@ -871,7 +1022,7 @@ EXPOSURE_LIMITS = {
     "SPY_BETA": {"max_net_long": 0.40, "max_net_short": 0.00, "max_gross": 0.40},
     "SMALL_CAP_BETA": {"max_net_long": 0.25, "max_net_short": 0.00, "max_gross": 0.25},
     "FINANCIALS_BETA": {"max_net_long": 0.15, "max_net_short": 0.00, "max_gross": 0.15},
-    "RATES": {"max_net_long": 0.40, "max_net_short": 0.00, "max_gross": 0.40}
+    "RATES": {"max_net_long": 0.99, "max_net_short": 0.00, "max_gross": 0.99}  # V2.3.17: raised from 40% for SHV flexibility
 }
 
 # Group Membership
@@ -887,14 +1038,14 @@ SYMBOL_GROUPS = {
     "SHV": "RATES"
 }
 
-# Trend Engine Allocations (V2.2 Balanced Model)
+# Trend Engine Allocations (V2.18: Reduced for Capital Firewall)
 TREND_SYMBOL_ALLOCATIONS = {
-    "QLD": 0.20,  # 20% - 2× Nasdaq
-    "SSO": 0.15,  # 15% - 2× S&P 500
-    "TNA": 0.12,  # 12% - 3× Russell 2000
-    "FAS": 0.08,  # 8% - 3× Financials
+    "QLD": 0.15,  # 15% - 2× Nasdaq (V2.18: was 20%)
+    "SSO": 0.12,  # 12% - 2× S&P 500 (V2.18: was 15%)
+    "TNA": 0.08,  # 8% - 3× Russell 2000 (V2.18: was 12%)
+    "FAS": 0.05,  # 5% - 3× Financials (V2.18: was 8%)
 }
-TREND_TOTAL_ALLOCATION = 0.55  # 55% total to Trend Engine
+TREND_TOTAL_ALLOCATION = 0.40  # 40% total (V2.18: was 55%)
 
 # Mean Reversion Allocations
 MR_SYMBOL_ALLOCATIONS = {
@@ -912,7 +1063,7 @@ MIN_SHARE_DELTA = 1
 # =============================================================================
 
 # Kill Switch
-KILL_SWITCH_PCT = 0.03
+KILL_SWITCH_PCT = 0.05  # V2.3.17: raised from 0.03
 
 # Panic Mode
 PANIC_MODE_PCT = 0.04

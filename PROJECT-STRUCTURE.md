@@ -1,7 +1,7 @@
 # Alpha NextGen - Project File Structure
 
-> **Last Updated:** 31 January 2026
-> **Status:** V2.3.6 Complete - Spread Order Protection + Sniper Window + Trailing Stops
+> **Last Updated:** 3 February 2026
+> **Status:** V2.24.2 — DTE Double-Filter Fix, Runtime Error Fix, Push 413 Fix
 
 ---
 
@@ -34,13 +34,13 @@ flowchart TD
             E_CAPITAL["capital_engine.py<br/><i>Phase mgmt, lockbox</i>"]
             E_RISK["risk_engine.py<br/><i>Circuit breakers, Greeks</i>"]
             E_COLD["cold_start_engine.py<br/><i>Days 1-5 warm entry</i>"]
-            E_TREND["trend_engine.py<br/><i>MA200+ADX QLD/SSO/TNA/FAS 55%</i>"]
+            E_TREND["trend_engine.py<br/><i>MA200+ADX QLD/SSO/TNA/FAS 40%</i>"]
         end
         subgraph SATELLITE["satellite/ (conditional)"]
             E_MR["mean_reversion_engine.py<br/><i>Intraday TQQQ/SOXL 0-10%</i>"]
             E_HEDGE["hedge_engine.py<br/><i>TMF/PSQ allocation</i>"]
             E_YIELD["yield_sleeve.py<br/><i>SHV cash mgmt</i>"]
-            E_OPTIONS["options_engine.py<br/><i>QQQ options 20%<br/>Dual-Mode + Micro Regime</i>"]
+            E_OPTIONS["options_engine.py<br/><i>QQQ options 25%<br/>VASS + Dual-Mode + Micro Regime</i>"]
         end
     end
 
@@ -62,6 +62,8 @@ flowchart TD
     subgraph INFRA["Infrastructure"]
         subgraph SCRIPTS["scripts/"]
             SC_VALID["validate_config.py<br/><i>Spec compliance</i>"]
+            SC_BACKTEST["qc_backtest.sh<br/><i>Sync + push + backtest</i>"]
+            SC_MINIFY["minify_workspace.py<br/><i>Strip comments/docstrings</i>"]
         end
         subgraph GITHUB[".github/workflows/"]
             GH_TEST["test.yml<br/><i>CI/CD pipeline</i>"]
@@ -97,7 +99,7 @@ flowchart TD
 ```
 alpha_nextgen/
 │
-├── main.py                              # QCAlgorithm entry point (1,638 lines - V2.1 Complete)
+├── main.py                              # QCAlgorithm entry point (~3,800 lines - V2.24.2)
 ├── config.py                            # All tunable parameters
 ├── requirements.txt                     # Python dependencies (pytest, lean, etc.)
 ├── requirements.lock                    # Locked versions for reproducibility
@@ -131,7 +133,9 @@ alpha_nextgen/
 │
 ├── scripts/
 │   ├── validate_config.py               # Validate config.py against specs
-│   └── check_spec_parity.py             # Code-to-spec update warning
+│   ├── check_spec_parity.py             # Code-to-spec update warning
+│   ├── qc_backtest.sh                   # Automated sync → push → backtest pipeline
+│   └── minify_workspace.py              # Strip comments/docstrings for QC push size limit
 │
 ├── engines/                             # V2 Core-Satellite architecture
 │   ├── __init__.py
@@ -141,15 +145,15 @@ alpha_nextgen/
 │   │   ├── capital_engine.py            # SEED/GROWTH phases, virtual lockbox
 │   │   ├── risk_engine.py               # Kill switch, panic mode, Greeks monitoring
 │   │   ├── cold_start_engine.py         # Days 1-5 warm entry logic
-│   │   └── trend_engine.py              # MA200+ADX (QLD 20%, SSO 15%, TNA 12%, FAS 8%) - 55%
+│   │   └── trend_engine.py              # MA200+ADX (QLD 15%, SSO 12%, TNA 8%, FAS 5%) - 40%
 │   └── satellite/                       # Conditional engines
 │       ├── __init__.py
 │       ├── mean_reversion_engine.py     # Intraday oversold bounce (TQQQ, SOXL) - 0-10%
 │       ├── hedge_engine.py              # Regime-based TMF/PSQ allocation
 │       ├── yield_sleeve.py              # SHV idle cash management
-│       └── options_engine.py            # QQQ options - 20% (V2.1.1 Dual-Mode)
-│                                        #   Swing Mode (15%): Debit/Credit spreads, ITM long
-│                                        #   Intraday Mode (5%): Micro Regime Engine (21 regimes)
+│       └── options_engine.py            # QQQ options - 25% (V2.8 VASS + Dual-Mode)
+│                                        #   Swing Mode (18.75%): VASS debit/credit spreads
+│                                        #   Intraday Mode (6.25%): Micro Regime Engine
 │
 ├── portfolio/
 │   ├── __init__.py
@@ -248,7 +252,7 @@ alpha_nextgen/
 | **Root** | 17 | Entry point, config, documentation, workflow files |
 | **.github/** | 2 | CI/CD workflow, PR template |
 | **.claude/** | 1 | Claude Code project config |
-| **scripts/** | 2 | Validation utilities |
+| **scripts/** | 4 | Validation, backtest automation, minification |
 | **engines/** | 9 | All strategy and core engines |
 | **portfolio/** | 4 | Router, exposure groups, positions |
 | **execution/** | 4 | Order management and fills |
@@ -354,8 +358,16 @@ flowchart LR
 | **Phase 3** | cold_start, trend, mr, hedge, yield | ✅ Complete |
 | **Phase 4** | portfolio_router, risk_engine, exposure_groups | ✅ Complete |
 | **Phase 5** | execution_engine, state_manager, daily_scheduler | ✅ Complete |
-| **Phase 6** | main.py (1,332 lines - wires all components) | ✅ Complete |
+| **Phase 6** | main.py (~3,800 lines - wires all components) | ✅ Complete |
 | **V2.1.1** | Options Engine Redesign (Dual-Mode + Micro Regime) | ✅ Complete |
 | **V2.3.6** | Spread Order Protection, Sniper Window 10:00-15:00, Trailing Stops | ✅ Complete |
+| **V2.4** | SMA50 Structural Trend Exit + Hard Stops | ✅ Complete |
+| **V2.8** | VASS (Volatility-Adaptive Strategy Selection) | ✅ Complete |
+| **V2.18** | Capital Firewall (50/50), Leverage Cap 90%, Hardcoded Sizing | ✅ Complete |
+| **V2.19** | Limit Orders, VIX Filter, Ghost Margin Fix, 20K Loop Fix | ✅ Complete |
+| **V2.22** | Neutrality Exit (Hysteresis Shield) | ✅ Complete |
+| **V2.23** | Universe Filter ±25 Strikes, 0-60 DTE | ✅ Complete |
+| **V2.24** | Router Price Failsafe, Spread Filter Diagnostics | ✅ Complete |
+| **V2.24.2** | Runtime Error Fix, DTE Double-Filter Fix, Push 413 Fix | ✅ Complete |
 
 See [developer-guide-claude.md](developer-guide-claude.md) for detailed build workflow.

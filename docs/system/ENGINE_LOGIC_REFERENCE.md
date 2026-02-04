@@ -3,7 +3,7 @@
 > **Purpose:** Complete reference for all engine logic, conditions, and config values.
 > This document enables developers to understand the entire trading system flow.
 >
-> **Last Updated:** 2026-02-01 (V2.3.20)
+> **Last Updated:** 3 February 2026 (V2.24.2)
 
 ---
 
@@ -51,7 +51,7 @@
 │                          STRATEGY ENGINES                                   │
 ├───────────┬────────────┬──────────┬───────────┬───────────┬─────────────────┤
 │   TREND   │  OPTIONS   │   MR     │   HEDGE   │   YIELD   │   COLD START    │
-│   55%     │   25%      │   10%    │   0-30%   │ Remainder │   Days 1-5      │
+│   40%     │   25%      │   10%    │   0-30%   │ Remainder │   Days 1-5      │
 │ QLD,SSO   │ QQQ Opts   │ TQQQ,    │ TMF,PSQ   │    SHV    │   50% sizing    │
 │ TNA,FAS   │ Swing+Intr │ SOXL     │           │           │   (options)     │
 └───────────┴────────────┴──────────┴───────────┴───────────┴─────────────────┘
@@ -248,21 +248,32 @@ flowchart TD
 | Parameter | Value | Description |
 |-----------|------:|-------------|
 | `KILL_SWITCH_PCT` | 0.05 | 5% daily loss triggers kill switch (V2.3.17) |
+| `KILL_SWITCH_PREEMPTIVE_PCT` | 0.045 | 4.5% preemptive kill switch (V2.4.4) |
 | `PANIC_MODE_SPY_DROP` | 0.04 | SPY -4% triggers panic mode |
 | `WEEKLY_BREAKER_PCT` | 0.05 | 5% WTD loss triggers sizing reduction |
 | `GAP_FILTER_PCT` | 0.015 | SPY -1.5% gap blocks MR entries |
 | `VOL_SHOCK_ATR_MULT` | 3.0 | Bar > 3× ATR triggers 15-min pause |
 | `TIME_GUARD_START` | "13:55" | Entry blocking window start |
 | `TIME_GUARD_END` | "14:10" | Entry blocking window end |
+| `MARGIN_CALL_MAX_CONSECUTIVE` | 5 | Max consecutive margin calls before circuit breaker (V2.4.4) |
+
+### Margin Call Circuit Breaker (V2.4.4)
+
+When the system detects `MARGIN_CALL_MAX_CONSECUTIVE` (5) consecutive margin calls, a 4-hour cooldown is triggered. During the cooldown:
+- No new entries are submitted
+- Existing positions are not affected
+- Cooldown resets after 4 hours or after a successful non-margin-call fill
 
 ### Circuit Breaker Priority
 
 1. **Kill Switch** (highest) - Full liquidation
-2. **Panic Mode** - Liquidate longs, keep hedges
-3. **Weekly Breaker** - 50% sizing reduction
-4. **Gap Filter** - Block intraday only
-5. **Vol Shock** - 15-minute pause
-6. **Time Guard** - Block entries 13:55-14:10
+2. **Preemptive Kill Switch** - Warning at 4.5%, blocks new entries (V2.4.4)
+3. **Panic Mode** - Liquidate longs, keep hedges
+4. **Margin Call Breaker** - 4-hour cooldown after 5 consecutive margin calls (V2.4.4)
+5. **Weekly Breaker** - 50% sizing reduction
+6. **Gap Filter** - Block intraday only
+7. **Vol Shock** - 15-minute pause
+8. **Time Guard** - Block entries 13:55-14:10
 
 ---
 
@@ -306,7 +317,7 @@ flowchart TD
 ## Trend Engine
 
 **File:** `engines/core/trend_engine.py`
-**Purpose:** MA200 + ADX trend-following for core allocation (55%).
+**Purpose:** MA200 + ADX trend-following for core allocation (40%).
 
 ### Flowchart
 
@@ -325,12 +336,14 @@ flowchart TD
     ADX -->|Yes| REGIME{Regime >= 40?}
 
     REGIME -->|No| NO_ENTRY
-    REGIME -->|Yes| ALLOC[Generate Entry Signal<br/>QLD: 20%, SSO: 15%<br/>TNA: 12%, FAS: 8%]
+    REGIME -->|Yes| ALLOC[Generate Entry Signal<br/>QLD: 15%, SSO: 12%<br/>TNA: 8%, FAS: 5%]
 
     subgraph EXIT[Exit Conditions]
         EX1[Price < MA200]
         EX2[ADX < 10]
         EX3[Stop Loss Hit]
+        EX4[SMA50 Structural Exit V2.4<br/>Price < SMA50 × 0.98<br/>for 2 consecutive days]
+        EX5[Hard Stop<br/>QLD/SSO: -15%, TNA/FAS: -12%]
     end
 
     EXIT --> EXIT_SIG[Generate Exit Signal<br/>target_weight = 0]
@@ -341,8 +354,15 @@ flowchart TD
 | Parameter | Value | Description |
 |-----------|------:|-------------|
 | `TREND_ADX_ENTRY_THRESHOLD` | 15 | ADX >= 15 for entry (V2.3.12) |
+| `ADX_MODERATE_THRESHOLD` | 22 | ADX moderate threshold (V2.5) |
 | `TREND_ADX_EXIT_THRESHOLD` | 10 | ADX < 10 for exit (V2.3.12) |
-| `TREND_SYMBOL_ALLOCATIONS` | QLD: 0.20, SSO: 0.15, TNA: 0.12, FAS: 0.08 | Symbol weights |
+| `TREND_SYMBOL_ALLOCATIONS` | QLD: 0.15, SSO: 0.12, TNA: 0.08, FAS: 0.05 | Symbol weights (40% total) |
+| `TREND_USE_SMA50_EXIT` | True | Enable SMA50 structural exit (V2.4) |
+| `TREND_SMA50_PERIOD` | 50 | SMA50 lookback period |
+| `TREND_SMA50_BUFFER` | 0.02 | 2% buffer below SMA50 for exit trigger |
+| `TREND_SMA_CONFIRM_DAYS` | 2 | Consecutive days below SMA50 before exit (V2.5) |
+| `TREND_HARD_STOP_2X` | 0.15 | 15% hard stop for QLD, SSO (V2.4) |
+| `TREND_HARD_STOP_3X` | 0.12 | 12% hard stop for TNA, FAS (V2.4) |
 | `CHANDELIER_ATR_PERIOD` | 14 | ATR period for stops |
 | `CHANDELIER_BASE_MULT` | 3.5 | ATR multiplier for 2× ETFs |
 | `CHANDELIER_3X_BASE_MULT` | 2.5 | ATR multiplier for 3× ETFs (TNA, FAS) |
@@ -408,7 +428,7 @@ flowchart TD
 ## Options Engine
 
 **File:** `engines/satellite/options_engine.py`
-**Purpose:** QQQ options with Dual-Mode architecture (Swing 20% + Intraday 5%).
+**Purpose:** QQQ options with Dual-Mode architecture (Swing 18.75% + Intraday 6.25%, total 25%).
 
 ### Dual-Mode Architecture
 
@@ -416,12 +436,17 @@ flowchart TD
 flowchart TD
     START[Options Signal Check] --> MODE{DTE Range?}
 
-    MODE -->|6-45 DTE| SWING[SWING MODE<br/>20% Allocation]
-    MODE -->|0-1 DTE| INTRADAY[INTRADAY MODE<br/>5% Allocation]
+    MODE -->|14-45 DTE| SWING[SWING MODE<br/>18.75% Allocation]
+    MODE -->|0-1 DTE| INTRADAY[INTRADAY MODE<br/>6.25% Allocation]
 
-    SWING --> SPREAD{Try Spread Entry}
-    SPREAD -->|Success| SPREAD_ORDER[Bull Call / Bear Put Spread<br/>Based on Regime]
-    SPREAD -->|Fail| FALLBACK[Single-Leg Fallback<br/>0.70 Delta ITM]
+    SWING --> VASS{VASS: IV Environment?}
+    VASS -->|VIX < 15| DEBIT_MONTHLY[Debit Spreads<br/>30-45 DTE Monthly]
+    VASS -->|VIX 15-25| DEBIT_WEEKLY[Debit Spreads<br/>7-21 DTE Weekly]
+    VASS -->|VIX > 25| CREDIT_WEEKLY[Credit Spreads<br/>7-14 DTE Weekly]
+
+    DEBIT_MONTHLY --> SPREAD_ORDER[Spread Order]
+    DEBIT_WEEKLY --> SPREAD_ORDER
+    CREDIT_WEEKLY --> SPREAD_ORDER
 
     INTRADAY --> MICRO[Micro Regime Engine<br/>VIX Level × VIX Direction]
     MICRO --> STRAT{Strategy Selection}
@@ -429,6 +454,51 @@ flowchart TD
     STRAT --> MOMENTUM[ITM_MOMENTUM<br/>Trend Following]
     STRAT --> CREDIT[CREDIT_SPREAD<br/>Theta Decay]
 ```
+
+### VASS (VIX-Adaptive Strategy Selection) — V2.8
+
+VASS routes swing mode trades to the appropriate strategy based on the current IV environment.
+
+| IV Environment | VIX Range | Strategy | DTE Range |
+|----------------|-----------|----------|-----------|
+| Low IV | < 15 | Debit Spreads | 30-45 (Monthly) |
+| Medium IV | 15-25 | Debit Spreads | 7-21 (Weekly) |
+| High IV | > 25 | Credit Spreads | 7-14 (Weekly) |
+
+### Credit Spread Config (V2.8)
+
+| Parameter | Value | Description |
+|-----------|------:|-------------|
+| `CREDIT_SPREAD_MIN_CREDIT` | 0.30 | Minimum credit received per spread |
+| `CREDIT_SPREAD_WIDTH_TARGET` | 5.0 | Target spread width in dollars |
+| `CREDIT_SPREAD_SHORT_LEG_DELTA_MIN` | 0.25 | Min delta for short leg |
+| `CREDIT_SPREAD_SHORT_LEG_DELTA_MAX` | 0.40 | Max delta for short leg |
+| `CREDIT_SPREAD_PROFIT_TARGET` | 0.50 | 50% profit target (buy back at 50% of credit) |
+| `CREDIT_SPREAD_STOP_MULTIPLIER` | 2.0 | Stop at 2× credit received |
+
+### Elastic Delta Bands (V2.24.1)
+
+Dynamic delta adjustment based on profit/loss levels.
+
+| Parameter | Value | Description |
+|-----------|------:|-------------|
+| `ELASTIC_DELTA_STEPS` | [0.0, 0.03, 0.07, 0.12] | P&L breakpoints for delta adjustment |
+| `ELASTIC_DELTA_FLOOR` | 0.10 | Minimum delta floor |
+| `ELASTIC_DELTA_CEILING` | 0.95 | Maximum delta ceiling |
+
+### Sizing Caps (V2.18)
+
+| Parameter | Value | Description |
+|-----------|------:|-------------|
+| `SWING_SPREAD_MAX_DOLLARS` | 7,500 | Max dollar allocation per swing spread |
+| `INTRADAY_SPREAD_MAX_DOLLARS` | 4,000 | Max dollar allocation per intraday spread |
+
+### Safety Rules (V2.4.1)
+
+| Parameter | Value | Description |
+|-----------|------:|-------------|
+| `SWING_FALLBACK_ENABLED` | False | Single-leg fallback disabled (V2.4.1) |
+| Friday Firewall | — | No new swing entries on Fridays |
 
 ### Micro Regime Engine (Intraday)
 
@@ -458,19 +528,22 @@ flowchart TD
 
 | Parameter | Value | Description |
 |-----------|------:|-------------|
-| `OPTIONS_SWING_ALLOCATION` | 0.20 | 20% portfolio allocation |
-| `OPTIONS_SWING_DTE_MIN` | 6 | Minimum DTE for swing (V2.3.18) |
+| `OPTIONS_SWING_ALLOCATION` | 0.1875 | 18.75% portfolio allocation |
+| `OPTIONS_SWING_DTE_MIN` | 14 | Minimum DTE for swing (V2.4, was 6) |
 | `OPTIONS_SWING_DTE_MAX` | 45 | Maximum DTE for swing |
+| `OPTIONS_DTE_MAX` | 60 | Universe filter max DTE (V2.23, was 30) |
+| `SPREAD_DTE_MIN` | 14 | Spread minimum DTE (V2.4, was 6) |
 | `OPTIONS_SWING_DELTA_MIN` | 0.55 | Min delta for swing |
 | `OPTIONS_SWING_DELTA_MAX` | 0.85 | Max delta for swing |
 | `OPTIONS_SINGLE_LEG_DTE_EXIT` | 4 | Exit single-leg at 4 DTE (V2.3.18) |
 | `OPTIONS_SPREAD_DTE_EXIT` | 5 | Exit spreads at 5 DTE |
+| SetFilter strikes | -25 to +25 | Strike range (V2.23, was -8 to +5) |
 
 ### Config Values - Intraday Mode
 
 | Parameter | Value | Description |
 |-----------|------:|-------------|
-| `OPTIONS_INTRADAY_ALLOCATION` | 0.05 | 5% portfolio allocation |
+| `OPTIONS_INTRADAY_ALLOCATION` | 0.0625 | 6.25% portfolio allocation |
 | `OPTIONS_INTRADAY_DTE_MAX` | 1 | Max DTE for intraday (0-1 DTE) |
 | `OPTIONS_INTRADAY_DELTA_MIN` | 0.40 | Min delta for intraday |
 | `OPTIONS_INTRADAY_DELTA_MAX` | 0.60 | Max delta for intraday |
@@ -479,12 +552,21 @@ flowchart TD
 | `INTRADAY_FADE_MIN_MOVE` | 0.0050 | 0.50% min for FADE |
 | `INTRADAY_FADE_MAX_MOVE` | 0.0120 | 1.20% max for FADE |
 | `INTRADAY_MOMENTUM_MIN_MOVE` | 0.0080 | 0.80% min for MOMENTUM |
+| `INTRADAY_DEBIT_FADE_VIX_MIN` | 13.5 | Min VIX for intraday debit fade (V2.19) |
 
 ### Config Values - Cold Start (V2.3.20)
 
 | Parameter | Value | Description |
 |-----------|------:|-------------|
 | `OPTIONS_COLD_START_MULTIPLIER` | 0.50 | 50% sizing during cold start |
+
+### Neutrality Exit (V2.22)
+
+| Parameter | Value | Description |
+|-----------|------:|-------------|
+| `SPREAD_NEUTRALITY_EXIT_ENABLED` | True | Enable hysteresis shield neutrality exit (V2.22) |
+
+When a spread's net value approaches zero (neutrality), the system triggers an exit to avoid holding worthless positions. The hysteresis shield prevents rapid re-entry after a neutrality exit.
 
 ---
 
@@ -585,6 +667,34 @@ flowchart TD
     IMMED -->|EOD| MOO[Queue for 15:45 MOO]
 ```
 
+### Capital Firewall (V2.18)
+
+Capital is partitioned between trend and options to prevent one strategy from consuming the other's allocation.
+
+| Parameter | Value | Description |
+|-----------|------:|-------------|
+| `CAPITAL_PARTITION_TREND` | 0.50 | 50% of tradeable equity reserved for trend |
+| `CAPITAL_PARTITION_OPTIONS` | 0.50 | 50% of tradeable equity reserved for options |
+| `MAX_MARGIN_WEIGHTED_ALLOCATION` | 0.90 | 90% leverage cap across all positions |
+
+### Price Discovery Chain (V2.19 / V2.24)
+
+3-layer fallback for option price resolution:
+
+1. **Mid-price** (ask + bid) / 2 — preferred
+2. **Last trade price** — if mid is unavailable or zero
+3. **Theoretical price** (Black-Scholes) — last resort
+
+This prevents ghost fills and ensures accurate position valuation.
+
+### Limit Orders (V2.19)
+
+| Parameter | Value | Description |
+|-----------|------:|-------------|
+| `OPTIONS_USE_LIMIT_ORDERS` | True | Use limit orders for options (V2.19) |
+
+Options orders default to limit orders at mid-price instead of market orders to avoid slippage on wide bid-ask spreads.
+
 ### SHV Auto-Liquidation (V2.3.20)
 
 ```python
@@ -613,7 +723,7 @@ if shortfall > 0:
 
 | Source | Max % | Description |
 |--------|------:|-------------|
-| TREND | 55% | Core trend following |
+| TREND | 40% | Core trend following |
 | OPT | 30% | Swing options |
 | OPT_INTRADAY | 5% | Intraday options |
 | MR | 10% | Mean reversion |
@@ -648,7 +758,7 @@ if shortfall > 0:
 | MR | Drop | > 2.5% |
 | MR | VIX | < 35 |
 | Options | Regime | >= 40 |
-| Options (Swing) | DTE | 6-45 |
+| Options (Swing) | DTE | 14-45 |
 | Options (Intraday) | DTE | 0-1 |
 
 ### Key Times (Eastern)
@@ -676,6 +786,15 @@ if shortfall > 0:
 | V2.3.18 | 2026-02-01 | Single-leg exit 2→4 DTE, Swing entry 5→6 DTE |
 | V2.3.19 | 2026-02-01 | ITM_MOMENTUM time window to config |
 | V2.3.20 | 2026-02-01 | Cold start options 50%, SHV auto-liquidation |
+| V2.4 | 2026-02-01 | SMA50 structural exit, hard stops, width-based short leg |
+| V2.5 | 2026-02-01 | ADX moderate threshold 22, SMA confirm 2 days |
+| V2.8 | 2026-02-01 | VASS, credit spreads, IV environment routing |
+| V2.18 | 2026-02-02 | Capital firewall 50/50, leverage cap 90%, sizing caps |
+| V2.19 | 2026-02-02 | Limit orders, VIX filter, ghost margin fix |
+| V2.22 | 2026-02-02 | Neutrality exit (hysteresis shield) |
+| V2.23 | 2026-02-02 | Universe filter +/-25 strikes, 0-60 DTE |
+| V2.24 | 2026-02-03 | Router price failsafe, spread filter diagnostics |
+| V2.24.2 | 2026-02-03 | Runtime error fix, DTE double-filter fix, push 413 fix |
 
 ---
 

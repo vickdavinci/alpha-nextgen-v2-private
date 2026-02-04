@@ -141,17 +141,17 @@ URL:  https://www.quantconnect.com/project/27678023/...
 
 **Alpha NextGen V2** is a multi-strategy algorithmic trading system built on QuantConnect (LEAN engine) for deployment on Interactive Brokers. The system implements a **Core-Satellite** architecture:
 
-- **Core (55%)**: Trend Engine - MA200 + ADX confirmation across diversified indices
-  - QLD (20%) - 2× Nasdaq
-  - SSO (15%) - 2× S&P 500
-  - TNA (12%) - 3× Russell 2000 (small-cap diversification)
-  - FAS (8%) - 3× Financials (sector diversification)
+- **Core (40%)**: Trend Engine - MA200 + ADX confirmation across diversified indices (V2.18: was 55%)
+  - QLD (15%) - 2× Nasdaq
+  - SSO (12%) - 2× S&P 500
+  - TNA (8%) - 3× Russell 2000 (small-cap diversification)
+  - FAS (5%) - 3× Financials (sector diversification)
 - **Satellite (10%)**: Mean Reversion Engine - RSI oversold bounce with VIX filter
   - TQQQ (5%) - 3× Nasdaq
   - SOXL (5%) - 3× Semiconductor
-- **Satellite (25%)**: Options Engine - Dual-Mode Architecture (V2.1.1)
-  - **Swing Mode (20%)**: Debit spreads, credit spreads, ITM long options (5-45 DTE)
-  - **Intraday Mode (5%)**: Micro Regime Engine - VIX Level × VIX Direction (0-2 DTE)
+- **Satellite (25%)**: Options Engine - VASS + Dual-Mode Architecture (V2.8/V2.24.2)
+  - **Swing Mode (18.75%)**: VASS debit/credit spreads (14-45 DTE, VASS routes by IV)
+  - **Intraday Mode (6.25%)**: Micro Regime Engine - VIX Level × VIX Direction (1-5 DTE)
 
 Forked from V1 v1.0.0 on 2026-01-26. See `docs/specs/v2.1/` for V2.1 specifications (archived).
 See `docs/specs/v2.1/v2-1-options-engine-design.txt` for Options Engine V2.1.1 design reference.
@@ -160,7 +160,7 @@ See `docs/specs/v2.1/v2-1-options-engine-design.txt` for Options Engine V2.1.1 d
 
 ```
 alpha-nextgen/
-├── main.py                     # QCAlgorithm entry point (V2.1 Complete)
+├── main.py                     # QCAlgorithm entry point (~3,800 lines - V2.24.2)
 ├── config.py                   # ALL tunable parameters
 ├── requirements.txt            # Python dependencies
 ├── requirements.lock           # Locked versions for reproducibility
@@ -188,7 +188,9 @@ alpha-nextgen/
 │
 ├── scripts/
 │   ├── validate_config.py      # Spec compliance checker
-│   └── check_spec_parity.py    # Code-to-spec update warning
+│   ├── check_spec_parity.py    # Code-to-spec update warning
+│   ├── qc_backtest.sh          # Automated sync → push → backtest pipeline
+│   └── minify_workspace.py     # Strip comments/docstrings for QC push size limit
 │
 ├── historical/
 │   └── V2_IMPLEMENTATION_ROADMAP.md  # Historical roadmap (archived)
@@ -199,12 +201,12 @@ alpha-nextgen/
 │   │   ├── capital_engine.py   # Position sizing
 │   │   ├── risk_engine.py      # Circuit breakers
 │   │   ├── cold_start_engine.py # Startup handling
-│   │   └── trend_engine.py     # MA200+ADX (55%)
+│   │   └── trend_engine.py     # MA200+ADX (40%)
 │   └── satellite/              # Conditional engines
 │       ├── mean_reversion_engine.py # Intraday bounce (0-10%)
 │       ├── hedge_engine.py     # TMF/PSQ overlay
 │       ├── yield_sleeve.py     # SHV cash management
-│       └── options_engine.py   # QQQ options (25%) - Dual-Mode + Micro Regime
+│       └── options_engine.py   # QQQ options (25%) - VASS + Dual-Mode + Micro Regime
 ├── portfolio/                  # Router, exposure groups, positions
 ├── execution/                  # Order management
 ├── data/                       # Symbols, indicators, validation
@@ -356,7 +358,7 @@ def OnData(self, data):
 - `PSQ` — 1× Inverse Nasdaq (Strategic Hedge)
 - `SHV` — Short Treasury (Yield)
 
-*TNA/FAS are 3× but allowed overnight for Trend Engine. The MA200+ADX strategy requires strong momentum (ADX ≥ 25), which historically offsets decay risk during sustained trends.
+*TNA/FAS are 3× but allowed overnight for Trend Engine. The MA200+ADX strategy requires momentum confirmation (ADX ≥ 15), which historically offsets decay risk during sustained trends.
 
 ```python
 # In Mean Reversion Engine - enforced at 15:45
@@ -669,12 +671,14 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 
 | Threshold | Value | Triggers |
 |-----------|-------|----------|
-| Kill switch | 3% daily loss | Full liquidation |
+| Kill switch | 5% daily loss | Full liquidation (V2.3.17: raised from 3%) |
+| Preemptive KS | 4.5% daily loss | Warning threshold |
 | Panic mode | SPY -4% intraday | Liquidate longs only |
 | Weekly breaker | 5% WTD loss | 50% sizing reduction |
 | Gap filter | SPY -1.5% gap | Block MR entries |
 | Vol shock | 3× ATR bar | 15-min pause |
-| Trend entry (V2) | Price > MA200 + ADX >= 25 | Trend entry eligible |
+| Leverage cap | 90% margin | Block new entries (V2.18) |
+| Trend entry (V2) | Price > MA200 + ADX >= 15 | Trend entry eligible (V2.3.12: was 25) |
 | Oversold | RSI(5) < 25 | MR entry eligible |
 | VIX Low (V2.3) | VIX < 15 | Complacent market, cheap options |
 | VIX Normal (V2.3) | VIX 15-22 | Normal volatility |
@@ -706,4 +710,4 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | SPY_BETA | 40% | 40% |
 | SMALL_CAP_BETA | 25% | 25% |
 | FINANCIALS_BETA | 15% | 15% |
-| RATES | 40% | 40% |
+| RATES | 99% | 99% (V2.3.17: raised from 40% for SHV) |
