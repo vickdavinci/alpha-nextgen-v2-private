@@ -95,26 +95,26 @@ class TestSymbolClassifications:
 class TestKillSwitch:
     """Tests for Kill Switch circuit breaker."""
 
-    def test_kill_switch_triggers_at_3_percent_tier1_from_prior_close(self, risk_engine):
-        """Test graduated KS Tier 1 triggers at -3% from prior close (V2.27)."""
+    def test_kill_switch_triggers_at_2_percent_tier1_from_prior_close(self, risk_engine):
+        """Test graduated KS Tier 1 triggers at -2% from prior close (V2.28.1)."""
         risk_engine.set_equity_prior_close(100_000.0)
 
-        # 2.9% loss - should not trigger
-        assert risk_engine.check_kill_switch(97_100.0) is False
+        # 1.9% loss - should not trigger
+        assert risk_engine.check_kill_switch(98_100.0) is False
 
-        # Exactly 3% loss - should trigger Tier 1 (REDUCE)
-        assert risk_engine.check_kill_switch(97_000.0) is True
+        # Exactly 2% loss - should trigger Tier 1 (REDUCE)
+        assert risk_engine.check_kill_switch(98_000.0) is True
         assert risk_engine.get_ks_tier() == KSTier.REDUCE
 
-    def test_kill_switch_triggers_at_3_percent_tier1_from_sod(self, risk_engine):
-        """Test graduated KS Tier 1 triggers at -3% from SOD (V2.27)."""
+    def test_kill_switch_triggers_at_2_percent_tier1_from_sod(self, risk_engine):
+        """Test graduated KS Tier 1 triggers at -2% from SOD (V2.28.1)."""
         risk_engine.set_equity_sod(100_000.0)
 
-        # 2.9% loss - should not trigger
-        assert risk_engine.check_kill_switch(97_100.0) is False
+        # 1.9% loss - should not trigger
+        assert risk_engine.check_kill_switch(98_100.0) is False
 
-        # Exactly 3% loss - should trigger Tier 1
-        assert risk_engine.check_kill_switch(97_000.0) is True
+        # Exactly 2% loss - should trigger Tier 1
+        assert risk_engine.check_kill_switch(98_000.0) is True
         assert risk_engine.get_ks_tier() == KSTier.REDUCE
 
     def test_kill_switch_uses_either_baseline(self, risk_engine):
@@ -807,8 +807,19 @@ class TestCBLevel1DailyLoss:
         assert risk_engine.get_sizing_multiplier() == 0.5
 
     def test_cb_daily_loss_before_kill_switch(self, configured_engine):
-        """Test Level 1 CB (-2%) triggers before Kill Switch (-3%)."""
-        # At 2.5% loss: Level 1 should trigger, Kill Switch should not
+        """Test Level 1 CB (-2%) triggers alongside KS Tier 1 (-2%) (V2.28.1)."""
+        # At 1.5% loss: Level 1 CB should not trigger, Kill Switch should not
+        result = configured_engine.check_all(
+            current_equity=98_500.0,
+            spy_price=450.0,
+            spy_bar_range=0.5,
+            current_time=datetime(2024, 1, 15, 10, 30),
+        )
+
+        assert SafeguardType.CB_DAILY_LOSS not in result.active_safeguards
+        assert SafeguardType.KILL_SWITCH not in result.active_safeguards
+
+        # At 2.5% loss: Both CB Level 1 and KS Tier 1 trigger (both at 2%)
         result = configured_engine.check_all(
             current_equity=97_500.0,
             spy_price=450.0,
@@ -817,8 +828,7 @@ class TestCBLevel1DailyLoss:
         )
 
         assert SafeguardType.CB_DAILY_LOSS in result.active_safeguards
-        assert SafeguardType.KILL_SWITCH not in result.active_safeguards
-        assert result.circuit_breaker_level == 1
+        assert SafeguardType.KILL_SWITCH in result.active_safeguards
 
     def test_cb_daily_loss_stays_active(self, risk_engine):
         """Test Level 1 CB stays active once triggered."""
