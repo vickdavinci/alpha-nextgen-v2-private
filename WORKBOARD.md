@@ -82,6 +82,8 @@
 | 2j | 1 month (Jan 2025) | V2.24 Zero-Trade Diagnostic Fixes | **Ready to Run** ⏳ | 2026-02-03 |
 | 2k | 1 month (Jan 2025) | V2.24.1 Hardening (Price Discovery + Elastic Delta) | **Ready to Run** ⏳ | 2026-02-03 |
 | 2l | 1 month (Jan 2025) | V2.24.2 Runtime Error + DTE Double-Filter + Push Fix | **Ready to Run** ⏳ | 2026-02-03 |
+| 2m | 1 year (2015) | V2.26 Drawdown Governor + Chop Detector | **Ready to Run** ⏳ | 2026-02-03 |
+| 2n | 1 year (2015) | V2.27 Graduated KS + Win Rate Gate | **Ready to Run** ⏳ | 2026-02-03 |
 | 3 | 3 months | Position lifecycle | Pending | — |
 | 4 | 1 year | Full annual cycle | Pending | — |
 | 5 | 5 years | Long-term stress test | Pending | — |
@@ -702,6 +704,68 @@ Runtime Error: TypeError at _process_immediate_signals → self.Log(... trades_o
 ```bash
 ./scripts/qc_backtest.sh "V2.24.2-DTE-Fix" --open
 ```
+
+---
+
+### V2.27: Strategy Quality — Graduated KS + Win Rate Gate (2026-02-03) — COMPLETE ✅
+
+**Source:** `docs/V2_26_IMPLEMENTATION_PLAN.md` Phase 2 — Capital Preservation & Strategy Quality
+**Branch:** `testing/va/stage2-backtest`
+
+**Goal:** Self-correcting options throttle. Fewer kill switch cascades. Spreads survive soft KS tiers.
+
+| # | Fix | Priority | Status |
+|:-:|-----|:--------:|:------:|
+| 3 | **KS_DECOUPLE** — Spreads survive Tier 1 (REDUCE) and Tier 2 (TREND_EXIT). Only Tier 3 (FULL_EXIT) forces spread closure. -50% spread stop already in place from V2.4.2. | P1 | ✅ |
+| 4 | **WIN_RATE_GATE** — Rolling 10-trade win rate tracker for spreads. >40% = full, 30-40% = 75% sizing, 20-30% = 50% sizing, <20% = shutoff with paper tracking. Resume at 35% paper win rate. Applied to both debit and credit spread entry paths. | P1 | ✅ |
+| 5 | **GRADUATED_KS** — Replace binary -5% kill switch with 3 tiers: -3% REDUCE (halve trend, block new options), -5% TREND_EXIT (liquidate trend, keep spreads), -8% FULL_EXIT (liquidate everything). Escalation-only within day. Skip-day enforcement after Tier 2+. | P0 | ✅ |
+
+**Files Modified:**
+- `engines/core/risk_engine.py` — KSTier enum, `check_kill_switch_graduated()`, tiered `check_all()`, skip-day persistence
+- `engines/core/__init__.py` — Added `KSTier` to exports
+- `main.py` — Rewrote `_handle_kill_switch()` for tiers, `_ks_close_all_options()` decouple helper, skip-day gating in `_scan_options_signals`, `_generate_options_signals`, `_generate_trend_signals_eod`
+- `engines/satellite/options_engine.py` — `record_spread_result()`, `get_win_rate_scale()`, paper tracking, win rate gate in `check_spread_entry_signal()` + `check_credit_spread_entry_signal()`, sizing scale in both debit and credit paths, persistence
+- `config.py` — 19 new params (KS_GRADUATED_ENABLED, KS_TIER_1/2/3_PCT, WIN_RATE_* params, etc.)
+- `tests/test_risk_engine.py` — Updated 8 tests for graduated thresholds + KSTier import
+- `tests/scenarios/test_kill_switch_scenario.py` — Updated boundary test for 3% Tier 1
+
+**Tests:** All 1349 passed ✅
+
+**Backtest Validation:**
+
+| Period | Version | Return | Sharpe | Max DD | Status |
+|--------|---------|-------:|-------:|-------:|:------:|
+| 2015 Full Year | V2.27 | | | | ⏳ Pending |
+
+---
+
+### V2.26: Capital Preservation — Drawdown Governor + Chop Detector (2026-02-03) — COMPLETE ✅
+
+**Source:** `docs/V2_26_IMPLEMENTATION_PLAN.md` Phase 1 — Capital Preservation & Strategy Quality
+**Branch:** `testing/va/stage2-backtest`
+
+**Goal:** Cumulative drawdown protection + chop market detection. Prevents death by 1000 cuts.
+
+| # | Fix | Priority | Status |
+|:-:|-----|:--------:|:------:|
+| 1 | **DRAWDOWN_GOVERNOR** — Cumulative high-watermark based drawdown protection. Scales all engine allocations: 10% DD → 50%, 15% DD → 25%, 20% DD → 0% (shutdown). Hysteresis recovery (+5% from trough to step back up). Persisted via StateManager. | P0 | ✅ |
+| 2 | **CHOP_DETECTOR** — ADX(14) of SPY as 6th regime factor (5% weight). Strong trend (ADX≥25) = 100, moderate (20-25) = 60, weak (15-20) = 30, dead (<15) = 10. Lowers regime score in choppy markets, increasing hedge targets. | P1 | ✅ |
+
+**Files Modified:**
+- `engines/core/risk_engine.py` — `check_drawdown_governor()`, `_equity_high_watermark`, `_governor_scale`, hysteresis recovery, persistence
+- `engines/core/regime_engine.py` — `spy_adx` parameter, `chop_score` + `spy_adx_value` in RegimeState, `chop_factor_score()` wiring
+- `utils/calculations.py` — `chop_factor_score()`, updated `aggregate_regime_score()` with chop weight
+- `config.py` — 8 new params (DRAWDOWN_GOVERNOR_LEVELS, WEIGHT_CHOP, CHOP_ADX_THRESHOLD_*, ADX_PERIOD)
+- `main.py` — SPY ADX indicator, governor call at market open, governor_scale passthrough to engines
+- `tests/` — Updated regime engine tests for chop factor
+
+**Tests:** All 1349 passed ✅
+
+**Backtest Validation:**
+
+| Period | Version | Return | Sharpe | Max DD | Status |
+|--------|---------|-------:|-------:|-------:|:------:|
+| 2015 Full Year | V2.26 | | | | ⏳ Pending |
 
 ---
 

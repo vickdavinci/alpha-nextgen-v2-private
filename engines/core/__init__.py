@@ -11,15 +11,16 @@
 #
 # =============================================================================
 
-from engines.core.regime_engine import RegimeEngine, RegimeState
 from engines.core.capital_engine import CapitalEngine, CapitalState
-from engines.core.risk_engine import (
-    RiskEngine,
-    RiskCheckResult,
-    SafeguardType,
-    SafeguardStatus,
-)
 from engines.core.cold_start_engine import ColdStartEngine, ColdStartState
+from engines.core.regime_engine import RegimeEngine, RegimeState
+from engines.core.risk_engine import (
+    KSTier,
+    RiskCheckResult,
+    RiskEngine,
+    SafeguardStatus,
+    SafeguardType,
+)
 from engines.core.trend_engine import TrendEngine, TrendPosition
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "RegimeState",
     "CapitalEngine",
     "CapitalState",
+    "KSTier",
     "RiskEngine",
     "RiskCheckResult",
     "SafeguardType",

@@ -18,7 +18,7 @@ import pytest
 
 import config
 from engines.core.cold_start_engine import ColdStartEngine
-from engines.core.risk_engine import RiskEngine, SafeguardType
+from engines.core.risk_engine import KSTier, RiskEngine, SafeguardType
 
 
 @pytest.fixture
@@ -169,33 +169,37 @@ class TestKillSwitchScenario:
     @pytest.mark.scenario
     def test_scenario_kill_switch_threshold_boundary(self, mock_algorithm):
         """
-        SCENARIO: Kill switch triggers at exactly -5%, not before (V2.3.17).
+        SCENARIO: Graduated KS Tier 1 triggers at exactly -3%, not before (V2.27).
 
-        Given: Portfolio at -4.99% loss
-        When: Loss increases to -5.00%
-        Then: Kill switch triggers immediately
+        Given: Portfolio at -2.99% loss
+        When: Loss increases to -3.00%
+        Then: Kill switch triggers (Tier 1 REDUCE)
         """
         # Fresh engine for each test
         engine = RiskEngine(mock_algorithm)
         engine.set_equity_prior_close(50000.0)
 
-        # Test: -4.99% should NOT trigger
-        current_below = 50000.0 * (1 - 0.0499)  # $47,505
+        # Test: -2.99% should NOT trigger
+        current_below = 50000.0 * (1 - 0.0299)  # $48,505
         triggered_below = engine.check_kill_switch(current_below)
         assert triggered_below is False
 
         # Reset
         engine._kill_switch_active = False
+        engine._ks_current_tier = KSTier.NONE
 
-        # Test: -5.00% SHOULD trigger (V2.3.17)
-        current_at = 50000.0 * (1 - 0.05)  # $47,500
+        # Test: -3.00% SHOULD trigger (V2.27 Tier 1)
+        current_at = 50000.0 * (1 - 0.03)  # $48,500
         triggered_at = engine.check_kill_switch(current_at)
         assert triggered_at is True
+        assert engine.get_ks_tier() == KSTier.REDUCE
 
         # Reset
         engine._kill_switch_active = False
+        engine._ks_current_tier = KSTier.NONE
 
-        # Test: -5.01% should also trigger
-        current_above = 50000.0 * (1 - 0.0501)  # $47,495
-        triggered_above = engine.check_kill_switch(current_above)
-        assert triggered_above is True
+        # Test: -5.00% should trigger Tier 2
+        current_tier2 = 50000.0 * (1 - 0.05)  # $47,500
+        triggered_tier2 = engine.check_kill_switch(current_tier2)
+        assert triggered_tier2 is True
+        assert engine.get_ks_tier() == KSTier.TREND_EXIT

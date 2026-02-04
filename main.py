@@ -11,7 +11,13 @@ from engines.core.cold_start_engine import ColdStartEngine
 
 # Core Engines
 from engines.core.regime_engine import RegimeEngine, RegimeState
-from engines.core.risk_engine import GreeksSnapshot, RiskCheckResult, RiskEngine, SafeguardType
+from engines.core.risk_engine import (
+    GreeksSnapshot,
+    KSTier,
+    RiskCheckResult,
+    RiskEngine,
+    SafeguardType,
+)
 from engines.core.trend_engine import TrendEngine
 from engines.satellite.hedge_engine import HedgeEngine
 
@@ -184,8 +190,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2022, 1, 1)
-        self.SetEndDate(2022, 3, 31)  # V2.25 Q1 2022 audit fix verification
+        self.SetStartDate(2015, 1, 1)
+        self.SetEndDate(2015, 12, 31)  # V2.25 full year 2015 backtest
         self.SetCash(config.PHASE_SEED_MIN)  # $50,000 seed capital
 
         # All times are Eastern
@@ -240,6 +246,7 @@ class AlphaNextGen(QCAlgorithm):
         self.equity_sod = 0.0
         self.spy_prior_close = 0.0
         self.spy_open = 0.0
+        self._governor_scale = 1.0  # V2.26: Drawdown Governor allocation multiplier
         self.today_trades = []
         self.today_safeguards = []
         self.symbols_to_skip = set()
@@ -272,6 +279,9 @@ class AlphaNextGen(QCAlgorithm):
         self._spread_close_qty_long = 0
         self._spread_close_qty_short = 0
         self._spread_close_expected_qty = 0
+        # V2.27: Track close fill prices for win rate gate P&L
+        self._spread_close_long_fill_price: float = 0.0
+        self._spread_close_short_fill_price: float = 0.0
 
         # V2.6 Bug #14: Exit order retry tracking
         self._pending_exit_orders: Dict[str, ExitOrderTracker] = {}
@@ -336,9 +346,12 @@ class AlphaNextGen(QCAlgorithm):
         self._check_expiration_hammer_v2()
 
         # =====================================================================
-        # STEP 4: HANDLE KILL SWITCH
+        # STEP 4: HANDLE KILL SWITCH (V2.27: Graduated tiers)
         # =====================================================================
-        if risk_result.reset_cold_start:
+        # Tier 1 (REDUCE): Applied through result flags, doesn't need handler
+        # Tier 2 (TREND_EXIT): Liquidate trend, keep spreads → needs handler
+        # Tier 3 (FULL_EXIT): Liquidate everything → needs handler
+        if risk_result.ks_tier in (KSTier.TREND_EXIT, KSTier.FULL_EXIT):
             self._handle_kill_switch(risk_result)
             return  # All other processing skipped
 
@@ -505,6 +518,9 @@ class AlphaNextGen(QCAlgorithm):
         self.spy_sma20 = self.SMA(self.spy, config.SMA_FAST, Resolution.Daily)
         self.spy_sma50 = self.SMA(self.spy, config.SMA_MED, Resolution.Daily)
         self.spy_sma200 = self.SMA(self.spy, config.SMA_SLOW, Resolution.Daily)
+
+        # V2.26: SPY ADX(14) for Chop Detection (regime engine 6th factor)
+        self.spy_adx_daily = self.ADX(self.spy, config.ADX_PERIOD, Resolution.Daily)
 
         # ---------------------------------------------------------------------
         # Risk Engine Indicators
@@ -837,6 +853,9 @@ class AlphaNextGen(QCAlgorithm):
 
         self.equity_prior_close = self.Portfolio.TotalPortfolioValue
         self.risk_engine.set_equity_prior_close(self.equity_prior_close)
+
+        # V2.26: Drawdown Governor — check cumulative DD from peak, scale allocations
+        self._governor_scale = self.risk_engine.check_drawdown_governor(self.equity_prior_close)
 
         # Set SPY prior close for gap filter
         self.spy_prior_close = self.Securities[self.spy].Close
@@ -2204,6 +2223,11 @@ class AlphaNextGen(QCAlgorithm):
                 f"Max={max_positions} | Entries allowed={entries_allowed}"
             )
 
+        # V2.27: Skip-day enforcement after Tier 2+ kill switch (block entries only, exits still run)
+        skip_entries = self.risk_engine.is_ks_skip_day(str(self.Time.date()))
+        if skip_entries:
+            self.Log("TREND: Entry blocked - KS skip day active")
+
         # V2.3: Collect entry candidates with their ADX scores for prioritization
         entry_candidates = []
 
@@ -2275,6 +2299,10 @@ class AlphaNextGen(QCAlgorithm):
                 )
             entry_candidates = []
 
+        # V2.27: Block entries on KS skip day (exits still processed above)
+        if skip_entries:
+            entry_candidates = []
+
         # V2.3: Apply position limit - only send top N entry signals
         if entry_candidates and entries_allowed > 0:
             # Sort by ADX descending (strongest trends first)
@@ -2323,6 +2351,11 @@ class AlphaNextGen(QCAlgorithm):
         """
         # Skip if indicators not ready
         if not self.qqq_adx.IsReady or not self.qqq_sma200.IsReady:
+            return
+
+        # V2.27: Skip-day enforcement after Tier 2+ kill switch
+        if self.risk_engine.is_ks_skip_day(str(self.Time.date())):
+            self.Log("OPTIONS_EOD: Blocked - KS skip day active")
             return
 
         # Skip if already have options position (single-leg or spread)
@@ -3070,25 +3103,25 @@ class AlphaNextGen(QCAlgorithm):
 
     def _handle_kill_switch(self, risk_result: RiskCheckResult) -> None:
         """
-        V2.3.4: Handle kill switch trigger with ENGINE-SPECIFIC liquidation.
+        V2.27: Handle graduated kill switch tiers.
 
-        Instead of liquidating EVERYTHING, we now:
-        1. Check if options are causing the loss (look at options P&L)
-        2. If options are the culprit, only liquidate OPTIONS (protect trend)
-        3. If trend is also losing badly, liquidate trend too
-        4. Only do full liquidation for catastrophic losses (>5%)
+        Tier 2 (TREND_EXIT): Liquidate trend + MR. Keep spreads (decouple).
+        Tier 3 (FULL_EXIT): Liquidate everything including spreads. Reset cold start.
+
+        Tier 1 (REDUCE) is handled inline through risk_result flags — it doesn't
+        call this handler.
 
         Args:
-            risk_result: Risk check result containing symbols to liquidate.
+            risk_result: Risk check result containing ks_tier and symbols to liquidate.
         """
         # V2.3 FIX: Only handle kill switch ONCE per day
         if self._kill_switch_handled_today:
-            return  # Already handled today, skip repeated processing
-
+            return
         self._kill_switch_handled_today = True
 
-        # V2.3.4: Calculate options P&L vs trend P&L
-        # V2.13: Add spread netting diagnostics (Fix #15)
+        tier = risk_result.ks_tier
+
+        # Calculate P&L diagnostics for logging
         options_gross_pnl = 0.0
         options_long_pnl = 0.0
         options_short_pnl = 0.0
@@ -3107,77 +3140,110 @@ class AlphaNextGen(QCAlgorithm):
                 elif str(holding.Symbol.Value) in trend_symbols:
                     trend_pnl += holding.UnrealizedProfit
 
-        # V2.13: Log spread netting diagnostics
         self.Log(
             f"SPREAD_PNL_DIAG: Long={options_long_pnl:+,.0f} Short={options_short_pnl:+,.0f} "
             f"Net={options_gross_pnl:+,.0f} | Trend={trend_pnl:+,.0f}"
         )
 
-        # Use net options P&L for kill switch logic (was: options_pnl)
-        options_pnl = options_gross_pnl
-
-        total_loss_pct = (
-            self.Portfolio.TotalPortfolioValue - self.equity_prior_close
-        ) / self.equity_prior_close
+        total_loss_pct = 0.0
+        if self.equity_prior_close > 0:
+            total_loss_pct = (
+                self.Portfolio.TotalPortfolioValue - self.equity_prior_close
+            ) / self.equity_prior_close
 
         self.Log(
-            f"KILL_SWITCH: Triggered at {self.Time} | "
+            f"KS_GRADUATED: {tier.value} at {self.Time} | "
             f"Equity={self.Portfolio.TotalPortfolioValue:,.2f} | "
-            f"Loss={total_loss_pct:.2%} | Options P&L=${options_pnl:,.0f} | Trend P&L=${trend_pnl:,.0f}"
+            f"Loss={total_loss_pct:.2%} | Options P&L=${options_gross_pnl:,.0f} | "
+            f"Trend P&L=${trend_pnl:,.0f}"
         )
 
         # Trigger in scheduler (disables all trading)
         self.scheduler.trigger_kill_switch()
 
-        # V2.3.4: ENGINE-SPECIFIC LIQUIDATION
-        # If options are the primary cause of loss, protect trend positions
-        options_are_culprit = options_pnl < -500 and trend_pnl >= -200  # Options losing, trend OK
-        catastrophic_loss = total_loss_pct < -0.05  # More than 5% loss = liquidate everything
-
-        if catastrophic_loss:
-            # CATASTROPHIC: Liquidate everything
-            self.Log("KILL_SWITCH: CATASTROPHIC LOSS - Full liquidation")
-            for symbol in risk_result.symbols_to_liquidate:
-                self.Liquidate(symbol)
-        elif options_are_culprit:
-            # OPTIONS-ONLY: Protect trend positions
-            self.Log(
-                f"KILL_SWITCH: Options-only liquidation (protecting trend with P&L=${trend_pnl:,.0f})"
-            )
-            # Don't liquidate trend symbols
-        else:
-            # Mixed losses: Liquidate specified symbols
+        # ---- TIER 3: FULL EXIT ----
+        if tier == KSTier.FULL_EXIT:
+            self.Log("KS_FULL_EXIT: Liquidating ALL positions")
             for symbol in risk_result.symbols_to_liquidate:
                 self.Liquidate(symbol)
 
-        # ALWAYS liquidate options (they're short-term and risky)
-        # V2.17: Route spread closes through Portfolio Router for unified retry + fallback
-        # This fixes USER-1 (naked exposure), USER-3 (bypass), RPT-9 (no retry)
+            # Close spreads (Tier 3 overrides decouple)
+            self._ks_close_all_options(force_spread_close=True)
+
+            # Clear options state and reset cold start
+            self.options_engine.clear_all_positions()
+            if config.KS_COLD_START_RESET_ON_TIER_3:
+                self.cold_start_engine.reset()
+
+        # ---- TIER 2: TREND EXIT ----
+        elif tier == KSTier.TREND_EXIT:
+            # Liquidate trend + MR equity positions
+            for symbol in risk_result.symbols_to_liquidate:
+                self.Liquidate(symbol)
+            self.Log(f"KS_TREND_EXIT: Liquidated {len(risk_result.symbols_to_liquidate)} symbols")
+
+            # V2.27: Spread decouple — keep active spreads, they have -50% stop
+            if config.KILL_SWITCH_SPREAD_DECOUPLE:
+                spread = self.options_engine._spread_position
+                spread_count = spread.num_spreads if spread else 0
+                self.Log(
+                    f"KS_SPREAD_DECOUPLE: Keeping {spread_count} active spreads | "
+                    f"Monitored by -{config.SPREAD_STOP_LOSS_PCT:.0%} spread stop"
+                )
+                # Close single-leg options only (NOT spread legs)
+                self._ks_close_all_options(force_spread_close=False)
+            else:
+                # Legacy: close everything including spreads
+                self._ks_close_all_options(force_spread_close=True)
+                self.options_engine.clear_all_positions()
+
+            if config.KS_COLD_START_RESET_ON_TIER_2:
+                self.cold_start_engine.reset()
+
+    def _ks_close_all_options(self, force_spread_close: bool) -> None:
+        """
+        V2.27: Close options positions during kill switch.
+
+        Args:
+            force_spread_close: If True, also close spread positions.
+                               If False, preserve spread positions (decouple).
+        """
         spread = self.options_engine._spread_position
         spread_closed = False
 
-        if spread is not None and spread.num_spreads > 0 and not spread.is_closing:
-            # V2.17: Use Router's unified spread close (handles retries + sequential fallback)
+        # Close spread if forced (Tier 3 or decouple disabled)
+        if (
+            force_spread_close
+            and spread is not None
+            and spread.num_spreads > 0
+            and not spread.is_closing
+        ):
             spread_closed = self.portfolio_router.execute_spread_close(
                 spread=spread,
-                reason=f"KILL_SWITCH_{risk_result.kill_switch_reason if hasattr(risk_result, 'kill_switch_reason') else 'TRIGGERED'}",
-                is_emergency=catastrophic_loss,  # Skip retries for catastrophic loss
+                reason=f"KILL_SWITCH_{self.risk_engine.get_ks_tier().value}",
+                is_emergency=True,
             )
-
             if spread_closed:
                 self.Log("KILL_SWITCH: Spread closed via Router")
             else:
                 self.Log("KILL_SWITCH: Spread close FAILED - may require manual intervention")
 
-        # V2.17: Close any remaining single-leg options (intraday positions, protective puts)
-        # These are NOT part of spreads and need individual handling
+        # Close remaining single-leg options (intraday positions, protective puts)
         short_options = []
         long_options = []
         for kvp in self.Portfolio:
             holding = kvp.Value
             if holding.Invested and holding.Symbol.SecurityType == SecurityType.Option:
-                # Skip if this was part of the spread we just closed
-                if spread and spread_closed:
+                # Skip spread legs if we're preserving them (decouple)
+                if not force_spread_close and spread is not None:
+                    symbol_str = str(holding.Symbol)
+                    if (
+                        spread.long_leg.symbol in symbol_str
+                        or spread.short_leg.symbol in symbol_str
+                    ):
+                        continue
+                # Skip spread legs that were just closed
+                if force_spread_close and spread and spread_closed:
                     symbol_str = str(holding.Symbol)
                     if (
                         spread.long_leg.symbol in symbol_str
@@ -3190,7 +3256,6 @@ class AlphaNextGen(QCAlgorithm):
                     long_options.append(holding)
 
         # Close shorts first (buy to close), then longs (sell to close)
-        # This order prevents margin issues
         for holding in short_options:
             self.Log(f"KILL_SWITCH: Closing SHORT option {holding.Symbol} (qty={holding.Quantity})")
             try:
@@ -3204,15 +3269,6 @@ class AlphaNextGen(QCAlgorithm):
                 self.MarketOrder(holding.Symbol, -int(holding.Quantity))
             except Exception as e:
                 self.Log(f"KILL_SWITCH: Long option close error: {e}")
-
-        # V2.5 PART 19 FIX: Clear ALL options engine position state
-        # This prevents "zombie state" where internal trackers remain set
-        # after broker positions are closed, blocking future trades for months
-        self.options_engine.clear_all_positions()
-
-        # V2.3.4: Only reset cold start if we liquidated trend positions
-        if catastrophic_loss or not options_are_culprit:
-            self.cold_start_engine.reset()
 
     def _handle_panic_mode(self, risk_result: RiskCheckResult) -> None:
         """
@@ -3478,6 +3534,12 @@ class AlphaNextGen(QCAlgorithm):
             # V2.3 DEBUG: Log once per day when options blocked by kill switch (live only)
             if self.Time.hour == 10 and self.Time.minute == 30 and self.LiveMode:
                 self.Log("OPT_SCAN: Blocked - Kill switch handled today")
+            return
+
+        # V2.27: Skip-day enforcement after Tier 2+ kill switch
+        if self.risk_engine.is_ks_skip_day(str(self.Time.date())):
+            if self.Time.hour == 10 and self.Time.minute == 30:
+                self.Log("OPT_SCAN: Blocked - KS skip day active")
             return
 
         # V2.9: Skip if in settlement cooldown (Bug #6 fix)
@@ -4371,11 +4433,13 @@ class AlphaNextGen(QCAlgorithm):
                 volatility_score=50.0,
                 breadth_score=50.0,
                 credit_score=50.0,
+                chop_score=50.0,
                 vix_level=20.0,
                 realized_vol=0.0,
                 vol_percentile=50.0,
                 breadth_spread_value=0.0,
                 credit_spread_value=0.0,
+                spy_adx_value=25.0,
                 new_longs_allowed=True,
                 cold_start_allowed=True,
                 tmf_target_pct=0.0,
@@ -4389,7 +4453,8 @@ class AlphaNextGen(QCAlgorithm):
         hyg_prices = list(self.hyg_closes) if self.hyg_closes.IsReady else []
         ief_prices = list(self.ief_closes) if self.ief_closes.IsReady else []
 
-        # V2.3: Pass VIX to regime calculation
+        # V2.26: Pass VIX + SPY ADX to regime calculation
+        spy_adx_val = self.spy_adx_daily.Current.Value if self.spy_adx_daily.IsReady else 25.0
         return self.regime_engine.calculate(
             spy_closes=spy_prices,
             rsp_closes=rsp_prices,
@@ -4399,6 +4464,7 @@ class AlphaNextGen(QCAlgorithm):
             spy_sma50=self.spy_sma50.Current.Value,
             spy_sma200=self.spy_sma200.Current.Value,
             vix_level=self._current_vix,
+            spy_adx=spy_adx_val,
         )
 
     def _log_daily_summary(self) -> None:
@@ -4775,6 +4841,8 @@ class AlphaNextGen(QCAlgorithm):
         if spread.long_leg.symbol == symbol:
             self._spread_long_closed = True
             self._spread_close_qty_long += fill_qty_abs
+            # V2.27: Track close fill price for win rate gate
+            self._spread_close_long_fill_price = fill_price
             self.Log(
                 f"SPREAD: Long leg closed | {symbol[-20:]} @ ${fill_price:.2f} x{fill_qty_abs} | "
                 f"Total closed={self._spread_close_qty_long}/{self._spread_close_expected_qty}"
@@ -4782,6 +4850,8 @@ class AlphaNextGen(QCAlgorithm):
         elif spread.short_leg.symbol == symbol:
             self._spread_short_closed = True
             self._spread_close_qty_short += fill_qty_abs
+            # V2.27: Track close fill price for win rate gate
+            self._spread_close_short_fill_price = fill_price
             self.Log(
                 f"SPREAD: Short leg closed | {symbol[-20:]} @ ${fill_price:.2f} x{fill_qty_abs} | "
                 f"Total closed={self._spread_close_qty_short}/{self._spread_close_expected_qty}"
@@ -4802,6 +4872,28 @@ class AlphaNextGen(QCAlgorithm):
                     f"Closed={self._spread_close_qty_short} Expected={self._spread_close_expected_qty}"
                 )
 
+            # V2.27: Record win/loss for Win Rate Gate before removing position
+            close_long_price = getattr(self, "_spread_close_long_fill_price", 0.0)
+            close_short_price = getattr(self, "_spread_close_short_fill_price", 0.0)
+            is_credit = spread.spread_type in (
+                "BULL_PUT_CREDIT",
+                "BEAR_CALL_CREDIT",
+            )
+            if is_credit:
+                # Credit spread: profit when close value < credit received
+                close_value = close_long_price - close_short_price
+                is_win = close_value < spread.net_debit  # net_debit = net credit for credits
+            else:
+                # Debit spread: profit when close value > entry cost
+                close_value = close_long_price - close_short_price
+                is_win = close_value > spread.net_debit
+            self.options_engine.record_spread_result(is_win)
+            result_str = "WIN" if is_win else "LOSS"
+            self.Log(
+                f"SPREAD_RESULT: {result_str} | Type={spread.spread_type} | "
+                f"Entry={spread.net_debit:.2f} | Close={close_value:.2f}"
+            )
+
             # Both legs closed - remove spread position
             self.options_engine.remove_spread_position()
             self._greeks_breach_logged = False  # Reset for next position
@@ -4812,6 +4904,8 @@ class AlphaNextGen(QCAlgorithm):
             self._spread_close_qty_long = 0
             self._spread_close_qty_short = 0
             self._spread_close_expected_qty = 0
+            self._spread_close_long_fill_price = 0.0
+            self._spread_close_short_fill_price = 0.0
 
             self.Log("SPREAD: Position removed - both legs closed")
 

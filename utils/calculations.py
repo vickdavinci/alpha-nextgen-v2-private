@@ -882,38 +882,78 @@ def vix_factor_score(
         return 0.0  # Crisis mode
 
 
+def chop_factor_score(
+    adx_value: float,
+    strong: float = 25.0,
+    moderate: float = 20.0,
+    weak: float = 15.0,
+) -> float:
+    """Score 0-100 based on ADX trend strength (V2.26: Chop Detector).
+
+    Measures trend quality/consistency via ADX(14) of SPY.
+    Low ADX = choppy/directionless market = low score = reduces regime.
+
+    Args:
+        adx_value: Current ADX(14) value.
+        strong: ADX threshold for strong trend (score 100).
+        moderate: ADX threshold for moderate trend (score 60).
+        weak: ADX threshold for weak trend (score 30).
+
+    Returns:
+        Chop factor score (0-100). Lower = choppier.
+
+    Example:
+        >>> chop_factor_score(28)
+        100
+        >>> chop_factor_score(12)
+        10
+    """
+    if adx_value >= strong:
+        return 100.0  # Strong trend, safe for directional plays
+    elif adx_value >= moderate:
+        return 60.0  # Moderate, some directional plays OK
+    elif adx_value >= weak:
+        return 30.0  # Weak, reduce directional exposure
+    else:
+        return 10.0  # Dead/choppy, avoid directional plays
+
+
 def aggregate_regime_score(
     trend_score: float,
     vol_score: float,
     breadth_score: float,
     credit_score: float,
-    weight_trend: float = 0.30,
+    weight_trend: float = 0.25,
     weight_vol: float = 0.15,
     weight_breadth: float = 0.20,
     weight_credit: float = 0.15,
     vix_score: float = 50.0,
     weight_vix: float = 0.20,
+    chop_score: float = 50.0,
+    weight_chop: float = 0.05,
 ) -> float:
-    """Calculate weighted aggregate regime score (V2.3: includes VIX).
+    """Calculate weighted aggregate regime score (V2.26: includes Chop).
 
     Args:
         trend_score: Trend factor score (0-100).
         vol_score: Realized volatility factor score (0-100).
         breadth_score: Breadth factor score (0-100).
         credit_score: Credit factor score (0-100).
-        weight_trend: Weight for trend factor (V2.3: 0.30).
+        weight_trend: Weight for trend factor (V2.26: 0.25, was 0.30).
         weight_vol: Weight for realized volatility factor (V2.3: 0.15).
         weight_breadth: Weight for breadth factor (V2.3: 0.20).
         weight_credit: Weight for credit factor (0.15).
         vix_score: VIX factor score (0-100) - V2.3 NEW.
         weight_vix: Weight for VIX factor (V2.3: 0.20).
+        chop_score: Chop/ADX factor score (0-100) - V2.26 NEW.
+        weight_chop: Weight for chop factor (V2.26: 0.05).
 
     Returns:
         Aggregate score (0-100).
 
     Example:
-        >>> aggregate_regime_score(70, 60, 55, 50, vix_score=80)
-        64.0
+        >>> aggregate_regime_score(70, 60, 55, 50, vix_score=80, chop_score=100)
+        63.5
     """
     raw = (
         trend_score * weight_trend
@@ -921,6 +961,7 @@ def aggregate_regime_score(
         + breadth_score * weight_breadth
         + credit_score * weight_credit
         + vix_score * weight_vix
+        + chop_score * weight_chop
     )
     return clamp(raw, 0, 100)
 

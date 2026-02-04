@@ -64,12 +64,13 @@ MIN_SPREAD_CONTRACTS = 2
 # REGIME ENGINE
 # =============================================================================
 
-# Factor Weights (V2.3: Added VIX, rebalanced)
-WEIGHT_TREND = 0.30  # V2.3: Reduced from 0.45 to make room for VIX
+# Factor Weights (V2.3: Added VIX, rebalanced; V2.26: Added Chop)
+WEIGHT_TREND = 0.25  # V2.26: Reduced from 0.30 to make room for chop factor
 WEIGHT_VIX = 0.20  # V2.3 NEW: Implied volatility for options pricing
 WEIGHT_VOLATILITY = 0.15  # V2.3: Reduced from 0.25 (realized vol)
 WEIGHT_BREADTH = 0.20  # V2.3: Increased from 0.15
 WEIGHT_CREDIT = 0.15
+WEIGHT_CHOP = 0.05  # V2.26 NEW: Trend quality/consistency factor (ADX-based)
 
 # Smoothing
 REGIME_SMOOTHING_ALPHA = 0.30
@@ -107,6 +108,13 @@ VOL_PERCENTILE_LOOKBACK = 252
 # Breadth & Credit
 BREADTH_LOOKBACK = 20
 CREDIT_LOOKBACK = 20
+
+# V2.26: Chop Detection Factor (ADX-based regime sub-score)
+# ADX(14) of SPY measures trend strength regardless of direction
+CHOP_ADX_THRESHOLD_STRONG = 25  # ADX >= 25 = strong trend (score 100)
+CHOP_ADX_THRESHOLD_MODERATE = 20  # ADX 20-25 = moderate (score 60)
+CHOP_ADX_THRESHOLD_WEAK = 15  # ADX 15-20 = weak (score 30)
+# ADX < 15 = dead/choppy (score 10)
 
 # =============================================================================
 # COLD START ENGINE
@@ -344,10 +352,27 @@ MIN_INTRADAY_OPTIONS_TRADE_VALUE = 500
 
 # Kill Switch (V1: Nuclear option - liquidate ALL)
 # V2.3.17: Raised from 3% to 5% to reduce false triggers in volatile markets
-KILL_SWITCH_PCT = 0.05
+KILL_SWITCH_PCT = 0.05  # Legacy fallback (used when KS_GRADUATED_ENABLED = False)
 # V2.16-BT: Preemptive kill switch when panic mode active AND approaching threshold
 # Closes gap between panic mode (4%) and kill switch (5%) where hedges could lose value
 KILL_SWITCH_PREEMPTIVE_PCT = 0.045  # 4.5% - triggers kill switch when in panic mode
+
+# V2.27: Graduated Kill Switch (replaces binary -5% nuclear option)
+# 3-tier response: REDUCE → TREND_EXIT → FULL_EXIT
+KS_GRADUATED_ENABLED = True
+KS_TIER_1_PCT = 0.03  # -3% daily loss → REDUCE (halve trend, block new options)
+KS_TIER_2_PCT = 0.05  # -5% daily loss → TREND_EXIT (liquidate trend, keep spreads)
+KS_TIER_3_PCT = 0.08  # -8% daily loss → FULL_EXIT (liquidate everything)
+KS_TIER_1_TREND_REDUCTION = 0.50  # Reduce trend allocation by 50% at Tier 1
+KS_TIER_1_BLOCK_NEW_OPTIONS = True  # Block new option entries at Tier 1
+KS_SKIP_DAYS = 1  # Block new entries for 1 day after Tier 2+
+KS_COLD_START_RESET_ON_TIER_2 = False  # Don't reset cold start on Tier 2
+KS_COLD_START_RESET_ON_TIER_3 = True  # Reset cold start on Tier 3 (true emergency)
+
+# V2.27: KS Spread Decouple
+# Spreads survive Tier 1 and Tier 2 — they have their own -50% stop (SPREAD_STOP_LOSS_PCT)
+# Only Tier 3 (FULL_EXIT) liquidates spreads
+KILL_SWITCH_SPREAD_DECOUPLE = True
 
 # Panic Mode
 PANIC_MODE_PCT = 0.04
@@ -366,6 +391,21 @@ VOL_SHOCK_PAUSE_MIN = 15
 # Time Guard
 TIME_GUARD_START = "13:55"
 TIME_GUARD_END = "14:10"
+
+# =============================================================================
+# V2.26: DRAWDOWN GOVERNOR (Cumulative Capital Preservation)
+# =============================================================================
+# Tracks equity high watermark. Scales ALL engine allocations based on
+# drawdown from peak. Prevents death-by-a-thousand-cuts (-42% in 2015).
+# Bull market impact: zero drag (HWM rises continuously, governor never fires).
+DRAWDOWN_GOVERNOR_ENABLED = True
+DRAWDOWN_GOVERNOR_LEVELS = {
+    0.05: 0.75,  # At -5% from peak → 75% allocation
+    0.10: 0.50,  # At -10% from peak → 50% allocation
+    0.15: 0.25,  # At -15% from peak → 25% allocation
+    0.20: 0.00,  # At -20% from peak → CASH ONLY (SHV + hedges)
+}
+DRAWDOWN_GOVERNOR_RECOVERY_PCT = 0.05  # Must recover 5% from trough before stepping up
 
 # =============================================================================
 # V2.1 CIRCUIT BREAKER SYSTEM (5 Levels)
@@ -636,7 +676,21 @@ SPREAD_DTE_EXIT = 5  # Close by 5 DTE remaining
 
 # Exit targets
 SPREAD_PROFIT_TARGET_PCT = 0.50  # Take profit at 50% of max profit
-SPREAD_STOP_LOSS_PCT = 0.50  # V2.4.2: Stop loss at 50% of entry debit (max loss = 50% of net debit)
+SPREAD_STOP_LOSS_PCT = (
+    0.50  # V2.4.2/V2.27: Stop loss at 50% of entry debit (max loss = 50% of net debit)
+)
+
+# V2.27: Win Rate Gate (Options Self-Correcting Throttle)
+# Rolling window of recent closed spread trades. Scales down/shuts off when losing.
+WIN_RATE_GATE_ENABLED = True
+WIN_RATE_LOOKBACK = 10  # Rolling window of recent closed spread trades
+WIN_RATE_FULL_THRESHOLD = 0.40  # Above 40%: full size
+WIN_RATE_REDUCED_THRESHOLD = 0.30  # 30-40%: reduced size
+WIN_RATE_MINIMUM_THRESHOLD = 0.20  # 20-30%: minimum size
+WIN_RATE_SHUTOFF_THRESHOLD = 0.20  # Below 20%: STOP all new spread entries
+WIN_RATE_RESTART_THRESHOLD = 0.35  # Resume when paper win rate recovers to 35%
+WIN_RATE_SIZING_REDUCED = 0.75  # Multiplier at REDUCED level
+WIN_RATE_SIZING_MINIMUM = 0.50  # Multiplier at MINIMUM level
 SPREAD_REGIME_EXIT_BULL = 45  # Exit Bull Call if regime drops below 45
 SPREAD_REGIME_EXIT_BEAR = 60  # Exit Bear Put if regime rises above 60
 

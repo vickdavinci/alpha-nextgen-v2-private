@@ -32,6 +32,15 @@ if TYPE_CHECKING:
     from AlgorithmImports import QCAlgorithm
 
 
+class KSTier(Enum):
+    """V2.27: Graduated Kill Switch tiers."""
+
+    NONE = "NONE"  # No kill switch triggered
+    REDUCE = "REDUCE"  # Tier 1: -3% → halve trend, block new options
+    TREND_EXIT = "TREND_EXIT"  # Tier 2: -5% → liquidate trend, keep spreads
+    FULL_EXIT = "FULL_EXIT"  # Tier 3: -8% → liquidate everything
+
+
 class SafeguardType(Enum):
     """Types of risk safeguards."""
 
@@ -143,6 +152,7 @@ class RiskCheckResult:
     active_safeguards: List[SafeguardType] = field(default_factory=list)
     reset_cold_start: bool = False
     circuit_breaker_level: int = 0
+    ks_tier: KSTier = KSTier.NONE  # V2.27: Graduated kill switch tier
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for logging/persistence."""
@@ -157,6 +167,7 @@ class RiskCheckResult:
             "active_safeguards": [s.value for s in self.active_safeguards],
             "reset_cold_start": self.reset_cold_start,
             "circuit_breaker_level": self.circuit_breaker_level,
+            "ks_tier": self.ks_tier.value,
         }
 
 
@@ -211,6 +222,18 @@ class RiskEngine:
         self._daily_returns: List[float] = []  # For portfolio vol calculation
         self._position_correlations: Dict[str, float] = {}  # Symbol -> correlation
         self._current_greeks: Optional[GreeksSnapshot] = None
+
+        # V2.26: Drawdown Governor state
+        self._equity_high_watermark: float = 0.0  # Highest equity observed
+        self._governor_scale: float = 1.0  # Current allocation multiplier (0.0-1.0)
+        self._trough_equity: float = 0.0  # Lowest equity since last scale-down
+        self._scale_at_trough: float = 1.0  # Governor scale when trough was set
+        self._governor_enabled: bool = config.DRAWDOWN_GOVERNOR_ENABLED
+
+        # V2.27: Graduated Kill Switch state
+        self._ks_current_tier: KSTier = KSTier.NONE
+        self._ks_skip_until_date: Optional[str] = None  # Block entries after Tier 2+
+        self._ks_graduated_enabled: bool = config.KS_GRADUATED_ENABLED
 
         # Persisted state
         self._last_kill_date: Optional[str] = None
@@ -312,43 +335,166 @@ class RiskEngine:
         self._spy_atr = atr
 
     # =========================================================================
-    # Kill Switch (-3% Daily)
+    # V2.26: Drawdown Governor (Cumulative Capital Preservation)
     # =========================================================================
 
-    def check_kill_switch(self, current_equity: float) -> bool:
+    def check_drawdown_governor(self, current_equity: float) -> float:
         """
-        Check if kill switch should trigger.
+        Check drawdown from equity high watermark and scale allocations.
 
-        Triggers if loss from EITHER baseline exceeds 3%.
+        Called at market open (09:25) before any signal generation.
+        Tracks cumulative drawdown from peak and applies graduated scaling.
+        Implements hysteresis: must recover RECOVERY_PCT from trough before stepping up.
 
         Args:
             current_equity: Current portfolio value.
 
         Returns:
-            True if kill switch triggered.
+            Governor scale (0.0-1.0) to multiply all engine allocations.
+        """
+        if not self._governor_enabled:
+            return 1.0
+
+        if current_equity <= 0:
+            return self._governor_scale
+
+        # Initialize HWM on first call
+        if self._equity_high_watermark <= 0:
+            self._equity_high_watermark = current_equity
+            self._trough_equity = current_equity
+            self._scale_at_trough = 1.0
+            self.log(f"DRAWDOWN_GOVERNOR: Initialized | HWM=${current_equity:,.0f}")
+            return 1.0
+
+        # Update high watermark
+        if current_equity > self._equity_high_watermark:
+            self._equity_high_watermark = current_equity
+            # Reset trough tracking when making new highs
+            self._trough_equity = current_equity
+            self._scale_at_trough = self._governor_scale
+
+        # Calculate drawdown from peak
+        dd_pct = (self._equity_high_watermark - current_equity) / self._equity_high_watermark
+
+        # Walk governor levels to find applicable scale (highest DD threshold that applies)
+        levels = sorted(config.DRAWDOWN_GOVERNOR_LEVELS.items())  # Sort by DD %
+        target_scale = 1.0
+        for threshold, scale in levels:
+            if dd_pct >= threshold:
+                target_scale = scale
+
+        # Hysteresis: only step UP when equity recovers RECOVERY_PCT from trough
+        if target_scale > self._governor_scale:
+            # Attempting to step UP — check recovery from trough
+            if self._trough_equity > 0:
+                recovery_pct = (current_equity - self._trough_equity) / self._trough_equity
+                if recovery_pct < config.DRAWDOWN_GOVERNOR_RECOVERY_PCT:
+                    # Not enough recovery yet — hold current scale
+                    target_scale = self._governor_scale
+                else:
+                    # Recovery confirmed — step up and reset trough
+                    self.log(
+                        f"DRAWDOWN_GOVERNOR: STEP_UP | "
+                        f"Recovery={recovery_pct:.1%} >= {config.DRAWDOWN_GOVERNOR_RECOVERY_PCT:.0%} | "
+                        f"Scale {self._governor_scale:.0%} → {target_scale:.0%}"
+                    )
+                    self._trough_equity = current_equity
+                    self._scale_at_trough = target_scale
+
+        # Step DOWN is immediate (no hysteresis needed for protection)
+        if target_scale < self._governor_scale:
+            self.log(
+                f"DRAWDOWN_GOVERNOR: STEP_DOWN | "
+                f"DD={dd_pct:.1%} | Scale {self._governor_scale:.0%} → {target_scale:.0%} | "
+                f"HWM=${self._equity_high_watermark:,.0f} | Current=${current_equity:,.0f}"
+            )
+            # Update trough tracking
+            self._trough_equity = current_equity
+            self._scale_at_trough = target_scale
+
+        # Track trough for recovery calculation
+        if current_equity < self._trough_equity or self._trough_equity <= 0:
+            self._trough_equity = current_equity
+
+        prev_scale = self._governor_scale
+        self._governor_scale = target_scale
+
+        # Log status (only when active or changing)
+        if self._governor_scale < 1.0 or prev_scale != self._governor_scale:
+            self.log(
+                f"DRAWDOWN_GOVERNOR: DD={dd_pct:.1%} | Scale={self._governor_scale:.0%} | "
+                f"HWM=${self._equity_high_watermark:,.0f} | Current=${current_equity:,.0f}"
+            )
+
+        return self._governor_scale
+
+    def get_governor_scale(self) -> float:
+        """Get current drawdown governor scale (0.0-1.0)."""
+        return self._governor_scale
+
+    # =========================================================================
+    # Kill Switch (-3% Daily)
+    # =========================================================================
+
+    def _get_max_loss_pct(self, current_equity: float) -> Tuple[float, str, float]:
+        """
+        Calculate max loss percentage from either baseline.
+
+        Returns:
+            Tuple of (max_loss_pct, baseline_name, baseline_value).
+            Loss is positive (e.g., 0.03 = 3% loss).
+        """
+        max_loss = 0.0
+        baseline_name = "none"
+        baseline_value = 0.0
+
+        if self._equity_prior_close > 0:
+            loss_from_prior = (self._equity_prior_close - current_equity) / self._equity_prior_close
+            if loss_from_prior > max_loss:
+                max_loss = loss_from_prior
+                baseline_name = "prior_close"
+                baseline_value = self._equity_prior_close
+
+        if self._equity_sod > 0:
+            loss_from_sod = (self._equity_sod - current_equity) / self._equity_sod
+            if loss_from_sod > max_loss:
+                max_loss = loss_from_sod
+                baseline_name = "sod"
+                baseline_value = self._equity_sod
+
+        return max_loss, baseline_name, baseline_value
+
+    def check_kill_switch(self, current_equity: float) -> bool:
+        """
+        Check if kill switch should trigger.
+
+        V2.27: When KS_GRADUATED_ENABLED, delegates to check_kill_switch_graduated().
+        Otherwise uses legacy binary threshold.
+
+        Args:
+            current_equity: Current portfolio value.
+
+        Returns:
+            True if any kill switch tier triggered.
         """
         if self._kill_switch_active:
             return True  # Already triggered today
 
-        # Check vs prior close
-        if self._equity_prior_close > 0:
-            loss_from_prior = (self._equity_prior_close - current_equity) / self._equity_prior_close
-            if loss_from_prior >= self._kill_switch_pct:
-                self._trigger_kill_switch(
-                    current_equity, "prior_close", self._equity_prior_close, loss_from_prior
-                )
-                return True
+        if self._ks_graduated_enabled:
+            tier = self.check_kill_switch_graduated(current_equity)
+            return tier != KSTier.NONE
 
-        # Check vs SOD
-        if self._equity_sod > 0:
+        # Legacy: binary kill switch at single threshold
+        max_loss, baseline_name, baseline_value = self._get_max_loss_pct(current_equity)
+
+        if max_loss >= self._kill_switch_pct:
+            self._trigger_kill_switch(current_equity, baseline_name, baseline_value, max_loss)
+            return True
+
+        # V2.16-BT: Preemptive kill switch when panic mode active AND approaching threshold
+        if self._equity_sod > 0 and self._panic_mode_active:
             loss_from_sod = (self._equity_sod - current_equity) / self._equity_sod
-            if loss_from_sod >= self._kill_switch_pct:
-                self._trigger_kill_switch(current_equity, "sod", self._equity_sod, loss_from_sod)
-                return True
-
-            # V2.16-BT: Preemptive kill switch when panic mode active AND approaching threshold
-            # Closes gap between panic mode (4%) and kill switch (5%) where hedges could lose value
-            if self._panic_mode_active and loss_from_sod >= config.KILL_SWITCH_PREEMPTIVE_PCT:
+            if loss_from_sod >= config.KILL_SWITCH_PREEMPTIVE_PCT:
                 self._trigger_kill_switch(
                     current_equity, "preemptive_sod", self._equity_sod, loss_from_sod
                 )
@@ -360,11 +506,93 @@ class RiskEngine:
 
         return False
 
+    def check_kill_switch_graduated(self, current_equity: float) -> KSTier:
+        """
+        V2.27: Check graduated kill switch tiers.
+
+        Walks tiers from highest (FULL_EXIT) to lowest (REDUCE).
+        Each tier escalates from the previous — once a higher tier triggers,
+        it stays active for the day.
+
+        Args:
+            current_equity: Current portfolio value.
+
+        Returns:
+            KSTier indicating which tier (if any) triggered.
+        """
+        # Don't downgrade if already at a higher tier today
+        if self._ks_current_tier == KSTier.FULL_EXIT:
+            return KSTier.FULL_EXIT
+
+        max_loss, baseline_name, baseline_value = self._get_max_loss_pct(current_equity)
+
+        new_tier = KSTier.NONE
+
+        # Walk tiers from highest to lowest
+        if max_loss >= config.KS_TIER_3_PCT:
+            new_tier = KSTier.FULL_EXIT
+        elif max_loss >= config.KS_TIER_2_PCT:
+            new_tier = KSTier.TREND_EXIT
+        elif max_loss >= config.KS_TIER_1_PCT:
+            new_tier = KSTier.REDUCE
+
+        # V2.16-BT: Preemptive escalation when panic mode active
+        if self._panic_mode_active and max_loss >= config.KILL_SWITCH_PREEMPTIVE_PCT:
+            if self._tier_rank(new_tier) < self._tier_rank(KSTier.TREND_EXIT):
+                new_tier = KSTier.TREND_EXIT
+                self.log(
+                    f"KS_PREEMPTIVE: Panic mode + {max_loss:.2%} loss → escalating to TREND_EXIT"
+                )
+
+        # Only escalate, never downgrade within a day
+        if self._tier_rank(new_tier) <= self._tier_rank(self._ks_current_tier):
+            return self._ks_current_tier
+
+        # Log tier transition
+        old_tier = self._ks_current_tier
+        self._ks_current_tier = new_tier
+        self._kill_switch_active = new_tier != KSTier.NONE
+
+        self.log(
+            f"KS_GRADUATED: {old_tier.value} → {new_tier.value} | "
+            f"Loss={max_loss:.2%} from {baseline_name} | "
+            f"Baseline=${baseline_value:,.2f} | Current=${current_equity:,.2f}"
+        )
+
+        # Set skip-day for Tier 2+
+        if new_tier in (KSTier.TREND_EXIT, KSTier.FULL_EXIT):
+            if self.algorithm:
+                skip_date = self.algorithm.Time.date()  # type: ignore[attr-defined]
+                # Skip for KS_SKIP_DAYS trading days (simplified: skip next calendar day)
+                from datetime import timedelta as td
+
+                self._ks_skip_until_date = str(skip_date + td(days=config.KS_SKIP_DAYS))
+                self.log(f"KS_SKIP_DAY: New entries blocked until {self._ks_skip_until_date}")
+
+        return new_tier
+
+    @staticmethod
+    def _tier_rank(tier: KSTier) -> int:
+        """Return numeric rank for tier comparison."""
+        ranks = {KSTier.NONE: 0, KSTier.REDUCE: 1, KSTier.TREND_EXIT: 2, KSTier.FULL_EXIT: 3}
+        return ranks.get(tier, 0)
+
+    def get_ks_tier(self) -> KSTier:
+        """Get current graduated kill switch tier."""
+        return self._ks_current_tier
+
+    def is_ks_skip_day(self, current_date_str: str) -> bool:
+        """Check if current date is within KS skip period."""
+        if self._ks_skip_until_date is None:
+            return False
+        return current_date_str <= self._ks_skip_until_date
+
     def _trigger_kill_switch(
         self, current_equity: float, baseline_name: str, baseline_value: float, loss_pct: float
     ) -> None:
-        """Record kill switch trigger."""
+        """Record kill switch trigger (legacy mode)."""
         self._kill_switch_active = True
+        self._ks_current_tier = KSTier.FULL_EXIT  # Legacy maps to full exit
         self.log(
             f"KILL_SWITCH: TRIGGERED | "
             f"Loss={loss_pct:.2%} from {baseline_name} | "
@@ -1001,17 +1229,44 @@ class RiskEngine:
         result = RiskCheckResult()
         active_safeguards: List[SafeguardType] = []
 
-        # 1. Kill Switch (highest priority - V1 nuclear option)
+        # 1. Kill Switch (highest priority)
+        # V2.27: Graduated kill switch with tiered response
         if self.check_kill_switch(current_equity):
-            result.can_enter_positions = False
-            result.can_enter_intraday = False
-            result.can_enter_options = False
-            result.symbols_to_liquidate = ALL_TRADED_SYMBOLS.copy()
-            result.reset_cold_start = True
-            result.circuit_breaker_level = 5  # Treat as max level
+            tier = self._ks_current_tier
+            result.ks_tier = tier
             active_safeguards.append(SafeguardType.KILL_SWITCH)
-            result.active_safeguards = active_safeguards
-            return result  # Kill switch overrides everything
+
+            if tier == KSTier.FULL_EXIT:
+                # Tier 3: Liquidate EVERYTHING, reset cold start
+                result.can_enter_positions = False
+                result.can_enter_intraday = False
+                result.can_enter_options = False
+                result.symbols_to_liquidate = ALL_TRADED_SYMBOLS.copy()
+                result.reset_cold_start = config.KS_COLD_START_RESET_ON_TIER_3
+                result.circuit_breaker_level = 5
+                result.active_safeguards = active_safeguards
+                return result  # Full exit overrides everything
+
+            elif tier == KSTier.TREND_EXIT:
+                # Tier 2: Liquidate trend + MR, keep spreads (decouple)
+                result.can_enter_positions = False
+                result.can_enter_intraday = False
+                result.can_enter_options = False
+                trend_and_mr = ["QLD", "SSO", "TNA", "FAS", "TQQQ", "SOXL"]
+                result.symbols_to_liquidate = trend_and_mr
+                result.reset_cold_start = config.KS_COLD_START_RESET_ON_TIER_2
+                result.circuit_breaker_level = 5
+                result.active_safeguards = active_safeguards
+                return result  # Trend exit still needs handler
+
+            elif tier == KSTier.REDUCE:
+                # Tier 1: Halve trend sizing, block new options, NO liquidation
+                result.can_enter_options = False if config.KS_TIER_1_BLOCK_NEW_OPTIONS else True
+                result.sizing_multiplier = min(
+                    result.sizing_multiplier, config.KS_TIER_1_TREND_REDUCTION
+                )
+                result.circuit_breaker_level = max(result.circuit_breaker_level, 3)
+                # Don't return early — let other checks run, Tier 1 is soft
 
         # 2. Panic Mode (V1 - SPY -4%)
         if self.check_panic_mode(spy_price):
@@ -1141,6 +1396,9 @@ class RiskEngine:
         self._current_circuit_breaker_level = 0
         # Note: Portfolio vol and correlation persist across days
 
+        # V2.27: Reset graduated KS tier (skip-day persists across days)
+        self._ks_current_tier = KSTier.NONE
+
         # Reset baselines (will be set by scheduling)
         self._equity_prior_close = 0.0
         self._equity_sod = 0.0
@@ -1183,6 +1441,15 @@ class RiskEngine:
             # CRITICAL: Greeks state for Level 5 CB continuity
             "current_greeks": greeks_data,
             "cb_greeks_breach_active": self._cb_greeks_breach_active,
+            # V2.26: Drawdown Governor state
+            "drawdown_governor": {
+                "equity_high_watermark": self._equity_high_watermark,
+                "governor_scale": self._governor_scale,
+                "trough_equity": self._trough_equity,
+                "scale_at_trough": self._scale_at_trough,
+            },
+            # V2.27: Graduated KS skip-day
+            "ks_skip_until_date": self._ks_skip_until_date,
         }
 
     def load_state(self, state: Dict[str, Any]) -> None:
@@ -1218,6 +1485,17 @@ class RiskEngine:
 
         self._cb_greeks_breach_active = state.get("cb_greeks_breach_active", False)
 
+        # V2.26: Restore Drawdown Governor state
+        gov_state = state.get("drawdown_governor", {})
+        if gov_state:
+            self._equity_high_watermark = gov_state.get("equity_high_watermark", 0.0)
+            self._governor_scale = gov_state.get("governor_scale", 1.0)
+            self._trough_equity = gov_state.get("trough_equity", 0.0)
+            self._scale_at_trough = gov_state.get("scale_at_trough", 1.0)
+
+        # V2.27: Restore KS skip-day
+        self._ks_skip_until_date = state.get("ks_skip_until_date")
+
         self.log(
             f"RISK: State loaded | "
             f"last_kill_date={self._last_kill_date} | "
@@ -1225,7 +1503,9 @@ class RiskEngine:
             f"weekly_breaker={self._weekly_breaker_active} | "
             f"portfolio_vol_cb={self._cb_portfolio_vol_active} | "
             f"correlation_cb={self._cb_correlation_active} | "
-            f"greeks_restored={'Yes' if self._current_greeks else 'No'}"
+            f"greeks_restored={'Yes' if self._current_greeks else 'No'} | "
+            f"governor_scale={self._governor_scale:.0%} | "
+            f"hwm=${self._equity_high_watermark:,.0f}"
         )
 
     def set_last_kill_date(self, date_str: str) -> None:

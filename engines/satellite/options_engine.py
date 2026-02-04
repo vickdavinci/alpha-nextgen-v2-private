@@ -1549,6 +1549,11 @@ class OptionsEngine:
             log_func=self.log,
         )
 
+        # V2.27: Win Rate Gate - rolling spread trade result tracker
+        self._spread_result_history: List[bool] = []  # True=win, False=loss
+        self._win_rate_shutoff: bool = False  # True when win rate < shutoff threshold
+        self._paper_track_history: List[bool] = []  # Paper trades during shutoff
+
     def log(self, message: str, trades_only: bool = False) -> None:
         """
         Log via algorithm with LiveMode awareness.
@@ -2641,6 +2646,16 @@ class OptionsEngine:
         if self._entry_attempted_today:
             return None
 
+        # V2.27: Win Rate Gate - block or scale down entries
+        win_rate_scale = self.get_win_rate_scale()
+        if win_rate_scale == 0.0:
+            self.log(
+                f"WIN_RATE_GATE: BLOCKED | Shutoff active | "
+                f"History={self._spread_result_history}",
+                trades_only=True,
+            )
+            return None
+
         # V2.6 Bug #16: Post-trade margin cooldown
         # After closing a spread, broker takes time to settle - wait before new entry
         if self._last_spread_exit_time is not None:
@@ -2869,6 +2884,16 @@ class OptionsEngine:
             f"SIZING: SWING | Cap=${swing_max_dollars} | Cost/spread=${cost_per_spread:.2f} | Qty={num_spreads}"
         )
 
+        # V2.27: Apply win rate gate scaling to contract count
+        if win_rate_scale < 1.0:
+            scaled = max(1, int(num_spreads * win_rate_scale))
+            self.log(
+                f"WIN_RATE_GATE: REDUCED | Scale={win_rate_scale:.0%} | "
+                f"{num_spreads} -> {scaled} spreads",
+                trades_only=True,
+            )
+            num_spreads = scaled
+
         # V2.21 Layer 1: Pre-submission margin estimation
         # Scale num_spreads down to fit within available margin
         if margin_remaining is not None and margin_remaining > 0 and width > 0:
@@ -3048,6 +3073,16 @@ class OptionsEngine:
         if self._entry_attempted_today:
             return None
 
+        # V2.27: Win Rate Gate - block or scale down entries
+        win_rate_scale = self.get_win_rate_scale()
+        if win_rate_scale == 0.0:
+            self.log(
+                f"WIN_RATE_GATE: CREDIT BLOCKED | Shutoff active | "
+                f"History={self._spread_result_history}",
+                trades_only=True,
+            )
+            return None
+
         # Post-trade margin cooldown
         if self._last_spread_exit_time is not None:
             try:
@@ -3167,6 +3202,16 @@ class OptionsEngine:
                 f"CREDIT_SPREAD: Cold start sizing - reduced to {num_spreads} spreads "
                 f"(x{size_multiplier})"
             )
+
+        # V2.27: Apply win rate gate scaling
+        if win_rate_scale < 1.0:
+            scaled = max(1, int(num_spreads * win_rate_scale))
+            self.log(
+                f"WIN_RATE_GATE: CREDIT REDUCED | Scale={win_rate_scale:.0%} | "
+                f"{num_spreads} -> {scaled} spreads",
+                trades_only=True,
+            )
+            num_spreads = scaled
 
         # V2.21: Pre-submission margin estimation
         if margin_remaining is not None and margin_remaining > 0 and width > 0:
@@ -4934,6 +4979,94 @@ class OptionsEngine:
         """V2.3: Get current spread position."""
         return self._spread_position
 
+    # =========================================================================
+    # V2.27 WIN RATE GATE
+    # =========================================================================
+
+    def record_spread_result(self, is_win: bool) -> None:
+        """
+        V2.27: Record a spread trade result for win rate tracking.
+
+        Args:
+            is_win: True if the spread was profitable, False if a loss.
+        """
+        if not config.WIN_RATE_GATE_ENABLED:
+            return
+
+        if self._win_rate_shutoff:
+            # During shutoff, record to paper history instead
+            self._paper_track_history.append(is_win)
+            if len(self._paper_track_history) > config.WIN_RATE_LOOKBACK:
+                self._paper_track_history = self._paper_track_history[-config.WIN_RATE_LOOKBACK :]
+
+            # Check if paper win rate recovers enough to resume
+            if len(self._paper_track_history) >= config.WIN_RATE_LOOKBACK:
+                paper_wr = sum(self._paper_track_history) / len(self._paper_track_history)
+                if paper_wr >= config.WIN_RATE_RESTART_THRESHOLD:
+                    self._win_rate_shutoff = False
+                    self._paper_track_history = []
+                    self.log(
+                        f"WIN_RATE_GATE: RESUMED | PaperWR={paper_wr:.0%} >= "
+                        f"{config.WIN_RATE_RESTART_THRESHOLD:.0%} | Real trading restored",
+                        trades_only=True,
+                    )
+        else:
+            # Normal mode: record to real history
+            self._spread_result_history.append(is_win)
+            if len(self._spread_result_history) > config.WIN_RATE_LOOKBACK:
+                self._spread_result_history = self._spread_result_history[
+                    -config.WIN_RATE_LOOKBACK :
+                ]
+
+            # Check if we should enter shutoff
+            if len(self._spread_result_history) >= config.WIN_RATE_LOOKBACK:
+                wr = sum(self._spread_result_history) / len(self._spread_result_history)
+                if wr < config.WIN_RATE_SHUTOFF_THRESHOLD:
+                    self._win_rate_shutoff = True
+                    self.log(
+                        f"WIN_RATE_GATE: SHUTOFF | WinRate={wr:.0%} < "
+                        f"{config.WIN_RATE_SHUTOFF_THRESHOLD:.0%} | "
+                        f"LastN={self._spread_result_history} | Paper tracking active",
+                        trades_only=True,
+                    )
+
+        result_str = "WIN" if is_win else "LOSS"
+        self.log(
+            f"WIN_RATE_GATE: Recorded {result_str} | "
+            f"History={len(self._spread_result_history)} | "
+            f"Shutoff={self._win_rate_shutoff}",
+            trades_only=True,
+        )
+
+    def get_win_rate_scale(self) -> float:
+        """
+        V2.27: Get position sizing scale based on rolling win rate.
+
+        Returns:
+            1.0 = full size, 0.75 = reduced, 0.50 = minimum, 0.0 = shutoff.
+        """
+        if not config.WIN_RATE_GATE_ENABLED:
+            return 1.0
+
+        if self._win_rate_shutoff:
+            return 0.0
+
+        if len(self._spread_result_history) < config.WIN_RATE_LOOKBACK:
+            return 1.0  # Not enough data, full size
+
+        win_rate = (
+            sum(self._spread_result_history[-config.WIN_RATE_LOOKBACK :]) / config.WIN_RATE_LOOKBACK
+        )
+
+        if win_rate >= config.WIN_RATE_FULL_THRESHOLD:
+            return 1.0
+        elif win_rate >= config.WIN_RATE_REDUCED_THRESHOLD:
+            return config.WIN_RATE_SIZING_REDUCED  # 0.75
+        elif win_rate >= config.WIN_RATE_MINIMUM_THRESHOLD:
+            return config.WIN_RATE_SIZING_MINIMUM  # 0.50
+        else:
+            return 0.0  # Should trigger shutoff via record_spread_result
+
     def clear_spread_position(self) -> None:
         """
         V2.12 Fix #5: Force clear spread position tracking.
@@ -5176,6 +5309,10 @@ class OptionsEngine:
             "vix_at_open": self._vix_at_open,
             "spy_at_open": self._spy_at_open,
             "spy_gap_pct": self._spy_gap_pct,
+            # V2.27: Win Rate Gate state
+            "spread_result_history": self._spread_result_history,
+            "win_rate_shutoff": self._win_rate_shutoff,
+            "paper_track_history": self._paper_track_history,
         }
 
     def restore_state(self, state: Dict[str, Any]) -> None:
@@ -5279,6 +5416,11 @@ class OptionsEngine:
         self._vix_at_open = state.get("vix_at_open", 0.0)
         self._spy_at_open = state.get("spy_at_open", 0.0)
         self._spy_gap_pct = state.get("spy_gap_pct", 0.0)
+
+        # V2.27: Win Rate Gate state
+        self._spread_result_history = state.get("spread_result_history", [])
+        self._win_rate_shutoff = state.get("win_rate_shutoff", False)
+        self._paper_track_history = state.get("paper_track_history", [])
 
     def reset(self) -> None:
         """Reset engine state."""

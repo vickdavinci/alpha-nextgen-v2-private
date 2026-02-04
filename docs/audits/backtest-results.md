@@ -2,7 +2,7 @@
 
 > **Purpose:** Track backtest progress, results, and validation status for QC Cloud deployments.
 >
-> **Last Updated:** 2026-02-03 (V2.24.2: Runtime Error + DTE Double-Filter + Push 413 Fix)
+> **Last Updated:** 2026-02-03 (V2.27: Graduated KS + Win Rate Gate)
 
 ---
 
@@ -40,6 +40,8 @@ See `docs/guides/backtest-workflow.md` for full optimization guide.
 | 2j | 1 month (Jan 2025) | V2.24 Zero-Trade Diagnostic Fixes | **Ready to Run** ⏳ |
 | 2k | 1 month (Jan 2025) | V2.24.1 Hardening (Price Discovery + Elastic Delta) | **Ready to Run** ⏳ |
 | 2l | 1 month (Jan 2025) | V2.24.2 Runtime Error + DTE Double-Filter + Push Fix | **Ready to Run** ⏳ |
+| 2m | 1 year (2015) | V2.26 Drawdown Governor + Chop Detector | **Ready to Run** ⏳ |
+| 2n | 1 year (2015) | V2.27 Graduated KS + Win Rate Gate | **Ready to Run** ⏳ |
 | 3 | 3 months (Q1 2024) | Position lifecycle, entries/exits | Pending |
 | 4 | 1 year (2024) | Full annual cycle, all market conditions | Pending |
 | 5 | 5 years (2020-2024) | Long-term stress test, crisis periods | Pending |
@@ -3638,4 +3640,223 @@ Successfully updated name, files, and libraries for 'AlphaNextGen'
 
 ---
 
-*Document created: 2026-01-30 | Last updated: 2026-02-03 (V2.24.2 Runtime Error + DTE Double-Filter + Push 413 Fix)*
+## V2.26: Drawdown Governor + Chop Detector (2026-02-03)
+
+### Overview
+
+Phase 1 of the V2.26+ Implementation Plan (Capital Preservation & Strategy Quality).
+
+**Source:** `docs/V2_26_IMPLEMENTATION_PLAN.md` — 2015 full-year backtest lost -41.9% from 20 kill switch triggers, 28.6% win rate spreads, and no cumulative drawdown protection.
+
+### Fix 1: Drawdown Governor (risk_engine.py)
+
+**Problem:** Daily kill switch at -5% allows death by 20 cuts. No cumulative protection.
+
+**Solution:** High-watermark based drawdown governor that scales all engine allocations:
+
+| Drawdown | Scale | Effect |
+|----------|------:|--------|
+| 0-10% | 100% | Full allocation |
+| 10-15% | 50% | Half allocation |
+| 15-20% | 25% | Quarter allocation |
+| >20% | 0% | Shutdown — no new entries |
+
+- **Hysteresis:** Recovery requires +5% from trough before stepping scale back up
+- **Persisted:** `_equity_high_watermark`, `_governor_scale`, `_trough_equity` via StateManager
+- **Called at:** Market open (09:25) before signal generation
+- **Passthrough:** `governor_scale` multiplied into all engine allocations (trend, options, MR)
+
+### Fix 2: Chop Detector (regime_engine.py)
+
+**Problem:** Regime engine scored 67-74 (NEUTRAL/RISK_ON) throughout Aug 2015 -12% crash because trend/breadth/credit factors didn't capture lack of directional movement.
+
+**Solution:** ADX(14) of SPY as 6th regime factor (5% weight):
+
+| ADX Value | Score | Interpretation |
+|-----------|------:|----------------|
+| ≥ 25 | 100 | Strong trend, safe for directional plays |
+| 20-25 | 60 | Moderate trend |
+| 15-20 | 30 | Weak trend |
+| < 15 | 10 | Dead/choppy — avoid directional plays |
+
+- **Regime weights adjusted:** Trend 30% → 25% to free 5% for chop
+- **RegimeState:** Added `chop_score` and `spy_adx_value` fields
+- **New function:** `chop_factor_score()` in `utils/calculations.py`
+- **Indicator:** `self.spy_adx_daily = self.ADX(self.spy, config.ADX_PERIOD, Resolution.Daily)` in main.py
+
+### Config Parameters Added
+
+```python
+# Drawdown Governor
+DRAWDOWN_GOVERNOR_LEVELS = [(0.10, 0.50), (0.15, 0.25), (0.20, 0.0)]
+DRAWDOWN_GOVERNOR_RECOVERY_PCT = 0.05
+
+# Chop Detection
+WEIGHT_TREND = 0.25          # Reduced from 0.30
+WEIGHT_CHOP = 0.05           # New factor
+CHOP_ADX_THRESHOLD_STRONG = 25
+CHOP_ADX_THRESHOLD_MODERATE = 20
+CHOP_ADX_THRESHOLD_WEAK = 15
+ADX_PERIOD = 14
+```
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `engines/core/risk_engine.py` | Drawdown governor: `check_drawdown_governor()`, HWM tracking, hysteresis, persistence |
+| `engines/core/regime_engine.py` | `spy_adx` param, chop_score in RegimeState, wiring |
+| `utils/calculations.py` | `chop_factor_score()`, updated `aggregate_regime_score()` |
+| `config.py` | 8 new parameters |
+| `main.py` | SPY ADX indicator, governor call, scale passthrough |
+
+### Tests
+
+All 1349 tests passed ✅
+
+### Verification Patterns
+
+After running V2.26 backtest, verify:
+```
+# Drawdown governor activating during losses
+DRAWDOWN_GOVERNOR: DD=10.5% | Scale=50% | HWM=50000 | Current=44750
+
+# Chop factor in regime output
+REGIME: RegimeState(NEUTRAL | Score=58.3 | T=65 VIX=55 RV=50 B=60 C=45 C_ADX=30 | ...)
+
+# Governor scale reducing allocations
+TREND: ENTRY_APPROVED QLD | ... | GovernorScale=0.50
+```
+
+---
+
+## V2.27: Graduated Kill Switch + Win Rate Gate (2026-02-03)
+
+### Overview
+
+Phase 2 of the V2.26+ Implementation Plan (Strategy Quality).
+
+**Source:** `docs/V2_26_IMPLEMENTATION_PLAN.md` — Kill switch cascade (KS → cold start → re-enter → KS) burned through 20% of capital. Binary 28.6% win rate spreads never self-corrected.
+
+### Fix 3: KS Decouple + -50% Spread Stop
+
+**Problem:** Kill switch liquidated spreads at market-worst prices. Spreads have defined max loss and own exit logic — no reason to force-close them.
+
+**Solution:**
+- Tier 1 (REDUCE) and Tier 2 (TREND_EXIT): Spreads survive. Only single-leg options closed.
+- Tier 3 (FULL_EXIT): All spreads force-closed (nuclear option preserved).
+- `_ks_close_all_options(force_spread_close: bool)` helper controls behavior.
+- -50% spread stop already implemented via `SPREAD_STOP_LOSS_PCT = 0.50` (V2.4.2).
+
+### Fix 4: Win Rate Gate
+
+**Problem:** 42 debit spread trades at 28.6% win rate. System kept entering losing trades with no self-correction.
+
+**Solution:** Rolling 10-trade win rate tracker with automatic sizing throttle:
+
+| Win Rate | Scale | Effect |
+|----------|------:|--------|
+| ≥ 40% | 100% | Full contract count |
+| 30-40% | 75% | Reduced sizing |
+| 20-30% | 50% | Minimum sizing |
+| < 20% | 0% | **SHUTOFF** — no new entries, paper tracking active |
+
+- **Recovery:** When paper win rate reaches 35% over 10 paper trades, real trading resumes
+- **Tracking:** `record_spread_result(is_win)` called from main.py on every spread close
+- **P&L detection:** Close fill prices tracked per leg, compared against entry `net_debit`
+- **Applied to:** Both `check_spread_entry_signal()` and `check_credit_spread_entry_signal()`
+- **Persisted:** `_spread_result_history`, `_win_rate_shutoff`, `_paper_track_history`
+
+### Fix 5: Graduated Kill Switch Reform
+
+**Problem:** Binary -5% kill switch is too aggressive. Every trigger liquidates everything and resets cold start. 20 triggers in 2015 created KS cascade.
+
+**Solution:** Three-tier graduated response:
+
+| Tier | Threshold | Response | Cold Start Reset |
+|------|----------:|----------|:----------------:|
+| REDUCE | -3% | Halve trend sizing, block new options. **No liquidation.** | No |
+| TREND_EXIT | -5% | Liquidate trend + MR. **Keep spreads** (decouple). Skip-day. | No |
+| FULL_EXIT | -8% | Liquidate everything. Skip-day. | Yes |
+
+**Key behaviors:**
+- **Escalation-only:** Within a day, tier can only go up, never down
+- **Skip-day enforcement:** After Tier 2+, all new entries blocked for `KS_SKIP_DAYS` (1 day)
+- **Skip-day gating:** Added to `_scan_options_signals`, `_generate_options_signals`, `_generate_trend_signals_eod`
+- **Backward compatible:** `KS_GRADUATED_ENABLED = False` reverts to legacy binary mode
+
+### Config Parameters Added
+
+```python
+# Graduated Kill Switch
+KS_GRADUATED_ENABLED = True
+KS_TIER_1_PCT = 0.03              # -3% → REDUCE
+KS_TIER_2_PCT = 0.05              # -5% → TREND_EXIT
+KS_TIER_3_PCT = 0.08              # -8% → FULL_EXIT
+KS_TIER_1_TREND_REDUCTION = 0.50  # Halve trend sizing at Tier 1
+KS_TIER_1_BLOCK_NEW_OPTIONS = True
+KS_SKIP_DAYS = 1
+KS_COLD_START_RESET_ON_TIER_2 = False
+KS_COLD_START_RESET_ON_TIER_3 = True
+KILL_SWITCH_SPREAD_DECOUPLE = True
+
+# Win Rate Gate
+WIN_RATE_GATE_ENABLED = True
+WIN_RATE_LOOKBACK = 10
+WIN_RATE_FULL_THRESHOLD = 0.40
+WIN_RATE_REDUCED_THRESHOLD = 0.30
+WIN_RATE_MINIMUM_THRESHOLD = 0.20
+WIN_RATE_SHUTOFF_THRESHOLD = 0.20
+WIN_RATE_RESTART_THRESHOLD = 0.35
+WIN_RATE_SIZING_REDUCED = 0.75
+WIN_RATE_SIZING_MINIMUM = 0.50
+```
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `engines/core/risk_engine.py` | `KSTier` enum, `check_kill_switch_graduated()`, tiered `check_all()`, skip-day tracking + persistence |
+| `engines/core/__init__.py` | Added `KSTier` to exports |
+| `main.py` | Rewrote `_handle_kill_switch()` for tiers, `_ks_close_all_options()`, skip-day gating (3 locations), spread P&L tracking for win rate gate |
+| `engines/satellite/options_engine.py` | `record_spread_result()`, `get_win_rate_scale()`, paper tracking, win rate gate in entry signals (2 paths), sizing scale (2 paths), persistence |
+| `config.py` | 19 new parameters |
+| `tests/test_risk_engine.py` | Updated 8 tests for graduated thresholds |
+| `tests/scenarios/test_kill_switch_scenario.py` | Updated boundary test for 3% Tier 1 |
+
+### Tests
+
+All 1349 tests passed ✅
+
+### Verification Patterns
+
+After running V2.27 backtest, verify:
+```
+# Graduated KS tiers
+KILL_SWITCH_GRADUATED: Tier=REDUCE | Loss=3.2% | Tier1_PCT=3.0% | From=prior_close
+KILL_SWITCH_GRADUATED: Tier=TREND_EXIT | Loss=5.1% | Tier2_PCT=5.0% | Skip until 2015-02-04
+
+# KS decouple — spreads survive Tier 2
+KS_CLOSE_OPTIONS: force_spread_close=False | Preserving spread legs
+
+# Win rate gate scaling
+WIN_RATE_GATE: REDUCED | Scale=75% | 8 -> 6 spreads
+WIN_RATE_GATE: SHUTOFF | WinRate=20% < 20% | Paper tracking active
+WIN_RATE_GATE: RESUMED | PaperWR=35% >= 35% | Real trading restored
+
+# Skip-day enforcement
+TREND: Entry blocked - KS skip day active
+OPT_SCAN: Blocked - KS skip day active
+```
+
+### Expected Impact
+
+| Market | V2.25 (Before) | V2.27 (After) | Change |
+|--------|---------------:|----------:|--------|
+| **2015 (Chop)** | -41.9% | -18% to -22% est. | Governor caps cumulative DD, win rate gate stops unprofitable spreads |
+| **2013 (Bull)** | Full perf | Full perf | Zero drag — governor never activates, win rate > 40% |
+| **2022 (Bear)** | Unknown | Improved | Graduated KS preserves spreads, fewer cascades |
+
+---
+
+*Document created: 2026-01-30 | Last updated: 2026-02-03 (V2.27 Graduated KS + Win Rate Gate)*
