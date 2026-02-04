@@ -195,6 +195,14 @@ class ColdStartEngine:
             reason=reason,
         )
 
+        # V2.3.23: Mark warm entry as executed IMMEDIATELY to prevent duplicates
+        # This is critical because MOO orders don't fill until next market open,
+        # and check_warm_entry() may be called multiple times (weekends, holidays)
+        # before the order fills. Previously we waited for confirm_warm_entry()
+        # which caused duplicate orders on Jan 18-20, 2025 (weekend + MLK holiday).
+        self._warm_entry_executed = True
+        self._warm_entry_symbol = symbol
+
         self.log(
             f"COLD_START: WARM_ENTRY {symbol} | Weight={weight:.2%} | "
             f"Value=${position_value:,.0f} | Regime={regime_score:.1f}"
@@ -204,16 +212,35 @@ class ColdStartEngine:
 
     def confirm_warm_entry(self, symbol: str) -> None:
         """
-        Confirm warm entry was executed.
+        Confirm warm entry order was filled.
 
-        Call this after the warm entry order is filled.
+        Note: As of V2.3.23, warm entry is marked as executed immediately
+        when the signal is generated (in check_warm_entry) to prevent
+        duplicate orders during weekends/holidays. This method is now
+        only used for logging confirmation of the actual fill.
 
         Args:
             symbol: Symbol that was entered (QLD or SSO).
         """
-        self._warm_entry_executed = True
-        self._warm_entry_symbol = symbol
-        self.log(f"COLD_START: Warm entry confirmed for {symbol}")
+        # State already set in check_warm_entry(), just log confirmation
+        if not self._warm_entry_executed:
+            self._warm_entry_executed = True
+            self._warm_entry_symbol = symbol
+        self.log(f"COLD_START: Warm entry fill confirmed for {symbol}")
+
+    def cancel_warm_entry(self) -> None:
+        """
+        V2.20: Cancel warm entry after broker rejection.
+
+        Resets warm entry state so cold start can retry on the
+        next favorable check. Called by main._handle_order_rejection()
+        when a warm entry order is rejected or canceled by the broker.
+        """
+        if self._warm_entry_executed:
+            symbol = self._warm_entry_symbol
+            self._warm_entry_executed = False
+            self._warm_entry_symbol = None
+            self.log(f"COLD_START_RECOVERY: Warm entry cancelled for {symbol} | Retry allowed")
 
     def _select_instrument(self, regime_score: float) -> str:
         """Select instrument based on regime score."""
@@ -252,8 +279,8 @@ class ColdStartEngine:
             # Kill switch resets everything
             self.log("COLD_START: Kill switch triggered - resetting to day 0")
             self.reset()
-        else:
-            # Increment days running
+        elif self._days_running < config.COLD_START_DAYS:
+            # V2.19 FIX: Only increment during cold start period (was counting forever)
             self._days_running += 1
             if self._days_running == config.COLD_START_DAYS:
                 self.log(
@@ -270,10 +297,12 @@ class ColdStartEngine:
 
     def reset(self) -> None:
         """Reset cold start state (called after kill switch)."""
+        # Only log if actually resetting (not already at day 0)
+        if self._days_running > 0:
+            self.log("COLD_START: Reset to day 0")
         self._days_running = 0
         self._warm_entry_executed = False
         self._warm_entry_symbol = None
-        self.log("COLD_START: Reset to day 0")
 
     def get_state_for_persistence(self) -> Dict[str, Any]:
         """Get state for ObjectStore."""

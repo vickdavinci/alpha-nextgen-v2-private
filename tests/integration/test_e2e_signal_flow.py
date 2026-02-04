@@ -15,19 +15,20 @@ These tests verify:
 5. Position state is updated after fills
 """
 
-import pytest
-from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta
 from typing import Dict, List
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+import config
+from engines.core.risk_engine import RiskEngine
 from engines.core.trend_engine import TrendEngine
 from engines.satellite.mean_reversion_engine import MeanReversionEngine
-from engines.core.risk_engine import RiskEngine
-from portfolio.portfolio_router import PortfolioRouter, OrderIntent, OrderSide, OrderType
 from execution.execution_engine import ExecutionEngine, OrderState
-from models.target_weight import TargetWeight
 from models.enums import Urgency
-import config
+from models.target_weight import TargetWeight
+from portfolio.portfolio_router import OrderIntent, OrderSide, OrderType, PortfolioRouter
 
 
 class MockBroker:
@@ -43,13 +44,15 @@ class MockBroker:
         order_id = self._next_order_id
         self._next_order_id += 1
 
-        self.submitted_orders.append({
-            "order_id": order_id,
-            "symbol": symbol,
-            "quantity": quantity,
-            "type": "MARKET",
-            "status": "SUBMITTED",
-        })
+        self.submitted_orders.append(
+            {
+                "order_id": order_id,
+                "symbol": symbol,
+                "quantity": quantity,
+                "type": "MARKET",
+                "status": "SUBMITTED",
+            }
+        )
 
         return order_id
 
@@ -137,7 +140,9 @@ class TestTrendEntryToFill:
         assert isinstance(signal, TargetWeight)
         assert signal.symbol == "QLD"
         assert signal.source == "TREND"
-        assert signal.target_weight == 1.0
+        # V2.3.3: TrendEngine now uses symbol-specific allocations from config
+        # V2.18: Reduced from 20% to 15% to prevent margin overflow
+        assert signal.target_weight == 0.15  # QLD gets 15%
 
         # Router receives signal
         router.receive_signal(signal)
@@ -157,7 +162,7 @@ class TestTrendEntryToFill:
             target_weight=0.35,
             source="TREND",
             urgency=Urgency.EOD,
-            reason="MA200 + ADX Entry"
+            reason="MA200 + ADX Entry",
         )
 
         mr_signal = TargetWeight(
@@ -165,7 +170,7 @@ class TestTrendEntryToFill:
             target_weight=0.05,
             source="MR",
             urgency=Urgency.IMMEDIATE,
-            reason="RSI Oversold"
+            reason="RSI Oversold",
         )
 
         router.receive_signal(trend_signal)
@@ -193,6 +198,7 @@ class TestTrendEntryToFill:
                 target_weight=0.35,
                 urgency=Urgency.EOD,
                 reasons=["MA200 Entry"],
+                metadata=None,  # V2.3: Explicitly set to None to avoid spread handling
             ),
         }
 

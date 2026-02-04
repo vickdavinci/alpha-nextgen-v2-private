@@ -21,14 +21,13 @@ from engines.core.trend_engine import TrendEngine, TrendPosition, adx_score
 from models.enums import Urgency
 from models.target_weight import TargetWeight
 
-
 # =============================================================================
 # ADX SCORING FUNCTION TESTS
 # =============================================================================
 
 
 class TestADXScore:
-    """Tests for ADX scoring function (V2.1 spec)."""
+    """Tests for ADX scoring function (V2.3.7 thresholds)."""
 
     def test_adx_very_strong(self):
         """Test ADX >= 35 returns score 1.0 (very strong)."""
@@ -37,22 +36,24 @@ class TestADXScore:
         assert adx_score(50.0) == 1.0
 
     def test_adx_strong(self):
-        """Test ADX 25-35 returns score 0.75 (strong)."""
+        """Test ADX 22-35 returns score 0.75 (strong). V2.5: lowered to 22."""
+        assert adx_score(22.0) == 0.75  # V2.5: New threshold
         assert adx_score(25.0) == 0.75
         assert adx_score(30.0) == 0.75
         assert adx_score(34.9) == 0.75
 
     def test_adx_moderate(self):
-        """Test ADX 20-25 returns score 0.50 (moderate)."""
+        """Test ADX 15-22 returns score 0.50 (moderate). V2.5: threshold lowered to 22."""
+        assert adx_score(15.0) == 0.50
+        assert adx_score(17.0) == 0.50
         assert adx_score(20.0) == 0.50
-        assert adx_score(22.0) == 0.50
-        assert adx_score(24.9) == 0.50
+        assert adx_score(21.9) == 0.50  # V2.5: Below 22 is still moderate
 
     def test_adx_weak(self):
-        """Test ADX < 20 returns score 0.25 (weak)."""
-        assert adx_score(19.9) == 0.25
-        assert adx_score(15.0) == 0.25
+        """Test ADX < 15 returns score 0.25 (weak). V2.3.12: lowered to 15."""
+        assert adx_score(14.9) == 0.25
         assert adx_score(10.0) == 0.25
+        assert adx_score(5.0) == 0.25
         assert adx_score(0.0) == 0.25
 
 
@@ -207,16 +208,20 @@ class TestTrendEngineInit:
     """Tests for TrendEngine initialization."""
 
     def test_instruments_list(self, engine):
-        """Test INSTRUMENTS class variable."""
+        """Test INSTRUMENTS class variable (V2.2: 4 symbols for diversification)."""
         assert "QLD" in TrendEngine.INSTRUMENTS
         assert "SSO" in TrendEngine.INSTRUMENTS
-        assert len(TrendEngine.INSTRUMENTS) == 2
+        assert "TNA" in TrendEngine.INSTRUMENTS  # V2.2: 3× Russell 2000
+        assert "FAS" in TrendEngine.INSTRUMENTS  # V2.2: 3× Financials
+        assert len(TrendEngine.INSTRUMENTS) == 4
 
     def test_initial_state_empty(self, engine):
         """Test engine starts with no positions."""
         assert len(engine.get_all_positions()) == 0
         assert not engine.has_position("QLD")
         assert not engine.has_position("SSO")
+        assert not engine.has_position("TNA")
+        assert not engine.has_position("FAS")
 
 
 # =============================================================================
@@ -245,28 +250,30 @@ class TestEntrySignals:
         assert result is not None
         assert isinstance(result, TargetWeight)
         assert result.symbol == "QLD"
-        assert result.target_weight == 1.0
+        # V2.3.3: TrendEngine now uses symbol-specific allocations from config
+        # V2.18: Reduced from 20% to 15% to prevent margin overflow
+        assert result.target_weight == 0.15  # QLD gets 15% (config.TREND_SYMBOL_ALLOCATIONS)
         assert result.source == "TREND"
-        assert result.urgency == Urgency.EOD
+        assert result.urgency == Urgency.MOC  # V2.4.2: MOC for same-day trend
         assert "MA200+ADX Entry" in result.reason
         assert "STRONG" in result.reason
 
     def test_entry_moderate_adx(self, engine):
-        """Test entry with moderate ADX (20-25, score = 0.50)."""
+        """Test entry with moderate ADX (25-35, score = 0.75). V2.4.2: Require ADX >= 25."""
         result = engine.check_entry_signal(
             symbol="QLD",
             close=105.0,
             ma200=100.0,
-            adx=22.0,  # Moderate (score = 0.50)
+            adx=28.0,  # V2.4.2: Moderate ADX (25-35) - score 0.75 required for entry
             regime_score=55.0,
             is_cold_start_active=False,
             has_warm_entry=False,
             atr=2.0,
             current_date="2024-01-15",
         )
-        # Score 0.50 meets threshold
+        # V2.4.2: Score 0.75 (ADX >= 25) required for entry
         assert result is not None
-        assert "MODERATE" in result.reason
+        assert "STRONG" in result.reason  # ADX 28 is in 25-35 range (STRONG)
 
     def test_entry_blocked_below_ma200(self, engine):
         """Test entry blocked when close <= MA200."""
@@ -299,12 +306,12 @@ class TestEntrySignals:
         assert result is None
 
     def test_entry_blocked_weak_adx(self, engine):
-        """Test entry blocked when ADX < 20 (score < 0.50)."""
+        """Test entry blocked when ADX < 15 (score < 0.50). V2.3.7 thresholds."""
         result = engine.check_entry_signal(
             symbol="QLD",
             close=105.0,
             ma200=100.0,
-            adx=18.0,  # Weak (score = 0.25 < 0.50)
+            adx=12.0,  # V2.3.7: Weak (score = 0.25 < 0.50) - was 18.0
             regime_score=60.0,
             is_cold_start_active=False,
             has_warm_entry=False,
@@ -443,7 +450,7 @@ class TestExitSignals:
         assert result is not None
         assert result.symbol == "QLD"
         assert result.target_weight == 0.0
-        assert result.urgency == Urgency.EOD
+        assert result.urgency == Urgency.MOC  # V2.4.2: MOC for same-day trend
         assert "MA200_EXIT" in result.reason
 
     def test_no_exit_close_above_ma200(self, engine_with_position):
@@ -460,13 +467,13 @@ class TestExitSignals:
         assert result is None
 
     def test_exit_adx_exhaustion(self, engine_with_position):
-        """Test exit when ADX < 20 (momentum exhaustion)."""
+        """Test exit when ADX < 10 (momentum exhaustion). V2.3.12: lowered to 10."""
         result = engine_with_position.check_exit_signals(
             symbol="QLD",
             close=105.0,  # Above MA200
             high=106.0,
             ma200=100.0,
-            adx=18.0,  # Below 20 - momentum exhaustion
+            adx=9.0,  # V2.3.12: Below 10 - momentum exhaustion (was 18, then 14)
             regime_score=60.0,
             atr=2.0,
         )
@@ -588,7 +595,7 @@ class TestStopHit:
         """Test stop hit when price exactly equals stop."""
         result = engine_with_position.check_stop_hit(
             symbol="QLD",
-            current_price=94.0,  # Exactly at stop
+            current_price=93.0,  # V2.3.6: 100 - (3.5 * 2.0) = 93.0
         )
 
         assert result is not None
@@ -628,7 +635,7 @@ class TestChandelierStopUpdate:
             atr=2.0,
         )
         initial_stop = engine.get_stop_level("QLD")
-        assert initial_stop == 94.0  # 100 - (3.0 * 2.0)
+        assert initial_stop == 93.0  # V2.3.6: 100 - (3.5 * 2.0) = 93.0
 
         # Price moves up
         engine.check_exit_signals(
@@ -642,8 +649,8 @@ class TestChandelierStopUpdate:
         )
 
         new_stop = engine.get_stop_level("QLD")
-        # V2: 10% profit uses tight mult (2.5), so: 110 - (2.5 * 2.0) = 105
-        assert new_stop == 105.0
+        # V2.3.6: 10% profit uses BASE mult (3.5) since < 15%, so: 110 - (3.5 * 2.0) = 103
+        assert new_stop == 103.0
         assert new_stop > initial_stop
 
     def test_stop_never_moves_down(self, engine):
@@ -655,19 +662,19 @@ class TestChandelierStopUpdate:
             atr=2.0,
         )
 
-        # Move up first - 20% profit uses tighter multiplier (2.0)
+        # Move up first - 25% profit uses tighter multiplier (2.5)
         engine.check_exit_signals(
             symbol="QLD",
-            close=115.0,
-            high=120.0,
+            close=120.0,
+            high=125.0,  # 25% profit
             ma200=100.0,
             adx=30.0,
             regime_score=60.0,
             atr=2.0,
         )
         high_stop = engine.get_stop_level("QLD")
-        # V2: 20% profit uses tighter mult (2.0), so: 120 - (2.0 * 2.0) = 116
-        assert high_stop == 116.0
+        # V2.3.6: 25% profit uses tighter mult (2.5), so: 125 - (2.5 * 2.0) = 120
+        assert high_stop == 120.0
 
         # Price drops but stop should not
         engine.check_exit_signals(
@@ -679,60 +686,60 @@ class TestChandelierStopUpdate:
             regime_score=60.0,
             atr=2.0,
         )
-        # Highest high unchanged (120), stop should stay at 116
+        # Highest high unchanged (125), stop should stay at 120
         assert engine.get_stop_level("QLD") == high_stop
 
     def test_tiered_multiplier_base_level(self, engine):
-        """Test base multiplier (3.0) for < 10% profit (V2)."""
+        """Test base multiplier (3.5) for < 15% profit (V2.3.6)."""
         engine.register_entry(
             symbol="QLD",
             entry_price=100.0,
             entry_date="2024-01-15",
             atr=2.0,
         )
-        # Move up 5% (below 10% threshold)
+        # Move up 10% (below 15% threshold)
         engine.check_exit_signals(
             symbol="QLD",
-            close=103.0,
-            high=105.0,  # 5% profit
+            close=108.0,
+            high=110.0,  # 10% profit
             ma200=100.0,
             adx=30.0,
             regime_score=60.0,
             atr=2.0,
         )
-        # V2: Stop = 105 - (3.0 * 2.0) = 99
-        assert engine.get_stop_level("QLD") == 99.0
+        # V2.3.6: Stop = 110 - (3.5 * 2.0) = 103
+        assert engine.get_stop_level("QLD") == 103.0
 
     def test_tiered_multiplier_tight_level(self, engine):
-        """Test tight multiplier (2.5) for 10-20% profit (V2)."""
+        """Test tight multiplier (3.0) for 15-25% profit (V2.3.6)."""
         engine.register_entry(
             symbol="QLD",
             entry_price=100.0,
             entry_date="2024-01-15",
             atr=2.0,
         )
-        # Move up 15% (between 10% and 20%)
+        # Move up 20% (between 15% and 25%)
         engine.check_exit_signals(
             symbol="QLD",
-            close=113.0,
-            high=115.0,  # 15% profit
+            close=118.0,
+            high=120.0,  # 20% profit
             ma200=100.0,
             adx=30.0,
             regime_score=60.0,
             atr=2.0,
         )
-        # V2: Stop = 115 - (2.5 * 2.0) = 110
-        assert engine.get_stop_level("QLD") == 110.0
+        # V2.3.6: Stop = 120 - (3.0 * 2.0) = 114
+        assert engine.get_stop_level("QLD") == 114.0
 
     def test_tiered_multiplier_tighter_level(self, engine):
-        """Test tighter multiplier (2.0) for > 20% profit (V2)."""
+        """Test tighter multiplier (2.5) for > 25% profit (V2.3.6)."""
         engine.register_entry(
             symbol="QLD",
             entry_price=100.0,
             entry_date="2024-01-15",
             atr=2.0,
         )
-        # Move up 30% (above 20%)
+        # Move up 30% (above 25%)
         engine.check_exit_signals(
             symbol="QLD",
             close=128.0,
@@ -742,8 +749,8 @@ class TestChandelierStopUpdate:
             regime_score=60.0,
             atr=2.0,
         )
-        # V2: Stop = 130 - (2.0 * 2.0) = 126
-        assert engine.get_stop_level("QLD") == 126.0
+        # V2.3.6: Stop = 130 - (2.5 * 2.0) = 125
+        assert engine.get_stop_level("QLD") == 125.0
 
 
 # =============================================================================
@@ -768,7 +775,7 @@ class TestPositionManagement:
         assert position.entry_price == 100.0
         assert position.entry_date == "2024-01-15"
         assert position.highest_high == 100.0  # Starts at entry price
-        assert position.current_stop == 94.0  # 100 - (3.0 * 2.0)
+        assert position.current_stop == 93.0  # V2.3.6: 100 - (3.5 * 2.0) = 93.0
         assert position.strategy_tag == "TREND"
 
     def test_register_entry_cold_start_tag(self, engine):
@@ -827,7 +834,7 @@ class TestPositionManagement:
     def test_get_stop_level(self, engine_with_position):
         """Test get_stop_level helper."""
         stop = engine_with_position.get_stop_level("QLD")
-        assert stop == 94.0
+        assert stop == 93.0  # V2.3.6: 100 - (3.5 * 2.0) = 93.0
 
         assert engine_with_position.get_stop_level("SSO") is None
 
@@ -929,7 +936,9 @@ class TestStatePersistence:
         # Verify restoration
         position = new_engine.get_position("QLD")
         assert position.highest_high == 120.0
-        assert position.current_stop == 116.0  # 120 - (2.0 * 2.0) for 20% profit
+        assert (
+            position.current_stop == 114.0
+        )  # V2.3.6: 120 - (3.0 * 2.0) for 20% profit (TIGHT tier)
 
 
 # =============================================================================
@@ -978,14 +987,14 @@ class TestEdgeCases:
         )
         assert result is not None
 
-    def test_adx_exactly_at_moderate_threshold(self, engine):
-        """Test ADX exactly at moderate threshold (20)."""
-        # ADX = 20 should give score 0.50 which is exactly at threshold
+    def test_adx_exactly_at_entry_threshold(self, engine):
+        """Test ADX exactly at entry threshold (25). V2.4.2: Require ADX >= 25."""
+        # ADX = 25 should give score 0.75 which is exactly at threshold
         result = engine.check_entry_signal(
             symbol="QLD",
             close=105.0,
             ma200=100.0,
-            adx=20.0,  # Exactly at moderate threshold
+            adx=25.0,  # V2.4.2: Exactly at entry threshold (score = 0.75)
             regime_score=60.0,
             is_cold_start_active=False,
             has_warm_entry=False,
@@ -995,13 +1004,13 @@ class TestEdgeCases:
         assert result is not None
 
     def test_adx_just_below_threshold(self, engine):
-        """Test ADX just below entry threshold."""
-        # ADX = 19.9 gives score 0.25 which is < 0.50
+        """Test ADX just below entry threshold. V2.3.7: threshold lowered to 15."""
+        # ADX = 14.9 gives score 0.25 which is < 0.50
         result = engine.check_entry_signal(
             symbol="QLD",
             close=105.0,
             ma200=100.0,
-            adx=19.9,  # Just below moderate threshold
+            adx=14.9,  # V2.3.7: Just below moderate threshold (was 19.9)
             regime_score=60.0,
             is_cold_start_active=False,
             has_warm_entry=False,
@@ -1060,7 +1069,7 @@ class TestEdgeCases:
             atr=2.0,
         )
 
-        # 50% profit - should use tighter multiplier (2.0 in V2)
+        # 50% profit - should use tighter multiplier (2.5 in V2.3.6)
         engine.check_exit_signals(
             symbol="QLD",
             close=148.0,
@@ -1070,8 +1079,8 @@ class TestEdgeCases:
             regime_score=60.0,
             atr=2.0,
         )
-        # V2: Stop = 150 - (2.0 * 2.0) = 146
-        assert engine.get_stop_level("QLD") == 146.0
+        # V2.3.6: Stop = 150 - (2.5 * 2.0) = 145
+        assert engine.get_stop_level("QLD") == 145.0
 
 
 # =============================================================================
@@ -1246,3 +1255,27 @@ class TestIndicatorReadiness:
             atr=2.0,
         )
         assert result is None  # No crash, returns None
+
+
+# =============================================================================
+# V2.20: PENDING MOO REJECTION RECOVERY TESTS
+# =============================================================================
+
+
+class TestPendingMooRejection:
+    """V2.20: Tests for trend engine MOO rejection recovery."""
+
+    def test_cancel_pending_moo_clears_symbol(self):
+        """Test cancel_pending_moo removes symbol from pending set."""
+        engine = TrendEngine(algorithm=None)
+        engine.mark_pending_moo("TNA")
+        assert "TNA" in engine._pending_moo_symbols
+
+        engine.cancel_pending_moo("TNA")
+        assert "TNA" not in engine._pending_moo_symbols
+
+    def test_cancel_pending_moo_idempotent(self):
+        """Test cancel for non-pending symbol is safe (no error)."""
+        engine = TrendEngine(algorithm=None)
+        engine.cancel_pending_moo("FAS")  # Not in set
+        assert "FAS" not in engine._pending_moo_symbols

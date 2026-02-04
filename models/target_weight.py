@@ -7,10 +7,11 @@ and the only component authorized to place orders.
 
 Schema Version History:
 - 1.0: Initial version (symbol, target_weight, source, urgency, reason)
+- 1.1: Added requested_quantity for options risk-based sizing (V2.3.2)
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, ClassVar
+from typing import Any, ClassVar, Dict, Optional
 
 from models.enums import Urgency
 
@@ -46,7 +47,7 @@ class TargetWeight:
 
     # Class constant for schema version (ClassVar excludes it from dataclass fields)
     # Increment when structure changes
-    SCHEMA_VERSION: ClassVar[str] = "1.0"
+    SCHEMA_VERSION: ClassVar[str] = "1.1"
 
     # Required fields
     symbol: str
@@ -58,6 +59,11 @@ class TargetWeight:
     # Optional fields
     timestamp: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+    # V2.3.2: Optional requested quantity for options
+    # When set, router uses this instead of calculating from target_weight
+    # This allows options engine to pass risk-calculated contract count
+    requested_quantity: Optional[int] = None
 
     def __post_init__(self) -> None:
         """Validate fields after initialization."""
@@ -72,7 +78,17 @@ class TargetWeight:
             )
 
         # Validate source
-        valid_sources = {"TREND", "MR", "HEDGE", "YIELD", "COLD_START", "RISK", "ROUTER", "OPT"}
+        valid_sources = {
+            "TREND",
+            "MR",
+            "HEDGE",
+            "YIELD",
+            "COLD_START",
+            "RISK",
+            "ROUTER",
+            "OPT",
+            "OPT_INTRADAY",
+        }
         if self.source not in valid_sources:
             raise ValueError(f"source must be one of {valid_sources}, got: {self.source}")
 
@@ -96,6 +112,7 @@ class TargetWeight:
             "reason": self.reason,
             "timestamp": self.timestamp,
             "metadata": self.metadata,
+            "requested_quantity": self.requested_quantity,
         }
 
     @classmethod
@@ -113,10 +130,9 @@ class TargetWeight:
             ValueError: If schema version is incompatible or fields are invalid
         """
         schema_version = data.get("schema_version", "1.0")
-        if schema_version != cls.SCHEMA_VERSION:
-            raise ValueError(
-                f"Incompatible schema version: {schema_version}, expected: {cls.SCHEMA_VERSION}"
-            )
+        # V2.3.2: Accept 1.0 for backwards compatibility (requested_quantity will be None)
+        if schema_version not in ("1.0", "1.1"):
+            raise ValueError(f"Incompatible schema version: {schema_version}, expected: 1.0 or 1.1")
 
         return cls(
             symbol=data["symbol"],
@@ -126,6 +142,7 @@ class TargetWeight:
             reason=data["reason"],
             timestamp=data.get("timestamp"),
             metadata=data.get("metadata", {}),
+            requested_quantity=data.get("requested_quantity"),
         )
 
     def is_exit_signal(self) -> bool:
@@ -139,4 +156,5 @@ class TargetWeight:
     def __str__(self) -> str:
         """Human-readable representation for logging."""
         action = "EXIT" if self.is_exit_signal() else f"{self.target_weight:.1%}"
-        return f"TargetWeight({self.symbol} -> {action} | {self.source} | {self.urgency.value} | {self.reason})"
+        qty_str = f" x{self.requested_quantity}" if self.requested_quantity else ""
+        return f"TargetWeight({self.symbol} -> {action}{qty_str} | {self.source} | {self.urgency.value} | {self.reason})"

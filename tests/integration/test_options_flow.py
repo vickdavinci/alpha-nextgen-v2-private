@@ -9,36 +9,37 @@ Tests the complete wiring from main.py:
 5. Risk engine Greeks breach detection
 """
 
-import pytest
-from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
 
-from engines.satellite.options_engine import OptionsEngine, OptionContract, OptionDirection
-from engines.core.risk_engine import RiskEngine, GreeksSnapshot
-from models.target_weight import TargetWeight
-from models.enums import Urgency
+import pytest
+
 import config
+from engines.core.risk_engine import GreeksSnapshot, RiskEngine
+from engines.satellite.options_engine import OptionContract, OptionDirection, OptionsEngine
+from models.enums import Urgency
+from models.target_weight import TargetWeight
 
 
 class TestOptionsChainDTEFilter:
     """Test that options chain uses config-driven DTE values."""
 
     def test_config_dte_values(self):
-        """Verify config has correct DTE values for daily volatility harvesting."""
-        # V2.1: 1-4 DTE for daily options
-        assert config.OPTIONS_DTE_MIN == 1, "OPTIONS_DTE_MIN should be 1"
-        assert config.OPTIONS_DTE_MAX == 4, "OPTIONS_DTE_MAX should be 4"
+        """Verify config has correct DTE values for V2.23 VASS dual-mode architecture."""
+        # V2.23: 0-60 DTE range (0-2 Intraday, 5-60 Swing incl. VASS Low IV monthly)
+        assert config.OPTIONS_DTE_MIN == 0, "OPTIONS_DTE_MIN should be 0 for intraday"
+        assert config.OPTIONS_DTE_MAX == 60, "OPTIONS_DTE_MAX should be 60 for VASS Low IV monthly"
 
     def test_dte_filter_rejects_long_dated_options(self):
-        """Options with DTE > 4 should be filtered out."""
+        """Options with DTE > 60 should be filtered out."""
         # This tests the logic that would be in _select_best_option_contract
-        dte = 30  # 30 DTE option
+        dte = 75  # 75 DTE option - exceeds max
         is_valid = config.OPTIONS_DTE_MIN <= dte <= config.OPTIONS_DTE_MAX
-        assert not is_valid, "30 DTE options should be rejected"
+        assert not is_valid, "75 DTE options should be rejected"
 
-    def test_dte_filter_accepts_short_dated_options(self):
-        """Options with DTE 1-4 should be accepted."""
-        for dte in [1, 2, 3, 4]:
+    def test_dte_filter_accepts_valid_dte_options(self):
+        """Options with DTE 0-45 should be accepted."""
+        for dte in [0, 1, 2, 5, 14, 30, 45]:
             is_valid = config.OPTIONS_DTE_MIN <= dte <= config.OPTIONS_DTE_MAX
             assert is_valid, f"DTE {dte} should be accepted"
 
@@ -342,10 +343,11 @@ class TestConfigConsistency:
     """Test that config values are consistent across the system."""
 
     def test_options_dte_range(self):
-        """Test OPTIONS_DTE values are sensible."""
+        """Test OPTIONS_DTE values are sensible for V2.3 dual-mode."""
         assert config.OPTIONS_DTE_MIN >= 0, "DTE min should be non-negative"
         assert config.OPTIONS_DTE_MAX > config.OPTIONS_DTE_MIN, "DTE max should be > min"
-        assert config.OPTIONS_DTE_MAX <= 7, "DTE max should be short-dated (weekly)"
+        # V2.3: Swing mode supports up to 45 DTE
+        assert config.OPTIONS_DTE_MAX <= 60, "DTE max should be reasonable (up to 60 days)"
 
     def test_greeks_thresholds_exist(self):
         """Test Greeks threshold config values exist."""

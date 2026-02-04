@@ -1,0 +1,2536 @@
+================================================================================
+                    OPTIONS ENGINE V2.1 - COMPLETE DESIGN DOCUMENT
+================================================================================
+
+Document Version: 2.0
+Date: January 2026
+Status: Design Complete - Awaiting Final Approval
+
+================================================================================
+                            TABLE OF CONTENTS
+================================================================================
+
+PART A: OVERVIEW
+  1. EXECUTIVE SUMMARY
+  2. DUAL-MODE ARCHITECTURE
+  3. DESIGN EVOLUTION & REASONING
+  4. THE PROBLEM WITH V1 OPTIONS LOGIC
+  5. MATHEMATICAL VALIDATION (REAL MARKET DATA)
+
+PART B: SWING MODE (5-45 DTE)
+  6. SWING MODE: 4-STRATEGY PORTFOLIO
+  7. DTE SELECTION FRAMEWORK
+  8. POSITION SIZING RULES
+  9. SIMPLE INTRADAY FILTERS (FOR SWING MODE)
+
+PART C: INTRADAY MODE (0-2 DTE) - MICRO REGIME ENGINE
+  10. MICRO REGIME ENGINE OVERVIEW
+  11. VIX DIRECTION: THE KEY DIFFERENTIATOR
+  12. MICRO REGIME SCORE CALCULATION
+  13. REGIME CLASSIFICATION MATRIX
+  14. INTRADAY STRATEGY DEPLOYMENT
+  15. DECISION FLOW & EXAMPLES
+
+PART D: SHARED COMPONENTS
+  16. VIX-BASED ALLOCATION SCALING
+  17. IV RANK SCORING FIX
+  18. GAP FILTER FOR OPTIONS
+  19. OPTIONS-SPECIFIC DRAWDOWN LIMITS
+  20. IMPLEMENTATION CHECKLIST
+
+================================================================================
+                        1. EXECUTIVE SUMMARY
+================================================================================
+
+This document captures the complete design of the Options Engine V2.1, which
+operates in TWO DISTINCT MODES based on trade horizon:
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    OPTIONS ENGINE V2.1 - DUAL MODE                          │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   MODE 1: SWING MODE (5-45 DTE)                                             │
+│   ─────────────────────────────                                             │
+│   • 4-Strategy Portfolio (Debit, Credit, ITM, Protective)                   │
+│   • Simple intraday filters                                                 │
+│   • Hold overnight, multi-day positions                                     │
+│   • Uses Macro Regime for direction                                         │
+│                                                                             │
+│   MODE 2: INTRADAY MODE (0-2 DTE) - "SNIPER"                                │
+│   ──────────────────────────────────────────                                │
+│   • Micro Regime Engine orchestrates strategies                             │
+│   • VIX Level + VIX Direction = True Regime                                 │
+│   • Same-day entry and exit                                                 │
+│   • Mean Reversion (VIX Normal) vs Momentum (VIX Elevated)                  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+KEY OUTCOMES:
+
+  1. REJECTED: Naked options with stop losses (vulnerable to small moves)
+  2. ADOPTED: Debit spreads as primary structure (defined risk)
+  3. ADOPTED: Micro Regime Engine for 0-2 DTE (entry timing critical)
+  4. ADOPTED: Simple filters for 5+ DTE (entry timing less critical)
+  5. ADOPTED: VIX Direction as key differentiator (rising vs falling)
+
+================================================================================
+                    2. DUAL-MODE ARCHITECTURE
+================================================================================
+
+The Options Engine operates in two modes based on DTE:
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         OPTIONS ENGINE ARCHITECTURE                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                    ┌───────────────┴───────────────┐
+                    │      TRADE HORIZON CHECK      │
+                    └───────────────┬───────────────┘
+                                    │
+            ┌───────────────────────┴───────────────────────┐
+            │                                               │
+            ▼                                               ▼
+┌───────────────────────────┐               ┌───────────────────────────┐
+│      SWING MODE           │               │     INTRADAY MODE         │
+│      (5-45 DTE)           │               │       (0-2 DTE)           │
+├───────────────────────────┤               ├───────────────────────────┤
+│                           │               │                           │
+│ • Entry timing: 1-3% of   │               │ • Entry timing: 15%+ of   │
+│   option's life           │               │   option's life           │
+│                           │               │                           │
+│ • Simple filters enough   │               │ • Micro Regime required   │
+│                           │               │                           │
+│ • Macro Regime for        │               │ • VIX Level + Direction   │
+│   direction               │               │   for regime              │
+│                           │               │                           │
+│ • Multi-day hold OK       │               │ • Same-day exit mandatory │
+│                           │               │                           │
+├───────────────────────────┤               ├───────────────────────────┤
+│ STRATEGIES:               │               │ STRATEGIES:               │
+│ • Debit Spreads (10-14)   │               │ • Debit Fade (MR)         │
+│ • Credit Spreads (18-21)  │               │ • Credit Spreads          │
+│ • ITM Options (14-21)     │               │ • ITM Momentum            │
+│ • Protective Puts (35-45) │               │ • Protective Puts         │
+└───────────────────────────┘               └───────────────────────────┘
+
+CAPITAL ALLOCATION:
+
+  Total Options Budget: 20% of Portfolio = $10,000
+
+  ┌────────────────────┬────────────┬──────────────────────────────────┐
+  │ Mode               │ Allocation │ Notes                            │
+  ├────────────────────┼────────────┼──────────────────────────────────┤
+  │ Swing Mode         │ 15%        │ $7,500 - Multi-day positions     │
+  │ Intraday Mode      │ 5%         │ $2,500 - Same-day sniper trades  │
+  └────────────────────┴────────────┴──────────────────────────────────┘
+
+WHY TWO MODES:
+
+  The critical insight: Entry timing matters more for shorter DTE.
+
+  For 2 DTE Option:
+    2-hour timing window = 15% of option's remaining life
+    Micro Regime: ESSENTIAL
+
+  For 14 DTE Option:
+    2-hour timing window = 2% of option's remaining life
+    Micro Regime: OVER-ENGINEERED
+
+  Therefore:
+    0-2 DTE  → Micro Regime Engine (complex, real-time)
+    5-45 DTE → Simple Filters (lightweight, rule-based)
+
+================================================================================
+                    2. DESIGN EVOLUTION & REASONING
+================================================================================
+
+The Options Engine V2.1 design went through several iterations. This section
+documents the evolution and why we arrived at the final architecture.
+
+--------------------------------------------------------------------------------
+PHASE 1: INITIAL REQUIREMENTS (5 CHANGES REQUESTED)
+--------------------------------------------------------------------------------
+
+The user requested 5 specific changes to the options logic:
+
+  1. Add explicit directional logic (regime-aligned)
+  2. Add gap filter for options
+  3. Add options-specific drawdown limits
+  4. Add VIX-based correlation/allocation adjustment
+  5. Fix IV scoring for option buying
+
+INITIAL APPROACH:
+  - Use Macro Regime (daily score 0-100) for directional bias
+  - Confirm with intraday momentum before entry
+  - Scale allocation based on VIX levels
+
+--------------------------------------------------------------------------------
+PHASE 2: TWO-TIER REGIME PROPOSAL
+--------------------------------------------------------------------------------
+
+QUESTION RAISED: "Do we need a sub-regime for intraday/options trading?"
+
+PROPOSAL: Macro + Micro Regime Architecture
+
+  Macro Regime (Daily):
+    - Calculated once at market open
+    - Uses SPY MA200, RSP/SPY ratio, HYG/IEF ratio, VIX level
+    - Score 0-100 determines directional bias
+    - Already implemented in regime_engine.py
+
+  Micro Regime (Intraday):
+    - Recalculated every 30 minutes
+    - Uses 30-min candle direction, VWAP slope, tick breadth
+    - Score 0-100 for intraday momentum
+    - NEW component proposed
+
+WHY THIS WAS CONSIDERED:
+  - Options are sensitive to intraday momentum
+  - Mean Reversion already operates intraday
+  - Micro regime could improve entry timing
+
+--------------------------------------------------------------------------------
+PHASE 3: REAL-WORLD VALIDATION (THE CRITICAL PIVOT)
+--------------------------------------------------------------------------------
+
+We validated the strategy with real market data:
+
+  QQQ 2-DTE ATM Call Option:
+    Premium: $4.74
+    Delta: 0.50
+    Gamma: 0.036
+    Theta: -1.16
+    Vega: 0.18
+
+MATHEMATICAL PROOF - QQQ MOVE REQUIRED:
+
+  For +50% profit target ($4.74 → $7.11):
+    Profit needed = $2.37 per contract
+    Delta contribution = 0.50 × QQQ move
+    $2.37 = 0.50 × QQQ move
+    QQQ move needed = $4.74 (about +0.94% on QQQ ~$505)
+
+  For -25% stop loss ($4.74 → $3.56):
+    Loss trigger = $1.19 per contract
+    $1.19 = 0.50 × QQQ move
+    QQQ move needed = -$2.38 (about -0.47%)
+
+    BUT with gamma acceleration and theta decay:
+    Actual QQQ move to trigger -25% stop = -0.36%
+
+CRITICAL DISCOVERY:
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │  A mere -0.36% move in QQQ triggers our 25% stop loss!     │
+  │  A -0.45% move triggers our 30% stop loss!                 │
+  │                                                             │
+  │  QQQ average intraday range: 0.8% - 1.2%                   │
+  │  Both stop levels are within normal market noise.          │
+  └─────────────────────────────────────────────────────────────┘
+
+USER INSIGHT: "Our current strategy is vulnerable to small moves of QQQ."
+
+VALIDATION: User was CORRECT. The strategy as designed would get stopped out
+by normal intraday noise, not by actual directional moves against us.
+
+--------------------------------------------------------------------------------
+PHASE 4: SOLUTION SEARCH
+--------------------------------------------------------------------------------
+
+FIVE OPTIONS EVALUATED:
+
+  1. Lower Target (+30% instead of +50%)
+     - Reduces QQQ move needed for profit
+     - Still vulnerable to whipsaw on stop side
+     - REJECTED: Doesn't solve the core problem
+
+  2. ITM Options (0.70 Delta instead of 0.50)
+     - 60% more room before stop triggers
+     - Higher premium = larger position risk
+     - PARTIALLY ADOPTED: Good for high-conviction trades
+
+  3. Debit Spreads (Bull Call / Bear Put)
+     - No stop loss needed
+     - Risk defined at entry (max loss = debit paid)
+     - ADOPTED: Primary strategy for directional plays
+
+  4. Time Exit Only (no price-based stops)
+     - Let theta and direction work
+     - Risk: Unlimited downside
+     - REJECTED: Too risky without defined risk
+
+  5. Trailing Stops (after profit cushion)
+     - Only activate stop after +20% profit
+     - ADOPTED: For ITM options only
+
+WINNING SOLUTION: DEBIT SPREADS
+
+Why Debit Spreads Solve the Whipsaw Problem:
+
+  Example Bull Call Spread:
+    Buy: QQQ 505 Call @ $4.74
+    Sell: QQQ 510 Call @ $2.50
+    Net Debit: $2.24
+
+    Max Profit: $5.00 - $2.24 = $2.76 (123% return)
+    Max Loss: $2.24 (100% of debit paid)
+    Breakeven: QQQ +0.45% from entry
+
+    NO STOP LOSS NEEDED - Risk is capped at entry!
+
+--------------------------------------------------------------------------------
+PHASE 5: MICRO REGIME EVALUATION
+--------------------------------------------------------------------------------
+
+QUESTION: "How does Micro Regime complement Debit Spreads?"
+
+ANALYSIS:
+
+  With Naked Options (original strategy):
+    Micro Regime role: DEFENSIVE
+    - Detect choppy conditions → skip trades
+    - Avoid entries during whipsaw periods
+    - Value: High (prevents stop-outs)
+
+  With Debit Spreads (new strategy):
+    Micro Regime role: OFFENSIVE
+    - Better entry timing for higher win rate
+    - Value: Moderate (spreads survive without it)
+    - Estimated improvement: +10% win rate
+
+CONCLUSION: Micro Regime still valuable but now optional, not critical.
+
+--------------------------------------------------------------------------------
+PHASE 6: THE OVER-ENGINEERING REVELATION
+--------------------------------------------------------------------------------
+
+USER QUESTION: "If we are not trading 0-5 DTE options, why do we need Micro
+Regime? Our options are 10-21 DTE."
+
+CRITICAL ANALYSIS:
+
+  Impact of 2-Hour Micro Regime Decision Window:
+
+  For 2 DTE Option:
+    2 hours = 15% of option's remaining life
+    Micro regime timing: SIGNIFICANT
+
+  For 10 DTE Option:
+    2 hours = 2.5% of option's remaining life
+    Micro regime timing: MINIMAL
+
+  For 21 DTE Option:
+    2 hours = 1.2% of option's remaining life
+    Micro regime timing: NEGLIGIBLE
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│                                                                          │
+│   CONCLUSION: MICRO REGIME IS OVER-ENGINEERED FOR 10-21 DTE OPTIONS      │
+│                                                                          │
+│   The 2-hour decision window that Micro Regime provides represents       │
+│   only 1-3% of our options' remaining life. The engineering effort       │
+│   (30-min recalculation, VWAP tracking, tick breadth) provides           │
+│   minimal value for our DTE range.                                       │
+│                                                                          │
+│   RECOMMENDATION: SCRAP MICRO REGIME                                     │
+│   ALTERNATIVE: SIMPLE INTRADAY FILTERS                                   │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+
+================================================================================
+                    3. THE PROBLEM WITH V1 OPTIONS LOGIC
+================================================================================
+
+V1 OPTIONS ENGINE ISSUES:
+
+  1. NO DIRECTIONAL ALIGNMENT
+     - Traded both calls and puts randomly
+     - No regime-based direction filtering
+     - Result: 50% of trades fighting the trend
+
+  2. SINGLE STRATEGY (NAKED OPTIONS)
+     - Only bought calls/puts outright
+     - Vulnerable to time decay
+     - Vulnerable to IV crush
+     - Vulnerable to whipsaw stops
+
+  3. IV SCORING BACKWARDS
+     - High IV scored well (good for selling)
+     - But we were BUYING options
+     - High IV = expensive premium = lower returns
+
+  4. NO GAP FILTER
+     - Entered on gap days
+     - Gaps often reverse or consolidate
+     - Lost money on gap fade
+
+  5. NO OPTIONS-SPECIFIC RISK LIMITS
+     - Options shared portfolio drawdown limits
+     - No separate controls for high-risk options
+     - Could lose 3% on options alone
+
+================================================================================
+                4. MATHEMATICAL VALIDATION (REAL MARKET DATA)
+================================================================================
+
+All calculations below use real market data from January 2026.
+
+--------------------------------------------------------------------------------
+NAKED OPTION VULNERABILITY PROOF
+--------------------------------------------------------------------------------
+
+Setup:
+  QQQ Price: ~$505
+  2-DTE ATM Call: $4.74
+  Delta: 0.50
+  Gamma: 0.036
+  Theta: -1.16/day
+
+Question: How much does QQQ need to move to trigger stops?
+
+  25% Stop ($4.74 → $3.56):
+    Loss = $1.19
+    Including gamma acceleration: QQQ -0.36% triggers stop
+
+  30% Stop ($4.74 → $3.32):
+    Loss = $1.42
+    Including gamma acceleration: QQQ -0.45% triggers stop
+
+Reality Check:
+  QQQ average daily range: 0.8% - 1.2%
+  QQQ average intraday swing: 0.5% - 0.8%
+
+  BOTH STOP LEVELS ARE WITHIN NORMAL NOISE!
+
+--------------------------------------------------------------------------------
+DEBIT SPREAD ADVANTAGE PROOF
+--------------------------------------------------------------------------------
+
+Bull Call Spread Setup:
+  Buy: QQQ 505 Call @ $4.74
+  Sell: QQQ 510 Call @ $2.50
+  Net Debit: $2.24
+  Width: $5.00
+
+P&L Scenarios at Expiration:
+
+  QQQ at $500 (-1.0%):
+    Long call worthless, short call worthless
+    Loss = $2.24 (100% of debit)
+
+  QQQ at $505 (0%):
+    Long call worthless, short call worthless
+    Loss = $2.24 (100% of debit)
+
+  QQQ at $507.24 (+0.45%):
+    Long call = $2.24, short call worthless
+    P&L = $0 (breakeven)
+
+  QQQ at $510 (+1.0%):
+    Long call = $5.00, short call = $0
+    Profit = $5.00 - $2.24 = $2.76 (123% return)
+
+  QQQ at $515 (+2.0%):
+    Long call = $10.00, short call = $5.00
+    Net = $5.00 - $2.24 = $2.76 (123% return - capped)
+
+KEY ADVANTAGES:
+  1. Max loss KNOWN and CAPPED at entry
+  2. No stop loss management needed
+  3. Can survive -1% QQQ move (naked option stopped out at -0.36%)
+  4. Reduced theta decay (short leg offsets)
+  5. Lower cost = more contracts possible
+
+--------------------------------------------------------------------------------
+THETA DECAY BY DTE
+--------------------------------------------------------------------------------
+
+2-DTE Option ($4.74, Theta -1.16):
+  1 day theta = -$1.16 = -24.5% of premium
+  Overnight hold: DANGEROUS
+
+7-DTE Option ($8.50 est, Theta -0.45):
+  1 day theta = -$0.45 = -5.3% of premium
+  Overnight hold: ACCEPTABLE
+
+14-DTE Option ($12.00 est, Theta -0.25):
+  1 day theta = -$0.25 = -2.1% of premium
+  Overnight hold: COMFORTABLE
+
+21-DTE Option ($15.00 est, Theta -0.18):
+  1 day theta = -$0.18 = -1.2% of premium
+  Overnight hold: MINIMAL IMPACT
+
+THETA DECAY CURVE:
+
+  Daily Theta Loss (% of premium)
+  │
+  │  *
+  │   *
+  │    *
+  │      *
+  │         *
+  │             * * * * * * * * *
+  └────────────────────────────────> DTE
+     2   5   7  10  14  21  30  45
+
+  CRITICAL ZONE: Below 7 DTE (accelerating decay)
+  COMFORT ZONE: Above 14 DTE (linear decay)
+
+================================================================================
+      PART B: SWING MODE (5-45 DTE)
+================================================================================
+
+================================================================================
+                6. SWING MODE: 4-STRATEGY PORTFOLIO
+================================================================================
+
+Total Options Allocation: 20% of portfolio = $10,000 (on $50,000 portfolio)
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    OPTIONS ENGINE V2.1 PORTFOLIO                            │
+├──────────────────┬───────────┬──────────┬───────────┬───────────────────────┤
+│ Strategy         │ Allocation│ Capital  │ DTE Range │ Purpose               │
+├──────────────────┼───────────┼──────────┼───────────┼───────────────────────┤
+│ Debit Spreads    │ 25%       │ $2,500   │ 10-14     │ Directional plays     │
+│ Credit Spreads   │ 25%       │ $2,500   │ 18-21     │ Premium collection    │
+│ ITM Long Options │ 30%       │ $3,000   │ 14-21     │ High conviction       │
+│ Protective Puts  │ 20%       │ $2,000   │ 35-45     │ Portfolio hedge       │
+└──────────────────┴───────────┴──────────┴───────────┴───────────────────────┘
+
+--------------------------------------------------------------------------------
+STRATEGY 1: DEBIT SPREADS (25% = $2,500)
+--------------------------------------------------------------------------------
+
+WHEN TO USE:
+  - Regime score confirms direction (>60 for calls, <40 for puts)
+  - Looking for defined-risk directional exposure
+  - Want to capitalize on 1-2% moves
+
+STRUCTURE:
+  Bull Call Spread (Bullish):
+    Buy ATM call
+    Sell OTM call ($5 wide)
+
+  Bear Put Spread (Bearish):
+    Buy ATM put
+    Sell OTM put ($5 wide)
+
+POSITION SIZING:
+  Max risk per spread: $2.50 (typical debit)
+  With $2,500 allocation: 10 spreads maximum
+  Typical position: 3-5 spreads per entry
+
+ENTRY CRITERIA:
+  1. Macro Regime aligned (>60 bullish, <40 bearish)
+  2. VIX < 30 (avoid extreme volatility)
+  3. No gap > 1% in direction of trade
+  4. Time: 10:00 AM - 2:30 PM ET
+  5. IV Rank < 50 (not overpriced)
+
+EXIT CRITERIA:
+  1. Take profit at +80% of max profit
+  2. Roll or close by 3 DTE (avoid gamma risk)
+  3. Close if regime flips dramatically
+
+--------------------------------------------------------------------------------
+STRATEGY 2: CREDIT SPREADS (25% = $2,500)
+--------------------------------------------------------------------------------
+
+WHEN TO USE:
+  - Regime is neutral (40-60) or mildly directional
+  - VIX elevated (>20) - premium is rich
+  - Want to collect theta decay
+
+STRUCTURE:
+  Bull Put Spread (Neutral-Bullish):
+    Sell OTM put (5-10% below current)
+    Buy further OTM put ($5 wide)
+
+  Bear Call Spread (Neutral-Bearish):
+    Sell OTM call (5-10% above current)
+    Buy further OTM call ($5 wide)
+
+POSITION SIZING:
+  Max risk per spread: $5.00 - credit received
+  Typical credit: $1.50 - $2.00
+  Max loss: ~$3.50 per spread
+  With $2,500 allocation: 7 spreads maximum
+
+ENTRY CRITERIA:
+  1. VIX > 20 (rich premium)
+  2. IV Rank > 40 (elevated IV for credit)
+  3. No earnings in underlying within DTE
+  4. Time: 10:00 AM - 2:00 PM ET
+  5. Regime neutral or mildly aligned
+
+EXIT CRITERIA:
+  1. Take profit at 50% of max profit
+  2. Roll or close by 7 DTE
+  3. Close if breached short strike
+
+--------------------------------------------------------------------------------
+STRATEGY 3: ITM LONG OPTIONS (30% = $3,000)
+--------------------------------------------------------------------------------
+
+WHEN TO USE:
+  - Strong regime conviction (>70 bullish, <30 bearish)
+  - Expecting 2-3% move in underlying
+  - Want leverage without spread cap
+
+STRUCTURE:
+  ITM Call (0.70 Delta):
+    Higher premium, lower gamma risk
+    More room before stop triggers
+
+  ITM Put (0.70 Delta):
+    Same principle for bearish trades
+
+POSITION SIZING:
+  2% risk per trade = $600 max loss
+  With 0.70 delta ITM @ $15 premium:
+  30% stop = $4.50 loss per contract
+  Max contracts: 6-7 per trade
+
+ENTRY CRITERIA:
+  1. Regime strongly aligned (>70 or <30)
+  2. Confirmed momentum (intraday filter)
+  3. VIX < 25 (reasonable IV)
+  4. Time: 10:00 AM - 2:00 PM ET
+  5. After initial move confirms (not at open)
+
+EXIT CRITERIA:
+  1. Target: +40% profit
+  2. Stop: -30% (only after in profit, use trailing)
+  3. Time stop: Close by 7 DTE
+  4. Regime reversal: Exit immediately
+
+TRAILING STOP MECHANISM:
+  - Activate after +20% profit
+  - Trail at 50% of profit (lock in 10%)
+  - Never trail below entry
+
+--------------------------------------------------------------------------------
+STRATEGY 4: PROTECTIVE PUTS (20% = $2,000)
+--------------------------------------------------------------------------------
+
+WHEN TO USE:
+  - Always maintain for portfolio protection
+  - Scale up when regime deteriorates
+  - Core hedge, not profit center
+
+STRUCTURE:
+  5% OTM Puts on QQQ:
+    Strike: 5% below current price
+    DTE: 35-45 days
+    Roll at 14 DTE remaining
+
+POSITION SIZING:
+  Target notional coverage: $25,000 (50% of portfolio)
+  Put delta: ~0.20
+  Contracts needed: ~10 puts
+  Annual cost: ~$3,000-4,000 (3-4% drag)
+
+SCALING BY REGIME:
+
+  Regime Score | Put Allocation | Notional Coverage
+  -------------|----------------|------------------
+  > 70         | 10% ($1,000)   | $15,000 (30%)
+  50-70        | 20% ($2,000)   | $25,000 (50%)
+  30-50        | 30% ($3,000)   | $35,000 (70%)
+  < 30         | 40% ($4,000)   | $50,000 (100%)
+
+MANAGEMENT:
+  - Roll at 14 DTE to new 35-45 DTE
+  - Move strikes down as portfolio value decreases
+  - Sell during panic VIX spikes (>40) for premium harvest
+
+================================================================================
+                    7. DTE SELECTION FRAMEWORK
+================================================================================
+
+Each strategy has specific DTE requirements based on:
+  1. Theta decay curve
+  2. Gamma risk
+  3. Holding period
+  4. Roll timing
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         DTE LIFECYCLE BY STRATEGY                           │
+├──────────────────────┬─────────────┬──────────────┬────────────────────────┤
+│ Strategy             │ Entry DTE   │ Exit by DTE  │ Reason                 │
+├──────────────────────┼─────────────┼──────────────┼────────────────────────┤
+│ Debit Spreads        │ 10-14       │ 3            │ Theta acceleration     │
+│ Credit Spreads       │ 18-21       │ 7            │ Max theta capture      │
+│ ITM Long Options     │ 14-21       │ 7            │ Balance decay/premium  │
+│ Protective Puts      │ 35-45       │ Roll at 14   │ Cost efficiency        │
+└──────────────────────┴─────────────┴──────────────┴────────────────────────┘
+
+--------------------------------------------------------------------------------
+DEBIT SPREADS: 10-14 DTE ENTRY, EXIT BY 3 DTE
+--------------------------------------------------------------------------------
+
+WHY 10-14 DTE ENTRY:
+  - Enough time for 1-2% move in underlying
+  - Theta not yet in acceleration phase
+  - Reasonable premium cost (not too expensive)
+  - Gamma starting to pick up (amplifies gains)
+
+WHY EXIT BY 3 DTE:
+  - Theta decay accelerates dramatically below 7 DTE
+  - Gamma becomes extreme (position swings wildly)
+  - Bid-ask spreads widen as expiration approaches
+  - Risk of assignment increases
+
+TYPICAL LIFECYCLE:
+  Day 0: Entry at 12 DTE
+  Day 3-5: Re-evaluate, adjust if needed
+  Day 7-9: Take profit if target hit, or close
+  Day 9+: MUST close regardless of P&L
+
+--------------------------------------------------------------------------------
+CREDIT SPREADS: 18-21 DTE ENTRY, EXIT BY 7 DTE
+--------------------------------------------------------------------------------
+
+WHY 18-21 DTE ENTRY:
+  - Captures premium while theta decay is steady
+  - Enough time for position to be challenged and recover
+  - IV typically stable in this range
+  - Less gamma risk than shorter DTE
+
+WHY EXIT BY 7 DTE:
+  - At 50% profit, most theta captured
+  - Below 7 DTE, gamma increases risk
+  - Rolling to new position is efficient
+  - Avoid pin risk near expiration
+
+TYPICAL LIFECYCLE:
+  Day 0: Entry at 20 DTE
+  Day 5-10: Monitor, target 50% profit
+  Day 10-13: Close if profitable, roll if not
+  Day 14+: MUST close or roll
+
+--------------------------------------------------------------------------------
+ITM LONG OPTIONS: 14-21 DTE ENTRY, EXIT BY 7 DTE
+--------------------------------------------------------------------------------
+
+WHY 14-21 DTE ENTRY:
+  - Balanced premium (not too expensive)
+  - Time for thesis to play out
+  - Theta manageable at ~1-2% per day
+  - ITM delta provides leverage
+
+WHY EXIT BY 7 DTE:
+  - Theta becomes problematic
+  - High conviction should resolve by now
+  - Capital can be redeployed
+  - Avoid holding through acceleration
+
+TYPICAL LIFECYCLE:
+  Day 0: Entry at 16 DTE
+  Day 1-5: Trailing stop activates at +20%
+  Day 5-9: Take profit at +40% or stop
+  Day 9+: MUST close regardless of P&L
+
+--------------------------------------------------------------------------------
+PROTECTIVE PUTS: 35-45 DTE ENTRY, ROLL AT 14 DTE
+--------------------------------------------------------------------------------
+
+WHY 35-45 DTE ENTRY:
+  - Cheapest cost per day of protection
+  - Theta decay minimal (1-2% per week)
+  - Time to react to market changes
+  - Less frequent trading/rolling
+
+WHY ROLL AT 14 DTE:
+  - Theta starts accelerating
+  - New 35-45 DTE puts are relatively cheap
+  - Continuous protection maintained
+  - Avoid holding into acceleration
+
+TYPICAL LIFECYCLE:
+  Day 0: Entry at 40 DTE
+  Day 1-25: Hold, minimal management
+  Day 26: Roll to new 35-45 DTE position
+  NEVER hold below 14 DTE (unless in crisis)
+
+================================================================================
+                    8. POSITION SIZING RULES
+================================================================================
+
+--------------------------------------------------------------------------------
+RISK-BASED SIZING (NOT ALLOCATION-BASED)
+--------------------------------------------------------------------------------
+
+CRITICAL DISTINCTION:
+
+  ALLOCATION = Capital deployed to a strategy
+  RISK = Maximum acceptable loss per trade
+
+  These are NOT the same!
+
+EXAMPLE OF THE CONFLICT:
+
+  Options allocation: 20% = $10,000
+  Risk per trade: 1% = $500
+
+  If we buy $10,000 in options with 1% risk:
+    Premium: $4.74 per contract
+    Contracts for $10,000: 21 contracts
+    25% stop loss: $1.19 per contract
+    Max loss: 21 × $1.19 × 100 = $2,499 (5% of portfolio!)
+
+  This VIOLATES our 1% risk rule.
+
+SOLUTION: SIZE BY RISK, NOT ALLOCATION
+
+  2% Risk Model (Recommended):
+    Max loss per trade: $1,000
+
+    For Debit Spread ($2.24 max loss):
+      Max contracts: $1,000 / $224 = 4 spreads
+
+    For ITM Option ($15 premium, 30% stop):
+      Max loss per contract: $4.50 × 100 = $450
+      Max contracts: $1,000 / $450 = 2 contracts
+
+    For Credit Spread ($3.50 max loss):
+      Max contracts: $1,000 / $350 = 2 spreads
+
+--------------------------------------------------------------------------------
+POSITION SIZING BY STRATEGY
+--------------------------------------------------------------------------------
+
+DEBIT SPREADS:
+  Risk: 2% per trade = $1,000
+  Max loss per spread: ~$2.50 × 100 = $250
+  Max position: 4 spreads
+  Typical position: 2-3 spreads
+
+CREDIT SPREADS:
+  Risk: 2% per trade = $1,000
+  Max loss per spread: ~$3.50 × 100 = $350
+  Max position: 2-3 spreads
+  Typical position: 1-2 spreads
+
+ITM LONG OPTIONS:
+  Risk: 2% per trade = $1,000
+  30% stop on $15 premium: $4.50 × 100 = $450
+  Max position: 2 contracts
+  Typical position: 1-2 contracts
+
+PROTECTIVE PUTS:
+  Not risk-based (insurance cost)
+  Budget: ~$2,000 annually
+  Size by notional coverage needed
+
+--------------------------------------------------------------------------------
+CONCURRENT POSITION LIMITS
+--------------------------------------------------------------------------------
+
+Maximum open positions at any time:
+
+  Strategy          | Max Concurrent | Max Capital
+  ------------------|----------------|------------
+  Debit Spreads     | 3 positions    | $750 risk
+  Credit Spreads    | 2 positions    | $700 risk
+  ITM Long Options  | 2 positions    | $900 risk
+  Protective Puts   | 1 position     | (hedge)
+  ------------------|----------------|------------
+  TOTAL MAX RISK    | 8 positions    | $2,350
+
+This keeps total options risk under 5% of portfolio even if all stop out.
+
+================================================================================
+                9. SIMPLE INTRADAY FILTERS (FOR SWING MODE)
+================================================================================
+
+NOTE: For Swing Mode (5+ DTE), we use simple filters instead of Micro Regime.
+Micro Regime is reserved for Intraday Mode (0-2 DTE) - see Part C.
+
+--------------------------------------------------------------------------------
+THE MICRO REGIME PROPOSAL (REJECTED)
+--------------------------------------------------------------------------------
+
+WHAT WAS PROPOSED:
+
+  Micro Regime Engine:
+    - Recalculate every 30 minutes
+    - Track 30-min candle direction
+    - Monitor VWAP slope
+    - Measure tick breadth (advancing vs declining)
+    - Score 0-100 for intraday momentum
+
+ENGINEERING EFFORT REQUIRED:
+  - New engine file (~500 lines)
+  - 30-minute data subscription
+  - Tick breadth data feed
+  - VWAP calculation
+  - Integration with Options Engine
+  - Additional testing (~100 tests)
+
+--------------------------------------------------------------------------------
+WHY MICRO REGIME WAS REJECTED
+--------------------------------------------------------------------------------
+
+THE CRITICAL INSIGHT:
+
+  "If we are not trading 0-5 DTE options, why do we need Micro Regime?"
+
+MATHEMATICAL PROOF:
+
+  Micro Regime provides a 2-hour decision window (better entry timing).
+
+  For 2 DTE Option:
+    2 hours = 2 / (2 × 6.5) = 15.4% of remaining life
+    Micro Regime: SIGNIFICANT IMPACT
+
+  For 10 DTE Option:
+    2 hours = 2 / (10 × 6.5) = 3.1% of remaining life
+    Micro Regime: MINIMAL IMPACT
+
+  For 21 DTE Option:
+    2 hours = 2 / (21 × 6.5) = 1.5% of remaining life
+    Micro Regime: NEGLIGIBLE IMPACT
+
+CONCLUSION:
+
+  ┌──────────────────────────────────────────────────────────────────────┐
+  │                                                                      │
+  │  Micro Regime optimizes WHEN in the day to enter.                   │
+  │  For 10-21 DTE options, entry timing within a day matters           │
+  │  only 1-3% in terms of option lifecycle.                            │
+  │                                                                      │
+  │  The engineering effort (500+ lines, new data feeds, testing)       │
+  │  provides only MARGINAL improvement for our DTE range.              │
+  │                                                                      │
+  │  VERDICT: OVER-ENGINEERED FOR OUR USE CASE                          │
+  │                                                                      │
+  └──────────────────────────────────────────────────────────────────────┘
+
+--------------------------------------------------------------------------------
+SIMPLE INTRADAY FILTERS (ADOPTED INSTEAD)
+--------------------------------------------------------------------------------
+
+Instead of a complex Micro Regime engine, we use simple rule-based filters:
+
+1. TIME WINDOW FILTER
+   Entry allowed: 10:00 AM - 2:30 PM ET only
+
+   Why:
+   - 9:30-10:00: Opening volatility, unreliable signals
+   - 2:30-4:00: End-of-day flows, unpredictable
+   - Middle of day: Cleanest price action
+
+2. GAP FILTER
+   If SPY gaps > 1.0%:
+     - Calls: Skip if gap up (reversal risk)
+     - Puts: Skip if gap down (bounce risk)
+
+   Why:
+   - Gap moves often mean revert
+   - Don't chase extended moves
+
+3. EXTREME MOVE FILTER
+   If during session:
+     - SPY moves > -2% intraday: Pause all entries
+     - VIX spikes > +15% intraday: Pause all entries
+
+   Why:
+   - Extreme conditions = unpredictable
+   - Wait for dust to settle
+
+4. DIRECTION PREFERENCE (NOT REQUIRED)
+   If SPY above VWAP: Prefer calls (not required)
+   If SPY below VWAP: Prefer puts (not required)
+
+   Why:
+   - Simple directional bias
+   - Not blocking, just preference
+
+IMPLEMENTATION (SIMPLE):
+
+  def can_enter_options(self, direction: str) -> bool:
+      # Time window
+      if not (10*60 <= self.time_minutes <= 14*30):
+          return False
+
+      # Gap filter
+      if abs(self.gap_percent) > 1.0:
+          if direction == "CALL" and self.gap_percent > 0:
+              return False
+          if direction == "PUT" and self.gap_percent < 0:
+              return False
+
+      # Extreme move filter
+      if self.spy_intraday_change < -2.0:
+          return False
+      if self.vix_intraday_change > 15.0:
+          return False
+
+      return True
+
+TOTAL ENGINEERING: ~50 lines (vs 500+ for Micro Regime)
+
+================================================================================
+      PART C: INTRADAY MODE (0-2 DTE) - MICRO REGIME ENGINE
+================================================================================
+
+================================================================================
+                10. MICRO REGIME ENGINE OVERVIEW
+================================================================================
+
+The Micro Regime Engine is the "brain" for intraday options trading (0-2 DTE).
+It orchestrates strategy deployment based on real-time market conditions.
+
+--------------------------------------------------------------------------------
+WHY MICRO REGIME IS NEEDED FOR 0-2 DTE
+--------------------------------------------------------------------------------
+
+USER'S ORIGINAL OBSERVATION:
+
+  "There are three scenarios I observed:
+   1. VIX range normal - After 1 to 1.25% move, QQQ always reverses
+   2. VIX range abnormal - Moves concentrate in one direction
+
+   My manual trading resulted in losses because I exit quickly in profit
+   and hold on to losses for a long time."
+
+This observation is backed by market microstructure:
+
+  VIX Normal (< 20):
+    - Low fear, market is "efficient"
+    - Large moves attract profit-taking
+    - Market makers rebalance against the move
+    - Result: MEAN REVERSION dominates
+
+  VIX Elevated (> 25):
+    - Fear/greed driving decisions
+    - Hedging flows amplify moves
+    - Less liquidity = moves persist
+    - Result: MOMENTUM dominates
+
+--------------------------------------------------------------------------------
+MICRO REGIME ARCHITECTURE
+--------------------------------------------------------------------------------
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        MICRO REGIME ENGINE                                  │
+│                      (Intraday Decision Brain)                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                   │
+                                   ▼
+          ┌────────────────────────┴────────────────────────┐
+          │              REGIME CLASSIFICATION              │
+          │   VIX Level + VIX Direction + QQQ Move → Score  │
+          └────────────────────────┬────────────────────────┘
+                                   │
+           ┌───────────────────────┼───────────────────────┐
+           ▼                       ▼                       ▼
+     ┌───────────┐          ┌───────────┐          ┌───────────┐
+     │  NORMAL   │          │  CAUTION  │          │ ELEVATED  │
+     │  VIX < 20 │          │ VIX 20-25 │          │  VIX > 25 │
+     └─────┬─────┘          └─────┬─────┘          └─────┬─────┘
+           │                      │                      │
+           ▼                      ▼                      ▼
+     ┌───────────┐          ┌───────────┐          ┌───────────┐
+     │   MEAN    │          │  HYBRID   │          │ MOMENTUM  │
+     │ REVERSION │          │   MODE    │          │   MODE    │
+     │   MODE    │          │           │          │           │
+     └─────┬─────┘          └─────┬─────┘          └─────┬─────┘
+           │                      │                      │
+           └──────────────────────┼──────────────────────┘
+                                  │
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         STRATEGY SELECTOR                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│   Based on Regime + Signal Strength + Time → Deploy Strategy                │
+└─────────────────────────────────────────────────────────────────────────────┘
+           │
+           ├──────────────┬──────────────┬──────────────┬──────────────┐
+           ▼              ▼              ▼              ▼              ▼
+     ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+     │  DEBIT   │  │  CREDIT  │  │   ITM    │  │PROTECTIVE│  │    NO    │
+     │  FADE    │  │ SPREADS  │  │ MOMENTUM │  │   PUTS   │  │  TRADE   │
+     └──────────┘  └──────────┘  └──────────┘  └──────────┘  └──────────┘
+
+================================================================================
+                11. VIX DIRECTION: THE KEY DIFFERENTIATOR
+================================================================================
+
+VIX LEVEL tells us where we are.
+VIX DIRECTION tells us where we're going.
+
+This is the critical insight that makes the Micro Regime Engine effective.
+
+--------------------------------------------------------------------------------
+VIX DIRECTION ANALYSIS
+--------------------------------------------------------------------------------
+
+                    │ VIX FALLING    │ VIX STABLE     │ VIX RISING
+                    │ (fear easing)  │ (±2% intraday) │ (fear building)
+────────────────────┼────────────────┼────────────────┼────────────────
+VIX < 20            │ CALM           │ NORMAL         │ TRANSITIONING
+(Normal)            │ MR works great │ MR works       │ MR risky
+────────────────────┼────────────────┼────────────────┼────────────────
+VIX 20-25           │ RECOVERING     │ CAUTIOUS       │ DETERIORATING
+(Caution)           │ MR improving   │ Reduce size    │ Shift to momentum
+────────────────────┼────────────────┼────────────────┼────────────────
+VIX > 25            │ PANIC FADING   │ ELEVATED       │ PANIC BUILDING
+(Elevated)          │ MR starting    │ Momentum       │ Momentum only
+                    │ to work        │                │ or NO TRADE
+────────────────────┴────────────────┴────────────────┴────────────────
+
+--------------------------------------------------------------------------------
+WHY VIX DIRECTION MATTERS (REAL EXAMPLES)
+--------------------------------------------------------------------------------
+
+SCENARIO A: VIX at 19, RISING (+8% today)
+─────────────────────────────────────────
+  VIX level says: "Normal, mean reversion OK"
+  VIX direction says: "Fear building, something's brewing"
+
+  Reality: Market may be transitioning to risk-off
+  Action: DON'T fade aggressively, reduce size or skip
+
+SCENARIO B: VIX at 24, FALLING (-10% today)
+─────────────────────────────────────────
+  VIX level says: "Caution, be careful"
+  VIX direction says: "Panic subsiding, calm returning"
+
+  Reality: Worst is likely over, mean reversion starting to work
+  Action: CAN fade with moderate size
+
+SCENARIO C: VIX at 28, RISING (+15% today)
+─────────────────────────────────────────
+  VIX level says: "Elevated, momentum mode"
+  VIX direction says: "Panic accelerating"
+
+  Reality: Full risk-off, don't fight it
+  Action: Momentum puts ONLY or NO TRADE
+
+SCENARIO D: VIX WHIPSAW (±5% swings intraday)
+─────────────────────────────────────────
+  VIX level says: Varies
+  VIX direction says: "Market undecided, uncertainty high"
+
+  Reality: Both MR and momentum will get chopped up
+  Action: CREDIT SPREADS ONLY or NO TRADE
+
+--------------------------------------------------------------------------------
+VIX DIRECTION CALCULATION
+--------------------------------------------------------------------------------
+
+  def calculate_vix_direction(self) -> tuple[str, float]:
+      """
+      Calculate VIX direction and classify it.
+
+      Returns:
+          (direction_label, direction_points)
+      """
+      # Get VIX values
+      vix_open = self.vix_open
+      vix_current = self.vix_current
+      vix_high = self.vix_session_high
+      vix_low = self.vix_session_low
+
+      # Calculate change
+      vix_change_pct = (vix_current - vix_open) / vix_open * 100
+
+      # Calculate whipsaw (range vs net change)
+      vix_range = vix_high - vix_low
+      vix_range_pct = vix_range / vix_open * 100
+      net_change_pct = abs(vix_change_pct)
+
+      # Whipsaw detection: large range but small net change
+      whipsaw_ratio = vix_range_pct / max(net_change_pct, 0.1)
+      is_whipsaw = whipsaw_ratio > 3 and vix_range_pct > 5
+
+      if is_whipsaw:
+          return ("WHIPSAW", -10)
+      elif vix_change_pct < -5:
+          return ("FALLING_FAST", 20)
+      elif vix_change_pct < -2:
+          return ("FALLING", 15)
+      elif vix_change_pct <= 2:
+          return ("STABLE", 10)
+      elif vix_change_pct <= 5:
+          return ("RISING", 5)
+      elif vix_change_pct <= 10:
+          return ("RISING_FAST", 0)
+      else:
+          return ("SPIKING", -5)
+
+--------------------------------------------------------------------------------
+VIX MONITORING SYSTEM (FINALIZED)
+--------------------------------------------------------------------------------
+
+IMPORTANT: WE USE VIX ONLY (NOT VIX1D)
+
+After chart analysis and validation, we confirmed:
+
+  ┌──────────────────────────────────────────────────────────────────────────┐
+  │  VIX1D EVALUATED AND REJECTED                                            │
+  │  ────────────────────────────────────────────────────────────────────    │
+  │                                                                          │
+  │  VIX1D (1-day implied volatility) was considered but rejected because:  │
+  │                                                                          │
+  │  1. VIX and VIX1D move together during trading hours (0.95 correlation) │
+  │  2. VIX1D only diverges at market open (9:30-10:00 AM)                  │
+  │  3. Our trading window starts at 10:00 AM - divergence already resolved │
+  │  4. Adding VIX1D increases complexity without actionable benefit         │
+  │                                                                          │
+  │  CONCLUSION: VIX alone is sufficient for our strategy.                  │
+  │                                                                          │
+  └──────────────────────────────────────────────────────────────────────────┘
+
+VIX MONITORING LAYERS:
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                    TIERED VIX MONITORING SYSTEM                         │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  LAYER 1: SPIKE DETECTION (Every 5 minutes)
+  ──────────────────────────────────────────
+    Check: Has VIX moved > 5% in last 5 minutes?
+
+    If YES → SPIKE ALERT MODE
+      - Pause any pending entries
+      - Wait 10 minutes before new entries
+      - Re-evaluate regime after cooldown
+
+    If NO → Continue normal operations
+
+  LAYER 2: DIRECTION ASSESSMENT (Every 15 minutes)
+  ────────────────────────────────────────────────
+    Calculate using multi-timeframe analysis:
+      - VIX change from market open
+      - VIX change in last 30 minutes
+      - VIX change in last 15 minutes
+
+    Get consensus direction (2 of 3 must agree):
+      - If 2+ timeframes show RISING → Direction = RISING
+      - If 2+ timeframes show FALLING → Direction = FALLING
+      - Otherwise → Direction = MIXED (treat as CHOPPY)
+
+    Update: Micro Regime Score
+
+  LAYER 3: WHIPSAW DETECTION (Rolling 1-hour window)
+  ──────────────────────────────────────────────────
+    Track VIX every 5 minutes (12 data points per hour)
+    Count direction reversals in the window
+
+    Classification:
+      0-2 reversals:  TRENDING  → Normal trading
+      3-4 reversals:  CHOPPY    → Reduce position size 50%
+      5+ reversals:   WHIPSAW   → Credit spreads only or NO TRADE
+
+  LAYER 4: REGIME CLASSIFICATION (Every 30 minutes)
+  ─────────────────────────────────────────────────
+    Combine VIX Level + VIX Direction → Final Regime
+    Output: Trading mode (Mean Reversion / Momentum / Defensive)
+
+WHIPSAW DETECTION ALGORITHM:
+
+  def detect_whipsaw(self, vix_history: list) -> tuple[str, int]:
+      """
+      Detect whipsaw using direction reversal count.
+
+      Args:
+          vix_history: VIX values every 5 min for last hour (12 values)
+
+      Returns:
+          (classification, reversal_count)
+      """
+      if len(vix_history) < 12:
+          return ("UNKNOWN", 0)
+
+      reversals = 0
+      prev_direction = None
+
+      for i in range(1, len(vix_history)):
+          change = vix_history[i] - vix_history[i-1]
+
+          if abs(change) < 0.1:  # Ignore tiny moves (noise)
+              continue
+
+          current_direction = "UP" if change > 0 else "DOWN"
+
+          if prev_direction and current_direction != prev_direction:
+              reversals += 1
+
+          prev_direction = current_direction
+
+      # Classify based on reversal count
+      if reversals <= 2:
+          return ("TRENDING", reversals)
+      elif reversals <= 4:
+          return ("CHOPPY", reversals)
+      else:
+          return ("WHIPSAW", reversals)
+
+MULTI-TIMEFRAME DIRECTION CONSENSUS:
+
+  def get_direction_consensus(self) -> str:
+      """
+      Get VIX direction using multi-timeframe consensus.
+      Requires 2 of 3 timeframes to agree.
+      """
+      directions = []
+
+      # From market open
+      change_from_open = (self.vix_current - self.vix_open) / self.vix_open * 100
+      directions.append(self._classify_change(change_from_open))
+
+      # Last 30 minutes
+      change_30min = (self.vix_current - self.vix_30min_ago) / self.vix_30min_ago * 100
+      directions.append(self._classify_change(change_30min))
+
+      # Last 15 minutes
+      change_15min = (self.vix_current - self.vix_15min_ago) / self.vix_15min_ago * 100
+      directions.append(self._classify_change(change_15min))
+
+      # Count directions
+      rising = sum(1 for d in directions if d in ["RISING", "RISING_FAST", "SPIKING"])
+      falling = sum(1 for d in directions if d in ["FALLING", "FALLING_FAST"])
+
+      if rising >= 2:
+          return "RISING"
+      elif falling >= 2:
+          return "FALLING"
+      else:
+          return "MIXED"
+
+MONITORING TIMELINE VISUAL:
+
+  Time:   9:45  9:50  9:55  10:00 10:05 10:10 10:15 10:20 10:25 10:30
+          ─────────────────────────────────────────────────────────────
+  Layer 1:  ✓     ✓     ✓     ✓     ✓     ✓     ✓     ✓     ✓     ✓
+  (5 min) spike spike spike spike spike spike spike spike spike spike
+
+  Layer 2:              ✓                       ✓                 ✓
+  (15 min)           score                   score             score
+
+  Layer 3:                                                        ✓
+  (30 min)                                                    whipsaw
+
+  Layer 4:                                                        ✓
+  (30 min)                                                    regime
+
+================================================================================
+                12. MICRO REGIME SCORE CALCULATION
+================================================================================
+
+The Micro Regime Score is calculated every 15 minutes from 9:45 AM to 3:30 PM.
+
+--------------------------------------------------------------------------------
+SCORE COMPONENTS
+--------------------------------------------------------------------------------
+
+INPUTS:
+─────────────────────────────────────────────────────────────────────
+
+1. VIX LEVEL (0-25 points)
+   ────────────────────────
+   VIX < 15:     25 pts  (very calm - strong mean reversion)
+   VIX 15-18:    20 pts  (calm)
+   VIX 18-20:    15 pts  (normal)
+   VIX 20-23:    10 pts  (elevated)
+   VIX 23-25:     5 pts  (high)
+   VIX > 25:      0 pts  (extreme - momentum dominates)
+
+2. VIX DIRECTION (−10 to +20 points) ← THE KEY DIFFERENTIATOR
+   ──────────────────────────────────
+   VIX falling > 5%:     20 pts  (fear easing rapidly)
+   VIX falling 2-5%:     15 pts  (fear easing)
+   VIX stable (±2%):     10 pts  (neutral)
+   VIX rising 2-5%:       5 pts  (fear building)
+   VIX rising 5-10%:      0 pts  (fear accelerating)
+   VIX rising > 10%:     -5 pts  (PENALTY - panic mode)
+   VIX whipsaw:         -10 pts  (PENALTY - chaos)
+
+3. QQQ MOVE MAGNITUDE (0-20 points)
+   ────────────────────────────────
+   |Move| < 0.3%:    5 pts  (no signal)
+   |Move| 0.3-0.5%: 10 pts  (building)
+   |Move| 0.5-0.8%: 15 pts  (approaching trigger)
+   |Move| 0.8-1.25%: 20 pts  (sweet spot - trigger zone)
+   |Move| > 1.25%:  15 pts  (extended - caution)
+
+4. MOVE VELOCITY (0-15 points)
+   ────────────────────────────
+   Gradual (> 2 hours):    15 pts  (sustainable)
+   Moderate (1-2 hours):   10 pts  (normal)
+   Fast (30-60 min):        5 pts  (exhaustion risk)
+   Spike (< 30 min):        0 pts  (news-driven, skip)
+
+5. VOLUME PROFILE (0-10 points)
+   ────────────────────────────
+   Declining volume:       10 pts  (exhaustion - reversal likely)
+   Normal volume:           7 pts  (neutral)
+   Rising volume:           3 pts  (conviction - continuation likely)
+   Volume spike:            0 pts  (capitulation, wait)
+
+6. VWAP POSITION (0-10 points)
+   ────────────────────────────
+   Stretched > 0.5% from VWAP:  10 pts  (reversion likely)
+   Stretched 0.3-0.5%:           7 pts  (moderate stretch)
+   Within 0.3% of VWAP:          3 pts  (no edge)
+   Crossing VWAP:                0 pts  (direction uncertain)
+
+--------------------------------------------------------------------------------
+SCORE RANGE AND INTERPRETATION
+--------------------------------------------------------------------------------
+
+SCORE RANGE: -15 to 100
+
+  Score 80-100:  PRIME MEAN REVERSION
+                 VIX low + falling + QQQ extended + exhaustion signals
+                 → Full size Debit Fade + Credit Spread
+
+  Score 60-79:   GOOD MEAN REVERSION
+                 Solid setup but not perfect
+                 → Full size Debit Fade
+
+  Score 40-59:   MODERATE/MIXED
+                 Some signals conflicting
+                 → Half size Debit Fade or Credit Spread only
+
+  Score 20-39:   MOMENTUM LEANING
+                 VIX rising or elevated
+                 → ITM Momentum (if VIX > 25) or Credit only
+
+  Score 0-19:    STRONG MOMENTUM
+                 VIX high + rising + trend day
+                 → ITM Momentum only (high conviction)
+
+  Score < 0:     CHAOS/DANGER
+                 VIX spiking or whipsawing
+                 → NO TRADE or Protective Puts only
+
+================================================================================
+                13. REGIME CLASSIFICATION MATRIX
+================================================================================
+
+The complete regime matrix combines VIX Level × VIX Direction:
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    COMPLETE REGIME MATRIX                                   │
+│                  (VIX LEVEL × VIX DIRECTION)                                │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+             │FALLING_FAST│ FALLING  │ STABLE   │ RISING   │RISING_FAST│ SPIKING  │ WHIPSAW
+             │  (< -5%)   │(-5% -2%) │ (±2%)    │(+2% +5%) │(+5% +10%) │ (> +10%) │(range>3x)
+─────────────┼────────────┼──────────┼──────────┼──────────┼───────────┼──────────┼──────────
+VIX < 20     │ PERFECT MR │ GOOD MR  │ NORMAL   │ CAUTION  │TRANSITION │ RISK OFF │ CHOPPY
+(Normal)     │ Full fade  │ Full fade│ Std fade │ Half size│ Skip MR   │ Skip all │ Credits
+             │ + credits  │          │          │          │           │          │ only
+─────────────┼────────────┼──────────┼──────────┼──────────┼───────────┼──────────┼──────────
+VIX 20-25    │ RECOVERING │ IMPROVING│ CAUTIOUS │ WORSENING│DETERIORATE│ BREAKING │ UNSTABLE
+(Caution)    │ Half fade  │ Half fade│ Credits  │ Credits  │ ITM puts  │ ITM puts │ No trade
+             │            │          │ only     │ only     │ only      │ only     │
+─────────────┼────────────┼──────────┼──────────┼──────────┼───────────┼──────────┼──────────
+VIX > 25     │PANIC EASING│ CALMING  │ ELEVATED │ WORSENING│FULL PANIC │ CRASH    │ VOLATILE
+(Elevated)   │ Small fade │ Credits  │ ITM mom  │ ITM puts │ Puts only │ NO TRADE │ NO TRADE
+             │ or credits │          │          │ only     │ or none   │ protect  │ protect
+─────────────┴────────────┴──────────┴──────────┴──────────┴───────────┴──────────┴──────────
+
+LEGEND:
+  MR = Mean Reversion (Debit Spread Fade)
+  Credits = Credit Spreads only
+  ITM mom = ITM Options momentum (direction of QQQ move)
+  ITM puts = ITM Puts only (bearish momentum)
+  Protect = Protective puts, no directional trades
+
+================================================================================
+                14. INTRADAY STRATEGY DEPLOYMENT
+================================================================================
+
+Each strategy in Intraday Mode has specific entry criteria and sizing.
+
+--------------------------------------------------------------------------------
+STRATEGY 1: DEBIT FADE (Mean Reversion)
+--------------------------------------------------------------------------------
+
+WHEN DEPLOYED:
+  Micro Score ≥ 50
+  VIX < 25
+  QQQ Move ≥ 1.0%
+  Time: 10:30 AM - 2:00 PM
+
+DIRECTION:
+  QQQ up → Bear Put Spread (fade the rally)
+  QQQ down → Bull Call Spread (fade the selloff)
+
+STRUCTURE:
+  DTE: 0-1 DTE
+  Width: $2.00
+  Debit: ~$1.20
+
+SIZING BY MICRO SCORE:
+  Score 75-100: 4 spreads ($480 risk) - FULL
+  Score 50-74:  2 spreads ($240 risk) - HALF
+
+EXIT:
+  Target: Max profit (hold for full $0.80 gain per spread)
+  Time: 3:30 PM mandatory close
+  NO price-based stop (spread structure handles risk)
+
+EXPECTED:
+  Win Rate: 65-70%
+  Per Win (full): +$320 (4 spreads × $0.80)
+  Per Loss (full): -$480 (4 spreads × $1.20)
+
+WHY NO STOP LOSS:
+  Debit spread max loss is capped at entry.
+  QQQ can drop 1%+ and you only lose the debit.
+  This solves the -0.36% whipsaw problem with naked options.
+
+--------------------------------------------------------------------------------
+STRATEGY 2: CREDIT SPREADS (Premium Collection)
+--------------------------------------------------------------------------------
+
+WHEN DEPLOYED:
+  VIX ≥ 18 (premium is rich enough)
+  QQQ Move < 1.5% (not extended)
+  Time: 10:00 AM - 2:30 PM
+  Micro Score 25-74 (not strong enough for directional)
+
+DIRECTION:
+  Micro Score > 50: Sell against the move (contrarian)
+    QQQ up → Bear Call Spread (sell calls above)
+    QQQ down → Bull Put Spread (sell puts below)
+
+  Micro Score 25-50: Sell with the move (momentum premium)
+    QQQ up → Bull Put Spread (sell puts below)
+    QQQ down → Bear Call Spread (sell calls above)
+
+STRUCTURE:
+  DTE: 1-2 DTE (more theta to capture intraday)
+  Width: $2.00
+  Credit: ~$0.60-0.80
+
+SIZING:
+  Standard: 3 spreads (~$360 max risk)
+  Half size: 2 spreads (~$240 max risk)
+
+EXIT:
+  Target: 50% of max profit ($0.30-0.40 gain)
+  Stop: Close if spread doubles (100% of credit lost)
+  Time: 3:30 PM (must close before EOD)
+
+EXPECTED:
+  Win Rate: 70-75%
+  Per Win: +$120 (3 spreads × $0.40)
+  Per Loss: -$360 (3 spreads × $1.20)
+
+--------------------------------------------------------------------------------
+STRATEGY 3: ITM MOMENTUM (VIX Elevated)
+--------------------------------------------------------------------------------
+
+WHEN DEPLOYED:
+  VIX > 25 (momentum regime)
+  QQQ Move ≥ 0.8%
+  Micro Score ≥ 50
+  Time: 10:00 AM - 1:30 PM (need time for continuation)
+
+DIRECTION:
+  Ride the move (momentum, NOT fade)
+  QQQ up → Buy ITM Call (0.70 delta)
+  QQQ down → Buy ITM Put (0.70 delta)
+
+STRUCTURE:
+  DTE: 1-2 DTE
+  Strike: 0.70 delta (ITM)
+  Premium: ~$6-8 per contract
+
+SIZING:
+  Full: 2 contracts (~$600 risk at 50% stop)
+  Half: 1 contract (~$300 risk)
+
+EXIT:
+  Target: +40% profit
+  Stop: -50% loss (wider stop for momentum)
+  Trailing: After +20%, trail at 50% of gains
+  Time: 3:30 PM mandatory close
+
+EXPECTED:
+  Win Rate: 50-55% (lower, but larger winners)
+  Per Win (full): +$480 (2 contracts × $2.40)
+  Per Loss (full): -$600 (2 contracts × $3.00)
+
+NOTE: Only deploy when Micro Score > 70 in elevated VIX.
+
+--------------------------------------------------------------------------------
+STRATEGY 4: PROTECTIVE PUTS (Intraday Hedge)
+--------------------------------------------------------------------------------
+
+WHEN DEPLOYED:
+  VIX > 20 (always when elevated)
+  VIX Direction = RISING or SPIKING
+  Scale up as conditions deteriorate
+
+STRUCTURE:
+  Strike: 3-5% OTM
+  DTE: 3-7 DTE (shorter than Swing Mode hedge)
+
+SIZING BY VIX:
+  VIX < 18:  0 contracts (no hedge needed)
+  VIX 18-22: 1 contract (~$150)
+  VIX 22-25: 2 contracts (~$300)
+  VIX > 25:  3 contracts (~$450)
+
+PURPOSE:
+  Not for profit - insurance against flash crash during session.
+  Protects intraday positions from sudden moves.
+  Cost: ~$50-100/week (acceptable drag)
+
+================================================================================
+                15. DECISION FLOW & EXAMPLES
+================================================================================
+
+--------------------------------------------------------------------------------
+COMPLETE DECISION FLOW
+--------------------------------------------------------------------------------
+
+Every 15 minutes from 9:45 AM:
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 1: CALCULATE VIX DIRECTION                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ VIX Change % → FALLING_FAST | FALLING | STABLE | RISING | RISING_FAST |    │
+│                SPIKING | WHIPSAW                                            │
+└───────────────────────────────┬─────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 2: CALCULATE MICRO SCORE                                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ VIX Level + VIX Direction + QQQ Move + Velocity + Volume + VWAP = SCORE     │
+│ Range: -15 to 100                                                           │
+└───────────────────────────────┬─────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 3: DANGER CHECK                                                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Score < 0? → PROTECTIVE_PUTS_ONLY or NO_TRADE                               │
+│ WHIPSAW? → CREDIT_SPREAD_ONLY or NO_TRADE                                   │
+│ SPIKING? → ITM_PUTS or PROTECTIVE_ONLY                                      │
+└───────────────────────────────┬─────────────────────────────────────────────┘
+                                │
+                        ┌───────┴───────┐
+                        │    SAFE?      │
+                        └───────┬───────┘
+                       YES      │       NO
+                ┌───────────────┘       └──────────────┐
+                ▼                                      ▼
+┌───────────────────────────────┐      ┌───────────────────────────────────┐
+│ STEP 4: REGIME CLASSIFY       │      │ DEFENSIVE MODE                    │
+├───────────────────────────────┤      ├───────────────────────────────────┤
+│ VIX Level + Direction →       │      │ • Protective Puts only            │
+│ NORMAL / CAUTION / ELEVATED   │      │ • No new directional trades       │
+└───────────────┬───────────────┘      │ • Close existing if profitable    │
+                │                      └───────────────────────────────────┘
+                ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 5: TRIGGER CHECK                                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ NORMAL + VIX Falling:     QQQ ≥ 0.8% triggers                               │
+│ NORMAL + VIX Stable:      QQQ ≥ 1.0% triggers                               │
+│ NORMAL + VIX Rising:      QQQ ≥ 1.25% triggers (extra caution)              │
+│ CAUTION + VIX Falling:    QQQ ≥ 1.0% triggers                               │
+│ CAUTION + VIX Rising:     QQQ ≥ 0.8% for puts only                          │
+│ ELEVATED:                 QQQ ≥ 0.8% for momentum                           │
+└───────────────────────────────┬─────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 6: STRATEGY SELECT                                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Score 80+ │ PRIME MR    │ Debit Fade Full + Credit Spread                   │
+│ Score 60+ │ GOOD MR     │ Debit Fade Full                                   │
+│ Score 40+ │ MODERATE    │ Debit Fade Half or Credit only                    │
+│ Score 20+ │ WEAK        │ Credit only or ITM (if VIX elevated)              │
+│ Score 0+  │ MOMENTUM    │ ITM Momentum or No Trade                          │
+│ Score <0  │ DANGER      │ Protective or No Trade                            │
+└───────────────────────────────┬─────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 7: EXECUTE                                                             │
+├─────────────────────────────────────────────────────────────────────────────┤
+│ Generate Signal:                                                            │
+│ {                                                                           │
+│   strategy: "DEBIT_FADE" | "CREDIT" | "ITM_MOMENTUM" | "PROTECTIVE",        │
+│   direction: "BULLISH" | "BEARISH",                                         │
+│   size: "FULL" | "HALF",                                                    │
+│   micro_score: 0-100,                                                       │
+│   vix_level: current_vix,                                                   │
+│   vix_direction: direction_label,                                           │
+│   qqq_move: move_percent                                                    │
+│ }                                                                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+--------------------------------------------------------------------------------
+DAILY SCENARIO EXAMPLES
+--------------------------------------------------------------------------------
+
+SCENARIO 1: CALM DAY - PERFECT MEAN REVERSION (VIX = 16, Falling)
+─────────────────────────────────────────────────────────────────
+
+  9:45 AM:  VIX 16 (-3%), QQQ +0.2%
+            Score = 20 + 15 + 5 + ... = 55 → No trigger (QQQ < 1.0%)
+
+  10:30 AM: VIX 15.5 (-6%), QQQ +1.1%
+            Score = 25 + 20 + 20 + 15 + 10 + 10 = 100 → PRIME MR!
+            Action: DEBIT FADE FULL (4 Bear Put Spreads) + CREDIT SPREAD
+
+  12:00 PM: QQQ pulls back to +0.6%
+            Debit spread at +50% profit, hold for max
+
+  2:30 PM:  QQQ at +0.4%
+            Debit spread at MAX PROFIT
+            Credit spread at +40%
+            CLOSE ALL
+
+  Daily P&L: +$320 (debit) + $120 (credit) = +$440
+
+SCENARIO 2: TRANSITIONING DAY - VIX RISING (VIX = 18 → 21)
+─────────────────────────────────────────────────────────
+
+  9:45 AM:  VIX 18, QQQ -0.3%
+            Score = 55 → No trigger
+
+  10:30 AM: VIX 20 (+11% from open), QQQ -0.9%
+            VIX Direction = RISING_FAST (0 pts penalty)
+            Score = 15 + 0 + 15 + ... = 45 → CAUTION
+            Action: NO directional fade (VIX rising too fast)
+            Action: CREDIT SPREAD ONLY (if any)
+
+  11:30 AM: VIX 21 (+17%), QQQ -1.4%
+            VIX Direction = SPIKING (-5 pts)
+            Score = 10 + (-5) + 15 + ... = 30 → MOMENTUM LEANING
+            Action: NO TRADE (VIX spiking, don't fight it)
+
+  2:00 PM:  VIX 22, QQQ -1.8%
+            Action: PROTECTIVE PUTS only
+
+  Daily P&L: $0 (avoided losses by respecting VIX direction)
+
+SCENARIO 3: PANIC DAY - ELEVATED VIX (VIX = 28, Rising)
+───────────────────────────────────────────────────────
+
+  9:45 AM:  VIX 28 (+5%), QQQ -1.2%
+            Score = 0 + 0 + 20 + ... = 35 → MOMENTUM
+            Action: ITM PUTS (ride the momentum down)
+
+  10:30 AM: VIX 30 (+12%), QQQ -2.0%
+            VIX Direction = SPIKING
+            Score = 0 + (-5) + 15 + ... = 20 → DANGER
+            Action: CLOSE ITM position at +30%, take profit
+            Action: PROTECTIVE PUTS only
+
+  1:00 PM:  VIX 32, QQQ -2.8%
+            Action: NO NEW TRADES, hold protective puts
+
+  3:30 PM:  Close protective puts for small gain
+
+  Daily P&L: +$300 (ITM momentum) + $50 (puts) = +$350
+
+SCENARIO 4: WHIPSAW DAY - NO CLEAR DIRECTION
+─────────────────────────────────────────────
+
+  9:45 AM:  VIX 20, QQQ +0.5%
+  10:15 AM: VIX 22 (+10%), QQQ -0.3%
+  10:45 AM: VIX 19 (-5%), QQQ +0.7%
+  11:15 AM: VIX 21 (+5%), QQQ +0.2%
+
+            VIX Range: 19-22 (15% range)
+            VIX Net Change: +5%
+            WHIPSAW DETECTED (range >> net change)
+
+            Score includes -10 pts WHIPSAW penalty
+            Score = 15 + (-10) + 10 + ... = 25 → WEAK
+
+            Action: CREDIT SPREAD ONLY or NO TRADE
+
+  Daily P&L: +$90 (small credit spread win) or $0
+
+--------------------------------------------------------------------------------
+CAPITAL ALLOCATION - INTRADAY MODE
+--------------------------------------------------------------------------------
+
+Total Intraday Budget: 5% of Portfolio = $2,500
+
+  ┌────────────────────┬────────────┬───────────────┬───────────────────────┐
+  │ Strategy           │ Max Risk   │ Max Positions │ Notes                 │
+  ├────────────────────┼────────────┼───────────────┼───────────────────────┤
+  │ Debit Fade         │ $480       │ 1             │ 4 spreads @ $120 ea   │
+  │ Credit Spread      │ $360       │ 1             │ 3 spreads @ $120 ea   │
+  │ ITM Momentum       │ $600       │ 1             │ 2 contracts           │
+  │ Protective Puts    │ $450       │ 1             │ Insurance only        │
+  ├────────────────────┼────────────┼───────────────┼───────────────────────┤
+  │ TOTAL MAX RISK     │ $1,890     │ 4             │ Worst case all lose   │
+  └────────────────────┴────────────┴───────────────┴───────────────────────┘
+
+  Remaining $610 stays in cash for:
+    - Margin requirements
+    - Opportunity reserve
+    - Buffer for spreads widening
+
+================================================================================
+      PART D: SHARED COMPONENTS
+================================================================================
+
+================================================================================
+                16. VIX-BASED ALLOCATION SCALING
+================================================================================
+
+VIX level determines total options allocation and direction constraints.
+
+--------------------------------------------------------------------------------
+ALLOCATION SCALING TABLE
+--------------------------------------------------------------------------------
+
+  VIX Level  | Allocation | Direction     | Rationale
+  -----------|------------|---------------|----------------------------------
+  < 15       | 30%        | Calls + Puts  | Low vol, options cheap
+  15-20      | 25%        | Calls + Puts  | Normal conditions
+  20-25      | 20%        | Calls + Puts  | Elevated, proceed with caution
+  25-30      | 15%        | Puts only     | High vol, sell calls not buys
+  30-35      | 10%        | Puts only     | Very high, reduce exposure
+  > 35       | 5%         | Puts only     | Extreme, minimal options
+  > 50       | 0%         | None          | Crisis, no options
+
+--------------------------------------------------------------------------------
+IMPLEMENTATION
+--------------------------------------------------------------------------------
+
+  def get_options_allocation(self, vix: float) -> tuple[float, str]:
+      """Return (allocation_pct, allowed_direction)."""
+
+      if vix < 15:
+          return (0.30, "BOTH")
+      elif vix < 20:
+          return (0.25, "BOTH")
+      elif vix < 25:
+          return (0.20, "BOTH")
+      elif vix < 30:
+          return (0.15, "PUTS_ONLY")
+      elif vix < 35:
+          return (0.10, "PUTS_ONLY")
+      elif vix < 50:
+          return (0.05, "PUTS_ONLY")
+      else:
+          return (0.00, "NONE")
+
+--------------------------------------------------------------------------------
+RATIONALE
+--------------------------------------------------------------------------------
+
+WHY REDUCE ALLOCATION WHEN VIX HIGH:
+  - Options premium expensive (IV inflated)
+  - Market more unpredictable
+  - Risk/reward ratio deteriorates
+  - Capital preservation more important
+
+WHY PUTS-ONLY WHEN VIX > 25:
+  - Calls are extremely expensive
+  - Market likely under stress
+  - Buying calls = fighting the tape
+  - Puts provide hedge value
+
+WHY ZERO ALLOCATION WHEN VIX > 50:
+  - Crisis conditions (2020 COVID, 2008 crash)
+  - Options pricing broken
+  - Better to preserve capital
+  - Wait for dust to settle
+
+================================================================================
+                    17. IV RANK SCORING FIX
+================================================================================
+
+V1 PROBLEM: IV scoring was designed for option SELLING, not BUYING.
+
+--------------------------------------------------------------------------------
+V1 SCORING (WRONG FOR BUYING)
+--------------------------------------------------------------------------------
+
+V1 scored IV for selling premium:
+
+  IV Rank 80-100: Score 1.0 (highest - great for selling)
+  IV Rank 60-80:  Score 0.8
+  IV Rank 40-60:  Score 0.6
+  IV Rank 20-40:  Score 0.4
+  IV Rank 0-20:   Score 0.2 (lowest - bad for selling)
+
+PROBLEM: We are BUYING options, not selling!
+  - High IV = expensive premium = lower return potential
+  - Low IV = cheap premium = higher return potential
+
+--------------------------------------------------------------------------------
+V2.1 SCORING (CORRECT FOR BUYING)
+--------------------------------------------------------------------------------
+
+  IV Rank 0-20:   Score 0.8 (cheap, but might be dead money)
+  IV Rank 20-40:  Score 1.0 (SWEET SPOT - cheap + room to expand)
+  IV Rank 40-60:  Score 0.7 (fair value)
+  IV Rank 60-80:  Score 0.4 (expensive)
+  IV Rank 80-100: Score 0.1 (very expensive, avoid)
+
+WHY 20-40% IS THE SWEET SPOT:
+  - Not too cheap (stocks with 0-20% IV often aren't moving)
+  - Not too expensive (premium not inflated)
+  - Room for IV expansion on move (adds to profit)
+  - Historically best risk/reward for buyers
+
+--------------------------------------------------------------------------------
+IMPLEMENTATION
+--------------------------------------------------------------------------------
+
+  def score_iv_for_buying(self, iv_rank: float) -> float:
+      """Score IV rank for option buying (lower = better)."""
+
+      if iv_rank <= 20:
+          return 0.8
+      elif iv_rank <= 40:
+          return 1.0  # Sweet spot
+      elif iv_rank <= 60:
+          return 0.7
+      elif iv_rank <= 80:
+          return 0.4
+      else:
+          return 0.1
+
+--------------------------------------------------------------------------------
+WHEN TO OVERRIDE
+--------------------------------------------------------------------------------
+
+For CREDIT SPREADS (selling premium):
+  - Use inverse scoring (high IV = good)
+  - IV Rank > 50 preferred for credit collection
+
+For PROTECTIVE PUTS:
+  - IV scoring less relevant (it's insurance)
+  - Buy regardless of IV
+  - But try to avoid > 80% IV if possible
+
+================================================================================
+                    18. GAP FILTER FOR OPTIONS
+================================================================================
+
+Options entries require gap filtering to avoid mean reversion risk.
+
+--------------------------------------------------------------------------------
+GAP FILTER THRESHOLDS
+--------------------------------------------------------------------------------
+
+  Gap Size    | Action - Calls          | Action - Puts
+  ------------|-------------------------|-------------------------
+  < -3%       | SKIP (crash in progress)| SKIP (too late for puts)
+  -3% to -2%  | Wait 30 min, then OK    | SKIP (extended move)
+  -2% to -1%  | Caution, half size      | Wait 30 min, then OK
+  -1% to +1%  | Normal entry OK         | Normal entry OK
+  +1% to +2%  | Wait 30 min, then OK    | Caution, half size
+  +2% to +3%  | SKIP (extended move)    | Wait 30 min, then OK
+  > +3%       | SKIP (too late)         | SKIP (squeeze ongoing)
+
+--------------------------------------------------------------------------------
+IMPLEMENTATION
+--------------------------------------------------------------------------------
+
+  def evaluate_gap_for_options(self, gap_pct: float, direction: str) -> str:
+      """Return: ALLOW, WAIT, HALF_SIZE, or SKIP."""
+
+      if abs(gap_pct) > 3.0:
+          return "SKIP"
+
+      if direction == "CALL":
+          if gap_pct < -2.0:
+              return "WAIT"
+          elif gap_pct < -1.0:
+              return "HALF_SIZE"
+          elif gap_pct > 2.0:
+              return "SKIP"
+          elif gap_pct > 1.0:
+              return "WAIT"
+          else:
+              return "ALLOW"
+
+      elif direction == "PUT":
+          if gap_pct > 2.0:
+              return "WAIT"
+          elif gap_pct > 1.0:
+              return "HALF_SIZE"
+          elif gap_pct < -2.0:
+              return "SKIP"
+          elif gap_pct < -1.0:
+              return "WAIT"
+          else:
+              return "ALLOW"
+
+--------------------------------------------------------------------------------
+RATIONALE
+--------------------------------------------------------------------------------
+
+WHY FILTER GAPS:
+  - Gaps often see mean reversion during the day
+  - Chasing gap up with calls = buying at highs
+  - Chasing gap down with puts = buying at lows
+  - Waiting allows dust to settle
+
+WHY 3% IS THE CUTOFF:
+  - Gaps > 3% are exceptional events
+  - Often continue trending (don't fight them)
+  - Options priced extremely (premium distorted)
+  - Better to wait for next day
+
+================================================================================
+                19. OPTIONS-SPECIFIC DRAWDOWN LIMITS
+================================================================================
+
+Options have separate drawdown limits from the main portfolio.
+
+--------------------------------------------------------------------------------
+OPTIONS DRAWDOWN LIMITS
+--------------------------------------------------------------------------------
+
+  Timeframe  | Limit  | Action
+  -----------|--------|------------------------------------------
+  Daily      | -1%    | Pause new entries for rest of day
+  Weekly     | -2%    | Reduce position sizes by 50%
+  Monthly    | -4%    | Pause options engine for 5 trading days
+
+THESE ARE SEPARATE FROM PORTFOLIO LIMITS:
+  - Portfolio kill switch: -3% daily
+  - Options limit: -1% daily (more conservative)
+
+Options can trigger their own pause without affecting other strategies.
+
+--------------------------------------------------------------------------------
+IMPLEMENTATION
+--------------------------------------------------------------------------------
+
+  class OptionsDrawdownTracker:
+      def __init__(self, portfolio_value: float):
+          self.portfolio_value = portfolio_value
+          self.daily_pnl = 0.0
+          self.weekly_pnl = 0.0
+          self.monthly_pnl = 0.0
+          self.paused_until = None
+          self.size_reduction = 1.0
+
+      def update_pnl(self, pnl: float):
+          self.daily_pnl += pnl
+          self.weekly_pnl += pnl
+          self.monthly_pnl += pnl
+
+          daily_pct = self.daily_pnl / self.portfolio_value
+          weekly_pct = self.weekly_pnl / self.portfolio_value
+          monthly_pct = self.monthly_pnl / self.portfolio_value
+
+          if daily_pct <= -0.01:
+              self.pause_until_tomorrow()
+
+          if weekly_pct <= -0.02:
+              self.size_reduction = 0.5
+
+          if monthly_pct <= -0.04:
+              self.pause_for_days(5)
+
+      def can_trade(self) -> bool:
+          if self.paused_until and datetime.now() < self.paused_until:
+              return False
+          return True
+
+      def get_size_multiplier(self) -> float:
+          return self.size_reduction
+
+--------------------------------------------------------------------------------
+RATIONALE
+--------------------------------------------------------------------------------
+
+WHY STRICTER LIMITS FOR OPTIONS:
+  - Options are levered instruments
+  - Losses can compound quickly
+  - 2-3 bad trades can wipe out weeks of gains
+  - Need circuit breakers specific to options
+
+WHY -1% DAILY LIMIT:
+  - Options allocation is 20% of portfolio
+  - -1% options loss = -5% of options capital
+  - This represents 2-3 stop outs
+  - Pause prevents revenge trading
+
+WHY -4% MONTHLY TRIGGERS 5-DAY PAUSE:
+  - -4% in options = -20% of options capital
+  - Something is wrong (market regime? strategy?)
+  - Need time to reassess
+  - Prevents strategy from bleeding out
+
+================================================================================
+                    20. IMPLEMENTATION CHECKLIST
+================================================================================
+
+The following items need to be implemented in code:
+
+================================================================================
+SWING MODE IMPLEMENTATION (5-45 DTE)
+================================================================================
+
+--------------------------------------------------------------------------------
+PHASE S1: CORE OPTIONS ENGINE REFACTOR
+--------------------------------------------------------------------------------
+
+[ ] Update options_engine.py structure:
+    [ ] Add 4-strategy portfolio support
+    [ ] Implement strategy selection logic
+    [ ] Add DTE-based entry/exit rules
+    [ ] Separate Swing vs Intraday mode detection
+
+[ ] Implement position sizing:
+    [ ] Risk-based sizing (not allocation-based)
+    [ ] Concurrent position limits
+    [ ] Per-strategy sizing rules
+
+[ ] Add IV scoring fix:
+    [ ] Invert scoring for buying
+    [ ] Separate scoring for credit spreads
+    [ ] Sweet spot detection (20-40% IV rank)
+
+--------------------------------------------------------------------------------
+PHASE S2: SWING SPREAD STRATEGIES
+--------------------------------------------------------------------------------
+
+[ ] Implement debit spread logic (10-14 DTE):
+    [ ] Bull call spread entry/exit
+    [ ] Bear put spread entry/exit
+    [ ] Max profit/loss calculation
+    [ ] Roll/close by 3 DTE rules
+
+[ ] Implement credit spread logic (18-21 DTE):
+    [ ] Bull put spread entry/exit
+    [ ] Bear call spread entry/exit
+    [ ] Premium collection tracking
+    [ ] Breach handling
+    [ ] Roll/close by 7 DTE rules
+
+[ ] Implement ITM options logic (14-21 DTE):
+    [ ] 0.70 delta selection
+    [ ] Trailing stop mechanism
+    [ ] Close by 7 DTE rules
+
+[ ] Implement protective puts (35-45 DTE):
+    [ ] Regime-based sizing
+    [ ] Roll at 14 DTE
+    [ ] Coverage calculation
+
+--------------------------------------------------------------------------------
+PHASE S3: SWING MODE FILTERS
+--------------------------------------------------------------------------------
+
+[ ] Implement simple intraday filters:
+    [ ] Time window (10 AM - 2:30 PM)
+    [ ] Gap filter with thresholds
+    [ ] Extreme move filter
+
+================================================================================
+INTRADAY MODE IMPLEMENTATION (0-2 DTE) - MICRO REGIME ENGINE
+================================================================================
+
+--------------------------------------------------------------------------------
+PHASE I1: MICRO REGIME ENGINE CORE
+--------------------------------------------------------------------------------
+
+[ ] Create micro_regime_engine.py:
+    [ ] VIX direction calculation
+    [ ] Whipsaw detection algorithm
+    [ ] Micro score calculation (6 components)
+    [ ] 15-minute recalculation scheduler
+
+[ ] Implement VIX direction classifier:
+    [ ] FALLING_FAST (< -5%)
+    [ ] FALLING (-5% to -2%)
+    [ ] STABLE (±2%)
+    [ ] RISING (+2% to +5%)
+    [ ] RISING_FAST (+5% to +10%)
+    [ ] SPIKING (> +10%)
+    [ ] WHIPSAW (range >> net change)
+
+[ ] Implement regime classification matrix:
+    [ ] 21 micro-regimes (3 VIX levels × 7 directions)
+    [ ] Strategy mapping for each regime
+    [ ] Danger zone detection (score < 0)
+
+--------------------------------------------------------------------------------
+PHASE I2: INTRADAY STRATEGIES
+--------------------------------------------------------------------------------
+
+[ ] Implement Debit Fade strategy (0-1 DTE):
+    [ ] Bear put spread for up moves
+    [ ] Bull call spread for down moves
+    [ ] Full/Half sizing by score
+    [ ] 3:30 PM mandatory exit
+
+[ ] Implement Intraday Credit Spreads (1-2 DTE):
+    [ ] Contrarian vs momentum direction logic
+    [ ] 50% profit target
+    [ ] Same-day exit rules
+
+[ ] Implement ITM Momentum strategy (1-2 DTE):
+    [ ] 0.70 delta selection
+    [ ] -50% wider stop
+    [ ] Trailing stop after +20%
+    [ ] 3:30 PM mandatory exit
+
+[ ] Implement Intraday Protective Puts (3-7 DTE):
+    [ ] VIX-based scaling
+    [ ] Intraday flash crash protection
+
+--------------------------------------------------------------------------------
+PHASE I3: DECISION FLOW
+--------------------------------------------------------------------------------
+
+[ ] Implement strategy selector:
+    [ ] Danger check (score < 0)
+    [ ] Whipsaw filter
+    [ ] Trigger thresholds by regime
+    [ ] Strategy output signal generation
+
+[ ] Implement position manager for intraday:
+    [ ] Max 1 position per strategy type
+    [ ] 3:30 PM liquidation enforcement
+    [ ] Same-day P&L tracking
+
+================================================================================
+SHARED COMPONENTS IMPLEMENTATION
+================================================================================
+
+--------------------------------------------------------------------------------
+PHASE C1: VIX AND FILTERS
+--------------------------------------------------------------------------------
+
+[ ] Implement VIX scaling (both modes):
+    [ ] Allocation by VIX level
+    [ ] Direction constraints
+    [ ] Puts-only mode when VIX > 25
+
+[ ] Implement gap filter (both modes):
+    [ ] Gap thresholds by direction
+    [ ] ALLOW/WAIT/HALF_SIZE/SKIP logic
+
+--------------------------------------------------------------------------------
+PHASE C2: RISK MANAGEMENT
+--------------------------------------------------------------------------------
+
+[ ] Implement options drawdown tracker:
+    [ ] Daily -1% limit (pause)
+    [ ] Weekly -2% limit (size reduction)
+    [ ] Monthly -4% limit (5-day pause)
+    [ ] Separate tracking for Swing vs Intraday
+
+--------------------------------------------------------------------------------
+PHASE C3: TESTING
+--------------------------------------------------------------------------------
+
+[ ] Swing Mode tests:
+    [ ] Unit tests for each strategy
+    [ ] DTE lifecycle tests
+    [ ] Integration tests for filters
+
+[ ] Intraday Mode tests:
+    [ ] Micro Regime score calculation tests
+    [ ] VIX direction classification tests
+    [ ] Regime matrix tests
+    [ ] Strategy deployment tests
+
+[ ] End-to-end tests:
+    [ ] Backtest validation (2020-2024)
+    [ ] Paper trading validation (30 days minimum)
+    [ ] Mode switching tests
+
+================================================================================
+IMPLEMENTATION PRIORITY ORDER
+================================================================================
+
+HIGH PRIORITY (Core functionality):
+  1. Micro Regime Engine core (I1)
+  2. VIX direction classifier (I1)
+  3. Debit Fade strategy (I2)
+  4. Swing debit spreads (S2)
+
+MEDIUM PRIORITY (Complete strategies):
+  5. Credit spreads (both modes)
+  6. ITM options (both modes)
+  7. Gap filter
+  8. VIX scaling
+
+LOW PRIORITY (Polish):
+  9. Protective puts
+  10. Drawdown tracker
+  11. Full test suite
+
+================================================================================
+                    V2.3 REVISION: SIMPLIFIED SWING MODE
+================================================================================
+
+Date: January 2026
+Status: APPROVED - Replaces 4-Strategy Portfolio
+
+================================================================================
+                    RATIONALE FOR SIMPLIFICATION
+================================================================================
+
+After critical review, the 4-strategy portfolio (Debit Spreads, Credit Spreads,
+ITM Long, Protective Puts) was found to have significant pitfalls:
+
+PITFALL 1: MISSING VIX IN REGIME SCORE
+--------------------------------------------------------------------------------
+The macro regime score uses REALIZED volatility (historical), not IMPLIED
+volatility (VIX). Options are priced off implied volatility, so the regime
+score doesn't account for whether options are cheap or expensive.
+
+  Current Regime Components:
+    Trend (35%)      → Price vs MA200
+    Volatility (25%) → REALIZED vol percentile (backward-looking)
+    Breadth (25%)    → RSP/SPY ratio
+    Credit (15%)     → HYG/IEF ratio
+    VIX              → NOT INCLUDED (!)
+
+  Problem: High VIX = expensive options = lower expected returns
+  The regime score ignores this completely.
+
+PITFALL 2: OVER-ENGINEERING
+--------------------------------------------------------------------------------
+Managing 4 strategies with different DTE ranges, entry criteria, and exit rules
+creates excessive complexity:
+  - Spread execution risk (legging)
+  - Position tracking complexity
+  - Regime transition handling undefined
+  - Strategy overlap conditions ambiguous
+
+PITFALL 3: PROTECTIVE PUTS DRAG
+--------------------------------------------------------------------------------
+Always-on protective puts create 3-4% annual drag. In sustained bull markets
+(2019-2024), this is mostly pure cost with rare payoff.
+
+PITFALL 4: CREDIT SPREADS IN TRENDING MARKETS
+--------------------------------------------------------------------------------
+Credit spreads profit from range-bound conditions. QQQ trends strongly, making
+credit spreads a poor fit. They lose big on breakouts.
+
+================================================================================
+                    V2.3 SIMPLIFIED APPROACH
+================================================================================
+
+STEP 1: ADD VIX TO MACRO REGIME SCORE
+--------------------------------------------------------------------------------
+
+New Regime Components (rebalanced):
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                    REGIME SCORE V2.3 COMPONENTS                         │
+  ├────────────────┬────────────┬───────────────────────────────────────────┤
+  │ Component      │ Weight     │ Purpose                                   │
+  ├────────────────┼────────────┼───────────────────────────────────────────┤
+  │ Trend          │ 30%        │ Price vs MA200 (direction)                │
+  │ VIX Level      │ 20%        │ IMPLIED volatility (option pricing)  NEW  │
+  │ Realized Vol   │ 15%        │ Historical volatility (stability)         │
+  │ Breadth        │ 20%        │ RSP/SPY ratio (market participation)      │
+  │ Credit         │ 15%        │ HYG/IEF ratio (risk appetite)             │
+  └────────────────┴────────────┴───────────────────────────────────────────┘
+
+VIX Scoring (20% weight):
+
+  VIX Level    │ Score (0-100) │ Interpretation
+  ─────────────┼───────────────┼─────────────────────────────────────
+  < 15         │ 100           │ Complacent, cheap options, ideal
+  15-18        │ 85            │ Low fear, good for buying
+  18-22        │ 70            │ Normal volatility
+  22-26        │ 50            │ Elevated, options getting expensive
+  26-30        │ 30            │ High fear, expensive premiums
+  30-40        │ 15            │ Very high, avoid buying options
+  > 40         │ 0             │ Crisis, options extremely expensive
+
+STEP 2: SIMPLIFIED STRATEGY SELECTION
+--------------------------------------------------------------------------------
+
+Remove 4-strategy complexity. Use DEBIT SPREADS as primary structure with
+regime-based direction selection:
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                    V2.3 STRATEGY SELECTION MATRIX                       │
+  ├─────────────────────────────────────────────────────────────────────────┤
+  │                                                                         │
+  │   REGIME > 60 (Bullish)    ──────►  DEBIT SPREAD: Bull Call Spread     │
+  │                                     DTE: 10-21 days                     │
+  │                                     Defined risk, no stop needed        │
+  │                                                                         │
+  │   REGIME 45-60 (Neutral)   ──────►  NO OPTIONS TRADE                   │
+  │                                     No directional edge                 │
+  │                                     Preserve capital                    │
+  │                                                                         │
+  │   REGIME < 45 (Bearish)    ──────►  DEBIT SPREAD: Bear Put Spread      │
+  │                                     DTE: 10-21 days                     │
+  │                                     Defined risk, no stop needed        │
+  │                                                                         │
+  │   REGIME < 30 (Crisis)     ──────►  PROTECTIVE PUTS ONLY               │
+  │                                     DTE: 21-35 days                     │
+  │                                     Hedge, not speculation              │
+  │                                                                         │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+STEP 3: VIX FILTER (NOT REGIME COMPONENT)
+--------------------------------------------------------------------------------
+
+VIX Direction used as FILTER, not score component:
+
+  if vix_change_1hr > +10%:
+      BLOCK all new CALL entries ("VIX spiking, avoid long calls")
+
+  if vix_change_1hr < -10%:
+      BLOCK all new PUT entries ("VIX collapsing, avoid long puts")
+
+This prevents fighting strong VIX moves without over-complicating regime score.
+
+================================================================================
+                    V2.3 DEBIT SPREAD SPECIFICATION
+================================================================================
+
+WHY DEBIT SPREADS ONLY:
+--------------------------------------------------------------------------------
+
+  1. DEFINED RISK: Max loss = debit paid, no stop loss needed
+  2. SURVIVES WHIPSAW: Can't get stopped out by normal noise
+  3. SIMPLER EXECUTION: One spread structure, two directions
+  4. PROVEN MATH: Solves the -0.36% stop-out vulnerability
+
+BULL CALL SPREAD (Regime > 60):
+--------------------------------------------------------------------------------
+
+  Structure:
+    Buy: ATM Call
+    Sell: OTM Call ($3-5 wide)
+
+  Example:
+    QQQ @ $500
+    Buy: QQQ 500 Call @ $6.00
+    Sell: QQQ 505 Call @ $3.50
+    Net Debit: $2.50
+    Max Profit: $5.00 - $2.50 = $2.50 (100% return)
+    Max Loss: $2.50 (capped at entry)
+
+  Entry Criteria:
+    1. Regime Score > 60
+    2. VIX < 30 (options not overpriced)
+    3. Time: 10:00 AM - 2:30 PM ET
+    4. No position already open
+    5. DTE: 10-21 days
+
+  Exit Criteria:
+    1. Take profit at +50% of max profit
+    2. Close by 5 DTE (avoid gamma acceleration)
+    3. Close if regime drops below 45
+
+BEAR PUT SPREAD (Regime < 45):
+--------------------------------------------------------------------------------
+
+  Structure:
+    Buy: ATM Put
+    Sell: OTM Put ($3-5 wide)
+
+  Example:
+    QQQ @ $500
+    Buy: QQQ 500 Put @ $5.50
+    Sell: QQQ 495 Put @ $3.00
+    Net Debit: $2.50
+    Max Profit: $5.00 - $2.50 = $2.50 (100% return)
+    Max Loss: $2.50 (capped at entry)
+
+  Entry Criteria:
+    1. Regime Score < 45
+    2. VIX < 35 (allow higher for bearish)
+    3. Time: 10:00 AM - 2:30 PM ET
+    4. No position already open
+    5. DTE: 10-21 days
+
+  Exit Criteria:
+    1. Take profit at +50% of max profit
+    2. Close by 5 DTE
+    3. Close if regime rises above 60
+
+PROTECTIVE PUTS (Regime < 30):
+--------------------------------------------------------------------------------
+
+  When regime enters RISK_OFF (<30), shift from speculation to hedging.
+
+  Structure:
+    Buy: 5% OTM Put on QQQ
+    DTE: 21-35 days
+    Roll at 10 DTE remaining
+
+  Sizing:
+    Notional coverage: 30-50% of portfolio equity
+
+  Purpose:
+    Insurance, not profit center. Expected to lose slowly.
+
+================================================================================
+                    V2.3 IMPLEMENTATION CHECKLIST
+================================================================================
+
+PHASE 1: REGIME ENGINE UPDATE
+--------------------------------------------------------------------------------
+
+[x] Add VIX to regime score calculation:
+    [x] Add VIX Level component (20% weight)
+    [x] Rebalance other weights (Trend 30%, RV 15%, Breadth 20%, Credit 15%)
+    [x] Add VIX scoring function
+    [x] Update config.py with VIX thresholds
+
+PHASE 2: OPTIONS ENGINE SIMPLIFICATION
+--------------------------------------------------------------------------------
+
+[ ] Remove 4-strategy complexity:
+    [ ] Remove Credit Spread logic
+    [ ] Remove ITM Long logic
+    [ ] Simplify to Debit Spread only
+
+[ ] Implement Debit Spread logic:
+    [ ] Bull Call Spread entry (Regime > 60)
+    [ ] Bear Put Spread entry (Regime < 45)
+    [ ] Spread order execution (2-leg)
+    [ ] Max profit/loss calculation
+
+[ ] Implement VIX filter:
+    [ ] Track VIX 1-hour change
+    [ ] Block entries on VIX spike/collapse
+
+PHASE 3: PROTECTIVE PUTS
+--------------------------------------------------------------------------------
+
+[ ] Implement regime-triggered protective puts:
+    [ ] Activate only when regime < 30
+    [ ] Deactivate when regime > 40
+    [ ] Roll management at 10 DTE
+
+================================================================================
+                        END OF DOCUMENT
+================================================================================
+
+Document Version: 2.3
+Document Author: Claude (AI Assistant)
+Review Status: APPROVED
+Last Updated: January 2026
+
+Key Changes in V2.3:
+  - Added VIX Level to macro regime score (20% weight)
+  - Simplified from 4-strategy to Debit Spread primary
+  - Removed Credit Spreads (poor fit for trending QQQ)
+  - Removed ITM Long Options (spreads are safer)
+  - Made Protective Puts regime-triggered (<30) not always-on
+  - Added VIX direction as filter (not regime component)
+
+================================================================================

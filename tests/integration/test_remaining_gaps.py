@@ -9,24 +9,25 @@ Addresses:
 - GAP #13: State Persistence Recovery E2E
 """
 
-import pytest
-from unittest.mock import MagicMock, patch, call
 from datetime import datetime, time, timedelta
-from typing import Dict, List, Any
+from typing import Any, Dict, List
+from unittest.mock import MagicMock, call, patch
 
-from execution.execution_engine import ExecutionEngine, OrderState, OrderType
-from execution.oco_manager import OCOManager, OCOState, OCOPair
-from portfolio.portfolio_router import PortfolioRouter, OrderSide
-from engines.satellite.options_engine import OptionsEngine
-from engines.core.capital_engine import CapitalEngine
-from models.target_weight import TargetWeight
-from models.enums import Urgency, Phase
+import pytest
+
 import config
-
+from engines.core.capital_engine import CapitalEngine
+from engines.satellite.options_engine import OptionsEngine
+from execution.execution_engine import ExecutionEngine, OrderState, OrderType
+from execution.oco_manager import OCOManager, OCOPair, OCOState
+from models.enums import Phase, Urgency
+from models.target_weight import TargetWeight
+from portfolio.portfolio_router import OrderSide, PortfolioRouter
 
 # =============================================================================
 # GAP #8: MOO Order Lifecycle Complete Sequence
 # =============================================================================
+
 
 class TestMOOOrderLifecycle:
     """
@@ -185,6 +186,7 @@ class TestMOOOrderLifecycle:
 # GAP #10: Partial Fills Integration
 # =============================================================================
 
+
 class TestPartialFillsIntegration:
     """
     Test partial fill handling integration:
@@ -313,6 +315,7 @@ class TestPartialFillsIntegration:
 # GAP #11: EOD SetHoldings Sell-Before-Buy
 # =============================================================================
 
+
 class TestEODSellBeforeBuy:
     """
     Test that EOD signals execute sells before buys for margin.
@@ -370,7 +373,6 @@ class TestEODSellBeforeBuy:
         )
 
         # Check order of execution - sells should come before buys
-        # The router's _add_shv_liquidation_if_needed ensures sells first
         sell_orders = [o for o in executed if o.side == OrderSide.SELL]
         buy_orders = [o for o in executed if o.side == OrderSide.BUY]
 
@@ -380,43 +382,11 @@ class TestEODSellBeforeBuy:
             first_buy_idx = executed.index(buy_orders[0])
             assert first_sell_idx < first_buy_idx, "Sells must execute before buys"
 
-    def test_shv_liquidation_for_buys(self, mock_algorithm):
-        """
-        SHV is liquidated to fund buy orders when cash insufficient.
-        """
-        router = PortfolioRouter(mock_algorithm)
-
-        # Need $35k for QLD, only $10k cash, have $30k in SHV
-        current_positions = {"SHV": 30000.0}
-        current_prices = {"SHV": 110.0, "QLD": 75.0}
-
-        buy_signal = TargetWeight(
-            symbol="QLD",
-            target_weight=0.35,
-            source="TREND",
-            urgency=Urgency.EOD,
-            reason="Enter QLD",
-        )
-
-        router.receive_signal(buy_signal)
-
-        # Calculate SHV liquidation
-        shv_signal = router.calculate_shv_liquidation(
-            cash_needed=35000.0,
-            current_shv_value=30000.0,
-            locked_amount=0.0,
-            tradeable_equity=100000.0,
-        )
-
-        # Should create SHV liquidation signal
-        assert shv_signal is not None
-        assert shv_signal.symbol == "SHV"
-        assert shv_signal.target_weight < 0.30  # Less than current 30%
-
 
 # =============================================================================
 # GAP #12: OCO Expiration State
 # =============================================================================
+
 
 class TestOCOExpirationState:
     """
@@ -440,7 +410,7 @@ class TestOCOExpirationState:
         """
         OCOState.EXPIRED is defined and usable.
         """
-        assert hasattr(OCOState, 'EXPIRED')
+        assert hasattr(OCOState, "EXPIRED")
         assert OCOState.EXPIRED.value == "EXPIRED"
 
     def test_oco_pair_can_be_marked_expired(self, oco_manager):
@@ -559,6 +529,7 @@ class TestOCOExpirationState:
 # =============================================================================
 # GAP #13: State Persistence Recovery E2E
 # =============================================================================
+
 
 class TestStatePersistenceRecoveryE2E:
     """
@@ -706,8 +677,8 @@ class TestStatePersistenceRecoveryE2E:
         3. Restart at 14:35
         4. Continue trading correctly
         """
-        from engines.core.trend_engine import TrendEngine
         from engines.core.risk_engine import RiskEngine
+        from engines.core.trend_engine import TrendEngine
 
         # === Before Crash ===
         trend1 = TrendEngine(mock_algorithm)

@@ -61,21 +61,106 @@ make branch name=feature/va/my-feature
 
 ---
 
+## QuantConnect Infrastructure
+
+> **Plan:** Trading Firm ($48/mo) + 2× B4-12 nodes ($48/mo) = **$96/mo**
+
+| Resource | Limit | Notes |
+|----------|------:|-------|
+| File Size | 256 KB | No minification needed |
+| Backtest Log | 5 MB | Use `trades_only=True` for essential logs |
+| Daily Log | 50 MB | Multiple debug runs allowed |
+| Plot Points | 32,000 | ~14K for 5-year backtest |
+| Backtest Nodes | 2× B4-12 | 4 cores, 12GB RAM - required for options data |
+
+### Logging Pattern (CRITICAL)
+
+```python
+# ALWAYS log (trades_only=True): fills, entries, exits, errors, kill switch
+self.log("FILL: BUY 100 QLD", trades_only=True)
+
+# LIVE ONLY (trades_only=False): signals, diagnostics, regime updates
+self.log("INTRADAY_SIGNAL: ...", trades_only=False)  # Silent in backtests
+```
+
+**Without this pattern:** 400+ logs/day kills backtests. See `docs/guides/backtest-workflow.md`.
+
+### QuantConnect Backtest Workflow
+
+> **Use the automated script!** Do NOT manually sync files.
+
+**Cloud Project:** `AlphaNextGen` (cloud-id: 27678023)
+**Lean Workspace:** `~/Documents/Trading Github/lean-workspace/AlphaNextGen`
+
+```bash
+# RECOMMENDED: Wait for completion and see results (use this!)
+./scripts/qc_backtest.sh "V2.11-MyFeature" --open
+
+# Fire-and-forget (async, just starts the backtest):
+./scripts/qc_backtest.sh "V2.4.4-MyFeature"
+
+# Auto-generated name from git branch:
+./scripts/qc_backtest.sh --open
+```
+
+**IMPORTANT FOR CLAUDE:** Always use `--open` flag to wait for backtest completion and access results directly. Without `--open`, the backtest runs async and you cannot see the results.
+
+**What the script does:**
+1. Syncs ALL project files (main.py, config.py, engines/, portfolio/, etc.) to lean-workspace
+2. Pushes to QuantConnect cloud via `lean cloud push`
+3. Starts the backtest with specified name
+4. With `--open`: Waits for completion and streams results to terminal
+5. Prints the backtest URL for viewing results
+
+**Example output:**
+```
+╔═══════════════════════════════════════════════════════════════╗
+║           QC BACKTEST - AlphaNextGen V2                       ║
+╚═══════════════════════════════════════════════════════════════╝
+
+Backtest Name: V2.4.4-P0-Fixes
+[1/3] Syncing files to lean workspace...
+   ✓ Synced 47 Python files
+[2/3] Pushing to QuantConnect cloud...
+   ✓ Push complete
+[3/3] Starting backtest...
+   ✓ Backtest started
+
+URL:  https://www.quantconnect.com/project/27678023/...
+```
+
+**Notes:**
+- lean CLI is already installed globally
+- Trading Firm plan allows 256KB files (no minification needed)
+- Use B4-12 nodes for options backtests (requires more memory)
+- Results viewable at: https://www.quantconnect.com/terminal
+
+---
+
 ## Project Overview
 
-**Alpha NextGen V2** is a multi-strategy algorithmic trading system built on QuantConnect (LEAN engine) for deployment on Interactive Brokers. The system implements a **Core-Satellite** architecture with three engines:
+**Alpha NextGen V2** is a multi-strategy algorithmic trading system built on QuantConnect (LEAN engine) for deployment on Interactive Brokers. The system implements a **Core-Satellite** architecture:
 
-- **Core (70%)**: Trend Engine - MA200 + ADX confirmation
-- **Satellite (0-10%)**: Mean Reversion Engine - RSI oversold bounce with VIX filter
-- **Satellite (20-30%)**: Options Engine - 4-factor entry scoring, Greeks monitoring
+- **Core (40%)**: Trend Engine - MA200 + ADX confirmation across diversified indices (V2.18: was 55%)
+  - QLD (15%) - 2× Nasdaq
+  - SSO (12%) - 2× S&P 500
+  - TNA (8%) - 3× Russell 2000 (small-cap diversification)
+  - FAS (5%) - 3× Financials (sector diversification)
+- **Satellite (10%)**: Mean Reversion Engine - RSI oversold bounce with VIX filter
+  - TQQQ (5%) - 3× Nasdaq
+  - SOXL (5%) - 3× Semiconductor
+- **Satellite (25%)**: Options Engine - VASS + Dual-Mode Architecture (V2.8/V2.24.2)
+  - **Swing Mode (18.75%)**: VASS debit/credit spreads (14-45 DTE, VASS routes by IV)
+  - **Intraday Mode (6.25%)**: Micro Regime Engine - VIX Level × VIX Direction (1-5 DTE)
 
-Forked from V1 v1.0.0 on 2026-01-26. See `docs/v2-specs/` for V2.1 specifications.
+Forked from V1 v1.0.0 on 2026-01-26. See `docs/specs/v2.1/` for V2.1 specifications (archived).
+See `docs/specs/v2.1/v2-1-options-engine-design.txt` for Options Engine V2.1.1 design reference.
 
 ## Repository Structure
 
 ```
 alpha-nextgen/
-├── main.py                     # QCAlgorithm entry point (V2.1 Complete)
+├── main.py                     # QCAlgorithm entry point (~3,800 lines - V2.24.2)
 ├── config.py                   # ALL tunable parameters
 ├── requirements.txt            # Python dependencies
 ├── requirements.lock           # Locked versions for reproducibility
@@ -103,23 +188,26 @@ alpha-nextgen/
 │
 ├── scripts/
 │   ├── validate_config.py      # Spec compliance checker
-│   └── check_spec_parity.py    # Code-to-spec update warning
+│   ├── check_spec_parity.py    # Code-to-spec update warning
+│   ├── qc_backtest.sh          # Automated sync → push → backtest pipeline
+│   └── minify_workspace.py     # Strip comments/docstrings for QC push size limit
 │
-├── archive/
-│   └── main_old.py.bak         # Archived original implementation
+├── historical/
+│   └── V2_IMPLEMENTATION_ROADMAP.md  # Historical roadmap (archived)
 │
 ├── engines/                    # V2 Core-Satellite architecture
 │   ├── core/                   # Foundational engines (always active)
 │   │   ├── regime_engine.py    # Market state detection
 │   │   ├── capital_engine.py   # Position sizing
 │   │   ├── risk_engine.py      # Circuit breakers
-│   │   ├── cold_start_engine.py # Startup handling
-│   │   └── trend_engine.py     # Primary alpha (70%)
+│   │   ├── cold_start_engine.py # Startup handling (resets on kill switch)
+│   │   ├── startup_gate.py     # V2.30: All-weather time-based arming (permanent)
+│   │   └── trend_engine.py     # MA200+ADX (40%)
 │   └── satellite/              # Conditional engines
 │       ├── mean_reversion_engine.py # Intraday bounce (0-10%)
 │       ├── hedge_engine.py     # TMF/PSQ overlay
 │       ├── yield_sleeve.py     # SHV cash management
-│       └── options_engine.py   # QQQ options (20-30%)
+│       └── options_engine.py   # QQQ options (25%) - VASS + Dual-Mode + Micro Regime
 ├── portfolio/                  # Router, exposure groups, positions
 ├── execution/                  # Order management
 ├── data/                       # Symbols, indicators, validation
@@ -128,8 +216,12 @@ alpha-nextgen/
 ├── scheduling/                 # Timed events
 ├── utils/                      # Helper functions
 ├── tests/                      # Unit and scenario tests
-└── docs/                       # Full specification (17 sections)
-    └── DOCUMENTATION-MAP.md    # Code-to-documentation mapping (for Claude)
+└── docs/
+    ├── system/                 # Core system docs (00-19)
+    ├── specs/v2.1/             # V2.1 design specs (archived)
+    ├── audits/                 # Backtest results, code audits
+    │   └── v2.1/               # V2.1 audits (archived)
+    └── internal/               # Documentation map
 ```
 
 See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with Mermaid diagrams.
@@ -148,7 +240,8 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 | **Capital Engine** | `engines/core/capital_engine.py` | `docs/05-capital-engine.md` | Phase management, lockbox, tradeable equity |
 | **Risk Engine** | `engines/core/risk_engine.py` | `docs/12-risk-engine.md` | All circuit breakers and safeguards |
 | **Cold Start Engine** | `engines/core/cold_start_engine.py` | `docs/06-cold-start-engine.md` | Days 1-5 warm entry logic |
-| **Trend Engine** | `engines/core/trend_engine.py` | `docs/07-trend-engine.md` | MA200 + ADX trend signals for QLD/SSO (70%) |
+| **Startup Gate** | `engines/core/startup_gate.py` | `docs/system/ENGINE_LOGIC_REFERENCE.md` | V2.30: All-weather time-based arming (INDICATOR_WARMUP → OBSERVATION → REDUCED → FULLY_ARMED). 15 days, no regime dependency. |
+| **Trend Engine** | `engines/core/trend_engine.py` | `docs/07-trend-engine.md` | MA200 + ADX trend signals for QLD/SSO/TNA/FAS (55%) |
 
 ### Satellite Engines (engines/satellite/)
 
@@ -157,7 +250,7 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 | **Mean Reversion Engine** | `engines/satellite/mean_reversion_engine.py` | `docs/08-mean-reversion-engine.md` | Intraday oversold bounce signals for TQQQ/SOXL (0-10%) |
 | **Hedge Engine** | `engines/satellite/hedge_engine.py` | `docs/09-hedge-engine.md` | Regime-based TMF/PSQ allocation signals |
 | **Yield Sleeve** | `engines/satellite/yield_sleeve.py` | `docs/10-yield-sleeve.md` | SHV cash management signals |
-| **Options Engine** | `engines/satellite/options_engine.py` | `docs/18-options-engine.md` | QQQ options with 4-factor scoring (20-30%) |
+| **Options Engine** | `engines/satellite/options_engine.py` | `docs/18-options-engine.md` | QQQ options Dual-Mode (20%): Swing 15% + Intraday 5% (Micro Regime) |
 
 ### Infrastructure
 
@@ -177,6 +270,7 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 | `docs/16-appendix-parameters.md` | All tunable parameters in one place |
 | `docs/17-appendix-glossary.md` | Terms, abbreviations, formulas |
 | `docs/v2-specs/` | V2.1 specifications and architecture guides |
+| `docs/v2-specs/V2_1_OPTIONS_ENGINE_DESIGN.txt` | Options Engine V2.1.1 (Dual-Mode + Micro Regime) |
 
 ---
 
@@ -253,16 +347,20 @@ def OnData(self, data):
 
 ### 3. Overnight Safety
 
-**MUST liquidate by 15:45 ET (Mean Reversion / High-Volatility 3×):**
+**MUST liquidate by 15:45 ET (Mean Reversion intraday only):**
 - `TQQQ` — 3× Nasdaq (Mean Reversion)
 - `SOXL` — 3× Semiconductor (Mean Reversion)
 
-**Allowed overnight holds:**
+**Allowed overnight holds (Trend Engine swing trades + Hedges):**
 - `QLD` — 2× Nasdaq (Trend/Swing)
 - `SSO` — 2× S&P 500 (Trend/Swing)
+- `TNA` — 3× Russell 2000 (Trend/Swing)*
+- `FAS` — 3× Financials (Trend/Swing)*
 - `TMF` — 3× Treasury (Strategic Hedge)
 - `PSQ` — 1× Inverse Nasdaq (Strategic Hedge)
 - `SHV` — Short Treasury (Yield)
+
+*TNA/FAS are 3× but allowed overnight for Trend Engine. The MA200+ADX strategy requires momentum confirmation (ADX ≥ 15), which historically offsets decay risk during sustained trends.
 
 ```python
 # In Mean Reversion Engine - enforced at 15:45
@@ -417,9 +515,9 @@ except Exception as e:
 │                       STRATEGY ENGINES                            │
 ├─────────────────┬─────────────────┬─────────────────┬─────────────┤
 │  Trend Engine   │ Options Engine  │    MR Engine    │Hedge/Yield  │
-│   (Core 70%)    │(Satellite 20-30%)│(Satellite 0-10%)│  (Overlay)  │
-│   QLD, SSO      │   QQQ Options   │  TQQQ, SOXL     │ TMF,PSQ,SHV │
-│  Urgency: EOD   │ Urgency: IMMED  │ Urgency: IMMED  │Urgency: EOD │
+│   (Core 55%)    │ (Satellite 25%) │ (Satellite 10%) │  (Overlay)  │
+│ QLD,SSO,TNA,FAS │ Dual-Mode V2.1.1│  TQQQ, SOXL     │ TMF,PSQ,SHV │
+│  Urgency: EOD   │ Swing + Intraday│ Urgency: IMMED  │Urgency: EOD │
 └────────┬────────┴────────┬────────┴────────┬────────┴──────┬──────┘
          │                 │                 │               │
          └─────────────────┴─────────────────┴───────────────┘
@@ -575,13 +673,22 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 
 | Threshold | Value | Triggers |
 |-----------|-------|----------|
-| Kill switch | 3% daily loss | Full liquidation |
+| Kill switch | 5% daily loss | Full liquidation (V2.3.17: raised from 3%) |
+| Preemptive KS | 4.5% daily loss | Warning threshold |
 | Panic mode | SPY -4% intraday | Liquidate longs only |
 | Weekly breaker | 5% WTD loss | 50% sizing reduction |
 | Gap filter | SPY -1.5% gap | Block MR entries |
 | Vol shock | 3× ATR bar | 15-min pause |
-| Trend entry (V2) | Price > MA200 + ADX >= 25 | Trend entry eligible |
+| Leverage cap | 90% margin | Block new entries (V2.18) |
+| Trend entry (V2) | Price > MA200 + ADX >= 15 | Trend entry eligible (V2.3.12: was 25) |
 | Oversold | RSI(5) < 25 | MR entry eligible |
+| VIX Low (V2.3) | VIX < 15 | Complacent market, cheap options |
+| VIX Normal (V2.3) | VIX 15-22 | Normal volatility |
+| VIX High (V2.3) | VIX 22-30 | Elevated fear |
+| VIX Extreme (V2.3) | VIX > 40 | Crisis mode |
+| VASS Low IV (V2.8) | VIX < 15 | Debit spreads, monthly DTE |
+| VASS Medium IV (V2.8) | VIX 15-25 | Debit spreads, weekly DTE |
+| VASS High IV (V2.8) | VIX > 25 | Credit spreads, weekly DTE |
 
 ### Overnight Holdings
 
@@ -589,6 +696,8 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 |--------|------|:----------:|
 | QLD | 2× Nasdaq (Trend) | ✅ Yes |
 | SSO | 2× S&P 500 (Trend) | ✅ Yes |
+| TNA | 3× Russell 2000 (Trend) | ✅ Yes |
+| FAS | 3× Financials (Trend) | ✅ Yes |
 | TMF | 3× Treasury (Hedge) | ✅ Yes |
 | PSQ | 1× Inverse Nasdaq (Hedge) | ✅ Yes |
 | SHV | Short Treasury (Yield) | ✅ Yes |
@@ -601,4 +710,6 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 |-------|:------------:|:---------:|
 | NASDAQ_BETA | 50% | 75% |
 | SPY_BETA | 40% | 40% |
-| RATES | 40% | 40% |
+| SMALL_CAP_BETA | 25% | 25% |
+| FINANCIALS_BETA | 15% | 15% |
+| RATES | 99% | 99% (V2.3.17: raised from 40% for SHV) |

@@ -428,6 +428,19 @@ class MeanReversionEngine:
 
         return position
 
+    def cancel_pending_entry(self) -> None:
+        """
+        V2.20: Reset pending entry state after broker rejection.
+
+        Clears stale VIX regime and stop percentage that were set
+        during signal generation. Without this, a rejected entry's
+        VIX data could corrupt the next entry's stop calculation.
+        Called by main._handle_order_rejection().
+        """
+        self._pending_vix_regime = "NORMAL"
+        self._pending_stop_pct = config.MR_STOP_PCT
+        self.log("MR_RECOVERY: Pending entry cancelled | State reset")
+
     def remove_position(self) -> Optional[MRPosition]:
         """
         Remove the current position after exit.

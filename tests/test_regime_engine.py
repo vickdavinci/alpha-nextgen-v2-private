@@ -79,6 +79,7 @@ class TestRegimeEngine:
             spy_sma20=current_price * 1.02,  # Price below SMA20
             spy_sma50=current_price * 1.05,  # Price below SMA50
             spy_sma200=current_price * 1.10,  # Price below SMA200
+            vix_level=32.0,  # V2.3: Elevated VIX during bearish conditions
         )
 
         # In bearish conditions, score should be depressed
@@ -329,9 +330,11 @@ class TestRegimeStateFlags:
             raw_score=35,
             state=RegimeLevel.DEFENSIVE,
             trend_score=50,
+            vix_score=50,  # V2.3
             volatility_score=50,
             breadth_score=50,
             credit_score=50,
+            vix_level=20.0,  # V2.3
             realized_vol=0.15,
             vol_percentile=0.5,
             breadth_spread_value=0.0,
@@ -350,9 +353,11 @@ class TestRegimeStateFlags:
             raw_score=25,
             state=RegimeLevel.RISK_OFF,
             trend_score=30,
+            vix_score=30,  # V2.3
             volatility_score=30,
             breadth_score=30,
             credit_score=30,
+            vix_level=25.0,  # V2.3
             realized_vol=0.25,
             vol_percentile=0.8,
             breadth_spread_value=-0.02,
@@ -371,9 +376,11 @@ class TestRegimeStateFlags:
             raw_score=55,
             state=RegimeLevel.NEUTRAL,
             trend_score=55,
+            vix_score=55,  # V2.3
             volatility_score=55,
             breadth_score=55,
             credit_score=55,
+            vix_level=18.0,  # V2.3
             realized_vol=0.15,
             vol_percentile=0.5,
             breadth_spread_value=0.005,
@@ -392,9 +399,11 @@ class TestRegimeStateFlags:
             raw_score=50,
             state=RegimeLevel.NEUTRAL,
             trend_score=50,
+            vix_score=50,  # V2.3
             volatility_score=50,
             breadth_score=50,
             credit_score=50,
+            vix_level=20.0,  # V2.3
             realized_vol=0.15,
             vol_percentile=0.5,
             breadth_spread_value=0.0,

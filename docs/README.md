@@ -1,271 +1,195 @@
-# Alpha NextGen - Project Documentation
+# Alpha NextGen V2.1.1 Documentation
 
-## Overview
-
-Alpha NextGen is a multi-strategy algorithmic trading system designed for the QuantConnect platform. It combines regime-based market state detection, multiple trading strategies, and comprehensive risk management to trade leveraged ETFs.
-
-**Target Platform:** QuantConnect (LEAN Engine)
-**Target Broker:** Interactive Brokers
-**Initial Capital:** $50,000 (SEED Phase)
-**Asset Class:** US Equity ETFs (Leveraged and Inverse)
+> **Navigation Hub** - Start here to find what you need.
 
 ---
 
-## Documentation Structure
+## Quick Navigation
 
-This documentation is organized into 17 sections, each self-contained with relevant diagrams embedded inline.
+| I want to... | Go to |
+|--------------|-------|
+| Understand the system architecture | [system/02-system-architecture.md](system/02-system-architecture.md) |
+| Learn how a specific engine works | [system/](#system-documentation) |
+| Find a configuration parameter | [system/16-appendix-parameters.md](system/16-appendix-parameters.md) |
+| Run a backtest | [guides/backtest-workflow.md](guides/backtest-workflow.md) |
+| Understand main.py implementation | [guides/main-py-implementation.md](guides/main-py-implementation.md) |
+| Check deployment readiness | [audits/v2-1-1-readiness-audit.md](audits/v2-1-1-readiness-audit.md) |
+| Read the V2.1.1 design spec | [specs/v2-1-options-engine-design.txt](specs/v2-1-options-engine-design.txt) |
+| Find what docs to update after code changes | [internal/documentation-map.md](internal/documentation-map.md) |
+
+---
+
+## Folder Structure
+
 ```
 docs/
-├── 00-table-of-contents.md      # Master index and navigation
-├── 01-executive-summary.md      # Goals, constraints, key decisions
-├── 02-system-architecture.md    # Overall design and component relationships
-├── 03-data-infrastructure.md    # Symbols, indicators, data quality rules
-├── 04-regime-engine.md          # Market state detection (0-100 score)
-├── 05-capital-engine.md         # Phase management and lockbox
-├── 06-cold-start-engine.md      # First 5 days deployment handling
-├── 07-trend-engine.md           # Swing breakout strategy (QLD, SSO)
-├── 08-mean-reversion-engine.md  # Intraday fade strategy (TQQQ, SOXL)
-├── 09-hedge-engine.md           # Tail risk protection (TMF, PSQ)
-├── 10-yield-sleeve.md           # Cash management (SHV)
-├── 11-portfolio-router.md       # Signal aggregation and coordination
-├── 12-risk-engine.md            # Circuit breakers and safeguards
-├── 13-execution-engine.md       # Order types and fill handling
-├── 14-daily-operations.md       # Timeline and scheduled events
-├── 15-state-persistence.md      # ObjectStore and survival across restarts
-├── 16-appendix-parameters.md    # All tunable parameters in one place
-├── 17-appendix-glossary.md      # Trading and system term definitions
-└── reference/
-    ├── QC_RULES.md              # QuantConnect coding patterns
-    └── ERRORS.md                # Common errors and fixes
+├── README.md                 # You are here - navigation hub
+│
+├── system/                   # Core system documentation (20 sections)
+│   ├── 00-table-of-contents.md
+│   ├── 01-executive-summary.md
+│   ├── 02-system-architecture.md
+│   ├── 03-data-infrastructure.md
+│   ├── 04-regime-engine.md        # Core: Market state detection
+│   ├── 05-capital-engine.md       # Core: Position sizing
+│   ├── 06-cold-start-engine.md    # Core: Days 1-5 handling
+│   ├── 07-trend-engine.md         # Strategy: MA200+ADX (Core 70%)
+│   ├── 08-mean-reversion-engine.md # Strategy: RSI oversold (Satellite 0-10%)
+│   ├── 09-hedge-engine.md         # Strategy: TMF/PSQ overlay
+│   ├── 10-yield-sleeve.md         # Strategy: SHV cash management
+│   ├── 11-portfolio-router.md     # Infra: Order coordination
+│   ├── 12-risk-engine.md          # Infra: Circuit breakers
+│   ├── 13-execution-engine.md     # Infra: Order submission
+│   ├── 14-daily-operations.md     # Ops: Timeline & schedule
+│   ├── 15-state-persistence.md    # Infra: ObjectStore
+│   ├── 16-appendix-parameters.md  # Reference: All config values
+│   ├── 17-appendix-glossary.md    # Reference: Term definitions
+│   ├── 18-options-engine.md       # Strategy: QQQ options (Satellite 20-30%)
+│   └── 19-oco-manager.md          # Infra: OCO order pairs
+│
+├── guides/                   # How-to guides
+│   ├── backtest-workflow.md       # Running backtests
+│   ├── main-py-implementation.md  # Understanding main.py
+│   └── github-branch-protection.md # Branch protection rules
+│
+├── audits/                   # Quality audits & test plans
+│   ├── v2-1-readiness-audit.md    # V2.1 audit (PASSED)
+│   ├── v2-1-1-readiness-audit.md  # V2.1.1 audit (NO-GO - blockers)
+│   └── v2-test-plan.md            # Test strategy
+│
+├── specs/                    # Design specifications
+│   ├── v2-1-complete-architecture.txt
+│   ├── v2-1-critical-modifications.txt
+│   ├── v2-1-options-engine-design.txt  # Full V2.1.1 spec
+│   ├── v2-1-critical-fixes-guide.md
+│   ├── v2-1-final-synthesis.md
+│   ├── v2-1-delivery-summary.txt
+│   ├── v2-1-quick-reference.txt
+│   └── v2-1-summary.txt
+│
+└── internal/                 # Internal reference (for Claude/devs)
+    └── documentation-map.md       # Code-to-doc mapping
 ```
 
 ---
 
-## Section Overview
+## System Documentation
 
-### Foundation
+### Reading Order (Recommended)
 
-| Section | Title | Description |
-|:-------:|-------|-------------|
-| [01](01-executive-summary.md) | **Executive Summary** | Project goals, design philosophy, key constraints, and critical decisions that shaped the system |
-| [02](02-system-architecture.md) | **System Architecture** | High-level component diagram, data flow, engine relationships, and authority hierarchy |
+**For New Readers:**
+1. [01-executive-summary.md](system/01-executive-summary.md) - Goals and philosophy
+2. [02-system-architecture.md](system/02-system-architecture.md) - Big picture
+3. [14-daily-operations.md](system/14-daily-operations.md) - Daily timeline
 
-### Data Layer
+**For Implementers:**
+1. [03-data-infrastructure.md](system/03-data-infrastructure.md) - Data requirements
+2. [04-regime-engine.md](system/04-regime-engine.md) → [12-risk-engine.md](system/12-risk-engine.md) - Core engines
+3. [07-trend-engine.md](system/07-trend-engine.md) → [18-options-engine.md](system/18-options-engine.md) - Strategies
 
-| Section | Title | Description |
-|:-------:|-------|-------------|
-| [03](03-data-infrastructure.md) | **Data Infrastructure** | Proxy vs traded symbols, resolution requirements, indicator definitions, exposure groups, and data quality rules |
+### By Category
 
-### Core Engines
+#### Core Engines (Always Active)
 
-| Section | Title | Description |
-|:-------:|-------|-------------|
-| [04](04-regime-engine.md) | **Regime Engine** | Four-factor market state scoring (trend, volatility, breadth, credit), smoothing, and state classification |
-| [05](05-capital-engine.md) | **Capital Engine** | SEED/GROWTH phase management, position limits, virtual lockbox profit protection |
-| [12](12-risk-engine.md) | **Risk Engine** | Kill switch (-3%), panic mode (-4% SPY), weekly breaker, gap filter, vol shock, time guard |
+| Doc | Engine | Purpose |
+|-----|--------|---------|
+| [04](system/04-regime-engine.md) | **Regime Engine** | 5-factor market state scoring (0-100) - V2.3 |
+| [05](system/05-capital-engine.md) | **Capital Engine** | Phase management, lockbox, tradeable equity |
+| [06](system/06-cold-start-engine.md) | **Cold Start Engine** | Days 1-5 warm entry logic |
+| [12](system/12-risk-engine.md) | **Risk Engine** | Circuit breakers and safeguards |
 
-### Strategy Engines
+#### Strategy Engines (Core-Satellite Architecture)
 
-| Section | Title | Description |
-|:-------:|-------|-------------|
-| [06](06-cold-start-engine.md) | **Cold Start Engine** | Days 1-5 handling, warm entry logic, reduced position sizing |
-| [07](07-trend-engine.md) | **Trend Engine** | Bollinger Band compression breakouts, Chandelier trailing stops, EOD signals |
-| [08](08-mean-reversion-engine.md) | **Mean Reversion Engine** | RSI oversold detection, intraday-only positions, +2%/-2% exits |
-| [09](09-hedge-engine.md) | **Hedge Engine** | Regime-based TMF/PSQ allocation, tail risk protection |
-| [10](10-yield-sleeve.md) | **Yield Sleeve** | SHV for idle cash, LIFO liquidation, lockbox investment |
+| Doc | Engine | Allocation | Instruments |
+|-----|--------|:----------:|-------------|
+| [07](system/07-trend-engine.md) | **Trend Engine** | 70% (Core) | QLD, SSO |
+| [18](system/18-options-engine.md) | **Options Engine** | 20-30% (Satellite) | QQQ Options |
+| [08](system/08-mean-reversion-engine.md) | **Mean Reversion** | 0-10% (Satellite) | TQQQ, SOXL |
+| [09](system/09-hedge-engine.md) | **Hedge Engine** | Overlay | TMF, PSQ |
+| [10](system/10-yield-sleeve.md) | **Yield Sleeve** | Overlay | SHV |
 
-### Execution Layer
+#### Infrastructure
 
-| Section | Title | Description |
-|:-------:|-------|-------------|
-| [11](11-portfolio-router.md) | **Portfolio Router** | TargetWeight aggregation, exposure limit validation, urgency-based routing |
-| [13](13-execution-engine.md) | **Execution Engine** | Market orders, MOO orders, fallback handling, fill processing |
+| Doc | Component | Purpose |
+|-----|-----------|---------|
+| [11](system/11-portfolio-router.md) | **Portfolio Router** | Central coordination, order authorization |
+| [13](system/13-execution-engine.md) | **Execution Engine** | Order submission to broker |
+| [19](system/19-oco-manager.md) | **OCO Manager** | One-Cancels-Other for options |
+| [15](system/15-state-persistence.md) | **State Persistence** | ObjectStore save/load |
 
-### Operations
+#### Reference
 
-| Section | Title | Description |
-|:-------:|-------|-------------|
-| [14](14-daily-operations.md) | **Daily Operations** | Complete timeline from 09:00 to 16:00, scheduled events, engine activation matrix |
-| [15](15-state-persistence.md) | **State Persistence** | What survives restarts, ObjectStore usage, save/load triggers |
-
-### Appendices
-
-| Section | Title | Description |
-|:-------:|-------|-------------|
-| [16](16-appendix-parameters.md) | **Parameters Reference** | All tunable values with defaults, ranges, and descriptions |
-| [17](17-appendix-glossary.md) | **Glossary** | Definitions for trading terms and system-specific concepts |
+| Doc | Content |
+|-----|---------|
+| [16](system/16-appendix-parameters.md) | All configuration parameters |
+| [17](system/17-appendix-glossary.md) | Term definitions |
+| [00](system/00-table-of-contents.md) | Full table of contents |
 
 ---
 
-## Traded Instruments
+## Current Status
 
-| Symbol | Type | Leverage | Strategy Use | Overnight Hold |
-|--------|------|:--------:|--------------|:--------------:|
-| **TQQQ** | Nasdaq 100 | 3x | Mean Reversion | ❌ Never |
-| **SOXL** | Semiconductor | 3x | Mean Reversion | ❌ Never |
-| **QLD** | Nasdaq 100 | 2x | Trend, Cold Start | ✅ Yes |
-| **SSO** | S&P 500 | 2x | Trend, Cold Start | ✅ Yes |
-| **TMF** | 20+ Year Treasury | 3x | Hedge | ✅ Yes |
-| **PSQ** | Nasdaq 100 Inverse | 1x | Hedge | ✅ Yes |
-| **SHV** | Short Treasury | 1x | Yield | ✅ Yes |
+| Component | Version | Status |
+|-----------|---------|--------|
+| **Swing Mode (Options)** | V2.1 | ✅ Ready |
+| **Intraday Mode (Options)** | V2.1.1 | ❌ Blockers (see audit) |
+| **Trend Engine** | V2 | ✅ Ready |
+| **Mean Reversion** | V2.1 | ✅ Ready |
 
-**Proxy Symbols (Regime Calculation Only):**
-- SPY - S&P 500 (trend, volatility)
-- RSP - Equal Weight S&P 500 (breadth)
-- HYG - High Yield Corporate Bond (credit)
-- IEF - 7-10 Year Treasury (credit)
+**Latest Audit**: [v2-1-1-readiness-audit.md](audits/v2-1-1-readiness-audit.md)
 
 ---
 
-## System States
+## Key References
 
-| Regime Score | State | New Longs | Hedges | Cold Start |
-|:------------:|-------|:---------:|:------:|:----------:|
-| 70-100 | **RISK_ON** | ✅ Full | ❌ None | ✅ Allowed |
-| 50-69 | **NEUTRAL** | ✅ Full | ❌ None | ✅ If >50 |
-| 40-49 | **CAUTIOUS** | ✅ Full | 10% TMF | ❌ Blocked |
-| 30-39 | **DEFENSIVE** | ⚠️ Reduced | 15% TMF, 5% PSQ | ❌ Blocked |
-| 0-29 | **RISK_OFF** | ❌ None | 20% TMF, 10% PSQ | ❌ Blocked |
+### Configuration
+- All parameters: [system/16-appendix-parameters.md](system/16-appendix-parameters.md)
+- Source of truth: `config.py` in repository root
 
----
-
-## Risk Controls Summary
+### Risk Controls
 
 | Control | Trigger | Action |
 |---------|---------|--------|
-| **Kill Switch** | -3% daily (from either baseline) | Liquidate ALL, disable trading, reset cold start |
-| **Panic Mode** | SPY -4% intraday | Liquidate leveraged longs, keep hedges |
-| **Weekly Breaker** | -5% week-to-date | Reduce all positions 50% |
-| **Gap Filter** | SPY gaps down ≥1.5% | Block intraday entries |
-| **Vol Shock** | SPY 1-min range > 3×ATR | Pause entries 15 minutes |
-| **Time Guard** | 13:55-14:10 daily | Block all entries |
-| **Split Guard** | Corporate action detected | Freeze affected symbol |
+| Kill Switch | -3% daily | Liquidate ALL |
+| Panic Mode | SPY -4% | Liquidate longs only |
+| Weekly Breaker | -5% WTD | Reduce sizing 50% |
+
+Full details: [system/12-risk-engine.md](system/12-risk-engine.md)
+
+### Traded Instruments
+
+| Symbol | Type | Strategy | Overnight? |
+|--------|------|----------|:----------:|
+| QLD | 2× Nasdaq | Trend | ✅ |
+| SSO | 2× S&P 500 | Trend | ✅ |
+| TQQQ | 3× Nasdaq | Mean Reversion | ❌ |
+| SOXL | 3× Semi | Mean Reversion | ❌ |
+| TMF | 3× Treasury | Hedge | ✅ |
+| PSQ | 1× Inverse | Hedge | ✅ |
+| SHV | Short Treasury | Yield | ✅ |
 
 ---
 
-## Reading Order
+## For Claude (AI Developer)
 
-**For New Readers:**
-1. Start with [Executive Summary](01-executive-summary.md)
-2. Review [System Architecture](02-system-architecture.md) for the big picture
-3. Read [Daily Operations](14-daily-operations.md) to understand the timeline
-4. Then dive into specific engines as needed
+When working on this codebase:
 
-**For Implementers:**
-1. [QC Rules](../QC_RULES.md) - Critical QuantConnect patterns
-2. [Data Infrastructure](03-data-infrastructure.md) - What data is needed
-3. Follow sections 04-15 in order for implementation sequence
-
-**For Reviewers:**
-1. [Executive Summary](01-executive-summary.md) - Goals and constraints
-2. [Risk Engine](12-risk-engine.md) - Safety mechanisms
-3. [Parameters Reference](16-appendix-parameters.md) - Tunable values
+1. **Before code changes**: Read the relevant spec in `specs/`
+2. **After code changes**: Check `internal/documentation-map.md` for docs to update
+3. **For architecture questions**: Start with `system/02-system-architecture.md`
+4. **For parameters**: Check `system/16-appendix-parameters.md` and `config.py`
 
 ---
 
-## Diagrams
+## Related Root-Level Files
 
-Each section contains embedded Mermaid diagrams. GitHub renders these automatically.
-
-**Key Diagrams by Section:**
-
-| Section | Diagrams Included |
-|---------|-------------------|
-| 02 - System Architecture | Master Architecture, Authority Hierarchy |
-| 03 - Data Infrastructure | Data Flow |
-| 04 - Regime Engine | Regime Calculation Detail |
-| 05 - Capital Engine | Phase Transitions, Lockbox Logic |
-| 06 - Cold Start Engine | Warm Entry Flow |
-| 07 - Trend Engine | Entry/Exit Logic, Chandelier Stops |
-| 08 - Mean Reversion Engine | Scan and Exit Flow |
-| 09 - Hedge Engine | Regime-Based Allocation |
-| 11 - Portfolio Router | Six-Step Workflow, Exposure Groups |
-| 12 - Risk Engine | All Safeguards |
-| 13 - Execution Engine | Order State Machine |
-| 14 - Daily Operations | Daily Timeline, System State Machine, Master Timeline Flow |
-| 15 - State Persistence | Persisted Variables |
+| File | Purpose |
+|------|---------|
+| `CLAUDE.md` | AI assistant instructions |
+| `CONTRIBUTING.md` | Git workflow and PR guidelines |
+| `config.py` | All tunable parameters |
+| `main.py` | QCAlgorithm entry point |
 
 ---
 
-## Quick Reference
-
-### Key Thresholds
-
-| Parameter | Value | Used By |
-|-----------|:-----:|---------|
-| Kill Switch Loss | 3% | Risk Engine |
-| Panic Mode (SPY Drop) | 4% | Risk Engine |
-| Weekly Breaker | 5% | Risk Engine |
-| Gap Filter | 1.5% | Risk Engine |
-| Vol Shock (ATR Multiple) | 3x | Risk Engine |
-| Cold Start Days | 5 | Cold Start Engine |
-| Regime Smoothing Alpha | 0.3 | Regime Engine |
-| BB Compression Threshold | 0.10 | Trend Engine |
-| RSI Oversold | 25 | Mean Reversion Engine |
-| MR Drop from Open | 2.5% | Mean Reversion Engine |
-| MR Target | +2% | Mean Reversion Engine |
-| MR Stop | -2% | Mean Reversion Engine |
-
-### Exposure Group Limits
-
-| Group | Symbols | Max Net | Max Gross |
-|-------|---------|:-------:|:---------:|
-| NASDAQ_BETA | TQQQ, QLD, SOXL, PSQ | 50% | 75% |
-| SPY_BETA | SSO | 40% | 40% |
-| RATES | TMF, SHV | 40% | 40% |
-
-### Position Limits by Phase
-
-| Phase | Equity Range | Max Single Position |
-|-------|:------------:|:-------------------:|
-| SEED | $50k - $100k | 50% |
-| GROWTH | $100k - $500k | 40% |
-
----
-
-## Version History
-
-| Version | Date | Changes |
-|---------|------|---------|
-| 1.0 | 2026-01-25 | Phase 6 complete: main.py implemented (1,332 lines) - Ready for backtesting |
-| 0.6.0 | 2026-01-25 | Phase 6 complete: main.py entry point wires all components |
-| 0.5.0 | 2026-01-25 | Phase 5 complete: ExecutionEngine, StateManager, DailyScheduler |
-| 0.4.0 | 2026-01-25 | Phase 4 complete: ExposureGroups, PortfolioRouter, RiskEngine |
-| 0.3.0 | 2026-01-25 | Phase 3 complete: All strategy engines |
-| 0.2.0 | 2026-01-25 | Phase 2 complete: Core engines |
-| 0.1.0 | 2026-01-25 | Phase 1 complete: Foundation |
-
----
-
-## Contributing
-
-When updating documentation:
-
-1. Maintain the section structure
-2. Keep diagrams inline with their explanations
-3. Update the Table of Contents if adding sections
-4. Update Parameters Reference if changing values
-5. Add entries to Glossary for new terms
-
----
-
-## Related Files
-
-| File | Location | Purpose |
-|------|----------|---------|
-| Main Algorithm | `../main.py` | QCAlgorithm entry point (1,332 lines - Complete) |
-| Configuration | `../config.py` | All tunable parameters |
-| Developer Guide | `../developer-guide-claude.md` | Build workflow and session init |
-| Test Cases | `../tests/scenarios/` | Scenario test files |
-
----
-
-## Navigation
-
-➡️ **Start Reading:** [Table of Contents](00-table-of-contents.md)
-
-➡️ **Jump to Architecture:** [System Architecture](02-system-architecture.md)
-
-➡️ **Implementation Guide:** [QC Rules](../QC_RULES.md)
-
-➡️ **Error Reference:** [Common Errors](../ERRORS.md)
+*Last Updated: 2026-01-29 (V2.1.1 Documentation Reorganization)*
