@@ -3859,4 +3859,36 @@ OPT_SCAN: Blocked - KS skip day active
 
 ---
 
-*Document created: 2026-01-30 | Last updated: 2026-02-03 (V2.27 Graduated KS + Win Rate Gate)*
+## V2.28: Recovery & Insurance — ON HOLD (2026-02-03)
+
+**Source:** `docs/V2_26_IMPLEMENTATION_PLAN.md` Phase 3
+**Status:** ⏸️ On Hold — Deferred pending backtest validation of V2.26 (Phase 1) and V2.27 (Phase 2).
+
+### Planned Fixes
+
+| # | Fix | Priority | Description |
+|:-:|-----|:--------:|-------------|
+| 6 | **RECOVERY_ACCELERATION** | P2 | Fast-track cold start exit when regime > 65 AND VIX < 25. Cuts cold start from 5 days to 2. Target file: `engines/core/cold_start_engine.py` |
+| 7 | **PENNY_STEAMROLLER_GUARD** | P2 | Block credit spreads below VIX 18. Insurance against selling cheap premium. Target files: `config.py`, `engines/satellite/options_engine.py` |
+
+### Planned Config Params
+
+```python
+# Fix 6: Recovery Acceleration
+COLD_START_FAST_TRACK_ENABLED = True
+COLD_START_FAST_TRACK_DAYS = 2       # Exit cold start at day 2 instead of 5
+# Requires: regime > 65 AND VIX < 25
+
+# Fix 7: Penny Steamroller Guard
+CREDIT_SPREAD_MIN_VIX = 18           # Never sell credit spreads below this VIX
+```
+
+### Prerequisites
+
+- V2.26 backtest validates Drawdown Governor + Chop Detector
+- V2.27 backtest validates Graduated KS + Win Rate Gate
+- Fix 6 depends on Fix 5 (graduated KS tiers affect cold start reset)
+
+---
+
+*Document created: 2026-01-30 | Last updated: 2026-02-03 (V2.28 on hold, V2.27 Graduated KS + Win Rate Gate)*

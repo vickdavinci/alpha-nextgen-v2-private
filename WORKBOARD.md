@@ -739,6 +739,21 @@ Runtime Error: TypeError at _process_immediate_signals → self.Log(... trades_o
 
 ---
 
+### V2.28: Recovery & Insurance — Recovery Acceleration + Penny Steamroller Guard — ON HOLD ⏸️
+
+**Source:** `docs/V2_26_IMPLEMENTATION_PLAN.md` Phase 3 — Recovery & Insurance
+**Branch:** `testing/va/stage2-backtest`
+**Status:** Deferred — Phase 1 (V2.26) and Phase 2 (V2.27) complete. Phase 3 parked pending backtest validation of earlier phases.
+
+**Goal:** Faster recovery from crashes and insurance against future credit spread issues.
+
+| # | Fix | Priority | Status |
+|:-:|-----|:--------:|:------:|
+| 6 | **RECOVERY_ACCELERATION** — Fast-track cold start exit when regime > 65 AND VIX < 25. Cuts cold start from 5 days to 2. File: `engines/core/cold_start_engine.py` | P2 | ⏸️ On Hold |
+| 7 | **PENNY_STEAMROLLER_GUARD** — Block credit spreads below VIX 18. Insurance against selling cheap premium. File: `engines/satellite/options_engine.py`, `config.py` | P2 | ⏸️ On Hold |
+
+---
+
 ### V2.26: Capital Preservation — Drawdown Governor + Chop Detector (2026-02-03) — COMPLETE ✅
 
 **Source:** `docs/V2_26_IMPLEMENTATION_PLAN.md` Phase 1 — Capital Preservation & Strategy Quality
