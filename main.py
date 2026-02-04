@@ -185,7 +185,7 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
         self.SetStartDate(2022, 1, 1)
-        self.SetEndDate(2022, 3, 31)  # V2.19 Q1 2022 backtest - options engine test
+        self.SetEndDate(2022, 3, 31)  # V2.25 Q1 2022 audit fix verification
         self.SetCash(config.PHASE_SEED_MIN)  # $50,000 seed capital
 
         # All times are Eastern
@@ -1362,6 +1362,20 @@ class AlphaNextGen(QCAlgorithm):
             except Exception as e:
                 self.Log(f"EXPIRATION_HAMMER_V2: Error checking {holding.Symbol} - {e}")
 
+        # V2.25 Fix #2: Safety net — liquidate any QQQ equity from missed assignments
+        # If exercise detection (Fix #1) fails, this catches stale QQQ shares daily at 14:00
+        try:
+            qqq_holding = self.Portfolio[self.qqq]
+            if qqq_holding.Invested:
+                self.Log(
+                    f"ASSIGNMENT_SAFETY_NET: QQQ equity detected | "
+                    f"Qty={qqq_holding.Quantity} | Value=${qqq_holding.HoldingsValue:,.2f} | "
+                    f"LIQUIDATING stale assignment shares"
+                )
+                self.Liquidate(self.qqq, tag="ASSIGNMENT_SAFETY_NET")
+        except Exception as e:
+            self.Log(f"ASSIGNMENT_SAFETY_NET: Error checking QQQ - {e}")
+
     def _on_intraday_options_force_close(self) -> None:
         """
         V2.1.1: Intraday options force close at 15:30 ET.
@@ -1381,6 +1395,19 @@ class AlphaNextGen(QCAlgorithm):
             # Get current option price
             intraday_pos = self.options_engine._intraday_position
             symbol = intraday_pos.contract.symbol
+
+            # V2.25 Fix #4: Double-sell guard — verify position is still held
+            # Prevents creating orphan shorts if limit/profit-target already closed
+            try:
+                if not self.Portfolio[intraday_pos.contract.symbol].Invested:
+                    self.Log(
+                        f"INTRADAY_FORCE_EXIT: SKIP | {symbol} already closed | "
+                        f"Clearing stale _intraday_position"
+                    )
+                    self.options_engine._intraday_position = None
+                    return
+            except Exception:
+                pass  # If symbol lookup fails, proceed with force close
 
             # Get current price (best effort)
             current_price = intraday_pos.entry_price  # Fallback
@@ -1759,25 +1786,33 @@ class AlphaNextGen(QCAlgorithm):
                     # Immediately liquidate the options position
                     self.MarketOrder(orderEvent.Symbol, -fill_qty)
 
-        # V2.4.4 P0 Fix #3: Handle Option Exercise events
-        # ITM options get auto-exercised, creating massive stock positions
-        # Detect and immediately liquidate the resulting stock position
-        elif orderEvent.Status == OrderStatus.Filled and "Exercise" in str(orderEvent.Message):
-            symbol = str(orderEvent.Symbol)
-            fill_qty = orderEvent.FillQuantity
-            self.Log(
-                f"EXERCISE_DETECTED: {symbol} | Qty={fill_qty} | "
-                f"CRITICAL: Option was exercised - checking for stock position"
-            )
-            # After exercise, we have stock. Liquidate it immediately.
-            # The underlying symbol is QQQ for our options
-            qqq_holding = self.Portfolio[self.qqq]
-            if qqq_holding.Invested and abs(qqq_holding.Quantity) > 0:
+            # V2.25 Fix #1: Exercise/Assignment Detection
+            # Was unreachable dead code (elif after if Filled:). Moved inside.
+            # QC backtester uses "Simulated option assignment" not "Exercise".
+            try:
+                order = self.Transactions.GetOrderById(orderEvent.OrderId)
+                is_exercise = order.Type == OrderType.OptionExercise
+            except Exception:
+                is_exercise = False
+            if not is_exercise:
+                msg_lower = str(orderEvent.Message).lower()
+                is_exercise = "exercise" in msg_lower or "assignment" in msg_lower
+            if is_exercise:
                 self.Log(
-                    f"EXERCISE_LIQUIDATE: QQQ position from exercise | "
-                    f"Qty={qqq_holding.Quantity} | Value=${qqq_holding.HoldingsValue:,.2f}"
+                    f"EXERCISE_DETECTED: {symbol} | Qty={fill_qty} | "
+                    f"Msg='{orderEvent.Message}' | "
+                    f"CRITICAL: Option exercise/assignment detected"
                 )
-                self.Liquidate(self.qqq, tag="EXERCISE_LIQUIDATE")
+                qqq_holding = self.Portfolio[self.qqq]
+                if qqq_holding.Invested:
+                    self.Log(
+                        f"EXERCISE_LIQUIDATE: QQQ position from exercise | "
+                        f"Qty={qqq_holding.Quantity} | Value=${qqq_holding.HoldingsValue:,.2f}"
+                    )
+                    self.Liquidate(self.qqq, tag="EXERCISE_LIQUIDATE")
+                    # Clear spread tracking for this option
+                    if symbol in self._pending_spread_orders:
+                        self._pending_spread_orders.pop(symbol)
 
         elif orderEvent.Status == OrderStatus.Invalid:
             self.Log(f"INVALID: {orderEvent.Symbol} - {orderEvent.Message}")

@@ -461,6 +461,11 @@ ELASTIC_DELTA_STEPS = [0.0, 0.03, 0.07, 0.12]
 ELASTIC_DELTA_FLOOR = 0.10  # Never search below this delta (too far OTM)
 ELASTIC_DELTA_CEILING = 0.95  # Never search above this delta (deep ITM)
 
+# V2.25: IV-adaptive credit floor — lower min credit in high IV to allow fills
+# Q1 2022 audit: 116 VASS rejections at VIX > 30 because $0.30 floor filtered all candidates
+CREDIT_SPREAD_MIN_CREDIT_HIGH_IV = 0.20  # Reduced floor when VIX exceeds threshold
+CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD = 30.0  # VIX level above which reduced floor applies
+
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
 # V2.3.15: Sniper Logic - allow one retry, not machine gun
 INTRADAY_MAX_TRADES_PER_DAY = 2  # Sniper gets one retry per day

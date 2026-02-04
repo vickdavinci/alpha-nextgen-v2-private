@@ -2135,11 +2135,17 @@ class OptionsEngine:
                 )
 
                 delta_pass_count = sum(1 for p in puts if delta_min <= abs(p.delta) <= delta_max)
+                # V2.25 Fix #3: IV-adaptive credit floor
+                # Q1 2022: 116 rejections because $0.30 floor too high at VIX > 30
+                smoothed_vix = self._iv_sensor.get_smoothed_vix()
+                effective_min_credit = config.CREDIT_SPREAD_MIN_CREDIT
+                if smoothed_vix > config.CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD:
+                    effective_min_credit = config.CREDIT_SPREAD_MIN_CREDIT_HIGH_IV
+
                 short_candidates = [
                     p
                     for p in puts
-                    if delta_min <= abs(p.delta) <= delta_max
-                    and p.bid >= config.CREDIT_SPREAD_MIN_CREDIT
+                    if delta_min <= abs(p.delta) <= delta_max and p.bid >= effective_min_credit
                 ]
 
                 if short_candidates:
@@ -2152,7 +2158,12 @@ class OptionsEngine:
                 f"Delta_range={config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN}-"
                 f"{config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX}"
                 + (f" | Elastic_widen=±{elastic_widen_used:.2f}" if elastic_widen_used > 0 else "")
-                + f" | Min_credit=${config.CREDIT_SPREAD_MIN_CREDIT}"
+                + f" | Min_credit=${effective_min_credit}"
+                + (
+                    f" (IV-adaptive, VIX={smoothed_vix:.1f})"
+                    if effective_min_credit != config.CREDIT_SPREAD_MIN_CREDIT
+                    else ""
+                )
             )
 
             if not short_candidates:
@@ -2235,11 +2246,16 @@ class OptionsEngine:
                 )
 
                 delta_pass_count = sum(1 for c in calls if delta_min <= abs(c.delta) <= delta_max)
+                # V2.25 Fix #3: IV-adaptive credit floor
+                smoothed_vix = self._iv_sensor.get_smoothed_vix()
+                effective_min_credit = config.CREDIT_SPREAD_MIN_CREDIT
+                if smoothed_vix > config.CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD:
+                    effective_min_credit = config.CREDIT_SPREAD_MIN_CREDIT_HIGH_IV
+
                 short_candidates = [
                     c
                     for c in calls
-                    if delta_min <= abs(c.delta) <= delta_max
-                    and c.bid >= config.CREDIT_SPREAD_MIN_CREDIT
+                    if delta_min <= abs(c.delta) <= delta_max and c.bid >= effective_min_credit
                 ]
 
                 if short_candidates:
@@ -2252,7 +2268,12 @@ class OptionsEngine:
                 f"Delta_range={config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN}-"
                 f"{config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX}"
                 + (f" | Elastic_widen=±{elastic_widen_used:.2f}" if elastic_widen_used > 0 else "")
-                + f" | Min_credit=${config.CREDIT_SPREAD_MIN_CREDIT}"
+                + f" | Min_credit=${effective_min_credit}"
+                + (
+                    f" (IV-adaptive, VIX={smoothed_vix:.1f})"
+                    if effective_min_credit != config.CREDIT_SPREAD_MIN_CREDIT
+                    else ""
+                )
             )
 
             if not short_candidates:

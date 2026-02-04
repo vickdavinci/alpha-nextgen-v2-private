@@ -705,6 +705,41 @@ Runtime Error: TypeError at _process_immediate_signals → self.Log(... trades_o
 
 ---
 
+### V2.25 AAP Audit Bug Fixes (2026-02-03)
+
+**Source:** `docs/audits/V2_24_2_Q1_2022_audit_report.md` — Forensic AAP audit of Q1 2022 backtest.
+
+**Root Cause:** Q1 2022 backtest revealed 5 critical bugs:
+- Exercise handler was dead code (elif after if Filled:) → -$330K phantom QQQ position
+- 116 VASS credit spread rejections → zero credit spread fills in entire Q1
+- Intraday EOD double-sells → orphan short positions get exercised
+
+| # | Fix | Priority | Status |
+|:-:|-----|:--------:|:------:|
+| 1 | **EXERCISE_HANDLER** - Move exercise detection inside `if Filled:` block (was unreachable `elif`). Check for both "exercise" and "assignment" + `OrderType.OptionExercise`. | P0 | ✅ |
+| 2 | **ASSIGNMENT_SAFETY_NET** - Daily QQQ equity scan in `_check_expiration_hammer_v2` at 14:00. Liquidates stale assignment shares if Fix #1 misses. | P0 | ✅ |
+| 3 | **IV_ADAPTIVE_CREDIT_FLOOR** - Lower min credit from $0.30 to $0.20 when VIX > 30. Applied to both BULL_PUT and BEAR_CALL credit spread paths. | P1 | ✅ |
+| 4 | **INTRADAY_DOUBLE_SELL_GUARD** - Check `Portfolio[symbol].Invested` before emitting force-close. Prevents orphan shorts from double-selling already-closed positions. | P1 | ✅ |
+| 5 | **WORKBOARD** - Document V2.25 fixes and backtest validation. | P2 | ✅ |
+
+**Files Modified:**
+- `main.py` — Fixes 1, 2, 4 (OnOrderEvent, _check_expiration_hammer_v2, _on_intraday_options_force_close)
+- `engines/satellite/options_engine.py` — Fix 3 (select_credit_spread_legs × 2 paths)
+- `config.py` — Fix 3 (`CREDIT_SPREAD_MIN_CREDIT_HIGH_IV`, `CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD`)
+
+**Backtest Validation:**
+
+| Period | Version | Return | Sharpe | Max DD | Status |
+|--------|---------|-------:|-------:|-------:|:------:|
+| Q1 2022 | V2.25 | | | | ⏳ Pending |
+
+**Next Step:** Run V2.25 backtest to verify fixes
+```bash
+./scripts/qc_backtest.sh "V2.25-AuditFixes" --open
+```
+
+---
+
 ### V2.12 AAP Audit Bug Fixes (2026-02-02) — COMPLETE ✅
 
 **Root Cause:** V2.11 3-month backtest showed -62% loss due to **exit signal bug** (not strategy failure):
