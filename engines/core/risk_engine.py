@@ -565,12 +565,26 @@ class RiskEngine:
         # Set skip-day for Tier 2+
         if new_tier in (KSTier.TREND_EXIT, KSTier.FULL_EXIT):
             if self.algorithm:
-                skip_date = self.algorithm.Time.date()  # type: ignore[attr-defined]
-                # Skip for KS_SKIP_DAYS trading days (simplified: skip next calendar day)
-                from datetime import timedelta as td
+                # V3.0 P1-A: Skip business days, not calendar days
+                try:
+                    from datetime import date as date_type
+                    from datetime import timedelta as td
 
-                self._ks_skip_until_date = str(skip_date + td(days=config.KS_SKIP_DAYS))
-                self.log(f"KS_SKIP_DAY: New entries blocked until {self._ks_skip_until_date}")
+                    skip_date = self.algorithm.Time.date()  # type: ignore[attr-defined]
+                    skip_days_remaining = config.KS_SKIP_DAYS
+                    candidate = skip_date
+                    while skip_days_remaining > 0:
+                        candidate += td(days=1)
+                        if candidate.weekday() < 5:  # Mon=0..Fri=4
+                            skip_days_remaining -= 1
+                    self._ks_skip_until_date = str(candidate)
+                    self.log(
+                        f"KS_SKIP_DAY: New entries blocked until {self._ks_skip_until_date} "
+                        f"({config.KS_SKIP_DAYS} business days)"
+                    )
+                except (TypeError, AttributeError):
+                    # Graceful fallback if Time is not a real datetime
+                    self.log("KS_SKIP_DAY: Could not compute skip date")
 
         return new_tier
 

@@ -423,8 +423,47 @@ DRAWDOWN_GOVERNOR_LEVELS = {
 DRAWDOWN_GOVERNOR_RECOVERY_BASE = 0.08
 
 # V2.28: Minimum governor scale for intraday options entry
-# At 50% or below, intraday options are fully blocked (capital preservation mode)
-GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE = 1.0  # Only allow intraday options at full governor scale
+# V3.0: Lowered from 1.0 to 0.75 — options should reduce sizing during drawdowns,
+# not shut off entirely. 1.0 created a 6.5-month dead zone in 2017 where ANY drawdown
+# from equity peak blocked ALL options entries, while trend positions continued at reduced size.
+# V2.32: Further lowered to 0.5 for BULLISH options. BEARISH options use 0.25 (direction-aware).
+#
+# V2.33 CRITICAL FIX: Thesis-aligned direction-aware governor gating
+#
+# ROOT CAUSE of V2.32 -80% loss:
+# - Regime was 63-71 (bullish) but portfolio had 10-16% drawdown
+# - System entered BULL_CALL spreads (wrong for drawdown protection!)
+# - Governor liquidated next morning → forced loss → repeat
+#
+# V2.33 FIX: Direction-aware gating aligned with investment thesis:
+# - Governor 0% (shutdown): ONLY bearish PUT spreads allowed
+#   * Thesis says "Bear markets: PUT spreads active" - they hedge/profit from decline
+#   * Bull spreads blocked - they increase risk during severe drawdowns
+# - Governor 1-24%: Only bearish PUT spreads allowed
+# - Governor 25-49%: Only bearish PUT spreads allowed
+# - Governor 50%+: Both bullish and bearish spreads allowed
+#
+# Additional V2.33 fixes:
+# - Spread margin estimate increased from 2× to 6× safety (broker uses delta margin)
+# - Added 20% equity cushion requirement (prevents over-leveraging)
+# - ATOMIC OPTIONS CLOSE: ALL options close paths now use _close_options_atomic()
+#   * Kill Switch Tier 3 (full liquidation)
+#   * Kill Switch Tier 2 (trend exit)
+#   * EXPIRATION_HAMMER (options expiring today)
+#   * EARLY_EXERCISE_GUARD (ITM options near expiry)
+#   * Emergency close (retry exhausted)
+#   * This ALWAYS closes shorts first, then longs (prevents naked short margin errors)
+GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE = 0.50  # Bull options at 50%+ governor scale
+GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE_BEARISH = 0.25  # Bear options allowed even at 25%
+
+# V2.32: Options sizing floor — don't scale options below this even if governor is lower
+# Prevents options positions from becoming too small to be meaningful
+# Set to 0.0 to allow full scaling, set to 1.0 to exempt options entirely
+GOVERNOR_OPTIONS_SIZING_FLOOR = 0.50  # Options never scaled below 50% size
+
+# V2.32: Exempt bearish options from governor sizing entirely
+# Bear options REDUCE portfolio risk during drawdowns, so scaling them down is counterproductive
+GOVERNOR_EXEMPT_BEARISH_OPTIONS = True  # Bear spreads keep full size during drawdowns
 
 # =============================================================================
 # V2.1 CIRCUIT BREAKER SYSTEM (5 Levels)

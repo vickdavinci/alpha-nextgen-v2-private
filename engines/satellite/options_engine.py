@@ -2601,6 +2601,7 @@ class OptionsEngine:
         margin_remaining: Optional[float] = None,
         dte_min: int = None,
         dte_max: int = None,
+        is_eod_scan: bool = False,
     ) -> Optional[TargetWeight]:
         """
         V2.3: Check for debit spread entry signal.
@@ -2729,8 +2730,9 @@ class OptionsEngine:
             return None
 
         # Check time window (10:00 AM - 2:30 PM ET)
+        # V3.0: EOD scan at 15:45 bypasses time window — chain is valid at EOD
         time_minutes = current_hour * 60 + current_minute
-        if not (10 * 60 <= time_minutes <= 14 * 60 + 30):
+        if not is_eod_scan and not (10 * 60 <= time_minutes <= 14 * 60 + 30):
             if not self._swing_time_warning_logged:
                 self.log("SPREAD: Entry blocked - outside time window (10:00-14:30)")
                 self._swing_time_warning_logged = True
@@ -3025,6 +3027,7 @@ class OptionsEngine:
         vol_shock_active: bool = False,
         size_multiplier: float = 1.0,
         margin_remaining: Optional[float] = None,
+        is_eod_scan: bool = False,
     ) -> Optional[TargetWeight]:
         """
         V2.23: Check for credit spread entry signal.
@@ -3137,8 +3140,9 @@ class OptionsEngine:
             return None
 
         # Check time window (10:00 AM - 2:30 PM ET)
+        # V3.0: EOD scan at 15:45 bypasses time window — chain is valid at EOD
         time_minutes = current_hour * 60 + current_minute
-        if not (10 * 60 <= time_minutes <= 14 * 60 + 30):
+        if not is_eod_scan and not (10 * 60 <= time_minutes <= 14 * 60 + 30):
             return None
 
         # Validate contracts

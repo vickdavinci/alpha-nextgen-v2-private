@@ -192,7 +192,7 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
         self.SetStartDate(2017, 1, 1)
-        self.SetEndDate(2017, 12, 31)  # V2.28.1 2017 Full Year backtest
+        self.SetEndDate(2017, 12, 31)  # V3.0 governor fix - 2017 full year retest
         self.SetCash(config.PHASE_SEED_MIN)  # $50,000 seed capital
 
         # All times are Eastern
@@ -387,14 +387,21 @@ class AlphaNextGen(QCAlgorithm):
         # =====================================================================
         # V2.30: Direction-aware gating — bearish options unlock before bullish
         # V2.27: Also check can_enter_options (Tier 1 blocks new options)
-        # V2.28: Require governor >= 0.75 for intraday options (was > 0.0)
-        if (
-            mr_window_open
-            and risk_result.can_enter_intraday
-            and risk_result.can_enter_options
-            and self._governor_scale >= config.GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE
-        ):
-            self._scan_options_signals_gated(data)
+        # V2.32: Direction-aware governor — bear options allowed at lower governor scales
+        # Bear options REDUCE risk during drawdowns, bull options INCREASE risk
+        if mr_window_open and risk_result.can_enter_intraday and risk_result.can_enter_options:
+            regime_score = self.regime_engine.get_previous_score()
+
+            # V2.32: Determine governor threshold based on regime direction
+            if regime_score < config.SPREAD_REGIME_BEARISH:
+                # Bearish regime: Allow bear options even at 25% governor (risk-reducing)
+                min_governor = config.GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE_BEARISH
+            else:
+                # Bullish/Neutral regime: Require higher governor for bull options
+                min_governor = config.GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE
+
+            if self._governor_scale >= min_governor:
+                self._scan_options_signals_gated(data)
 
         # =====================================================================
         # STEP 7: CHECK MR EXITS (always if position exists)
@@ -864,6 +871,12 @@ class AlphaNextGen(QCAlgorithm):
         current_date_str = str(self.Time.date())
         self.options_engine.reset_daily(current_date_str)
 
+        # V3.0 P0-C: Reset satellite engine daily state
+        if hasattr(self, "hedge_engine") and self.hedge_engine:
+            self.hedge_engine.reset()
+        if hasattr(self, "mr_engine") and self.mr_engine:
+            self.mr_engine.reset()
+
         # V2.3 DEBUG: Log daily reset confirmation (only in live mode)
         if self.LiveMode:
             self.Log(f"DAILY_RESET: All flags cleared at {self.Time}")
@@ -889,43 +902,175 @@ class AlphaNextGen(QCAlgorithm):
 
     def _liquidate_all_spread_aware(self, reason: str = "GOVERNOR_SHUTDOWN") -> None:
         """
-        V2.28: Spread-aware liquidation. Close short leg first to avoid naked margin.
+        V2.33: Portfolio-scan based liquidation with atomic options handling.
 
-        Standard self.Liquidate() iterates portfolio in unpredictable order. For bull call
-        spreads, if the long leg sells first, QC sees a naked short call → margin rejection.
-        This helper closes the short leg first (buys it back), then the long leg.
+        V2.28's approach only handled ONE tracked spread, but multiple spreads or
+        orphaned legs could exist. V2.33 scans the actual Portfolio for ALL options
+        positions and closes them in the correct order:
+        1. Buy back ALL short options first (eliminates naked short risk)
+        2. Sell ALL long options (now safe - no naked exposure)
+        3. Liquidate equity positions last
+
+        This prevents the "long leg sold → naked short → margin rejection" death spiral
+        that caused -80% loss in V2.32.
         """
-        # Step 1: Close spread if one exists (short leg first to avoid naked margin)
-        if self.options_engine and self.options_engine.has_spread_position():
-            spread = self.options_engine.get_spread_position()
-            if spread:
-                try:
-                    short_sym = spread.short_leg.symbol
-                    long_sym = spread.long_leg.symbol
-                    qty = spread.num_spreads
-                    # Buy back short leg first (eliminates short exposure)
-                    self.MarketOrder(short_sym, qty, tag=reason)
-                    self.Log(f"{reason}: Closed short leg {str(short_sym)[-21:]} x{qty}")
-                    # Then sell long leg (now safe — no naked short)
-                    self.MarketOrder(long_sym, -qty, tag=reason)
-                    self.Log(f"{reason}: Closed long leg {str(long_sym)[-21:]} x{qty}")
-                except Exception as e:
-                    self.Log(f"{reason}: Spread close error | {e} | Falling back to Liquidate()")
-                    self.Liquidate(tag=reason)
-                # Clear spread tracking regardless of success
+        # V2.33: Scan Portfolio for ALL options positions (not just tracked spread)
+        short_options = []  # (symbol, quantity) - negative qty, need to buy back
+        long_options = []  # (symbol, quantity) - positive qty, need to sell
+        equity_positions = []  # Non-options positions
+
+        for kvp in self.Portfolio:
+            holding = kvp.Value
+            if not holding.Invested:
+                continue
+
+            symbol = holding.Symbol
+            qty = holding.Quantity
+
+            # Check if this is an options position (SecurityType.Option)
+            if symbol.SecurityType == SecurityType.Option:
+                if qty < 0:
+                    short_options.append((symbol, qty))
+                else:
+                    long_options.append((symbol, qty))
+            else:
+                equity_positions.append((symbol, qty))
+
+        # Step 1: Buy back ALL short options first (eliminates naked exposure)
+        # This MUST happen before selling any long options
+        for symbol, qty in short_options:
+            try:
+                # qty is negative, so we buy abs(qty) to close
+                close_qty = abs(qty)
+                self.MarketOrder(symbol, close_qty, tag=reason)
+                self.Log(f"{reason}: Closed short option {str(symbol)[-21:]} x{close_qty}")
+            except Exception as e:
+                self.Log(f"{reason}: Failed to close short {str(symbol)[-21:]} | {e}")
+
+        # Step 2: Sell ALL long options (safe now - all shorts closed)
+        for symbol, qty in long_options:
+            try:
+                self.MarketOrder(symbol, -qty, tag=reason)
+                self.Log(f"{reason}: Closed long option {str(symbol)[-21:]} x{qty}")
+            except Exception as e:
+                self.Log(f"{reason}: Failed to close long {str(symbol)[-21:]} | {e}")
+
+        # Step 3: Clear all options engine tracking state
+        if self.options_engine:
+            self.options_engine.clear_spread_position()
+            self.options_engine.cancel_pending_spread_entry()
+            self.options_engine.cancel_pending_intraday_entry()
+        if self.portfolio_router:
+            self.portfolio_router.clear_all_spread_margins()
+
+        # V2.33: Clear main.py spread tracking dicts
+        if self._spread_fill_tracker is not None:
+            self.Log(f"{reason}: Clearing spread fill tracker")
+            self._spread_fill_tracker = None
+        if self._pending_spread_orders:
+            self.Log(f"{reason}: Clearing {len(self._pending_spread_orders)} pending spread orders")
+            self._pending_spread_orders.clear()
+            self._pending_spread_orders_reverse.clear()
+
+        # Step 4: Liquidate equity positions (trend, MR, hedges)
+        for symbol, qty in equity_positions:
+            try:
+                self.MarketOrder(symbol, -qty, tag=reason)
+                self.Log(f"{reason}: Closed equity {symbol} x{qty}")
+            except Exception as e:
+                self.Log(f"{reason}: Failed to close equity {symbol} | {e}")
+
+        # Log summary
+        total_closed = len(short_options) + len(long_options) + len(equity_positions)
+        self.Log(
+            f"{reason}: Liquidation complete | "
+            f"Short opts={len(short_options)} | Long opts={len(long_options)} | "
+            f"Equity={len(equity_positions)} | Total={total_closed}"
+        )
+
+    def _close_options_atomic(
+        self,
+        symbols_to_close: list = None,
+        reason: str = "OPTIONS_CLOSE",
+        clear_tracking: bool = True,
+    ) -> int:
+        """
+        V2.33: ATOMIC options close - ALWAYS closes shorts first, then longs.
+
+        This is the ONLY method that should be used to close options positions.
+        NEVER call Liquidate() directly on option symbols!
+
+        Args:
+            symbols_to_close: Optional list of specific option symbols to close.
+                            If None, closes ALL options in portfolio.
+            reason: Tag for logging and order tracking.
+            clear_tracking: Whether to clear options engine tracking state.
+
+        Returns:
+            Number of options positions closed.
+        """
+        # Collect options to close (from specific list or entire portfolio)
+        short_options = []  # (symbol, qty) - shorts have negative qty
+        long_options = []  # (symbol, qty) - longs have positive qty
+
+        if symbols_to_close is not None:
+            # Close specific symbols
+            for symbol in symbols_to_close:
+                if symbol in self.Portfolio and self.Portfolio[symbol].Invested:
+                    holding = self.Portfolio[symbol]
+                    if holding.Symbol.SecurityType == SecurityType.Option:
+                        if holding.Quantity < 0:
+                            short_options.append((holding.Symbol, holding.Quantity))
+                        else:
+                            long_options.append((holding.Symbol, holding.Quantity))
+        else:
+            # Close all options in portfolio
+            for kvp in self.Portfolio:
+                holding = kvp.Value
+                if holding.Invested and holding.Symbol.SecurityType == SecurityType.Option:
+                    if holding.Quantity < 0:
+                        short_options.append((holding.Symbol, holding.Quantity))
+                    else:
+                        long_options.append((holding.Symbol, holding.Quantity))
+
+        # CRITICAL: Close ALL shorts FIRST (buy to close)
+        for symbol, qty in short_options:
+            try:
+                close_qty = abs(qty)
+                self.MarketOrder(symbol, close_qty, tag=reason)
+                self.Log(f"{reason}: Closed SHORT {str(symbol)[-21:]} x{close_qty}")
+            except Exception as e:
+                self.Log(f"{reason}: FAILED short close {str(symbol)[-21:]} | {e}")
+
+        # THEN close ALL longs (sell to close) - safe now, no naked shorts
+        for symbol, qty in long_options:
+            try:
+                self.MarketOrder(symbol, -qty, tag=reason)
+                self.Log(f"{reason}: Closed LONG {str(symbol)[-21:]} x{qty}")
+            except Exception as e:
+                self.Log(f"{reason}: FAILED long close {str(symbol)[-21:]} | {e}")
+
+        # Clear tracking state if requested
+        if clear_tracking:
+            if self.options_engine:
                 self.options_engine.clear_spread_position()
-                if self.portfolio_router:
-                    self.portfolio_router.clear_all_spread_margins()
+                self.options_engine.cancel_pending_spread_entry()
+                self.options_engine.cancel_pending_intraday_entry()
+            if self.portfolio_router:
+                self.portfolio_router.clear_all_spread_margins()
+            if self._spread_fill_tracker is not None:
+                self._spread_fill_tracker = None
+            if self._pending_spread_orders:
+                self._pending_spread_orders.clear()
+                self._pending_spread_orders_reverse.clear()
 
-        # V2.29: Clear all pending options entry state
-        # Governor shutdown at 09:25 has no subsequent rejection event to clean up,
-        # so pending state (spread legs, intraday entry) must be cleared here.
-        self.options_engine.cancel_pending_spread_entry()
-        self.options_engine.cancel_pending_intraday_entry()
-
-        # Step 2: Liquidate everything else (equity, single-leg options, etc.)
-        if self.Portfolio.Invested:
-            self.Liquidate(tag=reason)
+        total_closed = len(short_options) + len(long_options)
+        if total_closed > 0:
+            self.Log(
+                f"{reason}: Atomic close complete | "
+                f"Shorts={len(short_options)} Longs={len(long_options)}"
+            )
+        return total_closed
 
     def _on_moo_fallback(self) -> None:
         """
@@ -1260,6 +1405,18 @@ class AlphaNextGen(QCAlgorithm):
         self._options_intraday_cooldown_until = None
         self._options_spread_cooldown_until = None
         self._mr_rejection_cooldown_until = None
+        # V3.0 P1-B: Clean stale pending exit orders at EOD
+        if self._pending_exit_orders:
+            stale_keys = [
+                k
+                for k, v in self._pending_exit_orders.items()
+                if v.retry_count >= 3 or v.order_id is None
+            ]
+            for k in stale_keys:
+                self._pending_exit_orders.pop(k, None)
+            if stale_keys:
+                self.Log(f"EOD_CLEANUP: Cleared {len(stale_keys)} stale pending exit orders")
+
         # NOTE: _kill_switch_handled_today is NOT reset here - it resets at 09:25 pre-market
         # Resetting here causes double-trigger since OnData runs at 16:00 after EOD handler
 
@@ -1415,6 +1572,8 @@ class AlphaNextGen(QCAlgorithm):
 
         This is a CRITICAL safety check that runs independently of the options
         engine's tracked positions. It catches any options that slipped through.
+
+        V2.33: Uses atomic close pattern - ALWAYS closes shorts first, then longs.
         """
         if self.IsWarmingUp:
             return
@@ -1429,6 +1588,10 @@ class AlphaNextGen(QCAlgorithm):
             return
 
         current_date = self.Time.strftime("%Y-%m-%d")
+
+        # V2.33: Collect ALL options to close FIRST, then close atomically
+        expiration_hammer_symbols = []  # Options expiring TODAY
+        early_exercise_symbols = []  # ITM options near expiry
 
         # Scan ALL portfolio positions for expiring options
         for holding in self.Portfolio.Values:
@@ -1445,16 +1608,16 @@ class AlphaNextGen(QCAlgorithm):
                 expiry_date = expiry.strftime("%Y-%m-%d")
 
                 if expiry_date == current_date:
-                    # EXPIRING TODAY - LIQUIDATE IMMEDIATELY
+                    # EXPIRING TODAY - collect for atomic close
                     qty = holding.Quantity
-                    symbol = str(holding.Symbol)
+                    symbol_str = str(holding.Symbol)
                     self.Log(
-                        f"EXPIRATION_HAMMER_V2: LIQUIDATING {symbol} | "
+                        f"EXPIRATION_HAMMER_V2: QUEUED {symbol_str} | "
                         f"Qty={qty} | Expires TODAY ({expiry_date}) | "
                         f"Time={self.Time.strftime('%H:%M')} | "
                         f"P0 FIX: Preventing auto-exercise"
                     )
-                    self.Liquidate(holding.Symbol, tag="EXPIRATION_HAMMER_V2")
+                    expiration_hammer_symbols.append(holding.Symbol)
 
                 # V2.28: Early exercise guard — close ITM single-leg options near expiry
                 # Prevents costly early exercise (Q1 2022: 2 exercises cost -$5,614)
@@ -1472,15 +1635,38 @@ class AlphaNextGen(QCAlgorithm):
                         )
                         if is_itm:
                             qty = holding.Quantity
-                            symbol = str(holding.Symbol)
+                            symbol_str = str(holding.Symbol)
                             self.Log(
-                                f"EARLY_EXERCISE_GUARD: CLOSING {symbol} | "
+                                f"EARLY_EXERCISE_GUARD: QUEUED {symbol_str} | "
                                 f"Qty={qty} | DTE={days_to_expiry} | ITM | "
                                 f"Strike={strike} Underlying={underlying_price:.2f}"
                             )
-                            self.Liquidate(holding.Symbol, tag="EARLY_EXERCISE_GUARD")
+                            early_exercise_symbols.append(holding.Symbol)
             except Exception as e:
                 self.Log(f"EXPIRATION_HAMMER_V2: Error checking {holding.Symbol} - {e}")
+
+        # V2.33 CRITICAL: Close all collected options ATOMICALLY (shorts first, then longs)
+        if expiration_hammer_symbols:
+            self.Log(
+                f"EXPIRATION_HAMMER_V2: Closing {len(expiration_hammer_symbols)} expiring options atomically"
+            )
+            self._close_options_atomic(
+                symbols_to_close=expiration_hammer_symbols,
+                reason="EXPIRATION_HAMMER_V2",
+                clear_tracking=True,
+            )
+
+        if early_exercise_symbols:
+            # Don't clear tracking again if hammer already did
+            clear_tracking = len(expiration_hammer_symbols) == 0
+            self.Log(
+                f"EARLY_EXERCISE_GUARD: Closing {len(early_exercise_symbols)} ITM options atomically"
+            )
+            self._close_options_atomic(
+                symbols_to_close=early_exercise_symbols,
+                reason="EARLY_EXERCISE_GUARD",
+                clear_tracking=clear_tracking,
+            )
 
         # V2.25 Fix #2: Safety net — liquidate any QQQ equity from missed assignments
         # If exercise detection (Fix #1) fails, this catches stale QQQ shares daily at 14:00
@@ -2281,15 +2467,57 @@ class AlphaNextGen(QCAlgorithm):
             # Aggregate weights by symbol (take highest weight for same symbol)
             aggregated = self.portfolio_router.aggregate_weights(weights)
 
-            # V2.26: Apply Drawdown Governor scaling to ALL allocations
+            # V2.26: Apply Drawdown Governor scaling to allocations
+            # V2.32: EXEMPT hedges (TMF, PSQ) — we want MORE hedging during drawdowns, not less
+            # V2.32: Apply sizing floor for options, exempt bearish options if configured
+            HEDGE_SYMBOLS = {"TMF", "PSQ"}
+
+            # V2.32: Determine if current spread is bearish (for exemption logic)
+            is_bearish_spread = False
+            if hasattr(self, "options_engine") and self.options_engine._spread_position is not None:
+                is_bearish_spread = self.options_engine._spread_position.spread_type == "BEAR_PUT"
+
             if self._governor_scale < 1.0:
+                scaled_count = 0
+                options_exempt_count = 0
                 for symbol, agg in aggregated.items():
                     if agg.target_weight > 0:  # Only scale entries/holds, not exits (weight=0)
-                        agg.target_weight *= self._governor_scale
+                        # V2.32: Hedges exempt
+                        if symbol in HEDGE_SYMBOLS:
+                            continue
+
+                        # V2.32: Check if this is an options position (QQQ options)
+                        is_option = len(str(symbol)) > 5 and "QQQ" in str(symbol)
+
+                        if is_option:
+                            # V2.32: Exempt bearish options entirely if configured
+                            if is_bearish_spread and config.GOVERNOR_EXEMPT_BEARISH_OPTIONS:
+                                options_exempt_count += 1
+                                continue
+
+                            # V2.32: Apply sizing floor for options
+                            effective_scale = max(
+                                self._governor_scale, config.GOVERNOR_OPTIONS_SIZING_FLOOR
+                            )
+                            agg.target_weight *= effective_scale
+                        else:
+                            # Non-option positions get full governor scaling
+                            agg.target_weight *= self._governor_scale
+
+                        scaled_count += 1
+
                 if self._governor_scale == 0.0:
-                    self.Log("GOVERNOR: SHUTDOWN | All EOD allocations zeroed")
+                    self.Log("GOVERNOR: SHUTDOWN | All non-hedge allocations zeroed")
                 else:
-                    self.Log(f"GOVERNOR: Scaling all EOD weights by {self._governor_scale:.0%}")
+                    exempt_msg = (
+                        f", {options_exempt_count} bear options exempt"
+                        if options_exempt_count
+                        else ""
+                    )
+                    self.Log(
+                        f"GOVERNOR: Scaling {scaled_count} positions by {self._governor_scale:.0%} "
+                        f"(hedges exempt{exempt_msg})"
+                    )
 
             # Validate against max position size
             max_single_position_pct = capital_state.max_single_position_pct
@@ -2493,6 +2721,7 @@ class AlphaNextGen(QCAlgorithm):
         regime_state: RegimeState,
         capital_state: CapitalState,
         size_multiplier: float = 1.0,
+        is_eod_scan: bool = False,
     ) -> None:
         """
         Generate Options Engine signals at end of day.
@@ -2523,6 +2752,59 @@ class AlphaNextGen(QCAlgorithm):
         if self.risk_engine.is_ks_skip_day(str(self.Time.date())):
             self.Log("OPTIONS_EOD: Blocked - KS skip day active")
             return
+
+        # V2.33: Direction-aware governor gating for EOD options
+        # This was missing in V2.32 causing the enter→liquidate death spiral
+        #
+        # Investment thesis alignment:
+        # - Bear PUT spreads REDUCE portfolio risk → allowed even at low governor
+        # - Bull CALL spreads INCREASE risk → require higher governor
+        #
+        # The V2.32 death spiral happened because:
+        # - Regime was 63-71 (bullish) but portfolio drawdown was 10-16%
+        # - System entered BULL_CALL spreads (wrong for drawdown protection)
+        # - Governor liquidated next morning → forced loss → repeat
+        #
+        # V2.33 fix: Only allow bearish PUT spreads during severe drawdowns
+        regime_score_for_governor = self.regime_engine.get_previous_score()
+        is_bearish_regime = regime_score_for_governor < config.SPREAD_REGIME_BEARISH
+
+        if self._governor_scale == 0.0:
+            # Governor SHUTDOWN (16%+ drawdown)
+            # Only bearish PUT spreads allowed - they hedge/profit from continued decline
+            if not is_bearish_regime:
+                self.Log(
+                    f"OPTIONS_EOD: Blocked by Governor SHUTDOWN | "
+                    f"Scale=0% | Regime={regime_score_for_governor:.0f} (not bearish) | "
+                    f"Only PUT spreads allowed at 0%"
+                )
+                return
+            else:
+                self.Log(
+                    f"OPTIONS_EOD: Bearish PUT spread allowed at Governor 0% | "
+                    f"Regime={regime_score_for_governor:.0f} | Thesis: PUT spreads active in bear markets"
+                )
+                # Continue to spread entry logic below
+
+        elif self._governor_scale < config.GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE_BEARISH:
+            # Governor below 25% but above 0% - only bearish allowed
+            if not is_bearish_regime:
+                self.Log(
+                    f"OPTIONS_EOD: Blocked by Governor | "
+                    f"Scale={self._governor_scale:.0%} < 25% | "
+                    f"Regime={regime_score_for_governor:.0f} (not bearish)"
+                )
+                return
+
+        elif self._governor_scale < config.GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE:
+            # Governor 25-50% - bearish allowed, bullish blocked
+            if not is_bearish_regime:
+                self.Log(
+                    f"OPTIONS_EOD: Blocked by Governor | "
+                    f"Scale={self._governor_scale:.0%} < 50% for bullish | "
+                    f"Regime={regime_score_for_governor:.0f}"
+                )
+                return
 
         # Skip if already have options position (single-leg or spread)
         if self.options_engine.has_position():
@@ -2635,6 +2917,7 @@ class AlphaNextGen(QCAlgorithm):
                 vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
                 size_multiplier=size_multiplier,
                 margin_remaining=margin_remaining,
+                is_eod_scan=is_eod_scan,
             )
         else:
             # Existing debit spread path
@@ -2679,37 +2962,51 @@ class AlphaNextGen(QCAlgorithm):
                 margin_remaining=margin_remaining,
                 dte_min=vass_dte_min,
                 dte_max=vass_dte_max,
+                is_eod_scan=is_eod_scan,
             )
 
         if signal:
             # V2.3.6 FIX: Check margin BEFORE submitting spread
-            # IBKR treats spread legs as separate orders and requires naked short margin
-            # for the short leg. If we don't have enough margin, skip the spread entirely
-            # to avoid "orphaned long leg" situation.
+            # V2.32 FIX: Use SPREAD margin (max loss = width × 100), not naked short margin
+            # Spreads have defined risk — margin = spread width, not $10K/contract
             if signal.metadata and signal.metadata.get("spread_short_leg_quantity"):
                 short_qty = signal.metadata.get("spread_short_leg_quantity", 0)
                 short_symbol = signal.metadata.get("spread_short_leg_symbol", "")
 
-                # Estimate required margin for naked short (conservative: $10K per contract)
-                # IBKR typically requires 20-30% of notional for naked options
-                estimated_margin_per_contract = 10000  # $10K per contract (conservative)
-                required_margin = abs(short_qty) * estimated_margin_per_contract
+                # V2.33: Conservative spread margin estimate (CRITICAL FIX)
+                # V2.32's 2× safety was too low — broker uses delta-based margin which can be
+                # 3× or more. Use 6× safety factor to account for:
+                # - Delta margin variation with strike proximity
+                # - Total portfolio margin (not just incremental)
+                # - VIX-driven margin increases during volatility
+                spread_width = signal.metadata.get("spread_width", config.SPREAD_WIDTH_TARGET)
+                margin_per_contract = (
+                    spread_width * 100 * 6
+                )  # $5 width = $3,000/contract (6× safety)
+                required_margin = abs(short_qty) * margin_per_contract
 
                 # Get current free margin
                 free_margin = self.Portfolio.MarginRemaining
 
-                if required_margin > free_margin:
+                # V2.33: Additional safeguard — require at least 20% of equity to remain free
+                # This prevents over-leveraging even if individual spread check passes
+                total_equity = self.Portfolio.TotalPortfolioValue
+                min_free_margin = total_equity * 0.20  # Keep 20% cushion
+                effective_free_margin = max(0, free_margin - min_free_margin)
+
+                if required_margin > effective_free_margin:
                     self.Log(
-                        f"SPREAD: BLOCKED - Insufficient margin for short leg | "
-                        f"Required=${required_margin:,.0f} | Free=${free_margin:,.0f} | "
-                        f"Short={short_symbol} x{short_qty}"
+                        f"SPREAD: BLOCKED - Insufficient margin | "
+                        f"Required=${required_margin:,.0f} | Effective Free=${effective_free_margin:,.0f} | "
+                        f"(Actual Free=${free_margin:,.0f} - 20% cushion=${min_free_margin:,.0f}) | "
+                        f"Width=${spread_width} x{short_qty} contracts"
                     )
                     # Skip this spread - don't submit orphaned long leg
                     return
 
                 self.Log(
                     f"SPREAD: Margin check passed | Required=${required_margin:,.0f} | "
-                    f"Free=${free_margin:,.0f}"
+                    f"Effective Free=${effective_free_margin:,.0f} | Equity=${total_equity:,.0f}"
                 )
 
                 # V2.3.6: Track spread order pair for failure handling
@@ -3224,13 +3521,17 @@ class AlphaNextGen(QCAlgorithm):
         # Bullish path (CALL spreads): regime > 60
         if regime_score > config.SPREAD_REGIME_BULLISH:
             if self.startup_gate.allows_directional_longs():
-                self._generate_options_signals(regime_state, capital_state, size_mult)
+                self._generate_options_signals(
+                    regime_state, capital_state, size_mult, is_eod_scan=True
+                )
             return
 
         # Bearish path (PUT spreads): regime < 45
         if regime_score < config.SPREAD_REGIME_BEARISH:
             if self.startup_gate.allows_bearish_options():
-                self._generate_options_signals(regime_state, capital_state, size_mult)
+                self._generate_options_signals(
+                    regime_state, capital_state, size_mult, is_eod_scan=True
+                )
             return
 
         # Neutral (45-60): No options trade (by design)
@@ -3367,24 +3668,39 @@ class AlphaNextGen(QCAlgorithm):
         # ---- TIER 3: FULL EXIT ----
         if tier == KSTier.FULL_EXIT:
             self.Log("KS_FULL_EXIT: Liquidating ALL positions")
-            for symbol in risk_result.symbols_to_liquidate:
-                self.Liquidate(symbol)
 
-            # Close spreads (Tier 3 overrides decouple)
-            self._ks_close_all_options(force_spread_close=True)
+            # V2.33 CRITICAL: Close ALL options FIRST using atomic close (shorts before longs)
+            # This MUST happen before any equity liquidation to prevent naked short margin errors
+            self._close_options_atomic(reason="KS_TIER3_OPTIONS", clear_tracking=True)
+
+            # Now safe to liquidate equity positions
+            for symbol in risk_result.symbols_to_liquidate:
+                # Skip options - they were already closed atomically above
+                if symbol.SecurityType == SecurityType.Option:
+                    continue
+                self.Liquidate(symbol)
 
             # Clear options state and reset cold start
             self.options_engine.clear_all_positions()
             if config.KS_COLD_START_RESET_ON_TIER_3:
                 self.cold_start_engine.reset()
 
+            # V3.0 P0-A: Reset all engine internal state after full liquidation
+            self.trend_engine.reset()
+            if hasattr(self, "mr_engine") and self.mr_engine:
+                self.mr_engine.reset()
+            if hasattr(self, "hedge_engine") and self.hedge_engine:
+                self.hedge_engine.reset()
+            # Clear main.py spread tracking dicts (may already be cleared by atomic close)
+            self._spread_fill_tracker = None
+            self._pending_spread_orders.clear()
+            self._pending_spread_orders_reverse.clear()
+            self._pending_exit_orders.clear()
+            self.Log("KS_CLEANUP: All engine state reset after Tier 3 liquidation")
+
         # ---- TIER 2: TREND EXIT ----
         elif tier == KSTier.TREND_EXIT:
-            # Liquidate trend + MR equity positions
-            for symbol in risk_result.symbols_to_liquidate:
-                self.Liquidate(symbol)
-            self.Log(f"KS_TREND_EXIT: Liquidated {len(risk_result.symbols_to_liquidate)} symbols")
-
+            # V2.33: Close options FIRST using atomic close (shorts before longs)
             # V2.27: Spread decouple — keep active spreads, they have -50% stop
             if config.KILL_SWITCH_SPREAD_DECOUPLE:
                 spread = self.options_engine._spread_position
@@ -3393,85 +3709,87 @@ class AlphaNextGen(QCAlgorithm):
                     f"KS_SPREAD_DECOUPLE: Keeping {spread_count} active spreads | "
                     f"Monitored by -{config.SPREAD_STOP_LOSS_PCT:.0%} spread stop"
                 )
-                # Close single-leg options only (NOT spread legs)
-                self._ks_close_all_options(force_spread_close=False)
+                # Close single-leg options only (NOT spread legs) using atomic close
+                self._ks_close_single_leg_options_atomic()
             else:
-                # Legacy: close everything including spreads
-                self._ks_close_all_options(force_spread_close=True)
+                # Legacy: close everything including spreads atomically
+                self._close_options_atomic(reason="KS_TIER2_OPTIONS", clear_tracking=True)
                 self.options_engine.clear_all_positions()
+
+            # NOW liquidate trend + MR equity positions (options already handled above)
+            equity_count = 0
+            for symbol in risk_result.symbols_to_liquidate:
+                # Skip options - they were already closed atomically above
+                if symbol.SecurityType == SecurityType.Option:
+                    continue
+                self.Liquidate(symbol)
+                equity_count += 1
+            self.Log(f"KS_TREND_EXIT: Liquidated {equity_count} equity symbols")
 
             if config.KS_COLD_START_RESET_ON_TIER_2:
                 self.cold_start_engine.reset()
 
-    def _ks_close_all_options(self, force_spread_close: bool) -> None:
-        """
-        V2.27: Close options positions during kill switch.
+            # V3.0 P0-A: Reset trend + MR state after Tier 2 liquidation (hedge stays)
+            self.trend_engine.reset()
+            if hasattr(self, "mr_engine") and self.mr_engine:
+                self.mr_engine.reset()
+            self.Log("KS_CLEANUP: Trend + MR state reset after Tier 2 liquidation")
 
-        Args:
-            force_spread_close: If True, also close spread positions.
-                               If False, preserve spread positions (decouple).
+    def _ks_close_single_leg_options_atomic(self) -> int:
+        """
+        V2.33: Close ONLY single-leg options (NOT spread legs) using atomic close.
+
+        Used for Tier 2 decouple mode where we want to keep spreads but close
+        any single-leg options (intraday positions, protective puts).
+
+        Returns:
+            Number of single-leg options closed.
         """
         spread = self.options_engine._spread_position
-        spread_closed = False
+        spread_symbols = set()
 
-        # Close spread if forced (Tier 3 or decouple disabled)
-        if (
-            force_spread_close
-            and spread is not None
-            and spread.num_spreads > 0
-            and not spread.is_closing
-        ):
-            spread_closed = self.portfolio_router.execute_spread_close(
-                spread=spread,
-                reason=f"KILL_SWITCH_{self.risk_engine.get_ks_tier().value}",
-                is_emergency=True,
-            )
-            if spread_closed:
-                self.Log("KILL_SWITCH: Spread closed via Router")
-            else:
-                self.Log("KILL_SWITCH: Spread close FAILED - may require manual intervention")
+        # Get spread leg symbols to exclude
+        if spread is not None:
+            if hasattr(spread.long_leg, "symbol"):
+                spread_symbols.add(str(spread.long_leg.symbol))
+            if hasattr(spread.short_leg, "symbol"):
+                spread_symbols.add(str(spread.short_leg.symbol))
 
-        # Close remaining single-leg options (intraday positions, protective puts)
+        # Collect single-leg options (excluding spread legs)
         short_options = []
         long_options = []
         for kvp in self.Portfolio:
             holding = kvp.Value
             if holding.Invested and holding.Symbol.SecurityType == SecurityType.Option:
-                # Skip spread legs if we're preserving them (decouple)
-                if not force_spread_close and spread is not None:
-                    symbol_str = str(holding.Symbol)
-                    if (
-                        spread.long_leg.symbol in symbol_str
-                        or spread.short_leg.symbol in symbol_str
-                    ):
-                        continue
-                # Skip spread legs that were just closed
-                if force_spread_close and spread and spread_closed:
-                    symbol_str = str(holding.Symbol)
-                    if (
-                        spread.long_leg.symbol in symbol_str
-                        or spread.short_leg.symbol in symbol_str
-                    ):
-                        continue
+                symbol_str = str(holding.Symbol)
+                # Skip if this is a spread leg
+                if any(spread_sym in symbol_str for spread_sym in spread_symbols):
+                    continue
                 if holding.Quantity < 0:
-                    short_options.append(holding)
+                    short_options.append((holding.Symbol, holding.Quantity))
                 else:
-                    long_options.append(holding)
+                    long_options.append((holding.Symbol, holding.Quantity))
 
-        # Close shorts first (buy to close), then longs (sell to close)
-        for holding in short_options:
-            self.Log(f"KILL_SWITCH: Closing SHORT option {holding.Symbol} (qty={holding.Quantity})")
+        # ATOMIC CLOSE: Shorts first, then longs
+        for symbol, qty in short_options:
             try:
-                self.MarketOrder(holding.Symbol, -int(holding.Quantity))
+                close_qty = abs(qty)
+                self.MarketOrder(symbol, close_qty, tag="KS_SINGLE_LEG")
+                self.Log(f"KS_SINGLE_LEG: Closed SHORT {str(symbol)[-21:]} x{close_qty}")
             except Exception as e:
-                self.Log(f"KILL_SWITCH: Short option close error: {e}")
+                self.Log(f"KS_SINGLE_LEG: FAILED short close {str(symbol)[-21:]} | {e}")
 
-        for holding in long_options:
-            self.Log(f"KILL_SWITCH: Closing LONG option {holding.Symbol} (qty={holding.Quantity})")
+        for symbol, qty in long_options:
             try:
-                self.MarketOrder(holding.Symbol, -int(holding.Quantity))
+                self.MarketOrder(symbol, -qty, tag="KS_SINGLE_LEG")
+                self.Log(f"KS_SINGLE_LEG: Closed LONG {str(symbol)[-21:]} x{qty}")
             except Exception as e:
-                self.Log(f"KILL_SWITCH: Long option close error: {e}")
+                self.Log(f"KS_SINGLE_LEG: FAILED long close {str(symbol)[-21:]} | {e}")
+
+        total = len(short_options) + len(long_options)
+        if total > 0:
+            self.Log(f"KS_SINGLE_LEG: Closed {total} single-leg options (spread preserved)")
+        return total
 
     def _handle_panic_mode(self, risk_result: RiskCheckResult) -> None:
         """
@@ -4778,6 +5096,17 @@ class AlphaNextGen(QCAlgorithm):
                     self.portfolio_router.clear_all_spread_margins()
                 # Cooldown: 30 minutes before spread can retry
                 self._options_spread_cooldown_until = self.Time + timedelta(minutes=30)
+                # V3.0 P0-B: Clear main.py spread tracking state on rejection
+                if self._spread_fill_tracker is not None:
+                    self.Log("REJECTION_CLEANUP: Clearing spread fill tracker")
+                    self._spread_fill_tracker = None
+                if self._pending_spread_orders:
+                    self.Log(
+                        f"REJECTION_CLEANUP: Clearing "
+                        f"{len(self._pending_spread_orders)} pending spread orders"
+                    )
+                    self._pending_spread_orders.clear()
+                    self._pending_spread_orders_reverse.clear()
                 self.Log(
                     f"OPT_MACRO_RECOVERY: Spread rejected | Pending + margin cleared | "
                     f"Cooldown 30min until {self._options_spread_cooldown_until}"
@@ -5321,6 +5650,8 @@ class AlphaNextGen(QCAlgorithm):
         """
         V2.6 Bug #14: Emergency market close when all retries exhausted.
 
+        V2.33: If symbol is an option, use atomic close to ensure shorts close first.
+
         Args:
             symbol: Symbol to force close.
         """
@@ -5329,9 +5660,20 @@ class AlphaNextGen(QCAlgorithm):
             holding = self.Portfolio.get(symbol)
             if holding and holding.Invested:
                 qty = holding.Quantity
-                # Use Liquidate for absolute closure
-                self.Liquidate(symbol, tag="EMERG_ALL_RETRIES_FAILED")
-                self.Log(f"EXIT_EMERGENCY: Liquidated | {symbol[-20:]} x{qty}")
+
+                # V2.33: If this is an option, use atomic close for safety
+                # This ensures shorts close before longs even in emergency
+                if holding.Symbol.SecurityType == SecurityType.Option:
+                    self.Log(f"EXIT_EMERGENCY: Using atomic close for option | {symbol[-20:]}")
+                    self._close_options_atomic(
+                        symbols_to_close=[holding.Symbol],
+                        reason="EMERG_OPTION_RETRY_EXHAUSTED",
+                        clear_tracking=False,  # Don't clear other tracking state
+                    )
+                else:
+                    # Equity: Use Liquidate for absolute closure
+                    self.Liquidate(symbol, tag="EMERG_ALL_RETRIES_FAILED")
+                    self.Log(f"EXIT_EMERGENCY: Liquidated | {symbol[-20:]} x{qty}")
             else:
                 self.Log(f"EXIT_EMERGENCY: No position to close | {symbol[-20:]}")
         except Exception as e:
