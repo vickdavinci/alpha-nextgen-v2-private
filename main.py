@@ -4581,7 +4581,7 @@ class AlphaNextGen(QCAlgorithm):
             msg = str(order_event.Message) if hasattr(order_event, "Message") else ""
             match = re.search(r"Free Margin:\s*([\d.]+)", msg)
             if match:
-                free_margin = float(match.group(1))
+                free_margin = float(match.group(1).rstrip("."))
                 safety = getattr(config, "SPREAD_REJECTION_MARGIN_SAFETY", 0.80)
                 cap = free_margin * safety
                 self.options_engine._rejection_margin_cap = cap
