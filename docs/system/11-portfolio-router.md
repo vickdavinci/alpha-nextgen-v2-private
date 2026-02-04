@@ -1,5 +1,7 @@
 # Section 11: Portfolio Router
 
+*Last Updated: 4 February 2026 (V2.30)*
+
 ## 11.1 Purpose and Philosophy
 
 The Portfolio Router is the **central coordination hub** that transforms strategy intentions into executed trades. It ensures all strategies work together harmoniously rather than conflicting.
@@ -410,7 +412,260 @@ Action:
 
 ---
 
-## 11.10 Mermaid Diagram: Six-Step Workflow
+## 11.10 Capital Firewall: 50/50 Partition (V2.18)
+
+Prior to V2.18, the Trend Engine could consume all available capital, leaving the Options Engine starved (manifesting as `Entries allowed=-1`). V2.18 introduces a **hard capital partition** between the two primary engines.
+
+### 11.10.1 Partition Methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `get_trend_capital()` | 50% of total portfolio value | Capital reserved exclusively for Trend Engine |
+| `get_options_capital()` | 50% of total portfolio value | Capital reserved exclusively for Options Engine |
+| `check_capital_partition(source, order_value)` | `True`/`False` | Validates order fits within its engine's partition |
+
+### 11.10.2 Configuration
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `CAPITAL_PARTITION_TREND` | 0.50 | 50% reserved for Trend (was 55% pre-V2.18) |
+| `CAPITAL_PARTITION_OPTIONS` | 0.50 | 50% reserved for Options (was 25% pre-V2.18) |
+
+### 11.10.3 How It Works
+
+```
+When a TREND order arrives:
+  1. available = get_trend_capital() - current_trend_holdings
+  2. If order_value > available → PARTITION_BLOCK (order rejected)
+
+When an OPTIONS order arrives:
+  1. available = get_options_capital() - reserved_spread_margin
+  2. If order_value > available → PARTITION_BLOCK (order rejected)
+```
+
+The partition is **hard** -- one engine cannot borrow from the other's allocation.
+
+---
+
+## 11.11 Leverage Cap and Margin Pre-Check (V2.18)
+
+V2.18 also introduces two margin safeguards to prevent the 196% margin overflow observed when all four Trend tickers (QLD, SSO, TNA, FAS) were fully allocated simultaneously.
+
+### 11.11.1 Leverage Cap (90%)
+
+The `check_leverage_cap()` method blocks new entries if projected margin usage would exceed 90% of equity.
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `MAX_MARGIN_WEIGHTED_ALLOCATION` | 0.90 | Block entries if margin > 90% of equity |
+
+```
+check_leverage_cap(projected_margin_pct):
+  If projected_margin_pct > 0.90:
+    → LEVERAGE_CAP: Blocked | log projected vs max
+    → Return False (entry blocked)
+  Else:
+    → Return True (entry allowed)
+```
+
+### 11.11.2 Margin Pre-Check
+
+The `verify_margin_available()` method verifies sufficient margin exists **before** order submission, with a 20% buffer. This prevents `INSUFFICIENT_MARGIN` broker rejections.
+
+```
+verify_margin_available(order_value):
+  required_with_buffer = order_value * 1.20
+  If required_with_buffer > Portfolio.MarginRemaining:
+    → MARGIN_PRECHECK_FAIL (order blocked)
+  Else:
+    → Proceed with order
+```
+
+---
+
+## 11.12 Options Price Discovery Chain (V2.19)
+
+Options contracts frequently lack a price in the standard `current_prices` dictionary because they are not equity symbols. V2.19 introduces a **3-layer fallback chain** to resolve prices before order sizing.
+
+### 11.12.1 The Three Layers
+
+| Layer | Source | When It Fires | Introduced |
+|-------|--------|---------------|:----------:|
+| **Layer 1** | `current_prices[symbol]` | Portfolio holdings (existing positions) | Original |
+| **Layer 2** | `metadata['contract_price']` | Options Engine chain data, injected via `main.py` | V2.19 |
+| **Layer 3** | Bid/Ask mid-price from `Securities[symbol]` | `_try_bid_ask_mid_price()` lookup | V2.24.1 |
+
+### 11.12.2 Fallback Logic
+
+```
+For each aggregated symbol:
+  1. Check current_prices[symbol]
+     → If valid (> 0): use it (Layer 1)
+
+  2. Check agg.metadata['contract_price']
+     → If valid (> 0): inject into current_prices, log PRICE_INJECT (Layer 2)
+
+  3. Call _try_bid_ask_mid_price(symbol)
+     → Search Securities for matching symbol
+     → If Bid > 0 and Ask > 0: use (Bid + Ask) / 2, log BIDASK_INJECT (Layer 3)
+
+  4. If all layers fail:
+     → Log "ROUTER: SKIP | {symbol} | No price available"
+     → Skip this symbol entirely
+```
+
+### 11.12.3 Known Issues
+
+- **V2.24.2 fix**: A `TypeError` in `self.Log()` was crashing the router before Layer 2 could execute. The string formatting error prevented the metadata fallback from ever firing, causing all options entries to be skipped with "No price available".
+
+---
+
+## 11.13 Limit Order Execution for Options (V2.19)
+
+V2.19 replaces market orders with **marketable limit orders** for all options trades, providing slippage protection and bad-tick rejection.
+
+### 11.13.1 Spread Validation
+
+`validate_options_spread()` checks both legs of a spread before execution:
+
+| Check | Condition | Action |
+|-------|-----------|--------|
+| **Bad tick** | Bid or Ask <= 0 on either leg | Block: `BAD_TICK` |
+| **Illiquidity** | Spread width > 20% of mid-price | Block: `ILLIQUID` |
+| **Inverted pricing** | Short Bid > Long Ask on debit spread | Block: `BAD_TICK_GUARD` |
+
+### 11.13.2 Limit Price Calculation
+
+`calculate_limit_price()` computes the limit price with slippage tolerance:
+
+| Direction | Formula | Rationale |
+|-----------|---------|-----------|
+| **BUY** | Ask + (Spread * 5%) | Willing to pay slightly above Ask for fill |
+| **SELL** | Bid - (Spread * 5%) | Willing to accept slightly below Bid for fill |
+
+The price is never allowed to go negative (floor of $0.01 for sells).
+
+### 11.13.3 Unified Execution
+
+`execute_options_limit_order()` is the single entry point for all options orders:
+
+```
+execute_options_limit_order(symbol, quantity, reason):
+  1. If OPTIONS_USE_LIMIT_ORDERS is False → fall back to MarketOrder
+  2. Calculate limit price via calculate_limit_price()
+  3. If limit_price is None (blocked by validation) → reject order
+  4. Submit LimitOrder(symbol, quantity, limit_price)
+```
+
+### 11.13.4 Configuration
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `OPTIONS_USE_LIMIT_ORDERS` | `True` | Enable limit orders for options |
+| `OPTIONS_LIMIT_SLIPPAGE_PCT` | 0.05 | 5% of spread as slippage tolerance |
+| `OPTIONS_MAX_SPREAD_PCT` | 0.20 | Block if bid-ask spread > 20% of mid |
+
+---
+
+## 11.14 Atomic Spread Close (V2.17-BT)
+
+`execute_spread_close()` is the **single exit point** for all spread positions. It uses a retry-then-fallback strategy to ensure spread legs are closed together.
+
+### 11.14.1 Close Strategy
+
+```
+execute_spread_close(spread, reason, is_emergency):
+  1. Mark spread.is_closing = True (prevent duplicate signals)
+  2. Unless is_emergency:
+     → Attempt ComboMarketOrder (up to 3 retries)
+     → If success: unregister margin, return True
+  3. Sequential fallback:
+     → Buy back SHORT leg first (reduce margin exposure)
+     → Sell LONG leg second
+  4. If all attempts fail:
+     → Clear is_closing lock (allow retry on next cycle)
+     → Return False
+```
+
+### 11.14.2 Why Short First?
+
+The sequential fallback closes the **short leg first** because buying back the short option reduces margin requirement, making it safer to then sell the long leg. Closing the long leg first could temporarily increase margin exposure.
+
+### 11.14.3 Configuration
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `COMBO_ORDER_MAX_RETRIES` | 3 | Max attempts for atomic ComboMarketOrder |
+| `SPREAD_LOCK_CLEAR_ON_FAILURE` | `True` | Clear `is_closing` flag if all attempts fail |
+
+---
+
+## 11.15 Ghost Margin Fix (V2.18.2)
+
+### 11.15.1 The Problem
+
+When `clear_spread_position()` is called (e.g., during margin circuit breaker liquidation), it clears the Options Engine's state but does **not** clear the router's `_open_spread_margin` tracking. This leaves "ghost" margin reservations that block all future options trades because the router thinks margin is still consumed.
+
+### 11.15.2 The Fix
+
+`clear_all_spread_margins()` clears **all** router margin reservations when a spread position is force-cleared:
+
+```
+clear_all_spread_margins():
+  If _open_spread_margin has entries:
+    → Log count and total freed amount
+    → Clear entire _open_spread_margin dict
+```
+
+This is called during margin circuit breaker events and kill switch liquidation to ensure the router's margin state stays in sync with actual positions.
+
+---
+
+## 11.16 Leverage-Adjusted Allocation (V2.3.24)
+
+### 11.16.1 The Problem
+
+A 20% allocation to a 2x ETF (QLD) consumes 40% of margin. A 12% allocation to a 3x ETF (TNA) consumes 36% of margin. Source allocation limits based on **weight alone** undercount actual margin consumption, potentially starving the Options Engine.
+
+### 11.16.2 Margin-Weighted Enforcement
+
+`_enforce_source_limits()` now calculates **margin-weighted allocation** for non-options sources:
+
+```
+For each non-options weight:
+  margin_weighted = target_weight * SYMBOL_LEVERAGE[symbol]
+
+Total margin-weighted = Sum of all non-options margin-weighted allocations
+Max allowed = 1.0 - RESERVED_OPTIONS_PCT (75%)
+
+If total margin-weighted > 75%:
+  Scale all non-options weights by (75% / total_margin_weighted)
+```
+
+### 11.16.3 SYMBOL_LEVERAGE Reference
+
+| Symbol | Leverage | Margin per 10% Allocation |
+|--------|:--------:|:-------------------------:|
+| QLD | 2.0x | 20% |
+| SSO | 2.0x | 20% |
+| TNA | 3.0x | 30% |
+| FAS | 3.0x | 30% |
+| TQQQ | 3.0x | 30% |
+| SOXL | 3.0x | 30% |
+| TMF | 3.0x | 30% |
+| PSQ | 1.0x | 10% |
+
+### 11.16.4 Contract Scaling for Spreads
+
+When margin checks indicate a full spread position would exceed limits, the router scales the number of contracts down to fit available margin, with a minimum of 2 contracts. If even 2 contracts would exceed margin, the trade is skipped entirely.
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `MIN_SPREAD_CONTRACTS` | 2 | Minimum contracts for a scaled spread |
+
+---
+
+## 11.17 Mermaid Diagram: Six-Step Workflow (Original)
 
 ```mermaid
 flowchart TD
@@ -473,7 +728,7 @@ flowchart TD
 
 ---
 
-## 11.11 Mermaid Diagram: Exposure Group Validation
+## 11.18 Mermaid Diagram: Exposure Group Validation
 
 ```mermaid
 flowchart TD
@@ -524,7 +779,7 @@ flowchart TD
 
 ---
 
-## 11.12 Netting Examples
+## 11.19 Netting Examples
 
 ### Example 1: Multiple Strategies, Same Direction
 
@@ -584,9 +839,9 @@ Adjusted:
 
 ---
 
-## 11.13 Error Handling
+## 11.20 Error Handling
 
-### 11.13.1 Invalid Symbols
+### 11.20.1 Invalid Symbols
 
 ```
 If TargetWeight references unknown symbol:
@@ -595,7 +850,7 @@ If TargetWeight references unknown symbol:
     → Continue processing others
 ```
 
-### 11.13.2 Conflicting Urgencies
+### 11.20.2 Conflicting Urgencies
 
 ```
 If same symbol has both IMMEDIATE and EOD:
@@ -603,7 +858,7 @@ If same symbol has both IMMEDIATE and EOD:
     → Log the conflict
 ```
 
-### 11.13.3 Insufficient Liquidity
+### 11.20.3 Insufficient Liquidity
 
 ```
 If position sizing exceeds available capital (including margin):
@@ -612,7 +867,7 @@ If position sizing exceeds available capital (including margin):
     → Execute reduced position
 ```
 
-### 11.13.4 Negative Weights
+### 11.20.4 Negative Weights
 
 ```
 If aggregated weight < 0 for a long-only symbol:
@@ -622,7 +877,7 @@ If aggregated weight < 0 for a long-only symbol:
 
 ---
 
-## 11.14 Integration with Other Engines
+## 11.21 Integration with Other Engines
 
 ### Inputs from Other Engines
 
@@ -655,17 +910,19 @@ Level 6: Execution Preferences ← Router decides
 
 ---
 
-## 11.15 Parameter Reference
+## 11.22 Parameter Reference
 
 ### Exposure Group Limits
 
-| Group | Max Net Long | Max Net Short | Max Gross |
-|-------|:------------:|:-------------:|:---------:|
-| NASDAQ_BETA | 50% | 30% | 75% |
-| SPY_BETA | 40% | 0% | 40% |
-| SMALL_CAP_BETA | 25% | 0% | 25% |
-| FINANCIALS_BETA | 15% | 0% | 15% |
-| RATES | 40% | 0% | 40% |
+| Group | Max Net Long | Max Net Short | Max Gross | Notes |
+|-------|:------------:|:-------------:|:---------:|-------|
+| NASDAQ_BETA | 50% | 30% | 75% | |
+| SPY_BETA | 40% | 0% | 40% | |
+| SMALL_CAP_BETA | 25% | 0% | 25% | |
+| FINANCIALS_BETA | 15% | 0% | 15% | |
+| RATES | 40% | 0% | 40% | TMF only (config) |
+
+> **Note (V2.3.17):** The YIELD source allocation limit was raised to 99% to allow SHV to absorb idle cash post-kill-switch. See `SOURCE_ALLOCATION_LIMITS` in `portfolio_router.py`.
 
 ### Position Limits
 
@@ -681,9 +938,47 @@ Level 6: Execution Preferences ← Router decides
 | Minimum trade size | $2,000 |
 | Minimum share delta | 1 share |
 
+### Capital Partition (V2.18)
+
+| Parameter | Value | Config Key |
+|-----------|:-----:|------------|
+| Trend capital partition | 50% | `CAPITAL_PARTITION_TREND` |
+| Options capital partition | 50% | `CAPITAL_PARTITION_OPTIONS` |
+
+### Margin Safeguards (V2.18)
+
+| Parameter | Value | Config Key |
+|-----------|:-----:|------------|
+| Max margin-weighted allocation | 90% | `MAX_MARGIN_WEIGHTED_ALLOCATION` |
+| Margin pre-check buffer | 1.20x | `MARGIN_PRE_CHECK_BUFFER` |
+
+### Options Execution (V2.19)
+
+| Parameter | Value | Config Key |
+|-----------|:-----:|------------|
+| Use limit orders | `True` | `OPTIONS_USE_LIMIT_ORDERS` |
+| Limit order slippage | 5% of spread | `OPTIONS_LIMIT_SLIPPAGE_PCT` |
+| Max bid-ask spread | 20% of mid | `OPTIONS_MAX_SPREAD_PCT` |
+| Combo order max retries | 3 | `COMBO_ORDER_MAX_RETRIES` |
+| Min spread contracts | 2 | `MIN_SPREAD_CONTRACTS` |
+
+### Source Allocation Limits
+
+| Source | Max Allocation | Notes |
+|--------|:--------------:|-------|
+| TREND | 55% | `config.TREND_TOTAL_ALLOCATION` |
+| OPT | 30% | `config.OPTIONS_ALLOCATION_MAX` |
+| OPT_INTRADAY | 5% | Intraday "Sniper" mode |
+| MR | 10% | `config.MR_TOTAL_ALLOCATION` |
+| HEDGE | 30% | TMF 20% + PSQ 10% |
+| COLD_START | 35% | Subset of TREND |
+| YIELD | 99% | V2.3.17: allows near-full SHV |
+| RISK | 100% | Emergency liquidations |
+| ROUTER | 100% | No limit |
+
 ---
 
-## 11.16 Processing Timeline
+## 11.23 Processing Timeline
 
 ### Intraday Processing (IMMEDIATE)
 
@@ -711,19 +1006,58 @@ At 15:45 ET:
 
 ---
 
-## 11.17 Key Design Decisions Summary
+## 11.24 Key Design Decisions Summary
 
-| Decision | Rationale |
-|----------|-----------|
-| **Centralized coordination** | Prevents strategy conflicts, wash sales, beta stacking |
-| **TargetWeight abstraction** | Strategies express intent, Router decides execution |
-| **Aggregate then validate** | See full picture before applying constraints |
-| **Static exposure groups** | Simpler than rolling correlation matrices |
-| **IMMEDIATE vs EOD urgency** | Time-sensitive signals execute immediately |
-| **SHV liquidation priority** | Lowest-priority holding funds higher-priority trades |
-| **Proportional scaling** | Fair reduction when limits exceeded |
-| **$2,000 minimum trade** | Avoids inefficient small trades |
-| **MOO for EOD signals** | Reliable execution at next open |
+| Decision | Rationale | Version |
+|----------|-----------|:-------:|
+| **Centralized coordination** | Prevents strategy conflicts, wash sales, beta stacking | V1 |
+| **TargetWeight abstraction** | Strategies express intent, Router decides execution | V1 |
+| **Aggregate then validate** | See full picture before applying constraints | V1 |
+| **Static exposure groups** | Simpler than rolling correlation matrices | V1 |
+| **IMMEDIATE vs EOD urgency** | Time-sensitive signals execute immediately | V1 |
+| **SHV liquidation priority** | Lowest-priority holding funds higher-priority trades | V1 |
+| **Proportional scaling** | Fair reduction when limits exceeded | V1 |
+| **$2,000 minimum trade** | Avoids inefficient small trades | V1 |
+| **MOO for EOD signals** | Reliable execution at next open | V1 |
+| **50/50 capital partition** | Hard firewall prevents engine capital starvation | V2.18 |
+| **90% leverage cap** | Prevents margin overflow from concentrated leveraged ETF positions | V2.18 |
+| **Margin pre-check with 20% buffer** | Prevents broker INSUFFICIENT_MARGIN rejections | V2.18 |
+| **3-layer options price discovery** | Ensures options orders are not skipped due to missing prices | V2.19 |
+| **Limit orders for options** | Slippage protection + bad-tick rejection for illiquid options | V2.19 |
+| **Atomic spread close with fallback** | Combo order first, then sequential (short-first) if needed | V2.17-BT |
+| **Ghost margin cleanup** | Keeps router margin state in sync after force-clear events | V2.18.2 |
+| **Leverage-adjusted source limits** | Accounts for 2x/3x ETF margin consumption, not just allocation weight | V2.3.24 |
+| **Ghost spread state reconciliation** | Multi-layer cleanup prevents orphaned margin reservations and stale pending state | V2.29 |
+
+---
+
+## 11.25 Ghost Spread State Management (V2.29)
+
+### 11.25.1 Problem
+
+When spread positions are closed (both legs filled), the options engine's internal `_spread_position` state was not being cleared, creating a "ghost" state. This ghost state:
+- Generated continuous `SPREAD_EXIT_WARNING` logs (43,291 in 2015 backtest)
+- May have blocked new spread entries
+- Consumed log bandwidth causing truncation
+
+### 11.25.2 Reconciliation Layers
+
+The Portfolio Router participates in ghost spread cleanup via `clear_all_spread_margins()`:
+
+| Layer | Trigger | Router Action |
+|:-----:|---------|---------------|
+| A | Both spread legs fill | `clear_all_spread_margins()` |
+| B | Portfolio check (no legs held) | `clear_all_spread_margins()` |
+| C | Friday firewall | `clear_all_spread_margins()` |
+
+### 11.25.3 State Cleanup in Liquidation
+
+All liquidation paths (`_liquidate_all_spread_aware`) now call:
+1. `options_engine.cancel_pending_spread_entry()`
+2. `options_engine.cancel_pending_intraday_entry()`
+3. `portfolio_router.clear_all_spread_margins()`
+
+This ensures no orphaned margin reservations or pending entry state survives a governor shutdown or kill switch.
 
 ---
 

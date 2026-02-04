@@ -73,6 +73,35 @@ def adx_score(adx_value: float) -> float:
         return 0.25
 
 
+def get_chandelier_multipliers(symbol: str) -> tuple:
+    """
+    Get Chandelier stop multipliers for a symbol.
+
+    V2.3.8: 3x ETFs (TNA/FAS) use tighter stops because they swing 5-7% daily.
+    2x ETFs (QLD/SSO) use standard multipliers.
+
+    Args:
+        symbol: Symbol to get multipliers for.
+
+    Returns:
+        Tuple of (base_mult, tight_mult, tighter_mult).
+    """
+    if symbol in config.TREND_3X_SYMBOLS:
+        # 3x ETFs: Tighter stops to control volatility (PART 14 Pitfall 3)
+        return (
+            config.CHANDELIER_3X_BASE_MULT,
+            config.CHANDELIER_3X_TIGHT_MULT,
+            config.CHANDELIER_3X_TIGHTER_MULT,
+        )
+    else:
+        # 2x ETFs: Standard multipliers
+        return (
+            config.CHANDELIER_BASE_MULT,
+            config.CHANDELIER_TIGHT_MULT,
+            config.CHANDELIER_TIGHTER_MULT,
+        )
+
+
 @dataclass
 class TrendPosition:
     """Tracks an active trend position."""
@@ -83,6 +112,9 @@ class TrendPosition:
     highest_high: float
     current_stop: float
     strategy_tag: str = "TREND"
+    # V2.5: Track consecutive days below SMA50 for confirmation exit
+    days_below_sma50: int = 0
+    last_sma50_check_date: str = ""  # Prevent multiple increments on same day
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for persistence."""
@@ -93,6 +125,8 @@ class TrendPosition:
             "highest_high": self.highest_high,
             "current_stop": self.current_stop,
             "strategy_tag": self.strategy_tag,
+            "days_below_sma50": self.days_below_sma50,
+            "last_sma50_check_date": self.last_sma50_check_date,
         }
 
     @classmethod
@@ -105,6 +139,8 @@ class TrendPosition:
             highest_high=data["highest_high"],
             current_stop=data["current_stop"],
             strategy_tag=data.get("strategy_tag", "TREND"),
+            days_below_sma50=data.get("days_below_sma50", 0),
+            last_sma50_check_date=data.get("last_sma50_check_date", ""),
         )
 
 
@@ -161,6 +197,12 @@ class TrendEngine:
         """Initialize Trend Engine."""
         self.algorithm = algorithm
         self._positions: Dict[str, TrendPosition] = {}
+        # V2.3.21: Track symbols with pending MOO orders to prevent duplicates
+        # When MOO signal generated at 15:45, symbol added here
+        # When fill received (9:30 next day), symbol moved to _positions
+        self._pending_moo_symbols: set = set()
+        # V2.24: Track when each pending MOO was created for stale detection
+        self._pending_moo_dates: Dict[str, str] = {}
 
     def log(self, message: str) -> None:
         """Log via algorithm or skip for testing."""
@@ -204,6 +246,10 @@ class TrendEngine:
         if symbol in self._positions:
             return None
 
+        # V2.3.21: Check if MOO order already pending (submitted at 15:45, fills at 9:30)
+        if symbol in self._pending_moo_symbols:
+            return None
+
         # Validate indicator inputs (prevent crashes from None/NaN)
         if not _is_valid_float(close) or not _is_valid_float(ma200):
             self.log(f"TREND: {symbol} entry blocked - MA200/price not ready")
@@ -224,9 +270,13 @@ class TrendEngine:
         if close <= ma200:
             return None
 
-        # Condition 2: ADX >= 25 (score >= 0.50, sufficient momentum)
-        if score < 0.50:
-            self.log(f"TREND: {symbol} entry blocked - ADX {adx:.1f} too weak (score={score:.2f})")
+        # Condition 2: ADX >= 25 (score >= 0.75, sufficient momentum)
+        # V2.4.2 FIX: Changed from 0.50 to 0.75 - ADX_WEAK_THRESHOLD was lowered to 15,
+        # causing entries at ADX 15-24. Requiring score >= 0.75 enforces ADX >= 25.
+        if score < 0.75:
+            self.log(
+                f"TREND: {symbol} entry blocked - ADX {adx:.1f} too weak (score={score:.2f} < 0.75)"
+            )
             return None
 
         # Condition 3: Regime score >= 40
@@ -250,11 +300,19 @@ class TrendEngine:
 
         self.log(f"TREND: ENTRY_SIGNAL {symbol} | {reason} | Regime={regime_score:.1f}")
 
+        # V2.19: DO NOT add to _pending_moo_symbols here!
+        # The signal may be BLOCKED by position limit in main.py.
+        # main.py will call mark_pending_moo() ONLY for approved signals.
+
+        # V2.3.3: Use symbol-specific allocation from config (not 1.0)
+        # This ensures QLD gets 20%, SSO 15%, TNA 12%, FAS 8% as designed
+        symbol_weight = config.TREND_SYMBOL_ALLOCATIONS.get(symbol, 0.20)
+
         return TargetWeight(
             symbol=symbol,
-            target_weight=1.0,  # Full allocation to trend budget
+            target_weight=symbol_weight,  # V2.3.3: Symbol-specific allocation
             source="TREND",
-            urgency=Urgency.EOD,
+            urgency=Urgency.MOC,  # V2.4.2: Same-day close (was EOD/next-day open)
             reason=reason,
         )
 
@@ -267,12 +325,18 @@ class TrendEngine:
         adx: float,
         regime_score: float,
         atr: float,
+        sma50: Optional[float] = None,
     ) -> Optional[TargetWeight]:
         """
-        Check for V2 trend exit signals (MA200, ADX, regime).
+        Check for trend exit signals.
 
-        This is the EOD check for MA200, ADX, and regime exits.
-        Chandelier stop is checked separately via check_stop_hit.
+        V2.4: If TREND_USE_SMA50_EXIT is True, uses SMA50 + Hard Stop logic.
+        Otherwise, uses original MA200/ADX/Regime + Chandelier stop logic.
+
+        SMA50 Benefits:
+        - Allows 3% minor volatility without exit (if above SMA50)
+        - Longer holding periods (30-90 days vs 5-15 days)
+        - Cleaner logic than tiered ATR multipliers
 
         Args:
             symbol: Symbol to check.
@@ -282,6 +346,7 @@ class TrendEngine:
             adx: Current ADX(14) value.
             regime_score: Current smoothed regime score.
             atr: Current 14-period ATR.
+            sma50: V2.4 - 50-period SMA for structural trend exit (optional).
 
         Returns:
             TargetWeight for exit, or None if no exit signal.
@@ -294,24 +359,145 @@ class TrendEngine:
             self.log(f"TREND: {symbol} exit check skipped - price data not ready")
             return None
 
+        position = self._positions[symbol]
+
+        # Update highest high (used by both exit modes)
+        if high > position.highest_high:
+            position.highest_high = high
+
+        # V2.4: SMA50 + Hard Stop exit mode
+        if config.TREND_USE_SMA50_EXIT and sma50 is not None and _is_valid_float(sma50):
+            return self._check_sma50_exit(symbol, close, sma50, position, regime_score)
+
+        # V2.2: Original Chandelier exit mode (fallback)
+        return self._check_chandelier_exit(symbol, close, ma200, adx, regime_score, atr, position)
+
+    def _check_sma50_exit(
+        self,
+        symbol: str,
+        close: float,
+        sma50: float,
+        position: TrendPosition,
+        regime_score: float,
+        current_date: Optional[str] = None,
+    ) -> Optional[TargetWeight]:
+        """
+        V2.4: SMA50 + Hard Stop exit logic.
+        V2.5: Added 2-day confirmation for SMA50 break to prevent whipsaw exits.
+
+        Exit Conditions:
+        1. Close < SMA50 * (1 - buffer) for N consecutive days - Structural trend break
+        2. Loss from entry >= Hard Stop % - Risk management
+        3. Regime < 30 - Market deterioration (kept from V2.2)
+
+        Allows minor volatility (3% drops) without exit if price stays above SMA50.
+        """
+        # Get current date for tracking (default to empty string if not provided)
+        today = current_date or ""
+        if self.algorithm and hasattr(self.algorithm, "Time"):
+            today = str(self.algorithm.Time.date())
+
+        # Exit 1: SMA50 structural trend break (V2.5: with confirmation days)
+        sma50_exit_level = sma50 * (1 - config.TREND_SMA_EXIT_BUFFER)
+        confirm_days = getattr(config, "TREND_SMA_CONFIRM_DAYS", 1)
+
+        if close < sma50_exit_level:
+            # V2.5: Only increment counter once per day
+            if today and today != position.last_sma50_check_date:
+                position.days_below_sma50 += 1
+                position.last_sma50_check_date = today
+                self.log(
+                    f"TREND: {symbol} below SMA50 for {position.days_below_sma50}/{confirm_days} days"
+                )
+
+            # V2.5: Only exit after N consecutive days below SMA50
+            if position.days_below_sma50 >= confirm_days:
+                reason = (
+                    f"SMA50_BREAK: Close ${close:.2f} < SMA50 ${sma50:.2f} * "
+                    f"(1 - {config.TREND_SMA_EXIT_BUFFER:.0%}) = ${sma50_exit_level:.2f} "
+                    f"| {position.days_below_sma50} consecutive days"
+                )
+                self.log(f"TREND: EXIT_SIGNAL {symbol} | {reason}")
+                return TargetWeight(
+                    symbol=symbol,
+                    target_weight=0.0,
+                    source="TREND",
+                    urgency=Urgency.MOC,  # V2.4.2: Same-day close (was EOD/next-day open)
+                    reason=reason,
+                )
+            # Not enough days yet - hold position
+            return None
+        else:
+            # V2.5: Price recovered above SMA50, reset counter
+            if position.days_below_sma50 > 0:
+                self.log(
+                    f"TREND: {symbol} recovered above SMA50, resetting counter from {position.days_below_sma50}"
+                )
+                position.days_below_sma50 = 0
+
+        # Exit 2: Hard stop from entry (asset-specific)
+        hard_stop_pct = config.TREND_HARD_STOP_PCT.get(symbol, 0.15)
+        if position.entry_price > 0:
+            loss_pct = (position.entry_price - close) / position.entry_price
+            if loss_pct >= hard_stop_pct:
+                reason = (
+                    f"HARD_STOP: Loss {loss_pct:.1%} >= {hard_stop_pct:.0%} | "
+                    f"Entry ${position.entry_price:.2f} -> ${close:.2f}"
+                )
+                self.log(f"TREND: EXIT_SIGNAL {symbol} | {reason}")
+                return TargetWeight(
+                    symbol=symbol,
+                    target_weight=0.0,
+                    source="TREND",
+                    urgency=Urgency.IMMEDIATE,  # Hard stop is urgent
+                    reason=reason,
+                )
+
+        # Exit 3: Regime deterioration (kept from V2.2)
+        if regime_score < config.TREND_EXIT_REGIME:
+            reason = f"REGIME_EXIT: Score ({regime_score:.1f}) < {config.TREND_EXIT_REGIME}"
+            self.log(f"TREND: EXIT_SIGNAL {symbol} | {reason}")
+            return TargetWeight(
+                symbol=symbol,
+                target_weight=0.0,
+                source="TREND",
+                urgency=Urgency.MOC,  # V2.4.2: Same-day close (was EOD/next-day open)
+                reason=reason,
+            )
+
+        return None  # Hold position - above SMA50, no hard stop hit
+
+    def _check_chandelier_exit(
+        self,
+        symbol: str,
+        close: float,
+        ma200: float,
+        adx: float,
+        regime_score: float,
+        atr: float,
+        position: TrendPosition,
+    ) -> Optional[TargetWeight]:
+        """
+        V2.2: Original Chandelier trailing stop exit logic.
+
+        Exit Conditions:
+        1. Close < MA200 - Trend reversal
+        2. ADX < threshold - Momentum exhaustion
+        3. Regime < 30 - Market deterioration
+
+        Note: Chandelier stop hit is checked separately via check_stop_hit().
+        """
+        # Validate indicators for Chandelier mode
         if not _is_valid_float(ma200) or not _is_valid_float(adx):
             self.log(f"TREND: {symbol} exit check skipped - indicators not ready")
             return None
 
         if not _is_valid_float(atr) or atr <= 0:
-            # ATR not ready, skip stop update but still check other exits
             atr = 0.0  # Will skip stop update
-
-        position = self._positions[symbol]
-
-        # Update highest high
-        if high > position.highest_high:
-            position.highest_high = high
 
         # Update trailing stop
         self._update_chandelier_stop(position, atr)
 
-        # Check exit conditions
         # Exit 1: MA200 exit - close < MA200 (trend reversal)
         if close < ma200:
             reason = f"MA200_EXIT: Close (${close:.2f}) < MA200 (${ma200:.2f})"
@@ -320,7 +506,7 @@ class TrendEngine:
                 symbol=symbol,
                 target_weight=0.0,
                 source="TREND",
-                urgency=Urgency.EOD,
+                urgency=Urgency.MOC,  # V2.4.2: Same-day close (was EOD/next-day open)
                 reason=reason,
             )
 
@@ -332,7 +518,7 @@ class TrendEngine:
                 symbol=symbol,
                 target_weight=0.0,
                 source="TREND",
-                urgency=Urgency.EOD,
+                urgency=Urgency.MOC,  # V2.4.2: Same-day close (was EOD/next-day open)
                 reason=reason,
             )
 
@@ -344,7 +530,7 @@ class TrendEngine:
                 symbol=symbol,
                 target_weight=0.0,
                 source="TREND",
-                urgency=Urgency.EOD,
+                urgency=Urgency.MOC,  # V2.4.2: Same-day close (was EOD/next-day open)
                 reason=reason,
             )
 
@@ -390,6 +576,9 @@ class TrendEngine:
         Update the Chandelier trailing stop for a position.
 
         The stop only moves up, never down.
+
+        V2.3.8: Uses symbol-specific multipliers - 3x ETFs (TNA/FAS) get
+        tighter stops because they swing 5-7% daily.
         """
         # Skip if ATR not valid
         if not _is_valid_float(atr) or atr <= 0:
@@ -398,14 +587,17 @@ class TrendEngine:
         # Calculate current profit
         current_profit = profit_pct(position.entry_price, position.highest_high)
 
+        # V2.3.8: Get symbol-specific multipliers (3x ETFs use tighter stops)
+        base_mult, tight_mult, tighter_mult = get_chandelier_multipliers(position.symbol)
+
         # Get appropriate ATR multiplier based on profit level
         multiplier = atr_multiplier_for_profit(
             current_profit,
             config.PROFIT_TIGHT_PCT,
             config.PROFIT_TIGHTER_PCT,
-            config.CHANDELIER_BASE_MULT,
-            config.CHANDELIER_TIGHT_MULT,
-            config.CHANDELIER_TIGHTER_MULT,
+            base_mult,
+            tight_mult,
+            tighter_mult,
         )
 
         # Calculate new stop level
@@ -432,6 +624,9 @@ class TrendEngine:
         """
         Register a new trend position after fill.
 
+        V2.3.8: Uses symbol-specific multipliers - 3x ETFs (TNA/FAS) get
+        tighter initial stops because they swing 5-7% daily.
+
         Args:
             symbol: Symbol entered.
             entry_price: Fill price.
@@ -442,8 +637,11 @@ class TrendEngine:
         Returns:
             Created TrendPosition.
         """
+        # V2.3.8: Get symbol-specific multiplier (3x ETFs use tighter stops)
+        base_mult, _, _ = get_chandelier_multipliers(symbol)
+
         # Calculate initial stop
-        initial_stop = chandelier_stop(entry_price, atr, config.CHANDELIER_BASE_MULT)
+        initial_stop = chandelier_stop(entry_price, atr, base_mult)
 
         position = TrendPosition(
             symbol=symbol,
@@ -456,10 +654,14 @@ class TrendEngine:
 
         self._positions[symbol] = position
 
+        # V2.3.21: Clear pending MOO flag now that position is registered
+        self._pending_moo_symbols.discard(symbol)
+        self._pending_moo_dates.pop(symbol, None)
+
         self.log(
             f"TREND: POSITION_REGISTERED {symbol} | "
             f"Entry=${entry_price:.2f} | Stop=${initial_stop:.2f} | "
-            f"Tag={strategy_tag}"
+            f"Mult={base_mult} | Tag={strategy_tag}"
         )
 
         return position
@@ -474,11 +676,46 @@ class TrendEngine:
         Returns:
             Removed position, or None if not found.
         """
+        # V2.3.21: Also clear any pending MOO for this symbol
+        self._pending_moo_symbols.discard(symbol)
+        self._pending_moo_dates.pop(symbol, None)
+
         if symbol in self._positions:
             position = self._positions.pop(symbol)
             self.log(f"TREND: POSITION_REMOVED {symbol}")
             return position
         return None
+
+    def cancel_pending_moo(self, symbol: str) -> None:
+        """
+        V2.3.21: Cancel pending MOO tracking for a symbol.
+
+        Called when MOO order is cancelled or rejected.
+
+        Args:
+            symbol: Symbol to cancel pending MOO for.
+        """
+        if symbol in self._pending_moo_symbols:
+            self._pending_moo_symbols.discard(symbol)
+            self._pending_moo_dates.pop(symbol, None)
+            self.log(f"TREND: PENDING_MOO_CANCELLED {symbol}")
+
+    def mark_pending_moo(self, symbol: str, current_date: str = "") -> None:
+        """
+        V2.19: Mark symbol as having a pending MOO order.
+
+        Called by main.py ONLY for signals that pass the position limit filter.
+        This ensures blocked candidates don't pollute the pending set.
+
+        Args:
+            symbol: Symbol to mark as pending MOO.
+            current_date: Current date string for stale tracking.
+        """
+        self._pending_moo_symbols.add(symbol)
+        # V2.24: Track creation date for stale detection
+        if current_date:
+            self._pending_moo_dates[symbol] = current_date
+        self.log(f"TREND: PENDING_MOO_MARKED {symbol} | Date={current_date}")
 
     def has_position(self, symbol: str) -> bool:
         """Check if a position exists for symbol."""
@@ -506,6 +743,8 @@ class TrendEngine:
     def reset(self) -> None:
         """Reset engine state (clear all positions)."""
         self._positions.clear()
+        self._pending_moo_symbols.clear()
+        self._pending_moo_dates.clear()
         self.log("TREND: Engine reset - all positions cleared")
 
     def get_stop_level(self, symbol: str) -> Optional[float]:

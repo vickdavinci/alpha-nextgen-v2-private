@@ -90,6 +90,22 @@ exclude = [
 ]
 
 # Per-module settings
+# engines/ uses TYPE_CHECKING guards with QC stubs that have incomplete coverage.
+# See CONTRIBUTING.md "QuantConnect API Validation" section.
+[[tool.mypy.overrides]]
+module = "engines.*"
+ignore_errors = true
+
+[[tool.mypy.overrides]]
+module = "data.*"
+ignore_errors = true
+
+# portfolio_router uses QC API directly (MarketOrder, Portfolio, etc.)
+# which the QC stubs don't fully define
+[[tool.mypy.overrides]]
+module = "portfolio.portfolio_router"
+ignore_errors = true
+
 [[tool.mypy.overrides]]
 module = "tests.*"
 ignore_errors = true

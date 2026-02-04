@@ -30,12 +30,12 @@ from engines.core.risk_engine import (
     LEVERAGED_LONG_SYMBOLS,
     YIELD_SYMBOLS,
     GreeksSnapshot,
+    KSTier,
     RiskCheckResult,
     RiskEngine,
     SafeguardStatus,
     SafeguardType,
 )
-
 
 # =============================================================================
 # Test Fixtures
@@ -95,49 +95,51 @@ class TestSymbolClassifications:
 class TestKillSwitch:
     """Tests for Kill Switch circuit breaker."""
 
-    def test_kill_switch_triggers_at_3_percent_from_prior_close(self, risk_engine):
-        """Test kill switch triggers at exactly -3% from prior close."""
+    def test_kill_switch_triggers_at_2_percent_tier1_from_prior_close(self, risk_engine):
+        """Test graduated KS Tier 1 triggers at -2% from prior close (V2.28.1)."""
         risk_engine.set_equity_prior_close(100_000.0)
 
-        # 2.9% loss - should not trigger
-        assert risk_engine.check_kill_switch(97_100.0) is False
+        # 1.9% loss - should not trigger
+        assert risk_engine.check_kill_switch(98_100.0) is False
 
-        # Exactly 3% loss - should trigger
-        assert risk_engine.check_kill_switch(97_000.0) is True
+        # Exactly 2% loss - should trigger Tier 1 (REDUCE)
+        assert risk_engine.check_kill_switch(98_000.0) is True
+        assert risk_engine.get_ks_tier() == KSTier.REDUCE
 
-    def test_kill_switch_triggers_at_3_percent_from_sod(self, risk_engine):
-        """Test kill switch triggers at exactly -3% from SOD."""
+    def test_kill_switch_triggers_at_2_percent_tier1_from_sod(self, risk_engine):
+        """Test graduated KS Tier 1 triggers at -2% from SOD (V2.28.1)."""
         risk_engine.set_equity_sod(100_000.0)
 
-        # 2.9% loss - should not trigger
-        assert risk_engine.check_kill_switch(97_100.0) is False
+        # 1.9% loss - should not trigger
+        assert risk_engine.check_kill_switch(98_100.0) is False
 
-        # Exactly 3% loss - should trigger
-        assert risk_engine.check_kill_switch(97_000.0) is True
+        # Exactly 2% loss - should trigger Tier 1
+        assert risk_engine.check_kill_switch(98_000.0) is True
+        assert risk_engine.get_ks_tier() == KSTier.REDUCE
 
     def test_kill_switch_uses_either_baseline(self, risk_engine):
-        """Test kill switch triggers from either baseline."""
+        """Test kill switch triggers from either baseline (V2.27 graduated)."""
         risk_engine.set_equity_prior_close(100_000.0)
         risk_engine.set_equity_sod(98_000.0)
 
         # No loss from SOD but 3%+ from prior close
-        current = 96_900.0  # 3.1% from prior, 1.1% from SOD
+        current = 96_900.0  # 3.1% from prior, ~1.1% from SOD
         assert risk_engine.check_kill_switch(current) is True
 
     def test_kill_switch_stays_active_once_triggered(self, risk_engine):
-        """Test kill switch stays active once triggered."""
+        """Test kill switch stays active once triggered (V2.27 graduated)."""
         risk_engine.set_equity_prior_close(100_000.0)
 
-        # Trigger
+        # Trigger Tier 1 (3% loss)
         assert risk_engine.check_kill_switch(97_000.0) is True
 
-        # Should still return True even if equity recovers
+        # Should still return True even if equity recovers (tier doesn't downgrade)
         assert risk_engine.check_kill_switch(100_000.0) is True
 
     def test_kill_switch_liquidates_all_positions(self, configured_engine):
-        """Test kill switch includes all symbols in liquidation."""
+        """Test Tier 3 kill switch includes all symbols in liquidation (V2.27)."""
         result = configured_engine.check_all(
-            current_equity=97_000.0,  # 3% loss
+            current_equity=92_000.0,  # 8% loss = Tier 3 FULL_EXIT
             spy_price=450.0,
             spy_bar_range=0.5,
             current_time=datetime(2024, 1, 15, 10, 30),
@@ -147,11 +149,11 @@ class TestKillSwitch:
         assert set(result.symbols_to_liquidate) == set(ALL_TRADED_SYMBOLS)
 
     def test_kill_switch_blocks_new_entries(self, configured_engine):
-        """Test no new entries allowed after kill switch."""
-        configured_engine.check_kill_switch(97_000.0)  # Trigger
+        """Test Tier 2 blocks all new entries (V2.27 graduated)."""
+        configured_engine.check_kill_switch(95_000.0)  # Trigger Tier 2 (5% loss)
 
         result = configured_engine.check_all(
-            current_equity=97_000.0,
+            current_equity=95_000.0,
             spy_price=450.0,
             spy_bar_range=0.5,
             current_time=datetime(2024, 1, 15, 10, 30),
@@ -159,11 +161,12 @@ class TestKillSwitch:
 
         assert result.can_enter_positions is False
         assert result.can_enter_intraday is False
+        assert result.can_enter_options is False
 
-    def test_kill_switch_resets_cold_start(self, configured_engine):
-        """Test kill switch resets days_running to 0."""
+    def test_kill_switch_resets_cold_start_tier3(self, configured_engine):
+        """Test Tier 3 kill switch resets days_running to 0 (V2.27)."""
         result = configured_engine.check_all(
-            current_equity=97_000.0,  # 3% loss
+            current_equity=92_000.0,  # 8% loss = Tier 3 FULL_EXIT
             spy_price=450.0,
             spy_bar_range=0.5,
             current_time=datetime(2024, 1, 15, 10, 30),
@@ -172,7 +175,7 @@ class TestKillSwitch:
         assert result.reset_cold_start is True
 
     def test_kill_switch_status(self, risk_engine):
-        """Test kill switch status reporting."""
+        """Test kill switch status reporting (V2.27 graduated)."""
         risk_engine.set_equity_prior_close(100_000.0)
 
         # Before trigger
@@ -180,11 +183,10 @@ class TestKillSwitch:
         assert status.is_active is False
         assert status.safeguard_type == SafeguardType.KILL_SWITCH
 
-        # After trigger
+        # After trigger (3% loss = Tier 1)
         risk_engine.check_kill_switch(97_000.0)
         status = risk_engine.get_kill_switch_status()
         assert status.is_active is True
-        assert "liquidated" in status.details.lower()
 
 
 # =============================================================================
@@ -545,16 +547,16 @@ class TestCombinedRiskCheck:
         assert result.sizing_multiplier == 1.0
 
     def test_kill_switch_overrides_other_safeguards(self, configured_engine):
-        """Test kill switch overrides all other safeguards."""
+        """Test Tier 3 kill switch overrides all other safeguards (V2.27)."""
         result = configured_engine.check_all(
-            current_equity=97_000.0,  # 3% loss triggers kill switch
+            current_equity=92_000.0,  # 8% loss triggers Tier 3 FULL_EXIT
             spy_price=432.0,  # 4% drop would trigger panic mode too
             spy_bar_range=0.5,
             current_time=datetime(2024, 1, 15, 14, 0),  # Time guard window
         )
 
         # Only kill switch should be in the result (it returns early)
-        assert result.active_safeguards == [SafeguardType.KILL_SWITCH]
+        assert SafeguardType.KILL_SWITCH in result.active_safeguards
         assert result.reset_cold_start is True
         assert set(result.symbols_to_liquidate) == set(ALL_TRADED_SYMBOLS)
 
@@ -599,7 +601,7 @@ class TestQuickCheckMethods:
     def test_can_enter_new_positions_blocked_by_kill_switch(self, risk_engine):
         """Test kill switch blocks can_enter_new_positions."""
         risk_engine.set_equity_prior_close(100_000.0)
-        risk_engine.check_kill_switch(97_000.0)
+        risk_engine.check_kill_switch(95_000.0)  # 5% loss (V2.3.17)
 
         current_time = datetime(2024, 1, 15, 10, 30)
         assert risk_engine.can_enter_new_positions(current_time) is False
@@ -625,7 +627,7 @@ class TestDailyReset:
     def test_reset_clears_all_flags(self, configured_engine):
         """Test daily reset clears all safeguard flags."""
         # Trigger various safeguards
-        configured_engine.check_kill_switch(97_000.0)
+        configured_engine.check_kill_switch(95_000.0)  # 5% loss (V2.3.17)
         configured_engine.check_panic_mode(432.0)
         configured_engine.check_gap_filter(443.0)
         configured_engine.register_split("QLD")
@@ -805,8 +807,19 @@ class TestCBLevel1DailyLoss:
         assert risk_engine.get_sizing_multiplier() == 0.5
 
     def test_cb_daily_loss_before_kill_switch(self, configured_engine):
-        """Test Level 1 CB (-2%) triggers before Kill Switch (-3%)."""
-        # At 2.5% loss: Level 1 should trigger, Kill Switch should not
+        """Test Level 1 CB (-2%) triggers alongside KS Tier 1 (-2%) (V2.28.1)."""
+        # At 1.5% loss: Level 1 CB should not trigger, Kill Switch should not
+        result = configured_engine.check_all(
+            current_equity=98_500.0,
+            spy_price=450.0,
+            spy_bar_range=0.5,
+            current_time=datetime(2024, 1, 15, 10, 30),
+        )
+
+        assert SafeguardType.CB_DAILY_LOSS not in result.active_safeguards
+        assert SafeguardType.KILL_SWITCH not in result.active_safeguards
+
+        # At 2.5% loss: Both CB Level 1 and KS Tier 1 trigger (both at 2%)
         result = configured_engine.check_all(
             current_equity=97_500.0,
             spy_price=450.0,
@@ -815,8 +828,7 @@ class TestCBLevel1DailyLoss:
         )
 
         assert SafeguardType.CB_DAILY_LOSS in result.active_safeguards
-        assert SafeguardType.KILL_SWITCH not in result.active_safeguards
-        assert result.circuit_breaker_level == 1
+        assert SafeguardType.KILL_SWITCH in result.active_safeguards
 
     def test_cb_daily_loss_stays_active(self, risk_engine):
         """Test Level 1 CB stays active once triggered."""

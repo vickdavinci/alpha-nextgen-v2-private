@@ -574,7 +574,59 @@ The warm entry position follows normal trend position management once establishe
 
 ---
 
-## 6.15 Key Design Decisions Summary
+## 6.15 Relationship with StartupGate (V2.30)
+
+### 6.15.1 Two Independent Systems
+
+V2.29 introduced `StartupGate` (`engines/core/startup_gate.py`) as a **separate, one-time** arming sequence, redesigned in V2.30 as an all-weather time-based system. It is important to understand how it differs from Cold Start Engine:
+
+| Property | Cold Start Engine | Startup Gate (V2.30) |
+|----------|:-----------------:|:--------------------:|
+| **Purpose** | Warm entry after start/kill switch | One-time time-based arming |
+| **Duration** | 5 trading days | 15 days (5 warmup + 5 obs + 5 reduced) |
+| **Resets on kill switch** | Yes | **No** (permanent) |
+| **Once completed** | Resets next kill switch | **Stays armed forever** |
+| **Hedges/Yield** | Based on regime | **Always allowed** (never gated) |
+| **Directional longs** | Warm entry at 50% | Blocked → 50% → 100% |
+| **Regime dependency** | Uses regime score | **None** (time-based only) |
+| **File** | `cold_start_engine.py` | `startup_gate.py` |
+
+### 6.15.2 Execution Order
+
+StartupGate runs **before** ColdStart matters:
+
+```
+Algorithm Launch
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────┐
+│ STARTUP GATE (one-time, never resets, no regime dependency) │
+│ INDICATOR_WARMUP → OBSERVATION → REDUCED → FULLY_ARMED     │
+│      5 days          5 days       5 days                    │
+│ Hedges/yield always allowed. Bearish options from OBSERVATION│
+└─────────────────────────────────────────────────────────────┘
+    │ (FULLY_ARMED — permanent)
+    ▼
+┌─────────────────────────────────────────────────────┐
+│ COLD START (resets on kill switch)                   │
+│ Day 1-5: Warm entry at 50% → Day 6+: Full          │
+│ Kill switch → Reset to Day 0 → 5 more days          │
+└─────────────────────────────────────────────────────┘
+```
+
+- While StartupGate gates directional longs, hedges and yield always run
+- ColdStart still counts its days silently during startup gate phases
+- Once StartupGate is FULLY_ARMED, it is permanently out of the picture
+- ColdStart continues to handle kill switch recovery independently
+- **No cross-dependencies** between the two systems
+
+### 6.15.3 Code Impact
+
+**Zero changes** to `cold_start_engine.py` for V2.29 or V2.30. All StartupGate logic lives in its own class and integrates via `main.py` only.
+
+---
+
+## 6.16 Key Design Decisions Summary
 
 | Decision | Rationale |
 |----------|-----------|

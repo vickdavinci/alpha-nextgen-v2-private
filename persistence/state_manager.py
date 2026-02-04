@@ -41,8 +41,19 @@ class StateKeys:
     WEEKLY = "ALPHA_NEXTGEN_WEEKLY"
     EXECUTION = "ALPHA_NEXTGEN_EXECUTION"
     ROUTER = "ALPHA_NEXTGEN_ROUTER"
+    STARTUP_GATE = "ALPHA_NEXTGEN_STARTUP_GATE"
 
-    ALL_KEYS = [CAPITAL, COLDSTART, POSITIONS, REGIME, RISK, WEEKLY, EXECUTION, ROUTER]
+    ALL_KEYS = [
+        CAPITAL,
+        COLDSTART,
+        POSITIONS,
+        REGIME,
+        RISK,
+        WEEKLY,
+        EXECUTION,
+        ROUTER,
+        STARTUP_GATE,
+    ]
 
 
 # Current schema version for migration support
@@ -278,6 +289,26 @@ class StateManager:
         if data:
             cold_start_engine.restore_state(data)
             self.log(f"STATE: LOADED | ColdStart | Days={data.get('days_running')}")
+            return True
+        return False
+
+    # =========================================================================
+    # Startup Gate State (V2.29)
+    # =========================================================================
+
+    def save_startup_gate_state(self, startup_gate: Any) -> bool:
+        """Save startup gate state."""
+        data = startup_gate.get_state_for_persistence()
+        success = self._save_state(StateKeys.STARTUP_GATE, data)
+        if success:
+            self.log(f"STATE: SAVED | StartupGate | Phase={data.get('phase')}")
+        return success
+
+    def load_startup_gate_state(self, startup_gate: Any) -> bool:
+        """Load startup gate state."""
+        data = self._load_state(StateKeys.STARTUP_GATE)
+        if data:
+            startup_gate.restore_state(data)
             return True
         return False
 
@@ -518,6 +549,7 @@ class StateManager:
         risk_engine: Optional[Any] = None,
         execution_engine: Optional[Any] = None,
         router: Optional[Any] = None,
+        startup_gate: Optional[Any] = None,
     ) -> int:
         """
         Save all state to ObjectStore.
@@ -529,6 +561,7 @@ class StateManager:
             risk_engine: Risk engine instance.
             execution_engine: Execution engine instance.
             router: Portfolio router instance.
+            startup_gate: Startup gate instance (V2.29).
 
         Returns:
             Number of categories successfully saved.
@@ -541,6 +574,10 @@ class StateManager:
 
         if cold_start_engine:
             if self.save_coldstart_state(cold_start_engine):
+                saved += 1
+
+        if startup_gate:
+            if self.save_startup_gate_state(startup_gate):
                 saved += 1
 
         if self._positions:
@@ -573,6 +610,7 @@ class StateManager:
         cold_start_engine: Optional[Any] = None,
         regime_engine: Optional[Any] = None,
         risk_engine: Optional[Any] = None,
+        startup_gate: Optional[Any] = None,
     ) -> int:
         """
         Load all state from ObjectStore.
@@ -582,6 +620,7 @@ class StateManager:
             cold_start_engine: Cold start engine instance.
             regime_engine: Regime engine instance.
             risk_engine: Risk engine instance.
+            startup_gate: Startup gate instance (V2.29).
 
         Returns:
             Number of categories successfully loaded.
@@ -594,6 +633,10 @@ class StateManager:
 
         if cold_start_engine:
             if self.load_coldstart_state(cold_start_engine):
+                loaded += 1
+
+        if startup_gate:
+            if self.load_startup_gate_state(startup_gate):
                 loaded += 1
 
         # Always load positions

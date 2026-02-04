@@ -496,14 +496,14 @@ class TestSignalFlow:
         assert hasattr(engine, "calculate")
 
     def test_risk_engine_kill_switch_check(self):
-        """Test risk engine kill switch detection."""
+        """Test risk engine kill switch detection (V2.3.17: 5% threshold)."""
         engine = RiskEngine()
         engine.set_equity_prior_close(100000)
 
-        # Simulate 3% loss
-        result = engine.check_kill_switch(current_equity=97000)
+        # Simulate 5% loss (V2.3.17: raised from 3%)
+        result = engine.check_kill_switch(current_equity=95000)
 
-        assert result is True, "3% loss should trigger kill switch"
+        assert result is True, "5% loss should trigger kill switch"
 
     def test_risk_engine_panic_mode_check(self):
         """Test risk engine panic mode detection."""
@@ -560,13 +560,15 @@ class TestOptionsIntegration:
         """Test options mode determination."""
         engine = OptionsEngine()
 
-        # Intraday: 0-2 DTE
+        # V2.13: OPTIONS_INTRADAY_DTE_MAX=5, so 0-5 DTE is INTRADAY
         assert engine.determine_mode(0).value == "INTRADAY"
         assert engine.determine_mode(1).value == "INTRADAY"
         assert engine.determine_mode(2).value == "INTRADAY"
+        assert engine.determine_mode(3).value == "INTRADAY"
+        assert engine.determine_mode(5).value == "INTRADAY"
 
-        # Swing: 3+ DTE
-        assert engine.determine_mode(3).value == "SWING"
+        # V2.13: 6+ DTE is SWING mode
+        assert engine.determine_mode(6).value == "SWING"
         assert engine.determine_mode(10).value == "SWING"
 
     def test_micro_regime_updates_during_simulation(self):

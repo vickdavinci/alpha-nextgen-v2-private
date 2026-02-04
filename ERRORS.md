@@ -836,6 +836,131 @@ if self._daily_stats["signals_generated"] > 0:
 
 ---
 
+## 10. Options Engine Errors (V2.24.x)
+
+### 10.1 self.Log() TypeError — Keyword Arguments Not Accepted
+
+**Error:**
+```
+Runtime Error: TypeError at _process_immediate_signals
+  self.Log(..., trades_only=False)
+```
+
+**Cause:** QC's native `self.Log()` method only accepts a single string parameter. Passing any keyword argument (like `trades_only=False`) causes a TypeError that crashes the entire calling function.
+
+**This is particularly dangerous because it crashes silently** — code after the Log call never executes, which can prevent critical operations like price injection or signal processing.
+
+**Solution:**
+```python
+# WRONG — crashes with TypeError
+self.Log(
+    f"V2.19_INJECT: {signal.symbol} | price={price}",
+    trades_only=False,  # ❌ QC Log() does NOT accept kwargs
+)
+
+# CORRECT — plain string only
+self.Log(
+    f"V2.19_INJECT: {signal.symbol} | price={price}"
+)
+```
+
+**Note:** If you need conditional logging (e.g., only in live mode), use a wrapper function:
+```python
+def log(self, message: str, trades_only: bool = False):
+    """Custom log wrapper that respects trades_only flag."""
+    if trades_only or not self.LiveMode:
+        self.Log(message)  # Always plain string
+```
+
+**Discovered:** V2.24.2 — This crash prevented price injection from completing, causing all options orders to be skipped with "No price available".
+
+---
+
+### 10.2 DTE Double-Filter — Silent Contract Rejection
+
+**Error:**
+```
+VASS_REJECTION: Direction=CALL | IV_Env=MEDIUM | Contracts_checked=44 | Reason=No contracts met spread criteria
+SWING: Spread construction failed - staying cash (fallback disabled)
+```
+
+**Cause:** Two separate DTE filters applied sequentially, where the second silently eliminates all contracts that passed the first:
+
+1. `_build_spread_candidate_contracts()` filters by VASS DTE range (e.g., 7-21 DTE for MEDIUM IV)
+2. `select_spread_legs()` re-applies global `config.SPREAD_DTE_MIN=14`, killing all 7-13 DTE contracts
+
+**Result:** 100% rejection rate for VASS MEDIUM IV trades. Elastic delta bands fire on an empty list.
+
+**Solution:**
+```python
+# WRONG — uses global config, ignoring VASS-specific range
+dte_filtered = [c for c in filtered
+    if config.SPREAD_DTE_MIN <= c.days_to_expiry <= config.SPREAD_DTE_MAX]
+
+# CORRECT — pass VASS-aware DTE range through call chain
+def select_spread_legs(self, contracts, direction, ...,
+                       dte_min=None, dte_max=None):
+    effective_dte_min = dte_min if dte_min is not None else config.SPREAD_DTE_MIN
+    effective_dte_max = dte_max if dte_max is not None else config.SPREAD_DTE_MAX
+    dte_filtered = [c for c in filtered
+        if effective_dte_min <= c.days_to_expiry <= effective_dte_max]
+```
+
+**Pattern:** Whenever a method applies filters from `config.*`, check if the caller has already applied a more specific filter. Pass the specific range as parameters to avoid double-filtering.
+
+**Discovered:** V2.24.2 — Root cause of zero options trades in multiple backtests.
+
+---
+
+### 10.3 QC Cloud Push 413 — File Size Exceeded
+
+**Error:**
+```
+POST request to https://www.quantconnect.com/api/v2/projects/update failed with status code 413
+The uploaded files exceed the allowed size limit.
+```
+
+**Cause:** `lean cloud push` sends ALL project files in a single HTTP POST. If the total size exceeds the QC server's request body limit, the push silently fails and backtests run on stale code.
+
+**Solution:**
+1. Strip comments and docstrings from Python files before push (minify_workspace.py)
+2. Clean `__pycache__` directories (contributed ~1MB to total)
+3. Detect 413 errors in push output instead of swallowing them
+
+```bash
+# In qc_backtest.sh — detect push failure
+PUSH_OUTPUT=$(lean cloud push --project "$PROJECT_NAME" 2>&1)
+if echo "$PUSH_OUTPUT" | grep -q "413\|exceed.*size\|failed"; then
+    echo "Push FAILED — files exceed QC size limit"
+    exit 1
+fi
+```
+
+**Discovered:** V2.24.2 — Backtests were running on pre-V2.24 stale code because the push script used `2>/dev/null` which swallowed all errors.
+
+---
+
+### 10.4 Options Price Discovery Failure — ROUTER: SKIP
+
+**Error:**
+```
+ROUTER: SKIP | QQQ 220121C00395000 | No price available
+```
+
+**Cause:** Options contracts may not have prices in `current_prices` dict when they are newly discovered. The 3-layer price discovery chain must be followed:
+
+1. `current_prices[symbol]` — from portfolio holdings
+2. `metadata['contract_price']` — from options engine chain data
+3. `Securities[symbol].BidPrice/AskPrice` — from QC Securities object
+
+If any layer crashes (e.g., due to a TypeError in logging before layer 2 executes), all subsequent layers are skipped and the order is silently dropped.
+
+**Solution:** Ensure the entire price injection flow completes without exceptions. Do not add `self.Log()` calls with keyword arguments in the injection path. Wrap in try/except if needed.
+
+**Discovered:** V2.24.2 — The `self.Log(trades_only=False)` TypeError (10.1 above) crashed before the V2.19 price injection code could set `current_prices[signal.symbol]`.
+
+---
+
 ## Quick Reference: Error Categories
 
 | Error Type | Common Cause | First Check |
@@ -849,3 +974,7 @@ if self._daily_stats["signals_generated"] > 0:
 | Calculation wrong | Types/precision | Decimal vs percentage |
 | Split corruption | Corporate action | Check `data.Splits.ContainsKey()` |
 | Logs truncated | 100KB limit | Add `IsWarmingUp` checks, reduce daily logs |
+| Log() TypeError | kwargs in self.Log() | Only pass plain string to `self.Log()` |
+| DTE double-filter | Two-stage DTE filtering | Pass VASS DTE range through call chain |
+| Push 413 | Total project too large | Run minify_workspace.py before push |
+| ROUTER: SKIP | No price for options | Check 3-layer price discovery chain |

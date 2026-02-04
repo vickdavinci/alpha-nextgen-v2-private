@@ -16,11 +16,14 @@ class Urgency(Enum):
     Order execution urgency.
 
     IMMEDIATE: Execute now via MarketOrder (used by Mean Reversion, Risk events)
-    EOD: Execute at next open via MarketOnOpenOrder (used by Trend, Hedge)
+    EOD: Execute at next open via MarketOnOpenOrder (used by Hedge)
+    MOC: Execute at today's close via MarketOnCloseOrder (used by Trend)
+         V2.4.2: Added to eliminate overnight gap risk on trend entries
     """
 
     IMMEDIATE = "IMMEDIATE"
     EOD = "EOD"
+    MOC = "MOC"  # V2.4.2: Market-On-Close for same-day trend entries
 
 
 class Phase(Enum):
@@ -179,3 +182,21 @@ class WhipsawState(Enum):
     TRENDING = "TRENDING"  # 0-2 reversals: Normal trading
     CHOPPY = "CHOPPY"  # 3-4 reversals: Reduce size 50%
     WHIPSAW = "WHIPSAW"  # 5+ reversals: Credits only or no trade
+
+
+class QQQMove(Enum):
+    """
+    V2.3.4: QQQ price move classification for Micro Regime Engine.
+
+    QQQ move direction is critical for determining option direction:
+    - QQQ UP + VIX FALLING = Strong fade setup (buy PUT)
+    - QQQ DOWN + VIX FALLING = Recovery bounce (buy CALL)
+    - QQQ UP + VIX RISING = Momentum, don't fade
+    - QQQ FLAT = No edge, no trade
+    """
+
+    UP_STRONG = "UP_STRONG"  # QQQ > +0.8% from open
+    UP = "UP"  # QQQ +0.15% to +0.8% from open (V2.3.4: lowered from 0.3%)
+    FLAT = "FLAT"  # QQQ ±0.15% from open (V2.3.4: lowered from 0.3%)
+    DOWN = "DOWN"  # QQQ -0.15% to -0.8% from open (V2.3.4: lowered from 0.3%)
+    DOWN_STRONG = "DOWN_STRONG"  # QQQ < -0.8% from open

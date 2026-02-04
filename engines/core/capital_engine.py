@@ -125,6 +125,34 @@ class CapitalEngine:
 
         return state
 
+    def get_tradeable_equity_settlement_aware(
+        self, total_equity: float, unsettled_cash: float
+    ) -> float:
+        """
+        V2.9: Calculate tradeable equity minus unsettled cash.
+
+        Options settle T+1. This prevents 'Insufficient Funds' errors
+        on post-holiday opens by subtracting Portfolio.UnsettledCash.
+
+        Args:
+            total_equity: Current total portfolio value.
+            unsettled_cash: Portfolio.UnsettledCash from QC.
+
+        Returns:
+            Tradeable equity adjusted for unsettled cash.
+        """
+        base_tradeable = tradeable_equity(total_equity, self._locked_amount)
+        adjusted = max(0.0, base_tradeable - unsettled_cash)
+
+        if unsettled_cash > 0:
+            self.log(
+                f"CAPITAL: Settlement-aware equity | "
+                f"Base=${base_tradeable:,.0f} | Unsettled=${unsettled_cash:,.0f} | "
+                f"Adjusted=${adjusted:,.0f}"
+            )
+
+        return adjusted
+
     def end_of_day_update(self, total_equity: float) -> CapitalState:
         """
         Perform end-of-day phase transition check.

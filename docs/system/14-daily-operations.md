@@ -145,6 +145,21 @@ QuantConnect handles timezone conversion automatically.
     │   ├── Apply exponential smoothing
     │   └── Output: RegimeState with hedge targets
     │
+    ├── STARTUP GATE (V2.30) — runs AFTER regime, BEFORE strategy signals
+    │   ├── Update phase: advance day counter (time-based, no regime dependency)
+    │   ├── Hedges ALWAYS run (never gated by StartupGate)
+    │   ├── Yield ALWAYS runs (never gated by StartupGate)
+    │   ├── Trend gated by allows_directional_longs() (REDUCED+)
+    │   ├── Options: direction-aware gating via _generate_options_signals_gated()
+    │   │   ├── Bullish (regime > 60): needs allows_directional_longs()
+    │   │   └── Bearish (regime < 45): needs allows_bearish_options() (OBSERVATION+)
+    │   └── If FULLY_ARMED: no-op (gate permanently passed)
+    │
+    ├── GHOST SPREAD RECONCILIATION (V2.29 P0) — Friday only
+    │   ├── _reconcile_spread_state() called from _on_friday_firewall()
+    │   ├── If spread state exists but no options held → clear ghost state
+    │   └── Clear router spread margins
+    │
     ├── CAPITAL ENGINE
     │   ├── Check phase transition eligibility
     │   ├── Check lockbox milestones
@@ -240,18 +255,24 @@ gantt
 
 ### Which Engines Are Active When?
 
-| Time Window | Regime | Capital | Risk | Cold Start | Trend | MR | Hedge | Yield | Options |
-|-------------|:------:|:-------:|:----:|:----------:|:-----:|:--:|:-----:|:-----:|:-------:|
-| 09:00–09:30 | Preview | Load | — | Check | — | — | — | — | — |
-| 09:30–09:33 | — | — | ✅ | — | — | — | — | — | — |
-| 09:33–10:00 | — | — | ✅ | — | Monitor | — | — | — | — |
-| 10:00–13:55 | — | — | ✅ | ✅ | Monitor | ✅ | — | — | ✅ |
-| 13:55–14:10 | — | — | ✅ | — | Monitor | ❌ | — | — | ❌ |
-| 14:10–14:30 | — | — | ✅ | — | Monitor | ✅ | — | — | ✅ |
-| 14:30–15:00 | — | — | ✅ | — | Monitor | ✅ | — | — | Exit only |
-| 15:00–15:45 | — | — | ✅ | — | Monitor | Exit only | — | — | Exit only |
-| 15:45–16:00 | ✅ | ✅ | ✅ | — | ✅ | Exit | ✅ | ✅ | Exit |
-| 16:00+ | — | — | — | — | — | — | — | — | — |
+| Time Window | Regime | Capital | Risk | Startup Gate | Cold Start | Trend | MR | Hedge | Yield | Options |
+|-------------|:------:|:-------:|:----:|:------------:|:----------:|:-----:|:--:|:-----:|:-----:|:-------:|
+| 09:00–09:30 | Preview | Load | — | — | Check | — | — | — | — | — |
+| 09:30–09:33 | — | — | ✅ | — | — | — | — | — | — | — |
+| 09:33–10:00 | — | — | ✅ | — | — | Monitor | — | — | — | — |
+| 10:00–13:55 | — | — | ✅ | Gate | ✅ | Monitor | ✅ | — | — | ✅ |
+| 13:55–14:10 | — | — | ✅ | Gate | — | Monitor | ❌ | — | — | ❌ |
+| 14:10–14:30 | — | — | ✅ | Gate | — | Monitor | ✅ | — | — | ✅ |
+| 14:30–15:00 | — | — | ✅ | Gate | — | Monitor | ✅ | — | — | Exit only |
+| 15:00–15:45 | — | — | ✅ | Gate | — | Monitor | Exit only | — | — | Exit only |
+| 15:45–16:00 | ✅ | ✅ | ✅ | ✅ EOD | — | ✅ | Exit | ✅ | ✅ | Exit |
+| 16:00+ | — | — | — | — | — | — | — | — | — | — |
+
+**Startup Gate (V2.30 All-Weather):**
+- "Gate" = Granular gating: hedges/yield always allowed, bearish options from OBSERVATION, directional longs from REDUCED
+- "✅ EOD" = End-of-day update: advance day counter (time-based, no regime dependency)
+- Once FULLY_ARMED (permanent), gate column becomes "—" forever
+- 15 days total: INDICATOR_WARMUP (5d) → OBSERVATION (5d) → REDUCED (5d) → FULLY_ARMED
 
 **Note:** Options Engine entries close at 14:30 (late day constraint), force close at 15:45.
 
@@ -643,6 +664,8 @@ flowchart TD
 | **15:45 MR force close** | Ensures no 3× overnight exposure |
 | **15:45 options force close** | No overnight options exposure (theta decay) |
 | **State persistence at 16:00** | All daily data finalized |
+| **StartupGate before strategies** | Time-based all-weather gating: hedges always run, directional longs gated (V2.30) |
+| **Ghost spread Friday safety net** | Weekly reconciliation catches any stale spread state (V2.29) |
 | **Risk checks ALWAYS first** | Safety before opportunity |
 | **MA200+ADX for trend** | More reliable than BB compression breakout (V2) |
 | **VIX-adjusted MR sizing** | Reduces exposure in high volatility (V2.1) |

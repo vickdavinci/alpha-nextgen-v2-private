@@ -38,6 +38,7 @@ QuantConnect provides the **ObjectStore** for persistent storage:
 |----------|------------------|:--------------:|
 | **Capital State** | EOD, on milestones | 🔴 Critical |
 | **Cold Start State** | EOD, on kill switch | 🔴 Critical |
+| **Startup Gate State** | EOD | 🔴 Critical |
 | **Position State** | EOD, on fills | 🔴 Critical |
 | **Regime State** | EOD | 🟡 Important |
 | **Risk State** | EOD, on triggers | 🟡 Important |
@@ -138,6 +139,47 @@ QuantConnect provides the **ObjectStore** for persistent storage:
   }
 }
 ```
+
+---
+
+## 15.4.5 Startup Gate State (V2.30)
+
+### Persisted Variables
+
+| Variable | Type | Default | Description |
+|----------|------|:-------:|-------------|
+| `phase` | String | "INDICATOR_WARMUP" | Current startup gate phase |
+| `days_in_phase` | Integer | 0 | Days spent in current phase |
+
+### Save Triggers
+
+| Event | Variables Saved |
+|-------|-----------------|
+| End of day (16:00) | All startup gate state |
+
+### Example Persisted Data
+
+```json
+{
+  "startup_gate_state": {
+    "phase": "OBSERVATION",
+    "days_in_phase": 3
+  }
+}
+```
+
+### Backward Compatibility (V2.29 → V2.30)
+
+When loading V2.29 state, `restore_state()` performs automatic migration:
+- `REGIME_GATE` phase maps to `INDICATOR_WARMUP`
+- `arming_days` field is read as fallback for `days_in_phase`
+- `regime_gate_consecutive_days` field is ignored (no longer used)
+
+### Key Design Decision
+
+The Startup Gate state is **never reset by kill switch**. This is deliberate — StartupGate is a one-time arming sequence that progresses permanently from INDICATOR_WARMUP → OBSERVATION → REDUCED → FULLY_ARMED. Once FULLY_ARMED, it stays armed forever. This is separate from ColdStartEngine (which resets on kill switch).
+
+V2.30 removed the regime dependency: progression is purely time-based (5 days per phase, 15 days total). This ensures the gate completes in all market conditions, not just bull markets.
 
 ---
 
@@ -328,10 +370,13 @@ ALPHA_NEXTGEN_{CATEGORY}
 |-----|----------|
 | `ALPHA_NEXTGEN_CAPITAL` | Capital state |
 | `ALPHA_NEXTGEN_COLDSTART` | Cold start state |
+| `ALPHA_NEXTGEN_STARTUP_GATE` | Startup gate phase + arming state (V2.29) |
 | `ALPHA_NEXTGEN_POSITIONS` | Position tracking |
 | `ALPHA_NEXTGEN_REGIME` | Regime smoothing |
 | `ALPHA_NEXTGEN_RISK` | Risk state |
 | `ALPHA_NEXTGEN_WEEKLY` | Weekly breaker state |
+| `ALPHA_NEXTGEN_EXECUTION` | Execution engine state |
+| `ALPHA_NEXTGEN_ROUTER` | Portfolio router state |
 
 ### 15.9.2 Why Separate Keys?
 
@@ -608,10 +653,13 @@ def reset_all_state(self):
     keys = [
         "ALPHA_NEXTGEN_CAPITAL",
         "ALPHA_NEXTGEN_COLDSTART",
+        "ALPHA_NEXTGEN_STARTUP_GATE",
         "ALPHA_NEXTGEN_POSITIONS",
         "ALPHA_NEXTGEN_REGIME",
         "ALPHA_NEXTGEN_RISK",
-        "ALPHA_NEXTGEN_WEEKLY"
+        "ALPHA_NEXTGEN_WEEKLY",
+        "ALPHA_NEXTGEN_EXECUTION",
+        "ALPHA_NEXTGEN_ROUTER",
     ]
     for key in keys:
         if self.ObjectStore.ContainsKey(key):
@@ -664,10 +712,13 @@ Reset specific categories only:
 |-----|----------|----------|
 | `ALPHA_NEXTGEN_CAPITAL` | Capital | Phase, lockbox, milestones |
 | `ALPHA_NEXTGEN_COLDSTART` | Cold Start | Days running, warm entry |
+| `ALPHA_NEXTGEN_STARTUP_GATE` | Startup Gate | Phase, days_in_phase (V2.30) |
 | `ALPHA_NEXTGEN_POSITIONS` | Positions | Entry prices, stops, highs |
 | `ALPHA_NEXTGEN_REGIME` | Regime | Smoothed score |
 | `ALPHA_NEXTGEN_RISK` | Risk | Kill dates, prior close |
 | `ALPHA_NEXTGEN_WEEKLY` | Weekly | Week start equity |
+| `ALPHA_NEXTGEN_EXECUTION` | Execution | Execution engine state |
+| `ALPHA_NEXTGEN_ROUTER` | Router | Portfolio router state |
 
 ### Default Values
 

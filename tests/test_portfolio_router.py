@@ -643,57 +643,6 @@ class TestRiskEngineIntegration:
         assert router.get_risk_status() is True
 
 
-class TestSHVLiquidation:
-    """Tests for SHV liquidation support."""
-
-    def test_calculate_shv_liquidation(self):
-        """Test calculating SHV liquidation."""
-        router = PortfolioRouter()
-
-        result = router.calculate_shv_liquidation(
-            cash_needed=20000.0,
-            current_shv_value=45000.0,
-            locked_amount=10000.0,
-            tradeable_equity=100000.0,
-        )
-
-        assert result is not None
-        assert result.symbol == "SHV"
-        assert result.urgency == Urgency.IMMEDIATE
-        # Remaining SHV: $45k - $20k = $25k
-        # Target weight: $25k / $100k = 25%
-        assert pytest.approx(result.target_weight, rel=0.01) == 0.25
-
-    def test_calculate_shv_liquidation_limited_by_available(self):
-        """Test liquidation limited by available SHV."""
-        router = PortfolioRouter()
-
-        result = router.calculate_shv_liquidation(
-            cash_needed=50000.0,  # Need more than available
-            current_shv_value=45000.0,
-            locked_amount=10000.0,  # Only $35k available
-            tradeable_equity=100000.0,
-        )
-
-        assert result is not None
-        # Can only sell $35k (available), remaining = $10k (locked)
-        # Target weight: $10k / $100k = 10%
-        assert pytest.approx(result.target_weight, rel=0.01) == 0.10
-
-    def test_calculate_shv_liquidation_no_available(self):
-        """Test no liquidation when no SHV available."""
-        router = PortfolioRouter()
-
-        result = router.calculate_shv_liquidation(
-            cash_needed=20000.0,
-            current_shv_value=10000.0,
-            locked_amount=10000.0,  # All locked
-            tradeable_equity=100000.0,
-        )
-
-        assert result is None
-
-
 class TestStateManagement:
     """Tests for state management."""
 

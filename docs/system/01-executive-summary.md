@@ -33,7 +33,8 @@
 
 | Strategy | Thesis | Holding Period |
 |----------|--------|:---------------|
-| **Trend** | Volatility compression precedes breakouts | Days to weeks |
+| **Trend** | MA200+ADX momentum in diverse sectors | Days to weeks |
+| **Options** | QQQ directional moves via spreads/ITM calls | Hours to weeks |
 | **Mean Reversion** | Extreme oversold conditions revert quickly | Minutes to hours |
 | **Hedge** | Tail risk protection preserves capital | As needed |
 | **Yield** | Idle cash should earn return | Ongoing |
@@ -81,11 +82,12 @@ When conditions deteriorate:
 
 | Constraint | Rationale |
 |------------|-----------|
-| No 3x overnight holds | Decay risk too high; volatility drag destroys returns |
+| No 3x intraday-only overnight | TQQQ/SOXL (MR) must close by 15:45; TNA/FAS (Trend) allowed overnight with MA200+ADX confirmation |
 | Maximum 3% daily loss | Capital preservation; live to trade another day |
 | No trading during Fed window | 13:55-14:10 volatility is unpredictable |
 | No entries on gap days | -1.5% SPY gap indicates elevated risk |
 | Minimum 5 days before full strategies | Cold start allows system calibration |
+| Options close by 15:45 | No overnight options exposure |
 
 ### Soft Constraints (Configurable)
 
@@ -117,8 +119,8 @@ When conditions deteriorate:
 |---------------|-----|
 | Maximizing absolute returns | Risk of ruin too high |
 | High-frequency trading | Infrastructure complexity |
-| Options strategies | Platform limitations, complexity |
-| Overnight 3x positions | Decay and gap risk |
+| Overnight options positions | Gamma risk; all options close by 15:45 |
+| Overnight 3x intraday positions | TQQQ/SOXL decay risk (TNA/FAS allowed with trend confirmation) |
 
 ---
 
@@ -248,10 +250,10 @@ Profit protection mechanism:
 
 | Decision | Alternatives Considered | Why This Choice |
 |----------|------------------------|-----------------|
-| **No options trading** | Vol Harvest strategy | Platform complexity, keeps system simpler |
+| **QQQ options with 25% allocation** | No options / larger allocation | Balanced risk/reward with spread protection |
 | **Static exposure groups** | Rolling correlation | Easier to validate, more predictable |
 | **Proxy symbols for regime** | Traded symbols | Cleaner signals, no interference |
-| **2x for overnight, 3x intraday** | All 3x or all 2x | Balances opportunity vs decay |
+| **2x for overnight, 3x intraday** | All 3x or all 2x | Balances opportunity vs decay (except TNA/FAS trend) |
 | **Single regime score** | Separate scores per strategy | Simpler coordination, consistent behavior |
 | **Router hub architecture** | Direct strategy-to-broker | Central control, easier debugging |
 
@@ -265,7 +267,7 @@ Profit protection mechanism:
 | **Market making** | Not providing liquidity |
 | **Arbitrage** | Not exploiting price discrepancies |
 | **Machine learning** | Explicit rules, no black boxes |
-| **Options trading** | Platform limitations |
+| **Naked options selling** | Capped risk via spreads only |
 | **24/7 crypto trading** | Different asset class |
 
 ---

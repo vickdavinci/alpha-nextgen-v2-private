@@ -25,17 +25,17 @@ class TestOptionsChainDTEFilter:
     """Test that options chain uses config-driven DTE values."""
 
     def test_config_dte_values(self):
-        """Verify config has correct DTE values for V2.3 dual-mode architecture."""
-        # V2.3: 0-45 DTE range (0-2 Intraday, 5-45 Swing)
+        """Verify config has correct DTE values for V2.23 VASS dual-mode architecture."""
+        # V2.23: 0-60 DTE range (0-2 Intraday, 5-60 Swing incl. VASS Low IV monthly)
         assert config.OPTIONS_DTE_MIN == 0, "OPTIONS_DTE_MIN should be 0 for intraday"
-        assert config.OPTIONS_DTE_MAX == 45, "OPTIONS_DTE_MAX should be 45 for swing mode"
+        assert config.OPTIONS_DTE_MAX == 60, "OPTIONS_DTE_MAX should be 60 for VASS Low IV monthly"
 
     def test_dte_filter_rejects_long_dated_options(self):
-        """Options with DTE > 45 should be filtered out."""
+        """Options with DTE > 60 should be filtered out."""
         # This tests the logic that would be in _select_best_option_contract
-        dte = 60  # 60 DTE option - exceeds max
+        dte = 75  # 75 DTE option - exceeds max
         is_valid = config.OPTIONS_DTE_MIN <= dte <= config.OPTIONS_DTE_MAX
-        assert not is_valid, "60 DTE options should be rejected"
+        assert not is_valid, "75 DTE options should be rejected"
 
     def test_dte_filter_accepts_valid_dte_options(self):
         """Options with DTE 0-45 should be accepted."""

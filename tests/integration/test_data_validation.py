@@ -110,10 +110,11 @@ class TestOptionsChainFiltering:
 
     def test_dte_filter_swing_mode(self):
         """
-        Test DTE filter for Swing Mode (5-45 DTE).
+        Test DTE filter for Swing Mode (14-45 DTE).
+        V2.3.22: Raised from 6 to 14 to reduce overnight gap risk.
         """
         # Swing mode DTE range
-        assert config.OPTIONS_SWING_DTE_MIN == 5
+        assert config.OPTIONS_SWING_DTE_MIN == 14  # V2.3.22: Raised from 6 to 14
         assert config.OPTIONS_SWING_DTE_MAX == 45
 
         # Test filtering
@@ -121,14 +122,14 @@ class TestOptionsChainFiltering:
 
         # Valid swing contracts
         valid_expiries = [
-            current_date + timedelta(days=5),  # Min
-            current_date + timedelta(days=20),  # Middle
+            current_date + timedelta(days=14),  # Min (V2.3.22: raised to 14)
+            current_date + timedelta(days=28),  # Middle
             current_date + timedelta(days=45),  # Max
         ]
 
         # Invalid swing contracts
         invalid_expiries = [
-            current_date + timedelta(days=2),  # Too soon
+            current_date + timedelta(days=7),  # Too soon (< 14 DTE)
             current_date + timedelta(days=50),  # Too far
         ]
 
@@ -142,11 +143,14 @@ class TestOptionsChainFiltering:
 
     def test_dte_filter_intraday_mode(self):
         """
-        Test DTE filter for Intraday Mode (0-2 DTE).
+        Test DTE filter for Intraday Mode (1-5 DTE).
+
+        V2.13: Changed from 0-1 to 1-5 to match VASS strategy and improve data quality.
+        0DTE has poor Greeks coverage in QC backtest data, causing 306 silent failures.
         """
-        # Intraday mode DTE range
-        assert config.OPTIONS_INTRADAY_DTE_MIN == 0
-        assert config.OPTIONS_INTRADAY_DTE_MAX == 2
+        # Intraday mode DTE range (V2.13: 1-5 DTE for VASS alignment)
+        assert config.OPTIONS_INTRADAY_DTE_MIN == 1
+        assert config.OPTIONS_INTRADAY_DTE_MAX == 5
 
     def test_atm_strike_filter(self):
         """
@@ -192,12 +196,12 @@ class TestOptionsChainFiltering:
         """
         Test liquidity filters (spread, open interest).
         """
-        # Max bid-ask spread
-        assert config.OPTIONS_SPREAD_MAX_PCT == 0.05  # 5%
-        assert config.OPTIONS_SPREAD_WARNING_PCT == 0.10  # 10%
+        # Max bid-ask spread - V2.3.10: Widened from 5% to 15% for ATM contracts
+        assert config.OPTIONS_SPREAD_MAX_PCT == 0.15  # V2.3.10: 15% (was 5%)
+        assert config.OPTIONS_SPREAD_WARNING_PCT == 0.25  # V2.3.7: Widened from 10% to 25%
 
-        # Min open interest
-        assert config.OPTIONS_MIN_OPEN_INTEREST == 5000
+        # Min open interest (V2.3.7: Relaxed from 200 to 100)
+        assert config.OPTIONS_MIN_OPEN_INTEREST == 100
 
     def test_min_premium_filter(self):
         """

@@ -29,6 +29,7 @@ from utils.calculations import (
     aggregate_regime_score,
     breadth_factor_score,
     breadth_spread,
+    chop_factor_score,
     credit_factor_score,
     credit_spread,
     period_return,
@@ -44,7 +45,7 @@ from utils.calculations import (
 @dataclass
 class RegimeState:
     """
-    Complete regime calculation output (V2.3: includes VIX).
+    Complete regime calculation output (V2.26: includes Chop).
 
     Contains the smoothed score, classification, component scores,
     raw values, and derived flags/targets for other engines.
@@ -77,8 +78,10 @@ class RegimeState:
     tmf_target_pct: float
     psq_target_pct: float
 
-    # Previous score for continuity
+    # Fields with defaults (must come after non-default fields)
     previous_smoothed: float = 50.0
+    chop_score: float = 50.0  # V2.26 NEW: Trend quality score (ADX-based)
+    spy_adx_value: float = 25.0  # V2.26 NEW: Raw SPY ADX(14) value
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for logging or persistence."""
@@ -91,7 +94,9 @@ class RegimeState:
             "volatility_score": round(self.volatility_score, 2),
             "breadth_score": round(self.breadth_score, 2),
             "credit_score": round(self.credit_score, 2),
+            "chop_score": round(self.chop_score, 2),
             "vix_level": round(self.vix_level, 2),
+            "spy_adx_value": round(self.spy_adx_value, 2),
             "realized_vol": round(self.realized_vol, 4),
             "vol_percentile": round(self.vol_percentile, 2),
             "breadth_spread": round(self.breadth_spread_value, 4),
@@ -103,12 +108,12 @@ class RegimeState:
         }
 
     def __str__(self) -> str:
-        """Human-readable summary for logging (V2.3: includes VIX)."""
+        """Human-readable summary for logging (V2.26: includes Chop)."""
         return (
             f"RegimeState({self.state.value} | "
             f"Score={self.smoothed_score:.1f} | "
             f"T={self.trend_score:.0f} VIX={self.vix_score:.0f} RV={self.volatility_score:.0f} "
-            f"B={self.breadth_score:.0f} C={self.credit_score:.0f} | "
+            f"B={self.breadth_score:.0f} C={self.credit_score:.0f} C_ADX={self.chop_score:.0f} | "
             f"Hedge: TMF={self.tmf_target_pct:.0%} PSQ={self.psq_target_pct:.0%})"
         )
 
@@ -158,9 +163,10 @@ class RegimeEngine:
         spy_sma50: float,
         spy_sma200: float,
         vix_level: float = 20.0,
+        spy_adx: float = 25.0,
     ) -> RegimeState:
         """
-        Calculate regime state from proxy data (V2.3: includes VIX).
+        Calculate regime state from proxy data (V2.26: includes Chop).
 
         Args:
             spy_closes: List of SPY closing prices (most recent last).
@@ -172,6 +178,7 @@ class RegimeEngine:
             spy_sma50: Current SPY 50-day SMA.
             spy_sma200: Current SPY 200-day SMA.
             vix_level: Current VIX value (V2.3 NEW, default 20.0).
+            spy_adx: Current SPY ADX(14) value (V2.26 NEW, default 25.0).
 
         Returns:
             RegimeState with all scores, flags, and hedge targets.
@@ -228,7 +235,15 @@ class RegimeEngine:
         credit_spread_val = credit_spread(hyg_return, ief_return)
         credit = credit_factor_score(credit_spread_val)
 
-        # Aggregate raw score (V2.3: includes VIX)
+        # Calculate chop factor (V2.26 NEW: ADX-based trend quality)
+        chop = chop_factor_score(
+            adx_value=spy_adx,
+            strong=config.CHOP_ADX_THRESHOLD_STRONG,
+            moderate=config.CHOP_ADX_THRESHOLD_MODERATE,
+            weak=config.CHOP_ADX_THRESHOLD_WEAK,
+        )
+
+        # Aggregate raw score (V2.26: includes Chop)
         raw = aggregate_regime_score(
             trend_score=trend,
             vol_score=volatility,
@@ -240,6 +255,8 @@ class RegimeEngine:
             weight_credit=config.WEIGHT_CREDIT,
             vix_score=vix,
             weight_vix=config.WEIGHT_VIX,
+            chop_score=chop,
+            weight_chop=config.WEIGHT_CHOP,
         )
 
         # Apply exponential smoothing
@@ -271,11 +288,13 @@ class RegimeEngine:
             volatility_score=volatility,
             breadth_score=breadth,
             credit_score=credit,
+            chop_score=chop,
             vix_level=vix_level,
             realized_vol=current_vol,
             vol_percentile=vol_pct,
             breadth_spread_value=breadth_spread_val,
             credit_spread_value=credit_spread_val,
+            spy_adx_value=spy_adx,
             new_longs_allowed=new_longs_allowed,
             cold_start_allowed=cold_start_allowed,
             tmf_target_pct=tmf_pct,

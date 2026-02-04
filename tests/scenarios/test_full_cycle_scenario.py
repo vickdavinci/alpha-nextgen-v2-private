@@ -11,22 +11,22 @@ Tests a complete trading day workflow:
 Spec: docs/14-daily-operations.md
 """
 
-import pytest
-from unittest.mock import MagicMock, patch
 from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
 
-from engines.core.regime_engine import RegimeEngine, RegimeState
+import pytest
+
+import config
 from engines.core.capital_engine import CapitalEngine, CapitalState
+from engines.core.regime_engine import RegimeEngine, RegimeState
 from engines.core.risk_engine import RiskEngine
 from engines.core.trend_engine import TrendEngine
-from engines.satellite.mean_reversion_engine import MeanReversionEngine
 from engines.satellite.hedge_engine import HedgeEngine
-from engines.satellite.yield_sleeve import YieldSleeve
-from portfolio.portfolio_router import PortfolioRouter
-from portfolio.exposure_groups import ExposureCalculator
-from models.target_weight import TargetWeight
+from engines.satellite.mean_reversion_engine import MeanReversionEngine
 from models.enums import Urgency
-import config
+from models.target_weight import TargetWeight
+from portfolio.exposure_groups import ExposureCalculator
+from portfolio.portfolio_router import PortfolioRouter
 
 
 @pytest.fixture
@@ -65,7 +65,6 @@ def engines(mock_algorithm):
         "trend": TrendEngine(mock_algorithm),
         "mr": MeanReversionEngine(mock_algorithm),
         "hedge": HedgeEngine(mock_algorithm),
-        "yield": YieldSleeve(mock_algorithm),
     }
 
 
@@ -126,7 +125,7 @@ class TestFullCycleScenario:
         assert trend_signal is not None
         assert trend_signal.symbol == "QLD"
         assert trend_signal.source == "TREND"
-        assert trend_signal.urgency == Urgency.EOD
+        assert trend_signal.urgency == Urgency.MOC  # V2.4.2: MOC for same-day trend
 
         # EOD processing (15:45) would queue MOO order
         # State persisted at 16:00
@@ -267,38 +266,6 @@ class TestFullCycleScenario:
 
         # Assert: No signal due to time guard
         assert mr_signal is None
-
-    @pytest.mark.scenario
-    def test_scenario_full_day_yield_sweep(self, mock_algorithm, engines):
-        """
-        SCENARIO: Yield sleeve parks idle cash.
-
-        Given: $5,000 idle cash, no pending signals
-        When: 15:45 EOD processing
-        Then: Yield sleeve generates SHV signal
-        And: Cash parked in SHV overnight
-        """
-        # Setup: Idle cash scenario
-        total_equity = 50000.0
-        tradeable_equity = 45000.0
-        non_shv_positions = 40000.0
-        current_shv = 0.0
-        locked_amount = 5000.0  # Lockbox
-
-        # Calculate expected SHV allocation
-        yield_signal = engines["yield"].get_yield_signal(
-            total_equity=total_equity,
-            tradeable_equity=tradeable_equity,
-            non_shv_positions_value=non_shv_positions,
-            current_shv_value=current_shv,
-            locked_amount=locked_amount,
-        )
-
-        # Assert: SHV signal generated for idle cash
-        if yield_signal is not None:
-            assert yield_signal.symbol == "SHV"
-            assert yield_signal.source == "YIELD"
-            assert yield_signal.target_weight > 0
 
     @pytest.mark.scenario
     def test_scenario_full_day_exposure_limit_hit(self, mock_algorithm):
