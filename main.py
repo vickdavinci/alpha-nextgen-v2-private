@@ -190,8 +190,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2015, 1, 1)
-        self.SetEndDate(2015, 12, 31)  # V2.25 full year 2015 backtest
+        self.SetStartDate(2022, 1, 1)
+        self.SetEndDate(2022, 3, 31)  # V2.27 Q1 2022 backtest
         self.SetCash(config.PHASE_SEED_MIN)  # $50,000 seed capital
 
         # All times are Eastern
@@ -254,6 +254,7 @@ class AlphaNextGen(QCAlgorithm):
         self._splits_logged_today = set()  # Log throttle: only log each split once/day
         self._greeks_breach_logged = False  # Log throttle: only log Greeks breach once/position
         self._kill_switch_handled_today = False  # V2.3: Only handle kill switch once per day
+        self._margin_cb_in_progress = False  # V2.27: Re-entry guard for margin CB liquidation
         self._last_vass_rejection_log = None  # V2.10: Throttle VASS rejection logs
         self._last_swing_scan_time = None  # V2.19: Throttle swing spread scans (1/hour)
 
@@ -1862,7 +1863,12 @@ class AlphaNextGen(QCAlgorithm):
             # Track consecutive margin calls and enter cooldown after hitting limit
             if "Margin" in str(orderEvent.Message):
                 self._margin_call_consecutive_count += 1
-                if self._margin_call_consecutive_count >= config.MARGIN_CALL_MAX_CONSECUTIVE:
+                if (
+                    self._margin_call_consecutive_count >= config.MARGIN_CALL_MAX_CONSECUTIVE
+                    and not self._margin_cb_in_progress
+                ):
+                    # V2.27: Re-entry guard — MarketOrder inside OnOrderEvent can recurse
+                    self._margin_cb_in_progress = True
                     # V2.12 Fix #5: LIQUIDATE positions, not just cooldown
                     # Evidence: V2.11 showed positions held overnight into gap → kill switch
                     self.Log(
@@ -1898,6 +1904,8 @@ class AlphaNextGen(QCAlgorithm):
                                 self.Log(f"MARGIN_CB_LIQUIDATE: Closed {symbol_str[-21:]} x{qty}")
                     except Exception as e:
                         self.Log(f"MARGIN_CB_LIQUIDATE: Error liquidating | {e}")
+
+                    self._margin_cb_in_progress = False
 
                     # Clear spread tracking
                     if self.options_engine:
