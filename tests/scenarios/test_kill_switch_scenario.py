@@ -169,18 +169,18 @@ class TestKillSwitchScenario:
     @pytest.mark.scenario
     def test_scenario_kill_switch_threshold_boundary(self, mock_algorithm):
         """
-        SCENARIO: Graduated KS Tier 1 triggers at exactly -3%, not before (V2.27).
+        SCENARIO: Graduated KS Tier 1 triggers at exactly -2%, not before (V2.28.1).
 
-        Given: Portfolio at -2.99% loss
-        When: Loss increases to -3.00%
+        Given: Portfolio at -1.99% loss
+        When: Loss increases to -2.00%
         Then: Kill switch triggers (Tier 1 REDUCE)
         """
         # Fresh engine for each test
         engine = RiskEngine(mock_algorithm)
         engine.set_equity_prior_close(50000.0)
 
-        # Test: -2.99% should NOT trigger
-        current_below = 50000.0 * (1 - 0.0299)  # $48,505
+        # Test: -1.99% should NOT trigger
+        current_below = 50000.0 * (1 - 0.0199)  # $49,005
         triggered_below = engine.check_kill_switch(current_below)
         assert triggered_below is False
 
@@ -188,8 +188,8 @@ class TestKillSwitchScenario:
         engine._kill_switch_active = False
         engine._ks_current_tier = KSTier.NONE
 
-        # Test: -3.00% SHOULD trigger (V2.27 Tier 1)
-        current_at = 50000.0 * (1 - 0.03)  # $48,500
+        # Test: -2.00% SHOULD trigger (V2.28.1 Tier 1)
+        current_at = 50000.0 * (1 - 0.02)  # $49,000
         triggered_at = engine.check_kill_switch(current_at)
         assert triggered_at is True
         assert engine.get_ks_tier() == KSTier.REDUCE
@@ -198,8 +198,8 @@ class TestKillSwitchScenario:
         engine._kill_switch_active = False
         engine._ks_current_tier = KSTier.NONE
 
-        # Test: -5.00% should trigger Tier 2
-        current_tier2 = 50000.0 * (1 - 0.05)  # $47,500
+        # Test: -4.00% should trigger Tier 2 (V2.28.1)
+        current_tier2 = 50000.0 * (1 - 0.04)  # $48,000
         triggered_tier2 = engine.check_kill_switch(current_tier2)
         assert triggered_tier2 is True
         assert engine.get_ks_tier() == KSTier.TREND_EXIT
