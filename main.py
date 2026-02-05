@@ -191,8 +191,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2017, 1, 1)
-        self.SetEndDate(2017, 12, 31)  # V3.0 governor fix - 2017 full year retest
+        self.SetStartDate(2015, 1, 1)
+        self.SetEndDate(2015, 12, 31)  # V3.0: 2015 full year (choppy/flat market)
         self.SetCash(config.INITIAL_CAPITAL)  # $50,000 seed capital
 
         # All times are Eastern
@@ -3883,10 +3883,8 @@ class AlphaNextGen(QCAlgorithm):
             self._close_options_atomic(reason="KS_TIER3_OPTIONS", clear_tracking=True)
 
             # Now safe to liquidate equity positions
+            # symbols_to_liquidate is List[str] (equity only, options handled above)
             for symbol in risk_result.symbols_to_liquidate:
-                # Skip options - they were already closed atomically above
-                if symbol.SecurityType == SecurityType.Option:
-                    continue
                 self.Liquidate(symbol)
 
             # Clear options state and reset cold start
@@ -3926,11 +3924,9 @@ class AlphaNextGen(QCAlgorithm):
                 self.options_engine.clear_all_positions()
 
             # NOW liquidate trend + MR equity positions (options already handled above)
+            # symbols_to_liquidate is List[str] (equity only, options handled above)
             equity_count = 0
             for symbol in risk_result.symbols_to_liquidate:
-                # Skip options - they were already closed atomically above
-                if symbol.SecurityType == SecurityType.Option:
-                    continue
                 self.Liquidate(symbol)
                 equity_count += 1
             self.Log(f"KS_TREND_EXIT: Liquidated {equity_count} equity symbols")
