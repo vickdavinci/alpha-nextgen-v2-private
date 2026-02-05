@@ -39,7 +39,7 @@ from execution.execution_engine import ExecutionEngine
 from execution.oco_manager import OCOManager
 
 # Models
-from models.enums import IntradayStrategy, Phase, RegimeLevel, Urgency
+from models.enums import IntradayStrategy, RegimeLevel, Urgency
 from models.target_weight import TargetWeight
 
 # Infrastructure

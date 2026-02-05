@@ -175,7 +175,7 @@ def check_imports() -> Tuple[bool, float]:
         # main.py can't be imported locally (requires QCAlgorithm)
         # Check config and models which work locally
         result = subprocess.run(
-            "python -c 'import config; from models.enums import Phase, Urgency; print(\"Imports OK\")'",
+            "python -c 'import config; from models.enums import Urgency; print(\"Imports OK\")'",
             shell=True,
             capture_output=True,
             text=True,
