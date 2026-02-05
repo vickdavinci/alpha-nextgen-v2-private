@@ -2589,7 +2589,7 @@ class AlphaNextGen(QCAlgorithm):
 
         try:
             # Calculate max single position in dollars from percentage
-            max_single_position = capital_state.tradeable_eq * capital_state.max_single_position_pct
+            max_single_position = capital_state.tradeable_eq * config.MAX_SINGLE_POSITION_PCT
             self.portfolio_router.process_immediate(
                 tradeable_equity=capital_state.tradeable_eq,
                 current_positions=current_positions,
@@ -2680,7 +2680,7 @@ class AlphaNextGen(QCAlgorithm):
                     )
 
             # Validate against max position size
-            max_single_position_pct = capital_state.max_single_position_pct
+            max_single_position_pct = config.MAX_SINGLE_POSITION_PCT
             for symbol, agg in aggregated.items():
                 if agg.target_weight > max_single_position_pct:
                     agg.target_weight = max_single_position_pct

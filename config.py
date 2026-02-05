@@ -14,6 +14,7 @@ All tunable parameters in one place.
 # Account size no longer determines allocation - market conditions do.
 
 INITIAL_CAPITAL = 50_000  # V3.0: Starting capital for backtests
+MAX_SINGLE_POSITION_PCT = 0.40  # V3.0: Max weight for any single position (was phase-dependent)
 
 TARGET_VOLATILITY = 0.20
 # V2.3.17: Kill switch raised from 3% to 5% (reduces false triggers in volatile markets)
