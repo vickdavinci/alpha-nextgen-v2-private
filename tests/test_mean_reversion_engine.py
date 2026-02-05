@@ -314,14 +314,14 @@ class TestEntrySignals:
         assert result is not None
 
     def test_entry_blocked_low_regime(self, engine):
-        """Test entry blocked when regime < 40."""
-        params = make_entry_params(regime_score=39.9)
+        """V3.0: Test entry blocked when regime < 50 (MR_REGIME_MIN)."""
+        params = make_entry_params(regime_score=49.9)
         result = engine.check_entry_signal(**params)
         assert result is None
 
     def test_entry_allowed_regime_at_threshold(self, engine):
-        """Test entry allowed when regime exactly 40."""
-        params = make_entry_params(regime_score=40.0)
+        """V3.0: Test entry allowed when regime exactly 50 (MR_REGIME_MIN)."""
+        params = make_entry_params(regime_score=50.0)
         result = engine.check_entry_signal(**params)
         assert result is not None
 

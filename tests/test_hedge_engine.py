@@ -90,63 +90,63 @@ class TestHedgeTierAllocation:
         """Create engine for testing."""
         return HedgeEngine()
 
-    def test_tier_none_regime_above_40(self, engine):
-        """Test no hedge when regime >= 40."""
+    def test_tier_none_regime_above_50(self, engine):
+        """V3.0: Test no hedge when regime >= 50 (Neutral+)."""
         # Test at boundary and above
-        for score in [40.0, 50.0, 70.0, 100.0]:
+        for score in [50.0, 60.0, 70.0, 100.0]:
             tmf, psq, tier = engine.get_target_allocations(score)
             assert tmf == 0.0, f"TMF should be 0 at regime {score}"
             assert psq == 0.0, f"PSQ should be 0 at regime {score}"
             assert tier == "NONE", f"Tier should be NONE at regime {score}"
 
-    def test_tier_light_regime_30_to_39(self, engine):
-        """Test light hedge (TMF only) when regime 30-39."""
-        for score in [30.0, 35.0, 39.0, 39.9]:
+    def test_tier_light_regime_40_to_49(self, engine):
+        """V3.0: Test light hedge (TMF only) when regime 40-49 (Cautious)."""
+        for score in [40.0, 45.0, 49.0, 49.9]:
             tmf, psq, tier = engine.get_target_allocations(score)
             assert tmf == config.TMF_LIGHT, f"TMF should be {config.TMF_LIGHT} at regime {score}"
             assert psq == 0.0, f"PSQ should be 0 at regime {score}"
             assert tier == "LIGHT", f"Tier should be LIGHT at regime {score}"
 
-    def test_tier_medium_regime_20_to_29(self, engine):
-        """Test medium hedge (TMF + PSQ) when regime 20-29."""
-        for score in [20.0, 25.0, 29.0, 29.9]:
+    def test_tier_medium_regime_30_to_39(self, engine):
+        """V3.0: Test medium hedge (TMF + PSQ) when regime 30-39 (Defensive)."""
+        for score in [30.0, 35.0, 39.0, 39.9]:
             tmf, psq, tier = engine.get_target_allocations(score)
             assert tmf == config.TMF_MEDIUM, f"TMF should be {config.TMF_MEDIUM} at regime {score}"
             assert psq == config.PSQ_MEDIUM, f"PSQ should be {config.PSQ_MEDIUM} at regime {score}"
             assert tier == "MEDIUM", f"Tier should be MEDIUM at regime {score}"
 
-    def test_tier_full_regime_below_20(self, engine):
-        """Test full hedge when regime < 20."""
-        for score in [0.0, 10.0, 15.0, 19.0, 19.9]:
+    def test_tier_full_regime_below_30(self, engine):
+        """V3.0: Test full hedge when regime < 30 (Risk Off)."""
+        for score in [0.0, 10.0, 20.0, 29.0, 29.9]:
             tmf, psq, tier = engine.get_target_allocations(score)
             assert tmf == config.TMF_FULL, f"TMF should be {config.TMF_FULL} at regime {score}"
             assert psq == config.PSQ_FULL, f"PSQ should be {config.PSQ_FULL} at regime {score}"
             assert tier == "FULL", f"Tier should be FULL at regime {score}"
 
     def test_tier_boundaries(self, engine):
-        """Test exact boundary transitions."""
-        # At exactly 40 - should be NONE
-        tmf, psq, tier = engine.get_target_allocations(40.0)
+        """V3.0: Test exact boundary transitions."""
+        # At exactly 50 - should be NONE
+        tmf, psq, tier = engine.get_target_allocations(50.0)
         assert tier == "NONE"
 
-        # Just below 40 - should be LIGHT
+        # Just below 50 - should be LIGHT
+        tmf, psq, tier = engine.get_target_allocations(49.9)
+        assert tier == "LIGHT"
+
+        # At exactly 40 - should be LIGHT
+        tmf, psq, tier = engine.get_target_allocations(40.0)
+        assert tier == "LIGHT"
+
+        # Just below 40 - should be MEDIUM
         tmf, psq, tier = engine.get_target_allocations(39.9)
-        assert tier == "LIGHT"
+        assert tier == "MEDIUM"
 
-        # At exactly 30 - should be LIGHT
+        # At exactly 30 - should be MEDIUM
         tmf, psq, tier = engine.get_target_allocations(30.0)
-        assert tier == "LIGHT"
+        assert tier == "MEDIUM"
 
-        # Just below 30 - should be MEDIUM
+        # Just below 30 - should be FULL
         tmf, psq, tier = engine.get_target_allocations(29.9)
-        assert tier == "MEDIUM"
-
-        # At exactly 20 - should be MEDIUM
-        tmf, psq, tier = engine.get_target_allocations(20.0)
-        assert tier == "MEDIUM"
-
-        # Just below 20 - should be FULL
-        tmf, psq, tier = engine.get_target_allocations(19.9)
         assert tier == "FULL"
 
 
@@ -197,10 +197,10 @@ class TestHedgeSignals:
         """Create engine for testing."""
         return HedgeEngine()
 
-    def test_signals_when_regime_drops_to_defensive(self, engine):
-        """Test signals generated when regime drops to DEFENSIVE tier."""
+    def test_signals_when_regime_drops_to_cautious(self, engine):
+        """V3.0: Test signals generated when regime drops to CAUTIOUS tier (40-49)."""
         signals = engine.get_hedge_signals(
-            regime_score=35.0,
+            regime_score=45.0,  # V3.0: Cautious is 40-49
             current_tmf_pct=0.0,
             current_psq_pct=0.0,
         )
@@ -212,14 +212,14 @@ class TestHedgeSignals:
         assert tmf_signal.source == "HEDGE"
         assert tmf_signal.urgency == Urgency.EOD
 
-    def test_signals_when_regime_drops_to_risk_off_moderate(self, engine):
-        """Test signals generated when regime drops to RISK_OFF moderate."""
+    def test_signals_when_regime_drops_to_defensive(self, engine):
+        """V3.0: Test signals generated when regime drops to DEFENSIVE tier (30-39)."""
         signals = engine.get_hedge_signals(
-            regime_score=25.0,
+            regime_score=35.0,  # V3.0: Defensive is 30-39
             current_tmf_pct=0.0,
             current_psq_pct=0.0,
         )
-        # Should get both TMF and PSQ signals
+        # Should get both TMF and PSQ signals (MEDIUM tier)
         assert len(signals) == 2
         symbols = {s.symbol for s in signals}
         assert "TMF" in symbols
@@ -249,9 +249,9 @@ class TestHedgeSignals:
                 assert signal.target_weight == config.PSQ_FULL
 
     def test_no_signals_when_within_threshold(self, engine):
-        """Test no signals when positions are within threshold."""
+        """V3.0: Test no signals when positions are within threshold."""
         signals = engine.get_hedge_signals(
-            regime_score=35.0,  # TMF target = 10%, PSQ target = 0%
+            regime_score=45.0,  # V3.0: Cautious tier - TMF target = 10%, PSQ target = 0%
             current_tmf_pct=0.09,  # 1% diff < 2% threshold
             current_psq_pct=0.0,
         )
@@ -270,16 +270,16 @@ class TestHedgeSignals:
             assert signal.target_weight == 0.0
 
     def test_stores_last_allocation(self, engine):
-        """Test that get_hedge_signals stores allocation state."""
+        """V3.0: Test that get_hedge_signals stores allocation state."""
         assert engine._last_allocation is None
         engine.get_hedge_signals(
-            regime_score=25.0,
+            regime_score=35.0,  # V3.0: Defensive tier (30-39) → MEDIUM
             current_tmf_pct=0.0,
             current_psq_pct=0.0,
         )
         alloc = engine.get_last_allocation()
         assert alloc is not None
-        assert alloc.regime_score == 25.0
+        assert alloc.regime_score == 35.0
         assert alloc.hedge_tier == "MEDIUM"
 
 
@@ -303,10 +303,10 @@ class TestPanicMode:
             assert signal.urgency == Urgency.IMMEDIATE
 
     def test_panic_mode_bypasses_threshold(self, engine):
-        """Test panic mode generates signals even within threshold."""
+        """V3.0: Test panic mode generates signals even within threshold."""
         # Normal mode - no signal (within threshold)
         normal_signals = engine.get_hedge_signals(
-            regime_score=35.0,  # TMF target = 10%
+            regime_score=45.0,  # V3.0: Cautious tier - TMF target = 10%
             current_tmf_pct=0.09,  # 1% diff < threshold
             current_psq_pct=0.0,
             is_panic_mode=False,
@@ -315,7 +315,7 @@ class TestPanicMode:
 
         # Panic mode - signal generated anyway
         panic_signals = engine.get_hedge_signals(
-            regime_score=35.0,
+            regime_score=45.0,
             current_tmf_pct=0.09,
             current_psq_pct=0.0,
             is_panic_mode=True,
@@ -390,15 +390,15 @@ class TestPersistence:
         assert state["last_allocation"] is None
 
     def test_get_state_after_signal(self, engine):
-        """Test get_state_for_persistence after generating signals."""
+        """V3.0: Test get_state_for_persistence after generating signals."""
         engine.get_hedge_signals(
-            regime_score=25.0,
+            regime_score=35.0,  # V3.0: Defensive tier (30-39) → MEDIUM
             current_tmf_pct=0.0,
             current_psq_pct=0.0,
         )
         state = engine.get_state_for_persistence()
         assert state["last_allocation"] is not None
-        assert state["last_allocation"]["regime_score"] == 25.0
+        assert state["last_allocation"]["regime_score"] == 35.0
         assert state["last_allocation"]["hedge_tier"] == "MEDIUM"
 
     def test_restore_state(self, engine):
@@ -468,11 +468,11 @@ class TestHelperMethods:
         return HedgeEngine()
 
     def test_get_hedge_tier_for_regime(self, engine):
-        """Test get_hedge_tier_for_regime returns correct tier."""
+        """V3.0: Test get_hedge_tier_for_regime returns correct tier."""
         assert engine.get_hedge_tier_for_regime(50.0) == "NONE"
-        assert engine.get_hedge_tier_for_regime(35.0) == "LIGHT"
-        assert engine.get_hedge_tier_for_regime(25.0) == "MEDIUM"
-        assert engine.get_hedge_tier_for_regime(15.0) == "FULL"
+        assert engine.get_hedge_tier_for_regime(45.0) == "LIGHT"  # V3.0: 40-49 is LIGHT
+        assert engine.get_hedge_tier_for_regime(35.0) == "MEDIUM"  # V3.0: 30-39 is MEDIUM
+        assert engine.get_hedge_tier_for_regime(25.0) == "FULL"  # V3.0: < 30 is FULL
 
     def test_get_max_total_hedge(self, engine):
         """Test get_max_total_hedge returns correct max."""
@@ -491,10 +491,11 @@ class TestGraduatedScaling:
         return HedgeEngine()
 
     def test_graduated_tmf_allocation(self, engine):
-        """Test TMF allocation increases gradually."""
+        """V3.0: Test TMF allocation increases gradually."""
         # As regime worsens, TMF should increase
+        # V3.0 thresholds: NONE>=50, LIGHT 40-49, MEDIUM 30-39, FULL <30
         allocs = []
-        for score in [50, 35, 25, 15]:
+        for score in [50, 45, 35, 25]:
             tmf, _, _ = engine.get_target_allocations(score)
             allocs.append(tmf)
 
@@ -504,9 +505,10 @@ class TestGraduatedScaling:
         assert allocs == [0.0, config.TMF_LIGHT, config.TMF_MEDIUM, config.TMF_FULL]
 
     def test_graduated_psq_allocation(self, engine):
-        """Test PSQ allocation increases gradually."""
+        """V3.0: Test PSQ allocation increases gradually."""
+        # V3.0 thresholds: NONE>=50, LIGHT 40-49, MEDIUM 30-39, FULL <30
         allocs = []
-        for score in [50, 35, 25, 15]:
+        for score in [50, 45, 35, 25]:
             _, psq, _ = engine.get_target_allocations(score)
             allocs.append(psq)
 
@@ -516,9 +518,10 @@ class TestGraduatedScaling:
         assert allocs == [0.0, 0.0, config.PSQ_MEDIUM, config.PSQ_FULL]
 
     def test_total_hedge_increases_with_severity(self, engine):
-        """Test total hedge (TMF + PSQ) increases with severity."""
+        """V3.0: Test total hedge (TMF + PSQ) increases with severity."""
+        # V3.0 thresholds: NONE>=50, LIGHT 40-49, MEDIUM 30-39, FULL <30
         totals = []
-        for score in [50, 35, 25, 15]:
+        for score in [50, 45, 35, 25]:
             tmf, psq, _ = engine.get_target_allocations(score)
             totals.append(tmf + psq)
 

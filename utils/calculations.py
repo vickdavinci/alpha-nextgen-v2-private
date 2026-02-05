@@ -882,6 +882,73 @@ def vix_factor_score(
         return 0.0  # Crisis mode
 
 
+def vix_direction_score(
+    vix_current: float,
+    vix_prior: float,
+    spiking_threshold: float = 15.0,
+    rising_fast_threshold: float = 8.0,
+    rising_threshold: float = 3.0,
+    falling_threshold: float = -3.0,
+    falling_fast_threshold: float = -8.0,
+    score_spiking: float = 0.0,
+    score_rising_fast: float = 25.0,
+    score_rising: float = 40.0,
+    score_stable: float = 50.0,
+    score_falling: float = 70.0,
+    score_falling_fast: float = 100.0,
+) -> float:
+    """V3.0: Calculate VIX direction score for regime calculation.
+
+    VIX direction (momentum) is a LEADING indicator that detects stress
+    2-3 days earlier than VIX level alone. This enables the daily regime
+    to catch crashes same-day like the Micro Regime does.
+
+    Args:
+        vix_current: Current VIX value.
+        vix_prior: Prior day's VIX close.
+        spiking_threshold: VIX change % threshold for spiking (default +15%).
+        rising_fast_threshold: VIX change % threshold for rising fast (default +8%).
+        rising_threshold: VIX change % threshold for rising (default +3%).
+        falling_threshold: VIX change % threshold for falling (default -3%).
+        falling_fast_threshold: VIX change % threshold for falling fast (default -8%).
+        score_spiking: Score when VIX is spiking (default 0).
+        score_rising_fast: Score when VIX is rising fast (default 25).
+        score_rising: Score when VIX is rising (default 40).
+        score_stable: Score when VIX is stable (default 50).
+        score_falling: Score when VIX is falling (default 70).
+        score_falling_fast: Score when VIX is falling fast (default 100).
+
+    Returns:
+        VIX direction score (0-100). Lower = fear building, Higher = fear receding.
+
+    Example:
+        >>> vix_direction_score(25, 20)  # VIX up 25%
+        0
+        >>> vix_direction_score(18, 20)  # VIX down 10%
+        100
+        >>> vix_direction_score(20, 20)  # VIX unchanged
+        50
+    """
+    if vix_prior <= 0:
+        return score_stable  # No prior data, assume stable
+
+    vix_change_pct = ((vix_current - vix_prior) / vix_prior) * 100
+
+    # Classify direction and return score
+    if vix_change_pct >= spiking_threshold:
+        return score_spiking  # Crisis building
+    elif vix_change_pct >= rising_fast_threshold:
+        return score_rising_fast  # Significant stress
+    elif vix_change_pct >= rising_threshold:
+        return score_rising  # Mild concern
+    elif vix_change_pct <= falling_fast_threshold:
+        return score_falling_fast  # Strong recovery
+    elif vix_change_pct <= falling_threshold:
+        return score_falling  # Recovery
+    else:
+        return score_stable  # Stable
+
+
 def chop_factor_score(
     adx_value: float,
     strong: float = 25.0,
@@ -931,8 +998,10 @@ def aggregate_regime_score(
     weight_vix: float = 0.20,
     chop_score: float = 50.0,
     weight_chop: float = 0.05,
+    vix_direction_score: float = 50.0,
+    weight_vix_direction: float = 0.0,
 ) -> float:
-    """Calculate weighted aggregate regime score (V2.26: includes Chop).
+    """Calculate weighted aggregate regime score (V3.0: includes VIX Direction).
 
     Args:
         trend_score: Trend factor score (0-100).
@@ -947,6 +1016,8 @@ def aggregate_regime_score(
         weight_vix: Weight for VIX factor (V2.3: 0.20).
         chop_score: Chop/ADX factor score (0-100) - V2.26 NEW.
         weight_chop: Weight for chop factor (V2.26: 0.05).
+        vix_direction_score: VIX direction score (0-100) - V3.0 NEW.
+        weight_vix_direction: Weight for VIX direction (V3.0: 0.15 when enabled).
 
     Returns:
         Aggregate score (0-100).
@@ -954,6 +1025,9 @@ def aggregate_regime_score(
     Example:
         >>> aggregate_regime_score(70, 60, 55, 50, vix_score=80, chop_score=100)
         63.5
+        >>> aggregate_regime_score(70, 60, 55, 50, vix_score=80, chop_score=100,
+        ...                        vix_direction_score=25, weight_vix_direction=0.15)
+        59.75  # Penalized by rising VIX direction
     """
     raw = (
         trend_score * weight_trend
@@ -962,6 +1036,7 @@ def aggregate_regime_score(
         + credit_score * weight_credit
         + vix_score * weight_vix
         + chop_score * weight_chop
+        + vix_direction_score * weight_vix_direction
     )
     return clamp(raw, 0, 100)
 

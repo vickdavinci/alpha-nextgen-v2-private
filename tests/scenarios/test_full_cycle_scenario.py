@@ -199,23 +199,24 @@ class TestFullCycleScenario:
         """
         SCENARIO: Complete day with hedge activation.
 
-        Given: Regime drops from 50 to 35 mid-day
+        V3.0: Updated for thesis-aligned hedge thresholds.
+        Given: Regime drops from 60 to 45 mid-day
         When: Regime engine recalculates
         Then:
-            - Hedge engine generates TMF/PSQ signals
+            - Hedge engine generates TMF signals (LIGHT tier)
             - Signals have EOD urgency
             - 15:45: MOO orders submitted for hedges
             - Next day: Hedge positions established
         """
-        # Setup: Regime deteriorates to CAUTIOUS
-        regime_score = 35.0  # Below 40 = CAUTIOUS/DEFENSIVE
+        # Setup: Regime deteriorates to CAUTIOUS (V3.0: 40-49 = LIGHT tier)
+        regime_score = 45.0  # V3.0: Below 50 = CAUTIOUS, 40-49 = LIGHT tier
 
         # Hedge engine calculates target allocations
         tmf_target, psq_target, hedge_tier = engines["hedge"].get_target_allocations(
             regime_score=regime_score,
         )
 
-        # Assert: Hedges activated (score 30-39 = LIGHT tier with TMF)
+        # Assert: Hedges activated (V3.0: score 40-49 = LIGHT tier with TMF only)
         assert tmf_target > 0 or psq_target > 0
         assert hedge_tier == "LIGHT"
 

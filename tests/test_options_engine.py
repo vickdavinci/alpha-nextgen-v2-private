@@ -2911,9 +2911,12 @@ class TestVASSCreditSpreadEntry:
     # --- Credit Entry Signal Tests ---
 
     def test_credit_entry_signal_bull_put(self, engine, credit_short_leg, credit_long_leg):
-        """Bull Put Credit entry should generate TargetWeight with credit metadata."""
+        """V3.0: Bull Put Credit entry should generate TargetWeight with credit metadata.
+
+        V3.0 thesis: PUT spreads (including Bull Put Credit) are allowed in bearish regimes (< 50).
+        """
         signal = engine.check_credit_spread_entry_signal(
-            regime_score=65.0,  # Bullish
+            regime_score=45.0,  # V3.0: Bearish regime (< 50) for PUT spreads
             vix_current=28.0,  # High IV
             adx_value=30.0,
             current_price=510.0,
@@ -2942,7 +2945,7 @@ class TestVASSCreditSpreadEntry:
         assert signal.metadata["spread_short_leg_symbol"] == credit_short_leg.symbol
 
     def test_credit_entry_blocked_low_credit(self, engine, credit_long_leg):
-        """Credit spread with insufficient premium should be rejected."""
+        """V3.0: Credit spread with insufficient premium should be rejected."""
         # Create short leg with very low bid (credit < $0.30)
         low_premium_short = OptionContract(
             symbol="QQQ 270315P00500000",
@@ -2959,7 +2962,7 @@ class TestVASSCreditSpreadEntry:
         )
 
         signal = engine.check_credit_spread_entry_signal(
-            regime_score=65.0,
+            regime_score=45.0,  # V3.0: Bearish regime (< 50) for PUT spreads
             vix_current=28.0,
             adx_value=30.0,
             current_price=510.0,
@@ -2990,10 +2993,14 @@ class TestVASSCreditSpreadEntry:
         assert max_loss_per > 0  # Defined max loss
         assert total_margin <= 7500  # Never exceeds allocation
 
-    def test_credit_entry_blocked_regime_crisis(self, engine, credit_short_leg, credit_long_leg):
-        """Credit spread should be blocked when regime < 30 (crisis)."""
+    def test_credit_entry_blocked_dead_zone(self, engine, credit_short_leg, credit_long_leg):
+        """V3.0: Credit spread should be blocked in dead zone (50-70).
+
+        V3.0 thesis: PUT spreads only allowed when regime < 50.
+        Regime 50-70 is the "dead zone" where no options are allowed.
+        """
         signal = engine.check_credit_spread_entry_signal(
-            regime_score=25.0,  # Crisis mode
+            regime_score=60.0,  # V3.0: Dead zone (50-70) - no options allowed
             vix_current=28.0,
             adx_value=30.0,
             current_price=510.0,
