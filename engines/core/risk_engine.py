@@ -409,15 +409,25 @@ class RiskEngine:
                     self._scale_at_trough = target_scale
 
         # Step DOWN is immediate (no hysteresis needed for protection)
+        # V3.0 FIX: Check immunity period from Regime Override
         if target_scale < self._governor_scale:
-            self.log(
-                f"DRAWDOWN_GOVERNOR: STEP_DOWN | "
-                f"DD={dd_pct:.1%} | Scale {self._governor_scale:.0%} → {target_scale:.0%} | "
-                f"HWM=${self._equity_high_watermark:,.0f} | Current=${current_equity:,.0f}"
-            )
-            # Update trough tracking
-            self._trough_equity = current_equity
-            self._scale_at_trough = target_scale
+            # Check if we're in immunity period from recent Regime Override
+            if self._is_in_override_immunity():
+                self.log(
+                    f"DRAWDOWN_GOVERNOR: STEP_DOWN_BLOCKED | "
+                    f"DD={dd_pct:.1%} | Would be {self._governor_scale:.0%} → {target_scale:.0%} | "
+                    f"REGIME_OVERRIDE immunity active"
+                )
+                target_scale = self._governor_scale  # Block the step-down
+            else:
+                self.log(
+                    f"DRAWDOWN_GOVERNOR: STEP_DOWN | "
+                    f"DD={dd_pct:.1%} | Scale {self._governor_scale:.0%} → {target_scale:.0%} | "
+                    f"HWM=${self._equity_high_watermark:,.0f} | Current=${current_equity:,.0f}"
+                )
+                # Update trough tracking
+                self._trough_equity = current_equity
+                self._scale_at_trough = target_scale
 
         # Track trough for recovery calculation
         if current_equity < self._trough_equity or self._trough_equity <= 0:
@@ -522,6 +532,38 @@ class RiskEngine:
         )
 
         return True
+
+    def _is_in_override_immunity(self) -> bool:
+        """
+        V3.0: Check if we're within the immunity period from a Regime Override.
+
+        When Regime Override fires, we grant immunity from STEP_DOWN for the
+        cooldown period. This prevents the yo-yo effect where override fires
+        one day and step-down reverses it the next day.
+
+        Returns:
+            True if in immunity period (block step-downs).
+        """
+        if self._regime_override_last_trigger_day is None:
+            return False
+
+        cooldown_days = getattr(config, "GOVERNOR_REGIME_OVERRIDE_COOLDOWN_DAYS", 10)
+
+        try:
+            from datetime import datetime as dt
+
+            last_trigger = dt.strptime(self._regime_override_last_trigger_day, "%Y-%m-%d")
+            # Use algorithm time if available, otherwise use current datetime
+            if self.algorithm:
+                current = self.algorithm.Time.date()
+                current_dt = dt(current.year, current.month, current.day)
+            else:
+                current_dt = dt.now()
+
+            days_since = (current_dt - last_trigger).days
+            return days_since < cooldown_days
+        except (ValueError, TypeError):
+            return False
 
     # =========================================================================
     # Kill Switch (-3% Daily)

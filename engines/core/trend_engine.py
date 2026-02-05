@@ -270,14 +270,40 @@ class TrendEngine:
         if close <= ma200:
             return None
 
-        # Condition 2: ADX >= 25 (score >= 0.75, sufficient momentum)
-        # V2.4.2 FIX: Changed from 0.50 to 0.75 - ADX_WEAK_THRESHOLD was lowered to 15,
-        # causing entries at ADX 15-24. Requiring score >= 0.75 enforces ADX >= 25.
-        if score < 0.75:
-            self.log(
-                f"TREND: {symbol} entry blocked - ADX {adx:.1f} too weak (score={score:.2f} < 0.75)"
-            )
-            return None
+        # Condition 2: ADX check - V3.0 Regime-Adaptive Thresholds
+        # In strong bull markets, lower ADX bar (trust the regime)
+        # In neutral/bear markets, require stronger momentum confirmation
+        adx_bull_threshold = getattr(config, "ADX_REGIME_BULL_THRESHOLD", 75)
+        adx_bear_threshold = getattr(config, "ADX_REGIME_BEAR_THRESHOLD", 60)
+        adx_bull_min = getattr(config, "ADX_BULL_MINIMUM", 15)
+        adx_bear_min = getattr(config, "ADX_BEAR_MINIMUM", 25)
+
+        if regime_score >= adx_bull_threshold:
+            # Strong bull market: ADX > 15 is enough
+            if adx < adx_bull_min:
+                self.log(
+                    f"TREND: {symbol} entry blocked - ADX {adx:.1f} < {adx_bull_min} "
+                    f"(bull regime={regime_score:.0f})"
+                )
+                return None
+            # Override score to 1.0 for strong bull regime
+            score = 1.0
+        elif regime_score < adx_bear_threshold:
+            # Neutral/bear market: require stronger ADX confirmation
+            if adx < adx_bear_min:
+                self.log(
+                    f"TREND: {symbol} entry blocked - ADX {adx:.1f} < {adx_bear_min} "
+                    f"(cautious regime={regime_score:.0f})"
+                )
+                return None
+        else:
+            # Normal regime (60-74): use standard threshold (score >= 0.75 = ADX >= 22)
+            if score < 0.75:
+                self.log(
+                    f"TREND: {symbol} entry blocked - ADX {adx:.1f} too weak "
+                    f"(score={score:.2f} < 0.75, regime={regime_score:.0f})"
+                )
+                return None
 
         # Condition 3: Regime score >= 40
         if regime_score < config.TREND_ENTRY_REGIME_MIN:

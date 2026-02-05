@@ -342,7 +342,7 @@ class TestEntrySignals:
             close=105.0,
             ma200=100.0,
             adx=30.0,
-            regime_score=40.0,  # Exactly at threshold
+            regime_score=50.0,  # V3.0: Exactly at threshold (TREND_ENTRY_REGIME_MIN=50)
             is_cold_start_active=False,
             has_warm_entry=False,
             atr=2.0,

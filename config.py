@@ -183,6 +183,14 @@ ADX_WEAK_THRESHOLD = 15  # V2.3.12: Lowered to 15 - catch grinding trends (align
 # Evidence: Jan-May 2025 backtests showed QLD/SSO blocked at ADX 17-24
 ADX_MODERATE_THRESHOLD = 22  # Upper bound of moderate range (V2.5: was 25)
 
+# V3.0: Regime-Adaptive ADX Thresholds
+# In strong bull markets, lower the ADX bar - trust the regime signal
+# In neutral/bear markets, require stronger momentum confirmation
+ADX_REGIME_BULL_THRESHOLD = 75  # Regime score above this = strong bull
+ADX_REGIME_BEAR_THRESHOLD = 60  # Regime score below this = neutral/bear
+ADX_BULL_MINIMUM = 15  # In strong bull, ADX > 15 is enough
+ADX_BEAR_MINIMUM = 25  # In neutral/bear, require ADX > 25
+
 # Chandelier Stop
 ATR_PERIOD = 14
 CHANDELIER_BASE_MULT = 3.5  # V2.3.6: Widened from 3.0 - allow more room in choppy markets
