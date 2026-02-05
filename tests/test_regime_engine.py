@@ -312,11 +312,17 @@ class TestRegimeEngine:
             spy_sma200=current_price * 0.90,
         )
 
-        # With same raw scores, smoothed should converge toward raw
-        # Second smoothed should be closer to raw than first
-        assert abs(state2.smoothed_score - state2.raw_score) <= abs(
-            state1.smoothed_score - state1.raw_score
-        )
+        # V3.0: VIX Direction activates on second calc (after _vix_prior is set),
+        # so raw scores differ. Test that smoothing is working by verifying
+        # state2.smoothed_score moves toward state2.raw_score from state1.smoothed_score
+        # (i.e., smoothed2 is between smoothed1 and raw2, or closer to raw2)
+        if state2.raw_score > state1.smoothed_score:
+            # Raw is higher, smoothed should increase
+            assert state2.smoothed_score > state1.smoothed_score
+        elif state2.raw_score < state1.smoothed_score:
+            # Raw is lower, smoothed should decrease
+            assert state2.smoothed_score < state1.smoothed_score
+        # If equal, smoothed can stay the same (edge case)
 
 
 class TestRegimeStateFlags:
@@ -417,33 +423,33 @@ class TestRegimeStateFlags:
 
 
 class TestHedgeTargets:
-    """Tests for hedge target calculations."""
+    """Tests for hedge target calculations (V3.0: thesis-aligned thresholds)."""
 
-    def test_no_hedges_above_40(self):
-        """Test no hedges when score >= 40."""
+    def test_no_hedges_above_50(self):
+        """V3.0: Test no hedges when score >= 50 (Neutral+)."""
         engine = RegimeEngine()
-        tmf, psq = engine._calculate_hedge_targets(45)
+        tmf, psq = engine._calculate_hedge_targets(55)
         assert tmf == 0.0
         assert psq == 0.0
 
-    def test_light_hedge_30_to_39(self):
-        """Test light hedge (TMF only) when score 30-39."""
+    def test_light_hedge_40_to_49(self):
+        """V3.0: Test light hedge (TMF only) when score 40-49 (Cautious)."""
         engine = RegimeEngine()
-        tmf, psq = engine._calculate_hedge_targets(35)
+        tmf, psq = engine._calculate_hedge_targets(45)
         assert tmf == 0.10  # 10% TMF
         assert psq == 0.0
 
-    def test_medium_hedge_20_to_29(self):
-        """Test medium hedge when score 20-29."""
+    def test_medium_hedge_30_to_39(self):
+        """V3.0: Test medium hedge when score 30-39 (Defensive)."""
         engine = RegimeEngine()
-        tmf, psq = engine._calculate_hedge_targets(25)
+        tmf, psq = engine._calculate_hedge_targets(35)
         assert tmf == 0.15  # 15% TMF
         assert psq == 0.05  # 5% PSQ
 
-    def test_full_hedge_below_20(self):
-        """Test full hedge when score < 20."""
+    def test_full_hedge_below_30(self):
+        """V3.0: Test full hedge when score < 30 (Risk Off)."""
         engine = RegimeEngine()
-        tmf, psq = engine._calculate_hedge_targets(15)
+        tmf, psq = engine._calculate_hedge_targets(25)
         assert tmf == 0.20  # 20% TMF
         assert psq == 0.10  # 10% PSQ
 

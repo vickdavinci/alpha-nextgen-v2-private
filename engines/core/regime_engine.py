@@ -1,11 +1,21 @@
 """
-Regime Engine - 4-factor market state scoring system.
+Regime Engine - Multi-factor market state scoring system.
 
-Calculates a 0-100 regime score from four factors:
-- Trend (35%): Price position vs moving averages
-- Volatility (25%): Realized vol percentile ranking
-- Breadth (25%): RSP vs SPY performance spread
-- Credit (15%): HYG vs IEF performance spread
+V3.0: Added VIX Direction factor for same-day crash detection.
+The Micro Regime Engine detected Aug 2015 crash 3 days before Daily Regime.
+VIX Direction captures momentum in fear, not just level.
+
+Calculates a 0-100 regime score from 7 factors (normalized to 100%):
+- Trend (20%): Price position vs moving averages (lagging)
+- VIX Level (15%): Implied volatility level
+- VIX Direction (15%): V3.0 NEW - VIX momentum (leading indicator, clamped 25-75)
+- Breadth (15%): RSP vs SPY performance spread
+- Credit (15%): HYG vs IEF performance spread (leading)
+- Chop (10%): ADX-based trend quality
+- Volatility (10%): Realized vol percentile ranking (lagging)
+
+VIX Direction Safeguard: Score clamped to 25-75 range to prevent single-factor
+boundary crossings. At 15% weight, this limits max swing to 7.5 points.
 
 The smoothed score maps to regime states that drive system behavior:
 - RISK_ON (70-100): Full leverage, no hedges
@@ -30,12 +40,14 @@ from utils.calculations import (
     breadth_factor_score,
     breadth_spread,
     chop_factor_score,
+    clamp,
     credit_factor_score,
     credit_spread,
     period_return,
     realized_volatility,
     smooth_regime_score,
     trend_factor_score,
+    vix_direction_score,
     vix_factor_score,
     volatility_factor_score,
     volatility_percentile,
@@ -82,6 +94,8 @@ class RegimeState:
     previous_smoothed: float = 50.0
     chop_score: float = 50.0  # V2.26 NEW: Trend quality score (ADX-based)
     spy_adx_value: float = 25.0  # V2.26 NEW: Raw SPY ADX(14) value
+    vix_direction_score: float = 50.0  # V3.0 NEW: VIX momentum score
+    vix_prior: float = 0.0  # V3.0 NEW: Prior day VIX for direction calc
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for logging or persistence."""
@@ -91,11 +105,13 @@ class RegimeState:
             "state": self.state.value,
             "trend_score": round(self.trend_score, 2),
             "vix_score": round(self.vix_score, 2),
+            "vix_direction_score": round(self.vix_direction_score, 2),  # V3.0 NEW
             "volatility_score": round(self.volatility_score, 2),
             "breadth_score": round(self.breadth_score, 2),
             "credit_score": round(self.credit_score, 2),
             "chop_score": round(self.chop_score, 2),
             "vix_level": round(self.vix_level, 2),
+            "vix_prior": round(self.vix_prior, 2),  # V3.0 NEW
             "spy_adx_value": round(self.spy_adx_value, 2),
             "realized_vol": round(self.realized_vol, 4),
             "vol_percentile": round(self.vol_percentile, 2),
@@ -108,12 +124,13 @@ class RegimeState:
         }
 
     def __str__(self) -> str:
-        """Human-readable summary for logging (V2.26: includes Chop)."""
+        """Human-readable summary for logging (V3.0: includes VIX Direction)."""
         return (
             f"RegimeState({self.state.value} | "
             f"Score={self.smoothed_score:.1f} | "
-            f"T={self.trend_score:.0f} VIX={self.vix_score:.0f} RV={self.volatility_score:.0f} "
-            f"B={self.breadth_score:.0f} C={self.credit_score:.0f} C_ADX={self.chop_score:.0f} | "
+            f"T={self.trend_score:.0f} VIX={self.vix_score:.0f} VD={self.vix_direction_score:.0f} "
+            f"RV={self.volatility_score:.0f} B={self.breadth_score:.0f} C={self.credit_score:.0f} "
+            f"ADX={self.chop_score:.0f} | "
             f"Hedge: TMF={self.tmf_target_pct:.0%} PSQ={self.psq_target_pct:.0%})"
         )
 
@@ -147,6 +164,7 @@ class RegimeEngine:
         self.algorithm = algorithm
         self._previous_smoothed_score: float = 50.0  # Start at neutral
         self._vol_history: List[float] = []  # For percentile calculation
+        self._vix_prior: float = 0.0  # V3.0: Track prior VIX for direction calc
 
     def log(self, message: str) -> None:
         """Log message via algorithm or print for testing."""
@@ -243,7 +261,41 @@ class RegimeEngine:
             weak=config.CHOP_ADX_THRESHOLD_WEAK,
         )
 
-        # Aggregate raw score (V2.26: includes Chop)
+        # V3.0: Calculate VIX direction score (detects crashes same-day like Micro Regime)
+        # Use prior VIX to calculate momentum - spiking VIX = regime deteriorating
+        vix_dir_score = 50.0  # Default neutral
+        vix_dir_score_raw = 50.0  # For logging pre-clamp value
+        vix_dir_weight = 0.0  # Default disabled
+        if config.VIX_DIRECTION_ENABLED and self._vix_prior > 0:
+            vix_dir_score_raw = vix_direction_score(
+                vix_current=vix_level,
+                vix_prior=self._vix_prior,
+                spiking_threshold=config.VIX_DAILY_DIRECTION_SPIKING,
+                rising_fast_threshold=config.VIX_DAILY_DIRECTION_RISING_FAST,
+                rising_threshold=config.VIX_DAILY_DIRECTION_RISING,
+                falling_threshold=config.VIX_DAILY_DIRECTION_FALLING,
+                falling_fast_threshold=config.VIX_DAILY_DIRECTION_FALLING_FAST,
+                score_spiking=config.VIX_DIRECTION_SCORE_SPIKING,
+                score_rising_fast=config.VIX_DIRECTION_SCORE_RISING_FAST,
+                score_rising=config.VIX_DIRECTION_SCORE_RISING,
+                score_stable=config.VIX_DIRECTION_SCORE_STABLE,
+                score_falling=config.VIX_DIRECTION_SCORE_FALLING,
+                score_falling_fast=config.VIX_DIRECTION_SCORE_FALLING_FAST,
+            )
+            # V3.0: Clamp VIX direction score to prevent single-factor regime boundary crossings
+            # At 15% weight, clamping to 25-75 limits max swing to 7.5 points
+            vix_dir_score = clamp(
+                vix_dir_score_raw,
+                config.VIX_DIRECTION_SCORE_CLAMP_MIN,
+                config.VIX_DIRECTION_SCORE_CLAMP_MAX,
+            )
+            vix_dir_weight = config.VIX_DIRECTION_WEIGHT
+
+        # Store current VIX for next calculation's direction
+        vix_prior_for_state = self._vix_prior  # Save for RegimeState before updating
+        self._vix_prior = vix_level
+
+        # Aggregate raw score (V3.0: includes VIX Direction)
         raw = aggregate_regime_score(
             trend_score=trend,
             vol_score=volatility,
@@ -257,6 +309,8 @@ class RegimeEngine:
             weight_vix=config.WEIGHT_VIX,
             chop_score=chop,
             weight_chop=config.WEIGHT_CHOP,
+            vix_direction_score=vix_dir_score,
+            weight_vix_direction=vix_dir_weight,
         )
 
         # Apply exponential smoothing
@@ -300,6 +354,8 @@ class RegimeEngine:
             tmf_target_pct=tmf_pct,
             psq_target_pct=psq_pct,
             previous_smoothed=self._previous_smoothed_score,
+            vix_direction_score=vix_dir_score,  # V3.0 NEW
+            vix_prior=vix_prior_for_state,  # V3.0 NEW
         )
 
         self.log(f"REGIME: {regime_state}")
@@ -374,6 +430,7 @@ class RegimeEngine:
         """Reset engine state (used after kill switch or for testing)."""
         self._previous_smoothed_score = 50.0
         self._vol_history = []
+        self._vix_prior = 0.0  # V3.0: Reset VIX prior
         self.log("REGIME: Engine reset to neutral (score=50)")
 
     def get_previous_score(self) -> float:
@@ -397,3 +454,16 @@ class RegimeEngine:
             history: List of historical volatility readings.
         """
         self._vol_history = history[-config.VOL_PERCENTILE_LOOKBACK :]
+
+    def get_vix_prior(self) -> float:
+        """Get the prior VIX value for state persistence (V3.0)."""
+        return self._vix_prior
+
+    def set_vix_prior(self, vix_prior: float) -> None:
+        """
+        Set the prior VIX value (for state restoration, V3.0).
+
+        Args:
+            vix_prior: Prior VIX value to restore.
+        """
+        self._vix_prior = vix_prior

@@ -81,13 +81,15 @@ MIN_SPREAD_CONTRACTS = 2
 # REGIME ENGINE
 # =============================================================================
 
-# Factor Weights (V2.3: Added VIX, rebalanced; V2.26: Added Chop)
-WEIGHT_TREND = 0.25  # V2.26: Reduced from 0.30 to make room for chop factor
-WEIGHT_VIX = 0.20  # V2.3 NEW: Implied volatility for options pricing
-WEIGHT_VOLATILITY = 0.15  # V2.3: Reduced from 0.25 (realized vol)
-WEIGHT_BREADTH = 0.20  # V2.3: Increased from 0.15
-WEIGHT_CREDIT = 0.15
-WEIGHT_CHOP = 0.05  # V2.26 NEW: Trend quality/consistency factor (ADX-based)
+# Factor Weights (V3.0: Normalized to 100% with VIX Direction enabled)
+# Research-based allocation: leading indicators (Credit, VIX Dir) balanced with
+# lagging indicators (Trend, Realized Vol) for regime identification.
+WEIGHT_TREND = 0.20  # V3.0: Lagging indicator, reduced from 0.25
+WEIGHT_VIX = 0.15  # V3.0: Implied volatility level, reduced from 0.20
+WEIGHT_VOLATILITY = 0.10  # V3.0: Realized vol (lagging), reduced from 0.15
+WEIGHT_BREADTH = 0.15  # V3.0: Market breadth, reduced from 0.20
+WEIGHT_CREDIT = 0.15  # Leading indicator (unchanged)
+WEIGHT_CHOP = 0.10  # V3.0: ADX trend quality, increased from 0.05
 
 # Smoothing
 REGIME_SMOOTHING_ALPHA = 0.30
@@ -117,6 +119,36 @@ VIX_LEVEL_VERY_CALM_MAX = 11.5  # V2.3.11: VIX < 11.5 = VERY_CALM (was 15)
 VIX_LEVEL_CALM_MAX = 15.0  # VIX 11.5-15 = CALM (shifted down)
 VIX_LEVEL_NORMAL_MAX = 18.0  # VIX 15-18 = NORMAL (unchanged)
 VIX_LEVEL_ELEVATED_MAX = 22.0  # V2.23.1: VIX 18-22 = ELEVATED (was hardcoded)
+
+# V3.0: VIX Direction for Daily Regime (detect crashes same-day like Micro Regime)
+# VIX momentum is a LEADING indicator - catches crashes 2-3 days earlier than level alone
+# Direction = % change from prior close (positive = rising fear)
+VIX_DIRECTION_ENABLED = True  # Enable VIX direction modifier in daily regime
+VIX_DIRECTION_WEIGHT = 0.15  # Weight for direction modifier (normalized with other weights)
+
+# V3.0: VIX Direction Score Clamping Safeguard
+# Prevents VIX Direction from single-handedly dragging score across regime boundaries.
+# At 15% weight, unclamped range (0-100) creates 15-point swing potential.
+# Clamping to 25-75 limits swing to 7.5 points (0.15 × 50 = 7.5).
+# This ensures VIX Direction can't cross 10-point boundaries alone (50→40, 40→30).
+VIX_DIRECTION_SCORE_CLAMP_MIN = 25.0  # Min VIX direction score (prevents -11.25 point drag)
+VIX_DIRECTION_SCORE_CLAMP_MAX = 75.0  # Max VIX direction score (prevents +3.75 point boost)
+
+# Direction thresholds (% change from prior close)
+VIX_DAILY_DIRECTION_SPIKING = 15.0  # VIX +15% = crisis building
+VIX_DAILY_DIRECTION_RISING_FAST = 8.0  # VIX +8% = significant stress
+VIX_DAILY_DIRECTION_RISING = 3.0  # VIX +3% = mild concern
+VIX_DAILY_DIRECTION_FALLING = -3.0  # VIX -3% = recovery
+VIX_DAILY_DIRECTION_FALLING_FAST = -8.0  # VIX -8% = strong recovery
+
+# Direction score modifiers (applied to VIX score, then weighted into regime)
+# Negative = penalty (reduces regime score), Positive = bonus
+VIX_DIRECTION_SCORE_SPIKING = 0  # VIX spiking = score 0 (max penalty)
+VIX_DIRECTION_SCORE_RISING_FAST = 25  # VIX rising fast = score 25
+VIX_DIRECTION_SCORE_RISING = 40  # VIX rising = score 40
+VIX_DIRECTION_SCORE_STABLE = 50  # VIX stable = score 50 (neutral)
+VIX_DIRECTION_SCORE_FALLING = 70  # VIX falling = score 70
+VIX_DIRECTION_SCORE_FALLING_FAST = 100  # VIX falling fast = score 100 (max bonus)
 
 # Volatility Factor (Realized)
 VOL_LOOKBACK = 20
@@ -439,21 +471,30 @@ TIME_GUARD_START = "13:55"
 TIME_GUARD_END = "14:10"
 
 # =============================================================================
-# V2.26: DRAWDOWN GOVERNOR (Cumulative Capital Preservation)
+# V3.0: DRAWDOWN GOVERNOR (Simplified 3-Tier System)
 # =============================================================================
+# V3.0: Simplified from 5 tiers to 3 tiers (100% / 50% / 0%)
+# The 75% and 25% "limbo" states were eliminated because:
+#   - 75% was barely different from 100% (not protective)
+#   - 25% couldn't do anything useful (couldn't grow equity to recover)
+#   - Oscillation between tiers created churning and confusion
+#
+# New design: Clear decision points with distinct behaviors:
+#   - 100%: Full allocation, all strategies active
+#   - 50%: Reduced risk, all strategies at half size
+#   - 0%: DEFENSIVE ONLY (hedges, PUTs, SHV) — bullish trades blocked
+#
 # Tracks equity high watermark. Scales ALL engine allocations based on
 # drawdown from peak. Prevents death-by-a-thousand-cuts (-42% in 2015).
 # Bull market impact: zero drag (HWM rises continuously, governor never fires).
 DRAWDOWN_GOVERNOR_ENABLED = True
 DRAWDOWN_GOVERNOR_LEVELS = {
-    0.03: 0.75,  # At -3% from peak → 75% allocation
-    0.06: 0.50,  # At -6% from peak → 50% allocation
-    0.10: 0.25,  # At -10% from peak → 25% allocation
-    0.15: 0.00,  # At -15% from peak → CASH ONLY (SHV + hedges)
+    0.05: 0.50,  # V3.0: At -5% from peak → 50% allocation (was -3% → 75%)
+    0.10: 0.00,  # V3.0: At -10% from peak → DEFENSIVE ONLY (was -15% → 0%)
 }
-# V2.29 P1: Dynamic recovery — scales with governor level
-# Effective = base × current_scale: 100%→8%, 75%→6%, 50%→4%, 25%→2%
-# Replaces flat 12% threshold that trapped governor at 50% for 358 days in 2015
+# V3.0: Dynamic recovery — scales with governor level
+# Effective = base × current_scale: 100%→8%, 50%→4%
+# Note: Recovery from 0% requires Regime Override (see below)
 DRAWDOWN_GOVERNOR_RECOVERY_BASE = 0.08
 
 # V3.0: Regime Override for Drawdown Governor
@@ -471,39 +512,27 @@ GOVERNOR_REGIME_OVERRIDE_DAYS = 5  # Consecutive days at/above threshold
 GOVERNOR_REGIME_OVERRIDE_COOLDOWN_DAYS = 10  # Days before another override can trigger
 GOVERNOR_REGIME_OVERRIDE_MIN_SCALE = 0.50  # V3.0: Jump to 50% min to enable bullish options
 
-# V2.28: Minimum governor scale for intraday options entry
-# V3.0: Lowered from 1.0 to 0.75 — options should reduce sizing during drawdowns,
-# not shut off entirely. 1.0 created a 6.5-month dead zone in 2017 where ANY drawdown
-# from equity peak blocked ALL options entries, while trend positions continued at reduced size.
-# V2.32: Further lowered to 0.5 for BULLISH options. BEARISH options use 0.25 (direction-aware).
+# V3.0: Simplified Governor Options Gating (3-tier system)
 #
-# V2.33 CRITICAL FIX: Thesis-aligned direction-aware governor gating
-#
-# ROOT CAUSE of V2.32 -80% loss:
-# - Regime was 63-71 (bullish) but portfolio had 10-16% drawdown
-# - System entered BULL_CALL spreads (wrong for drawdown protection!)
-# - Governor liquidated next morning → forced loss → repeat
-#
-# V2.33 FIX: Direction-aware gating aligned with investment thesis:
+# With V3.0 simplified governor (100%/50%/0%), options gating is straightforward:
 # - Governor 0% (shutdown): ONLY bearish PUT spreads allowed
-#   * Thesis says "Bear markets: PUT spreads active" - they hedge/profit from decline
-#   * Bull spreads blocked - they increase risk during severe drawdowns
-# - Governor 1-24%: Only bearish PUT spreads allowed
-# - Governor 25-49%: Only bearish PUT spreads allowed
-# - Governor 50%+: Both bullish and bearish spreads allowed
+#   * Thesis: PUT spreads hedge/profit from continued decline
+#   * Bullish trades blocked - they increase risk during severe drawdowns
+# - Governor 50%: All options allowed at 50% sizing
+# - Governor 100%: All options allowed at full size
 #
-# Additional V2.33 fixes:
-# - Spread margin estimate increased from 2× to 6× safety (broker uses delta margin)
-# - Added 20% equity cushion requirement (prevents over-leveraging)
-# - ATOMIC OPTIONS CLOSE: ALL options close paths now use _close_options_atomic()
-#   * Kill Switch Tier 3 (full liquidation)
-#   * Kill Switch Tier 2 (trend exit)
-#   * EXPIRATION_HAMMER (options expiring today)
-#   * EARLY_EXERCISE_GUARD (ITM options near expiry)
-#   * Emergency close (retry exhausted)
-#   * This ALWAYS closes shorts first, then longs (prevents naked short margin errors)
-GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE = 0.50  # Bull options at 50%+ governor scale
-GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE_BEARISH = 0.25  # Bear options allowed even at 25%
+# Historical note (V2.32/V2.33):
+# The 5-tier system created confusion where 25% was neither useful for trading
+# nor protective against drawdowns. Simplified to 3 clear decision points.
+#
+# Additional safety measures:
+# - ATOMIC OPTIONS CLOSE: ALL options close paths use _close_options_atomic()
+#   (Kill Switch, Expiration Hammer, Early Exercise Guard)
+#   This ALWAYS closes shorts first to prevent naked short margin errors
+GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE = 0.50  # V3.0: Bull options at 50%+ governor scale
+GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE_BEARISH = (
+    0.0  # V3.0: Bear options allowed at any scale (0% handled separately)
+)
 
 # V2.32: Options sizing floor — don't scale options below this even if governor is lower
 # Prevents options positions from becoming too small to be meaningful

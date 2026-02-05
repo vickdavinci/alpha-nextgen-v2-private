@@ -37,6 +37,192 @@
 
 ---
 
+## V3.0 Hardening — Regime Navigation & Governor Simplification
+
+> **Status:** IN PROGRESS 🔄
+> **Goal:** Fix regime detection lag, simplify Governor, enable defensive trades at all levels
+> **Branch:** `feature/va/v3.0-hardening`
+> **Audit:** `docs/audits/V3_0_FullFix_2015_v2_audit.md`
+
+### Problem Statement
+
+2015 backtest revealed critical failures:
+- **-24.16% return** in a flat market (S&P 500 was ~0% in 2015)
+- **266 days (73%)** at Governor 0% — unable to trade
+- **Zero hedges deployed** despite 34+ days of `TMF_SIGNAL` generated
+- **Regime detected crash 3 days late** (Micro Regime detected Aug 21, Daily Regime detected Aug 24)
+
+### V3.0 Fix List
+
+| ID | Category | Fix | Priority | Status |
+|:--:|:--------:|-----|:--------:|:------:|
+| V3-1 | EOD_LOCK | Exempt hedges (TMF/PSQ) from EOD_LOCK at Governor 0% | P0 | ✅ DONE |
+| V3-2 | EOD_LOCK | Exempt bearish PUT spreads from EOD_LOCK at Governor 0% | P0 | ✅ DONE |
+| V3-3 | Regime | Add VIX Direction to daily regime score (detect crashes same-day) | P0 | ✅ DONE |
+| V3-3b | Regime | Normalize weights to 100% + clamp VIX Direction (safeguard) | P0 | ✅ DONE |
+| V3-4 | Governor | Simplify to 3 tiers: 100% / 50% / 0% (eliminate 75%, 25% limbo) | P1 | ✅ DONE |
+| V3-5 | Governor | Allow hedges + PUTs at 0% scale (defensive trades always enabled) | P1 | ✅ DONE |
+| V3-6 | Governor | HWM Reset after 20 days at 50%+ with positive P&L | P2 | ⬜ TODO |
+| V3-7 | Regime | Lower CAUTIOUS threshold from 40 to 45 (with VIX direction may not be needed) | P3 | ⬜ TODO |
+
+### Fix Details
+
+#### V3-1 & V3-2: EOD_LOCK Exemption (P0)
+
+**Bug:** `main.py:1514` blocks ALL MOO orders at Governor 0%, including hedges and PUT spreads.
+
+```python
+# CURRENT (BROKEN)
+if self._governor_scale <= 0.0:
+    self.Log("EOD_LOCK: Governor scale = 0, skipping MOO order submission")
+    self._save_state()
+```
+
+**Evidence:**
+```
+15:45 HEDGE: TMF_SIGNAL | Regime=46.5, TMF target=10%, current=0%
+16:00 EOD_LOCK: Governor scale = 0, skipping MOO order submission  ← BLOCKS HEDGE
+```
+
+**Fix:** Exempt hedges and bearish options from EOD_LOCK.
+
+**Files:** `main.py`
+
+---
+
+#### V3-3: VIX Direction in Daily Regime (P0) ✅ DONE
+
+**Bug:** Daily regime only uses VIX level (20% weight), no direction. Micro regime uses VIX Level × Direction and detected crash 3 days earlier.
+
+**Evidence:**
+```
+Aug 21 10:45 MICRO: WORSENING (UVXY +3.1%)
+Aug 21 11:15 MICRO: DETERIORATING (UVXY +11.1%)
+Aug 21 15:45 DAILY: Score=60 (NEUTRAL)  ← 3 DAYS LATE
+```
+
+**Fix:** Add `vix_direction_score()` that penalizes rising VIX momentum.
+
+**Files:** `config.py`, `utils/calculations.py`, `engines/core/regime_engine.py`
+
+---
+
+#### V3-3b: Weight Normalization + Clamping Safeguard (P0) ✅ DONE
+
+**Bug:** With VIX Direction enabled, regime weights summed to 115% (not normalized).
+
+**Fix:** Normalized weights to 100% with research-based allocation:
+
+| Factor | Old | New | Rationale |
+|--------|-----|-----|-----------|
+| Trend | 25% | 20% | Lagging indicator |
+| VIX Level | 20% | 15% | Implied vol level |
+| VIX Direction | 15% | 15% | Leading indicator |
+| Breadth | 20% | 15% | Market breadth |
+| Credit | 15% | 15% | Leading indicator |
+| Chop | 5% | 10% | ADX trend quality |
+| Volatility | 15% | 10% | Lagging indicator |
+| **Total** | **115%** | **100%** | ✅ Normalized |
+
+**Clamping Safeguard:** VIX Direction score clamped to 25-75 range to prevent single-factor boundary crossings. At 15% weight, this limits max swing to 7.5 points (cannot cross 10-point regime boundaries alone).
+
+**Files:** `config.py`, `engines/core/regime_engine.py`
+
+---
+
+#### V3-4: Simplified Governor Tiers (P1)
+
+**Bug:** 5-tier system (100%/75%/50%/25%/0%) creates oscillation and useless limbo states.
+
+```python
+# CURRENT (5 tiers)
+DRAWDOWN_GOVERNOR_LEVELS = {
+    0.03: 0.75,  # -3% → 75% (barely meaningful)
+    0.06: 0.50,  # -6% → 50%
+    0.10: 0.25,  # -10% → 25% (can't do anything useful)
+    0.15: 0.00,  # -15% → 0%
+}
+
+# PROPOSED (3 tiers)
+DRAWDOWN_GOVERNOR_LEVELS = {
+    0.06: 0.50,  # -6% → 50% (defensive mode)
+    0.15: 0.00,  # -15% → 0% (hedges/PUTs only)
+}
+```
+
+**Files:** `config.py`, `engines/core/risk_engine.py`
+
+---
+
+#### V3-5: Defensive Trades at Governor 0% (P1)
+
+**Design:** At Governor 0%, only BULLISH trades are blocked. Defensive trades always allowed:
+
+| Trade Type | Governor 100% | Governor 50% | Governor 0% |
+|------------|:-------------:|:------------:|:-----------:|
+| Trend (QLD/SSO/TNA/FAS) | ✅ | ✅ | ❌ |
+| Bullish CALL spreads | ✅ | ✅ | ❌ |
+| Mean Reversion (TQQQ/SOXL) | ✅ | ✅ | ❌ |
+| Hedges (TMF/PSQ) | ✅ | ✅ | ✅ |
+| Bearish PUT spreads | ✅ | ✅ | ✅ |
+| Yield (SHV) | ✅ | ✅ | ✅ |
+
+**Files:** `main.py`, `config.py`
+
+---
+
+#### V3-6: HWM Reset Mechanism (P2)
+
+**Bug:** HWM stayed locked at $50,029 for entire 2015. Even 10 REGIME_OVERRIDEs couldn't break the death spiral.
+
+**Fix:** After 20 days at Governor 50%+ with cumulative positive P&L, reset HWM to current equity.
+
+```python
+GOVERNOR_HWM_RESET_ENABLED = True
+GOVERNOR_HWM_RESET_MIN_DAYS = 20
+GOVERNOR_HWM_RESET_MIN_SCALE = 0.50
+```
+
+**Files:** `config.py`, `engines/core/risk_engine.py`
+
+---
+
+### Implementation Order
+
+```
+Phase 1: P0 Fixes (EOD_LOCK + VIX Direction)
+  └── V3-1: EOD_LOCK exempt hedges
+  └── V3-2: EOD_LOCK exempt PUT spreads
+  └── V3-3: VIX Direction in regime
+
+Phase 2: P1 Fixes (Governor Simplification)
+  └── V3-4: 3-tier Governor
+  └── V3-5: Defensive trades at 0%
+
+Phase 3: P2 Fixes (Recovery)
+  └── V3-6: HWM Reset mechanism
+
+Phase 4: Validation
+  └── Backtest 2015 with all fixes
+  └── Backtest 2017 (bull market)
+  └── Backtest 2022 Q1-Q2 (bear market)
+```
+
+---
+
+### Prior V3.0 Commits (Already Applied)
+
+| Commit | Description |
+|--------|-------------|
+| `cdf189f` | fix(imports): remove Phase enum import |
+| `b8103a1` | fix(config): add INITIAL_CAPITAL |
+| `88951ed` | fix(config): add MAX_SINGLE_POSITION_PCT |
+| `1a66f2b` | feat(v3.0): Governor immunity + regime-adaptive ADX |
+| `d10e700` | feat(governor): Regime Override jumps to 50% |
+| `3ed2875` | fix(kill-switch): handle string symbols in liquidation |
+
+---
+
 ## Current Sprint: V2.1.1 Options Engine Redesign
 
 > **Status:** V2.1.1 COMPLETE ✅ — Options Engine Dual-Mode + Micro Regime Engine
