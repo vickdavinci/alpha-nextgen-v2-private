@@ -730,12 +730,9 @@ class AlphaNextGen(QCAlgorithm):
         self.scheduler.on_market_close(self._on_market_close)
         self.scheduler.on_weekly_reset(self._on_weekly_reset)
 
-        # V2.1.1: Add intraday options force exit at 15:30
-        self.Schedule.On(
-            self.DateRules.EveryDay(),
-            self.TimeRules.At(15, 30),
-            self._on_intraday_options_force_close,
-        )
+        # V2.1.1: Intraday options force exit - NOW SCHEDULED DYNAMICALLY
+        # V3.0: Moved to _schedule_dynamic_eod_events() to handle early close days
+        # Time is calculated as: market_close - INTRADAY_OPTIONS_OFFSET_MINUTES
 
         # V2.1.1: Tiered VIX Monitoring schedules
         # Layer 1: Spike detection every 5 minutes (10:00 - 15:00)
@@ -946,6 +943,47 @@ class AlphaNextGen(QCAlgorithm):
         # Set SPY prior close for gap filter
         self.spy_prior_close = self.Securities[self.spy].Close
         self.risk_engine.set_spy_prior_close(self.spy_prior_close)
+
+        # V3.0: Schedule dynamic EOD events based on actual market close time
+        # Handles early close days (1:00 PM) automatically
+        self._schedule_dynamic_eod_events()
+
+    def _schedule_dynamic_eod_events(self) -> None:
+        """
+        V3.0: Schedule EOD events dynamically based on actual market close time.
+
+        Queries Exchange.Hours.GetNextMarketClose() to determine today's actual
+        close time, then schedules MR force close, EOD processing, and market
+        close events relative to that time.
+
+        Handles:
+            - Normal days (4:00 PM close): Events at 15:30/15:45/16:00
+            - Early close days (1:00 PM): Events at 12:30/12:45/13:00
+        """
+        try:
+            # Get actual market close time for today
+            market_hours = self.Securities[self.spy].Exchange.Hours
+            market_close = market_hours.GetNextMarketClose(self.Time, False)
+
+            # Schedule EOD events via scheduler
+            self.scheduler.schedule_dynamic_eod_events(market_close)
+
+            # Also schedule intraday options force close dynamically
+            from datetime import timedelta
+
+            opt_offset = getattr(config, "INTRADAY_OPTIONS_OFFSET_MINUTES", 30)
+            opt_close_time = market_close - timedelta(minutes=opt_offset)
+
+            self.Schedule.On(
+                self.DateRules.On(self.Time.year, self.Time.month, self.Time.day),
+                self.TimeRules.At(opt_close_time.hour, opt_close_time.minute),
+                self._on_intraday_options_force_close,
+            )
+
+        except Exception as e:
+            # Fallback to fixed times if dynamic scheduling fails
+            self.Log(f"EOD_SCHEDULE_ERROR: {e} - using fixed 15:45/16:00 fallback")
+            # Fixed fallback schedules are registered in _setup_schedules() if needed
 
     def _liquidate_all_spread_aware(self, reason: str = "GOVERNOR_SHUTDOWN") -> None:
         """

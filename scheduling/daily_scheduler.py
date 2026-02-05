@@ -20,7 +20,7 @@ Spec: docs/14-daily-operations.md
 """
 
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
@@ -83,6 +83,8 @@ class EventConfig:
 
 
 # Scheduled event configurations
+# NOTE: EOD events (MR_FORCE_CLOSE, EOD_PROCESSING, MARKET_CLOSE) are scheduled
+# dynamically in schedule_dynamic_eod_events() to handle early close days.
 SCHEDULED_EVENTS: List[EventConfig] = [
     EventConfig(ScheduledEvent.PRE_MARKET_SETUP, 9, 25, "Set equity_prior_close baseline"),
     EventConfig(ScheduledEvent.MOO_FALLBACK, 9, 31, "Check MOO orders, execute fallbacks"),
@@ -90,9 +92,9 @@ SCHEDULED_EVENTS: List[EventConfig] = [
     EventConfig(ScheduledEvent.WARM_ENTRY_CHECK, 10, 0, "Cold start warm entry check"),
     EventConfig(ScheduledEvent.TIME_GUARD_START, 13, 55, "Block all entries"),
     EventConfig(ScheduledEvent.TIME_GUARD_END, 14, 10, "Resume entries"),
-    EventConfig(ScheduledEvent.MR_FORCE_CLOSE, 15, 45, "Force close MR positions"),
-    EventConfig(ScheduledEvent.EOD_PROCESSING, 15, 45, "Run EOD batch processing"),
-    EventConfig(ScheduledEvent.MARKET_CLOSE, 16, 0, "Persist state"),
+    # MR_FORCE_CLOSE - scheduled dynamically (market_close - 15 min)
+    # EOD_PROCESSING - scheduled dynamically (market_close - 15 min)
+    # MARKET_CLOSE - scheduled dynamically (at market_close)
     EventConfig(ScheduledEvent.WEEKLY_RESET, 9, 30, "Reset weekly breaker", "Monday"),
 ]
 
@@ -198,6 +200,84 @@ class DailyScheduler:
 
         self.algorithm.Schedule.On(date_rule, time_rule, callback)  # type: ignore[attr-defined]
         # Registration logging disabled to save log space
+
+    def schedule_dynamic_eod_events(self, market_close: datetime) -> None:
+        """
+        V3.0: Schedule EOD events dynamically based on actual market close time.
+
+        Handles early close days (1:00 PM) by calculating EOD times relative
+        to the actual market close rather than using fixed 15:45/16:00 times.
+
+        Args:
+            market_close: The actual market close time for today.
+
+        Events scheduled:
+            - MR_FORCE_CLOSE: market_close - EOD_OFFSET_MINUTES (default 15)
+            - EOD_PROCESSING: market_close - EOD_OFFSET_MINUTES (default 15)
+            - MARKET_CLOSE: at market_close
+        """
+        if not self.algorithm:
+            self.log("SCHEDULER: No algorithm, skipping dynamic EOD scheduling")
+            return
+
+        # Get offset from config (default 15 minutes)
+        eod_offset = getattr(config, "EOD_OFFSET_MINUTES", 15)
+        intraday_opt_offset = getattr(config, "INTRADAY_OPTIONS_OFFSET_MINUTES", 30)
+
+        # Calculate dynamic times
+        eod_time = market_close - timedelta(minutes=eod_offset)
+        opt_close_time = market_close - timedelta(minutes=intraday_opt_offset)
+
+        # Store for time-based checks in other methods
+        self._mr_force_close = (eod_time.hour, eod_time.minute)
+        self._dynamic_market_close = (market_close.hour, market_close.minute)
+
+        # Check if this is an early close day
+        is_early_close = market_close.hour < 16
+        close_type = "EARLY" if is_early_close else "NORMAL"
+
+        self.log(
+            f"EOD_SCHEDULE: {close_type} close at {market_close.strftime('%H:%M')} | "
+            f"MR/EOD={eod_time.strftime('%H:%M')} | OptClose={opt_close_time.strftime('%H:%M')}"
+        )
+
+        # Get today's date for DateRules.On
+        today = self.algorithm.Time  # type: ignore[attr-defined]
+
+        # Create callback wrappers
+        def mr_force_close_callback() -> None:
+            self._on_event(ScheduledEvent.MR_FORCE_CLOSE)
+
+        def eod_processing_callback() -> None:
+            self._on_event(ScheduledEvent.EOD_PROCESSING)
+
+        def market_close_callback() -> None:
+            self._on_event(ScheduledEvent.MARKET_CLOSE)
+
+        # Schedule MR_FORCE_CLOSE (market_close - offset)
+        self.algorithm.Schedule.On(  # type: ignore[attr-defined]
+            self.algorithm.DateRules.On(today.year, today.month, today.day),  # type: ignore[attr-defined]
+            self.algorithm.TimeRules.At(eod_time.hour, eod_time.minute),  # type: ignore[attr-defined]
+            mr_force_close_callback,
+        )
+
+        # Schedule EOD_PROCESSING (market_close - offset)
+        self.algorithm.Schedule.On(  # type: ignore[attr-defined]
+            self.algorithm.DateRules.On(today.year, today.month, today.day),  # type: ignore[attr-defined]
+            self.algorithm.TimeRules.At(eod_time.hour, eod_time.minute),  # type: ignore[attr-defined]
+            eod_processing_callback,
+        )
+
+        # Schedule MARKET_CLOSE (at market_close)
+        self.algorithm.Schedule.On(  # type: ignore[attr-defined]
+            self.algorithm.DateRules.On(today.year, today.month, today.day),  # type: ignore[attr-defined]
+            self.algorithm.TimeRules.At(market_close.hour, market_close.minute),  # type: ignore[attr-defined]
+            market_close_callback,
+        )
+
+        # Also schedule intraday options force close dynamically
+        # This is handled separately in main.py but we store the time for reference
+        self._intraday_opt_close = (opt_close_time.hour, opt_close_time.minute)
 
     def _on_event(self, event: ScheduledEvent) -> None:
         """Internal handler called when a scheduled event fires."""
@@ -371,11 +451,14 @@ class DailyScheduler:
         """
         Check if MR positions should be force closed.
 
-        Returns True at or after 15:45 ET.
+        V3.0: Uses dynamic time from schedule_dynamic_eod_events() to handle
+        early close days. Falls back to 15:45 if dynamic scheduling hasn't run.
         """
         current = self._get_current_time()
         current_minutes = self._time_to_minutes(current[0], current[1])
-        force_close_minutes = self._time_to_minutes(15, 45)
+        # Use dynamic time if set, otherwise fall back to 15:45
+        force_close_time = getattr(self, "_mr_force_close", (15, 45))
+        force_close_minutes = self._time_to_minutes(force_close_time[0], force_close_time[1])
 
         return current_minutes >= force_close_minutes
 

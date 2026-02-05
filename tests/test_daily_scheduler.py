@@ -78,13 +78,21 @@ class TestEventConfiguration:
             ScheduledEvent.WARM_ENTRY_CHECK,
             ScheduledEvent.TIME_GUARD_START,
             ScheduledEvent.TIME_GUARD_END,
-            ScheduledEvent.MR_FORCE_CLOSE,
-            ScheduledEvent.EOD_PROCESSING,
-            ScheduledEvent.MARKET_CLOSE,
+            # V3.0: MR_FORCE_CLOSE, EOD_PROCESSING, MARKET_CLOSE are now dynamically scheduled
+            # to handle early close days, so they are NOT in SCHEDULED_EVENTS
         }
 
         for event in required_events:
             assert event in configured_events, f"Missing configuration for {event.value}"
+
+        # V3.0: Verify EOD events are NOT in static config (they're scheduled dynamically)
+        dynamic_events = {
+            ScheduledEvent.MR_FORCE_CLOSE,
+            ScheduledEvent.EOD_PROCESSING,
+            ScheduledEvent.MARKET_CLOSE,
+        }
+        for event in dynamic_events:
+            assert event not in configured_events, f"{event.value} should be dynamically scheduled"
 
     def test_pre_market_setup_at_0925(self) -> None:
         """Test pre-market setup is at 09:25."""
@@ -104,11 +112,18 @@ class TestEventConfiguration:
         assert config.hour == 14
         assert config.minute == 10
 
-    def test_eod_processing_at_1545(self) -> None:
-        """Test EOD processing is at 15:45."""
-        config = next(e for e in SCHEDULED_EVENTS if e.event == ScheduledEvent.EOD_PROCESSING)
-        assert config.hour == 15
-        assert config.minute == 45
+    def test_eod_offset_config(self) -> None:
+        """V3.0: Test EOD offset config exists for dynamic scheduling."""
+        import config
+
+        # EOD events are now dynamically scheduled based on market close time
+        # Default offset is 15 minutes before close
+        assert hasattr(config, "EOD_OFFSET_MINUTES")
+        assert config.EOD_OFFSET_MINUTES == 15
+
+        # Intraday options close 30 minutes before market close
+        assert hasattr(config, "INTRADAY_OPTIONS_OFFSET_MINUTES")
+        assert config.INTRADAY_OPTIONS_OFFSET_MINUTES == 30
 
 
 # =============================================================================

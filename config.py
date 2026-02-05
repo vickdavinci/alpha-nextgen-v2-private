@@ -1178,6 +1178,14 @@ MARKET_ORDER_TIMEOUT_SEC = 60
 CONNECTION_TIMEOUT_MIN = 5
 
 # =============================================================================
+# V3.0: DYNAMIC EOD SCHEDULING (Early Close Day Support)
+# =============================================================================
+# EOD events are scheduled dynamically based on actual market close time.
+# On early close days (1:00 PM), events fire earlier automatically.
+EOD_OFFSET_MINUTES = 15  # MR force close & EOD processing = market_close - 15 min
+INTRADAY_OPTIONS_OFFSET_MINUTES = 30  # Intraday options close = market_close - 30 min
+
+# =============================================================================
 # LOG THROTTLING (Pre-QC Local Testing)
 # =============================================================================
 # QC has 100KB log limit per backtest - throttle high-frequency logs
