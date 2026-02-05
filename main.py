@@ -861,7 +861,14 @@ class AlphaNextGen(QCAlgorithm):
 
             stale_count = 0
             for order in open_orders:
-                order_age_minutes = (self.Time - order.Time).total_seconds() / 60
+                # V3.0 FIX: Handle timezone-aware vs naive datetime comparison
+                try:
+                    order_age_minutes = (self.Time - order.Time).total_seconds() / 60
+                except TypeError:
+                    # If timezone mismatch, use naive comparison
+                    order_age_minutes = (
+                        self.Time.replace(tzinfo=None) - order.Time.replace(tzinfo=None)
+                    ).total_seconds() / 60
                 if order_age_minutes > 5:
                     try:
                         self.Transactions.CancelOrder(order.Id)
