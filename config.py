@@ -521,6 +521,15 @@ GOVERNOR_HWM_RESET_ENABLED = True
 GOVERNOR_HWM_RESET_MIN_DAYS = 10  # Consecutive days of positive P&L at 50%+ scale
 GOVERNOR_HWM_RESET_MIN_SCALE = 0.50  # Must be at this scale or higher to count
 
+# V3.1: Equity Recovery from Governor 0% (P0 Fix for 2015 Death Spiral)
+# Problem: HWM Reset requires Scale >= 50%, but at Governor 0% this is impossible.
+# Bot gets stuck at 0% forever with no recovery path.
+# Solution: If equity recovers X% from the trough while at Governor 0%, step up to 50%.
+# This gives the bot a chance to recover without waiting for HWM reset conditions.
+GOVERNOR_EQUITY_RECOVERY_ENABLED = True
+GOVERNOR_EQUITY_RECOVERY_PCT = 0.03  # 3% recovery from trough → step up to 50%
+GOVERNOR_EQUITY_RECOVERY_MIN_DAYS_AT_ZERO = 5  # Must be at 0% for at least N days
+
 # V3.0: Simplified Governor Options Gating (3-tier system)
 #
 # With V3.0 simplified governor (100%/50%/0%), options gating is straightforward:

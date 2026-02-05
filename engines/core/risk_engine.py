@@ -238,6 +238,10 @@ class RiskEngine:
         self._hwm_reset_consecutive_days: int = 0
         self._hwm_reset_prior_equity: float = 0.0  # For daily P&L calculation
 
+        # V3.1: Equity Recovery from Governor 0%
+        self._days_at_governor_zero: int = 0
+        self._equity_at_governor_zero_start: float = 0.0
+
         # V2.27: Graduated Kill Switch state
         self._ks_current_tier: KSTier = KSTier.NONE
         self._ks_skip_until_date: Optional[str] = None  # Block entries after Tier 2+
@@ -450,6 +454,9 @@ class RiskEngine:
         # V3.0: HWM Reset after sustained recovery
         self._check_hwm_reset(current_equity)
 
+        # V3.1: Equity Recovery from Governor 0%
+        self._check_equity_recovery_from_zero(current_equity)
+
         return self._governor_scale
 
     def get_governor_scale(self) -> float:
@@ -528,6 +535,89 @@ class RiskEngine:
                 f"Forgave ${old_hwm - current_equity:,.0f} drawdown"
             )
             return True
+
+        return False
+
+    def _check_equity_recovery_from_zero(self, current_equity: float) -> bool:
+        """
+        V3.1: Check if equity has recovered enough to step up from Governor 0%.
+
+        Problem: At Governor 0%, HWM Reset requires Scale >= 50% which is impossible.
+        Bot gets stuck at 0% forever with no recovery path.
+
+        Solution: If at Governor 0% for N days AND equity recovers X% from trough,
+        force step-up to 50%. This gives the bot a chance to recover.
+
+        Args:
+            current_equity: Current portfolio value.
+
+        Returns:
+            True if step-up was triggered.
+        """
+        if not getattr(config, "GOVERNOR_EQUITY_RECOVERY_ENABLED", False):
+            return False
+
+        # Only applies when at Governor 0%
+        if self._governor_scale > 0:
+            # Reset counter if not at 0%
+            if self._days_at_governor_zero > 0:
+                self.log(f"EQUITY_RECOVERY: Counter reset | Scale={self._governor_scale:.0%} > 0%")
+            self._days_at_governor_zero = 0
+            self._equity_at_governor_zero_start = 0.0
+            return False
+
+        # Track days at Governor 0%
+        if self._days_at_governor_zero == 0:
+            # First day at 0%, start tracking
+            self._equity_at_governor_zero_start = current_equity
+            self._days_at_governor_zero = 1
+            self.log(
+                f"EQUITY_RECOVERY: Started tracking at Governor 0% | "
+                f"Equity=${current_equity:,.0f}"
+            )
+            return False
+
+        self._days_at_governor_zero += 1
+
+        # Check minimum days requirement
+        min_days = getattr(config, "GOVERNOR_EQUITY_RECOVERY_MIN_DAYS_AT_ZERO", 5)
+        if self._days_at_governor_zero < min_days:
+            self.log(
+                f"EQUITY_RECOVERY: Day {self._days_at_governor_zero}/{min_days} at Governor 0%"
+            )
+            return False
+
+        # Check if equity has recovered enough from trough
+        recovery_pct = getattr(config, "GOVERNOR_EQUITY_RECOVERY_PCT", 0.03)
+        if self._trough_equity <= 0:
+            return False
+
+        recovery_from_trough = (current_equity - self._trough_equity) / self._trough_equity
+
+        if recovery_from_trough >= recovery_pct:
+            # Trigger step-up to 50%
+            old_scale = self._governor_scale
+            self._governor_scale = 0.50
+            self._days_at_governor_zero = 0
+            self._equity_at_governor_zero_start = 0.0
+            # Reset trough to current equity
+            self._trough_equity = current_equity
+            self._scale_at_trough = self._governor_scale
+
+            self.log(
+                f"EQUITY_RECOVERY: TRIGGERED | "
+                f"Days at 0%={self._days_at_governor_zero} | "
+                f"Recovery={recovery_from_trough:.1%} >= {recovery_pct:.0%} | "
+                f"Scale {old_scale:.0%} → {self._governor_scale:.0%} | "
+                f"Trough=${self._trough_equity:,.0f} → Current=${current_equity:,.0f}"
+            )
+            return True
+        else:
+            self.log(
+                f"EQUITY_RECOVERY: Day {self._days_at_governor_zero} at 0% | "
+                f"Recovery={recovery_from_trough:.1%} < {recovery_pct:.0%} needed | "
+                f"Trough=${self._trough_equity:,.0f}"
+            )
 
         return False
 
@@ -1697,6 +1787,9 @@ class RiskEngine:
                 # V3.0: HWM Reset state
                 "hwm_reset_consecutive_days": self._hwm_reset_consecutive_days,
                 "hwm_reset_prior_equity": self._hwm_reset_prior_equity,
+                # V3.1: Equity Recovery state
+                "days_at_governor_zero": self._days_at_governor_zero,
+                "equity_at_governor_zero_start": self._equity_at_governor_zero_start,
             },
             # V2.27: Graduated KS skip-day
             "ks_skip_until_date": self._ks_skip_until_date,
@@ -1752,6 +1845,11 @@ class RiskEngine:
             # V3.0: Restore HWM Reset state
             self._hwm_reset_consecutive_days = gov_state.get("hwm_reset_consecutive_days", 0)
             self._hwm_reset_prior_equity = gov_state.get("hwm_reset_prior_equity", 0.0)
+            # V3.1: Restore Equity Recovery state
+            self._days_at_governor_zero = gov_state.get("days_at_governor_zero", 0)
+            self._equity_at_governor_zero_start = gov_state.get(
+                "equity_at_governor_zero_start", 0.0
+            )
 
         # V2.27: Restore KS skip-day
         self._ks_skip_until_date = state.get("ks_skip_until_date")

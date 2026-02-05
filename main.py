@@ -192,7 +192,7 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
         self.SetStartDate(2015, 1, 1)
-        self.SetEndDate(2015, 12, 31)  # V3.0: 2015 full year (choppy/flat market)
+        self.SetEndDate(2015, 12, 31)  # V3.0 validation: 2015 full year (original problem period)
         self.SetCash(config.INITIAL_CAPITAL)  # $50,000 seed capital
 
         # All times are Eastern
@@ -968,13 +968,22 @@ class AlphaNextGen(QCAlgorithm):
             self._governor_scale = self.risk_engine.get_governor_scale()
 
         # V2.26: Governor at 0% = full shutdown — liquidate all positions
+        # V3.1: EXEMPT hedge positions (TMF/PSQ) - they were legitimately opened at EOD
+        # and should NOT be liquidated the next morning (causes guaranteed hedge losses)
         if self._governor_scale == 0.0 and self.Portfolio.Invested:
-            self.Log(
-                f"GOVERNOR: SHUTDOWN — Liquidating all positions | "
-                f"Equity=${self.equity_prior_close:,.0f}"
+            # Check which positions to liquidate (exempt hedges)
+            hedge_symbols = {self.tmf, self.psq}
+            has_non_hedge = any(
+                kvp.Value.Invested and kvp.Value.Symbol not in hedge_symbols
+                for kvp in self.Portfolio
             )
-            self._liquidate_all_spread_aware("GOVERNOR_SHUTDOWN")  # V2.28: Spread-aware
-            self.portfolio_router._pending_weights.clear()
+            if has_non_hedge:
+                self.Log(
+                    f"GOVERNOR: SHUTDOWN — Liquidating non-hedge positions | "
+                    f"Equity=${self.equity_prior_close:,.0f} | Hedges exempt"
+                )
+                self._liquidate_all_spread_aware("GOVERNOR_SHUTDOWN", exempt_symbols=hedge_symbols)
+                self.portfolio_router._pending_weights.clear()
 
         # Set SPY prior close for gap filter
         self.spy_prior_close = self.Securities[self.spy].Close
@@ -1021,7 +1030,9 @@ class AlphaNextGen(QCAlgorithm):
             self.Log(f"EOD_SCHEDULE_ERROR: {e} - using fixed 15:45/16:00 fallback")
             # Fixed fallback schedules are registered in _setup_schedules() if needed
 
-    def _liquidate_all_spread_aware(self, reason: str = "GOVERNOR_SHUTDOWN") -> None:
+    def _liquidate_all_spread_aware(
+        self, reason: str = "GOVERNOR_SHUTDOWN", exempt_symbols: set = None
+    ) -> None:
         """
         V2.33: Portfolio-scan based liquidation with atomic options handling.
 
@@ -1034,7 +1045,13 @@ class AlphaNextGen(QCAlgorithm):
 
         This prevents the "long leg sold → naked short → margin rejection" death spiral
         that caused -80% loss in V2.32.
+
+        V3.1: Added exempt_symbols parameter to exclude hedge positions (TMF/PSQ)
+        from GOVERNOR_SHUTDOWN liquidation. Hedges should persist overnight.
         """
+        if exempt_symbols is None:
+            exempt_symbols = set()
+
         # V2.33: Scan Portfolio for ALL options positions (not just tracked spread)
         short_options = []  # (symbol, quantity) - negative qty, need to buy back
         long_options = []  # (symbol, quantity) - positive qty, need to sell
@@ -1047,6 +1064,11 @@ class AlphaNextGen(QCAlgorithm):
 
             symbol = holding.Symbol
             qty = holding.Quantity
+
+            # V3.1: Skip exempt symbols (hedges)
+            if symbol in exempt_symbols:
+                self.Log(f"{reason}: Exempting hedge {symbol}")
+                continue
 
             # Check if this is an options position (SecurityType.Option)
             if symbol.SecurityType == SecurityType.Option:
@@ -1510,16 +1532,14 @@ class AlphaNextGen(QCAlgorithm):
         if self.IsWarmingUp:
             return
 
-        # V3.0 P0: EOD Governor Lock - prevent zombie trading when shutdown
-        if self._governor_scale <= 0.0:
-            self.Log("EOD_LOCK: Governor scale = 0, skipping MOO order submission")
-            self._save_state()
-            # Still reset daily tracking below
-        else:
-            # Submit MOO orders (market is now closed)
-            if hasattr(self, "_eod_capital_state") and self._eod_capital_state is not None:
-                self._process_eod_signals(self._eod_capital_state)
-                self._eod_capital_state = None
+        # V3.0 FIX: Always process EOD signals - internal logic handles Governor scaling
+        # At Governor 0%, hedges (TMF/PSQ) and bearish PUTs are still allowed
+        # The scaling logic in _process_eod_signals zeros out bullish positions
+        if hasattr(self, "_eod_capital_state") and self._eod_capital_state is not None:
+            if self._governor_scale <= 0.0:
+                self.Log("EOD_GOVERNOR_0: Processing defensive signals only (hedges + PUTs)")
+            self._process_eod_signals(self._eod_capital_state)
+            self._eod_capital_state = None
 
         # Save all state
         self._save_state()
@@ -2632,10 +2652,32 @@ class AlphaNextGen(QCAlgorithm):
             # V2.32: Apply sizing floor for options, exempt bearish options if configured
             HEDGE_SYMBOLS = {"TMF", "PSQ"}
 
-            # V2.32: Determine if current spread is bearish (for exemption logic)
-            is_bearish_spread = False
-            if hasattr(self, "options_engine") and self.options_engine._spread_position is not None:
-                is_bearish_spread = self.options_engine._spread_position.spread_type == "BEAR_PUT"
+            # V3.0 FIX: Improved bearish detection - check existing position OR signal source
+            # This allows NEW bearish entries at Governor 0%, not just existing positions
+            def is_bearish_signal(agg) -> bool:
+                """Check if signal is bearish (PUT spread entry or exit)."""
+                # Check existing spread position
+                if (
+                    hasattr(self, "options_engine")
+                    and self.options_engine._spread_position is not None
+                ):
+                    if self.options_engine._spread_position.spread_type == "BEAR_PUT":
+                        return True
+                # Check signal source/reasons for bearish indicators
+                for source in agg.sources:
+                    if "BEAR" in source.upper() or "PUT" in source.upper():
+                        return True
+                for reason in agg.reasons:
+                    if "BEAR" in reason.upper() or "PUT" in reason.upper():
+                        return True
+                # Check symbol for PUT option (option symbols contain P for put)
+                symbol_str = str(agg.symbol)
+                if len(symbol_str) > 10 and "QQQ" in symbol_str:
+                    # QQQ option symbol format: QQQ YYMMDDP00123000 (P = put)
+                    # Extract option type from symbol
+                    if "P0" in symbol_str:  # PUT option
+                        return True
+                return False
 
             if self._governor_scale < 1.0:
                 scaled_count = 0
@@ -2650,8 +2692,9 @@ class AlphaNextGen(QCAlgorithm):
                         is_option = len(str(symbol)) > 5 and "QQQ" in str(symbol)
 
                         if is_option:
-                            # V2.32: Exempt bearish options entirely if configured
-                            if is_bearish_spread and config.GOVERNOR_EXEMPT_BEARISH_OPTIONS:
+                            # V3.0: Exempt bearish options entirely if configured
+                            # Uses improved detection that checks signal source, not just existing position
+                            if is_bearish_signal(agg) and config.GOVERNOR_EXEMPT_BEARISH_OPTIONS:
                                 options_exempt_count += 1
                                 continue
 

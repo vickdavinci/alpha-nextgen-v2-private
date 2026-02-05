@@ -65,6 +65,13 @@
 | V3-6 | Governor | HWM Reset after 10 days at 50%+ with positive P&L | P2 | ✅ DONE |
 | V3-7 | Regime | Lower CAUTIOUS threshold from 40 to 45 (with VIX direction may not be needed) | P3 | ⏭️ SKIP |
 
+### V3.1 Fixes (P0 from 2015 Audit)
+
+| ID | Area | Fix | Priority | Status |
+|:--:|:----:|-----|:--------:|:------:|
+| V3.1-1 | Governor | Exempt hedges (TMF/PSQ) from morning GOVERNOR_SHUTDOWN | P0 | ✅ DONE |
+| V3.1-2 | Governor | Add equity recovery path from Governor 0% (3% recovery → 50%) | P0 | ✅ DONE |
+
 ### Fix Details
 
 #### V3-1 & V3-2: EOD_LOCK Exemption (P0)
