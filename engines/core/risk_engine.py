@@ -501,18 +501,33 @@ class RiskEngine:
         if self._governor_scale >= 1.0:
             return False
 
-        # Determine the next step up
-        levels = sorted(config.DRAWDOWN_GOVERNOR_LEVELS.items())  # (dd%, scale)
+        # Determine the next scale
         current_scale = self._governor_scale
-        next_scale = 1.0  # Default to full if no level found
 
-        # Find the next higher scale
-        available_scales = sorted(set([1.0] + [scale for _, scale in levels]), reverse=True)
-        for scale in available_scales:
-            if scale > current_scale:
-                next_scale = scale
-            else:
-                break
+        # V3.0 FIX: In bullish regime, jump directly to 50% minimum
+        # This enables bullish options which require Governor >= 50%
+        # Without this, override from 0% → 25% still blocks bullish options
+        min_bullish_scale = getattr(config, "GOVERNOR_REGIME_OVERRIDE_MIN_SCALE", 0.50)
+
+        if regime_score >= threshold and current_scale < min_bullish_scale:
+            # Bullish regime but scale too low for options - jump to minimum
+            next_scale = min_bullish_scale
+            self.log(
+                f"DRAWDOWN_GOVERNOR: REGIME_OVERRIDE_BOOST | "
+                f"Regime={regime_score:.0f} bullish, jumping to {min_bullish_scale:.0%} for options"
+            )
+        else:
+            # Normal step-up logic
+            levels = sorted(config.DRAWDOWN_GOVERNOR_LEVELS.items())  # (dd%, scale)
+            next_scale = 1.0  # Default to full if no level found
+
+            # Find the next higher scale
+            available_scales = sorted(set([1.0] + [scale for _, scale in levels]), reverse=True)
+            for scale in available_scales:
+                if scale > current_scale:
+                    next_scale = scale
+                else:
+                    break
 
         # Apply the override
         old_scale = self._governor_scale

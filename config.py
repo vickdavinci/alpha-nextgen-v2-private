@@ -469,6 +469,7 @@ GOVERNOR_REGIME_OVERRIDE_ENABLED = True
 GOVERNOR_REGIME_OVERRIDE_THRESHOLD = 70  # Regime score must be >= this
 GOVERNOR_REGIME_OVERRIDE_DAYS = 5  # Consecutive days at/above threshold
 GOVERNOR_REGIME_OVERRIDE_COOLDOWN_DAYS = 10  # Days before another override can trigger
+GOVERNOR_REGIME_OVERRIDE_MIN_SCALE = 0.50  # V3.0: Jump to 50% min to enable bullish options
 
 # V2.28: Minimum governor scale for intraday options entry
 # V3.0: Lowered from 1.0 to 0.75 — options should reduce sizing during drawdowns,
