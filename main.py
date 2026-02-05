@@ -337,6 +337,12 @@ class AlphaNextGen(QCAlgorithm):
             return
 
         # =====================================================================
+        # STEP 2.5: V3.0 STALE ORDER CLEANUP (every 5 minutes)
+        # =====================================================================
+        # Cancel orphaned orders from previous failed cycles to prevent interference
+        self._cleanup_stale_orders()
+
+        # =====================================================================
         # STEP 3: RISK ENGINE CHECKS (ALWAYS FIRST AFTER SPLITS)
         # =====================================================================
         risk_result = self._run_risk_checks(data)
@@ -811,6 +817,47 @@ class AlphaNextGen(QCAlgorithm):
                     self._splits_logged_today.add(symbol_str)
 
         return False
+
+    def _cleanup_stale_orders(self) -> None:
+        """
+        V3.0 P2: Clean up stale orders at start of logic cycle.
+
+        Cancels orders that have been pending for more than 5 minutes to prevent
+        orphaned orders from previous failed cycles from interfering with new logic.
+        Runs every 5 minutes to avoid excessive API calls.
+        """
+        # Rate limit: only run every 5 minutes
+        if not hasattr(self, "_last_stale_order_check"):
+            self._last_stale_order_check = None
+
+        if self._last_stale_order_check is not None:
+            minutes_since_check = (self.Time - self._last_stale_order_check).total_seconds() / 60
+            if minutes_since_check < 5:
+                return  # Too soon, skip
+
+        self._last_stale_order_check = self.Time
+
+        # Get all open orders and cancel those older than 5 minutes
+        try:
+            open_orders = list(self.Transactions.GetOpenOrders())
+            if not open_orders:
+                return
+
+            stale_count = 0
+            for order in open_orders:
+                order_age_minutes = (self.Time - order.Time).total_seconds() / 60
+                if order_age_minutes > 5:
+                    try:
+                        self.Transactions.CancelOrder(order.Id)
+                        stale_count += 1
+                    except Exception as e:
+                        self.Log(f"STALE_CLEANUP: Failed to cancel order {order.Id} | {e}")
+
+            if stale_count > 0:
+                self.Log(f"STALE_CLEANUP: Cancelled {stale_count} orders older than 5 minutes")
+
+        except Exception as e:
+            self.Log(f"STALE_CLEANUP: Error checking orders | {e}")
 
     def _update_rolling_windows(self, data: Slice) -> None:
         """
@@ -1389,10 +1436,16 @@ class AlphaNextGen(QCAlgorithm):
         if self.IsWarmingUp:
             return
 
-        # Submit MOO orders (market is now closed)
-        if hasattr(self, "_eod_capital_state") and self._eod_capital_state is not None:
-            self._process_eod_signals(self._eod_capital_state)
-            self._eod_capital_state = None
+        # V3.0 P0: EOD Governor Lock - prevent zombie trading when shutdown
+        if self._governor_scale <= 0.0:
+            self.Log("EOD_LOCK: Governor scale = 0, skipping MOO order submission")
+            self._save_state()
+            # Still reset daily tracking below
+        else:
+            # Submit MOO orders (market is now closed)
+            if hasattr(self, "_eod_capital_state") and self._eod_capital_state is not None:
+                self._process_eod_signals(self._eod_capital_state)
+                self._eod_capital_state = None
 
         # Save all state
         self._save_state()

@@ -3466,17 +3466,33 @@ class OptionsEngine:
             pnl = current_spread_value - entry_debit
             pnl_pct = pnl / entry_debit if entry_debit > 0 else 0
 
-            # Exit 1: Profit target (50% of max profit)
+            # Exit 1: Profit target (base 50% of max profit)
+            # V3.0: Regime-adaptive profit targets - greedy in bull, defensive in bear
+            base_profit_pct = config.SPREAD_PROFIT_TARGET_PCT
+            profit_multipliers = getattr(
+                config, "SPREAD_PROFIT_REGIME_MULTIPLIERS", {75: 1.0, 50: 1.0, 40: 1.0, 0: 1.0}
+            )
+
+            # Find applicable multiplier based on regime score
+            profit_multiplier = 1.0
+            for threshold in sorted(profit_multipliers.keys(), reverse=True):
+                if regime_score >= threshold:
+                    profit_multiplier = profit_multipliers[threshold]
+                    break
+
+            adaptive_profit_pct = base_profit_pct * profit_multiplier
+
             # V2.16-BT: Commission-aware profit target
             # Require NET profit (after commission) to meet the target, not just gross
             commission_cost = spread.num_spreads * config.SPREAD_COMMISSION_PER_CONTRACT
-            raw_profit_target = spread.max_profit * config.SPREAD_PROFIT_TARGET_PCT
+            raw_profit_target = spread.max_profit * adaptive_profit_pct
             # Gross P&L needed = raw_target + commission (ensures net profit meets target)
             profit_target = raw_profit_target + commission_cost
             net_pnl = pnl - commission_cost
             if pnl >= profit_target:
                 exit_reason = (
                     f"PROFIT_TARGET +{pnl_pct:.1%} (Net ${net_pnl:.2f} >= ${raw_profit_target:.2f}) | "
+                    f"Target {adaptive_profit_pct:.0%} (regime {regime_score:.0f}) | "
                     f"Gross ${pnl:.2f} - Commission ${commission_cost:.2f}"
                 )
 

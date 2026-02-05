@@ -365,6 +365,15 @@ TREND_HARD_STOP_PCT = {
     "FAS": 0.12,  # 12% hard stop (3× ETF - more volatile)
 }
 
+# V3.0: Regime-Adaptive Stop Multipliers
+# In bull markets (regime >= 75), give winners more room to run
+# In cautious/bear markets (regime < 50), tighten stops to protect capital
+TREND_STOP_REGIME_MULTIPLIERS = {
+    75: 1.50,  # Regime >= 75: 150% of base stop (looser - let winners run)
+    50: 1.00,  # Regime 50-74: 100% of base stop (standard)
+    0: 0.70,  # Regime < 50: 70% of base stop (tighter - protect capital)
+}
+
 # Mean Reversion Allocations (10% total)
 MR_SYMBOL_ALLOCATIONS = {
     "TQQQ": 0.05,  # 5% - 3× Nasdaq
@@ -761,10 +770,20 @@ SPREAD_DTE_MAX = 45  # V2.19: Widened from 21 to 45 to align with VASS_LOW_IV_DT
 SPREAD_DTE_EXIT = 5  # Close by 5 DTE remaining
 
 # Exit targets
-SPREAD_PROFIT_TARGET_PCT = 0.50  # Take profit at 50% of max profit
+SPREAD_PROFIT_TARGET_PCT = 0.50  # Take profit at 50% of max profit (base value)
 SPREAD_STOP_LOSS_PCT = (
     0.50  # V2.4.2/V2.27: Stop loss at 50% of entry debit (max loss = 50% of net debit)
 )
+
+# V3.0: Regime-Adaptive Profit Targets
+# In bull markets (regime >= 75), be greedy - let winners run to 90%
+# In cautious/bear markets (regime < 40), take profits quickly at 40%
+SPREAD_PROFIT_REGIME_MULTIPLIERS = {
+    75: 1.80,  # Regime >= 75: 90% target (1.80 × 50% base = 90%)
+    50: 1.00,  # Regime 50-74: 50% target (standard)
+    40: 1.00,  # Regime 40-49: 50% target (cautious)
+    0: 0.80,  # Regime < 40: 40% target (0.80 × 50% base = 40%)
+}
 
 # V2.27: Win Rate Gate (Options Self-Correcting Throttle)
 # Rolling window of recent closed spread trades. Scales down/shuts off when losing.
@@ -1193,7 +1212,7 @@ MARGIN_CALL_COOLDOWN_HOURS = 4  # 4-hour cooldown after hitting limit
 # P0 Fix #2: Margin Pre-Check Buffer
 # Before placing any order, verify MarginRemaining > order_cost * buffer
 # Buffer accounts for potential price movement during execution
-MARGIN_PRE_CHECK_BUFFER = 1.20  # Require 20% extra margin buffer
+MARGIN_PRE_CHECK_BUFFER = 1.50  # V3.0: Require 50% extra margin buffer (was 1.20)
 
 # P0 Fix #3: Options Exercise Detection
 # Handle exercise events in OnOrderEvent to prevent margin disasters

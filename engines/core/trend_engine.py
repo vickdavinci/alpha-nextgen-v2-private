@@ -436,12 +436,27 @@ class TrendEngine:
                 position.days_below_sma50 = 0
 
         # Exit 2: Hard stop from entry (asset-specific)
-        hard_stop_pct = config.TREND_HARD_STOP_PCT.get(symbol, 0.15)
+        # V3.0: Regime-adaptive stops - looser in bull, tighter in bear
+        base_stop_pct = config.TREND_HARD_STOP_PCT.get(symbol, 0.15)
+        stop_multipliers = getattr(
+            config, "TREND_STOP_REGIME_MULTIPLIERS", {75: 1.0, 50: 1.0, 0: 1.0}
+        )
+
+        # Find applicable multiplier based on regime score
+        stop_multiplier = 1.0
+        for threshold in sorted(stop_multipliers.keys(), reverse=True):
+            if regime_score >= threshold:
+                stop_multiplier = stop_multipliers[threshold]
+                break
+
+        hard_stop_pct = base_stop_pct * stop_multiplier
+
         if position.entry_price > 0:
             loss_pct = (position.entry_price - close) / position.entry_price
             if loss_pct >= hard_stop_pct:
                 reason = (
-                    f"HARD_STOP: Loss {loss_pct:.1%} >= {hard_stop_pct:.0%} | "
+                    f"HARD_STOP: Loss {loss_pct:.1%} >= {hard_stop_pct:.0%} "
+                    f"(base {base_stop_pct:.0%} × {stop_multiplier:.0%} regime mult) | "
                     f"Entry ${position.entry_price:.2f} -> ${close:.2f}"
                 )
                 self.log(f"TREND: EXIT_SIGNAL {symbol} | {reason}")
