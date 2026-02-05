@@ -14,11 +14,12 @@ These are NOT strategy tests. They don't test if strategies are profitable.
 They test if components can communicate.
 """
 
-import pytest
 from unittest.mock import MagicMock
 
+import pytest
+
+from models.enums import ExposureGroup, RegimeLevel, Urgency
 from models.target_weight import TargetWeight
-from models.enums import Urgency, Phase, RegimeLevel, ExposureGroup
 
 
 class TestSmokeTargetWeightFlow:
@@ -94,11 +95,6 @@ class TestSmokeEnums:
         """SMOKE: Urgency enum has required values."""
         assert Urgency.IMMEDIATE.value == "IMMEDIATE"
         assert Urgency.EOD.value == "EOD"
-
-    def test_smoke_phase_enum(self):
-        """SMOKE: Phase enum has required values."""
-        assert Phase.SEED.value == "SEED"
-        assert Phase.GROWTH.value == "GROWTH"
 
     def test_smoke_regime_level_enum(self):
         """SMOKE: RegimeLevel enum has required values."""

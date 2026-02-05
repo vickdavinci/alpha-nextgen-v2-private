@@ -20,7 +20,7 @@ from engines.core.capital_engine import CapitalEngine
 from engines.satellite.options_engine import OptionsEngine
 from execution.execution_engine import ExecutionEngine, OrderState, OrderType
 from execution.oco_manager import OCOManager, OCOPair, OCOState
-from models.enums import Phase, Urgency
+from models.enums import Urgency
 from models.target_weight import TargetWeight
 from portfolio.portfolio_router import OrderSide, PortfolioRouter
 
@@ -265,11 +265,11 @@ class TestPartialFillsIntegration:
         capital_engine = CapitalEngine(mock_algorithm)
 
         # Set up capital state via calculate()
-        state = capital_engine.calculate(total_equity=75000.0)  # SEED phase
+        state = capital_engine.calculate(total_equity=75000.0)
 
-        # Verify phase and available capital
-        assert state.current_phase == Phase.SEED
+        # V3.0: Phase removed - verify tradeable equity is calculated correctly
         assert state.tradeable_eq > 0
+        assert state.total_equity == 75000.0
 
         # Position sizing should be based on target weight, not partial fills
         # The execution layer handles actual fills
@@ -639,33 +639,33 @@ class TestStatePersistenceRecoveryE2E:
         assert "pending_moo_orders" in saved_state
         assert order_id in saved_state["pending_moo_orders"]
 
-    def test_capital_engine_phase_survives_restart(self, mock_algorithm):
+    def test_capital_engine_lockbox_survives_restart(self, mock_algorithm):
         """
-        Capital engine phase and lockbox survives restart.
+        V3.0: Capital engine lockbox survives restart.
+        (Phase system removed - testing lockbox persistence instead)
         """
         engine1 = CapitalEngine(mock_algorithm)
 
-        # Phase transition requires 5 days above GROWTH threshold ($100k)
-        # Simulate 5 days of EOD updates to trigger transition
-        for _ in range(5):
-            engine1.end_of_day_update(total_equity=150000.0)
+        # Trigger lockbox at $100k milestone
+        engine1.calculate(total_equity=110000.0)
 
-        # Verify we're now in GROWTH phase after 5 days
-        assert engine1.get_current_phase() == Phase.GROWTH
+        # Verify lockbox was triggered
+        assert engine1.get_locked_amount() > 0
+        locked_amount = engine1.get_locked_amount()
 
         # Save state
         saved_state = engine1.get_state_for_persistence()
 
         # Verify persisted state
-        assert "current_phase" in saved_state
-        assert saved_state["current_phase"] == Phase.GROWTH.value
+        assert "locked_amount" in saved_state
+        assert saved_state["locked_amount"] == locked_amount
 
         # Simulate restart
         engine2 = CapitalEngine(mock_algorithm)
         engine2.restore_state(saved_state)
 
-        # Verify phase is restored
-        assert engine2.get_current_phase() == Phase.GROWTH
+        # Verify lockbox is restored
+        assert engine2.get_locked_amount() == locked_amount
 
     def test_full_system_restart_recovery(self, mock_algorithm):
         """

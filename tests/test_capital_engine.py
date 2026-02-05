@@ -1,12 +1,12 @@
 """
 Unit tests for Capital Engine.
 
-Tests phase management, lockbox, and tradeable equity calculations:
-- SEED phase (< $100k)
-- GROWTH phase ($100k+)
-- Phase transitions (5-day upward, immediate downward)
+V3.0: Simplified tests after removal of SEED/GROWTH phase system.
+
+Tests lockbox and tradeable equity calculations:
 - Virtual lockbox at milestones ($100k, $200k)
 - Tradeable equity = Total - Lockbox
+- State persistence and restoration
 
 Spec: docs/05-capital-engine.md
 """
@@ -15,7 +15,6 @@ import pytest
 
 import config
 from engines.core.capital_engine import CapitalEngine, CapitalState
-from models.enums import Phase
 
 
 class TestCapitalState:
@@ -27,18 +26,13 @@ class TestCapitalState:
             total_equity=100_000,
             locked_amount=10_000,
             tradeable_eq=90_000,
-            current_phase=Phase.GROWTH,
-            days_above_threshold=5,
             target_volatility=0.20,
-            max_single_position_pct=0.40,
-            kill_switch_pct=0.03,
+            kill_switch_pct=0.05,
             milestones_triggered={100_000},
         )
         assert state.total_equity == 100_000
         assert state.locked_amount == 10_000
         assert state.tradeable_eq == 90_000
-        assert state.current_phase == Phase.GROWTH
-        assert state.days_above_threshold == 5
         assert 100_000 in state.milestones_triggered
 
     def test_capital_state_to_dict(self):
@@ -47,19 +41,14 @@ class TestCapitalState:
             total_equity=125_000.567,
             locked_amount=12_500.123,
             tradeable_eq=112_500.444,
-            current_phase=Phase.GROWTH,
-            days_above_threshold=3,
             target_volatility=0.20,
-            max_single_position_pct=0.40,
-            kill_switch_pct=0.03,
+            kill_switch_pct=0.05,
             milestones_triggered={100_000},
         )
         data = state.to_dict()
         assert data["total_equity"] == 125000.57  # Rounded
         assert data["locked_amount"] == 12500.12
         assert data["tradeable_equity"] == 112500.44
-        assert data["current_phase"] == "GROWTH"
-        assert data["days_above_threshold"] == 3
         assert 100_000 in data["milestones_triggered"]
 
     def test_capital_state_str(self):
@@ -68,110 +57,25 @@ class TestCapitalState:
             total_equity=100_000,
             locked_amount=10_000,
             tradeable_eq=90_000,
-            current_phase=Phase.GROWTH,
-            days_above_threshold=0,
             target_volatility=0.20,
-            max_single_position_pct=0.40,
-            kill_switch_pct=0.03,
+            kill_switch_pct=0.05,
         )
         result = str(state)
-        assert "GROWTH" in result
         assert "100,000" in result
         assert "10,000" in result
         assert "90,000" in result
 
 
-class TestCapitalEnginePhases:
-    """Tests for phase determination and transitions."""
+class TestCapitalEngineBasic:
+    """Tests for basic capital engine functionality."""
 
-    def test_initial_phase_is_seed(self):
-        """Test engine starts in SEED phase."""
-        engine = CapitalEngine()
-        assert engine.get_current_phase() == Phase.SEED
-
-    def test_seed_phase_at_low_equity(self):
-        """Test SEED phase for equity below threshold."""
+    def test_calculate_basic(self):
+        """Test basic calculate returns correct state."""
         engine = CapitalEngine()
         state = engine.calculate(75_000)
-        assert state.current_phase == Phase.SEED
-
-    def test_seed_phase_parameters(self):
-        """Test SEED phase returns correct parameters."""
-        engine = CapitalEngine()
-        state = engine.calculate(75_000)
-        assert state.max_single_position_pct == config.MAX_SINGLE_POSITION_PCT["SEED"]
-        assert state.kill_switch_pct == config.KILL_SWITCH_PCT_BY_PHASE["SEED"]
+        assert state.total_equity == 75_000
+        assert state.kill_switch_pct == config.KILL_SWITCH_PCT
         assert state.target_volatility == config.TARGET_VOLATILITY
-
-    def test_growth_phase_parameters(self):
-        """Test GROWTH phase returns correct parameters."""
-        engine = CapitalEngine()
-        # Force transition to GROWTH
-        for _ in range(config.UPWARD_TRANSITION_DAYS):
-            engine.end_of_day_update(config.PHASE_GROWTH_MIN + 10_000)
-        state = engine.calculate(config.PHASE_GROWTH_MIN + 10_000)
-        assert state.current_phase == Phase.GROWTH
-        assert state.max_single_position_pct == config.MAX_SINGLE_POSITION_PCT["GROWTH"]
-
-    def test_upward_transition_requires_5_days(self):
-        """Test transition from SEED to GROWTH requires 5 consecutive days."""
-        engine = CapitalEngine()
-        equity = config.PHASE_GROWTH_MIN + 10_000  # Above threshold
-
-        # Days 1-4: Still SEED
-        for day in range(config.UPWARD_TRANSITION_DAYS - 1):
-            state = engine.end_of_day_update(equity)
-            assert state.current_phase == Phase.SEED
-            assert state.days_above_threshold == day + 1
-
-        # Day 5: Transition to GROWTH
-        state = engine.end_of_day_update(equity)
-        assert state.current_phase == Phase.GROWTH
-        assert state.days_above_threshold == 0  # Reset after transition
-
-    def test_upward_transition_resets_on_dip(self):
-        """Test days counter resets if equity drops below threshold."""
-        engine = CapitalEngine()
-        equity_above = config.PHASE_GROWTH_MIN + 10_000
-        equity_below = config.PHASE_GROWTH_MIN - 10_000
-
-        # 3 days above threshold
-        for _ in range(3):
-            engine.end_of_day_update(equity_above)
-
-        # Dip below threshold
-        state = engine.end_of_day_update(equity_below)
-        assert state.days_above_threshold == 0  # Reset
-        assert state.current_phase == Phase.SEED
-
-        # Start counting again
-        engine.end_of_day_update(equity_above)
-        assert engine._days_above_threshold == 1
-
-    def test_downward_transition_immediate(self):
-        """Test transition from GROWTH to SEED is immediate."""
-        engine = CapitalEngine()
-
-        # Get to GROWTH phase
-        for _ in range(config.UPWARD_TRANSITION_DAYS):
-            engine.end_of_day_update(config.PHASE_GROWTH_MIN + 10_000)
-
-        assert engine.get_current_phase() == Phase.GROWTH
-
-        # Single day below threshold triggers immediate transition
-        state = engine.end_of_day_update(config.PHASE_GROWTH_MIN - 10_000)
-        assert state.current_phase == Phase.SEED
-
-    def test_phase_boundary_exact_threshold(self):
-        """Test behavior at exact threshold value."""
-        engine = CapitalEngine()
-        equity = config.PHASE_GROWTH_MIN  # Exactly at threshold
-
-        # Should count as above threshold
-        for _ in range(config.UPWARD_TRANSITION_DAYS):
-            state = engine.end_of_day_update(equity)
-
-        assert state.current_phase == Phase.GROWTH
 
 
 class TestLockbox:
@@ -285,35 +189,24 @@ class TestStateManagement:
         """Test state can be extracted for persistence."""
         engine = CapitalEngine()
 
-        # Set up some state
-        for _ in range(3):
-            engine.end_of_day_update(config.PHASE_GROWTH_MIN + 10_000)
-
         engine.calculate(110_000)  # Trigger lockbox
 
         state = engine.get_state_for_persistence()
 
-        assert "current_phase" in state
-        assert "days_above_threshold" in state
         assert "locked_amount" in state
         assert "milestones_triggered" in state
-        assert state["days_above_threshold"] == 3
 
     def test_restore_state(self):
         """Test state can be restored from persistence."""
         engine = CapitalEngine()
 
         saved_state = {
-            "current_phase": "GROWTH",
-            "days_above_threshold": 2,
             "locked_amount": 15_000.0,
             "milestones_triggered": [100_000],
         }
 
         engine.restore_state(saved_state)
 
-        assert engine.get_current_phase() == Phase.GROWTH
-        assert engine._days_above_threshold == 2
         assert engine.get_locked_amount() == 15_000.0
         assert 100_000 in engine._milestones_triggered
 
@@ -321,58 +214,40 @@ class TestStateManagement:
         """Test restore handles missing keys with defaults."""
         engine = CapitalEngine()
 
-        # Partial state
-        saved_state = {"current_phase": "GROWTH"}
+        # Empty state
+        saved_state = {}
 
         engine.restore_state(saved_state)
 
-        assert engine.get_current_phase() == Phase.GROWTH
-        assert engine._days_above_threshold == 0
         assert engine.get_locked_amount() == 0.0
 
     def test_reset_preserves_lockbox(self):
-        """Test reset() preserves lockbox but resets phase."""
+        """Test reset() preserves lockbox."""
         engine = CapitalEngine()
 
-        # Get to GROWTH and trigger lockbox
-        for _ in range(config.UPWARD_TRANSITION_DAYS):
-            engine.end_of_day_update(config.PHASE_GROWTH_MIN + 10_000)
         engine.calculate(110_000)
-
         lock_before = engine.get_locked_amount()
 
         # Reset
         engine.reset()
 
-        assert engine.get_current_phase() == Phase.SEED
-        assert engine._days_above_threshold == 0
         assert engine.get_locked_amount() == lock_before  # Preserved
 
     def test_reset_full_clears_lockbox(self):
         """Test reset_full() clears everything including lockbox."""
         engine = CapitalEngine()
 
-        # Set up state
-        for _ in range(config.UPWARD_TRANSITION_DAYS):
-            engine.end_of_day_update(config.PHASE_GROWTH_MIN + 10_000)
         engine.calculate(110_000)
 
         # Full reset
         engine.reset_full()
 
-        assert engine.get_current_phase() == Phase.SEED
-        assert engine._days_above_threshold == 0
         assert engine.get_locked_amount() == 0.0
         assert len(engine._milestones_triggered) == 0
 
 
 class TestHelperMethods:
     """Tests for helper methods."""
-
-    def test_get_current_phase(self):
-        """Test get_current_phase returns correct phase."""
-        engine = CapitalEngine()
-        assert engine.get_current_phase() == Phase.SEED
 
     def test_get_locked_amount(self):
         """Test get_locked_amount returns correct value."""
@@ -381,17 +256,6 @@ class TestHelperMethods:
 
         engine.calculate(110_000)
         assert engine.get_locked_amount() > 0
-
-    def test_get_max_position_pct(self):
-        """Test get_max_position_pct returns phase-appropriate value."""
-        engine = CapitalEngine()
-        assert engine.get_max_position_pct() == config.MAX_SINGLE_POSITION_PCT["SEED"]
-
-        # Transition to GROWTH
-        for _ in range(config.UPWARD_TRANSITION_DAYS):
-            engine.end_of_day_update(config.PHASE_GROWTH_MIN + 10_000)
-
-        assert engine.get_max_position_pct() == config.MAX_SINGLE_POSITION_PCT["GROWTH"]
 
 
 class TestLogging:

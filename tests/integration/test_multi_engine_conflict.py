@@ -11,13 +11,15 @@ These tests verify that:
 CRITICAL: These tests ensure the algorithm "lives naturally" without internal conflicts.
 """
 
-import pytest
+from typing import Dict, List
 from unittest.mock import MagicMock, patch
-from typing import List, Dict
+
+import pytest
+
+from models.enums import Urgency
 
 # Import components under test
 from models.target_weight import TargetWeight
-from models.enums import Urgency, Phase
 
 
 @pytest.fixture
@@ -66,7 +68,7 @@ class TestTrendMRConflict:
             target_weight=0.30,
             source="TREND",
             urgency=Urgency.EOD,
-            reason="MA200_ADX_ENTRY"
+            reason="MA200_ADX_ENTRY",
         )
 
         mr_signal = TargetWeight(
@@ -74,15 +76,16 @@ class TestTrendMRConflict:
             target_weight=0.10,
             source="MR",
             urgency=Urgency.IMMEDIATE,
-            reason="RSI Oversold"
+            reason="RSI Oversold",
         )
 
         # Both are NASDAQ_BETA exposure
         nasdaq_exposure = trend_signal.target_weight + mr_signal.target_weight
         max_nasdaq = 0.50
 
-        assert nasdaq_exposure <= max_nasdaq, \
-            f"Combined NASDAQ exposure {nasdaq_exposure} exceeds limit {max_nasdaq}"
+        assert (
+            nasdaq_exposure <= max_nasdaq
+        ), f"Combined NASDAQ exposure {nasdaq_exposure} exceeds limit {max_nasdaq}"
 
     def test_nasdaq_limit_reduces_mr_allocation(self):
         """
@@ -98,8 +101,9 @@ class TestTrendMRConflict:
         available_nasdaq = max_nasdaq - existing_qld
         approved_tqqq = min(requested_tqqq, available_nasdaq)
 
-        assert approved_tqqq == pytest.approx(0.05), \
-            f"MR should be capped at {available_nasdaq}, got {approved_tqqq}"
+        assert approved_tqqq == pytest.approx(
+            0.05
+        ), f"MR should be capped at {available_nasdaq}, got {approved_tqqq}"
 
 
 class TestTrendOptionsConflict:
@@ -137,8 +141,9 @@ class TestTrendOptionsConflict:
         available_for_options = 1.0 - trend_locked - hedge_reserved - yield_reserved
         approved_options = min(options_requested, available_for_options)
 
-        assert approved_options == pytest.approx(0.15), \
-            f"Options should be capped at {available_for_options}"
+        assert approved_options == pytest.approx(
+            0.15
+        ), f"Options should be capped at {available_for_options}"
 
 
 class TestMROptionsConflict:
@@ -156,7 +161,7 @@ class TestMROptionsConflict:
             target_weight=0.05,
             source="MR",
             urgency=Urgency.IMMEDIATE,
-            reason="RSI Oversold"
+            reason="RSI Oversold",
         )
 
         options_signal = TargetWeight(
@@ -164,7 +169,7 @@ class TestMROptionsConflict:
             target_weight=0.20,
             source="OPT",
             urgency=Urgency.IMMEDIATE,
-            reason="Entry Score=3.5"
+            reason="Entry Score=3.5",
         )
 
         # Different symbols, both can execute
@@ -201,7 +206,9 @@ class TestHedgeLongConflict:
         psq_short = 0.10  # PSQ is inverse, so it reduces exposure
 
         net_nasdaq = qld_long - psq_short
-        assert net_nasdaq == pytest.approx(0.20), f"Net NASDAQ exposure should be 20%, got {net_nasdaq}"
+        assert net_nasdaq == pytest.approx(
+            0.20
+        ), f"Net NASDAQ exposure should be 20%, got {net_nasdaq}"
 
     def test_hedge_tmf_independent_of_longs(self):
         """
@@ -248,8 +255,9 @@ class TestKillSwitchOverride:
         # Kill switch liquidates everything
         positions_after_kill_switch = []
 
-        assert len(positions_after_kill_switch) == 0, \
-            "All positions should be liquidated after kill switch"
+        assert (
+            len(positions_after_kill_switch) == 0
+        ), "All positions should be liquidated after kill switch"
 
     def test_kill_switch_resets_cold_start(self):
         """
@@ -407,6 +415,7 @@ class TestEngineIsolation:
         When: Error is caught
         Then: Other engines continue operating
         """
+
         def trend_calculate():
             return 0.30
 
@@ -473,7 +482,9 @@ class TestConcurrentSignals:
         entry_signal = TargetWeight("TQQQ", 0.05, "RISK", Urgency.IMMEDIATE, "Entry")
 
         # Net result
-        net_weight = exit_signal.target_weight + entry_signal.target_weight - exit_signal.target_weight
+        net_weight = (
+            exit_signal.target_weight + entry_signal.target_weight - exit_signal.target_weight
+        )
         # Exit (0.0) + Entry (0.05) = 0.05, but if there's actual netting:
         # The net depends on implementation
 

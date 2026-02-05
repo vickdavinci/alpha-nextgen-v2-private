@@ -7,22 +7,15 @@ All tunable parameters in one place.
 # CAPITAL ENGINE
 # =============================================================================
 
-# Phase Definitions
-PHASE_SEED_MIN = 50_000
-PHASE_SEED_MAX = 99_999
-PHASE_GROWTH_MIN = 100_000
-PHASE_GROWTH_MAX = 499_999
-
-# Phase Transitions
-UPWARD_TRANSITION_DAYS = 5
-DOWNWARD_TRANSITION_DAYS = 1  # Immediate
-
-# Position Limits
-MAX_SINGLE_POSITION_PCT = {"SEED": 0.50, "GROWTH": 0.40}
+# V3.0: Removed SEED/GROWTH phase system - regime-based safeguards replace it
+# - Startup Gate handles new deployment ramp-up (time-based)
+# - Drawdown Governor handles capital protection (performance-based)
+# - Regime Engine handles market adaptation (conditions-based)
+# Account size no longer determines allocation - market conditions do.
 
 TARGET_VOLATILITY = 0.20
 # V2.3.17: Kill switch raised from 3% to 5% (reduces false triggers in volatile markets)
-KILL_SWITCH_PCT_BY_PHASE = {"SEED": 0.05, "GROWTH": 0.05}
+KILL_SWITCH_PCT = 0.05  # V3.0: Unified (was phase-dependent)
 
 # Lockbox
 LOCKBOX_MILESTONES = [100_000, 200_000]

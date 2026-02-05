@@ -348,8 +348,8 @@ class TestPositionSizing:
 
         result = engine.check_warm_entry(**conditions)
 
-        # Expected: 50% max position (SEED) × 50% warm entry = 25%
-        expected_weight = config.MAX_SINGLE_POSITION_PCT["SEED"] * config.WARM_ENTRY_SIZE_MULT
+        # V3.0: Expected: 50% base × 50% warm entry multiplier = 25%
+        expected_weight = 0.50 * config.WARM_ENTRY_SIZE_MULT
         assert result is not None
         assert result.target_weight == expected_weight
 

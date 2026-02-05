@@ -458,7 +458,6 @@ class TestDailySummary:
             moo_orders=[],
             regime_score=58.0,
             regime_state="NEUTRAL",
-            phase="SEED",
             days_running=5,
         )
 
@@ -477,12 +476,10 @@ class TestDailySummary:
             moo_orders=[],
             regime_score=75.0,
             regime_state="RISK_ON",
-            phase="GROWTH",
             days_running=15,
         )
 
         assert "75 (RISK_ON)" in summary
-        assert "GROWTH" in summary
         assert "15" in summary
 
     def test_summary_includes_trades(self, scheduler: DailyScheduler) -> None:
@@ -496,7 +493,6 @@ class TestDailySummary:
             moo_orders=[],
             regime_score=58.0,
             regime_state="NEUTRAL",
-            phase="SEED",
             days_running=5,
         )
 
@@ -514,7 +510,6 @@ class TestDailySummary:
             moo_orders=[],
             regime_score=35.0,
             regime_state="DEFENSIVE",
-            phase="SEED",
             days_running=5,
         )
 

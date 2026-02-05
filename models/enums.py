@@ -3,9 +3,10 @@ Enums for Alpha NextGen trading system.
 
 Contains:
 - Urgency: Order execution timing (IMMEDIATE vs EOD)
-- Phase: Capital phase (SEED vs GROWTH)
 - RegimeLevel: Market regime classification
 - ExposureGroup: Position grouping for exposure limits
+
+V3.0: Removed Phase enum (SEED/GROWTH). Regime-based safeguards replace it.
 """
 
 from enum import Enum
@@ -24,18 +25,6 @@ class Urgency(Enum):
     IMMEDIATE = "IMMEDIATE"
     EOD = "EOD"
     MOC = "MOC"  # V2.4.2: Market-On-Close for same-day trend entries
-
-
-class Phase(Enum):
-    """
-    Capital growth phase.
-
-    SEED: Initial phase, conservative sizing (equity < $75,000)
-    GROWTH: Growth phase, full sizing (equity >= $75,000)
-    """
-
-    SEED = "SEED"
-    GROWTH = "GROWTH"
 
 
 class RegimeLevel(Enum):

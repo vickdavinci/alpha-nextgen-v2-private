@@ -569,7 +569,6 @@ class DailyScheduler:
         moo_orders: List[str],
         regime_score: float,
         regime_state: str,
-        phase: str,
         days_running: int,
     ) -> str:
         """
@@ -583,7 +582,6 @@ class DailyScheduler:
             moo_orders: List of MOO orders submitted.
             regime_score: Final regime score.
             regime_state: Final regime state name.
-            phase: Current capital phase.
             days_running: Cold start days running.
 
         Returns:
@@ -601,7 +599,6 @@ class DailyScheduler:
             f"Daily P&L:        {'+' if pnl >= 0 else ''}${pnl:,.2f} ({pnl_pct:+.2f}%)",
             "",
             f"Regime Score:     {regime_score:.0f} ({regime_state})",
-            f"Phase:            {phase}",
             f"Days Running:     {days_running}",
             "",
             "Trades Executed:",

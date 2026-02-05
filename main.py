@@ -5240,7 +5240,6 @@ class AlphaNextGen(QCAlgorithm):
             moo_orders=[],  # Already logged when submitted
             regime_score=regime_state.smoothed_score,
             regime_state=regime_state.state.value,
-            phase=capital_state.current_phase.value,
             days_running=self.cold_start_engine.get_days_running(),
         )
 

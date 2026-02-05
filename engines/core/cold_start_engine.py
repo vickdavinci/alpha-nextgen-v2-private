@@ -256,8 +256,8 @@ class ColdStartEngine:
         by full volatility targeting. Here we approximate with max
         single position percentage × warm entry multiplier.
         """
-        # Use SEED phase max position as baseline (conservative)
-        base_weight = config.MAX_SINGLE_POSITION_PCT.get("SEED", 0.50)
+        # V3.0: Use fixed baseline (was phase-dependent, now simplified)
+        base_weight = 0.50  # Conservative baseline for warm entries
         return base_weight * config.WARM_ENTRY_SIZE_MULT
 
     def _parse_time(self, time_str: str) -> tuple:
