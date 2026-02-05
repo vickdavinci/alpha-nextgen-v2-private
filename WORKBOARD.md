@@ -63,7 +63,7 @@
 | V3-4 | Governor | Simplify to 3 tiers: 100% / 50% / 0% (eliminate 75%, 25% limbo) | P1 | ✅ DONE |
 | V3-5 | Governor | Allow hedges + PUTs at 0% scale (defensive trades always enabled) | P1 | ✅ DONE |
 | V3-6 | Governor | HWM Reset after 10 days at 50%+ with positive P&L | P2 | ✅ DONE |
-| V3-7 | Regime | Lower CAUTIOUS threshold from 40 to 45 (with VIX direction may not be needed) | P3 | ⬜ TODO |
+| V3-7 | Regime | Lower CAUTIOUS threshold from 40 to 45 (with VIX direction may not be needed) | P3 | ⏭️ SKIP |
 
 ### Fix Details
 
