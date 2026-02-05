@@ -43,6 +43,27 @@ CAPITAL_PARTITION_OPTIONS = 0.50  # 50% reserved for Options Engine (was 25%)
 # Block entries if projected margin exceeds this threshold
 MAX_MARGIN_WEIGHTED_ALLOCATION = 0.90  # Never exceed 90% margin consumption
 
+# V3.0: Total Allocation Cap - Prevent over-allocation when all engines active
+# Sum of all engine allocations must not exceed this threshold
+MAX_TOTAL_ALLOCATION = 0.95  # Never allocate more than 95% of portfolio
+
+# V3.0: Engine Priority System - Lower number = higher priority
+# When scaling down due to allocation conflicts, reduce lower priority engines first
+ENGINE_PRIORITY = {
+    "RISK": 0,  # Highest - emergency liquidations (never scaled)
+    "HEDGE": 1,  # Second - defensive positions
+    "TREND": 2,  # Core positions
+    "OPT": 3,  # Satellite - options
+    "OPT_INTRADAY": 4,  # Satellite - intraday options
+    "MR": 5,  # Lowest - opportunistic mean reversion
+    "COLD_START": 2,  # Same as TREND (subset)
+    "ROUTER": 0,  # Same as RISK (internal)
+}
+
+# V3.0: Hedge Regime Gating - Only run hedges when regime is below this threshold
+# Per thesis: Hedges should be 0% in Bull (70+) and Neutral (50-69)
+HEDGE_REGIME_GATE = 50  # Hedges only active when regime < 50
+
 # V2.3.24: Leverage multipliers for margin calculation
 # Used by portfolio_router to calculate actual margin consumption, not just allocation %
 SYMBOL_LEVERAGE = {
@@ -182,9 +203,9 @@ CHANDELIER_3X_BASE_MULT = 2.5  # V2.3.8: Tighter than 2x (3.5) - control 3x vola
 CHANDELIER_3X_TIGHT_MULT = 2.0  # V2.3.8: Tighter than 2x (3.0)
 CHANDELIER_3X_TIGHTER_MULT = 1.5  # V2.3.8: Tighter than 2x (2.5)
 
-# Entry/Exit
-TREND_ENTRY_REGIME_MIN = 40
-TREND_EXIT_REGIME = 30
+# Entry/Exit (V3.0: thesis-aligned - trend blocked in Cautious zone)
+TREND_ENTRY_REGIME_MIN = 50  # V3.0: Trend entries only in Neutral+ (regime >= 50)
+TREND_EXIT_REGIME = 30  # Exit when regime drops to Bear
 TREND_ADX_EXIT_THRESHOLD = 10  # V2.3.12: Lowered to 10 - allow holding during low momentum grind
 
 # V2.3.3 Position Limits (Part 4 audit fix)
@@ -210,7 +231,7 @@ MR_DROP_THRESHOLD = 0.025  # Spec value: 2.5% drop from open
 MR_VOLUME_MULT = 1.2  # Spec value: 1.2x average volume
 MR_WINDOW_START = "10:00"
 MR_WINDOW_END = "15:00"
-MR_REGIME_MIN = 40  # Spec value: regime >= 40
+MR_REGIME_MIN = 50  # V3.0: MR entries only in Neutral+ (regime >= 50)
 
 # Exit Conditions
 MR_TARGET_PCT = 0.02
@@ -255,10 +276,10 @@ MR_MAX_EXPOSURE_CRASH = 0.00  # 0% in crash
 # HEDGE ENGINE
 # =============================================================================
 
-# Thresholds
-HEDGE_LEVEL_1 = 40
-HEDGE_LEVEL_2 = 30
-HEDGE_LEVEL_3 = 20
+# Thresholds (V3.0: thesis-aligned graduated hedge response)
+HEDGE_LEVEL_1 = 50  # V3.0: Light hedge starts at Cautious (regime < 50)
+HEDGE_LEVEL_2 = 40  # V3.0: Medium hedge at Defensive (regime < 40)
+HEDGE_LEVEL_3 = 30  # V3.0: Full hedge at Bear (regime < 30)
 
 # TMF Allocation
 TMF_LIGHT = 0.10
@@ -709,14 +730,16 @@ OPTIONS_INTRADAY_DTE_MAX = (
 # V2.3 DEBIT SPREAD CONFIGURATION
 # -----------------------------------------------------------------------------
 # Debit spreads: defined risk, survives whipsaw, no stop loss needed
-# Bull Call Spread: Regime > 60 (bullish)
-# Bear Put Spread: Regime < 45 (bearish)
-# No Trade: Regime 45-60 (neutral, no edge)
+# V3.0 THESIS-ALIGNED:
+#   Bull (70+): CALL spreads active
+#   Neutral (50-69): NO options (dead zone)
+#   Cautious (30-49): PUT spreads active
+#   Bear (0-29): PUT spreads active
 
-# Regime thresholds for spread direction
-SPREAD_REGIME_BULLISH = 60  # Regime > 60: Bull Call Spread
-SPREAD_REGIME_BEARISH = 45  # Regime < 45: Bear Put Spread
-SPREAD_REGIME_CRISIS = 30  # Regime < 30: Protective Puts only (no spreads)
+# Regime thresholds for spread direction (V3.0: thesis-aligned)
+SPREAD_REGIME_BULLISH = 70  # V3.0: CALL spreads ONLY in Bull (regime > 70)
+SPREAD_REGIME_BEARISH = 50  # V3.0: PUT spreads in Cautious + Bear (regime < 50)
+SPREAD_REGIME_CRISIS = 0  # V3.0: DISABLED — PUT spreads work in ALL bear regimes
 
 # VIX filters for entry
 SPREAD_VIX_MAX_BULL = 30  # Max VIX for Bull Call Spread entry

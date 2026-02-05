@@ -1359,8 +1359,15 @@ class AlphaNextGen(QCAlgorithm):
         # 4. V2.30: Generate Options signals (direction-aware gating)
         self._generate_options_signals_gated(regime_state, capital_state)
 
-        # 5. Generate Hedge signals (ALWAYS — never gated, defensive by nature)
-        self._generate_hedge_signals(regime_state)
+        # 5. Generate Hedge signals (V3.0: regime-gated per thesis)
+        # Thesis: Hedges should be 0% in Bull (70+) and Neutral (50-69)
+        # Only activate hedges when regime < HEDGE_REGIME_GATE (50)
+        regime_score = regime_state.smoothed_score
+        if regime_score < config.HEDGE_REGIME_GATE:
+            self._generate_hedge_signals(regime_state)
+        else:
+            # V3.0: Exit hedges when regime improves above threshold
+            self._generate_hedge_exit_signals()
 
         # 6. Store capital state for MOO submission at 16:00
         # (MOO orders can't be submitted while market is open)
@@ -3561,6 +3568,55 @@ class AlphaNextGen(QCAlgorithm):
         )
         for signal in signals:
             self.portfolio_router.receive_signal(signal)
+
+    def _generate_hedge_exit_signals(self) -> None:
+        """
+        V3.0: Generate signals to exit hedge positions when regime improves.
+
+        Called when regime >= HEDGE_REGIME_GATE (50) to unwind TMF/PSQ positions.
+        Per thesis: Hedges should be 0% in Bull (70+) and Neutral (50-69).
+        """
+        total_equity = self.Portfolio.TotalPortfolioValue
+        if total_equity <= 0:
+            return
+
+        # Check if we have hedge positions to exit
+        tmf_invested = self.Portfolio[self.tmf].Invested
+        psq_invested = self.Portfolio[self.psq].Invested
+
+        if not tmf_invested and not psq_invested:
+            return  # No hedges to exit
+
+        # Emit 0% target weight signals to unwind hedges
+        if tmf_invested:
+            tmf_pct = self.Portfolio[self.tmf].HoldingsValue / total_equity
+            signal = TargetWeight(
+                symbol="TMF",
+                target_weight=0.0,
+                source="HEDGE",
+                urgency=Urgency.EOD,
+                reason=f"REGIME_EXIT: Score >= {config.HEDGE_REGIME_GATE} (was {tmf_pct:.1%})",
+            )
+            self.portfolio_router.receive_signal(signal)
+            self.Log(
+                f"HEDGE_EXIT: TMF | Regime >= {config.HEDGE_REGIME_GATE} | "
+                f"Unwinding {tmf_pct:.1%} position"
+            )
+
+        if psq_invested:
+            psq_pct = self.Portfolio[self.psq].HoldingsValue / total_equity
+            signal = TargetWeight(
+                symbol="PSQ",
+                target_weight=0.0,
+                source="HEDGE",
+                urgency=Urgency.EOD,
+                reason=f"REGIME_EXIT: Score >= {config.HEDGE_REGIME_GATE} (was {psq_pct:.1%})",
+            )
+            self.portfolio_router.receive_signal(signal)
+            self.Log(
+                f"HEDGE_EXIT: PSQ | Regime >= {config.HEDGE_REGIME_GATE} | "
+                f"Unwinding {psq_pct:.1%} position"
+            )
 
     # =========================================================================
     # UTILITY HELPERS

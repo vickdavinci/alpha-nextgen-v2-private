@@ -1127,6 +1127,82 @@ class PortfolioRouter:
                 f"ROUTER: HARD_MARGIN_RESERVE | Margin-weighted total {margin_weighted_total:.1%} > "
                 f"Max {max_non_options_margin:.1%} | Scaled by {margin_scale_factor:.0%}"
             )
+            adjusted_weights = final_weights
+
+        # V3.0: TOTAL ALLOCATION CAP with priority-based scaling
+        # Ensure total allocation across all engines doesn't exceed MAX_TOTAL_ALLOCATION
+        total_allocation = sum(w.target_weight for w in adjusted_weights)
+        max_total = getattr(config, "MAX_TOTAL_ALLOCATION", 0.95)
+
+        if total_allocation > max_total:
+            # Priority-based scaling: reduce lower priority engines first
+            engine_priority = getattr(config, "ENGINE_PRIORITY", {})
+
+            # Group by priority
+            by_priority: Dict[int, List[TargetWeight]] = {}
+            for w in adjusted_weights:
+                priority = engine_priority.get(w.source, 5)  # Default to low priority
+                if priority not in by_priority:
+                    by_priority[priority] = []
+                by_priority[priority].append(w)
+
+            # Calculate how much we need to reduce
+            excess = total_allocation - max_total
+            final_weights = []
+
+            # Start from lowest priority (highest number) and scale down
+            for priority in sorted(by_priority.keys(), reverse=True):
+                priority_weights = by_priority[priority]
+                priority_total = sum(w.target_weight for w in priority_weights)
+
+                if excess <= 0:
+                    # No more reduction needed, keep as-is
+                    final_weights.extend(priority_weights)
+                elif priority_total <= excess:
+                    # Zero out this entire priority level
+                    for w in priority_weights:
+                        final_weights.append(
+                            TargetWeight(
+                                symbol=w.symbol,
+                                target_weight=0.0,
+                                source=w.source,
+                                urgency=w.urgency,
+                                reason=f"{w.reason} [priority scaled to 0]",
+                                requested_quantity=w.requested_quantity,
+                                metadata=w.metadata,
+                            )
+                        )
+                    self.log(
+                        f"ROUTER: PRIORITY_SCALE | Priority {priority} ({w.source}) | "
+                        f"Zeroed {priority_total:.1%} to reduce excess"
+                    )
+                    excess -= priority_total
+                else:
+                    # Partial reduction of this priority level
+                    scale_factor = (priority_total - excess) / priority_total
+                    for w in priority_weights:
+                        scaled_weight = w.target_weight * scale_factor
+                        final_weights.append(
+                            TargetWeight(
+                                symbol=w.symbol,
+                                target_weight=scaled_weight,
+                                source=w.source,
+                                urgency=w.urgency,
+                                reason=f"{w.reason} [priority scaled {scale_factor:.0%}]",
+                                requested_quantity=w.requested_quantity,
+                                metadata=w.metadata,
+                            )
+                        )
+                    self.log(
+                        f"ROUTER: PRIORITY_SCALE | Priority {priority} ({w.source}) | "
+                        f"Scaled by {scale_factor:.0%} to fit total cap"
+                    )
+                    excess = 0
+
+            self.log(
+                f"ROUTER: TOTAL_ALLOCATION_CAP | Total {total_allocation:.1%} > "
+                f"Max {max_total:.1%} | Applied priority-based scaling"
+            )
             return final_weights
 
         return adjusted_weights

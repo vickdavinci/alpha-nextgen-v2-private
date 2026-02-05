@@ -106,20 +106,37 @@ CAPITAL_PARTITION_OPTIONS = 0.50  # 50% reserved for Options
 
 **Problem:** These are **documentation only** — not enforced in code!
 
-### 4.4 🟡 Hedges Not Regime-Gated
+### 4.4 ✅ Hedges Not Regime-Gated — FIXED
 
-Current flow in `_on_eod_processing`:
+**V3.0 Fix:** Added `HEDGE_REGIME_GATE = 50` in config.py
+
+New flow in `_on_eod_processing`:
 ```python
-# 5. Generate Hedge signals (ALWAYS — never gated, defensive by nature)
-self._generate_hedge_signals(regime_state)  # ← NO REGIME CHECK!
+# 5. Generate Hedge signals (V3.0: regime-gated per thesis)
+if regime_score < config.HEDGE_REGIME_GATE:  # < 50
+    self._generate_hedge_signals(regime_state)
+else:
+    self._generate_hedge_exit_signals()  # Unwind hedges
 ```
 
-**Current behavior:** Hedges run at ALL regime levels
-**Thesis says:** Hedges should be 0% at regime 50+ (Bull/Neutral)
+**New behavior:** Hedges only active when regime < 50 (Cautious/Defensive/Bear)
 
-### 4.5 🟡 No Priority System for Allocation Conflicts
+### 4.5 ✅ No Priority System for Allocation Conflicts — FIXED
 
-When multiple engines compete for limited capital, there's no explicit priority.
+**V3.0 Fix:** Added `ENGINE_PRIORITY` in config.py and priority-based scaling in portfolio_router.py
+
+```python
+ENGINE_PRIORITY = {
+    "RISK": 0,       # Highest - never scaled
+    "HEDGE": 1,      # Second - defensive
+    "TREND": 2,      # Core positions
+    "OPT": 3,        # Satellite - options
+    "OPT_INTRADAY": 4,
+    "MR": 5,         # Lowest - scaled first
+}
+```
+
+When total allocation exceeds `MAX_TOTAL_ALLOCATION` (95%), lower priority engines are scaled down first.
 
 ---
 
@@ -298,10 +315,10 @@ if self.Portfolio.Cash < config.PHASE_SEED_MIN:
 | Issue | Severity | Status |
 |-------|:--------:|:------:|
 | Bull margin overflow (151%) | 🔴 High | Mitigated by 90% cap |
-| Total allocation > 100% | 🔴 High | Needs total cap enforcement |
-| Hedges not regime-gated | 🟡 Medium | Needs regime check |
-| No engine priority | 🟡 Medium | Enhancement recommended |
-| Capital partition not enforced | 🟡 Medium | Remove or enforce |
+| Total allocation > 100% | 🔴 High | ✅ Fixed → `MAX_TOTAL_ALLOCATION = 0.95` |
+| Hedges not regime-gated | 🟡 Medium | ✅ Fixed → `HEDGE_REGIME_GATE = 50` |
+| No engine priority | 🟡 Medium | ✅ Fixed → `ENGINE_PRIORITY` dict |
+| Capital partition not enforced | 🟡 Medium | Superseded by priority system |
 | **OPTIONS_MAX_MARGIN_CAP hardcoded** | 🔴 High | ✅ Fixed → `OPTIONS_MAX_MARGIN_PCT = 0.20` |
 | **SWING_SPREAD_MAX_DOLLARS hardcoded** | 🔴 High | ✅ Fixed → `SWING_SPREAD_MAX_PCT = 0.15` |
 | **INTRADAY_SPREAD_MAX_DOLLARS hardcoded** | 🔴 High | ✅ Fixed → `INTRADAY_SPREAD_MAX_PCT = 0.08` |
