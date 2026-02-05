@@ -2875,15 +2875,19 @@ class OptionsEngine:
             self.log(f"SPREAD: Entry blocked - max profit ${max_profit:.2f} <= 0")
             return None
 
-        # V2.18: Use hardcoded sizing cap (Fix for MarginBuyingPower sizing bug)
+        # V2.18: Use sizing cap (Fix for MarginBuyingPower sizing bug)
         # Evidence: Architect found $14K trade vs $5K expected when using allocation-based sizing
-        # Solution: Absolute dollar cap of $7,500 for swing spreads
-        swing_max_dollars = getattr(config, "SWING_SPREAD_MAX_DOLLARS", 7500)
+        # V3.0 SCALABILITY FIX: Use percentage-based cap instead of hardcoded dollars
+        # At $50K: 15% = $7,500, at $200K: 15% = $30,000 (scales with portfolio)
+        portfolio_value = self.algorithm.Portfolio.TotalPortfolioValue if self.algorithm else 50000
+        swing_max_pct = getattr(config, "SWING_SPREAD_MAX_PCT", 0.15)
+        swing_max_dollars = portfolio_value * swing_max_pct
         # V2.14: Use conservative net debit for sizing (prevents tier cap violations)
         cost_per_spread = net_debit_for_sizing * 100  # 100 shares per contract
         num_spreads = int(swing_max_dollars / cost_per_spread)
         self.log(
-            f"SIZING: SWING | Cap=${swing_max_dollars} | Cost/spread=${cost_per_spread:.2f} | Qty={num_spreads}"
+            f"SIZING: SWING | Cap=${swing_max_dollars:,.0f} ({swing_max_pct:.0%} of ${portfolio_value:,.0f}) | "
+            f"Cost/spread=${cost_per_spread:.2f} | Qty={num_spreads}"
         )
 
         # V2.27: Apply win rate gate scaling to contract count
@@ -3191,7 +3195,10 @@ class OptionsEngine:
             return None
 
         # Size using margin-based calculator
-        swing_max_dollars = getattr(config, "SWING_SPREAD_MAX_DOLLARS", 7500)
+        # V3.0 SCALABILITY FIX: Use percentage-based cap
+        portfolio_value = self.algorithm.Portfolio.TotalPortfolioValue if self.algorithm else 50000
+        swing_max_pct = getattr(config, "SWING_SPREAD_MAX_PCT", 0.15)
+        swing_max_dollars = portfolio_value * swing_max_pct
         num_spreads, _credit_per, _max_loss_per, _total_margin = self._calculate_credit_spread_size(
             short_leg_contract, long_leg_contract, swing_max_dollars
         )
@@ -4269,9 +4276,12 @@ class OptionsEngine:
             )
             return None
 
-        # V2.18: Use hardcoded sizing cap (Fix for MarginBuyingPower sizing bug)
-        # Solution: Absolute dollar cap of $4,000 for intraday
-        intraday_max_dollars = getattr(config, "INTRADAY_SPREAD_MAX_DOLLARS", 4000)
+        # V2.18: Use sizing cap (Fix for MarginBuyingPower sizing bug)
+        # V3.0 SCALABILITY FIX: Use percentage-based cap instead of hardcoded dollars
+        # At $50K: 8% = $4,000, at $200K: 8% = $16,000 (scales with portfolio)
+        portfolio_value = self.algorithm.Portfolio.TotalPortfolioValue if self.algorithm else 50000
+        intraday_max_pct = getattr(config, "INTRADAY_SPREAD_MAX_PCT", 0.08)
+        intraday_max_dollars = portfolio_value * intraday_max_pct
 
         # Adjust size based on micro score
         if state.micro_score >= config.MICRO_SCORE_PRIME_MR:
@@ -4289,10 +4299,11 @@ class OptionsEngine:
             self.log("INTRADAY: Entry blocked - invalid premium price")
             return None
 
-        # V2.18: Calculate contracts using hardcoded cap / (premium * 100)
+        # V2.18: Calculate contracts using cap / (premium * 100)
         num_contracts = int(adjusted_cap / (premium * 100))
         self.log(
-            f"SIZING: INTRADAY | Cap=${adjusted_cap:.0f} | Premium=${premium:.2f} | Qty={num_contracts}"
+            f"SIZING: INTRADAY | Cap=${adjusted_cap:,.0f} ({intraday_max_pct:.0%} of ${portfolio_value:,.0f}) | "
+            f"Premium=${premium:.2f} | Qty={num_contracts}"
         )
         if num_contracts <= 0:
             self.log(

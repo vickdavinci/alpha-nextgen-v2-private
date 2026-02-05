@@ -4100,22 +4100,27 @@ class AlphaNextGen(QCAlgorithm):
         # V2.11 (Pitfall #6): Margin-aware sizing guard
         # Check available margin BEFORE calculating any allocation
         margin_remaining = self.portfolio_router.get_effective_margin_remaining()
-        # V2.19 FIX: Only block if margin < $1000 (minimum viable for options)
-        # The cap is a LIMIT on usage, not a minimum requirement
-        if margin_remaining < 1000:
+        # V3.0 SCALABILITY FIX: Use percentage-based minimum (was hardcoded $1,000)
+        # At $50K: 2% = $1,000, at $200K: 2% = $4,000 (scales with portfolio)
+        portfolio_value = self.Portfolio.TotalPortfolioValue
+        min_margin_required = portfolio_value * config.OPTIONS_MIN_MARGIN_PCT
+        if margin_remaining < min_margin_required:
             if self.Time.minute == 0:  # Log once per hour to avoid spam
                 self.Log(
-                    f"OPT_MARGIN_GUARD: Margin ${margin_remaining:,.0f} < $1,000 min | Options blocked"
+                    f"OPT_MARGIN_GUARD: Margin ${margin_remaining:,.0f} < "
+                    f"${min_margin_required:,.0f} ({config.OPTIONS_MIN_MARGIN_PCT:.0%} of portfolio) | Options blocked"
                 )
             return
 
         # Calculate effective portfolio value capped by available margin
         # V2.19 FIX: Use min() to cap at OPTIONS_MAX_MARGIN_CAP (not subtract it)
+        # V3.0 SCALABILITY FIX: Use percentage-based cap (OPTIONS_MAX_MARGIN_PCT)
         base_tradeable = self.capital_engine.calculate(
             self.Portfolio.TotalPortfolioValue
         ).tradeable_eq
-        # Cap margin used for options at OPTIONS_MAX_MARGIN_CAP
-        margin_available_for_options = min(margin_remaining, config.OPTIONS_MAX_MARGIN_CAP)
+        # Cap margin used for options at percentage of portfolio (scales with size)
+        options_max_margin = portfolio_value * config.OPTIONS_MAX_MARGIN_PCT
+        margin_available_for_options = min(margin_remaining, options_max_margin)
         # max_portfolio_from_margin = margin_available / OPTIONS_SWING_ALLOCATION
         # This ensures: effective_portfolio * OPTIONS_SWING_ALLOCATION <= margin_available
         max_portfolio_from_margin = (

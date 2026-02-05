@@ -872,13 +872,23 @@ VASS_LOG_REJECTION_INTERVAL_MINUTES = 15  # Log rejections every 15 min (not eve
 # Pitfall #6: Margin Collateral Lock-Out
 # Options sizing must cap by actual available margin, not just portfolio %
 # V2.12 Fix #4: Raised from $5K to $10K - 8-lot spread requires ~$8K margin
-OPTIONS_MAX_MARGIN_CAP = 10000  # $10K max margin reserved for all options combined
+# V3.0 SCALABILITY FIX: Converted to percentage-based for portfolio scaling
+OPTIONS_MAX_MARGIN_CAP = 10000  # $10K — LEGACY, kept for backwards compatibility
+OPTIONS_MAX_MARGIN_PCT = 0.20  # 20% of portfolio for all options combined
 
 # V2.18: Hardcoded Sizing Caps (Fix for MarginBuyingPower sizing bug)
 # Evidence: Architect found $14K trade vs $5K expected - sizing used MarginBuyingPower
-# Solution: Absolute dollar caps, not percentage-based
-SWING_SPREAD_MAX_DOLLARS = 7500  # $7,500 hard cap for swing spreads (14-21 DTE)
-INTRADAY_SPREAD_MAX_DOLLARS = 4000  # $4,000 hard cap for intraday (1-5 DTE)
+# V3.0 SCALABILITY FIX: Converted to percentage-based for portfolio scaling
+# At $50K: 15% = $7,500, 8% = $4,000 (same as original hardcoded values)
+# At $200K: 15% = $30,000, 8% = $16,000 (scales properly)
+SWING_SPREAD_MAX_DOLLARS = 7500  # LEGACY — kept for backwards compatibility
+SWING_SPREAD_MAX_PCT = 0.15  # 15% of portfolio for swing spreads (14-21 DTE)
+INTRADAY_SPREAD_MAX_DOLLARS = 4000  # LEGACY — kept for backwards compatibility
+INTRADAY_SPREAD_MAX_PCT = 0.08  # 8% of portfolio for intraday spreads (1-5 DTE)
+
+# V3.0: Minimum margin percentage to allow options trading
+# Replaces hardcoded $1,000 check in main.py
+OPTIONS_MIN_MARGIN_PCT = 0.02  # 2% of portfolio minimum margin to trade options
 
 # V2.21: Rejection-aware spread sizing
 # Pre-submission: use 80% of reported margin (20% buffer for broker calc differences)
