@@ -779,7 +779,7 @@ SPREAD_STOP_LOSS_PCT = (
 # In bull markets (regime >= 75), be greedy - let winners run to 90%
 # In cautious/bear markets (regime < 40), take profits quickly at 40%
 SPREAD_PROFIT_REGIME_MULTIPLIERS = {
-    75: 1.80,  # Regime >= 75: 90% target (1.80 × 50% base = 90%)
+    75: 1.40,  # Regime >= 75: 70% target (1.40 × 50% base = 70%)
     50: 1.00,  # Regime 50-74: 50% target (standard)
     40: 1.00,  # Regime 40-49: 50% target (cautious)
     0: 0.80,  # Regime < 40: 40% target (0.80 × 50% base = 40%)
