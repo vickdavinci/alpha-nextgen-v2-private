@@ -193,7 +193,7 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
         self.SetStartDate(2017, 1, 1)
         self.SetEndDate(2017, 12, 31)  # V3.0 governor fix - 2017 full year retest
-        self.SetCash(config.PHASE_SEED_MIN)  # $50,000 seed capital
+        self.SetCash(config.INITIAL_CAPITAL)  # $50,000 seed capital
 
         # All times are Eastern
         self.SetTimeZone("America/New_York")
@@ -315,7 +315,7 @@ class AlphaNextGen(QCAlgorithm):
 
         self.Log(
             f"INIT: Complete | "
-            f"Cash=${config.PHASE_SEED_MIN:,} | "
+            f"Cash=${config.INITIAL_CAPITAL:,} | "
             f"Symbols={len(self.traded_symbols) + len(self.proxy_symbols)}"
         )
 

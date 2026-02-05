@@ -13,6 +13,8 @@ All tunable parameters in one place.
 # - Regime Engine handles market adaptation (conditions-based)
 # Account size no longer determines allocation - market conditions do.
 
+INITIAL_CAPITAL = 50_000  # V3.0: Starting capital for backtests
+
 TARGET_VOLATILITY = 0.20
 # V2.3.17: Kill switch raised from 3% to 5% (reduces false triggers in volatile markets)
 KILL_SWITCH_PCT = 0.05  # V3.0: Unified (was phase-dependent)
