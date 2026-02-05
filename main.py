@@ -2391,15 +2391,41 @@ class AlphaNextGen(QCAlgorithm):
         Restores:
             - Capital Engine state (phase, lockbox)
             - Cold Start state (days_running)
-            - Risk Engine state (baselines, safeguards)
-            - Trend Engine state (positions, stops)
-            - Regime Engine state (previous score)
+            - Risk Engine state (baselines, safeguards, governor)
             - Startup Gate state (V2.29)
         """
         try:
+            # V3.0 FIX: Pass ALL engines to load_all (was only passing startup_gate)
             self.state_manager.load_all(
+                capital_engine=self.capital_engine,
+                cold_start_engine=self.cold_start_engine,
+                risk_engine=self.risk_engine,
                 startup_gate=self.startup_gate,
             )
+
+            # V3.0 FIX: Restore governor scale from risk_engine state
+            # Governor scale is stored in risk_engine but used in main.py
+            if hasattr(self.risk_engine, "_governor_scale"):
+                self._governor_scale = self.risk_engine._governor_scale
+                if self._governor_scale < 1.0:
+                    self.Log(
+                        f"STATE_RESTORE: Governor scale = {self._governor_scale:.0%} "
+                        f"(drawdown protection active)"
+                    )
+
+            # V3.0: Load options engine state
+            if hasattr(self, "options_engine"):
+                try:
+                    if self.ObjectStore.ContainsKey("options_engine_state"):
+                        raw = self.ObjectStore.Read("options_engine_state")
+                        import ast
+
+                        opt_state = ast.literal_eval(raw)
+                        self.options_engine.restore_state(opt_state)
+                        self.Log("STATE_RESTORE: Options engine state loaded")
+                except Exception as e:
+                    self.Log(f"STATE_WARN: Failed to load options state - {e}")
+
         except Exception as e:
             self.Log(f"STATE_ERROR: Failed to load state - {e}")
 

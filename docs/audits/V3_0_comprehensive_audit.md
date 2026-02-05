@@ -502,16 +502,62 @@ MARGIN_PRE_CHECK_BUFFER = 1.50  # V3.0: 50% buffer (was 1.20)
 
 ---
 
+## P0 Pre-Live Audit Results (2026-02-04)
+
+### Audit 1: State Persistence & Recovery
+
+| Check | Status | Notes |
+|-------|:------:|-------|
+| State Save Complete | ✅ PASS | All engines saved |
+| State Load Complete | ✅ **FIXED** | Was missing 3 engines, now passes all 4 |
+| Governor Scale Restore | ✅ **FIXED** | Now extracted from risk_engine after load |
+| Options State Restore | ✅ **FIXED** | Now loads from ObjectStore |
+| Position Reconciliation | ⚠️ DEFER | Method exists, not critical for V3.0 |
+
+**Fix Applied:** `main.py:_load_state()` now passes `capital_engine`, `cold_start_engine`, `risk_engine`, `startup_gate` and restores governor scale.
+
+### Audit 4: Options Assignment & Exercise
+
+| Check | Status | Notes |
+|-------|:------:|-------|
+| Assignment Detection | ✅ PASS | Multi-layer (OrderType + message) |
+| Friday Firewall | ✅ PASS | Holiday-aware, 15:45 trigger |
+| DTE Exit Rule | ✅ PASS | Spreads: 5 DTE, Single: 4 DTE |
+| Early Assignment Guard | ✅ PASS | DTE ≤ 2 + ITM detection |
+| Ex-Dividend Protection | ⚠️ DEFER | Not critical for QQQ (low div yield) |
+
+### Audit 5: Order Rejection & Partial Fill
+
+| Check | Status | Notes |
+|-------|:------:|-------|
+| Order Rejection Handling | ✅ PASS | Invalid status checked, logged |
+| Partial Fill Handling | ✅ PASS | SpreadFillTracker accumulation |
+| Orphaned Leg Detection | ✅ PASS | Dual-map tracking |
+| Combo Order Fallback | ✅ PASS | 3 retries + sequential fallback |
+| Stale Order Cleanup | ✅ PASS | 5-min timeout in OnData |
+| Margin Pre-Check | ✅ PASS | 50% buffer (1.50x) |
+
+---
+
 ## Conclusion
 
-**V3.0 Hardening Status: 72% Complete**
+**V3.0 Hardening Status: 100% Complete**
 
-The Capital Stack (Section 1) is fully compliant with all three checks passing. Execution Safety (Section 2) is 83% compliant with only the EOD governor lock missing. Winner's Edge (Section 3) needs regime-adaptive logic implementation. Order Management (Section 4) has good atomic execution but needs stale order cleanup and higher margin buffer.
+All critical fixes implemented:
 
-**Immediate Action Required:**
-1. Add EOD governor lock (prevents zombie trading)
-2. Implement regime-adaptive stops and profits (maximizes bull market returns)
+| Fix | Status | Commit |
+|-----|:------:|--------|
+| MAX_TOTAL_ALLOCATION (95%) | ✅ | `4c2a142` |
+| ENGINE_PRIORITY system | ✅ | `4c2a142` |
+| HEDGE_REGIME_GATE (50) | ✅ | `4c2a142` |
+| EOD Governor Lock | ✅ | `d6949bf` |
+| Regime-Adaptive Stops | ✅ | `d6949bf` |
+| Regime-Adaptive Profits | ✅ | `d6949bf` |
+| Stale Order Cleanup | ✅ | `d6949bf` |
+| Margin Buffer 1.50x | ✅ | `d6949bf` |
+| State Load Fix (all engines) | ✅ | `pending` |
+| Governor Scale Restore | ✅ | `pending` |
 
-**For Next Release:**
-3. Add OnData stale order cleanup
-4. Increase margin buffer to 1.5x
+**Deferred to V3.1:**
+- Position reconciliation on startup
+- Ex-dividend protection for short calls
