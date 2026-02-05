@@ -445,6 +445,20 @@ DRAWDOWN_GOVERNOR_LEVELS = {
 # Replaces flat 12% threshold that trapped governor at 50% for 358 days in 2015
 DRAWDOWN_GOVERNOR_RECOVERY_BASE = 0.08
 
+# V3.0: Regime Override for Drawdown Governor
+# Problem: In 2017, Governor held bot at 25% for 4 months during bull market.
+# HWM was set, market pulled back 11%, Governor scaled to 25%, bot couldn't
+# recover because at 25% allocation it couldn't grow equity fast enough.
+# This created a death spiral: can't grow → can't escape drawdown → can't grow.
+#
+# Solution: If regime is clearly bullish (RISK_ON) for N consecutive days,
+# trust the regime and force a STEP_UP regardless of recovery percentage.
+# Thesis says "regime controls allocation" - stale HWM shouldn't override regime.
+GOVERNOR_REGIME_OVERRIDE_ENABLED = True
+GOVERNOR_REGIME_OVERRIDE_THRESHOLD = 70  # Regime score must be >= this
+GOVERNOR_REGIME_OVERRIDE_DAYS = 5  # Consecutive days at/above threshold
+GOVERNOR_REGIME_OVERRIDE_COOLDOWN_DAYS = 10  # Days before another override can trigger
+
 # V2.28: Minimum governor scale for intraday options entry
 # V3.0: Lowered from 1.0 to 0.75 — options should reduce sizing during drawdowns,
 # not shut off entirely. 1.0 created a 6.5-month dead zone in 2017 where ANY drawdown

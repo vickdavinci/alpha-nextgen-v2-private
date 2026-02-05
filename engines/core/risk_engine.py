@@ -230,6 +230,10 @@ class RiskEngine:
         self._scale_at_trough: float = 1.0  # Governor scale when trough was set
         self._governor_enabled: bool = config.DRAWDOWN_GOVERNOR_ENABLED
 
+        # V3.0: Regime Override for Drawdown Governor
+        self._regime_override_consecutive_days: int = 0
+        self._regime_override_last_trigger_day: Optional[str] = None  # Cooldown tracking
+
         # V2.27: Graduated Kill Switch state
         self._ks_current_tier: KSTier = KSTier.NONE
         self._ks_skip_until_date: Optional[str] = None  # Block entries after Tier 2+
@@ -434,6 +438,90 @@ class RiskEngine:
     def get_governor_scale(self) -> float:
         """Get current drawdown governor scale (0.0-1.0)."""
         return self._governor_scale
+
+    def check_governor_regime_override(self, regime_score: float, current_date_str: str) -> bool:
+        """
+        V3.0: Check if regime should override Governor and force STEP_UP.
+
+        If regime is bullish (>= threshold) for N consecutive days AND
+        Governor scale is below 100%, force one step up. This prevents
+        the death spiral where bot can't recover because it's at low allocation.
+
+        Called once per day (typically at pre-market setup).
+
+        Args:
+            regime_score: Current smoothed regime score (0-100).
+            current_date_str: Current date as string for cooldown tracking.
+
+        Returns:
+            True if override was applied (Governor stepped up).
+        """
+        if not getattr(config, "GOVERNOR_REGIME_OVERRIDE_ENABLED", False):
+            return False
+
+        threshold = getattr(config, "GOVERNOR_REGIME_OVERRIDE_THRESHOLD", 70)
+        required_days = getattr(config, "GOVERNOR_REGIME_OVERRIDE_DAYS", 5)
+        cooldown_days = getattr(config, "GOVERNOR_REGIME_OVERRIDE_COOLDOWN_DAYS", 10)
+
+        # Check cooldown - don't trigger again too soon
+        if self._regime_override_last_trigger_day is not None:
+            try:
+                from datetime import datetime as dt
+
+                last_trigger = dt.strptime(self._regime_override_last_trigger_day, "%Y-%m-%d")
+                current = dt.strptime(current_date_str, "%Y-%m-%d")
+                days_since = (current - last_trigger).days
+                if days_since < cooldown_days:
+                    return False
+            except (ValueError, TypeError):
+                pass  # Ignore parsing errors, proceed with check
+
+        # Update consecutive days counter
+        if regime_score >= threshold:
+            self._regime_override_consecutive_days += 1
+        else:
+            self._regime_override_consecutive_days = 0
+            return False
+
+        # Check if we meet the threshold for override
+        if self._regime_override_consecutive_days < required_days:
+            return False
+
+        # Only override if Governor is below 100%
+        if self._governor_scale >= 1.0:
+            return False
+
+        # Determine the next step up
+        levels = sorted(config.DRAWDOWN_GOVERNOR_LEVELS.items())  # (dd%, scale)
+        current_scale = self._governor_scale
+        next_scale = 1.0  # Default to full if no level found
+
+        # Find the next higher scale
+        available_scales = sorted(set([1.0] + [scale for _, scale in levels]), reverse=True)
+        for scale in available_scales:
+            if scale > current_scale:
+                next_scale = scale
+            else:
+                break
+
+        # Apply the override
+        old_scale = self._governor_scale
+        self._governor_scale = next_scale
+        self._regime_override_consecutive_days = 0  # Reset counter
+        self._regime_override_last_trigger_day = current_date_str
+
+        # Reset trough tracking since we're forcing recovery
+        self._trough_equity = 0.0
+        self._scale_at_trough = next_scale
+
+        self.log(
+            f"DRAWDOWN_GOVERNOR: REGIME_OVERRIDE | "
+            f"Regime={regime_score:.0f} >= {threshold} for {required_days} days | "
+            f"Scale {old_scale:.0%} → {next_scale:.0%} | "
+            f"Cooldown until +{cooldown_days} days"
+        )
+
+        return True
 
     # =========================================================================
     # Kill Switch (-3% Daily)
@@ -1464,6 +1552,9 @@ class RiskEngine:
                 "governor_scale": self._governor_scale,
                 "trough_equity": self._trough_equity,
                 "scale_at_trough": self._scale_at_trough,
+                # V3.0: Regime Override state
+                "regime_override_consecutive_days": self._regime_override_consecutive_days,
+                "regime_override_last_trigger_day": self._regime_override_last_trigger_day,
             },
             # V2.27: Graduated KS skip-day
             "ks_skip_until_date": self._ks_skip_until_date,
@@ -1509,6 +1600,13 @@ class RiskEngine:
             self._governor_scale = gov_state.get("governor_scale", 1.0)
             self._trough_equity = gov_state.get("trough_equity", 0.0)
             self._scale_at_trough = gov_state.get("scale_at_trough", 1.0)
+            # V3.0: Restore Regime Override state
+            self._regime_override_consecutive_days = gov_state.get(
+                "regime_override_consecutive_days", 0
+            )
+            self._regime_override_last_trigger_day = gov_state.get(
+                "regime_override_last_trigger_day"
+            )
 
         # V2.27: Restore KS skip-day
         self._ks_skip_until_date = state.get("ks_skip_until_date")

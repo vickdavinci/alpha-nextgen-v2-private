@@ -957,6 +957,16 @@ class AlphaNextGen(QCAlgorithm):
         # V2.26: Drawdown Governor — check cumulative DD from peak, scale allocations
         self._governor_scale = self.risk_engine.check_drawdown_governor(self.equity_prior_close)
 
+        # V3.0: Regime Override — if bullish regime persists, force Governor step-up
+        # This prevents death spiral where bot can't recover at low allocation
+        regime_score_for_override = self.regime_engine.get_previous_score()
+        current_date_str = str(self.Time.date())
+        if self.risk_engine.check_governor_regime_override(
+            regime_score_for_override, current_date_str
+        ):
+            # Override was applied, update local scale
+            self._governor_scale = self.risk_engine.get_governor_scale()
+
         # V2.26: Governor at 0% = full shutdown — liquidate all positions
         if self._governor_scale == 0.0 and self.Portfolio.Invested:
             self.Log(
