@@ -234,6 +234,10 @@ class RiskEngine:
         self._regime_override_consecutive_days: int = 0
         self._regime_override_last_trigger_day: Optional[str] = None  # Cooldown tracking
 
+        # V3.0: HWM Reset after sustained recovery
+        self._hwm_reset_consecutive_days: int = 0
+        self._hwm_reset_prior_equity: float = 0.0  # For daily P&L calculation
+
         # V2.27: Graduated Kill Switch state
         self._ks_current_tier: KSTier = KSTier.NONE
         self._ks_skip_until_date: Optional[str] = None  # Block entries after Tier 2+
@@ -443,11 +447,89 @@ class RiskEngine:
                 f"HWM=${self._equity_high_watermark:,.0f} | Current=${current_equity:,.0f}"
             )
 
+        # V3.0: HWM Reset after sustained recovery
+        self._check_hwm_reset(current_equity)
+
         return self._governor_scale
 
     def get_governor_scale(self) -> float:
         """Get current drawdown governor scale (0.0-1.0)."""
         return self._governor_scale
+
+    def _check_hwm_reset(self, current_equity: float) -> bool:
+        """
+        V3.0: Check if HWM should be reset after sustained recovery.
+
+        Problem: In 2015, HWM stayed locked at $50,029 for entire year. Bot perpetually
+        measured against a stale peak, creating death spiral.
+
+        Solution: After N consecutive days at Governor 50%+ with positive daily P&L,
+        reset HWM to current equity. This "forgives" old drawdowns.
+
+        Args:
+            current_equity: Current portfolio value.
+
+        Returns:
+            True if HWM was reset.
+        """
+        if not getattr(config, "GOVERNOR_HWM_RESET_ENABLED", False):
+            return False
+
+        min_days = getattr(config, "GOVERNOR_HWM_RESET_MIN_DAYS", 10)
+        min_scale = getattr(config, "GOVERNOR_HWM_RESET_MIN_SCALE", 0.50)
+
+        # Check if at required scale
+        if self._governor_scale < min_scale:
+            # Not at required scale, reset counter
+            if self._hwm_reset_consecutive_days > 0:
+                self.log(
+                    f"HWM_RESET: Counter reset | Scale={self._governor_scale:.0%} < {min_scale:.0%}"
+                )
+            self._hwm_reset_consecutive_days = 0
+            self._hwm_reset_prior_equity = current_equity
+            return False
+
+        # Check daily P&L (positive = equity > prior equity)
+        if self._hwm_reset_prior_equity <= 0:
+            # First day tracking, initialize and start counting
+            self._hwm_reset_prior_equity = current_equity
+            self._hwm_reset_consecutive_days = 1
+            return False
+
+        daily_pnl = current_equity - self._hwm_reset_prior_equity
+        is_positive = daily_pnl > 0
+
+        if is_positive:
+            self._hwm_reset_consecutive_days += 1
+            self.log(
+                f"HWM_RESET: Day {self._hwm_reset_consecutive_days}/{min_days} | "
+                f"P&L=+${daily_pnl:,.0f} | Scale={self._governor_scale:.0%}"
+            )
+        else:
+            # Negative P&L resets counter
+            if self._hwm_reset_consecutive_days > 0:
+                self.log(f"HWM_RESET: Counter reset | P&L=${daily_pnl:,.0f} (negative)")
+            self._hwm_reset_consecutive_days = 0
+
+        # Update prior equity for next day's comparison
+        self._hwm_reset_prior_equity = current_equity
+
+        # Check if we've reached the threshold
+        if self._hwm_reset_consecutive_days >= min_days:
+            old_hwm = self._equity_high_watermark
+            self._equity_high_watermark = current_equity
+            self._hwm_reset_consecutive_days = 0  # Reset counter
+            self._trough_equity = current_equity  # Reset trough
+            self._scale_at_trough = self._governor_scale
+
+            self.log(
+                f"HWM_RESET: TRIGGERED | {min_days} days positive P&L at {min_scale:.0%}+ | "
+                f"HWM ${old_hwm:,.0f} → ${current_equity:,.0f} | "
+                f"Forgave ${old_hwm - current_equity:,.0f} drawdown"
+            )
+            return True
+
+        return False
 
     def check_governor_regime_override(self, regime_score: float, current_date_str: str) -> bool:
         """
@@ -1612,6 +1694,9 @@ class RiskEngine:
                 # V3.0: Regime Override state
                 "regime_override_consecutive_days": self._regime_override_consecutive_days,
                 "regime_override_last_trigger_day": self._regime_override_last_trigger_day,
+                # V3.0: HWM Reset state
+                "hwm_reset_consecutive_days": self._hwm_reset_consecutive_days,
+                "hwm_reset_prior_equity": self._hwm_reset_prior_equity,
             },
             # V2.27: Graduated KS skip-day
             "ks_skip_until_date": self._ks_skip_until_date,
@@ -1664,6 +1749,9 @@ class RiskEngine:
             self._regime_override_last_trigger_day = gov_state.get(
                 "regime_override_last_trigger_day"
             )
+            # V3.0: Restore HWM Reset state
+            self._hwm_reset_consecutive_days = gov_state.get("hwm_reset_consecutive_days", 0)
+            self._hwm_reset_prior_equity = gov_state.get("hwm_reset_prior_equity", 0.0)
 
         # V2.27: Restore KS skip-day
         self._ks_skip_until_date = state.get("ks_skip_until_date")

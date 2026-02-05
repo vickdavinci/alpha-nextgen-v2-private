@@ -62,7 +62,7 @@
 | V3-3b | Regime | Normalize weights to 100% + clamp VIX Direction (safeguard) | P0 | ✅ DONE |
 | V3-4 | Governor | Simplify to 3 tiers: 100% / 50% / 0% (eliminate 75%, 25% limbo) | P1 | ✅ DONE |
 | V3-5 | Governor | Allow hedges + PUTs at 0% scale (defensive trades always enabled) | P1 | ✅ DONE |
-| V3-6 | Governor | HWM Reset after 20 days at 50%+ with positive P&L | P2 | ⬜ TODO |
+| V3-6 | Governor | HWM Reset after 10 days at 50%+ with positive P&L | P2 | ✅ DONE |
 | V3-7 | Regime | Lower CAUTIOUS threshold from 40 to 45 (with VIX direction may not be needed) | P3 | ⬜ TODO |
 
 ### Fix Details
@@ -171,17 +171,24 @@ DRAWDOWN_GOVERNOR_LEVELS = {
 
 ---
 
-#### V3-6: HWM Reset Mechanism (P2)
+#### V3-6: HWM Reset Mechanism (P2) ✅ DONE
 
 **Bug:** HWM stayed locked at $50,029 for entire 2015. Even 10 REGIME_OVERRIDEs couldn't break the death spiral.
 
-**Fix:** After 20 days at Governor 50%+ with cumulative positive P&L, reset HWM to current equity.
+**Fix:** After 10 consecutive days at Governor 50%+ with positive daily P&L, reset HWM to current equity.
 
 ```python
 GOVERNOR_HWM_RESET_ENABLED = True
-GOVERNOR_HWM_RESET_MIN_DAYS = 20
+GOVERNOR_HWM_RESET_MIN_DAYS = 10  # Changed from 20 to 10
 GOVERNOR_HWM_RESET_MIN_SCALE = 0.50
 ```
+
+**Implementation:**
+- Tracks consecutive days with positive P&L at 50%+ scale
+- Any negative P&L day resets the counter
+- Dropping below 50% scale resets the counter
+- When threshold reached, HWM resets to current equity
+- State persisted across restarts
 
 **Files:** `config.py`, `engines/core/risk_engine.py`
 

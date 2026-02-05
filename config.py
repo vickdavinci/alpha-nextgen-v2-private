@@ -512,6 +512,15 @@ GOVERNOR_REGIME_OVERRIDE_DAYS = 5  # Consecutive days at/above threshold
 GOVERNOR_REGIME_OVERRIDE_COOLDOWN_DAYS = 10  # Days before another override can trigger
 GOVERNOR_REGIME_OVERRIDE_MIN_SCALE = 0.50  # V3.0: Jump to 50% min to enable bullish options
 
+# V3.0: HWM Reset after Sustained Recovery
+# Problem: In 2015, HWM stayed locked at $50,029 for entire year. Bot perpetually
+# measured against a stale peak, creating death spiral where it couldn't recover.
+# Solution: After N days at Governor 50%+ with positive daily P&L, reset HWM
+# to current equity. This allows bot to "forgive" old drawdowns and trade fresh.
+GOVERNOR_HWM_RESET_ENABLED = True
+GOVERNOR_HWM_RESET_MIN_DAYS = 10  # Consecutive days of positive P&L at 50%+ scale
+GOVERNOR_HWM_RESET_MIN_SCALE = 0.50  # Must be at this scale or higher to count
+
 # V3.0: Simplified Governor Options Gating (3-tier system)
 #
 # With V3.0 simplified governor (100%/50%/0%), options gating is straightforward:
