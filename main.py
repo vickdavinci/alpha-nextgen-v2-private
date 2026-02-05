@@ -236,6 +236,25 @@ class AlphaNextGen(QCAlgorithm):
         self._setup_schedules()
 
         # =====================================================================
+        # STEP 7b: Clear ObjectStore for Backtests (V3.0 FIX)
+        # =====================================================================
+        # Prevents state contamination from previous backtests
+        # Without this, HWM/Governor/KillSwitch state from prior runs
+        # can cause ZERO TRADES (as seen in V3.0-70pct-profit-2017 backtest)
+        if not self.LiveMode:
+            state_keys = [
+                "ALPHA_NEXTGEN_RISK",
+                "ALPHA_NEXTGEN_CAPITAL",
+                "ALPHA_NEXTGEN_COLDSTART",
+                "ALPHA_NEXTGEN_STARTUP_GATE",
+                "ALPHA_NEXTGEN_POSITIONS",
+            ]
+            for key in state_keys:
+                if self.ObjectStore.ContainsKey(key):
+                    self.ObjectStore.Delete(key)
+            self.Log("INIT: ObjectStore cleared for fresh backtest")
+
+        # =====================================================================
         # STEP 8: Load Persisted State
         # =====================================================================
         self._load_state()
