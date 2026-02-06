@@ -1036,7 +1036,7 @@ VASS_LOG_REJECTION_INTERVAL_MINUTES = 15  # Log rejections every 15 min (not eve
 # V2.12 Fix #4: Raised from $5K to $10K - 8-lot spread requires ~$8K margin
 # V3.0 SCALABILITY FIX: Converted to percentage-based for portfolio scaling
 OPTIONS_MAX_MARGIN_CAP = 10000  # $10K — LEGACY, kept for backwards compatibility
-OPTIONS_MAX_MARGIN_PCT = 0.20  # 20% of portfolio for all options combined
+OPTIONS_MAX_MARGIN_PCT = 0.30  # V3.6: 30% of portfolio for all options (was 20%)
 
 # V2.18: Hardcoded Sizing Caps (Fix for MarginBuyingPower sizing bug)
 # Evidence: Architect found $14K trade vs $5K expected - sizing used MarginBuyingPower

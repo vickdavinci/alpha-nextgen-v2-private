@@ -209,6 +209,7 @@
 | V3.6-1 | Margin | Reduce safety factor from 6× to 4× | P1 | ✅ DONE |
 | V3.6-2 | Margin | Add margin-aware sizing (size down vs block) | P1 | ✅ DONE |
 | V3.6-3 | Margin | Reduce equity cushion from 20% to 10% | P1 | ✅ DONE |
+| V3.6-4 | Margin | Increase OPTIONS_MAX_MARGIN_PCT from 20% to 30% | P1 | ✅ DONE |
 
 **Before:**
 ```
@@ -219,6 +220,7 @@ Required=$48,000 | Effective Free=$35,072 | → BLOCKED
 ```
 - 4× safety: $4 × 100 × 4 = $1,600/contract (was $2,400)
 - 10% cushion: ~$39K available (was ~$35K)
+- 30% max margin for options: $43K × 30% = $12.9K cap (was 20% = $8.6K)
 - If still insufficient: Size down to max contracts that fit (instead of block)
 ```
 
