@@ -224,7 +224,28 @@ Required=$48,000 | Effective Free=$35,072 | → BLOCKED
 - If still insufficient: Size down to max contracts that fit (instead of block)
 ```
 
-**Files Changed:** `main.py` (margin calculation + margin-aware sizing)
+**Files Changed:** `main.py` (margin calculation + margin-aware sizing), `config.py`
+
+**Tests:** 1340 passed ✅
+
+### V3.7 Fixes (52-Week High Bug - CRITICAL)
+
+> **Branch:** `feature/va/v3.0-hardening`
+> **Problem:** Drawdown factor used 25-day rolling window instead of actual 52-week high
+
+**Root Cause:** `spy_closes` rolling window was only 25 days. When `spy_52w_high` wasn't passed
+to regime engine, it fell back to `max(spy_closes)` = max of 25 days, not 252 days.
+
+| ID | Area | Fix | Priority | Status |
+|:--:|:----:|-----|:--------:|:------:|
+| V3.7-1 | Regime | Add SPY 252-day Maximum indicator for true 52-week high | P0 | ✅ DONE |
+| V3.7-2 | Regime | Pass spy_52w_high to regime engine calculate() | P0 | ✅ DONE |
+
+**Impact:** In 2022 bear market, drawdown factor was miscalculating because it measured
+distance from 25-day high (not 52-week high). A 15% drawdown from ATH might appear as
+only 5% drawdown from recent 25-day high, causing regime to stay bullish/neutral too long.
+
+**Files Changed:** `main.py` (added spy_52w_high indicator + pass to regime engine)
 
 **Tests:** 1340 passed ✅
 

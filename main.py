@@ -576,6 +576,10 @@ class AlphaNextGen(QCAlgorithm):
         # V2.26: SPY ADX(14) for Chop Detection (regime engine 6th factor)
         self.spy_adx_daily = self.ADX(self.spy, config.ADX_PERIOD, Resolution.Daily)
 
+        # V3.7: SPY 52-week high for Drawdown Factor (252 trading days)
+        # CRITICAL FIX: Previously used 25-day rolling window, not actual 52-week high
+        self.spy_52w_high = self.MAX(self.spy, 252, Resolution.Daily)
+
         # ---------------------------------------------------------------------
         # Risk Engine Indicators
         # ---------------------------------------------------------------------
@@ -5327,7 +5331,9 @@ class AlphaNextGen(QCAlgorithm):
         ief_prices = list(self.ief_closes) if self.ief_closes.IsReady else []
 
         # V2.26: Pass VIX + SPY ADX to regime calculation
+        # V3.7: Pass actual 52-week high for drawdown factor (CRITICAL FIX)
         spy_adx_val = self.spy_adx_daily.Current.Value if self.spy_adx_daily.IsReady else 25.0
+        spy_52w_high_val = self.spy_52w_high.Current.Value if self.spy_52w_high.IsReady else 0.0
         return self.regime_engine.calculate(
             spy_closes=spy_prices,
             rsp_closes=rsp_prices,
@@ -5338,6 +5344,7 @@ class AlphaNextGen(QCAlgorithm):
             spy_sma200=self.spy_sma200.Current.Value,
             vix_level=self._current_vix,
             spy_adx=spy_adx_val,
+            spy_52w_high=spy_52w_high_val,
         )
 
     def _log_daily_summary(self) -> None:
