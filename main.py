@@ -422,12 +422,13 @@ class AlphaNextGen(QCAlgorithm):
         if mr_window_open and risk_result.can_enter_intraday and risk_result.can_enter_options:
             regime_score = self.regime_engine.get_previous_score()
 
-            # V2.32: Determine governor threshold based on regime direction
-            if regime_score < config.SPREAD_REGIME_BEARISH:
-                # Bearish regime: Allow bear options even at 25% governor (risk-reducing)
+            # V3.5 Fix: Determine governor threshold based on regime direction
+            # Allow bearish options (PUT spreads) in NEUTRAL zone - they're defensive
+            if regime_score <= config.SPREAD_REGIME_BULLISH:  # <= 70: bearish/defensive
+                # NEUTRAL/CAUTIOUS/BEAR: Allow PUT options at low governor (risk-reducing)
                 min_governor = config.GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE_BEARISH
             else:
-                # Bullish/Neutral regime: Require higher governor for bull options
+                # BULL (>70): Require higher governor for CALL options (risk-increasing)
                 min_governor = config.GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE
 
             if self._governor_scale >= min_governor:
@@ -2989,43 +2990,45 @@ class AlphaNextGen(QCAlgorithm):
         # - System entered BULL_CALL spreads (wrong for drawdown protection)
         # - Governor liquidated next morning → forced loss → repeat
         #
-        # V2.33 fix: Only allow bearish PUT spreads during severe drawdowns
+        # V3.5 fix: Allow PUT spreads in NEUTRAL zone at low governor
+        # "Bearish" for governor purposes = anything not BULL (regime <= 70)
+        # PUT spreads reduce risk → allowed at low governor in NEUTRAL/CAUTIOUS/BEAR
         regime_score_for_governor = self.regime_engine.get_previous_score()
-        is_bearish_regime = regime_score_for_governor < config.SPREAD_REGIME_BEARISH
+        is_put_direction = regime_score_for_governor <= config.SPREAD_REGIME_BULLISH  # <= 70
 
         if self._governor_scale == 0.0:
             # Governor SHUTDOWN (16%+ drawdown)
-            # Only bearish PUT spreads allowed - they hedge/profit from continued decline
-            if not is_bearish_regime:
+            # Only PUT spreads allowed - they hedge/profit from continued decline
+            if not is_put_direction:
                 self.Log(
                     f"OPTIONS_EOD: Blocked by Governor SHUTDOWN | "
-                    f"Scale=0% | Regime={regime_score_for_governor:.0f} (not bearish) | "
+                    f"Scale=0% | Regime={regime_score_for_governor:.0f} (BULL) | "
                     f"Only PUT spreads allowed at 0%"
                 )
                 return
             else:
                 self.Log(
-                    f"OPTIONS_EOD: Bearish PUT spread allowed at Governor 0% | "
-                    f"Regime={regime_score_for_governor:.0f} | Thesis: PUT spreads active in bear markets"
+                    f"OPTIONS_EOD: PUT spread allowed at Governor 0% | "
+                    f"Regime={regime_score_for_governor:.0f} | Thesis: PUT spreads active in non-BULL"
                 )
                 # Continue to spread entry logic below
 
         elif self._governor_scale < config.GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE_BEARISH:
-            # Governor below 25% but above 0% - only bearish allowed
-            if not is_bearish_regime:
+            # Governor below 25% but above 0% - only PUT direction allowed
+            if not is_put_direction:
                 self.Log(
                     f"OPTIONS_EOD: Blocked by Governor | "
                     f"Scale={self._governor_scale:.0%} < 25% | "
-                    f"Regime={regime_score_for_governor:.0f} (not bearish)"
+                    f"Regime={regime_score_for_governor:.0f} (BULL)"
                 )
                 return
 
         elif self._governor_scale < config.GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE:
-            # Governor 25-50% - bearish allowed, bullish blocked
-            if not is_bearish_regime:
+            # Governor 25-50% - PUT direction allowed, CALL direction blocked
+            if not is_put_direction:
                 self.Log(
                     f"OPTIONS_EOD: Blocked by Governor | "
-                    f"Scale={self._governor_scale:.0%} < 50% for bullish | "
+                    f"Scale={self._governor_scale:.0%} < 50% for CALL | "
                     f"Regime={regime_score_for_governor:.0f}"
                 )
                 return
@@ -3078,17 +3081,51 @@ class AlphaNextGen(QCAlgorithm):
         # V2.23: Update IVSensor BEFORE strategy selection
         self.options_engine._iv_sensor.update(self._current_vix)
 
-        # V2.3: Determine spread direction from regime score
-        if regime_score > config.SPREAD_REGIME_BULLISH:
-            direction = OptionDirection.CALL
-            direction_str = "BULLISH"
-        elif regime_score < config.SPREAD_REGIME_BEARISH:
-            direction = OptionDirection.PUT
-            direction_str = "BEARISH"
-        else:
-            # Neutral regime (45-60): No trade
-            return
+        # V3.5 Fix: Determine spread directions to scan based on regime score
+        # Upper NEUTRAL (60-70): Scan BOTH directions (CALL @ 50%, PUT @ 25%)
+        # Lower NEUTRAL (50-59): PUT only @ 50%
+        # CAUTIOUS/BEAR (<50): PUT only @ 100%
+        upper_neutral_threshold = getattr(config, "OPTIONS_UPPER_NEUTRAL_THRESHOLD", 60)
 
+        if regime_score > config.SPREAD_REGIME_BULLISH:  # > 70: BULL - CALL only
+            directions_to_scan = [(OptionDirection.CALL, "BULLISH")]
+        elif regime_score >= upper_neutral_threshold:  # 60-70: Upper NEUTRAL - both
+            directions_to_scan = [
+                (OptionDirection.CALL, "BULLISH"),  # CALL @ 50%
+                (OptionDirection.PUT, "BEARISH"),  # PUT @ 25%
+            ]
+        else:  # < 60: Lower NEUTRAL/CAUTIOUS/BEAR - PUT only
+            directions_to_scan = [(OptionDirection.PUT, "BEARISH")]
+
+        # Scan each direction (upper NEUTRAL scans both CALL and PUT)
+        for direction, direction_str in directions_to_scan:
+            self._scan_spread_for_direction(
+                chain,
+                direction,
+                direction_str,
+                regime_score,
+                qqq_price,
+                adx_value,
+                ma200_value,
+                iv_rank,
+                size_multiplier,
+                is_eod_scan,
+            )
+
+    def _scan_spread_for_direction(
+        self,
+        chain,
+        direction: OptionDirection,
+        direction_str: str,
+        regime_score: float,
+        qqq_price: float,
+        adx_value: float,
+        ma200_value: float,
+        iv_rank: float,
+        size_multiplier: float,
+        is_eod_scan: bool,
+    ) -> None:
+        """Scan for spread entry in a specific direction."""
         # V2.23: VASS strategy selection — routes to credit or debit
         strategy, vass_dte_min, vass_dte_max, is_credit = self._route_vass_strategy(direction_str)
 
@@ -3742,23 +3779,20 @@ class AlphaNextGen(QCAlgorithm):
 
         regime_score = regime_state.smoothed_score
 
-        # Bullish path (CALL spreads): regime > 60
+        # V3.5 Fix: Remove dead zone - let macro regime gate handle NEUTRAL
+        # Bullish path (CALL spreads): regime > 70
         if regime_score > config.SPREAD_REGIME_BULLISH:
             if self.startup_gate.allows_directional_longs():
                 self._generate_options_signals(
                     regime_state, capital_state, size_mult, is_eod_scan=True
                 )
-            return
-
-        # Bearish path (PUT spreads): regime < 45
-        if regime_score < config.SPREAD_REGIME_BEARISH:
+        # Bearish/NEUTRAL path (PUT spreads): regime <= 70
+        # Macro gate will size down in NEUTRAL, full size in CAUTIOUS/BEAR
+        else:
             if self.startup_gate.allows_bearish_options():
                 self._generate_options_signals(
                     regime_state, capital_state, size_mult, is_eod_scan=True
                 )
-            return
-
-        # Neutral (45-60): No options trade (by design)
 
     def _generate_hedge_signals(self, regime_state: RegimeState) -> None:
         """
@@ -4293,23 +4327,14 @@ class AlphaNextGen(QCAlgorithm):
         """
         regime_score = self.regime_engine.get_previous_score()
 
-        # Check if current regime direction is allowed by startup gate
-        if regime_score > config.SPREAD_REGIME_BULLISH:
+        # V3.5 Fix: Check startup gate - NEUTRAL zone now allows PUT spreads
+        if regime_score > config.SPREAD_REGIME_BULLISH:  # > 70: CALL direction
             # Bullish direction — requires directional longs permission
             if not self.startup_gate.allows_directional_longs():
                 return
-        elif regime_score < config.SPREAD_REGIME_BEARISH:
+        else:  # <= 70: PUT direction (NEUTRAL/CAUTIOUS/BEAR)
             # Bearish direction — requires bearish options permission
             if not self.startup_gate.allows_bearish_options():
-                return
-        else:
-            # Neutral (45-60) — swing spreads won't fire (internal no-trade),
-            # but intraday micro regime is VIX-driven and may still trade.
-            # Allow if either bearish or directional permission is granted.
-            if not (
-                self.startup_gate.allows_bearish_options()
-                or self.startup_gate.allows_directional_longs()
-            ):
                 return
 
         self._scan_options_signals(data)
@@ -4558,15 +4583,13 @@ class AlphaNextGen(QCAlgorithm):
 
         regime_score = self.regime_engine.get_previous_score()
 
-        if regime_score > config.SPREAD_REGIME_BULLISH:
+        # V3.5 Fix: Remove dead zone - let macro regime gate handle NEUTRAL
+        if regime_score > config.SPREAD_REGIME_BULLISH:  # > 70: CALL spreads
             direction = OptionDirection.CALL
             direction_str = "BULLISH"
-        elif regime_score < config.SPREAD_REGIME_BEARISH:
+        else:  # <= 70: PUT spreads (macro gate handles sizing)
             direction = OptionDirection.PUT
             direction_str = "BEARISH"
-        else:
-            # Neutral regime (45-60): No trade
-            return
 
         # V2.23: VASS strategy selection — routes to credit or debit
         strategy, vass_dte_min, vass_dte_max, is_credit = self._route_vass_strategy(direction_str)

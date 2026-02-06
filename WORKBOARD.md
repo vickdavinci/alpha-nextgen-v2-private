@@ -164,6 +164,35 @@
 
 **Files Changed:** `config.py`, `engines/core/regime_engine.py`, `engines/satellite/options_engine.py`, `main.py`, `tests/test_options_engine.py`
 
+### V3.5 Fixes (Options Dead Zone Removal)
+
+> **Branch:** `feature/va/v3.2-macro-regime-gate`
+> **Audit:** `docs/audits/V3_4_2022H1_audit_report.md`
+> **Problem:** 2022 H1 backtest fired ZERO PUT options despite -20% market drop
+
+**Root Cause:** Direction selection in main.py created a 20-point dead zone (regime 50-70) where:
+- CALLs blocked (regime < 70)
+- PUTs blocked (regime >= 50)
+- Result: NO options trades in NEUTRAL zone
+
+| ID | Area | Fix | Priority | Status |
+|:--:|:----:|-----|:--------:|:------:|
+| V3.5-1 | Options | Dual-direction scanning in Upper NEUTRAL (60-70) | P0 | ✅ DONE |
+| V3.5-2 | Options | Refactored to `_scan_spread_for_direction()` helper | P0 | ✅ DONE |
+| V3.5-3 | Options | Fixed EOD options gating for NEUTRAL zone | P0 | ✅ DONE |
+| V3.5-4 | Options | Fixed governor gate: PUT allowed at low governor in NEUTRAL | P0 | ✅ DONE |
+| V3.5-5 | Options | Fixed startup gate check for NEUTRAL direction | P0 | ✅ DONE |
+
+**Fix Logic (Dual-Direction Scanning):**
+- **BULL (>70):** Scan CALL only
+- **Upper NEUTRAL (60-70):** Scan BOTH directions (CALL @ 50%, PUT @ 25%)
+- **Lower NEUTRAL (50-59):** Scan PUT only @ 50%
+- **CAUTIOUS/BEAR (<50):** Scan PUT only @ 100%
+
+**Files Changed:** `main.py` (refactored direction logic + new helper function)
+
+**Tests:** 1340 passed ✅
+
 ### Fix Details
 
 #### V3-1 & V3-2: EOD_LOCK Exemption (P0)
