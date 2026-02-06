@@ -81,6 +81,57 @@ MIN_SPREAD_CONTRACTS = 2
 # REGIME ENGINE
 # =============================================================================
 
+# -----------------------------------------------------------------------------
+# V3.3: SIMPLIFIED 3-FACTOR MODEL
+# -----------------------------------------------------------------------------
+# Problem: 7-factor model caused score compression (stuck at 43-50 in grinding bears)
+# Solution: 3 decisive factors that directly measure what matters
+#
+# Factor 1: TREND (35%) - Is the market going up or down?
+# Factor 2: VIX LEVEL (30%) - Is there fear/panic?
+# Factor 3: DRAWDOWN (35%) - How far has market fallen from peak?
+#
+# Guards (not weighted, just safety valves):
+# - VIX Direction Shock Cap: Caps regime at CAUTIOUS when VIX spiking
+# - Recovery Hysteresis: Prevents "sticky bear" after V-shaped recoveries
+
+V3_REGIME_SIMPLIFIED_ENABLED = True  # Enable simplified 3-factor model
+
+# V3.3 Factor Weights (must sum to 1.0)
+WEIGHT_TREND_V3 = 0.35  # Direction indicator (SPY vs MA200)
+WEIGHT_VIX_V3 = 0.30  # Fear/panic level
+WEIGHT_DRAWDOWN_V3 = 0.35  # Distance from 52-week high (breaks compression)
+
+# Drawdown Factor Thresholds (SPY drawdown from 52-week high)
+DRAWDOWN_THRESHOLD_BULL = 0.05  # 0-5% = Bull pullback → Score 90
+DRAWDOWN_THRESHOLD_CORRECTION = 0.10  # 5-10% = Correction → Score 70
+DRAWDOWN_THRESHOLD_PULLBACK = 0.15  # 10-15% = Pullback → Score 50
+DRAWDOWN_THRESHOLD_BEAR = 0.20  # 15-20% = Bear territory → Score 30
+# 20%+ = Deep bear → Score 10
+
+# Drawdown Factor Scores (mapped to thresholds above)
+DRAWDOWN_SCORE_BULL = 90
+DRAWDOWN_SCORE_CORRECTION = 70
+DRAWDOWN_SCORE_PULLBACK = 50
+DRAWDOWN_SCORE_BEAR = 30
+DRAWDOWN_SCORE_DEEP_BEAR = 10
+
+# Guard 1: VIX Direction Shock Cap
+# When VIX is spiking, cap regime at CAUTIOUS for fast crash response
+VIX_SHOCK_CAP_ENABLED = True
+VIX_SHOCK_CAP_THRESHOLD = 10.0  # VIX rising > 10% = shock
+VIX_SHOCK_CAP_MAX_REGIME = 49  # Cap at CAUTIOUS (below NEUTRAL)
+VIX_SHOCK_CAP_DECAY_DAYS = 2  # Decay cap after 2 sessions if not confirmed
+
+# Guard 2: Recovery Hysteresis
+# Prevents "sticky bear" - upgrades require confirmation, downgrades are immediate
+RECOVERY_HYSTERESIS_ENABLED = True
+RECOVERY_HYSTERESIS_DAYS = 2  # Require 2 days of improvement to upgrade
+RECOVERY_HYSTERESIS_VIX_MAX = 25.0  # VIX must be below this to allow upgrade
+
+# -----------------------------------------------------------------------------
+# LEGACY 7-FACTOR WEIGHTS (V3.0) - Used if V3_REGIME_SIMPLIFIED_ENABLED = False
+# -----------------------------------------------------------------------------
 # Factor Weights (V3.0: Normalized to 100% with VIX Direction enabled)
 # Research-based allocation: leading indicators (Credit, VIX Dir) balanced with
 # lagging indicators (Trend, Realized Vol) for regime identification.

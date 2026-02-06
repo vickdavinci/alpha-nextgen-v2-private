@@ -882,6 +882,64 @@ def vix_factor_score(
         return 0.0  # Crisis mode
 
 
+def drawdown_factor_score(
+    current_price: float,
+    high_52w: float,
+    threshold_bull: float = 0.05,
+    threshold_correction: float = 0.10,
+    threshold_pullback: float = 0.15,
+    threshold_bear: float = 0.20,
+    score_bull: float = 90.0,
+    score_correction: float = 70.0,
+    score_pullback: float = 50.0,
+    score_bear: float = 30.0,
+    score_deep_bear: float = 10.0,
+) -> float:
+    """V3.3: Calculate drawdown factor score for regime calculation.
+
+    This factor directly measures how far the market has fallen from its peak,
+    breaking the score compression problem in grinding bear markets.
+
+    In a -20% to -30% bear market, this factor forces the regime score lower
+    regardless of whether other factors (VIX, breadth, credit) have normalized.
+
+    Args:
+        current_price: Current SPY price.
+        high_52w: 52-week high SPY price.
+        threshold_bull: Drawdown below this = bull pullback (default 5%).
+        threshold_correction: Drawdown below this = correction (default 10%).
+        threshold_pullback: Drawdown below this = pullback (default 15%).
+        threshold_bear: Drawdown below this = bear (default 20%).
+        score_*: Scores for each regime band.
+
+    Returns:
+        Drawdown score (0-100). Higher = healthier market.
+
+    Example:
+        >>> drawdown_factor_score(100, 100)  # At high
+        90
+        >>> drawdown_factor_score(85, 100)  # -15% drawdown
+        50
+        >>> drawdown_factor_score(75, 100)  # -25% drawdown
+        10
+    """
+    if high_52w <= 0:
+        return 50.0  # Neutral if no valid high
+
+    drawdown_pct = (high_52w - current_price) / high_52w
+
+    if drawdown_pct <= threshold_bull:
+        return score_bull  # 0-5% = Bull pullback
+    elif drawdown_pct <= threshold_correction:
+        return score_correction  # 5-10% = Correction
+    elif drawdown_pct <= threshold_pullback:
+        return score_pullback  # 10-15% = Pullback
+    elif drawdown_pct <= threshold_bear:
+        return score_bear  # 15-20% = Bear territory
+    else:
+        return score_deep_bear  # 20%+ = Deep bear
+
+
 def vix_direction_score(
     vix_current: float,
     vix_prior: float,

@@ -101,6 +101,39 @@
 
 **Tests:** 1340 passed ✅
 
+### V3.3 Fixes (Regime Engine Simplification)
+
+> **Branch:** `feature/va/v3.2-macro-regime-gate`
+> **Problem:** 7-factor regime engine caused score compression (43-50 in -30% bear markets)
+
+**Solution:** Simplified to 3-factor model with 2 safety guards:
+
+| ID | Area | Fix | Priority | Status |
+|:--:|:----:|-----|:--------:|:------:|
+| V3.3-1 | Regime | 3-Factor Core: Trend (35%) + VIX (30%) + Drawdown (35%) | P0 | ✅ DONE |
+| V3.3-2 | Regime | VIX Shock Cap: Cap regime at CAUTIOUS when VIX spiking >10% | P0 | ✅ DONE |
+| V3.3-3 | Regime | Recovery Hysteresis: Require 2 days confirmation for upgrades | P1 | ✅ DONE |
+
+**Why 3 Factors?**
+- **Trend (35%)**: Is market going up or down? (SPY vs MA200)
+- **VIX (30%)**: Is there fear/panic?
+- **Drawdown (35%)**: How far from 52-week high? (Breaks compression!)
+
+**Guards (not weighted, just safety valves):**
+- **VIX Shock Cap**: Fast crash response - caps regime when VIX spiking
+- **Recovery Hysteresis**: Prevents "sticky bear" and missing V-recoveries
+
+**Config Additions:**
+- `V3_REGIME_SIMPLIFIED_ENABLED = True`
+- `WEIGHT_TREND_V3 = 0.35`, `WEIGHT_VIX_V3 = 0.30`, `WEIGHT_DRAWDOWN_V3 = 0.35`
+- `DRAWDOWN_THRESHOLD_*` and `DRAWDOWN_SCORE_*` parameters
+- `VIX_SHOCK_CAP_ENABLED`, `VIX_SHOCK_CAP_THRESHOLD = 10.0`
+- `RECOVERY_HYSTERESIS_ENABLED`, `RECOVERY_HYSTERESIS_DAYS = 2`
+
+**Files Changed:** `config.py`, `engines/core/regime_engine.py`, `utils/calculations.py`
+
+**Tests:** 1340 passed ✅
+
 ### Fix Details
 
 #### V3-1 & V3-2: EOD_LOCK Exemption (P0)
