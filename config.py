@@ -127,7 +127,9 @@ VIX_SHOCK_CAP_DECAY_DAYS = 2  # Decay cap after 2 sessions if not confirmed
 # Prevents "sticky bear" - upgrades require confirmation, downgrades are immediate
 RECOVERY_HYSTERESIS_ENABLED = True
 RECOVERY_HYSTERESIS_DAYS = 2  # Require 2 days of improvement to upgrade
-RECOVERY_HYSTERESIS_VIX_MAX = 25.0  # VIX must be below this to allow upgrade
+# V3.8: Raised from 25 to 35 - VIX 25-35 is common during V-recoveries (Mar 2020, 2011)
+# Old threshold blocked ALL upgrades for 63 days in Mar 2020 while market rallied 30%
+RECOVERY_HYSTERESIS_VIX_MAX = 35.0  # VIX must be below this to allow upgrade
 
 # -----------------------------------------------------------------------------
 # LEGACY 7-FACTOR WEIGHTS (V3.0) - Used if V3_REGIME_SIMPLIFIED_ENABLED = False

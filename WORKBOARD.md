@@ -249,6 +249,35 @@ only 5% drawdown from recent 25-day high, causing regime to stay bullish/neutral
 
 **Tests:** 1340 passed ✅
 
+### V3.8 Fixes (Recovery Hysteresis VIX Threshold)
+
+> **Branch:** `feature/va/v3.0-hardening`
+> **Problem:** Recovery hysteresis blocked ALL regime upgrades when VIX > 25
+
+**Root Cause:** The recovery hysteresis guard required VIX < 25 to allow regime upgrades:
+```python
+if trend_improving and vix_level < 25:  # Too restrictive!
+    recovery_days += 1
+else:
+    recovery_days = 0  # Reset every day when VIX > 25
+```
+
+**Impact Analysis:**
+- Mar 2020: VIX stayed above 25 for 63 days (Feb 24 - Apr 27)
+- Market bottomed Mar 23 and rallied 30% by Apr 27
+- System would have stayed RISK_OFF the entire time, missing the V-recovery
+- Same issue in 2011 debt ceiling recovery (VIX 28)
+
+| ID | Area | Fix | Priority | Status |
+|:--:|:----:|-----|:--------:|:------:|
+| V3.8-1 | Regime | Raise RECOVERY_HYSTERESIS_VIX_MAX from 25 to 35 | P0 | ✅ DONE |
+
+**Rationale:** VIX 25-35 is common during V-recoveries. Only block upgrades in true crisis (VIX > 35).
+
+**Files Changed:** `config.py`
+
+**Tests:** 1340 passed ✅
+
 ### Fix Details
 
 #### V3-1 & V3-2: EOD_LOCK Exemption (P0)
