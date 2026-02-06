@@ -1,5 +1,6 @@
 # region imports
 # Type hints
+import json
 from typing import Any, Dict, List, Optional, Set
 
 from AlgorithmImports import *
@@ -248,6 +249,10 @@ class AlphaNextGen(QCAlgorithm):
                 "ALPHA_NEXTGEN_COLDSTART",
                 "ALPHA_NEXTGEN_STARTUP_GATE",
                 "ALPHA_NEXTGEN_POSITIONS",
+                # V3.3 P0: Add options/OCO/regime state keys
+                "options_engine_state",
+                "oco_manager_state",
+                "regime_engine_state",
             ]
             for key in state_keys:
                 if self.ObjectStore.ContainsKey(key):
@@ -2512,13 +2517,23 @@ class AlphaNextGen(QCAlgorithm):
                 try:
                     if self.ObjectStore.ContainsKey("options_engine_state"):
                         raw = self.ObjectStore.Read("options_engine_state")
-                        import ast
-
-                        opt_state = ast.literal_eval(raw)
+                        # V3.3 P0-2: Use JSON instead of ast.literal_eval for safety
+                        opt_state = json.loads(raw)
                         self.options_engine.restore_state(opt_state)
                         self.Log("STATE_RESTORE: Options engine state loaded")
                 except Exception as e:
                     self.Log(f"STATE_WARN: Failed to load options state - {e}")
+
+            # V3.3 P0-1: Load regime engine state
+            if hasattr(self, "regime_engine"):
+                try:
+                    if self.ObjectStore.ContainsKey("regime_engine_state"):
+                        raw = self.ObjectStore.Read("regime_engine_state")
+                        regime_state = json.loads(raw)
+                        self.regime_engine.restore_state(regime_state)
+                        self.Log("STATE_RESTORE: Regime engine V3.3 state loaded")
+                except Exception as e:
+                    self.Log(f"STATE_WARN: Failed to load regime state - {e}")
 
         except Exception as e:
             self.Log(f"STATE_ERROR: Failed to load state - {e}")
@@ -2540,13 +2555,19 @@ class AlphaNextGen(QCAlgorithm):
             )
 
             # V2.1: Save options engine and OCO manager state
+            # V3.3 P0-2: Use JSON instead of str() for safe serialization
             if hasattr(self, "options_engine"):
                 opt_state = self.options_engine.get_state_for_persistence()
-                self.ObjectStore.Save("options_engine_state", str(opt_state))
+                self.ObjectStore.Save("options_engine_state", json.dumps(opt_state))
 
             if hasattr(self, "oco_manager"):
                 oco_state = self.oco_manager.get_state_for_persistence()
-                self.ObjectStore.Save("oco_manager_state", str(oco_state))
+                self.ObjectStore.Save("oco_manager_state", json.dumps(oco_state))
+
+            # V3.3 P0-1: Save regime engine state (includes V3.3 simplified model state)
+            if hasattr(self, "regime_engine"):
+                regime_state = self.regime_engine.get_state_for_persistence()
+                self.ObjectStore.Save("regime_engine_state", json.dumps(regime_state))
 
         except Exception as e:
             self.Log(f"STATE_ERROR: Failed to save state - {e}")

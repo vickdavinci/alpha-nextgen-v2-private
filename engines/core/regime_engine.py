@@ -752,3 +752,62 @@ class RegimeEngine:
             vix_prior: Prior VIX value to restore.
         """
         self._vix_prior = vix_prior
+
+    # =========================================================================
+    # V3.3: STATE PERSISTENCE
+    # =========================================================================
+
+    def get_state_for_persistence(self) -> Dict[str, Any]:
+        """
+        V3.3: Get all regime engine state for persistence.
+
+        Returns:
+            Dictionary containing all state needed for restoration.
+        """
+        return {
+            "previous_smoothed": self._previous_smoothed_score,
+            "vix_prior": self._vix_prior,
+            "vol_history": self._vol_history[-100:] if self._vol_history else [],
+            # V3.3 simplified model state
+            "spy_52w_high": self._spy_52w_high,
+            "shock_cap_active": self._shock_cap_active,
+            "shock_cap_days_remaining": self._shock_cap_days_remaining,
+            "recovery_days": self._recovery_days,
+            "previous_regime": self._previous_regime.value if self._previous_regime else "NEUTRAL",
+        }
+
+    def restore_state(self, state: Dict[str, Any]) -> None:
+        """
+        V3.3: Restore regime engine state from persistence.
+
+        Args:
+            state: Dictionary from get_state_for_persistence().
+        """
+        if not state:
+            return
+
+        # Core state
+        self._previous_smoothed_score = state.get("previous_smoothed", 50.0)
+        self._vix_prior = state.get("vix_prior", 0.0)
+        vol_history = state.get("vol_history", [])
+        if vol_history:
+            self._vol_history = vol_history[-config.VOL_PERCENTILE_LOOKBACK :]
+
+        # V3.3 simplified model state
+        self._spy_52w_high = state.get("spy_52w_high", 0.0)
+        self._shock_cap_active = state.get("shock_cap_active", False)
+        self._shock_cap_days_remaining = state.get("shock_cap_days_remaining", 0)
+        self._recovery_days = state.get("recovery_days", 0)
+
+        # Restore previous regime enum
+        prev_regime_str = state.get("previous_regime", "NEUTRAL")
+        try:
+            self._previous_regime = RegimeLevel[prev_regime_str]
+        except (KeyError, TypeError):
+            self._previous_regime = RegimeLevel.NEUTRAL
+
+        self.log(
+            f"REGIME: State restored | Score={self._previous_smoothed_score:.1f} | "
+            f"VIX_prior={self._vix_prior:.1f} | 52w_high={self._spy_52w_high:.2f} | "
+            f"Shock_cap={self._shock_cap_active} | Recovery_days={self._recovery_days}"
+        )
