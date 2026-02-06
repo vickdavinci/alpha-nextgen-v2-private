@@ -39,9 +39,9 @@
 
 ## V3.0 Hardening — Regime Navigation & Governor Simplification
 
-> **Status:** IN PROGRESS 🔄
+> **Status:** COMPLETE ✅ (V3.0 + V3.1 + V3.2)
 > **Goal:** Fix regime detection lag, simplify Governor, enable defensive trades at all levels
-> **Branch:** `feature/va/v3.0-hardening`
+> **Branches:** `feature/va/v3.0-hardening`, `feature/va/v3.2-macro-regime-gate`
 > **Audit:** `docs/audits/V3_0_FullFix_2015_v2_audit.md`
 
 ### Problem Statement
@@ -71,6 +71,35 @@
 |:--:|:----:|-----|:--------:|:------:|
 | V3.1-1 | Governor | Exempt hedges (TMF/PSQ) from morning GOVERNOR_SHUTDOWN | P0 | ✅ DONE |
 | V3.1-2 | Governor | Add equity recovery path from Governor 0% (3% recovery → 50%) | P0 | ✅ DONE |
+
+### V3.2 Fixes (Options-Macro Regime Alignment)
+
+> **Branch:** `feature/va/v3.2-macro-regime-gate`
+> **Commit:** `f5c5ad6`
+> **Docs:** `docs/audits/P0_OPTIONS_MACRO_REGIME_GATE_IMPLEMENTATION_PLAN.md`
+
+**Problem:** Options engine had independent regime logic that conflicted with macro regime:
+- PROTECTIVE_PUTS existed as enum but returned `None` (never executed)
+- Intraday options had no Governor check (gap in protection)
+- Options could enter CALLs in NEUTRAL/CAUTIOUS regimes (misaligned with macro thesis)
+
+| ID | Area | Fix | Priority | Status |
+|:--:|:----:|-----|:--------:|:------:|
+| V3.2-1 | Options | Macro Regime Gate: BULL=all, NEUTRAL=PUT@50%, BEAR=PUT@100% | P0 | ✅ DONE |
+| V3.2-2 | Options | Intraday Governor Gate: Block CALL at Governor 0%, allow PUT | P0 | ✅ DONE |
+| V3.2-3 | Options | Implement PROTECTIVE_PUTS (was returning None, now buys PUTs in crisis) | P0 | ✅ DONE |
+| V3.2-4 | Options | Sizing Stack: Multiply all factors (Governor × Macro × ColdStart × Micro) | P1 | ✅ DONE |
+
+**Config Additions:**
+- `OPTIONS_MACRO_REGIME_GATE_ENABLED = True`
+- `OPTIONS_NEUTRAL_ZONE_SIZE_MULT = 0.50`
+- `OPTIONS_MIN_COMBINED_SIZE_PCT = 0.10`
+- `INTRADAY_GOVERNOR_GATE_ENABLED = True`
+- `PROTECTIVE_PUTS_ENABLED = True` (with DTE/delta/sizing params)
+
+**Files Changed:** `config.py`, `engines/satellite/options_engine.py`, `main.py`, `tests/test_options_engine.py`
+
+**Tests:** 1340 passed ✅
 
 ### Fix Details
 

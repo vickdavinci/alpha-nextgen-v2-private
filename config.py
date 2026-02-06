@@ -1215,7 +1215,7 @@ INTRADAY_GOVERNOR_GATE_ENABLED = True
 # When Micro Regime detects crisis (score < 0), buy protective PUTs
 # This supplements TMF/PSQ hedging with direct options protection
 PROTECTIVE_PUTS_ENABLED = True
-PROTECTIVE_PUTS_SIZE_PCT = 0.02  # 2% of portfolio (small, insurance)
+PROTECTIVE_PUTS_SIZE_PCT = 0.05  # 5% of portfolio (meaningful crisis protection)
 PROTECTIVE_PUTS_DTE_MIN = 3  # Minimum 3 DTE (time for recovery)
 PROTECTIVE_PUTS_DTE_MAX = 7  # Maximum 7 DTE (balance cost vs protection)
 PROTECTIVE_PUTS_DELTA_TARGET = 0.30  # OTM puts (cheaper, more leverage)
