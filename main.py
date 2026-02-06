@@ -3234,41 +3234,64 @@ class AlphaNextGen(QCAlgorithm):
                 short_qty = signal.metadata.get("spread_short_leg_quantity", 0)
                 short_symbol = signal.metadata.get("spread_short_leg_symbol", "")
 
-                # V2.33: Conservative spread margin estimate (CRITICAL FIX)
-                # V2.32's 2× safety was too low — broker uses delta-based margin which can be
-                # 3× or more. Use 6× safety factor to account for:
-                # - Delta margin variation with strike proximity
-                # - Total portfolio margin (not just incremental)
-                # - VIX-driven margin increases during volatility
+                # V3.5: Balanced spread margin estimate (P1-1 FIX)
+                # V2.33's 6× safety was too conservative — blocked PUT entries even when
+                # regime correctly detected bear market. Use 4× safety factor:
+                # - Still accounts for delta margin variation
+                # - Still accounts for VIX-driven margin increases
+                # - But allows defensive PUT spreads during drawdowns
                 spread_width = signal.metadata.get("spread_width", config.SPREAD_WIDTH_TARGET)
                 margin_per_contract = (
-                    spread_width * 100 * 6
-                )  # $5 width = $3,000/contract (6× safety)
+                    spread_width * 100 * 4
+                )  # $5 width = $2,000/contract (4× safety)
                 required_margin = abs(short_qty) * margin_per_contract
 
                 # Get current free margin
                 free_margin = self.Portfolio.MarginRemaining
 
-                # V2.33: Additional safeguard — require at least 20% of equity to remain free
-                # This prevents over-leveraging even if individual spread check passes
+                # V3.5: Balanced safeguard — require at least 10% of equity to remain free (P1-3)
+                # Reduced from 20% to allow defensive PUT spreads during drawdowns
+                # Still prevents over-leveraging while allowing hedges to execute
                 total_equity = self.Portfolio.TotalPortfolioValue
-                min_free_margin = total_equity * 0.20  # Keep 20% cushion
+                min_free_margin = total_equity * 0.10  # Keep 10% cushion (was 20%)
                 effective_free_margin = max(0, free_margin - min_free_margin)
 
                 if required_margin > effective_free_margin:
-                    self.Log(
-                        f"SPREAD: BLOCKED - Insufficient margin | "
-                        f"Required=${required_margin:,.0f} | Effective Free=${effective_free_margin:,.0f} | "
-                        f"(Actual Free=${free_margin:,.0f} - 20% cushion=${min_free_margin:,.0f}) | "
-                        f"Width=${spread_width} x{short_qty} contracts"
-                    )
-                    # Skip this spread - don't submit orphaned long leg
-                    return
+                    # V3.5 P1-2: Margin-aware sizing - size down instead of blocking entirely
+                    max_contracts_by_margin = int(effective_free_margin / margin_per_contract)
 
-                self.Log(
-                    f"SPREAD: Margin check passed | Required=${required_margin:,.0f} | "
-                    f"Effective Free=${effective_free_margin:,.0f} | Equity=${total_equity:,.0f}"
-                )
+                    if max_contracts_by_margin >= 1:
+                        # Can fit at least 1 contract - reduce size and proceed
+                        original_qty = abs(short_qty)
+                        short_qty = -max_contracts_by_margin  # Negative for short
+                        required_margin = max_contracts_by_margin * margin_per_contract
+
+                        # Update signal metadata with reduced quantities
+                        signal.metadata["spread_short_leg_quantity"] = short_qty
+                        signal.metadata["spread_long_leg_quantity"] = max_contracts_by_margin
+                        signal.metadata["contracts"] = max_contracts_by_margin
+
+                        self.Log(
+                            f"SPREAD: MARGIN-SIZED DOWN | "
+                            f"Requested={original_qty} → Actual={max_contracts_by_margin} contracts | "
+                            f"Required=${required_margin:,.0f} | Effective Free=${effective_free_margin:,.0f} | "
+                            f"Width=${spread_width}"
+                        )
+                    else:
+                        # Can't fit even 1 contract - must block
+                        self.Log(
+                            f"SPREAD: BLOCKED - Insufficient margin for even 1 contract | "
+                            f"Required=${margin_per_contract:,.0f}/contract | "
+                            f"Effective Free=${effective_free_margin:,.0f} | "
+                            f"(Actual Free=${free_margin:,.0f} - 10% cushion=${min_free_margin:,.0f}) | "
+                            f"Width=${spread_width} x{abs(short_qty)} contracts requested"
+                        )
+                        return
+                else:
+                    self.Log(
+                        f"SPREAD: Margin check passed | Required=${required_margin:,.0f} | "
+                        f"Effective Free=${effective_free_margin:,.0f} | Equity=${total_equity:,.0f}"
+                    )
 
                 # V2.3.6: Track spread order pair for failure handling
                 # Map short leg symbol -> long leg symbol (and reverse for Bug #5 fix)

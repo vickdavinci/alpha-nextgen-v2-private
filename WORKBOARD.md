@@ -193,6 +193,39 @@
 
 **Tests:** 1340 passed ✅
 
+### V3.6 Fixes (Margin Optimization for PUT Entries)
+
+> **Branch:** `feature/va/v3.0-hardening`
+> **Audit:** `docs/audits/V3_5_2022H1_Regime_Audit.md`
+> **Problem:** 2022 H1 backtest PUT signals blocked by over-conservative margin check
+
+**Root Cause:** Even after V3.5 dead zone fix, PUT signals generated but BLOCKED by margin:
+- 6× safety factor required $48K margin for $4 spread × 20 contracts
+- 20% equity cushion left only $35K available
+- Result: PUT signals fired correctly but couldn't execute
+
+| ID | Area | Fix | Priority | Status |
+|:--:|:----:|-----|:--------:|:------:|
+| V3.6-1 | Margin | Reduce safety factor from 6× to 4× | P1 | ✅ DONE |
+| V3.6-2 | Margin | Add margin-aware sizing (size down vs block) | P1 | ✅ DONE |
+| V3.6-3 | Margin | Reduce equity cushion from 20% to 10% | P1 | ✅ DONE |
+
+**Before:**
+```
+Required=$48,000 | Effective Free=$35,072 | → BLOCKED
+```
+
+**After (V3.6):**
+```
+- 4× safety: $4 × 100 × 4 = $1,600/contract (was $2,400)
+- 10% cushion: ~$39K available (was ~$35K)
+- If still insufficient: Size down to max contracts that fit (instead of block)
+```
+
+**Files Changed:** `main.py` (margin calculation + margin-aware sizing)
+
+**Tests:** 1340 passed ✅
+
 ### Fix Details
 
 #### V3-1 & V3-2: EOD_LOCK Exemption (P0)
