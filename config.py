@@ -1186,6 +1186,43 @@ GRIND_UP_MIN_MOVE = 0.50  # Minimum QQQ move to trigger override (0.50% = UP_STR
 GRIND_UP_MACRO_SAFE_MIN = 40  # Macro regime score must be > 40 to avoid bear traps
 
 # -----------------------------------------------------------------------------
+# V3.2: OPTIONS MACRO REGIME GATE
+# -----------------------------------------------------------------------------
+# Enforces investment thesis: aligns options direction with macro regime
+# - BULL (70+): All directions allowed, full sizing
+# - NEUTRAL (50-69): PUT-only at reduced sizing (not a dead zone)
+# - CAUTIOUS/BEAR (<50): PUT-only at full sizing
+OPTIONS_MACRO_REGIME_GATE_ENABLED = True
+
+# Sizing multiplier for NEUTRAL regime (50-69)
+# PUT-only allowed, at reduced sizing to manage uncertainty
+OPTIONS_NEUTRAL_ZONE_SIZE_MULT = 0.50  # 50% sizing in NEUTRAL
+
+# Minimum combined size multiplier to proceed with trade
+# If Governor × MacroGate × ColdStart < this, skip trade (too small)
+OPTIONS_MIN_COMBINED_SIZE_PCT = 0.10  # 10% minimum
+
+# -----------------------------------------------------------------------------
+# V3.2: INTRADAY GOVERNOR GATE
+# -----------------------------------------------------------------------------
+# Closes gap: intraday options previously had no Governor check
+# At Governor 0%: CALL blocked, PUT allowed (defensive)
+INTRADAY_GOVERNOR_GATE_ENABLED = True
+
+# -----------------------------------------------------------------------------
+# V3.2: PROTECTIVE PUTS (Crisis Hedge via PUT Options)
+# -----------------------------------------------------------------------------
+# When Micro Regime detects crisis (score < 0), buy protective PUTs
+# This supplements TMF/PSQ hedging with direct options protection
+PROTECTIVE_PUTS_ENABLED = True
+PROTECTIVE_PUTS_SIZE_PCT = 0.02  # 2% of portfolio (small, insurance)
+PROTECTIVE_PUTS_DTE_MIN = 3  # Minimum 3 DTE (time for recovery)
+PROTECTIVE_PUTS_DTE_MAX = 7  # Maximum 7 DTE (balance cost vs protection)
+PROTECTIVE_PUTS_DELTA_TARGET = 0.30  # OTM puts (cheaper, more leverage)
+PROTECTIVE_PUTS_DELTA_TOLERANCE = 0.10  # Accept delta 0.20-0.40
+PROTECTIVE_PUTS_STOP_PCT = 0.50  # 50% stop (it's insurance, accept loss)
+
+# -----------------------------------------------------------------------------
 # V2.1.1 SWING MODE SIMPLE FILTERS
 # -----------------------------------------------------------------------------
 # For Swing Mode (5+ DTE), use simple filters instead of Micro Regime

@@ -2339,6 +2339,67 @@ class OptionsEngine:
             return None
 
     # =========================================================================
+    # V3.2: MACRO REGIME GATE
+    # =========================================================================
+
+    def _check_macro_regime_gate(
+        self,
+        macro_regime_score: float,
+        requested_direction: OptionDirection,
+        mode: OptionsMode,
+    ) -> Tuple[bool, float, str]:
+        """
+        V3.2: Enforce macro regime constraints on all options entries.
+
+        Investment Thesis:
+        - BULL (70+): All directions allowed, full sizing
+        - NEUTRAL (50-69): PUT-only at 50% sizing
+        - CAUTIOUS/DEFENSIVE/BEAR (<50): PUT-only, full sizing
+
+        Args:
+            macro_regime_score: Daily regime score (0-100).
+            requested_direction: CALL or PUT.
+            mode: SWING or INTRADAY.
+
+        Returns:
+            Tuple of (allowed: bool, size_multiplier: float, reason: str)
+        """
+        if not getattr(config, "OPTIONS_MACRO_REGIME_GATE_ENABLED", True):
+            return True, 1.0, ""
+
+        mode_str = mode.value if mode else "UNKNOWN"
+
+        # BULL regime (70+): All directions allowed, full sizing
+        if macro_regime_score >= config.REGIME_RISK_ON:
+            return True, 1.0, ""
+
+        # NEUTRAL regime (50-69): PUT-only at reduced sizing
+        if macro_regime_score >= config.REGIME_NEUTRAL:
+            neutral_mult = getattr(config, "OPTIONS_NEUTRAL_ZONE_SIZE_MULT", 0.50)
+            if requested_direction == OptionDirection.CALL:
+                return (
+                    False,
+                    0.0,
+                    f"MACRO_GATE: {mode_str} CALL blocked in NEUTRAL ({macro_regime_score:.0f})",
+                )
+            else:
+                return (
+                    True,
+                    neutral_mult,
+                    f"MACRO_GATE: {mode_str} PUT allowed in NEUTRAL @ {neutral_mult:.0%}",
+                )
+
+        # CAUTIOUS/DEFENSIVE/BEAR (<50): PUT-only, full sizing
+        if requested_direction == OptionDirection.PUT:
+            return True, 1.0, ""
+        else:
+            return (
+                False,
+                0.0,
+                f"MACRO_GATE: {mode_str} CALL blocked - regime {macro_regime_score:.0f} < 50",
+            )
+
+    # =========================================================================
     # ENTRY SIGNAL
     # =========================================================================
 
@@ -2396,11 +2457,6 @@ class OptionsEngine:
         if not self._can_trade_options(OptionsMode.SWING):
             return None
 
-        # GAP #1 FIX: Check regime score (must be >= 40 per V2.1 spec)
-        if regime_score < 40:
-            self.log(f"OPT: Entry blocked - regime score {regime_score:.1f} < 40 (RISK_OFF)")
-            return None
-
         # Check safeguards
         if gap_filter_triggered:
             self.log("OPT: Entry blocked - gap filter active")
@@ -2416,6 +2472,17 @@ class OptionsEngine:
 
         # Check if we have a valid contract
         if best_contract is None:
+            return None
+
+        # V3.2: Macro Regime Gate - enforce investment thesis
+        contract_direction = best_contract.direction
+        gate_allowed, gate_mult, gate_reason = self._check_macro_regime_gate(
+            macro_regime_score=regime_score,
+            requested_direction=contract_direction,
+            mode=OptionsMode.SWING,
+        )
+        if not gate_allowed:
+            self.log(gate_reason)
             return None
 
         # GAP #3 FIX: Minimum premium validation ($0.50 per spec)
@@ -2528,11 +2595,20 @@ class OptionsEngine:
             days_to_expiry=best_contract.days_to_expiry,
         )
 
-        # V2.3.20: Apply cold start size multiplier
-        if size_multiplier < 1.0:
-            num_contracts = max(1, int(num_contracts * size_multiplier))
+        # V3.2: Apply combined multipliers (cold start × macro gate)
+        combined_mult = size_multiplier * gate_mult
+        min_combined = getattr(config, "OPTIONS_MIN_COMBINED_SIZE_PCT", 0.10)
+        if combined_mult < min_combined:
             self.log(
-                f"OPT: Cold start sizing - reduced to {num_contracts} contracts (×{size_multiplier})"
+                f"OPT: Entry blocked - combined size {combined_mult:.0%} < min {min_combined:.0%}"
+            )
+            return None
+
+        if combined_mult < 1.0:
+            num_contracts = max(1, int(num_contracts * combined_mult))
+            self.log(
+                f"OPT: Sizing reduced to {num_contracts} contracts (×{combined_mult:.0%} = "
+                f"cold_start {size_multiplier:.0%} × macro_gate {gate_mult:.0%})"
             )
 
         if num_contracts <= 0:
@@ -2697,23 +2773,29 @@ class OptionsEngine:
             )
             return None
 
-        if config.SPREAD_REGIME_BEARISH <= regime_score <= config.SPREAD_REGIME_BULLISH:
-            # Neutral regime (45-60): NO TRADE
-            self.log(
-                f"SPREAD: No entry - regime {regime_score:.1f} is neutral "
-                f"({config.SPREAD_REGIME_BEARISH}-{config.SPREAD_REGIME_BULLISH})"
-            )
-            return None
-
-        # Determine spread type and direction
-        if regime_score > config.SPREAD_REGIME_BULLISH:
+        # V3.2: Determine spread type and direction, then apply macro gate
+        # BULL (70+): CALL spreads allowed
+        # NEUTRAL (50-69): PUT spreads only @ reduced sizing
+        # CAUTIOUS/BEAR (<50): PUT spreads only
+        if regime_score >= config.SPREAD_REGIME_BULLISH:
             spread_type = "BULL_CALL"
             direction = OptionDirection.CALL
             vix_max = config.SPREAD_VIX_MAX_BULL
-        else:  # regime_score < config.SPREAD_REGIME_BEARISH
+        else:
             spread_type = "BEAR_PUT"
             direction = OptionDirection.PUT
             vix_max = config.SPREAD_VIX_MAX_BEAR
+
+        # V3.2: Apply macro regime gate
+        gate_allowed, gate_mult, gate_reason = self._check_macro_regime_gate(
+            macro_regime_score=regime_score,
+            requested_direction=direction,
+            mode=OptionsMode.SWING,
+        )
+        if not gate_allowed:
+            self.log(gate_reason)
+            return None
+        # gate_mult will be applied to sizing later
 
         # VIX filter
         if vix_current > vix_max:
@@ -2896,6 +2978,24 @@ class OptionsEngine:
             self.log(
                 f"WIN_RATE_GATE: REDUCED | Scale={win_rate_scale:.0%} | "
                 f"{num_spreads} -> {scaled} spreads",
+                trades_only=True,
+            )
+            num_spreads = scaled
+
+        # V3.2: Apply combined multipliers (cold start × macro gate)
+        combined_mult = size_multiplier * gate_mult
+        min_combined = getattr(config, "OPTIONS_MIN_COMBINED_SIZE_PCT", 0.10)
+        if combined_mult < min_combined:
+            self.log(
+                f"SPREAD: Entry blocked - combined size {combined_mult:.0%} < min {min_combined:.0%}"
+            )
+            return None
+
+        if combined_mult < 1.0:
+            scaled = max(1, int(num_spreads * combined_mult))
+            self.log(
+                f"SPREAD: Sizing reduced | {num_spreads} -> {scaled} spreads | "
+                f"Combined={combined_mult:.0%} (cold_start {size_multiplier:.0%} × macro_gate {gate_mult:.0%})",
                 trades_only=True,
             )
             num_spreads = scaled
@@ -3126,13 +3226,27 @@ class OptionsEngine:
             )
             return None
 
-        # Neutral regime check
-        if config.SPREAD_REGIME_BEARISH <= regime_score <= config.SPREAD_REGIME_BULLISH:
-            self.log(
-                f"CREDIT_SPREAD: No entry - regime {regime_score:.1f} is neutral "
-                f"({config.SPREAD_REGIME_BEARISH}-{config.SPREAD_REGIME_BULLISH})"
-            )
+        # V3.2: Determine direction from strategy for macro gate
+        # BULL_PUT_CREDIT → collecting PUT premium (bullish view, PUT direction)
+        # BEAR_CALL_CREDIT → collecting CALL premium (bearish view, CALL direction)
+        if strategy == SpreadStrategy.BULL_PUT_CREDIT:
+            gate_direction = OptionDirection.PUT
+        elif strategy == SpreadStrategy.BEAR_CALL_CREDIT:
+            gate_direction = OptionDirection.CALL
+        else:
+            # Unknown strategy, determine from regime
+            gate_direction = OptionDirection.CALL if regime_score >= 70 else OptionDirection.PUT
+
+        # V3.2: Apply macro regime gate
+        gate_allowed, gate_mult, gate_reason = self._check_macro_regime_gate(
+            macro_regime_score=regime_score,
+            requested_direction=gate_direction,
+            mode=OptionsMode.SWING,
+        )
+        if not gate_allowed:
+            self.log(gate_reason)
             return None
+        # gate_mult will be applied to sizing later
 
         # Check safeguards
         if gap_filter_triggered:
@@ -3220,6 +3334,24 @@ class OptionsEngine:
             self.log(
                 f"WIN_RATE_GATE: CREDIT REDUCED | Scale={win_rate_scale:.0%} | "
                 f"{num_spreads} -> {scaled} spreads",
+                trades_only=True,
+            )
+            num_spreads = scaled
+
+        # V3.2: Apply combined multipliers (cold start × macro gate)
+        combined_mult = size_multiplier * gate_mult
+        min_combined = getattr(config, "OPTIONS_MIN_COMBINED_SIZE_PCT", 0.10)
+        if combined_mult < min_combined:
+            self.log(
+                f"CREDIT_SPREAD: Entry blocked - combined size {combined_mult:.0%} < min {min_combined:.0%}"
+            )
+            return None
+
+        if combined_mult < 1.0:
+            scaled = max(1, int(num_spreads * combined_mult))
+            self.log(
+                f"CREDIT_SPREAD: Sizing reduced | {num_spreads} -> {scaled} spreads | "
+                f"Combined={combined_mult:.0%} (cold_start {size_multiplier:.0%} × macro_gate {gate_mult:.0%})",
                 trades_only=True,
             )
             num_spreads = scaled
@@ -4180,6 +4312,7 @@ class OptionsEngine:
         best_contract: Optional[OptionContract] = None,
         size_multiplier: float = 1.0,
         macro_regime_score: float = 50.0,
+        governor_scale: float = 1.0,
     ) -> Optional[TargetWeight]:
         """
         Check for intraday mode entry signal using Micro Regime Engine.
@@ -4187,6 +4320,7 @@ class OptionsEngine:
         V2.1.1: Uses VIX Level × VIX Direction = 21 trading regimes.
         V2.3.20: Added size_multiplier for cold start reduced sizing.
         V2.5: Added macro_regime_score for Grind-Up Override logic.
+        V3.2: Added governor_scale for intraday Governor gate.
 
         Args:
             vix_current: Current VIX value.
@@ -4201,6 +4335,7 @@ class OptionsEngine:
             size_multiplier: Position size multiplier (default 1.0). V2.3.20: Set to 0.5
                 during cold start to reduce risk.
             macro_regime_score: Macro regime score (0-100) for Grind-Up Override. V2.5.
+            governor_scale: Governor scaling (0-1). V3.2: At 0%, CALL blocked, PUT allowed.
 
         Returns:
             TargetWeight for intraday entry, or None.
@@ -4228,16 +4363,70 @@ class OptionsEngine:
         if state.recommended_strategy == IntradayStrategy.NO_TRADE:
             return None
 
-        # Check if strategy is PROTECTIVE_PUTS (hedge, not directional)
+        # V3.2: Check if strategy is PROTECTIVE_PUTS (crisis hedge)
         if state.recommended_strategy == IntradayStrategy.PROTECTIVE_PUTS:
-            self.log(f"INTRADAY: Protective mode - regime={state.micro_regime.value}")
-            return None  # Would emit hedge signal separately
+            # V3.2: Actually implement protective puts (was previously just returning None)
+            if not getattr(config, "PROTECTIVE_PUTS_ENABLED", True):
+                self.log(
+                    f"INTRADAY: Protective mode (disabled) - regime={state.micro_regime.value}"
+                )
+                return None
 
-        # V2.3.4: Use direction from state (determined by recommend_strategy_and_direction)
-        direction = state.recommended_direction
-        if direction is None:
-            self.log(f"INTRADAY: No direction recommended for {state.recommended_strategy.value}")
-            return None
+            # Force direction to PUT for protection
+            direction = OptionDirection.PUT
+
+            # Protective puts bypass macro gate (defensive by definition)
+            # But still respect Governor scaling
+            protective_size_pct = getattr(config, "PROTECTIVE_PUTS_SIZE_PCT", 0.02)
+            effective_size_pct = protective_size_pct * governor_scale
+
+            if effective_size_pct < 0.005:  # Less than 0.5% = not worth it
+                self.log(
+                    f"INTRADAY: Protective PUT size too small ({effective_size_pct:.1%}) "
+                    f"| Governor={governor_scale:.0%}"
+                )
+                return None
+
+            self.log(
+                f"PROTECTIVE_PUT: Crisis detected | Micro={state.micro_regime.value} | "
+                f"Score={state.micro_score:.0f} | Size={effective_size_pct:.1%}",
+                trades_only=True,
+            )
+
+            # Continue to contract selection with protective sizing
+            # Will be handled below with special sizing path
+            is_protective_put = True
+        else:
+            is_protective_put = False
+            # V2.3.4: Use direction from state (determined by recommend_strategy_and_direction)
+            direction = state.recommended_direction
+            if direction is None:
+                self.log(
+                    f"INTRADAY: No direction recommended for {state.recommended_strategy.value}"
+                )
+                return None
+
+        # V3.2: Governor Gate for intraday (closes gap)
+        if getattr(config, "INTRADAY_GOVERNOR_GATE_ENABLED", True) and not is_protective_put:
+            if governor_scale <= 0:
+                if direction == OptionDirection.CALL:
+                    self.log("INTRADAY: CALL blocked at Governor 0%")
+                    return None
+                # PUT allowed at Governor 0% (reduces risk)
+                self.log("INTRADAY: PUT allowed at Governor 0% (defensive)", trades_only=True)
+
+        # V3.2: Macro Regime Gate for intraday (skip for protective puts)
+        if not is_protective_put:
+            gate_allowed, gate_mult, gate_reason = self._check_macro_regime_gate(
+                macro_regime_score=macro_regime_score,
+                requested_direction=direction,
+                mode=OptionsMode.INTRADAY,
+            )
+            if not gate_allowed:
+                self.log(gate_reason)
+                return None
+        else:
+            gate_mult = 1.0  # Protective puts bypass macro gate
 
         # Map strategy to name for logging
         strategy_names = {
@@ -4295,21 +4484,42 @@ class OptionsEngine:
         # V2.18: Use sizing cap (Fix for MarginBuyingPower sizing bug)
         # V3.0 SCALABILITY FIX: Use percentage-based cap instead of hardcoded dollars
         # At $50K: 8% = $4,000, at $200K: 8% = $16,000 (scales with portfolio)
-        portfolio_value = self.algorithm.Portfolio.TotalPortfolioValue if self.algorithm else 50000
-        intraday_max_pct = getattr(config, "INTRADAY_SPREAD_MAX_PCT", 0.08)
-        intraday_max_dollars = portfolio_value * intraday_max_pct
+        portfolio_value_for_sizing = (
+            self.algorithm.Portfolio.TotalPortfolioValue if self.algorithm else 50000
+        )
 
-        # Adjust size based on micro score
-        if state.micro_score >= config.MICRO_SCORE_PRIME_MR:
-            size_mult = 1.0  # Full size
-        elif state.micro_score >= config.MICRO_SCORE_GOOD_MR:
-            size_mult = 1.0  # Full size
-        elif state.micro_score >= config.MICRO_SCORE_MODERATE:
-            size_mult = 0.5  # Half size
+        # V3.2: Protective puts use fixed sizing, regular intraday uses score-based
+        if is_protective_put:
+            # Protective puts: fixed percentage, already scaled by Governor
+            protective_size_pct = getattr(config, "PROTECTIVE_PUTS_SIZE_PCT", 0.02)
+            effective_size_pct = protective_size_pct * governor_scale
+            adjusted_cap = portfolio_value_for_sizing * effective_size_pct
+            size_mult = 1.0  # Already factored in above
         else:
-            size_mult = 0.5  # Half size
+            intraday_max_pct = getattr(config, "INTRADAY_SPREAD_MAX_PCT", 0.08)
+            intraday_max_dollars = portfolio_value_for_sizing * intraday_max_pct
 
-        adjusted_cap = intraday_max_dollars * size_mult
+            # Adjust size based on micro score
+            if state.micro_score >= config.MICRO_SCORE_PRIME_MR:
+                micro_mult = 1.0  # Full size
+            elif state.micro_score >= config.MICRO_SCORE_GOOD_MR:
+                micro_mult = 1.0  # Full size
+            elif state.micro_score >= config.MICRO_SCORE_MODERATE:
+                micro_mult = 0.5  # Half size
+            else:
+                micro_mult = 0.5  # Half size
+
+            # V3.2: Apply combined multipliers (cold_start × governor × macro_gate × micro)
+            combined_mult = size_multiplier * governor_scale * gate_mult * micro_mult
+            min_combined = getattr(config, "OPTIONS_MIN_COMBINED_SIZE_PCT", 0.10)
+            if combined_mult < min_combined:
+                self.log(
+                    f"INTRADAY: Entry blocked - combined size {combined_mult:.0%} < min {min_combined:.0%}"
+                )
+                return None
+
+            adjusted_cap = intraday_max_dollars * combined_mult
+            size_mult = micro_mult  # For logging compatibility
         premium = best_contract.mid_price
         if premium <= 0:
             self.log("INTRADAY: Entry blocked - invalid premium price")

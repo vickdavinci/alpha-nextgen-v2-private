@@ -386,6 +386,7 @@ class TestEntrySignals:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=75.0,  # V3.2: BULL regime required for CALL entries
         )
         assert result is not None
         assert result.source == "OPT"
@@ -517,6 +518,7 @@ class TestEntrySignals:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=75.0,  # V3.2: BULL regime required for CALL entries
         )
         assert result is not None
 
@@ -537,6 +539,7 @@ class TestEntrySignals:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=75.0,  # V3.2: BULL regime required for CALL entries
         )
         assert result is None
 
@@ -556,35 +559,51 @@ class TestEntrySignals:
         )
         assert result is None
 
-    def test_entry_allowed_regime_at_40(self, engine, sample_contract):
-        """Test entry allowed when regime score = 40 (boundary)."""
+    def test_call_blocked_regime_at_40(self, engine, sample_contract):
+        """V3.2: CALL blocked when regime = 40 (CAUTIOUS - PUT only)."""
         result = engine.check_entry_signal(
             adx_value=30.0,
             current_price=105.0,
             ma200_value=100.0,
             iv_rank=50.0,
-            best_contract=sample_contract,
+            best_contract=sample_contract,  # CALL contract
             current_hour=10,
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
-            regime_score=40.0,  # At threshold
+            regime_score=40.0,  # CAUTIOUS - CALL blocked
         )
-        assert result is not None
+        assert result is None  # V3.2: CALL blocked below regime 70
 
-    def test_entry_allowed_regime_above_40(self, engine, sample_contract):
-        """Test entry allowed when regime score > 40."""
+    def test_call_blocked_regime_neutral(self, engine, sample_contract):
+        """V3.2: CALL blocked when regime = 65 (NEUTRAL - PUT only)."""
         result = engine.check_entry_signal(
             adx_value=30.0,
             current_price=105.0,
             ma200_value=100.0,
             iv_rank=50.0,
-            best_contract=sample_contract,
+            best_contract=sample_contract,  # CALL contract
             current_hour=10,
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
-            regime_score=65.0,  # Above threshold
+            regime_score=65.0,  # NEUTRAL - CALL blocked
+        )
+        assert result is None  # V3.2: CALL blocked below regime 70
+
+    def test_call_allowed_regime_bull(self, engine, sample_contract):
+        """V3.2: CALL allowed when regime >= 70 (BULL)."""
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=105.0,
+            ma200_value=100.0,
+            iv_rank=50.0,
+            best_contract=sample_contract,  # CALL contract
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+            regime_score=75.0,  # BULL - CALL allowed
         )
         assert result is not None
 
@@ -644,6 +663,7 @@ class TestEntrySignals:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=75.0,  # V3.2: BULL regime required for CALL entries
         )
         assert result is not None
 
@@ -1153,6 +1173,7 @@ class TestDTEDeltaFiltering:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=75.0,  # V3.2: BULL regime required for CALL entries
         )
         # DTE=0 is within allowed range (0-45), so entry is allowed
         assert result is not None
@@ -1196,6 +1217,7 @@ class TestDTEDeltaFiltering:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=75.0,  # V3.2: BULL regime required for CALL entries
         )
         assert result is not None
 
@@ -1213,6 +1235,7 @@ class TestDTEDeltaFiltering:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=75.0,  # V3.2: BULL regime required for CALL entries
         )
         assert result is not None
 
@@ -1280,6 +1303,7 @@ class TestDTEDeltaFiltering:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=75.0,  # V3.2: BULL regime required for CALL entries
         )
         assert result is not None
 
@@ -1297,6 +1321,7 @@ class TestDTEDeltaFiltering:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=75.0,  # V3.2: BULL regime required for CALL entries
         )
         assert result is not None
 
@@ -1315,6 +1340,7 @@ class TestDTEDeltaFiltering:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=35.0,  # V3.2: PUT allowed in BEAR regime
         )
         assert result is not None  # Should allow since abs(-0.50) = 0.50 is valid
 
@@ -2993,14 +3019,16 @@ class TestVASSCreditSpreadEntry:
         assert max_loss_per > 0  # Defined max loss
         assert total_margin <= 7500  # Never exceeds allocation
 
-    def test_credit_entry_blocked_dead_zone(self, engine, credit_short_leg, credit_long_leg):
-        """V3.0: Credit spread should be blocked in dead zone (50-70).
+    def test_credit_put_allowed_neutral_reduced_sizing(
+        self, engine, credit_short_leg, credit_long_leg
+    ):
+        """V3.2: PUT credit spread allowed in NEUTRAL (50-69) at 50% sizing.
 
-        V3.0 thesis: PUT spreads only allowed when regime < 50.
-        Regime 50-70 is the "dead zone" where no options are allowed.
+        V3.2 thesis: NEUTRAL zone allows PUT-only at reduced sizing, not blocked.
+        BULL_PUT_CREDIT is PUT direction, so allowed at 50% sizing.
         """
         signal = engine.check_credit_spread_entry_signal(
-            regime_score=60.0,  # V3.0: Dead zone (50-70) - no options allowed
+            regime_score=60.0,  # V3.2: NEUTRAL (50-69) - PUT allowed at 50% sizing
             vix_current=28.0,
             adx_value=30.0,
             current_price=510.0,
@@ -3015,7 +3043,9 @@ class TestVASSCreditSpreadEntry:
             strategy=SpreadStrategy.BULL_PUT_CREDIT,
         )
 
-        assert signal is None
+        # V3.2: PUT allowed in NEUTRAL at reduced sizing
+        assert signal is not None
+        assert "BULL_PUT_CREDIT" in signal.reason
 
     # --- IVSensor Tests ---
 

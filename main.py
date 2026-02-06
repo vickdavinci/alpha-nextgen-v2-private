@@ -4482,6 +4482,7 @@ class AlphaNextGen(QCAlgorithm):
                 # V2.5: Pass macro_regime_score for Grind-Up Override
                 # V2.7: Use tradeable equity (not total portfolio) for cash-only sizing
                 # V2.11: Use margin-capped effective_portfolio_value (Pitfall #6)
+                # V3.2: Pass governor_scale for intraday Governor gate
                 intraday_signal = self.options_engine.check_intraday_entry_signal(
                     vix_current=vix_intraday,  # V2.4.1: UVXY proxy
                     vix_open=self._vix_at_open,
@@ -4494,6 +4495,7 @@ class AlphaNextGen(QCAlgorithm):
                     best_contract=intraday_contract,
                     size_multiplier=size_multiplier,
                     macro_regime_score=self._last_regime_score,
+                    governor_scale=self._governor_scale,  # V3.2: Intraday Governor gate
                 )
                 if intraday_signal:
                     self.portfolio_router.receive_signal(intraday_signal)
