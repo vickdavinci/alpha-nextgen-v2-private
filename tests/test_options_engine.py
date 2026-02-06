@@ -587,9 +587,9 @@ class TestEntrySignals:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
-            regime_score=65.0,  # NEUTRAL - CALL blocked
+            regime_score=55.0,  # V3.4: Lower NEUTRAL (50-59) - CALL blocked
         )
-        assert result is None  # V3.2: CALL blocked below regime 70
+        assert result is None  # V3.4: CALL blocked in lower NEUTRAL (50-59)
 
     def test_call_allowed_regime_bull(self, engine, sample_contract):
         """V3.2: CALL allowed when regime >= 70 (BULL)."""
@@ -2753,7 +2753,7 @@ class TestNeutralityExit:
         result = engine.check_spread_exit_signals(
             long_leg_price=long_price,
             short_leg_price=short_price,
-            regime_score=65.0,  # Outside dead zone — bullish conviction
+            regime_score=70.0,  # V3.4: Outside dead zone (45-65) — bullish conviction
             current_dte=15,
         )
 

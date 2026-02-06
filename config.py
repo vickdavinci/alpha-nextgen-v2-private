@@ -913,13 +913,16 @@ WIN_RATE_SHUTOFF_THRESHOLD = 0.20  # Below 20%: STOP all new spread entries
 WIN_RATE_RESTART_THRESHOLD = 0.35  # Resume when paper win rate recovers to 35%
 WIN_RATE_SIZING_REDUCED = 0.75  # Multiplier at REDUCED level
 WIN_RATE_SIZING_MINIMUM = 0.50  # Multiplier at MINIMUM level
-SPREAD_REGIME_EXIT_BULL = 45  # Exit Bull Call if regime drops below 45
+SPREAD_REGIME_EXIT_BULL = 60  # V3.3: Tightened from 45 to 60 (10-point gap, not 25)
 SPREAD_REGIME_EXIT_BEAR = 60  # Exit Bear Put if regime rises above 60
 
 # V2.22: Neutrality Exit (Hysteresis Shield)
-# Close flat spreads when regime enters dead zone (45-60) — no directional edge
+# Close flat spreads when regime enters dead zone — no directional edge
+# V3.4: Separate neutrality zone from exit thresholds (allows tight exits + wide neutrality)
 SPREAD_NEUTRALITY_EXIT_ENABLED = True
 SPREAD_NEUTRALITY_EXIT_PNL_BAND = 0.10  # ±10% P&L considered "flat"
+SPREAD_NEUTRALITY_ZONE_LOW = 45  # Neutrality zone lower bound (below this = bearish)
+SPREAD_NEUTRALITY_ZONE_HIGH = 65  # Neutrality zone upper bound (above this = bullish)
 
 # V2.16-BT: Commission-aware profit targets
 # Round-trip commission estimate per spread (entry + exit, both legs)
@@ -1248,6 +1251,14 @@ OPTIONS_MACRO_REGIME_GATE_ENABLED = True
 # Sizing multiplier for NEUTRAL regime (50-69)
 # PUT-only allowed, at reduced sizing to manage uncertainty
 OPTIONS_NEUTRAL_ZONE_SIZE_MULT = 0.50  # 50% sizing in NEUTRAL
+
+# V3.3: Upper NEUTRAL zone (60-69) - Allow CALLs for growth
+# Split NEUTRAL into upper (60-69) and lower (50-59) zones
+# Upper: CALL at 50%, PUT at 25% - lean bullish in recovery
+# Lower: CALL blocked, PUT at 50% - stay defensive
+OPTIONS_UPPER_NEUTRAL_THRESHOLD = 60  # Upper NEUTRAL starts at regime 60
+OPTIONS_UPPER_NEUTRAL_CALL_MULT = 0.50  # 50% sizing for CALLs in upper NEUTRAL
+OPTIONS_UPPER_NEUTRAL_PUT_MULT = 0.25  # 25% sizing for PUTs in upper NEUTRAL
 
 # Minimum combined size multiplier to proceed with trade
 # If Governor × MacroGate × ColdStart < this, skip trade (too small)

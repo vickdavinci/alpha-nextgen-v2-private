@@ -134,6 +134,36 @@
 
 **Tests:** 1340 passed ✅
 
+### V3.4 Fixes (Pre-Live Audit + Options Regime Alignment)
+
+> **Branch:** `feature/va/v3.2-macro-regime-gate`
+> **Audit:** `docs/audits/V3_3_pre_live_audit_report.md`
+
+**P0 Fixes (State Persistence):**
+
+| ID | Area | Fix | Priority | Status |
+|:--:|:----:|-----|:--------:|:------:|
+| V3.4-1 | State | V3.3 Regime state persistence (shock_cap, recovery_days, spy_52w_high) | P0 | ✅ DONE |
+| V3.4-2 | State | Options state JSON migration (ast.literal_eval → json.loads) | P0 | ✅ DONE |
+
+**Options Regime Alignment:**
+
+| ID | Area | Fix | Priority | Status |
+|:--:|:----:|-----|:--------:|:------:|
+| V3.4-3 | Options | Upper NEUTRAL (60-69): CALL @ 50%, PUT @ 25% (lean bullish in recovery) | P1 | ✅ DONE |
+| V3.4-4 | Options | CALL exit threshold tightened: 45 → 60 (10-point gap, not 25) | P1 | ✅ DONE |
+| V3.4-5 | Options | Neutrality zone separated from exit thresholds (45-65 vs 60-60) | P1 | ✅ DONE |
+
+**Config Additions:**
+- `OPTIONS_UPPER_NEUTRAL_THRESHOLD = 60`
+- `OPTIONS_UPPER_NEUTRAL_CALL_MULT = 0.50`
+- `OPTIONS_UPPER_NEUTRAL_PUT_MULT = 0.25`
+- `SPREAD_REGIME_EXIT_BULL = 60` (was 45)
+- `SPREAD_NEUTRALITY_ZONE_LOW = 45` (independent of exit thresholds)
+- `SPREAD_NEUTRALITY_ZONE_HIGH = 65` (independent of exit thresholds)
+
+**Files Changed:** `config.py`, `engines/core/regime_engine.py`, `engines/satellite/options_engine.py`, `main.py`, `tests/test_options_engine.py`
+
 ### Fix Details
 
 #### V3-1 & V3-2: EOD_LOCK Exemption (P0)

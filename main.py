@@ -192,8 +192,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2015, 1, 1)
-        self.SetEndDate(2015, 12, 31)  # V3.0 validation: 2015 full year (original problem period)
+        self.SetStartDate(2022, 1, 1)
+        self.SetEndDate(2022, 6, 30)  # V3.3 validation: 2022 Q1-Q2 (bear market)
         self.SetCash(config.INITIAL_CAPITAL)  # $50,000 seed capital
 
         # All times are Eastern

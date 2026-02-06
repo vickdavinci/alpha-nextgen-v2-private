@@ -2373,20 +2373,40 @@ class OptionsEngine:
         if macro_regime_score >= config.REGIME_RISK_ON:
             return True, 1.0, ""
 
-        # NEUTRAL regime (50-69): PUT-only at reduced sizing
+        # NEUTRAL regime (50-69): Split into upper and lower zones
         if macro_regime_score >= config.REGIME_NEUTRAL:
             neutral_mult = getattr(config, "OPTIONS_NEUTRAL_ZONE_SIZE_MULT", 0.50)
+            upper_neutral_threshold = getattr(config, "OPTIONS_UPPER_NEUTRAL_THRESHOLD", 60)
+            upper_neutral_call_mult = getattr(config, "OPTIONS_UPPER_NEUTRAL_CALL_MULT", 0.25)
+
+            # V3.3: Upper NEUTRAL (60-69): Lean bullish - CALL at 50%, PUT at 25%
+            if macro_regime_score >= upper_neutral_threshold:
+                upper_neutral_put_mult = getattr(config, "OPTIONS_UPPER_NEUTRAL_PUT_MULT", 0.25)
+                if requested_direction == OptionDirection.CALL:
+                    return (
+                        True,
+                        upper_neutral_call_mult,
+                        f"MACRO_GATE: {mode_str} CALL allowed in upper NEUTRAL @ {upper_neutral_call_mult:.0%}",
+                    )
+                else:
+                    return (
+                        True,
+                        upper_neutral_put_mult,
+                        f"MACRO_GATE: {mode_str} PUT allowed in upper NEUTRAL @ {upper_neutral_put_mult:.0%}",
+                    )
+
+            # Lower NEUTRAL (50-59): PUT-only at reduced sizing (conservative)
             if requested_direction == OptionDirection.CALL:
                 return (
                     False,
                     0.0,
-                    f"MACRO_GATE: {mode_str} CALL blocked in NEUTRAL ({macro_regime_score:.0f})",
+                    f"MACRO_GATE: {mode_str} CALL blocked in lower NEUTRAL ({macro_regime_score:.0f})",
                 )
             else:
                 return (
                     True,
                     neutral_mult,
-                    f"MACRO_GATE: {mode_str} PUT allowed in NEUTRAL @ {neutral_mult:.0%}",
+                    f"MACRO_GATE: {mode_str} PUT allowed in lower NEUTRAL @ {neutral_mult:.0%}",
                 )
 
         # CAUTIOUS/DEFENSIVE/BEAR (<50): PUT-only, full sizing
@@ -3566,16 +3586,19 @@ class OptionsEngine:
 
             # Exit 4: V2.22 Neutrality Exit (Hysteresis Shield)
             # Close flat spreads in dead zone — directional bet with no direction
+            # V3.4: Use separate neutrality zone bounds (independent of exit thresholds)
+            neutrality_zone_low = getattr(config, "SPREAD_NEUTRALITY_ZONE_LOW", 45)
+            neutrality_zone_high = getattr(config, "SPREAD_NEUTRALITY_ZONE_HIGH", 65)
             if (
                 exit_reason is None
                 and getattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", True)
-                and config.SPREAD_REGIME_EXIT_BULL <= regime_score <= config.SPREAD_REGIME_EXIT_BEAR
+                and neutrality_zone_low <= regime_score <= neutrality_zone_high
             ):
                 neutrality_band = getattr(config, "SPREAD_NEUTRALITY_EXIT_PNL_BAND", 0.10)
                 if -neutrality_band <= pnl_pct <= neutrality_band:
                     exit_reason = (
                         f"NEUTRALITY_EXIT: Score {regime_score:.0f} in dead zone "
-                        f"({config.SPREAD_REGIME_EXIT_BULL}-{config.SPREAD_REGIME_EXIT_BEAR}) "
+                        f"({neutrality_zone_low}-{neutrality_zone_high}) "
                         f"with flat P&L ({pnl_pct:+.1%})"
                     )
 
@@ -3642,15 +3665,18 @@ class OptionsEngine:
 
             # Exit 4: V2.22 Neutrality Exit (Hysteresis Shield)
             # Close flat spreads in dead zone — directional bet with no direction
-            elif (
+            # V3.4: Use separate neutrality zone bounds (independent of exit thresholds)
+            neutrality_zone_low = getattr(config, "SPREAD_NEUTRALITY_ZONE_LOW", 45)
+            neutrality_zone_high = getattr(config, "SPREAD_NEUTRALITY_ZONE_HIGH", 65)
+            if (
                 getattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", True)
-                and config.SPREAD_REGIME_EXIT_BULL <= regime_score <= config.SPREAD_REGIME_EXIT_BEAR
+                and neutrality_zone_low <= regime_score <= neutrality_zone_high
             ):
                 neutrality_band = getattr(config, "SPREAD_NEUTRALITY_EXIT_PNL_BAND", 0.10)
                 if -neutrality_band <= pnl_pct <= neutrality_band:
                     exit_reason = (
                         f"NEUTRALITY_EXIT: Score {regime_score:.0f} in dead zone "
-                        f"({config.SPREAD_REGIME_EXIT_BULL}-{config.SPREAD_REGIME_EXIT_BEAR}) "
+                        f"({neutrality_zone_low}-{neutrality_zone_high}) "
                         f"with flat P&L ({pnl_pct:+.1%})"
                     )
 
