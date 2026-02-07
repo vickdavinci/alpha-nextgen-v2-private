@@ -278,6 +278,194 @@ else:
 
 **Tests:** 1340 passed ✅
 
+---
+
+## V5.3 Options Engine Overhaul — Conviction-Based Trading
+
+> **Status:** ✅ COMPLETE
+> **Goal:** Give VASS & Micro engines autonomy to override Macro when they have conviction
+> **Branch:** `feature/va/v3.0-hardening`
+
+### Problem Statement
+
+2022H1 backtest revealed options engine failures:
+- **-66% return** with Governor stuck at 0% for 147 days
+- **PUT spreads not trading** even when market was falling (Macro scored bullish due to VIX 17-20)
+- **VASS not tracking VIX direction** — only level classification (LOW/MEDIUM/HIGH)
+- **Too many gates blocking trades** — Governor, Macro Gate, Neutrality Exit all compounding
+
+### Architecture Change
+
+```
+BEFORE: Macro → Gates → Options (Macro dictates, options obey)
+AFTER:  VASS/Micro → Verify vs Macro → Trade if aligned OR has conviction
+```
+
+**Key Principle:** VASS and Micro measure volatility directly. If they have strong conviction (VIX spiking, UVXY extreme), they can veto Macro's direction.
+
+### V5.3 Fix List
+
+| ID | Category | Fix | Priority | Status |
+|:--:|:--------:|-----|:--------:|:------:|
+| V5.3-1 | Governor | Disable Governor for strategy validation | P0 | ✅ DONE |
+| V5.3-2 | Options | Disable Neutrality Exit for testing | P0 | ✅ DONE |
+| V5.3-3 | Options | Add position limits: max 1 intraday + 2 swing = 3 total | P0 | ✅ DONE |
+| V5.3-4 | VASS | Add VIX 5d/20d SMA tracking | P1 | ✅ DONE |
+| V5.3-5 | VASS | Add VIX direction (5d/20d change %) | P1 | ✅ DONE |
+| V5.3-6 | VASS | Add VIX level crossing detection (25↑, 15↓) | P1 | ✅ DONE |
+| V5.3-7 | VASS | Implement `vass_has_conviction()` | P1 | ✅ DONE |
+| V5.3-8 | Micro | Implement `micro_has_conviction()` | P1 | ✅ DONE |
+| V5.3-9 | Options | Implement `resolve_trade_signal()` | P1 | ✅ DONE |
+| V5.3-10 | Options | Add position counting methods | P1 | ✅ DONE |
+| V5.3-11 | VASS | Change HIGH IV from credit to debit spreads | P1 | ✅ DONE |
+| V5.3-12 | Macro | V5.3 Regime: 4-factor with VIX Combined (Phase 1 & 2) | P2 | ✅ DONE |
+
+### Config Additions
+
+```python
+# Governor & Exit Disables
+DRAWDOWN_GOVERNOR_ENABLED = False  # V5.3: Disabled for strategy validation
+SPREAD_NEUTRALITY_EXIT_ENABLED = False  # V5.3: Disabled for testing
+
+# Position Limits
+OPTIONS_MAX_INTRADAY_POSITIONS = 1
+OPTIONS_MAX_SWING_POSITIONS = 2
+OPTIONS_MAX_TOTAL_POSITIONS = 3
+
+# VASS Conviction Thresholds
+VASS_VIX_5D_PERIOD = 5
+VASS_VIX_20D_PERIOD = 20
+VASS_VIX_5D_BEARISH_THRESHOLD = 0.20  # +20%
+VASS_VIX_5D_BULLISH_THRESHOLD = -0.15  # -15%
+VASS_VIX_20D_STRONG_BEARISH = 0.30  # +30%
+VASS_VIX_20D_STRONG_BULLISH = -0.20  # -20%
+VASS_VIX_FEAR_CROSS_LEVEL = 25
+VASS_VIX_COMPLACENT_CROSS_LEVEL = 15
+
+# Micro Conviction Thresholds
+MICRO_UVXY_BEARISH_THRESHOLD = 0.08  # +8%
+MICRO_UVXY_BULLISH_THRESHOLD = -0.05  # -5%
+MICRO_VIX_CRISIS_LEVEL = 35
+MICRO_VIX_COMPLACENT_LEVEL = 12
+MICRO_BEARISH_STATES = ["FULL_PANIC", "SPIKING", "WORSENING_HIGH"]
+MICRO_BULLISH_STATES = ["CRASHING", "STABLE_LOW", "IMPROVING"]
+```
+
+### Conviction Logic
+
+**VASS Conviction (Swing 7-45 DTE):**
+- VIX 5d change > +20% → BEARISH
+- VIX 5d change < -15% → BULLISH
+- VIX 20d change > +30% → STRONG BEARISH
+- VIX 20d change < -20% → STRONG BULLISH
+- VIX crosses above 25 → BEARISH
+- VIX crosses below 15 → BULLISH
+
+**Micro Conviction (Intraday 0-5 DTE):**
+- UVXY > +8% → BEARISH
+- UVXY < -5% → BULLISH
+- VIX > 35 → CRISIS (BEARISH)
+- VIX < 12 → COMPLACENT (BULLISH)
+- Micro state FULL_PANIC/SPIKING → BEARISH
+- Micro state CRASHING/STABLE_LOW → BULLISH
+
+### Trade Resolution
+
+```
+1. Engine generates signal (BULLISH or BEARISH)
+2. Engine checks conviction (has_conviction())
+3. Compare to Macro direction
+4. Resolution:
+   - ALIGNED → TRADE
+   - MISALIGNED + CONVICTION → VETO MACRO, TRADE
+   - MISALIGNED + NO CONVICTION → NO TRADE
+```
+
+### Files Changed
+
+- `config.py` — New thresholds, disabled Governor/Neutrality
+- `engines/satellite/options_engine.py` — IVSensor overhaul, conviction methods
+
+### V5.3 Macro Regime Implementation (V5.3-12)
+
+**Status:** ✅ COMPLETE
+
+**4-Factor Model with VIX Combined:**
+- Momentum (30%): 20-day ROC - catches reversals in days
+- VIX Combined (30%): 60% VIX level + 40% VIX direction
+- Trend (25%): SPY vs MA200
+- Drawdown (15%): Distance from 52-week high
+
+**Key Features:**
+- **VIX Combined Score:** Blends absolute fear level with fear velocity
+- **High-VIX Clamp:** VIX Combined capped at 47 when VIX >= 25 (prevents bullish signals during elevated fear)
+- **Spike Cap:** Macro score capped at 45 when VIX 5d >= +28%
+- **Breadth Decay Penalty (Phase 2):** -5 points for 5d RSP/SPY decay <= -10%, -8 points for 10d decay <= -15%
+
+**Config Additions:**
+```python
+# V5.3 Master Switch
+V53_REGIME_ENABLED = True
+V4_REGIME_ENABLED = False  # Disabled - V5.3 is now active
+
+# Factor Weights
+WEIGHT_MOMENTUM_V53 = 0.30
+WEIGHT_VIX_COMBINED_V53 = 0.30
+WEIGHT_TREND_V53 = 0.25
+WEIGHT_DRAWDOWN_V53 = 0.15
+
+# VIX Combined
+VIX_COMBINED_LEVEL_WEIGHT = 0.60
+VIX_COMBINED_DIRECTION_WEIGHT = 0.40
+VIX_COMBINED_HIGH_VIX_CLAMP = 47
+VIX_COMBINED_HIGH_VIX_THRESHOLD = 25.0
+
+# Spike Cap
+V53_SPIKE_CAP_THRESHOLD = 0.28  # +28% VIX 5d triggers cap
+V53_SPIKE_CAP_MAX_SCORE = 45
+
+# Breadth Decay Penalty
+V53_BREADTH_5D_DECAY_THRESHOLD = -0.10
+V53_BREADTH_10D_DECAY_THRESHOLD = -0.15
+V53_BREADTH_5D_PENALTY = 5
+V53_BREADTH_10D_PENALTY = 8
+```
+
+**Files Changed:**
+- `config.py` — V5.3 parameters
+- `utils/calculations.py` — `vix_combined_score()`, `breadth_decay_penalty()`, `aggregate_regime_score_v53()`
+- `engines/core/regime_engine.py` — `_calculate_v53()` method, RegimeState V5.3 fields
+
+### Conviction Logic Wiring (V5.3-13) ✅ COMPLETE
+
+**Swing Spreads (VASS Conviction):**
+```python
+# In main.py _process_options_chain():
+can_swing, swing_reason = self.options_engine.can_enter_swing()
+vass_has_conviction, vass_direction, vass_reason = self.options_engine._iv_sensor.has_conviction()
+macro_direction = self.options_engine.get_macro_direction(regime_score)
+should_trade, resolved_direction, resolve_reason = self.options_engine.resolve_trade_signal(
+    engine="VASS", engine_direction=vass_direction, engine_conviction=vass_has_conviction, macro_direction=macro_direction
+)
+```
+
+**Intraday Options (Micro Conviction):**
+```python
+# In main.py options intraday block:
+can_intraday, intraday_limit_reason = self.options_engine.can_enter_intraday()
+micro_has_conviction, micro_direction, micro_reason = self.options_engine._micro_regime_engine.has_conviction(...)
+should_trade, resolved_direction, resolve_reason = self.options_engine.resolve_trade_signal(
+    engine="MICRO", engine_direction=micro_direction, engine_conviction=micro_has_conviction, macro_direction=macro_direction
+)
+```
+
+### Next Steps
+
+1. Run 2022H1 backtest to validate bear market capture
+2. Run 2015 backtest to validate choppy market handling
+
+---
+
 ### Fix Details
 
 #### V3-1 & V3-2: EOD_LOCK Exemption (P0)

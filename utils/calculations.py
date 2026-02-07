@@ -1221,3 +1221,367 @@ def should_adjust_shv(unallocated: float, min_trade: float = 2000) -> bool:
         False
     """
     return abs(unallocated) >= min_trade
+
+
+# =============================================================================
+# V4.0 REGIME MODEL SCORING FUNCTIONS
+# =============================================================================
+
+
+def momentum_factor_score_v4(
+    roc_20: float,
+    threshold_strong_bull: float = 0.05,
+    threshold_bull: float = 0.02,
+    threshold_neutral_high: float = 0.01,
+    threshold_neutral_low: float = -0.01,
+    threshold_bear: float = -0.02,
+    threshold_strong_bear: float = -0.05,
+    score_strong_bull: float = 90.0,
+    score_bull: float = 75.0,
+    score_neutral_high: float = 60.0,
+    score_neutral: float = 50.0,
+    score_neutral_low: float = 40.0,
+    score_bear: float = 25.0,
+    score_strong_bear: float = 10.0,
+) -> float:
+    """V4.0: Calculate momentum factor score from 20-day Rate of Change.
+
+    Momentum is a LEADING indicator that catches reversals in days, not months.
+    Unlike MA200 (lagging), ROC detects direction changes immediately.
+
+    Args:
+        roc_20: 20-day Rate of Change as decimal (e.g., 0.05 = +5%).
+        threshold_strong_bull: ROC threshold for strong bull (default +5%).
+        threshold_bull: ROC threshold for bull (default +2%).
+        threshold_neutral_high: ROC threshold for neutral high (default +1%).
+        threshold_neutral_low: ROC threshold for neutral low (default -1%).
+        threshold_bear: ROC threshold for bear (default -2%).
+        threshold_strong_bear: ROC threshold for strong bear (default -5%).
+        score_*: Scores for each threshold level.
+
+    Returns:
+        Momentum factor score (0-100). Higher = bullish momentum.
+
+    Example:
+        >>> momentum_factor_score_v4(0.06)  # +6% ROC
+        90.0
+        >>> momentum_factor_score_v4(-0.03)  # -3% ROC
+        25.0
+        >>> momentum_factor_score_v4(0.005)  # +0.5% ROC
+        50.0
+    """
+    if roc_20 >= threshold_strong_bull:
+        return score_strong_bull  # Strong uptrend
+    elif roc_20 >= threshold_bull:
+        return score_bull  # Bullish
+    elif roc_20 >= threshold_neutral_high:
+        return score_neutral_high  # Slightly bullish
+    elif roc_20 >= threshold_neutral_low:
+        return score_neutral  # Neutral
+    elif roc_20 >= threshold_bear:
+        return score_neutral_low  # Slightly bearish
+    elif roc_20 >= threshold_strong_bear:
+        return score_bear  # Bearish
+    else:
+        return score_strong_bear  # Strong downtrend
+
+
+def vix_direction_score_v4(
+    vix_current: float,
+    vix_5d_ago: float,
+    spike_threshold: float = 0.20,
+    rising_fast_threshold: float = 0.10,
+    rising_threshold: float = 0.05,
+    stable_high_threshold: float = 0.02,
+    stable_low_threshold: float = -0.02,
+    falling_threshold: float = -0.10,
+    falling_fast_threshold: float = -0.20,
+    score_spike: float = 10.0,
+    score_rising_fast: float = 25.0,
+    score_rising: float = 40.0,
+    score_stable_high: float = 50.0,
+    score_stable: float = 55.0,
+    score_falling: float = 70.0,
+    score_falling_fast: float = 85.0,
+) -> float:
+    """V4.0: Calculate VIX direction score from 5-day VIX change.
+
+    Measures fear VELOCITY over 5 days (not daily like V3.0).
+    5-day window smooths noise while still catching trend changes.
+    Spike detection is critical for immediate crash identification.
+
+    Args:
+        vix_current: Current VIX value.
+        vix_5d_ago: VIX value from 5 trading days ago.
+        spike_threshold: VIX change % for spike detection (default +20%).
+        rising_fast_threshold: VIX change % for rising fast (default +10%).
+        rising_threshold: VIX change % for rising (default +5%).
+        stable_high_threshold: VIX change % for stable/rising (default +2%).
+        stable_low_threshold: VIX change % for stable (default -2%).
+        falling_threshold: VIX change % for falling (default -10%).
+        falling_fast_threshold: VIX change % for falling fast (default -20%).
+        score_*: Scores for each threshold level.
+
+    Returns:
+        VIX direction score (0-100). Lower = fear building, Higher = fear receding.
+
+    Example:
+        >>> vix_direction_score_v4(30, 20)  # VIX up 50%
+        10.0
+        >>> vix_direction_score_v4(18, 25)  # VIX down 28%
+        85.0
+        >>> vix_direction_score_v4(20, 20)  # VIX unchanged
+        55.0
+    """
+    if vix_5d_ago <= 0:
+        return score_stable  # No prior data, assume stable
+
+    vix_change_pct = (vix_current - vix_5d_ago) / vix_5d_ago
+
+    # Classify direction and return score
+    if vix_change_pct >= spike_threshold:
+        return score_spike  # Crisis building - immediate danger
+    elif vix_change_pct >= rising_fast_threshold:
+        return score_rising_fast  # Significant stress
+    elif vix_change_pct >= rising_threshold:
+        return score_rising  # Fear increasing
+    elif vix_change_pct >= stable_high_threshold:
+        return score_stable_high  # Slightly rising
+    elif vix_change_pct >= stable_low_threshold:
+        return score_stable  # Stable
+    elif vix_change_pct >= falling_threshold:
+        return score_falling  # Fear decreasing
+    elif vix_change_pct >= falling_fast_threshold:
+        return score_falling  # Fear decreasing (same as falling)
+    else:
+        return score_falling_fast  # Fear collapsing - strong bullish
+
+
+def breadth_factor_score_v4(
+    rsp_spy_ratio: float,
+    ratio_strong: float = 1.02,
+    ratio_healthy: float = 1.00,
+    ratio_narrow: float = 0.98,
+    ratio_weak: float = 0.96,
+    score_strong: float = 85.0,
+    score_healthy: float = 70.0,
+    score_narrow: float = 50.0,
+    score_weak: float = 30.0,
+) -> float:
+    """V4.0: Calculate breadth factor score from RSP/SPY ratio.
+
+    Measures market participation - narrow rallies (mega-cap only) are warning signs.
+    RSP (equal-weight) outperforming SPY (cap-weight) = broad participation = healthy.
+    RSP underperforming SPY = narrow rally = potential warning.
+
+    Args:
+        rsp_spy_ratio: RSP 20-day return / SPY 20-day return ratio.
+        ratio_strong: Ratio threshold for strong breadth (default 1.02).
+        ratio_healthy: Ratio threshold for healthy breadth (default 1.00).
+        ratio_narrow: Ratio threshold for narrow breadth (default 0.98).
+        ratio_weak: Ratio threshold for weak breadth (default 0.96).
+        score_*: Scores for each threshold level.
+
+    Returns:
+        Breadth factor score (0-100). Higher = broader participation.
+
+    Example:
+        >>> breadth_factor_score_v4(1.05)  # RSP outperforming by 5%
+        85.0
+        >>> breadth_factor_score_v4(0.95)  # RSP underperforming by 5%
+        30.0
+        >>> breadth_factor_score_v4(1.00)  # RSP = SPY
+        70.0
+    """
+    if rsp_spy_ratio >= ratio_strong:
+        return score_strong  # Broad participation
+    elif rsp_spy_ratio >= ratio_healthy:
+        return score_healthy  # Normal participation
+    elif rsp_spy_ratio >= ratio_narrow:
+        return score_narrow  # Narrowing
+    elif rsp_spy_ratio >= ratio_weak:
+        return score_weak  # Weak breadth
+    else:
+        return score_weak * 0.8  # Very weak (capped at 24)
+
+
+def aggregate_regime_score_v4(
+    momentum_score: float,
+    vix_direction_score: float,
+    breadth_score: float,
+    drawdown_score: float,
+    trend_score: float,
+    weight_momentum: float = 0.30,
+    weight_vix_direction: float = 0.25,
+    weight_breadth: float = 0.20,
+    weight_drawdown: float = 0.15,
+    weight_trend: float = 0.10,
+) -> float:
+    """V4.0: Calculate weighted aggregate regime score with leading indicators.
+
+    55% weight on leading/concurrent indicators (momentum, VIX direction, breadth)
+    vs V3.3's 0%. This enables 1-2 day crash detection vs 4-7 day lag.
+
+    Args:
+        momentum_score: 20-day ROC momentum score (0-100).
+        vix_direction_score: 5-day VIX direction score (0-100).
+        breadth_score: RSP/SPY breadth score (0-100).
+        drawdown_score: Drawdown from HWM score (0-100).
+        trend_score: SPY vs MA200 trend score (0-100).
+        weight_*: Weights for each factor (must sum to 1.0).
+
+    Returns:
+        Aggregate V4.0 regime score (0-100).
+
+    Example:
+        >>> aggregate_regime_score_v4(25, 10, 42, 85, 85)  # Jan 2022 crash
+        42.25  # CAUTIOUS (V3.3 would be 77.5 RISK_ON)
+    """
+    raw = (
+        momentum_score * weight_momentum
+        + vix_direction_score * weight_vix_direction
+        + breadth_score * weight_breadth
+        + drawdown_score * weight_drawdown
+        + trend_score * weight_trend
+    )
+    return clamp(raw, 0, 100)
+
+
+# =============================================================================
+# V5.3 REGIME CALCULATIONS
+# =============================================================================
+
+
+def vix_combined_score(
+    vix_level: float,
+    vix_level_score: float,
+    vix_direction_score: float,
+    level_weight: float = 0.60,
+    direction_weight: float = 0.40,
+    high_vix_threshold: float = 25.0,
+    high_vix_clamp: float = 47.0,
+) -> float:
+    """V5.3: Calculate VIX Combined score (60% level + 40% direction).
+
+    Combines absolute VIX level (fear intensity) with VIX direction (fear velocity)
+    for a more nuanced fear reading. When VIX >= threshold, clamps score to prevent
+    bullish signals during elevated fear.
+
+    Args:
+        vix_level: Current VIX value.
+        vix_level_score: VIX level factor score (0-100).
+        vix_direction_score: VIX 5-day direction score (0-100).
+        level_weight: Weight for VIX level component (default 0.60).
+        direction_weight: Weight for VIX direction component (default 0.40).
+        high_vix_threshold: VIX level above which clamp is applied (default 25).
+        high_vix_clamp: Maximum combined score when VIX >= threshold (default 47).
+
+    Returns:
+        VIX Combined score (0-100). Clamped at high_vix_clamp when VIX >= threshold.
+
+    Example:
+        >>> vix_combined_score(18, 70, 55)  # Normal VIX
+        64.0  # 70*0.6 + 55*0.4 = 64
+        >>> vix_combined_score(30, 40, 55)  # High VIX
+        47.0  # Clamped at 47
+    """
+    combined = vix_level_score * level_weight + vix_direction_score * direction_weight
+
+    # High-VIX clamp: Cap score when VIX is elevated
+    if vix_level >= high_vix_threshold:
+        combined = min(combined, high_vix_clamp)
+
+    return clamp(combined, 0, 100)
+
+
+def breadth_decay_penalty(
+    rsp_spy_ratio_5d_change: float,
+    rsp_spy_ratio_10d_change: float,
+    threshold_5d: float = -0.10,
+    threshold_10d: float = -0.15,
+    penalty_5d: float = 5.0,
+    penalty_10d: float = 8.0,
+) -> float:
+    """V5.3: Calculate breadth decay penalty for regime score.
+
+    Detects distribution (smart money selling into strength) before price confirms.
+    When breadth is decaying (RSP underperforming SPY on a rolling basis),
+    applies penalty to regime score.
+
+    Args:
+        rsp_spy_ratio_5d_change: 5-day change in RSP/SPY ratio as decimal.
+        rsp_spy_ratio_10d_change: 10-day change in RSP/SPY ratio as decimal.
+        threshold_5d: Threshold for 5d decay penalty (default -0.10 = -10%).
+        threshold_10d: Threshold for 10d decay penalty (default -0.15 = -15%).
+        penalty_5d: Points to subtract for 5d decay (default 5).
+        penalty_10d: Points to subtract for 10d decay (default 8).
+
+    Returns:
+        Total penalty points (0 to penalty_5d + penalty_10d).
+        Penalties stack (10d decay triggers both penalties).
+
+    Example:
+        >>> breadth_decay_penalty(-0.08, -0.12)  # Mild decay
+        0  # No penalty (neither threshold met)
+        >>> breadth_decay_penalty(-0.12, -0.12)  # 5d decay only
+        5.0  # 5-day penalty applied
+        >>> breadth_decay_penalty(-0.12, -0.18)  # Both decays
+        13.0  # 5 + 8 = 13 point penalty
+    """
+    penalty = 0.0
+
+    # 5-day decay penalty
+    if rsp_spy_ratio_5d_change <= threshold_5d:
+        penalty += penalty_5d
+
+    # 10-day decay penalty (stacks with 5d)
+    if rsp_spy_ratio_10d_change <= threshold_10d:
+        penalty += penalty_10d
+
+    return penalty
+
+
+def aggregate_regime_score_v53(
+    momentum_score: float,
+    vix_combined_score: float,
+    trend_score: float,
+    drawdown_score: float,
+    breadth_penalty: float = 0.0,
+    weight_momentum: float = 0.30,
+    weight_vix_combined: float = 0.30,
+    weight_trend: float = 0.25,
+    weight_drawdown: float = 0.15,
+) -> float:
+    """V5.3: Calculate weighted aggregate regime score with VIX Combined.
+
+    4-factor model with VIX Combined (level + direction) replacing separate
+    VIX factors. Breadth penalty applied after base calculation.
+
+    Args:
+        momentum_score: 20-day ROC momentum score (0-100).
+        vix_combined_score: VIX Combined score (0-100).
+        trend_score: SPY vs MA200 trend score (0-100).
+        drawdown_score: Drawdown from HWM score (0-100).
+        breadth_penalty: Points to subtract for breadth decay (default 0).
+        weight_*: Weights for each factor (must sum to 1.0).
+
+    Returns:
+        Aggregate V5.3 regime score (0-100).
+
+    Example:
+        >>> aggregate_regime_score_v53(75, 64, 80, 85)  # Bull market
+        75.15  # RISK_ON
+        >>> aggregate_regime_score_v53(25, 40, 30, 30, breadth_penalty=8)  # Bear with decay
+        22.5  # RISK_OFF (further reduced by breadth penalty)
+    """
+    raw = (
+        momentum_score * weight_momentum
+        + vix_combined_score * weight_vix_combined
+        + trend_score * weight_trend
+        + drawdown_score * weight_drawdown
+    )
+
+    # Apply breadth decay penalty
+    raw -= breadth_penalty
+
+    return clamp(raw, 0, 100)

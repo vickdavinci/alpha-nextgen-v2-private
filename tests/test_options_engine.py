@@ -2638,6 +2638,10 @@ class TestRejectionAwareSizing:
 # =============================================================================
 
 
+@pytest.mark.skipif(
+    not getattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", True),
+    reason="V5.3: Neutrality exit disabled for strategy validation",
+)
 class TestNeutralityExit:
     """V2.22: Tests for symmetric neutrality exit — close flat spreads in dead zone."""
 
@@ -2914,9 +2918,10 @@ class TestVASSCreditSpreadEntry:
     # --- VASS Strategy Selection Tests ---
 
     def test_select_strategy_high_iv_bullish(self, engine):
-        """HIGH IV + BULLISH should select Bull Put Credit with weekly DTE."""
+        """HIGH IV + BULLISH should select Bull Call Debit with weekly DTE (V5.3: debit for gamma)."""
         strategy, dte_min, dte_max = engine._select_strategy("BULLISH", "HIGH")
-        assert strategy == SpreadStrategy.BULL_PUT_CREDIT
+        # V5.3: Changed from CREDIT to DEBIT - gamma capture in high IV environment
+        assert strategy == SpreadStrategy.BULL_CALL_DEBIT
         assert dte_min == config.VASS_HIGH_IV_DTE_MIN
         assert dte_max == config.VASS_HIGH_IV_DTE_MAX
 
@@ -3019,16 +3024,17 @@ class TestVASSCreditSpreadEntry:
         assert max_loss_per > 0  # Defined max loss
         assert total_margin <= 7500  # Never exceeds allocation
 
-    def test_credit_put_allowed_neutral_reduced_sizing(
+    def test_credit_put_allowed_lower_neutral_reduced_sizing(
         self, engine, credit_short_leg, credit_long_leg
     ):
-        """V3.2: PUT credit spread allowed in NEUTRAL (50-69) at 50% sizing.
+        """V3.9: PUT credit spread allowed in Lower NEUTRAL (50-59) at 50% sizing.
 
-        V3.2 thesis: NEUTRAL zone allows PUT-only at reduced sizing, not blocked.
-        BULL_PUT_CREDIT is PUT direction, so allowed at 50% sizing.
+        V3.9 thesis: Lower NEUTRAL allows PUT-only at reduced sizing.
+        Upper NEUTRAL (60-69) is CALL-only zone.
+        BULL_PUT_CREDIT is PUT direction, so allowed at 50% in Lower NEUTRAL.
         """
         signal = engine.check_credit_spread_entry_signal(
-            regime_score=60.0,  # V3.2: NEUTRAL (50-69) - PUT allowed at 50% sizing
+            regime_score=55.0,  # V3.9: Lower NEUTRAL (50-59) - PUT allowed at 50% sizing
             vix_current=28.0,
             adx_value=30.0,
             current_price=510.0,
@@ -3043,7 +3049,7 @@ class TestVASSCreditSpreadEntry:
             strategy=SpreadStrategy.BULL_PUT_CREDIT,
         )
 
-        # V3.2: PUT allowed in NEUTRAL at reduced sizing
+        # V3.9: PUT allowed in Lower NEUTRAL at reduced sizing
         assert signal is not None
         assert "BULL_PUT_CREDIT" in signal.reason
 

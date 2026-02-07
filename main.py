@@ -40,7 +40,7 @@ from execution.execution_engine import ExecutionEngine
 from execution.oco_manager import OCOManager
 
 # Models
-from models.enums import IntradayStrategy, RegimeLevel, Urgency
+from models.enums import IntradayStrategy, OptionDirection, RegimeLevel, Urgency
 from models.target_weight import TargetWeight
 
 # Infrastructure
@@ -193,7 +193,7 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
         self.SetStartDate(2022, 1, 1)
-        self.SetEndDate(2022, 6, 30)  # V3.3 validation: 2022 Q1-Q2 (bear market)
+        self.SetEndDate(2022, 6, 30)  # V5.3 Conviction Logic: 2022 H1 Bear Market
         self.SetCash(config.INITIAL_CAPITAL)  # $50,000 seed capital
 
         # All times are Eastern
@@ -964,15 +964,23 @@ class AlphaNextGen(QCAlgorithm):
         self.equity_prior_close = self.Portfolio.TotalPortfolioValue
         self.risk_engine.set_equity_prior_close(self.equity_prior_close)
 
-        # V2.26: Drawdown Governor — check cumulative DD from peak, scale allocations
-        self._governor_scale = self.risk_engine.check_drawdown_governor(self.equity_prior_close)
+        # V5.1: Get regime score for Governor decisions
+        # Regime Guard checks this for step-up eligibility
+        regime_score_for_governor = self.regime_engine.get_previous_score()
+
+        # V2.26/V5.1: Drawdown Governor — check cumulative DD from peak, scale allocations
+        # V5.1: Now passes regime_score for Regime Guard check on step-up
+        self._governor_scale = self.risk_engine.check_drawdown_governor(
+            self.equity_prior_close, regime_score_for_governor
+        )
 
         # V3.0: Regime Override — if bullish regime persists, force Governor step-up
-        # This prevents death spiral where bot can't recover at low allocation
-        regime_score_for_override = self.regime_engine.get_previous_score()
+        # V5.1: DISABLED by default (GOVERNOR_REGIME_OVERRIDE_ENABLED = False)
+        # This was the root cause of the 2017 death spiral (27 liquidation events)
+        # Kept for backward compatibility - method checks config flag internally
         current_date_str = str(self.Time.date())
         if self.risk_engine.check_governor_regime_override(
-            regime_score_for_override, current_date_str
+            regime_score_for_governor, current_date_str
         ):
             # Override was applied, update local scale
             self._governor_scale = self.risk_engine.get_governor_scale()
@@ -3017,22 +3025,13 @@ class AlphaNextGen(QCAlgorithm):
                 )
                 # Continue to spread entry logic below
 
-        elif self._governor_scale < config.GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE_BEARISH:
-            # Governor below 25% but above 0% - only PUT direction allowed
+        # V5.2 BINARY: No intermediate states - only 100% or 0%
+        # If scale is not 100% and not 0%, log warning (shouldn't happen)
+        elif self._governor_scale < 1.0:
             if not is_put_direction:
                 self.Log(
                     f"OPTIONS_EOD: Blocked by Governor | "
-                    f"Scale={self._governor_scale:.0%} < 25% | "
-                    f"Regime={regime_score_for_governor:.0f} (BULL)"
-                )
-                return
-
-        elif self._governor_scale < config.GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE:
-            # Governor 25-50% - PUT direction allowed, CALL direction blocked
-            if not is_put_direction:
-                self.Log(
-                    f"OPTIONS_EOD: Blocked by Governor | "
-                    f"Scale={self._governor_scale:.0%} < 50% for CALL | "
+                    f"Scale={self._governor_scale:.0%} < 100% for CALL | "
                     f"Regime={regime_score_for_governor:.0f}"
                 )
                 return
@@ -3083,25 +3082,51 @@ class AlphaNextGen(QCAlgorithm):
         iv_rank = self._calculate_iv_rank(chain)
 
         # V2.23: Update IVSensor BEFORE strategy selection
-        self.options_engine._iv_sensor.update(self._current_vix)
+        # V5.3: Pass date for daily VIX tracking (conviction logic)
+        current_date_str = self.Time.strftime("%Y-%m-%d")
+        self.options_engine._iv_sensor.update(self._current_vix, current_date_str)
 
-        # V3.5 Fix: Determine spread directions to scan based on regime score
-        # Upper NEUTRAL (60-70): Scan BOTH directions (CALL @ 50%, PUT @ 25%)
-        # Lower NEUTRAL (50-59): PUT only @ 50%
-        # CAUTIOUS/BEAR (<50): PUT only @ 100%
-        upper_neutral_threshold = getattr(config, "OPTIONS_UPPER_NEUTRAL_THRESHOLD", 60)
+        # V5.3: Check position limits before scanning
+        can_swing, swing_reason = self.options_engine.can_enter_swing()
+        if not can_swing:
+            # Debug log - skip in backtest to avoid log limits
+            return
 
-        if regime_score > config.SPREAD_REGIME_BULLISH:  # > 70: BULL - CALL only
+        # V5.3: Get VASS conviction for potential Macro override
+        (
+            vass_has_conviction,
+            vass_direction,
+            vass_reason,
+        ) = self.options_engine._iv_sensor.has_conviction()
+
+        # V5.3: Get Macro direction from regime score
+        macro_direction = self.options_engine.get_macro_direction(regime_score)
+
+        # V5.3: Resolve trade signal - VASS conviction can override Macro
+        should_trade, resolved_direction, resolve_reason = self.options_engine.resolve_trade_signal(
+            engine="VASS",
+            engine_direction=vass_direction,
+            engine_conviction=vass_has_conviction,
+            macro_direction=macro_direction,
+        )
+
+        if not should_trade:
+            # Debug log - skip in backtest to avoid log limits
+            return
+
+        # V5.3: Use resolved direction (may be VASS override or Macro alignment)
+        if resolved_direction == "BULLISH":
             directions_to_scan = [(OptionDirection.CALL, "BULLISH")]
-        elif regime_score >= upper_neutral_threshold:  # 60-70: Upper NEUTRAL - both
-            directions_to_scan = [
-                (OptionDirection.CALL, "BULLISH"),  # CALL @ 50%
-                (OptionDirection.PUT, "BEARISH"),  # PUT @ 25%
-            ]
-        else:  # < 60: Lower NEUTRAL/CAUTIOUS/BEAR - PUT only
+        else:  # BEARISH
             directions_to_scan = [(OptionDirection.PUT, "BEARISH")]
 
-        # Scan each direction (upper NEUTRAL scans both CALL and PUT)
+        if vass_has_conviction:
+            self.Log(
+                f"OPTIONS_VASS_CONVICTION: {vass_reason} | Macro={macro_direction} | "
+                f"Resolved={resolved_direction} | {resolve_reason}"
+            )
+
+        # Scan each direction
         for direction, direction_str in directions_to_scan:
             self._scan_spread_for_direction(
                 chain,
@@ -4508,75 +4533,135 @@ class AlphaNextGen(QCAlgorithm):
             and self.Time < self._options_intraday_cooldown_until
         )
         if self._should_scan_intraday() and self._qqq_at_open > 0 and not intraday_cooldown_active:
-            # V2.4.1 FIX: Use UVXY-derived VIX proxy instead of stale daily VIX
-            # self._current_vix is daily close and doesn't change intraday
-            vix_intraday = self._get_vix_intraday_proxy()
-
-            # Get macro regime score for direction conflict check
-            regime_score = self.regime_engine.get_previous_score()
-
-            # STEP 1: Get engine recommendation (updates micro regime state)
-            # V2.3.16: Now includes direction conflict resolution internally
-            # V2.4.1: Pass UVXY-derived VIX proxy, not stale daily VIX
-            intraday_direction = self.options_engine.get_intraday_direction(
-                vix_current=vix_intraday,  # V2.4.1: UVXY proxy
-                vix_open=self._vix_at_open,
-                qqq_current=qqq_price,
-                qqq_open=self._qqq_at_open,
-                current_time=str(self.Time),
-                regime_score=regime_score,
-            )
-
-            # If engine recommends NO_TRADE or conflict detected, skip contract selection
-            if intraday_direction is None:
-                intraday_contract = None
+            # V5.3: Check position limits before scanning
+            can_intraday, intraday_limit_reason = self.options_engine.can_enter_intraday()
+            if not can_intraday:
+                # Debug log - skip in backtest to avoid log limits
+                pass  # Skip intraday but allow swing to continue
             else:
-                # STEP 2: Select contract matching ENGINE recommendation (not hardcoded fade)
-                # V2.14 Fix #20: Pass strategy for delta-aware contract selection
-                intraday_strategy = self.options_engine.get_last_intraday_strategy()
-                intraday_contract = self._select_intraday_option_contract(
-                    chain, intraday_direction, strategy=intraday_strategy
+                # V2.4.1 FIX: Use UVXY-derived VIX proxy instead of stale daily VIX
+                # self._current_vix is daily close and doesn't change intraday
+                vix_intraday = self._get_vix_intraday_proxy()
+
+                # Get macro regime score for direction conflict check
+                regime_score = self.regime_engine.get_previous_score()
+
+                # V5.3: Get Micro conviction for potential Macro override
+                uvxy_pct = 0.0
+                if hasattr(self, "_uvxy_at_open") and self._uvxy_at_open > 0:
+                    uvxy_current = self.Securities[self.uvxy].Price if hasattr(self, "uvxy") else 0
+                    if uvxy_current > 0:
+                        uvxy_pct = (uvxy_current - self._uvxy_at_open) / self._uvxy_at_open
+
+                (
+                    micro_has_conviction,
+                    micro_direction,
+                    micro_reason,
+                ) = self.options_engine._micro_regime_engine.has_conviction(
+                    uvxy_intraday_pct=uvxy_pct,
+                    vix_level=vix_intraday,
                 )
 
-            # V2.13 Fix #18: Log bid/ask rejection (was silent)
-            if intraday_contract is not None and (
-                intraday_contract.bid <= 0 or intraday_contract.ask <= 0
-            ):
-                self.Log(
-                    f"INTRADAY_PRICE_REJECT: {intraday_contract.symbol} | "
-                    f"Bid={intraday_contract.bid} Ask={intraday_contract.ask}"
-                )
-                intraday_contract = None  # Clear invalid contract
+                # V5.3: Get Macro direction
+                macro_direction = self.options_engine.get_macro_direction(regime_score)
 
-            # Verify contract has valid bid/ask before proceeding
-            if intraday_contract is not None:
-                # V2.3.20: Pass size_multiplier for cold start reduced sizing
-                # V2.4.1: Pass UVXY-derived VIX proxy
-                # V2.5: Pass macro_regime_score for Grind-Up Override
-                # V2.7: Use tradeable equity (not total portfolio) for cash-only sizing
-                # V2.11: Use margin-capped effective_portfolio_value (Pitfall #6)
-                # V3.2: Pass governor_scale for intraday Governor gate
-                intraday_signal = self.options_engine.check_intraday_entry_signal(
-                    vix_current=vix_intraday,  # V2.4.1: UVXY proxy
-                    vix_open=self._vix_at_open,
-                    qqq_current=qqq_price,
-                    qqq_open=self._qqq_at_open,
-                    current_hour=self.Time.hour,
-                    current_minute=self.Time.minute,
-                    current_time=str(self.Time),
-                    portfolio_value=effective_portfolio_value,  # V2.11: Margin-capped
-                    best_contract=intraday_contract,
-                    size_multiplier=size_multiplier,
-                    macro_regime_score=self._last_regime_score,
-                    governor_scale=self._governor_scale,  # V3.2: Intraday Governor gate
+                # V5.3: Resolve trade signal - Micro conviction can override Macro
+                (
+                    should_trade,
+                    resolved_direction,
+                    resolve_reason,
+                ) = self.options_engine.resolve_trade_signal(
+                    engine="MICRO",
+                    engine_direction=micro_direction,
+                    engine_conviction=micro_has_conviction,
+                    macro_direction=macro_direction,
                 )
-                if intraday_signal:
-                    self.portfolio_router.receive_signal(intraday_signal)
-                    # V2.3.13 FIX: MUST process immediately - signal was being queued but never executed!
-                    # The function returns early via swing spread path, so signal was lost
-                    self._process_immediate_signals()
-                    # V2.3.3 FIX: Don't return here - allow swing check to run too
-                    # Previously returned early, blocking swing spreads entirely
+
+                if not should_trade:
+                    # Debug log - skip in backtest to avoid log limits
+                    intraday_direction = None
+                else:
+                    if micro_has_conviction:
+                        self.Log(
+                            f"OPTIONS_MICRO_CONVICTION: {micro_reason} | Macro={macro_direction} | "
+                            f"Resolved={resolved_direction} | {resolve_reason}"
+                        )
+
+                    # STEP 1: Get engine recommendation (updates micro regime state)
+                    # V2.3.16: Now includes direction conflict resolution internally
+                    # V2.4.1: Pass UVXY-derived VIX proxy, not stale daily VIX
+                    engine_direction = self.options_engine.get_intraday_direction(
+                        vix_current=vix_intraday,  # V2.4.1: UVXY proxy
+                        vix_open=self._vix_at_open,
+                        qqq_current=qqq_price,
+                        qqq_open=self._qqq_at_open,
+                        current_time=str(self.Time),
+                        regime_score=regime_score,
+                    )
+
+                    # V5.3 FIX: When conviction fires, use conviction direction, not engine's
+                    # This ensures trades fire in same direction as conviction signal
+                    if micro_has_conviction and resolved_direction:
+                        # Convert string direction to OptionDirection enum
+                        if resolved_direction == "BULLISH":
+                            intraday_direction = OptionDirection.CALL
+                        elif resolved_direction == "BEARISH":
+                            intraday_direction = OptionDirection.PUT
+                        else:
+                            intraday_direction = engine_direction
+                    else:
+                        intraday_direction = engine_direction
+
+                # If engine recommends NO_TRADE or conflict detected, skip contract selection
+                if intraday_direction is None:
+                    intraday_contract = None
+                else:
+                    # STEP 2: Select contract matching ENGINE recommendation (not hardcoded fade)
+                    # V2.14 Fix #20: Pass strategy for delta-aware contract selection
+                    intraday_strategy = self.options_engine.get_last_intraday_strategy()
+                    intraday_contract = self._select_intraday_option_contract(
+                        chain, intraday_direction, strategy=intraday_strategy
+                    )
+
+                # V2.13 Fix #18: Log bid/ask rejection (was silent)
+                if intraday_contract is not None and (
+                    intraday_contract.bid <= 0 or intraday_contract.ask <= 0
+                ):
+                    self.Log(
+                        f"INTRADAY_PRICE_REJECT: {intraday_contract.symbol} | "
+                        f"Bid={intraday_contract.bid} Ask={intraday_contract.ask}"
+                    )
+                    intraday_contract = None  # Clear invalid contract
+
+                # Verify contract has valid bid/ask before proceeding
+                if intraday_contract is not None:
+                    # V2.3.20: Pass size_multiplier for cold start reduced sizing
+                    # V2.4.1: Pass UVXY-derived VIX proxy
+                    # V2.5: Pass macro_regime_score for Grind-Up Override
+                    # V2.7: Use tradeable equity (not total portfolio) for cash-only sizing
+                    # V2.11: Use margin-capped effective_portfolio_value (Pitfall #6)
+                    # V3.2: Pass governor_scale for intraday Governor gate
+                    intraday_signal = self.options_engine.check_intraday_entry_signal(
+                        vix_current=vix_intraday,  # V2.4.1: UVXY proxy
+                        vix_open=self._vix_at_open,
+                        qqq_current=qqq_price,
+                        qqq_open=self._qqq_at_open,
+                        current_hour=self.Time.hour,
+                        current_minute=self.Time.minute,
+                        current_time=str(self.Time),
+                        portfolio_value=effective_portfolio_value,  # V2.11: Margin-capped
+                        best_contract=intraday_contract,
+                        size_multiplier=size_multiplier,
+                        macro_regime_score=self._last_regime_score,
+                        governor_scale=self._governor_scale,  # V3.2: Intraday Governor gate
+                    )
+                    if intraday_signal:
+                        self.portfolio_router.receive_signal(intraday_signal)
+                        # V2.3.13 FIX: MUST process immediately - signal was being queued but never executed!
+                        # The function returns early via swing spread path, so signal was lost
+                        self._process_immediate_signals()
+                        # V2.3.3 FIX: Don't return here - allow swing check to run too
+                        # Previously returned early, blocking swing spreads entirely
 
         # V2.20: Check rejection cooldowns for swing/spread modes
         swing_cooldown_active = (
@@ -4606,7 +4691,9 @@ class AlphaNextGen(QCAlgorithm):
         self._last_swing_scan_time = self.Time
 
         # V2.23: Update IVSensor BEFORE strategy selection
-        self.options_engine._iv_sensor.update(self._current_vix)
+        # V5.3: Pass date for daily VIX tracking (conviction logic)
+        current_date_str = self.Time.strftime("%Y-%m-%d")
+        self.options_engine._iv_sensor.update(self._current_vix, current_date_str)
 
         regime_score = self.regime_engine.get_previous_score()
 
@@ -5148,6 +5235,24 @@ class AlphaNextGen(QCAlgorithm):
             for signal in gamma_pin_signals:
                 self.portfolio_router.receive_signal(signal)
             return  # Gamma pin exit takes priority
+
+        # V5.3 P0: Check assignment risk BEFORE normal exit conditions
+        # Assignment risk takes priority - close immediately if short leg is deep ITM
+        current_hour = self.Time.hour
+        current_minute = self.Time.minute
+        available_margin = self.Portfolio.MarginRemaining
+
+        assignment_risk_signals = self.options_engine.check_assignment_risk_exit(
+            underlying_price=underlying_price,
+            current_dte=current_dte,
+            current_hour=current_hour,
+            current_minute=current_minute,
+            available_margin=available_margin,
+        )
+        if assignment_risk_signals:
+            for signal in assignment_risk_signals:
+                self.portfolio_router.receive_signal(signal)
+            return  # Assignment risk exit takes priority
 
         # Get current regime score
         regime_score = self.regime_engine.get_previous_score()

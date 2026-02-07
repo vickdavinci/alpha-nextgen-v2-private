@@ -189,3 +189,15 @@ class QQQMove(Enum):
     FLAT = "FLAT"  # QQQ ±0.15% from open (V2.3.4: lowered from 0.3%)
     DOWN = "DOWN"  # QQQ -0.15% to -0.8% from open (V2.3.4: lowered from 0.3%)
     DOWN_STRONG = "DOWN_STRONG"  # QQQ < -0.8% from open
+
+
+class OptionDirection(Enum):
+    """
+    V5.3: Option trade direction for conviction logic.
+
+    Used when conviction overrides strategy direction to ensure
+    trades align with market regime signals.
+    """
+
+    CALL = "CALL"  # Bullish direction
+    PUT = "PUT"  # Bearish direction

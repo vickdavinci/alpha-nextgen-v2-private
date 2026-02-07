@@ -489,60 +489,150 @@ class ExitOrderTracker:
 
 class IVSensor:
     """
-    V2.8: Smoothed IV classification to prevent strategy flickering.
+    V5.3: VASS Conviction Engine - VIX Direction + Level Tracking.
 
-    Uses 30-minute SMA of VIX to classify IV environment into three tiers:
-    - LOW (< 15): Use debit spreads with monthly expiration
-    - MEDIUM (15-25): Use debit spreads with weekly expiration
-    - HIGH (> 25): Use credit spreads with weekly expiration
+    Tracks VIX on multiple timeframes:
+    - Intraday: 30-min SMA for strategy flickering prevention
+    - Weekly: 5-day SMA for short-term trend
+    - Monthly: 20-day SMA for sustained trend
 
-    The smoothing prevents rapid strategy switching when VIX hovers near thresholds.
+    Conviction triggers when VIX shows clear directional movement:
+    - 5d change > +20% → BEARISH conviction
+    - 5d change < -15% → BULLISH conviction
+    - 20d change > +30% → STRONG BEARISH
+    - 20d change < -20% → STRONG BULLISH
+    - VIX crosses above 25 → BEARISH
+    - VIX crosses below 15 → BULLISH
     """
 
     def __init__(self, smoothing_minutes: int = 30, log_func=None):
         """
-        Initialize IV Sensor.
+        Initialize VASS Conviction Engine.
 
         Args:
-            smoothing_minutes: SMA window size (default 30 minutes)
+            smoothing_minutes: Intraday SMA window (default 30 minutes)
             log_func: Logging function (optional)
         """
+        # Intraday smoothing (existing)
         self._vix_history: Deque[float] = deque(
             maxlen=smoothing_minutes or config.VASS_IV_SMOOTHING_MINUTES
         )
         self._last_classification: Optional[str] = None
         self._log = log_func or (lambda x: None)
 
-    def update(self, vix_value: float) -> None:
+        # V5.3: Daily VIX tracking for conviction
+        self._vix_daily_history: Deque[float] = deque(
+            maxlen=config.VASS_VIX_20D_PERIOD + 5  # 25 days buffer
+        )
+        self._last_vix_daily: Optional[float] = None
+        self._last_update_date: Optional[str] = None
+
+        # V5.3: Level crossing tracking
+        self._prev_vix_level: Optional[float] = None
+        self._crossed_above_fear: bool = False
+        self._crossed_below_complacent: bool = False
+
+    def update(self, vix_value: float, current_date: str = None) -> None:
         """
         Add VIX reading (called every minute from OnData).
 
         Args:
             vix_value: Current VIX value
+            current_date: Date string (YYYY-MM-DD) for daily tracking
         """
-        if vix_value > 0:  # Sanity check
-            self._vix_history.append(vix_value)
+        if vix_value <= 0:
+            return
+
+        # Intraday update
+        self._vix_history.append(vix_value)
+
+        # Daily update (once per day)
+        if current_date and current_date != self._last_update_date:
+            self._vix_daily_history.append(vix_value)
+            self._last_update_date = current_date
+
+            # Track level crossings
+            if self._prev_vix_level is not None:
+                # Crossed above fear threshold
+                if self._prev_vix_level < config.VASS_VIX_FEAR_CROSS_LEVEL <= vix_value:
+                    self._crossed_above_fear = True
+                    self._log(
+                        f"VASS: VIX crossed ABOVE {config.VASS_VIX_FEAR_CROSS_LEVEL} (fear threshold)"
+                    )
+                else:
+                    self._crossed_above_fear = False
+
+                # Crossed below complacent threshold
+                if self._prev_vix_level > config.VASS_VIX_COMPLACENT_CROSS_LEVEL >= vix_value:
+                    self._crossed_below_complacent = True
+                    self._log(
+                        f"VASS: VIX crossed BELOW {config.VASS_VIX_COMPLACENT_CROSS_LEVEL} (complacent threshold)"
+                    )
+                else:
+                    self._crossed_below_complacent = False
+
+            self._prev_vix_level = vix_value
+            self._last_vix_daily = vix_value
 
     def get_smoothed_vix(self) -> float:
-        """
-        Return 30-min SMA of VIX.
-
-        Returns:
-            Smoothed VIX value, or 20.0 (medium IV default) if no history
-        """
+        """Return 30-min SMA of VIX (intraday smoothing)."""
         if not self._vix_history:
             return 20.0  # Default to medium IV
         return sum(self._vix_history) / len(self._vix_history)
 
-    def classify(self) -> str:
+    def get_vix_5d_sma(self) -> Optional[float]:
+        """Return 5-day SMA of VIX (weekly trend)."""
+        period = config.VASS_VIX_5D_PERIOD
+        if len(self._vix_daily_history) < period:
+            return None
+        recent = list(self._vix_daily_history)[-period:]
+        return sum(recent) / len(recent)
+
+    def get_vix_20d_sma(self) -> Optional[float]:
+        """Return 20-day SMA of VIX (monthly trend)."""
+        period = config.VASS_VIX_20D_PERIOD
+        if len(self._vix_daily_history) < period:
+            return None
+        recent = list(self._vix_daily_history)[-period:]
+        return sum(recent) / len(recent)
+
+    def get_vix_5d_change(self) -> Optional[float]:
         """
-        Classify IV environment: LOW, MEDIUM, HIGH.
+        Return 5-day VIX change as percentage.
 
         Returns:
-            IV environment classification string
+            Percentage change (0.20 = +20%), or None if insufficient data
         """
+        period = config.VASS_VIX_5D_PERIOD
+        if len(self._vix_daily_history) < period:
+            return None
+        history = list(self._vix_daily_history)
+        vix_now = history[-1]
+        vix_5d_ago = history[-period]
+        if vix_5d_ago <= 0:
+            return None
+        return (vix_now - vix_5d_ago) / vix_5d_ago
+
+    def get_vix_20d_change(self) -> Optional[float]:
+        """
+        Return 20-day VIX change as percentage.
+
+        Returns:
+            Percentage change (0.30 = +30%), or None if insufficient data
+        """
+        period = config.VASS_VIX_20D_PERIOD
+        if len(self._vix_daily_history) < period:
+            return None
+        history = list(self._vix_daily_history)
+        vix_now = history[-1]
+        vix_20d_ago = history[-period]
+        if vix_20d_ago <= 0:
+            return None
+        return (vix_now - vix_20d_ago) / vix_20d_ago
+
+    def classify(self) -> str:
+        """Classify IV environment: LOW, MEDIUM, HIGH."""
         if not self._vix_history or len(self._vix_history) < 5:
-            # FALLBACK: Assume MEDIUM IV if insufficient data
             self._log("VASS: Insufficient VIX data, defaulting to MEDIUM")
             return "MEDIUM"
 
@@ -555,7 +645,6 @@ class IVSensor:
         else:
             classification = "MEDIUM"
 
-        # Log classification changes
         if self._last_classification != classification:
             self._log(
                 f"VASS: IV environment changed {self._last_classification} → {classification} "
@@ -565,23 +654,100 @@ class IVSensor:
 
         return classification
 
-    def is_ready(self) -> bool:
+    def has_conviction(self) -> Tuple[bool, Optional[str], str]:
         """
-        True if enough history for reliable smoothing.
+        V5.3: Check if VASS has conviction to override Macro.
 
         Returns:
-            True if at least 10 minutes of VIX data collected
+            Tuple of (has_conviction, direction, reason)
+            - has_conviction: True if clear signal
+            - direction: "BULLISH" or "BEARISH" or None
+            - reason: Human-readable explanation
         """
+        vix_5d_change = self.get_vix_5d_change()
+        vix_20d_change = self.get_vix_20d_change()
+
+        # Level crossing conviction (immediate)
+        if self._crossed_above_fear:
+            return True, "BEARISH", f"VIX crossed above {config.VASS_VIX_FEAR_CROSS_LEVEL}"
+
+        if self._crossed_below_complacent:
+            return True, "BULLISH", f"VIX crossed below {config.VASS_VIX_COMPLACENT_CROSS_LEVEL}"
+
+        # 5-day change conviction (fast-moving fear)
+        if vix_5d_change is not None:
+            if vix_5d_change > config.VASS_VIX_5D_BEARISH_THRESHOLD:
+                return (
+                    True,
+                    "BEARISH",
+                    f"VIX 5d change +{vix_5d_change:.0%} > +{config.VASS_VIX_5D_BEARISH_THRESHOLD:.0%}",
+                )
+
+            if vix_5d_change < config.VASS_VIX_5D_BULLISH_THRESHOLD:
+                return (
+                    True,
+                    "BULLISH",
+                    f"VIX 5d change {vix_5d_change:.0%} < {config.VASS_VIX_5D_BULLISH_THRESHOLD:.0%}",
+                )
+
+        # 20-day change conviction (sustained direction)
+        if vix_20d_change is not None:
+            if vix_20d_change > config.VASS_VIX_20D_STRONG_BEARISH:
+                return (
+                    True,
+                    "BEARISH",
+                    f"VIX 20d change +{vix_20d_change:.0%} > +{config.VASS_VIX_20D_STRONG_BEARISH:.0%} (STRONG)",
+                )
+
+            if vix_20d_change < config.VASS_VIX_20D_STRONG_BULLISH:
+                return (
+                    True,
+                    "BULLISH",
+                    f"VIX 20d change {vix_20d_change:.0%} < {config.VASS_VIX_20D_STRONG_BULLISH:.0%} (STRONG)",
+                )
+
+        # No conviction
+        return False, None, "No clear VIX direction signal"
+
+    def is_ready(self) -> bool:
+        """True if enough history for reliable classification."""
         return len(self._vix_history) >= 10
 
+    def is_conviction_ready(self) -> bool:
+        """True if enough daily history for conviction signals (5 days min)."""
+        return len(self._vix_daily_history) >= config.VASS_VIX_5D_PERIOD
+
     def get_history_length(self) -> int:
-        """Return current history length (for debugging)."""
+        """Return current intraday history length."""
         return len(self._vix_history)
 
+    def get_daily_history_length(self) -> int:
+        """Return current daily history length."""
+        return len(self._vix_daily_history)
+
     def reset(self) -> None:
-        """Clear history (for testing or session reset)."""
+        """Clear all history (for testing or session reset)."""
         self._vix_history.clear()
+        self._vix_daily_history.clear()
         self._last_classification = None
+        self._last_vix_daily = None
+        self._last_update_date = None
+        self._prev_vix_level = None
+        self._crossed_above_fear = False
+        self._crossed_below_complacent = False
+
+    def get_state_summary(self) -> dict:
+        """Return current state for logging/debugging."""
+        return {
+            "vix_intraday_sma": self.get_smoothed_vix(),
+            "vix_5d_sma": self.get_vix_5d_sma(),
+            "vix_20d_sma": self.get_vix_20d_sma(),
+            "vix_5d_change": self.get_vix_5d_change(),
+            "vix_20d_change": self.get_vix_20d_change(),
+            "iv_classification": self.classify() if self.is_ready() else "NOT_READY",
+            "conviction": self.has_conviction(),
+            "daily_history_len": len(self._vix_daily_history),
+        }
 
 
 # =============================================================================
@@ -1447,6 +1613,75 @@ class MicroRegimeEngine:
         self._qqq_open = 0.0
         self.log("Daily reset complete")
 
+    # =========================================================================
+    # V5.3: MICRO CONVICTION ENGINE
+    # =========================================================================
+
+    def has_conviction(
+        self,
+        uvxy_intraday_pct: float,
+        vix_level: float,
+    ) -> Tuple[bool, Optional[str], str]:
+        """
+        V5.3: Check if Micro has conviction to override Macro.
+
+        Conviction triggers:
+        - UVXY > +8% intraday → BEARISH
+        - UVXY < -5% intraday → BULLISH
+        - VIX > 35 → CRISIS (BEARISH)
+        - VIX < 12 → COMPLACENT (BULLISH)
+        - Micro state in BEARISH_STATES → BEARISH
+        - Micro state in BULLISH_STATES → BULLISH
+
+        Args:
+            uvxy_intraday_pct: UVXY change from open as decimal (0.08 = +8%)
+            vix_level: Current VIX level
+
+        Returns:
+            Tuple of (has_conviction, direction, reason)
+        """
+        # UVXY-based conviction (fastest signal)
+        if uvxy_intraday_pct > config.MICRO_UVXY_BEARISH_THRESHOLD:
+            return (
+                True,
+                "BEARISH",
+                f"UVXY +{uvxy_intraday_pct:.0%} > +{config.MICRO_UVXY_BEARISH_THRESHOLD:.0%}",
+            )
+
+        if uvxy_intraday_pct < config.MICRO_UVXY_BULLISH_THRESHOLD:
+            return (
+                True,
+                "BULLISH",
+                f"UVXY {uvxy_intraday_pct:.0%} < {config.MICRO_UVXY_BULLISH_THRESHOLD:.0%}",
+            )
+
+        # VIX level conviction (extreme levels)
+        if vix_level > config.MICRO_VIX_CRISIS_LEVEL:
+            return (
+                True,
+                "BEARISH",
+                f"VIX {vix_level:.1f} > {config.MICRO_VIX_CRISIS_LEVEL} (CRISIS)",
+            )
+
+        if vix_level < config.MICRO_VIX_COMPLACENT_LEVEL:
+            return (
+                True,
+                "BULLISH",
+                f"VIX {vix_level:.1f} < {config.MICRO_VIX_COMPLACENT_LEVEL} (COMPLACENT)",
+            )
+
+        # State-based conviction
+        if self._state.micro_regime:
+            regime_name = self._state.micro_regime.value
+            if regime_name in config.MICRO_BEARISH_STATES:
+                return True, "BEARISH", f"Micro state {regime_name} is BEARISH"
+
+            if regime_name in config.MICRO_BULLISH_STATES:
+                return True, "BULLISH", f"Micro state {regime_name} is BULLISH"
+
+        # No conviction
+        return False, None, "No extreme intraday signals"
+
 
 class OptionsEngine:
     """
@@ -1571,6 +1806,157 @@ class OptionsEngine:
             elif hasattr(self.algorithm, "LiveMode") and self.algorithm.LiveMode:
                 self.algorithm.Log(message)
             # In backtest mode with trades_only=False, skip logging (silent)
+
+    # =========================================================================
+    # V5.3: CONVICTION & POSITION MANAGEMENT
+    # =========================================================================
+
+    def resolve_trade_signal(
+        self,
+        engine: str,  # "MICRO" or "VASS"
+        engine_direction: Optional[str],  # "BULLISH" or "BEARISH"
+        engine_conviction: bool,
+        macro_direction: str,  # "BULLISH", "BEARISH", or "NEUTRAL"
+    ) -> Tuple[bool, Optional[str], str]:
+        """
+        V5.3: Resolve whether to trade based on engine signal vs macro.
+
+        Resolution Logic:
+        - ALIGNED: Engine and Macro agree → TRADE
+        - MISALIGNED + CONVICTION: Engine overrides Macro → TRADE (veto)
+        - MISALIGNED + NO CONVICTION: Uncertainty → NO TRADE
+
+        Args:
+            engine: Which engine is signaling ("MICRO" or "VASS")
+            engine_direction: Engine's directional view ("BULLISH" or "BEARISH")
+            engine_conviction: True if engine has strong signal
+            macro_direction: Macro regime's direction
+
+        Returns:
+            Tuple of (should_trade, final_direction, reason)
+        """
+        # No engine direction = follow Macro if it has a clear direction
+        if engine_direction is None:
+            if macro_direction in ("BULLISH", "BEARISH"):
+                return (
+                    True,
+                    macro_direction,
+                    f"FOLLOW_MACRO: {engine} has no direction, following Macro {macro_direction}",
+                )
+            else:
+                return (
+                    False,
+                    None,
+                    f"NO_TRADE: {engine} has no direction, Macro is {macro_direction}",
+                )
+
+        # Case 1: Aligned
+        if engine_direction == macro_direction:
+            return True, engine_direction, f"ALIGNED: {engine} + Macro agree on {engine_direction}"
+
+        # Case 2: Macro is NEUTRAL (no strong opinion)
+        if macro_direction == "NEUTRAL":
+            if engine_conviction:
+                return (
+                    True,
+                    engine_direction,
+                    f"VETO: {engine} conviction ({engine_direction}) overrides NEUTRAL Macro",
+                )
+            else:
+                return False, None, f"NO_TRADE: Macro NEUTRAL, {engine} no conviction"
+
+        # Case 3: Misaligned with clear Macro direction
+        if engine_conviction:
+            self.log(
+                f"VETO: {engine} conviction ({engine_direction}) overrides Macro ({macro_direction})",
+                trades_only=True,
+            )
+            return (
+                True,
+                engine_direction,
+                f"VETO: {engine} conviction overrides Macro {macro_direction}",
+            )
+        else:
+            return (
+                False,
+                None,
+                f"NO_TRADE: Misaligned ({engine}={engine_direction}, Macro={macro_direction}), no conviction",
+            )
+
+    def count_options_positions(self) -> Tuple[int, int, int]:
+        """
+        V5.3: Count current options positions.
+
+        Returns:
+            Tuple of (intraday_count, swing_count, total_count)
+        """
+        intraday_count = 1 if self._intraday_position is not None else 0
+        swing_count = 0
+
+        # Count spread positions
+        if self._spread_position is not None:
+            swing_count += 1
+
+        # Count legacy single position if in swing mode
+        if self._swing_position is not None:
+            swing_count += 1
+
+        total_count = intraday_count + swing_count
+        return intraday_count, swing_count, total_count
+
+    def can_enter_intraday(self) -> Tuple[bool, str]:
+        """
+        V5.3: Check if intraday entry is allowed.
+
+        Returns:
+            Tuple of (allowed, reason)
+        """
+        intraday_count, _, total_count = self.count_options_positions()
+
+        if total_count >= config.OPTIONS_MAX_TOTAL_POSITIONS:
+            return False, f"MAX_TOTAL: {total_count} >= {config.OPTIONS_MAX_TOTAL_POSITIONS}"
+
+        if intraday_count >= config.OPTIONS_MAX_INTRADAY_POSITIONS:
+            return (
+                False,
+                f"MAX_INTRADAY: {intraday_count} >= {config.OPTIONS_MAX_INTRADAY_POSITIONS}",
+            )
+
+        return True, "OK"
+
+    def can_enter_swing(self) -> Tuple[bool, str]:
+        """
+        V5.3: Check if swing entry is allowed.
+
+        Returns:
+            Tuple of (allowed, reason)
+        """
+        _, swing_count, total_count = self.count_options_positions()
+
+        if total_count >= config.OPTIONS_MAX_TOTAL_POSITIONS:
+            return False, f"MAX_TOTAL: {total_count} >= {config.OPTIONS_MAX_TOTAL_POSITIONS}"
+
+        if swing_count >= config.OPTIONS_MAX_SWING_POSITIONS:
+            return False, f"MAX_SWING: {swing_count} >= {config.OPTIONS_MAX_SWING_POSITIONS}"
+
+        return True, "OK"
+
+    def get_macro_direction(self, macro_regime_score: float) -> str:
+        """
+        V5.3: Determine Macro direction from regime score.
+
+        Args:
+            macro_regime_score: Regime score (0-100)
+
+        Returns:
+            "BULLISH", "BEARISH", or "NEUTRAL"
+        """
+        if macro_regime_score > 60:
+            return "BULLISH"
+        elif macro_regime_score < 40:
+            return "BEARISH"
+        else:
+            return "NEUTRAL"
 
     def _set_spread_failure_cooldown(self, current_time: Optional[str]) -> None:
         """
@@ -2349,12 +2735,13 @@ class OptionsEngine:
         mode: OptionsMode,
     ) -> Tuple[bool, float, str]:
         """
-        V3.2: Enforce macro regime constraints on all options entries.
+        V3.9: Enforce macro regime constraints on all options entries.
 
         Investment Thesis:
-        - BULL (70+): All directions allowed, full sizing
-        - NEUTRAL (50-69): PUT-only at 50% sizing
-        - CAUTIOUS/DEFENSIVE/BEAR (<50): PUT-only, full sizing
+        - BULL (70+): CALL allowed @ 100%
+        - Upper NEUTRAL (60-69): CALL only @ 50% (no PUTs - would fight bullish lean)
+        - Lower NEUTRAL (50-59): PUT only @ 50%
+        - CAUTIOUS/DEFENSIVE/BEAR (<50): PUT only @ 100%
 
         Args:
             macro_regime_score: Daily regime score (0-100).
@@ -2379,9 +2766,9 @@ class OptionsEngine:
             upper_neutral_threshold = getattr(config, "OPTIONS_UPPER_NEUTRAL_THRESHOLD", 60)
             upper_neutral_call_mult = getattr(config, "OPTIONS_UPPER_NEUTRAL_CALL_MULT", 0.25)
 
-            # V3.3: Upper NEUTRAL (60-69): Lean bullish - CALL at 50%, PUT at 25%
+            # V3.9: Upper NEUTRAL (60-69): CALL only at 50%, PUT blocked
+            # Rationale: Upper NEUTRAL leans bullish, PUTs would fight the trend
             if macro_regime_score >= upper_neutral_threshold:
-                upper_neutral_put_mult = getattr(config, "OPTIONS_UPPER_NEUTRAL_PUT_MULT", 0.25)
                 if requested_direction == OptionDirection.CALL:
                     return (
                         True,
@@ -2390,9 +2777,9 @@ class OptionsEngine:
                     )
                 else:
                     return (
-                        True,
-                        upper_neutral_put_mult,
-                        f"MACRO_GATE: {mode_str} PUT allowed in upper NEUTRAL @ {upper_neutral_put_mult:.0%}",
+                        False,
+                        0.0,
+                        f"MACRO_GATE: {mode_str} PUT blocked in upper NEUTRAL ({macro_regime_score:.0f}) - CALL only zone",
                     )
 
             # Lower NEUTRAL (50-59): PUT-only at reduced sizing (conservative)
@@ -2793,11 +3180,16 @@ class OptionsEngine:
             )
             return None
 
-        # V3.2: Determine spread type and direction, then apply macro gate
-        # BULL (70+): CALL spreads allowed
-        # NEUTRAL (50-69): PUT spreads only @ reduced sizing
-        # CAUTIOUS/BEAR (<50): PUT spreads only
-        if regime_score >= config.SPREAD_REGIME_BULLISH:
+        # V3.9: Determine spread type and direction, then apply macro gate
+        # Macro gate governs sizing based on regime zone:
+        # - BULL (70+): CALL @ 100%
+        # - Upper NEUTRAL (60-69): CALL only @ 50% (PUT blocked)
+        # - Lower NEUTRAL (50-59): PUT only @ 50%
+        # - CAUTIOUS/BEAR (<50): PUT only @ 100%
+        # Direction threshold uses OPTIONS_UPPER_NEUTRAL_THRESHOLD (60) to allow
+        # CALLs in Upper NEUTRAL - macro gate then governs the actual sizing.
+        upper_neutral_threshold = getattr(config, "OPTIONS_UPPER_NEUTRAL_THRESHOLD", 60)
+        if regime_score >= upper_neutral_threshold:
             spread_type = "BULL_CALL"
             direction = OptionDirection.CALL
             vix_max = config.SPREAD_VIX_MAX_BULL
@@ -3072,6 +3464,27 @@ class OptionsEngine:
                 f"SPREAD_LIMIT: Capped contracts | Requested={num_spreads} > Max={config.SPREAD_MAX_CONTRACTS}"
             )
             num_spreads = config.SPREAD_MAX_CONTRACTS
+
+        # V5.3 P1 Fix 5: Assignment-aware sizing
+        # Reduce size if max short exposure exceeds safe margin
+        underlying_price = short_leg_contract.strike  # Use strike as proxy for underlying
+        if self.algorithm:
+            underlying_price = getattr(
+                self.algorithm.Securities.get("QQQ", None), "Price", short_leg_contract.strike
+            )
+            portfolio_value = self.algorithm.Portfolio.TotalPortfolioValue
+        else:
+            portfolio_value = 50000  # Default for testing
+
+        assignment_multiplier = self.get_assignment_aware_size_multiplier(
+            underlying_price=underlying_price,
+            portfolio_value=portfolio_value,
+            requested_contracts=num_spreads,
+        )
+        if assignment_multiplier < 1.0:
+            adjusted_contracts = max(1, int(num_spreads * assignment_multiplier))
+            if adjusted_contracts < num_spreads:
+                num_spreads = adjusted_contracts
 
         # Store pending spread entry details
         self._pending_spread_long_leg = long_leg_contract
@@ -3490,6 +3903,390 @@ class OptionsEngine:
                 "short_leg_price": short_leg_contract.mid_price,
             },
         )
+
+    # =========================================================================
+    # V5.3 ASSIGNMENT RISK MANAGEMENT (P0/P1 Fixes)
+    # =========================================================================
+
+    def _is_short_leg_deep_itm(
+        self,
+        short_leg: "OptionContract",
+        underlying_price: float,
+        current_dte: int,
+    ) -> Tuple[bool, str]:
+        """
+        V5.3 P0 Fix 1: Check if short leg is deep ITM (assignment risk).
+
+        A short option is considered deep ITM when:
+        - DTE <= threshold (default 3)
+        - AND (delta > threshold OR intrinsic value > threshold)
+
+        Args:
+            short_leg: The short leg of the spread
+            underlying_price: Current price of underlying (QQQ)
+            current_dte: Days to expiration
+
+        Returns:
+            Tuple of (is_deep_itm, reason)
+        """
+        if not getattr(config, "DEEP_ITM_EXIT_ENABLED", True):
+            return False, ""
+
+        dte_threshold = getattr(config, "DEEP_ITM_EXIT_DTE_THRESHOLD", 3)
+        delta_threshold = getattr(config, "DEEP_ITM_EXIT_DELTA_THRESHOLD", 0.80)
+        intrinsic_pct_threshold = getattr(config, "DEEP_ITM_EXIT_INTRINSIC_PCT", 0.05)
+
+        # Only check if DTE is within threshold
+        if current_dte > dte_threshold:
+            return False, ""
+
+        # Calculate intrinsic value
+        is_put = "P" in str(short_leg.symbol).upper()
+        strike = short_leg.strike
+
+        if is_put:
+            # Put is ITM when strike > underlying
+            intrinsic = max(0, strike - underlying_price)
+            is_itm = strike > underlying_price
+        else:
+            # Call is ITM when strike < underlying
+            intrinsic = max(0, underlying_price - strike)
+            is_itm = strike < underlying_price
+
+        if not is_itm:
+            return False, ""
+
+        intrinsic_pct = intrinsic / underlying_price if underlying_price > 0 else 0
+
+        # Check delta threshold (if available)
+        short_delta = abs(getattr(short_leg, "delta", 0.5))
+        is_deep_by_delta = short_delta >= delta_threshold
+
+        # Check intrinsic threshold
+        is_deep_by_intrinsic = intrinsic_pct >= intrinsic_pct_threshold
+
+        if is_deep_by_delta or is_deep_by_intrinsic:
+            reason = (
+                f"DEEP_ITM_SHORT: DTE={current_dte} | Delta={short_delta:.2f} | "
+                f"Intrinsic=${intrinsic:.2f} ({intrinsic_pct:.1%}) | "
+                f"Strike={strike} vs Underlying={underlying_price:.2f}"
+            )
+            return True, reason
+
+        return False, ""
+
+    def _check_overnight_itm_short_risk(
+        self,
+        short_leg: "OptionContract",
+        underlying_price: float,
+        current_dte: int,
+        current_hour: int,
+        current_minute: int,
+    ) -> Tuple[bool, str]:
+        """
+        V5.3 P0 Fix 2: Block holding short ITM options overnight if DTE <= 2.
+
+        Assignment typically happens overnight. If a short option is ITM
+        near market close with low DTE, force close to avoid assignment.
+
+        Returns:
+            Tuple of (should_close, reason)
+        """
+        if not getattr(config, "OVERNIGHT_ITM_SHORT_BLOCK_ENABLED", True):
+            return False, ""
+
+        dte_threshold = getattr(config, "OVERNIGHT_ITM_SHORT_DTE_THRESHOLD", 2)
+        check_hour = getattr(config, "OVERNIGHT_ITM_SHORT_CHECK_TIME_HOUR", 15)
+        check_minute = getattr(config, "OVERNIGHT_ITM_SHORT_CHECK_TIME_MINUTE", 0)
+
+        # Only check at or after the configured time
+        current_time_mins = current_hour * 60 + current_minute
+        check_time_mins = check_hour * 60 + check_minute
+
+        if current_time_mins < check_time_mins:
+            return False, ""
+
+        # Only check if DTE is within threshold
+        if current_dte > dte_threshold:
+            return False, ""
+
+        # Check if short leg is ITM
+        is_put = "P" in str(short_leg.symbol).upper()
+        strike = short_leg.strike
+
+        if is_put:
+            is_itm = strike > underlying_price
+        else:
+            is_itm = strike < underlying_price
+
+        if is_itm:
+            reason = (
+                f"OVERNIGHT_ITM_BLOCK: Short {'PUT' if is_put else 'CALL'} "
+                f"Strike={strike} is ITM (Underlying={underlying_price:.2f}) | "
+                f"DTE={current_dte} | Time={current_hour}:{current_minute:02d} | "
+                f"Closing to prevent overnight assignment risk"
+            )
+            return True, reason
+
+        return False, ""
+
+    def _check_assignment_margin_buffer(
+        self,
+        spread: "SpreadPosition",
+        underlying_price: float,
+        available_margin: float,
+    ) -> Tuple[bool, str]:
+        """
+        V5.3 P0 Fix 3: Check if margin buffer is sufficient for assignment risk.
+
+        If short leg is ITM and we don't have enough margin buffer to handle
+        potential assignment, auto-reduce or close the position.
+
+        Returns:
+            Tuple of (should_close, reason)
+        """
+        if not getattr(config, "ASSIGNMENT_MARGIN_BUFFER_ENABLED", True):
+            return False, ""
+
+        buffer_pct = getattr(config, "ASSIGNMENT_MARGIN_BUFFER_PCT", 0.20)
+
+        # Calculate potential assignment exposure
+        # If short put assigned: We buy 100 shares per contract at strike
+        # If short call assigned: We sell 100 shares per contract at strike
+        short_leg = spread.short_leg
+        strike = short_leg.strike
+        num_contracts = spread.num_spreads
+
+        # Assignment exposure = strike * 100 shares * num_contracts
+        assignment_exposure = strike * 100 * num_contracts
+
+        # Required margin buffer
+        required_buffer = assignment_exposure * buffer_pct
+
+        if available_margin < required_buffer:
+            reason = (
+                f"MARGIN_BUFFER_INSUFFICIENT: Assignment exposure=${assignment_exposure:,.0f} | "
+                f"Required buffer=${required_buffer:,.0f} ({buffer_pct:.0%}) | "
+                f"Available margin=${available_margin:,.0f}"
+            )
+            return True, reason
+
+        return False, ""
+
+    def check_assignment_risk_exit(
+        self,
+        underlying_price: float,
+        current_dte: int,
+        current_hour: int,
+        current_minute: int,
+        available_margin: float = 0,
+    ) -> Optional[List[TargetWeight]]:
+        """
+        V5.3 P0: Check if spread should be closed due to assignment risk.
+
+        This is a PRIORITY check that runs BEFORE normal exit conditions.
+        Assignment risk takes precedence over profit/loss targets.
+
+        Args:
+            underlying_price: Current price of underlying (QQQ)
+            current_dte: Days to expiration
+            current_hour: Current hour (ET)
+            current_minute: Current minute
+            available_margin: Available margin for assignment buffer check
+
+        Returns:
+            List of TargetWeights to close spread, or None
+        """
+        if self._spread_position is None:
+            return None
+
+        spread = self._spread_position
+
+        # Skip if already closing
+        if spread.is_closing:
+            return None
+
+        short_leg = spread.short_leg
+        exit_reason = None
+
+        # P0 Fix 1: Deep ITM short leg
+        is_deep_itm, deep_itm_reason = self._is_short_leg_deep_itm(
+            short_leg=short_leg,
+            underlying_price=underlying_price,
+            current_dte=current_dte,
+        )
+        if is_deep_itm:
+            exit_reason = deep_itm_reason
+
+        # P0 Fix 2: Overnight ITM short block
+        if exit_reason is None:
+            should_close, overnight_reason = self._check_overnight_itm_short_risk(
+                short_leg=short_leg,
+                underlying_price=underlying_price,
+                current_dte=current_dte,
+                current_hour=current_hour,
+                current_minute=current_minute,
+            )
+            if should_close:
+                exit_reason = overnight_reason
+
+        # P0 Fix 3: Margin buffer insufficient
+        if exit_reason is None and available_margin > 0:
+            should_close, margin_reason = self._check_assignment_margin_buffer(
+                spread=spread,
+                underlying_price=underlying_price,
+                available_margin=available_margin,
+            )
+            if should_close:
+                exit_reason = margin_reason
+
+        if exit_reason is None:
+            return None
+
+        self.log(
+            f"ASSIGNMENT_RISK_EXIT: {exit_reason}",
+            trades_only=True,
+        )
+
+        # Mark as closing to prevent duplicate signals
+        spread.is_closing = True
+
+        # Return exit signal (same structure as normal spread exit)
+        return [
+            TargetWeight(
+                symbol=spread.long_leg.symbol,
+                target_weight=0.0,
+                source="OPT",
+                urgency=Urgency.IMMEDIATE,
+                reason=f"ASSIGNMENT_RISK: {exit_reason}",
+                metadata={
+                    "spread_type": spread.spread_type,
+                    "spread_short_leg_symbol": spread.short_leg.symbol,
+                    "spread_short_leg_quantity": -spread.num_spreads,
+                    "exit_type": "ASSIGNMENT_RISK",
+                },
+            )
+        ]
+
+    def get_assignment_aware_size_multiplier(
+        self,
+        underlying_price: float,
+        portfolio_value: float,
+        requested_contracts: int,
+    ) -> float:
+        """
+        V5.3 P1 Fix 5: Assignment-aware position sizing.
+
+        Reduce size if max short exposure would exceed safe margin.
+
+        Args:
+            underlying_price: Current underlying price
+            portfolio_value: Total portfolio value
+            requested_contracts: Requested number of contracts
+
+        Returns:
+            Size multiplier (0.0 to 1.0)
+        """
+        if not getattr(config, "ASSIGNMENT_AWARE_SIZING_ENABLED", True):
+            return 1.0
+
+        # Skip assignment-aware sizing in test mode (algorithm is None)
+        if self.algorithm is None:
+            return 1.0
+
+        max_exposure_pct = getattr(config, "ASSIGNMENT_SIZING_MAX_EXPOSURE_PCT", 0.50)
+
+        # Max exposure we allow = portfolio_value * max_exposure_pct
+        max_exposure = portfolio_value * max_exposure_pct
+
+        # Potential assignment exposure = underlying_price * 100 * contracts
+        potential_exposure = underlying_price * 100 * requested_contracts
+
+        if potential_exposure <= max_exposure:
+            return 1.0
+
+        # Calculate how many contracts we can safely hold
+        safe_contracts = int(max_exposure / (underlying_price * 100))
+        if safe_contracts <= 0:
+            return 0.0
+
+        multiplier = safe_contracts / requested_contracts
+        self.log(
+            f"ASSIGNMENT_SIZING: Reduced {requested_contracts} -> {safe_contracts} contracts | "
+            f"Max exposure={max_exposure_pct:.0%} of ${portfolio_value:,.0f} = ${max_exposure:,.0f} | "
+            f"Potential=${potential_exposure:,.0f}",
+            trades_only=True,
+        )
+
+        return multiplier
+
+    def handle_partial_assignment(
+        self,
+        assigned_symbol: str,
+        assigned_quantity: int,
+    ) -> Optional[List[TargetWeight]]:
+        """
+        V5.3 P0 Fix 4: Handle partial assignment of spread.
+
+        When one leg of a spread is assigned, we need to close the remaining leg
+        to avoid naked exposure.
+
+        Args:
+            assigned_symbol: Symbol that was assigned
+            assigned_quantity: Quantity that was assigned
+
+        Returns:
+            List of TargetWeights to close orphaned legs, or None
+        """
+        if not getattr(config, "PARTIAL_ASSIGNMENT_DETECTION_ENABLED", True):
+            return None
+
+        if self._spread_position is None:
+            return None
+
+        spread = self._spread_position
+        auto_close = getattr(config, "PARTIAL_ASSIGNMENT_AUTO_CLOSE", True)
+
+        # Check if assigned symbol matches our short leg
+        is_short_assigned = assigned_symbol == spread.short_leg.symbol
+        is_long_assigned = assigned_symbol == spread.long_leg.symbol
+
+        if not (is_short_assigned or is_long_assigned):
+            return None
+
+        self.log(
+            f"PARTIAL_ASSIGNMENT_DETECTED: {assigned_symbol} x{assigned_quantity} | "
+            f"Spread: {spread.spread_type} | "
+            f"{'Short' if is_short_assigned else 'Long'} leg assigned",
+            trades_only=True,
+        )
+
+        if not auto_close:
+            self.log(
+                "PARTIAL_ASSIGNMENT: Auto-close disabled, manual intervention required",
+                trades_only=True,
+            )
+            return None
+
+        # Close the remaining leg
+        remaining_leg = spread.long_leg if is_short_assigned else spread.short_leg
+        remaining_qty = spread.num_spreads
+
+        spread.is_closing = True
+
+        return [
+            TargetWeight(
+                symbol=remaining_leg.symbol,
+                target_weight=0.0,
+                source="OPT",
+                urgency=Urgency.IMMEDIATE,
+                reason=f"PARTIAL_ASSIGNMENT: Closing orphaned {'long' if is_short_assigned else 'short'} leg",
+                metadata={
+                    "exit_type": "PARTIAL_ASSIGNMENT",
+                    "assigned_leg": assigned_symbol,
+                },
+            )
+        ]
 
     # =========================================================================
     # V2.3 SPREAD EXIT SIGNALS
@@ -4183,13 +4980,18 @@ class OptionsEngine:
         """
         V2.8: Select spread strategy based on direction + IV environment.
 
-        Strategy Matrix:
+        Strategy Matrix (V5.3: All DEBIT spreads for gamma capture):
         - LOW IV + BULLISH → Bull Call Debit (Monthly 30-45 DTE)
         - LOW IV + BEARISH → Bear Put Debit (Monthly 30-45 DTE)
         - MEDIUM IV + BULLISH → Bull Call Debit (Weekly 7-21 DTE)
         - MEDIUM IV + BEARISH → Bear Put Debit (Weekly 7-21 DTE)
-        - HIGH IV + BULLISH → Bull Put Credit (Weekly 7-14 DTE)
-        - HIGH IV + BEARISH → Bear Call Credit (Weekly 7-14 DTE)
+        - HIGH IV + BULLISH → Bull Call Debit (Weekly 7-14 DTE)
+        - HIGH IV + BEARISH → Bear Put Debit (Weekly 7-14 DTE)
+
+        Rationale: In HIGH IV, big moves are expected. Debit spreads are
+        ALIGNED with this (profit from movement). Credit spreads bet AGAINST
+        movement, which contradicts the high IV environment. Spread structure
+        hedges vega risk from IV crush.
 
         For intraday trades, strategy type comes from matrix but DTE is always
         nearest weekly (0-5 DTE).
@@ -4215,7 +5017,7 @@ class OptionsEngine:
                 config.VASS_MEDIUM_IV_DTE_MAX,
             ),
             ("BULLISH", "HIGH"): (
-                SpreadStrategy.BULL_PUT_CREDIT,
+                SpreadStrategy.BULL_CALL_DEBIT,  # V5.3: Debit for gamma capture in volatile markets
                 config.VASS_HIGH_IV_DTE_MIN,
                 config.VASS_HIGH_IV_DTE_MAX,
             ),
@@ -4230,7 +5032,7 @@ class OptionsEngine:
                 config.VASS_MEDIUM_IV_DTE_MAX,
             ),
             ("BEARISH", "HIGH"): (
-                SpreadStrategy.BEAR_CALL_CREDIT,
+                SpreadStrategy.BEAR_PUT_DEBIT,  # V5.3: Debit for gamma capture in volatile markets
                 config.VASS_HIGH_IV_DTE_MIN,
                 config.VASS_HIGH_IV_DTE_MAX,
             ),

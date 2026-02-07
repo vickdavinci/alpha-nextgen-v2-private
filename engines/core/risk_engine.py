@@ -242,6 +242,9 @@ class RiskEngine:
         self._days_at_governor_zero: int = 0
         self._equity_at_governor_zero_start: float = 0.0
 
+        # V5.1: Regime Guard for safe re-arming
+        self._regime_guard_consecutive_days: int = 0
+
         # V2.27: Graduated Kill Switch state
         self._ks_current_tier: KSTier = KSTier.NONE
         self._ks_skip_until_date: Optional[str] = None  # Block entries after Tier 2+
@@ -347,22 +350,27 @@ class RiskEngine:
         self._spy_atr = atr
 
     # =========================================================================
-    # V2.26: Drawdown Governor (Cumulative Capital Preservation)
+    # V5.2: BINARY Drawdown Governor
     # =========================================================================
 
-    def check_drawdown_governor(self, current_equity: float) -> float:
+    def check_drawdown_governor(self, current_equity: float, regime_score: float = 50.0) -> float:
         """
-        Check drawdown from equity high watermark and scale allocations.
+        V5.2 BINARY Governor: Check drawdown and set scale to 100% or 0%.
 
-        Called at market open (09:25) before any signal generation.
-        Tracks cumulative drawdown from peak and applies graduated scaling.
-        Implements hysteresis: must recover RECOVERY_PCT from trough before stepping up.
+        Binary Logic:
+        - DD < 15%: FULL TRADING (100%)
+        - DD >= 15%: DEFENSIVE ONLY (0%)
+
+        Recovery from 0% requires:
+        - DD falls below recovery threshold (12%)
+        - Regime guard passes (regime >= 60 for 5 days)
 
         Args:
             current_equity: Current portfolio value.
+            regime_score: Current smoothed regime score (0-100).
 
         Returns:
-            Governor scale (0.0-1.0) to multiply all engine allocations.
+            Governor scale: 1.0 (full trading) or 0.0 (defensive only).
         """
         if not self._governor_enabled:
             return 1.0
@@ -374,88 +382,76 @@ class RiskEngine:
         if self._equity_high_watermark <= 0:
             self._equity_high_watermark = current_equity
             self._trough_equity = current_equity
-            self._scale_at_trough = 1.0
             self.log(f"DRAWDOWN_GOVERNOR: Initialized | HWM=${current_equity:,.0f}")
             return 1.0
 
-        # Update high watermark
+        # Update high watermark when making new highs
         if current_equity > self._equity_high_watermark:
             self._equity_high_watermark = current_equity
-            # Reset trough tracking when making new highs
             self._trough_equity = current_equity
-            self._scale_at_trough = self._governor_scale
-
-        # Calculate drawdown from peak
-        dd_pct = (self._equity_high_watermark - current_equity) / self._equity_high_watermark
-
-        # Walk governor levels to find applicable scale (highest DD threshold that applies)
-        levels = sorted(config.DRAWDOWN_GOVERNOR_LEVELS.items())  # Sort by DD %
-        target_scale = 1.0
-        for threshold, scale in levels:
-            if dd_pct >= threshold:
-                target_scale = scale
-
-        # Hysteresis: only step UP when equity recovers dynamically from trough
-        if target_scale > self._governor_scale:
-            # Attempting to step UP — check recovery from trough
-            if self._trough_equity > 0:
-                recovery_pct = (current_equity - self._trough_equity) / self._trough_equity
-                # V2.29 P1: Dynamic recovery — lower bar at reduced allocations
-                dynamic_recovery = config.DRAWDOWN_GOVERNOR_RECOVERY_BASE * self._governor_scale
-                if recovery_pct < dynamic_recovery:
-                    # Not enough recovery yet — hold current scale
-                    target_scale = self._governor_scale
-                else:
-                    # Recovery confirmed — step up and reset trough
-                    self.log(
-                        f"DRAWDOWN_GOVERNOR: STEP_UP | "
-                        f"Recovery={recovery_pct:.1%} >= {dynamic_recovery:.1%} "
-                        f"(base={config.DRAWDOWN_GOVERNOR_RECOVERY_BASE:.0%} × scale={self._governor_scale:.0%}) | "
-                        f"Scale {self._governor_scale:.0%} → {target_scale:.0%}"
-                    )
-                    self._trough_equity = current_equity
-                    self._scale_at_trough = target_scale
-
-        # Step DOWN is immediate (no hysteresis needed for protection)
-        # V3.0 FIX: Check immunity period from Regime Override
-        if target_scale < self._governor_scale:
-            # Check if we're in immunity period from recent Regime Override
-            if self._is_in_override_immunity():
-                self.log(
-                    f"DRAWDOWN_GOVERNOR: STEP_DOWN_BLOCKED | "
-                    f"DD={dd_pct:.1%} | Would be {self._governor_scale:.0%} → {target_scale:.0%} | "
-                    f"REGIME_OVERRIDE immunity active"
-                )
-                target_scale = self._governor_scale  # Block the step-down
-            else:
-                self.log(
-                    f"DRAWDOWN_GOVERNOR: STEP_DOWN | "
-                    f"DD={dd_pct:.1%} | Scale {self._governor_scale:.0%} → {target_scale:.0%} | "
-                    f"HWM=${self._equity_high_watermark:,.0f} | Current=${current_equity:,.0f}"
-                )
-                # Update trough tracking
-                self._trough_equity = current_equity
-                self._scale_at_trough = target_scale
 
         # Track trough for recovery calculation
         if current_equity < self._trough_equity or self._trough_equity <= 0:
             self._trough_equity = current_equity
 
-        prev_scale = self._governor_scale
-        self._governor_scale = target_scale
+        # Calculate drawdown from peak
+        dd_pct = (self._equity_high_watermark - current_equity) / self._equity_high_watermark
 
-        # Log status (only when active or changing)
-        if self._governor_scale < 1.0 or prev_scale != self._governor_scale:
+        # V5.2: Get single threshold from config (should be 0.15: 0.00)
+        dd_threshold = 0.15  # Default
+        for threshold, scale in config.DRAWDOWN_GOVERNOR_LEVELS.items():
+            if scale == 0.0:
+                dd_threshold = threshold
+                break
+
+        recovery_threshold = getattr(config, "DRAWDOWN_GOVERNOR_RECOVERY_THRESHOLD", 0.12)
+
+        prev_scale = self._governor_scale
+
+        # V5.2 BINARY LOGIC
+        if self._governor_scale == 1.0:
+            # Currently FULL TRADING - check if need to go DEFENSIVE
+            if dd_pct >= dd_threshold:
+                self._governor_scale = 0.0
+                self._days_at_governor_zero = 0
+                self._equity_at_governor_zero_start = current_equity
+                self.log(
+                    f"DRAWDOWN_GOVERNOR: DEFENSIVE MODE | "
+                    f"DD={dd_pct:.1%} >= {dd_threshold:.0%} | "
+                    f"Scale 100% → 0% | "
+                    f"HWM=${self._equity_high_watermark:,.0f} | Current=${current_equity:,.0f}"
+                )
+        else:
+            # Currently DEFENSIVE (0%) - check if can recover to FULL TRADING
+            self._days_at_governor_zero += 1
+
+            if dd_pct < recovery_threshold:
+                # DD has improved enough - check regime guard
+                if self._check_regime_guard(regime_score):
+                    # Check equity recovery from trough
+                    if self._check_equity_recovery_from_zero(current_equity, regime_score):
+                        # Recovery complete - handled in _check_equity_recovery_from_zero
+                        pass
+                    else:
+                        self.log(
+                            f"DRAWDOWN_GOVERNOR: RECOVERY_PENDING | "
+                            f"DD={dd_pct:.1%} < {recovery_threshold:.0%} | "
+                            f"Regime Guard PASSED | Waiting for equity recovery"
+                        )
+                else:
+                    self.log(
+                        f"DRAWDOWN_GOVERNOR: RECOVERY_BLOCKED | "
+                        f"DD={dd_pct:.1%} < {recovery_threshold:.0%} but "
+                        f"Regime Guard FAILED (score={regime_score:.0f})"
+                    )
+
+        # Log status when defensive
+        if self._governor_scale == 0.0:
             self.log(
-                f"DRAWDOWN_GOVERNOR: DD={dd_pct:.1%} | Scale={self._governor_scale:.0%} | "
+                f"DRAWDOWN_GOVERNOR: DD={dd_pct:.1%} | Scale=0% (DEFENSIVE) | "
+                f"Days at 0%={self._days_at_governor_zero} | "
                 f"HWM=${self._equity_high_watermark:,.0f} | Current=${current_equity:,.0f}"
             )
-
-        # V3.0: HWM Reset after sustained recovery
-        self._check_hwm_reset(current_equity)
-
-        # V3.1: Equity Recovery from Governor 0%
-        self._check_equity_recovery_from_zero(current_equity)
 
         return self._governor_scale
 
@@ -538,18 +534,74 @@ class RiskEngine:
 
         return False
 
-    def _check_equity_recovery_from_zero(self, current_equity: float) -> bool:
+    def _check_regime_guard(self, regime_score: float) -> bool:
         """
-        V3.1: Check if equity has recovered enough to step up from Governor 0%.
+        V5.1: Check if regime guard allows step-up.
+
+        This is a GATE that ALLOWS step-up when regime confirms,
+        NOT a FORCE that causes step-up regardless of drawdown.
+
+        Key difference from REGIME_OVERRIDE:
+        - REGIME_OVERRIDE: Forces step-up when bullish → causes death spiral
+        - REGIME_GUARD: Only allows step-up when DD recovers AND regime confirms
+
+        Args:
+            regime_score: Current smoothed regime score (0-100).
+
+        Returns:
+            True if regime guard passes (step-up allowed).
+        """
+        if not getattr(config, "GOVERNOR_REGIME_GUARD_ENABLED", True):
+            return True  # Guard disabled = always pass
+
+        threshold = getattr(config, "GOVERNOR_REGIME_GUARD_THRESHOLD", 60)
+        required_days = getattr(config, "GOVERNOR_REGIME_GUARD_DAYS", 5)
+
+        # Track consecutive days at/above threshold
+        if regime_score >= threshold:
+            self._regime_guard_consecutive_days += 1
+        else:
+            # Reset counter if regime drops below threshold
+            if self._regime_guard_consecutive_days > 0:
+                self.log(
+                    f"REGIME_GUARD: Counter reset | "
+                    f"Regime={regime_score:.0f} < {threshold} threshold"
+                )
+            self._regime_guard_consecutive_days = 0
+            return False
+
+        passes = self._regime_guard_consecutive_days >= required_days
+
+        if passes:
+            self.log(
+                f"REGIME_GUARD: PASSED | "
+                f"Regime={regime_score:.0f} >= {threshold} for "
+                f"{self._regime_guard_consecutive_days} days"
+            )
+
+        return passes
+
+    def _check_equity_recovery_from_zero(
+        self, current_equity: float, regime_score: float = 50.0
+    ) -> bool:
+        """
+        V3.1/V5.1: Check if equity has recovered enough to step up from Governor 0%.
 
         Problem: At Governor 0%, HWM Reset requires Scale >= 50% which is impossible.
         Bot gets stuck at 0% forever with no recovery path.
 
         Solution: If at Governor 0% for N days AND equity recovers X% from trough,
-        force step-up to 50%. This gives the bot a chance to recover.
+        step up to 50%. This gives the bot a chance to recover.
+
+        V5.1 Changes:
+        - Stricter recovery: 5% from trough (was 3%)
+        - Longer waiting: 10 days at 0% (was 5)
+        - Regime guard: Must also pass regime guard (regime >= 60 for 5 days)
+        This prevents bear rally traps where market bounces then resumes decline.
 
         Args:
             current_equity: Current portfolio value.
+            regime_score: Current smoothed regime score (0-100).
 
         Returns:
             True if step-up was triggered.
@@ -577,7 +629,8 @@ class RiskEngine:
             )
             return False
 
-        self._days_at_governor_zero += 1
+        # NOTE: Counter already incremented in check_drawdown_governor()
+        # Do NOT increment here (was causing double-counting bug)
 
         # Check minimum days requirement
         min_days = getattr(config, "GOVERNOR_EQUITY_RECOVERY_MIN_DAYS_AT_ZERO", 5)
@@ -595,21 +648,38 @@ class RiskEngine:
         recovery_from_trough = (current_equity - self._trough_equity) / self._trough_equity
 
         if recovery_from_trough >= recovery_pct:
-            # Trigger step-up to 50%
+            # V5.1: Also require regime guard if enabled
+            require_regime_guard = getattr(
+                config, "GOVERNOR_EQUITY_RECOVERY_REQUIRE_REGIME_GUARD", True
+            )
+
+            if require_regime_guard and not self._check_regime_guard(regime_score):
+                # Recovery sufficient but regime guard failed — block step-up
+                self.log(
+                    f"EQUITY_RECOVERY: BLOCKED | "
+                    f"Day {self._days_at_governor_zero} at 0% | "
+                    f"Recovery={recovery_from_trough:.1%} >= {recovery_pct:.0%} sufficient but "
+                    f"Regime Guard FAILED (score={regime_score:.0f})"
+                )
+                return False
+
+            # V5.2 BINARY: Step directly to 100% (full trading)
             old_scale = self._governor_scale
-            self._governor_scale = 0.50
+            days_at_zero = self._days_at_governor_zero  # Save before resetting
+            self._governor_scale = 1.0  # V5.2: Binary - go to FULL TRADING
             self._days_at_governor_zero = 0
             self._equity_at_governor_zero_start = 0.0
             # Reset trough to current equity
+            old_trough = self._trough_equity
             self._trough_equity = current_equity
-            self._scale_at_trough = self._governor_scale
 
             self.log(
-                f"EQUITY_RECOVERY: TRIGGERED | "
-                f"Days at 0%={self._days_at_governor_zero} | "
+                f"EQUITY_RECOVERY: FULL TRADING RESTORED | "
+                f"Days at 0%={days_at_zero} | "
                 f"Recovery={recovery_from_trough:.1%} >= {recovery_pct:.0%} | "
-                f"Scale {old_scale:.0%} → {self._governor_scale:.0%} | "
-                f"Trough=${self._trough_equity:,.0f} → Current=${current_equity:,.0f}"
+                f"Regime Guard PASSED | "
+                f"Scale 0% → 100% | "
+                f"Trough=${old_trough:,.0f} → Current=${current_equity:,.0f}"
             )
             return True
         else:
