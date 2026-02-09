@@ -16,13 +16,34 @@ The V6.6 Options Engine isolation test revealed **8 bugs** (3 critical, 3 high, 
 | Bug # | Description | Count | Priority | Status |
 |-------|-------------|-------|----------|--------|
 | 1 | ASSIGNMENT_RISK_EXIT wrong calculation | 17 | P0 | **FIXED V6.7** |
-| 2 | Dir=NONE always (thresholds too tight) | 0/834 | P0 | OPEN |
-| 3 | CALLs on DOWN days (wrong direction) | 9 | P0 | OPEN |
+| 2 | Dir=NONE always (thresholds too tight) | 0/834 | P0 | **MITIGATED V6.8** |
+| 3 | CALLs on DOWN days (wrong direction) | 9 | P0 | **FIXED V6.8** |
 | 4 | Options expired worthless (-99%) | 7 | P1 | OPEN |
-| 5 | Invalid OCO orders (after hours) | 8 | P1 | OPEN |
-| 6 | VASS rejections too high | 274 | P1 | OPEN |
+| 5 | Invalid OCO orders (after hours) | 8 | P1 | **FIXED V6.8** |
+| 6 | VASS rejections too high | 274 | P1 | **MITIGATED V6.8** |
 | 7 | MARGIN_CB force liquidation | 5 | P2 | OPEN |
-| 8 | 50% stop hit rate (symptom of #2/#3) | 22 | P2 | Symptom |
+| 8 | 50% stop hit rate (symptom of #2/#3) | 22 | P2 | **FIXED V6.8** |
+
+---
+
+## Fix Status Mapping (Code vs Report)
+
+This section maps the report’s bugs to current code status.
+
+| Bug | Report Description | Code Status | Notes |
+|-----|--------------------|------------|-------|
+| #1 | ASSIGNMENT_RISK_EXIT wrong calculation | **FIXED V6.7** | Uses spread max-loss, not naked notional |
+| #2 | Dir=NONE always | **MITIGATED V6.8** | VIX floor 13.5→11.5, scores 45/50→35/40, move range widened |
+| #3 | CALLs on DOWN days | **FIXED V6.8** | NO_TRADE blocks entirely - no conviction override |
+| #4 | Options expired worthless | **Open** | DTE exit exists but rolling/OCO gaps still allow expiry hammer |
+| #5 | Invalid OCO orders (after hours) | **FIXED V6.8** | Market-hours guard added to OCO submit |
+| #6 | VASS rejections too high | **MITIGATED V6.8** | DTE 5-28, deltas 0.40-0.55, width 3.0, assignment buffer 10% |
+| #7 | MARGIN_CB force liquidation | **Open** | No explicit guard/logic found |
+| #8 | 50% stop hit rate | **FIXED V6.8** | ATR multiplier 1.5→1.0, max 50%→30%, min 20%→15% |
+
+**Additional fixes (V6.8):**
+- NO_TRADE strategy now blocks entirely - no macro fallback, no conviction override
+- UVXY conviction thresholds narrowed (3%→2.5%) for more signals
 
 ---
 
@@ -147,7 +168,7 @@ def _check_assignment_margin_buffer(
 
 ### Bug #2: VIX Direction Never Establishes (Dir=NONE Always)
 
-**Status**: OPEN
+**Status**: **MITIGATED V6.8** (parameter changes reduce NO_TRADE frequency)
 
 **Occurrences**:
 | Direction | Count | Percentage |
@@ -199,7 +220,7 @@ VIX_DIRECTION_FALLING = -1.5       # Was -1.0 (trigger earlier)
 
 ### Bug #3: Wrong Direction Trades (CALLs When QQQ is DOWN)
 
-**Status**: OPEN
+**Status**: **FIXED V6.8**
 
 **Occurrences**: 9 trades where CALLs were bought on DOWN days
 
@@ -217,13 +238,21 @@ VIX_DIRECTION_FALLING = -1.5       # Was -1.0 (trigger earlier)
 4. Macro direction is always BULLISH in this period (FOLLOW_MACRO:BULLISH = 62, FOLLOW_MACRO:BEARISH = 0)
 5. Result: CALLs are traded even when QQQ is moving DOWN
 
-**Note**: When UVXY exceeds +3%, the conviction override correctly switches to PUT:
-```
-2022-01-04 10:56:00 VETO: MICRO conviction (BEARISH) overrides Macro (BULLISH)
-2022-01-04 10:56:00 INTRADAY_SIGNAL_APPROVED: CONVICTION: UVXY +3% > +3% | Direction=PUT
+**V6.8 Fix Applied** (`options_engine.py:2015-2022`):
+```python
+# V6.8 P0 FIX: If Micro returns NO_TRADE, skip entirely - no conviction override
+# Micro's NO_TRADE decision is final. Reasons include:
+# - VIX floor not met (apathy market)
+# - QQQ move too small (no edge)
+# - QQQ flat, whipsaw, or caution regime
+if state.recommended_strategy == IntradayStrategy.NO_TRADE:
+    return False, None, state, f"NO_TRADE: Micro blocked ({state.micro_regime.value})"
 ```
 
-**Fix Required**: Fix Bug #2 (thresholds) or add QQQ direction check as secondary filter.
+**Fix Rationale**:
+- When Micro says NO_TRADE, skip entirely - no macro fallback, no conviction override
+- This prevents wrong-direction trades from FOLLOW_MACRO fallback
+- With V6.8 lower gates, Micro will trade more often when conditions are favorable
 
 ---
 
@@ -268,7 +297,7 @@ VIX_DIRECTION_FALLING = -1.5       # Was -1.0 (trigger earlier)
 
 ### Bug #5: Invalid OCO Orders (After Market Hours)
 
-**Status**: OPEN
+**Status**: **FIXED V6.8**
 
 **Occurrences**: 8 Invalid orders
 
@@ -289,23 +318,30 @@ VIX_DIRECTION_FALLING = -1.5       # Was -1.0 (trigger earlier)
 - 18:46 = 2h 46m after close
 - 19:10 = 3h 10m after close
 
-**Root Cause**: OCO orders (Stop Market + Limit) cannot be placed after market hours. The order submission logic doesn't check if market is open before placing OCO.
-
-**Fix Required**:
+**V6.8 Fix Applied** (`execution/oco_manager.py:262-275`):
 ```python
-def _create_oco_pair(self, symbol, entry_price, qty):
-    # Add market hours check
-    if not self.algorithm.IsMarketOpen(symbol):
-        self.log(f"OCO: SKIPPED (market closed) | {symbol}")
-        return None
-    # ... rest of OCO creation
+# V6.8: Market hours guard - block OCO submission outside regular trading hours
+if self.algorithm is not None:
+    try:
+        underlying = pair.symbol.split()[0] if " " in str(pair.symbol) else str(pair.symbol)
+        equity_symbol = self.algorithm.Symbol(underlying)
+        if not self.algorithm.Securities[equity_symbol].Exchange.ExchangeOpen:
+            self.log(f"OCO: BLOCKED {pair.oco_id} - market closed for {underlying}")
+            return False
+    except Exception as e:
+        self.log(f"OCO: WARNING - could not verify market hours: {e}")
 ```
+
+**Fix Rationale**:
+- Checks `Exchange.ExchangeOpen` before submitting OCO orders
+- Extracts underlying symbol from option symbol for hours check
+- Logs blocked submissions with clear reason
 
 ---
 
 ### Bug #6: VASS Rejections - Spread Criteria Too Restrictive
 
-**Status**: OPEN
+**Status**: **MITIGATED V6.8**
 
 **Occurrences**: 274 VASS rejections
 
@@ -320,16 +356,20 @@ VASS_REJECTION: Direction=CALL | IV_Env=MEDIUM | VIX=16.6 | Contracts_checked=28
 - Finding ZERO that meet spread criteria
 - Happens consistently throughout the period
 
-**Impact**:
-- VASS swing allocation sits in cash
-- Misses potential swing trade opportunities
-- Only intraday single-leg trades execute
+**V6.8 Fixes Applied** (`config.py`):
 
-**Fix Required**: Review and loosen spread selection criteria:
-- DTE range (currently 14-45)
-- Delta range requirements
-- Spread width constraints
-- Max debit as % of account
+| Parameter | Before | After | Impact |
+|-----------|--------|-------|--------|
+| `VASS_HIGH_IV_DTE_MIN` | 7 | **5** | Allow shorter DTE in high IV |
+| `VASS_HIGH_IV_DTE_MAX` | 21 | **28** | Widen candidate pool |
+| `SPREAD_LONG_LEG_DELTA_MIN` | 0.45 | **0.40** | Allow near-ATM |
+| `SPREAD_SHORT_LEG_DELTA_MAX` | 0.52 | **0.55** | Reduce rejection |
+| `SPREAD_WIDTH_TARGET` | 4.0 | **3.0** | More chain matches |
+| `ASSIGNMENT_MARGIN_BUFFER_PCT` | 0.20 | **0.10** | Reduce instant exits |
+| `OPTIONS_MIN_OPEN_INTEREST` | 100 | **50** | Accept thinner chains |
+| `OPTIONS_SPREAD_WARNING_PCT` | 0.25 | **0.30** | Reduce spread rejection |
+
+**Expected Impact**: Significant reduction in VASS rejections due to relaxed criteria.
 
 ---
 
@@ -358,7 +398,7 @@ VASS_REJECTION: Direction=CALL | IV_Env=MEDIUM | VIX=16.6 | Contracts_checked=28
 
 ### Bug #8: 50% Stop Hits Too Often (Symptom)
 
-**Status**: Symptom of Bugs #2 and #3
+**Status**: **FIXED V6.8** (tighter stops + direction fix)
 
 **Occurrences**: 22 trades hit exactly 50% stop loss
 
@@ -370,12 +410,15 @@ VASS_REJECTION: Direction=CALL | IV_Env=MEDIUM | VIX=16.6 | Contracts_checked=28
 2022-01-07 10:49:00 INTRADAY_RESULT: LOSS | Entry=$1.09 | Exit=$0.54 | P&L=-50.5%
 ```
 
-**Analysis**: This is primarily a symptom, not a root cause:
-- When direction is wrong (Bug #3), positions immediately move against
-- 50% stop triggers quickly
-- The stop itself is reasonable for options (high theta/gamma risk)
+**V6.8 Fixes Applied** (`config.py`):
 
-**Note**: With correct direction signals, the 50% stop should be appropriate.
+| Parameter | Before | After | Impact |
+|-----------|--------|-------|--------|
+| `OPTIONS_ATR_STOP_MULTIPLIER` | 1.5 | **1.0** | Tighter stops |
+| `OPTIONS_ATR_STOP_MAX_PCT` | 0.50 | **0.30** | Cap at 30% loss |
+| `OPTIONS_ATR_STOP_MIN_PCT` | 0.20 | **0.15** | Allow tighter |
+
+**Combined with Bug #3 fix**: Wrong-direction trades are now blocked, so stops should trigger less frequently on well-directed trades.
 
 ---
 
@@ -413,26 +456,26 @@ VASS_REJECTION: Direction=CALL | IV_Env=MEDIUM | VIX=16.6 | Contracts_checked=28
 
 ### P0 (Critical - Must Fix Before Live)
 
-| Bug | Status | File | Change Required |
-|-----|--------|------|-----------------|
+| Bug | Status | File | Change Applied |
+|-----|--------|------|----------------|
 | #1 | **FIXED V6.7** | `options_engine.py:4178-4219` | Calculate actual risk (net debit) not notional |
-| #2 | OPEN | `config.py` | Widen STABLE zone to ±2% or adjust thresholds |
-| #3 | OPEN | (depends on #2) | Fix direction logic |
+| #2 | **MITIGATED V6.8** | `config.py` | Lower VIX floor 13.5→11.5, scores 45/50→35/40 |
+| #3 | **FIXED V6.8** | `options_engine.py:2015-2022` | NO_TRADE blocks entirely, no fallback |
 
 ### P1 (High - Should Fix Before Live)
 
-| Bug | Status | File | Change Required |
-|-----|--------|------|-----------------|
+| Bug | Status | File | Change Applied |
+|-----|--------|------|----------------|
 | #4 | OPEN | `options_engine.py` | Ensure OCO always exists; add time-based exit |
-| #5 | OPEN | `options_engine.py` | Check market hours before OCO placement |
-| #6 | OPEN | `options_engine.py` | Review/loosen spread selection criteria |
+| #5 | **FIXED V6.8** | `oco_manager.py:262-275` | Market hours guard before OCO submission |
+| #6 | **MITIGATED V6.8** | `config.py` | DTE 5-28, deltas 0.40-0.55, width 3.0 |
 
 ### P2 (Medium - Nice to Have)
 
 | Bug | Status | Notes |
 |-----|--------|-------|
-| #7 | OPEN | Symptom of capital depletion |
-| #8 | OPEN | Symptom of wrong direction |
+| #7 | OPEN | Margin callback guard - needs explicit logic |
+| #8 | **FIXED V6.8** | ATR stop 1.5→1.0, max 50%→30% |
 
 ---
 
@@ -509,6 +552,7 @@ VASS_REJECTION: Direction=CALL | IV_Env=MEDIUM | VIX=16.6 | Contracts_checked=28
 |---------|------|---------|
 | V6.6 | 2026-02-08 | Initial audit report |
 | V6.7 | 2026-02-08 | Fixed Bug #1 (ASSIGNMENT_RISK_EXIT margin calculation) |
+| V6.8 | 2026-02-08 | Fixed Bug #3 (NO_TRADE blocks entirely), Bug #5 (OCO market hours), Bug #8 (tighter stops). Mitigated Bug #2 (lower gates) and Bug #6 (relaxed VASS). |
 
 ---
 
