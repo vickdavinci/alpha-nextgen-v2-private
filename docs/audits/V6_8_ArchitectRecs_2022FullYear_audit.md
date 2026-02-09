@@ -563,15 +563,19 @@ SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 15  # Minutes between log messages
 **Status:** FIXED
 
 **Changes Applied:**
-- Added `SPREAD_STOP_REGIME_MULTIPLIERS` to make debit spread stop loss adaptive by regime.
-- Wider stop in bull, tighter in bear.
+1. Reduced `SPREAD_STOP_LOSS_PCT` base from 0.50 to 0.35 — prevents premature stop-outs in volatile markets
+2. Added `SPREAD_STOP_REGIME_MULTIPLIERS` for regime-adaptive stops:
+   - Bull (regime >= 75): 42% stop (0.35 × 1.2)
+   - Neutral (regime 50-74): 35% stop (base)
+   - Cautious (regime 40-49): 31.5% stop (0.35 × 0.9)
+   - Bear (regime < 40): 28% stop (0.35 × 0.8)
 
 **Files Modified**
 
 | File | Changes |
 |------|---------|
-| `config.py` | Added PUT-specific filters + `SPREAD_STOP_REGIME_MULTIPLIERS` |
-| `engines/satellite/options_engine.py` | PUT-specific filters used in spread selection + regime-adaptive debit stop loss |
+| `config.py` | `SPREAD_STOP_LOSS_PCT`: 0.50 → 0.35, added `SPREAD_STOP_REGIME_MULTIPLIERS` |
+| `engines/satellite/options_engine.py` | PUT-specific filters + regime-adaptive debit stop loss |
 
 ---
 
