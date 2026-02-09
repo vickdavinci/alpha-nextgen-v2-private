@@ -1883,6 +1883,9 @@ class OptionsEngine:
         # V2.4.3: Spread FAILURE cooldown - don't retry for 4 hours after construction fails
         # Prevents 340+ retries when no valid contracts exist
         self._spread_failure_cooldown_until: Optional[str] = None
+        self._spread_failure_cooldown_until_by_dir: dict = {}
+        self._last_spread_failure_stats: Optional[str] = None
+        self._last_credit_failure_stats: Optional[str] = None
 
         # V2.3.2 FIX #4: Track if pending entry is intraday (for correct position registration)
         self._pending_intraday_entry: bool = False
@@ -2283,7 +2286,9 @@ class OptionsEngine:
         else:
             return "NEUTRAL"
 
-    def _set_spread_failure_cooldown(self, current_time: Optional[str]) -> None:
+    def _set_spread_failure_cooldown(
+        self, current_time: Optional[str], direction: Optional[str] = None
+    ) -> None:
         """
         V2.4.3: Set cooldown after spread construction fails.
 
@@ -2292,6 +2297,7 @@ class OptionsEngine:
 
         Args:
             current_time: Current timestamp in "YYYY-MM-DD HH:MM:SS" format.
+            direction: Optional direction label to scope cooldown (CALL/PUT).
         """
         if not current_time:
             return
@@ -2316,7 +2322,13 @@ class OptionsEngine:
             else:
                 cooldown_until = f"{date_part} {new_hour:02d}:{minute:02d}:{second:02d}"
 
-            self._spread_failure_cooldown_until = cooldown_until
+            # V6.12: Direction-scoped cooldown (CALL failure doesn't block PUT)
+            if direction:
+                if not hasattr(self, "_spread_failure_cooldown_until_by_dir"):
+                    self._spread_failure_cooldown_until_by_dir = {}
+                self._spread_failure_cooldown_until_by_dir[direction] = cooldown_until
+            else:
+                self._spread_failure_cooldown_until = cooldown_until
             self.log(
                 f"SPREAD: Construction failed - entering {cooldown_hours}h cooldown until {cooldown_until}"
             )
@@ -2572,6 +2584,9 @@ class OptionsEngine:
         current_time: str = None,
         dte_min: int = None,
         dte_max: int = None,
+        set_cooldown: bool = True,
+        log_filters: bool = True,
+        debug_stats: Optional[Dict[str, Any]] = None,
     ) -> Optional[tuple]:
         """
         V2.3.21: Select long and short leg contracts for a debit spread.
@@ -2597,16 +2612,25 @@ class OptionsEngine:
         Returns:
             Tuple of (long_leg, short_leg) or None if no valid spread found.
         """
-        # V2.4.3: Check FAILURE cooldown first (4-hour penalty after failed construction)
-        if current_time and self._spread_failure_cooldown_until:
+        # V2.4.3: Check FAILURE cooldown first (penalty after failed construction)
+        if current_time:
             try:
-                # Compare timestamps (format: "YYYY-MM-DD HH:MM:SS")
-                if current_time < self._spread_failure_cooldown_until:
-                    # Still in cooldown - silently skip (don't spam logs)
-                    return None
-                else:
-                    # Cooldown expired - clear it and proceed
-                    self._spread_failure_cooldown_until = None
+                # V6.12: Direction-scoped cooldown if available
+                if hasattr(self, "_spread_failure_cooldown_until_by_dir") and direction:
+                    dir_key = direction.value if hasattr(direction, "value") else str(direction)
+                    until = self._spread_failure_cooldown_until_by_dir.get(dir_key)
+                    if until and current_time < until:
+                        return None  # Still in cooldown for this direction
+                    elif until:
+                        self._spread_failure_cooldown_until_by_dir.pop(dir_key, None)
+                elif self._spread_failure_cooldown_until:
+                    # Compare timestamps (format: "YYYY-MM-DD HH:MM:SS")
+                    if current_time < self._spread_failure_cooldown_until:
+                        # Still in cooldown - silently skip (don't spam logs)
+                        return None
+                    else:
+                        # Cooldown expired - clear it and proceed
+                        self._spread_failure_cooldown_until = None
             except (ValueError, TypeError):
                 pass  # If comparison fails, proceed with scan
 
@@ -2647,7 +2671,8 @@ class OptionsEngine:
 
         if len(filtered) < 2:
             self.log(f"SPREAD: Not enough {direction.value} contracts for spread")
-            self._set_spread_failure_cooldown(current_time)
+            if set_cooldown:
+                self._set_spread_failure_cooldown(current_time, direction=direction)
             return None
 
         # For puts, delta is negative so we need to handle that
@@ -2717,12 +2742,24 @@ class OptionsEngine:
                 break
 
         # V2.24: Log filter funnel for debugging
-        self.log(
-            f"SPREAD_FILTER: LongLeg | Total={len(filtered)} | "
-            f"DTE_pass={dte_pass} | Delta_pass={delta_pass} | "
-            f"OI_pass={oi_pass} | Spread_pass={spread_pass}"
-            + (f" | Elastic_widen=±{elastic_widen_used:.2f}" if elastic_widen_used > 0 else "")
-        )
+        if log_filters:
+            self.log(
+                f"SPREAD_FILTER: LongLeg | Total={len(filtered)} | "
+                f"DTE_pass={dte_pass} | Delta_pass={delta_pass} | "
+                f"OI_pass={oi_pass} | Spread_pass={spread_pass}"
+                + (f" | Elastic_widen=±{elastic_widen_used:.2f}" if elastic_widen_used > 0 else "")
+            )
+        if debug_stats is not None:
+            debug_stats.update(
+                {
+                    "dte_pass": dte_pass,
+                    "delta_pass": delta_pass,
+                    "oi_pass": oi_pass,
+                    "spread_pass": spread_pass,
+                    "elastic_widen": elastic_widen_used,
+                    "dte_range": f"{effective_dte_min}-{effective_dte_max}",
+                }
+            )
 
         if not long_candidates:
             self.log(
@@ -2730,7 +2767,8 @@ class OptionsEngine:
                 f"Delta={long_delta_min_base}-{long_delta_max_base} | "
                 f"Elastic steps tried={len(config.ELASTIC_DELTA_STEPS)}"
             )
-            self._set_spread_failure_cooldown(current_time)
+            if set_cooldown:
+                self._set_spread_failure_cooldown(current_time, direction=direction)
             return None
 
         # V2.3.21: Sort by delta proximity to 0.70 (ITM target for Smart Swing)
@@ -2786,7 +2824,8 @@ class OptionsEngine:
                 f"SPREAD: No valid short leg | LongStrike={long_leg.strike} | "
                 f"WidthRange=${config.SPREAD_WIDTH_MIN}-${config.SPREAD_WIDTH_MAX}"
             )
-            self._set_spread_failure_cooldown(current_time)
+            if set_cooldown:
+                self._set_spread_failure_cooldown(current_time, direction=direction)
             return None
 
         # V2.4.3: Sort by WIDTH proximity to target, then by delta as tiebreaker
@@ -2803,6 +2842,65 @@ class OptionsEngine:
 
         return (long_leg, short_leg)
 
+    def select_spread_legs_with_fallback(
+        self,
+        contracts: List[OptionContract],
+        direction: OptionDirection,
+        dte_ranges: List[Tuple[int, int]],
+        target_width: float = None,
+        current_time: str = None,
+    ) -> Optional[tuple]:
+        """
+        V6.12: Try multiple DTE ranges before applying failure cooldown.
+
+        This avoids "cooldown trap" when the primary DTE window has no valid contracts.
+        """
+        if not dte_ranges:
+            return self.select_spread_legs(
+                contracts=contracts,
+                direction=direction,
+                target_width=target_width,
+                current_time=current_time,
+            )
+
+        failure_stats = []
+        for dte_min, dte_max in dte_ranges:
+            stats: Dict[str, Any] = {}
+            spread_legs = self.select_spread_legs(
+                contracts=contracts,
+                direction=direction,
+                target_width=target_width,
+                current_time=current_time,
+                dte_min=dte_min,
+                dte_max=dte_max,
+                set_cooldown=False,
+                log_filters=False,
+                debug_stats=stats,
+            )
+            if spread_legs is not None:
+                if dte_min is not None and dte_max is not None:
+                    self.log(
+                        f"SPREAD: Fallback DTE used | Range={dte_min}-{dte_max} | "
+                        f"Direction={direction.value}"
+                    )
+                return spread_legs
+            if stats:
+                failure_stats.append(stats)
+
+        # All ranges failed -> apply cooldown once
+        self._set_spread_failure_cooldown(current_time, direction=direction)
+        if failure_stats:
+            summary = "; ".join(
+                [
+                    f"{s.get('dte_range')}|DTE={s.get('dte_pass')}|"
+                    f"Delta={s.get('delta_pass')}|OI={s.get('oi_pass')}|"
+                    f"Spread={s.get('spread_pass')}|Widen={s.get('elastic_widen')}"
+                    for s in failure_stats
+                ]
+            )
+            self._last_spread_failure_stats = summary
+        return None
+
     # =========================================================================
     # V2.8: CREDIT SPREAD LEG SELECTION (VASS)
     # =========================================================================
@@ -2814,6 +2912,9 @@ class OptionsEngine:
         dte_min: int,
         dte_max: int,
         current_time: Optional[str] = None,
+        set_cooldown: bool = True,
+        log_filters: bool = True,
+        debug_stats: Optional[Dict[str, Any]] = None,
     ) -> Optional[Tuple[OptionContract, OptionContract]]:
         """
         V2.8: Select legs for credit spread (sell short leg, buy long leg for protection).
@@ -2849,17 +2950,27 @@ class OptionsEngine:
         dte_filtered = [c for c in contracts if dte_min <= c.days_to_expiry <= dte_max]
 
         # V2.24: Diagnostic logging for credit spread filter funnel
-        self.log(
-            f"SPREAD_FILTER: CreditSpread | Total={len(contracts)} | "
-            f"DTE_pass={len(dte_filtered)} (range={dte_min}-{dte_max}) | "
-            f"Strategy={strategy.value}"
-        )
+        if log_filters:
+            self.log(
+                f"SPREAD_FILTER: CreditSpread | Total={len(contracts)} | "
+                f"DTE_pass={len(dte_filtered)} (range={dte_min}-{dte_max}) | "
+                f"Strategy={strategy.value}"
+            )
+        if debug_stats is not None:
+            debug_stats.update(
+                {
+                    "dte_pass": len(dte_filtered),
+                    "dte_range": f"{dte_min}-{dte_max}",
+                }
+            )
 
         if not dte_filtered:
             self.log(
                 f"VASS: No contracts in DTE range {dte_min}-{dte_max} "
                 f"(available: {[c.days_to_expiry for c in contracts[:5]]}...)"
             )
+            if set_cooldown:
+                self._set_spread_failure_cooldown(current_time, direction="CREDIT")
             return None
 
         if strategy == SpreadStrategy.BULL_PUT_CREDIT:
@@ -2869,6 +2980,8 @@ class OptionsEngine:
 
             if not puts:
                 self.log("VASS: No PUT contracts available for Bull Put Credit")
+                if set_cooldown:
+                    self._set_spread_failure_cooldown(current_time, direction="CREDIT")
                 return None
 
             # Short leg: Delta -0.25 to -0.40 (OTM but decent premium)
@@ -2919,6 +3032,15 @@ class OptionsEngine:
                     else ""
                 )
             )
+            if debug_stats is not None:
+                debug_stats.update(
+                    {
+                        "delta_pass": delta_pass_count,
+                        "credit_pass": len(short_candidates),
+                        "elastic_widen": elastic_widen_used,
+                        "min_credit": effective_min_credit,
+                    }
+                )
 
             if not short_candidates:
                 self.log(
@@ -2928,6 +3050,8 @@ class OptionsEngine:
                     f"Elastic steps tried={len(config.ELASTIC_DELTA_STEPS)} | "
                     f"Min credit: ${config.CREDIT_SPREAD_MIN_CREDIT}"
                 )
+                if set_cooldown:
+                    self._set_spread_failure_cooldown(current_time, direction="CREDIT")
                 return None
 
             # Sort by premium (highest first) - we want max credit
@@ -2959,6 +3083,8 @@ class OptionsEngine:
                     f"VASS: No long put candidates for protection | "
                     f"Short strike={short_leg.strike} | Target=${target_long_strike}"
                 )
+                if set_cooldown:
+                    self._set_spread_failure_cooldown(current_time, direction="CREDIT")
                 return None
 
             long_leg = long_candidates[0]
@@ -2981,6 +3107,8 @@ class OptionsEngine:
 
             if not calls:
                 self.log("VASS: No CALL contracts available for Bear Call Credit")
+                if set_cooldown:
+                    self._set_spread_failure_cooldown(current_time, direction="CREDIT")
                 return None
 
             # Short leg: Delta 0.25-0.40 (OTM but decent premium)
@@ -3029,6 +3157,15 @@ class OptionsEngine:
                     else ""
                 )
             )
+            if debug_stats is not None:
+                debug_stats.update(
+                    {
+                        "delta_pass": delta_pass_count,
+                        "credit_pass": len(short_candidates),
+                        "elastic_widen": elastic_widen_used,
+                        "min_credit": effective_min_credit,
+                    }
+                )
 
             if not short_candidates:
                 self.log(
@@ -3038,6 +3175,8 @@ class OptionsEngine:
                     f"Elastic steps tried={len(config.ELASTIC_DELTA_STEPS)} | "
                     f"Min credit: ${config.CREDIT_SPREAD_MIN_CREDIT}"
                 )
+                if set_cooldown:
+                    self._set_spread_failure_cooldown(current_time, direction="CREDIT")
                 return None
 
             short_candidates.sort(key=lambda x: x.bid, reverse=True)
@@ -3068,6 +3207,8 @@ class OptionsEngine:
                     f"VASS: No long call candidates for protection | "
                     f"Short strike={short_leg.strike} | Target=${target_long_strike}"
                 )
+                if set_cooldown:
+                    self._set_spread_failure_cooldown(current_time, direction="CREDIT")
                 return None
 
             long_leg = long_candidates[0]
@@ -3086,6 +3227,70 @@ class OptionsEngine:
         else:
             self.log(f"VASS: Strategy {strategy} is not a credit spread")
             return None
+
+    def select_credit_spread_legs_with_fallback(
+        self,
+        contracts: List[OptionContract],
+        strategy: SpreadStrategy,
+        dte_ranges: List[Tuple[int, int]],
+        current_time: Optional[str] = None,
+    ) -> Optional[Tuple[OptionContract, OptionContract]]:
+        """
+        V6.12: Try multiple DTE ranges for credit spreads before cooldown.
+        """
+        if not dte_ranges:
+            return self.select_credit_spread_legs(
+                contracts=contracts,
+                strategy=strategy,
+                dte_min=config.CREDIT_SPREAD_DTE_MIN,
+                dte_max=config.CREDIT_SPREAD_DTE_MAX,
+                current_time=current_time,
+            )
+
+        failure_stats = []
+        for dte_min, dte_max in dte_ranges:
+            stats: Dict[str, Any] = {}
+            spread_legs = self.select_credit_spread_legs(
+                contracts=contracts,
+                strategy=strategy,
+                dte_min=dte_min,
+                dte_max=dte_max,
+                current_time=current_time,
+                set_cooldown=False,
+                log_filters=False,
+                debug_stats=stats,
+            )
+            if spread_legs is not None:
+                self.log(
+                    f"VASS: Credit fallback DTE used | Range={dte_min}-{dte_max} | "
+                    f"Strategy={strategy.value}"
+                )
+                return spread_legs
+            if stats:
+                failure_stats.append(stats)
+
+        self._set_spread_failure_cooldown(current_time, direction="CREDIT")
+        if failure_stats:
+            summary = "; ".join(
+                [
+                    f"{s.get('dte_range')}|DTE={s.get('dte_pass')}|"
+                    f"Delta={s.get('delta_pass')}|Credit={s.get('credit_pass')}|"
+                    f"Widen={s.get('elastic_widen')}|MinCred={s.get('min_credit')}"
+                    for s in failure_stats
+                ]
+            )
+            self._last_credit_failure_stats = summary
+        return None
+
+    def pop_last_spread_failure_stats(self) -> Optional[str]:
+        stats = self._last_spread_failure_stats
+        self._last_spread_failure_stats = None
+        return stats
+
+    def pop_last_credit_failure_stats(self) -> Optional[str]:
+        stats = self._last_credit_failure_stats
+        self._last_credit_failure_stats = None
+        return stats
 
     # V6.0: _check_macro_regime_gate() REMOVED
     # Direction decisions now handled by conviction resolution (resolve_trade_signal)

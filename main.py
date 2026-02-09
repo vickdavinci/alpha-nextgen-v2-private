@@ -1,7 +1,7 @@
 # region imports
 # Type hints
 import json
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from AlgorithmImports import *
 
@@ -3429,8 +3429,9 @@ class AlphaNextGen(QCAlgorithm):
                 )
                 return
 
-        # Skip if already have options position (single-leg or spread)
-        if self.options_engine.has_position():
+        # Skip if swing positions already maxed out
+        can_swing, _ = self.options_engine.can_enter_swing()
+        if not can_swing:
             return
 
         # CRITICAL FIX: Validate options symbol is resolved before use
@@ -3551,10 +3552,13 @@ class AlphaNextGen(QCAlgorithm):
         """Scan for spread entry in a specific direction."""
         # V2.23: VASS strategy selection — routes to credit or debit
         strategy, vass_dte_min, vass_dte_max, is_credit = self._route_vass_strategy(direction_str)
+        dte_ranges = self._build_vass_dte_fallbacks(vass_dte_min, vass_dte_max)
+        dte_min_all = min(r[0] for r in dte_ranges)
+        dte_max_all = max(r[1] for r in dte_ranges)
 
-        # V2.23: Build candidate contracts with VASS-aware DTE range
+        # V2.23: Build candidate contracts with widest VASS DTE range (fallback uses subranges)
         candidate_contracts = self._build_spread_candidate_contracts(
-            chain, direction, dte_min=vass_dte_min, dte_max=vass_dte_max
+            chain, direction, dte_min=dte_min_all, dte_max=dte_max_all
         )
         if len(candidate_contracts) < 2:
             return
@@ -3566,11 +3570,10 @@ class AlphaNextGen(QCAlgorithm):
 
         if is_credit:
             # V2.23: Credit spread path
-            spread_legs = self.options_engine.select_credit_spread_legs(
+            spread_legs = self.options_engine.select_credit_spread_legs_with_fallback(
                 contracts=candidate_contracts,
                 strategy=strategy,
-                dte_min=vass_dte_min,
-                dte_max=vass_dte_max,
+                dte_ranges=dte_ranges,
                 current_time=str(self.Time),
             )
             if spread_legs is None:
@@ -3582,12 +3585,11 @@ class AlphaNextGen(QCAlgorithm):
                         f"VASS_FALLBACK: CREDIT spread failed for PUT | "
                         f"Trying BEAR_PUT_DEBIT fallback | Strategy={strategy.value}"
                     )
-                    spread_legs = self.options_engine.select_spread_legs(
+                    spread_legs = self.options_engine.select_spread_legs_with_fallback(
                         contracts=candidate_contracts,
                         direction=direction,
                         current_time=str(self.Time),
-                        dte_min=vass_dte_min,
-                        dte_max=vass_dte_max,
+                        dte_ranges=dte_ranges,
                     )
                     if spread_legs is not None:
                         long_leg, short_leg = spread_legs  # DEBIT returns (long, short)
@@ -3678,12 +3680,11 @@ class AlphaNextGen(QCAlgorithm):
         else:
             # Existing debit spread path
             # V2.24.2: Pass VASS DTE range to prevent double-filter bug
-            spread_legs = self.options_engine.select_spread_legs(
+            spread_legs = self.options_engine.select_spread_legs_with_fallback(
                 contracts=candidate_contracts,
                 direction=direction,
                 current_time=str(self.Time),
-                dte_min=vass_dte_min,
-                dte_max=vass_dte_max,
+                dte_ranges=dte_ranges,
             )
             if spread_legs is None:
                 return
@@ -3898,6 +3899,20 @@ class AlphaNextGen(QCAlgorithm):
             is_credit = self.options_engine.is_credit_strategy(strategy)
             return (strategy, dte_min, dte_max, is_credit)
         return (None, config.SPREAD_DTE_MIN, config.SPREAD_DTE_MAX, False)
+
+    def _build_vass_dte_fallbacks(self, dte_min: int, dte_max: int) -> List[Tuple[int, int]]:
+        """
+        V6.12: Build ordered DTE ranges for VASS spread selection.
+
+        Primary range is the configured VASS window. Fallback widens the window
+        to avoid "cooldown traps" when primary DTE has no viable contracts.
+        """
+        ranges = [(dte_min, dte_max)]
+        fallback_min = max(5, dte_min - 2)
+        fallback_max = min(45, dte_max + 14)
+        if (fallback_min, fallback_max) != (dte_min, dte_max):
+            ranges.append((fallback_min, fallback_max))
+        return ranges
 
     def _normalize_option_symbol(self, symbol) -> str:
         """
@@ -4972,8 +4987,9 @@ class AlphaNextGen(QCAlgorithm):
                 )
                 self.options_engine.clear_all_positions()
             else:
-                # Real position exists, skip scanning
-                return
+                # If an intraday position is open, skip intraday scan
+                if self.options_engine.has_intraday_position():
+                    return
 
         # V2.3 FIX: Skip if kill switch triggered (prevents new entries after liquidation)
         if self._kill_switch_handled_today:
@@ -5271,10 +5287,13 @@ class AlphaNextGen(QCAlgorithm):
 
         # V2.23: VASS strategy selection — routes to credit or debit
         strategy, vass_dte_min, vass_dte_max, is_credit = self._route_vass_strategy(direction_str)
+        dte_ranges = self._build_vass_dte_fallbacks(vass_dte_min, vass_dte_max)
+        dte_min_all = min(r[0] for r in dte_ranges)
+        dte_max_all = max(r[1] for r in dte_ranges)
 
-        # V2.23: Build candidate contracts with VASS-aware DTE range
+        # V2.23: Build candidate contracts with widest VASS DTE range (fallback uses subranges)
         candidate_contracts = self._build_spread_candidate_contracts(
-            chain, direction, dte_min=vass_dte_min, dte_max=vass_dte_max
+            chain, direction, dte_min=dte_min_all, dte_max=dte_max_all
         )
         if len(candidate_contracts) < 2:
             return
@@ -5287,11 +5306,10 @@ class AlphaNextGen(QCAlgorithm):
         if not spread_cooldown_active:
             if is_credit:
                 # V2.23: Credit spread path
-                spread_legs = self.options_engine.select_credit_spread_legs(
+                spread_legs = self.options_engine.select_credit_spread_legs_with_fallback(
                     contracts=candidate_contracts,
                     strategy=strategy,
-                    dte_min=vass_dte_min,
-                    dte_max=vass_dte_max,
+                    dte_ranges=dte_ranges,
                     current_time=str(self.Time),
                 )
                 if spread_legs is not None:
@@ -5329,12 +5347,11 @@ class AlphaNextGen(QCAlgorithm):
                             f"VASS_FALLBACK_INTRADAY: CREDIT spread failed for PUT | "
                             f"Trying BEAR_PUT_DEBIT fallback | Strategy={strategy.value}"
                         )
-                        debit_spread_legs = self.options_engine.select_spread_legs(
+                        debit_spread_legs = self.options_engine.select_spread_legs_with_fallback(
                             contracts=candidate_contracts,
                             direction=direction,
                             current_time=str(self.Time),
-                            dte_min=vass_dte_min,
-                            dte_max=vass_dte_max,
+                            dte_ranges=dte_ranges,
                         )
                         if debit_spread_legs is not None:
                             long_leg, short_leg = debit_spread_legs
@@ -5374,12 +5391,11 @@ class AlphaNextGen(QCAlgorithm):
             else:
                 # Existing debit spread path
                 # V2.24.2: Pass VASS DTE range to prevent double-filter bug
-                spread_legs = self.options_engine.select_spread_legs(
+                spread_legs = self.options_engine.select_spread_legs_with_fallback(
                     contracts=candidate_contracts,
                     direction=direction,
                     current_time=str(self.Time),
-                    dte_min=vass_dte_min,
-                    dte_max=vass_dte_max,
+                    dte_ranges=dte_ranges,
                 )
                 if spread_legs is not None:
                     long_leg, short_leg = spread_legs
@@ -5426,6 +5442,11 @@ class AlphaNextGen(QCAlgorithm):
                 >= config.VASS_LOG_REJECTION_INTERVAL_MINUTES
             )
             if should_log:
+                fail_stats = (
+                    self.options_engine.pop_last_credit_failure_stats()
+                    if is_credit
+                    else self.options_engine.pop_last_spread_failure_stats()
+                )
                 iv_env = (
                     self.options_engine._iv_sensor.classify()
                     if hasattr(self.options_engine, "_iv_sensor")
@@ -5437,7 +5458,9 @@ class AlphaNextGen(QCAlgorithm):
                     f"Regime={regime_score:.0f} | "
                     f"Contracts_checked={len(candidate_contracts)} | "
                     f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
+                    f"DTE_Ranges={dte_ranges} | "
                     f"Reason=No contracts met spread criteria (DTE/delta/credit)"
+                    + (f" | FailStats={fail_stats}" if fail_stats else "")
                 )
                 self._last_vass_rejection_log = self.Time
 
@@ -5445,11 +5468,8 @@ class AlphaNextGen(QCAlgorithm):
         # Single-leg has higher delta exposure and full premium at risk
         # If spread fails, stay cash (Safety First approach)
         # V2.20: Also check swing cooldown
-        if (
-            config.SWING_FALLBACK_ENABLED
-            and not self.options_engine.has_position()
-            and not swing_cooldown_active
-        ):
+        can_swing, _ = self.options_engine.can_enter_swing()
+        if config.SWING_FALLBACK_ENABLED and can_swing and not swing_cooldown_active:
             best_contract = self._select_swing_option_contract(chain, direction)
             if best_contract is not None and best_contract.bid > 0 and best_contract.ask > 0:
                 # V2.3.20: Pass size_multiplier for cold start reduced sizing
@@ -5474,7 +5494,7 @@ class AlphaNextGen(QCAlgorithm):
                     self.Log(f"SWING_FALLBACK: Single-leg {direction.value} after spread failure")
                     self.portfolio_router.receive_signal(signal)
                     self._process_immediate_signals()
-        elif not config.SWING_FALLBACK_ENABLED and not self.options_engine.has_position():
+        elif not config.SWING_FALLBACK_ENABLED and can_swing:
             self.Log("SWING: Spread construction failed - staying cash (fallback disabled)")
 
     def _monitor_risk_greeks(self, data: Slice) -> None:

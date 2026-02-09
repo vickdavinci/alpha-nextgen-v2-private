@@ -26,14 +26,15 @@ Core blockers remain: **high Dir=NONE**, **large VASS rejection volume**, and **
 | **P0** | Short-Leg Close Logging Missing | `SPREAD: Short leg closed` **0** vs `SPREAD: POSITION_REMOVED` **71** | Orphaned short risk or missing close logging | 🟡 Applied (Pending Validation) |
 | **P0** | Zero-Price Inject (Sizing Bug) | `V2.19_INJECT: ... price=0` **130 occurrences** | Oversized positions from $0 pricing | 🟡 Applied (Pending Validation) |
 | **P0** | Intraday Exit Missing | `INTRADAY_POSITION_REMOVED` **90** vs `INTRADAY position registered` **116** | Intraday exits not logged or not executed | 🟡 Applied (Pending Validation) |
+| **P1** | Swing/Intraday Cross-Blocking | Swing entry used `has_position()` and intraday scan exited on any position | Intraday trades blocked swing entries and vice‑versa | 🟡 Applied (Pending Validation) |
 
 ## Bug List (Current Run) — Optimization
 
 | Priority | Bug | Evidence | Impact | Status |
 |:--------:|-----|----------|--------|:------:|
 | **P1** | Low Win Rate / Negative P&L | Win% **24.1%**, Net **-37,784** | Core strategy not profitable | 🔴 Open |
-| **P1** | High Dir=NONE | `Dir=NONE` **4,706 / 7,280** (~64.6%) | Signal starvation | 🔴 Open |
-| **P1** | VASS Rejection Storm | `VASS_REJECTION` **1,734** vs `VASS_ENTRY` **30** | Bear/credit spreads still not executing | 🔴 Open |
+| **P1** | High Dir=NONE | `Dir=NONE` **4,706 / 7,280** (~64.6%) | Signal starvation | 🟡 Applied (Pending Validation) |
+| **P1** | VASS Rejection Storm | `VASS_REJECTION` **1,734** vs `VASS_ENTRY` **30** | Bear/credit spreads still not executing | 🟡 Applied (Pending Validation) |
 | **P1** | Signal → Execution Gap | `INTRADAY_SIGNAL` 360 → `INTRADAY_RESULT` 71 | Most signals never become trades | 🔴 Open |
 | **P1** | CALL Loss Concentration | CALL P&L **-32,811** vs PUT **-4,973** | Direction/strategy bias hurting performance | 🔴 Open |
 | **P2** | Assignment Risk Still Triggers | `ASSIGNMENT_RISK_EXIT` **14** | Frequent defensive exits reduce opportunity | 🟡 Monitor |
@@ -125,6 +126,15 @@ Still low; most intraday signals do not become executed results.
 ✅ **Assignments eliminated** (no QQQ equity trades)  
 ✅ **PUT participation increased** (near 50/50)  
 ✅ **Margin‑related failures not observed in logs**  
+
+---
+
+## Fixes Applied (Pending Validation)
+
+- **VASS spread failure cooldown trap**: Added DTE fallback ranges and only apply cooldown after all ranges fail.
+- **VASS rejection visibility**: Added compact `FailStats` summary to throttled `VASS_REJECTION` logs.
+- **Swing/Intraday cross‑blocking**: Replaced `has_position()` gate with mode‑specific `can_enter_swing()` and `has_intraday_position()` checks.
+- **Micro Dir=None reduction**: Lowered `QQQ_NOISE_THRESHOLD` (0.35→0.25), `INTRADAY_QQQ_FALLBACK_MIN_MOVE` (0.50→0.35), `MICRO_SCORE_*_CONFIRM` (52/48→50/50), and `INTRADAY_ITM_MIN_MOVE` (0.80→0.45).
 
 ---
 

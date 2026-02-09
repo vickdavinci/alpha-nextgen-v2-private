@@ -853,7 +853,7 @@ VASS_IV_SMOOTHING_MINUTES = 30  # SMA window to prevent strategy flickering
 VASS_LOW_IV_DTE_MIN = 30  # Low IV: Monthly expiration
 VASS_LOW_IV_DTE_MAX = 45
 VASS_MEDIUM_IV_DTE_MIN = 7  # Medium IV: Weekly expiration
-VASS_MEDIUM_IV_DTE_MAX = 21
+VASS_MEDIUM_IV_DTE_MAX = 30  # V6.12: Widen for better contract availability
 # V6.6: Widened HIGH IV DTE range - 36 spread failures in 2022H1 due to narrow 7-14 window
 VASS_HIGH_IV_DTE_MIN = 5  # V6.8: Was 7, allow trades in high IV
 VASS_HIGH_IV_DTE_MAX = 28  # V6.8: Was 21, widen candidate pool
@@ -1421,9 +1421,9 @@ MICRO_UVXY_BULLISH_THRESHOLD = -0.03  # V6.10: -3% for more CALL signals (was -5
 # V6.10: Lower conviction extreme to capture 5-7% moves that were blocked
 MICRO_UVXY_CONVICTION_EXTREME = 0.05  # V6.10: 5% intraday move for NEUTRAL VETO (was 7%)
 # V6.10: Micro fallback + confirmation thresholds (Dir=None tuning)
-MICRO_SCORE_BULLISH_CONFIRM = 52.0  # V6.10: Lowered from 55 for more STABLE fallbacks
-MICRO_SCORE_BEARISH_CONFIRM = 48.0  # V6.10: Raised from 45 for symmetric confirmation
-INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.50  # V6.10: Lowered from 0.70% for more STABLE trades
+MICRO_SCORE_BULLISH_CONFIRM = 50.0  # V6.12: Relaxed for fewer Dir=None in STABLE
+MICRO_SCORE_BEARISH_CONFIRM = 50.0  # V6.12: Symmetric confirmation threshold
+INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.35  # V6.12: Lowered to align with QQQ noise threshold
 MICRO_VIX_CRISIS_LEVEL = 35  # VIX > 35 → CRISIS (BEARISH conviction)
 MICRO_VIX_COMPLACENT_LEVEL = 12  # VIX < 12 → COMPLACENT (BULLISH conviction)
 
@@ -1506,7 +1506,7 @@ VIX_REVERSAL_CHOPPY = 4  # 3-4 reversals: Choppy
 # -----------------------------------------------------------------------------
 
 # V2.3.16: Sniper Logic - Noise Filter (Gate 1)
-QQQ_NOISE_THRESHOLD = 0.35  # Minimum QQQ move to consider trading (was 0.15%)
+QQQ_NOISE_THRESHOLD = 0.25  # V6.12: Lowered to reduce QQQ FLAT classification
 
 # V2.19: VIX Floor for DEBIT_FADE
 # In low VIX (<13.5) "apathy" markets, mean reversion fails - trends persist longer
@@ -1535,7 +1535,7 @@ INTRADAY_CREDIT_STOP = 1.0  # Stop if spread doubles
 
 # ITM Momentum
 INTRADAY_ITM_MIN_VIX = 10.0  # V6.8: Was 11.5, allow momentum in very low VIX
-INTRADAY_ITM_MIN_MOVE = 0.8  # QQQ move >= 0.8%
+INTRADAY_ITM_MIN_MOVE = 0.45  # V6.12: Lowered to allow more ITM momentum participation
 INTRADAY_ITM_MIN_SCORE = 40  # V6.8: Was 50, capture momentum earlier
 # V2.3.19: Time window moved from hardcoded to config
 INTRADAY_ITM_START = "10:00"  # Entry window start
@@ -1698,7 +1698,7 @@ SPREAD_SCAN_THROTTLE_MINUTES = 15
 # V2.4.3: Spread FAILURE cooldown - if spread construction fails, don't retry for 4 hours
 # Problem: Engine retried 340 times when no valid contracts existed
 # Solution: After failure, enter 4-hour cooldown (market conditions won't change that fast)
-SPREAD_FAILURE_COOLDOWN_HOURS = 4
+SPREAD_FAILURE_COOLDOWN_HOURS = 1  # V6.12: Reduce cooldown to avoid all-day lockout
 
 # V2.5: Max concurrent spreads - limit exposure from spread positions
 # Problem: Mar 25-26 had two spreads open simultaneously ($19K exposure)
