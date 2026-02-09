@@ -33,7 +33,7 @@
 > - `engines/satellite/` - Conditional engines (0-30%)
 > - `docs/v2-specs/` - V2.1 specifications
 >
-> **Tests:** 1333 passed (as of 2026-02-08, V6.6)
+> **Tests:** 1239 passed, 42 failed (as of 2026-02-09, V6.11 - test updates pending)
 
 ---
 
@@ -2964,7 +2964,81 @@ After architecture is stable.
 
 | Component | Owner | Branch | Started | Spec |
 |-----------|-------|--------|---------|------|
-| - | - | - | - | - |
+| V6.11 Universe Redesign | VA | feature/va/v3.2-macro-regime-gate | 2026-02-09 | Below |
+
+---
+
+## V6.10 Options Engine Fix (COMPLETE ✅)
+
+> **Status:** COMPLETE ✅
+> **Goal:** Fix 2015 negative P&L despite 48% win rate through R:R rebalancing
+> **Plan:** `docs/audits/V6_10_COMPREHENSIVE_FIX_PLAN.md`
+> **Branch:** `feature/va/v3.2-macro-regime-gate`
+
+### V6.10 Phase Summary
+
+| Phase | Fix | Status |
+|:-----:|-----|:------:|
+| P1 | Regime-adaptive entry thresholds (VIX-based delta targets, conviction score floor) | ✅ DONE |
+| P2 | Spread selection scoring with weighted factors (IV alignment, delta, spread efficiency) | ✅ DONE |
+| P3 | Pre-market ITM check for short legs (queue for close at open if ITM overnight) | ✅ DONE |
+| P4 | Conviction direction guard (block trades with insufficient conviction) | ✅ DONE |
+| P5 | Symmetric R:R (40% stop / 40% target) + Choppy market filter | ✅ DONE |
+
+**Key Config Changes:**
+```python
+SPREAD_PROFIT_TARGET_PCT = 0.40  # V6.10 P5: Was 0.50
+SPREAD_STOP_LOSS_PCT = 0.40      # V6.10 P5: Was 0.35
+CHOPPY_MARKET_FILTER_ENABLED = True
+CHOPPY_REVERSAL_COUNT = 3
+CHOPPY_SIZE_REDUCTION = 0.50
+```
+
+---
+
+## V6.11 Universe Redesign (IN PROGRESS 🔄)
+
+> **Status:** IMPLEMENTATION COMPLETE, TESTS NEED UPDATE
+> **Goal:** Diversify portfolio away from correlated equity exposure
+> **Branch:** `feature/va/v3.2-macro-regime-gate`
+
+### V6.11 New Universe
+
+| Engine | Old Symbols | New Symbols | Change |
+|:------:|:-----------:|:-----------:|--------|
+| **Trend** | QLD, SSO, TNA, FAS (equity-correlated) | QLD (15%), SSO (7%), UGL (10%), UCO (8%) | Added gold/oil commodities |
+| **MR** | TQQQ, SOXL | TQQQ (4%), SPXL (3%), SOXL (3%) | Added SPXL for broader market |
+| **Hedge** | TMF, PSQ (Treasury + Inverse Nasdaq) | SH (5-10%) | 1× Inverse S&P (no decay) |
+| **Options** | QQQ | QQQ (unchanged) | - |
+
+### V6.11 Implementation Status
+
+| Component | File | Status |
+|-----------|------|:------:|
+| Config: Symbol leverage, groups, allocations | `config.py` | ✅ DONE |
+| Config: SH hedge levels (5%/8%/10%) | `config.py` | ✅ DONE |
+| Config: TMF/PSQ values set to 0 (deprecated) | `config.py` | ✅ DONE |
+| Hedge Engine: SH-only architecture | `hedge_engine.py` | ✅ DONE |
+| Main: Add UGL, UCO, SPXL, SH symbols | `main.py` | ✅ DONE |
+| Main: Add indicators for new symbols | `main.py` | ✅ DONE |
+| Main: Update hedge signal generation | `main.py` | ✅ DONE |
+| Main: Update MR entry/exit for SPXL | `main.py` | ✅ DONE |
+| Main: Update trend stop monitoring | `main.py` | ✅ DONE |
+| Tests: hedge_engine tests | `test_hedge_engine.py` | ✅ DONE |
+| Tests: scenario tests | `test_full_cycle_scenario.py` | ✅ DONE |
+| Tests: regime engine hedge tests | `test_regime_engine.py` | 🔲 TODO |
+| Tests: other TMF/PSQ references | Various | 🔲 TODO |
+
+**Key Files Changed:**
+- `config.py` - Extensive symbol/allocation updates
+- `engines/satellite/hedge_engine.py` - Complete SH-only refactor
+- `main.py` - Symbol initialization, indicators, signal generation
+- `tests/test_hedge_engine.py` - Rewritten for SH API
+- `tests/scenarios/test_full_cycle_scenario.py` - Updated hedge test
+
+**Test Status:** 1239 passed, 42 failed (mostly due to TMF/PSQ references in old tests)
+
+---
 
 ### In Progress (V6.7 - Bug Fixes from Cross-Year Audit)
 

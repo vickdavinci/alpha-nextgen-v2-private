@@ -193,8 +193,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2022, 1, 1)
-        self.SetEndDate(2022, 12, 31)  # V6.8: 2022 full year Options Engine test
+        self.SetStartDate(2015, 1, 1)
+        self.SetEndDate(2015, 12, 31)  # V6.9: 2015 full year backtest
         self.SetCash(config.INITIAL_CAPITAL)  # $50,000 seed capital
 
         # All times are Eastern
@@ -468,9 +468,11 @@ class AlphaNextGen(QCAlgorithm):
         """
         Add all required securities at Minute resolution.
 
-        Adds:
-            - Traded symbols: TQQQ, SOXL, QLD, SSO, TMF, PSQ, SHV
-            - Proxy symbols: SPY, RSP, HYG, IEF (for regime calculation)
+        V6.11 Universe:
+            - Trend: QLD, SSO, UGL, UCO (diversified w/ commodities)
+            - MR: TQQQ, SOXL, SPXL
+            - Hedge: SH (1× inverse S&P)
+            - Proxy: SPY, RSP, HYG, IEF (for regime calculation)
 
         Stores symbol references as instance attributes for easy access.
         """
@@ -480,13 +482,21 @@ class AlphaNextGen(QCAlgorithm):
         self.qld = self.AddEquity("QLD", Resolution.Minute).Symbol
         self.sso = self.AddEquity("SSO", Resolution.Minute).Symbol
 
-        # V2.2: New Trend symbols for diversification
-        self.tna = self.AddEquity("TNA", Resolution.Minute).Symbol  # 3× Russell 2000
-        self.fas = self.AddEquity("FAS", Resolution.Minute).Symbol  # 3× Financials
+        # V6.11: New Trend symbols for commodity diversification
+        self.ugl = self.AddEquity("UGL", Resolution.Minute).Symbol  # 2× Gold
+        self.uco = self.AddEquity("UCO", Resolution.Minute).Symbol  # 2× Crude Oil
 
-        # Traded symbols - Hedges
-        self.tmf = self.AddEquity("TMF", Resolution.Minute).Symbol
-        self.psq = self.AddEquity("PSQ", Resolution.Minute).Symbol
+        # V6.11: SPXL for MR Engine (broader market bounces)
+        self.spxl = self.AddEquity("SPXL", Resolution.Minute).Symbol  # 3× S&P 500
+
+        # V6.11: Deprecated symbols - kept for indicator compatibility but not actively traded
+        self.tna = self.AddEquity("TNA", Resolution.Minute).Symbol  # Deprecated: 3× Russell
+        self.fas = self.AddEquity("FAS", Resolution.Minute).Symbol  # Deprecated: 3× Financials
+        self.tmf = self.AddEquity("TMF", Resolution.Minute).Symbol  # Deprecated: 3× Treasury
+        self.psq = self.AddEquity("PSQ", Resolution.Minute).Symbol  # Deprecated: 1× Inv Nasdaq
+
+        # Traded symbols - Hedges (V6.11: SH replaces TMF/PSQ)
+        self.sh = self.AddEquity("SH", Resolution.Minute).Symbol  # 1× Inverse S&P
 
         # V2.1: QQQ for options trading
         self.qqq = self.AddEquity("QQQ", Resolution.Minute).Symbol
@@ -538,20 +548,21 @@ class AlphaNextGen(QCAlgorithm):
         self._last_market_close_check: Optional[datetime] = None
 
         # Store collections for iteration
+        # V6.11: Updated traded symbols for diversified universe
         self.traded_symbols = [
-            self.tqqq,
-            self.soxl,
-            self.qld,
-            self.sso,
-            self.tna,  # V2.2
-            self.fas,  # V2.2
-            self.tmf,
-            self.psq,
+            self.tqqq,  # MR: 3× Nasdaq
+            self.soxl,  # MR: 3× Semiconductor
+            self.spxl,  # MR: 3× S&P 500
+            self.qld,  # Trend: 2× Nasdaq
+            self.sso,  # Trend: 2× S&P 500
+            self.ugl,  # Trend: 2× Gold
+            self.uco,  # Trend: 2× Oil
+            self.sh,  # Hedge: 1× Inverse S&P
         ]
         self.proxy_symbols = [self.spy, self.rsp, self.hyg, self.ief]
 
-        # V2.2: Trend symbols for easy iteration
-        self.trend_symbols = [self.qld, self.sso, self.tna, self.fas]
+        # V6.11: Trend symbols for diversified universe
+        self.trend_symbols = [self.qld, self.sso, self.ugl, self.uco]
 
         self.Log(
             f"INIT: Added {len(self.traded_symbols)} traded symbols, "
@@ -624,11 +635,25 @@ class AlphaNextGen(QCAlgorithm):
             self.tna, config.ATR_PERIOD, MovingAverageType.Wilders, Resolution.Daily
         )
 
-        # V2.2: FAS indicators (3× Financials)
+        # V2.2: FAS indicators (3× Financials) - DEPRECATED V6.11 but kept for compatibility
         self.fas_ma200 = self.SMA(self.fas, config.SMA_SLOW, Resolution.Daily)
         self.fas_adx = self.ADX(self.fas, config.ADX_PERIOD, Resolution.Daily)
         self.fas_atr = self.ATR(
             self.fas, config.ATR_PERIOD, MovingAverageType.Wilders, Resolution.Daily
+        )
+
+        # V6.11: UGL indicators (2× Gold - commodity diversification)
+        self.ugl_ma200 = self.SMA(self.ugl, config.SMA_SLOW, Resolution.Daily)
+        self.ugl_adx = self.ADX(self.ugl, config.ADX_PERIOD, Resolution.Daily)
+        self.ugl_atr = self.ATR(
+            self.ugl, config.ATR_PERIOD, MovingAverageType.Wilders, Resolution.Daily
+        )
+
+        # V6.11: UCO indicators (2× Crude Oil - commodity diversification)
+        self.uco_ma200 = self.SMA(self.uco, config.SMA_SLOW, Resolution.Daily)
+        self.uco_adx = self.ADX(self.uco, config.ADX_PERIOD, Resolution.Daily)
+        self.uco_atr = self.ATR(
+            self.uco, config.ATR_PERIOD, MovingAverageType.Wilders, Resolution.Daily
         )
 
         # V2.4: SMA50 for Structural Trend exit (replaces Chandelier trailing stops)
@@ -637,6 +662,9 @@ class AlphaNextGen(QCAlgorithm):
         self.sso_sma50 = self.SMA(self.sso, config.TREND_SMA_PERIOD, Resolution.Daily)
         self.tna_sma50 = self.SMA(self.tna, config.TREND_SMA_PERIOD, Resolution.Daily)
         self.fas_sma50 = self.SMA(self.fas, config.TREND_SMA_PERIOD, Resolution.Daily)
+        # V6.11: SMA50 for new commodity trend symbols
+        self.ugl_sma50 = self.SMA(self.ugl, config.TREND_SMA_PERIOD, Resolution.Daily)
+        self.uco_sma50 = self.SMA(self.uco, config.TREND_SMA_PERIOD, Resolution.Daily)
 
         # ---------------------------------------------------------------------
         # Mean Reversion Engine Indicators (Minute resolution for intraday)
@@ -646,6 +674,10 @@ class AlphaNextGen(QCAlgorithm):
         )
         self.soxl_rsi = self.RSI(
             self.soxl, config.RSI_PERIOD, MovingAverageType.Wilders, Resolution.Minute
+        )
+        # V6.11: SPXL RSI for broader market mean reversion
+        self.spxl_rsi = self.RSI(
+            self.spxl, config.RSI_PERIOD, MovingAverageType.Wilders, Resolution.Minute
         )
 
         # ---------------------------------------------------------------------
@@ -668,8 +700,10 @@ class AlphaNextGen(QCAlgorithm):
         self.ief_closes = RollingWindow[float](lookback)
 
         # Volume rolling windows for MR engine (20-day average)
+        # V6.11: Added SPXL
         self.tqqq_volumes = RollingWindow[float](20)
         self.soxl_volumes = RollingWindow[float](20)
+        self.spxl_volumes = RollingWindow[float](20)
 
         # Store last regime score for intraday use
         self._last_regime_score = 50.0
@@ -934,10 +968,13 @@ class AlphaNextGen(QCAlgorithm):
                 self._current_vix = float(vix_data.Close)
 
         # Update volume rolling windows for MR symbols (daily volume)
+        # V6.11: Added SPXL
         if data.Bars.ContainsKey(self.tqqq):
             self.tqqq_volumes.Add(float(data.Bars[self.tqqq].Volume))
         if data.Bars.ContainsKey(self.soxl):
             self.soxl_volumes.Add(float(data.Bars[self.soxl].Volume))
+        if data.Bars.ContainsKey(self.spxl):
+            self.spxl_volumes.Add(float(data.Bars[self.spxl].Volume))
 
     # =========================================================================
     # SCHEDULED EVENT HANDLERS
@@ -999,11 +1036,11 @@ class AlphaNextGen(QCAlgorithm):
             self._governor_scale = self.risk_engine.get_governor_scale()
 
         # V2.26: Governor at 0% = full shutdown — liquidate all positions
-        # V3.1: EXEMPT hedge positions (TMF/PSQ) - they were legitimately opened at EOD
+        # V3.1/V6.11: EXEMPT hedge positions (SH) - they were legitimately opened at EOD
         # and should NOT be liquidated the next morning (causes guaranteed hedge losses)
         if self._governor_scale == 0.0 and self.Portfolio.Invested:
             # Check which positions to liquidate (exempt hedges)
-            hedge_symbols = {self.tmf, self.psq}
+            hedge_symbols = {self.sh}
             has_non_hedge = any(
                 kvp.Value.Invested and kvp.Value.Symbol not in hedge_symbols
                 for kvp in self.Portfolio
@@ -1019,6 +1056,11 @@ class AlphaNextGen(QCAlgorithm):
         # Set SPY prior close for gap filter
         self.spy_prior_close = self.Securities[self.spy].Close
         self.risk_engine.set_spy_prior_close(self.spy_prior_close)
+
+        # V6.10 P0: Pre-market ITM check for spread positions
+        # Check if any short legs went ITM overnight and queue for close
+        if getattr(config, "PREMARKET_ITM_CHECK_ENABLED", True):
+            self._check_premarket_itm_shorts()
 
         # V3.0: Schedule dynamic EOD events based on actual market close time
         # Handles early close days (1:00 PM) automatically
@@ -1061,6 +1103,52 @@ class AlphaNextGen(QCAlgorithm):
             self.Log(f"EOD_SCHEDULE_ERROR: {e} - using fixed 15:45/16:00 fallback")
             # Fixed fallback schedules are registered in _setup_schedules() if needed
 
+    def _check_premarket_itm_shorts(self) -> None:
+        """
+        V6.10 P0: Pre-market ITM check at 09:25 ET.
+
+        Check all spread short legs BEFORE market open to catch overnight gaps.
+        If a short leg went ITM overnight, queue for immediate close at 09:30.
+
+        This prevents assignment losses from overnight gaps that bypass
+        the regular trading-hours ITM checks.
+        """
+        # Skip if options engine not initialized or no spread position
+        if not hasattr(self, "options_engine") or self.options_engine is None:
+            return
+
+        if self.options_engine._spread_position is None:
+            self.Log("PREMARKET_ITM_CHECK: No spread position - skipping", trades_only=False)
+            return
+
+        # Get current QQQ price (pre-market)
+        qqq_price = self.Securities[self.qqq].Price
+        if qqq_price <= 0:
+            self.Log(
+                f"PREMARKET_ITM_CHECK: Invalid QQQ price {qqq_price} - skipping",
+                trades_only=True,
+            )
+            return
+
+        # Call options engine pre-market check
+        exit_signals = self.options_engine.check_premarket_itm_shorts(underlying_price=qqq_price)
+
+        if exit_signals:
+            # Queue the exit signals for immediate execution at market open
+            self.Log(
+                f"PREMARKET_ITM_CHECK: ITM short detected - queuing close for market open | "
+                f"QQQ={qqq_price:.2f}",
+                trades_only=True,
+            )
+            # Process through portfolio router for proper execution
+            for signal in exit_signals:
+                self.portfolio_router.add_weight(signal)
+        else:
+            self.Log(
+                f"PREMARKET_ITM_CHECK: All shorts OTM - no action needed | QQQ={qqq_price:.2f}",
+                trades_only=False,
+            )
+
     def _liquidate_all_spread_aware(
         self, reason: str = "GOVERNOR_SHUTDOWN", exempt_symbols: set = None
     ) -> None:
@@ -1077,7 +1165,7 @@ class AlphaNextGen(QCAlgorithm):
         This prevents the "long leg sold → naked short → margin rejection" death spiral
         that caused -80% loss in V2.32.
 
-        V3.1: Added exempt_symbols parameter to exclude hedge positions (TMF/PSQ)
+        V3.1/V6.11: Added exempt_symbols parameter to exclude hedge positions (SH)
         from GOVERNOR_SHUTDOWN liquidation. Hedges should persist overnight.
         """
         if exempt_symbols is None:
@@ -1327,11 +1415,8 @@ class AlphaNextGen(QCAlgorithm):
             current_date_str = str(self.Time.date())
             for sym in self.trend_engine._pending_moo_symbols:
                 # Check if this pending symbol is actually invested
-                lean_sym = (
-                    getattr(self, sym.lower(), None)
-                    if sym in ["QLD", "SSO", "TNA", "FAS"]
-                    else None
-                )
+                # V6.11: Use config for trend symbols
+                lean_sym = getattr(self, sym.lower(), None) if sym in config.TREND_SYMBOLS else None
                 if lean_sym and not self.Portfolio[lean_sym].Invested:
                     stale_symbols.add(sym)
                 elif lean_sym and self.Portfolio[lean_sym].Invested:
@@ -1400,7 +1485,7 @@ class AlphaNextGen(QCAlgorithm):
             # V2.19 FIX: Warm entry must respect position limit
             # Cold start SSO entry was bypassing the trend position limit,
             # pushing invested count above MAX_CONCURRENT_TREND_POSITIONS
-            trend_symbols = config.TREND_PRIORITY_ORDER  # ["QLD", "SSO", "TNA", "FAS"]
+            trend_symbols = config.TREND_PRIORITY_ORDER  # V6.11: ["QLD", "UGL", "UCO", "SSO"]
             current_trend_count = sum(
                 1 for sym in trend_symbols if self.Portfolio[getattr(self, sym.lower())].Invested
             )
@@ -1454,27 +1539,17 @@ class AlphaNextGen(QCAlgorithm):
         if self.IsWarmingUp:
             return
 
-        # Check TQQQ position
-        if self.Portfolio[self.tqqq].Invested:
-            signal = TargetWeight(
-                symbol="TQQQ",
-                target_weight=0.0,
-                source="MR",
-                urgency=Urgency.IMMEDIATE,
-                reason="TIME_EXIT_15:45",
-            )
-            self.portfolio_router.receive_signal(signal)
-
-        # Check SOXL position
-        if self.Portfolio[self.soxl].Invested:
-            signal = TargetWeight(
-                symbol="SOXL",
-                target_weight=0.0,
-                source="MR",
-                urgency=Urgency.IMMEDIATE,
-                reason="TIME_EXIT_15:45",
-            )
-            self.portfolio_router.receive_signal(signal)
+        # V6.11: Check all MR symbols (TQQQ, SOXL, SPXL)
+        for mr_symbol, mr_name in [(self.tqqq, "TQQQ"), (self.soxl, "SOXL"), (self.spxl, "SPXL")]:
+            if self.Portfolio[mr_symbol].Invested:
+                signal = TargetWeight(
+                    symbol=mr_name,
+                    target_weight=0.0,
+                    source="MR",
+                    urgency=Urgency.IMMEDIATE,
+                    reason="TIME_EXIT_15:45",
+                )
+                self.portfolio_router.receive_signal(signal)
 
         # Process the signals immediately
         self._process_immediate_signals()
@@ -1482,12 +1557,11 @@ class AlphaNextGen(QCAlgorithm):
         # CRITICAL FAILSAFE: Direct Liquidate() call to ensure 3x ETFs are closed
         # This runs AFTER signal processing as a belt-and-suspenders safety measure
         # 3x ETFs held overnight can suffer catastrophic losses from gaps
-        if self.Portfolio[self.tqqq].Invested:
-            self.Log("MR_FAILSAFE: Force liquidating TQQQ via direct Liquidate()")
-            self.Liquidate(self.tqqq, tag="MR_FAILSAFE_15:45")
-        if self.Portfolio[self.soxl].Invested:
-            self.Log("MR_FAILSAFE: Force liquidating SOXL via direct Liquidate()")
-            self.Liquidate(self.soxl, tag="MR_FAILSAFE_15:45")
+        # V6.11: Updated for all MR symbols
+        for mr_symbol, mr_name in [(self.tqqq, "TQQQ"), (self.soxl, "SOXL"), (self.spxl, "SPXL")]:
+            if self.Portfolio[mr_symbol].Invested:
+                self.Log(f"MR_FAILSAFE: Force liquidating {mr_name} via direct Liquidate()")
+                self.Liquidate(mr_symbol, tag="MR_FAILSAFE_15:45")
 
     def _on_eod_processing(self) -> None:
         """
@@ -1564,7 +1638,7 @@ class AlphaNextGen(QCAlgorithm):
             return
 
         # V3.0 FIX: Always process EOD signals - internal logic handles Governor scaling
-        # At Governor 0%, hedges (TMF/PSQ) and bearish PUTs are still allowed
+        # V6.11: At Governor 0%, hedges (SH) and bearish PUTs are still allowed
         # The scaling logic in _process_eod_signals zeros out bullish positions
         if hasattr(self, "_eod_capital_state") and self._eod_capital_state is not None:
             if self._governor_scale <= 0.0:
@@ -2864,9 +2938,9 @@ class AlphaNextGen(QCAlgorithm):
             aggregated = self.portfolio_router.aggregate_weights(weights)
 
             # V2.26: Apply Drawdown Governor scaling to allocations
-            # V2.32: EXEMPT hedges (TMF, PSQ) — we want MORE hedging during drawdowns, not less
+            # V2.32/V6.11: EXEMPT hedges (SH) — we want MORE hedging during drawdowns, not less
             # V2.32: Apply sizing floor for options, exempt bearish options if configured
-            HEDGE_SYMBOLS = {"TMF", "PSQ"}
+            HEDGE_SYMBOLS = {"SH"}
 
             # V3.0 FIX: Improved bearish detection - check existing position OR signal source
             # This allows NEW bearish entries at Governor 0%, not just existing positions
@@ -3002,7 +3076,7 @@ class AlphaNextGen(QCAlgorithm):
 
         # V2.18: Count current trend positions AND pending MOO orders for position limit enforcement
         # Fix: Previously only counted invested positions, missing pending MOOs that would fill next day
-        trend_symbols = config.TREND_PRIORITY_ORDER  # ["QLD", "SSO", "TNA", "FAS"]
+        trend_symbols = config.TREND_PRIORITY_ORDER  # V6.11: ["QLD", "UGL", "UCO", "SSO"]
         current_trend_positions = sum(
             1 for sym in trend_symbols if self.Portfolio[getattr(self, sym.lower())].Invested
         )
@@ -3034,9 +3108,13 @@ class AlphaNextGen(QCAlgorithm):
 
         # Build symbol data map for cleaner iteration
         # V2.4: Added SMA50 for structural trend exit
+        # V6.11: Updated for diversified universe (UGL, UCO replace TNA, FAS)
         symbol_data = {
             "QLD": (self.qld, self.qld_ma200, self.qld_adx, self.qld_atr, self.qld_sma50),
             "SSO": (self.sso, self.sso_ma200, self.sso_adx, self.sso_atr, self.sso_sma50),
+            "UGL": (self.ugl, self.ugl_ma200, self.ugl_adx, self.ugl_atr, self.ugl_sma50),
+            "UCO": (self.uco, self.uco_ma200, self.uco_adx, self.uco_atr, self.uco_sma50),
+            # Deprecated symbols - kept for backward compatibility
             "TNA": (self.tna, self.tna_ma200, self.tna_adx, self.tna_atr, self.tna_sma50),
             "FAS": (self.fas, self.fas_ma200, self.fas_adx, self.fas_atr, self.fas_sma50),
         }
@@ -3367,6 +3445,77 @@ class AlphaNextGen(QCAlgorithm):
                 current_time=str(self.Time),
             )
             if spread_legs is None:
+                # V6.10 P3: DEBIT fallback when CREDIT fails
+                fallback_enabled = getattr(config, "CREDIT_SPREAD_FALLBACK_TO_DEBIT", False)
+                if fallback_enabled and direction == OptionDirection.PUT:
+                    # For PUT direction, fall back to BEAR_PUT_DEBIT
+                    self.Log(
+                        f"VASS_FALLBACK: CREDIT spread failed for PUT | "
+                        f"Trying BEAR_PUT_DEBIT fallback | Strategy={strategy.value}"
+                    )
+                    spread_legs = self.options_engine.select_spread_legs(
+                        contracts=candidate_contracts,
+                        direction=direction,
+                        current_time=str(self.Time),
+                        dte_min=vass_dte_min,
+                        dte_max=vass_dte_max,
+                    )
+                    if spread_legs is not None:
+                        long_leg, short_leg = spread_legs  # DEBIT returns (long, short)
+                        if (
+                            long_leg.bid > 0
+                            and long_leg.ask > 0
+                            and short_leg.bid > 0
+                            and short_leg.ask > 0
+                        ):
+                            self.Log(
+                                f"VASS_FALLBACK: DEBIT spread found | "
+                                f"Long={long_leg.strike} | Short={short_leg.strike}"
+                            )
+                            signal = self.options_engine.check_spread_entry_signal(
+                                regime_score=regime_score,
+                                vix_current=self._current_vix,
+                                adx_value=adx_value,
+                                current_price=qqq_price,
+                                ma200_value=ma200_value,
+                                iv_rank=iv_rank,
+                                current_hour=self.Time.hour,
+                                current_minute=self.Time.minute,
+                                current_date=str(self.Time.date()),
+                                portfolio_value=tradeable_eq,
+                                long_leg_contract=long_leg,
+                                short_leg_contract=short_leg,
+                                gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
+                                vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
+                                size_multiplier=size_multiplier,
+                                margin_remaining=margin_remaining,
+                                dte_min=vass_dte_min,
+                                dte_max=vass_dte_max,
+                                is_eod_scan=is_eod_scan,
+                                direction=direction,
+                            )
+                            if signal:
+                                # V2.3.6 FIX: Check margin BEFORE submitting spread
+                                if signal.metadata and signal.metadata.get(
+                                    "spread_short_leg_quantity"
+                                ):
+                                    short_qty = signal.metadata.get("spread_short_leg_quantity", 0)
+                                    short_symbol = signal.metadata.get(
+                                        "spread_short_leg_symbol", ""
+                                    )
+                                    spread_width = getattr(config, "SPREAD_WIDTH_TARGET", 5.0)
+                                    spread_margin = short_qty * spread_width * 100 * 1.5
+                                    if spread_margin > margin_remaining:
+                                        self.Log(
+                                            f"SPREAD_MARGIN_BLOCK: DEBIT fallback insufficient margin | "
+                                            f"Required=${spread_margin:,.0f} | Available=${margin_remaining:,.0f}"
+                                        )
+                                        return
+                                self.Log(
+                                    f"VASS_FALLBACK: DEBIT entry signal generated | {signal.symbol}"
+                                )
+                                self.portfolio_router.process_signal(signal)
+                            return
                 return
             short_leg, long_leg = spread_legs  # Credit returns (short, long)
 
@@ -4065,7 +4214,7 @@ class AlphaNextGen(QCAlgorithm):
         """
         Generate Hedge Engine signals at end of day.
 
-        Calculates target TMF and PSQ allocations based on regime level.
+        V6.11: Calculates target SH allocation based on regime level.
 
         Args:
             regime_state: Current regime state.
@@ -4078,14 +4227,12 @@ class AlphaNextGen(QCAlgorithm):
         if total_equity <= 0:
             return
 
-        # Calculate current allocations as percentages
-        tmf_pct = self.Portfolio[self.tmf].HoldingsValue / total_equity
-        psq_pct = self.Portfolio[self.psq].HoldingsValue / total_equity
+        # V6.11: Calculate current SH allocation
+        sh_pct = self.Portfolio[self.sh].HoldingsValue / total_equity
 
         signals = self.hedge_engine.get_hedge_signals(
             regime_score=regime_state.smoothed_score,
-            current_tmf_pct=tmf_pct,
-            current_psq_pct=psq_pct,
+            current_sh_pct=sh_pct,
             is_panic_mode=False,
         )
         for signal in signals:
@@ -4093,9 +4240,9 @@ class AlphaNextGen(QCAlgorithm):
 
     def _generate_hedge_exit_signals(self) -> None:
         """
-        V3.0: Generate signals to exit hedge positions when regime improves.
+        V3.0/V6.11: Generate signals to exit hedge positions when regime improves.
 
-        Called when regime >= HEDGE_REGIME_GATE (50) to unwind TMF/PSQ positions.
+        Called when regime >= HEDGE_REGIME_GATE (50) to unwind SH positions.
         Per thesis: Hedges should be 0% in Bull (70+) and Neutral (50-69).
         """
         # V6.4: Skip hedge engine in isolation mode if disabled
@@ -4106,43 +4253,26 @@ class AlphaNextGen(QCAlgorithm):
         if total_equity <= 0:
             return
 
-        # Check if we have hedge positions to exit
-        tmf_invested = self.Portfolio[self.tmf].Invested
-        psq_invested = self.Portfolio[self.psq].Invested
+        # V6.11: Check if we have SH hedge position to exit
+        sh_invested = self.Portfolio[self.sh].Invested
 
-        if not tmf_invested and not psq_invested:
+        if not sh_invested:
             return  # No hedges to exit
 
-        # Emit 0% target weight signals to unwind hedges
-        if tmf_invested:
-            tmf_pct = self.Portfolio[self.tmf].HoldingsValue / total_equity
-            signal = TargetWeight(
-                symbol="TMF",
-                target_weight=0.0,
-                source="HEDGE",
-                urgency=Urgency.EOD,
-                reason=f"REGIME_EXIT: Score >= {config.HEDGE_REGIME_GATE} (was {tmf_pct:.1%})",
-            )
-            self.portfolio_router.receive_signal(signal)
-            self.Log(
-                f"HEDGE_EXIT: TMF | Regime >= {config.HEDGE_REGIME_GATE} | "
-                f"Unwinding {tmf_pct:.1%} position"
-            )
-
-        if psq_invested:
-            psq_pct = self.Portfolio[self.psq].HoldingsValue / total_equity
-            signal = TargetWeight(
-                symbol="PSQ",
-                target_weight=0.0,
-                source="HEDGE",
-                urgency=Urgency.EOD,
-                reason=f"REGIME_EXIT: Score >= {config.HEDGE_REGIME_GATE} (was {psq_pct:.1%})",
-            )
-            self.portfolio_router.receive_signal(signal)
-            self.Log(
-                f"HEDGE_EXIT: PSQ | Regime >= {config.HEDGE_REGIME_GATE} | "
-                f"Unwinding {psq_pct:.1%} position"
-            )
+        # Emit 0% target weight signal to unwind SH
+        sh_pct = self.Portfolio[self.sh].HoldingsValue / total_equity
+        signal = TargetWeight(
+            symbol="SH",
+            target_weight=0.0,
+            source="HEDGE",
+            urgency=Urgency.EOD,
+            reason=f"REGIME_EXIT: Score >= {config.HEDGE_REGIME_GATE} (was {sh_pct:.1%})",
+        )
+        self.portfolio_router.receive_signal(signal)
+        self.Log(
+            f"HEDGE_EXIT: SH | Regime >= {config.HEDGE_REGIME_GATE} | "
+            f"Unwinding {sh_pct:.1%} position"
+        )
 
     # =========================================================================
     # UTILITY HELPERS
@@ -4212,7 +4342,8 @@ class AlphaNextGen(QCAlgorithm):
         options_long_pnl = 0.0
         options_short_pnl = 0.0
         trend_pnl = 0.0
-        trend_symbols = ["QLD", "SSO", "TNA", "FAS"]
+        # V6.11: Use config for trend symbols
+        trend_symbols = config.TREND_SYMBOLS
 
         for kvp in self.Portfolio:
             holding = kvp.Value
@@ -4499,6 +4630,38 @@ class AlphaNextGen(QCAlgorithm):
             if signal:
                 self.portfolio_router.receive_signal(signal)
 
+        # V6.11: Check SPXL (3× S&P 500 for broader market bounce)
+        if self.spxl_rsi.IsReady and not self.Portfolio[self.spxl].Invested:
+            spxl_price = self.Securities[self.spxl].Price
+            spxl_open = (
+                data.Bars[self.spxl].Open if data.Bars.ContainsKey(self.spxl) else spxl_price
+            )
+            spxl_volume = (
+                float(data.Bars[self.spxl].Volume) if data.Bars.ContainsKey(self.spxl) else 0.0
+            )
+            spxl_vwap = (spxl_open + spxl_price) / 2.0
+            spxl_avg_vol = self._get_average_volume(self.spxl_volumes)
+
+            signal = self.mr_engine.check_entry_signal(
+                symbol="SPXL",
+                current_price=spxl_price,
+                open_price=spxl_open,
+                rsi_value=self.spxl_rsi.Current.Value,
+                current_volume=spxl_volume,
+                avg_volume=spxl_avg_vol,
+                vwap=spxl_vwap,
+                regime_score=regime_score,
+                days_running=days_running,
+                gap_filter_triggered=gap_filter,
+                vol_shock_active=vol_shock,
+                time_guard_active=time_guard,
+                current_hour=self.Time.hour,
+                current_minute=self.Time.minute,
+                vix_value=self._current_vix,
+            )
+            if signal:
+                self.portfolio_router.receive_signal(signal)
+
     def _check_mr_exits(self, data: Slice) -> None:
         """
         Check for Mean Reversion exit conditions.
@@ -4509,9 +4672,11 @@ class AlphaNextGen(QCAlgorithm):
             data: Current data slice.
         """
         # Safety check: Detect sync issues between broker and MR engine
+        # V6.11: Updated for all MR symbols (TQQQ, SOXL, SPXL)
         mr_pos = self.mr_engine.get_position_symbol()
         broker_tqqq = self.Portfolio[self.tqqq].Invested
         broker_soxl = self.Portfolio[self.soxl].Invested
+        broker_spxl = self.Portfolio[self.spxl].Invested
 
         # If broker has MR position but engine doesn't, we have a sync issue
         if broker_tqqq and mr_pos is None:
@@ -4522,8 +4687,12 @@ class AlphaNextGen(QCAlgorithm):
             self.Liquidate(self.soxl)
             return
 
+        if broker_spxl and mr_pos is None:
+            self.Liquidate(self.spxl)
+            return
+
         # If engine has position but broker doesn't, clear engine state
-        if mr_pos is not None and not broker_tqqq and not broker_soxl:
+        if mr_pos is not None and not broker_tqqq and not broker_soxl and not broker_spxl:
             self.mr_engine.remove_position()
             return
 
@@ -4548,11 +4717,21 @@ class AlphaNextGen(QCAlgorithm):
             if signal:
                 self.portfolio_router.receive_signal(signal)
 
+        # V6.11: Check SPXL price if that's the current position
+        if self.Portfolio[self.spxl].Invested:
+            signal = self.mr_engine.check_exit_signals(
+                current_price=self.Securities[self.spxl].Price,
+                current_hour=self.Time.hour,
+                current_minute=self.Time.minute,
+            )
+            if signal:
+                self.portfolio_router.receive_signal(signal)
+
     def _monitor_trend_stops(self, data: Slice) -> None:
         """
         Monitor Trend positions for intraday stop triggers.
 
-        Checks Chandelier trailing stops for QLD, SSO, TNA, and FAS.
+        V6.11: Checks Chandelier trailing stops for QLD, SSO, UGL, UCO.
 
         Args:
             data: Current data slice.
@@ -4577,7 +4756,27 @@ class AlphaNextGen(QCAlgorithm):
                 self.portfolio_router.receive_signal(signal)
                 self._process_immediate_signals()
 
-        # V2.2: Check TNA
+        # V6.11: Check UGL (2× Gold)
+        if self.Portfolio[self.ugl].Invested:
+            signal = self.trend_engine.check_stop_hit(
+                symbol="UGL",
+                current_price=self.Securities[self.ugl].Price,
+            )
+            if signal:
+                self.portfolio_router.receive_signal(signal)
+                self._process_immediate_signals()
+
+        # V6.11: Check UCO (2× Crude Oil)
+        if self.Portfolio[self.uco].Invested:
+            signal = self.trend_engine.check_stop_hit(
+                symbol="UCO",
+                current_price=self.Securities[self.uco].Price,
+            )
+            if signal:
+                self.portfolio_router.receive_signal(signal)
+                self._process_immediate_signals()
+
+        # DEPRECATED V6.11: TNA/FAS kept for backward compatibility
         if self.Portfolio[self.tna].Invested:
             signal = self.trend_engine.check_stop_hit(
                 symbol="TNA",
@@ -4587,7 +4786,6 @@ class AlphaNextGen(QCAlgorithm):
                 self.portfolio_router.receive_signal(signal)
                 self._process_immediate_signals()
 
-        # V2.2: Check FAS
         if self.Portfolio[self.fas].Invested:
             signal = self.trend_engine.check_stop_hit(
                 symbol="FAS",
@@ -4994,6 +5192,56 @@ class AlphaNextGen(QCAlgorithm):
                             size_multiplier=size_multiplier,
                             margin_remaining=margin_remaining,
                         )
+                else:
+                    # V6.10 P3: DEBIT fallback when CREDIT fails (intraday path)
+                    fallback_enabled = getattr(config, "CREDIT_SPREAD_FALLBACK_TO_DEBIT", False)
+                    if fallback_enabled and direction == OptionDirection.PUT:
+                        self.Log(
+                            f"VASS_FALLBACK_INTRADAY: CREDIT spread failed for PUT | "
+                            f"Trying BEAR_PUT_DEBIT fallback | Strategy={strategy.value}"
+                        )
+                        debit_spread_legs = self.options_engine.select_spread_legs(
+                            contracts=candidate_contracts,
+                            direction=direction,
+                            current_time=str(self.Time),
+                            dte_min=vass_dte_min,
+                            dte_max=vass_dte_max,
+                        )
+                        if debit_spread_legs is not None:
+                            long_leg, short_leg = debit_spread_legs
+                            if (
+                                long_leg.bid > 0
+                                and long_leg.ask > 0
+                                and short_leg.bid > 0
+                                and short_leg.ask > 0
+                            ):
+                                self.Log(
+                                    f"VASS_FALLBACK_INTRADAY: DEBIT spread found | "
+                                    f"Long={long_leg.strike} | Short={short_leg.strike}"
+                                )
+                                signal = self.options_engine.check_spread_entry_signal(
+                                    regime_score=regime_score,
+                                    vix_current=self._current_vix,
+                                    adx_value=adx_value,
+                                    current_price=qqq_price,
+                                    ma200_value=ma200_value,
+                                    iv_rank=iv_rank,
+                                    current_hour=self.Time.hour,
+                                    current_minute=self.Time.minute,
+                                    current_date=str(self.Time.date()),
+                                    portfolio_value=effective_portfolio_value,
+                                    long_leg_contract=long_leg,
+                                    short_leg_contract=short_leg,
+                                    gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
+                                    vol_shock_active=self.risk_engine.is_vol_shock_active(
+                                        self.Time
+                                    ),
+                                    size_multiplier=size_multiplier,
+                                    margin_remaining=margin_remaining,
+                                    dte_min=vass_dte_min,
+                                    dte_max=vass_dte_max,
+                                    direction=direction,
+                                )
             else:
                 # Existing debit spread path
                 # V2.24.2: Pass VASS DTE range to prevent double-filter bug
@@ -5728,8 +5976,8 @@ class AlphaNextGen(QCAlgorithm):
             symbol: String symbol of the rejected/canceled order.
             order_event: Original OrderEvent from broker.
         """
-        # Route 1: Trend symbols (QLD, SSO, TNA, FAS)
-        if symbol in ["QLD", "SSO", "TNA", "FAS"]:
+        # Route 1: Trend symbols - V6.11: Updated to include UGL, UCO
+        if symbol in config.TREND_SYMBOLS:
             # Trend MOO recovery — clear stuck pending slot
             if symbol in self.trend_engine._pending_moo_symbols:
                 self.trend_engine.cancel_pending_moo(symbol)
@@ -5747,8 +5995,8 @@ class AlphaNextGen(QCAlgorithm):
             ):
                 self.cold_start_engine.cancel_warm_entry()
 
-        # Route 2: MR symbols (TQQQ, SOXL)
-        elif symbol in ["TQQQ", "SOXL"]:
+        # Route 2: MR symbols - V6.11: Updated to include SPXL
+        elif symbol in config.MR_SYMBOLS:
             self.mr_engine.cancel_pending_entry()
             # Cooldown: 15 minutes before MR can retry
             self._mr_rejection_cooldown_until = self.Time + timedelta(minutes=15)
@@ -5844,15 +6092,20 @@ class AlphaNextGen(QCAlgorithm):
             fill_qty: Fill quantity (positive=buy, negative=sell).
             order_event: Original order event.
         """
-        # Update trend engine if QLD/SSO/TNA/FAS (V2.2)
-        if symbol in ["QLD", "SSO", "TNA", "FAS"]:
+        # Update trend engine - V6.11: Updated for diversified universe
+        if symbol in config.TREND_SYMBOLS:
             if fill_qty > 0:
-                # Get ATR for initial stop calculation
+                # Get ATR for initial stop calculation - V6.11: Added UGL, UCO
                 atr_value = 0.0
                 if symbol == "QLD" and self.qld_atr.IsReady:
                     atr_value = self.qld_atr.Current.Value
                 elif symbol == "SSO" and self.sso_atr.IsReady:
                     atr_value = self.sso_atr.Current.Value
+                elif symbol == "UGL" and self.ugl_atr.IsReady:
+                    atr_value = self.ugl_atr.Current.Value
+                elif symbol == "UCO" and self.uco_atr.IsReady:
+                    atr_value = self.uco_atr.Current.Value
+                # Deprecated but kept for backward compatibility
                 elif symbol == "TNA" and self.tna_atr.IsReady:
                     atr_value = self.tna_atr.Current.Value
                 elif symbol == "FAS" and self.fas_atr.IsReady:
@@ -5867,8 +6120,8 @@ class AlphaNextGen(QCAlgorithm):
             else:
                 self.trend_engine.remove_position(symbol)
 
-        # Update MR engine if TQQQ/SOXL
-        if symbol in ["TQQQ", "SOXL"]:
+        # Update MR engine - V6.11: Updated to include SPXL
+        if symbol in config.MR_SYMBOLS:
             try:
                 if fill_qty > 0:
                     # Use current price as VWAP approximation

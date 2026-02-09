@@ -211,20 +211,19 @@ class TestFullCycleScenario:
         # Setup: Regime deteriorates to CAUTIOUS (V3.0: 40-49 = LIGHT tier)
         regime_score = 45.0  # V3.0: Below 50 = CAUTIOUS, 40-49 = LIGHT tier
 
-        # Hedge engine calculates target allocations
-        tmf_target, psq_target, hedge_tier = engines["hedge"].get_target_allocations(
+        # V6.11: Hedge engine calculates target allocations (SH only)
+        sh_target, hedge_tier = engines["hedge"].get_target_allocations(
             regime_score=regime_score,
         )
 
-        # Assert: Hedges activated (V3.0: score 40-49 = LIGHT tier with TMF only)
-        assert tmf_target > 0 or psq_target > 0
+        # Assert: Hedges activated (V6.11: SH at 5% for LIGHT tier)
+        assert sh_target > 0
         assert hedge_tier == "LIGHT"
 
-        # Generate hedge signals (returns list of TargetWeight)
+        # V6.11: Generate hedge signals (returns list of TargetWeight for SH)
         hedge_signals = engines["hedge"].get_hedge_signals(
             regime_score=regime_score,
-            current_tmf_pct=0.0,
-            current_psq_pct=0.0,
+            current_sh_pct=0.0,
         )
 
         # If signals generated, should be EOD urgency

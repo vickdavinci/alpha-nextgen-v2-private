@@ -62,15 +62,19 @@ HEDGE_REGIME_GATE = 50  # Hedges only active when regime < 50
 
 # V2.3.24: Leverage multipliers for margin calculation
 # Used by portfolio_router to calculate actual margin consumption, not just allocation %
+# V6.11: Universe redesign - diversified trend + commodity hedges
 SYMBOL_LEVERAGE = {
+    # Trend Engine (diversified)
     "QLD": 2.0,  # 2× Nasdaq
     "SSO": 2.0,  # 2× S&P 500
-    "TNA": 3.0,  # 3× Russell 2000
-    "FAS": 3.0,  # 3× Financials
+    "UGL": 2.0,  # 2× Gold (commodity hedge)
+    "UCO": 2.0,  # 2× Crude Oil (commodity hedge)
+    # Mean Reversion Engine
     "TQQQ": 3.0,  # 3× Nasdaq (MR)
+    "SPXL": 3.0,  # 3× S&P 500 (MR)
     "SOXL": 3.0,  # 3× Semiconductor (MR)
-    "TMF": 3.0,  # 3× Treasury (Hedge)
-    "PSQ": 1.0,  # 1× Inverse Nasdaq (Hedge)
+    # Hedge Engine
+    "SH": 1.0,  # 1× Inverse S&P (Hedge)
 }
 
 # V2.3.24: Minimum contracts for scaled spreads
@@ -426,9 +430,9 @@ PROFIT_TIGHT_PCT = 0.15  # V2.3.6: Raised from 0.10 - don't tighten too early
 PROFIT_TIGHTER_PCT = 0.25  # V2.3.6: Raised from 0.20 - let trends run
 
 # V2.3.8: 3x ETF Volatility Multipliers (PART 14 Pitfall 3)
-# TNA/FAS swing 5-7% daily - tighter stops to limit damage
-# Use ATR×2.5 instead of ATR×3.5 for 3x ETFs
-TREND_3X_SYMBOLS = ["TNA", "FAS"]  # 3× leveraged symbols needing tighter stops
+# V6.11: No 3x symbols in trend engine (all 2x now)
+# Kept for backward compatibility with Chandelier stop logic
+TREND_3X_SYMBOLS = []  # V6.11: No 3× in trend (QLD/SSO/UGL/UCO are all 2×)
 CHANDELIER_3X_BASE_MULT = 2.5  # V2.3.8: Tighter than 2x (3.5) - control 3x volatility
 CHANDELIER_3X_TIGHT_MULT = 2.0  # V2.3.8: Tighter than 2x (3.0)
 CHANDELIER_3X_TIGHTER_MULT = 1.5  # V2.3.8: Tighter than 2x (2.5)
@@ -439,14 +443,14 @@ TREND_EXIT_REGIME = 30  # Exit when regime drops to Bear
 TREND_ADX_EXIT_THRESHOLD = 10  # V2.3.12: Lowered to 10 - allow holding during low momentum grind
 
 # V2.3.3 Position Limits (Part 4 audit fix)
-# In bull markets, all 4 tickers (QLD/SSO/TNA/FAS) may trigger together
-# because they're all correlated to US equity market (0.70-0.95 correlation)
-# V2.3.3: Changed from 2 to 4 to allow full trend allocation (55% total)
-MAX_CONCURRENT_TREND_POSITIONS = 4  # V5.3: Allow all 4 trend tickers (QLD/SSO/TNA/FAS)
+# V6.11: Diversified trend universe (QLD/SSO/UGL/UCO)
+# With commodities, not all will trigger together (uncorrelated)
+MAX_CONCURRENT_TREND_POSITIONS = 4  # Allow all 4 trend tickers
 
 # Priority order when multiple entries trigger simultaneously
 # Higher priority symbols get capital first
-TREND_PRIORITY_ORDER = ["QLD", "SSO", "TNA", "FAS"]  # Nasdaq > S&P > Russell > Financials
+# V6.11: QLD primary, then commodities (hedge value), then SSO
+TREND_PRIORITY_ORDER = ["QLD", "UGL", "UCO", "SSO"]  # Nasdaq > Gold > Oil > S&P
 
 # =============================================================================
 # MEAN REVERSION ENGINE
@@ -511,14 +515,19 @@ HEDGE_LEVEL_1 = 50  # V3.0: Light hedge starts at Cautious (regime < 50)
 HEDGE_LEVEL_2 = 40  # V3.0: Medium hedge at Defensive (regime < 40)
 HEDGE_LEVEL_3 = 30  # V3.0: Full hedge at Bear (regime < 30)
 
-# TMF Allocation
-TMF_LIGHT = 0.10
-TMF_MEDIUM = 0.15
-TMF_FULL = 0.20
+# V6.11: SH (1x Inverse S&P) replaces TMF/PSQ
+# SH has no decay (unlike VIXY), provides direct equity hedge
+HEDGE_SYMBOLS = ["SH"]
+SH_LIGHT = 0.05  # Regime 40-50: 5% inverse
+SH_MEDIUM = 0.08  # Regime 30-40: 8% inverse
+SH_FULL = 0.10  # Regime < 30: 10% inverse
 
-# PSQ Allocation
-PSQ_MEDIUM = 0.05
-PSQ_FULL = 0.10
+# Legacy TMF/PSQ (deprecated in V6.11)
+TMF_LIGHT = 0.00
+TMF_MEDIUM = 0.00
+TMF_FULL = 0.00
+PSQ_MEDIUM = 0.00
+PSQ_FULL = 0.00
 
 # Rebalancing
 HEDGE_REBAL_THRESHOLD = 0.02
@@ -528,43 +537,55 @@ HEDGE_REBAL_THRESHOLD = 0.02
 # =============================================================================
 
 # Exposure Limits
+# V6.11: Simplified groups - equity + commodities + hedge
 EXPOSURE_LIMITS = {
     "NASDAQ_BETA": {"max_net_long": 0.50, "max_net_short": 0.30, "max_gross": 0.75},
-    "SPY_BETA": {"max_net_long": 0.40, "max_net_short": 0.00, "max_gross": 0.40},
-    "SMALL_CAP_BETA": {"max_net_long": 0.25, "max_net_short": 0.00, "max_gross": 0.25},
-    "FINANCIALS_BETA": {"max_net_long": 0.15, "max_net_short": 0.00, "max_gross": 0.15},
-    "RATES": {"max_net_long": 0.40, "max_net_short": 0.00, "max_gross": 0.40},  # TMF only
+    "SPY_BETA": {
+        "max_net_long": 0.40,
+        "max_net_short": 0.15,
+        "max_gross": 0.50,
+    },  # V6.11: Allow SH short
+    "COMMODITIES": {
+        "max_net_long": 0.25,
+        "max_net_short": 0.00,
+        "max_gross": 0.25,
+    },  # V6.11: Gold + Oil
 }
 
 # Group Membership
+# V6.11: Universe redesign - diversified trend + commodity hedges
 SYMBOL_GROUPS = {
-    "TQQQ": "NASDAQ_BETA",
+    # Trend Engine
     "QLD": "NASDAQ_BETA",
-    "SOXL": "NASDAQ_BETA",
-    "PSQ": "NASDAQ_BETA",  # Inverse
     "SSO": "SPY_BETA",
-    "TNA": "SMALL_CAP_BETA",  # V2.2: 3× Russell 2000
-    "FAS": "FINANCIALS_BETA",  # V2.2: 3× Financials
-    "TMF": "RATES",
+    "UGL": "COMMODITIES",  # 2× Gold
+    "UCO": "COMMODITIES",  # 2× Crude Oil
+    # Mean Reversion Engine
+    "TQQQ": "NASDAQ_BETA",
+    "SPXL": "SPY_BETA",
+    "SOXL": "NASDAQ_BETA",
+    # Hedge Engine
+    "SH": "SPY_BETA",  # 1× Inverse S&P
 }
 
 # =============================================================================
 # V2.2 BALANCED ALLOCATION MODEL
 # =============================================================================
-# Addresses capital utilization problem from V1 testing:
-# - Trend Engine entry probability ~13.3% (very conservative)
-# - Adding TNA/FAS increases diversification and entry opportunities
+# V6.11: Universe redesign - diversified trend with commodities
+# - Equity exposure: QLD (15%) + SSO (7%) = 22%
+# - Commodity exposure: UGL (10%) + UCO (8%) = 18%
+# - Total: 40% with genuine diversification (not just correlated equity ETFs)
 
-# Trend Engine Allocations (40% total - V2.18 reduced from 55%)
-# V2.18: Reduced to prevent margin overflow (was 196% when all 4 triggered)
-# Margin impact: 15%×2 + 12%×2 + 8%×3 + 5%×3 = 30% + 24% + 24% + 15% = 93%
+# Trend Engine Allocations (40% total)
+# V6.11: Diversified across equities + commodities
+# Margin impact: 15%×2 + 7%×2 + 10%×2 + 8%×2 = 30% + 14% + 20% + 16% = 80%
 TREND_SYMBOL_ALLOCATIONS = {
-    "QLD": 0.15,  # V2.18: 15% (was 20%) - 2× Nasdaq (primary)
-    "SSO": 0.12,  # V2.18: 12% (was 15%) - 2× S&P 500 (secondary)
-    "TNA": 0.08,  # V2.18: 8% (was 12%) - 3× Russell 2000 (small-cap diversification)
-    "FAS": 0.05,  # V2.18: 5% (was 8%) - 3× Financials (sector diversification)
+    "QLD": 0.15,  # 15% - 2× Nasdaq (primary equity)
+    "SSO": 0.07,  # 7% - 2× S&P 500 (broad equity)
+    "UGL": 0.10,  # 10% - 2× Gold (commodity hedge, uncorrelated)
+    "UCO": 0.08,  # 8% - 2× Crude Oil (energy/inflation hedge)
 }
-TREND_TOTAL_ALLOCATION = 0.40  # V2.18: 40% total (was 55%)
+TREND_TOTAL_ALLOCATION = 0.40  # 40% total
 
 # =============================================================================
 # V2.4 STRUCTURAL TREND - SMA50 + HARD STOP
@@ -586,13 +607,13 @@ TREND_SMA_EXIT_BUFFER = 0.02  # Exit when close < SMA50 * (1 - 2%)
 TREND_SMA_CONFIRM_DAYS = 2  # Days below SMA50 required before exit
 
 # Hard Stop Percentages (asset-specific, from entry price)
-# 3× ETFs need tighter stops due to higher daily volatility (5-7% swings)
-# 2× ETFs can tolerate wider stops (2-3% daily swings)
+# V6.11: Updated for new universe - all 2× ETFs, wider stops for commodities
+# Commodities (UGL, UCO) can be more volatile - use 18% stop
 TREND_HARD_STOP_PCT = {
-    "QLD": 0.15,  # 15% hard stop (2× ETF)
-    "SSO": 0.15,  # 15% hard stop (2× ETF)
-    "TNA": 0.12,  # 12% hard stop (3× ETF - more volatile)
-    "FAS": 0.12,  # 12% hard stop (3× ETF - more volatile)
+    "QLD": 0.15,  # 15% hard stop (2× Nasdaq)
+    "SSO": 0.15,  # 15% hard stop (2× S&P)
+    "UGL": 0.18,  # 18% hard stop (2× Gold - higher volatility)
+    "UCO": 0.18,  # 18% hard stop (2× Crude - higher volatility)
 }
 
 # V3.0: Regime-Adaptive Stop Multipliers
@@ -605,9 +626,11 @@ TREND_STOP_REGIME_MULTIPLIERS = {
 }
 
 # Mean Reversion Allocations (10% total)
+# V6.11: Diversified across Nasdaq, S&P, and Semis
 MR_SYMBOL_ALLOCATIONS = {
-    "TQQQ": 0.05,  # 5% - 3× Nasdaq
-    "SOXL": 0.05,  # 5% - 3× Semiconductor
+    "TQQQ": 0.04,  # 4% - 3× Nasdaq (primary MR)
+    "SPXL": 0.03,  # 3% - 3× S&P 500 (broad market bounces)
+    "SOXL": 0.03,  # 3% - 3× Semiconductor (high-beta bounces)
 }
 MR_TOTAL_ALLOCATION = 0.10  # 10% total to MR Engine
 
@@ -851,8 +874,9 @@ VASS_VIX_FEAR_CROSS_LEVEL = 25  # VIX crosses above this → BEARISH
 VASS_VIX_COMPLACENT_CROSS_LEVEL = 15  # VIX crosses below this → BULLISH
 
 # Credit Spread Constraints
-CREDIT_SPREAD_MIN_CREDIT = 0.30  # Min $0.30 credit to justify margin risk
+CREDIT_SPREAD_MIN_CREDIT = 0.20  # V6.10 P3: Was 0.30, lowered to allow more fills
 CREDIT_SPREAD_WIDTH_TARGET = 5.0  # $5 width for credit spreads
+CREDIT_SPREAD_FALLBACK_TO_DEBIT = True  # V6.10 P3: Fall back to debit when credit fails
 CREDIT_SPREAD_PROFIT_TARGET = 0.50  # Exit at 50% of max profit
 CREDIT_SPREAD_STOP_MULTIPLIER = 2.0  # Stop if spread value doubles (100% loss)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg delta range (OTM)
@@ -992,7 +1016,7 @@ OVERNIGHT_ITM_SHORT_CHECK_TIME_MINUTE = 0
 # P0 Fix 3: Margin Buffer Before Assignment Risk
 # Require extra margin when ITM short exposure exists
 ASSIGNMENT_MARGIN_BUFFER_ENABLED = True
-ASSIGNMENT_MARGIN_BUFFER_PCT = 0.10  # V6.8: Was 0.20, reduce instant exit triggers
+ASSIGNMENT_MARGIN_BUFFER_PCT = 0.20  # V6.9 P0: Restore safer buffer to prevent assignment losses
 ASSIGNMENT_MARGIN_AUTO_REDUCE = True  # Auto-reduce if buffer insufficient
 
 # P0 Fix 4: Partial Assignment Handling
@@ -1005,8 +1029,21 @@ PARTIAL_ASSIGNMENT_AUTO_CLOSE = True  # Auto-close orphaned legs
 # This catches assignments at ANY DTE, not just near expiry
 # Aug 2022 assignments happened at DTE=4, missed by DTE<=3 guards
 SHORT_LEG_ITM_EXIT_ENABLED = True
-SHORT_LEG_ITM_EXIT_THRESHOLD = 0.02  # Exit when short leg is 2% ITM
+SHORT_LEG_ITM_EXIT_THRESHOLD = 0.005  # V6.10 P0: Exit when 0.5% ITM (was 1%)
 SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 15  # Minutes between log messages
+
+# V6.10 P0: Mandatory DTE=1 Force Close (Nuclear Assignment Prevention)
+# Close ALL spread positions when DTE reaches this value, regardless of P&L
+# This is the last line of defense against overnight assignment risk
+SPREAD_FORCE_CLOSE_DTE = 1  # Close at DTE=1 (day before expiry)
+SPREAD_FORCE_CLOSE_ENABLED = True  # Master switch for mandatory close
+
+# V6.10 P0: Pre-Market ITM Check (09:25 ET)
+# Check all short legs before market open to catch overnight gaps
+# If short leg went ITM overnight, queue for immediate close at 09:30
+PREMARKET_ITM_CHECK_ENABLED = True  # Enable 09:25 pre-market check
+PREMARKET_ITM_CHECK_HOUR = 9  # Check at 09:25 ET
+PREMARKET_ITM_CHECK_MINUTE = 25
 
 # P1 Fix 5: Assignment-Aware Position Sizing
 # Reduce size if max short exposure exceeds safe margin
@@ -1109,10 +1146,11 @@ SPREAD_VIX_MAX_BEAR = 35  # Max VIX for Bear Put Spread entry (allow higher)
 # Problem: Delta values jump (0.45 → 0.25) leaving gaps where no "perfect" delta exists
 # Solution: Select short leg by STRIKE WIDTH, not delta. Delta is soft preference only.
 SPREAD_SHORT_LEG_BY_WIDTH = True  # V2.4.3: Use strike width for short leg (not delta)
-# V6.6: Spread width settings for QQQ
-SPREAD_WIDTH_MIN = 2.0  # Keep at 2.0 - $1 spreads have poor risk/reward
+# V6.10: Spread width settings for QQQ - WIDENED FOR ASSIGNMENT PROTECTION
+# Wider spreads survive larger overnight gaps and reduce assignment risk
+SPREAD_WIDTH_MIN = 5.0  # V6.10: Raised from 2.0 to 5.0 (assignment protection)
 SPREAD_WIDTH_MAX = 10.0  # V2.4.3: Maximum $10 spread (caps risk)
-SPREAD_WIDTH_TARGET = 3.0  # V6.8: Was 4.0, more matches in chain
+SPREAD_WIDTH_TARGET = 5.0  # V6.10: Raised from 3.0 to 5.0 (match MIN)
 
 # DTE for debit spreads (per V2.3 spec)
 # V2.3.22: Raised from 10 to 14 - spreads need same gap cushion as single-leg
@@ -1121,25 +1159,26 @@ SPREAD_DTE_MAX = 45  # V2.19: Widened from 21 to 45 to align with VASS_LOW_IV_DT
 SPREAD_DTE_EXIT = 5  # Close by 5 DTE remaining
 
 # Exit targets
-SPREAD_PROFIT_TARGET_PCT = 0.50  # Take profit at 50% of max profit (base value)
+# V6.10 P5: Symmetric R:R (40%/40%) - need 1:1 win ratio to break even
+# Was asymmetric (50%/35%) requiring 1.43:1 win ratio
+SPREAD_PROFIT_TARGET_PCT = 0.40  # V6.10 P5: Lowered from 0.50 to 0.40 (symmetric with stop)
 SPREAD_STOP_LOSS_PCT = (
-    0.35  # V6.9: Reduced from 0.50 to prevent frequent stop-outs in volatile markets
+    0.40  # V6.10 P5: Raised from 0.35 to 0.40 (wider stop, symmetric with target)
 )
 SPREAD_STOP_REGIME_MULTIPLIERS = {
-    75: 1.20,  # Bull: give more room (0.35 * 1.2 = 0.42)
-    50: 1.00,  # Neutral: base (0.35)
-    40: 0.90,  # Cautious: tighter (0.35 * 0.9 = 0.315)
-    0: 0.80,  # Bear: tightest (0.35 * 0.8 = 0.28)
+    75: 1.20,  # Bull: give more room (0.40 * 1.2 = 0.48)
+    50: 1.00,  # Neutral: base (0.40)
+    40: 0.90,  # Cautious: tighter (0.40 * 0.9 = 0.36)
+    0: 0.80,  # Bear: tightest (0.40 * 0.8 = 0.32)
 }
 
 # V3.0: Regime-Adaptive Profit Targets
-# In bull markets (regime >= 75), be greedy - let winners run to 90%
-# In cautious/bear markets (regime < 40), take profits quickly at 40%
+# V6.10 P5: With 40% base, multipliers give: Bull=56%, Neutral=40%, Bear=32%
 SPREAD_PROFIT_REGIME_MULTIPLIERS = {
-    75: 1.40,  # Regime >= 75: 70% target (1.40 × 50% base = 70%)
-    50: 1.00,  # Regime 50-74: 50% target (standard)
-    40: 1.00,  # Regime 40-49: 50% target (cautious)
-    0: 0.80,  # Regime < 40: 40% target (0.80 × 50% base = 40%)
+    75: 1.40,  # Regime >= 75: 56% target (1.40 × 40% base)
+    50: 1.00,  # Regime 50-74: 40% target (standard)
+    40: 1.00,  # Regime 40-49: 40% target (cautious)
+    0: 0.80,  # Regime < 40: 32% target (0.80 × 40% base)
 }
 
 # V2.27: Win Rate Gate (Options Self-Correcting Throttle)
@@ -1155,6 +1194,15 @@ WIN_RATE_SIZING_REDUCED = 0.75  # Multiplier at REDUCED level
 WIN_RATE_SIZING_MINIMUM = 0.50  # Multiplier at MINIMUM level
 # V6.1: Removed SPREAD_REGIME_EXIT_BULL/BEAR - legacy logic conflicted with conviction-based entry
 # Spreads now exit via: STOP_LOSS, PROFIT_TARGET, DTE_EXIT, NEUTRALITY_EXIT
+
+# V6.10 P5: Choppy Market Filter
+# Detects whipsawing markets and reduces position size to limit losses
+# Rationale: 2015 had 48% win rate but negative P&L due to choppy markets hitting stops
+CHOPPY_MARKET_FILTER_ENABLED = True  # V6.10 P5: Enable choppy market detection
+CHOPPY_REVERSAL_COUNT = 3  # 3+ reversals in lookback window = choppy
+CHOPPY_LOOKBACK_HOURS = 2  # Look back 2 hours for reversal count
+CHOPPY_SIZE_REDUCTION = 0.50  # 50% size reduction in choppy markets
+CHOPPY_MIN_MOVE_PCT = 0.003  # Minimum 0.3% move to count as reversal (filters noise)
 
 # V2.22: Neutrality Exit (Hysteresis Shield)
 # Close flat spreads when regime enters dead zone — no directional edge
@@ -1192,15 +1240,15 @@ SPREAD_LOCK_CLEAR_ON_FAILURE = True  # Clear is_closing lock if all close attemp
 # V2.3.24: Widened DELTA_MIN from 0.55 → 0.50 to include ATM contracts
 # V6.6: Slightly relaxed delta requirements for better contract matching
 # 2022H1 analysis showed 36 spread failures due to strict delta requirements
-SPREAD_LONG_LEG_DELTA_MIN = 0.40  # V6.8: Was 0.45, allow near-ATM
-SPREAD_LONG_LEG_DELTA_MAX = 0.85  # Keep at 0.85 - 0.90 is deep ITM, expensive
-SPREAD_SHORT_LEG_DELTA_MIN = 0.10  # Keep at 0.10 - lower collects minimal premium
-SPREAD_SHORT_LEG_DELTA_MAX = 0.55  # V6.8: Was 0.52, avoid excessive rejection
+SPREAD_LONG_LEG_DELTA_MIN = 0.35  # V6.10 P3: Was 0.40, widen range for more candidates
+SPREAD_LONG_LEG_DELTA_MAX = 0.90  # V6.10 P3: Was 0.85, allow deeper ITM for swing
+SPREAD_SHORT_LEG_DELTA_MIN = 0.08  # V6.10 P3: Was 0.10, allow farther OTM shorts
+SPREAD_SHORT_LEG_DELTA_MAX = 0.60  # V6.10 P3: Was 0.55, allow closer-to-ATM shorts
 # V6.9: PUT-specific spread filters (bear put spreads need looser liquidity + delta)
-SPREAD_LONG_LEG_DELTA_MIN_PUT = 0.30  # Allow closer-to-ATM puts at swing DTE
-SPREAD_LONG_LEG_DELTA_MAX_PUT = 0.85
-SPREAD_SHORT_LEG_DELTA_MIN_PUT = 0.08
-SPREAD_SHORT_LEG_DELTA_MAX_PUT = 0.50
+SPREAD_LONG_LEG_DELTA_MIN_PUT = 0.25  # V6.10 P3: Was 0.30, widen PUT delta range
+SPREAD_LONG_LEG_DELTA_MAX_PUT = 0.90  # V6.10 P3: Allow deeper ITM long PUTs
+SPREAD_SHORT_LEG_DELTA_MIN_PUT = 0.05  # V6.10 P3: Was 0.08, allow farther OTM PUT shorts
+SPREAD_SHORT_LEG_DELTA_MAX_PUT = 0.60  # V6.10 P3: Allow closer-to-ATM short PUTs
 OPTIONS_MIN_OPEN_INTEREST_PUT = 25  # Relax OI filter for puts
 OPTIONS_SPREAD_MAX_PCT_PUT = 0.25  # Allow slightly wider spreads for puts
 OPTIONS_SPREAD_WARNING_PCT_PUT = 0.35
@@ -1286,7 +1334,7 @@ VASS_LOG_REJECTION_INTERVAL_MINUTES = 15  # Log rejections every 15 min (not eve
 # V2.12 Fix #4: Raised from $5K to $10K - 8-lot spread requires ~$8K margin
 # V3.0 SCALABILITY FIX: Converted to percentage-based for portfolio scaling
 OPTIONS_MAX_MARGIN_CAP = 35000  # V5.3: ~47% of $75K (higher allocation for options testing)
-OPTIONS_MAX_MARGIN_PCT = 0.30  # V3.6: 30% of portfolio for all options (was 20%)
+OPTIONS_MAX_MARGIN_PCT = 0.25  # V6.10 P4: Raised to 25% (was 20%) - pre-check prevents bad signals
 
 # V2.18: Percentage-based Sizing Caps (scales with portfolio)
 # At $75K: 15% = $11,250, 8% = $6,000
@@ -1307,7 +1355,7 @@ SPREAD_REJECTION_MARGIN_SAFETY = 0.80
 # V4.0.2: Margin Utilization Gate - Use broker's ACTUAL margin, not estimates
 # This prevents margin overflow by checking TotalMarginUsed / TotalPortfolioValue
 # before entering any new spread position. More reliable than estimating per-spread margin.
-MAX_MARGIN_UTILIZATION = 0.70  # Block new spreads if margin used > 70% of equity
+MAX_MARGIN_UTILIZATION = 0.60  # V6.9 P0: More conservative utilization cap
 MARGIN_UTILIZATION_WARNING = 0.60  # Log warning when utilization exceeds 60%
 MARGIN_UTILIZATION_ENABLED = True  # Enable/disable the margin utilization gate
 
@@ -1351,8 +1399,8 @@ VIX_DIRECTION_STABLE_HIGH = 1.0  # V6.6: Was +2.0, narrowed to capture more sign
 # V6.9: VIX-adaptive STABLE band (for Dir=None tuning)
 VIX_STABLE_LOW_VIX_MAX = 15.0  # Low VIX regime
 VIX_STABLE_HIGH_VIX_MIN = 25.0  # High VIX regime
-VIX_STABLE_BAND_LOW = 0.5  # ±0.5% when VIX is low (more signals)
-VIX_STABLE_BAND_HIGH = 2.0  # ±2.0% when VIX is high (less noise)
+VIX_STABLE_BAND_LOW = 0.3  # V6.10: ±0.3% when VIX is low (was 0.5%, more signals)
+VIX_STABLE_BAND_HIGH = 1.0  # V6.10: ±1.0% when VIX is high (was 2.0%, less Dir=NONE)
 
 VIX_DIRECTION_RISING = 3.0  # V6.6: Was +5.0, captures +2.7% cluster (46 observations)
 VIX_DIRECTION_RISING_FAST = 6.0  # V6.6: Was +10.0, earlier panic detection
@@ -1368,14 +1416,14 @@ VIX_WHIPSAW_MIN_RANGE = 5.0  # Minimum range % to consider whipsaw
 # Analysis showed Jan 21 (+6.9%), Jan 24 (+7.4%), Jan 25 (+5.3%) missed by narrow margin
 # V6.6: Lowered from ±5% to ±3% based on 2022H1 analysis
 # Only 8% of moves exceeded ±5%, missing many valid conviction signals
-MICRO_UVXY_BEARISH_THRESHOLD = 0.04  # V6.10: +4% for optimal cross-market balance (was +2.5%)
-MICRO_UVXY_BULLISH_THRESHOLD = -0.05  # V6.9: -5% filters bear market relief noise (was -2.5%)
-# V6.9: Only allow Micro VETO in NEUTRAL when UVXY move is extreme
-MICRO_UVXY_CONVICTION_EXTREME = 0.07  # 7% intraday move required for NEUTRAL VETO
-# V6.9: Micro fallback + confirmation thresholds (Dir=None tuning)
-MICRO_SCORE_BULLISH_CONFIRM = 55.0  # Require score >= 55 for bullish fallback
-MICRO_SCORE_BEARISH_CONFIRM = 45.0  # Require score <= 45 for bearish fallback
-INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.70  # % move required for VIX STABLE fallback
+MICRO_UVXY_BEARISH_THRESHOLD = 0.025  # V6.10: +2.5% for more PUT signals (was +4%)
+MICRO_UVXY_BULLISH_THRESHOLD = -0.03  # V6.10: -3% for more CALL signals (was -5%)
+# V6.10: Lower conviction extreme to capture 5-7% moves that were blocked
+MICRO_UVXY_CONVICTION_EXTREME = 0.05  # V6.10: 5% intraday move for NEUTRAL VETO (was 7%)
+# V6.10: Micro fallback + confirmation thresholds (Dir=None tuning)
+MICRO_SCORE_BULLISH_CONFIRM = 52.0  # V6.10: Lowered from 55 for more STABLE fallbacks
+MICRO_SCORE_BEARISH_CONFIRM = 48.0  # V6.10: Raised from 45 for symmetric confirmation
+INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.50  # V6.10: Lowered from 0.70% for more STABLE trades
 MICRO_VIX_CRISIS_LEVEL = 35  # VIX > 35 → CRISIS (BEARISH conviction)
 MICRO_VIX_COMPLACENT_LEVEL = 12  # VIX < 12 → COMPLACENT (BULLISH conviction)
 
@@ -1463,7 +1511,7 @@ QQQ_NOISE_THRESHOLD = 0.35  # Minimum QQQ move to consider trading (was 0.15%)
 # V2.19: VIX Floor for DEBIT_FADE
 # In low VIX (<13.5) "apathy" markets, mean reversion fails - trends persist longer
 # Evidence: V2.18 backtests showed DEBIT_FADE losses when VIX < 13.5
-INTRADAY_DEBIT_FADE_VIX_MIN = 11.5  # V6.8: Was 13.5, allow trades in low VIX bull markets
+INTRADAY_DEBIT_FADE_VIX_MIN = 10.5  # V6.10: Was 11.5, allow 2017-style low-VIX trading
 
 # Debit Fade (Mean Reversion) - Gate 3a - The Sniper Window
 INTRADAY_DEBIT_FADE_MIN_SCORE = 35  # V6.8: Was 45, allow more trades in bull/chop
@@ -1670,7 +1718,13 @@ MARGIN_CALL_COOLDOWN_HOURS = 4  # 4-hour cooldown after hitting limit
 # P0 Fix #2: Margin Pre-Check Buffer
 # Before placing any order, verify MarginRemaining > order_cost * buffer
 # Buffer accounts for potential price movement during execution
-MARGIN_PRE_CHECK_BUFFER = 1.50  # V3.0: Require 50% extra margin buffer (was 1.20)
+MARGIN_PRE_CHECK_BUFFER = 0.15  # V6.10 P4: Lowered from 2.00 to 15% buffer (was too restrictive)
+
+# V6.10 P4: Margin Check BEFORE Signal Approval
+# Check margin availability before approving ANY spread signal
+# This prevents signals from being generated only to fail at execution
+MARGIN_CHECK_BEFORE_SIGNAL = True  # V6.10 P4: Enable pre-signal margin check
+MARGIN_PRE_CHECK_MIN_SPREADS = 1  # Minimum spreads to check margin for (1 spread)
 
 # P0 Fix #3: Options Exercise Detection
 # Handle exercise events in OnOrderEvent to prevent margin disasters
@@ -1710,15 +1764,37 @@ INDICATOR_WARMUP_DAYS = 300  # Calendar days (not trading days)
 # SYMBOLS
 # =============================================================================
 
-TRADED_SYMBOLS = ["TQQQ", "SOXL", "QLD", "SSO", "TNA", "FAS", "TMF", "PSQ"]
-PROXY_SYMBOLS = ["SPY", "RSP", "HYG", "IEF"]
+# V6.11: Universe redesign - diversified trend + commodity hedges
+TRADED_SYMBOLS = [
+    # Trend Engine (2× leveraged, overnight hold)
+    "QLD",
+    "SSO",
+    "UGL",
+    "UCO",
+    # Mean Reversion Engine (3× leveraged, intraday only)
+    "TQQQ",
+    "SPXL",
+    "SOXL",
+    # Hedge Engine
+    "SH",
+]
+PROXY_SYMBOLS = [
+    "SPY",
+    "RSP",
+    "HYG",
+    "IEF",
+    "GLD",
+    "USO",
+]  # V6.11: Added GLD, USO for commodity tracking
 ALL_SYMBOLS = TRADED_SYMBOLS + PROXY_SYMBOLS
 
 # Trend symbols (overnight hold allowed)
-TREND_SYMBOLS = ["QLD", "SSO", "TNA", "FAS"]
+# V6.11: Diversified - equities (QLD, SSO) + commodities (UGL, UCO)
+TREND_SYMBOLS = ["QLD", "SSO", "UGL", "UCO"]
 
 # Mean Reversion symbols (intraday only, must close by 15:45)
-MR_SYMBOLS = ["TQQQ", "SOXL"]
+# V6.11: Added SPXL for broader market bounces
+MR_SYMBOLS = ["TQQQ", "SPXL", "SOXL"]
 
 # =============================================================================
 # V6.4: ENGINE ISOLATION MODE
@@ -1733,9 +1809,9 @@ ISOLATION_TEST_MODE = True  # V6.6: Options Engine isolation backtest
 # Engine enables (only checked when ISOLATION_TEST_MODE = True)
 ISOLATION_REGIME_ENABLED = True  # Regime Engine (required by most engines)
 ISOLATION_OPTIONS_ENABLED = True  # Options Engine (VASS + Micro Intraday)
-ISOLATION_TREND_ENABLED = False  # Trend Engine (QLD/SSO/TNA/FAS)
-ISOLATION_MR_ENABLED = False  # Mean Reversion Engine (TQQQ/SOXL)
-ISOLATION_HEDGE_ENABLED = False  # Hedge Engine (TMF/PSQ)
+ISOLATION_TREND_ENABLED = False  # Trend Engine (QLD/SSO/UGL/UCO) - V6.11 updated
+ISOLATION_MR_ENABLED = False  # Mean Reversion Engine (TQQQ/SPXL/SOXL) - V6.11 updated
+ISOLATION_HEDGE_ENABLED = False  # Hedge Engine (SH) - V6.11 updated
 ISOLATION_YIELD_ENABLED = False  # Yield Sleeve (SHV)
 
 # Safeguard enables (only checked when ISOLATION_TEST_MODE = True)

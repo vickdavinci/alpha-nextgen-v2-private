@@ -1352,6 +1352,8 @@ class MicroRegimeEngine:
             MicroRegime.IMPROVING,
             MicroRegime.PANIC_EASING,  # Can fade after panic subsides
             MicroRegime.CALMING,  # Can trade when fear is decreasing
+            MicroRegime.CAUTION_LOW,  # V6.10 P3: Added - VIX low + rising (half size)
+            MicroRegime.CAUTIOUS,  # V6.10 P3: Added - VIX medium + stable (allow credits)
         }
 
         if micro_regime not in tradeable_regimes:
@@ -1924,6 +1926,46 @@ class OptionsEngine:
             elif hasattr(self.algorithm, "LiveMode") and self.algorithm.LiveMode:
                 self.algorithm.Log(message)
             # In backtest mode with trades_only=False, skip logging (silent)
+
+    # =========================================================================
+    # V6.10 P5: CHOPPY MARKET DETECTION
+    # =========================================================================
+
+    def get_choppy_market_scale(self) -> float:
+        """
+        V6.10 P5: Detect choppy market conditions and return size scale factor.
+
+        Uses the MicroRegimeEngine's whipsaw detection to identify choppy markets.
+        When market is choppy/whipsawing, reduces position size to limit losses.
+
+        Returns:
+            1.0 for normal markets, CHOPPY_SIZE_REDUCTION (0.5) for choppy markets.
+        """
+        # Check if filter is enabled
+        if not getattr(config, "CHOPPY_MARKET_FILTER_ENABLED", False):
+            return 1.0
+
+        # Get whipsaw state from Micro Regime Engine
+        try:
+            whipsaw_state, reversal_count = self._micro_regime_engine._detect_whipsaw()
+
+            # Check against configured threshold
+            choppy_threshold = getattr(config, "CHOPPY_REVERSAL_COUNT", 3)
+
+            if reversal_count >= choppy_threshold:
+                reduction = getattr(config, "CHOPPY_SIZE_REDUCTION", 0.50)
+                self.log(
+                    f"CHOPPY_FILTER: Size reduction | Reversals={reversal_count} >= {choppy_threshold} | "
+                    f"Scale={reduction:.0%} | WhipsawState={whipsaw_state.value}",
+                    trades_only=True,
+                )
+                return reduction
+
+        except Exception as e:
+            # If detection fails, don't apply reduction
+            self.log(f"CHOPPY_FILTER: Detection error - {e}", trades_only=True)
+
+        return 1.0
 
     # =========================================================================
     # V5.3: CONVICTION & POSITION MANAGEMENT
@@ -3391,6 +3433,25 @@ class OptionsEngine:
             )
             return None
 
+        # V6.10 P4: Margin Pre-Check BEFORE Signal Approval
+        # Check if we have sufficient margin for at least 1 spread before proceeding
+        margin_check_enabled = getattr(config, "MARGIN_CHECK_BEFORE_SIGNAL", False)
+        if margin_check_enabled and margin_remaining is not None:
+            spread_width = getattr(config, "SPREAD_WIDTH_TARGET", 5.0)
+            min_spreads = getattr(config, "MARGIN_PRE_CHECK_MIN_SPREADS", 1)
+            buffer_pct = getattr(config, "MARGIN_PRE_CHECK_BUFFER", 0.15)
+
+            # Margin required = width × 100 × num_spreads × (1 + buffer)
+            min_margin_required = spread_width * 100 * min_spreads * (1 + buffer_pct)
+
+            if margin_remaining < min_margin_required:
+                self.log(
+                    f"MARGIN_PRE_CHECK: BLOCKED | Available=${margin_remaining:,.0f} | "
+                    f"Required=${min_margin_required:,.0f} (width=${spread_width} × {min_spreads} × {1+buffer_pct:.0%})",
+                    trades_only=True,
+                )
+                return None
+
         # V2.6 Bug #16: Post-trade margin cooldown
         # After closing a spread, broker takes time to settle - wait before new entry
         if self._last_spread_exit_time is not None:
@@ -3689,6 +3750,17 @@ class OptionsEngine:
             )
             num_spreads = scaled
 
+        # V6.10 P5: Choppy market size reduction
+        choppy_scale = self.get_choppy_market_scale()
+        if choppy_scale < 1.0 and num_spreads > 1:
+            choppy_adjusted = max(1, int(num_spreads * choppy_scale))
+            self.log(
+                f"SPREAD: Choppy market reduction | {num_spreads} -> {choppy_adjusted} spreads | "
+                f"ChoppyScale={choppy_scale:.0%}",
+                trades_only=True,
+            )
+            num_spreads = choppy_adjusted
+
         # V2.21 Layer 1: Pre-submission margin estimation
         # Scale num_spreads down to fit within available margin
         if margin_remaining is not None and margin_remaining > 0 and width > 0:
@@ -3898,6 +3970,26 @@ class OptionsEngine:
             )
             return None
 
+        # V6.10 P4: Margin Pre-Check BEFORE Signal Approval
+        # Check if we have sufficient margin for at least 1 spread before proceeding
+        margin_check_enabled = getattr(config, "MARGIN_CHECK_BEFORE_SIGNAL", False)
+        if margin_check_enabled and margin_remaining is not None:
+            # Credit spreads use CREDIT_SPREAD_WIDTH_TARGET
+            spread_width = getattr(config, "CREDIT_SPREAD_WIDTH_TARGET", 5.0)
+            min_spreads = getattr(config, "MARGIN_PRE_CHECK_MIN_SPREADS", 1)
+            buffer_pct = getattr(config, "MARGIN_PRE_CHECK_BUFFER", 0.15)
+
+            # Margin required = width × 100 × num_spreads × (1 + buffer)
+            min_margin_required = spread_width * 100 * min_spreads * (1 + buffer_pct)
+
+            if margin_remaining < min_margin_required:
+                self.log(
+                    f"MARGIN_PRE_CHECK: CREDIT BLOCKED | Available=${margin_remaining:,.0f} | "
+                    f"Required=${min_margin_required:,.0f} (width=${spread_width} × {min_spreads} × {1+buffer_pct:.0%})",
+                    trades_only=True,
+                )
+                return None
+
         # Post-trade margin cooldown
         if self._last_spread_exit_time is not None:
             try:
@@ -4068,6 +4160,17 @@ class OptionsEngine:
                 trades_only=True,
             )
             num_spreads = scaled
+
+        # V6.10 P5: Choppy market size reduction
+        choppy_scale = self.get_choppy_market_scale()
+        if choppy_scale < 1.0 and num_spreads > 1:
+            choppy_adjusted = max(1, int(num_spreads * choppy_scale))
+            self.log(
+                f"CREDIT_SPREAD: Choppy market reduction | {num_spreads} -> {choppy_adjusted} spreads | "
+                f"ChoppyScale={choppy_scale:.0%}",
+                trades_only=True,
+            )
+            num_spreads = choppy_adjusted
 
         # V2.21: Pre-submission margin estimation
         if margin_remaining is not None and margin_remaining > 0 and width > 0:
@@ -4415,6 +4518,101 @@ class OptionsEngine:
 
         return False, ""
 
+    def check_premarket_itm_shorts(
+        self,
+        underlying_price: float,
+    ) -> Optional[List[TargetWeight]]:
+        """
+        V6.10 P0: Pre-market ITM check at 09:25 ET.
+
+        Check all short legs BEFORE market open to catch overnight gaps.
+        If a short leg went ITM overnight, queue for immediate close at 09:30.
+
+        This is called from main.py at 09:25 ET via scheduled event.
+
+        Args:
+            underlying_price: Current/pre-market price of underlying (QQQ)
+
+        Returns:
+            List of TargetWeights to close spread at market open, or None
+        """
+        if not getattr(config, "PREMARKET_ITM_CHECK_ENABLED", True):
+            return None
+
+        if self._spread_position is None:
+            return None
+
+        spread = self._spread_position
+
+        # Skip if already closing
+        if spread.is_closing:
+            return None
+
+        short_leg = spread.short_leg
+
+        # Check if short leg is ITM
+        # Use a tighter threshold for pre-market (any ITM = close)
+        is_put = "P" in str(short_leg.symbol).upper()
+        strike = short_leg.strike
+
+        is_itm = False
+        itm_pct = 0.0
+
+        if is_put:
+            # Put is ITM when strike > underlying
+            if strike > underlying_price:
+                is_itm = True
+                itm_pct = (strike - underlying_price) / strike
+        else:
+            # Call is ITM when strike < underlying
+            if strike < underlying_price:
+                is_itm = True
+                itm_pct = (underlying_price - strike) / strike
+
+        if not is_itm:
+            self.log(
+                f"PREMARKET_ITM_CHECK: Short {'PUT' if is_put else 'CALL'} "
+                f"Strike={strike} is OTM | Underlying={underlying_price:.2f} | No action needed",
+                trades_only=False,
+            )
+            return None
+
+        # Short leg is ITM - queue for immediate close
+        exit_reason = (
+            f"PREMARKET_ITM_CLOSE: Short {'PUT' if is_put else 'CALL'} "
+            f"Strike={strike} is {itm_pct:.1%} ITM at pre-market | "
+            f"Underlying={underlying_price:.2f} | "
+            f"Closing at market open to prevent assignment"
+        )
+
+        self.log(
+            f"PREMARKET_ITM_CHECK: {exit_reason}",
+            trades_only=True,
+        )
+
+        # Mark as closing
+        spread.is_closing = True
+
+        # Return exit signal for market open
+        num_contracts = spread.num_spreads
+        return [
+            TargetWeight(
+                symbol=spread.long_leg.symbol,
+                target_weight=0.0,
+                source="OPT",
+                urgency=Urgency.IMMEDIATE,
+                reason=f"PREMARKET_ITM: {exit_reason}",
+                requested_quantity=num_contracts,
+                metadata={
+                    "spread_type": spread.spread_type,
+                    "spread_close_short": True,
+                    "spread_short_leg_symbol": spread.short_leg.symbol,
+                    "spread_short_leg_quantity": num_contracts,
+                    "exit_type": "PREMARKET_ITM",
+                },
+            )
+        ]
+
     def check_assignment_risk_exit(
         self,
         underlying_price: float,
@@ -4450,6 +4648,16 @@ class OptionsEngine:
 
         short_leg = spread.short_leg
         exit_reason = None
+
+        # V6.10 P0: MANDATORY DTE FORCE CLOSE (Nuclear Option)
+        # Close ALL spreads at DTE=1 regardless of P&L - last line of defense
+        force_close_enabled = getattr(config, "SPREAD_FORCE_CLOSE_ENABLED", True)
+        force_close_dte = getattr(config, "SPREAD_FORCE_CLOSE_DTE", 1)
+        if force_close_enabled and current_dte <= force_close_dte:
+            exit_reason = (
+                f"MANDATORY_DTE_CLOSE: DTE={current_dte} <= {force_close_dte} | "
+                f"Closing ALL spreads to prevent assignment risk"
+            )
 
         # V6.9 P0 Fix 5: Short leg ITM exit (any DTE) - CHECK FIRST
         # This catches assignments at any DTE, not just near expiry
