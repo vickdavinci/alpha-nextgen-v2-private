@@ -60,84 +60,93 @@ The Trend Engine holds positions **overnight**, sometimes for multiple days or w
 
 ## 7.2 Instruments
 
-The Trend Engine trades four diversified leveraged ETFs to maximize entry opportunities while maintaining risk controls:
+The Trend Engine trades four diversified 2× leveraged ETFs spanning equities and commodities to maximize entry opportunities while maintaining risk controls.
 
-### 7.2.1 QLD (ProShares Ultra QQQ) — 20% Allocation
+> **V6.11 Update:** Universe changed from equities-only (QLD/SSO/TNA/FAS) to diversified equities + commodities (QLD/SSO/UGL/UCO). All instruments are now 2× leverage for consistent risk management.
 
-**Primary trend instrument.** 2× leveraged Nasdaq-100 exposure.
+### 7.2.1 QLD (ProShares Ultra QQQ) — 15% Allocation
+
+**Primary equity trend instrument.** 2× leveraged Nasdaq-100 exposure.
 
 | Characteristic | Description |
 |----------------|-------------|
 | Underlying | Nasdaq-100 Index |
 | Leverage | 2× |
-| Allocation | 20% of portfolio |
+| Allocation | 15% of portfolio |
 | Beta | Higher than SSO (tech-heavy) |
 | Best for | Strong risk-on regimes |
 | Liquidity | Excellent ($4.2B AUM) |
+| Hard Stop | 15% from entry |
 
-### 7.2.2 SSO (ProShares Ultra S&P 500) — 15% Allocation
+### 7.2.2 SSO (ProShares Ultra S&P 500) — 7% Allocation
 
-**Secondary trend instrument.** 2× leveraged S&P 500 exposure.
+**Secondary equity trend instrument.** 2× leveraged S&P 500 exposure.
 
 | Characteristic | Description |
 |----------------|-------------|
 | Underlying | S&P 500 Index |
 | Leverage | 2× |
-| Allocation | 15% of portfolio |
+| Allocation | 7% of portfolio |
 | Beta | Lower than QLD (diversified sectors) |
 | Best for | Moderate regimes |
 | Liquidity | Very high ($3.8B AUM) |
+| Hard Stop | 15% from entry |
 
-### 7.2.3 TNA (Direxion Daily Small Cap Bull 3X) — 12% Allocation
+### 7.2.3 UGL (ProShares Ultra Gold) — 10% Allocation
 
-**V2.2 Addition: Small-cap diversification.** 3× leveraged Russell 2000 exposure.
-
-| Characteristic | Description |
-|----------------|-------------|
-| Underlying | Russell 2000 Index |
-| Leverage | 3× |
-| Allocation | 12% of portfolio |
-| Correlation to QLD | 0.65-0.75 (moderate) |
-| Best for | Small-cap rallies, sector rotation |
-| Liquidity | Strong ($2.16B AUM, $472M daily volume) |
-
-**Rationale for TNA:** Russell 2000 often leads or diverges from mega-cap tech. Adding TNA provides:
-- Exposure to domestic small-caps underweighted in QLD/SSO
-- Lower correlation to Nasdaq during sector rotation periods
-- Higher entry frequency (small-caps trend independently)
-
-### 7.2.4 FAS (Direxion Daily Financial Bull 3X) — 8% Allocation
-
-**V2.2 Addition: Sector diversification.** 3× leveraged Financial sector exposure.
+**V6.11 Addition: Commodity hedge.** 2× leveraged Gold exposure.
 
 | Characteristic | Description |
 |----------------|-------------|
-| Underlying | Russell 1000 Financial Services Index |
-| Leverage | 3× |
+| Underlying | Gold Bullion |
+| Leverage | 2× |
+| Allocation | 10% of portfolio |
+| Correlation to QLD | Low/Negative (uncorrelated asset) |
+| Best for | Inflation hedging, risk-off environments |
+| Liquidity | Good ($300M+ AUM) |
+| Hard Stop | 18% from entry (higher volatility) |
+
+**Rationale for UGL:** Gold provides true diversification from equity exposure:
+- Uncorrelated to stock market movements
+- Tends to rise during risk-off periods when equities fall
+- Provides inflation protection
+- Lower overall portfolio correlation
+
+### 7.2.4 UCO (ProShares Ultra Bloomberg Crude Oil) — 8% Allocation
+
+**V6.11 Addition: Energy/inflation hedge.** 2× leveraged Crude Oil exposure.
+
+| Characteristic | Description |
+|----------------|-------------|
+| Underlying | Bloomberg WTI Crude Oil Subindex |
+| Leverage | 2× |
 | Allocation | 8% of portfolio |
-| Correlation to QLD | 0.55-0.70 (moderate) |
-| Best for | Rate cycle plays, financial sector strength |
-| Liquidity | Strong ($2.55B AUM, ~374K shares daily) |
+| Correlation to QLD | Moderate (0.40-0.60) |
+| Best for | Energy sector strength, inflation periods |
+| Liquidity | Good ($500M+ AUM) |
+| Hard Stop | 18% from entry (higher volatility) |
 
-**Rationale for FAS:** Financial sector has distinct drivers (interest rates, credit spreads) from tech:
-- Diversifies beyond tech-heavy Nasdaq exposure
-- Provides opportunities during rate-driven market environments
-- Lower correlation improves portfolio diversification
+**Rationale for UCO:** Crude oil provides energy sector exposure:
+- Diversifies beyond tech-heavy equity exposure
+- Benefits from inflation and geopolitical events
+- Provides additional entry opportunities uncorrelated to stock movements
 
 ### 7.2.5 Allocation Summary
 
-| Symbol | Allocation | Index | Leverage | Correlation to QLD |
-|--------|:----------:|-------|:--------:|:------------------:|
-| QLD | 20% | Nasdaq-100 | 2× | 1.00 |
-| SSO | 15% | S&P 500 | 2× | 0.85-0.95 |
-| TNA | 12% | Russell 2000 | 3× | 0.65-0.75 |
-| FAS | 8% | Financials | 3× | 0.55-0.70 |
-| **Total** | **55%** | | |
+| Symbol | Allocation | Underlying | Leverage | Correlation to QLD | Hard Stop |
+|--------|:----------:|------------|:--------:|:------------------:|:---------:|
+| QLD | 15% | Nasdaq-100 | 2× | 1.00 | 15% |
+| SSO | 7% | S&P 500 | 2× | 0.85-0.95 | 15% |
+| UGL | 10% | Gold | 2× | Low/Negative | 18% |
+| UCO | 8% | Crude Oil | 2× | 0.40-0.60 | 18% |
+| **Total** | **40%** | | | |
+
+**Priority Order:** QLD > UGL > UCO > SSO (Nasdaq > Gold > Oil > S&P)
 
 **Liquidity Requirements for All Trend Symbols:**
-- Minimum AUM: $2 billion
-- Minimum daily volume: $300 million
-- Maximum bid-ask spread: 0.05%
+- Minimum AUM: $250 million
+- Minimum daily volume: $50 million
+- Maximum bid-ask spread: 0.10%
 
 ---
 
@@ -181,24 +190,46 @@ def adx_score(adx_value: float) -> float:
 | # | Condition | Requirement | Rationale |
 |:-:|-----------|-------------|-----------|
 | 1 | **Trend Direction** | Close > MA200 | Bullish trend confirmed |
-| 2 | **Momentum Strength** | ADX >= 25 (score >= 0.50) | Sufficient trend strength |
-| 3 | **Regime** | Score >= 40 | Not RISK_OFF |
+| 2 | **Momentum Strength** | ADX >= regime-adaptive threshold | V3.0: Varies by market regime |
+| 3 | **Regime** | Score >= 50 | V3.0: Only in Neutral+ regimes |
 | 4 | **Cold Start** | Not in cold start, OR has warm entry | Safety during startup |
 | 5 | **No Position** | No existing position in symbol | Avoid pyramiding |
 
-### 7.4.2 Entry Signal Logic
+### 7.4.2 V3.0 Regime-Adaptive ADX Thresholds
+
+The ADX entry requirement varies based on the current regime score:
+
+| Regime Score | Market State | ADX Minimum | Rationale |
+|:------------:|--------------|:-----------:|-----------|
+| >= 75 | Strong Bull | 15 | Trust the regime, lower bar for momentum |
+| 60-74 | Normal | 22 | Standard momentum confirmation |
+| < 60 | Cautious/Bear | 25 | Require stronger trend confirmation |
+
+**Why adaptive thresholds?** In strong bull markets, the regime itself provides confidence. We can enter with lower ADX because the macro environment is favorable. In cautious/bear markets, we need stronger technical confirmation before committing capital.
+
+### 7.4.3 Entry Signal Logic
 
 ```python
 # Condition 1: Price above MA200 (bullish trend)
 if close <= ma200:
     return None
 
-# Condition 2: ADX >= 25 (sufficient momentum)
-if adx_score(adx) < 0.50:
-    return None  # ADX too weak
+# Condition 2: ADX check - V3.0 Regime-Adaptive Thresholds
+if regime_score >= 75:
+    # Strong bull: ADX > 15 is enough
+    if adx < 15:
+        return None
+elif regime_score < 60:
+    # Cautious/bear: require ADX > 25
+    if adx < 25:
+        return None
+else:
+    # Normal regime (60-74): ADX >= 22
+    if adx < 22:
+        return None
 
-# Condition 3: Regime score >= 40
-if regime_score < 40:
+# Condition 3: Regime score >= 50 (V3.0: raised from 40)
+if regime_score < 50:
     return None
 
 # Condition 4: Not in cold start, OR has warm entry
@@ -208,72 +239,95 @@ if is_cold_start_active and not has_warm_entry:
 # All conditions passed → Generate entry signal
 ```
 
-### 7.4.3 Entry Signal Output
+### 7.4.4 Entry Signal Output
 
 | Field | Value |
 |-------|-------|
-| Symbol | QLD or SSO |
-| Weight | 1.0 (full allocation to trend budget) |
+| Symbol | QLD, SSO, UGL, or UCO |
+| Weight | Symbol-specific allocation (0.15, 0.07, 0.10, or 0.08) |
 | Source | "TREND" |
-| Urgency | EOD |
+| Urgency | MOC (Market-On-Close, same day) |
 | Reason | "MA200+ADX Entry: Close=$X > MA200=$Y, ADX=Z (score=S, STRONG)" |
+
+> **V2.4.2 Change:** Urgency changed from EOD (next-day open) to MOC (same-day close) for faster execution.
 
 ---
 
 ## 7.5 Exit Signals
 
-The system exits trend positions when **any of four conditions** trigger.
+The system supports two exit modes: **V2.4 SMA50 + Hard Stop** (default) and **Legacy Chandelier** (fallback).
 
-### Exit Conditions Summary
+### 7.5.0 Exit Mode Selection
+
+| Config Flag | Exit Mode | Description |
+|-------------|-----------|-------------|
+| `TREND_USE_SMA50_EXIT = True` | **SMA50 + Hard Stop (Default)** | V2.4: Structural trend exit |
+| `TREND_USE_SMA50_EXIT = False` | Chandelier Legacy | Original MA200/ADX/Chandelier logic |
+
+---
+
+### V2.4 SMA50 Exit Mode (Default)
+
+The SMA50 exit mode provides simpler, more robust exit logic with longer holding periods.
+
+#### Exit Conditions Summary (SMA50 Mode)
 
 | Exit Type | Trigger | Urgency | Rationale |
 |-----------|---------|:-------:|-----------|
-| **MA200 Exit** | Close < MA200 | EOD | Trend reversal |
-| **ADX Exit** | ADX < 20 | EOD | Momentum exhaustion |
-| **Chandelier Stop** | Price <= Stop Level | IMMEDIATE | Capital protection |
-| **Regime Exit** | Score < 30 | EOD | Macro override |
+| **SMA50 Break** | Close < SMA50 × (1 - 2%) for 2 days | MOC | Structural trend break |
+| **Hard Stop** | Loss >= asset-specific % | IMMEDIATE | Capital protection |
+| **Regime Exit** | Score < 30 | MOC | Macro override |
+
+### 7.5.1 SMA50 Structural Exit (V2.4)
+
+**Trigger:** Daily close falls below SMA50 × (1 - 2% buffer) for 2 consecutive days.
+
+**V2.5 Enhancement:** Requires 2 consecutive days below the threshold to prevent whipsaw exits in choppy markets.
+
+**Rationale:** The 50-day SMA represents the intermediate-term trend. When price closes below this level with a buffer, the structural uptrend has broken.
+
+```
+Exit when: Close < SMA50 × 0.98 for 2 consecutive days
+```
+
+**Benefits over Chandelier:**
+- Allows 3% minor volatility without exit (if above SMA50)
+- Longer holding periods (30-90 days vs 5-15 days)
+- Cleaner logic than tiered ATR multipliers
+- 2-day confirmation prevents false exits
 
 ---
 
-### 7.5.1 MA200 Exit
+### 7.5.2 Hard Stop Exit (V2.4)
 
-**Trigger:** Daily close falls below the 200-day moving average.
+**Trigger:** Loss from entry price exceeds asset-specific threshold.
 
-**Rationale:** When price closes below MA200, the bullish trend has reversed. Exit to avoid riding a downtrend.
+**V3.0 Enhancement:** Stop percentages are regime-adaptive (looser in bull, tighter in bear).
+
+| Asset | Base Hard Stop | Rationale |
+|-------|:--------------:|-----------|
+| QLD | 15% | 2× equity, standard volatility |
+| SSO | 15% | 2× equity, standard volatility |
+| UGL | 18% | 2× commodity, higher volatility |
+| UCO | 18% | 2× commodity, higher volatility |
+
+#### Regime-Adaptive Stop Multipliers (V3.0)
+
+| Regime Score | Multiplier | Effective QLD Stop | Effective UGL Stop |
+|:------------:|:----------:|:------------------:|:------------------:|
+| >= 75 | 1.50× | 22.5% | 27% |
+| 50-74 | 1.00× | 15% | 18% |
+| < 50 | 0.70× | 10.5% | 12.6% |
+
+**Rationale:** In strong bull markets, give winners more room to run. In cautious/bear markets, tighten stops to protect capital.
 
 ```
-Exit when: Close < MA200
+Exit when: (Entry Price - Current Price) / Entry Price >= Hard Stop %
 ```
 
 ---
 
-### 7.5.2 ADX Exit (Momentum Exhaustion)
-
-**Trigger:** ADX falls below 20.
-
-**Rationale:** When ADX drops below 20, the trend has lost momentum and the market is becoming directionless. Exit before whipsaws begin.
-
-```
-Exit when: ADX < 20
-```
-
----
-
-### 7.5.3 Chandelier Stop Exit
-
-**Trigger:** Price touches or falls below the trailing stop level.
-
-**Rationale:** Protect capital from violent trend reversals. The trailing stop rises with price, locking in gains while giving room for normal pullbacks.
-
-```
-Exit when: Price <= Chandelier Stop Level
-```
-
-See **Section 7.6** for detailed Chandelier stop mechanics.
-
----
-
-### 7.5.4 Regime Exit
+### 7.5.3 Regime Exit
 
 **Trigger:** Regime score falls below 30 (RISK_OFF territory).
 
@@ -285,7 +339,24 @@ Exit when: Regime Score < 30
 
 ---
 
-## 7.6 Chandelier Trailing Stop
+### Legacy Chandelier Exit Mode (Fallback)
+
+When `TREND_USE_SMA50_EXIT = False`, the original V2.2 exit logic applies:
+
+| Exit Type | Trigger | Urgency | Rationale |
+|-----------|---------|:-------:|-----------|
+| **MA200 Exit** | Close < MA200 | MOC | Trend reversal |
+| **ADX Exit** | ADX < 10 | MOC | Momentum exhaustion (V2.3.12: lowered from 20) |
+| **Chandelier Stop** | Price <= Stop Level | IMMEDIATE | Capital protection |
+| **Regime Exit** | Score < 30 | MOC | Macro override |
+
+See **Section 7.6** for detailed Chandelier stop mechanics.
+
+---
+
+## 7.6 Chandelier Trailing Stop (Legacy Mode)
+
+> **Note:** This section describes the legacy Chandelier stop logic, which is only active when `TREND_USE_SMA50_EXIT = False`. The default V2.4+ configuration uses SMA50 + Hard Stop instead (see Section 7.5).
 
 ### 7.6.1 Concept
 
@@ -311,7 +382,9 @@ ATR measures typical daily range, so the stop is calibrated to the instrument's 
 
 ### 7.6.3 Tiered Multipliers (V2.3.6)
 
-The ATR multiplier **tightens as profit increases**, locking in more gains on winning trades:
+The ATR multiplier **tightens as profit increases**, locking in more gains on winning trades.
+
+**2× ETFs (QLD, SSO, UGL, UCO):**
 
 | Profit Level | ATR Multiplier | Stop Distance | Rationale |
 |:------------:|:--------------:|:-------------:|-----------|
@@ -320,6 +393,8 @@ The ATR multiplier **tightens as profit increases**, locking in more gains on wi
 | > 25% | **2.5** | Tightest | Large gain, protect aggressively |
 
 > **V2.3.6 Change:** Widened all multipliers (3.0→3.5, 2.5→3.0, 2.0→2.5) and raised thresholds (10%→15%, 20%→25%). In choppy markets like Q1 2024, tight stops were suffocating trades, cutting +2-3% winners short instead of holding for +20% moves.
+
+> **V6.11 Note:** All trend symbols are now 2× leverage. The 3× multiplier table (TNA/FAS) is no longer used.
 
 ### 7.6.4 Example Progression
 
@@ -438,28 +513,36 @@ The Trend Engine produces **TargetWeight** objects for the Portfolio Router.
 
 | Field | Value |
 |-------|-------|
-| Symbol | QLD or SSO |
-| Weight | 1.0 (full allocation to trend strategy budget) |
+| Symbol | QLD, SSO, UGL, or UCO |
+| Weight | Symbol-specific: 0.15 (QLD), 0.07 (SSO), 0.10 (UGL), 0.08 (UCO) |
 | Source | "TREND" |
-| Urgency | EOD |
+| Urgency | MOC (Market-On-Close, same day) |
 | Reason | "MA200+ADX Entry: Close=$X > MA200=$Y, ADX=Z (score=S, STRONG)" |
 
 ### Exit Signal Output
 
 | Field | Value |
 |-------|-------|
-| Symbol | QLD or SSO |
+| Symbol | QLD, SSO, UGL, or UCO |
 | Weight | 0.0 (exit position) |
 | Source | "TREND" |
-| Urgency | EOD (MA200/ADX/regime) or IMMEDIATE (stop hit) |
+| Urgency | MOC (SMA50/regime) or IMMEDIATE (hard stop hit) |
 | Reason | Description of exit trigger |
 
-#### Exit Reason Examples
+#### Exit Reason Examples (V2.4 SMA50 Mode)
+
+| Exit Type | Reason String |
+|-----------|---------------|
+| SMA50 break | "SMA50_BREAK: Close $X < SMA50 $Y × 0.98 = $Z \| 2 consecutive days" |
+| Hard stop | "HARD_STOP: Loss 16% >= 15% (base 15% × 100% regime mult) \| Entry $X -> $Y" |
+| Regime exit | "REGIME_EXIT: Score (X) < 30" |
+
+#### Exit Reason Examples (Legacy Chandelier Mode)
 
 | Exit Type | Reason String |
 |-----------|---------------|
 | MA200 exit | "MA200_EXIT: Close ($X) < MA200 ($Y)" |
-| ADX exit | "ADX_EXIT: ADX (X) < 20" |
+| ADX exit | "ADX_EXIT: ADX (X) < 10" |
 | Chandelier stop | "STOP_HIT: Price ($X) <= Stop ($Y)" |
 | Regime exit | "REGIME_EXIT: Score (X) < 30" |
 
@@ -471,23 +554,22 @@ The Trend Engine produces **TargetWeight** objects for the Portfolio Router.
 flowchart TD
     subgraph ENTRY["Entry Signal Detection (EOD)"]
         E1{"Close > MA200?"}
-        E2{"ADX >= 25?<br/>(score >= 0.50)"}
-        E3{"Regime >= 40?"}
+        E2{"ADX >= regime-adaptive<br/>threshold?"}
+        E3{"Regime >= 50?<br/>(V3.0)"}
         E4{"Not in Cold Start<br/>OR has warm entry?"}
         E5{"No existing<br/>position?"}
-        ENTRY_SIGNAL["Generate Entry Signal<br/>→ TargetWeight(1.0, EOD)"]
+        ENTRY_SIGNAL["Generate Entry Signal<br/>→ TargetWeight(symbol_alloc, MOC)"]
     end
 
-    subgraph EXIT["Exit Signal Detection"]
-        X1{"Close < MA200?<br/>(EOD Check)"}
-        X2{"ADX < 20?<br/>(EOD Check)"}
-        X3{"Price <= Stop Level?<br/>(Continuous Check)"}
-        X4{"Regime < 30?<br/>(EOD Check)"}
+    subgraph EXIT_SMA50["Exit Detection (V2.4 SMA50 Mode)"]
+        S1{"Close < SMA50 × 0.98<br/>for 2 days?"}
+        S2{"Loss >= Hard Stop %?<br/>(Regime-adaptive)"}
+        S3{"Regime < 30?"}
         EXIT_SIGNAL["Generate Exit Signal<br/>→ TargetWeight(0.0)"]
     end
 
     subgraph EXECUTION["Order Execution"]
-        MOO["MOO Order<br/>(Next Day Open)"]
+        MOC["MOC Order<br/>(Same Day Close)"]
         MKT["Market Order<br/>(Immediate)"]
     end
 
@@ -502,20 +584,21 @@ flowchart TD
     E5 -->|No| NO_ENTRY
     E5 -->|Yes| ENTRY_SIGNAL
 
-    ENTRY_SIGNAL --> MOO
+    ENTRY_SIGNAL --> MOC
 
-    X1 -->|Yes| EXIT_SIGNAL
-    X2 -->|Yes| EXIT_SIGNAL
-    X3 -->|Yes| EXIT_SIGNAL
-    X4 -->|Yes| EXIT_SIGNAL
+    S1 -->|Yes| EXIT_SIGNAL
+    S2 -->|Yes| EXIT_SIGNAL
+    S3 -->|Yes| EXIT_SIGNAL
 
-    EXIT_SIGNAL -->|MA200/ADX/Regime| MOO
-    EXIT_SIGNAL -->|Stop Hit| MKT
+    EXIT_SIGNAL -->|SMA50/Regime| MOC
+    EXIT_SIGNAL -->|Hard Stop| MKT
 ```
 
 ---
 
-## 7.10 Mermaid Diagram: Chandelier Stop Logic
+## 7.10 Mermaid Diagram: Chandelier Stop Logic (Legacy Mode)
+
+> **Note:** This diagram shows the legacy Chandelier logic. Default V2.4+ uses SMA50 + Hard Stop.
 
 ```mermaid
 flowchart TD
@@ -526,12 +609,12 @@ flowchart TD
         PROFIT["Calculate Profit %<br/>= (Highest High − Entry) / Entry"]
     end
 
-    subgraph MULTIPLIER["Select ATR Multiplier (V2.1)"]
-        M1{"Profit > 20%?"}
-        M2{"Profit > 10%?"}
-        MULT_20["Multiplier = 2.0"]
+    subgraph MULTIPLIER["Select ATR Multiplier (V2.3.6)"]
+        M1{"Profit > 25%?"}
+        M2{"Profit > 15%?"}
         MULT_25["Multiplier = 2.5"]
         MULT_30["Multiplier = 3.0"]
+        MULT_35["Multiplier = 3.5"]
     end
 
     subgraph STOP_CALC["Stop Calculation"]
@@ -545,14 +628,14 @@ flowchart TD
     HH --> PROFIT
     PROFIT --> M1
 
-    M1 -->|Yes| MULT_20
+    M1 -->|Yes| MULT_25
     M1 -->|No| M2
-    M2 -->|Yes| MULT_25
-    M2 -->|No| MULT_30
+    M2 -->|Yes| MULT_30
+    M2 -->|No| MULT_35
 
-    MULT_20 --> CALC
     MULT_25 --> CALC
     MULT_30 --> CALC
+    MULT_35 --> CALC
 
     CALC --> COMPARE
     COMPARE -->|Yes| UPDATE
@@ -608,14 +691,49 @@ All position tracking data is persisted to ObjectStore and survives algorithm re
 |-----------|:-----:|-------------|
 | `MA_PERIOD` | 200 | Moving average period for trend direction |
 | `ADX_PERIOD` | 14 | ADX calculation period |
-| `ADX_WEAK_THRESHOLD` | 20 | Below this = weak trend (exit trigger) |
-| `ADX_MODERATE_THRESHOLD` | 25 | Entry minimum threshold |
+| `ADX_WEAK_THRESHOLD` | 15 | V2.3.12: Lowered to 15 - catch grinding trends |
+| `ADX_MODERATE_THRESHOLD` | 22 | V2.5: Upper bound of moderate range (was 25) |
 | `ADX_STRONG_THRESHOLD` | 35 | Very strong trend |
-| `TREND_ENTRY_REGIME_MIN` | 40 | Minimum regime score for entry |
+| `TREND_ENTRY_REGIME_MIN` | 50 | V3.0: Minimum regime score for entry (raised from 40) |
 | `TREND_EXIT_REGIME` | 30 | Regime score that forces exit |
-| `TREND_ADX_EXIT_THRESHOLD` | 20 | ADX level that forces exit |
+| `TREND_ADX_EXIT_THRESHOLD` | 10 | V2.3.12: Lowered to 10 - allow holding during low momentum grind |
 
-### Chandelier Stop Parameters (V2.3.6)
+### V3.0 Regime-Adaptive ADX Thresholds
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `ADX_REGIME_BULL_THRESHOLD` | 75 | Regime >= this = strong bull (lower ADX bar) |
+| `ADX_REGIME_BEAR_THRESHOLD` | 60 | Regime < this = cautious/bear (higher ADX bar) |
+| `ADX_BULL_MINIMUM` | 15 | In strong bull, ADX > 15 is enough |
+| `ADX_BEAR_MINIMUM` | 25 | In cautious/bear, require ADX > 25 |
+
+### V2.4 SMA50 + Hard Stop Parameters (Default Mode)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `TREND_USE_SMA50_EXIT` | True | V2.4: Use SMA50 exit instead of Chandelier |
+| `TREND_SMA_PERIOD` | 50 | 50-day SMA for structural trend |
+| `TREND_SMA_EXIT_BUFFER` | 0.02 | Exit when close < SMA50 × (1 - 2%) |
+| `TREND_SMA_CONFIRM_DAYS` | 2 | V2.5: Days below SMA50 required before exit |
+
+### Hard Stop Percentages (Asset-Specific)
+
+| Symbol | Hard Stop | Description |
+|--------|:---------:|-------------|
+| QLD | 15% | 2× Nasdaq equity |
+| SSO | 15% | 2× S&P 500 equity |
+| UGL | 18% | 2× Gold commodity (higher volatility) |
+| UCO | 18% | 2× Crude Oil commodity (higher volatility) |
+
+### V3.0 Regime-Adaptive Stop Multipliers
+
+| Regime Score | Multiplier | Description |
+|:------------:|:----------:|-------------|
+| >= 75 | 1.50× | Looser stops - let winners run in bull markets |
+| 50-74 | 1.00× | Standard stops |
+| < 50 | 0.70× | Tighter stops - protect capital in bear markets |
+
+### Chandelier Stop Parameters (Legacy Mode)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
@@ -626,58 +744,95 @@ All position tracking data is persisted to ObjectStore and survives algorithm re
 | `PROFIT_TIGHT_PCT` | 0.15 | Profit level for first tightening (15%) - V2.3.6: raised from 10% |
 | `PROFIT_TIGHTER_PCT` | 0.25 | Profit level for second tightening (25%) - V2.3.6: raised from 20% |
 
+### Symbol Allocations
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `TREND_SYMBOL_ALLOCATIONS["QLD"]` | 0.15 | 15% allocation to Nasdaq 2× |
+| `TREND_SYMBOL_ALLOCATIONS["SSO"]` | 0.07 | 7% allocation to S&P 500 2× |
+| `TREND_SYMBOL_ALLOCATIONS["UGL"]` | 0.10 | 10% allocation to Gold 2× |
+| `TREND_SYMBOL_ALLOCATIONS["UCO"]` | 0.08 | 8% allocation to Crude Oil 2× |
+| `TREND_TOTAL_ALLOCATION` | 0.40 | 40% total to Trend Engine |
+| `MAX_CONCURRENT_TREND_POSITIONS` | 4 | Allow all 4 trend tickers |
+| `TREND_PRIORITY_ORDER` | QLD, UGL, UCO, SSO | Priority when positions limited |
+
 ---
 
 ## 7.14 Edge Cases and Special Scenarios
 
-### Scenario 1: Gap Down Through Stop
+### Scenario 1: Gap Down Through Hard Stop
 
 ```
-Previous Close: $120 (Stop at $115)
-Today's Open: $110 (Below stop)
+Previous Close: $120 (Entry at $100, Hard Stop at 15% = $85)
+Today's Open: $80 (Below hard stop)
 ```
 
-**Action:** Exit immediately at market open (~$110). The stop is a trigger level, not a guaranteed exit price. Gap risk is accepted.
+**Action:** Exit immediately at market open (~$80). The hard stop is a trigger level, not a guaranteed exit price. Gap risk is accepted.
 
 ### Scenario 2: Multiple Symbols Signal Entry
 
 ```
 EOD Analysis:
-- QLD: MA200+ADX entry signal ✅
-- SSO: MA200+ADX entry signal ✅
+- QLD: MA200+ADX entry signal ✅ (15% allocation)
+- UGL: MA200+ADX entry signal ✅ (10% allocation)
+- UCO: MA200+ADX entry signal ✅ (8% allocation)
 ```
 
-**Action:** Both signals route to Portfolio Router. Router validates against exposure limits and may scale down if NASDAQ_BETA + SPY_BETA would exceed limits.
+**Action:** All signals route to Portfolio Router. Each gets its symbol-specific allocation. Priority order (QLD > UGL > UCO > SSO) applies if `MAX_CONCURRENT_TREND_POSITIONS` is reached.
 
-### Scenario 3: ADX Drops to 22 (Above Exit, Below Entry)
+### Scenario 3: SMA50 Break Confirmation (V2.5)
 
 ```
-Current Position: QLD at +12% profit
-ADX: 22 (above 20 exit threshold)
+Day 1: Close = $98, SMA50 = $100, Threshold = $98 (SMA50 × 0.98)
+       Close < Threshold ✅, days_below_sma50 = 1
+Day 2: Close = $97, still below threshold
+       days_below_sma50 = 2 → EXIT TRIGGERED
 ```
 
-**Action:** Position remains open. ADX exit only triggers at < 20. However, no new entries would be allowed since ADX < 25.
+**Action:** Exit only after 2 consecutive days below SMA50 × 0.98. This prevents whipsaw exits from single-day volatility.
 
-### Scenario 4: MA200 Below Price But ADX < 20
+### Scenario 4: SMA50 Recovery
+
+```
+Day 1: Close = $97 < SMA50 × 0.98, days_below_sma50 = 1
+Day 2: Close = $101 > SMA50 × 0.98
+```
+
+**Action:** Counter resets to 0. Position holds. The 2-day confirmation window restarts.
+
+### Scenario 5: Regime-Adaptive ADX Entry
 
 ```
 No current position
 Close > MA200 ✅
-ADX = 18 ❌
+ADX = 18
+Regime Score = 80 (Strong Bull)
 ```
 
-**Action:** No entry. Both conditions must be met. Price above MA200 confirms trend direction, but ADX < 20 indicates the trend lacks momentum.
+**Action:** Entry allowed! In strong bull (regime >= 75), ADX > 15 is sufficient. Same ADX = 18 would be blocked in neutral regime (requires ADX >= 22).
 
-### Scenario 5: ATR Increases Significantly
+### Scenario 6: Regime-Adaptive Hard Stop
 
 ```
-Day 1: Highest High = $100, ATR = $2, Stop = $94 (100 - 3×2)
-Day 2: Highest High = $100, ATR = $4, Stop = $88?
+Position: UGL at +5% profit
+Base hard stop: 18%
+Regime Score: 78 (Strong Bull)
+Multiplier: 1.50×
+Effective stop: 27% (18% × 1.50)
 ```
 
-**Action:** Stop stays at $94. The stop **never moves down**, even if ATR increases. This protects against volatility expansion eroding protection.
+**Action:** In bull markets, stops are widened to let winners run. The effective hard stop is now 27% instead of 18%.
 
-### Scenario 6: Position From Warm Entry
+### Scenario 7: Commodity vs Equity Stop Difference
+
+```
+QLD entry at $100 → Hard stop at $85 (15%)
+UCO entry at $100 → Hard stop at $82 (18%)
+```
+
+**Action:** Commodities (UGL, UCO) get wider stops because they're inherently more volatile than equity indices.
+
+### Scenario 8: Position From Warm Entry
 
 ```
 Day 2: Warm entry in QLD at $80 (tagged "COLD_START")
@@ -695,35 +850,54 @@ Day 7: MA200+ADX entry signal for QLD
 |----------|-----------|
 | **MA200 for trend direction** | Most widely watched long-term trend indicator |
 | **ADX for momentum confirmation** | Prevents entries during choppy, directionless markets |
-| **ADX >= 25 for entry** | Ensures sufficient trend strength before committing capital |
-| **ADX < 20 for exit** | Exits when momentum exhausts before whipsaws begin |
-| **2× leverage (not 3×)** | Acceptable decay for multi-day holds; manageable gap risk |
-| **Chandelier trailing stop** | Volatility-adjusted protection that locks in gains |
-| **Tiered multipliers (3.0/2.5/2.0)** | Tighten protection as profit increases |
+| **V3.0: Regime-adaptive ADX thresholds** | Lower bar (15) in bull, higher bar (25) in bear/neutral |
+| **V3.0: Regime >= 50 for entry** | Only enter in Neutral+ markets (raised from 40) |
+| **V2.3.12: ADX < 10 for exit** | Lowered from 20 - allow holding during low momentum grind |
+| **2× leverage only (V6.11)** | Acceptable decay for multi-day holds; removed 3× symbols |
+| **V6.11: Equity + Commodity diversification** | UGL/UCO provide true uncorrelated diversification |
+| **V2.4: SMA50 + Hard Stop (default)** | Simpler, longer holding periods than Chandelier |
+| **V2.5: 2-day SMA50 confirmation** | Prevents whipsaw exits in choppy markets |
+| **V3.0: Regime-adaptive hard stops** | Looser in bull (1.5×), tighter in bear (0.7×) |
+| **Asset-specific hard stops** | Commodities (18%) get wider stops than equities (15%) |
 | **Stop never moves down** | Prevents volatility expansion from eroding protection |
 | **EOD signal generation** | Uses complete daily bars for reliable signals |
-| **MOO execution** | High liquidity, reliable fills at open |
-| **Immediate stop execution** | Capital preservation overrides timing optimization |
+| **V2.4.2: MOC execution** | Same-day close (changed from next-day MOO) |
+| **Immediate hard stop execution** | Capital preservation overrides timing optimization |
 | **Regime < 30 exit** | Macro conditions override technical signals |
 
 ---
 
-## 7.16 V1 to V2 Migration Notes
+## 7.16 Version History
 
-| Aspect | V1 (Bollinger Band) | V2 (MA200 + ADX) |
-|--------|---------------------|------------------|
+### V1 to V2 Migration
+
+| Aspect | V1 (Bollinger Band) | V2.0 (MA200 + ADX) |
+|--------|---------------------|-------------------|
 | Entry Signal | Bandwidth < 0.10, Close > Upper Band | Close > MA200, ADX >= 25 |
 | Exit Signal | Close < Middle Band | Close < MA200, ADX < 20 |
 | Trend Filter | Implicit (breakout direction) | Explicit (MA200 position) |
 | Momentum Filter | None (compression only) | ADX strength scoring |
-| Stop Tiers | 3.0 / 2.0 / 1.5 | 3.0 / 2.5 / 2.0 |
-| Profit Thresholds | 15% / 25% | 10% / 20% |
 
-**Why the change?** MA200 + ADX provides:
-- Clearer trend definition (above/below MA200)
-- Better false signal filtering (ADX rejects choppy markets)
-- More intuitive logic (trend + momentum vs compression + breakout)
-- Widely validated approach used by institutional traders
+### V2.x to V6.x Evolution
+
+| Aspect | V2.2 | V6.11 (Current) |
+|--------|------|-----------------|
+| Instruments | QLD, SSO, TNA, FAS | QLD, SSO, UGL, UCO |
+| Leverage Mix | 2×, 3× | All 2× |
+| Total Allocation | 55% | 40% |
+| Exit Mode | Chandelier | SMA50 + Hard Stop |
+| ADX Entry | Fixed 25 | Regime-adaptive (15/22/25) |
+| ADX Exit | Fixed 20 | Fixed 10 |
+| Entry Regime Min | 40 | 50 |
+| Hard Stops | One-size-fits-all | Asset-specific (15%/18%) |
+| Stop Adjustment | None | Regime-adaptive multipliers |
+
+**Why the V6.11 changes?**
+- **All 2× leverage:** Removes 3× decay risk for multi-day holds
+- **Commodity diversification:** UGL/UCO provide true uncorrelated assets
+- **SMA50 exit:** Simpler logic, longer holding periods (30-90 days vs 5-15)
+- **Regime-adaptive:** Trusts bull markets more, protects in bear markets
+- **Asset-specific stops:** Commodities need wider stops due to higher volatility
 
 ---
 

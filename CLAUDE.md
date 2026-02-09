@@ -170,15 +170,16 @@ See `docs/guides/ENGINE_ISOLATION_MODE.md` for full configuration options.
 
 **Alpha NextGen V2** is a multi-strategy algorithmic trading system built on QuantConnect (LEAN engine) for deployment on Interactive Brokers. The system implements a **Core-Satellite** architecture:
 
-- **Core (40%)**: Trend Engine - MA200 + ADX confirmation across diversified indices (V2.18: was 55%)
-  - QLD (15%) - 2× Nasdaq
-  - SSO (12%) - 2× S&P 500
-  - TNA (8%) - 3× Russell 2000 (small-cap diversification)
-  - FAS (5%) - 3× Financials (sector diversification)
+- **Core (40%)**: Trend Engine - MA200 + ADX confirmation across equities + commodities (V6.11)
+  - QLD (15%) - 2× Nasdaq (primary equity)
+  - SSO (7%) - 2× S&P 500 (broad equity)
+  - UGL (10%) - 2× Gold (commodity hedge, uncorrelated)
+  - UCO (8%) - 2× Crude Oil (energy/inflation hedge)
 - **Satellite (10%)**: Mean Reversion Engine - RSI oversold bounce with VIX filter
-  - TQQQ (5%) - 3× Nasdaq
-  - SOXL (5%) - 3× Semiconductor
-- **Satellite (25%)**: Options Engine - VASS + Dual-Mode Architecture (V2.8/V2.24.2)
+  - TQQQ (4%) - 3× Nasdaq
+  - SPXL (3%) - 3× S&P 500
+  - SOXL (3%) - 3× Semiconductor
+- **Satellite (25%)**: Options Engine - VASS + Dual-Mode Architecture (V6.10)
   - **Swing Mode (18.75%)**: VASS debit/credit spreads (14-45 DTE, VASS routes by IV)
   - **Intraday Mode (6.25%)**: Micro Regime Engine - VIX Level × VIX Direction (1-5 DTE)
 
@@ -265,41 +266,41 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 
 | Component | File | Spec Document | Description |
 |-----------|------|---------------|-------------|
-| **Regime Engine** | `engines/core/regime_engine.py` | `docs/04-regime-engine.md` | 4-factor market state scoring (0-100) |
-| **Capital Engine** | `engines/core/capital_engine.py` | `docs/05-capital-engine.md` | Phase management, lockbox, tradeable equity |
-| **Risk Engine** | `engines/core/risk_engine.py` | `docs/12-risk-engine.md` | All circuit breakers and safeguards |
-| **Cold Start Engine** | `engines/core/cold_start_engine.py` | `docs/06-cold-start-engine.md` | Days 1-5 warm entry logic |
-| **Startup Gate** | `engines/core/startup_gate.py` | `docs/system/ENGINE_LOGIC_REFERENCE.md` | V2.30: All-weather time-based arming (INDICATOR_WARMUP → OBSERVATION → REDUCED → FULLY_ARMED). 15 days, no regime dependency. |
-| **Trend Engine** | `engines/core/trend_engine.py` | `docs/07-trend-engine.md` | MA200 + ADX trend signals for QLD/SSO/TNA/FAS (55%) |
+| **Regime Engine** | `engines/core/regime_engine.py` | `docs/system/04-regime-engine.md` | 4-factor market state scoring (0-100) |
+| **Capital Engine** | `engines/core/capital_engine.py` | `docs/system/05-capital-engine.md` | Phase management, lockbox, tradeable equity |
+| **Risk Engine** | `engines/core/risk_engine.py` | `docs/system/12-risk-engine.md` | All circuit breakers and safeguards (tiered KS, drawdown governor) |
+| **Cold Start Engine** | `engines/core/cold_start_engine.py` | `docs/system/06-cold-start-engine.md` | Days 1-5 warm entry logic |
+| **Startup Gate** | `engines/core/startup_gate.py` | `docs/system/ENGINE_LOGIC_REFERENCE.md` | V2.30: All-weather time-based arming (15 days: 5+5+5). Never resets on kill switch. |
+| **Trend Engine** | `engines/core/trend_engine.py` | `docs/system/07-trend-engine.md` | MA200 + ADX trend signals for QLD/SSO/UGL/UCO (40%) - V6.11: equities + commodities |
 
 ### Satellite Engines (engines/satellite/)
 
 | Component | File | Spec Document | Description |
 |-----------|------|---------------|-------------|
-| **Mean Reversion Engine** | `engines/satellite/mean_reversion_engine.py` | `docs/08-mean-reversion-engine.md` | Intraday oversold bounce signals for TQQQ/SOXL (0-10%) |
-| **Hedge Engine** | `engines/satellite/hedge_engine.py` | `docs/09-hedge-engine.md` | Regime-based TMF/PSQ allocation signals |
-| **Yield Sleeve** | `engines/satellite/yield_sleeve.py` | `docs/10-yield-sleeve.md` | SHV cash management signals |
-| **Options Engine** | `engines/satellite/options_engine.py` | `docs/18-options-engine.md` | QQQ options Dual-Mode (20%): Swing 15% + Intraday 5% (Micro Regime) |
+| **Mean Reversion Engine** | `engines/satellite/mean_reversion_engine.py` | `docs/system/08-mean-reversion-engine.md` | Intraday oversold bounce signals for TQQQ/SPXL/SOXL (10%) |
+| **Hedge Engine** | `engines/satellite/hedge_engine.py` | `docs/system/09-hedge-engine.md` | Regime-based TMF/PSQ allocation signals |
+| **Yield Sleeve** | `engines/satellite/yield_sleeve.py` | `docs/system/10-yield-sleeve.md` | SHV cash management signals |
+| **Options Engine** | `engines/satellite/options_engine.py` | `docs/system/18-options-engine.md` | QQQ options Dual-Mode (25%): Swing 18.75% + Intraday 6.25% (Micro Regime) |
 
 ### Infrastructure
 
 | Component | File | Spec Document | Description |
 |-----------|------|---------------|-------------|
-| **Portfolio Router** | `portfolio/portfolio_router.py` | `docs/11-portfolio-router.md` | Central coordination, order authorization |
-| **Execution Engine** | `execution/execution_engine.py` | `docs/13-execution-engine.md` | Order submission to broker |
-| **OCO Manager** | `execution/oco_manager.py` | `docs/19-oco-manager.md` | One-Cancels-Other order pairs for options |
-| **Position Manager** | `portfolio/position_manager.py` | `docs/15-state-persistence.md` | Entry prices, stops, highest highs |
-| **State Manager** | `persistence/state_manager.py` | `docs/15-state-persistence.md` | ObjectStore save/load |
+| **Portfolio Router** | `portfolio/portfolio_router.py` | `docs/system/11-portfolio-router.md` | Central coordination, order authorization |
+| **Execution Engine** | `execution/execution_engine.py` | `docs/system/13-execution-engine.md` | Order submission to broker |
+| **OCO Manager** | `execution/oco_manager.py` | `docs/system/19-oco-manager.md` | One-Cancels-Other order pairs for options |
+| **Position Manager** | `portfolio/position_manager.py` | `docs/system/15-state-persistence.md` | Entry prices, stops, highest highs |
+| **State Manager** | `persistence/state_manager.py` | `docs/system/15-state-persistence.md` | ObjectStore save/load |
 
 ### Supporting Documents
 
 | Document | Description |
 |----------|-------------|
-| `docs/14-daily-operations.md` | Complete daily timeline and event schedule |
-| `docs/16-appendix-parameters.md` | All tunable parameters in one place |
-| `docs/17-appendix-glossary.md` | Terms, abbreviations, formulas |
-| `docs/v2-specs/` | V2.1 specifications and architecture guides |
-| `docs/v2-specs/V2_1_OPTIONS_ENGINE_DESIGN.txt` | Options Engine V2.1.1 (Dual-Mode + Micro Regime) |
+| `docs/system/14-daily-operations.md` | Complete daily timeline and event schedule |
+| `docs/system/16-appendix-parameters.md` | All tunable parameters in one place |
+| `docs/system/17-appendix-glossary.md` | Terms, abbreviations, formulas |
+| `docs/specs/v2.1/` | V2.1 specifications and architecture guides |
+| `docs/specs/v2.1/v2-1-options-engine-design.txt` | Options Engine V2.1.1 (Dual-Mode + Micro Regime) |
 
 ---
 
@@ -378,22 +379,23 @@ def OnData(self, data):
 
 **MUST liquidate by 15:45 ET (Mean Reversion intraday only):**
 - `TQQQ` — 3× Nasdaq (Mean Reversion)
+- `SPXL` — 3× S&P 500 (Mean Reversion)
 - `SOXL` — 3× Semiconductor (Mean Reversion)
 
 **Allowed overnight holds (Trend Engine swing trades + Hedges):**
 - `QLD` — 2× Nasdaq (Trend/Swing)
 - `SSO` — 2× S&P 500 (Trend/Swing)
-- `TNA` — 3× Russell 2000 (Trend/Swing)*
-- `FAS` — 3× Financials (Trend/Swing)*
+- `UGL` — 2× Gold (Trend/Swing) - V6.11 addition
+- `UCO` — 2× Crude Oil (Trend/Swing) - V6.11 addition
 - `TMF` — 3× Treasury (Strategic Hedge)
 - `PSQ` — 1× Inverse Nasdaq (Strategic Hedge)
 - `SHV` — Short Treasury (Yield)
 
-*TNA/FAS are 3× but allowed overnight for Trend Engine. The MA200+ADX strategy requires momentum confirmation (ADX ≥ 15), which historically offsets decay risk during sustained trends.
+> **V6.11 Note:** All Trend Engine symbols are now 2× leverage. TNA/FAS removed, replaced with UGL/UCO for commodity diversification.
 
 ```python
 # In Mean Reversion Engine - enforced at 15:45
-INTRADAY_ONLY_SYMBOLS = ["TQQQ", "SOXL"]
+INTRADAY_ONLY_SYMBOLS = ["TQQQ", "SPXL", "SOXL"]
 
 def force_close_intraday_positions(self):
     """Force close all MR positions at 15:45."""
@@ -535,8 +537,8 @@ except Exception as e:
 ┌───────────────────────────────────────────────────────────────────┐
 │                         CORE ENGINES                              │
 ├─────────────────┬─────────────────┬─────────────────┬─────────────┤
-│  Regime Engine  │  Capital Engine │   Risk Engine   │ Cold Start  │
-│  (Score 0-100)  │  (Phase/Lockbox)│  (Circuit Break)│ (Days 1-5)  │
+│  Regime Engine  │  Capital Engine │   Risk Engine   │ Startup Gate│
+│  (Score 0-100)  │  (Phase/Lockbox)│ (Tiered KS/DG)  │ (15 days)   │
 └────────┬────────┴────────┬────────┴────────┬────────┴──────┬──────┘
          │                 │                 │               │
          ▼                 ▼                 ▼               ▼
@@ -544,9 +546,9 @@ except Exception as e:
 │                       STRATEGY ENGINES                            │
 ├─────────────────┬─────────────────┬─────────────────┬─────────────┤
 │  Trend Engine   │ Options Engine  │    MR Engine    │Hedge/Yield  │
-│   (Core 55%)    │ (Satellite 25%) │ (Satellite 10%) │  (Overlay)  │
-│ QLD,SSO,TNA,FAS │ Dual-Mode V2.1.1│  TQQQ, SOXL     │ TMF,PSQ,SHV │
-│  Urgency: EOD   │ Swing + Intraday│ Urgency: IMMED  │Urgency: EOD │
+│   (Core 40%)    │ (Satellite 25%) │ (Satellite 10%) │  (Overlay)  │
+│QLD,SSO,UGL,UCO  │ VASS Dual-Mode  │ TQQQ,SPXL,SOXL  │ TMF,PSQ,SHV │
+│  Urgency: MOC   │ Swing + Intraday│ Urgency: IMMED  │Urgency: EOD │
 └────────┬────────┴────────┬────────┴────────┬────────┴──────┬──────┘
          │                 │                 │               │
          └─────────────────┴─────────────────┴───────────────┘
@@ -564,7 +566,7 @@ except Exception as e:
 ┌───────────────────────────────────────────────────────────────────┐
 │                      EXECUTION ENGINE                             │
 ├───────────────────────────────┬───────────────────────────────────┤
-│         Market Orders         │           MOO Orders              │
+│         Market Orders         │           MOC Orders              │
 │    (MR, Options, Stops)       │    (Trend, Hedge, Yield)          │
 ├───────────────────────────────┼───────────────────────────────────┤
 │         OCO Manager           │        Fill Handler               │
@@ -740,12 +742,13 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 |--------|------|:----------:|
 | QLD | 2× Nasdaq (Trend) | ✅ Yes |
 | SSO | 2× S&P 500 (Trend) | ✅ Yes |
-| TNA | 3× Russell 2000 (Trend) | ✅ Yes |
-| FAS | 3× Financials (Trend) | ✅ Yes |
+| UGL | 2× Gold (Trend) | ✅ Yes |
+| UCO | 2× Crude Oil (Trend) | ✅ Yes |
 | TMF | 3× Treasury (Hedge) | ✅ Yes |
 | PSQ | 1× Inverse Nasdaq (Hedge) | ✅ Yes |
 | SHV | Short Treasury (Yield) | ✅ Yes |
 | TQQQ | 3× Nasdaq (MR) | ❌ **Close by 15:45** |
+| SPXL | 3× S&P 500 (MR) | ❌ **Close by 15:45** |
 | SOXL | 3× Semiconductor (MR) | ❌ **Close by 15:45** |
 
 ### Exposure Limits
@@ -754,6 +757,5 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 |-------|:------------:|:---------:|
 | NASDAQ_BETA | 50% | 75% |
 | SPY_BETA | 40% | 40% |
-| SMALL_CAP_BETA | 25% | 25% |
-| FINANCIALS_BETA | 15% | 15% |
+| COMMODITY | 20% | 20% |
 | RATES | 99% | 99% (V2.3.17: raised from 40% for SHV) |

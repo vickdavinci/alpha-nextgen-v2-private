@@ -35,7 +35,9 @@ Unlike trend trading, mean reversion is **intraday only**—no overnight holds. 
 
 ## 8.2 Instruments
 
-### 8.2.1 TQQQ (ProShares UltraPro QQQ)
+> **V6.11 Update:** Added SPXL (3× S&P 500) for broader market bounce opportunities. Total allocation: 10% (TQQQ 4% + SPXL 3% + SOXL 3%).
+
+### 8.2.1 TQQQ (ProShares UltraPro QQQ) — 4% Allocation
 
 **Primary mean reversion instrument.** 3× leveraged Nasdaq-100.
 
@@ -43,23 +45,56 @@ Unlike trend trading, mean reversion is **intraday only**—no overnight holds. 
 |----------------|-------------|
 | Leverage | 3× |
 | Underlying | Nasdaq-100 Index |
+| Allocation | 4% of portfolio |
 | Volume | Highest volume 3× equity ETF |
 | Spreads | Tightest bid-ask of any 3× ETF |
 | Intraday moves | Frequent large swings |
 | Priority | Scan first |
+| Exposure Group | NASDAQ_BETA |
 
-### 8.2.2 SOXL (Direxion Daily Semiconductor Bull 3x)
+### 8.2.2 SPXL (Direxion Daily S&P 500 Bull 3X) — 3% Allocation
 
-**Secondary mean reversion instrument.** 3× leveraged semiconductor index.
+**V6.11 Addition: Broad market bounces.** 3× leveraged S&P 500.
+
+| Characteristic | Description |
+|----------------|-------------|
+| Leverage | 3× |
+| Underlying | S&P 500 Index |
+| Allocation | 3% of portfolio |
+| Volatility | Lower than TQQQ (more diversified) |
+| Catalyst | Broad market sell-offs, not tech-specific |
+| Spreads | Tight, similar to TQQQ |
+| Priority | Scan second |
+| Exposure Group | SPY_BETA |
+
+**Rationale for SPXL:** S&P 500 oversold bounces may occur when tech is flat:
+- Diversifies beyond Nasdaq-only opportunities
+- Provides broader market bounce exposure
+- Lower correlation to TQQQ entries
+
+### 8.2.3 SOXL (Direxion Daily Semiconductor Bull 3x) — 3% Allocation
+
+**Semiconductor sector mean reversion.** 3× leveraged semiconductor index.
 
 | Characteristic | Description |
 |----------------|-------------|
 | Leverage | 3× |
 | Underlying | ICE Semiconductor Index |
+| Allocation | 3% of portfolio |
 | Volatility | Higher than TQQQ |
 | Catalyst | Sector-specific news creates oversold opportunities |
 | Spreads | Wider than TQQQ but acceptable |
-| Priority | Scan second |
+| Priority | Scan third |
+| Exposure Group | NASDAQ_BETA |
+
+### 8.2.4 Allocation Summary
+
+| Symbol | Allocation | Underlying | Exposure Group |
+|--------|:----------:|------------|----------------|
+| TQQQ | 4% | Nasdaq-100 | NASDAQ_BETA |
+| SPXL | 3% | S&P 500 | SPY_BETA |
+| SOXL | 3% | Semiconductors | NASDAQ_BETA |
+| **Total** | **10%** | | |
 
 ---
 
@@ -412,7 +447,7 @@ Unlike trend (which scans at EOD), mean reversion scans **continuously** during 
 |----------|-------|
 | Scan frequency | Every minute bar |
 | Scan window | 10:00 AM – 3:00 PM |
-| Symbols scanned | TQQQ, then SOXL |
+| Symbols scanned | TQQQ, then SPXL, then SOXL |
 
 Opportunities can appear at any time—the engine must act immediately when conditions align.
 
@@ -438,19 +473,19 @@ The Mean Reversion Engine produces **TargetWeight** objects with **IMMEDIATE** u
 
 | Field | Value |
 |-------|-------|
-| Symbol | TQQQ or SOXL |
+| Symbol | TQQQ, SPXL, or SOXL |
 | Weight | 1.0 |
-| Strategy | "MEANREV" |
+| Strategy | "MR" |
 | Urgency | **IMMEDIATE** |
-| Reason | "MR Entry: RSI=X, Drop=Y%, Volume=Zx" |
+| Reason | "MR Entry: RSI=X<threshold, Drop=Y%, Volume=Zx, VIX=regime" |
 
 ### Exit Signal Output
 
 | Field | Value |
 |-------|-------|
-| Symbol | TQQQ or SOXL |
+| Symbol | TQQQ, SPXL, or SOXL |
 | Weight | 0.0 |
-| Strategy | "MEANREV" |
+| Strategy | "MR" |
 | Urgency | **IMMEDIATE** |
 | Reason | Exit description (see below) |
 

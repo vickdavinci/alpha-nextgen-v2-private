@@ -61,7 +61,9 @@ Risk Engine decisions **override** all strategy signals and portfolio allocation
 
 ---
 
-## 12.2 Kill Switch (Daily −3%)
+## 12.2 Kill Switch (V2.28.1 Tiered System)
+
+> **V2.28.1 Update:** Kill switch now uses a 3-tier graduated response system instead of a single threshold. This prevents over-liquidation on moderate losses while still protecting against catastrophic drawdowns.
 
 ### 12.2.1 Purpose
 
@@ -69,14 +71,38 @@ Prevent a single bad day from causing irreparable damage.
 
 | Loss Level | Recovery Needed | Assessment |
 |-----------:|:---------------:|------------|
-| 3% | 3.1% | Painful but recoverable |
-| 5% | 5.3% | Significant setback |
+| 2% | 2.0% | Minor setback |
+| 4% | 4.2% | Significant concern |
+| 6% | 6.4% | Major damage |
 | 10% | 11.1% | Devastating |
-| 20% | 25.0% | Account-threatening |
 
-**The kill switch ensures we never experience the larger losses.**
+**The tiered kill switch provides graduated responses to prevent over-liquidation.**
 
-### 12.2.2 Two-Tier Implementation
+### 12.2.2 V2.28.1 Three-Tier Kill Switch
+
+| Tier | Loss Threshold | Action | Assets Affected |
+|:----:|:--------------:|--------|-----------------|
+| **Tier 1** | -2% | REDUCE | Halve trend positions, block new options |
+| **Tier 2** | -4% | TREND_EXIT | Liquidate trend positions, keep spreads |
+| **Tier 3** | -6% | FULL_EXIT | Liquidate everything |
+
+#### Tier 1: REDUCE (-2% Loss)
+- Reduce trend allocation by 50%
+- Block new option entries
+- Keep existing spreads running
+- Allow existing positions to reach targets
+
+#### Tier 2: TREND_EXIT (-4% Loss)
+- Liquidate all trend positions (QLD, SSO, UGL, UCO)
+- Keep existing option spreads (they have defined risk)
+- Block all new equity entries
+
+#### Tier 3: FULL_EXIT (-6% Loss)
+- Liquidate ALL positions including spreads
+- Go to 100% cash
+- Reset cold start
+
+### 12.2.3 Baseline Measurement
 
 The kill switch uses **two baselines** to catch different scenarios:
 
@@ -88,7 +114,7 @@ The kill switch uses **two baselines** to catch different scenarios:
 | Value | Portfolio value at previous day's close |
 | Purpose | Catches **gap-down scenarios** |
 
-If the portfolio gaps down 3%+ on open, the kill switch triggers immediately at 09:30.
+If the portfolio gaps down 6%+ on open, Tier 3 triggers immediately at 09:30.
 
 #### Baseline 2: `equity_sod` (Start of Day)
 
@@ -100,42 +126,73 @@ If the portfolio gaps down 3%+ on open, the kill switch triggers immediately at 
 
 If MOO fills moved the portfolio significantly, we measure subsequent losses from the post-fill level.
 
-### 12.2.3 Trigger Condition
+### 12.2.4 Trigger Condition
 
-Kill switch triggers if loss from **EITHER baseline** exceeds 3%:
+Each tier triggers if loss from **EITHER baseline** exceeds its threshold:
 
 ```
-TRIGGER if:
-    (equity_prior_close - current_equity) / equity_prior_close >= 0.03
-    OR
-    (equity_sod - current_equity) / equity_sod >= 0.03
+TIER 1 if: loss >= 0.02 (2%)
+TIER 2 if: loss >= 0.04 (4%)
+TIER 3 if: loss >= 0.06 (6%)
+
+Where loss = max(
+    (equity_prior_close - current_equity) / equity_prior_close,
+    (equity_sod - current_equity) / equity_sod
+)
 ```
 
-Whichever happens first.
+### 12.2.5 Legacy Single-Threshold Mode
 
-### 12.2.4 Actions on Trigger
+When `KS_GRADUATED_ENABLED = False`, the system falls back to the legacy single-threshold mode:
 
-**Immediate actions (in order):**
+| Parameter | Value |
+|-----------|-------|
+| `KILL_SWITCH_PCT` | 5% |
+
+This triggers full liquidation at 5% daily loss.
+
+### 12.2.6 Actions by Tier
+
+**Tier 1 Actions (REDUCE):**
+
+| Step | Action | Details |
+|:----:|--------|---------|
+| 1 | Reduce trend positions | Sell 50% of trend holdings |
+| 2 | Block new options | No new spread entries |
+| 3 | Keep existing spreads | Let them run to target/stop |
+| 4 | Log warning | Alert about reduced mode |
+
+**Tier 2 Actions (TREND_EXIT):**
+
+| Step | Action | Details |
+|:----:|--------|---------|
+| 1 | Liquidate trend | Sell all QLD, SSO, UGL, UCO |
+| 2 | Keep spreads | Existing spreads have defined risk |
+| 3 | Block all equities | No new equity entries |
+| 4 | Log details | Full tier 2 trigger information |
+
+**Tier 3 Actions (FULL_EXIT):**
 
 | Step | Action | Details |
 |:----:|--------|---------|
 | 1 | Cancel all pending orders | MOO orders, limit orders, any outstanding |
-| 2 | Liquidate ALL positions | Longs, hedges, yield—everything |
+| 2 | Liquidate ALL positions | Longs, hedges, yield, spreads—everything |
 | 3 | Disable new entries | For remainder of day |
 | 4 | Reset `days_running` to 0 | Triggers new cold start period |
 | 5 | Save kill date | To persistent storage |
 | 6 | Log details | Full information about trigger |
 
-### 12.2.5 Liquidation Details
+### 12.2.7 Liquidation Details (Tier 3)
 
 **ALL positions are liquidated via market orders:**
 
 | Position Type | Action |
 |---------------|--------|
-| Trend (QLD, SSO) | Sell all |
-| Mean Reversion (TQQQ, SOXL) | Sell all |
+| Trend (QLD, SSO, UGL, UCO) | Sell all |
+| Mean Reversion (TQQQ, SPXL, SOXL) | Sell all |
 | Hedges (TMF, PSQ) | Sell all |
 | Yield (SHV) | Sell all |
+| Option Spreads | Close all |
 
 **Nothing is spared.** The goal is to go to 100% cash immediately.
 
