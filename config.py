@@ -1123,13 +1123,13 @@ SPREAD_DTE_EXIT = 5  # Close by 5 DTE remaining
 # Exit targets
 SPREAD_PROFIT_TARGET_PCT = 0.50  # Take profit at 50% of max profit (base value)
 SPREAD_STOP_LOSS_PCT = (
-    0.50  # V2.4.2/V2.27: Stop loss at 50% of entry debit (max loss = 50% of net debit)
+    0.35  # V6.9: Reduced from 0.50 to prevent frequent stop-outs in volatile markets
 )
 SPREAD_STOP_REGIME_MULTIPLIERS = {
-    75: 1.20,  # Bull: give more room (0.50 * 1.2 = 0.60)
-    50: 1.00,  # Neutral: base
-    40: 0.90,  # Cautious: tighter
-    0: 0.80,  # Bear: tightest
+    75: 1.20,  # Bull: give more room (0.35 * 1.2 = 0.42)
+    50: 1.00,  # Neutral: base (0.35)
+    40: 0.90,  # Cautious: tighter (0.35 * 0.9 = 0.315)
+    0: 0.80,  # Bear: tightest (0.35 * 0.8 = 0.28)
 }
 
 # V3.0: Regime-Adaptive Profit Targets
