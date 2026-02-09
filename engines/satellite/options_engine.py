@@ -1886,6 +1886,7 @@ class OptionsEngine:
         self._spread_failure_cooldown_until_by_dir: dict = {}
         self._last_spread_failure_stats: Optional[str] = None
         self._last_credit_failure_stats: Optional[str] = None
+        self._last_micro_no_trade_log: Optional[str] = None
 
         # V2.3.2 FIX #4: Track if pending entry is intraday (for correct position registration)
         self._pending_intraday_entry: bool = False
@@ -2036,7 +2037,11 @@ class OptionsEngine:
                     f"VETO: {engine} conviction ({engine_direction}) overrides NEUTRAL Macro",
                 )
             else:
-                return False, None, f"NO_TRADE: Macro NEUTRAL, {engine} no conviction"
+                return (
+                    True,
+                    engine_direction,
+                    f"NEUTRAL_ALIGNED_HALF: Macro NEUTRAL, {engine} no conviction",
+                )
 
         # Case 3: Misaligned with clear Macro direction
         if engine_conviction:
@@ -2123,6 +2128,29 @@ class OptionsEngine:
         # - QQQ flat, whipsaw, or caution regime
         # With V6.8 lowered gates, Micro will trade more often without needing overrides.
         if state.recommended_strategy == IntradayStrategy.NO_TRADE:
+            # Minimal, throttled logging to understand Dir=None / NO_TRADE causes
+            should_log = True
+            if current_time and self._last_micro_no_trade_log:
+                try:
+                    if current_time[:10] == self._last_micro_no_trade_log[:10]:
+                        curr_min = int(current_time[11:13]) * 60 + int(current_time[14:16])
+                        last_min = int(self._last_micro_no_trade_log[11:13]) * 60 + int(
+                            self._last_micro_no_trade_log[14:16]
+                        )
+                        if curr_min - last_min < config.VASS_LOG_REJECTION_INTERVAL_MINUTES:
+                            should_log = False
+                except (ValueError, IndexError):
+                    pass
+
+            if should_log:
+                vix_change_pct = (vix_current - vix_open) / vix_open * 100 if vix_open > 0 else 0.0
+                qqq_move_pct = (qqq_current - qqq_open) / qqq_open * 100 if qqq_open > 0 else 0.0
+                self.log(
+                    f"MICRO_NO_TRADE: Regime={state.micro_regime.value} | "
+                    f"VIXchg={vix_change_pct:+.2f}% | QQQ={qqq_move_pct:+.2f}% | "
+                    f"Score={state.micro_score:.0f} | Dir=NONE"
+                )
+                self._last_micro_no_trade_log = current_time
             return False, None, state, f"NO_TRADE: Micro blocked ({state.micro_regime.value})"
 
         # Step 2: Check conviction (now without state-based fallback)

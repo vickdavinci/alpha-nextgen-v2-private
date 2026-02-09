@@ -3509,6 +3509,9 @@ class AlphaNextGen(QCAlgorithm):
             # Debug log - skip in backtest to avoid log limits
             return
 
+        if "NEUTRAL_ALIGNED_HALF" in resolve_reason:
+            size_multiplier *= config.NEUTRAL_ALIGNED_SIZE_MULT
+
         # V5.3: Use resolved direction (may be VASS override or Macro alignment)
         if resolved_direction == "BULLISH":
             directions_to_scan = [(OptionDirection.CALL, "BULLISH")]
@@ -5141,6 +5144,10 @@ class AlphaNextGen(QCAlgorithm):
                     vix_level_override=vix_level_cboe,
                 )
 
+                intraday_size_multiplier = size_multiplier
+                if "NEUTRAL_ALIGNED_HALF" in signal_reason:
+                    intraday_size_multiplier *= config.NEUTRAL_ALIGNED_SIZE_MULT
+
                 if not should_trade:
                     self.Log(f"INTRADAY: Blocked - {signal_reason}")
                     intraday_direction = None
@@ -5198,7 +5205,7 @@ class AlphaNextGen(QCAlgorithm):
                         current_time=str(self.Time),
                         portfolio_value=effective_portfolio_value,  # V2.11: Margin-capped
                         best_contract=intraday_contract,
-                        size_multiplier=size_multiplier,
+                        size_multiplier=intraday_size_multiplier,
                         macro_regime_score=self._last_regime_score,
                         governor_scale=self._governor_scale,  # V3.2: Intraday Governor gate
                         direction=intraday_direction,  # V6.0: Pass resolved direction
@@ -5270,6 +5277,9 @@ class AlphaNextGen(QCAlgorithm):
         if not should_trade:
             # No trade - either NEUTRAL macro with no conviction, or conflict without conviction
             return
+
+        if "NEUTRAL_ALIGNED_HALF" in resolve_reason:
+            size_multiplier *= config.NEUTRAL_ALIGNED_SIZE_MULT
 
         # Use resolved direction (may be VASS override or Macro alignment)
         if resolved_direction == "BULLISH":

@@ -3068,7 +3068,7 @@ CHOPPY_SIZE_REDUCTION = 0.50
 | V6.7-3 | #3 | Direction | CALLs on DOWN days - FOLLOW_MACRO fallback when Dir=NONE | ALL | P0 | 🔲 TODO |
 | V6.7-4 | #4 | OCO | Options expired worthless - no OCO after roll | 2022 | P1 | 🔲 TODO |
 | V6.7-5 | #5 | OCO | Invalid OCO orders after market hours (2015: 5, 2017: 2, 2022: 8) | ALL | P1 | 🔲 TODO |
-| V6.7-6 | #6 | VASS | Spread selection too restrictive (2015: 92, 2017: 52, 2022: 274 rejections) | ALL | P1 | 🔲 TODO |
+| V6.7-6 | #6 | VASS | Spread selection too restrictive (2015: 92, 2017: 52, 2022: 274 rejections) | ALL | P1 | ✅ DONE (V6.12: DTE fallbacks + cooldown after all ranges + FailStats logging) |
 | V6.7-7 | #7 | Margin | MARGIN_CB force liquidation - consecutive margin calls (2015: 4 orders) | 2015 | P2 | ✅ FIXED (V6.6.1: count only OPENING margin rejects + require margin stress) |
 | V6.6.2 | #4 | Options | Options expired worthless (-99%) | 2022 | P1 | ✅ FIXED (OCO recovery: recreate missing OCO for open single-leg positions) |
 | V6.9 | Conviction | Bullish VETO bias in NEUTRAL/BEARISH (UVXY -2.5%) | 2022 | P0 | ✅ FIXED (raise bullish threshold to -5%, gate NEUTRAL VETO to extreme UVXY, block CALL override in BEARISH macro) |
@@ -3083,6 +3083,9 @@ CHOPPY_SIZE_REDUCTION = 0.50
 | V6.7-10 | #10 | Regime | Breadth Decay: Relax thresholds (-10%/-15% → -2%/-4%) to actually trigger | 2022 | P0 | ✅ DONE |
 | V6.7-11 | #11 | Greeks | PUT contracts fail filter (Greeks=0, Delta=0) - 33 failures in 2015 | 2015 | P1 | 🔲 TODO |
 | V6.7-12 | #12 | Exercise | Option Exercise handling - ITM options exercised, QQQ stock assigned | 2015 | P2 | 🔲 TODO |
+| V6.7-13 | #13 | Positions | Swing/Intraday cross‑blocking via `has_position()` gate | ALL | P1 | ✅ DONE (V6.12: mode‑specific gates) |
+| V6.7-14 | #14 | Micro | Dir=None reduction: lower QQQ noise + stable fallback + ITM move threshold | ALL | P1 | ✅ DONE (V6.12: 0.25/0.35/50/0.45) |
+| V6.7-15 | #15 | Conviction | CALL bias control: asym UVXY thresholds + NEUTRAL aligned size reduction | ALL | P1 | ✅ DONE (V6.12: -5% / +2.5% + x0.5) |
 
 **Cross-Year Bug Analysis:**
 
@@ -3092,7 +3095,7 @@ CHOPPY_SIZE_REDUCTION = 0.50
 | #2 Dir=NONE | 3276× | 3597× | 834× | Thresholds too tight across all years |
 | #3 Wrong Direction | FOLLOW_MACRO 64× | FOLLOW_MACRO 3× | FOLLOW_MACRO 62× | Fallback to Macro when Micro=NONE |
 | #5 Invalid OCO | 5 orders | 2 orders | 8 orders | OCO placed after 18:00 (market closed) |
-| #6 VASS Reject | 92 | 52 | 274 | Spread criteria too restrictive |
+| #6 VASS Reject | 92 | 52 | 274 | Spread criteria too restrictive (V6.12 DTE fallback + cooldown fix) |
 | #7 Margin CB | 4 orders | 0 | 5 | Consecutive margin calls force liquidation |
 | #11 Greeks=0 | 33 PUT failures | 0 | 0 | PUT contracts missing Greeks in 2015 data |
 | #12 Exercise | 3 events | 0 | 0 | ITM options exercised at expiration |

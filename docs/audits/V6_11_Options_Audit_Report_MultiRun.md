@@ -36,7 +36,7 @@ Core blockers remain: **high Dir=NONE**, **large VASS rejection volume**, and **
 | **P1** | High Dir=NONE | `Dir=NONE` **4,706 / 7,280** (~64.6%) | Signal starvation | 🟡 Applied (Pending Validation) |
 | **P1** | VASS Rejection Storm | `VASS_REJECTION` **1,734** vs `VASS_ENTRY` **30** | Bear/credit spreads still not executing | 🟡 Applied (Pending Validation) |
 | **P1** | Signal → Execution Gap | `INTRADAY_SIGNAL` 360 → `INTRADAY_RESULT` 71 | Most signals never become trades | 🔴 Open |
-| **P1** | CALL Loss Concentration | CALL P&L **-32,811** vs PUT **-4,973** | Direction/strategy bias hurting performance | 🔴 Open |
+| **P1** | CALL Loss Concentration | CALL P&L **-32,811** vs PUT **-4,973** | Direction/strategy bias hurting performance | 🟡 Applied (Pending Validation) |
 | **P2** | Assignment Risk Still Triggers | `ASSIGNMENT_RISK_EXIT` **14** | Frequent defensive exits reduce opportunity | 🟡 Monitor |
 | **P1** | 2017: Dir=NONE Dominates | `Dir=NONE` **6,928 / 7,260** (~95.4%) | Micro still mostly inactive in bull year | 🔴 Open |
 | **P1** | 2017: Intraday Execution Near-Zero | `INTRADAY_SIGNAL` 20 → `INTRADAY_RESULT` 1 | Intraday pipeline still starved in bull year | 🔴 Open |
@@ -135,6 +135,7 @@ Still low; most intraday signals do not become executed results.
 - **VASS rejection visibility**: Added compact `FailStats` summary to throttled `VASS_REJECTION` logs.
 - **Swing/Intraday cross‑blocking**: Replaced `has_position()` gate with mode‑specific `can_enter_swing()` and `has_intraday_position()` checks.
 - **Micro Dir=None reduction**: Lowered `QQQ_NOISE_THRESHOLD` (0.35→0.25), `INTRADAY_QQQ_FALLBACK_MIN_MOVE` (0.50→0.35), `MICRO_SCORE_*_CONFIRM` (52/48→50/50), and `INTRADAY_ITM_MIN_MOVE` (0.80→0.45).
+- **CALL bias control**: Asymmetric UVXY conviction thresholds (CALL -5%, PUT +2.5%) and NEUTRAL aligned trades allowed at reduced size.
 
 ---
 

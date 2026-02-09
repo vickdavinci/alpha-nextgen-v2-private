@@ -1345,6 +1345,7 @@ INTRADAY_SPREAD_MAX_PCT = 0.08  # 8% of portfolio for intraday spreads (1-5 DTE)
 # V3.0: Minimum margin percentage to allow options trading
 # Replaces hardcoded $1,000 check in main.py
 OPTIONS_MIN_MARGIN_PCT = 0.02  # 2% of portfolio minimum margin to trade options
+NEUTRAL_ALIGNED_SIZE_MULT = 0.50  # V6.12: Reduce size when Macro NEUTRAL and no conviction
 
 # V2.21: Rejection-aware spread sizing
 # Pre-submission: use 80% of reported margin (20% buffer for broker calc differences)
@@ -1416,10 +1417,10 @@ VIX_WHIPSAW_MIN_RANGE = 5.0  # Minimum range % to consider whipsaw
 # Analysis showed Jan 21 (+6.9%), Jan 24 (+7.4%), Jan 25 (+5.3%) missed by narrow margin
 # V6.6: Lowered from ±5% to ±3% based on 2022H1 analysis
 # Only 8% of moves exceeded ±5%, missing many valid conviction signals
-MICRO_UVXY_BEARISH_THRESHOLD = 0.025  # V6.10: +2.5% for more PUT signals (was +4%)
-MICRO_UVXY_BULLISH_THRESHOLD = -0.03  # V6.10: -3% for more CALL signals (was -5%)
+MICRO_UVXY_BEARISH_THRESHOLD = 0.025  # +2.5% for more PUT signals
+MICRO_UVXY_BULLISH_THRESHOLD = -0.05  # V6.12: -5% for CALL conviction (stricter)
 # V6.10: Lower conviction extreme to capture 5-7% moves that were blocked
-MICRO_UVXY_CONVICTION_EXTREME = 0.05  # V6.10: 5% intraday move for NEUTRAL VETO (was 7%)
+MICRO_UVXY_CONVICTION_EXTREME = 0.035  # V6.12: 3.5% intraday move for NEUTRAL VETO
 # V6.10: Micro fallback + confirmation thresholds (Dir=None tuning)
 MICRO_SCORE_BULLISH_CONFIRM = 50.0  # V6.12: Relaxed for fewer Dir=None in STABLE
 MICRO_SCORE_BEARISH_CONFIRM = 50.0  # V6.12: Symmetric confirmation threshold
