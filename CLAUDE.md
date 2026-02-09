@@ -715,12 +715,15 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | VIX Normal (V2.3) | VIX 15-22 | Normal volatility |
 | VIX High (V2.3) | VIX 22-30 | Elevated fear |
 | VIX Extreme (V2.3) | VIX > 40 | Crisis mode |
-| VASS Low IV (V2.8) | VIX < 15 | Debit spreads, monthly DTE |
-| VASS Medium IV (V2.8) | VIX 15-25 | Debit spreads, weekly DTE |
-| VASS High IV (V2.8) | VIX > 25 | Credit spreads, weekly DTE |
-| UVXY Bearish (V6.4) | UVXY > +5% | PUT conviction signal (was +8%) |
-| UVXY Bullish (V6.4) | UVXY < -5% | CALL conviction signal |
-| BEAR_PUT OTM Gate (V6.4) | Short PUT ≥ 3% OTM | Block assignment-risk entries |
+| VASS Low IV (V2.8) | VIX < 15 | Debit spreads, 30-45 DTE (monthly) |
+| VASS Medium IV (V2.8) | VIX 15-25 | Debit spreads, 7-21 DTE (weekly) |
+| VASS High IV (V6.8) | VIX > 25 | Credit spreads, 5-28 DTE (was 7-21) |
+| UVXY Bearish (V6.8) | UVXY > +2.5% | PUT conviction signal (was +3%) |
+| UVXY Bullish (V6.8) | UVXY < -2.5% | CALL conviction signal (was -3%) |
+| BEAR_PUT OTM Gate (V6.4) | Short PUT >= 3% OTM | Block assignment-risk entries |
+| Options ATR Stop Max (V6.8) | 30% | Max loss cap (was 50%) |
+| Intraday FADE VIX Min (V6.8) | VIX >= 11.5 | Enable DEBIT_FADE (was 13.5) |
+| Intraday ITM VIX Min (V6.8) | VIX >= 10.0 | Enable ITM momentum (was 11.5) |
 
 ### Overnight Holdings
 

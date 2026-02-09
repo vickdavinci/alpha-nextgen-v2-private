@@ -6,11 +6,23 @@
 
 ## Overview
 
-> **Last Updated**: 8 February 2026 (V6.5)
+> **Last Updated**: 8 February 2026 (V6.8)
 
 The **Options Engine** implements a dual-mode architecture for QQQ options trading. This is a **satellite engine** (25% allocation) with two distinct operating modes based on DTE (days to expiration).
 
-> **V6.5 Revision** (Latest):
+> **V6.8 Revision** (Latest):
+> - Relaxed liquidity filters: Open interest 100->50, spread warning 25%->30%
+> - Widened VASS High IV DTE range: 7-21 -> 5-28 (more contract matches)
+> - Tighter ATR-based stops: multiplier 1.5->1.0, max 50%->30% loss cap
+> - Lowered delta requirements: long leg min 0.45->0.40, short leg max 0.52->0.55
+> - Narrower spread width target: 4.0 -> 3.0 (more matches in chain)
+> - Reduced UVXY conviction thresholds: +/-3% -> +/-2.5%
+> - Lowered intraday VIX floors: DEBIT_FADE 13.5->11.5, ITM 11.5->10.0
+> - Reduced intraday score requirements: DEBIT_FADE 45->35, ITM 50->40
+> - Widened FADE_MAX_MOVE: 1.20% -> 1.50% (allow stronger continuations)
+> - Reduced assignment margin buffer: 20%->10% (fewer instant exit triggers)
+>
+> **V6.5 Revision**:
 > - Fixed DEBIT_FADE divergence/confirmation logic (was inverted)
 > - Added `DEBIT_MOMENTUM` strategy for confirmed trends (QQQ and VIX aligned)
 > - WORSENING + WORSENING_HIGH regimes now ALWAYS use ITM PUT (regardless of QQQ direction)
@@ -119,7 +131,7 @@ VASS dynamically selects the spread strategy and DTE range based on the current 
 |:--------------:|:---------:|----------|:---------:|-----------|
 | **Low IV** | VIX < 15 | Debit Spreads | 30-45 DTE (monthly) | Cheap options, need more time for move |
 | **Medium IV** | VIX 15-25 | Debit Spreads | 7-21 DTE (weekly) | Fair pricing, standard DTE |
-| **High IV** | VIX > 25 | Credit Spreads | 7-14 DTE (weekly) | Rich premium, sell into fear |
+| **High IV** | VIX > 25 | Credit Spreads | 5-28 DTE (V6.8: widened from 7-14) | Rich premium, sell into fear |
 
 ### How VASS Routing Works
 
@@ -141,8 +153,8 @@ The 30-minute smoothing window prevents strategy flickering when VIX oscillates 
 | `VASS_LOW_IV_DTE_MAX` | 45 | Low IV: Monthly DTE maximum |
 | `VASS_MEDIUM_IV_DTE_MIN` | 7 | Medium IV: Weekly DTE minimum |
 | `VASS_MEDIUM_IV_DTE_MAX` | 21 | Medium IV: Weekly DTE maximum |
-| `VASS_HIGH_IV_DTE_MIN` | 7 | High IV: Weekly DTE minimum |
-| `VASS_HIGH_IV_DTE_MAX` | 14 | High IV: Weekly DTE maximum |
+| `VASS_HIGH_IV_DTE_MIN` | 5 | High IV: Weekly DTE minimum (V6.8: was 7) |
+| `VASS_HIGH_IV_DTE_MAX` | 28 | High IV: Weekly DTE maximum (V6.8: was 21) |
 | `VASS_LOG_REJECTION_INTERVAL_MINUTES` | 15 | Throttled rejection logging |
 
 > **V2.24.2 Note**: When VASS routes to a specific DTE range, the `dte_min`/`dte_max` parameters are passed through to `select_spread_legs()` and `check_spread_entry_signal()`, overriding the global `SPREAD_DTE_MIN`/`SPREAD_DTE_MAX`. See [DTE Double-Filter Fix](#v2242-dte-double-filter-fix) below.
@@ -342,7 +354,7 @@ The intraday DEBIT_FADE strategy (mean-reversion bounce) is disabled when VIX is
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `INTRADAY_DEBIT_FADE_VIX_MIN` | 13.5 | Minimum VIX for DEBIT_FADE |
+| `INTRADAY_DEBIT_FADE_VIX_MIN` | 11.5 | Minimum VIX for DEBIT_FADE (V6.8: was 13.5) |
 | `INTRADAY_DEBIT_FADE_VIX_MAX` | 25 | Maximum VIX for DEBIT_FADE |
 
 ---
@@ -510,7 +522,7 @@ contracts = floor(allocation / (entry_price * 100 * stop_pct))
 - `OPTIONS_INTRADAY_DELTA_TARGET` (default: 0.30)
 - `OPTIONS_SWING_DELTA_TARGET` (default: 0.70)
 - `OPTIONS_DELTA_TOLERANCE` (default: 0.20)
-- `OPTIONS_MIN_OPEN_INTEREST` (default: 200)
+- `OPTIONS_MIN_OPEN_INTEREST` (default: 50, V6.8: was 100)
 - `OPTIONS_SPREAD_WARNING_PCT` (default: 0.15)
 
 > **V2.3.6 Changes:** Lowered OI from 500 to 200 (0DTE contracts have less liquidity), widened spread tolerance from 10% to 15% (0DTE spreads are naturally wider).
@@ -736,9 +748,10 @@ The intraday options scanning window was adjusted:
 | `SPREAD_SHORT_LEG_BY_WIDTH` | True | V2.4.3: Width-based short leg selection |
 | `SPREAD_WIDTH_MIN` | 2.0 | Minimum spread width ($2) |
 | `SPREAD_WIDTH_MAX` | 10.0 | Maximum spread width ($10) |
-| `SPREAD_WIDTH_TARGET` | 5.0 | Target spread width ($5) |
+| `SPREAD_WIDTH_TARGET` | 3.0 | Target spread width (V6.8: was 5.0, lower for more matches) |
+| `SPREAD_LONG_LEG_DELTA_MIN` | 0.40 | Long leg minimum delta (V6.8: was 0.45) |
 | `SPREAD_SHORT_LEG_DELTA_MIN` | 0.10 | Short leg minimum delta |
-| `SPREAD_SHORT_LEG_DELTA_MAX` | 0.50 | Short leg maximum delta |
+| `SPREAD_SHORT_LEG_DELTA_MAX` | 0.55 | Short leg maximum delta (V6.8: was 0.52) |
 
 ### Exits and Stops
 
@@ -1010,7 +1023,7 @@ Strategy: OTM debit spread, 0-1 DTE
 Exit: +30% profit OR return to VWAP OR 15:30 time stop
 ```
 
-> **V2.19 Change**: Added `INTRADAY_DEBIT_FADE_VIX_MIN = 13.5` floor. In ultra-low VIX "apathy" markets (VIX < 13.5), QQQ moves are too small for a fade to generate meaningful profit.
+> **V6.8 Change**: Lowered `INTRADAY_DEBIT_FADE_VIX_MIN` from 13.5 to 11.5 to allow trades in low VIX bull markets. Also reduced `INTRADAY_DEBIT_FADE_MIN_SCORE` from 45 to 35 and widened `INTRADAY_FADE_MAX_MOVE` from 1.20% to 1.50% to capture more opportunities.
 
 #### Strategy 1b: Debit Momentum (Confirmation - Trend Following) [V6.5 NEW]
 

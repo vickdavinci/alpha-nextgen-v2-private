@@ -317,8 +317,8 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `OPTIONS_MIN_OPEN_INTEREST` | 200 | Minimum OI - V2.3.6: lowered from 500 for 0DTE liquidity |
-| `OPTIONS_SPREAD_WARNING_PCT` | 0.15 | Max bid-ask spread - V2.3.6: widened from 10% for 0DTE reality |
+| `OPTIONS_MIN_OPEN_INTEREST` | 50 | Minimum OI - V6.8: lowered from 100 for thin chains |
+| `OPTIONS_SPREAD_WARNING_PCT` | 0.30 | Max bid-ask spread - V6.8: widened from 0.25 to reduce rejections |
 | `OPTIONS_DELTA_TOLERANCE` | 0.20 | Delta tolerance from target - V2.3.5: widened from 0.15 |
 
 ### 4-Factor Entry Scoring
@@ -436,7 +436,7 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 |----------------|-----------|----------|-----------|
 | Low IV | < 15 | Debit Spreads | 30-45 (Monthly) |
 | Medium IV | 15-25 | Debit Spreads | 7-21 (Weekly) |
-| High IV | > 25 | Credit Spreads | 7-14 (Weekly) |
+| High IV | > 25 | Credit Spreads | 5-28 (V6.8: was 7-21) |
 
 ### Credit Spread Parameters (V2.8/V2.10)
 
@@ -464,7 +464,7 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `SPREAD_SHORT_LEG_BY_WIDTH` | True | Use strike width instead of delta |
 | `SPREAD_WIDTH_MIN` | 2.0 | Minimum spread width ($2) |
 | `SPREAD_WIDTH_MAX` | 10.0 | Maximum spread width ($10) |
-| `SPREAD_WIDTH_TARGET` | 5.0 | Target spread width ($5) |
+| `SPREAD_WIDTH_TARGET` | 3.0 | Target spread width (V6.8: was 5.0) |
 
 ### Sizing Caps (V2.18)
 
@@ -472,6 +472,32 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 |-----------|:-----:|-------------|
 | `SWING_SPREAD_MAX_DOLLARS` | 7,500 | Max $ per swing spread |
 | `INTRADAY_SPREAD_MAX_DOLLARS` | 4,000 | Max $ per intraday spread |
+
+### ATR-Based Stops (V6.8)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `OPTIONS_ATR_STOP_MULTIPLIER` | 1.0 | ATR multiplier for stops (V6.8: was 1.5) |
+| `OPTIONS_ATR_STOP_MIN_PCT` | 0.15 | Minimum stop % (V6.8: was 0.20) |
+| `OPTIONS_ATR_STOP_MAX_PCT` | 0.30 | Maximum stop % (V6.8: was 0.50 - prevents 50% losses) |
+| `OPTIONS_USE_ATR_STOPS` | True | Use ATR-based stops (vs legacy tier-based) |
+
+### UVXY Conviction Thresholds (V6.8)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `MICRO_UVXY_BEARISH_THRESHOLD` | +2.5% | UVXY up → PUT conviction (V6.8: was +3%) |
+| `MICRO_UVXY_BULLISH_THRESHOLD` | -2.5% | UVXY down → CALL conviction (V6.8: was -3%) |
+| `MICRO_VIX_CRISIS_LEVEL` | 35 | VIX > 35 → CRISIS (BEARISH conviction) |
+| `MICRO_VIX_COMPLACENT_LEVEL` | 12 | VIX < 12 → COMPLACENT (BULLISH conviction) |
+
+### Assignment Risk Management (V6.8)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `ASSIGNMENT_MARGIN_BUFFER_ENABLED` | True | Require extra margin for ITM shorts |
+| `ASSIGNMENT_MARGIN_BUFFER_PCT` | 0.10 | Margin buffer % (V6.8: was 0.20 - reduced instant exits) |
+| `ASSIGNMENT_MARGIN_AUTO_REDUCE` | True | Auto-reduce if buffer insufficient |
 
 ### Limit Order Execution (V2.19)
 
@@ -538,11 +564,14 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `INTRADAY_DEBIT_FADE_MIN_SCORE` | 50 | Minimum micro score for debit fade |
-| `INTRADAY_DEBIT_FADE_MIN_MOVE` | 1.0% | Minimum QQQ move |
+| `INTRADAY_DEBIT_FADE_MIN_SCORE` | 35 | Minimum micro score for debit fade (V6.8: was 45) |
+| `INTRADAY_DEBIT_FADE_VIX_MIN` | 11.5 | Minimum VIX for DEBIT_FADE (V6.8: was 13.5) |
+| `INTRADAY_FADE_MIN_MOVE` | 0.50% | Minimum QQQ move for FADE |
+| `INTRADAY_FADE_MAX_MOVE` | 1.50% | Max QQQ move for FADE (V6.8: was 1.20%) |
 | `INTRADAY_DEBIT_FADE_VIX_MAX` | 25 | Maximum VIX for debit fade |
 | `INTRADAY_CREDIT_MIN_VIX` | 18 | Minimum VIX for credit spreads |
-| `INTRADAY_ITM_MIN_VIX` | 25 | Minimum VIX for ITM momentum |
+| `INTRADAY_ITM_MIN_VIX` | 10.0 | Minimum VIX for ITM momentum (V6.8: was 11.5) |
+| `INTRADAY_ITM_MIN_SCORE` | 40 | Minimum micro score for ITM (V6.8: was 50) |
 | `INTRADAY_ITM_MIN_MOVE` | 0.8% | Minimum QQQ move for ITM |
 | `INTRADAY_FORCE_EXIT_TIME` | 15:30 ET | Intraday positions must close |
 
@@ -1054,6 +1083,22 @@ ELASTIC_DELTA_CEILING = 0.95
 # Sizing Caps (V2.18)
 SWING_SPREAD_MAX_DOLLARS = 7500
 INTRADAY_SPREAD_MAX_DOLLARS = 4000
+
+# ATR-Based Stops (V6.8)
+OPTIONS_ATR_STOP_MULTIPLIER = 1.0  # V6.8: was 1.5
+OPTIONS_ATR_STOP_MIN_PCT = 0.15    # V6.8: was 0.20
+OPTIONS_ATR_STOP_MAX_PCT = 0.30    # V6.8: was 0.50
+OPTIONS_USE_ATR_STOPS = True
+
+# UVXY Conviction Thresholds (V6.8)
+MICRO_UVXY_BEARISH_THRESHOLD = 0.025  # V6.8: was 0.03
+MICRO_UVXY_BULLISH_THRESHOLD = -0.025  # V6.8: was -0.03
+MICRO_VIX_CRISIS_LEVEL = 35
+MICRO_VIX_COMPLACENT_LEVEL = 12
+
+# Assignment Margin Buffer (V6.8)
+ASSIGNMENT_MARGIN_BUFFER_ENABLED = True
+ASSIGNMENT_MARGIN_BUFFER_PCT = 0.10  # V6.8: was 0.20
 
 # Limit Orders (V2.19)
 OPTIONS_USE_LIMIT_ORDERS = True
