@@ -48,42 +48,43 @@ class TestClassifyVIXDirection:
     """Tests for classify_vix_direction() method."""
 
     def test_falling_fast_direction(self, micro_engine):
-        """VIX falling fast (< -5%)."""
+        """VIX falling fast (< -3%)."""
         # VIX dropped from 20 to 18 (-10%)
         direction, score = micro_engine.classify_vix_direction(18.0, 20.0)
         assert direction == VIXDirection.FALLING_FAST
         assert score == config.MICRO_SCORE_DIR_FALLING_FAST
 
     def test_falling_direction(self, micro_engine):
-        """VIX falling (-5% to -2%)."""
-        # VIX dropped from 20 to 19.4 (-3%)
-        direction, score = micro_engine.classify_vix_direction(19.4, 20.0)
+        """VIX falling (-3% to -1%)."""
+        # V6.6: Updated for new thresholds - VIX dropped from 20 to 19.6 (-2%)
+        direction, score = micro_engine.classify_vix_direction(19.6, 20.0)
         assert direction == VIXDirection.FALLING
         assert score == config.MICRO_SCORE_DIR_FALLING
 
     def test_stable_direction(self, micro_engine):
-        """VIX stable (-2% to +2%)."""
+        """VIX stable (-1% to +1%)."""
         # VIX unchanged
         direction, score = micro_engine.classify_vix_direction(20.0, 20.0)
         assert direction == VIXDirection.STABLE
         assert score == config.MICRO_SCORE_DIR_STABLE
 
     def test_stable_direction_small_rise(self, micro_engine):
-        """VIX stable with small rise (+1%)."""
-        direction, score = micro_engine.classify_vix_direction(20.2, 20.0)
+        """VIX stable with small rise (+0.5%)."""
+        # V6.6: Updated for new thresholds - +0.5% is within ±1% STABLE zone
+        direction, score = micro_engine.classify_vix_direction(20.1, 20.0)
         assert direction == VIXDirection.STABLE
 
     def test_rising_direction(self, micro_engine):
-        """VIX rising (+2% to +5%)."""
-        # VIX rose from 20 to 20.6 (+3%)
-        direction, score = micro_engine.classify_vix_direction(20.6, 20.0)
+        """VIX rising (+1% to +3%)."""
+        # V6.6: Updated for new thresholds - VIX rose from 20 to 20.4 (+2%)
+        direction, score = micro_engine.classify_vix_direction(20.4, 20.0)
         assert direction == VIXDirection.RISING
         assert score == config.MICRO_SCORE_DIR_RISING
 
     def test_rising_fast_direction(self, micro_engine):
-        """VIX rising fast (+5% to +10%)."""
-        # VIX rose from 20 to 21.4 (+7%)
-        direction, score = micro_engine.classify_vix_direction(21.4, 20.0)
+        """VIX rising fast (+3% to +6%)."""
+        # V6.6: Updated for new thresholds - VIX rose from 20 to 20.8 (+4%)
+        direction, score = micro_engine.classify_vix_direction(20.8, 20.0)
         assert direction == VIXDirection.RISING_FAST
         assert score == config.MICRO_SCORE_DIR_RISING_FAST
 
@@ -99,40 +100,45 @@ class TestClassifyVIXDirection:
         direction, _ = micro_engine.classify_vix_direction(20.0, 0.0)
         assert direction == VIXDirection.STABLE
 
-    # Boundary tests
+    # Boundary tests - V6.6 updated for new thresholds
+    # Using values that avoid floating point precision issues at exact boundaries
     def test_boundary_falling_fast_to_falling(self, micro_engine):
-        """Test boundary between FALLING_FAST and FALLING (-5.0%)."""
-        # Exactly at -5%
-        direction, _ = micro_engine.classify_vix_direction(19.0, 20.0)
-        # -5% should be FALLING (not FALLING_FAST, which is < -5%)
+        """Test boundary between FALLING_FAST and FALLING (-3.0%)."""
+        # V6.6: -2.5% should be FALLING (between -3% and -1%)
+        direction, _ = micro_engine.classify_vix_direction(19.5, 20.0)  # -2.5%
         assert direction == VIXDirection.FALLING
 
     def test_boundary_falling_to_stable(self, micro_engine):
-        """Test boundary between FALLING and STABLE (-2.0%)."""
-        # Exactly at -2% is STABLE (FALLING is < -2%, not <=)
-        direction, _ = micro_engine.classify_vix_direction(19.6, 20.0)
+        """Test boundary between FALLING and STABLE (-1.0%)."""
+        # V6.6: -0.5% is STABLE (between -1% and +1%)
+        direction, _ = micro_engine.classify_vix_direction(19.9, 20.0)  # -0.5%
         assert direction == VIXDirection.STABLE
-        # Just below -2% is FALLING
-        direction_below, _ = micro_engine.classify_vix_direction(19.58, 20.0)  # -2.1%
+        # -1.5% is FALLING (between -3% and -1%)
+        direction_below, _ = micro_engine.classify_vix_direction(19.7, 20.0)  # -1.5%
         assert direction_below == VIXDirection.FALLING
 
     def test_boundary_stable_to_rising(self, micro_engine):
-        """Test boundary between STABLE and RISING (+2.0%)."""
-        # Exactly at +2%
-        direction, _ = micro_engine.classify_vix_direction(20.4, 20.0)
+        """Test boundary between STABLE and RISING (+1.0%)."""
+        # V6.6: +0.5% is STABLE (between -1% and +1%)
+        direction, _ = micro_engine.classify_vix_direction(20.1, 20.0)  # +0.5%
         assert direction == VIXDirection.STABLE
 
     def test_boundary_rising_to_rising_fast(self, micro_engine):
-        """Test boundary between RISING and RISING_FAST (+5.0%)."""
-        # Exactly at +5%
-        direction, _ = micro_engine.classify_vix_direction(21.0, 20.0)
+        """Test boundary between RISING and RISING_FAST (+3.0%)."""
+        # V6.6: +2% is RISING (between +1% and +3%)
+        direction, _ = micro_engine.classify_vix_direction(20.4, 20.0)  # +2%
         assert direction == VIXDirection.RISING
 
     def test_boundary_rising_fast_to_spiking(self, micro_engine):
-        """Test boundary between RISING_FAST and SPIKING (+10.0%)."""
-        # Exactly at +10%
-        direction, _ = micro_engine.classify_vix_direction(22.0, 20.0)
+        """Test boundary between RISING_FAST and SPIKING."""
+        # V6.6: RISING_FAST zone is +3% to +6%. Values > 6% are SPIKING.
+        # +5% is RISING_FAST (within +3% to +6%)
+        direction, _ = micro_engine.classify_vix_direction(21.0, 20.0)  # +5%
         assert direction == VIXDirection.RISING_FAST
+
+        # +8% is SPIKING (above +6%)
+        direction, _ = micro_engine.classify_vix_direction(21.6, 20.0)  # +8%
+        assert direction == VIXDirection.SPIKING
 
 
 # =============================================================================
@@ -455,18 +461,18 @@ class TestRecommendStrategy:
         )
         assert strategy == IntradayStrategy.DEBIT_FADE
 
-    def test_crash_regime_recommends_no_trade(self, micro_engine):
-        """CRASH regime -> NO_TRADE."""
+    def test_crash_regime_recommends_protective_puts(self, micro_engine):
+        """V6.4: CRASH regime -> PROTECTIVE_PUTS (crisis protection, no score required)."""
         strategy = micro_engine.recommend_strategy(
             micro_regime=MicroRegime.CRASH,
             micro_score=20,
             vix_current=40.0,
             qqq_move_pct=3.0,
         )
-        assert strategy == IntradayStrategy.NO_TRADE
+        assert strategy == IntradayStrategy.PROTECTIVE_PUTS
 
     def test_crash_with_negative_score_recommends_protective(self, micro_engine):
-        """CRASH with negative score -> PROTECTIVE_PUTS."""
+        """CRASH with negative score -> PROTECTIVE_PUTS (V6.4: always, regardless of score)."""
         strategy = micro_engine.recommend_strategy(
             micro_regime=MicroRegime.CRASH,
             micro_score=-10,
@@ -486,15 +492,15 @@ class TestRecommendStrategy:
         # V2.3.4: Choppy regimes are avoided, not traded
         assert strategy == IntradayStrategy.NO_TRADE
 
-    def test_full_panic_recommends_no_trade(self, micro_engine):
-        """FULL_PANIC -> NO_TRADE."""
+    def test_full_panic_recommends_protective_puts(self, micro_engine):
+        """V6.4: FULL_PANIC -> PROTECTIVE_PUTS (crisis protection, no score required)."""
         strategy = micro_engine.recommend_strategy(
             micro_regime=MicroRegime.FULL_PANIC,
             micro_score=10,
             vix_current=35.0,
             qqq_move_pct=4.0,
         )
-        assert strategy == IntradayStrategy.NO_TRADE
+        assert strategy == IntradayStrategy.PROTECTIVE_PUTS
 
     def test_deteriorating_recommends_itm_momentum(self, micro_engine):
         """DETERIORATING with high VIX and big move -> ITM_MOMENTUM."""

@@ -135,6 +135,35 @@ URL:  https://www.quantconnect.com/project/27678023/...
 - Use B4-12 nodes for options backtests (requires more memory)
 - Results viewable at: https://www.quantconnect.com/terminal
 
+### Engine Isolation Mode (V6.4)
+
+For targeted backtesting of individual engines, use **Isolation Mode** to disable all other engines and safeguards.
+
+**To test Options Engine only:**
+```python
+# In config.py, set:
+ISOLATION_TEST_MODE = True
+```
+
+**What gets disabled:**
+- Kill Switch, Startup Gate, Cold Start
+- Trend, Mean Reversion, Hedge, Yield engines
+- Drawdown Governor, Panic Mode, Weekly Breaker
+- Gap Filter, Vol Shock
+
+**What stays enabled:**
+- Regime Engine (required for options direction)
+- Options Engine (VASS Swing + Micro Intraday)
+- Time Guards (13:55-14:10 block)
+- Position Limits
+
+**To return to normal:**
+```python
+ISOLATION_TEST_MODE = False
+```
+
+See `docs/guides/ENGINE_ISOLATION_MODE.md` for full configuration options.
+
 ---
 
 ## Project Overview
@@ -689,6 +718,9 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | VASS Low IV (V2.8) | VIX < 15 | Debit spreads, monthly DTE |
 | VASS Medium IV (V2.8) | VIX 15-25 | Debit spreads, weekly DTE |
 | VASS High IV (V2.8) | VIX > 25 | Credit spreads, weekly DTE |
+| UVXY Bearish (V6.4) | UVXY > +5% | PUT conviction signal (was +8%) |
+| UVXY Bullish (V6.4) | UVXY < -5% | CALL conviction signal |
+| BEAR_PUT OTM Gate (V6.4) | Short PUT ≥ 3% OTM | Block assignment-risk entries |
 
 ### Overnight Holdings
 

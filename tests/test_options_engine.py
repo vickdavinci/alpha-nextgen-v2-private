@@ -387,6 +387,7 @@ class TestEntrySignals:
             current_date="2026-01-26",
             portfolio_value=100000,
             regime_score=75.0,  # V3.2: BULL regime required for CALL entries
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         assert result is not None
         assert result.source == "OPT"
@@ -519,6 +520,7 @@ class TestEntrySignals:
             current_date="2026-01-26",
             portfolio_value=100000,
             regime_score=75.0,  # V3.2: BULL regime required for CALL entries
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         assert result is not None
 
@@ -540,6 +542,7 @@ class TestEntrySignals:
             current_date="2026-01-26",
             portfolio_value=100000,
             regime_score=75.0,  # V3.2: BULL regime required for CALL entries
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         assert result is None
 
@@ -604,6 +607,7 @@ class TestEntrySignals:
             current_date="2026-01-26",
             portfolio_value=100000,
             regime_score=75.0,  # BULL - CALL allowed
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         assert result is not None
 
@@ -664,6 +668,7 @@ class TestEntrySignals:
             current_date="2026-01-26",
             portfolio_value=100000,
             regime_score=75.0,  # V3.2: BULL regime required for CALL entries
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         assert result is not None
 
@@ -1174,6 +1179,7 @@ class TestDTEDeltaFiltering:
             current_date="2026-01-26",
             portfolio_value=100000,
             regime_score=75.0,  # V3.2: BULL regime required for CALL entries
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         # DTE=0 is within allowed range (0-45), so entry is allowed
         assert result is not None
@@ -1218,6 +1224,7 @@ class TestDTEDeltaFiltering:
             current_date="2026-01-26",
             portfolio_value=100000,
             regime_score=75.0,  # V3.2: BULL regime required for CALL entries
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         assert result is not None
 
@@ -1236,6 +1243,7 @@ class TestDTEDeltaFiltering:
             current_date="2026-01-26",
             portfolio_value=100000,
             regime_score=75.0,  # V3.2: BULL regime required for CALL entries
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         assert result is not None
 
@@ -1304,6 +1312,7 @@ class TestDTEDeltaFiltering:
             current_date="2026-01-26",
             portfolio_value=100000,
             regime_score=75.0,  # V3.2: BULL regime required for CALL entries
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         assert result is not None
 
@@ -1322,6 +1331,7 @@ class TestDTEDeltaFiltering:
             current_date="2026-01-26",
             portfolio_value=100000,
             regime_score=75.0,  # V3.2: BULL regime required for CALL entries
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         assert result is not None
 
@@ -1341,6 +1351,7 @@ class TestDTEDeltaFiltering:
             current_date="2026-01-26",
             portfolio_value=100000,
             regime_score=35.0,  # V3.2: PUT allowed in BEAR regime
+            direction=OptionDirection.PUT,  # V6.0: Direction from conviction resolution
         )
         assert result is not None  # Should allow since abs(-0.50) = 0.50 is valid
 
@@ -2945,12 +2956,13 @@ class TestVASSCreditSpreadEntry:
         """V3.0: Bull Put Credit entry should generate TargetWeight with credit metadata.
 
         V3.0 thesis: PUT spreads (including Bull Put Credit) are allowed in bearish regimes (< 50).
+        V6.4: Short PUT strike (500) must be >= 3% OTM, so current_price must be >= 515.46.
         """
         signal = engine.check_credit_spread_entry_signal(
             regime_score=45.0,  # V3.0: Bearish regime (< 50) for PUT spreads
             vix_current=28.0,  # High IV
             adx_value=30.0,
-            current_price=510.0,
+            current_price=520.0,  # V6.4: Raised to pass 3% OTM gate (500/520 = 3.85% OTM)
             ma200_value=480.0,
             iv_rank=70.0,
             current_hour=11,
@@ -2960,6 +2972,7 @@ class TestVASSCreditSpreadEntry:
             short_leg_contract=credit_short_leg,
             long_leg_contract=credit_long_leg,
             strategy=SpreadStrategy.BULL_PUT_CREDIT,
+            direction=OptionDirection.PUT,  # V6.0: Direction from conviction resolution
         )
 
         assert signal is not None
@@ -3032,12 +3045,13 @@ class TestVASSCreditSpreadEntry:
         V3.9 thesis: Lower NEUTRAL allows PUT-only at reduced sizing.
         Upper NEUTRAL (60-69) is CALL-only zone.
         BULL_PUT_CREDIT is PUT direction, so allowed at 50% in Lower NEUTRAL.
+        V6.4: Short PUT strike (500) must be >= 3% OTM, so current_price must be >= 515.46.
         """
         signal = engine.check_credit_spread_entry_signal(
             regime_score=55.0,  # V3.9: Lower NEUTRAL (50-59) - PUT allowed at 50% sizing
             vix_current=28.0,
             adx_value=30.0,
-            current_price=510.0,
+            current_price=520.0,  # V6.4: Raised to pass 3% OTM gate (500/520 = 3.85% OTM)
             ma200_value=480.0,
             iv_rank=70.0,
             current_hour=11,
@@ -3047,6 +3061,7 @@ class TestVASSCreditSpreadEntry:
             short_leg_contract=credit_short_leg,
             long_leg_contract=credit_long_leg,
             strategy=SpreadStrategy.BULL_PUT_CREDIT,
+            direction=OptionDirection.PUT,  # V6.0: Direction from conviction resolution
         )
 
         # V3.9: PUT allowed in Lower NEUTRAL at reduced sizing
@@ -3056,11 +3071,11 @@ class TestVASSCreditSpreadEntry:
     # --- IVSensor Tests ---
 
     def test_iv_sensor_classification_high(self):
-        """IVSensor with VIX avg=28 should classify as HIGH."""
+        """IVSensor with VIX avg=30 should classify as HIGH."""
         sensor = IVSensor(smoothing_minutes=30)
-        # Feed 15 readings of VIX=28
+        # V6.6: Updated - Feed 15 readings of VIX=30 (threshold raised to 28)
         for _ in range(15):
-            sensor.update(28.0)
+            sensor.update(30.0)
 
         assert sensor.is_ready()
         assert sensor.classify() == "HIGH"

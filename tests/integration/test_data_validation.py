@@ -84,22 +84,23 @@ class TestVIXDataFeed:
     def test_vix_direction_classification(self):
         """
         Test VIX direction classification thresholds.
+        V6.6: Updated to match narrowed STABLE zone from ±2% to ±1%.
         """
-        # Falling fast: < -5%
-        assert config.VIX_DIRECTION_FALLING_FAST == -5.0
+        # Falling fast: < -3%
+        assert config.VIX_DIRECTION_FALLING_FAST == -3.0
 
-        # Falling: -5% to -2%
-        assert config.VIX_DIRECTION_FALLING == -2.0
+        # Falling: -3% to -1%
+        assert config.VIX_DIRECTION_FALLING == -1.0
 
-        # Stable: -2% to +2%
-        assert config.VIX_DIRECTION_STABLE_LOW == -2.0
-        assert config.VIX_DIRECTION_STABLE_HIGH == 2.0
+        # Stable: -1% to +1%
+        assert config.VIX_DIRECTION_STABLE_LOW == -1.0
+        assert config.VIX_DIRECTION_STABLE_HIGH == 1.0
 
-        # Rising: +2% to +5%
-        assert config.VIX_DIRECTION_RISING == 5.0
+        # Rising: +1% to +3%
+        assert config.VIX_DIRECTION_RISING == 3.0
 
-        # Rising fast: +5% to +10%
-        assert config.VIX_DIRECTION_RISING_FAST == 10.0
+        # Rising fast: +3% to +6%
+        assert config.VIX_DIRECTION_RISING_FAST == 6.0
 
         # Spiking: > +10%
         assert config.VIX_DIRECTION_SPIKING == 10.0

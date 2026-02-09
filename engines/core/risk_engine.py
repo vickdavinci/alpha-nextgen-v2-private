@@ -1633,6 +1633,18 @@ class RiskEngine:
         result = RiskCheckResult()
         active_safeguards: List[SafeguardType] = []
 
+        # V6.4: ISOLATION MODE - Bypass safeguards when disabled
+        # This allows targeted backtesting of specific engines without interference
+        if config.ISOLATION_TEST_MODE:
+            # Time guard always stays active (core safety feature)
+            if self.is_time_guard_active(current_time):
+                result.can_enter_positions = False
+                result.can_enter_intraday = False
+                active_safeguards.append(SafeguardType.TIME_GUARD)
+            result.active_safeguards = active_safeguards
+            # Return early - all other safeguards bypassed
+            return result
+
         # 1. Kill Switch (highest priority)
         # V2.27: Graduated kill switch with tiered response
         if self.check_kill_switch(current_equity):

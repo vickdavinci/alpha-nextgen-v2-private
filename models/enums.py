@@ -152,11 +152,13 @@ class IntradayStrategy(Enum):
     Intraday trading strategies for 0-2 DTE options.
 
     Each strategy is deployed based on Micro Regime classification.
+    V6.5: Added DEBIT_MOMENTUM for confirmed trend-following.
     """
 
-    DEBIT_FADE = "DEBIT_FADE"  # Mean reversion via debit spread
+    DEBIT_FADE = "DEBIT_FADE"  # Divergence: fade the move (opposite direction)
+    DEBIT_MOMENTUM = "DEBIT_MOMENTUM"  # V6.5: Confirmation: ride the trend (same direction)
     CREDIT_SPREAD = "CREDIT_SPREAD"  # Premium collection
-    ITM_MOMENTUM = "ITM_MOMENTUM"  # Ride the move with ITM options
+    ITM_MOMENTUM = "ITM_MOMENTUM"  # Ride the move with ITM options (high VIX)
     PROTECTIVE_PUTS = "PROTECTIVE_PUTS"  # Hedge during uncertainty
     NO_TRADE = "NO_TRADE"  # Too risky, sit out
 

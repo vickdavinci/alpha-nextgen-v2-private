@@ -43,6 +43,9 @@ if TYPE_CHECKING:
 import config
 from engines.core.risk_engine import GreeksSnapshot
 from models.enums import (
+    OptionDirection,  # V6.4: Unified from models.enums (fixes P0 duplicate enum bug)
+)
+from models.enums import (
     IntradayStrategy,
     MicroRegime,
     OptionsMode,
@@ -54,12 +57,8 @@ from models.enums import (
 )
 from models.target_weight import TargetWeight
 
-
-class OptionDirection(Enum):
-    """Option direction (call or put)."""
-
-    CALL = "CALL"
-    PUT = "PUT"
+# V6.4: OptionDirection moved to models.enums (fixes P0 duplicate enum bug)
+# Previously defined here, caused type mismatch when comparing enums
 
 
 class SpreadStrategy(Enum):
@@ -1234,10 +1233,13 @@ class MicroRegimeEngine:
         - VIX Level × VIX Direction (market fear state)
         - QQQ Move Direction (what to fade or ride)
 
-        Key Logic:
-        - FADE: QQQ up + VIX falling = Buy PUT (fade the up move)
-        - FADE: QQQ down + VIX falling = Buy CALL (fade the down move)
-        - MOMENTUM: QQQ up + VIX rising = Buy CALL (ride momentum)
+        Key Logic (V6.5 Divergence/Confirmation):
+        - DIVERGENCE (opposite moves) = FADE (mean reversion):
+          • QQQ UP + VIX RISING = weak rally, fade → Buy PUT
+          • QQQ DOWN + VIX FALLING = weak dip, fade → Buy CALL
+        - CONFIRMATION (aligned moves) = MOMENTUM (ride trend):
+          • QQQ UP + VIX FALLING = confirmed rally → Buy CALL
+          • QQQ DOWN + VIX RISING = confirmed selloff → Buy PUT
         - NO TRADE: QQQ flat OR VIX whipsawing
         - V2.5 GRIND-UP: CAUTIOUS + QQQ strong rally + macro safe = Buy CALL (ride grind)
 
@@ -1262,18 +1264,33 @@ class MicroRegimeEngine:
         # =====================================================================
         # RULE 2: Danger regimes - No trade or protective only
         # =====================================================================
-        danger_regimes = {
-            MicroRegime.RISK_OFF_LOW,
-            MicroRegime.BREAKING,
-            MicroRegime.UNSTABLE,
+        # V6.4: Danger regimes - ALWAYS trade PROTECTIVE_PUTS
+        # The regime itself is the signal, no micro_score check needed
+        # These regimes indicate crisis conditions where protection is paramount
+        crisis_regimes = {
             MicroRegime.FULL_PANIC,
             MicroRegime.CRASH,
             MicroRegime.VOLATILE,
         }
-        if micro_regime in danger_regimes:
+        if micro_regime in crisis_regimes:
+            # V6.4: Crisis detected - trade protective puts immediately
+            return (
+                IntradayStrategy.PROTECTIVE_PUTS,
+                OptionDirection.PUT,
+                f"Crisis: {micro_regime.value}",
+            )
+
+        # Other danger regimes - still caution but not crisis
+        caution_regimes = {
+            MicroRegime.RISK_OFF_LOW,
+            MicroRegime.BREAKING,
+            MicroRegime.UNSTABLE,
+        }
+        if micro_regime in caution_regimes:
+            # Only trade if score is very negative (severe deterioration)
             if micro_score < 0:
-                return IntradayStrategy.PROTECTIVE_PUTS, OptionDirection.PUT, "Crisis protection"
-            return IntradayStrategy.NO_TRADE, None, f"Danger regime: {micro_regime.value}"
+                return IntradayStrategy.PROTECTIVE_PUTS, OptionDirection.PUT, "Caution protection"
+            return IntradayStrategy.NO_TRADE, None, f"Caution regime: {micro_regime.value}"
 
         # =====================================================================
         # RULE 3: Whipsaw/choppy - Skip (direction unclear)
@@ -1294,78 +1311,131 @@ class MicroRegimeEngine:
         )
 
         # =====================================================================
-        # RULE 5: FADE SETUP (Mean Reversion)
-        # Best setup: QQQ moved + VIX falling = market calming, fade the move
-        # V2.3.15 SNIPER LOGIC: Added Gate 3a minimum move check (0.50%)
-        # V2.19: Added VIX Floor - block DEBIT_FADE when VIX < 13.5 (apathy market)
+        # RULE 5: DIVERGENCE/CONFIRMATION LOGIC (V6.5 Fix)
         # =====================================================================
-        fade_regimes = {
+        # DIVERGENCE = QQQ and VIX moving opposite → FADE (mean reversion)
+        #   - QQQ UP + VIX RISING = weak rally, smart money hedging → BUY PUT
+        #   - QQQ DOWN + VIX FALLING = weak dip, being bought → BUY CALL
+        #
+        # CONFIRMATION = QQQ and VIX aligned → MOMENTUM (ride the trend)
+        #   - QQQ UP + VIX FALLING = confirmed rally, risk-on → BUY CALL
+        #   - QQQ DOWN + VIX RISING = confirmed selloff, fear real → BUY PUT
+        # =====================================================================
+
+        # V6.5: Only apply divergence/confirmation logic in tradeable regimes
+        # Choppy/caution regimes should skip this and fall through to RULE 7
+        tradeable_regimes = {
             MicroRegime.PERFECT_MR,
             MicroRegime.GOOD_MR,
             MicroRegime.NORMAL,
             MicroRegime.RECOVERING,
             MicroRegime.IMPROVING,
+            MicroRegime.PANIC_EASING,  # Can fade after panic subsides
+            MicroRegime.CALMING,  # Can trade when fear is decreasing
         }
-        if micro_regime in fade_regimes and micro_score >= config.MICRO_SCORE_MODERATE:
-            # V2.19: VIX Floor Check - Block DEBIT_FADE in "apathy" market
-            # Low VIX (<13.5) markets don't mean-revert - trends persist longer
+
+        if micro_regime not in tradeable_regimes:
+            # Not a tradeable regime for divergence/confirmation - skip to other rules
+            pass  # Fall through to RULE 6 (ITM_MOMENTUM) and RULE 7 (caution)
+        else:
+            # V2.19: VIX Floor Check - Block trades in "apathy" market
             vix_floor = getattr(config, "INTRADAY_DEBIT_FADE_VIX_MIN", 13.5)
             if vix_current < vix_floor:
                 return (
                     IntradayStrategy.NO_TRADE,
                     None,
-                    f"DEBIT_FADE_BLOCKED: VIX {vix_current:.1f} < {vix_floor} (apathy market)",
+                    f"VIX_FLOOR: VIX {vix_current:.1f} < {vix_floor} (apathy market)",
                 )
-            # VIX falling = safe to fade
-            if vix_is_falling or vix_direction == VIXDirection.STABLE:
-                # V2.3.15 SNIPER: Gate 3a - FADE requires minimum move (0.50%)
-                # This prevents fading tiny moves that are just noise
-                if abs(qqq_move_pct) < config.INTRADAY_FADE_MIN_MOVE:
-                    return (
-                        IntradayStrategy.NO_TRADE,
-                        None,
-                        f"FADE blocked: |{qqq_move_pct:.2f}%| < {config.INTRADAY_FADE_MIN_MOVE}% min",
-                    )
 
-                # V2.3.16: FADE max cap - don't fade runaway trends/crashes
-                # When move exceeds 1.20%, trend is too strong to mean-revert
-                if abs(qqq_move_pct) > config.INTRADAY_FADE_MAX_MOVE:
-                    return (
-                        IntradayStrategy.NO_TRADE,
-                        None,
-                        f"FADE blocked: |{qqq_move_pct:.2f}%| > {config.INTRADAY_FADE_MAX_MOVE}% max (runaway trend)",
-                    )
-
-                if qqq_is_up:
-                    # QQQ up + VIX falling/stable = Buy PUT (fade the rally)
-                    return (
-                        IntradayStrategy.DEBIT_FADE,
-                        OptionDirection.PUT,
-                        f"Fade rally: QQQ +{qqq_move_pct:.2f}%, VIX {vix_direction.value}",
-                    )
-                elif qqq_is_down:
-                    # QQQ down + VIX falling/stable = Buy CALL (fade the dip)
-                    return (
-                        IntradayStrategy.DEBIT_FADE,
-                        OptionDirection.CALL,
-                        f"Fade dip: QQQ {qqq_move_pct:.2f}%, VIX {vix_direction.value}",
-                    )
-
-            # VIX rising = DON'T fade, momentum might continue
-            if vix_is_rising:
+            # Gate: Minimum move required for any trade
+            if abs(qqq_move_pct) < config.INTRADAY_FADE_MIN_MOVE:
                 return (
                     IntradayStrategy.NO_TRADE,
                     None,
-                    f"VIX rising ({vix_direction.value}) - don't fade",
+                    f"MIN_MOVE: |{qqq_move_pct:.2f}%| < {config.INTRADAY_FADE_MIN_MOVE}% (no edge)",
                 )
 
+            # =================================================================
+            # SCENARIO 1: QQQ UP
+            # =================================================================
+            if qqq_is_up:
+                if vix_is_rising:
+                    # DIVERGENCE: QQQ up but VIX rising = weak rally, fade it
+                    # V2.3.16: Don't fade if move too large (runaway trend)
+                    if abs(qqq_move_pct) > config.INTRADAY_FADE_MAX_MOVE:
+                        return (
+                            IntradayStrategy.NO_TRADE,
+                            None,
+                            f"FADE blocked: |{qqq_move_pct:.2f}%| > {config.INTRADAY_FADE_MAX_MOVE}% (runaway)",
+                        )
+                    return (
+                        IntradayStrategy.DEBIT_FADE,
+                        OptionDirection.PUT,
+                        f"DIVERGENCE: QQQ +{qqq_move_pct:.2f}% but VIX {vix_direction.value} → Fade with PUT",
+                    )
+
+                elif vix_is_falling:
+                    # CONFIRMATION: QQQ up + VIX falling = confirmed rally, ride it
+                    return (
+                        IntradayStrategy.DEBIT_MOMENTUM,
+                        OptionDirection.CALL,
+                        f"CONFIRMATION: QQQ +{qqq_move_pct:.2f}% + VIX {vix_direction.value} → Ride with CALL",
+                    )
+
+                elif vix_direction == VIXDirection.STABLE:
+                    # VIX stable = no clear signal, small fade allowed
+                    if abs(qqq_move_pct) <= config.INTRADAY_FADE_MAX_MOVE:
+                        return (
+                            IntradayStrategy.DEBIT_FADE,
+                            OptionDirection.PUT,
+                            f"STABLE_FADE: QQQ +{qqq_move_pct:.2f}%, VIX stable → Small fade with PUT",
+                        )
+
+            # =================================================================
+            # SCENARIO 2: QQQ DOWN
+            # =================================================================
+            elif qqq_is_down:
+                if vix_is_rising:
+                    # CONFIRMATION: QQQ down + VIX rising = confirmed selloff, ride it
+                    return (
+                        IntradayStrategy.DEBIT_MOMENTUM,
+                        OptionDirection.PUT,
+                        f"CONFIRMATION: QQQ {qqq_move_pct:.2f}% + VIX {vix_direction.value} → Ride with PUT",
+                    )
+
+                elif vix_is_falling:
+                    # DIVERGENCE: QQQ down but VIX falling = weak dip, fade it
+                    # V2.3.16: Don't fade if move too large (crash)
+                    if abs(qqq_move_pct) > config.INTRADAY_FADE_MAX_MOVE:
+                        return (
+                            IntradayStrategy.NO_TRADE,
+                            None,
+                            f"FADE blocked: |{qqq_move_pct:.2f}%| > {config.INTRADAY_FADE_MAX_MOVE}% (crash)",
+                        )
+                    return (
+                        IntradayStrategy.DEBIT_FADE,
+                        OptionDirection.CALL,
+                        f"DIVERGENCE: QQQ {qqq_move_pct:.2f}% but VIX {vix_direction.value} → Fade with CALL",
+                    )
+
+                elif vix_direction == VIXDirection.STABLE:
+                    # VIX stable = no clear signal, small fade allowed
+                    if abs(qqq_move_pct) <= config.INTRADAY_FADE_MAX_MOVE:
+                        return (
+                            IntradayStrategy.DEBIT_FADE,
+                            OptionDirection.CALL,
+                            f"STABLE_FADE: QQQ {qqq_move_pct:.2f}%, VIX stable → Small fade with CALL",
+                        )
+
         # =====================================================================
-        # RULE 6: MOMENTUM SETUP (Ride the move)
-        # VIX rising + QQQ moving = fear/greed, ride momentum
+        # RULE 6: HIGH VIX MOMENTUM (ITM options for elevated fear)
+        # Only in specific high-fear regimes with sufficient move
+        # V6.5: WORSENING/WORSENING_HIGH always use PUT (VIX rising = fear real)
         # =====================================================================
         momentum_regimes = {
             MicroRegime.DETERIORATING,
             MicroRegime.ELEVATED,
+            MicroRegime.WORSENING,  # V6.5: Added - MEDIUM + RISING, use ITM PUT
             MicroRegime.WORSENING_HIGH,
             MicroRegime.PANIC_EASING,
             MicroRegime.CALMING,
@@ -1373,19 +1443,25 @@ class MicroRegimeEngine:
         if micro_regime in momentum_regimes:
             if vix_current > config.INTRADAY_ITM_MIN_VIX:
                 if abs(qqq_move_pct) >= config.INTRADAY_ITM_MIN_MOVE:
-                    if qqq_is_up:
-                        # QQQ up strongly = ride momentum with CALL
-                        return (
-                            IntradayStrategy.ITM_MOMENTUM,
-                            OptionDirection.CALL,
-                            f"Momentum up: QQQ +{qqq_move_pct:.2f}%",
-                        )
-                    elif qqq_is_down:
-                        # QQQ down strongly = ride momentum with PUT
+                    # V6.5: WORSENING and WORSENING_HIGH - VIX RISING regimes
+                    # Always use PUT regardless of QQQ direction (fear is real/building)
+                    if micro_regime in (MicroRegime.WORSENING, MicroRegime.WORSENING_HIGH):
                         return (
                             IntradayStrategy.ITM_MOMENTUM,
                             OptionDirection.PUT,
-                            f"Momentum down: QQQ {qqq_move_pct:.2f}%",
+                            f"ITM_FEAR: VIX rising in {micro_regime.value}, QQQ {qqq_move_pct:+.2f}% → ITM PUT",
+                        )
+                    elif qqq_is_up:
+                        return (
+                            IntradayStrategy.ITM_MOMENTUM,
+                            OptionDirection.CALL,
+                            f"ITM_MOMENTUM: QQQ +{qqq_move_pct:.2f}% in {micro_regime.value}",
+                        )
+                    elif qqq_is_down:
+                        return (
+                            IntradayStrategy.ITM_MOMENTUM,
+                            OptionDirection.PUT,
+                            f"ITM_MOMENTUM: QQQ {qqq_move_pct:.2f}% in {micro_regime.value}",
                         )
 
         # =====================================================================
@@ -1397,7 +1473,7 @@ class MicroRegimeEngine:
             MicroRegime.TRANSITION,
             MicroRegime.CHOPPY_LOW,
             MicroRegime.CAUTIOUS,
-            MicroRegime.WORSENING,
+            # V6.5: WORSENING moved to momentum_regimes (ITM PUT)
         }
         if micro_regime in caution_regimes:
             # V2.5: Grind-Up Override - capture strong rallies even in CAUTIOUS regime
@@ -1670,17 +1746,13 @@ class MicroRegimeEngine:
                 f"VIX {vix_level:.1f} < {config.MICRO_VIX_COMPLACENT_LEVEL} (COMPLACENT)",
             )
 
-        # State-based conviction
-        if self._state.micro_regime:
-            regime_name = self._state.micro_regime.value
-            if regime_name in config.MICRO_BEARISH_STATES:
-                return True, "BEARISH", f"Micro state {regime_name} is BEARISH"
+        # V6.3: Removed state-based fallback (was lines 1674-1680)
+        # State-based conviction was re-classifying Micro's state, not providing
+        # independent validation. Conviction should only fire on extreme signals
+        # (UVXY ±threshold, VIX extremes). Let Micro's direction stand otherwise.
 
-            if regime_name in config.MICRO_BULLISH_STATES:
-                return True, "BULLISH", f"Micro state {regime_name} is BULLISH"
-
-        # No conviction
-        return False, None, "No extreme intraday signals"
+        # No extreme signals - trust Micro's computed direction
+        return False, None, "No extreme intraday signals - trust Micro direction"
 
 
 class OptionsEngine:
@@ -1789,6 +1861,10 @@ class OptionsEngine:
         self._win_rate_shutoff: bool = False  # True when win rate < shutoff threshold
         self._paper_track_history: List[bool] = []  # Paper trades during shutoff
 
+        # V6.5 FIX: Prevent gamma pin exit from firing every minute
+        # Once triggered, don't trigger again for the same position
+        self._gamma_pin_exit_triggered: bool = False
+
     def log(self, message: str, trades_only: bool = False) -> None:
         """
         Log via algorithm with LiveMode awareness.
@@ -1882,6 +1958,144 @@ class OptionsEngine:
                 None,
                 f"NO_TRADE: Misaligned ({engine}={engine_direction}, Macro={macro_direction}), no conviction",
             )
+
+    def generate_micro_intraday_signal(
+        self,
+        vix_current: float,
+        vix_open: float,
+        qqq_current: float,
+        qqq_open: float,
+        uvxy_pct: float,
+        macro_regime_score: float,
+        current_time: str,
+        vix_level_override: Optional[float] = None,
+    ) -> Tuple[bool, Optional[OptionDirection], Optional["MicroRegimeState"], str]:
+        """
+        V6.3: Unified entry point for Micro intraday signal generation.
+
+        Consolidates update, conviction check, and resolution into a single method
+        to eliminate dual-update bug. This replaces the scattered orchestration
+        logic that was in main.py.
+
+        Flow:
+        1. Single update() call on Micro Regime Engine
+        2. Check conviction (UVXY/VIX extremes only - no state fallback)
+        3. Resolve vs Macro using shared resolver
+        4. Apply direction conflict resolution for FADE strategies
+        5. Return final decision
+
+        Args:
+            vix_current: Current VIX value (UVXY proxy for intraday).
+            vix_open: VIX at market open.
+            qqq_current: Current QQQ price.
+            qqq_open: QQQ at market open.
+            uvxy_pct: UVXY intraday change as decimal (0.08 = +8%).
+            macro_regime_score: Macro regime score (0-100).
+            current_time: Timestamp string.
+            vix_level_override: CBOE VIX for consistent level classification.
+
+        Returns:
+            Tuple of (should_trade, direction, state, reason):
+            - should_trade: True if a trade should be executed
+            - direction: OptionDirection.CALL or .PUT, or None
+            - state: MicroRegimeState for logging/debugging
+            - reason: Human-readable explanation of decision
+        """
+        # Step 1: Single update (eliminates dual-update bug)
+        state = self._micro_regime_engine.update(
+            vix_current=vix_current,
+            vix_open=vix_open,
+            qqq_current=qqq_current,
+            qqq_open=qqq_open,
+            current_time=current_time,
+            macro_regime_score=macro_regime_score,
+            vix_level_override=vix_level_override,
+        )
+
+        # Step 2: Check conviction (now without state-based fallback)
+        (
+            has_conviction,
+            conviction_direction,
+            conviction_reason,
+        ) = self._micro_regime_engine.has_conviction(
+            uvxy_intraday_pct=uvxy_pct,
+            vix_level=vix_level_override if vix_level_override else vix_current,
+        )
+
+        # Step 3: Get Macro direction
+        macro_direction = self.get_macro_direction(macro_regime_score)
+
+        # Step 4: Resolve trade signal using shared resolver
+        # If conviction is not active, fall back to Micro's computed direction
+        # so the resolver doesn't treat it as "no direction".
+        if has_conviction and conviction_direction:
+            engine_direction = conviction_direction
+        elif state.recommended_direction is not None:
+            engine_direction = (
+                "BULLISH" if state.recommended_direction == OptionDirection.CALL else "BEARISH"
+            )
+        else:
+            engine_direction = None
+
+        should_trade, resolved_direction, resolve_reason = self.resolve_trade_signal(
+            engine="MICRO",
+            engine_direction=engine_direction,
+            engine_conviction=has_conviction,
+            macro_direction=macro_direction,
+        )
+
+        if not should_trade:
+            return False, None, state, resolve_reason
+
+        # Step 5: Determine final direction
+        # V6.4 FIX: Use resolved_direction whenever set (includes FOLLOW_MACRO path)
+        # Previous bug: `has_conviction and resolved_direction` ignored FOLLOW_MACRO cases
+        # where resolved_direction was set but has_conviction=False
+        if resolved_direction:
+            if resolved_direction == "BULLISH":
+                final_direction = OptionDirection.CALL
+            else:  # BEARISH
+                final_direction = OptionDirection.PUT
+        else:
+            # No resolved direction - use Micro's computed direction from state
+            final_direction = state.recommended_direction
+
+        # If still no direction, can't trade
+        if final_direction is None:
+            return False, None, state, "NO_DIRECTION: Micro has no recommended direction"
+
+        # Step 6: Direction conflict resolution for FADE strategies
+        # Prevents counter-trend trades in strongly trending markets
+        if state.recommended_strategy == IntradayStrategy.DEBIT_FADE:
+            # Strong bullish regime + PUT = conflict
+            if (
+                macro_regime_score > config.DIRECTION_CONFLICT_BULLISH_THRESHOLD
+                and final_direction == OptionDirection.PUT
+            ):
+                self.log(
+                    f"DIRECTION_CONFLICT: Skipping FADE PUT - regime {macro_regime_score:.1f} "
+                    f"> {config.DIRECTION_CONFLICT_BULLISH_THRESHOLD} (strong bullish)"
+                )
+                return False, None, state, "DIRECTION_CONFLICT: FADE PUT in strong bullish regime"
+
+            # Strong bearish regime + CALL = conflict
+            if (
+                macro_regime_score < config.DIRECTION_CONFLICT_BEARISH_THRESHOLD
+                and final_direction == OptionDirection.CALL
+            ):
+                self.log(
+                    f"DIRECTION_CONFLICT: Skipping FADE CALL - regime {macro_regime_score:.1f} "
+                    f"< {config.DIRECTION_CONFLICT_BEARISH_THRESHOLD} (strong bearish)"
+                )
+                return False, None, state, "DIRECTION_CONFLICT: FADE CALL in strong bearish regime"
+
+        # Build reason string for logging
+        if has_conviction:
+            reason = f"CONVICTION: {conviction_reason} | Macro={macro_direction} | {resolve_reason}"
+        else:
+            reason = f"MICRO_DIRECTION: {final_direction.value} | Macro={macro_direction} | {resolve_reason}"
+
+        return True, final_direction, state, reason
 
     def count_options_positions(self) -> Tuple[int, int, int]:
         """
@@ -2724,87 +2938,9 @@ class OptionsEngine:
             self.log(f"VASS: Strategy {strategy} is not a credit spread")
             return None
 
-    # =========================================================================
-    # V3.2: MACRO REGIME GATE
-    # =========================================================================
-
-    def _check_macro_regime_gate(
-        self,
-        macro_regime_score: float,
-        requested_direction: OptionDirection,
-        mode: OptionsMode,
-    ) -> Tuple[bool, float, str]:
-        """
-        V3.9: Enforce macro regime constraints on all options entries.
-
-        Investment Thesis:
-        - BULL (70+): CALL allowed @ 100%
-        - Upper NEUTRAL (60-69): CALL only @ 50% (no PUTs - would fight bullish lean)
-        - Lower NEUTRAL (50-59): PUT only @ 50%
-        - CAUTIOUS/DEFENSIVE/BEAR (<50): PUT only @ 100%
-
-        Args:
-            macro_regime_score: Daily regime score (0-100).
-            requested_direction: CALL or PUT.
-            mode: SWING or INTRADAY.
-
-        Returns:
-            Tuple of (allowed: bool, size_multiplier: float, reason: str)
-        """
-        if not getattr(config, "OPTIONS_MACRO_REGIME_GATE_ENABLED", True):
-            return True, 1.0, ""
-
-        mode_str = mode.value if mode else "UNKNOWN"
-
-        # BULL regime (70+): All directions allowed, full sizing
-        if macro_regime_score >= config.REGIME_RISK_ON:
-            return True, 1.0, ""
-
-        # NEUTRAL regime (50-69): Split into upper and lower zones
-        if macro_regime_score >= config.REGIME_NEUTRAL:
-            neutral_mult = getattr(config, "OPTIONS_NEUTRAL_ZONE_SIZE_MULT", 0.50)
-            upper_neutral_threshold = getattr(config, "OPTIONS_UPPER_NEUTRAL_THRESHOLD", 60)
-            upper_neutral_call_mult = getattr(config, "OPTIONS_UPPER_NEUTRAL_CALL_MULT", 0.25)
-
-            # V3.9: Upper NEUTRAL (60-69): CALL only at 50%, PUT blocked
-            # Rationale: Upper NEUTRAL leans bullish, PUTs would fight the trend
-            if macro_regime_score >= upper_neutral_threshold:
-                if requested_direction == OptionDirection.CALL:
-                    return (
-                        True,
-                        upper_neutral_call_mult,
-                        f"MACRO_GATE: {mode_str} CALL allowed in upper NEUTRAL @ {upper_neutral_call_mult:.0%}",
-                    )
-                else:
-                    return (
-                        False,
-                        0.0,
-                        f"MACRO_GATE: {mode_str} PUT blocked in upper NEUTRAL ({macro_regime_score:.0f}) - CALL only zone",
-                    )
-
-            # Lower NEUTRAL (50-59): PUT-only at reduced sizing (conservative)
-            if requested_direction == OptionDirection.CALL:
-                return (
-                    False,
-                    0.0,
-                    f"MACRO_GATE: {mode_str} CALL blocked in lower NEUTRAL ({macro_regime_score:.0f})",
-                )
-            else:
-                return (
-                    True,
-                    neutral_mult,
-                    f"MACRO_GATE: {mode_str} PUT allowed in lower NEUTRAL @ {neutral_mult:.0%}",
-                )
-
-        # CAUTIOUS/DEFENSIVE/BEAR (<50): PUT-only, full sizing
-        if requested_direction == OptionDirection.PUT:
-            return True, 1.0, ""
-        else:
-            return (
-                False,
-                0.0,
-                f"MACRO_GATE: {mode_str} CALL blocked - regime {macro_regime_score:.0f} < 50",
-            )
+    # V6.0: _check_macro_regime_gate() REMOVED
+    # Direction decisions now handled by conviction resolution (resolve_trade_signal)
+    # in main.py before calling entry signal functions.
 
     # =========================================================================
     # ENTRY SIGNAL
@@ -2826,11 +2962,13 @@ class OptionsEngine:
         vol_shock_active: bool = False,
         time_guard_active: bool = False,
         size_multiplier: float = 1.0,
+        direction: Optional[OptionDirection] = None,
     ) -> Optional[TargetWeight]:
         """
-        Check for options entry signal.
+        Check for options entry signal (single-leg fallback path).
 
         V2.3.20: Added size_multiplier for cold start reduced sizing.
+        V6.0: Direction now passed from conviction resolution.
 
         Args:
             adx_value: Current ADX(14) value.
@@ -2848,6 +2986,7 @@ class OptionsEngine:
             time_guard_active: True if time guard is active.
             size_multiplier: Position size multiplier (default 1.0). V2.3.20: Set to 0.5
                 during cold start to reduce risk.
+            direction: V6.0: Direction from conviction resolution (CALL or PUT).
 
         Returns:
             TargetWeight for entry, or None if no signal.
@@ -2881,15 +3020,18 @@ class OptionsEngine:
         if best_contract is None:
             return None
 
-        # V3.2: Macro Regime Gate - enforce investment thesis
-        contract_direction = best_contract.direction
-        gate_allowed, gate_mult, gate_reason = self._check_macro_regime_gate(
-            macro_regime_score=regime_score,
-            requested_direction=contract_direction,
-            mode=OptionsMode.SWING,
-        )
-        if not gate_allowed:
-            self.log(gate_reason)
+        # V6.0: Direction now passed from conviction resolution
+        # Caller (main.py) has already resolved VASS conviction vs macro direction
+        if direction is None:
+            self.log("OPT: Entry blocked - direction not provided (conviction resolution required)")
+            return None
+
+        # Validate contract direction matches resolved direction
+        if best_contract.direction != direction:
+            self.log(
+                f"OPT: Entry blocked - contract direction {best_contract.direction.value} "
+                f"doesn't match resolved direction {direction.value}"
+            )
             return None
 
         # GAP #3 FIX: Minimum premium validation ($0.50 per spec)
@@ -2943,6 +3085,11 @@ class OptionsEngine:
                 delta_min = config.INTRADAY_DEBIT_FADE_DELTA_MIN
                 delta_max = config.INTRADAY_DEBIT_FADE_DELTA_MAX
                 mode_label = "Intraday-FADE"
+            elif current_strategy == IntradayStrategy.DEBIT_MOMENTUM:
+                # V6.4: DEBIT_MOMENTUM: Trend confirmation needs ATM-ish (0.45-0.65)
+                delta_min = config.INTRADAY_DEBIT_MOMENTUM_DELTA_MIN
+                delta_max = config.INTRADAY_DEBIT_MOMENTUM_DELTA_MAX
+                mode_label = "Intraday-MOMENTUM"
             else:
                 # Default for other strategies (CREDIT_SPREAD, etc.)
                 delta_min = config.OPTIONS_INTRADAY_DELTA_MIN
@@ -3002,20 +3149,18 @@ class OptionsEngine:
             days_to_expiry=best_contract.days_to_expiry,
         )
 
-        # V3.2: Apply combined multipliers (cold start × macro gate)
-        combined_mult = size_multiplier * gate_mult
-        min_combined = getattr(config, "OPTIONS_MIN_COMBINED_SIZE_PCT", 0.10)
-        if combined_mult < min_combined:
-            self.log(
-                f"OPT: Entry blocked - combined size {combined_mult:.0%} < min {min_combined:.0%}"
-            )
-            return None
+        # V6.0: Apply cold start multiplier (macro gate removed - conviction handles direction)
+        if size_multiplier < 1.0:
+            min_size = getattr(config, "OPTIONS_MIN_COMBINED_SIZE_PCT", 0.10)
+            if size_multiplier < min_size:
+                self.log(
+                    f"OPT: Entry blocked - cold start size {size_multiplier:.0%} < min {min_size:.0%}"
+                )
+                return None
 
-        if combined_mult < 1.0:
-            num_contracts = max(1, int(num_contracts * combined_mult))
+            num_contracts = max(1, int(num_contracts * size_multiplier))
             self.log(
-                f"OPT: Sizing reduced to {num_contracts} contracts (×{combined_mult:.0%} = "
-                f"cold_start {size_multiplier:.0%} × macro_gate {gate_mult:.0%})"
+                f"OPT: Sizing reduced to {num_contracts} contracts (ColdStart={size_multiplier:.0%})"
             )
 
         if num_contracts <= 0:
@@ -3085,16 +3230,14 @@ class OptionsEngine:
         dte_min: int = None,
         dte_max: int = None,
         is_eod_scan: bool = False,
+        direction: Optional[OptionDirection] = None,
     ) -> Optional[TargetWeight]:
         """
         V2.3: Check for debit spread entry signal.
 
         Debit Spreads have defined risk (max loss = net debit).
-        Direction determined by regime score:
-        - Regime > 60: Bull Call Spread
-        - Regime < 45: Bear Put Spread
-        - Regime 45-60: NO TRADE (neutral, no edge)
-        - Regime < 30: No spread (protective puts only mode)
+        V6.0: Direction is now passed in from conviction resolution (VASS/MICRO).
+        Caller (main.py) resolves VASS conviction vs macro before calling.
 
         Args:
             regime_score: Market regime score (0-100).
@@ -3115,6 +3258,7 @@ class OptionsEngine:
                 during cold start to reduce risk.
             margin_remaining: Available margin from portfolio router. V2.21: Used for
                 pre-submission margin estimation to prevent broker rejections.
+            direction: V6.0: Direction from conviction resolution (CALL or PUT).
 
         Returns:
             TargetWeight for spread entry (with short leg in metadata), or None.
@@ -3180,34 +3324,40 @@ class OptionsEngine:
             )
             return None
 
-        # V3.9: Determine spread type and direction, then apply macro gate
-        # Macro gate governs sizing based on regime zone:
-        # - BULL (70+): CALL @ 100%
-        # - Upper NEUTRAL (60-69): CALL only @ 50% (PUT blocked)
-        # - Lower NEUTRAL (50-59): PUT only @ 50%
-        # - CAUTIOUS/BEAR (<50): PUT only @ 100%
-        # Direction threshold uses OPTIONS_UPPER_NEUTRAL_THRESHOLD (60) to allow
-        # CALLs in Upper NEUTRAL - macro gate then governs the actual sizing.
-        upper_neutral_threshold = getattr(config, "OPTIONS_UPPER_NEUTRAL_THRESHOLD", 60)
-        if regime_score >= upper_neutral_threshold:
+        # V6.0: Direction now passed in from conviction resolution
+        # Caller (main.py) has already resolved VASS conviction vs macro direction
+        if direction is None:
+            self.log("SPREAD: No entry - direction not provided (conviction resolution required)")
+            return None
+
+        # Derive spread type and VIX max from direction
+        if direction == OptionDirection.CALL:
             spread_type = "BULL_CALL"
-            direction = OptionDirection.CALL
             vix_max = config.SPREAD_VIX_MAX_BULL
         else:
             spread_type = "BEAR_PUT"
-            direction = OptionDirection.PUT
             vix_max = config.SPREAD_VIX_MAX_BEAR
 
-        # V3.2: Apply macro regime gate
-        gate_allowed, gate_mult, gate_reason = self._check_macro_regime_gate(
-            macro_regime_score=regime_score,
-            requested_direction=direction,
-            mode=OptionsMode.SWING,
-        )
-        if not gate_allowed:
-            self.log(gate_reason)
-            return None
-        # gate_mult will be applied to sizing later
+        # V6.4: Pre-entry assignment risk gate for BEAR_PUT spreads
+        # Block entry if short PUT strike is too close to ATM or ITM
+        if (
+            spread_type == "BEAR_PUT"
+            and config.BEAR_PUT_ENTRY_GATE_ENABLED
+            and short_leg_contract is not None
+            and current_price > 0
+        ):
+            short_strike = short_leg_contract.strike
+            # For PUTs: OTM when strike < price, ITM when strike > price
+            # Calculate how far OTM the short strike is (negative = ITM)
+            otm_pct = (current_price - short_strike) / current_price
+            if otm_pct < config.BEAR_PUT_ENTRY_MIN_OTM_PCT:
+                self.log(
+                    f"SPREAD: Entry blocked - BEAR_PUT assignment risk | "
+                    f"Short strike {short_strike:.0f} is {otm_pct:.1%} OTM "
+                    f"(min {config.BEAR_PUT_ENTRY_MIN_OTM_PCT:.1%}) | "
+                    f"QQQ={current_price:.2f}"
+                )
+                return None
 
         # VIX filter
         if vix_current > vix_max:
@@ -3394,20 +3544,19 @@ class OptionsEngine:
             )
             num_spreads = scaled
 
-        # V3.2: Apply combined multipliers (cold start × macro gate)
-        combined_mult = size_multiplier * gate_mult
-        min_combined = getattr(config, "OPTIONS_MIN_COMBINED_SIZE_PCT", 0.10)
-        if combined_mult < min_combined:
-            self.log(
-                f"SPREAD: Entry blocked - combined size {combined_mult:.0%} < min {min_combined:.0%}"
-            )
-            return None
+        # V6.0: Apply cold start multiplier (macro gate removed - conviction handles direction)
+        if size_multiplier < 1.0:
+            min_size = getattr(config, "OPTIONS_MIN_COMBINED_SIZE_PCT", 0.10)
+            if size_multiplier < min_size:
+                self.log(
+                    f"SPREAD: Entry blocked - cold start size {size_multiplier:.0%} < min {min_size:.0%}"
+                )
+                return None
 
-        if combined_mult < 1.0:
-            scaled = max(1, int(num_spreads * combined_mult))
+            scaled = max(1, int(num_spreads * size_multiplier))
             self.log(
                 f"SPREAD: Sizing reduced | {num_spreads} -> {scaled} spreads | "
-                f"Combined={combined_mult:.0%} (cold_start {size_multiplier:.0%} × macro_gate {gate_mult:.0%})",
+                f"ColdStart={size_multiplier:.0%}",
                 trades_only=True,
             )
             num_spreads = scaled
@@ -3465,19 +3614,15 @@ class OptionsEngine:
             )
             num_spreads = config.SPREAD_MAX_CONTRACTS
 
-        # V5.3 P1 Fix 5: Assignment-aware sizing
-        # Reduce size if max short exposure exceeds safe margin
-        underlying_price = short_leg_contract.strike  # Use strike as proxy for underlying
+        # V6.0 Fix: Assignment-aware sizing using spread width
+        # Max loss on spread = width * 100 * contracts (NOT underlying * 100 * contracts)
         if self.algorithm:
-            underlying_price = getattr(
-                self.algorithm.Securities.get("QQQ", None), "Price", short_leg_contract.strike
-            )
             portfolio_value = self.algorithm.Portfolio.TotalPortfolioValue
         else:
             portfolio_value = 50000  # Default for testing
 
         assignment_multiplier = self.get_assignment_aware_size_multiplier(
-            underlying_price=underlying_price,
+            spread_width=width,  # V6.0: Use spread width, not underlying price
             portfolio_value=portfolio_value,
             requested_contracts=num_spreads,
         )
@@ -3565,6 +3710,7 @@ class OptionsEngine:
         size_multiplier: float = 1.0,
         margin_remaining: Optional[float] = None,
         is_eod_scan: bool = False,
+        direction: Optional[OptionDirection] = None,
     ) -> Optional[TargetWeight]:
         """
         V2.23: Check for credit spread entry signal.
@@ -3598,6 +3744,7 @@ class OptionsEngine:
             vol_shock_active: True if vol shock pause is active.
             size_multiplier: Position size multiplier (default 1.0).
             margin_remaining: Available margin from portfolio router.
+            direction: V6.0: Direction from conviction resolution (CALL or PUT).
 
         Returns:
             TargetWeight for credit spread entry, or None.
@@ -3659,27 +3806,13 @@ class OptionsEngine:
             )
             return None
 
-        # V3.2: Determine direction from strategy for macro gate
-        # BULL_PUT_CREDIT → collecting PUT premium (bullish view, PUT direction)
-        # BEAR_CALL_CREDIT → collecting CALL premium (bearish view, CALL direction)
-        if strategy == SpreadStrategy.BULL_PUT_CREDIT:
-            gate_direction = OptionDirection.PUT
-        elif strategy == SpreadStrategy.BEAR_CALL_CREDIT:
-            gate_direction = OptionDirection.CALL
-        else:
-            # Unknown strategy, determine from regime
-            gate_direction = OptionDirection.CALL if regime_score >= 70 else OptionDirection.PUT
-
-        # V3.2: Apply macro regime gate
-        gate_allowed, gate_mult, gate_reason = self._check_macro_regime_gate(
-            macro_regime_score=regime_score,
-            requested_direction=gate_direction,
-            mode=OptionsMode.SWING,
-        )
-        if not gate_allowed:
-            self.log(gate_reason)
+        # V6.0: Direction now passed in from conviction resolution
+        # Caller (main.py) has already resolved VASS conviction vs macro direction
+        if direction is None:
+            self.log(
+                "CREDIT_SPREAD: No entry - direction not provided (conviction resolution required)"
+            )
             return None
-        # gate_mult will be applied to sizing later
 
         # Check safeguards
         if gap_filter_triggered:
@@ -3708,6 +3841,26 @@ class OptionsEngine:
 
         # Determine spread type from strategy
         spread_type = strategy.value  # "BULL_PUT_CREDIT" or "BEAR_CALL_CREDIT"
+
+        # V6.4: Pre-entry assignment risk gate for credit spreads with short PUTs
+        # BULL_PUT_CREDIT has a short PUT (higher strike) - check assignment risk
+        if (
+            strategy == SpreadStrategy.BULL_PUT_CREDIT
+            and config.BEAR_PUT_ENTRY_GATE_ENABLED
+            and short_leg_contract is not None
+            and current_price > 0
+        ):
+            short_strike = short_leg_contract.strike
+            # For short PUTs: OTM when strike < price, ITM when strike > price
+            otm_pct = (current_price - short_strike) / current_price
+            if otm_pct < config.BEAR_PUT_ENTRY_MIN_OTM_PCT:
+                self.log(
+                    f"CREDIT_SPREAD: Entry blocked - BULL_PUT assignment risk | "
+                    f"Short strike {short_strike:.0f} is {otm_pct:.1%} OTM "
+                    f"(min {config.BEAR_PUT_ENTRY_MIN_OTM_PCT:.1%}) | "
+                    f"QQQ={current_price:.2f}"
+                )
+                return None
 
         # Calculate width
         width = abs(short_leg_contract.strike - long_leg_contract.strike)
@@ -3771,20 +3924,19 @@ class OptionsEngine:
             )
             num_spreads = scaled
 
-        # V3.2: Apply combined multipliers (cold start × macro gate)
-        combined_mult = size_multiplier * gate_mult
-        min_combined = getattr(config, "OPTIONS_MIN_COMBINED_SIZE_PCT", 0.10)
-        if combined_mult < min_combined:
-            self.log(
-                f"CREDIT_SPREAD: Entry blocked - combined size {combined_mult:.0%} < min {min_combined:.0%}"
-            )
-            return None
+        # V6.0: Apply cold start multiplier (macro gate removed - conviction handles direction)
+        if size_multiplier < 1.0:
+            min_size = getattr(config, "OPTIONS_MIN_COMBINED_SIZE_PCT", 0.10)
+            if size_multiplier < min_size:
+                self.log(
+                    f"CREDIT_SPREAD: Entry blocked - cold start size {size_multiplier:.0%} < min {min_size:.0%}"
+                )
+                return None
 
-        if combined_mult < 1.0:
-            scaled = max(1, int(num_spreads * combined_mult))
+            scaled = max(1, int(num_spreads * size_multiplier))
             self.log(
                 f"CREDIT_SPREAD: Sizing reduced | {num_spreads} -> {scaled} spreads | "
-                f"Combined={combined_mult:.0%} (cold_start {size_multiplier:.0%} × macro_gate {gate_mult:.0%})",
+                f"ColdStart={size_multiplier:.0%}",
                 trades_only=True,
             )
             num_spreads = scaled
@@ -4039,8 +4191,13 @@ class OptionsEngine:
         """
         V5.3 P0 Fix 3: Check if margin buffer is sufficient for assignment risk.
 
-        If short leg is ITM and we don't have enough margin buffer to handle
-        potential assignment, auto-reduce or close the position.
+        V6.7 FIX: Use spread's actual max loss, not naked short exposure.
+        For vertical spreads, the long leg covers the short leg, so:
+        - Debit spreads: max loss = net debit paid
+        - Credit spreads: max loss = width - credit received
+
+        Only triggers if we don't have enough margin buffer to handle
+        the spread's actual max loss (not the naked assignment value).
 
         Returns:
             Tuple of (should_close, reason)
@@ -4049,23 +4206,27 @@ class OptionsEngine:
             return False, ""
 
         buffer_pct = getattr(config, "ASSIGNMENT_MARGIN_BUFFER_PCT", 0.20)
-
-        # Calculate potential assignment exposure
-        # If short put assigned: We buy 100 shares per contract at strike
-        # If short call assigned: We sell 100 shares per contract at strike
-        short_leg = spread.short_leg
-        strike = short_leg.strike
         num_contracts = spread.num_spreads
 
-        # Assignment exposure = strike * 100 shares * num_contracts
-        assignment_exposure = strike * 100 * num_contracts
+        # V6.7 FIX: Calculate actual max loss for the SPREAD, not naked short
+        # In a vertical spread, the long leg covers the short leg on assignment
+        # - If short call assigned: Exercise long call to deliver shares
+        # - If short put assigned: Exercise long put to sell shares
+        # Therefore, max loss is limited to the spread's defined risk
+        if spread.spread_type in ["BULL_CALL", "BEAR_PUT"]:
+            # Debit spreads: max loss = net debit paid (what we paid to open)
+            actual_max_loss = spread.net_debit * 100 * num_contracts
+        else:
+            # Credit spreads: max loss = width - credit received
+            credit_received = abs(spread.net_debit)  # Stored as negative for credits
+            actual_max_loss = (spread.width - credit_received) * 100 * num_contracts
 
-        # Required margin buffer
-        required_buffer = assignment_exposure * buffer_pct
+        # Required margin buffer based on actual max loss
+        required_buffer = actual_max_loss * buffer_pct
 
         if available_margin < required_buffer:
             reason = (
-                f"MARGIN_BUFFER_INSUFFICIENT: Assignment exposure=${assignment_exposure:,.0f} | "
+                f"MARGIN_BUFFER_INSUFFICIENT: Spread max loss=${actual_max_loss:,.0f} | "
                 f"Required buffer=${required_buffer:,.0f} ({buffer_pct:.0%}) | "
                 f"Available margin=${available_margin:,.0f}"
             )
@@ -4152,6 +4313,8 @@ class OptionsEngine:
         spread.is_closing = True
 
         # Return exit signal (same structure as normal spread exit)
+        # V6.5 FIX: Added spread_close_short and requested_quantity for proper combo close
+        num_contracts = spread.num_spreads
         return [
             TargetWeight(
                 symbol=spread.long_leg.symbol,
@@ -4159,10 +4322,12 @@ class OptionsEngine:
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
                 reason=f"ASSIGNMENT_RISK: {exit_reason}",
+                requested_quantity=num_contracts,
                 metadata={
                     "spread_type": spread.spread_type,
+                    "spread_close_short": True,  # V6.5 FIX: Required for combo close
                     "spread_short_leg_symbol": spread.short_leg.symbol,
-                    "spread_short_leg_quantity": -spread.num_spreads,
+                    "spread_short_leg_quantity": num_contracts,  # V6.5 FIX: Positive for close
                     "exit_type": "ASSIGNMENT_RISK",
                 },
             )
@@ -4170,17 +4335,19 @@ class OptionsEngine:
 
     def get_assignment_aware_size_multiplier(
         self,
-        underlying_price: float,
+        spread_width: float,
         portfolio_value: float,
         requested_contracts: int,
     ) -> float:
         """
-        V5.3 P1 Fix 5: Assignment-aware position sizing.
+        V6.0 Fix: Assignment-aware position sizing using spread width.
 
-        Reduce size if max short exposure would exceed safe margin.
+        For vertical spreads, max loss is limited to spread width, NOT underlying price.
+        Previous bug used underlying price (~$358) instead of spread width (~$6),
+        causing 20 contracts to be reduced to 1.
 
         Args:
-            underlying_price: Current underlying price
+            spread_width: Width between strikes (e.g., $6 for $358/$352 spread)
             portfolio_value: Total portfolio value
             requested_contracts: Requested number of contracts
 
@@ -4199,14 +4366,15 @@ class OptionsEngine:
         # Max exposure we allow = portfolio_value * max_exposure_pct
         max_exposure = portfolio_value * max_exposure_pct
 
-        # Potential assignment exposure = underlying_price * 100 * contracts
-        potential_exposure = underlying_price * 100 * requested_contracts
+        # V6.0 FIX: Max loss on spread = spread_width * 100 * contracts
+        # NOT underlying_price * 100 * contracts (that's for naked options)
+        potential_exposure = spread_width * 100 * requested_contracts
 
         if potential_exposure <= max_exposure:
             return 1.0
 
         # Calculate how many contracts we can safely hold
-        safe_contracts = int(max_exposure / (underlying_price * 100))
+        safe_contracts = int(max_exposure / (spread_width * 100))
         if safe_contracts <= 0:
             return 0.0
 
@@ -4214,7 +4382,7 @@ class OptionsEngine:
         self.log(
             f"ASSIGNMENT_SIZING: Reduced {requested_contracts} -> {safe_contracts} contracts | "
             f"Max exposure={max_exposure_pct:.0%} of ${portfolio_value:,.0f} = ${max_exposure:,.0f} | "
-            f"Potential=${potential_exposure:,.0f}",
+            f"Potential=${potential_exposure:,.0f} (width=${spread_width:.2f})",
             trades_only=True,
         )
 
@@ -4399,17 +4567,8 @@ class OptionsEngine:
                         f"with flat P&L ({pnl_pct:+.1%})"
                     )
 
-            # Exit 5: Credit Regime reversal
-            if exit_reason is None:
-                if spread.spread_type in ("BULL_PUT_CREDIT", SpreadStrategy.BULL_PUT_CREDIT.value):
-                    if regime_score < config.SPREAD_REGIME_EXIT_BULL:
-                        exit_reason = f"REGIME_REVERSAL (Bull Put exit: {regime_score:.0f} < {config.SPREAD_REGIME_EXIT_BULL})"
-                elif spread.spread_type in (
-                    "BEAR_CALL_CREDIT",
-                    SpreadStrategy.BEAR_CALL_CREDIT.value,
-                ):
-                    if regime_score > config.SPREAD_REGIME_EXIT_BEAR:
-                        exit_reason = f"REGIME_REVERSAL (Bear Call exit: {regime_score:.0f} > {config.SPREAD_REGIME_EXIT_BEAR})"
+            # V6.1: Removed Credit Regime reversal exit - legacy logic conflicted with conviction-based entry
+            # Credit spreads now exit via: STOP_LOSS, PROFIT_TARGET, DTE_EXIT, NEUTRALITY_EXIT
 
         else:
             # DEBIT SPREAD P&L: Original logic
@@ -4438,9 +4597,14 @@ class OptionsEngine:
             # Require NET profit (after commission) to meet the target, not just gross
             commission_cost = spread.num_spreads * config.SPREAD_COMMISSION_PER_CONTRACT
             raw_profit_target = spread.max_profit * adaptive_profit_pct
-            # Gross P&L needed = raw_target + commission (ensures net profit meets target)
-            profit_target = raw_profit_target + commission_cost
-            net_pnl = pnl - commission_cost
+            # V6.4 Fix: Convert commission to per-share basis to match pnl units
+            # pnl and raw_profit_target are per-share, commission_cost is total dollars
+            # Each spread = 100 shares, so divide by (num_spreads * 100)
+            commission_per_share = (
+                commission_cost / (spread.num_spreads * 100) if spread.num_spreads > 0 else 0
+            )
+            profit_target = raw_profit_target + commission_per_share
+            net_pnl = pnl - commission_per_share
             if pnl >= profit_target:
                 exit_reason = (
                     f"PROFIT_TARGET +{pnl_pct:.1%} (Net ${net_pnl:.2f} >= ${raw_profit_target:.2f}) | "
@@ -4477,13 +4641,8 @@ class OptionsEngine:
                         f"with flat P&L ({pnl_pct:+.1%})"
                     )
 
-            # Exit 5: Regime reversal
-            elif (
-                spread.spread_type == "BULL_CALL" and regime_score < config.SPREAD_REGIME_EXIT_BULL
-            ):
-                exit_reason = f"REGIME_REVERSAL (Bull exit: {regime_score:.0f} < {config.SPREAD_REGIME_EXIT_BULL})"
-            elif spread.spread_type == "BEAR_PUT" and regime_score > config.SPREAD_REGIME_EXIT_BEAR:
-                exit_reason = f"REGIME_REVERSAL (Bear exit: {regime_score:.0f} > {config.SPREAD_REGIME_EXIT_BEAR})"
+            # V6.1: Removed Debit Regime reversal exit - legacy logic conflicted with conviction-based entry
+            # Debit spreads now exit via: STOP_LOSS, PROFIT_TARGET, DTE_EXIT, NEUTRALITY_EXIT
 
         if exit_reason is None:
             return None
@@ -5141,6 +5300,9 @@ class OptionsEngine:
         size_multiplier: float = 1.0,
         macro_regime_score: float = 50.0,
         governor_scale: float = 1.0,
+        direction: Optional[OptionDirection] = None,
+        vix_level_override: Optional[float] = None,  # V6.2: CBOE VIX for level consistency
+        underlying_atr: float = 0.0,  # V6.5: QQQ ATR for delta-scaled stops
     ) -> Optional[TargetWeight]:
         """
         Check for intraday mode entry signal using Micro Regime Engine.
@@ -5149,6 +5311,9 @@ class OptionsEngine:
         V2.3.20: Added size_multiplier for cold start reduced sizing.
         V2.5: Added macro_regime_score for Grind-Up Override logic.
         V3.2: Added governor_scale for intraday Governor gate.
+        V6.0: Added direction parameter - use pre-resolved direction from conviction.
+        V6.2: Added vix_level_override for consistent VIX level classification.
+        V6.5: Added underlying_atr for delta-scaled ATR stop calculation.
 
         Args:
             vix_current: Current VIX value.
@@ -5164,20 +5329,33 @@ class OptionsEngine:
                 during cold start to reduce risk.
             macro_regime_score: Macro regime score (0-100) for Grind-Up Override. V2.5.
             governor_scale: Governor scaling (0-1). V3.2: At 0%, CALL blocked, PUT allowed.
+            direction: V6.0: Pre-resolved direction from conviction. If provided, skip
+                recalculation to avoid mismatch with contract selection.
+            vix_level_override: V6.2 - CBOE VIX for level classification (ensures consistency
+                with scheduled _update_micro_regime calls).
+            underlying_atr: V6.5 - QQQ ATR for delta-scaled stop calculation. If 0, falls back
+                to fixed percentage stop.
 
         Returns:
             TargetWeight for intraday entry, or None.
         """
         # Check if already have intraday position
         if self._intraday_position is not None:
+            # V6.2: Log position block (was silent - Bug #3 instrumentation)
+            self.log(
+                f"INTRADAY: Blocked - already has position | "
+                f"Symbol={self._intraday_position.symbol if hasattr(self._intraday_position, 'symbol') else self._intraday_position}"
+            )
             return None
 
         # V2.9: Check trade limits (Bug #4 fix) - Uses comprehensive counter
         # Replaces V2.3.14 intraday-only check to also enforce global limit
         if not self._can_trade_options(OptionsMode.INTRADAY):
+            # V6.2: _can_trade_options already logs, no additional log needed
             return None
 
         # Update Micro Regime Engine (V2.5: pass macro_regime_score for Grind-Up Override)
+        # V6.2: Pass vix_level_override for consistent level classification
         state = self._micro_regime_engine.update(
             vix_current=vix_current,
             vix_open=vix_open,
@@ -5185,11 +5363,42 @@ class OptionsEngine:
             qqq_open=qqq_open,
             current_time=current_time,
             macro_regime_score=macro_regime_score,
+            vix_level_override=vix_level_override,  # V6.2: Pass through
         )
 
-        # Check if strategy is NO_TRADE
+        # V6.1 FIX: When direction is passed from conviction resolution, skip NO_TRADE check
+        # Conviction has already determined there's a trade signal (e.g., UVXY divergence)
+        # Micro regime may return NO_TRADE but conviction overrides it
         if state.recommended_strategy == IntradayStrategy.NO_TRADE:
-            return None
+            if direction is not None:
+                # Conviction passed a direction - use default strategy (DEBIT_FADE is conservative)
+                self.log(
+                    f"INTRADAY: Micro NO_TRADE overridden by conviction | "
+                    f"Dir={direction.value} | Using DEBIT_FADE strategy"
+                )
+                # Override state strategy for downstream logic (preserve all other fields)
+                state = MicroRegimeState(
+                    vix_level=state.vix_level,
+                    vix_direction=state.vix_direction,
+                    micro_regime=state.micro_regime,
+                    micro_score=state.micro_score,
+                    whipsaw_state=state.whipsaw_state,
+                    recommended_strategy=IntradayStrategy.DEBIT_FADE,  # V6.1: Default strategy
+                    qqq_move_pct=state.qqq_move_pct,
+                    vix_current=state.vix_current,
+                    vix_open=state.vix_open,
+                    last_update=state.last_update,
+                    spike_cooldown_until=state.spike_cooldown_until,
+                    qqq_direction=state.qqq_direction,
+                    recommended_direction=direction,  # V6.1: Use passed direction from conviction
+                )
+            else:
+                # V6.1: Log NO_TRADE rejection (was silent before)
+                self.log(
+                    f"INTRADAY: Blocked - NO_TRADE strategy | "
+                    f"Regime={state.micro_regime.value} | Score={state.micro_score:.0f}"
+                )
+                return None
 
         # V3.2: Check if strategy is PROTECTIVE_PUTS (crisis hedge)
         if state.recommended_strategy == IntradayStrategy.PROTECTIVE_PUTS:
@@ -5226,8 +5435,11 @@ class OptionsEngine:
             is_protective_put = True
         else:
             is_protective_put = False
-            # V2.3.4: Use direction from state (determined by recommend_strategy_and_direction)
-            direction = state.recommended_direction
+            # V6.0: Use passed direction from conviction resolution (avoids mismatch with contract)
+            # Previously recalculated from state.recommended_direction which could differ
+            if direction is None:
+                # Fallback to state direction if not passed (backwards compatibility)
+                direction = state.recommended_direction
             if direction is None:
                 self.log(
                     f"INTRADAY: No direction recommended for {state.recommended_strategy.value}"
@@ -5243,24 +5455,18 @@ class OptionsEngine:
                 # PUT allowed at Governor 0% (reduces risk)
                 self.log("INTRADAY: PUT allowed at Governor 0% (defensive)", trades_only=True)
 
-        # V3.2: Macro Regime Gate for intraday (skip for protective puts)
-        if not is_protective_put:
-            gate_allowed, gate_mult, gate_reason = self._check_macro_regime_gate(
-                macro_regime_score=macro_regime_score,
-                requested_direction=direction,
-                mode=OptionsMode.INTRADAY,
-            )
-            if not gate_allowed:
-                self.log(gate_reason)
-                return None
-        else:
-            gate_mult = 1.0  # Protective puts bypass macro gate
+        # V6.0: Macro Regime Gate removed - conviction resolution handles direction
+        # Direction comes from Micro Regime Engine's recommend_strategy_and_direction()
+        # Conviction resolution (resolve_trade_signal) called in main.py before this function
 
         # Map strategy to name for logging
+        # V6.5 FIX: Added DEBIT_MOMENTUM and PROTECTIVE_PUTS (were missing, caused "UNKNOWN")
         strategy_names = {
             IntradayStrategy.DEBIT_FADE: "DEBIT_FADE",
             IntradayStrategy.ITM_MOMENTUM: "ITM_MOM",
             IntradayStrategy.CREDIT_SPREAD: "CREDIT",
+            IntradayStrategy.DEBIT_MOMENTUM: "DEBIT_MOMENTUM",
+            IntradayStrategy.PROTECTIVE_PUTS: "PROTECTIVE_PUTS",
         }
         strategy_name = strategy_names.get(state.recommended_strategy, "UNKNOWN")
 
@@ -5295,6 +5501,19 @@ class OptionsEngine:
                 )
                 return None
 
+        elif state.recommended_strategy == IntradayStrategy.DEBIT_MOMENTUM:
+            # V6.4: DEBIT_MOMENTUM time window (same as ITM_MOMENTUM)
+            momentum_start = config.INTRADAY_DEBIT_MOMENTUM_START.split(":")
+            momentum_end = config.INTRADAY_DEBIT_MOMENTUM_END.split(":")
+            start_time = int(momentum_start[0]) * 60 + int(momentum_start[1])
+            end_time = int(momentum_end[0]) * 60 + int(momentum_end[1])
+            if not (start_time <= time_minutes <= end_time):
+                self.log(
+                    f"INTRADAY_TIME_REJECT: DEBIT_MOMENTUM at {current_hour}:{current_minute:02d} "
+                    f"outside window {config.INTRADAY_DEBIT_MOMENTUM_START}-{config.INTRADAY_DEBIT_MOMENTUM_END}"
+                )
+                return None
+
         # Check if we have a valid contract
         if best_contract is None:
             self.log(f"INTRADAY: {strategy_name} signal but no contract available")
@@ -5317,14 +5536,17 @@ class OptionsEngine:
         )
 
         # V3.2: Protective puts use fixed sizing, regular intraday uses score-based
+        # V6.6: Define intraday_max_pct before branch to avoid unbound variable error
+        intraday_max_pct = getattr(config, "INTRADAY_SPREAD_MAX_PCT", 0.08)
+
         if is_protective_put:
             # Protective puts: fixed percentage, already scaled by Governor
             protective_size_pct = getattr(config, "PROTECTIVE_PUTS_SIZE_PCT", 0.02)
             effective_size_pct = protective_size_pct * governor_scale
             adjusted_cap = portfolio_value_for_sizing * effective_size_pct
             size_mult = 1.0  # Already factored in above
+            intraday_max_pct = protective_size_pct  # For logging
         else:
-            intraday_max_pct = getattr(config, "INTRADAY_SPREAD_MAX_PCT", 0.08)
             intraday_max_dollars = portfolio_value_for_sizing * intraday_max_pct
 
             # Adjust size based on micro score
@@ -5337,8 +5559,9 @@ class OptionsEngine:
             else:
                 micro_mult = 0.5  # Half size
 
-            # V3.2: Apply combined multipliers (cold_start × governor × macro_gate × micro)
-            combined_mult = size_multiplier * governor_scale * gate_mult * micro_mult
+            # V6.0: Apply combined multipliers (cold_start × governor × micro)
+            # Macro gate removed - conviction resolution handles direction
+            combined_mult = size_multiplier * governor_scale * micro_mult
             min_combined = getattr(config, "OPTIONS_MIN_COMBINED_SIZE_PCT", 0.10)
             if combined_mult < min_combined:
                 self.log(
@@ -5388,10 +5611,38 @@ class OptionsEngine:
         # Without this, register_entry fails with "no pending contract"
         self._pending_contract = best_contract
         self._pending_num_contracts = num_contracts
-        self._pending_stop_pct = config.OPTIONS_0DTE_STOP_PCT  # Use 0DTE stop
+
+        # V6.5: Delta-scaled ATR stop calculation
+        # Formula: stop_distance = ATR_MULTIPLIER × ATR × abs(delta)
+        # This gives more room in high-VIX environments while accounting for option sensitivity
+        if getattr(config, "OPTIONS_USE_ATR_STOPS", True) and underlying_atr > 0 and premium > 0:
+            atr_multiplier = getattr(config, "OPTIONS_ATR_STOP_MULTIPLIER", 1.5)
+            option_delta = abs(best_contract.delta)
+
+            # Calculate stop distance in option price terms
+            stop_distance = atr_multiplier * underlying_atr * option_delta
+            atr_stop_pct = stop_distance / premium if premium > 0 else 0.20
+
+            # Apply floor and cap
+            min_stop = getattr(config, "OPTIONS_ATR_STOP_MIN_PCT", 0.20)
+            max_stop = getattr(config, "OPTIONS_ATR_STOP_MAX_PCT", 0.50)
+            final_stop_pct = max(min_stop, min(atr_stop_pct, max_stop))
+
+            self.log(
+                f"STOP_CALC: ATR=${underlying_atr:.2f} × Δ={option_delta:.2f} × {atr_multiplier}× = "
+                f"${stop_distance:.2f} | Raw={atr_stop_pct:.0%} → Final={final_stop_pct:.0%} "
+                f"(floor={min_stop:.0%}, cap={max_stop:.0%})"
+            )
+            self._pending_stop_pct = final_stop_pct
+        else:
+            # Fallback to legacy fixed percentage stop
+            self._pending_stop_pct = config.OPTIONS_0DTE_STOP_PCT
+            if underlying_atr <= 0:
+                self.log(f"STOP_CALC: ATR not ready, using fixed {self._pending_stop_pct:.0%} stop")
 
         self.log(
-            f"INTRADAY_SIGNAL: {reason} | Δ={best_contract.delta:.2f} K={best_contract.strike} DTE={best_contract.days_to_expiry} | TradeCount={self._intraday_trades_today}/{config.INTRADAY_MAX_TRADES_PER_DAY}",
+            f"INTRADAY_SIGNAL: {reason} | Δ={best_contract.delta:.2f} K={best_contract.strike} DTE={best_contract.days_to_expiry} | "
+            f"Stop={self._pending_stop_pct:.0%} | TradeCount={self._intraday_trades_today}/{config.INTRADAY_MAX_TRADES_PER_DAY}",
             trades_only=True,
         )
 
@@ -5481,6 +5732,10 @@ class OptionsEngine:
         if not config.GAMMA_PIN_CHECK_ENABLED:
             return None
 
+        # V6.5 FIX: Prevent order spam - only trigger once per position
+        if self._gamma_pin_exit_triggered:
+            return None
+
         # Only check spread positions (credit or debit)
         spread = self._spread_position or self._credit_spread_position
         if spread is None:
@@ -5507,7 +5762,14 @@ class OptionsEngine:
             trades_only=True,
         )
 
+        # V6.5 FIX: Mark as triggered to prevent order spam every minute
+        self._gamma_pin_exit_triggered = True
+
+        # Get the number of spreads/contracts for the close order
+        num_contracts = getattr(spread, "num_spreads", getattr(spread, "num_contracts", 1))
+
         # Return spread exit signal (same format as spread exit)
+        # V6.5 FIX: Added spread_short_leg_quantity to enable combo close order
         return [
             TargetWeight(
                 symbol=spread.long_leg.symbol,
@@ -5515,12 +5777,11 @@ class OptionsEngine:
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
                 reason=f"GAMMA_PIN_BUFFER (price within {distance_pct:.2%} of strike ${short_strike})",
-                requested_quantity=getattr(
-                    spread, "num_spreads", getattr(spread, "num_contracts", 1)
-                ),
+                requested_quantity=num_contracts,
                 metadata={
                     "spread_close_short": True,
                     "spread_short_leg_symbol": spread.short_leg.symbol,
+                    "spread_short_leg_quantity": num_contracts,  # V6.5 FIX: Required for combo close
                     "exit_type": "GAMMA_PIN",
                 },
             )
@@ -5621,10 +5882,12 @@ class OptionsEngine:
         qqq_open: float,
         current_time: str,
         regime_score: float = 50.0,
+        vix_level_override: Optional[float] = None,  # V6.2: CBOE VIX for level consistency
     ) -> Optional[OptionDirection]:
         """
         V2.3.14: Get recommended intraday direction from Micro Regime Engine.
         V2.3.16: Added direction conflict resolution (centralized).
+        V6.2: Added vix_level_override for consistent VIX level classification.
 
         Updates the engine state and returns the recommended direction.
         This should be called BEFORE selecting the contract to avoid
@@ -5642,11 +5905,14 @@ class OptionsEngine:
             qqq_open: QQQ at market open.
             current_time: Timestamp string.
             regime_score: Macro regime score (0-100) for direction conflict check.
+            vix_level_override: V6.2 - CBOE VIX for level classification (ensures consistency
+                with scheduled _update_micro_regime calls).
 
         Returns:
             Recommended OptionDirection (CALL or PUT), or None if NO_TRADE or conflict.
         """
         # Update Micro Regime Engine (V2.5: pass macro_regime_score for Grind-Up Override)
+        # V6.2: Pass vix_level_override for consistent level classification
         state = self._micro_regime_engine.update(
             vix_current=vix_current,
             vix_open=vix_open,
@@ -5654,6 +5920,7 @@ class OptionsEngine:
             qqq_open=qqq_open,
             current_time=current_time,
             macro_regime_score=regime_score,
+            vix_level_override=vix_level_override,  # V6.2: Pass through
         )
 
         direction = state.recommended_direction
@@ -6021,6 +6288,9 @@ class OptionsEngine:
         if self._spread_position is not None:
             spread = self._spread_position
             self._spread_position = None
+
+            # V6.5 FIX: Reset gamma pin flag when position is closed
+            self._gamma_pin_exit_triggered = False
 
             # V2.6 Bug #16: Record exit time for margin cooldown
             # After closing a spread, broker takes T+1 to settle margin

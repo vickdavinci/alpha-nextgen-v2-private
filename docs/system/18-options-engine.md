@@ -6,11 +6,18 @@
 
 ## Overview
 
-> **Last Updated**: 4 February 2026 (V2.30)
+> **Last Updated**: 8 February 2026 (V6.5)
 
 The **Options Engine** implements a dual-mode architecture for QQQ options trading. This is a **satellite engine** (25% allocation) with two distinct operating modes based on DTE (days to expiration).
 
-> **V2.30 Revision** (Latest):
+> **V6.5 Revision** (Latest):
+> - Fixed DEBIT_FADE divergence/confirmation logic (was inverted)
+> - Added `DEBIT_MOMENTUM` strategy for confirmed trends (QQQ and VIX aligned)
+> - WORSENING + WORSENING_HIGH regimes now ALWAYS use ITM PUT (regardless of QQQ direction)
+> - Updated 21-regime matrix with correct CALL/PUT directions for all scenarios
+> - Divergence (opposite moves) = FADE, Confirmation (aligned moves) = MOMENTUM
+>
+> **V2.30 Revision**:
 > - Bearish Options Path Fix: Removed outer `regime >= 40` gate that blocked PUT spreads below regime 40
 > - Direction-aware gating: `_generate_options_signals_gated()` routes bullish vs bearish separately
 > - Bullish options (regime > 60) require StartupGate `allows_directional_longs()`
@@ -831,47 +838,87 @@ Same VIX level → OPPOSITE strategies!
 | SPIKING | > +5.0% | -3 | Crash mode |
 | WHIPSAW | 5+ reversals/hour | 0 | No direction |
 
-### 21 Micro-Regime Matrix (Complete)
+### 21 Micro-Regime Matrix (V6.5 Complete)
 
-VIX Level × VIX Direction = **21 distinct trading regimes**. Each regime maps to a specific strategy and allocation.
+VIX Level × VIX Direction = **21 distinct trading regimes**. Each regime maps to a specific strategy and direction.
 
-#### VIX LOW Regimes (VIX < 20) - Normal Market Conditions
+> **V6.5 Update**: Fixed divergence/confirmation logic. Added `DEBIT_MOMENTUM` strategy. WORSENING regimes now always use ITM PUT.
 
-| VIX Direction | Micro Regime | Strategy | Allocation | Rationale |
-|---------------|--------------|----------|:----------:|-----------|
-| FALLING_FAST | COMPLACENT_BULL | Long Calls | 5% | Strong recovery, ride momentum |
-| FALLING | CALM_BULL | Debit Spreads | 4% | Recovery starting, defined risk |
-| STABLE | GOLDILOCKS | Iron Condors | 3% | Range-bound, collect premium |
-| RISING | WAKING_UP | Protective Puts | 2% | Fear emerging, hedge longs |
-| RISING_FAST | SURPRISE_FEAR | Long Puts | 3% | Unexpected selloff, ride down |
-| SPIKING | FLASH_CRASH | Emergency Puts | 2% | Sudden crash, protective only |
-| WHIPSAW | CONFUSED_LOW | Iron Condors | 2% | No direction, small range bets |
+#### V6.5 Core Logic: Divergence vs Confirmation
 
-#### VIX MEDIUM Regimes (VIX 20-30) - Elevated Fear
+```
+DIVERGENCE (QQQ and VIX opposite) = Weak move → FADE (mean reversion)
+  • QQQ UP + VIX RISING = weak rally → BUY PUT
+  • QQQ DOWN + VIX FALLING = weak dip → BUY CALL
 
-| VIX Direction | Micro Regime | Strategy | Allocation | Rationale |
-|---------------|--------------|----------|:----------:|-----------|
-| FALLING_FAST | RELIEF_RALLY | Long Calls | 4% | Fear unwinding fast |
-| FALLING | FEAR_FADING | Call Spreads | 3% | Recovery starting |
-| STABLE | ELEVATED_RANGE | Iron Condors | 2% | High premium, tight range |
-| RISING | FEAR_BUILDING | Put Spreads | 3% | Momentum down continuing |
-| RISING_FAST | PANIC_STARTING | Long Puts | 4% | Accelerating selloff |
-| SPIKING | CRISIS_FORMING | Defensive Only | 2% | Potential crash forming |
-| WHIPSAW | CONFUSED_MED | Small Condors | 1% | Chaos, minimal exposure |
+CONFIRMATION (QQQ and VIX aligned) = Strong move → MOMENTUM (ride trend)
+  • QQQ UP + VIX FALLING = confirmed rally → BUY CALL
+  • QQQ DOWN + VIX RISING = confirmed selloff → BUY PUT
+```
 
-#### VIX HIGH Regimes (VIX > 30) - Crisis Conditions
+#### Complete 21-Regime Matrix with CALL/PUT Direction
 
-| VIX Direction | Micro Regime | Strategy | Allocation | Rationale |
-|---------------|--------------|----------|:----------:|-----------|
-| FALLING_FAST | CRISIS_ENDING | Long Calls | 3% | Crisis resolution, bounce |
-| FALLING | RECOVERY_START | Call Spreads | 2% | Early recovery signs |
-| STABLE | CRISIS_PLATEAU | **NO TRADE** | 0% | Uncertainty too high |
-| RISING | CRISIS_WORSENING | Protective Only | 1% | Crisis deepening |
-| RISING_FAST | FULL_PANIC | **NO TRADE** | 0% | Max fear, stay out |
-| SPIKING | CAPITULATION | **NO TRADE** | 0% | Capitulation phase |
-| WHIPSAW | CHAOS | **NO TRADE** | 0% | Complete chaos, no edge |
+```
+                              VIX DIRECTION
+              ┌──────────────┬──────────────┬──────────────┬──────────────┬──────────────┬──────────────┬──────────────┐
+              │ FALLING_FAST │   FALLING    │    STABLE    │    RISING    │ RISING_FAST  │   SPIKING    │   WHIPSAW    │
+              │   (< -5%)    │  (-5% to -2%)│    (±2%)     │ (+2% to +5%) │ (+5% to +10%)│   (> +10%)   │  (choppy)    │
+┌─────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤
+│             │  PERFECT_MR  │   GOOD_MR    │    NORMAL    │  CAUTION_LOW │  TRANSITION  │ RISK_OFF_LOW │  CHOPPY_LOW  │
+│     LOW     ├──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤
+│   (VIX<20)  │ QQQ↑: CALL   │ QQQ↑: CALL   │ QQQ↑: PUT    │              │              │  PROTECTIVE  │              │
+│             │ QQQ↓: CALL   │ QQQ↓: CALL   │ QQQ↓: CALL   │   NO_TRADE   │   NO_TRADE   │  PUTS ONLY   │   NO_TRADE   │
+│             │  ✅ TRADEABLE │  ✅ TRADEABLE │  ✅ TRADEABLE │  ⚠️ CAUTION   │  ⚠️ CAUTION   │  🔴 DANGER   │  ⚠️ CAUTION   │
+├─────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤
+│             │  RECOVERING  │   IMPROVING  │   CAUTIOUS   │   WORSENING  │ DETERIORATING│   BREAKING   │   UNSTABLE   │
+│   MEDIUM    ├──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤
+│  (VIX20-25) │ QQQ↑: CALL   │ QQQ↑: CALL   │              │ QQQ↑: PUT    │ QQQ↑: CALL   │  PROTECTIVE  │  PROTECTIVE  │
+│             │ QQQ↓: CALL   │ QQQ↓: CALL   │   NO_TRADE   │ QQQ↓: PUT    │ QQQ↓: PUT    │  PUTS ONLY   │  PUTS ONLY   │
+│             │  ✅ TRADEABLE │  ✅ TRADEABLE │  ⚠️ CAUTION   │  ✅ ITM PUT   │  ✅ ITM ONLY  │  🔴 DANGER   │  🔴 DANGER   │
+├─────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤
+│             │ PANIC_EASING │   CALMING    │   ELEVATED   │WORSENING_HIGH│  FULL_PANIC  │    CRASH     │   VOLATILE   │
+│    HIGH     ├──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤
+│   (VIX>25)  │ QQQ↑: CALL   │ QQQ↑: CALL   │ QQQ↑: CALL   │ QQQ↑: PUT    │  PROTECTIVE  │  PROTECTIVE  │  PROTECTIVE  │
+│             │ QQQ↓: CALL   │ QQQ↓: CALL   │ QQQ↓: PUT    │ QQQ↓: PUT    │  PUTS ONLY   │  PUTS ONLY   │  PUTS ONLY   │
+│             │  ✅ TRADEABLE │  ✅ TRADEABLE │  ✅ ITM ONLY  │  ✅ ITM PUT   │  🔴 DANGER   │  🔴 DANGER   │  🔴 DANGER   │
+└─────────────┴──────────────┴──────────────┴──────────────┴──────────────┴──────────────┴──────────────┴──────────────┘
+```
 
-**Key Insight**: 4 of 21 regimes result in **NO TRADE** (all HIGH VIX with non-recovery direction). This is by design—some market conditions have no edge.
+#### Quick Reference: All 21 Regimes
+
+| Regime | VIX Level + Dir | QQQ UP | QQQ DOWN | Strategy | Notes |
+|--------|-----------------|:------:|:--------:|----------|-------|
+| **PERFECT_MR** | LOW + FALL_FAST | CALL | CALL | DEBIT_FADE/MOMENTUM | Best MR conditions |
+| **GOOD_MR** | LOW + FALLING | CALL | CALL | DEBIT_FADE/MOMENTUM | Good MR conditions |
+| **NORMAL** | LOW + STABLE | PUT | CALL | DEBIT_FADE (small) | Stable fade |
+| **CAUTION_LOW** | LOW + RISING | — | — | NO_TRADE | Skip |
+| **TRANSITION** | LOW + RISE_FAST | — | — | NO_TRADE | Skip |
+| **RISK_OFF_LOW** | LOW + SPIKING | PUT | PUT | PROTECTIVE_PUTS | Danger |
+| **CHOPPY_LOW** | LOW + WHIPSAW | — | — | NO_TRADE | Skip |
+| **RECOVERING** | MED + FALL_FAST | CALL | CALL | DEBIT_FADE/MOMENTUM | Recovery starting |
+| **IMPROVING** | MED + FALLING | CALL | CALL | DEBIT_FADE/MOMENTUM | Conditions improving |
+| **CAUTIOUS** | MED + STABLE | — | — | NO_TRADE | Grind-Up exception |
+| **WORSENING** | MED + RISING | **PUT** | **PUT** | ITM_MOMENTUM | V6.5: Always PUT |
+| **DETERIORATING** | MED + RISE_FAST | CALL | PUT | ITM_MOMENTUM | ITM follows QQQ |
+| **BREAKING** | MED + SPIKING | PUT | PUT | PROTECTIVE_PUTS | Danger |
+| **UNSTABLE** | MED + WHIPSAW | PUT | PUT | PROTECTIVE_PUTS | Danger |
+| **PANIC_EASING** | HIGH + FALL_FAST | CALL | CALL | DEBIT_FADE/MOMENTUM | Panic subsiding |
+| **CALMING** | HIGH + FALLING | CALL | CALL | DEBIT_FADE/MOMENTUM | Fear decreasing |
+| **ELEVATED** | HIGH + STABLE | CALL | PUT | ITM_MOMENTUM | ITM follows QQQ |
+| **WORSENING_HIGH** | HIGH + RISING | **PUT** | **PUT** | ITM_MOMENTUM | V6.5: Always PUT |
+| **FULL_PANIC** | HIGH + RISE_FAST | PUT | PUT | PROTECTIVE_PUTS | Danger |
+| **CRASH** | HIGH + SPIKING | PUT | PUT | PROTECTIVE_PUTS | Danger |
+| **VOLATILE** | HIGH + WHIPSAW | PUT | PUT | PROTECTIVE_PUTS | Danger |
+
+#### V6.5 Key Insights
+
+| VIX Direction | Bias | Logic |
+|---------------|------|-------|
+| 🟢 **VIX FALLING** | CALL bias | Fear decreasing = bullish. Confirmation (QQQ↑) or Divergence (QQQ↓) both favor CALL |
+| 🔴 **VIX RISING** | PUT bias | Fear increasing = bearish. WORSENING regimes ALWAYS use PUT regardless of QQQ |
+| ⚪ **VIX STABLE** | Small fade | No conviction. QQQ UP → small PUT fade, QQQ DOWN → small CALL fade |
+
+**Key Insight**: 6 of 21 regimes result in **DANGER/NO TRADE** (SPIKING, WHIPSAW in MEDIUM/HIGH VIX). This is by design—some market conditions have no edge.
 
 ### Micro Score Calculation
 
@@ -942,24 +989,45 @@ VIX1D was evaluated and rejected because:
 
 ---
 
-### Intraday Strategy Deployment
+### Intraday Strategy Deployment (V6.5)
 
-Based on micro regime, deploy one of four intraday strategies:
+Based on micro regime, deploy one of five intraday strategies:
 
-#### Strategy 1: Debit Fade (Mean Reversion)
+#### Strategy 1: Debit Fade (Divergence - Mean Reversion)
 
-**When**: VIX FALLING + QQQ oversold
-**Setup**: Buy OTM call/put debit spread
-**Target**: Fade the extreme move, exit at VWAP
+**When**: QQQ and VIX moving in OPPOSITE directions (divergence = weak move)
+**Setup**: Fade the weak move with opposite direction option
+**Target**: Mean reversion to VWAP
 **Max Allocation**: 3%
 
 ```
-Trigger: micro_score >= 50 AND qqqMove >= 1.0% AND vix >= 13.5 AND vix < 25
-Strategy: ATM debit spread, 0-1 DTE
+V6.5 DIVERGENCE LOGIC:
+  • QQQ UP + VIX RISING = weak rally → BUY PUT (fade)
+  • QQQ DOWN + VIX FALLING = weak dip → BUY CALL (fade)
+
+Trigger: tradeable_regime AND qqqMove >= 0.15% AND vix >= 13.5 AND vix < 25
+Strategy: OTM debit spread, 0-1 DTE
 Exit: +30% profit OR return to VWAP OR 15:30 time stop
 ```
 
 > **V2.19 Change**: Added `INTRADAY_DEBIT_FADE_VIX_MIN = 13.5` floor. In ultra-low VIX "apathy" markets (VIX < 13.5), QQQ moves are too small for a fade to generate meaningful profit.
+
+#### Strategy 1b: Debit Momentum (Confirmation - Trend Following) [V6.5 NEW]
+
+**When**: QQQ and VIX moving in ALIGNED directions (confirmation = strong move)
+**Setup**: Ride the confirmed trend with same direction option
+**Target**: Momentum continuation
+**Max Allocation**: 3%
+
+```
+V6.5 CONFIRMATION LOGIC:
+  • QQQ UP + VIX FALLING = confirmed rally → BUY CALL (ride)
+  • QQQ DOWN + VIX RISING = confirmed selloff → BUY PUT (ride)
+
+Trigger: tradeable_regime AND qqqMove >= 0.15% AND vix >= 13.5 AND vix < 25
+Strategy: OTM debit spread, 0-1 DTE
+Exit: +30% profit OR trailing stop OR 15:30 time stop
+```
 
 #### Strategy 2: Credit Spreads (Range-Bound)
 
@@ -974,18 +1042,26 @@ Strategy: 10-delta wings, 0-1 DTE
 Exit: 50% of max profit OR breach of short strike
 ```
 
-#### Strategy 3: ITM Momentum
+#### Strategy 3: ITM Momentum (V6.5 Updated)
 
-**When**: VIX RISING + clear directional move
-**Setup**: Buy ITM option (0.70 delta)
+**When**: VIX elevated + clear directional move (or VIX RISING regimes)
+**Setup**: Buy ITM option (0.70 delta) - reduced vega exposure
 **Target**: Ride momentum continuation
 **Max Allocation**: 3%
 
 ```
-Trigger: vixDirection in (RISING, RISING_FAST) AND qqqMove >= 0.8% AND vix >= 25
-Strategy: ITM put (delta 0.70), 0-1 DTE
+V6.5 ITM MOMENTUM REGIMES:
+  • WORSENING (MED + RISING): Always ITM PUT regardless of QQQ direction
+  • WORSENING_HIGH (HIGH + RISING): Always ITM PUT regardless of QQQ direction
+  • DETERIORATING (MED + RISE_FAST): ITM follows QQQ direction
+  • ELEVATED (HIGH + STABLE): ITM follows QQQ direction
+
+Trigger: momentum_regime AND vix >= INTRADAY_ITM_MIN_VIX AND qqqMove >= 0.8%
+Strategy: ITM option (delta 0.70), 0-1 DTE
 Exit: +25% profit OR trailing stop after +15%
 ```
+
+> **V6.5 Change**: WORSENING and WORSENING_HIGH regimes now ALWAYS use ITM PUT regardless of QQQ direction. Rationale: VIX rising = fear is real/building, so bearish bias is correct even if QQQ is temporarily up (bear market rally).
 
 #### Strategy 4: Protective Puts
 

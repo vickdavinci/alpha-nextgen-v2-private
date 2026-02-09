@@ -33,8 +33,8 @@ Read the backtest log file, analyze performance, verify all systems functioned c
 ---
 
 ## CONTEXT
-- Backtest name: V5.3-ConvictionLogic-2022H1
-- Log file location: `docs/audits/logs/stage5/`
+- Backtest name: V6.3_*.md
+- Log file location: `docs/audits/logs/stage6/`
 - Backtest period: {START_DATE} to {END_DATE}
 - Starting capital: $75,000 (V5.3 increased from $50K)
 - Market context: {BULL/BEAR/CHOPPY}

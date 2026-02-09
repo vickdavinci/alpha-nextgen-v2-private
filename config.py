@@ -253,14 +253,19 @@ VIX_COMBINED_HIGH_VIX_THRESHOLD = 25.0  # VIX level threshold for clamp
 # V5.3 Spike Cap: Macro score capped at 45 when VIX 5d change >= +28%
 V53_SPIKE_CAP_ENABLED = True
 V53_SPIKE_CAP_THRESHOLD = 0.28  # VIX up >28% in 5 days triggers cap
-V53_SPIKE_CAP_MAX_SCORE = 45  # Cap score at CAUTIOUS during spike
+# V6.6: Lowered from 45 to 38 to force DEFENSIVE during VIX spikes
+# 45 only reached CAUTIOUS (40-49), missing the defensive posture needed
+V53_SPIKE_CAP_MAX_SCORE = 38  # Cap score at DEFENSIVE during spike
 V53_SPIKE_CAP_DECAY_DAYS = 3  # Cap persists for 3 days
 
 # Phase 2: Breadth Decay Penalty
 # Detects distribution (smart money selling) before price confirms
 V53_BREADTH_DECAY_ENABLED = True
-V53_BREADTH_5D_DECAY_THRESHOLD = -0.10  # RSP/SPY 5d ratio decay <= -10%
-V53_BREADTH_10D_DECAY_THRESHOLD = -0.15  # RSP/SPY 10d ratio decay <= -15%
+# V6.6: Relaxed thresholds from -10%/-15% to -2%/-4%
+# Old thresholds never triggered - RSP/SPY relative moves are typically 1-3%
+# A -2% divergence over 5 days indicates meaningful distribution
+V53_BREADTH_5D_DECAY_THRESHOLD = -0.02  # RSP/SPY 5d ratio decay <= -2%
+V53_BREADTH_10D_DECAY_THRESHOLD = -0.04  # RSP/SPY 10d ratio decay <= -4%
 V53_BREADTH_5D_PENALTY = 5  # -5 points for 5d decay
 V53_BREADTH_10D_PENALTY = 8  # -8 points for 10d decay (stacks with 5d)
 
@@ -368,16 +373,19 @@ WARM_MIN_SIZE = 2_000
 OPTIONS_COLD_START_MULTIPLIER = 0.50
 
 # =============================================================================
-# V2.30: STARTUP GATE — All-Weather (one-time arming, never resets on kill switch)
+# V6.0: STARTUP GATE — Simplified (one-time arming, never resets on kill switch)
 # =============================================================================
-# Separate from Cold Start. Ramps capital over 15 days while allowing defensive
-# engines (hedges, bearish options) from day 1. Regime controls WHAT trades,
-# gate controls HOW MUCH. Once FULLY_ARMED, stays armed permanently.
+# Simplified 6-day arming sequence. Options are independent with their own
+# conviction system (VASS/MICRO). Gate only controls TREND/MR sizing.
+#
+# Phases:
+#   INDICATOR_WARMUP (Days 1-3): Nothing allowed, indicators warming up
+#   REDUCED (Days 4-6): TREND/MR at 50%, OPTIONS at 100%
+#   FULLY_ARMED (Day 7+): Everything at 100%
 STARTUP_GATE_ENABLED = True
-STARTUP_GATE_WARMUP_DAYS = 5  # Phase 0: Indicators warming up (hedges only)
-STARTUP_GATE_OBSERVATION_DAYS = 5  # Phase 1: Add bearish options (50% size)
-STARTUP_GATE_REDUCED_DAYS = 5  # Phase 2: All engines at 50% sizing
-STARTUP_GATE_REDUCED_SIZE_MULT = 0.50  # Position size multiplier during OBSERVATION + REDUCED
+STARTUP_GATE_WARMUP_DAYS = 3  # Phase 0: Indicators warming up (nothing allowed)
+STARTUP_GATE_REDUCED_DAYS = 3  # Phase 1: TREND/MR at 50%, OPTIONS at 100%
+STARTUP_GATE_REDUCED_SIZE_MULT = 0.50  # TREND/MR size multiplier during REDUCED
 
 # =============================================================================
 # TREND ENGINE
@@ -811,8 +819,9 @@ OPTIONS_DOLLAR_CAP_TIER_2 = 10_000  # Max $10K per spread when equity $60K-$100K
 VASS_ENABLED = True  # Master switch for VASS
 
 # IV Environment Classification Thresholds
-VASS_IV_LOW_THRESHOLD = 15  # VIX < 15 = Low IV (use debit spreads, monthly DTE)
-VASS_IV_HIGH_THRESHOLD = 25  # VIX > 25 = High IV (V5.3: use debit spreads for gamma capture)
+# V6.6: Adjusted based on 2022H1 VIX distribution (16.6-32.0 range observed)
+VASS_IV_LOW_THRESHOLD = 16  # V6.6: Was 15, raised to match data distribution
+VASS_IV_HIGH_THRESHOLD = 28  # V6.6: Was 25, raised to reduce HIGH IV frequency
 VASS_IV_SMOOTHING_MINUTES = 30  # SMA window to prevent strategy flickering
 
 # DTE Ranges by IV Environment (Swing Mode)
@@ -820,8 +829,9 @@ VASS_LOW_IV_DTE_MIN = 30  # Low IV: Monthly expiration
 VASS_LOW_IV_DTE_MAX = 45
 VASS_MEDIUM_IV_DTE_MIN = 7  # Medium IV: Weekly expiration
 VASS_MEDIUM_IV_DTE_MAX = 21
-VASS_HIGH_IV_DTE_MIN = 7  # High IV: Weekly expiration (V5.3: debit spreads for gamma)
-VASS_HIGH_IV_DTE_MAX = 14
+# V6.6: Widened HIGH IV DTE range - 36 spread failures in 2022H1 due to narrow 7-14 window
+VASS_HIGH_IV_DTE_MIN = 7  # Keep at 7 - 5 DTE has high gamma risk near expiry
+VASS_HIGH_IV_DTE_MAX = 21  # V6.6: Was 14, wider window prevents "no contracts met criteria"
 
 # V5.3: VASS Conviction Engine (VIX Direction Tracking)
 # VASS tracks weekly (5d) and monthly (20d) VIX to determine conviction
@@ -914,6 +924,27 @@ OPTIONS_STOP_TIERS = {
 # NOTE: StopMarketOrder fills at next available price after trigger, not the stop price
 OPTIONS_0DTE_STOP_PCT = 0.15  # -15% stop for 0DTE
 
+# =============================================================================
+# V6.5: DELTA-SCALED ATR STOP CALIBRATION
+# =============================================================================
+# Dynamic stop based on underlying ATR × option delta
+# Formula: stop_distance = ATR_MULTIPLIER × underlying_ATR × abs(option_delta)
+# This gives more room in high-VIX environments while accounting for option sensitivity
+#
+# Example with QQQ ATR=$4, delta=0.45, multiplier=1.5:
+#   stop_distance = 1.5 × $4 × 0.45 = $2.70 (in option price terms)
+#   If entry=$3.50, stop=$0.80 (77% stop)
+
+# ATR multiplier for stop calculation (Chandelier-style)
+OPTIONS_ATR_STOP_MULTIPLIER = 1.5  # 1.5× ATR × delta
+
+# Floor and cap to prevent extreme stops
+OPTIONS_ATR_STOP_MIN_PCT = 0.20  # Never tighter than 20% (low delta protection)
+OPTIONS_ATR_STOP_MAX_PCT = 0.50  # Never wider than 50% (risk cap)
+
+# Whether to use ATR-based stops (set False to use legacy tier-based stops)
+OPTIONS_USE_ATR_STOPS = True
+
 # Profit Target
 OPTIONS_PROFIT_TARGET_PCT = 0.50  # +50% profit target
 
@@ -977,6 +1008,14 @@ ASSIGNMENT_SIZING_MAX_EXPOSURE_PCT = 0.50  # Max 50% of portfolio for assignment
 # P1 Fix 6: Assignment-Aware Exit Priority
 # Close high-risk positions first when exiting
 ASSIGNMENT_EXIT_PRIORITY_ENABLED = True
+
+# V6.4: P0 Fix 7: Pre-Entry Assignment Risk Gate for BEAR_PUT Spreads
+# Block BEAR_PUT entries when short PUT strike is too close to ATM or ITM
+# This prevents opening positions with high assignment risk from the start
+# For PUTs: ITM = strike > price, OTM = strike < price
+# Example: If MIN_OTM_PCT = 0.03 and QQQ = $350, min short strike = $339.50
+BEAR_PUT_ENTRY_GATE_ENABLED = True
+BEAR_PUT_ENTRY_MIN_OTM_PCT = 0.03  # Short PUT must be >= 3% OTM at entry
 
 # Contract Selection
 # Options chain filter (must cover BOTH Intraday 0-2 DTE AND Swing 5-45 DTE)
@@ -1062,9 +1101,10 @@ SPREAD_VIX_MAX_BEAR = 35  # Max VIX for Bear Put Spread entry (allow higher)
 # Problem: Delta values jump (0.45 → 0.25) leaving gaps where no "perfect" delta exists
 # Solution: Select short leg by STRIKE WIDTH, not delta. Delta is soft preference only.
 SPREAD_SHORT_LEG_BY_WIDTH = True  # V2.4.3: Use strike width for short leg (not delta)
-SPREAD_WIDTH_MIN = 2.0  # V2.4.3: Minimum $2 spread (ensures meaningful max profit)
+# V6.6: Spread width settings for QQQ
+SPREAD_WIDTH_MIN = 2.0  # Keep at 2.0 - $1 spreads have poor risk/reward
 SPREAD_WIDTH_MAX = 10.0  # V2.4.3: Maximum $10 spread (caps risk)
-SPREAD_WIDTH_TARGET = 5.0  # V2.4.3: Target $5 width (primary selection criterion)
+SPREAD_WIDTH_TARGET = 4.0  # V6.6: Was 5.0, slightly lower for more contract matches
 
 # DTE for debit spreads (per V2.3 spec)
 # V2.3.22: Raised from 10 to 14 - spreads need same gap cushion as single-leg
@@ -1099,8 +1139,8 @@ WIN_RATE_SHUTOFF_THRESHOLD = 0.20  # Below 20%: STOP all new spread entries
 WIN_RATE_RESTART_THRESHOLD = 0.35  # Resume when paper win rate recovers to 35%
 WIN_RATE_SIZING_REDUCED = 0.75  # Multiplier at REDUCED level
 WIN_RATE_SIZING_MINIMUM = 0.50  # Multiplier at MINIMUM level
-SPREAD_REGIME_EXIT_BULL = 60  # V3.3: Tightened from 45 to 60 (10-point gap, not 25)
-SPREAD_REGIME_EXIT_BEAR = 60  # Exit Bear Put if regime rises above 60
+# V6.1: Removed SPREAD_REGIME_EXIT_BULL/BEAR - legacy logic conflicted with conviction-based entry
+# Spreads now exit via: STOP_LOSS, PROFIT_TARGET, DTE_EXIT, NEUTRALITY_EXIT
 
 # V2.22: Neutrality Exit (Hysteresis Shield)
 # Close flat spreads when regime enters dead zone — no directional edge
@@ -1136,10 +1176,12 @@ SPREAD_LOCK_CLEAR_ON_FAILURE = True  # Clear is_closing lock if all close attemp
 # Delta targets for spread legs - V2.3.21 "Smart Swing" Strategy
 # ITM Long Leg / OTM Short Leg: Prioritize execution with wider delta range
 # V2.3.24: Widened DELTA_MIN from 0.55 → 0.50 to include ATM contracts
-SPREAD_LONG_LEG_DELTA_MIN = 0.50  # V2.3.24: Include ATM (was 0.55)
-SPREAD_LONG_LEG_DELTA_MAX = 0.85  # V2.3.21: ITM range (was 0.60 ATM)
-SPREAD_SHORT_LEG_DELTA_MIN = 0.10  # V2.3.7: Accept more OTM (was 0.15)
-SPREAD_SHORT_LEG_DELTA_MAX = 0.50  # V2.3.7: Accept closer to ATM (was 0.45)
+# V6.6: Slightly relaxed delta requirements for better contract matching
+# 2022H1 analysis showed 36 spread failures due to strict delta requirements
+SPREAD_LONG_LEG_DELTA_MIN = 0.45  # V6.6: Was 0.50, include near-ATM options
+SPREAD_LONG_LEG_DELTA_MAX = 0.85  # Keep at 0.85 - 0.90 is deep ITM, expensive
+SPREAD_SHORT_LEG_DELTA_MIN = 0.10  # Keep at 0.10 - lower collects minimal premium
+SPREAD_SHORT_LEG_DELTA_MAX = 0.52  # V6.6: Was 0.50, slight relaxation but avoid assignment risk
 
 # -----------------------------------------------------------------------------
 # V2.4.1 SWING SAFETY RULES
@@ -1277,12 +1319,15 @@ SPREAD_SIZING_SLIPPAGE_BUFFER = 0.10  # 10% buffer on top of ASK/BID pricing
 # VIX direction is THE key differentiator for intraday trading
 # Same VIX level + different direction = OPPOSITE strategies
 
-VIX_DIRECTION_FALLING_FAST = -5.0  # VIX change < -5%: Strong recovery
-VIX_DIRECTION_FALLING = -2.0  # VIX change -5% to -2%: Recovery
-VIX_DIRECTION_STABLE_LOW = -2.0  # VIX stable range lower bound
-VIX_DIRECTION_STABLE_HIGH = 2.0  # VIX stable range upper bound
-VIX_DIRECTION_RISING = 5.0  # VIX change +2% to +5%: Fear building
-VIX_DIRECTION_RISING_FAST = 10.0  # VIX change +5% to +10%: Panic
+# V6.6: Narrowed STABLE zone from ±2% to ±1% based on 2022H1 backtest analysis
+# Data showed 76% of UVXY moves were in ±2% range, blocking most signals
+# New thresholds capture more directional signals while filtering noise
+VIX_DIRECTION_FALLING_FAST = -3.0  # V6.6: Was -5.0, now -3% for earlier detection
+VIX_DIRECTION_FALLING = -1.0  # V6.6: Was -2.0, aligned with new STABLE boundary
+VIX_DIRECTION_STABLE_LOW = -1.0  # V6.6: Was -2.0, narrowed to capture more signals
+VIX_DIRECTION_STABLE_HIGH = 1.0  # V6.6: Was +2.0, narrowed to capture more signals
+VIX_DIRECTION_RISING = 3.0  # V6.6: Was +5.0, captures +2.7% cluster (46 observations)
+VIX_DIRECTION_RISING_FAST = 6.0  # V6.6: Was +10.0, earlier panic detection
 VIX_DIRECTION_SPIKING = 10.0  # VIX change > +10%: Crash mode
 
 # Whipsaw detection: Range > threshold × net change
@@ -1291,8 +1336,12 @@ VIX_WHIPSAW_MIN_RANGE = 5.0  # Minimum range % to consider whipsaw
 
 # V5.3: Micro Conviction Engine Thresholds
 # Micro tracks intraday UVXY and VIX to override Macro when signals are extreme
-MICRO_UVXY_BEARISH_THRESHOLD = 0.08  # UVXY > +8% intraday → BEARISH conviction
-MICRO_UVXY_BULLISH_THRESHOLD = -0.05  # UVXY < -5% intraday → BULLISH conviction
+# V6.4: Lowered BEARISH threshold from 8% to 5% to capture more crash signals
+# Analysis showed Jan 21 (+6.9%), Jan 24 (+7.4%), Jan 25 (+5.3%) missed by narrow margin
+# V6.6: Lowered from ±5% to ±3% based on 2022H1 analysis
+# Only 8% of moves exceeded ±5%, missing many valid conviction signals
+MICRO_UVXY_BEARISH_THRESHOLD = 0.03  # V6.6: Was 0.05, now +3% for more conviction signals
+MICRO_UVXY_BULLISH_THRESHOLD = -0.03  # V6.6: Was -0.05, now -3% for more conviction signals
 MICRO_VIX_CRISIS_LEVEL = 35  # VIX > 35 → CRISIS (BEARISH conviction)
 MICRO_VIX_COMPLACENT_LEVEL = 12  # VIX < 12 → COMPLACENT (BULLISH conviction)
 
@@ -1410,9 +1459,11 @@ INTRADAY_ITM_MIN_SCORE = 50  # Micro score >= 50
 INTRADAY_ITM_START = "10:00"  # Entry window start
 INTRADAY_ITM_END = "13:30"  # Entry window end (earlier than FADE - momentum fades after lunch)
 INTRADAY_ITM_DELTA = 0.70  # ITM delta target
-INTRADAY_ITM_START = "10:00"  # Entry window start
-INTRADAY_ITM_END = "13:30"  # Entry window end (need time)
 INTRADAY_ITM_TARGET = 0.40  # +40% profit target
+
+# V6.4: DEBIT_MOMENTUM time window (same as ITM_MOMENTUM - both are momentum strategies)
+INTRADAY_DEBIT_MOMENTUM_START = "10:00"  # Entry window start
+INTRADAY_DEBIT_MOMENTUM_END = "13:30"  # Entry window end
 INTRADAY_ITM_STOP = 0.50  # -50% stop
 INTRADAY_ITM_TRAIL_TRIGGER = 0.20  # Trail after +20%
 INTRADAY_ITM_TRAIL_PCT = 0.50  # Trail at 50% of gains
@@ -1421,6 +1472,11 @@ INTRADAY_ITM_TRAIL_PCT = 0.50  # Trail at 50% of gains
 # DEBIT_FADE: Mean reversion needs OTM options (delta 0.20-0.50)
 INTRADAY_DEBIT_FADE_DELTA_MIN = 0.20  # OTM for mean reversion
 INTRADAY_DEBIT_FADE_DELTA_MAX = 0.50  # Near ATM max
+
+# V6.4: DEBIT_MOMENTUM: Trend confirmation needs ATM-ish options (delta 0.45-0.65)
+# Between DEBIT_FADE (OTM) and ITM_MOMENTUM (ITM) - captures directional moves
+INTRADAY_DEBIT_MOMENTUM_DELTA_MIN = 0.45  # Near ATM for momentum
+INTRADAY_DEBIT_MOMENTUM_DELTA_MAX = 0.65  # Slightly ITM max
 
 # ITM_MOMENTUM: Stock replacement needs ITM options (delta 0.60-0.85)
 INTRADAY_ITM_DELTA_MIN = 0.60  # ITM for momentum
@@ -1448,28 +1504,15 @@ GRIND_UP_MIN_MOVE = 0.50  # Minimum QQQ move to trigger override (0.50% = UP_STR
 GRIND_UP_MACRO_SAFE_MIN = 40  # Macro regime score must be > 40 to avoid bear traps
 
 # -----------------------------------------------------------------------------
-# V3.2: OPTIONS MACRO REGIME GATE
+# V6.0: OPTIONS MACRO REGIME GATE - REMOVED
 # -----------------------------------------------------------------------------
-# Enforces investment thesis: aligns options direction with macro regime
-# - BULL (70+): All directions allowed, full sizing
-# - NEUTRAL (50-69): PUT-only at reduced sizing (not a dead zone)
-# - CAUTIOUS/BEAR (<50): PUT-only at full sizing
-OPTIONS_MACRO_REGIME_GATE_ENABLED = True
-
-# Sizing multiplier for NEUTRAL regime (50-69)
-# PUT-only allowed, at reduced sizing to manage uncertainty
-OPTIONS_NEUTRAL_ZONE_SIZE_MULT = 0.50  # 50% sizing in NEUTRAL
-
-# V3.3: Upper NEUTRAL zone (60-69) - Allow CALLs for growth
-# V3.9: Split NEUTRAL into upper (60-69) and lower (50-59) zones
-# Upper NEUTRAL (60-69): CALL only @ 50% - lean bullish, PUTs would fight trend
-# Lower NEUTRAL (50-59): PUT only @ 50% - stay defensive
-OPTIONS_UPPER_NEUTRAL_THRESHOLD = 60  # Upper NEUTRAL starts at regime 60
-OPTIONS_UPPER_NEUTRAL_CALL_MULT = 0.50  # 50% sizing for CALLs in upper NEUTRAL
-# OPTIONS_UPPER_NEUTRAL_PUT_MULT removed in V3.9 - PUTs blocked in upper NEUTRAL
+# Direction decisions now handled by conviction resolution (resolve_trade_signal)
+# in main.py. VASS & MICRO engines make direction decisions with conviction,
+# and resolve_trade_signal() handles alignment/override with macro direction.
+# See options_engine.py for details.
 
 # Minimum combined size multiplier to proceed with trade
-# If Governor × MacroGate × ColdStart < this, skip trade (too small)
+# If Governor × ColdStart < this, skip trade (too small)
 OPTIONS_MIN_COMBINED_SIZE_PCT = 0.10  # 10% minimum
 
 # -----------------------------------------------------------------------------
@@ -1642,3 +1685,31 @@ TREND_SYMBOLS = ["QLD", "SSO", "TNA", "FAS"]
 
 # Mean Reversion symbols (intraday only, must close by 15:45)
 MR_SYMBOLS = ["TQQQ", "SOXL"]
+
+# =============================================================================
+# V6.4: ENGINE ISOLATION MODE
+# =============================================================================
+# Allows targeted backtesting of individual engines by disabling all others.
+# Use for focused debugging, performance analysis, and validation.
+# See docs/guides/ENGINE_ISOLATION_MODE.md for full documentation.
+
+# Master switch - when True, only enabled engines/safeguards run
+ISOLATION_TEST_MODE = True  # V6.6: Options Engine isolation backtest
+
+# Engine enables (only checked when ISOLATION_TEST_MODE = True)
+ISOLATION_REGIME_ENABLED = True  # Regime Engine (required by most engines)
+ISOLATION_OPTIONS_ENABLED = True  # Options Engine (VASS + Micro Intraday)
+ISOLATION_TREND_ENABLED = False  # Trend Engine (QLD/SSO/TNA/FAS)
+ISOLATION_MR_ENABLED = False  # Mean Reversion Engine (TQQQ/SOXL)
+ISOLATION_HEDGE_ENABLED = False  # Hedge Engine (TMF/PSQ)
+ISOLATION_YIELD_ENABLED = False  # Yield Sleeve (SHV)
+
+# Safeguard enables (only checked when ISOLATION_TEST_MODE = True)
+ISOLATION_KILL_SWITCH_ENABLED = False  # Kill Switch (5% daily loss)
+ISOLATION_STARTUP_GATE_ENABLED = False  # Startup Gate (15-day warmup)
+ISOLATION_COLD_START_ENABLED = False  # Cold Start (days 1-5 restrictions)
+ISOLATION_DRAWDOWN_GOVERNOR_ENABLED = False  # Drawdown Governor (position scaling)
+ISOLATION_PANIC_MODE_ENABLED = False  # Panic Mode (SPY -4% liquidation)
+ISOLATION_WEEKLY_BREAKER_ENABLED = False  # Weekly Breaker (5% WTD loss)
+ISOLATION_GAP_FILTER_ENABLED = False  # Gap Filter (SPY -1.5% gap block)
+ISOLATION_VOL_SHOCK_ENABLED = False  # Vol Shock (3× ATR pause)

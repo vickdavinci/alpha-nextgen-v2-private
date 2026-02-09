@@ -98,6 +98,9 @@ class ColdStartEngine:
 
     def is_cold_start_active(self) -> bool:
         """Check if cold start mode is active."""
+        # V6.4: Bypass cold start in isolation mode if disabled
+        if config.ISOLATION_TEST_MODE and not config.ISOLATION_COLD_START_ENABLED:
+            return False
         return self._days_running < config.COLD_START_DAYS
 
     def are_full_strategies_allowed(self) -> bool:
