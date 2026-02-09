@@ -2012,6 +2012,15 @@ class OptionsEngine:
             vix_level_override=vix_level_override,
         )
 
+        # V6.8 P0 FIX: If Micro returns NO_TRADE, skip entirely - no conviction override
+        # Micro's NO_TRADE decision is final. Reasons include:
+        # - VIX floor not met (apathy market)
+        # - QQQ move too small (no edge)
+        # - QQQ flat, whipsaw, or caution regime
+        # With V6.8 lowered gates, Micro will trade more often without needing overrides.
+        if state.recommended_strategy == IntradayStrategy.NO_TRADE:
+            return False, None, state, f"NO_TRADE: Micro blocked ({state.micro_regime.value})"
+
         # Step 2: Check conviction (now without state-based fallback)
         (
             has_conviction,
@@ -5366,39 +5375,14 @@ class OptionsEngine:
             vix_level_override=vix_level_override,  # V6.2: Pass through
         )
 
-        # V6.1 FIX: When direction is passed from conviction resolution, skip NO_TRADE check
-        # Conviction has already determined there's a trade signal (e.g., UVXY divergence)
-        # Micro regime may return NO_TRADE but conviction overrides it
+        # V6.8: NO_TRADE is now blocked earlier in generate_micro_intraday_signal()
+        # This check is a safety net - should never reach here with NO_TRADE
         if state.recommended_strategy == IntradayStrategy.NO_TRADE:
-            if direction is not None:
-                # Conviction passed a direction - use default strategy (DEBIT_FADE is conservative)
-                self.log(
-                    f"INTRADAY: Micro NO_TRADE overridden by conviction | "
-                    f"Dir={direction.value} | Using DEBIT_FADE strategy"
-                )
-                # Override state strategy for downstream logic (preserve all other fields)
-                state = MicroRegimeState(
-                    vix_level=state.vix_level,
-                    vix_direction=state.vix_direction,
-                    micro_regime=state.micro_regime,
-                    micro_score=state.micro_score,
-                    whipsaw_state=state.whipsaw_state,
-                    recommended_strategy=IntradayStrategy.DEBIT_FADE,  # V6.1: Default strategy
-                    qqq_move_pct=state.qqq_move_pct,
-                    vix_current=state.vix_current,
-                    vix_open=state.vix_open,
-                    last_update=state.last_update,
-                    spike_cooldown_until=state.spike_cooldown_until,
-                    qqq_direction=state.qqq_direction,
-                    recommended_direction=direction,  # V6.1: Use passed direction from conviction
-                )
-            else:
-                # V6.1: Log NO_TRADE rejection (was silent before)
-                self.log(
-                    f"INTRADAY: Blocked - NO_TRADE strategy | "
-                    f"Regime={state.micro_regime.value} | Score={state.micro_score:.0f}"
-                )
-                return None
+            self.log(
+                f"INTRADAY: Blocked - NO_TRADE strategy | "
+                f"Regime={state.micro_regime.value} | Score={state.micro_score:.0f}"
+            )
+            return None
 
         # V3.2: Check if strategy is PROTECTIVE_PUTS (crisis hedge)
         if state.recommended_strategy == IntradayStrategy.PROTECTIVE_PUTS:
