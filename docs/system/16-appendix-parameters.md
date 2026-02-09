@@ -438,16 +438,30 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | Medium IV | 15-25 | Debit Spreads | 7-21 (Weekly) |
 | High IV | > 25 | Credit Spreads | 5-28 (V6.8: was 7-21) |
 
-### Credit Spread Parameters (V2.8/V2.10)
+### Credit Spread Parameters (V2.8/V2.10/V6.10)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `CREDIT_SPREAD_MIN_CREDIT` | 0.30 | Minimum credit received ($0.30) |
+| `CREDIT_SPREAD_MIN_CREDIT` | 0.20 | Minimum credit (V6.10: was $0.30, lowered for fills) |
 | `CREDIT_SPREAD_WIDTH_TARGET` | 5.0 | Target spread width ($5) |
 | `CREDIT_SPREAD_SHORT_LEG_DELTA_MIN` | 0.25 | Short leg minimum delta |
 | `CREDIT_SPREAD_SHORT_LEG_DELTA_MAX` | 0.40 | Short leg maximum delta |
 | `CREDIT_SPREAD_PROFIT_TARGET` | 0.50 | 50% of max profit |
 | `CREDIT_SPREAD_STOP_MULTIPLIER` | 2.0 | Stop = spread doubles |
+| `CREDIT_SPREAD_FALLBACK_TO_DEBIT` | True | V6.10: Fall back to debit when credit fails |
+
+### V6.10 Spread Delta Requirements
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `SPREAD_LONG_LEG_DELTA_MIN` | 0.35 | V6.10: CALL long min (was 0.40) |
+| `SPREAD_LONG_LEG_DELTA_MAX` | 0.90 | V6.10: Allow deeper ITM (was 0.85) |
+| `SPREAD_SHORT_LEG_DELTA_MIN` | 0.08 | V6.10: Allow farther OTM (was 0.10) |
+| `SPREAD_SHORT_LEG_DELTA_MAX` | 0.60 | V6.10: Allow closer to ATM (was 0.55) |
+| `SPREAD_LONG_LEG_DELTA_MIN_PUT` | 0.25 | V6.10: PUT long min (was 0.30) |
+| `SPREAD_LONG_LEG_DELTA_MAX_PUT` | 0.90 | V6.10: Allow deeper ITM long PUTs |
+| `SPREAD_SHORT_LEG_DELTA_MIN_PUT` | 0.05 | V6.10: Allow farther OTM (was 0.08) |
+| `SPREAD_SHORT_LEG_DELTA_MAX_PUT` | 0.60 | V6.10: Allow closer to ATM short PUTs |
 
 ### Elastic Delta Bands (V2.24.1)
 
@@ -457,14 +471,14 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `ELASTIC_DELTA_FLOOR` | 0.10 | Absolute minimum delta |
 | `ELASTIC_DELTA_CEILING` | 0.95 | Absolute maximum delta |
 
-### Width-Based Short Leg Selection (V2.4.3)
+### Width-Based Short Leg Selection (V2.4.3/V6.10)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `SPREAD_SHORT_LEG_BY_WIDTH` | True | Use strike width instead of delta |
-| `SPREAD_WIDTH_MIN` | 2.0 | Minimum spread width ($2) |
+| `SPREAD_WIDTH_MIN` | 5.0 | Minimum spread width (V6.10: $5, was $2 — assignment protection) |
 | `SPREAD_WIDTH_MAX` | 10.0 | Maximum spread width ($10) |
-| `SPREAD_WIDTH_TARGET` | 3.0 | Target spread width (V6.8: was 5.0) |
+| `SPREAD_WIDTH_TARGET` | 5.0 | Target spread width (V6.10: $5, was $3 — assignment protection) |
 
 ### Sizing Caps (V2.18)
 
@@ -482,22 +496,27 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `OPTIONS_ATR_STOP_MAX_PCT` | 0.30 | Maximum stop % (V6.8: was 0.50 - prevents 50% losses) |
 | `OPTIONS_USE_ATR_STOPS` | True | Use ATR-based stops (vs legacy tier-based) |
 
-### UVXY Conviction Thresholds (V6.8)
+### UVXY Conviction Thresholds (V6.10)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `MICRO_UVXY_BEARISH_THRESHOLD` | +2.5% | UVXY up → PUT conviction (V6.8: was +3%) |
-| `MICRO_UVXY_BULLISH_THRESHOLD` | -2.5% | UVXY down → CALL conviction (V6.8: was -3%) |
+| `MICRO_UVXY_BEARISH_THRESHOLD` | +2.5% | UVXY up → PUT conviction (V6.10: was +4%) |
+| `MICRO_UVXY_BULLISH_THRESHOLD` | -3.0% | UVXY down → CALL conviction (V6.10: was -5%) |
+| `MICRO_UVXY_CONVICTION_EXTREME` | 5% | NEUTRAL VETO threshold (V6.10: was 7%) |
 | `MICRO_VIX_CRISIS_LEVEL` | 35 | VIX > 35 → CRISIS (BEARISH conviction) |
 | `MICRO_VIX_COMPLACENT_LEVEL` | 12 | VIX < 12 → COMPLACENT (BULLISH conviction) |
 
-### Assignment Risk Management (V6.8)
+### Assignment Risk Management (V6.10)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `ASSIGNMENT_MARGIN_BUFFER_ENABLED` | True | Require extra margin for ITM shorts |
-| `ASSIGNMENT_MARGIN_BUFFER_PCT` | 0.10 | Margin buffer % (V6.8: was 0.20 - reduced instant exits) |
+| `ASSIGNMENT_MARGIN_BUFFER_PCT` | 0.20 | Margin buffer % (V6.9: restored to 0.20 for safety) |
 | `ASSIGNMENT_MARGIN_AUTO_REDUCE` | True | Auto-reduce if buffer insufficient |
+| `SPREAD_FORCE_CLOSE_DTE` | 1 | V6.10: Mandatory close at DTE=1 (assignment prevention) |
+| `SPREAD_FORCE_CLOSE_ENABLED` | True | V6.10: Master switch for DTE=1 force close |
+| `PREMARKET_ITM_CHECK_ENABLED` | True | V6.10: Check short legs at 09:25 pre-market |
+| `SHORT_LEG_ITM_EXIT_THRESHOLD` | 0.005 | V6.10: Exit when 0.5% ITM (was 1%) |
 
 ### Limit Order Execution (V2.19)
 
@@ -506,6 +525,17 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `OPTIONS_USE_LIMIT_ORDERS` | True | Use marketable limit orders |
 | `OPTIONS_LIMIT_SLIPPAGE_PCT` | 0.05 | 5% slippage tolerance |
 | `OPTIONS_MAX_SPREAD_PCT` | 0.20 | Max bid-ask spread % (block if wider) |
+
+### V6.10 Margin Pre-Check
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `MARGIN_CHECK_BEFORE_SIGNAL` | True | V6.10: Check margin before generating signal |
+| `MARGIN_PRE_CHECK_BUFFER` | 0.15 | V6.10: 15% buffer (was 2.0 — too restrictive) |
+| `OPTIONS_MAX_MARGIN_PCT` | 0.25 | V6.10: Max margin 25% (was 30%) |
+| `MARGIN_PRE_CHECK_MIN_SPREADS` | 1 | V6.10: Min spreads to check margin for |
+
+> **V6.10 Rationale:** Pre-check margin availability before approving any spread signal. Prevents signals from being generated only to fail at execution.
 
 ### Safety Rules (V2.4.1)
 
@@ -522,17 +552,47 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `SPREAD_NEUTRALITY_EXIT_ENABLED` | True | Exit flat spreads in neutral regime |
 | `SPREAD_NEUTRALITY_EXIT_PNL_BAND` | 0.10 | Within ±10% of breakeven = flat |
 
+### V6.10 Symmetric Stop/Target
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `SPREAD_PROFIT_TARGET_PCT` | 0.40 | 40% profit target (V6.10: was 50%) |
+| `SPREAD_STOP_LOSS_PCT` | 0.40 | 40% stop loss (V6.10: was 35%) |
+
+> **V6.10 Rationale:** Symmetric R:R (40%/40%) requires 1:1 win ratio to break even. Previous asymmetric (50%/35%) required 1.43:1 win ratio which was not achieved.
+
+### V6.10 Choppy Market Filter
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `CHOPPY_MARKET_FILTER_ENABLED` | True | Enable choppy market detection |
+| `CHOPPY_REVERSAL_COUNT` | 3 | 3+ reversals = choppy market |
+| `CHOPPY_LOOKBACK_HOURS` | 2 | Look back 2 hours for reversals |
+| `CHOPPY_SIZE_REDUCTION` | 0.50 | 50% size reduction in choppy markets |
+| `CHOPPY_MIN_MOVE_PCT` | 0.003 | Min 0.3% move to count as reversal |
+
+> **V6.10 Rationale:** 2015 backtest showed 48% win rate but negative P&L due to choppy market conditions triggering stops. Filter reduces position size when 3+ reversals detected.
+
 ### V2.1.1 VIX Direction Thresholds (Micro Regime Engine)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `VIX_DIRECTION_FALLING_FAST` | -5.0% | Strong recovery threshold |
-| `VIX_DIRECTION_FALLING` | -2.0% | Recovery threshold |
-| `VIX_DIRECTION_STABLE_LOW` | -2.0% | Stable range lower bound |
-| `VIX_DIRECTION_STABLE_HIGH` | 2.0% | Stable range upper bound |
-| `VIX_DIRECTION_RISING` | 5.0% | Fear building threshold |
-| `VIX_DIRECTION_RISING_FAST` | 10.0% | Panic emerging threshold |
+| `VIX_DIRECTION_FALLING_FAST` | -3.0% | Strong recovery threshold (V6.6: was -5.0%) |
+| `VIX_DIRECTION_FALLING` | -1.0% | Recovery threshold (V6.6: was -2.0%) |
+| `VIX_DIRECTION_STABLE_LOW` | -1.0% | Stable range lower bound (V6.6: was -2.0%) |
+| `VIX_DIRECTION_STABLE_HIGH` | 1.0% | Stable range upper bound (V6.6: was 2.0%) |
+| `VIX_DIRECTION_RISING` | 3.0% | Fear building threshold (V6.6: was 5.0%) |
+| `VIX_DIRECTION_RISING_FAST` | 6.0% | Panic emerging threshold (V6.6: was 10.0%) |
 | `VIX_DIRECTION_SPIKING` | 10.0% | Crash mode threshold |
+
+### V6.10 VIX-Adaptive STABLE Band
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `VIX_STABLE_BAND_LOW` | +/-0.3% | STABLE band when VIX < 15 (V6.10: was +/-0.5%) |
+| `VIX_STABLE_BAND_HIGH` | +/-1.0% | STABLE band when VIX > 25 (V6.10: was +/-2.0%) |
+| `VIX_STABLE_LOW_VIX_MAX` | 15.0 | Low VIX regime threshold |
+| `VIX_STABLE_HIGH_VIX_MIN` | 25.0 | High VIX regime threshold |
 
 ### V2.1.1 VIX Level Thresholds
 
@@ -560,12 +620,12 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | Layer 3 | 60 min | Whipsaw detection (reversal count) |
 | Layer 4 | 30 min | Full regime classification |
 
-### V2.1.1 Intraday Strategy Parameters
+### V2.1.1 Intraday Strategy Parameters (V6.10)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `INTRADAY_DEBIT_FADE_MIN_SCORE` | 35 | Minimum micro score for debit fade (V6.8: was 45) |
-| `INTRADAY_DEBIT_FADE_VIX_MIN` | 11.5 | Minimum VIX for DEBIT_FADE (V6.8: was 13.5) |
+| `INTRADAY_DEBIT_FADE_VIX_MIN` | 10.5 | Minimum VIX for DEBIT_FADE (V6.10: was 13.5) |
 | `INTRADAY_FADE_MIN_MOVE` | 0.50% | Minimum QQQ move for FADE |
 | `INTRADAY_FADE_MAX_MOVE` | 1.50% | Max QQQ move for FADE (V6.8: was 1.20%) |
 | `INTRADAY_DEBIT_FADE_VIX_MAX` | 25 | Maximum VIX for debit fade |
@@ -574,6 +634,9 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `INTRADAY_ITM_MIN_SCORE` | 40 | Minimum micro score for ITM (V6.8: was 50) |
 | `INTRADAY_ITM_MIN_MOVE` | 0.8% | Minimum QQQ move for ITM |
 | `INTRADAY_FORCE_EXIT_TIME` | 15:30 ET | Intraday positions must close |
+| `INTRADAY_QQQ_FALLBACK_MIN_MOVE` | 0.50% | V6.10: Min move for VIX STABLE fallback (was 0.70%) |
+| `MICRO_SCORE_BULLISH_CONFIRM` | 52 | V6.10: Score for BULLISH confirm (was 55) |
+| `MICRO_SCORE_BEARISH_CONFIRM` | 48 | V6.10: Score for BEARISH confirm (was 45) |
 
 ### V2.1.1 Swing Mode Simple Filters
 

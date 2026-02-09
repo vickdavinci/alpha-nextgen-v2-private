@@ -718,12 +718,21 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | VASS Low IV (V2.8) | VIX < 15 | Debit spreads, 30-45 DTE (monthly) |
 | VASS Medium IV (V2.8) | VIX 15-25 | Debit spreads, 7-21 DTE (weekly) |
 | VASS High IV (V6.8) | VIX > 25 | Credit spreads, 5-28 DTE (was 7-21) |
-| UVXY Bearish (V6.8) | UVXY > +2.5% | PUT conviction signal (was +3%) |
-| UVXY Bullish (V6.8) | UVXY < -2.5% | CALL conviction signal (was -3%) |
+| UVXY Bearish (V6.10) | UVXY > +2.5% | PUT conviction signal (was +4%) |
+| UVXY Bullish (V6.10) | UVXY < -3% | CALL conviction signal (was -5%) |
+| UVXY Conviction Extreme (V6.10) | 5% | NEUTRAL VETO threshold (was 7%) |
 | BEAR_PUT OTM Gate (V6.4) | Short PUT >= 3% OTM | Block assignment-risk entries |
 | Options ATR Stop Max (V6.8) | 30% | Max loss cap (was 50%) |
-| Intraday FADE VIX Min (V6.8) | VIX >= 11.5 | Enable DEBIT_FADE (was 13.5) |
+| Intraday FADE VIX Min (V6.10) | VIX >= 10.5 | Enable DEBIT_FADE (was 13.5) |
 | Intraday ITM VIX Min (V6.8) | VIX >= 10.0 | Enable ITM momentum (was 11.5) |
+| Spread Force Close DTE (V6.10) | DTE = 1 | Mandatory spread close (assignment prevention) |
+| Short Leg ITM Exit (V6.10) | 0.5% ITM | Exit spread when short leg ITM (was 1%) |
+| Spread Width Min (V6.10) | $5 | Minimum spread width (was $3, assignment protection) |
+| Spread Stop/Target (V6.10) | 40%/40% | Symmetric R:R (was 35%/50%) |
+| Choppy Market Filter (V6.10) | 3 reversals/2hr | 50% size reduction in choppy markets |
+| VIX Stable Band Low (V6.10) | +/-0.3% | STABLE band when VIX < 15 (was +/-0.5%) |
+| VIX Stable Band High (V6.10) | +/-1.0% | STABLE band when VIX > 25 (was +/-2.0%) |
+| Margin Pre-Check (V6.10) | 15% buffer | Check margin before signal approval |
 
 ### Overnight Holdings
 

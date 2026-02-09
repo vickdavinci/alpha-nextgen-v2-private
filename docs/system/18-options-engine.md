@@ -6,11 +6,39 @@
 
 ## Overview
 
-> **Last Updated**: 8 February 2026 (V6.8)
+> **Last Updated**: 9 February 2026 (V6.10)
 
 The **Options Engine** implements a dual-mode architecture for QQQ options trading. This is a **satellite engine** (25% allocation) with two distinct operating modes based on DTE (days to expiration).
 
-> **V6.8 Revision** (Latest):
+> **V6.10 Revision** (Latest):
+> - **Phase 1 - Assignment Prevention (P0)**:
+>   - Added `SPREAD_FORCE_CLOSE_DTE=1` - mandatory close ALL spreads at DTE=1
+>   - Added `PREMARKET_ITM_CHECK_ENABLED=True` - 09:25 pre-market ITM check
+>   - Tightened `SHORT_LEG_ITM_EXIT_THRESHOLD` 1% -> 0.5% ITM for faster exit
+>   - Widened `SPREAD_WIDTH_MIN` $3 -> $5 for assignment gap protection
+> - **Phase 2 - Direction Generation (Micro Engine)**:
+>   - Narrowed `VIX_STABLE_BAND_LOW` +/-0.5% -> +/-0.3% (more signals in low VIX)
+>   - Narrowed `VIX_STABLE_BAND_HIGH` +/-2.0% -> +/-1.0% (high VIX still trades)
+>   - Lowered `MICRO_UVXY_CONVICTION_EXTREME` 7% -> 5% (capture more conviction)
+>   - Lowered `MICRO_UVXY_BEARISH_THRESHOLD` +4% -> +2.5% (more PUT signals)
+>   - Raised `MICRO_UVXY_BULLISH_THRESHOLD` -5% -> -3% (more CALL signals)
+>   - Lowered `INTRADAY_DEBIT_FADE_VIX_MIN` 13.5 -> 10.5 (low-VIX years can trade)
+>   - Lowered `INTRADAY_QQQ_FALLBACK_MIN_MOVE` 0.70% -> 0.50% (more STABLE trades)
+>   - Adjusted `MICRO_SCORE_BULLISH_CONFIRM` 55 -> 52, `MICRO_SCORE_BEARISH_CONFIRM` 45 -> 48
+> - **Phase 3 - Spread Construction (VASS)**:
+>   - Widened delta requirements: CALL long 0.40->0.35, short 0.55->0.60
+>   - Widened PUT delta requirements: long 0.30->0.25, short 0.08->0.05
+>   - Lowered `CREDIT_SPREAD_MIN_CREDIT` $0.30 -> $0.20
+>   - Added `CREDIT_SPREAD_FALLBACK_TO_DEBIT=True` for PUT direction
+> - **Phase 4 - Execution Pipeline**:
+>   - Lowered `OPTIONS_MAX_MARGIN_PCT` 30% -> 25%
+>   - Adjusted `MARGIN_PRE_CHECK_BUFFER` 2.0 -> 0.15 (was too restrictive)
+>   - Added `MARGIN_CHECK_BEFORE_SIGNAL=True` (pre-approve before generating)
+> - **Phase 5 - Risk/Reward**:
+>   - Symmetric `SPREAD_STOP_LOSS_PCT` 35% -> 40%, `SPREAD_PROFIT_TARGET_PCT` 50% -> 40%
+>   - Added choppy market filter: 3 reversals in 2hrs = 50% size reduction
+>
+> **V6.8 Revision**:
 > - Relaxed liquidity filters: Open interest 100->50, spread warning 25%->30%
 > - Widened VASS High IV DTE range: 7-21 -> 5-28 (more contract matches)
 > - Tighter ATR-based stops: multiplier 1.5->1.0, max 50%->30% loss cap
@@ -215,9 +243,9 @@ Long leg at $480 → Target short leg at $480 + $5 = $485
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `SPREAD_SHORT_LEG_BY_WIDTH` | True | Use width-based selection |
-| `SPREAD_WIDTH_MIN` | 2.0 | Minimum $2 spread width |
+| `SPREAD_WIDTH_MIN` | 5.0 | Minimum $5 spread width (V6.10: was $2, assignment protection) |
 | `SPREAD_WIDTH_MAX` | 10.0 | Maximum $10 spread width |
-| `SPREAD_WIDTH_TARGET` | 5.0 | Target $5 width |
+| `SPREAD_WIDTH_TARGET` | 5.0 | Target $5 width (V6.10: was $3, assignment protection) |
 
 Candidates are sorted by distance from target width, then by open interest. This eliminates the silent failure mode where no short leg was found due to delta gaps.
 
@@ -746,7 +774,7 @@ The intraday options scanning window was adjusted:
 | `SPREAD_DTE_MIN` | 14 | Default minimum DTE (VASS overrides) |
 | `SPREAD_DTE_MAX` | 45 | Default maximum DTE (VASS overrides) |
 | `SPREAD_SHORT_LEG_BY_WIDTH` | True | V2.4.3: Width-based short leg selection |
-| `SPREAD_WIDTH_MIN` | 2.0 | Minimum spread width ($2) |
+| `SPREAD_WIDTH_MIN` | 5.0 | Minimum spread width (V6.10: $5, was $2) |
 | `SPREAD_WIDTH_MAX` | 10.0 | Maximum spread width ($10) |
 | `SPREAD_WIDTH_TARGET` | 3.0 | Target spread width (V6.8: was 5.0, lower for more matches) |
 | `SPREAD_LONG_LEG_DELTA_MIN` | 0.40 | Long leg minimum delta (V6.8: was 0.45) |
@@ -1095,6 +1123,73 @@ Exit: Crisis resolution OR expiry
 - 30 minutes before market close
 - Time to handle any execution issues
 - Avoids overnight gamma risk on 0-DTE
+
+---
+
+## V6.10 Assignment Prevention System
+
+V6.10 introduces a comprehensive 4-layer defense against option assignment risk, which caused -$150,953 in losses across 2015, 2017, 2021-2022 backtests.
+
+### Layer 1: Mandatory DTE=1 Force Close
+
+**All spread positions close when DTE reaches 1** (day before expiration), regardless of P&L.
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `SPREAD_FORCE_CLOSE_DTE` | 1 | Close at DTE=1 (nuclear option) |
+| `SPREAD_FORCE_CLOSE_ENABLED` | True | Master switch |
+
+### Layer 2: Pre-Market ITM Check (09:25 ET)
+
+Check all short legs before market open to catch overnight gaps. If short leg went ITM overnight, queue for immediate close at 09:30.
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `PREMARKET_ITM_CHECK_ENABLED` | True | Enable 09:25 check |
+| `PREMARKET_ITM_CHECK_HOUR` | 9 | Check hour |
+| `PREMARKET_ITM_CHECK_MINUTE` | 25 | Check minute |
+
+### Layer 3: Tighter ITM Exit Threshold
+
+Exit spread immediately when short leg goes ITM by threshold (at ANY DTE, not just near expiry).
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `SHORT_LEG_ITM_EXIT_THRESHOLD` | 0.005 | Exit at 0.5% ITM (was 1%) |
+| `SHORT_LEG_ITM_EXIT_ENABLED` | True | Master switch |
+
+### Layer 4: Wider Spread Width
+
+Wider spreads survive larger overnight gaps and reduce assignment risk.
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `SPREAD_WIDTH_MIN` | 5.0 | Minimum $5 width (was $3) |
+| `SPREAD_WIDTH_TARGET` | 5.0 | Target $5 width (was $3) |
+
+### Assignment Prevention Summary
+
+```
+Timeline of Protection:
+09:25 ET → Layer 2: Pre-market ITM check (catch overnight gaps)
+Intraday → Layer 3: ITM exit at 0.5% threshold (real-time monitoring)
+DTE = 1  → Layer 1: Force close ALL spreads (nuclear option)
+All DTE  → Layer 4: Wider spreads survive larger gaps
+```
+
+---
+
+## V6.10 Choppy Market Filter
+
+Detects whipsawing markets and reduces position size to limit losses. Added after 2015 backtest showed 48% win rate but negative P&L due to choppy conditions.
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `CHOPPY_MARKET_FILTER_ENABLED` | True | Enable filter |
+| `CHOPPY_REVERSAL_COUNT` | 3 | Reversals to trigger |
+| `CHOPPY_LOOKBACK_HOURS` | 2 | Lookback window |
+| `CHOPPY_SIZE_REDUCTION` | 0.50 | 50% size reduction |
+| `CHOPPY_MIN_MOVE_PCT` | 0.003 | Min 0.3% move (filter noise) |
 
 ---
 
