@@ -2,13 +2,16 @@
 
 **Goal:** Clone → Setup → Run tests in under 5 minutes.
 
+**Current Version:** V6.x (Options Engine + Micro Regime)
+
 ---
 
 ## Prerequisites
 
-- Python 3.11 (required)
+- Python 3.11 (required - system default may be 3.14, but project requires 3.11)
 - Git
 - GitHub CLI (`gh`) - optional but recommended
+- Lean CLI - for QuantConnect backtests
 
 **Check Python version:**
 ```bash
@@ -24,10 +27,10 @@ If not installed: [python.org/downloads](https://www.python.org/downloads/)
 
 ```bash
 # 1. Clone and enter directory
-git clone https://github.com/vickdavinci/alpha-nextgen.git
-cd alpha-nextgen
+git clone https://github.com/vickdavinci/alpha-nextgen-v2-private.git
+cd alpha-nextgen-v2-private
 
-# 2. Create virtual environment
+# 2. Create virtual environment with Python 3.11
 python3.11 -m venv venv
 
 # 3. Activate virtual environment
@@ -36,34 +39,27 @@ source venv/bin/activate  # macOS/Linux
 
 # 4. Install dependencies
 pip install -r requirements.lock
-pip install -r requirements-dev.txt  # Optional: IDE autocomplete for QC API
 
 # 5. Install pre-commit hooks
 pip install pre-commit
 pre-commit install
 
 # 6. Verify setup
-make verify
+make test
 ```
 
 ---
 
 ## Verify Success
 
-After running `make verify`, you should see:
+After running `make test`, you should see:
 
 ```
-1. Python version:
-Python 3.11.x
-
-2. Running critical tests...
+========================= test session starts ==========================
 tests/test_architecture_boundaries.py::test_... PASSED
 tests/test_target_weight_contract.py::test_... PASSED
-tests/test_smoke_integration.py::test_... PASSED
-
-==============================================
-Setup verified! You're ready to develop.
-==============================================
+...
+========================= X passed in Y.YYs ============================
 ```
 
 **All tests passed?** You're ready to code.
@@ -78,29 +74,78 @@ Setup verified! You're ready to develop.
 | `make lint` | Check code formatting |
 | `make format` | Auto-format code |
 | `make branch name=feature/va/my-feature` | Create feature branch |
-| `make verify` | Verify setup is working |
+| `./scripts/qc_backtest.sh "V6.12-Test" --open` | Run QC backtest and wait for results |
+
+---
+
+## Running a Backtest
+
+The primary workflow for testing changes:
+
+```bash
+# 1. Make your code changes
+
+# 2. Run unit tests locally
+make test
+
+# 3. Run QC backtest (syncs, minifies, pushes, and runs)
+./scripts/qc_backtest.sh "V6.12-MyFeature" --open
+
+# 4. Review results in terminal or at the URL provided
+```
+
+**What the script does:**
+- Syncs all Python files to the Lean workspace
+- Minifies files to reduce size (QC has 256KB limit per file)
+- Pushes to QuantConnect cloud
+- Starts backtest and waits for completion (with `--open`)
 
 ---
 
 ## First Task Workflow
 
 ```bash
-# 1. Create your feature branch
+# 1. Activate venv (every session!)
+source venv/bin/activate
+
+# 2. Check current branch and status
+git status && git branch
+
+# 3. Create your feature branch
 make branch name=feature/<initials>/<description>
 
-# 2. Make changes to code
+# 4. Make changes to code
 
-# 3. Run tests
+# 5. Run tests
 make test
 
-# 4. Commit (pre-commit hooks run automatically)
+# 6. Commit (pre-commit hooks run automatically)
 git add <files>
 git commit -m "feat: your description"
 
-# 5. Push and create PR
+# 7. Push and create PR
 git push origin <branch-name>
 gh pr create --base develop
 ```
+
+---
+
+## Project Architecture (V6.x)
+
+```
+Core-Satellite Architecture:
+├── Core (40%): Trend Engine (QLD, SSO, TNA, FAS)
+├── Satellite (10%): Mean Reversion (TQQQ, SOXL - intraday only)
+├── Satellite (25%): Options Engine (QQQ spreads)
+│   ├── Swing Mode (18.75%): VASS spreads, 14-45 DTE
+│   └── Intraday Mode (6.25%): Micro Regime, 1-5 DTE
+└── Hedges: TMF, PSQ (regime-triggered)
+```
+
+**Key Engines:**
+- **Regime Engine (V5.3)**: 4-factor model (Momentum, VIX Combined, Trend, Drawdown)
+- **Options Engine (V6.x)**: Dual-mode with Micro Regime direction detection
+- **Risk Engine**: Kill switch, panic mode, drawdown governor
 
 ---
 
@@ -141,25 +186,29 @@ make format           # Fix formatting
 # Remove datetime.now() - use self.algorithm.Time
 ```
 
-### Tests fail with import errors
+### Backtest errors
 
 ```bash
-# Verify you're in project root
-pwd
-# Should end with: alpha-nextgen
+# Check if lean CLI is installed
+lean --version
 
-# Verify venv is activated
-which python
-# Should show: .../alpha-nextgen/venv/bin/python
+# Re-authenticate if needed
+lean login
+
+# Check backtest logs in QC web interface
 ```
 
 ---
 
-## What's Next?
+## Key Files to Read
 
-1. **Read the architecture:** [CLAUDE.md](CLAUDE.md) - Component map and critical rules
-2. **Check task board:** [WORKBOARD.md](WORKBOARD.md) - Pick a task from "Ready to Start"
-3. **Understand the spec:** `docs/` folder has detailed specifications
+| Priority | File | Purpose |
+|:--------:|------|---------|
+| 1 | `CLAUDE.md` | Architecture, rules, thresholds |
+| 2 | `WORKBOARD.md` | Current tasks and progress |
+| 3 | `config.py` | All tunable parameters |
+| 4 | `docs/system/04-regime-engine.md` | V5.3 regime model |
+| 5 | `docs/system/18-options-engine.md` | Options dual-mode design |
 
 ---
 
@@ -176,3 +225,4 @@ which python
 ---
 
 *Time to first test: ~5 minutes*
+*Last updated: February 2026 (V6.x)*

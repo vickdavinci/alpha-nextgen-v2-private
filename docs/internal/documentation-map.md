@@ -185,4 +185,4 @@ This map should be updated when:
 - New documentation files are created
 - New patterns of code-to-doc relationships emerge
 
-**Last Updated:** 8 February 2026 (V6.8 — Updated options engine parameter documentation)
+**Last Updated:** 9 February 2026 (V6.11 — Updated regime engine V5.3 documentation, universe redesign)

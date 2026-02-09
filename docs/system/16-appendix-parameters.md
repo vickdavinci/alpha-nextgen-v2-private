@@ -44,36 +44,62 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 ## 16.3 Regime Engine Parameters
 
-### Factor Weights (V2.3: Added VIX)
+### V5.3 Four-Factor Model (Current)
+
+The V5.3 regime model uses four factors optimized for crash detection while maintaining responsiveness to recoveries. See `docs/system/04-regime-engine.md` for full documentation.
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `WEIGHT_TREND` | 0.30 | Trend factor weight (30%) - V2.3: reduced from 0.45 |
-| `WEIGHT_VIX` | 0.20 | VIX (implied vol) factor weight (20%) - V2.3 NEW |
-| `WEIGHT_VOLATILITY` | 0.15 | Realized volatility factor weight (15%) - V2.3: reduced from 0.25 |
-| `WEIGHT_BREADTH` | 0.20 | Breadth factor weight (20%) - V2.3: increased from 0.15 |
-| `WEIGHT_CREDIT` | 0.15 | Credit factor weight (15%) |
+| `V53_REGIME_ENABLED` | True | Enable V5.3 4-factor model |
+| `WEIGHT_MOMENTUM_V53` | 0.30 | Momentum factor weight (30%) - 20-day ROC |
+| `WEIGHT_VIX_COMBINED_V53` | 0.30 | VIX Combined factor weight (30%) - 60% level + 40% direction |
+| `WEIGHT_TREND_V53` | 0.25 | Trend factor weight (25%) - SPY vs MA200 |
+| `WEIGHT_DRAWDOWN_V53` | 0.15 | Drawdown factor weight (15%) - distance from 52-week high |
 
-### VIX Level Factor (V2.3 NEW)
+### VIX Combined Scoring (V5.3)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `VIX_LOW_THRESHOLD` | 15 | Below = complacent market, cheap options |
-| `VIX_NORMAL_THRESHOLD` | 22 | 15-22 = normal volatility |
-| `VIX_HIGH_THRESHOLD` | 30 | 22-30 = elevated fear |
-| `VIX_EXTREME_THRESHOLD` | 40 | Above = crisis mode |
+| `VIX_COMBINED_LEVEL_WEIGHT` | 0.60 | VIX level contribution (60%) |
+| `VIX_COMBINED_DIRECTION_WEIGHT` | 0.40 | VIX 5-day direction contribution (40%) |
+| `VIX_COMBINED_HIGH_VIX_THRESHOLD` | 25.0 | VIX level that triggers clamp |
+| `VIX_COMBINED_HIGH_VIX_CLAMP` | 47 | Max VIX Combined score when VIX >= 25 |
 
-### VIX Factor Scoring
+### V5.3 Guards (Safety Mechanisms)
 
-| VIX Level | Score | Market State |
-|:---------:|:-----:|--------------|
-| < 15 | 100 | Complacent, cheap options |
-| 15-18 | 85 | Low normal |
-| 18-22 | 70 | Normal |
-| 22-26 | 50 | Mild fear |
-| 26-30 | 30 | Elevated |
-| 30-40 | 15 | High fear |
-| > 40 | 0 | Crisis mode |
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `V53_SPIKE_CAP_ENABLED` | True | Enable spike cap |
+| `V53_SPIKE_CAP_THRESHOLD` | 0.28 | VIX 5-day change >= +28% triggers cap |
+| `V53_SPIKE_CAP_MAX_SCORE` | 38 | Score cap during spike (V6.6: lowered from 45) |
+| `V53_SPIKE_CAP_DECAY_DAYS` | 3 | Days until cap expires |
+| `V53_BREADTH_DECAY_ENABLED` | True | Enable breadth decay penalty |
+| `V53_BREADTH_5D_DECAY_THRESHOLD` | -0.01 | 5-day decay trigger (V6.9: was -0.02) |
+| `V53_BREADTH_10D_DECAY_THRESHOLD` | -0.03 | 10-day decay trigger (V6.9: was -0.04) |
+| `V53_BREADTH_5D_PENALTY` | 8 | Points deducted for 5-day decay |
+| `V53_BREADTH_10D_PENALTY` | 12 | Points deducted for 10-day decay (additive) |
+
+### Momentum Factor Scoring (V5.3)
+
+| ROC Range | Score | Description |
+|:---------:|:-----:|-------------|
+| > +5% | 90 | Strong bull momentum |
+| +2% to +5% | 75 | Bull momentum |
+| +1% to +2% | 60 | Mildly bullish |
+| -1% to +1% | 50 | Neutral |
+| -2% to -1% | 40 | Mildly bearish |
+| -5% to -2% | 25 | Bear momentum |
+| < -5% | 10 | Strong bear momentum |
+
+### Drawdown Factor Scoring (V5.3)
+
+| Drawdown | Score | Description |
+|:--------:|:-----:|-------------|
+| < 5% | 90 | Bull market (near highs) |
+| 5-10% | 70 | Correction |
+| 10-15% | 50 | Pullback |
+| 15-20% | 30 | Bear market |
+| > 20% | 10 | Deep bear |
 
 ### Smoothing
 
@@ -91,6 +117,27 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `REGIME_DEFENSIVE` | 30 | DEFENSIVE (30-39) |
 | `REGIME_RISK_OFF` | 0 | RISK_OFF (0-29) |
 
+### VIX Level Thresholds (Shared)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `VIX_LOW_THRESHOLD` | 15 | Below = complacent market, cheap options |
+| `VIX_NORMAL_THRESHOLD` | 22 | 15-22 = normal volatility |
+| `VIX_HIGH_THRESHOLD` | 30 | 22-30 = elevated fear |
+| `VIX_EXTREME_THRESHOLD` | 40 | Above = crisis mode |
+
+### Legacy Factor Parameters (V3.0/V4.0)
+
+These parameters are used when `V53_REGIME_ENABLED = False`:
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `V4_REGIME_ENABLED` | False | V4.0 5-factor model (deprecated) |
+| `V3_REGIME_SIMPLIFIED_ENABLED` | True | V3.3 3-factor model (fallback) |
+| `WEIGHT_TREND_V3` | 0.35 | V3.3 trend weight |
+| `WEIGHT_VIX_V3` | 0.30 | V3.3 VIX level weight |
+| `WEIGHT_DRAWDOWN_V3` | 0.35 | V3.3 drawdown weight |
+
 ### Trend Factor Parameters
 
 | Parameter | Value | Description |
@@ -101,23 +148,11 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `EXTENDED_THRESHOLD` | 1.05 | 5% above SMA200 = extended |
 | `OVERSOLD_THRESHOLD` | 0.95 | 5% below SMA200 = oversold |
 
-### Volatility Factor Parameters
-
-| Parameter | Value | Description |
-|-----------|:-----:|-------------|
-| `VOL_LOOKBACK` | 20 | Realized volatility lookback (days) |
-| `VOL_PERCENTILE_LOOKBACK` | 252 | Percentile ranking lookback (days) |
-
-### Breadth Factor Parameters
+### Breadth & Credit Factor Parameters
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `BREADTH_LOOKBACK` | 20 | RSP vs SPY comparison period |
-
-### Credit Factor Parameters
-
-| Parameter | Value | Description |
-|-----------|:-----:|-------------|
 | `CREDIT_LOOKBACK` | 20 | HYG vs IEF comparison period |
 
 ---
@@ -662,29 +697,28 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 ## 16.9 Portfolio Router Parameters
 
-### Exposure Group Limits
+### Exposure Group Limits (V6.11)
 
 | Group | Max Net Long | Max Net Short | Max Gross |
 |-------|:------------:|:-------------:|:---------:|
 | `NASDAQ_BETA` | 50% | 30% | 75% |
-| `SPY_BETA` | 40% | 0% | 40% |
-| `SMALL_CAP_BETA` | 25% | 0% | 25% |
-| `FINANCIALS_BETA` | 15% | 0% | 15% |
-| `RATES` | 40% | 0% | 40% |
+| `SPY_BETA` | 40% | 10% | 50% |
+| `COMMODITY` | 20% | 0% | 20% |
 
-### Group Membership
+### Group Membership (V6.11 Universe)
 
 | Symbol | Group | Type | Allocation |
 |--------|-------|------|:----------:|
-| TQQQ | NASDAQ_BETA | 3× Long Nasdaq | 5% (MR) |
-| QLD | NASDAQ_BETA | 2× Long Nasdaq | 15% (Trend — V2.18: was 20%) |
-| SOXL | NASDAQ_BETA | 3× Long Semi | 5% (MR) |
-| PSQ | NASDAQ_BETA | 1× Inverse Nasdaq | (Hedge) |
-| SSO | SPY_BETA | 2× Long S&P | 12% (Trend — V2.18: was 15%) |
-| TNA | SMALL_CAP_BETA | 3× Long Russell 2000 | 8% (Trend — V2.18: was 12%) |
-| FAS | FINANCIALS_BETA | 3× Long Financials | 5% (Trend — V2.18: was 8%) |
-| TMF | RATES | 3× Long Treasury | (Hedge) |
-| SHV | RATES | Short Treasury | (Yield) |
+| QLD | NASDAQ_BETA | 2× Long Nasdaq | 15% (Trend) |
+| TQQQ | NASDAQ_BETA | 3× Long Nasdaq | 4% (MR) |
+| SOXL | NASDAQ_BETA | 3× Long Semi | 3% (MR) |
+| SSO | SPY_BETA | 2× Long S&P | 7% (Trend) |
+| SPXL | SPY_BETA | 3× Long S&P | 3% (MR) |
+| SH | SPY_BETA | 1× Inverse S&P | (Hedge) |
+| UGL | COMMODITY | 2× Gold | 10% (Trend) |
+| UCO | COMMODITY | 2× Crude Oil | 8% (Trend) |
+
+> **V6.11 Universe Redesign:** TNA/FAS/TMF/PSQ/SHV removed. UGL/UCO added for commodity diversification. All Trend symbols now 2× leverage. SH replaces PSQ as hedge.
 
 ### Capital Firewall (V2.18)
 
@@ -703,28 +737,24 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 ---
 
-## 16.9.1 Startup Gate Parameters (V2.30)
+## 16.9.1 Startup Gate Parameters (V6.0)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `STARTUP_GATE_ENABLED` | True | Master toggle for startup gate |
-| `STARTUP_GATE_WARMUP_DAYS` | 5 | Indicator warmup phase duration |
-| `STARTUP_GATE_OBSERVATION_DAYS` | 5 | Observation phase duration (V2.30: was 10) |
-| `STARTUP_GATE_REDUCED_DAYS` | 5 | Reduced phase duration (V2.30: was 10) |
-| `STARTUP_GATE_REDUCED_SIZE_MULT` | 0.50 | Size multiplier during OBSERVATION/REDUCED phases |
+| `STARTUP_GATE_WARMUP_DAYS` | 3 | Indicator warmup phase duration |
+| `STARTUP_GATE_REDUCED_DAYS` | 3 | Reduced phase duration |
+| `STARTUP_GATE_REDUCED_SIZE_MULT` | 0.50 | TREND/MR size multiplier during REDUCED |
 
-### Phase Progression
+### Phase Progression (V6.0 Simplified)
 
-| Phase | Duration | Hedges/Yield | Bearish Options | Directional Longs | Size Mult |
-|-------|:--------:|:------------:|:---------------:|:-----------------:|:---------:|
-| INDICATOR_WARMUP | 5 days | Allowed | Blocked | Blocked | 0% |
-| OBSERVATION | 5 days | Allowed | Allowed (50%) | Blocked | 50% |
-| REDUCED | 5 days | Allowed | Allowed (50%) | Allowed (50%) | 50% |
-| FULLY_ARMED | Permanent | Allowed | Allowed | Allowed | 100% |
+| Phase | Duration | TREND/MR | OPTIONS |
+|-------|:--------:|:--------:|:-------:|
+| INDICATOR_WARMUP | 3 days | Blocked | Blocked |
+| REDUCED | 3 days | 50% | 100% |
+| FULLY_ARMED | Permanent | 100% | 100% |
 
-> **V2.30 Design:** All-weather time-based system. No regime dependency. 15 days total. Hedges/yield never gated. Bearish options available from OBSERVATION. One-time and permanent. Never resets on kill switch. Separate from ColdStartEngine.
->
-> **V2.30 Removed:** `STARTUP_GATE_REGIME_DAYS`, `STARTUP_GATE_REGIME_MIN_SCORE`, `STARTUP_GATE_REDUCED_MAX_WEIGHT`
+> **V6.0 Design:** Simplified 6-day arming sequence. Options are independent with their own conviction system (VASS/MICRO). Gate only controls TREND/MR sizing. Never resets on kill switch.
 
 ---
 
@@ -858,20 +888,21 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 ## 16.14 Symbol Configuration
 
-### Traded Symbols
+### Traded Symbols (V6.11 Universe)
 
 | Symbol | Description | Strategy | Allocation |
 |--------|-------------|----------|:----------:|
-| QLD | 2× Nasdaq | Trend, Warm Entry | 15% (V2.18: was 20%) |
-| SSO | 2× S&P 500 | Trend, Warm Entry | 12% (V2.18: was 15%) |
-| TNA | 3× Russell 2000 | Trend | 8% (V2.18: was 12%) |
-| FAS | 3× Financials | Trend | 5% (V2.18: was 8%) |
-| TQQQ | 3× Nasdaq | Mean Reversion | 5% |
-| SOXL | 3× Semiconductor | Mean Reversion | 5% |
-| QQQ Options | Options chain | Options (VASS) | 25% (V2.3: was 20%) |
-| TMF | 3× Treasury | Hedge | 0-20% |
-| PSQ | 1× Inverse Nasdaq | Hedge | 0-10% |
-| SHV | Short Treasury | Yield | Remainder |
+| QLD | 2× Nasdaq | Trend (Core) | 15% |
+| SSO | 2× S&P 500 | Trend (Core) | 7% |
+| UGL | 2× Gold | Trend (Commodity) | 10% (V6.11 NEW) |
+| UCO | 2× Crude Oil | Trend (Commodity) | 8% (V6.11 NEW) |
+| TQQQ | 3× Nasdaq | Mean Reversion | 4% |
+| SPXL | 3× S&P 500 | Mean Reversion | 3% |
+| SOXL | 3× Semiconductor | Mean Reversion | 3% |
+| QQQ Options | Options chain | Options (VASS) | 25% |
+| SH | 1× Inverse S&P | Hedge | 0-10% |
+
+> **V6.11 Universe Redesign:** Replaced TNA/FAS with UGL/UCO for commodity diversification. All Trend symbols now 2× leverage. TMF/PSQ/SHV removed from default universe.
 
 ### Symbol Liquidity Requirements
 
@@ -934,17 +965,38 @@ LOCKBOX_MILESTONES = [100_000, 200_000]
 LOCKBOX_LOCK_PCT = 0.10
 
 # =============================================================================
-# REGIME ENGINE
+# REGIME ENGINE (V5.3 4-Factor Model)
 # =============================================================================
 
-# Factor Weights (V2.3: Added VIX, rebalanced)
-WEIGHT_TREND = 0.30      # V2.3: Reduced from 0.45
-WEIGHT_VIX = 0.20        # V2.3 NEW: Implied volatility
-WEIGHT_VOLATILITY = 0.15 # V2.3: Reduced from 0.25 (realized vol)
-WEIGHT_BREADTH = 0.20    # V2.3: Increased from 0.15
-WEIGHT_CREDIT = 0.15
+# V5.3 Model Selection
+V53_REGIME_ENABLED = True    # Enable V5.3 4-factor model (recommended)
+V4_REGIME_ENABLED = False    # V4.0/V4.1 5-factor model (deprecated)
+V3_REGIME_SIMPLIFIED_ENABLED = True  # V3.3 3-factor fallback
 
-# VIX Level Factor Thresholds (V2.3 NEW)
+# V5.3 Factor Weights (must sum to 1.0)
+WEIGHT_MOMENTUM_V53 = 0.30   # 20-day ROC - catches reversals in days
+WEIGHT_VIX_COMBINED_V53 = 0.30  # 60% level + 40% direction
+WEIGHT_TREND_V53 = 0.25      # SPY vs MA200
+WEIGHT_DRAWDOWN_V53 = 0.15   # Distance from 52-week high
+
+# VIX Combined Scoring
+VIX_COMBINED_LEVEL_WEIGHT = 0.60      # VIX level contribution
+VIX_COMBINED_DIRECTION_WEIGHT = 0.40  # VIX direction contribution
+VIX_COMBINED_HIGH_VIX_THRESHOLD = 25.0  # Clamp threshold
+VIX_COMBINED_HIGH_VIX_CLAMP = 47        # Max score when VIX >= 25
+
+# V5.3 Guards
+V53_SPIKE_CAP_ENABLED = True
+V53_SPIKE_CAP_THRESHOLD = 0.28        # VIX 5d >= +28% triggers
+V53_SPIKE_CAP_MAX_SCORE = 38          # V6.6: was 45
+V53_SPIKE_CAP_DECAY_DAYS = 3
+V53_BREADTH_DECAY_ENABLED = True
+V53_BREADTH_5D_DECAY_THRESHOLD = -0.01
+V53_BREADTH_10D_DECAY_THRESHOLD = -0.03
+V53_BREADTH_5D_PENALTY = 8
+V53_BREADTH_10D_PENALTY = 12
+
+# VIX Level Thresholds
 VIX_LOW_THRESHOLD = 15       # Below = complacent
 VIX_NORMAL_THRESHOLD = 22    # Normal volatility
 VIX_HIGH_THRESHOLD = 30      # Elevated fear
@@ -1180,41 +1232,39 @@ OCO_CANCEL_TIMEOUT_SEC = 30
 # PORTFOLIO ROUTER
 # =============================================================================
 
-# Exposure Limits
+# Exposure Limits (V6.11 Universe)
 EXPOSURE_LIMITS = {
     "NASDAQ_BETA": {"max_net_long": 0.50, "max_net_short": 0.30, "max_gross": 0.75},
-    "SPY_BETA": {"max_net_long": 0.40, "max_net_short": 0.00, "max_gross": 0.40},
-    "SMALL_CAP_BETA": {"max_net_long": 0.25, "max_net_short": 0.00, "max_gross": 0.25},
-    "FINANCIALS_BETA": {"max_net_long": 0.15, "max_net_short": 0.00, "max_gross": 0.15},
-    "RATES": {"max_net_long": 0.99, "max_net_short": 0.00, "max_gross": 0.99}  # V2.3.17: raised from 40% for SHV flexibility
+    "SPY_BETA": {"max_net_long": 0.40, "max_net_short": 0.10, "max_gross": 0.50},
+    "COMMODITY": {"max_net_long": 0.20, "max_net_short": 0.00, "max_gross": 0.20},
 }
 
-# Group Membership
+# Group Membership (V6.11 Universe)
 SYMBOL_GROUPS = {
-    "TQQQ": "NASDAQ_BETA",
     "QLD": "NASDAQ_BETA",
+    "TQQQ": "NASDAQ_BETA",
     "SOXL": "NASDAQ_BETA",
-    "PSQ": "NASDAQ_BETA",  # Inverse
     "SSO": "SPY_BETA",
-    "TNA": "SMALL_CAP_BETA",
-    "FAS": "FINANCIALS_BETA",
-    "TMF": "RATES",
-    "SHV": "RATES"
+    "SPXL": "SPY_BETA",
+    "SH": "SPY_BETA",     # Inverse S&P (Hedge)
+    "UGL": "COMMODITY",   # 2× Gold
+    "UCO": "COMMODITY",   # 2× Crude Oil
 }
 
-# Trend Engine Allocations (V2.18: Reduced for Capital Firewall)
+# Trend Engine Allocations (V6.11)
 TREND_SYMBOL_ALLOCATIONS = {
-    "QLD": 0.15,  # 15% - 2× Nasdaq (V2.18: was 20%)
-    "SSO": 0.12,  # 12% - 2× S&P 500 (V2.18: was 15%)
-    "TNA": 0.08,  # 8% - 3× Russell 2000 (V2.18: was 12%)
-    "FAS": 0.05,  # 5% - 3× Financials (V2.18: was 8%)
+    "QLD": 0.15,  # 15% - 2× Nasdaq
+    "SSO": 0.07,  # 7% - 2× S&P 500
+    "UGL": 0.10,  # 10% - 2× Gold
+    "UCO": 0.08,  # 8% - 2× Crude Oil
 }
-TREND_TOTAL_ALLOCATION = 0.40  # 40% total (V2.18: was 55%)
+TREND_TOTAL_ALLOCATION = 0.40  # 40% total
 
-# Mean Reversion Allocations
+# Mean Reversion Allocations (V6.11)
 MR_SYMBOL_ALLOCATIONS = {
-    "TQQQ": 0.05,  # 5% - 3× Nasdaq
-    "SOXL": 0.05,  # 5% - 3× Semiconductor
+    "TQQQ": 0.04,  # 4% - 3× Nasdaq
+    "SPXL": 0.03,  # 3% - 3× S&P 500
+    "SOXL": 0.03,  # 3% - 3× Semiconductor
 }
 MR_TOTAL_ALLOCATION = 0.10  # 10% total to MR Engine
 
@@ -1259,12 +1309,11 @@ KS_TIER_1_PCT = 0.02   # 2% — Reduce sizing 50%
 KS_TIER_2_PCT = 0.04   # 4% — Block all new entries
 KS_TIER_3_PCT = 0.06   # 6% — Full liquidation + cold start reset
 
-# V2.30: All-Weather Startup Gate (time-based, no regime dependency, never resets on kill switch)
+# V6.0: Simplified Startup Gate (6-day arming, never resets on kill switch)
 STARTUP_GATE_ENABLED = True
-STARTUP_GATE_WARMUP_DAYS = 5            # 5 days indicator warmup (hedges + yield only)
-STARTUP_GATE_OBSERVATION_DAYS = 5       # 5 days observation (+ bearish options at 50%)
-STARTUP_GATE_REDUCED_DAYS = 5           # 5 days reduced (all engines at 50%)
-STARTUP_GATE_REDUCED_SIZE_MULT = 0.50   # 50% sizing during OBSERVATION/REDUCED phases
+STARTUP_GATE_WARMUP_DAYS = 3            # Phase 0: Indicators warming up (nothing allowed)
+STARTUP_GATE_REDUCED_DAYS = 3           # Phase 1: TREND/MR at 50%, OPTIONS at 100%
+STARTUP_GATE_REDUCED_SIZE_MULT = 0.50   # TREND/MR size multiplier during REDUCED
 
 # =============================================================================
 # V2.1 CIRCUIT BREAKER SYSTEM (5 Levels)

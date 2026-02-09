@@ -385,13 +385,11 @@ def OnData(self, data):
 **Allowed overnight holds (Trend Engine swing trades + Hedges):**
 - `QLD` — 2× Nasdaq (Trend/Swing)
 - `SSO` — 2× S&P 500 (Trend/Swing)
-- `UGL` — 2× Gold (Trend/Swing) - V6.11 addition
-- `UCO` — 2× Crude Oil (Trend/Swing) - V6.11 addition
-- `TMF` — 3× Treasury (Strategic Hedge)
-- `PSQ` — 1× Inverse Nasdaq (Strategic Hedge)
-- `SHV` — Short Treasury (Yield)
+- `UGL` — 2× Gold (Trend/Swing)
+- `UCO` — 2× Crude Oil (Trend/Swing)
+- `SH` — 1× Inverse S&P (Strategic Hedge)
 
-> **V6.11 Note:** All Trend Engine symbols are now 2× leverage. TNA/FAS removed, replaced with UGL/UCO for commodity diversification.
+> **V6.11 Universe Redesign:** All Trend symbols are 2× leverage. TNA/FAS replaced with UGL/UCO for commodity diversification. TMF/PSQ/SHV removed; SH is the only hedge symbol.
 
 ```python
 # In Mean Reversion Engine - enforced at 15:45
@@ -713,10 +711,13 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | Leverage cap | 90% margin | Block new entries (V2.18) |
 | Trend entry (V2) | Price > MA200 + ADX >= 15 | Trend entry eligible (V2.3.12: was 25) |
 | Oversold | RSI(5) < 25 | MR entry eligible |
-| VIX Low (V2.3) | VIX < 15 | Complacent market, cheap options |
-| VIX Normal (V2.3) | VIX 15-22 | Normal volatility |
-| VIX High (V2.3) | VIX 22-30 | Elevated fear |
-| VIX Extreme (V2.3) | VIX > 40 | Crisis mode |
+| VIX Low | VIX < 15 | Complacent market, cheap options |
+| VIX Normal | VIX 15-22 | Normal volatility |
+| VIX High | VIX 22-30 | Elevated fear |
+| VIX Extreme | VIX > 40 | Crisis mode |
+| V5.3 VIX Clamp (V6.6) | VIX >= 25 | VIX Combined score capped at 47 |
+| V5.3 Spike Cap (V6.6) | VIX 5d >= +28% | Regime score capped at 38 (DEFENSIVE) |
+| V5.3 Breadth Decay (V6.9) | RSP/SPY 5d < -1% | 8-point regime penalty |
 | VASS Low IV (V2.8) | VIX < 15 | Debit spreads, 30-45 DTE (monthly) |
 | VASS Medium IV (V2.8) | VIX 15-25 | Debit spreads, 7-21 DTE (weekly) |
 | VASS High IV (V6.8) | VIX > 25 | Credit spreads, 5-28 DTE (was 7-21) |
@@ -736,20 +737,20 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | VIX Stable Band High (V6.10) | +/-1.0% | STABLE band when VIX > 25 (was +/-2.0%) |
 | Margin Pre-Check (V6.10) | 15% buffer | Check margin before signal approval |
 
-### Overnight Holdings
+### Overnight Holdings (V6.11 Universe)
 
 | Symbol | Type | Overnight? |
 |--------|------|:----------:|
-| QLD | 2× Nasdaq (Trend) | ✅ Yes |
-| SSO | 2× S&P 500 (Trend) | ✅ Yes |
-| UGL | 2× Gold (Trend) | ✅ Yes |
-| UCO | 2× Crude Oil (Trend) | ✅ Yes |
-| TMF | 3× Treasury (Hedge) | ✅ Yes |
-| PSQ | 1× Inverse Nasdaq (Hedge) | ✅ Yes |
-| SHV | Short Treasury (Yield) | ✅ Yes |
-| TQQQ | 3× Nasdaq (MR) | ❌ **Close by 15:45** |
-| SPXL | 3× S&P 500 (MR) | ❌ **Close by 15:45** |
-| SOXL | 3× Semiconductor (MR) | ❌ **Close by 15:45** |
+| QLD | 2× Nasdaq (Trend) | Yes |
+| SSO | 2× S&P 500 (Trend) | Yes |
+| UGL | 2× Gold (Trend) | Yes |
+| UCO | 2× Crude Oil (Trend) | Yes |
+| SH | 1× Inverse S&P (Hedge) | Yes |
+| TQQQ | 3× Nasdaq (MR) | **Close by 15:45** |
+| SPXL | 3× S&P 500 (MR) | **Close by 15:45** |
+| SOXL | 3× Semiconductor (MR) | **Close by 15:45** |
+
+> **V6.11 Note:** TMF/PSQ/SHV removed from default universe. SH is the only hedge symbol. All Trend symbols are 2× leverage.
 
 ### Exposure Limits
 
