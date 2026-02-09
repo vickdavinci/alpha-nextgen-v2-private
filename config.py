@@ -264,10 +264,10 @@ V53_BREADTH_DECAY_ENABLED = True
 # V6.6: Relaxed thresholds from -10%/-15% to -2%/-4%
 # Old thresholds never triggered - RSP/SPY relative moves are typically 1-3%
 # A -2% divergence over 5 days indicates meaningful distribution
-V53_BREADTH_5D_DECAY_THRESHOLD = -0.02  # RSP/SPY 5d ratio decay <= -2%
-V53_BREADTH_10D_DECAY_THRESHOLD = -0.04  # RSP/SPY 10d ratio decay <= -4%
-V53_BREADTH_5D_PENALTY = 5  # -5 points for 5d decay
-V53_BREADTH_10D_PENALTY = 8  # -8 points for 10d decay (stacks with 5d)
+V53_BREADTH_5D_DECAY_THRESHOLD = -0.01  # V6.9: Trigger earlier (-1% vs -2%)
+V53_BREADTH_10D_DECAY_THRESHOLD = -0.03  # V6.9: Trigger earlier (-3% vs -4%)
+V53_BREADTH_5D_PENALTY = 8  # V6.9: Increase penalty to pull regime down faster
+V53_BREADTH_10D_PENALTY = 12  # V6.9: Stronger 10d decay penalty (stacks with 5d)
 
 # -----------------------------------------------------------------------------
 # LEGACY 7-FACTOR WEIGHTS (V3.0) - Used if V3_REGIME_SIMPLIFIED_ENABLED = False
@@ -821,7 +821,9 @@ VASS_ENABLED = True  # Master switch for VASS
 # IV Environment Classification Thresholds
 # V6.6: Adjusted based on 2022H1 VIX distribution (16.6-32.0 range observed)
 VASS_IV_LOW_THRESHOLD = 16  # V6.6: Was 15, raised to match data distribution
-VASS_IV_HIGH_THRESHOLD = 28  # V6.6: Was 25, raised to reduce HIGH IV frequency
+VASS_IV_HIGH_THRESHOLD = (
+    25  # V6.9: Reverted to 25 - HIGH IV must use CREDIT spreads per V2.8 design
+)
 VASS_IV_SMOOTHING_MINUTES = 30  # SMA window to prevent strategy flickering
 
 # DTE Ranges by IV Environment (Swing Mode)
@@ -830,8 +832,8 @@ VASS_LOW_IV_DTE_MAX = 45
 VASS_MEDIUM_IV_DTE_MIN = 7  # Medium IV: Weekly expiration
 VASS_MEDIUM_IV_DTE_MAX = 21
 # V6.6: Widened HIGH IV DTE range - 36 spread failures in 2022H1 due to narrow 7-14 window
-VASS_HIGH_IV_DTE_MIN = 7  # Keep at 7 - 5 DTE has high gamma risk near expiry
-VASS_HIGH_IV_DTE_MAX = 21  # V6.6: Was 14, wider window prevents "no contracts met criteria"
+VASS_HIGH_IV_DTE_MIN = 5  # V6.8: Was 7, allow trades in high IV
+VASS_HIGH_IV_DTE_MAX = 28  # V6.8: Was 21, widen candidate pool
 
 # V5.3: VASS Conviction Engine (VIX Direction Tracking)
 # VASS tracks weekly (5d) and monthly (20d) VIX to determine conviction
@@ -902,10 +904,8 @@ OPTIONS_IV_RANK_HIGH = 80  # IV rank > 80 → 0.25
 
 # Liquidity Factor
 OPTIONS_SPREAD_MAX_PCT = 0.15  # V2.3.10: Widened from 5% to 15% - ATM contracts have wider spreads
-OPTIONS_SPREAD_WARNING_PCT = 0.25  # V2.3.7: Widened from 15% - fast markets have wide spreads
-OPTIONS_MIN_OPEN_INTEREST = (
-    100  # V2.3.7: Lowered from 200 - 0DTE contracts have even lower OI in practice
-)
+OPTIONS_SPREAD_WARNING_PCT = 0.30  # V6.8: Was 0.25, reduce spread-based rejection
+OPTIONS_MIN_OPEN_INTEREST = 50  # V6.8: Was 100, avoid rejection in thin chains
 
 # Confidence-Weighted Tiered Stops
 # V2.4.3 FIX: CORRECTED - Higher confidence = MORE contracts (was inverted!)
@@ -936,11 +936,11 @@ OPTIONS_0DTE_STOP_PCT = 0.15  # -15% stop for 0DTE
 #   If entry=$3.50, stop=$0.80 (77% stop)
 
 # ATR multiplier for stop calculation (Chandelier-style)
-OPTIONS_ATR_STOP_MULTIPLIER = 1.5  # 1.5× ATR × delta
+OPTIONS_ATR_STOP_MULTIPLIER = 1.0  # V6.8: Was 1.5, tighter stops
 
 # Floor and cap to prevent extreme stops
-OPTIONS_ATR_STOP_MIN_PCT = 0.20  # Never tighter than 20% (low delta protection)
-OPTIONS_ATR_STOP_MAX_PCT = 0.50  # Never wider than 50% (risk cap)
+OPTIONS_ATR_STOP_MIN_PCT = 0.15  # V6.8: Was 0.20, allow slightly tighter stops
+OPTIONS_ATR_STOP_MAX_PCT = 0.30  # V6.8: Was 0.50, prevent 50% losses
 
 # Whether to use ATR-based stops (set False to use legacy tier-based stops)
 OPTIONS_USE_ATR_STOPS = True
@@ -992,13 +992,21 @@ OVERNIGHT_ITM_SHORT_CHECK_TIME_MINUTE = 0
 # P0 Fix 3: Margin Buffer Before Assignment Risk
 # Require extra margin when ITM short exposure exists
 ASSIGNMENT_MARGIN_BUFFER_ENABLED = True
-ASSIGNMENT_MARGIN_BUFFER_PCT = 0.20  # Require 20% extra margin for ITM shorts
+ASSIGNMENT_MARGIN_BUFFER_PCT = 0.10  # V6.8: Was 0.20, reduce instant exit triggers
 ASSIGNMENT_MARGIN_AUTO_REDUCE = True  # Auto-reduce if buffer insufficient
 
 # P0 Fix 4: Partial Assignment Handling
 # Detect partial assignment and auto-close remaining legs
 PARTIAL_ASSIGNMENT_DETECTION_ENABLED = True
 PARTIAL_ASSIGNMENT_AUTO_CLOSE = True  # Auto-close orphaned legs
+
+# V6.9 P0 Fix 5: Short Leg ITM Exit (regardless of DTE)
+# Exit spread immediately when short leg goes ITM by threshold
+# This catches assignments at ANY DTE, not just near expiry
+# Aug 2022 assignments happened at DTE=4, missed by DTE<=3 guards
+SHORT_LEG_ITM_EXIT_ENABLED = True
+SHORT_LEG_ITM_EXIT_THRESHOLD = 0.02  # Exit when short leg is 2% ITM
+SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 15  # Minutes between log messages
 
 # P1 Fix 5: Assignment-Aware Position Sizing
 # Reduce size if max short exposure exceeds safe margin
@@ -1104,7 +1112,7 @@ SPREAD_SHORT_LEG_BY_WIDTH = True  # V2.4.3: Use strike width for short leg (not 
 # V6.6: Spread width settings for QQQ
 SPREAD_WIDTH_MIN = 2.0  # Keep at 2.0 - $1 spreads have poor risk/reward
 SPREAD_WIDTH_MAX = 10.0  # V2.4.3: Maximum $10 spread (caps risk)
-SPREAD_WIDTH_TARGET = 4.0  # V6.6: Was 5.0, slightly lower for more contract matches
+SPREAD_WIDTH_TARGET = 3.0  # V6.8: Was 4.0, more matches in chain
 
 # DTE for debit spreads (per V2.3 spec)
 # V2.3.22: Raised from 10 to 14 - spreads need same gap cushion as single-leg
@@ -1117,6 +1125,12 @@ SPREAD_PROFIT_TARGET_PCT = 0.50  # Take profit at 50% of max profit (base value)
 SPREAD_STOP_LOSS_PCT = (
     0.50  # V2.4.2/V2.27: Stop loss at 50% of entry debit (max loss = 50% of net debit)
 )
+SPREAD_STOP_REGIME_MULTIPLIERS = {
+    75: 1.20,  # Bull: give more room (0.50 * 1.2 = 0.60)
+    50: 1.00,  # Neutral: base
+    40: 0.90,  # Cautious: tighter
+    0: 0.80,  # Bear: tightest
+}
 
 # V3.0: Regime-Adaptive Profit Targets
 # In bull markets (regime >= 75), be greedy - let winners run to 90%
@@ -1178,10 +1192,18 @@ SPREAD_LOCK_CLEAR_ON_FAILURE = True  # Clear is_closing lock if all close attemp
 # V2.3.24: Widened DELTA_MIN from 0.55 → 0.50 to include ATM contracts
 # V6.6: Slightly relaxed delta requirements for better contract matching
 # 2022H1 analysis showed 36 spread failures due to strict delta requirements
-SPREAD_LONG_LEG_DELTA_MIN = 0.45  # V6.6: Was 0.50, include near-ATM options
+SPREAD_LONG_LEG_DELTA_MIN = 0.40  # V6.8: Was 0.45, allow near-ATM
 SPREAD_LONG_LEG_DELTA_MAX = 0.85  # Keep at 0.85 - 0.90 is deep ITM, expensive
 SPREAD_SHORT_LEG_DELTA_MIN = 0.10  # Keep at 0.10 - lower collects minimal premium
-SPREAD_SHORT_LEG_DELTA_MAX = 0.52  # V6.6: Was 0.50, slight relaxation but avoid assignment risk
+SPREAD_SHORT_LEG_DELTA_MAX = 0.55  # V6.8: Was 0.52, avoid excessive rejection
+# V6.9: PUT-specific spread filters (bear put spreads need looser liquidity + delta)
+SPREAD_LONG_LEG_DELTA_MIN_PUT = 0.30  # Allow closer-to-ATM puts at swing DTE
+SPREAD_LONG_LEG_DELTA_MAX_PUT = 0.85
+SPREAD_SHORT_LEG_DELTA_MIN_PUT = 0.08
+SPREAD_SHORT_LEG_DELTA_MAX_PUT = 0.50
+OPTIONS_MIN_OPEN_INTEREST_PUT = 25  # Relax OI filter for puts
+OPTIONS_SPREAD_MAX_PCT_PUT = 0.25  # Allow slightly wider spreads for puts
+OPTIONS_SPREAD_WARNING_PCT_PUT = 0.35
 
 # -----------------------------------------------------------------------------
 # V2.4.1 SWING SAFETY RULES
@@ -1340,8 +1362,10 @@ VIX_WHIPSAW_MIN_RANGE = 5.0  # Minimum range % to consider whipsaw
 # Analysis showed Jan 21 (+6.9%), Jan 24 (+7.4%), Jan 25 (+5.3%) missed by narrow margin
 # V6.6: Lowered from ±5% to ±3% based on 2022H1 analysis
 # Only 8% of moves exceeded ±5%, missing many valid conviction signals
-MICRO_UVXY_BEARISH_THRESHOLD = 0.03  # V6.6: Was 0.05, now +3% for more conviction signals
-MICRO_UVXY_BULLISH_THRESHOLD = -0.03  # V6.6: Was -0.05, now -3% for more conviction signals
+MICRO_UVXY_BEARISH_THRESHOLD = 0.04  # V6.10: +4% for optimal cross-market balance (was +2.5%)
+MICRO_UVXY_BULLISH_THRESHOLD = -0.06  # V6.10: -6% filters bear market relief noise (was -5%)
+# V6.9: Only allow Micro VETO in NEUTRAL when UVXY move is extreme
+MICRO_UVXY_CONVICTION_EXTREME = 0.07  # 7% intraday move required for NEUTRAL VETO
 MICRO_VIX_CRISIS_LEVEL = 35  # VIX > 35 → CRISIS (BEARISH conviction)
 MICRO_VIX_COMPLACENT_LEVEL = 12  # VIX < 12 → COMPLACENT (BULLISH conviction)
 
@@ -1429,12 +1453,12 @@ QQQ_NOISE_THRESHOLD = 0.35  # Minimum QQQ move to consider trading (was 0.15%)
 # V2.19: VIX Floor for DEBIT_FADE
 # In low VIX (<13.5) "apathy" markets, mean reversion fails - trends persist longer
 # Evidence: V2.18 backtests showed DEBIT_FADE losses when VIX < 13.5
-INTRADAY_DEBIT_FADE_VIX_MIN = 13.5  # Disable DEBIT_FADE in "apathy" market
+INTRADAY_DEBIT_FADE_VIX_MIN = 11.5  # V6.8: Was 13.5, allow trades in low VIX bull markets
 
 # Debit Fade (Mean Reversion) - Gate 3a - The Sniper Window
-INTRADAY_DEBIT_FADE_MIN_SCORE = 45  # Micro score >= 45 (MICRO_SCORE_MODERATE)
+INTRADAY_DEBIT_FADE_MIN_SCORE = 35  # V6.8: Was 45, allow more trades in bull/chop
 INTRADAY_FADE_MIN_MOVE = 0.50  # V2.3.16: Min move for FADE (was INTRADAY_DEBIT_FADE_MIN_MOVE)
-INTRADAY_FADE_MAX_MOVE = 1.20  # V2.3.16: Max move - don't fade runaway trends/crashes
+INTRADAY_FADE_MAX_MOVE = 1.50  # V6.8: Was 1.20, don't block strong bull continuation
 INTRADAY_DEBIT_FADE_VIX_MAX = 25  # VIX < 25
 INTRADAY_DEBIT_FADE_START = "10:15"  # V2.14: Widened from 10:30 to capture more signals
 INTRADAY_DEBIT_FADE_END = "14:00"  # Entry window end
@@ -1452,9 +1476,9 @@ INTRADAY_CREDIT_TARGET = 0.50  # 50% of max profit target
 INTRADAY_CREDIT_STOP = 1.0  # Stop if spread doubles
 
 # ITM Momentum
-INTRADAY_ITM_MIN_VIX = 11.5  # V2.3.12: Lowered from 25 - enable more 0-DTE ITM momentum trades
+INTRADAY_ITM_MIN_VIX = 10.0  # V6.8: Was 11.5, allow momentum in very low VIX
 INTRADAY_ITM_MIN_MOVE = 0.8  # QQQ move >= 0.8%
-INTRADAY_ITM_MIN_SCORE = 50  # Micro score >= 50
+INTRADAY_ITM_MIN_SCORE = 40  # V6.8: Was 50, capture momentum earlier
 # V2.3.19: Time window moved from hardcoded to config
 INTRADAY_ITM_START = "10:00"  # Entry window start
 INTRADAY_ITM_END = "13:30"  # Entry window end (earlier than FADE - momentum fades after lunch)

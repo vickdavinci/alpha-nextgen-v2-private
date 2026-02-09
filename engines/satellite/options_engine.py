@@ -1943,6 +1943,13 @@ class OptionsEngine:
 
         # Case 3: Misaligned with clear Macro direction
         if engine_conviction:
+            # V6.10: Never allow CALL overrides in BEARISH macro (prevent bull bias in bear markets)
+            if macro_direction == "BEARISH" and engine_direction == "BULLISH":
+                return (
+                    False,
+                    None,
+                    "NO_TRADE: Macro BEARISH blocks CALL override (V6.10)",
+                )
             self.log(
                 f"VETO: {engine} conviction ({engine_direction}) overrides Macro ({macro_direction})",
                 trades_only=True,
@@ -4243,6 +4250,59 @@ class OptionsEngine:
 
         return False, ""
 
+    def _check_short_leg_itm_exit(
+        self,
+        short_leg: "OptionContract",
+        underlying_price: float,
+    ) -> Tuple[bool, str]:
+        """
+        V6.9 P0 Fix 5: Check if short leg is ITM beyond threshold (any DTE).
+
+        Unlike DEEP_ITM_EXIT which requires DTE <= 3, this guard triggers
+        at ANY DTE when the short leg goes ITM by the threshold percentage.
+        This catches early assignment risk that the Aug 2022 backtest exposed
+        (assignments at DTE=4 were missed by DTE<=3 guards).
+
+        Args:
+            short_leg: The short leg of the spread
+            underlying_price: Current price of underlying (QQQ)
+
+        Returns:
+            Tuple of (should_exit, reason)
+        """
+        if not getattr(config, "SHORT_LEG_ITM_EXIT_ENABLED", True):
+            return False, ""
+
+        itm_threshold = getattr(config, "SHORT_LEG_ITM_EXIT_THRESHOLD", 0.02)
+
+        # Determine if call or put
+        is_put = "P" in str(short_leg.symbol).upper()
+        strike = short_leg.strike
+
+        if is_put:
+            # Put is ITM when strike > underlying
+            if strike <= underlying_price:
+                return False, ""  # Not ITM
+            itm_amount = strike - underlying_price
+            itm_pct = itm_amount / strike
+        else:
+            # Call is ITM when strike < underlying
+            if strike >= underlying_price:
+                return False, ""  # Not ITM
+            itm_amount = underlying_price - strike
+            itm_pct = itm_amount / strike
+
+        if itm_pct >= itm_threshold:
+            reason = (
+                f"SHORT_LEG_ITM_EXIT: Short {'PUT' if is_put else 'CALL'} "
+                f"Strike={strike} is {itm_pct:.1%} ITM (threshold={itm_threshold:.1%}) | "
+                f"Underlying={underlying_price:.2f} | ITM$={itm_amount:.2f} | "
+                f"Closing to prevent assignment"
+            )
+            return True, reason
+
+        return False, ""
+
     def check_assignment_risk_exit(
         self,
         underlying_price: float,
@@ -4279,14 +4339,24 @@ class OptionsEngine:
         short_leg = spread.short_leg
         exit_reason = None
 
-        # P0 Fix 1: Deep ITM short leg
-        is_deep_itm, deep_itm_reason = self._is_short_leg_deep_itm(
+        # V6.9 P0 Fix 5: Short leg ITM exit (any DTE) - CHECK FIRST
+        # This catches assignments at any DTE, not just near expiry
+        should_exit, itm_reason = self._check_short_leg_itm_exit(
             short_leg=short_leg,
             underlying_price=underlying_price,
-            current_dte=current_dte,
         )
-        if is_deep_itm:
-            exit_reason = deep_itm_reason
+        if should_exit:
+            exit_reason = itm_reason
+
+        # P0 Fix 1: Deep ITM short leg (DTE <= 3)
+        if exit_reason is None:
+            is_deep_itm, deep_itm_reason = self._is_short_leg_deep_itm(
+                short_leg=short_leg,
+                underlying_price=underlying_price,
+                current_dte=current_dte,
+            )
+            if is_deep_itm:
+                exit_reason = deep_itm_reason
 
         # P0 Fix 2: Overnight ITM short block
         if exit_reason is None:
@@ -5185,7 +5255,7 @@ class OptionsEngine:
                 config.VASS_MEDIUM_IV_DTE_MAX,
             ),
             ("BULLISH", "HIGH"): (
-                SpreadStrategy.BULL_CALL_DEBIT,  # V5.3: Debit for gamma capture in volatile markets
+                SpreadStrategy.BULL_PUT_CREDIT,  # V6.9: Reverted to V2.8 - sell premium in HIGH IV
                 config.VASS_HIGH_IV_DTE_MIN,
                 config.VASS_HIGH_IV_DTE_MAX,
             ),
@@ -5200,7 +5270,7 @@ class OptionsEngine:
                 config.VASS_MEDIUM_IV_DTE_MAX,
             ),
             ("BEARISH", "HIGH"): (
-                SpreadStrategy.BEAR_PUT_DEBIT,  # V5.3: Debit for gamma capture in volatile markets
+                SpreadStrategy.BEAR_CALL_CREDIT,  # V6.9: Reverted to V2.8 - CALLs have better liquidity than ITM PUTs
                 config.VASS_HIGH_IV_DTE_MIN,
                 config.VASS_HIGH_IV_DTE_MAX,
             ),
