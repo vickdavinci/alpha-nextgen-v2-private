@@ -283,6 +283,8 @@ class AlphaNextGen(QCAlgorithm):
         self._margin_cb_in_progress = False  # V2.27: Re-entry guard for margin CB liquidation
         self._last_vass_rejection_log = None  # V2.10: Throttle VASS rejection logs
         self._last_swing_scan_time = None  # V2.19: Throttle swing spread scans (1/hour)
+        self._intraday_force_exit_fallback_date = None  # V6.12: Fallback guard (once/day)
+        self._mr_force_close_fallback_date = None  # V6.12: MR force close fallback guard
 
         # V2.20: Scoped rejection cooldowns — per-strategy penalty after broker rejection
         # Prevents "machine gun" retries while allowing other strategies to continue
@@ -459,6 +461,18 @@ class AlphaNextGen(QCAlgorithm):
         # STEP 9: PROCESS IMMEDIATE SIGNALS
         # =====================================================================
         self._process_immediate_signals()
+
+        # =====================================================================
+        # STEP 9B: V6.12 FALLBACK INTRADAY FORCE-CLOSE (safety net)
+        # =====================================================================
+        # If the scheduled 15:30 close missed, enforce once after 15:35.
+        self._intraday_force_exit_fallback()
+
+        # =====================================================================
+        # STEP 9C: V6.12 FALLBACK MR FORCE-CLOSE (safety net)
+        # =====================================================================
+        # If the scheduled 15:45 MR close missed, enforce once after 15:50.
+        self._mr_force_close_fallback()
 
     # =========================================================================
     # SETUP HELPERS
@@ -806,9 +820,35 @@ class AlphaNextGen(QCAlgorithm):
         self.scheduler.on_market_close(self._on_market_close)
         self.scheduler.on_weekly_reset(self._on_weekly_reset)
 
-        # V2.1.1: Intraday options force exit - NOW SCHEDULED DYNAMICALLY
-        # V3.0: Moved to _schedule_dynamic_eod_events() to handle early close days
-        # Time is calculated as: market_close - INTRADAY_OPTIONS_OFFSET_MINUTES
+        # V6.12: CRITICAL FIX - Static fallback EOD schedules
+        # The dynamic scheduling in _schedule_dynamic_eod_events() was failing silently,
+        # causing NO EOD events to fire. This resulted in:
+        # - Positions held overnight when they should close
+        # - OCO orders never triggered (0% trigger rate across all backtests)
+        # - Missing 15:30/15:45/16:00 processing
+        #
+        # These static schedules act as a fallback for normal trading days (4:00 PM close).
+        # For early close days, dynamic scheduling should override these times.
+        self.Schedule.On(
+            self.DateRules.EveryDay(),
+            self.TimeRules.At(15, 30),
+            self._on_intraday_options_force_close,
+        )
+        self.Schedule.On(
+            self.DateRules.EveryDay(),
+            self.TimeRules.At(15, 45),
+            self._on_mr_force_close,
+        )
+        self.Schedule.On(
+            self.DateRules.EveryDay(),
+            self.TimeRules.At(15, 45),
+            self._on_eod_processing,
+        )
+        self.Schedule.On(
+            self.DateRules.EveryDay(),
+            self.TimeRules.At(16, 0),
+            self._on_market_close,
+        )
 
         # V2.1.1: Tiered VIX Monitoring schedules
         # Layer 1: Spike detection every 5 minutes (10:00 - 15:00)
@@ -1118,16 +1158,12 @@ class AlphaNextGen(QCAlgorithm):
             return
 
         if self.options_engine._spread_position is None:
-            self.Log("PREMARKET_ITM_CHECK: No spread position - skipping", trades_only=False)
-            return
+            return  # V6.12: Silent return, no log needed for normal case
 
         # Get current QQQ price (pre-market)
         qqq_price = self.Securities[self.qqq].Price
         if qqq_price <= 0:
-            self.Log(
-                f"PREMARKET_ITM_CHECK: Invalid QQQ price {qqq_price} - skipping",
-                trades_only=True,
-            )
+            self.Log(f"PREMARKET_ITM_CHECK: Invalid QQQ price {qqq_price} - skipping")
             return
 
         # Call options engine pre-market check
@@ -1137,17 +1173,95 @@ class AlphaNextGen(QCAlgorithm):
             # Queue the exit signals for immediate execution at market open
             self.Log(
                 f"PREMARKET_ITM_CHECK: ITM short detected - queuing close for market open | "
-                f"QQQ={qqq_price:.2f}",
-                trades_only=True,
+                f"QQQ={qqq_price:.2f}"
             )
             # Process through portfolio router for proper execution
             for signal in exit_signals:
                 self.portfolio_router.add_weight(signal)
-        else:
-            self.Log(
-                f"PREMARKET_ITM_CHECK: All shorts OTM - no action needed | QQQ={qqq_price:.2f}",
-                trades_only=False,
-            )
+
+    def _intraday_force_exit_fallback(self) -> None:
+        """
+        V6.12: Safety net - force-close intraday position after 15:35 if scheduled close missed.
+
+        This prevents intraday options from carrying overnight due to scheduler issues.
+        """
+        # Only run once per day
+        if getattr(self, "_intraday_force_exit_fallback_date", None) == self.Time.date():
+            return
+
+        # Only after 15:35 ET (5 min after scheduled 15:30 close)
+        if self.Time.hour < 15 or (self.Time.hour == 15 and self.Time.minute < 35):
+            return
+
+        # Check if we have an intraday position
+        if not hasattr(self, "options_engine") or not self.options_engine.has_intraday_position():
+            self._intraday_force_exit_fallback_date = self.Time.date()
+            return
+
+        # Get current option price
+        symbol = self.options_engine._intraday_position.contract.symbol
+        price = self.Securities[symbol].Price if self.Securities.ContainsKey(symbol) else 0
+        if price <= 0:
+            try:
+                sec = self.Securities[symbol]
+                bid = sec.BidPrice or 0
+                ask = sec.AskPrice or 0
+                if bid > 0 and ask > 0:
+                    price = (bid + ask) / 2
+            except Exception:
+                price = 0
+
+        if price <= 0:
+            self.Log(f"INTRADAY_FORCE_EXIT_FALLBACK: No valid price for {symbol} - skip")
+            self._intraday_force_exit_fallback_date = self.Time.date()
+            return
+
+        signal = self.options_engine.check_intraday_force_exit(
+            current_hour=self.Time.hour,
+            current_minute=self.Time.minute,
+            current_price=price,
+        )
+        if signal:
+            self.Log(f"INTRADAY_FORCE_EXIT_FALLBACK: Triggered for {symbol}")
+            self.portfolio_router.add_weight(signal)
+            self._process_immediate_signals()
+
+        # Always mark as done after 15:35 check to prevent repeated attempts
+        self._intraday_force_exit_fallback_date = self.Time.date()
+
+    def _mr_force_close_fallback(self) -> None:
+        """
+        V6.12: Safety net - force-close MR positions after 15:50 if scheduled close missed.
+
+        This prevents 3x ETFs (TQQQ, SOXL, SPXL) from carrying overnight due to
+        scheduler issues. Overnight gaps can cause catastrophic losses with 3x leverage.
+        """
+        # Only run once per day
+        if getattr(self, "_mr_force_close_fallback_date", None) == self.Time.date():
+            return
+
+        # Only after 15:50 ET (5 min after scheduled 15:45 close)
+        if self.Time.hour < 15 or (self.Time.hour == 15 and self.Time.minute < 50):
+            return
+
+        # Check all MR symbols and force liquidate if still invested
+        mr_symbols = [(self.tqqq, "TQQQ"), (self.soxl, "SOXL"), (self.spxl, "SPXL")]
+        liquidated_any = False
+
+        for mr_symbol, mr_name in mr_symbols:
+            if self.Portfolio[mr_symbol].Invested:
+                self.Log(
+                    f"MR_FALLBACK: Force liquidating {mr_name} at {self.Time.strftime('%H:%M')} | "
+                    f"Qty={self.Portfolio[mr_symbol].Quantity}"
+                )
+                self.Liquidate(mr_symbol, tag="MR_FALLBACK_15:50")
+                liquidated_any = True
+
+        if liquidated_any:
+            self.Log("MR_FALLBACK: Completed - all MR positions closed")
+
+        # Mark as done to prevent repeated attempts
+        self._mr_force_close_fallback_date = self.Time.date()
 
     def _liquidate_all_spread_aware(
         self, reason: str = "GOVERNOR_SHUTDOWN", exempt_symbols: set = None
@@ -2888,14 +3002,29 @@ class AlphaNextGen(QCAlgorithm):
         for signal in self.portfolio_router._pending_weights:
             if signal.source in ("OPT", "OPT_INTRADAY") and signal.symbol not in current_prices:
                 price = signal.metadata.get("contract_price", 0) if signal.metadata else 0
-                # V2.24: Diagnostic logging to trace why injection might fail
-                self.Log(
-                    f"V2.19_INJECT: {signal.symbol} | price={price} | "
-                    f"has_meta={bool(signal.metadata)} | "
-                    f"meta_keys={list(signal.metadata.keys()) if signal.metadata else 'None'}"
-                )
+
+                # V6.12: Fallback to bid/ask mid if metadata price is 0
+                if price <= 0 and self.Securities.ContainsKey(signal.symbol):
+                    try:
+                        sec = self.Securities[signal.symbol]
+                        bid = sec.BidPrice or 0
+                        ask = sec.AskPrice or 0
+                        if bid > 0 and ask > 0:
+                            price = (bid + ask) / 2
+                            self.Log(
+                                f"V2.19_INJECT_FALLBACK: {signal.symbol} | "
+                                f"Using bid/ask mid=${price:.2f} (bid={bid:.2f}, ask={ask:.2f})"
+                            )
+                    except Exception:
+                        pass  # Keep price as 0, will be logged below
+
                 if price > 0:
                     current_prices[signal.symbol] = price
+                else:
+                    self.Log(
+                        f"V2.19_INJECT_WARNING: {signal.symbol} | price=0 | "
+                        f"No valid price found - sizing may be incorrect"
+                    )
 
         try:
             # Calculate max single position in dollars from percentage
@@ -6152,32 +6281,41 @@ class AlphaNextGen(QCAlgorithm):
                     # Use abs(fill_qty) because _handle_spread_leg_fill expects positive qty
                     self._handle_spread_leg_fill(symbol, fill_price, abs(fill_qty))
                 elif fill_qty > 0:
-                    # Single-leg entry (legacy or intraday)
-                    position = self.options_engine.register_entry(
-                        fill_price=fill_price,
-                        entry_time=str(self.Time),
-                        current_date=str(self.Time.date()),
-                    )
-
-                    if position:
-                        # Create OCO pair for stop and profit exits
-                        oco_pair = self.oco_manager.create_oco_pair(
-                            symbol=symbol,
-                            entry_price=fill_price,
-                            stop_price=position.stop_price,
-                            target_price=position.target_price,
-                            quantity=int(fill_qty),
+                    # V6.12 FIX: Check if this is a BUY to close a spread short leg
+                    # Short leg close = BUY (fill_qty > 0), but it's an EXIT not an entry
+                    spread = self.options_engine.get_spread_position()
+                    if spread and spread.short_leg and spread.short_leg.symbol == symbol:
+                        # This is a short leg close (BUY to close)
+                        self._handle_spread_leg_close(symbol, fill_price, fill_qty)
+                    else:
+                        # Single-leg entry (legacy or intraday)
+                        position = self.options_engine.register_entry(
+                            fill_price=fill_price,
+                            entry_time=str(self.Time),
                             current_date=str(self.Time.date()),
                         )
 
-                        if oco_pair:
-                            # Submit OCO orders
-                            self.oco_manager.submit_oco_pair(oco_pair, current_time=str(self.Time))
-                            self.Log(
-                                f"OPT: OCO pair created | "
-                                f"Stop=${position.stop_price:.2f} | "
-                                f"Target=${position.target_price:.2f}"
+                        if position:
+                            # Create OCO pair for stop and profit exits
+                            oco_pair = self.oco_manager.create_oco_pair(
+                                symbol=symbol,
+                                entry_price=fill_price,
+                                stop_price=position.stop_price,
+                                target_price=position.target_price,
+                                quantity=int(fill_qty),
+                                current_date=str(self.Time.date()),
                             )
+
+                            if oco_pair:
+                                # Submit OCO orders
+                                self.oco_manager.submit_oco_pair(
+                                    oco_pair, current_time=str(self.Time)
+                                )
+                                self.Log(
+                                    f"OPT: OCO pair created | "
+                                    f"Stop=${position.stop_price:.2f} | "
+                                    f"Target=${position.target_price:.2f}"
+                                )
                 elif fill_qty < 0:
                     # Exit - check position type (spread, intraday, or legacy single-leg)
                     if self.options_engine.has_spread_position():
