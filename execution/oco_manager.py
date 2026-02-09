@@ -259,6 +259,19 @@ class OCOManager:
             self.log(f"OCO: Cannot submit {pair.oco_id} - state is {pair.state.value}")
             return False
 
+        # V6.8: Market hours guard - block OCO submission outside regular trading hours
+        if self.algorithm is not None:
+            try:
+                # Get the equity symbol for market hours check (options follow equity hours)
+                underlying = pair.symbol.split()[0] if " " in str(pair.symbol) else str(pair.symbol)
+                equity_symbol = self.algorithm.Symbol(underlying)
+                if not self.algorithm.Securities[equity_symbol].Exchange.ExchangeOpen:
+                    self.log(f"OCO: BLOCKED {pair.oco_id} - market closed for {underlying}")
+                    return False
+            except Exception as e:
+                # If we can't check market hours, log warning but allow submission
+                self.log(f"OCO: WARNING - could not verify market hours: {e}")
+
         # Submit stop order
         stop_order_id = self._submit_stop_order(pair.symbol, pair.stop_leg)
         if stop_order_id is None:
