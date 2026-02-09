@@ -3003,6 +3003,7 @@ After architecture is stable.
 | V6.9 | Options | Spread stop-loss hit frequently | 2022 | P2 | ✅ FIXED (regime-adaptive debit stop multipliers) |
 | V6.9 | Options | BEAR_PUT spreads never executed | 2022 | P0 | ✅ FIXED (VASS HIGH IV → BEAR_CALL_CREDIT) |
 | V6.9 | Options | Short-call assignment losses | 2022 | P0 | ✅ FIXED (SHORT_LEG_ITM_EXIT guard, any DTE) |
+| V6.9 | Micro | Dir=None dominated signals | 2015/2017/2022 | P1 | ✅ FIXED (VIX-adaptive stable band + QQQ fallback + 2-of-3 confirmation) |
 | V6.7-8 | #8 | Stops | 50% stop hit rate high - symptom of #2/#3 wrong direction | ALL | P2 | Symptom |
 | V6.7-9 | #9 | Regime | Spike Cap: Lower max score 45→38 to force DEFENSIVE during VIX spikes | 2022 | P0 | ✅ DONE |
 | V6.7-10 | #10 | Regime | Breadth Decay: Relax thresholds (-10%/-15% → -2%/-4%) to actually trigger | 2022 | P0 | ✅ DONE |

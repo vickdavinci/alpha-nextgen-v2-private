@@ -1348,6 +1348,12 @@ VIX_DIRECTION_FALLING_FAST = -3.0  # V6.6: Was -5.0, now -3% for earlier detecti
 VIX_DIRECTION_FALLING = -1.0  # V6.6: Was -2.0, aligned with new STABLE boundary
 VIX_DIRECTION_STABLE_LOW = -1.0  # V6.6: Was -2.0, narrowed to capture more signals
 VIX_DIRECTION_STABLE_HIGH = 1.0  # V6.6: Was +2.0, narrowed to capture more signals
+# V6.9: VIX-adaptive STABLE band (for Dir=None tuning)
+VIX_STABLE_LOW_VIX_MAX = 15.0  # Low VIX regime
+VIX_STABLE_HIGH_VIX_MIN = 25.0  # High VIX regime
+VIX_STABLE_BAND_LOW = 0.5  # ±0.5% when VIX is low (more signals)
+VIX_STABLE_BAND_HIGH = 2.0  # ±2.0% when VIX is high (less noise)
+
 VIX_DIRECTION_RISING = 3.0  # V6.6: Was +5.0, captures +2.7% cluster (46 observations)
 VIX_DIRECTION_RISING_FAST = 6.0  # V6.6: Was +10.0, earlier panic detection
 VIX_DIRECTION_SPIKING = 10.0  # VIX change > +10%: Crash mode
@@ -1366,6 +1372,10 @@ MICRO_UVXY_BEARISH_THRESHOLD = 0.04  # V6.10: +4% for optimal cross-market balan
 MICRO_UVXY_BULLISH_THRESHOLD = -0.05  # V6.9: -5% filters bear market relief noise (was -2.5%)
 # V6.9: Only allow Micro VETO in NEUTRAL when UVXY move is extreme
 MICRO_UVXY_CONVICTION_EXTREME = 0.07  # 7% intraday move required for NEUTRAL VETO
+# V6.9: Micro fallback + confirmation thresholds (Dir=None tuning)
+MICRO_SCORE_BULLISH_CONFIRM = 55.0  # Require score >= 55 for bullish fallback
+MICRO_SCORE_BEARISH_CONFIRM = 45.0  # Require score <= 45 for bearish fallback
+INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.70  # % move required for VIX STABLE fallback
 MICRO_VIX_CRISIS_LEVEL = 35  # VIX > 35 → CRISIS (BEARISH conviction)
 MICRO_VIX_COMPLACENT_LEVEL = 12  # VIX < 12 → COMPLACENT (BULLISH conviction)
 

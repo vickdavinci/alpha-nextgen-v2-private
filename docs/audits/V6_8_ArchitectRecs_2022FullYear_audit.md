@@ -16,7 +16,7 @@
 | 2 | Option assignments on short calls | P0 | **FIXED V6.9** | SHORT_LEG_ITM_EXIT guard added (2% ITM, any DTE) |
 | 3 | MARGIN_CB force liquidations | P0 | **FIXED V6.6.1** | Opening-only margin rejects + margin-stress guard |
 | 4 | ITM PUT liquidity filter mismatch | P1 | **FIXED V6.9** | Added PUT-specific delta + liquidity thresholds |
-| 5 | Dir=NONE dominated Micro signals | P1 | PARTIAL | Thresholds lowered; still blocked by Macro NEUTRAL |
+| 5 | Dir=NONE dominated Micro signals | P1 | **FIXED V6.9** | VIX‑adaptive STABLE band + QQQ fallback + 2‑of‑3 confirmation |
 | 6 | Regime never reached BEARISH | P1 | **FIXED V6.9** | Earlier + stronger breadth decay penalties applied |
 | 7 | Spread stop-loss hit frequently | P2 | **FIXED V6.9** | Regime-adaptive stop multipliers for debit spreads |
 | 8 | Position sizing too aggressive | P2 | OPEN | 25% options allocation unchanged |
@@ -43,6 +43,7 @@
 - **Bug #7 FIXED:** Regime‑adaptive stop loss multipliers for debit spreads
 - Conviction override bias fixed (block BEARISH→CALL overrides, raise bullish UVXY threshold, gate NEUTRAL VETO to extreme UVXY)
 - Regime bearish detection strengthened via breadth decay penalties (earlier + stronger penalties)
+- **Bug #5 FIXED:** Dir=None reduction via VIX‑adaptive STABLE band + QQQ fallback with score confirmation
 
 ---
 

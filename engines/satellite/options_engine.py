@@ -951,6 +951,26 @@ class MicroRegimeEngine:
 
         vix_change_pct = (vix_current - vix_open) / vix_open * 100
 
+        # V6.9: Adaptive STABLE band based on VIX level (reduces Dir=None in low VIX)
+        if vix_current <= config.VIX_STABLE_LOW_VIX_MAX:
+            stable_low = -config.VIX_STABLE_BAND_LOW
+            stable_high = config.VIX_STABLE_BAND_LOW
+        elif vix_current >= config.VIX_STABLE_HIGH_VIX_MIN:
+            stable_low = -config.VIX_STABLE_BAND_HIGH
+            stable_high = config.VIX_STABLE_BAND_HIGH
+        else:
+            # Linear interpolation between low and high bands
+            span = config.VIX_STABLE_HIGH_VIX_MIN - config.VIX_STABLE_LOW_VIX_MAX
+            if span <= 0:
+                band = config.VIX_STABLE_BAND_HIGH
+            else:
+                t = (vix_current - config.VIX_STABLE_LOW_VIX_MAX) / span
+                band = config.VIX_STABLE_BAND_LOW + t * (
+                    config.VIX_STABLE_BAND_HIGH - config.VIX_STABLE_BAND_LOW
+                )
+            stable_low = -band
+            stable_high = band
+
         # Check for whipsaw first (if we have history)
         if len(self._vix_history) >= 6:
             whipsaw_state, reversals = self._detect_whipsaw()
@@ -962,7 +982,7 @@ class MicroRegimeEngine:
             return VIXDirection.FALLING_FAST, config.MICRO_SCORE_DIR_FALLING_FAST
         elif vix_change_pct < config.VIX_DIRECTION_FALLING:
             return VIXDirection.FALLING, config.MICRO_SCORE_DIR_FALLING
-        elif vix_change_pct <= config.VIX_DIRECTION_STABLE_HIGH:
+        elif vix_change_pct <= stable_high:
             return VIXDirection.STABLE, config.MICRO_SCORE_DIR_STABLE
         elif vix_change_pct <= config.VIX_DIRECTION_RISING:
             return VIXDirection.RISING, config.MICRO_SCORE_DIR_RISING
@@ -1383,13 +1403,24 @@ class MicroRegimeEngine:
                     )
 
                 elif vix_direction == VIXDirection.STABLE:
-                    # VIX stable = no clear signal, small fade allowed
-                    if abs(qqq_move_pct) <= config.INTRADAY_FADE_MAX_MOVE:
+                    # V6.9: VIX stable fallback + 2-of-3 confirmation
+                    # Require strong QQQ move AND bullish micro score to take CALL
+                    if (
+                        abs(qqq_move_pct) >= config.INTRADAY_QQQ_FALLBACK_MIN_MOVE
+                        and micro_score >= config.MICRO_SCORE_BULLISH_CONFIRM
+                    ):
                         return (
-                            IntradayStrategy.DEBIT_FADE,
-                            OptionDirection.PUT,
-                            f"STABLE_FADE: QQQ +{qqq_move_pct:.2f}%, VIX stable → Small fade with PUT",
+                            IntradayStrategy.DEBIT_MOMENTUM,
+                            OptionDirection.CALL,
+                            f"STABLE_FALLBACK: QQQ +{qqq_move_pct:.2f}% + "
+                            f"Score={micro_score:.0f} → CALL",
                         )
+                    return (
+                        IntradayStrategy.NO_TRADE,
+                        None,
+                        f"STABLE_NO_TRADE: QQQ +{qqq_move_pct:.2f}% "
+                        f"Score={micro_score:.0f} (<{config.MICRO_SCORE_BULLISH_CONFIRM})",
+                    )
 
             # =================================================================
             # SCENARIO 2: QQQ DOWN
@@ -1419,13 +1450,24 @@ class MicroRegimeEngine:
                     )
 
                 elif vix_direction == VIXDirection.STABLE:
-                    # VIX stable = no clear signal, small fade allowed
-                    if abs(qqq_move_pct) <= config.INTRADAY_FADE_MAX_MOVE:
+                    # V6.9: VIX stable fallback + 2-of-3 confirmation
+                    # Require strong QQQ move AND bearish micro score to take PUT
+                    if (
+                        abs(qqq_move_pct) >= config.INTRADAY_QQQ_FALLBACK_MIN_MOVE
+                        and micro_score <= config.MICRO_SCORE_BEARISH_CONFIRM
+                    ):
                         return (
-                            IntradayStrategy.DEBIT_FADE,
-                            OptionDirection.CALL,
-                            f"STABLE_FADE: QQQ {qqq_move_pct:.2f}%, VIX stable → Small fade with CALL",
+                            IntradayStrategy.DEBIT_MOMENTUM,
+                            OptionDirection.PUT,
+                            f"STABLE_FALLBACK: QQQ {qqq_move_pct:.2f}% + "
+                            f"Score={micro_score:.0f} → PUT",
                         )
+                    return (
+                        IntradayStrategy.NO_TRADE,
+                        None,
+                        f"STABLE_NO_TRADE: QQQ {qqq_move_pct:.2f}% "
+                        f"Score={micro_score:.0f} (>{config.MICRO_SCORE_BEARISH_CONFIRM})",
+                    )
 
         # =====================================================================
         # RULE 6: HIGH VIX MOMENTUM (ITM options for elevated fear)
