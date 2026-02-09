@@ -1893,6 +1893,7 @@ class OptionsEngine:
         engine_direction: Optional[str],  # "BULLISH" or "BEARISH"
         engine_conviction: bool,
         macro_direction: str,  # "BULLISH", "BEARISH", or "NEUTRAL"
+        conviction_strength: Optional[float] = None,  # V6.9: For NEUTRAL VETO gating (e.g., UVXY %)
     ) -> Tuple[bool, Optional[str], str]:
         """
         V5.3: Resolve whether to trade based on engine signal vs macro.
@@ -1933,6 +1934,15 @@ class OptionsEngine:
         # Case 2: Macro is NEUTRAL (no strong opinion)
         if macro_direction == "NEUTRAL":
             if engine_conviction:
+                # V6.9: Only allow MICRO to VETO NEUTRAL on extreme UVXY moves
+                if engine == "MICRO" and conviction_strength is not None:
+                    if abs(conviction_strength) < config.MICRO_UVXY_CONVICTION_EXTREME:
+                        return (
+                            False,
+                            None,
+                            f"NO_TRADE: Macro NEUTRAL, MICRO conviction not extreme "
+                            f"({conviction_strength:+.1%} < {config.MICRO_UVXY_CONVICTION_EXTREME:.0%})",
+                        )
                 return (
                     True,
                     engine_direction,
@@ -1943,12 +1953,12 @@ class OptionsEngine:
 
         # Case 3: Misaligned with clear Macro direction
         if engine_conviction:
-            # V6.10: Never allow CALL overrides in BEARISH macro (prevent bull bias in bear markets)
+            # V6.9: Never allow CALL overrides in BEARISH macro (prevent bull bias in bear markets)
             if macro_direction == "BEARISH" and engine_direction == "BULLISH":
                 return (
                     False,
                     None,
-                    "NO_TRADE: Macro BEARISH blocks CALL override (V6.10)",
+                    "NO_TRADE: Macro BEARISH blocks CALL override (V6.9)",
                 )
             self.log(
                 f"VETO: {engine} conviction ({engine_direction}) overrides Macro ({macro_direction})",
@@ -2058,6 +2068,7 @@ class OptionsEngine:
             engine_direction=engine_direction,
             engine_conviction=has_conviction,
             macro_direction=macro_direction,
+            conviction_strength=uvxy_pct if has_conviction else None,
         )
 
         if not should_trade:
@@ -2240,6 +2251,9 @@ class OptionsEngine:
         iv_rank: float,
         bid_ask_spread_pct: float,
         open_interest: int,
+        min_open_interest: Optional[int] = None,
+        spread_max_pct: Optional[float] = None,
+        spread_warn_pct: Optional[float] = None,
     ) -> EntryScore:
         """
         Calculate 4-factor entry score.
@@ -2266,8 +2280,14 @@ class OptionsEngine:
         # Factor 3: IV Rank
         score.score_iv = self._score_iv_rank(iv_rank)
 
-        # Factor 4: Liquidity
-        score.score_liquidity = self._score_liquidity(bid_ask_spread_pct, open_interest)
+        # Factor 4: Liquidity (allow per-direction overrides)
+        score.score_liquidity = self._score_liquidity(
+            bid_ask_spread_pct,
+            open_interest,
+            min_open_interest=min_open_interest,
+            spread_max_pct=spread_max_pct,
+            spread_warn_pct=spread_warn_pct,
+        )
 
         return score
 
@@ -2330,24 +2350,39 @@ class OptionsEngine:
         else:
             return 0.25  # Too high IV
 
-    def _score_liquidity(self, spread_pct: float, open_interest: int) -> float:
+    def _score_liquidity(
+        self,
+        spread_pct: float,
+        open_interest: int,
+        min_open_interest: Optional[int] = None,
+        spread_max_pct: Optional[float] = None,
+        spread_warn_pct: Optional[float] = None,
+    ) -> float:
         """
         Score liquidity factor (0-1).
 
         Based on bid-ask spread and open interest.
         """
         # Start with spread score
-        if spread_pct <= config.OPTIONS_SPREAD_MAX_PCT:
+        max_pct = spread_max_pct if spread_max_pct is not None else config.OPTIONS_SPREAD_MAX_PCT
+        warn_pct = (
+            spread_warn_pct if spread_warn_pct is not None else config.OPTIONS_SPREAD_WARNING_PCT
+        )
+        min_oi = (
+            min_open_interest if min_open_interest is not None else config.OPTIONS_MIN_OPEN_INTEREST
+        )
+
+        if spread_pct <= max_pct:
             spread_score = 1.0
-        elif spread_pct <= config.OPTIONS_SPREAD_WARNING_PCT:
+        elif spread_pct <= warn_pct:
             spread_score = 0.50
         else:
             spread_score = 0.0  # Too wide
 
         # OI score
-        if open_interest >= config.OPTIONS_MIN_OPEN_INTEREST:
+        if open_interest >= min_oi:
             oi_score = 1.0
-        elif open_interest >= config.OPTIONS_MIN_OPEN_INTEREST // 2:
+        elif open_interest >= min_oi // 2:
             oi_score = 0.50
         else:
             oi_score = 0.0  # Too thin
@@ -2534,6 +2569,24 @@ class OptionsEngine:
         # For puts, delta is negative so we need to handle that
         is_call = direction == OptionDirection.CALL
 
+        # Direction-specific filters (PUTs need looser liquidity + delta)
+        if is_call:
+            long_delta_min_base = config.SPREAD_LONG_LEG_DELTA_MIN
+            long_delta_max_base = config.SPREAD_LONG_LEG_DELTA_MAX
+            short_delta_min = config.SPREAD_SHORT_LEG_DELTA_MIN
+            short_delta_max = config.SPREAD_SHORT_LEG_DELTA_MAX
+            oi_min_long = config.OPTIONS_MIN_OPEN_INTEREST
+            spread_max_long = config.OPTIONS_SPREAD_MAX_PCT
+            spread_warn_short = config.OPTIONS_SPREAD_WARNING_PCT
+        else:
+            long_delta_min_base = config.SPREAD_LONG_LEG_DELTA_MIN_PUT
+            long_delta_max_base = config.SPREAD_LONG_LEG_DELTA_MAX_PUT
+            short_delta_min = config.SPREAD_SHORT_LEG_DELTA_MIN_PUT
+            short_delta_max = config.SPREAD_SHORT_LEG_DELTA_MAX_PUT
+            oi_min_long = config.OPTIONS_MIN_OPEN_INTEREST_PUT
+            spread_max_long = config.OPTIONS_SPREAD_MAX_PCT_PUT
+            spread_warn_short = config.OPTIONS_SPREAD_WARNING_PCT_PUT
+
         # V2.4.3 FIX: Filter by DTE FIRST, then delta
         # Problem: Chain filter (OPTIONS_SWING_DTE_MAX=45) retrieves 14-45 DTE contracts
         # But spread validation (SPREAD_DTE_MAX=21) rejects anything over 21 DTE
@@ -2557,8 +2610,8 @@ class OptionsEngine:
         dte_pass = len(dte_filtered)
 
         for widen in config.ELASTIC_DELTA_STEPS:
-            delta_min = max(config.ELASTIC_DELTA_FLOOR, config.SPREAD_LONG_LEG_DELTA_MIN - widen)
-            delta_max = min(config.ELASTIC_DELTA_CEILING, config.SPREAD_LONG_LEG_DELTA_MAX + widen)
+            delta_min = max(config.ELASTIC_DELTA_FLOOR, long_delta_min_base - widen)
+            delta_max = min(config.ELASTIC_DELTA_CEILING, long_delta_max_base + widen)
 
             delta_pass = 0
             oi_pass = 0
@@ -2569,9 +2622,9 @@ class OptionsEngine:
                 delta_abs = abs(c.delta)
                 if delta_min <= delta_abs <= delta_max:
                     delta_pass += 1
-                    if c.open_interest >= config.OPTIONS_MIN_OPEN_INTEREST:
+                    if c.open_interest >= oi_min_long:
                         oi_pass += 1
-                        if c.spread_pct <= config.OPTIONS_SPREAD_MAX_PCT:
+                        if c.spread_pct <= spread_max_long:
                             spread_pass += 1
                             long_candidates.append(c)
 
@@ -2590,7 +2643,7 @@ class OptionsEngine:
         if not long_candidates:
             self.log(
                 f"SPREAD: No valid long leg | DTE={effective_dte_min}-{effective_dte_max} | "
-                f"Delta={config.SPREAD_LONG_LEG_DELTA_MIN}-{config.SPREAD_LONG_LEG_DELTA_MAX} | "
+                f"Delta={long_delta_min_base}-{long_delta_max_base} | "
                 f"Elastic steps tried={len(config.ELASTIC_DELTA_STEPS)}"
             )
             self._set_spread_failure_cooldown(current_time)
@@ -2636,16 +2689,12 @@ class OptionsEngine:
             else:
                 # Legacy: Hard delta filter (kept for backwards compatibility)
                 delta_abs = abs(c.delta)
-                if not (
-                    config.SPREAD_SHORT_LEG_DELTA_MIN
-                    <= delta_abs
-                    <= config.SPREAD_SHORT_LEG_DELTA_MAX
-                ):
+                if not (short_delta_min <= delta_abs <= short_delta_max):
                     continue
 
             # Check liquidity (relaxed for short leg)
-            if c.open_interest >= config.OPTIONS_MIN_OPEN_INTEREST // 2:
-                if c.spread_pct <= config.OPTIONS_SPREAD_WARNING_PCT:
+            if c.open_interest >= oi_min_long // 2:
+                if c.spread_pct <= spread_warn_short:
                     short_candidates.append((c, width, delta_abs))
 
         if not short_candidates:
@@ -3450,33 +3499,51 @@ class OptionsEngine:
         long_delta_abs = abs(long_leg_contract.delta) if long_leg_contract.delta else 0
         short_delta_abs = abs(short_leg_contract.delta) if short_leg_contract.delta else 0
 
-        if long_delta_abs < config.SPREAD_LONG_LEG_DELTA_MIN:
+        # Direction-specific delta + liquidity thresholds (PUTs are looser)
+        if spread_type == "BEAR_PUT":
+            long_delta_min = config.SPREAD_LONG_LEG_DELTA_MIN_PUT
+            long_delta_max = config.SPREAD_LONG_LEG_DELTA_MAX_PUT
+            short_delta_min = config.SPREAD_SHORT_LEG_DELTA_MIN_PUT
+            short_delta_max = config.SPREAD_SHORT_LEG_DELTA_MAX_PUT
+            min_oi = config.OPTIONS_MIN_OPEN_INTEREST_PUT
+            spread_max = config.OPTIONS_SPREAD_MAX_PCT_PUT
+            spread_warn = config.OPTIONS_SPREAD_WARNING_PCT_PUT
+        else:
+            long_delta_min = config.SPREAD_LONG_LEG_DELTA_MIN
+            long_delta_max = config.SPREAD_LONG_LEG_DELTA_MAX
+            short_delta_min = config.SPREAD_SHORT_LEG_DELTA_MIN
+            short_delta_max = config.SPREAD_SHORT_LEG_DELTA_MAX
+            min_oi = config.OPTIONS_MIN_OPEN_INTEREST
+            spread_max = config.OPTIONS_SPREAD_MAX_PCT
+            spread_warn = config.OPTIONS_SPREAD_WARNING_PCT
+
+        if long_delta_abs < long_delta_min:
             self.log(
                 f"SPREAD: Entry blocked - long leg delta drift | "
-                f"Delta={long_delta_abs:.2f} < min {config.SPREAD_LONG_LEG_DELTA_MIN}"
+                f"Delta={long_delta_abs:.2f} < min {long_delta_min}"
             )
             return None
 
-        if long_delta_abs > config.SPREAD_LONG_LEG_DELTA_MAX:
+        if long_delta_abs > long_delta_max:
             self.log(
                 f"SPREAD: Entry blocked - long leg delta drift | "
-                f"Delta={long_delta_abs:.2f} > max {config.SPREAD_LONG_LEG_DELTA_MAX}"
+                f"Delta={long_delta_abs:.2f} > max {long_delta_max}"
             )
             return None
 
         # Short leg delta validation (only if not using width-based selection)
         if not config.SPREAD_SHORT_LEG_BY_WIDTH:
-            if short_delta_abs < config.SPREAD_SHORT_LEG_DELTA_MIN:
+            if short_delta_abs < short_delta_min:
                 self.log(
                     f"SPREAD: Entry blocked - short leg delta drift | "
-                    f"Delta={short_delta_abs:.2f} < min {config.SPREAD_SHORT_LEG_DELTA_MIN}"
+                    f"Delta={short_delta_abs:.2f} < min {short_delta_min}"
                 )
                 return None
 
-            if short_delta_abs > config.SPREAD_SHORT_LEG_DELTA_MAX:
+            if short_delta_abs > short_delta_max:
                 self.log(
                     f"SPREAD: Entry blocked - short leg delta drift | "
-                    f"Delta={short_delta_abs:.2f} > max {config.SPREAD_SHORT_LEG_DELTA_MAX}"
+                    f"Delta={short_delta_abs:.2f} > max {short_delta_max}"
                 )
                 return None
 
@@ -3492,6 +3559,9 @@ class OptionsEngine:
             iv_rank=iv_rank,
             bid_ask_spread_pct=long_leg_contract.spread_pct,
             open_interest=long_leg_contract.open_interest,
+            min_open_interest=min_oi,
+            spread_max_pct=spread_max,
+            spread_warn_pct=spread_warn,
         )
 
         if not entry_score.is_valid:
@@ -4694,10 +4764,21 @@ class OptionsEngine:
             # Exit 2: STOP LOSS (V2.4.2 FIX: Max loss = 50% of entry debit)
             # This prevents catastrophic losses from holding spreads to expiration
             # Example: $4 debit spread exits if value drops to $2 (50% loss)
-            elif pnl_pct < -config.SPREAD_STOP_LOSS_PCT:
-                exit_reason = (
-                    f"STOP_LOSS {pnl_pct:.1%} (lost > {config.SPREAD_STOP_LOSS_PCT:.0%} of entry)"
+            elif pnl_pct < 0:
+                base_stop_pct = config.SPREAD_STOP_LOSS_PCT
+                stop_multipliers = getattr(
+                    config, "SPREAD_STOP_REGIME_MULTIPLIERS", {75: 1.0, 50: 1.0, 40: 1.0, 0: 1.0}
                 )
+                stop_multiplier = 1.0
+                for threshold in sorted(stop_multipliers.keys(), reverse=True):
+                    if regime_score >= threshold:
+                        stop_multiplier = stop_multipliers[threshold]
+                        break
+                adaptive_stop_pct = base_stop_pct * stop_multiplier
+                if pnl_pct < -adaptive_stop_pct:
+                    exit_reason = (
+                        f"STOP_LOSS {pnl_pct:.1%} (lost > {adaptive_stop_pct:.0%} of entry)"
+                    )
 
             # Exit 3: DTE exit (close by 5 DTE)
             elif current_dte <= config.SPREAD_DTE_EXIT:

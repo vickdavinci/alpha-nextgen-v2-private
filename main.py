@@ -193,8 +193,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2015, 1, 1)
-        self.SetEndDate(2015, 6, 30)  # V6.7: 2015 H1 Options Engine isolation test
+        self.SetStartDate(2022, 1, 1)
+        self.SetEndDate(2022, 12, 31)  # V6.8: 2022 full year Options Engine test
         self.SetCash(config.INITIAL_CAPITAL)  # $50,000 seed capital
 
         # All times are Eastern
@@ -379,6 +379,11 @@ class AlphaNextGen(QCAlgorithm):
         # This runs BEFORE kill switch to ensure expiring options are closed
         # even if the account is in margin crisis
         self._check_expiration_hammer_v2()
+
+        # =====================================================================
+        # STEP 3C: V6.6.2 OCO RECOVERY (ensure exits exist for open options)
+        # =====================================================================
+        self._ensure_oco_for_open_options()
 
         # =====================================================================
         # STEP 4: HANDLE KILL SWITCH (V2.27: Graduated tiers)
@@ -671,6 +676,8 @@ class AlphaNextGen(QCAlgorithm):
 
         # Store capital state for EOD->Market Close handoff
         self._eod_capital_state = None
+        # V6.6.2: OCO recovery throttle (symbol -> last attempt date)
+        self._last_oco_recovery_attempt = {}
 
         self.Log(
             f"INIT: Indicators initialized | "
@@ -1906,6 +1913,80 @@ class AlphaNextGen(QCAlgorithm):
                 self.portfolio_router.receive_signal(signal)
                 self._process_immediate_signals()
 
+    def _ensure_oco_for_open_options(self) -> None:
+        """
+        V6.6.2: Ensure every open single-leg options position has an active OCO.
+
+        If a position exists without an OCO (e.g., OCO submission failed after-hours),
+        create and submit one at the next market session to prevent expiry losses.
+        """
+        if (
+            self.IsWarmingUp
+            or not hasattr(self, "options_engine")
+            or not hasattr(self, "oco_manager")
+        ):
+            return
+
+        # Skip if we currently hold a spread (OCO only for single-leg options)
+        if self.options_engine.has_spread_position():
+            return
+
+        position = self.options_engine.get_intraday_position() or self.options_engine.get_position()
+        if position is None or position.contract is None:
+            return
+
+        symbol = position.contract.symbol
+
+        # If OCO already active, nothing to do
+        if self.oco_manager.has_active_pair(symbol):
+            return
+
+        # Throttle to once per day per symbol
+        today = str(self.Time.date())
+        last_attempt = self._last_oco_recovery_attempt.get(symbol)
+        if last_attempt == today:
+            return
+
+        # Ensure we still hold the position
+        try:
+            qc_symbol = self.Symbol(symbol)
+            holding = self.Portfolio[qc_symbol]
+            if not holding.Invested:
+                return
+            qty = abs(int(holding.Quantity))
+            if qty <= 0:
+                return
+        except Exception:
+            # Fallback to tracked quantity if symbol lookup fails
+            qty = int(position.num_contracts) if position.num_contracts else 0
+            if qty <= 0:
+                return
+
+        # Create and submit OCO
+        oco_pair = self.oco_manager.create_oco_pair(
+            symbol=symbol,
+            entry_price=position.entry_price,
+            stop_price=position.stop_price,
+            target_price=position.target_price,
+            quantity=qty,
+            current_date=today,
+        )
+        submitted = False
+        if oco_pair:
+            submitted = self.oco_manager.submit_oco_pair(oco_pair, current_time=str(self.Time))
+
+        self._last_oco_recovery_attempt[symbol] = today
+        if submitted:
+            self.Log(
+                f"OCO_RECOVER: Created missing OCO | {symbol} | "
+                f"Stop=${position.stop_price:.2f} Target=${position.target_price:.2f} Qty={qty}"
+            )
+        else:
+            self.Log(
+                f"OCO_RECOVER: Failed to submit (market closed or error) | {symbol} | "
+                f"Will retry next day"
+            )
+
     def _on_friday_firewall(self) -> None:
         """
         V2.4.1: Friday Firewall - close swing options before weekend.
@@ -2394,9 +2475,59 @@ class AlphaNextGen(QCAlgorithm):
             # V2.4.4 P0 Fix #4: Margin Call Circuit Breaker
             # Track consecutive margin calls and enter cooldown after hitting limit
             if "Margin" in str(orderEvent.Message):
-                self._margin_call_consecutive_count += 1
+                # V6.6.1: Only count margin rejections for OPENING orders
+                # Closing/liquidation rejects should NOT trigger the circuit breaker
+                order = self.Transactions.GetOrderById(orderEvent.OrderId)
+                is_opening = True
+                counted = False
+                try:
+                    if order is not None:
+                        current_qty = self.Portfolio[order.Symbol].Quantity
+                        # If order direction is opposite current position, it's a closing order
+                        if current_qty != 0 and (order.Quantity * current_qty) < 0:
+                            is_opening = False
+                        # Explicit liquidation/forced tags should never count
+                        if order.Tag and any(
+                            k in order.Tag
+                            for k in (
+                                "LIQUIDATE",
+                                "KILL_SWITCH",
+                                "KS_",
+                                "GOVERNOR",
+                                "MARGIN_CB",
+                                "FORCE_",
+                                "ORPHAN_",
+                                "EMERG_",
+                                "ASSIGNMENT",
+                                "EXERCISE",
+                            )
+                        ):
+                            is_opening = False
+                except Exception:
+                    # If we can't classify, default to counting (safer than ignoring)
+                    is_opening = True
+
+                # V6.6.1: Guard with margin utilization (avoid false positives)
+                margin_stressed = True
+                if self.portfolio_router and config.MARGIN_UTILIZATION_ENABLED:
+                    try:
+                        utilization = self.portfolio_router.get_current_margin_usage()
+                        margin_stressed = utilization >= (config.MAX_MARGIN_UTILIZATION + 0.05)
+                    except Exception:
+                        margin_stressed = True
+
+                if not is_opening or not margin_stressed:
+                    reason = "closing/forced order" if not is_opening else "low utilization"
+                    self.Log(
+                        f"MARGIN_CB_SKIP: Not counting margin reject ({reason}) | "
+                        f"OrderId={orderEvent.OrderId}"
+                    )
+                else:
+                    self._margin_call_consecutive_count += 1
+                    counted = True
                 if (
-                    self._margin_call_consecutive_count >= config.MARGIN_CALL_MAX_CONSECUTIVE
+                    counted
+                    and self._margin_call_consecutive_count >= config.MARGIN_CALL_MAX_CONSECUTIVE
                     and not self._margin_cb_in_progress
                 ):
                     # V2.27: Re-entry guard — MarketOrder inside OnOrderEvent can recurse
@@ -3163,6 +3294,7 @@ class AlphaNextGen(QCAlgorithm):
             engine_direction=vass_direction,
             engine_conviction=vass_has_conviction,
             macro_direction=macro_direction,
+            conviction_strength=None,
         )
 
         if not should_trade:
@@ -4789,6 +4921,7 @@ class AlphaNextGen(QCAlgorithm):
             engine_direction=vass_direction,
             engine_conviction=vass_has_conviction,
             macro_direction=macro_direction,
+            conviction_strength=None,
         )
 
         if not should_trade:

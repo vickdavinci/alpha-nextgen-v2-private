@@ -2995,7 +2995,14 @@ After architecture is stable.
 | V6.7-4 | #4 | OCO | Options expired worthless - no OCO after roll | 2022 | P1 | 🔲 TODO |
 | V6.7-5 | #5 | OCO | Invalid OCO orders after market hours (2015: 5, 2017: 2, 2022: 8) | ALL | P1 | 🔲 TODO |
 | V6.7-6 | #6 | VASS | Spread selection too restrictive (2015: 92, 2017: 52, 2022: 274 rejections) | ALL | P1 | 🔲 TODO |
-| V6.7-7 | #7 | Margin | MARGIN_CB force liquidation - consecutive margin calls (2015: 4 orders) | 2015 | P2 | 🔲 TODO |
+| V6.7-7 | #7 | Margin | MARGIN_CB force liquidation - consecutive margin calls (2015: 4 orders) | 2015 | P2 | ✅ FIXED (V6.6.1: count only OPENING margin rejects + require margin stress) |
+| V6.6.2 | #4 | Options | Options expired worthless (-99%) | 2022 | P1 | ✅ FIXED (OCO recovery: recreate missing OCO for open single-leg positions) |
+| V6.9 | Conviction | Bullish VETO bias in NEUTRAL/BEARISH (UVXY -2.5%) | 2022 | P0 | ✅ FIXED (raise bullish threshold to -5%, gate NEUTRAL VETO to extreme UVXY, block CALL override in BEARISH macro) |
+| V6.9 | Regime | Regime never reached BEARISH (scores stuck 43-68) | 2022 | P1 | ✅ FIXED (earlier/stronger breadth decay penalties to pull score down) |
+| V6.9 | Options | ITM PUT liquidity filter mismatch | 2022 | P1 | ✅ FIXED (PUT-specific delta + liquidity thresholds in spread selection/validation) |
+| V6.9 | Options | Spread stop-loss hit frequently | 2022 | P2 | ✅ FIXED (regime-adaptive debit stop multipliers) |
+| V6.9 | Options | BEAR_PUT spreads never executed | 2022 | P0 | ✅ FIXED (VASS HIGH IV → BEAR_CALL_CREDIT) |
+| V6.9 | Options | Short-call assignment losses | 2022 | P0 | ✅ FIXED (SHORT_LEG_ITM_EXIT guard, any DTE) |
 | V6.7-8 | #8 | Stops | 50% stop hit rate high - symptom of #2/#3 wrong direction | ALL | P2 | Symptom |
 | V6.7-9 | #9 | Regime | Spike Cap: Lower max score 45→38 to force DEFENSIVE during VIX spikes | 2022 | P0 | ✅ DONE |
 | V6.7-10 | #10 | Regime | Breadth Decay: Relax thresholds (-10%/-15% → -2%/-4%) to actually trigger | 2022 | P0 | ✅ DONE |

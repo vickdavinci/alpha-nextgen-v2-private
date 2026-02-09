@@ -1363,7 +1363,7 @@ VIX_WHIPSAW_MIN_RANGE = 5.0  # Minimum range % to consider whipsaw
 # V6.6: Lowered from ±5% to ±3% based on 2022H1 analysis
 # Only 8% of moves exceeded ±5%, missing many valid conviction signals
 MICRO_UVXY_BEARISH_THRESHOLD = 0.04  # V6.10: +4% for optimal cross-market balance (was +2.5%)
-MICRO_UVXY_BULLISH_THRESHOLD = -0.06  # V6.10: -6% filters bear market relief noise (was -5%)
+MICRO_UVXY_BULLISH_THRESHOLD = -0.05  # V6.9: -5% filters bear market relief noise (was -2.5%)
 # V6.9: Only allow Micro VETO in NEUTRAL when UVXY move is extreme
 MICRO_UVXY_CONVICTION_EXTREME = 0.07  # 7% intraday move required for NEUTRAL VETO
 MICRO_VIX_CRISIS_LEVEL = 35  # VIX > 35 → CRISIS (BEARISH conviction)
