@@ -1911,6 +1911,9 @@ class OptionsEngine:
         # V6.5 FIX: Prevent gamma pin exit from firing every minute
         # Once triggered, don't trigger again for the same position
         self._gamma_pin_exit_triggered: bool = False
+        # CALL-gate tracking: pause new CALLs after repeated losses.
+        self._call_consecutive_losses: int = 0
+        self._call_cooldown_until_date: Optional[datetime.date] = None
 
     def log(self, message: str, trades_only: bool = False) -> None:
         """
@@ -1929,6 +1932,54 @@ class OptionsEngine:
             elif hasattr(self.algorithm, "LiveMode") and self.algorithm.LiveMode:
                 self.algorithm.Log(message)
             # In backtest mode with trades_only=False, skip logging (silent)
+
+    def record_intraday_result(
+        self, symbol: str, is_win: bool, current_time: Optional[str] = None
+    ) -> None:
+        """
+        Track CALL-only consecutive loss streak for adaptive entry cooldown.
+
+        Args:
+            symbol: Option symbol string (used to infer CALL/PUT).
+            is_win: True if trade closed profitable.
+            current_time: Timestamp string (YYYY-MM-DD...) for cooldown date math.
+        """
+        try:
+            text = str(symbol)
+            import re
+
+            # OCC-style parse (e.g., QQQ 211203C00403000)
+            is_call = re.search(r"\d{6}C\d{8}", text) is not None
+            if not is_call:
+                return
+
+            if is_win:
+                self._call_consecutive_losses = 0
+                return
+
+            self._call_consecutive_losses += 1
+            if not getattr(config, "CALL_GATE_CONSECUTIVE_LOSS_ENABLED", True):
+                return
+
+            threshold = int(getattr(config, "CALL_GATE_CONSECUTIVE_LOSSES", 3))
+            if self._call_consecutive_losses < threshold:
+                return
+
+            cooldown_days = int(getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 2))
+            trade_date = datetime.utcnow().date()
+            if current_time:
+                try:
+                    trade_date = datetime.strptime(current_time[:10], "%Y-%m-%d").date()
+                except Exception:
+                    pass
+            self._call_cooldown_until_date = trade_date + timedelta(days=cooldown_days)
+            self.log(
+                f"INTRADAY: CALL cooldown armed | LossStreak={self._call_consecutive_losses} | "
+                f"Until={self._call_cooldown_until_date.isoformat()}",
+                trades_only=True,
+            )
+        except Exception as e:
+            self.log(f"INTRADAY: Failed to record CALL result streak: {e}", trades_only=True)
 
     # =========================================================================
     # V6.10 P5: CHOPPY MARKET DETECTION
@@ -6558,6 +6609,25 @@ class OptionsEngine:
 
             # Keep CALL risk constrained in stressed tape.
             if direction == OptionDirection.CALL:
+                # Gate 1: consecutive CALL-loss cooldown (adaptive pause)
+                if getattr(config, "CALL_GATE_CONSECUTIVE_LOSS_ENABLED", True):
+                    trade_date = None
+                    try:
+                        trade_date = datetime.strptime(current_time[:10], "%Y-%m-%d").date()
+                    except Exception:
+                        trade_date = None
+                    if (
+                        trade_date is not None
+                        and self._call_cooldown_until_date is not None
+                        and trade_date <= self._call_cooldown_until_date
+                    ):
+                        self.log(
+                            f"INTRADAY: CALL blocked - loss cooldown active | "
+                            f"Date={trade_date.isoformat()} <= {self._call_cooldown_until_date.isoformat()} | "
+                            f"LossStreak={self._call_consecutive_losses}"
+                        )
+                        return None
+
                 vix_for_call = vix_level_override if vix_level_override is not None else vix_current
                 call_block_vix = getattr(config, "INTRADAY_CALL_BLOCK_VIX_MIN", 25.0)
                 call_block_regime = getattr(config, "INTRADAY_CALL_BLOCK_REGIME_MAX", 55.0)
@@ -6568,6 +6638,33 @@ class OptionsEngine:
                         f"Macro={macro_regime_score:.1f} <= {call_block_regime:.1f}"
                     )
                     return None
+
+                # Gate 2: trend filter (block CALLs below QQQ SMA20)
+                if getattr(config, "CALL_GATE_MA20_ENABLED", True) and self.algorithm is not None:
+                    qqq_sma20 = getattr(self.algorithm, "qqq_sma20", None)
+                    if qqq_sma20 is not None and getattr(qqq_sma20, "IsReady", False):
+                        sma20_value = float(qqq_sma20.Current.Value)
+                        if qqq_current < sma20_value:
+                            self.log(
+                                f"INTRADAY: CALL blocked below MA20 | "
+                                f"QQQ={qqq_current:.2f} < SMA20={sma20_value:.2f}"
+                            )
+                            return None
+
+                # Gate 3: early fear build (5-day VIX trend rising)
+                if getattr(config, "CALL_GATE_VIX_5D_RISING_ENABLED", True):
+                    vix_5d_change = (
+                        self._iv_sensor.get_vix_5d_change()
+                        if self._iv_sensor.is_conviction_ready()
+                        else None
+                    )
+                    vix_5d_gate = float(getattr(config, "CALL_GATE_VIX_5D_RISING_PCT", 0.10))
+                    if vix_5d_change is not None and vix_5d_change >= vix_5d_gate:
+                        self.log(
+                            f"INTRADAY: CALL blocked by VIX 5d trend | "
+                            f"VIX5d={vix_5d_change:+.1%} >= {vix_5d_gate:.1%}"
+                        )
+                        return None
 
             # V6.14 OPT: Avoid buying long PUTs into panic highs; reduce size in elevated fear.
             if direction == OptionDirection.PUT:

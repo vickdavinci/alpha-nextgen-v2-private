@@ -196,8 +196,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2017, 7, 1)
-        self.SetEndDate(2017, 9, 30)  # Jul-Sep 2017 backtest (3 months)
+        self.SetStartDate(2021, 12, 1)
+        self.SetEndDate(2022, 2, 28)  # Dec 2021 - Feb 2022 backtest (3 months)
         self.SetCash(config.INITIAL_CAPITAL)  # $50,000 seed capital
 
         # All times are Eastern
@@ -719,6 +719,7 @@ class AlphaNextGen(QCAlgorithm):
         # V2.1: Options Engine Indicators (QQQ for options trading)
         # ---------------------------------------------------------------------
         self.qqq_adx = self.ADX(self.qqq, config.ADX_PERIOD, Resolution.Daily)
+        self.qqq_sma20 = self.SMA(self.qqq, config.SMA_FAST, Resolution.Daily)
         self.qqq_sma200 = self.SMA(self.qqq, config.SMA_SLOW, Resolution.Daily)
         # V2.3: QQQ RSI for direction selection (Daily for swing mode)
         self.qqq_rsi = self.RSI(
@@ -7148,6 +7149,11 @@ class AlphaNextGen(QCAlgorithm):
                         if removed_position and removed_position.entry_price > 0:
                             is_win = fill_price > removed_position.entry_price
                             self.options_engine.record_spread_result(is_win)
+                            self.options_engine.record_intraday_result(
+                                symbol=symbol,
+                                is_win=is_win,
+                                current_time=str(self.Time),
+                            )
                             result_str = "WIN" if is_win else "LOSS"
                             self.Log(
                                 f"INTRADAY_RESULT: {result_str} | "
@@ -7189,6 +7195,11 @@ class AlphaNextGen(QCAlgorithm):
                             entry_price = float(snapshot["entry_price"])
                             is_win = fill_price > entry_price
                             self.options_engine.record_spread_result(is_win)
+                            self.options_engine.record_intraday_result(
+                                symbol=symbol,
+                                is_win=is_win,
+                                current_time=str(self.Time),
+                            )
                             result_str = "WIN" if is_win else "LOSS"
                             self.Log(
                                 f"INTRADAY_RESULT: {result_str} | "

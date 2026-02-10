@@ -864,14 +864,14 @@ VASS_VIX_5D_PERIOD = 5  # Weekly VIX lookback (days)
 VASS_VIX_20D_PERIOD = 20  # Monthly VIX lookback (days)
 
 # Conviction Thresholds (% change triggers override of Macro)
-VASS_VIX_5D_BEARISH_THRESHOLD = 0.20  # VIX 5d change > +20% → BEARISH conviction
-VASS_VIX_5D_BULLISH_THRESHOLD = -0.15  # VIX 5d change < -15% → BULLISH conviction
+VASS_VIX_5D_BEARISH_THRESHOLD = 0.16  # VIX 5d change > +16% → BEARISH conviction
+VASS_VIX_5D_BULLISH_THRESHOLD = -0.20  # VIX 5d change < -20% → BULLISH conviction
 VASS_VIX_20D_STRONG_BEARISH = 0.30  # VIX 20d change > +30% → STRONG BEARISH
 VASS_VIX_20D_STRONG_BULLISH = -0.20  # VIX 20d change < -20% → STRONG BULLISH
 
 # Level Crossing Thresholds (regime shift signals)
-VASS_VIX_FEAR_CROSS_LEVEL = 25  # VIX crosses above this → BEARISH
-VASS_VIX_COMPLACENT_CROSS_LEVEL = 15  # VIX crosses below this → BULLISH
+VASS_VIX_FEAR_CROSS_LEVEL = 23  # VIX crosses above this → BEARISH
+VASS_VIX_COMPLACENT_CROSS_LEVEL = 14  # VIX crosses below this → BULLISH
 
 # Credit Spread Constraints
 CREDIT_SPREAD_MIN_CREDIT = 0.20  # V6.10 P3: Was 0.30, lowered to allow more fills
@@ -973,13 +973,13 @@ OPTIONS_ATR_STOP_MULTIPLIER = 0.9  # V6.13 OPT: Slightly tighter ATR base stop
 
 # Floor and cap to prevent extreme stops
 OPTIONS_ATR_STOP_MIN_PCT = 0.12  # V6.13 OPT: Tighter floor in calm conditions
-OPTIONS_ATR_STOP_MAX_PCT = 0.30  # V6.8: Was 0.50, prevent 50% losses
+OPTIONS_ATR_STOP_MAX_PCT = 0.28  # Slightly tighter cap to reduce tail-loss
 
 # Whether to use ATR-based stops (set False to use legacy tier-based stops)
 OPTIONS_USE_ATR_STOPS = True
 
 # Profit Target
-OPTIONS_PROFIT_TARGET_PCT = 0.50  # +50% profit target
+OPTIONS_PROFIT_TARGET_PCT = 0.60  # +60% profit target (trend riding)
 
 # V2.3.10: DTE Exit for Single-Leg Options (prevents exercise/expiration)
 # Close single-leg options when DTE <= this value to avoid:
@@ -1221,7 +1221,7 @@ SPREAD_DTE_EXIT = 5  # Close by 5 DTE remaining
 # Exit targets
 # V6.10 P5: Symmetric R:R (40%/40%) - need 1:1 win ratio to break even
 # Was asymmetric (50%/35%) requiring 1.43:1 win ratio
-SPREAD_PROFIT_TARGET_PCT = 0.40  # V6.10 P5: Lowered from 0.50 to 0.40 (symmetric with stop)
+SPREAD_PROFIT_TARGET_PCT = 0.50  # +50% base target
 SPREAD_STOP_LOSS_PCT = (
     0.40  # V6.10 P5: Raised from 0.35 to 0.40 (wider stop, symmetric with target)
 )
@@ -1235,10 +1235,10 @@ SPREAD_STOP_REGIME_MULTIPLIERS = {
 # V3.0: Regime-Adaptive Profit Targets
 # V6.10 P5: With 40% base, multipliers give: Bull=56%, Neutral=40%, Bear=32%
 SPREAD_PROFIT_REGIME_MULTIPLIERS = {
-    75: 1.40,  # Regime >= 75: 56% target (1.40 × 40% base)
-    50: 1.00,  # Regime 50-74: 40% target (standard)
-    40: 1.00,  # Regime 40-49: 40% target (cautious)
-    0: 0.80,  # Regime < 40: 32% target (0.80 × 40% base)
+    75: 1.30,  # Regime >= 75: 65% target (1.30 × 50% base)
+    50: 1.10,  # Regime 50-74: 55% target
+    40: 1.20,  # Regime 40-49: 60% target
+    0: 1.20,  # Regime < 40: 60% target (ride bear trends)
 }
 
 # V2.27: Win Rate Gate (Options Self-Correcting Throttle)
@@ -1478,16 +1478,14 @@ VIX_WHIPSAW_MIN_RANGE = 5.0  # Minimum range % to consider whipsaw
 # Analysis showed Jan 21 (+6.9%), Jan 24 (+7.4%), Jan 25 (+5.3%) missed by narrow margin
 # V6.6: Lowered from ±5% to ±3% based on 2022H1 analysis
 # Only 8% of moves exceeded ±5%, missing many valid conviction signals
-MICRO_UVXY_BEARISH_THRESHOLD = 0.028  # V6.14 OPT: Keep bearish responsiveness while reducing noise
-MICRO_UVXY_BULLISH_THRESHOLD = (
-    -0.045
-)  # V6.14 OPT: Improve participation without reintroducing CALL bias
+MICRO_UVXY_BEARISH_THRESHOLD = 0.022  # Easier bearish conviction in weak regimes
+MICRO_UVXY_BULLISH_THRESHOLD = -0.050  # Harder bullish conviction to reduce CALL bleed in stress
 # V6.10: Lower conviction extreme to capture 5-7% moves that were blocked
-MICRO_UVXY_CONVICTION_EXTREME = 0.035  # V6.12: 3.5% intraday move for NEUTRAL VETO
+MICRO_UVXY_CONVICTION_EXTREME = 0.030  # Slightly easier extreme conviction trigger
 # V6.10: Micro fallback + confirmation thresholds (Dir=None tuning)
 MICRO_SCORE_BULLISH_CONFIRM = 48.0  # V6.15 TUNE: Slightly tighter CALL confirmation
 MICRO_SCORE_BEARISH_CONFIRM = 47.0  # V6.15 TUNE: Easier PUT confirmation
-INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.20  # V6.15 TUNE: Lower fallback gate to reduce Dir=NONE
+INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.15  # Moderate participation boost when UVXY is neutral
 MICRO_VIX_CRISIS_LEVEL = 35  # VIX > 35 → CRISIS (BEARISH conviction)
 MICRO_VIX_COMPLACENT_LEVEL = 12  # VIX < 12 → COMPLACENT (BULLISH conviction)
 
@@ -1570,14 +1568,21 @@ VIX_REVERSAL_CHOPPY = 4  # 3-4 reversals: Choppy
 # -----------------------------------------------------------------------------
 
 # V2.3.16: Sniper Logic - Noise Filter (Gate 1)
-QQQ_NOISE_THRESHOLD = 0.10  # V6.15 TUNE: Reduce QQQ_FLAT blocks without opening floodgates
+QQQ_NOISE_THRESHOLD = 0.08  # Moderate relaxation to reduce QQQ_FLAT blocks
 
 # V6.14 OPT: Bear-market PUT risk controls.
-PUT_ENTRY_VIX_MAX = 36.0  # Block new long PUT entries when panic is extreme
-PUT_SIZE_REDUCTION_VIX_START = 30.0  # Start reducing long PUT sizing at elevated fear
-PUT_SIZE_REDUCTION_FACTOR = 0.50  # Size multiplier once VIX exceeds reduction threshold
-INTRADAY_CALL_BLOCK_VIX_MIN = 25.0  # V6.15 FIX: Block CALLs in high fear
-INTRADAY_CALL_BLOCK_REGIME_MAX = 55.0  # ...unless macro is clearly strong
+PUT_ENTRY_VIX_MAX = 38.0  # Allow more participation before panic cap
+PUT_SIZE_REDUCTION_VIX_START = 32.0  # Delay PUT size haircut for trend capture
+PUT_SIZE_REDUCTION_FACTOR = 0.60  # Less aggressive downsizing above threshold
+INTRADAY_CALL_BLOCK_VIX_MIN = 22.0  # Block CALLs earlier when fear rises
+INTRADAY_CALL_BLOCK_REGIME_MAX = 58.0  # Extend block deeper into weak-neutral macro
+# Additional minimal CALL-protection gates (bear-risk controls without major architecture changes)
+CALL_GATE_MA20_ENABLED = True  # Block CALL entries when QQQ is below its 20-day SMA
+CALL_GATE_VIX_5D_RISING_ENABLED = True  # Block CALL entries when 5-day VIX trend is rising
+CALL_GATE_VIX_5D_RISING_PCT = 0.10  # +10% over 5 days
+CALL_GATE_CONSECUTIVE_LOSS_ENABLED = True  # Pause CALL entries after repeated losses
+CALL_GATE_CONSECUTIVE_LOSSES = 3  # Trigger pause after 3 consecutive CALL losses
+CALL_GATE_LOSS_COOLDOWN_DAYS = 2  # Pause duration
 
 # V2.19: VIX Floor for DEBIT_FADE
 # In low VIX (<13.5) "apathy" markets, mean reversion fails - trends persist longer
