@@ -301,7 +301,13 @@ class StateManager:
         data = startup_gate.get_state_for_persistence()
         success = self._save_state(StateKeys.STARTUP_GATE, data)
         if success:
-            self.log(f"STATE: SAVED | StartupGate | Phase={data.get('phase')}")
+            raw_phase = data.get("phase")
+            enabled = bool(getattr(config, "STARTUP_GATE_ENABLED", True))
+            effective_phase = raw_phase if enabled else "FULLY_ARMED(DISABLED)"
+            self.log(
+                f"STATE: SAVED | StartupGate | "
+                f"Phase={raw_phase} | Effective={effective_phase} | Enabled={enabled}"
+            )
         return success
 
     def load_startup_gate_state(self, startup_gate: Any) -> bool:

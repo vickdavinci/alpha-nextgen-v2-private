@@ -1485,9 +1485,9 @@ MICRO_UVXY_BULLISH_THRESHOLD = (
 # V6.10: Lower conviction extreme to capture 5-7% moves that were blocked
 MICRO_UVXY_CONVICTION_EXTREME = 0.035  # V6.12: 3.5% intraday move for NEUTRAL VETO
 # V6.10: Micro fallback + confirmation thresholds (Dir=None tuning)
-MICRO_SCORE_BULLISH_CONFIRM = 47.0  # V6.14 OPT: Reduce NO_TRADE in benign transition states
-MICRO_SCORE_BEARISH_CONFIRM = 49.0  # V6.14 OPT: Slightly stricter bearish confirmation
-INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.30  # V6.13 OPT: More fallback triggers in bull/choppy
+MICRO_SCORE_BULLISH_CONFIRM = 48.0  # V6.15 TUNE: Slightly tighter CALL confirmation
+MICRO_SCORE_BEARISH_CONFIRM = 47.0  # V6.15 TUNE: Easier PUT confirmation
+INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.20  # V6.15 TUNE: Lower fallback gate to reduce Dir=NONE
 MICRO_VIX_CRISIS_LEVEL = 35  # VIX > 35 → CRISIS (BEARISH conviction)
 MICRO_VIX_COMPLACENT_LEVEL = 12  # VIX < 12 → COMPLACENT (BULLISH conviction)
 
@@ -1570,9 +1570,7 @@ VIX_REVERSAL_CHOPPY = 4  # 3-4 reversals: Choppy
 # -----------------------------------------------------------------------------
 
 # V2.3.16: Sniper Logic - Noise Filter (Gate 1)
-QQQ_NOISE_THRESHOLD = (
-    0.13  # V6.14 OPT: Modest relaxation to reduce NO_TRADE due to flat-move filter
-)
+QQQ_NOISE_THRESHOLD = 0.10  # V6.15 TUNE: Reduce QQQ_FLAT blocks without opening floodgates
 
 # V6.14 OPT: Bear-market PUT risk controls.
 PUT_ENTRY_VIX_MAX = 36.0  # Block new long PUT entries when panic is extreme

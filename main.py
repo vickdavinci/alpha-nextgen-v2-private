@@ -301,6 +301,8 @@ class AlphaNextGen(QCAlgorithm):
         self._intraday_retry_expires = None
         self._intraday_retry_direction = None
         self._intraday_retry_reason_code = None
+        # V6.15: Fallback ledger to ensure intraday exits always emit INTRADAY_RESULT.
+        self._intraday_entry_snapshot = {}
 
         # V6.14: Pre-market VIX shock ladder state (portfolio-wide options guard)
         self._premarket_vix_ladder_level = 0
@@ -6174,8 +6176,16 @@ class AlphaNextGen(QCAlgorithm):
                     if hasattr(self.options_engine, "_iv_sensor")
                     else "UNKNOWN"
                 )
+                skip_reasons = {
+                    "HAS_SPREAD_POSITION",
+                    "ENTRY_ALREADY_ATTEMPTED_TODAY",
+                    "POST_TRADE_MARGIN_COOLDOWN",
+                }
+                log_prefix = (
+                    "VASS_SKIPPED" if (validation_reason in skip_reasons) else "VASS_REJECTION"
+                )
                 self.Log(
-                    f"VASS_REJECTION: Direction={direction.value} | "
+                    f"{log_prefix}: Direction={direction.value} | "
                     f"IV_Env={iv_env} | VIX={self._current_vix:.1f} | "
                     f"Regime={regime_score:.0f} | "
                     f"Contracts_checked={len(candidate_contracts)} | "
@@ -7109,6 +7119,13 @@ class AlphaNextGen(QCAlgorithm):
                                     f"Stop=${position.stop_price:.2f} | "
                                     f"Target=${position.target_price:.2f}"
                                 )
+                            # Record intraday entry snapshot for robust exit accounting.
+                            if self.options_engine.has_intraday_position():
+                                self._intraday_entry_snapshot[symbol] = {
+                                    "entry_price": position.entry_price,
+                                    "entry_time": position.entry_time,
+                                    "quantity": abs(int(fill_qty)),
+                                }
                 elif fill_qty < 0:
                     # Exit - check position type (spread, intraday, or legacy single-leg)
                     if self.options_engine.has_spread_position():
@@ -7150,6 +7167,8 @@ class AlphaNextGen(QCAlgorithm):
                                     exit_price=fill_price,
                                     quantity=abs(int(fill_qty)),
                                 )
+                            # Clear fallback snapshot when normal intraday result path logs.
+                            self._intraday_entry_snapshot.pop(symbol, None)
                         self._greeks_breach_logged = False  # Reset for next position
                     else:
                         # Single-leg exit (legacy swing)
@@ -7163,6 +7182,29 @@ class AlphaNextGen(QCAlgorithm):
                             except Exception as e:
                                 self.Log(
                                     f"OCO_CLEANUP_ERROR: {removed_position.contract.symbol} | {e}"
+                                )
+                        # V6.15: Fallback intraday result accounting for orphan/implicit exits.
+                        snapshot = self._intraday_entry_snapshot.pop(symbol, None)
+                        if snapshot and snapshot.get("entry_price", 0) > 0:
+                            entry_price = float(snapshot["entry_price"])
+                            is_win = fill_price > entry_price
+                            self.options_engine.record_spread_result(is_win)
+                            result_str = "WIN" if is_win else "LOSS"
+                            self.Log(
+                                f"INTRADAY_RESULT: {result_str} | "
+                                f"Entry=${entry_price:.2f} | Exit=${fill_price:.2f} | "
+                                f"P&L={((fill_price - entry_price) / entry_price):.1%} | "
+                                f"Path=FALLBACK"
+                            )
+                            if hasattr(self, "pnl_tracker"):
+                                self.pnl_tracker.record_trade(
+                                    symbol=symbol,
+                                    engine="OPT",
+                                    entry_date=str(snapshot.get("entry_time", str(self.Time)))[:10],
+                                    exit_date=str(self.Time.date()),
+                                    entry_price=entry_price,
+                                    exit_price=fill_price,
+                                    quantity=abs(int(fill_qty)),
                                 )
                         self._greeks_breach_logged = False  # Reset for next position
             except Exception as e:
