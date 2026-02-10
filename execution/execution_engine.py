@@ -322,6 +322,56 @@ class ExecutionEngine:
         # Submit to broker
         return self._submit_to_broker(order)
 
+    def _validate_order_pre_submit(self, order: OrderRecord) -> Optional[str]:
+        """
+        T-16 FIX: Pre-submission order validation to reduce failure rate.
+
+        V6.14: 27.6% order failure rate traced to invalid orders reaching broker.
+        Validates order before submission to catch common issues early.
+
+        Args:
+            order: OrderRecord to validate.
+
+        Returns:
+            Error message if validation fails, None if valid.
+        """
+        # Validate quantity is not zero
+        if order.quantity == 0:
+            return "Zero quantity"
+
+        # Validate symbol is not empty
+        if not order.symbol or order.symbol.strip() == "":
+            return "Empty symbol"
+
+        # T-16: Check if security exists and is tradeable (for live algo only)
+        if self.algorithm:
+            try:
+                # Check if symbol exists in securities
+                if order.symbol not in self.algorithm.Securities:
+                    return f"Symbol {order.symbol} not in Securities"
+
+                security = self.algorithm.Securities[order.symbol]
+
+                # Check if security has valid price (not $0)
+                if security.Price <= 0:
+                    return f"Invalid price ${security.Price:.2f} for {order.symbol}"
+
+                # For options, validate the option hasn't expired
+                if hasattr(security, "Expiry"):
+                    if security.Expiry < self.algorithm.Time:
+                        return f"Option {order.symbol} has expired"
+
+                # Check if market is open for market orders
+                if order.order_type == OrderType.MARKET:
+                    if hasattr(security, "Exchange") and not security.Exchange.ExchangeOpen:
+                        return f"Market closed for {order.symbol}"
+
+            except Exception as e:
+                # Log but don't block - let broker handle edge cases
+                self.log(f"EXEC: PRE_VALIDATE_WARN | {order.order_id} | {e}")
+
+        return None  # Validation passed
+
     def _submit_to_broker(self, order: OrderRecord) -> ExecutionResult:
         """
         Submit order to broker.
@@ -340,6 +390,21 @@ class ExecutionEngine:
                 order_id=order.order_id,
                 success=True,
                 state=OrderState.SUBMITTED,
+            )
+
+        # T-16 FIX: Pre-submission validation
+        validation_error = self._validate_order_pre_submit(order)
+        if validation_error:
+            order.state = OrderState.REJECTED
+            order.rejection_reason = f"PRE_VALIDATE: {validation_error}"
+            self.log(
+                f"EXEC: PRE_VALIDATE_REJECT | {order.order_id} | {order.symbol} | {validation_error}"
+            )
+            return ExecutionResult(
+                order_id=order.order_id,
+                success=False,
+                state=OrderState.REJECTED,
+                error_message=validation_error,
             )
 
         try:
@@ -703,6 +768,32 @@ class ExecutionEngine:
             order.state = OrderState.CANCELLED
 
             self.log(f"EXEC: CANCELLED | {order_id} | {order.symbol}")
+
+            # T-15 FIX: Immediate fallback for cancelled MOO orders
+            # V6.14: Dec 27 MOO canceled caused -$37K loss because no fallback triggered
+            # If it's a critical order (LIQUIDATION, ASSIGNMENT, or RISK), submit market order immediately
+            if order.order_type == OrderType.MOO:
+                critical_signals = ["LIQUIDATION", "ASSIGNMENT", "RISK", "FORCE_CLOSE"]
+                is_critical = any(
+                    sig in order.signal_type.upper() for sig in critical_signals
+                ) or any(sig in order.reason.upper() for sig in critical_signals)
+                if is_critical:
+                    self.log(
+                        f"EXEC: MOO_CRITICAL_FALLBACK | {order_id} | "
+                        f"Cancelled MOO triggered immediate market fallback | "
+                        f"Signal={order.signal_type} | Reason={order.reason}"
+                    )
+                    # Submit immediate market order as fallback
+                    self.submit_market_order(
+                        symbol=order.symbol,
+                        quantity=order.quantity,
+                        strategy=order.strategy,
+                        signal_type=f"CRITICAL_FALLBACK_{order.signal_type}",
+                        reason=f"Immediate fallback for cancelled MOO: {order.reason}",
+                    )
+                else:
+                    # Non-critical MOO cancelled - add to fallback queue for 09:31 check
+                    self._moo_fallback_queue.append(order_id)
 
     # =========================================================================
     # Kill Switch Support

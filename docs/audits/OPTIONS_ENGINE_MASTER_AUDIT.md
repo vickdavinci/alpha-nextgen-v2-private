@@ -21,11 +21,11 @@
 | T-10 | Technical | Overnight gap protection (swing) | 2015 overnight liquidation event | ✅ Validated | V6.13: 121 EOD protection events logged |
 | T-11 | Technical | VIX spike auto‑exit (spreads) | 2015: VIX 12→28+ held | 🟡 Applied (Pending Validation) | Exit on VIX level/5D spike |
 | T-12 | Technical | Regime deterioration exit (spreads) | 2015: regime fell from 75→cautious, held | 🟡 Applied (Pending Validation) | Exit on regime drop vs entry |
-| T-13 | Technical | Invalid Stop Orders (Price=0) | V6.13: 10 StopMarket orders with Price=0, Status=Invalid | 🔴 Open | Risk mgmt disabled, positions ran max DD |
-| T-14 | Technical | Expiration Hammer Too Late | V6.13: 14 options sold @ $0.01 on expiry | 🔴 Open | Close earlier than 14:00 |
-| T-15 | Technical | Assignment Safety Net MOO Canceled | V6.13: Dec 27 MOO canceled, -$37K loss | 🔴 Open | Add fallback MarketOrder |
-| T-16 | Technical | High Order Failure Rate | V6.13: 27.6% orders failed (Invalid+Canceled) | 🔴 Open | Investigate root cause |
-| T-17 | Technical | Filter parsing failure (DTE=287) | V6.13 2015: 6 approved signals with nonsense filter counts | 🔴 Open | Investigate contract screening |
+| T-13 | Technical | Invalid Stop Orders (Price=0) | V6.13: 10 StopMarket orders with Price=0, Status=Invalid | 🟡 Applied (Pending Validation) | V6.14: OCO Manager validates stop_price > 0 before creation |
+| T-14 | Technical | Expiration Hammer Too Late | V6.13: 14 options sold @ $0.01 on expiry | 🟡 Applied (Pending Validation) | V6.14: Moved from 14:00 to 12:00 (noon) |
+| T-15 | Technical | Assignment Safety Net MOO Canceled | V6.13: Dec 27 MOO canceled, -$37K loss | 🟡 Applied (Pending Validation) | V6.14: Immediate market fallback for critical cancelled MOO |
+| T-16 | Technical | High Order Failure Rate | V6.13: 27.6% orders failed (Invalid+Canceled) | 🟡 Applied (Pending Validation) | V6.14: Pre-submit validation (symbol, price, expiry) |
+| T-17 | Technical | Filter parsing failure (DTE=287) | V6.13 2015: 6 approved signals with nonsense filter counts | 🟡 Applied (Pending Validation) | V6.14: Enhanced filter funnel diagnostics with blocker ID |
 | O-01 | Optimization | Low win rate / negative P&L | 2022Q1: -21,641 | 🔴 Open | Strategy tuning |
 | O-02 | Optimization | High Dir=NONE | 2022Q1: 59% | 🔴 Open | Micro gating still strict |
 | O-03 | Optimization | Micro gating too restrictive | CAUTIOUS/NORMAL/WORSENING blocks | 🔴 Open | Expand tradeable regimes or thresholds |

@@ -856,7 +856,7 @@ VASS_MEDIUM_IV_DTE_MIN = 7  # Medium IV: Weekly expiration
 VASS_MEDIUM_IV_DTE_MAX = 30  # V6.12: Widen for better contract availability
 # V6.6: Widened HIGH IV DTE range - 36 spread failures in 2022H1 due to narrow 7-14 window
 VASS_HIGH_IV_DTE_MIN = 5  # V6.8: Was 7, allow trades in high IV
-VASS_HIGH_IV_DTE_MAX = 28  # V6.8: Was 21, widen candidate pool
+VASS_HIGH_IV_DTE_MAX = 40  # V6.13.1 OPT: Expand candidate pool (was 28)
 
 # V5.3: VASS Conviction Engine (VIX Direction Tracking)
 # VASS tracks weekly (5d) and monthly (20d) VIX to determine conviction
@@ -886,13 +886,13 @@ CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.45  # V6.13 OPT: Improve credit spread con
 # Each step widens the delta range by ± the step value (e.g., [0.0, 0.03, 0.07, 0.12])
 # Step 0 = original range, Step 1 = ±0.03 wider, etc.
 # Capped at ELASTIC_DELTA_FLOOR (min delta) and ELASTIC_DELTA_CEILING (max delta)
-ELASTIC_DELTA_STEPS = [0.0, 0.03, 0.07, 0.12]
+ELASTIC_DELTA_STEPS = [0.0, 0.05, 0.10, 0.15]  # V6.13.1 OPT: More aggressive widening
 ELASTIC_DELTA_FLOOR = 0.10  # Never search below this delta (too far OTM)
 ELASTIC_DELTA_CEILING = 0.95  # Never search above this delta (deep ITM)
 
 # V2.25: IV-adaptive credit floor — lower min credit in high IV to allow fills
 # Q1 2022 audit: 116 VASS rejections at VIX > 30 because $0.30 floor filtered all candidates
-CREDIT_SPREAD_MIN_CREDIT_HIGH_IV = 0.20  # Reduced floor when VIX exceeds threshold
+CREDIT_SPREAD_MIN_CREDIT_HIGH_IV = 0.10  # V6.13.1 OPT: More credit spread fills (was 0.20)
 CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD = 30.0  # VIX level above which reduced floor applies
 
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
@@ -985,8 +985,10 @@ OPTIONS_SINGLE_LEG_DTE_EXIT = 4  # Close by 4 DTE (avoid expiration gamma trap)
 # ITM options held past 4 PM get auto-exercised → stock position → margin crisis
 # Example from V2.3.9: 800 shares of QQQ assigned = $360K on $50K account (7:1 leverage)
 # V2.4.2: Expiration Hammer - Moved from 3:45 PM to 2:00 PM
-# Gives 2 hours buffer before close for retries and avoids end-of-day volatility
-OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_HOUR = 14  # Force close expiring options at 14:00
+# V6.14 T-14 FIX: Moved from 2:00 PM to 12:00 PM (noon)
+# T-14 Bug: 14 options sold @ $0.01 on expiry because 14:00 was too late
+# Earlier close gives 4 hours buffer and avoids end-of-day volatility/low liquidity
+OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_HOUR = 12  # Force close expiring options at 12:00 noon
 OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE = 0
 
 # V2.28: Early exercise guard — force close ITM single-leg options near expiry
@@ -1406,8 +1408,8 @@ VIX_DIRECTION_STABLE_HIGH = 1.0  # V6.6: Was +2.0, narrowed to capture more sign
 # V6.9: VIX-adaptive STABLE band (for Dir=None tuning)
 VIX_STABLE_LOW_VIX_MAX = 15.0  # Low VIX regime
 VIX_STABLE_HIGH_VIX_MIN = 25.0  # High VIX regime
-VIX_STABLE_BAND_LOW = 0.3  # V6.10: ±0.3% when VIX is low (was 0.5%, more signals)
-VIX_STABLE_BAND_HIGH = 1.0  # V6.10: ±1.0% when VIX is high (was 2.0%, less Dir=NONE)
+VIX_STABLE_BAND_LOW = 0.2  # V6.13.1 OPT: ±0.2% when VIX is low (was 0.3%, more signals)
+VIX_STABLE_BAND_HIGH = 0.7  # V6.13.1 OPT: ±0.7% when VIX is high (was 1.0%, less Dir=NONE)
 
 VIX_DIRECTION_RISING = 3.0  # V6.6: Was +5.0, captures +2.7% cluster (46 observations)
 VIX_DIRECTION_RISING_FAST = 6.0  # V6.6: Was +10.0, earlier panic detection
@@ -1513,7 +1515,7 @@ VIX_REVERSAL_CHOPPY = 4  # 3-4 reversals: Choppy
 # -----------------------------------------------------------------------------
 
 # V2.3.16: Sniper Logic - Noise Filter (Gate 1)
-QQQ_NOISE_THRESHOLD = 0.20  # V6.13 OPT: Further reduce QQQ FLAT classification
+QQQ_NOISE_THRESHOLD = 0.15  # V6.13.1 OPT: Reduce Dir=NONE (was 0.20, target <40%)
 
 # V2.19: VIX Floor for DEBIT_FADE
 # In low VIX (<13.5) "apathy" markets, mean reversion fails - trends persist longer

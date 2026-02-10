@@ -197,7 +197,7 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
         self.SetStartDate(2015, 7, 1)
-        self.SetEndDate(2015, 9, 30)  # July-Sep 2015 backtest
+        self.SetEndDate(2015, 9, 30)  # Jul-Sep 2015 backtest
         self.SetCash(config.INITIAL_CAPITAL)  # $50,000 seed capital
 
         # All times are Eastern
@@ -4382,12 +4382,37 @@ class AlphaNextGen(QCAlgorithm):
 
         if not candidates:
             # V2.13 Fix #16: Log filter diagnostics to identify Black Hole causes
+            # T-17 FIX: Enhanced diagnostics with actionable insights
+            # Calculate where contracts are being lost in the funnel
+            passed_direction = total_contracts - filter_counts["direction"]
+            passed_dte = passed_direction - filter_counts["dte"]
+            passed_greeks = passed_dte - filter_counts["greeks"]
+            passed_delta = passed_greeks - filter_counts["delta"]
+
+            # Identify the primary blocker
+            if filter_counts["direction"] > total_contracts * 0.9:
+                primary_blocker = "DIRECTION (wrong CALL/PUT ratio in chain)"
+            elif filter_counts["dte"] > passed_direction * 0.9:
+                primary_blocker = f"DTE (outside {config.OPTIONS_INTRADAY_DTE_MIN}-{config.OPTIONS_INTRADAY_DTE_MAX} range)"
+            elif filter_counts["greeks"] > passed_dte * 0.9:
+                primary_blocker = "GREEKS (missing or zero delta data)"
+            elif filter_counts["delta"] > passed_greeks * 0.5:
+                primary_blocker = (
+                    f"DELTA (outside {target_delta:.2f} +/- {config.OPTIONS_DELTA_TOLERANCE})"
+                )
+            elif filter_counts["prices"] > 0:
+                primary_blocker = "PRICES (bid/ask <= 0)"
+            else:
+                primary_blocker = "SPREAD or OI"
+
             self.Log(
                 f"INTRADAY_FILTER_FAIL: {direction.value} | Total={total_contracts} | "
                 f"Dir={filter_counts['direction']} DTE={filter_counts['dte']} "
                 f"Greeks={filter_counts['greeks']} Delta={filter_counts['delta']} "
                 f"OI={filter_counts['oi']} Prices={filter_counts['prices']} "
-                f"Spread={filter_counts['spread']}"
+                f"Spread={filter_counts['spread']} | "
+                f"Funnel: {total_contracts}→{passed_direction}→{passed_dte}→{passed_greeks}→{passed_delta} | "
+                f"Blocker={primary_blocker}"
             )
             return None
 

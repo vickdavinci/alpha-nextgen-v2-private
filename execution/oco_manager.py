@@ -188,7 +188,7 @@ class OCOManager:
         target_price: float,
         quantity: int,
         current_date: str,
-    ) -> OCOPair:
+    ) -> Optional[OCOPair]:
         """
         Create a new OCO order pair.
 
@@ -201,8 +201,34 @@ class OCOManager:
             current_date: Date for ID generation.
 
         Returns:
-            Created OCOPair (in PENDING state).
+            Created OCOPair (in PENDING state), or None if validation fails.
         """
+        # T-13 FIX: Validate stop_price > 0 before creating OCO pair
+        # V6.13: 10 StopMarket orders with Price=0 caused risk mgmt to be disabled
+        if stop_price <= 0:
+            self.log(
+                f"OCO: REJECTED - Invalid stop_price={stop_price:.2f} <= 0 | "
+                f"Symbol={symbol} | Entry=${entry_price:.2f}"
+            )
+            return None
+
+        if target_price <= 0:
+            self.log(
+                f"OCO: REJECTED - Invalid target_price={target_price:.2f} <= 0 | "
+                f"Symbol={symbol} | Entry=${entry_price:.2f}"
+            )
+            return None
+
+        if entry_price <= 0:
+            self.log(
+                f"OCO: REJECTED - Invalid entry_price={entry_price:.2f} <= 0 | " f"Symbol={symbol}"
+            )
+            return None
+
+        if quantity <= 0:
+            self.log(f"OCO: REJECTED - Invalid quantity={quantity} <= 0 | " f"Symbol={symbol}")
+            return None
+
         # Generate unique OCO ID
         oco_id = f"OCO-{current_date.replace('-', '')}-{self._next_oco_number:03d}"
         self._next_oco_number += 1
