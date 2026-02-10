@@ -1114,7 +1114,16 @@ ASSIGNMENT_EXIT_PRIORITY_ENABLED = True
 # For PUTs: ITM = strike > price, OTM = strike < price
 # Example: If MIN_OTM_PCT = 0.03 and QQQ = $350, min short strike = $339.50
 BEAR_PUT_ENTRY_GATE_ENABLED = True
-BEAR_PUT_ENTRY_MIN_OTM_PCT = 0.03  # Short PUT must be >= 3% OTM at entry
+BEAR_PUT_ENTRY_MIN_OTM_PCT = (
+    0.02  # Baseline assignment gate (reduced from 3% to improve PUT spread participation)
+)
+BEAR_PUT_ENTRY_LOW_VIX_THRESHOLD = 18.0  # Relax assignment gate in calmer IV environments
+BEAR_PUT_ENTRY_MIN_OTM_PCT_RELAXED = (
+    0.015  # Relaxed OTM threshold in low-VIX + strong-regime contexts
+)
+BEAR_PUT_ENTRY_RELAXED_REGIME_MIN = (
+    60.0  # Require healthy regime before applying relaxed OTM threshold
+)
 
 # Contract Selection
 # Options chain filter (must cover BOTH Intraday 0-2 DTE AND Swing 5-45 DTE)
@@ -1478,14 +1487,18 @@ VIX_WHIPSAW_MIN_RANGE = 5.0  # Minimum range % to consider whipsaw
 # Analysis showed Jan 21 (+6.9%), Jan 24 (+7.4%), Jan 25 (+5.3%) missed by narrow margin
 # V6.6: Lowered from ±5% to ±3% based on 2022H1 analysis
 # Only 8% of moves exceeded ±5%, missing many valid conviction signals
-MICRO_UVXY_BEARISH_THRESHOLD = 0.022  # Easier bearish conviction in weak regimes
-MICRO_UVXY_BULLISH_THRESHOLD = -0.050  # Harder bullish conviction to reduce CALL bleed in stress
+MICRO_UVXY_BEARISH_THRESHOLD = (
+    0.020  # Slightly easier bearish conviction for faster PUT participation
+)
+MICRO_UVXY_BULLISH_THRESHOLD = (
+    -0.040
+)  # Restore bullish participation in bull/chop while gates control bear CALLs
 # V6.10: Lower conviction extreme to capture 5-7% moves that were blocked
 MICRO_UVXY_CONVICTION_EXTREME = 0.030  # Slightly easier extreme conviction trigger
 # V6.10: Micro fallback + confirmation thresholds (Dir=None tuning)
 MICRO_SCORE_BULLISH_CONFIRM = 48.0  # V6.15 TUNE: Slightly tighter CALL confirmation
 MICRO_SCORE_BEARISH_CONFIRM = 47.0  # V6.15 TUNE: Easier PUT confirmation
-INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.15  # Moderate participation boost when UVXY is neutral
+INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.12  # Stronger fallback when UVXY is neutral
 MICRO_VIX_CRISIS_LEVEL = 35  # VIX > 35 → CRISIS (BEARISH conviction)
 MICRO_VIX_COMPLACENT_LEVEL = 12  # VIX < 12 → COMPLACENT (BULLISH conviction)
 
@@ -1568,7 +1581,7 @@ VIX_REVERSAL_CHOPPY = 4  # 3-4 reversals: Choppy
 # -----------------------------------------------------------------------------
 
 # V2.3.16: Sniper Logic - Noise Filter (Gate 1)
-QQQ_NOISE_THRESHOLD = 0.08  # Moderate relaxation to reduce QQQ_FLAT blocks
+QQQ_NOISE_THRESHOLD = 0.06  # Reduce QQQ_FLAT blocks in low-vol bull/chop sessions
 
 # V6.14 OPT: Bear-market PUT risk controls.
 PUT_ENTRY_VIX_MAX = 38.0  # Allow more participation before panic cap
@@ -1648,6 +1661,7 @@ INTRADAY_PROTECT_DTE_MAX = 7  # Maximum 7 DTE
 
 # Force close time for intraday
 INTRADAY_FORCE_EXIT_TIME = "15:25"  # V6.15 FIX: Earlier close to avoid OCO race at 15:30
+OCO_RECOVERY_CUTOFF_MINUTES_BEFORE_FORCE_EXIT = 20  # Disable OCO recovery near force-close window
 
 # V2.3.16: Direction Conflict Resolution
 # Skip intraday FADE when main regime strongly disagrees
@@ -1686,12 +1700,12 @@ INTRADAY_GOVERNOR_GATE_ENABLED = True
 # When Micro Regime detects crisis (score < 0), buy protective PUTs
 # This supplements TMF/PSQ hedging with direct options protection
 PROTECTIVE_PUTS_ENABLED = True
-PROTECTIVE_PUTS_SIZE_PCT = 0.05  # 5% of portfolio (meaningful crisis protection)
+PROTECTIVE_PUTS_SIZE_PCT = 0.03  # Reduce insurance drag while preserving crash hedge
 PROTECTIVE_PUTS_DTE_MIN = 3  # Minimum 3 DTE (time for recovery)
 PROTECTIVE_PUTS_DTE_MAX = 7  # Maximum 7 DTE (balance cost vs protection)
 PROTECTIVE_PUTS_DELTA_TARGET = 0.30  # OTM puts (cheaper, more leverage)
 PROTECTIVE_PUTS_DELTA_TOLERANCE = 0.10  # Accept delta 0.20-0.40
-PROTECTIVE_PUTS_STOP_PCT = 0.50  # 50% stop (it's insurance, accept loss)
+PROTECTIVE_PUTS_STOP_PCT = 0.35  # Tighter stop to reduce repeated deep insurance losses
 
 # -----------------------------------------------------------------------------
 # V2.1.1 SWING MODE SIMPLE FILTERS

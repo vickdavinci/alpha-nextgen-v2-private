@@ -39,6 +39,11 @@
 | T-28 | Technical | Intraday approved->execution drop remains severe | Stage6.14: `INTRADAY_SIGNAL_APPROVED=385`, `INTRADAY_SIGNAL=104`, `DROPPED=281` | 🟡 Applied (Pending Validation) | Added canonical `DROP_*` reason codes + one-shot retry for temporary drop causes |
 | T-29 | Technical | VASS spreads are instantly closed by assignment guard | Stage6.14: `SPREAD: POSITION_REGISTERED=23`, `ASSIGNMENT_RISK_EXIT=23`, `POSITION_REMOVED=23` (<=1 min) | 🟡 Applied (Pending Validation) | Assignment grace (`SPREAD_ASSIGNMENT_GRACE_MINUTES`) added before non-mandatory assignment exits |
 | T-30 | Technical | NEUTRAL conviction veto can overtrade noisy flips | Panic rebound windows showed repeated NEUTRAL veto direction swings | 🟡 Applied (Pending Validation) | NEUTRAL veto now requires MICRO tradeable regime + direction alignment with MICRO recommendation |
+| T-31 | Technical | PRE_MARKET_SETUP callback still receives option symbol objects | V6.15 2015 run: `symbol must be a non-empty string` on 2015-08-26 / 2015-08-27 / 2015-09-03 | 🔴 Open | Symbol normalization/guard is still required in premarket setup path |
+| T-32 | Technical | Intraday force-exit fallback close-side regression | V6.15 2015 run: `INTRADAY_FORCE_EXIT_FALLBACK` followed by `ROUTER: MARKET_ORDER | BUY ... Tag=MICRO` during close intent | 🔴 Open | Close intent must always use reduce-only side/quantity, never position add |
+| T-33 | Technical | Router reject reason opacity in approved->dropped path | V6.15 2015 run: 35 `INTRADAY_SIGNAL_DROPPED` all as `DROP_ROUTER_REJECT` without canonical router cause | 🔴 Open | Add explicit router rejection reason codes and pre-approval sync |
+| T-34 | Technical | Force-close path not idempotent (position amplification) | V6.15 2017 run: 2017-08-22 close cycle grew to `Qty=653` via repeated fallback/OCO recovery before next-day reconcile | 🔴 Open | Add close-in-progress lock + one-shot force-close per symbol/session |
+| T-35 | Technical | OCO recovery recreates oversized orders during force-close window | V6.15 2017 run: `OCO_RECOVER` created `Qty=431` while active intraday leg was `Qty=222` near 15:25 | 🔴 Open | Disable OCO recovery in force-close window and enforce quantity invariant against live holdings |
 | O-01 | Optimization | Low win rate / negative P&L | 2022Q1: -21,641 | 🔴 Open | Strategy tuning |
 | O-02 | Optimization | High Dir=NONE | 2022Q1: 59% | 🔴 Open | Micro gating still strict |
 | O-03 | Optimization | Micro gating too restrictive | CAUTIOUS/NORMAL/WORSENING blocks | 🔴 Open | Expand tradeable regimes or thresholds |
@@ -51,6 +56,106 @@
 | O-10 | Optimization | Monthly P&L tracking | Aug 2015 drawdown visibility missing | ✅ Implemented | V6.12: MonthlyPnLTracker class + main.py integration |
 | O-11 | Optimization | Position concentration limit | Multiple spreads same expiry | 🔴 Open | Add per‑expiry cap |
 | O-12 | Optimization | CALL loss concentration remains dominant | Stage6.14: CALL P&L -20,695 vs PUT P&L +351 | 🟡 Applied (Pending Validation) | Added stress CALL block (`INTRADAY_CALL_BLOCK_VIX_MIN`, `INTRADAY_CALL_BLOCK_REGIME_MAX`) |
+| O-13 | Optimization | PUT spread participation blocked by assignment guard strictness | V6.15 2015 run: `ValidationFail=BEAR_PUT_ASSIGNMENT_GATE` 124 rejections; put-direction rejections dominate (299/355) | 🔴 Open | Recalibrate assignment gate thresholds for bear-put debit construction |
+| O-14 | Optimization | Micro participation still bottlenecked by gating | V6.15 2015 run: `Dir=NONE 72.6%`, `NO_TRADE` top blocks `REGIME_NOT_TRADEABLE/CONFIRMATION_FAIL/QQQ_FLAT` | 🔴 Open | Small-threshold tuning only; avoid broad logic expansion |
+| O-15 | Optimization | PUT participation remains too low in bull/chop windows | V6.15 2017 run: PUT only 3/38 trades; VASS PUT attempts mostly blocked by assignment gate in low IV | 🔴 Open | Keep bear-put path available with risk-scaled sizing instead of hard gate in low-risk contexts |
+
+---
+
+## V6.15 Jul-Sep 2015 NoSync (Pre-Change Baseline Audit)
+
+**Run:** `V6_15_Jul_Sep_2015_NoSync`  
+**Files reviewed:**  
+`docs/audits/logs/stage6.15/V6_15_Jul_Sep_2015_NoSync_logs.txt`  
+`docs/audits/logs/stage6.15/V6_15_Jul_Sep_2015_NoSync_orders.csv`  
+`docs/audits/logs/stage6.15/V6_15_Jul_Sep_2015_NoSync_trades.csv`
+
+**Date:** 2026-02-10
+
+### Headline Metrics
+
+- Trades: **98**
+- Net P&L: **-$14,190**
+- Calls: **67 trades**, **P&L -$5,622**, win rate **38.8%**
+- Puts: **31 trades**, **P&L -$8,568**, win rate **35.5%**
+- No margin order failure lines detected in this run
+
+### Micro Signal Funnel
+
+- `MICRO_UPDATE`: **1,840**
+- `Dir=NONE`: **1,335** (**72.6%**)
+- `INTRADAY_SIGNAL_APPROVED`: **173**
+- `INTRADAY_SIGNAL_DROPPED`: **35**
+- `INTRADAY_RESULT`: **20**
+- Top NO_TRADE reasons:
+  - `REGIME_NOT_TRADEABLE`: **222**
+  - `CONFIRMATION_FAIL`: **214**
+  - `QQQ_FLAT`: **165**
+  - `VIX_STABLE_LOW_CONVICTION`: **43**
+
+### VASS Behavior
+
+- `SPREAD: ENTRY_SIGNAL`: **27**
+- `VASS_REJECTION`: **355**
+- Rejection direction split: **PUT 299**, **CALL 56**
+- Validation fails:
+  - `DIRECTION_MISSING`: **205**
+  - `BEAR_PUT_ASSIGNMENT_GATE`: **124**
+  - `TRADE_LIMIT_BLOCK`: **22**
+
+### Technical Findings from This Run
+
+1. **T-31 confirmed:** PRE_MARKET_SETUP callback still crashes on symbol typing/normalization in multiple sessions.
+2. **T-32 confirmed:** intraday force-exit fallback still exhibits close-side regression (`BUY` on close intent) in this baseline run.
+3. **T-33 confirmed:** approved->dropped instrumentation still opaque (`DROP_ROUTER_REJECT` without router-side canonical cause).
+4. **T-11/T-12 behavior visible:** VIX spike and regime deterioration spread exits are firing, but not enough to protect losses when entries are poor.
+
+### Optimization Findings from This Run
+
+1. **O-13 confirmed:** PUT spread path is materially constrained by assignment gate strictness in stressed periods.
+2. **O-14 confirmed:** participation remains primarily constrained by Micro gating, not slots.
+
+---
+
+## V6.15 Jul-Sep 2017 NoSync (Pre-Change Baseline Audit)
+
+**Run:** `V6_15_Jul_Sep_2017_NoSync`  
+**Files reviewed:**  
+`docs/audits/logs/stage6.15/V6_15_Jul_Sep_2017_NoSync_logs.txt`  
+`docs/audits/logs/stage6.15/V6_15_Jul_Sep_2017_NoSync_orders.csv`  
+`docs/audits/logs/stage6.15/V6_15_Jul_Sep_2017_NoSync_trades.csv`
+
+**Date:** 2026-02-10
+
+### Headline Metrics
+
+- Trades: **38**
+- Net P&L: **-$1,247**
+- Calls: **35 trades**, **P&L +$1,657**
+- Puts: **3 trades**, **P&L -$2,904**
+- Micro funnel:
+  - `MICRO_UPDATE=1,820`
+  - `Dir=NONE=1,575` (**86.5%**)
+  - `NO_TRADE=941`
+  - `INTRADAY_SIGNAL_APPROVED=79`
+  - `INTRADAY_RESULT=4`
+
+### August Big-Loss RCA
+
+- Largest August loss cluster is not market thesis failure alone; it is execution-path corruption:
+  - 2017-08-22 15:30: `INTRADAY_FORCE_EXIT_FALLBACK` triggered for `170825C00144000`.
+  - Close path submitted additional `BUY` and OCO recovery rebuilt with inflated quantity (`Qty=431`).
+  - 2017-08-23 09:33: `RECON_ORPHAN_CLOSE_SUBMITTED` liquidated `Qty=653` at much lower price.
+  - Result: stacked losses on same contract (`-4,180`, `-3,996`, `-4,218`) and large fallback loss.
+
+### Additional Findings
+
+1. **T-34 confirmed:** close flow is not idempotent in force-close window; it can amplify holdings before reconciliation.
+2. **T-35 confirmed:** OCO recovery should not run during force-close path; recovered OCO quantity can diverge from real position.
+3. VASS PUT path remains underrepresented:
+   - `VASS_REJECTION=5` in this sample, all `ValidationFail=BEAR_PUT_ASSIGNMENT_GATE`
+   - spread entries are almost entirely bullish debit (`BULL_CALL`).
+4. Spread exits are firing (`REGIME_DETERIORATION`, `NEUTRALITY_EXIT`, `PROFIT_TARGET`, `STOP_LOSS`), but entry mix remains one-sided.
 
 ---
 

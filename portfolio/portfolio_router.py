@@ -1510,6 +1510,26 @@ class PortfolioRouter:
                 self.log(f"ROUTER: SKIP | {symbol} | Closing option without requested_quantity")
                 continue
 
+            # V6.16: For option close intents, derive side/quantity from live holdings only.
+            # This prevents stale weight snapshots from flipping close side (e.g., BUY on long close)
+            # and blocks accidental position amplification during force-close fallback.
+            if is_option and is_closing:
+                live_qty = 0
+                if self.algorithm:
+                    try:
+                        for kvp in self.algorithm.Portfolio:  # type: ignore[attr-defined]
+                            holding = kvp.Value
+                            if str(holding.Symbol) == symbol:
+                                live_qty = int(holding.Quantity)
+                                break
+                    except Exception:
+                        live_qty = 0
+                if live_qty == 0:
+                    self.log(f"ROUTER: SKIP | {symbol} | Close intent but no live holdings")
+                    continue
+                side = OrderSide.SELL if live_qty > 0 else OrderSide.BUY
+                delta_shares = abs(live_qty)
+
             # V2.3.24: Use lower threshold for intraday options
             # Single option contracts often $500-1,500, below the $2,000 MIN_TRADE_VALUE
             min_trade_value = config.MIN_TRADE_VALUE
@@ -1528,7 +1548,8 @@ class PortfolioRouter:
                 continue
 
             # Determine side and order type
-            side = OrderSide.BUY if delta_shares > 0 else OrderSide.SELL
+            if not (is_option and is_closing):
+                side = OrderSide.BUY if delta_shares > 0 else OrderSide.SELL
             # V2.4.2: Added MOC for same-day trend entries
             if agg.urgency == Urgency.IMMEDIATE:
                 order_type = OrderType.MARKET

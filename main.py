@@ -303,6 +303,9 @@ class AlphaNextGen(QCAlgorithm):
         self._intraday_retry_reason_code = None
         # V6.15: Fallback ledger to ensure intraday exits always emit INTRADAY_RESULT.
         self._intraday_entry_snapshot = {}
+        # V6.16: Force-close safety guards (prevent duplicate close amplification).
+        self._intraday_close_in_progress_symbols = set()
+        self._intraday_force_exit_submitted_symbols = {}
 
         # V6.14: Pre-market VIX shock ladder state (portfolio-wide options guard)
         self._premarket_vix_ladder_level = 0
@@ -407,6 +410,7 @@ class AlphaNextGen(QCAlgorithm):
         # STEP 3C: V6.6.2 OCO RECOVERY (ensure exits exist for open options)
         # =====================================================================
         self._ensure_oco_for_open_options()
+        self._reconcile_intraday_close_guards()
 
         # =====================================================================
         # STEP 4: HANDLE KILL SWITCH (V2.27: Graduated tiers)
@@ -1216,6 +1220,13 @@ class AlphaNextGen(QCAlgorithm):
             )
             # Process through portfolio router for proper execution
             for signal in exit_signals:
+                signal.symbol = self._normalize_symbol_str(signal.symbol)
+                if signal.metadata:
+                    short_leg_sym = signal.metadata.get("spread_short_leg_symbol")
+                    if short_leg_sym is not None:
+                        signal.metadata["spread_short_leg_symbol"] = self._normalize_symbol_str(
+                            short_leg_sym
+                        )
                 self.portfolio_router.receive_signal(signal)
 
     def _get_premarket_vix_gap_proxy_pct(self) -> float:
@@ -1321,7 +1332,7 @@ class AlphaNextGen(QCAlgorithm):
                 )
                 self.portfolio_router.receive_signal(
                     TargetWeight(
-                        symbol=intraday_pos.contract.symbol,
+                        symbol=self._normalize_symbol_str(intraday_pos.contract.symbol),
                         target_weight=0.0,
                         source="OPT_INTRADAY",
                         urgency=Urgency.IMMEDIATE,
@@ -1337,7 +1348,7 @@ class AlphaNextGen(QCAlgorithm):
             if spread is not None:
                 self.portfolio_router.receive_signal(
                     TargetWeight(
-                        symbol=spread.long_leg.symbol,
+                        symbol=self._normalize_symbol_str(spread.long_leg.symbol),
                         target_weight=0.0,
                         source="OPT",
                         urgency=Urgency.IMMEDIATE,
@@ -1345,7 +1356,9 @@ class AlphaNextGen(QCAlgorithm):
                         requested_quantity=spread.num_spreads,
                         metadata={
                             "spread_close_short": True,
-                            "spread_short_leg_symbol": spread.short_leg.symbol,
+                            "spread_short_leg_symbol": self._normalize_symbol_str(
+                                spread.short_leg.symbol
+                            ),
                             "spread_short_leg_quantity": spread.num_spreads,
                             "exit_type": "PREMARKET_VIX_L3",
                         },
@@ -1357,7 +1370,7 @@ class AlphaNextGen(QCAlgorithm):
             if intraday_pos is not None:
                 self.portfolio_router.receive_signal(
                     TargetWeight(
-                        symbol=intraday_pos.contract.symbol,
+                        symbol=self._normalize_symbol_str(intraday_pos.contract.symbol),
                         target_weight=0.0,
                         source="OPT_INTRADAY",
                         urgency=Urgency.IMMEDIATE,
@@ -1382,7 +1395,7 @@ class AlphaNextGen(QCAlgorithm):
                     continue
                 self.portfolio_router.receive_signal(
                     TargetWeight(
-                        symbol=holding.Symbol,
+                        symbol=self._normalize_symbol_str(holding.Symbol),
                         target_weight=0.0,
                         source="OPT",
                         urgency=Urgency.IMMEDIATE,
@@ -1413,7 +1426,7 @@ class AlphaNextGen(QCAlgorithm):
             if spread is not None and spread.spread_type in bullish_spreads:
                 self.portfolio_router.receive_signal(
                     TargetWeight(
-                        symbol=spread.long_leg.symbol,
+                        symbol=self._normalize_symbol_str(spread.long_leg.symbol),
                         target_weight=0.0,
                         source="OPT",
                         urgency=Urgency.IMMEDIATE,
@@ -1421,7 +1434,9 @@ class AlphaNextGen(QCAlgorithm):
                         requested_quantity=spread.num_spreads,
                         metadata={
                             "spread_close_short": True,
-                            "spread_short_leg_symbol": spread.short_leg.symbol,
+                            "spread_short_leg_symbol": self._normalize_symbol_str(
+                                spread.short_leg.symbol
+                            ),
                             "spread_short_leg_quantity": spread.num_spreads,
                             "exit_type": "PREMARKET_VIX_L2",
                         },
@@ -1448,7 +1463,7 @@ class AlphaNextGen(QCAlgorithm):
                 for symbol in unique_symbols:
                     self.portfolio_router.receive_signal(
                         TargetWeight(
-                            symbol=symbol,
+                            symbol=self._normalize_symbol_str(symbol),
                             target_weight=0.0,
                             source="OPT",
                             urgency=Urgency.IMMEDIATE,
@@ -1492,6 +1507,35 @@ class AlphaNextGen(QCAlgorithm):
             return 0.0
         return max(0.0, self._premarket_vix_shock_pct)
 
+    def _normalize_symbol_str(self, symbol) -> str:
+        """Normalize QC Symbol/string-like values to plain string for TargetWeight contract."""
+        if symbol is None:
+            return ""
+        if isinstance(symbol, str):
+            return symbol
+        try:
+            return str(symbol)
+        except Exception:
+            return ""
+
+    def _get_option_holding_quantity(self, symbol) -> int:
+        """Get signed live option holding quantity by symbol string."""
+        symbol_str = self._normalize_symbol_str(symbol)
+        if not symbol_str:
+            return 0
+        try:
+            for kvp in self.Portfolio:
+                holding = kvp.Value
+                if (
+                    holding.Invested
+                    and holding.Symbol.SecurityType == SecurityType.Option
+                    and self._normalize_symbol_str(holding.Symbol) == symbol_str
+                ):
+                    return int(holding.Quantity)
+        except Exception:
+            return 0
+        return 0
+
     def _intraday_force_exit_fallback(self) -> None:
         """
         V6.12: Safety net - force-close intraday position after configured close +5min if scheduled close missed.
@@ -1521,7 +1565,10 @@ class AlphaNextGen(QCAlgorithm):
             return
 
         # Get current option price
-        symbol = self.options_engine._intraday_position.contract.symbol
+        symbol = self._normalize_symbol_str(self.options_engine._intraday_position.contract.symbol)
+        if symbol in self._intraday_close_in_progress_symbols:
+            self._intraday_force_exit_fallback_date = self.Time.date()
+            return
         price = self.Securities[symbol].Price if self.Securities.ContainsKey(symbol) else 0
         if price <= 0:
             try:
@@ -1544,6 +1591,11 @@ class AlphaNextGen(QCAlgorithm):
             current_price=price,
         )
         if signal:
+            live_qty = abs(self._get_option_holding_quantity(signal.symbol))
+            if live_qty > 0:
+                signal.requested_quantity = live_qty
+            self._intraday_close_in_progress_symbols.add(signal.symbol)
+            self._intraday_force_exit_submitted_symbols[signal.symbol] = str(self.Time.date())
             self.Log(f"INTRADAY_FORCE_EXIT_FALLBACK: Triggered for {symbol}")
             self.portfolio_router.receive_signal(signal)
             self._process_immediate_signals()
@@ -2423,7 +2475,7 @@ class AlphaNextGen(QCAlgorithm):
         if self.options_engine._intraday_position is not None:
             # Get current option price
             intraday_pos = self.options_engine._intraday_position
-            symbol = intraday_pos.contract.symbol
+            symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
 
             # V2.25 Fix #4: Double-sell guard — verify position is still held
             # Prevents creating orphan shorts if limit/profit-target already closed
@@ -2434,6 +2486,8 @@ class AlphaNextGen(QCAlgorithm):
                         f"Clearing stale _intraday_position"
                     )
                     self.options_engine._intraday_position = None
+                    self._intraday_close_in_progress_symbols.discard(symbol)
+                    self._intraday_force_exit_submitted_symbols.pop(symbol, None)
                     return
             except Exception:
                 pass  # If symbol lookup fails, proceed with force close
@@ -2456,6 +2510,20 @@ class AlphaNextGen(QCAlgorithm):
             )
 
             if signal:
+                # Idempotency: only one force-close submit per symbol per day.
+                submitted_date = self._intraday_force_exit_submitted_symbols.get(signal.symbol)
+                if submitted_date == str(self.Time.date()):
+                    self.Log(
+                        f"INTRADAY_FORCE_EXIT: SKIP duplicate submit | {signal.symbol} | Date={submitted_date}"
+                    )
+                    return
+                live_qty = abs(self._get_option_holding_quantity(signal.symbol))
+                if live_qty <= 0:
+                    self.Log(f"INTRADAY_FORCE_EXIT: SKIP no live holding | {signal.symbol}")
+                    return
+                signal.requested_quantity = live_qty
+                self._intraday_close_in_progress_symbols.add(signal.symbol)
+                self._intraday_force_exit_submitted_symbols[signal.symbol] = str(self.Time.date())
                 self.portfolio_router.receive_signal(signal)
                 self._process_immediate_signals()
 
@@ -2481,7 +2549,24 @@ class AlphaNextGen(QCAlgorithm):
         if position is None or position.contract is None:
             return
 
-        symbol = position.contract.symbol
+        symbol = self._normalize_symbol_str(position.contract.symbol)
+
+        # Don't recover OCO while close is in progress for this symbol.
+        if symbol in self._intraday_close_in_progress_symbols:
+            return
+
+        # Skip OCO recovery in force-close window to avoid close-race amplification.
+        try:
+            exit_hour, exit_min = map(
+                int, getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:25").split(":")
+            )
+            cutoff = int(getattr(config, "OCO_RECOVERY_CUTOFF_MINUTES_BEFORE_FORCE_EXIT", 20))
+            now_minutes = self.Time.hour * 60 + self.Time.minute
+            force_minutes = exit_hour * 60 + exit_min
+            if now_minutes >= force_minutes - cutoff:
+                return
+        except Exception:
+            pass
 
         # If OCO already active, nothing to do
         if self.oco_manager.has_active_pair(symbol):
@@ -2498,9 +2583,13 @@ class AlphaNextGen(QCAlgorithm):
             qc_symbol = self.Symbol(symbol)
             holding = self.Portfolio[qc_symbol]
             if not holding.Invested:
+                self._intraday_close_in_progress_symbols.discard(symbol)
+                self._intraday_force_exit_submitted_symbols.pop(symbol, None)
                 return
             qty = abs(int(holding.Quantity))
             if qty <= 0:
+                self._intraday_close_in_progress_symbols.discard(symbol)
+                self._intraday_force_exit_submitted_symbols.pop(symbol, None)
                 return
         except Exception:
             # Fallback to tracked quantity if symbol lookup fails
@@ -2532,6 +2621,18 @@ class AlphaNextGen(QCAlgorithm):
                 f"OCO_RECOVER: Failed to submit (market closed or error) | {symbol} | "
                 f"Will retry next day"
             )
+
+    def _reconcile_intraday_close_guards(self) -> None:
+        """Clear stale close-in-progress guards after positions are flat."""
+        if not self._intraday_close_in_progress_symbols:
+            return
+        stale = []
+        for symbol in self._intraday_close_in_progress_symbols:
+            if abs(self._get_option_holding_quantity(symbol)) <= 0:
+                stale.append(symbol)
+        for symbol in stale:
+            self._intraday_close_in_progress_symbols.discard(symbol)
+            self._intraday_force_exit_submitted_symbols.pop(symbol, None)
 
     def _on_friday_firewall(self) -> None:
         """
@@ -5837,7 +5938,7 @@ class AlphaNextGen(QCAlgorithm):
                         # P1 Fix: Explicitly log approved signals that failed to produce an order
                         if should_trade:
                             # V6.15: Canonical drop reason coding for audit/debug.
-                            drop_code = "DROP_ROUTER_REJECT"
+                            drop_code = "DROP_ENGINE_NO_SIGNAL"
                             (
                                 can_retry_now,
                                 retry_reason_now,
@@ -5852,11 +5953,15 @@ class AlphaNextGen(QCAlgorithm):
                                 drop_code = "DROP_MARGIN"
                             elif self.options_engine.has_intraday_position():
                                 drop_code = "DROP_DUPLICATE_POSITION"
+                            elif intraday_contract is None:
+                                drop_code = "DROP_NO_CONTRACT"
+                            elif intraday_direction is None:
+                                drop_code = "DROP_NO_DIRECTION"
 
                             self.Log(
                                 f"INTRADAY_SIGNAL_DROPPED: Approved but no order | "
                                 f"Code={drop_code} | "
-                                f"Reason={signal_reason} | "
+                                f"Reason={signal_reason} | RetryHint={retry_reason_now} | "
                                 f"Dir={intraday_direction.value if intraday_direction else 'NONE'} | "
                                 f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'} | "
                                 f"Contract={intraday_contract.symbol if intraday_contract else 'NONE'}"

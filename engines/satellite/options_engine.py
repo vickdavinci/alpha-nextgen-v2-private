@@ -1933,6 +1933,17 @@ class OptionsEngine:
                 self.algorithm.Log(message)
             # In backtest mode with trades_only=False, skip logging (silent)
 
+    def _symbol_str(self, symbol) -> str:
+        """Normalize QC Symbol/string-like values to plain string for TargetWeight."""
+        if symbol is None:
+            return ""
+        if isinstance(symbol, str):
+            return symbol
+        try:
+            return str(symbol)
+        except Exception:
+            return ""
+
     def record_intraday_result(
         self, symbol: str, is_win: bool, current_time: Optional[str] = None
     ) -> None:
@@ -3904,7 +3915,7 @@ class OptionsEngine:
         # V2.4.1 FIX: Use actual allocation value, not 1.0
         # Was returning 1.0 instead of actual allocation (0.1875)
         return TargetWeight(
-            symbol=best_contract.symbol,
+            symbol=self._symbol_str(best_contract.symbol),
             target_weight=config.OPTIONS_SWING_ALLOCATION,  # V2.4.1: Actual allocation
             source="OPT",
             urgency=Urgency.IMMEDIATE,
@@ -4085,15 +4096,21 @@ class OptionsEngine:
             and short_leg_contract is not None
             and current_price > 0
         ):
+            min_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT", 0.03))
+            low_vix_threshold = float(getattr(config, "BEAR_PUT_ENTRY_LOW_VIX_THRESHOLD", 18.0))
+            relaxed_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT_RELAXED", 0.015))
+            relaxed_regime_min = float(getattr(config, "BEAR_PUT_ENTRY_RELAXED_REGIME_MIN", 60.0))
+            if vix_current <= low_vix_threshold and regime_score >= relaxed_regime_min:
+                min_otm_pct = min(min_otm_pct, relaxed_otm_pct)
             short_strike = short_leg_contract.strike
             # For PUTs: OTM when strike < price, ITM when strike > price
             # Calculate how far OTM the short strike is (negative = ITM)
             otm_pct = (current_price - short_strike) / current_price
-            if otm_pct < config.BEAR_PUT_ENTRY_MIN_OTM_PCT:
+            if otm_pct < min_otm_pct:
                 self.log(
                     f"SPREAD: Entry blocked - BEAR_PUT assignment risk | "
                     f"Short strike {short_strike:.0f} is {otm_pct:.1%} OTM "
-                    f"(min {config.BEAR_PUT_ENTRY_MIN_OTM_PCT:.1%}) | "
+                    f"(min {min_otm_pct:.1%}) | "
                     f"QQQ={current_price:.2f}"
                 )
                 return fail("BEAR_PUT_ASSIGNMENT_GATE")
@@ -4449,7 +4466,7 @@ class OptionsEngine:
         # Return TargetWeight for long leg, with short leg info in metadata
         # V2.4.1 FIX: Use actual allocation value, not 1.0
         return TargetWeight(
-            symbol=long_leg_contract.symbol,
+            symbol=self._symbol_str(long_leg_contract.symbol),
             target_weight=config.OPTIONS_SWING_ALLOCATION,  # V2.4.1: Actual allocation
             source="OPT",
             urgency=Urgency.IMMEDIATE,
@@ -4457,7 +4474,7 @@ class OptionsEngine:
             requested_quantity=num_spreads,
             metadata={
                 "spread_type": spread_type,
-                "spread_short_leg_symbol": short_leg_contract.symbol,
+                "spread_short_leg_symbol": self._symbol_str(short_leg_contract.symbol),
                 "spread_short_leg_quantity": num_spreads,
                 "spread_net_debit": net_debit,
                 "spread_cost_or_credit": net_debit,
@@ -4674,14 +4691,20 @@ class OptionsEngine:
             and short_leg_contract is not None
             and current_price > 0
         ):
+            min_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT", 0.03))
+            low_vix_threshold = float(getattr(config, "BEAR_PUT_ENTRY_LOW_VIX_THRESHOLD", 18.0))
+            relaxed_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT_RELAXED", 0.015))
+            relaxed_regime_min = float(getattr(config, "BEAR_PUT_ENTRY_RELAXED_REGIME_MIN", 60.0))
+            if vix_current <= low_vix_threshold and regime_score >= relaxed_regime_min:
+                min_otm_pct = min(min_otm_pct, relaxed_otm_pct)
             short_strike = short_leg_contract.strike
             # For short PUTs: OTM when strike < price, ITM when strike > price
             otm_pct = (current_price - short_strike) / current_price
-            if otm_pct < config.BEAR_PUT_ENTRY_MIN_OTM_PCT:
+            if otm_pct < min_otm_pct:
                 self.log(
                     f"CREDIT_SPREAD: Entry blocked - BULL_PUT assignment risk | "
                     f"Short strike {short_strike:.0f} is {otm_pct:.1%} OTM "
-                    f"(min {config.BEAR_PUT_ENTRY_MIN_OTM_PCT:.1%}) | "
+                    f"(min {min_otm_pct:.1%}) | "
                     f"QQQ={current_price:.2f}"
                 )
                 return fail("BEAR_PUT_ASSIGNMENT_GATE")
@@ -4867,7 +4890,7 @@ class OptionsEngine:
         # router combo convention. Router expects: primary=BUY leg, metadata=SELL leg.
         # Broker handles credit/debit mechanics through ComboMarketOrder.
         return TargetWeight(
-            symbol=long_leg_contract.symbol,
+            symbol=self._symbol_str(long_leg_contract.symbol),
             target_weight=config.OPTIONS_SWING_ALLOCATION,
             source="OPT",
             urgency=Urgency.IMMEDIATE,
@@ -4875,7 +4898,7 @@ class OptionsEngine:
             requested_quantity=num_spreads,  # Positive (matches debit convention)
             metadata={
                 "spread_type": spread_type,
-                "spread_short_leg_symbol": short_leg_contract.symbol,
+                "spread_short_leg_symbol": self._symbol_str(short_leg_contract.symbol),
                 "spread_short_leg_quantity": num_spreads,
                 "spread_net_debit": -credit_received,  # Negative = credit
                 "spread_cost_or_credit": credit_received,
@@ -5213,7 +5236,7 @@ class OptionsEngine:
         credit_received = abs(spread.net_debit) if is_credit_spread else 0.0
         return [
             TargetWeight(
-                symbol=spread.long_leg.symbol,
+                symbol=self._symbol_str(spread.long_leg.symbol),
                 target_weight=0.0,
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
@@ -5222,7 +5245,7 @@ class OptionsEngine:
                 metadata={
                     "spread_type": spread.spread_type,
                     "spread_close_short": True,
-                    "spread_short_leg_symbol": spread.short_leg.symbol,
+                    "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
                     "spread_short_leg_quantity": num_contracts,
                     "spread_width": spread.width,
                     "is_credit_spread": is_credit_spread,
@@ -5358,7 +5381,7 @@ class OptionsEngine:
         credit_received = abs(spread.net_debit) if is_credit_spread else 0.0
         return [
             TargetWeight(
-                symbol=spread.long_leg.symbol,
+                symbol=self._symbol_str(spread.long_leg.symbol),
                 target_weight=0.0,
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
@@ -5367,7 +5390,7 @@ class OptionsEngine:
                 metadata={
                     "spread_type": spread.spread_type,
                     "spread_close_short": True,  # V6.5 FIX: Required for combo close
-                    "spread_short_leg_symbol": spread.short_leg.symbol,
+                    "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
                     "spread_short_leg_quantity": num_contracts,  # V6.5 FIX: Positive for close
                     "spread_width": spread.width,
                     "is_credit_spread": is_credit_spread,
@@ -5488,7 +5511,7 @@ class OptionsEngine:
 
         return [
             TargetWeight(
-                symbol=remaining_leg.symbol,
+                symbol=self._symbol_str(remaining_leg.symbol),
                 target_weight=0.0,
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
@@ -5779,7 +5802,7 @@ class OptionsEngine:
         # Previously returned TWO signals which executed as separate orders!
         return [
             TargetWeight(
-                symbol=spread.long_leg.symbol,
+                symbol=self._symbol_str(spread.long_leg.symbol),
                 target_weight=0.0,
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
@@ -5788,7 +5811,7 @@ class OptionsEngine:
                 metadata={
                     "spread_close_short": True,  # Tells router this is an exit
                     "spread_type": spread.spread_type,
-                    "spread_short_leg_symbol": spread.short_leg.symbol,
+                    "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
                     "spread_short_leg_quantity": spread.num_spreads,
                     "spread_width": spread.width,
                     "is_credit_spread": is_credit_spread,
@@ -5874,7 +5897,7 @@ class OptionsEngine:
                 # V2.5 FIX: Close both legs via COMBO order (atomic execution)
                 exit_signals.append(
                     TargetWeight(
-                        symbol=spread.long_leg.symbol,
+                        symbol=self._symbol_str(spread.long_leg.symbol),
                         target_weight=0.0,
                         source="OPT",
                         urgency=Urgency.IMMEDIATE,
@@ -5882,7 +5905,7 @@ class OptionsEngine:
                         requested_quantity=spread.num_spreads,
                         metadata={
                             "spread_close_short": True,
-                            "spread_short_leg_symbol": spread.short_leg.symbol,
+                            "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
                             "spread_short_leg_quantity": spread.num_spreads,
                         },
                     )
@@ -5933,7 +5956,7 @@ class OptionsEngine:
                 )
                 exit_signals.append(
                     TargetWeight(
-                        symbol=position.contract.symbol,
+                        symbol=self._symbol_str(position.contract.symbol),
                         target_weight=0.0,
                         source="OPT",
                         urgency=Urgency.IMMEDIATE,
@@ -5988,7 +6011,7 @@ class OptionsEngine:
 
         return [
             TargetWeight(
-                symbol=spread.long_leg.symbol,
+                symbol=self._symbol_str(spread.long_leg.symbol),
                 target_weight=0.0,
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
@@ -5996,7 +6019,7 @@ class OptionsEngine:
                 requested_quantity=spread.num_spreads,
                 metadata={
                     "spread_close_short": True,
-                    "spread_short_leg_symbol": spread.short_leg.symbol,
+                    "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
                     "spread_short_leg_quantity": spread.num_spreads,
                     "exit_type": "OVERNIGHT_GAP_PROTECTION",
                 },
@@ -6038,7 +6061,7 @@ class OptionsEngine:
             reason = f"TARGET_HIT +{pnl_pct:.1%} (Price: ${current_price:.2f})"
             self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
             return TargetWeight(
-                symbol=symbol,
+                symbol=self._symbol_str(symbol),
                 target_weight=0.0,
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
@@ -6050,7 +6073,7 @@ class OptionsEngine:
             reason = f"STOP_HIT {pnl_pct:.1%} (Price: ${current_price:.2f})"
             self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
             return TargetWeight(
-                symbol=symbol,
+                symbol=self._symbol_str(symbol),
                 target_weight=0.0,
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
@@ -6065,7 +6088,7 @@ class OptionsEngine:
             reason = f"DTE_EXIT ({current_dte} DTE <= {config.OPTIONS_SINGLE_LEG_DTE_EXIT}) P&L={pnl_pct:.1%}"
             self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
             return TargetWeight(
-                symbol=symbol,
+                symbol=self._symbol_str(symbol),
                 target_weight=0.0,
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
@@ -6116,7 +6139,7 @@ class OptionsEngine:
         self.log(f"OPT: FORCE_EXIT {symbol} | {reason}", trades_only=True)
 
         return TargetWeight(
-            symbol=symbol,
+            symbol=self._symbol_str(symbol),
             target_weight=0.0,
             source="OPT",
             urgency=Urgency.IMMEDIATE,
@@ -6894,7 +6917,7 @@ class OptionsEngine:
         actual_target_weight = config.OPTIONS_INTRADAY_ALLOCATION * size_mult
 
         return TargetWeight(
-            symbol=best_contract.symbol,
+            symbol=self._symbol_str(best_contract.symbol),
             target_weight=actual_target_weight,  # V2.4.1: Actual allocation, not 1.0
             source="OPT_INTRADAY",
             urgency=Urgency.IMMEDIATE,
@@ -6951,7 +6974,7 @@ class OptionsEngine:
         self._pending_intraday_exit = True
 
         return TargetWeight(
-            symbol=symbol,
+            symbol=self._symbol_str(symbol),
             target_weight=0.0,
             source="OPT_INTRADAY",
             urgency=Urgency.IMMEDIATE,
@@ -7021,7 +7044,7 @@ class OptionsEngine:
         # V6.5 FIX: Added spread_short_leg_quantity to enable combo close order
         return [
             TargetWeight(
-                symbol=spread.long_leg.symbol,
+                symbol=self._symbol_str(spread.long_leg.symbol),
                 target_weight=0.0,
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
@@ -7029,7 +7052,7 @@ class OptionsEngine:
                 requested_quantity=num_contracts,
                 metadata={
                     "spread_close_short": True,
-                    "spread_short_leg_symbol": spread.short_leg.symbol,
+                    "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
                     "spread_short_leg_quantity": num_contracts,  # V6.5 FIX: Required for combo close
                     "exit_type": "GAMMA_PIN",
                 },
@@ -7112,7 +7135,7 @@ class OptionsEngine:
         )
 
         return TargetWeight(
-            symbol=symbol,
+            symbol=self._symbol_str(symbol),
             target_weight=0.0,
             source=source,
             urgency=Urgency.IMMEDIATE,
