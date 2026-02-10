@@ -238,6 +238,7 @@ config.json
 .claude/*
 !.claude/config.json
 !.claude/agents/
+.claude/agents/*.swp
 .claudeignore
 
 # ─── Project Archives ───
