@@ -188,9 +188,13 @@ class MonthlyPnLTracker:
         self._session_pnl = 0.0
 
     def log(self, message: str, trades_only: bool = True) -> None:
-        """Log via algorithm."""
+        """Log via algorithm.
+
+        Note: trades_only parameter is kept for API compatibility but
+        QuantConnect's Log method doesn't support it directly.
+        """
         if self.algorithm:
-            self.algorithm.Log(message, trades_only=trades_only)
+            self.algorithm.Log(message)
 
     # =========================================================================
     # Trade Recording

@@ -117,6 +117,13 @@ class TestClassifyVIXDirection:
         direction_below, _ = micro_engine.classify_vix_direction(19.7, 20.0)  # -1.5%
         assert direction_below == VIXDirection.FALLING
 
+    def test_adaptive_stable_lower_bound_is_enforced(self, micro_engine):
+        """Ensure values below adaptive stable_low are not misclassified as STABLE."""
+        # Low-VIX bucket uses narrow stable band (±VIX_STABLE_BAND_LOW).
+        # With -0.5% change and low VIX, this should classify as FALLING.
+        direction, _ = micro_engine.classify_vix_direction(13.93, 14.00)  # about -0.5%
+        assert direction == VIXDirection.FALLING
+
     def test_boundary_stable_to_rising(self, micro_engine):
         """Test boundary between STABLE and RISING (+1.0%)."""
         # V6.6: +0.5% is STABLE (between -1% and +1%)

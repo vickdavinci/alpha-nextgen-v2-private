@@ -3120,3 +3120,33 @@ class TestVASSCreditSpreadEntry:
         assert engine.is_debit_strategy(SpreadStrategy.BEAR_PUT_DEBIT) is True
         assert engine.is_debit_strategy(SpreadStrategy.BULL_PUT_CREDIT) is False
         assert engine.is_debit_strategy(SpreadStrategy.BEAR_CALL_CREDIT) is False
+
+
+class TestResolverMicroPrimary:
+    """Micro-first resolver behavior for intraday signals."""
+
+    def test_micro_misaligned_without_conviction_allows_half(self, engine):
+        """Micro misalignment should be allowed with risk-scale reason, not blocked."""
+        should_trade, resolved_direction, reason = engine.resolve_trade_signal(
+            engine="MICRO",
+            engine_direction="BEARISH",
+            engine_conviction=False,
+            macro_direction="BULLISH",
+            conviction_strength=None,
+        )
+        assert should_trade is True
+        assert resolved_direction == "BEARISH"
+        assert "MISALIGNED_HALF" in reason
+
+    def test_vass_misaligned_without_conviction_still_blocked(self, engine):
+        """VASS keeps legacy block behavior when misaligned and no conviction."""
+        should_trade, resolved_direction, reason = engine.resolve_trade_signal(
+            engine="VASS",
+            engine_direction="BEARISH",
+            engine_conviction=False,
+            macro_direction="BULLISH",
+            conviction_strength=None,
+        )
+        assert should_trade is False
+        assert resolved_direction is None
+        assert "NO_TRADE: Misaligned" in reason

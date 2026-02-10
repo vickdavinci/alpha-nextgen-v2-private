@@ -733,8 +733,8 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | Spread Width Min (V6.10) | $5 | Minimum spread width (was $3, assignment protection) |
 | Spread Stop/Target (V6.10) | 40%/40% | Symmetric R:R (was 35%/50%) |
 | Choppy Market Filter (V6.10) | 3 reversals/2hr | 50% size reduction in choppy markets |
-| VIX Stable Band Low (V6.10) | +/-0.3% | STABLE band when VIX < 15 (was +/-0.5%) |
-| VIX Stable Band High (V6.10) | +/-1.0% | STABLE band when VIX > 25 (was +/-2.0%) |
+| VIX Stable Band Low (V6.13.1) | +/-0.2% | STABLE band when VIX < 15 (was +/-0.3%) |
+| VIX Stable Band High (V6.13.1) | +/-0.7% | STABLE band when VIX > 25 (was +/-1.0%) |
 | Margin Pre-Check (V6.10) | 15% buffer | Check margin before signal approval |
 
 ### Overnight Holdings (V6.11 Universe)
