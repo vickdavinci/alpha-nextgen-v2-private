@@ -880,7 +880,7 @@ CREDIT_SPREAD_FALLBACK_TO_DEBIT = True  # V6.10 P3: Fall back to debit when cred
 CREDIT_SPREAD_PROFIT_TARGET = 0.50  # Exit at 50% of max profit
 CREDIT_SPREAD_STOP_MULTIPLIER = 2.0  # Stop if spread value doubles (100% loss)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg delta range (OTM)
-CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.40
+CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.45  # V6.13 OPT: Improve credit spread constructability
 
 # V2.24.1: Elastic Delta Bands — progressive widening when no candidates found
 # Each step widens the delta range by ± the step value (e.g., [0.0, 0.03, 0.07, 0.12])
@@ -960,10 +960,10 @@ OPTIONS_0DTE_STOP_PCT = 0.15  # -15% stop for 0DTE
 #   If entry=$3.50, stop=$0.80 (77% stop)
 
 # ATR multiplier for stop calculation (Chandelier-style)
-OPTIONS_ATR_STOP_MULTIPLIER = 1.0  # V6.8: Was 1.5, tighter stops
+OPTIONS_ATR_STOP_MULTIPLIER = 0.9  # V6.13 OPT: Slightly tighter ATR base stop
 
 # Floor and cap to prevent extreme stops
-OPTIONS_ATR_STOP_MIN_PCT = 0.15  # V6.8: Was 0.20, allow slightly tighter stops
+OPTIONS_ATR_STOP_MIN_PCT = 0.12  # V6.13 OPT: Tighter floor in calm conditions
 OPTIONS_ATR_STOP_MAX_PCT = 0.30  # V6.8: Was 0.50, prevent 50% losses
 
 # Whether to use ATR-based stops (set False to use legacy tier-based stops)
@@ -1154,9 +1154,9 @@ SPREAD_VIX_MAX_BEAR = 35  # Max VIX for Bear Put Spread entry (allow higher)
 SPREAD_SHORT_LEG_BY_WIDTH = True  # V2.4.3: Use strike width for short leg (not delta)
 # V6.10: Spread width settings for QQQ - WIDENED FOR ASSIGNMENT PROTECTION
 # Wider spreads survive larger overnight gaps and reduce assignment risk
-SPREAD_WIDTH_MIN = 5.0  # V6.10: Raised from 2.0 to 5.0 (assignment protection)
+SPREAD_WIDTH_MIN = 4.0  # V6.13 OPT: Improve candidate availability with controlled risk
 SPREAD_WIDTH_MAX = 10.0  # V2.4.3: Maximum $10 spread (caps risk)
-SPREAD_WIDTH_TARGET = 5.0  # V6.10: Raised from 3.0 to 5.0 (match MIN)
+SPREAD_WIDTH_TARGET = 4.0  # V6.13 OPT: Improve fill/constructability in medium IV
 
 # DTE for debit spreads (per V2.3 spec)
 # V2.3.22: Raised from 10 to 14 - spreads need same gap cushion as single-leg
@@ -1213,10 +1213,10 @@ CHOPPY_MIN_MOVE_PCT = 0.003  # Minimum 0.3% move to count as reversal (filters n
 # V2.22: Neutrality Exit (Hysteresis Shield)
 # Close flat spreads when regime enters dead zone — no directional edge
 # V3.4: Separate neutrality zone from exit thresholds (allows tight exits + wide neutrality)
-SPREAD_NEUTRALITY_EXIT_ENABLED = False  # V5.3: Disabled for strategy validation
-SPREAD_NEUTRALITY_EXIT_PNL_BAND = 0.10  # ±10% P&L considered "flat"
-SPREAD_NEUTRALITY_ZONE_LOW = 45  # Neutrality zone lower bound (below this = bearish)
-SPREAD_NEUTRALITY_ZONE_HIGH = 65  # Neutrality zone upper bound (above this = bullish)
+SPREAD_NEUTRALITY_EXIT_ENABLED = True  # V6.13 OPT: Re-enable for choppy capital recycling
+SPREAD_NEUTRALITY_EXIT_PNL_BAND = 0.06  # V6.13 OPT: Tight "flat" band
+SPREAD_NEUTRALITY_ZONE_LOW = 48  # V6.13 OPT: Narrower neutrality zone
+SPREAD_NEUTRALITY_ZONE_HIGH = 62  # V6.13 OPT: Narrower neutrality zone
 
 # V2.16-BT: Commission-aware profit targets
 # Round-trip commission estimate per spread (entry + exit, both legs)
@@ -1428,9 +1428,9 @@ MICRO_UVXY_BULLISH_THRESHOLD = -0.05  # V6.12: -5% for CALL conviction (stricter
 # V6.10: Lower conviction extreme to capture 5-7% moves that were blocked
 MICRO_UVXY_CONVICTION_EXTREME = 0.035  # V6.12: 3.5% intraday move for NEUTRAL VETO
 # V6.10: Micro fallback + confirmation thresholds (Dir=None tuning)
-MICRO_SCORE_BULLISH_CONFIRM = 50.0  # V6.12: Relaxed for fewer Dir=None in STABLE
-MICRO_SCORE_BEARISH_CONFIRM = 50.0  # V6.12: Symmetric confirmation threshold
-INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.35  # V6.12: Lowered to align with QQQ noise threshold
+MICRO_SCORE_BULLISH_CONFIRM = 48.0  # V6.13 OPT: Moderate increase in STABLE fallback participation
+MICRO_SCORE_BEARISH_CONFIRM = 48.0  # V6.13 OPT: Keep symmetric confirmation
+INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.30  # V6.13 OPT: More fallback triggers in bull/choppy
 MICRO_VIX_CRISIS_LEVEL = 35  # VIX > 35 → CRISIS (BEARISH conviction)
 MICRO_VIX_COMPLACENT_LEVEL = 12  # VIX < 12 → COMPLACENT (BULLISH conviction)
 
@@ -1513,16 +1513,16 @@ VIX_REVERSAL_CHOPPY = 4  # 3-4 reversals: Choppy
 # -----------------------------------------------------------------------------
 
 # V2.3.16: Sniper Logic - Noise Filter (Gate 1)
-QQQ_NOISE_THRESHOLD = 0.25  # V6.12: Lowered to reduce QQQ FLAT classification
+QQQ_NOISE_THRESHOLD = 0.20  # V6.13 OPT: Further reduce QQQ FLAT classification
 
 # V2.19: VIX Floor for DEBIT_FADE
 # In low VIX (<13.5) "apathy" markets, mean reversion fails - trends persist longer
 # Evidence: V2.18 backtests showed DEBIT_FADE losses when VIX < 13.5
-INTRADAY_DEBIT_FADE_VIX_MIN = 10.5  # V6.10: Was 11.5, allow 2017-style low-VIX trading
+INTRADAY_DEBIT_FADE_VIX_MIN = 9.5  # V6.13 OPT: Keep participation in calm bull/choppy conditions
 
 # Debit Fade (Mean Reversion) - Gate 3a - The Sniper Window
 INTRADAY_DEBIT_FADE_MIN_SCORE = 35  # V6.8: Was 45, allow more trades in bull/chop
-INTRADAY_FADE_MIN_MOVE = 0.50  # V2.3.16: Min move for FADE (was INTRADAY_DEBIT_FADE_MIN_MOVE)
+INTRADAY_FADE_MIN_MOVE = 0.45  # V6.13 OPT: Slightly easier fade trigger
 INTRADAY_FADE_MAX_MOVE = 1.50  # V6.8: Was 1.20, don't block strong bull continuation
 INTRADAY_DEBIT_FADE_VIX_MAX = 25  # VIX < 25
 INTRADAY_DEBIT_FADE_START = "10:15"  # V2.14: Widened from 10:30 to capture more signals
@@ -1541,19 +1541,19 @@ INTRADAY_CREDIT_TARGET = 0.50  # 50% of max profit target
 INTRADAY_CREDIT_STOP = 1.0  # Stop if spread doubles
 
 # ITM Momentum
-INTRADAY_ITM_MIN_VIX = 10.0  # V6.8: Was 11.5, allow momentum in very low VIX
-INTRADAY_ITM_MIN_MOVE = 0.45  # V6.12: Lowered to allow more ITM momentum participation
+INTRADAY_ITM_MIN_VIX = 9.0  # V6.13 OPT: Allow ITM momentum in low-VIX bull regimes
+INTRADAY_ITM_MIN_MOVE = 0.40  # V6.13 OPT: Increase momentum setup availability
 INTRADAY_ITM_MIN_SCORE = 40  # V6.8: Was 50, capture momentum earlier
 # V2.3.19: Time window moved from hardcoded to config
 INTRADAY_ITM_START = "10:00"  # Entry window start
 INTRADAY_ITM_END = "13:30"  # Entry window end (earlier than FADE - momentum fades after lunch)
 INTRADAY_ITM_DELTA = 0.70  # ITM delta target
-INTRADAY_ITM_TARGET = 0.40  # +40% profit target
+INTRADAY_ITM_TARGET = 0.35  # V6.13 OPT: Earlier profit capture in volatile sessions
 
 # V6.4: DEBIT_MOMENTUM time window (same as ITM_MOMENTUM - both are momentum strategies)
 INTRADAY_DEBIT_MOMENTUM_START = "10:00"  # Entry window start
 INTRADAY_DEBIT_MOMENTUM_END = "13:30"  # Entry window end
-INTRADAY_ITM_STOP = 0.50  # -50% stop
+INTRADAY_ITM_STOP = 0.35  # V6.13 OPT: Reduce catastrophic ITM losses
 INTRADAY_ITM_TRAIL_TRIGGER = 0.20  # Trail after +20%
 INTRADAY_ITM_TRAIL_PCT = 0.50  # Trail at 50% of gains
 

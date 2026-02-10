@@ -203,6 +203,11 @@ Still low; most intraday signals do not become executed results.
 
 ## Fixes Applied (Pending Validation)
 
+- **V6.13 optimization tuning (config-only)**:
+  - Micro participation: lowered noise/fallback thresholds (`QQQ_NOISE_THRESHOLD`, `INTRADAY_QQQ_FALLBACK_MIN_MOVE`, `MICRO_SCORE_*_CONFIRM`, `INTRADAY_DEBIT_FADE_VIX_MIN`, `INTRADAY_FADE_MIN_MOVE`, `INTRADAY_ITM_MIN_*`).
+  - Loss control: tightened ITM stop/target and ATR base/floor (`INTRADAY_ITM_STOP`, `INTRADAY_ITM_TARGET`, `OPTIONS_ATR_STOP_MULTIPLIER`, `OPTIONS_ATR_STOP_MIN_PCT`).
+  - VASS constructability: widened credit short-leg delta max and reduced spread width target/min (`CREDIT_SPREAD_SHORT_LEG_DELTA_MAX`, `SPREAD_WIDTH_MIN`, `SPREAD_WIDTH_TARGET`).
+  - Choppy recycling: re-enabled tight neutrality exit (`SPREAD_NEUTRALITY_EXIT_*`).
 - **VASS spread failure cooldown trap**: Added DTE fallback ranges and only apply cooldown after all ranges fail.
 - **VASS rejection visibility**: Added compact `FailStats` summary to throttled `VASS_REJECTION` logs.
 - **Swing/Intraday cross‑blocking**: Replaced `has_position()` gate with mode‑specific `can_enter_swing()` and `has_intraday_position()` checks.

@@ -3840,3 +3840,22 @@ Files:
 - `main.py`
 - `config.py`
 - `tests/test_options_engine.py`
+
+## V6.13 — Optimization Tuning (Config-Only)
+
+- Reduced MICRO signal starvation with moderate participation tuning:
+  - `QQQ_NOISE_THRESHOLD`, `INTRADAY_QQQ_FALLBACK_MIN_MOVE`,
+    `MICRO_SCORE_BULLISH_CONFIRM`, `MICRO_SCORE_BEARISH_CONFIRM`,
+    `INTRADAY_DEBIT_FADE_VIX_MIN`, `INTRADAY_FADE_MIN_MOVE`,
+    `INTRADAY_ITM_MIN_VIX`, `INTRADAY_ITM_MIN_MOVE`.
+- Tightened loss control for intraday momentum:
+  - `INTRADAY_ITM_STOP`, `INTRADAY_ITM_TARGET`,
+    `OPTIONS_ATR_STOP_MULTIPLIER`, `OPTIONS_ATR_STOP_MIN_PCT`.
+- Improved VASS spread constructability:
+  - `SPREAD_WIDTH_MIN`, `SPREAD_WIDTH_TARGET`,
+    `CREDIT_SPREAD_SHORT_LEG_DELTA_MAX`.
+- Re-enabled tight neutrality exit in choppy/neutral:
+  - `SPREAD_NEUTRALITY_EXIT_ENABLED`,
+    `SPREAD_NEUTRALITY_EXIT_PNL_BAND`,
+    `SPREAD_NEUTRALITY_ZONE_LOW`,
+    `SPREAD_NEUTRALITY_ZONE_HIGH`.
