@@ -17,63 +17,136 @@ Markets cycle through distinct phases:
 
 A static strategy that works well in one regime may fail catastrophically in another. The Regime Engine provides the adaptability to survive all conditions.
 
-### 4.1.2 VIX in Regime Score (V2.3 Update)
+### 4.1.2 Model Evolution
 
-> **V2.3 Change**: VIX Level is now included as a regime factor (20% weight) for options strategy selection.
+The Regime Engine has evolved through multiple versions to improve crash detection and regime accuracy:
 
-**Why VIX Was Added:**
+| Version | Model | Key Innovation |
+|---------|-------|----------------|
+| V2.3 | 5-factor | Added VIX Level for options pricing context |
+| V3.0 | 7-factor | Added VIX Direction for same-day crash detection |
+| V3.3 | 3-factor simplified | Fixed score compression in grinding bears with Drawdown factor |
+| V4.0 | 5-factor leading | 55% weight on leading/concurrent indicators |
+| V4.1 | 5-factor (VIX Level) | Fixed VIX Direction bug (stable VIX scored same regardless of level) |
+| **V5.3** | **4-factor** | **Current: VIX Combined (60% level + 40% direction)** |
 
-Options are priced off **implied volatility** (VIX), not realized volatility. The previous regime score used only realized volatility, which meant:
-- High VIX = expensive options = lower expected returns (not captured)
-- Low VIX = cheap options = better entry opportunities (not captured)
-
-**Data Source:** VIX is obtained via CBOE subscription. For live trading, ensure VIX data feed is enabled.
-
-| Proxy Symbol | Purpose | Why This Proxy |
-|--------------|---------|----------------|
-| **SPY** | Trend & Volatility | Most liquid, most representative broad market proxy |
-| **RSP** | Breadth | Equal-weight S&P 500; outperformance indicates broad participation |
-| **HYG** | Credit (Risk Appetite) | High-yield bonds sensitive to credit risk |
-| **IEF** | Credit (Safe Haven) | 7-10 Year Treasuries; HYG-IEF spread indicates credit premium |
-| **VIX** | Implied Volatility | Market's expectation of future volatility (V2.3) |
+**Active Model Selection** (via `config.py`):
+- `V53_REGIME_ENABLED = True` → V5.3 4-factor model (recommended)
+- `V4_REGIME_ENABLED = True` → V4.0/V4.1 5-factor model
+- `V3_REGIME_SIMPLIFIED_ENABLED = True` → V3.3 3-factor model
+- All disabled → Legacy 7-factor model
 
 ---
 
-## 4.2 The Five Factors (V2.3)
+## 4.2 V5.3 Four-Factor Model (Current)
 
-The regime score combines five distinct market factors, each measuring a different aspect of market health.
+The V5.3 model uses four factors optimized for crash detection while maintaining responsiveness to recoveries.
 
-### Factor Weight Summary (V2.3)
+### Factor Weight Summary (V5.3)
 
 | Factor | Weight | What It Measures |
 |--------|:------:|------------------|
-| **Trend** | 30% | Price position relative to moving averages and trend structure |
-| **VIX Level** | 20% | Implied volatility - options pricing environment (V2.3 NEW) |
-| **Realized Vol** | 15% | Historical price movement - market stability |
-| **Breadth** | 20% | Market health via equal-weight vs cap-weight performance |
-| **Credit** | 15% | Credit market stress via high-yield bond performance |
-
-> **V2.3 Change**: Weights rebalanced to include VIX. Trend reduced from 35% to 30%, Realized Vol from 25% to 15%, Breadth from 25% to 20%.
+| **Momentum** | 30% | 20-day ROC - catches reversals in days |
+| **VIX Combined** | 30% | 60% level + 40% direction, clamped when VIX >= 25 |
+| **Trend** | 25% | SPY vs MA200 position and alignment |
+| **Drawdown** | 15% | Distance from 52-week high |
 
 ---
 
-### 4.2.1 Trend Factor (35% Weight)
+### 4.2.1 Momentum Factor (30% Weight)
 
-**What It Measures:** Price position relative to moving averages and trend structure.
+**What It Measures:** 20-day Rate of Change (ROC) - how much has SPY moved in the last 20 days?
 
-**Why It Matters:** When price is above rising moving averages in proper alignment, the path of least resistance is higher. Fighting the trend is a losing strategy.
+**Why It Matters:** Momentum is a leading indicator that catches reversals within days, not weeks. A sharp momentum reversal often precedes regime changes.
 
 #### Calculation Logic
 
-Starting from a **base score of 50**, the trend factor adds or subtracts points:
+```python
+momentum_roc = (current_price - price_20d_ago) / price_20d_ago
+```
+
+| ROC Range | Score | Description |
+|:---------:|:-----:|-------------|
+| > +5% | 90 | Strong bull momentum |
+| +2% to +5% | 75 | Bull momentum |
+| +1% to +2% | 60 | Mildly bullish |
+| -1% to +1% | 50 | Neutral |
+| -2% to -1% | 40 | Mildly bearish |
+| -5% to -2% | 25 | Bear momentum |
+| < -5% | 10 | Strong bear momentum |
+
+**Config Parameters:**
+- `MOMENTUM_LOOKBACK` (default: 20)
+- `MOMENTUM_THRESHOLD_STRONG_BULL` (default: 0.05)
+- `MOMENTUM_THRESHOLD_BEAR` (default: -0.02)
+
+---
+
+### 4.2.2 VIX Combined Factor (30% Weight)
+
+**What It Measures:** Market fear intensity combining absolute level (60%) and directional momentum (40%).
+
+**Why It Matters:** VIX level alone misses fast-moving crashes (VIX can spike from 12 to 30 in days). VIX direction alone treats VIX=12 stable the same as VIX=32 stable. Combining both captures fear intensity AND momentum.
+
+#### Calculation Logic
+
+```python
+vix_combined = (0.60 * vix_level_score) + (0.40 * vix_direction_score)
+
+# High-VIX clamp: When VIX >= 25, cap combined score at 47
+if vix_level >= 25:
+    vix_combined = min(vix_combined, 47)
+```
+
+**VIX Level Scoring:**
+
+| VIX Level | Score | Interpretation |
+|:---------:|:-----:|----------------|
+| < 15 | 100 | Complacent market, cheap options |
+| 15-18 | 85 | Low fear |
+| 18-22 | 70 | Normal volatility |
+| 22-26 | 50 | Elevated fear |
+| 26-30 | 30 | High fear |
+| 30-40 | 15 | Very high fear |
+| > 40 | 0 | Crisis mode |
+
+**VIX Direction Scoring (5-day change):**
+
+| VIX 5d Change | Score | Interpretation |
+|:-------------:|:-----:|----------------|
+| > +20% | 10 | Spike (panic) |
+| +10% to +20% | 25 | Rising fast |
+| +5% to +10% | 40 | Rising |
+| +2% to +5% | 50 | Stable (high band) |
+| -2% to +2% | 55 | Stable |
+| -10% to -2% | 70 | Falling |
+| < -10% | 85 | Falling fast (relief) |
+
+**Config Parameters:**
+- `VIX_COMBINED_LEVEL_WEIGHT` (default: 0.60)
+- `VIX_COMBINED_DIRECTION_WEIGHT` (default: 0.40)
+- `VIX_COMBINED_HIGH_VIX_THRESHOLD` (default: 25.0)
+- `VIX_COMBINED_HIGH_VIX_CLAMP` (default: 47.0)
+
+---
+
+### 4.2.3 Trend Factor (25% Weight)
+
+**What It Measures:** Price position relative to moving averages and trend structure.
+
+**Why It Matters:** When price is above rising moving averages in proper alignment, the path of least resistance is higher.
+
+#### Calculation Logic
+
+Starting from a **base score of 50**:
 
 **Price vs Individual Moving Averages:**
 
 | Condition | Points |
 |-----------|:------:|
-| Price > 20-day SMA (short-term strength) | +10 |
-| Price > 50-day SMA (medium-term strength) | +10 |
-| Price > 200-day SMA (long-term strength) | +15 |
+| Price > 20-day SMA | +10 |
+| Price > 50-day SMA | +10 |
+| Price > 200-day SMA | +15 |
 
 **Moving Average Alignment:**
 
@@ -86,187 +159,117 @@ Starting from a **base score of 50**, the trend factor adds or subtracts points:
 
 | Condition | Points |
 |-----------|:------:|
-| Price > 15% above 200 SMA (extended, likely pullback) | -10 |
-| Price > 10% below 200 SMA (oversold, potential bounce) | +5 |
+| Price > 15% above 200 SMA | -10 |
+| Price > 10% below 200 SMA | +5 |
 
-The result is **clamped to range 0-100**.
+Result is **clamped to 0-100**.
 
 ---
 
-### 4.2.2 VIX Level Factor (20% Weight) - V2.3 NEW
+### 4.2.4 Drawdown Factor (15% Weight)
 
-**What It Measures:** Market's implied volatility expectations via VIX index.
+**What It Measures:** Distance from 52-week high - how far has the market fallen from its peak?
 
-**Why It Matters:** Options are priced off implied volatility. High VIX means expensive options with lower expected returns. Low VIX means cheap options with better entry opportunities.
+**Why It Matters:** Drawdown breaks score compression in grinding bear markets. Previous models would score 45-50 even when market was down 30% because each factor scored ~50. Drawdown provides decisive differentiation.
 
 #### Calculation Logic
 
-**VIX Level Scoring:**
+```python
+drawdown_pct = (spy_52w_high - current_price) / spy_52w_high
+```
 
-| VIX Level | Score (0-100) | Interpretation |
-|:---------:|:-------------:|----------------|
-| < 15 | 100 | Complacent market, cheap options |
-| 15-18 | 85 | Low fear, good for buying options |
-| 18-22 | 70 | Normal volatility environment |
-| 22-26 | 50 | Elevated fear, options getting expensive |
-| 26-30 | 30 | High fear, expensive premiums |
-| 30-40 | 15 | Very high fear, avoid buying options |
-| > 40 | 0 | Crisis mode, options extremely expensive |
+| Drawdown | Score | Market State |
+|:--------:|:-----:|--------------|
+| < 5% | 90 | Bull market (near highs) |
+| 5-10% | 70 | Correction |
+| 10-15% | 50 | Pullback |
+| 15-20% | 30 | Bear market |
+| > 20% | 10 | Deep bear |
 
 **Config Parameters:**
-- `VIX_REGIME_WEIGHT` (default: 0.20)
-- `VIX_LOW_THRESHOLD` (default: 15)
-- `VIX_NORMAL_THRESHOLD` (default: 22)
-- `VIX_HIGH_THRESHOLD` (default: 30)
-- `VIX_EXTREME_THRESHOLD` (default: 40)
+- `DRAWDOWN_THRESHOLD_BULL` (default: 0.05)
+- `DRAWDOWN_THRESHOLD_CORRECTION` (default: 0.10)
+- `DRAWDOWN_THRESHOLD_PULLBACK` (default: 0.15)
+- `DRAWDOWN_THRESHOLD_BEAR` (default: 0.20)
 
 ---
 
-### 4.2.3 Realized Volatility Factor (15% Weight)
+## 4.3 V5.3 Guards (Safety Mechanisms)
 
-**What It Measures:** Current market stability via historical price movement.
+### 4.3.1 VIX Spike Cap
 
-**Why It Matters:** Low realized volatility indicates stable conditions ideal for leveraged positions. High realized volatility indicates uncertainty and potential for large adverse moves.
+**Purpose:** Immediately cap regime score during VIX spikes to prevent bullish signals during crashes.
 
-#### Calculation Logic
+**Trigger:** VIX 5-day change >= +28%
 
-**Step 1: Calculate 20-day Realized Volatility**
+**Effect:** Raw regime score capped at 45 (CAUTIOUS) for 3 days
 
-1. Gather 21 days of SPY closing prices
-2. Calculate daily returns (close-to-close percentage changes)
-3. Take standard deviation of returns
-4. Annualize by multiplying by √252
+**Config:**
+- `V53_SPIKE_CAP_ENABLED` (default: True)
+- `V53_SPIKE_CAP_THRESHOLD` (default: 0.28)
+- `V53_SPIKE_CAP_MAX_SCORE` (default: 45)
+- `V53_SPIKE_CAP_DECAY_DAYS` (default: 3)
 
-**Step 2: Determine Historical Percentile**
+### 4.3.2 Breadth Decay Penalty
 
-1. Calculate rolling 20-day volatility for each of the past 252 days
-2. Find what percentile the current reading falls into
+**Purpose:** Penalize regime score when market breadth is deteriorating (mega-cap rally while average stock lags).
 
-**Step 3: Score Based on Percentile**
+**Trigger:** RSP/SPY ratio declining
+- 5-day decay > -10%: -5 points
+- 10-day decay > -15%: -8 points (additive)
 
-Starting from **base score of 50**, add/subtract based on percentile:
-
-| Volatility Percentile | Description | Points |
-|:---------------------:|-------------|:------:|
-| Below 20th | Very calm | +25 |
-| 20th – 40th | Calm | +15 |
-| 40th – 60th | Normal | +0 |
-| 60th – 80th | Elevated | -15 |
-| Above 80th | High fear | -25 |
-
-**Additional Absolute Level Adjustments:**
-
-| Condition | Points |
-|-----------|:------:|
-| Realized vol < 12% annualized (extra calm) | +10 |
-| Realized vol > 25% annualized (danger zone) | -10 |
+**Config:**
+- `V53_BREADTH_DECAY_ENABLED` (default: True)
+- `V53_BREADTH_5D_DECAY_THRESHOLD` (default: -0.10)
+- `V53_BREADTH_10D_DECAY_THRESHOLD` (default: -0.15)
+- `V53_BREADTH_5D_PENALTY` (default: 5.0)
+- `V53_BREADTH_10D_PENALTY` (default: 8.0)
 
 ---
 
-### 4.2.3 Breadth Factor (25% Weight)
+## 4.4 Score Aggregation and Smoothing
 
-**What It Measures:** Market health via equal-weight vs cap-weight performance divergence.
+### 4.4.1 V5.3 Aggregation Formula
 
-**Why It Matters:** A healthy bull market has broad participation across all stocks. When only mega-cap stocks are rising while the average stock lags, the rally is narrow and vulnerable.
-
-#### Calculation Logic
-
-Calculate 20-day returns for both RSP (equal weight) and SPY (cap weight).
-
-**Spread = RSP Return − SPY Return**
-
-Starting from **base score of 50**:
-
-| RSP vs SPY Spread | Description | Points |
-|:-----------------:|-------------|:------:|
-| RSP leading > 2% | Excellent breadth | +25 |
-| RSP leading 1% – 2% | Good breadth | +15 |
-| RSP leading 0% – 1% | Slightly positive | +5 |
-| RSP lagging 0% – 1% | Neutral | +0 |
-| RSP lagging 1% – 2% | Narrowing breadth | -10 |
-| RSP lagging > 2% | Very narrow (mega-cap only) | -20 |
-
----
-
-### 4.2.4 Credit Factor (15% Weight)
-
-**What It Measures:** Credit market stress via high-yield bond performance relative to treasuries.
-
-**Why It Matters:** Credit markets often lead equity markets. When high-yield bonds underperform treasuries, it signals credit stress and impending risk-off sentiment.
-
-#### Calculation Logic
-
-Calculate 20-day returns for both HYG (high yield) and IEF (treasuries).
-
-**Spread = HYG Return − IEF Return**
-
-Starting from **base score of 50**:
-
-| HYG vs IEF Spread | Description | Points |
-|:-----------------:|-------------|:------:|
-| HYG leading > 2% | Strong risk appetite | +25 |
-| HYG leading 1% – 2% | Healthy credit | +15 |
-| HYG leading 0% – 1% | Mildly positive | +5 |
-| HYG lagging 0% – 1% | Mild caution | -5 |
-| HYG lagging 1% – 2% | Credit stress emerging | -15 |
-| HYG lagging > 2% | Significant stress | -25 |
-
----
-
-## 4.3 Score Aggregation and Smoothing
-
-### 4.3.1 Weighted Combination Formula
-
-The five factor scores are combined using fixed weights (V2.3):
-
-```
-Raw Score = (Trend × 0.30) + (VIX × 0.20) + (Volatility × 0.15) + (Breadth × 0.20) + (Credit × 0.15)
+```python
+raw_score = (
+    momentum_score * 0.30 +
+    vix_combined_score * 0.30 +
+    trend_score * 0.25 +
+    drawdown_score * 0.15
+) - breadth_penalty
 ```
 
-#### Example Calculation (V2.3)
+#### Example Calculation (V5.3)
 
 | Factor | Score | Weight | Contribution |
 |--------|:-----:|:------:|:------------:|
-| Trend | 72 | 30% | 21.60 |
-| VIX | 70 | 20% | 14.00 |
-| Volatility | 65 | 15% | 9.75 |
-| Breadth | 58 | 20% | 11.60 |
-| Credit | 45 | 15% | 6.75 |
-| **Raw Score** | | | **63.70** |
+| Momentum | 75 | 30% | 22.50 |
+| VIX Combined | 60 | 30% | 18.00 |
+| Trend | 72 | 25% | 18.00 |
+| Drawdown | 70 | 15% | 10.50 |
+| Breadth Penalty | -5 | - | -5.00 |
+| **Raw Score** | | | **64.00** |
 
 ---
 
-### 4.3.2 Exponential Smoothing
+### 4.4.2 Exponential Smoothing
 
-Raw scores can be noisy day-to-day. To prevent whipsaw trading around threshold values, the score is smoothed using exponential moving average logic.
+Raw scores can be noisy day-to-day. To prevent whipsaw trading around threshold values, the score is smoothed:
 
-#### Smoothing Formula
-
-```
-Smoothed Score = (α × Raw Score) + ((1 - α) × Previous Smoothed Score)
+```python
+smoothed_score = (alpha * raw_score) + ((1 - alpha) * previous_smoothed)
 ```
 
-**Where α (alpha) = 0.30**
+**Where alpha = 0.30** (configurable via `REGIME_SMOOTHING_ALPHA`)
 
 This means:
 - **30% weight** on today's raw score
 - **70% weight** on previous smoothed score
 
-This creates "momentum" in the score. A single day's change has limited impact; sustained changes over multiple days have larger impact.
-
-#### Example Progression Over Three Days
-
-| Day | Raw Score | Previous Smoothed | Calculation | New Smoothed |
-|:---:|:---------:|:-----------------:|-------------|:------------:|
-| 1 | 60 | 50 | (0.3 × 60) + (0.7 × 50) | **53.0** |
-| 2 | 65 | 53 | (0.3 × 65) + (0.7 × 53) | **56.6** |
-| 3 | 70 | 56.6 | (0.3 × 70) + (0.7 × 56.6) | **60.6** |
-
-The score rose from 50 to 60.6 over three days, not immediately to 70.
-
 ---
 
-## 4.4 Regime State Classification
+## 4.5 Regime State Classification
 
 The smoothed score maps to discrete regime states that drive system behavior.
 
@@ -274,23 +277,17 @@ The smoothed score maps to discrete regime states that drive system behavior.
 
 | Score Range | State | New Longs | Hedges | Cold Start |
 |:-----------:|-------|:---------:|:------:|:----------:|
-| **70 – 100** | RISK_ON | ✅ Full | ❌ None | ✅ Allowed |
-| **50 – 69** | NEUTRAL | ✅ Full | ❌ None | ✅ If > 50 |
-| **40 – 49** | CAUTIOUS | ✅ Full | 10% TMF | ❌ Blocked |
-| **30 – 39** | DEFENSIVE | ⚠️ Reduced | 15% TMF + 5% PSQ | ❌ Blocked |
-| **0 – 29** | RISK_OFF | ❌ None | 20% TMF + 10% PSQ | ❌ Blocked |
+| **70 – 100** | RISK_ON | Full | None | Allowed |
+| **50 – 69** | NEUTRAL | Full | None | If > 50 |
+| **40 – 49** | CAUTIOUS | Full | 10% TMF | Blocked |
+| **30 – 39** | DEFENSIVE | Reduced | 15% TMF + 5% PSQ | Blocked |
+| **0 – 29** | RISK_OFF | None | 20% TMF + 10% PSQ | Blocked |
 
 ---
 
-### 4.4.1 RISK_ON (Score 70–100)
+### 4.5.1 RISK_ON (Score 70–100)
 
 Market conditions are highly favorable. **All systems are go.**
-
-**Characteristics:**
-- Strong trend (price above all MAs, proper alignment)
-- Low volatility (below historical median)
-- Good breadth (equal weight performing well)
-- Healthy credit (high yield outperforming)
 
 **System Behavior:**
 - Full leverage allowed
@@ -300,14 +297,9 @@ Market conditions are highly favorable. **All systems are go.**
 
 ---
 
-### 4.4.2 NEUTRAL (Score 50–69)
+### 4.5.2 NEUTRAL (Score 50–69)
 
 Market conditions are acceptable but not ideal. **Proceed normally with awareness.**
-
-**Characteristics:**
-- Mixed signals across factors
-- Some factors positive, some neutral or slightly negative
-- No glaring red flags
 
 **System Behavior:**
 - Full leverage allowed
@@ -317,14 +309,9 @@ Market conditions are acceptable but not ideal. **Proceed normally with awarenes
 
 ---
 
-### 4.4.3 CAUTIOUS (Score 40–49)
+### 4.5.3 CAUTIOUS (Score 40–49)
 
 Market conditions are deteriorating. **Increased vigilance required.**
-
-**Characteristics:**
-- Trend weakening or volatility rising
-- One or more factors flashing warning signs
-- Not yet crisis level
 
 **System Behavior:**
 - Leverage still allowed but proceed carefully
@@ -334,14 +321,9 @@ Market conditions are deteriorating. **Increased vigilance required.**
 
 ---
 
-### 4.4.4 DEFENSIVE (Score 30–39)
+### 4.5.4 DEFENSIVE (Score 30–39)
 
 Market conditions are unfavorable. **Defensive positioning required.**
-
-**Characteristics:**
-- Multiple factors negative
-- Clear risk-off signals emerging
-- Potential for further deterioration
 
 **System Behavior:**
 - Reduced leverage appropriate
@@ -351,15 +333,9 @@ Market conditions are unfavorable. **Defensive positioning required.**
 
 ---
 
-### 4.4.5 RISK_OFF (Score 0–29)
+### 4.5.5 RISK_OFF (Score 0–29)
 
 Market conditions are dangerous. **Maximum defense required.**
-
-**Characteristics:**
-- Strong bearish trend
-- High volatility
-- Narrow or negative breadth
-- Credit stress
 
 **System Behavior:**
 - **No new long entries allowed**
@@ -369,33 +345,16 @@ Market conditions are dangerous. **Maximum defense required.**
 
 ---
 
-## 4.5 Regime-Triggered Hedge Allocation
-
-The Regime Engine directly controls the Hedge Engine's target allocations. As regime deteriorates, hedge allocation increases automatically.
+## 4.6 Regime-Triggered Hedge Allocation
 
 ### Hedge Allocation Tiers
 
 | Regime Score | TMF Allocation | PSQ Allocation | Total Hedge |
 |:------------:|:--------------:|:--------------:|:-----------:|
-| **≥ 40** | 0% | 0% | 0% |
+| **>= 40** | 0% | 0% | 0% |
 | **30 – 39** | 10% | 0% | 10% |
 | **20 – 29** | 15% | 5% | 20% |
 | **< 20** | 20% | 10% | 30% |
-
-### Why Graduated Scaling?
-
-Previous versions used binary hedging (ON at regime 40, OFF at 41). This caused problems:
-
-| Problem | Impact |
-|---------|--------|
-| Regime oscillating around 40 | Constant hedge trading (high turnover) |
-| Sudden large hedge positions | Disrupted portfolio balance |
-| No gradual adjustment | Couldn't match severity of conditions |
-
-**Graduated scaling provides:**
-- Smooth transitions between hedge levels
-- Lower turnover and transaction costs
-- Appropriate hedge size for severity of conditions
 
 ### Why TMF Before PSQ?
 
@@ -404,16 +363,11 @@ TMF is added first because:
 - TMF can rally significantly during stress
 - PSQ is more expensive (inverse decay adds up over time)
 
-PSQ is added only when conditions are severe:
-- Score below 30 suggests serious trouble
-- Need direct equity offset, not just flight-to-safety
-- Worth the cost when probability of continued decline is high
+PSQ is added only when conditions are severe (score below 30).
 
 ---
 
-## 4.6 Regime Engine Outputs
-
-The Regime Engine produces a comprehensive output used by all other system components.
+## 4.7 Regime Engine Outputs
 
 ### Primary Outputs
 
@@ -421,60 +375,48 @@ The Regime Engine produces a comprehensive output used by all other system compo
 |--------|------|-------------|
 | `smoothed_score` | Float (0–100) | The final regime score after smoothing |
 | `raw_score` | Float (0–100) | Score before smoothing (for logging) |
-| `state_name` | String | RISK_ON, NEUTRAL, CAUTIOUS, DEFENSIVE, or RISK_OFF |
+| `state` | RegimeLevel | RISK_ON, NEUTRAL, CAUTIOUS, DEFENSIVE, or RISK_OFF |
 
-### Component Scores (Debugging/Analysis)
-
-| Output | Type | Description |
-|--------|------|-------------|
-| `trend_score` | Float (0–100) | Trend factor contribution |
-| `volatility_score` | Float (0–100) | Volatility factor contribution |
-| `breadth_score` | Float (0–100) | Breadth factor contribution |
-| `credit_score` | Float (0–100) | Credit factor contribution |
-
-### Component Raw Values
+### V5.3 Component Scores
 
 | Output | Type | Description |
 |--------|------|-------------|
-| `realized_vol` | Float | Current 20-day realized volatility (annualized) |
-| `vol_percentile` | Float (0–100) | Where current vol ranks vs 252-day history |
-| `breadth_spread` | Float | RSP return − SPY return (20-day) |
-| `credit_spread` | Float | HYG return − IEF return (20-day) |
+| `momentum_score` | Float (0–100) | 20-day ROC momentum score |
+| `momentum_roc` | Float | Raw 20-day ROC value |
+| `vix_combined_score` | Float (0–100) | 60% level + 40% direction |
+| `vix_level` | Float | Current VIX value |
+| `vix_5d_change` | Float | 5-day VIX change percentage |
+| `trend_score` | Float (0–100) | Trend factor score |
+| `drawdown_score` | Float (0–100) | Drawdown factor score |
+| `drawdown_pct` | Float | Raw drawdown percentage |
+| `breadth_penalty` | Float | Points deducted for breadth decay |
 
 ### Derived Flags
 
 | Flag | Type | Logic |
 |------|------|-------|
-| `new_longs_allowed` | Boolean | `True` if score ≥ 30 |
+| `new_longs_allowed` | Boolean | `True` if score >= 30 |
 | `cold_start_allowed` | Boolean | `True` if score > 50 |
 
-### Hedge Targets
+### Guard Status
 
-| Output | Type | Description |
-|--------|------|-------------|
-| `tmf_target_pct` | Float | Target TMF allocation (0% to 20%) |
-| `psq_target_pct` | Float | Target PSQ allocation (0% to 10%) |
+| Flag | Type | Description |
+|------|------|-------------|
+| `v53_spike_cap_active` | Boolean | VIX spike cap currently active |
+| `using_v53_model` | Boolean | True if using V5.3 model |
 
 ---
 
-## 4.7 Calculation Timing
+## 4.8 Calculation Timing
 
 The regime score is calculated **once per day** in the `OnEndOfDay` event, using finalized daily bars.
-
-### Why End-of-Day Calculation?
-
-| Benefit | Explanation |
-|---------|-------------|
-| **Complete Data** | All four proxies have complete, final daily data |
-| **No Incomplete Bars** | No risk of calculating on partial/incomplete bars |
-| **Consistent Timing** | Single authoritative score for the entire next trading day |
-| **Hedge Coordination** | Aligns with hedge rebalancing decisions |
 
 ### Daily Timeline
 
 ```
 15:45 ET — OnEndOfDay Event Fires
-    ├── Calculate all five factor scores (V2.3)
+    ├── Calculate all factor scores
+    ├── Apply guards (spike cap, breadth penalty)
     ├── Aggregate using weighted formula
     ├── Apply exponential smoothing
     ├── Classify regime state
@@ -484,49 +426,114 @@ The regime score is calculated **once per day** in the `OnEndOfDay` event, using
 
 ---
 
-## 4.8 Parameter Reference
+## 4.9 Alternative Models (Configurable)
 
-### Regime Calculation Parameters
+### V4.0/V4.1 Five-Factor Model
 
-| Parameter | Value | Description |
-|-----------|:-----:|-------------|
-| `TREND_WEIGHT` | 0.35 | Weight for trend factor |
-| `VOL_WEIGHT` | 0.25 | Weight for volatility factor |
-| `BREADTH_WEIGHT` | 0.25 | Weight for breadth factor |
-| `CREDIT_WEIGHT` | 0.15 | Weight for credit factor |
-| `SMOOTHING_ALPHA` | 0.30 | EMA smoothing coefficient |
+Enabled via `V4_REGIME_ENABLED = True`
 
-### Indicator Parameters
+| Factor | Weight | Description |
+|--------|:------:|-------------|
+| Momentum | 30% | 20-day ROC |
+| VIX Level (V4.1) | 25% | Absolute fear intensity |
+| Breadth | 20% | RSP/SPY ratio |
+| Drawdown | 15% | Distance from 52w high |
+| Trend | 10% | SPY vs MA200 (context only) |
 
-| Parameter | Value | Description |
-|-----------|:-----:|-------------|
-| `SMA_PERIODS` | 20, 50, 200 | Moving average periods for trend |
-| `VOL_LOOKBACK_DAYS` | 20 | Days for realized volatility calculation |
-| `VOL_PERCENTILE_LOOKBACK` | 252 | Days for volatility percentile ranking |
-| `RETURN_LOOKBACK_DAYS` | 20 | Days for breadth/credit spread calculation |
+**V4.1 Fix:** Uses VIX Level instead of VIX Direction to fix bug where stable VIX scored 55 regardless of level.
+
+### V3.3 Simplified Three-Factor Model
+
+Enabled via `V3_REGIME_SIMPLIFIED_ENABLED = True`
+
+| Factor | Weight | Description |
+|--------|:------:|-------------|
+| Trend | 35% | SPY vs MA200 |
+| VIX Level | 30% | Fear/panic level |
+| Drawdown | 35% | Distance from 52w high |
+
+**Guards:**
+- VIX Direction Shock Cap (10% daily VIX spike)
+- Recovery Hysteresis (2-day confirmation for upgrades)
+
+### Legacy Seven-Factor Model (V3.0)
+
+Used when all model flags are disabled.
+
+| Factor | Weight |
+|--------|:------:|
+| Trend | 20% |
+| VIX Level | 15% |
+| VIX Direction | 15% |
+| Breadth | 15% |
+| Credit | 15% |
+| Chop (ADX) | 10% |
+| Volatility | 10% |
 
 ---
 
-## 4.9 Mermaid Diagram: Regime Calculation Flow
+## 4.10 Parameter Reference
+
+### V5.3 Model Parameters
+
+| Parameter | Default | Description |
+|-----------|:-------:|-------------|
+| `V53_REGIME_ENABLED` | True | Enable V5.3 4-factor model |
+| `WEIGHT_MOMENTUM_V53` | 0.30 | Momentum factor weight |
+| `WEIGHT_VIX_COMBINED_V53` | 0.30 | VIX Combined factor weight |
+| `WEIGHT_TREND_V53` | 0.25 | Trend factor weight |
+| `WEIGHT_DRAWDOWN_V53` | 0.15 | Drawdown factor weight |
+| `REGIME_SMOOTHING_ALPHA` | 0.30 | EMA smoothing coefficient |
+
+### V5.3 Guard Parameters
+
+| Parameter | Default | Description |
+|-----------|:-------:|-------------|
+| `V53_SPIKE_CAP_ENABLED` | True | Enable spike cap |
+| `V53_SPIKE_CAP_THRESHOLD` | 0.28 | VIX 5d change trigger |
+| `V53_SPIKE_CAP_MAX_SCORE` | 45 | Score cap when triggered |
+| `V53_SPIKE_CAP_DECAY_DAYS` | 3 | Days until cap expires |
+| `V53_BREADTH_DECAY_ENABLED` | True | Enable breadth penalty |
+| `V53_BREADTH_5D_PENALTY` | 5.0 | Points for 5d decay |
+| `V53_BREADTH_10D_PENALTY` | 8.0 | Points for 10d decay |
+
+### Regime Thresholds
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `REGIME_RISK_ON` | 70 | RISK_ON threshold |
+| `REGIME_NEUTRAL` | 50 | NEUTRAL threshold |
+| `REGIME_CAUTIOUS` | 40 | CAUTIOUS threshold |
+| `REGIME_DEFENSIVE` | 30 | DEFENSIVE threshold |
+
+---
+
+## 4.11 Mermaid Diagram: V5.3 Regime Calculation Flow
 
 ```mermaid
 flowchart TD
     subgraph DATA["Data Layer"]
         SPY["SPY Daily Bars"]
         RSP["RSP Daily Bars"]
-        HYG["HYG Daily Bars"]
-        IEF["IEF Daily Bars"]
+        VIX["VIX Level"]
+        HIGH["52-Week High"]
     end
 
-    subgraph FACTORS["Factor Calculations"]
-        TREND["Trend Factor<br/>Weight: 35%"]
-        VOL["Volatility Factor<br/>Weight: 25%"]
-        BREADTH["Breadth Factor<br/>Weight: 25%"]
-        CREDIT["Credit Factor<br/>Weight: 15%"]
+    subgraph FACTORS["V5.3 Factor Calculations"]
+        MOM["Momentum (30%)<br/>20-day ROC"]
+        VIXC["VIX Combined (30%)<br/>60% Level + 40% Dir"]
+        TREND["Trend (25%)<br/>SPY vs MA200"]
+        DD["Drawdown (15%)<br/>Distance from High"]
+    end
+
+    subgraph GUARDS["Safety Guards"]
+        SPIKE["Spike Cap<br/>VIX 5d >= +28%"]
+        BREADTH["Breadth Penalty<br/>RSP/SPY Decay"]
     end
 
     subgraph AGGREGATION["Score Aggregation"]
-        RAW["Raw Score<br/>(Weighted Sum)"]
+        RAW["Raw Score<br/>(Weighted Sum - Penalty)"]
+        CAPPED["Capped Score<br/>(if Spike Cap active)"]
         SMOOTH["Smoothed Score<br/>(α = 0.30)"]
     end
 
@@ -539,24 +546,24 @@ flowchart TD
         RISK_OFF["RISK_OFF<br/>0-29"]
     end
 
-    subgraph OUTPUT["Regime Output"]
-        FLAGS["Flags:<br/>new_longs_allowed<br/>cold_start_allowed"]
-        HEDGES["Hedge Targets:<br/>TMF: 0-20%<br/>PSQ: 0-10%"]
-    end
-
+    SPY --> MOM
     SPY --> TREND
-    SPY --> VOL
+    SPY --> DD
+    HIGH --> DD
+    VIX --> VIXC
     RSP --> BREADTH
     SPY --> BREADTH
-    HYG --> CREDIT
-    IEF --> CREDIT
 
+    MOM --> RAW
+    VIXC --> RAW
     TREND --> RAW
-    VOL --> RAW
+    DD --> RAW
     BREADTH --> RAW
-    CREDIT --> RAW
 
-    RAW --> SMOOTH
+    VIX --> SPIKE
+    SPIKE --> CAPPED
+    RAW --> CAPPED
+    CAPPED --> SMOOTH
     SMOOTH --> STATE
 
     STATE -->|70-100| RISK_ON
@@ -564,31 +571,22 @@ flowchart TD
     STATE -->|40-49| CAUTIOUS
     STATE -->|30-39| DEFENSIVE
     STATE -->|0-29| RISK_OFF
-
-    RISK_ON --> FLAGS
-    NEUTRAL --> FLAGS
-    CAUTIOUS --> FLAGS
-    DEFENSIVE --> FLAGS
-    RISK_OFF --> FLAGS
-
-    CAUTIOUS --> HEDGES
-    DEFENSIVE --> HEDGES
-    RISK_OFF --> HEDGES
 ```
 
 ---
 
-## 4.10 Key Design Decisions Summary
+## 4.12 Key Design Decisions Summary
 
 | Decision | Rationale |
 |----------|-----------|
-| **Five-factor model (V2.3)** | Captures trend, VIX, volatility, breadth, and credit dimensions of market health |
-| **VIX included (V2.3)** | Implied volatility directly impacts options pricing and market fear |
-| **30% trend weight (V2.3)** | Trend remains important but balanced with VIX for options strategy |
-| **Exponential smoothing (α=0.30)** | Prevents whipsaw around threshold boundaries |
-| **Five regime states** | Provides granular response without excessive complexity |
-| **Graduated hedge scaling** | Matches hedge intensity to severity of conditions |
-| **EOD calculation only** | Uses finalized data; provides stable signal for next day |
+| **V5.3 4-factor model** | Balances crash detection with recovery responsiveness |
+| **VIX Combined (60/40)** | Captures both fear intensity AND momentum |
+| **High-VIX clamp at 47** | Prevents false bullish signals when VIX >= 25 |
+| **Momentum as leading indicator** | 20-day ROC catches reversals in days, not weeks |
+| **Drawdown for bear differentiation** | Breaks score compression in grinding bears |
+| **Breadth decay penalty** | Flags narrow rallies (mega-cap only) |
+| **Spike cap guard** | Immediate protection during VIX spikes |
+| **Exponential smoothing** | Prevents whipsaw around threshold boundaries |
 
 ---
 

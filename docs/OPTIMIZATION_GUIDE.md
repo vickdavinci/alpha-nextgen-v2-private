@@ -1,547 +1,556 @@
-# Alpha NextGen V2 — Optimization Guide
+# Alpha NextGen V6.7 — Options Engine Optimization Guide
 
-> **Purpose:** Parameter reference for backtesting and performance tuning.
-> **Version:** V2.33 "Thesis-Aligned"
-> **Last Updated:** 2026-02-04
-
----
-
-## Quick Reference: High-Impact Parameters
-
-| Parameter | File | Current | Range | Impact |
-|-----------|------|:-------:|-------|--------|
-| `GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE` | config.py | 0.50 | 0.25-1.0 | Options activity during drawdowns |
-| `GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE_BEARISH` | config.py | 0.25 | 0.0-0.75 | Bear options during drawdowns |
-| `SPREAD_REGIME_BEARISH` | config.py | 45 | 40-55 | When bear spreads activate |
-| `SPREAD_REGIME_BULLISH` | config.py | 60 | 55-70 | When bull spreads activate |
-| `DRAWDOWN_GOVERNOR_STEP_THRESHOLD` | config.py | 0.03 | 0.02-0.05 | Governor step-down sensitivity |
-| `KS_SKIP_DAYS` | config.py | 1 | 0-3 | Days blocked after kill switch |
+> **Goal:** Generate consistent income through active intraday and swing options trading.
+> **Mode:** Options Isolation (Trend/MR engines disabled)
+> **Source of Truth:** Current codebase (`config.py`, `options_engine.py`)
+> **Last Updated:** 2026-02-08
 
 ---
 
-## 1. Governor System (Drawdown Protection)
+## Investment Thesis
 
-Controls position sizing during equity drawdowns from peak.
-
-### Core Governor Parameters
-
-```python
-# config.py
-
-# Step-down thresholds (cumulative from equity peak)
-DRAWDOWN_GOVERNOR_STEP_THRESHOLD = 0.03   # 3% loss = step down to 75%
-# At 6% loss = 50%, at 9% loss = 25%, at 12% loss = 0% (shutdown)
-
-# Recovery requirement (scales with current level)
-DRAWDOWN_GOVERNOR_RECOVERY_BASE = 0.08    # 8% at 100% scale
-# Effective: 100%→8%, 75%→6%, 50%→4%, 25%→2%
-```
-
-### Options-Specific Governor Parameters (V2.32)
-
-```python
-# config.py
-
-# ENTRY GATES — minimum governor scale to allow new options entries
-GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE = 0.50        # Bull/neutral options need 50%+
-GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE_BEARISH = 0.25 # Bear options allowed at 25%+
-
-# SIZING CONTROLS — how governor affects options position sizes at EOD
-GOVERNOR_OPTIONS_SIZING_FLOOR = 0.50    # Options never scaled below 50%
-GOVERNOR_EXEMPT_BEARISH_OPTIONS = True  # Bear spreads keep full size (risk-reducing)
-```
-
-### Options Governor Matrix
-
-| Governor Scale | Bull Options Entry | Bear Options Entry | Bull Sizing | Bear Sizing |
-|:--------------:|:------------------:|:------------------:|:-----------:|:-----------:|
-| 100% | ✅ Full | ✅ Full | 100% | 100% |
-| 75% | ✅ Full | ✅ Full | 75% | 100% (exempt) |
-| 50% | ✅ Full | ✅ Full | 50% (floor) | 100% (exempt) |
-| 25% | ❌ Blocked | ✅ Full | 50% (floor) | 100% (exempt) |
-| 0% | ❌ Blocked | ❌ Blocked | 0% | 0% |
-
-### Optimization Notes
-
-| Scenario | Recommendation |
-|----------|----------------|
-| More aggressive (bull markets) | Lower `STEP_THRESHOLD` to 0.02, raise `MIN_SCALE` to 0.75 |
-| More defensive (bear markets) | Raise `STEP_THRESHOLD` to 0.04, lower `MIN_SCALE_BEARISH` to 0.0 |
-| Faster recovery | Lower `RECOVERY_BASE` to 0.06 |
+The Options Engine should **actively trade** to generate consistent returns across all market conditions. Every signal should get a direction — no idle "neutral" zones.
 
 ---
 
-## 2. Kill Switch System (Emergency Exits)
+## V6.7 Cross-Period Performance Baseline
 
-Graduated response to daily losses.
+| Period | Market Type | Return | Intraday Trades | Spread Trades | Win Rate |
+|--------|-------------|--------|-----------------|---------------|----------|
+| **2015 H1** | Choppy | +4.5% | 8 | 33 | 47% |
+| **2017 H1** | Bull | +26.5% | 3 | 23 | 52% |
+| **2022 Jan-Feb** | Bear | -46.8% | 68 | 17 | 22% |
 
-### Kill Switch Parameters
-
-```python
-# config.py
-
-# Tier thresholds (daily loss from prior close)
-KS_TIER_1_PCT = 0.02       # 2% → REDUCE (50% sizing, block new options)
-KS_TIER_2_PCT = 0.025      # 2.5% → TREND_EXIT (liquidate trend, keep spreads)
-KS_TIER_3_PCT = 0.03       # 3% → FULL_EXIT (liquidate everything)
-
-# Post-KS behavior
-KS_SKIP_DAYS = 1           # Business days blocked after Tier 2/3
-KS_TIER_1_BLOCK_NEW_OPTIONS = True  # Block new option entries at Tier 1
-```
-
-### Optimization Notes
-
-| Scenario | Recommendation |
-|----------|----------------|
-| Tighter risk control | Lower all thresholds by 0.5% |
-| More tolerance for volatility | Raise thresholds, increase `KS_SKIP_DAYS` to 2 |
-| Options-focused | Set `KS_TIER_1_BLOCK_NEW_OPTIONS = False` |
+**Problem:** Intraday mode fires too few trades in bull/choppy markets (3-8 vs target 50+).
 
 ---
 
-## 3. Regime Engine (Market State Detection)
+## 1. MICRO Regime Engine (Intraday Direction)
 
-4-factor scoring determines market conditions (0-100 scale).
-
-### Regime Thresholds
+### Current VIX Direction Thresholds
 
 ```python
-# config.py
+# config.py — Lines 1325-1331
 
-# Classification boundaries
-REGIME_RISK_ON = 70        # Score >= 70 = aggressive
-REGIME_NEUTRAL = 50        # Score 50-69 = balanced
-REGIME_CAUTIOUS = 40       # Score 40-49 = defensive lean
-REGIME_DEFENSIVE = 30      # Score 30-39 = defensive
-# Score < 30 = RISK_OFF (no new longs)
-
-# Factor weights (must sum to 1.0)
-WEIGHT_TREND = 0.25        # MA200 position
-WEIGHT_VIX = 0.20          # Implied volatility
-WEIGHT_VOLATILITY = 0.15   # Realized volatility
-WEIGHT_BREADTH = 0.20      # Market breadth
-WEIGHT_CREDIT = 0.15       # Credit spreads
-WEIGHT_CHOP = 0.05         # ADX (trend strength)
-
-# Smoothing
-REGIME_SMOOTHING_ALPHA = 0.30  # EMA alpha (higher = more reactive)
+VIX_DIRECTION_FALLING_FAST = -3.0   # VIX change < -3%
+VIX_DIRECTION_FALLING = -1.0        # VIX change < -1%
+VIX_DIRECTION_STABLE_LOW = -1.0     # STABLE zone: -1% to +1%
+VIX_DIRECTION_STABLE_HIGH = 1.0     # STABLE zone: -1% to +1%
+VIX_DIRECTION_RISING = 3.0          # VIX change > +3%
+VIX_DIRECTION_RISING_FAST = 6.0     # VIX change > +6%
+VIX_DIRECTION_SPIKING = 10.0        # VIX change > +10%
 ```
 
-### Optimization Notes
+**Issue:** STABLE zone (-1% to +1%) captures 83-98% of signals → Dir=NONE.
 
-| Scenario | Recommendation |
-|----------|----------------|
-| More reactive to changes | Raise `SMOOTHING_ALPHA` to 0.40 |
-| Smoother transitions | Lower `SMOOTHING_ALPHA` to 0.20 |
-| VIX-focused strategy | Raise `WEIGHT_VIX` to 0.30, reduce others |
+### Current VIX Level Classification
+
+```python
+# options_engine.py — classify_vix_level()
+
+VIX < 11.5   → VERY_CALM  (Score: 25)
+VIX 11.5-15  → CALM       (Score: 20)
+VIX 15-18    → NORMAL     (Score: 15)
+VIX 18-22    → ELEVATED   (Score: 10)
+VIX 22-25    → HIGH       (Score: 5)
+VIX > 25     → EXTREME    (Score: 0)
+```
+
+### Current MICRO Regime Matrix
+
+```python
+# options_engine.py — Lines 1095-1134
+
+# VIX Level LOW:
+{
+    FALLING_FAST: PERFECT_MR,
+    FALLING: GOOD_MR,
+    STABLE: NORMAL,        # ← Most signals land here
+    RISING: CAUTIOUS,
+    RISING_FAST: WORSENING,
+    SPIKING: BREAKING,
+    WHIPSAW: UNSTABLE
+}
+
+# VIX Level MEDIUM:
+{
+    FALLING_FAST: IMPROVING,
+    FALLING: PANIC_EASING,
+    STABLE: CAUTIOUS,      # ← Most signals land here
+    RISING: DETERIORATING,
+    RISING_FAST: WORSENING_HIGH,
+    SPIKING: CRASH,
+    WHIPSAW: UNSTABLE
+}
+
+# VIX Level HIGH:
+{
+    FALLING_FAST: CALMING,
+    FALLING: PANIC_EASING,
+    STABLE: ELEVATED,      # ← Most signals land here
+    RISING: WORSENING_HIGH,
+    RISING_FAST: CRASH,
+    SPIKING: FULL_PANIC,
+}
+```
+
+### MICRO Direction Scores
+
+```python
+# config.py — Lines 1376-1382
+
+MICRO_SCORE_DIR_FALLING_FAST = 20   # Fear easing rapidly
+MICRO_SCORE_DIR_FALLING = 15        # Fear easing
+MICRO_SCORE_DIR_STABLE = 10         # Neutral
+MICRO_SCORE_DIR_RISING = 5          # Fear building
+MICRO_SCORE_DIR_RISING_FAST = 0     # Fear accelerating
+MICRO_SCORE_DIR_SPIKING = -5        # Panic mode penalty
+MICRO_SCORE_DIR_WHIPSAW = -10       # Chaos penalty
+```
+
+### Optimization Parameters
+
+| Parameter | Current | Range | Impact |
+|-----------|---------|-------|--------|
+| `VIX_DIRECTION_STABLE_LOW` | -1.0% | -2.0 to 0.0 | Narrow = more directional signals |
+| `VIX_DIRECTION_STABLE_HIGH` | +1.0% | 0.0 to +2.0 | Narrow = more directional signals |
+| `VIX_DIRECTION_RISING` | +3.0% | +2.0 to +5.0 | Lower = earlier RISING detection |
+| `VIX_DIRECTION_FALLING` | -1.0% | -3.0 to -0.5 | Higher = earlier FALLING detection |
 
 ---
 
-## 4. Options Engine (Spread Trading)
+## 2. Regime Engine (Macro Direction for Spreads)
 
-### Direction Thresholds
+### Current Spread Direction Thresholds
 
 ```python
-# config.py
+# config.py — Lines 1091-1093
 
-# Spread direction based on regime
-SPREAD_REGIME_BULLISH = 60      # Score > 60 → BULL_CALL spreads
-SPREAD_REGIME_BEARISH = 45      # Score < 45 → BEAR_PUT spreads
-SPREAD_REGIME_CRISIS = 30       # Score < 30 → No spreads (protective only)
-# Score 45-60 = NEUTRAL (no trade)
-
-# Exit thresholds
-SPREAD_REGIME_EXIT_BULL = 45    # Exit bull spread if regime drops below
-SPREAD_REGIME_EXIT_BEAR = 60    # Exit bear spread if regime rises above
+SPREAD_REGIME_BULLISH = 70   # Regime > 70 → CALL spreads
+SPREAD_REGIME_BEARISH = 50   # Regime < 50 → PUT spreads
+SPREAD_REGIME_CRISIS = 0     # Disabled — PUTs work in all bear regimes
 ```
 
-### VASS (Volatility-Adaptive Strategy Selection)
+### Current V5.3 Regime Guards
+
+```python
+# config.py — Lines 254-270
+
+# Spike Cap (caps regime during VIX spikes)
+V53_SPIKE_CAP_ENABLED = True
+V53_SPIKE_CAP_THRESHOLD = 0.28       # VIX up >28% in 5 days
+V53_SPIKE_CAP_MAX_SCORE = 38         # Cap at DEFENSIVE (38)
+V53_SPIKE_CAP_DECAY_DAYS = 3         # Persists for 3 days
+
+# Breadth Decay (penalizes narrow rallies)
+V53_BREADTH_DECAY_ENABLED = True
+V53_BREADTH_5D_DECAY_THRESHOLD = -0.02   # RSP/SPY ratio decay <= -2%
+V53_BREADTH_10D_DECAY_THRESHOLD = -0.04  # RSP/SPY ratio decay <= -4%
+V53_BREADTH_5D_PENALTY = 5               # -5 points for 5d decay
+V53_BREADTH_10D_PENALTY = 8              # -8 points for 10d decay
+```
+
+### Optimization Parameters
+
+| Parameter | Current | Range | Impact |
+|-----------|---------|-------|--------|
+| `SPREAD_REGIME_BULLISH` | 70 | 60-75 | Lower = more CALL spreads |
+| `SPREAD_REGIME_BEARISH` | 50 | 45-55 | Higher = more PUT spreads |
+| `V53_SPIKE_CAP_MAX_SCORE` | 38 | 35-45 | Lower = faster DEFENSIVE |
+| `V53_BREADTH_5D_DECAY_THRESHOLD` | -0.02 | -0.01 to -0.03 | Sensitivity |
+
+---
+
+## 3. VASS (Volatility-Adaptive Strategy Selection)
+
+### Current VASS Thresholds
+
+```python
+# config.py — Lines 823-834
+
+VASS_ENABLED = True
+VASS_IV_LOW_THRESHOLD = 16           # VIX < 16 = Low IV
+VASS_IV_HIGH_THRESHOLD = 25          # VIX > 25 = High IV
+VASS_IV_SMOOTHING_MINUTES = 30       # SMA window
+
+# DTE by IV Environment
+VASS_LOW_IV_DTE_MIN = 30             # Monthly (30-45 DTE)
+VASS_LOW_IV_DTE_MAX = 45
+VASS_MEDIUM_IV_DTE_MIN = 7           # Weekly (7-21 DTE)
+VASS_MEDIUM_IV_DTE_MAX = 21
+VASS_HIGH_IV_DTE_MIN = 5             # V6.8: Allow trades in high IV
+VASS_HIGH_IV_DTE_MAX = 40            # V6.13.1: Expand candidate pool
+```
+
+### VASS Conviction Thresholds
+
+```python
+# config.py — Lines 842-849
+
+VASS_VIX_5D_BEARISH_THRESHOLD = 0.20     # VIX 5d change > +20% → BEARISH
+VASS_VIX_5D_BULLISH_THRESHOLD = -0.15    # VIX 5d change < -15% → BULLISH
+VASS_VIX_20D_STRONG_BEARISH = 0.30       # VIX 20d change > +30% → STRONG BEARISH
+VASS_VIX_20D_STRONG_BULLISH = -0.20      # VIX 20d change < -20% → STRONG BULLISH
+
+VASS_VIX_FEAR_CROSS_LEVEL = 25           # VIX crosses above → BEARISH
+VASS_VIX_COMPLACENT_CROSS_LEVEL = 15     # VIX crosses below → BULLISH
+```
+
+### Optimization Parameters
+
+| Parameter | Current | Range | Impact |
+|-----------|---------|-------|--------|
+| `VASS_IV_LOW_THRESHOLD` | 16 | 14-18 | Credit vs Debit routing |
+| `VASS_IV_HIGH_THRESHOLD` | 25 | 25-32 | When to sell premium |
+| `VASS_VIX_5D_BEARISH_THRESHOLD` | 0.20 | 0.15-0.25 | BEARISH conviction sensitivity |
+| `VASS_VIX_5D_BULLISH_THRESHOLD` | -0.15 | -0.20 to -0.10 | BULLISH conviction sensitivity |
+
+---
+
+## 4. MICRO Conviction Engine
+
+### Current Conviction Thresholds
+
+```python
+# config.py — Lines 1343-1352
+
+MICRO_UVXY_BEARISH_THRESHOLD = 0.025     # UVXY +2.5% → BEARISH conviction
+MICRO_UVXY_BULLISH_THRESHOLD = -0.03     # UVXY -3% → BULLISH conviction
+MICRO_VIX_CRISIS_LEVEL = 35              # VIX > 35 → CRISIS (BEARISH)
+MICRO_VIX_COMPLACENT_LEVEL = 12          # VIX < 12 → COMPLACENT (BULLISH)
+
+# Regime States → Direction
+MICRO_BEARISH_STATES = ["FULL_PANIC", "CRASH", "WORSENING_HIGH", "BREAKING", "DETERIORATING"]
+MICRO_BULLISH_STATES = ["PERFECT_MR", "GOOD_MR", "IMPROVING", "PANIC_EASING", "CALMING"]
+```
+
+### Optimization Parameters
+
+| Parameter | Current | Range | Impact |
+|-----------|---------|-------|--------|
+| `MICRO_UVXY_BEARISH_THRESHOLD` | 0.025 | 0.02-0.05 | BEARISH signal sensitivity |
+| `MICRO_UVXY_BULLISH_THRESHOLD` | -0.03 | -0.05 to -0.02 | BULLISH signal sensitivity |
+| `MICRO_VIX_CRISIS_LEVEL` | 35 | 30-40 | When to force BEARISH |
+| `MICRO_VIX_COMPLACENT_LEVEL` | 12 | 10-14 | When to force BULLISH |
+
+---
+
+## 5. Position Sizing
+
+### Current Allocation
 
 ```python
 # config.py
 
-# IV environment classification
-VASS_IV_LOW_THRESHOLD = 15      # VIX < 15 = LOW IV
-VASS_IV_HIGH_THRESHOLD = 25     # VIX > 25 = HIGH IV
-# VIX 15-25 = MEDIUM IV
+OPTIONS_ALLOCATION_MIN = 0.25            # 25% minimum
+OPTIONS_ALLOCATION_MAX = 0.30            # 30% maximum
+OPTIONS_SWING_ALLOCATION = 0.1875        # 18.75% for Swing
+OPTIONS_INTRADAY_ALLOCATION = 0.0625     # 6.25% for Intraday
 
-# Strategy routing by IV
-# LOW IV (VIX < 15):  Debit spreads, monthly DTE (30-45)
-# MEDIUM IV (15-25):  Debit spreads, weekly DTE (14-21)
-# HIGH IV (VIX > 25): Credit spreads, weekly DTE (7-14)
-
-# DTE ranges
-SPREAD_DTE_MIN = 14             # Minimum days to expiration
-SPREAD_DTE_MAX = 45             # Maximum days to expiration
-VASS_DEBIT_DTE_LOW_IV = (30, 45)
-VASS_DEBIT_DTE_MED_IV = (14, 21)
-VASS_CREDIT_DTE_HIGH_IV = (7, 14)
+OPTIONS_MAX_INTRADAY_POSITIONS = 1       # Max 1 intraday at a time
+INTRADAY_MAX_TRADES_PER_DAY = 2          # Max 2 trades per day
 ```
 
 ### Spread Sizing
 
 ```python
-# config.py
+# config.py — Lines 1112, 1273
 
-OPTIONS_ALLOCATION_PCT = 0.20         # 20% of portfolio for options
-OPTIONS_SWING_ALLOCATION_PCT = 0.15   # 15% for swing spreads
-SPREAD_WIDTH_TARGET = 5.0             # $5 strike width
-SPREAD_MAX_CONTRACTS = 20             # Hard cap per spread
-MIN_SPREAD_CONTRACTS = 2              # Minimum to enter
+SPREAD_DTE_MAX = 45                      # Maximum DTE for spreads
+INTRADAY_SPREAD_MAX_PCT = 0.08           # 8% of portfolio for intraday spreads
+MIN_INTRADAY_OPTIONS_TRADE_VALUE = 500   # Minimum trade value
 ```
 
-### Entry Quality
+### Optimization Parameters
 
-```python
-# config.py
-
-OPTIONS_ENTRY_SCORE_MIN = 2.0   # Minimum 4-factor score (0-4 scale)
-# Factors: ADX strength, Momentum, IV Rank, Liquidity
-
-# Credit spread minimums
-CREDIT_SPREAD_MIN_CREDIT = 0.30           # Base: $0.30 per contract
-CREDIT_SPREAD_MIN_CREDIT_HIGH_IV = 0.20   # When VIX > 30: $0.20
-```
-
-### Optimization Notes
-
-| Scenario | Recommendation |
-|----------|----------------|
-| Earlier bear entries | Lower `SPREAD_REGIME_BEARISH` to 50-55 |
-| Wider neutral zone | Raise `BEARISH` to 40, lower `BULLISH` to 65 |
-| More credit spreads | Lower `VASS_IV_HIGH_THRESHOLD` to 20 |
-| Higher quality entries | Raise `ENTRY_SCORE_MIN` to 2.5 |
-| Larger positions | Raise `OPTIONS_ALLOCATION_PCT` to 0.25 |
+| Parameter | Current | Range | Impact |
+|-----------|---------|-------|--------|
+| `OPTIONS_INTRADAY_ALLOCATION` | 0.0625 | 0.05-0.10 | Intraday capital |
+| `INTRADAY_MAX_TRADES_PER_DAY` | 2 | 1-4 | Daily activity |
+| `OPTIONS_MAX_INTRADAY_POSITIONS` | 1 | 1-2 | Concurrent positions |
 
 ---
 
-## 5. Trend Engine (Core Positions)
+## 6. Exit Management
 
-MA200 + ADX confirmation for leveraged ETF positions.
-
-### Entry/Exit Criteria
+### Current Profit/Stop Targets
 
 ```python
 # config.py
 
-# Entry signals
-ADX_ENTRY_THRESHOLD = 25       # ADX >= 25 for trend confirmation
-ADX_PERIOD = 14                # ADX lookback period
+OPTIONS_PROFIT_TARGET_PCT = 0.50         # +50% profit target
+SPREAD_PROFIT_TARGET_PCT = 0.50          # +50% for spreads
+CREDIT_SPREAD_PROFIT_TARGET = 0.50       # Exit at 50% of max profit
 
-# Trailing stop (Chandelier)
-CHANDELIER_ATR_MULT = 3.0      # Stop = High - 3×ATR
-CHANDELIER_ATR_PERIOD = 14     # ATR lookback
+# Intraday-specific
+INTRADAY_ITM_TARGET = 0.40               # +40% for ITM momentum
+INTRADAY_ITM_STOP = 0.35                 # -35% stop
+INTRADAY_ITM_TRAIL_TRIGGER = 0.20        # Trail after +20%
+INTRADAY_ITM_TRAIL_PCT = 0.50            # Trail at 50% of gains
 
-# Position sizing
-TREND_QLD_WEIGHT = 0.20        # 20% QLD (2× Nasdaq)
-TREND_SSO_WEIGHT = 0.15        # 15% SSO (2× S&P)
-TREND_TNA_WEIGHT = 0.12        # 12% TNA (3× Russell)
-TREND_FAS_WEIGHT = 0.08        # 8% FAS (3× Financials)
+INTRADAY_CREDIT_TARGET = 0.50            # 50% of max profit
+INTRADAY_CREDIT_STOP = 1.0               # Stop if spread doubles
 ```
 
-### Optimization Notes
+### Optimization Parameters
 
-| Scenario | Recommendation |
-|----------|----------------|
-| Fewer false entries | Raise `ADX_ENTRY_THRESHOLD` to 30 |
-| Tighter stops | Lower `CHANDELIER_ATR_MULT` to 2.5 |
-| More concentrated | Raise `QLD_WEIGHT` to 0.25, reduce others |
+| Parameter | Current | Range | Impact |
+|-----------|---------|-------|--------|
+| `OPTIONS_PROFIT_TARGET_PCT` | 0.50 | 0.30-0.60 | When to take profits |
+| `INTRADAY_ITM_STOP` | 0.35 | 0.25-0.50 | When to cut losses |
+| `INTRADAY_ITM_TRAIL_TRIGGER` | 0.20 | 0.15-0.30 | When to start trailing |
 
 ---
 
-## 6. Hedge Engine (Defensive Overlay)
+## 7. Intraday Strategy Parameters
 
-Regime-based TMF/PSQ allocation.
-
-### Hedge Tiers
+### DEBIT_FADE (Mean Reversion)
 
 ```python
-# config.py
+# config.py — Lines 1432-1443
 
-# Activation thresholds
-HEDGE_LEVEL_1 = 40    # Regime < 40 → Light hedge
-HEDGE_LEVEL_2 = 30    # Regime < 30 → Medium hedge
-HEDGE_LEVEL_3 = 20    # Regime < 20 → Full hedge
-
-# Allocations by tier
-HEDGE_TMF_LIGHT = 0.10    # 10% TMF at LIGHT
-HEDGE_TMF_MEDIUM = 0.15   # 15% TMF at MEDIUM
-HEDGE_TMF_FULL = 0.20     # 20% TMF at FULL
-
-HEDGE_PSQ_LIGHT = 0.00    # 0% PSQ at LIGHT
-HEDGE_PSQ_MEDIUM = 0.05   # 5% PSQ at MEDIUM
-HEDGE_PSQ_FULL = 0.10     # 10% PSQ at FULL
-
-# Rebalance threshold
-HEDGE_REBAL_THRESHOLD = 0.02  # Only rebalance if diff > 2%
+INTRADAY_DEBIT_FADE_VIX_MIN = 9.5        # V6.13 OPT: Allow in calm bull/choppy
+INTRADAY_DEBIT_FADE_VIX_MAX = 25         # Max VIX for fade
+INTRADAY_DEBIT_FADE_MIN_SCORE = 35       # Micro score >= 35
+INTRADAY_FADE_MIN_MOVE = 0.50            # Min QQQ move 0.5%
+INTRADAY_FADE_MAX_MOVE = 1.50            # Max move 1.5%
+INTRADAY_DEBIT_FADE_START = "10:15"      # Entry window start
+INTRADAY_DEBIT_FADE_END = "14:00"        # Entry window end
+INTRADAY_DEBIT_FADE_DELTA_MIN = 0.20     # OTM delta min
+INTRADAY_DEBIT_FADE_DELTA_MAX = 0.50     # Near ATM max
 ```
 
-### Optimization Notes
-
-| Scenario | Recommendation |
-|----------|----------------|
-| Earlier hedging | Raise `HEDGE_LEVEL_1` to 50 |
-| More aggressive hedging | Raise all `TMF_*` and `PSQ_*` values by 5% |
-| Less whipsaw | Raise `REBAL_THRESHOLD` to 0.03 |
-
----
-
-## 7. Startup Gate (Cold Start Protection)
-
-Graduated entry during algorithm startup.
-
-### Phase Durations
+### ITM Momentum
 
 ```python
-# config.py
+# config.py — Lines 1455-1469
 
-STARTUP_INDICATOR_WARMUP_DAYS = 5   # Days 1-5: Hedges only
-STARTUP_OBSERVATION_DAYS = 5         # Days 6-10: Add bearish options
-STARTUP_REDUCED_DAYS = 5             # Days 11-15: All at 50% size
-# Day 16+: FULLY_ARMED (no restrictions)
-
-STARTUP_REDUCED_MULTIPLIER = 0.50    # Size multiplier during REDUCED
+INTRADAY_ITM_MIN_VIX = 9.0               # V6.13 OPT: Min VIX for ITM plays
+INTRADAY_ITM_MIN_MOVE = 0.8              # QQQ move >= 0.8%
+INTRADAY_ITM_MIN_SCORE = 40              # Micro score >= 40
+INTRADAY_ITM_START = "10:00"             # Entry window start
+INTRADAY_ITM_END = "13:30"               # Entry window end
+INTRADAY_ITM_DELTA = 0.70                # ITM delta target
+INTRADAY_ITM_DELTA_MIN = 0.60            # ITM min
+INTRADAY_ITM_DELTA_MAX = 0.85            # Deep ITM max
 ```
 
-### Optimization Notes
-
-| Scenario | Recommendation |
-|----------|----------------|
-| Faster ramp-up | Reduce all `*_DAYS` to 3 |
-| More conservative start | Raise `REDUCED_MULTIPLIER` to 0.25 |
-
----
-
-## 8. Mean Reversion Engine (Intraday)
-
-RSI oversold bounce strategy for TQQQ/SOXL.
-
-### Entry Criteria
+### CREDIT Spreads
 
 ```python
-# config.py
+# config.py — Lines 1446-1452
 
-MR_RSI_PERIOD = 5              # RSI lookback
-MR_RSI_OVERSOLD = 25           # Entry when RSI < 25
-MR_RSI_EXIT = 50               # Exit when RSI > 50
-
-MR_VIX_MAX = 30                # Block entries if VIX > 30
-MR_MIN_DECLINE_PCT = 0.02      # Require 2% intraday decline
-
-# Position sizing
-MR_TQQQ_WEIGHT = 0.05          # 5% TQQQ
-MR_SOXL_WEIGHT = 0.05          # 5% SOXL
-```
-
-### Optimization Notes
-
-| Scenario | Recommendation |
-|----------|----------------|
-| More selective entries | Lower `RSI_OVERSOLD` to 20 |
-| Earlier exits | Lower `RSI_EXIT` to 40 |
-| Higher VIX tolerance | Raise `VIX_MAX` to 35 |
-
----
-
-## 9. Backtest Date Ranges
-
-### Key Test Periods
-
-| Period | Dates | Character | Tests |
-|--------|-------|-----------|-------|
-| 2015 Full | 2015-01-01 to 2015-12-31 | Choppy, -12% correction | Kill switch, governor |
-| 2017 Full | 2017-01-01 to 2017-12-31 | Strong bull, low VIX | Options activity |
-| 2018 Q4 | 2018-10-01 to 2018-12-31 | -20% selloff | Hedges, bear spreads |
-| 2020 Q1 | 2020-01-01 to 2020-03-31 | COVID crash | Panic mode, kill switch |
-| 2022 Q1 | 2022-01-01 to 2022-03-31 | Bear market start | Direction switching |
-| 2023 Full | 2023-01-01 to 2023-12-31 | Recovery rally | Bull performance |
-
-### Setting Dates
-
-```python
-# main.py lines 194-195
-self.SetStartDate(2017, 1, 1)
-self.SetEndDate(2017, 12, 31)
+INTRADAY_CREDIT_MIN_VIX = 18             # VIX >= 18 for rich premium
+INTRADAY_CREDIT_MAX_MOVE = 1.5           # QQQ move < 1.5%
+INTRADAY_CREDIT_START = "10:00"          # Entry window start
+INTRADAY_CREDIT_END = "14:30"            # Entry window end
+INTRADAY_CREDIT_SPREAD_WIDTH = 2.00      # $2 spread width
 ```
 
 ---
 
-## 10. Optimization Workflow
+## 8. V6.7 Fixes Applied
 
-### Step 1: Baseline
-Run current parameters on target period, record metrics.
-
-### Step 2: Single Parameter Sweep
-Change ONE parameter at a time, observe impact:
-```
-SPREAD_REGIME_BEARISH: [40, 45, 50, 55]
-GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE: [0.25, 0.50, 0.75, 1.0]
-KS_TIER_3_PCT: [0.025, 0.03, 0.035, 0.04]
-```
-
-### Step 3: Key Metrics to Track
-
-| Metric | Target | Notes |
-|--------|--------|-------|
-| Total Return | Maximize | Primary objective |
-| Max Drawdown | < 15% | Risk constraint |
-| Sharpe Ratio | > 1.5 | Risk-adjusted return |
-| Trade Count | > 20/year | Activity level |
-| Win Rate | > 50% | Quality of entries |
-
-### Step 4: Multi-Period Validation
-Test winning parameters on multiple periods (2015, 2017, 2020, 2022) to avoid overfitting.
+| Fix | Change | Impact |
+|-----|--------|--------|
+| V6.7-1 | Assignment Risk: Notional → Net Debit | Spreads stay open |
+| V6.7-9 | Spike Cap Max: reduced to 38 | Faster DEFENSIVE |
+| V6.7-10 | Breadth 5D Decay: reduced to -0.02 | Triggers more often |
+| V6.7-10 | Breadth 10D Decay: reduced to -0.04 | Triggers more often |
 
 ---
 
-## 11. Common Optimization Scenarios
+## 9. Known Issues (From Backtest Analysis)
 
-### Scenario A: "More Options Trades"
+| Issue | Metric | Root Cause |
+|-------|--------|------------|
+| Dir=NONE too frequent | 83-98% of signals | STABLE zone ±1% too wide |
+| FOLLOW_MACRO always BULLISH | 100% | Regime never < 50 |
+| Low intraday trade count | 3-8 per 6 months | STABLE zone + high min scores |
+| Wrong direction in bear | 2022: 22% win rate | Regime lag + BULLISH fallback |
+
+---
+
+## 10. Quick Parameter Reference
+
+### High-Impact (Tune First)
+
+| Parameter | Location | Current |
+|-----------|----------|---------|
+| `VIX_DIRECTION_STABLE_LOW` | config.py:1327 | -1.0 |
+| `VIX_DIRECTION_STABLE_HIGH` | config.py:1328 | +1.0 |
+| `SPREAD_REGIME_BULLISH` | config.py:1091 | 70 |
+| `SPREAD_REGIME_BEARISH` | config.py:1092 | 50 |
+| `V53_SPIKE_CAP_MAX_SCORE` | config.py:258 | 38 |
+| `MICRO_VIX_CRISIS_LEVEL` | config.py:1345 | 35 |
+
+### Medium-Impact
+
+| Parameter | Location | Current |
+|-----------|----------|---------|
+| `VASS_IV_LOW_THRESHOLD` | config.py:823 | 16 |
+| `VASS_IV_HIGH_THRESHOLD` | config.py:847 | 25 |
+| `OPTIONS_INTRADAY_ALLOCATION` | config.py:804 | 0.0625 |
+| `INTRADAY_MAX_TRADES_PER_DAY` | config.py:874 | 2 |
+| `MICRO_UVXY_BEARISH_THRESHOLD` | config.py:1429 | 0.025 |
+
+---
+
+## 11. Optimization Workflow
+
+### Step 1: Narrow STABLE Zone
 ```python
-GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE = 0.25
-SPREAD_REGIME_BEARISH = 50  # Smaller neutral zone
-OPTIONS_ENTRY_SCORE_MIN = 1.5  # Lower quality bar
+VIX_DIRECTION_STABLE_LOW = -0.5   # Was -1.0
+VIX_DIRECTION_STABLE_HIGH = 0.5   # Was +1.0
 ```
+→ Expect more directional signals.
 
-### Scenario B: "Aggressive Bear Market"
+### Step 2: Lower Rising Threshold
 ```python
-SPREAD_REGIME_BEARISH = 55  # Earlier bear entries
-HEDGE_LEVEL_1 = 50  # Earlier hedging
-KS_TIER_1_BLOCK_NEW_OPTIONS = False  # Keep options active
+VIX_DIRECTION_RISING = 2.0        # Was 3.0
 ```
+→ Earlier RISING detection in bear markets.
 
-### Scenario C: "Conservative Bull Market"
-```python
-SPREAD_REGIME_BULLISH = 65  # Higher bar for bull entries
-ADX_ENTRY_THRESHOLD = 30  # Stronger trends only
-CHANDELIER_ATR_MULT = 2.5  # Tighter stops
-```
+### Step 3: Test on Multiple Periods
 
-### Scenario D: "Capital Preservation"
+| Period | Expected Outcome |
+|--------|------------------|
+| 2017 H1 | More trades, maintain +20% return |
+| 2015 H1 | More trades, maintain positive return |
+| 2022 Jan-Feb | Earlier PUT signals, reduce losses |
+
+---
+
+## 12. Key Metrics
+
+| Metric | Current | Target |
+|--------|---------|--------|
+| Monthly Trade Count | 5-15 | 40-60 |
+| Dir=NONE Rate | 83-98% | < 30% |
+| Intraday Win Rate | 26-50% | > 50% |
+| Spread Win Rate | 0-58% | > 55% |
+| Direction Accuracy | ~40% | > 60% |
+
+---
+
+## 13. V6.8 Architect Recommendations
+
+> **Status:** Reviewed and validated. Ready for implementation.
+> **Philosophy:** Micro drives growth, while system stays safe across bull/bear/choppy.
+> **Evidence Base:** 2015/2017/2022 backtest analysis.
+
+---
+
+### A. Micro Engine — Profit Driver + Controlled Risk
+
+| Parameter | Current | Recommended | Purpose |
+|-----------|:-------:|:-----------:|---------|
+| `INTRADAY_DEBIT_FADE_MIN_SCORE` | 35 | **35** | Allow more trades in bull/chop ✓ |
+| `INTRADAY_ITM_MIN_SCORE` | 40 | **40** | Capture momentum earlier ✓ |
+| `INTRADAY_FADE_MAX_MOVE` | 1.50 | **1.50** | Don't block strong bull continuation ✓ |
+| `INTRADAY_DEBIT_FADE_VIX_MIN` | 9.5 | **9.5** | Allow trades in low VIX bull ✓ |
+| `INTRADAY_ITM_MIN_VIX` | 9.0 | **9.0** | Allow momentum in very low VIX ✓ |
+| `MICRO_UVXY_BEARISH_THRESHOLD` | 0.025 | **0.025** | More bear conviction signals ✓ |
+| `MICRO_UVXY_BULLISH_THRESHOLD` | -0.03 | **-0.025** | More bull conviction signals |
+
+---
+
+### B. Micro Stops — Reduce Catastrophic Losses
+
+| Parameter | Current | Recommended | Purpose |
+|-----------|:-------:|:-----------:|---------|
+| `OPTIONS_ATR_STOP_MULTIPLIER` | 0.9 | **0.9** | Stop not too wide ✓ |
+| `OPTIONS_ATR_STOP_MAX_PCT` | 0.30 | **0.30** | Prevent 50% losses ✓ |
+| `OPTIONS_ATR_STOP_MIN_PCT` | 0.12 | **0.12** | Allow slightly tighter stops ✓ |
+| `OPTIONS_0DTE_STOP_PCT` | 0.15 | **0.15** | Keep fallback as is |
+
+---
+
+### C. Liquidity / Spread Filters — Reduce Rejections
+
+| Parameter | Current | Recommended | Purpose |
+|-----------|:-------:|:-----------:|---------|
+| `OPTIONS_MIN_OPEN_INTEREST` | 50 | **50** | Avoid rejection in thin chains ✓ |
+| `OPTIONS_SPREAD_WARNING_PCT` | 0.30 | **0.30** | Reduce spread-based rejection ✓ |
+
+---
+
+### D. VASS / Spreads — Keep VASS Alive
+
+| Parameter | Current | Recommended | Purpose |
+|-----------|:-------:|:-----------:|---------|
+| `VASS_HIGH_IV_DTE_MIN` | 5 | **5** | Allow trades in high IV ✓ |
+| `VASS_HIGH_IV_DTE_MAX` | 40 | **40** | Widen candidate pool ✓ |
+| `SPREAD_LONG_LEG_DELTA_MIN` | 0.35 | **0.35** | Allow near-ATM ✓ |
+| `SPREAD_SHORT_LEG_DELTA_MAX` | 0.60 | **0.60** | Avoid excessive rejection ✓ |
+| `SPREAD_WIDTH_TARGET` | 4.0 | **3.0** | More matches in chain |
+
+---
+
+### E. Assignment Risk — Prevent Instant Close
+
+| Parameter | Current | Recommended | Purpose |
+|-----------|:-------:|:-----------:|---------|
+| `ASSIGNMENT_MARGIN_BUFFER_PCT` | 0.20 | **0.10** | Reduce instant exit triggers |
+
+---
+
+### Config Changes Applied (V6.8 → V6.13)
+
 ```python
-DRAWDOWN_GOVERNOR_STEP_THRESHOLD = 0.02  # Earlier step-down
-KS_TIER_3_PCT = 0.025  # Earlier full exit
-OPTIONS_ALLOCATION_PCT = 0.10  # Smaller options exposure
+# === A. MICRO ENGINE (Applied) ===
+INTRADAY_DEBIT_FADE_MIN_SCORE = 35       # ✓ Applied (was: 45)
+INTRADAY_ITM_MIN_SCORE = 40              # ✓ Applied (was: 50)
+INTRADAY_FADE_MAX_MOVE = 1.50            # ✓ Applied (was: 1.20)
+INTRADAY_DEBIT_FADE_VIX_MIN = 9.5        # ✓ Applied (was: 13.5) - V6.13 further reduced
+INTRADAY_ITM_MIN_VIX = 9.0               # ✓ Applied (was: 11.5) - V6.13 further reduced
+MICRO_UVXY_BEARISH_THRESHOLD = 0.025     # ✓ Applied (was: 0.03)
+MICRO_UVXY_BULLISH_THRESHOLD = -0.025    # ✓ Applied (was: -0.03)
+
+# === B. MICRO STOPS (Applied) ===
+OPTIONS_ATR_STOP_MULTIPLIER = 0.9        # ✓ Applied (was: 1.5) - V6.13 further tightened
+OPTIONS_ATR_STOP_MAX_PCT = 0.30          # ✓ Applied (was: 0.50)
+OPTIONS_ATR_STOP_MIN_PCT = 0.12          # ✓ Applied (was: 0.20) - V6.13 further tightened
+OPTIONS_0DTE_STOP_PCT = 0.15             # Unchanged
+
+# === C. LIQUIDITY FILTERS (Applied) ===
+OPTIONS_MIN_OPEN_INTEREST = 50           # ✓ Applied (was: 100)
+OPTIONS_SPREAD_WARNING_PCT = 0.30        # ✓ Applied (was: 0.25)
+
+# === D. VASS / SPREADS (Applied) ===
+VASS_HIGH_IV_DTE_MIN = 5                 # ✓ Applied (was: 7)
+VASS_HIGH_IV_DTE_MAX = 40                # ✓ Applied (was: 21) - V6.13 expanded
+SPREAD_LONG_LEG_DELTA_MIN = 0.35         # ✓ Applied (was: 0.45) - V6.10 further widened
+SPREAD_SHORT_LEG_DELTA_MAX = 0.60        # ✓ Applied (was: 0.52) - V6.10 further widened
+SPREAD_WIDTH_TARGET = 3.0                # ✓ Applied (was: 4.0)
+
+# === E. ASSIGNMENT RISK (Applied) ===
+ASSIGNMENT_MARGIN_BUFFER_PCT = 0.10      # ✓ Applied (was: 0.20)
 ```
 
 ---
 
-## Appendix A: Parameter Location Index
+### Expected Impact by Period
 
-| Category | File | Line Range |
-|----------|------|------------|
-| Governor | config.py | 420-430 |
-| Kill Switch | config.py | 440-470 |
-| Regime Thresholds | config.py | 65-85 |
-| Options Spreads | config.py | 500-700 |
-| VASS Strategy | config.py | 580-620 |
-| Trend Engine | config.py | 200-250 |
-| Hedge Engine | config.py | 255-290 |
-| Mean Reversion | config.py | 300-340 |
-| Startup Gate | config.py | 350-380 |
+| Period | Issue | Fix Applied | Expected Improvement |
+|--------|-------|-------------|---------------------|
+| **2017 H1** (Bull) | VIX floor blocked 90%+ | VIX_MIN 13.5→11.5 | +500-800% intraday trades |
+| **2015 H1** (Choppy) | Score gates too high | Scores 45/50→35/40 | +200% intraday trades |
+| **2022 Jan-Feb** (Bear) | Spreads closed instantly | Assignment buffer 20%→10% | Spreads stay open |
+| **All Periods** | 50% max loss too wide | ATR stop max 50%→30% | Smaller losing trades |
 
 ---
 
-## Appendix B: Thesis-Aligned Configuration Matrix
+### Validation Checklist
 
-> **Investment Thesis:** The system adapts behavior based on market conditions measured by regime score (0-100).
+Before deploying V6.8:
 
-### Regime Definitions
+- [ ] Backtest 2017 H1: Verify intraday count increases from 3 to 20+
+- [ ] Backtest 2015 H1: Verify win rate stays above 40%
+- [ ] Backtest 2022 Jan-Feb: Verify spreads stay open (not instant-closed)
+- [ ] Check 0DTE trades: Verify 30% max stop caps losses appropriately
+- [ ] Review VASS routing: Verify DTE 5-28 produces valid candidates
 
-| Regime | Score Range | Strategy |
-|--------|:-----------:|----------|
-| **Bull** | 70-100 | Full leverage via trend-following + bullish CALL spreads |
-| **Neutral** | 50-69 | Selective entries, NO options (dead zone) |
-| **Cautious/Defensive** | 30-49 | Hedges active, bearish PUT spreads, trend entries gated |
-| **Bear** | 0-29 | Maximum hedges (TMF 20% + PSQ 10%), longs blocked, PUT spreads active |
+---
 
-### Thesis-Aligned Parameters
-
-```python
-# ============================================================
-# THESIS-ALIGNED CONFIG — All Regimes Covered
-# ============================================================
-
-# OPTIONS DIRECTION THRESHOLDS
-# Bull (70+): CALL spreads active
-# Neutral (50-69): No options (dead zone)
-# Cautious/Bear (<50): PUT spreads active
-SPREAD_REGIME_BULLISH = 70   # CALL spreads ONLY in Bull (regime > 70)
-SPREAD_REGIME_BEARISH = 50   # PUT spreads in Cautious + Bear (regime < 50)
-SPREAD_REGIME_CRISIS = 0     # DISABLED — PUT spreads work in all bear regimes
-
-# HEDGE ACTIVATION (graduated response)
-# Cautious (40-49): Light hedge
-# Defensive (30-39): Medium hedge
-# Bear (0-29): Full hedge
-HEDGE_LEVEL_1 = 50           # Light hedge starts at regime < 50
-HEDGE_LEVEL_2 = 40           # Medium hedge at regime < 40
-HEDGE_LEVEL_3 = 30           # FULL hedge at regime < 30
-
-# LONG ENTRY GATING
-# Only allow trend/MR entries in Neutral or better (50+)
-TREND_ENTRY_REGIME_MIN = 50  # Trend blocked below 50
-MR_REGIME_MIN = 50           # Mean Reversion blocked below 50
-```
-
-### Verification Matrix
-
-| Regime | Score | Trend | MR | CALL Spreads | PUT Spreads | Hedge Level |
-|--------|:-----:|:-----:|:--:|:------------:|:-----------:|:-----------:|
-| **Bull** | 70+ | ✅ | ✅ | ✅ | ❌ | NONE |
-| **Neutral** | 50-69 | ✅ | ✅ | ❌ | ❌ | NONE |
-| **Cautious** | 40-49 | ❌ | ❌ | ❌ | ✅ | LIGHT (10% TMF) |
-| **Defensive** | 30-39 | ❌ | ❌ | ❌ | ✅ | MEDIUM (15% TMF, 5% PSQ) |
-| **Bear** | 0-29 | ❌ | ❌ | ❌ | ✅ | FULL (20% TMF, 10% PSQ) |
-
-### Changes from Default Configuration
-
-| Parameter | Default | Thesis-Aligned | Delta | Rationale |
-|-----------|:-------:|:--------------:|:-----:|-----------|
-| `SPREAD_REGIME_BULLISH` | 60 | **70** | +10 | CALL spreads only in true Bull market |
-| `SPREAD_REGIME_BEARISH` | 45 | **50** | +5 | PUT spreads cover full Cautious zone |
-| `SPREAD_REGIME_CRISIS` | 30 | **0** | -30 | Remove crisis block — PUTs should work in Bear |
-| `HEDGE_LEVEL_1` | 40 | **50** | +10 | Start hedging at Cautious threshold |
-| `HEDGE_LEVEL_2` | 30 | **40** | +10 | Medium hedge in Defensive zone |
-| `HEDGE_LEVEL_3` | 20 | **30** | +10 | Full hedge covers entire Bear range |
-| `TREND_ENTRY_REGIME_MIN` | 40 | **50** | +10 | Gate trend entries in Cautious zone |
-| `MR_REGIME_MIN` | 40 | **50** | +10 | Gate MR entries in Cautious zone |
-
-### Visual: Regime-to-Engine Mapping
-
-```
-REGIME SCORE:  0 -------- 30 -------- 40 -------- 50 -------- 70 -------- 100
-               |          |           |           |           |           |
-TREND/MR:      |<-------- BLOCKED ----------------->|<------ ALLOWED ----->|
-               |                                    |                      |
-CALL SPREADS:  |<-------------- BLOCKED --------------------------->|<-YES->|
-               |                                                    |      |
-PUT SPREADS:   |<---------------- ALLOWED ----------------->|<-- BLOCKED -->|
-               |                                            |              |
-HEDGES:        |<- FULL ->|<- MEDIUM ->|<- LIGHT ->|<----- NONE --------->|
-               |          |            |           |                       |
-               0         30           40          50                      70
-```
-
-### Backtest Validation Sequence
-
-After applying thesis-aligned parameters, validate across multiple market regimes:
-
-| Test | Period | Primary Regime | Validates |
-|------|--------|----------------|-----------|
-| 1 | 2017 Full | Bull (70+) | Trend + CALL spread performance |
-| 2 | 2015 Aug-Oct | Cautious/Defensive | PUT spreads + hedge activation |
-| 3 | 2018 Q4 | Bear (<30) | Full hedge + PUT spreads in crash |
-| 4 | 2020 Mar | Bear (<30) | Panic mode + kill switch behavior |
-| 5 | 2022 Q1 | Defensive/Bear | Direction switching, hedge timing |
-
-### Key Metrics to Compare
-
-| Metric | Default Config | Thesis-Aligned | Target |
-|--------|:--------------:|:--------------:|:------:|
-| 2017 Return | TBD% | TBD% | > 50% |
-| 2015 Max DD | TBD% | TBD% | < 15% |
-| 2018 Q4 Return | TBD% | TBD% | > -10% |
-| PUT Spread Win Rate | TBD% | TBD% | > 50% |
-| Hedge Activation Days | TBD | TBD | Timely |
+**Goal:** Every parameter change should answer: "Does this help us trade more AND trade better?"

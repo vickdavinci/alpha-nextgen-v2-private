@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
+import config
 from engines.core.risk_engine import (
     ALL_TRADED_SYMBOLS,
     HEDGE_SYMBOLS,

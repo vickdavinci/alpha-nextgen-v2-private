@@ -33,15 +33,15 @@
 > - `engines/satellite/` - Conditional engines (0-30%)
 > - `docs/v2-specs/` - V2.1 specifications
 >
-> **Tests:** 990 passed (as of 2026-01-27)
+> **Tests:** 1239 passed, 42 failed (as of 2026-02-09, V6.11 - test updates pending)
 
 ---
 
 ## V3.0 Hardening — Regime Navigation & Governor Simplification
 
-> **Status:** IN PROGRESS 🔄
+> **Status:** COMPLETE ✅ (V3.0 + V3.1 + V3.2)
 > **Goal:** Fix regime detection lag, simplify Governor, enable defensive trades at all levels
-> **Branch:** `feature/va/v3.0-hardening`
+> **Branches:** `feature/va/v3.0-hardening`, `feature/va/v3.2-macro-regime-gate`
 > **Audit:** `docs/audits/V3_0_FullFix_2015_v2_audit.md`
 
 ### Problem Statement
@@ -71,6 +71,400 @@
 |:--:|:----:|-----|:--------:|:------:|
 | V3.1-1 | Governor | Exempt hedges (TMF/PSQ) from morning GOVERNOR_SHUTDOWN | P0 | ✅ DONE |
 | V3.1-2 | Governor | Add equity recovery path from Governor 0% (3% recovery → 50%) | P0 | ✅ DONE |
+
+### V3.2 Fixes (Options-Macro Regime Alignment)
+
+> **Branch:** `feature/va/v3.2-macro-regime-gate`
+> **Commit:** `f5c5ad6`
+> **Docs:** `docs/audits/P0_OPTIONS_MACRO_REGIME_GATE_IMPLEMENTATION_PLAN.md`
+
+**Problem:** Options engine had independent regime logic that conflicted with macro regime:
+- PROTECTIVE_PUTS existed as enum but returned `None` (never executed)
+- Intraday options had no Governor check (gap in protection)
+- Options could enter CALLs in NEUTRAL/CAUTIOUS regimes (misaligned with macro thesis)
+
+| ID | Area | Fix | Priority | Status |
+|:--:|:----:|-----|:--------:|:------:|
+| V3.2-1 | Options | Macro Regime Gate: BULL=all, NEUTRAL=PUT@50%, BEAR=PUT@100% | P0 | ✅ DONE |
+| V3.2-2 | Options | Intraday Governor Gate: Block CALL at Governor 0%, allow PUT | P0 | ✅ DONE |
+| V3.2-3 | Options | Implement PROTECTIVE_PUTS (was returning None, now buys PUTs in crisis) | P0 | ✅ DONE |
+| V3.2-4 | Options | Sizing Stack: Multiply all factors (Governor × Macro × ColdStart × Micro) | P1 | ✅ DONE |
+
+**Config Additions:**
+- `OPTIONS_MACRO_REGIME_GATE_ENABLED = True`
+- `OPTIONS_NEUTRAL_ZONE_SIZE_MULT = 0.50`
+- `OPTIONS_MIN_COMBINED_SIZE_PCT = 0.10`
+- `INTRADAY_GOVERNOR_GATE_ENABLED = True`
+- `PROTECTIVE_PUTS_ENABLED = True` (with DTE/delta/sizing params)
+
+**Files Changed:** `config.py`, `engines/satellite/options_engine.py`, `main.py`, `tests/test_options_engine.py`
+
+**Tests:** 1340 passed ✅
+
+### V3.3 Fixes (Regime Engine Simplification)
+
+> **Branch:** `feature/va/v3.2-macro-regime-gate`
+> **Problem:** 7-factor regime engine caused score compression (43-50 in -30% bear markets)
+
+**Solution:** Simplified to 3-factor model with 2 safety guards:
+
+| ID | Area | Fix | Priority | Status |
+|:--:|:----:|-----|:--------:|:------:|
+| V3.3-1 | Regime | 3-Factor Core: Trend (35%) + VIX (30%) + Drawdown (35%) | P0 | ✅ DONE |
+| V3.3-2 | Regime | VIX Shock Cap: Cap regime at CAUTIOUS when VIX spiking >10% | P0 | ✅ DONE |
+| V3.3-3 | Regime | Recovery Hysteresis: Require 2 days confirmation for upgrades | P1 | ✅ DONE |
+
+**Why 3 Factors?**
+- **Trend (35%)**: Is market going up or down? (SPY vs MA200)
+- **VIX (30%)**: Is there fear/panic?
+- **Drawdown (35%)**: How far from 52-week high? (Breaks compression!)
+
+**Guards (not weighted, just safety valves):**
+- **VIX Shock Cap**: Fast crash response - caps regime when VIX spiking
+- **Recovery Hysteresis**: Prevents "sticky bear" and missing V-recoveries
+
+**Config Additions:**
+- `V3_REGIME_SIMPLIFIED_ENABLED = True`
+- `WEIGHT_TREND_V3 = 0.35`, `WEIGHT_VIX_V3 = 0.30`, `WEIGHT_DRAWDOWN_V3 = 0.35`
+- `DRAWDOWN_THRESHOLD_*` and `DRAWDOWN_SCORE_*` parameters
+- `VIX_SHOCK_CAP_ENABLED`, `VIX_SHOCK_CAP_THRESHOLD = 10.0`
+- `RECOVERY_HYSTERESIS_ENABLED`, `RECOVERY_HYSTERESIS_DAYS = 2`
+
+**Files Changed:** `config.py`, `engines/core/regime_engine.py`, `utils/calculations.py`
+
+**Tests:** 1340 passed ✅
+
+### V3.4 Fixes (Pre-Live Audit + Options Regime Alignment)
+
+> **Branch:** `feature/va/v3.2-macro-regime-gate`
+> **Audit:** `docs/audits/V3_3_pre_live_audit_report.md`
+
+**P0 Fixes (State Persistence):**
+
+| ID | Area | Fix | Priority | Status |
+|:--:|:----:|-----|:--------:|:------:|
+| V3.4-1 | State | V3.3 Regime state persistence (shock_cap, recovery_days, spy_52w_high) | P0 | ✅ DONE |
+| V3.4-2 | State | Options state JSON migration (ast.literal_eval → json.loads) | P0 | ✅ DONE |
+
+**Options Regime Alignment:**
+
+| ID | Area | Fix | Priority | Status |
+|:--:|:----:|-----|:--------:|:------:|
+| V3.4-3 | Options | Upper NEUTRAL (60-69): CALL @ 50%, PUT @ 25% (lean bullish in recovery) | P1 | ✅ DONE |
+| V3.4-4 | Options | CALL exit threshold tightened: 45 → 60 (10-point gap, not 25) | P1 | ✅ DONE |
+| V3.4-5 | Options | Neutrality zone separated from exit thresholds (45-65 vs 60-60) | P1 | ✅ DONE |
+
+**Config Additions:**
+- `OPTIONS_UPPER_NEUTRAL_THRESHOLD = 60`
+- `OPTIONS_UPPER_NEUTRAL_CALL_MULT = 0.50`
+- `OPTIONS_UPPER_NEUTRAL_PUT_MULT = 0.25`
+- `SPREAD_REGIME_EXIT_BULL = 60` (was 45)
+- `SPREAD_NEUTRALITY_ZONE_LOW = 45` (independent of exit thresholds)
+- `SPREAD_NEUTRALITY_ZONE_HIGH = 65` (independent of exit thresholds)
+
+**Files Changed:** `config.py`, `engines/core/regime_engine.py`, `engines/satellite/options_engine.py`, `main.py`, `tests/test_options_engine.py`
+
+### V3.5 Fixes (Options Dead Zone Removal)
+
+> **Branch:** `feature/va/v3.2-macro-regime-gate`
+> **Audit:** `docs/audits/V3_4_2022H1_audit_report.md`
+> **Problem:** 2022 H1 backtest fired ZERO PUT options despite -20% market drop
+
+**Root Cause:** Direction selection in main.py created a 20-point dead zone (regime 50-70) where:
+- CALLs blocked (regime < 70)
+- PUTs blocked (regime >= 50)
+- Result: NO options trades in NEUTRAL zone
+
+| ID | Area | Fix | Priority | Status |
+|:--:|:----:|-----|:--------:|:------:|
+| V3.5-1 | Options | Dual-direction scanning in Upper NEUTRAL (60-70) | P0 | ✅ DONE |
+| V3.5-2 | Options | Refactored to `_scan_spread_for_direction()` helper | P0 | ✅ DONE |
+| V3.5-3 | Options | Fixed EOD options gating for NEUTRAL zone | P0 | ✅ DONE |
+| V3.5-4 | Options | Fixed governor gate: PUT allowed at low governor in NEUTRAL | P0 | ✅ DONE |
+| V3.5-5 | Options | Fixed startup gate check for NEUTRAL direction | P0 | ✅ DONE |
+
+**Fix Logic (Dual-Direction Scanning):**
+- **BULL (>70):** Scan CALL only
+- **Upper NEUTRAL (60-70):** Scan BOTH directions (CALL @ 50%, PUT @ 25%)
+- **Lower NEUTRAL (50-59):** Scan PUT only @ 50%
+- **CAUTIOUS/BEAR (<50):** Scan PUT only @ 100%
+
+**Files Changed:** `main.py` (refactored direction logic + new helper function)
+
+**Tests:** 1340 passed ✅
+
+### V3.6 Fixes (Margin Optimization for PUT Entries)
+
+> **Branch:** `feature/va/v3.0-hardening`
+> **Audit:** `docs/audits/V3_5_2022H1_Regime_Audit.md`
+> **Problem:** 2022 H1 backtest PUT signals blocked by over-conservative margin check
+
+**Root Cause:** Even after V3.5 dead zone fix, PUT signals generated but BLOCKED by margin:
+- 6× safety factor required $48K margin for $4 spread × 20 contracts
+- 20% equity cushion left only $35K available
+- Result: PUT signals fired correctly but couldn't execute
+
+| ID | Area | Fix | Priority | Status |
+|:--:|:----:|-----|:--------:|:------:|
+| V3.6-1 | Margin | Reduce safety factor from 6× to 4× | P1 | ✅ DONE |
+| V3.6-2 | Margin | Add margin-aware sizing (size down vs block) | P1 | ✅ DONE |
+| V3.6-3 | Margin | Reduce equity cushion from 20% to 10% | P1 | ✅ DONE |
+| V3.6-4 | Margin | Increase OPTIONS_MAX_MARGIN_PCT from 20% to 30% | P1 | ✅ DONE |
+
+**Before:**
+```
+Required=$48,000 | Effective Free=$35,072 | → BLOCKED
+```
+
+**After (V3.6):**
+```
+- 4× safety: $4 × 100 × 4 = $1,600/contract (was $2,400)
+- 10% cushion: ~$39K available (was ~$35K)
+- 30% max margin for options: $43K × 30% = $12.9K cap (was 20% = $8.6K)
+- If still insufficient: Size down to max contracts that fit (instead of block)
+```
+
+**Files Changed:** `main.py` (margin calculation + margin-aware sizing), `config.py`
+
+**Tests:** 1340 passed ✅
+
+### V3.7 Fixes (52-Week High Bug - CRITICAL)
+
+> **Branch:** `feature/va/v3.0-hardening`
+> **Problem:** Drawdown factor used 25-day rolling window instead of actual 52-week high
+
+**Root Cause:** `spy_closes` rolling window was only 25 days. When `spy_52w_high` wasn't passed
+to regime engine, it fell back to `max(spy_closes)` = max of 25 days, not 252 days.
+
+| ID | Area | Fix | Priority | Status |
+|:--:|:----:|-----|:--------:|:------:|
+| V3.7-1 | Regime | Add SPY 252-day Maximum indicator for true 52-week high | P0 | ✅ DONE |
+| V3.7-2 | Regime | Pass spy_52w_high to regime engine calculate() | P0 | ✅ DONE |
+
+**Impact:** In 2022 bear market, drawdown factor was miscalculating because it measured
+distance from 25-day high (not 52-week high). A 15% drawdown from ATH might appear as
+only 5% drawdown from recent 25-day high, causing regime to stay bullish/neutral too long.
+
+**Files Changed:** `main.py` (added spy_52w_high indicator + pass to regime engine)
+
+**Tests:** 1340 passed ✅
+
+### V3.8 Fixes (Recovery Hysteresis VIX Threshold)
+
+> **Branch:** `feature/va/v3.0-hardening`
+> **Problem:** Recovery hysteresis blocked ALL regime upgrades when VIX > 25
+
+**Root Cause:** The recovery hysteresis guard required VIX < 25 to allow regime upgrades:
+```python
+if trend_improving and vix_level < 25:  # Too restrictive!
+    recovery_days += 1
+else:
+    recovery_days = 0  # Reset every day when VIX > 25
+```
+
+**Impact Analysis:**
+- Mar 2020: VIX stayed above 25 for 63 days (Feb 24 - Apr 27)
+- Market bottomed Mar 23 and rallied 30% by Apr 27
+- System would have stayed RISK_OFF the entire time, missing the V-recovery
+- Same issue in 2011 debt ceiling recovery (VIX 28)
+
+| ID | Area | Fix | Priority | Status |
+|:--:|:----:|-----|:--------:|:------:|
+| V3.8-1 | Regime | Raise RECOVERY_HYSTERESIS_VIX_MAX from 25 to 35 | P0 | ✅ DONE |
+
+**Rationale:** VIX 25-35 is common during V-recoveries. Only block upgrades in true crisis (VIX > 35).
+
+**Files Changed:** `config.py`
+
+**Tests:** 1340 passed ✅
+
+---
+
+## V5.3 Options Engine Overhaul — Conviction-Based Trading
+
+> **Status:** ✅ COMPLETE
+> **Goal:** Give VASS & Micro engines autonomy to override Macro when they have conviction
+> **Branch:** `feature/va/v3.0-hardening`
+
+### Problem Statement
+
+2022H1 backtest revealed options engine failures:
+- **-66% return** with Governor stuck at 0% for 147 days
+- **PUT spreads not trading** even when market was falling (Macro scored bullish due to VIX 17-20)
+- **VASS not tracking VIX direction** — only level classification (LOW/MEDIUM/HIGH)
+- **Too many gates blocking trades** — Governor, Macro Gate, Neutrality Exit all compounding
+
+### Architecture Change
+
+```
+BEFORE: Macro → Gates → Options (Macro dictates, options obey)
+AFTER:  VASS/Micro → Verify vs Macro → Trade if aligned OR has conviction
+```
+
+**Key Principle:** VASS and Micro measure volatility directly. If they have strong conviction (VIX spiking, UVXY extreme), they can veto Macro's direction.
+
+### V5.3 Fix List
+
+| ID | Category | Fix | Priority | Status |
+|:--:|:--------:|-----|:--------:|:------:|
+| V5.3-1 | Governor | Disable Governor for strategy validation | P0 | ✅ DONE |
+| V5.3-2 | Options | Disable Neutrality Exit for testing | P0 | ✅ DONE |
+| V5.3-3 | Options | Add position limits: max 1 intraday + 2 swing = 3 total | P0 | ✅ DONE |
+| V5.3-4 | VASS | Add VIX 5d/20d SMA tracking | P1 | ✅ DONE |
+| V5.3-5 | VASS | Add VIX direction (5d/20d change %) | P1 | ✅ DONE |
+| V5.3-6 | VASS | Add VIX level crossing detection (25↑, 15↓) | P1 | ✅ DONE |
+| V5.3-7 | VASS | Implement `vass_has_conviction()` | P1 | ✅ DONE |
+| V5.3-8 | Micro | Implement `micro_has_conviction()` | P1 | ✅ DONE |
+| V5.3-9 | Options | Implement `resolve_trade_signal()` | P1 | ✅ DONE |
+| V5.3-10 | Options | Add position counting methods | P1 | ✅ DONE |
+| V5.3-11 | VASS | Change HIGH IV from credit to debit spreads | P1 | ✅ DONE |
+| V5.3-12 | Macro | V5.3 Regime: 4-factor with VIX Combined (Phase 1 & 2) | P2 | ✅ DONE |
+
+### Config Additions
+
+```python
+# Governor & Exit Disables
+DRAWDOWN_GOVERNOR_ENABLED = False  # V5.3: Disabled for strategy validation
+SPREAD_NEUTRALITY_EXIT_ENABLED = False  # V5.3: Disabled for testing
+
+# Position Limits
+OPTIONS_MAX_INTRADAY_POSITIONS = 1
+OPTIONS_MAX_SWING_POSITIONS = 2
+OPTIONS_MAX_TOTAL_POSITIONS = 3
+
+# VASS Conviction Thresholds
+VASS_VIX_5D_PERIOD = 5
+VASS_VIX_20D_PERIOD = 20
+VASS_VIX_5D_BEARISH_THRESHOLD = 0.20  # +20%
+VASS_VIX_5D_BULLISH_THRESHOLD = -0.15  # -15%
+VASS_VIX_20D_STRONG_BEARISH = 0.30  # +30%
+VASS_VIX_20D_STRONG_BULLISH = -0.20  # -20%
+VASS_VIX_FEAR_CROSS_LEVEL = 25
+VASS_VIX_COMPLACENT_CROSS_LEVEL = 15
+
+# Micro Conviction Thresholds
+MICRO_UVXY_BEARISH_THRESHOLD = 0.08  # +8%
+MICRO_UVXY_BULLISH_THRESHOLD = -0.05  # -5%
+MICRO_VIX_CRISIS_LEVEL = 35
+MICRO_VIX_COMPLACENT_LEVEL = 12
+MICRO_BEARISH_STATES = ["FULL_PANIC", "SPIKING", "WORSENING_HIGH"]
+MICRO_BULLISH_STATES = ["CRASHING", "STABLE_LOW", "IMPROVING"]
+```
+
+### Conviction Logic
+
+**VASS Conviction (Swing 7-45 DTE):**
+- VIX 5d change > +20% → BEARISH
+- VIX 5d change < -15% → BULLISH
+- VIX 20d change > +30% → STRONG BEARISH
+- VIX 20d change < -20% → STRONG BULLISH
+- VIX crosses above 25 → BEARISH
+- VIX crosses below 15 → BULLISH
+
+**Micro Conviction (Intraday 0-5 DTE):**
+- UVXY > +8% → BEARISH
+- UVXY < -5% → BULLISH
+- VIX > 35 → CRISIS (BEARISH)
+- VIX < 12 → COMPLACENT (BULLISH)
+- Micro state FULL_PANIC/SPIKING → BEARISH
+- Micro state CRASHING/STABLE_LOW → BULLISH
+
+### Trade Resolution
+
+```
+1. Engine generates signal (BULLISH or BEARISH)
+2. Engine checks conviction (has_conviction())
+3. Compare to Macro direction
+4. Resolution:
+   - ALIGNED → TRADE
+   - MISALIGNED + CONVICTION → VETO MACRO, TRADE
+   - MISALIGNED + NO CONVICTION → NO TRADE
+```
+
+### Files Changed
+
+- `config.py` — New thresholds, disabled Governor/Neutrality
+- `engines/satellite/options_engine.py` — IVSensor overhaul, conviction methods
+
+### V5.3 Macro Regime Implementation (V5.3-12)
+
+**Status:** ✅ COMPLETE
+
+**4-Factor Model with VIX Combined:**
+- Momentum (30%): 20-day ROC - catches reversals in days
+- VIX Combined (30%): 60% VIX level + 40% VIX direction
+- Trend (25%): SPY vs MA200
+- Drawdown (15%): Distance from 52-week high
+
+**Key Features:**
+- **VIX Combined Score:** Blends absolute fear level with fear velocity
+- **High-VIX Clamp:** VIX Combined capped at 47 when VIX >= 25 (prevents bullish signals during elevated fear)
+- **Spike Cap:** Macro score capped at 45 when VIX 5d >= +28%
+- **Breadth Decay Penalty (Phase 2):** -5 points for 5d RSP/SPY decay <= -10%, -8 points for 10d decay <= -15%
+
+**Config Additions:**
+```python
+# V5.3 Master Switch
+V53_REGIME_ENABLED = True
+V4_REGIME_ENABLED = False  # Disabled - V5.3 is now active
+
+# Factor Weights
+WEIGHT_MOMENTUM_V53 = 0.30
+WEIGHT_VIX_COMBINED_V53 = 0.30
+WEIGHT_TREND_V53 = 0.25
+WEIGHT_DRAWDOWN_V53 = 0.15
+
+# VIX Combined
+VIX_COMBINED_LEVEL_WEIGHT = 0.60
+VIX_COMBINED_DIRECTION_WEIGHT = 0.40
+VIX_COMBINED_HIGH_VIX_CLAMP = 47
+VIX_COMBINED_HIGH_VIX_THRESHOLD = 25.0
+
+# Spike Cap
+V53_SPIKE_CAP_THRESHOLD = 0.28  # +28% VIX 5d triggers cap
+V53_SPIKE_CAP_MAX_SCORE = 45
+
+# Breadth Decay Penalty
+V53_BREADTH_5D_DECAY_THRESHOLD = -0.10
+V53_BREADTH_10D_DECAY_THRESHOLD = -0.15
+V53_BREADTH_5D_PENALTY = 5
+V53_BREADTH_10D_PENALTY = 8
+```
+
+**Files Changed:**
+- `config.py` — V5.3 parameters
+- `utils/calculations.py` — `vix_combined_score()`, `breadth_decay_penalty()`, `aggregate_regime_score_v53()`
+- `engines/core/regime_engine.py` — `_calculate_v53()` method, RegimeState V5.3 fields
+
+### Conviction Logic Wiring (V5.3-13) ✅ COMPLETE
+
+**Swing Spreads (VASS Conviction):**
+```python
+# In main.py _process_options_chain():
+can_swing, swing_reason = self.options_engine.can_enter_swing()
+vass_has_conviction, vass_direction, vass_reason = self.options_engine._iv_sensor.has_conviction()
+macro_direction = self.options_engine.get_macro_direction(regime_score)
+should_trade, resolved_direction, resolve_reason = self.options_engine.resolve_trade_signal(
+    engine="VASS", engine_direction=vass_direction, engine_conviction=vass_has_conviction, macro_direction=macro_direction
+)
+```
+
+**Intraday Options (Micro Conviction):**
+```python
+# In main.py options intraday block:
+can_intraday, intraday_limit_reason = self.options_engine.can_enter_intraday()
+micro_has_conviction, micro_direction, micro_reason = self.options_engine._micro_regime_engine.has_conviction(...)
+should_trade, resolved_direction, resolve_reason = self.options_engine.resolve_trade_signal(
+    engine="MICRO", engine_direction=micro_direction, engine_conviction=micro_has_conviction, macro_direction=macro_direction
+)
+```
+
+### Next Steps
+
+1. Run 2022H1 backtest to validate bear market capture
+2. Run 2015 backtest to validate choppy market handling
+
+---
 
 ### Fix Details
 
@@ -2570,6 +2964,339 @@ After architecture is stable.
 
 | Component | Owner | Branch | Started | Spec |
 |-----------|-------|--------|---------|------|
+| V6.11 Universe Redesign | VA | feature/va/v3.2-macro-regime-gate | 2026-02-09 | Below |
+
+---
+
+## V6.10 Options Engine Fix (COMPLETE ✅)
+
+> **Status:** COMPLETE ✅
+> **Goal:** Fix 2015 negative P&L despite 48% win rate through R:R rebalancing
+> **Plan:** `docs/audits/V6_10_COMPREHENSIVE_FIX_PLAN.md`
+> **Branch:** `feature/va/v3.2-macro-regime-gate`
+
+### V6.10 Phase Summary
+
+| Phase | Fix | Status |
+|:-----:|-----|:------:|
+| P1 | Regime-adaptive entry thresholds (VIX-based delta targets, conviction score floor) | ✅ DONE |
+| P2 | Spread selection scoring with weighted factors (IV alignment, delta, spread efficiency) | ✅ DONE |
+| P3 | Pre-market ITM check for short legs (queue for close at open if ITM overnight) | ✅ DONE |
+| P4 | Conviction direction guard (block trades with insufficient conviction) | ✅ DONE |
+| P5 | Symmetric R:R (40% stop / 40% target) + Choppy market filter | ✅ DONE |
+
+**Key Config Changes:**
+```python
+SPREAD_PROFIT_TARGET_PCT = 0.40  # V6.10 P5: Was 0.50
+SPREAD_STOP_LOSS_PCT = 0.40      # V6.10 P5: Was 0.35
+CHOPPY_MARKET_FILTER_ENABLED = True
+CHOPPY_REVERSAL_COUNT = 3
+CHOPPY_SIZE_REDUCTION = 0.50
+```
+
+---
+
+## V6.11 Universe Redesign (IN PROGRESS 🔄)
+
+> **Status:** IMPLEMENTATION COMPLETE, TESTS NEED UPDATE
+> **Goal:** Diversify portfolio away from correlated equity exposure
+> **Branch:** `feature/va/v3.2-macro-regime-gate`
+
+### V6.11 New Universe
+
+| Engine | Old Symbols | New Symbols | Change |
+|:------:|:-----------:|:-----------:|--------|
+| **Trend** | QLD, SSO, TNA, FAS (equity-correlated) | QLD (15%), SSO (7%), UGL (10%), UCO (8%) | Added gold/oil commodities |
+| **MR** | TQQQ, SOXL | TQQQ (4%), SPXL (3%), SOXL (3%) | Added SPXL for broader market |
+| **Hedge** | TMF, PSQ (Treasury + Inverse Nasdaq) | SH (5-10%) | 1× Inverse S&P (no decay) |
+| **Options** | QQQ | QQQ (unchanged) | - |
+
+### V6.11 Implementation Status
+
+| Component | File | Status |
+|-----------|------|:------:|
+| Config: Symbol leverage, groups, allocations | `config.py` | ✅ DONE |
+| Config: SH hedge levels (5%/8%/10%) | `config.py` | ✅ DONE |
+| Config: TMF/PSQ values set to 0 (deprecated) | `config.py` | ✅ DONE |
+| Hedge Engine: SH-only architecture | `hedge_engine.py` | ✅ DONE |
+| Main: Add UGL, UCO, SPXL, SH symbols | `main.py` | ✅ DONE |
+| Main: Add indicators for new symbols | `main.py` | ✅ DONE |
+| Main: Update hedge signal generation | `main.py` | ✅ DONE |
+| Main: Update MR entry/exit for SPXL | `main.py` | ✅ DONE |
+| Main: Update trend stop monitoring | `main.py` | ✅ DONE |
+| Tests: hedge_engine tests | `test_hedge_engine.py` | ✅ DONE |
+| Tests: scenario tests | `test_full_cycle_scenario.py` | ✅ DONE |
+| Tests: regime engine hedge tests | `test_regime_engine.py` | 🔲 TODO |
+| Tests: other TMF/PSQ references | Various | 🔲 TODO |
+
+**Key Files Changed:**
+- `config.py` - Extensive symbol/allocation updates
+- `engines/satellite/hedge_engine.py` - Complete SH-only refactor
+- `main.py` - Symbol initialization, indicators, signal generation
+- `tests/test_hedge_engine.py` - Rewritten for SH API
+- `tests/scenarios/test_full_cycle_scenario.py` - Updated hedge test
+
+**Test Status:** 1239 passed, 42 failed (mostly due to TMF/PSQ references in old tests)
+
+---
+
+### In Progress (V6.7 - Bug Fixes from Cross-Year Audit)
+
+> **Audit Reports:**
+> - `docs/audits/V6_6_Options_Engine_Audit_Report.md` (2022)
+> - `docs/audits/V6_7_VASS_MICRO_Engine_Analysis_Report.md` (Cross-Year Analysis)
+> - `docs/audits/logs/stage6.5/` (2015, 2017, 2022 raw logs)
+>
+> **Cross-Year Backtest Results:**
+> | Year | Period | Trades | Win Rate | P&L | Max DD | Version |
+> |:----:|:------:|:------:|:--------:|----:|-------:|:-------:|
+> | 2015 | H1 | 74 | 40% (30W/45L) | -$1,177 | $9,500 | V6.7 |
+> | 2017 | H1 | 45 | 47% (21W/24L) | +$23,758 | $12,630 | V6.6 |
+> | 2022 | Jan-Feb | 102 | 22% | -49.08% | - | V6.6 |
+>
+> **Key Observations:**
+> - 2017 Bull Market: Spreads profitable, Bug #1 (ASSIGNMENT_RISK_EXIT) fixed, Dir=NONE still persists
+> - 2015 Choppy Market: PUT filtering fails (Greeks=0), Option Exercise events, Margin CB force liquidations
+> - 2022 Bear Market: Worst performance - all bugs compounding
+>
+> **Critical Finding:** 12 bugs identified across all years (4 P0, 5 P1, 3 P2)
+
+| ID | Bug # | Category | Fix | Years | Priority | Status |
+|:--:|:-----:|:--------:|-----|:-----:|:--------:|:------:|
+| V6.7-1 | #1 | Spreads | Fix ASSIGNMENT_RISK_EXIT: Calculate actual risk (net debit) not notional | 2022 | P0 | ✅ DONE |
+| V6.7-2 | #2 | VIX Dir | Dir=NONE always - thresholds too tight (2015: 3276×, 2017: 3597×, 2022: 834×) | ALL | P0 | 🔲 TODO |
+| V6.7-3 | #3 | Direction | CALLs on DOWN days - FOLLOW_MACRO fallback when Dir=NONE | ALL | P0 | 🔲 TODO |
+| V6.7-4 | #4 | OCO | Options expired worthless - no OCO after roll | 2022 | P1 | 🔲 TODO |
+| V6.7-5 | #5 | OCO | Invalid OCO orders after market hours (2015: 5, 2017: 2, 2022: 8) | ALL | P1 | 🔲 TODO |
+| V6.7-6 | #6 | VASS | Spread selection too restrictive (2015: 92, 2017: 52, 2022: 274 rejections) | ALL | P1 | ✅ DONE (V6.12: DTE fallbacks + cooldown after all ranges + FailStats logging) |
+| V6.7-7 | #7 | Margin | MARGIN_CB force liquidation - consecutive margin calls (2015: 4 orders) | 2015 | P2 | ✅ FIXED (V6.6.1: count only OPENING margin rejects + require margin stress) |
+| V6.6.2 | #4 | Options | Options expired worthless (-99%) | 2022 | P1 | ✅ FIXED (OCO recovery: recreate missing OCO for open single-leg positions) |
+| V6.9 | Conviction | Bullish VETO bias in NEUTRAL/BEARISH (UVXY -2.5%) | 2022 | P0 | ✅ FIXED (raise bullish threshold to -5%, gate NEUTRAL VETO to extreme UVXY, block CALL override in BEARISH macro) |
+| V6.9 | Regime | Regime never reached BEARISH (scores stuck 43-68) | 2022 | P1 | ✅ FIXED (earlier/stronger breadth decay penalties to pull score down) |
+| V6.9 | Options | ITM PUT liquidity filter mismatch | 2022 | P1 | ✅ FIXED (PUT-specific delta + liquidity thresholds in spread selection/validation) |
+| V6.9 | Options | Spread stop-loss hit frequently | 2022 | P2 | ✅ FIXED (regime-adaptive debit stop multipliers) |
+| V6.9 | Options | BEAR_PUT spreads never executed | 2022 | P0 | ✅ FIXED (VASS HIGH IV → BEAR_CALL_CREDIT) |
+| V6.9 | Options | Short-call assignment losses | 2022 | P0 | ✅ FIXED (SHORT_LEG_ITM_EXIT guard, any DTE) |
+| V6.9 | Micro | Dir=None dominated signals | 2015/2017/2022 | P1 | ✅ FIXED (VIX-adaptive stable band + QQQ fallback + 2-of-3 confirmation) |
+| V6.7-8 | #8 | Stops | 50% stop hit rate high - symptom of #2/#3 wrong direction | ALL | P2 | Symptom |
+| V6.7-9 | #9 | Regime | Spike Cap: Lower max score 45→38 to force DEFENSIVE during VIX spikes | 2022 | P0 | ✅ DONE |
+| V6.7-10 | #10 | Regime | Breadth Decay: Relax thresholds (-10%/-15% → -2%/-4%) to actually trigger | 2022 | P0 | ✅ DONE |
+| V6.7-11 | #11 | Greeks | PUT contracts fail filter (Greeks=0, Delta=0) - 33 failures in 2015 | 2015 | P1 | 🔲 TODO |
+| V6.7-12 | #12 | Exercise | Option Exercise handling - ITM options exercised, QQQ stock assigned | 2015 | P2 | 🔲 TODO |
+| V6.7-13 | #13 | Positions | Swing/Intraday cross‑blocking via `has_position()` gate | ALL | P1 | ✅ DONE (V6.12: mode‑specific gates) |
+| V6.7-14 | #14 | Micro | Dir=None reduction: lower QQQ noise + stable fallback + ITM move threshold | ALL | P1 | ✅ DONE (V6.12: 0.25/0.35/50/0.45) |
+| V6.7-15 | #15 | Conviction | CALL bias control: asym UVXY thresholds + NEUTRAL aligned size reduction | ALL | P1 | ✅ DONE (V6.12: -5% / +2.5% + x0.5) |
+| V6.7-16 | #16 | Logging | Order tags for options (MICRO/VASS) via router tags | ALL | P2 | ✅ DONE |
+| V6.7-17 | #17 | VASS | Credit spread filter uses macro direction instead of strategy option type | ALL | P0 | ✅ DONE (V6.12: strategy-aware option_right) |
+
+**Cross-Year Bug Analysis:**
+
+| Bug | 2015 H1 | 2017 H1 | 2022 Jan-Feb | Root Cause |
+|:---:|:-------:|:-------:|:------------:|------------|
+| #1 ASSIGNMENT_RISK | N/A (V6.7) | ✅ Fixed | ❌ Broken | V6.7 fixed - spreads not immediately closed |
+| #2 Dir=NONE | 3276× | 3597× | 834× | Thresholds too tight across all years |
+| #3 Wrong Direction | FOLLOW_MACRO 64× | FOLLOW_MACRO 3× | FOLLOW_MACRO 62× | Fallback to Macro when Micro=NONE |
+| #5 Invalid OCO | 5 orders | 2 orders | 8 orders | OCO placed after 18:00 (market closed) |
+| #6 VASS Reject | 92 | 52 | 274 | Spread criteria too restrictive (V6.12 DTE fallback + cooldown fix) |
+| #7 Margin CB | 4 orders | 0 | 5 | Consecutive margin calls force liquidation |
+| #11 Greeks=0 | 33 PUT failures | 0 | 0 | PUT contracts missing Greeks in 2015 data |
+| #12 Exercise | 3 events | 0 | 0 | ITM options exercised at expiration |
+
+**Exit Type Distribution:**
+
+| Exit Type | 2015 H1 | 2017 H1 | 2022 |
+|-----------|:-------:|:-------:|:----:|
+| EXPIRATION_HAMMER | 9 | 18 | - |
+| STOP_EXIT | - | 0 | 22 |
+| PROFIT_EXIT | - | 0 | 18 |
+| Option Exercise | 3 | 0 | 0 |
+| MARGIN_CB_LIQUIDATE | 4 | 0 | 5 |
+
+**Bug #1 Fix Applied (V6.7):**
+```python
+# options_engine.py:4178-4219 - FIXED!
+# Old: assignment_exposure = strike * 100 * num_contracts  # $772K naked
+# New: actual_max_loss = spread.net_debit * 100 * num_contracts  # ~$7K spread
+```
+
+**Bug #9 & #10 Fixes Applied (V6.7 - Regime Hardening):**
+
+Audit revealed regime stayed at 60-68 even when VIX hit 30+ in Jan 2022. Root causes:
+
+1. **Spike Cap too lenient**: Capped at 45 (CAUTIOUS) instead of forcing DEFENSIVE
+2. **Breadth Decay never triggered**: Thresholds of -10%/-15% unrealistic for RSP/SPY ratio moves
+
+```python
+# config.py - V6.7 Regime Hardening
+
+# Bug #9: Spike Cap now forces DEFENSIVE
+V53_SPIKE_CAP_MAX_SCORE = 38  # Was 45 (CAUTIOUS), now 38 (DEFENSIVE)
+
+# Bug #10: Breadth Decay now triggers on realistic moves
+V53_BREADTH_5D_DECAY_THRESHOLD = -0.02   # Was -0.10 (-10%), now -2%
+V53_BREADTH_10D_DECAY_THRESHOLD = -0.04  # Was -0.15 (-15%), now -4%
+```
+
+**Expected behavior with fixes:**
+- VIX spikes +28%+ → Score capped at 38 (DEFENSIVE) for 3 days
+- RSP underperforms SPY by 2%+ in 5d → -5 point penalty
+- RSP underperforms SPY by 4%+ in 10d → -8 point penalty (stacks)
+- Net effect: Faster regime drop during selloffs → PUT direction for options
+
+**Bug #2 Root Cause (Dir=NONE):**
+- V6.6 STABLE zone: ±1%
+- UVXY intraday range: -2.1% to +4.7% (mostly within ±1%)
+- Result: Dir=NONE 834 times, RISING/FALLING 0 times
+- FOLLOW_MACRO fallback: BULLISH 62 times, BEARISH 0 times
+
+**Root Cause Analysis:**
+```
+Bug #2 (Dir=NONE) → Bug #3 (wrong direction) → Bug #8 (stops hit) → Bug #4 (expiry worthless)
+```
+Fixing Bug #2 should cascade fix to Bugs #3, #4, #8.
+
+**Bug #11 Root Cause (Greeks=0 for PUTs - 2015 only):**
+```
+2015-01-02 10:30:00 INTRADAY_FILTER_FAIL: PUT | Total=530 | Dir=265 DTE=265 Greeks=0 Delta=0
+```
+- 33 PUT contract filter failures in 2015 H1
+- Greeks data missing for PUT options in historical data
+- UVXY conviction override triggers correctly but can't find valid PUT contracts
+- May be a QuantConnect data issue specific to 2015 options data
+
+**Bug #12 Root Cause (Option Exercise - 2015 only):**
+```
+2015-01-17T05:00:00Z | QQQ 150117C00099000 | Option Exercise | -$1,980
+2015-01-17T05:00:00Z | QQQ | EXERCISE_LIQUIDATE | -$202,880 (QQQ stock assigned)
+```
+- ITM call options exercised at expiration
+- System correctly triggered EXERCISE_LIQUIDATE to close stock position
+- Need to review exercise handling and early exit before expiration week
+
+**Statistics from Audit (Cross-Year):**
+
+| Metric | 2015 H1 | 2017 H1 | 2022 Jan-Feb |
+|--------|:-------:|:-------:|:------------:|
+| Total Trades | 74 | 45 | 102 |
+| Win Rate | 40% | 47% | 22% |
+| Total P&L | -$1,177 | +$23,758 | -49.08% |
+| Fees | $2,466 | $1,853 | - |
+| Max Drawdown | $9,500 | $12,630 | - |
+| Dir=NONE Count | 3,276 | 3,597 | 834 |
+| Invalid OCO Orders | 5 | 2 | 8 |
+| VASS Rejections | 92 | 52 | 274 |
+
+---
+
+### Done (V6.6 - VIX Direction Threshold Optimization)
+
+> **Problem:** V6.5 2022H1 backtest revealed 76% of intraday signals blocked due to Dir=NONE
+> **Root Cause:** VIX STABLE zone too wide (±2%), most market moves fell in STABLE
+> **Fix:** Narrowed STABLE zone to ±1%, conservative spread construction relaxation
+> **Review:** User-reviewed spread thresholds - kept conservative values to avoid gamma/assignment risk
+> **Audit:** V6.6 isolation backtest revealed new critical bugs (see V6.7)
+
+| Ticket | Component | Owner | Branch | Merged |
+|--------|-----------|-------|--------|--------|
+| V6.6-1 | VIX Direction: Narrow STABLE zone (±2% → ±1%) | VA | feature/va/v3.2-macro-regime-gate | 2026-02-08 |
+| V6.6-2 | VIX Direction: Earlier detection thresholds (FALLING_FAST -5%→-3%, RISING +5%→+3%) | VA | feature/va/v3.2-macro-regime-gate | 2026-02-08 |
+| V6.6-3 | VIX Direction: RISING_FAST threshold lowered (+10%→+6%) | VA | feature/va/v3.2-macro-regime-gate | 2026-02-08 |
+| V6.6-4 | UVXY Conviction: Lower thresholds (±5%→±3%) | VA | feature/va/v3.2-macro-regime-gate | 2026-02-08 |
+| V6.6-5 | VASS IV: Widen thresholds (LOW 15→16, HIGH 25→28) | VA | feature/va/v3.2-macro-regime-gate | 2026-02-08 |
+| V6.6-6 | HIGH IV DTE: Extend max range (14→21, min kept at 7) | VA | feature/va/v3.2-macro-regime-gate | 2026-02-08 |
+| V6.6-7 | Spread Construction: Conservative delta relaxation | VA | feature/va/v3.2-macro-regime-gate | 2026-02-08 |
+| V6.6-8 | Tests: Update all threshold tests for V6.6 values | VA | feature/va/v3.2-macro-regime-gate | 2026-02-08 |
+| V6.6-9 | Config: Disable ISOLATION_TEST_MODE for normal ops | VA | feature/va/v3.2-macro-regime-gate | 2026-02-08 |
+
+**Config Changes:**
+```
+# VIX Direction (narrowed STABLE zone)
+VIX_DIRECTION_FALLING_FAST = -3.0  # was -5.0
+VIX_DIRECTION_FALLING = -1.0       # was -2.0
+VIX_DIRECTION_STABLE_LOW = -1.0    # was -2.0
+VIX_DIRECTION_STABLE_HIGH = 1.0    # was +2.0
+VIX_DIRECTION_RISING = 3.0         # was +5.0
+VIX_DIRECTION_RISING_FAST = 6.0    # was +10.0
+
+# UVXY Conviction (lower thresholds)
+MICRO_UVXY_BEARISH_THRESHOLD = 0.03  # was 0.05
+MICRO_UVXY_BULLISH_THRESHOLD = -0.03 # was -0.05
+
+# VASS IV Classification (wider bands)
+VASS_IV_LOW_THRESHOLD = 16   # was 15
+VASS_IV_HIGH_THRESHOLD = 28  # was 25
+VASS_HIGH_IV_DTE_MAX = 21    # was 14 (DTE_MIN kept at 7 - gamma risk)
+
+# Spread Construction (conservative relaxation)
+SPREAD_WIDTH_TARGET = 4.0           # was 5.0 (MIN kept at 2.0 - risk/reward)
+SPREAD_LONG_LEG_DELTA_MIN = 0.45    # was 0.50 (MAX kept at 0.85)
+SPREAD_SHORT_LEG_DELTA_MAX = 0.52   # was 0.50 (MIN kept at 0.10)
+```
+
+**Test Status:** 1333 passed, 9 skipped ✅
+
+**User Review (Conservative Adjustments):**
+| Parameter | Initial Proposal | Final Value | Rationale |
+|-----------|-----------------|-------------|-----------|
+| VASS_HIGH_IV_DTE_MIN | 5 | 7 (kept) | High gamma risk near expiry |
+| SPREAD_WIDTH_MIN | 1.0 | 2.0 (kept) | $1 spreads have poor risk/reward |
+| SPREAD_WIDTH_TARGET | 3.0 | 4.0 | $3 too narrow for QQQ |
+| SPREAD_LONG_LEG_DELTA_MIN | 0.40 | 0.45 | 0.40 too far OTM |
+| SPREAD_LONG_LEG_DELTA_MAX | 0.90 | 0.85 (kept) | 0.90 deep ITM expensive |
+| SPREAD_SHORT_LEG_DELTA_MIN | 0.08 | 0.10 (kept) | 0.08 collects minimal premium |
+| SPREAD_SHORT_LEG_DELTA_MAX | 0.55 | 0.52 | 0.55 risks early assignment |
+
+### Done (V6.5 - Options Isolation Backtest Audit)
+
+> **Audit:** `docs/audits/V6_5_2022H1_OptionsIsolation_audit.md`
+> **Backtest Period:** 2022 H1 (Options Engine Isolated)
+> **Critical Finding:** Gamma Pin Exit order spam - 184 BUY orders instead of 1 SELL
+
+| Ticket | Component | Owner | Commit | Merged |
+|--------|-----------|-------|--------|--------|
+| V6.5-1 | GAMMA_PIN_EXIT: Add spread_short_leg_quantity to metadata | VA | feature/va/v3.0-hardening | 2026-02-08 |
+| V6.5-2 | GAMMA_PIN_EXIT: Add once-per-position trigger flag | VA | feature/va/v3.0-hardening | 2026-02-08 |
+| V6.5-3 | GAMMA_PIN_EXIT: Reset flag on spread position removal | VA | feature/va/v3.0-hardening | 2026-02-08 |
+| V6.5-4 | INTRADAY_UNKNOWN: Add DEBIT_MOMENTUM + PROTECTIVE_PUTS to strategy_names | VA | feature/va/v3.0-hardening | 2026-02-08 |
+| V6.5-5 | ASSIGNMENT_RISK_EXIT: Add spread_close_short + spread_short_leg_quantity | VA | feature/va/v3.0-hardening | 2026-02-08 |
+| V6.5-6 | Delta-Scaled ATR Stops: Dynamic stop based on ATR × delta | VA | feature/va/v3.0-hardening | 2026-02-08 |
+
+**Root Cause Analysis:**
+- Gamma pin exit fired 184 times on Feb 8, 2022 (once per minute)
+- Missing `spread_short_leg_quantity` in metadata caused combo close path to be skipped
+- Router interpreted positive `requested_quantity=20` as BUY instead of SELL
+- No flag to prevent re-triggering after first signal
+
+**V6.5-6 Delta-Scaled ATR Stops:**
+- **Problem:** Intraday stops hit too quickly in high VIX (8/8 trades stopped in 15 min avg)
+- **Solution:** `stop_distance = ATR_MULTIPLIER × ATR × abs(delta)`
+- **Config:** `OPTIONS_ATR_STOP_MULTIPLIER=1.5`, floor=20%, cap=50%
+- **Files:** `config.py`, `main.py` (QQQ ATR), `options_engine.py`
+
+### Done (V6.4 - Options Engine Hardening)
+
+| Ticket | Component | Owner | Commit | Merged |
+|--------|-----------|-------|--------|--------|
+| V6.4-1 | BEAR_PUT Entry Gate (3% OTM min) | VA | feature/va/v3.0-hardening | 2026-02-08 |
+| V6.4-2 | UVXY Threshold lowered (8%→5%) | VA | feature/va/v3.0-hardening | 2026-02-08 |
+| V6.4-3 | Isolation Mode docs (CLAUDE.md + guide) | VA | feature/va/v3.0-hardening | 2026-02-08 |
+| V6.4-4 | Engine Isolation Mode implementation | VA | feature/va/v3.0-hardening | 2026-02-08 |
+| V6.4-5 | DEBIT_MOMENTUM delta wiring (0.45-0.65) | VA | feature/va/v3.0-hardening | 2026-02-08 |
+| V6.4-6 | DEBIT_MOMENTUM time gate (10:00-13:30) | VA | feature/va/v3.0-hardening | 2026-02-08 |
+| V6.4-7 | PROTECTIVE_PUTS crisis fix (no score required) | VA | feature/va/v3.0-hardening | 2026-02-08 |
+
+### Done (V6.3 - VIX Fix)
+
+| Ticket | Component | Owner | Commit | Merged |
+|--------|-----------|-------|--------|--------|
+| V6.3-1 | VIX Data Source Fix (CBOE vs SecDef) | VA | feature/va/v3.0-hardening | 2026-02-07 |
+| V6.3-2 | OptionDirection Enum Dedup | VA | feature/va/v3.0-hardening | 2026-02-07 |
+| V6.3-3 | FOLLOW_MACRO Logic Fix | VA | feature/va/v3.0-hardening | 2026-02-07 |
+
+### Archived
+
+| Component | Owner | Branch | Started | Spec |
+|-----------|-------|--------|---------|------|
 | QC Cloud Backtest Validation | VA | testing/va/stage1-1day-backtest | 2026-01-30 | docs/audits/backtest-results.md |
 
 ### Done (V2 Phase 1)
@@ -3097,3 +3824,38 @@ The governor/KS **trade off bear protection vs bull recovery:**
 > to dynamically adjust KS/governor sensitivity instead of static values.
 
 *Last Updated: 04 February 2026 (V2.30 All-Weather StartupGate)*
+
+---
+
+## V6.13 — P0 Options Risk Fixes (Uncommitted)
+
+- Added VIX spike auto-exit for bullish spreads (level + 5D change).
+- Added regime deterioration exit vs entry score (bull drops, bear improves).
+- Added overnight gap protection at EOD (VIX-based close for spreads).
+- Added explicit VASS_ENTRY logging (EOD + intraday).
+- Added intraday signal drop logging (`INTRADAY_SIGNAL_DROPPED`).
+
+Files:
+- `engines/satellite/options_engine.py`
+- `main.py`
+- `config.py`
+- `tests/test_options_engine.py`
+
+## V6.13 — Optimization Tuning (Config-Only)
+
+- Reduced MICRO signal starvation with moderate participation tuning:
+  - `QQQ_NOISE_THRESHOLD`, `INTRADAY_QQQ_FALLBACK_MIN_MOVE`,
+    `MICRO_SCORE_BULLISH_CONFIRM`, `MICRO_SCORE_BEARISH_CONFIRM`,
+    `INTRADAY_DEBIT_FADE_VIX_MIN`, `INTRADAY_FADE_MIN_MOVE`,
+    `INTRADAY_ITM_MIN_VIX`, `INTRADAY_ITM_MIN_MOVE`.
+- Tightened loss control for intraday momentum:
+  - `INTRADAY_ITM_STOP`, `INTRADAY_ITM_TARGET`,
+    `OPTIONS_ATR_STOP_MULTIPLIER`, `OPTIONS_ATR_STOP_MIN_PCT`.
+- Improved VASS spread constructability:
+  - `SPREAD_WIDTH_MIN`, `SPREAD_WIDTH_TARGET`,
+    `CREDIT_SPREAD_SHORT_LEG_DELTA_MAX`.
+- Re-enabled tight neutrality exit in choppy/neutral:
+  - `SPREAD_NEUTRALITY_EXIT_ENABLED`,
+    `SPREAD_NEUTRALITY_EXIT_PNL_BAND`,
+    `SPREAD_NEUTRALITY_ZONE_LOW`,
+    `SPREAD_NEUTRALITY_ZONE_HIGH`.

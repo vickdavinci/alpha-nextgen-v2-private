@@ -188,7 +188,7 @@ class OCOManager:
         target_price: float,
         quantity: int,
         current_date: str,
-    ) -> OCOPair:
+    ) -> Optional[OCOPair]:
         """
         Create a new OCO order pair.
 
@@ -201,8 +201,34 @@ class OCOManager:
             current_date: Date for ID generation.
 
         Returns:
-            Created OCOPair (in PENDING state).
+            Created OCOPair (in PENDING state), or None if validation fails.
         """
+        # T-13 FIX: Validate stop_price > 0 before creating OCO pair
+        # V6.13: 10 StopMarket orders with Price=0 caused risk mgmt to be disabled
+        if stop_price <= 0:
+            self.log(
+                f"OCO: REJECTED - Invalid stop_price={stop_price:.2f} <= 0 | "
+                f"Symbol={symbol} | Entry=${entry_price:.2f}"
+            )
+            return None
+
+        if target_price <= 0:
+            self.log(
+                f"OCO: REJECTED - Invalid target_price={target_price:.2f} <= 0 | "
+                f"Symbol={symbol} | Entry=${entry_price:.2f}"
+            )
+            return None
+
+        if entry_price <= 0:
+            self.log(
+                f"OCO: REJECTED - Invalid entry_price={entry_price:.2f} <= 0 | " f"Symbol={symbol}"
+            )
+            return None
+
+        if quantity <= 0:
+            self.log(f"OCO: REJECTED - Invalid quantity={quantity} <= 0 | " f"Symbol={symbol}")
+            return None
+
         # Generate unique OCO ID
         oco_id = f"OCO-{current_date.replace('-', '')}-{self._next_oco_number:03d}"
         self._next_oco_number += 1
@@ -258,6 +284,19 @@ class OCOManager:
         if pair.state != OCOState.PENDING:
             self.log(f"OCO: Cannot submit {pair.oco_id} - state is {pair.state.value}")
             return False
+
+        # V6.8: Market hours guard - block OCO submission outside regular trading hours
+        if self.algorithm is not None:
+            try:
+                # Get the equity symbol for market hours check (options follow equity hours)
+                underlying = pair.symbol.split()[0] if " " in str(pair.symbol) else str(pair.symbol)
+                equity_symbol = self.algorithm.Symbol(underlying)
+                if not self.algorithm.Securities[equity_symbol].Exchange.ExchangeOpen:
+                    self.log(f"OCO: BLOCKED {pair.oco_id} - market closed for {underlying}")
+                    return False
+            except Exception as e:
+                # If we can't check market hours, log warning but allow submission
+                self.log(f"OCO: WARNING - could not verify market hours: {e}")
 
         # Submit stop order
         stop_order_id = self._submit_stop_order(pair.symbol, pair.stop_leg)

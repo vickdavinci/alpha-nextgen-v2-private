@@ -13,7 +13,7 @@ All tunable parameters in one place.
 # - Regime Engine handles market adaptation (conditions-based)
 # Account size no longer determines allocation - market conditions do.
 
-INITIAL_CAPITAL = 50_000  # V3.0: Starting capital for backtests
+INITIAL_CAPITAL = 75_000  # V5.3: Starting capital for backtests
 MAX_SINGLE_POSITION_PCT = 0.40  # V3.0: Max weight for any single position (was phase-dependent)
 
 TARGET_VOLATILITY = 0.20
@@ -62,15 +62,19 @@ HEDGE_REGIME_GATE = 50  # Hedges only active when regime < 50
 
 # V2.3.24: Leverage multipliers for margin calculation
 # Used by portfolio_router to calculate actual margin consumption, not just allocation %
+# V6.11: Universe redesign - diversified trend + commodity hedges
 SYMBOL_LEVERAGE = {
+    # Trend Engine (diversified)
     "QLD": 2.0,  # 2× Nasdaq
     "SSO": 2.0,  # 2× S&P 500
-    "TNA": 3.0,  # 3× Russell 2000
-    "FAS": 3.0,  # 3× Financials
+    "UGL": 2.0,  # 2× Gold (commodity hedge)
+    "UCO": 2.0,  # 2× Crude Oil (commodity hedge)
+    # Mean Reversion Engine
     "TQQQ": 3.0,  # 3× Nasdaq (MR)
+    "SPXL": 3.0,  # 3× S&P 500 (MR)
     "SOXL": 3.0,  # 3× Semiconductor (MR)
-    "TMF": 3.0,  # 3× Treasury (Hedge)
-    "PSQ": 1.0,  # 1× Inverse Nasdaq (Hedge)
+    # Hedge Engine
+    "SH": 1.0,  # 1× Inverse S&P (Hedge)
 }
 
 # V2.3.24: Minimum contracts for scaled spreads
@@ -81,6 +85,197 @@ MIN_SPREAD_CONTRACTS = 2
 # REGIME ENGINE
 # =============================================================================
 
+# -----------------------------------------------------------------------------
+# V3.3: SIMPLIFIED 3-FACTOR MODEL
+# -----------------------------------------------------------------------------
+# Problem: 7-factor model caused score compression (stuck at 43-50 in grinding bears)
+# Solution: 3 decisive factors that directly measure what matters
+#
+# Factor 1: TREND (35%) - Is the market going up or down?
+# Factor 2: VIX LEVEL (30%) - Is there fear/panic?
+# Factor 3: DRAWDOWN (35%) - How far has market fallen from peak?
+#
+# Guards (not weighted, just safety valves):
+# - VIX Direction Shock Cap: Caps regime at CAUTIOUS when VIX spiking
+# - Recovery Hysteresis: Prevents "sticky bear" after V-shaped recoveries
+
+V3_REGIME_SIMPLIFIED_ENABLED = True  # Enable simplified 3-factor model
+
+# V3.3 Factor Weights (must sum to 1.0)
+WEIGHT_TREND_V3 = 0.35  # Direction indicator (SPY vs MA200)
+WEIGHT_VIX_V3 = 0.30  # Fear/panic level
+WEIGHT_DRAWDOWN_V3 = 0.35  # Distance from 52-week high (breaks compression)
+
+# Drawdown Factor Thresholds (SPY drawdown from 52-week high)
+DRAWDOWN_THRESHOLD_BULL = 0.05  # 0-5% = Bull pullback → Score 90
+DRAWDOWN_THRESHOLD_CORRECTION = 0.10  # 5-10% = Correction → Score 70
+DRAWDOWN_THRESHOLD_PULLBACK = 0.15  # 10-15% = Pullback → Score 50
+DRAWDOWN_THRESHOLD_BEAR = 0.20  # 15-20% = Bear territory → Score 30
+# 20%+ = Deep bear → Score 10
+
+# Drawdown Factor Scores (mapped to thresholds above)
+DRAWDOWN_SCORE_BULL = 90
+DRAWDOWN_SCORE_CORRECTION = 70
+DRAWDOWN_SCORE_PULLBACK = 50
+DRAWDOWN_SCORE_BEAR = 30
+DRAWDOWN_SCORE_DEEP_BEAR = 10
+
+# Guard 1: VIX Direction Shock Cap
+# When VIX is spiking, cap regime at CAUTIOUS for fast crash response
+VIX_SHOCK_CAP_ENABLED = True
+VIX_SHOCK_CAP_THRESHOLD = 10.0  # VIX rising > 10% = shock
+VIX_SHOCK_CAP_MAX_REGIME = 49  # Cap at CAUTIOUS (below NEUTRAL)
+VIX_SHOCK_CAP_DECAY_DAYS = 2  # Decay cap after 2 sessions if not confirmed
+
+# Guard 2: Recovery Hysteresis
+# Prevents "sticky bear" - upgrades require confirmation, downgrades are immediate
+RECOVERY_HYSTERESIS_ENABLED = True
+RECOVERY_HYSTERESIS_DAYS = 2  # Require 2 days of improvement to upgrade
+# V3.8: Raised from 25 to 35 - VIX 25-35 is common during V-recoveries (Mar 2020, 2011)
+# Old threshold blocked ALL upgrades for 63 days in Mar 2020 while market rallied 30%
+RECOVERY_HYSTERESIS_VIX_MAX = 35.0  # VIX must be below this to allow upgrade
+
+# =============================================================================
+# V4.0 REGIME MODEL (5-Factor with Leading Indicators)
+# =============================================================================
+# Purpose: Fix V3.3's 4-7 day lag in crash detection by using leading indicators.
+# V4.0 simulated 88% accuracy vs V3.3's 59% across 17 market scenarios.
+#
+# Factor 1: SHORT-TERM MOMENTUM (30%) - 20-day Rate of Change (leading)
+# Factor 2: VIX DIRECTION (25%) - 5-day VIX change + spike detection (leading)
+# Factor 3: MARKET BREADTH (20%) - RSP/SPY ratio (concurrent)
+# Factor 4: DRAWDOWN (15%) - Distance from 52-week high (lagging, reduced)
+# Factor 5: LONG-TERM TREND (10%) - SPY vs MA200 (lagging, context only)
+#
+# Key improvement: 55% weight on leading/concurrent indicators vs V3.3's 0%.
+
+V4_REGIME_ENABLED = False  # V4.0: Disabled - V5.3 is now the active model
+
+# V4.1: VIX Level Fix - Replace VIX Direction with VIX Level
+# Problem: V4.0's VIX Direction (rising/falling) scores 55 for STABLE high VIX (30+)
+#          This creates "score ceiling" at ~65 in both bull AND bear markets
+# Fix: Use VIX Level (absolute fear) instead - VIX>30 scores 15, VIX<15 scores 85
+# Result: +7.5 points in bull (RISK_ON achieved), -10 points in bear (faster DEFENSIVE)
+V4_1_VIX_LEVEL_ENABLED = True  # V4.1: Use VIX Level instead of VIX Direction
+
+# V4.0/V4.1 Factor Weights (must sum to 1.0)
+WEIGHT_MOMENTUM_V4 = 0.30  # 20-day ROC - catches reversals in days, not months
+WEIGHT_VIX_LEVEL_V4 = 0.25  # V4.1: Absolute VIX level - fear intensity (replaces VIX Direction)
+WEIGHT_VIX_DIRECTION_V4 = 0.25  # V4.0 (deprecated): VIX change - spike = danger, falling = safe
+WEIGHT_BREADTH_V4 = 0.20  # RSP/SPY - flags narrow rallies and weakness
+WEIGHT_DRAWDOWN_V4 = 0.15  # Reduced from V3.3's 35% - still useful but lagging
+WEIGHT_TREND_V4 = 0.10  # Reduced from V3.3's 35% - context only
+
+# Factor 1: Short-term Momentum (20-day ROC)
+# ROC = (Current Price - Price 20 days ago) / Price 20 days ago
+MOMENTUM_LOOKBACK = 20  # 20-day rate of change
+MOMENTUM_THRESHOLD_STRONG_BULL = 0.05  # ROC > +5% = Strong bullish → Score 90
+MOMENTUM_THRESHOLD_BULL = 0.02  # ROC +2% to +5% = Bullish → Score 75
+MOMENTUM_THRESHOLD_NEUTRAL_HIGH = 0.01  # ROC +1% to +2% = Neutral high → Score 60
+MOMENTUM_THRESHOLD_NEUTRAL_LOW = -0.01  # ROC -1% to +1% = Neutral → Score 50
+MOMENTUM_THRESHOLD_BEAR = -0.02  # ROC -2% to -1% = Bearish → Score 40
+MOMENTUM_THRESHOLD_STRONG_BEAR = -0.05  # ROC < -5% = Strong bearish → Score 10
+# Score mapping
+MOMENTUM_SCORE_STRONG_BULL = 90
+MOMENTUM_SCORE_BULL = 75
+MOMENTUM_SCORE_NEUTRAL_HIGH = 60
+MOMENTUM_SCORE_NEUTRAL = 50
+MOMENTUM_SCORE_NEUTRAL_LOW = 40
+MOMENTUM_SCORE_BEAR = 25
+MOMENTUM_SCORE_STRONG_BEAR = 10
+
+# Factor 2: VIX Direction (5-day change + spike detection)
+# Measures fear VELOCITY, not just level - key for early crash detection
+VIX_DIRECTION_LOOKBACK = 5  # 5-day VIX change
+VIX_DIRECTION_SPIKE_THRESHOLD = 0.20  # VIX up >20% in 5 days = spike (score 10)
+VIX_DIRECTION_RISING_FAST = 0.10  # VIX up 10-20% = rising fast → Score 25
+VIX_DIRECTION_RISING = 0.05  # VIX up 5-10% = rising → Score 40
+VIX_DIRECTION_STABLE_HIGH = 0.02  # VIX up 0-5% = stable/rising → Score 50
+VIX_DIRECTION_STABLE_LOW = -0.02  # VIX change -2% to +2% = stable → Score 55
+VIX_DIRECTION_FALLING = -0.10  # VIX down 2-10% = falling → Score 70
+VIX_DIRECTION_FALLING_FAST = -0.20  # VIX down >10% = falling fast → Score 85
+# Score mapping
+VIX_DIR_SCORE_SPIKE = 10  # Extreme fear spike
+VIX_DIR_SCORE_RISING_FAST = 25  # Fear increasing rapidly
+VIX_DIR_SCORE_RISING = 40  # Fear increasing
+VIX_DIR_SCORE_STABLE_HIGH = 50  # Slightly rising
+VIX_DIR_SCORE_STABLE = 55  # Stable
+VIX_DIR_SCORE_FALLING = 70  # Fear decreasing
+VIX_DIR_SCORE_FALLING_FAST = 85  # Fear decreasing rapidly
+
+# Factor 3: Market Breadth (RSP/SPY ratio)
+# Measures participation - narrow rallies (low breadth) are warning signs
+# Already have RSP/SPY calculation, just need scoring
+BREADTH_RATIO_STRONG = 1.02  # RSP outperforming SPY by 2%+ → Score 85
+BREADTH_RATIO_HEALTHY = 1.00  # RSP ~ SPY → Score 70
+BREADTH_RATIO_NARROW = 0.98  # RSP underperforming by 2% → Score 50
+BREADTH_RATIO_WEAK = 0.96  # RSP underperforming by 4%+ → Score 30
+# Score mapping
+BREADTH_SCORE_STRONG = 85  # Broad participation
+BREADTH_SCORE_HEALTHY = 70  # Normal participation
+BREADTH_SCORE_NARROW = 50  # Narrowing rally
+BREADTH_SCORE_WEAK = 30  # Very narrow/defensive
+
+# V4.0 VIX Spike Cap (enhanced from V3.3)
+# Immediate regime cap when VIX spikes - critical for crash protection
+# V4.0.1 FIX: Added VIX_MIN_LEVEL to prevent false triggers in low-VIX bull markets
+V4_SPIKE_CAP_ENABLED = True
+V4_SPIKE_CAP_THRESHOLD = (
+    0.25  # V4.0.1: Raised from 0.15 to 0.25 (VIX up >25% in 5 days triggers cap)
+)
+V4_SPIKE_CAP_VIX_MIN_LEVEL = (
+    15.0  # V4.0.1 FIX: Only trigger spike cap if VIX > 15 (ignore low-VIX noise)
+)
+V4_SPIKE_CAP_MAX_SCORE = 45  # Cap score at CAUTIOUS during spike
+V4_SPIKE_CAP_DECAY_DAYS = 3  # Cap persists for 3 days unless VIX falls
+
+# =============================================================================
+# V5.3 MACRO REGIME MODEL (Phase 1 & 2)
+# =============================================================================
+# 4-factor model with VIX Combined (Level + Direction) scoring
+#
+# Key improvements over V4.1:
+# - VIX Combined: 60% level + 40% direction for nuanced fear reading
+# - High-VIX clamp: VIX Combined capped at 47 when VIX >= 25
+# - Spike cap: Score capped at 45 when VIX 5d >= +28%
+# - Breadth decay penalty: Detects distribution before price confirms
+
+V53_REGIME_ENABLED = True  # V5.3: Master switch for new regime model
+
+# V5.3 Factor Weights (must sum to 1.0)
+WEIGHT_MOMENTUM_V53 = 0.30  # 20-day ROC - catches reversals in days
+WEIGHT_VIX_COMBINED_V53 = 0.30  # NEW: 60% level + 40% direction
+WEIGHT_TREND_V53 = 0.25  # SPY vs MA200 - increased from V4's 10%
+WEIGHT_DRAWDOWN_V53 = 0.15  # Distance from 52-week high
+
+# VIX Combined scoring: 60% VIX Level + 40% VIX Direction
+VIX_COMBINED_LEVEL_WEIGHT = 0.60  # Absolute VIX level contribution
+VIX_COMBINED_DIRECTION_WEIGHT = 0.40  # VIX 5-day direction contribution
+VIX_COMBINED_HIGH_VIX_CLAMP = 47  # Cap VIX Combined score when VIX >= 25
+VIX_COMBINED_HIGH_VIX_THRESHOLD = 25.0  # VIX level threshold for clamp
+
+# V5.3 Spike Cap: Macro score capped at 45 when VIX 5d change >= +28%
+V53_SPIKE_CAP_ENABLED = True
+V53_SPIKE_CAP_THRESHOLD = 0.28  # VIX up >28% in 5 days triggers cap
+# V6.6: Lowered from 45 to 38 to force DEFENSIVE during VIX spikes
+# 45 only reached CAUTIOUS (40-49), missing the defensive posture needed
+V53_SPIKE_CAP_MAX_SCORE = 38  # Cap score at DEFENSIVE during spike
+V53_SPIKE_CAP_DECAY_DAYS = 3  # Cap persists for 3 days
+
+# Phase 2: Breadth Decay Penalty
+# Detects distribution (smart money selling) before price confirms
+V53_BREADTH_DECAY_ENABLED = True
+# V6.6: Relaxed thresholds from -10%/-15% to -2%/-4%
+# Old thresholds never triggered - RSP/SPY relative moves are typically 1-3%
+# A -2% divergence over 5 days indicates meaningful distribution
+V53_BREADTH_5D_DECAY_THRESHOLD = -0.01  # V6.9: Trigger earlier (-1% vs -2%)
+V53_BREADTH_10D_DECAY_THRESHOLD = -0.03  # V6.9: Trigger earlier (-3% vs -4%)
+V53_BREADTH_5D_PENALTY = 8  # V6.9: Increase penalty to pull regime down faster
+V53_BREADTH_10D_PENALTY = 12  # V6.9: Stronger 10d decay penalty (stacks with 5d)
+
+# -----------------------------------------------------------------------------
+# LEGACY 7-FACTOR WEIGHTS (V3.0) - Used if V3_REGIME_SIMPLIFIED_ENABLED = False
+# -----------------------------------------------------------------------------
 # Factor Weights (V3.0: Normalized to 100% with VIX Direction enabled)
 # Research-based allocation: leading indicators (Credit, VIX Dir) balanced with
 # lagging indicators (Trend, Realized Vol) for regime identification.
@@ -182,16 +377,19 @@ WARM_MIN_SIZE = 2_000
 OPTIONS_COLD_START_MULTIPLIER = 0.50
 
 # =============================================================================
-# V2.30: STARTUP GATE — All-Weather (one-time arming, never resets on kill switch)
+# V6.0: STARTUP GATE — Simplified (one-time arming, never resets on kill switch)
 # =============================================================================
-# Separate from Cold Start. Ramps capital over 15 days while allowing defensive
-# engines (hedges, bearish options) from day 1. Regime controls WHAT trades,
-# gate controls HOW MUCH. Once FULLY_ARMED, stays armed permanently.
+# Simplified 6-day arming sequence. Options are independent with their own
+# conviction system (VASS/MICRO). Gate only controls TREND/MR sizing.
+#
+# Phases:
+#   INDICATOR_WARMUP (Days 1-3): Nothing allowed, indicators warming up
+#   REDUCED (Days 4-6): TREND/MR at 50%, OPTIONS at 100%
+#   FULLY_ARMED (Day 7+): Everything at 100%
 STARTUP_GATE_ENABLED = True
-STARTUP_GATE_WARMUP_DAYS = 5  # Phase 0: Indicators warming up (hedges only)
-STARTUP_GATE_OBSERVATION_DAYS = 5  # Phase 1: Add bearish options (50% size)
-STARTUP_GATE_REDUCED_DAYS = 5  # Phase 2: All engines at 50% sizing
-STARTUP_GATE_REDUCED_SIZE_MULT = 0.50  # Position size multiplier during OBSERVATION + REDUCED
+STARTUP_GATE_WARMUP_DAYS = 3  # Phase 0: Indicators warming up (nothing allowed)
+STARTUP_GATE_REDUCED_DAYS = 3  # Phase 1: TREND/MR at 50%, OPTIONS at 100%
+STARTUP_GATE_REDUCED_SIZE_MULT = 0.50  # TREND/MR size multiplier during REDUCED
 
 # =============================================================================
 # TREND ENGINE
@@ -232,9 +430,9 @@ PROFIT_TIGHT_PCT = 0.15  # V2.3.6: Raised from 0.10 - don't tighten too early
 PROFIT_TIGHTER_PCT = 0.25  # V2.3.6: Raised from 0.20 - let trends run
 
 # V2.3.8: 3x ETF Volatility Multipliers (PART 14 Pitfall 3)
-# TNA/FAS swing 5-7% daily - tighter stops to limit damage
-# Use ATR×2.5 instead of ATR×3.5 for 3x ETFs
-TREND_3X_SYMBOLS = ["TNA", "FAS"]  # 3× leveraged symbols needing tighter stops
+# V6.11: No 3x symbols in trend engine (all 2x now)
+# Kept for backward compatibility with Chandelier stop logic
+TREND_3X_SYMBOLS: list[str] = []  # V6.11: No 3× in trend (QLD/SSO/UGL/UCO are all 2×)
 CHANDELIER_3X_BASE_MULT = 2.5  # V2.3.8: Tighter than 2x (3.5) - control 3x volatility
 CHANDELIER_3X_TIGHT_MULT = 2.0  # V2.3.8: Tighter than 2x (3.0)
 CHANDELIER_3X_TIGHTER_MULT = 1.5  # V2.3.8: Tighter than 2x (2.5)
@@ -245,14 +443,14 @@ TREND_EXIT_REGIME = 30  # Exit when regime drops to Bear
 TREND_ADX_EXIT_THRESHOLD = 10  # V2.3.12: Lowered to 10 - allow holding during low momentum grind
 
 # V2.3.3 Position Limits (Part 4 audit fix)
-# In bull markets, all 4 tickers (QLD/SSO/TNA/FAS) may trigger together
-# because they're all correlated to US equity market (0.70-0.95 correlation)
-# V2.3.3: Changed from 2 to 4 to allow full trend allocation (55% total)
-MAX_CONCURRENT_TREND_POSITIONS = 2  # Max trend positions at any time (reduced for options testing)
+# V6.11: Diversified trend universe (QLD/SSO/UGL/UCO)
+# With commodities, not all will trigger together (uncorrelated)
+MAX_CONCURRENT_TREND_POSITIONS = 4  # Allow all 4 trend tickers
 
 # Priority order when multiple entries trigger simultaneously
 # Higher priority symbols get capital first
-TREND_PRIORITY_ORDER = ["QLD", "SSO", "TNA", "FAS"]  # Nasdaq > S&P > Russell > Financials
+# V6.11: QLD primary, then commodities (hedge value), then SSO
+TREND_PRIORITY_ORDER = ["QLD", "UGL", "UCO", "SSO"]  # Nasdaq > Gold > Oil > S&P
 
 # =============================================================================
 # MEAN REVERSION ENGINE
@@ -317,14 +515,19 @@ HEDGE_LEVEL_1 = 50  # V3.0: Light hedge starts at Cautious (regime < 50)
 HEDGE_LEVEL_2 = 40  # V3.0: Medium hedge at Defensive (regime < 40)
 HEDGE_LEVEL_3 = 30  # V3.0: Full hedge at Bear (regime < 30)
 
-# TMF Allocation
-TMF_LIGHT = 0.10
-TMF_MEDIUM = 0.15
-TMF_FULL = 0.20
+# V6.11: SH (1x Inverse S&P) replaces TMF/PSQ
+# SH has no decay (unlike VIXY), provides direct equity hedge
+HEDGE_SYMBOLS = ["SH"]
+SH_LIGHT = 0.05  # Regime 40-50: 5% inverse
+SH_MEDIUM = 0.08  # Regime 30-40: 8% inverse
+SH_FULL = 0.10  # Regime < 30: 10% inverse
 
-# PSQ Allocation
-PSQ_MEDIUM = 0.05
-PSQ_FULL = 0.10
+# Legacy TMF/PSQ (deprecated in V6.11)
+TMF_LIGHT = 0.00
+TMF_MEDIUM = 0.00
+TMF_FULL = 0.00
+PSQ_MEDIUM = 0.00
+PSQ_FULL = 0.00
 
 # Rebalancing
 HEDGE_REBAL_THRESHOLD = 0.02
@@ -334,43 +537,55 @@ HEDGE_REBAL_THRESHOLD = 0.02
 # =============================================================================
 
 # Exposure Limits
+# V6.11: Simplified groups - equity + commodities + hedge
 EXPOSURE_LIMITS = {
     "NASDAQ_BETA": {"max_net_long": 0.50, "max_net_short": 0.30, "max_gross": 0.75},
-    "SPY_BETA": {"max_net_long": 0.40, "max_net_short": 0.00, "max_gross": 0.40},
-    "SMALL_CAP_BETA": {"max_net_long": 0.25, "max_net_short": 0.00, "max_gross": 0.25},
-    "FINANCIALS_BETA": {"max_net_long": 0.15, "max_net_short": 0.00, "max_gross": 0.15},
-    "RATES": {"max_net_long": 0.40, "max_net_short": 0.00, "max_gross": 0.40},  # TMF only
+    "SPY_BETA": {
+        "max_net_long": 0.40,
+        "max_net_short": 0.15,
+        "max_gross": 0.50,
+    },  # V6.11: Allow SH short
+    "COMMODITIES": {
+        "max_net_long": 0.25,
+        "max_net_short": 0.00,
+        "max_gross": 0.25,
+    },  # V6.11: Gold + Oil
 }
 
 # Group Membership
+# V6.11: Universe redesign - diversified trend + commodity hedges
 SYMBOL_GROUPS = {
-    "TQQQ": "NASDAQ_BETA",
+    # Trend Engine
     "QLD": "NASDAQ_BETA",
-    "SOXL": "NASDAQ_BETA",
-    "PSQ": "NASDAQ_BETA",  # Inverse
     "SSO": "SPY_BETA",
-    "TNA": "SMALL_CAP_BETA",  # V2.2: 3× Russell 2000
-    "FAS": "FINANCIALS_BETA",  # V2.2: 3× Financials
-    "TMF": "RATES",
+    "UGL": "COMMODITIES",  # 2× Gold
+    "UCO": "COMMODITIES",  # 2× Crude Oil
+    # Mean Reversion Engine
+    "TQQQ": "NASDAQ_BETA",
+    "SPXL": "SPY_BETA",
+    "SOXL": "NASDAQ_BETA",
+    # Hedge Engine
+    "SH": "SPY_BETA",  # 1× Inverse S&P
 }
 
 # =============================================================================
 # V2.2 BALANCED ALLOCATION MODEL
 # =============================================================================
-# Addresses capital utilization problem from V1 testing:
-# - Trend Engine entry probability ~13.3% (very conservative)
-# - Adding TNA/FAS increases diversification and entry opportunities
+# V6.11: Universe redesign - diversified trend with commodities
+# - Equity exposure: QLD (15%) + SSO (7%) = 22%
+# - Commodity exposure: UGL (10%) + UCO (8%) = 18%
+# - Total: 40% with genuine diversification (not just correlated equity ETFs)
 
-# Trend Engine Allocations (40% total - V2.18 reduced from 55%)
-# V2.18: Reduced to prevent margin overflow (was 196% when all 4 triggered)
-# Margin impact: 15%×2 + 12%×2 + 8%×3 + 5%×3 = 30% + 24% + 24% + 15% = 93%
+# Trend Engine Allocations (40% total)
+# V6.11: Diversified across equities + commodities
+# Margin impact: 15%×2 + 7%×2 + 10%×2 + 8%×2 = 30% + 14% + 20% + 16% = 80%
 TREND_SYMBOL_ALLOCATIONS = {
-    "QLD": 0.15,  # V2.18: 15% (was 20%) - 2× Nasdaq (primary)
-    "SSO": 0.12,  # V2.18: 12% (was 15%) - 2× S&P 500 (secondary)
-    "TNA": 0.08,  # V2.18: 8% (was 12%) - 3× Russell 2000 (small-cap diversification)
-    "FAS": 0.05,  # V2.18: 5% (was 8%) - 3× Financials (sector diversification)
+    "QLD": 0.15,  # 15% - 2× Nasdaq (primary equity)
+    "SSO": 0.07,  # 7% - 2× S&P 500 (broad equity)
+    "UGL": 0.10,  # 10% - 2× Gold (commodity hedge, uncorrelated)
+    "UCO": 0.08,  # 8% - 2× Crude Oil (energy/inflation hedge)
 }
-TREND_TOTAL_ALLOCATION = 0.40  # V2.18: 40% total (was 55%)
+TREND_TOTAL_ALLOCATION = 0.40  # 40% total
 
 # =============================================================================
 # V2.4 STRUCTURAL TREND - SMA50 + HARD STOP
@@ -392,13 +607,13 @@ TREND_SMA_EXIT_BUFFER = 0.02  # Exit when close < SMA50 * (1 - 2%)
 TREND_SMA_CONFIRM_DAYS = 2  # Days below SMA50 required before exit
 
 # Hard Stop Percentages (asset-specific, from entry price)
-# 3× ETFs need tighter stops due to higher daily volatility (5-7% swings)
-# 2× ETFs can tolerate wider stops (2-3% daily swings)
+# V6.11: Updated for new universe - all 2× ETFs, wider stops for commodities
+# Commodities (UGL, UCO) can be more volatile - use 18% stop
 TREND_HARD_STOP_PCT = {
-    "QLD": 0.15,  # 15% hard stop (2× ETF)
-    "SSO": 0.15,  # 15% hard stop (2× ETF)
-    "TNA": 0.12,  # 12% hard stop (3× ETF - more volatile)
-    "FAS": 0.12,  # 12% hard stop (3× ETF - more volatile)
+    "QLD": 0.15,  # 15% hard stop (2× Nasdaq)
+    "SSO": 0.15,  # 15% hard stop (2× S&P)
+    "UGL": 0.18,  # 18% hard stop (2× Gold - higher volatility)
+    "UCO": 0.18,  # 18% hard stop (2× Crude - higher volatility)
 }
 
 # V3.0: Regime-Adaptive Stop Multipliers
@@ -411,9 +626,11 @@ TREND_STOP_REGIME_MULTIPLIERS = {
 }
 
 # Mean Reversion Allocations (10% total)
+# V6.11: Diversified across Nasdaq, S&P, and Semis
 MR_SYMBOL_ALLOCATIONS = {
-    "TQQQ": 0.05,  # 5% - 3× Nasdaq
-    "SOXL": 0.05,  # 5% - 3× Semiconductor
+    "TQQQ": 0.04,  # 4% - 3× Nasdaq (primary MR)
+    "SPXL": 0.03,  # 3% - 3× S&P 500 (broad market bounces)
+    "SOXL": 0.03,  # 3% - 3× Semiconductor (high-beta bounces)
 }
 MR_TOTAL_ALLOCATION = 0.10  # 10% total to MR Engine
 
@@ -471,95 +688,93 @@ TIME_GUARD_START = "13:55"
 TIME_GUARD_END = "14:10"
 
 # =============================================================================
-# V3.0: DRAWDOWN GOVERNOR (Simplified 3-Tier System)
+# DRAWDOWN GOVERNOR V5.2 - BINARY GOVERNOR
 # =============================================================================
-# V3.0: Simplified from 5 tiers to 3 tiers (100% / 50% / 0%)
-# The 75% and 25% "limbo" states were eliminated because:
-#   - 75% was barely different from 100% (not protective)
-#   - 25% couldn't do anything useful (couldn't grow equity to recover)
-#   - Oscillation between tiers created churning and confusion
+# V5.2 Changes (2026-02-06):
+# - BINARY SYSTEM: Only 100% (trading) or 0% (defensive)
+# - Single threshold: 15% DD → Defensive mode
+# - Eliminated intermediate 50% state (caused oscillation/churn)
+# - Simplified recovery: regime guard + equity recovery from 0%
 #
-# New design: Clear decision points with distinct behaviors:
-#   - 100%: Full allocation, all strategies active
-#   - 50%: Reduced risk, all strategies at half size
-#   - 0%: DEFENSIVE ONLY (hedges, PUTs, SHV) — bullish trades blocked
+# Why Binary?
+# - V3.x (5 levels): Massive churn between 100%→75%→50%→25%→0%
+# - V5.1 (2 levels): Still had 50% "limbo" state causing confusion
+# - V5.2 (binary): Either confident to trade (100%) or not (0%)
 #
-# Tracks equity high watermark. Scales ALL engine allocations based on
-# drawdown from peak. Prevents death-by-a-thousand-cuts (-42% in 2015).
-# Bull market impact: zero drag (HWM rises continuously, governor never fires).
-DRAWDOWN_GOVERNOR_ENABLED = True
+# Root Cause Analysis:
+# - Multiple governor levels create oscillation opportunities
+# - Intermediate states (50%, 25%) can't grow equity to recover
+# - Each level = decision point = potential failure mode
+#
+# State Machine:
+#   100% ─────(DD≥15%)─────→ 0%
+#     ↑                       │
+#     └───────────────────────┘
+#        (DD<12% + Regime Guard passes)
+#
+DRAWDOWN_GOVERNOR_ENABLED = False  # V5.3: Disabled for strategy validation
+
+# V5.2: BINARY - Single threshold for maximum simplicity
+# Normal bull pullbacks rarely exceed 10-12%
+# Genuine corrections hit 15-20%
+# Single threshold at 15% catches real danger without false triggers
 DRAWDOWN_GOVERNOR_LEVELS = {
-    0.05: 0.50,  # V3.0: At -5% from peak → 50% allocation (was -3% → 75%)
-    0.10: 0.00,  # V3.0: At -10% from peak → DEFENSIVE ONLY (was -15% → 0%)
+    0.15: 0.00,  # V5.2: At -15% from peak → DEFENSIVE ONLY (binary)
 }
-# V3.0: Dynamic recovery — scales with governor level
-# Effective = base × current_scale: 100%→8%, 50%→4%
-# Note: Recovery from 0% requires Regime Override (see below)
-DRAWDOWN_GOVERNOR_RECOVERY_BASE = 0.08
 
-# V3.0: Regime Override for Drawdown Governor
-# Problem: In 2017, Governor held bot at 25% for 4 months during bull market.
-# HWM was set, market pulled back 11%, Governor scaled to 25%, bot couldn't
-# recover because at 25% allocation it couldn't grow equity fast enough.
-# This created a death spiral: can't grow → can't escape drawdown → can't grow.
+# V5.2: Recovery threshold - must recover to below this DD to re-arm
+# Set slightly below trigger (12% vs 15%) to prevent oscillation
+DRAWDOWN_GOVERNOR_RECOVERY_THRESHOLD = 0.12  # DD must fall below 12% to re-arm
+
+# =============================================================================
+# V5.2: REMOVED MECHANISMS (Complexity Reduction)
+# =============================================================================
+# These mechanisms added complexity without improving outcomes.
+# Kept as False/disabled for backward compatibility but NOT used.
+
+GOVERNOR_REGIME_OVERRIDE_ENABLED = False  # V5.2: REMOVED (caused death spiral)
+GOVERNOR_HWM_RESET_ENABLED = False  # V5.2: REMOVED (artificial manipulation)
+
+# =============================================================================
+# V5.2: Regime Guard for Recovery from Defensive Mode
+# =============================================================================
+# When at 0%, recovery requires:
+# 1. DD improves below RECOVERY_THRESHOLD (12%)
+# 2. Regime score >= threshold for N consecutive days
+# This prevents bear rally traps.
 #
-# Solution: If regime is clearly bullish (RISK_ON) for N consecutive days,
-# trust the regime and force a STEP_UP regardless of recovery percentage.
-# Thesis says "regime controls allocation" - stale HWM shouldn't override regime.
-GOVERNOR_REGIME_OVERRIDE_ENABLED = True
-GOVERNOR_REGIME_OVERRIDE_THRESHOLD = 70  # Regime score must be >= this
-GOVERNOR_REGIME_OVERRIDE_DAYS = 5  # Consecutive days at/above threshold
-GOVERNOR_REGIME_OVERRIDE_COOLDOWN_DAYS = 10  # Days before another override can trigger
-GOVERNOR_REGIME_OVERRIDE_MIN_SCALE = 0.50  # V3.0: Jump to 50% min to enable bullish options
+GOVERNOR_REGIME_GUARD_ENABLED = True
+GOVERNOR_REGIME_GUARD_THRESHOLD = 60  # Regime must be >= NEUTRAL (60+)
+GOVERNOR_REGIME_GUARD_DAYS = 5  # For 5 consecutive days
 
-# V3.0: HWM Reset after Sustained Recovery
-# Problem: In 2015, HWM stayed locked at $50,029 for entire year. Bot perpetually
-# measured against a stale peak, creating death spiral where it couldn't recover.
-# Solution: After N days at Governor 50%+ with positive daily P&L, reset HWM
-# to current equity. This allows bot to "forgive" old drawdowns and trade fresh.
-GOVERNOR_HWM_RESET_ENABLED = True
-GOVERNOR_HWM_RESET_MIN_DAYS = 10  # Consecutive days of positive P&L at 50%+ scale
-GOVERNOR_HWM_RESET_MIN_SCALE = 0.50  # Must be at this scale or higher to count
-
-# V3.1: Equity Recovery from Governor 0% (P0 Fix for 2015 Death Spiral)
-# Problem: HWM Reset requires Scale >= 50%, but at Governor 0% this is impossible.
-# Bot gets stuck at 0% forever with no recovery path.
-# Solution: If equity recovers X% from the trough while at Governor 0%, step up to 50%.
-# This gives the bot a chance to recover without waiting for HWM reset conditions.
+# =============================================================================
+# V5.2: Recovery from Defensive Mode (0%)
+# =============================================================================
+# Requirements to step from 0% back to 100%:
+# 1. Equity recovers X% from trough
+# 2. At least N days at 0% (prevents whipsaw)
+# 3. Regime guard passes (regime >= 60 for 5 days)
+#
 GOVERNOR_EQUITY_RECOVERY_ENABLED = True
-GOVERNOR_EQUITY_RECOVERY_PCT = 0.03  # 3% recovery from trough → step up to 50%
-GOVERNOR_EQUITY_RECOVERY_MIN_DAYS_AT_ZERO = 5  # Must be at 0% for at least N days
+GOVERNOR_EQUITY_RECOVERY_PCT = 0.05  # 5% recovery from trough
+GOVERNOR_EQUITY_RECOVERY_MIN_DAYS_AT_ZERO = 7  # V5.2: 7 days (was 10)
+GOVERNOR_EQUITY_RECOVERY_REQUIRE_REGIME_GUARD = True
 
-# V3.0: Simplified Governor Options Gating (3-tier system)
-#
-# With V3.0 simplified governor (100%/50%/0%), options gating is straightforward:
-# - Governor 0% (shutdown): ONLY bearish PUT spreads allowed
-#   * Thesis: PUT spreads hedge/profit from continued decline
-#   * Bullish trades blocked - they increase risk during severe drawdowns
-# - Governor 50%: All options allowed at 50% sizing
+# =============================================================================
+# V5.2: Binary Options Gating
+# =============================================================================
+# With binary governor (100% or 0%), options gating is simple:
 # - Governor 100%: All options allowed at full size
+# - Governor 0%: ONLY PUT spreads allowed (hedging/profit from decline)
 #
-# Historical note (V2.32/V2.33):
-# The 5-tier system created confusion where 25% was neither useful for trading
-# nor protective against drawdowns. Simplified to 3 clear decision points.
-#
-# Additional safety measures:
-# - ATOMIC OPTIONS CLOSE: ALL options close paths use _close_options_atomic()
-#   (Kill Switch, Expiration Hammer, Early Exercise Guard)
-#   This ALWAYS closes shorts first to prevent naked short margin errors
-GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE = 0.50  # V3.0: Bull options at 50%+ governor scale
-GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE_BEARISH = (
-    0.0  # V3.0: Bear options allowed at any scale (0% handled separately)
-)
+GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE = 1.0  # V5.2: Options only when FULL (100%)
+GOVERNOR_INTRADAY_OPTIONS_MIN_SCALE_BEARISH = 0.0  # PUTs always allowed for hedging
 
-# V2.32: Options sizing floor — don't scale options below this even if governor is lower
-# Prevents options positions from becoming too small to be meaningful
-# Set to 0.0 to allow full scaling, set to 1.0 to exempt options entirely
-GOVERNOR_OPTIONS_SIZING_FLOOR = 0.50  # Options never scaled below 50% size
+# V5.2: No sizing floor needed with binary - either full size or defensive only
+GOVERNOR_OPTIONS_SIZING_FLOOR = 1.0  # No partial sizing
 
-# V2.32: Exempt bearish options from governor sizing entirely
-# Bear options REDUCE portfolio risk during drawdowns, so scaling them down is counterproductive
-GOVERNOR_EXEMPT_BEARISH_OPTIONS = True  # Bear spreads keep full size during drawdowns
+# V5.2: Bearish options always allowed at full size during drawdowns
+GOVERNOR_EXEMPT_BEARISH_OPTIONS = True
 
 # =============================================================================
 # V2.1 CIRCUIT BREAKER SYSTEM (5 Levels)
@@ -627,37 +842,57 @@ OPTIONS_DOLLAR_CAP_TIER_2 = 10_000  # Max $10K per spread when equity $60K-$100K
 VASS_ENABLED = True  # Master switch for VASS
 
 # IV Environment Classification Thresholds
-VASS_IV_LOW_THRESHOLD = 15  # VIX < 15 = Low IV (use debit spreads, monthly DTE)
-VASS_IV_HIGH_THRESHOLD = 25  # VIX > 25 = High IV (use credit spreads, weekly DTE)
+# V6.6: Adjusted based on 2022H1 VIX distribution (16.6-32.0 range observed)
+VASS_IV_LOW_THRESHOLD = 16  # V6.6: Was 15, raised to match data distribution
+VASS_IV_HIGH_THRESHOLD = (
+    25  # V6.9: Reverted to 25 - HIGH IV must use CREDIT spreads per V2.8 design
+)
 VASS_IV_SMOOTHING_MINUTES = 30  # SMA window to prevent strategy flickering
 
 # DTE Ranges by IV Environment (Swing Mode)
 VASS_LOW_IV_DTE_MIN = 30  # Low IV: Monthly expiration
 VASS_LOW_IV_DTE_MAX = 45
 VASS_MEDIUM_IV_DTE_MIN = 7  # Medium IV: Weekly expiration
-VASS_MEDIUM_IV_DTE_MAX = 21
-VASS_HIGH_IV_DTE_MIN = 7  # High IV: Weekly expiration (credit spreads)
-VASS_HIGH_IV_DTE_MAX = 14
+VASS_MEDIUM_IV_DTE_MAX = 30  # V6.12: Widen for better contract availability
+# V6.6: Widened HIGH IV DTE range - 36 spread failures in 2022H1 due to narrow 7-14 window
+VASS_HIGH_IV_DTE_MIN = 5  # V6.8: Was 7, allow trades in high IV
+VASS_HIGH_IV_DTE_MAX = 40  # V6.13.1 OPT: Expand candidate pool (was 28)
+
+# V5.3: VASS Conviction Engine (VIX Direction Tracking)
+# VASS tracks weekly (5d) and monthly (20d) VIX to determine conviction
+VASS_VIX_5D_PERIOD = 5  # Weekly VIX lookback (days)
+VASS_VIX_20D_PERIOD = 20  # Monthly VIX lookback (days)
+
+# Conviction Thresholds (% change triggers override of Macro)
+VASS_VIX_5D_BEARISH_THRESHOLD = 0.20  # VIX 5d change > +20% → BEARISH conviction
+VASS_VIX_5D_BULLISH_THRESHOLD = -0.15  # VIX 5d change < -15% → BULLISH conviction
+VASS_VIX_20D_STRONG_BEARISH = 0.30  # VIX 20d change > +30% → STRONG BEARISH
+VASS_VIX_20D_STRONG_BULLISH = -0.20  # VIX 20d change < -20% → STRONG BULLISH
+
+# Level Crossing Thresholds (regime shift signals)
+VASS_VIX_FEAR_CROSS_LEVEL = 25  # VIX crosses above this → BEARISH
+VASS_VIX_COMPLACENT_CROSS_LEVEL = 15  # VIX crosses below this → BULLISH
 
 # Credit Spread Constraints
-CREDIT_SPREAD_MIN_CREDIT = 0.30  # Min $0.30 credit to justify margin risk
+CREDIT_SPREAD_MIN_CREDIT = 0.20  # V6.10 P3: Was 0.30, lowered to allow more fills
 CREDIT_SPREAD_WIDTH_TARGET = 5.0  # $5 width for credit spreads
+CREDIT_SPREAD_FALLBACK_TO_DEBIT = True  # V6.10 P3: Fall back to debit when credit fails
 CREDIT_SPREAD_PROFIT_TARGET = 0.50  # Exit at 50% of max profit
 CREDIT_SPREAD_STOP_MULTIPLIER = 2.0  # Stop if spread value doubles (100% loss)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg delta range (OTM)
-CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.40
+CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.45  # V6.13 OPT: Improve credit spread constructability
 
 # V2.24.1: Elastic Delta Bands — progressive widening when no candidates found
 # Each step widens the delta range by ± the step value (e.g., [0.0, 0.03, 0.07, 0.12])
 # Step 0 = original range, Step 1 = ±0.03 wider, etc.
 # Capped at ELASTIC_DELTA_FLOOR (min delta) and ELASTIC_DELTA_CEILING (max delta)
-ELASTIC_DELTA_STEPS = [0.0, 0.03, 0.07, 0.12]
+ELASTIC_DELTA_STEPS = [0.0, 0.05, 0.10, 0.15]  # V6.13.1 OPT: More aggressive widening
 ELASTIC_DELTA_FLOOR = 0.10  # Never search below this delta (too far OTM)
 ELASTIC_DELTA_CEILING = 0.95  # Never search above this delta (deep ITM)
 
 # V2.25: IV-adaptive credit floor — lower min credit in high IV to allow fills
 # Q1 2022 audit: 116 VASS rejections at VIX > 30 because $0.30 floor filtered all candidates
-CREDIT_SPREAD_MIN_CREDIT_HIGH_IV = 0.20  # Reduced floor when VIX exceeds threshold
+CREDIT_SPREAD_MIN_CREDIT_HIGH_IV = 0.10  # V6.13.1 OPT: More credit spread fills (was 0.20)
 CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD = 30.0  # VIX level above which reduced floor applies
 
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
@@ -693,10 +928,8 @@ OPTIONS_IV_RANK_HIGH = 80  # IV rank > 80 → 0.25
 
 # Liquidity Factor
 OPTIONS_SPREAD_MAX_PCT = 0.15  # V2.3.10: Widened from 5% to 15% - ATM contracts have wider spreads
-OPTIONS_SPREAD_WARNING_PCT = 0.25  # V2.3.7: Widened from 15% - fast markets have wide spreads
-OPTIONS_MIN_OPEN_INTEREST = (
-    100  # V2.3.7: Lowered from 200 - 0DTE contracts have even lower OI in practice
-)
+OPTIONS_SPREAD_WARNING_PCT = 0.30  # V6.8: Was 0.25, reduce spread-based rejection
+OPTIONS_MIN_OPEN_INTEREST = 50  # V6.8: Was 100, avoid rejection in thin chains
 
 # Confidence-Weighted Tiered Stops
 # V2.4.3 FIX: CORRECTED - Higher confidence = MORE contracts (was inverted!)
@@ -715,6 +948,27 @@ OPTIONS_STOP_TIERS = {
 # NOTE: StopMarketOrder fills at next available price after trigger, not the stop price
 OPTIONS_0DTE_STOP_PCT = 0.15  # -15% stop for 0DTE
 
+# =============================================================================
+# V6.5: DELTA-SCALED ATR STOP CALIBRATION
+# =============================================================================
+# Dynamic stop based on underlying ATR × option delta
+# Formula: stop_distance = ATR_MULTIPLIER × underlying_ATR × abs(option_delta)
+# This gives more room in high-VIX environments while accounting for option sensitivity
+#
+# Example with QQQ ATR=$4, delta=0.45, multiplier=1.5:
+#   stop_distance = 1.5 × $4 × 0.45 = $2.70 (in option price terms)
+#   If entry=$3.50, stop=$0.80 (77% stop)
+
+# ATR multiplier for stop calculation (Chandelier-style)
+OPTIONS_ATR_STOP_MULTIPLIER = 0.9  # V6.13 OPT: Slightly tighter ATR base stop
+
+# Floor and cap to prevent extreme stops
+OPTIONS_ATR_STOP_MIN_PCT = 0.12  # V6.13 OPT: Tighter floor in calm conditions
+OPTIONS_ATR_STOP_MAX_PCT = 0.30  # V6.8: Was 0.50, prevent 50% losses
+
+# Whether to use ATR-based stops (set False to use legacy tier-based stops)
+OPTIONS_USE_ATR_STOPS = True
+
 # Profit Target
 OPTIONS_PROFIT_TARGET_PCT = 0.50  # +50% profit target
 
@@ -731,14 +985,84 @@ OPTIONS_SINGLE_LEG_DTE_EXIT = 4  # Close by 4 DTE (avoid expiration gamma trap)
 # ITM options held past 4 PM get auto-exercised → stock position → margin crisis
 # Example from V2.3.9: 800 shares of QQQ assigned = $360K on $50K account (7:1 leverage)
 # V2.4.2: Expiration Hammer - Moved from 3:45 PM to 2:00 PM
-# Gives 2 hours buffer before close for retries and avoids end-of-day volatility
-OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_HOUR = 14  # Force close expiring options at 14:00
+# V6.14 T-14 FIX: Moved from 2:00 PM to 12:00 PM (noon)
+# T-14 Bug: 14 options sold @ $0.01 on expiry because 14:00 was too late
+# Earlier close gives 4 hours buffer and avoids end-of-day volatility/low liquidity
+OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_HOUR = 12  # Force close expiring options at 12:00 noon
 OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE = 0
 
 # V2.28: Early exercise guard — force close ITM single-leg options near expiry
 # Prevents costly early exercise (Q1 2022: 2 exercises cost -$5,614)
 EARLY_EXERCISE_GUARD_DTE = 2  # Close if DTE <= 2 and ITM
 EARLY_EXERCISE_GUARD_ITM_BUFFER = 0.01  # 1% ITM buffer (strike vs underlying)
+
+# =============================================================================
+# V5.3: ASSIGNMENT RISK MANAGEMENT (P0 Fixes from 2022 H1 Backtest)
+# Apr 22-26 2022: Option assignments caused -$37K loss and margin cascade
+# =============================================================================
+
+# P0 Fix 1: Early Exit for Deep ITM Shorts
+# Force exit when short leg becomes deep ITM before assignment happens
+DEEP_ITM_EXIT_ENABLED = True
+DEEP_ITM_EXIT_DTE_THRESHOLD = 3  # Exit if DTE <= 3 AND deep ITM
+DEEP_ITM_EXIT_DELTA_THRESHOLD = 0.80  # Delta > 0.80 = deep ITM
+DEEP_ITM_EXIT_INTRINSIC_PCT = 0.05  # Exit if intrinsic > 5% of underlying price
+
+# P0 Fix 2: Assignment Detection & Prevention
+# Block holding short ITM options overnight if DTE <= 2
+OVERNIGHT_ITM_SHORT_BLOCK_ENABLED = True
+OVERNIGHT_ITM_SHORT_DTE_THRESHOLD = 2  # Block overnight hold if DTE <= 2 and ITM
+OVERNIGHT_ITM_SHORT_CHECK_TIME_HOUR = 15  # Check at 3:00 PM
+OVERNIGHT_ITM_SHORT_CHECK_TIME_MINUTE = 0
+
+# P0 Fix 3: Margin Buffer Before Assignment Risk
+# Require extra margin when ITM short exposure exists
+ASSIGNMENT_MARGIN_BUFFER_ENABLED = True
+ASSIGNMENT_MARGIN_BUFFER_PCT = 0.20  # V6.9 P0: Restore safer buffer to prevent assignment losses
+ASSIGNMENT_MARGIN_AUTO_REDUCE = True  # Auto-reduce if buffer insufficient
+
+# P0 Fix 4: Partial Assignment Handling
+# Detect partial assignment and auto-close remaining legs
+PARTIAL_ASSIGNMENT_DETECTION_ENABLED = True
+PARTIAL_ASSIGNMENT_AUTO_CLOSE = True  # Auto-close orphaned legs
+
+# V6.9 P0 Fix 5: Short Leg ITM Exit (regardless of DTE)
+# Exit spread immediately when short leg goes ITM by threshold
+# This catches assignments at ANY DTE, not just near expiry
+# Aug 2022 assignments happened at DTE=4, missed by DTE<=3 guards
+SHORT_LEG_ITM_EXIT_ENABLED = True
+SHORT_LEG_ITM_EXIT_THRESHOLD = 0.005  # V6.10 P0: Exit when 0.5% ITM (was 1%)
+SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 15  # Minutes between log messages
+
+# V6.10 P0: Mandatory DTE=1 Force Close (Nuclear Assignment Prevention)
+# Close ALL spread positions when DTE reaches this value, regardless of P&L
+# This is the last line of defense against overnight assignment risk
+SPREAD_FORCE_CLOSE_DTE = 1  # Close at DTE=1 (day before expiry)
+SPREAD_FORCE_CLOSE_ENABLED = True  # Master switch for mandatory close
+
+# V6.10 P0: Pre-Market ITM Check (09:25 ET)
+# Check all short legs before market open to catch overnight gaps
+# If short leg went ITM overnight, queue for immediate close at 09:30
+PREMARKET_ITM_CHECK_ENABLED = True  # Enable 09:25 pre-market check
+PREMARKET_ITM_CHECK_HOUR = 9  # Check at 09:25 ET
+PREMARKET_ITM_CHECK_MINUTE = 25
+
+# P1 Fix 5: Assignment-Aware Position Sizing
+# Reduce size if max short exposure exceeds safe margin
+ASSIGNMENT_AWARE_SIZING_ENABLED = True
+ASSIGNMENT_SIZING_MAX_EXPOSURE_PCT = 0.50  # Max 50% of portfolio for assignment risk
+
+# P1 Fix 6: Assignment-Aware Exit Priority
+# Close high-risk positions first when exiting
+ASSIGNMENT_EXIT_PRIORITY_ENABLED = True
+
+# V6.4: P0 Fix 7: Pre-Entry Assignment Risk Gate for BEAR_PUT Spreads
+# Block BEAR_PUT entries when short PUT strike is too close to ATM or ITM
+# This prevents opening positions with high assignment risk from the start
+# For PUTs: ITM = strike > price, OTM = strike < price
+# Example: If MIN_OTM_PCT = 0.03 and QQQ = $350, min short strike = $339.50
+BEAR_PUT_ENTRY_GATE_ENABLED = True
+BEAR_PUT_ENTRY_MIN_OTM_PCT = 0.03  # Short PUT must be >= 3% OTM at entry
 
 # Contract Selection
 # Options chain filter (must cover BOTH Intraday 0-2 DTE AND Swing 5-45 DTE)
@@ -784,8 +1108,7 @@ OPTIONS_LATE_DAY_HOUR = 14  # 2 PM
 OPTIONS_LATE_DAY_MINUTE = 30  # 2:30 PM
 OPTIONS_LATE_DAY_MAX_STOP = 0.20  # Only 20% stops after 2:30 PM
 
-# Max Trades Per Day
-OPTIONS_MAX_TRADES_PER_DAY = 1
+# V5.3: Removed OPTIONS_MAX_TRADES_PER_DAY = 1 (dead code, conflicts with MAX_OPTIONS_TRADES_PER_DAY = 4)
 
 # -----------------------------------------------------------------------------
 # V2.1.1 DUAL-MODE DTE BOUNDARIES
@@ -816,6 +1139,12 @@ SPREAD_REGIME_BULLISH = 70  # V3.0: CALL spreads ONLY in Bull (regime > 70)
 SPREAD_REGIME_BEARISH = 50  # V3.0: PUT spreads in Cautious + Bear (regime < 50)
 SPREAD_REGIME_CRISIS = 0  # V3.0: DISABLED — PUT spreads work in ALL bear regimes
 
+# V6.13 P0: Regime deterioration exits for swing spreads
+SPREAD_REGIME_DETERIORATION_EXIT_ENABLED = True
+SPREAD_REGIME_DETERIORATION_DELTA = 10  # Require at least 10-point regime drop/rise
+SPREAD_REGIME_DETERIORATION_BULL_EXIT = 60  # Exit bullish spreads if regime <= 60
+SPREAD_REGIME_DETERIORATION_BEAR_EXIT = 55  # Exit bearish spreads if regime >= 55
+
 # VIX filters for entry
 SPREAD_VIX_MAX_BULL = 30  # Max VIX for Bull Call Spread entry
 SPREAD_VIX_MAX_BEAR = 35  # Max VIX for Bear Put Spread entry (allow higher)
@@ -825,9 +1154,11 @@ SPREAD_VIX_MAX_BEAR = 35  # Max VIX for Bear Put Spread entry (allow higher)
 # Problem: Delta values jump (0.45 → 0.25) leaving gaps where no "perfect" delta exists
 # Solution: Select short leg by STRIKE WIDTH, not delta. Delta is soft preference only.
 SPREAD_SHORT_LEG_BY_WIDTH = True  # V2.4.3: Use strike width for short leg (not delta)
-SPREAD_WIDTH_MIN = 2.0  # V2.4.3: Minimum $2 spread (ensures meaningful max profit)
+# V6.10: Spread width settings for QQQ - WIDENED FOR ASSIGNMENT PROTECTION
+# Wider spreads survive larger overnight gaps and reduce assignment risk
+SPREAD_WIDTH_MIN = 4.0  # V6.13 OPT: Improve candidate availability with controlled risk
 SPREAD_WIDTH_MAX = 10.0  # V2.4.3: Maximum $10 spread (caps risk)
-SPREAD_WIDTH_TARGET = 5.0  # V2.4.3: Target $5 width (primary selection criterion)
+SPREAD_WIDTH_TARGET = 4.0  # V6.13 OPT: Improve fill/constructability in medium IV
 
 # DTE for debit spreads (per V2.3 spec)
 # V2.3.22: Raised from 10 to 14 - spreads need same gap cushion as single-leg
@@ -836,19 +1167,26 @@ SPREAD_DTE_MAX = 45  # V2.19: Widened from 21 to 45 to align with VASS_LOW_IV_DT
 SPREAD_DTE_EXIT = 5  # Close by 5 DTE remaining
 
 # Exit targets
-SPREAD_PROFIT_TARGET_PCT = 0.50  # Take profit at 50% of max profit (base value)
+# V6.10 P5: Symmetric R:R (40%/40%) - need 1:1 win ratio to break even
+# Was asymmetric (50%/35%) requiring 1.43:1 win ratio
+SPREAD_PROFIT_TARGET_PCT = 0.40  # V6.10 P5: Lowered from 0.50 to 0.40 (symmetric with stop)
 SPREAD_STOP_LOSS_PCT = (
-    0.50  # V2.4.2/V2.27: Stop loss at 50% of entry debit (max loss = 50% of net debit)
+    0.40  # V6.10 P5: Raised from 0.35 to 0.40 (wider stop, symmetric with target)
 )
+SPREAD_STOP_REGIME_MULTIPLIERS = {
+    75: 1.20,  # Bull: give more room (0.40 * 1.2 = 0.48)
+    50: 1.00,  # Neutral: base (0.40)
+    40: 0.90,  # Cautious: tighter (0.40 * 0.9 = 0.36)
+    0: 0.80,  # Bear: tightest (0.40 * 0.8 = 0.32)
+}
 
 # V3.0: Regime-Adaptive Profit Targets
-# In bull markets (regime >= 75), be greedy - let winners run to 90%
-# In cautious/bear markets (regime < 40), take profits quickly at 40%
+# V6.10 P5: With 40% base, multipliers give: Bull=56%, Neutral=40%, Bear=32%
 SPREAD_PROFIT_REGIME_MULTIPLIERS = {
-    75: 1.40,  # Regime >= 75: 70% target (1.40 × 50% base = 70%)
-    50: 1.00,  # Regime 50-74: 50% target (standard)
-    40: 1.00,  # Regime 40-49: 50% target (cautious)
-    0: 0.80,  # Regime < 40: 40% target (0.80 × 50% base = 40%)
+    75: 1.40,  # Regime >= 75: 56% target (1.40 × 40% base)
+    50: 1.00,  # Regime 50-74: 40% target (standard)
+    40: 1.00,  # Regime 40-49: 40% target (cautious)
+    0: 0.80,  # Regime < 40: 32% target (0.80 × 40% base)
 }
 
 # V2.27: Win Rate Gate (Options Self-Correcting Throttle)
@@ -862,13 +1200,25 @@ WIN_RATE_SHUTOFF_THRESHOLD = 0.20  # Below 20%: STOP all new spread entries
 WIN_RATE_RESTART_THRESHOLD = 0.35  # Resume when paper win rate recovers to 35%
 WIN_RATE_SIZING_REDUCED = 0.75  # Multiplier at REDUCED level
 WIN_RATE_SIZING_MINIMUM = 0.50  # Multiplier at MINIMUM level
-SPREAD_REGIME_EXIT_BULL = 45  # Exit Bull Call if regime drops below 45
-SPREAD_REGIME_EXIT_BEAR = 60  # Exit Bear Put if regime rises above 60
+# V6.1: Removed SPREAD_REGIME_EXIT_BULL/BEAR - legacy logic conflicted with conviction-based entry
+# Spreads now exit via: STOP_LOSS, PROFIT_TARGET, DTE_EXIT, NEUTRALITY_EXIT
+
+# V6.10 P5: Choppy Market Filter
+# Detects whipsawing markets and reduces position size to limit losses
+# Rationale: 2015 had 48% win rate but negative P&L due to choppy markets hitting stops
+CHOPPY_MARKET_FILTER_ENABLED = True  # V6.10 P5: Enable choppy market detection
+CHOPPY_REVERSAL_COUNT = 3  # 3+ reversals in lookback window = choppy
+CHOPPY_LOOKBACK_HOURS = 2  # Look back 2 hours for reversal count
+CHOPPY_SIZE_REDUCTION = 0.50  # 50% size reduction in choppy markets
+CHOPPY_MIN_MOVE_PCT = 0.003  # Minimum 0.3% move to count as reversal (filters noise)
 
 # V2.22: Neutrality Exit (Hysteresis Shield)
-# Close flat spreads when regime enters dead zone (45-60) — no directional edge
-SPREAD_NEUTRALITY_EXIT_ENABLED = True
-SPREAD_NEUTRALITY_EXIT_PNL_BAND = 0.10  # ±10% P&L considered "flat"
+# Close flat spreads when regime enters dead zone — no directional edge
+# V3.4: Separate neutrality zone from exit thresholds (allows tight exits + wide neutrality)
+SPREAD_NEUTRALITY_EXIT_ENABLED = True  # V6.13 OPT: Re-enable for choppy capital recycling
+SPREAD_NEUTRALITY_EXIT_PNL_BAND = 0.06  # V6.13 OPT: Tight "flat" band
+SPREAD_NEUTRALITY_ZONE_LOW = 48  # V6.13 OPT: Narrower neutrality zone
+SPREAD_NEUTRALITY_ZONE_HIGH = 62  # V6.13 OPT: Narrower neutrality zone
 
 # V2.16-BT: Commission-aware profit targets
 # Round-trip commission estimate per spread (entry + exit, both legs)
@@ -896,10 +1246,20 @@ SPREAD_LOCK_CLEAR_ON_FAILURE = True  # Clear is_closing lock if all close attemp
 # Delta targets for spread legs - V2.3.21 "Smart Swing" Strategy
 # ITM Long Leg / OTM Short Leg: Prioritize execution with wider delta range
 # V2.3.24: Widened DELTA_MIN from 0.55 → 0.50 to include ATM contracts
-SPREAD_LONG_LEG_DELTA_MIN = 0.50  # V2.3.24: Include ATM (was 0.55)
-SPREAD_LONG_LEG_DELTA_MAX = 0.85  # V2.3.21: ITM range (was 0.60 ATM)
-SPREAD_SHORT_LEG_DELTA_MIN = 0.10  # V2.3.7: Accept more OTM (was 0.15)
-SPREAD_SHORT_LEG_DELTA_MAX = 0.50  # V2.3.7: Accept closer to ATM (was 0.45)
+# V6.6: Slightly relaxed delta requirements for better contract matching
+# 2022H1 analysis showed 36 spread failures due to strict delta requirements
+SPREAD_LONG_LEG_DELTA_MIN = 0.35  # V6.10 P3: Was 0.40, widen range for more candidates
+SPREAD_LONG_LEG_DELTA_MAX = 0.90  # V6.10 P3: Was 0.85, allow deeper ITM for swing
+SPREAD_SHORT_LEG_DELTA_MIN = 0.08  # V6.10 P3: Was 0.10, allow farther OTM shorts
+SPREAD_SHORT_LEG_DELTA_MAX = 0.60  # V6.10 P3: Was 0.55, allow closer-to-ATM shorts
+# V6.9: PUT-specific spread filters (bear put spreads need looser liquidity + delta)
+SPREAD_LONG_LEG_DELTA_MIN_PUT = 0.25  # V6.10 P3: Was 0.30, widen PUT delta range
+SPREAD_LONG_LEG_DELTA_MAX_PUT = 0.90  # V6.10 P3: Allow deeper ITM long PUTs
+SPREAD_SHORT_LEG_DELTA_MIN_PUT = 0.05  # V6.10 P3: Was 0.08, allow farther OTM PUT shorts
+SPREAD_SHORT_LEG_DELTA_MAX_PUT = 0.60  # V6.10 P3: Allow closer-to-ATM short PUTs
+OPTIONS_MIN_OPEN_INTEREST_PUT = 25  # Relax OI filter for puts
+OPTIONS_SPREAD_MAX_PCT_PUT = 0.25  # Allow slightly wider spreads for puts
+OPTIONS_SPREAD_WARNING_PCT_PUT = 0.35
 
 # -----------------------------------------------------------------------------
 # V2.4.1 SWING SAFETY RULES
@@ -981,28 +1341,33 @@ VASS_LOG_REJECTION_INTERVAL_MINUTES = 15  # Log rejections every 15 min (not eve
 # Options sizing must cap by actual available margin, not just portfolio %
 # V2.12 Fix #4: Raised from $5K to $10K - 8-lot spread requires ~$8K margin
 # V3.0 SCALABILITY FIX: Converted to percentage-based for portfolio scaling
-OPTIONS_MAX_MARGIN_CAP = 10000  # $10K — LEGACY, kept for backwards compatibility
-OPTIONS_MAX_MARGIN_PCT = 0.20  # 20% of portfolio for all options combined
+OPTIONS_MAX_MARGIN_CAP = 35000  # V5.3: ~47% of $75K (higher allocation for options testing)
+OPTIONS_MAX_MARGIN_PCT = 0.25  # V6.10 P4: Raised to 25% (was 20%) - pre-check prevents bad signals
 
-# V2.18: Hardcoded Sizing Caps (Fix for MarginBuyingPower sizing bug)
-# Evidence: Architect found $14K trade vs $5K expected - sizing used MarginBuyingPower
-# V3.0 SCALABILITY FIX: Converted to percentage-based for portfolio scaling
-# At $50K: 15% = $7,500, 8% = $4,000 (same as original hardcoded values)
-# At $200K: 15% = $30,000, 8% = $16,000 (scales properly)
-SWING_SPREAD_MAX_DOLLARS = 7500  # LEGACY — kept for backwards compatibility
+# V2.18: Percentage-based Sizing Caps (scales with portfolio)
+# At $75K: 15% = $11,250, 8% = $6,000
+# At $200K: 15% = $30,000, 8% = $16,000
 SWING_SPREAD_MAX_PCT = 0.15  # 15% of portfolio for swing spreads (14-21 DTE)
-INTRADAY_SPREAD_MAX_DOLLARS = 4000  # LEGACY — kept for backwards compatibility
 INTRADAY_SPREAD_MAX_PCT = 0.08  # 8% of portfolio for intraday spreads (1-5 DTE)
 
 # V3.0: Minimum margin percentage to allow options trading
 # Replaces hardcoded $1,000 check in main.py
 OPTIONS_MIN_MARGIN_PCT = 0.02  # 2% of portfolio minimum margin to trade options
+MARGIN_MIN_FREE_EQUITY_PCT = 0.10  # Keep 10% equity as free margin cushion for spread entries
+NEUTRAL_ALIGNED_SIZE_MULT = 0.50  # V6.12: Reduce size when Macro NEUTRAL and no conviction
 
 # V2.21: Rejection-aware spread sizing
 # Pre-submission: use 80% of reported margin (20% buffer for broker calc differences)
 SPREAD_MARGIN_SAFETY_FACTOR = 0.80
 # Post-rejection: apply to broker-reported Free Margin for adaptive retry cap
 SPREAD_REJECTION_MARGIN_SAFETY = 0.80
+
+# V4.0.2: Margin Utilization Gate - Use broker's ACTUAL margin, not estimates
+# This prevents margin overflow by checking TotalMarginUsed / TotalPortfolioValue
+# before entering any new spread position. More reliable than estimating per-spread margin.
+MAX_MARGIN_UTILIZATION = 0.60  # V6.9 P0: More conservative utilization cap
+MARGIN_UTILIZATION_WARNING = 0.60  # Log warning when utilization exceeds 60%
+MARGIN_UTILIZATION_ENABLED = True  # Enable/disable the margin utilization gate
 
 # Pitfall #8: Settlement Ghost - Smarter threshold-based gate
 # Only halt if UnsettledCash is material (>10% of portfolio)
@@ -1017,6 +1382,12 @@ SETTLEMENT_HALT_UNTIL_MINUTE = 30
 # Evidence: V2.11 backtest showed qty=-80 (5× intended) from exit signal bug
 SPREAD_MAX_CONTRACTS = 20  # Hard cap per spread position
 
+# V5.3: Options Position Limits (Margin Error Prevention)
+# Max concurrent positions: 1 intraday + 2 swings = 3 total
+OPTIONS_MAX_INTRADAY_POSITIONS = 1  # Max 1 intraday position at a time
+OPTIONS_MAX_SWING_POSITIONS = 2  # Max 2 swing spread positions at a time
+OPTIONS_MAX_TOTAL_POSITIONS = 3  # Hard cap on total options positions
+
 # V2.14 Fix #22: Conservative spread sizing to prevent tier cap violations
 # Evidence: Trade #20 sized at mid price $2.75 but filled at $3.96 (44% slippage)
 # Solution: Use ASK/BID prices + buffer for worst-case sizing
@@ -1028,17 +1399,49 @@ SPREAD_SIZING_SLIPPAGE_BUFFER = 0.10  # 10% buffer on top of ASK/BID pricing
 # VIX direction is THE key differentiator for intraday trading
 # Same VIX level + different direction = OPPOSITE strategies
 
-VIX_DIRECTION_FALLING_FAST = -5.0  # VIX change < -5%: Strong recovery
-VIX_DIRECTION_FALLING = -2.0  # VIX change -5% to -2%: Recovery
-VIX_DIRECTION_STABLE_LOW = -2.0  # VIX stable range lower bound
-VIX_DIRECTION_STABLE_HIGH = 2.0  # VIX stable range upper bound
-VIX_DIRECTION_RISING = 5.0  # VIX change +2% to +5%: Fear building
-VIX_DIRECTION_RISING_FAST = 10.0  # VIX change +5% to +10%: Panic
+# V6.6: Narrowed STABLE zone from ±2% to ±1% based on 2022H1 backtest analysis
+# Data showed 76% of UVXY moves were in ±2% range, blocking most signals
+# New thresholds capture more directional signals while filtering noise
+VIX_DIRECTION_FALLING_FAST = -3.0  # V6.6: Was -5.0, now -3% for earlier detection
+VIX_DIRECTION_FALLING = -1.0  # V6.6: Was -2.0, aligned with new STABLE boundary
+VIX_DIRECTION_STABLE_LOW = -1.0  # V6.6: Was -2.0, narrowed to capture more signals
+VIX_DIRECTION_STABLE_HIGH = 1.0  # V6.6: Was +2.0, narrowed to capture more signals
+# V6.9: VIX-adaptive STABLE band (for Dir=None tuning)
+VIX_STABLE_LOW_VIX_MAX = 15.0  # Low VIX regime
+VIX_STABLE_HIGH_VIX_MIN = 25.0  # High VIX regime
+VIX_STABLE_BAND_LOW = 0.2  # V6.13.1 OPT: ±0.2% when VIX is low (was 0.3%, more signals)
+VIX_STABLE_BAND_HIGH = 0.7  # V6.13.1 OPT: ±0.7% when VIX is high (was 1.0%, less Dir=NONE)
+
+VIX_DIRECTION_RISING = 3.0  # V6.6: Was +5.0, captures +2.7% cluster (46 observations)
+VIX_DIRECTION_RISING_FAST = 6.0  # V6.6: Was +10.0, earlier panic detection
 VIX_DIRECTION_SPIKING = 10.0  # VIX change > +10%: Crash mode
 
 # Whipsaw detection: Range > threshold × net change
 VIX_WHIPSAW_RATIO = 3.0  # Range/NetChange threshold
 VIX_WHIPSAW_MIN_RANGE = 5.0  # Minimum range % to consider whipsaw
+
+# V5.3: Micro Conviction Engine Thresholds
+# Micro tracks intraday UVXY and VIX to override Macro when signals are extreme
+# V6.4: Lowered BEARISH threshold from 8% to 5% to capture more crash signals
+# Analysis showed Jan 21 (+6.9%), Jan 24 (+7.4%), Jan 25 (+5.3%) missed by narrow margin
+# V6.6: Lowered from ±5% to ±3% based on 2022H1 analysis
+# Only 8% of moves exceeded ±5%, missing many valid conviction signals
+MICRO_UVXY_BEARISH_THRESHOLD = 0.025  # +2.5% for more PUT signals
+MICRO_UVXY_BULLISH_THRESHOLD = -0.05  # V6.12: -5% for CALL conviction (stricter)
+# V6.10: Lower conviction extreme to capture 5-7% moves that were blocked
+MICRO_UVXY_CONVICTION_EXTREME = 0.035  # V6.12: 3.5% intraday move for NEUTRAL VETO
+# V6.10: Micro fallback + confirmation thresholds (Dir=None tuning)
+MICRO_SCORE_BULLISH_CONFIRM = 48.0  # V6.13 OPT: Moderate increase in STABLE fallback participation
+MICRO_SCORE_BEARISH_CONFIRM = 48.0  # V6.13 OPT: Keep symmetric confirmation
+INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.30  # V6.13 OPT: More fallback triggers in bull/choppy
+MICRO_VIX_CRISIS_LEVEL = 35  # VIX > 35 → CRISIS (BEARISH conviction)
+MICRO_VIX_COMPLACENT_LEVEL = 12  # VIX < 12 → COMPLACENT (BULLISH conviction)
+
+# Micro states that trigger conviction (must match MicroRegime enum values)
+# Bearish: VIX rising/spiking states → expect downside
+MICRO_BEARISH_STATES = ["FULL_PANIC", "CRASH", "WORSENING_HIGH", "BREAKING", "DETERIORATING"]
+# Bullish: VIX falling states → expect upside
+MICRO_BULLISH_STATES = ["PERFECT_MR", "GOOD_MR", "IMPROVING", "PANIC_EASING", "CALMING"]
 
 # -----------------------------------------------------------------------------
 # V2.1.1 VIX LEVEL THRESHOLDS
@@ -1113,17 +1516,17 @@ VIX_REVERSAL_CHOPPY = 4  # 3-4 reversals: Choppy
 # -----------------------------------------------------------------------------
 
 # V2.3.16: Sniper Logic - Noise Filter (Gate 1)
-QQQ_NOISE_THRESHOLD = 0.35  # Minimum QQQ move to consider trading (was 0.15%)
+QQQ_NOISE_THRESHOLD = 0.15  # V6.13.1 OPT: Reduce Dir=NONE (was 0.20, target <40%)
 
 # V2.19: VIX Floor for DEBIT_FADE
 # In low VIX (<13.5) "apathy" markets, mean reversion fails - trends persist longer
 # Evidence: V2.18 backtests showed DEBIT_FADE losses when VIX < 13.5
-INTRADAY_DEBIT_FADE_VIX_MIN = 13.5  # Disable DEBIT_FADE in "apathy" market
+INTRADAY_DEBIT_FADE_VIX_MIN = 9.5  # V6.13 OPT: Keep participation in calm bull/choppy conditions
 
 # Debit Fade (Mean Reversion) - Gate 3a - The Sniper Window
-INTRADAY_DEBIT_FADE_MIN_SCORE = 45  # Micro score >= 45 (MICRO_SCORE_MODERATE)
-INTRADAY_FADE_MIN_MOVE = 0.50  # V2.3.16: Min move for FADE (was INTRADAY_DEBIT_FADE_MIN_MOVE)
-INTRADAY_FADE_MAX_MOVE = 1.20  # V2.3.16: Max move - don't fade runaway trends/crashes
+INTRADAY_DEBIT_FADE_MIN_SCORE = 35  # V6.8: Was 45, allow more trades in bull/chop
+INTRADAY_FADE_MIN_MOVE = 0.45  # V6.13 OPT: Slightly easier fade trigger
+INTRADAY_FADE_MAX_MOVE = 1.50  # V6.8: Was 1.20, don't block strong bull continuation
 INTRADAY_DEBIT_FADE_VIX_MAX = 25  # VIX < 25
 INTRADAY_DEBIT_FADE_START = "10:15"  # V2.14: Widened from 10:30 to capture more signals
 INTRADAY_DEBIT_FADE_END = "14:00"  # Entry window end
@@ -1141,17 +1544,19 @@ INTRADAY_CREDIT_TARGET = 0.50  # 50% of max profit target
 INTRADAY_CREDIT_STOP = 1.0  # Stop if spread doubles
 
 # ITM Momentum
-INTRADAY_ITM_MIN_VIX = 11.5  # V2.3.12: Lowered from 25 - enable more 0-DTE ITM momentum trades
-INTRADAY_ITM_MIN_MOVE = 0.8  # QQQ move >= 0.8%
-INTRADAY_ITM_MIN_SCORE = 50  # Micro score >= 50
+INTRADAY_ITM_MIN_VIX = 9.0  # V6.13 OPT: Allow ITM momentum in low-VIX bull regimes
+INTRADAY_ITM_MIN_MOVE = 0.40  # V6.13 OPT: Increase momentum setup availability
+INTRADAY_ITM_MIN_SCORE = 40  # V6.8: Was 50, capture momentum earlier
 # V2.3.19: Time window moved from hardcoded to config
 INTRADAY_ITM_START = "10:00"  # Entry window start
 INTRADAY_ITM_END = "13:30"  # Entry window end (earlier than FADE - momentum fades after lunch)
 INTRADAY_ITM_DELTA = 0.70  # ITM delta target
-INTRADAY_ITM_START = "10:00"  # Entry window start
-INTRADAY_ITM_END = "13:30"  # Entry window end (need time)
-INTRADAY_ITM_TARGET = 0.40  # +40% profit target
-INTRADAY_ITM_STOP = 0.50  # -50% stop
+INTRADAY_ITM_TARGET = 0.35  # V6.13 OPT: Earlier profit capture in volatile sessions
+
+# V6.4: DEBIT_MOMENTUM time window (same as ITM_MOMENTUM - both are momentum strategies)
+INTRADAY_DEBIT_MOMENTUM_START = "10:00"  # Entry window start
+INTRADAY_DEBIT_MOMENTUM_END = "13:30"  # Entry window end
+INTRADAY_ITM_STOP = 0.35  # V6.13 OPT: Reduce catastrophic ITM losses
 INTRADAY_ITM_TRAIL_TRIGGER = 0.20  # Trail after +20%
 INTRADAY_ITM_TRAIL_PCT = 0.50  # Trail at 50% of gains
 
@@ -1159,6 +1564,11 @@ INTRADAY_ITM_TRAIL_PCT = 0.50  # Trail at 50% of gains
 # DEBIT_FADE: Mean reversion needs OTM options (delta 0.20-0.50)
 INTRADAY_DEBIT_FADE_DELTA_MIN = 0.20  # OTM for mean reversion
 INTRADAY_DEBIT_FADE_DELTA_MAX = 0.50  # Near ATM max
+
+# V6.4: DEBIT_MOMENTUM: Trend confirmation needs ATM-ish options (delta 0.45-0.65)
+# Between DEBIT_FADE (OTM) and ITM_MOMENTUM (ITM) - captures directional moves
+INTRADAY_DEBIT_MOMENTUM_DELTA_MIN = 0.45  # Near ATM for momentum
+INTRADAY_DEBIT_MOMENTUM_DELTA_MAX = 0.65  # Slightly ITM max
 
 # ITM_MOMENTUM: Stock replacement needs ITM options (delta 0.60-0.85)
 INTRADAY_ITM_DELTA_MIN = 0.60  # ITM for momentum
@@ -1186,6 +1596,38 @@ GRIND_UP_MIN_MOVE = 0.50  # Minimum QQQ move to trigger override (0.50% = UP_STR
 GRIND_UP_MACRO_SAFE_MIN = 40  # Macro regime score must be > 40 to avoid bear traps
 
 # -----------------------------------------------------------------------------
+# V6.0: OPTIONS MACRO REGIME GATE - REMOVED
+# -----------------------------------------------------------------------------
+# Direction decisions now handled by conviction resolution (resolve_trade_signal)
+# in main.py. VASS & MICRO engines make direction decisions with conviction,
+# and resolve_trade_signal() handles alignment/override with macro direction.
+# See options_engine.py for details.
+
+# Minimum combined size multiplier to proceed with trade
+# If Governor × ColdStart < this, skip trade (too small)
+OPTIONS_MIN_COMBINED_SIZE_PCT = 0.10  # 10% minimum
+
+# -----------------------------------------------------------------------------
+# V3.2: INTRADAY GOVERNOR GATE
+# -----------------------------------------------------------------------------
+# Closes gap: intraday options previously had no Governor check
+# At Governor 0%: CALL blocked, PUT allowed (defensive)
+INTRADAY_GOVERNOR_GATE_ENABLED = True
+
+# -----------------------------------------------------------------------------
+# V3.2: PROTECTIVE PUTS (Crisis Hedge via PUT Options)
+# -----------------------------------------------------------------------------
+# When Micro Regime detects crisis (score < 0), buy protective PUTs
+# This supplements TMF/PSQ hedging with direct options protection
+PROTECTIVE_PUTS_ENABLED = True
+PROTECTIVE_PUTS_SIZE_PCT = 0.05  # 5% of portfolio (meaningful crisis protection)
+PROTECTIVE_PUTS_DTE_MIN = 3  # Minimum 3 DTE (time for recovery)
+PROTECTIVE_PUTS_DTE_MAX = 7  # Maximum 7 DTE (balance cost vs protection)
+PROTECTIVE_PUTS_DELTA_TARGET = 0.30  # OTM puts (cheaper, more leverage)
+PROTECTIVE_PUTS_DELTA_TOLERANCE = 0.10  # Accept delta 0.20-0.40
+PROTECTIVE_PUTS_STOP_PCT = 0.50  # 50% stop (it's insurance, accept loss)
+
+# -----------------------------------------------------------------------------
 # V2.1.1 SWING MODE SIMPLE FILTERS
 # -----------------------------------------------------------------------------
 # For Swing Mode (5+ DTE), use simple filters instead of Micro Regime
@@ -1199,6 +1641,15 @@ SWING_GAP_THRESHOLD = 1.0  # Skip if SPY gaps > 1.0%
 # Extreme Move Filter
 SWING_EXTREME_SPY_DROP = -2.0  # Pause if SPY drops > 2% intraday
 SWING_EXTREME_VIX_SPIKE = 15.0  # Pause if VIX spikes > 15% intraday
+
+# V6.13 P0: Swing spread risk exits (VIX spike + overnight gap protection)
+SWING_VIX_SPIKE_EXIT_ENABLED = True
+SWING_VIX_SPIKE_EXIT_LEVEL = 25.0  # Exit bullish spreads if VIX >= 25
+SWING_VIX_SPIKE_EXIT_5D_PCT = 0.20  # Or if VIX 5D change >= +20%
+
+SWING_OVERNIGHT_GAP_PROTECTION_ENABLED = True
+SWING_OVERNIGHT_VIX_CLOSE_ALL = 30.0  # Close all spreads if VIX >= 30 at EOD
+SWING_OVERNIGHT_VIX_CLOSE_FRESH = 22.0  # Close fresh spreads if VIX >= 22 at EOD
 
 # -----------------------------------------------------------------------------
 # V2.1.1 QQQ MOVE TRIGGER THRESHOLDS BY REGIME
@@ -1266,7 +1717,7 @@ SPREAD_SCAN_THROTTLE_MINUTES = 15
 # V2.4.3: Spread FAILURE cooldown - if spread construction fails, don't retry for 4 hours
 # Problem: Engine retried 340 times when no valid contracts existed
 # Solution: After failure, enter 4-hour cooldown (market conditions won't change that fast)
-SPREAD_FAILURE_COOLDOWN_HOURS = 4
+SPREAD_FAILURE_COOLDOWN_HOURS = 1  # V6.12: Reduce cooldown to avoid all-day lockout
 
 # V2.5: Max concurrent spreads - limit exposure from spread positions
 # Problem: Mar 25-26 had two spreads open simultaneously ($19K exposure)
@@ -1286,7 +1737,13 @@ MARGIN_CALL_COOLDOWN_HOURS = 4  # 4-hour cooldown after hitting limit
 # P0 Fix #2: Margin Pre-Check Buffer
 # Before placing any order, verify MarginRemaining > order_cost * buffer
 # Buffer accounts for potential price movement during execution
-MARGIN_PRE_CHECK_BUFFER = 1.50  # V3.0: Require 50% extra margin buffer (was 1.20)
+MARGIN_PRE_CHECK_BUFFER = 0.15  # V6.10 P4: Lowered from 2.00 to 15% buffer (was too restrictive)
+
+# V6.10 P4: Margin Check BEFORE Signal Approval
+# Check margin availability before approving ANY spread signal
+# This prevents signals from being generated only to fail at execution
+MARGIN_CHECK_BEFORE_SIGNAL = True  # V6.10 P4: Enable pre-signal margin check
+MARGIN_PRE_CHECK_MIN_SPREADS = 1  # Minimum spreads to check margin for (1 spread)
 
 # P0 Fix #3: Options Exercise Detection
 # Handle exercise events in OnOrderEvent to prevent margin disasters
@@ -1326,12 +1783,62 @@ INDICATOR_WARMUP_DAYS = 300  # Calendar days (not trading days)
 # SYMBOLS
 # =============================================================================
 
-TRADED_SYMBOLS = ["TQQQ", "SOXL", "QLD", "SSO", "TNA", "FAS", "TMF", "PSQ"]
-PROXY_SYMBOLS = ["SPY", "RSP", "HYG", "IEF"]
+# V6.11: Universe redesign - diversified trend + commodity hedges
+TRADED_SYMBOLS = [
+    # Trend Engine (2× leveraged, overnight hold)
+    "QLD",
+    "SSO",
+    "UGL",
+    "UCO",
+    # Mean Reversion Engine (3× leveraged, intraday only)
+    "TQQQ",
+    "SPXL",
+    "SOXL",
+    # Hedge Engine
+    "SH",
+]
+PROXY_SYMBOLS = [
+    "SPY",
+    "RSP",
+    "HYG",
+    "IEF",
+    "GLD",
+    "USO",
+]  # V6.11: Added GLD, USO for commodity tracking
 ALL_SYMBOLS = TRADED_SYMBOLS + PROXY_SYMBOLS
 
 # Trend symbols (overnight hold allowed)
-TREND_SYMBOLS = ["QLD", "SSO", "TNA", "FAS"]
+# V6.11: Diversified - equities (QLD, SSO) + commodities (UGL, UCO)
+TREND_SYMBOLS = ["QLD", "SSO", "UGL", "UCO"]
 
 # Mean Reversion symbols (intraday only, must close by 15:45)
-MR_SYMBOLS = ["TQQQ", "SOXL"]
+# V6.11: Added SPXL for broader market bounces
+MR_SYMBOLS = ["TQQQ", "SPXL", "SOXL"]
+
+# =============================================================================
+# V6.4: ENGINE ISOLATION MODE
+# =============================================================================
+# Allows targeted backtesting of individual engines by disabling all others.
+# Use for focused debugging, performance analysis, and validation.
+# See docs/guides/ENGINE_ISOLATION_MODE.md for full documentation.
+
+# Master switch - when True, only enabled engines/safeguards run
+ISOLATION_TEST_MODE = True  # V6.6: Options Engine isolation backtest
+
+# Engine enables (only checked when ISOLATION_TEST_MODE = True)
+ISOLATION_REGIME_ENABLED = True  # Regime Engine (required by most engines)
+ISOLATION_OPTIONS_ENABLED = True  # Options Engine (VASS + Micro Intraday)
+ISOLATION_TREND_ENABLED = False  # Trend Engine (QLD/SSO/UGL/UCO) - V6.11 updated
+ISOLATION_MR_ENABLED = False  # Mean Reversion Engine (TQQQ/SPXL/SOXL) - V6.11 updated
+ISOLATION_HEDGE_ENABLED = False  # Hedge Engine (SH) - V6.11 updated
+ISOLATION_YIELD_ENABLED = False  # Yield Sleeve (SHV)
+
+# Safeguard enables (only checked when ISOLATION_TEST_MODE = True)
+ISOLATION_KILL_SWITCH_ENABLED = False  # Kill Switch (5% daily loss)
+ISOLATION_STARTUP_GATE_ENABLED = False  # Startup Gate (15-day warmup)
+ISOLATION_COLD_START_ENABLED = False  # Cold Start (days 1-5 restrictions)
+ISOLATION_DRAWDOWN_GOVERNOR_ENABLED = False  # Drawdown Governor (position scaling)
+ISOLATION_PANIC_MODE_ENABLED = False  # Panic Mode (SPY -4% liquidation)
+ISOLATION_WEEKLY_BREAKER_ENABLED = False  # Weekly Breaker (5% WTD loss)
+ISOLATION_GAP_FILTER_ENABLED = False  # Gap Filter (SPY -1.5% gap block)
+ISOLATION_VOL_SHOCK_ENABLED = False  # Vol Shock (3× ATR pause)

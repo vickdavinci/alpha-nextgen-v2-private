@@ -44,36 +44,62 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 ## 16.3 Regime Engine Parameters
 
-### Factor Weights (V2.3: Added VIX)
+### V5.3 Four-Factor Model (Current)
+
+The V5.3 regime model uses four factors optimized for crash detection while maintaining responsiveness to recoveries. See `docs/system/04-regime-engine.md` for full documentation.
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `WEIGHT_TREND` | 0.30 | Trend factor weight (30%) - V2.3: reduced from 0.45 |
-| `WEIGHT_VIX` | 0.20 | VIX (implied vol) factor weight (20%) - V2.3 NEW |
-| `WEIGHT_VOLATILITY` | 0.15 | Realized volatility factor weight (15%) - V2.3: reduced from 0.25 |
-| `WEIGHT_BREADTH` | 0.20 | Breadth factor weight (20%) - V2.3: increased from 0.15 |
-| `WEIGHT_CREDIT` | 0.15 | Credit factor weight (15%) |
+| `V53_REGIME_ENABLED` | True | Enable V5.3 4-factor model |
+| `WEIGHT_MOMENTUM_V53` | 0.30 | Momentum factor weight (30%) - 20-day ROC |
+| `WEIGHT_VIX_COMBINED_V53` | 0.30 | VIX Combined factor weight (30%) - 60% level + 40% direction |
+| `WEIGHT_TREND_V53` | 0.25 | Trend factor weight (25%) - SPY vs MA200 |
+| `WEIGHT_DRAWDOWN_V53` | 0.15 | Drawdown factor weight (15%) - distance from 52-week high |
 
-### VIX Level Factor (V2.3 NEW)
+### VIX Combined Scoring (V5.3)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `VIX_LOW_THRESHOLD` | 15 | Below = complacent market, cheap options |
-| `VIX_NORMAL_THRESHOLD` | 22 | 15-22 = normal volatility |
-| `VIX_HIGH_THRESHOLD` | 30 | 22-30 = elevated fear |
-| `VIX_EXTREME_THRESHOLD` | 40 | Above = crisis mode |
+| `VIX_COMBINED_LEVEL_WEIGHT` | 0.60 | VIX level contribution (60%) |
+| `VIX_COMBINED_DIRECTION_WEIGHT` | 0.40 | VIX 5-day direction contribution (40%) |
+| `VIX_COMBINED_HIGH_VIX_THRESHOLD` | 25.0 | VIX level that triggers clamp |
+| `VIX_COMBINED_HIGH_VIX_CLAMP` | 47 | Max VIX Combined score when VIX >= 25 |
 
-### VIX Factor Scoring
+### V5.3 Guards (Safety Mechanisms)
 
-| VIX Level | Score | Market State |
-|:---------:|:-----:|--------------|
-| < 15 | 100 | Complacent, cheap options |
-| 15-18 | 85 | Low normal |
-| 18-22 | 70 | Normal |
-| 22-26 | 50 | Mild fear |
-| 26-30 | 30 | Elevated |
-| 30-40 | 15 | High fear |
-| > 40 | 0 | Crisis mode |
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `V53_SPIKE_CAP_ENABLED` | True | Enable spike cap |
+| `V53_SPIKE_CAP_THRESHOLD` | 0.28 | VIX 5-day change >= +28% triggers cap |
+| `V53_SPIKE_CAP_MAX_SCORE` | 38 | Score cap during spike (V6.6: lowered from 45) |
+| `V53_SPIKE_CAP_DECAY_DAYS` | 3 | Days until cap expires |
+| `V53_BREADTH_DECAY_ENABLED` | True | Enable breadth decay penalty |
+| `V53_BREADTH_5D_DECAY_THRESHOLD` | -0.01 | 5-day decay trigger (V6.9: was -0.02) |
+| `V53_BREADTH_10D_DECAY_THRESHOLD` | -0.03 | 10-day decay trigger (V6.9: was -0.04) |
+| `V53_BREADTH_5D_PENALTY` | 8 | Points deducted for 5-day decay |
+| `V53_BREADTH_10D_PENALTY` | 12 | Points deducted for 10-day decay (additive) |
+
+### Momentum Factor Scoring (V5.3)
+
+| ROC Range | Score | Description |
+|:---------:|:-----:|-------------|
+| > +5% | 90 | Strong bull momentum |
+| +2% to +5% | 75 | Bull momentum |
+| +1% to +2% | 60 | Mildly bullish |
+| -1% to +1% | 50 | Neutral |
+| -2% to -1% | 40 | Mildly bearish |
+| -5% to -2% | 25 | Bear momentum |
+| < -5% | 10 | Strong bear momentum |
+
+### Drawdown Factor Scoring (V5.3)
+
+| Drawdown | Score | Description |
+|:--------:|:-----:|-------------|
+| < 5% | 90 | Bull market (near highs) |
+| 5-10% | 70 | Correction |
+| 10-15% | 50 | Pullback |
+| 15-20% | 30 | Bear market |
+| > 20% | 10 | Deep bear |
 
 ### Smoothing
 
@@ -91,6 +117,27 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `REGIME_DEFENSIVE` | 30 | DEFENSIVE (30-39) |
 | `REGIME_RISK_OFF` | 0 | RISK_OFF (0-29) |
 
+### VIX Level Thresholds (Shared)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `VIX_LOW_THRESHOLD` | 15 | Below = complacent market, cheap options |
+| `VIX_NORMAL_THRESHOLD` | 22 | 15-22 = normal volatility |
+| `VIX_HIGH_THRESHOLD` | 30 | 22-30 = elevated fear |
+| `VIX_EXTREME_THRESHOLD` | 40 | Above = crisis mode |
+
+### Legacy Factor Parameters (V3.0/V4.0)
+
+These parameters are used when `V53_REGIME_ENABLED = False`:
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `V4_REGIME_ENABLED` | False | V4.0 5-factor model (deprecated) |
+| `V3_REGIME_SIMPLIFIED_ENABLED` | True | V3.3 3-factor model (fallback) |
+| `WEIGHT_TREND_V3` | 0.35 | V3.3 trend weight |
+| `WEIGHT_VIX_V3` | 0.30 | V3.3 VIX level weight |
+| `WEIGHT_DRAWDOWN_V3` | 0.35 | V3.3 drawdown weight |
+
 ### Trend Factor Parameters
 
 | Parameter | Value | Description |
@@ -101,23 +148,11 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `EXTENDED_THRESHOLD` | 1.05 | 5% above SMA200 = extended |
 | `OVERSOLD_THRESHOLD` | 0.95 | 5% below SMA200 = oversold |
 
-### Volatility Factor Parameters
-
-| Parameter | Value | Description |
-|-----------|:-----:|-------------|
-| `VOL_LOOKBACK` | 20 | Realized volatility lookback (days) |
-| `VOL_PERCENTILE_LOOKBACK` | 252 | Percentile ranking lookback (days) |
-
-### Breadth Factor Parameters
+### Breadth & Credit Factor Parameters
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `BREADTH_LOOKBACK` | 20 | RSP vs SPY comparison period |
-
-### Credit Factor Parameters
-
-| Parameter | Value | Description |
-|-----------|:-----:|-------------|
 | `CREDIT_LOOKBACK` | 20 | HYG vs IEF comparison period |
 
 ---
@@ -317,8 +352,8 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `OPTIONS_MIN_OPEN_INTEREST` | 200 | Minimum OI - V2.3.6: lowered from 500 for 0DTE liquidity |
-| `OPTIONS_SPREAD_WARNING_PCT` | 0.15 | Max bid-ask spread - V2.3.6: widened from 10% for 0DTE reality |
+| `OPTIONS_MIN_OPEN_INTEREST` | 50 | Minimum OI - V6.8: lowered from 100 for thin chains |
+| `OPTIONS_SPREAD_WARNING_PCT` | 0.30 | Max bid-ask spread - V6.8: widened from 0.25 to reduce rejections |
 | `OPTIONS_DELTA_TOLERANCE` | 0.20 | Delta tolerance from target - V2.3.5: widened from 0.15 |
 
 ### 4-Factor Entry Scoring
@@ -436,18 +471,32 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 |----------------|-----------|----------|-----------|
 | Low IV | < 15 | Debit Spreads | 30-45 (Monthly) |
 | Medium IV | 15-25 | Debit Spreads | 7-21 (Weekly) |
-| High IV | > 25 | Credit Spreads | 7-14 (Weekly) |
+| High IV | > 25 | Credit Spreads | 5-28 (V6.8: was 7-21) |
 
-### Credit Spread Parameters (V2.8/V2.10)
+### Credit Spread Parameters (V2.8/V2.10/V6.10)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `CREDIT_SPREAD_MIN_CREDIT` | 0.30 | Minimum credit received ($0.30) |
+| `CREDIT_SPREAD_MIN_CREDIT` | 0.20 | Minimum credit (V6.10: was $0.30, lowered for fills) |
 | `CREDIT_SPREAD_WIDTH_TARGET` | 5.0 | Target spread width ($5) |
 | `CREDIT_SPREAD_SHORT_LEG_DELTA_MIN` | 0.25 | Short leg minimum delta |
 | `CREDIT_SPREAD_SHORT_LEG_DELTA_MAX` | 0.40 | Short leg maximum delta |
 | `CREDIT_SPREAD_PROFIT_TARGET` | 0.50 | 50% of max profit |
 | `CREDIT_SPREAD_STOP_MULTIPLIER` | 2.0 | Stop = spread doubles |
+| `CREDIT_SPREAD_FALLBACK_TO_DEBIT` | True | V6.10: Fall back to debit when credit fails |
+
+### V6.10 Spread Delta Requirements
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `SPREAD_LONG_LEG_DELTA_MIN` | 0.35 | V6.10: CALL long min (was 0.40) |
+| `SPREAD_LONG_LEG_DELTA_MAX` | 0.90 | V6.10: Allow deeper ITM (was 0.85) |
+| `SPREAD_SHORT_LEG_DELTA_MIN` | 0.08 | V6.10: Allow farther OTM (was 0.10) |
+| `SPREAD_SHORT_LEG_DELTA_MAX` | 0.60 | V6.10: Allow closer to ATM (was 0.55) |
+| `SPREAD_LONG_LEG_DELTA_MIN_PUT` | 0.25 | V6.10: PUT long min (was 0.30) |
+| `SPREAD_LONG_LEG_DELTA_MAX_PUT` | 0.90 | V6.10: Allow deeper ITM long PUTs |
+| `SPREAD_SHORT_LEG_DELTA_MIN_PUT` | 0.05 | V6.10: Allow farther OTM (was 0.08) |
+| `SPREAD_SHORT_LEG_DELTA_MAX_PUT` | 0.60 | V6.10: Allow closer to ATM short PUTs |
 
 ### Elastic Delta Bands (V2.24.1)
 
@@ -457,14 +506,14 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `ELASTIC_DELTA_FLOOR` | 0.10 | Absolute minimum delta |
 | `ELASTIC_DELTA_CEILING` | 0.95 | Absolute maximum delta |
 
-### Width-Based Short Leg Selection (V2.4.3)
+### Width-Based Short Leg Selection (V2.4.3/V6.10)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `SPREAD_SHORT_LEG_BY_WIDTH` | True | Use strike width instead of delta |
-| `SPREAD_WIDTH_MIN` | 2.0 | Minimum spread width ($2) |
+| `SPREAD_WIDTH_MIN` | 5.0 | Minimum spread width (V6.10: $5, was $2 — assignment protection) |
 | `SPREAD_WIDTH_MAX` | 10.0 | Maximum spread width ($10) |
-| `SPREAD_WIDTH_TARGET` | 5.0 | Target spread width ($5) |
+| `SPREAD_WIDTH_TARGET` | 5.0 | Target spread width (V6.10: $5, was $3 — assignment protection) |
 
 ### Sizing Caps (V2.18)
 
@@ -473,6 +522,37 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `SWING_SPREAD_MAX_DOLLARS` | 7,500 | Max $ per swing spread |
 | `INTRADAY_SPREAD_MAX_DOLLARS` | 4,000 | Max $ per intraday spread |
 
+### ATR-Based Stops (V6.8)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `OPTIONS_ATR_STOP_MULTIPLIER` | 1.0 | ATR multiplier for stops (V6.8: was 1.5) |
+| `OPTIONS_ATR_STOP_MIN_PCT` | 0.15 | Minimum stop % (V6.8: was 0.20) |
+| `OPTIONS_ATR_STOP_MAX_PCT` | 0.30 | Maximum stop % (V6.8: was 0.50 - prevents 50% losses) |
+| `OPTIONS_USE_ATR_STOPS` | True | Use ATR-based stops (vs legacy tier-based) |
+
+### UVXY Conviction Thresholds (V6.10)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `MICRO_UVXY_BEARISH_THRESHOLD` | +2.5% | UVXY up → PUT conviction (V6.10: was +4%) |
+| `MICRO_UVXY_BULLISH_THRESHOLD` | -3.0% | UVXY down → CALL conviction (V6.10: was -5%) |
+| `MICRO_UVXY_CONVICTION_EXTREME` | 5% | NEUTRAL VETO threshold (V6.10: was 7%) |
+| `MICRO_VIX_CRISIS_LEVEL` | 35 | VIX > 35 → CRISIS (BEARISH conviction) |
+| `MICRO_VIX_COMPLACENT_LEVEL` | 12 | VIX < 12 → COMPLACENT (BULLISH conviction) |
+
+### Assignment Risk Management (V6.10)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `ASSIGNMENT_MARGIN_BUFFER_ENABLED` | True | Require extra margin for ITM shorts |
+| `ASSIGNMENT_MARGIN_BUFFER_PCT` | 0.20 | Margin buffer % (V6.9: restored to 0.20 for safety) |
+| `ASSIGNMENT_MARGIN_AUTO_REDUCE` | True | Auto-reduce if buffer insufficient |
+| `SPREAD_FORCE_CLOSE_DTE` | 1 | V6.10: Mandatory close at DTE=1 (assignment prevention) |
+| `SPREAD_FORCE_CLOSE_ENABLED` | True | V6.10: Master switch for DTE=1 force close |
+| `PREMARKET_ITM_CHECK_ENABLED` | True | V6.10: Check short legs at 09:25 pre-market |
+| `SHORT_LEG_ITM_EXIT_THRESHOLD` | 0.005 | V6.10: Exit when 0.5% ITM (was 1%) |
+
 ### Limit Order Execution (V2.19)
 
 | Parameter | Value | Description |
@@ -480,6 +560,17 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `OPTIONS_USE_LIMIT_ORDERS` | True | Use marketable limit orders |
 | `OPTIONS_LIMIT_SLIPPAGE_PCT` | 0.05 | 5% slippage tolerance |
 | `OPTIONS_MAX_SPREAD_PCT` | 0.20 | Max bid-ask spread % (block if wider) |
+
+### V6.10 Margin Pre-Check
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `MARGIN_CHECK_BEFORE_SIGNAL` | True | V6.10: Check margin before generating signal |
+| `MARGIN_PRE_CHECK_BUFFER` | 0.15 | V6.10: 15% buffer (was 2.0 — too restrictive) |
+| `OPTIONS_MAX_MARGIN_PCT` | 0.25 | V6.10: Max margin 25% (was 30%) |
+| `MARGIN_PRE_CHECK_MIN_SPREADS` | 1 | V6.10: Min spreads to check margin for |
+
+> **V6.10 Rationale:** Pre-check margin availability before approving any spread signal. Prevents signals from being generated only to fail at execution.
 
 ### Safety Rules (V2.4.1)
 
@@ -496,17 +587,47 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | `SPREAD_NEUTRALITY_EXIT_ENABLED` | True | Exit flat spreads in neutral regime |
 | `SPREAD_NEUTRALITY_EXIT_PNL_BAND` | 0.10 | Within ±10% of breakeven = flat |
 
+### V6.10 Symmetric Stop/Target
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `SPREAD_PROFIT_TARGET_PCT` | 0.40 | 40% profit target (V6.10: was 50%) |
+| `SPREAD_STOP_LOSS_PCT` | 0.40 | 40% stop loss (V6.10: was 35%) |
+
+> **V6.10 Rationale:** Symmetric R:R (40%/40%) requires 1:1 win ratio to break even. Previous asymmetric (50%/35%) required 1.43:1 win ratio which was not achieved.
+
+### V6.10 Choppy Market Filter
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `CHOPPY_MARKET_FILTER_ENABLED` | True | Enable choppy market detection |
+| `CHOPPY_REVERSAL_COUNT` | 3 | 3+ reversals = choppy market |
+| `CHOPPY_LOOKBACK_HOURS` | 2 | Look back 2 hours for reversals |
+| `CHOPPY_SIZE_REDUCTION` | 0.50 | 50% size reduction in choppy markets |
+| `CHOPPY_MIN_MOVE_PCT` | 0.003 | Min 0.3% move to count as reversal |
+
+> **V6.10 Rationale:** 2015 backtest showed 48% win rate but negative P&L due to choppy market conditions triggering stops. Filter reduces position size when 3+ reversals detected.
+
 ### V2.1.1 VIX Direction Thresholds (Micro Regime Engine)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `VIX_DIRECTION_FALLING_FAST` | -5.0% | Strong recovery threshold |
-| `VIX_DIRECTION_FALLING` | -2.0% | Recovery threshold |
-| `VIX_DIRECTION_STABLE_LOW` | -2.0% | Stable range lower bound |
-| `VIX_DIRECTION_STABLE_HIGH` | 2.0% | Stable range upper bound |
-| `VIX_DIRECTION_RISING` | 5.0% | Fear building threshold |
-| `VIX_DIRECTION_RISING_FAST` | 10.0% | Panic emerging threshold |
+| `VIX_DIRECTION_FALLING_FAST` | -3.0% | Strong recovery threshold (V6.6: was -5.0%) |
+| `VIX_DIRECTION_FALLING` | -1.0% | Recovery threshold (V6.6: was -2.0%) |
+| `VIX_DIRECTION_STABLE_LOW` | -1.0% | Stable range lower bound (V6.6: was -2.0%) |
+| `VIX_DIRECTION_STABLE_HIGH` | 1.0% | Stable range upper bound (V6.6: was 2.0%) |
+| `VIX_DIRECTION_RISING` | 3.0% | Fear building threshold (V6.6: was 5.0%) |
+| `VIX_DIRECTION_RISING_FAST` | 6.0% | Panic emerging threshold (V6.6: was 10.0%) |
 | `VIX_DIRECTION_SPIKING` | 10.0% | Crash mode threshold |
+
+### V6.10 VIX-Adaptive STABLE Band
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `VIX_STABLE_BAND_LOW` | +/-0.3% | STABLE band when VIX < 15 (V6.10: was +/-0.5%) |
+| `VIX_STABLE_BAND_HIGH` | +/-1.0% | STABLE band when VIX > 25 (V6.10: was +/-2.0%) |
+| `VIX_STABLE_LOW_VIX_MAX` | 15.0 | Low VIX regime threshold |
+| `VIX_STABLE_HIGH_VIX_MIN` | 25.0 | High VIX regime threshold |
 
 ### V2.1.1 VIX Level Thresholds
 
@@ -534,17 +655,23 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 | Layer 3 | 60 min | Whipsaw detection (reversal count) |
 | Layer 4 | 30 min | Full regime classification |
 
-### V2.1.1 Intraday Strategy Parameters
+### V2.1.1 Intraday Strategy Parameters (V6.10)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `INTRADAY_DEBIT_FADE_MIN_SCORE` | 50 | Minimum micro score for debit fade |
-| `INTRADAY_DEBIT_FADE_MIN_MOVE` | 1.0% | Minimum QQQ move |
+| `INTRADAY_DEBIT_FADE_MIN_SCORE` | 35 | Minimum micro score for debit fade (V6.8: was 45) |
+| `INTRADAY_DEBIT_FADE_VIX_MIN` | 10.5 | Minimum VIX for DEBIT_FADE (V6.10: was 13.5) |
+| `INTRADAY_FADE_MIN_MOVE` | 0.50% | Minimum QQQ move for FADE |
+| `INTRADAY_FADE_MAX_MOVE` | 1.50% | Max QQQ move for FADE (V6.8: was 1.20%) |
 | `INTRADAY_DEBIT_FADE_VIX_MAX` | 25 | Maximum VIX for debit fade |
 | `INTRADAY_CREDIT_MIN_VIX` | 18 | Minimum VIX for credit spreads |
-| `INTRADAY_ITM_MIN_VIX` | 25 | Minimum VIX for ITM momentum |
+| `INTRADAY_ITM_MIN_VIX` | 10.0 | Minimum VIX for ITM momentum (V6.8: was 11.5) |
+| `INTRADAY_ITM_MIN_SCORE` | 40 | Minimum micro score for ITM (V6.8: was 50) |
 | `INTRADAY_ITM_MIN_MOVE` | 0.8% | Minimum QQQ move for ITM |
 | `INTRADAY_FORCE_EXIT_TIME` | 15:30 ET | Intraday positions must close |
+| `INTRADAY_QQQ_FALLBACK_MIN_MOVE` | 0.50% | V6.10: Min move for VIX STABLE fallback (was 0.70%) |
+| `MICRO_SCORE_BULLISH_CONFIRM` | 52 | V6.10: Score for BULLISH confirm (was 55) |
+| `MICRO_SCORE_BEARISH_CONFIRM` | 48 | V6.10: Score for BEARISH confirm (was 45) |
 
 ### V2.1.1 Swing Mode Simple Filters
 
@@ -570,29 +697,28 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 ## 16.9 Portfolio Router Parameters
 
-### Exposure Group Limits
+### Exposure Group Limits (V6.11)
 
 | Group | Max Net Long | Max Net Short | Max Gross |
 |-------|:------------:|:-------------:|:---------:|
 | `NASDAQ_BETA` | 50% | 30% | 75% |
-| `SPY_BETA` | 40% | 0% | 40% |
-| `SMALL_CAP_BETA` | 25% | 0% | 25% |
-| `FINANCIALS_BETA` | 15% | 0% | 15% |
-| `RATES` | 40% | 0% | 40% |
+| `SPY_BETA` | 40% | 10% | 50% |
+| `COMMODITY` | 20% | 0% | 20% |
 
-### Group Membership
+### Group Membership (V6.11 Universe)
 
 | Symbol | Group | Type | Allocation |
 |--------|-------|------|:----------:|
-| TQQQ | NASDAQ_BETA | 3× Long Nasdaq | 5% (MR) |
-| QLD | NASDAQ_BETA | 2× Long Nasdaq | 15% (Trend — V2.18: was 20%) |
-| SOXL | NASDAQ_BETA | 3× Long Semi | 5% (MR) |
-| PSQ | NASDAQ_BETA | 1× Inverse Nasdaq | (Hedge) |
-| SSO | SPY_BETA | 2× Long S&P | 12% (Trend — V2.18: was 15%) |
-| TNA | SMALL_CAP_BETA | 3× Long Russell 2000 | 8% (Trend — V2.18: was 12%) |
-| FAS | FINANCIALS_BETA | 3× Long Financials | 5% (Trend — V2.18: was 8%) |
-| TMF | RATES | 3× Long Treasury | (Hedge) |
-| SHV | RATES | Short Treasury | (Yield) |
+| QLD | NASDAQ_BETA | 2× Long Nasdaq | 15% (Trend) |
+| TQQQ | NASDAQ_BETA | 3× Long Nasdaq | 4% (MR) |
+| SOXL | NASDAQ_BETA | 3× Long Semi | 3% (MR) |
+| SSO | SPY_BETA | 2× Long S&P | 7% (Trend) |
+| SPXL | SPY_BETA | 3× Long S&P | 3% (MR) |
+| SH | SPY_BETA | 1× Inverse S&P | (Hedge) |
+| UGL | COMMODITY | 2× Gold | 10% (Trend) |
+| UCO | COMMODITY | 2× Crude Oil | 8% (Trend) |
+
+> **V6.11 Universe Redesign:** TNA/FAS/TMF/PSQ/SHV removed. UGL/UCO added for commodity diversification. All Trend symbols now 2× leverage. SH replaces PSQ as hedge.
 
 ### Capital Firewall (V2.18)
 
@@ -611,28 +737,24 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 ---
 
-## 16.9.1 Startup Gate Parameters (V2.30)
+## 16.9.1 Startup Gate Parameters (V6.0)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `STARTUP_GATE_ENABLED` | True | Master toggle for startup gate |
-| `STARTUP_GATE_WARMUP_DAYS` | 5 | Indicator warmup phase duration |
-| `STARTUP_GATE_OBSERVATION_DAYS` | 5 | Observation phase duration (V2.30: was 10) |
-| `STARTUP_GATE_REDUCED_DAYS` | 5 | Reduced phase duration (V2.30: was 10) |
-| `STARTUP_GATE_REDUCED_SIZE_MULT` | 0.50 | Size multiplier during OBSERVATION/REDUCED phases |
+| `STARTUP_GATE_WARMUP_DAYS` | 3 | Indicator warmup phase duration |
+| `STARTUP_GATE_REDUCED_DAYS` | 3 | Reduced phase duration |
+| `STARTUP_GATE_REDUCED_SIZE_MULT` | 0.50 | TREND/MR size multiplier during REDUCED |
 
-### Phase Progression
+### Phase Progression (V6.0 Simplified)
 
-| Phase | Duration | Hedges/Yield | Bearish Options | Directional Longs | Size Mult |
-|-------|:--------:|:------------:|:---------------:|:-----------------:|:---------:|
-| INDICATOR_WARMUP | 5 days | Allowed | Blocked | Blocked | 0% |
-| OBSERVATION | 5 days | Allowed | Allowed (50%) | Blocked | 50% |
-| REDUCED | 5 days | Allowed | Allowed (50%) | Allowed (50%) | 50% |
-| FULLY_ARMED | Permanent | Allowed | Allowed | Allowed | 100% |
+| Phase | Duration | TREND/MR | OPTIONS |
+|-------|:--------:|:--------:|:-------:|
+| INDICATOR_WARMUP | 3 days | Blocked | Blocked |
+| REDUCED | 3 days | 50% | 100% |
+| FULLY_ARMED | Permanent | 100% | 100% |
 
-> **V2.30 Design:** All-weather time-based system. No regime dependency. 15 days total. Hedges/yield never gated. Bearish options available from OBSERVATION. One-time and permanent. Never resets on kill switch. Separate from ColdStartEngine.
->
-> **V2.30 Removed:** `STARTUP_GATE_REGIME_DAYS`, `STARTUP_GATE_REGIME_MIN_SCORE`, `STARTUP_GATE_REDUCED_MAX_WEIGHT`
+> **V6.0 Design:** Simplified 6-day arming sequence. Options are independent with their own conviction system (VASS/MICRO). Gate only controls TREND/MR sizing. Never resets on kill switch.
 
 ---
 
@@ -766,20 +888,21 @@ This appendix consolidates **all tunable parameters** from across the Alpha Next
 
 ## 16.14 Symbol Configuration
 
-### Traded Symbols
+### Traded Symbols (V6.11 Universe)
 
 | Symbol | Description | Strategy | Allocation |
 |--------|-------------|----------|:----------:|
-| QLD | 2× Nasdaq | Trend, Warm Entry | 15% (V2.18: was 20%) |
-| SSO | 2× S&P 500 | Trend, Warm Entry | 12% (V2.18: was 15%) |
-| TNA | 3× Russell 2000 | Trend | 8% (V2.18: was 12%) |
-| FAS | 3× Financials | Trend | 5% (V2.18: was 8%) |
-| TQQQ | 3× Nasdaq | Mean Reversion | 5% |
-| SOXL | 3× Semiconductor | Mean Reversion | 5% |
-| QQQ Options | Options chain | Options (VASS) | 25% (V2.3: was 20%) |
-| TMF | 3× Treasury | Hedge | 0-20% |
-| PSQ | 1× Inverse Nasdaq | Hedge | 0-10% |
-| SHV | Short Treasury | Yield | Remainder |
+| QLD | 2× Nasdaq | Trend (Core) | 15% |
+| SSO | 2× S&P 500 | Trend (Core) | 7% |
+| UGL | 2× Gold | Trend (Commodity) | 10% (V6.11 NEW) |
+| UCO | 2× Crude Oil | Trend (Commodity) | 8% (V6.11 NEW) |
+| TQQQ | 3× Nasdaq | Mean Reversion | 4% |
+| SPXL | 3× S&P 500 | Mean Reversion | 3% |
+| SOXL | 3× Semiconductor | Mean Reversion | 3% |
+| QQQ Options | Options chain | Options (VASS) | 25% |
+| SH | 1× Inverse S&P | Hedge | 0-10% |
+
+> **V6.11 Universe Redesign:** Replaced TNA/FAS with UGL/UCO for commodity diversification. All Trend symbols now 2× leverage. TMF/PSQ/SHV removed from default universe.
 
 ### Symbol Liquidity Requirements
 
@@ -842,17 +965,38 @@ LOCKBOX_MILESTONES = [100_000, 200_000]
 LOCKBOX_LOCK_PCT = 0.10
 
 # =============================================================================
-# REGIME ENGINE
+# REGIME ENGINE (V5.3 4-Factor Model)
 # =============================================================================
 
-# Factor Weights (V2.3: Added VIX, rebalanced)
-WEIGHT_TREND = 0.30      # V2.3: Reduced from 0.45
-WEIGHT_VIX = 0.20        # V2.3 NEW: Implied volatility
-WEIGHT_VOLATILITY = 0.15 # V2.3: Reduced from 0.25 (realized vol)
-WEIGHT_BREADTH = 0.20    # V2.3: Increased from 0.15
-WEIGHT_CREDIT = 0.15
+# V5.3 Model Selection
+V53_REGIME_ENABLED = True    # Enable V5.3 4-factor model (recommended)
+V4_REGIME_ENABLED = False    # V4.0/V4.1 5-factor model (deprecated)
+V3_REGIME_SIMPLIFIED_ENABLED = True  # V3.3 3-factor fallback
 
-# VIX Level Factor Thresholds (V2.3 NEW)
+# V5.3 Factor Weights (must sum to 1.0)
+WEIGHT_MOMENTUM_V53 = 0.30   # 20-day ROC - catches reversals in days
+WEIGHT_VIX_COMBINED_V53 = 0.30  # 60% level + 40% direction
+WEIGHT_TREND_V53 = 0.25      # SPY vs MA200
+WEIGHT_DRAWDOWN_V53 = 0.15   # Distance from 52-week high
+
+# VIX Combined Scoring
+VIX_COMBINED_LEVEL_WEIGHT = 0.60      # VIX level contribution
+VIX_COMBINED_DIRECTION_WEIGHT = 0.40  # VIX direction contribution
+VIX_COMBINED_HIGH_VIX_THRESHOLD = 25.0  # Clamp threshold
+VIX_COMBINED_HIGH_VIX_CLAMP = 47        # Max score when VIX >= 25
+
+# V5.3 Guards
+V53_SPIKE_CAP_ENABLED = True
+V53_SPIKE_CAP_THRESHOLD = 0.28        # VIX 5d >= +28% triggers
+V53_SPIKE_CAP_MAX_SCORE = 38          # V6.6: was 45
+V53_SPIKE_CAP_DECAY_DAYS = 3
+V53_BREADTH_DECAY_ENABLED = True
+V53_BREADTH_5D_DECAY_THRESHOLD = -0.01
+V53_BREADTH_10D_DECAY_THRESHOLD = -0.03
+V53_BREADTH_5D_PENALTY = 8
+V53_BREADTH_10D_PENALTY = 12
+
+# VIX Level Thresholds
 VIX_LOW_THRESHOLD = 15       # Below = complacent
 VIX_NORMAL_THRESHOLD = 22    # Normal volatility
 VIX_HIGH_THRESHOLD = 30      # Elevated fear
@@ -1055,6 +1199,22 @@ ELASTIC_DELTA_CEILING = 0.95
 SWING_SPREAD_MAX_DOLLARS = 7500
 INTRADAY_SPREAD_MAX_DOLLARS = 4000
 
+# ATR-Based Stops (V6.8)
+OPTIONS_ATR_STOP_MULTIPLIER = 1.0  # V6.8: was 1.5
+OPTIONS_ATR_STOP_MIN_PCT = 0.15    # V6.8: was 0.20
+OPTIONS_ATR_STOP_MAX_PCT = 0.30    # V6.8: was 0.50
+OPTIONS_USE_ATR_STOPS = True
+
+# UVXY Conviction Thresholds (V6.8)
+MICRO_UVXY_BEARISH_THRESHOLD = 0.025  # V6.8: was 0.03
+MICRO_UVXY_BULLISH_THRESHOLD = -0.025  # V6.8: was -0.03
+MICRO_VIX_CRISIS_LEVEL = 35
+MICRO_VIX_COMPLACENT_LEVEL = 12
+
+# Assignment Margin Buffer (V6.8)
+ASSIGNMENT_MARGIN_BUFFER_ENABLED = True
+ASSIGNMENT_MARGIN_BUFFER_PCT = 0.10  # V6.8: was 0.20
+
 # Limit Orders (V2.19)
 OPTIONS_USE_LIMIT_ORDERS = True
 OPTIONS_LIMIT_SLIPPAGE_PCT = 0.05
@@ -1072,41 +1232,39 @@ OCO_CANCEL_TIMEOUT_SEC = 30
 # PORTFOLIO ROUTER
 # =============================================================================
 
-# Exposure Limits
+# Exposure Limits (V6.11 Universe)
 EXPOSURE_LIMITS = {
     "NASDAQ_BETA": {"max_net_long": 0.50, "max_net_short": 0.30, "max_gross": 0.75},
-    "SPY_BETA": {"max_net_long": 0.40, "max_net_short": 0.00, "max_gross": 0.40},
-    "SMALL_CAP_BETA": {"max_net_long": 0.25, "max_net_short": 0.00, "max_gross": 0.25},
-    "FINANCIALS_BETA": {"max_net_long": 0.15, "max_net_short": 0.00, "max_gross": 0.15},
-    "RATES": {"max_net_long": 0.99, "max_net_short": 0.00, "max_gross": 0.99}  # V2.3.17: raised from 40% for SHV flexibility
+    "SPY_BETA": {"max_net_long": 0.40, "max_net_short": 0.10, "max_gross": 0.50},
+    "COMMODITY": {"max_net_long": 0.20, "max_net_short": 0.00, "max_gross": 0.20},
 }
 
-# Group Membership
+# Group Membership (V6.11 Universe)
 SYMBOL_GROUPS = {
-    "TQQQ": "NASDAQ_BETA",
     "QLD": "NASDAQ_BETA",
+    "TQQQ": "NASDAQ_BETA",
     "SOXL": "NASDAQ_BETA",
-    "PSQ": "NASDAQ_BETA",  # Inverse
     "SSO": "SPY_BETA",
-    "TNA": "SMALL_CAP_BETA",
-    "FAS": "FINANCIALS_BETA",
-    "TMF": "RATES",
-    "SHV": "RATES"
+    "SPXL": "SPY_BETA",
+    "SH": "SPY_BETA",     # Inverse S&P (Hedge)
+    "UGL": "COMMODITY",   # 2× Gold
+    "UCO": "COMMODITY",   # 2× Crude Oil
 }
 
-# Trend Engine Allocations (V2.18: Reduced for Capital Firewall)
+# Trend Engine Allocations (V6.11)
 TREND_SYMBOL_ALLOCATIONS = {
-    "QLD": 0.15,  # 15% - 2× Nasdaq (V2.18: was 20%)
-    "SSO": 0.12,  # 12% - 2× S&P 500 (V2.18: was 15%)
-    "TNA": 0.08,  # 8% - 3× Russell 2000 (V2.18: was 12%)
-    "FAS": 0.05,  # 5% - 3× Financials (V2.18: was 8%)
+    "QLD": 0.15,  # 15% - 2× Nasdaq
+    "SSO": 0.07,  # 7% - 2× S&P 500
+    "UGL": 0.10,  # 10% - 2× Gold
+    "UCO": 0.08,  # 8% - 2× Crude Oil
 }
-TREND_TOTAL_ALLOCATION = 0.40  # 40% total (V2.18: was 55%)
+TREND_TOTAL_ALLOCATION = 0.40  # 40% total
 
-# Mean Reversion Allocations
+# Mean Reversion Allocations (V6.11)
 MR_SYMBOL_ALLOCATIONS = {
-    "TQQQ": 0.05,  # 5% - 3× Nasdaq
-    "SOXL": 0.05,  # 5% - 3× Semiconductor
+    "TQQQ": 0.04,  # 4% - 3× Nasdaq
+    "SPXL": 0.03,  # 3% - 3× S&P 500
+    "SOXL": 0.03,  # 3% - 3× Semiconductor
 }
 MR_TOTAL_ALLOCATION = 0.10  # 10% total to MR Engine
 
@@ -1151,12 +1309,11 @@ KS_TIER_1_PCT = 0.02   # 2% — Reduce sizing 50%
 KS_TIER_2_PCT = 0.04   # 4% — Block all new entries
 KS_TIER_3_PCT = 0.06   # 6% — Full liquidation + cold start reset
 
-# V2.30: All-Weather Startup Gate (time-based, no regime dependency, never resets on kill switch)
+# V6.0: Simplified Startup Gate (6-day arming, never resets on kill switch)
 STARTUP_GATE_ENABLED = True
-STARTUP_GATE_WARMUP_DAYS = 5            # 5 days indicator warmup (hedges + yield only)
-STARTUP_GATE_OBSERVATION_DAYS = 5       # 5 days observation (+ bearish options at 50%)
-STARTUP_GATE_REDUCED_DAYS = 5           # 5 days reduced (all engines at 50%)
-STARTUP_GATE_REDUCED_SIZE_MULT = 0.50   # 50% sizing during OBSERVATION/REDUCED phases
+STARTUP_GATE_WARMUP_DAYS = 3            # Phase 0: Indicators warming up (nothing allowed)
+STARTUP_GATE_REDUCED_DAYS = 3           # Phase 1: TREND/MR at 50%, OPTIONS at 100%
+STARTUP_GATE_REDUCED_SIZE_MULT = 0.50   # TREND/MR size multiplier during REDUCED
 
 # =============================================================================
 # V2.1 CIRCUIT BREAKER SYSTEM (5 Levels)

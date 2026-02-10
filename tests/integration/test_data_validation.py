@@ -84,22 +84,23 @@ class TestVIXDataFeed:
     def test_vix_direction_classification(self):
         """
         Test VIX direction classification thresholds.
+        V6.6: Updated to match narrowed STABLE zone from ±2% to ±1%.
         """
-        # Falling fast: < -5%
-        assert config.VIX_DIRECTION_FALLING_FAST == -5.0
+        # Falling fast: < -3%
+        assert config.VIX_DIRECTION_FALLING_FAST == -3.0
 
-        # Falling: -5% to -2%
-        assert config.VIX_DIRECTION_FALLING == -2.0
+        # Falling: -3% to -1%
+        assert config.VIX_DIRECTION_FALLING == -1.0
 
-        # Stable: -2% to +2%
-        assert config.VIX_DIRECTION_STABLE_LOW == -2.0
-        assert config.VIX_DIRECTION_STABLE_HIGH == 2.0
+        # Stable: -1% to +1%
+        assert config.VIX_DIRECTION_STABLE_LOW == -1.0
+        assert config.VIX_DIRECTION_STABLE_HIGH == 1.0
 
-        # Rising: +2% to +5%
-        assert config.VIX_DIRECTION_RISING == 5.0
+        # Rising: +1% to +3%
+        assert config.VIX_DIRECTION_RISING == 3.0
 
-        # Rising fast: +5% to +10%
-        assert config.VIX_DIRECTION_RISING_FAST == 10.0
+        # Rising fast: +3% to +6%
+        assert config.VIX_DIRECTION_RISING_FAST == 6.0
 
         # Spiking: > +10%
         assert config.VIX_DIRECTION_SPIKING == 10.0
@@ -198,10 +199,10 @@ class TestOptionsChainFiltering:
         """
         # Max bid-ask spread - V2.3.10: Widened from 5% to 15% for ATM contracts
         assert config.OPTIONS_SPREAD_MAX_PCT == 0.15  # V2.3.10: 15% (was 5%)
-        assert config.OPTIONS_SPREAD_WARNING_PCT == 0.25  # V2.3.7: Widened from 10% to 25%
+        assert config.OPTIONS_SPREAD_WARNING_PCT == 0.30  # V6.8: Widened from 25% to 30%
 
-        # Min open interest (V2.3.7: Relaxed from 200 to 100)
-        assert config.OPTIONS_MIN_OPEN_INTEREST == 100
+        # Min open interest (V6.8: Relaxed from 100 to 50)
+        assert config.OPTIONS_MIN_OPEN_INTEREST == 50
 
     def test_min_premium_filter(self):
         """

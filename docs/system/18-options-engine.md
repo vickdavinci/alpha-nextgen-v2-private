@@ -6,11 +6,58 @@
 
 ## Overview
 
-> **Last Updated**: 4 February 2026 (V2.30)
+> **Last Updated**: 9 February 2026 (V6.10)
 
 The **Options Engine** implements a dual-mode architecture for QQQ options trading. This is a **satellite engine** (25% allocation) with two distinct operating modes based on DTE (days to expiration).
 
-> **V2.30 Revision** (Latest):
+> **V6.10 Revision** (Latest):
+> - **Phase 1 - Assignment Prevention (P0)**:
+>   - Added `SPREAD_FORCE_CLOSE_DTE=1` - mandatory close ALL spreads at DTE=1
+>   - Added `PREMARKET_ITM_CHECK_ENABLED=True` - 09:25 pre-market ITM check
+>   - Tightened `SHORT_LEG_ITM_EXIT_THRESHOLD` 1% -> 0.5% ITM for faster exit
+>   - Widened `SPREAD_WIDTH_MIN` $3 -> $5 for assignment gap protection
+> - **Phase 2 - Direction Generation (Micro Engine)**:
+>   - Narrowed `VIX_STABLE_BAND_LOW` +/-0.5% -> +/-0.3% (more signals in low VIX)
+>   - Narrowed `VIX_STABLE_BAND_HIGH` +/-2.0% -> +/-1.0% (high VIX still trades)
+>   - Lowered `MICRO_UVXY_CONVICTION_EXTREME` 7% -> 5% (capture more conviction)
+>   - Lowered `MICRO_UVXY_BEARISH_THRESHOLD` +4% -> +2.5% (more PUT signals)
+>   - Raised `MICRO_UVXY_BULLISH_THRESHOLD` -5% -> -3% (more CALL signals)
+>   - Lowered `INTRADAY_DEBIT_FADE_VIX_MIN` 13.5 -> 10.5 (low-VIX years can trade)
+>   - Lowered `INTRADAY_QQQ_FALLBACK_MIN_MOVE` 0.70% -> 0.50% (more STABLE trades)
+>   - Adjusted `MICRO_SCORE_BULLISH_CONFIRM` 55 -> 52, `MICRO_SCORE_BEARISH_CONFIRM` 45 -> 48
+> - **Phase 3 - Spread Construction (VASS)**:
+>   - Widened delta requirements: CALL long 0.40->0.35, short 0.55->0.60
+>   - Widened PUT delta requirements: long 0.30->0.25, short 0.08->0.05
+>   - Lowered `CREDIT_SPREAD_MIN_CREDIT` $0.30 -> $0.20
+>   - Added `CREDIT_SPREAD_FALLBACK_TO_DEBIT=True` for PUT direction
+> - **Phase 4 - Execution Pipeline**:
+>   - Lowered `OPTIONS_MAX_MARGIN_PCT` 30% -> 25%
+>   - Adjusted `MARGIN_PRE_CHECK_BUFFER` 2.0 -> 0.15 (was too restrictive)
+>   - Added `MARGIN_CHECK_BEFORE_SIGNAL=True` (pre-approve before generating)
+> - **Phase 5 - Risk/Reward**:
+>   - Symmetric `SPREAD_STOP_LOSS_PCT` 35% -> 40%, `SPREAD_PROFIT_TARGET_PCT` 50% -> 40%
+>   - Added choppy market filter: 3 reversals in 2hrs = 50% size reduction
+>
+> **V6.8 Revision**:
+> - Relaxed liquidity filters: Open interest 100->50, spread warning 25%->30%
+> - Widened VASS High IV DTE range: 7-21 -> 5-28 (more contract matches)
+> - Tighter ATR-based stops: multiplier 1.5->1.0, max 50%->30% loss cap
+> - Lowered delta requirements: long leg min 0.45->0.40, short leg max 0.52->0.55
+> - Narrower spread width target: 4.0 -> 3.0 (more matches in chain)
+> - Reduced UVXY conviction thresholds: +/-3% -> +/-2.5%
+> - Lowered intraday VIX floors: DEBIT_FADE 13.5->11.5, ITM 11.5->10.0
+> - Reduced intraday score requirements: DEBIT_FADE 45->35, ITM 50->40
+> - Widened FADE_MAX_MOVE: 1.20% -> 1.50% (allow stronger continuations)
+> - Reduced assignment margin buffer: 20%->10% (fewer instant exit triggers)
+>
+> **V6.5 Revision**:
+> - Fixed DEBIT_FADE divergence/confirmation logic (was inverted)
+> - Added `DEBIT_MOMENTUM` strategy for confirmed trends (QQQ and VIX aligned)
+> - WORSENING + WORSENING_HIGH regimes now ALWAYS use ITM PUT (regardless of QQQ direction)
+> - Updated 21-regime matrix with correct CALL/PUT directions for all scenarios
+> - Divergence (opposite moves) = FADE, Confirmation (aligned moves) = MOMENTUM
+>
+> **V2.30 Revision**:
 > - Bearish Options Path Fix: Removed outer `regime >= 40` gate that blocked PUT spreads below regime 40
 > - Direction-aware gating: `_generate_options_signals_gated()` routes bullish vs bearish separately
 > - Bullish options (regime > 60) require StartupGate `allows_directional_longs()`
@@ -112,7 +159,7 @@ VASS dynamically selects the spread strategy and DTE range based on the current 
 |:--------------:|:---------:|----------|:---------:|-----------|
 | **Low IV** | VIX < 15 | Debit Spreads | 30-45 DTE (monthly) | Cheap options, need more time for move |
 | **Medium IV** | VIX 15-25 | Debit Spreads | 7-21 DTE (weekly) | Fair pricing, standard DTE |
-| **High IV** | VIX > 25 | Credit Spreads | 7-14 DTE (weekly) | Rich premium, sell into fear |
+| **High IV** | VIX > 25 | Credit Spreads | 5-28 DTE (V6.8: widened from 7-14) | Rich premium, sell into fear |
 
 ### How VASS Routing Works
 
@@ -134,8 +181,8 @@ The 30-minute smoothing window prevents strategy flickering when VIX oscillates 
 | `VASS_LOW_IV_DTE_MAX` | 45 | Low IV: Monthly DTE maximum |
 | `VASS_MEDIUM_IV_DTE_MIN` | 7 | Medium IV: Weekly DTE minimum |
 | `VASS_MEDIUM_IV_DTE_MAX` | 21 | Medium IV: Weekly DTE maximum |
-| `VASS_HIGH_IV_DTE_MIN` | 7 | High IV: Weekly DTE minimum |
-| `VASS_HIGH_IV_DTE_MAX` | 14 | High IV: Weekly DTE maximum |
+| `VASS_HIGH_IV_DTE_MIN` | 5 | High IV: Weekly DTE minimum (V6.8: was 7) |
+| `VASS_HIGH_IV_DTE_MAX` | 28 | High IV: Weekly DTE maximum (V6.8: was 21) |
 | `VASS_LOG_REJECTION_INTERVAL_MINUTES` | 15 | Throttled rejection logging |
 
 > **V2.24.2 Note**: When VASS routes to a specific DTE range, the `dte_min`/`dte_max` parameters are passed through to `select_spread_legs()` and `check_spread_entry_signal()`, overriding the global `SPREAD_DTE_MIN`/`SPREAD_DTE_MAX`. See [DTE Double-Filter Fix](#v2242-dte-double-filter-fix) below.
@@ -196,9 +243,9 @@ Long leg at $480 → Target short leg at $480 + $5 = $485
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `SPREAD_SHORT_LEG_BY_WIDTH` | True | Use width-based selection |
-| `SPREAD_WIDTH_MIN` | 2.0 | Minimum $2 spread width |
+| `SPREAD_WIDTH_MIN` | 5.0 | Minimum $5 spread width (V6.10: was $2, assignment protection) |
 | `SPREAD_WIDTH_MAX` | 10.0 | Maximum $10 spread width |
-| `SPREAD_WIDTH_TARGET` | 5.0 | Target $5 width |
+| `SPREAD_WIDTH_TARGET` | 5.0 | Target $5 width (V6.10: was $3, assignment protection) |
 
 Candidates are sorted by distance from target width, then by open interest. This eliminates the silent failure mode where no short leg was found due to delta gaps.
 
@@ -335,7 +382,7 @@ The intraday DEBIT_FADE strategy (mean-reversion bounce) is disabled when VIX is
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `INTRADAY_DEBIT_FADE_VIX_MIN` | 13.5 | Minimum VIX for DEBIT_FADE |
+| `INTRADAY_DEBIT_FADE_VIX_MIN` | 11.5 | Minimum VIX for DEBIT_FADE (V6.8: was 13.5) |
 | `INTRADAY_DEBIT_FADE_VIX_MAX` | 25 | Maximum VIX for DEBIT_FADE |
 
 ---
@@ -503,7 +550,7 @@ contracts = floor(allocation / (entry_price * 100 * stop_pct))
 - `OPTIONS_INTRADAY_DELTA_TARGET` (default: 0.30)
 - `OPTIONS_SWING_DELTA_TARGET` (default: 0.70)
 - `OPTIONS_DELTA_TOLERANCE` (default: 0.20)
-- `OPTIONS_MIN_OPEN_INTEREST` (default: 200)
+- `OPTIONS_MIN_OPEN_INTEREST` (default: 50, V6.8: was 100)
 - `OPTIONS_SPREAD_WARNING_PCT` (default: 0.15)
 
 > **V2.3.6 Changes:** Lowered OI from 500 to 200 (0DTE contracts have less liquidity), widened spread tolerance from 10% to 15% (0DTE spreads are naturally wider).
@@ -727,11 +774,12 @@ The intraday options scanning window was adjusted:
 | `SPREAD_DTE_MIN` | 14 | Default minimum DTE (VASS overrides) |
 | `SPREAD_DTE_MAX` | 45 | Default maximum DTE (VASS overrides) |
 | `SPREAD_SHORT_LEG_BY_WIDTH` | True | V2.4.3: Width-based short leg selection |
-| `SPREAD_WIDTH_MIN` | 2.0 | Minimum spread width ($2) |
+| `SPREAD_WIDTH_MIN` | 5.0 | Minimum spread width (V6.10: $5, was $2) |
 | `SPREAD_WIDTH_MAX` | 10.0 | Maximum spread width ($10) |
-| `SPREAD_WIDTH_TARGET` | 5.0 | Target spread width ($5) |
+| `SPREAD_WIDTH_TARGET` | 3.0 | Target spread width (V6.8: was 5.0, lower for more matches) |
+| `SPREAD_LONG_LEG_DELTA_MIN` | 0.40 | Long leg minimum delta (V6.8: was 0.45) |
 | `SPREAD_SHORT_LEG_DELTA_MIN` | 0.10 | Short leg minimum delta |
-| `SPREAD_SHORT_LEG_DELTA_MAX` | 0.50 | Short leg maximum delta |
+| `SPREAD_SHORT_LEG_DELTA_MAX` | 0.55 | Short leg maximum delta (V6.8: was 0.52) |
 
 ### Exits and Stops
 
@@ -831,47 +879,87 @@ Same VIX level → OPPOSITE strategies!
 | SPIKING | > +5.0% | -3 | Crash mode |
 | WHIPSAW | 5+ reversals/hour | 0 | No direction |
 
-### 21 Micro-Regime Matrix (Complete)
+### 21 Micro-Regime Matrix (V6.5 Complete)
 
-VIX Level × VIX Direction = **21 distinct trading regimes**. Each regime maps to a specific strategy and allocation.
+VIX Level × VIX Direction = **21 distinct trading regimes**. Each regime maps to a specific strategy and direction.
 
-#### VIX LOW Regimes (VIX < 20) - Normal Market Conditions
+> **V6.5 Update**: Fixed divergence/confirmation logic. Added `DEBIT_MOMENTUM` strategy. WORSENING regimes now always use ITM PUT.
 
-| VIX Direction | Micro Regime | Strategy | Allocation | Rationale |
-|---------------|--------------|----------|:----------:|-----------|
-| FALLING_FAST | COMPLACENT_BULL | Long Calls | 5% | Strong recovery, ride momentum |
-| FALLING | CALM_BULL | Debit Spreads | 4% | Recovery starting, defined risk |
-| STABLE | GOLDILOCKS | Iron Condors | 3% | Range-bound, collect premium |
-| RISING | WAKING_UP | Protective Puts | 2% | Fear emerging, hedge longs |
-| RISING_FAST | SURPRISE_FEAR | Long Puts | 3% | Unexpected selloff, ride down |
-| SPIKING | FLASH_CRASH | Emergency Puts | 2% | Sudden crash, protective only |
-| WHIPSAW | CONFUSED_LOW | Iron Condors | 2% | No direction, small range bets |
+#### V6.5 Core Logic: Divergence vs Confirmation
 
-#### VIX MEDIUM Regimes (VIX 20-30) - Elevated Fear
+```
+DIVERGENCE (QQQ and VIX opposite) = Weak move → FADE (mean reversion)
+  • QQQ UP + VIX RISING = weak rally → BUY PUT
+  • QQQ DOWN + VIX FALLING = weak dip → BUY CALL
 
-| VIX Direction | Micro Regime | Strategy | Allocation | Rationale |
-|---------------|--------------|----------|:----------:|-----------|
-| FALLING_FAST | RELIEF_RALLY | Long Calls | 4% | Fear unwinding fast |
-| FALLING | FEAR_FADING | Call Spreads | 3% | Recovery starting |
-| STABLE | ELEVATED_RANGE | Iron Condors | 2% | High premium, tight range |
-| RISING | FEAR_BUILDING | Put Spreads | 3% | Momentum down continuing |
-| RISING_FAST | PANIC_STARTING | Long Puts | 4% | Accelerating selloff |
-| SPIKING | CRISIS_FORMING | Defensive Only | 2% | Potential crash forming |
-| WHIPSAW | CONFUSED_MED | Small Condors | 1% | Chaos, minimal exposure |
+CONFIRMATION (QQQ and VIX aligned) = Strong move → MOMENTUM (ride trend)
+  • QQQ UP + VIX FALLING = confirmed rally → BUY CALL
+  • QQQ DOWN + VIX RISING = confirmed selloff → BUY PUT
+```
 
-#### VIX HIGH Regimes (VIX > 30) - Crisis Conditions
+#### Complete 21-Regime Matrix with CALL/PUT Direction
 
-| VIX Direction | Micro Regime | Strategy | Allocation | Rationale |
-|---------------|--------------|----------|:----------:|-----------|
-| FALLING_FAST | CRISIS_ENDING | Long Calls | 3% | Crisis resolution, bounce |
-| FALLING | RECOVERY_START | Call Spreads | 2% | Early recovery signs |
-| STABLE | CRISIS_PLATEAU | **NO TRADE** | 0% | Uncertainty too high |
-| RISING | CRISIS_WORSENING | Protective Only | 1% | Crisis deepening |
-| RISING_FAST | FULL_PANIC | **NO TRADE** | 0% | Max fear, stay out |
-| SPIKING | CAPITULATION | **NO TRADE** | 0% | Capitulation phase |
-| WHIPSAW | CHAOS | **NO TRADE** | 0% | Complete chaos, no edge |
+```
+                              VIX DIRECTION
+              ┌──────────────┬──────────────┬──────────────┬──────────────┬──────────────┬──────────────┬──────────────┐
+              │ FALLING_FAST │   FALLING    │    STABLE    │    RISING    │ RISING_FAST  │   SPIKING    │   WHIPSAW    │
+              │   (< -5%)    │  (-5% to -2%)│    (±2%)     │ (+2% to +5%) │ (+5% to +10%)│   (> +10%)   │  (choppy)    │
+┌─────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤
+│             │  PERFECT_MR  │   GOOD_MR    │    NORMAL    │  CAUTION_LOW │  TRANSITION  │ RISK_OFF_LOW │  CHOPPY_LOW  │
+│     LOW     ├──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤
+│   (VIX<20)  │ QQQ↑: CALL   │ QQQ↑: CALL   │ QQQ↑: PUT    │              │              │  PROTECTIVE  │              │
+│             │ QQQ↓: CALL   │ QQQ↓: CALL   │ QQQ↓: CALL   │   NO_TRADE   │   NO_TRADE   │  PUTS ONLY   │   NO_TRADE   │
+│             │  ✅ TRADEABLE │  ✅ TRADEABLE │  ✅ TRADEABLE │  ⚠️ CAUTION   │  ⚠️ CAUTION   │  🔴 DANGER   │  ⚠️ CAUTION   │
+├─────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤
+│             │  RECOVERING  │   IMPROVING  │   CAUTIOUS   │   WORSENING  │ DETERIORATING│   BREAKING   │   UNSTABLE   │
+│   MEDIUM    ├──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤
+│  (VIX20-25) │ QQQ↑: CALL   │ QQQ↑: CALL   │              │ QQQ↑: PUT    │ QQQ↑: CALL   │  PROTECTIVE  │  PROTECTIVE  │
+│             │ QQQ↓: CALL   │ QQQ↓: CALL   │   NO_TRADE   │ QQQ↓: PUT    │ QQQ↓: PUT    │  PUTS ONLY   │  PUTS ONLY   │
+│             │  ✅ TRADEABLE │  ✅ TRADEABLE │  ⚠️ CAUTION   │  ✅ ITM PUT   │  ✅ ITM ONLY  │  🔴 DANGER   │  🔴 DANGER   │
+├─────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤
+│             │ PANIC_EASING │   CALMING    │   ELEVATED   │WORSENING_HIGH│  FULL_PANIC  │    CRASH     │   VOLATILE   │
+│    HIGH     ├──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┼──────────────┤
+│   (VIX>25)  │ QQQ↑: CALL   │ QQQ↑: CALL   │ QQQ↑: CALL   │ QQQ↑: PUT    │  PROTECTIVE  │  PROTECTIVE  │  PROTECTIVE  │
+│             │ QQQ↓: CALL   │ QQQ↓: CALL   │ QQQ↓: PUT    │ QQQ↓: PUT    │  PUTS ONLY   │  PUTS ONLY   │  PUTS ONLY   │
+│             │  ✅ TRADEABLE │  ✅ TRADEABLE │  ✅ ITM ONLY  │  ✅ ITM PUT   │  🔴 DANGER   │  🔴 DANGER   │  🔴 DANGER   │
+└─────────────┴──────────────┴──────────────┴──────────────┴──────────────┴──────────────┴──────────────┴──────────────┘
+```
 
-**Key Insight**: 4 of 21 regimes result in **NO TRADE** (all HIGH VIX with non-recovery direction). This is by design—some market conditions have no edge.
+#### Quick Reference: All 21 Regimes
+
+| Regime | VIX Level + Dir | QQQ UP | QQQ DOWN | Strategy | Notes |
+|--------|-----------------|:------:|:--------:|----------|-------|
+| **PERFECT_MR** | LOW + FALL_FAST | CALL | CALL | DEBIT_FADE/MOMENTUM | Best MR conditions |
+| **GOOD_MR** | LOW + FALLING | CALL | CALL | DEBIT_FADE/MOMENTUM | Good MR conditions |
+| **NORMAL** | LOW + STABLE | PUT | CALL | DEBIT_FADE (small) | Stable fade |
+| **CAUTION_LOW** | LOW + RISING | — | — | NO_TRADE | Skip |
+| **TRANSITION** | LOW + RISE_FAST | — | — | NO_TRADE | Skip |
+| **RISK_OFF_LOW** | LOW + SPIKING | PUT | PUT | PROTECTIVE_PUTS | Danger |
+| **CHOPPY_LOW** | LOW + WHIPSAW | — | — | NO_TRADE | Skip |
+| **RECOVERING** | MED + FALL_FAST | CALL | CALL | DEBIT_FADE/MOMENTUM | Recovery starting |
+| **IMPROVING** | MED + FALLING | CALL | CALL | DEBIT_FADE/MOMENTUM | Conditions improving |
+| **CAUTIOUS** | MED + STABLE | — | — | NO_TRADE | Grind-Up exception |
+| **WORSENING** | MED + RISING | **PUT** | **PUT** | ITM_MOMENTUM | V6.5: Always PUT |
+| **DETERIORATING** | MED + RISE_FAST | CALL | PUT | ITM_MOMENTUM | ITM follows QQQ |
+| **BREAKING** | MED + SPIKING | PUT | PUT | PROTECTIVE_PUTS | Danger |
+| **UNSTABLE** | MED + WHIPSAW | PUT | PUT | PROTECTIVE_PUTS | Danger |
+| **PANIC_EASING** | HIGH + FALL_FAST | CALL | CALL | DEBIT_FADE/MOMENTUM | Panic subsiding |
+| **CALMING** | HIGH + FALLING | CALL | CALL | DEBIT_FADE/MOMENTUM | Fear decreasing |
+| **ELEVATED** | HIGH + STABLE | CALL | PUT | ITM_MOMENTUM | ITM follows QQQ |
+| **WORSENING_HIGH** | HIGH + RISING | **PUT** | **PUT** | ITM_MOMENTUM | V6.5: Always PUT |
+| **FULL_PANIC** | HIGH + RISE_FAST | PUT | PUT | PROTECTIVE_PUTS | Danger |
+| **CRASH** | HIGH + SPIKING | PUT | PUT | PROTECTIVE_PUTS | Danger |
+| **VOLATILE** | HIGH + WHIPSAW | PUT | PUT | PROTECTIVE_PUTS | Danger |
+
+#### V6.5 Key Insights
+
+| VIX Direction | Bias | Logic |
+|---------------|------|-------|
+| 🟢 **VIX FALLING** | CALL bias | Fear decreasing = bullish. Confirmation (QQQ↑) or Divergence (QQQ↓) both favor CALL |
+| 🔴 **VIX RISING** | PUT bias | Fear increasing = bearish. WORSENING regimes ALWAYS use PUT regardless of QQQ |
+| ⚪ **VIX STABLE** | Small fade | No conviction. QQQ UP → small PUT fade, QQQ DOWN → small CALL fade |
+
+**Key Insight**: 6 of 21 regimes result in **DANGER/NO TRADE** (SPIKING, WHIPSAW in MEDIUM/HIGH VIX). This is by design—some market conditions have no edge.
 
 ### Micro Score Calculation
 
@@ -942,24 +1030,45 @@ VIX1D was evaluated and rejected because:
 
 ---
 
-### Intraday Strategy Deployment
+### Intraday Strategy Deployment (V6.5)
 
-Based on micro regime, deploy one of four intraday strategies:
+Based on micro regime, deploy one of five intraday strategies:
 
-#### Strategy 1: Debit Fade (Mean Reversion)
+#### Strategy 1: Debit Fade (Divergence - Mean Reversion)
 
-**When**: VIX FALLING + QQQ oversold
-**Setup**: Buy OTM call/put debit spread
-**Target**: Fade the extreme move, exit at VWAP
+**When**: QQQ and VIX moving in OPPOSITE directions (divergence = weak move)
+**Setup**: Fade the weak move with opposite direction option
+**Target**: Mean reversion to VWAP
 **Max Allocation**: 3%
 
 ```
-Trigger: micro_score >= 50 AND qqqMove >= 1.0% AND vix >= 13.5 AND vix < 25
-Strategy: ATM debit spread, 0-1 DTE
+V6.5 DIVERGENCE LOGIC:
+  • QQQ UP + VIX RISING = weak rally → BUY PUT (fade)
+  • QQQ DOWN + VIX FALLING = weak dip → BUY CALL (fade)
+
+Trigger: tradeable_regime AND qqqMove >= 0.15% AND vix >= 13.5 AND vix < 25
+Strategy: OTM debit spread, 0-1 DTE
 Exit: +30% profit OR return to VWAP OR 15:30 time stop
 ```
 
-> **V2.19 Change**: Added `INTRADAY_DEBIT_FADE_VIX_MIN = 13.5` floor. In ultra-low VIX "apathy" markets (VIX < 13.5), QQQ moves are too small for a fade to generate meaningful profit.
+> **V6.8 Change**: Lowered `INTRADAY_DEBIT_FADE_VIX_MIN` from 13.5 to 11.5 to allow trades in low VIX bull markets. Also reduced `INTRADAY_DEBIT_FADE_MIN_SCORE` from 45 to 35 and widened `INTRADAY_FADE_MAX_MOVE` from 1.20% to 1.50% to capture more opportunities.
+
+#### Strategy 1b: Debit Momentum (Confirmation - Trend Following) [V6.5 NEW]
+
+**When**: QQQ and VIX moving in ALIGNED directions (confirmation = strong move)
+**Setup**: Ride the confirmed trend with same direction option
+**Target**: Momentum continuation
+**Max Allocation**: 3%
+
+```
+V6.5 CONFIRMATION LOGIC:
+  • QQQ UP + VIX FALLING = confirmed rally → BUY CALL (ride)
+  • QQQ DOWN + VIX RISING = confirmed selloff → BUY PUT (ride)
+
+Trigger: tradeable_regime AND qqqMove >= 0.15% AND vix >= 13.5 AND vix < 25
+Strategy: OTM debit spread, 0-1 DTE
+Exit: +30% profit OR trailing stop OR 15:30 time stop
+```
 
 #### Strategy 2: Credit Spreads (Range-Bound)
 
@@ -974,18 +1083,26 @@ Strategy: 10-delta wings, 0-1 DTE
 Exit: 50% of max profit OR breach of short strike
 ```
 
-#### Strategy 3: ITM Momentum
+#### Strategy 3: ITM Momentum (V6.5 Updated)
 
-**When**: VIX RISING + clear directional move
-**Setup**: Buy ITM option (0.70 delta)
+**When**: VIX elevated + clear directional move (or VIX RISING regimes)
+**Setup**: Buy ITM option (0.70 delta) - reduced vega exposure
 **Target**: Ride momentum continuation
 **Max Allocation**: 3%
 
 ```
-Trigger: vixDirection in (RISING, RISING_FAST) AND qqqMove >= 0.8% AND vix >= 25
-Strategy: ITM put (delta 0.70), 0-1 DTE
+V6.5 ITM MOMENTUM REGIMES:
+  • WORSENING (MED + RISING): Always ITM PUT regardless of QQQ direction
+  • WORSENING_HIGH (HIGH + RISING): Always ITM PUT regardless of QQQ direction
+  • DETERIORATING (MED + RISE_FAST): ITM follows QQQ direction
+  • ELEVATED (HIGH + STABLE): ITM follows QQQ direction
+
+Trigger: momentum_regime AND vix >= INTRADAY_ITM_MIN_VIX AND qqqMove >= 0.8%
+Strategy: ITM option (delta 0.70), 0-1 DTE
 Exit: +25% profit OR trailing stop after +15%
 ```
+
+> **V6.5 Change**: WORSENING and WORSENING_HIGH regimes now ALWAYS use ITM PUT regardless of QQQ direction. Rationale: VIX rising = fear is real/building, so bearish bias is correct even if QQQ is temporarily up (bear market rally).
 
 #### Strategy 4: Protective Puts
 
@@ -1006,6 +1123,73 @@ Exit: Crisis resolution OR expiry
 - 30 minutes before market close
 - Time to handle any execution issues
 - Avoids overnight gamma risk on 0-DTE
+
+---
+
+## V6.10 Assignment Prevention System
+
+V6.10 introduces a comprehensive 4-layer defense against option assignment risk, which caused -$150,953 in losses across 2015, 2017, 2021-2022 backtests.
+
+### Layer 1: Mandatory DTE=1 Force Close
+
+**All spread positions close when DTE reaches 1** (day before expiration), regardless of P&L.
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `SPREAD_FORCE_CLOSE_DTE` | 1 | Close at DTE=1 (nuclear option) |
+| `SPREAD_FORCE_CLOSE_ENABLED` | True | Master switch |
+
+### Layer 2: Pre-Market ITM Check (09:25 ET)
+
+Check all short legs before market open to catch overnight gaps. If short leg went ITM overnight, queue for immediate close at 09:30.
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `PREMARKET_ITM_CHECK_ENABLED` | True | Enable 09:25 check |
+| `PREMARKET_ITM_CHECK_HOUR` | 9 | Check hour |
+| `PREMARKET_ITM_CHECK_MINUTE` | 25 | Check minute |
+
+### Layer 3: Tighter ITM Exit Threshold
+
+Exit spread immediately when short leg goes ITM by threshold (at ANY DTE, not just near expiry).
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `SHORT_LEG_ITM_EXIT_THRESHOLD` | 0.005 | Exit at 0.5% ITM (was 1%) |
+| `SHORT_LEG_ITM_EXIT_ENABLED` | True | Master switch |
+
+### Layer 4: Wider Spread Width
+
+Wider spreads survive larger overnight gaps and reduce assignment risk.
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `SPREAD_WIDTH_MIN` | 5.0 | Minimum $5 width (was $3) |
+| `SPREAD_WIDTH_TARGET` | 5.0 | Target $5 width (was $3) |
+
+### Assignment Prevention Summary
+
+```
+Timeline of Protection:
+09:25 ET → Layer 2: Pre-market ITM check (catch overnight gaps)
+Intraday → Layer 3: ITM exit at 0.5% threshold (real-time monitoring)
+DTE = 1  → Layer 1: Force close ALL spreads (nuclear option)
+All DTE  → Layer 4: Wider spreads survive larger gaps
+```
+
+---
+
+## V6.10 Choppy Market Filter
+
+Detects whipsawing markets and reduces position size to limit losses. Added after 2015 backtest showed 48% win rate but negative P&L due to choppy conditions.
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `CHOPPY_MARKET_FILTER_ENABLED` | True | Enable filter |
+| `CHOPPY_REVERSAL_COUNT` | 3 | Reversals to trigger |
+| `CHOPPY_LOOKBACK_HOURS` | 2 | Lookback window |
+| `CHOPPY_SIZE_REDUCTION` | 0.50 | 50% size reduction |
+| `CHOPPY_MIN_MOVE_PCT` | 0.003 | Min 0.3% move (filter noise) |
 
 ---
 

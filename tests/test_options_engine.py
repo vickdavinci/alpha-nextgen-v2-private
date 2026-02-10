@@ -224,30 +224,32 @@ class TestLiquidityScoring:
         assert score == 1.0  # (1.0 + 1.0) / 2 - both excellent
 
     def test_liquidity_wide_spread(self, engine):
-        """Test wide spread (> 25%) reduces score significantly. V2.3.7 threshold."""
+        """Test wide spread at warning threshold gets moderate score. V6.8 threshold."""
+        # V6.8: OPTIONS_SPREAD_WARNING_PCT = 0.30, so exactly 30% gets spread_score=0.5
         score = engine._score_liquidity(
-            spread_pct=0.30,  # > 25% (V2.3.7 warning threshold)
+            spread_pct=0.30,  # = 30% (V6.8 warning threshold)
             open_interest=10000,
         )
-        assert score == 0.5  # (0.0 + 1.0) / 2
+        assert score == 0.75  # (0.5 + 1.0) / 2
 
     def test_liquidity_low_oi(self, engine):
-        """Test low open interest reduces score."""
-        # V2.3.7: OI thresholds changed (MIN_OI now 100, half is 50)
+        """Test moderate OI above threshold gets full score."""
+        # V6.8: OPTIONS_MIN_OPEN_INTEREST = 50, so 75 >= 50 → oi_score = 1.0
         score = engine._score_liquidity(
             spread_pct=0.03,
-            open_interest=75,  # 50-100 (low OI range)
+            open_interest=75,  # >= 50 (min_oi)
         )
-        assert score == 0.75  # (1.0 + 0.5) / 2
+        assert score == 1.0  # (1.0 + 1.0) / 2
 
     def test_liquidity_very_low_oi(self, engine):
-        """Test very low OI reduces score significantly."""
-        # V2.3.7: OI thresholds changed (MIN_OI now 100, half is 50)
+        """Test OI between min and half-min gets moderate score."""
+        # V6.8: OPTIONS_MIN_OPEN_INTEREST = 50, half is 25
+        # 30 is between 25 and 50, so oi_score = 0.5
         score = engine._score_liquidity(
             spread_pct=0.03,
-            open_interest=30,  # < 50
+            open_interest=30,  # 25 <= 30 < 50
         )
-        assert score == 0.5  # (1.0 + 0.0) / 2
+        assert score == 0.75  # (1.0 + 0.5) / 2
 
 
 class TestFullEntryScore:
@@ -386,6 +388,8 @@ class TestEntrySignals:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=75.0,  # V3.2: BULL regime required for CALL entries
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         assert result is not None
         assert result.source == "OPT"
@@ -517,6 +521,8 @@ class TestEntrySignals:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=75.0,  # V3.2: BULL regime required for CALL entries
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         assert result is not None
 
@@ -537,6 +543,8 @@ class TestEntrySignals:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=75.0,  # V3.2: BULL regime required for CALL entries
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         assert result is None
 
@@ -556,35 +564,52 @@ class TestEntrySignals:
         )
         assert result is None
 
-    def test_entry_allowed_regime_at_40(self, engine, sample_contract):
-        """Test entry allowed when regime score = 40 (boundary)."""
+    def test_call_blocked_regime_at_40(self, engine, sample_contract):
+        """V3.2: CALL blocked when regime = 40 (CAUTIOUS - PUT only)."""
         result = engine.check_entry_signal(
             adx_value=30.0,
             current_price=105.0,
             ma200_value=100.0,
             iv_rank=50.0,
-            best_contract=sample_contract,
+            best_contract=sample_contract,  # CALL contract
             current_hour=10,
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
-            regime_score=40.0,  # At threshold
+            regime_score=40.0,  # CAUTIOUS - CALL blocked
         )
-        assert result is not None
+        assert result is None  # V3.2: CALL blocked below regime 70
 
-    def test_entry_allowed_regime_above_40(self, engine, sample_contract):
-        """Test entry allowed when regime score > 40."""
+    def test_call_blocked_regime_neutral(self, engine, sample_contract):
+        """V3.2: CALL blocked when regime = 65 (NEUTRAL - PUT only)."""
         result = engine.check_entry_signal(
             adx_value=30.0,
             current_price=105.0,
             ma200_value=100.0,
             iv_rank=50.0,
-            best_contract=sample_contract,
+            best_contract=sample_contract,  # CALL contract
             current_hour=10,
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
-            regime_score=65.0,  # Above threshold
+            regime_score=55.0,  # V3.4: Lower NEUTRAL (50-59) - CALL blocked
+        )
+        assert result is None  # V3.4: CALL blocked in lower NEUTRAL (50-59)
+
+    def test_call_allowed_regime_bull(self, engine, sample_contract):
+        """V3.2: CALL allowed when regime >= 70 (BULL)."""
+        result = engine.check_entry_signal(
+            adx_value=30.0,
+            current_price=105.0,
+            ma200_value=100.0,
+            iv_rank=50.0,
+            best_contract=sample_contract,  # CALL contract
+            current_hour=10,
+            current_minute=30,
+            current_date="2026-01-26",
+            portfolio_value=100000,
+            regime_score=75.0,  # BULL - CALL allowed
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         assert result is not None
 
@@ -644,6 +669,8 @@ class TestEntrySignals:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=75.0,  # V3.2: BULL regime required for CALL entries
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         assert result is not None
 
@@ -1153,6 +1180,8 @@ class TestDTEDeltaFiltering:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=75.0,  # V3.2: BULL regime required for CALL entries
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         # DTE=0 is within allowed range (0-45), so entry is allowed
         assert result is not None
@@ -1196,6 +1225,8 @@ class TestDTEDeltaFiltering:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=75.0,  # V3.2: BULL regime required for CALL entries
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         assert result is not None
 
@@ -1213,6 +1244,8 @@ class TestDTEDeltaFiltering:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=75.0,  # V3.2: BULL regime required for CALL entries
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         assert result is not None
 
@@ -1280,6 +1313,8 @@ class TestDTEDeltaFiltering:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=75.0,  # V3.2: BULL regime required for CALL entries
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         assert result is not None
 
@@ -1297,6 +1332,8 @@ class TestDTEDeltaFiltering:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=75.0,  # V3.2: BULL regime required for CALL entries
+            direction=OptionDirection.CALL,  # V6.0: Direction from conviction resolution
         )
         assert result is not None
 
@@ -1315,6 +1352,8 @@ class TestDTEDeltaFiltering:
             current_minute=30,
             current_date="2026-01-26",
             portfolio_value=100000,
+            regime_score=35.0,  # V3.2: PUT allowed in BEAR regime
+            direction=OptionDirection.PUT,  # V6.0: Direction from conviction resolution
         )
         assert result is not None  # Should allow since abs(-0.50) = 0.50 is valid
 
@@ -2612,6 +2651,10 @@ class TestRejectionAwareSizing:
 # =============================================================================
 
 
+@pytest.mark.skipif(
+    not getattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", True),
+    reason="V5.3: Neutrality exit disabled for strategy validation",
+)
 class TestNeutralityExit:
     """V2.22: Tests for symmetric neutrality exit — close flat spreads in dead zone."""
 
@@ -2677,6 +2720,7 @@ class TestNeutralityExit:
             long_leg_price=long_price,
             short_leg_price=short_price,
             regime_score=52.0,  # Dead zone (45-60)
+            vix_current=20.0,
             current_dte=15,  # Not near expiry
         )
 
@@ -2694,6 +2738,7 @@ class TestNeutralityExit:
             long_leg_price=long_price,
             short_leg_price=short_price,
             regime_score=55.0,  # Dead zone
+            vix_current=20.0,
             current_dte=15,
         )
 
@@ -2711,6 +2756,7 @@ class TestNeutralityExit:
             long_leg_price=long_price,
             short_leg_price=short_price,
             regime_score=50.0,  # Dead zone
+            vix_current=20.0,
             current_dte=15,
         )
 
@@ -2727,7 +2773,8 @@ class TestNeutralityExit:
         result = engine.check_spread_exit_signals(
             long_leg_price=long_price,
             short_leg_price=short_price,
-            regime_score=65.0,  # Outside dead zone — bullish conviction
+            regime_score=70.0,  # V3.4: Outside dead zone (45-65) — bullish conviction
+            vix_current=20.0,
             current_dte=15,
         )
 
@@ -2760,6 +2807,7 @@ class TestNeutralityExit:
             long_leg_price=long_price,
             short_leg_price=short_price,
             regime_score=50.0,  # Dead zone
+            vix_current=20.0,
             current_dte=15,
         )
 
@@ -2779,6 +2827,7 @@ class TestNeutralityExit:
                 long_leg_price=long_price,
                 short_leg_price=short_price,
                 regime_score=52.0,
+                vix_current=20.0,
                 current_dte=15,
             )
             # Should be None — feature disabled
@@ -2786,17 +2835,21 @@ class TestNeutralityExit:
         finally:
             config.SPREAD_NEUTRALITY_EXIT_ENABLED = original
 
-    def test_neutrality_exit_boundary_pnl_10pct(self, engine, long_leg, short_leg):
-        """P&L at exactly +10% boundary should trigger neutrality exit (inclusive)."""
+    def test_neutrality_exit_within_pnl_band(self, engine, long_leg, short_leg):
+        """P&L within ±6% band should trigger neutrality exit in dead zone.
+
+        V6.13: SPREAD_NEUTRALITY_EXIT_PNL_BAND = 6%, SPREAD_NEUTRALITY_ZONE = 48-62.
+        """
         self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
-        # +10%: current = 2.50 * 1.10 = 2.75
-        long_price = 5.75
-        short_price = 3.00  # value = 2.75, pnl_pct = +10%
+        # +4%: current = 2.50 * 1.04 = 2.60
+        long_price = 5.60
+        short_price = 3.00  # value = 2.60, pnl_pct = +4%
 
         result = engine.check_spread_exit_signals(
             long_leg_price=long_price,
             short_leg_price=short_price,
-            regime_score=50.0,  # Dead zone
+            regime_score=50.0,  # Dead zone (within 48-62)
+            vix_current=20.0,
             current_dte=15,
         )
 
@@ -2888,8 +2941,9 @@ class TestVASSCreditSpreadEntry:
     # --- VASS Strategy Selection Tests ---
 
     def test_select_strategy_high_iv_bullish(self, engine):
-        """HIGH IV + BULLISH should select Bull Put Credit with weekly DTE."""
+        """HIGH IV + BULLISH should select Bull Put Credit with weekly DTE (V6.9: sell premium)."""
         strategy, dte_min, dte_max = engine._select_strategy("BULLISH", "HIGH")
+        # V6.9: Reverted to V2.8 - sell premium in HIGH IV environment
         assert strategy == SpreadStrategy.BULL_PUT_CREDIT
         assert dte_min == config.VASS_HIGH_IV_DTE_MIN
         assert dte_max == config.VASS_HIGH_IV_DTE_MAX
@@ -2914,12 +2968,13 @@ class TestVASSCreditSpreadEntry:
         """V3.0: Bull Put Credit entry should generate TargetWeight with credit metadata.
 
         V3.0 thesis: PUT spreads (including Bull Put Credit) are allowed in bearish regimes (< 50).
+        V6.4: Short PUT strike (500) must be >= 3% OTM, so current_price must be >= 515.46.
         """
         signal = engine.check_credit_spread_entry_signal(
             regime_score=45.0,  # V3.0: Bearish regime (< 50) for PUT spreads
             vix_current=28.0,  # High IV
             adx_value=30.0,
-            current_price=510.0,
+            current_price=520.0,  # V6.4: Raised to pass 3% OTM gate (500/520 = 3.85% OTM)
             ma200_value=480.0,
             iv_rank=70.0,
             current_hour=11,
@@ -2929,6 +2984,7 @@ class TestVASSCreditSpreadEntry:
             short_leg_contract=credit_short_leg,
             long_leg_contract=credit_long_leg,
             strategy=SpreadStrategy.BULL_PUT_CREDIT,
+            direction=OptionDirection.PUT,  # V6.0: Direction from conviction resolution
         )
 
         assert signal is not None
@@ -2993,17 +3049,21 @@ class TestVASSCreditSpreadEntry:
         assert max_loss_per > 0  # Defined max loss
         assert total_margin <= 7500  # Never exceeds allocation
 
-    def test_credit_entry_blocked_dead_zone(self, engine, credit_short_leg, credit_long_leg):
-        """V3.0: Credit spread should be blocked in dead zone (50-70).
+    def test_credit_put_allowed_lower_neutral_reduced_sizing(
+        self, engine, credit_short_leg, credit_long_leg
+    ):
+        """V3.9: PUT credit spread allowed in Lower NEUTRAL (50-59) at 50% sizing.
 
-        V3.0 thesis: PUT spreads only allowed when regime < 50.
-        Regime 50-70 is the "dead zone" where no options are allowed.
+        V3.9 thesis: Lower NEUTRAL allows PUT-only at reduced sizing.
+        Upper NEUTRAL (60-69) is CALL-only zone.
+        BULL_PUT_CREDIT is PUT direction, so allowed at 50% in Lower NEUTRAL.
+        V6.4: Short PUT strike (500) must be >= 3% OTM, so current_price must be >= 515.46.
         """
         signal = engine.check_credit_spread_entry_signal(
-            regime_score=60.0,  # V3.0: Dead zone (50-70) - no options allowed
+            regime_score=55.0,  # V3.9: Lower NEUTRAL (50-59) - PUT allowed at 50% sizing
             vix_current=28.0,
             adx_value=30.0,
-            current_price=510.0,
+            current_price=520.0,  # V6.4: Raised to pass 3% OTM gate (500/520 = 3.85% OTM)
             ma200_value=480.0,
             iv_rank=70.0,
             current_hour=11,
@@ -3013,18 +3073,21 @@ class TestVASSCreditSpreadEntry:
             short_leg_contract=credit_short_leg,
             long_leg_contract=credit_long_leg,
             strategy=SpreadStrategy.BULL_PUT_CREDIT,
+            direction=OptionDirection.PUT,  # V6.0: Direction from conviction resolution
         )
 
-        assert signal is None
+        # V3.9: PUT allowed in Lower NEUTRAL at reduced sizing
+        assert signal is not None
+        assert "BULL_PUT_CREDIT" in signal.reason
 
     # --- IVSensor Tests ---
 
     def test_iv_sensor_classification_high(self):
-        """IVSensor with VIX avg=28 should classify as HIGH."""
+        """IVSensor with VIX avg=30 should classify as HIGH."""
         sensor = IVSensor(smoothing_minutes=30)
-        # Feed 15 readings of VIX=28
+        # V6.6: Updated - Feed 15 readings of VIX=30 (threshold raised to 28)
         for _ in range(15):
-            sensor.update(28.0)
+            sensor.update(30.0)
 
         assert sensor.is_ready()
         assert sensor.classify() == "HIGH"
@@ -3062,3 +3125,33 @@ class TestVASSCreditSpreadEntry:
         assert engine.is_debit_strategy(SpreadStrategy.BEAR_PUT_DEBIT) is True
         assert engine.is_debit_strategy(SpreadStrategy.BULL_PUT_CREDIT) is False
         assert engine.is_debit_strategy(SpreadStrategy.BEAR_CALL_CREDIT) is False
+
+
+class TestResolverMicroPrimary:
+    """Micro-first resolver behavior for intraday signals."""
+
+    def test_micro_misaligned_without_conviction_allows_half(self, engine):
+        """Micro misalignment should be allowed with risk-scale reason, not blocked."""
+        should_trade, resolved_direction, reason = engine.resolve_trade_signal(
+            engine="MICRO",
+            engine_direction="BEARISH",
+            engine_conviction=False,
+            macro_direction="BULLISH",
+            conviction_strength=None,
+        )
+        assert should_trade is True
+        assert resolved_direction == "BEARISH"
+        assert "MISALIGNED_HALF" in reason
+
+    def test_vass_misaligned_without_conviction_still_blocked(self, engine):
+        """VASS keeps legacy block behavior when misaligned and no conviction."""
+        should_trade, resolved_direction, reason = engine.resolve_trade_signal(
+            engine="VASS",
+            engine_direction="BEARISH",
+            engine_conviction=False,
+            macro_direction="BULLISH",
+            conviction_strength=None,
+        )
+        assert should_trade is False
+        assert resolved_direction is None
+        assert "NO_TRADE: Misaligned" in reason

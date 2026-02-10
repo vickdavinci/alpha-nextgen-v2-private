@@ -45,6 +45,25 @@ class TestMOOOrderLifecycle:
         algo = MagicMock()
         algo.Time = datetime(2024, 1, 15, 10, 0)
         algo.Log = MagicMock()
+
+        # Set up Securities dictionary with common symbols
+        def create_security(symbol, price=100.0):
+            sec = MagicMock()
+            sec.Price = price
+            sec.Symbol = symbol
+            sec.IsTradable = True
+            return sec
+
+        algo.Securities = {
+            "QLD": create_security("QLD", 100.0),
+            "SSO": create_security("SSO", 75.0),
+            "TQQQ": create_security("TQQQ", 50.0),
+            "TMF": create_security("TMF", 8.0),
+            "SHV": create_security("SHV", 110.0),
+            "UGL": create_security("UGL", 50.0),
+            "UCO": create_security("UCO", 30.0),
+        }
+
         return ExecutionEngine(algo)
 
     def test_moo_lifecycle_queue_submit_fill(self, exec_engine):

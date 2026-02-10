@@ -3,12 +3,12 @@ Exposure Groups - Position grouping and limit enforcement.
 
 Groups correlated positions for portfolio-level risk management.
 Prevents excessive concentration in any single factor (Nasdaq beta,
-S&P beta, interest rates).
+S&P beta, commodities).
 
-Groups:
-- NASDAQ_BETA: TQQQ, QLD, SOXL, PSQ (inverse) - 50% net, 75% gross
-- SPY_BETA: SSO - 40% net, 40% gross
-- RATES: TMF, SHV - 40% net, 40% gross
+V6.11 Universe Groups:
+- NASDAQ_BETA: TQQQ, QLD, SOXL - 50% net, 75% gross
+- SPY_BETA: SSO, SPXL, SH (inverse) - 40% net, 50% gross
+- COMMODITIES: UGL, UCO - 25% net, 25% gross
 
 Spec: docs/11-portfolio-router.md (Section 11.5.2)
 """
@@ -21,15 +21,21 @@ import config
 
 
 class ExposureGroupName(Enum):
-    """Enumeration of exposure groups."""
+    """Enumeration of exposure groups.
+
+    V6.11 Universe Redesign:
+    - RATES removed (TMF/SHV retired)
+    - COMMODITIES added (UGL/UCO)
+    """
 
     NASDAQ_BETA = "NASDAQ_BETA"
     SPY_BETA = "SPY_BETA"
-    RATES = "RATES"
+    COMMODITIES = "COMMODITIES"
 
 
 # Inverse symbols count as negative exposure
-INVERSE_SYMBOLS: Set[str] = {"PSQ"}
+# V6.11: SH replaced PSQ as the inverse hedge
+INVERSE_SYMBOLS: Set[str] = {"SH"}
 
 
 @dataclass

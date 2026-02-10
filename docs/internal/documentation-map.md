@@ -185,4 +185,4 @@ This map should be updated when:
 - New documentation files are created
 - New patterns of code-to-doc relationships emerge
 
-**Last Updated:** 4 February 2026 (V2.29 — Added startup_gate.py mapping)
+**Last Updated:** 9 February 2026 (V6.11 — Updated regime engine V5.3 documentation, universe redesign)

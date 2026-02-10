@@ -177,15 +177,16 @@ class TestMicroRegimeEnum:
 class TestIntradayStrategyEnum:
     """Tests for IntradayStrategy enum."""
 
-    def test_intraday_strategy_has_five_values(self):
-        """IntradayStrategy should have exactly 5 values."""
-        assert len(IntradayStrategy) == 5
+    def test_intraday_strategy_has_six_values(self):
+        """IntradayStrategy should have exactly 6 values (V6.5: added DEBIT_MOMENTUM)."""
+        assert len(IntradayStrategy) == 6
 
     def test_intraday_strategy_expected_values(self):
         """IntradayStrategy should have specific expected values."""
         expected = {
             "NO_TRADE",
             "DEBIT_FADE",
+            "DEBIT_MOMENTUM",  # V6.5: Added for confirmation trades
             "CREDIT_SPREAD",
             "ITM_MOMENTUM",
             "PROTECTIVE_PUTS",

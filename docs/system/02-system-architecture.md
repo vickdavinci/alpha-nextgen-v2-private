@@ -24,19 +24,17 @@ flowchart TB
         subgraph PROXY["Proxy Data (Daily)"]
             SPY_D["SPY"]
             RSP_D["RSP"]
-            HYG_D["HYG"]
-            IEF_D["IEF"]
+            VIX_D["VIX"]
         end
         subgraph TRADED["Traded Data (Minute)"]
-            TQQQ["TQQQ"]
-            SOXL["SOXL"]
             QLD["QLD"]
             SSO["SSO"]
-            TNA["TNA"]
-            FAS["FAS"]
-            TMF["TMF"]
-            PSQ["PSQ"]
-            SHV["SHV"]
+            UGL["UGL"]
+            UCO["UCO"]
+            TQQQ["TQQQ"]
+            SPXL["SPXL"]
+            SOXL["SOXL"]
+            SH["SH"]
             SPY_M["SPY"]
         end
         subgraph OPTIONS_DATA["Options Data"]
@@ -47,18 +45,18 @@ flowchart TB
 
     subgraph CORE["CORE ENGINES"]
         direction LR
-        REGIME["REGIME ENGINE<br/>─────────────<br/>5 Factors (V2.3)<br/>Score 0-100<br/>Smoothing α=0.3<br/>State Classification"]
+        REGIME["REGIME ENGINE<br/>─────────────<br/>4 Factors (V5.3)<br/>Score 0-100<br/>VIX Guards<br/>State Classification"]
         CAPITAL["CAPITAL ENGINE<br/>─────────────<br/>SEED/GROWTH Phase<br/>Virtual Lockbox<br/>Tradeable Equity<br/>Position Limits"]
         RISK["RISK ENGINE<br/>─────────────<br/>Kill Switch -5%<br/>Panic Mode -4%<br/>Weekly Breaker<br/>Gap/Vol/Time Guard<br/>Greeks Monitor"]
     end
 
     subgraph STRATEGIES["STRATEGY ENGINES (Core-Satellite)"]
         direction LR
-        TREND["TREND (55%)<br/>─────────<br/>QLD 20%/SSO 15%<br/>TNA 12%/FAS 8%<br/>MA200+ADX<br/>Urgency: EOD"]
-        OPTIONS["OPTIONS (25%)<br/>─────────<br/>QQQ Options<br/>Swing 20%<br/>Intraday 5%<br/>Urgency: IMMED"]
-        MR["MEAN REV (10%)<br/>─────────<br/>TQQQ 5%/SOXL 5%<br/>RSI < 25 + VIX<br/>Drop > 2.5%<br/>Urgency: IMMED"]
-        HEDGE["HEDGE<br/>─────────<br/>TMF/PSQ<br/>Regime < 40<br/>Scaled Alloc<br/>Urgency: EOD"]
-        YIELD["YIELD<br/>─────────<br/>SHV<br/>Cash > $10k<br/>LIFO Liquidate<br/>Urgency: EOD"]
+        TREND["TREND (40%)<br/>─────────<br/>QLD 15%/SSO 7%<br/>UGL 10%/UCO 8%<br/>MA200+ADX<br/>Urgency: EOD"]
+        OPTIONS["OPTIONS (25%)<br/>─────────<br/>QQQ Options<br/>Swing 18.75%<br/>Intraday 6.25%<br/>Urgency: IMMED"]
+        MR["MEAN REV (10%)<br/>─────────<br/>TQQQ/SPXL/SOXL<br/>RSI < 25 + VIX<br/>Drop > 2.5%<br/>Urgency: IMMED"]
+        HEDGE["HEDGE<br/>─────────<br/>SH<br/>Regime < 40<br/>Scaled Alloc<br/>Urgency: EOD"]
+        YIELD["YIELD<br/>─────────<br/>(Spec Only)<br/>Cash Mgmt<br/>LIFO Liquidate<br/>Urgency: EOD"]
         COLD["COLD START<br/>─────────<br/>Days 1-5<br/>Regime > 50<br/>25% Size<br/>Urgency: IMMED"]
     end
 
@@ -118,11 +116,11 @@ Generate trading signals based on their specific logic.
 
 | Strategy | Style | Symbols | Urgency | Allocation |
 |----------|-------|---------|:-------:|:----------:|
-| **Trend** | MA200+ADX swing | QLD 20%, SSO 15%, TNA 12%, FAS 8% | EOD | 55% (Core) |
-| **Options** | 4-factor QQQ | QQQ options (Swing 20% + Intraday 5%) | IMMEDIATE | 25% |
-| **Mean Reversion** | RSI oversold + VIX | TQQQ 5%, SOXL 5% | IMMEDIATE | 10% |
-| **Hedge** | Tail protection | TMF, PSQ | EOD | 0-30% |
-| **Yield** | Cash management | SHV | EOD | Remainder |
+| **Trend** | MA200+ADX swing | QLD 15%, SSO 7%, UGL 10%, UCO 8% | EOD | 40% (Core) |
+| **Options** | VASS + Micro Regime | QQQ options (Swing 18.75% + Intraday 6.25%) | IMMEDIATE | 25% |
+| **Mean Reversion** | RSI oversold + VIX | TQQQ 4%, SPXL 3%, SOXL 3% | IMMEDIATE | 10% |
+| **Hedge** | Tail protection | SH | EOD | 0-30% |
+| **Yield** | Cash management | (Spec only) | EOD | Remainder |
 | **Cold Start** | Safe deployment | QLD, SSO | IMMEDIATE | 25% sizing |
 
 ### Layer 4: Portfolio Router
@@ -152,7 +150,7 @@ Converts validated signals into broker orders.
 ```mermaid
 flowchart TB
     subgraph MARKET["MARKET DATA"]
-        MD1["Daily Bars<br/>SPY, RSP, HYG, IEF"]
+        MD1["Daily Bars<br/>SPY, RSP, VIX"]
         MD2["Minute Bars<br/>All Traded Symbols"]
     end
 
@@ -165,12 +163,12 @@ flowchart TB
         IND6["VIX (MR Filter)"]
     end
 
-    subgraph REGIME["REGIME ENGINE"]
-        RE1["Trend Factor 35%"]
-        RE2["Vol Factor 25%"]
-        RE3["Breadth Factor 25%"]
-        RE4["Credit Factor 15%"]
-        RE5["Score 0-100"]
+    subgraph REGIME["REGIME ENGINE (V5.3)"]
+        RE1["Momentum Factor 30%"]
+        RE2["VIX Combined 30%"]
+        RE3["Trend Factor 25%"]
+        RE4["Drawdown Factor 15%"]
+        RE5["Score 0-100 + Guards"]
         RE6["State Classification"]
     end
 
@@ -228,7 +226,7 @@ flowchart TB
     end
 
     subgraph L2["LEVEL 2: CIRCUIT BREAKERS"]
-        L2A["Kill Switch -3%"]
+        L2A["Kill Switch -5%"]
         L2B["Panic Mode -4%"]
         L2C["Weekly Breaker -5%"]
         L2D["Vol Shock 3×ATR"]
@@ -272,7 +270,7 @@ flowchart TB
 |----------|------------|
 | Trend wants to buy QLD, but Kill Switch triggered | **Kill Switch wins** - No trade |
 | MR wants to enter TQQQ, but Gap Filter active | **Gap Filter wins** - Entry blocked |
-| Hedge wants 20% TMF, but Regime is 60 | **Regime wins** - No hedge needed |
+| Hedge wants 20% SH, but Regime is 60 | **Regime wins** - No hedge needed |
 | Trend wants 50% QLD, but NASDAQ_BETA already at 45% | **Exposure Limit wins** - Reduced to 5% |
 | MR and Trend both want QLD | **Router aggregates** - Net weight applied |
 
@@ -343,16 +341,17 @@ Reason: MA200_ADX_ENTRY
 
 - Trade futures or forex
 - Use margin beyond ETF leverage
-- Hold 3x leveraged products overnight (except TMF hedge)
+- Hold 3x leveraged products overnight (MR symbols close by 15:45)
 - Trade during pre-market or after-hours
 - Hold options overnight (closed by 15:45)
 
-### V2.1 Additions
+### V6.x Features
 
-- **Options Engine**: Trades QQQ options (20-30% allocation) using 4-factor entry scoring
-- **VIX Regime Filter**: Adjusts MR parameters based on VIX level
-- **5-Level Circuit Breaker**: Graduated risk response system
-- **Greeks Monitoring**: Portfolio delta/gamma/vega limits
+- **Options Engine**: Trades QQQ options (25% allocation) with VASS + Micro Regime dual-mode
+- **V5.3 Regime Model**: 4-factor scoring with VIX guards (Clamp, Spike Cap, Breadth Decay)
+- **V6.11 Universe**: Simplified to 2× Trend (QLD/SSO/UGL/UCO), 3× MR (TQQQ/SPXL/SOXL), 1× Hedge (SH)
+- **VIX Regime Filter**: Adjusts MR and Options parameters based on VIX level
+- **Greeks Monitoring**: Portfolio delta/gamma/vega limits for options
 
 ---
 
