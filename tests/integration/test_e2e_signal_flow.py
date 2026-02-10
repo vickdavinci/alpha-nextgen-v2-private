@@ -88,6 +88,22 @@ def mock_algorithm():
     algo.MarketOrder = MagicMock()
     algo.MarketOnOpenOrder = MagicMock()
 
+    # Set up Securities dictionary with common symbols
+    def create_security(symbol, price=100.0):
+        sec = MagicMock()
+        sec.Price = price
+        sec.Symbol = symbol
+        sec.IsTradable = True
+        return sec
+
+    algo.Securities = {
+        "QLD": create_security("QLD", 100.0),
+        "TQQQ": create_security("TQQQ", 50.0),
+        "SSO": create_security("SSO", 75.0),
+        "SHV": create_security("SHV", 110.0),
+        "TMF": create_security("TMF", 8.0),
+    }
+
     return algo
 
 

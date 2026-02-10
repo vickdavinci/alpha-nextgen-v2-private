@@ -530,9 +530,9 @@ class TestSignalFlow:
         """Test VIX direction classification."""
         engine = MicroRegimeEngine()
 
-        # V6.6: Stable zone narrowed to ±1%
-        # 15.1 / 15.0 = +0.67% which is within STABLE range
-        direction, _ = engine.classify_vix_direction(15.1, 15.0)
+        # V6.13: Adaptive stable band at VIX 15 is ±0.2%
+        # 15.02 / 15.0 = +0.13% which is within STABLE range
+        direction, _ = engine.classify_vix_direction(15.02, 15.0)
         assert direction == VIXDirection.STABLE
 
         # Spiking: large increase (>10% per config)

@@ -224,30 +224,32 @@ class TestLiquidityScoring:
         assert score == 1.0  # (1.0 + 1.0) / 2 - both excellent
 
     def test_liquidity_wide_spread(self, engine):
-        """Test wide spread (> 25%) reduces score significantly. V2.3.7 threshold."""
+        """Test wide spread at warning threshold gets moderate score. V6.8 threshold."""
+        # V6.8: OPTIONS_SPREAD_WARNING_PCT = 0.30, so exactly 30% gets spread_score=0.5
         score = engine._score_liquidity(
-            spread_pct=0.30,  # > 25% (V2.3.7 warning threshold)
+            spread_pct=0.30,  # = 30% (V6.8 warning threshold)
             open_interest=10000,
         )
-        assert score == 0.5  # (0.0 + 1.0) / 2
+        assert score == 0.75  # (0.5 + 1.0) / 2
 
     def test_liquidity_low_oi(self, engine):
-        """Test low open interest reduces score."""
-        # V2.3.7: OI thresholds changed (MIN_OI now 100, half is 50)
+        """Test moderate OI above threshold gets full score."""
+        # V6.8: OPTIONS_MIN_OPEN_INTEREST = 50, so 75 >= 50 → oi_score = 1.0
         score = engine._score_liquidity(
             spread_pct=0.03,
-            open_interest=75,  # 50-100 (low OI range)
+            open_interest=75,  # >= 50 (min_oi)
         )
-        assert score == 0.75  # (1.0 + 0.5) / 2
+        assert score == 1.0  # (1.0 + 1.0) / 2
 
     def test_liquidity_very_low_oi(self, engine):
-        """Test very low OI reduces score significantly."""
-        # V2.3.7: OI thresholds changed (MIN_OI now 100, half is 50)
+        """Test OI between min and half-min gets moderate score."""
+        # V6.8: OPTIONS_MIN_OPEN_INTEREST = 50, half is 25
+        # 30 is between 25 and 50, so oi_score = 0.5
         score = engine._score_liquidity(
             spread_pct=0.03,
-            open_interest=30,  # < 50
+            open_interest=30,  # 25 <= 30 < 50
         )
-        assert score == 0.5  # (1.0 + 0.0) / 2
+        assert score == 0.75  # (1.0 + 0.5) / 2
 
 
 class TestFullEntryScore:
@@ -2833,17 +2835,20 @@ class TestNeutralityExit:
         finally:
             config.SPREAD_NEUTRALITY_EXIT_ENABLED = original
 
-    def test_neutrality_exit_boundary_pnl_10pct(self, engine, long_leg, short_leg):
-        """P&L at exactly +10% boundary should trigger neutrality exit (inclusive)."""
+    def test_neutrality_exit_within_pnl_band(self, engine, long_leg, short_leg):
+        """P&L within ±6% band should trigger neutrality exit in dead zone.
+
+        V6.13: SPREAD_NEUTRALITY_EXIT_PNL_BAND = 6%, SPREAD_NEUTRALITY_ZONE = 48-62.
+        """
         self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
-        # +10%: current = 2.50 * 1.10 = 2.75
-        long_price = 5.75
-        short_price = 3.00  # value = 2.75, pnl_pct = +10%
+        # +4%: current = 2.50 * 1.04 = 2.60
+        long_price = 5.60
+        short_price = 3.00  # value = 2.60, pnl_pct = +4%
 
         result = engine.check_spread_exit_signals(
             long_leg_price=long_price,
             short_leg_price=short_price,
-            regime_score=50.0,  # Dead zone
+            regime_score=50.0,  # Dead zone (within 48-62)
             vix_current=20.0,
             current_dte=15,
         )
@@ -2936,10 +2941,10 @@ class TestVASSCreditSpreadEntry:
     # --- VASS Strategy Selection Tests ---
 
     def test_select_strategy_high_iv_bullish(self, engine):
-        """HIGH IV + BULLISH should select Bull Call Debit with weekly DTE (V5.3: debit for gamma)."""
+        """HIGH IV + BULLISH should select Bull Put Credit with weekly DTE (V6.9: sell premium)."""
         strategy, dte_min, dte_max = engine._select_strategy("BULLISH", "HIGH")
-        # V5.3: Changed from CREDIT to DEBIT - gamma capture in high IV environment
-        assert strategy == SpreadStrategy.BULL_CALL_DEBIT
+        # V6.9: Reverted to V2.8 - sell premium in HIGH IV environment
+        assert strategy == SpreadStrategy.BULL_PUT_CREDIT
         assert dte_min == config.VASS_HIGH_IV_DTE_MIN
         assert dte_max == config.VASS_HIGH_IV_DTE_MAX
 
