@@ -244,14 +244,14 @@ V53_REGIME_ENABLED = True  # V5.3: Master switch for new regime model
 
 # V5.3 Factor Weights (must sum to 1.0)
 WEIGHT_MOMENTUM_V53 = 0.30  # 20-day ROC - catches reversals in days
-WEIGHT_VIX_COMBINED_V53 = 0.30  # NEW: 60% level + 40% direction
-WEIGHT_TREND_V53 = 0.25  # SPY vs MA200 - increased from V4's 10%
+WEIGHT_VIX_COMBINED_V53 = 0.35  # V6.15 TUNE: Increase fear sensitivity in stress
+WEIGHT_TREND_V53 = 0.20  # V6.15 TUNE: Reduce lagging trend dominance
 WEIGHT_DRAWDOWN_V53 = 0.15  # Distance from 52-week high
 
 # VIX Combined scoring: 60% VIX Level + 40% VIX Direction
-VIX_COMBINED_LEVEL_WEIGHT = 0.60  # Absolute VIX level contribution
-VIX_COMBINED_DIRECTION_WEIGHT = 0.40  # VIX 5-day direction contribution
-VIX_COMBINED_HIGH_VIX_CLAMP = 47  # Cap VIX Combined score when VIX >= 25
+VIX_COMBINED_LEVEL_WEIGHT = 0.65  # V6.15 TUNE: Anchor more on absolute fear level
+VIX_COMBINED_DIRECTION_WEIGHT = 0.35  # V6.15 TUNE: Keep directional context
+VIX_COMBINED_HIGH_VIX_CLAMP = 44  # V6.15 TUNE: Push high-VIX states faster to caution
 VIX_COMBINED_HIGH_VIX_THRESHOLD = 25.0  # VIX level threshold for clamp
 
 # V5.3 Spike Cap: Macro score capped at 45 when VIX 5d change >= +28%
@@ -292,8 +292,8 @@ REGIME_SMOOTHING_ALPHA = 0.30
 # Thresholds
 REGIME_RISK_ON = 70
 REGIME_NEUTRAL = 50
-REGIME_CAUTIOUS = 40
-REGIME_DEFENSIVE = 30
+REGIME_CAUTIOUS = 45
+REGIME_DEFENSIVE = 35
 
 # Trend Factor
 SMA_FAST = 20
@@ -882,14 +882,10 @@ CREDIT_SPREAD_STOP_MULTIPLIER = 2.0  # Stop if spread value doubles (100% loss)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg delta range (OTM)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.45  # V6.13 OPT: Improve credit spread constructability
 # T-21: Credit-path liquidity quality gates (parity with debit selector).
-CREDIT_SPREAD_MIN_OPEN_INTEREST = (
-    35  # V6.14 OPT: Improve constructability with bounded liquidity risk
-)
-CREDIT_SPREAD_MAX_SPREAD_PCT = (
-    0.40  # V6.14 OPT: Slightly wider spread tolerance for real-chain fills
-)
+CREDIT_SPREAD_MIN_OPEN_INTEREST = 20  # V6.15 TUNE: Improve credit spread constructability
+CREDIT_SPREAD_MAX_SPREAD_PCT = 0.50  # V6.15 TUNE: Loosen spread-quality gate moderately
 CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT = (
-    0.55  # V6.14 OPT: Allow protective long legs in thinner tails
+    0.70  # V6.15 TUNE: Allow long-leg protection in thinner tails
 )
 
 # V2.24.1: Elastic Delta Bands — progressive widening when no candidates found
@@ -1044,7 +1040,8 @@ PARTIAL_ASSIGNMENT_AUTO_CLOSE = True  # Auto-close orphaned legs
 # This catches assignments at ANY DTE, not just near expiry
 # Aug 2022 assignments happened at DTE=4, missed by DTE<=3 guards
 SHORT_LEG_ITM_EXIT_ENABLED = True
-SHORT_LEG_ITM_EXIT_THRESHOLD = 0.005  # V6.10 P0: Exit when 0.5% ITM (was 1%)
+SHORT_LEG_ITM_EXIT_THRESHOLD = 0.010  # V6.15 TUNE: Reduce instant-churn exits
+SPREAD_ASSIGNMENT_GRACE_MINUTES = 45  # V6.15 FIX: Allow spread to stabilize before ITM checks
 SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 15  # Minutes between log messages
 
 # V6.10 P0: Mandatory DTE=1 Force Close (Nuclear Assignment Prevention)
@@ -1092,6 +1089,15 @@ PREMARKET_VIX_L3_SIZE_MULT = 0.25
 PREMARKET_VIX_L2_CLOSE_BULLISH_OPTIONS = True
 PREMARKET_VIX_L3_CLOSE_ALL_OPTIONS = True
 PREMARKET_FORCE_CLOSE_INTRADAY_STALE = True
+
+# V6.16: Overnight VIX shock memory (carry overnight panic context into early session)
+# Prevents Micro/VASS from "resetting" at open after a large overnight VIX jump.
+MICRO_SHOCK_MEMORY_ENABLED = True
+MICRO_SHOCK_MEMORY_MIN_LADDER_LEVEL = 2  # Apply only on L2/L3 shock days
+MICRO_SHOCK_MEMORY_UNTIL_HOUR = 13
+MICRO_SHOCK_MEMORY_UNTIL_MINUTE = 0
+MICRO_SHOCK_MEMORY_ANCHOR = 0.60  # 60% of overnight shock retained in effective open baseline
+SHOCK_MEMORY_FORCE_BEARISH_VASS = True  # Force VASS bearish direction while shock memory is active
 
 # P1 Fix 5: Assignment-Aware Position Sizing
 # Reduce size if max short exposure exceeds safe margin
@@ -1572,6 +1578,8 @@ QQQ_NOISE_THRESHOLD = (
 PUT_ENTRY_VIX_MAX = 36.0  # Block new long PUT entries when panic is extreme
 PUT_SIZE_REDUCTION_VIX_START = 30.0  # Start reducing long PUT sizing at elevated fear
 PUT_SIZE_REDUCTION_FACTOR = 0.50  # Size multiplier once VIX exceeds reduction threshold
+INTRADAY_CALL_BLOCK_VIX_MIN = 25.0  # V6.15 FIX: Block CALLs in high fear
+INTRADAY_CALL_BLOCK_REGIME_MAX = 55.0  # ...unless macro is clearly strong
 
 # V2.19: VIX Floor for DEBIT_FADE
 # In low VIX (<13.5) "apathy" markets, mean reversion fails - trends persist longer
@@ -1636,7 +1644,7 @@ INTRADAY_PROTECT_DTE_MIN = 3  # Minimum 3 DTE
 INTRADAY_PROTECT_DTE_MAX = 7  # Maximum 7 DTE
 
 # Force close time for intraday
-INTRADAY_FORCE_EXIT_TIME = "15:30"  # Must close by 3:30 PM
+INTRADAY_FORCE_EXIT_TIME = "15:25"  # V6.15 FIX: Earlier close to avoid OCO race at 15:30
 
 # V2.3.16: Direction Conflict Resolution
 # Skip intraday FADE when main regime strongly disagrees
@@ -1755,7 +1763,7 @@ CONNECTION_TIMEOUT_MIN = 5
 # EOD events are scheduled dynamically based on actual market close time.
 # On early close days (1:00 PM), events fire earlier automatically.
 EOD_OFFSET_MINUTES = 15  # MR force close & EOD processing = market_close - 15 min
-INTRADAY_OPTIONS_OFFSET_MINUTES = 30  # Intraday options close = market_close - 30 min
+INTRADAY_OPTIONS_OFFSET_MINUTES = 35  # V6.15 FIX: Align dynamic close with 15:25 fallback
 
 # =============================================================================
 # LOG THROTTLING (Pre-QC Local Testing)

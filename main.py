@@ -196,8 +196,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2021, 12, 1)
-        self.SetEndDate(2022, 2, 28)  # Dec 2021 - Feb 2022 backtest (3 months)
+        self.SetStartDate(2017, 7, 1)
+        self.SetEndDate(2017, 9, 30)  # Jul-Sep 2017 backtest (3 months)
         self.SetCash(config.INITIAL_CAPITAL)  # $50,000 seed capital
 
         # All times are Eastern
@@ -296,6 +296,11 @@ class AlphaNextGen(QCAlgorithm):
         self._options_intraday_cooldown_until = None  # Options Intraday: 15 min cooldown
         self._options_spread_cooldown_until = None  # Options Spread: 30 min cooldown
         self._mr_rejection_cooldown_until = None  # Mean Reversion: 15 min cooldown
+        # V6.15: One-shot retry for temporary intraday drops (slot/cooldown/margin timing).
+        self._intraday_retry_once_pending = False
+        self._intraday_retry_expires = None
+        self._intraday_retry_direction = None
+        self._intraday_retry_reason_code = None
 
         # V6.14: Pre-market VIX shock ladder state (portfolio-wide options guard)
         self._premarket_vix_ladder_level = 0
@@ -303,6 +308,8 @@ class AlphaNextGen(QCAlgorithm):
         self._premarket_vix_size_mult = 1.0
         self._premarket_vix_entry_block_until = None
         self._premarket_vix_call_block_until = None
+        self._premarket_vix_shock_pct = 0.0  # Decimal shock vs prior close (e.g., 0.50 = +50%)
+        self._premarket_vix_shock_memory_until = None  # (hour, minute)
         self._vix_prior_close = 15.0
         self._uvxy_prior_close = 0.0
 
@@ -844,9 +851,11 @@ class AlphaNextGen(QCAlgorithm):
         #
         # These static schedules act as a fallback for normal trading days (4:00 PM close).
         # For early close days, dynamic scheduling should override these times.
+        intraday_force_exit = getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:30")
+        intraday_force_hour, intraday_force_minute = map(int, intraday_force_exit.split(":"))
         self.Schedule.On(
             self.DateRules.EveryDay(),
-            self.TimeRules.At(15, 30),
+            self.TimeRules.At(intraday_force_hour, intraday_force_minute),
             self._on_intraday_options_force_close,
         )
         self.Schedule.On(
@@ -1204,7 +1213,7 @@ class AlphaNextGen(QCAlgorithm):
             )
             # Process through portfolio router for proper execution
             for signal in exit_signals:
-                self.portfolio_router.add_weight(signal)
+                self.portfolio_router.receive_signal(signal)
 
     def _get_premarket_vix_gap_proxy_pct(self) -> float:
         """
@@ -1228,6 +1237,8 @@ class AlphaNextGen(QCAlgorithm):
         self._premarket_vix_size_mult = 1.0
         self._premarket_vix_entry_block_until = None
         self._premarket_vix_call_block_until = None
+        self._premarket_vix_shock_pct = 0.0
+        self._premarket_vix_shock_memory_until = None
 
         if not getattr(config, "PREMARKET_VIX_LADDER_ENABLED", True):
             return
@@ -1268,6 +1279,27 @@ class AlphaNextGen(QCAlgorithm):
 
         if self._premarket_vix_ladder_level > 0:
             self.Log(f"PREMARKET_VIX_LADDER: {self._premarket_vix_ladder_reason}")
+
+        # V6.16: Persist overnight panic context into early session for Micro/VASS.
+        # Without this, intraday logic can "restart" from high VIX open and misclassify calming.
+        if (
+            getattr(config, "MICRO_SHOCK_MEMORY_ENABLED", True)
+            and self._vix_prior_close > 0
+            and self._premarket_vix_ladder_level
+            >= getattr(config, "MICRO_SHOCK_MEMORY_MIN_LADDER_LEVEL", 2)
+        ):
+            self._premarket_vix_shock_pct = max(
+                0.0, (vix_shock_level - self._vix_prior_close) / self._vix_prior_close
+            )
+            self._premarket_vix_shock_memory_until = (
+                getattr(config, "MICRO_SHOCK_MEMORY_UNTIL_HOUR", 13),
+                getattr(config, "MICRO_SHOCK_MEMORY_UNTIL_MINUTE", 0),
+            )
+            until_h, until_m = self._premarket_vix_shock_memory_until
+            self.Log(
+                f"PREMARKET_SHOCK_MEMORY: Active until {until_h:02d}:{until_m:02d} | "
+                f"Shock={self._premarket_vix_shock_pct:+.1%} | Ladder={self._premarket_vix_ladder_level}"
+            )
 
     def _apply_premarket_vix_actions(self) -> None:
         """Apply pre-market de-risk actions based on ladder level."""
@@ -1444,9 +1476,22 @@ class AlphaNextGen(QCAlgorithm):
         block_hour, block_minute = self._premarket_vix_call_block_until
         return (self.Time.hour, self.Time.minute) < (block_hour, block_minute)
 
+    def _is_premarket_shock_memory_active(self) -> bool:
+        """Return True while overnight VIX shock memory should affect intraday decisions."""
+        if self._premarket_vix_shock_memory_until is None:
+            return False
+        block_hour, block_minute = self._premarket_vix_shock_memory_until
+        return (self.Time.hour, self.Time.minute) < (block_hour, block_minute)
+
+    def _get_premarket_shock_memory_pct(self) -> float:
+        """Get active overnight VIX shock memory as decimal percentage."""
+        if not self._is_premarket_shock_memory_active():
+            return 0.0
+        return max(0.0, self._premarket_vix_shock_pct)
+
     def _intraday_force_exit_fallback(self) -> None:
         """
-        V6.12: Safety net - force-close intraday position after 15:35 if scheduled close missed.
+        V6.12: Safety net - force-close intraday position after configured close +5min if scheduled close missed.
 
         This prevents intraday options from carrying overnight due to scheduler issues.
         """
@@ -1454,8 +1499,17 @@ class AlphaNextGen(QCAlgorithm):
         if getattr(self, "_intraday_force_exit_fallback_date", None) == self.Time.date():
             return
 
-        # Only after 15:35 ET (5 min after scheduled 15:30 close)
-        if self.Time.hour < 15 or (self.Time.hour == 15 and self.Time.minute < 35):
+        # Only after configured force-close + 5 minutes.
+        exit_time = getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:30")
+        exit_hour, exit_minute = map(int, exit_time.split(":"))
+        fallback_hour = exit_hour
+        fallback_minute = exit_minute + 5
+        if fallback_minute >= 60:
+            fallback_hour += fallback_minute // 60
+            fallback_minute = fallback_minute % 60
+        if self.Time.hour < fallback_hour or (
+            self.Time.hour == fallback_hour and self.Time.minute < fallback_minute
+        ):
             return
 
         # Check if we have an intraday position
@@ -1488,7 +1542,7 @@ class AlphaNextGen(QCAlgorithm):
         )
         if signal:
             self.Log(f"INTRADAY_FORCE_EXIT_FALLBACK: Triggered for {symbol}")
-            self.portfolio_router.add_weight(signal)
+            self.portfolio_router.receive_signal(signal)
             self._process_immediate_signals()
 
         # Always mark as done after 15:35 check to prevent repeated attempts
@@ -2617,9 +2671,17 @@ class AlphaNextGen(QCAlgorithm):
 
         # Update micro regime engine with intraday VIX proxy
         # V2.5: Pass macro_regime_score for Grind-Up Override
+        vix_open_for_micro = self._vix_at_open
+        shock_memory_pct = self._get_premarket_shock_memory_pct()
+        if shock_memory_pct > 0:
+            anchor = min(max(getattr(config, "MICRO_SHOCK_MEMORY_ANCHOR", 0.60), 0.0), 1.0)
+            memory_scale = 1.0 + shock_memory_pct * anchor
+            if memory_scale > 1.0:
+                vix_open_for_micro = self._vix_at_open / memory_scale
+
         state = self.options_engine._micro_regime_engine.update(
             vix_current=vix_intraday_proxy,  # Use UVXY-derived for direction
-            vix_open=self._vix_at_open,
+            vix_open=vix_open_for_micro,
             qqq_current=qqq_current,
             qqq_open=self._qqq_at_open,
             current_time=str(self.Time),
@@ -2630,7 +2692,8 @@ class AlphaNextGen(QCAlgorithm):
         # V2.11: Log shows both CBOE level and UVXY direction
         self.Log(
             f"MICRO_UPDATE: VIX_level={vix_level_cboe:.1f}(CBOE) VIX_dir_proxy={vix_intraday_proxy:.2f} (UVXY {uvxy_change_pct:+.1f}%) | "
-            f"Regime={state.micro_regime.value} | Dir={state.recommended_direction.value if state.recommended_direction else 'NONE'}"
+            f"Regime={state.micro_regime.value} | Dir={state.recommended_direction.value if state.recommended_direction else 'NONE'} | "
+            f"ShockMem={shock_memory_pct:+.1%}"
         )
 
     def _get_vix_intraday_proxy(self) -> float:
@@ -3886,6 +3949,20 @@ class AlphaNextGen(QCAlgorithm):
 
         if "NEUTRAL_ALIGNED_HALF" in resolve_reason:
             size_multiplier *= config.NEUTRAL_ALIGNED_SIZE_MULT
+
+        # V6.16: Overnight shock memory override for EOD VASS path.
+        if (
+            getattr(config, "SHOCK_MEMORY_FORCE_BEARISH_VASS", True)
+            and self._is_premarket_shock_memory_active()
+            and resolved_direction == "BULLISH"
+        ):
+            resolved_direction = "BEARISH"
+            resolve_reason = f"{resolve_reason} | SHOCK_MEMORY_FORCE_BEARISH"
+            self.Log(
+                f"VASS_SHOCK_OVERRIDE_EOD: Forcing BEARISH | "
+                f"Shock={self._get_premarket_shock_memory_pct():+.1%} | "
+                f"Reason={resolve_reason}"
+            )
 
         # V5.3: Use resolved direction (may be VASS override or Macro alignment)
         if resolved_direction == "BULLISH":
@@ -5636,6 +5713,7 @@ class AlphaNextGen(QCAlgorithm):
                     macro_regime_score=regime_score,
                     current_time=str(self.Time),
                     vix_level_override=vix_level_cboe,
+                    premarket_shock_pct=self._get_premarket_shock_memory_pct(),
                 )
 
                 intraday_size_multiplier = size_multiplier
@@ -5647,6 +5725,24 @@ class AlphaNextGen(QCAlgorithm):
                 if not should_trade:
                     self.Log(f"INTRADAY: Blocked - {signal_reason}")
                     intraday_direction = None
+                    # V6.15: Allow one retry if prior approved signal was dropped for temporary reasons.
+                    if (
+                        self._intraday_retry_once_pending
+                        and self._intraday_retry_expires is not None
+                        and self.Time <= self._intraday_retry_expires
+                        and self._intraday_retry_direction is not None
+                    ):
+                        should_trade = True
+                        intraday_direction = self._intraday_retry_direction
+                        signal_reason = (
+                            f"RETRY_ONCE: {self._intraday_retry_reason_code} | "
+                            f"Reusing prior direction={intraday_direction.value}"
+                        )
+                        self._intraday_retry_once_pending = False
+                        self._intraday_retry_expires = None
+                        self._intraday_retry_direction = None
+                        self._intraday_retry_reason_code = None
+                        self.Log(f"INTRADAY_RETRY: {signal_reason}")
                 else:
                     if (
                         intraday_direction == OptionDirection.CALL
@@ -5720,24 +5816,58 @@ class AlphaNextGen(QCAlgorithm):
                         direction=intraday_direction,  # V6.0: Pass resolved direction
                         vix_level_override=vix_level_cboe,  # V6.2: CBOE VIX for level
                         underlying_atr=qqq_atr_value,  # V6.5: For delta-scaled ATR stops
+                        micro_state=micro_state,  # Reuse approved state; avoid second-update drift
                     )
                     if intraday_signal:
                         self.portfolio_router.receive_signal(intraday_signal)
                         # V2.3.13 FIX: MUST process immediately - signal was being queued but never executed!
                         # The function returns early via swing spread path, so signal was lost
                         self._process_immediate_signals()
+                        # Clear retry state after successful signal creation.
+                        self._intraday_retry_once_pending = False
+                        self._intraday_retry_expires = None
+                        self._intraday_retry_direction = None
+                        self._intraday_retry_reason_code = None
                         # V2.3.3 FIX: Don't return here - allow swing check to run too
                         # Previously returned early, blocking swing spreads entirely
                     else:
                         # P1 Fix: Explicitly log approved signals that failed to produce an order
                         if should_trade:
+                            # V6.15: Canonical drop reason coding for audit/debug.
+                            drop_code = "DROP_ROUTER_REJECT"
+                            (
+                                can_retry_now,
+                                retry_reason_now,
+                            ) = self.options_engine.can_enter_intraday()
+                            if not can_retry_now:
+                                drop_code = "DROP_SLOT_LIMIT"
+                            elif self._options_intraday_cooldown_until and (
+                                self.Time < self._options_intraday_cooldown_until
+                            ):
+                                drop_code = "DROP_COOLDOWN"
+                            elif self._margin_cb_in_progress or self._margin_call_cooldown_until:
+                                drop_code = "DROP_MARGIN"
+                            elif self.options_engine.has_intraday_position():
+                                drop_code = "DROP_DUPLICATE_POSITION"
+
                             self.Log(
                                 f"INTRADAY_SIGNAL_DROPPED: Approved but no order | "
+                                f"Code={drop_code} | "
                                 f"Reason={signal_reason} | "
                                 f"Dir={intraday_direction.value if intraday_direction else 'NONE'} | "
                                 f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'} | "
                                 f"Contract={intraday_contract.symbol if intraday_contract else 'NONE'}"
                             )
+                            # V6.15: One retry on next eligible scan for temporary drop causes only.
+                            if drop_code in {"DROP_SLOT_LIMIT", "DROP_COOLDOWN", "DROP_MARGIN"}:
+                                self._intraday_retry_once_pending = True
+                                self._intraday_retry_expires = self.Time + timedelta(minutes=20)
+                                self._intraday_retry_direction = intraday_direction
+                                self._intraday_retry_reason_code = drop_code
+                                self.Log(
+                                    f"INTRADAY_RETRY_QUEUED: Code={drop_code} | "
+                                    f"Expires={self._intraday_retry_expires.strftime('%H:%M')}"
+                                )
 
         # V2.20: Check rejection cooldowns for swing/spread modes
         swing_cooldown_active = (
@@ -5799,6 +5929,21 @@ class AlphaNextGen(QCAlgorithm):
 
         if "NEUTRAL_ALIGNED_HALF" in resolve_reason:
             size_multiplier *= config.NEUTRAL_ALIGNED_SIZE_MULT
+
+        # V6.16: If overnight shock memory is active, force VASS into defensive direction.
+        # This prevents bullish spread selection immediately after large overnight VIX shock.
+        if (
+            getattr(config, "SHOCK_MEMORY_FORCE_BEARISH_VASS", True)
+            and self._is_premarket_shock_memory_active()
+            and resolved_direction == "BULLISH"
+        ):
+            resolved_direction = "BEARISH"
+            resolve_reason = f"{resolve_reason} | SHOCK_MEMORY_FORCE_BEARISH"
+            self.Log(
+                f"VASS_SHOCK_OVERRIDE: Forcing BEARISH | "
+                f"Shock={self._get_premarket_shock_memory_pct():+.1%} | "
+                f"Reason={resolve_reason}"
+            )
 
         # Use resolved direction (may be VASS override or Macro alignment)
         if resolved_direction == "BULLISH":
@@ -6023,6 +6168,7 @@ class AlphaNextGen(QCAlgorithm):
                     if is_credit
                     else self.options_engine.pop_last_spread_failure_stats()
                 )
+                validation_reason = self.options_engine.pop_last_entry_validation_failure()
                 iv_env = (
                     self.options_engine._iv_sensor.classify()
                     if hasattr(self.options_engine, "_iv_sensor")
@@ -6038,6 +6184,11 @@ class AlphaNextGen(QCAlgorithm):
                     f"ReasonCode={rejection_code} | "
                     f"Reason=No contracts met spread criteria (DTE/delta/credit)"
                     + (f" | FailStats={fail_stats}" if fail_stats else "")
+                    + (
+                        f" | ValidationFail={validation_reason}"
+                        if (not fail_stats and validation_reason)
+                        else ""
+                    )
                 )
                 self._last_vass_rejection_log = self.Time
 

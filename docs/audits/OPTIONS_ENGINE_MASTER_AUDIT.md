@@ -33,11 +33,12 @@
 | T-22 | Technical | Credit cooldown not direction-scoped | `options_engine.py:3015` uses shared `"CREDIT"` cooldown bucket | 🟡 Applied (Pending Validation) | Cooldown key is now strategy-scoped (`BULL_PUT_CREDIT` / `BEAR_CALL_CREDIT`) with legacy key cleanup |
 | T-23 | Technical | Risk-reduction exits blocked by strict combo margin gate | Close combo path still enforces margin estimator before submit | 🟡 Applied (Pending Validation) | Router now bypasses margin-estimator block for `spread_close_short` exits |
 | T-24 | Technical | Spread closing lock can remain stuck after failed close submit | `spread.is_closing=True` set before router close failures | 🟡 Applied (Pending Validation) | Router now resets lock on close-order failures |
-| T-25 | Technical | VIX spike/regime deterioration exits preempted by assignment path | `ASSIGNMENT_RISK_EXIT` fires first; no `SPREAD: EXIT_SIGNAL` observed | 🟡 Monitor | Validate post-fix that forced closes execute and normal exits can re-engage |
+| T-25 | Technical | VIX spike/regime deterioration exits preempted by assignment path | `ASSIGNMENT_RISK_EXIT` fires first; no `SPREAD: EXIT_SIGNAL` observed | 🟡 Applied (Pending Validation) | Added assignment grace window before non-mandatory ITM/margin exits |
 | T-26 | Technical | Micro can starve VASS via shared daily options counter | Shared `MAX_OPTIONS_TRADES_PER_DAY` exhausted by intraday flow | 🟡 Applied (Pending Validation) | Added reserved swing slots guard for intraday limits |
-| T-27 | Technical | OCO sibling orders still trigger margin rejects at force-close | Stage6.14: 6 dates x 4 logs (`Order Error` + `INVALID`) at 15:30 for stale OCO ids | 🔴 Open | OCO cleanup still races with force-close; duplicate/stale exit orders remain live |
-| T-28 | Technical | Intraday approved->execution drop remains severe | Stage6.14: `INTRADAY_SIGNAL_APPROVED=385`, `INTRADAY_SIGNAL=104`, `DROPPED=281` | 🔴 Open | 72.99% approved signals fail to place orders |
-| T-29 | Technical | VASS spreads are instantly closed by assignment guard | Stage6.14: `SPREAD: POSITION_REGISTERED=23`, `ASSIGNMENT_RISK_EXIT=23`, `POSITION_REMOVED=23` (<=1 min) | 🔴 Open | Swing engine cannot express thesis; churn loss from immediate exits |
+| T-27 | Technical | OCO sibling orders still trigger margin rejects at force-close | Stage6.14: 6 dates x 4 logs (`Order Error` + `INVALID`) at 15:30 for stale OCO ids | 🟡 Applied (Pending Validation) | Force-close fallback/static timing now driven by `INTRADAY_FORCE_EXIT_TIME=15:25` to reduce race window |
+| T-28 | Technical | Intraday approved->execution drop remains severe | Stage6.14: `INTRADAY_SIGNAL_APPROVED=385`, `INTRADAY_SIGNAL=104`, `DROPPED=281` | 🟡 Applied (Pending Validation) | Added canonical `DROP_*` reason codes + one-shot retry for temporary drop causes |
+| T-29 | Technical | VASS spreads are instantly closed by assignment guard | Stage6.14: `SPREAD: POSITION_REGISTERED=23`, `ASSIGNMENT_RISK_EXIT=23`, `POSITION_REMOVED=23` (<=1 min) | 🟡 Applied (Pending Validation) | Assignment grace (`SPREAD_ASSIGNMENT_GRACE_MINUTES`) added before non-mandatory assignment exits |
+| T-30 | Technical | NEUTRAL conviction veto can overtrade noisy flips | Panic rebound windows showed repeated NEUTRAL veto direction swings | 🟡 Applied (Pending Validation) | NEUTRAL veto now requires MICRO tradeable regime + direction alignment with MICRO recommendation |
 | O-01 | Optimization | Low win rate / negative P&L | 2022Q1: -21,641 | 🔴 Open | Strategy tuning |
 | O-02 | Optimization | High Dir=NONE | 2022Q1: 59% | 🔴 Open | Micro gating still strict |
 | O-03 | Optimization | Micro gating too restrictive | CAUTIOUS/NORMAL/WORSENING blocks | 🔴 Open | Expand tradeable regimes or thresholds |
@@ -49,7 +50,7 @@
 | O-09 | Optimization | Spread exit reason logging | Limited PROFIT/STOP logs vs exits | 🟡 Monitor | Verify exit reasons cover all paths |
 | O-10 | Optimization | Monthly P&L tracking | Aug 2015 drawdown visibility missing | ✅ Implemented | V6.12: MonthlyPnLTracker class + main.py integration |
 | O-11 | Optimization | Position concentration limit | Multiple spreads same expiry | 🔴 Open | Add per‑expiry cap |
-| O-12 | Optimization | CALL loss concentration remains dominant | Stage6.14: CALL P&L -20,695 vs PUT P&L +351 | 🔴 Open | Direction/strategy mix still not regime-compatible in stress periods |
+| O-12 | Optimization | CALL loss concentration remains dominant | Stage6.14: CALL P&L -20,695 vs PUT P&L +351 | 🟡 Applied (Pending Validation) | Added stress CALL block (`INTRADAY_CALL_BLOCK_VIX_MIN`, `INTRADAY_CALL_BLOCK_REGIME_MAX`) |
 
 ---
 
@@ -333,18 +334,18 @@ The 2015 backtest validates that T-01 and T-02 bugs existed historically and are
 |------|--------|----------|
 | Pre-market ladder active | ✅ Working | `PREMARKET_VIX_LADDER=50`, `PREMARKET_LADDER_CALL_BLOCK=15` |
 | Cross-blocking fix | ✅ Working | Intraday + spread entries coexist on same timestamps/days |
-| OCO margin reject path | 🔴 Failing | `Insufficient buying power=24` (6 dates, clustered at 15:30 force-close window) |
-| Intraday signal execution path | 🔴 Failing | `APPROVED=385`, `EXECUTED=104`, `DROPPED=281` |
-| VASS execution continuity | 🔴 Failing | All 23 spread entries removed immediately by assignment-risk path |
+| OCO margin reject path | 🟡 Fix applied (pending validation) | Static + fallback force-close timing moved to config-driven 15:25 path |
+| Intraday signal execution path | 🟡 Fix applied (pending validation) | Approved `micro_state` is now reused in entry signal path |
+| VASS execution continuity | 🟡 Fix applied (pending validation) | Assignment grace window added before non-mandatory assignment exits |
 
 ### New / Reconfirmed Bugs from Stage6.14
 
 | ID | Bug | Severity | Evidence |
 |----|-----|:--------:|----------|
-| T-27 | OCO sibling margin reject race at force-close | P0 | Repeating `Order Error`/`INVALID` pairs at 15:30 for stale OCO ids |
-| T-28 | Intraday approved signals dropped before order placement | P0 | `INTRADAY_SIGNAL_DROPPED=281` (72.99% of approved signals) |
-| T-29 | Assignment guard instantly liquidates every VASS spread | P0 | `SPREAD: POSITION_REGISTERED=23`, `ASSIGNMENT_RISK_EXIT=23`, `POSITION_REMOVED=23` |
-| O-12 | CALL-side loss concentration persists | P1 | CALL bucket contributes nearly all net loss |
+| T-27 | OCO sibling margin reject race at force-close | P0 | Repeating `Order Error`/`INVALID` pairs at 15:30 for stale OCO ids; timing mitigation applied |
+| T-28 | Intraday approved signals dropped before order placement | P0 | `INTRADAY_SIGNAL_DROPPED=281` (72.99% of approved signals); single-update mitigation applied |
+| T-29 | Assignment guard instantly liquidates every VASS spread | P0 | `SPREAD: POSITION_REGISTERED=23`, `ASSIGNMENT_RISK_EXIT=23`, `POSITION_REMOVED=23`; assignment grace applied |
+| O-12 | CALL-side loss concentration persists | P1 | CALL bucket contributes nearly all net loss; stress CALL block applied |
 
 ---
 
@@ -366,13 +367,13 @@ Primary unresolved technical risks are **margin submit regression** and **assign
 | **P1** | Close path margin gate too strict for risk-reduction exits | Router blocked close combos on estimator failures | Risk-reduction exits could not fire when most needed | 🟡 Applied (Pending Validation) |
 | **P1** | Spread closing lock persistence after close-submit failures | `is_closing=True` could stay latched after close submit rejection | Suppressed later exit retries | 🟡 Applied (Pending Validation) |
 | **P1** | Pre-entry margin check strictness mismatch | Rejections occur despite pre-check passes in some windows | Indicates mismatch between local estimate and broker model timing | 🟡 Monitor |
-| **P1** | Pre-filter drops zero-bid long-leg candidates | `main.py:3872-3873` skips contracts with `bid<=0/ask<=0` in candidate builder | Missed valid long-leg contracts; lower VASS constructability | 🔴 Open |
-| **P1** | Credit selector lacks OI/spread quality filters | `options_engine.py:2974+` credit short/long selection has no explicit OI/spread gates | Increased rejects, unstable fills, poorer spread quality | 🔴 Open |
-| **P1** | Credit cooldown cross-blocking | `options_engine.py:3015` shared `CREDIT` cooldown key | Bear-call and bull-put credit attempts can block each other | 🔴 Open |
+| **P1** | Pre-filter drops zero-bid long-leg candidates | `main.py:3872-3873` skips contracts with `bid<=0/ask<=0` in candidate builder | Missed valid long-leg contracts; lower VASS constructability | 🟡 Applied (Pending Validation) |
+| **P1** | Credit selector lacks OI/spread quality filters | `options_engine.py:2974+` credit short/long selection has no explicit OI/spread gates | Increased rejects, unstable fills, poorer spread quality | 🟡 Applied (Pending Validation) |
+| **P1** | Credit cooldown cross-blocking | `options_engine.py:3015` shared `CREDIT` cooldown key | Bear-call and bull-put credit attempts can block each other | 🟡 Applied (Pending Validation) |
 | **P1** | Micro intraday can consume swing daily capacity | Shared global options daily counter used by both modes | VASS entries suppressed even when swing slot/risk is available | 🟡 Applied (Pending Validation) |
-| **P0** | OCO sibling margin reject race at force-close | Stage6.14: `Insufficient buying power=24`, all clustered at 15:30 | Stale exit orders still create invalid/margin noise and execution instability | 🔴 Open |
-| **P0** | Intraday approved signals dropped before order placement | Stage6.14: `APPROVED=385`, `DROPPED=281`, `EXECUTED=104` | Most approved signals never become orders | 🔴 Open |
-| **P0** | VASS spreads instantly closed by assignment guard | Stage6.14: `POSITION_REGISTERED=23`, `ASSIGNMENT_RISK_EXIT=23` | Swing engine rendered ineffective; churn losses | 🔴 Open |
+| **P0** | OCO sibling margin reject race at force-close | Stage6.14: `Insufficient buying power=24`, all clustered at 15:30 | Stale exit orders still create invalid/margin noise and execution instability | 🟡 Applied (Pending Validation) |
+| **P0** | Intraday approved signals dropped before order placement | Stage6.14: `APPROVED=385`, `DROPPED=281`, `EXECUTED=104` | Most approved signals never become orders | 🟡 Applied (Pending Validation) |
+| **P0** | VASS spreads instantly closed by assignment guard | Stage6.14: `POSITION_REGISTERED=23`, `ASSIGNMENT_RISK_EXIT=23` | Swing engine rendered ineffective; churn losses | 🟡 Applied (Pending Validation) |
 | **P2** | Legacy filter parsing anomaly tracking | 2015 had `DTE=287` parse anomalies; not reproduced in `V6_13_a` | Keep diagnostic hooks until two clean multi-year runs | 🟡 Monitor |
 
 ## Bug List (Current Run) — Optimization
