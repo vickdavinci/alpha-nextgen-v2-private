@@ -110,6 +110,7 @@ class OrderIntent:
     is_combo: bool = False
     combo_short_symbol: Optional[str] = None
     combo_short_quantity: Optional[int] = None
+    metadata: Optional[Dict[str, Any]] = None
     tag: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -129,6 +130,8 @@ class OrderIntent:
             result["is_combo"] = self.is_combo
             result["combo_short_symbol"] = self.combo_short_symbol
             result["combo_short_quantity"] = self.combo_short_quantity
+        if self.metadata is not None:
+            result["metadata"] = self.metadata
         if self.tag:
             result["tag"] = self.tag
         return result
@@ -984,6 +987,44 @@ class PortfolioRouter:
             self.log(f"LIMIT_ORDER_FAIL: {symbol} | {e}")
             return False
 
+    def _estimate_combo_margin_per_contract(
+        self,
+        metadata: Optional[Dict[str, Any]],
+    ) -> Tuple[float, str]:
+        """
+        Estimate per-contract spread margin from signal metadata.
+        Returns (margin_per_contract, reason_code).
+        """
+        if not metadata:
+            return 0.0, "ROUTER_MARGIN_META_MISSING"
+
+        try:
+            width = float(metadata.get("spread_width", 0.0))
+        except (TypeError, ValueError):
+            return 0.0, "ROUTER_MARGIN_WIDTH_INVALID"
+        if width <= 0:
+            return 0.0, "ROUTER_MARGIN_WIDTH_INVALID"
+
+        spread_type = str(metadata.get("spread_type", "")).upper()
+        is_credit = bool(metadata.get("is_credit_spread", False)) or ("CREDIT" in spread_type)
+        credit_received = 0.0
+        if is_credit:
+            raw_credit = metadata.get(
+                "spread_credit_received", metadata.get("spread_cost_or_credit", 0)
+            )
+            try:
+                credit_received = max(0.0, float(raw_credit))
+            except (TypeError, ValueError):
+                credit_received = 0.0
+            base_margin = max(1.0, (width - credit_received) * 100.0)
+        else:
+            base_margin = width * 100.0
+
+        # Keep router behavior consistent with engine's usable-margin safety factor.
+        safety = max(float(getattr(config, "SPREAD_MARGIN_SAFETY_FACTOR", 0.80)), 0.01)
+        margin_per_contract = base_margin / safety
+        return margin_per_contract, "OK"
+
     # =========================================================================
     # Step 1: COLLECT
     # =========================================================================
@@ -1509,6 +1550,7 @@ class PortfolioRouter:
                     reason=reason,
                     target_weight=agg.target_weight,
                     current_weight=current_weight,
+                    metadata=agg.metadata,
                     tag=tag,
                 )
             )
@@ -1569,6 +1611,7 @@ class PortfolioRouter:
                             is_combo=True,
                             combo_short_symbol=short_leg_symbol,
                             combo_short_quantity=short_qty,
+                            metadata=agg.metadata,
                             tag=tag,
                         )
                     )
@@ -1692,51 +1735,49 @@ class PortfolioRouter:
             # V2.3.24: For combo orders, scale contracts to fit margin instead of rejecting
             if order.side == OrderSide.BUY:
                 try:
+                    margin_remaining = self.get_effective_margin_remaining()
                     current_price = self.algorithm.Securities[order.symbol].Price  # type: ignore[attr-defined]
                     # Detect options by symbol pattern (C0 or P0 for calls/puts)
                     is_option = len(order.symbol) > 10 and (
                         "C0" in order.symbol or "P0" in order.symbol
                     )
-                    # Options: 1 contract = 100 shares
-                    multiplier = 100 if is_option else 1
-                    order_value = order.quantity * current_price * multiplier
-
-                    # V2.9: Use effective margin (accounts for open spread reservations)
-                    margin_remaining = self.get_effective_margin_remaining()
-                    if order_value > margin_remaining:
-                        # V2.3.24: For combo orders, try to scale contracts to fit margin
-                        if order.is_combo and is_option:
-                            # Calculate max contracts that fit in available margin
-                            per_contract_cost = current_price * multiplier
-                            if per_contract_cost > 0:
-                                max_contracts = int(margin_remaining / per_contract_cost)
-                                min_contracts = getattr(config, "MIN_SPREAD_CONTRACTS", 2)
-
-                                if max_contracts >= min_contracts:
-                                    # Scale down the order
-                                    scale_ratio = max_contracts / order.quantity
-                                    order.quantity = max_contracts
-                                    # Scale short leg proportionally
-                                    if order.combo_short_quantity:
-                                        order.combo_short_quantity = int(
-                                            order.combo_short_quantity * scale_ratio
-                                        )
-                                    self.log(
-                                        f"ROUTER: COMBO_SCALED | {order.symbol} | "
-                                        f"Scaled from original to {max_contracts} contracts | "
-                                        f"Margin=${margin_remaining:,.0f}"
+                    if order.is_combo and is_option:
+                        per_contract_margin, reason_code = self._estimate_combo_margin_per_contract(
+                            order.metadata
+                        )
+                        if per_contract_margin <= 0:
+                            self.log(
+                                f"ROUTER: {reason_code} | {order.symbol} | Combo order blocked"
+                            )
+                            continue
+                        required_margin = per_contract_margin * order.quantity
+                        if required_margin > margin_remaining:
+                            max_contracts = int(margin_remaining / per_contract_margin)
+                            min_contracts = getattr(config, "MIN_SPREAD_CONTRACTS", 2)
+                            if max_contracts >= min_contracts:
+                                scale_ratio = max_contracts / order.quantity
+                                order.quantity = max_contracts
+                                if order.combo_short_quantity:
+                                    order.combo_short_quantity = int(
+                                        order.combo_short_quantity * scale_ratio
                                     )
-                                else:
-                                    self.log(
-                                        f"ROUTER: COMBO_SKIP | {order.symbol} | "
-                                        f"Max {max_contracts} < min {min_contracts} contracts | "
-                                        f"Margin=${margin_remaining:,.0f}"
-                                    )
-                                    continue
+                                self.log(
+                                    f"ROUTER_MARGIN_SCALE_COMBO: {order.symbol} | "
+                                    f"Required=${required_margin:,.0f} > Available=${margin_remaining:,.0f} | "
+                                    f"Scaled to {max_contracts} spreads"
+                                )
                             else:
-                                continue  # Can't calculate, skip
-                        else:
-                            # Non-combo order - reject as before
+                                self.log(
+                                    f"ROUTER_MARGIN_BLOCK_COMBO: {order.symbol} | "
+                                    f"Required=${required_margin:,.0f} > Available=${margin_remaining:,.0f} | "
+                                    f"Max {max_contracts} < min {min_contracts}"
+                                )
+                                continue
+                    else:
+                        # Non-combo pre-check uses notional order value
+                        multiplier = 100 if is_option else 1
+                        order_value = order.quantity * current_price * multiplier
+                        if order_value > margin_remaining:
                             self.log(
                                 f"ROUTER: INSUFFICIENT_MARGIN | {order.symbol} | "
                                 f"Order=${order_value:,.0f} > Margin=${margin_remaining:,.0f} | "
@@ -1765,30 +1806,23 @@ class PortfolioRouter:
                 quantity = order.quantity if order.side == OrderSide.BUY else -order.quantity
 
                 # V2.3.9: Handle combo orders for spreads
-                # V2.8: Add credit spread margin validation
                 if order.is_combo and order.combo_short_symbol and order.combo_short_quantity:
-                    # V2.8 SAFETY: Validate credit spread margin before execution
-                    if hasattr(order, "metadata") and order.metadata:
-                        if order.metadata.get("spread_type") == "CREDIT":
-                            width = order.metadata.get("spread_width", 5.0)
-                            credit = abs(order.metadata.get("spread_cost_or_credit", 0))
-                            num_spreads = abs(order.quantity)
-                            margin_per_spread = (width - credit) * 100
-                            total_margin = margin_per_spread * num_spreads
-
-                            # SAFETY CHECK: Total margin must not exceed available
-                            if total_margin > margin_remaining:
-                                self.log(
-                                    f"SAFETY BLOCK: Credit spread margin ${total_margin:.0f} "
-                                    f"exceeds available ${margin_remaining:.0f} | "
-                                    f"Spreads={num_spreads} @ ${margin_per_spread:.0f}/spread"
-                                )
-                                continue  # Skip this order
-
-                            self.log(
-                                f"SAFETY: Credit spread margin validated | "
-                                f"Total=${total_margin:.0f} <= Available=${margin_remaining:.0f}"
-                            )
+                    # Final safety check before submit (same estimator as pre-check)
+                    (
+                        combo_margin_per_contract,
+                        reason_code,
+                    ) = self._estimate_combo_margin_per_contract(order.metadata)
+                    if combo_margin_per_contract <= 0:
+                        self.log(f"ROUTER: {reason_code} | {order.symbol} | Combo submit blocked")
+                        continue
+                    total_combo_margin = combo_margin_per_contract * abs(order.quantity)
+                    margin_remaining = self.get_effective_margin_remaining()
+                    if total_combo_margin > margin_remaining:
+                        self.log(
+                            f"ROUTER_MARGIN_BLOCK_COMBO: {order.symbol} | "
+                            f"Required=${total_combo_margin:,.0f} > Available=${margin_remaining:,.0f}"
+                        )
+                        continue
 
                     # Import Leg class for combo orders
                     from AlgorithmImports import Leg

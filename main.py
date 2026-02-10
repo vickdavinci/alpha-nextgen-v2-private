@@ -3797,81 +3797,21 @@ class AlphaNextGen(QCAlgorithm):
                 f"VASS_ENTRY: {signal.metadata.get('vass_strategy', 'UNKNOWN') if signal.metadata else 'UNKNOWN'} | "
                 f"{signal.symbol} | {signal.reason}"
             )
-            # V2.3.6 FIX: Check margin BEFORE submitting spread
-            # V2.32 FIX: Use SPREAD margin (max loss = width × 100), not naked short margin
-            # Spreads have defined risk — margin = spread width, not $10K/contract
-            if signal.metadata and signal.metadata.get("spread_short_leg_quantity"):
-                short_qty = signal.metadata.get("spread_short_leg_quantity", 0)
-                short_symbol = signal.metadata.get("spread_short_leg_symbol", "")
+            signal = self._apply_spread_margin_guard(signal, source_tag="VASS_SPREAD")
+            if signal is None:
+                return
 
-                # V3.5: Balanced spread margin estimate (P1-1 FIX)
-                # V2.33's 6× safety was too conservative — blocked PUT entries even when
-                # regime correctly detected bear market. Use 4× safety factor:
-                # - Still accounts for delta margin variation
-                # - Still accounts for VIX-driven margin increases
-                # - But allows defensive PUT spreads during drawdowns
-                spread_width = signal.metadata.get("spread_width", config.SPREAD_WIDTH_TARGET)
-                margin_per_contract = (
-                    spread_width * 100 * 4
-                )  # $5 width = $2,000/contract (4× safety)
-                required_margin = abs(short_qty) * margin_per_contract
-
-                # Get current free margin
-                free_margin = self.Portfolio.MarginRemaining
-
-                # V3.5: Balanced safeguard — require at least 10% of equity to remain free (P1-3)
-                # Reduced from 20% to allow defensive PUT spreads during drawdowns
-                # Still prevents over-leveraging while allowing hedges to execute
-                total_equity = self.Portfolio.TotalPortfolioValue
-                min_free_margin = total_equity * 0.10  # Keep 10% cushion (was 20%)
-                effective_free_margin = max(0, free_margin - min_free_margin)
-
-                if required_margin > effective_free_margin:
-                    # V3.5 P1-2: Margin-aware sizing - size down instead of blocking entirely
-                    max_contracts_by_margin = int(effective_free_margin / margin_per_contract)
-
-                    if max_contracts_by_margin >= 1:
-                        # Can fit at least 1 contract - reduce size and proceed
-                        original_qty = abs(short_qty)
-                        short_qty = -max_contracts_by_margin  # Negative for short
-                        required_margin = max_contracts_by_margin * margin_per_contract
-
-                        # Update signal metadata with reduced quantities
-                        signal.metadata["spread_short_leg_quantity"] = short_qty
-                        signal.metadata["spread_long_leg_quantity"] = max_contracts_by_margin
-                        signal.metadata["contracts"] = max_contracts_by_margin
-
-                        self.Log(
-                            f"SPREAD: MARGIN-SIZED DOWN | "
-                            f"Requested={original_qty} → Actual={max_contracts_by_margin} contracts | "
-                            f"Required=${required_margin:,.0f} | Effective Free=${effective_free_margin:,.0f} | "
-                            f"Width=${spread_width}"
-                        )
-                    else:
-                        # Can't fit even 1 contract - must block
-                        self.Log(
-                            f"SPREAD: BLOCKED - Insufficient margin for even 1 contract | "
-                            f"Required=${margin_per_contract:,.0f}/contract | "
-                            f"Effective Free=${effective_free_margin:,.0f} | "
-                            f"(Actual Free=${free_margin:,.0f} - 10% cushion=${min_free_margin:,.0f}) | "
-                            f"Width=${spread_width} x{abs(short_qty)} contracts requested"
-                        )
-                        return
-                else:
-                    self.Log(
-                        f"SPREAD: Margin check passed | Required=${required_margin:,.0f} | "
-                        f"Effective Free=${effective_free_margin:,.0f} | Equity=${total_equity:,.0f}"
-                    )
-
-                # V2.3.6: Track spread order pair for failure handling
-                # Map short leg symbol -> long leg symbol (and reverse for Bug #5 fix)
-                long_symbol = str(signal.symbol) if signal.symbol else ""
-                if short_symbol and long_symbol:
-                    self._pending_spread_orders[short_symbol] = long_symbol
-                    self._pending_spread_orders_reverse[long_symbol] = short_symbol  # V2.6 Bug #5
-                    self.Log(
-                        f"SPREAD: Tracking order pair | Short={short_symbol[-15:]} <-> Long={long_symbol[-15:]}"
-                    )
+            # V2.3.6: Track spread order pair for failure handling
+            short_symbol = (
+                signal.metadata.get("spread_short_leg_symbol", "") if signal.metadata else ""
+            )
+            long_symbol = str(signal.symbol) if signal.symbol else ""
+            if short_symbol and long_symbol:
+                self._pending_spread_orders[short_symbol] = long_symbol
+                self._pending_spread_orders_reverse[long_symbol] = short_symbol  # V2.6 Bug #5
+                self.Log(
+                    f"SPREAD: Tracking order pair | Short={short_symbol[-15:]} <-> Long={long_symbol[-15:]}"
+                )
 
             self.portfolio_router.receive_signal(signal)
 
@@ -4015,6 +3955,71 @@ class AlphaNextGen(QCAlgorithm):
         if (fallback_min, fallback_max) != (dte_min, dte_max):
             ranges.append((fallback_min, fallback_max))
         return ranges
+
+    def _apply_spread_margin_guard(
+        self,
+        signal: Optional[TargetWeight],
+        source_tag: str,
+    ) -> Optional[TargetWeight]:
+        """
+        Final spread margin guard before router submission.
+        Applies identical logic for EOD and intraday VASS spread flows.
+        """
+        if signal is None or not signal.metadata:
+            return signal
+        if not signal.metadata.get("spread_short_leg_quantity"):
+            return signal
+
+        spread_width = signal.metadata.get("spread_width", config.SPREAD_WIDTH_TARGET)
+        spread_type = signal.metadata.get("spread_type", "DEBIT")
+        credit_received = signal.metadata.get("spread_credit_received")
+        short_qty_raw = int(signal.metadata.get("spread_short_leg_quantity", 0))
+        contracts_requested = abs(short_qty_raw)
+        if contracts_requested <= 0:
+            return None
+
+        base_margin_per_contract = self.options_engine.estimate_spread_margin_per_contract(
+            spread_width=spread_width,
+            spread_type=spread_type,
+            credit_received=credit_received,
+        )
+        safety = max(getattr(config, "SPREAD_MARGIN_SAFETY_FACTOR", 0.80), 0.01)
+        required_per_contract = base_margin_per_contract / safety
+
+        free_margin = float(self.Portfolio.MarginRemaining)
+        total_equity = float(self.Portfolio.TotalPortfolioValue)
+        cushion_pct = getattr(config, "MARGIN_MIN_FREE_EQUITY_PCT", 0.10)
+        min_free_margin = total_equity * cushion_pct
+        effective_free_margin = max(0.0, free_margin - min_free_margin)
+
+        required_margin = contracts_requested * required_per_contract
+        if required_margin <= effective_free_margin:
+            self.Log(
+                f"{source_tag}: Margin check passed | Required=${required_margin:,.0f} | "
+                f"Effective Free=${effective_free_margin:,.0f} | Equity=${total_equity:,.0f}"
+            )
+            return signal
+
+        max_contracts = int(effective_free_margin / required_per_contract)
+        if max_contracts < 1:
+            self.Log(
+                f"{source_tag}: BLOCKED - Insufficient margin for 1 spread | "
+                f"Required=${required_per_contract:,.0f}/contract | "
+                f"Effective Free=${effective_free_margin:,.0f}"
+            )
+            return None
+
+        short_sign = -1 if short_qty_raw < 0 else 1
+        signal.metadata["spread_short_leg_quantity"] = short_sign * max_contracts
+        signal.metadata["spread_long_leg_quantity"] = max_contracts
+        signal.metadata["contracts"] = max_contracts
+
+        self.Log(
+            f"{source_tag}: MARGIN-SIZED DOWN | "
+            f"Requested={contracts_requested} -> Actual={max_contracts} contracts | "
+            f"Per=${required_per_contract:,.0f} | Effective Free=${effective_free_margin:,.0f}"
+        )
+        return signal
 
     def _normalize_option_symbol(self, symbol) -> str:
         """
@@ -5608,6 +5613,9 @@ class AlphaNextGen(QCAlgorithm):
                 f"VASS_ENTRY: {signal.metadata.get('vass_strategy', 'UNKNOWN') if signal.metadata else 'UNKNOWN'} | "
                 f"{signal.symbol} | {signal.reason}"
             )
+            signal = self._apply_spread_margin_guard(signal, source_tag="VASS_INTRADAY_SPREAD")
+            if signal is None:
+                return
             self.portfolio_router.receive_signal(signal)
             # V2.3.13 FIX: MUST process immediately - spread signals use IMMEDIATE urgency
             self._process_immediate_signals()
@@ -6392,15 +6400,34 @@ class AlphaNextGen(QCAlgorithm):
 
         try:
             msg = str(order_event.Message) if hasattr(order_event, "Message") else ""
-            match = re.search(r"Free Margin:\s*([\d.]+)", msg)
-            if match:
-                free_margin = float(match.group(1).rstrip("."))
+            patterns = [
+                r"Free Margin:\s*\$?([0-9][0-9,]*\.?[0-9]*)",
+                r"Available(?:\s+Margin)?[:=]\s*\$?([0-9][0-9,]*\.?[0-9]*)",
+                r"Margin Remaining[:=]\s*\$?([0-9][0-9,]*\.?[0-9]*)",
+            ]
+            free_margin = None
+            for pattern in patterns:
+                match = re.search(pattern, msg, flags=re.IGNORECASE)
+                if not match:
+                    continue
+                raw = match.group(1).replace(",", "").rstrip(".")
+                try:
+                    free_margin = float(raw)
+                    break
+                except ValueError:
+                    continue
+
+            if free_margin is not None:
                 safety = getattr(config, "SPREAD_REJECTION_MARGIN_SAFETY", 0.80)
                 cap = free_margin * safety
                 self.options_engine._rejection_margin_cap = cap
                 self.Log(
                     f"REJECTION_MARGIN: Free=${free_margin:,.0f} | "
                     f"Cap=${cap:,.0f} (x{safety:.0%})"
+                )
+            elif "insufficient buying power" in msg.lower() or "margin" in msg.lower():
+                self.Log(
+                    "REJECTION_MARGIN_PARSE_FAIL: Could not parse free margin from rejection message"
                 )
         except Exception as e:
             self.Log(f"REJECTION_MARGIN: Parse error: {e}")

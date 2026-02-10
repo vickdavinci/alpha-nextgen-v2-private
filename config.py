@@ -1353,6 +1353,7 @@ INTRADAY_SPREAD_MAX_PCT = 0.08  # 8% of portfolio for intraday spreads (1-5 DTE)
 # V3.0: Minimum margin percentage to allow options trading
 # Replaces hardcoded $1,000 check in main.py
 OPTIONS_MIN_MARGIN_PCT = 0.02  # 2% of portfolio minimum margin to trade options
+MARGIN_MIN_FREE_EQUITY_PCT = 0.10  # Keep 10% equity as free margin cushion for spread entries
 NEUTRAL_ALIGNED_SIZE_MULT = 0.50  # V6.12: Reduce size when Macro NEUTRAL and no conviction
 
 # V2.21: Rejection-aware spread sizing

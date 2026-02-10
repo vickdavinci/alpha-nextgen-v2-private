@@ -3389,6 +3389,49 @@ class OptionsEngine:
             return config.CREDIT_SPREAD_MIN_CREDIT_HIGH_IV
         return config.CREDIT_SPREAD_MIN_CREDIT
 
+    def estimate_spread_margin_per_contract(
+        self,
+        spread_width: float,
+        spread_type: Optional[str] = None,
+        credit_received: Optional[float] = None,
+    ) -> float:
+        """
+        Estimate margin requirement per spread contract using a single canonical formula.
+
+        Debit spread: width * 100
+        Credit spread: (width - credit) * 100
+        """
+        try:
+            width = max(0.0, float(spread_width))
+        except (TypeError, ValueError):
+            return 0.0
+        if width <= 0:
+            return 0.0
+
+        spread_label = (spread_type or "").upper()
+        is_credit = "CREDIT" in spread_label
+
+        if is_credit:
+            try:
+                credit = max(0.0, float(credit_received or 0.0))
+            except (TypeError, ValueError):
+                credit = 0.0
+            return max(1.0, (width - credit) * 100.0)
+
+        return width * 100.0
+
+    def get_usable_margin(self, margin_remaining: float) -> float:
+        """
+        Apply global margin safety factor and post-rejection cap.
+        """
+        if margin_remaining <= 0:
+            return 0.0
+        safety_factor = getattr(config, "SPREAD_MARGIN_SAFETY_FACTOR", 0.80)
+        usable_margin = margin_remaining * safety_factor
+        if self._rejection_margin_cap is not None:
+            usable_margin = min(usable_margin, self._rejection_margin_cap)
+        return max(0.0, usable_margin)
+
     # V6.0: _check_macro_regime_gate() REMOVED
     # Direction decisions now handled by conviction resolution (resolve_trade_signal)
     # in main.py before calling entry signal functions.
@@ -3744,7 +3787,11 @@ class OptionsEngine:
             buffer_pct = getattr(config, "MARGIN_PRE_CHECK_BUFFER", 0.15)
 
             # Margin required = width × 100 × num_spreads × (1 + buffer)
-            min_margin_required = spread_width * 100 * min_spreads * (1 + buffer_pct)
+            per_contract_margin = self.estimate_spread_margin_per_contract(
+                spread_width=spread_width,
+                spread_type="DEBIT",
+            )
+            min_margin_required = per_contract_margin * min_spreads * (1 + buffer_pct)
 
             if margin_remaining < min_margin_required:
                 self.log(
@@ -4067,18 +4114,18 @@ class OptionsEngine:
         # Scale num_spreads down to fit within available margin
         if margin_remaining is not None and margin_remaining > 0 and width > 0:
             safety_factor = getattr(config, "SPREAD_MARGIN_SAFETY_FACTOR", 0.80)
-            usable_margin = margin_remaining * safety_factor
-
-            # V2.21 Layer 2: Apply post-rejection cap if available
+            usable_margin = self.get_usable_margin(margin_remaining)
             if self._rejection_margin_cap is not None:
-                usable_margin = min(usable_margin, self._rejection_margin_cap)
                 self.log(
                     f"SIZING: Rejection cap active | Cap=${self._rejection_margin_cap:,.0f} | "
                     f"Usable=${usable_margin:,.0f}",
                     trades_only=True,
                 )
 
-            estimated_margin_per_spread = width * 100
+            estimated_margin_per_spread = self.estimate_spread_margin_per_contract(
+                spread_width=width,
+                spread_type=spread_type,
+            )
             if estimated_margin_per_spread > 0:
                 max_by_margin = int(usable_margin / estimated_margin_per_spread)
                 if max_by_margin < num_spreads:
@@ -4095,7 +4142,7 @@ class OptionsEngine:
         if 0 < num_spreads < min_contracts:
             self.log(
                 f"SPREAD: Entry skipped — {num_spreads} < min {min_contracts} | "
-                f"Insufficient margin for minimum position",
+                f"MARGIN_SCALE_BELOW_MIN_CONTRACTS",
                 trades_only=True,
             )
             return None  # Does NOT set _entry_attempted_today → retry preserved
@@ -4172,6 +4219,7 @@ class OptionsEngine:
                 "spread_short_leg_symbol": short_leg_contract.symbol,
                 "spread_short_leg_quantity": num_spreads,
                 "spread_net_debit": net_debit,
+                "spread_cost_or_credit": net_debit,
                 "spread_max_profit": max_profit,
                 "spread_width": width,
                 # V2.8: VASS metadata
@@ -4282,7 +4330,12 @@ class OptionsEngine:
             buffer_pct = getattr(config, "MARGIN_PRE_CHECK_BUFFER", 0.15)
 
             # Margin required = width × 100 × num_spreads × (1 + buffer)
-            min_margin_required = spread_width * 100 * min_spreads * (1 + buffer_pct)
+            per_contract_margin = self.estimate_spread_margin_per_contract(
+                spread_width=spread_width,
+                spread_type="CREDIT",
+                credit_received=None,
+            )
+            min_margin_required = per_contract_margin * min_spreads * (1 + buffer_pct)
 
             if margin_remaining < min_margin_required:
                 self.log(
@@ -4478,17 +4531,20 @@ class OptionsEngine:
         # V2.21: Pre-submission margin estimation
         if margin_remaining is not None and margin_remaining > 0 and width > 0:
             safety_factor = getattr(config, "SPREAD_MARGIN_SAFETY_FACTOR", 0.80)
-            usable_margin = margin_remaining * safety_factor
+            usable_margin = self.get_usable_margin(margin_remaining)
 
             if self._rejection_margin_cap is not None:
-                usable_margin = min(usable_margin, self._rejection_margin_cap)
                 self.log(
                     f"CREDIT_SIZING: Rejection cap active | Cap=${self._rejection_margin_cap:,.0f} | "
                     f"Usable=${usable_margin:,.0f}",
                     trades_only=True,
                 )
 
-            estimated_margin_per_spread = width * 100
+            estimated_margin_per_spread = self.estimate_spread_margin_per_contract(
+                spread_width=width,
+                spread_type=spread_type,
+                credit_received=credit_received,
+            )
             if estimated_margin_per_spread > 0:
                 max_by_margin = int(usable_margin / estimated_margin_per_spread)
                 if max_by_margin < num_spreads:
@@ -4505,7 +4561,7 @@ class OptionsEngine:
         if 0 < num_spreads < min_contracts:
             self.log(
                 f"CREDIT_SPREAD: Entry skipped - {num_spreads} < min {min_contracts} | "
-                f"Insufficient margin for minimum position",
+                f"MARGIN_SCALE_BELOW_MIN_CONTRACTS",
                 trades_only=True,
             )
             return None  # Does NOT set _entry_attempted_today → retry preserved
@@ -4573,6 +4629,7 @@ class OptionsEngine:
                 "spread_short_leg_symbol": short_leg_contract.symbol,
                 "spread_short_leg_quantity": num_spreads,
                 "spread_net_debit": -credit_received,  # Negative = credit
+                "spread_cost_or_credit": credit_received,
                 "spread_credit_received": credit_received,
                 "spread_max_profit": credit_received,
                 "spread_max_loss_per_spread": width - credit_received,
