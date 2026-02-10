@@ -432,7 +432,7 @@ PROFIT_TIGHTER_PCT = 0.25  # V2.3.6: Raised from 0.20 - let trends run
 # V2.3.8: 3x ETF Volatility Multipliers (PART 14 Pitfall 3)
 # V6.11: No 3x symbols in trend engine (all 2x now)
 # Kept for backward compatibility with Chandelier stop logic
-TREND_3X_SYMBOLS = []  # V6.11: No 3× in trend (QLD/SSO/UGL/UCO are all 2×)
+TREND_3X_SYMBOLS: list[str] = []  # V6.11: No 3× in trend (QLD/SSO/UGL/UCO are all 2×)
 CHANDELIER_3X_BASE_MULT = 2.5  # V2.3.8: Tighter than 2x (3.5) - control 3x volatility
 CHANDELIER_3X_TIGHT_MULT = 2.0  # V2.3.8: Tighter than 2x (3.0)
 CHANDELIER_3X_TIGHTER_MULT = 1.5  # V2.3.8: Tighter than 2x (2.5)
