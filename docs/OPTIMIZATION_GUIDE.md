@@ -170,7 +170,7 @@ V53_BREADTH_10D_PENALTY = 8              # -8 points for 10d decay
 
 VASS_ENABLED = True
 VASS_IV_LOW_THRESHOLD = 16           # VIX < 16 = Low IV
-VASS_IV_HIGH_THRESHOLD = 28          # VIX > 28 = High IV
+VASS_IV_HIGH_THRESHOLD = 25          # VIX > 25 = High IV
 VASS_IV_SMOOTHING_MINUTES = 30       # SMA window
 
 # DTE by IV Environment
@@ -178,8 +178,8 @@ VASS_LOW_IV_DTE_MIN = 30             # Monthly (30-45 DTE)
 VASS_LOW_IV_DTE_MAX = 45
 VASS_MEDIUM_IV_DTE_MIN = 7           # Weekly (7-21 DTE)
 VASS_MEDIUM_IV_DTE_MAX = 21
-VASS_HIGH_IV_DTE_MIN = 7             # Weekly (7-21 DTE)
-VASS_HIGH_IV_DTE_MAX = 21
+VASS_HIGH_IV_DTE_MIN = 5             # V6.8: Allow trades in high IV
+VASS_HIGH_IV_DTE_MAX = 40            # V6.13.1: Expand candidate pool
 ```
 
 ### VASS Conviction Thresholds
@@ -201,7 +201,7 @@ VASS_VIX_COMPLACENT_CROSS_LEVEL = 15     # VIX crosses below → BULLISH
 | Parameter | Current | Range | Impact |
 |-----------|---------|-------|--------|
 | `VASS_IV_LOW_THRESHOLD` | 16 | 14-18 | Credit vs Debit routing |
-| `VASS_IV_HIGH_THRESHOLD` | 28 | 25-32 | When to sell premium |
+| `VASS_IV_HIGH_THRESHOLD` | 25 | 25-32 | When to sell premium |
 | `VASS_VIX_5D_BEARISH_THRESHOLD` | 0.20 | 0.15-0.25 | BEARISH conviction sensitivity |
 | `VASS_VIX_5D_BULLISH_THRESHOLD` | -0.15 | -0.20 to -0.10 | BULLISH conviction sensitivity |
 
@@ -214,7 +214,7 @@ VASS_VIX_COMPLACENT_CROSS_LEVEL = 15     # VIX crosses below → BULLISH
 ```python
 # config.py — Lines 1343-1352
 
-MICRO_UVXY_BEARISH_THRESHOLD = 0.03      # UVXY +3% → BEARISH conviction
+MICRO_UVXY_BEARISH_THRESHOLD = 0.025     # UVXY +2.5% → BEARISH conviction
 MICRO_UVXY_BULLISH_THRESHOLD = -0.03     # UVXY -3% → BULLISH conviction
 MICRO_VIX_CRISIS_LEVEL = 35              # VIX > 35 → CRISIS (BEARISH)
 MICRO_VIX_COMPLACENT_LEVEL = 12          # VIX < 12 → COMPLACENT (BULLISH)
@@ -228,7 +228,7 @@ MICRO_BULLISH_STATES = ["PERFECT_MR", "GOOD_MR", "IMPROVING", "PANIC_EASING", "C
 
 | Parameter | Current | Range | Impact |
 |-----------|---------|-------|--------|
-| `MICRO_UVXY_BEARISH_THRESHOLD` | 0.03 | 0.02-0.05 | BEARISH signal sensitivity |
+| `MICRO_UVXY_BEARISH_THRESHOLD` | 0.025 | 0.02-0.05 | BEARISH signal sensitivity |
 | `MICRO_UVXY_BULLISH_THRESHOLD` | -0.03 | -0.05 to -0.02 | BULLISH signal sensitivity |
 | `MICRO_VIX_CRISIS_LEVEL` | 35 | 30-40 | When to force BEARISH |
 | `MICRO_VIX_COMPLACENT_LEVEL` | 12 | 10-14 | When to force BULLISH |
@@ -284,7 +284,7 @@ CREDIT_SPREAD_PROFIT_TARGET = 0.50       # Exit at 50% of max profit
 
 # Intraday-specific
 INTRADAY_ITM_TARGET = 0.40               # +40% for ITM momentum
-INTRADAY_ITM_STOP = 0.50                 # -50% stop
+INTRADAY_ITM_STOP = 0.35                 # -35% stop
 INTRADAY_ITM_TRAIL_TRIGGER = 0.20        # Trail after +20%
 INTRADAY_ITM_TRAIL_PCT = 0.50            # Trail at 50% of gains
 
@@ -297,7 +297,7 @@ INTRADAY_CREDIT_STOP = 1.0               # Stop if spread doubles
 | Parameter | Current | Range | Impact |
 |-----------|---------|-------|--------|
 | `OPTIONS_PROFIT_TARGET_PCT` | 0.50 | 0.30-0.60 | When to take profits |
-| `INTRADAY_ITM_STOP` | 0.50 | 0.40-0.75 | When to cut losses |
+| `INTRADAY_ITM_STOP` | 0.35 | 0.25-0.50 | When to cut losses |
 | `INTRADAY_ITM_TRAIL_TRIGGER` | 0.20 | 0.15-0.30 | When to start trailing |
 
 ---
@@ -309,11 +309,11 @@ INTRADAY_CREDIT_STOP = 1.0               # Stop if spread doubles
 ```python
 # config.py — Lines 1432-1443
 
-INTRADAY_DEBIT_FADE_VIX_MIN = 13.5       # Disable in apathy market
+INTRADAY_DEBIT_FADE_VIX_MIN = 9.5        # V6.13 OPT: Allow in calm bull/choppy
 INTRADAY_DEBIT_FADE_VIX_MAX = 25         # Max VIX for fade
-INTRADAY_DEBIT_FADE_MIN_SCORE = 45       # Micro score >= 45
+INTRADAY_DEBIT_FADE_MIN_SCORE = 35       # Micro score >= 35
 INTRADAY_FADE_MIN_MOVE = 0.50            # Min QQQ move 0.5%
-INTRADAY_FADE_MAX_MOVE = 1.20            # Max move 1.2%
+INTRADAY_FADE_MAX_MOVE = 1.50            # Max move 1.5%
 INTRADAY_DEBIT_FADE_START = "10:15"      # Entry window start
 INTRADAY_DEBIT_FADE_END = "14:00"        # Entry window end
 INTRADAY_DEBIT_FADE_DELTA_MIN = 0.20     # OTM delta min
@@ -325,9 +325,9 @@ INTRADAY_DEBIT_FADE_DELTA_MAX = 0.50     # Near ATM max
 ```python
 # config.py — Lines 1455-1469
 
-INTRADAY_ITM_MIN_VIX = 11.5              # Min VIX for ITM plays
+INTRADAY_ITM_MIN_VIX = 9.0               # V6.13 OPT: Min VIX for ITM plays
 INTRADAY_ITM_MIN_MOVE = 0.8              # QQQ move >= 0.8%
-INTRADAY_ITM_MIN_SCORE = 50              # Micro score >= 50
+INTRADAY_ITM_MIN_SCORE = 40              # Micro score >= 40
 INTRADAY_ITM_START = "10:00"             # Entry window start
 INTRADAY_ITM_END = "13:30"               # Entry window end
 INTRADAY_ITM_DELTA = 0.70                # ITM delta target
@@ -351,12 +351,12 @@ INTRADAY_CREDIT_SPREAD_WIDTH = 2.00      # $2 spread width
 
 ## 8. V6.7 Fixes Applied
 
-| Fix | Parameter | Old | New | Impact |
-|-----|-----------|-----|-----|--------|
-| V6.7-1 | Assignment Risk | Notional | Net Debit | Spreads stay open |
-| V6.7-9 | `V53_SPIKE_CAP_MAX_SCORE` | 45 | 38 | Faster DEFENSIVE |
-| V6.7-10 | `V53_BREADTH_5D_DECAY_THRESHOLD` | -0.10 | -0.02 | Triggers more often |
-| V6.7-10 | `V53_BREADTH_10D_DECAY_THRESHOLD` | -0.15 | -0.04 | Triggers more often |
+| Fix | Change | Impact |
+|-----|--------|--------|
+| V6.7-1 | Assignment Risk: Notional → Net Debit | Spreads stay open |
+| V6.7-9 | Spike Cap Max: reduced to 38 | Faster DEFENSIVE |
+| V6.7-10 | Breadth 5D Decay: reduced to -0.02 | Triggers more often |
+| V6.7-10 | Breadth 10D Decay: reduced to -0.04 | Triggers more often |
 
 ---
 
@@ -389,10 +389,10 @@ INTRADAY_CREDIT_SPREAD_WIDTH = 2.00      # $2 spread width
 | Parameter | Location | Current |
 |-----------|----------|---------|
 | `VASS_IV_LOW_THRESHOLD` | config.py:823 | 16 |
-| `VASS_IV_HIGH_THRESHOLD` | config.py:824 | 28 |
+| `VASS_IV_HIGH_THRESHOLD` | config.py:847 | 25 |
 | `OPTIONS_INTRADAY_ALLOCATION` | config.py:804 | 0.0625 |
 | `INTRADAY_MAX_TRADES_PER_DAY` | config.py:874 | 2 |
-| `MICRO_UVXY_BEARISH_THRESHOLD` | config.py:1343 | 0.03 |
+| `MICRO_UVXY_BEARISH_THRESHOLD` | config.py:1429 | 0.025 |
 
 ---
 
@@ -445,12 +445,12 @@ VIX_DIRECTION_RISING = 2.0        # Was 3.0
 
 | Parameter | Current | Recommended | Purpose |
 |-----------|:-------:|:-----------:|---------|
-| `INTRADAY_DEBIT_FADE_MIN_SCORE` | 45 | **35** | Allow more trades in bull/chop |
-| `INTRADAY_ITM_MIN_SCORE` | 50 | **40** | Capture momentum earlier |
-| `INTRADAY_FADE_MAX_MOVE` | 1.20 | **1.50** | Don't block strong bull continuation |
-| `INTRADAY_DEBIT_FADE_VIX_MIN` | 13.5 | **11.5** | Allow trades in low VIX bull |
-| `INTRADAY_ITM_MIN_VIX` | 11.5 | **10.0** | Allow momentum in very low VIX |
-| `MICRO_UVXY_BEARISH_THRESHOLD` | 0.03 | **0.025** | More bear conviction signals |
+| `INTRADAY_DEBIT_FADE_MIN_SCORE` | 35 | **35** | Allow more trades in bull/chop ✓ |
+| `INTRADAY_ITM_MIN_SCORE` | 40 | **40** | Capture momentum earlier ✓ |
+| `INTRADAY_FADE_MAX_MOVE` | 1.50 | **1.50** | Don't block strong bull continuation ✓ |
+| `INTRADAY_DEBIT_FADE_VIX_MIN` | 9.5 | **9.5** | Allow trades in low VIX bull ✓ |
+| `INTRADAY_ITM_MIN_VIX` | 9.0 | **9.0** | Allow momentum in very low VIX ✓ |
+| `MICRO_UVXY_BEARISH_THRESHOLD` | 0.025 | **0.025** | More bear conviction signals ✓ |
 | `MICRO_UVXY_BULLISH_THRESHOLD` | -0.03 | **-0.025** | More bull conviction signals |
 
 ---
@@ -459,9 +459,9 @@ VIX_DIRECTION_RISING = 2.0        # Was 3.0
 
 | Parameter | Current | Recommended | Purpose |
 |-----------|:-------:|:-----------:|---------|
-| `OPTIONS_ATR_STOP_MULTIPLIER` | 1.5 | **1.0** | Stop not too wide |
-| `OPTIONS_ATR_STOP_MAX_PCT` | 0.50 | **0.30** | Prevent 50% losses |
-| `OPTIONS_ATR_STOP_MIN_PCT` | 0.20 | **0.15** | Allow slightly tighter stops |
+| `OPTIONS_ATR_STOP_MULTIPLIER` | 0.9 | **0.9** | Stop not too wide ✓ |
+| `OPTIONS_ATR_STOP_MAX_PCT` | 0.30 | **0.30** | Prevent 50% losses ✓ |
+| `OPTIONS_ATR_STOP_MIN_PCT` | 0.12 | **0.12** | Allow slightly tighter stops ✓ |
 | `OPTIONS_0DTE_STOP_PCT` | 0.15 | **0.15** | Keep fallback as is |
 
 ---
@@ -470,8 +470,8 @@ VIX_DIRECTION_RISING = 2.0        # Was 3.0
 
 | Parameter | Current | Recommended | Purpose |
 |-----------|:-------:|:-----------:|---------|
-| `OPTIONS_MIN_OPEN_INTEREST` | 100 | **50** | Avoid rejection in thin chains |
-| `OPTIONS_SPREAD_WARNING_PCT` | 0.25 | **0.30** | Reduce spread-based rejection |
+| `OPTIONS_MIN_OPEN_INTEREST` | 50 | **50** | Avoid rejection in thin chains ✓ |
+| `OPTIONS_SPREAD_WARNING_PCT` | 0.30 | **0.30** | Reduce spread-based rejection ✓ |
 
 ---
 
@@ -479,10 +479,10 @@ VIX_DIRECTION_RISING = 2.0        # Was 3.0
 
 | Parameter | Current | Recommended | Purpose |
 |-----------|:-------:|:-----------:|---------|
-| `VASS_HIGH_IV_DTE_MIN` | 7 | **5** | Allow trades in high IV |
-| `VASS_HIGH_IV_DTE_MAX` | 21 | **28** | Widen candidate pool |
-| `SPREAD_LONG_LEG_DELTA_MIN` | 0.45 | **0.40** | Allow near-ATM |
-| `SPREAD_SHORT_LEG_DELTA_MAX` | 0.52 | **0.55** | Avoid excessive rejection |
+| `VASS_HIGH_IV_DTE_MIN` | 5 | **5** | Allow trades in high IV ✓ |
+| `VASS_HIGH_IV_DTE_MAX` | 40 | **40** | Widen candidate pool ✓ |
+| `SPREAD_LONG_LEG_DELTA_MIN` | 0.35 | **0.35** | Allow near-ATM ✓ |
+| `SPREAD_SHORT_LEG_DELTA_MAX` | 0.60 | **0.60** | Avoid excessive rejection ✓ |
 | `SPREAD_WIDTH_TARGET` | 4.0 | **3.0** | More matches in chain |
 
 ---
@@ -495,37 +495,37 @@ VIX_DIRECTION_RISING = 2.0        # Was 3.0
 
 ---
 
-### Config Changes for V6.8
+### Config Changes Applied (V6.8 → V6.13)
 
 ```python
-# === A. MICRO ENGINE ===
-INTRADAY_DEBIT_FADE_MIN_SCORE = 35       # Was: 45
-INTRADAY_ITM_MIN_SCORE = 40              # Was: 50
-INTRADAY_FADE_MAX_MOVE = 1.50            # Was: 1.20
-INTRADAY_DEBIT_FADE_VIX_MIN = 11.5       # Was: 13.5
-INTRADAY_ITM_MIN_VIX = 10.0              # Was: 11.5
-MICRO_UVXY_BEARISH_THRESHOLD = 0.025     # Was: 0.03
-MICRO_UVXY_BULLISH_THRESHOLD = -0.025    # Was: -0.03
+# === A. MICRO ENGINE (Applied) ===
+INTRADAY_DEBIT_FADE_MIN_SCORE = 35       # ✓ Applied (was: 45)
+INTRADAY_ITM_MIN_SCORE = 40              # ✓ Applied (was: 50)
+INTRADAY_FADE_MAX_MOVE = 1.50            # ✓ Applied (was: 1.20)
+INTRADAY_DEBIT_FADE_VIX_MIN = 9.5        # ✓ Applied (was: 13.5) - V6.13 further reduced
+INTRADAY_ITM_MIN_VIX = 9.0               # ✓ Applied (was: 11.5) - V6.13 further reduced
+MICRO_UVXY_BEARISH_THRESHOLD = 0.025     # ✓ Applied (was: 0.03)
+MICRO_UVXY_BULLISH_THRESHOLD = -0.025    # ✓ Applied (was: -0.03)
 
-# === B. MICRO STOPS ===
-OPTIONS_ATR_STOP_MULTIPLIER = 1.0        # Was: 1.5
-OPTIONS_ATR_STOP_MAX_PCT = 0.30          # Was: 0.50
-OPTIONS_ATR_STOP_MIN_PCT = 0.15          # Was: 0.20
+# === B. MICRO STOPS (Applied) ===
+OPTIONS_ATR_STOP_MULTIPLIER = 0.9        # ✓ Applied (was: 1.5) - V6.13 further tightened
+OPTIONS_ATR_STOP_MAX_PCT = 0.30          # ✓ Applied (was: 0.50)
+OPTIONS_ATR_STOP_MIN_PCT = 0.12          # ✓ Applied (was: 0.20) - V6.13 further tightened
 OPTIONS_0DTE_STOP_PCT = 0.15             # Unchanged
 
-# === C. LIQUIDITY FILTERS ===
-OPTIONS_MIN_OPEN_INTEREST = 50           # Was: 100
-OPTIONS_SPREAD_WARNING_PCT = 0.30        # Was: 0.25
+# === C. LIQUIDITY FILTERS (Applied) ===
+OPTIONS_MIN_OPEN_INTEREST = 50           # ✓ Applied (was: 100)
+OPTIONS_SPREAD_WARNING_PCT = 0.30        # ✓ Applied (was: 0.25)
 
-# === D. VASS / SPREADS ===
-VASS_HIGH_IV_DTE_MIN = 5                 # Was: 7
-VASS_HIGH_IV_DTE_MAX = 28                # Was: 21
-SPREAD_LONG_LEG_DELTA_MIN = 0.40         # Was: 0.45
-SPREAD_SHORT_LEG_DELTA_MAX = 0.55        # Was: 0.52
-SPREAD_WIDTH_TARGET = 3.0                # Was: 4.0
+# === D. VASS / SPREADS (Applied) ===
+VASS_HIGH_IV_DTE_MIN = 5                 # ✓ Applied (was: 7)
+VASS_HIGH_IV_DTE_MAX = 40                # ✓ Applied (was: 21) - V6.13 expanded
+SPREAD_LONG_LEG_DELTA_MIN = 0.35         # ✓ Applied (was: 0.45) - V6.10 further widened
+SPREAD_SHORT_LEG_DELTA_MAX = 0.60        # ✓ Applied (was: 0.52) - V6.10 further widened
+SPREAD_WIDTH_TARGET = 3.0                # ✓ Applied (was: 4.0)
 
-# === E. ASSIGNMENT RISK ===
-ASSIGNMENT_MARGIN_BUFFER_PCT = 0.10      # Was: 0.20
+# === E. ASSIGNMENT RISK (Applied) ===
+ASSIGNMENT_MARGIN_BUFFER_PCT = 0.10      # ✓ Applied (was: 0.20)
 ```
 
 ---
