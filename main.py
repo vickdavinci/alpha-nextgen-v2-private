@@ -297,6 +297,15 @@ class AlphaNextGen(QCAlgorithm):
         self._options_spread_cooldown_until = None  # Options Spread: 30 min cooldown
         self._mr_rejection_cooldown_until = None  # Mean Reversion: 15 min cooldown
 
+        # V6.14: Pre-market VIX shock ladder state (portfolio-wide options guard)
+        self._premarket_vix_ladder_level = 0
+        self._premarket_vix_ladder_reason = "L0"
+        self._premarket_vix_size_mult = 1.0
+        self._premarket_vix_entry_block_until = None
+        self._premarket_vix_call_block_until = None
+        self._vix_prior_close = 15.0
+        self._uvxy_prior_close = 0.0
+
         # V2.3.6: Track pending spread orders to handle leg failures
         # Maps short leg symbol -> long leg symbol (to liquidate long if short fails)
         self._pending_spread_orders: Dict[str, str] = {}
@@ -1103,6 +1112,18 @@ class AlphaNextGen(QCAlgorithm):
         self.spy_prior_close = self.Securities[self.spy].Close
         self.risk_engine.set_spy_prior_close(self.spy_prior_close)
 
+        # V6.14: Seed prior closes on first trading day if needed.
+        if self._vix_prior_close <= 0:
+            self._vix_prior_close = self._get_vix_level()
+        if self._uvxy_prior_close <= 0 and hasattr(self, "uvxy"):
+            uvxy_close = self.Securities[self.uvxy].Close
+            if uvxy_close > 0:
+                self._uvxy_prior_close = uvxy_close
+
+        # V6.14: Pre-market VIX shock ladder (shared protection across options modes)
+        self._update_premarket_vix_ladder()
+        self._apply_premarket_vix_actions()
+
         # V6.10 P0: Pre-market ITM check for spread positions
         # Check if any short legs went ITM overnight and queue for close
         if getattr(config, "PREMARKET_ITM_CHECK_ENABLED", True):
@@ -1184,6 +1205,244 @@ class AlphaNextGen(QCAlgorithm):
             # Process through portfolio router for proper execution
             for signal in exit_signals:
                 self.portfolio_router.add_weight(signal)
+
+    def _get_premarket_vix_gap_proxy_pct(self) -> float:
+        """
+        Estimate overnight VIX gap using UVXY close-to-preopen move.
+
+        QC backtests provide CBOE VIX at daily resolution, so pre-open VIX gap
+        is approximated from UVXY gap using ~1.5x relationship.
+        """
+        if self._uvxy_prior_close <= 0:
+            return 0.0
+        uvxy_now = self.Securities[self.uvxy].Price if hasattr(self, "uvxy") else 0.0
+        if uvxy_now <= 0:
+            return 0.0
+        uvxy_gap_pct = (uvxy_now - self._uvxy_prior_close) / self._uvxy_prior_close * 100.0
+        return uvxy_gap_pct / 1.5
+
+    def _update_premarket_vix_ladder(self) -> None:
+        """Set the daily pre-market VIX ladder state (L0-L3)."""
+        self._premarket_vix_ladder_level = 0
+        self._premarket_vix_ladder_reason = "L0_NORMAL"
+        self._premarket_vix_size_mult = 1.0
+        self._premarket_vix_entry_block_until = None
+        self._premarket_vix_call_block_until = None
+
+        if not getattr(config, "PREMARKET_VIX_LADDER_ENABLED", True):
+            return
+
+        vix_level = self._get_vix_level()
+        vix_gap_proxy_pct = self._get_premarket_vix_gap_proxy_pct()
+        vix_shock_level = max(vix_level, self._vix_prior_close * (1.0 + vix_gap_proxy_pct / 100.0))
+
+        if (
+            vix_shock_level >= config.PREMARKET_VIX_L3_LEVEL
+            or vix_gap_proxy_pct >= config.PREMARKET_VIX_L3_GAP_PCT
+        ):
+            self._premarket_vix_ladder_level = 3
+            self._premarket_vix_size_mult = config.PREMARKET_VIX_L3_SIZE_MULT
+            self._premarket_vix_entry_block_until = (
+                config.PREMARKET_VIX_L3_ENTRY_BLOCK_UNTIL_HOUR,
+                config.PREMARKET_VIX_L3_ENTRY_BLOCK_UNTIL_MINUTE,
+            )
+            self._premarket_vix_ladder_reason = f"L3_PANIC | VIX={vix_level:.1f} | Shock={vix_shock_level:.1f} | GapProxy={vix_gap_proxy_pct:+.1f}%"
+        elif (
+            vix_shock_level >= config.PREMARKET_VIX_L2_LEVEL
+            or vix_gap_proxy_pct >= config.PREMARKET_VIX_L2_GAP_PCT
+        ):
+            self._premarket_vix_ladder_level = 2
+            self._premarket_vix_size_mult = config.PREMARKET_VIX_L2_SIZE_MULT
+            self._premarket_vix_call_block_until = (
+                config.PREMARKET_VIX_L2_CALL_BLOCK_UNTIL_HOUR,
+                config.PREMARKET_VIX_L2_CALL_BLOCK_UNTIL_MINUTE,
+            )
+            self._premarket_vix_ladder_reason = f"L2_STRESS | VIX={vix_level:.1f} | Shock={vix_shock_level:.1f} | GapProxy={vix_gap_proxy_pct:+.1f}%"
+        elif (
+            vix_shock_level >= config.PREMARKET_VIX_L1_LEVEL
+            or vix_gap_proxy_pct >= config.PREMARKET_VIX_L1_GAP_PCT
+        ):
+            self._premarket_vix_ladder_level = 1
+            self._premarket_vix_size_mult = config.PREMARKET_VIX_L1_SIZE_MULT
+            self._premarket_vix_ladder_reason = f"L1_ELEVATED | VIX={vix_level:.1f} | Shock={vix_shock_level:.1f} | GapProxy={vix_gap_proxy_pct:+.1f}%"
+
+        if self._premarket_vix_ladder_level > 0:
+            self.Log(f"PREMARKET_VIX_LADDER: {self._premarket_vix_ladder_reason}")
+
+    def _apply_premarket_vix_actions(self) -> None:
+        """Apply pre-market de-risk actions based on ladder level."""
+        if not getattr(config, "PREMARKET_VIX_LADDER_ENABLED", True):
+            return
+
+        # Always flush stale intraday option carry first.
+        if (
+            getattr(config, "PREMARKET_FORCE_CLOSE_INTRADAY_STALE", True)
+            and self.options_engine.has_intraday_position()
+        ):
+            intraday_pos = self.options_engine.get_intraday_position()
+            if intraday_pos is not None:
+                self.Log(
+                    f"PREMARKET_LADDER: Closing stale intraday carry | {intraday_pos.contract.symbol}"
+                )
+                self.portfolio_router.receive_signal(
+                    TargetWeight(
+                        symbol=intraday_pos.contract.symbol,
+                        target_weight=0.0,
+                        source="OPT_INTRADAY",
+                        urgency=Urgency.IMMEDIATE,
+                        reason=f"PREMARKET_STALE_INTRADAY_CLOSE | {self._premarket_vix_ladder_reason}",
+                    )
+                )
+
+        if self._premarket_vix_ladder_level >= 3 and getattr(
+            config, "PREMARKET_VIX_L3_CLOSE_ALL_OPTIONS", True
+        ):
+            queued = 0
+            spread = self.options_engine.get_spread_position()
+            if spread is not None:
+                self.portfolio_router.receive_signal(
+                    TargetWeight(
+                        symbol=spread.long_leg.symbol,
+                        target_weight=0.0,
+                        source="OPT",
+                        urgency=Urgency.IMMEDIATE,
+                        reason=f"PREMARKET_VIX_L3_FLATTEN | {self._premarket_vix_ladder_reason}",
+                        requested_quantity=spread.num_spreads,
+                        metadata={
+                            "spread_close_short": True,
+                            "spread_short_leg_symbol": spread.short_leg.symbol,
+                            "spread_short_leg_quantity": spread.num_spreads,
+                            "exit_type": "PREMARKET_VIX_L3",
+                        },
+                    )
+                )
+                queued += 1
+
+            intraday_pos = self.options_engine.get_intraday_position()
+            if intraday_pos is not None:
+                self.portfolio_router.receive_signal(
+                    TargetWeight(
+                        symbol=intraday_pos.contract.symbol,
+                        target_weight=0.0,
+                        source="OPT_INTRADAY",
+                        urgency=Urgency.IMMEDIATE,
+                        reason=f"PREMARKET_VIX_L3_FLATTEN | {self._premarket_vix_ladder_reason}",
+                    )
+                )
+                queued += 1
+
+            # Queue exits for any orphan option holdings not covered by tracked state.
+            tracked_symbols = set()
+            if spread is not None:
+                tracked_symbols.add(spread.long_leg.symbol)
+                tracked_symbols.add(spread.short_leg.symbol)
+            if intraday_pos is not None:
+                tracked_symbols.add(intraday_pos.contract.symbol)
+
+            for kvp in self.Portfolio:
+                holding = kvp.Value
+                if not holding.Invested or holding.Symbol.SecurityType != SecurityType.Option:
+                    continue
+                if holding.Symbol in tracked_symbols:
+                    continue
+                self.portfolio_router.receive_signal(
+                    TargetWeight(
+                        symbol=holding.Symbol,
+                        target_weight=0.0,
+                        source="OPT",
+                        urgency=Urgency.IMMEDIATE,
+                        reason=f"PREMARKET_VIX_L3_ORPHAN_CLOSE | {self._premarket_vix_ladder_reason}",
+                    )
+                )
+                queued += 1
+
+            if queued > 0:
+                self.Log(
+                    f"PREMARKET_LADDER: L3 queued option flatten exits | Queued={queued} | "
+                    f"{self._premarket_vix_ladder_reason}"
+                )
+            return
+
+        if self._premarket_vix_ladder_level >= 2 and getattr(
+            config, "PREMARKET_VIX_L2_CLOSE_BULLISH_OPTIONS", True
+        ):
+            # Tracked spread-aware close for bullish swing structures.
+            spread = self.options_engine.get_spread_position()
+            bullish_spreads = {
+                "BULL_CALL",
+                "BULL_CALL_DEBIT",
+                "BULL_PUT_CREDIT",
+                SpreadStrategy.BULL_CALL_DEBIT.value,
+                SpreadStrategy.BULL_PUT_CREDIT.value,
+            }
+            if spread is not None and spread.spread_type in bullish_spreads:
+                self.portfolio_router.receive_signal(
+                    TargetWeight(
+                        symbol=spread.long_leg.symbol,
+                        target_weight=0.0,
+                        source="OPT",
+                        urgency=Urgency.IMMEDIATE,
+                        reason=f"PREMARKET_VIX_L2_BULLISH_SPREAD | {self._premarket_vix_ladder_reason}",
+                        requested_quantity=spread.num_spreads,
+                        metadata={
+                            "spread_close_short": True,
+                            "spread_short_leg_symbol": spread.short_leg.symbol,
+                            "spread_short_leg_quantity": spread.num_spreads,
+                            "exit_type": "PREMARKET_VIX_L2",
+                        },
+                    )
+                )
+
+            # Close bullish single-leg calls.
+            symbols_to_close = []
+            intraday_pos = self.options_engine.get_intraday_position()
+            if intraday_pos is not None and intraday_pos.contract.direction == OptionDirection.CALL:
+                symbols_to_close.append(intraday_pos.contract.symbol)
+
+            for kvp in self.Portfolio:
+                holding = kvp.Value
+                if not holding.Invested or holding.Symbol.SecurityType != SecurityType.Option:
+                    continue
+                if holding.Symbol.ID.OptionRight == OptionRight.Call:
+                    symbols_to_close.append(holding.Symbol)
+
+            # Deduplicate and close atomically (shorts first, then longs).
+            if symbols_to_close:
+                unique_symbols = list(dict.fromkeys(symbols_to_close))
+                queued = 0
+                for symbol in unique_symbols:
+                    self.portfolio_router.receive_signal(
+                        TargetWeight(
+                            symbol=symbol,
+                            target_weight=0.0,
+                            source="OPT",
+                            urgency=Urgency.IMMEDIATE,
+                            reason=(
+                                "PREMARKET_VIX_L2_CALL_DELEVER | "
+                                f"{self._premarket_vix_ladder_reason}"
+                            ),
+                        )
+                    )
+                    queued += 1
+                if queued > 0:
+                    self.Log(
+                        f"PREMARKET_LADDER: L2 de-risked bullish options | Queued={queued} | "
+                        f"{self._premarket_vix_ladder_reason}"
+                    )
+
+    def _is_premarket_ladder_entry_block_active(self) -> bool:
+        """Return True when ladder blocks all new options entries."""
+        if self._premarket_vix_entry_block_until is None:
+            return False
+        block_hour, block_minute = self._premarket_vix_entry_block_until
+        return (self.Time.hour, self.Time.minute) < (block_hour, block_minute)
+
+    def _is_premarket_ladder_call_block_active(self) -> bool:
+        """Return True when ladder blocks new CALL direction entries."""
+        if self._premarket_vix_call_block_until is None:
+            return False
+        block_hour, block_minute = self._premarket_vix_call_block_until
+        return (self.Time.hour, self.Time.minute) < (block_hour, block_minute)
 
     def _intraday_force_exit_fallback(self) -> None:
         """
@@ -1575,6 +1834,14 @@ class AlphaNextGen(QCAlgorithm):
         if not self.cold_start_engine.is_cold_start_active():
             return
 
+        # V6.14: Respect pre-market VIX ladder for warm-entry risk.
+        if self._premarket_vix_ladder_level >= 2:
+            self.Log(
+                f"WARM_ENTRY_BLOCKED: Pre-market VIX ladder {self._premarket_vix_ladder_level} | "
+                f"{self._premarket_vix_ladder_reason}"
+            )
+            return
+
         # Get regime state (use previous smoothed score)
         regime_score = self.regime_engine.get_previous_score()
 
@@ -1778,6 +2045,12 @@ class AlphaNextGen(QCAlgorithm):
 
         # Save all state
         self._save_state()
+
+        # V6.14: Cache closes for next day's pre-market VIX ladder.
+        self._vix_prior_close = self._get_vix_level()
+        uvxy_close = self.Securities[self.uvxy].Close if hasattr(self, "uvxy") else 0.0
+        if uvxy_close > 0:
+            self._uvxy_prior_close = uvxy_close
 
         # V6.12: Log EOD P&L summary
         if hasattr(self, "pnl_tracker"):
@@ -3461,6 +3734,8 @@ class AlphaNextGen(QCAlgorithm):
             size_multiplier: Position size multiplier (default 1.0). Set to 0.5
                 during cold start to reduce risk while still participating.
         """
+        size_multiplier *= self._premarket_vix_size_mult
+
         # Skip if indicators not ready
         if not self.qqq_adx.IsReady or not self.qqq_sma200.IsReady:
             return
@@ -3606,6 +3881,11 @@ class AlphaNextGen(QCAlgorithm):
 
         # V5.3: Use resolved direction (may be VASS override or Macro alignment)
         if resolved_direction == "BULLISH":
+            if self._is_premarket_ladder_call_block_active():
+                self.Log(
+                    f"OPTIONS_EOD: CALL blocked by pre-market ladder | {self._premarket_vix_ladder_reason}"
+                )
+                return
             directions_to_scan = [(OptionDirection.CALL, "BULLISH")]
         else:  # BEARISH
             directions_to_scan = [(OptionDirection.PUT, "BEARISH")]
@@ -5169,9 +5449,20 @@ class AlphaNextGen(QCAlgorithm):
         # V2.3.20: Calculate size multiplier for cold start
         is_cold_start = self.cold_start_engine.is_cold_start_active()
         size_multiplier = config.OPTIONS_COLD_START_MULTIPLIER if is_cold_start else 1.0
+        size_multiplier *= self._premarket_vix_size_mult
 
         # Skip if indicators not ready
         if not self.qqq_adx.IsReady or not self.qqq_sma200.IsReady:
+            return
+
+        # V6.14: L3 freeze window blocks all new options entries intraday.
+        if self._is_premarket_ladder_entry_block_active():
+            if self.Time.minute % 15 == 0:
+                until_h, until_m = self._premarket_vix_entry_block_until
+                self.Log(
+                    f"PREMARKET_LADDER_BLOCK: Options blocked until {until_h:02d}:{until_m:02d} | "
+                    f"{self._premarket_vix_ladder_reason}"
+                )
             return
 
         # V2.5 PART 19 FIX: Stateless reconciliation - detect zombie state
@@ -5349,15 +5640,28 @@ class AlphaNextGen(QCAlgorithm):
                     self.Log(f"INTRADAY: Blocked - {signal_reason}")
                     intraday_direction = None
                 else:
-                    self.Log(
-                        f"INTRADAY_SIGNAL_APPROVED: {signal_reason} | "
-                        f"Direction={intraday_direction.value if intraday_direction else 'NONE'}"
-                    )
+                    if (
+                        intraday_direction == OptionDirection.CALL
+                        and self._is_premarket_ladder_call_block_active()
+                    ):
+                        intraday_direction = None
+                        signal_reason = (
+                            f"PREMARKET_LADDER_CALL_BLOCK: {self._premarket_vix_ladder_reason}"
+                        )
+                        self.Log(f"INTRADAY: Blocked - {signal_reason}")
+                    else:
+                        self.Log(
+                            f"INTRADAY_SIGNAL_APPROVED: {signal_reason} | "
+                            f"Direction={intraday_direction.value if intraday_direction else 'NONE'}"
+                        )
 
                 # If engine recommends NO_TRADE or conflict detected, skip contract selection
                 if intraday_direction is None:
                     intraday_contract = None
                 else:
+                    self.Log(
+                        f"INTRADAY: Proceeding with ladder size mult {self._premarket_vix_size_mult:.2f}"
+                    )
                     # STEP 2: Select contract matching ENGINE recommendation (not hardcoded fade)
                     # V2.14 Fix #20: Pass strategy for delta-aware contract selection
                     intraday_strategy = self.options_engine.get_last_intraday_strategy()
@@ -5495,6 +5799,16 @@ class AlphaNextGen(QCAlgorithm):
         else:  # BEARISH
             direction = OptionDirection.PUT
             direction_str = "BEARISH"
+
+        # V6.14: L2 call block applies to VASS path too.
+        if direction == OptionDirection.CALL and self._is_premarket_ladder_call_block_active():
+            if self.Time.minute % 15 == 0:
+                until_h, until_m = self._premarket_vix_call_block_until
+                self.Log(
+                    f"VASS_BLOCKED: CALL blocked until {until_h:02d}:{until_m:02d} | "
+                    f"{self._premarket_vix_ladder_reason}"
+                )
+            return
 
         if vass_has_conviction:
             self.Log(

@@ -1060,6 +1060,39 @@ PREMARKET_ITM_CHECK_ENABLED = True  # Enable 09:25 pre-market check
 PREMARKET_ITM_CHECK_HOUR = 9  # Check at 09:25 ET
 PREMARKET_ITM_CHECK_MINUTE = 25
 
+# V6.14: Pre-market VIX shock ladder (shared guard across options modes)
+# Uses CBOE VIX level + UVXY overnight gap proxy to de-risk before market open.
+PREMARKET_VIX_LADDER_ENABLED = True
+
+# Level triggers (higher level takes precedence)
+# L3: Panic shock -> freeze new options entries and flatten all options risk
+PREMARKET_VIX_L3_LEVEL = 35.0
+PREMARKET_VIX_L3_GAP_PCT = 12.0  # Approx VIX gap via UVXY gap / 1.5
+
+# L2: High stress -> block new CALLs and de-risk bullish options
+PREMARKET_VIX_L2_LEVEL = 28.0
+PREMARKET_VIX_L2_GAP_PCT = 7.0
+
+# L1: Elevated -> reduce options size, no forced exits
+PREMARKET_VIX_L1_LEVEL = 22.0
+PREMARKET_VIX_L1_GAP_PCT = 4.0
+
+# Entry windows after pre-market shock
+PREMARKET_VIX_L2_CALL_BLOCK_UNTIL_HOUR = 11
+PREMARKET_VIX_L2_CALL_BLOCK_UNTIL_MINUTE = 0
+PREMARKET_VIX_L3_ENTRY_BLOCK_UNTIL_HOUR = 12
+PREMARKET_VIX_L3_ENTRY_BLOCK_UNTIL_MINUTE = 0
+
+# Size multipliers by level
+PREMARKET_VIX_L1_SIZE_MULT = 0.75
+PREMARKET_VIX_L2_SIZE_MULT = 0.50
+PREMARKET_VIX_L3_SIZE_MULT = 0.25
+
+# De-risk actions
+PREMARKET_VIX_L2_CLOSE_BULLISH_OPTIONS = True
+PREMARKET_VIX_L3_CLOSE_ALL_OPTIONS = True
+PREMARKET_FORCE_CLOSE_INTRADAY_STALE = True
+
 # P1 Fix 5: Assignment-Aware Position Sizing
 # Reduce size if max short exposure exceeds safe margin
 ASSIGNMENT_AWARE_SIZING_ENABLED = True
