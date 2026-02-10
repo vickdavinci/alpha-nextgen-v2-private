@@ -202,28 +202,28 @@ drawdown_pct = (spy_52w_high - current_price) / spy_52w_high
 
 **Trigger:** VIX 5-day change >= +28%
 
-**Effect:** Raw regime score capped at 45 (CAUTIOUS) for 3 days
+**Effect:** Raw regime score capped at 38 (DEFENSIVE) for 3 days (V6.6: lowered from 45 to 38)
 
 **Config:**
 - `V53_SPIKE_CAP_ENABLED` (default: True)
 - `V53_SPIKE_CAP_THRESHOLD` (default: 0.28)
-- `V53_SPIKE_CAP_MAX_SCORE` (default: 45)
+- `V53_SPIKE_CAP_MAX_SCORE` (default: 38 - V6.6: lowered from 45)
 - `V53_SPIKE_CAP_DECAY_DAYS` (default: 3)
 
-### 4.3.2 Breadth Decay Penalty
+### 4.3.2 Breadth Decay Penalty (V6.9)
 
 **Purpose:** Penalize regime score when market breadth is deteriorating (mega-cap rally while average stock lags).
 
-**Trigger:** RSP/SPY ratio declining
-- 5-day decay > -10%: -5 points
-- 10-day decay > -15%: -8 points (additive)
+**Trigger:** RSP/SPY ratio declining (V6.9: more sensitive thresholds)
+- 5-day decay > -1%: -8 points (V6.9: was -10% threshold, -5 penalty)
+- 10-day decay > -3%: -12 points (additive) (V6.9: was -15% threshold, -8 penalty)
 
 **Config:**
 - `V53_BREADTH_DECAY_ENABLED` (default: True)
-- `V53_BREADTH_5D_DECAY_THRESHOLD` (default: -0.10)
-- `V53_BREADTH_10D_DECAY_THRESHOLD` (default: -0.15)
-- `V53_BREADTH_5D_PENALTY` (default: 5.0)
-- `V53_BREADTH_10D_PENALTY` (default: 8.0)
+- `V53_BREADTH_5D_DECAY_THRESHOLD` (default: -0.01 - V6.9: was -0.10)
+- `V53_BREADTH_10D_DECAY_THRESHOLD` (default: -0.03 - V6.9: was -0.15)
+- `V53_BREADTH_5D_PENALTY` (default: 8 - V6.9: increased from 5)
+- `V53_BREADTH_10D_PENALTY` (default: 12 - V6.9: increased from 8)
 
 ---
 
@@ -273,15 +273,17 @@ This means:
 
 The smoothed score maps to discrete regime states that drive system behavior.
 
-### Regime States Summary Table
+### Regime States Summary Table (V6.11)
 
 | Score Range | State | New Longs | Hedges | Cold Start |
 |:-----------:|-------|:---------:|:------:|:----------:|
 | **70 – 100** | RISK_ON | Full | None | Allowed |
 | **50 – 69** | NEUTRAL | Full | None | If > 50 |
-| **40 – 49** | CAUTIOUS | Full | 10% TMF | Blocked |
-| **30 – 39** | DEFENSIVE | Reduced | 15% TMF + 5% PSQ | Blocked |
-| **0 – 29** | RISK_OFF | None | 20% TMF + 10% PSQ | Blocked |
+| **40 – 49** | CAUTIOUS | Full | 5% SH | Blocked |
+| **30 – 39** | DEFENSIVE | Reduced | 8% SH | Blocked |
+| **0 – 29** | RISK_OFF | None | 10% SH | Blocked |
+
+> **V6.11 Note:** TMF/PSQ replaced with SH (1x Inverse S&P). See docs/16-appendix-parameters.md for full hedge allocations.
 
 ---
 
@@ -315,7 +317,7 @@ Market conditions are deteriorating. **Increased vigilance required.**
 
 **System Behavior:**
 - Leverage still allowed but proceed carefully
-- **Light hedge required: 10% TMF**
+- **Light hedge required: 5% SH** (V6.11: was 10% TMF)
 - Cold start warm entry **NOT** permitted
 - Strategy signals still honored
 
@@ -327,7 +329,7 @@ Market conditions are unfavorable. **Defensive positioning required.**
 
 **System Behavior:**
 - Reduced leverage appropriate
-- **Medium hedge required: 15% TMF + 5% PSQ**
+- **Medium hedge required: 8% SH** (V6.11: was 15% TMF + 5% PSQ)
 - Cold start warm entry **NOT** permitted
 - Strategy signals honored but with reduced sizing
 
@@ -339,31 +341,30 @@ Market conditions are dangerous. **Maximum defense required.**
 
 **System Behavior:**
 - **No new long entries allowed**
-- **Full hedge required: 20% TMF + 10% PSQ**
+- **Full hedge required: 10% SH** (V6.11: was 20% TMF + 10% PSQ)
 - Cold start warm entry **NOT** permitted
 - Only exits and hedges active
 
 ---
 
-## 4.6 Regime-Triggered Hedge Allocation
+## 4.6 Regime-Triggered Hedge Allocation (V6.11)
 
-### Hedge Allocation Tiers
+### Hedge Allocation Tiers (V6.11)
 
-| Regime Score | TMF Allocation | PSQ Allocation | Total Hedge |
-|:------------:|:--------------:|:--------------:|:-----------:|
-| **>= 40** | 0% | 0% | 0% |
-| **30 – 39** | 10% | 0% | 10% |
-| **20 – 29** | 15% | 5% | 20% |
-| **< 20** | 20% | 10% | 30% |
+| Regime Score | SH Allocation | Notes |
+|:------------:|:-------------:|-------|
+| **>= 50** | 0% | No hedge in bull/neutral |
+| **40 – 49** | 5% | Light hedge (CAUTIOUS) |
+| **30 – 39** | 8% | Medium hedge (DEFENSIVE) |
+| **< 30** | 10% | Full hedge (RISK_OFF) |
 
-### Why TMF Before PSQ?
+### Why SH? (V6.11)
 
-TMF is added first because:
-- Flight-to-safety works in most crash scenarios
-- TMF can rally significantly during stress
-- PSQ is more expensive (inverse decay adds up over time)
-
-PSQ is added only when conditions are severe (score below 30).
+V6.11 simplified hedging from TMF/PSQ to SH only:
+- **SH (1x Inverse S&P)**: No decay, direct equity hedge
+- TMF removed: Rate-sensitive, less correlated in modern environment
+- PSQ removed: Inverse Nasdaq has decay, less liquid than SH
+- Single hedge symbol simplifies execution and position management
 
 ---
 
@@ -485,17 +486,19 @@ Used when all model flags are disabled.
 | `WEIGHT_DRAWDOWN_V53` | 0.15 | Drawdown factor weight |
 | `REGIME_SMOOTHING_ALPHA` | 0.30 | EMA smoothing coefficient |
 
-### V5.3 Guard Parameters
+### V5.3 Guard Parameters (V6.6/V6.9)
 
 | Parameter | Default | Description |
 |-----------|:-------:|-------------|
 | `V53_SPIKE_CAP_ENABLED` | True | Enable spike cap |
 | `V53_SPIKE_CAP_THRESHOLD` | 0.28 | VIX 5d change trigger |
-| `V53_SPIKE_CAP_MAX_SCORE` | 45 | Score cap when triggered |
+| `V53_SPIKE_CAP_MAX_SCORE` | 38 | V6.6: Score cap when triggered (was 45) |
 | `V53_SPIKE_CAP_DECAY_DAYS` | 3 | Days until cap expires |
 | `V53_BREADTH_DECAY_ENABLED` | True | Enable breadth penalty |
-| `V53_BREADTH_5D_PENALTY` | 5.0 | Points for 5d decay |
-| `V53_BREADTH_10D_PENALTY` | 8.0 | Points for 10d decay |
+| `V53_BREADTH_5D_DECAY_THRESHOLD` | -0.01 | V6.9: 5d decay trigger (was -0.10) |
+| `V53_BREADTH_10D_DECAY_THRESHOLD` | -0.03 | V6.9: 10d decay trigger (was -0.15) |
+| `V53_BREADTH_5D_PENALTY` | 8.0 | V6.9: Points for 5d decay (was 5.0) |
+| `V53_BREADTH_10D_PENALTY` | 12.0 | V6.9: Points for 10d decay (was 8.0) |
 
 ### Regime Thresholds
 

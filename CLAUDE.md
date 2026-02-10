@@ -702,40 +702,43 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 
 | Threshold | Value | Triggers |
 |-----------|-------|----------|
-| Kill switch | 5% daily loss | Full liquidation (V2.3.17: raised from 3%) |
+| Kill switch (Tier 3) | 6% daily loss | Full liquidation (V2.27: graduated system) |
+| Kill switch (Tier 2) | 4% daily loss | Trend exit, keep spreads |
+| Kill switch (Tier 1) | 2% daily loss | Reduce trend 50%, block new options |
 | Preemptive KS | 4.5% daily loss | Warning threshold |
 | Panic mode | SPY -4% intraday | Liquidate longs only |
 | Weekly breaker | 5% WTD loss | 50% sizing reduction |
 | Gap filter | SPY -1.5% gap | Block MR entries |
-| Vol shock | 3× ATR bar | 15-min pause |
-| Leverage cap | 90% margin | Block new entries (V2.18) |
+| Vol shock | 3x ATR bar | 15-min pause |
+| Leverage cap | 60% margin utilization | Block new entries (V6.9) |
 | Trend entry (V2) | Price > MA200 + ADX >= 15 | Trend entry eligible (V2.3.12: was 25) |
 | Oversold | RSI(5) < 25 | MR entry eligible |
-| VIX Low | VIX < 15 | Complacent market, cheap options |
-| VIX Normal | VIX 15-22 | Normal volatility |
-| VIX High | VIX 22-30 | Elevated fear |
+| VIX Low | VIX < 20 | Normal market, MR works |
+| VIX Medium | VIX 20-25 | Caution zone |
+| VIX High | VIX > 25 | Elevated, momentum dominates |
 | VIX Extreme | VIX > 40 | Crisis mode |
-| V5.3 VIX Clamp (V6.6) | VIX >= 25 | VIX Combined score capped at 47 |
-| V5.3 Spike Cap (V6.6) | VIX 5d >= +28% | Regime score capped at 38 (DEFENSIVE) |
-| V5.3 Breadth Decay (V6.9) | RSP/SPY 5d < -1% | 8-point regime penalty |
-| VASS Low IV (V2.8) | VIX < 15 | Debit spreads, 30-45 DTE (monthly) |
-| VASS Medium IV (V2.8) | VIX 15-25 | Debit spreads, 7-21 DTE (weekly) |
-| VASS High IV (V6.8) | VIX > 25 | Credit spreads, 5-28 DTE (was 7-21) |
-| UVXY Bearish (V6.10) | UVXY > +2.5% | PUT conviction signal (was +4%) |
-| UVXY Bullish (V6.10) | UVXY < -3% | CALL conviction signal (was -5%) |
-| UVXY Conviction Extreme (V6.10) | 5% | NEUTRAL VETO threshold (was 7%) |
+| VASS Low IV (V6.6) | VIX < 16 | Debit spreads, 30-45 DTE (monthly) |
+| VASS Medium IV | VIX 16-25 | Debit spreads, 7-30 DTE (V6.12: widened from 7-21) |
+| VASS High IV (V6.13.1) | VIX > 25 | Credit spreads, 5-40 DTE (expanded from 5-28) |
+| UVXY Bearish (V6.14) | UVXY > +2.8% | PUT conviction signal |
+| UVXY Bullish (V6.14) | UVXY < -4.5% | CALL conviction signal |
+| UVXY Conviction Extreme (V6.12) | 3.5% | NEUTRAL VETO threshold |
 | BEAR_PUT OTM Gate (V6.4) | Short PUT >= 3% OTM | Block assignment-risk entries |
 | Options ATR Stop Max (V6.8) | 30% | Max loss cap (was 50%) |
-| Intraday FADE VIX Min (V6.10) | VIX >= 10.5 | Enable DEBIT_FADE (was 13.5) |
-| Intraday ITM VIX Min (V6.8) | VIX >= 10.0 | Enable ITM momentum (was 11.5) |
+| Options ATR Stop Min (V6.13) | 12% | Min stop floor (was 15%) |
+| Intraday FADE VIX Min (V6.13) | VIX >= 9.5 | Enable DEBIT_FADE (lowered for bull markets) |
+| Intraday ITM VIX Min (V6.13) | VIX >= 9.0 | Enable ITM momentum |
 | Spread Force Close DTE (V6.10) | DTE = 1 | Mandatory spread close (assignment prevention) |
 | Short Leg ITM Exit (V6.10) | 0.5% ITM | Exit spread when short leg ITM (was 1%) |
-| Spread Width Min (V6.10) | $5 | Minimum spread width (was $3, assignment protection) |
+| Spread Width Min (V6.13) | $4 | Minimum spread width (optimized for fills) |
 | Spread Stop/Target (V6.10) | 40%/40% | Symmetric R:R (was 35%/50%) |
 | Choppy Market Filter (V6.10) | 3 reversals/2hr | 50% size reduction in choppy markets |
-| VIX Stable Band Low (V6.13.1) | +/-0.2% | STABLE band when VIX < 15 (was +/-0.3%) |
-| VIX Stable Band High (V6.13.1) | +/-0.7% | STABLE band when VIX > 25 (was +/-1.0%) |
-| Margin Pre-Check (V6.10) | 15% buffer | Check margin before signal approval |
+| VIX Stable Band Low (V6.13.1) | +/-0.2% | STABLE band when VIX < 15 |
+| VIX Stable Band High (V6.13.1) | +/-0.7% | STABLE band when VIX > 25 |
+| Margin Utilization Max (V6.9) | 60% | Cap total margin usage |
+| Options Max Margin PCT (V6.10) | 25% | Max margin for options |
+| Micro Score Bullish (V6.14) | 47 | Bullish confirmation threshold |
+| Micro Score Bearish (V6.14) | 49 | Bearish confirmation threshold |
 
 ### Overnight Holdings (V6.11 Universe)
 
@@ -752,11 +755,12 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 
 > **V6.11 Note:** TMF/PSQ/SHV removed from default universe. SH is the only hedge symbol. All Trend symbols are 2× leverage.
 
-### Exposure Limits
+### Exposure Limits (V6.11)
 
-| Group | Max Net Long | Max Gross |
-|-------|:------------:|:---------:|
-| NASDAQ_BETA | 50% | 75% |
-| SPY_BETA | 40% | 40% |
-| COMMODITY | 20% | 20% |
-| RATES | 99% | 99% (V2.3.17: raised from 40% for SHV) |
+| Group | Symbols | Max Net Long | Max Gross |
+|-------|---------|:------------:|:---------:|
+| NASDAQ_BETA | QLD, TQQQ, SOXL | 50% | 75% |
+| SPY_BETA | SSO, SPXL, SH (inverse) | 40% | 50% |
+| COMMODITIES | UGL, UCO | 25% | 25% |
+
+> **V6.11 Note:** RATES group removed (TMF/SHV retired). COMMODITIES added with UGL (2x Gold) and UCO (2x Crude Oil).

@@ -292,30 +292,36 @@ These parameters are used when `V53_REGIME_ENABLED = False`:
 
 ---
 
-## 16.7 Hedge Engine Parameters
+## 16.7 Hedge Engine Parameters (V6.11)
 
 ### Regime Thresholds
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `HEDGE_LEVEL_1` | 40 | Score below which hedging begins |
-| `HEDGE_LEVEL_2` | 30 | Score below which medium hedge |
-| `HEDGE_LEVEL_3` | 20 | Score below which full hedge |
+| `HEDGE_LEVEL_1` | 50 | V3.0: Light hedge starts at Cautious (regime < 50) |
+| `HEDGE_LEVEL_2` | 40 | V3.0: Medium hedge at Defensive (regime < 40) |
+| `HEDGE_LEVEL_3` | 30 | V3.0: Full hedge at Bear (regime < 30) |
 
-### TMF Allocation
+### SH Allocation (V6.11)
 
-| Parameter | Value | Description |
-|-----------|:-----:|-------------|
-| `TMF_LIGHT` | 0.10 | TMF at DEFENSIVE (10%) |
-| `TMF_MEDIUM` | 0.15 | TMF at RISK_OFF moderate (15%) |
-| `TMF_FULL` | 0.20 | TMF at RISK_OFF severe (20%) |
-
-### PSQ Allocation
+V6.11 replaced TMF/PSQ with SH (1x Inverse S&P). SH has no decay (unlike VIXY), provides direct equity hedge.
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `PSQ_MEDIUM` | 0.05 | PSQ at RISK_OFF moderate (5%) |
-| `PSQ_FULL` | 0.10 | PSQ at RISK_OFF severe (10%) |
+| `HEDGE_SYMBOLS` | ["SH"] | V6.11: Single hedge symbol |
+| `SH_LIGHT` | 0.05 | Regime 40-50: 5% inverse |
+| `SH_MEDIUM` | 0.08 | Regime 30-40: 8% inverse |
+| `SH_FULL` | 0.10 | Regime < 30: 10% inverse |
+
+### Legacy TMF/PSQ (Deprecated in V6.11)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `TMF_LIGHT` | 0.00 | Deprecated |
+| `TMF_MEDIUM` | 0.00 | Deprecated |
+| `TMF_FULL` | 0.00 | Deprecated |
+| `PSQ_MEDIUM` | 0.00 | Deprecated |
+| `PSQ_FULL` | 0.00 | Deprecated |
 
 ### Rebalancing
 
@@ -459,28 +465,33 @@ These parameters are used when `V53_REGIME_ENABLED = False`:
 
 > **V2.24.2 NOTE:** VASS overrides `SPREAD_DTE_MIN`/`SPREAD_DTE_MAX` per IV environment. Callers must pass `dte_min`/`dte_max` to `select_spread_legs()` and `check_spread_entry_signal()` to avoid the DTE double-filter bug.
 
-### VASS (VIX-Adaptive Strategy Selection) — V2.8
+### VASS (VIX-Adaptive Strategy Selection) — V2.8/V6.13
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `VASS_IV_LOW_THRESHOLD` | 15 | Below = Low IV environment |
+| `VASS_IV_LOW_THRESHOLD` | 16 | V6.6: Below = Low IV environment (was 15) |
 | `VASS_IV_HIGH_THRESHOLD` | 25 | Above = High IV environment |
 | `VASS_IV_SMOOTHING_MINUTES` | 30 | VIX smoothing window (minutes) |
 
 | IV Environment | VIX Range | Strategy | DTE Range |
 |----------------|-----------|----------|-----------|
-| Low IV | < 15 | Debit Spreads | 30-45 (Monthly) |
-| Medium IV | 15-25 | Debit Spreads | 7-21 (Weekly) |
-| High IV | > 25 | Credit Spreads | 5-28 (V6.8: was 7-21) |
+| Low IV | < 16 | Debit Spreads | 30-45 (Monthly) |
+| Medium IV | 16-25 | Debit Spreads | 7-30 (V6.12: widened from 7-21) |
+| High IV | > 25 | Credit Spreads | 5-40 (V6.13.1: expanded from 5-28) |
 
-### Credit Spread Parameters (V2.8/V2.10/V6.10)
+### Credit Spread Parameters (V2.8/V2.10/V6.14)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `CREDIT_SPREAD_MIN_CREDIT` | 0.20 | Minimum credit (V6.10: was $0.30, lowered for fills) |
+| `CREDIT_SPREAD_MIN_CREDIT_HIGH_IV` | 0.10 | V6.13.1: Min credit when VIX > 30 (was 0.20) |
+| `CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD` | 30.0 | VIX level above which reduced floor applies |
 | `CREDIT_SPREAD_WIDTH_TARGET` | 5.0 | Target spread width ($5) |
 | `CREDIT_SPREAD_SHORT_LEG_DELTA_MIN` | 0.25 | Short leg minimum delta |
-| `CREDIT_SPREAD_SHORT_LEG_DELTA_MAX` | 0.40 | Short leg maximum delta |
+| `CREDIT_SPREAD_SHORT_LEG_DELTA_MAX` | 0.45 | V6.13: Improve constructability (was 0.40) |
+| `CREDIT_SPREAD_MIN_OPEN_INTEREST` | 35 | V6.14: Liquidity gate (new) |
+| `CREDIT_SPREAD_MAX_SPREAD_PCT` | 0.40 | V6.14: Bid-ask spread tolerance (new) |
+| `CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT` | 0.55 | V6.14: Long leg spread tolerance (new) |
 | `CREDIT_SPREAD_PROFIT_TARGET` | 0.50 | 50% of max profit |
 | `CREDIT_SPREAD_STOP_MULTIPLIER` | 2.0 | Stop = spread doubles |
 | `CREDIT_SPREAD_FALLBACK_TO_DEBIT` | True | V6.10: Fall back to debit when credit fails |
@@ -498,22 +509,22 @@ These parameters are used when `V53_REGIME_ENABLED = False`:
 | `SPREAD_SHORT_LEG_DELTA_MIN_PUT` | 0.05 | V6.10: Allow farther OTM (was 0.08) |
 | `SPREAD_SHORT_LEG_DELTA_MAX_PUT` | 0.60 | V6.10: Allow closer to ATM short PUTs |
 
-### Elastic Delta Bands (V2.24.1)
+### Elastic Delta Bands (V2.24.1/V6.13.1)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `ELASTIC_DELTA_STEPS` | [0.0, 0.03, 0.07, 0.12] | Progressive widening steps |
+| `ELASTIC_DELTA_STEPS` | [0.0, 0.05, 0.10, 0.15] | V6.13.1: More aggressive widening (was [0.0, 0.03, 0.07, 0.12]) |
 | `ELASTIC_DELTA_FLOOR` | 0.10 | Absolute minimum delta |
 | `ELASTIC_DELTA_CEILING` | 0.95 | Absolute maximum delta |
 
-### Width-Based Short Leg Selection (V2.4.3/V6.10)
+### Width-Based Short Leg Selection (V2.4.3/V6.13)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `SPREAD_SHORT_LEG_BY_WIDTH` | True | Use strike width instead of delta |
-| `SPREAD_WIDTH_MIN` | 5.0 | Minimum spread width (V6.10: $5, was $2 — assignment protection) |
+| `SPREAD_WIDTH_MIN` | 4.0 | V6.13: Min spread width (optimized for fills, was $5) |
 | `SPREAD_WIDTH_MAX` | 10.0 | Maximum spread width ($10) |
-| `SPREAD_WIDTH_TARGET` | 5.0 | Target spread width (V6.10: $5, was $3 — assignment protection) |
+| `SPREAD_WIDTH_TARGET` | 4.0 | V6.13: Target spread width (optimized for fills, was $5) |
 
 ### Sizing Caps (V2.18)
 
@@ -522,24 +533,26 @@ These parameters are used when `V53_REGIME_ENABLED = False`:
 | `SWING_SPREAD_MAX_DOLLARS` | 7,500 | Max $ per swing spread |
 | `INTRADAY_SPREAD_MAX_DOLLARS` | 4,000 | Max $ per intraday spread |
 
-### ATR-Based Stops (V6.8)
+### ATR-Based Stops (V6.13)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `OPTIONS_ATR_STOP_MULTIPLIER` | 1.0 | ATR multiplier for stops (V6.8: was 1.5) |
-| `OPTIONS_ATR_STOP_MIN_PCT` | 0.15 | Minimum stop % (V6.8: was 0.20) |
+| `OPTIONS_ATR_STOP_MULTIPLIER` | 0.9 | V6.13: ATR multiplier for stops (was 1.0) |
+| `OPTIONS_ATR_STOP_MIN_PCT` | 0.12 | V6.13: Minimum stop % (was 0.15) |
 | `OPTIONS_ATR_STOP_MAX_PCT` | 0.30 | Maximum stop % (V6.8: was 0.50 - prevents 50% losses) |
 | `OPTIONS_USE_ATR_STOPS` | True | Use ATR-based stops (vs legacy tier-based) |
 
-### UVXY Conviction Thresholds (V6.10)
+### UVXY Conviction Thresholds (V6.14)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `MICRO_UVXY_BEARISH_THRESHOLD` | +2.5% | UVXY up → PUT conviction (V6.10: was +4%) |
-| `MICRO_UVXY_BULLISH_THRESHOLD` | -3.0% | UVXY down → CALL conviction (V6.10: was -5%) |
-| `MICRO_UVXY_CONVICTION_EXTREME` | 5% | NEUTRAL VETO threshold (V6.10: was 7%) |
+| `MICRO_UVXY_BEARISH_THRESHOLD` | +2.8% | V6.14: UVXY up → PUT conviction (was +2.5%) |
+| `MICRO_UVXY_BULLISH_THRESHOLD` | -4.5% | V6.14: UVXY down → CALL conviction (was -3.0%) |
+| `MICRO_UVXY_CONVICTION_EXTREME` | 3.5% | V6.12: NEUTRAL VETO threshold (was 5%) |
 | `MICRO_VIX_CRISIS_LEVEL` | 35 | VIX > 35 → CRISIS (BEARISH conviction) |
 | `MICRO_VIX_COMPLACENT_LEVEL` | 12 | VIX < 12 → COMPLACENT (BULLISH conviction) |
+| `MICRO_SCORE_BULLISH_CONFIRM` | 47 | V6.14: Bullish confirmation threshold (was 52) |
+| `MICRO_SCORE_BEARISH_CONFIRM` | 49 | V6.14: Bearish confirmation threshold (was 48) |
 
 ### Assignment Risk Management (V6.10)
 
@@ -568,7 +581,9 @@ These parameters are used when `V53_REGIME_ENABLED = False`:
 | `MARGIN_CHECK_BEFORE_SIGNAL` | True | V6.10: Check margin before generating signal |
 | `MARGIN_PRE_CHECK_BUFFER` | 0.15 | V6.10: 15% buffer (was 2.0 — too restrictive) |
 | `OPTIONS_MAX_MARGIN_PCT` | 0.25 | V6.10: Max margin 25% (was 30%) |
-| `MARGIN_PRE_CHECK_MIN_SPREADS` | 1 | V6.10: Min spreads to check margin for |
+| `MAX_MARGIN_UTILIZATION` | 0.60 | V6.9: Cap total margin utilization (was 0.90) |
+| `MARGIN_UTILIZATION_WARNING` | 0.60 | Log warning when utilization exceeds 60% |
+| `MARGIN_UTILIZATION_ENABLED` | True | Enable margin utilization gate |
 
 > **V6.10 Rationale:** Pre-check margin availability before approving any spread signal. Prevents signals from being generated only to fail at execution.
 
@@ -580,12 +595,14 @@ These parameters are used when `V53_REGIME_ENABLED = False`:
 | Friday Firewall | Active | Close swing options before weekend |
 | VIX > 25 | Active | Close ALL swing options in high VIX |
 
-### Neutrality Exit (V2.22)
+### Neutrality Exit (V2.22/V6.13)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `SPREAD_NEUTRALITY_EXIT_ENABLED` | True | Exit flat spreads in neutral regime |
-| `SPREAD_NEUTRALITY_EXIT_PNL_BAND` | 0.10 | Within ±10% of breakeven = flat |
+| `SPREAD_NEUTRALITY_EXIT_ENABLED` | True | V6.13: Re-enabled for choppy capital recycling |
+| `SPREAD_NEUTRALITY_EXIT_PNL_BAND` | 0.06 | V6.13: Tight "flat" band (was 0.10) |
+| `SPREAD_NEUTRALITY_ZONE_LOW` | 48 | V6.13: Narrower neutrality zone (was 45) |
+| `SPREAD_NEUTRALITY_ZONE_HIGH` | 62 | V6.13: Narrower neutrality zone (was 60) |
 
 ### V6.10 Symmetric Stop/Target
 
@@ -620,12 +637,12 @@ These parameters are used when `V53_REGIME_ENABLED = False`:
 | `VIX_DIRECTION_RISING_FAST` | 6.0% | Panic emerging threshold (V6.6: was 10.0%) |
 | `VIX_DIRECTION_SPIKING` | 10.0% | Crash mode threshold |
 
-### V6.10 VIX-Adaptive STABLE Band
+### V6.13.1 VIX-Adaptive STABLE Band
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `VIX_STABLE_BAND_LOW` | +/-0.3% | STABLE band when VIX < 15 (V6.10: was +/-0.5%) |
-| `VIX_STABLE_BAND_HIGH` | +/-1.0% | STABLE band when VIX > 25 (V6.10: was +/-2.0%) |
+| `VIX_STABLE_BAND_LOW` | +/-0.2% | V6.13.1: STABLE band when VIX < 15 (was +/-0.3%) |
+| `VIX_STABLE_BAND_HIGH` | +/-0.7% | V6.13.1: STABLE band when VIX > 25 (was +/-1.0%) |
 | `VIX_STABLE_LOW_VIX_MAX` | 15.0 | Low VIX regime threshold |
 | `VIX_STABLE_HIGH_VIX_MIN` | 25.0 | High VIX regime threshold |
 
@@ -655,23 +672,24 @@ These parameters are used when `V53_REGIME_ENABLED = False`:
 | Layer 3 | 60 min | Whipsaw detection (reversal count) |
 | Layer 4 | 30 min | Full regime classification |
 
-### V2.1.1 Intraday Strategy Parameters (V6.10)
+### V2.1.1 Intraday Strategy Parameters (V6.14)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `INTRADAY_DEBIT_FADE_MIN_SCORE` | 35 | Minimum micro score for debit fade (V6.8: was 45) |
-| `INTRADAY_DEBIT_FADE_VIX_MIN` | 10.5 | Minimum VIX for DEBIT_FADE (V6.10: was 13.5) |
-| `INTRADAY_FADE_MIN_MOVE` | 0.50% | Minimum QQQ move for FADE |
+| `INTRADAY_DEBIT_FADE_VIX_MIN` | 9.5 | V6.13: Minimum VIX for DEBIT_FADE (was 10.5) |
+| `INTRADAY_FADE_MIN_MOVE` | 0.45% | V6.13: Minimum QQQ move for FADE (was 0.50%) |
 | `INTRADAY_FADE_MAX_MOVE` | 1.50% | Max QQQ move for FADE (V6.8: was 1.20%) |
 | `INTRADAY_DEBIT_FADE_VIX_MAX` | 25 | Maximum VIX for debit fade |
 | `INTRADAY_CREDIT_MIN_VIX` | 18 | Minimum VIX for credit spreads |
-| `INTRADAY_ITM_MIN_VIX` | 10.0 | Minimum VIX for ITM momentum (V6.8: was 11.5) |
+| `INTRADAY_ITM_MIN_VIX` | 9.0 | V6.13: Minimum VIX for ITM momentum (was 10.0) |
+| `INTRADAY_ITM_MIN_MOVE` | 0.40% | V6.13: Minimum QQQ move for ITM (was 0.8%) |
 | `INTRADAY_ITM_MIN_SCORE` | 40 | Minimum micro score for ITM (V6.8: was 50) |
-| `INTRADAY_ITM_MIN_MOVE` | 0.8% | Minimum QQQ move for ITM |
+| `INTRADAY_ITM_TARGET` | 0.35 | V6.13: ITM profit target (earlier capture) |
+| `INTRADAY_ITM_STOP` | 0.35 | V6.13: ITM stop loss (reduce catastrophic losses) |
 | `INTRADAY_FORCE_EXIT_TIME` | 15:30 ET | Intraday positions must close |
-| `INTRADAY_QQQ_FALLBACK_MIN_MOVE` | 0.50% | V6.10: Min move for VIX STABLE fallback (was 0.70%) |
-| `MICRO_SCORE_BULLISH_CONFIRM` | 52 | V6.10: Score for BULLISH confirm (was 55) |
-| `MICRO_SCORE_BEARISH_CONFIRM` | 48 | V6.10: Score for BEARISH confirm (was 45) |
+| `INTRADAY_QQQ_FALLBACK_MIN_MOVE` | 0.30% | V6.13: Min move for VIX STABLE fallback (was 0.50%) |
+| `QQQ_NOISE_THRESHOLD` | 0.13% | V6.14: Noise filter threshold (was 0.15%) |
 
 ### V2.1.1 Swing Mode Simple Filters
 
@@ -702,8 +720,8 @@ These parameters are used when `V53_REGIME_ENABLED = False`:
 | Group | Max Net Long | Max Net Short | Max Gross |
 |-------|:------------:|:-------------:|:---------:|
 | `NASDAQ_BETA` | 50% | 30% | 75% |
-| `SPY_BETA` | 40% | 10% | 50% |
-| `COMMODITY` | 20% | 0% | 20% |
+| `SPY_BETA` | 40% | 15% | 50% |
+| `COMMODITIES` | 25% | 0% | 25% |
 
 ### Group Membership (V6.11 Universe)
 
