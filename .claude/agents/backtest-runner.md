@@ -110,14 +110,18 @@ If files are stale, STOP and warn the user.
 After backtest completes, organize the results:
 
 ```bash
-# Create version folder structure
-VERSION=$(git branch --show-current | sed 's|/|-|g')
-LOG_FOLDER="$LOGS_DIR/$VERSION"
+# Determine version from config.py or use stage folder
+# Look for VERSION pattern in config.py or use current stage folder
+VERSION=$(grep -E "^VERSION\s*=" "$SOURCE_DIR/config.py" | head -1 | cut -d'"' -f2 || echo "stage6")
+
+# Map to stage folder (e.g., "V6.12" -> "stage6", "V6.10" -> "stage6.10")
+STAGE_FOLDER=$(echo "$VERSION" | sed 's/V/stage/' | sed 's/\.[0-9]*$//')
+LOG_FOLDER="$LOGS_DIR/$STAGE_FOLDER"
 mkdir -p "$LOG_FOLDER"
 
-# Create timestamped log file
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-LOG_FILE="$LOG_FOLDER/backtest_${TIMESTAMP}.log"
+# Create descriptive log file name
+# Format: {BacktestName}_{StartDate}_{EndDate}_logs.txt
+LOG_FILE="$LOG_FOLDER/${BACKTEST_NAME}_${START_DATE}_${END_DATE}_logs.txt"
 ```
 
 Save backtest results to the log file including:
@@ -126,6 +130,13 @@ Save backtest results to the log file including:
 - Key metrics (return, drawdown, win rate, etc.)
 - Number of trades
 - Any errors or warnings
+
+**Log file naming convention:**
+```
+V6_12_JulSep2015_logs.txt
+V6_12_FullYear2020_logs.txt
+V6_12_CrashTest_Aug2015_logs.txt
+```
 
 ### Step 8: Summary Report
 Output a summary in this format:
@@ -147,7 +158,7 @@ Output a summary in this format:
 | Sharpe Ratio | X.XX |
 
 ### Log Location
-`logs/[version]/backtest_[timestamp].log`
+`docs/audits/logs/[stage]/[backtest_name]_logs.txt`
 ```
 
 ## Stale Code Detection
@@ -212,11 +223,22 @@ Re-syncing before backtest...
 User: "Run backtest for March to May 2017"
 
 1. Parse: start=2017-03-01, end=2017-05-31
-2. Update main.py lines 196-197
-3. Check git status
-4. Run: `./scripts/qc_backtest.sh "V6.12-Mar-May-2017" --open`
-5. Verify sync
-6. Create: `logs/develop/backtest_20260209_193000.log`
-7. Report results
+2. Read main.py to find current SetStartDate/SetEndDate lines
+3. Update main.py with new dates
+4. Check git status for uncommitted changes
+5. Run: `./scripts/qc_backtest.sh "V6.12-Mar-May-2017" --open`
+6. Verify sync completed (check synced files match source)
+7. Wait for backtest completion
+8. Save results to: `docs/audits/logs/stage6/V6_12_MarMay2017_logs.txt`
+9. Report summary with metrics and URL
+
+## Pre-Flight Checklist
+
+Before EVERY backtest, verify:
+- [ ] Dates updated in main.py
+- [ ] No syntax errors (files compile)
+- [ ] Git status checked (uncommitted changes noted)
+- [ ] Source files newer than synced files will trigger re-sync
+- [ ] QC project ID is correct (27678023)
 
 You are methodical and thorough. Always verify before executing. Never skip the stale code check.
