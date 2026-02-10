@@ -110,6 +110,7 @@ class OrderIntent:
     is_combo: bool = False
     combo_short_symbol: Optional[str] = None
     combo_short_quantity: Optional[int] = None
+    tag: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for logging."""
@@ -128,6 +129,8 @@ class OrderIntent:
             result["is_combo"] = self.is_combo
             result["combo_short_symbol"] = self.combo_short_symbol
             result["combo_short_quantity"] = self.combo_short_quantity
+        if self.tag:
+            result["tag"] = self.tag
         return result
 
 
@@ -1483,6 +1486,18 @@ class PortfolioRouter:
                 order_type = OrderType.MOO
 
             reason = "; ".join(agg.reasons) if agg.reasons else "No reason provided"
+            tag = None
+            if is_option:
+                if any(s == "OPT_INTRADAY" for s in agg.sources):
+                    intraday_strategy = None
+                    if agg.metadata:
+                        intraday_strategy = agg.metadata.get("intraday_strategy")
+                    tag = f"MICRO:{intraday_strategy}" if intraday_strategy else "MICRO"
+                elif any(s == "OPT" for s in agg.sources):
+                    vass_strategy = None
+                    if agg.metadata:
+                        vass_strategy = agg.metadata.get("vass_strategy")
+                    tag = f"VASS:{vass_strategy}" if vass_strategy else "VASS"
 
             orders.append(
                 OrderIntent(
@@ -1494,6 +1509,7 @@ class PortfolioRouter:
                     reason=reason,
                     target_weight=agg.target_weight,
                     current_weight=current_weight,
+                    tag=tag,
                 )
             )
 
@@ -1553,6 +1569,7 @@ class PortfolioRouter:
                             is_combo=True,
                             combo_short_symbol=short_leg_symbol,
                             combo_short_quantity=short_qty,
+                            tag=tag,
                         )
                     )
                     self.log(
@@ -1792,11 +1809,17 @@ class PortfolioRouter:
                     ]
 
                     # Submit combo order - broker calculates NET margin (spread margin)
-                    self.algorithm.ComboMarketOrder(legs, num_spreads)  # type: ignore[attr-defined]
+                    try:
+                        self.algorithm.ComboMarketOrder(  # type: ignore[attr-defined]
+                            legs, num_spreads, tag=order.tag
+                        )
+                    except TypeError:
+                        self.algorithm.ComboMarketOrder(legs, num_spreads)  # type: ignore[attr-defined]
                     self.log(
                         f"ROUTER: COMBO_MARKET_ORDER | "
                         f"Long={order.symbol} x{num_spreads} (ratio={long_ratio}) + "
                         f"Short={order.combo_short_symbol} x{num_spreads} (ratio={short_ratio})"
+                        + (f" | Tag={order.tag}" if order.tag else "")
                     )
 
                     # V2.9: Register spread margin reservation (Bug #1 fix)
@@ -1813,20 +1836,38 @@ class PortfolioRouter:
                             # Opening spread - register margin
                             self.register_spread_margin(order.symbol, spread_margin)
                 elif order.order_type == OrderType.MARKET:
-                    self.algorithm.MarketOrder(order.symbol, quantity)  # type: ignore[attr-defined]
+                    try:
+                        self.algorithm.MarketOrder(  # type: ignore[attr-defined]
+                            order.symbol, quantity, tag=order.tag
+                        )
+                    except TypeError:
+                        self.algorithm.MarketOrder(order.symbol, quantity)  # type: ignore[attr-defined]
                     self.log(
                         f"ROUTER: MARKET_ORDER | {order.side.value} {order.quantity} {order.symbol}"
+                        + (f" | Tag={order.tag}" if order.tag else "")
                     )
                 elif order.order_type == OrderType.MOC:
                     # V2.4.2: Market-On-Close for same-day trend entries
-                    self.algorithm.MarketOnCloseOrder(order.symbol, quantity)  # type: ignore[attr-defined]
+                    try:
+                        self.algorithm.MarketOnCloseOrder(  # type: ignore[attr-defined]
+                            order.symbol, quantity, tag=order.tag
+                        )
+                    except TypeError:
+                        self.algorithm.MarketOnCloseOrder(order.symbol, quantity)  # type: ignore[attr-defined]
                     self.log(
                         f"ROUTER: MOC_ORDER | {order.side.value} {order.quantity} {order.symbol}"
+                        + (f" | Tag={order.tag}" if order.tag else "")
                     )
                 else:  # MOO
-                    self.algorithm.MarketOnOpenOrder(order.symbol, quantity)  # type: ignore[attr-defined]
+                    try:
+                        self.algorithm.MarketOnOpenOrder(  # type: ignore[attr-defined]
+                            order.symbol, quantity, tag=order.tag
+                        )
+                    except TypeError:
+                        self.algorithm.MarketOnOpenOrder(order.symbol, quantity)  # type: ignore[attr-defined]
                     self.log(
                         f"ROUTER: MOO_ORDER | {order.side.value} {order.quantity} {order.symbol}"
+                        + (f" | Tag={order.tag}" if order.tag else "")
                     )
 
                 # Mark as executed to prevent duplicates

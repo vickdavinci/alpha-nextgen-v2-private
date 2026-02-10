@@ -3086,6 +3086,8 @@ CHOPPY_SIZE_REDUCTION = 0.50
 | V6.7-13 | #13 | Positions | Swing/Intraday cross‑blocking via `has_position()` gate | ALL | P1 | ✅ DONE (V6.12: mode‑specific gates) |
 | V6.7-14 | #14 | Micro | Dir=None reduction: lower QQQ noise + stable fallback + ITM move threshold | ALL | P1 | ✅ DONE (V6.12: 0.25/0.35/50/0.45) |
 | V6.7-15 | #15 | Conviction | CALL bias control: asym UVXY thresholds + NEUTRAL aligned size reduction | ALL | P1 | ✅ DONE (V6.12: -5% / +2.5% + x0.5) |
+| V6.7-16 | #16 | Logging | Order tags for options (MICRO/VASS) via router tags | ALL | P2 | ✅ DONE |
+| V6.7-17 | #17 | VASS | Credit spread filter uses macro direction instead of strategy option type | ALL | P0 | ✅ DONE (V6.12: strategy-aware option_right) |
 
 **Cross-Year Bug Analysis:**
 
@@ -3822,3 +3824,19 @@ The governor/KS **trade off bear protection vs bull recovery:**
 > to dynamically adjust KS/governor sensitivity instead of static values.
 
 *Last Updated: 04 February 2026 (V2.30 All-Weather StartupGate)*
+
+---
+
+## V6.13 — P0 Options Risk Fixes (Uncommitted)
+
+- Added VIX spike auto-exit for bullish spreads (level + 5D change).
+- Added regime deterioration exit vs entry score (bull drops, bear improves).
+- Added overnight gap protection at EOD (VIX-based close for spreads).
+- Added explicit VASS_ENTRY logging (EOD + intraday).
+- Added intraday signal drop logging (`INTRADAY_SIGNAL_DROPPED`).
+
+Files:
+- `engines/satellite/options_engine.py`
+- `main.py`
+- `config.py`
+- `tests/test_options_engine.py`

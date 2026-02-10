@@ -5098,6 +5098,7 @@ class OptionsEngine:
         short_leg_price: float,
         regime_score: float,
         current_dte: int,
+        vix_current: Optional[float] = None,
     ) -> Optional[List[TargetWeight]]:
         """
         V2.3: Check for spread exit signals.
@@ -5144,6 +5145,67 @@ class OptionsEngine:
         )
 
         exit_reason = None
+
+        # ---------------------------------------------------------------------
+        # P0: VIX Spike Auto-Exit (bullish spreads only)
+        # Close CALL spreads if VIX spikes to panic levels or 5d change surges
+        # ---------------------------------------------------------------------
+        vix_spike_enabled = getattr(config, "SWING_VIX_SPIKE_EXIT_ENABLED", True)
+        vix_spike_level = getattr(config, "SWING_VIX_SPIKE_EXIT_LEVEL", 25.0)
+        vix_spike_5d = getattr(config, "SWING_VIX_SPIKE_EXIT_5D_PCT", 0.20)
+        vix_5d_change = self._iv_sensor.get_vix_5d_change() if self._iv_sensor.is_ready() else None
+
+        is_bullish_spread = spread.spread_type in (
+            "BULL_CALL",
+            "BULL_PUT_CREDIT",
+            SpreadStrategy.BULL_CALL_DEBIT.value,
+            SpreadStrategy.BULL_PUT_CREDIT.value,
+        )
+        is_bearish_spread = spread.spread_type in (
+            "BEAR_PUT",
+            "BEAR_CALL_CREDIT",
+            SpreadStrategy.BEAR_PUT_DEBIT.value,
+            SpreadStrategy.BEAR_CALL_CREDIT.value,
+        )
+
+        if (
+            vix_spike_enabled
+            and exit_reason is None
+            and is_bullish_spread
+            and vix_current is not None
+        ):
+            if vix_current >= vix_spike_level:
+                exit_reason = f"VIX_SPIKE_EXIT: VIX {vix_current:.1f} >= {vix_spike_level}"
+            elif vix_5d_change is not None and vix_5d_change >= vix_spike_5d:
+                exit_reason = (
+                    f"VIX_SPIKE_EXIT: 5D change {vix_5d_change:+.0%} >= {vix_spike_5d:.0%}"
+                )
+
+        # ---------------------------------------------------------------------
+        # P0: Regime Deterioration Exit
+        # Close bullish spreads when regime drops sharply, bearish when it improves
+        # ---------------------------------------------------------------------
+        if exit_reason is None and getattr(
+            config, "SPREAD_REGIME_DETERIORATION_EXIT_ENABLED", True
+        ):
+            delta = getattr(config, "SPREAD_REGIME_DETERIORATION_DELTA", 10)
+            bull_exit = getattr(config, "SPREAD_REGIME_DETERIORATION_BULL_EXIT", 60)
+            bear_exit = getattr(config, "SPREAD_REGIME_DETERIORATION_BEAR_EXIT", 55)
+
+            if is_bullish_spread:
+                required_drop = spread.regime_at_entry - delta
+                if regime_score <= bull_exit and regime_score <= required_drop:
+                    exit_reason = (
+                        f"REGIME_DETERIORATION: {spread.regime_at_entry:.0f} → {regime_score:.0f} "
+                        f"(<= {bull_exit}, drop {delta}+)"
+                    )
+            elif is_bearish_spread:
+                required_rise = spread.regime_at_entry + delta
+                if regime_score >= bear_exit and regime_score >= required_rise:
+                    exit_reason = (
+                        f"REGIME_IMPROVEMENT: {spread.regime_at_entry:.0f} → {regime_score:.0f} "
+                        f"(>= {bear_exit}, rise {delta}+)"
+                    )
 
         if is_credit_spread:
             # CREDIT SPREAD P&L: Profit when spread value DECREASES
@@ -5464,6 +5526,66 @@ class OptionsEngine:
                 )
 
         return exit_signals if exit_signals else None
+
+    # =========================================================================
+    # V6.13 P0: OVERNIGHT GAP PROTECTION (All Days)
+    # =========================================================================
+
+    def check_overnight_gap_protection_exit(
+        self,
+        current_vix: float,
+        current_date: str,
+    ) -> Optional[List[TargetWeight]]:
+        """
+        V6.13 P0: Close swing spreads before overnight risk when VIX is elevated.
+
+        Rules:
+        1) If VIX >= SWING_OVERNIGHT_VIX_CLOSE_ALL → close ALL spreads
+        2) If trade opened today AND VIX >= SWING_OVERNIGHT_VIX_CLOSE_FRESH → close fresh spread
+        """
+        if not getattr(config, "SWING_OVERNIGHT_GAP_PROTECTION_ENABLED", True):
+            return None
+
+        if self._spread_position is None:
+            return None
+
+        spread = self._spread_position
+        entry_date = (
+            spread.entry_time.split()[0] if " " in spread.entry_time else spread.entry_time[:10]
+        )
+        is_fresh_trade = entry_date == current_date
+
+        close_all_threshold = getattr(config, "SWING_OVERNIGHT_VIX_CLOSE_ALL", 30.0)
+        close_fresh_threshold = getattr(config, "SWING_OVERNIGHT_VIX_CLOSE_FRESH", 22.0)
+
+        if current_vix >= close_all_threshold:
+            reason = f"OVERNIGHT_GAP_PROTECTION: VIX {current_vix:.1f} >= {close_all_threshold}"
+        elif is_fresh_trade and current_vix >= close_fresh_threshold:
+            reason = f"OVERNIGHT_GAP_PROTECTION: Fresh trade + VIX {current_vix:.1f} >= {close_fresh_threshold}"
+        else:
+            return None
+
+        self.log(
+            f"OVERNIGHT_GAP_PROTECTION: Closing spread | {reason} | Entry={entry_date} Fresh={is_fresh_trade}",
+            trades_only=True,
+        )
+
+        return [
+            TargetWeight(
+                symbol=spread.long_leg.symbol,
+                target_weight=0.0,
+                source="OPT",
+                urgency=Urgency.IMMEDIATE,
+                reason=reason,
+                requested_quantity=spread.num_spreads,
+                metadata={
+                    "spread_close_short": True,
+                    "spread_short_leg_symbol": spread.short_leg.symbol,
+                    "spread_short_leg_quantity": spread.num_spreads,
+                    "exit_type": "OVERNIGHT_GAP_PROTECTION",
+                },
+            )
+        ]
 
     # =========================================================================
     # EXIT SIGNALS
@@ -6275,6 +6397,10 @@ class OptionsEngine:
             urgency=Urgency.IMMEDIATE,
             reason=reason,
             requested_quantity=num_contracts,  # V2.3.2: Pass calculated contracts
+            metadata={
+                "intraday_strategy": self.get_last_intraday_strategy().value,
+                "contract_price": best_contract.mid_price,
+            },
         )
 
     def check_intraday_force_exit(

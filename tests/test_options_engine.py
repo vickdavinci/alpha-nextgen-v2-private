@@ -2718,6 +2718,7 @@ class TestNeutralityExit:
             long_leg_price=long_price,
             short_leg_price=short_price,
             regime_score=52.0,  # Dead zone (45-60)
+            vix_current=20.0,
             current_dte=15,  # Not near expiry
         )
 
@@ -2735,6 +2736,7 @@ class TestNeutralityExit:
             long_leg_price=long_price,
             short_leg_price=short_price,
             regime_score=55.0,  # Dead zone
+            vix_current=20.0,
             current_dte=15,
         )
 
@@ -2752,6 +2754,7 @@ class TestNeutralityExit:
             long_leg_price=long_price,
             short_leg_price=short_price,
             regime_score=50.0,  # Dead zone
+            vix_current=20.0,
             current_dte=15,
         )
 
@@ -2769,6 +2772,7 @@ class TestNeutralityExit:
             long_leg_price=long_price,
             short_leg_price=short_price,
             regime_score=70.0,  # V3.4: Outside dead zone (45-65) — bullish conviction
+            vix_current=20.0,
             current_dte=15,
         )
 
@@ -2801,6 +2805,7 @@ class TestNeutralityExit:
             long_leg_price=long_price,
             short_leg_price=short_price,
             regime_score=50.0,  # Dead zone
+            vix_current=20.0,
             current_dte=15,
         )
 
@@ -2820,6 +2825,7 @@ class TestNeutralityExit:
                 long_leg_price=long_price,
                 short_leg_price=short_price,
                 regime_score=52.0,
+                vix_current=20.0,
                 current_dte=15,
             )
             # Should be None — feature disabled
@@ -2838,6 +2844,7 @@ class TestNeutralityExit:
             long_leg_price=long_price,
             short_leg_price=short_price,
             regime_score=50.0,  # Dead zone
+            vix_current=20.0,
             current_dte=15,
         )
 

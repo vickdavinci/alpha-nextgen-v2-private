@@ -51,6 +51,9 @@ from persistence.state_manager import StateManager
 from portfolio.portfolio_router import PortfolioRouter
 from scheduling.daily_scheduler import DailyScheduler
 
+# V6.12: Monthly P&L Tracking
+from utils.monthly_pnl_tracker import MonthlyPnLTracker
+
 # endregion
 
 
@@ -193,8 +196,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2015, 1, 1)
-        self.SetEndDate(2015, 12, 31)  # V6.9: 2015 full year backtest
+        self.SetStartDate(2015, 7, 1)
+        self.SetEndDate(2015, 9, 30)  # July-Sep 2015 backtest
         self.SetCash(config.INITIAL_CAPITAL)  # $50,000 seed capital
 
         # All times are Eastern
@@ -784,6 +787,9 @@ class AlphaNextGen(QCAlgorithm):
         self.execution_engine = ExecutionEngine(self)
         self.state_manager = StateManager(self)
         self.scheduler = DailyScheduler(self)
+
+        # V6.12: Monthly P&L Tracker
+        self.pnl_tracker = MonthlyPnLTracker(self)
 
         self.Log("INIT: Infrastructure initialized")
 
@@ -1721,6 +1727,16 @@ class AlphaNextGen(QCAlgorithm):
         # 4. V2.30: Generate Options signals (direction-aware gating)
         self._generate_options_signals_gated(regime_state, capital_state)
 
+        # V6.13 P0: Overnight gap protection for swing spreads
+        if self.options_engine.has_spread_position():
+            overnight_exit = self.options_engine.check_overnight_gap_protection_exit(
+                current_vix=self._current_vix,
+                current_date=str(self.Time.date()),
+            )
+            if overnight_exit:
+                for signal in overnight_exit:
+                    self.portfolio_router.receive_signal(signal)
+
         # 5. Generate Hedge signals (V3.0: regime-gated per thesis)
         # Thesis: Hedges should be 0% in Bull (70+) and Neutral (50-69)
         # Only activate hedges when regime < HEDGE_REGIME_GATE (50)
@@ -1763,7 +1779,11 @@ class AlphaNextGen(QCAlgorithm):
         # Save all state
         self._save_state()
 
-        # Skip daily summary to save log space - only fills are logged
+        # V6.12: Log EOD P&L summary
+        if hasattr(self, "pnl_tracker"):
+            self.pnl_tracker.log_eod_summary(str(self.Time.date()))
+            # Reset session counters for next day
+            self.pnl_tracker.reset_session()
 
         # Reset daily tracking
         self.today_trades.clear()
@@ -2918,6 +2938,10 @@ class AlphaNextGen(QCAlgorithm):
                 except Exception as e:
                     self.Log(f"STATE_WARN: Failed to load regime state - {e}")
 
+            # V6.12: Load monthly P&L tracker state
+            if hasattr(self, "pnl_tracker"):
+                self.pnl_tracker.load()
+
         except Exception as e:
             self.Log(f"STATE_ERROR: Failed to load state - {e}")
 
@@ -2951,6 +2975,10 @@ class AlphaNextGen(QCAlgorithm):
             if hasattr(self, "regime_engine"):
                 regime_state = self.regime_engine.get_state_for_persistence()
                 self.ObjectStore.Save("regime_engine_state", json.dumps(regime_state))
+
+            # V6.12: Save monthly P&L tracker state
+            if hasattr(self, "pnl_tracker"):
+                self.pnl_tracker.save()
 
         except Exception as e:
             self.Log(f"STATE_ERROR: Failed to save state - {e}")
@@ -3559,9 +3587,15 @@ class AlphaNextGen(QCAlgorithm):
         dte_min_all = min(r[0] for r in dte_ranges)
         dte_max_all = max(r[1] for r in dte_ranges)
 
+        required_right = self._strategy_option_right(strategy)
+
         # V2.23: Build candidate contracts with widest VASS DTE range (fallback uses subranges)
         candidate_contracts = self._build_spread_candidate_contracts(
-            chain, direction, dte_min=dte_min_all, dte_max=dte_max_all
+            chain,
+            direction,
+            dte_min=dte_min_all,
+            dte_max=dte_max_all,
+            option_right=required_right,
         )
         if len(candidate_contracts) < 2:
             return
@@ -3648,6 +3682,10 @@ class AlphaNextGen(QCAlgorithm):
                                 self.Log(
                                     f"VASS_FALLBACK: DEBIT entry signal generated | {signal.symbol}"
                                 )
+                                self.Log(
+                                    f"VASS_ENTRY: {signal.metadata.get('vass_strategy', 'UNKNOWN') if signal.metadata else 'UNKNOWN'} | "
+                                    f"{signal.symbol} | {signal.reason}"
+                                )
                                 self.portfolio_router.process_signal(signal)
                             return
                 return
@@ -3727,6 +3765,10 @@ class AlphaNextGen(QCAlgorithm):
             )
 
         if signal:
+            self.Log(
+                f"VASS_ENTRY: {signal.metadata.get('vass_strategy', 'UNKNOWN') if signal.metadata else 'UNKNOWN'} | "
+                f"{signal.symbol} | {signal.reason}"
+            )
             # V2.3.6 FIX: Check margin BEFORE submitting spread
             # V2.32 FIX: Use SPREAD margin (max loss = width × 100), not naked short margin
             # Spreads have defined risk — margin = spread width, not $10K/contract
@@ -3811,6 +3853,7 @@ class AlphaNextGen(QCAlgorithm):
         direction: OptionDirection,
         dte_min: int = None,
         dte_max: int = None,
+        option_right: Optional[OptionRight] = None,
     ) -> List[OptionContract]:
         """
         V2.3: Build list of candidate OptionContract objects for spread selection.
@@ -3831,13 +3874,23 @@ class AlphaNextGen(QCAlgorithm):
         qqq_price = self.Securities[self.qqq].Price
 
         for contract in chain:
-            # Check direction
-            if direction == OptionDirection.CALL:
-                if contract.Right != OptionRight.Call:
+            # Check option right (strategy-aware). Falls back to direction-based filter.
+            if option_right is not None:
+                if contract.Right != option_right:
                     continue
+                opt_direction = (
+                    OptionDirection.CALL
+                    if option_right == OptionRight.Call
+                    else OptionDirection.PUT
+                )
             else:
-                if contract.Right != OptionRight.Put:
-                    continue
+                if direction == OptionDirection.CALL:
+                    if contract.Right != OptionRight.Call:
+                        continue
+                else:
+                    if contract.Right != OptionRight.Put:
+                        continue
+                opt_direction = direction
 
             # Check DTE range for spreads (V2.23: VASS-aware DTE override)
             dte = (contract.Expiry - self.Time).days
@@ -3864,7 +3917,7 @@ class AlphaNextGen(QCAlgorithm):
             opt_contract = OptionContract(
                 symbol=str(contract.Symbol),
                 underlying="QQQ",
-                direction=direction,
+                direction=opt_direction,
                 strike=float(contract.Strike),
                 expiry=str(contract.Expiry.date()),
                 delta=delta_val,
@@ -3902,6 +3955,24 @@ class AlphaNextGen(QCAlgorithm):
             is_credit = self.options_engine.is_credit_strategy(strategy)
             return (strategy, dte_min, dte_max, is_credit)
         return (None, config.SPREAD_DTE_MIN, config.SPREAD_DTE_MAX, False)
+
+    def _strategy_option_right(self, strategy: Optional[SpreadStrategy]) -> Optional[OptionRight]:
+        """
+        Determine which option right (CALL/PUT) is required for a VASS strategy.
+        """
+        if strategy is None:
+            return None
+        if strategy in (
+            SpreadStrategy.BULL_CALL_DEBIT,
+            SpreadStrategy.BEAR_CALL_CREDIT,
+        ):
+            return OptionRight.Call
+        if strategy in (
+            SpreadStrategy.BEAR_PUT_DEBIT,
+            SpreadStrategy.BULL_PUT_CREDIT,
+        ):
+            return OptionRight.Put
+        return None
 
     def _build_vass_dte_fallbacks(self, dte_min: int, dte_max: int) -> List[Tuple[int, int]]:
         """
@@ -5219,6 +5290,16 @@ class AlphaNextGen(QCAlgorithm):
                         self._process_immediate_signals()
                         # V2.3.3 FIX: Don't return here - allow swing check to run too
                         # Previously returned early, blocking swing spreads entirely
+                    else:
+                        # P1 Fix: Explicitly log approved signals that failed to produce an order
+                        if should_trade:
+                            self.Log(
+                                f"INTRADAY_SIGNAL_DROPPED: Approved but no order | "
+                                f"Reason={signal_reason} | "
+                                f"Dir={intraday_direction.value if intraday_direction else 'NONE'} | "
+                                f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'} | "
+                                f"Contract={intraday_contract.symbol if intraday_contract else 'NONE'}"
+                            )
 
         # V2.20: Check rejection cooldowns for swing/spread modes
         swing_cooldown_active = (
@@ -5301,9 +5382,15 @@ class AlphaNextGen(QCAlgorithm):
         dte_min_all = min(r[0] for r in dte_ranges)
         dte_max_all = max(r[1] for r in dte_ranges)
 
+        required_right = self._strategy_option_right(strategy)
+
         # V2.23: Build candidate contracts with widest VASS DTE range (fallback uses subranges)
         candidate_contracts = self._build_spread_candidate_contracts(
-            chain, direction, dte_min=dte_min_all, dte_max=dte_max_all
+            chain,
+            direction,
+            dte_min=dte_min_all,
+            dte_max=dte_max_all,
+            option_right=required_right,
         )
         if len(candidate_contracts) < 2:
             return
@@ -5438,6 +5525,10 @@ class AlphaNextGen(QCAlgorithm):
                         )
 
             if signal:
+                self.Log(
+                    f"VASS_ENTRY: {signal.metadata.get('vass_strategy', 'UNKNOWN') if signal.metadata else 'UNKNOWN'} | "
+                    f"{signal.symbol} | {signal.reason}"
+                )
                 self.portfolio_router.receive_signal(signal)
                 # V2.3.13 FIX: MUST process immediately - spread signals use IMMEDIATE urgency
                 self._process_immediate_signals()
@@ -5909,6 +6000,7 @@ class AlphaNextGen(QCAlgorithm):
             short_leg_price=short_leg_price,
             regime_score=regime_score,
             current_dte=current_dte,
+            vix_current=self._current_vix,
         )
 
         if exit_signals:
@@ -6277,6 +6369,18 @@ class AlphaNextGen(QCAlgorithm):
                     strategy_tag="TREND",
                 )
             else:
+                # V6.12: Record trade P&L before removing position
+                position = self.trend_engine.get_position(symbol)
+                if position and hasattr(self, "pnl_tracker"):
+                    self.pnl_tracker.record_trade(
+                        symbol=symbol,
+                        engine="TREND",
+                        entry_date=position.entry_date,
+                        exit_date=str(self.Time.date()),
+                        entry_price=position.entry_price,
+                        exit_price=fill_price,
+                        quantity=abs(int(fill_qty)),
+                    )
                 self.trend_engine.remove_position(symbol)
 
         # Update MR engine - V6.11: Updated to include SPXL
@@ -6296,6 +6400,19 @@ class AlphaNextGen(QCAlgorithm):
                         vwap=vwap,
                     )
                 else:
+                    # V6.12: Record trade P&L before removing position
+                    mr_position = self.mr_engine.get_position()
+                    if mr_position and hasattr(self, "pnl_tracker"):
+                        entry_date = mr_position.get("entry_time", str(self.Time))[:10]
+                        self.pnl_tracker.record_trade(
+                            symbol=symbol,
+                            engine="MR",
+                            entry_date=entry_date,
+                            exit_date=str(self.Time.date()),
+                            entry_price=mr_position.get("entry_price", fill_price),
+                            exit_price=fill_price,
+                            quantity=abs(int(fill_qty)),
+                        )
                     self.mr_engine.remove_position()
             except Exception as e:
                 self.Log(f"MR_TRACK_ERROR: {symbol}: {e}")
@@ -6363,6 +6480,19 @@ class AlphaNextGen(QCAlgorithm):
                                 f"Entry=${removed_position.entry_price:.2f} | Exit=${fill_price:.2f} | "
                                 f"P&L={((fill_price - removed_position.entry_price) / removed_position.entry_price):.1%}"
                             )
+                            # V6.12: Record trade in monthly P&L tracker
+                            if hasattr(self, "pnl_tracker"):
+                                self.pnl_tracker.record_trade(
+                                    symbol=symbol,
+                                    engine="OPT",
+                                    entry_date=removed_position.entry_time[:10]
+                                    if removed_position.entry_time
+                                    else str(self.Time.date()),
+                                    exit_date=str(self.Time.date()),
+                                    entry_price=removed_position.entry_price,
+                                    exit_price=fill_price,
+                                    quantity=abs(int(fill_qty)),
+                                )
                         self._greeks_breach_logged = False  # Reset for next position
                     else:
                         # Single-leg exit (legacy swing)
@@ -6557,6 +6687,25 @@ class AlphaNextGen(QCAlgorithm):
                 f"SPREAD_RESULT: {result_str} | Type={spread.spread_type} | "
                 f"Entry={spread.net_debit:.2f} | Close={close_value:.2f}"
             )
+
+            # V6.12: Record spread trade in monthly P&L tracker
+            if hasattr(self, "pnl_tracker"):
+                # Calculate realized P&L (×100 for options multiplier, ×num_spreads for quantity)
+                spread_pnl = (close_value - spread.net_debit) * 100 * spread.num_spreads
+                if is_credit:
+                    spread_pnl = -spread_pnl  # Credit spreads: profit when close < credit
+                # Record as single trade with net P&L
+                self.pnl_tracker.record_trade(
+                    symbol=f"SPREAD:{spread.spread_type}",
+                    engine="OPT",
+                    entry_date=spread.entry_time[:10]
+                    if spread.entry_time
+                    else str(self.Time.date()),
+                    exit_date=str(self.Time.date()),
+                    entry_price=spread.net_debit,
+                    exit_price=close_value,
+                    quantity=spread.num_spreads,
+                )
 
             # Both legs closed - remove spread position
             self.options_engine.remove_spread_position()
