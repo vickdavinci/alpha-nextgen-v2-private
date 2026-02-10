@@ -12,6 +12,7 @@ Spec: docs/04-regime-engine.md
 
 import pytest
 
+import config
 from engines.core.regime_engine import RegimeEngine, RegimeState
 from models.enums import RegimeLevel
 
@@ -423,7 +424,11 @@ class TestRegimeStateFlags:
 
 
 class TestHedgeTargets:
-    """Tests for hedge target calculations (V3.0: thesis-aligned thresholds)."""
+    """Tests for hedge target calculations (V3.0: thesis-aligned thresholds).
+
+    Note: Production config has hedges disabled (all 0.0). Global fixtures
+    in conftest.py enable hedge values for testing.
+    """
 
     def test_no_hedges_above_50(self):
         """V3.0: Test no hedges when score >= 50 (Neutral+)."""

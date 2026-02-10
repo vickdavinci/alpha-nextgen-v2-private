@@ -12,7 +12,7 @@ Tests central coordination and order execution:
 Spec: docs/11-portfolio-router.md
 """
 
-from unittest.mock import MagicMock, call
+from unittest.mock import ANY, MagicMock, call
 
 import pytest
 
@@ -470,7 +470,7 @@ class TestExecute:
         executed = router.execute_orders(orders)
 
         assert len(executed) == 1
-        mock_algo.MarketOrder.assert_called_once_with("TQQQ", 50)
+        mock_algo.MarketOrder.assert_called_once_with("TQQQ", 50, tag=ANY)
 
     def test_execute_moo_order(self):
         """Test executing a MOO order."""
@@ -484,7 +484,7 @@ class TestExecute:
         executed = router.execute_orders(orders)
 
         assert len(executed) == 1
-        mock_algo.MarketOnOpenOrder.assert_called_once_with("QLD", 100)
+        mock_algo.MarketOnOpenOrder.assert_called_once_with("QLD", 100, tag=ANY)
 
     def test_execute_sell_order(self):
         """Test executing a sell order (negative quantity)."""
@@ -500,7 +500,7 @@ class TestExecute:
         executed = router.execute_orders(orders)
 
         assert len(executed) == 1
-        mock_algo.MarketOrder.assert_called_once_with("QLD", -50)  # Negative for sell
+        mock_algo.MarketOrder.assert_called_once_with("QLD", -50, tag=ANY)  # Negative for sell
 
     def test_execute_blocked_by_risk_engine(self):
         """Test orders blocked when risk engine is NO-GO."""

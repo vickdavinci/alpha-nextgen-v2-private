@@ -10,10 +10,13 @@ IMPORTANT: All tests use fixed random seeds to ensure reproducibility.
 The same test run twice should produce identical results.
 """
 
-import pytest
 import random
+from typing import Any, Dict
 from unittest.mock import MagicMock
-from typing import Dict, Any
+
+import pytest
+
+import config
 
 # Optional: numpy for deterministic numerical operations
 try:
@@ -22,6 +25,37 @@ try:
     HAS_NUMPY = True
 except ImportError:
     HAS_NUMPY = False
+
+
+# =============================================================================
+# CONFIG OVERRIDES FOR TESTING
+# =============================================================================
+
+
+@pytest.fixture(autouse=True)
+def disable_isolation_mode(monkeypatch):
+    """
+    Disable isolation mode so all safeguards are tested properly.
+
+    Production has ISOLATION_TEST_MODE=True for options backtesting,
+    but tests need to verify all safeguards work correctly.
+    """
+    monkeypatch.setattr(config, "ISOLATION_TEST_MODE", False)
+
+
+@pytest.fixture(autouse=True)
+def enable_hedge_values(monkeypatch):
+    """
+    Enable hedge values for testing hedge logic.
+
+    Production has all hedge values at 0.0 (hedges disabled),
+    but tests need to verify hedge calculations work correctly.
+    """
+    monkeypatch.setattr(config, "TMF_LIGHT", 0.10)
+    monkeypatch.setattr(config, "TMF_MEDIUM", 0.15)
+    monkeypatch.setattr(config, "TMF_FULL", 0.20)
+    monkeypatch.setattr(config, "PSQ_MEDIUM", 0.05)
+    monkeypatch.setattr(config, "PSQ_FULL", 0.10)
 
 
 # =============================================================================
@@ -330,8 +364,8 @@ def multi_engine_signals() -> list:
     """
     Sample signals from multiple engines for aggregation testing.
     """
-    from models.target_weight import TargetWeight
     from models.enums import Urgency
+    from models.target_weight import TargetWeight
 
     return [
         TargetWeight(
@@ -339,34 +373,34 @@ def multi_engine_signals() -> list:
             target_weight=0.35,
             source="TREND",
             urgency=Urgency.EOD,
-            reason="MA200_ADX_ENTRY"
+            reason="MA200_ADX_ENTRY",
         ),
         TargetWeight(
             symbol="TQQQ",
             target_weight=0.05,
             source="MR",
             urgency=Urgency.IMMEDIATE,
-            reason="RSI Oversold"
+            reason="RSI Oversold",
         ),
         TargetWeight(
             symbol="QQQ_CALL",
             target_weight=0.20,
             source="OPT",
             urgency=Urgency.IMMEDIATE,
-            reason="Entry Score=3.5"
+            reason="Entry Score=3.5",
         ),
         TargetWeight(
             symbol="TMF",
             target_weight=0.10,
             source="HEDGE",
             urgency=Urgency.EOD,
-            reason="Regime=42"
+            reason="Regime=42",
         ),
         TargetWeight(
             symbol="SHV",
             target_weight=0.25,
             source="YIELD",
             urgency=Urgency.EOD,
-            reason="Unallocated Cash"
+            reason="Unallocated Cash",
         ),
     ]
