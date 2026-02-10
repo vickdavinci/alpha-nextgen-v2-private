@@ -3008,15 +3008,22 @@ class OptionsEngine:
             (short_leg, long_leg) tuple - NOTE: short leg is the one we SELL
             Returns None if no valid spread can be constructed
         """
+        # T-22: Use strategy-scoped cooldown keys so one credit side cannot block the other.
+        cooldown_key = strategy.value if hasattr(strategy, "value") else str(strategy)
+        legacy_credit_key = "CREDIT"
+
         # Keep credit spread cooldown handling consistent with debit spread path.
         if current_time:
             try:
                 if hasattr(self, "_spread_failure_cooldown_until_by_dir"):
-                    until = self._spread_failure_cooldown_until_by_dir.get("CREDIT")
+                    until = self._spread_failure_cooldown_until_by_dir.get(cooldown_key)
+                    if until is None:
+                        until = self._spread_failure_cooldown_until_by_dir.get(legacy_credit_key)
                     if until and current_time < until:
                         return None
                     elif until:
-                        self._spread_failure_cooldown_until_by_dir.pop("CREDIT", None)
+                        self._spread_failure_cooldown_until_by_dir.pop(cooldown_key, None)
+                        self._spread_failure_cooldown_until_by_dir.pop(legacy_credit_key, None)
                 elif self._spread_failure_cooldown_until:
                     if current_time < self._spread_failure_cooldown_until:
                         return None
@@ -3053,7 +3060,7 @@ class OptionsEngine:
                 f"(available: {[c.days_to_expiry for c in contracts[:5]]}...)"
             )
             if set_cooldown:
-                self._set_spread_failure_cooldown(current_time, direction="CREDIT")
+                self._set_spread_failure_cooldown(current_time, direction=cooldown_key)
             return None
 
         if strategy == SpreadStrategy.BULL_PUT_CREDIT:
@@ -3064,7 +3071,7 @@ class OptionsEngine:
             if not puts:
                 self.log("VASS: No PUT contracts available for Bull Put Credit")
                 if set_cooldown:
-                    self._set_spread_failure_cooldown(current_time, direction="CREDIT")
+                    self._set_spread_failure_cooldown(current_time, direction=cooldown_key)
                 return None
 
             # Short leg: Delta -0.25 to -0.40 (OTM but decent premium)
@@ -3072,6 +3079,9 @@ class OptionsEngine:
             # V2.24.1: Elastic Delta Bands — progressively widen if no candidates
             short_candidates = []
             delta_pass_count = 0
+            credit_pass_count = 0
+            oi_pass_count = 0
+            spread_pass_count = 0
             elastic_widen_used = 0.0
 
             for widen in config.ELASTIC_DELTA_STEPS:
@@ -3092,11 +3102,23 @@ class OptionsEngine:
                 if smoothed_vix > config.CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD:
                     effective_min_credit = config.CREDIT_SPREAD_MIN_CREDIT_HIGH_IV
 
-                short_candidates = [
-                    p
-                    for p in puts
-                    if delta_min <= abs(p.delta) <= delta_max and p.bid >= effective_min_credit
-                ]
+                short_candidates = []
+                credit_pass_count = 0
+                oi_pass_count = 0
+                spread_pass_count = 0
+                for p in puts:
+                    if not (delta_min <= abs(p.delta) <= delta_max):
+                        continue
+                    if p.bid < effective_min_credit:
+                        continue
+                    credit_pass_count += 1
+                    if p.open_interest < config.CREDIT_SPREAD_MIN_OPEN_INTEREST:
+                        continue
+                    oi_pass_count += 1
+                    if p.spread_pct > config.CREDIT_SPREAD_MAX_SPREAD_PCT:
+                        continue
+                    spread_pass_count += 1
+                    short_candidates.append(p)
 
                 if short_candidates:
                     elastic_widen_used = widen
@@ -3104,7 +3126,8 @@ class OptionsEngine:
 
             self.log(
                 f"SPREAD_FILTER: BullPut ShortLeg | Puts={len(puts)} | "
-                f"Delta_pass={delta_pass_count} | Credit_pass={len(short_candidates)} | "
+                f"Delta_pass={delta_pass_count} | Credit_pass={credit_pass_count} | "
+                f"OI_pass={oi_pass_count} | Spread_pass={spread_pass_count} | "
                 f"Delta_range={config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN}-"
                 f"{config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX}"
                 + (f" | Elastic_widen=±{elastic_widen_used:.2f}" if elastic_widen_used > 0 else "")
@@ -3119,7 +3142,9 @@ class OptionsEngine:
                 debug_stats.update(
                     {
                         "delta_pass": delta_pass_count,
-                        "credit_pass": len(short_candidates),
+                        "credit_pass": credit_pass_count,
+                        "oi_pass": oi_pass_count,
+                        "spread_pass": spread_pass_count,
                         "elastic_widen": elastic_widen_used,
                         "min_credit": effective_min_credit,
                     }
@@ -3131,10 +3156,12 @@ class OptionsEngine:
                     f"Delta range: {config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN}-"
                     f"{config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX} | "
                     f"Elastic steps tried={len(config.ELASTIC_DELTA_STEPS)} | "
-                    f"Min credit: ${config.CREDIT_SPREAD_MIN_CREDIT}"
+                    f"Min credit: ${config.CREDIT_SPREAD_MIN_CREDIT} | "
+                    f"Min OI: {config.CREDIT_SPREAD_MIN_OPEN_INTEREST} | "
+                    f"Max spread%: {config.CREDIT_SPREAD_MAX_SPREAD_PCT:.2f}"
                 )
                 if set_cooldown:
-                    self._set_spread_failure_cooldown(current_time, direction="CREDIT")
+                    self._set_spread_failure_cooldown(current_time, direction=cooldown_key)
                 return None
 
             # Sort by premium (highest first) - we want max credit
@@ -3144,7 +3171,13 @@ class OptionsEngine:
             # Long leg: $5 below short strike (for defined risk)
             target_long_strike = short_leg.strike - config.CREDIT_SPREAD_WIDTH_TARGET
             long_candidates = [
-                p for p in puts if p.strike == target_long_strike and p.expiry == short_leg.expiry
+                p
+                for p in puts
+                if p.strike == target_long_strike
+                and p.expiry == short_leg.expiry
+                and p.ask > 0
+                and p.open_interest >= max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)
+                and p.spread_pct <= config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT
             ]
 
             if not long_candidates:
@@ -3157,6 +3190,9 @@ class OptionsEngine:
                     and config.SPREAD_WIDTH_MIN
                     <= (short_leg.strike - p.strike)
                     <= config.SPREAD_WIDTH_MAX
+                    and p.ask > 0
+                    and p.open_interest >= max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)
+                    and p.spread_pct <= config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT
                 ]
                 if long_candidates:
                     long_candidates.sort(key=lambda x: x.strike, reverse=True)
@@ -3164,10 +3200,12 @@ class OptionsEngine:
             if not long_candidates:
                 self.log(
                     f"VASS: No long put candidates for protection | "
-                    f"Short strike={short_leg.strike} | Target=${target_long_strike}"
+                    f"Short strike={short_leg.strike} | Target=${target_long_strike} | "
+                    f"Min OI={max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)} | "
+                    f"Max spread%={config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT:.2f}"
                 )
                 if set_cooldown:
-                    self._set_spread_failure_cooldown(current_time, direction="CREDIT")
+                    self._set_spread_failure_cooldown(current_time, direction=cooldown_key)
                 return None
 
             long_leg = long_candidates[0]
@@ -3191,13 +3229,16 @@ class OptionsEngine:
             if not calls:
                 self.log("VASS: No CALL contracts available for Bear Call Credit")
                 if set_cooldown:
-                    self._set_spread_failure_cooldown(current_time, direction="CREDIT")
+                    self._set_spread_failure_cooldown(current_time, direction=cooldown_key)
                 return None
 
             # Short leg: Delta 0.25-0.40 (OTM but decent premium)
             # V2.24.1: Elastic Delta Bands — progressively widen if no candidates
             short_candidates = []
             delta_pass_count = 0
+            credit_pass_count = 0
+            oi_pass_count = 0
+            spread_pass_count = 0
             elastic_widen_used = 0.0
 
             for widen in config.ELASTIC_DELTA_STEPS:
@@ -3217,11 +3258,23 @@ class OptionsEngine:
                 if smoothed_vix > config.CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD:
                     effective_min_credit = config.CREDIT_SPREAD_MIN_CREDIT_HIGH_IV
 
-                short_candidates = [
-                    c
-                    for c in calls
-                    if delta_min <= abs(c.delta) <= delta_max and c.bid >= effective_min_credit
-                ]
+                short_candidates = []
+                credit_pass_count = 0
+                oi_pass_count = 0
+                spread_pass_count = 0
+                for c in calls:
+                    if not (delta_min <= abs(c.delta) <= delta_max):
+                        continue
+                    if c.bid < effective_min_credit:
+                        continue
+                    credit_pass_count += 1
+                    if c.open_interest < config.CREDIT_SPREAD_MIN_OPEN_INTEREST:
+                        continue
+                    oi_pass_count += 1
+                    if c.spread_pct > config.CREDIT_SPREAD_MAX_SPREAD_PCT:
+                        continue
+                    spread_pass_count += 1
+                    short_candidates.append(c)
 
                 if short_candidates:
                     elastic_widen_used = widen
@@ -3229,7 +3282,8 @@ class OptionsEngine:
 
             self.log(
                 f"SPREAD_FILTER: BearCall ShortLeg | Calls={len(calls)} | "
-                f"Delta_pass={delta_pass_count} | Credit_pass={len(short_candidates)} | "
+                f"Delta_pass={delta_pass_count} | Credit_pass={credit_pass_count} | "
+                f"OI_pass={oi_pass_count} | Spread_pass={spread_pass_count} | "
                 f"Delta_range={config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN}-"
                 f"{config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX}"
                 + (f" | Elastic_widen=±{elastic_widen_used:.2f}" if elastic_widen_used > 0 else "")
@@ -3244,7 +3298,9 @@ class OptionsEngine:
                 debug_stats.update(
                     {
                         "delta_pass": delta_pass_count,
-                        "credit_pass": len(short_candidates),
+                        "credit_pass": credit_pass_count,
+                        "oi_pass": oi_pass_count,
+                        "spread_pass": spread_pass_count,
                         "elastic_widen": elastic_widen_used,
                         "min_credit": effective_min_credit,
                     }
@@ -3256,10 +3312,12 @@ class OptionsEngine:
                     f"Delta range: {config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN}-"
                     f"{config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX} | "
                     f"Elastic steps tried={len(config.ELASTIC_DELTA_STEPS)} | "
-                    f"Min credit: ${config.CREDIT_SPREAD_MIN_CREDIT}"
+                    f"Min credit: ${config.CREDIT_SPREAD_MIN_CREDIT} | "
+                    f"Min OI: {config.CREDIT_SPREAD_MIN_OPEN_INTEREST} | "
+                    f"Max spread%: {config.CREDIT_SPREAD_MAX_SPREAD_PCT:.2f}"
                 )
                 if set_cooldown:
-                    self._set_spread_failure_cooldown(current_time, direction="CREDIT")
+                    self._set_spread_failure_cooldown(current_time, direction=cooldown_key)
                 return None
 
             short_candidates.sort(key=lambda x: x.bid, reverse=True)
@@ -3268,7 +3326,13 @@ class OptionsEngine:
             # Long leg: $5 above short strike (for defined risk)
             target_long_strike = short_leg.strike + config.CREDIT_SPREAD_WIDTH_TARGET
             long_candidates = [
-                c for c in calls if c.strike == target_long_strike and c.expiry == short_leg.expiry
+                c
+                for c in calls
+                if c.strike == target_long_strike
+                and c.expiry == short_leg.expiry
+                and c.ask > 0
+                and c.open_interest >= max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)
+                and c.spread_pct <= config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT
             ]
 
             if not long_candidates:
@@ -3281,6 +3345,9 @@ class OptionsEngine:
                     and config.SPREAD_WIDTH_MIN
                     <= (c.strike - short_leg.strike)
                     <= config.SPREAD_WIDTH_MAX
+                    and c.ask > 0
+                    and c.open_interest >= max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)
+                    and c.spread_pct <= config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT
                 ]
                 if long_candidates:
                     long_candidates.sort(key=lambda x: x.strike)
@@ -3288,10 +3355,12 @@ class OptionsEngine:
             if not long_candidates:
                 self.log(
                     f"VASS: No long call candidates for protection | "
-                    f"Short strike={short_leg.strike} | Target=${target_long_strike}"
+                    f"Short strike={short_leg.strike} | Target=${target_long_strike} | "
+                    f"Min OI={max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)} | "
+                    f"Max spread%={config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT:.2f}"
                 )
                 if set_cooldown:
-                    self._set_spread_failure_cooldown(current_time, direction="CREDIT")
+                    self._set_spread_failure_cooldown(current_time, direction=cooldown_key)
                 return None
 
             long_leg = long_candidates[0]
@@ -3352,12 +3421,14 @@ class OptionsEngine:
             if stats:
                 failure_stats.append(stats)
 
-        self._set_spread_failure_cooldown(current_time, direction="CREDIT")
+        cooldown_key = strategy.value if hasattr(strategy, "value") else str(strategy)
+        self._set_spread_failure_cooldown(current_time, direction=cooldown_key)
         if failure_stats:
             summary = "; ".join(
                 [
                     f"{s.get('dte_range')}|DTE={s.get('dte_pass')}|"
                     f"Delta={s.get('delta_pass')}|Credit={s.get('credit_pass')}|"
+                    f"OI={s.get('oi_pass')}|Spread={s.get('spread_pass')}|"
                     f"Widen={s.get('elastic_widen')}|MinCred={s.get('min_credit')}"
                     for s in failure_stats
                 ]
@@ -4955,6 +5026,13 @@ class OptionsEngine:
 
         # Return exit signal for market open
         num_contracts = spread.num_spreads
+        is_credit_spread = spread.spread_type in (
+            "BULL_PUT_CREDIT",
+            "BEAR_CALL_CREDIT",
+            SpreadStrategy.BULL_PUT_CREDIT.value,
+            SpreadStrategy.BEAR_CALL_CREDIT.value,
+        )
+        credit_received = abs(spread.net_debit) if is_credit_spread else 0.0
         return [
             TargetWeight(
                 symbol=spread.long_leg.symbol,
@@ -4968,6 +5046,9 @@ class OptionsEngine:
                     "spread_close_short": True,
                     "spread_short_leg_symbol": spread.short_leg.symbol,
                     "spread_short_leg_quantity": num_contracts,
+                    "spread_width": spread.width,
+                    "is_credit_spread": is_credit_spread,
+                    "spread_credit_received": credit_received,
                     "exit_type": "PREMARKET_ITM",
                 },
             )
@@ -5074,6 +5155,13 @@ class OptionsEngine:
         # Return exit signal (same structure as normal spread exit)
         # V6.5 FIX: Added spread_close_short and requested_quantity for proper combo close
         num_contracts = spread.num_spreads
+        is_credit_spread = spread.spread_type in (
+            "BULL_PUT_CREDIT",
+            "BEAR_CALL_CREDIT",
+            SpreadStrategy.BULL_PUT_CREDIT.value,
+            SpreadStrategy.BEAR_CALL_CREDIT.value,
+        )
+        credit_received = abs(spread.net_debit) if is_credit_spread else 0.0
         return [
             TargetWeight(
                 symbol=spread.long_leg.symbol,
@@ -5087,6 +5175,9 @@ class OptionsEngine:
                     "spread_close_short": True,  # V6.5 FIX: Required for combo close
                     "spread_short_leg_symbol": spread.short_leg.symbol,
                     "spread_short_leg_quantity": num_contracts,  # V6.5 FIX: Positive for close
+                    "spread_width": spread.width,
+                    "is_credit_spread": is_credit_spread,
+                    "spread_credit_received": credit_received,
                     "exit_type": "ASSIGNMENT_RISK",
                 },
             )
@@ -5502,8 +5593,12 @@ class OptionsEngine:
                 requested_quantity=spread.num_spreads,
                 metadata={
                     "spread_close_short": True,  # Tells router this is an exit
+                    "spread_type": spread.spread_type,
                     "spread_short_leg_symbol": spread.short_leg.symbol,
                     "spread_short_leg_quantity": spread.num_spreads,
+                    "spread_width": spread.width,
+                    "is_credit_spread": is_credit_spread,
+                    "spread_credit_received": abs(spread.net_debit) if is_credit_spread else 0.0,
                 },
             ),
         ]
@@ -7768,6 +7863,17 @@ class OptionsEngine:
                     f"{self._intraday_trades_today}/{config.INTRADAY_MAX_TRADES_PER_DAY}"
                 )
                 return False
+            if getattr(config, "OPTIONS_RESERVE_SWING_DAILY_SLOTS_ENABLED", False):
+                reserve = max(int(getattr(config, "OPTIONS_MIN_SWING_SLOTS_PER_DAY", 0)), 0)
+                if reserve > 0:
+                    intraday_cap = max(config.MAX_OPTIONS_TRADES_PER_DAY - reserve, 0)
+                    if self._intraday_trades_today >= intraday_cap:
+                        self.log(
+                            f"TRADE_LIMIT: Intraday reserve guard | "
+                            f"Intraday={self._intraday_trades_today} >= Cap={intraday_cap} | "
+                            f"ReservedSwingSlots={reserve}"
+                        )
+                        return False
         else:  # SWING
             if self._swing_trades_today >= config.MAX_SWING_TRADES_PER_DAY:
                 self.log(

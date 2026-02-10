@@ -881,6 +881,10 @@ CREDIT_SPREAD_PROFIT_TARGET = 0.50  # Exit at 50% of max profit
 CREDIT_SPREAD_STOP_MULTIPLIER = 2.0  # Stop if spread value doubles (100% loss)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg delta range (OTM)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.45  # V6.13 OPT: Improve credit spread constructability
+# T-21: Credit-path liquidity quality gates (parity with debit selector).
+CREDIT_SPREAD_MIN_OPEN_INTEREST = 50
+CREDIT_SPREAD_MAX_SPREAD_PCT = 0.35
+CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT = 0.50
 
 # V2.24.1: Elastic Delta Bands — progressive widening when no candidates found
 # Each step widens the delta range by ± the step value (e.g., [0.0, 0.03, 0.07, 0.12])
@@ -903,6 +907,9 @@ INTRADAY_MAX_TRADES_PER_DAY = 2  # Sniper gets one retry per day
 # Prevents over-trading when VIX flickers around strategy thresholds
 MAX_OPTIONS_TRADES_PER_DAY = 4  # All options combined (swing + intraday)
 MAX_SWING_TRADES_PER_DAY = 2  # Swing mode limit
+# Reserve swing capacity so intraday activity cannot fully starve VASS entries.
+OPTIONS_RESERVE_SWING_DAILY_SLOTS_ENABLED = True
+OPTIONS_MIN_SWING_SLOTS_PER_DAY = 1
 
 # Legacy compatibility (combined min/max)
 OPTIONS_ALLOCATION_MIN = 0.25  # 25% minimum

@@ -2611,6 +2611,16 @@ class AlphaNextGen(QCAlgorithm):
                 msg_lower = str(orderEvent.Message).lower()
                 is_exercise = "exercise" in msg_lower or "assignment" in msg_lower
             if is_exercise:
+                partial_signals = self.options_engine.handle_partial_assignment(
+                    symbol, abs(fill_qty)
+                )
+                if partial_signals:
+                    self.portfolio_router.receive_signals(partial_signals)
+                    self.Log(
+                        f"PARTIAL_ASSIGNMENT_SUBMITTED: {symbol} | "
+                        f"Signals={len(partial_signals)}"
+                    )
+
                 self.Log(
                     f"EXERCISE_DETECTED: {symbol} | Qty={fill_qty} | "
                     f"Msg='{orderEvent.Message}' | "
@@ -2987,11 +2997,65 @@ class AlphaNextGen(QCAlgorithm):
         """
         Reconcile internal position tracking with broker state.
 
-        Called at 09:33 - logging disabled to save log space.
+        Called at 09:33.
         """
-        # Position logging disabled to save log space
-        # Fills are logged in OnOrderEvent
-        pass
+        try:
+            option_holdings = {}
+            option_symbols = {}
+            for kvp in self.Portfolio:
+                holding = kvp.Value
+                if not holding.Invested:
+                    continue
+                symbol = holding.Symbol
+                if symbol.SecurityType != SecurityType.Option:
+                    continue
+                option_holdings[str(symbol)] = int(holding.Quantity)
+                option_symbols[str(symbol)] = symbol
+
+            tracked_symbols = set()
+            spread = self.options_engine.get_spread_position()
+            if spread is not None:
+                tracked_symbols.add(str(spread.long_leg.symbol))
+                tracked_symbols.add(str(spread.short_leg.symbol))
+
+            intraday = self.options_engine.get_intraday_position()
+            if intraday is not None:
+                tracked_symbols.add(str(intraday.contract.symbol))
+
+            single = self.options_engine.get_position()
+            if single is not None:
+                tracked_symbols.add(str(single.contract.symbol))
+
+            if tracked_symbols and not option_holdings:
+                self.options_engine.clear_all_positions()
+                if self.portfolio_router:
+                    self.portfolio_router.clear_all_spread_margins()
+                self.Log(
+                    f"RECON_ZOMBIE_CLEARED: Cleared stale internal option state | "
+                    f"Tracked={len(tracked_symbols)}"
+                )
+                tracked_symbols = set()
+
+            orphan_symbols = [s for s in option_holdings.keys() if s not in tracked_symbols]
+            for sym_str in orphan_symbols:
+                try:
+                    self.Liquidate(option_symbols[sym_str], tag="RECON_ORPHAN_OPTION")
+                    self.Log(
+                        f"RECON_ORPHAN_CLOSE_SUBMITTED: {sym_str} | "
+                        f"Qty={option_holdings.get(sym_str, 0)}"
+                    )
+                except Exception as e:
+                    self.Log(f"RECON_ORPHAN_CLOSE_FAILED: {sym_str} | {e}")
+
+            qqq_holding = self.Portfolio[self.qqq]
+            if qqq_holding.Invested and not option_holdings and not tracked_symbols:
+                self.Log(
+                    f"RECON_ASSIGNMENT_EQUITY_LIQUIDATED: QQQ Qty={qqq_holding.Quantity} | "
+                    f"Value=${qqq_holding.HoldingsValue:,.2f}"
+                )
+                self.Liquidate(self.qqq, tag="ASSIGNMENT_RECONCILE")
+        except Exception as e:
+            self.Log(f"RECON_ERROR: {e}")
 
     # =========================================================================
     # SIGNAL PROCESSING HELPERS
@@ -3869,10 +3933,12 @@ class AlphaNextGen(QCAlgorithm):
 
             # Get bid/ask safely
             bid, ask = self._get_contract_prices(contract)
-            if bid <= 0 or ask <= 0:
+            # T-20: Keep zero-bid contracts if ask is valid. Long-leg candidates can be buyable
+            # with bid=0 in thin chains.
+            if ask <= 0:
                 continue
 
-            mid_price = (bid + ask) / 2
+            mid_price = (bid + ask) / 2 if bid > 0 else ask
 
             # Get Greeks if available
             delta = getattr(contract, "Greeks", None)

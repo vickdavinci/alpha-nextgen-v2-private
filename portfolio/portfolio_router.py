@@ -1742,16 +1742,25 @@ class PortfolioRouter:
                         "C0" in order.symbol or "P0" in order.symbol
                     )
                     if order.is_combo and is_option:
+                        is_exit_combo = bool(
+                            order.metadata and order.metadata.get("spread_close_short", False)
+                        )
                         per_contract_margin, reason_code = self._estimate_combo_margin_per_contract(
                             order.metadata
                         )
                         if per_contract_margin <= 0:
-                            self.log(
-                                f"ROUTER: {reason_code} | {order.symbol} | Combo order blocked"
-                            )
-                            continue
+                            if is_exit_combo:
+                                self.log(
+                                    f"ROUTER_EXIT_BYPASS_MARGIN_ESTIMATE: {reason_code} | "
+                                    f"{order.symbol} | Risk-reduction combo close allowed"
+                                )
+                            else:
+                                self.log(
+                                    f"ROUTER: {reason_code} | {order.symbol} | Combo order blocked"
+                                )
+                                continue
                         required_margin = per_contract_margin * order.quantity
-                        if required_margin > margin_remaining:
+                        if per_contract_margin > 0 and required_margin > margin_remaining:
                             max_contracts = int(margin_remaining / per_contract_margin)
                             min_contracts = getattr(config, "MIN_SPREAD_CONTRACTS", 2)
                             if max_contracts >= min_contracts:
@@ -1807,21 +1816,37 @@ class PortfolioRouter:
 
                 # V2.3.9: Handle combo orders for spreads
                 if order.is_combo and order.combo_short_symbol and order.combo_short_quantity:
+                    is_exit_combo = bool(
+                        order.metadata and order.metadata.get("spread_close_short", False)
+                    )
                     # Final safety check before submit (same estimator as pre-check)
                     (
                         combo_margin_per_contract,
                         reason_code,
                     ) = self._estimate_combo_margin_per_contract(order.metadata)
                     if combo_margin_per_contract <= 0:
-                        self.log(f"ROUTER: {reason_code} | {order.symbol} | Combo submit blocked")
-                        continue
+                        if is_exit_combo:
+                            self.log(
+                                f"ROUTER_EXIT_BYPASS_MARGIN_ESTIMATE: {reason_code} | "
+                                f"{order.symbol} | Combo close submit allowed"
+                            )
+                        else:
+                            self.log(
+                                f"ROUTER: {reason_code} | {order.symbol} | Combo submit blocked"
+                            )
+                            if hasattr(self.algorithm, "options_engine") and order.metadata:
+                                if order.metadata.get("spread_close_short", False):
+                                    self.algorithm.options_engine.reset_spread_closing_lock()
+                            continue
                     total_combo_margin = combo_margin_per_contract * abs(order.quantity)
                     margin_remaining = self.get_effective_margin_remaining()
-                    if total_combo_margin > margin_remaining:
+                    if combo_margin_per_contract > 0 and total_combo_margin > margin_remaining:
                         self.log(
                             f"ROUTER_MARGIN_BLOCK_COMBO: {order.symbol} | "
                             f"Required=${total_combo_margin:,.0f} > Available=${margin_remaining:,.0f}"
                         )
+                        if is_exit_combo and hasattr(self.algorithm, "options_engine"):
+                            self.algorithm.options_engine.reset_spread_closing_lock()
                         continue
 
                     # Import Leg class for combo orders
@@ -1910,6 +1935,13 @@ class PortfolioRouter:
 
             except Exception as e:
                 self.log(f"ROUTER: ORDER_ERROR | {order.symbol} | {e}")
+                if (
+                    order.is_combo
+                    and order.metadata
+                    and order.metadata.get("spread_close_short", False)
+                    and hasattr(self.algorithm, "options_engine")
+                ):
+                    self.algorithm.options_engine.reset_spread_closing_lock()
 
         return executed
 
