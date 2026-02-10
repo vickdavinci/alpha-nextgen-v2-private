@@ -1,6 +1,6 @@
 # Section 11: Portfolio Router
 
-*Last Updated: 4 February 2026 (V2.30)*
+*Last Updated: 10 February 2026 (V6.11)*
 
 ## 11.1 Purpose and Philosophy
 
@@ -67,12 +67,16 @@ Gather all TargetWeight objects from all strategy engines:
 
 | Engine | Typical Weights | Symbols | Urgency |
 |--------|-----------------|---------|---------|
-| **Trend Engine** | 0-4 weights | QLD (20%), SSO (15%), TNA (12%), FAS (8%) | EOD |
-| **Mean Reversion Engine** | 0-2 weights | TQQQ, SOXL | IMMEDIATE |
+| **Trend Engine** | 0-4 weights | QLD (15%), SSO (7%), UGL (10%), UCO (8%) | EOD |
+| **Mean Reversion Engine** | 0-3 weights | TQQQ, SPXL, SOXL | IMMEDIATE |
 | **Options Engine** (V2.1) | 0-1 weight | QQQ options | IMMEDIATE |
-| **Hedge Engine** | 2 weights | TMF, PSQ | EOD |
-| **Yield Sleeve** | 0-1 weight | SHV | EOD |
+| **Hedge Engine** (V6.11) | 0-1 weight | SH | EOD |
 | **Cold Start Engine** | 0-1 weight | QLD or SSO | IMMEDIATE |
+
+> **V6.11 Changes:**
+> - Trend Engine now includes commodities (UGL, UCO) alongside equities (QLD, SSO)
+> - Hedge Engine uses SH only (TMF/PSQ retired)
+> - Yield Sleeve removed (SHV no longer used)
 
 ### 11.3.2 TargetWeight Structure
 
@@ -86,25 +90,22 @@ Each TargetWeight includes:
 | `urgency` | Enum | IMMEDIATE or EOD |
 | `reason` | String | Human-readable explanation |
 
-### 11.3.3 Example Collection
+### 11.3.3 Example Collection (V6.11)
 
 ```
 Collected TargetWeights at 15:45 ET:
 
 From Trend Engine:
-  • TargetWeight(QLD, 0.30, "TREND", EOD, "MA200_ADX_ENTRY")
+  - TargetWeight(QLD, 0.15, "TREND", EOD, "MA200_ADX_ENTRY")
+  - TargetWeight(UGL, 0.10, "TREND", EOD, "MA200_ADX_ENTRY")
 
 From Options Engine (V2.1):
-  • TargetWeight(QQQ_CALL, 0.20, "OPTIONS", IMMEDIATE, "Entry Score=3.5")
+  - TargetWeight(QQQ_CALL, 0.20, "OPTIONS", IMMEDIATE, "Entry Score=3.5")
 
-From Hedge Engine:
-  • TargetWeight(TMF, 0.10, "HEDGE", EOD, "Regime=38")
-  • TargetWeight(PSQ, 0.00, "HEDGE", EOD, "Regime=38")
+From Hedge Engine (V6.11):
+  - TargetWeight(SH, 0.08, "HEDGE", EOD, "Regime=35, tier=MEDIUM")
 
-From Yield Sleeve:
-  • TargetWeight(SHV, 0.45, "YIELD", EOD, "Unallocated $45k")
-
-Total: 5 TargetWeights collected
+Total: 4 TargetWeights collected
 ```
 
 ---
@@ -171,26 +172,42 @@ Apply portfolio-level constraints to aggregated weights.
 | **Single Position** | ≤ 50% (SEED) or 40% (GROWTH) | Cap at limit |
 | **Minimum Trade** | ≥ $2,000 position value | Skip trade |
 
-### 11.5.2 Group Exposure Limits
+### 11.5.2 Group Exposure Limits (V6.11)
 
 #### Exposure Group Definitions
 
 | Group | Symbols | Max Net Long | Max Net Short | Max Gross |
 |-------|---------|:------------:|:-------------:|:---------:|
-| **NASDAQ_BETA** | TQQQ, QLD, SOXL, PSQ | 50% | 30% | 75% |
-| **SPY_BETA** | SSO | 40% | 0% | 40% |
-| **SMALL_CAP_BETA** | TNA | 25% | 0% | 25% |
-| **FINANCIALS_BETA** | FAS | 15% | 0% | 15% |
-| **RATES** | TMF, SHV | 40% | 0% | 40% |
+| **NASDAQ_BETA** | TQQQ, QLD, SOXL | 50% | 30% | 75% |
+| **SPY_BETA** | SSO, SPXL, SH (inverse) | 40% | 15% | 50% |
+| **COMMODITIES** | UGL, UCO | 25% | 0% | 25% |
+
+> **V6.11 Universe Redesign:**
+> - **RATES group removed** - TMF retired (failed in 2022 rate hikes), SHV removed (no yield sleeve)
+> - **COMMODITIES group added** - UGL (2x Gold) and UCO (2x Crude Oil) for diversification
+> - **INVERSE_SYMBOLS** - SH replaced PSQ as the inverse hedge (SH is in SPY_BETA)
+> - **SMALL_CAP_BETA and FINANCIALS_BETA removed** - TNA/FAS replaced by commodities
 
 #### Calculating Group Exposure
 
 ```
 For NASDAQ_BETA group:
-  • Long exposure = Sum of positive weights (TQQQ, QLD, SOXL)
-  • Short exposure = Absolute value of inverse (PSQ counts as short)
-  • Net = Long - Short
-  • Gross = Long + Short
+  - Long exposure = Sum of positive weights (TQQQ, QLD, SOXL)
+  - Short exposure = 0 (no inverse symbols in this group)
+  - Net = Long - Short
+  - Gross = Long + Short
+
+For SPY_BETA group:
+  - Long exposure = Sum of positive weights (SSO, SPXL)
+  - Short exposure = Absolute value of inverse (SH counts as short)
+  - Net = Long - Short
+  - Gross = Long + Short
+
+For COMMODITIES group:
+  - Long exposure = Sum of positive weights (UGL, UCO)
+  - Short exposure = 0 (no inverse symbols)
+  - Net = Long
+  - Gross = Long
 ```
 
 #### Scaling When Exceeded
@@ -449,7 +466,9 @@ The partition is **hard** -- one engine cannot borrow from the other's allocatio
 
 ## 11.11 Leverage Cap and Margin Pre-Check (V2.18)
 
-V2.18 also introduces two margin safeguards to prevent the 196% margin overflow observed when all four Trend tickers (QLD, SSO, TNA, FAS) were fully allocated simultaneously.
+V2.18 introduces two margin safeguards to prevent margin overflow observed when all Trend tickers are fully allocated simultaneously.
+
+> **V6.11 Note:** With the new diversified universe (QLD, SSO, UGL, UCO), all tickers are 2x leverage. Margin calculation: 15% x 2 + 7% x 2 + 10% x 2 + 8% x 2 = 80% margin if fully allocated.
 
 ### 11.11.1 Leverage Cap (90%)
 
@@ -642,18 +661,23 @@ If total margin-weighted > 75%:
   Scale all non-options weights by (75% / total_margin_weighted)
 ```
 
-### 11.16.3 SYMBOL_LEVERAGE Reference
+### 11.16.3 SYMBOL_LEVERAGE Reference (V6.11)
 
-| Symbol | Leverage | Margin per 10% Allocation |
-|--------|:--------:|:-------------------------:|
-| QLD | 2.0x | 20% |
-| SSO | 2.0x | 20% |
-| TNA | 3.0x | 30% |
-| FAS | 3.0x | 30% |
-| TQQQ | 3.0x | 30% |
-| SOXL | 3.0x | 30% |
-| TMF | 3.0x | 30% |
-| PSQ | 1.0x | 10% |
+| Symbol | Leverage | Margin per 10% Allocation | Engine |
+|--------|:--------:|:-------------------------:|--------|
+| QLD | 2.0x | 20% | Trend |
+| SSO | 2.0x | 20% | Trend |
+| UGL | 2.0x | 20% | Trend |
+| UCO | 2.0x | 20% | Trend |
+| TQQQ | 3.0x | 30% | MR |
+| SPXL | 3.0x | 30% | MR |
+| SOXL | 3.0x | 30% | MR |
+| SH | 1.0x | 10% | Hedge |
+
+> **V6.11 Changes:**
+> - TNA, FAS, TMF, PSQ removed from leverage table
+> - UGL, UCO added (commodities, 2x leverage)
+> - SH added (inverse S&P, 1x leverage)
 
 ### 11.16.4 Contract Scaling for Spreads
 
@@ -728,53 +752,53 @@ flowchart TD
 
 ---
 
-## 11.18 Mermaid Diagram: Exposure Group Validation
+## 11.18 Mermaid Diagram: Exposure Group Validation (V6.11)
 
 ```mermaid
 flowchart TD
     START["Aggregated Weights"]
-    
+
     subgraph NASDAQ["NASDAQ_BETA Group"]
-        N_CALC["Calculate:<br/>TQQQ + QLD + SOXL − PSQ"]
+        N_CALC["Calculate:<br/>TQQQ + QLD + SOXL"]
         N_CHECK{"Net > 50%?"}
         N_SCALE["Scale Down<br/>All Positions"]
         N_OK["Within Limit"]
     end
-    
+
     subgraph SPY["SPY_BETA Group"]
-        S_CALC["Calculate:<br/>SSO"]
+        S_CALC["Calculate:<br/>SSO + SPXL - SH"]
         S_CHECK{"Net > 40%?"}
         S_CAP["Cap at 40%"]
         S_OK["Within Limit"]
     end
-    
-    subgraph RATES["RATES Group"]
-        R_CALC["Calculate:<br/>TMF + SHV"]
-        R_CHECK{"Net > 40%?"}
-        R_SCALE["Scale Down<br/>(SHV first)"]
-        R_OK["Within Limit"]
+
+    subgraph COMMODITIES["COMMODITIES Group"]
+        C_CALC["Calculate:<br/>UGL + UCO"]
+        C_CHECK{"Net > 25%?"}
+        C_SCALE["Scale Down<br/>All Positions"]
+        C_OK["Within Limit"]
     end
-    
+
     VALIDATED["Validated Weights"]
-    
+
     START --> N_CALC
     N_CALC --> N_CHECK
     N_CHECK -->|Yes| N_SCALE
     N_CHECK -->|No| N_OK
     N_SCALE --> S_CALC
     N_OK --> S_CALC
-    
+
     S_CALC --> S_CHECK
     S_CHECK -->|Yes| S_CAP
     S_CHECK -->|No| S_OK
-    S_CAP --> R_CALC
-    S_OK --> R_CALC
-    
-    R_CALC --> R_CHECK
-    R_CHECK -->|Yes| R_SCALE
-    R_CHECK -->|No| R_OK
-    R_SCALE --> VALIDATED
-    R_OK --> VALIDATED
+    S_CAP --> C_CALC
+    S_OK --> C_CALC
+
+    C_CALC --> C_CHECK
+    C_CHECK -->|Yes| C_SCALE
+    C_CHECK -->|No| C_OK
+    C_SCALE --> VALIDATED
+    C_OK --> VALIDATED
 ```
 
 ---
@@ -804,37 +828,54 @@ Aggregated: QLD = 30%
 Action: Target 30% QLD (net of both views)
 ```
 
-### Example 3: Hedge Offsetting Long
+### Example 3: Hedge Offsetting Long (V6.11)
 
 ```
 Input:
-  • Trend: QLD +35%
-  • Hedge: PSQ +10% (inverse = -10% effective)
+  - Trend: SSO +7%
+  - Hedge: SH +10% (inverse = -10% effective)
 
-NASDAQ_BETA Exposure:
-  • Gross: 35% + 10% = 45%
-  • Net: 35% - 10% = 25%
+SPY_BETA Exposure:
+  - Long: 7%
+  - Short: 10%
+  - Net: 7% - 10% = -3% (net short)
+  - Gross: 7% + 10% = 17%
 
-Both within limits (Gross < 75%, Net < 50%)
+Both within limits (Gross < 50%, Net short < 15%)
 ```
 
-### Example 4: Over-Concentration Requiring Scaling
+### Example 4: Over-Concentration Requiring Scaling (V6.11)
 
 ```
 Input:
-  • Trend: QLD +35%
-  • MR: TQQQ +25%
-  • Cold Start: SSO +0%
+  - Trend: QLD +20%
+  - MR: TQQQ +25%
+  - MR: SOXL +15%
 
-NASDAQ_BETA (QLD + TQQQ):
-  • Total: 60%
-  • Limit: 50%
-  • Scale: 50/60 = 0.833
+NASDAQ_BETA (QLD + TQQQ + SOXL):
+  - Total: 60%
+  - Limit: 50%
+  - Scale: 50/60 = 0.833
 
 Adjusted:
-  • QLD: 35% × 0.833 = 29.2%
-  • TQQQ: 25% × 0.833 = 20.8%
-  • Total: 50% (within limit)
+  - QLD: 20% x 0.833 = 16.7%
+  - TQQQ: 25% x 0.833 = 20.8%
+  - SOXL: 15% x 0.833 = 12.5%
+  - Total: 50% (within limit)
+```
+
+### Example 5: Commodity Diversification (V6.11)
+
+```
+Input:
+  - Trend: UGL +10% (gold)
+  - Trend: UCO +8% (oil)
+
+COMMODITIES Exposure:
+  - Total: 18%
+  - Limit: 25%
+
+Within limit, no scaling needed.
 ```
 
 ---
@@ -910,19 +951,22 @@ Level 6: Execution Preferences ← Router decides
 
 ---
 
-## 11.22 Parameter Reference
+## 11.22 Parameter Reference (V6.11)
 
 ### Exposure Group Limits
 
-| Group | Max Net Long | Max Net Short | Max Gross | Notes |
-|-------|:------------:|:-------------:|:---------:|-------|
-| NASDAQ_BETA | 50% | 30% | 75% | |
-| SPY_BETA | 40% | 0% | 40% | |
-| SMALL_CAP_BETA | 25% | 0% | 25% | |
-| FINANCIALS_BETA | 15% | 0% | 15% | |
-| RATES | 40% | 0% | 40% | TMF only (config) |
+| Group | Symbols | Max Net Long | Max Net Short | Max Gross |
+|-------|---------|:------------:|:-------------:|:---------:|
+| NASDAQ_BETA | QLD, TQQQ, SOXL | 50% | 30% | 75% |
+| SPY_BETA | SSO, SPXL, SH (inverse) | 40% | 15% | 50% |
+| COMMODITIES | UGL, UCO | 25% | 0% | 25% |
 
-> **Note (V2.3.17):** The YIELD source allocation limit was raised to 99% to allow SHV to absorb idle cash post-kill-switch. See `SOURCE_ALLOCATION_LIMITS` in `portfolio_router.py`.
+> **V6.11 Changes:**
+> - RATES group removed (TMF/SHV retired)
+> - SMALL_CAP_BETA removed (TNA retired)
+> - FINANCIALS_BETA removed (FAS retired)
+> - COMMODITIES group added for diversification
+> - SPY_BETA now includes SH as inverse hedge
 
 ### Position Limits
 
@@ -962,19 +1006,23 @@ Level 6: Execution Preferences ← Router decides
 | Combo order max retries | 3 | `COMBO_ORDER_MAX_RETRIES` |
 | Min spread contracts | 2 | `MIN_SPREAD_CONTRACTS` |
 
-### Source Allocation Limits
+### Source Allocation Limits (V6.11)
 
 | Source | Max Allocation | Notes |
 |--------|:--------------:|-------|
-| TREND | 55% | `config.TREND_TOTAL_ALLOCATION` |
+| TREND | 40% | `config.TREND_TOTAL_ALLOCATION` (V6.11: was 55%) |
 | OPT | 30% | `config.OPTIONS_ALLOCATION_MAX` |
 | OPT_INTRADAY | 5% | Intraday "Sniper" mode |
 | MR | 10% | `config.MR_TOTAL_ALLOCATION` |
-| HEDGE | 30% | TMF 20% + PSQ 10% |
+| HEDGE | 10% | V6.11: SH only (was 30% for TMF+PSQ) |
 | COLD_START | 35% | Subset of TREND |
-| YIELD | 99% | V2.3.17: allows near-full SHV |
 | RISK | 100% | Emergency liquidations |
 | ROUTER | 100% | No limit |
+
+> **V6.11 Changes:**
+> - TREND reduced from 55% to 40% (diversified portfolio)
+> - HEDGE reduced from 30% to 10% (SH only, no TMF/PSQ)
+> - YIELD removed (no SHV yield sleeve)
 
 ---
 

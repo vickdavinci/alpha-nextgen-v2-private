@@ -6,11 +6,28 @@
 
 ## Overview
 
-> **Last Updated**: 9 February 2026 (V6.10)
+> **Last Updated**: 10 February 2026 (V6.14)
 
 The **Options Engine** implements a dual-mode architecture for QQQ options trading. This is a **satellite engine** (25% allocation) with two distinct operating modes based on DTE (days to expiration).
 
-> **V6.10 Revision** (Latest):
+> **V6.14 Revision** (Latest):
+> - UVXY conviction thresholds tuned: `MICRO_UVXY_BEARISH_THRESHOLD` +2.8%, `MICRO_UVXY_BULLISH_THRESHOLD` -4.5%
+> - Micro score confirmations adjusted: `MICRO_SCORE_BULLISH_CONFIRM` 47, `MICRO_SCORE_BEARISH_CONFIRM` 49
+> - T-14 expiration fix: Moved expiring options close from 14:00 to 12:00 noon
+> - Pre-market VIX shock ladder added for de-risking before market open
+>
+> **V6.13.1 Revision**:
+> - Narrowed VIX adaptive stable bands: `VIX_STABLE_BAND_LOW` 0.2% (was 0.3%), `VIX_STABLE_BAND_HIGH` 0.7% (was 1.0%)
+> - Narrowed neutrality exit zone: 48-62 (was 45-65)
+> - Reduced `SPREAD_NEUTRALITY_EXIT_PNL_BAND` to 6% (was 10%)
+> - Reduced `INTRADAY_QQQ_FALLBACK_MIN_MOVE` to 0.30% (was 0.50%)
+>
+> **V6.12 Revision**:
+> - `MICRO_UVXY_CONVICTION_EXTREME` set to 3.5% (was 5%)
+> - `NEUTRAL_ALIGNED_SIZE_MULT` added (0.50) for reduced sizing when Macro NEUTRAL
+> - Dir=NONE reduction + VASS DTE fallback + cross-blocking fix
+>
+> **V6.10 Revision**:
 > - **Phase 1 - Assignment Prevention (P0)**:
 >   - Added `SPREAD_FORCE_CLOSE_DTE=1` - mandatory close ALL spreads at DTE=1
 >   - Added `PREMARKET_ITM_CHECK_ENABLED=True` - 09:25 pre-market ITM check
@@ -37,6 +54,12 @@ The **Options Engine** implements a dual-mode architecture for QQQ options tradi
 > - **Phase 5 - Risk/Reward**:
 >   - Symmetric `SPREAD_STOP_LOSS_PCT` 35% -> 40%, `SPREAD_PROFIT_TARGET_PCT` 50% -> 40%
 >   - Added choppy market filter: 3 reversals in 2hrs = 50% size reduction
+>
+> **V6.9 Revision**:
+> - VIX-adaptive STABLE band introduced: `VIX_STABLE_BAND_LOW` and `VIX_STABLE_BAND_HIGH`
+> - High IV now uses credit spreads via VASS routing (BULL_PUT for bullish, BEAR_CALL for bearish)
+> - Assignment margin buffer restored to 20% for safety
+> - P0 Fix 5: Short leg ITM exit regardless of DTE (catches assignment risk at any DTE)
 >
 > **V6.8 Revision**:
 > - Relaxed liquidity filters: Open interest 100->50, spread warning 25%->30%
@@ -153,13 +176,17 @@ Swing Mode uses **Debit Spreads** (Low/Medium IV) or **Credit Spreads** (High IV
 
 VASS dynamically selects the spread strategy and DTE range based on the current VIX level. This replaces the static "debit spreads only" approach from V2.3, allowing the engine to exploit different volatility environments.
 
-### IV Environment Classification
+### IV Environment Classification (V6.9)
 
 | IV Environment | VIX Range | Strategy | DTE Range | Rationale |
 |:--------------:|:---------:|----------|:---------:|-----------|
 | **Low IV** | VIX < 15 | Debit Spreads | 30-45 DTE (monthly) | Cheap options, need more time for move |
 | **Medium IV** | VIX 15-25 | Debit Spreads | 7-21 DTE (weekly) | Fair pricing, standard DTE |
 | **High IV** | VIX > 25 | Credit Spreads | 5-28 DTE (V6.8: widened from 7-14) | Rich premium, sell into fear |
+
+> **V6.9 Change**: High IV now routes to credit spreads. Direction determines spread type:
+> - Bullish (regime > 60): **BULL_PUT** credit spread (sell put spread)
+> - Bearish (regime < 45): **BEAR_CALL** credit spread (sell call spread)
 
 ### How VASS Routing Works
 
@@ -308,22 +335,26 @@ When VASS routes to a specific IV environment, it passes the VASS DTE range dire
 
 ---
 
-## V2.22: Neutrality Exit
+## V2.22: Neutrality Exit (Updated V6.13)
 
-When the regime score enters the neutral zone (45-60), existing spread positions that are near break-even should be closed rather than held through directionless chop.
+When the regime score enters the neutral zone, existing spread positions that are near break-even should be closed rather than held through directionless chop.
 
 ### Rules
 
-- **Trigger**: Regime score between 45 and 60 (neutral zone)
-- **P&L Band**: Position P&L within +/-10% of entry (considered "flat")
+- **Trigger**: Regime score between neutrality zone boundaries
+- **P&L Band**: Position P&L within defined band of entry (considered "flat")
 - **Action**: Close the spread to free capital for clearer setups
 
-### Configuration
+### Configuration (V6.13 Values)
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `SPREAD_NEUTRALITY_EXIT_ENABLED` | True | Enable neutrality exit |
-| `SPREAD_NEUTRALITY_EXIT_PNL_BAND` | 0.10 | +/-10% P&L considered flat |
+| `SPREAD_NEUTRALITY_EXIT_PNL_BAND` | 0.06 | V6.13: +/-6% P&L considered flat (was 10%) |
+| `SPREAD_NEUTRALITY_ZONE_LOW` | 48 | V6.13: Lower bound of neutral zone (was 45) |
+| `SPREAD_NEUTRALITY_ZONE_HIGH` | 62 | V6.13: Upper bound of neutral zone (was 65) |
+
+> **V6.13 Change**: Narrowed neutrality zone from 45-65 to 48-62 and tightened P&L band from 10% to 6% for faster capital recycling in choppy markets.
 
 ---
 
@@ -529,31 +560,36 @@ contracts = floor(allocation / (entry_price * 100 * stop_pct))
 | Price < MA200, RSI > 30 | PUT | Bearish momentum, not oversold |
 | Otherwise | NONE | Wait for clearer signal |
 
-### Contract Selection (V2.3.6)
+### Contract Selection (V2.3.6/V6.8)
 
 **Intraday Mode (0DTE):**
-1. **Expiry**: 0-1 DTE (true 0DTE trading)
+1. **Expiry**: 1-5 DTE (V2.13: Skip 0DTE due to QC data gaps)
 2. **Delta Target**: 0.30 (OTM for faster gamma/premium moves)
-3. **Delta Tolerance**: ±0.20 (allows 0.10-0.50 range)
-4. **Minimum OI**: 200 (V2.3.6: lowered from 500 for 0DTE liquidity)
+3. **Delta Tolerance**: +/-0.20 (allows 0.10-0.50 range)
+4. **Minimum OI**: 50 (V6.8: lowered from 100)
 5. **Max Spread**: 15% (V2.3.6: widened from 10%)
 
 **Swing Mode (Spreads):**
 1. **Expiry**: 14-45 DTE (VASS overrides per IV environment)
-2. **Long Leg Delta**: 0.55-0.85 (ITM, "Smart Swing" V2.3.21)
+2. **Long Leg Delta**: 0.35-0.90 (V6.10: widened from 0.55-0.85)
 3. **Short Leg**: Selected by strike width (V2.4.3), not delta
-4. **Spread Width**: $2-$10 (target $5)
+4. **Spread Width**: $4-$10 (V6.13: target $4, was $5)
+
+**Liquidity Thresholds (V6.8):**
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `OPTIONS_MIN_OPEN_INTEREST` | 50 | V6.8: Minimum OI (was 100) |
+| `OPTIONS_MIN_OPEN_INTEREST_PUT` | 25 | V6.9: Relaxed for PUT spreads |
+| `OPTIONS_SPREAD_WARNING_PCT` | 0.15 | Bid-ask spread warning threshold |
+| `OPTIONS_SPREAD_MAX_PCT_PUT` | 0.25 | V6.9: Relaxed for PUT spreads |
 
 **Config Parameters:**
-- `OPTIONS_INTRADAY_DTE_MIN` (default: 0)
-- `OPTIONS_INTRADAY_DTE_MAX` (default: 1)
+- `OPTIONS_INTRADAY_DTE_MIN` (default: 1, V2.13: was 0)
+- `OPTIONS_INTRADAY_DTE_MAX` (default: 5, V2.13: was 1)
 - `OPTIONS_INTRADAY_DELTA_TARGET` (default: 0.30)
 - `OPTIONS_SWING_DELTA_TARGET` (default: 0.70)
 - `OPTIONS_DELTA_TOLERANCE` (default: 0.20)
-- `OPTIONS_MIN_OPEN_INTEREST` (default: 50, V6.8: was 100)
-- `OPTIONS_SPREAD_WARNING_PCT` (default: 0.15)
-
-> **V2.3.6 Changes:** Lowered OI from 500 to 200 (0DTE contracts have less liquidity), widened spread tolerance from 10% to 15% (0DTE spreads are naturally wider).
 
 ---
 
@@ -871,13 +907,25 @@ Same VIX level → OPPOSITE strategies!
 
 | Direction | VIX Change (15min) | Score | Implication |
 |-----------|:------------------:|:-----:|-------------|
-| FALLING_FAST | < -2.0% | +2 | Strong recovery |
-| FALLING | -0.5% to -2.0% | +1 | Recovery starting |
-| STABLE | -0.5% to +0.5% | 0 | Range-bound |
-| RISING | +0.5% to +2.0% | -1 | Fear building |
-| RISING_FAST | +2.0% to +5.0% | -2 | Panic emerging |
-| SPIKING | > +5.0% | -3 | Crash mode |
+| FALLING_FAST | < -3.0% | +2 | Strong recovery |
+| FALLING | -1.0% to -3.0% | +1 | Recovery starting |
+| STABLE | -1.0% to +1.0% | 0 | Range-bound (V6.6: narrowed from +/-2%) |
+| RISING | +1.0% to +3.0% | -1 | Fear building |
+| RISING_FAST | +3.0% to +6.0% | -2 | Panic emerging |
+| SPIKING | > +10.0% | -3 | Crash mode |
 | WHIPSAW | 5+ reversals/hour | 0 | No direction |
+
+### VIX-Adaptive STABLE Band (V6.9/V6.13.1)
+
+The STABLE zone uses adaptive thresholds based on current VIX level to reduce "Dir=NONE" signals.
+
+| VIX Level | STABLE Band | Rationale |
+|-----------|:-----------:|-----------|
+| VIX < 15 (Low) | +/-0.2% | V6.13.1: Very narrow band captures more signals |
+| VIX 15-25 (Medium) | Linear interpolation | Gradual transition |
+| VIX > 25 (High) | +/-0.7% | V6.13.1: Wider band still allows trades |
+
+> **V6.13.1 Change**: Narrowed bands from 0.3%/1.0% to 0.2%/0.7% to reduce Dir=NONE frequency.
 
 ### 21 Micro-Regime Matrix (V6.5 Complete)
 
@@ -1006,6 +1054,27 @@ WHIPSAW:       -5 points + WHIPSAW FLAG
 | 20-39 | Cautious entry | 50% of regime allocation |
 | 0-19 | Skip or minimal | 25% or skip |
 | < 0 | **NO TRADE** | 0% |
+
+---
+
+### UVXY Conviction Thresholds (V6.14)
+
+The Micro Regime Engine uses UVXY intraday moves to override macro direction when conviction is extreme.
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `MICRO_UVXY_BEARISH_THRESHOLD` | +2.8% | V6.14: UVXY rise triggers PUT conviction |
+| `MICRO_UVXY_BULLISH_THRESHOLD` | -4.5% | V6.14: UVXY drop triggers CALL conviction |
+| `MICRO_UVXY_CONVICTION_EXTREME` | 3.5% | V6.12: NEUTRAL VETO threshold |
+| `MICRO_SCORE_BULLISH_CONFIRM` | 47 | V6.14: Score threshold for bullish confirmation |
+| `MICRO_SCORE_BEARISH_CONFIRM` | 49 | V6.14: Score threshold for bearish confirmation |
+| `INTRADAY_QQQ_FALLBACK_MIN_MOVE` | 0.30% | V6.13: QQQ move for STABLE direction fallback |
+
+**Evolution of UVXY Thresholds:**
+- V6.4: +/-5% (too wide, missed many signals)
+- V6.6: +/-3% (better but still restrictive)
+- V6.10: +2.5%/-3% (asymmetric for better PUT signals)
+- V6.14: +2.8%/-4.5% (tuned for reduced CALL bias)
 
 ---
 
@@ -1190,6 +1259,42 @@ Detects whipsawing markets and reduces position size to limit losses. Added afte
 | `CHOPPY_LOOKBACK_HOURS` | 2 | Lookback window |
 | `CHOPPY_SIZE_REDUCTION` | 0.50 | 50% size reduction |
 | `CHOPPY_MIN_MOVE_PCT` | 0.003 | Min 0.3% move (filter noise) |
+
+---
+
+## V6.14 Pre-Market VIX Shock Ladder
+
+A 3-tier pre-market guard that uses CBOE VIX level + UVXY overnight gap proxy to de-risk before market open. This shared guard applies across all options modes.
+
+### Tier Levels
+
+| Level | VIX Threshold | UVXY Gap | Actions |
+|:-----:|:-------------:|:--------:|---------|
+| **L1** (Elevated) | VIX >= 22 | Gap >= 4% | Reduce size to 75%, no forced exits |
+| **L2** (High Stress) | VIX >= 28 | Gap >= 7% | Block CALLs until 11:00, close bullish options, 50% size |
+| **L3** (Panic) | VIX >= 35 | Gap >= 12% | Block ALL entries until 12:00, flatten all options, 25% size |
+
+### Configuration
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `PREMARKET_VIX_LADDER_ENABLED` | True | Master switch |
+| `PREMARKET_VIX_L1_LEVEL` | 22.0 | L1 VIX threshold |
+| `PREMARKET_VIX_L1_GAP_PCT` | 4.0 | L1 UVXY gap threshold |
+| `PREMARKET_VIX_L2_LEVEL` | 28.0 | L2 VIX threshold |
+| `PREMARKET_VIX_L2_GAP_PCT` | 7.0 | L2 UVXY gap threshold |
+| `PREMARKET_VIX_L3_LEVEL` | 35.0 | L3 VIX threshold |
+| `PREMARKET_VIX_L3_GAP_PCT` | 12.0 | L3 UVXY gap threshold |
+| `PREMARKET_VIX_L1_SIZE_MULT` | 0.75 | L1 size multiplier |
+| `PREMARKET_VIX_L2_SIZE_MULT` | 0.50 | L2 size multiplier |
+| `PREMARKET_VIX_L3_SIZE_MULT` | 0.25 | L3 size multiplier |
+
+### Entry Block Windows
+
+| Level | CALL Block Until | Entry Block Until |
+|:-----:|:----------------:|:-----------------:|
+| L2 | 11:00 ET | - |
+| L3 | - | 12:00 ET |
 
 ---
 

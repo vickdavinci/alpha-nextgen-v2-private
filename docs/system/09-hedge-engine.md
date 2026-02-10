@@ -1,8 +1,12 @@
 # Section 9: Hedge Engine
 
+*Last Updated: 10 February 2026 (V6.11)*
+
 ## 9.1 Purpose and Philosophy
 
 The Hedge Engine provides **tail risk protection** when market conditions deteriorate. Hedges are insurance—they cost money in good times but protect the portfolio during crashes.
+
+> **V6.11 Universe Redesign**: TMF and PSQ have been **retired**. SH (1x Inverse S&P 500) is now the **sole hedge instrument**. SH provides direct equity offset without contango decay issues that affected volatility products.
 
 ### 9.1.1 Insurance Mentality
 
@@ -17,13 +21,13 @@ Hedges are **not profit centers**. We expect them to lose money most of the time
 
 ```
 Normal Year:
-  • 20% hedge allocation loses 5%
-  • Portfolio cost: 20% × 5% = 1% drag
+  - 10% hedge allocation loses 5%
+  - Portfolio cost: 10% x 5% = 0.5% drag
 
 Crash Year:
-  • 20% hedge allocation gains 50%
-  • Portfolio benefit: 20% × 50% = 10% gain
-  • While equity positions fall 30%+
+  - 10% hedge allocation gains 30%
+  - Portfolio benefit: 10% x 30% = 3% gain
+  - While equity positions fall 20%+
 ```
 
 The hedge's purpose is **survival**, not profit.
@@ -34,8 +38,8 @@ Hedges activate based on **regime score**, not prediction:
 
 | Approach | Problem |
 |----------|---------|
-| ❌ Predict crashes | Impossible to time consistently |
-| ✅ Respond to deterioration | Measurable, systematic, reliable |
+| X Predict crashes | Impossible to time consistently |
+| OK Respond to deterioration | Measurable, systematic, reliable |
 
 As regime worsens, hedge allocation increases automatically. No discretion required.
 
@@ -43,92 +47,85 @@ As regime worsens, hedge allocation increases automatically. No discretion requi
 
 ## 9.2 Instruments
 
-### 9.2.1 TMF (Direxion Daily 20+ Year Treasury Bull 3x)
+### 9.2.1 SH (ProShares Short S&P 500) - V6.11
 
-**Primary hedge instrument.** 3× leveraged long-duration treasuries.
+**Sole hedge instrument.** 1x inverse S&P 500.
 
-#### Why TMF Hedges Equity Risk
+#### Why SH Replaced TMF/PSQ
 
-| Factor | Explanation |
+| Factor | SH Advantage |
 |--------|-------------|
-| **Flight-to-safety** | During crashes, investors flee to treasuries |
-| **Negative correlation** | Treasury prices rise when stocks fall |
-| **Long duration** | 20+ year bonds maximize rate sensitivity |
-| **3× leverage** | Amplifies the hedge effect |
+| **No contango decay** | Unlike VIX products (VIXY/VXX), SH holds indefinitely without erosion |
+| **Direct inverse** | Rises when S&P 500 falls - reliable inverse correlation |
+| **Works in all selloffs** | Even rate-driven crashes (TMF failed in 2022) |
+| **1x leverage** | Minimal daily decay, suitable for longer holds |
+| **Broad market hedge** | S&P 500 is more diversified than Nasdaq-only (PSQ) |
 
 #### Characteristics
 
 | Property | Value/Description |
 |----------|-------------------|
-| Underlying | 20+ Year Treasury Bond Index |
-| Leverage | 3× |
-| Correlation to SPY | Negative (especially during stress) |
-| Daily decay | Significant during calm periods |
-| Best scenario | Equity crash + rate cuts |
-| Weakness | Rate-driven selloffs (rising rates) |
-
-### 9.2.2 PSQ (ProShares Short QQQ)
-
-**Secondary hedge instrument.** 1× inverse Nasdaq-100.
-
-#### Why PSQ Supplements TMF
-
-| Factor | Explanation |
-|--------|-------------|
-| **Direct inverse** | Guaranteed to rise when Nasdaq falls |
-| **Works in all selloffs** | Even rate-driven crashes |
-| **1× leverage** | Minimal decay |
-| **Stability** | More predictable than 3× inverse |
-
-#### Characteristics
-
-| Property | Value/Description |
-|----------|-------------------|
-| Underlying | Nasdaq-100 Index (inverse) |
-| Leverage | 1× (inverse) |
-| Correlation to QQQ | −1.0 (by design) |
-| Daily decay | Modest (1× inverse products) |
-| Best scenario | Any Nasdaq decline |
+| Underlying | S&P 500 Index (inverse) |
+| Leverage | 1x (inverse) |
+| Correlation to SPY | -1.0 (by design) |
+| Daily decay | Minimal (1x inverse products) |
+| Best scenario | Any equity decline |
 | Weakness | Bull markets (steady drag) |
 
-### 9.2.3 Why Both Instruments?
+### 9.2.2 Retired Instruments (V6.11)
 
-| Scenario | TMF | PSQ | Combined |
-|----------|:---:|:---:|:--------:|
-| Equity crash + rate cuts | ✅ Excellent | ✅ Good | ✅✅ Best |
-| Equity crash + rates flat | ✅ Good | ✅ Good | ✅✅ Good |
-| Equity crash + rates rise | ❌ Poor | ✅ Good | ✅ Protected |
-| Sideways market | ❌ Decay | ❌ Decay | ❌ Cost |
-| Bull market | ❌ Decay | ❌ Decay | ❌ Cost |
+> **TMF and PSQ are no longer used.** The following sections are retained for historical reference only.
 
-PSQ provides **certainty**—it will always hedge Nasdaq exposure regardless of interest rate dynamics.
+#### TMF (Retired)
+
+TMF (3x Long Treasury) was retired because:
+- **2022 Rate Hike Failure**: TMF lost value during equity selloffs due to rising rates
+- **Contango decay**: Significant erosion during calm periods
+- **Correlation breakdown**: Flight-to-safety correlation failed in rate-driven markets
+
+#### PSQ (Retired)
+
+PSQ (1x Inverse Nasdaq) was retired in favor of SH because:
+- **Narrower coverage**: Nasdaq-only leaves S&P and commodity positions unhedged
+- **SH is more diversified**: S&P 500 covers broader market risk
+
+### 9.2.3 Why Single Instrument?
+
+V6.11 simplifies to a single hedge instrument for several reasons:
+
+| Benefit | Description |
+|---------|-------------|
+| **Simplicity** | One instrument to track and rebalance |
+| **No decay issues** | SH has minimal decay vs TMF's significant contango |
+| **Reliable inverse** | SH reliably rises when equities fall |
+| **Lower allocation** | 10% max vs 30% max (TMF 20% + PSQ 10%) |
+| **No rate sensitivity** | Works in all interest rate environments |
 
 ---
 
-## 9.3 Hedge Allocation Logic
+## 9.3 Hedge Allocation Logic (V6.11)
 
 ### 9.3.1 Regime-Based Scaling
 
-Hedge allocation scales with regime deterioration:
+Hedge allocation scales with regime deterioration using SH only:
 
-| Regime Score | State | TMF Allocation | PSQ Allocation | Total Hedge |
-|:------------:|-------|:--------------:|:--------------:|:-----------:|
-| **≥ 40** | RISK_ON / NEUTRAL / CAUTIOUS | 0% | 0% | 0% |
-| **30 – 39** | DEFENSIVE | 10% | 0% | 10% |
-| **20 – 29** | RISK_OFF (moderate) | 15% | 5% | 20% |
-| **< 20** | RISK_OFF (severe) | 20% | 10% | 30% |
+| Regime Score | State | SH Allocation | Hedge Tier |
+|:------------:|-------|:-------------:|:----------:|
+| **>= 50** | NEUTRAL / RISK_ON | 0% | NONE |
+| **40 - 49** | CAUTIOUS | 5% | LIGHT |
+| **30 - 39** | DEFENSIVE | 8% | MEDIUM |
+| **< 30** | RISK_OFF | 10% | FULL |
 
 ### 9.3.2 Visual Representation
 
 ```
-Regime Score:  100 -------- 40 -------- 30 -------- 20 -------- 0
+Regime Score:  100 -------- 50 -------- 40 -------- 30 -------- 0
                 |           |           |           |           |
-TMF:           0%          0%         10%         15%         20%
-PSQ:           0%          0%          0%          5%         10%
-Total:         0%          0%         10%         20%         30%
+SH:            0%          0%          5%          8%         10%
                 |           |           |           |           |
-State:      RISK_ON    CAUTIOUS   DEFENSIVE  RISK_OFF   RISK_OFF
-                                              (mod)     (severe)
+Tier:         NONE       NONE       LIGHT      MEDIUM       FULL
+                |           |           |           |           |
+State:      RISK_ON    NEUTRAL   CAUTIOUS   DEFENSIVE   RISK_OFF
 ```
 
 ### 9.3.3 Why Graduated Scaling?
@@ -151,17 +148,16 @@ Previous versions used **binary hedging** (ON at regime 40, OFF at 41). This cau
 | Proportional response | Hedge matches threat level |
 | Reduced whipsaw | Less sensitivity to noise |
 
-### 9.3.4 Why TMF Before PSQ?
+### 9.3.4 Why Lower Maximum (10% vs 30%)?
 
-**TMF is added first because:**
-- Flight-to-safety works in most crash scenarios
-- TMF can rally significantly during stress (50%+ in severe crashes)
-- Lower ongoing cost than inverse products in typical conditions
+**V6.11 reduced maximum hedge allocation from 30% (TMF+PSQ) to 10% (SH only):**
 
-**PSQ is added only when conditions are severe:**
-- Score below 30 suggests serious trouble
-- Need direct equity offset, not just flight-to-safety
-- Worth the cost when probability of continued decline is high
+| Reason | Explanation |
+|--------|-------------|
+| **No decay drag** | SH doesn't erode like 3x TMF, so less capital needed for same protection |
+| **Capital efficiency** | Released 20% for productive assets (trend, options) |
+| **Reliable inverse** | SH's -1.0 correlation is more predictable than TMF's variable correlation |
+| **Simpler management** | One instrument, one threshold, one rebalance calculation |
 
 ---
 
@@ -187,17 +183,17 @@ Hedge rebalancing occurs **only at end of day** (15:45 ET):
 Rebalance only if target differs from current by more than **2%**:
 
 ```
-Rebalance if: |Target Allocation − Current Allocation| > 2%
+Rebalance if: |Target Allocation - Current Allocation| > 2%
 ```
 
-#### Example
+#### Example (V6.11 SH-only)
 
-| Scenario | TMF Target | TMF Current | Difference | Action |
-|----------|:----------:|:-----------:|:----------:|--------|
-| A | 10% | 9% | 1% | ❌ No rebalance |
-| B | 10% | 7% | 3% | ✅ Rebalance |
-| C | 15% | 10% | 5% | ✅ Rebalance |
-| D | 0% | 2% | 2% | ❌ No rebalance |
+| Scenario | SH Target | SH Current | Difference | Action |
+|----------|:---------:|:----------:|:----------:|--------|
+| A | 5% | 4% | 1% | X No rebalance |
+| B | 8% | 5% | 3% | OK Rebalance |
+| C | 10% | 5% | 5% | OK Rebalance |
+| D | 0% | 2% | 2% | X No rebalance |
 
 This avoids small, costly adjustments that don't meaningfully change protection.
 
@@ -207,122 +203,119 @@ If **panic mode** triggers (SPY down 4%+ intraday), hedge requirements may be ad
 
 ```
 Panic Mode Triggered:
-  → Check if hedge allocation is below required level
-  → If yes, increase hedge immediately
-  → Do not wait for 15:45 EOD processing
+  -> Check if SH allocation is below required level
+  -> If yes, increase SH immediately
+  -> Do not wait for 15:45 EOD processing
 ```
 
 This ensures protection is in place during acute stress.
 
 ---
 
-## 9.5 Output Format
+## 9.5 Output Format (V6.11)
 
-The Hedge Engine produces **TargetWeight** objects for both instruments.
+The Hedge Engine produces **TargetWeight** objects for SH only.
 
-### TMF Output
-
-| Field | Value |
-|-------|-------|
-| Symbol | TMF |
-| Weight | 0.0, 0.10, 0.15, or 0.20 (based on regime) |
-| Strategy | "HEDGE" |
-| Urgency | EOD |
-| Reason | "Regime=X, TMF target=Y%" |
-
-### PSQ Output
+### SH Output
 
 | Field | Value |
 |-------|-------|
-| Symbol | PSQ |
-| Weight | 0.0, 0.05, or 0.10 (based on regime) |
+| Symbol | SH |
+| Weight | 0.0, 0.05, 0.08, or 0.10 (based on regime) |
 | Strategy | "HEDGE" |
-| Urgency | EOD |
-| Reason | "Regime=X, PSQ target=Y%" |
+| Urgency | EOD (or IMMEDIATE in panic mode) |
+| Reason | "Regime=X, SH target=Y%, tier=Z" |
 
 ### Example Outputs
 
+**Regime Score = 55 (NEUTRAL):**
+```
+TargetWeight(SH, 0.00, "HEDGE", EOD, "Regime=55.0, SH target=0%, tier=NONE")
+```
+
+**Regime Score = 45 (CAUTIOUS):**
+```
+TargetWeight(SH, 0.05, "HEDGE", EOD, "Regime=45.0, SH target=5%, tier=LIGHT")
+```
+
 **Regime Score = 35 (DEFENSIVE):**
 ```
-TargetWeight(TMF, 0.10, "HEDGE", EOD, "Regime=35, TMF target=10%")
-TargetWeight(PSQ, 0.00, "HEDGE", EOD, "Regime=35, PSQ target=0%")
+TargetWeight(SH, 0.08, "HEDGE", EOD, "Regime=35.0, SH target=8%, tier=MEDIUM")
 ```
 
-**Regime Score = 22 (RISK_OFF moderate):**
+**Regime Score = 22 (RISK_OFF):**
 ```
-TargetWeight(TMF, 0.15, "HEDGE", EOD, "Regime=22, TMF target=15%")
-TargetWeight(PSQ, 0.05, "HEDGE", EOD, "Regime=22, PSQ target=5%")
+TargetWeight(SH, 0.10, "HEDGE", EOD, "Regime=22.0, SH target=10%, tier=FULL")
 ```
 
-**Regime Score = 15 (RISK_OFF severe):**
+**Panic Mode Active (IMMEDIATE urgency):**
 ```
-TargetWeight(TMF, 0.20, "HEDGE", EOD, "Regime=15, TMF target=20%")
-TargetWeight(PSQ, 0.10, "HEDGE", EOD, "Regime=15, PSQ target=10%")
+TargetWeight(SH, 0.10, "HEDGE", IMMEDIATE, "PANIC_MODE: Regime=22.0, SH target=10%, tier=FULL")
 ```
 
 ---
 
-## 9.6 Mermaid Diagram: Regime-Based Allocation
+## 9.6 Mermaid Diagram: Regime-Based Allocation (V6.11)
 
 ```mermaid
 flowchart TD
     START["End of Day Processing<br/>(15:45 ET)"]
-    
+
     subgraph REGIME["Get Regime Score"]
         SCORE["Smoothed Regime Score<br/>from Regime Engine"]
     end
-    
+
     subgraph DETERMINE["Determine Target Allocation"]
-        R1{"Score ≥ 40?"}
-        R2{"Score ≥ 30?"}
-        R3{"Score ≥ 20?"}
-        
-        A1["TMF: 0%<br/>PSQ: 0%"]
-        A2["TMF: 10%<br/>PSQ: 0%"]
-        A3["TMF: 15%<br/>PSQ: 5%"]
-        A4["TMF: 20%<br/>PSQ: 10%"]
+        R1{"Score >= 50?"}
+        R2{"Score >= 40?"}
+        R3{"Score >= 30?"}
+
+        A1["SH: 0%<br/>Tier: NONE"]
+        A2["SH: 5%<br/>Tier: LIGHT"]
+        A3["SH: 8%<br/>Tier: MEDIUM"]
+        A4["SH: 10%<br/>Tier: FULL"]
     end
-    
+
     subgraph REBALANCE["Rebalancing Check"]
-        DIFF{"| Target − Current |<br/>> 2%?"}
+        DIFF{"| Target - Current |<br/>> 2%?"}
         EMIT["Emit TargetWeight<br/>to Portfolio Router"]
         SKIP["Skip Rebalance<br/>(Within Threshold)"]
     end
-    
+
     START --> SCORE
     SCORE --> R1
-    
+
     R1 -->|Yes| A1
     R1 -->|No| R2
     R2 -->|Yes| A2
     R2 -->|No| R3
     R3 -->|Yes| A3
     R3 -->|No| A4
-    
+
     A1 --> DIFF
     A2 --> DIFF
     A3 --> DIFF
     A4 --> DIFF
-    
+
     DIFF -->|Yes| EMIT
     DIFF -->|No| SKIP
 ```
 
 ---
 
-## 9.7 Mermaid Diagram: Hedge Allocation Tiers
+## 9.7 Mermaid Diagram: Hedge Allocation Tiers (V6.11)
 
 ```mermaid
 graph LR
     subgraph SCORE["Regime Score"]
         S100["100"]
         S70["70"]
+        S50["50"]
         S40["40"]
         S30["30"]
-        S20["20"]
         S0["0"]
     end
-    
+
     subgraph STATE["Market State"]
         RISK_ON["RISK_ON"]
         NEUTRAL["NEUTRAL"]
@@ -330,27 +323,28 @@ graph LR
         DEFENSIVE["DEFENSIVE"]
         RISK_OFF["RISK_OFF"]
     end
-    
+
     subgraph HEDGE["Hedge Allocation"]
-        H0["No Hedge<br/>TMF: 0%<br/>PSQ: 0%"]
-        H1["Light Hedge<br/>TMF: 10%<br/>PSQ: 0%"]
-        H2["Medium Hedge<br/>TMF: 15%<br/>PSQ: 5%"]
-        H3["Full Hedge<br/>TMF: 20%<br/>PSQ: 10%"]
+        H0["No Hedge<br/>SH: 0%<br/>Tier: NONE"]
+        H1["Light Hedge<br/>SH: 5%<br/>Tier: LIGHT"]
+        H2["Medium Hedge<br/>SH: 8%<br/>Tier: MEDIUM"]
+        H3["Full Hedge<br/>SH: 10%<br/>Tier: FULL"]
     end
-    
+
     S100 --- RISK_ON
     S70 --- RISK_ON
     RISK_ON --- H0
-    
+
+    S50 --- NEUTRAL
+    NEUTRAL --- H0
+
     S40 --- CAUTIOUS
-    CAUTIOUS --- H0
-    
+    CAUTIOUS --- H1
+
     S30 --- DEFENSIVE
-    DEFENSIVE --- H1
-    
-    S20 --- RISK_OFF
+    DEFENSIVE --- H2
+
     S0 --- RISK_OFF
-    RISK_OFF --- H2
     RISK_OFF --- H3
 ```
 
@@ -363,7 +357,6 @@ graph LR
 | Source | Data | Used For |
 |--------|------|----------|
 | **Regime Engine** | `smoothed_score` | Determines hedge tier |
-| **Regime Engine** | `tmf_target_pct`, `psq_target_pct` | Direct allocation targets |
 | **Capital Engine** | `tradeable_equity` | Calculates dollar amounts |
 | **Risk Engine** | Panic mode status | Immediate rebalance trigger |
 
@@ -371,8 +364,7 @@ graph LR
 
 | Destination | Data | Purpose |
 |-------------|------|---------|
-| **Portfolio Router** | TargetWeight (TMF) | Hedge allocation intent |
-| **Portfolio Router** | TargetWeight (PSQ) | Hedge allocation intent |
+| **Portfolio Router** | TargetWeight (SH) | Hedge allocation intent |
 
 ### Relationship to Regime Engine
 
@@ -380,223 +372,252 @@ The Hedge Engine is tightly coupled to the Regime Engine:
 
 ```
 Regime Engine Output:
-  • smoothed_score: 28
-  • tmf_target_pct: 0.15
-  • psq_target_pct: 0.05
+  - smoothed_score: 28
 
-Hedge Engine simply passes these through as TargetWeights
+Hedge Engine calculates:
+  - Score < 30 -> Tier: FULL
+  - SH target: 10%
+
+Output:
+  TargetWeight(SH, 0.10, "HEDGE", EOD, "Regime=28.0, SH target=10%, tier=FULL")
 ```
 
-The allocation logic is **defined in the Regime Engine** (Section 4); the Hedge Engine is primarily a **signal emitter** that converts regime outputs to TargetWeight objects.
+The Hedge Engine uses the regime score to determine the hedge tier and emits TargetWeight objects for the Portfolio Router.
 
 ---
 
-## 9.9 Exposure Group Consideration
+## 9.9 Exposure Group Consideration (V6.11)
 
-### RATES Group
+### SPY_BETA Group
 
-TMF and SHV are both in the **RATES** exposure group:
+SH is in the **SPY_BETA** exposure group (as an inverse):
 
 | Symbol | Type | Group |
 |--------|------|-------|
-| TMF | 3× Long Treasury | RATES |
-| SHV | Short Treasury (Yield) | RATES |
+| SH | 1x Inverse S&P | SPY_BETA |
+| SSO | 2x Long S&P | SPY_BETA |
+| SPXL | 3x Long S&P (MR) | SPY_BETA |
 
-**RATES Group Limits:**
+**SPY_BETA Group Limits (V6.11):**
 
 | Limit | Value |
 |-------|:-----:|
 | Max Net Long | 40% |
-| Max Gross | 40% |
+| Max Net Short | 15% |
+| Max Gross | 50% |
 
-### NASDAQ_BETA Group
-
-PSQ is in the **NASDAQ_BETA** exposure group (as an inverse):
-
-| Symbol | Type | Group |
-|--------|------|-------|
-| PSQ | 1× Inverse Nasdaq | NASDAQ_BETA |
-| TQQQ | 3× Long Nasdaq | NASDAQ_BETA |
-| QLD | 2× Long Nasdaq | NASDAQ_BETA |
-| SOXL | 3× Long Semiconductor | NASDAQ_BETA |
-
-**Impact:** PSQ allocation counts as **negative** (short) exposure in NASDAQ_BETA, which can offset long positions.
+**Impact:** SH allocation counts as **negative** (short) exposure in SPY_BETA, which can offset long positions.
 
 ```
 Example:
-  • QLD position: +30% (long)
-  • PSQ position: +10% (inverse = -10% effective)
-  • Net NASDAQ_BETA: 30% - 10% = 20% net long
-  • Gross NASDAQ_BETA: 30% + 10% = 40%
+  - SSO position: +7% (long)
+  - SH position: +10% (inverse = -10% effective)
+  - Net SPY_BETA: 7% - 10% = -3% net short
+  - Gross SPY_BETA: 7% + 10% = 17%
 ```
+
+### Exposure Groups Summary (V6.11)
+
+| Group | Symbols | Max Net Long | Max Gross |
+|-------|---------|:------------:|:---------:|
+| **NASDAQ_BETA** | QLD, TQQQ, SOXL | 50% | 75% |
+| **SPY_BETA** | SSO, SPXL, SH (inverse) | 40% | 50% |
+| **COMMODITIES** | UGL, UCO | 25% | 25% |
+
+> **Note (V6.11):** The RATES group (TMF, SHV) has been **removed**. SHV is retired (no yield sleeve) and TMF is no longer used for hedging.
 
 ---
 
-## 9.10 Parameter Reference
+## 9.10 Parameter Reference (V6.11)
 
 ### Hedge Tier Parameters
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `HEDGE_LEVEL_1` | 40 | Score below which hedging begins |
-| `HEDGE_LEVEL_2` | 30 | Score below which medium hedge |
-| `HEDGE_LEVEL_3` | 20 | Score below which full hedge |
+| `HEDGE_LEVEL_1` | 50 | Score below which hedging begins (LIGHT) |
+| `HEDGE_LEVEL_2` | 40 | Score below which MEDIUM hedge |
+| `HEDGE_LEVEL_3` | 30 | Score below which FULL hedge |
 
-### TMF Allocation Parameters
-
-| Parameter | Value | Description |
-|-----------|:-----:|-------------|
-| `TMF_LIGHT` | 0.10 | TMF allocation at DEFENSIVE |
-| `TMF_MEDIUM` | 0.15 | TMF allocation at RISK_OFF (moderate) |
-| `TMF_FULL` | 0.20 | TMF allocation at RISK_OFF (severe) |
-
-### PSQ Allocation Parameters
+### SH Allocation Parameters
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `PSQ_MEDIUM` | 0.05 | PSQ allocation at RISK_OFF (moderate) |
-| `PSQ_FULL` | 0.10 | PSQ allocation at RISK_OFF (severe) |
+| `SH_LIGHT` | 0.05 | SH allocation at CAUTIOUS (regime 40-49) |
+| `SH_MEDIUM` | 0.08 | SH allocation at DEFENSIVE (regime 30-39) |
+| `SH_FULL` | 0.10 | SH allocation at RISK_OFF (regime < 30) |
+
+### Retired Parameters (V6.11)
+
+| Parameter | Value | Description |
+|-----------|:-----:|-------------|
+| `TMF_LIGHT` | 0.00 | **DEPRECATED** - TMF no longer used |
+| `TMF_MEDIUM` | 0.00 | **DEPRECATED** - TMF no longer used |
+| `TMF_FULL` | 0.00 | **DEPRECATED** - TMF no longer used |
+| `PSQ_MEDIUM` | 0.00 | **DEPRECATED** - PSQ no longer used |
+| `PSQ_FULL` | 0.00 | **DEPRECATED** - PSQ no longer used |
 
 ### Rebalancing Parameters
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| Rebalance threshold | 2% | Minimum difference to trigger rebalance |
-| Rebalance timing | EOD | When rebalancing occurs |
+| `HEDGE_REBAL_THRESHOLD` | 0.02 | Minimum difference to trigger rebalance (2%) |
+| Rebalance timing | EOD | When rebalancing occurs (15:45 ET) |
+| Panic mode urgency | IMMEDIATE | Override for acute stress |
 
 ---
 
-## 9.11 Hedge Performance Scenarios
+## 9.11 Hedge Performance Scenarios (V6.11)
 
-### Scenario 1: 2020 COVID Crash
+### Scenario 1: 2020 COVID Crash (Simulated with V6.11 model)
 
 ```
 February 19, 2020: Regime Score = 72 (RISK_ON)
-  • TMF: 0%, PSQ: 0%
-  • No hedges, full equity exposure
+  - SH: 0%
+  - No hedges, full equity exposure
 
-March 1, 2020: Regime Score = 38 (DEFENSIVE)
-  • TMF: 10%, PSQ: 0%
-  • Light hedge activated
+March 1, 2020: Regime Score = 45 (CAUTIOUS)
+  - SH: 5%
+  - Light hedge activated
 
-March 10, 2020: Regime Score = 22 (RISK_OFF)
-  • TMF: 15%, PSQ: 5%
-  • Medium hedge, direct protection added
+March 10, 2020: Regime Score = 32 (DEFENSIVE)
+  - SH: 8%
+  - Medium hedge
 
-March 16, 2020: Regime Score = 12 (RISK_OFF severe)
-  • TMF: 20%, PSQ: 10%
-  • Full hedge, maximum protection
+March 16, 2020: Regime Score = 15 (RISK_OFF)
+  - SH: 10%
+  - Full hedge, maximum protection
 
 Result:
-  • TMF gained ~50% during crash
-  • PSQ gained ~30% during crash
-  • 30% hedge allocation × ~40% average gain = ~12% portfolio offset
-  • Significantly reduced drawdown
+  - SH gained ~30% during crash (inverse of SPY)
+  - 10% hedge allocation x 30% gain = 3% portfolio offset
+  - No TMF rate sensitivity issues
+  - Simpler, more reliable hedge
 ```
 
-### Scenario 2: 2022 Rate Hike Environment
+### Scenario 2: 2022 Rate Hike Environment (V6.11 Advantage)
 
 ```
 January 2022: Regime Score = 55 (NEUTRAL)
-  • TMF: 0%, PSQ: 0%
-  • No hedges
+  - SH: 0%
+  - No hedges
 
-March 2022: Regime Score = 32 (DEFENSIVE)
-  • TMF: 10%, PSQ: 0%
-  • Light hedge activated
+March 2022: Regime Score = 38 (DEFENSIVE)
+  - SH: 8%
+  - Medium hedge activated
 
-Challenge:
-  • TMF LOST value (rates rising hurt bonds)
-  • Equity markets also fell
-  • TMF hedge was counterproductive
-
-June 2022: Regime Score = 25 (RISK_OFF)
-  • TMF: 15%, PSQ: 5%
-  • PSQ added, providing direct equity hedge
+June 2022: Regime Score = 28 (RISK_OFF)
+  - SH: 10%
+  - Full hedge
 
 Result:
-  • PSQ helped offset equity losses
-  • TMF was a drag (rate-driven selloff)
-  • Illustrates why PSQ is important as backup
+  - SH gained value as S&P fell (rate-driven selloff)
+  - Unlike TMF, SH has NO interest rate sensitivity
+  - V6.11 model would have performed BETTER than V1 with TMF
+  - This is exactly why SH replaced TMF
 ```
 
 ### Scenario 3: Normal Bull Market
 
 ```
 Throughout 2021: Regime Score = 65-80 (NEUTRAL to RISK_ON)
-  • TMF: 0%, PSQ: 0%
-  • No hedges, no drag on performance
+  - SH: 0%
+  - No hedges, no drag on performance
 
 Result:
-  • Full participation in bull market
-  • No hedge cost during favorable conditions
-  • Regime-based approach avoided unnecessary insurance
+  - Full participation in bull market
+  - No hedge cost during favorable conditions
+  - Regime-based approach avoided unnecessary insurance
 ```
+
+### Why V6.11 SH Model Outperforms Legacy TMF/PSQ
+
+| Scenario | Legacy (TMF/PSQ) | V6.11 (SH) |
+|----------|------------------|------------|
+| Rate-driven crash (2022) | TMF lost, PSQ gained | SH gained |
+| Flight-to-safety crash (2020) | TMF gained, PSQ gained | SH gained |
+| Bull market | 0% allocation | 0% allocation |
+| Capital tied up | Up to 30% | Up to 10% |
 
 ---
 
-## 9.12 Edge Cases and Special Scenarios
+## 9.12 Edge Cases and Special Scenarios (V6.11)
 
-### Scenario 1: Regime Oscillates Around 40
+### Scenario 1: Regime Oscillates Around 50
 
 ```
-Day 1: Score = 42 → TMF: 0%
-Day 2: Score = 38 → TMF: 10%
-Day 3: Score = 41 → TMF: 0%
-Day 4: Score = 39 → TMF: 10%
+Day 1: Score = 52 -> SH: 0% (NONE)
+Day 2: Score = 48 -> SH: 5% (LIGHT)
+Day 3: Score = 51 -> SH: 0% (NONE)
+Day 4: Score = 49 -> SH: 5% (LIGHT)
 ```
 
-**Mitigation:** 
+**Mitigation:**
 - 2% rebalancing threshold prevents tiny adjustments
+- On Day 3, SH current=5%, target=0%, diff=5% > 2% -> rebalance
 - Exponential smoothing in Regime Engine reduces daily swings
 - Graduated tiers reduce impact of threshold crossings
 
 ### Scenario 2: Panic Mode + Low Hedge
 
 ```
-Regime Score: 45 (no hedge required)
-11:00 AM: SPY drops 4.2% → Panic Mode triggers
+Regime Score: 55 (no hedge required)
+11:00 AM: SPY drops 4.2% -> Panic Mode triggers
 Current Hedge: 0%
 ```
 
-**Action:** Panic mode may trigger immediate hedge addition even though regime score doesn't require it. Risk Engine takes precedence.
+**Action:** Panic mode triggers immediate SH addition with IMMEDIATE urgency, even though regime score doesn't require it. Risk Engine takes precedence.
 
-### Scenario 3: RATES Group Limit
+### Scenario 3: SPY_BETA Group Limit
 
 ```
-Current SHV (Yield): 35%
-Regime Score: 25 → TMF target: 15%
-Combined RATES: 35% + 15% = 50%
-RATES limit: 40%
+Current SSO (Trend): 7%
+Current SPXL (MR): 3%
+Regime Score: 28 -> SH target: 10%
+
+Net SPY_BETA: 7% + 3% - 10% = 0% (balanced)
+Gross SPY_BETA: 7% + 3% + 10% = 20%
+Limit: 50% gross
 ```
 
-**Action:** Portfolio Router will scale down TMF and/or SHV to fit within 40% RATES limit. Hedge target may not be fully achieved.
+**Action:** Within limits - SH can be fully allocated. V6.11 limits are less restrictive than legacy RATES group.
 
 ### Scenario 4: Regime Improves Rapidly
 
 ```
-Day 1: Score = 18 → TMF: 20%, PSQ: 10%
-Day 2: Score = 35 → TMF: 10%, PSQ: 0%
-Day 3: Score = 55 → TMF: 0%, PSQ: 0%
+Day 1: Score = 18 -> SH: 10% (FULL)
+Day 2: Score = 35 -> SH: 8% (MEDIUM)
+Day 3: Score = 45 -> SH: 5% (LIGHT)
+Day 4: Score = 55 -> SH: 0% (NONE)
 ```
 
-**Action:** Hedges are reduced as conditions improve. The 2% threshold may cause slight lag, but positions are wound down over 2-3 days rather than immediately.
+**Action:** Hedges are reduced as conditions improve. The 2% threshold may cause slight lag, but positions are wound down over 2-4 days rather than immediately.
 
 ---
 
-## 9.13 Key Design Decisions Summary
+## 9.13 Key Design Decisions Summary (V6.11)
 
-| Decision | Rationale |
-|----------|-----------|
-| **Two hedge instruments** | TMF for flight-to-safety, PSQ for direct offset |
-| **TMF primary, PSQ secondary** | TMF works in most scenarios; PSQ added only when severe |
-| **Graduated scaling** | Smooth transitions, reduced whipsaw |
-| **Regime-triggered (not predictive)** | Systematic response to measurable deterioration |
-| **EOD rebalancing only** | Prevents intraday churn |
-| **2% rebalancing threshold** | Avoids small, costly adjustments |
-| **Panic mode exception** | Ensures protection during acute stress |
-| **Max 30% total hedge** | Balances protection with growth potential |
-| **Insurance mentality** | Accept ongoing cost for tail risk protection |
+| Decision | Rationale | Version |
+|----------|-----------|:-------:|
+| **Single hedge instrument (SH)** | No decay, reliable inverse, works in all selloffs | V6.11 |
+| **TMF/PSQ retired** | TMF failed in 2022 rate-driven selloff; SH is more reliable | V6.11 |
+| **Lower max allocation (10%)** | SH's reliability means less capital needed for same protection | V6.11 |
+| **Graduated scaling** | Smooth transitions, reduced whipsaw | V1 |
+| **Regime-triggered (not predictive)** | Systematic response to measurable deterioration | V1 |
+| **EOD rebalancing only** | Prevents intraday churn | V1 |
+| **2% rebalancing threshold** | Avoids small, costly adjustments | V1 |
+| **Panic mode exception** | Ensures protection during acute stress | V1 |
+| **Insurance mentality** | Accept ongoing cost for tail risk protection | V1 |
+| **SPY_BETA group (SH as inverse)** | SH hedges broad market, not just Nasdaq | V6.11 |
+
+---
+
+## 9.14 Version History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| V6.11 | Feb 2026 | TMF/PSQ retired, SH sole hedge, lower allocation (10% max) |
+| V3.0 | Jan 2026 | HEDGE_LEVEL_1 raised to 50, thesis-aligned graduated response |
+| V1.0 | Original | TMF+PSQ dual hedge with 30% max allocation |
 
 ---
 
