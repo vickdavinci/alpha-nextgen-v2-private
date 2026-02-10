@@ -982,7 +982,7 @@ class MicroRegimeEngine:
             return VIXDirection.FALLING_FAST, config.MICRO_SCORE_DIR_FALLING_FAST
         elif vix_change_pct < config.VIX_DIRECTION_FALLING:
             return VIXDirection.FALLING, config.MICRO_SCORE_DIR_FALLING
-        elif vix_change_pct <= stable_high:
+        elif stable_low <= vix_change_pct <= stable_high:
             return VIXDirection.STABLE, config.MICRO_SCORE_DIR_STABLE
         elif vix_change_pct <= config.VIX_DIRECTION_RISING:
             return VIXDirection.RISING, config.MICRO_SCORE_DIR_RISING
@@ -1481,8 +1481,6 @@ class MicroRegimeEngine:
             MicroRegime.ELEVATED,
             MicroRegime.WORSENING,  # V6.5: Added - MEDIUM + RISING, use ITM PUT
             MicroRegime.WORSENING_HIGH,
-            MicroRegime.PANIC_EASING,
-            MicroRegime.CALMING,
         }
         if micro_regime in momentum_regimes:
             if vix_current > config.INTRADAY_ITM_MIN_VIX:
@@ -2044,9 +2042,17 @@ class OptionsEngine:
                 )
 
         # Case 3: Misaligned with clear Macro direction
+        # Micro owns intraday direction. Resolver acts as a risk gate here.
+        if engine == "MICRO" and not engine_conviction:
+            return (
+                True,
+                engine_direction,
+                f"MISALIGNED_HALF: {engine}={engine_direction}, Macro={macro_direction}",
+            )
+
         if engine_conviction:
             # V6.9: Never allow CALL overrides in BEARISH macro (prevent bull bias in bear markets)
-            if macro_direction == "BEARISH" and engine_direction == "BULLISH":
+            if engine != "MICRO" and macro_direction == "BEARISH" and engine_direction == "BULLISH":
                 return (
                     False,
                     None,
@@ -2145,13 +2151,45 @@ class OptionsEngine:
             if should_log:
                 vix_change_pct = (vix_current - vix_open) / vix_open * 100 if vix_open > 0 else 0.0
                 qqq_move_pct = (qqq_current - qqq_open) / qqq_open * 100 if qqq_open > 0 else 0.0
+                if abs(qqq_move_pct) < config.QQQ_NOISE_THRESHOLD:
+                    block_code = "QQQ_FLAT"
+                elif state.micro_regime in (
+                    MicroRegime.CAUTION_LOW,
+                    MicroRegime.CAUTIOUS,
+                    MicroRegime.TRANSITION,
+                    MicroRegime.CHOPPY_LOW,
+                    MicroRegime.RISK_OFF_LOW,
+                    MicroRegime.BREAKING,
+                    MicroRegime.UNSTABLE,
+                    MicroRegime.VOLATILE,
+                    MicroRegime.FULL_PANIC,
+                    MicroRegime.CRASH,
+                ):
+                    block_code = "REGIME_NOT_TRADEABLE"
+                elif (
+                    state.micro_regime
+                    in (
+                        MicroRegime.NORMAL,
+                        MicroRegime.CAUTIOUS,
+                        MicroRegime.ELEVATED,
+                    )
+                    and abs(vix_change_pct) <= config.VIX_STABLE_BAND_HIGH
+                ):
+                    block_code = "VIX_STABLE_LOW_CONVICTION"
+                else:
+                    block_code = "CONFIRMATION_FAIL"
                 self.log(
-                    f"MICRO_NO_TRADE: Regime={state.micro_regime.value} | "
+                    f"MICRO_NO_TRADE[{block_code}]: Regime={state.micro_regime.value} | "
                     f"VIXchg={vix_change_pct:+.2f}% | QQQ={qqq_move_pct:+.2f}% | "
                     f"Score={state.micro_score:.0f} | Dir=NONE"
                 )
                 self._last_micro_no_trade_log = current_time
-            return False, None, state, f"NO_TRADE: Micro blocked ({state.micro_regime.value})"
+            return (
+                False,
+                None,
+                state,
+                f"NO_TRADE: MICRO_BLOCK:{block_code} ({state.micro_regime.value})",
+            )
 
         # Step 2: Check conviction (now without state-based fallback)
         (
@@ -2970,6 +3008,23 @@ class OptionsEngine:
             (short_leg, long_leg) tuple - NOTE: short leg is the one we SELL
             Returns None if no valid spread can be constructed
         """
+        # Keep credit spread cooldown handling consistent with debit spread path.
+        if current_time:
+            try:
+                if hasattr(self, "_spread_failure_cooldown_until_by_dir"):
+                    until = self._spread_failure_cooldown_until_by_dir.get("CREDIT")
+                    if until and current_time < until:
+                        return None
+                    elif until:
+                        self._spread_failure_cooldown_until_by_dir.pop("CREDIT", None)
+                elif self._spread_failure_cooldown_until:
+                    if current_time < self._spread_failure_cooldown_until:
+                        return None
+                    else:
+                        self._spread_failure_cooldown_until = None
+            except (ValueError, TypeError):
+                pass
+
         if not contracts:
             self.log("VASS: No contracts provided for credit spread selection")
             return None
@@ -3319,6 +3374,20 @@ class OptionsEngine:
         stats = self._last_credit_failure_stats
         self._last_credit_failure_stats = None
         return stats
+
+    def _get_effective_credit_min(self, vix_current: Optional[float] = None) -> float:
+        """
+        Return IV-adaptive credit floor used consistently by selection and entry validation.
+        """
+        smoothed_vix = self._iv_sensor.get_smoothed_vix()
+        if vix_current is not None:
+            try:
+                smoothed_vix = max(smoothed_vix, float(vix_current))
+            except (TypeError, ValueError):
+                pass
+        if smoothed_vix > config.CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD:
+            return config.CREDIT_SPREAD_MIN_CREDIT_HIGH_IV
+        return config.CREDIT_SPREAD_MIN_CREDIT
 
     # V6.0: _check_macro_regime_gate() REMOVED
     # Direction decisions now handled by conviction resolution (resolve_trade_signal)
@@ -4323,10 +4392,11 @@ class OptionsEngine:
 
         # Calculate credit received (conservative: bid for sell, ask for buy)
         credit_received = short_leg_contract.bid - long_leg_contract.ask
-        if credit_received < config.CREDIT_SPREAD_MIN_CREDIT:
+        min_credit_required = self._get_effective_credit_min(vix_current=vix_current)
+        if credit_received < min_credit_required:
             self.log(
                 f"CREDIT_SPREAD: Entry blocked - credit ${credit_received:.2f} < "
-                f"min ${config.CREDIT_SPREAD_MIN_CREDIT}"
+                f"min ${min_credit_required:.2f}"
             )
             return None
 

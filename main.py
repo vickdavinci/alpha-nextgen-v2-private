@@ -197,7 +197,7 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
         self.SetStartDate(2015, 7, 1)
-        self.SetEndDate(2015, 9, 30)  # Jul-Sep 2015 backtest
+        self.SetEndDate(2015, 10, 31)  # Jul-Oct 2015 backtest (4 months)
         self.SetCash(config.INITIAL_CAPITAL)  # $50,000 seed capital
 
         # All times are Eastern
@@ -3598,6 +3598,21 @@ class AlphaNextGen(QCAlgorithm):
             option_right=required_right,
         )
         if len(candidate_contracts) < 2:
+            should_log = (
+                self._last_vass_rejection_log is None
+                or (self.Time - self._last_vass_rejection_log).total_seconds() / 60
+                >= config.VASS_LOG_REJECTION_INTERVAL_MINUTES
+            )
+            if should_log:
+                self.Log(
+                    f"VASS_REJECTION: Direction={direction.value} | "
+                    f"IV_Env={self.options_engine._iv_sensor.classify()} | "
+                    f"VIX={self._current_vix:.1f} | Regime={regime_score:.0f} | "
+                    f"Contracts_checked={len(candidate_contracts)} | "
+                    f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
+                    f"DTE_Ranges={dte_ranges} | ReasonCode=INSUFFICIENT_CANDIDATES"
+                )
+                self._last_vass_rejection_log = self.Time
             return
 
         tradeable_eq = self.capital_engine.calculate(
@@ -3617,16 +3632,29 @@ class AlphaNextGen(QCAlgorithm):
                 # V6.10 P3: DEBIT fallback when CREDIT fails
                 fallback_enabled = getattr(config, "CREDIT_SPREAD_FALLBACK_TO_DEBIT", False)
                 if fallback_enabled and direction == OptionDirection.PUT:
+                    fallback_strategy = SpreadStrategy.BEAR_PUT_DEBIT
+                    fallback_right = self._strategy_option_right(fallback_strategy)
+                    fallback_contracts = self._build_spread_candidate_contracts(
+                        chain,
+                        direction,
+                        dte_min=dte_min_all,
+                        dte_max=dte_max_all,
+                        option_right=fallback_right,
+                    )
                     # For PUT direction, fall back to BEAR_PUT_DEBIT
                     self.Log(
                         f"VASS_FALLBACK: CREDIT spread failed for PUT | "
                         f"Trying BEAR_PUT_DEBIT fallback | Strategy={strategy.value}"
                     )
-                    spread_legs = self.options_engine.select_spread_legs_with_fallback(
-                        contracts=candidate_contracts,
-                        direction=direction,
-                        current_time=str(self.Time),
-                        dte_ranges=dte_ranges,
+                    spread_legs = (
+                        self.options_engine.select_spread_legs_with_fallback(
+                            contracts=fallback_contracts,
+                            direction=direction,
+                            current_time=str(self.Time),
+                            dte_ranges=dte_ranges,
+                        )
+                        if len(fallback_contracts) >= 2
+                        else None
                     )
                     if spread_legs is not None:
                         long_leg, short_leg = spread_legs  # DEBIT returns (long, short)
@@ -5243,6 +5271,8 @@ class AlphaNextGen(QCAlgorithm):
                 intraday_size_multiplier = size_multiplier
                 if "NEUTRAL_ALIGNED_HALF" in signal_reason:
                     intraday_size_multiplier *= config.NEUTRAL_ALIGNED_SIZE_MULT
+                if "MISALIGNED_HALF" in signal_reason:
+                    intraday_size_multiplier *= getattr(config, "MICRO_MISALIGNED_SIZE_MULT", 0.50)
 
                 if not should_trade:
                     self.Log(f"INTRADAY: Blocked - {signal_reason}")
@@ -5424,6 +5454,7 @@ class AlphaNextGen(QCAlgorithm):
         iv_rank = self._calculate_iv_rank(chain)
 
         signal = None
+        rejection_code = "UNKNOWN"
 
         if not spread_cooldown_active:
             if is_credit:
@@ -5436,6 +5467,7 @@ class AlphaNextGen(QCAlgorithm):
                 )
                 if spread_legs is not None:
                     short_leg, long_leg = spread_legs  # Credit returns (short, long)
+                    rejection_code = "CREDIT_ENTRY_VALIDATION_FAILED"
                     if (
                         short_leg.bid > 0
                         and short_leg.ask > 0
@@ -5462,20 +5494,35 @@ class AlphaNextGen(QCAlgorithm):
                             margin_remaining=margin_remaining,
                         )
                 else:
+                    rejection_code = "CREDIT_LEG_SELECTION_FAILED"
                     # V6.10 P3: DEBIT fallback when CREDIT fails (intraday path)
                     fallback_enabled = getattr(config, "CREDIT_SPREAD_FALLBACK_TO_DEBIT", False)
                     if fallback_enabled and direction == OptionDirection.PUT:
+                        fallback_strategy = SpreadStrategy.BEAR_PUT_DEBIT
+                        fallback_right = self._strategy_option_right(fallback_strategy)
+                        fallback_contracts = self._build_spread_candidate_contracts(
+                            chain,
+                            direction,
+                            dte_min=dte_min_all,
+                            dte_max=dte_max_all,
+                            option_right=fallback_right,
+                        )
                         self.Log(
                             f"VASS_FALLBACK_INTRADAY: CREDIT spread failed for PUT | "
                             f"Trying BEAR_PUT_DEBIT fallback | Strategy={strategy.value}"
                         )
-                        debit_spread_legs = self.options_engine.select_spread_legs_with_fallback(
-                            contracts=candidate_contracts,
-                            direction=direction,
-                            current_time=str(self.Time),
-                            dte_ranges=dte_ranges,
+                        debit_spread_legs = (
+                            self.options_engine.select_spread_legs_with_fallback(
+                                contracts=fallback_contracts,
+                                direction=direction,
+                                current_time=str(self.Time),
+                                dte_ranges=dte_ranges,
+                            )
+                            if len(fallback_contracts) >= 2
+                            else None
                         )
                         if debit_spread_legs is not None:
+                            rejection_code = "DEBIT_ENTRY_VALIDATION_FAILED"
                             long_leg, short_leg = debit_spread_legs
                             if (
                                 long_leg.bid > 0
@@ -5510,6 +5557,8 @@ class AlphaNextGen(QCAlgorithm):
                                     dte_max=vass_dte_max,
                                     direction=direction,
                                 )
+                        else:
+                            rejection_code = "DEBIT_FALLBACK_LEG_SELECTION_FAILED"
             else:
                 # Existing debit spread path
                 # V2.24.2: Pass VASS DTE range to prevent double-filter bug
@@ -5520,6 +5569,7 @@ class AlphaNextGen(QCAlgorithm):
                     dte_ranges=dte_ranges,
                 )
                 if spread_legs is not None:
+                    rejection_code = "DEBIT_ENTRY_VALIDATION_FAILED"
                     long_leg, short_leg = spread_legs
                     if (
                         long_leg.bid > 0
@@ -5548,16 +5598,20 @@ class AlphaNextGen(QCAlgorithm):
                             dte_max=vass_dte_max,
                             direction=direction,  # V6.0: Pass conviction-resolved direction
                         )
+                else:
+                    rejection_code = "DEBIT_LEG_SELECTION_FAILED"
+        else:
+            rejection_code = "SPREAD_COOLDOWN_ACTIVE"
 
-            if signal:
-                self.Log(
-                    f"VASS_ENTRY: {signal.metadata.get('vass_strategy', 'UNKNOWN') if signal.metadata else 'UNKNOWN'} | "
-                    f"{signal.symbol} | {signal.reason}"
-                )
-                self.portfolio_router.receive_signal(signal)
-                # V2.3.13 FIX: MUST process immediately - spread signals use IMMEDIATE urgency
-                self._process_immediate_signals()
-                return  # Spread trade placed, don't try single-leg
+        if signal:
+            self.Log(
+                f"VASS_ENTRY: {signal.metadata.get('vass_strategy', 'UNKNOWN') if signal.metadata else 'UNKNOWN'} | "
+                f"{signal.symbol} | {signal.reason}"
+            )
+            self.portfolio_router.receive_signal(signal)
+            # V2.3.13 FIX: MUST process immediately - spread signals use IMMEDIATE urgency
+            self._process_immediate_signals()
+            return  # Spread trade placed, don't try single-leg
 
         if signal is None and not spread_cooldown_active:
             # V2.10 (Pitfall #4): Throttled VASS rejection logging
@@ -5585,6 +5639,7 @@ class AlphaNextGen(QCAlgorithm):
                     f"Contracts_checked={len(candidate_contracts)} | "
                     f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
                     f"DTE_Ranges={dte_ranges} | "
+                    f"ReasonCode={rejection_code} | "
                     f"Reason=No contracts met spread criteria (DTE/delta/credit)"
                     + (f" | FailStats={fail_stats}" if fail_stats else "")
                 )
