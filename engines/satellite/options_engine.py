@@ -2043,6 +2043,30 @@ class OptionsEngine:
 
         # Case 3: Misaligned with clear Macro direction
         # Micro owns intraday direction. Resolver acts as a risk gate here.
+        # V6.14 OPT: In BEARISH macro, block bullish overrides unless conviction is extreme.
+        if macro_direction == "BEARISH" and engine_direction == "BULLISH":
+            if engine != "MICRO":
+                return (
+                    False,
+                    None,
+                    "NO_TRADE: Macro BEARISH blocks CALL override (non-MICRO)",
+                )
+            if not engine_conviction:
+                return (
+                    False,
+                    None,
+                    "NO_TRADE: Macro BEARISH blocks non-conviction MICRO CALL",
+                )
+            if (
+                conviction_strength is None
+                or abs(conviction_strength) < config.MICRO_UVXY_CONVICTION_EXTREME
+            ):
+                return (
+                    False,
+                    None,
+                    "NO_TRADE: Macro BEARISH requires extreme MICRO bullish conviction",
+                )
+
         if engine == "MICRO" and not engine_conviction:
             return (
                 True,
@@ -3951,6 +3975,25 @@ class OptionsEngine:
         if vix_current > vix_max:
             self.log(f"SPREAD: No entry - VIX {vix_current:.1f} > max {vix_max} for {spread_type}")
             return None
+
+        # V6.14 OPT: Avoid long PUT debit spreads at panic highs and reduce size in elevated fear.
+        if spread_type == "BEAR_PUT":
+            put_entry_vix_max = getattr(config, "PUT_ENTRY_VIX_MAX", 36.0)
+            if vix_current > put_entry_vix_max:
+                self.log(
+                    f"SPREAD: BEAR_PUT blocked - VIX {vix_current:.1f} > max {put_entry_vix_max:.1f}"
+                )
+                return None
+            put_reduce_start = getattr(config, "PUT_SIZE_REDUCTION_VIX_START", 30.0)
+            put_reduce_factor = getattr(config, "PUT_SIZE_REDUCTION_FACTOR", 0.50)
+            if vix_current >= put_reduce_start:
+                size_multiplier *= put_reduce_factor
+                self.log(
+                    f"SPREAD: BEAR_PUT size reduced in high VIX | "
+                    f"VIX={vix_current:.1f} >= {put_reduce_start:.1f} | "
+                    f"Multiplier={size_multiplier:.2f}",
+                    trades_only=True,
+                )
 
         # Check safeguards
         if gap_filter_triggered:
@@ -6408,6 +6451,25 @@ class OptionsEngine:
                 )
                 return None
 
+            # V6.14 OPT: Avoid buying long PUTs into panic highs; reduce size in elevated fear.
+            if direction == OptionDirection.PUT:
+                vix_for_put = vix_level_override if vix_level_override is not None else vix_current
+                put_entry_vix_max = getattr(config, "PUT_ENTRY_VIX_MAX", 36.0)
+                if vix_for_put > put_entry_vix_max:
+                    self.log(
+                        f"INTRADAY: PUT blocked - VIX {vix_for_put:.1f} > max {put_entry_vix_max:.1f}"
+                    )
+                    return None
+                put_reduce_start = getattr(config, "PUT_SIZE_REDUCTION_VIX_START", 30.0)
+                put_reduce_factor = getattr(config, "PUT_SIZE_REDUCTION_FACTOR", 0.50)
+                if vix_for_put >= put_reduce_start:
+                    size_multiplier *= put_reduce_factor
+                    self.log(
+                        f"INTRADAY: PUT size reduced in high VIX | "
+                        f"VIX={vix_for_put:.1f} >= {put_reduce_start:.1f} | "
+                        f"Multiplier={size_multiplier:.2f}"
+                    )
+
         # V3.2: Governor Gate for intraday (closes gap)
         if getattr(config, "INTRADAY_GOVERNOR_GATE_ENABLED", True) and not is_protective_put:
             if governor_scale <= 0:
@@ -6520,6 +6582,10 @@ class OptionsEngine:
                 micro_mult = 0.5  # Half size
             else:
                 micro_mult = 0.5  # Half size
+
+            # V6.14 OPT: Reduce size in fragile transition states even when tradable.
+            if state.micro_regime in (MicroRegime.ELEVATED, MicroRegime.WORSENING):
+                micro_mult = min(micro_mult, 0.5)
 
             # V6.0: Apply combined multipliers (cold_start × governor × micro)
             # Macro gate removed - conviction resolution handles direction

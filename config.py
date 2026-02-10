@@ -882,9 +882,15 @@ CREDIT_SPREAD_STOP_MULTIPLIER = 2.0  # Stop if spread value doubles (100% loss)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg delta range (OTM)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.45  # V6.13 OPT: Improve credit spread constructability
 # T-21: Credit-path liquidity quality gates (parity with debit selector).
-CREDIT_SPREAD_MIN_OPEN_INTEREST = 50
-CREDIT_SPREAD_MAX_SPREAD_PCT = 0.35
-CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT = 0.50
+CREDIT_SPREAD_MIN_OPEN_INTEREST = (
+    35  # V6.14 OPT: Improve constructability with bounded liquidity risk
+)
+CREDIT_SPREAD_MAX_SPREAD_PCT = (
+    0.40  # V6.14 OPT: Slightly wider spread tolerance for real-chain fills
+)
+CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT = (
+    0.55  # V6.14 OPT: Allow protective long legs in thinner tails
+)
 
 # V2.24.1: Elastic Delta Bands — progressive widening when no candidates found
 # Each step widens the delta range by ± the step value (e.g., [0.0, 0.03, 0.07, 0.12])
@@ -1433,13 +1439,15 @@ VIX_WHIPSAW_MIN_RANGE = 5.0  # Minimum range % to consider whipsaw
 # Analysis showed Jan 21 (+6.9%), Jan 24 (+7.4%), Jan 25 (+5.3%) missed by narrow margin
 # V6.6: Lowered from ±5% to ±3% based on 2022H1 analysis
 # Only 8% of moves exceeded ±5%, missing many valid conviction signals
-MICRO_UVXY_BEARISH_THRESHOLD = 0.025  # +2.5% for more PUT signals
-MICRO_UVXY_BULLISH_THRESHOLD = -0.05  # V6.12: -5% for CALL conviction (stricter)
+MICRO_UVXY_BEARISH_THRESHOLD = 0.028  # V6.14 OPT: Keep bearish responsiveness while reducing noise
+MICRO_UVXY_BULLISH_THRESHOLD = (
+    -0.045
+)  # V6.14 OPT: Improve participation without reintroducing CALL bias
 # V6.10: Lower conviction extreme to capture 5-7% moves that were blocked
 MICRO_UVXY_CONVICTION_EXTREME = 0.035  # V6.12: 3.5% intraday move for NEUTRAL VETO
 # V6.10: Micro fallback + confirmation thresholds (Dir=None tuning)
-MICRO_SCORE_BULLISH_CONFIRM = 48.0  # V6.13 OPT: Moderate increase in STABLE fallback participation
-MICRO_SCORE_BEARISH_CONFIRM = 48.0  # V6.13 OPT: Keep symmetric confirmation
+MICRO_SCORE_BULLISH_CONFIRM = 47.0  # V6.14 OPT: Reduce NO_TRADE in benign transition states
+MICRO_SCORE_BEARISH_CONFIRM = 49.0  # V6.14 OPT: Slightly stricter bearish confirmation
 INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.30  # V6.13 OPT: More fallback triggers in bull/choppy
 MICRO_VIX_CRISIS_LEVEL = 35  # VIX > 35 → CRISIS (BEARISH conviction)
 MICRO_VIX_COMPLACENT_LEVEL = 12  # VIX < 12 → COMPLACENT (BULLISH conviction)
@@ -1523,7 +1531,14 @@ VIX_REVERSAL_CHOPPY = 4  # 3-4 reversals: Choppy
 # -----------------------------------------------------------------------------
 
 # V2.3.16: Sniper Logic - Noise Filter (Gate 1)
-QQQ_NOISE_THRESHOLD = 0.15  # V6.13.1 OPT: Reduce Dir=NONE (was 0.20, target <40%)
+QQQ_NOISE_THRESHOLD = (
+    0.13  # V6.14 OPT: Modest relaxation to reduce NO_TRADE due to flat-move filter
+)
+
+# V6.14 OPT: Bear-market PUT risk controls.
+PUT_ENTRY_VIX_MAX = 36.0  # Block new long PUT entries when panic is extreme
+PUT_SIZE_REDUCTION_VIX_START = 30.0  # Start reducing long PUT sizing at elevated fear
+PUT_SIZE_REDUCTION_FACTOR = 0.50  # Size multiplier once VIX exceeds reduction threshold
 
 # V2.19: VIX Floor for DEBIT_FADE
 # In low VIX (<13.5) "apathy" markets, mean reversion fails - trends persist longer
