@@ -196,8 +196,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2015, 7, 1)
-        self.SetEndDate(2015, 10, 31)  # Jul-Oct 2015 backtest (4 months)
+        self.SetStartDate(2021, 12, 1)
+        self.SetEndDate(2022, 2, 28)  # Dec 2021 - Feb 2022 backtest (3 months)
         self.SetCash(config.INITIAL_CAPITAL)  # $50,000 seed capital
 
         # All times are Eastern
@@ -2383,6 +2383,14 @@ class AlphaNextGen(QCAlgorithm):
 
             # Get current price (best effort)
             current_price = intraday_pos.entry_price  # Fallback
+
+            # Cancel active OCO before force-close to avoid orphan sell orders
+            # creating accidental short options after the position is closed.
+            try:
+                if self.oco_manager.cancel_by_symbol(symbol, reason="INTRADAY_FORCE_CLOSE"):
+                    self.Log(f"INTRADAY_FORCE_EXIT: Cancelled active OCO for {symbol}")
+            except Exception as e:
+                self.Log(f"INTRADAY_FORCE_EXIT: OCO cancel failed for {symbol} | {e}")
 
             signal = self.options_engine.check_intraday_force_exit(
                 current_hour=self.Time.hour,
@@ -6958,6 +6966,17 @@ class AlphaNextGen(QCAlgorithm):
                     elif self.options_engine.has_intraday_position():
                         # V2.28: Record result for win rate gate before removing
                         removed_position = self.options_engine.remove_intraday_position()
+                        if removed_position:
+                            # Cancel any lingering OCO pair after explicit close fill.
+                            try:
+                                self.oco_manager.cancel_by_symbol(
+                                    removed_position.contract.symbol,
+                                    reason="INTRADAY_POSITION_CLOSED",
+                                )
+                            except Exception as e:
+                                self.Log(
+                                    f"OCO_CLEANUP_ERROR: {removed_position.contract.symbol} | {e}"
+                                )
                         if removed_position and removed_position.entry_price > 0:
                             is_win = fill_price > removed_position.entry_price
                             self.options_engine.record_spread_result(is_win)
@@ -6983,7 +7002,17 @@ class AlphaNextGen(QCAlgorithm):
                         self._greeks_breach_logged = False  # Reset for next position
                     else:
                         # Single-leg exit (legacy swing)
-                        self.options_engine.remove_position()
+                        removed_position = self.options_engine.remove_position()
+                        if removed_position:
+                            try:
+                                self.oco_manager.cancel_by_symbol(
+                                    removed_position.contract.symbol,
+                                    reason="SINGLE_LEG_POSITION_CLOSED",
+                                )
+                            except Exception as e:
+                                self.Log(
+                                    f"OCO_CLEANUP_ERROR: {removed_position.contract.symbol} | {e}"
+                                )
                         self._greeks_breach_logged = False  # Reset for next position
             except Exception as e:
                 self.Log(f"OPT_TRACK_ERROR: {symbol}: {e}")

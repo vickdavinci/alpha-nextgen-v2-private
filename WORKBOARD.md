@@ -3882,3 +3882,28 @@ Files:
 - `config.py`
 - `main.py`
 - `WORKBOARD.md`
+
+## V6.14 — Intraday OCO/Margin Exit Hardening (Implemented)
+
+- Fixed 15:30 intraday force-close race where stale OCO legs could remain active
+  and attempt additional sell orders after the position was already closed.
+- Added explicit OCO cancellation before force-close submission:
+  - `_on_intraday_options_force_close()` now calls `cancel_by_symbol(...)`.
+- Added explicit exit quantity for intraday time exits:
+  - `check_intraday_force_exit()` now sets `requested_quantity=num_contracts`.
+- Added post-fill OCO cleanup on intraday and legacy single-leg exits to remove
+  residual stop/target legs immediately after close fills.
+- Added router safety guard:
+  - options close intents (`target_weight=0`) without `requested_quantity` are
+    skipped instead of using fallback weight-based sizing.
+
+Expected impact:
+- Eliminate duplicate/oversell close attempts at 15:30.
+- Reduce false margin rejects triggered by stale OCO orders.
+- Prevent accidental short-open behavior from fallback close sizing.
+
+Files:
+- `main.py`
+- `engines/satellite/options_engine.py`
+- `portfolio/portfolio_router.py`
+- `WORKBOARD.md`

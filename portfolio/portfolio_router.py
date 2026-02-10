@@ -1499,6 +1499,17 @@ class PortfolioRouter:
             # Allow closing trades even if value is small (e.g., worthless options)
             is_closing = agg.target_weight == 0.0
 
+            # Safety: never allow options close intents to use weight fallback sizing.
+            # Close intents must carry explicit requested_quantity to avoid accidental
+            # oversell/short-open behavior when current_value snapshots are stale.
+            if (
+                is_option
+                and is_closing
+                and (agg.requested_quantity is None or agg.requested_quantity <= 0)
+            ):
+                self.log(f"ROUTER: SKIP | {symbol} | Closing option without requested_quantity")
+                continue
+
             # V2.3.24: Use lower threshold for intraday options
             # Single option contracts often $500-1,500, below the $2,000 MIN_TRADE_VALUE
             min_trade_value = config.MIN_TRADE_VALUE

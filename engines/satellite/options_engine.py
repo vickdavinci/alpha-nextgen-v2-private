@@ -6725,6 +6725,7 @@ class OptionsEngine:
 
         symbol = self._intraday_position.contract.symbol
         entry_price = self._intraday_position.entry_price
+        num_contracts = max(1, int(self._intraday_position.num_contracts))
 
         pnl_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0
 
@@ -6740,6 +6741,7 @@ class OptionsEngine:
             source="OPT_INTRADAY",
             urgency=Urgency.IMMEDIATE,
             reason=reason,
+            requested_quantity=num_contracts,
         )
 
     def check_gamma_pin_exit(
