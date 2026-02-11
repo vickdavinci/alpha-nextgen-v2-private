@@ -1,5 +1,34 @@
 # V6.16 Decision Funnel RCA
 
+## Plan Status (Multi-Phase)
+
+This RCA is a multi-phase remediation plan.
+
+- `Phase 1 - Hardening`: `Complete`
+- `Phase 2 - Decision Contract Model (E_*/R_*)`: `Not Started`
+- `Phase 3 - File Extraction / Thin Facade`: `Not Started`
+
+### Phase 1 Scope (Completed)
+
+- Router rejection tracing with structured `R_*` reason codes.
+- Trace metadata propagation (`trace_id`, source tagging) from options signals.
+- Explicit `INTRADAY_ROUTER_REJECTED` / `VASS_ROUTER_REJECTED` telemetry in orchestration flow.
+- CALL risk gates and execution hardening already integrated in existing options flow.
+
+### Phase 2 Scope (Pending)
+
+- Formal engine decision contract object with terminal states: `READY`, `BLOCKED`, `ERROR`.
+- Canonical `E_*` engine rejection codes (disjoint from router `R_*`).
+- Remove ambiguous catch-all drop semantics (`DROP_ENGINE_NO_SIGNAL` path).
+
+### Phase 3 Scope (Pending)
+
+- Extract decider/model modules:
+  - `options_decision_models.py`
+  - `options_intraday_decider.py`
+  - `options_swing_decider.py`
+- Reduce `main.py` and `options_engine.py` size/complexity; keep thin orchestration facade.
+
 ## Purpose
 
 Document the core architectural issue in options signal processing (Micro + VASS), why it causes misleading diagnostics and weak conversion, and the implementation direction to fix it without weakening risk controls.
@@ -129,6 +158,7 @@ These controls remain; only the decision flow ownership is simplified.
 2. Engine and router rejection reasons are disjoint (`E_*` vs `R_*`).
 3. Approved-to-executed conversion diagnosable with exact stage attribution.
 4. No regression in existing risk controls.
+5. Phase 2 and Phase 3 complete with no regression against Phase 1 hardening.
 
 ## Conclusion
 
