@@ -477,22 +477,22 @@ class TestRegimeClassification:
         assert engine._classify_regime(69) == RegimeLevel.NEUTRAL
 
     def test_classify_cautious(self):
-        """Test CAUTIOUS classification for score 40-49."""
+        """Test CAUTIOUS classification for score 45-49."""
         engine = RegimeEngine()
-        assert engine._classify_regime(40) == RegimeLevel.CAUTIOUS
         assert engine._classify_regime(45) == RegimeLevel.CAUTIOUS
+        assert engine._classify_regime(47) == RegimeLevel.CAUTIOUS
         assert engine._classify_regime(49) == RegimeLevel.CAUTIOUS
 
     def test_classify_defensive(self):
-        """Test DEFENSIVE classification for score 30-39."""
+        """Test DEFENSIVE classification for score 35-44."""
         engine = RegimeEngine()
-        assert engine._classify_regime(30) == RegimeLevel.DEFENSIVE
         assert engine._classify_regime(35) == RegimeLevel.DEFENSIVE
-        assert engine._classify_regime(39) == RegimeLevel.DEFENSIVE
+        assert engine._classify_regime(40) == RegimeLevel.DEFENSIVE
+        assert engine._classify_regime(44) == RegimeLevel.DEFENSIVE
 
     def test_classify_risk_off(self):
-        """Test RISK_OFF classification for score < 30."""
+        """Test RISK_OFF classification for score < 35."""
         engine = RegimeEngine()
         assert engine._classify_regime(0) == RegimeLevel.RISK_OFF
-        assert engine._classify_regime(15) == RegimeLevel.RISK_OFF
-        assert engine._classify_regime(29) == RegimeLevel.RISK_OFF
+        assert engine._classify_regime(20) == RegimeLevel.RISK_OFF
+        assert engine._classify_regime(34) == RegimeLevel.RISK_OFF
