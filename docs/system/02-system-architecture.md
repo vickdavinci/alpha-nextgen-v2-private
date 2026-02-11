@@ -46,8 +46,8 @@ flowchart TB
     subgraph CORE["CORE ENGINES"]
         direction LR
         REGIME["REGIME ENGINE<br/>─────────────<br/>4 Factors (V5.3)<br/>Score 0-100<br/>VIX Guards<br/>State Classification"]
-        CAPITAL["CAPITAL ENGINE<br/>─────────────<br/>SEED/GROWTH Phase<br/>Virtual Lockbox<br/>Tradeable Equity<br/>Position Limits"]
-        RISK["RISK ENGINE<br/>─────────────<br/>Kill Switch -5%<br/>Panic Mode -4%<br/>Weekly Breaker<br/>Gap/Vol/Time Guard<br/>Greeks Monitor"]
+        CAPITAL["CAPITAL ENGINE<br/>─────────────<br/>Tradeable Equity<br/>Virtual Lockbox<br/>Position Limits<br/>Engine Partitions"]
+        RISK["RISK ENGINE<br/>─────────────<br/>Kill Switch Tiered<br/>(2%/4%/6%)<br/>Panic Mode -4%<br/>Drawdown Governor<br/>Gap/Vol/Time Guard<br/>Greeks Monitor"]
     end
 
     subgraph STRATEGIES["STRATEGY ENGINES (Core-Satellite)"]
@@ -106,9 +106,9 @@ Provide context that governs all trading decisions.
 
 | Engine | Responsibility | Output |
 |--------|----------------|--------|
-| **Regime Engine** | Detect market state | Score 0-100, State classification |
-| **Capital Engine** | Manage account phases | Tradeable equity, Position limits |
-| **Risk Engine** | Protect capital | GO/NO-GO signals, Circuit breakers |
+| **Regime Engine** | Detect market state (V5.3 4-factor) | Score 0-100, State classification |
+| **Capital Engine** | Manage tradeable equity (V3.0) | Position limits, Engine partitions, Lockbox |
+| **Risk Engine** | Protect capital | Tiered KS (2%/4%/6%), Drawdown Governor, Circuit breakers |
 
 ### Layer 3: Strategy Engines
 
@@ -119,7 +119,7 @@ Generate trading signals based on their specific logic.
 | **Trend** | MA200+ADX swing | QLD 15%, SSO 7%, UGL 10%, UCO 8% | EOD | 40% (Core) |
 | **Options** | VASS + Micro Regime | QQQ options (Swing 18.75% + Intraday 6.25%) | IMMEDIATE | 25% |
 | **Mean Reversion** | RSI oversold + VIX | TQQQ 4%, SPXL 3%, SOXL 3% | IMMEDIATE | 10% |
-| **Hedge** | Tail protection | SH | EOD | 0-30% |
+| **Hedge** | Tail protection | SH (5%/8%/10% by regime) | EOD | 0-10% |
 | **Yield** | Cash management | (Spec only) | EOD | Remainder |
 | **Cold Start** | Safe deployment | QLD, SSO | IMMEDIATE | 25% sizing |
 
@@ -172,9 +172,9 @@ flowchart TB
         RE6["State Classification"]
     end
 
-    subgraph CAPITAL["CAPITAL ENGINE"]
+    subgraph CAPITAL["CAPITAL ENGINE (V3.0)"]
         CE1["Total Equity"]
-        CE2["Phase Check"]
+        CE2["Engine Partitions"]
         CE3["Lockbox Check"]
         CE4["Tradeable Equity"]
     end
@@ -226,12 +226,13 @@ flowchart TB
     end
 
     subgraph L2["LEVEL 2: CIRCUIT BREAKERS"]
-        L2A["Kill Switch -5%"]
+        L2A["Tiered Kill Switch<br/>-2%/-4%/-6%"]
         L2B["Panic Mode -4%"]
         L2C["Weekly Breaker -5%"]
-        L2D["Vol Shock 3×ATR"]
-        L2E["Gap Filter -1.5%"]
-        L2F["Time Guard"]
+        L2D["Drawdown Governor<br/>-15% Binary"]
+        L2E["Vol Shock 3×ATR"]
+        L2F["Gap Filter -1.5%"]
+        L2G["Time Guard"]
     end
 
     subgraph L3["LEVEL 3: REGIME CONSTRAINTS"]
@@ -241,10 +242,10 @@ flowchart TB
     end
 
     subgraph L4["LEVEL 4: CAPITAL CONSTRAINTS"]
-        L4A["Phase Position Limits"]
+        L4A["Engine Partitions"]
         L4B["Group Exposure Caps"]
         L4C["Lockbox Reservations"]
-        L4D["Min Trade Size $10k"]
+        L4D["Min Trade Size $2k"]
     end
 
     subgraph L5["LEVEL 5: STRATEGY SIGNALS"]
@@ -268,11 +269,14 @@ flowchart TB
 
 | Scenario | Resolution |
 |----------|------------|
-| Trend wants to buy QLD, but Kill Switch triggered | **Kill Switch wins** - No trade |
+| Trend wants to buy QLD, but KS Tier 1 (-2%) triggered | **Tier 1 wins** - Trend reduced 50%, options blocked |
+| Trend wants to hold, but KS Tier 2 (-4%) triggered | **Tier 2 wins** - Trend liquidated, spreads kept |
+| Portfolio at -6% loss (KS Tier 3) | **Tier 3 wins** - Full liquidation (nuclear) |
 | MR wants to enter TQQQ, but Gap Filter active | **Gap Filter wins** - Entry blocked |
 | Hedge wants 20% SH, but Regime is 60 | **Regime wins** - No hedge needed |
 | Trend wants 50% QLD, but NASDAQ_BETA already at 45% | **Exposure Limit wins** - Reduced to 5% |
 | MR and Trend both want QLD | **Router aggregates** - Net weight applied |
+| Portfolio at -15% drawdown | **Governor wins** - Binary 0%, PUT spreads only |
 
 ---
 
@@ -345,11 +349,52 @@ Reason: MA200_ADX_ENTRY
 - Trade during pre-market or after-hours
 - Hold options overnight (closed by 15:45)
 
+### V3.0 Capital & Risk Changes
+
+- **Phases Removed**: No more SEED/GROWTH phase system - regime-based safeguards replace it
+- **Drawdown Governor**: Binary system (100% or 0%) triggers at -15% from peak, recovers at -12%
+- **Tiered Kill Switch**: Graduated response replacing binary -5% nuclear option
+  - Tier 1 (-2%): Reduce trend by 50%, block new options
+  - Tier 2 (-4%): Liquidate trend, keep spreads (they have own stops)
+  - Tier 3 (-6%): Full liquidation (nuclear option)
+- **HWM Reset**: Removed - artificial manipulation no longer used
+
 ### V6.x Features
+
+#### V6.11 Universe Redesign
+- **Hedge Simplification**: TMF/PSQ retired, SH (1x Inverse S&P) is sole hedge
+- **COMMODITIES Exposure Group**: UGL (2x Gold) + UCO (2x Crude Oil) replaces RATES group
+- **All Trend Symbols 2x**: QLD/SSO/UGL/UCO - no 3x in Trend Engine
+- **Trend Allocations**: QLD 15%, SSO 7%, UGL 10%, UCO 8% (40% total)
+- **MR Symbols**: TQQQ 4%, SPXL 3%, SOXL 3% (10% total, intraday only)
+
+#### V6.12 Changes
+- **CALL Bias Control**: NEUTRAL_ALIGNED_SIZE_MULT = 0.50 reduces size when Macro NEUTRAL
+- **Dir=NONE Reduction**: VIX-adaptive STABLE bands narrow conviction gaps
+- **Spread Failure Cooldown**: Reduced from 4 hours to 1 hour
+- **VASS Medium IV DTE**: Extended to 30 days for better contract availability
+
+#### V6.13 Parameter Optimization
+- **Neutrality Exit Band**: Tightened to 6% (SPREAD_NEUTRALITY_EXIT_PNL_BAND = 0.06)
+- **Neutrality Zone**: Narrowed to 48-62 (from wider bands)
+- **Spread Width**: Reduced to $4 minimum/target (SPREAD_WIDTH_MIN = 4.0)
+- **ATR Stop**: 0.9 multiplier, 12% floor, 30% cap
+- **VIX-Adaptive STABLE Bands**: +/-0.2% (low VIX) to +/-0.7% (high VIX)
+- **Intraday Triggers**: Relaxed FADE/ITM thresholds for more signals
+
+#### V6.14 Changes
+- **UVXY Conviction Thresholds**: +2.8% bearish, -4.5% bullish
+- **Pre-Market VIX Shock Ladder**: 3-tier protection before market open
+  - L1 (VIX 22+ or 4% gap): Reduce size to 75%
+  - L2 (VIX 28+ or 7% gap): Block CALLs until 11:00, 50% size
+  - L3 (VIX 35+ or 12% gap): Block all entries until 12:00, 25% size
+- **Credit Spread Liquidity**: Min OI = 35, wider spread tolerance (40%)
+- **Expiration Hammer**: Moved to 12:00 PM (from 2:00 PM)
+
+### Core Infrastructure
 
 - **Options Engine**: Trades QQQ options (25% allocation) with VASS + Micro Regime dual-mode
 - **V5.3 Regime Model**: 4-factor scoring with VIX guards (Clamp, Spike Cap, Breadth Decay)
-- **V6.11 Universe**: Simplified to 2× Trend (QLD/SSO/UGL/UCO), 3× MR (TQQQ/SPXL/SOXL), 1× Hedge (SH)
 - **VIX Regime Filter**: Adjusts MR and Options parameters based on VIX level
 - **Greeks Monitoring**: Portfolio delta/gamma/vega limits for options
 

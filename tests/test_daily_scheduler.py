@@ -121,9 +121,9 @@ class TestEventConfiguration:
         assert hasattr(config, "EOD_OFFSET_MINUTES")
         assert config.EOD_OFFSET_MINUTES == 15
 
-        # Intraday options close 30 minutes before market close
+        # Intraday options close 35 minutes before market close (V6.15)
         assert hasattr(config, "INTRADAY_OPTIONS_OFFSET_MINUTES")
-        assert config.INTRADAY_OPTIONS_OFFSET_MINUTES == 30
+        assert config.INTRADAY_OPTIONS_OFFSET_MINUTES == 35
 
 
 # =============================================================================

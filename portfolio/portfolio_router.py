@@ -137,6 +137,18 @@ class OrderIntent:
         return result
 
 
+@dataclass
+class RouterRejection:
+    """Structured rejection record for post-run diagnostics."""
+
+    code: str
+    symbol: str
+    source_tag: str
+    trace_id: str
+    detail: str
+    stage: str
+
+
 class PortfolioRouter:
     """
     Central coordination hub for trade execution.
@@ -191,6 +203,7 @@ class PortfolioRouter:
         # V2.3.24: Rejection log throttle to reduce spam
         self._last_rejection_log_time: Optional[Any] = None
         self._rejection_log_count: int = 0
+        self._last_rejections: List[RouterRejection] = []
 
         # V2.9: Track open spread margin (Bug #1 fix)
         # Stores {spread_id: margin_reserved} for each open spread
@@ -1061,6 +1074,63 @@ class PortfolioRouter:
         """Clear all pending signals without processing."""
         self._pending_weights.clear()
 
+    def clear_last_rejections(self) -> None:
+        """Clear structured router rejection buffer."""
+        self._last_rejections = []
+
+    def get_last_rejections(self) -> List[RouterRejection]:
+        """Get a copy of latest structured router rejections."""
+        return list(self._last_rejections)
+
+    def _record_rejection(
+        self,
+        code: str,
+        symbol: str,
+        detail: str,
+        stage: str,
+        source_tag: str = "",
+        trace_id: str = "",
+    ) -> None:
+        """Track and log router rejection with source/trace context."""
+        item = RouterRejection(
+            code=code,
+            symbol=symbol,
+            source_tag=source_tag,
+            trace_id=trace_id,
+            detail=detail,
+            stage=stage,
+        )
+        self._last_rejections.append(item)
+        self.log(
+            f"ROUTER_REJECT: Code={code} | Stage={stage} | Symbol={symbol} | "
+            f"Source={source_tag or 'UNKNOWN'} | Trace={trace_id or 'NONE'} | {detail}"
+        )
+
+    def _extract_trace_context(
+        self,
+        metadata: Optional[Dict[str, Any]],
+        sources: Optional[List[str]] = None,
+    ) -> Tuple[str, str]:
+        """Derive source tag and trace id for diagnostics."""
+        source_tag = ""
+        trace_id = ""
+        if metadata:
+            trace_id = str(metadata.get("trace_id", "") or "")
+            source_tag = str(metadata.get("trace_source", "") or "")
+            if not source_tag:
+                if metadata.get("intraday_strategy"):
+                    source_tag = f"MICRO:{metadata.get('intraday_strategy')}"
+                elif metadata.get("vass_strategy"):
+                    source_tag = f"VASS:{metadata.get('vass_strategy')}"
+                elif metadata.get("spread_type"):
+                    source_tag = f"VASS:{metadata.get('spread_type')}"
+        if not source_tag and sources:
+            if "OPT_INTRADAY" in sources:
+                source_tag = "MICRO"
+            elif "OPT" in sources:
+                source_tag = "VASS"
+        return source_tag, trace_id
+
     # =========================================================================
     # Step 2: AGGREGATE
     # =========================================================================
@@ -1436,6 +1506,7 @@ class PortfolioRouter:
         orders: List[OrderIntent] = []
 
         for symbol, agg in aggregated.items():
+            source_tag, trace_id = self._extract_trace_context(agg.metadata, agg.sources)
             # Skip if no price available
             if symbol not in current_prices or current_prices[symbol] <= 0:
                 # V2.24: Failsafe — use metadata price for options entries
@@ -1455,7 +1526,14 @@ class PortfolioRouter:
                     if bid_ask_price > 0:
                         current_prices[symbol] = bid_ask_price
                     else:
-                        self.log(f"ROUTER: SKIP | {symbol} | No price available")
+                        self._record_rejection(
+                            code="R_NO_PRICE",
+                            symbol=symbol,
+                            detail="No price available from current_prices/metadata/bid-ask fallback",
+                            stage="INTENT_BUILD",
+                            source_tag=source_tag,
+                            trace_id=trace_id,
+                        )
                         continue
 
             price = current_prices[symbol]
@@ -1493,11 +1571,64 @@ class PortfolioRouter:
 
             # Skip if delta is below minimum
             if abs(delta_shares) < config.MIN_SHARE_DELTA:
+                self._record_rejection(
+                    code="R_DELTA_TOO_SMALL",
+                    symbol=symbol,
+                    detail=f"abs(delta_shares)={abs(delta_shares)} < MIN_SHARE_DELTA={config.MIN_SHARE_DELTA}",
+                    stage="INTENT_BUILD",
+                    source_tag=source_tag,
+                    trace_id=trace_id,
+                )
                 continue
 
             # V2.3.3: Check if this is a closing trade (going to 0)
             # Allow closing trades even if value is small (e.g., worthless options)
             is_closing = agg.target_weight == 0.0
+
+            # Safety: never allow options close intents to use weight fallback sizing.
+            # Close intents must carry explicit requested_quantity to avoid accidental
+            # oversell/short-open behavior when current_value snapshots are stale.
+            if (
+                is_option
+                and is_closing
+                and (agg.requested_quantity is None or agg.requested_quantity <= 0)
+            ):
+                self._record_rejection(
+                    code="R_CLOSE_NO_QTY",
+                    symbol=symbol,
+                    detail="Closing option without requested_quantity",
+                    stage="INTENT_BUILD",
+                    source_tag=source_tag,
+                    trace_id=trace_id,
+                )
+                continue
+
+            # V6.16: For option close intents, derive side/quantity from live holdings only.
+            # This prevents stale weight snapshots from flipping close side (e.g., BUY on long close)
+            # and blocks accidental position amplification during force-close fallback.
+            if is_option and is_closing:
+                live_qty = 0
+                if self.algorithm:
+                    try:
+                        for kvp in self.algorithm.Portfolio:  # type: ignore[attr-defined]
+                            holding = kvp.Value
+                            if str(holding.Symbol) == symbol:
+                                live_qty = int(holding.Quantity)
+                                break
+                    except Exception:
+                        live_qty = 0
+                if live_qty == 0:
+                    self._record_rejection(
+                        code="R_CLOSE_NO_LIVE_HOLDING",
+                        symbol=symbol,
+                        detail="Close intent but no live holdings",
+                        stage="INTENT_BUILD",
+                        source_tag=source_tag,
+                        trace_id=trace_id,
+                    )
+                    continue
+                side = OrderSide.SELL if live_qty > 0 else OrderSide.BUY
+                delta_shares = abs(live_qty)
 
             # V2.3.24: Use lower threshold for intraday options
             # Single option contracts often $500-1,500, below the $2,000 MIN_TRADE_VALUE
@@ -1514,10 +1645,19 @@ class PortfolioRouter:
                         f"ROUTER: SKIP | {symbol} | "
                         f"Delta ${delta_value:,.0f} < min ${min_trade_value:,}"
                     )
+                self._record_rejection(
+                    code="R_MIN_TRADE_VALUE",
+                    symbol=symbol,
+                    detail=f"Delta ${delta_value:,.0f} < min ${min_trade_value:,.0f}",
+                    stage="INTENT_BUILD",
+                    source_tag=source_tag,
+                    trace_id=trace_id,
+                )
                 continue
 
             # Determine side and order type
-            side = OrderSide.BUY if delta_shares > 0 else OrderSide.SELL
+            if not (is_option and is_closing):
+                side = OrderSide.BUY if delta_shares > 0 else OrderSide.SELL
             # V2.4.2: Added MOC for same-day trend entries
             if agg.urgency == Urgency.IMMEDIATE:
                 order_type = OrderType.MARKET
@@ -1586,15 +1726,23 @@ class PortfolioRouter:
                     # V2.14 Fix #11: SIGN_MISMATCH validation
                     # A valid spread must have one BUY and one SELL (opposite signs)
                     if long_qty > 0 and short_qty > 0:
-                        self.log(
-                            f"SIGN_MISMATCH: Spread has two BUYS | "
-                            f"Long={long_qty} Short={short_qty} | BLOCKED"
+                        self._record_rejection(
+                            code="R_SIGN_MISMATCH",
+                            symbol=symbol,
+                            detail=(f"Spread has two BUYS | Long={long_qty} Short={short_qty}"),
+                            stage="INTENT_BUILD",
+                            source_tag=source_tag,
+                            trace_id=trace_id,
                         )
                         continue  # Skip this malformed spread
                     if long_qty < 0 and short_qty < 0:
-                        self.log(
-                            f"SIGN_MISMATCH: Spread has two SELLS | "
-                            f"Long={long_qty} Short={short_qty} | BLOCKED"
+                        self._record_rejection(
+                            code="R_SIGN_MISMATCH",
+                            symbol=symbol,
+                            detail=(f"Spread has two SELLS | Long={long_qty} Short={short_qty}"),
+                            stage="INTENT_BUILD",
+                            source_tag=source_tag,
+                            trace_id=trace_id,
                         )
                         continue  # Skip this malformed spread
 
@@ -1674,11 +1822,35 @@ class PortfolioRouter:
         """
         if not self.algorithm:
             self.log("ROUTER: NO_ALGORITHM | Cannot execute orders")
+            for order in orders:
+                source_tag, trace_id = self._extract_trace_context(
+                    order.metadata, [order.tag] if order.tag else None
+                )
+                self._record_rejection(
+                    code="R_NO_ALGORITHM",
+                    symbol=order.symbol,
+                    detail="Router has no algorithm reference",
+                    stage="EXECUTE",
+                    source_tag=source_tag or (order.tag or ""),
+                    trace_id=trace_id,
+                )
             return []
 
         # Check risk engine status
         if not self._risk_engine_go:
             self.log("ROUTER: BLOCKED | Risk engine NO-GO status")
+            for order in orders:
+                source_tag, trace_id = self._extract_trace_context(
+                    order.metadata, [order.tag] if order.tag else None
+                )
+                self._record_rejection(
+                    code="R_RISK_ENGINE_NOGO",
+                    symbol=order.symbol,
+                    detail="Risk engine GO/NO-GO blocked execution",
+                    stage="EXECUTE",
+                    source_tag=source_tag or (order.tag or ""),
+                    trace_id=trace_id,
+                )
             return []
 
         # V2.4.4 P0: Check margin call cooldown before executing any orders
@@ -1695,6 +1867,18 @@ class PortfolioRouter:
                                 f"ROUTER: MARGIN_COOLDOWN_ACTIVE | "
                                 f"Blocked until {cooldown} | Current={current_time}"
                             )
+                            for order in orders:
+                                source_tag, trace_id = self._extract_trace_context(
+                                    order.metadata, [order.tag] if order.tag else None
+                                )
+                                self._record_rejection(
+                                    code="R_MARGIN_COOLDOWN",
+                                    symbol=order.symbol,
+                                    detail=f"Margin cooldown active until {cooldown}",
+                                    stage="EXECUTE",
+                                    source_tag=source_tag or (order.tag or ""),
+                                    trace_id=trace_id,
+                                )
                             return []
                         else:
                             # Cooldown expired, reset
@@ -1713,12 +1897,25 @@ class PortfolioRouter:
         executed: List[OrderIntent] = []
 
         for order in orders:
+            source_tag, trace_id = self._extract_trace_context(
+                order.metadata, [order.tag] if order.tag else None
+            )
+            if not source_tag and order.tag:
+                source_tag = order.tag
             # Create unique order key: SYMBOL:SIDE:QTY
             order_key = f"{order.symbol}:{order.side.value}:{order.quantity}"
 
             # Skip if already executed this minute (idempotency guard)
             if order_key in self._executed_this_minute:
                 self.log(f"ROUTER: SKIP_DUPLICATE | {order_key} already executed this minute")
+                self._record_rejection(
+                    code="R_DUPLICATE_ORDER",
+                    symbol=order.symbol,
+                    detail=f"Duplicate order key in same minute: {order_key}",
+                    stage="EXECUTE",
+                    source_tag=source_tag,
+                    trace_id=trace_id,
+                )
                 continue
 
             # V4.0.2: Check margin utilization gate for BUY orders
@@ -1729,6 +1926,14 @@ class PortfolioRouter:
                 )
                 if not margin_allowed:
                     self.log(f"ROUTER: {margin_reason} | Skipping {order.symbol}")
+                    self._record_rejection(
+                        code="R_MARGIN_UTILIZATION_GATE",
+                        symbol=order.symbol,
+                        detail=margin_reason,
+                        stage="EXECUTE",
+                        source_tag=source_tag,
+                        trace_id=trace_id,
+                    )
                     continue
 
             # V2.3.2 FIX: Check buying power before placing BUY orders
@@ -1742,16 +1947,33 @@ class PortfolioRouter:
                         "C0" in order.symbol or "P0" in order.symbol
                     )
                     if order.is_combo and is_option:
+                        is_exit_combo = bool(
+                            order.metadata and order.metadata.get("spread_close_short", False)
+                        )
                         per_contract_margin, reason_code = self._estimate_combo_margin_per_contract(
                             order.metadata
                         )
                         if per_contract_margin <= 0:
-                            self.log(
-                                f"ROUTER: {reason_code} | {order.symbol} | Combo order blocked"
-                            )
-                            continue
+                            if is_exit_combo:
+                                self.log(
+                                    f"ROUTER_EXIT_BYPASS_MARGIN_ESTIMATE: {reason_code} | "
+                                    f"{order.symbol} | Risk-reduction combo close allowed"
+                                )
+                            else:
+                                self.log(
+                                    f"ROUTER: {reason_code} | {order.symbol} | Combo order blocked"
+                                )
+                                self._record_rejection(
+                                    code=f"R_{reason_code}",
+                                    symbol=order.symbol,
+                                    detail="Combo pre-check margin estimate invalid",
+                                    stage="EXECUTE",
+                                    source_tag=source_tag,
+                                    trace_id=trace_id,
+                                )
+                                continue
                         required_margin = per_contract_margin * order.quantity
-                        if required_margin > margin_remaining:
+                        if per_contract_margin > 0 and required_margin > margin_remaining:
                             max_contracts = int(margin_remaining / per_contract_margin)
                             min_contracts = getattr(config, "MIN_SPREAD_CONTRACTS", 2)
                             if max_contracts >= min_contracts:
@@ -1772,6 +1994,17 @@ class PortfolioRouter:
                                     f"Required=${required_margin:,.0f} > Available=${margin_remaining:,.0f} | "
                                     f"Max {max_contracts} < min {min_contracts}"
                                 )
+                                self._record_rejection(
+                                    code="R_COMBO_MARGIN_BLOCK",
+                                    symbol=order.symbol,
+                                    detail=(
+                                        f"Required=${required_margin:,.0f} > Available=${margin_remaining:,.0f} | "
+                                        f"Max={max_contracts} < Min={min_contracts}"
+                                    ),
+                                    stage="EXECUTE",
+                                    source_tag=source_tag,
+                                    trace_id=trace_id,
+                                )
                                 continue
                     else:
                         # Non-combo pre-check uses notional order value
@@ -1782,6 +2015,17 @@ class PortfolioRouter:
                                 f"ROUTER: INSUFFICIENT_MARGIN | {order.symbol} | "
                                 f"Order=${order_value:,.0f} > Margin=${margin_remaining:,.0f} | "
                                 f"Qty={order.quantity} @ ${current_price:.2f}"
+                            )
+                            self._record_rejection(
+                                code="R_INSUFFICIENT_MARGIN",
+                                symbol=order.symbol,
+                                detail=(
+                                    f"Order=${order_value:,.0f} > Margin=${margin_remaining:,.0f} | "
+                                    f"Qty={order.quantity} Price=${current_price:.2f}"
+                                ),
+                                stage="EXECUTE",
+                                source_tag=source_tag,
+                                trace_id=trace_id,
                             )
                             continue
 
@@ -1798,6 +2042,17 @@ class PortfolioRouter:
                                 f"exceeds available ${margin_after_reserve:,.0f} "
                                 f"(reserved ${options_reserve:,.0f} for options)"
                             )
+                            self._record_rejection(
+                                code="R_MARGIN_RESERVE_TREND",
+                                symbol=order.symbol,
+                                detail=(
+                                    f"Trend order exceeds margin after reserve | "
+                                    f"Order=${order_value:,.0f} AvailableAfterReserve=${margin_after_reserve:,.0f}"
+                                ),
+                                stage="EXECUTE",
+                                source_tag=source_tag,
+                                trace_id=trace_id,
+                            )
                             continue
                 except Exception:
                     pass  # Continue with order if price lookup fails
@@ -1807,21 +2062,55 @@ class PortfolioRouter:
 
                 # V2.3.9: Handle combo orders for spreads
                 if order.is_combo and order.combo_short_symbol and order.combo_short_quantity:
+                    is_exit_combo = bool(
+                        order.metadata and order.metadata.get("spread_close_short", False)
+                    )
                     # Final safety check before submit (same estimator as pre-check)
                     (
                         combo_margin_per_contract,
                         reason_code,
                     ) = self._estimate_combo_margin_per_contract(order.metadata)
                     if combo_margin_per_contract <= 0:
-                        self.log(f"ROUTER: {reason_code} | {order.symbol} | Combo submit blocked")
-                        continue
+                        if is_exit_combo:
+                            self.log(
+                                f"ROUTER_EXIT_BYPASS_MARGIN_ESTIMATE: {reason_code} | "
+                                f"{order.symbol} | Combo close submit allowed"
+                            )
+                        else:
+                            self.log(
+                                f"ROUTER: {reason_code} | {order.symbol} | Combo submit blocked"
+                            )
+                            self._record_rejection(
+                                code=f"R_{reason_code}",
+                                symbol=order.symbol,
+                                detail="Combo submit blocked due to invalid margin estimate",
+                                stage="EXECUTE",
+                                source_tag=source_tag,
+                                trace_id=trace_id,
+                            )
+                            if hasattr(self.algorithm, "options_engine") and order.metadata:
+                                if order.metadata.get("spread_close_short", False):
+                                    self.algorithm.options_engine.reset_spread_closing_lock()
+                            continue
                     total_combo_margin = combo_margin_per_contract * abs(order.quantity)
                     margin_remaining = self.get_effective_margin_remaining()
-                    if total_combo_margin > margin_remaining:
+                    if combo_margin_per_contract > 0 and total_combo_margin > margin_remaining:
                         self.log(
                             f"ROUTER_MARGIN_BLOCK_COMBO: {order.symbol} | "
                             f"Required=${total_combo_margin:,.0f} > Available=${margin_remaining:,.0f}"
                         )
+                        self._record_rejection(
+                            code="R_COMBO_MARGIN_BLOCK",
+                            symbol=order.symbol,
+                            detail=(
+                                f"Required=${total_combo_margin:,.0f} > Available=${margin_remaining:,.0f}"
+                            ),
+                            stage="EXECUTE",
+                            source_tag=source_tag,
+                            trace_id=trace_id,
+                        )
+                        if is_exit_combo and hasattr(self.algorithm, "options_engine"):
+                            self.algorithm.options_engine.reset_spread_closing_lock()
                         continue
 
                     # Import Leg class for combo orders
@@ -1910,6 +2199,21 @@ class PortfolioRouter:
 
             except Exception as e:
                 self.log(f"ROUTER: ORDER_ERROR | {order.symbol} | {e}")
+                self._record_rejection(
+                    code="R_ORDER_EXCEPTION",
+                    symbol=order.symbol,
+                    detail=str(e),
+                    stage="EXECUTE",
+                    source_tag=source_tag,
+                    trace_id=trace_id,
+                )
+                if (
+                    order.is_combo
+                    and order.metadata
+                    and order.metadata.get("spread_close_short", False)
+                    and hasattr(self.algorithm, "options_engine")
+                ):
+                    self.algorithm.options_engine.reset_spread_closing_lock()
 
         return executed
 
@@ -1950,6 +2254,9 @@ class PortfolioRouter:
 
         if not immediate_weights:
             return []
+
+        # New cycle: reset rejection buffer for this immediate processing pass.
+        self.clear_last_rejections()
 
         # Remove processed weights from pending
         self._pending_weights = [w for w in self._pending_weights if w.urgency != Urgency.IMMEDIATE]

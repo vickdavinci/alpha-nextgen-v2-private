@@ -3859,3 +3859,51 @@ Files:
     `SPREAD_NEUTRALITY_EXIT_PNL_BAND`,
     `SPREAD_NEUTRALITY_ZONE_LOW`,
     `SPREAD_NEUTRALITY_ZONE_HIGH`.
+
+## V6.14 — Pre-Market VIX Shock Ladder (Implemented)
+
+- Added a unified pre-market shock ladder at `09:25` using:
+  - CBOE VIX level (`_get_vix_level()`)
+  - UVXY overnight gap proxy (mapped to VIX gap proxy)
+- Added ladder levels `L0/L1/L2/L3` with config thresholds and action windows.
+- Added portfolio-wide options controls from ladder:
+  - `L3`: freeze new options entries until configured time and queue flatten exits.
+  - `L2`: block new CALL entries until configured time and de-risk bullish options.
+  - `L1`: reduce options sizing only.
+- Added stale intraday carry cleanup in pre-market ladder action path.
+- Wired ladder controls into both options entry pathways:
+  - intraday scan (`_scan_options_signals`)
+  - EOD options generation (`_generate_options_signals`)
+- Applied ladder-aware sizing multiplier to options sizing stack.
+- Cached prior closes at market close for next-day ladder computation:
+  - `_vix_prior_close`, `_uvxy_prior_close`
+
+Files:
+- `config.py`
+- `main.py`
+- `WORKBOARD.md`
+
+## V6.14 — Intraday OCO/Margin Exit Hardening (Implemented)
+
+- Fixed 15:30 intraday force-close race where stale OCO legs could remain active
+  and attempt additional sell orders after the position was already closed.
+- Added explicit OCO cancellation before force-close submission:
+  - `_on_intraday_options_force_close()` now calls `cancel_by_symbol(...)`.
+- Added explicit exit quantity for intraday time exits:
+  - `check_intraday_force_exit()` now sets `requested_quantity=num_contracts`.
+- Added post-fill OCO cleanup on intraday and legacy single-leg exits to remove
+  residual stop/target legs immediately after close fills.
+- Added router safety guard:
+  - options close intents (`target_weight=0`) without `requested_quantity` are
+    skipped instead of using fallback weight-based sizing.
+
+Expected impact:
+- Eliminate duplicate/oversell close attempts at 15:30.
+- Reduce false margin rejects triggered by stale OCO orders.
+- Prevent accidental short-open behavior from fallback close sizing.
+
+Files:
+- `main.py`
+- `engines/satellite/options_engine.py`
+- `portfolio/portfolio_router.py`
+- `WORKBOARD.md`

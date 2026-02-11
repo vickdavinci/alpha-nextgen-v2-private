@@ -405,9 +405,9 @@ class TestTimingEdgeCases:
 
     def test_intraday_force_exit_time(self):
         """
-        Test intraday options force exit time.
+        Test intraday options force exit time (V6.15: 15:25).
         """
-        assert config.INTRADAY_FORCE_EXIT_TIME == "15:30"
+        assert config.INTRADAY_FORCE_EXIT_TIME == "15:25"
 
 
 class TestQCDataPatterns:

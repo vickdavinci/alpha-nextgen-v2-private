@@ -244,14 +244,14 @@ V53_REGIME_ENABLED = True  # V5.3: Master switch for new regime model
 
 # V5.3 Factor Weights (must sum to 1.0)
 WEIGHT_MOMENTUM_V53 = 0.30  # 20-day ROC - catches reversals in days
-WEIGHT_VIX_COMBINED_V53 = 0.30  # NEW: 60% level + 40% direction
-WEIGHT_TREND_V53 = 0.25  # SPY vs MA200 - increased from V4's 10%
+WEIGHT_VIX_COMBINED_V53 = 0.35  # V6.15 TUNE: Increase fear sensitivity in stress
+WEIGHT_TREND_V53 = 0.20  # V6.15 TUNE: Reduce lagging trend dominance
 WEIGHT_DRAWDOWN_V53 = 0.15  # Distance from 52-week high
 
 # VIX Combined scoring: 60% VIX Level + 40% VIX Direction
-VIX_COMBINED_LEVEL_WEIGHT = 0.60  # Absolute VIX level contribution
-VIX_COMBINED_DIRECTION_WEIGHT = 0.40  # VIX 5-day direction contribution
-VIX_COMBINED_HIGH_VIX_CLAMP = 47  # Cap VIX Combined score when VIX >= 25
+VIX_COMBINED_LEVEL_WEIGHT = 0.65  # V6.15 TUNE: Anchor more on absolute fear level
+VIX_COMBINED_DIRECTION_WEIGHT = 0.35  # V6.15 TUNE: Keep directional context
+VIX_COMBINED_HIGH_VIX_CLAMP = 44  # V6.15 TUNE: Push high-VIX states faster to caution
 VIX_COMBINED_HIGH_VIX_THRESHOLD = 25.0  # VIX level threshold for clamp
 
 # V5.3 Spike Cap: Macro score capped at 45 when VIX 5d change >= +28%
@@ -292,8 +292,8 @@ REGIME_SMOOTHING_ALPHA = 0.30
 # Thresholds
 REGIME_RISK_ON = 70
 REGIME_NEUTRAL = 50
-REGIME_CAUTIOUS = 40
-REGIME_DEFENSIVE = 30
+REGIME_CAUTIOUS = 45
+REGIME_DEFENSIVE = 35
 
 # Trend Factor
 SMA_FAST = 20
@@ -864,14 +864,14 @@ VASS_VIX_5D_PERIOD = 5  # Weekly VIX lookback (days)
 VASS_VIX_20D_PERIOD = 20  # Monthly VIX lookback (days)
 
 # Conviction Thresholds (% change triggers override of Macro)
-VASS_VIX_5D_BEARISH_THRESHOLD = 0.20  # VIX 5d change > +20% → BEARISH conviction
-VASS_VIX_5D_BULLISH_THRESHOLD = -0.15  # VIX 5d change < -15% → BULLISH conviction
+VASS_VIX_5D_BEARISH_THRESHOLD = 0.16  # VIX 5d change > +16% → BEARISH conviction
+VASS_VIX_5D_BULLISH_THRESHOLD = -0.20  # VIX 5d change < -20% → BULLISH conviction
 VASS_VIX_20D_STRONG_BEARISH = 0.30  # VIX 20d change > +30% → STRONG BEARISH
 VASS_VIX_20D_STRONG_BULLISH = -0.20  # VIX 20d change < -20% → STRONG BULLISH
 
 # Level Crossing Thresholds (regime shift signals)
-VASS_VIX_FEAR_CROSS_LEVEL = 25  # VIX crosses above this → BEARISH
-VASS_VIX_COMPLACENT_CROSS_LEVEL = 15  # VIX crosses below this → BULLISH
+VASS_VIX_FEAR_CROSS_LEVEL = 23  # VIX crosses above this → BEARISH
+VASS_VIX_COMPLACENT_CROSS_LEVEL = 14  # VIX crosses below this → BULLISH
 
 # Credit Spread Constraints
 CREDIT_SPREAD_MIN_CREDIT = 0.20  # V6.10 P3: Was 0.30, lowered to allow more fills
@@ -881,6 +881,12 @@ CREDIT_SPREAD_PROFIT_TARGET = 0.50  # Exit at 50% of max profit
 CREDIT_SPREAD_STOP_MULTIPLIER = 2.0  # Stop if spread value doubles (100% loss)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg delta range (OTM)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.45  # V6.13 OPT: Improve credit spread constructability
+# T-21: Credit-path liquidity quality gates (parity with debit selector).
+CREDIT_SPREAD_MIN_OPEN_INTEREST = 20  # V6.15 TUNE: Improve credit spread constructability
+CREDIT_SPREAD_MAX_SPREAD_PCT = 0.50  # V6.15 TUNE: Loosen spread-quality gate moderately
+CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT = (
+    0.70  # V6.15 TUNE: Allow long-leg protection in thinner tails
+)
 
 # V2.24.1: Elastic Delta Bands — progressive widening when no candidates found
 # Each step widens the delta range by ± the step value (e.g., [0.0, 0.03, 0.07, 0.12])
@@ -903,6 +909,11 @@ INTRADAY_MAX_TRADES_PER_DAY = 2  # Sniper gets one retry per day
 # Prevents over-trading when VIX flickers around strategy thresholds
 MAX_OPTIONS_TRADES_PER_DAY = 4  # All options combined (swing + intraday)
 MAX_SWING_TRADES_PER_DAY = 2  # Swing mode limit
+# Reserve swing capacity so intraday activity cannot fully starve VASS entries.
+OPTIONS_RESERVE_SWING_DAILY_SLOTS_ENABLED = True
+OPTIONS_MIN_SWING_SLOTS_PER_DAY = 1
+# Replace one-attempt-per-day spread lock with scoped attempt budgets.
+SPREAD_MAX_ATTEMPTS_PER_KEY_PER_DAY = 3
 
 # Legacy compatibility (combined min/max)
 OPTIONS_ALLOCATION_MIN = 0.25  # 25% minimum
@@ -964,13 +975,13 @@ OPTIONS_ATR_STOP_MULTIPLIER = 0.9  # V6.13 OPT: Slightly tighter ATR base stop
 
 # Floor and cap to prevent extreme stops
 OPTIONS_ATR_STOP_MIN_PCT = 0.12  # V6.13 OPT: Tighter floor in calm conditions
-OPTIONS_ATR_STOP_MAX_PCT = 0.30  # V6.8: Was 0.50, prevent 50% losses
+OPTIONS_ATR_STOP_MAX_PCT = 0.28  # Slightly tighter cap to reduce tail-loss
 
 # Whether to use ATR-based stops (set False to use legacy tier-based stops)
 OPTIONS_USE_ATR_STOPS = True
 
 # Profit Target
-OPTIONS_PROFIT_TARGET_PCT = 0.50  # +50% profit target
+OPTIONS_PROFIT_TARGET_PCT = 0.60  # +60% profit target (trend riding)
 
 # V2.3.10: DTE Exit for Single-Leg Options (prevents exercise/expiration)
 # Close single-leg options when DTE <= this value to avoid:
@@ -1031,7 +1042,8 @@ PARTIAL_ASSIGNMENT_AUTO_CLOSE = True  # Auto-close orphaned legs
 # This catches assignments at ANY DTE, not just near expiry
 # Aug 2022 assignments happened at DTE=4, missed by DTE<=3 guards
 SHORT_LEG_ITM_EXIT_ENABLED = True
-SHORT_LEG_ITM_EXIT_THRESHOLD = 0.005  # V6.10 P0: Exit when 0.5% ITM (was 1%)
+SHORT_LEG_ITM_EXIT_THRESHOLD = 0.010  # V6.15 TUNE: Reduce instant-churn exits
+SPREAD_ASSIGNMENT_GRACE_MINUTES = 45  # V6.15 FIX: Allow spread to stabilize before ITM checks
 SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 15  # Minutes between log messages
 
 # V6.10 P0: Mandatory DTE=1 Force Close (Nuclear Assignment Prevention)
@@ -1046,6 +1058,48 @@ SPREAD_FORCE_CLOSE_ENABLED = True  # Master switch for mandatory close
 PREMARKET_ITM_CHECK_ENABLED = True  # Enable 09:25 pre-market check
 PREMARKET_ITM_CHECK_HOUR = 9  # Check at 09:25 ET
 PREMARKET_ITM_CHECK_MINUTE = 25
+
+# V6.14: Pre-market VIX shock ladder (shared guard across options modes)
+# Uses CBOE VIX level + UVXY overnight gap proxy to de-risk before market open.
+PREMARKET_VIX_LADDER_ENABLED = True
+
+# Level triggers (higher level takes precedence)
+# L3: Panic shock -> freeze new options entries and flatten all options risk
+PREMARKET_VIX_L3_LEVEL = 35.0
+PREMARKET_VIX_L3_GAP_PCT = 12.0  # Approx VIX gap via UVXY gap / 1.5
+
+# L2: High stress -> block new CALLs and de-risk bullish options
+PREMARKET_VIX_L2_LEVEL = 28.0
+PREMARKET_VIX_L2_GAP_PCT = 7.0
+
+# L1: Elevated -> reduce options size, no forced exits
+PREMARKET_VIX_L1_LEVEL = 22.0
+PREMARKET_VIX_L1_GAP_PCT = 4.0
+
+# Entry windows after pre-market shock
+PREMARKET_VIX_L2_CALL_BLOCK_UNTIL_HOUR = 11
+PREMARKET_VIX_L2_CALL_BLOCK_UNTIL_MINUTE = 0
+PREMARKET_VIX_L3_ENTRY_BLOCK_UNTIL_HOUR = 12
+PREMARKET_VIX_L3_ENTRY_BLOCK_UNTIL_MINUTE = 0
+
+# Size multipliers by level
+PREMARKET_VIX_L1_SIZE_MULT = 0.75
+PREMARKET_VIX_L2_SIZE_MULT = 0.50
+PREMARKET_VIX_L3_SIZE_MULT = 0.25
+
+# De-risk actions
+PREMARKET_VIX_L2_CLOSE_BULLISH_OPTIONS = True
+PREMARKET_VIX_L3_CLOSE_ALL_OPTIONS = True
+PREMARKET_FORCE_CLOSE_INTRADAY_STALE = True
+
+# V6.16: Overnight VIX shock memory (carry overnight panic context into early session)
+# Prevents Micro/VASS from "resetting" at open after a large overnight VIX jump.
+MICRO_SHOCK_MEMORY_ENABLED = True
+MICRO_SHOCK_MEMORY_MIN_LADDER_LEVEL = 2  # Apply only on L2/L3 shock days
+MICRO_SHOCK_MEMORY_UNTIL_HOUR = 13
+MICRO_SHOCK_MEMORY_UNTIL_MINUTE = 0
+MICRO_SHOCK_MEMORY_ANCHOR = 0.60  # 60% of overnight shock retained in effective open baseline
+SHOCK_MEMORY_FORCE_BEARISH_VASS = True  # Force VASS bearish direction while shock memory is active
 
 # P1 Fix 5: Assignment-Aware Position Sizing
 # Reduce size if max short exposure exceeds safe margin
@@ -1062,7 +1116,16 @@ ASSIGNMENT_EXIT_PRIORITY_ENABLED = True
 # For PUTs: ITM = strike > price, OTM = strike < price
 # Example: If MIN_OTM_PCT = 0.03 and QQQ = $350, min short strike = $339.50
 BEAR_PUT_ENTRY_GATE_ENABLED = True
-BEAR_PUT_ENTRY_MIN_OTM_PCT = 0.03  # Short PUT must be >= 3% OTM at entry
+BEAR_PUT_ENTRY_MIN_OTM_PCT = (
+    0.02  # Baseline assignment gate (reduced from 3% to improve PUT spread participation)
+)
+BEAR_PUT_ENTRY_LOW_VIX_THRESHOLD = 18.0  # Relax assignment gate in calmer IV environments
+BEAR_PUT_ENTRY_MIN_OTM_PCT_RELAXED = (
+    0.015  # Relaxed OTM threshold in low-VIX + strong-regime contexts
+)
+BEAR_PUT_ENTRY_RELAXED_REGIME_MIN = (
+    60.0  # Require healthy regime before applying relaxed OTM threshold
+)
 
 # Contract Selection
 # Options chain filter (must cover BOTH Intraday 0-2 DTE AND Swing 5-45 DTE)
@@ -1169,7 +1232,7 @@ SPREAD_DTE_EXIT = 5  # Close by 5 DTE remaining
 # Exit targets
 # V6.10 P5: Symmetric R:R (40%/40%) - need 1:1 win ratio to break even
 # Was asymmetric (50%/35%) requiring 1.43:1 win ratio
-SPREAD_PROFIT_TARGET_PCT = 0.40  # V6.10 P5: Lowered from 0.50 to 0.40 (symmetric with stop)
+SPREAD_PROFIT_TARGET_PCT = 0.50  # +50% base target
 SPREAD_STOP_LOSS_PCT = (
     0.40  # V6.10 P5: Raised from 0.35 to 0.40 (wider stop, symmetric with target)
 )
@@ -1183,10 +1246,10 @@ SPREAD_STOP_REGIME_MULTIPLIERS = {
 # V3.0: Regime-Adaptive Profit Targets
 # V6.10 P5: With 40% base, multipliers give: Bull=56%, Neutral=40%, Bear=32%
 SPREAD_PROFIT_REGIME_MULTIPLIERS = {
-    75: 1.40,  # Regime >= 75: 56% target (1.40 × 40% base)
-    50: 1.00,  # Regime 50-74: 40% target (standard)
-    40: 1.00,  # Regime 40-49: 40% target (cautious)
-    0: 0.80,  # Regime < 40: 32% target (0.80 × 40% base)
+    75: 1.30,  # Regime >= 75: 65% target (1.30 × 50% base)
+    50: 1.10,  # Regime 50-74: 55% target
+    40: 1.20,  # Regime 40-49: 60% target
+    0: 1.20,  # Regime < 40: 60% target (ride bear trends)
 }
 
 # V2.27: Win Rate Gate (Options Self-Correcting Throttle)
@@ -1426,14 +1489,18 @@ VIX_WHIPSAW_MIN_RANGE = 5.0  # Minimum range % to consider whipsaw
 # Analysis showed Jan 21 (+6.9%), Jan 24 (+7.4%), Jan 25 (+5.3%) missed by narrow margin
 # V6.6: Lowered from ±5% to ±3% based on 2022H1 analysis
 # Only 8% of moves exceeded ±5%, missing many valid conviction signals
-MICRO_UVXY_BEARISH_THRESHOLD = 0.025  # +2.5% for more PUT signals
-MICRO_UVXY_BULLISH_THRESHOLD = -0.05  # V6.12: -5% for CALL conviction (stricter)
+MICRO_UVXY_BEARISH_THRESHOLD = (
+    0.020  # Slightly easier bearish conviction for faster PUT participation
+)
+MICRO_UVXY_BULLISH_THRESHOLD = (
+    -0.040
+)  # Restore bullish participation in bull/chop while gates control bear CALLs
 # V6.10: Lower conviction extreme to capture 5-7% moves that were blocked
-MICRO_UVXY_CONVICTION_EXTREME = 0.035  # V6.12: 3.5% intraday move for NEUTRAL VETO
+MICRO_UVXY_CONVICTION_EXTREME = 0.030  # Slightly easier extreme conviction trigger
 # V6.10: Micro fallback + confirmation thresholds (Dir=None tuning)
-MICRO_SCORE_BULLISH_CONFIRM = 48.0  # V6.13 OPT: Moderate increase in STABLE fallback participation
-MICRO_SCORE_BEARISH_CONFIRM = 48.0  # V6.13 OPT: Keep symmetric confirmation
-INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.30  # V6.13 OPT: More fallback triggers in bull/choppy
+MICRO_SCORE_BULLISH_CONFIRM = 48.0  # V6.15 TUNE: Slightly tighter CALL confirmation
+MICRO_SCORE_BEARISH_CONFIRM = 47.0  # V6.15 TUNE: Easier PUT confirmation
+INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.12  # Stronger fallback when UVXY is neutral
 MICRO_VIX_CRISIS_LEVEL = 35  # VIX > 35 → CRISIS (BEARISH conviction)
 MICRO_VIX_COMPLACENT_LEVEL = 12  # VIX < 12 → COMPLACENT (BULLISH conviction)
 
@@ -1516,7 +1583,21 @@ VIX_REVERSAL_CHOPPY = 4  # 3-4 reversals: Choppy
 # -----------------------------------------------------------------------------
 
 # V2.3.16: Sniper Logic - Noise Filter (Gate 1)
-QQQ_NOISE_THRESHOLD = 0.15  # V6.13.1 OPT: Reduce Dir=NONE (was 0.20, target <40%)
+QQQ_NOISE_THRESHOLD = 0.06  # Reduce QQQ_FLAT blocks in low-vol bull/chop sessions
+
+# V6.14 OPT: Bear-market PUT risk controls.
+PUT_ENTRY_VIX_MAX = 38.0  # Allow more participation before panic cap
+PUT_SIZE_REDUCTION_VIX_START = 32.0  # Delay PUT size haircut for trend capture
+PUT_SIZE_REDUCTION_FACTOR = 0.60  # Less aggressive downsizing above threshold
+INTRADAY_CALL_BLOCK_VIX_MIN = 22.0  # Block CALLs earlier when fear rises
+INTRADAY_CALL_BLOCK_REGIME_MAX = 58.0  # Extend block deeper into weak-neutral macro
+# Additional minimal CALL-protection gates (bear-risk controls without major architecture changes)
+CALL_GATE_MA20_ENABLED = True  # Block CALL entries when QQQ is below its 20-day SMA
+CALL_GATE_VIX_5D_RISING_ENABLED = True  # Block CALL entries when 5-day VIX trend is rising
+CALL_GATE_VIX_5D_RISING_PCT = 0.10  # +10% over 5 days
+CALL_GATE_CONSECUTIVE_LOSS_ENABLED = True  # Pause CALL entries after repeated losses
+CALL_GATE_CONSECUTIVE_LOSSES = 3  # Trigger pause after 3 consecutive CALL losses
+CALL_GATE_LOSS_COOLDOWN_DAYS = 2  # Pause duration
 
 # V2.19: VIX Floor for DEBIT_FADE
 # In low VIX (<13.5) "apathy" markets, mean reversion fails - trends persist longer
@@ -1581,7 +1662,8 @@ INTRADAY_PROTECT_DTE_MIN = 3  # Minimum 3 DTE
 INTRADAY_PROTECT_DTE_MAX = 7  # Maximum 7 DTE
 
 # Force close time for intraday
-INTRADAY_FORCE_EXIT_TIME = "15:30"  # Must close by 3:30 PM
+INTRADAY_FORCE_EXIT_TIME = "15:25"  # V6.15 FIX: Earlier close to avoid OCO race at 15:30
+OCO_RECOVERY_CUTOFF_MINUTES_BEFORE_FORCE_EXIT = 20  # Disable OCO recovery near force-close window
 
 # V2.3.16: Direction Conflict Resolution
 # Skip intraday FADE when main regime strongly disagrees
@@ -1620,12 +1702,12 @@ INTRADAY_GOVERNOR_GATE_ENABLED = True
 # When Micro Regime detects crisis (score < 0), buy protective PUTs
 # This supplements TMF/PSQ hedging with direct options protection
 PROTECTIVE_PUTS_ENABLED = True
-PROTECTIVE_PUTS_SIZE_PCT = 0.05  # 5% of portfolio (meaningful crisis protection)
+PROTECTIVE_PUTS_SIZE_PCT = 0.03  # Reduce insurance drag while preserving crash hedge
 PROTECTIVE_PUTS_DTE_MIN = 3  # Minimum 3 DTE (time for recovery)
 PROTECTIVE_PUTS_DTE_MAX = 7  # Maximum 7 DTE (balance cost vs protection)
 PROTECTIVE_PUTS_DELTA_TARGET = 0.30  # OTM puts (cheaper, more leverage)
 PROTECTIVE_PUTS_DELTA_TOLERANCE = 0.10  # Accept delta 0.20-0.40
-PROTECTIVE_PUTS_STOP_PCT = 0.50  # 50% stop (it's insurance, accept loss)
+PROTECTIVE_PUTS_STOP_PCT = 0.35  # Tighter stop to reduce repeated deep insurance losses
 
 # -----------------------------------------------------------------------------
 # V2.1.1 SWING MODE SIMPLE FILTERS
@@ -1700,7 +1782,7 @@ CONNECTION_TIMEOUT_MIN = 5
 # EOD events are scheduled dynamically based on actual market close time.
 # On early close days (1:00 PM), events fire earlier automatically.
 EOD_OFFSET_MINUTES = 15  # MR force close & EOD processing = market_close - 15 min
-INTRADAY_OPTIONS_OFFSET_MINUTES = 30  # Intraday options close = market_close - 30 min
+INTRADAY_OPTIONS_OFFSET_MINUTES = 35  # V6.15 FIX: Align dynamic close with 15:25 fallback
 
 # =============================================================================
 # LOG THROTTLING (Pre-QC Local Testing)
@@ -1711,13 +1793,13 @@ LOG_THROTTLE_MINUTES = 15  # VIX spike log throttle interval
 LOG_VIX_SPIKE_MIN_MOVE = 2.0  # Minimum VIX move to bypass throttle
 
 # V2.3.21: Spread scan throttle to reduce log noise
-# Only attempt spread selection every 15 minutes (not every minute)
-SPREAD_SCAN_THROTTLE_MINUTES = 15
+# Retry often enough to catch fast-moving contract availability changes.
+SPREAD_SCAN_THROTTLE_MINUTES = 10
 
-# V2.4.3: Spread FAILURE cooldown - if spread construction fails, don't retry for 4 hours
-# Problem: Engine retried 340 times when no valid contracts existed
-# Solution: After failure, enter 4-hour cooldown (market conditions won't change that fast)
-SPREAD_FAILURE_COOLDOWN_HOURS = 1  # V6.12: Reduce cooldown to avoid all-day lockout
+# V2.4.3: Spread FAILURE cooldown after construction failure.
+# Keep short so valid chains can be re-attempted intra-session.
+SPREAD_FAILURE_COOLDOWN_HOURS = 1  # Legacy fallback if minute override is absent
+SPREAD_FAILURE_COOLDOWN_MINUTES = 30
 
 # V2.5: Max concurrent spreads - limit exposure from spread positions
 # Problem: Mar 25-26 had two spreads open simultaneously ($19K exposure)

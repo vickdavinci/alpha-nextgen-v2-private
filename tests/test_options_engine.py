@@ -327,7 +327,7 @@ class TestPositionSizing:
         assert num_contracts <= 10  # Tier cap is 10 contracts
         assert stop_pct == 0.22  # Medium-high: -22% stop for score 3.5
         assert stop_price == pytest.approx(1.45 * (1 - 0.22), rel=0.01)  # $1.131
-        assert target_price == 1.45 * (1 + 0.50)  # $2.175
+        assert target_price == pytest.approx(1.45 * (1 + 0.60), rel=0.01)  # $2.32 (60% target)
 
     def test_minimum_one_contract(self, engine):
         """Test at least 1 contract is used."""
@@ -684,9 +684,9 @@ class TestExitSignals:
     """Tests for exit signal detection."""
 
     def test_exit_profit_target_hit(self, engine_with_position):
-        """Test exit when profit target hit (+50%)."""
-        # Entry at $1.45, target at $2.175
-        result = engine_with_position.check_exit_signals(current_price=2.20)
+        """Test exit when profit target hit (+60%)."""
+        # Entry at $1.45, target at $2.32 (60% profit)
+        result = engine_with_position.check_exit_signals(current_price=2.40)
         assert result is not None
         assert "TARGET_HIT" in result.reason
         assert result.target_weight == 0.0
