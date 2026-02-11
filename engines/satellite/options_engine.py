@@ -1354,6 +1354,7 @@ class MicroRegimeEngine:
             MicroRegime.CALMING,  # Can trade when fear is decreasing
             MicroRegime.CAUTION_LOW,  # V6.10 P3: Added - VIX low + rising (half size)
             MicroRegime.CAUTIOUS,  # V6.10 P3: Added - VIX medium + stable (allow credits)
+            MicroRegime.TRANSITION,  # Allow participation during mild handoff regimes
         }
 
         if micro_regime not in tradeable_regimes:
@@ -5933,10 +5934,15 @@ class OptionsEngine:
                     f"Gross ${pnl:.2f} - Commission ${commission_cost:.2f}"
                 )
 
-            # Exit 2: STOP LOSS (V2.4.2 FIX: Max loss = 50% of entry debit)
-            # This prevents catastrophic losses from holding spreads to expiration
-            # Example: $4 debit spread exits if value drops to $2 (50% loss)
-            elif pnl_pct < 0:
+            # Exit 2: STOP LOSS
+            # Add a hard cap across regimes, then apply adaptive stop logic.
+            if exit_reason is None and pnl_pct < 0:
+                hard_stop_pct = float(getattr(config, "SPREAD_HARD_STOP_LOSS_PCT", 0.0))
+                if hard_stop_pct > 0 and pnl_pct <= -hard_stop_pct:
+                    exit_reason = (
+                        f"HARD_STOP_LOSS {pnl_pct:.1%} (lost > {hard_stop_pct:.0%} hard cap)"
+                    )
+            if exit_reason is None and pnl_pct < 0:
                 base_stop_pct = config.SPREAD_STOP_LOSS_PCT
                 stop_multipliers = getattr(
                     config, "SPREAD_STOP_REGIME_MULTIPLIERS", {75: 1.0, 50: 1.0, 40: 1.0, 0: 1.0}
@@ -5953,7 +5959,7 @@ class OptionsEngine:
                     )
 
             # Exit 3: DTE exit (close by 5 DTE)
-            elif current_dte <= config.SPREAD_DTE_EXIT:
+            if exit_reason is None and current_dte <= config.SPREAD_DTE_EXIT:
                 exit_reason = f"DTE_EXIT ({current_dte} DTE <= {config.SPREAD_DTE_EXIT})"
 
             # Exit 4: V2.22 Neutrality Exit (Hysteresis Shield)
@@ -5962,7 +5968,8 @@ class OptionsEngine:
             neutrality_zone_low = getattr(config, "SPREAD_NEUTRALITY_ZONE_LOW", 45)
             neutrality_zone_high = getattr(config, "SPREAD_NEUTRALITY_ZONE_HIGH", 65)
             if (
-                getattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", True)
+                exit_reason is None
+                and getattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", True)
                 and neutrality_zone_low <= regime_score <= neutrality_zone_high
             ):
                 neutrality_band = getattr(config, "SPREAD_NEUTRALITY_EXIT_PNL_BAND", 0.10)
@@ -6869,11 +6876,35 @@ class OptionsEngine:
                     if qqq_sma20 is not None and getattr(qqq_sma20, "IsReady", False):
                         sma20_value = float(qqq_sma20.Current.Value)
                         if qqq_current < sma20_value:
-                            self.log(
-                                f"INTRADAY: CALL blocked below MA20 | "
-                                f"QQQ={qqq_current:.2f} < SMA20={sma20_value:.2f}"
+                            bypass_regime_min = float(
+                                getattr(config, "CALL_GATE_MA20_BYPASS_REGIME_MIN", 68.0)
                             )
-                            return fail("E_CALL_GATE_MA20")
+                            bypass_vix_max = float(
+                                getattr(config, "CALL_GATE_MA20_BYPASS_VIX_MAX", 14.5)
+                            )
+                            bypass_size_mult = float(
+                                getattr(config, "CALL_GATE_MA20_BYPASS_SIZE_MULT", 0.70)
+                            )
+                            can_bypass = (
+                                macro_regime_score >= bypass_regime_min
+                                and vix_for_call <= bypass_vix_max
+                            )
+                            if can_bypass:
+                                size_multiplier *= bypass_size_mult
+                                self.log(
+                                    f"INTRADAY: CALL below MA20 bypassed | "
+                                    f"QQQ={qqq_current:.2f} < SMA20={sma20_value:.2f} | "
+                                    f"Macro={macro_regime_score:.1f} >= {bypass_regime_min:.1f} | "
+                                    f"VIX={vix_for_call:.1f} <= {bypass_vix_max:.1f} | "
+                                    f"SizeMult={size_multiplier:.2f}",
+                                    trades_only=True,
+                                )
+                            else:
+                                self.log(
+                                    f"INTRADAY: CALL blocked below MA20 | "
+                                    f"QQQ={qqq_current:.2f} < SMA20={sma20_value:.2f}"
+                                )
+                                return fail("E_CALL_GATE_MA20")
 
                 # Gate 3: early fear build (5-day VIX trend rising)
                 if getattr(config, "CALL_GATE_VIX_5D_RISING_ENABLED", True):

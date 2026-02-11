@@ -1244,6 +1244,7 @@ SPREAD_PROFIT_TARGET_PCT = 0.50  # +50% base target
 SPREAD_STOP_LOSS_PCT = (
     0.40  # V6.10 P5: Raised from 0.35 to 0.40 (wider stop, symmetric with target)
 )
+SPREAD_HARD_STOP_LOSS_PCT = 0.32  # Emergency cap across regimes to prevent tail-loss drift
 SPREAD_STOP_REGIME_MULTIPLIERS = {
     75: 1.20,  # Bull: give more room (0.40 * 1.2 = 0.48)
     50: 1.00,  # Neutral: base (0.40)
@@ -1459,9 +1460,9 @@ SPREAD_MAX_CONTRACTS = 20  # Hard cap per spread position
 # V5.3: Options Position Limits (Margin Error Prevention)
 # Max concurrent positions: 1 intraday + 2 swings = 3 total
 OPTIONS_MAX_INTRADAY_POSITIONS = 1  # Max 1 intraday position at a time
-OPTIONS_MAX_SWING_POSITIONS = 3  # Stage-1: Max 3 swing spread positions at a time
-OPTIONS_MAX_TOTAL_POSITIONS = 3  # Hard cap on total options positions
-OPTIONS_MAX_SWING_PER_DIRECTION = 2  # Stage-1 cap per spread direction (bull/bear)
+OPTIONS_MAX_SWING_POSITIONS = 4  # V6.21 execution tune: allow more swing capacity
+OPTIONS_MAX_TOTAL_POSITIONS = 5  # 1 intraday + up to 4 swings
+OPTIONS_MAX_SWING_PER_DIRECTION = 3  # Keep directional concentration bounded
 
 # V2.14 Fix #22: Conservative spread sizing to prevent tier cap violations
 # Evidence: Trade #20 sized at mid price $2.75 but filled at $3.96 (44% slippage)
@@ -1510,9 +1511,9 @@ MICRO_UVXY_BULLISH_THRESHOLD = (
 # V6.10: Lower conviction extreme to capture 5-7% moves that were blocked
 MICRO_UVXY_CONVICTION_EXTREME = 0.030  # Slightly easier extreme conviction trigger
 # V6.10: Micro fallback + confirmation thresholds (Dir=None tuning)
-MICRO_SCORE_BULLISH_CONFIRM = 48.0  # V6.15 TUNE: Slightly tighter CALL confirmation
-MICRO_SCORE_BEARISH_CONFIRM = 47.0  # V6.15 TUNE: Easier PUT confirmation
-INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.12  # Stronger fallback when UVXY is neutral
+MICRO_SCORE_BULLISH_CONFIRM = 47.0  # Slightly easier CALL confirmation
+MICRO_SCORE_BEARISH_CONFIRM = 48.0  # Slightly easier PUT confirmation
+INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.10  # Let QQQ fallback participate earlier
 MICRO_VIX_CRISIS_LEVEL = 35  # VIX > 35 → CRISIS (BEARISH conviction)
 MICRO_VIX_COMPLACENT_LEVEL = 12  # VIX < 12 → COMPLACENT (BULLISH conviction)
 
@@ -1605,6 +1606,9 @@ INTRADAY_CALL_BLOCK_VIX_MIN = 22.0  # Block CALLs earlier when fear rises
 INTRADAY_CALL_BLOCK_REGIME_MAX = 58.0  # Extend block deeper into weak-neutral macro
 # Additional minimal CALL-protection gates (bear-risk controls without major architecture changes)
 CALL_GATE_MA20_ENABLED = True  # Block CALL entries when QQQ is below its 20-day SMA
+CALL_GATE_MA20_BYPASS_REGIME_MIN = 68.0  # Allow CALLs below MA20 in strong bullish macro
+CALL_GATE_MA20_BYPASS_VIX_MAX = 14.5  # Only bypass when fear is still low
+CALL_GATE_MA20_BYPASS_SIZE_MULT = 0.70  # Reduce size when using MA20 bypass
 CALL_GATE_VIX_5D_RISING_ENABLED = True  # Block CALL entries when 5-day VIX trend is rising
 CALL_GATE_VIX_5D_RISING_PCT = 0.10  # +10% over 5 days
 CALL_GATE_CONSECUTIVE_LOSS_ENABLED = True  # Pause CALL entries after repeated losses
@@ -1663,10 +1667,11 @@ INTRADAY_DEBIT_FADE_DELTA_MAX = 0.50  # Near ATM max
 INTRADAY_DEBIT_MOMENTUM_DELTA_MIN = 0.45  # Near ATM for momentum
 INTRADAY_DEBIT_MOMENTUM_DELTA_MAX = 0.65  # Slightly ITM max
 INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES = [
-    "CAUTION_LOW",
-    "CAUTIOUS",
-    "ELEVATED",
     "WORSENING",
+    "WORSENING_HIGH",
+    "BREAKING",
+    "FULL_PANIC",
+    "CRASH",
 ]  # Skip weak/choppy transition states for momentum
 
 # ITM_MOMENTUM: Stock replacement needs ITM options (delta 0.60-0.85)
