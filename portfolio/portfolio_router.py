@@ -2070,7 +2070,8 @@ class PortfolioRouter:
 
                     # V2.14 Fix #14: MARGIN_ERROR_TREND - Check trend orders don't exceed
                     # margin after reserving OPTIONS_MAX_MARGIN_CAP for options engine
-                    trend_symbols = ["QLD", "SSO", "TNA", "FAS"]
+                    # V6.11: Trend redesign replaced TNA/FAS with UGL/UCO.
+                    trend_symbols = ["QLD", "SSO", "UGL", "UCO"]
                     symbol_str = str(order.symbol)
                     if symbol_str in trend_symbols:
                         options_reserve = getattr(config, "OPTIONS_MAX_MARGIN_CAP", 10000)

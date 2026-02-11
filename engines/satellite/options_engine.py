@@ -12,7 +12,7 @@ MODE 1: SWING MODE (5-45 DTE)
 
 MODE 2: INTRADAY MODE (0-2 DTE)
 - 5% allocation of portfolio
-- Same-day entry and exit (must close by 3:30 PM)
+- Same-day entry and exit (must close by configured intraday cutoff)
 - Uses MICRO REGIME ENGINE for decision making
 - VIX Level × VIX Direction = 21 distinct trading regimes
 - Strategies: Debit Fade, Credit Spreads, ITM Momentum, Protective Puts
@@ -1917,6 +1917,8 @@ class OptionsEngine:
         # V6.5 FIX: Prevent gamma pin exit from firing every minute
         # Once triggered, don't trigger again for the same position
         self._gamma_pin_exit_triggered: bool = False
+        # Throttle repeated ITM short-leg risk logs.
+        self._last_short_leg_itm_exit_log: Dict[str, datetime] = {}
         # CALL-gate tracking: pause new CALLs after repeated losses.
         self._call_consecutive_losses: int = 0
         self._call_cooldown_until_date: Optional[datetime.date] = None
@@ -1949,6 +1951,15 @@ class OptionsEngine:
             return str(symbol)
         except Exception:
             return ""
+
+    def _get_intraday_force_exit_hhmm(self) -> Tuple[int, int]:
+        """Return configured intraday force-exit time as (hour, minute)."""
+        force_exit_cfg = str(getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:30"))
+        try:
+            hh, mm = force_exit_cfg.split(":")
+            return int(hh), int(mm)
+        except Exception:
+            return 15, 30
 
     def record_intraday_result(
         self, symbol: str, is_win: bool, current_time: Optional[str] = None
@@ -5305,6 +5316,19 @@ class OptionsEngine:
             itm_pct = itm_amount / strike
 
         if itm_pct >= itm_threshold:
+            # Throttle diagnostic logging to avoid repeated spam in fast loops.
+            interval_min = int(getattr(config, "SHORT_LEG_ITM_EXIT_LOG_INTERVAL", 15))
+            now_dt = self.algorithm.Time if self.algorithm is not None else None
+            if now_dt is not None and interval_min > 0:
+                sym_key = str(short_leg.symbol)
+                last_dt = self._last_short_leg_itm_exit_log.get(sym_key)
+                if last_dt is None or (now_dt - last_dt).total_seconds() >= interval_min * 60:
+                    self.log(
+                        f"SHORT_LEG_ITM_EXIT_TRIGGER: {sym_key} | ITM={itm_pct:.1%} >= {itm_threshold:.1%} | "
+                        f"Underlying={underlying_price:.2f} Strike={strike:.2f}",
+                        trades_only=True,
+                    )
+                    self._last_short_leg_itm_exit_log[sym_key] = now_dt
             reason = (
                 f"SHORT_LEG_ITM_EXIT: Short {'PUT' if is_put else 'CALL'} "
                 f"Strike={strike} is {itm_pct:.1%} ITM (threshold={itm_threshold:.1%}) | "
@@ -7117,9 +7141,9 @@ class OptionsEngine:
         current_price: float,
     ) -> Optional[TargetWeight]:
         """
-        Check for forced exit of intraday position at 3:30 PM ET.
+        Check for forced exit of intraday position at configured intraday cutoff.
 
-        Intraday mode positions MUST be closed by 3:30 PM.
+        Intraday mode positions MUST be closed by configured force-exit time.
 
         Args:
             current_hour: Current hour (0-23) Eastern.
@@ -7136,8 +7160,10 @@ class OptionsEngine:
         if self._pending_intraday_exit:
             return None
 
-        # Force exit at 15:30 (3:30 PM)
-        force_exit_time = current_hour > 15 or (current_hour == 15 and current_minute >= 30)
+        force_hh, force_mm = self._get_intraday_force_exit_hhmm()
+        force_exit_time = current_hour > force_hh or (
+            current_hour == force_hh and current_minute >= force_mm
+        )
 
         if not force_exit_time:
             return None
@@ -7148,7 +7174,10 @@ class OptionsEngine:
 
         pnl_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0
 
-        reason = f"INTRADAY_TIME_EXIT_1530 {pnl_pct:+.1%} (Price: ${current_price:.2f})"
+        reason = (
+            f"INTRADAY_TIME_EXIT_{force_hh:02d}{force_mm:02d} "
+            f"{pnl_pct:+.1%} (Price: ${current_price:.2f})"
+        )
         self.log(f"INTRADAY_FORCE_EXIT {symbol} | {reason}", trades_only=True)
 
         # V2.3.3: Set pending exit flag to prevent duplicate signals
@@ -7509,7 +7538,8 @@ class OptionsEngine:
             # Count intraday trades only after a confirmed fill registration.
             self._increment_trade_counter(OptionsMode.INTRADAY)
             self.log(
-                f"OPT: INTRADAY position registered (trade #{self._intraday_trades_today}, force-close at 15:30)",
+                f"OPT: INTRADAY position registered (trade #{self._intraday_trades_today}, "
+                f"force-close at {self._get_intraday_force_exit_hhmm()[0]:02d}:{self._get_intraday_force_exit_hhmm()[1]:02d})",
                 trades_only=True,
             )
         else:
@@ -7914,7 +7944,7 @@ class OptionsEngine:
             )
 
     def has_intraday_position(self) -> bool:
-        """V2.3.2: Check if an intraday position exists (tracked separately for 15:30 force close)."""
+        """V2.3.2: Check if an intraday position exists (tracked separately for timed force close)."""
         return self._intraday_position is not None
 
     def get_intraday_position(self) -> Optional[OptionsPosition]:
@@ -8197,11 +8227,12 @@ class OptionsEngine:
         intraday_data = state.get("intraday_position")
         if intraday_data:
             # CRITICAL FIX: Intraday positions should NEVER exist overnight
-            # If found, it means position wasn't closed at 15:30 (critical failure)
+            # If found, it means position wasn't closed by configured cutoff (critical failure)
             # Force clear and log warning - the position is likely expired or at extreme risk
+            force_hh, force_mm = self._get_intraday_force_exit_hhmm()
             self.log(
                 "OPT: CRITICAL - Intraday position found on state restore! "
-                "0-2 DTE options should close by 15:30. "
+                f"0-2 DTE options should close by {force_hh:02d}:{force_mm:02d}. "
                 "Position may be expired or at extreme gap risk. Clearing."
             )
             self._intraday_position = None
