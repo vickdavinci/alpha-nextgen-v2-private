@@ -68,13 +68,50 @@ PANIC_MODE: SPY -4.2% | Liquidating longs
 
 ### Options Engine Logs
 ```
+# VASS Direction Resolution (parse these to understand direction logic)
+OPTIONS_VASS_CONVICTION: VIX 5d change +22% > 20% | Macro=BULLISH | Resolved=BEARISH | VASS_OVERRIDE
+VASS_DIRECTION: Resolved=BULLISH | Source=Macro | Regime=62
+VASS_SHOCK_OVERRIDE_EOD: Forcing BEARISH | Shock=-3.5% | Reason=SHOCK_MEMORY_FORCE_BEARISH
+
+# VASS Entry/Exit (extract direction from Strategy name: BULL_CALL=BULLISH, BEAR_PUT=BEARISH)
 VASS: ENTRY | Strategy=BULL_CALL_DEBIT | IV=18 | DTE=21 | Score=3.8
+VASS: ENTRY | Strategy=BEAR_PUT_DEBIT | IV=22 | DTE=14 | Regime=38
 VASS: EXIT | P&L=+$450 | Reason=PROFIT_TARGET | Duration=5d
-MICRO: ENTRY | Strategy=DEBIT_FADE | VIX_DIR=FALLING | QQQ=+0.8%
+
+# MICRO Regime State (parse VIX level + direction to get 1 of 21 regimes)
+MICRO_REGIME: VIX=17.5 | Level=LOW | Direction=FALLING | Regime=GOOD_MR
+MICRO_REGIME: VIX=24.2 | Level=MEDIUM | Direction=RISING | Regime=WORSENING
+MICRO_STATE: Score=72 | VIX_Lvl=LOW | VIX_Dir=FALLING_FAST | Regime=PERFECT_MR
+
+# MICRO Entry/Exit (extract direction from CALL/PUT)
+MICRO: ENTRY | Strategy=DEBIT_FADE | Direction=PUT | VIX_DIR=FALLING | QQQ=+0.8%
+MICRO: ENTRY | Strategy=DEBIT_MOMENTUM | Direction=CALL | VIX=16.5 | QQQ_Move=-1.2%
+MICRO: ENTRY | Strategy=ITM_MOMENTUM | Direction=CALL | VIX_Level=LOW | Score=68
 MICRO: EXIT | P&L=-$120 | Reason=TIME_EXIT
+
+# UVXY Conviction (V6.10)
+UVXY_CONVICTION: UVXY=+3.2% | Direction=PUT | Reason=UVXY > +2.5%
+UVXY_CONVICTION: UVXY=-4.1% | Direction=CALL | Reason=UVXY < -3%
+
+# OCO (One-Cancels-Other) orders
 OCO: CREATED | Profit=$5.50 (+50%) | Stop=$2.50 (-50%)
 OCO: TRIGGERED | Type=PROFIT | P&L=+$300
 ```
+
+### Direction Extraction Rules
+**VASS Direction:**
+- `Strategy=BULL_CALL_*` → Direction=BULLISH
+- `Strategy=BEAR_PUT_*` → Direction=BEARISH
+- `Strategy=BULL_PUT_*` → Direction=BULLISH (credit)
+- `Strategy=BEAR_CALL_*` → Direction=BEARISH (credit)
+
+**MICRO Direction:**
+- Look for `Direction=CALL` or `Direction=PUT` in log line
+- If not explicit, infer from strategy:
+  - DEBIT_FADE on QQQ UP → PUT (fading the move)
+  - DEBIT_FADE on QQQ DOWN → CALL (fading the move)
+  - DEBIT_MOMENTUM → Same direction as QQQ move
+  - PROTECTIVE_PUTS → Always PUT
 
 ## Analysis Workflow
 
@@ -145,14 +182,68 @@ Read the ENTIRE log file. Do not skip or sample. Every line matters for accuracy
 
 Build these data structures by parsing each line:
 
-#### Trades by Engine
+#### Trades by Engine (with Direction and Regime)
 ```
 trades = {
     "TREND": [{"symbol": "QLD", "side": "BUY", "qty": 100, "price": 75.50, "pnl": null}, ...],
-    "VASS": [{"type": "BULL_CALL", "entry": 2.50, "exit": 3.75, "pnl": 150, "contracts": 3}, ...],
-    "MICRO": [{"strategy": "DEBIT_FADE", "direction": "CALL", "pnl": -120}, ...],
+    "VASS": [{
+        "date": "2022-01-15",
+        "time": "14:35",
+        "spread_type": "BULL_CALL",      # BULL_CALL, BEAR_PUT, BULL_PUT, BEAR_CALL
+        "direction": "BULLISH",           # Derived from spread_type
+        "direction_source": "Macro",      # Macro, VASS_CONVICTION, UVXY, SHOCK_MEMORY
+        "regime_score": 62,
+        "vix": 18.5,
+        "entry": 2.50,
+        "exit": 3.75,
+        "pnl": 150,
+        "aligned_with_regime": True,      # Was direction correct for regime?
+        "conviction_override": False      # Did conviction override macro?
+    }, ...],
+    "MICRO": [{
+        "date": "2022-01-10",
+        "time": "10:30",
+        "strategy": "DEBIT_FADE",
+        "direction": "PUT",               # CALL or PUT
+        "vix_value": 16.5,
+        "vix_level": "LOW",               # LOW, MEDIUM, HIGH
+        "vix_direction": "FALLING",       # FALLING_FAST, FALLING, STABLE, RISING, RISING_FAST, SPIKING, WHIPSAW
+        "micro_regime": "GOOD_MR",        # One of 21 regimes
+        "qqq_move": "+0.8%",
+        "pnl": 85,
+        "correct_regime_for_strategy": True  # Should this strategy run in this regime?
+    }, ...],
     "MR": [{"symbol": "TQQQ", "entry": 45.00, "exit": 46.50, "pnl": 150}, ...],
     "HEDGE": [{"symbol": "SH", "weight": 0.10, "pnl": null}, ...]
+}
+```
+
+#### Regime Validation Rules
+```
+VASS_REGIME_RULES = {
+    "BULL_CALL_DEBIT": {"min_regime": 50, "macro_direction": "BULLISH"},
+    "BEAR_PUT_DEBIT": {"max_regime": 50, "macro_direction": "BEARISH"},
+    "BULL_PUT_CREDIT": {"min_regime": 50, "macro_direction": "BULLISH", "vix_min": 25},
+    "BEAR_CALL_CREDIT": {"max_regime": 50, "macro_direction": "BEARISH", "vix_min": 25}
+}
+
+MICRO_REGIME_RULES = {
+    "DEBIT_FADE": {
+        "allowed_regimes": ["PERFECT_MR", "GOOD_MR", "NORMAL", "RECOVERING"],
+        "vix_direction_required": ["FALLING", "FALLING_FAST"]
+    },
+    "DEBIT_MOMENTUM": {
+        "allowed_regimes": ["NORMAL", "CAUTIOUS", "CAUTION_LOW"],
+        "vix_direction_required": ["STABLE", "RISING"]
+    },
+    "ITM_MOMENTUM": {
+        "allowed_regimes": ["RECOVERING", "IMPROVING", "PANIC_EASING"],
+        "vix_level_required": ["MEDIUM", "HIGH"]
+    },
+    "PROTECTIVE_PUTS": {
+        "allowed_regimes": ["RISK_OFF_LOW", "BREAKING", "CRASH", "FULL_PANIC"],
+        "vix_level_required": ["HIGH"]
+    }
 }
 ```
 
@@ -253,6 +344,35 @@ Generate a comprehensive markdown report with these sections:
 | BULL_PUT_CREDIT | 4 | 2 | 2 | -$25 | 6.1 days |
 | BEAR_CALL_CREDIT | 2 | 1 | 1 | +$40 | 5.5 days |
 
+#### VASS Direction Resolution Logic
+VASS uses a conviction system to determine BULL vs BEAR direction:
+
+**Direction Sources (Priority Order):**
+1. **VASS Conviction** - VIX trend signals:
+   - VIX 5d change > +20% → BEARISH conviction
+   - VIX 5d change < -15% → BULLISH conviction
+   - VIX crosses above 25 → BEARISH
+   - VIX crosses below 15 → BULLISH
+2. **Macro Direction** - From regime score:
+   - Regime > 55 → BULLISH (CALL spreads)
+   - Regime < 45 → BEARISH (PUT spreads)
+   - Regime 45-55 → NEUTRAL (no trade)
+3. **UVXY Conviction** (V6.10):
+   - UVXY > +2.5% → PUT conviction
+   - UVXY < -3% → CALL conviction
+
+**Validate each VASS trade:**
+- Was direction aligned with regime at entry time?
+- Did conviction override macro? (flag these)
+- Did shock memory force BEARISH? (flag these)
+
+### VASS Trade List (with Direction Validation)
+| Date | Time | Spread | Direction | Regime | Conviction | Aligned? | P&L |
+|------|------|--------|-----------|--------|------------|----------|-----|
+| 2022-01-15 | 14:35 | BULL_CALL | BULLISH | 62 | Macro | ✅ Yes | +$150 |
+| 2022-01-18 | 15:10 | BEAR_PUT | BEARISH | 58 | VIX 5d +22% | ⚠️ Override | -$85 |
+| 2022-01-22 | 14:20 | BEAR_PUT | BEARISH | 35 | Macro | ✅ Yes | +$220 |
+
 ### MICRO Intraday Analysis
 | Strategy | Count | Wins | Losses | Win Rate | Avg P&L |
 |----------|-------|------|--------|----------|---------|
@@ -260,6 +380,52 @@ Generate a comprehensive markdown report with these sections:
 | DEBIT_MOMENTUM | 18 | 8 | 10 | 44.4% | -$22 |
 | ITM_MOMENTUM | 10 | 3 | 7 | 30.0% | -$45 |
 | PROTECTIVE_PUTS | 5 | 2 | 3 | 40.0% | +$80 |
+
+#### MICRO 21-Regime Matrix
+MICRO uses VIX Level × VIX Direction = 21 distinct regimes:
+
+**VIX Levels (3):**
+- LOW: VIX < 18
+- MEDIUM: VIX 18-25
+- HIGH: VIX > 25
+
+**VIX Directions (7):**
+- FALLING_FAST: < -5%
+- FALLING: -5% to -2%
+- STABLE: -2% to +2% (adaptive band)
+- RISING: +2% to +5%
+- RISING_FAST: +5% to +10%
+- SPIKING: > +10%
+- WHIPSAW: 5+ reversals in 1 hour
+
+**21-Regime Grid:**
+```
+                    FALLING_FAST  FALLING   STABLE    RISING    RISING_FAST  SPIKING   WHIPSAW
+VIX LOW (< 18)      PERFECT_MR    GOOD_MR   NORMAL    CAUTION   TRANSITION   RISK_OFF  CHOPPY
+VIX MEDIUM (18-25)  RECOVERING    IMPROVING CAUTIOUS  WORSENING DETERIORATE  BREAKING  UNSTABLE
+VIX HIGH (> 25)     PANIC_EASE    CALMING   ELEVATED  WORSE_HI  FULL_PANIC   CRASH     VOLATILE
+```
+
+**Strategy by Regime:**
+- PERFECT_MR/GOOD_MR → DEBIT_FADE (fade the move)
+- NORMAL/CAUTIOUS → DEBIT_MOMENTUM or skip
+- RECOVERING/IMPROVING → ITM_MOMENTUM
+- RISK_OFF/BREAKING/CRASH → PROTECTIVE_PUTS only
+- CHOPPY/UNSTABLE/VOLATILE → No trade (whipsaw)
+
+### MICRO Trade List (with Regime Validation)
+| Date | Time | Strategy | Dir | VIX | VIX_Lvl | VIX_Dir | Regime | Correct? | P&L |
+|------|------|----------|-----|-----|---------|---------|--------|----------|-----|
+| 2022-01-10 | 10:30 | DEBIT_FADE | PUT | 16.5 | LOW | FALLING | GOOD_MR | ✅ | +$85 |
+| 2022-01-10 | 14:15 | DEBIT_MOM | CALL | 17.2 | LOW | RISING | CAUTION | ⚠️ | -$120 |
+| 2022-01-12 | 11:00 | PROTECT_PUT | PUT | 28.5 | HIGH | SPIKING | CRASH | ✅ | +$200 |
+
+**Regime Alignment Summary:**
+| Aligned with Regime | Count | Win Rate | P&L |
+|---------------------|-------|----------|-----|
+| ✅ Correct Regime | 45 | 55% | +$1,200 |
+| ⚠️ Wrong Regime | 12 | 25% | -$850 |
+| ❓ Unknown/Missing | 8 | 38% | -$180 |
 ```
 
 ### 3. Signal Flow Analysis
@@ -456,7 +622,62 @@ If Expected Value < 0, the strategy loses money despite win rate.
 | Order Rejected | MICRO_SINGLE | 2 | Trade aborted |
 ```
 
-### 8. Recommendations
+### 8. Regime Alignment Audit
+```markdown
+## Regime Alignment Audit
+
+This section validates whether trades were executed according to their regime rules.
+
+### VASS Direction Compliance
+| Metric | Value |
+|--------|-------|
+| Total VASS Trades | 32 |
+| Macro-Aligned | 25 (78%) |
+| Conviction Override | 5 (16%) |
+| Shock Memory Override | 2 (6%) |
+
+**Conviction Override Analysis:**
+| Date | Macro | Conviction | Resolved | P&L | Should Have Traded? |
+|------|-------|------------|----------|-----|---------------------|
+| 2022-01-18 | BULLISH | VIX 5d +22% → BEARISH | BEARISH | -$85 | ⚠️ VIX conviction correct |
+| 2022-01-25 | BEARISH | VIX crossed below 15 | BULLISH | +$120 | ⚠️ Review timing |
+
+### MICRO Regime Compliance
+| Metric | Value |
+|--------|-------|
+| Total MICRO Trades | 65 |
+| Correct Regime | 52 (80%) |
+| Wrong Regime | 8 (12%) |
+| Missing Regime Data | 5 (8%) |
+
+**Wrong Regime Trades (Review These):**
+| Date | Strategy | Expected Regime | Actual Regime | P&L | Issue |
+|------|----------|-----------------|---------------|-----|-------|
+| 2022-01-14 | DEBIT_FADE | GOOD_MR | CAUTION_LOW | -$95 | Should skip in CAUTION |
+| 2022-01-20 | DEBIT_MOM | RECOVERING | CHOPPY_LOW | -$150 | WHIPSAW not detected |
+
+### Strategy-Regime Matrix (Win Rate by Regime)
+```
+                    DEBIT_FADE  DEBIT_MOM  ITM_MOM  PROTECT_PUT
+PERFECT_MR (Best)   72% (8/11)  --         --       --
+GOOD_MR             58% (7/12)  --         --       --
+NORMAL              45% (5/11)  52% (6/12) --       --
+RECOVERING          --          --         65% (4/6) --
+RISK_OFF/CRASH      --          --         --       80% (4/5)
+WRONG REGIME        25% (2/8)   20% (1/5)  0% (0/3) --
+```
+
+### Regime Mismatch Impact
+| Category | Trades | Win Rate | Avg P&L | Total P&L |
+|----------|--------|----------|---------|-----------|
+| Correct Regime | 52 | 58% | +$45 | +$2,340 |
+| Wrong Regime | 8 | 25% | -$105 | -$840 |
+| **Delta (Opportunity)** | - | 33% | $150 | **$3,180** |
+
+**Recommendation:** Tightening regime gates could improve P&L by ~$3,180.
+```
+
+### 9. Recommendations
 ```markdown
 ## Recommendations
 
