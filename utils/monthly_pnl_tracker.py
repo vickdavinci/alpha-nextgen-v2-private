@@ -23,6 +23,7 @@ ENGINE_SOURCES = {
     "MR": "MR",
     "OPT": "OPT",
     "OPT_INTRADAY": "OPT",  # Roll up intraday options into OPT
+    "OPT_SPREAD": "OPT",  # Roll up spread options into OPT
     "HEDGE": "HEDGE",
     "YIELD": "YIELD",
     "COLD_START": "TREND",  # Cold start is part of trend
@@ -210,6 +211,7 @@ class MonthlyPnLTracker:
         exit_price: float,
         quantity: int,
         fees: float = 0.0,
+        realized_pnl: Optional[float] = None,
     ) -> TradeRecord:
         """
         Record a completed trade.
@@ -223,6 +225,8 @@ class MonthlyPnLTracker:
             exit_price: Exit fill price
             quantity: Number of shares/contracts (absolute value)
             fees: Total fees for the trade
+            realized_pnl: Optional explicit realized P&L override. When provided,
+                this value is used directly instead of derived (exit-entry)*qty.
 
         Returns:
             TradeRecord created
@@ -230,13 +234,15 @@ class MonthlyPnLTracker:
         # Normalize engine to category
         engine_category = ENGINE_SOURCES.get(engine, "OTHER")
 
-        # Calculate P&L
-        # For options: quantity is contracts, price is per-share (×100 multiplier)
-        is_option = len(symbol) > 10 or "C0" in symbol or "P0" in symbol
-        multiplier = 100 if is_option else 1
-
-        realized_pnl = (exit_price - entry_price) * abs(quantity) * multiplier
-        is_win = realized_pnl > 0
+        # Calculate P&L (or use explicit override for complex products like spreads).
+        if realized_pnl is None:
+            # For options: quantity is contracts, price is per-share (×100 multiplier)
+            is_option = len(symbol) > 10 or "C0" in symbol or "P0" in symbol
+            multiplier = 100 if is_option else 1
+            realized_pnl_calc = (exit_price - entry_price) * abs(quantity) * multiplier
+        else:
+            realized_pnl_calc = float(realized_pnl)
+        is_win = realized_pnl_calc > 0
 
         # Create record
         record = TradeRecord(
@@ -247,7 +253,7 @@ class MonthlyPnLTracker:
             entry_price=entry_price,
             exit_price=exit_price,
             quantity=abs(quantity),
-            realized_pnl=realized_pnl,
+            realized_pnl=realized_pnl_calc,
             fees=fees,
             is_win=is_win,
         )
@@ -266,13 +272,13 @@ class MonthlyPnLTracker:
 
         # Update session counters
         self._session_trades += 1
-        self._session_pnl += realized_pnl - fees
+        self._session_pnl += realized_pnl_calc - fees
 
         # Log trade
         win_str = "WIN" if is_win else "LOSS"
         self.log(
             f"PNL_TRACK: {win_str} | {engine_category} | {symbol[-15:]} | "
-            f"P&L=${realized_pnl:+,.0f} | Entry=${entry_price:.2f} Exit=${exit_price:.2f} | "
+            f"P&L=${realized_pnl_calc:+,.0f} | Entry=${entry_price:.2f} Exit=${exit_price:.2f} | "
             f"Qty={quantity} | Month={month}"
         )
 
@@ -411,6 +417,33 @@ class MonthlyPnLTracker:
             "trades": self._session_trades,
             "pnl": self._session_pnl,
         }
+
+    def log_optimization_summary(self, current_date: str) -> None:
+        """
+        Log one compact line for optimization decisions.
+
+        Includes MTD totals and options-only diagnostics so tuning can be
+        evaluated quickly without parsing multiple sections.
+        """
+        month = current_date[:7]
+        stats = self.get_month_stats(month)
+
+        opt_trades = stats.engine_trades.get("OPT", 0)
+        opt_wins = stats.engine_wins.get("OPT", 0)
+        opt_win_rate = (opt_wins / opt_trades * 100.0) if opt_trades > 0 else 0.0
+        opt_gross = stats.engine_pnl.get("OPT", 0.0)
+        opt_fee_share = (
+            (stats.fees / abs(stats.realized_pnl) * 100.0) if stats.realized_pnl else 0.0
+        )
+
+        self.log(
+            f"OPTIMIZATION_SUMMARY: {current_date} | "
+            f"SessionTrades={self._session_trades} SessionPnL=${self._session_pnl:+,.0f} | "
+            f"MTD Trades={stats.trades} Win%={stats.win_rate():.1f}% Gross=${stats.realized_pnl:+,.0f} "
+            f"Fees=${stats.fees:,.0f} Net=${stats.net_pnl():+,.0f} | "
+            f"OPT Trades={opt_trades} Win%={opt_win_rate:.1f}% Gross=${opt_gross:+,.0f} "
+            f"FeeLoad={opt_fee_share:.1f}%"
+        )
 
     # =========================================================================
     # Logging

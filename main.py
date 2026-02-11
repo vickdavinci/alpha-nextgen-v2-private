@@ -2183,6 +2183,7 @@ class AlphaNextGen(QCAlgorithm):
         # V6.12: Log EOD P&L summary
         if hasattr(self, "pnl_tracker"):
             self.pnl_tracker.log_eod_summary(str(self.Time.date()))
+            self.pnl_tracker.log_optimization_summary(str(self.Time.date()))
             # Reset session counters for next day
             self.pnl_tracker.reset_session()
 
@@ -7352,7 +7353,7 @@ class AlphaNextGen(QCAlgorithm):
                             if hasattr(self, "pnl_tracker"):
                                 self.pnl_tracker.record_trade(
                                     symbol=symbol,
-                                    engine="OPT",
+                                    engine="OPT_INTRADAY",
                                     entry_date=removed_position.entry_time[:10]
                                     if removed_position.entry_time
                                     else str(self.Time.date()),
@@ -7398,7 +7399,7 @@ class AlphaNextGen(QCAlgorithm):
                             if hasattr(self, "pnl_tracker"):
                                 self.pnl_tracker.record_trade(
                                     symbol=symbol,
-                                    engine="OPT",
+                                    engine="OPT_INTRADAY",
                                     entry_date=str(snapshot.get("entry_time", str(self.Time)))[:10],
                                     exit_date=str(self.Time.date()),
                                     entry_price=entry_price,
@@ -7605,7 +7606,7 @@ class AlphaNextGen(QCAlgorithm):
                 # Record as single trade with net P&L
                 self.pnl_tracker.record_trade(
                     symbol=f"SPREAD:{spread.spread_type}",
-                    engine="OPT",
+                    engine="OPT_SPREAD",
                     entry_date=spread.entry_time[:10]
                     if spread.entry_time
                     else str(self.Time.date()),
@@ -7613,6 +7614,7 @@ class AlphaNextGen(QCAlgorithm):
                     entry_price=spread.net_debit,
                     exit_price=close_value,
                     quantity=spread.num_spreads,
+                    realized_pnl=spread_pnl,
                 )
 
             # Both legs closed - remove spread position
