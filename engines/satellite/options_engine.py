@@ -1980,12 +1980,15 @@ class OptionsEngine:
                 return
 
             cooldown_days = int(getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 2))
-            trade_date = datetime.utcnow().date()
-            if current_time:
-                try:
-                    trade_date = datetime.strptime(current_time[:10], "%Y-%m-%d").date()
-                except Exception:
-                    pass
+            # Parse current_time for cooldown date (required for backtest accuracy)
+            if not current_time:
+                self.log("INTRADAY: CALL cooldown skipped - no timestamp", trades_only=True)
+                return
+            try:
+                trade_date = datetime.strptime(current_time[:10], "%Y-%m-%d").date()
+            except Exception:
+                self.log("INTRADAY: CALL cooldown skipped - invalid timestamp", trades_only=True)
+                return
             self._call_cooldown_until_date = trade_date + timedelta(days=cooldown_days)
             self.log(
                 f"INTRADAY: CALL cooldown armed | LossStreak={self._call_consecutive_losses} | "
