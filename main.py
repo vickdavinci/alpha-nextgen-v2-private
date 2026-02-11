@@ -1518,6 +1518,25 @@ class AlphaNextGen(QCAlgorithm):
         except Exception:
             return ""
 
+    def _attach_option_trace_metadata(
+        self,
+        signal: TargetWeight,
+        source: str,
+    ) -> TargetWeight:
+        """Attach trace metadata for end-to-end rejection attribution."""
+        if signal.metadata is None:
+            signal.metadata = {}
+        symbol_tail = self._normalize_symbol_str(signal.symbol)[-12:]
+        trace_id = (
+            f"{source}_{self.Time.strftime('%Y%m%d_%H%M%S')}_{symbol_tail}"
+            if symbol_tail
+            else f"{source}_{self.Time.strftime('%Y%m%d_%H%M%S')}"
+        )
+        signal.metadata["trace_id"] = trace_id
+        signal.metadata["trace_source"] = source
+        signal.metadata["trace_time"] = str(self.Time)
+        return signal
+
     def _get_option_holding_quantity(self, symbol) -> int:
         """Get signed live option holding quantity by symbol string."""
         symbol_str = self._normalize_symbol_str(symbol)
@@ -4247,6 +4266,7 @@ class AlphaNextGen(QCAlgorithm):
                                     f"VASS_ENTRY: {signal.metadata.get('vass_strategy', 'UNKNOWN') if signal.metadata else 'UNKNOWN'} | "
                                     f"{signal.symbol} | {signal.reason}"
                                 )
+                                signal = self._attach_option_trace_metadata(signal, source="VASS")
                                 self.portfolio_router.process_signal(signal)
                             return
                 return
@@ -4255,7 +4275,7 @@ class AlphaNextGen(QCAlgorithm):
             # CRITICAL: Verify both legs have valid bid/ask
             if short_leg.bid <= 0 or short_leg.ask <= 0:
                 return
-            if long_leg.bid <= 0 or long_leg.ask <= 0:
+            if long_leg.ask <= 0:
                 return
 
             signal = self.options_engine.check_credit_spread_entry_signal(
@@ -4294,7 +4314,7 @@ class AlphaNextGen(QCAlgorithm):
             long_leg, short_leg = spread_legs
 
             # CRITICAL: Verify both legs have valid bid/ask
-            if long_leg.bid <= 0 or long_leg.ask <= 0:
+            if long_leg.ask <= 0:
                 return
             if short_leg.bid <= 0 or short_leg.ask <= 0:
                 return
@@ -4330,6 +4350,7 @@ class AlphaNextGen(QCAlgorithm):
                 f"VASS_ENTRY: {signal.metadata.get('vass_strategy', 'UNKNOWN') if signal.metadata else 'UNKNOWN'} | "
                 f"{signal.symbol} | {signal.reason}"
             )
+            signal = self._attach_option_trace_metadata(signal, source="VASS")
             signal = self._apply_spread_margin_guard(signal, source_tag="VASS_SPREAD")
             if signal is None:
                 return
@@ -5923,6 +5944,14 @@ class AlphaNextGen(QCAlgorithm):
                         micro_state=micro_state,  # Reuse approved state; avoid second-update drift
                     )
                     if intraday_signal:
+                        intraday_signal = self._attach_option_trace_metadata(
+                            intraday_signal, source="MICRO"
+                        )
+                        intraday_trace_id = (
+                            intraday_signal.metadata.get("trace_id", "")
+                            if intraday_signal.metadata
+                            else ""
+                        )
                         self.portfolio_router.receive_signal(intraday_signal)
                         # V2.3.13 FIX: MUST process immediately - signal was being queued but never executed!
                         # The function returns early via swing spread path, so signal was lost
@@ -5932,6 +5961,17 @@ class AlphaNextGen(QCAlgorithm):
                         self._intraday_retry_expires = None
                         self._intraday_retry_direction = None
                         self._intraday_retry_reason_code = None
+                        # Emit explicit router rejection telemetry for this trace if execution blocked.
+                        if intraday_trace_id:
+                            for rej in self.portfolio_router.get_last_rejections():
+                                if rej.trace_id == intraday_trace_id and rej.source_tag.startswith(
+                                    "MICRO"
+                                ):
+                                    self.Log(
+                                        f"INTRADAY_ROUTER_REJECTED: Trace={rej.trace_id} | "
+                                        f"Code={rej.code} | Stage={rej.stage} | {rej.detail}"
+                                    )
+                                    break
                         # V2.3.3 FIX: Don't return here - allow swing check to run too
                         # Previously returned early, blocking swing spreads entirely
                     else:
@@ -6170,12 +6210,7 @@ class AlphaNextGen(QCAlgorithm):
                         if debit_spread_legs is not None:
                             rejection_code = "DEBIT_ENTRY_VALIDATION_FAILED"
                             long_leg, short_leg = debit_spread_legs
-                            if (
-                                long_leg.bid > 0
-                                and long_leg.ask > 0
-                                and short_leg.bid > 0
-                                and short_leg.ask > 0
-                            ):
+                            if long_leg.ask > 0 and short_leg.bid > 0 and short_leg.ask > 0:
                                 self.Log(
                                     f"VASS_FALLBACK_INTRADAY: DEBIT spread found | "
                                     f"Long={long_leg.strike} | Short={short_leg.strike}"
@@ -6217,12 +6252,7 @@ class AlphaNextGen(QCAlgorithm):
                 if spread_legs is not None:
                     rejection_code = "DEBIT_ENTRY_VALIDATION_FAILED"
                     long_leg, short_leg = spread_legs
-                    if (
-                        long_leg.bid > 0
-                        and long_leg.ask > 0
-                        and short_leg.bid > 0
-                        and short_leg.ask > 0
-                    ):
+                    if long_leg.ask > 0 and short_leg.bid > 0 and short_leg.ask > 0:
                         signal = self.options_engine.check_spread_entry_signal(
                             regime_score=regime_score,
                             vix_current=self._current_vix,
@@ -6254,12 +6284,22 @@ class AlphaNextGen(QCAlgorithm):
                 f"VASS_ENTRY: {signal.metadata.get('vass_strategy', 'UNKNOWN') if signal.metadata else 'UNKNOWN'} | "
                 f"{signal.symbol} | {signal.reason}"
             )
+            signal = self._attach_option_trace_metadata(signal, source="VASS")
+            vass_trace_id = signal.metadata.get("trace_id", "") if signal.metadata else ""
             signal = self._apply_spread_margin_guard(signal, source_tag="VASS_INTRADAY_SPREAD")
             if signal is None:
                 return
             self.portfolio_router.receive_signal(signal)
             # V2.3.13 FIX: MUST process immediately - spread signals use IMMEDIATE urgency
             self._process_immediate_signals()
+            if vass_trace_id:
+                for rej in self.portfolio_router.get_last_rejections():
+                    if rej.trace_id == vass_trace_id and rej.source_tag.startswith("VASS"):
+                        self.Log(
+                            f"VASS_ROUTER_REJECTED: Trace={rej.trace_id} | "
+                            f"Code={rej.code} | Stage={rej.stage} | {rej.detail}"
+                        )
+                        break
             return  # Spread trade placed, don't try single-leg
 
         if signal is None and not spread_cooldown_active:
@@ -6285,6 +6325,7 @@ class AlphaNextGen(QCAlgorithm):
                 skip_reasons = {
                     "HAS_SPREAD_POSITION",
                     "ENTRY_ALREADY_ATTEMPTED_TODAY",
+                    "ENTRY_ATTEMPT_LIMIT",
                     "POST_TRADE_MARGIN_COOLDOWN",
                 }
                 log_prefix = (

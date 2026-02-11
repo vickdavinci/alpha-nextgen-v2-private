@@ -1871,6 +1871,7 @@ class OptionsEngine:
 
         # V2.3 FIX: Prevent order spam - track failed entry attempts
         self._entry_attempted_today: bool = False
+        self._spread_attempts_today_by_key: Dict[str, int] = {}
         # V2.21: Post-rejection margin cap for adaptive retry sizing
         self._rejection_margin_cap: Optional[float] = None
         self._swing_time_warning_logged: bool = False
@@ -2498,14 +2499,37 @@ class OptionsEngine:
         else:
             return "NEUTRAL"
 
+    def _can_attempt_spread_entry(self, attempt_key: str) -> bool:
+        """
+        Limit spread entry attempts per day by strategy/direction key.
+
+        Replaces the old single global `_entry_attempted_today` lock that
+        blocked all subsequent spread opportunities after one failed attempt.
+        """
+        max_attempts = int(getattr(config, "SPREAD_MAX_ATTEMPTS_PER_KEY_PER_DAY", 3))
+        used = int(self._spread_attempts_today_by_key.get(attempt_key, 0))
+        if used >= max_attempts:
+            self.log(
+                f"SPREAD_ATTEMPT_LIMIT: {attempt_key} blocked | "
+                f"{used}/{max_attempts} attempts used"
+            )
+            return False
+        return True
+
+    def _record_spread_entry_attempt(self, attempt_key: str) -> None:
+        """Record spread attempt only after signal construction succeeds."""
+        self._spread_attempts_today_by_key[attempt_key] = (
+            int(self._spread_attempts_today_by_key.get(attempt_key, 0)) + 1
+        )
+
     def _set_spread_failure_cooldown(
         self, current_time: Optional[str], direction: Optional[str] = None
     ) -> None:
         """
         V2.4.3: Set cooldown after spread construction fails.
 
-        Prevents 340+ retries when no valid contracts exist.
-        Cooldown = 4 hours (SPREAD_FAILURE_COOLDOWN_HOURS).
+        Prevents retry storms when no valid contracts exist.
+        Uses minute-level cooldown when configured.
 
         Args:
             current_time: Current timestamp in "YYYY-MM-DD HH:MM:SS" format.
@@ -2515,24 +2539,18 @@ class OptionsEngine:
             return
 
         try:
-            # Parse current time
-            # Format: "YYYY-MM-DD HH:MM:SS"
-            date_part = current_time[:10]  # "YYYY-MM-DD"
-            time_part = current_time[11:19]  # "HH:MM:SS"
-            hour = int(time_part[:2])
-            minute = int(time_part[3:5])
-            second = int(time_part[6:8])
+            from datetime import datetime, timedelta
 
-            # Add cooldown hours
-            cooldown_hours = config.SPREAD_FAILURE_COOLDOWN_HOURS
-            new_hour = hour + cooldown_hours
-
-            # Handle day overflow (if cooldown pushes past midnight)
-            if new_hour >= 24:
-                # Just set to end of day - will reset tomorrow anyway
-                cooldown_until = f"{date_part} 23:59:59"
-            else:
-                cooldown_until = f"{date_part} {new_hour:02d}:{minute:02d}:{second:02d}"
+            now_dt = datetime.strptime(current_time[:19], "%Y-%m-%d %H:%M:%S")
+            cooldown_minutes = int(
+                getattr(
+                    config,
+                    "SPREAD_FAILURE_COOLDOWN_MINUTES",
+                    int(getattr(config, "SPREAD_FAILURE_COOLDOWN_HOURS", 1) * 60),
+                )
+            )
+            cooldown_until_dt = now_dt + timedelta(minutes=max(cooldown_minutes, 0))
+            cooldown_until = cooldown_until_dt.strftime("%Y-%m-%d %H:%M:%S")
 
             # V6.12: Direction-scoped cooldown (CALL failure doesn't block PUT)
             if direction:
@@ -2542,7 +2560,7 @@ class OptionsEngine:
             else:
                 self._spread_failure_cooldown_until = cooldown_until
             self.log(
-                f"SPREAD: Construction failed - entering {cooldown_hours}h cooldown until {cooldown_until}"
+                f"SPREAD: Construction failed - entering {cooldown_minutes}m cooldown until {cooldown_until}"
             )
         except (ValueError, IndexError) as e:
             self.log(f"SPREAD: Failed to set cooldown: {e}")
@@ -3997,9 +4015,10 @@ class OptionsEngine:
         if self._spread_position is not None:
             return fail("HAS_SPREAD_POSITION")
 
-        # V2.3 FIX: Check if entry already attempted today
-        if self._entry_attempted_today:
-            return fail("ENTRY_ALREADY_ATTEMPTED_TODAY")
+        # Scoped daily attempt budget (per spread key), replaces global one-attempt lock.
+        attempt_key = f"DEBIT_{direction.value if direction is not None else 'NONE'}"
+        if not self._can_attempt_spread_entry(attempt_key):
+            return fail("ENTRY_ATTEMPT_LIMIT")
 
         # V2.27: Win Rate Gate - block or scale down entries
         win_rate_scale = self.get_win_rate_scale()
@@ -4448,8 +4467,8 @@ class OptionsEngine:
         self._pending_num_contracts = num_spreads
         self._pending_entry_score = entry_score.total
 
-        # Mark entry attempted
-        self._entry_attempted_today = True
+        # Record attempt for this spread key (successful signal creation).
+        self._record_spread_entry_attempt(attempt_key)
 
         reason = (
             f"{spread_type}: Regime={regime_score:.0f} | VIX={vix_current:.1f} | "
@@ -4572,9 +4591,10 @@ class OptionsEngine:
         if self._spread_position is not None:
             return fail("HAS_SPREAD_POSITION")
 
-        # Check if entry already attempted today
-        if self._entry_attempted_today:
-            return fail("ENTRY_ALREADY_ATTEMPTED_TODAY")
+        # Scoped daily attempt budget (strategy-specific), replaces global one-attempt lock.
+        attempt_key = f"CREDIT_{strategy.value if strategy is not None else 'NONE'}"
+        if not self._can_attempt_spread_entry(attempt_key):
+            return fail("ENTRY_ATTEMPT_LIMIT")
 
         # V2.27: Win Rate Gate - block or scale down entries
         win_rate_scale = self.get_win_rate_scale()
@@ -4870,8 +4890,8 @@ class OptionsEngine:
         self._pending_num_contracts = num_spreads
         self._pending_entry_score = entry_score.total
 
-        # Mark entry attempted
-        self._entry_attempted_today = True
+        # Record attempt for this credit strategy key (successful signal creation).
+        self._record_spread_entry_attempt(attempt_key)
 
         reason = (
             f"{spread_type}: Regime={regime_score:.0f} | VIX={vix_current:.1f} | "
@@ -7693,7 +7713,15 @@ class OptionsEngine:
             )
             self._spread_position = None
             self._last_spread_exit_time = None
-            self._entry_attempted_today = True  # Prevent re-entry today
+            self._entry_attempted_today = True  # Legacy guard (single-leg paths)
+            max_attempts = int(getattr(config, "SPREAD_MAX_ATTEMPTS_PER_KEY_PER_DAY", 3))
+            # Preserve prior behavior: block any same-day spread re-entry after CB liquidation.
+            self._spread_attempts_today_by_key = {
+                "DEBIT_CALL": max_attempts,
+                "DEBIT_PUT": max_attempts,
+                f"CREDIT_{SpreadStrategy.BULL_PUT_CREDIT.value}": max_attempts,
+                f"CREDIT_{SpreadStrategy.BEAR_CALL_CREDIT.value}": max_attempts,
+            }
 
     def reset_spread_closing_lock(self) -> None:
         """
@@ -8064,6 +8092,7 @@ class OptionsEngine:
 
         # V2.3: Reset spam prevention flags
         self._entry_attempted_today = False
+        self._spread_attempts_today_by_key = {}
         self._swing_time_warning_logged = False
 
         # V2.3.2: Reset pending intraday entry flag
@@ -8085,6 +8114,7 @@ class OptionsEngine:
 
             # V2.3 FIX: Reset entry attempt flag for new day
             self._entry_attempted_today = False
+            self._spread_attempts_today_by_key = {}
             self._swing_time_warning_logged = False
             # V2.21: Clear rejection margin cap for new day
             self._rejection_margin_cap = None

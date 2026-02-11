@@ -912,6 +912,8 @@ MAX_SWING_TRADES_PER_DAY = 2  # Swing mode limit
 # Reserve swing capacity so intraday activity cannot fully starve VASS entries.
 OPTIONS_RESERVE_SWING_DAILY_SLOTS_ENABLED = True
 OPTIONS_MIN_SWING_SLOTS_PER_DAY = 1
+# Replace one-attempt-per-day spread lock with scoped attempt budgets.
+SPREAD_MAX_ATTEMPTS_PER_KEY_PER_DAY = 3
 
 # Legacy compatibility (combined min/max)
 OPTIONS_ALLOCATION_MIN = 0.25  # 25% minimum
@@ -1791,13 +1793,13 @@ LOG_THROTTLE_MINUTES = 15  # VIX spike log throttle interval
 LOG_VIX_SPIKE_MIN_MOVE = 2.0  # Minimum VIX move to bypass throttle
 
 # V2.3.21: Spread scan throttle to reduce log noise
-# Only attempt spread selection every 15 minutes (not every minute)
-SPREAD_SCAN_THROTTLE_MINUTES = 15
+# Retry often enough to catch fast-moving contract availability changes.
+SPREAD_SCAN_THROTTLE_MINUTES = 10
 
-# V2.4.3: Spread FAILURE cooldown - if spread construction fails, don't retry for 4 hours
-# Problem: Engine retried 340 times when no valid contracts existed
-# Solution: After failure, enter 4-hour cooldown (market conditions won't change that fast)
-SPREAD_FAILURE_COOLDOWN_HOURS = 1  # V6.12: Reduce cooldown to avoid all-day lockout
+# V2.4.3: Spread FAILURE cooldown after construction failure.
+# Keep short so valid chains can be re-attempted intra-session.
+SPREAD_FAILURE_COOLDOWN_HOURS = 1  # Legacy fallback if minute override is absent
+SPREAD_FAILURE_COOLDOWN_MINUTES = 30
 
 # V2.5: Max concurrent spreads - limit exposure from spread positions
 # Problem: Mar 25-26 had two spreads open simultaneously ($19K exposure)
