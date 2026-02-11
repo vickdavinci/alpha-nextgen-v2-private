@@ -132,9 +132,9 @@ flowchart TD
 
     CLASS -->|>= 70| RISKON[RISK_ON]
     CLASS -->|>= 50| NEUTRAL[NEUTRAL]
-    CLASS -->|>= 40| CAUTIOUS[CAUTIOUS]
-    CLASS -->|>= 30| DEFENSIVE[DEFENSIVE]
-    CLASS -->|< 30| RISKOFF[RISK_OFF]
+    CLASS -->|>= 45| CAUTIOUS[CAUTIOUS]
+    CLASS -->|>= 35| DEFENSIVE[DEFENSIVE]
+    CLASS -->|< 35| RISKOFF[RISK_OFF]
 ```
 
 ### Config Values
@@ -154,9 +154,9 @@ flowchart TD
 |:-----------:|:-----:|:---------------:|
 | >= 70 | RISK_ON | Full allocation |
 | >= 50 | NEUTRAL | Standard allocation |
-| >= 40 | CAUTIOUS | Reduced allocation |
-| >= 30 | DEFENSIVE | Hedges only |
-| < 30 | RISK_OFF | No new longs |
+| >= 45 | CAUTIOUS | Reduced allocation (V6.15: was >= 40) |
+| >= 35 | DEFENSIVE | Hedges only (V6.15: was >= 30) |
+| < 35 | RISK_OFF | No new longs |
 
 ---
 

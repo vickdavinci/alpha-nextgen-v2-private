@@ -52,8 +52,8 @@ The V5.3 regime model uses four factors optimized for crash detection while main
 |-----------|:-----:|-------------|
 | `V53_REGIME_ENABLED` | True | Enable V5.3 4-factor model |
 | `WEIGHT_MOMENTUM_V53` | 0.30 | Momentum factor weight (30%) - 20-day ROC |
-| `WEIGHT_VIX_COMBINED_V53` | 0.30 | VIX Combined factor weight (30%) - 60% level + 40% direction |
-| `WEIGHT_TREND_V53` | 0.25 | Trend factor weight (25%) - SPY vs MA200 |
+| `WEIGHT_VIX_COMBINED_V53` | 0.35 | V6.15: VIX Combined weight (35%) - was 30%, increased for fear sensitivity |
+| `WEIGHT_TREND_V53` | 0.20 | V6.15: Trend factor weight (20%) - was 25%, reduced lagging trend dominance |
 | `WEIGHT_DRAWDOWN_V53` | 0.15 | Drawdown factor weight (15%) - distance from 52-week high |
 
 ### VIX Combined Scoring (V5.3)
@@ -107,15 +107,15 @@ The V5.3 regime model uses four factors optimized for crash detection while main
 |-----------|:-----:|-------------|
 | `REGIME_SMOOTHING_ALPHA` | 0.30 | Exponential smoothing factor |
 
-### Regime Score Thresholds
+### Regime Score Thresholds (V6.15)
 
 | Parameter | Value | State |
 |-----------|:-----:|-------|
 | `REGIME_RISK_ON` | 70 | RISK_ON (70-100) |
 | `REGIME_NEUTRAL` | 50 | NEUTRAL (50-69) |
-| `REGIME_CAUTIOUS` | 40 | CAUTIOUS (40-49) |
-| `REGIME_DEFENSIVE` | 30 | DEFENSIVE (30-39) |
-| `REGIME_RISK_OFF` | 0 | RISK_OFF (0-29) |
+| `REGIME_CAUTIOUS` | 45 | V6.15: CAUTIOUS (45-49) - was 40 |
+| `REGIME_DEFENSIVE` | 35 | V6.15: DEFENSIVE (35-44) - was 30 |
+| `REGIME_RISK_OFF` | 0 | RISK_OFF (0-34) |
 
 ### VIX Level Thresholds (Shared)
 
@@ -377,9 +377,10 @@ V6.11 replaced TMF/PSQ with SH (1x Inverse S&P). SH has no decay (unlike VIXY), 
 |-----------|:-----:|-------------|
 | Start Time | 10:00 | V2.3.6: Opened from 10:30 to capture early momentum |
 | End Time | 15:00 | Stop scanning for new entries |
-| Force Exit | 15:30 | Close all intraday positions |
+| Force Exit | 15:25 | V6.15: Close all intraday positions (was 15:30) |
 
 > **V2.3.6 Rationale:** The 10:00-10:30 window has highest gamma opportunities for momentum strategies. Removed hardcoded gatekeeper that was blocking this window.
+> **V6.15 Change:** Force exit moved from 15:30 to 15:25 to prevent OCO race conditions.
 
 ### ADX Scoring (Factor 1)
 
@@ -408,7 +409,7 @@ V6.11 replaced TMF/PSQ with SH (1x Inverse S&P). SH has no decay (unlike VIXY), 
 | `OPTIONS_STOP_TIER_2` | 0.22 | Score 3.25-3.5: 22% stop |
 | `OPTIONS_STOP_TIER_3` | 0.25 | Score 3.5-3.75: 25% stop |
 | `OPTIONS_STOP_TIER_4` | 0.30 | Score 3.75-4.0: 30% stop |
-| `OPTIONS_PROFIT_TARGET_PCT` | 0.50 | +50% profit target |
+| `OPTIONS_PROFIT_TARGET_PCT` | 0.60 | V6.15: +60% profit target (was 50%) |
 
 ### Time Constraints
 
@@ -687,8 +688,9 @@ V6.11 replaced TMF/PSQ with SH (1x Inverse S&P). SH has no decay (unlike VIXY), 
 | `INTRADAY_ITM_MIN_SCORE` | 40 | Minimum micro score for ITM (V6.8: was 50) |
 | `INTRADAY_ITM_TARGET` | 0.35 | V6.13: ITM profit target (earlier capture) |
 | `INTRADAY_ITM_STOP` | 0.35 | V6.13: ITM stop loss (reduce catastrophic losses) |
-| `INTRADAY_FORCE_EXIT_TIME` | 15:30 ET | Intraday positions must close |
-| `INTRADAY_QQQ_FALLBACK_MIN_MOVE` | 0.30% | V6.13: Min move for VIX STABLE fallback (was 0.50%) |
+| `INTRADAY_FORCE_EXIT_TIME` | 15:25 ET | V6.15: Intraday positions must close (was 15:30) |
+| `INTRADAY_OPTIONS_OFFSET_MINUTES` | 35 | V6.15: Dynamic close offset (aligned with 15:25) |
+| `INTRADAY_QQQ_FALLBACK_MIN_MOVE` | 0.12% | V6.15: Min move for VIX STABLE fallback (was 0.30%) |
 | `QQQ_NOISE_THRESHOLD` | 0.13% | V6.14: Noise filter threshold (was 0.15%) |
 
 ### V2.1.1 Swing Mode Simple Filters
@@ -1023,11 +1025,11 @@ VIX_EXTREME_THRESHOLD = 40   # Crisis mode
 # Smoothing
 REGIME_SMOOTHING_ALPHA = 0.30
 
-# Thresholds
+# Thresholds (V6.15 update)
 REGIME_RISK_ON = 70
 REGIME_NEUTRAL = 50
-REGIME_CAUTIOUS = 40
-REGIME_DEFENSIVE = 30
+REGIME_CAUTIOUS = 45  # V6.15: Was 40
+REGIME_DEFENSIVE = 35  # V6.15: Was 30
 
 # Trend Factor
 SMA_FAST = 20
@@ -1169,7 +1171,7 @@ OPTIONS_STOP_TIER_1 = 0.20  # Score 3.0-3.25
 OPTIONS_STOP_TIER_2 = 0.22  # Score 3.25-3.5
 OPTIONS_STOP_TIER_3 = 0.25  # Score 3.5-3.75
 OPTIONS_STOP_TIER_4 = 0.30  # Score 3.75-4.0
-OPTIONS_PROFIT_TARGET_PCT = 0.50
+OPTIONS_PROFIT_TARGET_PCT = 0.60  # V6.15: Raised from 0.50
 
 # Time Constraints
 OPTIONS_ENTRY_START = "10:00"
@@ -1177,6 +1179,7 @@ OPTIONS_ENTRY_END = "14:30"
 OPTIONS_LATE_DAY_TIME = "14:30"
 OPTIONS_FORCE_EXIT_HOUR = 15    # 3 PM ET
 OPTIONS_FORCE_EXIT_MINUTE = 45  # 3:45 PM ET
+INTRADAY_FORCE_EXIT_TIME = "15:25"  # V6.15: Was 15:30, moved earlier for OCO race
 
 # Greeks Monitoring (Circuit Breaker Level 5)
 # Note: These use CB_ prefix as they're part of the circuit breaker system

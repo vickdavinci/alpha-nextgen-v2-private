@@ -13,7 +13,7 @@ All tunable parameters in one place.
 # - Regime Engine handles market adaptation (conditions-based)
 # Account size no longer determines allocation - market conditions do.
 
-INITIAL_CAPITAL = 75_000  # V5.3: Starting capital for backtests
+INITIAL_CAPITAL = 100_000  # V6.20: Raised capital baseline for options-capacity testing
 MAX_SINGLE_POSITION_PCT = 0.40  # V3.0: Max weight for any single position (was phase-dependent)
 
 TARGET_VOLATILITY = 0.20
@@ -28,7 +28,7 @@ LOCKBOX_LOCK_PCT = 0.10
 # When all 4 trend tickers trigger simultaneously, they consume ~196% of capital
 # via margin, leaving no buying power for options (25% allocation)
 # This reserves capital BEFORE trend positions are sized
-RESERVED_OPTIONS_PCT = 0.25  # Reserve 25% for options allocation
+RESERVED_OPTIONS_PCT = 0.50  # V6.20: Reserve 50% for options allocation
 
 # V2.18: Capital Firewall - Hard partition between engines to prevent starvation
 # Previously Trend could consume all capital, leaving Options with "Entries allowed=-1"
@@ -820,11 +820,11 @@ CB_THETA_SWING_CHECK_ENABLED = False  # Set to True to enforce -2% theta limit o
 OPTIONS_UNDERLYING = "QQQ"
 
 # -----------------------------------------------------------------------------
-# V2.3 DUAL-MODE ALLOCATION (25% total, 75/25 split)
+# V6.20 DUAL-MODE ALLOCATION (50% total, 75/25 split)
 # -----------------------------------------------------------------------------
-OPTIONS_TOTAL_ALLOCATION = 0.25  # 25% total options budget (increased from 20%)
-OPTIONS_SWING_ALLOCATION = 0.1875  # 18.75% for Swing Mode (75% of 25%)
-OPTIONS_INTRADAY_ALLOCATION = 0.0625  # 6.25% for Intraday Mode (25% of 25%)
+OPTIONS_TOTAL_ALLOCATION = 0.50  # 50% total options budget
+OPTIONS_SWING_ALLOCATION = 0.375  # 37.5% for Swing Mode (75% of 50%)
+OPTIONS_INTRADAY_ALLOCATION = 0.125  # 12.5% for Intraday Mode (25% of 50%)
 
 # V2.7: Tiered Options Dollar Caps
 # Prevents oversizing on small accounts while allowing growth on larger accounts
@@ -916,8 +916,8 @@ OPTIONS_MIN_SWING_SLOTS_PER_DAY = 1
 SPREAD_MAX_ATTEMPTS_PER_KEY_PER_DAY = 3
 
 # Legacy compatibility (combined min/max)
-OPTIONS_ALLOCATION_MIN = 0.25  # 25% minimum
-OPTIONS_ALLOCATION_MAX = 0.30  # 30% maximum
+OPTIONS_ALLOCATION_MIN = 0.50  # V6.20: 50% minimum (isolation profile)
+OPTIONS_ALLOCATION_MAX = 0.50  # V6.20: 50% maximum (isolation profile)
 
 # Entry Score Thresholds
 OPTIONS_ENTRY_SCORE_MIN = 2.0  # Minimum score for entry (0-4 scale) - lowered from 3.0 for testing
@@ -1211,6 +1211,14 @@ SPREAD_REGIME_DETERIORATION_BEAR_EXIT = 55  # Exit bearish spreads if regime >= 
 # VIX filters for entry
 SPREAD_VIX_MAX_BULL = 30  # Max VIX for Bull Call Spread entry
 SPREAD_VIX_MAX_BEAR = 35  # Max VIX for Bear Put Spread entry (allow higher)
+# V6.19: Conditional stress override for BULL_CALL_DEBIT (reduces call bias in corrections).
+# Hard block when stress is confirmed; early-stress zone keeps participation at reduced size.
+BULL_CALL_STRESS_BLOCK_VIX = 22.0
+BULL_CALL_STRESS_ACCEL_VIX = 18.0
+BULL_CALL_STRESS_ACCEL_5D = 0.20  # +20% VIX over 5 sessions
+BULL_CALL_EARLY_STRESS_VIX_LOW = 16.0
+BULL_CALL_EARLY_STRESS_VIX_HIGH = 18.0
+BULL_CALL_EARLY_STRESS_SIZE = 0.50
 
 # Spread width (strike difference between legs)
 # V2.4.3: WIDTH-BASED short leg selection (fixes "delta trap" in backtesting)
@@ -1239,8 +1247,8 @@ SPREAD_STOP_LOSS_PCT = (
 SPREAD_STOP_REGIME_MULTIPLIERS = {
     75: 1.20,  # Bull: give more room (0.40 * 1.2 = 0.48)
     50: 1.00,  # Neutral: base (0.40)
-    40: 0.90,  # Cautious: tighter (0.40 * 0.9 = 0.36)
-    0: 0.80,  # Bear: tightest (0.40 * 0.8 = 0.32)
+    40: 0.85,  # Cautious: tighter (0.40 * 0.85 = 0.34)
+    0: 0.70,  # Bear: tightest (0.40 * 0.70 = 0.28)
 }
 
 # V3.0: Regime-Adaptive Profit Targets
@@ -1263,6 +1271,9 @@ WIN_RATE_SHUTOFF_THRESHOLD = 0.20  # Below 20%: STOP all new spread entries
 WIN_RATE_RESTART_THRESHOLD = 0.35  # Resume when paper win rate recovers to 35%
 WIN_RATE_SIZING_REDUCED = 0.75  # Multiplier at REDUCED level
 WIN_RATE_SIZING_MINIMUM = 0.50  # Multiplier at MINIMUM level
+# V6.19 O-20: Keep VASS alive in stress periods; avoid full spread-path freeze.
+VASS_WIN_RATE_HARD_BLOCK = False  # If False, shutoff degrades to minimum size instead of blocking
+VASS_WIN_RATE_SHUTOFF_SCALE = 0.50  # Size scale used when shutoff is active and hard block disabled
 # V6.1: Removed SPREAD_REGIME_EXIT_BULL/BEAR - legacy logic conflicted with conviction-based entry
 # Spreads now exit via: STOP_LOSS, PROFIT_TARGET, DTE_EXIT, NEUTRALITY_EXIT
 
@@ -1272,7 +1283,7 @@ WIN_RATE_SIZING_MINIMUM = 0.50  # Multiplier at MINIMUM level
 CHOPPY_MARKET_FILTER_ENABLED = True  # V6.10 P5: Enable choppy market detection
 CHOPPY_REVERSAL_COUNT = 3  # 3+ reversals in lookback window = choppy
 CHOPPY_LOOKBACK_HOURS = 2  # Look back 2 hours for reversal count
-CHOPPY_SIZE_REDUCTION = 0.50  # 50% size reduction in choppy markets
+CHOPPY_SIZE_REDUCTION = 0.65  # V6.19 tune: keep participation while still reducing exposure
 CHOPPY_MIN_MOVE_PCT = 0.003  # Minimum 0.3% move to count as reversal (filters noise)
 
 # V2.22: Neutrality Exit (Hysteresis Shield)
@@ -1404,8 +1415,8 @@ VASS_LOG_REJECTION_INTERVAL_MINUTES = 15  # Log rejections every 15 min (not eve
 # Options sizing must cap by actual available margin, not just portfolio %
 # V2.12 Fix #4: Raised from $5K to $10K - 8-lot spread requires ~$8K margin
 # V3.0 SCALABILITY FIX: Converted to percentage-based for portfolio scaling
-OPTIONS_MAX_MARGIN_CAP = 35000  # V5.3: ~47% of $75K (higher allocation for options testing)
-OPTIONS_MAX_MARGIN_PCT = 0.25  # V6.10 P4: Raised to 25% (was 20%) - pre-check prevents bad signals
+OPTIONS_MAX_MARGIN_CAP = 50_000  # V6.20: Align hard cap with $100K capital and 50% options profile
+OPTIONS_MAX_MARGIN_PCT = 0.40  # V6.20: Raise margin allowance for options-isolation stress tests
 
 # V2.18: Percentage-based Sizing Caps (scales with portfolio)
 # At $75K: 15% = $11,250, 8% = $6,000
@@ -1450,6 +1461,7 @@ SPREAD_MAX_CONTRACTS = 20  # Hard cap per spread position
 OPTIONS_MAX_INTRADAY_POSITIONS = 1  # Max 1 intraday position at a time
 OPTIONS_MAX_SWING_POSITIONS = 2  # Max 2 swing spread positions at a time
 OPTIONS_MAX_TOTAL_POSITIONS = 3  # Hard cap on total options positions
+OPTIONS_MAX_SWING_PER_DIRECTION = 2  # Stage-1 cap per spread direction (bull/bear)
 
 # V2.14 Fix #22: Conservative spread sizing to prevent tier cap violations
 # Evidence: Trade #20 sized at mid price $2.75 but filled at $3.96 (44% slippage)
@@ -1650,6 +1662,12 @@ INTRADAY_DEBIT_FADE_DELTA_MAX = 0.50  # Near ATM max
 # Between DEBIT_FADE (OTM) and ITM_MOMENTUM (ITM) - captures directional moves
 INTRADAY_DEBIT_MOMENTUM_DELTA_MIN = 0.45  # Near ATM for momentum
 INTRADAY_DEBIT_MOMENTUM_DELTA_MAX = 0.65  # Slightly ITM max
+INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES = [
+    "CAUTION_LOW",
+    "CAUTIOUS",
+    "ELEVATED",
+    "WORSENING",
+]  # Skip weak/choppy transition states for momentum
 
 # ITM_MOMENTUM: Stock replacement needs ITM options (delta 0.60-0.85)
 INTRADAY_ITM_DELTA_MIN = 0.60  # ITM for momentum

@@ -176,8 +176,8 @@ class PortfolioRouter:
     # RESERVED_OPTIONS_PCT (25%) ensures buying power is available for options
     SOURCE_ALLOCATION_LIMITS: Dict[str, float] = {
         "TREND": config.TREND_TOTAL_ALLOCATION,  # 55% max (was 70%)
-        "OPT": config.OPTIONS_ALLOCATION_MAX,  # 30% max (reserved for swing spreads)
-        "OPT_INTRADAY": 0.05,  # 5% max for intraday "Sniper" mode
+        "OPT": config.OPTIONS_SWING_ALLOCATION,  # Swing options share of total portfolio
+        "OPT_INTRADAY": config.OPTIONS_INTRADAY_ALLOCATION,  # Intraday options share
         "MR": config.MR_TOTAL_ALLOCATION,  # 10% max
         "HEDGE": 0.30,  # Hedge: 30% max (TMF 20% + PSQ 10%)
         "COLD_START": 0.35,  # Cold Start: 35% max (subset of TREND)
@@ -191,6 +191,9 @@ class PortfolioRouter:
     def __init__(self, algorithm: Optional["QCAlgorithm"] = None):
         """Initialize Portfolio Router."""
         self.algorithm = algorithm
+        # Runtime source limits (starts from class defaults, then isolation profile can override).
+        self._source_allocation_limits = dict(self.SOURCE_ALLOCATION_LIMITS)
+        self._apply_isolation_source_limits()
         self._exposure_calc = ExposureCalculator()
         self._pending_weights: List[TargetWeight] = []
         self._last_orders: List[OrderIntent] = []
@@ -214,6 +217,42 @@ class PortfolioRouter:
         # V2.3.21: Re-enabled logging for SHV auto-liquidation visibility
         if self.algorithm:
             self.algorithm.Log(message)  # type: ignore[attr-defined]
+
+    def _apply_isolation_source_limits(self) -> None:
+        """
+        In isolation mode, disabled engines should not retain budget.
+        Normalize enabled source limits to 100% so capacity reflects active engines only.
+        """
+        if not getattr(config, "ISOLATION_TEST_MODE", False):
+            return
+
+        enabled_weights: Dict[str, float] = {}
+        if getattr(config, "ISOLATION_OPTIONS_ENABLED", False):
+            enabled_weights["OPT"] = float(getattr(config, "OPTIONS_SWING_ALLOCATION", 0.0))
+            enabled_weights["OPT_INTRADAY"] = float(
+                getattr(config, "OPTIONS_INTRADAY_ALLOCATION", 0.0)
+            )
+        if getattr(config, "ISOLATION_TREND_ENABLED", False):
+            enabled_weights["TREND"] = float(getattr(config, "TREND_TOTAL_ALLOCATION", 0.0))
+        if getattr(config, "ISOLATION_MR_ENABLED", False):
+            enabled_weights["MR"] = float(getattr(config, "MR_TOTAL_ALLOCATION", 0.0))
+        if getattr(config, "ISOLATION_HEDGE_ENABLED", False):
+            enabled_weights["HEDGE"] = 0.30
+        if getattr(config, "ISOLATION_COLD_START_ENABLED", False):
+            enabled_weights["COLD_START"] = 0.35
+
+        total = sum(v for v in enabled_weights.values() if v > 0)
+        if total <= 0:
+            return
+
+        # Zero out controllable engine budgets first.
+        for source in ("TREND", "OPT", "OPT_INTRADAY", "MR", "HEDGE", "COLD_START"):
+            self._source_allocation_limits[source] = 0.0
+
+        # Normalize enabled budgets to 100%.
+        for source, value in enabled_weights.items():
+            if value > 0:
+                self._source_allocation_limits[source] = value / total
 
     def _should_log_rejection(self) -> bool:
         """
@@ -1238,7 +1277,7 @@ class PortfolioRouter:
 
         for source, source_weights in by_source.items():
             # Get limit for this source
-            limit = self.SOURCE_ALLOCATION_LIMITS.get(source, 0.50)
+            limit = self._source_allocation_limits.get(source, 0.50)
 
             # Calculate total requested by this source
             total_requested = sum(w.target_weight for w in source_weights)

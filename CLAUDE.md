@@ -711,6 +711,11 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | Gap filter | SPY -1.5% gap | Block MR entries |
 | Vol shock | 3x ATR bar | 15-min pause |
 | Leverage cap | 60% margin utilization | Block new entries (V6.9) |
+| Regime RISK_ON | Score >= 70 | Full leverage, no hedges |
+| Regime NEUTRAL | Score 50-69 | Full leverage, no hedges |
+| Regime CAUTIOUS | Score 45-49 | V6.15: raised from 40 (light hedge: 5% SH) |
+| Regime DEFENSIVE | Score 35-44 | V6.15: raised from 30 (medium hedge: 8% SH) |
+| Regime RISK_OFF | Score 0-34 | No new longs, full hedge: 10% SH |
 | Trend entry (V2) | Price > MA200 + ADX >= 15 | Trend entry eligible (V2.3.12: was 25) |
 | Oversold | RSI(5) < 25 | MR entry eligible |
 | VIX Low | VIX < 20 | Normal market, MR works |
@@ -720,25 +725,27 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | VASS Low IV (V6.6) | VIX < 16 | Debit spreads, 30-45 DTE (monthly) |
 | VASS Medium IV | VIX 16-25 | Debit spreads, 7-30 DTE (V6.12: widened from 7-21) |
 | VASS High IV (V6.13.1) | VIX > 25 | Credit spreads, 5-40 DTE (expanded from 5-28) |
-| UVXY Bearish (V6.14) | UVXY > +2.8% | PUT conviction signal |
-| UVXY Bullish (V6.14) | UVXY < -4.5% | CALL conviction signal |
-| UVXY Conviction Extreme (V6.12) | 3.5% | NEUTRAL VETO threshold |
-| BEAR_PUT OTM Gate (V6.4) | Short PUT >= 3% OTM | Block assignment-risk entries |
-| Options ATR Stop Max (V6.8) | 30% | Max loss cap (was 50%) |
+| UVXY Bearish (V6.15) | UVXY > +2.0% | PUT conviction signal (V6.15: was +2.8%) |
+| UVXY Bullish (V6.15) | UVXY < -4.0% | CALL conviction signal (V6.15: was -4.5%) |
+| UVXY Conviction Extreme (V6.10) | 3.0% | NEUTRAL VETO threshold (V6.15: was 3.5%) |
+| BEAR_PUT OTM Gate (V6.4) | Short PUT >= 2% OTM | Block assignment-risk entries (V6.10: was 3%) |
+| Options Profit Target (V6.15) | 60% | Profit target (was 50%) |
+| Options ATR Stop Max (V6.8) | 28% | Max loss cap (V6.13: was 30%) |
 | Options ATR Stop Min (V6.13) | 12% | Min stop floor (was 15%) |
+| Intraday Force Exit (V6.15) | 15:25 | Close intraday options (was 15:30) |
 | Intraday FADE VIX Min (V6.13) | VIX >= 9.5 | Enable DEBIT_FADE (lowered for bull markets) |
 | Intraday ITM VIX Min (V6.13) | VIX >= 9.0 | Enable ITM momentum |
 | Spread Force Close DTE (V6.10) | DTE = 1 | Mandatory spread close (assignment prevention) |
-| Short Leg ITM Exit (V6.10) | 0.5% ITM | Exit spread when short leg ITM (was 1%) |
+| Short Leg ITM Exit (V6.15) | 1.0% ITM | Exit spread when short leg ITM (V6.15: was 0.5%) |
 | Spread Width Min (V6.13) | $4 | Minimum spread width (optimized for fills) |
-| Spread Stop/Target (V6.10) | 40%/40% | Symmetric R:R (was 35%/50%) |
+| Spread Stop/Target (V6.15) | 40%/50% | Stop 40%, Target 50% base (regime-adjusted) |
 | Choppy Market Filter (V6.10) | 3 reversals/2hr | 50% size reduction in choppy markets |
 | VIX Stable Band Low (V6.13.1) | +/-0.2% | STABLE band when VIX < 15 |
 | VIX Stable Band High (V6.13.1) | +/-0.7% | STABLE band when VIX > 25 |
 | Margin Utilization Max (V6.9) | 60% | Cap total margin usage |
 | Options Max Margin PCT (V6.10) | 25% | Max margin for options |
-| Micro Score Bullish (V6.14) | 47 | Bullish confirmation threshold |
-| Micro Score Bearish (V6.14) | 49 | Bearish confirmation threshold |
+| Micro Score Bullish (V6.15) | 48 | Bullish confirmation threshold (was 47) |
+| Micro Score Bearish (V6.15) | 47 | Bearish confirmation threshold (was 49) |
 
 ### Overnight Holdings (V6.11 Universe)
 

@@ -185,6 +185,59 @@ Acceptance:
 1. `E_INTRADAY_TRADE_LIMIT` drops decline.
 2. Late-session quality signals are not systematically starved.
 
+## O8. Protective-put transition ladder (shock lifecycle control)
+
+1. Implement one shock-state ladder across options modes, using existing VIX ladder state:
+2. `L1` (elevated shock start): allow one `PROTECTIVE_PUTS` cycle.
+3. `L2` (stress with volatility rollover): stop repeated long-put rebuys and prefer defined-risk put-writing (`BULL_PUT_CREDIT`) at reduced size.
+4. `L3` (panic): block immediate put-writing until rollover confirmation, then allow only reduced-size defined-risk credits.
+5. Add `shock_id` memory so the system does not keep re-buying protective puts within the same shock episode unless volatility re-accelerates.
+6. If volatility re-accelerates during L2/L3, invalidate credit posture and revert to defense.
+
+Acceptance:
+
+1. Protective puts are not repeatedly re-entered during volatility decline in the same shock episode.
+2. Post-spike transitions show measurable shift from long-put repetition toward controlled credit participation.
+3. Tail-risk controls remain active (no increase in assignment/margin incidents).
+
+## O9. VASS regime-mix bias correction (bull-spread lean in chop/bear)
+
+1. Add explicit regime-aware spread mix constraints:
+2. In chop/bear windows, cap repeated `BULL_CALL_DEBIT` recycling.
+3. Require minimum bearish/neutral strategy attempt ratio before allowing additional bullish debit attempts.
+4. Keep this logic inside options engine routing; do not add decision duplication in `main.py`.
+
+Acceptance:
+
+1. In chop/bear runs, VASS no longer over-concentrates in bullish debit structures.
+2. Strategy mix becomes regime-consistent without reducing safety gates.
+
+## O10. Credit spread liquidity unblock validation/tuning
+
+1. Add explicit validation of credit spread quality filters in current data regime.
+2. Recalibrate credit-path thresholds only as needed to avoid accidental full-path suppression:
+3. minimum OI, max spread percent, and long-leg quality bounds.
+4. Keep changes bounded and risk-aware; avoid opening illiquid tails.
+
+Acceptance:
+
+1. Credit-path `CREDIT_ENTRY_VALIDATION_FAILED` is no longer dominated by liquidity filter hard-fail.
+2. Credit entries appear in eligible high-IV windows with acceptable fill quality.
+3. No degradation in slippage/invalid-order behavior.
+
+## O11. Regime-aware DTE de-risk ladder for spreads
+
+1. Keep terminal force-close protection at DTE=1.
+2. Add earlier staged de-risking in volatile/choppy regimes:
+3. partial de-risk at earlier DTE threshold (for example DTE 7), full de-risk at tighter threshold (for example DTE 5) when stress persists.
+4. Preserve longer hold in stable risk-on conditions where trend remains favorable.
+
+Acceptance:
+
+1. Fewer long-duration adverse spread holds through corrections.
+2. Reduced tail-loss concentration from near-expiry or prolonged decaying holds.
+3. No material loss of profitable trend captures in bull windows.
+
 ---
 
 ## 6) Implementation Sequence (Strict Order)
@@ -211,6 +264,16 @@ Gate to proceed:
 5. O5 call concentration control.
 6. O6 combined-size boundary tuning.
 7. O7 trade-limit starvation control.
+8. O9 VASS regime-mix bias correction.
+9. O10 credit spread liquidity unblock validation/tuning.
+10. O11 regime-aware DTE de-risk ladder.
+
+## Phase C: Isolated High-Risk Rollout
+
+1. O8 protective-put transition ladder is implemented and validated in isolation.
+2. Gate with feature flag (`ENABLE_O8_SHOCK_LADDER` style) and dedicated logs:
+3. shock level transitions, `shock_id`, rollover detection, posture switches, and invalidation events.
+4. Promote O8 only after isolated pass across stress/chop windows.
 
 Gate to proceed:
 
@@ -223,10 +286,11 @@ Gate to proceed:
 
 Run order:
 
-1. 2018 Sep-Dec (choppy stress fast fail).
-2. 2015 Jul-Oct (shock/crash robustness).
-3. 2021 Dec-2022 Feb (bear transition).
-4. 2017 Jul-Oct (bull regression guard).
+1. 2017 Jul-Oct quick sanity run (early bull regression guard).
+2. 2018 Sep-Dec (choppy stress fast fail).
+3. 2015 Jul-Oct (shock/crash robustness).
+4. 2021 Dec-2022 Feb (bear transition).
+5. 2017 Jul-Oct full rerun (final bull confirmation).
 
 Promotion rule:
 
@@ -255,20 +319,29 @@ Optimization:
 3. `BEAR_PUT_ASSIGNMENT_GATE` rejections reduced with no assignment incidents.
 4. `NEUTRALITY_EXIT` churn reduced.
 5. CALL loss concentration reduced in non-bull windows.
+6. Protective-put lifecycle transitions from `L1` defense to `L2/L3` controlled premium-capture behavior when volatility rolls over.
 
 Cross-regime:
 
 1. Bull window retains positive participation quality.
 2. Bear/chop windows show improved risk-adjusted outcomes versus V6.18 baselines.
 
+Performance:
+
+1. V6.19 should improve risk-adjusted P&L versus V6.18 baselines in at least 3 of 4 core windows.
+2. Stress/chop drawdown should reduce by at least 20% versus corresponding V6.18 baseline windows.
+3. No promotion if process metrics improve while tail-loss concentration worsens.
+
 ---
 
 ## 9) Deliverables for V6.19
 
-1. Code changes implementing H1-H5 and O1-O7.
+1. Code changes implementing H1-H5 and O1-O11.
 2. Updated `OPTIONS_ENGINE_MASTER_AUDIT.md` with per-run scorecards.
 3. Updated optimization playbook with validated parameter deltas.
 4. One consolidated V6.19 audit report with pass/fail against success criteria.
+5. Size-impact note confirming decision logic stayed engine-local and avoided material `main.py` growth.
+6. Isolated O8 rollout report (feature-flag run logs + pass/fail) before merged activation.
 
 ---
 
@@ -277,3 +350,109 @@ Cross-regime:
 V6.19 will optimize only after reliability is proven.  
 No optimization change is accepted unless execution safety and lifecycle observability remain green.
 
+---
+
+## 11) Patch Wave Applied (2026-02-11, Pre-Next Backtest)
+
+These items are now implemented in code and moved from proposal to validation queue.
+
+### Technical Hardening Applied
+
+1. Spread DTE reliability hardening:
+2. Exit loop now recomputes spread DTE from live expiry before de-risk logic (`T-37`), to prevent stale-state hold-through behavior.
+3. Credit direction propagation fix:
+4. Credit spread entry path now receives explicit resolver direction in router->engine call.
+
+### Optimization Controls Applied
+
+1. VASS win-rate decouple (`O-20`):
+2. Added soft-shutoff controls so VASS can scale down instead of hard-blocking when win-rate gate degrades (`VASS_WIN_RATE_HARD_BLOCK=False`, `VASS_WIN_RATE_SHUTOFF_SCALE`).
+3. Bear/chop call concentration controls (`O-21`):
+4. Added VIX stress and acceleration-driven BULL_CALL block/size controls (`BULL_CALL_STRESS_*`, `BULL_CALL_EARLY_STRESS_*`).
+5. Added intraday `DEBIT_MOMENTUM` regime blocks in caution/elevated/worsening regimes.
+6. Choppy participation consistency:
+7. Applied choppy size reduction to single-leg intraday flow, not only spreads.
+
+### What Remains Pending Validation
+
+1. Confirm `WIN_RATE_GATE_BLOCK` is no longer dominant in VASS rejections.
+2. Confirm bear/chop runs show reduced call-loss concentration and healthier spread mix.
+3. Confirm DTE-based spread de-risk exits trigger on time in stress windows.
+4. Confirm margin-related runtime rejects do not regress while participation improves.
+
+---
+
+## 12) V6.19 Validation Results (2026-02-11)
+
+### 12.1 Dec 2021 - Feb 2022 Backtest (stage6.19)
+
+Run inputs:
+- `docs/audits/logs/stage6.19/V6_19_Dec2021_Feb2022_logs.txt`
+- `docs/audits/logs/stage6.19/V6_19_Dec2021_Feb2022_orders.csv`
+- `docs/audits/logs/stage6.19/V6_19_Dec2021_Feb2022_trades.csv`
+
+**Result: NO IMPROVEMENT over V6.18 baseline.**
+
+| Metric | V6.18 Baseline | V6.19 Actual | Status |
+|--------|----------------|--------------|--------|
+| Trades | 126 | 127 | Same |
+| Net P&L | -$16,050 | -$16,050 | Same |
+| Win Rate | 40.5% | 40.5% | Same |
+| INTRADAY_RESULT | 47 | 47 | Same |
+| VASS_ENTRY | 31 | 31 | Same |
+| VASS_REJECTION | 450 | 450 | Same |
+| WIN_RATE_GATE_BLOCK | 402 | **402** | ❌ NOT FIXED |
+| HAS_SPREAD_POSITION | 110 | 110 | Same |
+| Margin Errors | 4-5 | 5 | Same |
+| Conversion Rate | 13.4% | 13.4% | ❌ Target was ≥25% |
+
+### 12.2 Monthly P&L Breakdown
+
+| Month | V6.19 P&L |
+|-------|-----------|
+| Dec 2021 | -$9,374 |
+| Jan 2022 | -$7,009 |
+| Feb 2022 | +$333 |
+| **Total** | **-$16,050** |
+
+### 12.3 E_* Rejection Code Breakdown
+
+| Code | Count | % |
+|------|-------|---|
+| E_CALL_GATE_STRESS | 129 | 45% |
+| E_INTRADAY_TRADE_LIMIT | 63 | 22% |
+| E_CALL_GATE_MA20 | 51 | 18% |
+| Other | 45 | 15% |
+
+### 12.4 Assessment
+
+**O1 (WIN_RATE_GATE decouple) did NOT take effect:**
+- `WIN_RATE_GATE_BLOCK=402` still dominates VASS rejections
+- Config shows `VASS_WIN_RATE_HARD_BLOCK` may still be True or logic path not reached
+
+**Possible causes:**
+1. Config flag not changed in backtest run
+2. Code path not reached due to upstream rejection
+3. Soft-shutoff scale still blocking (scale=0.0 during shutoff)
+
+### 12.5 Next Steps
+
+1. Verify `VASS_WIN_RATE_HARD_BLOCK=False` is set in config for next run
+2. Add explicit log when soft-shutoff scale is applied vs hard block
+3. Re-run Dec 2021-Feb 2022 with verified config
+4. If still failing, trace code path to find why O1 fix is not reached
+
+---
+
+## 13) Cross-Period P&L Summary (All V6.18 Runs)
+
+| Period | Net P&L | Conversion Rate | Dominant Blocker | Status |
+|--------|---------|-----------------|------------------|--------|
+| 2017 Jul-Oct | +$5,160 | ~51% | E_CALL_GATE_MA20 | ✅ Profitable |
+| 2015 Jul-Oct | -$19,121 | ~44% | VASS churn | ❌ Loss |
+| 2018 Sep-Dec | -$23,293 | 7.6% | HAS_SPREAD_POSITION (603) | ❌ Loss |
+| 2021 Dec-2022 Feb | -$16,050 | 13.4% | WIN_RATE_GATE_BLOCK (402) | ❌ Loss |
+
+**Pattern:** Algorithm only profitable in low-VIX bull markets (2017). All stress/chop/bear periods show losses.
+
+**Root cause:** VASS stuck in BULL_CALL_DEBIT concentration; credit spreads blocked by liquidity filters and WIN_RATE_GATE.

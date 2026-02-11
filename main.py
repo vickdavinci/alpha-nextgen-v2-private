@@ -198,7 +198,7 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
         self.SetStartDate(2021, 12, 1)
         self.SetEndDate(2022, 2, 28)  # Dec 2021 - Feb 2022 backtest (3 months)
-        self.SetCash(config.INITIAL_CAPITAL)  # $50,000 seed capital
+        self.SetCash(config.INITIAL_CAPITAL)  # Seed capital from config
 
         # All times are Eastern
         self.SetTimeZone("America/New_York")
@@ -336,6 +336,12 @@ class AlphaNextGen(QCAlgorithm):
         # V2.27: Track close fill prices for win rate gate P&L
         self._spread_close_long_fill_price: float = 0.0
         self._spread_close_short_fill_price: float = 0.0
+        # V6.19: Run-level diagnostics counters for hardening validation.
+        self._diag_margin_reject_count = 0
+        self._diag_intraday_approved_count = 0
+        self._diag_intraday_dropped_count = 0
+        self._diag_intraday_result_count = 0
+        self._diag_vass_block_count = 0
 
         # V2.6 Bug #14: Exit order retry tracking
         self._pending_exit_orders: Dict[str, ExitOrderTracker] = {}
@@ -1200,7 +1206,8 @@ class AlphaNextGen(QCAlgorithm):
         if not hasattr(self, "options_engine") or self.options_engine is None:
             return
 
-        if self.options_engine._spread_position is None:
+        spreads = self.options_engine.get_spread_positions()
+        if not spreads:
             return  # V6.12: Silent return, no log needed for normal case
 
         # Get current QQQ price (pre-market)
@@ -1210,7 +1217,14 @@ class AlphaNextGen(QCAlgorithm):
             return
 
         # Call options engine pre-market check
-        exit_signals = self.options_engine.check_premarket_itm_shorts(underlying_price=qqq_price)
+        exit_signals = []
+        for spread in spreads:
+            signals = self.options_engine.check_premarket_itm_shorts(
+                underlying_price=qqq_price,
+                spread_override=spread,
+            )
+            if signals:
+                exit_signals.extend(signals)
 
         if exit_signals:
             # Queue the exit signals for immediate execution at market open
@@ -1344,8 +1358,8 @@ class AlphaNextGen(QCAlgorithm):
             config, "PREMARKET_VIX_L3_CLOSE_ALL_OPTIONS", True
         ):
             queued = 0
-            spread = self.options_engine.get_spread_position()
-            if spread is not None:
+            spreads = self.options_engine.get_spread_positions()
+            for spread in spreads:
                 self.portfolio_router.receive_signal(
                     TargetWeight(
                         symbol=self._normalize_symbol_str(spread.long_leg.symbol),
@@ -1381,7 +1395,7 @@ class AlphaNextGen(QCAlgorithm):
 
             # Queue exits for any orphan option holdings not covered by tracked state.
             tracked_symbols = set()
-            if spread is not None:
+            for spread in spreads:
                 tracked_symbols.add(spread.long_leg.symbol)
                 tracked_symbols.add(spread.short_leg.symbol)
             if intraday_pos is not None:
@@ -1415,7 +1429,7 @@ class AlphaNextGen(QCAlgorithm):
             config, "PREMARKET_VIX_L2_CLOSE_BULLISH_OPTIONS", True
         ):
             # Tracked spread-aware close for bullish swing structures.
-            spread = self.options_engine.get_spread_position()
+            spreads = self.options_engine.get_spread_positions()
             bullish_spreads = {
                 "BULL_CALL",
                 "BULL_CALL_DEBIT",
@@ -1423,7 +1437,9 @@ class AlphaNextGen(QCAlgorithm):
                 SpreadStrategy.BULL_CALL_DEBIT.value,
                 SpreadStrategy.BULL_PUT_CREDIT.value,
             }
-            if spread is not None and spread.spread_type in bullish_spreads:
+            for spread in spreads:
+                if spread.spread_type not in bullish_spreads:
+                    continue
                 self.portfolio_router.receive_signal(
                     TargetWeight(
                         symbol=self._normalize_symbol_str(spread.long_leg.symbol),
@@ -1512,9 +1528,9 @@ class AlphaNextGen(QCAlgorithm):
         if symbol is None:
             return ""
         if isinstance(symbol, str):
-            return symbol
+            return symbol.strip().upper()
         try:
-            return str(symbol)
+            return str(symbol).strip().upper()
         except Exception:
             return ""
 
@@ -2187,6 +2203,9 @@ class AlphaNextGen(QCAlgorithm):
             # Reset session counters for next day
             self.pnl_tracker.reset_session()
 
+        # V6.19: Emit daily options diagnostics summary for funnel validation.
+        self._log_daily_summary()
+
         # Reset daily tracking
         self.today_trades.clear()
         self.today_safeguards.clear()
@@ -2200,6 +2219,11 @@ class AlphaNextGen(QCAlgorithm):
         self._options_intraday_cooldown_until = None
         self._options_spread_cooldown_until = None
         self._mr_rejection_cooldown_until = None
+        self._diag_margin_reject_count = 0
+        self._diag_intraday_approved_count = 0
+        self._diag_intraday_dropped_count = 0
+        self._diag_intraday_result_count = 0
+        self._diag_vass_block_count = 0
         # V3.0 P1-B: Clean stale pending exit orders at EOD
         if self._pending_exit_orders:
             stale_keys = [
@@ -2680,12 +2704,17 @@ class AlphaNextGen(QCAlgorithm):
         vix_current = self._current_vix
 
         # Check if we have any swing positions
-        swing_signals = self.options_engine.check_friday_firewall_exit(
-            current_vix=vix_current,
-            current_date=str(self.Time.date()),
-            vix_close_all_threshold=config.FRIDAY_FIREWALL_VIX_CLOSE_ALL,
-            vix_keep_fresh_threshold=config.FRIDAY_FIREWALL_VIX_KEEP_FRESH,
-        )
+        swing_signals = []
+        for spread in self.options_engine.get_spread_positions():
+            signals = self.options_engine.check_friday_firewall_exit(
+                current_vix=vix_current,
+                current_date=str(self.Time.date()),
+                vix_close_all_threshold=config.FRIDAY_FIREWALL_VIX_CLOSE_ALL,
+                vix_keep_fresh_threshold=config.FRIDAY_FIREWALL_VIX_KEEP_FRESH,
+                spread_override=spread,
+            )
+            if signals:
+                swing_signals.extend(signals)
 
         if swing_signals:
             for signal in swing_signals:
@@ -3029,7 +3058,7 @@ class AlphaNextGen(QCAlgorithm):
                 # Without this, ghost spread state persists and fires SPREAD_EXIT_WARNING
                 # every minute for the lifetime of the backtest (43,291 warnings in 2015)
                 if self.options_engine.has_spread_position():
-                    self.options_engine.remove_spread_position()
+                    self.options_engine.remove_spread_position(symbol)
                     self.Log("SPREAD_RECONCILE: Cleared spread state after both legs filled")
                     if self.portfolio_router:
                         self.portfolio_router.clear_all_spread_margins()
@@ -3057,12 +3086,11 @@ class AlphaNextGen(QCAlgorithm):
             # V2.29 P0: Reconcile ghost spread after any option fill
             # Safety net: if spread state exists but neither leg is held, clear it
             if is_option and self.options_engine.has_spread_position():
-                spread = self.options_engine.get_spread_position()
-                if spread:
+                for spread in self.options_engine.get_spread_positions():
                     long_held = self.Portfolio[spread.long_leg.symbol].Invested
                     short_held = self.Portfolio[spread.short_leg.symbol].Invested
                     if not long_held and not short_held:
-                        self.options_engine.remove_spread_position()
+                        self.options_engine.remove_spread_position(str(spread.long_leg.symbol))
                         self.Log("SPREAD_RECONCILE: Both legs flat — cleared ghost state")
                         if self.portfolio_router:
                             self.portfolio_router.clear_all_spread_margins()
@@ -3152,11 +3180,20 @@ class AlphaNextGen(QCAlgorithm):
 
         elif orderEvent.Status == OrderStatus.Invalid:
             self.Log(f"INVALID: {orderEvent.Symbol} - {orderEvent.Message}")
+            if "Margin" in str(orderEvent.Message) or "buying power" in str(orderEvent.Message):
+                self._diag_margin_reject_count += 1
             self.execution_engine.on_order_event(
                 broker_order_id=orderEvent.OrderId,
                 status="Invalid",
                 rejection_reason=orderEvent.Message,
             )
+            if self.oco_manager.has_order(orderEvent.OrderId):
+                self.oco_manager.on_order_inactive(
+                    broker_order_id=orderEvent.OrderId,
+                    status="Invalid",
+                    detail=str(orderEvent.Message),
+                    event_time=str(self.Time),
+                )
 
             # V2.4.4 P0 Fix #4: Margin Call Circuit Breaker
             # Track consecutive margin calls and enter cooldown after hitting limit
@@ -3356,6 +3393,13 @@ class AlphaNextGen(QCAlgorithm):
                 broker_order_id=orderEvent.OrderId,
                 status="Canceled",
             )
+            if self.oco_manager.has_order(orderEvent.OrderId):
+                self.oco_manager.on_order_inactive(
+                    broker_order_id=orderEvent.OrderId,
+                    status="Canceled",
+                    detail=str(getattr(orderEvent, "Message", "")),
+                    event_time=str(self.Time),
+                )
             # V2.20: Event-driven state recovery — notify source engine
             canceled_symbol = str(orderEvent.Symbol)
             self._handle_order_rejection(canceled_symbol, orderEvent)
@@ -3481,8 +3525,7 @@ class AlphaNextGen(QCAlgorithm):
                 option_symbols[str(symbol)] = symbol
 
             tracked_symbols = set()
-            spread = self.options_engine.get_spread_position()
-            if spread is not None:
+            for spread in self.options_engine.get_spread_positions():
                 tracked_symbols.add(str(spread.long_leg.symbol))
                 tracked_symbols.add(str(spread.short_leg.symbol))
 
@@ -3636,12 +3679,10 @@ class AlphaNextGen(QCAlgorithm):
             def is_bearish_signal(agg) -> bool:
                 """Check if signal is bearish (PUT spread entry or exit)."""
                 # Check existing spread position
-                if (
-                    hasattr(self, "options_engine")
-                    and self.options_engine._spread_position is not None
-                ):
-                    if self.options_engine._spread_position.spread_type == "BEAR_PUT":
-                        return True
+                if hasattr(self, "options_engine") and self.options_engine.has_spread_position():
+                    for spread in self.options_engine.get_spread_positions():
+                        if spread.spread_type == "BEAR_PUT":
+                            return True
                 # Check signal source/reasons for bearish indicators
                 for source in agg.sources:
                     if "BEAR" in source.upper() or "PUT" in source.upper():
@@ -5263,8 +5304,8 @@ class AlphaNextGen(QCAlgorithm):
             # V2.33: Close options FIRST using atomic close (shorts before longs)
             # V2.27: Spread decouple — keep active spreads, they have -50% stop
             if config.KILL_SWITCH_SPREAD_DECOUPLE:
-                spread = self.options_engine._spread_position
-                spread_count = spread.num_spreads if spread else 0
+                spreads = self.options_engine.get_spread_positions()
+                spread_count = sum(s.num_spreads for s in spreads) if spreads else 0
                 self.Log(
                     f"KS_SPREAD_DECOUPLE: Keeping {spread_count} active spreads | "
                     f"Monitored by -{config.SPREAD_STOP_LOSS_PCT:.0%} spread stop"
@@ -5303,11 +5344,10 @@ class AlphaNextGen(QCAlgorithm):
         Returns:
             Number of single-leg options closed.
         """
-        spread = self.options_engine._spread_position
         spread_symbols = set()
 
         # Get spread leg symbols to exclude
-        if spread is not None:
+        for spread in self.options_engine.get_spread_positions():
             if hasattr(spread.long_leg, "symbol"):
                 spread_symbols.add(str(spread.long_leg.symbol))
             if hasattr(spread.short_leg, "symbol"):
@@ -5897,7 +5937,7 @@ class AlphaNextGen(QCAlgorithm):
                         self.Log(f"INTRADAY: Blocked - {signal_reason}")
                     else:
                         self.Log(
-                            f"INTRADAY_SIGNAL_APPROVED: {signal_reason} | "
+                            f"INTRADAY_SIGNAL_CANDIDATE: {signal_reason} | "
                             f"Direction={intraday_direction.value if intraday_direction else 'NONE'}"
                         )
 
@@ -5964,6 +6004,13 @@ class AlphaNextGen(QCAlgorithm):
                         intraday_signal = self._attach_option_trace_metadata(
                             intraday_signal, source="MICRO"
                         )
+                        self.Log(
+                            f"INTRADAY_SIGNAL_APPROVED: {signal_reason} | "
+                            f"Direction={intraday_direction.value if intraday_direction else 'NONE'} | "
+                            f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'} | "
+                            f"Contract={intraday_contract.symbol if intraday_contract else 'NONE'}"
+                        )
+                        self._diag_intraday_approved_count += 1
                         intraday_trace_id = (
                             intraday_signal.metadata.get("trace_id", "")
                             if intraday_signal.metadata
@@ -6027,7 +6074,7 @@ class AlphaNextGen(QCAlgorithm):
                                 else ""
                             )
                             self.Log(
-                                f"INTRADAY_SIGNAL_DROPPED: Approved but no order | "
+                                f"INTRADAY_SIGNAL_DROPPED: Candidate rejected before order | "
                                 f"Code={drop_code} | "
                                 f"Reason={signal_reason} | RetryHint={retry_reason_now} | "
                                 f"{validation_detail_fragment}"
@@ -6035,6 +6082,7 @@ class AlphaNextGen(QCAlgorithm):
                                 f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'} | "
                                 f"Contract={intraday_contract.symbol if intraday_contract else 'NONE'}"
                             )
+                            self._diag_intraday_dropped_count += 1
                             # V6.15: One retry on next eligible scan for temporary drop causes only.
                             if drop_code in {"DROP_SLOT_LIMIT", "DROP_COOLDOWN", "DROP_MARGIN"}:
                                 self._intraday_retry_once_pending = True
@@ -6207,6 +6255,7 @@ class AlphaNextGen(QCAlgorithm):
                             vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
                             size_multiplier=size_multiplier,
                             margin_remaining=margin_remaining,
+                            direction=direction,
                         )
                 else:
                     rejection_code = "CREDIT_LEG_SELECTION_FAILED"
@@ -6332,6 +6381,7 @@ class AlphaNextGen(QCAlgorithm):
             return  # Spread trade placed, don't try single-leg
 
         if signal is None and not spread_cooldown_active:
+            self._diag_vass_block_count += 1
             # V2.10 (Pitfall #4): Throttled VASS rejection logging
             # Log rejections every 15 min for visibility, not every candle to avoid spam
             should_log = (
@@ -6352,7 +6402,9 @@ class AlphaNextGen(QCAlgorithm):
                     else "UNKNOWN"
                 )
                 skip_reasons = {
-                    "HAS_SPREAD_POSITION",
+                    "R_SLOT_SWING_MAX",
+                    "R_SLOT_TOTAL_MAX",
+                    "R_SLOT_DIRECTION_MAX",
                     "ENTRY_ALREADY_ATTEMPTED_TODAY",
                     "ENTRY_ATTEMPT_LIMIT",
                     "POST_TRADE_MARGIN_COOLDOWN",
@@ -6361,8 +6413,13 @@ class AlphaNextGen(QCAlgorithm):
                     "VASS_SKIPPED" if (validation_reason in skip_reasons) else "VASS_REJECTION"
                 )
                 reason_text = "No contracts met spread criteria (DTE/delta/credit)"
-                if validation_reason == "HAS_SPREAD_POSITION":
+                if validation_reason in {
+                    "R_SLOT_SWING_MAX",
+                    "R_SLOT_DIRECTION_MAX",
+                }:
                     reason_text = "Skipped - existing spread position"
+                elif validation_reason == "R_SLOT_TOTAL_MAX":
+                    reason_text = "Skipped - total options slot limit reached"
                 elif validation_reason in {
                     "ENTRY_ALREADY_ATTEMPTED_TODAY",
                     "ENTRY_ATTEMPT_LIMIT",
@@ -6701,139 +6758,117 @@ class AlphaNextGen(QCAlgorithm):
         Args:
             data: Current data slice.
         """
-        spread = self.options_engine.get_spread_position()
-        if spread is None:
+        spreads = self.options_engine.get_spread_positions()
+        if not spreads:
             return
 
-        # V2.6 Bug #14: Force exit 30 min before close for 0DTE positions
-        current_dte = spread.long_leg.days_to_expiry  # Initial estimate
-        if (
-            current_dte <= 0
-            and self.Time.hour == config.ZERO_DTE_FORCE_EXIT_HOUR
-            and self.Time.minute >= config.ZERO_DTE_FORCE_EXIT_MINUTE
-        ):
-            self.Log(
-                f"0DTE_FIREWALL: Forcing exit 30 min before close | "
-                f"Time={self.Time.strftime('%H:%M')}"
-            )
-            self._force_spread_exit("0DTE_TIME_DECAY")
-            return
-
-        # Get current prices for both legs from chain
-        chain = (
-            data.OptionChains[self._qqq_option_symbol]
-            if self._qqq_option_symbol in data.OptionChains
-            else None
-        )
-
-        long_leg_price = None
-        short_leg_price = None
-
-        if chain is not None:
-            try:
-                for contract in chain:
-                    contract_symbol = str(contract.Symbol)
-                    if contract_symbol == spread.long_leg.symbol:
-                        bid, ask = self._get_contract_prices(contract)
-                        long_leg_price = (bid + ask) / 2 if bid > 0 and ask > 0 else None
-                        current_dte = (contract.Expiry - self.Time).days
-                    elif contract_symbol == spread.short_leg.symbol:
-                        bid, ask = self._get_contract_prices(contract)
-                        short_leg_price = (bid + ask) / 2 if bid > 0 and ask > 0 else None
-            except Exception as e:
-                self.Log(f"SPREAD_EXIT_ERROR: Failed to get prices from chain: {e}")
-
-        # V2.6 Bug #3: Fallback to Security price when chain data missing
-        if long_leg_price is None:
-            try:
-                long_sec = self.Securities.get(spread.long_leg.symbol)
-                if long_sec and long_sec.Price > 0:
-                    long_leg_price = long_sec.Price
-                    self.Log(
-                        f"SPREAD_EXIT: Using Security price for long leg: ${long_leg_price:.2f}"
-                    )
-            except Exception:
-                pass
-
-        if short_leg_price is None:
-            try:
-                short_sec = self.Securities.get(spread.short_leg.symbol)
-                if short_sec and short_sec.Price > 0:
-                    short_leg_price = short_sec.Price
-                    self.Log(
-                        f"SPREAD_EXIT: Using Security price for short leg: ${short_leg_price:.2f}"
-                    )
-            except Exception:
-                pass
-
-        # V2.6 Bug #3: Force exit if near expiration and no price data
-        if long_leg_price is None or short_leg_price is None:
-            if current_dte is not None and current_dte <= 2:
-                self.Log(
-                    f"SPREAD_EXIT: EMERGENCY - No price data but DTE={current_dte} <= 2 | "
-                    f"Forcing exit to avoid expiration risk"
-                )
-                self._force_spread_exit("NO_PRICE_DATA_NEAR_EXPIRY")
-                return
-
-            # Still no prices - log but continue checking on next tick
-            self.Log(
-                f"SPREAD_EXIT_WARNING: Missing price data | "
-                f"Long={long_leg_price} Short={short_leg_price} | "
-                f"Will retry next tick"
-            )
-            return
-
-        if current_dte is None:
-            current_dte = spread.long_leg.days_to_expiry  # Fallback
-
-        # V2.10 (Pitfall #5): Check gamma pin exit BEFORE other exit signals
-        # This exits early if underlying price is within buffer zone of short strike
-        # near expiration, preventing broker auto-liquidation at bad prices
         underlying_price = self.Securities["QQQ"].Price
-        gamma_pin_signals = self.options_engine.check_gamma_pin_exit(
-            current_price=underlying_price,
-            current_dte=current_dte,
-        )
-        if gamma_pin_signals:
-            for signal in gamma_pin_signals:
-                self.portfolio_router.receive_signal(signal)
-            return  # Gamma pin exit takes priority
-
-        # V5.3 P0: Check assignment risk BEFORE normal exit conditions
-        # Assignment risk takes priority - close immediately if short leg is deep ITM
         current_hour = self.Time.hour
         current_minute = self.Time.minute
         available_margin = self.Portfolio.MarginRemaining
-
-        assignment_risk_signals = self.options_engine.check_assignment_risk_exit(
-            underlying_price=underlying_price,
-            current_dte=current_dte,
-            current_hour=current_hour,
-            current_minute=current_minute,
-            available_margin=available_margin,
-        )
-        if assignment_risk_signals:
-            for signal in assignment_risk_signals:
-                self.portfolio_router.receive_signal(signal)
-            return  # Assignment risk exit takes priority
-
-        # Get current regime score
         regime_score = self.regime_engine.get_previous_score()
 
-        # Check for exit signals
-        exit_signals = self.options_engine.check_spread_exit_signals(
-            long_leg_price=long_leg_price,
-            short_leg_price=short_leg_price,
-            regime_score=regime_score,
-            current_dte=current_dte,
-            vix_current=self._current_vix,
-        )
+        for spread in spreads:
+            current_dte = spread.long_leg.days_to_expiry
+            try:
+                if spread.long_leg.expiry:
+                    from datetime import datetime
 
-        if exit_signals:
-            # Send both exit signals (long leg and short leg)
-            for signal in exit_signals:
-                self.portfolio_router.receive_signal(signal)
+                    expiry_date = datetime.strptime(spread.long_leg.expiry, "%Y-%m-%d").date()
+                    current_dte = (expiry_date - self.Time.date()).days
+                    spread.long_leg.days_to_expiry = current_dte
+                    spread.short_leg.days_to_expiry = current_dte
+            except Exception as e:
+                self.Log(f"SPREAD_EXIT_WARNING: Failed to parse spread expiry date: {e}")
+
+            if (
+                current_dte <= 0
+                and self.Time.hour == config.ZERO_DTE_FORCE_EXIT_HOUR
+                and self.Time.minute >= config.ZERO_DTE_FORCE_EXIT_MINUTE
+            ):
+                self.Log(
+                    f"0DTE_FIREWALL: Forcing exit 30 min before close | "
+                    f"Spread={spread.spread_type} | Time={self.Time.strftime('%H:%M')}"
+                )
+                self.portfolio_router.receive_signal(
+                    TargetWeight(
+                        symbol=self._normalize_symbol_str(spread.long_leg.symbol),
+                        target_weight=0.0,
+                        source="OPT",
+                        urgency=Urgency.IMMEDIATE,
+                        reason="0DTE_TIME_DECAY",
+                        requested_quantity=spread.num_spreads,
+                        metadata={
+                            "spread_close_short": True,
+                            "spread_short_leg_symbol": self._normalize_symbol_str(
+                                spread.short_leg.symbol
+                            ),
+                            "spread_short_leg_quantity": spread.num_spreads,
+                        },
+                    )
+                )
+                continue
+
+            long_leg_price = None
+            short_leg_price = None
+            try:
+                long_sec = self.Securities.get(spread.long_leg.symbol)
+                if long_sec:
+                    if long_sec.BidPrice > 0 and long_sec.AskPrice > 0:
+                        long_leg_price = (long_sec.BidPrice + long_sec.AskPrice) / 2
+                    elif long_sec.Price > 0:
+                        long_leg_price = long_sec.Price
+                short_sec = self.Securities.get(spread.short_leg.symbol)
+                if short_sec:
+                    if short_sec.BidPrice > 0 and short_sec.AskPrice > 0:
+                        short_leg_price = (short_sec.BidPrice + short_sec.AskPrice) / 2
+                    elif short_sec.Price > 0:
+                        short_leg_price = short_sec.Price
+            except Exception:
+                pass
+
+            if long_leg_price is None or short_leg_price is None:
+                if current_dte is not None and current_dte <= 2:
+                    self.Log(
+                        f"SPREAD_EXIT_WARNING: Missing price near expiry | "
+                        f"Type={spread.spread_type} | DTE={current_dte}"
+                    )
+                continue
+
+            gamma_pin_signals = self.options_engine.check_gamma_pin_exit(
+                current_price=underlying_price,
+                current_dte=current_dte,
+                spread_override=spread,
+            )
+            if gamma_pin_signals:
+                for signal in gamma_pin_signals:
+                    self.portfolio_router.receive_signal(signal)
+                continue
+
+            assignment_risk_signals = self.options_engine.check_assignment_risk_exit(
+                underlying_price=underlying_price,
+                current_dte=current_dte,
+                current_hour=current_hour,
+                current_minute=current_minute,
+                available_margin=available_margin,
+                spread_override=spread,
+            )
+            if assignment_risk_signals:
+                for signal in assignment_risk_signals:
+                    self.portfolio_router.receive_signal(signal)
+                continue
+
+            exit_signals = self.options_engine.check_spread_exit_signals(
+                long_leg_price=long_leg_price,
+                short_leg_price=short_leg_price,
+                regime_score=regime_score,
+                current_dte=current_dte,
+                vix_current=self._current_vix,
+                spread_override=spread,
+            )
+            if exit_signals:
+                for signal in exit_signals:
+                    self.portfolio_router.receive_signal(signal)
 
     def _get_actual_option_count(self) -> int:
         """
@@ -7039,6 +7074,14 @@ class AlphaNextGen(QCAlgorithm):
         )
 
         self.Log(summary)
+        self.Log(
+            "OPTIONS_DIAG_SUMMARY: "
+            f"Approved={self._diag_intraday_approved_count} | "
+            f"Dropped={self._diag_intraday_dropped_count} | "
+            f"Results={self._diag_intraday_result_count} | "
+            f"VASS_Blocks={self._diag_vass_block_count} | "
+            f"MarginRejects={self._diag_margin_reject_count}"
+        )
 
     def _handle_order_rejection(self, symbol: str, order_event) -> None:
         """
@@ -7264,7 +7307,8 @@ class AlphaNextGen(QCAlgorithm):
                 self.Log(f"MR_TRACK_ERROR: {symbol}: {e}")
 
         # V2.1/V2.3: Update Options engine if QQQ option
-        if "QQQ" in symbol and ("C" in symbol or "P" in symbol):
+        symbol_norm = self._normalize_symbol_str(symbol)
+        if "QQQ" in symbol_norm and ("C" in symbol_norm or "P" in symbol_norm):
             try:
                 # V2.5 FIX: Check spread mode FIRST (before fill_qty sign check)
                 # Bull Call Spread: Long leg = BUY (qty > 0), Short leg = SELL (qty < 0)
@@ -7276,8 +7320,15 @@ class AlphaNextGen(QCAlgorithm):
                 elif fill_qty > 0:
                     # V6.12 FIX: Check if this is a BUY to close a spread short leg
                     # Short leg close = BUY (fill_qty > 0), but it's an EXIT not an entry
-                    spread = self.options_engine.get_spread_position()
-                    if spread and spread.short_leg and spread.short_leg.symbol == symbol:
+                    is_spread_short_close = False
+                    for spread in self.options_engine.get_spread_positions():
+                        if (
+                            spread.short_leg
+                            and self._normalize_symbol_str(spread.short_leg.symbol) == symbol_norm
+                        ):
+                            is_spread_short_close = True
+                            break
+                    if is_spread_short_close:
                         # This is a short leg close (BUY to close)
                         self._handle_spread_leg_close(symbol, fill_price, fill_qty)
                     else:
@@ -7311,14 +7362,29 @@ class AlphaNextGen(QCAlgorithm):
                                 )
                             # Record intraday entry snapshot for robust exit accounting.
                             if self.options_engine.has_intraday_position():
-                                self._intraday_entry_snapshot[symbol] = {
+                                self._intraday_entry_snapshot[symbol_norm] = {
                                     "entry_price": position.entry_price,
                                     "entry_time": position.entry_time,
                                     "quantity": abs(int(fill_qty)),
                                 }
                 elif fill_qty < 0:
-                    # Exit - check position type (spread, intraday, or legacy single-leg)
-                    if self.options_engine.has_spread_position():
+                    # Exit routing must be symbol-aware because spread + intraday can coexist.
+                    is_spread_leg = False
+                    for spread in self.options_engine.get_spread_positions():
+                        spread_long_norm = (
+                            self._normalize_symbol_str(spread.long_leg.symbol)
+                            if spread.long_leg
+                            else ""
+                        )
+                        spread_short_norm = (
+                            self._normalize_symbol_str(spread.short_leg.symbol)
+                            if spread.short_leg
+                            else ""
+                        )
+                        if symbol_norm in {spread_long_norm, spread_short_norm}:
+                            is_spread_leg = True
+                            break
+                    if is_spread_leg:
                         # Spread exit - track leg closes
                         self._handle_spread_leg_close(symbol, fill_price, fill_qty)
                     elif self.options_engine.has_intraday_position():
@@ -7349,6 +7415,7 @@ class AlphaNextGen(QCAlgorithm):
                                 f"Entry=${removed_position.entry_price:.2f} | Exit=${fill_price:.2f} | "
                                 f"P&L={((fill_price - removed_position.entry_price) / removed_position.entry_price):.1%}"
                             )
+                            self._diag_intraday_result_count += 1
                             # V6.12: Record trade in monthly P&L tracker
                             if hasattr(self, "pnl_tracker"):
                                 self.pnl_tracker.record_trade(
@@ -7363,7 +7430,7 @@ class AlphaNextGen(QCAlgorithm):
                                     quantity=abs(int(fill_qty)),
                                 )
                             # Clear fallback snapshot when normal intraday result path logs.
-                            self._intraday_entry_snapshot.pop(symbol, None)
+                            self._intraday_entry_snapshot.pop(symbol_norm, None)
                         self._greeks_breach_logged = False  # Reset for next position
                     else:
                         # Single-leg exit (legacy swing)
@@ -7379,7 +7446,7 @@ class AlphaNextGen(QCAlgorithm):
                                     f"OCO_CLEANUP_ERROR: {removed_position.contract.symbol} | {e}"
                                 )
                         # V6.15: Fallback intraday result accounting for orphan/implicit exits.
-                        snapshot = self._intraday_entry_snapshot.pop(symbol, None)
+                        snapshot = self._intraday_entry_snapshot.pop(symbol_norm, None)
                         if snapshot and snapshot.get("entry_price", 0) > 0:
                             entry_price = float(snapshot["entry_price"])
                             is_win = fill_price > entry_price
@@ -7396,6 +7463,7 @@ class AlphaNextGen(QCAlgorithm):
                                 f"P&L={((fill_price - entry_price) / entry_price):.1%} | "
                                 f"Path=FALLBACK"
                             )
+                            self._diag_intraday_result_count += 1
                             if hasattr(self, "pnl_tracker"):
                                 self.pnl_tracker.record_trade(
                                     symbol=symbol,
@@ -7528,7 +7596,11 @@ class AlphaNextGen(QCAlgorithm):
             fill_price: Fill price.
             fill_qty: Fill quantity (negative for sells).
         """
-        spread = self.options_engine.get_spread_position()
+        spread = None
+        for candidate in self.options_engine.get_spread_positions():
+            if candidate.long_leg.symbol == symbol or candidate.short_leg.symbol == symbol:
+                spread = candidate
+                break
         if spread is None:
             return
 
@@ -7596,6 +7668,14 @@ class AlphaNextGen(QCAlgorithm):
                 f"SPREAD_RESULT: {result_str} | Type={spread.spread_type} | "
                 f"Entry={spread.net_debit:.2f} | Close={close_value:.2f}"
             )
+            pnl_pct = (
+                ((close_value - spread.net_debit) / spread.net_debit) if spread.net_debit else 0.0
+            )
+            self.Log(
+                f"SPREAD: EXIT | Reason=FILL_CLOSE_RECONCILED | "
+                f"Type={spread.spread_type} | Entry={spread.net_debit:.2f} | "
+                f"Close={close_value:.2f} | PnL={pnl_pct:+.1%}"
+            )
 
             # V6.12: Record spread trade in monthly P&L tracker
             if hasattr(self, "pnl_tracker"):
@@ -7618,7 +7698,7 @@ class AlphaNextGen(QCAlgorithm):
                 )
 
             # Both legs closed - remove spread position
-            self.options_engine.remove_spread_position()
+            self.options_engine.remove_spread_position(symbol)
             self._greeks_breach_logged = False  # Reset for next position
 
             # Clear tracking

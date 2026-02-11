@@ -467,6 +467,57 @@ class OCOManager:
 
         return pair
 
+    def on_order_inactive(
+        self,
+        broker_order_id: int,
+        status: str,
+        detail: str,
+        event_time: str,
+    ) -> Optional[OCOPair]:
+        """
+        Handle broker invalid/canceled events for an OCO leg.
+
+        If one leg becomes inactive unexpectedly, cancel the sibling leg and
+        close the OCO pair to avoid stale orphan orders.
+        """
+        if broker_order_id not in self._order_to_oco:
+            return None
+
+        oco_id = self._order_to_oco[broker_order_id]
+        pair = self._active_pairs.get(oco_id)
+        if pair is None:
+            return None
+
+        if pair.state != OCOState.ACTIVE:
+            # Already terminal; just clean stale mappings if any.
+            self._cleanup_pair(pair)
+            return pair
+
+        leg_name = "UNKNOWN"
+        sibling_id: Optional[int] = None
+        if pair.stop_leg.broker_order_id == broker_order_id:
+            pair.stop_leg.cancelled = True
+            leg_name = "STOP"
+            sibling_id = pair.profit_leg.broker_order_id
+        elif pair.profit_leg.broker_order_id == broker_order_id:
+            pair.profit_leg.cancelled = True
+            leg_name = "PROFIT"
+            sibling_id = pair.stop_leg.broker_order_id
+
+        if sibling_id:
+            self._cancel_order(sibling_id)
+
+        pair.state = OCOState.CANCELLED
+        pair.closed_at = event_time
+        pair.close_reason = f"{status.upper()}_{leg_name}"
+
+        self.log(
+            f"OCO: CLOSED {oco_id} due to {status.upper()} on {leg_name} leg | "
+            f"Symbol={pair.symbol} | Detail={detail}"
+        )
+        self._cleanup_pair(pair)
+        return pair
+
     def cancel_oco_pair(self, oco_id: str, reason: str = "MANUAL") -> bool:
         """
         Cancel an active OCO pair.

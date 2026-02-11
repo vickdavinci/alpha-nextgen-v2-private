@@ -42,13 +42,13 @@ The Regime Engine has evolved through multiple versions to improve crash detecti
 
 The V5.3 model uses four factors optimized for crash detection while maintaining responsiveness to recoveries.
 
-### Factor Weight Summary (V5.3)
+### Factor Weight Summary (V5.3/V6.15)
 
 | Factor | Weight | What It Measures |
 |--------|:------:|------------------|
 | **Momentum** | 30% | 20-day ROC - catches reversals in days |
-| **VIX Combined** | 30% | 60% level + 40% direction, clamped when VIX >= 25 |
-| **Trend** | 25% | SPY vs MA200 position and alignment |
+| **VIX Combined** | 35% | V6.15: Increased for fear sensitivity (was 30%). 60% level + 40% direction |
+| **Trend** | 20% | V6.15: Reduced lagging trend dominance (was 25%). SPY vs MA200 |
 | **Drawdown** | 15% | Distance from 52-week high |
 
 ---
@@ -273,15 +273,17 @@ This means:
 
 The smoothed score maps to discrete regime states that drive system behavior.
 
-### Regime States Summary Table (V6.11)
+### Regime States Summary Table (V6.15)
 
 | Score Range | State | New Longs | Hedges | Cold Start |
 |:-----------:|-------|:---------:|:------:|:----------:|
 | **70 – 100** | RISK_ON | Full | None | Allowed |
 | **50 – 69** | NEUTRAL | Full | None | If > 50 |
-| **40 – 49** | CAUTIOUS | Full | 5% SH | Blocked |
-| **30 – 39** | DEFENSIVE | Reduced | 8% SH | Blocked |
-| **0 – 29** | RISK_OFF | None | 10% SH | Blocked |
+| **45 – 49** | CAUTIOUS | Full | 5% SH | Blocked |
+| **35 – 44** | DEFENSIVE | Reduced | 8% SH | Blocked |
+| **0 – 34** | RISK_OFF | None | 10% SH | Blocked |
+
+> **V6.15 Note:** Regime thresholds adjusted for better crash detection. CAUTIOUS raised to 45 (was 40), DEFENSIVE raised to 35 (was 30).
 
 > **V6.11 Note:** TMF/PSQ replaced with SH (1x Inverse S&P). See docs/16-appendix-parameters.md for full hedge allocations.
 
@@ -311,9 +313,11 @@ Market conditions are acceptable but not ideal. **Proceed normally with awarenes
 
 ---
 
-### 4.5.3 CAUTIOUS (Score 40–49)
+### 4.5.3 CAUTIOUS (Score 45–49)
 
 Market conditions are deteriorating. **Increased vigilance required.**
+
+> V6.15: Threshold raised from 40 to 45 for earlier hedge activation.
 
 **System Behavior:**
 - Leverage still allowed but proceed carefully
@@ -323,9 +327,11 @@ Market conditions are deteriorating. **Increased vigilance required.**
 
 ---
 
-### 4.5.4 DEFENSIVE (Score 30–39)
+### 4.5.4 DEFENSIVE (Score 35–44)
 
 Market conditions are unfavorable. **Defensive positioning required.**
+
+> V6.15: Threshold raised from 30 to 35 for earlier risk reduction.
 
 **System Behavior:**
 - Reduced leverage appropriate
@@ -335,9 +341,11 @@ Market conditions are unfavorable. **Defensive positioning required.**
 
 ---
 
-### 4.5.5 RISK_OFF (Score 0–29)
+### 4.5.5 RISK_OFF (Score 0–34)
 
 Market conditions are dangerous. **Maximum defense required.**
+
+> V6.15: Threshold raised to 34 (was 29) due to DEFENSIVE threshold increase.
 
 **System Behavior:**
 - **No new long entries allowed**
@@ -349,14 +357,16 @@ Market conditions are dangerous. **Maximum defense required.**
 
 ## 4.6 Regime-Triggered Hedge Allocation (V6.11)
 
-### Hedge Allocation Tiers (V6.11)
+### Hedge Allocation Tiers (V6.15)
 
 | Regime Score | SH Allocation | Notes |
 |:------------:|:-------------:|-------|
 | **>= 50** | 0% | No hedge in bull/neutral |
-| **40 – 49** | 5% | Light hedge (CAUTIOUS) |
-| **30 – 39** | 8% | Medium hedge (DEFENSIVE) |
-| **< 30** | 10% | Full hedge (RISK_OFF) |
+| **45 – 49** | 5% | Light hedge (CAUTIOUS) |
+| **35 – 44** | 8% | Medium hedge (DEFENSIVE) |
+| **< 35** | 10% | Full hedge (RISK_OFF) |
+
+> **V6.15 Change:** Thresholds raised (CAUTIOUS 45, DEFENSIVE 35) for earlier hedge activation.
 
 ### Why SH? (V6.11)
 
@@ -475,14 +485,14 @@ Used when all model flags are disabled.
 
 ## 4.10 Parameter Reference
 
-### V5.3 Model Parameters
+### V5.3 Model Parameters (V6.15 Tuning)
 
 | Parameter | Default | Description |
 |-----------|:-------:|-------------|
 | `V53_REGIME_ENABLED` | True | Enable V5.3 4-factor model |
 | `WEIGHT_MOMENTUM_V53` | 0.30 | Momentum factor weight |
-| `WEIGHT_VIX_COMBINED_V53` | 0.30 | VIX Combined factor weight |
-| `WEIGHT_TREND_V53` | 0.25 | Trend factor weight |
+| `WEIGHT_VIX_COMBINED_V53` | 0.35 | V6.15: Increased for fear sensitivity (was 0.30) |
+| `WEIGHT_TREND_V53` | 0.20 | V6.15: Reduced lagging trend dominance (was 0.25) |
 | `WEIGHT_DRAWDOWN_V53` | 0.15 | Drawdown factor weight |
 | `REGIME_SMOOTHING_ALPHA` | 0.30 | EMA smoothing coefficient |
 
@@ -500,14 +510,14 @@ Used when all model flags are disabled.
 | `V53_BREADTH_5D_PENALTY` | 8.0 | V6.9: Points for 5d decay (was 5.0) |
 | `V53_BREADTH_10D_PENALTY` | 12.0 | V6.9: Points for 10d decay (was 8.0) |
 
-### Regime Thresholds
+### Regime Thresholds (V6.15)
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `REGIME_RISK_ON` | 70 | RISK_ON threshold |
 | `REGIME_NEUTRAL` | 50 | NEUTRAL threshold |
-| `REGIME_CAUTIOUS` | 40 | CAUTIOUS threshold |
-| `REGIME_DEFENSIVE` | 30 | DEFENSIVE threshold |
+| `REGIME_CAUTIOUS` | 45 | V6.15: CAUTIOUS threshold (was 40) |
+| `REGIME_DEFENSIVE` | 35 | V6.15: DEFENSIVE threshold (was 30) |
 
 ---
 
@@ -544,9 +554,9 @@ flowchart TD
         STATE{"Score Range?"}
         RISK_ON["RISK_ON<br/>70-100"]
         NEUTRAL["NEUTRAL<br/>50-69"]
-        CAUTIOUS["CAUTIOUS<br/>40-49"]
-        DEFENSIVE["DEFENSIVE<br/>30-39"]
-        RISK_OFF["RISK_OFF<br/>0-29"]
+        CAUTIOUS["CAUTIOUS<br/>45-49"]
+        DEFENSIVE["DEFENSIVE<br/>35-44"]
+        RISK_OFF["RISK_OFF<br/>0-34"]
     end
 
     SPY --> MOM
@@ -571,9 +581,9 @@ flowchart TD
 
     STATE -->|70-100| RISK_ON
     STATE -->|50-69| NEUTRAL
-    STATE -->|40-49| CAUTIOUS
-    STATE -->|30-39| DEFENSIVE
-    STATE -->|0-29| RISK_OFF
+    STATE -->|45-49| CAUTIOUS
+    STATE -->|35-44| DEFENSIVE
+    STATE -->|0-34| RISK_OFF
 ```
 
 ---

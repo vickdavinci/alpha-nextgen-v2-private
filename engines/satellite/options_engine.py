@@ -1831,6 +1831,9 @@ class OptionsEngine:
 
         # V2.3: Spread position tracking (replaces single-leg for swing mode)
         self._spread_position: Optional[SpreadPosition] = None
+        self._spread_positions: List[SpreadPosition] = []
+        # Secondary slot placeholder for legacy gamma-path safety (must exist even if unused).
+        self._credit_spread_position: Optional[SpreadPosition] = None
 
         # Legacy single position (for backwards compatibility)
         self._position: Optional[OptionsPosition] = None
@@ -2440,7 +2443,9 @@ class OptionsEngine:
         swing_count = 0
 
         # Count spread positions
-        if self._spread_position is not None:
+        if self._spread_positions:
+            swing_count += len(self._spread_positions)
+        elif self._spread_position is not None:
             swing_count += 1
 
         # Count legacy single position if in swing mode
@@ -2449,6 +2454,36 @@ class OptionsEngine:
 
         total_count = intraday_count + swing_count
         return intraday_count, swing_count, total_count
+
+    def get_spread_positions(self) -> List[SpreadPosition]:
+        """Get all active spread positions."""
+        if self._spread_positions:
+            return list(self._spread_positions)
+        if self._spread_position is not None:
+            return [self._spread_position]
+        return []
+
+    def get_open_spread_count(self) -> int:
+        """Number of active spread positions."""
+        return len(self.get_spread_positions())
+
+    def get_open_spread_count_by_direction(self, direction_label: str) -> int:
+        """Count active spreads in a directional bucket (BULLISH/BEARISH)."""
+        label = str(direction_label or "").upper()
+        count = 0
+        for spread in self.get_spread_positions():
+            if self._spread_direction_label(spread.spread_type) == label:
+                count += 1
+        return count
+
+    def _spread_direction_label(self, spread_type: str) -> Optional[str]:
+        """Map spread type to directional bucket for slot caps."""
+        st = str(spread_type or "").upper()
+        if st in {"BULL_CALL", "BULL_CALL_DEBIT", "BULL_PUT_CREDIT"}:
+            return "BULLISH"
+        if st in {"BEAR_PUT", "BEAR_PUT_DEBIT", "BEAR_CALL_CREDIT"}:
+            return "BEARISH"
+        return None
 
     def can_enter_intraday(self) -> Tuple[bool, str]:
         """
@@ -2460,17 +2495,20 @@ class OptionsEngine:
         intraday_count, _, total_count = self.count_options_positions()
 
         if total_count >= config.OPTIONS_MAX_TOTAL_POSITIONS:
-            return False, f"MAX_TOTAL: {total_count} >= {config.OPTIONS_MAX_TOTAL_POSITIONS}"
+            return (
+                False,
+                f"R_SLOT_TOTAL_MAX: {total_count} >= {config.OPTIONS_MAX_TOTAL_POSITIONS}",
+            )
 
         if intraday_count >= config.OPTIONS_MAX_INTRADAY_POSITIONS:
             return (
                 False,
-                f"MAX_INTRADAY: {intraday_count} >= {config.OPTIONS_MAX_INTRADAY_POSITIONS}",
+                f"R_SLOT_INTRADAY_MAX: {intraday_count} >= {config.OPTIONS_MAX_INTRADAY_POSITIONS}",
             )
 
-        return True, "OK"
+        return True, "R_OK"
 
-    def can_enter_swing(self) -> Tuple[bool, str]:
+    def can_enter_swing(self, direction: Optional[OptionDirection] = None) -> Tuple[bool, str]:
         """
         V5.3: Check if swing entry is allowed.
 
@@ -2480,12 +2518,29 @@ class OptionsEngine:
         _, swing_count, total_count = self.count_options_positions()
 
         if total_count >= config.OPTIONS_MAX_TOTAL_POSITIONS:
-            return False, f"MAX_TOTAL: {total_count} >= {config.OPTIONS_MAX_TOTAL_POSITIONS}"
+            return (
+                False,
+                f"R_SLOT_TOTAL_MAX: {total_count} >= {config.OPTIONS_MAX_TOTAL_POSITIONS}",
+            )
 
         if swing_count >= config.OPTIONS_MAX_SWING_POSITIONS:
-            return False, f"MAX_SWING: {swing_count} >= {config.OPTIONS_MAX_SWING_POSITIONS}"
+            return (
+                False,
+                f"R_SLOT_SWING_MAX: {swing_count} >= {config.OPTIONS_MAX_SWING_POSITIONS}",
+            )
 
-        return True, "OK"
+        # Directional slot cap (stage-1 guardrail).
+        if direction is not None:
+            wanted_dir = "BULLISH" if direction == OptionDirection.CALL else "BEARISH"
+            dir_count = self.get_open_spread_count_by_direction(wanted_dir)
+            dir_cap = int(getattr(config, "OPTIONS_MAX_SWING_PER_DIRECTION", 2))
+            if dir_count >= dir_cap:
+                return (
+                    False,
+                    f"R_SLOT_DIRECTION_MAX: {wanted_dir} {dir_count} >= {dir_cap}",
+                )
+
+        return True, "R_OK"
 
     def get_macro_direction(self, macro_regime_score: float) -> str:
         """
@@ -3918,6 +3973,16 @@ class OptionsEngine:
                 f"OPT: Sizing reduced to {num_contracts} contracts (ColdStart={size_multiplier:.0%})"
             )
 
+        # V6.19: Apply choppy-market scaling to single-leg entries too.
+        choppy_scale = self.get_choppy_market_scale()
+        if choppy_scale < 1.0 and num_contracts > 1:
+            choppy_adjusted = max(1, int(num_contracts * choppy_scale))
+            self.log(
+                f"OPT: Choppy market reduction | {num_contracts} -> {choppy_adjusted} contracts | "
+                f"ChoppyScale={choppy_scale:.0%}"
+            )
+            num_contracts = choppy_adjusted
+
         if num_contracts <= 0:
             self.log("OPT: Entry blocked - cannot calculate position size")
             return None
@@ -4029,24 +4094,33 @@ class OptionsEngine:
         # V2.8: Update IV sensor with current VIX (for smoothing)
         self._iv_sensor.update(vix_current)
 
-        # Check if already have a spread position
-        if self._spread_position is not None:
-            return fail("HAS_SPREAD_POSITION")
+        can_swing, swing_reason = self.can_enter_swing(direction=direction)
+        if not can_swing:
+            return fail(swing_reason)
 
         # Scoped daily attempt budget (per spread key), replaces global one-attempt lock.
         attempt_key = f"DEBIT_{direction.value if direction is not None else 'NONE'}"
         if not self._can_attempt_spread_entry(attempt_key):
             return fail("ENTRY_ATTEMPT_LIMIT")
 
-        # V2.27: Win Rate Gate - block or scale down entries
+        # V2.27/O-20: Win Rate Gate - block or scale down entries
         win_rate_scale = self.get_win_rate_scale()
         if win_rate_scale == 0.0:
+            if getattr(config, "VASS_WIN_RATE_HARD_BLOCK", True):
+                self.log(
+                    f"WIN_RATE_GATE: BLOCKED | Shutoff active | "
+                    f"History={self._spread_result_history}",
+                    trades_only=True,
+                )
+                return fail("WIN_RATE_GATE_BLOCK")
+            win_rate_scale = float(
+                getattr(config, "VASS_WIN_RATE_SHUTOFF_SCALE", config.WIN_RATE_SIZING_MINIMUM)
+            )
             self.log(
-                f"WIN_RATE_GATE: BLOCKED | Shutoff active | "
+                f"WIN_RATE_GATE: SHUTOFF_OVERRIDE | Applying minimum scale {win_rate_scale:.0%} | "
                 f"History={self._spread_result_history}",
                 trades_only=True,
             )
-            return fail("WIN_RATE_GATE_BLOCK")
 
         # V6.10 P4: Margin Pre-Check BEFORE Signal Approval
         # Check if we have sufficient margin for at least 1 spread before proceeding
@@ -4124,6 +4198,46 @@ class OptionsEngine:
         else:
             spread_type = "BEAR_PUT"
             vix_max = config.SPREAD_VIX_MAX_BEAR
+
+        # V6.19: Stress override for BULL_CALL_DEBIT to mitigate regime lag during corrections.
+        # Rule:
+        # - Hard block when VIX is already elevated, or when VIX is elevated + accelerating.
+        # - In early-stress zone, keep participation but reduce size to preserve optionality.
+        if spread_type == "BULL_CALL":
+            vix_5d_change = (
+                self._iv_sensor.get_vix_5d_change()
+                if self._iv_sensor.is_conviction_ready()
+                else None
+            )
+            hard_vix = float(getattr(config, "BULL_CALL_STRESS_BLOCK_VIX", 22.0))
+            accel_vix = float(getattr(config, "BULL_CALL_STRESS_ACCEL_VIX", 18.0))
+            accel_5d = float(getattr(config, "BULL_CALL_STRESS_ACCEL_5D", 0.20))
+            early_low = float(getattr(config, "BULL_CALL_EARLY_STRESS_VIX_LOW", 16.0))
+            early_high = float(getattr(config, "BULL_CALL_EARLY_STRESS_VIX_HIGH", 18.0))
+            early_size = float(getattr(config, "BULL_CALL_EARLY_STRESS_SIZE", 0.50))
+
+            hard_block = vix_current >= hard_vix
+            accel_block = (
+                vix_current >= accel_vix and vix_5d_change is not None and vix_5d_change >= accel_5d
+            )
+            if hard_block or accel_block:
+                reason = (
+                    f"VIX={vix_current:.1f} >= {hard_vix:.1f}"
+                    if hard_block
+                    else f"VIX={vix_current:.1f} >= {accel_vix:.1f} and VIX5d={vix_5d_change:+.1%} >= {accel_5d:.1%}"
+                )
+                self.log(f"SPREAD: BULL_CALL stress blocked | {reason}")
+                return fail("BULL_CALL_STRESS_BLOCK")
+
+            if early_low <= vix_current < early_high:
+                adjusted = min(size_multiplier, early_size)
+                if adjusted < size_multiplier:
+                    self.log(
+                        f"SPREAD: BULL_CALL early-stress size reduction | "
+                        f"VIX={vix_current:.1f} in [{early_low:.1f},{early_high:.1f}) | "
+                        f"Size {size_multiplier:.0%}->{adjusted:.0%}"
+                    )
+                    size_multiplier = adjusted
 
         # V6.4: Pre-entry assignment risk gate for BEAR_PUT spreads
         # Block entry if short PUT strike is too close to ATM or ITM
@@ -4605,24 +4719,33 @@ class OptionsEngine:
         # V2.8: Update IV sensor with current VIX (for smoothing)
         self._iv_sensor.update(vix_current)
 
-        # Check if already have a spread position
-        if self._spread_position is not None:
-            return fail("HAS_SPREAD_POSITION")
+        can_swing, swing_reason = self.can_enter_swing(direction=direction)
+        if not can_swing:
+            return fail(swing_reason)
 
         # Scoped daily attempt budget (strategy-specific), replaces global one-attempt lock.
         attempt_key = f"CREDIT_{strategy.value if strategy is not None else 'NONE'}"
         if not self._can_attempt_spread_entry(attempt_key):
             return fail("ENTRY_ATTEMPT_LIMIT")
 
-        # V2.27: Win Rate Gate - block or scale down entries
+        # V2.27/O-20: Win Rate Gate - block or scale down entries
         win_rate_scale = self.get_win_rate_scale()
         if win_rate_scale == 0.0:
+            if getattr(config, "VASS_WIN_RATE_HARD_BLOCK", True):
+                self.log(
+                    f"WIN_RATE_GATE: CREDIT BLOCKED | Shutoff active | "
+                    f"History={self._spread_result_history}",
+                    trades_only=True,
+                )
+                return fail("WIN_RATE_GATE_BLOCK")
+            win_rate_scale = float(
+                getattr(config, "VASS_WIN_RATE_SHUTOFF_SCALE", config.WIN_RATE_SIZING_MINIMUM)
+            )
             self.log(
-                f"WIN_RATE_GATE: CREDIT BLOCKED | Shutoff active | "
+                f"WIN_RATE_GATE: CREDIT SHUTOFF_OVERRIDE | Applying minimum scale {win_rate_scale:.0%} | "
                 f"History={self._spread_result_history}",
                 trades_only=True,
             )
-            return fail("WIN_RATE_GATE_BLOCK")
 
         # V6.10 P4: Margin Pre-Check BEFORE Signal Approval
         # Check if we have sufficient margin for at least 1 spread before proceeding
@@ -5191,6 +5314,7 @@ class OptionsEngine:
     def check_premarket_itm_shorts(
         self,
         underlying_price: float,
+        spread_override: Optional[SpreadPosition] = None,
     ) -> Optional[List[TargetWeight]]:
         """
         V6.10 P0: Pre-market ITM check at 09:25 ET.
@@ -5209,10 +5333,9 @@ class OptionsEngine:
         if not getattr(config, "PREMARKET_ITM_CHECK_ENABLED", True):
             return None
 
-        if self._spread_position is None:
+        spread = spread_override or self.get_spread_position()
+        if spread is None:
             return None
-
-        spread = self._spread_position
 
         # Skip if already closing
         if spread.is_closing:
@@ -5300,6 +5423,7 @@ class OptionsEngine:
         current_hour: int,
         current_minute: int,
         available_margin: float = 0,
+        spread_override: Optional[SpreadPosition] = None,
     ) -> Optional[List[TargetWeight]]:
         """
         V5.3 P0: Check if spread should be closed due to assignment risk.
@@ -5317,10 +5441,9 @@ class OptionsEngine:
         Returns:
             List of TargetWeights to close spread, or None
         """
-        if self._spread_position is None:
+        spread = spread_override or self.get_spread_position()
+        if spread is None:
             return None
-
-        spread = self._spread_position
 
         # Skip if already closing
         if spread.is_closing:
@@ -5514,10 +5637,13 @@ class OptionsEngine:
         if not getattr(config, "PARTIAL_ASSIGNMENT_DETECTION_ENABLED", True):
             return None
 
-        if self._spread_position is None:
+        spread = None
+        for s in self.get_spread_positions():
+            if assigned_symbol == s.short_leg.symbol or assigned_symbol == s.long_leg.symbol:
+                spread = s
+                break
+        if spread is None:
             return None
-
-        spread = self._spread_position
         auto_close = getattr(config, "PARTIAL_ASSIGNMENT_AUTO_CLOSE", True)
 
         # Check if assigned symbol matches our short leg
@@ -5572,6 +5698,7 @@ class OptionsEngine:
         regime_score: float,
         current_dte: int,
         vix_current: Optional[float] = None,
+        spread_override: Optional[SpreadPosition] = None,
     ) -> Optional[List[TargetWeight]]:
         """
         V2.3: Check for spread exit signals.
@@ -5592,10 +5719,9 @@ class OptionsEngine:
         Returns:
             List of TargetWeights for both legs exit, or None.
         """
-        if self._spread_position is None:
+        spread = spread_override or self.get_spread_position()
+        if spread is None:
             return None
-
-        spread = self._spread_position
 
         # V2.12 Fix #1: Must have contracts to exit
         if spread.num_spreads <= 0:
@@ -5868,6 +5994,7 @@ class OptionsEngine:
         current_date: str,
         vix_close_all_threshold: float = 25.0,
         vix_keep_fresh_threshold: float = 15.0,
+        spread_override: Optional[SpreadPosition] = None,
     ) -> Optional[List[TargetWeight]]:
         """
         V2.4.1: Friday Firewall - close swing options before weekend.
@@ -5890,8 +6017,8 @@ class OptionsEngine:
         exit_signals = []
 
         # Check spread position
-        if self._spread_position is not None:
-            spread = self._spread_position
+        spread = spread_override or self.get_spread_position()
+        if spread is not None:
             entry_date = (
                 spread.entry_time.split()[0] if " " in spread.entry_time else spread.entry_time[:10]
             )
@@ -6821,6 +6948,16 @@ class OptionsEngine:
                     f"outside window {config.INTRADAY_DEBIT_MOMENTUM_START}-{config.INTRADAY_DEBIT_MOMENTUM_END}"
                 )
                 return fail("E_INTRADAY_TIME_WINDOW")
+            blocked_regimes = {
+                str(r).upper() for r in getattr(config, "INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES", [])
+            }
+            current_regime_name = state.micro_regime.value.upper()
+            if current_regime_name in blocked_regimes:
+                self.log(
+                    f"INTRADAY: DEBIT_MOMENTUM blocked in regime {state.micro_regime.value}",
+                    trades_only=True,
+                )
+                return fail("E_DEBIT_MOMENTUM_REGIME_BLOCK")
 
         # Check if we have a valid contract
         if best_contract is None:
@@ -6909,12 +7046,6 @@ class OptionsEngine:
             f"({state.vix_direction.value}) | QQQ={qqq_dir_str} "
             f"({state.qqq_move_pct:+.2f}%) | {direction.value} x{num_contracts}"
         )
-
-        # V2.4.1 FIX: Increment counter IMMEDIATELY on signal generation, not on fill
-        # This fixes the race condition where multiple signals are generated before
-        # the first fill increments the counter (resulted in 4 fills when limit=2)
-        # V2.9: Use comprehensive counter to also track global limit
-        self._increment_trade_counter(OptionsMode.INTRADAY)
 
         # V2.3.2 FIX #4: Mark this as intraday entry for correct position tracking
         self._pending_intraday_entry = True
@@ -7032,6 +7163,7 @@ class OptionsEngine:
         self,
         current_price: float,
         current_dte: int,
+        spread_override: Optional[SpreadPosition] = None,
     ) -> Optional[List[TargetWeight]]:
         """
         V2.10 (Pitfall #5): Exit early if price is within buffer zone of short strike.
@@ -7055,7 +7187,7 @@ class OptionsEngine:
             return None
 
         # Only check spread positions (credit or debit)
-        spread = self._spread_position or self._credit_spread_position
+        spread = spread_override or self.get_spread_position() or self._credit_spread_position
         if spread is None:
             return None
 
@@ -7370,8 +7502,8 @@ class OptionsEngine:
         if self._pending_intraday_entry:
             self._intraday_position = position
             self._pending_intraday_entry = False  # Clear flag
-            # V2.4.1: Counter now incremented on signal generation (check_intraday_entry_signal)
-            # to prevent race condition. Do NOT increment again here.
+            # Count intraday trades only after a confirmed fill registration.
+            self._increment_trade_counter(OptionsMode.INTRADAY)
             self.log(
                 f"OPT: INTRADAY position registered (trade #{self._intraday_trades_today}, force-close at 15:30)",
                 trades_only=True,
@@ -7490,7 +7622,8 @@ class OptionsEngine:
             regime_at_entry=regime_score,
         )
 
-        self._spread_position = spread
+        self._spread_positions.append(spread)
+        self._spread_position = self._spread_positions[0] if self._spread_positions else None
 
         # V2.9: Update trade counter (Bug #4 fix) - Spreads are always swing mode
         self._increment_trade_counter(OptionsMode.SWING)
@@ -7569,11 +7702,8 @@ class OptionsEngine:
         """
         V2.20: Clear pending intraday entry state after broker rejection.
 
-        Resets intraday pending fields and DECREMENTS the pre-incremented
-        trade counter. V2.4.1 pre-increments at signal generation (line 3769)
-        to prevent race conditions; on rejection the counter must roll back.
-        Guard: only decrements if _pending_intraday_entry was True to
-        prevent double-decrement on repeated calls.
+        Resets intraday pending fields after broker rejection/cancel.
+        Intraday counters are fill-based, so no decrement rollback is needed.
         Called by main._handle_order_rejection().
         """
         if self._pending_intraday_entry:
@@ -7581,21 +7711,12 @@ class OptionsEngine:
             self._pending_contract = None
             self._pending_num_contracts = None
             self._pending_stop_pct = None
-            # Decrement pre-incremented counters (guard against underflow)
-            if self._intraday_trades_today > 0:
-                self._intraday_trades_today -= 1
-            if self._total_options_trades_today > 0:
-                self._total_options_trades_today -= 1
-            if self._trades_today > 0:
-                self._trades_today -= 1
             self.log(
-                f"OPT_MICRO_RECOVERY: Pending intraday entry cancelled | "
-                f"Counter decremented | Intraday={self._intraday_trades_today} | "
-                f"Total={self._total_options_trades_today} | Retry allowed",
+                "OPT_MICRO_RECOVERY: Pending intraday entry cancelled | Retry allowed",
                 trades_only=True,
             )
 
-    def remove_spread_position(self) -> Optional[SpreadPosition]:
+    def remove_spread_position(self, symbol: Optional[str] = None) -> Optional[SpreadPosition]:
         """
         V2.3: Remove the current spread position after exit.
         V2.6 Bug #16: Records exit time for post-trade margin cooldown.
@@ -7603,12 +7724,30 @@ class OptionsEngine:
         Returns:
             Removed spread position, or None if no spread existed.
         """
-        if self._spread_position is not None:
-            spread = self._spread_position
-            self._spread_position = None
+        spreads = self.get_spread_positions()
+        if spreads:
+            spread = None
+            if symbol:
+                sym = str(symbol)
+                for s in spreads:
+                    if str(s.long_leg.symbol) == sym or str(s.short_leg.symbol) == sym:
+                        spread = s
+                        break
+            if spread is None:
+                spread = spreads[0]
+
+            if self._spread_positions:
+                self._spread_positions = [s for s in self._spread_positions if s is not spread]
+            elif self._spread_position is spread:
+                self._spread_position = None
+            if self._credit_spread_position is spread:
+                self._credit_spread_position = None
+
+            self._spread_position = self._spread_positions[0] if self._spread_positions else None
 
             # V6.5 FIX: Reset gamma pin flag when position is closed
-            self._gamma_pin_exit_triggered = False
+            if not self._spread_positions:
+                self._gamma_pin_exit_triggered = False
 
             # V2.6 Bug #16: Record exit time for margin cooldown
             # After closing a spread, broker takes T+1 to settle margin
@@ -7630,11 +7769,12 @@ class OptionsEngine:
 
     def has_spread_position(self) -> bool:
         """V2.3: Check if a spread position exists."""
-        return self._spread_position is not None
+        return self.get_open_spread_count() > 0
 
     def get_spread_position(self) -> Optional[SpreadPosition]:
-        """V2.3: Get current spread position."""
-        return self._spread_position
+        """Get primary spread position (legacy compatibility)."""
+        spreads = self.get_spread_positions()
+        return spreads[0] if spreads else None
 
     # =========================================================================
     # V2.27 WIN RATE GATE
@@ -7731,12 +7871,13 @@ class OptionsEngine:
         Used by margin circuit breaker to reset tracking after forced liquidation.
         Does NOT place orders - just clears internal state.
         """
-        if self._spread_position is not None:
+        spreads = self.get_spread_positions()
+        if spreads:
             self.log(
-                f"SPREAD: FORCE_CLEARED | {self._spread_position.spread_type} | "
-                f"Margin CB liquidation",
+                f"SPREAD: FORCE_CLEARED | Count={len(spreads)} | Margin CB liquidation",
                 trades_only=True,
             )
+            self._spread_positions = []
             self._spread_position = None
             self._last_spread_exit_time = None
             self._entry_attempted_today = True  # Legacy guard (single-leg paths)
@@ -7759,12 +7900,14 @@ class OptionsEngine:
 
         Does NOT clear the spread position - just resets the lock flag.
         """
-        if self._spread_position is not None and self._spread_position.is_closing:
-            self._spread_position.is_closing = False
+        reset_count = 0
+        for spread in self.get_spread_positions():
+            if spread.is_closing:
+                spread.is_closing = False
+                reset_count += 1
+        if reset_count > 0:
             self.log(
-                f"SPREAD: LOCK_RESET | Position remains open | "
-                f"Type={self._spread_position.spread_type} x{self._spread_position.num_spreads} | "
-                f"Will retry on next check",
+                f"SPREAD: LOCK_RESET | Count={reset_count} | Will retry on next check",
                 trades_only=True,
             )
 
@@ -7780,7 +7923,7 @@ class OptionsEngine:
         """Check if any position exists (single-leg, spread, or intraday)."""
         return (
             self._position is not None
-            or self._spread_position is not None
+            or self.has_spread_position()
             or self._intraday_position is not None
         )
 
@@ -7808,8 +7951,10 @@ class OptionsEngine:
             self._position = None
             cleared.append("single-leg")
 
-        if self._spread_position is not None:
+        if self.has_spread_position():
+            self._spread_positions = []
             self._spread_position = None
+            self._credit_spread_position = None
             cleared.append("spread")
 
         if self._intraday_position is not None:
@@ -7982,6 +8127,7 @@ class OptionsEngine:
             "micro_regime_state": self._micro_regime_engine.get_state().to_dict(),
             # V2.16-BT: Persist spread position for multi-day backtests
             "spread_position": (self._spread_position.to_dict() if self._spread_position else None),
+            "spread_positions": [s.to_dict() for s in self.get_spread_positions()],
             # Market open data
             "vix_at_open": self._vix_at_open,
             "spy_at_open": self._spy_at_open,
@@ -8063,24 +8209,41 @@ class OptionsEngine:
         self._intraday_trades_today = state.get("intraday_trades_today", 0)
 
         # V2.16-BT: Restore spread position with expiry validation
-        spread_data = state.get("spread_position")
-        if spread_data:
-            spread = SpreadPosition.from_dict(spread_data)
-            # Check if spread has expired (use long leg expiry)
-            if spread.long_leg.expiry and spread.long_leg.expiry < current_date:
-                self.log(
-                    f"OPT: ZOMBIE_CLEAR - Spread position expired {spread.long_leg.expiry} < {current_date}. "
-                    "Clearing stale spread."
-                )
-                self._spread_position = None
-            else:
-                self._spread_position = spread
-                self.log(
-                    f"OPT: STATE_RESTORE - Spread position restored | "
-                    f"{spread.spread_type} x{spread.num_spreads} | Expiry={spread.long_leg.expiry}"
-                )
+        restored_spreads: List[SpreadPosition] = []
+        spread_positions_data = state.get("spread_positions")
+        if spread_positions_data:
+            for row in spread_positions_data:
+                try:
+                    spread = SpreadPosition.from_dict(row)
+                    if spread.long_leg.expiry and spread.long_leg.expiry < current_date:
+                        self.log(
+                            f"OPT: ZOMBIE_CLEAR - Spread position expired {spread.long_leg.expiry} < {current_date}. "
+                            "Clearing stale spread."
+                        )
+                        continue
+                    restored_spreads.append(spread)
+                except Exception:
+                    continue
         else:
-            self._spread_position = None
+            spread_data = state.get("spread_position")
+            if spread_data:
+                spread = SpreadPosition.from_dict(spread_data)
+                if spread.long_leg.expiry and spread.long_leg.expiry < current_date:
+                    self.log(
+                        f"OPT: ZOMBIE_CLEAR - Spread position expired {spread.long_leg.expiry} < {current_date}. "
+                        "Clearing stale spread."
+                    )
+                else:
+                    restored_spreads.append(spread)
+
+        self._spread_positions = restored_spreads
+        self._spread_position = self._spread_positions[0] if self._spread_positions else None
+        if self._spread_positions:
+            self.log(
+                f"OPT: STATE_RESTORE - Spread positions restored | "
+                f"Count={len(self._spread_positions)} | "
+                f"Primary={self._spread_positions[0].spread_type} x{self._spread_positions[0].num_spreads}",
+            )
 
         mode_value = state.get("current_mode", "SWING")
         self._current_mode = OptionsMode(mode_value)
@@ -8109,6 +8272,8 @@ class OptionsEngine:
         # V2.1.1
         self._swing_position = None
         self._intraday_position = None
+        self._spread_positions = []
+        self._spread_position = None
         self._intraday_trades_today = 0
         self._current_mode = OptionsMode.SWING
         self._micro_regime_engine.reset_daily()

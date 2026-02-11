@@ -190,9 +190,11 @@ Focus on these sections:
 |:-----:|-------|:---------:|:------:|:----------:|
 | 70-100 | RISK_ON | ✅ Full | ❌ None | ✅ Yes |
 | 50-69 | NEUTRAL | ✅ Full | ❌ None | ✅ If >50 |
-| 40-49 | CAUTIOUS | ✅ Full | 10% TMF | ❌ No |
-| 30-39 | DEFENSIVE | ⚠️ Reduced | 15% TMF, 5% PSQ | ❌ No |
-| 0-29 | RISK_OFF | ❌ None | 20% TMF, 10% PSQ | ❌ No |
+| 45-49 | CAUTIOUS | ✅ Full | 5% SH | ❌ No |
+| 35-44 | DEFENSIVE | ⚠️ Reduced | 8% SH | ❌ No |
+| 0-34 | RISK_OFF | ❌ None | 10% SH | ❌ No |
+
+> **V6.15/V6.11 Updates:** Regime thresholds adjusted (CAUTIOUS 45, DEFENSIVE 35). TMF/PSQ replaced with SH.
 
 ### Risk Controls
 

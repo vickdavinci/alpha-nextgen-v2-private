@@ -6,11 +6,20 @@
 
 ## Overview
 
-> **Last Updated**: 10 February 2026 (V6.14)
+> **Last Updated**: 11 February 2026 (V6.15)
 
 The **Options Engine** implements a dual-mode architecture for QQQ options trading. This is a **satellite engine** (25% allocation) with two distinct operating modes based on DTE (days to expiration).
 
-> **V6.14 Revision** (Latest):
+> **V6.15 Revision** (Latest):
+> - Profit target increased to 60% (was 50%) for trend riding
+> - Intraday force exit moved to 15:25 (was 15:30) to avoid OCO race conditions
+> - `INTRADAY_OPTIONS_OFFSET_MINUTES` set to 35 (aligned with 15:25 fallback)
+> - UVXY thresholds tuned: `MICRO_UVXY_BEARISH_THRESHOLD` +2.0%, `MICRO_UVXY_BULLISH_THRESHOLD` -4.0%
+> - Micro score confirmations: `MICRO_SCORE_BULLISH_CONFIRM` 48, `MICRO_SCORE_BEARISH_CONFIRM` 47
+> - `SHORT_LEG_ITM_EXIT_THRESHOLD` relaxed to 1.0% (was 0.5%)
+> - Spread stop/target adjusted to 40%/50% (regime-adjusted)
+>
+> **V6.14 Revision**:
 > - UVXY conviction thresholds tuned: `MICRO_UVXY_BEARISH_THRESHOLD` +2.8%, `MICRO_UVXY_BULLISH_THRESHOLD` -4.5%
 > - Micro score confirmations adjusted: `MICRO_SCORE_BULLISH_CONFIRM` 47, `MICRO_SCORE_BEARISH_CONFIRM` 49
 > - T-14 expiration fix: Moved expiring options close from 14:00 to 12:00 noon
@@ -597,14 +606,16 @@ contracts = floor(allocation / (entry_price * 100 * stop_pct))
 
 ### Profit Target
 
-**+50% gain** from entry price.
+**+60% gain** from entry price (V6.15: raised from 50% for trend riding).
 
 ```python
-if current_price >= entry_price * 1.50:
+if current_price >= entry_price * 1.60:
     emit_exit_signal("PROFIT_TARGET")
 ```
 
-**Config Parameter:** `OPTIONS_PROFIT_TARGET_PCT` (default: 0.50)
+**Config Parameter:** `OPTIONS_PROFIT_TARGET_PCT` (default: 0.60)
+
+> **V6.15 Change:** Profit target increased from 50% to 60% to capture more upside in trending markets.
 
 ### Stop Loss
 
@@ -738,13 +749,15 @@ if failed_symbol in self._pending_spread_orders:
 
 The intraday options scanning window was adjusted:
 
-| Parameter | Before V2.3.6 | After V2.3.6 |
-|-----------|:-------------:|:------------:|
-| Start Time | 10:30 | **10:00** |
-| End Time | 15:00 | 15:00 |
-| Force Exit | 15:30 | 15:30 |
+| Parameter | Before V2.3.6 | V2.3.6 | V6.15 |
+|-----------|:-------------:|:------:|:-----:|
+| Start Time | 10:30 | 10:00 | **10:00** |
+| End Time | 15:00 | 15:00 | **15:00** |
+| Force Exit | 15:30 | 15:30 | **15:25** |
 
 **Rationale:** The 10:00-10:30 window has highest gamma opportunities. Config defined strategy start times at 10:00, but a hardcoded gatekeeper blocked until 10:30. Removed to capture early momentum.
+
+> **V6.15 Change:** Force exit moved from 15:30 to 15:25 to prevent OCO race conditions.
 
 ---
 
@@ -821,7 +834,7 @@ The intraday options scanning window was adjusted:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `OPTIONS_PROFIT_TARGET_PCT` | 0.50 | Profit target (+50%) |
+| `OPTIONS_PROFIT_TARGET_PCT` | 0.60 | V6.15: Profit target (+60%, was 50%) |
 | `OPTIONS_STOP_TIER_1` | 0.20 | Tightest stop (score 3.0-3.25) |
 | `OPTIONS_STOP_TIER_2` | 0.22 | Stop for score 3.25-3.5 |
 | `OPTIONS_STOP_TIER_3` | 0.25 | Stop for score 3.5-3.75 |
@@ -1057,24 +1070,25 @@ WHIPSAW:       -5 points + WHIPSAW FLAG
 
 ---
 
-### UVXY Conviction Thresholds (V6.14)
+### UVXY Conviction Thresholds (V6.15)
 
 The Micro Regime Engine uses UVXY intraday moves to override macro direction when conviction is extreme.
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `MICRO_UVXY_BEARISH_THRESHOLD` | +2.8% | V6.14: UVXY rise triggers PUT conviction |
-| `MICRO_UVXY_BULLISH_THRESHOLD` | -4.5% | V6.14: UVXY drop triggers CALL conviction |
-| `MICRO_UVXY_CONVICTION_EXTREME` | 3.5% | V6.12: NEUTRAL VETO threshold |
-| `MICRO_SCORE_BULLISH_CONFIRM` | 47 | V6.14: Score threshold for bullish confirmation |
-| `MICRO_SCORE_BEARISH_CONFIRM` | 49 | V6.14: Score threshold for bearish confirmation |
-| `INTRADAY_QQQ_FALLBACK_MIN_MOVE` | 0.30% | V6.13: QQQ move for STABLE direction fallback |
+| `MICRO_UVXY_BEARISH_THRESHOLD` | +2.0% | V6.15: UVXY rise triggers PUT conviction (was +2.8%) |
+| `MICRO_UVXY_BULLISH_THRESHOLD` | -4.0% | V6.15: UVXY drop triggers CALL conviction (was -4.5%) |
+| `MICRO_UVXY_CONVICTION_EXTREME` | 3.0% | V6.15: NEUTRAL VETO threshold (was 3.5%) |
+| `MICRO_SCORE_BULLISH_CONFIRM` | 48 | V6.15: Score threshold for bullish confirmation (was 47) |
+| `MICRO_SCORE_BEARISH_CONFIRM` | 47 | V6.15: Score threshold for bearish confirmation (was 49) |
+| `INTRADAY_QQQ_FALLBACK_MIN_MOVE` | 0.12% | V6.15: QQQ move for STABLE direction fallback (was 0.30%) |
 
 **Evolution of UVXY Thresholds:**
 - V6.4: +/-5% (too wide, missed many signals)
 - V6.6: +/-3% (better but still restrictive)
 - V6.10: +2.5%/-3% (asymmetric for better PUT signals)
 - V6.14: +2.8%/-4.5% (tuned for reduced CALL bias)
+- V6.15: +2.0%/-4.0% (further refinement for balanced signals)
 
 ---
 
@@ -1186,12 +1200,15 @@ Strategy: 5% OTM puts, 1-2 DTE
 Exit: Crisis resolution OR expiry
 ```
 
-### Intraday Force Exit (15:30 ET)
+### Intraday Force Exit (15:25 ET)
 
-**All intraday options positions MUST close by 15:30 ET** (not 15:45 like Mean Reversion). This gives:
-- 30 minutes before market close
+**All intraday options positions MUST close by 15:25 ET** (not 15:45 like Mean Reversion). This gives:
+- 35 minutes before market close
 - Time to handle any execution issues
 - Avoids overnight gamma risk on 0-DTE
+- Prevents OCO race conditions near market close
+
+> **V6.15 Change:** Moved from 15:30 to 15:25 to avoid OCO recovery race at force-close window. `INTRADAY_OPTIONS_OFFSET_MINUTES` set to 35 to align with this fallback time.
 
 ---
 

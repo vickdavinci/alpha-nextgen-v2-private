@@ -244,11 +244,13 @@ Entry requires: Current Volume > (1.2 × SMA(Volume, 20))
 |--------|:-----:|:--------:|
 | RISK_ON | 70-100 | ✅ |
 | NEUTRAL | 50-69 | ✅ |
-| CAUTIOUS | 40-49 | ✅ |
-| DEFENSIVE | 30-39 | ❌ |
-| RISK_OFF | 0-29 | ❌ |
+| CAUTIOUS | 45-49 | ✅ |
+| DEFENSIVE | 35-44 | ❌ |
+| RISK_OFF | 0-34 | ❌ |
 
 **Rationale:** In RISK_OFF or DEFENSIVE conditions, oversold can become **more oversold**. We only buy dips in reasonable market environments.
+
+> **V6.15 Note:** Regime thresholds adjusted (CAUTIOUS 45, DEFENSIVE 35).
 
 ---
 

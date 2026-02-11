@@ -115,9 +115,11 @@ This glossary provides definitions for all acronyms, system-specific terms, math
 |-------|:-----------:|:---------:|:------:|:----------:|
 | **RISK_ON** | 70-100 | Allowed | None | Allowed |
 | **NEUTRAL** | 50-69 | Allowed | None | If > 50 |
-| **CAUTIOUS** | 40-49 | Allowed | 10% TMF | Blocked |
-| **DEFENSIVE** | 30-39 | Reduced | 15% TMF + 5% PSQ | Blocked |
-| **RISK_OFF** | 0-29 | Blocked | 20% TMF + 10% PSQ | Blocked |
+| **CAUTIOUS** | 45-49 | Allowed | 5% SH | Blocked |
+| **DEFENSIVE** | 35-44 | Reduced | 8% SH | Blocked |
+| **RISK_OFF** | 0-34 | Blocked | 10% SH | Blocked |
+
+> **V6.15/V6.11 Note:** Thresholds adjusted (CAUTIOUS 45, DEFENSIVE 35). TMF/PSQ replaced with SH.
 
 ---
 
