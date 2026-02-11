@@ -6405,9 +6405,7 @@ class AlphaNextGen(QCAlgorithm):
                     "R_SLOT_SWING_MAX",
                     "R_SLOT_TOTAL_MAX",
                     "R_SLOT_DIRECTION_MAX",
-                    "ENTRY_ALREADY_ATTEMPTED_TODAY",
-                    "ENTRY_ATTEMPT_LIMIT",
-                    "POST_TRADE_MARGIN_COOLDOWN",
+                    "R_COOLDOWN_DIRECTIONAL",
                 }
                 log_prefix = (
                     "VASS_SKIPPED" if (validation_reason in skip_reasons) else "VASS_REJECTION"
@@ -6420,13 +6418,14 @@ class AlphaNextGen(QCAlgorithm):
                     reason_text = "Skipped - existing spread position"
                 elif validation_reason == "R_SLOT_TOTAL_MAX":
                     reason_text = "Skipped - total options slot limit reached"
-                elif validation_reason in {
-                    "ENTRY_ALREADY_ATTEMPTED_TODAY",
-                    "ENTRY_ATTEMPT_LIMIT",
-                }:
+                elif validation_reason == "R_COOLDOWN_DIRECTIONAL":
                     reason_text = "Skipped - entry attempt limit reached"
-                elif validation_reason == "POST_TRADE_MARGIN_COOLDOWN":
-                    reason_text = "Skipped - post-trade margin cooldown active"
+                elif validation_reason == "R_MARGIN_PRECHECK":
+                    reason_text = "Skipped - margin precheck failed"
+                elif validation_reason and validation_reason.startswith("R_CONTRACT_QUALITY:"):
+                    reason_text = (
+                        "Rejected - contract quality: " + validation_reason.split(":", 1)[1]
+                    )
                 elif validation_reason == "WIN_RATE_GATE_BLOCK":
                     reason_text = "Skipped - win-rate gate shutoff active"
                 elif validation_reason == "TRADE_LIMIT_BLOCK":

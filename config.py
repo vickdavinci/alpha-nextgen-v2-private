@@ -1459,7 +1459,7 @@ SPREAD_MAX_CONTRACTS = 20  # Hard cap per spread position
 # V5.3: Options Position Limits (Margin Error Prevention)
 # Max concurrent positions: 1 intraday + 2 swings = 3 total
 OPTIONS_MAX_INTRADAY_POSITIONS = 1  # Max 1 intraday position at a time
-OPTIONS_MAX_SWING_POSITIONS = 2  # Max 2 swing spread positions at a time
+OPTIONS_MAX_SWING_POSITIONS = 3  # Stage-1: Max 3 swing spread positions at a time
 OPTIONS_MAX_TOTAL_POSITIONS = 3  # Hard cap on total options positions
 OPTIONS_MAX_SWING_PER_DIRECTION = 2  # Stage-1 cap per spread direction (bull/bear)
 

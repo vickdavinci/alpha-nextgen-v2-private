@@ -4088,6 +4088,10 @@ class OptionsEngine:
             self.set_last_entry_validation_failure(reason)
             return None
 
+        def fail_quality(detail: str) -> Optional[TargetWeight]:
+            self.set_last_entry_validation_failure(f"R_CONTRACT_QUALITY:{detail}")
+            return None
+
         # Reset previous validation reason for this attempt
         self.set_last_entry_validation_failure(None)
 
@@ -4101,7 +4105,7 @@ class OptionsEngine:
         # Scoped daily attempt budget (per spread key), replaces global one-attempt lock.
         attempt_key = f"DEBIT_{direction.value if direction is not None else 'NONE'}"
         if not self._can_attempt_spread_entry(attempt_key):
-            return fail("ENTRY_ATTEMPT_LIMIT")
+            return fail("R_COOLDOWN_DIRECTIONAL")
 
         # V2.27/O-20: Win Rate Gate - block or scale down entries
         win_rate_scale = self.get_win_rate_scale()
@@ -4143,7 +4147,7 @@ class OptionsEngine:
                     f"Required=${min_margin_required:,.0f} (width=${spread_width} × {min_spreads} × {1+buffer_pct:.0%})",
                     trades_only=True,
                 )
-                return fail("MARGIN_PRECHECK_BLOCK")
+                return fail("R_MARGIN_PRECHECK")
 
         # V2.6 Bug #16: Post-trade margin cooldown
         # After closing a spread, broker takes time to settle - wait before new entry
@@ -4165,7 +4169,7 @@ class OptionsEngine:
                         f"SPREAD: Entry blocked - margin cooldown | "
                         f"Elapsed={elapsed_minutes:.1f}m < {config.OPTIONS_POST_TRADE_COOLDOWN_MINUTES}m"
                     )
-                    return fail("POST_TRADE_MARGIN_COOLDOWN")
+                    return fail("R_COOLDOWN_DIRECTIONAL")
                 else:
                     # Cooldown expired, clear the tracking
                     self._last_spread_exit_time = None
@@ -4311,7 +4315,7 @@ class OptionsEngine:
         # Validate contracts
         if long_leg_contract is None or short_leg_contract is None:
             self.log("SPREAD: Entry blocked - missing contract legs")
-            return fail("MISSING_SPREAD_LEGS")
+            return fail_quality("MISSING_SPREAD_LEGS")
 
         # Validate contract directions match spread type
         if long_leg_contract.direction != direction:
@@ -4319,14 +4323,14 @@ class OptionsEngine:
                 f"SPREAD: Entry blocked - long leg direction {long_leg_contract.direction.value} "
                 f"doesn't match spread type {spread_type}"
             )
-            return fail("LONG_LEG_DIRECTION_MISMATCH")
+            return fail_quality("LONG_LEG_DIRECTION_MISMATCH")
 
         if short_leg_contract.direction != direction:
             self.log(
                 f"SPREAD: Entry blocked - short leg direction {short_leg_contract.direction.value} "
                 f"doesn't match spread type {spread_type}"
             )
-            return fail("SHORT_LEG_DIRECTION_MISMATCH")
+            return fail_quality("SHORT_LEG_DIRECTION_MISMATCH")
 
         # Validate DTE range — use VASS-aware bounds if provided
         effective_dte_min = dte_min if dte_min is not None else config.SPREAD_DTE_MIN
@@ -4336,14 +4340,14 @@ class OptionsEngine:
                 f"SPREAD: Entry blocked - DTE {long_leg_contract.days_to_expiry} < "
                 f"min {effective_dte_min}"
             )
-            return fail("DTE_BELOW_MIN")
+            return fail_quality("DTE_BELOW_MIN")
 
         if long_leg_contract.days_to_expiry > effective_dte_max:
             self.log(
                 f"SPREAD: Entry blocked - DTE {long_leg_contract.days_to_expiry} > "
                 f"max {effective_dte_max}"
             )
-            return fail("DTE_ABOVE_MAX")
+            return fail_quality("DTE_ABOVE_MAX")
 
         # V2.6 Bug #4: Validate short leg DTE matches long leg (within 1 day tolerance)
         dte_diff = abs(long_leg_contract.days_to_expiry - short_leg_contract.days_to_expiry)
@@ -4353,7 +4357,7 @@ class OptionsEngine:
                 f"Long={long_leg_contract.days_to_expiry} Short={short_leg_contract.days_to_expiry} | "
                 f"Diff={dte_diff} > 1 day"
             )
-            return fail("DTE_LONG_SHORT_MISMATCH")
+            return fail_quality("DTE_LONG_SHORT_MISMATCH")
 
         # V2.6 Bug #9: Re-validate delta bounds before entry (delta can drift after selection)
         # This is a defensive check - legs were already filtered during selection
@@ -4383,14 +4387,14 @@ class OptionsEngine:
                 f"SPREAD: Entry blocked - long leg delta drift | "
                 f"Delta={long_delta_abs:.2f} < min {long_delta_min}"
             )
-            return fail("LONG_DELTA_BELOW_MIN")
+            return fail_quality("LONG_DELTA_BELOW_MIN")
 
         if long_delta_abs > long_delta_max:
             self.log(
                 f"SPREAD: Entry blocked - long leg delta drift | "
                 f"Delta={long_delta_abs:.2f} > max {long_delta_max}"
             )
-            return fail("LONG_DELTA_ABOVE_MAX")
+            return fail_quality("LONG_DELTA_ABOVE_MAX")
 
         # Short leg delta validation (only if not using width-based selection)
         if not config.SPREAD_SHORT_LEG_BY_WIDTH:
@@ -4399,14 +4403,14 @@ class OptionsEngine:
                     f"SPREAD: Entry blocked - short leg delta drift | "
                     f"Delta={short_delta_abs:.2f} < min {short_delta_min}"
                 )
-                return fail("SHORT_DELTA_BELOW_MIN")
+                return fail_quality("SHORT_DELTA_BELOW_MIN")
 
             if short_delta_abs > short_delta_max:
                 self.log(
                     f"SPREAD: Entry blocked - short leg delta drift | "
                     f"Delta={short_delta_abs:.2f} > max {short_delta_max}"
                 )
-                return fail("SHORT_DELTA_ABOVE_MAX")
+                return fail_quality("SHORT_DELTA_ABOVE_MAX")
 
         # V2.3.8: Calculate spread width (for P/L calculation only, not filtering)
         # Removed width validation - delta drives selection now (PART 14 Pitfall 4)
@@ -4430,7 +4434,7 @@ class OptionsEngine:
                 f"SPREAD: Entry blocked - score {entry_score.total:.2f} < "
                 f"{config.OPTIONS_ENTRY_SCORE_MIN}"
             )
-            return fail("ENTRY_SCORE_BELOW_MIN")
+            return fail_quality("ENTRY_SCORE_BELOW_MIN")
 
         # Calculate net debit and max profit
         # V2.14 Fix #22: Use conservative pricing (ASK/BID) to prevent tier cap violations
@@ -4459,12 +4463,12 @@ class OptionsEngine:
         net_debit = long_leg_contract.mid_price - short_leg_contract.mid_price
         if net_debit <= 0:
             self.log(f"SPREAD: Entry blocked - net debit ${net_debit:.2f} <= 0")
-            return fail("NET_DEBIT_NON_POSITIVE")
+            return fail_quality("NET_DEBIT_NON_POSITIVE")
 
         max_profit = width - net_debit
         if max_profit <= 0:
             self.log(f"SPREAD: Entry blocked - max profit ${max_profit:.2f} <= 0")
-            return fail("MAX_PROFIT_NON_POSITIVE")
+            return fail_quality("MAX_PROFIT_NON_POSITIVE")
 
         # V2.18: Use sizing cap (Fix for MarginBuyingPower sizing bug)
         # Evidence: Architect found $14K trade vs $5K expected when using allocation-based sizing
@@ -4726,7 +4730,7 @@ class OptionsEngine:
         # Scoped daily attempt budget (strategy-specific), replaces global one-attempt lock.
         attempt_key = f"CREDIT_{strategy.value if strategy is not None else 'NONE'}"
         if not self._can_attempt_spread_entry(attempt_key):
-            return fail("ENTRY_ATTEMPT_LIMIT")
+            return fail("R_COOLDOWN_DIRECTIONAL")
 
         # V2.27/O-20: Win Rate Gate - block or scale down entries
         win_rate_scale = self.get_win_rate_scale()
@@ -4770,7 +4774,7 @@ class OptionsEngine:
                     f"Required=${min_margin_required:,.0f} (width=${spread_width} × {min_spreads} × {1+buffer_pct:.0%})",
                     trades_only=True,
                 )
-                return fail("MARGIN_PRECHECK_BLOCK")
+                return fail("R_MARGIN_PRECHECK")
 
         # Post-trade margin cooldown
         if self._last_spread_exit_time is not None:
@@ -4790,7 +4794,7 @@ class OptionsEngine:
                         f"CREDIT_SPREAD: Entry blocked - margin cooldown | "
                         f"Elapsed={elapsed_minutes:.1f}m < {config.OPTIONS_POST_TRADE_COOLDOWN_MINUTES}m"
                     )
-                    return fail("POST_TRADE_MARGIN_COOLDOWN")
+                    return fail("R_COOLDOWN_DIRECTIONAL")
                 else:
                     self._last_spread_exit_time = None
             except (ValueError, TypeError):
@@ -4834,12 +4838,12 @@ class OptionsEngine:
         # Validate contracts
         if short_leg_contract is None or long_leg_contract is None:
             self.log("CREDIT_SPREAD: Entry blocked - missing contract legs")
-            return fail("MISSING_SPREAD_LEGS")
+            return fail_quality("MISSING_SPREAD_LEGS")
 
         # Validate strategy
         if strategy is None or not self.is_credit_strategy(strategy):
             self.log(f"CREDIT_SPREAD: Entry blocked - invalid strategy {strategy}")
-            return fail("INVALID_CREDIT_STRATEGY")
+            return fail_quality("INVALID_CREDIT_STRATEGY")
 
         # Determine spread type from strategy
         spread_type = strategy.value  # "BULL_PUT_CREDIT" or "BEAR_CALL_CREDIT"
@@ -4874,7 +4878,7 @@ class OptionsEngine:
         width = abs(short_leg_contract.strike - long_leg_contract.strike)
         if width <= 0:
             self.log(f"CREDIT_SPREAD: Entry blocked - invalid width {width}")
-            return fail("WIDTH_NON_POSITIVE")
+            return fail_quality("WIDTH_NON_POSITIVE")
 
         # Calculate credit received (conservative: bid for sell, ask for buy)
         credit_received = short_leg_contract.bid - long_leg_contract.ask
@@ -4884,7 +4888,7 @@ class OptionsEngine:
                 f"CREDIT_SPREAD: Entry blocked - credit ${credit_received:.2f} < "
                 f"min ${min_credit_required:.2f}"
             )
-            return fail("CREDIT_BELOW_MIN")
+            return fail_quality("CREDIT_BELOW_MIN")
 
         # Calculate entry score (same scoring as debit)
         entry_score = self.calculate_entry_score(
@@ -4901,7 +4905,7 @@ class OptionsEngine:
                 f"CREDIT_SPREAD: Entry blocked - score {entry_score.total:.2f} < "
                 f"{config.OPTIONS_ENTRY_SCORE_MIN}"
             )
-            return fail("ENTRY_SCORE_BELOW_MIN")
+            return fail_quality("ENTRY_SCORE_BELOW_MIN")
 
         # Size using margin-based calculator
         # V3.0 SCALABILITY FIX: Use percentage-based cap
@@ -7692,7 +7696,6 @@ class OptionsEngine:
         self._pending_spread_width = None
         self._pending_num_contracts = None
         self._pending_entry_score = None
-        self._entry_attempted_today = False
         self.log(
             "OPT_MACRO_RECOVERY: Pending spread entry cancelled | Retry allowed",
             trades_only=True,
@@ -7880,7 +7883,6 @@ class OptionsEngine:
             self._spread_positions = []
             self._spread_position = None
             self._last_spread_exit_time = None
-            self._entry_attempted_today = True  # Legacy guard (single-leg paths)
             max_attempts = int(getattr(config, "SPREAD_MAX_ATTEMPTS_PER_KEY_PER_DAY", 3))
             # Preserve prior behavior: block any same-day spread re-entry after CB liquidation.
             self._spread_attempts_today_by_key = {
