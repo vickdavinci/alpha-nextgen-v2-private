@@ -1886,6 +1886,8 @@ class OptionsEngine:
         self._last_spread_failure_stats: Optional[str] = None
         self._last_credit_failure_stats: Optional[str] = None
         self._last_entry_validation_failure: Optional[str] = None
+        self._last_intraday_validation_failure: Optional[str] = None
+        self._last_intraday_validation_detail: Optional[str] = None
         self._last_micro_no_trade_log: Optional[str] = None
 
         # V2.3.2 FIX #4: Track if pending entry is intraday (for correct position registration)
@@ -3617,6 +3619,19 @@ class OptionsEngine:
         reason = self._last_entry_validation_failure
         self._last_entry_validation_failure = None
         return reason
+
+    def set_last_intraday_validation_failure(
+        self, reason: Optional[str], detail: Optional[str] = None
+    ) -> None:
+        self._last_intraday_validation_failure = reason
+        self._last_intraday_validation_detail = detail
+
+    def pop_last_intraday_validation_failure(self) -> Tuple[Optional[str], Optional[str]]:
+        reason = self._last_intraday_validation_failure
+        detail = self._last_intraday_validation_detail
+        self._last_intraday_validation_failure = None
+        self._last_intraday_validation_detail = None
+        return reason, detail
 
     def _get_effective_credit_min(self, vix_current: Optional[float] = None) -> float:
         """
@@ -6566,6 +6581,14 @@ class OptionsEngine:
         Returns:
             TargetWeight for intraday entry, or None.
         """
+
+        def fail(reason: str, detail: Optional[str] = None) -> Optional[TargetWeight]:
+            self.set_last_intraday_validation_failure(reason, detail)
+            return None
+
+        # Reset previous validation reason for this attempt
+        self.set_last_intraday_validation_failure(None, None)
+
         # Check if already have intraday position
         if self._intraday_position is not None:
             # V6.2: Log position block (was silent - Bug #3 instrumentation)
@@ -6573,13 +6596,13 @@ class OptionsEngine:
                 f"INTRADAY: Blocked - already has position | "
                 f"Symbol={self._intraday_position.symbol if hasattr(self._intraday_position, 'symbol') else self._intraday_position}"
             )
-            return None
+            return fail("E_INTRADAY_HAS_POSITION")
 
         # V2.9: Check trade limits (Bug #4 fix) - Uses comprehensive counter
         # Replaces V2.3.14 intraday-only check to also enforce global limit
         if not self._can_trade_options(OptionsMode.INTRADAY):
             # V6.2: _can_trade_options already logs, no additional log needed
-            return None
+            return fail("E_INTRADAY_TRADE_LIMIT")
 
         # Reuse state from generate_micro_intraday_signal when provided.
         # This prevents approved->dropped drift caused by a second update() call.
@@ -6602,7 +6625,7 @@ class OptionsEngine:
                 f"INTRADAY: Blocked - NO_TRADE strategy | "
                 f"Regime={state.micro_regime.value} | Score={state.micro_score:.0f}"
             )
-            return None
+            return fail("E_INTRADAY_NO_TRADE_STRATEGY", state.micro_regime.value)
 
         # V3.2: Check if strategy is PROTECTIVE_PUTS (crisis hedge)
         if state.recommended_strategy == IntradayStrategy.PROTECTIVE_PUTS:
@@ -6611,7 +6634,7 @@ class OptionsEngine:
                 self.log(
                     f"INTRADAY: Protective mode (disabled) - regime={state.micro_regime.value}"
                 )
-                return None
+                return fail("E_PROTECTIVE_PUTS_DISABLED")
 
             # Force direction to PUT for protection
             direction = OptionDirection.PUT
@@ -6626,7 +6649,7 @@ class OptionsEngine:
                     f"INTRADAY: Protective PUT size too small ({effective_size_pct:.1%}) "
                     f"| Governor={governor_scale:.0%}"
                 )
-                return None
+                return fail("E_INTRADAY_PROTECTIVE_TOO_SMALL", f"{effective_size_pct:.3f}")
 
             self.log(
                 f"PROTECTIVE_PUT: Crisis detected | Micro={state.micro_regime.value} | "
@@ -6648,7 +6671,7 @@ class OptionsEngine:
                 self.log(
                     f"INTRADAY: No direction recommended for {state.recommended_strategy.value}"
                 )
-                return None
+                return fail("E_INTRADAY_NO_DIRECTION", state.recommended_strategy.value)
 
             # Keep CALL risk constrained in stressed tape.
             if direction == OptionDirection.CALL:
@@ -6669,7 +6692,7 @@ class OptionsEngine:
                             f"Date={trade_date.isoformat()} <= {self._call_cooldown_until_date.isoformat()} | "
                             f"LossStreak={self._call_consecutive_losses}"
                         )
-                        return None
+                        return fail("E_CALL_GATE_LOSS_COOLDOWN")
 
                 vix_for_call = vix_level_override if vix_level_override is not None else vix_current
                 call_block_vix = getattr(config, "INTRADAY_CALL_BLOCK_VIX_MIN", 25.0)
@@ -6680,7 +6703,7 @@ class OptionsEngine:
                         f"VIX={vix_for_call:.1f} >= {call_block_vix:.1f} | "
                         f"Macro={macro_regime_score:.1f} <= {call_block_regime:.1f}"
                     )
-                    return None
+                    return fail("E_CALL_GATE_STRESS")
 
                 # Gate 2: trend filter (block CALLs below QQQ SMA20)
                 if getattr(config, "CALL_GATE_MA20_ENABLED", True) and self.algorithm is not None:
@@ -6692,7 +6715,7 @@ class OptionsEngine:
                                 f"INTRADAY: CALL blocked below MA20 | "
                                 f"QQQ={qqq_current:.2f} < SMA20={sma20_value:.2f}"
                             )
-                            return None
+                            return fail("E_CALL_GATE_MA20")
 
                 # Gate 3: early fear build (5-day VIX trend rising)
                 if getattr(config, "CALL_GATE_VIX_5D_RISING_ENABLED", True):
@@ -6707,7 +6730,7 @@ class OptionsEngine:
                             f"INTRADAY: CALL blocked by VIX 5d trend | "
                             f"VIX5d={vix_5d_change:+.1%} >= {vix_5d_gate:.1%}"
                         )
-                        return None
+                        return fail("E_CALL_GATE_VIX5D")
 
             # V6.14 OPT: Avoid buying long PUTs into panic highs; reduce size in elevated fear.
             if direction == OptionDirection.PUT:
@@ -6717,7 +6740,7 @@ class OptionsEngine:
                     self.log(
                         f"INTRADAY: PUT blocked - VIX {vix_for_put:.1f} > max {put_entry_vix_max:.1f}"
                     )
-                    return None
+                    return fail("E_PUT_GATE_VIX_MAX")
                 put_reduce_start = getattr(config, "PUT_SIZE_REDUCTION_VIX_START", 30.0)
                 put_reduce_factor = getattr(config, "PUT_SIZE_REDUCTION_FACTOR", 0.50)
                 if vix_for_put >= put_reduce_start:
@@ -6733,7 +6756,7 @@ class OptionsEngine:
             if governor_scale <= 0:
                 if direction == OptionDirection.CALL:
                     self.log("INTRADAY: CALL blocked at Governor 0%")
-                    return None
+                    return fail("E_INTRADAY_GOVERNOR_CALL_BLOCK")
                 # PUT allowed at Governor 0% (reduces risk)
                 self.log("INTRADAY: PUT allowed at Governor 0% (defensive)", trades_only=True)
 
@@ -6767,7 +6790,7 @@ class OptionsEngine:
                     f"INTRADAY_TIME_REJECT: DEBIT_FADE at {current_hour}:{current_minute:02d} "
                     f"outside window {config.INTRADAY_DEBIT_FADE_START}-{config.INTRADAY_DEBIT_FADE_END}"
                 )
-                return None
+                return fail("E_INTRADAY_TIME_WINDOW")
 
         elif state.recommended_strategy == IntradayStrategy.ITM_MOMENTUM:
             # V2.3.19: Use config values instead of hardcoded
@@ -6781,7 +6804,7 @@ class OptionsEngine:
                     f"INTRADAY_TIME_REJECT: ITM_MOMENTUM at {current_hour}:{current_minute:02d} "
                     f"outside window {config.INTRADAY_ITM_START}-{config.INTRADAY_ITM_END}"
                 )
-                return None
+                return fail("E_INTRADAY_TIME_WINDOW")
 
         elif state.recommended_strategy == IntradayStrategy.DEBIT_MOMENTUM:
             # V6.4: DEBIT_MOMENTUM time window (same as ITM_MOMENTUM)
@@ -6794,12 +6817,12 @@ class OptionsEngine:
                     f"INTRADAY_TIME_REJECT: DEBIT_MOMENTUM at {current_hour}:{current_minute:02d} "
                     f"outside window {config.INTRADAY_DEBIT_MOMENTUM_START}-{config.INTRADAY_DEBIT_MOMENTUM_END}"
                 )
-                return None
+                return fail("E_INTRADAY_TIME_WINDOW")
 
         # Check if we have a valid contract
         if best_contract is None:
             self.log(f"INTRADAY: {strategy_name} signal but no contract available")
-            return None
+            return fail("E_INTRADAY_NO_CONTRACT", strategy_name)
 
         # V2.3 FIX: Validate contract direction matches signal direction
         # The contract was selected before direction was determined, so we must verify
@@ -6808,7 +6831,7 @@ class OptionsEngine:
                 f"INTRADAY: Direction mismatch - signal wants {direction.value} "
                 f"but contract is {best_contract.direction.value}, skipping"
             )
-            return None
+            return fail("E_INTRADAY_DIRECTION_MISMATCH")
 
         # V2.18: Use sizing cap (Fix for MarginBuyingPower sizing bug)
         # V3.0 SCALABILITY FIX: Use percentage-based cap instead of hardcoded dollars
@@ -6853,14 +6876,14 @@ class OptionsEngine:
                 self.log(
                     f"INTRADAY: Entry blocked - combined size {combined_mult:.0%} < min {min_combined:.0%}"
                 )
-                return None
+                return fail("E_INTRADAY_COMBINED_SIZE_MIN")
 
             adjusted_cap = intraday_max_dollars * combined_mult
             size_mult = micro_mult  # For logging compatibility
         premium = best_contract.mid_price
         if premium <= 0:
             self.log("INTRADAY: Entry blocked - invalid premium price")
-            return None
+            return fail("E_INTRADAY_INVALID_PREMIUM")
 
         # V2.18: Calculate contracts using cap / (premium * 100)
         num_contracts = int(adjusted_cap / (premium * 100))
@@ -6873,7 +6896,7 @@ class OptionsEngine:
                 f"INTRADAY: Entry blocked - cap ${adjusted_cap:.0f} "
                 f"too small for premium ${premium:.2f}"
             )
-            return None
+            return fail("E_INTRADAY_CAP_TOO_SMALL")
 
         # V2.3.4: Use QQQ direction from state
         qqq_dir_str = state.qqq_direction.value if state.qqq_direction else "UNKNOWN"

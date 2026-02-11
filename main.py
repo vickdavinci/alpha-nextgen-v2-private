@@ -4138,6 +4138,22 @@ class AlphaNextGen(QCAlgorithm):
         dte_ranges = self._build_vass_dte_fallbacks(vass_dte_min, vass_dte_max)
         dte_min_all = min(r[0] for r in dte_ranges)
         dte_max_all = max(r[1] for r in dte_ranges)
+        can_swing_vass, swing_reason_vass = self.options_engine.can_enter_swing()
+        if not can_swing_vass:
+            if (
+                self._last_vass_rejection_log is None
+                or (self.Time - self._last_vass_rejection_log).total_seconds() / 60
+                >= config.VASS_LOG_REJECTION_INTERVAL_MINUTES
+            ):
+                self.Log(
+                    f"VASS_SKIPPED: Direction={direction.value} | IV_Env=NA | "
+                    f"VIX={self._current_vix:.1f} | Regime={regime_score:.0f} | "
+                    f"Contracts_checked=0 | Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
+                    f"DTE_Ranges={dte_ranges} | ReasonCode=SWING_SLOT_BLOCK | "
+                    f"Reason=Swing entry not allowed | ValidationFail={swing_reason_vass}"
+                )
+                self._last_vass_rejection_log = self.Time
+            return
 
         required_right = self._strategy_option_right(strategy)
 
@@ -5980,10 +5996,16 @@ class AlphaNextGen(QCAlgorithm):
                             # V6.15: Canonical drop reason coding for audit/debug.
                             drop_code = "DROP_ENGINE_NO_SIGNAL"
                             (
+                                intraday_validation_reason,
+                                intraday_validation_detail,
+                            ) = self.options_engine.pop_last_intraday_validation_failure()
+                            (
                                 can_retry_now,
                                 retry_reason_now,
                             ) = self.options_engine.can_enter_intraday()
-                            if not can_retry_now:
+                            if intraday_validation_reason:
+                                drop_code = intraday_validation_reason
+                            elif not can_retry_now:
                                 drop_code = "DROP_SLOT_LIMIT"
                             elif self._options_intraday_cooldown_until and (
                                 self.Time < self._options_intraday_cooldown_until
@@ -5998,10 +6020,16 @@ class AlphaNextGen(QCAlgorithm):
                             elif intraday_direction is None:
                                 drop_code = "DROP_NO_DIRECTION"
 
+                            validation_detail_fragment = (
+                                f"ValidationDetail={intraday_validation_detail} | "
+                                if intraday_validation_detail
+                                else ""
+                            )
                             self.Log(
                                 f"INTRADAY_SIGNAL_DROPPED: Approved but no order | "
                                 f"Code={drop_code} | "
                                 f"Reason={signal_reason} | RetryHint={retry_reason_now} | "
+                                f"{validation_detail_fragment}"
                                 f"Dir={intraday_direction.value if intraday_direction else 'NONE'} | "
                                 f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'} | "
                                 f"Contract={intraday_contract.symbol if intraday_contract else 'NONE'}"
@@ -6331,6 +6359,20 @@ class AlphaNextGen(QCAlgorithm):
                 log_prefix = (
                     "VASS_SKIPPED" if (validation_reason in skip_reasons) else "VASS_REJECTION"
                 )
+                reason_text = "No contracts met spread criteria (DTE/delta/credit)"
+                if validation_reason == "HAS_SPREAD_POSITION":
+                    reason_text = "Skipped - existing spread position"
+                elif validation_reason in {
+                    "ENTRY_ALREADY_ATTEMPTED_TODAY",
+                    "ENTRY_ATTEMPT_LIMIT",
+                }:
+                    reason_text = "Skipped - entry attempt limit reached"
+                elif validation_reason == "POST_TRADE_MARGIN_COOLDOWN":
+                    reason_text = "Skipped - post-trade margin cooldown active"
+                elif validation_reason == "WIN_RATE_GATE_BLOCK":
+                    reason_text = "Skipped - win-rate gate shutoff active"
+                elif validation_reason == "TRADE_LIMIT_BLOCK":
+                    reason_text = "Skipped - daily trade limit reached"
                 self.Log(
                     f"{log_prefix}: Direction={direction.value} | "
                     f"IV_Env={iv_env} | VIX={self._current_vix:.1f} | "
@@ -6339,7 +6381,7 @@ class AlphaNextGen(QCAlgorithm):
                     f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
                     f"DTE_Ranges={dte_ranges} | "
                     f"ReasonCode={rejection_code} | "
-                    f"Reason=No contracts met spread criteria (DTE/delta/credit)"
+                    f"Reason={reason_text}"
                     + (f" | FailStats={fail_stats}" if fail_stats else "")
                     + (
                         f" | ValidationFail={validation_reason}"

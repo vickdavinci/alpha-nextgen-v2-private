@@ -18,7 +18,7 @@
 | SC-04 | Technical Safety | Exit margin reliability | Exit margin rejection rate = **0%** | ⬜ |
 | SC-05 | Technical Safety | Expiry discipline | Intraday DTE<=2 overnight escapes = **0** | ⬜ |
 | SC-06 | Execution Integrity | Intraday conversion | Approved->Executed >= **60%** | ⬜ |
-| SC-07 | Execution Integrity | Drop reason quality | `INTRADAY_SIGNAL_DROPPED` coded >= **95%** actionable `DROP_*` | ⬜ |
+| SC-07 | Execution Integrity | Drop reason quality | `INTRADAY_SIGNAL_DROPPED` coded >= **95%** actionable `E_*` / `R_*` / `DROP_*` (no generic fallback dominance) | ⬜ |
 | SC-08 | Execution Integrity | OCO coverage | OCO created for open intraday positions >= **95%** | ⬜ |
 | SC-09 | Execution Integrity | OCO race prevention | No OCO recovery during force-close cutoff window | ⬜ |
 | SC-10 | Execution Integrity | Spread close integrity | Combo close metadata correct; no stuck `is_closing` lock | ⬜ |
@@ -30,12 +30,22 @@
 | SC-16 | Regime Fit | Choppy handling | Reduced churn/re-entry behavior vs prior version | ⬜ |
 | SC-17 | Performance | Risk-adjusted improvement | Drawdown/tail-loss/technical rejects improve vs prior baseline | ⬜ |
 | SC-18 | Performance | P&L interpretation | P&L is valid only if SC-01..SC-16 pass | ⬜ |
+| SC-19 | Diagnostics Integrity | Backtest rejection visibility | Engine/router rejection reasons visible in backtest logs for RCA | ⬜ |
 
 | Run Grade | Rule |
 |:--:|------|
 | Green (Promote) | SC-01..SC-16 pass and SC-17 not degraded materially |
 | Yellow (Iterate) | SC-01..SC-10 pass, but SC-11..SC-17 partially fail |
 | Red (Block) | Any failure in SC-01..SC-05, or repeated SC-06..SC-10 failure |
+
+### Latest Run Quick Scorecard (V6.17)
+
+| Gate | Snapshot | Status |
+|------|----------|:------:|
+| SC-06 Intraday conversion | Approved=352, Executed=64 (**18.2%**) | ❌ |
+| SC-07 Drop reason quality | Dropped=288, generic `DROP_ENGINE_NO_SIGNAL`=288 (**100%**) | ❌ |
+| SC-12 Stress protection firing visibility | CALL-gate logs absent in backtest telemetry | ⚠️ |
+| SC-19 Backtest rejection visibility | Engine-level intraday reject reasons not surfaced in this run | ❌ |
 
 ---
 
@@ -70,14 +80,15 @@
 | T-25 | Technical | VIX spike/regime deterioration exits preempted by assignment path | `ASSIGNMENT_RISK_EXIT` fires first; no `SPREAD: EXIT_SIGNAL` observed | 🟡 Applied (Pending Validation) | Added assignment grace window before non-mandatory ITM/margin exits |
 | T-26 | Technical | Micro can starve VASS via shared daily options counter | Shared `MAX_OPTIONS_TRADES_PER_DAY` exhausted by intraday flow | 🟡 Applied (Pending Validation) | Added reserved swing slots guard for intraday limits |
 | T-27 | Technical | OCO sibling orders still trigger margin rejects at force-close | Stage6.14: 6 dates x 4 logs (`Order Error` + `INVALID`) at 15:30 for stale OCO ids | 🟡 Applied (Pending Validation) | Force-close fallback/static timing now driven by `INTRADAY_FORCE_EXIT_TIME=15:25` to reduce race window |
-| T-28 | Technical | Intraday approved->execution drop remains severe | Stage6.14: `INTRADAY_SIGNAL_APPROVED=385`, `INTRADAY_SIGNAL=104`, `DROPPED=281` | 🟡 Applied (Pending Validation) | Added canonical `DROP_*` reason codes + one-shot retry for temporary drop causes |
+| T-28 | Technical | Intraday approved->execution drop remains severe | Stage6.17: `INTRADAY_SIGNAL_APPROVED=352`, `INTRADAY_SIGNAL=64`, `DROPPED=288` (81.8% drop) | 🔴 Reopened | Existing fallback coding still collapses to generic `DROP_ENGINE_NO_SIGNAL` in backtest |
 | T-29 | Technical | VASS spreads are instantly closed by assignment guard | Stage6.14: `SPREAD: POSITION_REGISTERED=23`, `ASSIGNMENT_RISK_EXIT=23`, `POSITION_REMOVED=23` (<=1 min) | 🟡 Applied (Pending Validation) | Assignment grace (`SPREAD_ASSIGNMENT_GRACE_MINUTES`) added before non-mandatory assignment exits |
 | T-30 | Technical | NEUTRAL conviction veto can overtrade noisy flips | Panic rebound windows showed repeated NEUTRAL veto direction swings | 🟡 Applied (Pending Validation) | NEUTRAL veto now requires MICRO tradeable regime + direction alignment with MICRO recommendation |
 | T-31 | Technical | PRE_MARKET_SETUP callback still receives option symbol objects | V6.15 2015 run: `symbol must be a non-empty string` on 2015-08-26 / 2015-08-27 / 2015-09-03 | 🟡 Applied (Pending Validation) | V6.16: premarket and ITM-short paths normalize symbols before router submission |
 | T-32 | Technical | Intraday force-exit fallback close-side regression | V6.15 2015 run: `INTRADAY_FORCE_EXIT_FALLBACK` followed by `ROUTER: MARKET_ORDER | BUY ... Tag=MICRO` during close intent | 🟡 Applied (Pending Validation) | V6.16: router close intents now derive side/qty from live holdings only (reduce-only behavior) |
-| T-33 | Technical | Router reject reason opacity in approved->dropped path | V6.15 2015 run: 35 `INTRADAY_SIGNAL_DROPPED` all as `DROP_ROUTER_REJECT` without canonical router cause | 🟡 Partial (Pending Validation) | V6.16: canonical `DROP_*` codes + retry hint added; full router-cause propagation still pending |
+| T-33 | Technical | Approved->dropped reason opacity in intraday path | V6.17: 288 drops all generic `DROP_ENGINE_NO_SIGNAL` with no engine reject code detail | 🟡 Applied (Pending Validation) | V6.18 patch adds explicit intraday engine validation codes and detail propagation into drop log |
 | T-34 | Technical | Force-close path not idempotent (position amplification) | V6.15 2017 run: 2017-08-22 close cycle grew to `Qty=653` via repeated fallback/OCO recovery before next-day reconcile | 🟡 Applied (Pending Validation) | V6.16: close-in-progress lock + one-submit-per-symbol/day + live-qty override |
 | T-35 | Technical | OCO recovery recreates oversized orders during force-close window | V6.15 2017 run: `OCO_RECOVER` created `Qty=431` while active intraday leg was `Qty=222` near 15:25 | 🟡 Applied (Pending Validation) | V6.16: OCO recovery disabled near force-close window and skipped during close-in-progress |
+| T-36 | Technical | Backtest telemetry suppresses intraday rejection reasons | CALL/PUT gate and intraday validation logs absent in stage6.17 despite high drop volume | 🔴 Open | `options_engine.log(..., trades_only=False)` suppression in backtest hides RCA signals; promote rejection logs/codes to backtest-visible path |
 | O-01 | Optimization | Low win rate / negative P&L | 2022Q1: -21,641 | 🔴 Open | Strategy tuning |
 | O-02 | Optimization | High Dir=NONE | 2022Q1: 59% | 🔴 Open | Micro gating still strict |
 | O-03 | Optimization | Micro gating too restrictive | CAUTIOUS/NORMAL/WORSENING blocks | 🔴 Open | Expand tradeable regimes or thresholds |
@@ -635,10 +646,16 @@ Primary unresolved technical risks are **margin submit regression** and **assign
 
 ## What Still Needs Fixing
 
-1. **Reduce Dir=NONE further** (micro thresholds still too conservative)  
-2. **Improve VASS contract selection rate** (rejections still very high)  
-3. **Close the signal→execution gap**  
-4. **Improve call profitability** (strategy logic or stop/target tuning)
+1. **Close approved->dropped leak first (P0)**  
+   - Eliminate generic `DROP_ENGINE_NO_SIGNAL` dominance with explicit engine/router reason propagation.
+2. **Make intraday rejection telemetry backtest-visible (P0)**  
+   - Ensure gate/validation failures are visible without requiring `LiveMode`.
+3. **Reduce Dir=NONE without breaking bull participation (P1)**  
+   - Tune conviction/noise thresholds with regime-conditional sizing, not blanket loosening.
+4. **Improve VASS constructability and entry mix (P1)**  
+   - Continue targeted filter tuning by dominant rejection class (DTE/delta/liquidity), avoid global over-relaxation.
+5. **Control CALL losses in bear stress while preserving bull capture (P1)**  
+   - Keep conditional CALL gates active and verify trigger rates in logs.
 
 ---
 
