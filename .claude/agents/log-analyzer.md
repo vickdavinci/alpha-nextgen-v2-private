@@ -13,8 +13,9 @@ You are an expert trading log analyst for the Alpha NextGen V2 algorithmic tradi
 ```
 SOURCE_DIR: /Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private
 LOGS_DIR: /Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private/docs/audits/logs
-REPORTS_DIR: /Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private/docs/audits/reports
 ```
+
+**IMPORTANT:** Reports are saved in the SAME folder as the source log files, not a separate reports directory.
 
 ## Log File Patterns
 
@@ -387,14 +388,18 @@ CVaR_95 = mean(daily_returns where daily_returns <= VaR_95)
 
 ## Output
 
-Save the report to:
+Save the report in the SAME folder as the source log file:
 ```
-docs/audits/reports/{LogFileName}_Analysis_{Timestamp}.md
+{LogFileFolder}/{LogFileName}_Analysis_{Timestamp}.md
 ```
 
-Example:
+Examples:
 ```
-docs/audits/reports/V6_12_JulSep2015_Analysis_20260210.md
+docs/audits/logs/stage6/V6_12_JulSep2015_logs.txt
+  → docs/audits/logs/stage6/V6_12_JulSep2015_Analysis_20260210.md
+
+docs/audits/logs/stage6.10/V6_10_Aug2015_logs.txt
+  → docs/audits/logs/stage6.10/V6_10_Aug2015_Analysis_20260210.md
 ```
 
 ## Accuracy Requirements

@@ -5,6 +5,40 @@
 
 ---
 
+## Backtest Success Criteria (Use Before Reading Bug Summary)
+
+**Principle:** Net P&L alone is not an acceptance test. Evaluate in order:  
+**Technical Safety -> Execution Integrity -> Strategy Behavior -> Regime Fit -> P&L**
+
+| ID | Gate | Success Criteria | Threshold / Rule | Status |
+|:--:|------|------------------|------------------|:------:|
+| SC-01 | Technical Safety | Runtime stability | No crash that halts trading loop | ⬜ |
+| SC-02 | Technical Safety | No position amplification | Forced close never increases net position | ⬜ |
+| SC-03 | Technical Safety | Orphan containment | No persistent orphan positions after reconcile window | ⬜ |
+| SC-04 | Technical Safety | Exit margin reliability | Exit margin rejection rate = **0%** | ⬜ |
+| SC-05 | Technical Safety | Expiry discipline | Intraday DTE<=2 overnight escapes = **0** | ⬜ |
+| SC-06 | Execution Integrity | Intraday conversion | Approved->Executed >= **60%** | ⬜ |
+| SC-07 | Execution Integrity | Drop reason quality | `INTRADAY_SIGNAL_DROPPED` coded >= **95%** actionable `DROP_*` | ⬜ |
+| SC-08 | Execution Integrity | OCO coverage | OCO created for open intraday positions >= **95%** | ⬜ |
+| SC-09 | Execution Integrity | OCO race prevention | No OCO recovery during force-close cutoff window | ⬜ |
+| SC-10 | Execution Integrity | Spread close integrity | Combo close metadata correct; no stuck `is_closing` lock | ⬜ |
+| SC-11 | Strategy Behavior | Tail-loss control | No catastrophic avoidable single-trade loss from control failure | ⬜ |
+| SC-12 | Strategy Behavior | Stress protection firing | VIX ladder and deterioration/spike exits log when thresholds are crossed | ⬜ |
+| SC-13 | Strategy Behavior | VASS participation | Non-zero entries where matrix allows; rejects dominated by market constraints | ⬜ |
+| SC-14 | Regime Fit | Bear handling | CALL gating active in stress; PUT participation not starved | ⬜ |
+| SC-15 | Regime Fit | Bull handling | CALL participation remains healthy (no over-blocking) | ⬜ |
+| SC-16 | Regime Fit | Choppy handling | Reduced churn/re-entry behavior vs prior version | ⬜ |
+| SC-17 | Performance | Risk-adjusted improvement | Drawdown/tail-loss/technical rejects improve vs prior baseline | ⬜ |
+| SC-18 | Performance | P&L interpretation | P&L is valid only if SC-01..SC-16 pass | ⬜ |
+
+| Run Grade | Rule |
+|:--:|------|
+| Green (Promote) | SC-01..SC-16 pass and SC-17 not degraded materially |
+| Yellow (Iterate) | SC-01..SC-10 pass, but SC-11..SC-17 partially fail |
+| Red (Block) | Any failure in SC-01..SC-05, or repeated SC-06..SC-10 failure |
+
+---
+
 ## Bug Registry (Master)
 
 | ID | Category | Bug | Evidence | Status | Notes |
@@ -39,11 +73,11 @@
 | T-28 | Technical | Intraday approved->execution drop remains severe | Stage6.14: `INTRADAY_SIGNAL_APPROVED=385`, `INTRADAY_SIGNAL=104`, `DROPPED=281` | 🟡 Applied (Pending Validation) | Added canonical `DROP_*` reason codes + one-shot retry for temporary drop causes |
 | T-29 | Technical | VASS spreads are instantly closed by assignment guard | Stage6.14: `SPREAD: POSITION_REGISTERED=23`, `ASSIGNMENT_RISK_EXIT=23`, `POSITION_REMOVED=23` (<=1 min) | 🟡 Applied (Pending Validation) | Assignment grace (`SPREAD_ASSIGNMENT_GRACE_MINUTES`) added before non-mandatory assignment exits |
 | T-30 | Technical | NEUTRAL conviction veto can overtrade noisy flips | Panic rebound windows showed repeated NEUTRAL veto direction swings | 🟡 Applied (Pending Validation) | NEUTRAL veto now requires MICRO tradeable regime + direction alignment with MICRO recommendation |
-| T-31 | Technical | PRE_MARKET_SETUP callback still receives option symbol objects | V6.15 2015 run: `symbol must be a non-empty string` on 2015-08-26 / 2015-08-27 / 2015-09-03 | 🔴 Open | Symbol normalization/guard is still required in premarket setup path |
-| T-32 | Technical | Intraday force-exit fallback close-side regression | V6.15 2015 run: `INTRADAY_FORCE_EXIT_FALLBACK` followed by `ROUTER: MARKET_ORDER | BUY ... Tag=MICRO` during close intent | 🔴 Open | Close intent must always use reduce-only side/quantity, never position add |
-| T-33 | Technical | Router reject reason opacity in approved->dropped path | V6.15 2015 run: 35 `INTRADAY_SIGNAL_DROPPED` all as `DROP_ROUTER_REJECT` without canonical router cause | 🔴 Open | Add explicit router rejection reason codes and pre-approval sync |
-| T-34 | Technical | Force-close path not idempotent (position amplification) | V6.15 2017 run: 2017-08-22 close cycle grew to `Qty=653` via repeated fallback/OCO recovery before next-day reconcile | 🔴 Open | Add close-in-progress lock + one-shot force-close per symbol/session |
-| T-35 | Technical | OCO recovery recreates oversized orders during force-close window | V6.15 2017 run: `OCO_RECOVER` created `Qty=431` while active intraday leg was `Qty=222` near 15:25 | 🔴 Open | Disable OCO recovery in force-close window and enforce quantity invariant against live holdings |
+| T-31 | Technical | PRE_MARKET_SETUP callback still receives option symbol objects | V6.15 2015 run: `symbol must be a non-empty string` on 2015-08-26 / 2015-08-27 / 2015-09-03 | 🟡 Applied (Pending Validation) | V6.16: premarket and ITM-short paths normalize symbols before router submission |
+| T-32 | Technical | Intraday force-exit fallback close-side regression | V6.15 2015 run: `INTRADAY_FORCE_EXIT_FALLBACK` followed by `ROUTER: MARKET_ORDER | BUY ... Tag=MICRO` during close intent | 🟡 Applied (Pending Validation) | V6.16: router close intents now derive side/qty from live holdings only (reduce-only behavior) |
+| T-33 | Technical | Router reject reason opacity in approved->dropped path | V6.15 2015 run: 35 `INTRADAY_SIGNAL_DROPPED` all as `DROP_ROUTER_REJECT` without canonical router cause | 🟡 Partial (Pending Validation) | V6.16: canonical `DROP_*` codes + retry hint added; full router-cause propagation still pending |
+| T-34 | Technical | Force-close path not idempotent (position amplification) | V6.15 2017 run: 2017-08-22 close cycle grew to `Qty=653` via repeated fallback/OCO recovery before next-day reconcile | 🟡 Applied (Pending Validation) | V6.16: close-in-progress lock + one-submit-per-symbol/day + live-qty override |
+| T-35 | Technical | OCO recovery recreates oversized orders during force-close window | V6.15 2017 run: `OCO_RECOVER` created `Qty=431` while active intraday leg was `Qty=222` near 15:25 | 🟡 Applied (Pending Validation) | V6.16: OCO recovery disabled near force-close window and skipped during close-in-progress |
 | O-01 | Optimization | Low win rate / negative P&L | 2022Q1: -21,641 | 🔴 Open | Strategy tuning |
 | O-02 | Optimization | High Dir=NONE | 2022Q1: 59% | 🔴 Open | Micro gating still strict |
 | O-03 | Optimization | Micro gating too restrictive | CAUTIOUS/NORMAL/WORSENING blocks | 🔴 Open | Expand tradeable regimes or thresholds |
@@ -105,9 +139,9 @@
 
 ### Technical Findings from This Run
 
-1. **T-31 confirmed:** PRE_MARKET_SETUP callback still crashes on symbol typing/normalization in multiple sessions.
-2. **T-32 confirmed:** intraday force-exit fallback still exhibits close-side regression (`BUY` on close intent) in this baseline run.
-3. **T-33 confirmed:** approved->dropped instrumentation still opaque (`DROP_ROUTER_REJECT` without router-side canonical cause).
+1. **T-31 baseline confirmed:** PRE_MARKET_SETUP callback crashed on symbol typing/normalization in this run. **V6.16 code fix applied; pending re-validation.**
+2. **T-32 baseline confirmed:** intraday force-exit fallback exhibited close-side regression (`BUY` on close intent) in this run. **V6.16 router close-path fix applied; pending re-validation.**
+3. **T-33 baseline confirmed:** approved->dropped instrumentation was opaque (`DROP_ROUTER_REJECT` without canonical cause). **V6.16 partial fix applied; pending re-validation.**
 4. **T-11/T-12 behavior visible:** VIX spike and regime deterioration spread exits are firing, but not enough to protect losses when entries are poor.
 
 ### Optimization Findings from This Run
@@ -150,8 +184,8 @@
 
 ### Additional Findings
 
-1. **T-34 confirmed:** close flow is not idempotent in force-close window; it can amplify holdings before reconciliation.
-2. **T-35 confirmed:** OCO recovery should not run during force-close path; recovered OCO quantity can diverge from real position.
+1. **T-34 baseline confirmed:** close flow was not idempotent in force-close window and could amplify holdings. **V6.16 lock/idempotency fix applied; pending re-validation.**
+2. **T-35 baseline confirmed:** OCO recovery ran during force-close and recovered quantity diverged from holdings. **V6.16 cutoff/guard fix applied; pending re-validation.**
 3. VASS PUT path remains underrepresented:
    - `VASS_REJECTION=5` in this sample, all `ValidationFail=BEAR_PUT_ASSIGNMENT_GATE`
    - spread entries are almost entirely bullish debit (`BULL_CALL`).
