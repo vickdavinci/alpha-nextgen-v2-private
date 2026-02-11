@@ -104,6 +104,10 @@
 | O-13 | Optimization | PUT spread participation blocked by assignment guard strictness | V6.15 2015 run: `ValidationFail=BEAR_PUT_ASSIGNMENT_GATE` 124 rejections; put-direction rejections dominate (299/355) | 🔴 Open | Recalibrate assignment gate thresholds for bear-put debit construction |
 | O-14 | Optimization | Micro participation still bottlenecked by gating | V6.15 2015 run: `Dir=NONE 72.6%`, `NO_TRADE` top blocks `REGIME_NOT_TRADEABLE/CONFIRMATION_FAIL/QQQ_FLAT` | 🔴 Open | Small-threshold tuning only; avoid broad logic expansion |
 | O-15 | Optimization | PUT participation remains too low in bull/chop windows | V6.15 2017 run: PUT only 3/38 trades; VASS PUT attempts mostly blocked by assignment gate in low IV | 🔴 Open | Keep bear-put path available with risk-scaled sizing instead of hard gate in low-risk contexts |
+| O-16 | Optimization | VASS conviction override too sensitive in RISK_ON | V6.17 2015 NoSync: bearish VIX-veto overrides during bullish macro windows (e.g., Jul 09/Jul 28) both lost | 🔴 Open | Add regime-aware hysteresis for VIX-veto so transient spikes do not force bearish spread direction in sustained risk-on |
+| O-17 | Optimization | Counter-trend PUT entries during sustained RISK_ON degrade Micro expectancy | V6.17 2017 NoSync: PUTs in regime 73-75 had weak outcomes vs CALLs | 🔴 Open | Add trend-persistence gate for counter-trend intraday PUTs when macro remains strongly risk-on |
+| O-18 | Optimization | Late-day intraday entries show weak/unstable edge | V6.17 2017 NoSync: multiple entries at/after 15:00 with mixed quality and elevated noise | 🔴 Open | Tighten late-session entry quality rules (higher conviction or reduced size near close) |
+| O-19 | Optimization | Neutrality churn exits reduce spread efficiency | V6.17 analysis: repeated neutrality/dead-zone exits with fee drag and low-quality churn | 🔴 Open | Convert hard neutrality exits to staged de-risking (size-down/guarded hold) when risk is contained |
 
 ---
 
@@ -537,6 +541,10 @@ Primary unresolved technical risks are **margin submit regression** and **assign
 | **P1** | CALL concentration still dominates latest run | Stage6.14: CALL P&L **-$20,695** vs PUT **+$351** | Optimization still not regime-compatible in stress periods | 🔴 Open |
 | **P2** | Multi-day carry efficiency | 51/140 trades held >1 day | Carry/expiry handling likely reducing edge | 🟡 Monitor |
 | **P2** | Signal quality in neutral micro states | NO_TRADE reasons cluster: CONFIRMATION_FAIL/QQQ_FLAT/REGIME_NOT_TRADEABLE | Conviction thresholds likely too strict/lagging | 🟡 Monitor |
+| **P1** | VASS conviction override too sensitive in risk-on windows | Stage6.17 2015 NoSync: VIX-veto bearish overrides in bullish macro periods were net negative | Reversal overrides degrade spread direction quality in trend markets | 🔴 Open |
+| **P1** | Counter-trend PUTs in sustained RISK_ON | Stage6.17 2017 NoSync: PUT bucket materially weaker than CALL bucket during strong risk-on regime | Avoidable drag from low-probability counter-trend entries | 🔴 Open |
+| **P2** | Late-day intraday entry quality | Stage6.17 2017 NoSync: after-15:00 entries showed unstable edge distribution | End-of-day noise increases slippage/churn risk | 🔴 Open |
+| **P2** | Neutrality churn in spread exits | Stage6.17 analyses: dead-zone neutrality exits create repeated small-loss/fee churn | Reduces spread expectancy without materially lowering tail risk | 🔴 Open |
 
 ## Performance Snapshot
 
