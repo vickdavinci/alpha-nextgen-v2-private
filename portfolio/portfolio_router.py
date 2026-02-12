@@ -1050,10 +1050,38 @@ class PortfolioRouter:
         if not metadata:
             return 0.0, "ROUTER_MARGIN_META_MISSING"
 
+        def _strike_from_occ_symbol(symbol_text: str) -> Optional[float]:
+            # OCC option symbol suffix encodes strike as 8 digits with 3 implied decimals.
+            # Example: QQQ 211220C00391000 -> 391.000
+            if not symbol_text:
+                return None
+            text = str(symbol_text).strip()
+            if len(text) < 8:
+                return None
+            suffix = text[-8:]
+            if not suffix.isdigit():
+                return None
+            try:
+                return float(int(suffix)) / 1000.0
+            except Exception:
+                return None
+
         try:
             width = float(metadata.get("spread_width", 0.0))
         except (TypeError, ValueError):
-            return 0.0, "ROUTER_MARGIN_WIDTH_INVALID"
+            width = 0.0
+        if width <= 0:
+            long_symbol = str(metadata.get("spread_long_leg_symbol", "")).strip()
+            short_symbol = str(metadata.get("spread_short_leg_symbol", "")).strip()
+            long_strike = _strike_from_occ_symbol(long_symbol)
+            short_strike = _strike_from_occ_symbol(short_symbol)
+            if long_strike is not None and short_strike is not None:
+                width = abs(long_strike - short_strike)
+                if width > 0:
+                    self.log(
+                        f"ROUTER_MARGIN_WIDTH_FALLBACK: Derived width=${width:.2f} "
+                        f"from legs {long_symbol} / {short_symbol}"
+                    )
         if width <= 0:
             return 0.0, "ROUTER_MARGIN_WIDTH_INVALID"
 
@@ -1743,6 +1771,10 @@ class PortfolioRouter:
                 spread_close_short = agg.metadata.get("spread_close_short", False)
 
                 if short_leg_symbol and short_leg_qty:
+                    # Enrich metadata so downstream margin estimation can recover width
+                    # even if explicit spread_width is missing.
+                    agg.metadata.setdefault("spread_long_leg_symbol", symbol)
+                    agg.metadata.setdefault("spread_short_leg_symbol", short_leg_symbol)
                     # Remove the separate long leg order we just added
                     # Replace with a combo order that includes both legs
                     if orders and orders[-1].symbol == symbol:
@@ -2019,8 +2051,13 @@ class PortfolioRouter:
                                 scale_ratio = max_contracts / order.quantity
                                 order.quantity = max_contracts
                                 if order.combo_short_quantity:
-                                    order.combo_short_quantity = int(
-                                        order.combo_short_quantity * scale_ratio
+                                    # Keep short leg quantity exactly aligned with scaled spread count.
+                                    # BUY combo (open): short leg is negative.
+                                    # SELL combo (close): short leg is positive.
+                                    order.combo_short_quantity = (
+                                        -order.quantity
+                                        if order.side == OrderSide.BUY
+                                        else order.quantity
                                     )
                                 self.log(
                                     f"ROUTER_MARGIN_SCALE_COMBO: {order.symbol} | "

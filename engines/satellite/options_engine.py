@@ -1833,7 +1833,7 @@ class OptionsEngine:
         # V2.3: Spread position tracking (replaces single-leg for swing mode)
         self._spread_position: Optional[SpreadPosition] = None
         self._spread_positions: List[SpreadPosition] = []
-        # Secondary slot placeholder for legacy gamma-path safety (must exist even if unused).
+        # Reserved compatibility slot for legacy persisted state payloads.
         self._credit_spread_position: Optional[SpreadPosition] = None
 
         # Legacy single position (for backwards compatibility)
@@ -5308,13 +5308,13 @@ class OptionsEngine:
             if strike <= underlying_price:
                 return False, ""  # Not ITM
             itm_amount = strike - underlying_price
-            itm_pct = itm_amount / strike
+            itm_pct = itm_amount / max(underlying_price, 1e-9)
         else:
             # Call is ITM when strike < underlying
             if strike >= underlying_price:
                 return False, ""  # Not ITM
             itm_amount = underlying_price - strike
-            itm_pct = itm_amount / strike
+            itm_pct = itm_amount / max(underlying_price, 1e-9)
 
         if itm_pct >= itm_threshold:
             # Throttle diagnostic logging to avoid repeated spam in fast loops.

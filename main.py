@@ -327,15 +327,11 @@ class AlphaNextGen(QCAlgorithm):
         # V2.6: Atomic spread fill tracking (Bugs #1, #6, #7)
         self._spread_fill_tracker: Optional[SpreadFillTracker] = None
 
-        # V2.6 Bug #12: Initialize close tracking flags (not lazy)
-        self._spread_long_closed = False
-        self._spread_short_closed = False
-        self._spread_close_qty_long = 0
-        self._spread_close_qty_short = 0
-        self._spread_close_expected_qty = 0
-        # V2.27: Track close fill prices for win rate gate P&L
-        self._spread_close_long_fill_price: float = 0.0
-        self._spread_close_short_fill_price: float = 0.0
+        # V6.22: Per-spread close trackers (fixes shared-counter corruption).
+        # key: "<long_symbol>|<short_symbol>"
+        self._spread_close_trackers: Dict[str, Dict[str, Any]] = {}
+        # V6.22: Track external broker order events to avoid EXEC: UNKNOWN_ORDER spam.
+        self._external_exec_event_logged: Set[int] = set()
         # V6.19: Run-level diagnostics counters for hardening validation.
         self._diag_margin_reject_count = 0
         self._diag_intraday_approved_count = 0
@@ -345,6 +341,10 @@ class AlphaNextGen(QCAlgorithm):
 
         # V2.6 Bug #14: Exit order retry tracking
         self._pending_exit_orders: Dict[str, ExitOrderTracker] = {}
+        # V6.22: Persist forced spread-close retries when broker cancels close legs.
+        # key = spread key "<long>|<short>", value = next eligible retry time.
+        self._spread_forced_close_retry: Dict[str, datetime] = {}
+        self._spread_forced_close_reason: Dict[str, str] = {}
 
         # V2.4.4 P0: Margin call circuit breaker tracking
         # Prevents 2765+ margin call spam seen in V2.4.3 backtest
@@ -2988,9 +2988,9 @@ class AlphaNextGen(QCAlgorithm):
                     # This is a spread fill - accumulate in tracker
                     self._handle_spread_leg_fill(symbol, fill_price, abs(fill_qty))
 
-            # Notify execution engine
-            self.execution_engine.on_order_event(
-                broker_order_id=orderEvent.OrderId,
+            # Notify execution engine only if the order originated there.
+            self._forward_execution_event(
+                order_event=orderEvent,
                 status="PartiallyFilled",
                 fill_price=fill_price,
                 fill_quantity=fill_qty,
@@ -3041,9 +3041,9 @@ class AlphaNextGen(QCAlgorithm):
                     fill_time=str(self.Time),
                 )
 
-            # Forward to execution engine for tracking
-            self.execution_engine.on_order_event(
-                broker_order_id=orderEvent.OrderId,
+            # Forward to execution engine only for mapped orders.
+            self._forward_execution_event(
+                order_event=orderEvent,
                 status="Filled",
                 fill_price=fill_price,
                 fill_quantity=fill_qty,
@@ -3182,8 +3182,8 @@ class AlphaNextGen(QCAlgorithm):
             self.Log(f"INVALID: {orderEvent.Symbol} - {orderEvent.Message}")
             if "Margin" in str(orderEvent.Message) or "buying power" in str(orderEvent.Message):
                 self._diag_margin_reject_count += 1
-            self.execution_engine.on_order_event(
-                broker_order_id=orderEvent.OrderId,
+            self._forward_execution_event(
+                order_event=orderEvent,
                 status="Invalid",
                 rejection_reason=orderEvent.Message,
             )
@@ -3389,8 +3389,8 @@ class AlphaNextGen(QCAlgorithm):
             self._handle_order_rejection(failed_symbol, orderEvent)
 
         elif orderEvent.Status == OrderStatus.Canceled:
-            self.execution_engine.on_order_event(
-                broker_order_id=orderEvent.OrderId,
+            self._forward_execution_event(
+                order_event=orderEvent,
                 status="Canceled",
             )
             if self.oco_manager.has_order(orderEvent.OrderId):
@@ -3402,7 +3402,42 @@ class AlphaNextGen(QCAlgorithm):
                 )
             # V2.20: Event-driven state recovery — notify source engine
             canceled_symbol = str(orderEvent.Symbol)
+            self._queue_spread_close_retry_on_cancel(canceled_symbol, orderEvent)
             self._handle_order_rejection(canceled_symbol, orderEvent)
+
+    def _forward_execution_event(
+        self,
+        order_event: OrderEvent,
+        status: str,
+        fill_price: float = 0.0,
+        fill_quantity: int = 0,
+        rejection_reason: str = "",
+    ) -> None:
+        """
+        V6.22: Forward broker events to ExecutionEngine only for mapped orders.
+
+        OCO/manual/spread-atomic orders are external to ExecutionEngine and should
+        not be logged as EXEC: UNKNOWN_ORDER repeatedly.
+        """
+        broker_id = int(order_event.OrderId)
+        if self.execution_engine.get_order_by_broker_id(broker_id) is None:
+            if broker_id not in self._external_exec_event_logged:
+                order = self.Transactions.GetOrderById(broker_id)
+                tag = getattr(order, "Tag", "") if order is not None else ""
+                self.Log(
+                    f"EXEC_EXTERNAL: BrokerID={broker_id} | Status={status} | "
+                    f"Symbol={order_event.Symbol} | Tag={tag}"
+                )
+                self._external_exec_event_logged.add(broker_id)
+            return
+
+        self.execution_engine.on_order_event(
+            broker_order_id=broker_id,
+            status=status,
+            fill_price=fill_price,
+            fill_quantity=fill_quantity,
+            rejection_reason=str(rejection_reason or ""),
+        )
 
     # =========================================================================
     # STATE MANAGEMENT HELPERS
@@ -3550,7 +3585,14 @@ class AlphaNextGen(QCAlgorithm):
             orphan_symbols = [s for s in option_holdings.keys() if s not in tracked_symbols]
             for sym_str in orphan_symbols:
                 try:
-                    self.Liquidate(option_symbols[sym_str], tag="RECON_ORPHAN_OPTION")
+                    broker_symbol = option_symbols[sym_str]
+                    holding = self.Portfolio[broker_symbol]
+                    if not holding.Invested or abs(float(holding.Quantity)) <= 0:
+                        self.Log(
+                            f"RECON_ORPHAN_SKIP: {sym_str} | No live position at liquidation time"
+                        )
+                        continue
+                    self.Liquidate(broker_symbol, tag="RECON_ORPHAN_OPTION")
                     self.Log(
                         f"RECON_ORPHAN_CLOSE_SUBMITTED: {sym_str} | "
                         f"Qty={option_holdings.get(sym_str, 0)}"
@@ -3559,7 +3601,9 @@ class AlphaNextGen(QCAlgorithm):
                     self.Log(f"RECON_ORPHAN_CLOSE_FAILED: {sym_str} | {e}")
 
             qqq_holding = self.Portfolio[self.qqq]
-            if qqq_holding.Invested and not option_holdings and not tracked_symbols:
+            # Assignment containment: QQQ equity should never persist in options-only flow.
+            # Liquidate whenever QQQ shares are present after reconciliation.
+            if qqq_holding.Invested:
                 self.Log(
                     f"RECON_ASSIGNMENT_EQUITY_LIQUIDATED: QQQ Qty={qqq_holding.Quantity} | "
                     f"Value=${qqq_holding.HoldingsValue:,.2f}"
@@ -6760,6 +6804,19 @@ class AlphaNextGen(QCAlgorithm):
         spreads = self.options_engine.get_spread_positions()
         if not spreads:
             return
+        active_spread_keys = set()
+        for s in spreads:
+            active_spread_keys.add(
+                f"{self._normalize_symbol_str(s.long_leg.symbol)}|"
+                f"{self._normalize_symbol_str(s.short_leg.symbol)}"
+            )
+        for key in list(self._spread_forced_close_retry.keys()):
+            if key not in active_spread_keys:
+                self._spread_forced_close_retry.pop(key, None)
+                self._spread_forced_close_reason.pop(key, None)
+        for key in list(self._spread_close_trackers.keys()):
+            if key not in active_spread_keys:
+                self._spread_close_trackers.pop(key, None)
 
         underlying_price = self.Securities["QQQ"].Price
         current_hour = self.Time.hour
@@ -6768,6 +6825,39 @@ class AlphaNextGen(QCAlgorithm):
         regime_score = self.regime_engine.get_previous_score()
 
         for spread in spreads:
+            long_symbol = self._normalize_symbol_str(spread.long_leg.symbol)
+            short_symbol = self._normalize_symbol_str(spread.short_leg.symbol)
+            spread_key = f"{long_symbol}|{short_symbol}"
+
+            # V6.21: If a spread close was canceled, keep retrying close until flat.
+            retry_at = self._spread_forced_close_retry.get(spread_key)
+            if retry_at is not None and self.Time >= retry_at:
+                retry_reason = self._spread_forced_close_reason.get(
+                    spread_key, "CANCELED_CLOSE_RETRY"
+                )
+                self.Log(
+                    f"SPREAD_RETRY: Re-submitting forced close | Long={long_symbol} "
+                    f"Short={short_symbol} | Reason={retry_reason}"
+                )
+                self.portfolio_router.receive_signal(
+                    TargetWeight(
+                        symbol=long_symbol,
+                        target_weight=0.0,
+                        source="OPT",
+                        urgency=Urgency.IMMEDIATE,
+                        reason=f"SPREAD_CLOSE_RETRY:{retry_reason}",
+                        requested_quantity=spread.num_spreads,
+                        metadata={
+                            "spread_close_short": True,
+                            "spread_short_leg_symbol": short_symbol,
+                            "spread_short_leg_quantity": spread.num_spreads,
+                        },
+                    )
+                )
+                # Backoff retries to reduce order spam while preserving persistence.
+                self._spread_forced_close_retry[spread_key] = self.Time + timedelta(minutes=5)
+                continue
+
             current_dte = spread.long_leg.days_to_expiry
             try:
                 if spread.long_leg.expiry:
@@ -7604,51 +7694,59 @@ class AlphaNextGen(QCAlgorithm):
             return
 
         fill_qty_abs = int(abs(fill_qty))
-
-        # Initialize close tracking if this is first close fill
-        if not self._spread_long_closed and not self._spread_short_closed:
-            self._spread_close_expected_qty = spread.num_spreads
-            self._spread_close_qty_long = 0
-            self._spread_close_qty_short = 0
+        spread_key = (
+            f"{self._normalize_symbol_str(spread.long_leg.symbol)}|"
+            f"{self._normalize_symbol_str(spread.short_leg.symbol)}"
+        )
+        tracker = self._spread_close_trackers.get(spread_key)
+        if tracker is None:
+            tracker = {
+                "expected_qty": spread.num_spreads,
+                "long_closed": False,
+                "short_closed": False,
+                "long_qty": 0,
+                "short_qty": 0,
+                "long_price": 0.0,
+                "short_price": 0.0,
+            }
+            self._spread_close_trackers[spread_key] = tracker
 
         # Track which leg closed and accumulate quantity
         if spread.long_leg.symbol == symbol:
-            self._spread_long_closed = True
-            self._spread_close_qty_long += fill_qty_abs
-            # V2.27: Track close fill price for win rate gate
-            self._spread_close_long_fill_price = fill_price
+            tracker["long_closed"] = True
+            tracker["long_qty"] += fill_qty_abs
+            tracker["long_price"] = fill_price
             self.Log(
                 f"SPREAD: Long leg closed | {symbol[-20:]} @ ${fill_price:.2f} x{fill_qty_abs} | "
-                f"Total closed={self._spread_close_qty_long}/{self._spread_close_expected_qty}"
+                f"Total closed={tracker['long_qty']}/{tracker['expected_qty']}"
             )
         elif spread.short_leg.symbol == symbol:
-            self._spread_short_closed = True
-            self._spread_close_qty_short += fill_qty_abs
-            # V2.27: Track close fill price for win rate gate
-            self._spread_close_short_fill_price = fill_price
+            tracker["short_closed"] = True
+            tracker["short_qty"] += fill_qty_abs
+            tracker["short_price"] = fill_price
             self.Log(
                 f"SPREAD: Short leg closed | {symbol[-20:]} @ ${fill_price:.2f} x{fill_qty_abs} | "
-                f"Total closed={self._spread_close_qty_short}/{self._spread_close_expected_qty}"
+                f"Total closed={tracker['short_qty']}/{tracker['expected_qty']}"
             )
 
         # Check if both legs closed
-        if self._spread_long_closed and self._spread_short_closed:
+        if tracker["long_closed"] and tracker["short_closed"]:
             # Validate quantities (Bug #8 fix)
-            if self._spread_close_qty_long != self._spread_close_expected_qty:
+            if tracker["long_qty"] != tracker["expected_qty"]:
                 self.Log(
                     f"SPREAD_WARNING: Long leg quantity mismatch | "
-                    f"Closed={self._spread_close_qty_long} Expected={self._spread_close_expected_qty}"
+                    f"Closed={tracker['long_qty']} Expected={tracker['expected_qty']}"
                 )
 
-            if self._spread_close_qty_short != self._spread_close_expected_qty:
+            if tracker["short_qty"] != tracker["expected_qty"]:
                 self.Log(
                     f"SPREAD_WARNING: Short leg quantity mismatch | "
-                    f"Closed={self._spread_close_qty_short} Expected={self._spread_close_expected_qty}"
+                    f"Closed={tracker['short_qty']} Expected={tracker['expected_qty']}"
                 )
 
             # V2.27: Record win/loss for Win Rate Gate before removing position
-            close_long_price = getattr(self, "_spread_close_long_fill_price", 0.0)
-            close_short_price = getattr(self, "_spread_close_short_fill_price", 0.0)
+            close_long_price = float(tracker["long_price"])
+            close_short_price = float(tracker["short_price"])
             is_credit = spread.spread_type in (
                 "BULL_PUT_CREDIT",
                 "BEAR_CALL_CREDIT",
@@ -7699,17 +7797,62 @@ class AlphaNextGen(QCAlgorithm):
             # Both legs closed - remove spread position
             self.options_engine.remove_spread_position(symbol)
             self._greeks_breach_logged = False  # Reset for next position
-
-            # Clear tracking
-            self._spread_long_closed = False
-            self._spread_short_closed = False
-            self._spread_close_qty_long = 0
-            self._spread_close_qty_short = 0
-            self._spread_close_expected_qty = 0
-            self._spread_close_long_fill_price = 0.0
-            self._spread_close_short_fill_price = 0.0
+            self._spread_forced_close_retry.pop(spread_key, None)
+            self._spread_forced_close_reason.pop(spread_key, None)
+            self._spread_close_trackers.pop(spread_key, None)
 
             self.Log("SPREAD: Position removed - both legs closed")
+
+    def _queue_spread_close_retry_on_cancel(self, symbol: str, order_event) -> None:
+        """
+        V6.21: Queue forced spread close retry when broker cancels a close leg.
+
+        We only queue retries for active spread symbols where the canceled order
+        appears to be reducing an existing position (close-side quantity).
+        """
+        if "QQQ" not in symbol or ("C" not in symbol and "P" not in symbol):
+            return
+
+        spread = None
+        for candidate in self.options_engine.get_spread_positions():
+            if candidate.long_leg.symbol == symbol or candidate.short_leg.symbol == symbol:
+                spread = candidate
+                break
+        if spread is None:
+            return
+
+        try:
+            order = self.Transactions.GetOrderById(order_event.OrderId)
+        except Exception:
+            order = None
+        if order is None:
+            return
+
+        # Only queue retries for close-side cancels:
+        # long-leg close => order qty < 0 while holdings qty > 0
+        # short-leg close => order qty > 0 while holdings qty < 0
+        try:
+            holdings_qty = self.Portfolio[order_event.Symbol].Quantity
+            is_close_side = (order.Quantity < 0 < holdings_qty) or (
+                order.Quantity > 0 > holdings_qty
+            )
+        except Exception:
+            is_close_side = False
+        if not is_close_side:
+            return
+
+        long_symbol = self._normalize_symbol_str(spread.long_leg.symbol)
+        short_symbol = self._normalize_symbol_str(spread.short_leg.symbol)
+        spread_key = f"{long_symbol}|{short_symbol}"
+        self._spread_forced_close_retry[spread_key] = self.Time
+        self._spread_forced_close_reason[
+            spread_key
+        ] = f"ORDER_CANCELED:{getattr(order, 'Type', 'UNKNOWN')}"
+        self.Log(
+            f"SPREAD_RETRY_QUEUED: Close leg canceled | Symbol={symbol} | "
+            f"Long={long_symbol} | Short={short_symbol} | "
+            f"OrderQty={order.Quantity}"
+        )
 
     def _cleanup_stale_spread_state(self) -> None:
         """
@@ -7725,6 +7868,9 @@ class AlphaNextGen(QCAlgorithm):
         # Clear pending orders mappings
         self._pending_spread_orders.clear()
         self._pending_spread_orders_reverse.clear()
+        self._spread_close_trackers.clear()
+        self._spread_forced_close_retry.clear()
+        self._spread_forced_close_reason.clear()
 
         # Clear options engine pending state
         self.options_engine._pending_spread_long_leg = None
