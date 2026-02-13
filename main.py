@@ -8732,18 +8732,10 @@ class AlphaNextGen(QCAlgorithm):
                 if tracker["short_qty"] > 0
                 else 0.0
             )
-            is_credit = spread.spread_type in (
-                "BULL_PUT_CREDIT",
-                "BEAR_CALL_CREDIT",
-            )
-            if is_credit:
-                # Credit spread: profit when close value < credit received
-                close_value = close_long_price - close_short_price
-                is_win = close_value < spread.net_debit  # net_debit = net credit for credits
-            else:
-                # Debit spread: profit when close value > entry cost
-                close_value = close_long_price - close_short_price
-                is_win = close_value > spread.net_debit
+            close_value = close_long_price - close_short_price
+            # Unified sign convention for debit/credit spreads:
+            # win when close value is greater than entry net value.
+            is_win = close_value > spread.net_debit
             self.options_engine.record_spread_result(is_win)
             result_str = "WIN" if is_win else "LOSS"
             self.Log(
@@ -8751,7 +8743,9 @@ class AlphaNextGen(QCAlgorithm):
                 f"Entry={spread.net_debit:.2f} | Close={close_value:.2f}"
             )
             pnl_pct = (
-                ((close_value - spread.net_debit) / spread.net_debit) if spread.net_debit else 0.0
+                ((close_value - spread.net_debit) / abs(spread.net_debit))
+                if spread.net_debit
+                else 0.0
             )
             self.Log(
                 f"SPREAD: EXIT | Reason=FILL_CLOSE_RECONCILED | "
@@ -8763,8 +8757,6 @@ class AlphaNextGen(QCAlgorithm):
             if hasattr(self, "pnl_tracker"):
                 # Calculate realized P&L (×100 for options multiplier, ×num_spreads for quantity)
                 spread_pnl = (close_value - spread.net_debit) * 100 * spread.num_spreads
-                if is_credit:
-                    spread_pnl = -spread_pnl  # Credit spreads: profit when close < credit
                 # Record as single trade with net P&L
                 self.pnl_tracker.record_trade(
                     symbol=f"SPREAD:{spread.spread_type}",
