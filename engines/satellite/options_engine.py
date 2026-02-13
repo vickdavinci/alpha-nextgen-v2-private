@@ -1901,6 +1901,8 @@ class OptionsEngine:
         # Trade counters
         self._trades_today: int = 0
         self._intraday_trades_today: int = 0
+        self._intraday_call_trades_today: int = 0
+        self._intraday_put_trades_today: int = 0
         self._swing_trades_today: int = 0  # V2.9: Swing mode counter
         self._total_options_trades_today: int = 0  # V2.9: Global counter (Bug #4 fix)
         self._last_trade_date: Optional[str] = None
@@ -7604,7 +7606,7 @@ class OptionsEngine:
 
         # V2.9: Check trade limits (Bug #4 fix) - Uses comprehensive counter
         # Replaces V2.3.14 intraday-only check to also enforce global limit
-        if not self._can_trade_options(OptionsMode.INTRADAY):
+        if not self._can_trade_options(OptionsMode.INTRADAY, direction=direction):
             # V6.2: _can_trade_options already logs, no additional log needed
             return fail("E_INTRADAY_TRADE_LIMIT")
 
@@ -8442,6 +8444,7 @@ class OptionsEngine:
         entry_time: str,
         current_date: str,
         contract: Optional[OptionContract] = None,
+        force_intraday: bool = False,
     ) -> Optional[OptionsPosition]:
         """
         Register a new options position after fill.
@@ -8451,6 +8454,8 @@ class OptionsEngine:
             entry_time: Entry timestamp string.
             current_date: Current date string.
             contract: Option contract (uses pending if not provided).
+            force_intraday: If True, classify fill as intraday even when pending
+                flag was cleared by a cancel/fallback race.
 
         Returns:
             Created OptionsPosition, or None if no pending contract exists.
@@ -8478,7 +8483,8 @@ class OptionsEngine:
         # Recalculate stop and target based on actual fill price
         stop_price = fill_price * (1 - stop_pct)
 
-        if self._pending_intraday_entry:
+        is_intraday_fill = self._pending_intraday_entry or force_intraday
+        if is_intraday_fill:
             target_pct, strategy_floor = self._get_intraday_exit_profile(entry_strategy)
             target_price = fill_price * (1 + target_pct)
             if strategy_floor is not None and strategy_floor > 0:
@@ -8517,11 +8523,24 @@ class OptionsEngine:
         )
 
         # V2.3.2 FIX #4: Track position in correct variable based on mode
-        if self._pending_intraday_entry:
+        if is_intraday_fill:
             self._intraday_position = position
             self._pending_intraday_entry = False  # Clear flag
             # Count intraday trades only after a confirmed fill registration.
-            self._increment_trade_counter(OptionsMode.INTRADAY)
+            intraday_dir = (
+                OptionDirection.CALL
+                if str(getattr(contract, "right", "")).upper() == "CALL"
+                else OptionDirection.PUT
+                if str(getattr(contract, "right", "")).upper() == "PUT"
+                else None
+            )
+            self._increment_trade_counter(OptionsMode.INTRADAY, direction=intraday_dir)
+            if force_intraday and not self._pending_intraday_entry:
+                self.log(
+                    f"OPT: INTRADAY_TAG_RECOVERY | Symbol={contract.symbol} | "
+                    f"Strategy={entry_strategy}",
+                    trades_only=True,
+                )
             self.log(
                 f"OPT: INTRADAY position registered (trade #{self._intraday_trades_today}, "
                 f"force-close at {self._get_intraday_force_exit_hhmm()[0]:02d}:{self._get_intraday_force_exit_hhmm()[1]:02d})",
@@ -9215,6 +9234,8 @@ class OptionsEngine:
                 self._intraday_position.to_dict() if self._intraday_position else None
             ),
             "intraday_trades_today": self._intraday_trades_today,
+            "intraday_call_trades_today": self._intraday_call_trades_today,
+            "intraday_put_trades_today": self._intraday_put_trades_today,
             "swing_trades_today": self._swing_trades_today,
             "total_options_trades_today": self._total_options_trades_today,
             "current_mode": self._current_mode.value,
@@ -9321,6 +9342,8 @@ class OptionsEngine:
             self._intraday_position = None
 
         self._intraday_trades_today = state.get("intraday_trades_today", 0)
+        self._intraday_call_trades_today = state.get("intraday_call_trades_today", 0)
+        self._intraday_put_trades_today = state.get("intraday_put_trades_today", 0)
         self._swing_trades_today = state.get("swing_trades_today", 0)
         self._total_options_trades_today = state.get(
             "total_options_trades_today", self._trades_today
@@ -9438,6 +9461,8 @@ class OptionsEngine:
         self._spread_positions = []
         self._spread_position = None
         self._intraday_trades_today = 0
+        self._intraday_call_trades_today = 0
+        self._intraday_put_trades_today = 0
         self._current_mode = OptionsMode.SWING
         self._micro_regime_engine.reset_daily()
         self._vix_at_open = 0.0
@@ -9468,6 +9493,8 @@ class OptionsEngine:
         if current_date != self._last_trade_date:
             self._trades_today = 0
             self._intraday_trades_today = 0
+            self._intraday_call_trades_today = 0
+            self._intraday_put_trades_today = 0
             self._swing_trades_today = 0  # V2.9
             self._total_options_trades_today = 0  # V2.9
             self._last_trade_date = current_date
@@ -9512,7 +9539,9 @@ class OptionsEngine:
     # V2.9: TRADE COUNTER ENFORCEMENT (Bug #4 Fix)
     # =========================================================================
 
-    def _increment_trade_counter(self, mode: OptionsMode) -> None:
+    def _increment_trade_counter(
+        self, mode: OptionsMode, direction: Optional[OptionDirection] = None
+    ) -> None:
         """
         V2.9: Increment trade counters when a trade is executed.
 
@@ -9529,8 +9558,14 @@ class OptionsEngine:
 
         if mode == OptionsMode.INTRADAY:
             self._intraday_trades_today += 1
+            if direction == OptionDirection.CALL:
+                self._intraday_call_trades_today += 1
+            elif direction == OptionDirection.PUT:
+                self._intraday_put_trades_today += 1
             self.log(
                 f"TRADE_COUNTER: Intraday={self._intraday_trades_today}/{config.INTRADAY_MAX_TRADES_PER_DAY} | "
+                f"CALL={self._intraday_call_trades_today}/{getattr(config, 'INTRADAY_MAX_TRADES_PER_DIRECTION_PER_DAY', 999)} | "
+                f"PUT={self._intraday_put_trades_today}/{getattr(config, 'INTRADAY_MAX_TRADES_PER_DIRECTION_PER_DAY', 999)} | "
                 f"Total={self._total_options_trades_today}/{config.MAX_OPTIONS_TRADES_PER_DAY}"
             )
         else:
@@ -9540,7 +9575,9 @@ class OptionsEngine:
                 f"Total={self._total_options_trades_today}/{config.MAX_OPTIONS_TRADES_PER_DAY}"
             )
 
-    def _can_trade_options(self, mode: OptionsMode) -> bool:
+    def _can_trade_options(
+        self, mode: OptionsMode, direction: Optional[OptionDirection] = None
+    ) -> bool:
         """
         V2.9: Check if trading is allowed based on daily limits.
 
@@ -9579,6 +9616,19 @@ class OptionsEngine:
                     f"{self._intraday_trades_today}/{config.INTRADAY_MAX_TRADES_PER_DAY}"
                 )
                 return False
+            per_direction_cap = int(getattr(config, "INTRADAY_MAX_TRADES_PER_DIRECTION_PER_DAY", 0))
+            if per_direction_cap > 0 and direction is not None:
+                dir_count = (
+                    self._intraday_call_trades_today
+                    if direction == OptionDirection.CALL
+                    else self._intraday_put_trades_today
+                )
+                if dir_count >= per_direction_cap:
+                    self.log(
+                        f"TRADE_LIMIT: Intraday direction cap reached | "
+                        f"Dir={direction.value} {dir_count}/{per_direction_cap}"
+                    )
+                    return False
             if reserve_checks_active and getattr(
                 config, "OPTIONS_RESERVE_SWING_DAILY_SLOTS_ENABLED", False
             ):

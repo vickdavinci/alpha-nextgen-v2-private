@@ -312,6 +312,8 @@ class AlphaNextGen(QCAlgorithm):
         self._intraday_retry_reason_code = None
         # V6.15: Fallback ledger to ensure intraday exits always emit INTRADAY_RESULT.
         self._intraday_entry_snapshot = {}
+        # Track live MICRO symbols from fill tags so EOD sweep can recover from state races.
+        self._micro_open_symbols = set()
         # V6.16: Force-close safety guards (prevent duplicate close amplification).
         self._intraday_close_in_progress_symbols = set()
         self._intraday_force_exit_submitted_symbols = {}
@@ -362,6 +364,9 @@ class AlphaNextGen(QCAlgorithm):
         self._diag_spread_position_removed_count = 0
         self._diag_spread_removed_fill_path_count = 0
         self._diag_spread_ghost_removed_count = 0
+        self._diag_micro_tag_recovery_count = 0
+        self._diag_micro_eod_sweep_close_count = 0
+        self._diag_micro_pending_cancel_ignored_count = 0
         self._order_lifecycle_log_count = 0
         self._last_micro_update_log_signature: Optional[Tuple[str, str, float, float, float]] = None
         self._last_micro_update_log_time: Optional[datetime] = None
@@ -2360,6 +2365,9 @@ class AlphaNextGen(QCAlgorithm):
         self._diag_spread_position_removed_count = 0
         self._diag_spread_removed_fill_path_count = 0
         self._diag_spread_ghost_removed_count = 0
+        self._diag_micro_tag_recovery_count = 0
+        self._diag_micro_eod_sweep_close_count = 0
+        self._diag_micro_pending_cancel_ignored_count = 0
         self._order_lifecycle_log_count = 0
         self._recon_orphan_close_submitted.clear()
         self._last_micro_update_log_signature = None
@@ -2717,6 +2725,42 @@ class AlphaNextGen(QCAlgorithm):
                 self._intraday_force_exit_submitted_symbols[signal.symbol] = str(self.Time.date())
                 self.portfolio_router.receive_signal(signal)
                 self._process_immediate_signals()
+
+        # Safety net: close any live MICRO-tagged holdings even if intraday state is missing.
+        # This prevents overnight orphan risk from fill/cancel race conditions.
+        if self._micro_open_symbols:
+            for holding in self.Portfolio.Values:
+                try:
+                    if not holding.Invested or holding.Symbol.SecurityType != SecurityType.Option:
+                        continue
+                    live_symbol = self._normalize_symbol_str(holding.Symbol)
+                    if live_symbol not in self._micro_open_symbols:
+                        continue
+                    live_qty = int(holding.Quantity)
+                    if live_qty == 0:
+                        self._micro_open_symbols.discard(live_symbol)
+                        continue
+                    submitted_date = self._intraday_force_exit_submitted_symbols.get(live_symbol)
+                    if submitted_date == str(self.Time.date()):
+                        continue
+
+                    try:
+                        self.oco_manager.cancel_by_symbol(
+                            live_symbol, reason="INTRADAY_FORCE_CLOSE_SWEEP"
+                        )
+                    except Exception:
+                        pass
+
+                    self._intraday_close_in_progress_symbols.add(live_symbol)
+                    self._intraday_force_exit_submitted_symbols[live_symbol] = str(self.Time.date())
+                    self._diag_micro_eod_sweep_close_count += 1
+                    self.Log(
+                        f"INTRADAY_FORCE_EXIT_SWEEP: Closing MICRO holding from holdings ledger | "
+                        f"{live_symbol} | Qty={live_qty}"
+                    )
+                    self.MarketOrder(holding.Symbol, -live_qty, tag="MICRO_EOD_SWEEP")
+                except Exception as e:
+                    self.Log(f"INTRADAY_FORCE_EXIT_SWEEP_ERROR: {e}")
 
     def _ensure_oco_for_open_options(self) -> None:
         """
@@ -3573,6 +3617,25 @@ class AlphaNextGen(QCAlgorithm):
         if is_live:
             return True
         return bool(getattr(config, config_flag, default))
+
+    def _get_order_tag(self, order_event: OrderEvent) -> str:
+        """Best-effort extraction of original order tag for fill classification."""
+        try:
+            order = self.Transactions.GetOrderById(order_event.OrderId)
+            if order and getattr(order, "Tag", None):
+                return str(order.Tag)
+        except Exception:
+            pass
+        return ""
+
+    def _is_micro_entry_fill(self, symbol: str, fill_qty: float, order_tag: str) -> bool:
+        """Classify fill as MICRO entry for recovery and EOD safety sweeps."""
+        if fill_qty <= 0:
+            return False
+        symbol_norm = self._normalize_symbol_str(symbol)
+        if "QQQ" not in symbol_norm or ("C" not in symbol_norm and "P" not in symbol_norm):
+            return False
+        return str(order_tag or "").upper().startswith("MICRO:")
 
     def _build_spread_runtime_key(self, spread: Any) -> str:
         """Build canonical spread key for runtime trackers."""
@@ -8102,6 +8165,9 @@ class AlphaNextGen(QCAlgorithm):
             f"SpreadRemoved={self._diag_spread_position_removed_count} | "
             f"SpreadRemovedFillPath={self._diag_spread_removed_fill_path_count} | "
             f"SpreadGhostRemoved={self._diag_spread_ghost_removed_count} | "
+            f"MicroTagRecovery={self._diag_micro_tag_recovery_count} | "
+            f"MicroEodSweepClose={self._diag_micro_eod_sweep_close_count} | "
+            f"MicroPendingCancelIgnored={self._diag_micro_pending_cancel_ignored_count} | "
             f"MarginRejects={self._diag_margin_reject_count}"
         )
 
@@ -8175,13 +8241,28 @@ class AlphaNextGen(QCAlgorithm):
                     f"Cooldown 30min until {self._options_spread_cooldown_until}"
                 )
             elif self.options_engine._pending_intraday_entry:
-                self.options_engine.cancel_pending_intraday_entry()
-                # Cooldown: 15 minutes before intraday can retry
-                self._options_intraday_cooldown_until = self.Time + timedelta(minutes=15)
-                self.Log(
-                    f"OPT_MICRO_RECOVERY: Intraday rejected | Pending + counter cleared | "
-                    f"Cooldown 15min until {self._options_intraday_cooldown_until}"
-                )
+                pending_symbol = ""
+                try:
+                    if self.options_engine._pending_contract is not None:
+                        pending_symbol = self._normalize_symbol_str(
+                            self.options_engine._pending_contract.symbol
+                        )
+                except Exception:
+                    pending_symbol = ""
+                if pending_symbol and self._normalize_symbol_str(symbol) != pending_symbol:
+                    self._diag_micro_pending_cancel_ignored_count += 1
+                    self.Log(
+                        f"OPT_MICRO_RECOVERY: Ignored unmatched cancel | "
+                        f"Canceled={self._normalize_symbol_str(symbol)} Pending={pending_symbol}"
+                    )
+                else:
+                    self.options_engine.cancel_pending_intraday_entry()
+                    # Cooldown: 15 minutes before intraday can retry
+                    self._options_intraday_cooldown_until = self.Time + timedelta(minutes=15)
+                    self.Log(
+                        f"OPT_MICRO_RECOVERY: Intraday rejected | Pending + counter cleared | "
+                        f"Cooldown 15min until {self._options_intraday_cooldown_until}"
+                    )
             elif self.options_engine._pending_contract is not None:
                 self.options_engine.cancel_pending_swing_entry()
                 # Cooldown: 30 minutes before swing can retry
@@ -8332,6 +8413,7 @@ class AlphaNextGen(QCAlgorithm):
         symbol_norm = self._normalize_symbol_str(symbol)
         if "QQQ" in symbol_norm and ("C" in symbol_norm or "P" in symbol_norm):
             try:
+                order_tag = self._get_order_tag(order_event)
                 # V2.5 FIX: Check spread mode FIRST (before fill_qty sign check)
                 # Bull Call Spread: Long leg = BUY (qty > 0), Short leg = SELL (qty < 0)
                 # The bug was: "if fill_qty > 0" excluded short leg fills entirely!
@@ -8355,10 +8437,26 @@ class AlphaNextGen(QCAlgorithm):
                         self._handle_spread_leg_close(symbol, fill_price, fill_qty)
                     else:
                         # Single-leg entry (legacy or intraday)
+                        force_intraday_recovery = (
+                            self._is_micro_entry_fill(
+                                symbol=symbol,
+                                fill_qty=fill_qty,
+                                order_tag=order_tag,
+                            )
+                            and not self.options_engine._pending_intraday_entry
+                        )
+                        if force_intraday_recovery:
+                            self._diag_micro_tag_recovery_count += 1
+                            self.Log(
+                                f"MICRO_TAG_RECOVERY: Fill classified intraday from tag | "
+                                f"Symbol={symbol_norm} | Tag={order_tag or 'NO_TAG'}"
+                            )
+
                         position = self.options_engine.register_entry(
                             fill_price=fill_price,
                             entry_time=str(self.Time),
                             current_date=str(self.Time.date()),
+                            force_intraday=force_intraday_recovery,
                         )
 
                         if position:
@@ -8389,6 +8487,7 @@ class AlphaNextGen(QCAlgorithm):
                                     "entry_time": position.entry_time,
                                     "quantity": abs(int(fill_qty)),
                                 }
+                                self._micro_open_symbols.add(symbol_norm)
                 elif fill_qty < 0:
                     # Exit routing must be symbol-aware because spread + intraday can coexist.
                     is_spread_leg = False
@@ -8469,11 +8568,14 @@ class AlphaNextGen(QCAlgorithm):
                                         quantity=abs(int(fill_qty)),
                                     )
                                 self._intraday_entry_snapshot.pop(symbol_norm, None)
+                                self._micro_open_symbols.discard(symbol_norm)
                             self._greeks_breach_logged = False  # Reset for next position
                         else:
                             # Not tracked as current intraday symbol; fall back to single-leg handling.
                             removed_position = self.options_engine.remove_position()
                             if removed_position:
+                                if abs(self._get_option_holding_quantity(symbol)) <= 0:
+                                    self._micro_open_symbols.discard(symbol_norm)
                                 try:
                                     self.oco_manager.cancel_by_symbol(
                                         removed_position.contract.symbol,
