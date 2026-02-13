@@ -341,8 +341,10 @@ class AlphaNextGen(QCAlgorithm):
         self._external_exec_event_logged: Set[int] = set()
         # V6.19: Run-level diagnostics counters for hardening validation.
         self._diag_margin_reject_count = 0
+        self._diag_intraday_candidate_count = 0
         self._diag_intraday_approved_count = 0
         self._diag_intraday_dropped_count = 0
+        self._diag_intraday_router_reject_count = 0
         self._diag_intraday_result_count = 0
         self._diag_vass_block_count = 0
         self._diag_overlay_block_count = 0
@@ -2331,8 +2333,10 @@ class AlphaNextGen(QCAlgorithm):
         self._options_spread_cooldown_until = None
         self._mr_rejection_cooldown_until = None
         self._diag_margin_reject_count = 0
+        self._diag_intraday_candidate_count = 0
         self._diag_intraday_approved_count = 0
         self._diag_intraday_dropped_count = 0
+        self._diag_intraday_router_reject_count = 0
         self._diag_intraday_result_count = 0
         self._diag_vass_block_count = 0
         self._diag_overlay_block_count = 0
@@ -6344,6 +6348,11 @@ class AlphaNextGen(QCAlgorithm):
                 if "MISALIGNED_HALF" in signal_reason:
                     intraday_size_multiplier *= getattr(config, "MICRO_MISALIGNED_SIZE_MULT", 0.50)
 
+                intraday_signal_id = (
+                    f"MICRO-{self.Time.strftime('%Y%m%d-%H%M')}-"
+                    f"{self._diag_intraday_candidate_count + 1}"
+                )
+
                 if not should_trade:
                     self.Log(f"INTRADAY: Blocked - {signal_reason}")
                     intraday_direction = None
@@ -6376,8 +6385,9 @@ class AlphaNextGen(QCAlgorithm):
                         )
                         self.Log(f"INTRADAY: Blocked - {signal_reason}")
                     else:
+                        self._diag_intraday_candidate_count += 1
                         self.Log(
-                            f"INTRADAY_SIGNAL_CANDIDATE: {signal_reason} | "
+                            f"INTRADAY_SIGNAL_CANDIDATE: SignalId={intraday_signal_id} | {signal_reason} | "
                             f"Direction={intraday_direction.value if intraday_direction else 'NONE'}"
                         )
 
@@ -6404,7 +6414,7 @@ class AlphaNextGen(QCAlgorithm):
                         # Previously 124 candidates/quarter silently fell through with
                         # no INTRADAY_SIGNAL_DROPPED, making funnel analysis incomplete.
                         self.Log(
-                            f"INTRADAY_SIGNAL_DROPPED: Candidate rejected before order | "
+                            f"INTRADAY_SIGNAL_DROPPED: SignalId={intraday_signal_id} | Candidate rejected before order | "
                             f"Code=E_NO_CONTRACT_SELECTED | "
                             f"Reason={signal_reason} | RetryHint=None | "
                             f"Dir={intraday_direction.value} | "
@@ -6423,7 +6433,7 @@ class AlphaNextGen(QCAlgorithm):
                     )
                     # V9.1 FIX: Emit DROPPED log for bid/ask rejection
                     self.Log(
-                        f"INTRADAY_SIGNAL_DROPPED: Candidate rejected before order | "
+                        f"INTRADAY_SIGNAL_DROPPED: SignalId={intraday_signal_id} | Candidate rejected before order | "
                         f"Code=E_BID_ASK_INVALID | "
                         f"Reason={signal_reason} | RetryHint=None | "
                         f"Dir={intraday_direction.value if intraday_direction else 'NONE'} | "
@@ -6467,7 +6477,7 @@ class AlphaNextGen(QCAlgorithm):
                             intraday_signal, source="MICRO"
                         )
                         self.Log(
-                            f"INTRADAY_SIGNAL_APPROVED: {signal_reason} | "
+                            f"INTRADAY_SIGNAL_APPROVED: SignalId={intraday_signal_id} | {signal_reason} | "
                             f"Direction={intraday_direction.value if intraday_direction else 'NONE'} | "
                             f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'} | "
                             f"Contract={intraday_contract.symbol if intraday_contract else 'NONE'}"
@@ -6493,9 +6503,10 @@ class AlphaNextGen(QCAlgorithm):
                                 if rej.trace_id == intraday_trace_id and rej.source_tag.startswith(
                                     "MICRO"
                                 ):
+                                    self._diag_intraday_router_reject_count += 1
                                     self.Log(
-                                        f"INTRADAY_ROUTER_REJECTED: Trace={rej.trace_id} | "
-                                        f"Code={rej.code} | Stage={rej.stage} | {rej.detail}"
+                                        f"INTRADAY_ROUTER_REJECTED: SignalId={intraday_signal_id} | "
+                                        f"Trace={rej.trace_id} | Code={rej.code} | Stage={rej.stage} | {rej.detail}"
                                     )
                                     break
                         # V2.3.3 FIX: Don't return here - allow swing check to run too
@@ -6538,7 +6549,7 @@ class AlphaNextGen(QCAlgorithm):
                                 else ""
                             )
                             self.Log(
-                                f"INTRADAY_SIGNAL_DROPPED: Candidate rejected before order | "
+                                f"INTRADAY_SIGNAL_DROPPED: SignalId={intraday_signal_id} | Candidate rejected before order | "
                                 f"Code={drop_code} | "
                                 f"Reason={signal_reason} | RetryHint={retry_reason_now} | "
                                 f"{validation_detail_fragment}"
@@ -7938,8 +7949,10 @@ class AlphaNextGen(QCAlgorithm):
         self.Log(summary)
         self.Log(
             "OPTIONS_DIAG_SUMMARY: "
+            f"Candidates={self._diag_intraday_candidate_count} | "
             f"Approved={self._diag_intraday_approved_count} | "
             f"Dropped={self._diag_intraday_dropped_count} | "
+            f"RouterRejects={self._diag_intraday_router_reject_count} | "
             f"Results={self._diag_intraday_result_count} | "
             f"VASS_Blocks={self._diag_vass_block_count} | "
             f"OverlayBlocks={self._diag_overlay_block_count} | "

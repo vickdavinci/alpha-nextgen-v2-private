@@ -842,6 +842,7 @@ class MicroRegimeState:
     # V2.3.4: QQQ move direction and recommended option direction
     qqq_direction: "QQQMove" = None  # UP/DOWN/FLAT
     recommended_direction: "OptionDirection" = None  # PUT or CALL
+    recommended_reason: str = ""  # Why the engine produced this recommendation
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for persistence."""
@@ -862,6 +863,7 @@ class MicroRegimeState:
             "recommended_direction": self.recommended_direction.value
             if self.recommended_direction
             else None,
+            "recommended_reason": self.recommended_reason,
         }
 
     @classmethod
@@ -883,6 +885,7 @@ class MicroRegimeState:
             vix_open=data.get("vix_open", 15.0),
             last_update=data.get("last_update", ""),
             spike_cooldown_until=data.get("spike_cooldown_until", ""),
+            recommended_reason=data.get("recommended_reason", ""),
         )
         # Set new fields if present
         if qqq_dir:
@@ -1712,6 +1715,7 @@ class MicroRegimeEngine:
         )
         self._state.recommended_strategy = strategy
         self._state.recommended_direction = direction
+        self._state.recommended_reason = reason or ""
 
         self._state.last_update = current_time
 
@@ -1733,7 +1737,8 @@ class MicroRegimeEngine:
                 f"MICRO_REGIME: VIX={vix_current:.1f} ({self._state.vix_direction.value}) | "
                 f"QQQ={qqq_dir_str} ({self._state.qqq_move_pct:+.2f}%) | "
                 f"Regime={self._state.micro_regime.value} | Score={self._state.micro_score:.0f} | "
-                f"Strategy={self._state.recommended_strategy.value} | Direction={dir_str}"
+                f"Strategy={self._state.recommended_strategy.value} | Direction={dir_str} | "
+                f"Why={self._state.recommended_reason}"
             )
             self._prev_strategy = self._state.recommended_strategy
 
@@ -2399,23 +2404,26 @@ class OptionsEngine:
                 if abs(qqq_move_pct) < config.QQQ_NOISE_THRESHOLD:
                     block_code = "QQQ_FLAT"
                 elif state.micro_regime in (
-                    MicroRegime.CAUTION_LOW,
-                    MicroRegime.CAUTIOUS,
-                    MicroRegime.TRANSITION,
                     MicroRegime.CHOPPY_LOW,
                     MicroRegime.RISK_OFF_LOW,
                     MicroRegime.BREAKING,
                     MicroRegime.UNSTABLE,
                     MicroRegime.VOLATILE,
-                    MicroRegime.FULL_PANIC,
-                    MicroRegime.CRASH,
                 ):
                     block_code = "REGIME_NOT_TRADEABLE"
+                elif state.micro_regime in (MicroRegime.FULL_PANIC, MicroRegime.CRASH) and (
+                    qqq_move_pct >= 0
+                ):
+                    # V9.2: FULL_PANIC/CRASH are tradeable with QQQ-down confirmation.
+                    # Keep telemetry aligned with gating logic instead of reporting generic non-tradeable.
+                    block_code = "PANIC_QQQ_GATE"
                 elif (
                     state.micro_regime
                     in (
                         MicroRegime.NORMAL,
+                        MicroRegime.CAUTION_LOW,
                         MicroRegime.CAUTIOUS,
+                        MicroRegime.TRANSITION,
                         MicroRegime.ELEVATED,
                     )
                     and abs(vix_change_pct) <= config.VIX_STABLE_BAND_HIGH
@@ -2426,14 +2434,15 @@ class OptionsEngine:
                 self.log(
                     f"MICRO_NO_TRADE[{block_code}]: Regime={state.micro_regime.value} | "
                     f"VIXchg={vix_change_pct:+.2f}% | QQQ={qqq_move_pct:+.2f}% | "
-                    f"Score={state.micro_score:.0f} | Dir=NONE"
+                    f"Score={state.micro_score:.0f} | Dir=NONE | Why={state.recommended_reason}"
                 )
                 self._last_micro_no_trade_log = current_time
             return (
                 False,
                 None,
                 state,
-                f"NO_TRADE: MICRO_BLOCK:{block_code} ({state.micro_regime.value})",
+                f"NO_TRADE: MICRO_BLOCK:{block_code} ({state.micro_regime.value}) | "
+                f"Why={state.recommended_reason}",
             )
 
         # Step 2: Check conviction (now without state-based fallback)
