@@ -1293,6 +1293,17 @@ class MicroRegimeEngine:
             MicroRegime.VOLATILE,
         }
         if micro_regime in crisis_regimes:
+            # V9.2 RCA: FULL_PANIC requires QQQ DOWN confirmation before protective puts.
+            # In 2022, 46% of FULL_PANIC protective puts were bought on QQQ UP days
+            # (counter-trend), amplifying losses. CRASH/VOLATILE remain ungated (true crisis).
+            if micro_regime == MicroRegime.FULL_PANIC:
+                qqq_is_down_here = qqq_move in (QQQMove.DOWN, QQQMove.DOWN_STRONG)
+                if not qqq_is_down_here:
+                    return (
+                        IntradayStrategy.NO_TRADE,
+                        None,
+                        f"PANIC_QQQ_GATE: FULL_PANIC but QQQ {qqq_move_pct:+.2f}% not DOWN → skip",
+                    )
             # V6.4: Crisis detected - trade protective puts immediately
             return (
                 IntradayStrategy.PROTECTIVE_PUTS,
@@ -1423,6 +1434,16 @@ class MicroRegimeEngine:
                         abs(qqq_move_pct) >= config.INTRADAY_QQQ_FALLBACK_MIN_MOVE
                         and micro_score >= config.MICRO_SCORE_BULLISH_CONFIRM
                     ):
+                        # V9.2 RCA: CAUTIOUS regime → ITM_MOMENTUM instead of DEBIT_MOMENTUM.
+                        # DEBIT_MOMENTUM spreads lack volatility confirmation in STABLE VIX,
+                        # while ITM singles respond better to directional moves.
+                        if micro_regime == MicroRegime.CAUTIOUS:
+                            return (
+                                IntradayStrategy.ITM_MOMENTUM,
+                                OptionDirection.CALL,
+                                f"CAUTIOUS_ITM: QQQ +{qqq_move_pct:.2f}% + "
+                                f"Score={micro_score:.0f} → ITM CALL (not DEBIT_MOMENTUM)",
+                            )
                         return momentum_or_disabled(
                             OptionDirection.CALL,
                             f"STABLE_FALLBACK: QQQ +{qqq_move_pct:.2f}% + "
@@ -1468,6 +1489,14 @@ class MicroRegimeEngine:
                         abs(qqq_move_pct) >= config.INTRADAY_QQQ_FALLBACK_MIN_MOVE
                         and micro_score <= config.MICRO_SCORE_BEARISH_CONFIRM
                     ):
+                        # V9.2 RCA: CAUTIOUS regime → ITM_MOMENTUM instead of DEBIT_MOMENTUM
+                        if micro_regime == MicroRegime.CAUTIOUS:
+                            return (
+                                IntradayStrategy.ITM_MOMENTUM,
+                                OptionDirection.PUT,
+                                f"CAUTIOUS_ITM: QQQ {qqq_move_pct:.2f}% + "
+                                f"Score={micro_score:.0f} → ITM PUT (not DEBIT_MOMENTUM)",
+                            )
                         return momentum_or_disabled(
                             OptionDirection.PUT,
                             f"STABLE_FALLBACK: QQQ {qqq_move_pct:.2f}% + "
@@ -1495,12 +1524,20 @@ class MicroRegimeEngine:
             if vix_current > config.INTRADAY_ITM_MIN_VIX:
                 if abs(qqq_move_pct) >= config.INTRADAY_ITM_MIN_MOVE:
                     # V6.5: WORSENING and WORSENING_HIGH - VIX RISING regimes
-                    # Always use PUT regardless of QQQ direction (fear is real/building)
+                    # V9.2 RCA: Only trade PUT when QQQ confirms downward direction.
+                    # Previously forced PUT regardless of QQQ direction, causing 52%
+                    # wrong-way PUTs against rising markets in 2022.
                     if micro_regime in (MicroRegime.WORSENING, MicroRegime.WORSENING_HIGH):
+                        if qqq_is_down:
+                            return (
+                                IntradayStrategy.ITM_MOMENTUM,
+                                OptionDirection.PUT,
+                                f"ITM_FEAR: VIX rising in {micro_regime.value}, QQQ {qqq_move_pct:+.2f}% → ITM PUT",
+                            )
                         return (
-                            IntradayStrategy.ITM_MOMENTUM,
-                            OptionDirection.PUT,
-                            f"ITM_FEAR: VIX rising in {micro_regime.value}, QQQ {qqq_move_pct:+.2f}% → ITM PUT",
+                            IntradayStrategy.NO_TRADE,
+                            None,
+                            f"WORSENING_QQQ_GATE: {micro_regime.value} but QQQ {qqq_move_pct:+.2f}% UP → skip",
                         )
                     elif qqq_is_up:
                         return (
@@ -7744,6 +7781,16 @@ class OptionsEngine:
 
         # V2.18: Calculate contracts using cap / (premium * 100)
         num_contracts = int(adjusted_cap / (premium * 100))
+
+        # V9.2 RCA: Cap protective puts to prevent outsized 10+ contract bets
+        # At 3% sizing on cheap OTM puts, uncapped quantity can reach 10-15 contracts,
+        # amplifying losses 5× compared to ITM_MOMENTUM's ~2 contracts.
+        if is_protective_put:
+            max_protective = getattr(config, "PROTECTIVE_PUTS_MAX_CONTRACTS", 5)
+            if num_contracts > max_protective:
+                self.log(f"PROTECTIVE_CAP: {num_contracts} → {max_protective} contracts (max)")
+                num_contracts = max_protective
+
         self.log(
             f"SIZING: INTRADAY | Cap=${adjusted_cap:,.0f} ({intraday_max_pct:.0%} of ${portfolio_value:,.0f}) | "
             f"Premium=${premium:.2f} | Qty={num_contracts}"
@@ -7786,6 +7833,22 @@ class OptionsEngine:
             # Apply floor and cap
             min_stop = getattr(config, "OPTIONS_ATR_STOP_MIN_PCT", 0.20)
             max_stop = getattr(config, "OPTIONS_ATR_STOP_MAX_PCT", 0.50)
+
+            # V9.2 RCA: Widen stop cap for ITM_MOMENTUM in high-VIX regimes.
+            # The standard 28% cap is noise in VIX>25 environments, causing premature
+            # stops on trades that would have recovered. Only affects bear-market regimes.
+            high_vix_momentum_regimes = {
+                MicroRegime.WORSENING_HIGH,
+                MicroRegime.DETERIORATING,
+                MicroRegime.ELEVATED,
+                MicroRegime.WORSENING,
+            }
+            if (
+                state.recommended_strategy == IntradayStrategy.ITM_MOMENTUM
+                and state.micro_regime in high_vix_momentum_regimes
+            ):
+                max_stop = getattr(config, "INTRADAY_HIGH_VIX_STOP_MAX_PCT", 0.40)
+
             final_stop_pct = max(min_stop, min(atr_stop_pct, max_stop))
 
             self.log(

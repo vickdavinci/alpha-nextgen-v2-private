@@ -1749,6 +1749,9 @@ INTRADAY_ITM_TARGET = 0.35  # V6.13 OPT: Earlier profit capture in volatile sess
 INTRADAY_DEBIT_MOMENTUM_START = "10:00"  # Entry window start
 INTRADAY_DEBIT_MOMENTUM_END = "13:30"  # Entry window end
 INTRADAY_ITM_STOP = 0.35  # V6.13 OPT: Reduce catastrophic ITM losses
+INTRADAY_HIGH_VIX_STOP_MAX_PCT = (
+    0.40  # V9.2 RCA: Wider stop cap for VIX>25 regimes (was capped at 28%)
+)
 INTRADAY_ITM_TRAIL_TRIGGER = 0.20  # Trail after +20%
 INTRADAY_ITM_TRAIL_PCT = 0.50  # Trail at 50% of gains
 
@@ -1829,6 +1832,9 @@ PROTECTIVE_PUTS_DTE_MAX = 7  # Maximum 7 DTE (balance cost vs protection)
 PROTECTIVE_PUTS_DELTA_TARGET = 0.30  # OTM puts (cheaper, more leverage)
 PROTECTIVE_PUTS_DELTA_TOLERANCE = 0.10  # Accept delta 0.20-0.40
 PROTECTIVE_PUTS_STOP_PCT = 0.35  # Tighter stop to reduce repeated deep insurance losses
+PROTECTIVE_PUTS_MAX_CONTRACTS = (
+    5  # V9.2 RCA: Cap contracts to prevent 10+ lot outsized bets in crisis
+)
 
 # -----------------------------------------------------------------------------
 # V2.1.1 SWING MODE SIMPLE FILTERS
