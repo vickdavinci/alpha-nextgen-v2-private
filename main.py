@@ -7116,6 +7116,16 @@ class AlphaNextGen(QCAlgorithm):
                 )
                 if signal is not None:
                     self.portfolio_router.receive_signal(signal)
+                    # V9.2 FIX: Cancel OCO on software exit (swing single-leg)
+                    try:
+                        sym_str = str(position.contract.symbol)
+                        if self.oco_manager.cancel_by_symbol(sym_str, reason="SOFTWARE_EXIT"):
+                            self.Log(
+                                f"OCO_CANCEL: {sym_str} | "
+                                f"Reason=SOFTWARE_EXIT ({signal.reason})"
+                            )
+                    except Exception as e:
+                        self.Log(f"OCO_CANCEL_ERROR: Swing exit OCO cancel | {e}")
 
         # V6.22 FIX: Software backup for intraday positions (OCO single-point-of-failure fix)
         # Previously intraday had NO software stop/profit/DTE check — relied solely on OCO.
@@ -7132,6 +7142,19 @@ class AlphaNextGen(QCAlgorithm):
                 )
                 if signal is not None:
                     self.portfolio_router.receive_signal(signal)
+                    # V9.2 FIX: Cancel OCO immediately when software backup triggers
+                    # an exit. Without this, the OCO stop/limit orders remain active
+                    # and could fire after the software exit order fills, creating
+                    # accidental short positions from orphaned sell orders.
+                    try:
+                        sym_str = str(intraday_position.contract.symbol)
+                        if self.oco_manager.cancel_by_symbol(sym_str, reason="SOFTWARE_EXIT"):
+                            self.Log(
+                                f"OCO_CANCEL: {sym_str} | "
+                                f"Reason=SOFTWARE_EXIT ({signal.reason})"
+                            )
+                    except Exception as e:
+                        self.Log(f"OCO_CANCEL_ERROR: Software exit OCO cancel | {e}")
 
     def _get_fresh_position_greeks(self) -> Optional[GreeksSnapshot]:
         """

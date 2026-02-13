@@ -4180,7 +4180,13 @@ class OptionsEngine:
         return config.CREDIT_SPREAD_MIN_CREDIT
 
     def _get_effective_credit_to_width_min(self, vix_current: Optional[float] = None) -> float:
-        """Return IV-adaptive minimum credit/width ratio for credit spread quality gating."""
+        """Return IV-adaptive minimum credit/width ratio for credit spread quality gating.
+
+        Three-tier system to avoid over-filtering in moderate VIX (Pitfall 6):
+        - VIX > 30: 30% (high IV, wide credits available)
+        - VIX 20-30: 32% (moderate IV, slight relaxation)
+        - VIX < 20: 35% (low IV, strict quality gate)
+        """
         smoothed_vix = self._iv_sensor.get_smoothed_vix()
         if vix_current is not None:
             try:
@@ -4189,6 +4195,9 @@ class OptionsEngine:
                 pass
         if smoothed_vix > config.CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD:
             return float(getattr(config, "CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV", 0.30))
+        medium_threshold = float(getattr(config, "CREDIT_SPREAD_MEDIUM_IV_VIX_THRESHOLD", 20.0))
+        if smoothed_vix > medium_threshold:
+            return float(getattr(config, "CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_MEDIUM_IV", 0.32))
         return float(getattr(config, "CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT", 0.35))
 
     def estimate_spread_margin_per_contract(
@@ -8013,23 +8022,6 @@ class OptionsEngine:
                 f"STOP_CALC: Protective PUT override → {self._pending_stop_pct:.0%} "
                 f"(config.PROTECTIVE_PUTS_STOP_PCT)"
             )
-        else:
-            # V9.2: Strategy-specific stop overrides for intraday exits.
-            strategy_stop_overrides = {
-                IntradayStrategy.ITM_MOMENTUM: float(
-                    getattr(config, "INTRADAY_ITM_STOP", self._pending_stop_pct)
-                ),
-                IntradayStrategy.DEBIT_FADE: float(
-                    getattr(config, "INTRADAY_DEBIT_FADE_STOP", self._pending_stop_pct)
-                ),
-                IntradayStrategy.DEBIT_MOMENTUM: float(
-                    getattr(config, "INTRADAY_DEBIT_MOMENTUM_STOP", self._pending_stop_pct)
-                ),
-            }
-            strategy_stop = strategy_stop_overrides.get(state.recommended_strategy)
-            if strategy_stop is not None and strategy_stop > 0:
-                self._pending_stop_pct = strategy_stop
-
         self.log(
             f"INTRADAY_SIGNAL: {reason} | Δ={best_contract.delta:.2f} K={best_contract.strike} DTE={best_contract.days_to_expiry} | "
             f"Stop={self._pending_stop_pct:.0%} | TradeCount={self._intraday_trades_today}/{config.INTRADAY_MAX_TRADES_PER_DAY}",
@@ -8441,11 +8433,27 @@ class OptionsEngine:
         stop_price = fill_price * (1 - stop_pct)
 
         if self._pending_intraday_entry:
-            target_pct, stop_override = self._get_intraday_exit_profile(entry_strategy)
+            target_pct, strategy_floor = self._get_intraday_exit_profile(entry_strategy)
             target_price = fill_price * (1 + target_pct)
-            if stop_override is not None and stop_override > 0:
-                stop_pct = float(stop_override)
+            if strategy_floor is not None and strategy_floor > 0:
+                # V9.2 FIX: Use max(ATR stop, strategy floor) to preserve ATR adaptive
+                # intelligence. The ATR stop accounts for market volatility (wider in
+                # high-VIX), while the strategy floor prevents too-tight stops in calm
+                # markets. Using max() means: in calm markets the floor protects, in
+                # volatile markets the ATR stop widens appropriately.
+                atr_stop_pct = stop_pct  # ATR-calculated value from signal time
+                stop_pct = max(stop_pct, float(strategy_floor))
                 stop_price = fill_price * (1 - stop_pct)
+                if stop_pct > atr_stop_pct:
+                    self.log(
+                        f"STOP_OVERRIDE: {entry_strategy} floor {strategy_floor:.0%} > "
+                        f"ATR {atr_stop_pct:.0%} → using floor"
+                    )
+                else:
+                    self.log(
+                        f"STOP_OVERRIDE: ATR {atr_stop_pct:.0%} >= "
+                        f"{entry_strategy} floor {strategy_floor:.0%} → keeping ATR"
+                    )
         else:
             target_price = fill_price * (1 + config.OPTIONS_PROFIT_TARGET_PCT)
 

@@ -916,8 +916,11 @@ ELASTIC_DELTA_CEILING = 0.95  # Never search above this delta (deep ITM)
 CREDIT_SPREAD_MIN_CREDIT_HIGH_IV = 0.10  # V6.13.1 OPT: More credit spread fills (was 0.20)
 CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD = 30.0  # VIX level above which reduced floor applies
 # V9.2: Structural credit quality floor (prevents low-credit, high-max-loss structures)
-CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT = 0.35
-CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV = 0.30
+# Three-tier system: strict in calm markets, relaxed as VIX rises and credit widens
+CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT = 0.35  # VIX < 20: strict quality gate
+CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_MEDIUM_IV = 0.32  # VIX 20-30: moderate relaxation
+CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV = 0.30  # VIX > 30: widest relaxation
+CREDIT_SPREAD_MEDIUM_IV_VIX_THRESHOLD = 20.0  # VIX level for medium-IV tier
 
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
 # V2.3.15: Sniper Logic - allow one retry, not machine gun
