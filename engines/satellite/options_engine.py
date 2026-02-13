@@ -1366,6 +1366,7 @@ class MicroRegimeEngine:
             MicroRegime.CALMING,  # Can trade when fear is decreasing
             MicroRegime.CAUTIOUS,  # V6.10 P3: Added - VIX medium + stable (allow credits)
             MicroRegime.TRANSITION,  # Allow participation during mild handoff regimes
+            MicroRegime.CAUTION_LOW,  # V9: tradeable with reduced size, universal gates handle quality
         }
 
         if micro_regime not in tradeable_regimes:
@@ -1519,51 +1520,13 @@ class MicroRegimeEngine:
         # V2.5: Added Grind-Up Override for strong rallies in safe macro conditions
         # =====================================================================
         caution_regimes = {
-            MicroRegime.CAUTION_LOW,
-            MicroRegime.TRANSITION,
             MicroRegime.CHOPPY_LOW,
-            MicroRegime.CAUTIOUS,
+            # V9: CAUTION_LOW → tradeable_regimes (universal gates handle quality)
+            # V9: TRANSITION → already in tradeable_regimes
+            # V9: CAUTIOUS → already in tradeable_regimes
             # V6.5: WORSENING moved to momentum_regimes (ITM PUT)
         }
         if micro_regime in caution_regimes:
-            # V8.2: Allow CAUTION_LOW to participate only on clean divergence fades.
-            # Size remains reduced downstream via CAUTION_LOW_SIZE_MULT.
-            if micro_regime == MicroRegime.CAUTION_LOW:
-                vix_floor = getattr(config, "INTRADAY_DEBIT_FADE_VIX_MIN", 13.5)
-                min_move = float(getattr(config, "INTRADAY_FADE_MIN_MOVE", 0.20))
-                max_move = float(getattr(config, "INTRADAY_FADE_MAX_MOVE", 1.20))
-                abs_move = abs(qqq_move_pct)
-                if vix_current < vix_floor:
-                    return (
-                        IntradayStrategy.NO_TRADE,
-                        None,
-                        f"CAUTION_LOW_VIX_FLOOR: VIX {vix_current:.1f} < {vix_floor}",
-                    )
-                if abs_move < min_move:
-                    return (
-                        IntradayStrategy.NO_TRADE,
-                        None,
-                        f"CAUTION_LOW_MIN_MOVE: |{qqq_move_pct:.2f}%| < {min_move}%",
-                    )
-                if abs_move > max_move:
-                    return (
-                        IntradayStrategy.NO_TRADE,
-                        None,
-                        f"CAUTION_LOW_MAX_MOVE: |{qqq_move_pct:.2f}%| > {max_move}%",
-                    )
-                if qqq_is_up and vix_is_rising:
-                    return (
-                        IntradayStrategy.DEBIT_FADE,
-                        OptionDirection.PUT,
-                        f"CAUTION_LOW_DIVERGENCE: QQQ +{qqq_move_pct:.2f}% + VIX {vix_direction.value} → Fade PUT",
-                    )
-                if qqq_is_down and vix_is_falling:
-                    return (
-                        IntradayStrategy.DEBIT_FADE,
-                        OptionDirection.CALL,
-                        f"CAUTION_LOW_DIVERGENCE: QQQ {qqq_move_pct:.2f}% + VIX {vix_direction.value} → Fade CALL",
-                    )
-
             # V2.5: Grind-Up Override - capture strong rallies even in CAUTIOUS regime
             # Only triggers when: (1) CAUTIOUS regime, (2) QQQ UP > 0.50%, (3) macro safe
             grind_up_enabled = getattr(config, "GRIND_UP_OVERRIDE_ENABLED", False)
@@ -1962,6 +1925,8 @@ class OptionsEngine:
         # signature = strategy|direction|expiry_bucket
         self._vass_last_entry_at_by_signature: Dict[str, datetime] = {}
         self._vass_cooldown_until_by_signature: Dict[str, datetime] = {}
+        # Per-direction day-gap memory for VASS spacing (BULLISH/BEARISH -> YYYY-MM-DD).
+        self._vass_last_entry_date_by_direction: Dict[str, str] = {}
         # Phase C: staged neutrality de-risk memory by spread key.
         # key = "<long_symbol>|<short_symbol>", value = first neutrality timestamp.
         self._spread_neutrality_warn_by_key: Dict[str, datetime] = {}
@@ -2892,6 +2857,37 @@ class OptionsEngine:
         cooldown_days = int(getattr(config, "VASS_SIMILAR_ENTRY_COOLDOWN_DAYS", 3))
         self._vass_last_entry_at_by_signature[signature] = entry_dt
         self._vass_cooldown_until_by_signature[signature] = entry_dt + timedelta(days=cooldown_days)
+
+    def _check_vass_direction_day_gap(
+        self, direction: Optional[OptionDirection], current_date: str
+    ) -> Optional[str]:
+        """Enforce max one VASS spread entry per direction per day."""
+        if not bool(getattr(config, "VASS_DIRECTION_DAY_GAP_ENABLED", True)):
+            return None
+        if direction is None:
+            return None
+        dir_label = "BULLISH" if direction == OptionDirection.CALL else "BEARISH"
+        today = str(current_date or "")[:10]
+        if not today:
+            try:
+                today = str(self.algorithm.Time.date()) if self.algorithm is not None else ""
+            except Exception:
+                today = ""
+        if not today:
+            return None
+        last_date = self._vass_last_entry_date_by_direction.get(dir_label)
+        if last_date == today:
+            return f"R_DIRECTION_DAY_GAP: {dir_label} already entered on {today}"
+        return None
+
+    def _record_vass_direction_day_entry(
+        self, direction: Optional[OptionDirection], entry_dt: Optional[datetime]
+    ) -> None:
+        """Persist day marker for VASS per-direction day-gap guard."""
+        if direction is None or entry_dt is None:
+            return
+        dir_label = "BULLISH" if direction == OptionDirection.CALL else "BEARISH"
+        self._vass_last_entry_date_by_direction[dir_label] = str(entry_dt.date())
 
     def _build_spread_key(self, spread: SpreadPosition) -> str:
         """Stable spread key for per-position state."""
@@ -4514,6 +4510,10 @@ class OptionsEngine:
         if not can_swing:
             return fail(swing_reason)
 
+        day_gap_reason = self._check_vass_direction_day_gap(direction, current_date)
+        if day_gap_reason is not None:
+            return fail(day_gap_reason)
+
         # Scoped daily attempt budget (per spread key), replaces global one-attempt lock.
         attempt_key = f"DEBIT_{direction.value if direction is not None else 'NONE'}"
         if not self._can_attempt_spread_entry(attempt_key):
@@ -5217,6 +5217,10 @@ class OptionsEngine:
         )
         if not can_swing:
             return fail(swing_reason)
+
+        day_gap_reason = self._check_vass_direction_day_gap(direction, current_date)
+        if day_gap_reason is not None:
+            return fail(day_gap_reason)
 
         # Scoped daily attempt budget (strategy-specific), replaces global one-attempt lock.
         attempt_key = f"CREDIT_{strategy.value if strategy is not None else 'NONE'}"
@@ -7436,13 +7440,21 @@ class OptionsEngine:
                 )
                 return fail("E_INTRADAY_NO_DIRECTION", state.recommended_strategy.value)
 
-            # V6.22: Keep CAUTION_LOW participation but cut size (avoid full no-trade behavior).
-            if state.micro_regime == MicroRegime.CAUTION_LOW:
-                caution_scale = float(getattr(config, "CAUTION_LOW_SIZE_MULT", 0.50))
+            # V9: Keep CAUTION_LOW / TRANSITION participation but cut size.
+            if state.micro_regime in (MicroRegime.CAUTION_LOW, MicroRegime.TRANSITION):
+                caution_scale = float(
+                    getattr(
+                        config,
+                        "CAUTION_LOW_SIZE_MULT"
+                        if state.micro_regime == MicroRegime.CAUTION_LOW
+                        else "TRANSITION_SIZE_MULT",
+                        0.50,
+                    )
+                )
                 adjusted = min(size_multiplier, caution_scale)
                 if adjusted < size_multiplier:
                     self.log(
-                        f"INTRADAY: CAUTION_LOW size reduction | "
+                        f"INTRADAY: {state.micro_regime.value} size reduction | "
                         f"Size {size_multiplier:.0%}->{adjusted:.0%}",
                         trades_only=True,
                     )
@@ -8331,6 +8343,14 @@ class OptionsEngine:
         except Exception:
             entry_dt = self.algorithm.Time if self.algorithm is not None else None
         self._record_vass_signature_entry(signature, entry_dt)
+        spread_dir = (
+            OptionDirection.CALL
+            if self._spread_direction_label(spread.spread_type) == "BULLISH"
+            else OptionDirection.PUT
+            if self._spread_direction_label(spread.spread_type) == "BEARISH"
+            else None
+        )
+        self._record_vass_direction_day_entry(spread_dir, entry_dt)
 
         # V2.9: Update trade counter (Bug #4 fix) - Spreads are always swing mode
         self._increment_trade_counter(OptionsMode.SWING)
@@ -8851,6 +8871,7 @@ class OptionsEngine:
                 k: v.strftime("%Y-%m-%d %H:%M:%S")
                 for k, v in self._vass_cooldown_until_by_signature.items()
             },
+            "vass_last_entry_date_by_direction": dict(self._vass_last_entry_date_by_direction),
             "spread_neutrality_warn_by_key": {
                 k: v.strftime("%Y-%m-%d %H:%M:%S")
                 for k, v in self._spread_neutrality_warn_by_key.items()
@@ -8987,6 +9008,11 @@ class OptionsEngine:
         self._paper_track_history = state.get("paper_track_history", [])
         self._vass_last_entry_at_by_signature = {}
         self._vass_cooldown_until_by_signature = {}
+        self._vass_last_entry_date_by_direction = {
+            str(k).upper(): str(v)[:10]
+            for k, v in (state.get("vass_last_entry_date_by_direction", {}) or {}).items()
+            if str(k).upper() in {"BULLISH", "BEARISH"} and str(v)
+        }
         for k, v in (state.get("vass_last_entry_at_by_signature", {}) or {}).items():
             try:
                 self._vass_last_entry_at_by_signature[str(k)] = datetime.strptime(
@@ -9046,6 +9072,7 @@ class OptionsEngine:
         self._pending_intraday_exit = False
         self._vass_last_entry_at_by_signature = {}
         self._vass_cooldown_until_by_signature = {}
+        self._vass_last_entry_date_by_direction = {}
         self._spread_neutrality_warn_by_key = {}
 
         self.log("OPT: Engine reset - all positions cleared")

@@ -882,6 +882,7 @@ VASS_SIMILAR_ENTRY_COOLDOWN_DAYS = (
     2  # Shorter cooldown to avoid over-throttling quality follow-through
 )
 VASS_SIMILAR_ENTRY_USE_EXPIRY_BUCKET = True  # Use expiry date bucket (fallback to DTE bucket)
+VASS_DIRECTION_DAY_GAP_ENABLED = True  # Hard spacing: max 1 VASS entry per day per direction
 
 # Level Crossing Thresholds (regime shift signals)
 VASS_VIX_FEAR_CROSS_LEVEL = 23  # VIX crosses above this → BEARISH
@@ -1669,6 +1670,7 @@ VIX_REVERSAL_CHOPPY = 4  # 3-4 reversals: Choppy
 # V2.3.16: Sniper Logic - Noise Filter (Gate 1)
 QQQ_NOISE_THRESHOLD = 0.04  # D7: Small relaxation to reduce QQQ_FLAT over-blocking
 CAUTION_LOW_SIZE_MULT = 0.50  # V6.22: keep trading in CAUTION_LOW but with reduced exposure
+TRANSITION_SIZE_MULT = 0.50  # V9: tradeable with reduced exposure (same as CAUTION_LOW)
 
 # D10: Per-expiry concentration cap for spread ladders.
 SPREAD_EXPIRY_CONCENTRATION_CAP_ENABLED = True
@@ -2041,7 +2043,7 @@ ISOLATION_HEDGE_ENABLED = False  # Hedge Engine (SH) - V6.11 updated
 ISOLATION_YIELD_ENABLED = False  # Yield Sleeve (SHV)
 
 # Safeguard enables (only checked when ISOLATION_TEST_MODE = True)
-ISOLATION_KILL_SWITCH_ENABLED = False  # Kill Switch (5% daily loss)
+ISOLATION_KILL_SWITCH_ENABLED = True  # Kill Switch (5% daily loss)
 ISOLATION_STARTUP_GATE_ENABLED = False  # Startup Gate (15-day warmup)
 ISOLATION_COLD_START_ENABLED = False  # Cold Start (days 1-5 restrictions)
 ISOLATION_DRAWDOWN_GOVERNOR_ENABLED = False  # Drawdown Governor (position scaling)
