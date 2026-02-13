@@ -6423,17 +6423,19 @@ class OptionsEngine:
                     f"(P&L ${pnl:.2f} >= ${profit_target:.2f})"
                 )
 
-            # Exit 2: Credit Stop Loss (spread value exceeds max loss threshold)
+            # Exit 2: Credit Stop Loss (actual loss exceeds % of max loss)
             # Max loss = width - credit received
+            # V9.1 FIX: Old formula compared raw spread value against max_loss * multiplier,
+            # which sat BELOW entry credit → stop fired on every trade at 20-min hold expiry.
+            # Correct formula: stop fires when spread value exceeds entry_credit + (max_loss * multiplier),
+            # meaning the trade must actually LOSE multiplier% of max_loss before stopping.
             max_loss = spread.width - entry_credit
-            if (
-                exit_reason is None
-                and current_spread_value >= max_loss * config.CREDIT_SPREAD_STOP_MULTIPLIER
-            ):
+            stop_threshold = entry_credit + max_loss * config.CREDIT_SPREAD_STOP_MULTIPLIER
+            if exit_reason is None and pnl < 0 and current_spread_value >= stop_threshold:
                 loss_pct = (current_spread_value - entry_credit) / max_loss if max_loss > 0 else 0
                 exit_reason = (
                     f"CREDIT_STOP_LOSS {loss_pct:.1%} "
-                    f"(spread value ${current_spread_value:.2f} >= ${max_loss * config.CREDIT_SPREAD_STOP_MULTIPLIER:.2f})"
+                    f"(spread value ${current_spread_value:.2f} >= ${stop_threshold:.2f})"
                 )
 
             # Exit 3: DTE exit (close by 5 DTE)
