@@ -358,6 +358,8 @@ class AlphaNextGen(QCAlgorithm):
         self._diag_spread_exit_fill_count = 0
         self._diag_spread_exit_canceled_count = 0
         self._diag_spread_position_removed_count = 0
+        self._diag_spread_removed_fill_path_count = 0
+        self._diag_spread_ghost_removed_count = 0
         self._order_lifecycle_log_count = 0
         self._last_micro_update_log_signature: Optional[Tuple[str, str, float, float, float]] = None
         self._last_micro_update_log_time: Optional[datetime] = None
@@ -376,6 +378,10 @@ class AlphaNextGen(QCAlgorithm):
         self._spread_forced_close_retry_cycles: Dict[str, int] = {}
         # Last known spread leg marks to avoid skipping exit checks on transient quote gaps.
         self._spread_exit_mark_cache: Dict[str, Dict[str, Any]] = {}
+        # Track consecutive intraday ghost detections by spread key.
+        self._spread_ghost_flat_streak_by_key: Dict[str, int] = {}
+        self._spread_ghost_last_log_by_key: Dict[str, datetime] = {}
+        self._friday_spread_reconcile_date: Optional[str] = None
         # Orphan-close idempotency: avoid resubmitting the same orphan liquidation every reconcile cycle.
         self._recon_orphan_close_submitted: Dict[str, str] = {}
 
@@ -2036,7 +2042,7 @@ class AlphaNextGen(QCAlgorithm):
                 )
 
         # Reconcile positions with broker
-        self._reconcile_positions()
+        self._reconcile_positions(mode="sod")
 
     def _on_intraday_reconcile(self) -> None:
         """
@@ -2053,7 +2059,7 @@ class AlphaNextGen(QCAlgorithm):
             elapsed_min = (now_dt - self._last_reconcile_positions_run).total_seconds() / 60.0
             if elapsed_min < 45:
                 return
-        self._reconcile_positions()
+        self._reconcile_positions(mode="intraday")
 
     def _is_primary_market_open(self) -> bool:
         """Return True when the primary equity market session is open."""
@@ -2350,12 +2356,16 @@ class AlphaNextGen(QCAlgorithm):
         self._diag_spread_exit_fill_count = 0
         self._diag_spread_exit_canceled_count = 0
         self._diag_spread_position_removed_count = 0
+        self._diag_spread_removed_fill_path_count = 0
+        self._diag_spread_ghost_removed_count = 0
         self._order_lifecycle_log_count = 0
         self._recon_orphan_close_submitted.clear()
         self._last_micro_update_log_signature = None
         self._last_micro_update_log_time = None
         self._last_spread_construct_fail_log_at = None
         self._external_exec_event_logged.clear()
+        self._spread_ghost_flat_streak_by_key.clear()
+        self._spread_ghost_last_log_by_key.clear()
         # V3.0 P1-B: Clean stale pending exit orders at EOD
         if self._pending_exit_orders:
             stale_keys = [
@@ -2861,34 +2871,16 @@ class AlphaNextGen(QCAlgorithm):
         else:
             self.Log(f"FRIDAY_FIREWALL: No action needed | VIX={vix_current:.1f}")
 
-        # V2.29 P0: Weekly reconciliation — clear ghost spread if no options held
+        # V9.2: Guarded Friday sweep (single pass/day).
         self._reconcile_spread_state()
 
     def _reconcile_spread_state(self) -> None:
-        """V2.29 P0: Weekly reconciliation — clear ghost spread if no options held."""
-        if not self.options_engine.has_spread_position():
+        """V9.2: Run a single guarded Friday spread reconcile sweep."""
+        today = str(self.Time.date())
+        if self._friday_spread_reconcile_date == today:
             return
-        spread_count_before = len(self.options_engine.get_spread_positions())
-        has_options = any(
-            kvp.Value.Invested
-            for kvp in self.Portfolio
-            if kvp.Value.Symbol.SecurityType == SecurityType.Option
-        )
-        if not has_options:
-            if self._should_log_backtest_category("LOG_SPREAD_RECONCILE_BACKTEST_ENABLED", False):
-                self.Log("SPREAD_RECONCILE: Friday check — no options held, clearing ghost spread")
-            for spread in list(self.options_engine.get_spread_positions()):
-                spread_key = (
-                    f"{self._normalize_symbol_str(spread.long_leg.symbol)}|"
-                    f"{self._normalize_symbol_str(spread.short_leg.symbol)}"
-                )
-                self._clear_spread_runtime_trackers_by_key(spread_key)
-            self.options_engine.clear_spread_position()
-            if spread_count_before > 0:
-                # Ghost clears are removals, not confirmed fill reconciliations.
-                self._diag_spread_position_removed_count += spread_count_before
-            if self.portfolio_router:
-                self.portfolio_router.clear_all_spread_margins()
+        self._friday_spread_reconcile_date = today
+        self._reconcile_positions(mode="friday")
 
     def _on_vix_spike_check(self) -> None:
         """
@@ -3252,28 +3244,6 @@ class AlphaNextGen(QCAlgorithm):
                     # Immediately liquidate the options position
                     self.MarketOrder(orderEvent.Symbol, -fill_qty, tag="KILL_SWITCH_ON_FILL")
 
-            # V2.29 P0: Reconcile ghost spread after any option fill
-            # Safety net: if spread state exists but neither leg is held, clear it
-            if is_option and self.options_engine.has_spread_position():
-                for spread in self.options_engine.get_spread_positions():
-                    long_held = self.Portfolio[spread.long_leg.symbol].Invested
-                    short_held = self.Portfolio[spread.short_leg.symbol].Invested
-                    if not long_held and not short_held:
-                        spread_key = (
-                            f"{self._normalize_symbol_str(spread.long_leg.symbol)}|"
-                            f"{self._normalize_symbol_str(spread.short_leg.symbol)}"
-                        )
-                        self._clear_spread_runtime_trackers_by_key(spread_key)
-                        self.options_engine.remove_spread_position(str(spread.long_leg.symbol))
-                        # Ghost clears are removals, not confirmed fill reconciliations.
-                        self._diag_spread_position_removed_count += 1
-                        if self._should_log_backtest_category(
-                            "LOG_SPREAD_RECONCILE_BACKTEST_ENABLED", False
-                        ):
-                            self.Log("SPREAD_RECONCILE: Both legs flat — cleared ghost state")
-                        if self.portfolio_router:
-                            self.portfolio_router.clear_all_spread_margins()
-
             # V2.25 Fix #1: Exercise/Assignment Detection
             # Was unreachable dead code (elif after if Filled:). Moved inside.
             # QC backtester uses "Simulated option assignment" not "Exercise".
@@ -3602,6 +3572,102 @@ class AlphaNextGen(QCAlgorithm):
             return True
         return bool(getattr(config, config_flag, default))
 
+    def _build_spread_runtime_key(self, spread: Any) -> str:
+        """Build canonical spread key for runtime trackers."""
+        return (
+            f"{self._normalize_symbol_str(spread.long_leg.symbol)}|"
+            f"{self._normalize_symbol_str(spread.short_leg.symbol)}"
+        )
+
+    def _record_spread_removal(self, reason: str, count: int = 1, context: str = "") -> None:
+        """Centralized spread-removal diagnostics accounting."""
+        if count <= 0:
+            return
+        self._diag_spread_position_removed_count += count
+        if reason == "fill_path":
+            self._diag_spread_removed_fill_path_count += count
+        elif reason == "ghost_path":
+            self._diag_spread_ghost_removed_count += count
+        else:
+            self.Log(
+                f"SPREAD_DIAG_WARNING: Unknown removal reason '{reason}' | "
+                f"Count={count} | Context={context}"
+            )
+
+    def _reconcile_spread_ghosts(self, mode: str) -> int:
+        """
+        Reconcile spread state ghosts with mode-aware clearing policy.
+
+        Modes:
+            - sod: immediate guarded clear when both legs are flat
+            - friday: immediate guarded clear once per day sweep
+            - intraday: non-destructive health check; emergency clear only after
+              N consecutive flat detections
+        """
+        mode_norm = str(mode or "sod").strip().lower()
+        spreads = list(self.options_engine.get_spread_positions())
+        if not spreads:
+            return 0
+
+        threshold = max(1, int(getattr(config, "SPREAD_GHOST_INTRADAY_CLEAR_CONSECUTIVE", 2)))
+        health_log_minutes = max(1, int(getattr(config, "SPREAD_GHOST_HEALTH_LOG_MINUTES", 60)))
+        cleared = 0
+
+        for spread in spreads:
+            spread_key = self._build_spread_runtime_key(spread)
+
+            long_held = self.Portfolio[spread.long_leg.symbol].Invested
+            short_held = self.Portfolio[spread.short_leg.symbol].Invested
+            if long_held or short_held:
+                self._spread_ghost_flat_streak_by_key.pop(spread_key, None)
+                self._spread_ghost_last_log_by_key.pop(spread_key, None)
+                continue
+
+            streak = self._spread_ghost_flat_streak_by_key.get(spread_key, 0) + 1
+            self._spread_ghost_flat_streak_by_key[spread_key] = streak
+
+            should_clear = mode_norm in {"sod", "friday"}
+            if mode_norm == "intraday" and streak >= threshold:
+                should_clear = True
+
+            last_log = self._spread_ghost_last_log_by_key.get(spread_key)
+            due = (
+                last_log is None
+                or (self.Time - last_log).total_seconds() / 60.0 >= health_log_minutes
+            )
+            if (due or should_clear) and self._should_log_backtest_category(
+                "LOG_SPREAD_RECONCILE_BACKTEST_ENABLED", False
+            ):
+                self.Log(
+                    f"SPREAD_GHOST_HEALTH: Mode={mode_norm.upper()} | "
+                    f"Key={spread_key} | FlatStreak={streak} | "
+                    f"Threshold={threshold}"
+                )
+                self._spread_ghost_last_log_by_key[spread_key] = self.Time
+
+            if not should_clear:
+                continue
+
+            self._clear_spread_runtime_trackers_by_key(spread_key)
+            removed = self.options_engine.remove_spread_position(str(spread.long_leg.symbol))
+            if removed is None:
+                continue
+
+            self._record_spread_removal(
+                reason="ghost_path",
+                count=1,
+                context=f"RECON_{mode_norm.upper()}_BOTH_LEGS_FLAT",
+            )
+            cleared += 1
+            self.Log(
+                f"SPREAD_GHOST_CLEAR: Mode={mode_norm.upper()} | "
+                f"Key={spread_key} | FlatStreak={streak}"
+            )
+            if self.portfolio_router:
+                self.portfolio_router.clear_all_spread_margins()
+
+        return cleared
+
     def _clear_spread_runtime_trackers_by_key(self, spread_key: str) -> None:
         """Clear runtime tracker maps for a spread key (long|short)."""
         self._spread_close_trackers.pop(spread_key, None)
@@ -3610,6 +3676,8 @@ class AlphaNextGen(QCAlgorithm):
         self._spread_forced_close_cancel_counts.pop(spread_key, None)
         self._spread_forced_close_retry_cycles.pop(spread_key, None)
         self._spread_exit_mark_cache.pop(spread_key, None)
+        self._spread_ghost_flat_streak_by_key.pop(spread_key, None)
+        self._spread_ghost_last_log_by_key.pop(spread_key, None)
 
     def _log_order_lifecycle_issue(self, order_event: OrderEvent, status: str) -> None:
         """Compact attribution log for canceled/invalid orders."""
@@ -3788,16 +3856,26 @@ class AlphaNextGen(QCAlgorithm):
         except Exception as e:
             self.Log(f"STATE_ERROR: Failed to save state - {e}")
 
-    def _reconcile_positions(self) -> None:
+    def _reconcile_positions(self, mode: str = "sod") -> None:
         """
         Reconcile internal position tracking with broker state.
 
-        Called at 09:33.
+        Modes:
+            - sod: baseline reconciliation (allows guarded spread ghost clear)
+            - intraday: orphan cleanup + guarded emergency spread clear only
+            - friday: single guarded late-week sweep
         """
         try:
             if not self._is_primary_market_open():
                 return
+            mode_norm = str(mode or "sod").strip().lower()
+            if mode_norm not in {"sod", "intraday", "friday"}:
+                mode_norm = "sod"
             self._last_reconcile_positions_run = self.Time
+
+            # Mode-aware spread ghost health checks and guarded clears.
+            self._reconcile_spread_ghosts(mode=mode_norm)
+
             option_holdings = {}
             option_symbols = {}
             for kvp in self.Portfolio:
@@ -3824,25 +3902,43 @@ class AlphaNextGen(QCAlgorithm):
                 tracked_symbols.add(str(single.contract.symbol))
 
             if tracked_symbols and not option_holdings:
-                spread_count_before = len(self.options_engine.get_spread_positions())
-                self.options_engine.clear_all_positions()
-                self._spread_close_trackers.clear()
-                self._spread_forced_close_retry.clear()
-                self._spread_forced_close_reason.clear()
-                self._spread_forced_close_cancel_counts.clear()
-                self._spread_forced_close_retry_cycles.clear()
-                self._spread_exit_mark_cache.clear()
-                if spread_count_before > 0:
-                    # Broker is flat while engine still tracked live spreads.
-                    # Count as state removals only (not confirmed fill reconciliations).
-                    self._diag_spread_position_removed_count += spread_count_before
-                if self.portfolio_router:
-                    self.portfolio_router.clear_all_spread_margins()
-                self.Log(
-                    f"RECON_ZOMBIE_CLEARED: Cleared stale internal option state | "
-                    f"Tracked={len(tracked_symbols)}"
-                )
-                tracked_symbols = set()
+                if mode_norm != "intraday":
+                    spread_count_before = len(self.options_engine.get_spread_positions())
+                    self.options_engine.clear_all_positions()
+                    self._spread_close_trackers.clear()
+                    self._spread_forced_close_retry.clear()
+                    self._spread_forced_close_reason.clear()
+                    self._spread_forced_close_cancel_counts.clear()
+                    self._spread_forced_close_retry_cycles.clear()
+                    self._spread_exit_mark_cache.clear()
+                    self._spread_ghost_flat_streak_by_key.clear()
+                    self._spread_ghost_last_log_by_key.clear()
+                    if spread_count_before > 0:
+                        # Broker is flat while engine still tracked live spreads.
+                        # Count as state removals only (not confirmed fill reconciliations).
+                        self._record_spread_removal(
+                            reason="ghost_path",
+                            count=spread_count_before,
+                            context=f"RECON_{mode_norm.upper()}_ZOMBIE_CLEAR",
+                        )
+                    if self.portfolio_router:
+                        self.portfolio_router.clear_all_spread_margins()
+                    self.Log(
+                        f"RECON_ZOMBIE_CLEARED: Cleared stale internal option state | "
+                        f"Mode={mode_norm.upper()} | Tracked={len(tracked_symbols)}"
+                    )
+                    tracked_symbols = set()
+                elif self._should_log_backtest_category(
+                    "LOG_SPREAD_RECONCILE_BACKTEST_ENABLED", False
+                ):
+                    self.Log(
+                        f"RECON_INTRADAY_SKIP_ZOMBIE_CLEAR: Tracked={len(tracked_symbols)} | "
+                        f"HoldingOptions={len(option_holdings)}"
+                    )
+
+            # Friday sweep is spread-state only to avoid introducing new close-order behavior.
+            if mode_norm == "friday":
+                return
 
             orphan_symbols = [s for s in option_holdings.keys() if s not in tracked_symbols]
             for sym_str in orphan_symbols:
@@ -7976,6 +8072,11 @@ class AlphaNextGen(QCAlgorithm):
         )
 
         self.Log(summary)
+        spread_exit_fill_strict = self._diag_spread_exit_fill_count
+        spread_exit_fill_legacy = max(
+            self._diag_spread_exit_fill_count,
+            self._diag_spread_position_removed_count,
+        )
         self.Log(
             "OPTIONS_DIAG_SUMMARY: "
             f"Candidates={self._diag_intraday_candidate_count} | "
@@ -7992,9 +8093,13 @@ class AlphaNextGen(QCAlgorithm):
             f"SpreadEntryFill={self._diag_spread_entry_fill_count} | "
             f"SpreadExitSignal={self._diag_spread_exit_signal_count} | "
             f"SpreadExitSubmit={self._diag_spread_exit_submit_count} | "
-            f"SpreadExitFill={max(self._diag_spread_exit_fill_count, self._diag_spread_position_removed_count)} | "
+            f"SpreadExitFill={spread_exit_fill_strict} | "
+            f"SpreadExitFillStrict={spread_exit_fill_strict} | "
+            f"SpreadExitFillLegacy={spread_exit_fill_legacy} | "
             f"SpreadExitCanceled={self._diag_spread_exit_canceled_count} | "
             f"SpreadRemoved={self._diag_spread_position_removed_count} | "
+            f"SpreadRemovedFillPath={self._diag_spread_removed_fill_path_count} | "
+            f"SpreadGhostRemoved={self._diag_spread_ghost_removed_count} | "
             f"MarginRejects={self._diag_margin_reject_count}"
         )
 
@@ -8676,7 +8781,11 @@ class AlphaNextGen(QCAlgorithm):
 
             # Both legs closed - remove spread position
             self.options_engine.remove_spread_position(symbol)
-            self._diag_spread_position_removed_count += 1
+            self._record_spread_removal(
+                reason="fill_path",
+                count=1,
+                context="FILL_CLOSE_RECONCILED",
+            )
             self._greeks_breach_logged = False  # Reset for next position
             self._spread_forced_close_retry.pop(spread_key, None)
             self._spread_forced_close_reason.pop(spread_key, None)

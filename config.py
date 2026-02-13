@@ -1950,6 +1950,10 @@ LOG_ORDER_LIFECYCLE_BACKTEST_ENABLED = (
     True  # Keep compact invalid/cancel attribution logs in backtests
 )
 LOG_ORDER_LIFECYCLE_MAX_PER_DAY = 200  # Guardrail for lifecycle log budget
+SPREAD_GHOST_INTRADAY_CLEAR_CONSECUTIVE = (
+    2  # Intraday guarded clear requires N consecutive flat checks
+)
+SPREAD_GHOST_HEALTH_LOG_MINUTES = 60  # Throttle ghost-health diagnostics
 STATE_MANAGER_POSITION_PERSIST_ENABLED = (
     False  # PositionState persistence path disabled until fully wired
 )
