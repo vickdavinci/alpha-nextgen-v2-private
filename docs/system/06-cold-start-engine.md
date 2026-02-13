@@ -154,7 +154,7 @@ If a position exists from a previous session (or was established earlier in the 
 
 **Requirement:** Kill switch not triggered
 
-If the account is in kill switch mode (daily loss exceeded 3%), no new entries are allowed for the remainder of the day.
+If the account is in kill switch mode (daily loss exceeded 6% Tier 3, V2.27), no new entries are allowed for the remainder of the day.
 
 ---
 
@@ -583,7 +583,7 @@ V2.29 introduced `StartupGate` (`engines/core/startup_gate.py`) as a **separate,
 | Property | Cold Start Engine | Startup Gate (V2.30) |
 |----------|:-----------------:|:--------------------:|
 | **Purpose** | Warm entry after start/kill switch | One-time time-based arming |
-| **Duration** | 5 trading days | 15 days (5 warmup + 5 obs + 5 reduced) |
+| **Duration** | 5 trading days | 6 days (3 warmup + 3 reduced, V6.0) |
 | **Resets on kill switch** | Yes | **No** (permanent) |
 | **Once completed** | Resets next kill switch | **Stays armed forever** |
 | **Hedges/Yield** | Based on regime | **Always allowed** (never gated) |
@@ -601,9 +601,9 @@ Algorithm Launch
     ▼
 ┌─────────────────────────────────────────────────────────────┐
 │ STARTUP GATE (one-time, never resets, no regime dependency) │
-│ INDICATOR_WARMUP → OBSERVATION → REDUCED → FULLY_ARMED     │
-│      5 days          5 days       5 days                    │
-│ Hedges/yield always allowed. Bearish options from OBSERVATION│
+│ WARMUP → REDUCED → FULLY_ARMED                             │
+│  3 days    3 days                                           │
+│ Hedges always allowed. TREND/MR at 50% during REDUCED      │
 └─────────────────────────────────────────────────────────────┘
     │ (FULLY_ARMED — permanent)
     ▼

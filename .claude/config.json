@@ -21,11 +21,12 @@
   ],
   "build_phases": {
     "phase_1": ["config.py", "models/", "utils/"],
-    "phase_2": ["engines/regime_engine.py", "engines/capital_engine.py"],
-    "phase_3": ["engines/cold_start_engine.py", "engines/trend_engine.py", "engines/mean_reversion_engine.py", "engines/hedge_engine.py", "engines/yield_sleeve.py"],
-    "phase_4": ["portfolio/portfolio_router.py", "engines/risk_engine.py"],
-    "phase_5": ["execution/execution_engine.py", "persistence/state_manager.py", "scheduling/daily_scheduler.py"],
-    "phase_6": ["main.py"]
+    "phase_2": ["engines/core/regime_engine.py", "engines/core/capital_engine.py"],
+    "phase_3": ["engines/core/cold_start_engine.py", "engines/core/startup_gate.py", "engines/core/trend_engine.py"],
+    "phase_4": ["engines/satellite/mean_reversion_engine.py", "engines/satellite/hedge_engine.py", "engines/satellite/yield_sleeve.py", "engines/satellite/options_engine.py"],
+    "phase_5": ["portfolio/portfolio_router.py", "engines/core/risk_engine.py"],
+    "phase_6": ["execution/execution_engine.py", "execution/oco_manager.py", "persistence/state_manager.py", "scheduling/daily_scheduler.py"],
+    "phase_7": ["main.py"]
   },
   "authority_rules": {
     "order_placement": "Only portfolio_router.py may call MarketOrder(), MarketOnOpenOrder(), Liquidate()",

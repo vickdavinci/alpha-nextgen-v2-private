@@ -179,9 +179,9 @@ See `docs/guides/ENGINE_ISOLATION_MODE.md` for full configuration options.
   - TQQQ (4%) - 3× Nasdaq
   - SPXL (3%) - 3× S&P 500
   - SOXL (3%) - 3× Semiconductor
-- **Satellite (25%)**: Options Engine - VASS + Dual-Mode Architecture (V6.10)
-  - **Swing Mode (18.75%)**: VASS debit/credit spreads (14-45 DTE, VASS routes by IV)
-  - **Intraday Mode (6.25%)**: Micro Regime Engine - VIX Level × VIX Direction (1-5 DTE)
+- **Satellite (50%)**: Options Engine - VASS + Dual-Mode Architecture (V6.20)
+  - **Swing Mode (37.5%)**: VASS debit/credit spreads (14-45 DTE, VASS routes by IV)
+  - **Intraday Mode (12.5%)**: Micro Regime Engine - VIX Level × VIX Direction (1-5 DTE)
 
 Forked from V1 v1.0.0 on 2026-01-26. See `docs/specs/v2.1/` for V2.1 specifications (archived).
 See `docs/specs/v2.1/v2-1-options-engine-design.txt` for Options Engine V2.1.1 design reference.
@@ -235,9 +235,9 @@ alpha-nextgen/
 │   │   └── trend_engine.py     # MA200+ADX (40%)
 │   └── satellite/              # Conditional engines
 │       ├── mean_reversion_engine.py # Intraday bounce (0-10%)
-│       ├── hedge_engine.py     # TMF/PSQ overlay
-│       ├── yield_sleeve.py     # SHV cash management
-│       └── options_engine.py   # QQQ options (25%) - VASS + Dual-Mode + Micro Regime
+│       ├── hedge_engine.py     # SH inverse overlay (V6.11: TMF/PSQ retired)
+│       ├── yield_sleeve.py     # SHV cash management (spec only)
+│       └── options_engine.py   # QQQ options (50%) - VASS + Dual-Mode + Micro Regime (V6.20)
 ├── portfolio/                  # Router, exposure groups, positions
 ├── execution/                  # Order management
 ├── data/                       # Symbols, indicators, validation
@@ -270,7 +270,7 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 | **Capital Engine** | `engines/core/capital_engine.py` | `docs/system/05-capital-engine.md` | Phase management, lockbox, tradeable equity |
 | **Risk Engine** | `engines/core/risk_engine.py` | `docs/system/12-risk-engine.md` | All circuit breakers and safeguards (tiered KS, drawdown governor) |
 | **Cold Start Engine** | `engines/core/cold_start_engine.py` | `docs/system/06-cold-start-engine.md` | Days 1-5 warm entry logic |
-| **Startup Gate** | `engines/core/startup_gate.py` | `docs/system/ENGINE_LOGIC_REFERENCE.md` | V2.30: All-weather time-based arming (15 days: 5+5+5). Never resets on kill switch. |
+| **Startup Gate** | `engines/core/startup_gate.py` | `docs/system/ENGINE_LOGIC_REFERENCE.md` | V6.0: All-weather time-based arming (6 days: 3+3). Never resets on kill switch. |
 | **Trend Engine** | `engines/core/trend_engine.py` | `docs/system/07-trend-engine.md` | MA200 + ADX trend signals for QLD/SSO/UGL/UCO (40%) - V6.11: equities + commodities |
 
 ### Satellite Engines (engines/satellite/)
@@ -278,9 +278,9 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 | Component | File | Spec Document | Description |
 |-----------|------|---------------|-------------|
 | **Mean Reversion Engine** | `engines/satellite/mean_reversion_engine.py` | `docs/system/08-mean-reversion-engine.md` | Intraday oversold bounce signals for TQQQ/SPXL/SOXL (10%) |
-| **Hedge Engine** | `engines/satellite/hedge_engine.py` | `docs/system/09-hedge-engine.md` | Regime-based TMF/PSQ allocation signals |
-| **Yield Sleeve** | `engines/satellite/yield_sleeve.py` | `docs/system/10-yield-sleeve.md` | SHV cash management signals |
-| **Options Engine** | `engines/satellite/options_engine.py` | `docs/system/18-options-engine.md` | QQQ options Dual-Mode (25%): Swing 18.75% + Intraday 6.25% (Micro Regime) |
+| **Hedge Engine** | `engines/satellite/hedge_engine.py` | `docs/system/09-hedge-engine.md` | Regime-based SH allocation signals (V6.11: TMF/PSQ retired) |
+| **Yield Sleeve** | `engines/satellite/yield_sleeve.py` | `docs/system/10-yield-sleeve.md` | SHV cash management signals (spec only) |
+| **Options Engine** | `engines/satellite/options_engine.py` | `docs/system/18-options-engine.md` | QQQ options Dual-Mode (50%): Swing 37.5% + Intraday 12.5% (Micro Regime) (V6.20) |
 
 ### Infrastructure
 
@@ -536,7 +536,7 @@ except Exception as e:
 │                         CORE ENGINES                              │
 ├─────────────────┬─────────────────┬─────────────────┬─────────────┤
 │  Regime Engine  │  Capital Engine │   Risk Engine   │ Startup Gate│
-│  (Score 0-100)  │  (Phase/Lockbox)│ (Tiered KS/DG)  │ (15 days)   │
+│  (Score 0-100)  │  (Phase/Lockbox)│ (Tiered KS/DG)  │ (6 days)    │
 └────────┬────────┴────────┬────────┴────────┬────────┴──────┬──────┘
          │                 │                 │               │
          ▼                 ▼                 ▼               ▼
@@ -544,8 +544,8 @@ except Exception as e:
 │                       STRATEGY ENGINES                            │
 ├─────────────────┬─────────────────┬─────────────────┬─────────────┤
 │  Trend Engine   │ Options Engine  │    MR Engine    │Hedge/Yield  │
-│   (Core 40%)    │ (Satellite 25%) │ (Satellite 10%) │  (Overlay)  │
-│QLD,SSO,UGL,UCO  │ VASS Dual-Mode  │ TQQQ,SPXL,SOXL  │ TMF,PSQ,SHV │
+│   (Core 40%)    │ (Satellite 50%) │ (Satellite 10%) │  (Overlay)  │
+│QLD,SSO,UGL,UCO  │ VASS Dual-Mode  │ TQQQ,SPXL,SOXL  │    SH       │
 │  Urgency: MOC   │ Swing + Intraday│ Urgency: IMMED  │Urgency: EOD │
 └────────┬────────┴────────┬────────┴────────┬────────┴──────┬──────┘
          │                 │                 │               │
@@ -605,9 +605,9 @@ Test complete workflows in `/tests/scenarios`:
 ```python
 # tests/scenarios/test_kill_switch_scenario.py
 def test_kill_switch_liquidates_all():
-    """Verify kill switch liquidates all positions."""
+    """Verify kill switch Tier 3 liquidates all positions."""
     # Setup: Portfolio with multiple positions
-    # Action: Trigger 3% loss
+    # Action: Trigger 6% loss (Tier 3)
     # Assert: All positions = 0, cold start reset
 ```
 
@@ -623,7 +623,7 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 4. **Time zone confusion** - All times are Eastern; use `self.Time`
 5. **State not loaded** - Always call `load_state()` in `Initialize()`
 6. **Strategy placing orders** - Only Portfolio Router places orders
-7. **3× held overnight** - TQQQ/SOXL must close by 15:45
+7. **3x held overnight** - TQQQ/SPXL/SOXL must close by 15:45
 
 ---
 
@@ -710,7 +710,12 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | Weekly breaker | 5% WTD loss | 50% sizing reduction |
 | Gap filter | SPY -1.5% gap | Block MR entries |
 | Vol shock | 3x ATR bar | 15-min pause |
-| Leverage cap | 60% margin utilization | Block new entries (V6.9) |
+| Leverage cap | 90% margin utilization | Block new entries (V6.20: raised from 60%) |
+| Regime RISK_ON | Score >= 70 | Full leverage, no hedges |
+| Regime NEUTRAL | Score 50-69 | Full leverage, no hedges |
+| Regime CAUTIOUS | Score 45-49 | V6.15: raised from 40 (light hedge: 5% SH) |
+| Regime DEFENSIVE | Score 35-44 | V6.15: raised from 30 (medium hedge: 8% SH) |
+| Regime RISK_OFF | Score 0-34 | No new longs, full hedge: 10% SH |
 | Trend entry (V2) | Price > MA200 + ADX >= 15 | Trend entry eligible (V2.3.12: was 25) |
 | Oversold | RSI(5) < 25 | MR entry eligible |
 | VIX Low | VIX < 20 | Normal market, MR works |
@@ -720,25 +725,30 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | VASS Low IV (V6.6) | VIX < 16 | Debit spreads, 30-45 DTE (monthly) |
 | VASS Medium IV | VIX 16-25 | Debit spreads, 7-30 DTE (V6.12: widened from 7-21) |
 | VASS High IV (V6.13.1) | VIX > 25 | Credit spreads, 5-40 DTE (expanded from 5-28) |
-| UVXY Bearish (V6.14) | UVXY > +2.8% | PUT conviction signal |
-| UVXY Bullish (V6.14) | UVXY < -4.5% | CALL conviction signal |
-| UVXY Conviction Extreme (V6.12) | 3.5% | NEUTRAL VETO threshold |
-| BEAR_PUT OTM Gate (V6.4) | Short PUT >= 3% OTM | Block assignment-risk entries |
-| Options ATR Stop Max (V6.8) | 30% | Max loss cap (was 50%) |
-| Options ATR Stop Min (V6.13) | 12% | Min stop floor (was 15%) |
-| Intraday FADE VIX Min (V6.13) | VIX >= 9.5 | Enable DEBIT_FADE (lowered for bull markets) |
-| Intraday ITM VIX Min (V6.13) | VIX >= 9.0 | Enable ITM momentum |
+| UVXY Bearish | UVXY > +2.0% | PUT conviction signal |
+| UVXY Bullish | UVXY < -4.0% | CALL conviction signal |
+| UVXY Conviction Extreme | 3.0% | NEUTRAL VETO threshold |
+| BEAR_PUT OTM Gate (V6.4) | Short PUT >= 2% OTM | Block assignment-risk entries (V6.10: was 3%) |
+| Options Profit Target | 60% | Profit target |
+| Options ATR Stop Max | 28% | Max loss cap |
+| Options ATR Stop Min | 12% | Min stop floor |
+| Intraday Force Exit (V6.15) | 15:25 | Close intraday options (was 15:30) |
+| Intraday FADE VIX Min | VIX >= 9.0 | Enable DEBIT_FADE (V8.2: lowered from 9.5) |
+| Intraday ITM VIX Min | VIX >= 9.0 | Enable ITM momentum |
 | Spread Force Close DTE (V6.10) | DTE = 1 | Mandatory spread close (assignment prevention) |
-| Short Leg ITM Exit (V6.10) | 0.5% ITM | Exit spread when short leg ITM (was 1%) |
+| Short Leg ITM Exit | 3.5% ITM | Exit spread when short leg ITM (raised to reduce noise) |
 | Spread Width Min (V6.13) | $4 | Minimum spread width (optimized for fills) |
-| Spread Stop/Target (V6.10) | 40%/40% | Symmetric R:R (was 35%/50%) |
-| Choppy Market Filter (V6.10) | 3 reversals/2hr | 50% size reduction in choppy markets |
-| VIX Stable Band Low (V6.13.1) | +/-0.2% | STABLE band when VIX < 15 |
-| VIX Stable Band High (V6.13.1) | +/-0.7% | STABLE band when VIX > 25 |
-| Margin Utilization Max (V6.9) | 60% | Cap total margin usage |
-| Options Max Margin PCT (V6.10) | 25% | Max margin for options |
-| Micro Score Bullish (V6.14) | 47 | Bullish confirmation threshold |
-| Micro Score Bearish (V6.14) | 49 | Bearish confirmation threshold |
+| Spread Width Effective Max (V9.1) | $7 | Preferred width ceiling for R:R sort |
+| Spread Stop/Target | 40%/50% | Stop 40%, Target 50% base (regime-adjusted) |
+| Spread Max Debit/Width (V9.1) | 55% | Block spreads where debit > 55% of width (R:R gate) |
+| Choppy Market Filter (V6.10) | 3 reversals/2hr | 65% size reduction in choppy markets (V6.19) |
+| VIX Stable Band Low (V6.22) | +/-0.3% | STABLE band when VIX < 15 |
+| VIX Stable Band High (V8.2) | +/-0.8% | STABLE band when VIX > 25 |
+| Margin Utilization Max (V6.20) | 90% | Cap total margin usage (emergency brake) |
+| Options Max Margin PCT (V6.20) | 40% | Max margin for options |
+| Options Budget Cap (V8.2) | 50% | Options budget gate = CAPITAL_PARTITION_OPTIONS |
+| Micro Score Bullish (V6.22) | 42 | Bullish confirmation threshold (lowered from 48) |
+| Micro Score Bearish (D7) | 50 | Bearish confirmation threshold |
 
 ### Overnight Holdings (V6.11 Universe)
 
@@ -764,3 +774,21 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | COMMODITIES | UGL, UCO | 25% | 25% |
 
 > **V6.11 Note:** RATES group removed (TMF/SHV retired). COMMODITIES added with UGL (2x Gold) and UCO (2x Crude Oil).
+
+---
+
+## Custom Agents
+
+These agents are defined in `.claude/agents/` and available via the Task tool:
+
+| Agent | Purpose | Usage |
+|-------|---------|-------|
+| **log-analyzer** | Analyze backtest logs and generate comprehensive trading performance reports with hedge fund style statistics | `Use the log-analyzer agent to analyze the V7 2017 logs in stage7/` |
+| **backtest-runner** | Run backtests on QuantConnect with automated sync, push, and log organization | `Use the backtest-runner agent to run Dec 2021 - Feb 2022` |
+| **v3-pre-live-auditor** | Comprehensive pre-live audit checks (state persistence, IBKR rules, assignment handling) | `Use the v3-pre-live-auditor to validate before going live` |
+| **docs-sync** | Update documentation after code changes to keep docs in sync | `Use the docs-sync agent to update docs for my changes` |
+
+To invoke an agent with bypass permissions:
+```
+Use the log-analyzer agent in bypassPermissions mode to analyze stage7 logs
+```

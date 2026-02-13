@@ -22,7 +22,7 @@ Multiple layers of protection address different risk scenarios:
 
 | Safeguard | Threat Addressed |
 |-----------|------------------|
-| **Kill Switch** | Single-day catastrophic loss (-3%) |
+| **Kill Switch** | Single-day catastrophic loss (Tiered: -2%/-4%/-6%) |
 | **Panic Mode** | Flash crash / market meltdown (SPY -4%) |
 | **Gap Filter** | Gap-down morning weakness (-1.5%) |
 | **Vol Shock** | Extreme short-term volatility (3× ATR) |
@@ -190,8 +190,7 @@ This triggers full liquidation at 5% daily loss.
 |---------------|--------|
 | Trend (QLD, SSO, UGL, UCO) | Sell all |
 | Mean Reversion (TQQQ, SPXL, SOXL) | Sell all |
-| Hedges (TMF, PSQ) | Sell all |
-| Yield (SHV) | Sell all |
+| Hedges (SH) | Sell all |
 | Option Spreads | Close all |
 
 **Nothing is spared.** The goal is to go to 100% cash immediately.
@@ -213,19 +212,25 @@ The algorithm remains in "killed" state until the next trading day:
 09:25 AM: equity_prior_close = $52,000
 09:33 AM: equity_sod = $51,500 (after MOO fills)
 
-10:42 AM: current_equity = $50,300
+10:42 AM: current_equity = $50,920
+  Loss = ($52,000 - $50,920) / $52,000 = 2.08%
+  2.08% >= 2% → TIER 1 TRIGGERED (REDUCE)
+  Actions: Halve trend positions, block new options
 
-Check vs prior_close:
-  Loss = ($52,000 - $50,300) / $52,000 = 3.27%
-  3.27% >= 3% → TRIGGER
+11:30 AM: current_equity = $49,920
+  Loss = ($52,000 - $49,920) / $52,000 = 4.00%
+  4.00% >= 4% → TIER 2 TRIGGERED (TREND_EXIT)
+  Actions: Liquidate all trend (QLD, SSO, UGL, UCO), keep spreads
 
-Actions:
-  1. Cancel pending orders
-  2. Liquidate: QLD (200 shares), TQQQ (150 shares), 
-               TMF (100 shares), SHV (500 shares)
-  3. Disable entries
-  4. days_running = 0
-  5. Save: last_kill_date = "2024-01-15"
+13:15 AM: current_equity = $48,880
+  Loss = ($52,000 - $48,880) / $52,000 = 6.00%
+  6.00% >= 6% → TIER 3 TRIGGERED (FULL_EXIT)
+  Actions:
+    1. Cancel pending orders
+    2. Liquidate ALL: QLD, SSO, UGL, UCO, TQQQ, SPXL, SOXL, SH, spreads
+    3. Disable entries
+    4. days_running = 0
+    5. Save: last_kill_date = "2024-01-15"
 ```
 
 ---
@@ -249,9 +254,8 @@ TRIGGER when:
 
 | Action | Positions Affected |
 |--------|-------------------|
-| **Liquidate** | All leveraged longs (TQQQ, QLD, SSO, SOXL) |
-| **KEEP** | Hedge positions (TMF, PSQ) |
-| **KEEP** | Yield positions (SHV) |
+| **Liquidate** | All leveraged longs (TQQQ, SPXL, QLD, SSO, UGL, UCO, SOXL) |
+| **KEEP** | Hedge positions (SH) |
 | **Disable** | New long entries for remainder of day |
 
 ### 12.3.4 Why Keep Hedges?
@@ -260,20 +264,18 @@ During a crash, hedges are **doing their job**:
 
 | Instrument | Behavior During Crash |
 |------------|----------------------|
-| TMF | Rising (flight to safety) |
-| PSQ | Rising (inverse of falling Nasdaq) |
+| SH | Rising (inverse of falling S&P) |
 
 Liquidating hedges during the crash would **remove protection** exactly when it's needed most.
 
 ### 12.3.5 Difference from Kill Switch
 
-| Aspect | Kill Switch | Panic Mode |
+| Aspect | Kill Switch (Tier 3) | Panic Mode |
 |--------|-------------|------------|
-| Trigger | Portfolio loss (−3%) | Market drop (SPY −4%) |
+| Trigger | Portfolio loss (−6%) | Market drop (SPY −4%) |
 | Liquidates | EVERYTHING | Only leveraged longs |
 | Hedges | Sold | **Kept** |
-| Yield | Sold | **Kept** |
-| Reset cold start | Yes | No |
+| Reset cold start | Yes (Tier 3 only) | No |
 
 ### 12.3.6 Example Scenario
 
@@ -287,15 +289,18 @@ Check:
 
 Actions:
   1. Liquidate QLD position (market sell)
-  2. Liquidate TQQQ position (market sell)
-  3. KEEP TMF position (hedge working)
-  4. KEEP PSQ position (hedge working)
-  5. KEEP SHV position (safe)
-  6. Block new long entries
+  2. Liquidate SSO position (market sell)
+  3. Liquidate UGL position (market sell)
+  4. Liquidate UCO position (market sell)
+  5. Liquidate TQQQ position (market sell)
+  6. Liquidate SPXL position (market sell)
+  7. Liquidate SOXL position (market sell)
+  8. KEEP SH position (hedge working - inverse S&P rising)
+  9. Block new long entries
 
 Result:
-  Portfolio is now: TMF + PSQ + SHV + Cash
-  Hedges continue to provide protection
+  Portfolio is now: SH + Cash
+  Hedge continues to provide protection
 ```
 
 ---
@@ -545,7 +550,7 @@ Better to skip one day than to trade on corrupted data.
 
 | Safeguard | Trigger | Action | Duration | Resets |
 |-----------|---------|--------|----------|--------|
-| **Kill Switch** | −3% daily (either baseline) | Liquidate ALL, disable trading, reset cold start | Rest of day | Next day (in cold start) |
+| **Kill Switch (Tiered)** | T1: -2%, T2: -4%, T3: -6% daily | T1: Reduce 50%, T2: Exit trend, T3: Liquidate ALL | Rest of day | Next day (T3: cold start) |
 | **Panic Mode** | SPY −4% intraday | Liquidate leveraged longs, keep hedges | Rest of day | Next day |
 | **Weekly Breaker** | −5% week-to-date | Reduce sizing 50% | Rest of week | Monday open |
 | **Gap Filter** | SPY gaps down ≥1.5% | Block intraday entries | Rest of day | Next day |
@@ -561,11 +566,11 @@ Better to skip one day than to trade on corrupted data.
 flowchart TD
     START["Every Minute<br/>During Market Hours"]
     
-    subgraph KILL["Kill Switch Check"]
+    subgraph KILL["Kill Switch Check (Tiered)"]
         K1["Get current_equity"]
-        K2{"Loss from prior_close<br/>≥ 3%?"}
-        K3{"Loss from SOD<br/>≥ 3%?"}
-        K_TRIGGER["🚨 KILL SWITCH<br/>Liquidate ALL"]
+        K2{"Loss from prior_close<br/>≥ 2%/4%/6%?"}
+        K3{"Loss from SOD<br/>≥ 2%/4%/6%?"}
+        K_TRIGGER["KILL SWITCH<br/>T1: Reduce / T2: Trend Exit / T3: Full Exit"]
     end
     
     subgraph PANIC["Panic Mode Check"]
@@ -615,22 +620,19 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    TRIGGER["Kill Switch Triggered<br/>(Loss ≥ 3%)"]
-    
+    TRIGGER["Kill Switch Tier 3 Triggered<br/>(Loss >= 6%)"]
+
     subgraph CANCEL["Step 1: Cancel Orders"]
         C1["Cancel all MOO orders"]
         C2["Cancel all limit orders"]
         C3["Cancel any pending orders"]
     end
-    
+
     subgraph LIQUIDATE["Step 2: Liquidate ALL"]
-        L1["Sell all TQQQ"]
-        L2["Sell all QLD"]
-        L3["Sell all SSO"]
-        L4["Sell all SOXL"]
-        L5["Sell all TMF"]
-        L6["Sell all PSQ"]
-        L7["Sell all SHV"]
+        L1["Sell all QLD, SSO, UGL, UCO"]
+        L2["Sell all TQQQ, SPXL, SOXL"]
+        L3["Sell all SH"]
+        L4["Close all option spreads"]
     end
     
     subgraph DISABLE["Step 3: Disable"]
@@ -654,7 +656,7 @@ flowchart TD
     TRIGGER --> CANCEL
     C1 --> C2 --> C3
     CANCEL --> LIQUIDATE
-    L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> L7
+    L1 --> L2 --> L3 --> L4
     LIQUIDATE --> DISABLE
     D1 --> D2
     DISABLE --> RESET
@@ -762,7 +764,11 @@ When multiple safeguards could apply, they're checked in order:
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `KILL_SWITCH_PCT` | 0.03 | 3% daily loss threshold |
+| `KILL_SWITCH_PCT` | 0.05 | 5% daily loss threshold (legacy fallback) |
+| `KS_GRADUATED_ENABLED` | True | Enable tiered kill switch |
+| `KS_TIER_1_PCT` | 0.02 | -2% Tier 1 (Reduce trend 50%, block new options) |
+| `KS_TIER_2_PCT` | 0.04 | -4% Tier 2 (Exit trend, keep spreads) |
+| `KS_TIER_3_PCT` | 0.06 | -6% Tier 3 (Full liquidation, reset cold start) |
 
 ### Panic Mode Parameters
 
@@ -804,8 +810,8 @@ When multiple safeguards could apply, they're checked in order:
 | Decision | Rationale |
 |----------|-----------|
 | **Two kill switch baselines** | Catches both gap-down and intraday crashes |
-| **3% kill switch threshold** | Painful but recoverable; prevents catastrophic losses |
-| **Panic mode keeps hedges** | Hedges are working during crash; don't remove protection |
+| **Tiered kill switch (2%/4%/6%)** | Graduated response prevents over-liquidation on moderate losses |
+| **Panic mode keeps hedges** | SH hedge is working during crash; don't remove protection |
 | **Weekly breaker reduces, doesn't liquidate** | Stay in game but reduce bleeding |
 | **Gap filter blocks MR only** | Trend MOOs already submitted; MR relies on "normal" conditions |
 | **15-minute vol shock pause** | Brief pause for clarity; not full-day block |
@@ -832,7 +838,7 @@ The V2.1 Circuit Breaker System provides graduated responses to risk events, all
 | Duration | Rest of trading day |
 | Reset | Next trading day (daily reset) |
 
-This is a "soft warning" level that reduces risk before the nuclear kill switch at 3%.
+This is a "soft warning" level that reduces risk before the tiered kill switch (2%/4%/6%).
 
 **Level 2: Weekly Loss (-5%)**
 
@@ -916,41 +922,39 @@ The system tracks the highest active circuit breaker level (0-5):
 
 ---
 
-## 12.18 Drawdown Governor (V2.26)
+## 12.18 Drawdown Governor (V5.2 Binary)
 
-The Drawdown Governor provides cumulative high-watermark-based drawdown protection. It scales all engine allocations based on how far equity has fallen from peak.
+> **V5.3 Status:** `DRAWDOWN_GOVERNOR_ENABLED = False` - Disabled for strategy validation.
 
-### 12.18.1 Governor Levels
+The Drawdown Governor provides cumulative high-watermark-based drawdown protection. V5.2 simplified this to a **binary system** (100% or 0%) to eliminate the oscillation and churn caused by intermediate levels.
+
+### 12.18.1 V5.2 Binary Governor
 
 | Drawdown from HWM | Governor Scale | Effect |
 |:------------------:|:--------------:|--------|
-| < 3% | 100% | Full allocation |
-| 3-6% | 75% | Moderate reduction |
-| 6-10% | 50% | Significant reduction |
-| 10-15% | 25% | Severe restriction |
-| > 15% | 0% | Full shutdown |
+| < 15% | 100% | Full allocation (trading) |
+| >= 15% | 0% | Defensive only (no new entries) |
 
-### 12.18.2 Dynamic Recovery (V2.29)
+**Why Binary?**
+- V3.x (5 levels): Massive churn between 100%/75%/50%/25%/0%
+- V5.1 (2 levels): Still had 50% "limbo" state causing confusion
+- V5.2 (binary): Either confident to trade (100%) or not (0%)
 
-The recovery threshold scales with the current governor level to prevent the "recovery trap" — where reduced allocations make it impossible to earn back to the recovery threshold.
+### 12.18.2 Recovery from Defensive Mode
 
-**Formula:**
-```
-effective_recovery = DRAWDOWN_GOVERNOR_RECOVERY_BASE × governor_scale
-```
+Requirements to return from 0% to 100%:
+1. Drawdown improves below 12% (`DRAWDOWN_GOVERNOR_RECOVERY_THRESHOLD`)
+2. Regime score >= 60 for 5 consecutive days (Regime Guard)
+3. Equity recovers 5% from trough
+4. At least 7 days at 0% (prevents whipsaw)
 
-| Governor Scale | Recovery Base | Effective Recovery |
-|:--------------:|:------------:|:------------------:|
-| 100% | 8% | 8% |
-| 75% | 8% | 6% |
-| 50% | 8% | 4% |
-| 25% | 8% | 2% |
+### 12.18.3 Options Gating
 
-**Config:** `DRAWDOWN_GOVERNOR_RECOVERY_BASE = 0.08` (defined in `config.py`, not hardcoded)
+With binary governor:
+- Governor 100%: All options allowed at full size
+- Governor 0%: ONLY PUT spreads allowed (hedging/profit from decline)
 
-When `recovery_pct >= effective_recovery`, the governor steps up one level.
-
-### 12.18.3 Persistence
+### 12.18.4 Persistence
 
 Governor state is persisted via `StateManager`:
 - `_equity_high_watermark`
@@ -991,21 +995,26 @@ All liquidation paths now clear pending options entry state:
 
 ---
 
-## 12.20 Kill Switch Tiered Thresholds (V2.28.1)
+## 12.20 Kill Switch Tiered Thresholds (V2.27)
 
-V2.28.1 introduced graduated kill switch thresholds:
+V2.27 introduced graduated kill switch thresholds:
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `KS_TIER_1_PCT` | 0.02 | 2% — First warning, reduce sizing 50% |
-| `KS_TIER_2_PCT` | 0.04 | 4% — Block all new entries |
-| `KS_TIER_3_PCT` | 0.06 | 6% — Full liquidation + cold start reset |
+| `KS_GRADUATED_ENABLED` | True | Enable tiered system |
+| `KS_TIER_1_PCT` | 0.02 | 2% -- Reduce trend 50%, block new options |
+| `KS_TIER_2_PCT` | 0.04 | 4% -- Liquidate trend, keep spreads |
+| `KS_TIER_3_PCT` | 0.06 | 6% -- Full liquidation + cold start reset |
+| `KS_TIER_1_TREND_REDUCTION` | 0.50 | Reduce trend allocation by 50% at Tier 1 |
+| `KS_TIER_1_BLOCK_NEW_OPTIONS` | True | Block new option entries at Tier 1 |
+| `KILL_SWITCH_SPREAD_DECOUPLE` | True | Spreads survive Tier 1 and Tier 2 |
+| `KS_SKIP_DAYS` | 1 | Block new entries for 1 day after Tier 2+ |
 
-**Note:** The `KILL_SWITCH_PCT` config value (0.05) is now overridden by the tiered system. Tier 3 at 6% is the actual full liquidation trigger.
+**Note:** The `KILL_SWITCH_PCT` config value (0.05) is the legacy fallback when `KS_GRADUATED_ENABLED = False`. Tier 3 at 6% is the actual full liquidation trigger.
 
 ---
 
-*Last updated: 04 February 2026 (V2.30)*
+*Last updated: 13 February 2026 (V9.2 - Tiered KS, V5.2 Binary Governor, V6.11 Universe)*
 
 *Next Section: [13 - Execution Engine](13-execution-engine.md)*
 

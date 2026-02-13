@@ -1641,8 +1641,28 @@ class RiskEngine:
                 result.can_enter_positions = False
                 result.can_enter_intraday = False
                 active_safeguards.append(SafeguardType.TIME_GUARD)
+
+            # Kill switch when explicitly enabled in isolation mode
+            if getattr(config, "ISOLATION_KILL_SWITCH_ENABLED", False):
+                if self.check_kill_switch(current_equity):
+                    tier = self._ks_current_tier
+                    result.ks_tier = tier
+                    active_safeguards.append(SafeguardType.KILL_SWITCH)
+                    if tier == KSTier.FULL_EXIT:
+                        result.can_enter_positions = False
+                        result.can_enter_intraday = False
+                        result.can_enter_options = False
+                        result.symbols_to_liquidate = ALL_TRADED_SYMBOLS.copy()
+                        result.reset_cold_start = config.KS_COLD_START_RESET_ON_TIER_3
+                        result.circuit_breaker_level = 5
+                    elif tier == KSTier.TREND_EXIT:
+                        result.can_enter_positions = False
+                        result.can_enter_intraday = False
+                    elif tier == KSTier.REDUCE:
+                        result.reduce_trend_50 = True
+                        result.can_enter_options = False
+
             result.active_safeguards = active_safeguards
-            # Return early - all other safeguards bypassed
             return result
 
         # 1. Kill Switch (highest priority)

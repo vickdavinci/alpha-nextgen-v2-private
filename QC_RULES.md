@@ -101,7 +101,7 @@ def OnData(self, data: Slice):
     # MANDATORY SPLIT CHECK - MUST BE FIRST
     # ═══════════════════════════════════════════════════════════════
     
-    # 1. Check PROXY symbols (SPY, RSP, HYG, IEF) - freezes EVERYTHING
+    # 1. Check PROXY symbols (SPY, RSP) - freezes EVERYTHING
     #    If SPY splits, the entire Regime Score is invalid
     for proxy in self.proxy_symbols:
         if data.Splits.ContainsKey(proxy):
@@ -136,8 +136,8 @@ def OnData(self, data: Slice):
 
 | Type | Symbols | Split Action |
 |------|---------|--------------|
-| **Proxy** | SPY, RSP, HYG, IEF | Freeze EVERYTHING (Regime invalid) |
-| **Traded** | TQQQ, SOXL, QLD, SSO, TMF, PSQ, SHV | Freeze only that symbol |
+| **Proxy** | SPY, RSP, VIX | Freeze EVERYTHING (Regime invalid) |
+| **Traded** | QLD, SSO, UGL, UCO, TQQQ, SPXL, SOXL, SH | Freeze only that symbol |
 
 ---
 
@@ -175,24 +175,25 @@ Resolution.Daily     # Daily bars
 def add_securities(self):
     """Add all required securities."""
     # Traded symbols (minute resolution for intraday)
-    self.tqqq = self.AddEquity("TQQQ", Resolution.Minute).Symbol
-    self.soxl = self.AddEquity("SOXL", Resolution.Minute).Symbol
+    # V6.11: Trend (2x): QLD, SSO, UGL, UCO | MR (3x): TQQQ, SPXL, SOXL | Hedge: SH
     self.qld = self.AddEquity("QLD", Resolution.Minute).Symbol
     self.sso = self.AddEquity("SSO", Resolution.Minute).Symbol
-    self.tmf = self.AddEquity("TMF", Resolution.Minute).Symbol
-    self.psq = self.AddEquity("PSQ", Resolution.Minute).Symbol
-    self.shv = self.AddEquity("SHV", Resolution.Minute).Symbol
-    
-    # Proxy symbols (data only - used for Regime calculation)
+    self.ugl = self.AddEquity("UGL", Resolution.Minute).Symbol
+    self.uco = self.AddEquity("UCO", Resolution.Minute).Symbol
+    self.tqqq = self.AddEquity("TQQQ", Resolution.Minute).Symbol
+    self.spxl = self.AddEquity("SPXL", Resolution.Minute).Symbol
+    self.soxl = self.AddEquity("SOXL", Resolution.Minute).Symbol
+    self.sh = self.AddEquity("SH", Resolution.Minute).Symbol
+
+    # Proxy symbols (data only - used for Regime calculation, V5.3)
     self.spy = self.AddEquity("SPY", Resolution.Minute).Symbol
     self.rsp = self.AddEquity("RSP", Resolution.Minute).Symbol
-    self.hyg = self.AddEquity("HYG", Resolution.Minute).Symbol
-    self.ief = self.AddEquity("IEF", Resolution.Minute).Symbol
-    
+    # VIX subscribed separately for IV/direction data
+
     # Store for split checking
-    self.traded_symbols = [self.tqqq, self.soxl, self.qld, self.sso, 
-                           self.tmf, self.psq, self.shv]
-    self.proxy_symbols = [self.spy, self.rsp, self.hyg, self.ief]
+    self.traded_symbols = [self.qld, self.sso, self.ugl, self.uco,
+                           self.tqqq, self.spxl, self.soxl, self.sh]
+    self.proxy_symbols = [self.spy, self.rsp]
 ```
 
 ---
@@ -674,7 +675,7 @@ def log(self, message: str, trades_only: bool = False):
 self.Log(f"TRADE|{action}|{symbol}|{quantity}|{price}")
 
 # Include context
-self.Log(f"REGIME: Score={score:.1f} | State={state} | TMF={tmf_pct:.1%}")
+self.Log(f"REGIME: Score={score:.1f} | State={state} | SH={sh_pct:.1%}")
 
 # Log important events with prefixes
 self.Log(f"KILL_SWITCH: Triggered at {self.Time}")

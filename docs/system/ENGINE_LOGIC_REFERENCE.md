@@ -3,7 +3,7 @@
 > **Purpose:** Complete reference for all engine logic, conditions, and config values.
 > This document enables developers to understand the entire trading system flow.
 >
-> **Last Updated:** 04 February 2026 (V2.30)
+> **Last Updated:** 13 February 2026 (V9.2)
 
 ---
 
@@ -33,7 +33,7 @@
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              DATA LAYER                                     │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│  Proxy (Daily): SPY, RSP, HYG, IEF     │  Traded (Minute): QLD, SSO, etc.  │
+│  Proxy (Daily): SPY, RSP, GLD, USO     │  Traded (Minute): QLD, SSO, etc.  │
 │  Options: QQQ chains                    │  VIX: Minute resolution           │
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
@@ -42,9 +42,9 @@
 │                            CORE ENGINES                                     │
 ├──────────────────┬────────────────────┬─────────────────────────────────────┤
 │  REGIME ENGINE   │   CAPITAL ENGINE   │   RISK ENGINE     │  STARTUP GATE   │
-│  Score 0-100     │   Phase: SEED/     │   Kill Switch     │  V2.30          │
-│  5-Factor V2.3   │   GROWTH/MATURE    │   Governor V2.26  │  All-Weather    │
-│  Smoothing 0.3   │   Lockbox          │   Ghost Flush P0  │  4 phases 15d   │
+│  Score 0-100     │   V3.0: Regime-    │   Tiered KS       │  V6.0           │
+│  V5.3 4-Factor   │   based safeguards │   V2.27 (2/4/6%)  │  6-day arming   │
+│  Smoothing 0.3   │   Lockbox          │   DG V5.2 Binary  │  3 phases       │
 └──────────────────┴────────────────────┴─────────────────────────────────────┘
                                     │
                                     ▼
@@ -52,9 +52,9 @@
 │                          STRATEGY ENGINES                                   │
 ├───────────┬────────────┬──────────┬───────────┬───────────┬─────────────────┤
 │   TREND   │  OPTIONS   │   MR     │   HEDGE   │   YIELD   │   COLD START    │
-│   40%     │   25%      │   10%    │   0-30%   │ Remainder │   Days 1-5      │
-│ QLD,SSO   │ QQQ Opts   │ TQQQ,    │ TMF,PSQ   │    SHV    │   50% sizing    │
-│ TNA,FAS   │ Swing+Intr │ SOXL     │           │           │   (options)     │
+│   40%     │   50%      │   10%    │   0-10%   │  (spec)   │   Days 1-5      │
+│ QLD,SSO   │ QQQ Opts   │ TQQQ,    │    SH     │           │   50% sizing    │
+│ UGL,UCO   │ Swing+Intr │ SPXL,SOXL│           │           │   (options)     │
 └───────────┴────────────┴──────────┴───────────┴───────────┴─────────────────┘
                                     │
                         TargetWeight Objects
@@ -85,7 +85,7 @@ sequenceDiagram
     participant E as Execution
 
     D->>R: Market data
-    R->>R: Calculate 5-factor score
+    R->>R: Calculate V5.3 4-factor score
     R-->>S: RegimeState (score, classification)
 
     D->>K: Price data
@@ -105,7 +105,7 @@ sequenceDiagram
 ## Regime Engine
 
 **File:** `engines/core/regime_engine.py`
-**Purpose:** Detect overall market state using 5 weighted factors.
+**Purpose:** Detect overall market state using V5.3 4-factor model with VIX Combined scoring.
 
 ### Flowchart
 
@@ -113,39 +113,38 @@ sequenceDiagram
 flowchart TD
     START[Start] --> CHECK{Indicators Ready?}
     CHECK -->|No| WAIT[Return cached score]
-    CHECK -->|Yes| CALC[Calculate 5 factors]
+    CHECK -->|Yes| CALC[Calculate V5.3 4 factors]
 
-    CALC --> F1[Trend Factor 30%]
-    CALC --> F2[VIX Factor 20%]
-    CALC --> F3[Realized Vol 15%]
-    CALC --> F4[Breadth Factor 20%]
-    CALC --> F5[Credit Factor 15%]
+    CALC --> F1[Momentum Factor 30%<br/>20-day ROC]
+    CALC --> F2[VIX Combined 35%<br/>65% Level + 35% Direction]
+    CALC --> F3[Trend Factor 20%<br/>SPY vs MA200]
+    CALC --> F4[Drawdown Factor 15%<br/>52-week high distance]
 
     F1 --> AGG[Weighted Average]
     F2 --> AGG
     F3 --> AGG
     F4 --> AGG
-    F5 --> AGG
 
-    AGG --> SMOOTH[Apply EMA Smoothing<br/>α = 0.3]
+    AGG --> GUARDS[Apply Guards:<br/>VIX Spike Cap, Breadth Decay]
+    GUARDS --> SMOOTH[Apply EMA Smoothing<br/>alpha = 0.3]
     SMOOTH --> CLASS{Classify Score}
 
     CLASS -->|>= 70| RISKON[RISK_ON]
     CLASS -->|>= 50| NEUTRAL[NEUTRAL]
-    CLASS -->|>= 40| CAUTIOUS[CAUTIOUS]
-    CLASS -->|>= 30| DEFENSIVE[DEFENSIVE]
-    CLASS -->|< 30| RISKOFF[RISK_OFF]
+    CLASS -->|>= 45| CAUTIOUS[CAUTIOUS]
+    CLASS -->|>= 35| DEFENSIVE[DEFENSIVE]
+    CLASS -->|< 35| RISKOFF[RISK_OFF]
 ```
 
-### Config Values
+### Config Values (V5.3)
 
 | Parameter | Value | Description |
 |-----------|------:|-------------|
-| `TREND_WEIGHT` | 0.30 | Price vs MA200 contribution |
-| `VIX_WEIGHT` | 0.20 | VIX level contribution |
-| `REALIZED_VOL_WEIGHT` | 0.15 | Historical volatility |
-| `BREADTH_WEIGHT` | 0.20 | Market breadth (SPY vs RSP) |
-| `CREDIT_WEIGHT` | 0.15 | Credit spread (HYG vs IEF) |
+| `WEIGHT_MOMENTUM_V53` | 0.30 | 20-day ROC (leading indicator) |
+| `WEIGHT_VIX_COMBINED_V53` | 0.35 | V6.15: VIX Combined (65% level + 35% direction) |
+| `WEIGHT_TREND_V53` | 0.20 | V6.15: SPY vs MA200 (lagging, reduced) |
+| `WEIGHT_DRAWDOWN_V53` | 0.15 | Distance from 52-week high |
+| `VIX_COMBINED_HIGH_VIX_CLAMP` | 44 | V6.15: Cap VIX Combined when VIX >= 25 |
 | `REGIME_SMOOTHING_ALPHA` | 0.30 | EMA smoothing factor |
 
 ### State Classification
@@ -154,75 +153,75 @@ flowchart TD
 |:-----------:|:-----:|:---------------:|
 | >= 70 | RISK_ON | Full allocation |
 | >= 50 | NEUTRAL | Standard allocation |
-| >= 40 | CAUTIOUS | Reduced allocation |
-| >= 30 | DEFENSIVE | Hedges only |
-| < 30 | RISK_OFF | No new longs |
+| >= 45 | CAUTIOUS | Reduced allocation (V6.15: was >= 40) |
+| >= 35 | DEFENSIVE | Hedges only (V6.15: was >= 30) |
+| < 35 | RISK_OFF | No new longs |
 
 ---
 
 ## Capital Engine
 
 **File:** `engines/core/capital_engine.py`
-**Purpose:** Manage account phases, lockbox, and position limits.
+**Purpose:** V3.0: Regime-based safeguards, lockbox, and position limits. SEED/GROWTH phases removed.
 
 ### Flowchart
 
 ```mermaid
 flowchart TD
-    START[Calculate Capital State] --> PHASE{Determine Phase}
-
-    PHASE -->|< $100K| SEED[SEED Phase]
-    PHASE -->|$100K-$250K| GROWTH[GROWTH Phase]
-    PHASE -->|> $250K| MATURE[MATURE Phase]
-
-    SEED --> LOCKBOX[Calculate Lockbox]
-    GROWTH --> LOCKBOX
-    MATURE --> LOCKBOX
+    START[Calculate Capital State] --> LOCKBOX[Calculate Lockbox]
 
     LOCKBOX --> LB1{Equity > $100K?}
-    LB1 -->|Yes| ADD1[Add $10K to lockbox]
+    LB1 -->|Yes| ADD1[Lock 10% of $100K milestone]
     LB1 -->|No| TE
     ADD1 --> LB2{Equity > $200K?}
-    LB2 -->|Yes| ADD2[Add another $20K]
+    LB2 -->|Yes| ADD2[Lock 10% of $200K milestone]
     LB2 -->|No| TE
 
-    TE[Tradeable Equity<br/>= Total - Lockbox] --> LIMITS[Apply Position Limits]
+    TE[Tradeable Equity<br/>= Total - Lockbox] --> LIMITS[Apply V3.0 Position Limits<br/>Max single: 40%]
 
-    LIMITS --> RETURN[Return CapitalState]
+    LIMITS --> PARTITION[Capital Partition<br/>50% Trend / 50% Options]
+    PARTITION --> RETURN[Return CapitalState]
 ```
 
-### Config Values
+### Config Values (V3.0)
 
 | Parameter | Value | Description |
 |-----------|------:|-------------|
-| `PHASE_SEED_MAX` | $100,000 | Max equity for SEED phase |
-| `PHASE_GROWTH_MAX` | $250,000 | Max equity for GROWTH phase |
-| `LOCKBOX_MILESTONE_1` | $100,000 | First lockbox trigger |
-| `LOCKBOX_MILESTONE_1_AMT` | $10,000 | Amount locked at $100K |
-| `LOCKBOX_MILESTONE_2` | $200,000 | Second lockbox trigger |
-| `LOCKBOX_MILESTONE_2_AMT` | $20,000 | Amount locked at $200K |
-| `SEED_MAX_POSITION_PCT` | 0.30 | Max single position in SEED |
-| `GROWTH_MAX_POSITION_PCT` | 0.25 | Max single position in GROWTH |
+| `INITIAL_CAPITAL` | $100,000 | V6.20: Raised for options testing |
+| `MAX_SINGLE_POSITION_PCT` | 0.40 | V3.0: Max single position (was phase-dependent) |
+| `LOCKBOX_MILESTONES` | $100K, $200K | Lockbox trigger levels |
+| `LOCKBOX_LOCK_PCT` | 0.10 | Lock 10% of milestone |
+| `CAPITAL_PARTITION_TREND` | 0.50 | V2.18: Reserved for Trend Engine |
+| `CAPITAL_PARTITION_OPTIONS` | 0.50 | V6.20: Reserved for Options Engine |
+| `MAX_TOTAL_ALLOCATION` | 0.95 | V3.0: Never allocate more than 95% |
 
 ---
 
 ## Risk Engine
 
 **File:** `engines/core/risk_engine.py`
-**Purpose:** Protect capital through circuit breakers and safeguards.
+**Purpose:** Protect capital through tiered kill switch (V2.27) and circuit breakers.
 
 ### Flowchart
 
 ```mermaid
 flowchart TD
-    START[Risk Check] --> KS{Kill Switch<br/>Loss >= 5%?}
+    START[Risk Check] --> KS3{Tier 3 KS<br/>Loss >= 6%?}
 
-    KS -->|Yes| KS_ACT[KILL SWITCH ACTIVE<br/>Liquidate ALL<br/>Reset Cold Start]
-    KS_ACT --> RETURN_NOGO[Return: NO-GO]
+    KS3 -->|Yes| KS3_ACT[TIER 3: FULL EXIT<br/>Liquidate ALL<br/>Reset Cold Start]
+    KS3_ACT --> RETURN_NOGO[Return: NO-GO]
 
-    KS -->|No| PM{Panic Mode<br/>SPY -4% intraday?}
-    PM -->|Yes| PM_ACT[PANIC MODE<br/>Liquidate Longs<br/>Keep Hedges]
-    PM_ACT --> RETURN_PARTIAL[Return: Partial GO]
+    KS3 -->|No| KS2{Tier 2 KS<br/>Loss >= 4%?}
+    KS2 -->|Yes| KS2_ACT[TIER 2: TREND EXIT<br/>Liquidate trend<br/>Keep spreads]
+    KS2_ACT --> RETURN_PARTIAL1[Return: Partial GO]
+
+    KS2 -->|No| KS1{Tier 1 KS<br/>Loss >= 2%?}
+    KS1 -->|Yes| KS1_ACT[TIER 1: REDUCE<br/>Halve trend 50%<br/>Block new options]
+    KS1_ACT --> RETURN_PARTIAL2[Return: Partial GO]
+
+    KS1 -->|No| PM{Panic Mode<br/>SPY -4% intraday?}
+    PM -->|Yes| PM_ACT[PANIC MODE<br/>Liquidate Longs<br/>Keep SH hedge]
+    PM_ACT --> RETURN_PARTIAL3[Return: Partial GO]
 
     PM -->|No| WB{Weekly Breaker<br/>WTD Loss >= 5%?}
     WB -->|Yes| WB_ACT[WEEKLY BREAKER<br/>50% Position Sizing]
@@ -422,17 +421,17 @@ flowchart TD
     MA -->|Yes| ADX{ADX >= 15?}
 
     ADX -->|No| NO_ENTRY
-    ADX -->|Yes| REGIME{Regime >= 40?}
+    ADX -->|Yes| REGIME{Regime >= 50?<br/>V3.0}
 
     REGIME -->|No| NO_ENTRY
-    REGIME -->|Yes| ALLOC[Generate Entry Signal<br/>QLD: 15%, SSO: 12%<br/>TNA: 8%, FAS: 5%]
+    REGIME -->|Yes| ALLOC[Generate Entry Signal<br/>QLD: 15%, SSO: 7%<br/>UGL: 10%, UCO: 8%]
 
     subgraph EXIT[Exit Conditions]
         EX1[Price < MA200]
         EX2[ADX < 10]
         EX3[Stop Loss Hit]
-        EX4[SMA50 Structural Exit V2.4<br/>Price < SMA50 × 0.98<br/>for 2 consecutive days]
-        EX5[Hard Stop<br/>QLD/SSO: -15%, TNA/FAS: -12%]
+        EX4[SMA50 Structural Exit V2.4<br/>Price < SMA50 x 0.98<br/>for 2 consecutive days]
+        EX5[Hard Stop<br/>QLD/SSO: -15%, UGL/UCO: -18%]
     end
 
     EXIT --> EXIT_SIG[Generate Exit Signal<br/>target_weight = 0]
@@ -445,31 +444,31 @@ flowchart TD
 | `TREND_ADX_ENTRY_THRESHOLD` | 15 | ADX >= 15 for entry (V2.3.12) |
 | `ADX_MODERATE_THRESHOLD` | 22 | ADX moderate threshold (V2.5) |
 | `TREND_ADX_EXIT_THRESHOLD` | 10 | ADX < 10 for exit (V2.3.12) |
-| `TREND_SYMBOL_ALLOCATIONS` | QLD: 0.15, SSO: 0.12, TNA: 0.08, FAS: 0.05 | Symbol weights (40% total) |
+| `TREND_SYMBOL_ALLOCATIONS` | QLD: 0.15, SSO: 0.07, UGL: 0.10, UCO: 0.08 | V6.11 symbol weights (40% total) |
+| `TREND_ENTRY_REGIME_MIN` | 50 | V3.0: Minimum regime for entry (raised from 40) |
 | `TREND_USE_SMA50_EXIT` | True | Enable SMA50 structural exit (V2.4) |
-| `TREND_SMA50_PERIOD` | 50 | SMA50 lookback period |
-| `TREND_SMA50_BUFFER` | 0.02 | 2% buffer below SMA50 for exit trigger |
+| `TREND_SMA_PERIOD` | 50 | SMA50 lookback period |
+| `TREND_SMA_EXIT_BUFFER` | 0.02 | 2% buffer below SMA50 for exit trigger |
 | `TREND_SMA_CONFIRM_DAYS` | 2 | Consecutive days below SMA50 before exit (V2.5) |
-| `TREND_HARD_STOP_2X` | 0.15 | 15% hard stop for QLD, SSO (V2.4) |
-| `TREND_HARD_STOP_3X` | 0.12 | 12% hard stop for TNA, FAS (V2.4) |
-| `CHANDELIER_ATR_PERIOD` | 14 | ATR period for stops |
-| `CHANDELIER_BASE_MULT` | 3.5 | ATR multiplier for 2× ETFs |
-| `CHANDELIER_3X_BASE_MULT` | 2.5 | ATR multiplier for 3× ETFs (TNA, FAS) |
+| `TREND_HARD_STOP_PCT` | QLD/SSO: 0.15, UGL/UCO: 0.18 | V6.11: Asset-specific hard stops |
+| `CHANDELIER_ATR_PERIOD` | 14 | ATR period for stops (legacy mode) |
+| `CHANDELIER_BASE_MULT` | 3.5 | ATR multiplier for 2x ETFs |
 
-### Stop Loss Progression
+### Stop Loss Progression (All 2x ETFs - V6.11)
 
-| Profit Range | 2× ETFs (QLD, SSO) | 3× ETFs (TNA, FAS) |
-|:------------:|:------------------:|:------------------:|
-| < 15% | ATR × 3.5 | ATR × 2.5 |
-| 15-25% | ATR × 3.0 | ATR × 2.0 |
-| > 25% | ATR × 2.5 | ATR × 1.5 |
+| Profit Range | QLD, SSO | UGL, UCO |
+|:------------:|:--------:|:--------:|
+| Base Hard Stop | 15% | 18% (higher commodity volatility) |
+| Regime >= 75 (1.5x) | 22.5% | 27% |
+| Regime 50-74 (1.0x) | 15% | 18% |
+| Regime < 50 (0.7x) | 10.5% | 12.6% |
 
 ---
 
 ## Mean Reversion Engine
 
 **File:** `engines/satellite/mean_reversion_engine.py`
-**Purpose:** RSI oversold bounce strategy for TQQQ/SOXL (10%).
+**Purpose:** RSI oversold bounce strategy for TQQQ/SPXL/SOXL (10%).
 
 ### Flowchart
 
@@ -517,7 +516,7 @@ flowchart TD
 ## Options Engine
 
 **File:** `engines/satellite/options_engine.py`
-**Purpose:** QQQ options with Dual-Mode architecture (Swing 18.75% + Intraday 6.25%, total 25%).
+**Purpose:** QQQ options with Dual-Mode architecture (Swing 37.5% + Intraday 12.5%, total 50% in V6.20 isolation profile).
 
 ### Dual-Mode Architecture
 
@@ -525,13 +524,13 @@ flowchart TD
 flowchart TD
     START[Options Signal Check] --> MODE{DTE Range?}
 
-    MODE -->|14-45 DTE| SWING[SWING MODE<br/>18.75% Allocation]
-    MODE -->|0-1 DTE| INTRADAY[INTRADAY MODE<br/>6.25% Allocation]
+    MODE -->|14-45 DTE| SWING[SWING MODE<br/>37.5% Allocation]
+    MODE -->|1-5 DTE| INTRADAY[INTRADAY MODE<br/>12.5% Allocation]
 
     SWING --> VASS{VASS: IV Environment?}
     VASS -->|VIX < 15| DEBIT_MONTHLY[Debit Spreads<br/>30-45 DTE Monthly]
-    VASS -->|VIX 15-25| DEBIT_WEEKLY[Debit Spreads<br/>7-21 DTE Weekly]
-    VASS -->|VIX > 25| CREDIT_WEEKLY[Credit Spreads<br/>7-14 DTE Weekly]
+    VASS -->|VIX 15-25| DEBIT_WEEKLY[Debit Spreads<br/>7-30 DTE Weekly]
+    VASS -->|VIX > 25| CREDIT_WEEKLY[Credit Spreads<br/>5-40 DTE]
 
     DEBIT_MONTHLY --> SPREAD_ORDER[Spread Order]
     DEBIT_WEEKLY --> SPREAD_ORDER
@@ -551,8 +550,8 @@ VASS routes swing mode trades to the appropriate strategy based on the current I
 | IV Environment | VIX Range | Strategy | DTE Range |
 |----------------|-----------|----------|-----------|
 | Low IV | < 15 | Debit Spreads | 30-45 (Monthly) |
-| Medium IV | 15-25 | Debit Spreads | 7-21 (Weekly) |
-| High IV | > 25 | Credit Spreads | 7-14 (Weekly) |
+| Medium IV | 15-25 | Debit Spreads | 7-30 (V6.12: widened from 7-21) |
+| High IV | > 25 | Credit Spreads | 5-40 (V6.13.1: expanded from 7-14) |
 
 ### Credit Spread Config (V2.8)
 
@@ -617,7 +616,7 @@ flowchart TD
 
 | Parameter | Value | Description |
 |-----------|------:|-------------|
-| `OPTIONS_SWING_ALLOCATION` | 0.1875 | 18.75% portfolio allocation |
+| `OPTIONS_SWING_ALLOCATION` | 0.375 | 37.5% portfolio allocation (V6.20) |
 | `OPTIONS_SWING_DTE_MIN` | 14 | Minimum DTE for swing (V2.4, was 6) |
 | `OPTIONS_SWING_DTE_MAX` | 45 | Maximum DTE for swing |
 | `OPTIONS_DTE_MAX` | 60 | Universe filter max DTE (V2.23, was 30) |
@@ -632,8 +631,8 @@ flowchart TD
 
 | Parameter | Value | Description |
 |-----------|------:|-------------|
-| `OPTIONS_INTRADAY_ALLOCATION` | 0.0625 | 6.25% portfolio allocation |
-| `OPTIONS_INTRADAY_DTE_MAX` | 1 | Max DTE for intraday (0-1 DTE) |
+| `OPTIONS_INTRADAY_ALLOCATION` | 0.125 | 12.5% portfolio allocation (V6.20) |
+| `OPTIONS_INTRADAY_DTE_MAX` | 5 | Max DTE for intraday (1-5 DTE, V2.13) |
 | `OPTIONS_INTRADAY_DELTA_MIN` | 0.40 | Min delta for intraday |
 | `OPTIONS_INTRADAY_DELTA_MAX` | 0.60 | Max delta for intraday |
 | `INTRADAY_MAX_TRADES_PER_DAY` | 2 | Sniper mode: 2 trades max |
@@ -641,7 +640,7 @@ flowchart TD
 | `INTRADAY_FADE_MIN_MOVE` | 0.0050 | 0.50% min for FADE |
 | `INTRADAY_FADE_MAX_MOVE` | 0.0120 | 1.20% max for FADE |
 | `INTRADAY_MOMENTUM_MIN_MOVE` | 0.0080 | 0.80% min for MOMENTUM |
-| `INTRADAY_DEBIT_FADE_VIX_MIN` | 13.5 | Min VIX for intraday debit fade (V2.19) |
+| `INTRADAY_DEBIT_FADE_VIX_MIN` | 9.0 | Min VIX for intraday debit fade (V6.13: was 13.5) |
 
 ### Config Values - Cold Start (V2.3.20)
 
@@ -662,43 +661,44 @@ When a spread's net value approaches zero (neutrality), the system triggers an e
 ## Hedge Engine
 
 **File:** `engines/satellite/hedge_engine.py`
-**Purpose:** Regime-based tail protection with TMF and PSQ.
+**Purpose:** Regime-based tail protection with SH (V6.11: TMF/PSQ retired).
 
 ### Flowchart
 
 ```mermaid
 flowchart TD
-    START[Hedge Allocation] --> REGIME{Regime Score?}
+    START[Hedge Allocation] --> GATE{Regime < 50?}
 
-    REGIME -->|>= 70| NONE[0% Hedge<br/>Full Risk-On]
-    REGIME -->|60-69| L1[Level 1: 5% TMF]
-    REGIME -->|50-59| L2[Level 2: 10% TMF + 5% PSQ]
-    REGIME -->|40-49| L3[Level 3: 15% TMF + 10% PSQ]
-    REGIME -->|< 40| L4[Level 4: 20% TMF + 10% PSQ]
+    GATE -->|No| NONE[0% SH<br/>Regime >= 50: No Hedge]
+    GATE -->|Yes| REGIME{Regime Score?}
 
-    L1 --> EMIT[Emit TargetWeight<br/>Urgency: EOD]
-    L2 --> EMIT
-    L3 --> EMIT
-    L4 --> EMIT
+    REGIME -->|40-49| LIGHT[Light: 5% SH<br/>CAUTIOUS]
+    REGIME -->|30-39| MEDIUM[Medium: 8% SH<br/>DEFENSIVE]
+    REGIME -->|< 30| FULL[Full: 10% SH<br/>RISK_OFF]
+
+    LIGHT --> EMIT[Emit TargetWeight<br/>Urgency: EOD]
+    MEDIUM --> EMIT
+    FULL --> EMIT
 ```
 
 ### Config Values
 
 | Parameter | Value | Description |
 |-----------|------:|-------------|
-| `HEDGE_REGIME_THRESHOLD` | 70 | No hedge above this score |
-| `HEDGE_L1_THRESHOLD` | 60 | Level 1 hedge threshold |
-| `HEDGE_L2_THRESHOLD` | 50 | Level 2 hedge threshold |
-| `HEDGE_L3_THRESHOLD` | 40 | Level 3 hedge threshold |
-| `HEDGE_TMF_MAX` | 0.20 | Max TMF allocation |
-| `HEDGE_PSQ_MAX` | 0.10 | Max PSQ allocation |
+| `HEDGE_REGIME_GATE` | 50 | No hedge above this score (V3.0) |
+| `HEDGE_LEVEL_1` | 50 | Below this: light hedge |
+| `HEDGE_LEVEL_2` | 40 | Below this: medium hedge |
+| `HEDGE_LEVEL_3` | 30 | Below this: full hedge |
+| `SH_LIGHT` | 0.05 | Light hedge: 5% SH |
+| `SH_MEDIUM` | 0.08 | Medium hedge: 8% SH |
+| `SH_FULL` | 0.10 | Full hedge: 10% SH |
 
 ---
 
 ## Yield Sleeve
 
 **File:** `engines/satellite/yield_sleeve.py`
-**Purpose:** Cash management via SHV (Short-Term Treasury ETF).
+**Purpose:** Cash management via SHV (Short-Term Treasury ETF). V6.11: Removed from default universe (spec only).
 
 ### Flowchart
 
@@ -802,22 +802,19 @@ if shortfall > 0:
 
 | Group | Max Net Long | Max Gross | Symbols |
 |-------|:------------:|:---------:|---------|
-| NASDAQ_BETA | 50% | 75% | QLD, TQQQ, PSQ |
-| SPY_BETA | 40% | 40% | SSO |
-| SMALL_CAP_BETA | 25% | 25% | TNA |
-| FINANCIALS_BETA | 15% | 15% | FAS |
-| RATES | 99% | 99% | TMF, SHV (V2.3.17) |
+| NASDAQ_BETA | 50% | 75% | QLD, TQQQ, SOXL |
+| SPY_BETA | 40% | 50% | SSO, SPXL, SH (inverse) |
+| COMMODITIES | 25% | 25% | UGL, UCO |
 
 ### Source Allocation Limits
 
 | Source | Max % | Description |
 |--------|------:|-------------|
-| TREND | 40% | Core trend following |
-| OPT | 30% | Swing options |
-| OPT_INTRADAY | 5% | Intraday options |
+| TREND | 40% | Core trend following (V6.11: was 55%) |
+| OPT | 50% | Options (V6.20: was 30%) |
+| OPT_INTRADAY | 12.5% | Intraday options (V6.20: was 5%) |
 | MR | 10% | Mean reversion |
-| HEDGE | 30% | Hedging |
-| YIELD | 99% | Cash management (V2.3.17) |
+| HEDGE | 10% | SH hedge (V6.11: was 30% for TMF+PSQ) |
 | COLD_START | 35% | Cold start entries |
 | RISK | 100% | Risk-driven exits |
 | ROUTER | 100% | Router-initiated trades |
@@ -830,7 +827,9 @@ if shortfall > 0:
 
 | Safeguard | Threshold | Action |
 |-----------|:---------:|--------|
-| Kill Switch | 5% daily loss | Liquidate ALL (V2.3.17) |
+| Kill Switch Tier 3 | 6% daily loss | Liquidate ALL (V2.27: graduated) |
+| Kill Switch Tier 2 | 4% daily loss | Exit trend, keep spreads |
+| Kill Switch Tier 1 | 2% daily loss | Reduce trend 50%, block new options |
 | Panic Mode | SPY -4% | Liquidate longs |
 | Weekly Breaker | 5% WTD loss | 50% sizing |
 | Gap Filter | SPY -1.5% gap | Block MR |
@@ -846,9 +845,9 @@ if shortfall > 0:
 | MR | RSI Oversold | < 25 |
 | MR | Drop | > 2.5% |
 | MR | VIX | < 35 |
-| Options | Regime | >= 40 |
+| Options | Regime | >= 50 (V3.0) |
 | Options (Swing) | DTE | 14-45 |
-| Options (Intraday) | DTE | 0-1 |
+| Options (Intraday) | DTE | 1-5 |
 
 ### Key Times (Eastern)
 
@@ -861,8 +860,8 @@ if shortfall > 0:
 | 13:55 | Time guard starts |
 | 14:10 | Time guard ends |
 | 15:00 | MR window closes |
-| 15:30 | Intraday options force close |
-| 15:45 | EOD processing, MOO submit, TQQQ/SOXL close |
+| 15:25 | Intraday options force close (V6.15: was 15:30) |
+| 15:45 | EOD processing, MOO submit, TQQQ/SPXL/SOXL close |
 | 16:00 | Market close, state persist |
 
 ---
@@ -888,6 +887,11 @@ if shortfall > 0:
 | V2.28.1 | 2026-02-04 | Graduated KS tiers (2/4/6%), tightened governor |
 | V2.29 | 2026-02-04 | Ghost spread flush, dynamic governor recovery, StartupGate |
 | V2.30 | 2026-02-04 | All-Weather StartupGate redesign, bearish options path fix |
+| V3.0 | 2026-02-05 | Regime-based capital (SEED/GROWTH removed), regime min 50 |
+| V5.3 | 2026-02-06 | 4-factor regime model (Momentum/VIX Combined/Trend/Drawdown) |
+| V6.11 | 2026-02-08 | Universe redesign: UGL/UCO replace TNA/FAS, SH replaces TMF/PSQ |
+| V6.20 | 2026-02-10 | Options allocation 50% (isolation profile), VASS DTE expansions |
+| V9.2 | 2026-02-12 | MICRO telemetry, bear-regime fixes, VASS debit spread R:R |
 
 ---
 

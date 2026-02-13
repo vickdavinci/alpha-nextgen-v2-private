@@ -90,7 +90,7 @@ This represents cash that **could be deployed** to SHV.
 |-----------|------:|
 | Total equity | $120,000 |
 | QLD position | $35,000 |
-| TMF position | $12,000 |
+| SH position | $12,000 |
 | Current SHV | $40,000 |
 | **Unallocated cash** | **$33,000** |
 
@@ -206,7 +206,7 @@ The **virtual lockbox capital** is physically invested in SHV.
 |-----------|------:|-------|
 | Total equity | $150,000 | |
 | Locked amount | $10,500 | From $100k milestone |
-| Non-SHV positions | $80,000 | QLD, TMF, etc. |
+| Non-SHV positions | $80,000 | QLD, SH, etc. |
 | **Total SHV holdings** | **$59,500** | |
 | ↳ Locked portion | $10,500 | Cannot be traded |
 | ↳ Available portion | $49,000 | Can be liquidated |
@@ -406,41 +406,9 @@ If resources are constrained, Yield Sleeve is first to be reduced or skipped.
 
 ## 10.10 Exposure Group Consideration
 
-### RATES Group
+### Exposure Group Note (V6.11)
 
-SHV is in the **RATES** exposure group along with TMF:
-
-| Symbol | Type | Group |
-|--------|------|-------|
-| SHV | Short Treasury (Yield) | RATES |
-| TMF | 3× Long Treasury (Hedge) | RATES |
-
-**RATES Group Limits:**
-
-| Limit | Value |
-|-------|:-----:|
-| Max Net Long | 40% |
-| Max Gross | 40% |
-
-### Potential Conflict
-
-In RISK_OFF scenarios:
-- TMF hedge: 20%
-- SHV yield: Could be 30%+
-- Combined RATES: 50%+ (exceeds limit)
-
-**Resolution:** Portfolio Router scales down SHV to fit within RATES limit. Hedge allocation takes priority over yield.
-
-```
-Example:
-  TMF target: 20%
-  SHV target: 35%
-  RATES limit: 40%
-  
-  Adjusted:
-  TMF: 20% (hedge priority)
-  SHV: 20% (scaled to fit)
-```
+> **V6.11 Change:** The RATES exposure group (which contained TMF + SHV) has been removed. TMF is retired, and SHV is no longer part of the default trading universe. SH (ProShares Short S&P 500) is now the only hedge symbol, in the SPY_BETA group. If yield sleeve is re-enabled, SHV would need its own exposure group or be unGrouped.
 
 ---
 
@@ -454,12 +422,9 @@ Example:
 | Yield (current) | ~5% | Approximate annual yield |
 | Expense ratio | 0.15% | Annual fund expense |
 
-### Exposure Limits
+### Exposure Limits (V6.11 Note)
 
-| Parameter | Value | Description |
-|-----------|:-----:|-------------|
-| RATES Max Net | 40% | Maximum combined TMF + SHV |
-| RATES Max Gross | 40% | Same (no short exposure) |
+> V6.11: RATES group removed (TMF retired). Yield Sleeve removed from default universe. These limits are historical reference only.
 
 ---
 
@@ -541,19 +506,16 @@ Next day:
 
 ```
 Regime = 18 (RISK_OFF severe)
-  • TMF target: 20%
-  • PSQ target: 10%
+  • SH target: 10% (V6.11: full hedge)
   • Unallocated cash: 45%
-  
-RATES limit: 40%
-TMF (20%) already at hedge target
 
-SHV allocation:
+No RATES limit applies (V6.11: group removed)
+
+SHV allocation (if enabled):
   • Target: 45%
-  • Allowed: 40% − 20% = 20%
-  • Actual: 20%
-  
-Remaining 25% stays as cash
+  • No group limit conflict
+
+Note: In V6.11, SHV is not in the default universe
 ```
 
 ### Scenario 4: Rapid Position Changes
@@ -582,8 +544,8 @@ SHV acts as a buffer, absorbing and releasing cash as needed
 | **Automatic liquidation** | No manual intervention for cash management |
 | **Lockbox integration** | Protected capital physically in SHV but logically excluded |
 | **EOD rebalancing** | Batches with other EOD orders; no intraday churn |
-| **RATES group membership** | Subject to 40% combined limit with TMF |
-| **Hedge priority over yield** | TMF allocation maintained; SHV scaled if needed |
+| **V6.11: Removed from default universe** | SHV no longer actively traded; spec retained for future use |
+| **Hedge priority over yield** | Hedge allocation maintained; SHV scaled if needed |
 
 ---
 

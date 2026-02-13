@@ -258,7 +258,7 @@ flowchart TB
 
     subgraph L6["LEVEL 6: EXECUTION (Lowest)"]
         L6A["Order Type Selection"]
-        L6B["SHV Liquidation Priority"]
+        L6B["Cash/Yield Liquidation Priority"]
         L6C["Order Tagging"]
     end
 

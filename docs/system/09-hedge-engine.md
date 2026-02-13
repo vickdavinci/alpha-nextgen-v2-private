@@ -116,6 +116,8 @@ Hedge allocation scales with regime deterioration using SH only:
 | **30 - 39** | DEFENSIVE | 8% | MEDIUM |
 | **< 30** | RISK_OFF | 10% | FULL |
 
+> **Config:** `HEDGE_LEVEL_1 = 50`, `HEDGE_LEVEL_2 = 40`, `HEDGE_LEVEL_3 = 30`.
+
 ### 9.3.2 Visual Representation
 
 ```
@@ -266,9 +268,9 @@ flowchart TD
     end
 
     subgraph DETERMINE["Determine Target Allocation"]
-        R1{"Score >= 50?"}
-        R2{"Score >= 40?"}
-        R3{"Score >= 30?"}
+        R1{"Score >= 50?<br/>(HEDGE_LEVEL_1)"}
+        R2{"Score >= 40?<br/>(HEDGE_LEVEL_2)"}
+        R3{"Score >= 30?<br/>(HEDGE_LEVEL_3)"}
 
         A1["SH: 0%<br/>Tier: NONE"]
         A2["SH: 5%<br/>Tier: LIGHT"]
@@ -586,7 +588,7 @@ Limit: 50% gross
 ```
 Day 1: Score = 18 -> SH: 10% (FULL)
 Day 2: Score = 35 -> SH: 8% (MEDIUM)
-Day 3: Score = 45 -> SH: 5% (LIGHT)
+Day 3: Score = 42 -> SH: 5% (LIGHT)
 Day 4: Score = 55 -> SH: 0% (NONE)
 ```
 

@@ -1683,20 +1683,20 @@ class TestDualModeArchitecture:
         assert mode == OptionsMode.SWING
 
     def test_get_mode_allocation_intraday(self, engine):
-        """Test intraday mode allocation is 6.25% (config.OPTIONS_INTRADAY_ALLOCATION)."""
+        """Test intraday mode allocation is 12.5% (config.OPTIONS_INTRADAY_ALLOCATION)."""
         from models.enums import OptionsMode
 
         allocation = engine.get_mode_allocation(OptionsMode.INTRADAY, portfolio_value=100000)
-        # 6.25% of $100,000 = $6,250
-        assert allocation == 6250.0
+        # V6.20: 12.5% of $100,000 = $12,500
+        assert allocation == 12500.0
 
     def test_get_mode_allocation_swing(self, engine):
-        """Test swing mode allocation is 18.75% (config.OPTIONS_SWING_ALLOCATION)."""
+        """Test swing mode allocation is 37.5% (config.OPTIONS_SWING_ALLOCATION)."""
         from models.enums import OptionsMode
 
         allocation = engine.get_mode_allocation(OptionsMode.SWING, portfolio_value=100000)
-        # 18.75% of $100,000 = $18,750
-        assert allocation == 18750.0
+        # V6.20: 37.5% of $100,000 = $37,500
+        assert allocation == 37500.0
 
     def test_check_intraday_entry_blocked_existing_position(self, engine):
         """Intraday entry blocked when intraday position exists."""
@@ -1772,8 +1772,20 @@ class TestIntradayForceExit:
 
         return engine
 
-    def test_intraday_force_exit_at_1530(self, engine_with_intraday_position):
-        """Test intraday force exit at 15:30 ET."""
+    def test_intraday_force_exit_at_1525(self, engine_with_intraday_position):
+        """V6.15: Test intraday force exit at 15:25 ET (moved from 15:30)."""
+        result = engine_with_intraday_position.check_intraday_force_exit(
+            current_hour=15,
+            current_minute=25,
+            current_price=1.10,
+        )
+
+        assert result is not None
+        assert result.target_weight == 0.0
+        assert "INTRADAY_TIME_EXIT_1525" in result.reason
+
+    def test_intraday_force_exit_after_1525(self, engine_with_intraday_position):
+        """V6.15: Test intraday force exit after 15:25 ET."""
         result = engine_with_intraday_position.check_intraday_force_exit(
             current_hour=15,
             current_minute=30,
@@ -1781,25 +1793,13 @@ class TestIntradayForceExit:
         )
 
         assert result is not None
-        assert result.target_weight == 0.0
-        assert "INTRADAY_TIME_EXIT_1530" in result.reason
+        assert "INTRADAY_TIME_EXIT_1525" in result.reason
 
-    def test_intraday_force_exit_after_1530(self, engine_with_intraday_position):
-        """Test intraday force exit after 15:30 ET."""
+    def test_no_intraday_force_exit_before_1525(self, engine_with_intraday_position):
+        """V6.15: Test no force exit before 15:25 ET."""
         result = engine_with_intraday_position.check_intraday_force_exit(
             current_hour=15,
-            current_minute=35,
-            current_price=1.10,
-        )
-
-        assert result is not None
-        assert "INTRADAY_TIME_EXIT_1530" in result.reason
-
-    def test_no_intraday_force_exit_before_1530(self, engine_with_intraday_position):
-        """Test no force exit before 15:30 ET."""
-        result = engine_with_intraday_position.check_intraday_force_exit(
-            current_hour=15,
-            current_minute=29,
+            current_minute=24,
             current_price=1.10,
         )
 
@@ -2419,16 +2419,15 @@ class TestRejectionRecovery:
         assert engine._pending_spread_width is None
         assert engine._pending_num_contracts is None
         assert engine._pending_entry_score is None
-        assert engine._entry_attempted_today is False
+        # V9.0: _entry_attempted_today is NOT cleared on cancel (fill-based tracking)
 
     def test_cancel_pending_spread_entry_idempotent(self, engine):
         """Test calling cancel when no spread pending is safe."""
         engine.cancel_pending_spread_entry()  # Should not raise
         assert engine._pending_spread_long_leg is None
-        assert engine._entry_attempted_today is False
 
-    def test_cancel_pending_intraday_entry_clears_and_decrements(self, engine):
-        """Test intraday rejection clears state and decrements counter."""
+    def test_cancel_pending_intraday_entry_clears_and_preserves_counters(self, engine):
+        """V9.0: Intraday rejection clears state but does NOT decrement counters (fill-based)."""
         engine._pending_intraday_entry = True
         engine._pending_contract = "PENDING"
         engine._pending_num_contracts = 1
@@ -2443,9 +2442,10 @@ class TestRejectionRecovery:
         assert engine._pending_contract is None
         assert engine._pending_num_contracts is None
         assert engine._pending_stop_pct is None
-        assert engine._intraday_trades_today == 0
-        assert engine._total_options_trades_today == 0
-        assert engine._trades_today == 0
+        # V9.0: Counters are fill-based, no decrement on cancel
+        assert engine._intraday_trades_today == 1
+        assert engine._total_options_trades_today == 1
+        assert engine._trades_today == 1
 
     def test_cancel_pending_intraday_no_underflow(self, engine):
         """Test intraday counter decrement does not go below 0."""
@@ -2738,7 +2738,7 @@ class TestNeutralityExit:
             long_leg_price=long_price,
             short_leg_price=short_price,
             regime_score=55.0,  # Dead zone
-            vix_current=20.0,
+            vix_current=14.0,  # V9.4: Below STRESS threshold (19.0) to test neutrality logic
             current_dte=15,
         )
 
@@ -2774,7 +2774,7 @@ class TestNeutralityExit:
             long_leg_price=long_price,
             short_leg_price=short_price,
             regime_score=70.0,  # V3.4: Outside dead zone (45-65) — bullish conviction
-            vix_current=20.0,
+            vix_current=14.0,  # V9.4: Below STRESS threshold (19.0) to test neutrality logic
             current_dte=15,
         )
 
@@ -2964,17 +2964,19 @@ class TestVASSCreditSpreadEntry:
 
     # --- Credit Entry Signal Tests ---
 
-    def test_credit_entry_signal_bull_put(self, engine, credit_short_leg, credit_long_leg):
-        """V3.0: Bull Put Credit entry should generate TargetWeight with credit metadata.
+    def test_credit_entry_blocked_in_stress_overlay(
+        self, engine, credit_short_leg, credit_long_leg
+    ):
+        """V9.4: BULL_PUT_CREDIT blocked when STRESS overlay active (VIX >= 19.0).
 
-        V3.0 thesis: PUT spreads (including Bull Put Credit) are allowed in bearish regimes (< 50).
-        V6.4: Short PUT strike (500) must be >= 3% OTM, so current_price must be >= 515.46.
+        V3.0 thesis: PUT spreads allowed in bearish regimes, but V6.22 STRESS overlay
+        now blocks BULL_PUT_CREDIT to prevent selling puts into rising vol.
         """
         signal = engine.check_credit_spread_entry_signal(
             regime_score=45.0,  # V3.0: Bearish regime (< 50) for PUT spreads
-            vix_current=28.0,  # High IV
+            vix_current=28.0,  # High IV → triggers STRESS overlay (>= 19.0)
             adx_value=30.0,
-            current_price=520.0,  # V6.4: Raised to pass 3% OTM gate (500/520 = 3.85% OTM)
+            current_price=520.0,
             ma200_value=480.0,
             iv_rank=70.0,
             current_hour=11,
@@ -2984,21 +2986,11 @@ class TestVASSCreditSpreadEntry:
             short_leg_contract=credit_short_leg,
             long_leg_contract=credit_long_leg,
             strategy=SpreadStrategy.BULL_PUT_CREDIT,
-            direction=OptionDirection.PUT,  # V6.0: Direction from conviction resolution
+            direction=OptionDirection.PUT,
         )
 
-        assert signal is not None
-        assert signal.metadata["spread_type"] == "BULL_PUT_CREDIT"
-        assert signal.metadata["is_credit_spread"] is True
-        assert signal.metadata["spread_credit_received"] > 0
-        assert signal.urgency == Urgency.IMMEDIATE
-        # V2.23.1 APVP: Primary symbol must be LONG leg (protection) for router combo convention
-        assert (
-            signal.symbol == credit_long_leg.symbol
-        ), "Primary symbol must be long leg (protection)"
-        assert signal.requested_quantity > 0, "Quantity must be positive for router combo logic"
-        # Short leg goes in metadata for combo order
-        assert signal.metadata["spread_short_leg_symbol"] == credit_short_leg.symbol
+        # V9.4: BULL_PUT_CREDIT blocked by STRESS overlay at VIX >= 19.0
+        assert signal is None
 
     def test_credit_entry_blocked_low_credit(self, engine, credit_long_leg):
         """V3.0: Credit spread with insufficient premium should be rejected."""
@@ -3049,21 +3041,19 @@ class TestVASSCreditSpreadEntry:
         assert max_loss_per > 0  # Defined max loss
         assert total_margin <= 7500  # Never exceeds allocation
 
-    def test_credit_put_allowed_lower_neutral_reduced_sizing(
+    def test_credit_put_blocked_lower_neutral_stress_overlay(
         self, engine, credit_short_leg, credit_long_leg
     ):
-        """V3.9: PUT credit spread allowed in Lower NEUTRAL (50-59) at 50% sizing.
+        """V9.4: PUT credit spread in Lower NEUTRAL blocked by STRESS overlay.
 
         V3.9 thesis: Lower NEUTRAL allows PUT-only at reduced sizing.
-        Upper NEUTRAL (60-69) is CALL-only zone.
-        BULL_PUT_CREDIT is PUT direction, so allowed at 50% in Lower NEUTRAL.
-        V6.4: Short PUT strike (500) must be >= 3% OTM, so current_price must be >= 515.46.
+        But V6.22 STRESS overlay (VIX >= 19.0) blocks BULL_PUT_CREDIT.
         """
         signal = engine.check_credit_spread_entry_signal(
-            regime_score=55.0,  # V3.9: Lower NEUTRAL (50-59) - PUT allowed at 50% sizing
-            vix_current=28.0,
+            regime_score=55.0,  # V3.9: Lower NEUTRAL (50-59)
+            vix_current=28.0,  # High IV → triggers STRESS overlay (>= 19.0)
             adx_value=30.0,
-            current_price=520.0,  # V6.4: Raised to pass 3% OTM gate (500/520 = 3.85% OTM)
+            current_price=520.0,
             ma200_value=480.0,
             iv_rank=70.0,
             current_hour=11,
@@ -3073,12 +3063,11 @@ class TestVASSCreditSpreadEntry:
             short_leg_contract=credit_short_leg,
             long_leg_contract=credit_long_leg,
             strategy=SpreadStrategy.BULL_PUT_CREDIT,
-            direction=OptionDirection.PUT,  # V6.0: Direction from conviction resolution
+            direction=OptionDirection.PUT,
         )
 
-        # V3.9: PUT allowed in Lower NEUTRAL at reduced sizing
-        assert signal is not None
-        assert "BULL_PUT_CREDIT" in signal.reason
+        # V9.4: BULL_PUT_CREDIT blocked by STRESS overlay at VIX >= 19.0
+        assert signal is None
 
     # --- IVSensor Tests ---
 

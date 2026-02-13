@@ -52,7 +52,7 @@ This glossary provides definitions for all acronyms, system-specific terms, math
 |------|------------|
 | **Days Running** | Counter tracking consecutive trading days since algorithm start or last kill switch |
 | **Delta Shares** | Difference between target position size and current holdings |
-| **Exposure Group** | Category of correlated symbols (NASDAQ_BETA, SPY_BETA, RATES) with aggregate limits |
+| **Exposure Group** | Category of correlated symbols (NASDAQ_BETA, SPY_BETA, COMMODITIES) with aggregate limits (V6.11: RATES removed) |
 | **Frozen Symbol** | Symbol temporarily excluded from trading due to split detection |
 | **Gap Filter** | Safeguard blocking intraday entries when SPY opens down >= 1.5% from prior close |
 | **GROWTH Phase** | Capital phase for accounts $100k-$500k with 40% max single position |
@@ -61,11 +61,11 @@ This glossary provides definitions for all acronyms, system-specific terms, math
 
 | Term | Definition |
 |------|------------|
-| **Hedge Engine** | Strategy engine managing TMF and PSQ allocations based on regime score |
+| **Hedge Engine** | Strategy engine managing SH allocation based on regime score (V6.11: TMF/PSQ retired) |
 | **Highest High** | Maximum price reached since position entry; used for Chandelier stop calculation |
 | **Hub-and-Spoke Architecture** | Design pattern where Portfolio Router (hub) coordinates all strategy engines (spokes) |
 | **Indicator Warmup** | Period required for indicators to have sufficient data for valid calculations |
-| **Kill Switch** | Emergency safeguard triggered by 3% daily portfolio loss; liquidates all positions |
+| **Kill Switch** | Tiered emergency safeguard: Tier 1 at 2% (reduce), Tier 2 at 4% (exit trend), Tier 3 at 6% (full liquidation) (V2.27) |
 | **Lockbox** | Virtual protection mechanism that excludes a portion of equity from tradeable capital |
 | **Lockbox Milestone** | Equity threshold ($100k, $200k) that triggers locking 10% of capital |
 
@@ -78,13 +78,13 @@ This glossary provides definitions for all acronyms, system-specific terms, math
 | **Panic Mode** | Safeguard triggered by SPY -4% intraday; liquidates leveraged longs but keeps hedges |
 | **Portfolio Router** | Central coordination component that aggregates, validates, and routes all orders |
 | **Position Manager** | Component tracking entry prices, highest highs, and stop levels for each position |
-| **Proxy Symbol** | Symbol used for data/calculations but never traded (SPY, RSP, HYG, IEF for regime) |
+| **Proxy Symbol** | Symbol used for data/calculations but never traded (SPY, RSP, VIX for regime; V5.3: HYG/IEF removed) |
 
 ### R-S
 
 | Term | Definition |
 |------|------------|
-| **Regime Engine** | Core engine calculating market state score (0-100) from five factors (V2.3: added VIX) |
+| **Regime Engine** | Core engine calculating market state score (0-100) from four factors: Momentum (30%), VIX Combined (35%), Trend (20%), Drawdown (15%) (V5.3) |
 | **Regime Score** | Composite 0-100 value indicating market conditions; drives hedge and entry decisions |
 | **Regime State** | Categorical classification: RISK_ON, NEUTRAL, CAUTIOUS, DEFENSIVE, RISK_OFF |
 | **Risk Engine** | Core engine implementing all circuit breakers and safeguards |
@@ -99,8 +99,8 @@ This glossary provides definitions for all acronyms, system-specific terms, math
 | **TargetWeight** | Data object expressing strategy intention: symbol, weight, urgency, reason |
 | **Time Guard** | Daily 13:55-14:10 ET window blocking all entries (Fed announcement protection) |
 | **Tradeable Equity** | Portfolio value minus lockbox amount; basis for position sizing |
-| **Traded Symbol** | Symbol that the system actively buys and sells (TQQQ, SOXL, QLD, SSO, TMF, PSQ, SHV) |
-| **Trend Engine** | Strategy engine detecting Bollinger Band compression breakouts for QLD/SSO |
+| **Traded Symbol** | Symbol that the system actively buys and sells (QLD, SSO, UGL, UCO, TQQQ, SPXL, SOXL, SH) (V6.11) |
+| **Trend Engine** | Strategy engine detecting MA200 + ADX confirmation entries for QLD/SSO/UGL/UCO (V6.11: BB compression replaced) |
 | **Urgency** | Signal priority classification: IMMEDIATE (execute now) or EOD (submit as MOO) |
 | **Vol Shock** | Safeguard triggered when SPY 1-minute bar range exceeds 3x ATR; pauses entries 15 min |
 | **Warm Entry** | Conservative position entry during cold start period (50% of normal size) |
@@ -115,9 +115,11 @@ This glossary provides definitions for all acronyms, system-specific terms, math
 |-------|:-----------:|:---------:|:------:|:----------:|
 | **RISK_ON** | 70-100 | Allowed | None | Allowed |
 | **NEUTRAL** | 50-69 | Allowed | None | If > 50 |
-| **CAUTIOUS** | 40-49 | Allowed | 10% TMF | Blocked |
-| **DEFENSIVE** | 30-39 | Reduced | 15% TMF + 5% PSQ | Blocked |
-| **RISK_OFF** | 0-29 | Blocked | 20% TMF + 10% PSQ | Blocked |
+| **CAUTIOUS** | 45-49 | Allowed | 5% SH | Blocked |
+| **DEFENSIVE** | 35-44 | Reduced | 8% SH | Blocked |
+| **RISK_OFF** | 0-34 | Blocked | 10% SH | Blocked |
+
+> **V6.15/V6.11 Note:** Thresholds adjusted (CAUTIOUS 45, DEFENSIVE 35). TMF/PSQ replaced with SH.
 
 ---
 
@@ -143,9 +145,12 @@ Multiplier Selection:
 Rule: Stop NEVER moves down
 ```
 
-### Regime Score (V2.3)
+### Regime Score (V5.3)
 ```
-Raw Score = (Trend x 0.30) + (VIX x 0.20) + (Volatility x 0.15) + (Breadth x 0.20) + (Credit x 0.15)
+Raw Score = (Momentum x 0.30) + (VIX_Combined x 0.35) + (Trend x 0.20) + (Drawdown x 0.15)
+
+VIX_Combined = (VIX_Level x 0.65) + (VIX_Direction x 0.35)
+  - Clamp at 44 when VIX >= 25
 
 Smoothed Score = (0.30 x Raw) + (0.70 x Previous Smoothed)
 ```
@@ -157,12 +162,16 @@ Smoothed Score = (0.30 x Raw) + (0.70 x Previous Smoothed)
 3. Annualize: Realized Vol = sigma x sqrt(252)
 ```
 
-### Kill Switch Check
+### Kill Switch Check (V2.27 Tiered)
 ```
-Trigger if EITHER:
-  (equity_prior_close - current) / equity_prior_close >= 0.03
+Tier 1 (2%): Reduce trend 50%, block new options entries
+Tier 2 (4%): Exit trend positions, keep spreads
+Tier 3 (6%): Full liquidation of ALL positions
+
+Trigger check vs BOTH:
+  (equity_prior_close - current) / equity_prior_close >= threshold
   OR
-  (equity_sod - current) / equity_sod >= 0.03
+  (equity_sod - current) / equity_sod >= threshold
 ```
 
 ### Position Sizing
@@ -176,34 +185,38 @@ Delta Shares = floor(Delta Value / Current Price)
 
 ## Symbols Reference
 
-### Traded Symbols
+### Traded Symbols (V6.11)
 
 | Symbol | Name | Leverage | Strategy | Overnight |
 |--------|------|:--------:|----------|:---------:|
-| **TQQQ** | ProShares UltraPro QQQ | 3x | Mean Reversion | No |
-| **SOXL** | Direxion Semiconductor Bull | 3x | Mean Reversion | No |
 | **QLD** | ProShares Ultra QQQ | 2x | Trend, Cold Start | Yes |
 | **SSO** | ProShares Ultra S&P 500 | 2x | Trend, Cold Start | Yes |
-| **TMF** | Direxion 20+ Year Treasury Bull | 3x | Hedge | Yes |
-| **PSQ** | ProShares Short QQQ | 1x | Hedge | Yes |
-| **SHV** | iShares Short Treasury Bond | 1x | Yield, Lockbox | Yes |
+| **UGL** | ProShares Ultra Gold | 2x | Trend (Commodity) | Yes |
+| **UCO** | ProShares Ultra Bloomberg Crude Oil | 2x | Trend (Commodity) | Yes |
+| **TQQQ** | ProShares UltraPro QQQ | 3x | Mean Reversion | No |
+| **SPXL** | Direxion Daily S&P 500 Bull 3X | 3x | Mean Reversion | No |
+| **SOXL** | Direxion Semiconductor Bull | 3x | Mean Reversion | No |
+| **SH** | ProShares Short S&P 500 | 1x | Hedge (Inverse) | Yes |
+
+> **V6.11 Note:** TMF, PSQ, SHV removed from universe. TNA/FAS replaced by UGL/UCO. SPXL added to MR.
 
 ### Proxy Symbols (Data Only - Never Traded)
 
 | Symbol | Name | Purpose |
 |--------|------|---------|
-| **SPY** | SPDR S&P 500 ETF | Trend factor, volatility, panic mode, gap filter, vol shock |
-| **RSP** | Invesco S&P 500 Equal Weight | Breadth factor (equal weight vs cap weight) |
-| **HYG** | iShares iBoxx High Yield Corporate Bond | Credit factor (risk appetite) |
-| **IEF** | iShares 7-10 Year Treasury Bond | Credit factor (safe haven) |
+| **SPY** | SPDR S&P 500 ETF | Trend factor, panic mode, gap filter, vol shock |
+| **RSP** | Invesco S&P 500 Equal Weight | Breadth/momentum factor |
+| **VIX** | CBOE Volatility Index | VIX Combined factor, MR filter, Options routing |
 
-### Exposure Groups
+> **V5.3 Note:** HYG and IEF removed as proxy symbols (credit/breadth factors removed from regime model).
+
+### Exposure Groups (V6.11)
 
 | Group | Symbols | Max Net Long | Max Net Short | Max Gross |
 |-------|---------|:------------:|:-------------:|:---------:|
-| **NASDAQ_BETA** | TQQQ, QLD, SOXL, PSQ | 50% | 30% | 75% |
-| **SPY_BETA** | SSO | 40% | 0% | 40% |
-| **RATES** | TMF, SHV | 40% | 0% | 40% |
+| **NASDAQ_BETA** | QLD, TQQQ, SOXL | 50% | 30% | 75% |
+| **SPY_BETA** | SSO, SPXL, SH (inverse) | 40% | 15% | 50% |
+| **COMMODITIES** | UGL, UCO | 25% | 0% | 25% |
 
 ---
 
@@ -211,7 +224,9 @@ Delta Shares = floor(Delta Value / Current Price)
 
 | Threshold | Value | Triggers |
 |-----------|:-----:|----------|
-| Kill Switch | 3% daily loss | Full liquidation, cold start reset |
+| Kill Switch Tier 3 | 6% daily loss | Full liquidation, cold start reset (V2.27) |
+| Kill Switch Tier 2 | 4% daily loss | Exit trend, keep spreads |
+| Kill Switch Tier 1 | 2% daily loss | Reduce trend 50%, block new options |
 | Panic Mode | SPY -4% intraday | Liquidate leveraged longs only |
 | Weekly Breaker | 5% WTD loss | 50% sizing reduction |
 | Gap Filter | SPY -1.5% gap | Block MR/warm entries for day |
@@ -219,12 +234,12 @@ Delta Shares = floor(Delta Value / Current Price)
 | BB Compression | Bandwidth < 10% | Trend entry eligible |
 | RSI Oversold | RSI(5) < 25 | MR entry eligible |
 | MR Drop | -2.5% from open | MR entry condition |
-| MR Target | +2% profit | MR exit target |
+| MR Target | +3% profit | MR exit target |
 | MR Stop | -2% loss | MR exit stop |
-| Trend Regime Min | Score >= 40 | Trend entry allowed |
+| Trend Regime Min | Score >= 50 | Trend entry allowed (V3.0: was 40) |
 | Trend Regime Exit | Score < 30 | Force trend exit |
 | Warm Entry Regime | Score > 50 | Cold start entry allowed |
-| Hedge Start | Score < 40 | Begin TMF allocation |
+| Hedge Start | Score < 50 | Begin SH allocation (V3.0/V6.11) |
 
 ---
 
@@ -241,7 +256,8 @@ Delta Shares = floor(Delta Value / Current Price)
 | 13:55 | Time guard starts (entries blocked) |
 | 14:10 | Time guard ends |
 | 15:00 | MR entry window closes |
-| 15:45 | TQQQ/SOXL force close, EOD processing, MOO submission |
+| 15:25 | Intraday options force close (V6.15) |
+| 15:45 | TQQQ/SPXL/SOXL force close, EOD processing, MOO submission |
 | 16:00 | Market close, state persistence |
 
 ---

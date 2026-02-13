@@ -768,7 +768,7 @@ if not self.IsWarmingUp and self.Time.weekday() == 0:
 | INIT | Once at startup | `INIT: Complete \| Cash=$50,000` |
 | FILL | On trade execution | `FILL: BUY 100 TQQQ @ $45.00` |
 | INVALID | On order errors | `INVALID: TQQQ - Insufficient funds` |
-| KILL_SWITCH | On 3% daily loss | `KILL_SWITCH: Triggered` |
+| KILL_SWITCH | On tiered daily loss (2%/4%/6%) | `KILL_SWITCH: Tier X triggered` |
 | PANIC_MODE | On SPY -4% drop | `PANIC_MODE: Triggered` |
 | SPLIT | On proxy splits | `SPLIT: SPY (proxy) - freezing all` |
 | STATE_ERROR | On persistence errors | `STATE_ERROR: Failed to load` |

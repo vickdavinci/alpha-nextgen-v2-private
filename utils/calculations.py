@@ -1352,7 +1352,7 @@ def vix_direction_score_v4(
     elif vix_change_pct >= falling_threshold:
         return score_falling  # Fear decreasing
     elif vix_change_pct >= falling_fast_threshold:
-        return score_falling  # Fear decreasing (same as falling)
+        return score_falling_fast  # Fear decreasing quickly
     else:
         return score_falling_fast  # Fear collapsing - strong bullish
 

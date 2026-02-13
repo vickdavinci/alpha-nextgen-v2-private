@@ -176,8 +176,8 @@ class PortfolioRouter:
     # RESERVED_OPTIONS_PCT (25%) ensures buying power is available for options
     SOURCE_ALLOCATION_LIMITS: Dict[str, float] = {
         "TREND": config.TREND_TOTAL_ALLOCATION,  # 55% max (was 70%)
-        "OPT": config.OPTIONS_ALLOCATION_MAX,  # 30% max (reserved for swing spreads)
-        "OPT_INTRADAY": 0.05,  # 5% max for intraday "Sniper" mode
+        "OPT": config.OPTIONS_SWING_ALLOCATION,  # Swing options share of total portfolio
+        "OPT_INTRADAY": config.OPTIONS_INTRADAY_ALLOCATION,  # Intraday options share
         "MR": config.MR_TOTAL_ALLOCATION,  # 10% max
         "HEDGE": 0.30,  # Hedge: 30% max (TMF 20% + PSQ 10%)
         "COLD_START": 0.35,  # Cold Start: 35% max (subset of TREND)
@@ -191,6 +191,9 @@ class PortfolioRouter:
     def __init__(self, algorithm: Optional["QCAlgorithm"] = None):
         """Initialize Portfolio Router."""
         self.algorithm = algorithm
+        # Runtime source limits (starts from class defaults, then isolation profile can override).
+        self._source_allocation_limits = dict(self.SOURCE_ALLOCATION_LIMITS)
+        self._apply_isolation_source_limits()
         self._exposure_calc = ExposureCalculator()
         self._pending_weights: List[TargetWeight] = []
         self._last_orders: List[OrderIntent] = []
@@ -211,9 +214,59 @@ class PortfolioRouter:
 
     def log(self, message: str) -> None:
         """Log via algorithm or skip for testing."""
-        # V2.3.21: Re-enabled logging for SHV auto-liquidation visibility
         if self.algorithm:
+            if message.startswith("MARGIN_TRACK:"):
+                is_live = bool(
+                    hasattr(self.algorithm, "LiveMode") and self.algorithm.LiveMode  # type: ignore[attr-defined]
+                )
+                enabled = bool(
+                    getattr(
+                        config,
+                        "MARGIN_TRACK_LOG_LIVE_ENABLED"
+                        if is_live
+                        else "MARGIN_TRACK_LOG_BACKTEST_ENABLED",
+                        is_live,
+                    )
+                )
+                if not enabled:
+                    return
             self.algorithm.Log(message)  # type: ignore[attr-defined]
+
+    def _apply_isolation_source_limits(self) -> None:
+        """
+        In isolation mode, disabled engines should not retain budget.
+        Normalize enabled source limits to 100% so capacity reflects active engines only.
+        """
+        if not getattr(config, "ISOLATION_TEST_MODE", False):
+            return
+
+        enabled_weights: Dict[str, float] = {}
+        if getattr(config, "ISOLATION_OPTIONS_ENABLED", False):
+            enabled_weights["OPT"] = float(getattr(config, "OPTIONS_SWING_ALLOCATION", 0.0))
+            enabled_weights["OPT_INTRADAY"] = float(
+                getattr(config, "OPTIONS_INTRADAY_ALLOCATION", 0.0)
+            )
+        if getattr(config, "ISOLATION_TREND_ENABLED", False):
+            enabled_weights["TREND"] = float(getattr(config, "TREND_TOTAL_ALLOCATION", 0.0))
+        if getattr(config, "ISOLATION_MR_ENABLED", False):
+            enabled_weights["MR"] = float(getattr(config, "MR_TOTAL_ALLOCATION", 0.0))
+        if getattr(config, "ISOLATION_HEDGE_ENABLED", False):
+            enabled_weights["HEDGE"] = 0.30
+        if getattr(config, "ISOLATION_COLD_START_ENABLED", False):
+            enabled_weights["COLD_START"] = 0.35
+
+        total = sum(v for v in enabled_weights.values() if v > 0)
+        if total <= 0:
+            return
+
+        # Zero out controllable engine budgets first.
+        for source in ("TREND", "OPT", "OPT_INTRADAY", "MR", "HEDGE", "COLD_START"):
+            self._source_allocation_limits[source] = 0.0
+
+        # Normalize enabled budgets to 100%.
+        for source, value in enabled_weights.items():
+            if value > 0:
+                self._source_allocation_limits[source] = value / total
 
     def _should_log_rejection(self) -> bool:
         """
@@ -373,6 +426,139 @@ class PortfolioRouter:
         total_equity = self.algorithm.Portfolio.TotalPortfolioValue
         return total_equity * config.CAPITAL_PARTITION_OPTIONS
 
+    def get_options_budget_cap(self) -> float:
+        """
+        V8.2: Hard options entry budget.
+
+        Uses a single percentage-of-equity cap for options exposure to keep
+        normal entry gating simple and aligned with configured partition.
+        """
+        if not self.algorithm:
+            return 0.0
+        total_equity = self.algorithm.Portfolio.TotalPortfolioValue
+        cap_pct = float(getattr(config, "OPTIONS_BUDGET_CAP_PCT", config.CAPITAL_PARTITION_OPTIONS))
+        return max(0.0, total_equity * cap_pct)
+
+    def get_options_budget_used(self) -> float:
+        """
+        V8.2: Current options budget used.
+
+        For swing spreads we use tracked reserved margin (width-based), which is
+        stable and avoids mark-to-market noise. This is intentionally simple and
+        avoids double-counting spread legs.
+        """
+        return max(0.0, self.get_reserved_spread_margin())
+
+    def _is_option_symbol(self, symbol: str) -> bool:
+        """Heuristic option symbol detector used in router guards."""
+        sym = str(symbol).strip()
+        return len(sym) > 10 and ("C0" in sym or "P0" in sym)
+
+    def _get_live_option_qty(self, symbol: str) -> int:
+        """Return live portfolio quantity for symbol (0 when flat/not found)."""
+        if not self.algorithm:
+            return 0
+        target = str(symbol).strip()
+        try:
+            for kvp in self.algorithm.Portfolio:  # type: ignore[attr-defined]
+                holding = kvp.Value
+                if str(holding.Symbol).strip() == target:
+                    return int(holding.Quantity)
+        except Exception:
+            return 0
+        return 0
+
+    def _is_option_close_order(self, order: "OrderIntent") -> bool:
+        """
+        True when an option order reduces/close existing exposure.
+        Close orders must always be allowed through budget gate.
+        """
+        if not self._is_option_symbol(order.symbol):
+            return False
+
+        if order.is_combo and bool(
+            order.metadata and order.metadata.get("spread_close_short", False)
+        ):
+            return True
+
+        live_qty = self._get_live_option_qty(order.symbol)
+        if live_qty == 0:
+            return False
+
+        return (order.side == OrderSide.BUY and live_qty < 0) or (
+            order.side == OrderSide.SELL and live_qty > 0
+        )
+
+    def _estimate_option_order_margin_requirement(self, order: "OrderIntent") -> float:
+        """
+        Estimate incremental margin/capital usage for an option BUY entry.
+        """
+        if order.is_combo:
+            per_contract_margin, _ = self._estimate_combo_margin_per_contract(order.metadata)
+            if per_contract_margin > 0:
+                return per_contract_margin * abs(order.quantity)
+            return 0.0
+
+        if not self.algorithm:
+            return 0.0
+        try:
+            sec = self.algorithm.Securities[order.symbol]  # type: ignore[attr-defined]
+            price = float(getattr(sec, "Price", 0.0) or 0.0)
+            ask = float(getattr(sec, "AskPrice", 0.0) or 0.0)
+            if ask > 0:
+                price = ask
+            if price <= 0:
+                return 0.0
+            return abs(order.quantity) * price * 100.0
+        except Exception:
+            return 0.0
+
+    def check_options_budget_gate(self, order: "OrderIntent") -> Tuple[bool, str]:
+        """
+        V8.2: Primary options gate.
+
+        Blocks new options BUY entries that exceed the configured options budget.
+        """
+        if not getattr(config, "OPTIONS_BUDGET_GATE_ENABLED", True):
+            return True, ""
+
+        if not self._is_option_symbol(order.symbol):
+            return True, ""
+
+        # Never block risk-reduction orders.
+        if self._is_option_close_order(order):
+            return True, ""
+
+        # Options entries are submitted as BUY for combo open and long-option open.
+        if order.side != OrderSide.BUY:
+            return True, ""
+
+        cap = self.get_options_budget_cap()
+        if cap <= 0:
+            return True, ""
+
+        used = self.get_options_budget_used()
+        required = self._estimate_option_order_margin_requirement(order)
+        if required <= 0:
+            return True, ""
+
+        warn_pct = float(getattr(config, "OPTIONS_BUDGET_WARN_PCT", 0.90))
+        warn_level = cap * max(0.0, warn_pct)
+        if used >= warn_level:
+            self.log(
+                f"OPTIONS_BUDGET_WARN: Used=${used:,.0f} / Cap=${cap:,.0f} " f"({(used / cap):.1%})"
+            )
+
+        projected = used + required
+        if projected > cap:
+            reason = (
+                f"OPTIONS_BUDGET_GATE: BLOCKED | Used=${used:,.0f} + "
+                f"Req=${required:,.0f} > Cap=${cap:,.0f} ({(projected / cap):.1%})"
+            )
+            return False, reason
+
+        return True, ""
+
     def check_capital_partition(self, source: str, order_value: float) -> bool:
         """
         V2.18: Check if order would exceed capital partition for source.
@@ -501,10 +687,13 @@ class PortfolioRouter:
 
     def check_margin_utilization_gate(self, is_buy_order: bool = True) -> Tuple[bool, str]:
         """
-        V4.0.2: Check if margin utilization allows new position entries.
+        V4.0.2/V8.2: Emergency margin-utilization circuit breaker.
 
-        Uses the broker's ACTUAL margin numbers (TotalMarginUsed / TotalPortfolioValue)
-        instead of estimating per-position margin. This is more reliable because:
+        Uses broker ACTUAL margin numbers (TotalMarginUsed / TotalPortfolioValue).
+        In V8.2 this gate is intentionally an emergency brake only; normal
+        options throttling is handled by options budget gate.
+
+        Reliable because:
         1. Uses broker's actual margin model (includes all factors)
         2. Accounts for ALL positions (equities, options, everything)
         3. Dynamically adjusts as market conditions change
@@ -1011,10 +1200,38 @@ class PortfolioRouter:
         if not metadata:
             return 0.0, "ROUTER_MARGIN_META_MISSING"
 
+        def _strike_from_occ_symbol(symbol_text: str) -> Optional[float]:
+            # OCC option symbol suffix encodes strike as 8 digits with 3 implied decimals.
+            # Example: QQQ 211220C00391000 -> 391.000
+            if not symbol_text:
+                return None
+            text = str(symbol_text).strip()
+            if len(text) < 8:
+                return None
+            suffix = text[-8:]
+            if not suffix.isdigit():
+                return None
+            try:
+                return float(int(suffix)) / 1000.0
+            except Exception:
+                return None
+
         try:
             width = float(metadata.get("spread_width", 0.0))
         except (TypeError, ValueError):
-            return 0.0, "ROUTER_MARGIN_WIDTH_INVALID"
+            width = 0.0
+        if width <= 0:
+            long_symbol = str(metadata.get("spread_long_leg_symbol", "")).strip()
+            short_symbol = str(metadata.get("spread_short_leg_symbol", "")).strip()
+            long_strike = _strike_from_occ_symbol(long_symbol)
+            short_strike = _strike_from_occ_symbol(short_symbol)
+            if long_strike is not None and short_strike is not None:
+                width = abs(long_strike - short_strike)
+                if width > 0:
+                    self.log(
+                        f"ROUTER_MARGIN_WIDTH_FALLBACK: Derived width=${width:.2f} "
+                        f"from legs {long_symbol} / {short_symbol}"
+                    )
         if width <= 0:
             return 0.0, "ROUTER_MARGIN_WIDTH_INVALID"
 
@@ -1037,6 +1254,45 @@ class PortfolioRouter:
         safety = max(float(getattr(config, "SPREAD_MARGIN_SAFETY_FACTOR", 0.80)), 0.01)
         margin_per_contract = base_margin / safety
         return margin_per_contract, "OK"
+
+    def _validate_combo_entry_quotes(self, order: "OrderIntent") -> Tuple[bool, str]:
+        """
+        Validate combo ENTRY quotes before submit:
+        - long leg (buy) must have valid ask
+        - short leg (sell) must have valid bid
+        """
+        if not self.algorithm:
+            return True, "NO_ALGO"
+        if not (order.is_combo and order.combo_short_symbol):
+            return True, "NOT_COMBO"
+        is_exit_combo = bool(order.metadata and order.metadata.get("spread_close_short", False))
+
+        try:
+            long_sec = self.algorithm.Securities[order.symbol]  # type: ignore[attr-defined]
+            short_sec = self.algorithm.Securities[order.combo_short_symbol]  # type: ignore[attr-defined]
+            if is_exit_combo:
+                # Exit combo: sell long leg (needs bid), buy short leg (needs ask)
+                long_bid = float(getattr(long_sec, "BidPrice", 0.0) or 0.0)
+                short_ask = float(getattr(short_sec, "AskPrice", 0.0) or 0.0)
+                if long_bid <= 0 or short_ask <= 0:
+                    return (
+                        False,
+                        f"ExitLongBid={long_bid:.4f} ExitShortAsk={short_ask:.4f} "
+                        f"Long={order.symbol} Short={order.combo_short_symbol}",
+                    )
+                return True, "EXIT_OK"
+
+            long_ask = float(getattr(long_sec, "AskPrice", 0.0) or 0.0)
+            short_bid = float(getattr(short_sec, "BidPrice", 0.0) or 0.0)
+            if long_ask <= 0 or short_bid <= 0:
+                return (
+                    False,
+                    f"LongAsk={long_ask:.4f} ShortBid={short_bid:.4f} "
+                    f"Long={order.symbol} Short={order.combo_short_symbol}",
+                )
+            return True, "OK"
+        except Exception as e:
+            return False, f"QUOTE_LOOKUP_ERROR: {e}"
 
     # =========================================================================
     # Step 1: COLLECT
@@ -1238,7 +1494,7 @@ class PortfolioRouter:
 
         for source, source_weights in by_source.items():
             # Get limit for this source
-            limit = self.SOURCE_ALLOCATION_LIMITS.get(source, 0.50)
+            limit = self._source_allocation_limits.get(source, 0.50)
 
             # Calculate total requested by this source
             total_requested = sum(w.target_weight for w in source_weights)
@@ -1704,6 +1960,10 @@ class PortfolioRouter:
                 spread_close_short = agg.metadata.get("spread_close_short", False)
 
                 if short_leg_symbol and short_leg_qty:
+                    # Enrich metadata so downstream margin estimation can recover width
+                    # even if explicit spread_width is missing.
+                    agg.metadata.setdefault("spread_long_leg_symbol", symbol)
+                    agg.metadata.setdefault("spread_short_leg_symbol", short_leg_symbol)
                     # Remove the separate long leg order we just added
                     # Replace with a combo order that includes both legs
                     if orders and orders[-1].symbol == symbol:
@@ -1918,8 +2178,22 @@ class PortfolioRouter:
                 )
                 continue
 
-            # V4.0.2: Check margin utilization gate for BUY orders
-            # Uses broker's ACTUAL margin, not estimates - prevents margin overflow
+            # V8.2: Primary options budget gate (simple cap aligned to partition).
+            # This runs before generic margin-util checks to avoid over-throttling.
+            options_budget_allowed, options_budget_reason = self.check_options_budget_gate(order)
+            if not options_budget_allowed:
+                self.log(f"ROUTER: {options_budget_reason} | Skipping {order.symbol}")
+                self._record_rejection(
+                    code="R_OPTIONS_BUDGET_CAP",
+                    symbol=order.symbol,
+                    detail=options_budget_reason,
+                    stage="EXECUTE",
+                    source_tag=source_tag,
+                    trace_id=trace_id,
+                )
+                continue
+
+            # V4.0.2: Margin utilization gate (emergency-only brake for BUY orders).
             if order.side == OrderSide.BUY:
                 margin_allowed, margin_reason = self.check_margin_utilization_gate(
                     is_buy_order=True
@@ -1947,6 +2221,20 @@ class PortfolioRouter:
                         "C0" in order.symbol or "P0" in order.symbol
                     )
                     if order.is_combo and is_option:
+                        quotes_ok, quote_detail = self._validate_combo_entry_quotes(order)
+                        if not quotes_ok:
+                            self.log(
+                                f"ROUTER: R_CONTRACT_QUOTE_INVALID | {order.symbol} | {quote_detail}"
+                            )
+                            self._record_rejection(
+                                code="R_CONTRACT_QUOTE_INVALID",
+                                symbol=order.symbol,
+                                detail=quote_detail,
+                                stage="EXECUTE",
+                                source_tag=source_tag,
+                                trace_id=trace_id,
+                            )
+                            continue
                         is_exit_combo = bool(
                             order.metadata and order.metadata.get("spread_close_short", False)
                         )
@@ -1980,8 +2268,13 @@ class PortfolioRouter:
                                 scale_ratio = max_contracts / order.quantity
                                 order.quantity = max_contracts
                                 if order.combo_short_quantity:
-                                    order.combo_short_quantity = int(
-                                        order.combo_short_quantity * scale_ratio
+                                    # Keep short leg quantity exactly aligned with scaled spread count.
+                                    # BUY combo (open): short leg is negative.
+                                    # SELL combo (close): short leg is positive.
+                                    order.combo_short_quantity = (
+                                        -order.quantity
+                                        if order.side == OrderSide.BUY
+                                        else order.quantity
                                     )
                                 self.log(
                                     f"ROUTER_MARGIN_SCALE_COMBO: {order.symbol} | "
@@ -2031,7 +2324,8 @@ class PortfolioRouter:
 
                     # V2.14 Fix #14: MARGIN_ERROR_TREND - Check trend orders don't exceed
                     # margin after reserving OPTIONS_MAX_MARGIN_CAP for options engine
-                    trend_symbols = ["QLD", "SSO", "TNA", "FAS"]
+                    # V6.11: Trend redesign replaced TNA/FAS with UGL/UCO.
+                    trend_symbols = ["QLD", "SSO", "UGL", "UCO"]
                     symbol_str = str(order.symbol)
                     if symbol_str in trend_symbols:
                         options_reserve = getattr(config, "OPTIONS_MAX_MARGIN_CAP", 10000)
@@ -2059,12 +2353,31 @@ class PortfolioRouter:
 
             try:
                 quantity = order.quantity if order.side == OrderSide.BUY else -order.quantity
+                effective_tag = (
+                    order.tag.strip()
+                    if isinstance(order.tag, str) and order.tag.strip()
+                    else f"ROUTER_{order.order_type.value}_{order.side.value}"
+                )
 
                 # V2.3.9: Handle combo orders for spreads
                 if order.is_combo and order.combo_short_symbol and order.combo_short_quantity:
                     is_exit_combo = bool(
                         order.metadata and order.metadata.get("spread_close_short", False)
                     )
+                    quotes_ok, quote_detail = self._validate_combo_entry_quotes(order)
+                    if not quotes_ok:
+                        self.log(
+                            f"ROUTER: R_CONTRACT_QUOTE_INVALID | {order.symbol} | {quote_detail}"
+                        )
+                        self._record_rejection(
+                            code="R_CONTRACT_QUOTE_INVALID",
+                            symbol=order.symbol,
+                            detail=quote_detail,
+                            stage="EXECUTE",
+                            source_tag=source_tag,
+                            trace_id=trace_id,
+                        )
+                        continue
                     # Final safety check before submit (same estimator as pre-check)
                     (
                         combo_margin_per_contract,
@@ -2134,7 +2447,7 @@ class PortfolioRouter:
                     # Submit combo order - broker calculates NET margin (spread margin)
                     try:
                         self.algorithm.ComboMarketOrder(  # type: ignore[attr-defined]
-                            legs, num_spreads, tag=order.tag
+                            legs, num_spreads, tag=effective_tag
                         )
                     except TypeError:
                         self.algorithm.ComboMarketOrder(legs, num_spreads)  # type: ignore[attr-defined]
@@ -2142,7 +2455,7 @@ class PortfolioRouter:
                         f"ROUTER: COMBO_MARKET_ORDER | "
                         f"Long={order.symbol} x{num_spreads} (ratio={long_ratio}) + "
                         f"Short={order.combo_short_symbol} x{num_spreads} (ratio={short_ratio})"
-                        + (f" | Tag={order.tag}" if order.tag else "")
+                        + f" | Tag={effective_tag}"
                     )
 
                     # V2.9: Register spread margin reservation (Bug #1 fix)
@@ -2161,36 +2474,36 @@ class PortfolioRouter:
                 elif order.order_type == OrderType.MARKET:
                     try:
                         self.algorithm.MarketOrder(  # type: ignore[attr-defined]
-                            order.symbol, quantity, tag=order.tag
+                            order.symbol, quantity, tag=effective_tag
                         )
                     except TypeError:
                         self.algorithm.MarketOrder(order.symbol, quantity)  # type: ignore[attr-defined]
                     self.log(
                         f"ROUTER: MARKET_ORDER | {order.side.value} {order.quantity} {order.symbol}"
-                        + (f" | Tag={order.tag}" if order.tag else "")
+                        + f" | Tag={effective_tag}"
                     )
                 elif order.order_type == OrderType.MOC:
                     # V2.4.2: Market-On-Close for same-day trend entries
                     try:
                         self.algorithm.MarketOnCloseOrder(  # type: ignore[attr-defined]
-                            order.symbol, quantity, tag=order.tag
+                            order.symbol, quantity, tag=effective_tag
                         )
                     except TypeError:
                         self.algorithm.MarketOnCloseOrder(order.symbol, quantity)  # type: ignore[attr-defined]
                     self.log(
                         f"ROUTER: MOC_ORDER | {order.side.value} {order.quantity} {order.symbol}"
-                        + (f" | Tag={order.tag}" if order.tag else "")
+                        + f" | Tag={effective_tag}"
                     )
                 else:  # MOO
                     try:
                         self.algorithm.MarketOnOpenOrder(  # type: ignore[attr-defined]
-                            order.symbol, quantity, tag=order.tag
+                            order.symbol, quantity, tag=effective_tag
                         )
                     except TypeError:
                         self.algorithm.MarketOnOpenOrder(order.symbol, quantity)  # type: ignore[attr-defined]
                     self.log(
                         f"ROUTER: MOO_ORDER | {order.side.value} {order.quantity} {order.symbol}"
-                        + (f" | Tag={order.tag}" if order.tag else "")
+                        + f" | Tag={effective_tag}"
                     )
 
                 # Mark as executed to prevent duplicates

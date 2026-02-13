@@ -110,7 +110,7 @@ Unlike trend trading, mean reversion is **intraday only**—no overnight holds. 
 | 2 | Price Drop | > 2.5% from open | Meaningful decline, not noise |
 | 3 | Volume Confirmation | > 1.2× average | Genuine selling pressure |
 | 4 | Time Window | 10:00 AM – 3:00 PM | Avoid open chaos, allow time for bounce |
-| 5 | Regime Requirement | Score ≥ 40 | Don't buy dips in bad environments |
+| 5 | Regime Requirement | Score >= 50 | V3.0: Only in Neutral+ environments |
 | 6 | VIX Regime Filter | VIX < 40 (see table below) | Adjust exposure in high volatility |
 | 7 | Not Cold Start | Days ≥ 5 | Need sufficient intraday history |
 | 8 | Safeguards Clear | No gap/vol shock/time guard | Safety checks pass |
@@ -236,19 +236,19 @@ Entry requires: Current Volume > (1.2 × SMA(Volume, 20))
 
 ---
 
-### 8.3.5 Regime Requirement (Score ≥ 40)
+### 8.3.5 Regime Requirement (Score >= 50)
 
-**Requirement:** Regime score must be at least 40.
+**Requirement:** Regime score must be at least 50 (V3.0: raised from 40).
 
 | Regime | Score | MR Entry |
 |--------|:-----:|:--------:|
-| RISK_ON | 70-100 | ✅ |
-| NEUTRAL | 50-69 | ✅ |
-| CAUTIOUS | 40-49 | ✅ |
-| DEFENSIVE | 30-39 | ❌ |
-| RISK_OFF | 0-29 | ❌ |
+| RISK_ON | 70-100 | Yes |
+| NEUTRAL | 50-69 | Yes |
+| CAUTIOUS | 45-49 | No |
+| DEFENSIVE | 35-44 | No |
+| RISK_OFF | 0-34 | No |
 
-**Rationale:** In RISK_OFF or DEFENSIVE conditions, oversold can become **more oversold**. We only buy dips in reasonable market environments.
+**Rationale:** V3.0 raised the threshold from 40 to 50 to only buy dips in Neutral+ environments. In CAUTIOUS or worse conditions, oversold can become **more oversold**.
 
 ---
 
@@ -383,8 +383,8 @@ At 15:45 ET: Liquidate all MR positions regardless of P&L
 Mean reversion positions are sized using the same volatility-targeting approach as other strategies, subject to:
 
 - **Tradeable equity** from Capital Engine
-- **Exposure group limits** (NASDAQ_BETA)
-- **Maximum single position** (50% SEED, 40% GROWTH)
+- **Exposure group limits** (NASDAQ_BETA, SPY_BETA)
+- **Maximum single position** (40% of portfolio - V3.0)
 
 ### 8.5.2 NASDAQ_BETA Group Constraint
 
@@ -410,7 +410,7 @@ When a mean reversion entry executes, record:
 | `entry_price` | Fill price | Target/stop calculation |
 | `entry_time` | Timestamp | Time exit tracking |
 | `vwap_at_entry` | VWAP value | Target calculation |
-| `symbol` | TQQQ or SOXL | Position identification |
+| `symbol` | TQQQ, SPXL, or SOXL | Position identification |
 
 ### 8.6.2 Real-Time Monitoring
 
@@ -515,7 +515,7 @@ flowchart TD
         C1{"RSI(5) < 25?"}
         C2{"Drop > 2.5%<br/>from Open?"}
         C3{"Volume > 1.2x<br/>Average?"}
-        C4{"Regime ≥ 40?"}
+        C4{"Regime >= 50?<br/>(V3.0)"}
         C5{"Days Running ≥ 5?"}
         C6{"No Existing<br/>MR Position?"}
     end
@@ -603,7 +603,7 @@ flowchart TD
 
 | Source | Data | Used For |
 |--------|------|----------|
-| **Regime Engine** | `regime_score` | Entry blocking if < 40 |
+| **Regime Engine** | `regime_score` | Entry blocking if < 50 (V3.0) |
 | **Capital Engine** | `tradeable_equity` | Position sizing |
 | **Risk Engine** | Gap filter, vol shock, time guard status | Entry blocking |
 | **Cold Start Engine** | `days_running` | Entry blocking if < 5 |
@@ -661,7 +661,7 @@ Router will scale MR entry to fit within limit:
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| Entry minimum | 40 | Regime score required |
+| Entry minimum | 50 | V3.0: Regime score required (raised from 40) |
 
 ### VIX Regime Parameters (V2.1)
 
@@ -813,7 +813,7 @@ Router will scale MR entry to fit within limit:
 | **+2%/−2% symmetric exits** | Simple 1:1 risk/reward; quick decisions |
 | **VWAP alternative target** | "Fair value" reached = reversion complete |
 | **3:45 PM force exit** | Ensures no overnight exposure to 3× |
-| **Regime ≥ 40 required** | Don't buy dips in deteriorating markets |
+| **Regime >= 50 required** | V3.0: Only buy dips in Neutral+ markets (raised from 40) |
 | **Cold start blocking** | Need intraday history for reliable signals |
 | **IMMEDIATE urgency** | Time-sensitive; must execute now |
 

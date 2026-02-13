@@ -31,6 +31,8 @@
 | SC-17 | Performance | Risk-adjusted improvement | Drawdown/tail-loss/technical rejects improve vs prior baseline | ⬜ |
 | SC-18 | Performance | P&L interpretation | P&L is valid only if SC-01..SC-16 pass | ⬜ |
 | SC-19 | Diagnostics Integrity | Backtest rejection visibility | Engine/router rejection reasons visible in backtest logs for RCA | ⬜ |
+| SC-20 | Strategy Behavior | VASS unblock effectiveness | `WIN_RATE_GATE_BLOCK` is not the dominant VASS rejection reason | ⬜ |
+| SC-21 | Technical Safety | Spread DTE de-risk reliability | Stress/chop spreads do not bypass DTE-driven de-risk/exit checks due to stale state | ⬜ |
 
 | Run Grade | Rule |
 |:--:|------|
@@ -52,6 +54,23 @@
 - Win-rate improvements are valid only if technical safety gates remain green (`SC-01..SC-05`).
 - Do not promote a run if win rate rises but tail-loss concentration or technical reject rates regress (`SC-17`).
 - Evaluate win rate together with funnel quality (`SC-06`) and VASS participation (`SC-13`), not in isolation.
+
+### Open Technical Items Snapshot (Current — includes V8.2 FullYear2017_v2 findings)
+
+| Priority | Bug ID | Remaining Gap | Next Validation Gate |
+|---|---|---|---|
+| P0 | T-18 | Router margin-width invalid appears intermittently; fallback derivation added and awaiting rerun validation | SC-04, SC-10 |
+| P0 | T-27 | Force-close/OCO margin reject cluster still reappears | SC-04, SC-09 |
+| P0 | T-52 | Spread open/close churn in same bar: spread can enter and exit in same minute when transition/neutral exits run immediately after entry | SC-10, SC-11, SC-17 |
+| P0 | T-53 | Backtest diagnostics are log-budget truncated (5MB cap), cutting signal-flow visibility before run end; V8.2 full-year log ends around 2017-05-22 while orders/trades continue to Dec | SC-19 |
+| P0 | T-54 | Spread exit signals are emitted but fill accounting remains near-zero in normal path (`SpreadExitFill=0` on 139/141 diag days; 33 days had `SpreadExitSignal>=1` with `SpreadExitFill=0`) | SC-10, SC-19 |
+| P1 | T-28 | Candidate->Approved funnel remains narrow even though Approved->Result improved | SC-06 |
+| P1 | T-36 | Spread lifecycle telemetry still incomplete across all entry/exit paths | SC-10, SC-19 |
+| P1 | T-19 | Assignment containment fix still needs rerun validation in stress windows | SC-03 |
+| P1 | T-55 | Ghost spread-state churn persists (`SPREAD_RECONCILE: Both legs flat` repeatedly at open), indicating state/broker desync pressure on slot availability | SC-03, SC-13 |
+| P1 | T-56 | Canceled/invalid order traceability gap: many lifecycle failures are emitted with empty tags, reducing root-cause attribution quality | SC-07, SC-19 |
+| P1 | O-24 | Exit mix dominated by time-stop dumps (V8.2 Jan-May: `SPREAD_TIME_STOP=39/49`, `PROFIT_TARGET=1/49`), limiting realized edge capture | SC-11, SC-17 |
+
 
 ### Latest Run Quick Scorecard (V6.18: Jul-Oct 2017 + Jul-Oct 2015)
 
@@ -126,6 +145,44 @@
 | T-36 | Still open: rejection reason visibility is good, but lifecycle/result telemetry coverage remains incomplete |
 | O-20 | Still open and confirmed: VASS heavily throttled by win-rate shutoff |
 
+### Latest Run Quick Scorecard (V6.19: Dec 2021-Feb 2022)
+
+| Gate | Snapshot | Status |
+|------|----------|:------:|
+| SC-04 Exit margin reliability | `Order Error=4` (`Insufficient buying power`) + `ROUTER_MARGIN_WIDTH_INVALID=1` + `MARGIN_CB_SKIP=2` | ❌ |
+| SC-06 Intraday conversion | `CANDIDATE=352`, `APPROVED=64`, `RESULT=47` (`APPROVED->RESULT=73.4%`) | 🟡 |
+| SC-07 Drop reason quality | `INTRADAY_SIGNAL_DROPPED=288`, all drops coded actionable `E_*` (no `DROP_ENGINE_NO_SIGNAL`) | ✅ |
+| SC-12 Stress protection firing | `PREMARKET_VIX_LADDER=50`, `PREMARKET_LADDER_CALL_BLOCK=6`, stress/MA20 call gates firing (`E_CALL_GATE_STRESS=129`, `E_CALL_GATE_MA20=51`) | ✅ |
+| SC-13 VASS participation | `VASS_ENTRY=31`, `VASS_REJECTION=450`, `VASS_SKIPPED=124`; rejects dominated by `ValidationFail=WIN_RATE_GATE_BLOCK=402` | ❌ |
+| SC-14 Bear handling (call control) | Direction generation PUT-leaning (`Dir=PUT=554`, `Dir=CALL=484`) but realized P&L remains CALL-heavy negative (`CALL=-17,680`, `PUT=+1,630`) | ❌ |
+| SC-19 Diagnostics integrity | Engine rejection reasons visible; daily `OPTIONS_DIAG_SUMMARY` absent in this run | 🟡 |
+
+### V6.19 Dec 2021-Feb 2022 Snapshot
+
+| Metric | Value |
+|---|---:|
+| Trades | 126 |
+| Win Rate | 40.5% (51W / 75L) |
+| Net P&L | -16,050 |
+| Calls / Puts (executed trades) | 66 / 60 |
+| Call P&L / Put P&L | -17,680 / +1,630 |
+| MICRO_UPDATE | 1,800 |
+| Dir=NONE / CALL / PUT | 1,050 / 484 / 554 |
+| INTRADAY_CANDIDATE / APPROVED / DROPPED / RESULT | 352 / 64 / 288 / 47 |
+| Top intraday drop codes | `E_CALL_GATE_STRESS=129`, `E_INTRADAY_TRADE_LIMIT=63`, `E_CALL_GATE_MA20=51`, `E_INTRADAY_CAP_TOO_SMALL=33` |
+| Top NO_TRADE blocks | `CONFIRMATION_FAIL`, `REGIME_NOT_TRADEABLE`, panic-regime neutral blocks, `VIX_STABLE_LOW_CONVICTION` |
+| VASS validation fails (dominant) | `WIN_RATE_GATE_BLOCK=402`, `HAS_SPREAD_POSITION=110`, `TRADE_LIMIT_BLOCK=42` |
+
+| Bug ID | V6.19 Dec-Feb Status Update |
+|---|---|
+| T-18 | Regression persists (`ROUTER_MARGIN_WIDTH_INVALID=1`), though one occurrence is bypassed in close flow (`ROUTER_EXIT_BYPASS_MARGIN_ESTIMATE`) |
+| T-27 | Regression persists (`Insufficient buying power=4` with related forced-close/orphan cleanup activity) |
+| T-28 | Improved materially in this run (`APPROVED->RESULT=73.4%`), but candidate->approved funnel remains narrow |
+| T-33 | Validated (all 288 intraday drops carry explicit actionable `E_*` codes) |
+| T-36 | Partial: spread exit reconciliation appears (`SPREAD: EXIT | Reason=FILL_CLOSE_RECONCILED=1`), but lifecycle coverage still incomplete (`SPREAD: EXIT_SIGNAL=3` vs `SPREAD entries=31`) |
+| O-20 | Still open and severe: VASS throttled mainly by `WIN_RATE_GATE_BLOCK=402` |
+| O-21 | Still open: spread mix remains bull-call heavy into stress windows; call-side losses dominate realized P&L |
+
 ### Latest Run Quick Scorecard (V6.18: Sep-Dec 2018)
 
 | Gate | Snapshot | Status |
@@ -188,6 +245,63 @@
 | O-13 | Still open (bear-put spread participation remains heavily suppressed by VASS gating/fails) |
 | O-19 | Not triggered in this run (`NEUTRALITY_EXIT=0`), keep open pending longer-horizon validation |
 
+### V6.19 Technical Fix Wave (Applied in Code, Pending Backtest Validation)
+
+| Fix Area | What Changed | Validation Status |
+|---|---|:---:|
+| Intraday funnel semantics (T-28) | `INTRADAY_SIGNAL_APPROVED` now logs only after engine produces a real order intent; pre-check logging moved to candidate stage | 🟡 |
+| Intraday counters correctness (T-28) | Intraday trade counters moved to fill-time (`register_entry`) from pre-submit time; pre-submit rollback path removed | 🟡 |
+| OCO inactive sibling cleanup (T-27) | Added OCO inactive handler to cancel sibling and cleanup pair on `Invalid`/`Canceled` lifecycle states | 🟡 |
+| Spread exit lifecycle telemetry (T-36) | Added explicit spread exit reconciliation log (`SPREAD: EXIT | Reason=FILL_CLOSE_RECONCILED`) | 🟡 |
+| Run-level diagnostics (T-36/T-28 support) | Added `OPTIONS_DIAG_SUMMARY` counters for `Approved/Dropped/Results/VASS_Blocks/MarginRejects` | 🟡 |
+| VASS win-rate decouple controls (O-20) | Added `VASS_WIN_RATE_HARD_BLOCK=False` + `VASS_WIN_RATE_SHUTOFF_SCALE` fallback so VASS can degrade size instead of hard stop | 🟡 |
+| Bear/chop call concentration controls (O-21) | Added BULL_CALL stress block/early-stress size controls (`BULL_CALL_STRESS_*`, `BULL_CALL_EARLY_STRESS_*`) and debit-momentum regime blocks | 🟡 |
+| Spread DTE refresh hardening (T-37) | `_check_spread_exit` now recomputes DTE from live expiry each check to avoid stale DTE state bypassing de-risk exits | 🟡 |
+| Credit direction propagation fix (T-07/T-21 support) | Router->engine credit spread call path now passes resolved `direction` explicitly | 🟡 |
+| Choppy single-leg participation control (O-23 support) | Applied `CHOPPY_SIZE_REDUCTION` on intraday single-leg entries for churn control parity with spread path | 🟡 |
+
+### V6.20 Execution + Cleanup Wave (Applied in Code, Pending Backtest Validation)
+
+| Fix Area | What Changed | Validation Status |
+|---|---|:---:|
+| Multi-spread execution state (T-41) | Replaced single spread-slot behavior with list-backed spread tracking (`_spread_positions`) while keeping compatibility accessor (`get_spread_position`) | 🟡 |
+| Slot/counter gating taxonomy (T-42) | Spread/intraday entry gating now emits explicit `R_SLOT_*` reasons (`R_SLOT_SWING_MAX`, `R_SLOT_TOTAL_MAX`, `R_SLOT_DIRECTION_MAX`, `R_SLOT_INTRADAY_MAX`) | 🟡 |
+| Spread lifecycle iteration (T-43) | Premarket ITM checks, Friday firewall, spread exits, and reconcile paths iterate all active spreads (no primary-slot assumption) | 🟡 |
+| Spread rejection normalization (T-44) | Added/used `R_COOLDOWN_DIRECTIONAL`, `R_MARGIN_PRECHECK`, and `R_CONTRACT_QUALITY:*` in spread entry paths and VASS logging | 🟡 |
+| Stage-1 capacity activation (T-45) | `OPTIONS_MAX_SWING_POSITIONS` raised to `3` with direction cap guard (`OPTIONS_MAX_SWING_PER_DIRECTION=2`) | 🟡 |
+| Trend reserve-symbol alignment (T-46) | Router trend margin reserve list updated from deprecated `TNA/FAS` to `UGL/UCO` | 🟡 |
+| ITM log throttling wiring (T-47) | Implemented stateful use of `SHORT_LEG_ITM_EXIT_LOG_INTERVAL` to throttle repeated ITM trigger logs | 🟡 |
+| Intraday cutoff log consistency (T-48) | Removed hardcoded `15:30` force-exit wording in options engine runtime logs; now uses `INTRADAY_FORCE_EXIT_TIME` | 🟡 |
+
+**Commit references (V6.20 wave):**
+- `dd93f44` - multi-spread slots/lifecycle and rejection hardening
+- `c6b62f8` - Stage-1 swing cap + `R_*` spread rejection taxonomy + cooldown decoupling
+- `caa4ffc` - trend symbol alignment + ITM throttling + configurable intraday cutoff logs
+
+### V6.21 Plumbing Hotfixes (Applied, Pending Validation)
+
+| Fix Area | What Changed | Validation Status |
+|---|---|:---:|
+| Spread close retry durability | Added persistent spread-close retry queue on close-leg `Canceled` events; retries every 5 minutes until flat | 🟡 |
+| Spread close accounting isolation | Replaced shared/global close counters with per-spread close trackers keyed by `long|short` | 🟡 |
+| Spread retry key safety | Retry queue now keyed by spread pair (not long symbol only), preventing cross-spread contamination | 🟡 |
+| Stale close-state cleanup | Auto-purge retry/close tracker keys when spread is no longer active | 🟡 |
+| Execution telemetry noise reduction | Added execution event forwarding guard so non-ExecutionEngine orders log once as `EXEC_EXTERNAL` (reduces `EXEC: UNKNOWN_ORDER` spam) | 🟡 |
+| Router combo width fallback hardening | Router now derives spread width from OCC leg symbols when `spread_width` metadata is missing/invalid before margin estimation | 🟡 |
+| Combo short-qty consistency | Router combo scaling now keeps short-leg qty exactly aligned with scaled spread count/sign | 🟡 |
+| Reconcile orphan close guard | Reconcile now skips orphan liquidate when broker holding is already flat at submit time | 🟡 |
+| Assignment equity containment tighten | Reconcile now liquidates any residual `QQQ` equity detected in options isolation flow | 🟡 |
+| ITM% calculation correction | Short-leg ITM exit % now uses underlying price denominator (not strike) | 🟡 |
+
+### Latest Run Quick Scorecard (V8.2 Full Year 2017 v2)
+
+| Gate | Snapshot | Status |
+|------|----------|:------:|
+| SC-19 Diagnostics integrity | Backtest log truncated at ~5MB (`~46,941` lines), ending around `2017-05-22` while orders/trades continue to Dec | ❌ |
+| SC-10 Spread close integrity | `SpreadExitFill=0` on `139/141` diagnostic days; frequent exit-signal/no-fill mismatch | ❌ |
+| SC-03 Orphan containment | `SPREAD_RECONCILE: Both legs flat = 58` (Jan-May), indicating repeated ghost-state cleanup | ❌ |
+| SC-13 VASS participation quality | `Spread construction failed - staying cash = 1,799` (Jan-May log window) | ❌ |
+| SC-11 Tail-loss control / exit quality | Exit mix heavily time-stop dominated (`SPREAD_TIME_STOP=39/49`, `PROFIT_TARGET=1/49`) | ❌ |
 ---
 
 ## Bug Registry (Master)
@@ -211,8 +325,8 @@
 | T-15 | Technical | Assignment Safety Net MOO Canceled | V6.13: Dec 27 MOO canceled, -$37K loss | 🟡 Applied (Pending Validation) | V6.14: Immediate market fallback for critical cancelled MOO |
 | T-16 | Technical | High Order Failure Rate | V6.13: 27.6% orders failed (Invalid+Canceled) | 🟡 Applied (Pending Validation) | V6.14: Pre-submit validation (symbol, price, expiry) |
 | T-17 | Technical | Filter parsing failure (DTE=287) | V6.13 2015: 6 approved signals with nonsense filter counts | 🟡 Applied (Pending Validation) | V6.14: Enhanced filter funnel diagnostics with blocker ID |
-| T-18 | Technical | Router margin width invalid regression | V6.13_a: `ROUTER_MARGIN_WIDTH_INVALID` appears during spread submits | 🔴 Open (Regression) | Dec-Feb 2022 shows this again (`ROUTER_MARGIN_WIDTH_INVALID=1`); margin metadata/control still inconsistent in some paths |
-| T-19 | Technical | Assignment containment leak | V6.13_a: 2022-03-29 assignment path still produced QQQ stock liquidation | 🟡 Applied (Pending Validation) | `_reconcile_positions()` now actively clears zombie state, closes orphan option holdings, and liquidates stale assignment QQQ equity |
+| T-18 | Technical | Router margin width invalid regression | V6.13_a: `ROUTER_MARGIN_WIDTH_INVALID` appears during spread submits | 🟡 Applied (Pending Validation) | Router now falls back to width derivation from OCC symbols when metadata width is missing/invalid; rerun validation pending |
+| T-19 | Technical | Assignment containment leak | V6.13_a: 2022-03-29 assignment path still produced QQQ stock liquidation | 🟡 Applied (Pending Validation) | `_reconcile_positions()` now always liquidates residual assignment QQQ equity and keeps zombie/orphan cleanup active |
 | T-20 | Technical | Spread candidate pre-filter drops zero-bid long legs | `main.py:3872` rejects when `bid<=0 or ask<=0` before leg-role assignment | 🟡 Applied (Pending Validation) | Prefilter now rejects only invalid ask; zero-bid candidates are retained with safe mid-price fallback |
 | T-21 | Technical | Credit selector missing liquidity quality filters | `options_engine.py:2974+` credit path lacks explicit OI/spread quality gates | 🟡 Applied (Pending Validation) | Added OI/spread quality filters and diagnostics parity for credit short/long leg selection |
 | T-22 | Technical | Credit cooldown not direction-scoped | `options_engine.py:3015` uses shared `"CREDIT"` cooldown bucket | 🟡 Applied (Pending Validation) | Cooldown key is now strategy-scoped (`BULL_PUT_CREDIT` / `BEAR_CALL_CREDIT`) with legacy key cleanup |
@@ -220,8 +334,8 @@
 | T-24 | Technical | Spread closing lock can remain stuck after failed close submit | `spread.is_closing=True` set before router close failures | 🟡 Applied (Pending Validation) | Router now resets lock on close-order failures |
 | T-25 | Technical | VIX spike/regime deterioration exits preempted by assignment path | `ASSIGNMENT_RISK_EXIT` fires first; no `SPREAD: EXIT_SIGNAL` observed | 🟡 Applied (Pending Validation) | Added assignment grace window before non-mandatory ITM/margin exits |
 | T-26 | Technical | Micro can starve VASS via shared daily options counter | Shared `MAX_OPTIONS_TRADES_PER_DAY` exhausted by intraday flow | 🟡 Applied (Pending Validation) | Added reserved swing slots guard for intraday limits |
-| T-27 | Technical | OCO sibling orders still trigger margin rejects at force-close | Stage6.14: 6 dates x 4 logs (`Order Error` + `INVALID`) at 15:30 for stale OCO ids | 🔴 Open (Regression) | Dec-Feb 2022 still logs `Insufficient buying power` order failures; close-path/OCO race not fully eliminated |
-| T-28 | Technical | Intraday approved->execution drop remains severe | Stage6.18: 2017 `APPROVED=162`, `SELECTED=83`, `DROPPED=69`; 2015 `APPROVED=301`, `SELECTED=132`, `DROPPED=89` | 🟡 Applied (Pending Validation) | Severity improved vs V6.17, but conversion still below SC-06 threshold |
+| T-27 | Technical | OCO sibling orders still trigger margin rejects at force-close | Stage6.19 Dec-Feb: `Insufficient buying power=4` with force-close/orphan recovery around rejected exits | 🟡 Applied (Pending Validation) | Added inactive-order sibling cancel+cleanup in OCO manager; regression persists under stress and needs another validation run after latest patch |
+| T-28 | Technical | Intraday approved->execution drop remains severe | Stage6.19 Dec-Feb: `CANDIDATE=352`, `APPROVED=64`, `RESULT=47` (`APPROVED->RESULT=73.4%`) | 🟡 Applied (Pending Validation) | Major improvement vs prior severe leak; remaining bottleneck moved upstream (candidate->approved narrowing) |
 | T-29 | Technical | VASS spreads are instantly closed by assignment guard | Stage6.14: `SPREAD: POSITION_REGISTERED=23`, `ASSIGNMENT_RISK_EXIT=23`, `POSITION_REMOVED=23` (<=1 min) | 🟡 Applied (Pending Validation) | Assignment grace (`SPREAD_ASSIGNMENT_GRACE_MINUTES`) added before non-mandatory assignment exits |
 | T-30 | Technical | NEUTRAL conviction veto can overtrade noisy flips | Panic rebound windows showed repeated NEUTRAL veto direction swings | 🟡 Applied (Pending Validation) | NEUTRAL veto now requires MICRO tradeable regime + direction alignment with MICRO recommendation |
 | T-31 | Technical | PRE_MARKET_SETUP callback still receives option symbol objects | V6.15 2015 run: `symbol must be a non-empty string` on 2015-08-26 / 2015-08-27 / 2015-09-03 | 🟡 Applied (Pending Validation) | V6.16: premarket and ITM-short paths normalize symbols before router submission |
@@ -229,11 +343,28 @@
 | T-33 | Technical | Approved->dropped reason opacity in intraday path | V6.18: drops now carry explicit codes (`E_CALL_GATE_MA20`, `E_CALL_GATE_STRESS`, `E_INTRADAY_TIME_WINDOW`, `E_INTRADAY_TRADE_LIMIT`) | ✅ Validated | Engine-side drop reason propagation is now visible in backtest logs |
 | T-34 | Technical | Force-close path not idempotent (position amplification) | V6.15 2017 run: 2017-08-22 close cycle grew to `Qty=653` via repeated fallback/OCO recovery before next-day reconcile | 🟡 Applied (Pending Validation) | V6.16: close-in-progress lock + one-submit-per-symbol/day + live-qty override |
 | T-35 | Technical | OCO recovery recreates oversized orders during force-close window | V6.15 2017 run: `OCO_RECOVER` created `Qty=431` while active intraday leg was `Qty=222` near 15:25 | 🟡 Applied (Pending Validation) | V6.16: OCO recovery disabled near force-close window and skipped during close-in-progress |
-| T-36 | Technical | Backtest telemetry suppresses intraday rejection reasons | Stage6.18 now surfaces rejection reasons, but lifecycle telemetry remains incomplete (`INTRADAY_RESULT` and `SPREAD: EXIT` under-reported vs fills) | 🟡 Applied (Pending Validation) | Rejection visibility fixed; remaining work is result/exit coverage completeness |
+| T-36 | Technical | Backtest telemetry suppresses intraday rejection reasons | Stage6.19 Dec-Feb: explicit rejection codes present; lifecycle still partial (`SPREAD: EXIT_SIGNAL=3` vs `ENTRY_SIGNAL=31`) | 🟡 Applied (Pending Validation) | Rejection visibility fixed; lifecycle/result completeness remains open until next run confirms `OPTIONS_DIAG_SUMMARY` + full exit coverage |
+| T-37 | Technical | Spread DTE state can become stale and delay de-risk exits | Dec-Feb/2015 reviews showed spread hold-to-expiry behavior inconsistent with intended DTE de-risk | 🟡 Applied (Pending Validation) | `_check_spread_exit` now recomputes DTE from leg expiry each cycle before applying de-risk/expiry exits |
+| T-41 | Technical | Single-slot spread state starved VASS participation | Prior runs dominated by `HAS_SPREAD_POSITION` / single active spread assumptions | 🟡 Applied (Pending Validation) | V6.20 introduced list-backed spread tracking and multi-spread lifecycle iteration |
+| T-42 | Technical | Slot rejection ambiguity masked true blocker source | Generic/legacy skip reasons reduced RCA quality | 🟡 Applied (Pending Validation) | V6.20 uses explicit `R_SLOT_*` reasons in engine/router-visible diagnostics |
+| T-43 | Technical | Spread lifecycle logic assumed one active spread | Premarket/firewall/exit/reconcile paths historically read single spread object | 🟡 Applied (Pending Validation) | V6.20 updated main orchestration to iterate all active spreads |
+| T-44 | Technical | Spread rejection codes inconsistent across cooldown/margin/quality | Mixed legacy reasons (`ENTRY_ATTEMPT_LIMIT`, `MARGIN_PRECHECK_BLOCK`, etc.) | 🟡 Applied (Pending Validation) | V6.20 normalized to `R_COOLDOWN_DIRECTIONAL`, `R_MARGIN_PRECHECK`, `R_CONTRACT_QUALITY:*` |
+| T-45 | Technical | Stage-1 capacity not enabled in config | Plan required 3 swing slots; config remained at 2 | ✅ Validated | V6.20 set `OPTIONS_MAX_SWING_POSITIONS=3` |
+| T-46 | Technical | Trend reserve-symbol list stale in router | Router still used `TNA/FAS` after `UGL/UCO` trend redesign | ✅ Validated | V6.20 changed trend reserve list to `QLD/SSO/UGL/UCO` |
+| T-47 | Technical | ITM log interval configured but not wired | `SHORT_LEG_ITM_EXIT_LOG_INTERVAL` existed without runtime state usage | ✅ Validated | V6.20 added throttled ITM trigger logging state by symbol/time |
+| T-48 | Technical | Intraday force-close log text hardcoded 15:30 | Runtime/log wording diverged from configured cutoff (`INTRADAY_FORCE_EXIT_TIME`) | ✅ Validated | V6.20 options engine logs now derive cutoff from config |
+| T-49 | Technical | Spread close quantity tracker cross-contamination | Stage6.21 logs show impossible aggregates (for example `Total closed=120/20`, `320/20`) | 🟡 Applied (Pending Validation) | V6.21: replaced shared close counters with per-spread close trackers keyed by `long|short` |
+| T-50 | Technical | `EXEC: UNKNOWN_ORDER` flood hides actionable execution telemetry | Stage6.21 logs contain repeated unknown broker IDs for OCO/atomic/manual orders | 🟡 Applied (Pending Validation) | V6.21: main now forwards order events to ExecutionEngine only for mapped broker IDs; external events logged once as `EXEC_EXTERNAL` |
+| T-51 | Technical | Canceled spread close can fall through to expiry | Example: `211220C00391000` close canceled on Dec 11, later liquidated by expiration hammer on Dec 20 | 🟡 Applied (Pending Validation) | V6.21: canceled close legs now enqueue persistent spread-close retry loop until position is flat |
+| T-52 | Technical | Spread entry/exit churn can occur in same minute | 2021-12-08 11:45 sample: VASS spread legs open and close at same timestamp; `_check_spread_exit` can run after new spread entry in same OnData cycle | 🔴 Open | Add spread minimum hold-time gate for non-critical exits (overlay/neutrality), keep assignment/gamma/0DTE/hard-stop exits always active |
+| T-53 | Technical | Backtest diagnostics log-budget exhaustion truncates run visibility | V8.2 full-year 2017 log reached ~46,941 lines and stopped around 2017-05-22 while orders/trades continue to Dec; noise drivers include `MARGIN_TRACK=22,998`, `MICRO_UPDATE=2,827`, `Spread construction failed=1,799`, `SPREAD_EXIT_GUARD_HOLD=1,220` | 🔴 Open | Add backtest log-budget governor (rate-limit/sampling/category suppression) so SC-19 remains measurable for full-run windows |
+| T-54 | Technical | Spread exit signal/fill disconnect in diagnostics path | V8.2 Jan-May: `OPTIONS_DIAG_SUMMARY` shows `SpreadExitFill=0` on 139/141 days; 35 days had `SpreadExitSignal>=1`, and 33 of those had `SpreadExitFill=0` | 🔴 Open | Unify exit-fill accounting across combo/sequential/reconcile paths and guarantee `SpreadExitFill` increments on all close fills |
+| T-55 | Technical | Ghost spread-state reconcile churn at open | V8.2 Jan-May: `SPREAD_RECONCILE: Both legs flat` = 58 events (mostly around 09:31), indicating persistent state drift before morning cleanup | 🔴 Open | Tighten close-state finalization and same-day reconcile cadence to clear ghost state before next session slot checks |
+| T-56 | Technical | Canceled/invalid orders often missing tags (RCA blind spot) | V8.2 full-year orders: many `Canceled`/`Invalid` rows have `Tag=\"\"` (for example stop/limit invalid pairs); lifecycle attribution becomes ambiguous | 🔴 Open | Enforce non-empty standardized tag propagation for all order types (including retries/OCO/cleanup/orphan paths) |
 | O-01 | Optimization | Low win rate / negative P&L | 2022Q1: -21,641 | 🔴 Open | Strategy tuning |
 | O-02 | Optimization | High Dir=NONE | 2022Q1: 59% | 🔴 Open | Micro gating still strict |
 | O-03 | Optimization | Micro gating too restrictive | CAUTIOUS/NORMAL/WORSENING blocks | 🔴 Open | Expand tradeable regimes or thresholds |
-| O-04 | Optimization | VASS rejection storm | 2022Q1: 534 rejections | 🟡 Applied (Pending Validation) | DTE fallback + credit fix |
+| O-04 | Optimization | VASS rejection storm / spread-builder misses remain high | 2022Q1: 534 rejections; V8.2 Jan-May: `Spread construction failed - staying cash=1,799` | 🔴 Open | Rework spread-construction fallback ladder and contract-eligibility relaxation by regime without diluting quality floor |
 | O-05 | Optimization | CALL/PUT profitability imbalance | 2022Q1: PUTs worse | 🔴 Open | Strategy calibration |
 | O-06 | Optimization | Multi-day hold efficiency | V6.13_a: 51/140 trades held >1 day | 🟡 Monitor | Most are swing by design; optimize carry/expiry behavior |
 | O-07 | Optimization | PUT strategy underperforms in crash | 2015/2022 PUT P&L negative | 🔴 Open | Re‑evaluate PUT sizing/strategy |
@@ -249,10 +380,11 @@
 | O-17 | Optimization | Counter-trend PUT entries during sustained RISK_ON degrade Micro expectancy | V6.17 2017 NoSync: PUTs in regime 73-75 had weak outcomes vs CALLs | 🔴 Open | Add trend-persistence gate for counter-trend intraday PUTs when macro remains strongly risk-on |
 | O-18 | Optimization | Late-day intraday entries show weak/unstable edge | V6.17 2017 NoSync: multiple entries at/after 15:00 with mixed quality and elevated noise | 🔴 Open | Tighten late-session entry quality rules (higher conviction or reduced size near close) |
 | O-19 | Optimization | Neutrality churn exits reduce spread efficiency | V6.18 2015: `SPREAD: EXIT_SIGNAL` shows `NEUTRALITY_EXIT=17` (dominant spread exit mode) | 🔴 Open | Convert hard neutrality exits to staged de-risking (size-down/guarded hold) when risk is contained |
-| O-20 | Optimization | VASS frozen by global win-rate shutoff in bear run | V6.18 2022: `VASS_REJECTION=674`, `ValidationFail=WIN_RATE_GATE_BLOCK=610`, `VASS_ENTRY=4` | 🔴 Open | Decouple swing spread participation from global win-rate shutoff (or downgrade to size/score penalty) |
-| O-21 | Optimization | VASS over-concentrates in bullish debit spreads during deteriorating bear windows | V6.18 Dec-Feb: large call-spread leg losses dominate net (`CALL P&L -17,680`) while put side is net positive | 🔴 Open | Add regime-aware spread mix rebalance so bear windows do not recycle BULL_CALL_DEBIT concentration |
+| O-20 | Optimization | VASS frozen by global win-rate shutoff in bear run | V6.19 Dec-Feb: `VASS_REJECTION=450`, dominant `ValidationFail=WIN_RATE_GATE_BLOCK=402` while `VASS_ENTRY=31` | 🟡 Applied (Pending Validation) | Implemented soft-shutoff controls (`VASS_WIN_RATE_HARD_BLOCK=False`, scaled participation). Need next run to confirm `WIN_RATE_GATE_BLOCK` no longer dominant |
+| O-21 | Optimization | VASS over-concentrates in bullish debit spreads during deteriorating bear windows | V6.19 Dec-Feb: realized call-side losses dominate (`CALL P&L=-17,680`, `PUT P&L=+1,630`) | 🟡 Applied (Pending Validation) | Added VIX stress/acceleration BULL_CALL blocks + early-stress size down + debit-momentum regime blocks. Validate spread-mix shift in next runs |
 | O-22 | Optimization | Choppy regime slot starvation from persistent spread occupancy | V6.18 Sep-Dec 2018: `HAS_SPREAD_POSITION=603` dominates VASS skips/rejections | 🔴 Open | Reduce hold/churn lockup via staged exits and position-age aware re-entry controls |
 | O-23 | Optimization | Combined-size floor blocks tradable intraday setups in chop | V6.18 Sep-Dec 2018: `E_INTRADAY_COMBINED_SIZE_MIN=7` drops | 🟡 Monitor | Recalibrate combined-size minimum near boundary conditions |
+| O-24 | Optimization | Profit-target starvation due time-stop-dominant spread exits | V8.2 Jan-May: exit reasons from `SPREAD: EXIT_SIGNAL` -> `SPREAD_TIME_STOP=39/49`, `PROFIT_TARGET=1/49`, `HARD_STOP=5/49` | 🔴 Open | Rebalance debit-spread exit profile (target/stop/hold horizon) so profitable exits happen intraday/session-normal, not primarily by clock expiry |
 
 ---
 

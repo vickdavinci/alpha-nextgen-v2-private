@@ -83,7 +83,7 @@ QuantConnect handles timezone conversion automatically.
     EVERY MINUTE:
     │
     ├── STEP 1: Risk Engine Checks (ALWAYS FIRST) [V2.1 5-Level Circuit Breaker]
-    │   ├── Level 1 - Daily Loss: Compare equity vs prior_close AND sod (3% trigger)
+    │   ├── Level 1 - Daily Loss: Compare equity vs prior_close AND sod (V2.27: tiered 2%/4%/6%)
     │   ├── Level 2 - Weekly Loss: Check WTD P&L vs 5% threshold
     │   ├── Level 3 - Portfolio Volatility: Check 20-day rolling vol vs 25% annualized
     │   ├── Level 4 - Correlation Spike: Check cross-asset correlation > 0.8
@@ -94,7 +94,7 @@ QuantConnect handles timezone conversion automatically.
     │
     ├── STEP 2: Mean Reversion Scanning (if safeguards clear)
     │   ├── Check VIX regime filter (NORMAL/CAUTION/HIGH_RISK/CRASH)
-    │   ├── For each MR symbol (TQQQ, SOXL):
+    │   ├── For each MR symbol (TQQQ, SPXL, SOXL):
     │   │   ├── Apply VIX-adjusted parameters (allocation, RSI threshold, stop)
     │   │   ├── Check entry conditions (RSI, drop, volume, time)
     │   │   └── Check exit conditions (target, stop, time)
@@ -140,7 +140,7 @@ QuantConnect handles timezone conversion automatically.
 15:45 ET ─── EOD Processing Begins
 
     ├── REGIME ENGINE
-    │   ├── Calculate all 5 factors (V2.3: trend, VIX, vol, breadth, credit)
+    │   ├── Calculate V5.3 4-factor model (Momentum, VIX Combined, Trend, Drawdown)
     │   ├── Aggregate weighted score
     │   ├── Apply exponential smoothing
     │   └── Output: RegimeState with hedge targets
@@ -166,7 +166,7 @@ QuantConnect handles timezone conversion automatically.
     │   └── Output: CapitalState with tradeable equity
     │
     ├── TREND ENGINE (EOD signals)
-    │   ├── Check MA200 + ADX confirmation for QLD, SSO (price > MA200, ADX >= 25)
+    │   ├── Check MA200 + ADX confirmation for QLD, SSO, UGL, UCO (price > MA200, ADX >= 15)
     │   ├── Check MA200 cross below exit for existing positions
     │   ├── Check ADX weakness exit (ADX < 20)
     │   ├── Check regime exit condition (regime < 30)
@@ -178,13 +178,9 @@ QuantConnect handles timezone conversion automatically.
     │   ├── Check for existing options positions
     │   └── Emit TargetWeight for QQQ options (urgency: EOD)
     │
-    ├── HEDGE ENGINE
+    ├── HEDGE ENGINE (V6.11)
     │   ├── Compare current hedge vs regime-required levels
-    │   └── Emit TargetWeight for TMF, PSQ (urgency: EOD)
-    │
-    ├── YIELD SLEEVE
-    │   ├── Calculate unallocated cash
-    │   └── Emit TargetWeight for SHV (urgency: EOD)
+    │   └── Emit TargetWeight for SH (urgency: EOD)
     │
     └── PORTFOLIO ROUTER (EOD batch)
         ├── Collect all EOD TargetWeights
@@ -272,7 +268,7 @@ gantt
 - "Gate" = Granular gating: hedges/yield always allowed, bearish options from OBSERVATION, directional longs from REDUCED
 - "✅ EOD" = End-of-day update: advance day counter (time-based, no regime dependency)
 - Once FULLY_ARMED (permanent), gate column becomes "—" forever
-- 15 days total: INDICATOR_WARMUP (5d) → OBSERVATION (5d) → REDUCED (5d) → FULLY_ARMED
+- 6 days total: WARMUP (3d) → REDUCED (3d) → FULLY_ARMED (V6.0: simplified from 15d)
 
 **Note:** Options Engine entries close at 14:30 (late day constraint), force close at 15:45.
 
@@ -343,10 +339,10 @@ Yesterday's Daily Bars
 ### 14.6.2 Market Hours Data Flow
 
 ```
-Minute Bars (SPY, TQQQ, SOXL, QLD, SSO, TMF, PSQ, SHV, QQQ)
+Minute Bars (SPY, TQQQ, SPXL, SOXL, QLD, SSO, UGL, UCO, SH, QQQ)
     │
     ├──→ Risk Engine (SPY for panic, vol shock)
-    ├──→ MR Engine (TQQQ, SOXL for RSI, price, volume)
+    ├──→ MR Engine (TQQQ, SPXL, SOXL for RSI, price, volume)
     ├──→ Options Engine (QQQ options Greeks, price)
     └──→ Position Manager (all for stop monitoring)
 
@@ -371,14 +367,14 @@ Portfolio Value + Greeks [V2.1]
 ### 14.6.3 EOD Data Flow
 
 ```
-Finalized Daily Bars (SPY, RSP, HYG, IEF)
+Finalized Daily Bars (SPY, RSP) + VIX Data
     │
-    └──→ Regime Engine
+    └──→ Regime Engine (V5.3 4-Factor)
             │
-            ├──→ Trend Factor
-            ├──→ Volatility Factor
-            ├──→ Breadth Factor
-            └──→ Credit Factor
+            ├──→ Momentum Factor (30%)
+            ├──→ VIX Combined Factor (35%)
+            ├──→ Trend Factor (20%)
+            └──→ Drawdown Factor (15%)
                     │
                     └──→ Smoothed Score
                             │
@@ -386,12 +382,12 @@ Finalized Daily Bars (SPY, RSP, HYG, IEF)
                             ├──→ Trend Engine (entry/exit decisions)
                             └──→ Cold Start Engine (warm entry eligibility)
 
-Finalized Daily Bars (QLD, SSO)
+Finalized Daily Bars (QLD, SSO, UGL, UCO)
     │
     └──→ Trend Engine
             │
             ├──→ MA200 (trend direction)
-            ├──→ ADX (momentum confirmation)
+            ├──→ ADX (trend strength confirmation)
             └──→ Entry/Exit Signals
                     │
                     └──→ Portfolio Router
@@ -438,7 +434,7 @@ stateDiagram-v2
     
     state TRADING {
         [*] --> NORMAL
-        NORMAL --> KILL_SWITCH: Loss ≥ 3%
+        NORMAL --> KILL_SWITCH: Loss ≥ 6% Tier 3
         NORMAL --> PANIC_MODE: SPY ≥ -4%
         NORMAL --> VOL_SHOCK: Range > 3×ATR
         VOL_SHOCK --> NORMAL: 15 min elapsed
@@ -563,7 +559,7 @@ Day Timeline:
 | 10:00 | Cold start | "Warm entry check: [conditions]" |
 | Various | MR signals | "MR Entry: TQQQ RSI=22, Drop=3.1%" |
 | Various | Risk events | "⚠️ VOL SHOCK: SPY range $2.50 > 3×ATR" |
-| 15:45 | EOD | "Regime score: 58 (NEUTRAL), TMF=0%, PSQ=0%" |
+| 15:45 | EOD | "Regime score: 58 (NEUTRAL), SH=0%" |
 | 15:45 | MOO submit | "MOO submitted: Buy 150 QLD" |
 | 16:00 | Close | "Market close: State persisted" |
 

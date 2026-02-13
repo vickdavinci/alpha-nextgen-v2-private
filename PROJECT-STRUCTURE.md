@@ -1,7 +1,7 @@
 # Alpha NextGen - Project File Structure
 
-> **Last Updated:** 4 February 2026
-> **Status:** V2.30 — All-Weather StartupGate, Bearish Options Path Fix
+> **Last Updated:** 13 February 2026
+> **Status:** V9.2 — MICRO telemetry, bear-regime fixes, VASS debit R:R gates
 
 ---
 
@@ -35,13 +35,13 @@ flowchart TD
             E_RISK["risk_engine.py<br/><i>Circuit breakers, Greeks</i>"]
             E_COLD["cold_start_engine.py<br/><i>Days 1-5 warm entry</i>"]
             E_GATE["startup_gate.py<br/><i>V2.30: All-weather time-based arming</i>"]
-            E_TREND["trend_engine.py<br/><i>MA200+ADX QLD/SSO/TNA/FAS 40%</i>"]
+            E_TREND["trend_engine.py<br/><i>MA200+ADX QLD/SSO/UGL/UCO 40%</i>"]
         end
         subgraph SATELLITE["satellite/ (conditional)"]
-            E_MR["mean_reversion_engine.py<br/><i>Intraday TQQQ/SOXL 0-10%</i>"]
-            E_HEDGE["hedge_engine.py<br/><i>TMF/PSQ allocation</i>"]
-            E_YIELD["yield_sleeve.py<br/><i>SHV cash mgmt</i>"]
-            E_OPTIONS["options_engine.py<br/><i>QQQ options 25%<br/>VASS + Dual-Mode + Micro Regime</i>"]
+            E_MR["mean_reversion_engine.py<br/><i>Intraday TQQQ/SPXL/SOXL 0-10%</i>"]
+            E_HEDGE["hedge_engine.py<br/><i>SH inverse allocation (V6.11)</i>"]
+            E_YIELD["yield_sleeve.py<br/><i>SHV cash mgmt (spec only)</i>"]
+            E_OPTIONS["options_engine.py<br/><i>QQQ options 50% (V6.20)<br/>VASS + Dual-Mode + Micro Regime</i>"]
         end
     end
 
@@ -143,23 +143,24 @@ alpha_nextgen/
 │   ├── core/                            # Foundational engines (always active)
 │   │   ├── __init__.py
 │   │   ├── regime_engine.py             # 4-factor market state (0-100 score)
-│   │   ├── capital_engine.py            # SEED/GROWTH phases, virtual lockbox
-│   │   ├── risk_engine.py               # Kill switch, panic mode, Greeks monitoring
+│   │   ├── capital_engine.py            # V3.0: Regime-based safeguards, virtual lockbox
+│   │   ├── risk_engine.py               # Tiered kill switch (V2.27), panic mode, Greeks
 │   │   ├── cold_start_engine.py         # Days 1-5 warm entry logic
-│   │   └── trend_engine.py              # MA200+ADX (QLD 15%, SSO 12%, TNA 8%, FAS 5%) - 40%
+│   │   ├── startup_gate.py              # V6.0: All-weather time-based arming (6 days)
+│   │   └── trend_engine.py              # MA200+ADX (QLD 15%, SSO 7%, UGL 10%, UCO 8%) - 40%
 │   └── satellite/                       # Conditional engines
 │       ├── __init__.py
-│       ├── mean_reversion_engine.py     # Intraday oversold bounce (TQQQ, SOXL) - 0-10%
-│       ├── hedge_engine.py              # Regime-based TMF/PSQ allocation
-│       ├── yield_sleeve.py              # SHV idle cash management
-│       └── options_engine.py            # QQQ options - 25% (V2.8 VASS + Dual-Mode)
-│                                        #   Swing Mode (18.75%): VASS debit/credit spreads
-│                                        #   Intraday Mode (6.25%): Micro Regime Engine
+│       ├── mean_reversion_engine.py     # Intraday oversold bounce (TQQQ, SPXL, SOXL) - 0-10%
+│       ├── hedge_engine.py              # Regime-based SH allocation (V6.11: TMF/PSQ retired)
+│       ├── yield_sleeve.py              # SHV cash management (spec only)
+│       └── options_engine.py            # QQQ options - 50% (V6.20 VASS + Dual-Mode)
+│                                        #   Swing Mode (37.5%): VASS debit/credit spreads
+│                                        #   Intraday Mode (12.5%): Micro Regime Engine
 │
 ├── portfolio/
 │   ├── __init__.py
 │   ├── portfolio_router.py              # Central hub - TargetWeight aggregation
-│   ├── exposure_groups.py               # NASDAQ_BETA, SPY_BETA, RATES definitions
+│   ├── exposure_groups.py               # NASDAQ_BETA, SPY_BETA, COMMODITIES definitions
 │   └── position_manager.py              # Entry prices, stops, highest highs
 │
 ├── execution/

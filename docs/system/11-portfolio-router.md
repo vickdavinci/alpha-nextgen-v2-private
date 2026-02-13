@@ -14,7 +14,7 @@ Previous system versions had each strategy place orders independently. This caus
 |---------|-------------|--------|
 | **Wash Sales** | One strategy buys while another sells same symbol | Tax issues, wasted commissions |
 | **Beta Stacking** | Multiple strategies all long Nasdaq simultaneously | Excessive concentration risk |
-| **Conflicting Positions** | Long TQQQ and short PSQ creating unintended exposure | Unpredictable net exposure |
+| **Conflicting Positions** | Long TQQQ and short SH creating unintended exposure | Unpredictable net exposure |
 | **Execution Chaos** | Multiple orders hitting market at same time | Poor fills, confusion |
 
 ### 11.1.2 The Router Solution
@@ -225,7 +225,6 @@ NASDAQ_BETA positions:
   • TQQQ: +25%
   • QLD: +35%
   • SOXL: +15%
-  • PSQ: 0%
 
 Total Net Long: 75%
 Max Net Long: 50%
@@ -644,7 +643,7 @@ This is called during margin circuit breaker events and kill switch liquidation 
 
 ### 11.16.1 The Problem
 
-A 20% allocation to a 2x ETF (QLD) consumes 40% of margin. A 12% allocation to a 3x ETF (TNA) consumes 36% of margin. Source allocation limits based on **weight alone** undercount actual margin consumption, potentially starving the Options Engine.
+A 15% allocation to a 2x ETF (QLD) consumes 30% of margin. A 4% allocation to a 3x ETF (TQQQ) consumes 12% of margin. Source allocation limits based on **weight alone** undercount actual margin consumption, potentially starving the Options Engine.
 
 ### 11.16.2 Margin-Weighted Enforcement
 

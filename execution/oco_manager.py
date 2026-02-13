@@ -299,7 +299,7 @@ class OCOManager:
                 self.log(f"OCO: WARNING - could not verify market hours: {e}")
 
         # Submit stop order
-        stop_order_id = self._submit_stop_order(pair.symbol, pair.stop_leg)
+        stop_order_id = self._submit_stop_order(pair.symbol, pair.stop_leg, pair.oco_id)
         if stop_order_id is None:
             self.log(f"OCO: Failed to submit stop leg for {pair.oco_id}")
             return False
@@ -307,7 +307,7 @@ class OCOManager:
         pair.stop_leg.submitted = True
 
         # Submit profit order
-        profit_order_id = self._submit_limit_order(pair.symbol, pair.profit_leg)
+        profit_order_id = self._submit_limit_order(pair.symbol, pair.profit_leg, pair.oco_id)
         if profit_order_id is None:
             # Cancel the stop order since profit failed
             self._cancel_order(stop_order_id)
@@ -332,7 +332,7 @@ class OCOManager:
 
         return True
 
-    def _submit_stop_order(self, symbol: str, leg: OCOLeg) -> Optional[int]:
+    def _submit_stop_order(self, symbol: str, leg: OCOLeg, oco_id: str) -> Optional[int]:
         """
         Submit a stop order to the broker.
 
@@ -346,17 +346,26 @@ class OCOManager:
 
         try:
             # Use StopMarketOrder for options
-            ticket = self.algorithm.StopMarketOrder(
-                symbol,
-                leg.quantity,
-                leg.trigger_price,
-            )
+            tag = f"OCO_STOP:{oco_id}"
+            try:
+                ticket = self.algorithm.StopMarketOrder(
+                    symbol,
+                    leg.quantity,
+                    leg.trigger_price,
+                    tag=tag,
+                )
+            except TypeError:
+                ticket = self.algorithm.StopMarketOrder(
+                    symbol,
+                    leg.quantity,
+                    leg.trigger_price,
+                )
             return ticket.OrderId
         except Exception as e:
             self.log(f"OCO: Stop order submission failed: {e}")
             return None
 
-    def _submit_limit_order(self, symbol: str, leg: OCOLeg) -> Optional[int]:
+    def _submit_limit_order(self, symbol: str, leg: OCOLeg, oco_id: str) -> Optional[int]:
         """
         Submit a limit order to the broker.
 
@@ -370,11 +379,20 @@ class OCOManager:
 
         try:
             # Use LimitOrder for profit target
-            ticket = self.algorithm.LimitOrder(
-                symbol,
-                leg.quantity,
-                leg.trigger_price,
-            )
+            tag = f"OCO_PROFIT:{oco_id}"
+            try:
+                ticket = self.algorithm.LimitOrder(
+                    symbol,
+                    leg.quantity,
+                    leg.trigger_price,
+                    tag=tag,
+                )
+            except TypeError:
+                ticket = self.algorithm.LimitOrder(
+                    symbol,
+                    leg.quantity,
+                    leg.trigger_price,
+                )
             return ticket.OrderId
         except Exception as e:
             self.log(f"OCO: Limit order submission failed: {e}")
@@ -465,6 +483,57 @@ class OCOManager:
         # Clean up tracking
         self._cleanup_pair(pair)
 
+        return pair
+
+    def on_order_inactive(
+        self,
+        broker_order_id: int,
+        status: str,
+        detail: str,
+        event_time: str,
+    ) -> Optional[OCOPair]:
+        """
+        Handle broker invalid/canceled events for an OCO leg.
+
+        If one leg becomes inactive unexpectedly, cancel the sibling leg and
+        close the OCO pair to avoid stale orphan orders.
+        """
+        if broker_order_id not in self._order_to_oco:
+            return None
+
+        oco_id = self._order_to_oco[broker_order_id]
+        pair = self._active_pairs.get(oco_id)
+        if pair is None:
+            return None
+
+        if pair.state != OCOState.ACTIVE:
+            # Already terminal; just clean stale mappings if any.
+            self._cleanup_pair(pair)
+            return pair
+
+        leg_name = "UNKNOWN"
+        sibling_id: Optional[int] = None
+        if pair.stop_leg.broker_order_id == broker_order_id:
+            pair.stop_leg.cancelled = True
+            leg_name = "STOP"
+            sibling_id = pair.profit_leg.broker_order_id
+        elif pair.profit_leg.broker_order_id == broker_order_id:
+            pair.profit_leg.cancelled = True
+            leg_name = "PROFIT"
+            sibling_id = pair.stop_leg.broker_order_id
+
+        if sibling_id:
+            self._cancel_order(sibling_id)
+
+        pair.state = OCOState.CANCELLED
+        pair.closed_at = event_time
+        pair.close_reason = f"{status.upper()}_{leg_name}"
+
+        self.log(
+            f"OCO: CLOSED {oco_id} due to {status.upper()} on {leg_name} leg | "
+            f"Symbol={pair.symbol} | Detail={detail}"
+        )
+        self._cleanup_pair(pair)
         return pair
 
     def cancel_oco_pair(self, oco_id: str, reason: str = "MANUAL") -> bool:
