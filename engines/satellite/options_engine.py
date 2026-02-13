@@ -1949,6 +1949,9 @@ class OptionsEngine:
         self._last_intraday_validation_failure: Optional[str] = None
         self._last_intraday_validation_detail: Optional[str] = None
         self._last_micro_no_trade_log: Optional[str] = None
+        # MICRO anti-churn: brief cooldown for same strategy after close.
+        self._last_intraday_close_time: Optional[datetime] = None
+        self._last_intraday_close_strategy: Optional[str] = None
 
         # V2.3.2 FIX #4: Track if pending entry is intraday (for correct position registration)
         self._pending_intraday_entry: bool = False
@@ -7765,6 +7768,34 @@ class OptionsEngine:
         }
         strategy_name = strategy_names.get(state.recommended_strategy, "UNKNOWN")
 
+        # MICRO anti-churn cooldown: avoid immediate re-entry of same strategy.
+        cooldown_min = int(getattr(config, "MICRO_SAME_STRATEGY_COOLDOWN_MINUTES", 0))
+        if (
+            cooldown_min > 0
+            and self._last_intraday_close_time is not None
+            and self._last_intraday_close_strategy
+        ):
+            current_dt = None
+            if current_time:
+                try:
+                    current_dt = datetime.strptime(current_time[:19], "%Y-%m-%d %H:%M:%S")
+                except Exception:
+                    current_dt = None
+            if current_dt is None and self.algorithm is not None:
+                current_dt = self.algorithm.Time
+            if current_dt is not None:
+                elapsed = (current_dt - self._last_intraday_close_time).total_seconds() / 60.0
+                if (
+                    0 <= elapsed < cooldown_min
+                    and strategy_name == self._last_intraday_close_strategy
+                ):
+                    self.log(
+                        f"INTRADAY: Same-strategy cooldown block | Strategy={strategy_name} | "
+                        f"Elapsed={elapsed:.1f}m < {cooldown_min}m",
+                        trades_only=True,
+                    )
+                    return fail("E_INTRADAY_SAME_STRATEGY_COOLDOWN")
+
         # Check time windows based on strategy (V2.3.19: use config values)
         time_minutes = current_hour * 60 + current_minute
 
@@ -8498,8 +8529,17 @@ class OptionsEngine:
         if self._intraday_position is not None:
             position = self._intraday_position
             self._intraday_position = None
+            try:
+                strategy = str(getattr(position, "entry_strategy", "") or "UNKNOWN")
+            except Exception:
+                strategy = "UNKNOWN"
+            self._last_intraday_close_strategy = strategy
+            self._last_intraday_close_time = (
+                self.algorithm.Time if self.algorithm is not None else None
+            )
             self.log(
-                f"OPT: INTRADAY_POSITION_REMOVED {position.contract.symbol}",
+                f"OPT: INTRADAY_POSITION_REMOVED {position.contract.symbol} | "
+                f"Strategy={strategy}",
                 trades_only=True,
             )
             return position
@@ -8950,6 +8990,8 @@ class OptionsEngine:
         self._pending_target_price = None
         self._pending_entry_strategy = None
         self._entry_attempted_today = False
+        self._last_intraday_close_time = None
+        self._last_intraday_close_strategy = None
 
         if cleared:
             self.log(
@@ -9117,6 +9159,12 @@ class OptionsEngine:
                 k: v.strftime("%Y-%m-%d %H:%M:%S")
                 for k, v in self._spread_neutrality_warn_by_key.items()
             },
+            "last_intraday_close_time": (
+                self._last_intraday_close_time.strftime("%Y-%m-%d %H:%M:%S")
+                if self._last_intraday_close_time is not None
+                else None
+            ),
+            "last_intraday_close_strategy": self._last_intraday_close_strategy,
         }
 
     def restore_state(self, state: Dict[str, Any]) -> None:
@@ -9282,6 +9330,17 @@ class OptionsEngine:
                 k: v for k, v in self._spread_neutrality_warn_by_key.items() if k in active_keys
             }
 
+        self._last_intraday_close_time = None
+        last_close = state.get("last_intraday_close_time")
+        if last_close:
+            try:
+                self._last_intraday_close_time = datetime.strptime(
+                    str(last_close)[:19], "%Y-%m-%d %H:%M:%S"
+                )
+            except Exception:
+                self._last_intraday_close_time = None
+        self._last_intraday_close_strategy = state.get("last_intraday_close_strategy")
+
     def reset(self) -> None:
         """Reset engine state."""
         # Legacy
@@ -9315,6 +9374,8 @@ class OptionsEngine:
         self._vass_cooldown_until_by_signature = {}
         self._vass_last_entry_date_by_direction = {}
         self._spread_neutrality_warn_by_key = {}
+        self._last_intraday_close_time = None
+        self._last_intraday_close_strategy = None
 
         self.log("OPT: Engine reset - all positions cleared")
 
@@ -9339,6 +9400,8 @@ class OptionsEngine:
 
             # V2.3.3: Reset pending intraday exit flag
             self._pending_intraday_exit = False
+            self._last_intraday_close_time = None
+            self._last_intraday_close_strategy = None
 
             # Reset Micro Regime Engine for new day
             self._micro_regime_engine.reset_daily()

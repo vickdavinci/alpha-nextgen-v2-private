@@ -924,6 +924,9 @@ CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV = 0.30
 INTRADAY_MAX_TRADES_PER_DAY = (
     3  # All-regime throughput tune: allow one additional high-quality intraday slot
 )
+MICRO_SAME_STRATEGY_COOLDOWN_MINUTES = (
+    20  # Block immediate repeat of same MICRO strategy after close
+)
 
 # V2.9: Global options trade limits (Bug #4 fix)
 # Keep conservative defaults to avoid fee drag/correlation spikes while
@@ -1687,7 +1690,7 @@ TRANSITION_SIZE_MULT = 0.50  # V9: tradeable with reduced exposure (same as CAUT
 
 # D10: Per-expiry concentration cap for spread ladders.
 SPREAD_EXPIRY_CONCENTRATION_CAP_ENABLED = True
-SPREAD_MAX_PER_EXPIRY = 3
+SPREAD_MAX_PER_EXPIRY = 2
 SPREAD_MAX_BULLISH_PER_EXPIRY = 2
 SPREAD_MAX_BEARISH_PER_EXPIRY = 2
 SPREAD_MAX_BULLISH_PER_EXPIRY_BULL_PROFILE = (
