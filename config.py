@@ -921,9 +921,7 @@ CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV = 0.30
 
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
 # V2.3.15: Sniper Logic - allow one retry, not machine gun
-INTRADAY_MAX_TRADES_PER_DAY = (
-    3  # All-regime throughput tune: allow one additional high-quality intraday slot
-)
+INTRADAY_MAX_TRADES_PER_DAY = 4  # Throughput tune: allow one additional high-quality intraday slot
 MICRO_SAME_STRATEGY_COOLDOWN_MINUTES = (
     20  # Block immediate repeat of same MICRO strategy after close
 )
@@ -936,7 +934,7 @@ MAX_SWING_TRADES_PER_DAY = 3
 # Reserve swing capacity so intraday activity cannot fully starve VASS entries.
 OPTIONS_RESERVE_SWING_DAILY_SLOTS_ENABLED = False
 OPTIONS_MIN_SWING_SLOTS_PER_DAY = 1
-OPTIONS_RESERVE_INTRADAY_DAILY_SLOTS_ENABLED = True
+OPTIONS_RESERVE_INTRADAY_DAILY_SLOTS_ENABLED = False
 OPTIONS_MIN_INTRADAY_SLOTS_PER_DAY = 1
 OPTIONS_RESERVE_RELEASE_HOUR = 12  # Release reserved slots earlier to reduce midday throttling
 OPTIONS_RESERVE_RELEASE_MINUTE = 30
@@ -1708,8 +1706,8 @@ INTRADAY_CALL_BLOCK_REGIME_MAX = 58.0  # Extend block deeper into weak-neutral m
 # Additional minimal CALL-protection gates (bear-risk controls without major architecture changes)
 CALL_GATE_MA20_ENABLED = True  # Block CALL entries when QQQ is below its 20-day SMA
 CALL_GATE_MA20_BYPASS_REGIME_MIN = 68.0  # Allow CALLs below MA20 in strong bullish macro
-CALL_GATE_MA20_BYPASS_VIX_MAX = 14.5  # Only bypass when fear is still low
-CALL_GATE_MA20_BYPASS_SIZE_MULT = 0.70  # Reduce size when using MA20 bypass
+CALL_GATE_MA20_BYPASS_VIX_MAX = 18.0  # Only bypass when fear is still low
+CALL_GATE_MA20_BYPASS_SIZE_MULT = 0.85  # Reduce size when using MA20 bypass
 CALL_GATE_VIX_5D_RISING_ENABLED = True  # Block CALL entries when 5-day VIX trend is rising
 CALL_GATE_VIX_5D_RISING_PCT = 0.10  # +10% over 5 days
 CALL_GATE_CONSECUTIVE_LOSS_ENABLED = True  # Pause CALL entries after repeated losses
@@ -1747,13 +1745,13 @@ INTRADAY_ITM_MIN_MOVE = 0.40  # V6.13 OPT: Increase momentum setup availability
 INTRADAY_ITM_MIN_SCORE = 40  # V6.8: Was 50, capture momentum earlier
 # V2.3.19: Time window moved from hardcoded to config
 INTRADAY_ITM_START = "10:00"  # Entry window start
-INTRADAY_ITM_END = "13:30"  # Entry window end (earlier than FADE - momentum fades after lunch)
+INTRADAY_ITM_END = "14:30"  # Entry window end (earlier than FADE - momentum fades after lunch)
 INTRADAY_ITM_DELTA = 0.70  # ITM delta target
 INTRADAY_ITM_TARGET = 0.35  # V6.13 OPT: Earlier profit capture in volatile sessions
 
 # V6.4: DEBIT_MOMENTUM time window (same as ITM_MOMENTUM - both are momentum strategies)
 INTRADAY_DEBIT_MOMENTUM_START = "10:00"  # Entry window start
-INTRADAY_DEBIT_MOMENTUM_END = "13:30"  # Entry window end
+INTRADAY_DEBIT_MOMENTUM_END = "14:30"  # Entry window end
 INTRADAY_ITM_STOP = 0.35  # V6.13 OPT: Reduce catastrophic ITM losses
 INTRADAY_HIGH_VIX_STOP_MAX_PCT = (
     0.40  # V9.2 RCA: Wider stop cap for VIX>25 regimes (was capped at 28%)
