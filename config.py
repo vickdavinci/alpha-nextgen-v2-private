@@ -1267,6 +1267,9 @@ SPREAD_SHORT_LEG_BY_WIDTH = True  # V2.4.3: Use strike width for short leg (not 
 SPREAD_WIDTH_MIN = 4.0  # V6.13 OPT: Improve candidate availability with controlled risk
 SPREAD_WIDTH_MAX = 10.0  # V2.4.3: Maximum $10 spread (caps risk)
 SPREAD_WIDTH_TARGET = 4.0  # V6.13 OPT: Improve fill/constructability in medium IV
+SPREAD_WIDTH_EFFECTIVE_MAX = (
+    7.0  # V9.1: Preferred width ceiling for R:R sort (avoids lottery-ticket wide spreads)
+)
 
 # DTE for debit spreads (per V2.3 spec)
 # V2.3.22: Raised from 10 to 14 - spreads need same gap cushion as single-leg
@@ -1280,6 +1283,9 @@ VASS_DEBIT_LOW_VIX_THRESHOLD = 16.0
 # Exit targets
 # V6.10 P5: Symmetric R:R (40%/40%) - need 1:1 win ratio to break even
 # Was asymmetric (50%/35%) requiring 1.43:1 win ratio
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT = (
+    0.55  # V9.1: Block spreads where debit > 55% of width (ensures R:R ≥ 0.82:1)
+)
 SPREAD_PROFIT_TARGET_PCT = 0.50  # +50% base target
 SPREAD_STOP_LOSS_PCT = (
     0.40  # V6.10 P5: Raised from 0.35 to 0.40 (wider stop, symmetric with target)
@@ -1379,7 +1385,11 @@ SPREAD_LOCK_CLEAR_ON_FAILURE = True  # Clear is_closing lock if all close attemp
 # V6.6: Slightly relaxed delta requirements for better contract matching
 # 2022H1 analysis showed 36 spread failures due to strict delta requirements
 SPREAD_LONG_LEG_DELTA_MIN = 0.35  # V6.10 P3: Was 0.40, widen range for more candidates
-SPREAD_LONG_LEG_DELTA_MAX = 0.90  # V6.10 P3: Was 0.85, allow deeper ITM for swing
+SPREAD_LONG_LEG_DELTA_MAX = 0.65  # V9.1: Was 0.90, cap ITM depth to improve R:R on CALL debits
+SPREAD_LONG_LEG_DELTA_TARGET_CALL = 0.50  # V9.1: ATM target for CALLs (cheaper debit, better R:R)
+SPREAD_LONG_LEG_DELTA_TARGET_PUT = (
+    0.70  # V9.1: ITM target for PUTs (unchanged, directional exposure)
+)
 SPREAD_SHORT_LEG_DELTA_MIN = 0.08  # V6.10 P3: Was 0.10, allow farther OTM shorts
 SPREAD_SHORT_LEG_DELTA_MAX = 0.60  # V6.10 P3: Was 0.55, allow closer-to-ATM shorts
 # V6.9: PUT-specific spread filters (bear put spreads need looser liquidity + delta)

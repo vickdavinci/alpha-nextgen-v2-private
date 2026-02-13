@@ -3460,8 +3460,13 @@ class OptionsEngine:
                 self._set_spread_failure_cooldown(current_time, direction=direction)
             return None
 
-        # V2.3.21: Sort by delta proximity to 0.70 (ITM target for Smart Swing)
-        long_candidates.sort(key=lambda c: abs(abs(c.delta) - 0.70))
+        # V9.1: Direction-specific delta target (CALL=ATM 0.50 for better R:R, PUT=ITM 0.70)
+        delta_target = (
+            getattr(config, "SPREAD_LONG_LEG_DELTA_TARGET_CALL", 0.50)
+            if is_call
+            else getattr(config, "SPREAD_LONG_LEG_DELTA_TARGET_PUT", 0.70)
+        )
+        long_candidates.sort(key=lambda c: abs(abs(c.delta) - delta_target))
         long_leg = long_candidates[0]
 
         # V2.4.3: WIDTH-BASED short leg selection (fixes "delta trap" in backtesting)
@@ -3517,10 +3522,24 @@ class OptionsEngine:
                 self._set_spread_failure_cooldown(current_time, direction=direction)
             return None
 
-        # V2.4.3: Sort by WIDTH proximity to target, then by delta as tiebreaker
-        # Primary: closest to $5 target width
-        # Secondary: prefer lower delta (more OTM = cheaper credit)
-        short_candidates.sort(key=lambda x: (abs(x[1] - config.SPREAD_WIDTH_TARGET), x[2]))
+        # V9.1: Sort by best R:R (debit/width ascending) within effective width cap
+        # Prefer spreads where we pay less relative to width = better risk:reward
+        # Cap at SPREAD_WIDTH_EFFECTIVE_MAX to avoid lottery-ticket wide spreads
+        effective_max = getattr(config, "SPREAD_WIDTH_EFFECTIVE_MAX", 7.0)
+        preferred = [s for s in short_candidates if s[1] <= effective_max]
+        if not preferred:
+            preferred = short_candidates  # Fall back to all if none within cap
+
+        # Estimate debit for R:R sort: long_leg.mid - short_candidate.mid
+        # Lower debit_to_width = better R:R
+        def rr_sort_key(x):
+            candidate, width, delta_abs = x
+            estimated_debit = long_leg.mid_price - candidate.mid_price
+            debit_to_width = estimated_debit / width if width > 0 else 1.0
+            return (debit_to_width, -width)  # Tiebreak: prefer wider at same R:R
+
+        preferred.sort(key=rr_sort_key)
+        short_candidates = preferred
         short_leg = short_candidates[0][0]
         actual_width = abs(short_leg.strike - long_leg.strike)
 
@@ -4935,6 +4954,18 @@ class OptionsEngine:
         if max_profit <= 0:
             self.log(f"SPREAD: Entry blocked - max profit ${max_profit:.2f} <= 0")
             return fail_quality("MAX_PROFIT_NON_POSITIVE")
+
+        # V9.1: Debit-to-width quality gate — block spreads with poor R:R
+        max_debit_pct = float(getattr(config, "SPREAD_MAX_DEBIT_TO_WIDTH_PCT", 0.55))
+        debit_to_width = net_debit / width if width > 0 else 1.0
+        if debit_to_width > max_debit_pct:
+            self.log(
+                f"SPREAD: Entry blocked - DEBIT_TO_WIDTH {debit_to_width:.1%} > {max_debit_pct:.0%} | "
+                f"Debit=${net_debit:.2f} Width=${width:.0f}",
+                trades_only=True,
+            )
+            return fail_quality("DEBIT_TO_WIDTH_TOO_HIGH")
+
         if bool(getattr(config, "SPREAD_ENTRY_COMMISSION_GATE_ENABLED", False)):
             max_profit_dollars = max_profit * 100.0
             commission_per_spread = float(getattr(config, "SPREAD_COMMISSION_PER_CONTRACT", 2.60))
