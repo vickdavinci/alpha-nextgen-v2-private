@@ -86,9 +86,10 @@ class TestOptionsIntradayRejectionScenario:
         assert engine._pending_intraday_entry is False
         assert engine._pending_contract is None
         assert engine._pending_num_contracts is None
-        assert engine._intraday_trades_today == 0
-        assert engine._total_options_trades_today == 0
-        assert engine._trades_today == 0
+        # V9.0: Counters are fill-based, no decrement on cancel
+        assert engine._intraday_trades_today == 1
+        assert engine._total_options_trades_today == 1
+        assert engine._trades_today == 1
 
         # Step 4: Verify next signal can fire
         assert engine._pending_intraday_entry is False
@@ -144,4 +145,4 @@ class TestSpreadRejectionScenario:
         assert engine._pending_spread_width is None
         assert engine._pending_num_contracts is None
         assert engine._pending_entry_score is None
-        assert engine._entry_attempted_today is False
+        # V9.0: _entry_attempted_today is NOT cleared on cancel (fill-based tracking)

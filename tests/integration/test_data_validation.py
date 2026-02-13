@@ -198,11 +198,11 @@ class TestOptionsChainFiltering:
         Test liquidity filters (spread, open interest).
         """
         # Max bid-ask spread - V2.3.10: Widened from 5% to 15% for ATM contracts
-        assert config.OPTIONS_SPREAD_MAX_PCT == 0.15  # V2.3.10: 15% (was 5%)
+        assert config.OPTIONS_SPREAD_MAX_PCT == 0.14  # V9.x: Tightened from 15% to 14%
         assert config.OPTIONS_SPREAD_WARNING_PCT == 0.30  # V6.8: Widened from 25% to 30%
 
         # Min open interest (V6.8: Relaxed from 100 to 50)
-        assert config.OPTIONS_MIN_OPEN_INTEREST == 50
+        assert config.OPTIONS_MIN_OPEN_INTEREST == 60  # V9.x: Raised from 50 to 60
 
     def test_min_premium_filter(self):
         """

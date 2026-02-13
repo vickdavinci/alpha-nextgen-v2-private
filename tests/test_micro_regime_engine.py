@@ -508,12 +508,14 @@ class TestRecommendStrategy:
         assert strategy == IntradayStrategy.NO_TRADE
 
     def test_full_panic_recommends_protective_puts(self, micro_engine):
-        """V6.4: FULL_PANIC -> PROTECTIVE_PUTS (crisis protection, no score required)."""
+        """V6.4: FULL_PANIC -> PROTECTIVE_PUTS (crisis protection, no score required).
+        V9.2: Requires QQQ DOWN confirmation (positive move = QQQ UP = blocked).
+        """
         strategy = micro_engine.recommend_strategy(
             micro_regime=MicroRegime.FULL_PANIC,
             micro_score=10,
             vix_current=35.0,
-            qqq_move_pct=4.0,
+            qqq_move_pct=-4.0,  # V9.2: Must be QQQ DOWN for FULL_PANIC protective puts
         )
         assert strategy == IntradayStrategy.PROTECTIVE_PUTS
 
