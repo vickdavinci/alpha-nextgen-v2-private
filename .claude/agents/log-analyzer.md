@@ -1,6 +1,6 @@
 ---
 name: log-analyzer
-description: "Use this agent to analyze backtest logs and generate comprehensive trading performance reports. The agent reads every line of log files, extracts trades, signals, regime data, and calculates hedge fund style statistics. It produces a detailed markdown report with tables, metrics, and anomaly detection.\n\n<example>\nContext: User wants to analyze a backtest log.\nuser: \"Analyze the logs in docs/audits/logs/stage6/V6_12_JulSep2015_logs.txt\"\nassistant: \"I'll launch the log-analyzer to create a comprehensive performance report.\"\n</example>\n\n<example>\nContext: User wants to analyze multiple logs in a folder.\nuser: \"Analyze all logs in docs/audits/logs/stage6.10/\"\nassistant: \"I'll analyze all log files in that folder and generate a combined report.\"\n</example>\n\n<example>\nContext: User wants to identify why options are losing.\nuser: \"Why is the options engine underperforming? Check the logs.\"\nassistant: \"Let me analyze the logs to identify options engine issues.\"\n</example>"
+description: "Use this agent to analyze backtest logs and generate TWO comprehensive reports: (1) a Performance Report with hedge fund style statistics, trades by engine, regime analysis, risk events, anomalies, and recommendations; (2) a Signal Flow Report with direction-level breakdowns showing signals generated vs blocked vs executed for both VASS (BULLISH/BEARISH) and MICRO (CALL/PUT), rejection reason analysis, and strategy-level win/loss/P&L. The agent reads every line of log files and cross-validates against trades.csv.\n\n<example>\nContext: User wants to analyze a backtest log.\nuser: \"Analyze the logs in docs/audits/logs/stage6/V6_12_JulSep2015_logs.txt\"\nassistant: \"I'll launch the log-analyzer to create a comprehensive performance report.\"\n</example>\n\n<example>\nContext: User wants to analyze multiple logs in a folder.\nuser: \"Analyze all logs in docs/audits/logs/stage6.10/\"\nassistant: \"I'll analyze all log files in that folder and generate a combined report.\"\n</example>\n\n<example>\nContext: User wants to identify why options are losing.\nuser: \"Why is the options engine underperforming? Check the logs.\"\nassistant: \"Let me analyze the logs to identify options engine issues.\"\n</example>"
 tools: Bash, Glob, Grep, Read, Write
 model: sonnet
 color: green
@@ -731,20 +731,70 @@ VaR_95 = percentile(daily_returns, 5)
 CVaR_95 = mean(daily_returns where daily_returns <= VaR_95)
 ```
 
-## Output
+## Output — TWO Reports Per Analysis (MANDATORY)
 
-Save the report in the SAME folder as the source log file:
+Every log analysis MUST produce **two separate reports**. Both are saved in the SAME folder as the source log files.
+
+### Report 1: Performance Report (Main Analysis)
+Contains: Executive summary, trades by engine, regime analysis, risk events, hedge fund statistics, anomalies, recommendations.
+
 ```
-{LogFileFolder}/{LogFileName}_Analysis_{Timestamp}.md
+{LogFileFolder}/{LogFileName}_REPORT.md
 ```
 
-Examples:
+### Report 2: Signal Flow Report (Direction Breakdown)
+Contains: Signal-level funnel for VASS and MICRO, broken down by direction (BULLISH/BEARISH for VASS, CALL/PUT for MICRO).
+
+```
+{LogFileFolder}/{LogFileName}_SIGNAL_FLOW_REPORT.md
+```
+
+### Signal Flow Report Structure
+
+The Signal Flow Report MUST include these sections:
+
+**1. Executive Summary** — Signal funnel overview table (signals generated → blocked → executed per engine)
+
+**2. VASS Signal Flow:**
+- 2.1 Signal generation by direction (CALL/Bullish vs PUT/Bearish counts)
+- 2.2 Rejections breakdown by direction — table of every rejection reason with count and % (e.g., `R_SLOT_DIRECTION_MAX`, `R_EXPIRY_CONCENTRATION_CAP_DIRECTION`, `BEAR_PUT_ASSIGNMENT_GATE_*`, `TIME_WINDOW_BLOCK`, `E_VASS_SIMILAR_`, `TRADE_LIMIT_BLOCK`)
+- 2.3 Executed trades by direction and spread type — wins, losses, win%, total P&L, avg P&L
+- 2.4 Visual funnel (ASCII art showing generated → rejected → executed → outcome per direction)
+
+**3. MICRO Signal Flow:**
+- 3.1 Signal generation by direction (CALL vs PUT counts)
+- 3.2 Rejections breakdown — table of every block reason with count and % (e.g., `REGIME_NOT_TRADEABLE`, `CONFIRMATION_FAIL`, `QQQ_FLAT`, `VIX_STABLE_LOW_CONVICTION`, `E_INTRADAY_TRADE_LIMIT`)
+- 3.3 Executed trades by direction — wins, losses, win%, total P&L, avg P&L
+- 3.4 Executed trades by strategy (DEBIT_FADE, DEBIT_MOMENTUM, ITM_MOMENTUM) — wins, losses, win%, total P&L, avg P&L
+- 3.5 Visual funnel per direction
+
+**4. Combined Signal Funnel Visualization** — ASCII overview of both engines
+
+**5. Rejection Reason Analysis:**
+- Which rejections SAVED money (prevented losing trades)
+- Which rejections COST opportunity (blocked potentially profitable trades)
+- Net assessment per rejection type
+
+**6. Key Findings & Recommendations** — P0/P1 prioritized fixes based on signal flow evidence
+
+### Parsing Guidance for Signal Flow Report
+
+Search log lines for these patterns to count signals and rejections:
+- VASS signals: `VASS`, `BULL_CALL`, `BEAR_PUT`, `BULL_PUT`, `BEAR_CALL`, `VASS_DIRECTION`
+- VASS rejections: `R_SLOT_DIRECTION_MAX`, `R_EXPIRY_CONCENTRATION_CAP`, `E_VASS_SIMILAR`, `BEAR_PUT_ASSIGNMENT_GATE`, `TIME_WINDOW_BLOCK`, `TRADE_LIMIT_BLOCK`
+- MICRO signals: `MICRO`, `DEBIT_FADE`, `DEBIT_MOMENTUM`, `ITM_MOMENTUM`
+- MICRO blocks: `MICRO_BLOCK`, `REGIME_NOT_TRADEABLE`, `CONFIRMATION_FAIL`, `QQQ_FLAT`, `VIX_STABLE_LOW_CONVICTION`, `E_INTRADAY_TRADE_LIMIT`, `E_INTRADAY_TIME_WINDOW`
+- Cross-reference orders.csv `Tag` field for strategy labels and trades.csv for P&L
+
+### Examples
 ```
 docs/audits/logs/stage6/V6_12_JulSep2015_logs.txt
-  → docs/audits/logs/stage6/V6_12_JulSep2015_Analysis_20260210.md
+  → docs/audits/logs/stage6/V6_12_JulSep2015_REPORT.md
+  → docs/audits/logs/stage6/V6_12_JulSep2015_SIGNAL_FLOW_REPORT.md
 
-docs/audits/logs/stage6.10/V6_10_Aug2015_logs.txt
-  → docs/audits/logs/stage6.10/V6_10_Aug2015_Analysis_20260210.md
+docs/audits/logs/stage8/V8_JulSep2017_v2_logs.txt
+  → docs/audits/logs/stage8/V8_JulSep2017_v2_REPORT.md
+  → docs/audits/logs/stage8/V8_JulSep2017_v2_SIGNAL_FLOW_REPORT.md
 ```
 
 ## Accuracy Requirements

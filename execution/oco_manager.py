@@ -299,7 +299,7 @@ class OCOManager:
                 self.log(f"OCO: WARNING - could not verify market hours: {e}")
 
         # Submit stop order
-        stop_order_id = self._submit_stop_order(pair.symbol, pair.stop_leg)
+        stop_order_id = self._submit_stop_order(pair.symbol, pair.stop_leg, pair.oco_id)
         if stop_order_id is None:
             self.log(f"OCO: Failed to submit stop leg for {pair.oco_id}")
             return False
@@ -307,7 +307,7 @@ class OCOManager:
         pair.stop_leg.submitted = True
 
         # Submit profit order
-        profit_order_id = self._submit_limit_order(pair.symbol, pair.profit_leg)
+        profit_order_id = self._submit_limit_order(pair.symbol, pair.profit_leg, pair.oco_id)
         if profit_order_id is None:
             # Cancel the stop order since profit failed
             self._cancel_order(stop_order_id)
@@ -332,7 +332,7 @@ class OCOManager:
 
         return True
 
-    def _submit_stop_order(self, symbol: str, leg: OCOLeg) -> Optional[int]:
+    def _submit_stop_order(self, symbol: str, leg: OCOLeg, oco_id: str) -> Optional[int]:
         """
         Submit a stop order to the broker.
 
@@ -346,17 +346,26 @@ class OCOManager:
 
         try:
             # Use StopMarketOrder for options
-            ticket = self.algorithm.StopMarketOrder(
-                symbol,
-                leg.quantity,
-                leg.trigger_price,
-            )
+            tag = f"OCO_STOP:{oco_id}"
+            try:
+                ticket = self.algorithm.StopMarketOrder(
+                    symbol,
+                    leg.quantity,
+                    leg.trigger_price,
+                    tag=tag,
+                )
+            except TypeError:
+                ticket = self.algorithm.StopMarketOrder(
+                    symbol,
+                    leg.quantity,
+                    leg.trigger_price,
+                )
             return ticket.OrderId
         except Exception as e:
             self.log(f"OCO: Stop order submission failed: {e}")
             return None
 
-    def _submit_limit_order(self, symbol: str, leg: OCOLeg) -> Optional[int]:
+    def _submit_limit_order(self, symbol: str, leg: OCOLeg, oco_id: str) -> Optional[int]:
         """
         Submit a limit order to the broker.
 
@@ -370,11 +379,20 @@ class OCOManager:
 
         try:
             # Use LimitOrder for profit target
-            ticket = self.algorithm.LimitOrder(
-                symbol,
-                leg.quantity,
-                leg.trigger_price,
-            )
+            tag = f"OCO_PROFIT:{oco_id}"
+            try:
+                ticket = self.algorithm.LimitOrder(
+                    symbol,
+                    leg.quantity,
+                    leg.trigger_price,
+                    tag=tag,
+                )
+            except TypeError:
+                ticket = self.algorithm.LimitOrder(
+                    symbol,
+                    leg.quantity,
+                    leg.trigger_price,
+                )
             return ticket.OrderId
         except Exception as e:
             self.log(f"OCO: Limit order submission failed: {e}")

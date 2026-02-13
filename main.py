@@ -288,6 +288,13 @@ class AlphaNextGen(QCAlgorithm):
         self._last_swing_scan_time = None  # V2.19: Throttle swing spread scans (1/hour)
         self._intraday_force_exit_fallback_date = None  # V6.12: Fallback guard (once/day)
         self._mr_force_close_fallback_date = None  # V6.12: MR force close fallback guard
+        # Guard against duplicate static+dynamic schedule callbacks on same day.
+        self._intraday_force_close_ran_date = None
+        self._mr_force_close_ran_date = None
+        self._eod_processing_ran_date = None
+        self._market_close_ran_date = None
+        # Intraday reconciliation cadence (reduce zombie/orphan persistence).
+        self._last_reconcile_positions_run: Optional[datetime] = None
 
         # V2.20: Scoped rejection cooldowns — per-strategy penalty after broker rejection
         # Prevents "machine gun" retries while allowing other strategies to continue
@@ -338,6 +345,24 @@ class AlphaNextGen(QCAlgorithm):
         self._diag_intraday_dropped_count = 0
         self._diag_intraday_result_count = 0
         self._diag_vass_block_count = 0
+        self._diag_overlay_block_count = 0
+        self._diag_overlay_slot_block_count = 0
+        self._diag_spread_close_escalation_count = 0
+        self._diag_spread_entry_signal_count = 0
+        self._diag_spread_entry_submit_count = 0
+        self._diag_spread_entry_fill_count = 0
+        self._diag_spread_exit_signal_count = 0
+        self._diag_spread_exit_submit_count = 0
+        self._diag_spread_exit_fill_count = 0
+        self._diag_spread_exit_canceled_count = 0
+        self._diag_spread_position_removed_count = 0
+        self._order_lifecycle_log_count = 0
+        self._last_micro_update_log_signature: Optional[Tuple[str, str, float, float, float]] = None
+        self._last_micro_update_log_time: Optional[datetime] = None
+        self._last_spread_construct_fail_log_at: Optional[datetime] = None
+        self._intraday_regime_score: Optional[float] = None
+        self._intraday_regime_updated_at: Optional[datetime] = None
+        self._last_regime_effective_log_at: Optional[datetime] = None
 
         # V2.6 Bug #14: Exit order retry tracking
         self._pending_exit_orders: Dict[str, ExitOrderTracker] = {}
@@ -345,6 +370,12 @@ class AlphaNextGen(QCAlgorithm):
         # key = spread key "<long>|<short>", value = next eligible retry time.
         self._spread_forced_close_retry: Dict[str, datetime] = {}
         self._spread_forced_close_reason: Dict[str, str] = {}
+        self._spread_forced_close_cancel_counts: Dict[str, int] = {}
+        self._spread_forced_close_retry_cycles: Dict[str, int] = {}
+        # Last known spread leg marks to avoid skipping exit checks on transient quote gaps.
+        self._spread_exit_mark_cache: Dict[str, Dict[str, Any]] = {}
+        # Orphan-close idempotency: avoid resubmitting the same orphan liquidation every reconcile cycle.
+        self._recon_orphan_close_submitted: Dict[str, str] = {}
 
         # V2.4.4 P0: Margin call circuit breaker tracking
         # Prevents 2765+ margin call spam seen in V2.4.3 backtest
@@ -459,7 +490,7 @@ class AlphaNextGen(QCAlgorithm):
         # V2.32: Direction-aware governor — bear options allowed at lower governor scales
         # Bear options REDUCE risk during drawdowns, bull options INCREASE risk
         if mr_window_open and risk_result.can_enter_intraday and risk_result.can_enter_options:
-            regime_score = self.regime_engine.get_previous_score()
+            regime_score = self._get_effective_regime_score_for_options()
 
             # V3.5 Fix: Determine governor threshold based on regime direction
             # Allow bearish options (PUT spreads) in NEUTRAL zone - they're defensive
@@ -730,6 +761,7 @@ class AlphaNextGen(QCAlgorithm):
         # ---------------------------------------------------------------------
         self.qqq_adx = self.ADX(self.qqq, config.ADX_PERIOD, Resolution.Daily)
         self.qqq_sma20 = self.SMA(self.qqq, config.SMA_FAST, Resolution.Daily)
+        self.qqq_sma50 = self.SMA(self.qqq, config.SMA_MED, Resolution.Daily)
         self.qqq_sma200 = self.SMA(self.qqq, config.SMA_SLOW, Resolution.Daily)
         # V2.3: QQQ RSI for direction selection (Daily for swing mode)
         self.qqq_rsi = self.RSI(
@@ -905,6 +937,31 @@ class AlphaNextGen(QCAlgorithm):
                     self.TimeRules.At(hour, minute),
                     self._on_micro_regime_update,
                 )
+        # Phase A: intraday macro-regime refresh to reduce stale EOD lag for options gating.
+        # Add an early-session refresh so options are not anchored to yesterday's regime
+        # during the first half of the trading day.
+        self.Schedule.On(
+            self.DateRules.EveryDay(),
+            self.TimeRules.At(9, 35),
+            self._refresh_intraday_regime_score,
+        )
+        self.Schedule.On(
+            self.DateRules.EveryDay(),
+            self.TimeRules.At(12, 0),
+            self._refresh_intraday_regime_score,
+        )
+        self.Schedule.On(
+            self.DateRules.EveryDay(),
+            self.TimeRules.At(14, 0),
+            self._refresh_intraday_regime_score,
+        )
+        # #8 fix: intraday reconciliation checkpoints (zombie/orphan cleanup)
+        for hour, minute in [(11, 30), (13, 30)]:
+            self.Schedule.On(
+                self.DateRules.EveryDay(),
+                self.TimeRules.At(hour, minute),
+                self._on_intraday_reconcile,
+            )
 
         # V2.4.1: Friday Firewall - close swing options before weekend
         # V2.9: Holiday-aware expiration firewall (Bug #3 fix)
@@ -1068,11 +1125,15 @@ class AlphaNextGen(QCAlgorithm):
         # Skip during warmup
         if self.IsWarmingUp:
             return
-
         # Reset daily state (kill switch, panic mode, etc.) at start of new day
         self.risk_engine.reset_daily_state()
         self.scheduler.reset_daily()  # V2.3 FIX: Reset scheduler kill switch flag
         self._kill_switch_handled_today = False  # V2.3: Allow kill switch to trigger again today
+        # Reset once-per-day handler guards at daily boundary.
+        self._intraday_force_close_ran_date = None
+        self._mr_force_close_ran_date = None
+        self._eod_processing_ran_date = None
+        self._market_close_ran_date = None
 
         # V2.3 FIX: Reset options engine daily state (entry flags, trade counters)
         current_date_str = str(self.Time.date())
@@ -1090,6 +1151,7 @@ class AlphaNextGen(QCAlgorithm):
 
         self.equity_prior_close = self.Portfolio.TotalPortfolioValue
         self.risk_engine.set_equity_prior_close(self.equity_prior_close)
+        self._last_regime_effective_log_at = None
 
         # V5.1: Get regime score for Governor decisions
         # Regime Guard checks this for step-up eligibility
@@ -1171,21 +1233,35 @@ class AlphaNextGen(QCAlgorithm):
             # Get actual market close time for today
             market_hours = self.Securities[self.spy].Exchange.Hours
             market_close = market_hours.GetNextMarketClose(self.Time, False)
+            is_normal_close = market_close.hour == 16 and market_close.minute == 0
 
-            # Schedule EOD events via scheduler
-            self.scheduler.schedule_dynamic_eod_events(market_close)
+            # #10 fix: avoid duplicate static+dynamic schedules on normal close days.
+            # Static fallback schedules already exist for 15:30/15:45/16:00.
+            if not is_normal_close:
+                self.scheduler.schedule_dynamic_eod_events(market_close)
+            else:
+                self.Log(
+                    "EOD_SCHEDULE: Normal close detected | Using static fallback schedules only"
+                )
 
             # Also schedule intraday options force close dynamically
             from datetime import timedelta
 
             opt_offset = getattr(config, "INTRADAY_OPTIONS_OFFSET_MINUTES", 30)
             opt_close_time = market_close - timedelta(minutes=opt_offset)
-
-            self.Schedule.On(
-                self.DateRules.On(self.Time.year, self.Time.month, self.Time.day),
-                self.TimeRules.At(opt_close_time.hour, opt_close_time.minute),
-                self._on_intraday_options_force_close,
-            )
+            static_force_exit = getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:30")
+            static_h, static_m = map(int, static_force_exit.split(":"))
+            # Keep dynamic scheduling for early-close sessions or when dynamic time differs.
+            if not (
+                is_normal_close
+                and opt_close_time.hour == static_h
+                and opt_close_time.minute == static_m
+            ):
+                self.Schedule.On(
+                    self.DateRules.On(self.Time.year, self.Time.month, self.Time.day),
+                    self.TimeRules.At(opt_close_time.hour, opt_close_time.minute),
+                    self._on_intraday_options_force_close,
+                )
 
         except Exception as e:
             # Fallback to fixed times if dynamic scheduling fails
@@ -1960,6 +2036,32 @@ class AlphaNextGen(QCAlgorithm):
         # Reconcile positions with broker
         self._reconcile_positions()
 
+    def _on_intraday_reconcile(self) -> None:
+        """
+        #8 fix: periodic intraday broker-vs-engine reconciliation.
+
+        Reduces zombie/orphan persistence from full-day to sub-day windows.
+        """
+        if self.IsWarmingUp:
+            return
+        if not self._is_primary_market_open():
+            return
+        now_dt = self.Time
+        if self._last_reconcile_positions_run is not None:
+            elapsed_min = (now_dt - self._last_reconcile_positions_run).total_seconds() / 60.0
+            if elapsed_min < 45:
+                return
+        self._reconcile_positions()
+
+    def _is_primary_market_open(self) -> bool:
+        """Return True when the primary equity market session is open."""
+        try:
+            exchange_hours = self.Securities[self.qqq].Exchange.Hours
+            return bool(exchange_hours.IsOpen(self.Time, False))
+        except Exception:
+            # Conservative fallback if exchange metadata is unavailable.
+            return self.Time.weekday() < 5
+
     def _on_warm_entry_check(self) -> None:
         """
         Warm entry check at 10:00 ET.
@@ -2069,6 +2171,9 @@ class AlphaNextGen(QCAlgorithm):
         # Skip during warmup - no orders allowed
         if self.IsWarmingUp:
             return
+        if self._mr_force_close_ran_date == self.Time.date():
+            return
+        self._mr_force_close_ran_date = self.Time.date()
 
         # V6.11: Check all MR symbols (TQQQ, SOXL, SPXL)
         for mr_symbol, mr_name in [(self.tqqq, "TQQQ"), (self.soxl, "SOXL"), (self.spxl, "SPXL")]:
@@ -2110,6 +2215,9 @@ class AlphaNextGen(QCAlgorithm):
         # Skip during warmup - no orders allowed
         if self.IsWarmingUp:
             return
+        if self._eod_processing_ran_date == self.Time.date():
+            return
+        self._eod_processing_ran_date = self.Time.date()
 
         total_equity = self.Portfolio.TotalPortfolioValue
 
@@ -2177,6 +2285,9 @@ class AlphaNextGen(QCAlgorithm):
         # Skip during warmup - no orders allowed
         if self.IsWarmingUp:
             return
+        if self._market_close_ran_date == self.Time.date():
+            return
+        self._market_close_ran_date = self.Time.date()
 
         # V3.0 FIX: Always process EOD signals - internal logic handles Governor scaling
         # V6.11: At Governor 0%, hedges (SH) and bearish PUTs are still allowed
@@ -2224,6 +2335,23 @@ class AlphaNextGen(QCAlgorithm):
         self._diag_intraday_dropped_count = 0
         self._diag_intraday_result_count = 0
         self._diag_vass_block_count = 0
+        self._diag_overlay_block_count = 0
+        self._diag_overlay_slot_block_count = 0
+        self._diag_spread_close_escalation_count = 0
+        self._diag_spread_entry_signal_count = 0
+        self._diag_spread_entry_submit_count = 0
+        self._diag_spread_entry_fill_count = 0
+        self._diag_spread_exit_signal_count = 0
+        self._diag_spread_exit_submit_count = 0
+        self._diag_spread_exit_fill_count = 0
+        self._diag_spread_exit_canceled_count = 0
+        self._diag_spread_position_removed_count = 0
+        self._order_lifecycle_log_count = 0
+        self._recon_orphan_close_submitted.clear()
+        self._last_micro_update_log_signature = None
+        self._last_micro_update_log_time = None
+        self._last_spread_construct_fail_log_at = None
+        self._external_exec_event_logged.clear()
         # V3.0 P1-B: Clean stale pending exit orders at EOD
         if self._pending_exit_orders:
             stale_keys = [
@@ -2511,6 +2639,9 @@ class AlphaNextGen(QCAlgorithm):
         # Skip during warmup
         if self.IsWarmingUp:
             return
+        if self._intraday_force_close_ran_date == self.Time.date():
+            return
+        self._intraday_force_close_ran_date = self.Time.date()
 
         # V2.4.4 P0: Run Expiration Hammer V2 as part of force close
         self._check_expiration_hammer_v2()
@@ -2733,14 +2864,25 @@ class AlphaNextGen(QCAlgorithm):
         """V2.29 P0: Weekly reconciliation — clear ghost spread if no options held."""
         if not self.options_engine.has_spread_position():
             return
+        spread_count_before = len(self.options_engine.get_spread_positions())
         has_options = any(
             kvp.Value.Invested
             for kvp in self.Portfolio
             if kvp.Value.Symbol.SecurityType == SecurityType.Option
         )
         if not has_options:
-            self.Log("SPREAD_RECONCILE: Friday check — no options held, clearing ghost spread")
+            if self._should_log_backtest_category("LOG_SPREAD_RECONCILE_BACKTEST_ENABLED", False):
+                self.Log("SPREAD_RECONCILE: Friday check — no options held, clearing ghost spread")
+            for spread in list(self.options_engine.get_spread_positions()):
+                spread_key = (
+                    f"{self._normalize_symbol_str(spread.long_leg.symbol)}|"
+                    f"{self._normalize_symbol_str(spread.short_leg.symbol)}"
+                )
+                self._clear_spread_runtime_trackers_by_key(spread_key)
             self.options_engine.clear_spread_position()
+            if spread_count_before > 0:
+                self._diag_spread_exit_fill_count += spread_count_before
+                self._diag_spread_position_removed_count += spread_count_before
             if self.portfolio_router:
                 self.portfolio_router.clear_all_spread_margins()
 
@@ -2842,12 +2984,39 @@ class AlphaNextGen(QCAlgorithm):
             vix_level_override=vix_level_cboe,  # V2.11: Use CBOE VIX for level
         )
 
-        # V2.11: Log shows both CBOE level and UVXY direction
-        self.Log(
+        # V8: Backtest log-budget guard for high-frequency MICRO_UPDATE diagnostics.
+        micro_dir = state.recommended_direction.value if state.recommended_direction else "NONE"
+        micro_msg = (
             f"MICRO_UPDATE: VIX_level={vix_level_cboe:.1f}(CBOE) VIX_dir_proxy={vix_intraday_proxy:.2f} (UVXY {uvxy_change_pct:+.1f}%) | "
-            f"Regime={state.micro_regime.value} | Dir={state.recommended_direction.value if state.recommended_direction else 'NONE'} | "
+            f"Regime={state.micro_regime.value} | Dir={micro_dir} | "
             f"ShockMem={shock_memory_pct:+.1%}"
         )
+        is_live = bool(hasattr(self, "LiveMode") and self.LiveMode)
+        if is_live:
+            self.Log(micro_msg)
+        elif bool(getattr(config, "MICRO_UPDATE_LOG_BACKTEST_ENABLED", True)):
+            signature = (
+                state.micro_regime.value,
+                micro_dir,
+                round(float(vix_level_cboe), 1),
+                round(float(vix_intraday_proxy), 2),
+                round(float(shock_memory_pct), 3),
+            )
+            on_change_only = bool(getattr(config, "MICRO_UPDATE_LOG_ON_CHANGE_ONLY", True))
+            min_minutes = int(getattr(config, "MICRO_UPDATE_LOG_MINUTES", 60))
+            should_log = True
+            if on_change_only:
+                changed = signature != self._last_micro_update_log_signature
+                due = (
+                    self._last_micro_update_log_time is None
+                    or (self.Time - self._last_micro_update_log_time).total_seconds() / 60.0
+                    >= min_minutes
+                )
+                should_log = changed or due
+            if should_log:
+                self.Log(micro_msg)
+                self._last_micro_update_log_signature = signature
+                self._last_micro_update_log_time = self.Time
 
     def _get_vix_intraday_proxy(self) -> float:
         """
@@ -3052,16 +3221,12 @@ class AlphaNextGen(QCAlgorithm):
             # V2.3.6: Clean up spread tracking when short leg fills successfully
             if symbol in self._pending_spread_orders:
                 long_leg = self._pending_spread_orders.pop(symbol)
+                self._pending_spread_orders_reverse.pop(long_leg, None)
                 self.Log(f"SPREAD: Both legs filled successfully | Short={symbol} Long={long_leg}")
-
-                # V2.29 P0: Clear spread state when both entry legs filled
-                # Without this, ghost spread state persists and fires SPREAD_EXIT_WARNING
-                # every minute for the lifetime of the backtest (43,291 warnings in 2015)
-                if self.options_engine.has_spread_position():
-                    self.options_engine.remove_spread_position(symbol)
-                    self.Log("SPREAD_RECONCILE: Cleared spread state after both legs filled")
-                    if self.portfolio_router:
-                        self.portfolio_router.clear_all_spread_margins()
+                # Entry-leg tracking cleanup only.
+                # Do NOT clear live spread state here; spread was just opened and must remain
+                # tracked for exits/diagnostics. Clearing it here causes ghost/orphan churn.
+                self.Log("SPREAD: Entry tracking map cleared after paired fill")
 
             # V2.4.1 FIX #8: Kill switch check on options fills
             # Kill switch may trip between signal generation and fill.
@@ -3081,7 +3246,7 @@ class AlphaNextGen(QCAlgorithm):
                         f"{symbol} x{fill_qty} @ ${fill_price:.2f} | LIQUIDATING IMMEDIATELY"
                     )
                     # Immediately liquidate the options position
-                    self.MarketOrder(orderEvent.Symbol, -fill_qty)
+                    self.MarketOrder(orderEvent.Symbol, -fill_qty, tag="KILL_SWITCH_ON_FILL")
 
             # V2.29 P0: Reconcile ghost spread after any option fill
             # Safety net: if spread state exists but neither leg is held, clear it
@@ -3090,8 +3255,18 @@ class AlphaNextGen(QCAlgorithm):
                     long_held = self.Portfolio[spread.long_leg.symbol].Invested
                     short_held = self.Portfolio[spread.short_leg.symbol].Invested
                     if not long_held and not short_held:
+                        spread_key = (
+                            f"{self._normalize_symbol_str(spread.long_leg.symbol)}|"
+                            f"{self._normalize_symbol_str(spread.short_leg.symbol)}"
+                        )
+                        self._clear_spread_runtime_trackers_by_key(spread_key)
                         self.options_engine.remove_spread_position(str(spread.long_leg.symbol))
-                        self.Log("SPREAD_RECONCILE: Both legs flat — cleared ghost state")
+                        self._diag_spread_exit_fill_count += 1
+                        self._diag_spread_position_removed_count += 1
+                        if self._should_log_backtest_category(
+                            "LOG_SPREAD_RECONCILE_BACKTEST_ENABLED", False
+                        ):
+                            self.Log("SPREAD_RECONCILE: Both legs flat — cleared ghost state")
                         if self.portfolio_router:
                             self.portfolio_router.clear_all_spread_margins()
 
@@ -3180,6 +3355,7 @@ class AlphaNextGen(QCAlgorithm):
 
         elif orderEvent.Status == OrderStatus.Invalid:
             self.Log(f"INVALID: {orderEvent.Symbol} - {orderEvent.Message}")
+            self._log_order_lifecycle_issue(orderEvent, "Invalid")
             if "Margin" in str(orderEvent.Message) or "buying power" in str(orderEvent.Message):
                 self._diag_margin_reject_count += 1
             self._forward_execution_event(
@@ -3389,6 +3565,7 @@ class AlphaNextGen(QCAlgorithm):
             self._handle_order_rejection(failed_symbol, orderEvent)
 
         elif orderEvent.Status == OrderStatus.Canceled:
+            self._log_order_lifecycle_issue(orderEvent, "Canceled")
             self._forward_execution_event(
                 order_event=orderEvent,
                 status="Canceled",
@@ -3404,6 +3581,40 @@ class AlphaNextGen(QCAlgorithm):
             canceled_symbol = str(orderEvent.Symbol)
             self._queue_spread_close_retry_on_cancel(canceled_symbol, orderEvent)
             self._handle_order_rejection(canceled_symbol, orderEvent)
+
+    def _should_log_backtest_category(self, config_flag: str, default: bool = True) -> bool:
+        """Return whether a log category is enabled for current run mode."""
+        is_live = bool(hasattr(self, "LiveMode") and self.LiveMode)
+        if is_live:
+            return True
+        return bool(getattr(config, config_flag, default))
+
+    def _clear_spread_runtime_trackers_by_key(self, spread_key: str) -> None:
+        """Clear runtime tracker maps for a spread key (long|short)."""
+        self._spread_close_trackers.pop(spread_key, None)
+        self._spread_forced_close_retry.pop(spread_key, None)
+        self._spread_forced_close_reason.pop(spread_key, None)
+        self._spread_forced_close_cancel_counts.pop(spread_key, None)
+        self._spread_forced_close_retry_cycles.pop(spread_key, None)
+        self._spread_exit_mark_cache.pop(spread_key, None)
+
+    def _log_order_lifecycle_issue(self, order_event: OrderEvent, status: str) -> None:
+        """Compact attribution log for canceled/invalid orders."""
+        if not self._should_log_backtest_category("LOG_ORDER_LIFECYCLE_BACKTEST_ENABLED", True):
+            return
+        max_per_day = int(getattr(config, "LOG_ORDER_LIFECYCLE_MAX_PER_DAY", 200))
+        if self._order_lifecycle_log_count >= max_per_day:
+            return
+        order = self.Transactions.GetOrderById(order_event.OrderId)
+        order_type = str(getattr(order, "Type", "UNKNOWN")) if order is not None else "UNKNOWN"
+        raw_tag = str(getattr(order, "Tag", "") or "") if order is not None else ""
+        tag = raw_tag if raw_tag else f"NO_TAG:{order_type}"
+        msg = str(getattr(order_event, "Message", "") or "")
+        self.Log(
+            f"ORDER_LIFECYCLE: Status={status} | OrderId={order_event.OrderId} | "
+            f"Symbol={order_event.Symbol} | Type={order_type} | Tag={tag} | Msg={msg}"
+        )
+        self._order_lifecycle_log_count += 1
 
     def _forward_execution_event(
         self,
@@ -3429,6 +3640,13 @@ class AlphaNextGen(QCAlgorithm):
                     f"Symbol={order_event.Symbol} | Tag={tag}"
                 )
                 self._external_exec_event_logged.add(broker_id)
+                max_external_cache = 20000
+                if len(self._external_exec_event_logged) > max_external_cache:
+                    self._external_exec_event_logged.clear()
+                    self.Log(
+                        f"EXEC_EXTERNAL_CACHE_RESET: Cleared external event cache at "
+                        f"{max_external_cache}+ entries"
+                    )
             return
 
         self.execution_engine.on_order_event(
@@ -3483,6 +3701,17 @@ class AlphaNextGen(QCAlgorithm):
                         self.Log("STATE_RESTORE: Options engine state loaded")
                 except Exception as e:
                     self.Log(f"STATE_WARN: Failed to load options state - {e}")
+
+            # V3.0: Load OCO manager state
+            if hasattr(self, "oco_manager"):
+                try:
+                    if self.ObjectStore.ContainsKey("oco_manager_state"):
+                        raw = self.ObjectStore.Read("oco_manager_state")
+                        oco_state = json.loads(raw)
+                        self.oco_manager.restore_state(oco_state)
+                        self.Log("STATE_RESTORE: OCO manager state loaded")
+                except Exception as e:
+                    self.Log(f"STATE_WARN: Failed to load OCO state - {e}")
 
             # V3.3 P0-1: Load regime engine state
             if hasattr(self, "regime_engine"):
@@ -3547,6 +3776,9 @@ class AlphaNextGen(QCAlgorithm):
         Called at 09:33.
         """
         try:
+            if not self._is_primary_market_open():
+                return
+            self._last_reconcile_positions_run = self.Time
             option_holdings = {}
             option_symbols = {}
             for kvp in self.Portfolio:
@@ -3573,7 +3805,18 @@ class AlphaNextGen(QCAlgorithm):
                 tracked_symbols.add(str(single.contract.symbol))
 
             if tracked_symbols and not option_holdings:
+                spread_count_before = len(self.options_engine.get_spread_positions())
                 self.options_engine.clear_all_positions()
+                self._spread_close_trackers.clear()
+                self._spread_forced_close_retry.clear()
+                self._spread_forced_close_reason.clear()
+                self._spread_forced_close_cancel_counts.clear()
+                self._spread_forced_close_retry_cycles.clear()
+                self._spread_exit_mark_cache.clear()
+                if spread_count_before > 0:
+                    # Broker is flat while engine still tracked live spreads.
+                    self._diag_spread_exit_fill_count += spread_count_before
+                    self._diag_spread_position_removed_count += spread_count_before
                 if self.portfolio_router:
                     self.portfolio_router.clear_all_spread_margins()
                 self.Log(
@@ -3585,6 +3828,21 @@ class AlphaNextGen(QCAlgorithm):
             orphan_symbols = [s for s in option_holdings.keys() if s not in tracked_symbols]
             for sym_str in orphan_symbols:
                 try:
+                    today = str(self.Time.date())
+                    if self._recon_orphan_close_submitted.get(sym_str) == today:
+                        continue
+
+                    # Avoid duplicate orphan close submits while a prior order is still open.
+                    has_pending_orphan_close = False
+                    for open_order in self.Transactions.GetOpenOrders():
+                        if str(open_order.Symbol) != sym_str:
+                            continue
+                        if "RECON_ORPHAN_OPTION" in str(getattr(open_order, "Tag", "") or ""):
+                            has_pending_orphan_close = True
+                            break
+                    if has_pending_orphan_close:
+                        continue
+
                     broker_symbol = option_symbols[sym_str]
                     holding = self.Portfolio[broker_symbol]
                     if not holding.Invested or abs(float(holding.Quantity)) <= 0:
@@ -3593,6 +3851,7 @@ class AlphaNextGen(QCAlgorithm):
                         )
                         continue
                     self.Liquidate(broker_symbol, tag="RECON_ORPHAN_OPTION")
+                    self._recon_orphan_close_submitted[sym_str] = today
                     self.Log(
                         f"RECON_ORPHAN_CLOSE_SUBMITTED: {sym_str} | "
                         f"Qty={option_holdings.get(sym_str, 0)}"
@@ -4014,6 +4273,8 @@ class AlphaNextGen(QCAlgorithm):
             size_multiplier: Position size multiplier (default 1.0). Set to 0.5
                 during cold start to reduce risk while still participating.
         """
+        # Defensive default to avoid NameError in minified/stale variants.
+        ma50_value = 0.0
         size_multiplier *= self._premarket_vix_size_mult
 
         # Skip if indicators not ready
@@ -4045,7 +4306,7 @@ class AlphaNextGen(QCAlgorithm):
         # V3.5 fix: Allow PUT spreads in NEUTRAL zone at low governor
         # "Bearish" for governor purposes = anything not BULL (regime <= 70)
         # PUT spreads reduce risk → allowed at low governor in NEUTRAL/CAUTIOUS/BEAR
-        regime_score_for_governor = self.regime_engine.get_previous_score()
+        regime_score_for_governor = self._get_effective_regime_score_for_options()
         is_put_direction = regime_score_for_governor <= config.SPREAD_REGIME_BULLISH  # <= 70
 
         if self._governor_scale == 0.0:
@@ -4117,6 +4378,11 @@ class AlphaNextGen(QCAlgorithm):
         qqq_price = self.Securities[self.qqq].Price
         adx_value = self.qqq_adx.Current.Value
         ma200_value = self.qqq_sma200.Current.Value
+        ma50_value = (
+            self.qqq_sma50.Current.Value
+            if hasattr(self, "qqq_sma50") and self.qqq_sma50.IsReady
+            else 0.0
+        )
         regime_score = regime_state.smoothed_score
 
         # V2.1: Calculate IV rank from options chain
@@ -4142,6 +4408,9 @@ class AlphaNextGen(QCAlgorithm):
 
         # V5.3: Get Macro direction from regime score
         macro_direction = self.options_engine.get_macro_direction(regime_score)
+        overlay_state = self.options_engine.get_regime_overlay_state(
+            vix_current=self._current_vix, regime_score=regime_score
+        )
 
         # V5.3: Resolve trade signal - VASS conviction can override Macro
         should_trade, resolved_direction, resolve_reason = self.options_engine.resolve_trade_signal(
@@ -4150,10 +4419,40 @@ class AlphaNextGen(QCAlgorithm):
             engine_conviction=vass_has_conviction,
             macro_direction=macro_direction,
             conviction_strength=None,
+            overlay_state=overlay_state,
         )
 
         if not should_trade:
+            if "E_OVERLAY_STRESS_BULL_BLOCK" in resolve_reason:
+                self._diag_overlay_block_count += 1
             # Debug log - skip in backtest to avoid log limits
+            return
+
+        if (
+            bool(getattr(config, "VASS_BULL_PROFILE_BEARISH_BLOCK_ENABLED", True))
+            and resolved_direction == "BEARISH"
+            and float(regime_score) >= float(getattr(config, "VASS_BULL_PROFILE_REGIME_MIN", 70.0))
+            and str(overlay_state).upper() in {"NORMAL", "RECOVERY"}
+        ):
+            self.Log(
+                f"VASS_BULL_PROFILE_BLOCK: Bearish VASS blocked in strong bull profile | "
+                f"Regime={float(regime_score):.1f} | Overlay={overlay_state}"
+            )
+            return
+
+        # Bear hardening: do not allow bullish VASS override from NEUTRAL macro
+        # when volatility is already elevated.
+        if (
+            resolved_direction == "BULLISH"
+            and str(macro_direction).upper() == "NEUTRAL"
+            and self._current_vix
+            >= float(getattr(config, "VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX", 18.0))
+        ):
+            self.Log(
+                f"VASS_CLAMP_BLOCK: Neutral macro + elevated VIX blocks bullish override | "
+                f"VIX={self._current_vix:.1f} >= {float(getattr(config, 'VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX', 18.0)):.1f} | "
+                f"Resolve={resolve_reason}"
+            )
             return
 
         if "NEUTRAL_ALIGNED_HALF" in resolve_reason:
@@ -4200,6 +4499,7 @@ class AlphaNextGen(QCAlgorithm):
                 qqq_price,
                 adx_value,
                 ma200_value,
+                ma50_value,
                 iv_rank,
                 size_multiplier,
                 is_eod_scan,
@@ -4214,18 +4514,29 @@ class AlphaNextGen(QCAlgorithm):
         qqq_price: float,
         adx_value: float,
         ma200_value: float,
+        ma50_value: float,
         iv_rank: float,
         size_multiplier: float,
         is_eod_scan: bool,
     ) -> None:
         """Scan for spread entry in a specific direction."""
+        overlay_state = self.options_engine.get_regime_overlay_state(
+            vix_current=self._current_vix, regime_score=regime_score
+        )
         # V2.23: VASS strategy selection — routes to credit or debit
-        strategy, vass_dte_min, vass_dte_max, is_credit = self._route_vass_strategy(direction_str)
+        strategy, vass_dte_min, vass_dte_max, is_credit = self._route_vass_strategy(
+            direction_str=direction_str,
+            overlay_state=overlay_state,
+        )
         dte_ranges = self._build_vass_dte_fallbacks(vass_dte_min, vass_dte_max)
         dte_min_all = min(r[0] for r in dte_ranges)
         dte_max_all = max(r[1] for r in dte_ranges)
-        can_swing_vass, swing_reason_vass = self.options_engine.can_enter_swing()
+        can_swing_vass, swing_reason_vass = self.options_engine.can_enter_swing(
+            direction=direction, overlay_state=overlay_state
+        )
         if not can_swing_vass:
+            if "R_SLOT_DIRECTION_OVERLAY" in swing_reason_vass:
+                self._diag_overlay_slot_block_count += 1
             if (
                 self._last_vass_rejection_log is None
                 or (self.Time - self._last_vass_rejection_log).total_seconds() / 60
@@ -4328,6 +4639,7 @@ class AlphaNextGen(QCAlgorithm):
                                 adx_value=adx_value,
                                 current_price=qqq_price,
                                 ma200_value=ma200_value,
+                                ma50_value=ma50_value,
                                 iv_rank=iv_rank,
                                 current_hour=self.Time.hour,
                                 current_minute=self.Time.minute,
@@ -4430,6 +4742,7 @@ class AlphaNextGen(QCAlgorithm):
                 adx_value=adx_value,
                 current_price=qqq_price,
                 ma200_value=ma200_value,
+                ma50_value=ma50_value,
                 iv_rank=iv_rank,
                 current_hour=self.Time.hour,
                 current_minute=self.Time.minute,
@@ -4560,7 +4873,11 @@ class AlphaNextGen(QCAlgorithm):
 
         return candidates
 
-    def _route_vass_strategy(self, direction_str: str) -> tuple:
+    def _route_vass_strategy(
+        self,
+        direction_str: str,
+        overlay_state: Optional[str] = None,
+    ) -> tuple:
         """
         V2.23: Route to credit or debit strategy based on IV environment.
 
@@ -4578,6 +4895,37 @@ class AlphaNextGen(QCAlgorithm):
             strategy, dte_min, dte_max = self.options_engine._select_strategy(
                 direction_str, iv_environment
             )
+            overlay = str(overlay_state or "").upper()
+            if overlay == "EARLY_STRESS":
+                if (
+                    direction_str == "BULLISH"
+                    and strategy == SpreadStrategy.BULL_CALL_DEBIT
+                    and bool(getattr(config, "VASS_EARLY_STRESS_BULL_STRATEGY_TO_CREDIT", True))
+                ):
+                    self.Log(
+                        "VASS_EARLY_STRESS_REMIX: BULL_CALL_DEBIT->BULL_PUT_CREDIT | "
+                        f"IV={iv_environment}"
+                    )
+                    strategy = SpreadStrategy.BULL_PUT_CREDIT
+                    # D8 fix: re-anchor DTE window after strategy remap so credit spreads
+                    # do not inherit debit-oriented DTE bounds.
+                    dte_min = int(getattr(config, "VASS_HIGH_IV_DTE_MIN", dte_min))
+                    dte_max = int(getattr(config, "VASS_HIGH_IV_DTE_MAX", dte_max))
+                if (
+                    direction_str == "BEARISH"
+                    and strategy == SpreadStrategy.BEAR_PUT_DEBIT
+                    and iv_environment in {"MEDIUM", "HIGH"}
+                    and bool(getattr(config, "VASS_EARLY_STRESS_BEAR_PREFER_CREDIT", True))
+                ):
+                    self.Log(
+                        "VASS_EARLY_STRESS_REMIX: BEAR_PUT_DEBIT->BEAR_CALL_CREDIT | "
+                        f"IV={iv_environment}"
+                    )
+                    strategy = SpreadStrategy.BEAR_CALL_CREDIT
+                    # D8 fix: re-anchor DTE window after strategy remap so credit spreads
+                    # do not inherit debit-oriented DTE bounds.
+                    dte_min = int(getattr(config, "VASS_HIGH_IV_DTE_MIN", dte_min))
+                    dte_max = int(getattr(config, "VASS_HIGH_IV_DTE_MAX", dte_max))
             is_credit = self.options_engine.is_credit_strategy(strategy)
             return (strategy, dte_min, dte_max, is_credit)
         return (None, config.SPREAD_DTE_MIN, config.SPREAD_DTE_MAX, False)
@@ -4613,6 +4961,38 @@ class AlphaNextGen(QCAlgorithm):
         if (fallback_min, fallback_max) != (dte_min, dte_max):
             ranges.append((fallback_min, fallback_max))
         return ranges
+
+    def _canonical_options_reason_code(self, code: Optional[str]) -> str:
+        """
+        Normalize legacy/mixed reason codes to explicit E_*/R_* taxonomy.
+        """
+        raw = (code or "").strip()
+        if not raw:
+            return "E_NO_REASON_UNCLASSIFIED"
+        if raw.startswith(("E_", "R_")):
+            return raw
+
+        mapping = {
+            "TRADE_LIMIT_BLOCK": "R_TRADE_LIMIT",
+            "TIME_WINDOW_BLOCK": "E_TIME_WINDOW",
+            "GAP_FILTER_BLOCK": "E_GAP_FILTER",
+            "VOL_SHOCK_BLOCK": "E_VOL_SHOCK",
+            "VIX_MAX_BLOCK": "E_VIX_MAX",
+            "PUT_ENTRY_VIX_MAX_BLOCK": "E_PUT_VIX_MAX",
+            "WIN_RATE_GATE_BLOCK": "R_WIN_RATE_GATE",
+            "REGIME_CRISIS_BLOCK": "E_REGIME_CRISIS",
+            "DIRECTION_MISSING": "E_DIRECTION_MISSING",
+            "BULL_CALL_STRESS_BLOCK": "E_CALL_GATE_STRESS",
+            "SPREAD_COOLDOWN_ACTIVE": "R_SPREAD_COOLDOWN",
+            "CREDIT_ENTRY_VALIDATION_FAILED": "R_SPREAD_SELECTION_FAIL_UNCLASSIFIED",
+            "DEBIT_ENTRY_VALIDATION_FAILED": "R_SPREAD_SELECTION_FAIL_UNCLASSIFIED",
+            "UNKNOWN": "E_UNKNOWN_UNCLASSIFIED",
+        }
+        if raw in mapping:
+            return mapping[raw]
+        if raw.startswith("BEAR_PUT_ASSIGNMENT_GATE_"):
+            return f"R_{raw}"
+        return f"E_{raw}"
 
     def _apply_spread_margin_guard(
         self,
@@ -5757,6 +6137,8 @@ class AlphaNextGen(QCAlgorithm):
         Args:
             data: Current data slice.
         """
+        # Defensive default to avoid NameError in minified/stale variants.
+        ma50_value = 0.0
         # V2.3.20: Calculate size multiplier for cold start
         is_cold_start = self.cold_start_engine.is_cold_start_active()
         size_multiplier = config.OPTIONS_COLD_START_MULTIPLIER if is_cold_start else 1.0
@@ -5889,6 +6271,11 @@ class AlphaNextGen(QCAlgorithm):
         qqq_price = self.Securities[self.qqq].Price
         adx_value = self.qqq_adx.Current.Value
         ma200_value = self.qqq_sma200.Current.Value
+        ma50_value = (
+            self.qqq_sma50.Current.Value
+            if hasattr(self, "qqq_sma50") and self.qqq_sma50.IsReady
+            else 0.0
+        )
 
         # V2.4.1: Throttle intraday scanning to every 15 minutes (was every minute)
         # This reduces 95 scans/hour to 4 scans/hour
@@ -5913,7 +6300,7 @@ class AlphaNextGen(QCAlgorithm):
                 vix_level_cboe = self._get_vix_level()
 
                 # Get macro regime score for direction conflict check
-                regime_score = self.regime_engine.get_previous_score()
+                regime_score = self._get_effective_regime_score_for_options()
 
                 # V6.3: Calculate UVXY intraday change for conviction check
                 uvxy_pct = 0.0
@@ -6037,7 +6424,7 @@ class AlphaNextGen(QCAlgorithm):
                         portfolio_value=effective_portfolio_value,  # V2.11: Margin-capped
                         best_contract=intraday_contract,
                         size_multiplier=intraday_size_multiplier,
-                        macro_regime_score=self._last_regime_score,
+                        macro_regime_score=regime_score,
                         governor_scale=self._governor_scale,  # V3.2: Intraday Governor gate
                         direction=intraday_direction,  # V6.0: Pass resolved direction
                         vix_level_override=vix_level_cboe,  # V6.2: CBOE VIX for level
@@ -6086,7 +6473,7 @@ class AlphaNextGen(QCAlgorithm):
                         # P1 Fix: Explicitly log approved signals that failed to produce an order
                         if should_trade:
                             # V6.15: Canonical drop reason coding for audit/debug.
-                            drop_code = "DROP_ENGINE_NO_SIGNAL"
+                            drop_code = "E_INTRADAY_NO_SIGNAL_UNCLASSIFIED"
                             (
                                 intraday_validation_reason,
                                 intraday_validation_detail,
@@ -6095,23 +6482,25 @@ class AlphaNextGen(QCAlgorithm):
                                 can_retry_now,
                                 retry_reason_now,
                             ) = self.options_engine.can_enter_intraday()
+                            retry_code_now = (retry_reason_now or "").split(":", 1)[0].strip()
                             if intraday_validation_reason:
                                 drop_code = intraday_validation_reason
                             elif not can_retry_now:
-                                drop_code = "DROP_SLOT_LIMIT"
+                                drop_code = retry_code_now or "R_SLOT_LIMIT"
                             elif self._options_intraday_cooldown_until and (
                                 self.Time < self._options_intraday_cooldown_until
                             ):
-                                drop_code = "DROP_COOLDOWN"
+                                drop_code = "R_COOLDOWN_INTRADAY"
                             elif self._margin_cb_in_progress or self._margin_call_cooldown_until:
-                                drop_code = "DROP_MARGIN"
+                                drop_code = "R_MARGIN_CB_ACTIVE"
                             elif self.options_engine.has_intraday_position():
-                                drop_code = "DROP_DUPLICATE_POSITION"
+                                drop_code = "R_DUPLICATE_INTRADAY_POSITION"
                             elif intraday_contract is None:
-                                drop_code = "DROP_NO_CONTRACT"
+                                drop_code = "E_INTRADAY_NO_CONTRACT"
                             elif intraday_direction is None:
-                                drop_code = "DROP_NO_DIRECTION"
+                                drop_code = "E_INTRADAY_NO_DIRECTION"
 
+                            drop_code = self._canonical_options_reason_code(drop_code)
                             validation_detail_fragment = (
                                 f"ValidationDetail={intraday_validation_detail} | "
                                 if intraday_validation_detail
@@ -6128,7 +6517,12 @@ class AlphaNextGen(QCAlgorithm):
                             )
                             self._diag_intraday_dropped_count += 1
                             # V6.15: One retry on next eligible scan for temporary drop causes only.
-                            if drop_code in {"DROP_SLOT_LIMIT", "DROP_COOLDOWN", "DROP_MARGIN"}:
+                            if drop_code in {
+                                "R_SLOT_TOTAL_MAX",
+                                "R_SLOT_INTRADAY_MAX",
+                                "R_COOLDOWN_INTRADAY",
+                                "R_MARGIN_CB_ACTIVE",
+                            }:
                                 self._intraday_retry_once_pending = True
                                 self._intraday_retry_expires = self.Time + timedelta(minutes=20)
                                 self._intraday_retry_direction = intraday_direction
@@ -6170,7 +6564,7 @@ class AlphaNextGen(QCAlgorithm):
         current_date_str = self.Time.strftime("%Y-%m-%d")
         self.options_engine._iv_sensor.update(self._current_vix, current_date_str)
 
-        regime_score = self.regime_engine.get_previous_score()
+        regime_score = self._get_effective_regime_score_for_options()
 
         # V6.0: Add VASS conviction resolution to intraday path (matches EOD path)
         # Get VASS conviction for potential Macro override
@@ -6182,6 +6576,9 @@ class AlphaNextGen(QCAlgorithm):
 
         # Get Macro direction from regime score
         macro_direction = self.options_engine.get_macro_direction(regime_score)
+        overlay_state = self.options_engine.get_regime_overlay_state(
+            vix_current=self._current_vix, regime_score=regime_score
+        )
 
         # Resolve trade signal - VASS conviction can override Macro
         should_trade, resolved_direction, resolve_reason = self.options_engine.resolve_trade_signal(
@@ -6190,10 +6587,39 @@ class AlphaNextGen(QCAlgorithm):
             engine_conviction=vass_has_conviction,
             macro_direction=macro_direction,
             conviction_strength=None,
+            overlay_state=overlay_state,
         )
 
         if not should_trade:
+            if "E_OVERLAY_STRESS_BULL_BLOCK" in resolve_reason:
+                self._diag_overlay_block_count += 1
             # No trade - either NEUTRAL macro with no conviction, or conflict without conviction
+            return
+
+        if (
+            bool(getattr(config, "VASS_BULL_PROFILE_BEARISH_BLOCK_ENABLED", True))
+            and resolved_direction == "BEARISH"
+            and float(regime_score) >= float(getattr(config, "VASS_BULL_PROFILE_REGIME_MIN", 70.0))
+            and str(overlay_state).upper() in {"NORMAL", "RECOVERY"}
+        ):
+            self.Log(
+                f"VASS_BULL_PROFILE_BLOCK_INTRADAY: Bearish VASS blocked in strong bull profile | "
+                f"Regime={float(regime_score):.1f} | Overlay={overlay_state}"
+            )
+            return
+
+        # Bear hardening: clamp bullish VASS override in elevated VIX when macro is neutral.
+        if (
+            resolved_direction == "BULLISH"
+            and str(macro_direction).upper() == "NEUTRAL"
+            and self._current_vix
+            >= float(getattr(config, "VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX", 18.0))
+        ):
+            self.Log(
+                f"VASS_CLAMP_BLOCK_INTRADAY: Neutral macro + elevated VIX blocks bullish override | "
+                f"VIX={self._current_vix:.1f} >= {float(getattr(config, 'VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX', 18.0)):.1f} | "
+                f"Resolve={resolve_reason}"
+            )
             return
 
         if "NEUTRAL_ALIGNED_HALF" in resolve_reason:
@@ -6239,7 +6665,10 @@ class AlphaNextGen(QCAlgorithm):
             )
 
         # V2.23: VASS strategy selection — routes to credit or debit
-        strategy, vass_dte_min, vass_dte_max, is_credit = self._route_vass_strategy(direction_str)
+        strategy, vass_dte_min, vass_dte_max, is_credit = self._route_vass_strategy(
+            direction_str=direction_str,
+            overlay_state=overlay_state,
+        )
         dte_ranges = self._build_vass_dte_fallbacks(vass_dte_min, vass_dte_max)
         dte_min_all = min(r[0] for r in dte_ranges)
         dte_max_all = max(r[1] for r in dte_ranges)
@@ -6343,6 +6772,7 @@ class AlphaNextGen(QCAlgorithm):
                                     adx_value=adx_value,
                                     current_price=qqq_price,
                                     ma200_value=ma200_value,
+                                    ma50_value=ma50_value,
                                     iv_rank=iv_rank,
                                     current_hour=self.Time.hour,
                                     current_minute=self.Time.minute,
@@ -6381,6 +6811,7 @@ class AlphaNextGen(QCAlgorithm):
                             adx_value=adx_value,
                             current_price=qqq_price,
                             ma200_value=ma200_value,
+                            ma50_value=ma50_value,
                             iv_rank=iv_rank,
                             current_hour=self.Time.hour,
                             current_minute=self.Time.minute,
@@ -6402,6 +6833,7 @@ class AlphaNextGen(QCAlgorithm):
             rejection_code = "SPREAD_COOLDOWN_ACTIVE"
 
         if signal:
+            self._diag_spread_entry_signal_count += 1
             self.Log(
                 f"VASS_ENTRY: {signal.metadata.get('vass_strategy', 'UNKNOWN') if signal.metadata else 'UNKNOWN'} | "
                 f"{signal.symbol} | {signal.reason}"
@@ -6411,6 +6843,7 @@ class AlphaNextGen(QCAlgorithm):
             signal = self._apply_spread_margin_guard(signal, source_tag="VASS_INTRADAY_SPREAD")
             if signal is None:
                 return
+            self._diag_spread_entry_submit_count += 1
             self.portfolio_router.receive_signal(signal)
             # V2.3.13 FIX: MUST process immediately - spread signals use IMMEDIATE urgency
             self._process_immediate_signals()
@@ -6454,6 +6887,9 @@ class AlphaNextGen(QCAlgorithm):
                 log_prefix = (
                     "VASS_SKIPPED" if (validation_reason in skip_reasons) else "VASS_REJECTION"
                 )
+                reason_code = self._canonical_options_reason_code(
+                    validation_reason or rejection_code
+                )
                 reason_text = "No contracts met spread criteria (DTE/delta/credit)"
                 if validation_reason in {
                     "R_SLOT_SWING_MAX",
@@ -6481,7 +6917,7 @@ class AlphaNextGen(QCAlgorithm):
                     f"Contracts_checked={len(candidate_contracts)} | "
                     f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
                     f"DTE_Ranges={dte_ranges} | "
-                    f"ReasonCode={rejection_code} | "
+                    f"ReasonCode={reason_code} | "
                     f"Reason={reason_text}"
                     + (f" | FailStats={fail_stats}" if fail_stats else "")
                     + (
@@ -6523,7 +6959,21 @@ class AlphaNextGen(QCAlgorithm):
                     self.portfolio_router.receive_signal(signal)
                     self._process_immediate_signals()
         elif not config.SWING_FALLBACK_ENABLED and can_swing:
-            self.Log("SWING: Spread construction failed - staying cash (fallback disabled)")
+            throttle_min = int(getattr(config, "SPREAD_CONSTRUCTION_FAIL_LOG_INTERVAL_MINUTES", 60))
+            is_live = bool(hasattr(self, "LiveMode") and self.LiveMode)
+            backtest_logs_enabled = bool(
+                getattr(config, "SPREAD_CONSTRUCTION_FAIL_LOG_BACKTEST_ENABLED", False)
+            )
+            if (not is_live) and (not backtest_logs_enabled):
+                return
+            should_log = (
+                self._last_spread_construct_fail_log_at is None
+                or (self.Time - self._last_spread_construct_fail_log_at).total_seconds() / 60.0
+                >= throttle_min
+            )
+            if should_log:
+                self.Log("SWING: Spread construction failed - staying cash (fallback disabled)")
+                self._last_spread_construct_fail_log_at = self.Time
 
     def _monitor_risk_greeks(self, data: Slice) -> None:
         """
@@ -6621,6 +7071,22 @@ class AlphaNextGen(QCAlgorithm):
                 signal = self.options_engine.check_exit_signals(
                     current_price=current_price,
                     current_dte=current_dte,
+                )
+                if signal is not None:
+                    self.portfolio_router.receive_signal(signal)
+
+        # V6.22 FIX: Software backup for intraday positions (OCO single-point-of-failure fix)
+        # Previously intraday had NO software stop/profit/DTE check — relied solely on OCO.
+        # If OCO was cancelled (199 events in 2022), position bled until 15:25 forced exit.
+        if intraday_position is not None:
+            intra_price = self._get_option_current_price(intraday_position.contract.symbol, data)
+            intra_dte = self._get_option_current_dte(intraday_position.contract.symbol, data)
+
+            if intra_price is not None:
+                signal = self.options_engine.check_exit_signals(
+                    current_price=intra_price,
+                    current_dte=intra_dte,
+                    position=intraday_position,
                 )
                 if signal is not None:
                     self.portfolio_router.receive_signal(signal)
@@ -6789,6 +7255,22 @@ class AlphaNextGen(QCAlgorithm):
 
         return None
 
+    def _cancel_spread_linked_oco(self, long_symbol: str, short_symbol: str, reason: str) -> None:
+        """
+        Cancel any OCO siblings tied to spread legs before forced-close retries.
+
+        Spread exits use combo/sequential flow, so stale leg-level OCO orders can
+        race forced closes and create cancel/reject loops.
+        """
+        if not hasattr(self, "oco_manager"):
+            return
+        for leg_symbol in (long_symbol, short_symbol):
+            try:
+                if self.oco_manager.cancel_by_symbol(leg_symbol, reason=reason):
+                    self.Log(f"SPREAD_OCO_CANCEL: {leg_symbol} | Reason={reason}")
+            except Exception as e:
+                self.Log(f"SPREAD_OCO_CANCEL_ERROR: {leg_symbol} | {e}")
+
     def _check_spread_exit(self, data: Slice) -> None:
         """
         V2.3: Check for spread exit conditions.
@@ -6801,6 +7283,11 @@ class AlphaNextGen(QCAlgorithm):
         Args:
             data: Current data slice.
         """
+        # Plumbing guard: never emit spread-exit orders while the primary market is closed.
+        # Off-hours time-stop signals were creating submit->reconcile churn and masking true fill flow.
+        if not self._is_primary_market_open():
+            return
+
         spreads = self.options_engine.get_spread_positions()
         if not spreads:
             return
@@ -6814,15 +7301,20 @@ class AlphaNextGen(QCAlgorithm):
             if key not in active_spread_keys:
                 self._spread_forced_close_retry.pop(key, None)
                 self._spread_forced_close_reason.pop(key, None)
+                self._spread_forced_close_cancel_counts.pop(key, None)
+                self._spread_forced_close_retry_cycles.pop(key, None)
         for key in list(self._spread_close_trackers.keys()):
             if key not in active_spread_keys:
                 self._spread_close_trackers.pop(key, None)
+        for key in list(self._spread_exit_mark_cache.keys()):
+            if key not in active_spread_keys:
+                self._spread_exit_mark_cache.pop(key, None)
 
         underlying_price = self.Securities["QQQ"].Price
         current_hour = self.Time.hour
         current_minute = self.Time.minute
         available_margin = self.Portfolio.MarginRemaining
-        regime_score = self.regime_engine.get_previous_score()
+        regime_score = self._get_effective_regime_score_for_options()
 
         for spread in spreads:
             long_symbol = self._normalize_symbol_str(spread.long_leg.symbol)
@@ -6835,10 +7327,63 @@ class AlphaNextGen(QCAlgorithm):
                 retry_reason = self._spread_forced_close_reason.get(
                     spread_key, "CANCELED_CLOSE_RETRY"
                 )
+                # D1 fix: cancel any linked OCO orders before each retry/escalation cycle.
+                self._cancel_spread_linked_oco(
+                    long_symbol, short_symbol, reason="SPREAD_CLOSE_RETRY"
+                )
+                retry_cycles = self._spread_forced_close_retry_cycles.get(spread_key, 0) + 1
+                self._spread_forced_close_retry_cycles[spread_key] = retry_cycles
+                max_retry_cycles = int(getattr(config, "SPREAD_CLOSE_MAX_RETRY_CYCLES", 12))
+                if retry_cycles >= max_retry_cycles:
+                    self._diag_spread_close_escalation_count += 1
+                    self._diag_spread_exit_signal_count += 1
+                    self._diag_spread_exit_submit_count += 1
+                    self.Log(
+                        f"SPREAD_RETRY_MAX: Escalating to emergency sequential close | "
+                        f"Long={long_symbol} Short={short_symbol} | "
+                        f"Cycles={retry_cycles}/{max_retry_cycles} | Reason={retry_reason}"
+                    )
+                    try:
+                        close_ok = self.portfolio_router.execute_spread_close(
+                            spread=spread,
+                            reason=f"SPREAD_RETRY_MAX:{retry_reason}",
+                            is_emergency=True,
+                        )
+                        if not close_ok:
+                            raise RuntimeError("execute_spread_close returned False")
+                    except Exception as e:
+                        # D5 fix: terminal close failure enters safe-lock retry loop
+                        # instead of silently abandoning the position.
+                        safe_retry_min = int(
+                            getattr(config, "SPREAD_CLOSE_SAFE_LOCK_RETRY_MIN", 10)
+                        )
+                        self.Log(
+                            f"SAFE_LOCK_ALERT: Emergency close failed | Long={long_symbol} "
+                            f"Short={short_symbol} | Error={e} | RetryIn={safe_retry_min}m"
+                        )
+                        self._spread_forced_close_reason[
+                            spread_key
+                        ] = f"SAFE_LOCK_RETRY:{retry_reason}"
+                        self._spread_forced_close_retry[spread_key] = self.Time + timedelta(
+                            minutes=safe_retry_min
+                        )
+                        # Keep retrying at emergency cadence.
+                        self._spread_forced_close_retry_cycles[spread_key] = max(
+                            max_retry_cycles - 1, 0
+                        )
+                        continue
+                    self._spread_forced_close_retry.pop(spread_key, None)
+                    self._spread_forced_close_reason.pop(spread_key, None)
+                    self._spread_forced_close_cancel_counts.pop(spread_key, None)
+                    self._spread_forced_close_retry_cycles.pop(spread_key, None)
+                    continue
                 self.Log(
                     f"SPREAD_RETRY: Re-submitting forced close | Long={long_symbol} "
-                    f"Short={short_symbol} | Reason={retry_reason}"
+                    f"Short={short_symbol} | Reason={retry_reason} | "
+                    f"Cycle={retry_cycles}/{max_retry_cycles}"
                 )
+                self._diag_spread_exit_signal_count += 1
+                self._diag_spread_exit_submit_count += 1
                 self.portfolio_router.receive_signal(
                     TargetWeight(
                         symbol=long_symbol,
@@ -6855,7 +7400,10 @@ class AlphaNextGen(QCAlgorithm):
                     )
                 )
                 # Backoff retries to reduce order spam while preserving persistence.
-                self._spread_forced_close_retry[spread_key] = self.Time + timedelta(minutes=5)
+                retry_minutes = int(getattr(config, "SPREAD_CLOSE_RETRY_INTERVAL_MIN", 5))
+                self._spread_forced_close_retry[spread_key] = self.Time + timedelta(
+                    minutes=retry_minutes
+                )
                 continue
 
             current_dte = spread.long_leg.days_to_expiry
@@ -6896,6 +7444,8 @@ class AlphaNextGen(QCAlgorithm):
                         },
                     )
                 )
+                self._diag_spread_exit_signal_count += 1
+                self._diag_spread_exit_submit_count += 1
                 continue
 
             long_leg_price = None
@@ -6917,12 +7467,105 @@ class AlphaNextGen(QCAlgorithm):
                 pass
 
             if long_leg_price is None or short_leg_price is None:
-                if current_dte is not None and current_dte <= 2:
+                cached = self._spread_exit_mark_cache.get(spread_key, {})
+                if long_leg_price is None:
+                    long_leg_price = cached.get("long_leg_price")
+                if short_leg_price is None:
+                    short_leg_price = cached.get("short_leg_price")
+                if long_leg_price is not None and short_leg_price is not None:
                     self.Log(
-                        f"SPREAD_EXIT_WARNING: Missing price near expiry | "
+                        f"SPREAD_EXIT_MARK_FALLBACK: Using cached leg marks | "
                         f"Type={spread.spread_type} | DTE={current_dte}"
                     )
-                continue
+                else:
+                    # Time-based exits must still fire even when option quotes are unavailable.
+                    # This avoids holding stale spreads simply because leg marks are missing.
+                    time_exit_reason = None
+                    try:
+                        max_hold_days = int(getattr(config, "VASS_DEBIT_MAX_HOLD_DAYS", 0))
+                        low_vix_days = int(
+                            getattr(config, "VASS_DEBIT_MAX_HOLD_DAYS_LOW_VIX", max_hold_days)
+                        )
+                        low_vix_threshold = float(
+                            getattr(config, "VASS_DEBIT_LOW_VIX_THRESHOLD", 16.0)
+                        )
+                        if (
+                            self._current_vix is not None
+                            and low_vix_days > 0
+                            and float(self._current_vix) < low_vix_threshold
+                        ):
+                            max_hold_days = (
+                                min(max_hold_days, low_vix_days)
+                                if max_hold_days > 0
+                                else low_vix_days
+                            )
+                        if max_hold_days > 0:
+                            from datetime import datetime as _dt
+
+                            entry_dt = _dt.strptime(spread.entry_time[:19], "%Y-%m-%d %H:%M:%S")
+                            held_days = (self.Time.date() - entry_dt.date()).days
+                            if held_days >= max_hold_days:
+                                time_exit_reason = (
+                                    f"SPREAD_TIME_STOP_NO_QUOTE ({held_days}d >= {max_hold_days}d)"
+                                )
+                    except Exception:
+                        pass
+                    if time_exit_reason is None and current_dte <= int(config.SPREAD_DTE_EXIT):
+                        time_exit_reason = f"DTE_EXIT_NO_QUOTE ({current_dte} DTE <= {int(config.SPREAD_DTE_EXIT)})"
+
+                    if time_exit_reason is not None:
+                        self.Log(
+                            f"SPREAD_EXIT_NO_QUOTE_TIME_BASED: {time_exit_reason} | "
+                            f"Type={spread.spread_type}"
+                        )
+                        self.portfolio_router.receive_signal(
+                            TargetWeight(
+                                symbol=long_symbol,
+                                target_weight=0.0,
+                                source="OPT",
+                                urgency=Urgency.IMMEDIATE,
+                                reason=f"SPREAD_EXIT: {time_exit_reason}",
+                                requested_quantity=spread.num_spreads,
+                                metadata={
+                                    "spread_close_short": True,
+                                    "spread_short_leg_symbol": short_symbol,
+                                    "spread_short_leg_quantity": spread.num_spreads,
+                                    "exit_type": "TIME_BASED_NO_QUOTE",
+                                },
+                            )
+                        )
+                        self._diag_spread_exit_signal_count += 1
+                        self._diag_spread_exit_submit_count += 1
+                        continue
+
+                    self.Log(
+                        f"SPREAD_EXIT_SKIPPED_NO_QUOTE: Missing leg marks | "
+                        f"Type={spread.spread_type} | DTE={current_dte} | "
+                        f"LongPx={'NA' if long_leg_price is None else f'{long_leg_price:.2f}'} | "
+                        f"ShortPx={'NA' if short_leg_price is None else f'{short_leg_price:.2f}'}"
+                    )
+                    continue
+
+            self._spread_exit_mark_cache[spread_key] = {
+                "long_leg_price": float(long_leg_price),
+                "short_leg_price": float(short_leg_price),
+                "updated_at": self.Time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+
+            min_hold_minutes = int(getattr(config, "SPREAD_MIN_HOLD_MINUTES", 0))
+            hold_block_active = False
+            if min_hold_minutes > 0:
+                try:
+                    from datetime import datetime as _dt
+
+                    entry_dt = _dt.strptime(spread.entry_time[:19], "%Y-%m-%d %H:%M:%S")
+                    live_minutes = (self.Time - entry_dt).total_seconds() / 60.0
+                    mandatory_dte = int(getattr(config, "SPREAD_FORCE_CLOSE_DTE", 1))
+                    hold_block_active = (
+                        0 <= live_minutes < min_hold_minutes and current_dte > mandatory_dte
+                    )
+                except Exception:
+                    hold_block_active = False
 
             gamma_pin_signals = self.options_engine.check_gamma_pin_exit(
                 current_price=underlying_price,
@@ -6932,6 +7575,8 @@ class AlphaNextGen(QCAlgorithm):
             if gamma_pin_signals:
                 for signal in gamma_pin_signals:
                     self.portfolio_router.receive_signal(signal)
+                self._diag_spread_exit_signal_count += len(gamma_pin_signals)
+                self._diag_spread_exit_submit_count += len(gamma_pin_signals)
                 continue
 
             assignment_risk_signals = self.options_engine.check_assignment_risk_exit(
@@ -6945,7 +7590,46 @@ class AlphaNextGen(QCAlgorithm):
             if assignment_risk_signals:
                 for signal in assignment_risk_signals:
                     self.portfolio_router.receive_signal(signal)
+                self._diag_spread_exit_signal_count += len(assignment_risk_signals)
+                self._diag_spread_exit_submit_count += len(assignment_risk_signals)
                 continue
+
+            # V6.22: Transition exit priority - close wrong-way bullish spreads first in STRESS.
+            # Apply this only when anti-churn minimum-hold window has elapsed.
+            if not hold_block_active:
+                overlay_state = self.options_engine.get_regime_overlay_state(
+                    vix_current=self._current_vix, regime_score=regime_score
+                )
+                spread_type_upper = str(spread.spread_type).upper()
+                is_bullish_spread = spread_type_upper in {
+                    "BULL_CALL",
+                    "BULL_CALL_DEBIT",
+                    "BULL_PUT_CREDIT",
+                }
+                if overlay_state == "STRESS" and is_bullish_spread:
+                    self.Log(
+                        f"SPREAD_OVERLAY_EXIT: Forcing close in STRESS | "
+                        f"Type={spread.spread_type} | VIX={self._current_vix:.1f} | Regime={regime_score:.0f}"
+                    )
+                    self.portfolio_router.receive_signal(
+                        TargetWeight(
+                            symbol=long_symbol,
+                            target_weight=0.0,
+                            source="OPT",
+                            urgency=Urgency.IMMEDIATE,
+                            reason="SPREAD_EXIT: OVERLAY_STRESS_EXIT",
+                            requested_quantity=spread.num_spreads,
+                            metadata={
+                                "spread_close_short": True,
+                                "spread_short_leg_symbol": short_symbol,
+                                "spread_short_leg_quantity": spread.num_spreads,
+                                "exit_type": "OVERLAY_STRESS_EXIT",
+                            },
+                        )
+                    )
+                    self._diag_spread_exit_signal_count += 1
+                    self._diag_spread_exit_submit_count += 1
+                    continue
 
             exit_signals = self.options_engine.check_spread_exit_signals(
                 long_leg_price=long_leg_price,
@@ -6958,6 +7642,8 @@ class AlphaNextGen(QCAlgorithm):
             if exit_signals:
                 for signal in exit_signals:
                     self.portfolio_router.receive_signal(signal)
+                self._diag_spread_exit_signal_count += len(exit_signals)
+                self._diag_spread_exit_submit_count += len(exit_signals)
 
     def _get_actual_option_count(self) -> int:
         """
@@ -7083,7 +7769,7 @@ class AlphaNextGen(QCAlgorithm):
             or self.Portfolio[self.sso].Invested
         )
 
-    def _calculate_regime(self) -> RegimeState:
+    def _calculate_regime(self, read_only: bool = False) -> RegimeState:
         """
         Calculate current regime state (V2.3: includes VIX).
 
@@ -7128,7 +7814,10 @@ class AlphaNextGen(QCAlgorithm):
         # V3.7: Pass actual 52-week high for drawdown factor (CRITICAL FIX)
         spy_adx_val = self.spy_adx_daily.Current.Value if self.spy_adx_daily.IsReady else 25.0
         spy_52w_high_val = self.spy_52w_high.Current.Value if self.spy_52w_high.IsReady else 0.0
-        return self.regime_engine.calculate(
+        calculate_fn = (
+            self.regime_engine.calculate_readonly if read_only else self.regime_engine.calculate
+        )
+        return calculate_fn(
             spy_closes=spy_prices,
             rsp_closes=rsp_prices,
             hyg_closes=hyg_prices,
@@ -7141,6 +7830,45 @@ class AlphaNextGen(QCAlgorithm):
             spy_52w_high=spy_52w_high_val,
         )
 
+    def _refresh_intraday_regime_score(self) -> None:
+        """Phase A: refresh intraday macro regime snapshot for options gating."""
+        if self.IsWarmingUp:
+            return
+        try:
+            regime_state = self._calculate_regime(read_only=True)
+            self._intraday_regime_score = float(regime_state.smoothed_score)
+            self._intraday_regime_updated_at = self.Time
+            self.Log(
+                f"REGIME_REFRESH_INTRADAY: Score={self._intraday_regime_score:.1f} | "
+                f"Time={self.Time.strftime('%H:%M')}"
+            )
+        except Exception as e:
+            self.Log(f"REGIME_REFRESH_INTRADAY_ERROR: {e}")
+
+    def _get_effective_regime_score_for_options(self) -> float:
+        """
+        Phase A: defensive options regime score.
+        Uses worse-of (lower) between previous EOD and intraday refreshed score.
+        """
+        eod_score = float(self.regime_engine.get_previous_score())
+        intraday_score = self._intraday_regime_score
+        if intraday_score is None:
+            return eod_score
+        effective = min(eod_score, float(intraday_score))
+        # Phase B: log meaningful intraday downside adjustments for traceability.
+        # Throttled to avoid log flooding.
+        if eod_score - effective >= 2.0:
+            should_log = self._last_regime_effective_log_at is None or (
+                (self.Time - self._last_regime_effective_log_at).total_seconds() >= 1800
+            )
+            if should_log:
+                self.Log(
+                    f"REGIME_EFFECTIVE_OPTIONS: EOD={eod_score:.1f} | "
+                    f"Intraday={float(intraday_score):.1f} | Effective={effective:.1f}"
+                )
+                self._last_regime_effective_log_at = self.Time
+        return effective
+
     def _log_daily_summary(self) -> None:
         """
         Log end of day summary.
@@ -7148,7 +7876,21 @@ class AlphaNextGen(QCAlgorithm):
         Includes P&L, trades, safeguards, and regime state.
         """
         ending_equity = self.Portfolio.TotalPortfolioValue
-        regime_state = self._calculate_regime()
+        regime_score = float(
+            self._last_regime_score
+            if self._last_regime_score is not None
+            else self.regime_engine.get_previous_score()
+        )
+        if regime_score >= config.REGIME_RISK_ON:
+            regime_state_label = RegimeLevel.RISK_ON.value
+        elif regime_score >= config.REGIME_NEUTRAL:
+            regime_state_label = RegimeLevel.NEUTRAL.value
+        elif regime_score >= config.REGIME_CAUTIOUS:
+            regime_state_label = RegimeLevel.CAUTIOUS.value
+        elif regime_score >= config.REGIME_DEFENSIVE:
+            regime_state_label = RegimeLevel.DEFENSIVE.value
+        else:
+            regime_state_label = RegimeLevel.RISK_OFF.value
         capital_state = self.capital_engine.calculate(ending_equity)
 
         summary = self.scheduler.get_day_summary(
@@ -7157,8 +7899,8 @@ class AlphaNextGen(QCAlgorithm):
             trades=self.today_trades,
             safeguards=self.today_safeguards,
             moo_orders=[],  # Already logged when submitted
-            regime_score=regime_state.smoothed_score,
-            regime_state=regime_state.state.value,
+            regime_score=regime_score,
+            regime_state=regime_state_label,
             days_running=self.cold_start_engine.get_days_running(),
         )
 
@@ -7169,6 +7911,17 @@ class AlphaNextGen(QCAlgorithm):
             f"Dropped={self._diag_intraday_dropped_count} | "
             f"Results={self._diag_intraday_result_count} | "
             f"VASS_Blocks={self._diag_vass_block_count} | "
+            f"OverlayBlocks={self._diag_overlay_block_count} | "
+            f"OverlaySlotBlocks={self._diag_overlay_slot_block_count} | "
+            f"SpreadCloseEscalations={self._diag_spread_close_escalation_count} | "
+            f"SpreadEntrySignal={self._diag_spread_entry_signal_count} | "
+            f"SpreadEntrySubmit={self._diag_spread_entry_submit_count} | "
+            f"SpreadEntryFill={self._diag_spread_entry_fill_count} | "
+            f"SpreadExitSignal={self._diag_spread_exit_signal_count} | "
+            f"SpreadExitSubmit={self._diag_spread_exit_submit_count} | "
+            f"SpreadExitFill={max(self._diag_spread_exit_fill_count, self._diag_spread_position_removed_count)} | "
+            f"SpreadExitCanceled={self._diag_spread_exit_canceled_count} | "
+            f"SpreadRemoved={self._diag_spread_position_removed_count} | "
             f"MarginRejects={self._diag_margin_reject_count}"
         )
 
@@ -7642,6 +8395,7 @@ class AlphaNextGen(QCAlgorithm):
             return
 
         # Check if both legs filled with expected quantity
+        spread = None
         if tracker.is_complete():
             # Validate quantities match (Bug #6 fix)
             if not tracker.quantities_match():
@@ -7661,10 +8415,11 @@ class AlphaNextGen(QCAlgorithm):
                 short_leg_fill_price=tracker.short_fill_price,
                 entry_time=str(self.Time),
                 current_date=str(self.Time.date()),
-                regime_score=self.regime_engine.get_previous_score(),
+                regime_score=self._get_effective_regime_score_for_options(),
             )
 
             if spread:
+                self._diag_spread_entry_fill_count += 1
                 self.Log(
                     f"SPREAD: Position registered | {spread.spread_type} | "
                     f"Debit=${spread.net_debit:.2f} | Max Profit=${spread.max_profit:.2f} | "
@@ -7685,9 +8440,12 @@ class AlphaNextGen(QCAlgorithm):
             fill_price: Fill price.
             fill_qty: Fill quantity (negative for sells).
         """
+        norm_symbol = self._normalize_symbol_str(symbol)
         spread = None
         for candidate in self.options_engine.get_spread_positions():
-            if candidate.long_leg.symbol == symbol or candidate.short_leg.symbol == symbol:
+            long_norm = self._normalize_symbol_str(candidate.long_leg.symbol)
+            short_norm = self._normalize_symbol_str(candidate.short_leg.symbol)
+            if norm_symbol == long_norm or norm_symbol == short_norm:
                 spread = candidate
                 break
         if spread is None:
@@ -7712,7 +8470,9 @@ class AlphaNextGen(QCAlgorithm):
             self._spread_close_trackers[spread_key] = tracker
 
         # Track which leg closed and accumulate quantity
-        if spread.long_leg.symbol == symbol:
+        long_norm = self._normalize_symbol_str(spread.long_leg.symbol)
+        short_norm = self._normalize_symbol_str(spread.short_leg.symbol)
+        if norm_symbol == long_norm:
             tracker["long_closed"] = True
             tracker["long_qty"] += fill_qty_abs
             tracker["long_price"] = fill_price
@@ -7720,7 +8480,7 @@ class AlphaNextGen(QCAlgorithm):
                 f"SPREAD: Long leg closed | {symbol[-20:]} @ ${fill_price:.2f} x{fill_qty_abs} | "
                 f"Total closed={tracker['long_qty']}/{tracker['expected_qty']}"
             )
-        elif spread.short_leg.symbol == symbol:
+        elif norm_symbol == short_norm:
             tracker["short_closed"] = True
             tracker["short_qty"] += fill_qty_abs
             tracker["short_price"] = fill_price
@@ -7731,6 +8491,7 @@ class AlphaNextGen(QCAlgorithm):
 
         # Check if both legs closed
         if tracker["long_closed"] and tracker["short_closed"]:
+            self._diag_spread_exit_fill_count += 1
             # Validate quantities (Bug #8 fix)
             if tracker["long_qty"] != tracker["expected_qty"]:
                 self.Log(
@@ -7796,9 +8557,12 @@ class AlphaNextGen(QCAlgorithm):
 
             # Both legs closed - remove spread position
             self.options_engine.remove_spread_position(symbol)
+            self._diag_spread_position_removed_count += 1
             self._greeks_breach_logged = False  # Reset for next position
             self._spread_forced_close_retry.pop(spread_key, None)
             self._spread_forced_close_reason.pop(spread_key, None)
+            self._spread_forced_close_cancel_counts.pop(spread_key, None)
+            self._spread_forced_close_retry_cycles.pop(spread_key, None)
             self._spread_close_trackers.pop(spread_key, None)
 
             self.Log("SPREAD: Position removed - both legs closed")
@@ -7844,15 +8608,51 @@ class AlphaNextGen(QCAlgorithm):
         long_symbol = self._normalize_symbol_str(spread.long_leg.symbol)
         short_symbol = self._normalize_symbol_str(spread.short_leg.symbol)
         spread_key = f"{long_symbol}|{short_symbol}"
+        self._cancel_spread_linked_oco(
+            long_symbol, short_symbol, reason="SPREAD_CLOSE_CANCELED_RETRY"
+        )
+        cancel_count = self._spread_forced_close_cancel_counts.get(spread_key, 0) + 1
+        self._spread_forced_close_cancel_counts[spread_key] = cancel_count
+        self._diag_spread_exit_canceled_count += 1
+        escalation_count = int(getattr(config, "SPREAD_CLOSE_CANCEL_ESCALATION_COUNT", 2))
+
         self._spread_forced_close_retry[spread_key] = self.Time
         self._spread_forced_close_reason[
             spread_key
         ] = f"ORDER_CANCELED:{getattr(order, 'Type', 'UNKNOWN')}"
-        self.Log(
-            f"SPREAD_RETRY_QUEUED: Close leg canceled | Symbol={symbol} | "
-            f"Long={long_symbol} | Short={short_symbol} | "
-            f"OrderQty={order.Quantity}"
-        )
+
+        if cancel_count >= escalation_count:
+            self._diag_spread_close_escalation_count += 1
+            self.Log(
+                f"SPREAD_CLOSE_ESCALATED: Cancel threshold reached | "
+                f"Long={long_symbol} | Short={short_symbol} | "
+                f"CancelCount={cancel_count} >= {escalation_count} | "
+                f"Submitting immediate sequential close"
+            )
+            self.portfolio_router.receive_signal(
+                TargetWeight(
+                    symbol=long_symbol,
+                    target_weight=0.0,
+                    source="OPT",
+                    urgency=Urgency.IMMEDIATE,
+                    reason="SPREAD_CLOSE_ESCALATED",
+                    requested_quantity=spread.num_spreads,
+                    metadata={
+                        "spread_close_short": True,
+                        "spread_short_leg_symbol": short_symbol,
+                        "spread_short_leg_quantity": spread.num_spreads,
+                        "exit_type": "SPREAD_CLOSE_ESCALATED",
+                    },
+                )
+            )
+            self._diag_spread_exit_signal_count += 1
+            self._diag_spread_exit_submit_count += 1
+        else:
+            self.Log(
+                f"SPREAD_RETRY_QUEUED: Close leg canceled | Symbol={symbol} | "
+                f"Long={long_symbol} | Short={short_symbol} | "
+                f"OrderQty={order.Quantity} | CancelCount={cancel_count}"
+            )
 
     def _cleanup_stale_spread_state(self) -> None:
         """
@@ -7871,6 +8671,8 @@ class AlphaNextGen(QCAlgorithm):
         self._spread_close_trackers.clear()
         self._spread_forced_close_retry.clear()
         self._spread_forced_close_reason.clear()
+        self._spread_forced_close_cancel_counts.clear()
+        self._spread_forced_close_retry_cycles.clear()
 
         # Clear options engine pending state
         self.options_engine._pending_spread_long_leg = None
@@ -7879,6 +8681,11 @@ class AlphaNextGen(QCAlgorithm):
         self.options_engine._pending_net_debit = None
         self.options_engine._pending_max_profit = None
         self.options_engine._pending_spread_width = None
+        self.options_engine._pending_num_contracts = None
+        self.options_engine._pending_entry_score = None
+        self.options_engine._pending_stop_pct = None
+        self.options_engine._pending_stop_price = None
+        self.options_engine._pending_target_price = None
 
     def _emergency_close_spread_legs(self) -> None:
         """

@@ -771,3 +771,21 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | COMMODITIES | UGL, UCO | 25% | 25% |
 
 > **V6.11 Note:** RATES group removed (TMF/SHV retired). COMMODITIES added with UGL (2x Gold) and UCO (2x Crude Oil).
+
+---
+
+## Custom Agents
+
+These agents are defined in `.claude/agents/` and available via the Task tool:
+
+| Agent | Purpose | Usage |
+|-------|---------|-------|
+| **log-analyzer** | Analyze backtest logs and generate comprehensive trading performance reports with hedge fund style statistics | `Use the log-analyzer agent to analyze the V7 2017 logs in stage7/` |
+| **backtest-runner** | Run backtests on QuantConnect with automated sync, push, and log organization | `Use the backtest-runner agent to run Dec 2021 - Feb 2022` |
+| **v3-pre-live-auditor** | Comprehensive pre-live audit checks (state persistence, IBKR rules, assignment handling) | `Use the v3-pre-live-auditor to validate before going live` |
+| **docs-sync** | Update documentation after code changes to keep docs in sync | `Use the docs-sync agent to update docs for my changes` |
+
+To invoke an agent with bypass permissions:
+```
+Use the log-analyzer agent in bypassPermissions mode to analyze stage7 logs
+```

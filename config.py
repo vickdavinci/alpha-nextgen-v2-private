@@ -868,6 +868,20 @@ VASS_VIX_5D_BEARISH_THRESHOLD = 0.16  # VIX 5d change > +16% → BEARISH convict
 VASS_VIX_5D_BULLISH_THRESHOLD = -0.20  # VIX 5d change < -20% → BULLISH conviction
 VASS_VIX_20D_STRONG_BEARISH = 0.30  # VIX 20d change > +30% → STRONG BEARISH
 VASS_VIX_20D_STRONG_BULLISH = -0.20  # VIX 20d change < -20% → STRONG BULLISH
+VASS_EARLY_STRESS_BULL_REQUIRE_CONVICTION = (
+    True  # D8: In EARLY_STRESS, block bullish VASS unless conviction is present
+)
+VASS_EARLY_STRESS_BULL_STRATEGY_TO_CREDIT = (
+    True  # D8: In EARLY_STRESS, remap bullish debit spreads to bullish credit spreads
+)
+VASS_EARLY_STRESS_BEAR_PREFER_CREDIT = (
+    True  # D8: In EARLY_STRESS, prefer bearish credit over bearish debit
+)
+VASS_SIMILAR_ENTRY_MIN_GAP_MINUTES = 15  # Block repeated same-signature entries in burst windows
+VASS_SIMILAR_ENTRY_COOLDOWN_DAYS = (
+    2  # Shorter cooldown to avoid over-throttling quality follow-through
+)
+VASS_SIMILAR_ENTRY_USE_EXPIRY_BUCKET = True  # Use expiry date bucket (fallback to DTE bucket)
 
 # Level Crossing Thresholds (regime shift signals)
 VASS_VIX_FEAR_CROSS_LEVEL = 23  # VIX crosses above this → BEARISH
@@ -878,7 +892,7 @@ CREDIT_SPREAD_MIN_CREDIT = 0.20  # V6.10 P3: Was 0.30, lowered to allow more fil
 CREDIT_SPREAD_WIDTH_TARGET = 5.0  # $5 width for credit spreads
 CREDIT_SPREAD_FALLBACK_TO_DEBIT = True  # V6.10 P3: Fall back to debit when credit fails
 CREDIT_SPREAD_PROFIT_TARGET = 0.50  # Exit at 50% of max profit
-CREDIT_SPREAD_STOP_MULTIPLIER = 2.0  # Stop if spread value doubles (100% loss)
+CREDIT_SPREAD_STOP_MULTIPLIER = 0.60  # Stop at 60% of max-loss threshold to cap tail losses
 CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg delta range (OTM)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.45  # V6.13 OPT: Improve credit spread constructability
 # T-21: Credit-path liquidity quality gates (parity with debit selector).
@@ -903,15 +917,22 @@ CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD = 30.0  # VIX level above which reduced floo
 
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
 # V2.3.15: Sniper Logic - allow one retry, not machine gun
-INTRADAY_MAX_TRADES_PER_DAY = 2  # Sniper gets one retry per day
+INTRADAY_MAX_TRADES_PER_DAY = (
+    3  # All-regime throughput tune: allow one additional high-quality intraday slot
+)
 
 # V2.9: Global options trade limits (Bug #4 fix)
-# Prevents over-trading when VIX flickers around strategy thresholds
-MAX_OPTIONS_TRADES_PER_DAY = 4  # All options combined (swing + intraday)
-MAX_SWING_TRADES_PER_DAY = 2  # Swing mode limit
+# Keep conservative defaults to avoid fee drag/correlation spikes while
+# execution plumbing is still being hardened.
+MAX_OPTIONS_TRADES_PER_DAY = 5
+MAX_SWING_TRADES_PER_DAY = 3
 # Reserve swing capacity so intraday activity cannot fully starve VASS entries.
-OPTIONS_RESERVE_SWING_DAILY_SLOTS_ENABLED = True
+OPTIONS_RESERVE_SWING_DAILY_SLOTS_ENABLED = False
 OPTIONS_MIN_SWING_SLOTS_PER_DAY = 1
+OPTIONS_RESERVE_INTRADAY_DAILY_SLOTS_ENABLED = True
+OPTIONS_MIN_INTRADAY_SLOTS_PER_DAY = 1
+OPTIONS_RESERVE_RELEASE_HOUR = 12  # Release reserved slots earlier to reduce midday throttling
+OPTIONS_RESERVE_RELEASE_MINUTE = 30
 # Replace one-attempt-per-day spread lock with scoped attempt budgets.
 SPREAD_MAX_ATTEMPTS_PER_KEY_PER_DAY = 3
 
@@ -920,7 +941,9 @@ OPTIONS_ALLOCATION_MIN = 0.50  # V6.20: 50% minimum (isolation profile)
 OPTIONS_ALLOCATION_MAX = 0.50  # V6.20: 50% maximum (isolation profile)
 
 # Entry Score Thresholds
-OPTIONS_ENTRY_SCORE_MIN = 2.0  # Minimum score for entry (0-4 scale) - lowered from 3.0 for testing
+OPTIONS_ENTRY_SCORE_MIN = (
+    2.20  # Relaxed to recover quality throughput without reopening low-conviction noise
+)
 OPTIONS_ADX_THRESHOLD = 25  # ADX >= 25 for full score
 
 # Entry Score Component Weights (each 0-1, total 0-4)
@@ -938,9 +961,9 @@ OPTIONS_IV_RANK_HIGH = 80  # IV rank > 80 → 0.25
 # IV rank 20-80 → full score
 
 # Liquidity Factor
-OPTIONS_SPREAD_MAX_PCT = 0.15  # V2.3.10: Widened from 5% to 15% - ATM contracts have wider spreads
+OPTIONS_SPREAD_MAX_PCT = 0.14  # Slightly wider filter to reduce unnecessary spread rejections
 OPTIONS_SPREAD_WARNING_PCT = 0.30  # V6.8: Was 0.25, reduce spread-based rejection
-OPTIONS_MIN_OPEN_INTEREST = 50  # V6.8: Was 100, avoid rejection in thin chains
+OPTIONS_MIN_OPEN_INTEREST = 60  # Loosen OI floor to restore execution coverage
 
 # Confidence-Weighted Tiered Stops
 # V2.4.3 FIX: CORRECTED - Higher confidence = MORE contracts (was inverted!)
@@ -1042,9 +1065,12 @@ PARTIAL_ASSIGNMENT_AUTO_CLOSE = True  # Auto-close orphaned legs
 # This catches assignments at ANY DTE, not just near expiry
 # Aug 2022 assignments happened at DTE=4, missed by DTE<=3 guards
 SHORT_LEG_ITM_EXIT_ENABLED = True
-SHORT_LEG_ITM_EXIT_THRESHOLD = 0.010  # V6.15 TUNE: Reduce instant-churn exits
+SHORT_LEG_ITM_EXIT_THRESHOLD = (
+    0.035  # Raised to reduce noise exits; trigger only on deeper ITM risk
+)
 SPREAD_ASSIGNMENT_GRACE_MINUTES = 45  # V6.15 FIX: Allow spread to stabilize before ITM checks
 SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 15  # Minutes between log messages
+SPREAD_MIN_HOLD_MINUTES = 20  # Block non-emergency spread exits right after entry
 
 # V6.10 P0: Mandatory DTE=1 Force Close (Nuclear Assignment Prevention)
 # Close ALL spread positions when DTE reaches this value, regardless of P&L
@@ -1126,6 +1152,8 @@ BEAR_PUT_ENTRY_MIN_OTM_PCT_RELAXED = (
 BEAR_PUT_ENTRY_RELAXED_REGIME_MIN = (
     60.0  # Require healthy regime before applying relaxed OTM threshold
 )
+# V6.22: During confirmed stress, allow slightly tighter BEAR_PUT shorts to keep bearish access alive.
+BEAR_PUT_ENTRY_MIN_OTM_PCT_STRESS = 0.008
 
 # Contract Selection
 # Options chain filter (must cover BOTH Intraday 0-2 DTE AND Swing 5-45 DTE)
@@ -1219,6 +1247,14 @@ BULL_CALL_STRESS_ACCEL_5D = 0.20  # +20% VIX over 5 sessions
 BULL_CALL_EARLY_STRESS_VIX_LOW = 16.0
 BULL_CALL_EARLY_STRESS_VIX_HIGH = 18.0
 BULL_CALL_EARLY_STRESS_SIZE = 0.50
+# Bear hardening: block bullish debit spreads when short-term trend is down.
+VASS_BULL_CALL_MA50_BLOCK_ENABLED = True
+VASS_BULL_CALL_MA50_BLOCK_REGIME_MAX = 60.0
+# V6.22: Fast regime overlay thresholds (shared by resolver, slot caps, and exits).
+REGIME_OVERLAY_STRESS_VIX = 19.0
+REGIME_OVERLAY_STRESS_VIX_5D = 0.12
+REGIME_OVERLAY_EARLY_VIX_LOW = 15.0
+REGIME_OVERLAY_EARLY_VIX_HIGH = 17.0
 
 # Spread width (strike difference between legs)
 # V2.4.3: WIDTH-BASED short leg selection (fixes "delta trap" in backtesting)
@@ -1236,6 +1272,9 @@ SPREAD_WIDTH_TARGET = 4.0  # V6.13 OPT: Improve fill/constructability in medium 
 SPREAD_DTE_MIN = 14  # Minimum 14 DTE (avoid gamma acceleration + gap risk)
 SPREAD_DTE_MAX = 45  # V2.19: Widened from 21 to 45 to align with VASS_LOW_IV_DTE (30-45)
 SPREAD_DTE_EXIT = 5  # Close by 5 DTE remaining
+VASS_DEBIT_MAX_HOLD_DAYS = 7  # Debit spreads: force-close if held >= 7 days
+VASS_DEBIT_MAX_HOLD_DAYS_LOW_VIX = 5  # In low IV, shorten hold to reduce theta drag
+VASS_DEBIT_LOW_VIX_THRESHOLD = 16.0
 
 # Exit targets
 # V6.10 P5: Symmetric R:R (40%/40%) - need 1:1 win ratio to break even
@@ -1244,7 +1283,8 @@ SPREAD_PROFIT_TARGET_PCT = 0.50  # +50% base target
 SPREAD_STOP_LOSS_PCT = (
     0.40  # V6.10 P5: Raised from 0.35 to 0.40 (wider stop, symmetric with target)
 )
-SPREAD_HARD_STOP_LOSS_PCT = 0.32  # Emergency cap across regimes to prevent tail-loss drift
+SPREAD_HARD_STOP_LOSS_PCT = 0.50  # Emergency cap above max adaptive stop (Bull=48%)
+SPREAD_HARD_STOP_WIDTH_PCT = 0.35  # Hard cap using spread width (debit spreads)
 SPREAD_STOP_REGIME_MULTIPLIERS = {
     75: 1.20,  # Bull: give more room (0.40 * 1.2 = 0.48)
     50: 1.00,  # Neutral: base (0.40)
@@ -1253,9 +1293,9 @@ SPREAD_STOP_REGIME_MULTIPLIERS = {
 }
 
 # V3.0: Regime-Adaptive Profit Targets
-# V6.10 P5: With 40% base, multipliers give: Bull=56%, Neutral=40%, Bear=32%
+# With 50% base, multipliers give: Bull=45%, Neutral=55%, Cautious/Bear=60%
 SPREAD_PROFIT_REGIME_MULTIPLIERS = {
-    75: 1.30,  # Regime >= 75: 65% target (1.30 × 50% base)
+    75: 0.90,  # Regime >= 75: 45% target (0.90 × 50% base) for low-IV bull runs
     50: 1.10,  # Regime 50-74: 55% target
     40: 1.20,  # Regime 40-49: 60% target
     0: 1.20,  # Regime < 40: 60% target (ride bear trends)
@@ -1274,7 +1314,13 @@ WIN_RATE_SIZING_REDUCED = 0.75  # Multiplier at REDUCED level
 WIN_RATE_SIZING_MINIMUM = 0.50  # Multiplier at MINIMUM level
 # V6.19 O-20: Keep VASS alive in stress periods; avoid full spread-path freeze.
 VASS_WIN_RATE_HARD_BLOCK = False  # If False, shutoff degrades to minimum size instead of blocking
-VASS_WIN_RATE_SHUTOFF_SCALE = 0.50  # Size scale used when shutoff is active and hard block disabled
+VASS_WIN_RATE_SHUTOFF_SCALE = 0.40  # Size scale used when shutoff is active and hard block disabled
+# In elevated VIX, do not allow VASS bullish conviction to force trades from NEUTRAL macro.
+VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX = 18.0
+VASS_BULL_PROFILE_BEARISH_BLOCK_ENABLED = True
+VASS_BULL_PROFILE_REGIME_MIN = (
+    70.0  # Strong-bull profile threshold for blocking bearish VASS entries
+)
 # V6.1: Removed SPREAD_REGIME_EXIT_BULL/BEAR - legacy logic conflicted with conviction-based entry
 # Spreads now exit via: STOP_LOSS, PROFIT_TARGET, DTE_EXIT, NEUTRALITY_EXIT
 
@@ -1294,11 +1340,18 @@ SPREAD_NEUTRALITY_EXIT_ENABLED = True  # V6.13 OPT: Re-enable for choppy capital
 SPREAD_NEUTRALITY_EXIT_PNL_BAND = 0.06  # V6.13 OPT: Tight "flat" band
 SPREAD_NEUTRALITY_ZONE_LOW = 48  # V6.13 OPT: Narrower neutrality zone
 SPREAD_NEUTRALITY_ZONE_HIGH = 62  # V6.13 OPT: Narrower neutrality zone
+SPREAD_NEUTRALITY_STAGED_ENABLED = True  # Phase C: two-stage de-risk to reduce churn exits
+SPREAD_NEUTRALITY_CONFIRM_HOURS = 2  # Stage-2 exit only after neutrality persistence window
+SPREAD_NEUTRALITY_STAGE1_DAMAGE_PCT = 0.15  # Exit early if loss breaches this threshold in stage-1
 
 # V2.16-BT: Commission-aware profit targets
 # Round-trip commission estimate per spread (entry + exit, both legs)
 # IBKR: ~$0.65/contract × 2 legs × 2 (entry+exit) = $2.60/spread
 SPREAD_COMMISSION_PER_CONTRACT = 2.60  # Estimated round-trip commission per spread
+SPREAD_ENTRY_COMMISSION_GATE_ENABLED = True
+SPREAD_MAX_COMMISSION_TO_MAX_PROFIT_RATIO = (
+    0.15  # Balanced fee gate to avoid over-throttling entries
+)
 
 # -----------------------------------------------------------------------------
 # V2.17-BT: COMBO ORDER RETRY & KILL SWITCH COORDINATION
@@ -1309,6 +1362,7 @@ SPREAD_COMMISSION_PER_CONTRACT = 2.60  # Estimated round-trip commission per spr
 # Combo order retry settings
 COMBO_ORDER_MAX_RETRIES = 3  # Try atomic ComboMarketOrder up to 3 times
 COMBO_ORDER_FALLBACK_TO_SEQUENTIAL = True  # If all retries fail, use sequential close
+SPREAD_CLOSE_SAFE_LOCK_RETRY_MIN = 10  # Retry emergency close after safe-lock alert
 
 # Sequential fallback: close SHORT leg first (buy back), then LONG leg (sell)
 # This prevents naked short exposure - worst case is holding a long temporarily
@@ -1388,6 +1442,9 @@ FRIDAY_HOLIDAY_CHECK_ENABLED = True  # Enable Thursday expiration detection
 # Exit order retry settings for gamma decay (0DTE)
 EXIT_ORDER_RETRY_COUNT = 3  # Bug #14: Retry failed exits
 EXIT_ORDER_RETRY_DELAY_SECONDS = 5  # Delay between retries
+SPREAD_CLOSE_CANCEL_ESCALATION_COUNT = 2  # Escalate to immediate sequential close after N cancels
+SPREAD_CLOSE_RETRY_INTERVAL_MIN = 5  # Retry cadence for forced spread close queue
+SPREAD_CLOSE_MAX_RETRY_CYCLES = 12  # Hard cap to avoid infinite forced-close retry loops
 
 # 0DTE forced exit time (3:30 PM ET = 30 min before close)
 ZERO_DTE_FORCE_EXIT_HOUR = 15
@@ -1437,12 +1494,18 @@ SPREAD_MARGIN_SAFETY_FACTOR = 0.80
 # Post-rejection: apply to broker-reported Free Margin for adaptive retry cap
 SPREAD_REJECTION_MARGIN_SAFETY = 0.80
 
-# V4.0.2: Margin Utilization Gate - Use broker's ACTUAL margin, not estimates
-# This prevents margin overflow by checking TotalMarginUsed / TotalPortfolioValue
-# before entering any new spread position. More reliable than estimating per-spread margin.
-MAX_MARGIN_UTILIZATION = 0.60  # V6.9 P0: More conservative utilization cap
-MARGIN_UTILIZATION_WARNING = 0.60  # Log warning when utilization exceeds 60%
-MARGIN_UTILIZATION_ENABLED = True  # Enable/disable the margin utilization gate
+# V8.2 cleanup: options budget gate is now the primary normal-entry limiter.
+# Keep margin-utilization gate as emergency brake only.
+OPTIONS_BUDGET_GATE_ENABLED = True
+OPTIONS_BUDGET_CAP_PCT = (
+    CAPITAL_PARTITION_OPTIONS  # Keep options risk aligned to configured partition.
+)
+OPTIONS_BUDGET_WARN_PCT = 0.90  # Warn when used budget is above 90% of cap.
+
+# V4.0.2: Margin Utilization Gate - emergency-only circuit breaker
+MAX_MARGIN_UTILIZATION = 0.90  # Block new BUY orders only in high-stress utilization.
+MARGIN_UTILIZATION_WARNING = 0.80  # Early warning threshold.
+MARGIN_UTILIZATION_ENABLED = True  # Enable/disable emergency margin circuit breaker.
 
 # Pitfall #8: Settlement Ghost - Smarter threshold-based gate
 # Only halt if UnsettledCash is material (>10% of portfolio)
@@ -1458,11 +1521,17 @@ SETTLEMENT_HALT_UNTIL_MINUTE = 30
 SPREAD_MAX_CONTRACTS = 20  # Hard cap per spread position
 
 # V5.3: Options Position Limits (Margin Error Prevention)
-# Max concurrent positions: 1 intraday + 2 swings = 3 total
-OPTIONS_MAX_INTRADAY_POSITIONS = 1  # Max 1 intraday position at a time
-OPTIONS_MAX_SWING_POSITIONS = 4  # V6.21 execution tune: allow more swing capacity
-OPTIONS_MAX_TOTAL_POSITIONS = 5  # 1 intraday + up to 4 swings
-OPTIONS_MAX_SWING_PER_DIRECTION = 3  # Keep directional concentration bounded
+# Max concurrent positions: 2 intraday + 5 swings = 7 total
+OPTIONS_MAX_INTRADAY_POSITIONS = 2  # V8.2: Allow 2 concurrent intraday positions
+OPTIONS_MAX_SWING_POSITIONS = 5  # Expand swing capacity across regimes
+OPTIONS_MAX_TOTAL_POSITIONS = 7  # 2 intraday + up to 5 swings
+OPTIONS_MAX_SWING_PER_DIRECTION = 3  # Legacy fallback cap if directional pools are unset
+# V8: Separate directional swing pools (prevents one side from monopolizing all swing slots).
+OPTIONS_MAX_SWING_BULLISH_POSITIONS = 3
+OPTIONS_MAX_SWING_BEARISH_POSITIONS = 3
+MAX_BULLISH_SPREADS_STRESS = 0  # No new bullish spreads in confirmed stress
+MAX_BULLISH_SPREADS_EARLY_STRESS = 1  # Restrict bullish concentration in early stress
+MAX_BEARISH_SPREADS_STRESS = 3  # Preserve bearish spread capacity in stress
 
 # V2.14 Fix #22: Conservative spread sizing to prevent tier cap violations
 # Evidence: Trade #20 sized at mid price $2.75 but filled at $3.96 (44% slippage)
@@ -1485,8 +1554,8 @@ VIX_DIRECTION_STABLE_HIGH = 1.0  # V6.6: Was +2.0, narrowed to capture more sign
 # V6.9: VIX-adaptive STABLE band (for Dir=None tuning)
 VIX_STABLE_LOW_VIX_MAX = 15.0  # Low VIX regime
 VIX_STABLE_HIGH_VIX_MIN = 25.0  # High VIX regime
-VIX_STABLE_BAND_LOW = 0.2  # V6.13.1 OPT: ±0.2% when VIX is low (was 0.3%, more signals)
-VIX_STABLE_BAND_HIGH = 0.7  # V6.13.1 OPT: ±0.7% when VIX is high (was 1.0%, less Dir=NONE)
+VIX_STABLE_BAND_LOW = 0.3  # V6.22: tighter band so more low-vol VIX moves register as directional
+VIX_STABLE_BAND_HIGH = 0.8  # V8.2 MICRO revive: reduce WHIPSAW / false non-direction blocks
 
 VIX_DIRECTION_RISING = 3.0  # V6.6: Was +5.0, captures +2.7% cluster (46 observations)
 VIX_DIRECTION_RISING_FAST = 6.0  # V6.6: Was +10.0, earlier panic detection
@@ -1511,9 +1580,11 @@ MICRO_UVXY_BULLISH_THRESHOLD = (
 # V6.10: Lower conviction extreme to capture 5-7% moves that were blocked
 MICRO_UVXY_CONVICTION_EXTREME = 0.030  # Slightly easier extreme conviction trigger
 # V6.10: Micro fallback + confirmation thresholds (Dir=None tuning)
-MICRO_SCORE_BULLISH_CONFIRM = 47.0  # Slightly easier CALL confirmation
-MICRO_SCORE_BEARISH_CONFIRM = 48.0  # Slightly easier PUT confirmation
-INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.10  # Let QQQ fallback participate earlier
+MICRO_SCORE_BULLISH_CONFIRM = (
+    42.0  # V6.22: lower threshold to let more VIX-STABLE CALL setups through
+)
+MICRO_SCORE_BEARISH_CONFIRM = 50.0  # D7: Slightly easier bearish confirmation in downtrends
+INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.08  # V8.2 MICRO revive: reduce fallback move floor
 MICRO_VIX_CRISIS_LEVEL = 35  # VIX > 35 → CRISIS (BEARISH conviction)
 MICRO_VIX_COMPLACENT_LEVEL = 12  # VIX < 12 → COMPLACENT (BULLISH conviction)
 
@@ -1596,7 +1667,19 @@ VIX_REVERSAL_CHOPPY = 4  # 3-4 reversals: Choppy
 # -----------------------------------------------------------------------------
 
 # V2.3.16: Sniper Logic - Noise Filter (Gate 1)
-QQQ_NOISE_THRESHOLD = 0.06  # Reduce QQQ_FLAT blocks in low-vol bull/chop sessions
+QQQ_NOISE_THRESHOLD = 0.04  # D7: Small relaxation to reduce QQQ_FLAT over-blocking
+CAUTION_LOW_SIZE_MULT = 0.50  # V6.22: keep trading in CAUTION_LOW but with reduced exposure
+
+# D10: Per-expiry concentration cap for spread ladders.
+SPREAD_EXPIRY_CONCENTRATION_CAP_ENABLED = True
+SPREAD_MAX_PER_EXPIRY = 3
+SPREAD_MAX_BULLISH_PER_EXPIRY = 2
+SPREAD_MAX_BEARISH_PER_EXPIRY = 2
+SPREAD_MAX_BULLISH_PER_EXPIRY_BULL_PROFILE = (
+    2  # Allow denser bullish ladders in clean bull profiles
+)
+SPREAD_EXPIRY_BULL_PROFILE_REGIME_MIN = 70.0
+SPREAD_EXPIRY_BULL_PROFILE_VIX_MAX = 18.0
 
 # V6.14 OPT: Bear-market PUT risk controls.
 PUT_ENTRY_VIX_MAX = 38.0  # Allow more participation before panic cap
@@ -1618,15 +1701,15 @@ CALL_GATE_LOSS_COOLDOWN_DAYS = 2  # Pause duration
 # V2.19: VIX Floor for DEBIT_FADE
 # In low VIX (<13.5) "apathy" markets, mean reversion fails - trends persist longer
 # Evidence: V2.18 backtests showed DEBIT_FADE losses when VIX < 13.5
-INTRADAY_DEBIT_FADE_VIX_MIN = 9.5  # V6.13 OPT: Keep participation in calm bull/choppy conditions
+INTRADAY_DEBIT_FADE_VIX_MIN = 9.0  # Slightly wider low-vol participation
 
 # Debit Fade (Mean Reversion) - Gate 3a - The Sniper Window
-INTRADAY_DEBIT_FADE_MIN_SCORE = 35  # V6.8: Was 45, allow more trades in bull/chop
-INTRADAY_FADE_MIN_MOVE = 0.45  # V6.13 OPT: Slightly easier fade trigger
+INTRADAY_DEBIT_FADE_MIN_SCORE = 32  # Increase DEBIT_FADE throughput while preserving quality filter
+INTRADAY_FADE_MIN_MOVE = 0.35  # Restore intraday participation while keeping noise filter
 INTRADAY_FADE_MAX_MOVE = 1.50  # V6.8: Was 1.20, don't block strong bull continuation
 INTRADAY_DEBIT_FADE_VIX_MAX = 25  # VIX < 25
-INTRADAY_DEBIT_FADE_START = "10:15"  # V2.14: Widened from 10:30 to capture more signals
-INTRADAY_DEBIT_FADE_END = "14:00"  # Entry window end
+INTRADAY_DEBIT_FADE_START = "10:00"  # Include early-session mean-reversion setups
+INTRADAY_DEBIT_FADE_END = "14:30"  # Extend late-session setup coverage
 INTRADAY_DEBIT_SPREAD_WIDTH = 2.00  # $2.00 spread width
 INTRADAY_DEBIT_FULL_SIZE = 4  # Full size: 4 spreads
 INTRADAY_DEBIT_HALF_SIZE = 2  # Half size: 2 spreads
@@ -1664,6 +1747,9 @@ INTRADAY_DEBIT_FADE_DELTA_MAX = 0.50  # Near ATM max
 
 # V6.4: DEBIT_MOMENTUM: Trend confirmation needs ATM-ish options (delta 0.45-0.65)
 # Between DEBIT_FADE (OTM) and ITM_MOMENTUM (ITM) - captures directional moves
+INTRADAY_DEBIT_MOMENTUM_ENABLED = (
+    True  # V8.2 MICRO revive: re-enable with existing regime/time guards
+)
 INTRADAY_DEBIT_MOMENTUM_DELTA_MIN = 0.45  # Near ATM for momentum
 INTRADAY_DEBIT_MOMENTUM_DELTA_MAX = 0.65  # Slightly ITM max
 INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES = [
@@ -1814,6 +1900,23 @@ INTRADAY_OPTIONS_OFFSET_MINUTES = 35  # V6.15 FIX: Align dynamic close with 15:2
 
 LOG_THROTTLE_MINUTES = 15  # VIX spike log throttle interval
 LOG_VIX_SPIKE_MIN_MOVE = 2.0  # Minimum VIX move to bypass throttle
+MARGIN_TRACK_LOG_BACKTEST_ENABLED = False  # Suppress minute-level margin spam in backtests
+MARGIN_TRACK_LOG_LIVE_ENABLED = True  # Keep margin visibility in live trading
+MICRO_UPDATE_LOG_BACKTEST_ENABLED = True  # Keep micro logs in backtest, but throttle heavily
+MICRO_UPDATE_LOG_ON_CHANGE_ONLY = True  # Backtest: log only on state change (+heartbeat)
+MICRO_UPDATE_LOG_MINUTES = 60  # Heartbeat interval when micro state remains unchanged
+SPREAD_CONSTRUCTION_FAIL_LOG_INTERVAL_MINUTES = 60  # Throttle repeated spread-build failure logs
+SPREAD_CONSTRUCTION_FAIL_LOG_BACKTEST_ENABLED = True  # Backtest: keep for RCA (still throttled)
+LOG_SPREAD_RECONCILE_BACKTEST_ENABLED = (
+    False  # Suppress repetitive reconcile-clear logs in backtests
+)
+LOG_ORDER_LIFECYCLE_BACKTEST_ENABLED = (
+    True  # Keep compact invalid/cancel attribution logs in backtests
+)
+LOG_ORDER_LIFECYCLE_MAX_PER_DAY = 200  # Guardrail for lifecycle log budget
+STATE_MANAGER_POSITION_PERSIST_ENABLED = (
+    False  # PositionState persistence path disabled until fully wired
+)
 
 # V2.3.21: Spread scan throttle to reduce log noise
 # Retry often enough to catch fast-moving contract availability changes.
@@ -1827,7 +1930,6 @@ SPREAD_FAILURE_COOLDOWN_MINUTES = 30
 # V2.5: Max concurrent spreads - limit exposure from spread positions
 # Problem: Mar 25-26 had two spreads open simultaneously ($19K exposure)
 # Solution: Only allow 1 active spread at a time
-MAX_CONCURRENT_SPREADS = 1
 
 # =============================================================================
 # V2.4.4 P0 FIXES - CRITICAL OPTIONS SAFETY

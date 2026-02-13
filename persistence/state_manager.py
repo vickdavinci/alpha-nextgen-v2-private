@@ -587,8 +587,13 @@ class StateManager:
                 saved += 1
 
         if self._positions:
-            if self.save_positions(self._positions):
-                saved += 1
+            if bool(getattr(config, "STATE_MANAGER_POSITION_PERSIST_ENABLED", False)):
+                if self.save_positions(self._positions):
+                    saved += 1
+            else:
+                self.log(
+                    "STATE: POSITIONS_SAVE_SKIPPED | Disabled by STATE_MANAGER_POSITION_PERSIST_ENABLED"
+                )
 
         if regime_engine:
             if self.save_regime_state(regime_engine):

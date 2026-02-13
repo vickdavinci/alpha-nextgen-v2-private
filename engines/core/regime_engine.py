@@ -573,6 +573,80 @@ class RegimeEngine:
 
         return regime_state
 
+    def _snapshot_runtime_state(self) -> Dict[str, Any]:
+        """Capture mutable runtime state for read-only calculations."""
+        return {
+            "previous_smoothed_score": self._previous_smoothed_score,
+            "vix_prior": self._vix_prior,
+            "vol_history": list(self._vol_history),
+            "spy_52w_high": self._spy_52w_high,
+            "shock_cap_active": self._shock_cap_active,
+            "shock_cap_days_remaining": self._shock_cap_days_remaining,
+            "recovery_days": self._recovery_days,
+            "previous_regime": self._previous_regime,
+            "vix_history": list(self._vix_history),
+            "v4_spike_cap_active": self._v4_spike_cap_active,
+            "v4_spike_cap_days_remaining": self._v4_spike_cap_days_remaining,
+            "rsp_spy_ratio_history": list(self._rsp_spy_ratio_history),
+            "v53_spike_cap_active": self._v53_spike_cap_active,
+            "v53_spike_cap_days_remaining": self._v53_spike_cap_days_remaining,
+        }
+
+    def _restore_runtime_state(self, snapshot: Dict[str, Any]) -> None:
+        """Restore mutable runtime state captured by _snapshot_runtime_state()."""
+        if not snapshot:
+            return
+        self._previous_smoothed_score = float(snapshot.get("previous_smoothed_score", 50.0))
+        self._vix_prior = float(snapshot.get("vix_prior", 0.0))
+        self._vol_history = list(snapshot.get("vol_history", []))
+        self._spy_52w_high = float(snapshot.get("spy_52w_high", 0.0))
+        self._shock_cap_active = bool(snapshot.get("shock_cap_active", False))
+        self._shock_cap_days_remaining = int(snapshot.get("shock_cap_days_remaining", 0))
+        self._recovery_days = int(snapshot.get("recovery_days", 0))
+        self._previous_regime = snapshot.get("previous_regime", RegimeLevel.NEUTRAL)
+        self._vix_history = list(snapshot.get("vix_history", []))
+        self._v4_spike_cap_active = bool(snapshot.get("v4_spike_cap_active", False))
+        self._v4_spike_cap_days_remaining = int(snapshot.get("v4_spike_cap_days_remaining", 0))
+        self._rsp_spy_ratio_history = list(snapshot.get("rsp_spy_ratio_history", []))
+        self._v53_spike_cap_active = bool(snapshot.get("v53_spike_cap_active", False))
+        self._v53_spike_cap_days_remaining = int(snapshot.get("v53_spike_cap_days_remaining", 0))
+
+    def calculate_readonly(
+        self,
+        spy_closes: List[float],
+        rsp_closes: List[float],
+        hyg_closes: List[float],
+        ief_closes: List[float],
+        spy_sma20: float,
+        spy_sma50: float,
+        spy_sma200: float,
+        vix_level: float = 20.0,
+        spy_adx: float = 25.0,
+        spy_52w_high: float = 0.0,
+    ) -> RegimeState:
+        """
+        Calculate a regime snapshot without mutating runtime state.
+
+        Used for intraday overlays/diagnostics where we need a fresh score
+        but must preserve daily lookbacks, spike-cap timers, and EMA path.
+        """
+        snapshot = self._snapshot_runtime_state()
+        try:
+            return self.calculate(
+                spy_closes=spy_closes,
+                rsp_closes=rsp_closes,
+                hyg_closes=hyg_closes,
+                ief_closes=ief_closes,
+                spy_sma20=spy_sma20,
+                spy_sma50=spy_sma50,
+                spy_sma200=spy_sma200,
+                vix_level=vix_level,
+                spy_adx=spy_adx,
+                spy_52w_high=spy_52w_high,
+            )
+        finally:
+            self._restore_runtime_state(snapshot)
+
     def _calculate_returns(self, prices: List[float]) -> List[float]:
         """Calculate daily returns from price series."""
         if len(prices) < 2:

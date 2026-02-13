@@ -244,7 +244,7 @@ class SpreadPosition:
     short_leg: OptionContract  # Sold leg (OTM)
     spread_type: str  # "BULL_CALL" or "BEAR_PUT"
     net_debit: float  # Cost to open spread
-    max_profit: float  # Width - net debit
+    max_profit: float  # Debit: width - net_debit | Credit: abs(net_debit)
     width: float  # Strike difference ($3-5)
     entry_time: str
     entry_score: float
@@ -1329,6 +1329,18 @@ class MicroRegimeEngine:
             VIXDirection.RISING_FAST,
             VIXDirection.SPIKING,
         )
+        debit_momentum_enabled = bool(getattr(config, "INTRADAY_DEBIT_MOMENTUM_ENABLED", True))
+
+        def momentum_or_disabled(
+            direction: OptionDirection, reason: str
+        ) -> Tuple[IntradayStrategy, Optional[OptionDirection], str]:
+            if debit_momentum_enabled:
+                return (IntradayStrategy.DEBIT_MOMENTUM, direction, reason)
+            return (
+                IntradayStrategy.ITM_MOMENTUM,
+                direction,
+                f"DEBIT_MOMENTUM_DISABLED_FALLBACK: {reason}",
+            )
 
         # =====================================================================
         # RULE 5: DIVERGENCE/CONFIRMATION LOGIC (V6.5 Fix)
@@ -1352,7 +1364,6 @@ class MicroRegimeEngine:
             MicroRegime.IMPROVING,
             MicroRegime.PANIC_EASING,  # Can fade after panic subsides
             MicroRegime.CALMING,  # Can trade when fear is decreasing
-            MicroRegime.CAUTION_LOW,  # V6.10 P3: Added - VIX low + rising (half size)
             MicroRegime.CAUTIOUS,  # V6.10 P3: Added - VIX medium + stable (allow credits)
             MicroRegime.TRANSITION,  # Allow participation during mild handoff regimes
         }
@@ -1399,8 +1410,7 @@ class MicroRegimeEngine:
 
                 elif vix_is_falling:
                     # CONFIRMATION: QQQ up + VIX falling = confirmed rally, ride it
-                    return (
-                        IntradayStrategy.DEBIT_MOMENTUM,
+                    return momentum_or_disabled(
                         OptionDirection.CALL,
                         f"CONFIRMATION: QQQ +{qqq_move_pct:.2f}% + VIX {vix_direction.value} → Ride with CALL",
                     )
@@ -1412,8 +1422,7 @@ class MicroRegimeEngine:
                         abs(qqq_move_pct) >= config.INTRADAY_QQQ_FALLBACK_MIN_MOVE
                         and micro_score >= config.MICRO_SCORE_BULLISH_CONFIRM
                     ):
-                        return (
-                            IntradayStrategy.DEBIT_MOMENTUM,
+                        return momentum_or_disabled(
                             OptionDirection.CALL,
                             f"STABLE_FALLBACK: QQQ +{qqq_move_pct:.2f}% + "
                             f"Score={micro_score:.0f} → CALL",
@@ -1431,8 +1440,7 @@ class MicroRegimeEngine:
             elif qqq_is_down:
                 if vix_is_rising:
                     # CONFIRMATION: QQQ down + VIX rising = confirmed selloff, ride it
-                    return (
-                        IntradayStrategy.DEBIT_MOMENTUM,
+                    return momentum_or_disabled(
                         OptionDirection.PUT,
                         f"CONFIRMATION: QQQ {qqq_move_pct:.2f}% + VIX {vix_direction.value} → Ride with PUT",
                     )
@@ -1459,8 +1467,7 @@ class MicroRegimeEngine:
                         abs(qqq_move_pct) >= config.INTRADAY_QQQ_FALLBACK_MIN_MOVE
                         and micro_score <= config.MICRO_SCORE_BEARISH_CONFIRM
                     ):
-                        return (
-                            IntradayStrategy.DEBIT_MOMENTUM,
+                        return momentum_or_disabled(
                             OptionDirection.PUT,
                             f"STABLE_FALLBACK: QQQ {qqq_move_pct:.2f}% + "
                             f"Score={micro_score:.0f} → PUT",
@@ -1508,7 +1515,7 @@ class MicroRegimeEngine:
                         )
 
         # =====================================================================
-        # RULE 7: Caution regimes - smaller moves, credits only
+        # RULE 7: Caution regimes - tightly constrained participation only
         # V2.5: Added Grind-Up Override for strong rallies in safe macro conditions
         # =====================================================================
         caution_regimes = {
@@ -1519,6 +1526,44 @@ class MicroRegimeEngine:
             # V6.5: WORSENING moved to momentum_regimes (ITM PUT)
         }
         if micro_regime in caution_regimes:
+            # V8.2: Allow CAUTION_LOW to participate only on clean divergence fades.
+            # Size remains reduced downstream via CAUTION_LOW_SIZE_MULT.
+            if micro_regime == MicroRegime.CAUTION_LOW:
+                vix_floor = getattr(config, "INTRADAY_DEBIT_FADE_VIX_MIN", 13.5)
+                min_move = float(getattr(config, "INTRADAY_FADE_MIN_MOVE", 0.20))
+                max_move = float(getattr(config, "INTRADAY_FADE_MAX_MOVE", 1.20))
+                abs_move = abs(qqq_move_pct)
+                if vix_current < vix_floor:
+                    return (
+                        IntradayStrategy.NO_TRADE,
+                        None,
+                        f"CAUTION_LOW_VIX_FLOOR: VIX {vix_current:.1f} < {vix_floor}",
+                    )
+                if abs_move < min_move:
+                    return (
+                        IntradayStrategy.NO_TRADE,
+                        None,
+                        f"CAUTION_LOW_MIN_MOVE: |{qqq_move_pct:.2f}%| < {min_move}%",
+                    )
+                if abs_move > max_move:
+                    return (
+                        IntradayStrategy.NO_TRADE,
+                        None,
+                        f"CAUTION_LOW_MAX_MOVE: |{qqq_move_pct:.2f}%| > {max_move}%",
+                    )
+                if qqq_is_up and vix_is_rising:
+                    return (
+                        IntradayStrategy.DEBIT_FADE,
+                        OptionDirection.PUT,
+                        f"CAUTION_LOW_DIVERGENCE: QQQ +{qqq_move_pct:.2f}% + VIX {vix_direction.value} → Fade PUT",
+                    )
+                if qqq_is_down and vix_is_falling:
+                    return (
+                        IntradayStrategy.DEBIT_FADE,
+                        OptionDirection.CALL,
+                        f"CAUTION_LOW_DIVERGENCE: QQQ {qqq_move_pct:.2f}% + VIX {vix_direction.value} → Fade CALL",
+                    )
+
             # V2.5: Grind-Up Override - capture strong rallies even in CAUTIOUS regime
             # Only triggers when: (1) CAUTIOUS regime, (2) QQQ UP > 0.50%, (3) macro safe
             grind_up_enabled = getattr(config, "GRIND_UP_OVERRIDE_ENABLED", False)
@@ -1834,7 +1879,6 @@ class OptionsEngine:
         self._spread_position: Optional[SpreadPosition] = None
         self._spread_positions: List[SpreadPosition] = []
         # Reserved compatibility slot for legacy persisted state payloads.
-        self._credit_spread_position: Optional[SpreadPosition] = None
 
         # Legacy single position (for backwards compatibility)
         self._position: Optional[OptionsPosition] = None
@@ -1914,6 +1958,13 @@ class OptionsEngine:
         self._spread_result_history: List[bool] = []  # True=win, False=loss
         self._win_rate_shutoff: bool = False  # True when win rate < shutoff threshold
         self._paper_track_history: List[bool] = []  # Paper trades during shutoff
+        # Phase A: prevent burst/repeat VASS spread clustering by signature.
+        # signature = strategy|direction|expiry_bucket
+        self._vass_last_entry_at_by_signature: Dict[str, datetime] = {}
+        self._vass_cooldown_until_by_signature: Dict[str, datetime] = {}
+        # Phase C: staged neutrality de-risk memory by spread key.
+        # key = "<long_symbol>|<short_symbol>", value = first neutrality timestamp.
+        self._spread_neutrality_warn_by_key: Dict[str, datetime] = {}
 
         # V6.5 FIX: Prevent gamma pin exit from firing every minute
         # Once triggered, don't trigger again for the same position
@@ -2068,6 +2119,9 @@ class OptionsEngine:
         engine_recommended_direction: Optional[
             str
         ] = None,  # V6.15: Ensure veto aligns with engine direction
+        overlay_state: Optional[
+            str
+        ] = None,  # V6.22: Fast overlay (NORMAL/EARLY_STRESS/STRESS/RECOVERY)
     ) -> Tuple[bool, Optional[str], str]:
         """
         V5.3: Resolve whether to trade based on engine signal vs macro.
@@ -2086,6 +2140,36 @@ class OptionsEngine:
         Returns:
             Tuple of (should_trade, final_direction, reason)
         """
+        overlay = str(overlay_state or "").upper()
+
+        # V6.22: Overlay precedence - block bullish VASS routes during STRESS.
+        if engine == "VASS" and overlay == "STRESS":
+            if engine_direction == "BULLISH":
+                return (
+                    False,
+                    None,
+                    "NO_TRADE: E_OVERLAY_STRESS_BULL_BLOCK (VASS bullish blocked in STRESS)",
+                )
+            if engine_direction is None and macro_direction == "BULLISH":
+                return (
+                    False,
+                    None,
+                    "NO_TRADE: E_OVERLAY_STRESS_BULL_BLOCK (Macro bullish blocked in STRESS)",
+                )
+        # D8: In EARLY_STRESS, require conviction before allowing bullish VASS direction.
+        if (
+            engine == "VASS"
+            and overlay == "EARLY_STRESS"
+            and engine_direction == "BULLISH"
+            and not engine_conviction
+            and bool(getattr(config, "VASS_EARLY_STRESS_BULL_REQUIRE_CONVICTION", True))
+        ):
+            return (
+                False,
+                None,
+                "NO_TRADE: E_OVERLAY_EARLY_BULL_NO_CONVICTION",
+            )
+
         # No engine direction = follow Macro if it has a clear direction
         if engine_direction is None:
             if macro_direction in ("BULLISH", "BEARISH"):
@@ -2488,6 +2572,86 @@ class OptionsEngine:
                 count += 1
         return count
 
+    def get_open_spread_count_for_expiry(
+        self, expiry_bucket: str, direction_label: Optional[str] = None
+    ) -> int:
+        """Count active spreads in a given expiry bucket (optionally by direction)."""
+        bucket = str(expiry_bucket or "").strip()
+        if not bucket:
+            return 0
+        wanted_dir = str(direction_label or "").upper() if direction_label else None
+        count = 0
+        for spread in self.get_spread_positions():
+            spread_bucket = str(getattr(spread.long_leg, "expiry", "") or "").strip()
+            if not spread_bucket:
+                spread_bucket = f"DTE:{int(getattr(spread.long_leg, 'days_to_expiry', -1))}"
+            if spread_bucket != bucket:
+                continue
+            if wanted_dir:
+                spread_dir = self._spread_direction_label(spread.spread_type)
+                if spread_dir != wanted_dir:
+                    continue
+            count += 1
+        return count
+
+    def _check_expiry_concentration_cap(
+        self,
+        expiry_bucket: str,
+        direction: Optional[OptionDirection],
+        regime_score: Optional[float] = None,
+        vix_current: Optional[float] = None,
+    ) -> Optional[str]:
+        """Return reject code when per-expiry spread concentration cap is exceeded."""
+        if not bool(getattr(config, "SPREAD_EXPIRY_CONCENTRATION_CAP_ENABLED", False)):
+            return None
+        bucket = str(expiry_bucket or "").strip()
+        if not bucket:
+            return None
+
+        total_cap = max(int(getattr(config, "SPREAD_MAX_PER_EXPIRY", 0)), 0)
+        if total_cap > 0:
+            total_count = self.get_open_spread_count_for_expiry(bucket)
+            if total_count >= total_cap:
+                self.log(
+                    f"EXPIRY_CAP_BLOCK: Bucket={bucket} | Total={total_count} >= Cap={total_cap}"
+                )
+                return "R_EXPIRY_CONCENTRATION_CAP"
+
+        if direction is None:
+            return None
+
+        dir_label = "BULLISH" if direction == OptionDirection.CALL else "BEARISH"
+        if dir_label == "BULLISH":
+            dir_cap = max(int(getattr(config, "SPREAD_MAX_BULLISH_PER_EXPIRY", 0)), 0)
+            # Bull-profile override: allow one additional bullish ladder slot per expiry.
+            bull_regime_min = float(getattr(config, "SPREAD_EXPIRY_BULL_PROFILE_REGIME_MIN", 70.0))
+            bull_vix_max = float(getattr(config, "SPREAD_EXPIRY_BULL_PROFILE_VIX_MAX", 18.0))
+            bull_cap = max(
+                int(getattr(config, "SPREAD_MAX_BULLISH_PER_EXPIRY_BULL_PROFILE", dir_cap)),
+                dir_cap,
+            )
+            if (
+                regime_score is not None
+                and float(regime_score) >= bull_regime_min
+                and vix_current is not None
+                and float(vix_current) <= bull_vix_max
+            ):
+                dir_cap = bull_cap
+        else:
+            dir_cap = max(int(getattr(config, "SPREAD_MAX_BEARISH_PER_EXPIRY", 0)), 0)
+        if dir_cap <= 0:
+            return None
+
+        dir_count = self.get_open_spread_count_for_expiry(bucket, dir_label)
+        if dir_count >= dir_cap:
+            self.log(
+                f"EXPIRY_CAP_BLOCK: Bucket={bucket} | Direction={dir_label} | "
+                f"Count={dir_count} >= Cap={dir_cap}"
+            )
+            return "R_EXPIRY_CONCENTRATION_CAP_DIRECTION"
+
+        return None
+
     def _spread_direction_label(self, spread_type: str) -> Optional[str]:
         """Map spread type to directional bucket for slot caps."""
         st = str(spread_type or "").upper()
@@ -2496,6 +2660,37 @@ class OptionsEngine:
         if st in {"BEAR_PUT", "BEAR_PUT_DEBIT", "BEAR_CALL_CREDIT"}:
             return "BEARISH"
         return None
+
+    def get_regime_overlay_state(
+        self, vix_current: Optional[float], regime_score: Optional[float] = None
+    ) -> str:
+        """
+        V6.22: Fast stress overlay used by resolver, slot caps, and exits.
+
+        Returns one of: NORMAL, EARLY_STRESS, STRESS, RECOVERY.
+        """
+        try:
+            vix = float(vix_current) if vix_current is not None else 0.0
+        except (TypeError, ValueError):
+            vix = 0.0
+
+        stress_vix = float(getattr(config, "REGIME_OVERLAY_STRESS_VIX", 21.0))
+        stress_vix_5d = float(getattr(config, "REGIME_OVERLAY_STRESS_VIX_5D", 0.18))
+        early_low = float(getattr(config, "REGIME_OVERLAY_EARLY_VIX_LOW", 16.0))
+        early_high = float(getattr(config, "REGIME_OVERLAY_EARLY_VIX_HIGH", 18.0))
+        vix_5d_change = (
+            self._iv_sensor.get_vix_5d_change() if self._iv_sensor.is_conviction_ready() else None
+        )
+
+        if vix >= stress_vix:
+            return "STRESS"
+        if vix >= early_high and vix_5d_change is not None and vix_5d_change >= stress_vix_5d:
+            return "STRESS"
+        if early_low <= vix < early_high:
+            return "EARLY_STRESS"
+        if vix < early_low and vix_5d_change is not None and vix_5d_change <= -0.05:
+            return "RECOVERY"
+        return "NORMAL"
 
     def can_enter_intraday(self) -> Tuple[bool, str]:
         """
@@ -2520,7 +2715,11 @@ class OptionsEngine:
 
         return True, "R_OK"
 
-    def can_enter_swing(self, direction: Optional[OptionDirection] = None) -> Tuple[bool, str]:
+    def can_enter_swing(
+        self,
+        direction: Optional[OptionDirection] = None,
+        overlay_state: Optional[str] = None,
+    ) -> Tuple[bool, str]:
         """
         V5.3: Check if swing entry is allowed.
 
@@ -2541,12 +2740,34 @@ class OptionsEngine:
                 f"R_SLOT_SWING_MAX: {swing_count} >= {config.OPTIONS_MAX_SWING_POSITIONS}",
             )
 
-        # Directional slot cap (stage-1 guardrail).
+        # Directional slot cap (stage-1 guardrail + stress-overlay shaping).
         if direction is not None:
             wanted_dir = "BULLISH" if direction == OptionDirection.CALL else "BEARISH"
             dir_count = self.get_open_spread_count_by_direction(wanted_dir)
-            dir_cap = int(getattr(config, "OPTIONS_MAX_SWING_PER_DIRECTION", 2))
+            default_cap = int(getattr(config, "OPTIONS_MAX_SWING_PER_DIRECTION", 2))
+            bullish_cap = max(
+                int(getattr(config, "OPTIONS_MAX_SWING_BULLISH_POSITIONS", default_cap)),
+                0,
+            )
+            bearish_cap = max(
+                int(getattr(config, "OPTIONS_MAX_SWING_BEARISH_POSITIONS", default_cap)),
+                0,
+            )
+            dir_cap = bullish_cap if wanted_dir == "BULLISH" else bearish_cap
+            overlay = str(overlay_state or "").upper()
+            if overlay == "STRESS":
+                if wanted_dir == "BULLISH":
+                    dir_cap = int(getattr(config, "MAX_BULLISH_SPREADS_STRESS", 0))
+                else:
+                    dir_cap = int(getattr(config, "MAX_BEARISH_SPREADS_STRESS", dir_cap))
+            elif overlay == "EARLY_STRESS" and wanted_dir == "BULLISH":
+                dir_cap = min(dir_cap, int(getattr(config, "MAX_BULLISH_SPREADS_EARLY_STRESS", 1)))
             if dir_count >= dir_cap:
+                if overlay in {"STRESS", "EARLY_STRESS"}:
+                    return (
+                        False,
+                        f"R_SLOT_DIRECTION_OVERLAY: {overlay} {wanted_dir} {dir_count} >= {dir_cap}",
+                    )
                 return (
                     False,
                     f"R_SLOT_DIRECTION_MAX: {wanted_dir} {dir_count} >= {dir_cap}",
@@ -2587,6 +2808,176 @@ class OptionsEngine:
             )
             return False
         return True
+
+    def _build_vass_signature(
+        self,
+        spread_type: str,
+        direction: Optional[OptionDirection],
+        long_leg_contract: OptionContract,
+    ) -> str:
+        """Build same-trade signature key for VASS anti-cluster guard."""
+        strategy = str(spread_type or "UNKNOWN").upper()
+        direction_key = direction.value if direction is not None else "NONE"
+        use_expiry = bool(getattr(config, "VASS_SIMILAR_ENTRY_USE_EXPIRY_BUCKET", True))
+        expiry_bucket = ""
+        if use_expiry and getattr(long_leg_contract, "expiry", None):
+            expiry_bucket = str(long_leg_contract.expiry)
+        else:
+            expiry_bucket = f"DTE:{int(getattr(long_leg_contract, 'days_to_expiry', -1))}"
+        return f"{strategy}|{direction_key}|{expiry_bucket}"
+
+    def _parse_dt(self, date_text: str, hour: int, minute: int) -> Optional[datetime]:
+        """Parse current scan timestamp from inputs; fallback to algorithm time."""
+        try:
+            return datetime.strptime(
+                f"{date_text} {int(hour):02d}:{int(minute):02d}:00", "%Y-%m-%d %H:%M:%S"
+            )
+        except Exception:
+            pass
+        if self.algorithm is not None:
+            try:
+                return self.algorithm.Time
+            except Exception:
+                return None
+        return None
+
+    def _check_vass_similar_entry_guard(
+        self,
+        signature: str,
+        now_dt: Optional[datetime],
+    ) -> Optional[str]:
+        """
+        Return rejection code when same-signature entry is blocked.
+
+        Blocks:
+        - Burst repeats within VASS_SIMILAR_ENTRY_MIN_GAP_MINUTES
+        - Rolling cooldown within VASS_SIMILAR_ENTRY_COOLDOWN_DAYS
+        """
+        if not signature or now_dt is None:
+            return None
+        min_gap_min = int(getattr(config, "VASS_SIMILAR_ENTRY_MIN_GAP_MINUTES", 15))
+        cooldown_days = int(getattr(config, "VASS_SIMILAR_ENTRY_COOLDOWN_DAYS", 3))
+        last_entry = self._vass_last_entry_at_by_signature.get(signature)
+        if last_entry is not None:
+            elapsed_min = (now_dt - last_entry).total_seconds() / 60.0
+            if 0 <= elapsed_min < min_gap_min:
+                self.log(
+                    f"VASS_SIGNATURE_BLOCK: Burst guard | Sig={signature} | "
+                    f"Elapsed={elapsed_min:.1f}m < {min_gap_min}m"
+                )
+                return "E_VASS_SIMILAR_15M_BLOCK"
+        cooldown_until = self._vass_cooldown_until_by_signature.get(signature)
+        if cooldown_until is not None and now_dt < cooldown_until:
+            self.log(
+                f"VASS_SIGNATURE_BLOCK: Cooldown guard | Sig={signature} | "
+                f"Now={now_dt} < Until={cooldown_until}"
+            )
+            return "E_VASS_SIMILAR_3D_COOLDOWN"
+        if self._vass_last_entry_at_by_signature:
+            stale_cutoff = now_dt - timedelta(days=10)
+            stale = [
+                key
+                for key, ts in self._vass_last_entry_at_by_signature.items()
+                if ts < stale_cutoff
+            ]
+            for key in stale:
+                self._vass_last_entry_at_by_signature.pop(key, None)
+                self._vass_cooldown_until_by_signature.pop(key, None)
+        return None
+
+    def _record_vass_signature_entry(self, signature: str, entry_dt: Optional[datetime]) -> None:
+        """Record successful VASS spread entry for anti-cluster guard."""
+        if not signature or entry_dt is None:
+            return
+        cooldown_days = int(getattr(config, "VASS_SIMILAR_ENTRY_COOLDOWN_DAYS", 3))
+        self._vass_last_entry_at_by_signature[signature] = entry_dt
+        self._vass_cooldown_until_by_signature[signature] = entry_dt + timedelta(days=cooldown_days)
+
+    def _build_spread_key(self, spread: SpreadPosition) -> str:
+        """Stable spread key for per-position state."""
+        return f"{self._symbol_str(spread.long_leg.symbol)}|{self._symbol_str(spread.short_leg.symbol)}"
+
+    def _get_engine_now_dt(self) -> Optional[datetime]:
+        """Best-effort engine timestamp for staged timers."""
+        if self.algorithm is None:
+            return None
+        try:
+            return self.algorithm.Time
+        except Exception:
+            return None
+
+    def _check_neutrality_staged_exit(
+        self,
+        spread: SpreadPosition,
+        regime_score: float,
+        pnl_pct: float,
+    ) -> Optional[str]:
+        """
+        Phase C: staged neutrality de-risk.
+
+        Stage 1: warn and hold.
+        Stage 2: exit if neutrality persists for confirm window or loss breaches damage threshold.
+        """
+        if not getattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", True):
+            return None
+
+        key = self._build_spread_key(spread)
+        zone_low = float(getattr(config, "SPREAD_NEUTRALITY_ZONE_LOW", 45))
+        zone_high = float(getattr(config, "SPREAD_NEUTRALITY_ZONE_HIGH", 65))
+        band = float(getattr(config, "SPREAD_NEUTRALITY_EXIT_PNL_BAND", 0.06))
+
+        in_neutral_zone = zone_low <= regime_score <= zone_high
+        in_flat_band = -band <= pnl_pct <= band
+        if not (in_neutral_zone and in_flat_band):
+            if key in self._spread_neutrality_warn_by_key:
+                self._spread_neutrality_warn_by_key.pop(key, None)
+                self.log(
+                    f"NEUTRALITY_WARN_CLEARED: Spread={spread.spread_type} | "
+                    f"Score={regime_score:.0f} | PnL={pnl_pct:+.1%}",
+                    trades_only=True,
+                )
+            return None
+
+        if not getattr(config, "SPREAD_NEUTRALITY_STAGED_ENABLED", True):
+            return (
+                f"NEUTRALITY_EXIT: Score {regime_score:.0f} in dead zone "
+                f"({zone_low:.0f}-{zone_high:.0f}) with flat P&L ({pnl_pct:+.1%})"
+            )
+
+        now_dt = self._get_engine_now_dt()
+        if now_dt is None:
+            return (
+                f"NEUTRALITY_EXIT: Score {regime_score:.0f} in dead zone "
+                f"({zone_low:.0f}-{zone_high:.0f}) with flat P&L ({pnl_pct:+.1%})"
+            )
+
+        confirm_hours = float(getattr(config, "SPREAD_NEUTRALITY_CONFIRM_HOURS", 2))
+        damage_pct = float(getattr(config, "SPREAD_NEUTRALITY_STAGE1_DAMAGE_PCT", 0.15))
+
+        first_seen = self._spread_neutrality_warn_by_key.get(key)
+        if first_seen is None:
+            self._spread_neutrality_warn_by_key[key] = now_dt
+            self.log(
+                f"NEUTRALITY_WARN: Spread={spread.spread_type} | "
+                f"Score={regime_score:.0f} | PnL={pnl_pct:+.1%} | Confirm={confirm_hours:.1f}h",
+                trades_only=True,
+            )
+            return None
+
+        elapsed_hours = max(0.0, (now_dt - first_seen).total_seconds() / 3600.0)
+        if pnl_pct <= -damage_pct:
+            return (
+                f"NEUTRALITY_CONFIRMED_EXIT: Damage guard | "
+                f"PnL={pnl_pct:+.1%} <= -{damage_pct:.0%} | "
+                f"Elapsed={elapsed_hours:.1f}h"
+            )
+        if elapsed_hours >= confirm_hours:
+            return (
+                f"NEUTRALITY_CONFIRMED_EXIT: Confirmed in dead zone "
+                f"({zone_low:.0f}-{zone_high:.0f}) | "
+                f"Elapsed={elapsed_hours:.1f}h | PnL={pnl_pct:+.1%}"
+            )
+        return None
 
     def _record_spread_entry_attempt(self, attempt_key: str) -> None:
         """Record spread attempt only after signal construction succeeds."""
@@ -3796,6 +4187,7 @@ class OptionsEngine:
             adx_value: Current ADX(14) value.
             current_price: Current QQQ price.
             ma200_value: 200-day moving average value.
+            ma50_value: 50-day moving average value (used for bearish trend gate on bullish debit).
             iv_rank: IV percentile (0-100).
             best_contract: Best available option contract.
             current_hour: Current hour (0-23) Eastern.
@@ -4063,6 +4455,7 @@ class OptionsEngine:
         dte_max: int = None,
         is_eod_scan: bool = False,
         direction: Optional[OptionDirection] = None,
+        ma50_value: float = 0.0,
     ) -> Optional[TargetWeight]:
         """
         V2.3: Check for debit spread entry signal.
@@ -4091,6 +4484,8 @@ class OptionsEngine:
             margin_remaining: Available margin from portfolio router. V2.21: Used for
                 pre-submission margin estimation to prevent broker rejections.
             direction: V6.0: Direction from conviction resolution (CALL or PUT).
+            ma50_value: Optional 50-day moving average used for bullish debit
+                trend blocking during bear transitions.
 
         Returns:
             TargetWeight for spread entry (with short leg in metadata), or None.
@@ -4110,7 +4505,12 @@ class OptionsEngine:
         # V2.8: Update IV sensor with current VIX (for smoothing)
         self._iv_sensor.update(vix_current)
 
-        can_swing, swing_reason = self.can_enter_swing(direction=direction)
+        overlay_state = self.get_regime_overlay_state(
+            vix_current=vix_current, regime_score=regime_score
+        )
+        can_swing, swing_reason = self.can_enter_swing(
+            direction=direction, overlay_state=overlay_state
+        )
         if not can_swing:
             return fail(swing_reason)
 
@@ -4215,11 +4615,32 @@ class OptionsEngine:
             spread_type = "BEAR_PUT"
             vix_max = config.SPREAD_VIX_MAX_BEAR
 
+        # Bear hardening: block bullish debit spreads when short-term trend is down.
+        if (
+            spread_type == "BULL_CALL"
+            and bool(getattr(config, "VASS_BULL_CALL_MA50_BLOCK_ENABLED", True))
+            and ma50_value > 0
+            and current_price < ma50_value
+            and regime_score < float(getattr(config, "VASS_BULL_CALL_MA50_BLOCK_REGIME_MAX", 60.0))
+        ):
+            self.log(
+                f"SPREAD: BULL_CALL blocked by MA50 trend gate | "
+                f"QQQ={current_price:.2f} < MA50={ma50_value:.2f} | "
+                f"Regime={regime_score:.1f}"
+            )
+            return fail("E_BULL_CALL_MA50_REGIME_BLOCK")
+
         # V6.19: Stress override for BULL_CALL_DEBIT to mitigate regime lag during corrections.
         # Rule:
         # - Hard block when VIX is already elevated, or when VIX is elevated + accelerating.
         # - In early-stress zone, keep participation but reduce size to preserve optionality.
         if spread_type == "BULL_CALL":
+            if overlay_state == "STRESS":
+                self.log(
+                    f"SPREAD: BULL_CALL blocked by overlay | "
+                    f"Overlay={overlay_state} | VIX={vix_current:.1f} | Regime={regime_score:.1f}"
+                )
+                return fail("E_OVERLAY_STRESS_BULL_BLOCK")
             vix_5d_change = (
                 self._iv_sensor.get_vix_5d_change()
                 if self._iv_sensor.is_conviction_ready()
@@ -4264,11 +4685,23 @@ class OptionsEngine:
             and current_price > 0
         ):
             min_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT", 0.03))
+            stress_otm_pct = float(
+                getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT_STRESS", min_otm_pct)
+            )
             low_vix_threshold = float(getattr(config, "BEAR_PUT_ENTRY_LOW_VIX_THRESHOLD", 18.0))
             relaxed_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT_RELAXED", 0.015))
             relaxed_regime_min = float(getattr(config, "BEAR_PUT_ENTRY_RELAXED_REGIME_MIN", 60.0))
-            if vix_current <= low_vix_threshold and regime_score >= relaxed_regime_min:
+            gate_profile = "BASE"
+            if overlay_state in {"STRESS", "EARLY_STRESS"}:
+                min_otm_pct = min(min_otm_pct, stress_otm_pct)
+                gate_profile = "STRESS"
+            if (
+                vix_current <= low_vix_threshold
+                and regime_score >= relaxed_regime_min
+                and gate_profile == "BASE"
+            ):
                 min_otm_pct = min(min_otm_pct, relaxed_otm_pct)
+                gate_profile = "LOW_VIX_RELAXED"
             short_strike = short_leg_contract.strike
             # For PUTs: OTM when strike < price, ITM when strike > price
             # Calculate how far OTM the short strike is (negative = ITM)
@@ -4280,7 +4713,7 @@ class OptionsEngine:
                     f"(min {min_otm_pct:.1%}) | "
                     f"QQQ={current_price:.2f}"
                 )
-                return fail("BEAR_PUT_ASSIGNMENT_GATE")
+                return fail(f"BEAR_PUT_ASSIGNMENT_GATE_{gate_profile}")
 
         # VIX filter
         if vix_current > vix_max:
@@ -4328,6 +4761,27 @@ class OptionsEngine:
         if long_leg_contract is None or short_leg_contract is None:
             self.log("SPREAD: Entry blocked - missing contract legs")
             return fail_quality("MISSING_SPREAD_LEGS")
+
+        now_dt = self._parse_dt(current_date, current_hour, current_minute)
+        signature = self._build_vass_signature(
+            spread_type=spread_type,
+            direction=direction,
+            long_leg_contract=long_leg_contract,
+        )
+        expiry_bucket = str(getattr(long_leg_contract, "expiry", "") or "").strip()
+        if not expiry_bucket:
+            expiry_bucket = f"DTE:{int(getattr(long_leg_contract, 'days_to_expiry', -1))}"
+        expiry_block_reason = self._check_expiry_concentration_cap(
+            expiry_bucket=expiry_bucket,
+            direction=direction,
+            regime_score=regime_score,
+            vix_current=vix_current,
+        )
+        if expiry_block_reason:
+            return fail(expiry_block_reason)
+        similar_block_reason = self._check_vass_similar_entry_guard(signature, now_dt)
+        if similar_block_reason:
+            return fail(similar_block_reason)
 
         # Validate contract directions match spread type
         if long_leg_contract.direction != direction:
@@ -4481,6 +4935,21 @@ class OptionsEngine:
         if max_profit <= 0:
             self.log(f"SPREAD: Entry blocked - max profit ${max_profit:.2f} <= 0")
             return fail_quality("MAX_PROFIT_NON_POSITIVE")
+        if bool(getattr(config, "SPREAD_ENTRY_COMMISSION_GATE_ENABLED", False)):
+            max_profit_dollars = max_profit * 100.0
+            commission_per_spread = float(getattr(config, "SPREAD_COMMISSION_PER_CONTRACT", 2.60))
+            ratio_limit = float(getattr(config, "SPREAD_MAX_COMMISSION_TO_MAX_PROFIT_RATIO", 0.15))
+            fee_to_profit_ratio = (
+                commission_per_spread / max_profit_dollars if max_profit_dollars > 0 else 1.0
+            )
+            if fee_to_profit_ratio > ratio_limit:
+                self.log(
+                    f"SPREAD: Entry blocked - COMMISSION_TO_MAX_PROFIT {fee_to_profit_ratio:.1%} "
+                    f"> {ratio_limit:.0%} | MaxProfit=${max_profit_dollars:.2f} "
+                    f"Commission=${commission_per_spread:.2f}",
+                    trades_only=True,
+                )
+                return fail_quality("COMMISSION_TO_MAX_PROFIT_TOO_HIGH")
 
         # V2.18: Use sizing cap (Fix for MarginBuyingPower sizing bug)
         # Evidence: Architect found $14K trade vs $5K expected when using allocation-based sizing
@@ -4643,6 +5112,7 @@ class OptionsEngine:
                 "spread_type": spread_type,
                 "spread_short_leg_symbol": self._symbol_str(short_leg_contract.symbol),
                 "spread_short_leg_quantity": num_spreads,
+                "vass_signature_key": signature,
                 "spread_net_debit": net_debit,
                 "spread_cost_or_credit": net_debit,
                 "spread_max_profit": max_profit,
@@ -4729,13 +5199,22 @@ class OptionsEngine:
             self.set_last_entry_validation_failure(reason)
             return None
 
+        def fail_quality(detail: str) -> Optional[TargetWeight]:
+            self.set_last_entry_validation_failure(f"R_CONTRACT_QUALITY:{detail}")
+            return None
+
         # Reset previous validation reason for this attempt
         self.set_last_entry_validation_failure(None)
 
         # V2.8: Update IV sensor with current VIX (for smoothing)
         self._iv_sensor.update(vix_current)
 
-        can_swing, swing_reason = self.can_enter_swing(direction=direction)
+        overlay_state = self.get_regime_overlay_state(
+            vix_current=vix_current, regime_score=regime_score
+        )
+        can_swing, swing_reason = self.can_enter_swing(
+            direction=direction, overlay_state=overlay_state
+        )
         if not can_swing:
             return fail(swing_reason)
 
@@ -4832,6 +5311,13 @@ class OptionsEngine:
             )
             return fail("DIRECTION_MISSING")
 
+        if overlay_state == "STRESS" and strategy == SpreadStrategy.BULL_PUT_CREDIT:
+            self.log(
+                f"CREDIT_SPREAD: BULL_PUT_CREDIT blocked by overlay | "
+                f"Overlay={overlay_state} | VIX={vix_current:.1f} | Regime={regime_score:.1f}"
+            )
+            return fail("E_OVERLAY_STRESS_BULL_BLOCK")
+
         # Check safeguards
         if gap_filter_triggered:
             self.log("CREDIT_SPREAD: Entry blocked - gap filter active")
@@ -4860,6 +5346,27 @@ class OptionsEngine:
         # Determine spread type from strategy
         spread_type = strategy.value  # "BULL_PUT_CREDIT" or "BEAR_CALL_CREDIT"
 
+        now_dt = self._parse_dt(current_date, current_hour, current_minute)
+        signature = self._build_vass_signature(
+            spread_type=spread_type,
+            direction=direction,
+            long_leg_contract=long_leg_contract,
+        )
+        expiry_bucket = str(getattr(long_leg_contract, "expiry", "") or "").strip()
+        if not expiry_bucket:
+            expiry_bucket = f"DTE:{int(getattr(long_leg_contract, 'days_to_expiry', -1))}"
+        expiry_block_reason = self._check_expiry_concentration_cap(
+            expiry_bucket=expiry_bucket,
+            direction=direction,
+            regime_score=regime_score,
+            vix_current=vix_current,
+        )
+        if expiry_block_reason:
+            return fail(expiry_block_reason)
+        similar_block_reason = self._check_vass_similar_entry_guard(signature, now_dt)
+        if similar_block_reason:
+            return fail(similar_block_reason)
+
         # V6.4: Pre-entry assignment risk gate for credit spreads with short PUTs
         # BULL_PUT_CREDIT has a short PUT (higher strike) - check assignment risk
         if (
@@ -4869,11 +5376,23 @@ class OptionsEngine:
             and current_price > 0
         ):
             min_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT", 0.03))
+            stress_otm_pct = float(
+                getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT_STRESS", min_otm_pct)
+            )
             low_vix_threshold = float(getattr(config, "BEAR_PUT_ENTRY_LOW_VIX_THRESHOLD", 18.0))
             relaxed_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT_RELAXED", 0.015))
             relaxed_regime_min = float(getattr(config, "BEAR_PUT_ENTRY_RELAXED_REGIME_MIN", 60.0))
-            if vix_current <= low_vix_threshold and regime_score >= relaxed_regime_min:
+            gate_profile = "BASE"
+            if overlay_state in {"STRESS", "EARLY_STRESS"}:
+                min_otm_pct = min(min_otm_pct, stress_otm_pct)
+                gate_profile = "STRESS"
+            if (
+                vix_current <= low_vix_threshold
+                and regime_score >= relaxed_regime_min
+                and gate_profile == "BASE"
+            ):
                 min_otm_pct = min(min_otm_pct, relaxed_otm_pct)
+                gate_profile = "LOW_VIX_RELAXED"
             short_strike = short_leg_contract.strike
             # For short PUTs: OTM when strike < price, ITM when strike > price
             otm_pct = (current_price - short_strike) / current_price
@@ -4884,7 +5403,7 @@ class OptionsEngine:
                     f"(min {min_otm_pct:.1%}) | "
                     f"QQQ={current_price:.2f}"
                 )
-                return fail("BEAR_PUT_ASSIGNMENT_GATE")
+                return fail(f"BEAR_PUT_ASSIGNMENT_GATE_{gate_profile}")
 
         # Calculate width
         width = abs(short_leg_contract.strike - long_leg_contract.strike)
@@ -4901,6 +5420,21 @@ class OptionsEngine:
                 f"min ${min_credit_required:.2f}"
             )
             return fail_quality("CREDIT_BELOW_MIN")
+        if bool(getattr(config, "SPREAD_ENTRY_COMMISSION_GATE_ENABLED", False)):
+            max_profit_dollars = credit_received * 100.0
+            commission_per_spread = float(getattr(config, "SPREAD_COMMISSION_PER_CONTRACT", 2.60))
+            ratio_limit = float(getattr(config, "SPREAD_MAX_COMMISSION_TO_MAX_PROFIT_RATIO", 0.15))
+            fee_to_profit_ratio = (
+                commission_per_spread / max_profit_dollars if max_profit_dollars > 0 else 1.0
+            )
+            if fee_to_profit_ratio > ratio_limit:
+                self.log(
+                    f"CREDIT_SPREAD: Entry blocked - COMMISSION_TO_MAX_PROFIT {fee_to_profit_ratio:.1%} "
+                    f"> {ratio_limit:.0%} | MaxProfit=${max_profit_dollars:.2f} "
+                    f"Commission=${commission_per_spread:.2f}",
+                    trades_only=True,
+                )
+                return fail_quality("COMMISSION_TO_MAX_PROFIT_TOO_HIGH")
 
         # Calculate entry score (same scoring as debit)
         entry_score = self.calculate_entry_score(
@@ -5077,6 +5611,7 @@ class OptionsEngine:
                 "spread_type": spread_type,
                 "spread_short_leg_symbol": self._symbol_str(short_leg_contract.symbol),
                 "spread_short_leg_quantity": num_spreads,
+                "vass_signature_key": signature,
                 "spread_net_debit": -credit_received,  # Negative = credit
                 "spread_cost_or_credit": credit_received,
                 "spread_credit_received": credit_received,
@@ -5764,6 +6299,25 @@ class OptionsEngine:
         if spread.is_closing:
             return None
 
+        # Phase A: anti-churn hold window for non-emergency spread exits.
+        # Emergency exits (assignment/0DTE mandatory) are handled in check_assignment_risk_exit().
+        min_hold_minutes = int(getattr(config, "SPREAD_MIN_HOLD_MINUTES", 0))
+        if min_hold_minutes > 0 and self.algorithm is not None:
+            try:
+                entry_dt = datetime.strptime(spread.entry_time[:19], "%Y-%m-%d %H:%M:%S")
+                live_minutes = (self.algorithm.Time - entry_dt).total_seconds() / 60.0
+                mandatory_dte = int(getattr(config, "SPREAD_FORCE_CLOSE_DTE", 1))
+                if 0 <= live_minutes < min_hold_minutes and current_dte > mandatory_dte:
+                    self.log(
+                        f"SPREAD_EXIT_GUARD_HOLD: Sig={spread.spread_type} | "
+                        f"Live={live_minutes:.1f}m < Min={min_hold_minutes}m | "
+                        f"DTE={current_dte}",
+                        trades_only=True,
+                    )
+                    return None
+            except Exception:
+                pass
+
         # V2.8: Determine if credit or debit spread
         is_credit_spread = spread.spread_type in (
             "BULL_PUT_CREDIT",
@@ -5795,6 +6349,17 @@ class OptionsEngine:
             SpreadStrategy.BEAR_PUT_DEBIT.value,
             SpreadStrategy.BEAR_CALL_CREDIT.value,
         )
+
+        # V6.22: Transition exit priority - force close wrong-way bullish spreads in STRESS.
+        if exit_reason is None and is_bullish_spread and vix_current is not None:
+            overlay_state = self.get_regime_overlay_state(
+                vix_current=vix_current, regime_score=regime_score
+            )
+            if overlay_state == "STRESS":
+                exit_reason = (
+                    f"OVERLAY_STRESS_EXIT: Overlay={overlay_state} | "
+                    f"Regime={regime_score:.0f} | VIX={vix_current:.1f}"
+                )
 
         if (
             vix_spike_enabled
@@ -5871,23 +6436,15 @@ class OptionsEngine:
             if exit_reason is None and current_dte <= config.SPREAD_DTE_EXIT:
                 exit_reason = f"DTE_EXIT ({current_dte} DTE <= {config.SPREAD_DTE_EXIT})"
 
-            # Exit 4: V2.22 Neutrality Exit (Hysteresis Shield)
-            # Close flat spreads in dead zone — directional bet with no direction
-            # V3.4: Use separate neutrality zone bounds (independent of exit thresholds)
-            neutrality_zone_low = getattr(config, "SPREAD_NEUTRALITY_ZONE_LOW", 45)
-            neutrality_zone_high = getattr(config, "SPREAD_NEUTRALITY_ZONE_HIGH", 65)
-            if (
-                exit_reason is None
-                and getattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", True)
-                and neutrality_zone_low <= regime_score <= neutrality_zone_high
-            ):
-                neutrality_band = getattr(config, "SPREAD_NEUTRALITY_EXIT_PNL_BAND", 0.10)
-                if -neutrality_band <= pnl_pct <= neutrality_band:
-                    exit_reason = (
-                        f"NEUTRALITY_EXIT: Score {regime_score:.0f} in dead zone "
-                        f"({neutrality_zone_low}-{neutrality_zone_high}) "
-                        f"with flat P&L ({pnl_pct:+.1%})"
-                    )
+            # Exit 4: Phase C staged neutrality de-risk.
+            if exit_reason is None:
+                neutrality_reason = self._check_neutrality_staged_exit(
+                    spread=spread,
+                    regime_score=regime_score,
+                    pnl_pct=pnl_pct,
+                )
+                if neutrality_reason:
+                    exit_reason = neutrality_reason
 
             # V6.1: Removed Credit Regime reversal exit - legacy logic conflicted with conviction-based entry
             # Credit spreads now exit via: STOP_LOSS, PROFIT_TARGET, DTE_EXIT, NEUTRALITY_EXIT
@@ -5937,11 +6494,18 @@ class OptionsEngine:
             # Exit 2: STOP LOSS
             # Add a hard cap across regimes, then apply adaptive stop logic.
             if exit_reason is None and pnl_pct < 0:
+                width_stop_pct = float(getattr(config, "SPREAD_HARD_STOP_WIDTH_PCT", 0.0))
+                if width_stop_pct > 0 and float(getattr(spread, "width", 0.0)) > 0:
+                    width_loss_cap = float(spread.width) * width_stop_pct
+                    if pnl <= -width_loss_cap:
+                        exit_reason = (
+                            f"SPREAD_HARD_STOP_TRIGGERED_WIDTH {pnl:.2f} (loss <= -${width_loss_cap:.2f}, "
+                            f"{width_stop_pct:.0%} of width ${float(spread.width):.2f})"
+                        )
+            if exit_reason is None and pnl_pct < 0:
                 hard_stop_pct = float(getattr(config, "SPREAD_HARD_STOP_LOSS_PCT", 0.0))
                 if hard_stop_pct > 0 and pnl_pct <= -hard_stop_pct:
-                    exit_reason = (
-                        f"HARD_STOP_LOSS {pnl_pct:.1%} (lost > {hard_stop_pct:.0%} hard cap)"
-                    )
+                    exit_reason = f"SPREAD_HARD_STOP_TRIGGERED_PCT {pnl_pct:.1%} (lost > {hard_stop_pct:.0%} hard cap)"
             if exit_reason is None and pnl_pct < 0:
                 base_stop_pct = config.SPREAD_STOP_LOSS_PCT
                 stop_multipliers = getattr(
@@ -5958,27 +6522,45 @@ class OptionsEngine:
                         f"STOP_LOSS {pnl_pct:.1%} (lost > {adaptive_stop_pct:.0%} of entry)"
                     )
 
-            # Exit 3: DTE exit (close by 5 DTE)
+            # Exit 3: Time stop for debit spreads (hold window cap).
+            if exit_reason is None and self.algorithm is not None:
+                max_hold_days = int(getattr(config, "VASS_DEBIT_MAX_HOLD_DAYS", 0))
+                low_vix_days = int(
+                    getattr(config, "VASS_DEBIT_MAX_HOLD_DAYS_LOW_VIX", max_hold_days)
+                )
+                low_vix_threshold = float(getattr(config, "VASS_DEBIT_LOW_VIX_THRESHOLD", 16.0))
+                if (
+                    vix_current is not None
+                    and low_vix_days > 0
+                    and float(vix_current) < low_vix_threshold
+                ):
+                    max_hold_days = (
+                        min(max_hold_days, low_vix_days) if max_hold_days > 0 else low_vix_days
+                    )
+                if max_hold_days > 0:
+                    try:
+                        entry_dt = datetime.strptime(spread.entry_time[:19], "%Y-%m-%d %H:%M:%S")
+                        held_days = (self.algorithm.Time.date() - entry_dt.date()).days
+                        if held_days >= max_hold_days:
+                            exit_reason = (
+                                f"SPREAD_TIME_STOP ({held_days}d >= {max_hold_days}d max hold)"
+                            )
+                    except Exception:
+                        pass
+
+            # Exit 4: DTE exit (close by 5 DTE)
             if exit_reason is None and current_dte <= config.SPREAD_DTE_EXIT:
                 exit_reason = f"DTE_EXIT ({current_dte} DTE <= {config.SPREAD_DTE_EXIT})"
 
-            # Exit 4: V2.22 Neutrality Exit (Hysteresis Shield)
-            # Close flat spreads in dead zone — directional bet with no direction
-            # V3.4: Use separate neutrality zone bounds (independent of exit thresholds)
-            neutrality_zone_low = getattr(config, "SPREAD_NEUTRALITY_ZONE_LOW", 45)
-            neutrality_zone_high = getattr(config, "SPREAD_NEUTRALITY_ZONE_HIGH", 65)
-            if (
-                exit_reason is None
-                and getattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", True)
-                and neutrality_zone_low <= regime_score <= neutrality_zone_high
-            ):
-                neutrality_band = getattr(config, "SPREAD_NEUTRALITY_EXIT_PNL_BAND", 0.10)
-                if -neutrality_band <= pnl_pct <= neutrality_band:
-                    exit_reason = (
-                        f"NEUTRALITY_EXIT: Score {regime_score:.0f} in dead zone "
-                        f"({neutrality_zone_low}-{neutrality_zone_high}) "
-                        f"with flat P&L ({pnl_pct:+.1%})"
-                    )
+            # Exit 5: Phase C staged neutrality de-risk.
+            if exit_reason is None:
+                neutrality_reason = self._check_neutrality_staged_exit(
+                    spread=spread,
+                    regime_score=regime_score,
+                    pnl_pct=pnl_pct,
+                )
+                if neutrality_reason:
+                    exit_reason = neutrality_reason
 
             # V6.1: Removed Debit Regime reversal exit - legacy logic conflicted with conviction-based entry
             # Debit spreads now exit via: STOP_LOSS, PROFIT_TARGET, DTE_EXIT, NEUTRALITY_EXIT
@@ -5986,12 +6568,22 @@ class OptionsEngine:
         if exit_reason is None:
             return None
 
+        # Any non-neutrality terminal exit clears staged-neutrality memory for this spread.
+        if not str(exit_reason).startswith("NEUTRALITY_"):
+            self._spread_neutrality_warn_by_key.pop(self._build_spread_key(spread), None)
+
         self.log(
             f"SPREAD: EXIT_SIGNAL | {exit_reason} | "
             f"Long=${long_leg_price:.2f} Short=${short_leg_price:.2f} | "
             f"P&L={pnl_pct:.1%}",
             trades_only=True,
         )
+
+        exit_code = "SPREAD_EXIT_UNSPECIFIED"
+        try:
+            exit_code = str(exit_reason).split(" ", 1)[0].split(":", 1)[0]
+        except Exception:
+            pass
 
         # V2.12 Fix #2: Lock the position to prevent duplicate exit signals
         spread.is_closing = True
@@ -6013,6 +6605,7 @@ class OptionsEngine:
                     "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
                     "spread_short_leg_quantity": spread.num_spreads,
                     "spread_width": spread.width,
+                    "spread_exit_code": exit_code,
                     "is_credit_spread": is_credit_spread,
                     "spread_credit_received": abs(spread.net_debit) if is_credit_spread else 0.0,
                 },
@@ -6234,30 +6827,35 @@ class OptionsEngine:
         self,
         current_price: float,
         current_dte: Optional[int] = None,
+        position: "Optional[OptionsPosition]" = None,
     ) -> Optional[TargetWeight]:
         """
         Check for options exit signals.
 
         V2.3.10: Added DTE exit to prevent options being held to expiration.
+        V6.22 FIX: Accept explicit position param so intraday positions get
+        the same software stop/profit/DTE coverage as swing positions.
 
         Args:
             current_price: Current option price.
             current_dte: Optional current days to expiration.
+            position: Explicit position to check. Falls back to self._position.
 
         Returns:
             TargetWeight for exit, or None if no exit signal.
         """
-        if self._position is None:
+        pos = position if position is not None else self._position
+        if pos is None:
             return None
 
-        symbol = self._position.contract.symbol
-        entry_price = self._position.entry_price
+        symbol = pos.contract.symbol
+        entry_price = pos.entry_price
 
         # Calculate P&L percentage
         pnl_pct = (current_price - entry_price) / entry_price
 
         # Exit 1: Profit target hit (+50%)
-        if current_price >= self._position.target_price:
+        if current_price >= pos.target_price:
             reason = f"TARGET_HIT +{pnl_pct:.1%} (Price: ${current_price:.2f})"
             self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
             return TargetWeight(
@@ -6269,7 +6867,7 @@ class OptionsEngine:
             )
 
         # Exit 2: Stop hit
-        if current_price <= self._position.stop_price:
+        if current_price <= pos.stop_price:
             reason = f"STOP_HIT {pnl_pct:.1%} (Price: ${current_price:.2f})"
             self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
             return TargetWeight(
@@ -6838,6 +7436,18 @@ class OptionsEngine:
                 )
                 return fail("E_INTRADAY_NO_DIRECTION", state.recommended_strategy.value)
 
+            # V6.22: Keep CAUTION_LOW participation but cut size (avoid full no-trade behavior).
+            if state.micro_regime == MicroRegime.CAUTION_LOW:
+                caution_scale = float(getattr(config, "CAUTION_LOW_SIZE_MULT", 0.50))
+                adjusted = min(size_multiplier, caution_scale)
+                if adjusted < size_multiplier:
+                    self.log(
+                        f"INTRADAY: CAUTION_LOW size reduction | "
+                        f"Size {size_multiplier:.0%}->{adjusted:.0%}",
+                        trades_only=True,
+                    )
+                    size_multiplier = adjusted
+
             # Keep CALL risk constrained in stressed tape.
             if direction == OptionDirection.CALL:
                 # Gate 1: consecutive CALL-loss cooldown (adaptive pause)
@@ -6996,6 +7606,9 @@ class OptionsEngine:
                 return fail("E_INTRADAY_TIME_WINDOW")
 
         elif state.recommended_strategy == IntradayStrategy.DEBIT_MOMENTUM:
+            if not bool(getattr(config, "INTRADAY_DEBIT_MOMENTUM_ENABLED", True)):
+                self.log("INTRADAY: DEBIT_MOMENTUM disabled by config", trades_only=True)
+                return fail("E_DEBIT_MOMENTUM_DISABLED")
             # V6.4: DEBIT_MOMENTUM time window (same as ITM_MOMENTUM)
             momentum_start = config.INTRADAY_DEBIT_MOMENTUM_START.split(":")
             momentum_end = config.INTRADAY_DEBIT_MOMENTUM_END.split(":")
@@ -7142,6 +7755,16 @@ class OptionsEngine:
             if underlying_atr <= 0:
                 self.log(f"STOP_CALC: ATR not ready, using fixed {self._pending_stop_pct:.0%} stop")
 
+        # V6.22 FIX: Protective puts use dedicated stop from config (was dead config).
+        # Protective puts are insurance — they need a wider stop (35%) than generic ATR (12-28%)
+        # to avoid being stopped out on normal intraday noise before the hedge pays off.
+        if is_protective_put:
+            self._pending_stop_pct = getattr(config, "PROTECTIVE_PUTS_STOP_PCT", 0.35)
+            self.log(
+                f"STOP_CALC: Protective PUT override → {self._pending_stop_pct:.0%} "
+                f"(config.PROTECTIVE_PUTS_STOP_PCT)"
+            )
+
         self.log(
             f"INTRADAY_SIGNAL: {reason} | Δ={best_contract.delta:.2f} K={best_contract.strike} DTE={best_contract.days_to_expiry} | "
             f"Stop={self._pending_stop_pct:.0%} | TradeCount={self._intraday_trades_today}/{config.INTRADAY_MAX_TRADES_PER_DAY}",
@@ -7251,7 +7874,7 @@ class OptionsEngine:
             return None
 
         # Only check spread positions (credit or debit)
-        spread = spread_override or self.get_spread_position() or self._credit_spread_position
+        spread = spread_override or self.get_spread_position()
         if spread is None:
             return None
 
@@ -7669,7 +8292,9 @@ class OptionsEngine:
         width = self._pending_spread_width or abs(
             self._pending_spread_short_leg.strike - self._pending_spread_long_leg.strike
         )
-        max_profit = width - net_debit
+        # Debit spread: max profit = width - debit paid
+        # Credit spread (stored as negative net_debit): max profit = credit received
+        max_profit = width - net_debit if net_debit > 0 else abs(net_debit)
 
         num_spreads = self._pending_num_contracts or 1
         entry_score = self._pending_entry_score or 3.0
@@ -7687,8 +8312,25 @@ class OptionsEngine:
             regime_at_entry=regime_score,
         )
 
+        self._spread_neutrality_warn_by_key.pop(self._build_spread_key(spread), None)
         self._spread_positions.append(spread)
         self._spread_position = self._spread_positions[0] if self._spread_positions else None
+        signature = (
+            self._build_vass_signature(
+                spread_type=spread.spread_type,
+                direction=OptionDirection.CALL
+                if "CALL" in str(spread.spread_type).upper()
+                else OptionDirection.PUT,
+                long_leg_contract=spread.long_leg,
+            )
+            if spread.long_leg is not None
+            else ""
+        )
+        try:
+            entry_dt = datetime.strptime(entry_time[:19], "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            entry_dt = self.algorithm.Time if self.algorithm is not None else None
+        self._record_vass_signature_entry(signature, entry_dt)
 
         # V2.9: Update trade counter (Bug #4 fix) - Spreads are always swing mode
         self._increment_trade_counter(OptionsMode.SWING)
@@ -7804,8 +8446,7 @@ class OptionsEngine:
                 self._spread_positions = [s for s in self._spread_positions if s is not spread]
             elif self._spread_position is spread:
                 self._spread_position = None
-            if self._credit_spread_position is spread:
-                self._credit_spread_position = None
+            self._spread_neutrality_warn_by_key.pop(self._build_spread_key(spread), None)
 
             self._spread_position = self._spread_positions[0] if self._spread_positions else None
 
@@ -7941,6 +8582,7 @@ class OptionsEngine:
                 f"SPREAD: FORCE_CLEARED | Count={len(spreads)} | Margin CB liquidation",
                 trades_only=True,
             )
+            self._spread_neutrality_warn_by_key = {}
             self._spread_positions = []
             self._spread_position = None
             self._last_spread_exit_time = None
@@ -8017,7 +8659,7 @@ class OptionsEngine:
         if self.has_spread_position():
             self._spread_positions = []
             self._spread_position = None
-            self._credit_spread_position = None
+            self._spread_neutrality_warn_by_key = {}
             cleared.append("spread")
 
         if self._intraday_position is not None:
@@ -8186,6 +8828,8 @@ class OptionsEngine:
                 self._intraday_position.to_dict() if self._intraday_position else None
             ),
             "intraday_trades_today": self._intraday_trades_today,
+            "swing_trades_today": self._swing_trades_today,
+            "total_options_trades_today": self._total_options_trades_today,
             "current_mode": self._current_mode.value,
             "micro_regime_state": self._micro_regime_engine.get_state().to_dict(),
             # V2.16-BT: Persist spread position for multi-day backtests
@@ -8199,6 +8843,18 @@ class OptionsEngine:
             "spread_result_history": self._spread_result_history,
             "win_rate_shutoff": self._win_rate_shutoff,
             "paper_track_history": self._paper_track_history,
+            "vass_last_entry_at_by_signature": {
+                k: v.strftime("%Y-%m-%d %H:%M:%S")
+                for k, v in self._vass_last_entry_at_by_signature.items()
+            },
+            "vass_cooldown_until_by_signature": {
+                k: v.strftime("%Y-%m-%d %H:%M:%S")
+                for k, v in self._vass_cooldown_until_by_signature.items()
+            },
+            "spread_neutrality_warn_by_key": {
+                k: v.strftime("%Y-%m-%d %H:%M:%S")
+                for k, v in self._spread_neutrality_warn_by_key.items()
+            },
         }
 
     def restore_state(self, state: Dict[str, Any]) -> None:
@@ -8271,6 +8927,10 @@ class OptionsEngine:
             self._intraday_position = None
 
         self._intraday_trades_today = state.get("intraday_trades_today", 0)
+        self._swing_trades_today = state.get("swing_trades_today", 0)
+        self._total_options_trades_today = state.get(
+            "total_options_trades_today", self._trades_today
+        )
 
         # V2.16-BT: Restore spread position with expiry validation
         restored_spreads: List[SpreadPosition] = []
@@ -8325,6 +8985,35 @@ class OptionsEngine:
         self._spread_result_history = state.get("spread_result_history", [])
         self._win_rate_shutoff = state.get("win_rate_shutoff", False)
         self._paper_track_history = state.get("paper_track_history", [])
+        self._vass_last_entry_at_by_signature = {}
+        self._vass_cooldown_until_by_signature = {}
+        for k, v in (state.get("vass_last_entry_at_by_signature", {}) or {}).items():
+            try:
+                self._vass_last_entry_at_by_signature[str(k)] = datetime.strptime(
+                    str(v)[:19], "%Y-%m-%d %H:%M:%S"
+                )
+            except Exception:
+                continue
+        for k, v in (state.get("vass_cooldown_until_by_signature", {}) or {}).items():
+            try:
+                self._vass_cooldown_until_by_signature[str(k)] = datetime.strptime(
+                    str(v)[:19], "%Y-%m-%d %H:%M:%S"
+                )
+            except Exception:
+                continue
+        self._spread_neutrality_warn_by_key = {}
+        for k, v in (state.get("spread_neutrality_warn_by_key", {}) or {}).items():
+            try:
+                self._spread_neutrality_warn_by_key[str(k)] = datetime.strptime(
+                    str(v)[:19], "%Y-%m-%d %H:%M:%S"
+                )
+            except Exception:
+                continue
+        if self._spread_neutrality_warn_by_key:
+            active_keys = {self._build_spread_key(s) for s in self._spread_positions}
+            self._spread_neutrality_warn_by_key = {
+                k: v for k, v in self._spread_neutrality_warn_by_key.items() if k in active_keys
+            }
 
     def reset(self) -> None:
         """Reset engine state."""
@@ -8355,6 +9044,9 @@ class OptionsEngine:
 
         # V2.3.3: Reset pending intraday exit flag
         self._pending_intraday_exit = False
+        self._vass_last_entry_at_by_signature = {}
+        self._vass_cooldown_until_by_signature = {}
+        self._spread_neutrality_warn_by_key = {}
 
         self.log("OPT: Engine reset - all positions cleared")
 
@@ -8385,12 +9077,19 @@ class OptionsEngine:
 
             # V2.4.3: Clear spread failure cooldown for new day
             self._spread_failure_cooldown_until = None
+            self._spread_failure_cooldown_until_by_dir = {}
             self._last_spread_scan_time = None
 
             # Clear intraday position (should not exist overnight)
             if self._intraday_position is not None:
                 self.log("OPT: WARNING - Intraday position found at daily reset, clearing")
                 self._intraday_position = None
+
+            if self._spread_neutrality_warn_by_key:
+                active_keys = {self._build_spread_key(s) for s in self._spread_positions}
+                self._spread_neutrality_warn_by_key = {
+                    k: v for k, v in self._spread_neutrality_warn_by_key.items() if k in active_keys
+                }
 
             self.log(f"OPT: Daily reset for {current_date}")
 
@@ -8446,6 +9145,17 @@ class OptionsEngine:
             )
             return False
 
+        reserve_checks_active = True
+        if self.algorithm is not None:
+            try:
+                release_h = int(getattr(config, "OPTIONS_RESERVE_RELEASE_HOUR", 13))
+                release_m = int(getattr(config, "OPTIONS_RESERVE_RELEASE_MINUTE", 30))
+                release_minute_of_day = release_h * 60 + release_m
+                now_minute_of_day = self.algorithm.Time.hour * 60 + self.algorithm.Time.minute
+                reserve_checks_active = now_minute_of_day < release_minute_of_day
+            except Exception:
+                reserve_checks_active = True
+
         # Check mode-specific limits
         if mode == OptionsMode.INTRADAY:
             if self._intraday_trades_today >= config.INTRADAY_MAX_TRADES_PER_DAY:
@@ -8454,7 +9164,9 @@ class OptionsEngine:
                     f"{self._intraday_trades_today}/{config.INTRADAY_MAX_TRADES_PER_DAY}"
                 )
                 return False
-            if getattr(config, "OPTIONS_RESERVE_SWING_DAILY_SLOTS_ENABLED", False):
+            if reserve_checks_active and getattr(
+                config, "OPTIONS_RESERVE_SWING_DAILY_SLOTS_ENABLED", False
+            ):
                 reserve = max(int(getattr(config, "OPTIONS_MIN_SWING_SLOTS_PER_DAY", 0)), 0)
                 if reserve > 0:
                     intraday_cap = max(config.MAX_OPTIONS_TRADES_PER_DAY - reserve, 0)
@@ -8472,5 +9184,18 @@ class OptionsEngine:
                     f"{self._swing_trades_today}/{config.MAX_SWING_TRADES_PER_DAY}"
                 )
                 return False
+            if reserve_checks_active and getattr(
+                config, "OPTIONS_RESERVE_INTRADAY_DAILY_SLOTS_ENABLED", False
+            ):
+                reserve = max(int(getattr(config, "OPTIONS_MIN_INTRADAY_SLOTS_PER_DAY", 0)), 0)
+                if reserve > 0:
+                    swing_cap = max(config.MAX_OPTIONS_TRADES_PER_DAY - reserve, 0)
+                    if self._swing_trades_today >= swing_cap:
+                        self.log(
+                            f"TRADE_LIMIT: Swing reserve guard | "
+                            f"Swing={self._swing_trades_today} >= Cap={swing_cap} | "
+                            f"ReservedIntradaySlots={reserve}"
+                        )
+                        return False
 
         return True
