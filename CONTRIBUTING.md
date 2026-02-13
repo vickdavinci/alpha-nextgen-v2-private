@@ -848,12 +848,12 @@ def test_my_engine(mock_algorithm):
     assert engine.algorithm.Portfolio.TotalPortfolioValue == 50000.0
 
 def test_with_positions(mock_portfolio_with_positions):
-    """mock_portfolio_with_positions - Algorithm with pre-configured QLD, TQQQ, SHV positions."""
+    """mock_portfolio_with_positions - Algorithm with pre-configured QLD, TQQQ, SH positions."""
     algo = mock_portfolio_with_positions
     assert algo.Portfolio["QLD"].Invested == True
 
 def test_with_prices(deterministic_prices):
-    """deterministic_prices - Reproducible price data for SPY, QLD, TQQQ, SSO, TMF."""
+    """deterministic_prices - Reproducible price data for SPY, QLD, TQQQ, SSO, UGL, UCO, SH."""
     prices = deterministic_prices
     assert len(prices["SPY"]) == 100  # 100 data points
 

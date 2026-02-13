@@ -140,12 +140,13 @@ These parameters are used when `V53_REGIME_ENABLED = False`:
 | `EXTENDED_THRESHOLD` | 1.05 | 5% above SMA200 = extended |
 | `OVERSOLD_THRESHOLD` | 0.95 | 5% below SMA200 = oversold |
 
-### Breadth & Credit Factor Parameters
+### Momentum Factor Parameters
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `BREADTH_LOOKBACK` | 20 | RSP vs SPY comparison period |
-| `CREDIT_LOOKBACK` | 20 | HYG vs IEF comparison period |
+| `BREADTH_LOOKBACK` | 20 | RSP vs SPY comparison period (breadth proxy) |
+
+> **V5.3 Note:** CREDIT_LOOKBACK (HYG vs IEF) removed. Credit factor eliminated in V5.3 4-factor model.
 
 ---
 

@@ -82,22 +82,22 @@ When conditions deteriorate:
 
 | Constraint | Rationale |
 |------------|-----------|
-| No 3x intraday-only overnight | TQQQ/SOXL (MR) must close by 15:45; TNA/FAS (Trend) allowed overnight with MA200+ADX confirmation |
-| Maximum 3% daily loss | Capital preservation; live to trade another day |
+| No 3x overnight (MR) | TQQQ/SPXL/SOXL must close by 15:45; Trend symbols (QLD/SSO/UGL/UCO) are 2x and hold overnight |
+| Tiered kill switch (2%/4%/6%) | Graduated response: reduce, exit trend, full liquidation |
 | No trading during Fed window | 13:55-14:10 volatility is unpredictable |
 | No entries on gap days | -1.5% SPY gap indicates elevated risk |
-| Minimum 5 days before full strategies | Cold start allows system calibration |
-| Options close by 15:45 | No overnight options exposure |
+| Startup Gate (6 days: 3+3) | Phased capital deployment before full operation |
+| Options close by 15:25 (intraday) / 15:45 (swing) | No overnight options exposure |
 
 ### Soft Constraints (Configurable)
 
 | Constraint | Default | Range |
 |------------|:-------:|:-----:|
 | Target volatility | 20% | 15-25% |
-| Maximum single position | 40-50% | 30-60% |
+| Maximum single position | 40% | 30-60% |
 | Regime smoothing alpha | 0.3 | 0.2-0.5 |
 | MR RSI threshold | 25 | 20-30 |
-| Trend BB compression | 0.10 | 0.08-0.12 |
+| Trend ADX threshold | 15 | 10-25 |
 
 ---
 
@@ -120,7 +120,7 @@ When conditions deteriorate:
 | Maximizing absolute returns | Risk of ruin too high |
 | High-frequency trading | Infrastructure complexity |
 | Overnight options positions | Gamma risk; all options close by 15:45 |
-| Overnight 3x intraday positions | TQQQ/SOXL decay risk (TNA/FAS allowed with trend confirmation) |
+| Overnight 3x intraday positions | TQQQ/SPXL/SOXL decay risk; all Trend symbols are 2x |
 
 ---
 
@@ -130,7 +130,7 @@ When conditions deteriorate:
 
 | Control | Trigger | Severity |
 |---------|---------|:--------:|
-| **Kill Switch** | -3% daily loss | 🔴 Critical |
+| **Kill Switch (Tiered)** | -2%/-4%/-6% daily loss | 🔴 Critical |
 | **Panic Mode** | SPY -4% intraday | 🔴 Critical |
 | **Weekly Breaker** | -5% week-to-date | 🟠 High |
 | **Gap Filter** | SPY gaps -1.5% | 🟡 Medium |
@@ -139,31 +139,32 @@ When conditions deteriorate:
 
 ### Exposure Limits
 
-| Group | Max Net | Max Gross |
-|-------|:-------:|:---------:|
-| NASDAQ_BETA (TQQQ, QLD, SOXL, PSQ) | 50% | 75% |
-| SPY_BETA (SSO) | 40% | 40% |
-| SMALL_CAP_BETA (TNA) | 25% | 25% |
-| FINANCIALS_BETA (FAS) | 15% | 15% |
-| RATES (TMF, SHV) | 40% | 40% |
+| Group | Symbols | Max Net | Max Gross |
+|-------|---------|:-------:|:---------:|
+| NASDAQ_BETA | QLD, TQQQ, SOXL | 50% | 75% |
+| SPY_BETA | SSO, SPXL, SH (inverse) | 40% | 50% |
+| COMMODITIES | UGL, UCO | 25% | 25% |
+
+> **V6.11 Note:** SMALL_CAP_BETA (TNA), FINANCIALS_BETA (FAS), and RATES (TMF, SHV) groups removed.
 
 ---
 
-## Account Phases
+## Capital Management (V3.0)
 
-The system adapts its risk parameters based on account size:
+> **V3.0 Note:** The SEED/GROWTH phase system has been removed. Regime-based safeguards (Startup Gate, Drawdown Governor, Regime Engine) now replace phase-dependent risk parameters. Account size no longer determines allocation -- market conditions do.
 
-| Phase | Equity Range | Max Position | Kill Switch |
-|-------|:------------:|:------------:|:-----------:|
-| **SEED** | $50k - $100k | 50% | 3% |
-| **GROWTH** | $100k - $500k | 40% | 3% |
+| Parameter | Value | Notes |
+|-----------|:-----:|-------|
+| Max Single Position | 40% | Fixed (was phase-dependent) |
+| Kill Switch (Tiered) | 2%/4%/6% | Graduated response (V2.27) |
+| Capital Partition | 50/50 | Trend/Options hard firewall |
 
 ### Virtual Lockbox
 
 Profit protection mechanism:
 - At $100k: Lock 10% of equity (never risk again)
 - At $200k: Lock additional 10% of equity
-- Locked capital invested in SHV (earning yield)
+- Locked capital physically in SHV (earning yield) if Yield Sleeve enabled
 - Excluded from tradeable equity calculations
 
 ---
@@ -182,12 +183,13 @@ Profit protection mechanism:
 
 | Strategy | Instruments | Allocation | When Active |
 |----------|-------------|:----------:|-------------|
-| **Cold Start** | QLD, SSO | 25% sizing | Days 1-5 only |
-| **Trend** | QLD (20%), SSO (15%), TNA (12%), FAS (8%) | 55% | After cold start, Regime ≥ 40 |
-| **Options** | QQQ options | 25% | After cold start, 4-factor score ≥ 3.0 |
-| **Mean Reversion** | TQQQ (5%), SOXL (5%) | 10% | After cold start, Regime ≥ 40, Intraday |
-| **Hedge** | TMF, PSQ | 0-30% | Regime < 40 |
-| **Yield** | SHV | Remainder | Always (for idle cash) |
+| **Cold Start** | QLD, SSO | 50% sizing | Days 1-5 (kill switch recovery) |
+| **Trend** | QLD (15%), SSO (7%), UGL (10%), UCO (8%) | 40% | After startup gate, Regime >= 50 |
+| **Options (Swing)** | QQQ options (VASS spreads) | 18.75% | After startup gate, Regime >= 50 |
+| **Options (Intraday)** | QQQ options (Micro Regime) | 6.25% | After startup gate, 1-5 DTE |
+| **Mean Reversion** | TQQQ (4%), SPXL (3%), SOXL (3%) | 10% | After startup gate, Regime >= 50, Intraday |
+| **Hedge** | SH | 0-10% | Regime < 50 (3 tiers: 5%/8%/10%) |
+| **Yield** | SHV (spec only) | Remainder | Removed from default universe (V6.11) |
 
 ### Coordination Layer
 
@@ -222,7 +224,7 @@ Profit protection mechanism:
 | Factor | Why Critical |
 |--------|--------------|
 | **Kill switch works perfectly** | Prevents catastrophic loss |
-| **No 3x overnight** | Eliminates decay risk |
+| **No 3x MR overnight** | Eliminates intraday decay risk (all Trend symbols are 2x) |
 | **State persists** | Survives restarts without confusion |
 | **Regime adapts** | Different behavior for different markets |
 | **Logging comprehensive** | Debug issues, verify behavior |
@@ -250,10 +252,10 @@ Profit protection mechanism:
 
 | Decision | Alternatives Considered | Why This Choice |
 |----------|------------------------|-----------------|
-| **QQQ options with 25% allocation** | No options / larger allocation | Balanced risk/reward with spread protection |
+| **QQQ options with 25% allocation** | No options / larger allocation | Balanced risk/reward with spread protection (V6.20 isolation: 50%) |
 | **Static exposure groups** | Rolling correlation | Easier to validate, more predictable |
 | **Proxy symbols for regime** | Traded symbols | Cleaner signals, no interference |
-| **2x for overnight, 3x intraday** | All 3x or all 2x | Balances opportunity vs decay (except TNA/FAS trend) |
+| **2x for overnight, 3x intraday** | All 3x or all 2x | Balances opportunity vs decay (all Trend symbols are 2x) |
 | **Single regime score** | Separate scores per strategy | Simpler coordination, consistent behavior |
 | **Router hub architecture** | Direct strategy-to-broker | Central control, easier debugging |
 
@@ -308,15 +310,15 @@ Profit protection mechanism:
 
 ## Document Organization
 
-This specification is organized into 17 sections:
+This specification is organized into 20 sections:
 
 | Sections | Coverage |
 |----------|----------|
 | 01-02 | Foundation (this summary, architecture) |
 | 03 | Data layer |
 | 04-05, 12 | Core engines |
-| 06-10 | Strategy engines |
-| 11, 13 | Execution layer |
+| 06-10, 18 | Strategy engines |
+| 11, 13, 19 | Execution layer |
 | 14-15 | Operations |
 | 16-17 | Reference appendices |
 

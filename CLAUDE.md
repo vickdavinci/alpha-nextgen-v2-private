@@ -536,7 +536,7 @@ except Exception as e:
 │                         CORE ENGINES                              │
 ├─────────────────┬─────────────────┬─────────────────┬─────────────┤
 │  Regime Engine  │  Capital Engine │   Risk Engine   │ Startup Gate│
-│  (Score 0-100)  │  (Phase/Lockbox)│ (Tiered KS/DG)  │ (15 days)   │
+│  (Score 0-100)  │  (Phase/Lockbox)│ (Tiered KS/DG)  │ (6 days)    │
 └────────┬────────┴────────┬────────┴────────┬────────┴──────┬──────┘
          │                 │                 │               │
          ▼                 ▼                 ▼               ▼

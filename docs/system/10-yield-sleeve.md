@@ -206,7 +206,7 @@ The **virtual lockbox capital** is physically invested in SHV.
 |-----------|------:|-------|
 | Total equity | $150,000 | |
 | Locked amount | $10,500 | From $100k milestone |
-| Non-SHV positions | $80,000 | QLD, TMF, etc. |
+| Non-SHV positions | $80,000 | QLD, SH, etc. |
 | **Total SHV holdings** | **$59,500** | |
 | ↳ Locked portion | $10,500 | Cannot be traded |
 | ↳ Available portion | $49,000 | Can be liquidated |

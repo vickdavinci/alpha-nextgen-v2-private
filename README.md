@@ -20,7 +20,7 @@ Alpha NextGen V2 is a systematic trading system that combines **regime detection
 - **Overlay**: Hedge Engine (SH) - regime-driven defensive allocation
 
 **V6.x "All-Weather" Features:**
-- Startup Gate: 15-day phased capital deployment allowing hedges + bearish options from day 1
+- Startup Gate: 6-day phased capital deployment (3 warmup + 3 reduced) allowing hedges from day 1
 - V5.3 Regime Model: 4-factor scoring (Momentum, VIX Combined, Trend, Drawdown) with guards
 - VIX Guards: High-VIX Clamp (47 cap @ VIX≥25), Spike Cap (38 cap @ +28% 5-day), Breadth Decay
 - Drawdown Governor: cumulative drawdown scaling with dynamic recovery
@@ -31,8 +31,9 @@ Alpha NextGen V2 is a systematic trading system that combines **regime detection
 The system adapts its behavior based on market conditions:
 - **Bull markets (regime 70+)**: Full leverage via trend-following + bullish options spreads
 - **Neutral markets (50-69)**: Selective entries, no options (dead zone)
-- **Cautious/Defensive (30-49)**: Hedges active, bearish PUT spreads, trend entries gated
-- **Bear markets (0-29)**: Maximum hedges (SH 30%), longs blocked, PUT spreads active
+- **Cautious (45-49)**: Light hedge (5% SH), bearish PUT spreads, trend entries gated
+- **Defensive (35-44)**: Medium hedge (8% SH), PUT spreads, trend blocked
+- **Bear markets (0-34)**: Full hedge (10% SH), longs blocked, PUT spreads active
 
 ---
 
@@ -68,7 +69,7 @@ The system adapts its behavior based on market conditions:
             │  0-100 score)  │  Partitions)   │  Circuit Breakers)│
             ├────────────────┴────────────────┴───────────────────┤
             │ Startup Gate (V6.0)        │ Cold Start Engine      │
-            │ (15-day phased deployment) │ (5-day KS recovery)    │
+            │ (6-day phased deployment)  │ (5-day KS recovery)    │
             └─────────────────────────────────────────────────────┘
                                     │
                                     ▼
@@ -123,14 +124,13 @@ The system adapts its behavior based on market conditions:
 
 ## Startup Gate (V2.30)
 
-The Startup Gate is a one-time 15-day arming sequence that ramps capital deployment while allowing defensive engines from day 1. Once fully armed, it stays armed permanently (kill switch does NOT reset it).
+The Startup Gate is a one-time 6-day arming sequence (3+3) that ramps capital deployment while allowing defensive engines from day 1. Once fully armed, it stays armed permanently (kill switch does NOT reset it).
 
 | Phase | Days | What's Allowed | Size Multiplier |
 |-------|:----:|----------------|:---------------:|
-| **INDICATOR_WARMUP** | 1-5 | Hedges (TMF/PSQ) only | 0% |
-| **OBSERVATION** | 6-10 | + Bearish options (PUT spreads) | 50% |
-| **REDUCED** | 11-15 | + All engines (trend, MR, bullish options) | 50% |
-| **FULLY_ARMED** | 16+ | No restrictions (permanent) | 100% |
+| **WARMUP** | 1-3 | Hedges (SH) only | 0% |
+| **REDUCED** | 4-6 | + All engines (trend, MR, options) | 50% |
+| **FULLY_ARMED** | 7+ | No restrictions (permanent) | 100% |
 
 ---
 
@@ -139,7 +139,7 @@ The Startup Gate is a one-time 15-day arming sequence that ramps capital deploym
 ### Layered Defense System
 
 ```
-Layer 1: Startup Gate ──────── Capital deployment ramp (15 days)
+Layer 1: Startup Gate ──────── Capital deployment ramp (6 days: 3+3)
 Layer 2: Drawdown Governor ─── Cumulative drawdown scaling (3%/6%/10%/15%)
 Layer 3: Graduated Kill Switch  Per-day loss tiers (2%/4%/6%)
 Layer 4: Circuit Breakers ───── 5-level graduated response
@@ -210,7 +210,7 @@ alpha-nextgen-v2-private/
 │   │   ├── capital_engine.py        # Phase management, lockbox, partitions
 │   │   ├── risk_engine.py           # Governor, graduated KS, circuit breakers
 │   │   ├── cold_start_engine.py     # 5-day warm entry after kill switch
-│   │   ├── startup_gate.py          # V6.0: 15-day phased capital deployment
+│   │   ├── startup_gate.py          # V6.0: 6-day phased capital deployment (3+3)
 │   │   └── trend_engine.py          # MA200 + ADX trend signals (40%)
 │   └── satellite/
 │       ├── options_engine.py        # QQQ options dual-mode (25%)
@@ -283,7 +283,7 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 | [06 - Cold Start Engine](docs/system/06-cold-start-engine.md) | Days 1-5 warm entry + Startup Gate |
 | [07 - Trend Engine](docs/system/07-trend-engine.md) | MA200 + ADX + SMA50 exit |
 | [08 - Mean Reversion Engine](docs/system/08-mean-reversion-engine.md) | Intraday RSI bounce logic |
-| [09 - Hedge Engine](docs/system/09-hedge-engine.md) | TMF/PSQ regime-driven allocation |
+| [09 - Hedge Engine](docs/system/09-hedge-engine.md) | SH regime-driven allocation (V6.11) |
 | [10 - Yield Sleeve](docs/system/10-yield-sleeve.md) | SHV cash management (spec only) |
 | [11 - Portfolio Router](docs/system/11-portfolio-router.md) | Central coordination + capital firewall |
 | [12 - Risk Engine](docs/system/12-risk-engine.md) | Governor, graduated KS, circuit breakers |
@@ -306,9 +306,9 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 |:-----:|-------|:-----------:|:-------:|--------|
 | 70-100 | RISK_ON | Full | CALL spreads | None |
 | 50-69 | NEUTRAL | Full | No trade (dead zone) | None |
-| 40-49 | CAUTIOUS | Full | PUT spreads | 10% SH |
-| 30-39 | DEFENSIVE | Blocked | PUT spreads | 20% SH |
-| 0-29 | RISK_OFF | Blocked | PUT spreads | 30% SH |
+| 45-49 | CAUTIOUS | Full | PUT spreads | 5% SH |
+| 35-44 | DEFENSIVE | Blocked | PUT spreads | 8% SH |
+| 0-34 | RISK_OFF | Blocked | PUT spreads | 10% SH |
 
 ### Daily Timeline (Eastern Time)
 
@@ -322,17 +322,16 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 | 13:55 | Time guard starts |
 | 14:10 | Time guard ends |
 | 15:00 | MR entry window closes |
-| 15:45 | **TQQQ/SOXL force close**, EOD processing, MOO submission |
+| 15:45 | **TQQQ/SPXL/SOXL force close**, EOD processing, MOO submission |
 | 16:00 | Market close, save state |
 
 ### Exposure Limits
 
-| Group | Max Net Long | Max Gross |
-|-------|:------------:|:---------:|
-| NASDAQ_BETA | 50% | 75% |
-| SPY_BETA | 40% | 40% |
-| COMMODITY | 20% | 20% |
-| RATES | 99% | 99% |
+| Group | Symbols | Max Net Long | Max Gross |
+|-------|---------|:------------:|:---------:|
+| NASDAQ_BETA | QLD, TQQQ, SOXL | 50% | 75% |
+| SPY_BETA | SSO, SPXL, SH | 40% | 50% |
+| COMMODITIES | UGL, UCO | 25% | 25% |
 
 ---
 
@@ -383,16 +382,17 @@ The script syncs all project files to the lean workspace, pushes to QuantConnect
 All parameters are centralized in `config.py`. Never hardcode values.
 
 ```python
-# Kill Switch (V6.x)
-KILL_SWITCH_PCT = 0.05             # -5% daily → full liquidation
+# Graduated Kill Switch (V2.27)
+KS_TIER_1_PCT = 0.02              # -2% → reduce trend 50%, block new options
+KS_TIER_2_PCT = 0.04              # -4% → liquidate trend, keep spreads
+KS_TIER_3_PCT = 0.06              # -6% → full liquidation (nuclear)
 
 # Drawdown Governor
 DRAWDOWN_GOVERNOR_RECOVERY_BASE = 0.08  # Dynamic recovery threshold
 
-# Startup Gate (V6.0)
-STARTUP_GATE_WARMUP_DAYS = 5       # Indicators warmup (hedges only)
-STARTUP_GATE_OBSERVATION_DAYS = 5  # Add bearish options
-STARTUP_GATE_REDUCED_DAYS = 5      # All engines at 50%
+# Startup Gate (V6.0, simplified)
+STARTUP_GATE_WARMUP_DAYS = 3       # Phase 0: Indicators warming up (hedges only)
+STARTUP_GATE_REDUCED_DAYS = 3      # Phase 1: All engines at 50%
 
 # V5.3 Regime Guards
 VIX_HIGH_CLAMP_SCORE = 47          # Cap score when VIX >= 25

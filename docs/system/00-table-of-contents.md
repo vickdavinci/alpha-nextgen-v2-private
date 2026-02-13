@@ -38,9 +38,9 @@
 
 | # | Section | Description | Key Diagrams |
 |:-:|---------|-------------|--------------|
-| [04](04-regime-engine.md) | **Regime Engine** | Five-factor market state scoring (V2.3), smoothing, state classification (RISK_ON to RISK_OFF) | Regime Engine Detail |
-| [05](05-capital-engine.md) | **Capital Engine** | SEED/GROWTH phases, position limits, virtual lockbox profit protection | Capital Engine Detail |
-| [12](12-risk-engine.md) | **Risk Engine** | Kill switch, panic mode, weekly breaker, gap filter, vol shock, time guard, split guard | Risk Engine Safeguards |
+| [04](04-regime-engine.md) | **Regime Engine** | V5.3 4-factor market state scoring (Momentum, VIX Combined, Trend, Drawdown), guards, state classification | Regime Engine Detail |
+| [05](05-capital-engine.md) | **Capital Engine** | V3.0 unified capital management, position limits, virtual lockbox, engine partitions | Capital Engine Detail |
+| [12](12-risk-engine.md) | **Risk Engine** | Tiered kill switch (2%/4%/6%), drawdown governor, panic mode, circuit breakers | Risk Engine Safeguards |
 
 ---
 
@@ -49,9 +49,9 @@
 | # | Section | Description | Key Diagrams |
 |:-:|---------|-------------|--------------|
 | [06](06-cold-start-engine.md) | **Cold Start Engine** | Days 1-5 handling, warm entry conditions, reduced sizing, restrictions | Cold Start Flow |
-| [07](07-trend-engine.md) | **Trend Engine** | Bollinger Band compression breakouts, Chandelier trailing stops, EOD signals | Trend Engine Detail |
+| [07](07-trend-engine.md) | **Trend Engine** | MA200 + ADX trend signals for QLD/SSO/UGL/UCO (40%), Chandelier stops, EOD signals | Trend Engine Detail |
 | [08](08-mean-reversion-engine.md) | **Mean Reversion Engine** | RSI oversold detection, intraday-only, +2%/-2% exits, time-based force close | Mean Reversion Detail |
-| [09](09-hedge-engine.md) | **Hedge Engine** | Regime-based TMF/PSQ allocation, tail risk protection, rebalancing rules | Hedge Engine Detail |
+| [09](09-hedge-engine.md) | **Hedge Engine** | V6.11 regime-based SH allocation (5%/8%/10%), tail risk protection | Hedge Engine Detail |
 | [10](10-yield-sleeve.md) | **Yield Sleeve** | SHV for idle cash, LIFO liquidation, lockbox investment | None |
 | [18](18-options-engine.md) | **Options Engine** | Dual-Mode (Swing + Intraday), Micro Regime Engine, VIX direction | Options Flow |
 
@@ -176,13 +176,14 @@ Focus on these sections:
 
 | Symbol | Type | Leverage | Strategy | Overnight |
 |--------|------|:--------:|----------|:---------:|
-| TQQQ | Nasdaq 100 | 3x | Mean Reversion | ❌ |
-| SOXL | Semiconductor | 3x | Mean Reversion | ❌ |
 | QLD | Nasdaq 100 | 2x | Trend, Cold Start | ✅ |
 | SSO | S&P 500 | 2x | Trend, Cold Start | ✅ |
-| TMF | 20+ Year Treasury | 3x | Hedge | ✅ |
-| PSQ | Nasdaq Inverse | 1x | Hedge | ✅ |
-| SHV | Short Treasury | 1x | Yield | ✅ |
+| UGL | Gold | 2x | Trend | ✅ |
+| UCO | Crude Oil | 2x | Trend | ✅ |
+| TQQQ | Nasdaq 100 | 3x | Mean Reversion | ❌ |
+| SPXL | S&P 500 | 3x | Mean Reversion | ❌ |
+| SOXL | Semiconductor | 3x | Mean Reversion | ❌ |
+| SH | S&P 500 Inverse | 1x | Hedge | ✅ |
 
 ### Regime States
 
@@ -200,11 +201,13 @@ Focus on these sections:
 
 | Control | Trigger | Action |
 |---------|---------|--------|
-| Kill Switch | -3% daily | Liquidate ALL |
+| Kill Switch Tier 1 | -2% daily | Reduce trend 50%, block new options |
+| Kill Switch Tier 2 | -4% daily | Liquidate trend, keep spreads |
+| Kill Switch Tier 3 | -6% daily | Liquidate ALL |
 | Panic Mode | SPY -4% intraday | Liquidate leveraged longs |
 | Weekly Breaker | -5% WTD | Reduce positions 50% |
 | Gap Filter | SPY gaps -1.5% | Block intraday entries |
-| Vol Shock | SPY bar > 3×ATR | Pause 15 minutes |
+| Vol Shock | SPY bar > 3x ATR | Pause 15 minutes |
 | Time Guard | 13:55-14:10 | Block all entries |
 
 ---
@@ -250,6 +253,11 @@ Every section includes:
 | 2.0 | 26 January 2026 | V2 fork with Core-Satellite architecture |
 | 2.1 | 26 January 2026 | Options Engine, OCO Manager, Greeks monitoring, VIX filter |
 | 2.1.1 | 28 January 2026 | Options Engine Redesign: Dual-Mode + Micro Regime Engine |
+| V3.0 | February 2026 | Capital Engine: SEED/GROWTH phases removed, regime-based safeguards |
+| V5.3 | February 2026 | 4-factor regime model with VIX guards |
+| V6.11 | February 2026 | Universe redesign: TNA/FAS/TMF/PSQ removed, UGL/UCO/SH/SPXL added |
+| V6.20 | February 2026 | Options isolation testing, multi-spread execution |
+| V9.2 | February 2026 | MICRO telemetry, bear-regime fixes, signal IDs |
 
 ---
 

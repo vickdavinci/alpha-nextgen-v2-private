@@ -36,17 +36,19 @@ The **Virtual Lockbox** mechanism reserves capital via calculation (not actual w
 
 ---
 
-### 5.2.1 SEED Phase ($50,000 – $99,999)
+### 5.2.1 SEED Phase ($50,000 -- $99,999) [Historical]
+
+> **V3.0 Note:** This phase is no longer active. Risk parameters are now unified (see section 5.9).
 
 The initial growth phase focused on building the account to six figures.
 
-#### Risk Parameters
+#### Risk Parameters (Historical)
 
 | Parameter | Value | Rationale |
 |-----------|:-----:|-----------|
 | Target Volatility | 20% annualized | Aggressive but controlled |
 | Maximum Single Position | 50% of tradeable equity | Allows meaningful concentration for growth |
-| Kill Switch Threshold | 3% daily loss | Prevents catastrophic single-day losses |
+| Kill Switch Threshold | ~~3%~~ Now tiered (2%/4%/6%) | V2.27: Graduated kill switch replaces flat 3% |
 
 #### Philosophy
 
@@ -56,17 +58,19 @@ Accept higher concentration to accelerate growth. A single position can be half 
 
 ---
 
-### 5.2.2 GROWTH Phase ($100,000 – $499,999)
+### 5.2.2 GROWTH Phase ($100,000 -- $499,999) [Historical]
+
+> **V3.0 Note:** This phase is no longer active. Risk parameters are now unified (see section 5.9).
 
 The scaling phase focused on consistent compounding with reduced concentration.
 
-#### Risk Parameters
+#### Risk Parameters (Historical)
 
 | Parameter | Value | Rationale |
 |-----------|:-----:|-----------|
 | Target Volatility | 20% annualized | Unchanged from SEED |
-| Maximum Single Position | 40% of tradeable equity | **Reduced from 50%** |
-| Kill Switch Threshold | 3% daily loss | Unchanged from SEED |
+| Maximum Single Position | 40% of tradeable equity | **V3.0: Now the unified value** |
+| Kill Switch Threshold | ~~3%~~ Now tiered (2%/4%/6%) | V2.27: Graduated kill switch replaces flat 3% |
 
 #### Philosophy
 

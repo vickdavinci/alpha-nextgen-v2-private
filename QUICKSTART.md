@@ -133,13 +133,13 @@ gh pr create --base develop
 ## Project Architecture (V6.x)
 
 ```
-Core-Satellite Architecture:
-├── Core (40%): Trend Engine (QLD, SSO, TNA, FAS)
-├── Satellite (10%): Mean Reversion (TQQQ, SOXL - intraday only)
+Core-Satellite Architecture (V6.11):
+├── Core (40%): Trend Engine (QLD 15%, SSO 7%, UGL 10%, UCO 8% - all 2x)
+├── Satellite (10%): Mean Reversion (TQQQ 4%, SPXL 3%, SOXL 3% - intraday only)
 ├── Satellite (25%): Options Engine (QQQ spreads)
 │   ├── Swing Mode (18.75%): VASS spreads, 14-45 DTE
 │   └── Intraday Mode (6.25%): Micro Regime, 1-5 DTE
-└── Hedges: TMF, PSQ (regime-triggered)
+└── Hedges: SH (regime-triggered, 5%/8%/10%)
 ```
 
 **Key Engines:**
