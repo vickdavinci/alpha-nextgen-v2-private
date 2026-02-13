@@ -2885,7 +2885,7 @@ class AlphaNextGen(QCAlgorithm):
                 self._clear_spread_runtime_trackers_by_key(spread_key)
             self.options_engine.clear_spread_position()
             if spread_count_before > 0:
-                self._diag_spread_exit_fill_count += spread_count_before
+                # Ghost clears are removals, not confirmed fill reconciliations.
                 self._diag_spread_position_removed_count += spread_count_before
             if self.portfolio_router:
                 self.portfolio_router.clear_all_spread_margins()
@@ -3265,7 +3265,7 @@ class AlphaNextGen(QCAlgorithm):
                         )
                         self._clear_spread_runtime_trackers_by_key(spread_key)
                         self.options_engine.remove_spread_position(str(spread.long_leg.symbol))
-                        self._diag_spread_exit_fill_count += 1
+                        # Ghost clears are removals, not confirmed fill reconciliations.
                         self._diag_spread_position_removed_count += 1
                         if self._should_log_backtest_category(
                             "LOG_SPREAD_RECONCILE_BACKTEST_ENABLED", False
@@ -3647,7 +3647,13 @@ class AlphaNextGen(QCAlgorithm):
         if self.execution_engine.get_order_by_broker_id(broker_id) is None:
             if broker_id not in self._external_exec_event_logged:
                 order = self.Transactions.GetOrderById(broker_id)
-                tag = getattr(order, "Tag", "") if order is not None else ""
+                raw_tag = getattr(order, "Tag", "") if order is not None else ""
+                order_type = (
+                    str(getattr(order, "Type", "UNKNOWN")) if order is not None else "UNKNOWN"
+                )
+                tag = str(raw_tag or "") if raw_tag is not None else ""
+                if not tag:
+                    tag = f"NO_TAG:{order_type}"
                 self.Log(
                     f"EXEC_EXTERNAL: BrokerID={broker_id} | Status={status} | "
                     f"Symbol={order_event.Symbol} | Tag={tag}"
@@ -3828,7 +3834,7 @@ class AlphaNextGen(QCAlgorithm):
                 self._spread_exit_mark_cache.clear()
                 if spread_count_before > 0:
                     # Broker is flat while engine still tracked live spreads.
-                    self._diag_spread_exit_fill_count += spread_count_before
+                    # Count as state removals only (not confirmed fill reconciliations).
                     self._diag_spread_position_removed_count += spread_count_before
                 if self.portfolio_router:
                     self.portfolio_router.clear_all_spread_margins()
@@ -8567,8 +8573,8 @@ class AlphaNextGen(QCAlgorithm):
                 "short_closed": False,
                 "long_qty": 0,
                 "short_qty": 0,
-                "long_price": 0.0,
-                "short_price": 0.0,
+                "long_notional": 0.0,
+                "short_notional": 0.0,
             }
             self._spread_close_trackers[spread_key] = tracker
 
@@ -8576,41 +8582,51 @@ class AlphaNextGen(QCAlgorithm):
         long_norm = self._normalize_symbol_str(spread.long_leg.symbol)
         short_norm = self._normalize_symbol_str(spread.short_leg.symbol)
         if norm_symbol == long_norm:
-            tracker["long_closed"] = True
             tracker["long_qty"] += fill_qty_abs
-            tracker["long_price"] = fill_price
+            tracker["long_notional"] += fill_price * fill_qty_abs
+            tracker["long_closed"] = tracker["long_qty"] >= tracker["expected_qty"]
             self.Log(
                 f"SPREAD: Long leg closed | {symbol[-20:]} @ ${fill_price:.2f} x{fill_qty_abs} | "
                 f"Total closed={tracker['long_qty']}/{tracker['expected_qty']}"
             )
         elif norm_symbol == short_norm:
-            tracker["short_closed"] = True
             tracker["short_qty"] += fill_qty_abs
-            tracker["short_price"] = fill_price
+            tracker["short_notional"] += fill_price * fill_qty_abs
+            tracker["short_closed"] = tracker["short_qty"] >= tracker["expected_qty"]
             self.Log(
                 f"SPREAD: Short leg closed | {symbol[-20:]} @ ${fill_price:.2f} x{fill_qty_abs} | "
                 f"Total closed={tracker['short_qty']}/{tracker['expected_qty']}"
             )
 
-        # Check if both legs closed
+        # Check if both legs reached expected close quantity.
         if tracker["long_closed"] and tracker["short_closed"]:
-            self._diag_spread_exit_fill_count += 1
-            # Validate quantities (Bug #8 fix)
-            if tracker["long_qty"] != tracker["expected_qty"]:
+            expected_qty = int(tracker["expected_qty"])
+            if tracker["long_qty"] != expected_qty:
                 self.Log(
                     f"SPREAD_WARNING: Long leg quantity mismatch | "
-                    f"Closed={tracker['long_qty']} Expected={tracker['expected_qty']}"
+                    f"Closed={tracker['long_qty']} Expected={expected_qty}"
                 )
-
-            if tracker["short_qty"] != tracker["expected_qty"]:
+            if tracker["short_qty"] != expected_qty:
                 self.Log(
                     f"SPREAD_WARNING: Short leg quantity mismatch | "
-                    f"Closed={tracker['short_qty']} Expected={tracker['expected_qty']}"
+                    f"Closed={tracker['short_qty']} Expected={expected_qty}"
                 )
 
-            # V2.27: Record win/loss for Win Rate Gate before removing position
-            close_long_price = float(tracker["long_price"])
-            close_short_price = float(tracker["short_price"])
+            # Count fill reconciliation only when both legs fully match expected quantity.
+            if tracker["long_qty"] == expected_qty and tracker["short_qty"] == expected_qty:
+                self._diag_spread_exit_fill_count += 1
+
+            # Use weighted average close prices to avoid partial-fill accounting distortion.
+            close_long_price = (
+                float(tracker["long_notional"]) / float(tracker["long_qty"])
+                if tracker["long_qty"] > 0
+                else 0.0
+            )
+            close_short_price = (
+                float(tracker["short_notional"]) / float(tracker["short_qty"])
+                if tracker["short_qty"] > 0
+                else 0.0
+            )
             is_credit = spread.spread_type in (
                 "BULL_PUT_CREDIT",
                 "BEAR_CALL_CREDIT",
