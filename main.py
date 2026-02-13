@@ -3570,7 +3570,8 @@ class AlphaNextGen(QCAlgorithm):
                 order_event=orderEvent,
                 status="Canceled",
             )
-            if self.oco_manager.has_order(orderEvent.OrderId):
+            is_oco_cancel = self.oco_manager.has_order(orderEvent.OrderId)
+            if is_oco_cancel:
                 self.oco_manager.on_order_inactive(
                     broker_order_id=orderEvent.OrderId,
                     status="Canceled",
@@ -3580,7 +3581,15 @@ class AlphaNextGen(QCAlgorithm):
             # V2.20: Event-driven state recovery — notify source engine
             canceled_symbol = str(orderEvent.Symbol)
             self._queue_spread_close_retry_on_cancel(canceled_symbol, orderEvent)
-            self._handle_order_rejection(canceled_symbol, orderEvent)
+            # V9.1 FIX: Skip rejection handler for OCO cancels.
+            # OCO cancels occur when one leg fills (e.g., profit target hit cancels
+            # the paired stop). These are normal operational events, not order failures.
+            # Routing them through _handle_order_rejection incorrectly clears pending
+            # state for NEW entries submitted at the same timestamp (Bug: Aug 8 2017
+            # orphan position cascade — 669 contracts registered as SWING instead of
+            # INTRADAY because OCO cancel wiped _pending_intraday_entry flag).
+            if not is_oco_cancel:
+                self._handle_order_rejection(canceled_symbol, orderEvent)
 
     def _should_log_backtest_category(self, config_flag: str, default: bool = True) -> bool:
         """Return whether a log category is enabled for current run mode."""
@@ -6391,6 +6400,18 @@ class AlphaNextGen(QCAlgorithm):
                             f"Dir={intraday_direction.value} | "
                             f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'}"
                         )
+                        # V9.1 FIX: Emit DROPPED log for contract selection failures.
+                        # Previously 124 candidates/quarter silently fell through with
+                        # no INTRADAY_SIGNAL_DROPPED, making funnel analysis incomplete.
+                        self.Log(
+                            f"INTRADAY_SIGNAL_DROPPED: Candidate rejected before order | "
+                            f"Code=E_NO_CONTRACT_SELECTED | "
+                            f"Reason={signal_reason} | RetryHint=None | "
+                            f"Dir={intraday_direction.value} | "
+                            f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'} | "
+                            f"Contract=NONE"
+                        )
+                        self._diag_intraday_dropped_count += 1
 
                 # V2.13 Fix #18: Log bid/ask rejection (was silent)
                 if intraday_contract is not None and (
@@ -6400,6 +6421,16 @@ class AlphaNextGen(QCAlgorithm):
                         f"INTRADAY_PRICE_REJECT: {intraday_contract.symbol} | "
                         f"Bid={intraday_contract.bid} Ask={intraday_contract.ask}"
                     )
+                    # V9.1 FIX: Emit DROPPED log for bid/ask rejection
+                    self.Log(
+                        f"INTRADAY_SIGNAL_DROPPED: Candidate rejected before order | "
+                        f"Code=E_BID_ASK_INVALID | "
+                        f"Reason={signal_reason} | RetryHint=None | "
+                        f"Dir={intraday_direction.value if intraday_direction else 'NONE'} | "
+                        f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'} | "
+                        f"Contract={intraday_contract.symbol}"
+                    )
+                    self._diag_intraday_dropped_count += 1
                     intraday_contract = None  # Clear invalid contract
 
                 # Verify contract has valid bid/ask before proceeding
@@ -8230,50 +8261,80 @@ class AlphaNextGen(QCAlgorithm):
                         # Spread exit - track leg closes
                         self._handle_spread_leg_close(symbol, fill_price, fill_qty)
                     elif self.options_engine.has_intraday_position():
-                        # V2.28: Record result for win rate gate before removing
-                        removed_position = self.options_engine.remove_intraday_position()
-                        if removed_position:
-                            # Cancel any lingering OCO pair after explicit close fill.
-                            try:
-                                self.oco_manager.cancel_by_symbol(
-                                    removed_position.contract.symbol,
-                                    reason="INTRADAY_POSITION_CLOSED",
-                                )
-                            except Exception as e:
+                        # P0 fix: keep intraday state until symbol is fully flat.
+                        intraday_pos = self.options_engine.get_intraday_position()
+                        intraday_symbol_norm = (
+                            self._normalize_symbol_str(intraday_pos.contract.symbol)
+                            if intraday_pos is not None and intraday_pos.contract is not None
+                            else ""
+                        )
+                        live_qty_after_fill = abs(self._get_option_holding_quantity(symbol))
+                        if intraday_symbol_norm and symbol_norm == intraday_symbol_norm:
+                            if live_qty_after_fill > 0:
+                                if intraday_pos is not None:
+                                    intraday_pos.num_contracts = int(live_qty_after_fill)
                                 self.Log(
-                                    f"OCO_CLEANUP_ERROR: {removed_position.contract.symbol} | {e}"
+                                    f"INTRADAY_PARTIAL_CLOSE: {symbol_norm} | RemainingQty={live_qty_after_fill} | State retained"
                                 )
-                        if removed_position and removed_position.entry_price > 0:
-                            is_win = fill_price > removed_position.entry_price
-                            self.options_engine.record_spread_result(is_win)
-                            self.options_engine.record_intraday_result(
-                                symbol=symbol,
-                                is_win=is_win,
-                                current_time=str(self.Time),
-                            )
-                            result_str = "WIN" if is_win else "LOSS"
-                            self.Log(
-                                f"INTRADAY_RESULT: {result_str} | "
-                                f"Entry=${removed_position.entry_price:.2f} | Exit=${fill_price:.2f} | "
-                                f"P&L={((fill_price - removed_position.entry_price) / removed_position.entry_price):.1%}"
-                            )
-                            self._diag_intraday_result_count += 1
-                            # V6.12: Record trade in monthly P&L tracker
-                            if hasattr(self, "pnl_tracker"):
-                                self.pnl_tracker.record_trade(
+                                self._greeks_breach_logged = False
+                                return
+
+                            removed_position = self.options_engine.remove_intraday_position()
+                            if removed_position:
+                                # Cancel any lingering OCO pair after explicit close fill.
+                                try:
+                                    self.oco_manager.cancel_by_symbol(
+                                        removed_position.contract.symbol,
+                                        reason="INTRADAY_POSITION_CLOSED",
+                                    )
+                                except Exception as e:
+                                    self.Log(
+                                        f"OCO_CLEANUP_ERROR: {removed_position.contract.symbol} | {e}"
+                                    )
+                            if removed_position and removed_position.entry_price > 0:
+                                is_win = fill_price > removed_position.entry_price
+                                self.options_engine.record_spread_result(is_win)
+                                self.options_engine.record_intraday_result(
                                     symbol=symbol,
-                                    engine="OPT_INTRADAY",
-                                    entry_date=removed_position.entry_time[:10]
-                                    if removed_position.entry_time
-                                    else str(self.Time.date()),
-                                    exit_date=str(self.Time.date()),
-                                    entry_price=removed_position.entry_price,
-                                    exit_price=fill_price,
-                                    quantity=abs(int(fill_qty)),
+                                    is_win=is_win,
+                                    current_time=str(self.Time),
                                 )
-                            # Clear fallback snapshot when normal intraday result path logs.
-                            self._intraday_entry_snapshot.pop(symbol_norm, None)
-                        self._greeks_breach_logged = False  # Reset for next position
+                                result_str = "WIN" if is_win else "LOSS"
+                                self.Log(
+                                    f"INTRADAY_RESULT: {result_str} | "
+                                    f"Entry=${removed_position.entry_price:.2f} | Exit=${fill_price:.2f} | "
+                                    f"P&L={((fill_price - removed_position.entry_price) / removed_position.entry_price):.1%}"
+                                )
+                                self._diag_intraday_result_count += 1
+                                # V6.12: Record trade in monthly P&L tracker
+                                if hasattr(self, "pnl_tracker"):
+                                    self.pnl_tracker.record_trade(
+                                        symbol=symbol,
+                                        engine="OPT_INTRADAY",
+                                        entry_date=removed_position.entry_time[:10]
+                                        if removed_position.entry_time
+                                        else str(self.Time.date()),
+                                        exit_date=str(self.Time.date()),
+                                        entry_price=removed_position.entry_price,
+                                        exit_price=fill_price,
+                                        quantity=abs(int(fill_qty)),
+                                    )
+                                self._intraday_entry_snapshot.pop(symbol_norm, None)
+                            self._greeks_breach_logged = False  # Reset for next position
+                        else:
+                            # Not tracked as current intraday symbol; fall back to single-leg handling.
+                            removed_position = self.options_engine.remove_position()
+                            if removed_position:
+                                try:
+                                    self.oco_manager.cancel_by_symbol(
+                                        removed_position.contract.symbol,
+                                        reason="SINGLE_LEG_POSITION_CLOSED",
+                                    )
+                                except Exception as e:
+                                    self.Log(
+                                        f"OCO_CLEANUP_ERROR: {removed_position.contract.symbol} | {e}"
+                                    )
+                            self._greeks_breach_logged = False
                     else:
                         # Single-leg exit (legacy swing)
                         removed_position = self.options_engine.remove_position()
@@ -8288,8 +8349,14 @@ class AlphaNextGen(QCAlgorithm):
                                     f"OCO_CLEANUP_ERROR: {removed_position.contract.symbol} | {e}"
                                 )
                         # V6.15: Fallback intraday result accounting for orphan/implicit exits.
-                        snapshot = self._intraday_entry_snapshot.pop(symbol_norm, None)
-                        if snapshot and snapshot.get("entry_price", 0) > 0:
+                        snapshot = self._intraday_entry_snapshot.get(symbol_norm)
+                        live_qty_after_fill = abs(self._get_option_holding_quantity(symbol))
+                        if (
+                            snapshot
+                            and snapshot.get("entry_price", 0) > 0
+                            and live_qty_after_fill <= 0
+                        ):
+                            self._intraday_entry_snapshot.pop(symbol_norm, None)
                             entry_price = float(snapshot["entry_price"])
                             is_win = fill_price > entry_price
                             self.options_engine.record_spread_result(is_win)
