@@ -1150,18 +1150,17 @@ ASSIGNMENT_EXIT_PRIORITY_ENABLED = True
 # For PUTs: ITM = strike > price, OTM = strike < price
 # Example: If MIN_OTM_PCT = 0.03 and QQQ = $350, min short strike = $339.50
 BEAR_PUT_ENTRY_GATE_ENABLED = True
-BEAR_PUT_ENTRY_MIN_OTM_PCT = (
-    0.02  # Baseline assignment gate (reduced from 3% to improve PUT spread participation)
-)
+BEAR_PUT_ENTRY_MIN_OTM_PCT = 0.02  # V6.4 baseline: tighter OTM requirement for assignment safety.
 BEAR_PUT_ENTRY_LOW_VIX_THRESHOLD = 18.0  # Relax assignment gate in calmer IV environments
 BEAR_PUT_ENTRY_MIN_OTM_PCT_RELAXED = (
-    0.015  # Relaxed OTM threshold in low-VIX + strong-regime contexts
+    0.015  # V6.4 baseline relaxed threshold in low-VIX healthy regimes.
 )
 BEAR_PUT_ENTRY_RELAXED_REGIME_MIN = (
     60.0  # Require healthy regime before applying relaxed OTM threshold
 )
-# V6.22: During confirmed stress, allow slightly tighter BEAR_PUT shorts to keep bearish access alive.
-BEAR_PUT_ENTRY_MIN_OTM_PCT_STRESS = 0.008
+# V6.22: During confirmed stress, allow tighter BEAR_PUT shorts to keep bearish access alive.
+# V9.4: Lowered from 0.8% to 0.3%. Bear markets need PUT access most — max loss already capped by debit.
+BEAR_PUT_ENTRY_MIN_OTM_PCT_STRESS = 0.005
 
 # Contract Selection
 # Options chain filter (must cover BOTH Intraday 0-2 DTE AND Swing 5-45 DTE)
