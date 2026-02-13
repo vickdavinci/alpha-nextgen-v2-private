@@ -2,16 +2,18 @@
 
 ## 5.1 Purpose and Philosophy
 
-The Capital Engine manages the financial foundation of the system: how much capital is available, what phase the account is in, and how to preserve profits over time.
+The Capital Engine manages the financial foundation of the system: how much capital is available and how to preserve profits over time.
 
-### 5.1.1 Phase-Based Risk Management
+> **V3.0 Note:** The SEED/GROWTH phase system has been removed. Regime-based safeguards (Startup Gate, Drawdown Governor, Regime Engine) now replace phase-dependent risk parameters. Account size no longer determines allocation -- market conditions do.
 
-Different account sizes warrant different risk parameters:
+### 5.1.1 Capital Management (V3.0)
 
-- A **$50,000 account** can tolerate higher concentration to accelerate growth
-- A **$500,000 account** should be more diversified to protect accumulated wealth
+The Capital Engine now focuses on:
 
-The Capital Engine automatically adjusts position limits and risk parameters as the account grows through predefined phases.
+- **Capital partitioning**: 50/50 split between Trend and Options engines
+- **Lockbox**: Virtual profit preservation mechanism
+- **Tradeable equity**: Total equity minus locked amount
+- **Maximum single position**: Fixed at 40% (was phase-dependent)
 
 ### 5.1.2 Profit Preservation Philosophy
 
@@ -23,12 +25,14 @@ The **Virtual Lockbox** mechanism reserves capital via calculation (not actual w
 
 ## 5.2 Phase Definitions
 
-### Phase Overview
+> **V3.0 Note:** Phase-based risk management (SEED/GROWTH) has been removed. The parameters below are retained for reference but no longer drive runtime behavior. The kill switch is now a tiered system (2%/4%/6%, V2.27) and max single position is fixed at 40%.
+
+### Phase Overview (Historical/Reference Only)
 
 | Phase | Equity Range | Target Vol | Max Single Position | Kill Switch |
 |-------|:------------:|:----------:|:-------------------:|:-----------:|
-| **SEED** | $50,000 – $99,999 | 20% | 50% | 3% |
-| **GROWTH** | $100,000 – $499,999 | 20% | 40% | 3% |
+| **SEED** | $50,000 – $99,999 | 20% | 50% | ~~3%~~ → 6% (Tier 3) |
+| **GROWTH** | $100,000 – $499,999 | 20% | 40% | ~~3%~~ → 6% (Tier 3) |
 
 ---
 
@@ -258,7 +262,7 @@ The locked capital doesn't disappear—it needs to be invested somewhere. The sy
 |-----------|------:|-------|
 | Total equity | $150,000 | |
 | Locked amount | $10,500 | |
-| Non-SHV positions | $80,000 | QLD, TMF, etc. |
+| Non-SHV positions | $80,000 | QLD, SH, etc. |
 | SHV holdings | $59,500 | Of which $10,500 is "locked" |
 | Tradeable equity | $139,500 | Total − Locked |
 
@@ -285,13 +289,13 @@ The Capital Engine produces outputs used throughout the system.
 | `current_phase` | String | "SEED" or "GROWTH" |
 | `days_above_threshold` | Integer | For transition tracking |
 
-### Phase Parameters
+### Phase Parameters (V3.0)
 
 | Output | Type | Description |
 |--------|------|-------------|
-| `target_volatility` | Float | 0.20 for both SEED and GROWTH |
-| `max_single_position_pct` | Float | 0.50 (SEED) or 0.40 (GROWTH) |
-| `kill_switch_pct` | Float | 0.03 for both phases |
+| `target_volatility` | Float | 0.20 |
+| `max_single_position_pct` | Float | 0.40 (V3.0: fixed, was phase-dependent) |
+| `kill_switch_pct` | Float | 0.06 Tier 3 / 0.04 Tier 2 / 0.02 Tier 1 (V2.27: tiered) |
 
 ### Lockbox Information
 
@@ -409,13 +413,15 @@ Capital constraints override strategy signals but are overridden by regime const
 | `GROWTH_MIN` | $100,000 | Lower bound of GROWTH phase |
 | `GROWTH_MAX` | $499,999 | Upper bound of GROWTH phase |
 
-### Risk Parameters by Phase
+### Risk Parameters (V3.0: Unified)
 
-| Parameter | SEED | GROWTH |
-|-----------|:----:|:------:|
-| `TARGET_VOLATILITY` | 20% | 20% |
-| `MAX_SINGLE_POSITION` | 50% | 40% |
-| `KILL_SWITCH_PCT` | 3% | 3% |
+| Parameter | Value | Notes |
+|-----------|:-----:|-------|
+| `TARGET_VOLATILITY` | 20% | Unchanged |
+| `MAX_SINGLE_POSITION_PCT` | 40% | V3.0: Fixed (was phase-dependent) |
+| Kill Switch Tier 1 | 2% | Reduce trend 50%, block new options |
+| Kill Switch Tier 2 | 4% | Exit trend, keep spreads |
+| Kill Switch Tier 3 | 6% | Full liquidation |
 
 ### Transition Parameters
 
@@ -466,8 +472,8 @@ State is saved:
 
 | Decision | Rationale |
 |----------|-----------|
-| **Two active phases (SEED, GROWTH)** | Appropriate for $50k–$500k range; future phases defined but not implemented |
-| **Asymmetric transitions** | Slow to promote (5 days), fast to demote (immediate) for safety |
+| **V3.0: Phases removed** | Regime-based safeguards replace phase-dependent risk parameters |
+| **Capital Partition (50/50)** | Hard firewall prevents Trend/Options engine starvation |
 | **Virtual lockbox (not withdrawal)** | Keeps capital earning yield while excluding from risk |
 | **10% lock at milestones** | Meaningful profit preservation without excessive conservatism |
 | **SHV for locked capital** | Earns ~5% yield with minimal volatility |

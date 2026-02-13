@@ -82,20 +82,20 @@ momentum_roc = (current_price - price_20d_ago) / price_20d_ago
 
 ---
 
-### 4.2.2 VIX Combined Factor (30% Weight)
+### 4.2.2 VIX Combined Factor (35% Weight)
 
-**What It Measures:** Market fear intensity combining absolute level (60%) and directional momentum (40%).
+**What It Measures:** Market fear intensity combining absolute level (65%) and directional momentum (35%).
 
 **Why It Matters:** VIX level alone misses fast-moving crashes (VIX can spike from 12 to 30 in days). VIX direction alone treats VIX=12 stable the same as VIX=32 stable. Combining both captures fear intensity AND momentum.
 
 #### Calculation Logic
 
 ```python
-vix_combined = (0.60 * vix_level_score) + (0.40 * vix_direction_score)
+vix_combined = (0.65 * vix_level_score) + (0.35 * vix_direction_score)
 
-# High-VIX clamp: When VIX >= 25, cap combined score at 47
+# High-VIX clamp: When VIX >= 25, cap combined score at 44
 if vix_level >= 25:
-    vix_combined = min(vix_combined, 47)
+    vix_combined = min(vix_combined, 44)
 ```
 
 **VIX Level Scoring:**
@@ -123,14 +123,14 @@ if vix_level >= 25:
 | < -10% | 85 | Falling fast (relief) |
 
 **Config Parameters:**
-- `VIX_COMBINED_LEVEL_WEIGHT` (default: 0.60)
-- `VIX_COMBINED_DIRECTION_WEIGHT` (default: 0.40)
+- `VIX_COMBINED_LEVEL_WEIGHT` (default: 0.65 - V6.15: anchor more on absolute fear level)
+- `VIX_COMBINED_DIRECTION_WEIGHT` (default: 0.35 - V6.15: keep directional context)
 - `VIX_COMBINED_HIGH_VIX_THRESHOLD` (default: 25.0)
-- `VIX_COMBINED_HIGH_VIX_CLAMP` (default: 47.0)
+- `VIX_COMBINED_HIGH_VIX_CLAMP` (default: 44 - V6.15: push high-VIX states faster to caution)
 
 ---
 
-### 4.2.3 Trend Factor (25% Weight)
+### 4.2.3 Trend Factor (20% Weight)
 
 **What It Measures:** Price position relative to moving averages and trend structure.
 
@@ -234,22 +234,22 @@ drawdown_pct = (spy_52w_high - current_price) / spy_52w_high
 ```python
 raw_score = (
     momentum_score * 0.30 +
-    vix_combined_score * 0.30 +
-    trend_score * 0.25 +
+    vix_combined_score * 0.35 +
+    trend_score * 0.20 +
     drawdown_score * 0.15
 ) - breadth_penalty
 ```
 
-#### Example Calculation (V5.3)
+#### Example Calculation (V5.3/V6.15)
 
 | Factor | Score | Weight | Contribution |
 |--------|:-----:|:------:|:------------:|
 | Momentum | 75 | 30% | 22.50 |
-| VIX Combined | 60 | 30% | 18.00 |
-| Trend | 72 | 25% | 18.00 |
+| VIX Combined | 60 | 35% | 21.00 |
+| Trend | 72 | 20% | 14.40 |
 | Drawdown | 70 | 15% | 10.50 |
 | Breadth Penalty | -5 | - | -5.00 |
-| **Raw Score** | | | **64.00** |
+| **Raw Score** | | | **63.40** |
 
 ---
 
@@ -534,8 +534,8 @@ flowchart TD
 
     subgraph FACTORS["V5.3 Factor Calculations"]
         MOM["Momentum (30%)<br/>20-day ROC"]
-        VIXC["VIX Combined (30%)<br/>60% Level + 40% Dir"]
-        TREND["Trend (25%)<br/>SPY vs MA200"]
+        VIXC["VIX Combined (35%)<br/>65% Level + 35% Dir"]
+        TREND["Trend (20%)<br/>SPY vs MA200"]
         DD["Drawdown (15%)<br/>Distance from High"]
     end
 
@@ -593,8 +593,8 @@ flowchart TD
 | Decision | Rationale |
 |----------|-----------|
 | **V5.3 4-factor model** | Balances crash detection with recovery responsiveness |
-| **VIX Combined (60/40)** | Captures both fear intensity AND momentum |
-| **High-VIX clamp at 47** | Prevents false bullish signals when VIX >= 25 |
+| **VIX Combined (65/35)** | Captures both fear intensity AND momentum (V6.15: anchored more on level) |
+| **High-VIX clamp at 44** | Prevents false bullish signals when VIX >= 25 (V6.15: lowered from 47) |
 | **Momentum as leading indicator** | 20-day ROC catches reversals in days, not weeks |
 | **Drawdown for bear differentiation** | Breaks score compression in grinding bears |
 | **Breadth decay penalty** | Flags narrow rallies (mega-cap only) |

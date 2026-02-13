@@ -8,15 +8,36 @@
 
 > **Last Updated**: 11 February 2026 (V6.15)
 
-The **Options Engine** implements a dual-mode architecture for QQQ options trading. This is a **satellite engine** (25% allocation) with two distinct operating modes based on DTE (days to expiration).
+The **Options Engine** implements a dual-mode architecture for QQQ options trading. This is a **satellite engine** (50% allocation in V6.20 isolation profile) with two distinct operating modes based on DTE (days to expiration).
 
-> **V6.15 Revision** (Latest):
+> **V9.2 Revision** (Latest):
+> - Per-strategy intraday exits (DEBIT_FADE/DEBIT_MOMENTUM get distinct target/stop/trail)
+> - Bear-regime MICRO profitability fixes from 2022 RCA
+> - MICRO telemetry improvements: signal IDs, reason tracing, funnel counters
+> - Protective PUT max contracts capped at 5 (was uncapped)
+> - High-VIX intraday stop cap widened to 40% (was capped at 28%)
+>
+> **V9.1 Revision**:
+> - `SPREAD_LONG_LEG_DELTA_MAX` capped at 0.65 (was 0.90) for better R:R on CALL debits
+> - `SPREAD_MAX_DEBIT_TO_WIDTH_PCT` set to 0.55 (blocks overpriced spreads)
+> - `SPREAD_WIDTH_EFFECTIVE_MAX` set to 7.0 (preferred width ceiling for R:R sort)
+> - Separate delta targets: CALL 0.50 ATM, PUT 0.70 ITM
+>
+> **V6.22 Revision**:
+> - `MICRO_SCORE_BULLISH_CONFIRM` lowered to 42 (from 48) for more CALL throughput
+> - `VIX_STABLE_BAND_LOW` tightened to 0.3% for low-vol directional signals
+> - Regime overlay thresholds for shared stress detection
+>
+> **V6.20 Revision**:
+> - Total allocation raised to 50% (from 25%) for options-isolation stress tests
+> - Capital partition: 50% Trend / 50% Options
+> - Margin allowance raised to 40% (`OPTIONS_MAX_MARGIN_PCT`)
+>
+> **V6.15 Revision**:
 > - Profit target increased to 60% (was 50%) for trend riding
 > - Intraday force exit moved to 15:25 (was 15:30) to avoid OCO race conditions
-> - `INTRADAY_OPTIONS_OFFSET_MINUTES` set to 35 (aligned with 15:25 fallback)
 > - UVXY thresholds tuned: `MICRO_UVXY_BEARISH_THRESHOLD` +2.0%, `MICRO_UVXY_BULLISH_THRESHOLD` -4.0%
-> - Micro score confirmations: `MICRO_SCORE_BULLISH_CONFIRM` 48, `MICRO_SCORE_BEARISH_CONFIRM` 47
-> - `SHORT_LEG_ITM_EXIT_THRESHOLD` relaxed to 1.0% (was 0.5%)
+> - `SHORT_LEG_ITM_EXIT_THRESHOLD` relaxed to 3.5% (reduced noise exits)
 > - Spread stop/target adjusted to 40%/50% (regime-adjusted)
 >
 > **V6.14 Revision**:
@@ -116,10 +137,10 @@ The **Options Engine** implements a dual-mode architecture for QQQ options tradi
 
 **Key Characteristics:**
 - **Underlying**: QQQ (Nasdaq 100 ETF)
-- **Total Allocation**: 25% of portfolio
-- **Dual-Mode Architecture**:
-  - **Swing Mode (18.75%)**: 14-45 DTE (VASS-adaptive), Debit Spreads + Credit Spreads (regime-based)
-  - **Intraday Mode (6.25%)**: 0-2 DTE, Micro Regime Engine
+- **Total Allocation**: 50% of portfolio (V6.20: raised from 25% for isolation profile)
+- **Dual-Mode Architecture** (75/25 split of total):
+  - **Swing Mode (37.5%)**: 14-45 DTE (VASS-adaptive), Debit Spreads + Credit Spreads (regime-based)
+  - **Intraday Mode (12.5%)**: 1-5 DTE, Micro Regime Engine
 
 ---
 
@@ -132,9 +153,9 @@ The **Options Engine** implements a dual-mode architecture for QQQ options tradi
 │                                                                       │
 │  ┌───────────────────────────┐     ┌─────────────────────────────┐   │
 │  │     SWING MODE            │     │     INTRADAY MODE           │   │
-│  │  (14-45 DTE, VASS-routed) │     │       (0-2 DTE)             │   │
+│  │  (14-45 DTE, VASS-routed) │     │       (1-5 DTE)             │   │
 │  ├───────────────────────────┤     ├─────────────────────────────┤   │
-│  │ Allocation: 18.75%        │     │ Allocation: 6.25%           │   │
+│  │ Allocation: 37.5%         │     │ Allocation: 12.5%           │   │
 │  │                           │     │                             │   │
 │  │ VASS Strategy Selection:  │     │ Decision Engine:            │   │
 │  │ (VIX-Adaptive V2.8)       │     │ MICRO REGIME ENGINE         │   │
@@ -170,12 +191,12 @@ The original 4-strategy portfolio (Debit Spreads, Credit Spreads, ITM Long, Prot
 
 ## Swing Mode (14-45 DTE, VASS-Adaptive)
 
-### Allocation: 18.75% of Portfolio
+### Allocation: 37.5% of Portfolio (V6.20)
 
 Swing Mode uses **Debit Spreads** (Low/Medium IV) or **Credit Spreads** (High IV) as selected by VASS (V2.8). Direction is determined by the macro regime score (which includes VIX). DTE range is set by VASS per IV environment (see below).
 
 **Config Parameters:**
-- `OPTIONS_SWING_ALLOCATION` = 0.1875 (18.75%)
+- `OPTIONS_SWING_ALLOCATION` = 0.375 (37.5%, V6.20: was 18.75%)
 - `SPREAD_DTE_MIN` = 14 (default minimum, overridden by VASS)
 - `SPREAD_DTE_MAX` = 45 (default maximum, overridden by VASS)
 
@@ -191,7 +212,7 @@ VASS dynamically selects the spread strategy and DTE range based on the current 
 |:--------------:|:---------:|----------|:---------:|-----------|
 | **Low IV** | VIX < 15 | Debit Spreads | 30-45 DTE (monthly) | Cheap options, need more time for move |
 | **Medium IV** | VIX 15-25 | Debit Spreads | 7-21 DTE (weekly) | Fair pricing, standard DTE |
-| **High IV** | VIX > 25 | Credit Spreads | 5-28 DTE (V6.8: widened from 7-14) | Rich premium, sell into fear |
+| **High IV** | VIX > 25 | Credit Spreads | 5-40 DTE (V6.13.1: expanded from 5-28) | Rich premium, sell into fear |
 
 > **V6.9 Change**: High IV now routes to credit spreads. Direction determines spread type:
 > - Bullish (regime > 60): **BULL_PUT** credit spread (sell put spread)
@@ -216,9 +237,9 @@ The 30-minute smoothing window prevents strategy flickering when VIX oscillates 
 | `VASS_LOW_IV_DTE_MIN` | 30 | Low IV: Monthly DTE minimum |
 | `VASS_LOW_IV_DTE_MAX` | 45 | Low IV: Monthly DTE maximum |
 | `VASS_MEDIUM_IV_DTE_MIN` | 7 | Medium IV: Weekly DTE minimum |
-| `VASS_MEDIUM_IV_DTE_MAX` | 21 | Medium IV: Weekly DTE maximum |
+| `VASS_MEDIUM_IV_DTE_MAX` | 30 | Medium IV: DTE maximum (V6.12: was 21) |
 | `VASS_HIGH_IV_DTE_MIN` | 5 | High IV: Weekly DTE minimum (V6.8: was 7) |
-| `VASS_HIGH_IV_DTE_MAX` | 28 | High IV: Weekly DTE maximum (V6.8: was 21) |
+| `VASS_HIGH_IV_DTE_MAX` | 40 | High IV: DTE maximum (V6.13.1: was 28) |
 | `VASS_LOG_REJECTION_INTERVAL_MINUTES` | 15 | Throttled rejection logging |
 
 > **V2.24.2 Note**: When VASS routes to a specific DTE range, the `dte_min`/`dte_max` parameters are passed through to `select_spread_legs()` and `check_spread_entry_signal()`, overriding the global `SPREAD_DTE_MIN`/`SPREAD_DTE_MAX`. See [DTE Double-Filter Fix](#v2242-dte-double-filter-fix) below.
@@ -422,7 +443,7 @@ The intraday DEBIT_FADE strategy (mean-reversion bounce) is disabled when VIX is
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `INTRADAY_DEBIT_FADE_VIX_MIN` | 11.5 | Minimum VIX for DEBIT_FADE (V6.8: was 13.5) |
+| `INTRADAY_DEBIT_FADE_VIX_MIN` | 9.0 | Minimum VIX for DEBIT_FADE (V6.13: was 11.5) |
 | `INTRADAY_DEBIT_FADE_VIX_MAX` | 25 | Maximum VIX for DEBIT_FADE |
 
 ---
@@ -555,7 +576,7 @@ contracts = floor(allocation / (entry_price * 100 * stop_pct))
 
 ### Prerequisites
 
-1. **Regime Score >= 40** (not RISK_OFF)
+1. **Regime Score >= 50** (V3.0: not below NEUTRAL)
 2. **No existing options position**
 3. **Time within trading window** (10:00 AM - 2:30 PM ET)
 4. **Risk Engine green light** (no active safeguards)
@@ -571,7 +592,7 @@ contracts = floor(allocation / (entry_price * 100 * stop_pct))
 
 ### Contract Selection (V2.3.6/V6.8)
 
-**Intraday Mode (0DTE):**
+**Intraday Mode (1-5 DTE):**
 1. **Expiry**: 1-5 DTE (V2.13: Skip 0DTE due to QC data gaps)
 2. **Delta Target**: 0.30 (OTM for faster gamma/premium moves)
 3. **Delta Tolerance**: +/-0.20 (allows 0.10-0.50 range)
@@ -582,7 +603,7 @@ contracts = floor(allocation / (entry_price * 100 * stop_pct))
 1. **Expiry**: 14-45 DTE (VASS overrides per IV environment)
 2. **Long Leg Delta**: 0.35-0.90 (V6.10: widened from 0.55-0.85)
 3. **Short Leg**: Selected by strike width (V2.4.3), not delta
-4. **Spread Width**: $4-$10 (V6.13: target $4, was $5)
+4. **Spread Width**: $4-$10 (V6.13: min $4, target $4)
 
 **Liquidity Thresholds (V6.8):**
 
@@ -780,7 +801,7 @@ The intraday options scanning window was adjusted:
          │
          ▼
 ┌─────────────────┐
-│ Contract Select │ ─── ATM, 0-1 DTE, liquidity check
+│ Contract Select │ ─── ATM, 1-5 DTE, liquidity check
 └────────┬────────┘
          │
          ▼
@@ -802,10 +823,9 @@ The intraday options scanning window was adjusted:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `OPTIONS_ALLOCATION_MIN` | 0.25 | Minimum allocation to options (25%) |
-| `OPTIONS_ALLOCATION_MAX` | 0.30 | Maximum allocation to options (30%) |
-| `OPTIONS_SWING_ALLOCATION` | 0.1875 | Swing Mode allocation (18.75%) |
-| `OPTIONS_INTRADAY_ALLOCATION` | 0.0625 | Intraday Mode allocation (6.25%) |
+| `OPTIONS_TOTAL_ALLOCATION` | 0.50 | Total allocation to options (V6.20: 50%) |
+| `OPTIONS_SWING_ALLOCATION` | 0.375 | Swing Mode allocation (V6.20: 37.5%) |
+| `OPTIONS_INTRADAY_ALLOCATION` | 0.125 | Intraday Mode allocation (V6.20: 12.5%) |
 
 ### Entry Scoring
 
@@ -825,7 +845,7 @@ The intraday options scanning window was adjusted:
 | `SPREAD_SHORT_LEG_BY_WIDTH` | True | V2.4.3: Width-based short leg selection |
 | `SPREAD_WIDTH_MIN` | 5.0 | Minimum spread width (V6.10: $5, was $2) |
 | `SPREAD_WIDTH_MAX` | 10.0 | Maximum spread width ($10) |
-| `SPREAD_WIDTH_TARGET` | 3.0 | Target spread width (V6.8: was 5.0, lower for more matches) |
+| `SPREAD_WIDTH_TARGET` | 4.0 | Target spread width (V6.13: was 3.0) |
 | `SPREAD_LONG_LEG_DELTA_MIN` | 0.40 | Long leg minimum delta (V6.8: was 0.45) |
 | `SPREAD_SHORT_LEG_DELTA_MIN` | 0.10 | Short leg minimum delta |
 | `SPREAD_SHORT_LEG_DELTA_MAX` | 0.55 | Short leg maximum delta (V6.8: was 0.52) |
@@ -899,9 +919,9 @@ The intraday options scanning window was adjusted:
 
 ---
 
-## Intraday Mode (0-2 DTE) - Micro Regime Engine
+## Intraday Mode (1-5 DTE) - Micro Regime Engine
 
-### Allocation: 6.25% of Portfolio
+### Allocation: 12.5% of Portfolio (V6.20)
 
 Intraday Mode uses the **Micro Regime Engine** to determine optimal strategy based on VIX conditions.
 
@@ -934,11 +954,11 @@ The STABLE zone uses adaptive thresholds based on current VIX level to reduce "D
 
 | VIX Level | STABLE Band | Rationale |
 |-----------|:-----------:|-----------|
-| VIX < 15 (Low) | +/-0.2% | V6.13.1: Very narrow band captures more signals |
+| VIX < 15 (Low) | +/-0.3% | V6.22: Slightly wider than V6.13.1 (was 0.2%) |
 | VIX 15-25 (Medium) | Linear interpolation | Gradual transition |
-| VIX > 25 (High) | +/-0.7% | V6.13.1: Wider band still allows trades |
+| VIX > 25 (High) | +/-0.8% | V6.22: Slightly wider than V6.13.1 (was 0.7%) |
 
-> **V6.13.1 Change**: Narrowed bands from 0.3%/1.0% to 0.2%/0.7% to reduce Dir=NONE frequency.
+> **V6.22 Change**: Adjusted bands from 0.2%/0.7% to 0.3%/0.8% for better signal quality.
 
 ### 21 Micro-Regime Matrix (V6.5 Complete)
 
@@ -1079,8 +1099,8 @@ The Micro Regime Engine uses UVXY intraday moves to override macro direction whe
 | `MICRO_UVXY_BEARISH_THRESHOLD` | +2.0% | V6.15: UVXY rise triggers PUT conviction (was +2.8%) |
 | `MICRO_UVXY_BULLISH_THRESHOLD` | -4.0% | V6.15: UVXY drop triggers CALL conviction (was -4.5%) |
 | `MICRO_UVXY_CONVICTION_EXTREME` | 3.0% | V6.15: NEUTRAL VETO threshold (was 3.5%) |
-| `MICRO_SCORE_BULLISH_CONFIRM` | 48 | V6.15: Score threshold for bullish confirmation (was 47) |
-| `MICRO_SCORE_BEARISH_CONFIRM` | 47 | V6.15: Score threshold for bearish confirmation (was 49) |
+| `MICRO_SCORE_BULLISH_CONFIRM` | 42 | V6.22: Score threshold for bullish confirmation (was 48) |
+| `MICRO_SCORE_BEARISH_CONFIRM` | 50 | V6.22: Score threshold for bearish confirmation (was 47) |
 | `INTRADAY_QQQ_FALLBACK_MIN_MOVE` | 0.12% | V6.15: QQQ move for STABLE direction fallback (was 0.30%) |
 
 **Evolution of UVXY Thresholds:**
@@ -1241,7 +1261,7 @@ Exit spread immediately when short leg goes ITM by threshold (at ANY DTE, not ju
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `SHORT_LEG_ITM_EXIT_THRESHOLD` | 0.005 | Exit at 0.5% ITM (was 1%) |
+| `SHORT_LEG_ITM_EXIT_THRESHOLD` | 0.035 | Exit at 3.5% ITM (V6.15: raised from 0.5% to reduce noise exits) |
 | `SHORT_LEG_ITM_EXIT_ENABLED` | True | Master switch |
 
 ### Layer 4: Wider Spread Width
@@ -1258,7 +1278,7 @@ Wider spreads survive larger overnight gaps and reduce assignment risk.
 ```
 Timeline of Protection:
 09:25 ET → Layer 2: Pre-market ITM check (catch overnight gaps)
-Intraday → Layer 3: ITM exit at 0.5% threshold (real-time monitoring)
+Intraday → Layer 3: ITM exit at 3.5% threshold (real-time monitoring)
 DTE = 1  → Layer 1: Force close ALL spreads (nuclear option)
 All DTE  → Layer 4: Wider spreads survive larger gaps
 ```
@@ -1274,7 +1294,7 @@ Detects whipsawing markets and reduces position size to limit losses. Added afte
 | `CHOPPY_MARKET_FILTER_ENABLED` | True | Enable filter |
 | `CHOPPY_REVERSAL_COUNT` | 3 | Reversals to trigger |
 | `CHOPPY_LOOKBACK_HOURS` | 2 | Lookback window |
-| `CHOPPY_SIZE_REDUCTION` | 0.50 | 50% size reduction |
+| `CHOPPY_SIZE_REDUCTION` | 0.65 | 65% size reduction (V6.19: was 50%) |
 | `CHOPPY_MIN_MOVE_PCT` | 0.003 | Min 0.3% move (filter noise) |
 
 ---

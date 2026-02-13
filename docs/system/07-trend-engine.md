@@ -669,7 +669,7 @@ All position tracking data is persisted to ObjectStore and survives algorithm re
 
 | Source | Data | Used For |
 |--------|------|----------|
-| **Regime Engine** | `regime_score` | Entry blocking (< 40), exit trigger (< 30) |
+| **Regime Engine** | `regime_score` | Entry blocking (< 50), exit trigger (< 30) |
 | **Capital Engine** | `tradeable_equity` | Position sizing |
 | **Risk Engine** | Safeguard status | Entry blocking if kill switch active |
 | **Cold Start Engine** | `days_running` | Cold start blocking |

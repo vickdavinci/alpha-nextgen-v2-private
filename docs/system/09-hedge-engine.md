@@ -112,16 +112,16 @@ Hedge allocation scales with regime deterioration using SH only:
 | Regime Score | State | SH Allocation | Hedge Tier |
 |:------------:|-------|:-------------:|:----------:|
 | **>= 50** | NEUTRAL / RISK_ON | 0% | NONE |
-| **45 - 49** | CAUTIOUS | 5% | LIGHT |
-| **35 - 44** | DEFENSIVE | 8% | MEDIUM |
-| **< 35** | RISK_OFF | 10% | FULL |
+| **40 - 49** | CAUTIOUS | 5% | LIGHT |
+| **30 - 39** | DEFENSIVE | 8% | MEDIUM |
+| **< 30** | RISK_OFF | 10% | FULL |
 
-> **V6.15 Note:** Thresholds adjusted (CAUTIOUS 45, DEFENSIVE 35).
+> **Config:** `HEDGE_LEVEL_1 = 50`, `HEDGE_LEVEL_2 = 40`, `HEDGE_LEVEL_3 = 30`.
 
 ### 9.3.2 Visual Representation
 
 ```
-Regime Score:  100 -------- 50 -------- 45 -------- 35 -------- 0
+Regime Score:  100 -------- 50 -------- 40 -------- 30 -------- 0
                 |           |           |           |           |
 SH:            0%          0%          5%          8%         10%
                 |           |           |           |           |
@@ -268,9 +268,9 @@ flowchart TD
     end
 
     subgraph DETERMINE["Determine Target Allocation"]
-        R1{"Score >= 50?"}
-        R2{"Score >= 40?"}
-        R3{"Score >= 30?"}
+        R1{"Score >= 50?<br/>(HEDGE_LEVEL_1)"}
+        R2{"Score >= 40?<br/>(HEDGE_LEVEL_2)"}
+        R3{"Score >= 30?<br/>(HEDGE_LEVEL_3)"}
 
         A1["SH: 0%<br/>Tier: NONE"]
         A2["SH: 5%<br/>Tier: LIGHT"]
@@ -340,10 +340,10 @@ graph LR
     S50 --- NEUTRAL
     NEUTRAL --- H0
 
-    S45 --- CAUTIOUS
+    S40 --- CAUTIOUS
     CAUTIOUS --- H1
 
-    S35 --- DEFENSIVE
+    S30 --- DEFENSIVE
     DEFENSIVE --- H2
 
     S0 --- RISK_OFF
@@ -437,16 +437,16 @@ Example:
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
 | `HEDGE_LEVEL_1` | 50 | Score below which hedging begins (LIGHT) |
-| `HEDGE_LEVEL_2` | 45 | V6.15: Score below which MEDIUM hedge (was 40) |
-| `HEDGE_LEVEL_3` | 35 | V6.15: Score below which FULL hedge (was 30) |
+| `HEDGE_LEVEL_2` | 40 | Score below which MEDIUM hedge |
+| `HEDGE_LEVEL_3` | 30 | Score below which FULL hedge |
 
 ### SH Allocation Parameters
 
 | Parameter | Value | Description |
 |-----------|:-----:|-------------|
-| `SH_LIGHT` | 0.05 | SH allocation at CAUTIOUS (regime 45-49) |
-| `SH_MEDIUM` | 0.08 | SH allocation at DEFENSIVE (regime 35-44) |
-| `SH_FULL` | 0.10 | SH allocation at RISK_OFF (regime < 35) |
+| `SH_LIGHT` | 0.05 | SH allocation at CAUTIOUS (regime 40-49) |
+| `SH_MEDIUM` | 0.08 | SH allocation at DEFENSIVE (regime 30-39) |
+| `SH_FULL` | 0.10 | SH allocation at RISK_OFF (regime < 30) |
 
 ### Retired Parameters (V6.11)
 
@@ -588,7 +588,7 @@ Limit: 50% gross
 ```
 Day 1: Score = 18 -> SH: 10% (FULL)
 Day 2: Score = 35 -> SH: 8% (MEDIUM)
-Day 3: Score = 45 -> SH: 5% (LIGHT)
+Day 3: Score = 42 -> SH: 5% (LIGHT)
 Day 4: Score = 55 -> SH: 0% (NONE)
 ```
 

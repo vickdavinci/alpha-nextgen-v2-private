@@ -14,7 +14,7 @@ Previous system versions had each strategy place orders independently. This caus
 |---------|-------------|--------|
 | **Wash Sales** | One strategy buys while another sells same symbol | Tax issues, wasted commissions |
 | **Beta Stacking** | Multiple strategies all long Nasdaq simultaneously | Excessive concentration risk |
-| **Conflicting Positions** | Long TQQQ and short PSQ creating unintended exposure | Unpredictable net exposure |
+| **Conflicting Positions** | Long TQQQ and short SH creating unintended exposure | Unpredictable net exposure |
 | **Execution Chaos** | Multiple orders hitting market at same time | Poor fills, confusion |
 
 ### 11.1.2 The Router Solution
@@ -225,7 +225,6 @@ NASDAQ_BETA positions:
   • TQQQ: +25%
   • QLD: +35%
   • SOXL: +15%
-  • PSQ: 0%
 
 Total Net Long: 75%
 Max Net Long: 50%

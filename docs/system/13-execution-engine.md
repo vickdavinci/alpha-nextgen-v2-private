@@ -40,7 +40,7 @@ Used for **IMMEDIATE** urgency signals:
 | Mean reversion entries | RSI oversold detected |
 | Mean reversion exits | Target/stop/time hit |
 | Stop loss exits | Chandelier stop triggered |
-| Kill switch liquidations | −3% daily loss |
+| Kill switch liquidations | Tier 3: −6% daily loss (V2.27) |
 | Panic mode liquidations | SPY −4% intraday |
 | Cold start warm entries | 10:00 AM regime check |
 
@@ -388,7 +388,7 @@ flowchart TD
     
     subgraph POSITIONS["Get All Positions"]
         P1["Query current holdings"]
-        P2["List: TQQQ, QLD, SSO, SOXL,<br/>TMF, PSQ, SHV"]
+        P2["List: QLD, SSO, UGL, UCO,<br/>TQQQ, SPXL, SOXL, SH"]
     end
     
     subgraph LIQUIDATE["Liquidate Each Position"]
@@ -525,7 +525,7 @@ def CancelAllOrders(self):
 |-------|--------|-------------|
 | Minimum trade | $2,000 | From Portfolio Router |
 | Maximum single position | 50%/40% | Phase-dependent |
-| Group exposure limits | Various | NASDAQ_BETA, SPY_BETA, RATES |
+| Group exposure limits | Various | NASDAQ_BETA, SPY_BETA, COMMODITIES (V6.11) |
 
 ---
 

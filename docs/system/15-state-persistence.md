@@ -179,7 +179,7 @@ When loading V2.29 state, `restore_state()` performs automatic migration:
 
 The Startup Gate state is **never reset by kill switch**. This is deliberate — StartupGate is a one-time arming sequence that progresses permanently from INDICATOR_WARMUP → OBSERVATION → REDUCED → FULLY_ARMED. Once FULLY_ARMED, it stays armed forever. This is separate from ColdStartEngine (which resets on kill switch).
 
-V2.30 removed the regime dependency: progression is purely time-based (5 days per phase, 15 days total). This ensures the gate completes in all market conditions, not just bull markets.
+V2.30 removed the regime dependency: progression is purely time-based. V6.0 simplified to 3 days per phase, 6 days total (WARMUP 3d + REDUCED 3d). This ensures the gate completes in all market conditions, not just bull markets.
 
 ---
 
@@ -222,14 +222,14 @@ For each open position:
       "strategy_tag": "TREND",
       "quantity": 150
     },
-    "TMF": {
-      "symbol": "TMF",
-      "entry_price": 45.00,
+    "SH": {
+      "symbol": "SH",
+      "entry_price": 14.50,
       "entry_date": "2024-01-12",
-      "highest_high": 45.00,
+      "highest_high": 14.50,
       "current_stop": null,
       "strategy_tag": "HEDGE",
-      "quantity": 200
+      "quantity": 500
     }
   }
 }
