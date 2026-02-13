@@ -2262,43 +2262,54 @@ class PortfolioRouter:
                                 continue
                         required_margin = per_contract_margin * order.quantity
                         if per_contract_margin > 0 and required_margin > margin_remaining:
-                            max_contracts = int(margin_remaining / per_contract_margin)
-                            min_contracts = getattr(config, "MIN_SPREAD_CONTRACTS", 2)
-                            if max_contracts >= min_contracts:
-                                scale_ratio = max_contracts / order.quantity
-                                order.quantity = max_contracts
-                                if order.combo_short_quantity:
-                                    # Keep short leg quantity exactly aligned with scaled spread count.
-                                    # BUY combo (open): short leg is negative.
-                                    # SELL combo (close): short leg is positive.
-                                    order.combo_short_quantity = (
-                                        -order.quantity
-                                        if order.side == OrderSide.BUY
-                                        else order.quantity
-                                    )
+                            # V9.4 P0: Exit combos bypass margin check — closing a spread
+                            # releases margin, it should never be blocked by margin requirements.
+                            # This fixes the deadlock where exit signals fire every minute but
+                            # the close order is perpetually margin-blocked.
+                            if is_exit_combo:
                                 self.log(
-                                    f"ROUTER_MARGIN_SCALE_COMBO: {order.symbol} | "
+                                    f"ROUTER_EXIT_BYPASS_MARGIN: {order.symbol} | "
                                     f"Required=${required_margin:,.0f} > Available=${margin_remaining:,.0f} | "
-                                    f"Scaled to {max_contracts} spreads"
+                                    f"Allowing exit combo (risk-reducing)"
                                 )
                             else:
-                                self.log(
-                                    f"ROUTER_MARGIN_BLOCK_COMBO: {order.symbol} | "
-                                    f"Required=${required_margin:,.0f} > Available=${margin_remaining:,.0f} | "
-                                    f"Max {max_contracts} < min {min_contracts}"
-                                )
-                                self._record_rejection(
-                                    code="R_COMBO_MARGIN_BLOCK",
-                                    symbol=order.symbol,
-                                    detail=(
+                                max_contracts = int(margin_remaining / per_contract_margin)
+                                min_contracts = getattr(config, "MIN_SPREAD_CONTRACTS", 2)
+                                if max_contracts >= min_contracts:
+                                    scale_ratio = max_contracts / order.quantity
+                                    order.quantity = max_contracts
+                                    if order.combo_short_quantity:
+                                        # Keep short leg quantity exactly aligned with scaled spread count.
+                                        # BUY combo (open): short leg is negative.
+                                        # SELL combo (close): short leg is positive.
+                                        order.combo_short_quantity = (
+                                            -order.quantity
+                                            if order.side == OrderSide.BUY
+                                            else order.quantity
+                                        )
+                                    self.log(
+                                        f"ROUTER_MARGIN_SCALE_COMBO: {order.symbol} | "
                                         f"Required=${required_margin:,.0f} > Available=${margin_remaining:,.0f} | "
-                                        f"Max={max_contracts} < Min={min_contracts}"
-                                    ),
-                                    stage="EXECUTE",
-                                    source_tag=source_tag,
-                                    trace_id=trace_id,
-                                )
-                                continue
+                                        f"Scaled to {max_contracts} spreads"
+                                    )
+                                else:
+                                    self.log(
+                                        f"ROUTER_MARGIN_BLOCK_COMBO: {order.symbol} | "
+                                        f"Required=${required_margin:,.0f} > Available=${margin_remaining:,.0f} | "
+                                        f"Max {max_contracts} < min {min_contracts}"
+                                    )
+                                    self._record_rejection(
+                                        code="R_COMBO_MARGIN_BLOCK",
+                                        symbol=order.symbol,
+                                        detail=(
+                                            f"Required=${required_margin:,.0f} > Available=${margin_remaining:,.0f} | "
+                                            f"Max={max_contracts} < Min={min_contracts}"
+                                        ),
+                                        stage="EXECUTE",
+                                        source_tag=source_tag,
+                                        trace_id=trace_id,
+                                    )
+                                    continue
                     else:
                         # Non-combo pre-check uses notional order value
                         multiplier = 100 if is_option else 1
@@ -2408,23 +2419,29 @@ class PortfolioRouter:
                     total_combo_margin = combo_margin_per_contract * abs(order.quantity)
                     margin_remaining = self.get_effective_margin_remaining()
                     if combo_margin_per_contract > 0 and total_combo_margin > margin_remaining:
-                        self.log(
-                            f"ROUTER_MARGIN_BLOCK_COMBO: {order.symbol} | "
-                            f"Required=${total_combo_margin:,.0f} > Available=${margin_remaining:,.0f}"
-                        )
-                        self._record_rejection(
-                            code="R_COMBO_MARGIN_BLOCK",
-                            symbol=order.symbol,
-                            detail=(
+                        # V9.4 P0: Exit combos bypass — closing reduces risk, should never be blocked
+                        if is_exit_combo:
+                            self.log(
+                                f"ROUTER_EXIT_BYPASS_MARGIN: {order.symbol} | "
+                                f"Required=${total_combo_margin:,.0f} > Available=${margin_remaining:,.0f} | "
+                                f"Allowing exit combo (risk-reducing)"
+                            )
+                        else:
+                            self.log(
+                                f"ROUTER_MARGIN_BLOCK_COMBO: {order.symbol} | "
                                 f"Required=${total_combo_margin:,.0f} > Available=${margin_remaining:,.0f}"
-                            ),
-                            stage="EXECUTE",
-                            source_tag=source_tag,
-                            trace_id=trace_id,
-                        )
-                        if is_exit_combo and hasattr(self.algorithm, "options_engine"):
-                            self.algorithm.options_engine.reset_spread_closing_lock()
-                        continue
+                            )
+                            self._record_rejection(
+                                code="R_COMBO_MARGIN_BLOCK",
+                                symbol=order.symbol,
+                                detail=(
+                                    f"Required=${total_combo_margin:,.0f} > Available=${margin_remaining:,.0f}"
+                                ),
+                                stage="EXECUTE",
+                                source_tag=source_tag,
+                                trace_id=trace_id,
+                            )
+                            continue
 
                     # Import Leg class for combo orders
                     from AlgorithmImports import Leg

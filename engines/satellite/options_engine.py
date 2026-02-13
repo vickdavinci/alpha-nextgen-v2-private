@@ -1998,6 +1998,11 @@ class OptionsEngine:
         self._call_consecutive_losses: int = 0
         self._call_cooldown_until_date: Optional[datetime.date] = None
 
+        # V9.4 P0: Exit signal cooldown — prevent per-minute spam when close order fails.
+        # Maps spread_key -> last exit signal datetime. If exit fires and close fails,
+        # don't re-fire for SPREAD_EXIT_RETRY_MINUTES.
+        self._spread_exit_signal_cooldown: Dict[str, datetime] = {}
+
     def log(self, message: str, trades_only: bool = False) -> None:
         """
         Log via algorithm with LiveMode awareness.
@@ -6454,6 +6459,18 @@ class OptionsEngine:
         if spread.is_closing:
             return None
 
+        # V9.4 P0: Exit signal cooldown — if a previous exit signal was sent but the
+        # close order failed (margin, liquidity, etc.), don't re-fire every minute.
+        # Wait SPREAD_EXIT_RETRY_MINUTES before retrying.
+        retry_minutes = int(getattr(config, "SPREAD_EXIT_RETRY_MINUTES", 15))
+        if retry_minutes > 0 and self.algorithm is not None:
+            spread_key = self._build_spread_key(spread)
+            last_exit_time = self._spread_exit_signal_cooldown.get(spread_key)
+            if last_exit_time is not None:
+                elapsed = (self.algorithm.Time - last_exit_time).total_seconds() / 60.0
+                if elapsed < retry_minutes:
+                    return None
+
         # Phase A: anti-churn hold window for non-emergency spread exits.
         # Emergency exits (assignment/0DTE mandatory) are handled in check_assignment_risk_exit().
         min_hold_minutes = int(getattr(config, "SPREAD_MIN_HOLD_MINUTES", 0))
@@ -6761,6 +6778,11 @@ class OptionsEngine:
 
         # V2.12 Fix #2: Lock the position to prevent duplicate exit signals
         spread.is_closing = True
+
+        # V9.4 P0: Record exit signal time for retry cooldown
+        if self.algorithm is not None:
+            cooldown_key = self._build_spread_key(spread)
+            self._spread_exit_signal_cooldown[cooldown_key] = self.algorithm.Time
 
         # V2.5 FIX: Return SINGLE exit signal with combo metadata
         # (Same structure as entry, so router creates atomic ComboMarketOrder)
@@ -8849,7 +8871,9 @@ class OptionsEngine:
                 self._spread_positions = [s for s in self._spread_positions if s is not spread]
             elif self._spread_position is spread:
                 self._spread_position = None
-            self._spread_neutrality_warn_by_key.pop(self._build_spread_key(spread), None)
+            spread_key = self._build_spread_key(spread)
+            self._spread_neutrality_warn_by_key.pop(spread_key, None)
+            self._spread_exit_signal_cooldown.pop(spread_key, None)  # V9.4 P0: Clear cooldown
 
             self._spread_position = self._spread_positions[0] if self._spread_positions else None
 

@@ -1082,6 +1082,9 @@ SHORT_LEG_ITM_EXIT_THRESHOLD = (
 SPREAD_ASSIGNMENT_GRACE_MINUTES = 45  # V6.15 FIX: Allow spread to stabilize before ITM checks
 SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 15  # Minutes between log messages
 SPREAD_MIN_HOLD_MINUTES = 20  # Block non-emergency spread exits right after entry
+SPREAD_EXIT_RETRY_MINUTES = (
+    15  # V9.4 P0: Cooldown between exit signal retries (prevents per-minute spam)
+)
 
 # V6.10 P0: Mandatory DTE=1 Force Close (Nuclear Assignment Prevention)
 # Close ALL spread positions when DTE reaches this value, regardless of P&L
