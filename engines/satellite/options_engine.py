@@ -257,11 +257,13 @@ class SpreadPosition:
     num_spreads: int  # Number of spread contracts
     regime_at_entry: float  # Regime score at entry
     is_closing: bool = False  # V2.12 Fix #2: Prevent duplicate exit signals
+    highest_pnl_pct: float = 0.0  # V9.4: Track high-water mark for trailing stop
 
     @property
     def profit_target(self) -> float:
-        """50% of max profit per V2.3 spec."""
-        return self.net_debit + (self.max_profit * 0.5)
+        """Base configured profit target as spread value (telemetry helper)."""
+        base_profit_pct = float(getattr(config, "SPREAD_PROFIT_TARGET_PCT", 0.50))
+        return self.net_debit + (self.max_profit * base_profit_pct)
 
     @property
     def breakeven(self) -> float:
@@ -285,6 +287,7 @@ class SpreadPosition:
             "num_spreads": self.num_spreads,
             "regime_at_entry": self.regime_at_entry,
             "is_closing": self.is_closing,
+            "highest_pnl_pct": self.highest_pnl_pct,
         }
 
     @classmethod
@@ -302,6 +305,7 @@ class SpreadPosition:
             num_spreads=data["num_spreads"],
             regime_at_entry=data["regime_at_entry"],
             is_closing=data.get("is_closing", False),  # V2.12: Default False for backwards compat
+            highest_pnl_pct=data.get("highest_pnl_pct", 0.0),  # V9.4: Trailing stop HWM
         )
 
 
@@ -4712,6 +4716,31 @@ class OptionsEngine:
             spread_type = "BEAR_PUT"
             vix_max = config.SPREAD_VIX_MAX_BEAR
 
+        # V9.4 F4: Require minimum regime for BULL spread entries
+        bull_regime_min = float(getattr(config, "VASS_BULL_SPREAD_REGIME_MIN", 0))
+        if bull_regime_min > 0 and spread_type == "BULL_CALL" and regime_score < bull_regime_min:
+            self.log(
+                f"SPREAD: BULL_CALL blocked by regime floor | "
+                f"Regime={regime_score:.1f} < {bull_regime_min:.0f}"
+            )
+            return fail("R_BULL_REGIME_FLOOR")
+
+        # V9.4 F5: Block BULL spreads when QQQ is below 20MA (trend confirmation)
+        if (
+            getattr(config, "VASS_BULL_MA20_GATE_ENABLED", False)
+            and spread_type == "BULL_CALL"
+            and self.algorithm is not None
+        ):
+            qqq_sma20 = getattr(self.algorithm, "qqq_sma20", None)
+            if qqq_sma20 is not None and getattr(qqq_sma20, "IsReady", False):
+                sma20_value = float(qqq_sma20.Current.Value)
+                if current_price < sma20_value:
+                    self.log(
+                        f"SPREAD: BULL_CALL blocked by MA20 gate | "
+                        f"QQQ={current_price:.2f} < MA20={sma20_value:.2f}"
+                    )
+                    return fail("R_BULL_MA20_GATE")
+
         # Bear hardening: block bullish debit spreads when short-term trend is down.
         if (
             spread_type == "BULL_CALL"
@@ -6616,6 +6645,23 @@ class OptionsEngine:
                     f"Target {adaptive_profit_pct:.0%} (regime {regime_score:.0f}) | "
                     f"Gross ${pnl:.2f} - Commission ${commission_cost:.2f}"
                 )
+
+            # Exit 1B: TRAILING STOP — lock in gains after reaching activation threshold
+            # V9.4: Once spread reaches +X% unrealized, trail stop from high-water mark
+            trail_activate_pct = float(getattr(config, "SPREAD_TRAIL_ACTIVATE_PCT", 0.20))
+            trail_offset_pct = float(getattr(config, "SPREAD_TRAIL_OFFSET_PCT", 0.15))
+            if exit_reason is None and pnl_pct > 0:
+                # Update high-water mark
+                if pnl_pct > spread.highest_pnl_pct:
+                    spread.highest_pnl_pct = pnl_pct
+                # Trail stop activates after reaching activation threshold
+                if spread.highest_pnl_pct >= trail_activate_pct:
+                    trail_stop_level = spread.highest_pnl_pct - trail_offset_pct
+                    if pnl_pct <= trail_stop_level:
+                        exit_reason = (
+                            f"TRAIL_STOP {pnl_pct:.1%} "
+                            f"(High={spread.highest_pnl_pct:.1%}, Trail={trail_stop_level:.1%})"
+                        )
 
             # Exit 2: STOP LOSS
             # Add a hard cap across regimes, then apply adaptive stop logic.
@@ -8638,12 +8684,42 @@ class OptionsEngine:
         # V2.9: Update trade counter (Bug #4 fix) - Spreads are always swing mode
         self._increment_trade_counter(OptionsMode.SWING)
 
+        spread_type_upper = str(spread.spread_type or "").upper()
+        if spread_type_upper in {
+            "BULL_PUT_CREDIT",
+            "BEAR_CALL_CREDIT",
+            SpreadStrategy.BULL_PUT_CREDIT.value,
+            SpreadStrategy.BEAR_CALL_CREDIT.value,
+        }:
+            # Credit spread telemetry: target is close-cost threshold to realize configured profit.
+            credit_target_pct = float(getattr(config, "CREDIT_SPREAD_PROFIT_TARGET", 0.50))
+            target_close_value = abs(net_debit) - (max_profit * credit_target_pct)
+            target_telemetry = f"TargetClose<=${target_close_value:.2f} ({credit_target_pct:.0%})"
+        else:
+            # Debit spread telemetry: mirror configured/adaptive target math from exit logic.
+            base_profit_pct = float(getattr(config, "SPREAD_PROFIT_TARGET_PCT", 0.50))
+            profit_multipliers = getattr(
+                config, "SPREAD_PROFIT_REGIME_MULTIPLIERS", {75: 1.0, 50: 1.0, 40: 1.0, 0: 1.0}
+            )
+            profit_multiplier = 1.0
+            for threshold in sorted(profit_multipliers.keys(), reverse=True):
+                if regime_score >= threshold:
+                    profit_multiplier = profit_multipliers[threshold]
+                    break
+            adaptive_profit_pct = base_profit_pct * profit_multiplier
+            commission_cost = num_spreads * config.SPREAD_COMMISSION_PER_CONTRACT
+            commission_per_share = commission_cost / (num_spreads * 100) if num_spreads > 0 else 0
+            target_spread_value = (
+                net_debit + (max_profit * adaptive_profit_pct) + commission_per_share
+            )
+            target_telemetry = f"Target=${target_spread_value:.2f} ({adaptive_profit_pct:.0%}, Comm ${commission_cost:.2f})"
+
         self.log(
             f"SPREAD: POSITION_REGISTERED | {spread.spread_type} | "
             f"Long={spread.long_leg.strike} @ ${long_leg_fill_price:.2f} | "
             f"Short={spread.short_leg.strike} @ ${short_leg_fill_price:.2f} | "
             f"Net Debit=${net_debit:.2f} | Max Profit=${max_profit:.2f} | "
-            f"x{num_spreads} | Target=${spread.profit_target:.2f}",
+            f"x{num_spreads} | {target_telemetry}",
             trades_only=True,
         )
 
