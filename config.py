@@ -915,6 +915,9 @@ ELASTIC_DELTA_CEILING = 0.95  # Never search above this delta (deep ITM)
 # Q1 2022 audit: 116 VASS rejections at VIX > 30 because $0.30 floor filtered all candidates
 CREDIT_SPREAD_MIN_CREDIT_HIGH_IV = 0.10  # V6.13.1 OPT: More credit spread fills (was 0.20)
 CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD = 30.0  # VIX level above which reduced floor applies
+# V9.2: Structural credit quality floor (prevents low-credit, high-max-loss structures)
+CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT = 0.35
+CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV = 0.30
 
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
 # V2.3.15: Sniper Logic - allow one retry, not machine gun
@@ -1754,6 +1757,17 @@ INTRADAY_HIGH_VIX_STOP_MAX_PCT = (
 )
 INTRADAY_ITM_TRAIL_TRIGGER = 0.20  # Trail after +20%
 INTRADAY_ITM_TRAIL_PCT = 0.50  # Trail at 50% of gains
+
+# V9.2: Per-strategy intraday exits (previously universal target/stop)
+INTRADAY_DEBIT_FADE_TARGET = 0.40
+INTRADAY_DEBIT_FADE_STOP = 0.25
+INTRADAY_DEBIT_FADE_TRAIL_TRIGGER = 0.25
+INTRADAY_DEBIT_FADE_TRAIL_PCT = 0.50
+
+INTRADAY_DEBIT_MOMENTUM_TARGET = 0.45
+INTRADAY_DEBIT_MOMENTUM_STOP = 0.30
+INTRADAY_DEBIT_MOMENTUM_TRAIL_TRIGGER = 0.20
+INTRADAY_DEBIT_MOMENTUM_TRAIL_PCT = 0.50
 
 # V2.15: Strategy-aware intraday delta bounds
 # DEBIT_FADE: Mean reversion needs OTM options (delta 0.20-0.50)

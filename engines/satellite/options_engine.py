@@ -197,6 +197,8 @@ class OptionsPosition:
     stop_price: float  # Based on tiered stop
     target_price: float  # +50% target
     stop_pct: float  # Stop percentage used
+    entry_strategy: str = "UNKNOWN"  # Strategy at entry for strategy-aware exits
+    highest_price: float = 0.0  # High watermark for trailing stop
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for persistence."""
@@ -209,6 +211,8 @@ class OptionsPosition:
             "stop_price": self.stop_price,
             "target_price": self.target_price,
             "stop_pct": self.stop_pct,
+            "entry_strategy": self.entry_strategy,
+            "highest_price": self.highest_price,
         }
 
     @classmethod
@@ -223,6 +227,8 @@ class OptionsPosition:
             stop_price=data["stop_price"],
             target_price=data["target_price"],
             stop_pct=data["stop_pct"],
+            entry_strategy=data.get("entry_strategy", "UNKNOWN"),
+            highest_price=data.get("highest_price", 0.0),
         )
 
 
@@ -1913,6 +1919,7 @@ class OptionsEngine:
         self._pending_stop_pct: Optional[float] = None
         self._pending_stop_price: Optional[float] = None
         self._pending_target_price: Optional[float] = None
+        self._pending_entry_strategy: Optional[str] = None
 
         # V2.3: Pending spread entry state
         self._pending_spread_long_leg: Optional[OptionContract] = None
@@ -4169,6 +4176,18 @@ class OptionsEngine:
             return config.CREDIT_SPREAD_MIN_CREDIT_HIGH_IV
         return config.CREDIT_SPREAD_MIN_CREDIT
 
+    def _get_effective_credit_to_width_min(self, vix_current: Optional[float] = None) -> float:
+        """Return IV-adaptive minimum credit/width ratio for credit spread quality gating."""
+        smoothed_vix = self._iv_sensor.get_smoothed_vix()
+        if vix_current is not None:
+            try:
+                smoothed_vix = max(smoothed_vix, float(vix_current))
+            except (TypeError, ValueError):
+                pass
+        if smoothed_vix > config.CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD:
+            return float(getattr(config, "CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV", 0.30))
+        return float(getattr(config, "CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT", 0.35))
+
     def estimate_spread_margin_per_contract(
         self,
         spread_width: float,
@@ -4459,6 +4478,7 @@ class OptionsEngine:
         self._pending_stop_pct = stop_pct
         self._pending_stop_price = stop_price
         self._pending_target_price = target_price
+        self._pending_entry_strategy = "SWING_SINGLE"
 
         # V2.3 FIX: Mark that we attempted entry today (prevents retry spam)
         self._entry_attempted_today = True
@@ -5501,6 +5521,17 @@ class OptionsEngine:
                 f"min ${min_credit_required:.2f}"
             )
             return fail_quality("CREDIT_BELOW_MIN")
+
+        credit_to_width = (credit_received / width) if width > 0 else 0.0
+        min_credit_to_width = self._get_effective_credit_to_width_min(vix_current=vix_current)
+        if credit_to_width < min_credit_to_width:
+            self.log(
+                f"CREDIT_SPREAD: Entry blocked - CREDIT_TO_WIDTH {credit_to_width:.1%} < {min_credit_to_width:.0%} | "
+                f"Credit=${credit_received:.2f} Width=${width:.0f}",
+                trades_only=True,
+            )
+            return fail_quality("CREDIT_TO_WIDTH_TOO_LOW")
+
         if bool(getattr(config, "SPREAD_ENTRY_COMMISSION_GATE_ENABLED", False)):
             max_profit_dollars = credit_received * 100.0
             commission_per_spread = float(getattr(config, "SPREAD_COMMISSION_PER_CONTRACT", 2.60))
@@ -6906,6 +6937,47 @@ class OptionsEngine:
     # EXIT SIGNALS
     # =========================================================================
 
+    def _get_intraday_exit_profile(self, entry_strategy: str) -> Tuple[float, Optional[float]]:
+        """Return (target_pct, stop_pct_override) for strategy-aware intraday exits."""
+        strategy = str(entry_strategy or "").upper()
+        if strategy == IntradayStrategy.ITM_MOMENTUM.value:
+            return (
+                float(getattr(config, "INTRADAY_ITM_TARGET", 0.35)),
+                float(getattr(config, "INTRADAY_ITM_STOP", 0.35)),
+            )
+        if strategy == IntradayStrategy.DEBIT_FADE.value:
+            return (
+                float(getattr(config, "INTRADAY_DEBIT_FADE_TARGET", 0.40)),
+                float(getattr(config, "INTRADAY_DEBIT_FADE_STOP", 0.25)),
+            )
+        if strategy == IntradayStrategy.DEBIT_MOMENTUM.value:
+            return (
+                float(getattr(config, "INTRADAY_DEBIT_MOMENTUM_TARGET", 0.45)),
+                float(getattr(config, "INTRADAY_DEBIT_MOMENTUM_STOP", 0.30)),
+            )
+        # Protective puts + swing single-leg keep existing defaults
+        return (float(getattr(config, "OPTIONS_PROFIT_TARGET_PCT", 0.60)), None)
+
+    def _get_trail_config(self, entry_strategy: str) -> Optional[Tuple[float, float]]:
+        """Return (trigger_pct, trail_pct) for intraday strategy trailing stops."""
+        strategy = str(entry_strategy or "").upper()
+        if strategy == IntradayStrategy.ITM_MOMENTUM.value:
+            return (
+                float(getattr(config, "INTRADAY_ITM_TRAIL_TRIGGER", 0.20)),
+                float(getattr(config, "INTRADAY_ITM_TRAIL_PCT", 0.50)),
+            )
+        if strategy == IntradayStrategy.DEBIT_FADE.value:
+            return (
+                float(getattr(config, "INTRADAY_DEBIT_FADE_TRAIL_TRIGGER", 0.25)),
+                float(getattr(config, "INTRADAY_DEBIT_FADE_TRAIL_PCT", 0.50)),
+            )
+        if strategy == IntradayStrategy.DEBIT_MOMENTUM.value:
+            return (
+                float(getattr(config, "INTRADAY_DEBIT_MOMENTUM_TRAIL_TRIGGER", 0.20)),
+                float(getattr(config, "INTRADAY_DEBIT_MOMENTUM_TRAIL_PCT", 0.50)),
+            )
+        return None
+
     def check_exit_signals(
         self,
         current_price: float,
@@ -6948,6 +7020,34 @@ class OptionsEngine:
                 urgency=Urgency.IMMEDIATE,
                 reason=reason,
             )
+
+        # Exit 1.5: Strategy-aware trailing stop for intraday strategies
+        if pos.entry_strategy and pos.entry_strategy.upper() != "PROTECTIVE_PUTS":
+            if current_price > pos.highest_price:
+                pos.highest_price = current_price
+            trail_cfg = self._get_trail_config(pos.entry_strategy)
+            if trail_cfg is not None:
+                trail_trigger, trail_pct = trail_cfg
+                gain_pct = (
+                    (pos.highest_price - entry_price) / entry_price if entry_price > 0 else 0.0
+                )
+                if gain_pct >= trail_trigger:
+                    trail_stop = pos.highest_price - ((pos.highest_price - entry_price) * trail_pct)
+                    if trail_stop > pos.stop_price:
+                        pos.stop_price = trail_stop
+                    if current_price <= pos.stop_price:
+                        reason = (
+                            f"TRAIL_STOP {pnl_pct:.1%} (High=${pos.highest_price:.2f}, "
+                            f"Trail=${pos.stop_price:.2f})"
+                        )
+                        self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
+                        return TargetWeight(
+                            symbol=self._symbol_str(symbol),
+                            target_weight=0.0,
+                            source="OPT",
+                            urgency=Urgency.IMMEDIATE,
+                            reason=reason,
+                        )
 
         # Exit 2: Stop hit
         if current_price <= pos.stop_price:
@@ -7827,6 +7927,7 @@ class OptionsEngine:
         # Without this, register_entry fails with "no pending contract"
         self._pending_contract = best_contract
         self._pending_num_contracts = num_contracts
+        self._pending_entry_strategy = state.recommended_strategy.value
 
         # V6.5: Delta-scaled ATR stop calculation
         # Formula: stop_distance = ATR_MULTIPLIER × ATR × abs(delta)
@@ -7881,6 +7982,22 @@ class OptionsEngine:
                 f"STOP_CALC: Protective PUT override → {self._pending_stop_pct:.0%} "
                 f"(config.PROTECTIVE_PUTS_STOP_PCT)"
             )
+        else:
+            # V9.2: Strategy-specific stop overrides for intraday exits.
+            strategy_stop_overrides = {
+                IntradayStrategy.ITM_MOMENTUM: float(
+                    getattr(config, "INTRADAY_ITM_STOP", self._pending_stop_pct)
+                ),
+                IntradayStrategy.DEBIT_FADE: float(
+                    getattr(config, "INTRADAY_DEBIT_FADE_STOP", self._pending_stop_pct)
+                ),
+                IntradayStrategy.DEBIT_MOMENTUM: float(
+                    getattr(config, "INTRADAY_DEBIT_MOMENTUM_STOP", self._pending_stop_pct)
+                ),
+            }
+            strategy_stop = strategy_stop_overrides.get(state.recommended_strategy)
+            if strategy_stop is not None and strategy_stop > 0:
+                self._pending_stop_pct = strategy_stop
 
         self.log(
             f"INTRADAY_SIGNAL: {reason} | Δ={best_contract.delta:.2f} K={best_contract.strike} DTE={best_contract.days_to_expiry} | "
@@ -8287,9 +8404,19 @@ class OptionsEngine:
         )
         stop_pct = self._pending_stop_pct if self._pending_stop_pct is not None else 0.20
 
+        entry_strategy = self._pending_entry_strategy or "SWING_SINGLE"
+
         # Recalculate stop and target based on actual fill price
         stop_price = fill_price * (1 - stop_pct)
-        target_price = fill_price * (1 + config.OPTIONS_PROFIT_TARGET_PCT)
+
+        if self._pending_intraday_entry:
+            target_pct, stop_override = self._get_intraday_exit_profile(entry_strategy)
+            target_price = fill_price * (1 + target_pct)
+            if stop_override is not None and stop_override > 0:
+                stop_pct = float(stop_override)
+                stop_price = fill_price * (1 - stop_pct)
+        else:
+            target_price = fill_price * (1 + config.OPTIONS_PROFIT_TARGET_PCT)
 
         position = OptionsPosition(
             contract=contract,
@@ -8300,6 +8427,8 @@ class OptionsEngine:
             stop_price=stop_price,
             target_price=target_price,
             stop_pct=stop_pct,
+            entry_strategy=entry_strategy,
+            highest_price=fill_price,
         )
 
         # V2.3.2 FIX #4: Track position in correct variable based on mode
@@ -8325,9 +8454,9 @@ class OptionsEngine:
         self.log(
             f"OPT: POSITION_REGISTERED {contract.symbol} | "
             f"Entry=${fill_price:.2f} | "
-            f"Target=${target_price:.2f} (+{config.OPTIONS_PROFIT_TARGET_PCT:.0%}) | "
+            f"Target=${target_price:.2f} | "
             f"Stop=${stop_price:.2f} (-{stop_pct:.0%}) | "
-            f"Contracts={num_contracts} | "
+            f"Strategy={entry_strategy} | Contracts={num_contracts} | "
             f"Score={entry_score:.2f}"
         )
 
@@ -8338,6 +8467,7 @@ class OptionsEngine:
         self._pending_stop_pct = None
         self._pending_stop_price = None
         self._pending_target_price = None
+        self._pending_entry_strategy = None
 
         return position
 
@@ -8499,6 +8629,7 @@ class OptionsEngine:
         self._pending_stop_pct = None
         self._pending_stop_price = None
         self._pending_target_price = None
+        self._pending_entry_strategy = None
         self._entry_attempted_today = False
         self.log(
             "OPT_SWING_RECOVERY: Pending swing entry cancelled | Retry allowed",
@@ -8540,8 +8671,12 @@ class OptionsEngine:
         if self._pending_intraday_entry:
             self._pending_intraday_entry = False
             self._pending_contract = None
+            self._pending_entry_score = None
             self._pending_num_contracts = None
             self._pending_stop_pct = None
+            self._pending_stop_price = None
+            self._pending_target_price = None
+            self._pending_entry_strategy = None
             self.log(
                 "OPT_MICRO_RECOVERY: Pending intraday entry cancelled | Retry allowed",
                 trades_only=True,
@@ -8813,6 +8948,7 @@ class OptionsEngine:
         self._pending_stop_pct = None
         self._pending_stop_price = None
         self._pending_target_price = None
+        self._pending_entry_strategy = None
         self._entry_attempted_today = False
 
         if cleared:
