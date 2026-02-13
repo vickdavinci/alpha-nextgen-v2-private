@@ -1,0 +1,4 @@
+interface:
+  display_name: "Log Analyzer"
+  short_description: "Analyze backtest logs with validated trade metrics"
+  default_prompt: "Analyze specified backtest log files and produce performance and signal flow reports cross-validated with trades.csv."

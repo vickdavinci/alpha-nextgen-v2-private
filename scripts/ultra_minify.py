@@ -383,9 +383,9 @@ def ultra_minify(source: str) -> str:
     result = source
     result = strip_inline_comments(result)
     result = remove_type_annotations(result)
-    result = remove_unnecessary_pass(result)
+    # remove_unnecessary_pass disabled: causes IndentationError on QC after basic minify strips docstrings
     result = remove_blank_lines(result)
-    result = compress_indentation(result, target_spaces=1)
+    result = compress_indentation(result, target_spaces=2)
     return result
 
 

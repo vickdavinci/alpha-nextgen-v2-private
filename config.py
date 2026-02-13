@@ -925,6 +925,9 @@ CREDIT_SPREAD_MEDIUM_IV_VIX_THRESHOLD = 20.0  # VIX level for medium-IV tier
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
 # V2.3.15: Sniper Logic - allow one retry, not machine gun
 INTRADAY_MAX_TRADES_PER_DAY = 4  # Throughput tune: allow one additional high-quality intraday slot
+INTRADAY_MAX_TRADES_PER_DIRECTION_PER_DAY = (
+    2  # Hard cap per intraday direction (CALL/PUT) to curb same-side churn.
+)
 MICRO_SAME_STRATEGY_COOLDOWN_MINUTES = (
     20  # Block immediate repeat of same MICRO strategy after close
 )
@@ -1292,27 +1295,33 @@ VASS_DEBIT_LOW_VIX_THRESHOLD = 16.0
 SPREAD_MAX_DEBIT_TO_WIDTH_PCT = (
     0.55  # V9.1: Block spreads where debit > 55% of width (ensures R:R ≥ 0.82:1)
 )
-SPREAD_PROFIT_TARGET_PCT = 0.50  # +50% base target
-SPREAD_STOP_LOSS_PCT = (
-    0.40  # V6.10 P5: Raised from 0.35 to 0.40 (wider stop, symmetric with target)
-)
-SPREAD_HARD_STOP_LOSS_PCT = 0.50  # Emergency cap above max adaptive stop (Bull=48%)
+SPREAD_PROFIT_TARGET_PCT = 0.40  # V9.4: Lowered from 0.50 (more achievable targets)
+SPREAD_STOP_LOSS_PCT = 0.30  # V9.4: Tightened from 0.40 (caps worst-case at 36% in bull)
+SPREAD_HARD_STOP_LOSS_PCT = 0.40  # V9.4: Lowered from 0.50 (cap above max adaptive of 0.36)
 SPREAD_HARD_STOP_WIDTH_PCT = 0.35  # Hard cap using spread width (debit spreads)
 SPREAD_STOP_REGIME_MULTIPLIERS = {
-    75: 1.20,  # Bull: give more room (0.40 * 1.2 = 0.48)
-    50: 1.00,  # Neutral: base (0.40)
-    40: 0.85,  # Cautious: tighter (0.40 * 0.85 = 0.34)
-    0: 0.70,  # Bear: tightest (0.40 * 0.70 = 0.28)
+    75: 1.20,  # Bull: give more room (0.30 * 1.2 = 0.36)
+    50: 1.00,  # Neutral: base (0.30)
+    40: 0.85,  # Cautious: tighter (0.30 * 0.85 = 0.255)
+    0: 0.70,  # Bear: tightest (0.30 * 0.70 = 0.21)
 }
 
+# V9.4: Spread Trailing Stop — lock in gains after reaching activation threshold
+SPREAD_TRAIL_ACTIVATE_PCT = 0.20  # Activate after +20% unrealized gain
+SPREAD_TRAIL_OFFSET_PCT = 0.15  # Trail 15% below high-water mark
+
 # V3.0: Regime-Adaptive Profit Targets
-# With 50% base, multipliers give: Bull=45%, Neutral=55%, Cautious/Bear=60%
+# V9.4: With 40% base, multipliers give: Bull=36%, Neutral=44%, Cautious/Bear=48%
 SPREAD_PROFIT_REGIME_MULTIPLIERS = {
-    75: 0.90,  # Regime >= 75: 45% target (0.90 × 50% base) for low-IV bull runs
-    50: 1.10,  # Regime 50-74: 55% target
-    40: 1.20,  # Regime 40-49: 60% target
-    0: 1.20,  # Regime < 40: 60% target (ride bear trends)
+    75: 0.90,  # Regime >= 75: 36% target (0.90 × 40% base)
+    50: 1.10,  # Regime 50-74: 44% target
+    40: 1.20,  # Regime 40-49: 48% target
+    0: 1.20,  # Regime < 40: 48% target (ride bear trends)
 }
+
+# V9.4: BULL spread entry gates (regime-specific, no impact in bull markets)
+VASS_BULL_SPREAD_REGIME_MIN = 55  # Block BULL_CALL when regime < 55
+VASS_BULL_MA20_GATE_ENABLED = True  # Block BULL_CALL when QQQ < 20MA
 
 # V2.27: Win Rate Gate (Options Self-Correcting Throttle)
 # Rolling window of recent closed spread trades. Scales down/shuts off when losing.
