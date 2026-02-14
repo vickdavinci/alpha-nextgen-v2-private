@@ -4486,7 +4486,7 @@ class OptionsEngine:
 
             num_contracts = max(1, int(num_contracts * size_multiplier))
             self.log(
-                f"OPT: Sizing reduced to {num_contracts} contracts (ColdStart={size_multiplier:.0%})"
+                f"OPT: Sizing reduced to {num_contracts} contracts (SizeMult={size_multiplier:.0%})"
             )
 
         # V6.19: Apply choppy-market scaling to single-leg entries too.
@@ -5155,7 +5155,7 @@ class OptionsEngine:
             scaled = max(1, int(num_spreads * size_multiplier))
             self.log(
                 f"SPREAD: Sizing reduced | {num_spreads} -> {scaled} spreads | "
-                f"ColdStart={size_multiplier:.0%}",
+                f"SizeMult={size_multiplier:.0%}",
                 trades_only=True,
             )
             num_spreads = scaled
@@ -5677,7 +5677,7 @@ class OptionsEngine:
             scaled = max(1, int(num_spreads * size_multiplier))
             self.log(
                 f"CREDIT_SPREAD: Sizing reduced | {num_spreads} -> {scaled} spreads | "
-                f"ColdStart={size_multiplier:.0%}",
+                f"SizeMult={size_multiplier:.0%}",
                 trades_only=True,
             )
             num_spreads = scaled
