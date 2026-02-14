@@ -893,7 +893,7 @@ CREDIT_SPREAD_MIN_CREDIT = 0.20  # V6.10 P3: Was 0.30, lowered to allow more fil
 CREDIT_SPREAD_WIDTH_TARGET = 5.0  # $5 width for credit spreads
 CREDIT_SPREAD_FALLBACK_TO_DEBIT = True  # V6.10 P3: Fall back to debit when credit fails
 CREDIT_SPREAD_PROFIT_TARGET = 0.50  # Exit at 50% of max profit
-CREDIT_SPREAD_STOP_MULTIPLIER = 0.60  # Stop at 60% of max-loss threshold to cap tail losses
+CREDIT_SPREAD_STOP_MULTIPLIER = 0.40  # V10: tightened from 0.60 (R:R 0.45→0.67)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg delta range (OTM)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.45  # V6.13 OPT: Improve credit spread constructability
 # T-21: Credit-path liquidity quality gates (parity with debit selector).
