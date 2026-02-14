@@ -667,7 +667,7 @@ KS_COLD_START_RESET_ON_TIER_3 = True  # Reset cold start on Tier 3 (true emergen
 # V2.27: KS Spread Decouple
 # Spreads survive Tier 1 and Tier 2 — they have their own -50% stop (SPREAD_STOP_LOSS_PCT)
 # Only Tier 3 (FULL_EXIT) liquidates spreads
-KILL_SWITCH_SPREAD_DECOUPLE = True
+KILL_SWITCH_SPREAD_DECOUPLE = False  # V9.4: Spreads now liquidated at all KS tiers
 
 # Panic Mode
 PANIC_MODE_PCT = 0.04
@@ -924,7 +924,7 @@ CREDIT_SPREAD_MEDIUM_IV_VIX_THRESHOLD = 20.0  # VIX level for medium-IV tier
 
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
 # V2.3.15: Sniper Logic - allow one retry, not machine gun
-INTRADAY_MAX_TRADES_PER_DAY = 4  # Throughput tune: allow one additional high-quality intraday slot
+INTRADAY_MAX_TRADES_PER_DAY = 2  # V9.5 tune: reduce MICRO churn/fee drag
 INTRADAY_MAX_TRADES_PER_DIRECTION_PER_DAY = (
     2  # Hard cap per intraday direction (CALL/PUT) to curb same-side churn.
 )
@@ -1081,7 +1081,7 @@ SHORT_LEG_ITM_EXIT_THRESHOLD = (
 )
 SPREAD_ASSIGNMENT_GRACE_MINUTES = 45  # V6.15 FIX: Allow spread to stabilize before ITM checks
 SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 15  # Minutes between log messages
-SPREAD_MIN_HOLD_MINUTES = 20  # Block non-emergency spread exits right after entry
+SPREAD_MIN_HOLD_MINUTES = 0  # V9.5: Disable VASS spread minimum hold guard
 SPREAD_EXIT_RETRY_MINUTES = (
     15  # V9.4 P0: Cooldown between exit signal retries (prevents per-minute spam)
 )
@@ -1223,10 +1223,21 @@ OPTIONS_LATE_DAY_MAX_STOP = 0.20  # Only 20% stops after 2:30 PM
 # With single-leg exit at DTE=4, entering at DTE=14 gives 10+ days hold
 OPTIONS_SWING_DTE_MIN = 14  # Minimum DTE for Swing Mode (reduces gap risk)
 OPTIONS_SWING_DTE_MAX = 45  # Maximum DTE for Swing Mode
-OPTIONS_INTRADAY_DTE_MIN = 1  # V2.13: Skip 0DTE (QC backtest data gaps)
+OPTIONS_INTRADAY_DTE_MIN = 1  # Baseline floor (MICRO routing may override to 2+)
 OPTIONS_INTRADAY_DTE_MAX = (
     5  # V2.13: Match VASS "nearest weekly" (was 1, caused 306 silent failures)
 )
+
+# V9.5: MICRO DTE routing by volatility regime (keeps logic simple, config-driven)
+MICRO_DTE_ROUTING_ENABLED = True
+MICRO_DTE_LOW_VIX_THRESHOLD = 16.0  # Bull/low-vol profile
+MICRO_DTE_HIGH_VIX_THRESHOLD = 25.0  # Bear/high-vol profile
+MICRO_DTE_LOW_VIX_MIN = 2
+MICRO_DTE_LOW_VIX_MAX = 3
+MICRO_DTE_MEDIUM_VIX_MIN = 2
+MICRO_DTE_MEDIUM_VIX_MAX = 3
+MICRO_DTE_HIGH_VIX_MIN = 2
+MICRO_DTE_HIGH_VIX_MAX = 4
 
 # -----------------------------------------------------------------------------
 # V2.3 DEBIT SPREAD CONFIGURATION
@@ -1288,8 +1299,8 @@ SPREAD_WIDTH_EFFECTIVE_MAX = (
 SPREAD_DTE_MIN = 14  # Minimum 14 DTE (avoid gamma acceleration + gap risk)
 SPREAD_DTE_MAX = 45  # V2.19: Widened from 21 to 45 to align with VASS_LOW_IV_DTE (30-45)
 SPREAD_DTE_EXIT = 5  # Close by 5 DTE remaining
-VASS_DEBIT_MAX_HOLD_DAYS = 7  # Debit spreads: force-close if held >= 7 days
-VASS_DEBIT_MAX_HOLD_DAYS_LOW_VIX = 5  # In low IV, shorten hold to reduce theta drag
+VASS_DEBIT_MAX_HOLD_DAYS = 0  # V9.5: disable debit spread time-stop force exit
+VASS_DEBIT_MAX_HOLD_DAYS_LOW_VIX = 0  # V9.5: disable low-VIX debit time-stop override
 VASS_DEBIT_LOW_VIX_THRESHOLD = 16.0
 
 # Exit targets
@@ -1310,7 +1321,7 @@ SPREAD_STOP_REGIME_MULTIPLIERS = {
 }
 
 # V9.4: Spread Trailing Stop — lock in gains after reaching activation threshold
-SPREAD_TRAIL_ACTIVATE_PCT = 0.20  # Activate after +20% unrealized gain
+SPREAD_TRAIL_ACTIVATE_PCT = 0.30  # V9.5 tune: avoid cutting swing winners too early
 SPREAD_TRAIL_OFFSET_PCT = 0.15  # Trail 15% below high-water mark
 
 # V3.0: Regime-Adaptive Profit Targets
@@ -1324,7 +1335,7 @@ SPREAD_PROFIT_REGIME_MULTIPLIERS = {
 
 # V9.4: BULL spread entry gates (regime-specific, no impact in bull markets)
 VASS_BULL_SPREAD_REGIME_MIN = 55  # Block BULL_CALL when regime < 55
-VASS_BULL_MA20_GATE_ENABLED = True  # Block BULL_CALL when QQQ < 20MA
+VASS_BULL_MA20_GATE_ENABLED = False  # V9.5 tune: disable for VASS swing pullback participation
 
 # V2.27: Win Rate Gate (Options Self-Correcting Throttle)
 # Rolling window of recent closed spread trades. Scales down/shuts off when losing.
@@ -1792,7 +1803,7 @@ INTRADAY_DEBIT_FADE_DELTA_MAX = 0.50  # Near ATM max
 # V6.4: DEBIT_MOMENTUM: Trend confirmation needs ATM-ish options (delta 0.45-0.65)
 # Between DEBIT_FADE (OTM) and ITM_MOMENTUM (ITM) - captures directional moves
 INTRADAY_DEBIT_MOMENTUM_ENABLED = (
-    True  # V8.2 MICRO revive: re-enable with existing regime/time guards
+    False  # V9.5 tune: disable weakest MICRO strategy (fee-heavy, low EV)
 )
 INTRADAY_DEBIT_MOMENTUM_DELTA_MIN = 0.45  # Near ATM for momentum
 INTRADAY_DEBIT_MOMENTUM_DELTA_MAX = 0.65  # Slightly ITM max

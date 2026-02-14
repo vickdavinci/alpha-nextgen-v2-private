@@ -6480,8 +6480,9 @@ class OptionsEngine:
                 live_minutes = (self.algorithm.Time - entry_dt).total_seconds() / 60.0
                 mandatory_dte = int(getattr(config, "SPREAD_FORCE_CLOSE_DTE", 1))
                 if 0 <= live_minutes < min_hold_minutes and current_dte > mandatory_dte:
+                    spread_key = self._build_spread_key(spread)
                     self.log(
-                        f"SPREAD_EXIT_GUARD_HOLD: Sig={spread.spread_type} | "
+                        f"SPREAD_EXIT_GUARD_HOLD: Key={spread_key} | Sig={spread.spread_type} | "
                         f"Live={live_minutes:.1f}m < Min={min_hold_minutes}m | "
                         f"DTE={current_dte}",
                         trades_only=True,
@@ -6763,8 +6764,9 @@ class OptionsEngine:
         if not str(exit_reason).startswith("NEUTRALITY_"):
             self._spread_neutrality_warn_by_key.pop(self._build_spread_key(spread), None)
 
+        spread_key = self._build_spread_key(spread)
         self.log(
-            f"SPREAD: EXIT_SIGNAL | {exit_reason} | "
+            f"SPREAD: EXIT_SIGNAL | Key={spread_key} | {exit_reason} | "
             f"Long=${long_leg_price:.2f} Short=${short_leg_price:.2f} | "
             f"P&L={pnl_pct:.1%}",
             trades_only=True,

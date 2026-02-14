@@ -196,10 +196,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2021, 12, 1)
-        self.SetEndDate(
-            2022, 2, 28
-        )  # Dec 2021 - Feb 2022 backtest (3 months - exit optimization test)
+        self.SetStartDate(2017, 7, 1)
+        self.SetEndDate(2017, 9, 30)  # Jul - Sep 2017 backtest (3 months)
         self.SetCash(config.INITIAL_CAPITAL)  # Seed capital from config
 
         # All times are Eastern
@@ -368,6 +366,19 @@ class AlphaNextGen(QCAlgorithm):
         self._diag_micro_eod_sweep_close_count = 0
         self._diag_micro_pending_cancel_ignored_count = 0
         self._order_lifecycle_log_count = 0
+        self._order_lifecycle_suppressed_count = 0
+        self._diag_micro_dte_candidates = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
+        self._diag_micro_dte_approved = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
+        self._diag_micro_dte_dropped = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
+        self._diag_micro_dte_win = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
+        self._diag_micro_dte_loss = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
+        self._diag_micro_drop_reason_by_dte = {}
+        self._diag_micro_dte_candidates = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
+        self._diag_micro_dte_approved = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
+        self._diag_micro_dte_dropped = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
+        self._diag_micro_dte_win = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
+        self._diag_micro_dte_loss = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
+        self._diag_micro_drop_reason_by_dte = {}
         self._last_micro_update_log_signature: Optional[Tuple[str, str, float, float, float]] = None
         self._last_micro_update_log_time: Optional[datetime] = None
         self._last_spread_construct_fail_log_at: Optional[datetime] = None
@@ -2369,6 +2380,7 @@ class AlphaNextGen(QCAlgorithm):
         self._diag_micro_eod_sweep_close_count = 0
         self._diag_micro_pending_cancel_ignored_count = 0
         self._order_lifecycle_log_count = 0
+        self._order_lifecycle_suppressed_count = 0
         self._recon_orphan_close_submitted.clear()
         self._last_micro_update_log_signature = None
         self._last_micro_update_log_time = None
@@ -3185,9 +3197,22 @@ class AlphaNextGen(QCAlgorithm):
             fill_price = orderEvent.FillPrice
             fill_qty = orderEvent.FillQuantity
 
+            order_tag = self._get_order_tag(orderEvent)
+            order_type = "UNKNOWN"
+            try:
+                order = self.Transactions.GetOrderById(orderEvent.OrderId)
+                if order is not None:
+                    order_type = str(getattr(order, "Type", "UNKNOWN"))
+            except Exception:
+                pass
+            trace_id = self._extract_trace_id_from_tag(order_tag) or "NONE"
+            compact_tag = self._compact_tag_for_log(order_tag)
+
             self.Log(
                 f"PARTIAL_FILL: {symbol[-20:]} | Qty={fill_qty} @ ${fill_price:.2f} | "
-                f"Remaining={orderEvent.Quantity - orderEvent.FillQuantity}"
+                f"Remaining={orderEvent.Quantity - orderEvent.FillQuantity} | "
+                f"OrderId={orderEvent.OrderId} | Type={order_type} | "
+                f"Tag={compact_tag} | Trace={trace_id}"
             )
 
             # Route partial fills to spread handler if applicable
@@ -3214,7 +3239,21 @@ class AlphaNextGen(QCAlgorithm):
             fill_qty = orderEvent.FillQuantity
             direction = "BUY" if fill_qty > 0 else "SELL"
 
-            self.Log(f"FILL: {direction} {abs(fill_qty)} {symbol} @ ${fill_price:.2f}")
+            order_tag = self._get_order_tag(orderEvent)
+            order_type = "UNKNOWN"
+            try:
+                order = self.Transactions.GetOrderById(orderEvent.OrderId)
+                if order is not None:
+                    order_type = str(getattr(order, "Type", "UNKNOWN"))
+            except Exception:
+                pass
+            trace_id = self._extract_trace_id_from_tag(order_tag) or "NONE"
+            compact_tag = self._compact_tag_for_log(order_tag)
+            self.Log(
+                f"FILL: {direction} {abs(fill_qty)} {symbol} @ ${fill_price:.2f} | "
+                f"OrderId={orderEvent.OrderId} | Type={order_type} | "
+                f"Tag={compact_tag} | Trace={trace_id}"
+            )
 
             # V2.14 Fix #12: SLIPPAGE_EXCEEDED check
             # Compare fill price to expected market price (bid for sells, ask for buys)
@@ -3517,8 +3556,10 @@ class AlphaNextGen(QCAlgorithm):
                     holding = self.Portfolio.get(long_leg_symbol)
                     if holding and holding.Invested:
                         qty = holding.Quantity
+                        orphan_key = f"{self._normalize_symbol_str(long_leg_symbol)}|{self._normalize_symbol_str(failed_symbol)}"
                         self.Log(
                             f"SPREAD: LIQUIDATING orphaned long leg | "
+                            f"OrderId={orderEvent.OrderId} | SpreadKey={orphan_key} | "
                             f"{long_leg_symbol[-20:]} x{qty}"
                         )
                         self.MarketOrder(long_leg_symbol, -qty, tag="ORPHAN_LONG")
@@ -3546,8 +3587,10 @@ class AlphaNextGen(QCAlgorithm):
                     holding = self.Portfolio.get(short_leg_symbol)
                     if holding and holding.Invested:
                         qty = holding.Quantity
+                        orphan_key = f"{self._normalize_symbol_str(failed_symbol)}|{self._normalize_symbol_str(short_leg_symbol)}"
                         self.Log(
                             f"SPREAD: BUYING BACK orphaned short leg | "
+                            f"OrderId={orderEvent.OrderId} | SpreadKey={orphan_key} | "
                             f"{short_leg_symbol[-20:]} x{abs(qty)}"
                         )
                         # Short leg is negative qty, buy back means positive order
@@ -3627,6 +3670,62 @@ class AlphaNextGen(QCAlgorithm):
         except Exception:
             pass
         return ""
+
+    def _extract_trace_id_from_tag(self, order_tag: str) -> str:
+        """Extract trace id from order tag (best-effort) for RCA joins."""
+        if not order_tag:
+            return ""
+        tag = str(order_tag)
+        markers = ("trace=", "trace_id=", "trace:")
+        lowered = tag.lower()
+        for marker in markers:
+            idx = lowered.find(marker)
+            if idx < 0:
+                continue
+            value = tag[idx + len(marker) :].strip()
+            if not value:
+                return ""
+            for sep in ("|", ";", ",", " "):
+                cut = value.find(sep)
+                if cut >= 0:
+                    value = value[:cut]
+                    break
+            return value.strip()
+        return ""
+
+    def _compact_tag_for_log(self, order_tag: str, max_chars: int = 64) -> str:
+        """Trim noisy broker tags to keep logs under budget while preserving correlation."""
+        tag = str(order_tag or "").strip()
+        if not tag:
+            return "NO_TAG"
+        if len(tag) <= max_chars:
+            return tag
+        return f"{tag[:max_chars]}..."
+
+    def _micro_dte_bucket(self, dte: Optional[int]) -> str:
+        """Normalize intraday DTE to compact telemetry buckets."""
+        try:
+            d = int(dte) if dte is not None else -1
+        except Exception:
+            d = -1
+        if d in (2, 3, 4, 5):
+            return str(d)
+        return "OTHER"
+
+    def _inc_micro_dte_counter(self, store: Dict[str, int], dte: Optional[int]) -> str:
+        """Increment a MICRO DTE diagnostics counter and return resolved bucket."""
+        bucket = self._micro_dte_bucket(dte)
+        store[bucket] = int(store.get(bucket, 0)) + 1
+        return bucket
+
+    def _record_micro_drop_reason_dte(self, code: str, dte: Optional[int]) -> None:
+        """Track drop reason x DTE bucket for funnel RCA."""
+        bucket = self._micro_dte_bucket(dte)
+        reason = str(code or "E_UNKNOWN")
+        key = f"{reason}|{bucket}"
+        self._diag_micro_drop_reason_by_dte[key] = (
+            int(self._diag_micro_drop_reason_by_dte.get(key, 0)) + 1
+        )
 
     def _is_micro_entry_fill(self, symbol: str, fill_qty: float, order_tag: str) -> bool:
         """Classify fill as MICRO entry for recovery and EOD safety sweeps."""
@@ -3750,6 +3849,7 @@ class AlphaNextGen(QCAlgorithm):
             return
         max_per_day = int(getattr(config, "LOG_ORDER_LIFECYCLE_MAX_PER_DAY", 200))
         if self._order_lifecycle_log_count >= max_per_day:
+            self._order_lifecycle_suppressed_count += 1
             return
         order = self.Transactions.GetOrderById(order_event.OrderId)
         order_type = str(getattr(order, "Type", "UNKNOWN")) if order is not None else "UNKNOWN"
@@ -5494,6 +5594,7 @@ class AlphaNextGen(QCAlgorithm):
             chain: QuantConnect options chain.
             direction: Required option direction (CALL or PUT).
             strategy: V2.14 - Intraday strategy (DEBIT_FADE or ITM_MOMENTUM).
+            vix_current: Current VIX proxy for DTE routing (optional).
 
         Returns:
             OptionContract or None if no suitable contract found.
@@ -5512,6 +5613,26 @@ class AlphaNextGen(QCAlgorithm):
 
         # Determine which OptionRight to filter for
         required_right = OptionRight.Call if direction == OptionDirection.CALL else OptionRight.Put
+
+        # V9.5: Regime-aware MICRO DTE routing
+        effective_dte_min = int(getattr(config, "OPTIONS_INTRADAY_DTE_MIN", 1))
+        effective_dte_max = int(getattr(config, "OPTIONS_INTRADAY_DTE_MAX", 5))
+        if bool(getattr(config, "MICRO_DTE_ROUTING_ENABLED", False)) and vix_current is not None:
+            try:
+                vix_val = float(vix_current)
+                low_thr = float(getattr(config, "MICRO_DTE_LOW_VIX_THRESHOLD", 16.0))
+                high_thr = float(getattr(config, "MICRO_DTE_HIGH_VIX_THRESHOLD", 25.0))
+                if vix_val < low_thr:
+                    effective_dte_min = int(getattr(config, "MICRO_DTE_LOW_VIX_MIN", 2))
+                    effective_dte_max = int(getattr(config, "MICRO_DTE_LOW_VIX_MAX", 3))
+                elif vix_val >= high_thr:
+                    effective_dte_min = int(getattr(config, "MICRO_DTE_HIGH_VIX_MIN", 2))
+                    effective_dte_max = int(getattr(config, "MICRO_DTE_HIGH_VIX_MAX", 4))
+                else:
+                    effective_dte_min = int(getattr(config, "MICRO_DTE_MEDIUM_VIX_MIN", 2))
+                    effective_dte_max = int(getattr(config, "MICRO_DTE_MEDIUM_VIX_MAX", 3))
+            except Exception:
+                pass
 
         # V2.13 Fix #16: Add filter diagnostics to track why contracts are rejected
         filter_counts = {
@@ -5567,7 +5688,7 @@ class AlphaNextGen(QCAlgorithm):
 
             # Check DTE using config values (1-5 for intraday, V2.13)
             dte = (contract.Expiry - self.Time).days
-            if dte < config.OPTIONS_INTRADAY_DTE_MIN or dte > config.OPTIONS_INTRADAY_DTE_MAX:
+            if dte < effective_dte_min or dte > effective_dte_max:
                 filter_counts["dte"] += 1
                 continue
 
@@ -5644,7 +5765,7 @@ class AlphaNextGen(QCAlgorithm):
             if filter_counts["direction"] > total_contracts * 0.9:
                 primary_blocker = "DIRECTION (wrong CALL/PUT ratio in chain)"
             elif filter_counts["dte"] > passed_direction * 0.9:
-                primary_blocker = f"DTE (outside {config.OPTIONS_INTRADAY_DTE_MIN}-{config.OPTIONS_INTRADAY_DTE_MAX} range)"
+                primary_blocker = f"DTE (outside {effective_dte_min}-{effective_dte_max} range)"
             elif filter_counts["greeks"] > passed_dte * 0.9:
                 primary_blocker = "GREEKS (missing or zero delta data)"
             elif filter_counts["delta"] > passed_greeks * 0.5:
@@ -6569,7 +6690,10 @@ class AlphaNextGen(QCAlgorithm):
                     # V2.14 Fix #20: Pass strategy for delta-aware contract selection
                     intraday_strategy = self.options_engine.get_last_intraday_strategy()
                     intraday_contract = self._select_intraday_option_contract(
-                        chain, intraday_direction, strategy=intraday_strategy
+                        chain,
+                        intraday_direction,
+                        strategy=intraday_strategy,
+                        vix_current=vix_intraday,
                     )
                     if intraday_contract is None:
                         self.Log(
@@ -6589,6 +6713,8 @@ class AlphaNextGen(QCAlgorithm):
                             f"Contract=NONE"
                         )
                         self._diag_intraday_dropped_count += 1
+                        self._inc_micro_dte_counter(self._diag_micro_dte_dropped, None)
+                        self._record_micro_drop_reason_dte("E_NO_CONTRACT_SELECTED", None)
 
                 # V2.13 Fix #18: Log bid/ask rejection (was silent)
                 if intraday_contract is not None and (
@@ -6608,10 +6734,22 @@ class AlphaNextGen(QCAlgorithm):
                         f"Contract={intraday_contract.symbol}"
                     )
                     self._diag_intraday_dropped_count += 1
+                    self._inc_micro_dte_counter(
+                        self._diag_micro_dte_dropped,
+                        getattr(intraday_contract, "days_to_expiry", None),
+                    )
+                    self._record_micro_drop_reason_dte(
+                        "E_BID_ASK_INVALID",
+                        getattr(intraday_contract, "days_to_expiry", None),
+                    )
                     intraday_contract = None  # Clear invalid contract
 
                 # Verify contract has valid bid/ask before proceeding
                 if intraday_contract is not None:
+                    self._inc_micro_dte_counter(
+                        self._diag_micro_dte_candidates,
+                        getattr(intraday_contract, "days_to_expiry", None),
+                    )
                     # V2.3.20: Pass size_multiplier for cold start reduced sizing
                     # V2.4.1: Pass UVXY-derived VIX proxy
                     # V2.5: Pass macro_regime_score for Grind-Up Override
@@ -6650,6 +6788,10 @@ class AlphaNextGen(QCAlgorithm):
                             f"Contract={intraday_contract.symbol if intraday_contract else 'NONE'}"
                         )
                         self._diag_intraday_approved_count += 1
+                        self._inc_micro_dte_counter(
+                            self._diag_micro_dte_approved,
+                            getattr(intraday_contract, "days_to_expiry", None),
+                        )
                         intraday_trace_id = (
                             intraday_signal.metadata.get("trace_id", "")
                             if intraday_signal.metadata
@@ -6725,6 +6867,18 @@ class AlphaNextGen(QCAlgorithm):
                                 f"Contract={intraday_contract.symbol if intraday_contract else 'NONE'}"
                             )
                             self._diag_intraday_dropped_count += 1
+                            self._inc_micro_dte_counter(
+                                self._diag_micro_dte_dropped,
+                                getattr(intraday_contract, "days_to_expiry", None)
+                                if intraday_contract is not None
+                                else None,
+                            )
+                            self._record_micro_drop_reason_dte(
+                                drop_code,
+                                getattr(intraday_contract, "days_to_expiry", None)
+                                if intraday_contract is not None
+                                else None,
+                            )
                             # V6.15: One retry on next eligible scan for temporary drop causes only.
                             if drop_code in {
                                 "R_SLOT_TOTAL_MAX",
@@ -8142,6 +8296,29 @@ class AlphaNextGen(QCAlgorithm):
             self._diag_spread_exit_fill_count,
             self._diag_spread_position_removed_count,
         )
+        if self._order_lifecycle_suppressed_count > 0:
+            self.Log(
+                f"ORDER_LIFECYCLE_CAP_HIT: Logged={self._order_lifecycle_log_count} | "
+                f"Suppressed={self._order_lifecycle_suppressed_count} | "
+                f"Cap={int(getattr(config, 'LOG_ORDER_LIFECYCLE_MAX_PER_DAY', 200))}"
+            )
+
+        dte_order = ["2", "3", "4", "5", "OTHER"]
+        fmt = lambda d: ",".join(f"{k}:{int(d.get(k, 0))}" for k in dte_order)
+        top_drop_pairs = sorted(
+            self._diag_micro_drop_reason_by_dte.items(), key=lambda kv: kv[1], reverse=True
+        )[:5]
+        top_drop = ";".join(f"{k}={v}" for k, v in top_drop_pairs) if top_drop_pairs else "NONE"
+        self.Log(
+            "MICRO_DTE_DIAG_SUMMARY: "
+            f"Cand[{fmt(self._diag_micro_dte_candidates)}] | "
+            f"Approved[{fmt(self._diag_micro_dte_approved)}] | "
+            f"Dropped[{fmt(self._diag_micro_dte_dropped)}] | "
+            f"Win[{fmt(self._diag_micro_dte_win)}] | "
+            f"Loss[{fmt(self._diag_micro_dte_loss)}] | "
+            f"TopDrop[{top_drop}]"
+        )
+
         self.Log(
             "OPTIONS_DIAG_SUMMARY: "
             f"Candidates={self._diag_intraday_candidate_count} | "
@@ -8486,6 +8663,11 @@ class AlphaNextGen(QCAlgorithm):
                                     "entry_price": position.entry_price,
                                     "entry_time": position.entry_time,
                                     "quantity": abs(int(fill_qty)),
+                                    "entry_dte": int(
+                                        getattr(position.contract, "days_to_expiry", -1)
+                                    )
+                                    if position and position.contract
+                                    else -1,
                                 }
                                 self._micro_open_symbols.add(symbol_norm)
                 elif fill_qty < 0:
@@ -8554,6 +8736,17 @@ class AlphaNextGen(QCAlgorithm):
                                     f"P&L={((fill_price - removed_position.entry_price) / removed_position.entry_price):.1%}"
                                 )
                                 self._diag_intraday_result_count += 1
+                                dte_for_result = (
+                                    getattr(removed_position.contract, "days_to_expiry", None)
+                                    if removed_position is not None and removed_position.contract
+                                    else None
+                                )
+                                self._inc_micro_dte_counter(
+                                    self._diag_micro_dte_win
+                                    if is_win
+                                    else self._diag_micro_dte_loss,
+                                    dte_for_result,
+                                )
                                 # V6.12: Record trade in monthly P&L tracker
                                 if hasattr(self, "pnl_tracker"):
                                     self.pnl_tracker.record_trade(
@@ -8624,6 +8817,10 @@ class AlphaNextGen(QCAlgorithm):
                                 f"Path=FALLBACK"
                             )
                             self._diag_intraday_result_count += 1
+                            self._inc_micro_dte_counter(
+                                self._diag_micro_dte_win if is_win else self._diag_micro_dte_loss,
+                                snapshot.get("entry_dte") if snapshot else None,
+                            )
                             if hasattr(self, "pnl_tracker"):
                                 self.pnl_tracker.record_trade(
                                     symbol=symbol,
@@ -8947,8 +9144,11 @@ class AlphaNextGen(QCAlgorithm):
 
         if cancel_count >= escalation_count:
             self._diag_spread_close_escalation_count += 1
+            order_tag = str(getattr(order, "Tag", "") or "")
             self.Log(
                 f"SPREAD_CLOSE_ESCALATED: Cancel threshold reached | "
+                f"OrderId={order_event.OrderId} | SpreadKey={spread_key} | "
+                f"Tag={self._compact_tag_for_log(order_tag)} | "
                 f"Long={long_symbol} | Short={short_symbol} | "
                 f"CancelCount={cancel_count} >= {escalation_count} | "
                 f"Submitting immediate sequential close"
@@ -8972,8 +9172,11 @@ class AlphaNextGen(QCAlgorithm):
             self._diag_spread_exit_signal_count += 1
             self._diag_spread_exit_submit_count += 1
         else:
+            order_tag = str(getattr(order, "Tag", "") or "")
             self.Log(
-                f"SPREAD_RETRY_QUEUED: Close leg canceled | Symbol={symbol} | "
+                f"SPREAD_RETRY_QUEUED: Close leg canceled | "
+                f"OrderId={order_event.OrderId} | SpreadKey={spread_key} | "
+                f"Tag={self._compact_tag_for_log(order_tag)} | Symbol={symbol} | "
                 f"Long={long_symbol} | Short={short_symbol} | "
                 f"OrderQty={order.Quantity} | CancelCount={cancel_count}"
             )
