@@ -1081,7 +1081,7 @@ SHORT_LEG_ITM_EXIT_THRESHOLD = (
 )
 SPREAD_ASSIGNMENT_GRACE_MINUTES = 45  # V6.15 FIX: Allow spread to stabilize before ITM checks
 SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 15  # Minutes between log messages
-SPREAD_MIN_HOLD_MINUTES = 10080  # V9.8: 7-day min hold (spreads held 4-14 days had 60-72% WR)
+SPREAD_MIN_HOLD_MINUTES = 5760  # V9.9: 4-day min hold guard for VASS spreads
 SPREAD_EXIT_RETRY_MINUTES = (
     15  # V9.4 P0: Cooldown between exit signal retries (prevents per-minute spam)
 )
