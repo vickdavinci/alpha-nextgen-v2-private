@@ -14,14 +14,7 @@ Spec: docs/v2-specs/V2-1-FINAL-SYNTHESIS.md (Modification #3)
 
 import pytest
 
-from execution.oco_manager import (
-    OCOLeg,
-    OCOManager,
-    OCOOrderType,
-    OCOPair,
-    OCOState,
-)
-
+from execution.oco_manager import OCOLeg, OCOManager, OCOOrderType, OCOPair, OCOState
 
 # =============================================================================
 # FIXTURES
@@ -365,12 +358,8 @@ class TestOCOQueries:
 
     def test_get_all_active_pairs(self, manager):
         """Test get all active pairs."""
-        pair1 = manager.create_oco_pair(
-            "QQQ 260126C00450000", 1.45, 1.09, 2.175, 27, "2026-01-26"
-        )
-        pair2 = manager.create_oco_pair(
-            "QQQ 260126P00440000", 1.20, 0.96, 1.80, 20, "2026-01-26"
-        )
+        pair1 = manager.create_oco_pair("QQQ 260126C00450000", 1.45, 1.09, 2.175, 27, "2026-01-26")
+        pair2 = manager.create_oco_pair("QQQ 260126P00440000", 1.20, 0.96, 1.80, 20, "2026-01-26")
         manager.submit_oco_pair(pair1, "10:30:00")
         manager.submit_oco_pair(pair2, "10:31:00")
 
@@ -399,14 +388,21 @@ class TestOCOPersistence:
         assert state["next_oco_number"] > 1
 
     def test_restore_state(self, manager, active_pair):
-        """Test state restoration."""
+        """Test state restoration drops stale pairs (broker IDs are session-specific).
+
+        V10.1: restore_state intentionally drops all pairs with broker order IDs
+        since they are invalid after restart. OCO recovery happens via
+        main._ensure_oco_for_open_options() from live holdings instead.
+        """
         state = manager.get_state_for_persistence()
 
         new_manager = OCOManager()
         new_manager.restore_state(state)
 
-        assert active_pair.oco_id in new_manager._active_pairs
-        assert active_pair.symbol in new_manager._symbol_to_oco
+        # Active pairs with broker IDs are dropped as stale (session-specific)
+        assert len(new_manager._active_pairs) == 0
+        # But oco_number counter is preserved for ID continuity
+        assert new_manager._next_oco_number == state["next_oco_number"]
 
     def test_reset(self, manager, active_pair):
         """Test reset clears all state."""
@@ -426,12 +422,8 @@ class TestOCOEdgeCases:
 
     def test_multiple_pairs_different_symbols(self, manager):
         """Test multiple OCO pairs for different symbols."""
-        pair1 = manager.create_oco_pair(
-            "QQQ 260126C00450000", 1.45, 1.09, 2.175, 27, "2026-01-26"
-        )
-        pair2 = manager.create_oco_pair(
-            "QQQ 260126C00460000", 2.00, 1.50, 3.00, 20, "2026-01-26"
-        )
+        pair1 = manager.create_oco_pair("QQQ 260126C00450000", 1.45, 1.09, 2.175, 27, "2026-01-26")
+        pair2 = manager.create_oco_pair("QQQ 260126C00460000", 2.00, 1.50, 3.00, 20, "2026-01-26")
 
         manager.submit_oco_pair(pair1, "10:30:00")
         manager.submit_oco_pair(pair2, "10:31:00")
