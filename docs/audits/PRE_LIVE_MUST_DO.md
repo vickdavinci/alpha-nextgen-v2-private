@@ -385,3 +385,65 @@ STATE_RESTORE: OCO manager state loaded
 | Options Engine | YES | `"options_engine_state"` | Direct ObjectStore (unchanged) |
 | OCO Manager | YES | `"oco_manager_state"` | Direct ObjectStore (unchanged) |
 | Weekly Breaker | YES | `ALPHA_NEXTGEN_WEEKLY` | StateManager dedicated path |
+
+---
+
+## Deferred: MICRO Reversal Gate (Strict Scope + Telemetry)
+
+**Status:** Deferred (implement later)
+**Priority:** P1 before live promotion of MICRO
+**Intent:** Reduce extreme-VIX intraday whipsaw losses without changing VASS behavior.
+
+### Scope Guardrails (Must Hold)
+
+- Apply to `MICRO` engine only.
+- Do not change VASS direction, sizing, or conviction behavior.
+- Activate only when VIX is in extreme buckets:
+  - `VIX < 14` OR
+  - `VIX > 25`
+- Trigger only on repeated direction instability:
+  - At least `2` direction flips in a rolling `45-60` minute window.
+- Response is a short cooldown (`20-30` minutes), not a long hard block.
+
+### Required Telemetry
+
+Add structured rejection + summary telemetry:
+
+- Reason code: `R_MICRO_VIX_REVERSAL_EXTREME`
+- Event log fields:
+  - `timestamp`
+  - `vix_level`
+  - `vix_bucket`
+  - `flip_count`
+  - `window_minutes`
+  - `blocked_direction`
+  - `cooldown_until`
+  - `strategy_at_signal`
+- Daily diagnostics:
+  - `MicroReversalGateHits`
+  - `MicroReversalGateBlockedSignals`
+  - `MicroReversalGateBypassSignals`
+
+### State Management Requirements
+
+Keep state minimal and isolated from VASS:
+
+- `micro_vix_dir_history` (rolling flip history with timestamps)
+- `micro_reversal_cooldown_until`
+- `micro_reversal_last_trigger_at` (dedupe)
+- `micro_reversal_block_count_today`
+
+Lifecycle rules:
+
+- Initialize in `Initialize`.
+- Reset daily counters/state at EOD/SOD.
+- Do not carry stale intraday flip history overnight.
+- Fail-open if state unavailable/corrupt (do not block trades silently).
+
+### Acceptance Criteria
+
+- VASS behavior and metrics remain unchanged vs baseline.
+- MICRO logs include explicit reversal-gate hits and cooldown lifecycle.
+- No broad rise in `Dir=None`/choke outside extreme VIX windows.
+- Aug 8-style repeated same-direction intraday entries are reduced.
+

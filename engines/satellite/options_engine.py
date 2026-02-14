@@ -1353,18 +1353,12 @@ class MicroRegimeEngine:
             VIXDirection.RISING_FAST,
             VIXDirection.SPIKING,
         )
-        debit_momentum_enabled = bool(getattr(config, "INTRADAY_DEBIT_MOMENTUM_ENABLED", True))
 
-        def momentum_or_disabled(
+        # V10: All confirmation paths route to ITM_MOMENTUM (DEBIT_MOMENTUM deprecated)
+        def confirmation_strategy(
             direction: OptionDirection, reason: str
         ) -> Tuple[IntradayStrategy, Optional[OptionDirection], str]:
-            if debit_momentum_enabled:
-                return (IntradayStrategy.DEBIT_MOMENTUM, direction, reason)
-            return (
-                IntradayStrategy.ITM_MOMENTUM,
-                direction,
-                f"DEBIT_MOMENTUM_DISABLED_FALLBACK: {reason}",
-            )
+            return (IntradayStrategy.ITM_MOMENTUM, direction, reason)
 
         # =====================================================================
         # RULE 5: DIVERGENCE/CONFIRMATION LOGIC (V6.5 Fix)
@@ -1406,12 +1400,21 @@ class MicroRegimeEngine:
                     f"VIX_FLOOR: VIX {vix_current:.1f} < {vix_floor} (apathy market)",
                 )
 
-            # Gate: Minimum move required for any trade
-            if abs(qqq_move_pct) < config.INTRADAY_FADE_MIN_MOVE:
+            # V10: VIX-tier move gates (stricter in LOW VIX to filter theta noise)
+            if vix_current < 18:
+                min_move_gate = float(getattr(config, "MICRO_MIN_MOVE_LOW_VIX", 0.50))
+                vix_tier_label = "LOW"
+            elif vix_current < 25:
+                min_move_gate = float(getattr(config, "MICRO_MIN_MOVE_MED_VIX", 0.40))
+                vix_tier_label = "MED"
+            else:
+                min_move_gate = float(getattr(config, "MICRO_MIN_MOVE_HIGH_VIX", 0.40))
+                vix_tier_label = "HIGH"
+            if abs(qqq_move_pct) < min_move_gate:
                 return (
                     IntradayStrategy.NO_TRADE,
                     None,
-                    f"MIN_MOVE: |{qqq_move_pct:.2f}%| < {config.INTRADAY_FADE_MIN_MOVE}% (no edge)",
+                    f"MIN_MOVE_{vix_tier_label}: |{qqq_move_pct:.2f}%| < {min_move_gate}% (VIX={vix_current:.1f})",
                 )
 
             # =================================================================
@@ -1427,6 +1430,14 @@ class MicroRegimeEngine:
                             None,
                             f"FADE blocked: |{qqq_move_pct:.2f}%| > {config.INTRADAY_FADE_MAX_MOVE}% (runaway)",
                         )
+                    # V10: HIGH VIX divergence → ITM_MOMENTUM (no spread cap in volatile market)
+                    if vix_current >= 25:
+                        return (
+                            IntradayStrategy.ITM_MOMENTUM,
+                            OptionDirection.PUT,
+                            f"HIGH_VIX_DIVERGENCE: QQQ +{qqq_move_pct:.2f}% but VIX {vix_direction.value} "
+                            f"(VIX={vix_current:.1f}>=25) → ITM PUT",
+                        )
                     return (
                         IntradayStrategy.DEBIT_FADE,
                         OptionDirection.PUT,
@@ -1435,7 +1446,7 @@ class MicroRegimeEngine:
 
                 elif vix_is_falling:
                     # CONFIRMATION: QQQ up + VIX falling = confirmed rally, ride it
-                    return momentum_or_disabled(
+                    return confirmation_strategy(
                         OptionDirection.CALL,
                         f"CONFIRMATION: QQQ +{qqq_move_pct:.2f}% + VIX {vix_direction.value} → Ride with CALL",
                     )
@@ -1447,17 +1458,8 @@ class MicroRegimeEngine:
                         abs(qqq_move_pct) >= config.INTRADAY_QQQ_FALLBACK_MIN_MOVE
                         and micro_score >= config.MICRO_SCORE_BULLISH_CONFIRM
                     ):
-                        # V9.2 RCA: CAUTIOUS regime → ITM_MOMENTUM instead of DEBIT_MOMENTUM.
-                        # DEBIT_MOMENTUM spreads lack volatility confirmation in STABLE VIX,
-                        # while ITM singles respond better to directional moves.
-                        if micro_regime == MicroRegime.CAUTIOUS:
-                            return (
-                                IntradayStrategy.ITM_MOMENTUM,
-                                OptionDirection.CALL,
-                                f"CAUTIOUS_ITM: QQQ +{qqq_move_pct:.2f}% + "
-                                f"Score={micro_score:.0f} → ITM CALL (not DEBIT_MOMENTUM)",
-                            )
-                        return momentum_or_disabled(
+                        # V10: All confirmation paths → ITM_MOMENTUM
+                        return confirmation_strategy(
                             OptionDirection.CALL,
                             f"STABLE_FALLBACK: QQQ +{qqq_move_pct:.2f}% + "
                             f"Score={micro_score:.0f} → CALL",
@@ -1475,7 +1477,7 @@ class MicroRegimeEngine:
             elif qqq_is_down:
                 if vix_is_rising:
                     # CONFIRMATION: QQQ down + VIX rising = confirmed selloff, ride it
-                    return momentum_or_disabled(
+                    return confirmation_strategy(
                         OptionDirection.PUT,
                         f"CONFIRMATION: QQQ {qqq_move_pct:.2f}% + VIX {vix_direction.value} → Ride with PUT",
                     )
@@ -1488,6 +1490,14 @@ class MicroRegimeEngine:
                             IntradayStrategy.NO_TRADE,
                             None,
                             f"FADE blocked: |{qqq_move_pct:.2f}%| > {config.INTRADAY_FADE_MAX_MOVE}% (crash)",
+                        )
+                    # V10: HIGH VIX divergence → ITM_MOMENTUM (no spread cap in volatile market)
+                    if vix_current >= 25:
+                        return (
+                            IntradayStrategy.ITM_MOMENTUM,
+                            OptionDirection.CALL,
+                            f"HIGH_VIX_DIVERGENCE: QQQ {qqq_move_pct:.2f}% but VIX {vix_direction.value} "
+                            f"(VIX={vix_current:.1f}>=25) → ITM CALL",
                         )
                     return (
                         IntradayStrategy.DEBIT_FADE,
@@ -1502,15 +1512,8 @@ class MicroRegimeEngine:
                         abs(qqq_move_pct) >= config.INTRADAY_QQQ_FALLBACK_MIN_MOVE
                         and micro_score <= config.MICRO_SCORE_BEARISH_CONFIRM
                     ):
-                        # V9.2 RCA: CAUTIOUS regime → ITM_MOMENTUM instead of DEBIT_MOMENTUM
-                        if micro_regime == MicroRegime.CAUTIOUS:
-                            return (
-                                IntradayStrategy.ITM_MOMENTUM,
-                                OptionDirection.PUT,
-                                f"CAUTIOUS_ITM: QQQ {qqq_move_pct:.2f}% + "
-                                f"Score={micro_score:.0f} → ITM PUT (not DEBIT_MOMENTUM)",
-                            )
-                        return momentum_or_disabled(
+                        # V10: All confirmation paths → ITM_MOMENTUM
+                        return confirmation_strategy(
                             OptionDirection.PUT,
                             f"STABLE_FALLBACK: QQQ {qqq_move_pct:.2f}% + "
                             f"Score={micro_score:.0f} → PUT",
@@ -1577,29 +1580,7 @@ class MicroRegimeEngine:
             # V6.5: WORSENING moved to momentum_regimes (ITM PUT)
         }
         if micro_regime in caution_regimes:
-            # V2.5: Grind-Up Override - capture strong rallies even in CAUTIOUS regime
-            # Only triggers when: (1) CAUTIOUS regime, (2) QQQ UP > 0.50%, (3) macro safe
-            grind_up_enabled = getattr(config, "GRIND_UP_OVERRIDE_ENABLED", False)
-            grind_up_min_move = getattr(config, "GRIND_UP_MIN_MOVE", 0.50)
-            grind_up_macro_safe = getattr(config, "GRIND_UP_MACRO_SAFE_MIN", 40)
-
-            if grind_up_enabled and micro_regime == MicroRegime.CAUTIOUS:
-                is_strong_rally = qqq_move_pct > grind_up_min_move  # Positive only, not abs()
-                is_macro_safe = macro_regime_score > grind_up_macro_safe
-
-                if is_strong_rally and is_macro_safe:
-                    # Override: Ride the grind-up with CALL
-                    return (
-                        IntradayStrategy.ITM_MOMENTUM,
-                        OptionDirection.CALL,
-                        f"GRIND_UP_OVERRIDE: QQQ +{qqq_move_pct:.2f}% > {grind_up_min_move}% | Macro={macro_regime_score:.1f} > {grind_up_macro_safe}",
-                    )
-                elif is_strong_rally and not is_macro_safe:
-                    # Bear trap protection - log and skip
-                    self.log(
-                        f"MICRO: Grind-Up Rejected (Bear Market Trap Risk) | QQQ +{qqq_move_pct:.2f}% but Macro={macro_regime_score:.1f} <= {grind_up_macro_safe}"
-                    )
-
+            # V10: Grind-Up override removed (CAUTIOUS is in tradeable_regimes, not caution_regimes)
             return IntradayStrategy.NO_TRADE, None, f"Caution regime: {micro_regime.value}"
 
         return IntradayStrategy.NO_TRADE, None, "No matching setup"
@@ -1901,6 +1882,8 @@ class OptionsEngine:
         # Trade counters
         self._trades_today: int = 0
         self._intraday_trades_today: int = 0
+        self._intraday_call_trades_today: int = 0
+        self._intraday_put_trades_today: int = 0
         self._swing_trades_today: int = 0  # V2.9: Swing mode counter
         self._total_options_trades_today: int = 0  # V2.9: Global counter (Bug #4 fix)
         self._last_trade_date: Optional[str] = None
@@ -1952,7 +1935,10 @@ class OptionsEngine:
         self._last_entry_validation_failure: Optional[str] = None
         self._last_intraday_validation_failure: Optional[str] = None
         self._last_intraday_validation_detail: Optional[str] = None
-        self._last_micro_no_trade_log: Optional[str] = None
+        # Detailed slot/limit rejection context for MICRO drop telemetry.
+        self._last_trade_limit_failure: Optional[str] = None
+        self._last_trade_limit_detail: Optional[str] = None
+        self._last_micro_no_trade_log_by_key: Dict[str, str] = {}
         # MICRO anti-churn: brief cooldown for same strategy after close.
         self._last_intraday_close_time: Optional[datetime] = None
         self._last_intraday_close_strategy: Optional[str] = None
@@ -1996,6 +1982,13 @@ class OptionsEngine:
         self._call_consecutive_losses: int = 0
         self._call_cooldown_until_date: Optional[datetime.date] = None
 
+        # V9.4 P0: Exit signal cooldown — prevent per-minute spam when close order fails.
+        # Maps spread_key -> last exit signal datetime. If exit fires and close fails,
+        # don't re-fire for SPREAD_EXIT_RETRY_MINUTES.
+        self._spread_exit_signal_cooldown: Dict[str, datetime] = {}
+        # Track which spreads have already logged the hold guard (log once, not every minute)
+        self._spread_hold_guard_logged: set = set()
+
     def log(self, message: str, trades_only: bool = False) -> None:
         """
         Log via algorithm with LiveMode awareness.
@@ -2019,9 +2012,9 @@ class OptionsEngine:
         if symbol is None:
             return ""
         if isinstance(symbol, str):
-            return symbol
+            return symbol.strip().upper()
         try:
-            return str(symbol)
+            return str(symbol).strip().upper()
         except Exception:
             return ""
 
@@ -2394,63 +2387,69 @@ class OptionsEngine:
         # - QQQ flat, whipsaw, or caution regime
         # With V6.8 lowered gates, Micro will trade more often without needing overrides.
         if state.recommended_strategy == IntradayStrategy.NO_TRADE:
-            # Minimal, throttled logging to understand Dir=None / NO_TRADE causes
+            # Minimal, keyed throttle to preserve distinct MICRO_NO_TRADE reasons.
             should_log = True
-            if current_time and self._last_micro_no_trade_log:
+
+            vix_change_pct = (
+                (vix_current - vix_open_for_micro) / vix_open_for_micro * 100
+                if vix_open_for_micro > 0
+                else 0.0
+            )
+            qqq_move_pct = (qqq_current - qqq_open) / qqq_open * 100 if qqq_open > 0 else 0.0
+            if abs(qqq_move_pct) < config.QQQ_NOISE_THRESHOLD:
+                block_code = "QQQ_FLAT"
+            elif state.micro_regime in (
+                MicroRegime.CHOPPY_LOW,
+                MicroRegime.RISK_OFF_LOW,
+                MicroRegime.BREAKING,
+                MicroRegime.UNSTABLE,
+                MicroRegime.VOLATILE,
+            ):
+                block_code = "REGIME_NOT_TRADEABLE"
+            elif state.micro_regime in (MicroRegime.FULL_PANIC, MicroRegime.CRASH) and (
+                qqq_move_pct >= 0
+            ):
+                # V9.2: FULL_PANIC/CRASH are tradeable with QQQ-down confirmation.
+                # Keep telemetry aligned with gating logic instead of reporting generic non-tradeable.
+                block_code = "PANIC_QQQ_GATE"
+            elif (
+                state.micro_regime
+                in (
+                    MicroRegime.NORMAL,
+                    MicroRegime.CAUTION_LOW,
+                    MicroRegime.CAUTIOUS,
+                    MicroRegime.TRANSITION,
+                    MicroRegime.ELEVATED,
+                )
+                and abs(vix_change_pct) <= config.VIX_STABLE_BAND_HIGH
+            ):
+                block_code = "VIX_STABLE_LOW_CONVICTION"
+            else:
+                block_code = "CONFIRMATION_FAIL"
+
+            if current_time:
                 try:
-                    if current_time[:10] == self._last_micro_no_trade_log[:10]:
+                    throttle_key = f"{current_time[:10]}|{block_code}"
+                    last_log = self._last_micro_no_trade_log_by_key.get(throttle_key)
+                    if last_log and last_log[:10] == current_time[:10]:
                         curr_min = int(current_time[11:13]) * 60 + int(current_time[14:16])
-                        last_min = int(self._last_micro_no_trade_log[11:13]) * 60 + int(
-                            self._last_micro_no_trade_log[14:16]
+                        last_min = int(last_log[11:13]) * 60 + int(last_log[14:16])
+                        interval_min = int(
+                            getattr(config, "MICRO_NO_TRADE_LOG_INTERVAL_MINUTES", 5)
                         )
-                        if curr_min - last_min < config.VASS_LOG_REJECTION_INTERVAL_MINUTES:
+                        if curr_min - last_min < interval_min:
                             should_log = False
+                    if should_log:
+                        self._last_micro_no_trade_log_by_key[throttle_key] = current_time
                 except (ValueError, IndexError):
                     pass
 
             if should_log:
-                vix_change_pct = (
-                    (vix_current - vix_open_for_micro) / vix_open_for_micro * 100
-                    if vix_open_for_micro > 0
-                    else 0.0
-                )
-                qqq_move_pct = (qqq_current - qqq_open) / qqq_open * 100 if qqq_open > 0 else 0.0
-                if abs(qqq_move_pct) < config.QQQ_NOISE_THRESHOLD:
-                    block_code = "QQQ_FLAT"
-                elif state.micro_regime in (
-                    MicroRegime.CHOPPY_LOW,
-                    MicroRegime.RISK_OFF_LOW,
-                    MicroRegime.BREAKING,
-                    MicroRegime.UNSTABLE,
-                    MicroRegime.VOLATILE,
-                ):
-                    block_code = "REGIME_NOT_TRADEABLE"
-                elif state.micro_regime in (MicroRegime.FULL_PANIC, MicroRegime.CRASH) and (
-                    qqq_move_pct >= 0
-                ):
-                    # V9.2: FULL_PANIC/CRASH are tradeable with QQQ-down confirmation.
-                    # Keep telemetry aligned with gating logic instead of reporting generic non-tradeable.
-                    block_code = "PANIC_QQQ_GATE"
-                elif (
-                    state.micro_regime
-                    in (
-                        MicroRegime.NORMAL,
-                        MicroRegime.CAUTION_LOW,
-                        MicroRegime.CAUTIOUS,
-                        MicroRegime.TRANSITION,
-                        MicroRegime.ELEVATED,
-                    )
-                    and abs(vix_change_pct) <= config.VIX_STABLE_BAND_HIGH
-                ):
-                    block_code = "VIX_STABLE_LOW_CONVICTION"
-                else:
-                    block_code = "CONFIRMATION_FAIL"
                 self.log(
                     f"MICRO_NO_TRADE[{block_code}]: Regime={state.micro_regime.value} | "
                     f"VIXchg={vix_change_pct:+.2f}% | QQQ={qqq_move_pct:+.2f}% | "
                     f"Score={state.micro_score:.0f} | Dir=NONE | Why={state.recommended_reason}"
                 )
-                self._last_micro_no_trade_log = current_time
             return (
                 False,
                 None,
@@ -2951,7 +2950,11 @@ class OptionsEngine:
 
     def _build_spread_key(self, spread: SpreadPosition) -> str:
         """Stable spread key for per-position state."""
-        return f"{self._symbol_str(spread.long_leg.symbol)}|{self._symbol_str(spread.short_leg.symbol)}"
+        return (
+            f"{self._symbol_str(spread.long_leg.symbol)}|"
+            f"{self._symbol_str(spread.short_leg.symbol)}|"
+            f"{str(getattr(spread, 'entry_time', '') or '')}"
+        )
 
     def _get_engine_now_dt(self) -> Optional[datetime]:
         """Best-effort engine timestamp for staged timers."""
@@ -4169,6 +4172,19 @@ class OptionsEngine:
         self._last_intraday_validation_detail = None
         return reason, detail
 
+    def set_last_trade_limit_failure(
+        self, reason: Optional[str], detail: Optional[str] = None
+    ) -> None:
+        self._last_trade_limit_failure = reason
+        self._last_trade_limit_detail = detail
+
+    def pop_last_trade_limit_failure(self) -> Tuple[Optional[str], Optional[str]]:
+        reason = self._last_trade_limit_failure
+        detail = self._last_trade_limit_detail
+        self._last_trade_limit_failure = None
+        self._last_trade_limit_detail = None
+        return reason, detail
+
     def _get_effective_credit_min(self, vix_current: Optional[float] = None) -> float:
         """
         Return IV-adaptive credit floor used consistently by selection and entry validation.
@@ -4470,7 +4486,7 @@ class OptionsEngine:
 
             num_contracts = max(1, int(num_contracts * size_multiplier))
             self.log(
-                f"OPT: Sizing reduced to {num_contracts} contracts (ColdStart={size_multiplier:.0%})"
+                f"OPT: Sizing reduced to {num_contracts} contracts (SizeMult={size_multiplier:.0%})"
             )
 
         # V6.19: Apply choppy-market scaling to single-leg entries too.
@@ -4715,6 +4731,19 @@ class OptionsEngine:
         else:
             spread_type = "BEAR_PUT"
             vix_max = config.SPREAD_VIX_MAX_BEAR
+
+        # V9.7: Block BEAR_PUT_DEBIT in RISK_ON — 12.5% WR in 2017 (regime was 88% RISK_ON)
+        bear_put_risk_on_max = float(getattr(config, "VASS_BEAR_PUT_REGIME_MAX", 0))
+        if (
+            bear_put_risk_on_max > 0
+            and spread_type == "BEAR_PUT"
+            and regime_score >= bear_put_risk_on_max
+        ):
+            self.log(
+                f"SPREAD: BEAR_PUT blocked in RISK_ON | "
+                f"Regime={regime_score:.1f} >= {bear_put_risk_on_max:.0f}"
+            )
+            return fail("R_BEAR_PUT_RISK_ON_BLOCK")
 
         # V9.4 F4: Require minimum regime for BULL spread entries
         bull_regime_min = float(getattr(config, "VASS_BULL_SPREAD_REGIME_MIN", 0))
@@ -5126,7 +5155,7 @@ class OptionsEngine:
             scaled = max(1, int(num_spreads * size_multiplier))
             self.log(
                 f"SPREAD: Sizing reduced | {num_spreads} -> {scaled} spreads | "
-                f"ColdStart={size_multiplier:.0%}",
+                f"SizeMult={size_multiplier:.0%}",
                 trades_only=True,
             )
             num_spreads = scaled
@@ -5648,7 +5677,7 @@ class OptionsEngine:
             scaled = max(1, int(num_spreads * size_multiplier))
             self.log(
                 f"CREDIT_SPREAD: Sizing reduced | {num_spreads} -> {scaled} spreads | "
-                f"ColdStart={size_multiplier:.0%}",
+                f"SizeMult={size_multiplier:.0%}",
                 trades_only=True,
             )
             num_spreads = scaled
@@ -6397,6 +6426,7 @@ class OptionsEngine:
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
                 reason=f"PARTIAL_ASSIGNMENT: Closing orphaned {'long' if is_short_assigned else 'short'} leg",
+                requested_quantity=max(1, int(remaining_qty)),
                 metadata={
                     "exit_type": "PARTIAL_ASSIGNMENT",
                     "assigned_leg": assigned_symbol,
@@ -6452,6 +6482,18 @@ class OptionsEngine:
         if spread.is_closing:
             return None
 
+        # V9.4 P0: Exit signal cooldown — if a previous exit signal was sent but the
+        # close order failed (margin, liquidity, etc.), don't re-fire every minute.
+        # Wait SPREAD_EXIT_RETRY_MINUTES before retrying.
+        retry_minutes = int(getattr(config, "SPREAD_EXIT_RETRY_MINUTES", 15))
+        if retry_minutes > 0 and self.algorithm is not None:
+            spread_key = self._build_spread_key(spread)
+            last_exit_time = self._spread_exit_signal_cooldown.get(spread_key)
+            if last_exit_time is not None:
+                elapsed = (self.algorithm.Time - last_exit_time).total_seconds() / 60.0
+                if elapsed < retry_minutes:
+                    return None
+
         # Phase A: anti-churn hold window for non-emergency spread exits.
         # Emergency exits (assignment/0DTE mandatory) are handled in check_assignment_risk_exit().
         min_hold_minutes = int(getattr(config, "SPREAD_MIN_HOLD_MINUTES", 0))
@@ -6461,12 +6503,15 @@ class OptionsEngine:
                 live_minutes = (self.algorithm.Time - entry_dt).total_seconds() / 60.0
                 mandatory_dte = int(getattr(config, "SPREAD_FORCE_CLOSE_DTE", 1))
                 if 0 <= live_minutes < min_hold_minutes and current_dte > mandatory_dte:
-                    self.log(
-                        f"SPREAD_EXIT_GUARD_HOLD: Sig={spread.spread_type} | "
-                        f"Live={live_minutes:.1f}m < Min={min_hold_minutes}m | "
-                        f"DTE={current_dte}",
-                        trades_only=True,
-                    )
+                    spread_key = self._build_spread_key(spread)
+                    if spread_key not in self._spread_hold_guard_logged:
+                        self._spread_hold_guard_logged.add(spread_key)
+                        hold_days = min_hold_minutes / 1440.0
+                        self.log(
+                            f"SPREAD_EXIT_GUARD_HOLD: Key={spread_key} | Sig={spread.spread_type} | "
+                            f"Hold={hold_days:.0f}d ({min_hold_minutes}m) | DTE={current_dte}",
+                            trades_only=True,
+                        )
                     return None
             except Exception:
                 pass
@@ -6744,8 +6789,9 @@ class OptionsEngine:
         if not str(exit_reason).startswith("NEUTRALITY_"):
             self._spread_neutrality_warn_by_key.pop(self._build_spread_key(spread), None)
 
+        spread_key = self._build_spread_key(spread)
         self.log(
-            f"SPREAD: EXIT_SIGNAL | {exit_reason} | "
+            f"SPREAD: EXIT_SIGNAL | Key={spread_key} | {exit_reason} | "
             f"Long=${long_leg_price:.2f} Short=${short_leg_price:.2f} | "
             f"P&L={pnl_pct:.1%}",
             trades_only=True,
@@ -6759,6 +6805,11 @@ class OptionsEngine:
 
         # V2.12 Fix #2: Lock the position to prevent duplicate exit signals
         spread.is_closing = True
+
+        # V9.4 P0: Record exit signal time for retry cooldown
+        if self.algorithm is not None:
+            cooldown_key = self._build_spread_key(spread)
+            self._spread_exit_signal_cooldown[cooldown_key] = self.algorithm.Time
 
         # V2.5 FIX: Return SINGLE exit signal with combo metadata
         # (Same structure as entry, so router creates atomic ComboMarketOrder)
@@ -6926,6 +6977,7 @@ class OptionsEngine:
                         source="OPT",
                         urgency=Urgency.IMMEDIATE,
                         reason=f"FRIDAY_FIREWALL: {close_reason}",
+                        requested_quantity=max(1, int(getattr(position, "num_contracts", 1))),
                     )
                 )
 
@@ -7077,6 +7129,7 @@ class OptionsEngine:
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
                 reason=reason,
+                requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
             )
 
         # Exit 1.5: Strategy-aware trailing stop for intraday strategies
@@ -7105,6 +7158,7 @@ class OptionsEngine:
                             source="OPT",
                             urgency=Urgency.IMMEDIATE,
                             reason=reason,
+                            requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
                         )
 
         # Exit 2: Stop hit
@@ -7117,6 +7171,7 @@ class OptionsEngine:
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
                 reason=reason,
+                requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
             )
 
         # V2.3.10: Exit 3 - DTE exit (prevent expiration/exercise)
@@ -7132,6 +7187,7 @@ class OptionsEngine:
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
                 reason=reason,
+                requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
             )
 
         return None
@@ -7183,6 +7239,7 @@ class OptionsEngine:
             source="OPT",
             urgency=Urgency.IMMEDIATE,
             reason=reason,
+            requested_quantity=max(1, int(getattr(self._position, "num_contracts", 1))),
         )
 
     # =========================================================================
@@ -7604,9 +7661,10 @@ class OptionsEngine:
 
         # V2.9: Check trade limits (Bug #4 fix) - Uses comprehensive counter
         # Replaces V2.3.14 intraday-only check to also enforce global limit
-        if not self._can_trade_options(OptionsMode.INTRADAY):
-            # V6.2: _can_trade_options already logs, no additional log needed
-            return fail("E_INTRADAY_TRADE_LIMIT")
+        if not self._can_trade_options(OptionsMode.INTRADAY, direction=direction):
+            # Preserve granular slot-limit cause for funnel diagnostics.
+            tl_reason, tl_detail = self.pop_last_trade_limit_failure()
+            return fail(tl_reason or "E_INTRADAY_TRADE_LIMIT", tl_detail)
 
         # Reuse state from generate_micro_intraday_signal when provided.
         # This prevents approved->dropped drift caused by a second update() call.
@@ -7977,12 +8035,21 @@ class OptionsEngine:
         # V2.18: Calculate contracts using cap / (premium * 100)
         num_contracts = int(adjusted_cap / (premium * 100))
 
+        # V9.8: Hard cap all MICRO intraday entries to prevent quantity explosions on cheap options.
+        intraday_max_contracts = int(getattr(config, "INTRADAY_MAX_CONTRACTS", 40))
+        if intraday_max_contracts > 0 and num_contracts > intraday_max_contracts:
+            self.log(
+                f"INTRADAY_CAP: {num_contracts} → {intraday_max_contracts} contracts (max)",
+                trades_only=True,
+            )
+            num_contracts = intraday_max_contracts
+
         # V9.2 RCA: Cap protective puts to prevent outsized 10+ contract bets
         # At 3% sizing on cheap OTM puts, uncapped quantity can reach 10-15 contracts,
         # amplifying losses 5× compared to ITM_MOMENTUM's ~2 contracts.
         if is_protective_put:
-            max_protective = getattr(config, "PROTECTIVE_PUTS_MAX_CONTRACTS", 5)
-            if num_contracts > max_protective:
+            max_protective = int(getattr(config, "PROTECTIVE_PUTS_MAX_CONTRACTS", 5))
+            if max_protective > 0 and num_contracts > max_protective:
                 self.log(f"PROTECTIVE_CAP: {num_contracts} → {max_protective} contracts (max)")
                 num_contracts = max_protective
 
@@ -8308,6 +8375,7 @@ class OptionsEngine:
             source=source,
             urgency=Urgency.IMMEDIATE,
             reason=reason,
+            requested_quantity=max(1, int(getattr(position, "num_contracts", 1))),
         )
 
     def get_micro_regime_state(self) -> MicroRegimeState:
@@ -8442,6 +8510,7 @@ class OptionsEngine:
         entry_time: str,
         current_date: str,
         contract: Optional[OptionContract] = None,
+        force_intraday: bool = False,
     ) -> Optional[OptionsPosition]:
         """
         Register a new options position after fill.
@@ -8451,6 +8520,8 @@ class OptionsEngine:
             entry_time: Entry timestamp string.
             current_date: Current date string.
             contract: Option contract (uses pending if not provided).
+            force_intraday: If True, classify fill as intraday even when pending
+                flag was cleared by a cancel/fallback race.
 
         Returns:
             Created OptionsPosition, or None if no pending contract exists.
@@ -8478,7 +8549,8 @@ class OptionsEngine:
         # Recalculate stop and target based on actual fill price
         stop_price = fill_price * (1 - stop_pct)
 
-        if self._pending_intraday_entry:
+        is_intraday_fill = self._pending_intraday_entry or force_intraday
+        if is_intraday_fill:
             target_pct, strategy_floor = self._get_intraday_exit_profile(entry_strategy)
             target_price = fill_price * (1 + target_pct)
             if strategy_floor is not None and strategy_floor > 0:
@@ -8517,11 +8589,24 @@ class OptionsEngine:
         )
 
         # V2.3.2 FIX #4: Track position in correct variable based on mode
-        if self._pending_intraday_entry:
+        if is_intraday_fill:
             self._intraday_position = position
             self._pending_intraday_entry = False  # Clear flag
             # Count intraday trades only after a confirmed fill registration.
-            self._increment_trade_counter(OptionsMode.INTRADAY)
+            intraday_dir = (
+                OptionDirection.CALL
+                if str(getattr(contract, "right", "")).upper() == "CALL"
+                else OptionDirection.PUT
+                if str(getattr(contract, "right", "")).upper() == "PUT"
+                else None
+            )
+            self._increment_trade_counter(OptionsMode.INTRADAY, direction=intraday_dir)
+            if force_intraday and not self._pending_intraday_entry:
+                self.log(
+                    f"OPT: INTRADAY_TAG_RECOVERY | Symbol={contract.symbol} | "
+                    f"Strategy={entry_strategy}",
+                    trades_only=True,
+                )
             self.log(
                 f"OPT: INTRADAY position registered (trade #{self._intraday_trades_today}, "
                 f"force-close at {self._get_intraday_force_exit_hhmm()[0]:02d}:{self._get_intraday_force_exit_hhmm()[1]:02d})",
@@ -8556,19 +8641,33 @@ class OptionsEngine:
 
         return position
 
-    def remove_position(self) -> Optional[OptionsPosition]:
+    def remove_position(self, symbol: Optional[str] = None) -> Optional[OptionsPosition]:
         """
-        Remove the current position after exit.
+        Remove the current swing single-leg position after exit.
+
+        Args:
+            symbol: Optional symbol guard. When provided, removal only occurs
+                if it matches the tracked swing position symbol.
 
         Returns:
-            Removed position, or None if no position existed.
+            Removed position, or None if no matching position existed.
         """
-        if self._position is not None:
-            position = self._position
-            self._position = None
-            self.log(f"OPT: POSITION_REMOVED {position.contract.symbol}", trades_only=True)
-            return position
-        return None
+        if self._position is None:
+            return None
+
+        if symbol:
+            try:
+                expected = self._symbol_str(self._position.contract.symbol)
+                actual = self._symbol_str(symbol)
+                if expected != actual:
+                    return None
+            except Exception:
+                return None
+
+        position = self._position
+        self._position = None
+        self.log(f"OPT: POSITION_REMOVED {position.contract.symbol}", trades_only=True)
+        return position
 
     def remove_intraday_position(self) -> Optional[OptionsPosition]:
         """
@@ -8830,7 +8929,10 @@ class OptionsEngine:
                 self._spread_positions = [s for s in self._spread_positions if s is not spread]
             elif self._spread_position is spread:
                 self._spread_position = None
-            self._spread_neutrality_warn_by_key.pop(self._build_spread_key(spread), None)
+            spread_key = self._build_spread_key(spread)
+            self._spread_neutrality_warn_by_key.pop(spread_key, None)
+            self._spread_exit_signal_cooldown.pop(spread_key, None)  # V9.4 P0: Clear cooldown
+            self._spread_hold_guard_logged.discard(spread_key)
 
             self._spread_position = self._spread_positions[0] if self._spread_positions else None
 
@@ -8967,6 +9069,7 @@ class OptionsEngine:
                 trades_only=True,
             )
             self._spread_neutrality_warn_by_key = {}
+            self._spread_hold_guard_logged.clear()
             self._spread_positions = []
             self._spread_position = None
             self._last_spread_exit_time = None
@@ -9044,6 +9147,7 @@ class OptionsEngine:
             self._spread_positions = []
             self._spread_position = None
             self._spread_neutrality_warn_by_key = {}
+            self._spread_hold_guard_logged.clear()
             cleared.append("spread")
 
         if self._intraday_position is not None:
@@ -9215,6 +9319,8 @@ class OptionsEngine:
                 self._intraday_position.to_dict() if self._intraday_position else None
             ),
             "intraday_trades_today": self._intraday_trades_today,
+            "intraday_call_trades_today": self._intraday_call_trades_today,
+            "intraday_put_trades_today": self._intraday_put_trades_today,
             "swing_trades_today": self._swing_trades_today,
             "total_options_trades_today": self._total_options_trades_today,
             "current_mode": self._current_mode.value,
@@ -9321,6 +9427,8 @@ class OptionsEngine:
             self._intraday_position = None
 
         self._intraday_trades_today = state.get("intraday_trades_today", 0)
+        self._intraday_call_trades_today = state.get("intraday_call_trades_today", 0)
+        self._intraday_put_trades_today = state.get("intraday_put_trades_today", 0)
         self._swing_trades_today = state.get("swing_trades_today", 0)
         self._total_options_trades_today = state.get(
             "total_options_trades_today", self._trades_today
@@ -9438,6 +9546,8 @@ class OptionsEngine:
         self._spread_positions = []
         self._spread_position = None
         self._intraday_trades_today = 0
+        self._intraday_call_trades_today = 0
+        self._intraday_put_trades_today = 0
         self._current_mode = OptionsMode.SWING
         self._micro_regime_engine.reset_daily()
         self._vix_at_open = 0.0
@@ -9458,6 +9568,7 @@ class OptionsEngine:
         self._vass_cooldown_until_by_signature = {}
         self._vass_last_entry_date_by_direction = {}
         self._spread_neutrality_warn_by_key = {}
+        self._spread_hold_guard_logged.clear()
         self._last_intraday_close_time = None
         self._last_intraday_close_strategy = None
 
@@ -9468,6 +9579,8 @@ class OptionsEngine:
         if current_date != self._last_trade_date:
             self._trades_today = 0
             self._intraday_trades_today = 0
+            self._intraday_call_trades_today = 0
+            self._intraday_put_trades_today = 0
             self._swing_trades_today = 0  # V2.9
             self._total_options_trades_today = 0  # V2.9
             self._last_trade_date = current_date
@@ -9512,7 +9625,9 @@ class OptionsEngine:
     # V2.9: TRADE COUNTER ENFORCEMENT (Bug #4 Fix)
     # =========================================================================
 
-    def _increment_trade_counter(self, mode: OptionsMode) -> None:
+    def _increment_trade_counter(
+        self, mode: OptionsMode, direction: Optional[OptionDirection] = None
+    ) -> None:
         """
         V2.9: Increment trade counters when a trade is executed.
 
@@ -9529,8 +9644,14 @@ class OptionsEngine:
 
         if mode == OptionsMode.INTRADAY:
             self._intraday_trades_today += 1
+            if direction == OptionDirection.CALL:
+                self._intraday_call_trades_today += 1
+            elif direction == OptionDirection.PUT:
+                self._intraday_put_trades_today += 1
             self.log(
                 f"TRADE_COUNTER: Intraday={self._intraday_trades_today}/{config.INTRADAY_MAX_TRADES_PER_DAY} | "
+                f"CALL={self._intraday_call_trades_today}/{getattr(config, 'INTRADAY_MAX_TRADES_PER_DIRECTION_PER_DAY', 999)} | "
+                f"PUT={self._intraday_put_trades_today}/{getattr(config, 'INTRADAY_MAX_TRADES_PER_DIRECTION_PER_DAY', 999)} | "
                 f"Total={self._total_options_trades_today}/{config.MAX_OPTIONS_TRADES_PER_DAY}"
             )
         else:
@@ -9540,7 +9661,9 @@ class OptionsEngine:
                 f"Total={self._total_options_trades_today}/{config.MAX_OPTIONS_TRADES_PER_DAY}"
             )
 
-    def _can_trade_options(self, mode: OptionsMode) -> bool:
+    def _can_trade_options(
+        self, mode: OptionsMode, direction: Optional[OptionDirection] = None
+    ) -> bool:
         """
         V2.9: Check if trading is allowed based on daily limits.
 
@@ -9552,13 +9675,22 @@ class OptionsEngine:
         Returns:
             True if trading is allowed, False if limits exceeded.
         """
+
+        def reject(reason: str, detail: str) -> bool:
+            self.set_last_trade_limit_failure(reason, detail)
+            return False
+
+        # Reset previous limit failure context for this check.
+        self.set_last_trade_limit_failure(None, None)
+
         # Check global limit
         if self._total_options_trades_today >= config.MAX_OPTIONS_TRADES_PER_DAY:
-            self.log(
-                f"TRADE_LIMIT: Global limit reached | "
+            detail = (
+                f"Global limit reached | "
                 f"{self._total_options_trades_today}/{config.MAX_OPTIONS_TRADES_PER_DAY}"
             )
-            return False
+            self.log(f"TRADE_LIMIT: {detail}")
+            return reject("R_SLOT_TOTAL_MAX", detail)
 
         reserve_checks_active = True
         if self.algorithm is not None:
@@ -9574,11 +9706,26 @@ class OptionsEngine:
         # Check mode-specific limits
         if mode == OptionsMode.INTRADAY:
             if self._intraday_trades_today >= config.INTRADAY_MAX_TRADES_PER_DAY:
-                self.log(
-                    f"TRADE_LIMIT: Intraday limit reached | "
+                detail = (
+                    f"Intraday limit reached | "
                     f"{self._intraday_trades_today}/{config.INTRADAY_MAX_TRADES_PER_DAY}"
                 )
-                return False
+                self.log(f"TRADE_LIMIT: {detail}")
+                return reject("R_SLOT_INTRADAY_MAX", detail)
+            per_direction_cap = int(getattr(config, "INTRADAY_MAX_TRADES_PER_DIRECTION_PER_DAY", 0))
+            if per_direction_cap > 0 and direction is not None:
+                dir_count = (
+                    self._intraday_call_trades_today
+                    if direction == OptionDirection.CALL
+                    else self._intraday_put_trades_today
+                )
+                if dir_count >= per_direction_cap:
+                    detail = (
+                        f"Intraday direction cap reached | "
+                        f"Dir={direction.value} {dir_count}/{per_direction_cap}"
+                    )
+                    self.log(f"TRADE_LIMIT: {detail}")
+                    return reject("R_SLOT_DIRECTION_MAX", detail)
             if reserve_checks_active and getattr(
                 config, "OPTIONS_RESERVE_SWING_DAILY_SLOTS_ENABLED", False
             ):
@@ -9586,19 +9733,21 @@ class OptionsEngine:
                 if reserve > 0:
                     intraday_cap = max(config.MAX_OPTIONS_TRADES_PER_DAY - reserve, 0)
                     if self._intraday_trades_today >= intraday_cap:
-                        self.log(
-                            f"TRADE_LIMIT: Intraday reserve guard | "
+                        detail = (
+                            f"Intraday reserve guard | "
                             f"Intraday={self._intraday_trades_today} >= Cap={intraday_cap} | "
                             f"ReservedSwingSlots={reserve}"
                         )
-                        return False
+                        self.log(f"TRADE_LIMIT: {detail}")
+                        return reject("R_SLOT_INTRADAY_RESERVE", detail)
         else:  # SWING
             if self._swing_trades_today >= config.MAX_SWING_TRADES_PER_DAY:
-                self.log(
-                    f"TRADE_LIMIT: Swing limit reached | "
+                detail = (
+                    f"Swing limit reached | "
                     f"{self._swing_trades_today}/{config.MAX_SWING_TRADES_PER_DAY}"
                 )
-                return False
+                self.log(f"TRADE_LIMIT: {detail}")
+                return reject("R_SLOT_SWING_MAX", detail)
             if reserve_checks_active and getattr(
                 config, "OPTIONS_RESERVE_INTRADAY_DAILY_SLOTS_ENABLED", False
             ):
@@ -9606,11 +9755,12 @@ class OptionsEngine:
                 if reserve > 0:
                     swing_cap = max(config.MAX_OPTIONS_TRADES_PER_DAY - reserve, 0)
                     if self._swing_trades_today >= swing_cap:
-                        self.log(
-                            f"TRADE_LIMIT: Swing reserve guard | "
+                        detail = (
+                            f"Swing reserve guard | "
                             f"Swing={self._swing_trades_today} >= Cap={swing_cap} | "
                             f"ReservedIntradaySlots={reserve}"
                         )
-                        return False
+                        self.log(f"TRADE_LIMIT: {detail}")
+                        return reject("R_SLOT_SWING_RESERVE", detail)
 
         return True

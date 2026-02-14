@@ -667,7 +667,7 @@ KS_COLD_START_RESET_ON_TIER_3 = True  # Reset cold start on Tier 3 (true emergen
 # V2.27: KS Spread Decouple
 # Spreads survive Tier 1 and Tier 2 — they have their own -50% stop (SPREAD_STOP_LOSS_PCT)
 # Only Tier 3 (FULL_EXIT) liquidates spreads
-KILL_SWITCH_SPREAD_DECOUPLE = True
+KILL_SWITCH_SPREAD_DECOUPLE = False  # V9.4: Spreads now liquidated at all KS tiers
 
 # Panic Mode
 PANIC_MODE_PCT = 0.04
@@ -893,7 +893,7 @@ CREDIT_SPREAD_MIN_CREDIT = 0.20  # V6.10 P3: Was 0.30, lowered to allow more fil
 CREDIT_SPREAD_WIDTH_TARGET = 5.0  # $5 width for credit spreads
 CREDIT_SPREAD_FALLBACK_TO_DEBIT = True  # V6.10 P3: Fall back to debit when credit fails
 CREDIT_SPREAD_PROFIT_TARGET = 0.50  # Exit at 50% of max profit
-CREDIT_SPREAD_STOP_MULTIPLIER = 0.60  # Stop at 60% of max-loss threshold to cap tail losses
+CREDIT_SPREAD_STOP_MULTIPLIER = 0.40  # V10: tightened from 0.60 (R:R 0.45→0.67)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg delta range (OTM)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.45  # V6.13 OPT: Improve credit spread constructability
 # T-21: Credit-path liquidity quality gates (parity with debit selector).
@@ -924,7 +924,7 @@ CREDIT_SPREAD_MEDIUM_IV_VIX_THRESHOLD = 20.0  # VIX level for medium-IV tier
 
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
 # V2.3.15: Sniper Logic - allow one retry, not machine gun
-INTRADAY_MAX_TRADES_PER_DAY = 4  # Throughput tune: allow one additional high-quality intraday slot
+INTRADAY_MAX_TRADES_PER_DAY = 4  # V9.7: revert to V9.3 (V9.5 halved this, killed MICRO volume)
 INTRADAY_MAX_TRADES_PER_DIRECTION_PER_DAY = (
     2  # Hard cap per intraday direction (CALL/PUT) to curb same-side churn.
 )
@@ -1081,7 +1081,10 @@ SHORT_LEG_ITM_EXIT_THRESHOLD = (
 )
 SPREAD_ASSIGNMENT_GRACE_MINUTES = 45  # V6.15 FIX: Allow spread to stabilize before ITM checks
 SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 15  # Minutes between log messages
-SPREAD_MIN_HOLD_MINUTES = 20  # Block non-emergency spread exits right after entry
+SPREAD_MIN_HOLD_MINUTES = 5760  # V9.9: 4-day min hold guard for VASS spreads
+SPREAD_EXIT_RETRY_MINUTES = (
+    15  # V9.4 P0: Cooldown between exit signal retries (prevents per-minute spam)
+)
 
 # V6.10 P0: Mandatory DTE=1 Force Close (Nuclear Assignment Prevention)
 # Close ALL spread positions when DTE reaches this value, regardless of P&L
@@ -1220,10 +1223,29 @@ OPTIONS_LATE_DAY_MAX_STOP = 0.20  # Only 20% stops after 2:30 PM
 # With single-leg exit at DTE=4, entering at DTE=14 gives 10+ days hold
 OPTIONS_SWING_DTE_MIN = 14  # Minimum DTE for Swing Mode (reduces gap risk)
 OPTIONS_SWING_DTE_MAX = 45  # Maximum DTE for Swing Mode
-OPTIONS_INTRADAY_DTE_MIN = 1  # V2.13: Skip 0DTE (QC backtest data gaps)
+OPTIONS_INTRADAY_DTE_MIN = 1  # Baseline floor (MICRO routing may override to 2+)
 OPTIONS_INTRADAY_DTE_MAX = (
     5  # V2.13: Match VASS "nearest weekly" (was 1, caused 306 silent failures)
 )
+
+# V9.5: MICRO DTE routing by volatility regime (keeps logic simple, config-driven)
+MICRO_DTE_ROUTING_ENABLED = True  # V10: re-enabled with wide 1-5 ranges (ITM floor as overlay)
+MICRO_DTE_LOW_VIX_THRESHOLD = 18.0  # V10: raised from 16 to align with VIX-tier gates
+MICRO_DTE_HIGH_VIX_THRESHOLD = 25.0  # Bear/high-vol profile
+MICRO_DTE_LOW_VIX_MIN = 1  # V10: widened from 2 (ITM floor applied as overlay)
+MICRO_DTE_LOW_VIX_MAX = 5  # V10: widened from 3
+MICRO_DTE_MEDIUM_VIX_MIN = 1  # V10: widened from 2
+MICRO_DTE_MEDIUM_VIX_MAX = 5  # V10: widened from 3
+MICRO_DTE_HIGH_VIX_MIN = 1  # V10: widened from 2
+MICRO_DTE_HIGH_VIX_MAX = 5  # V10: widened from 4
+
+# V10: ITM DTE floor overlay (applied on top of base DTE routing for ITM_MOMENTUM only)
+MICRO_ITM_DTE_MIN_LOW_VIX = 3  # LOW VIX: reduce theta decay on ITM singles
+MICRO_ITM_DTE_MIN_MED_VIX = 3  # MED VIX: reduce theta decay on ITM singles
+MICRO_ITM_DTE_MIN_HIGH_VIX = 2  # HIGH VIX: vol provides buffer
+MICRO_ITM_DTE_MAX = 5  # Unchanged intraday envelope
+MICRO_DTE_DIAG_LOG_INTERVAL_MIN = 30  # Throttle ITM DTE routing diagnostics
+MICRO_DTE_DIAG_LOG_BACKTEST_ENABLED = True  # Keep throttled ITM DTE diagnostics in backtests
 
 # -----------------------------------------------------------------------------
 # V2.3 DEBIT SPREAD CONFIGURATION
@@ -1285,8 +1307,8 @@ SPREAD_WIDTH_EFFECTIVE_MAX = (
 SPREAD_DTE_MIN = 14  # Minimum 14 DTE (avoid gamma acceleration + gap risk)
 SPREAD_DTE_MAX = 45  # V2.19: Widened from 21 to 45 to align with VASS_LOW_IV_DTE (30-45)
 SPREAD_DTE_EXIT = 5  # Close by 5 DTE remaining
-VASS_DEBIT_MAX_HOLD_DAYS = 7  # Debit spreads: force-close if held >= 7 days
-VASS_DEBIT_MAX_HOLD_DAYS_LOW_VIX = 5  # In low IV, shorten hold to reduce theta drag
+VASS_DEBIT_MAX_HOLD_DAYS = 0  # V9.5: disable debit spread time-stop force exit
+VASS_DEBIT_MAX_HOLD_DAYS_LOW_VIX = 0  # V9.5: disable low-VIX debit time-stop override
 VASS_DEBIT_LOW_VIX_THRESHOLD = 16.0
 
 # Exit targets
@@ -1307,7 +1329,7 @@ SPREAD_STOP_REGIME_MULTIPLIERS = {
 }
 
 # V9.4: Spread Trailing Stop — lock in gains after reaching activation threshold
-SPREAD_TRAIL_ACTIVATE_PCT = 0.20  # Activate after +20% unrealized gain
+SPREAD_TRAIL_ACTIVATE_PCT = 0.30  # V9.5 tune: avoid cutting swing winners too early
 SPREAD_TRAIL_OFFSET_PCT = 0.15  # Trail 15% below high-water mark
 
 # V3.0: Regime-Adaptive Profit Targets
@@ -1321,7 +1343,10 @@ SPREAD_PROFIT_REGIME_MULTIPLIERS = {
 
 # V9.4: BULL spread entry gates (regime-specific, no impact in bull markets)
 VASS_BULL_SPREAD_REGIME_MIN = 55  # Block BULL_CALL when regime < 55
-VASS_BULL_MA20_GATE_ENABLED = True  # Block BULL_CALL when QQQ < 20MA
+VASS_BULL_MA20_GATE_ENABLED = False  # V9.5 tune: disable for VASS swing pullback participation
+
+# V9.7: BEAR_PUT entry gate — block in RISK_ON (12.5% WR in 2017 full-year RCA)
+VASS_BEAR_PUT_REGIME_MAX = 70  # Block BEAR_PUT_DEBIT when regime >= 70 (RISK_ON)
 
 # V2.27: Win Rate Gate (Options Self-Correcting Throttle)
 # Rolling window of recent closed spread trades. Scales down/shuts off when losing.
@@ -1491,6 +1516,7 @@ GAMMA_PIN_EARLY_EXIT_DTE = 2  # Activate within 2 DTE
 
 # Pitfall #4: VASS Rejection Logging - Throttled logging for silent rejections
 VASS_LOG_REJECTION_INTERVAL_MINUTES = 15  # Log rejections every 15 min (not every candle)
+MICRO_NO_TRADE_LOG_INTERVAL_MINUTES = 5  # Per-block throttle for MICRO_NO_TRADE logs
 
 # -----------------------------------------------------------------------------
 # V2.11: PRE-BACKTEST SAFETY FIXES (Pitfalls #6-8)
@@ -1733,6 +1759,10 @@ INTRADAY_DEBIT_FADE_VIX_MIN = 9.0  # Slightly wider low-vol participation
 # Debit Fade (Mean Reversion) - Gate 3a - The Sniper Window
 INTRADAY_DEBIT_FADE_MIN_SCORE = 32  # Increase DEBIT_FADE throughput while preserving quality filter
 INTRADAY_FADE_MIN_MOVE = 0.35  # Restore intraday participation while keeping noise filter
+# V10: VIX-tier move gates (replace single INTRADAY_FADE_MIN_MOVE for MICRO routing)
+MICRO_MIN_MOVE_LOW_VIX = 0.50  # Stricter for LOW VIX — filter theta-dominated noise
+MICRO_MIN_MOVE_MED_VIX = 0.40  # Standard move gate
+MICRO_MIN_MOVE_HIGH_VIX = 0.40  # Standard move gate
 INTRADAY_FADE_MAX_MOVE = 1.50  # V6.8: Was 1.20, don't block strong bull continuation
 INTRADAY_DEBIT_FADE_VIX_MAX = 25  # VIX < 25
 INTRADAY_DEBIT_FADE_START = "10:00"  # Include early-session mean-reversion setups
@@ -1758,28 +1788,34 @@ INTRADAY_ITM_MIN_SCORE = 40  # V6.8: Was 50, capture momentum earlier
 INTRADAY_ITM_START = "10:00"  # Entry window start
 INTRADAY_ITM_END = "14:30"  # Entry window end (earlier than FADE - momentum fades after lunch)
 INTRADAY_ITM_DELTA = 0.70  # ITM delta target
-INTRADAY_ITM_TARGET = 0.35  # V6.13 OPT: Earlier profit capture in volatile sessions
+INTRADAY_ITM_TARGET = 0.45  # V10: wider for uncapped upside (was 0.35)
 
 # V6.4: DEBIT_MOMENTUM time window (same as ITM_MOMENTUM - both are momentum strategies)
 INTRADAY_DEBIT_MOMENTUM_START = "10:00"  # Entry window start
 INTRADAY_DEBIT_MOMENTUM_END = "14:30"  # Entry window end
-INTRADAY_ITM_STOP = 0.35  # V6.13 OPT: Reduce catastrophic ITM losses
+INTRADAY_ITM_STOP = 0.25  # V10: tighter — ITM moves predictably with delta (was 0.35)
 INTRADAY_HIGH_VIX_STOP_MAX_PCT = (
     0.40  # V9.2 RCA: Wider stop cap for VIX>25 regimes (was capped at 28%)
 )
-INTRADAY_ITM_TRAIL_TRIGGER = 0.20  # Trail after +20%
+INTRADAY_ITM_TRAIL_TRIGGER = 0.20  # V9.8: revert to V9.3 (below 0.35 target, trail works)
 INTRADAY_ITM_TRAIL_PCT = 0.50  # Trail at 50% of gains
 
 # V9.2: Per-strategy intraday exits (previously universal target/stop)
-INTRADAY_DEBIT_FADE_TARGET = 0.40
+INTRADAY_DEBIT_FADE_TARGET = (
+    0.40  # V9.8: revert to V9.3 (0.25 was within bid-ask noise on $0.30 options)
+)
 INTRADAY_DEBIT_FADE_STOP = 0.25
-INTRADAY_DEBIT_FADE_TRAIL_TRIGGER = 0.25
+INTRADAY_DEBIT_FADE_TRAIL_TRIGGER = 0.25  # V9.8: revert to V9.3 (below 0.40 target, trail works)
 INTRADAY_DEBIT_FADE_TRAIL_PCT = 0.50
 
-INTRADAY_DEBIT_MOMENTUM_TARGET = 0.45
-INTRADAY_DEBIT_MOMENTUM_STOP = 0.30
-INTRADAY_DEBIT_MOMENTUM_TRAIL_TRIGGER = 0.20
-INTRADAY_DEBIT_MOMENTUM_TRAIL_PCT = 0.50
+INTRADAY_DEBIT_MOMENTUM_TARGET = (
+    0.45  # V9.8: revert to V9.3 (0.25 was within bid-ask noise on $0.34 options)
+)
+INTRADAY_DEBIT_MOMENTUM_STOP = 0.30  # V9.8: revert to V9.3
+INTRADAY_DEBIT_MOMENTUM_TRAIL_TRIGGER = (
+    0.20  # V9.8: revert to V9.3 (below 0.45 target, trail works)
+)
+INTRADAY_DEBIT_MOMENTUM_TRAIL_PCT = 0.50  # Standard 50% retracement from peak
 
 # V2.15: Strategy-aware intraday delta bounds
 # DEBIT_FADE: Mean reversion needs OTM options (delta 0.20-0.50)
@@ -1789,8 +1825,9 @@ INTRADAY_DEBIT_FADE_DELTA_MAX = 0.50  # Near ATM max
 # V6.4: DEBIT_MOMENTUM: Trend confirmation needs ATM-ish options (delta 0.45-0.65)
 # Between DEBIT_FADE (OTM) and ITM_MOMENTUM (ITM) - captures directional moves
 INTRADAY_DEBIT_MOMENTUM_ENABLED = (
-    True  # V8.2 MICRO revive: re-enable with existing regime/time guards
+    False  # V10: deprecated — ITM_MOMENTUM replaces all confirmation paths
 )
+INTRADAY_ITM_MOMENTUM_ENABLED = True  # V10: primary confirmation strategy
 INTRADAY_DEBIT_MOMENTUM_DELTA_MIN = 0.45  # Near ATM for momentum
 INTRADAY_DEBIT_MOMENTUM_DELTA_MAX = 0.65  # Slightly ITM max
 INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES = [
@@ -1802,8 +1839,8 @@ INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES = [
 ]  # Skip weak/choppy transition states for momentum
 
 # ITM_MOMENTUM: Stock replacement needs ITM options (delta 0.60-0.85)
-INTRADAY_ITM_DELTA_MIN = 0.60  # ITM for momentum
-INTRADAY_ITM_DELTA_MAX = 0.85  # Deep ITM max
+INTRADAY_ITM_DELTA_MIN = 0.65  # V10: tightened from 0.60 for better ITM quality
+INTRADAY_ITM_DELTA_MAX = 0.80  # V10: tightened from 0.85 to avoid deep ITM illiquidity
 
 # Protective Puts (Intraday Hedge)
 INTRADAY_PROTECT_MIN_VIX = 20  # VIX > 20: Add protection
@@ -1814,6 +1851,7 @@ INTRADAY_PROTECT_DTE_MAX = 7  # Maximum 7 DTE
 # Force close time for intraday
 INTRADAY_FORCE_EXIT_TIME = "15:25"  # V6.15 FIX: Earlier close to avoid OCO race at 15:30
 OCO_RECOVERY_CUTOFF_MINUTES_BEFORE_FORCE_EXIT = 20  # Disable OCO recovery near force-close window
+OCO_RECOVERY_RETRY_MINUTES = 30  # Retry missing OCO creation intraday (bounded cadence)
 
 # V2.3.16: Direction Conflict Resolution
 # Skip intraday FADE when main regime strongly disagrees
@@ -1823,7 +1861,7 @@ DIRECTION_CONFLICT_BEARISH_THRESHOLD = 40  # Regime < 40 = strong bearish, don't
 # V2.5: Grind-Up Override - capture rallies missed in CAUTIOUS regime
 # Problem: Feb 4 missed +1.2% rally because VIX was STABLE (CAUTIOUS regime = NO_TRADE)
 # Solution: In CAUTIOUS regime, if QQQ is UP_STRONG and macro score is safe, ride the rally
-GRIND_UP_OVERRIDE_ENABLED = True
+GRIND_UP_OVERRIDE_ENABLED = False  # V10: dead code path — CAUTIOUS not in caution_regimes
 GRIND_UP_MIN_MOVE = 0.50  # Minimum QQQ move to trigger override (0.50% = UP_STRONG)
 GRIND_UP_MACRO_SAFE_MIN = 40  # Macro regime score must be > 40 to avoid bear traps
 
@@ -1858,6 +1896,7 @@ PROTECTIVE_PUTS_DTE_MAX = 7  # Maximum 7 DTE (balance cost vs protection)
 PROTECTIVE_PUTS_DELTA_TARGET = 0.30  # OTM puts (cheaper, more leverage)
 PROTECTIVE_PUTS_DELTA_TOLERANCE = 0.10  # Accept delta 0.20-0.40
 PROTECTIVE_PUTS_STOP_PCT = 0.35  # Tighter stop to reduce repeated deep insurance losses
+INTRADAY_MAX_CONTRACTS = 40  # V9.8: Hard cap for all MICRO intraday entries
 PROTECTIVE_PUTS_MAX_CONTRACTS = (
     5  # V9.2 RCA: Cap contracts to prevent 10+ lot outsized bets in crisis
 )
@@ -2012,6 +2051,7 @@ EXPIRATION_HAMMER_CLOSE_ALL = True  # Close ALL options expiring today at 2 PM
 # V2.3.24: Rejection log throttle to reduce log spam
 # Only log MIN_TRADE_VALUE rejections once per interval
 REJECTION_LOG_THROTTLE_MINUTES = 15
+REJECTION_EVENT_LOG_THROTTLE_MINUTES = 5  # Throttle repeated ROUTER_REJECT lines by code/stage
 
 # =============================================================================
 # SCHEDULING

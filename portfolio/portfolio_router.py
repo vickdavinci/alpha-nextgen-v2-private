@@ -207,6 +207,8 @@ class PortfolioRouter:
         self._last_rejection_log_time: Optional[Any] = None
         self._rejection_log_count: int = 0
         self._last_rejections: List[RouterRejection] = []
+        self._last_rejection_event_log_by_key: Dict[str, Any] = {}
+        self._suppressed_rejection_event_count_by_key: Dict[str, int] = {}
 
         # V2.9: Track open spread margin (Bug #1 fix)
         # Stores {spread_id: margin_reserved} for each open spread
@@ -307,36 +309,96 @@ class PortfolioRouter:
             self._rejection_log_count += 1
             return False
 
+    def _should_log_rejection_event(self, code: str, stage: str) -> Tuple[bool, int]:
+        """
+        Throttle high-frequency ROUTER_REJECT logs by rejection class.
+
+        Keeps structured rejection records intact for diagnostics while reducing
+        repeated log-line spam during reject storms (margin, quote, sizing loops).
+        """
+        if not self.algorithm:
+            return True, 0
+
+        from datetime import timedelta
+
+        key = f"{str(code)}|{str(stage)}"
+        now = self.algorithm.Time  # type: ignore[attr-defined]
+        interval_min = max(1, int(getattr(config, "REJECTION_EVENT_LOG_THROTTLE_MINUTES", 5)))
+        last = self._last_rejection_event_log_by_key.get(key)
+
+        if last is None or (now - last) >= timedelta(minutes=interval_min):
+            suppressed = int(self._suppressed_rejection_event_count_by_key.pop(key, 0))
+            self._last_rejection_event_log_by_key[key] = now
+            return True, suppressed
+
+        self._suppressed_rejection_event_count_by_key[key] = (
+            int(self._suppressed_rejection_event_count_by_key.get(key, 0)) + 1
+        )
+        return False, 0
+
     # =========================================================================
     # V2.9: SPREAD MARGIN TRACKING (Bug #1 Fix)
     # =========================================================================
 
-    def register_spread_margin(self, spread_id: str, margin_reserved: float) -> None:
+    def _build_spread_margin_key(self, long_symbol: str, short_symbol: Optional[str] = None) -> str:
+        """Build stable margin key for a spread reservation."""
+        long_str = str(long_symbol or "").strip()
+        short_str = str(short_symbol or "").strip()
+        return f"{long_str}|{short_str}" if short_str else long_str
+
+    def register_spread_margin(
+        self,
+        spread_id: str,
+        margin_reserved: float,
+        short_symbol: Optional[str] = None,
+    ) -> None:
         """
         V2.9: Register margin reserved by an open spread position.
 
-        Called when a spread fills to track margin locked by open positions.
-        This prevents Trend engine from overcommitting margin.
-
         Args:
-            spread_id: Unique identifier for the spread (e.g., long_leg_symbol).
-            margin_reserved: Margin requirement for this spread (width × 100 × num_spreads).
+            spread_id: Long leg symbol or spread id.
+            margin_reserved: Margin requirement for this spread.
+            short_symbol: Optional short leg symbol for stable composite keying.
         """
-        self._open_spread_margin[spread_id] = margin_reserved
-        self.log(
-            f"MARGIN_TRACK: Registered spread | ID={spread_id} | Reserved=${margin_reserved:,.0f}"
-        )
+        key = self._build_spread_margin_key(spread_id, short_symbol)
+        self._open_spread_margin[key] = margin_reserved
+        self.log(f"MARGIN_TRACK: Registered spread | ID={key} | Reserved=${margin_reserved:,.0f}")
 
     def unregister_spread_margin(self, spread_id: str) -> None:
-        """
-        V2.9: Unregister margin when a spread position is closed.
-
-        Args:
-            spread_id: Unique identifier for the spread being closed.
-        """
+        """Unregister margin when a spread position is closed (direct key)."""
         if spread_id in self._open_spread_margin:
             freed = self._open_spread_margin.pop(spread_id)
             self.log(f"MARGIN_TRACK: Unregistered spread | ID={spread_id} | Freed=${freed:,.0f}")
+
+    def unregister_spread_margin_by_legs(
+        self,
+        long_symbol: str,
+        short_symbol: Optional[str] = None,
+    ) -> None:
+        """Unregister spread margin by long/short symbols with legacy-key compatibility."""
+        long_str = str(long_symbol or "").strip()
+        short_str = str(short_symbol or "").strip()
+        if not long_str:
+            return
+
+        candidates = {self._build_spread_margin_key(long_str, short_str), long_str}
+        removed = 0
+        for key in list(candidates):
+            if key in self._open_spread_margin:
+                self.unregister_spread_margin(key)
+                removed += 1
+
+        # Legacy fallback: remove any key anchored by this long leg.
+        legacy_prefix = f"{long_str}|"
+        for key in list(self._open_spread_margin.keys()):
+            if key.startswith(legacy_prefix):
+                self.unregister_spread_margin(key)
+                removed += 1
+
+        if removed == 0:
+            self.log(
+                f"MARGIN_TRACK: Unregister skipped | Long={long_str} Short={short_str or 'NA'} | No matching reservation"
+            )
 
     def clear_all_spread_margins(self) -> None:
         """
@@ -792,9 +854,11 @@ class PortfolioRouter:
 
         # Try atomic ComboMarketOrder first (unless emergency)
         if not is_emergency:
-            combo_success = self._try_combo_close(long_symbol, short_symbol, num_spreads, reason)
+            combo_success = self._try_combo_close(
+                long_symbol, short_symbol, num_spreads, reason, tag=f"SPREAD_CLOSE_COMBO|{reason}"
+            )
             if combo_success:
-                self._unregister_spread_margin_if_tracked(long_symbol)
+                self._unregister_spread_margin_if_tracked(long_symbol, short_symbol)
                 return True
 
         # Fallback to sequential close (margin-safe: short first, then long)
@@ -804,11 +868,11 @@ class PortfolioRouter:
         )
 
         sequential_success = self._execute_sequential_close(
-            long_symbol, short_symbol, num_spreads, reason
+            long_symbol, short_symbol, num_spreads, reason, tag_prefix=f"SPREAD_CLOSE_SEQ|{reason}"
         )
 
         if sequential_success:
-            self._unregister_spread_margin_if_tracked(long_symbol)
+            self._unregister_spread_margin_if_tracked(long_symbol, short_symbol)
             return True
 
         # All close attempts failed - clear the lock to allow retry
@@ -827,18 +891,12 @@ class PortfolioRouter:
         short_symbol: str,
         num_spreads: int,
         reason: str,
+        tag: str = "SPREAD_CLOSE_COMBO",
     ) -> bool:
         """
         V2.17: Attempt atomic combo close with retries.
 
-        Args:
-            long_symbol: Symbol of the long leg to sell.
-            short_symbol: Symbol of the short leg to buy back.
-            num_spreads: Number of spreads to close.
-            reason: Reason for close (for logging).
-
-        Returns:
-            True if combo order succeeded, False if all retries exhausted.
+        Uses live holdings quantities to avoid stale num_spreads over/under-close.
         """
         if not self.algorithm:
             return False
@@ -846,9 +904,11 @@ class PortfolioRouter:
         try:
             from AlgorithmImports import Leg
 
-            # Find actual QC Symbol objects from portfolio
+            # Find actual QC Symbol objects + live quantities from portfolio
             long_qc_symbol = None
             short_qc_symbol = None
+            live_long_qty = 0
+            live_short_qty = 0
 
             for kvp in self.algorithm.Portfolio:  # type: ignore[attr-defined]
                 holding = kvp.Value
@@ -857,8 +917,10 @@ class PortfolioRouter:
                 symbol_str = str(holding.Symbol)
                 if long_symbol in symbol_str and holding.Quantity > 0:
                     long_qc_symbol = holding.Symbol
+                    live_long_qty = int(holding.Quantity)
                 elif short_symbol in symbol_str and holding.Quantity < 0:
                     short_qc_symbol = holding.Symbol
+                    live_short_qty = abs(int(holding.Quantity))
 
             if long_qc_symbol is None or short_qc_symbol is None:
                 self.log(
@@ -868,6 +930,23 @@ class PortfolioRouter:
                 )
                 return False
 
+            if live_long_qty <= 0 or live_short_qty <= 0:
+                self.log(
+                    f"ROUTER: COMBO_CLOSE_QTY_INVALID | {reason} | "
+                    f"LongQty={live_long_qty} ShortQty={live_short_qty}"
+                )
+                return False
+
+            if live_long_qty != live_short_qty:
+                self.log(
+                    f"ROUTER: COMBO_CLOSE_QTY_MISMATCH | {reason} | "
+                    f"LongQty={live_long_qty} ShortQty={live_short_qty} | "
+                    f"Falling back to sequential"
+                )
+                return False
+
+            close_qty = live_long_qty
+
             # Retry loop
             for attempt in range(1, config.COMBO_ORDER_MAX_RETRIES + 1):
                 try:
@@ -876,11 +955,14 @@ class PortfolioRouter:
                         Leg.Create(short_qc_symbol, 1),  # Buy short (ratio +1)
                     ]
 
-                    self.algorithm.ComboMarketOrder(legs, num_spreads)  # type: ignore[attr-defined]
+                    try:
+                        self.algorithm.ComboMarketOrder(legs, close_qty, tag=tag)  # type: ignore[attr-defined]
+                    except TypeError:
+                        self.algorithm.ComboMarketOrder(legs, close_qty, tag)  # type: ignore[attr-defined]
                     self.log(
                         f"ROUTER: COMBO_CLOSE_SUCCESS | {reason} | "
                         f"Attempt {attempt}/{config.COMBO_ORDER_MAX_RETRIES} | "
-                        f"Spreads={num_spreads}"
+                        f"Spreads={close_qty}"
                     )
                     return True
 
@@ -890,7 +972,6 @@ class PortfolioRouter:
                         f"Attempt {attempt}/{config.COMBO_ORDER_MAX_RETRIES} | "
                         f"Error: {e}"
                     )
-                    # Continue to next retry
 
             self.log(
                 f"ROUTER: COMBO_CLOSE_EXHAUSTED | {reason} | "
@@ -908,28 +989,21 @@ class PortfolioRouter:
         short_symbol: str,
         num_spreads: int,
         reason: str,
+        tag_prefix: str = "SPREAD_CLOSE_SEQ",
     ) -> bool:
         """
         V2.17: Execute sequential close: SHORT first (buy back), then LONG (sell).
 
-        This order prevents naked short exposure during the close.
-        Worst case: long leg remains open temporarily.
-
-        Args:
-            long_symbol: Symbol of the long leg to sell.
-            short_symbol: Symbol of the short leg to buy back.
-            num_spreads: Number of spreads to close.
-            reason: Reason for close (for logging).
-
-        Returns:
-            True if at least short leg was closed, False if both failed.
+        Uses live leg quantities so stale spread counts cannot over/under-close.
         """
         if not self.algorithm:
             return False
 
-        # Find actual QC Symbol objects
+        # Find actual QC Symbol objects + live quantities
         long_qc_symbol = None
         short_qc_symbol = None
+        live_long_qty = 0
+        live_short_qty = 0
 
         for kvp in self.algorithm.Portfolio:  # type: ignore[attr-defined]
             holding = kvp.Value
@@ -938,41 +1012,65 @@ class PortfolioRouter:
             symbol_str = str(holding.Symbol)
             if long_symbol in symbol_str and holding.Quantity > 0:
                 long_qc_symbol = holding.Symbol
+                live_long_qty = int(holding.Quantity)
             elif short_symbol in symbol_str and holding.Quantity < 0:
                 short_qc_symbol = holding.Symbol
+                live_short_qty = abs(int(holding.Quantity))
+
+        short_close_qty = live_short_qty
+        long_close_qty = live_long_qty
 
         short_closed = False
         long_closed = False
 
         # Step 1: Buy back short leg first (eliminates short exposure)
-        if short_qc_symbol is not None:
+        if short_qc_symbol is not None and short_close_qty > 0:
             try:
-                self.algorithm.MarketOrder(short_qc_symbol, num_spreads)  # BUY (positive)
+                try:
+                    self.algorithm.MarketOrder(
+                        short_qc_symbol, short_close_qty, tag=f"{tag_prefix}|SHORT"
+                    )  # BUY (positive)
+                except TypeError:
+                    self.algorithm.MarketOrder(
+                        short_qc_symbol, short_close_qty, f"{tag_prefix}|SHORT"
+                    )  # BUY (positive)
                 short_closed = True
                 self.log(
                     f"ROUTER: SEQUENTIAL_SHORT_CLOSED | {reason} | "
-                    f"Bought back {num_spreads} @ {short_symbol}"
+                    f"Bought back {short_close_qty} @ {short_symbol}"
                 )
             except Exception as e:
                 self.log(f"ROUTER: SEQUENTIAL_SHORT_FAIL | {reason} | {e}")
         else:
-            self.log(f"ROUTER: SEQUENTIAL_SHORT_NOTFOUND | {reason} | {short_symbol}")
+            self.log(
+                f"ROUTER: SEQUENTIAL_SHORT_NOTFOUND | {reason} | {short_symbol} | "
+                f"LiveQty={live_short_qty}"
+            )
 
         # Step 2: Sell long leg (after short is closed)
-        if long_qc_symbol is not None:
+        if long_qc_symbol is not None and long_close_qty > 0:
             try:
-                self.algorithm.MarketOrder(long_qc_symbol, -num_spreads)  # SELL (negative)
+                try:
+                    self.algorithm.MarketOrder(
+                        long_qc_symbol, -long_close_qty, tag=f"{tag_prefix}|LONG"
+                    )  # SELL (negative)
+                except TypeError:
+                    self.algorithm.MarketOrder(
+                        long_qc_symbol, -long_close_qty, f"{tag_prefix}|LONG"
+                    )  # SELL (negative)
                 long_closed = True
                 self.log(
                     f"ROUTER: SEQUENTIAL_LONG_CLOSED | {reason} | "
-                    f"Sold {num_spreads} @ {long_symbol}"
+                    f"Sold {long_close_qty} @ {long_symbol}"
                 )
             except Exception as e:
                 self.log(f"ROUTER: SEQUENTIAL_LONG_FAIL | {reason} | {e}")
         else:
-            self.log(f"ROUTER: SEQUENTIAL_LONG_NOTFOUND | {reason} | {long_symbol}")
+            self.log(
+                f"ROUTER: SEQUENTIAL_LONG_NOTFOUND | {reason} | {long_symbol} | "
+                f"LiveQty={live_long_qty}"
+            )
 
-        # Log final state
         if short_closed and long_closed:
             self.log(f"ROUTER: SEQUENTIAL_COMPLETE | {reason}")
             return True
@@ -981,20 +1079,20 @@ class PortfolioRouter:
                 f"ROUTER: SEQUENTIAL_PARTIAL | {reason} | "
                 f"SHORT closed, LONG failed - long exposure remains"
             )
-            return True  # Partial success - at least no naked short
+            return True
         else:
             self.log(f"ROUTER: SEQUENTIAL_FAILED | {reason} | Both legs failed")
             return False
 
-    def _unregister_spread_margin_if_tracked(self, spread_id: str) -> None:
-        """
-        V2.17: Helper to safely unregister spread margin if it was tracked.
-
-        Args:
-            spread_id: Spread identifier (usually long_leg_symbol).
-        """
-        if spread_id in self._open_spread_margin:
-            self.unregister_spread_margin(spread_id)
+    def _unregister_spread_margin_if_tracked(
+        self,
+        long_symbol: str,
+        short_symbol: Optional[str] = None,
+    ) -> None:
+        """Helper to safely unregister spread margin by spread legs."""
+        self.unregister_spread_margin_by_legs(
+            str(long_symbol), str(short_symbol) if short_symbol else None
+        )
 
     # =========================================================================
     # V2.19: LIMIT ORDER EXECUTION (Slippage Protection)
@@ -1094,6 +1192,12 @@ class PortfolioRouter:
         try:
             security = self.algorithm.Securities.get(symbol)
             if security is None:
+                symbol_str = str(symbol)
+                for sec in self.algorithm.Securities.Values:  # type: ignore[attr-defined]
+                    if str(sec.Symbol) == symbol_str:
+                        security = sec
+                        break
+            if security is None:
                 return None, f"SYMBOL_NOT_FOUND: {symbol}"
 
             bid = security.BidPrice
@@ -1141,6 +1245,7 @@ class PortfolioRouter:
         symbol: str,
         quantity: int,
         reason: str = "OPTIONS_ORDER",
+        tag: Optional[str] = None,
     ) -> bool:
         """
         V2.19: Execute options order using marketable limit.
@@ -1165,7 +1270,13 @@ class PortfolioRouter:
         if not use_limits:
             # Fall back to market order
             try:
-                self.algorithm.MarketOrder(symbol, quantity)
+                if tag:
+                    try:
+                        self.algorithm.MarketOrder(symbol, quantity, tag=tag)
+                    except TypeError:
+                        self.algorithm.MarketOrder(symbol, quantity)
+                else:
+                    self.algorithm.MarketOrder(symbol, quantity)
                 self.log(f"MARKET_ORDER: {symbol} | Qty={quantity} | {reason}")
                 return True
             except Exception as e:
@@ -1180,7 +1291,13 @@ class PortfolioRouter:
             return False
 
         try:
-            self.algorithm.LimitOrder(symbol, quantity, limit_price)
+            if tag:
+                try:
+                    self.algorithm.LimitOrder(symbol, quantity, limit_price, tag=tag)
+                except TypeError:
+                    self.algorithm.LimitOrder(symbol, quantity, limit_price)
+            else:
+                self.algorithm.LimitOrder(symbol, quantity, limit_price)
             self.log(
                 f"LIMIT_ORDER: {symbol} | Qty={quantity} | " f"Limit=${limit_price:.2f} | {reason}"
             )
@@ -1357,9 +1474,14 @@ class PortfolioRouter:
             stage=stage,
         )
         self._last_rejections.append(item)
+        should_log, suppressed = self._should_log_rejection_event(code=code, stage=stage)
+        if not should_log:
+            return
+        suppressed_suffix = f" | Suppressed={suppressed}" if suppressed > 0 else ""
         self.log(
             f"ROUTER_REJECT: Code={code} | Stage={stage} | Symbol={symbol} | "
-            f"Source={source_tag or 'UNKNOWN'} | Trace={trace_id or 'NONE'} | {detail}"
+            f"Source={source_tag or 'UNKNOWN'} | Trace={trace_id or 'NONE'} | "
+            f"{detail}{suppressed_suffix}"
         )
 
     def _extract_trace_context(
@@ -1841,23 +1963,36 @@ class PortfolioRouter:
             # Allow closing trades even if value is small (e.g., worthless options)
             is_closing = agg.target_weight == 0.0
 
-            # Safety: never allow options close intents to use weight fallback sizing.
-            # Close intents must carry explicit requested_quantity to avoid accidental
-            # oversell/short-open behavior when current_value snapshots are stale.
+            # Safety: close intents should carry explicit requested_quantity.
+            # As a hardening fallback, infer live quantity for option closes when missing.
             if (
                 is_option
                 and is_closing
                 and (agg.requested_quantity is None or agg.requested_quantity <= 0)
             ):
-                self._record_rejection(
-                    code="R_CLOSE_NO_QTY",
-                    symbol=symbol,
-                    detail="Closing option without requested_quantity",
-                    stage="INTENT_BUILD",
-                    source_tag=source_tag,
-                    trace_id=trace_id,
-                )
-                continue
+                inferred_qty = 0
+                if self.algorithm:
+                    try:
+                        for kvp in self.algorithm.Portfolio:  # type: ignore[attr-defined]
+                            holding = kvp.Value
+                            if str(holding.Symbol) == symbol:
+                                inferred_qty = abs(int(holding.Quantity))
+                                break
+                    except Exception:
+                        inferred_qty = 0
+                if inferred_qty > 0:
+                    agg.requested_quantity = inferred_qty
+                    self.log(f"ROUTER: CLOSE_QTY_INFERRED | {symbol} | Qty={inferred_qty}")
+                else:
+                    self._record_rejection(
+                        code="R_CLOSE_NO_QTY",
+                        symbol=symbol,
+                        detail="Closing option without requested_quantity and no live qty fallback",
+                        stage="INTENT_BUILD",
+                        source_tag=source_tag,
+                        trace_id=trace_id,
+                    )
+                    continue
 
             # V6.16: For option close intents, derive side/quantity from live holdings only.
             # This prevents stale weight snapshots from flipping close side (e.g., BUY on long close)
@@ -2162,8 +2297,12 @@ class PortfolioRouter:
             )
             if not source_tag and order.tag:
                 source_tag = order.tag
-            # Create unique order key: SYMBOL:SIDE:QTY
-            order_key = f"{order.symbol}:{order.side.value}:{order.quantity}"
+            # Create unique order key with routing context to avoid false duplicate suppression.
+            order_key = (
+                f"{order.symbol}:{order.side.value}:{order.quantity}:"
+                f"{order.order_type.value}:{int(order.is_combo)}:"
+                f"{order.combo_short_symbol or ''}:{source_tag or ''}:{trace_id or ''}"
+            )
 
             # Skip if already executed this minute (idempotency guard)
             if order_key in self._executed_this_minute:
@@ -2262,43 +2401,54 @@ class PortfolioRouter:
                                 continue
                         required_margin = per_contract_margin * order.quantity
                         if per_contract_margin > 0 and required_margin > margin_remaining:
-                            max_contracts = int(margin_remaining / per_contract_margin)
-                            min_contracts = getattr(config, "MIN_SPREAD_CONTRACTS", 2)
-                            if max_contracts >= min_contracts:
-                                scale_ratio = max_contracts / order.quantity
-                                order.quantity = max_contracts
-                                if order.combo_short_quantity:
-                                    # Keep short leg quantity exactly aligned with scaled spread count.
-                                    # BUY combo (open): short leg is negative.
-                                    # SELL combo (close): short leg is positive.
-                                    order.combo_short_quantity = (
-                                        -order.quantity
-                                        if order.side == OrderSide.BUY
-                                        else order.quantity
-                                    )
+                            # V9.4 P0: Exit combos bypass margin check — closing a spread
+                            # releases margin, it should never be blocked by margin requirements.
+                            # This fixes the deadlock where exit signals fire every minute but
+                            # the close order is perpetually margin-blocked.
+                            if is_exit_combo:
                                 self.log(
-                                    f"ROUTER_MARGIN_SCALE_COMBO: {order.symbol} | "
+                                    f"ROUTER_EXIT_BYPASS_MARGIN: {order.symbol} | "
                                     f"Required=${required_margin:,.0f} > Available=${margin_remaining:,.0f} | "
-                                    f"Scaled to {max_contracts} spreads"
+                                    f"Allowing exit combo (risk-reducing)"
                                 )
                             else:
-                                self.log(
-                                    f"ROUTER_MARGIN_BLOCK_COMBO: {order.symbol} | "
-                                    f"Required=${required_margin:,.0f} > Available=${margin_remaining:,.0f} | "
-                                    f"Max {max_contracts} < min {min_contracts}"
-                                )
-                                self._record_rejection(
-                                    code="R_COMBO_MARGIN_BLOCK",
-                                    symbol=order.symbol,
-                                    detail=(
+                                max_contracts = int(margin_remaining / per_contract_margin)
+                                min_contracts = getattr(config, "MIN_SPREAD_CONTRACTS", 2)
+                                if max_contracts >= min_contracts:
+                                    scale_ratio = max_contracts / order.quantity
+                                    order.quantity = max_contracts
+                                    if order.combo_short_quantity:
+                                        # Keep short leg quantity exactly aligned with scaled spread count.
+                                        # BUY combo (open): short leg is negative.
+                                        # SELL combo (close): short leg is positive.
+                                        order.combo_short_quantity = (
+                                            -order.quantity
+                                            if order.side == OrderSide.BUY
+                                            else order.quantity
+                                        )
+                                    self.log(
+                                        f"ROUTER_MARGIN_SCALE_COMBO: {order.symbol} | "
                                         f"Required=${required_margin:,.0f} > Available=${margin_remaining:,.0f} | "
-                                        f"Max={max_contracts} < Min={min_contracts}"
-                                    ),
-                                    stage="EXECUTE",
-                                    source_tag=source_tag,
-                                    trace_id=trace_id,
-                                )
-                                continue
+                                        f"Scaled to {max_contracts} spreads"
+                                    )
+                                else:
+                                    self.log(
+                                        f"ROUTER_MARGIN_BLOCK_COMBO: {order.symbol} | "
+                                        f"Required=${required_margin:,.0f} > Available=${margin_remaining:,.0f} | "
+                                        f"Max {max_contracts} < min {min_contracts}"
+                                    )
+                                    self._record_rejection(
+                                        code="R_COMBO_MARGIN_BLOCK",
+                                        symbol=order.symbol,
+                                        detail=(
+                                            f"Required=${required_margin:,.0f} > Available=${margin_remaining:,.0f} | "
+                                            f"Max={max_contracts} < Min={min_contracts}"
+                                        ),
+                                        stage="EXECUTE",
+                                        source_tag=source_tag,
+                                        trace_id=trace_id,
+                                    )
+                                    continue
                     else:
                         # Non-combo pre-check uses notional order value
                         multiplier = 100 if is_option else 1
@@ -2408,23 +2558,29 @@ class PortfolioRouter:
                     total_combo_margin = combo_margin_per_contract * abs(order.quantity)
                     margin_remaining = self.get_effective_margin_remaining()
                     if combo_margin_per_contract > 0 and total_combo_margin > margin_remaining:
-                        self.log(
-                            f"ROUTER_MARGIN_BLOCK_COMBO: {order.symbol} | "
-                            f"Required=${total_combo_margin:,.0f} > Available=${margin_remaining:,.0f}"
-                        )
-                        self._record_rejection(
-                            code="R_COMBO_MARGIN_BLOCK",
-                            symbol=order.symbol,
-                            detail=(
+                        # V9.4 P0: Exit combos bypass — closing reduces risk, should never be blocked
+                        if is_exit_combo:
+                            self.log(
+                                f"ROUTER_EXIT_BYPASS_MARGIN: {order.symbol} | "
+                                f"Required=${total_combo_margin:,.0f} > Available=${margin_remaining:,.0f} | "
+                                f"Allowing exit combo (risk-reducing)"
+                            )
+                        else:
+                            self.log(
+                                f"ROUTER_MARGIN_BLOCK_COMBO: {order.symbol} | "
                                 f"Required=${total_combo_margin:,.0f} > Available=${margin_remaining:,.0f}"
-                            ),
-                            stage="EXECUTE",
-                            source_tag=source_tag,
-                            trace_id=trace_id,
-                        )
-                        if is_exit_combo and hasattr(self.algorithm, "options_engine"):
-                            self.algorithm.options_engine.reset_spread_closing_lock()
-                        continue
+                            )
+                            self._record_rejection(
+                                code="R_COMBO_MARGIN_BLOCK",
+                                symbol=order.symbol,
+                                detail=(
+                                    f"Required=${total_combo_margin:,.0f} > Available=${margin_remaining:,.0f}"
+                                ),
+                                stage="EXECUTE",
+                                source_tag=source_tag,
+                                trace_id=trace_id,
+                            )
+                            continue
 
                     # Import Leg class for combo orders
                     from AlgorithmImports import Leg
@@ -2465,23 +2621,55 @@ class PortfolioRouter:
                         spread_margin = spread_width * 100 * num_spreads
                         is_exit = order.metadata.get("spread_close_short", False)
 
-                        if is_exit:
-                            # Closing spread - unregister margin
-                            self.unregister_spread_margin(order.symbol)
-                        else:
-                            # Opening spread - register margin
-                            self.register_spread_margin(order.symbol, spread_margin)
-                elif order.order_type == OrderType.MARKET:
-                    try:
-                        self.algorithm.MarketOrder(  # type: ignore[attr-defined]
-                            order.symbol, quantity, tag=effective_tag
+                        long_leg_symbol = str(
+                            order.metadata.get("spread_long_leg_symbol", order.symbol)
                         )
-                    except TypeError:
-                        self.algorithm.MarketOrder(order.symbol, quantity)  # type: ignore[attr-defined]
-                    self.log(
-                        f"ROUTER: MARKET_ORDER | {order.side.value} {order.quantity} {order.symbol}"
-                        + f" | Tag={effective_tag}"
+                        short_leg_symbol = str(
+                            order.metadata.get("spread_short_leg_symbol", order.combo_short_symbol)
+                        )
+                        if is_exit:
+                            # Closing spread - unregister composite key reservation
+                            self.unregister_spread_margin_by_legs(long_leg_symbol, short_leg_symbol)
+                        else:
+                            # Opening spread - register composite key reservation
+                            self.register_spread_margin(
+                                long_leg_symbol,
+                                spread_margin,
+                                short_symbol=short_leg_symbol,
+                            )
+                elif order.order_type == OrderType.MARKET:
+                    is_option_market = len(str(order.symbol)) > 10 and (
+                        "C0" in str(order.symbol) or "P0" in str(order.symbol)
                     )
+                    use_option_limits = bool(getattr(config, "OPTIONS_USE_LIMIT_ORDERS", True))
+                    if is_option_market and use_option_limits:
+                        submitted = self.execute_options_limit_order(
+                            symbol=order.symbol,
+                            quantity=quantity,
+                            reason=order.reason,
+                            tag=effective_tag,
+                        )
+                        if not submitted:
+                            self._record_rejection(
+                                code="R_LIMIT_EXEC_FAIL",
+                                symbol=order.symbol,
+                                detail="Marketable limit submission failed",
+                                stage="EXECUTE",
+                                source_tag=source_tag,
+                                trace_id=trace_id,
+                            )
+                            continue
+                    else:
+                        try:
+                            self.algorithm.MarketOrder(  # type: ignore[attr-defined]
+                                order.symbol, quantity, tag=effective_tag
+                            )
+                        except TypeError:
+                            self.algorithm.MarketOrder(order.symbol, quantity)  # type: ignore[attr-defined]
+                        self.log(
+                            f"ROUTER: MARKET_ORDER | {order.side.value} {order.quantity} {order.symbol}"
+                            + f" | Tag={effective_tag}"
+                        )
                 elif order.order_type == OrderType.MOC:
                     # V2.4.2: Market-On-Close for same-day trend entries
                     try:
@@ -2840,4 +3028,6 @@ class PortfolioRouter:
         # V2.3.24: Reset rejection log throttle
         self._last_rejection_log_time = None
         self._rejection_log_count = 0
+        self._last_rejection_event_log_by_key.clear()
+        self._suppressed_rejection_event_count_by_key.clear()
         self.log("ROUTER: RESET")
