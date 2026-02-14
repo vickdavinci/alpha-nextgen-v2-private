@@ -5571,7 +5571,11 @@ class AlphaNextGen(QCAlgorithm):
         return candidates[0][1]
 
     def _select_intraday_option_contract(
-        self, chain, direction: OptionDirection, strategy: IntradayStrategy = None
+        self,
+        chain,
+        direction: OptionDirection,
+        strategy: IntradayStrategy = None,
+        vix_current: Optional[float] = None,
     ) -> Optional[OptionContract]:
         """
         V2.3.4: Select QQQ option contract for intraday mode (1-5 DTE).

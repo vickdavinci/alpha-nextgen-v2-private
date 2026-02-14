@@ -924,7 +924,7 @@ CREDIT_SPREAD_MEDIUM_IV_VIX_THRESHOLD = 20.0  # VIX level for medium-IV tier
 
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
 # V2.3.15: Sniper Logic - allow one retry, not machine gun
-INTRADAY_MAX_TRADES_PER_DAY = 2  # V9.5 tune: reduce MICRO churn/fee drag
+INTRADAY_MAX_TRADES_PER_DAY = 4  # V9.7: revert to V9.3 (V9.5 halved this, killed MICRO volume)
 INTRADAY_MAX_TRADES_PER_DIRECTION_PER_DAY = (
     2  # Hard cap per intraday direction (CALL/PUT) to curb same-side churn.
 )
@@ -1081,7 +1081,9 @@ SHORT_LEG_ITM_EXIT_THRESHOLD = (
 )
 SPREAD_ASSIGNMENT_GRACE_MINUTES = 45  # V6.15 FIX: Allow spread to stabilize before ITM checks
 SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 15  # Minutes between log messages
-SPREAD_MIN_HOLD_MINUTES = 0  # V9.5: Disable VASS spread minimum hold guard
+SPREAD_MIN_HOLD_MINUTES = (
+    2880  # V9.7: 2-day min hold (0-1 day exits had 0% WR, -$13,546 in 2017 RCA)
+)
 SPREAD_EXIT_RETRY_MINUTES = (
     15  # V9.4 P0: Cooldown between exit signal retries (prevents per-minute spam)
 )
@@ -1229,7 +1231,9 @@ OPTIONS_INTRADAY_DTE_MAX = (
 )
 
 # V9.5: MICRO DTE routing by volatility regime (keeps logic simple, config-driven)
-MICRO_DTE_ROUTING_ENABLED = True
+MICRO_DTE_ROUTING_ENABLED = (
+    False  # V9.7: disabled — restricted DTE 2-3 killed MICRO (uses DTE 1-5 baseline)
+)
 MICRO_DTE_LOW_VIX_THRESHOLD = 16.0  # Bull/low-vol profile
 MICRO_DTE_HIGH_VIX_THRESHOLD = 25.0  # Bear/high-vol profile
 MICRO_DTE_LOW_VIX_MIN = 2
@@ -1336,6 +1340,9 @@ SPREAD_PROFIT_REGIME_MULTIPLIERS = {
 # V9.4: BULL spread entry gates (regime-specific, no impact in bull markets)
 VASS_BULL_SPREAD_REGIME_MIN = 55  # Block BULL_CALL when regime < 55
 VASS_BULL_MA20_GATE_ENABLED = False  # V9.5 tune: disable for VASS swing pullback participation
+
+# V9.7: BEAR_PUT entry gate — block in RISK_ON (12.5% WR in 2017 full-year RCA)
+VASS_BEAR_PUT_REGIME_MAX = 70  # Block BEAR_PUT_DEBIT when regime >= 70 (RISK_ON)
 
 # V2.27: Win Rate Gate (Options Self-Correcting Throttle)
 # Rolling window of recent closed spread trades. Scales down/shuts off when losing.
@@ -1772,28 +1779,36 @@ INTRADAY_ITM_MIN_SCORE = 40  # V6.8: Was 50, capture momentum earlier
 INTRADAY_ITM_START = "10:00"  # Entry window start
 INTRADAY_ITM_END = "14:30"  # Entry window end (earlier than FADE - momentum fades after lunch)
 INTRADAY_ITM_DELTA = 0.70  # ITM delta target
-INTRADAY_ITM_TARGET = 0.35  # V6.13 OPT: Earlier profit capture in volatile sessions
+INTRADAY_ITM_TARGET = 0.20  # V9.7: Capture gamma pops before theta eats them (was 0.35)
 
 # V6.4: DEBIT_MOMENTUM time window (same as ITM_MOMENTUM - both are momentum strategies)
 INTRADAY_DEBIT_MOMENTUM_START = "10:00"  # Entry window start
 INTRADAY_DEBIT_MOMENTUM_END = "14:30"  # Entry window end
-INTRADAY_ITM_STOP = 0.35  # V6.13 OPT: Reduce catastrophic ITM losses
+INTRADAY_ITM_STOP = 0.25  # V9.7: Tighter — if going against you, theta wins (was 0.35)
 INTRADAY_HIGH_VIX_STOP_MAX_PCT = (
     0.40  # V9.2 RCA: Wider stop cap for VIX>25 regimes (was capped at 28%)
 )
-INTRADAY_ITM_TRAIL_TRIGGER = 0.20  # Trail after +20%
+INTRADAY_ITM_TRAIL_TRIGGER = (
+    0.12  # V9.7: Was 0.20 (= target, trail dead). Activate below target to ride or protect
+)
 INTRADAY_ITM_TRAIL_PCT = 0.50  # Trail at 50% of gains
 
 # V9.2: Per-strategy intraday exits (previously universal target/stop)
-INTRADAY_DEBIT_FADE_TARGET = 0.40
+INTRADAY_DEBIT_FADE_TARGET = 0.25  # V9.7: Faster capture in low VIX (was 0.40)
 INTRADAY_DEBIT_FADE_STOP = 0.25
-INTRADAY_DEBIT_FADE_TRAIL_TRIGGER = 0.25
+INTRADAY_DEBIT_FADE_TRAIL_TRIGGER = (
+    0.15  # V9.7: Was 0.25 (= target, trail dead). Activate below target for MR protection
+)
 INTRADAY_DEBIT_FADE_TRAIL_PCT = 0.50
 
-INTRADAY_DEBIT_MOMENTUM_TARGET = 0.45
-INTRADAY_DEBIT_MOMENTUM_STOP = 0.30
-INTRADAY_DEBIT_MOMENTUM_TRAIL_TRIGGER = 0.20
-INTRADAY_DEBIT_MOMENTUM_TRAIL_PCT = 0.50
+INTRADAY_DEBIT_MOMENTUM_TARGET = (
+    0.25  # V9.7: ATM has most extrinsic/theta — capture fast (was 0.45)
+)
+INTRADAY_DEBIT_MOMENTUM_STOP = 0.20  # V9.7: Tighter — more extrinsic = theta wins faster (was 0.30)
+INTRADAY_DEBIT_MOMENTUM_TRAIL_TRIGGER = (
+    0.15  # V9.7: Lock in earlier — low VIX moves don't sustain (was 0.20)
+)
+INTRADAY_DEBIT_MOMENTUM_TRAIL_PCT = 0.50  # Standard 50% retracement from peak
 
 # V2.15: Strategy-aware intraday delta bounds
 # DEBIT_FADE: Mean reversion needs OTM options (delta 0.20-0.50)
@@ -1803,7 +1818,7 @@ INTRADAY_DEBIT_FADE_DELTA_MAX = 0.50  # Near ATM max
 # V6.4: DEBIT_MOMENTUM: Trend confirmation needs ATM-ish options (delta 0.45-0.65)
 # Between DEBIT_FADE (OTM) and ITM_MOMENTUM (ITM) - captures directional moves
 INTRADAY_DEBIT_MOMENTUM_ENABLED = (
-    False  # V9.5 tune: disable weakest MICRO strategy (fee-heavy, low EV)
+    True  # V9.7: revert to V9.3 (V9.5 disabled this, but V9.3 was profitable with it)
 )
 INTRADAY_DEBIT_MOMENTUM_DELTA_MIN = 0.45  # Near ATM for momentum
 INTRADAY_DEBIT_MOMENTUM_DELTA_MAX = 0.65  # Slightly ITM max
@@ -1816,8 +1831,8 @@ INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES = [
 ]  # Skip weak/choppy transition states for momentum
 
 # ITM_MOMENTUM: Stock replacement needs ITM options (delta 0.60-0.85)
-INTRADAY_ITM_DELTA_MIN = 0.60  # ITM for momentum
-INTRADAY_ITM_DELTA_MAX = 0.85  # Deep ITM max
+INTRADAY_ITM_DELTA_MIN = 0.70  # V9.7: More intrinsic = less theta sensitivity (was 0.60)
+INTRADAY_ITM_DELTA_MAX = 0.90  # V9.7: Near stock-replacement (was 0.85)
 
 # Protective Puts (Intraday Hedge)
 INTRADAY_PROTECT_MIN_VIX = 20  # VIX > 20: Add protection

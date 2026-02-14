@@ -1954,6 +1954,9 @@ class OptionsEngine:
         self._last_entry_validation_failure: Optional[str] = None
         self._last_intraday_validation_failure: Optional[str] = None
         self._last_intraday_validation_detail: Optional[str] = None
+        # Detailed slot/limit rejection context for MICRO drop telemetry.
+        self._last_trade_limit_failure: Optional[str] = None
+        self._last_trade_limit_detail: Optional[str] = None
         self._last_micro_no_trade_log: Optional[str] = None
         # MICRO anti-churn: brief cooldown for same strategy after close.
         self._last_intraday_close_time: Optional[datetime] = None
@@ -4176,6 +4179,19 @@ class OptionsEngine:
         self._last_intraday_validation_detail = None
         return reason, detail
 
+    def set_last_trade_limit_failure(
+        self, reason: Optional[str], detail: Optional[str] = None
+    ) -> None:
+        self._last_trade_limit_failure = reason
+        self._last_trade_limit_detail = detail
+
+    def pop_last_trade_limit_failure(self) -> Tuple[Optional[str], Optional[str]]:
+        reason = self._last_trade_limit_failure
+        detail = self._last_trade_limit_detail
+        self._last_trade_limit_failure = None
+        self._last_trade_limit_detail = None
+        return reason, detail
+
     def _get_effective_credit_min(self, vix_current: Optional[float] = None) -> float:
         """
         Return IV-adaptive credit floor used consistently by selection and entry validation.
@@ -4722,6 +4738,19 @@ class OptionsEngine:
         else:
             spread_type = "BEAR_PUT"
             vix_max = config.SPREAD_VIX_MAX_BEAR
+
+        # V9.7: Block BEAR_PUT_DEBIT in RISK_ON — 12.5% WR in 2017 (regime was 88% RISK_ON)
+        bear_put_risk_on_max = float(getattr(config, "VASS_BEAR_PUT_REGIME_MAX", 0))
+        if (
+            bear_put_risk_on_max > 0
+            and spread_type == "BEAR_PUT"
+            and regime_score >= bear_put_risk_on_max
+        ):
+            self.log(
+                f"SPREAD: BEAR_PUT blocked in RISK_ON | "
+                f"Regime={regime_score:.1f} >= {bear_put_risk_on_max:.0f}"
+            )
+            return fail("R_BEAR_PUT_RISK_ON_BLOCK")
 
         # V9.4 F4: Require minimum regime for BULL spread entries
         bull_regime_min = float(getattr(config, "VASS_BULL_SPREAD_REGIME_MIN", 0))
@@ -7631,8 +7660,9 @@ class OptionsEngine:
         # V2.9: Check trade limits (Bug #4 fix) - Uses comprehensive counter
         # Replaces V2.3.14 intraday-only check to also enforce global limit
         if not self._can_trade_options(OptionsMode.INTRADAY, direction=direction):
-            # V6.2: _can_trade_options already logs, no additional log needed
-            return fail("E_INTRADAY_TRADE_LIMIT")
+            # Preserve granular slot-limit cause for funnel diagnostics.
+            tl_reason, tl_detail = self.pop_last_trade_limit_failure()
+            return fail(tl_reason or "E_INTRADAY_TRADE_LIMIT", tl_detail)
 
         # Reuse state from generate_micro_intraday_signal when provided.
         # This prevents approved->dropped drift caused by a second update() call.
@@ -9615,13 +9645,22 @@ class OptionsEngine:
         Returns:
             True if trading is allowed, False if limits exceeded.
         """
+
+        def reject(reason: str, detail: str) -> bool:
+            self.set_last_trade_limit_failure(reason, detail)
+            return False
+
+        # Reset previous limit failure context for this check.
+        self.set_last_trade_limit_failure(None, None)
+
         # Check global limit
         if self._total_options_trades_today >= config.MAX_OPTIONS_TRADES_PER_DAY:
-            self.log(
-                f"TRADE_LIMIT: Global limit reached | "
+            detail = (
+                f"Global limit reached | "
                 f"{self._total_options_trades_today}/{config.MAX_OPTIONS_TRADES_PER_DAY}"
             )
-            return False
+            self.log(f"TRADE_LIMIT: {detail}")
+            return reject("R_SLOT_TOTAL_MAX", detail)
 
         reserve_checks_active = True
         if self.algorithm is not None:
@@ -9637,11 +9676,12 @@ class OptionsEngine:
         # Check mode-specific limits
         if mode == OptionsMode.INTRADAY:
             if self._intraday_trades_today >= config.INTRADAY_MAX_TRADES_PER_DAY:
-                self.log(
-                    f"TRADE_LIMIT: Intraday limit reached | "
+                detail = (
+                    f"Intraday limit reached | "
                     f"{self._intraday_trades_today}/{config.INTRADAY_MAX_TRADES_PER_DAY}"
                 )
-                return False
+                self.log(f"TRADE_LIMIT: {detail}")
+                return reject("R_SLOT_INTRADAY_MAX", detail)
             per_direction_cap = int(getattr(config, "INTRADAY_MAX_TRADES_PER_DIRECTION_PER_DAY", 0))
             if per_direction_cap > 0 and direction is not None:
                 dir_count = (
@@ -9650,11 +9690,12 @@ class OptionsEngine:
                     else self._intraday_put_trades_today
                 )
                 if dir_count >= per_direction_cap:
-                    self.log(
-                        f"TRADE_LIMIT: Intraday direction cap reached | "
+                    detail = (
+                        f"Intraday direction cap reached | "
                         f"Dir={direction.value} {dir_count}/{per_direction_cap}"
                     )
-                    return False
+                    self.log(f"TRADE_LIMIT: {detail}")
+                    return reject("R_SLOT_DIRECTION_MAX", detail)
             if reserve_checks_active and getattr(
                 config, "OPTIONS_RESERVE_SWING_DAILY_SLOTS_ENABLED", False
             ):
@@ -9662,19 +9703,21 @@ class OptionsEngine:
                 if reserve > 0:
                     intraday_cap = max(config.MAX_OPTIONS_TRADES_PER_DAY - reserve, 0)
                     if self._intraday_trades_today >= intraday_cap:
-                        self.log(
-                            f"TRADE_LIMIT: Intraday reserve guard | "
+                        detail = (
+                            f"Intraday reserve guard | "
                             f"Intraday={self._intraday_trades_today} >= Cap={intraday_cap} | "
                             f"ReservedSwingSlots={reserve}"
                         )
-                        return False
+                        self.log(f"TRADE_LIMIT: {detail}")
+                        return reject("R_SLOT_INTRADAY_RESERVE", detail)
         else:  # SWING
             if self._swing_trades_today >= config.MAX_SWING_TRADES_PER_DAY:
-                self.log(
-                    f"TRADE_LIMIT: Swing limit reached | "
+                detail = (
+                    f"Swing limit reached | "
                     f"{self._swing_trades_today}/{config.MAX_SWING_TRADES_PER_DAY}"
                 )
-                return False
+                self.log(f"TRADE_LIMIT: {detail}")
+                return reject("R_SLOT_SWING_MAX", detail)
             if reserve_checks_active and getattr(
                 config, "OPTIONS_RESERVE_INTRADAY_DAILY_SLOTS_ENABLED", False
             ):
@@ -9682,11 +9725,12 @@ class OptionsEngine:
                 if reserve > 0:
                     swing_cap = max(config.MAX_OPTIONS_TRADES_PER_DAY - reserve, 0)
                     if self._swing_trades_today >= swing_cap:
-                        self.log(
-                            f"TRADE_LIMIT: Swing reserve guard | "
+                        detail = (
+                            f"Swing reserve guard | "
                             f"Swing={self._swing_trades_today} >= Cap={swing_cap} | "
                             f"ReservedIntradaySlots={reserve}"
                         )
-                        return False
+                        self.log(f"TRADE_LIMIT: {detail}")
+                        return reject("R_SLOT_SWING_RESERVE", detail)
 
         return True
