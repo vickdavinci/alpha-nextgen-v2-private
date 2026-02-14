@@ -123,6 +123,7 @@ class OCOPair:
     activated_at: Optional[str] = None
     closed_at: Optional[str] = None
     close_reason: str = ""
+    tag_context: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize for persistence."""
@@ -137,6 +138,7 @@ class OCOPair:
             "activated_at": self.activated_at,
             "closed_at": self.closed_at,
             "close_reason": self.close_reason,
+            "tag_context": self.tag_context,
         }
 
     @classmethod
@@ -153,6 +155,7 @@ class OCOPair:
             activated_at=data.get("activated_at"),
             closed_at=data.get("closed_at"),
             close_reason=data.get("close_reason", ""),
+            tag_context=data.get("tag_context", ""),
         )
 
 
@@ -188,6 +191,7 @@ class OCOManager:
         target_price: float,
         quantity: int,
         current_date: str,
+        tag_context: str = "",
     ) -> Optional[OCOPair]:
         """
         Create a new OCO order pair.
@@ -256,6 +260,7 @@ class OCOManager:
             profit_leg=profit_leg,
             state=OCOState.PENDING,
             created_at=current_date,
+            tag_context=str(tag_context or "").strip(),
         )
 
         self.log(
@@ -299,7 +304,9 @@ class OCOManager:
                 self.log(f"OCO: WARNING - could not verify market hours: {e}")
 
         # Submit stop order
-        stop_order_id = self._submit_stop_order(pair.symbol, pair.stop_leg, pair.oco_id)
+        stop_order_id = self._submit_stop_order(
+            pair.symbol, pair.stop_leg, pair.oco_id, pair.tag_context
+        )
         if stop_order_id is None:
             self.log(f"OCO: Failed to submit stop leg for {pair.oco_id}")
             return False
@@ -307,7 +314,9 @@ class OCOManager:
         pair.stop_leg.submitted = True
 
         # Submit profit order
-        profit_order_id = self._submit_limit_order(pair.symbol, pair.profit_leg, pair.oco_id)
+        profit_order_id = self._submit_limit_order(
+            pair.symbol, pair.profit_leg, pair.oco_id, pair.tag_context
+        )
         if profit_order_id is None:
             # Cancel the stop order since profit failed
             self._cancel_order(stop_order_id)
@@ -332,7 +341,9 @@ class OCOManager:
 
         return True
 
-    def _submit_stop_order(self, symbol: str, leg: OCOLeg, oco_id: str) -> Optional[int]:
+    def _submit_stop_order(
+        self, symbol: str, leg: OCOLeg, oco_id: str, tag_context: str = ""
+    ) -> Optional[int]:
         """
         Submit a stop order to the broker.
 
@@ -346,7 +357,8 @@ class OCOManager:
 
         try:
             # Use StopMarketOrder for options
-            tag = f"OCO_STOP:{oco_id}"
+            context = str(tag_context or "").strip()
+            tag = f"OCO_STOP:{oco_id}" if not context else f"OCO_STOP:{oco_id}|{context}"
             try:
                 ticket = self.algorithm.StopMarketOrder(
                     symbol,
@@ -365,7 +377,9 @@ class OCOManager:
             self.log(f"OCO: Stop order submission failed: {e}")
             return None
 
-    def _submit_limit_order(self, symbol: str, leg: OCOLeg, oco_id: str) -> Optional[int]:
+    def _submit_limit_order(
+        self, symbol: str, leg: OCOLeg, oco_id: str, tag_context: str = ""
+    ) -> Optional[int]:
         """
         Submit a limit order to the broker.
 
@@ -379,7 +393,8 @@ class OCOManager:
 
         try:
             # Use LimitOrder for profit target
-            tag = f"OCO_PROFIT:{oco_id}"
+            context = str(tag_context or "").strip()
+            tag = f"OCO_PROFIT:{oco_id}" if not context else f"OCO_PROFIT:{oco_id}|{context}"
             try:
                 ticket = self.algorithm.LimitOrder(
                     symbol,
