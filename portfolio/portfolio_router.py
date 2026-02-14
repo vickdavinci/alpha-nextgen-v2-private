@@ -207,6 +207,8 @@ class PortfolioRouter:
         self._last_rejection_log_time: Optional[Any] = None
         self._rejection_log_count: int = 0
         self._last_rejections: List[RouterRejection] = []
+        self._last_rejection_event_log_by_key: Dict[str, Any] = {}
+        self._suppressed_rejection_event_count_by_key: Dict[str, int] = {}
 
         # V2.9: Track open spread margin (Bug #1 fix)
         # Stores {spread_id: margin_reserved} for each open spread
@@ -306,6 +308,33 @@ class PortfolioRouter:
             # Within throttle period - count but don't log
             self._rejection_log_count += 1
             return False
+
+    def _should_log_rejection_event(self, code: str, stage: str) -> Tuple[bool, int]:
+        """
+        Throttle high-frequency ROUTER_REJECT logs by rejection class.
+
+        Keeps structured rejection records intact for diagnostics while reducing
+        repeated log-line spam during reject storms (margin, quote, sizing loops).
+        """
+        if not self.algorithm:
+            return True, 0
+
+        from datetime import timedelta
+
+        key = f"{str(code)}|{str(stage)}"
+        now = self.algorithm.Time  # type: ignore[attr-defined]
+        interval_min = max(1, int(getattr(config, "REJECTION_EVENT_LOG_THROTTLE_MINUTES", 5)))
+        last = self._last_rejection_event_log_by_key.get(key)
+
+        if last is None or (now - last) >= timedelta(minutes=interval_min):
+            suppressed = int(self._suppressed_rejection_event_count_by_key.pop(key, 0))
+            self._last_rejection_event_log_by_key[key] = now
+            return True, suppressed
+
+        self._suppressed_rejection_event_count_by_key[key] = (
+            int(self._suppressed_rejection_event_count_by_key.get(key, 0)) + 1
+        )
+        return False, 0
 
     # =========================================================================
     # V2.9: SPREAD MARGIN TRACKING (Bug #1 Fix)
@@ -1445,9 +1474,14 @@ class PortfolioRouter:
             stage=stage,
         )
         self._last_rejections.append(item)
+        should_log, suppressed = self._should_log_rejection_event(code=code, stage=stage)
+        if not should_log:
+            return
+        suppressed_suffix = f" | Suppressed={suppressed}" if suppressed > 0 else ""
         self.log(
             f"ROUTER_REJECT: Code={code} | Stage={stage} | Symbol={symbol} | "
-            f"Source={source_tag or 'UNKNOWN'} | Trace={trace_id or 'NONE'} | {detail}"
+            f"Source={source_tag or 'UNKNOWN'} | Trace={trace_id or 'NONE'} | "
+            f"{detail}{suppressed_suffix}"
         )
 
     def _extract_trace_context(
@@ -2994,4 +3028,6 @@ class PortfolioRouter:
         # V2.3.24: Reset rejection log throttle
         self._last_rejection_log_time = None
         self._rejection_log_count = 0
+        self._last_rejection_event_log_by_key.clear()
+        self._suppressed_rejection_event_count_by_key.clear()
         self.log("ROUTER: RESET")

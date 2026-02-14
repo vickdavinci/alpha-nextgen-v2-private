@@ -1851,6 +1851,7 @@ INTRADAY_PROTECT_DTE_MAX = 7  # Maximum 7 DTE
 # Force close time for intraday
 INTRADAY_FORCE_EXIT_TIME = "15:25"  # V6.15 FIX: Earlier close to avoid OCO race at 15:30
 OCO_RECOVERY_CUTOFF_MINUTES_BEFORE_FORCE_EXIT = 20  # Disable OCO recovery near force-close window
+OCO_RECOVERY_RETRY_MINUTES = 30  # Retry missing OCO creation intraday (bounded cadence)
 
 # V2.3.16: Direction Conflict Resolution
 # Skip intraday FADE when main regime strongly disagrees
@@ -2050,6 +2051,7 @@ EXPIRATION_HAMMER_CLOSE_ALL = True  # Close ALL options expiring today at 2 PM
 # V2.3.24: Rejection log throttle to reduce log spam
 # Only log MIN_TRADE_VALUE rejections once per interval
 REJECTION_LOG_THROTTLE_MINUTES = 15
+REJECTION_EVENT_LOG_THROTTLE_MINUTES = 5  # Throttle repeated ROUTER_REJECT lines by code/stage
 
 # =============================================================================
 # SCHEDULING

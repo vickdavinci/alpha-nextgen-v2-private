@@ -821,7 +821,7 @@ class AlphaNextGen(QCAlgorithm):
 
         # Store capital state for EOD->Market Close handoff
         self._eod_capital_state = None
-        # V6.6.2: OCO recovery throttle (symbol -> last attempt date)
+        # V6.6.2: OCO recovery throttle (symbol -> last attempt datetime)
         self._last_oco_recovery_attempt = {}
 
         self.Log(
@@ -2853,11 +2853,21 @@ class AlphaNextGen(QCAlgorithm):
         if self.oco_manager.has_active_pair(symbol):
             return
 
-        # Throttle to once per day per symbol
+        # Throttle OCO recovery retries per symbol (minutes, not once/day).
         today = str(self.Time.date())
         last_attempt = self._last_oco_recovery_attempt.get(symbol)
-        if last_attempt == today:
-            return
+        retry_interval_min = max(1, int(getattr(config, "OCO_RECOVERY_RETRY_MINUTES", 30)))
+        if isinstance(last_attempt, str):
+            # Backward compatibility if old date-string format remains in memory.
+            if last_attempt == today:
+                return
+        elif last_attempt is not None:
+            try:
+                elapsed_min = (self.Time - last_attempt).total_seconds() / 60.0
+                if elapsed_min < retry_interval_min:
+                    return
+            except Exception:
+                pass
 
         # Ensure we still hold the position
         try:
@@ -2892,7 +2902,7 @@ class AlphaNextGen(QCAlgorithm):
         if oco_pair:
             submitted = self.oco_manager.submit_oco_pair(oco_pair, current_time=str(self.Time))
 
-        self._last_oco_recovery_attempt[symbol] = today
+        self._last_oco_recovery_attempt[symbol] = self.Time
         if submitted:
             self.Log(
                 f"OCO_RECOVER: Created missing OCO | {symbol} | "
@@ -2901,7 +2911,7 @@ class AlphaNextGen(QCAlgorithm):
         else:
             self.Log(
                 f"OCO_RECOVER: Failed to submit (market closed or error) | {symbol} | "
-                f"Will retry next day"
+                f"RetryIn={retry_interval_min}m"
             )
 
     def _reconcile_intraday_close_guards(self) -> None:
@@ -9254,12 +9264,18 @@ class AlphaNextGen(QCAlgorithm):
                 )
 
             # Both legs closed - remove spread position
-            self.options_engine.remove_spread_position(symbol)
-            self._record_spread_removal(
-                reason="fill_path",
-                count=1,
-                context="FILL_CLOSE_RECONCILED",
-            )
+            removed = self.options_engine.remove_spread_position(symbol)
+            if removed is not None:
+                self._record_spread_removal(
+                    reason="fill_path",
+                    count=1,
+                    context="FILL_CLOSE_RECONCILED",
+                )
+            else:
+                self.Log(
+                    "SPREAD_DIAG_WARNING: Fill-path counter skipped | "
+                    f"Reason=REMOVE_RETURNED_NONE | Symbol={symbol}"
+                )
             self._greeks_breach_logged = False  # Reset for next position
             self._spread_forced_close_retry.pop(spread_key, None)
             self._spread_forced_close_reason.pop(spread_key, None)

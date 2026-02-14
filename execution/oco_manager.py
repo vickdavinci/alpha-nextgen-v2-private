@@ -633,9 +633,33 @@ class OCOManager:
             return self._active_pairs.get(oco_id)
         return None
 
+    def _pair_has_live_broker_orders(self, pair: Optional[OCOPair]) -> bool:
+        """True when at least one leg still has a live broker order ID."""
+        if pair is None:
+            return False
+        return bool(pair.stop_leg.broker_order_id or pair.profit_leg.broker_order_id)
+
     def has_active_pair(self, symbol: str) -> bool:
         """Check if symbol has an active OCO pair."""
-        return symbol in self._symbol_to_oco
+        oco_id = self._symbol_to_oco.get(symbol)
+        if not oco_id:
+            return False
+
+        pair = self._active_pairs.get(oco_id)
+        if pair is None:
+            self._symbol_to_oco.pop(symbol, None)
+            return False
+
+        # Defensive cleanup: stale/restored pair without broker IDs is not actionable.
+        if pair.state != OCOState.ACTIVE or not self._pair_has_live_broker_orders(pair):
+            self.log(
+                f"OCO: STALE_ACTIVE_PAIR_CLEARED {pair.oco_id} | {pair.symbol} | "
+                f"State={pair.state.value}"
+            )
+            self._cleanup_pair(pair)
+            return False
+
+        return True
 
     def has_order(self, broker_order_id: int) -> bool:
         """Check if a broker order ID is part of any OCO pair."""
@@ -672,6 +696,8 @@ class OCOManager:
 
         # CRITICAL: Clear order-to-OCO mappings - broker IDs are session-specific
         # Previous session's broker_order_ids will NOT match this session's IDs
+        self._active_pairs.clear()
+        self._symbol_to_oco.clear()
         self._order_to_oco.clear()
 
         pairs_data = state.get("active_pairs", {})
@@ -681,24 +707,23 @@ class OCOManager:
         for oco_id, pair_data in pairs_data.items():
             pair = OCOPair.from_dict(pair_data)
 
-            # CRITICAL: Clear broker_order_ids as they're invalid after restart
-            # The broker assigns NEW IDs each session
+            # Previous-session OCO broker IDs are invalid after restart.
+            # Keep no active OCO state from persistence; runtime recovery will
+            # rebuild OCOs from live holdings via main._ensure_oco_for_open_options().
             if pair.stop_leg.broker_order_id or pair.profit_leg.broker_order_id:
-                pair.stop_leg.broker_order_id = None
-                pair.profit_leg.broker_order_id = None
                 stale_pairs += 1
+                continue
 
-            self._active_pairs[oco_id] = pair
-            self._symbol_to_oco[pair.symbol] = oco_id
-            restored_pairs += 1
+            # Pairs without broker IDs are also non-actionable post-restart.
+            stale_pairs += 1
 
         if stale_pairs > 0:
             self.log(
-                f"OCO: WARNING - {stale_pairs} pairs had stale broker IDs cleared. "
-                f"Orders may need to be re-placed."
+                f"OCO: RESTORE_DROPPED_STALE_ACTIVE={stale_pairs} | "
+                f"Will recover OCO from live holdings"
             )
 
-        self.log(f"OCO: Restored {restored_pairs} pairs (broker IDs cleared for new session)")
+        self.log(f"OCO: Restored {restored_pairs} actionable pairs")
 
     def reset(self) -> None:
         """Reset manager state."""
