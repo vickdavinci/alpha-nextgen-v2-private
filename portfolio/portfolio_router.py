@@ -825,7 +825,9 @@ class PortfolioRouter:
 
         # Try atomic ComboMarketOrder first (unless emergency)
         if not is_emergency:
-            combo_success = self._try_combo_close(long_symbol, short_symbol, num_spreads, reason)
+            combo_success = self._try_combo_close(
+                long_symbol, short_symbol, num_spreads, reason, tag=f"SPREAD_CLOSE_COMBO|{reason}"
+            )
             if combo_success:
                 self._unregister_spread_margin_if_tracked(long_symbol, short_symbol)
                 return True
@@ -837,7 +839,7 @@ class PortfolioRouter:
         )
 
         sequential_success = self._execute_sequential_close(
-            long_symbol, short_symbol, num_spreads, reason
+            long_symbol, short_symbol, num_spreads, reason, tag_prefix=f"SPREAD_CLOSE_SEQ|{reason}"
         )
 
         if sequential_success:
@@ -860,6 +862,7 @@ class PortfolioRouter:
         short_symbol: str,
         num_spreads: int,
         reason: str,
+        tag: str = "SPREAD_CLOSE_COMBO",
     ) -> bool:
         """
         V2.17: Attempt atomic combo close with retries.
@@ -923,7 +926,10 @@ class PortfolioRouter:
                         Leg.Create(short_qc_symbol, 1),  # Buy short (ratio +1)
                     ]
 
-                    self.algorithm.ComboMarketOrder(legs, close_qty)  # type: ignore[attr-defined]
+                    try:
+                        self.algorithm.ComboMarketOrder(legs, close_qty, tag=tag)  # type: ignore[attr-defined]
+                    except TypeError:
+                        self.algorithm.ComboMarketOrder(legs, close_qty, tag)  # type: ignore[attr-defined]
                     self.log(
                         f"ROUTER: COMBO_CLOSE_SUCCESS | {reason} | "
                         f"Attempt {attempt}/{config.COMBO_ORDER_MAX_RETRIES} | "
@@ -954,6 +960,7 @@ class PortfolioRouter:
         short_symbol: str,
         num_spreads: int,
         reason: str,
+        tag_prefix: str = "SPREAD_CLOSE_SEQ",
     ) -> bool:
         """
         V2.17: Execute sequential close: SHORT first (buy back), then LONG (sell).
@@ -990,7 +997,14 @@ class PortfolioRouter:
         # Step 1: Buy back short leg first (eliminates short exposure)
         if short_qc_symbol is not None and short_close_qty > 0:
             try:
-                self.algorithm.MarketOrder(short_qc_symbol, short_close_qty)  # BUY (positive)
+                try:
+                    self.algorithm.MarketOrder(
+                        short_qc_symbol, short_close_qty, tag=f"{tag_prefix}|SHORT"
+                    )  # BUY (positive)
+                except TypeError:
+                    self.algorithm.MarketOrder(
+                        short_qc_symbol, short_close_qty, f"{tag_prefix}|SHORT"
+                    )  # BUY (positive)
                 short_closed = True
                 self.log(
                     f"ROUTER: SEQUENTIAL_SHORT_CLOSED | {reason} | "
@@ -1007,7 +1021,14 @@ class PortfolioRouter:
         # Step 2: Sell long leg (after short is closed)
         if long_qc_symbol is not None and long_close_qty > 0:
             try:
-                self.algorithm.MarketOrder(long_qc_symbol, -long_close_qty)  # SELL (negative)
+                try:
+                    self.algorithm.MarketOrder(
+                        long_qc_symbol, -long_close_qty, tag=f"{tag_prefix}|LONG"
+                    )  # SELL (negative)
+                except TypeError:
+                    self.algorithm.MarketOrder(
+                        long_qc_symbol, -long_close_qty, f"{tag_prefix}|LONG"
+                    )  # SELL (negative)
                 long_closed = True
                 self.log(
                     f"ROUTER: SEQUENTIAL_LONG_CLOSED | {reason} | "
@@ -1908,23 +1929,36 @@ class PortfolioRouter:
             # Allow closing trades even if value is small (e.g., worthless options)
             is_closing = agg.target_weight == 0.0
 
-            # Safety: never allow options close intents to use weight fallback sizing.
-            # Close intents must carry explicit requested_quantity to avoid accidental
-            # oversell/short-open behavior when current_value snapshots are stale.
+            # Safety: close intents should carry explicit requested_quantity.
+            # As a hardening fallback, infer live quantity for option closes when missing.
             if (
                 is_option
                 and is_closing
                 and (agg.requested_quantity is None or agg.requested_quantity <= 0)
             ):
-                self._record_rejection(
-                    code="R_CLOSE_NO_QTY",
-                    symbol=symbol,
-                    detail="Closing option without requested_quantity",
-                    stage="INTENT_BUILD",
-                    source_tag=source_tag,
-                    trace_id=trace_id,
-                )
-                continue
+                inferred_qty = 0
+                if self.algorithm:
+                    try:
+                        for kvp in self.algorithm.Portfolio:  # type: ignore[attr-defined]
+                            holding = kvp.Value
+                            if str(holding.Symbol) == symbol:
+                                inferred_qty = abs(int(holding.Quantity))
+                                break
+                    except Exception:
+                        inferred_qty = 0
+                if inferred_qty > 0:
+                    agg.requested_quantity = inferred_qty
+                    self.log(f"ROUTER: CLOSE_QTY_INFERRED | {symbol} | Qty={inferred_qty}")
+                else:
+                    self._record_rejection(
+                        code="R_CLOSE_NO_QTY",
+                        symbol=symbol,
+                        detail="Closing option without requested_quantity and no live qty fallback",
+                        stage="INTENT_BUILD",
+                        source_tag=source_tag,
+                        trace_id=trace_id,
+                    )
+                    continue
 
             # V6.16: For option close intents, derive side/quantity from live holdings only.
             # This prevents stale weight snapshots from flipping close side (e.g., BUY on long close)

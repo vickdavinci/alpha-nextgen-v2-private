@@ -405,6 +405,10 @@ class AlphaNextGen(QCAlgorithm):
         self._friday_spread_reconcile_date: Optional[str] = None
         # Orphan-close idempotency: avoid resubmitting the same orphan liquidation every reconcile cycle.
         self._recon_orphan_close_submitted: Dict[str, str] = {}
+        # Guarded orphan reconciliation trackers (intraday mode).
+        self._recon_orphan_seen_streak: Dict[str, int] = {}
+        self._recon_orphan_first_seen_at: Dict[str, datetime] = {}
+        self._recon_orphan_last_log_at: Dict[str, datetime] = {}
 
         # V2.4.4 P0: Margin call circuit breaker tracking
         # Prevents 2765+ margin call spam seen in V2.4.3 backtest
@@ -2407,6 +2411,9 @@ class AlphaNextGen(QCAlgorithm):
         self._order_lifecycle_log_count = 0
         self._order_lifecycle_suppressed_count = 0
         self._recon_orphan_close_submitted.clear()
+        self._recon_orphan_seen_streak.clear()
+        self._recon_orphan_first_seen_at.clear()
+        self._recon_orphan_last_log_at.clear()
         self._last_micro_update_log_signature = None
         self._last_micro_update_log_time = None
         self._last_spread_construct_fail_log_at = None
@@ -4143,6 +4150,25 @@ class AlphaNextGen(QCAlgorithm):
                 return
 
             orphan_symbols = [s for s in option_holdings.keys() if s not in tracked_symbols]
+            orphan_set = set(orphan_symbols)
+
+            # Clear orphan guard state for symbols that are no longer orphaned.
+            stale_symbols = [
+                s for s in list(self._recon_orphan_seen_streak.keys()) if s not in orphan_set
+            ]
+            for stale_sym in stale_symbols:
+                self._recon_orphan_seen_streak.pop(stale_sym, None)
+                self._recon_orphan_first_seen_at.pop(stale_sym, None)
+                self._recon_orphan_last_log_at.pop(stale_sym, None)
+
+            intraday_min_streak = int(getattr(config, "RECON_INTRADAY_ORPHAN_MIN_STREAK", 2))
+            intraday_min_age_min = float(
+                getattr(config, "RECON_INTRADAY_ORPHAN_MIN_AGE_MINUTES", 20)
+            )
+            intraday_guard_log_min = float(
+                getattr(config, "RECON_INTRADAY_ORPHAN_LOG_THROTTLE_MINUTES", 30)
+            )
+
             for sym_str in orphan_symbols:
                 try:
                     today = str(self.Time.date())
@@ -4151,9 +4177,11 @@ class AlphaNextGen(QCAlgorithm):
 
                     # Avoid duplicate orphan close submits while a prior order is still open.
                     has_pending_orphan_close = False
+                    has_any_open_order = False
                     for open_order in self.Transactions.GetOpenOrders():
                         if str(open_order.Symbol) != sym_str:
                             continue
+                        has_any_open_order = True
                         if "RECON_ORPHAN_OPTION" in str(getattr(open_order, "Tag", "") or ""):
                             has_pending_orphan_close = True
                             break
@@ -4166,12 +4194,52 @@ class AlphaNextGen(QCAlgorithm):
                         self.Log(
                             f"RECON_ORPHAN_SKIP: {sym_str} | No live position at liquidation time"
                         )
+                        self._recon_orphan_seen_streak.pop(sym_str, None)
+                        self._recon_orphan_first_seen_at.pop(sym_str, None)
+                        self._recon_orphan_last_log_at.pop(sym_str, None)
                         continue
+
+                    if mode_norm == "intraday":
+                        first_seen = self._recon_orphan_first_seen_at.get(sym_str)
+                        if first_seen is None:
+                            first_seen = self.Time
+                            self._recon_orphan_first_seen_at[sym_str] = first_seen
+                        streak = int(self._recon_orphan_seen_streak.get(sym_str, 0)) + 1
+                        self._recon_orphan_seen_streak[sym_str] = streak
+                        age_min = (self.Time - first_seen).total_seconds() / 60.0
+
+                        # Guard intraday orphan liquidation to avoid transient desync churn.
+                        if (
+                            streak < intraday_min_streak
+                            or age_min < intraday_min_age_min
+                            or has_any_open_order
+                        ):
+                            last_log_at = self._recon_orphan_last_log_at.get(sym_str)
+                            should_log = (
+                                last_log_at is None
+                                or (self.Time - last_log_at).total_seconds() / 60.0
+                                >= intraday_guard_log_min
+                            )
+                            if should_log and self._should_log_backtest_category(
+                                "LOG_SPREAD_RECONCILE_BACKTEST_ENABLED", False
+                            ):
+                                self.Log(
+                                    f"RECON_ORPHAN_GUARD_HOLD: {sym_str} | "
+                                    f"Mode=INTRADAY | Streak={streak}/{intraday_min_streak} | "
+                                    f"AgeMin={age_min:.1f}/{intraday_min_age_min:.1f} | "
+                                    f"OpenOrders={1 if has_any_open_order else 0}"
+                                )
+                                self._recon_orphan_last_log_at[sym_str] = self.Time
+                            continue
+
                     self.Liquidate(broker_symbol, tag="RECON_ORPHAN_OPTION")
                     self._recon_orphan_close_submitted[sym_str] = today
+                    self._recon_orphan_seen_streak.pop(sym_str, None)
+                    self._recon_orphan_first_seen_at.pop(sym_str, None)
+                    self._recon_orphan_last_log_at.pop(sym_str, None)
                     self.Log(
                         f"RECON_ORPHAN_CLOSE_SUBMITTED: {sym_str} | "
-                        f"Qty={option_holdings.get(sym_str, 0)}"
+                        f"Qty={option_holdings.get(sym_str, 0)} | Mode={mode_norm.upper()}"
                     )
                 except Exception as e:
                     self.Log(f"RECON_ORPHAN_CLOSE_FAILED: {sym_str} | {e}")

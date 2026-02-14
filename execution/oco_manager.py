@@ -367,10 +367,12 @@ class OCOManager:
                     tag=tag,
                 )
             except TypeError:
+                # Some LEAN builds reject keyword args; retry with positional tag.
                 ticket = self.algorithm.StopMarketOrder(
                     symbol,
                     leg.quantity,
                     leg.trigger_price,
+                    tag,
                 )
             return ticket.OrderId
         except Exception as e:
@@ -403,10 +405,12 @@ class OCOManager:
                     tag=tag,
                 )
             except TypeError:
+                # Some LEAN builds reject keyword args; retry with positional tag.
                 ticket = self.algorithm.LimitOrder(
                     symbol,
                     leg.quantity,
                     leg.trigger_price,
+                    tag,
                 )
             return ticket.OrderId
         except Exception as e:
