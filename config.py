@@ -1229,17 +1229,21 @@ OPTIONS_INTRADAY_DTE_MAX = (
 )
 
 # V9.5: MICRO DTE routing by volatility regime (keeps logic simple, config-driven)
-MICRO_DTE_ROUTING_ENABLED = (
-    False  # V9.7: disabled — restricted DTE 2-3 killed MICRO (uses DTE 1-5 baseline)
-)
-MICRO_DTE_LOW_VIX_THRESHOLD = 16.0  # Bull/low-vol profile
+MICRO_DTE_ROUTING_ENABLED = True  # V10: re-enabled with wide 1-5 ranges (ITM floor as overlay)
+MICRO_DTE_LOW_VIX_THRESHOLD = 18.0  # V10: raised from 16 to align with VIX-tier gates
 MICRO_DTE_HIGH_VIX_THRESHOLD = 25.0  # Bear/high-vol profile
-MICRO_DTE_LOW_VIX_MIN = 2
-MICRO_DTE_LOW_VIX_MAX = 3
-MICRO_DTE_MEDIUM_VIX_MIN = 2
-MICRO_DTE_MEDIUM_VIX_MAX = 3
-MICRO_DTE_HIGH_VIX_MIN = 2
-MICRO_DTE_HIGH_VIX_MAX = 4
+MICRO_DTE_LOW_VIX_MIN = 1  # V10: widened from 2 (ITM floor applied as overlay)
+MICRO_DTE_LOW_VIX_MAX = 5  # V10: widened from 3
+MICRO_DTE_MEDIUM_VIX_MIN = 1  # V10: widened from 2
+MICRO_DTE_MEDIUM_VIX_MAX = 5  # V10: widened from 3
+MICRO_DTE_HIGH_VIX_MIN = 1  # V10: widened from 2
+MICRO_DTE_HIGH_VIX_MAX = 5  # V10: widened from 4
+
+# V10: ITM DTE floor overlay (applied on top of base DTE routing for ITM_MOMENTUM only)
+MICRO_ITM_DTE_MIN_LOW_VIX = 3  # LOW VIX: reduce theta decay on ITM singles
+MICRO_ITM_DTE_MIN_MED_VIX = 3  # MED VIX: reduce theta decay on ITM singles
+MICRO_ITM_DTE_MIN_HIGH_VIX = 2  # HIGH VIX: vol provides buffer
+MICRO_ITM_DTE_MAX = 5  # Unchanged intraday envelope
 
 # -----------------------------------------------------------------------------
 # V2.3 DEBIT SPREAD CONFIGURATION
@@ -1752,6 +1756,10 @@ INTRADAY_DEBIT_FADE_VIX_MIN = 9.0  # Slightly wider low-vol participation
 # Debit Fade (Mean Reversion) - Gate 3a - The Sniper Window
 INTRADAY_DEBIT_FADE_MIN_SCORE = 32  # Increase DEBIT_FADE throughput while preserving quality filter
 INTRADAY_FADE_MIN_MOVE = 0.35  # Restore intraday participation while keeping noise filter
+# V10: VIX-tier move gates (replace single INTRADAY_FADE_MIN_MOVE for MICRO routing)
+MICRO_MIN_MOVE_LOW_VIX = 0.50  # Stricter for LOW VIX — filter theta-dominated noise
+MICRO_MIN_MOVE_MED_VIX = 0.40  # Standard move gate
+MICRO_MIN_MOVE_HIGH_VIX = 0.40  # Standard move gate
 INTRADAY_FADE_MAX_MOVE = 1.50  # V6.8: Was 1.20, don't block strong bull continuation
 INTRADAY_DEBIT_FADE_VIX_MAX = 25  # VIX < 25
 INTRADAY_DEBIT_FADE_START = "10:00"  # Include early-session mean-reversion setups
@@ -1777,12 +1785,12 @@ INTRADAY_ITM_MIN_SCORE = 40  # V6.8: Was 50, capture momentum earlier
 INTRADAY_ITM_START = "10:00"  # Entry window start
 INTRADAY_ITM_END = "14:30"  # Entry window end (earlier than FADE - momentum fades after lunch)
 INTRADAY_ITM_DELTA = 0.70  # ITM delta target
-INTRADAY_ITM_TARGET = 0.35  # V9.8: revert to V9.3 (0.20 was noise on ITM options)
+INTRADAY_ITM_TARGET = 0.45  # V10: wider for uncapped upside (was 0.35)
 
 # V6.4: DEBIT_MOMENTUM time window (same as ITM_MOMENTUM - both are momentum strategies)
 INTRADAY_DEBIT_MOMENTUM_START = "10:00"  # Entry window start
 INTRADAY_DEBIT_MOMENTUM_END = "14:30"  # Entry window end
-INTRADAY_ITM_STOP = 0.35  # V9.8: revert to V9.3
+INTRADAY_ITM_STOP = 0.25  # V10: tighter — ITM moves predictably with delta (was 0.35)
 INTRADAY_HIGH_VIX_STOP_MAX_PCT = (
     0.40  # V9.2 RCA: Wider stop cap for VIX>25 regimes (was capped at 28%)
 )
@@ -1814,8 +1822,9 @@ INTRADAY_DEBIT_FADE_DELTA_MAX = 0.50  # Near ATM max
 # V6.4: DEBIT_MOMENTUM: Trend confirmation needs ATM-ish options (delta 0.45-0.65)
 # Between DEBIT_FADE (OTM) and ITM_MOMENTUM (ITM) - captures directional moves
 INTRADAY_DEBIT_MOMENTUM_ENABLED = (
-    True  # V9.7: revert to V9.3 (V9.5 disabled this, but V9.3 was profitable with it)
+    False  # V10: deprecated — ITM_MOMENTUM replaces all confirmation paths
 )
+INTRADAY_ITM_MOMENTUM_ENABLED = True  # V10: primary confirmation strategy
 INTRADAY_DEBIT_MOMENTUM_DELTA_MIN = 0.45  # Near ATM for momentum
 INTRADAY_DEBIT_MOMENTUM_DELTA_MAX = 0.65  # Slightly ITM max
 INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES = [
@@ -1827,8 +1836,8 @@ INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES = [
 ]  # Skip weak/choppy transition states for momentum
 
 # ITM_MOMENTUM: Stock replacement needs ITM options (delta 0.60-0.85)
-INTRADAY_ITM_DELTA_MIN = 0.60  # V9.8: revert to V9.3 (0.70 killed ITM_MOMENTUM — zero trades)
-INTRADAY_ITM_DELTA_MAX = 0.85  # V9.8: revert to V9.3
+INTRADAY_ITM_DELTA_MIN = 0.65  # V10: tightened from 0.60 for better ITM quality
+INTRADAY_ITM_DELTA_MAX = 0.80  # V10: tightened from 0.85 to avoid deep ITM illiquidity
 
 # Protective Puts (Intraday Hedge)
 INTRADAY_PROTECT_MIN_VIX = 20  # VIX > 20: Add protection
@@ -1848,7 +1857,7 @@ DIRECTION_CONFLICT_BEARISH_THRESHOLD = 40  # Regime < 40 = strong bearish, don't
 # V2.5: Grind-Up Override - capture rallies missed in CAUTIOUS regime
 # Problem: Feb 4 missed +1.2% rally because VIX was STABLE (CAUTIOUS regime = NO_TRADE)
 # Solution: In CAUTIOUS regime, if QQQ is UP_STRONG and macro score is safe, ride the rally
-GRIND_UP_OVERRIDE_ENABLED = True
+GRIND_UP_OVERRIDE_ENABLED = False  # V10: dead code path — CAUTIOUS not in caution_regimes
 GRIND_UP_MIN_MOVE = 0.50  # Minimum QQQ move to trigger override (0.50% = UP_STRONG)
 GRIND_UP_MACRO_SAFE_MIN = 40  # Macro regime score must be > 40 to avoid bear traps
 

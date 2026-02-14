@@ -1353,18 +1353,12 @@ class MicroRegimeEngine:
             VIXDirection.RISING_FAST,
             VIXDirection.SPIKING,
         )
-        debit_momentum_enabled = bool(getattr(config, "INTRADAY_DEBIT_MOMENTUM_ENABLED", True))
 
-        def momentum_or_disabled(
+        # V10: All confirmation paths route to ITM_MOMENTUM (DEBIT_MOMENTUM deprecated)
+        def confirmation_strategy(
             direction: OptionDirection, reason: str
         ) -> Tuple[IntradayStrategy, Optional[OptionDirection], str]:
-            if debit_momentum_enabled:
-                return (IntradayStrategy.DEBIT_MOMENTUM, direction, reason)
-            return (
-                IntradayStrategy.ITM_MOMENTUM,
-                direction,
-                f"DEBIT_MOMENTUM_DISABLED_FALLBACK: {reason}",
-            )
+            return (IntradayStrategy.ITM_MOMENTUM, direction, reason)
 
         # =====================================================================
         # RULE 5: DIVERGENCE/CONFIRMATION LOGIC (V6.5 Fix)
@@ -1406,12 +1400,21 @@ class MicroRegimeEngine:
                     f"VIX_FLOOR: VIX {vix_current:.1f} < {vix_floor} (apathy market)",
                 )
 
-            # Gate: Minimum move required for any trade
-            if abs(qqq_move_pct) < config.INTRADAY_FADE_MIN_MOVE:
+            # V10: VIX-tier move gates (stricter in LOW VIX to filter theta noise)
+            if vix_current < 18:
+                min_move_gate = float(getattr(config, "MICRO_MIN_MOVE_LOW_VIX", 0.50))
+                vix_tier_label = "LOW"
+            elif vix_current < 25:
+                min_move_gate = float(getattr(config, "MICRO_MIN_MOVE_MED_VIX", 0.40))
+                vix_tier_label = "MED"
+            else:
+                min_move_gate = float(getattr(config, "MICRO_MIN_MOVE_HIGH_VIX", 0.40))
+                vix_tier_label = "HIGH"
+            if abs(qqq_move_pct) < min_move_gate:
                 return (
                     IntradayStrategy.NO_TRADE,
                     None,
-                    f"MIN_MOVE: |{qqq_move_pct:.2f}%| < {config.INTRADAY_FADE_MIN_MOVE}% (no edge)",
+                    f"MIN_MOVE_{vix_tier_label}: |{qqq_move_pct:.2f}%| < {min_move_gate}% (VIX={vix_current:.1f})",
                 )
 
             # =================================================================
@@ -1427,6 +1430,14 @@ class MicroRegimeEngine:
                             None,
                             f"FADE blocked: |{qqq_move_pct:.2f}%| > {config.INTRADAY_FADE_MAX_MOVE}% (runaway)",
                         )
+                    # V10: HIGH VIX divergence → ITM_MOMENTUM (no spread cap in volatile market)
+                    if vix_current >= 25:
+                        return (
+                            IntradayStrategy.ITM_MOMENTUM,
+                            OptionDirection.PUT,
+                            f"HIGH_VIX_DIVERGENCE: QQQ +{qqq_move_pct:.2f}% but VIX {vix_direction.value} "
+                            f"(VIX={vix_current:.1f}>=25) → ITM PUT",
+                        )
                     return (
                         IntradayStrategy.DEBIT_FADE,
                         OptionDirection.PUT,
@@ -1435,7 +1446,7 @@ class MicroRegimeEngine:
 
                 elif vix_is_falling:
                     # CONFIRMATION: QQQ up + VIX falling = confirmed rally, ride it
-                    return momentum_or_disabled(
+                    return confirmation_strategy(
                         OptionDirection.CALL,
                         f"CONFIRMATION: QQQ +{qqq_move_pct:.2f}% + VIX {vix_direction.value} → Ride with CALL",
                     )
@@ -1447,17 +1458,8 @@ class MicroRegimeEngine:
                         abs(qqq_move_pct) >= config.INTRADAY_QQQ_FALLBACK_MIN_MOVE
                         and micro_score >= config.MICRO_SCORE_BULLISH_CONFIRM
                     ):
-                        # V9.2 RCA: CAUTIOUS regime → ITM_MOMENTUM instead of DEBIT_MOMENTUM.
-                        # DEBIT_MOMENTUM spreads lack volatility confirmation in STABLE VIX,
-                        # while ITM singles respond better to directional moves.
-                        if micro_regime == MicroRegime.CAUTIOUS:
-                            return (
-                                IntradayStrategy.ITM_MOMENTUM,
-                                OptionDirection.CALL,
-                                f"CAUTIOUS_ITM: QQQ +{qqq_move_pct:.2f}% + "
-                                f"Score={micro_score:.0f} → ITM CALL (not DEBIT_MOMENTUM)",
-                            )
-                        return momentum_or_disabled(
+                        # V10: All confirmation paths → ITM_MOMENTUM
+                        return confirmation_strategy(
                             OptionDirection.CALL,
                             f"STABLE_FALLBACK: QQQ +{qqq_move_pct:.2f}% + "
                             f"Score={micro_score:.0f} → CALL",
@@ -1475,7 +1477,7 @@ class MicroRegimeEngine:
             elif qqq_is_down:
                 if vix_is_rising:
                     # CONFIRMATION: QQQ down + VIX rising = confirmed selloff, ride it
-                    return momentum_or_disabled(
+                    return confirmation_strategy(
                         OptionDirection.PUT,
                         f"CONFIRMATION: QQQ {qqq_move_pct:.2f}% + VIX {vix_direction.value} → Ride with PUT",
                     )
@@ -1488,6 +1490,14 @@ class MicroRegimeEngine:
                             IntradayStrategy.NO_TRADE,
                             None,
                             f"FADE blocked: |{qqq_move_pct:.2f}%| > {config.INTRADAY_FADE_MAX_MOVE}% (crash)",
+                        )
+                    # V10: HIGH VIX divergence → ITM_MOMENTUM (no spread cap in volatile market)
+                    if vix_current >= 25:
+                        return (
+                            IntradayStrategy.ITM_MOMENTUM,
+                            OptionDirection.CALL,
+                            f"HIGH_VIX_DIVERGENCE: QQQ {qqq_move_pct:.2f}% but VIX {vix_direction.value} "
+                            f"(VIX={vix_current:.1f}>=25) → ITM CALL",
                         )
                     return (
                         IntradayStrategy.DEBIT_FADE,
@@ -1502,15 +1512,8 @@ class MicroRegimeEngine:
                         abs(qqq_move_pct) >= config.INTRADAY_QQQ_FALLBACK_MIN_MOVE
                         and micro_score <= config.MICRO_SCORE_BEARISH_CONFIRM
                     ):
-                        # V9.2 RCA: CAUTIOUS regime → ITM_MOMENTUM instead of DEBIT_MOMENTUM
-                        if micro_regime == MicroRegime.CAUTIOUS:
-                            return (
-                                IntradayStrategy.ITM_MOMENTUM,
-                                OptionDirection.PUT,
-                                f"CAUTIOUS_ITM: QQQ {qqq_move_pct:.2f}% + "
-                                f"Score={micro_score:.0f} → ITM PUT (not DEBIT_MOMENTUM)",
-                            )
-                        return momentum_or_disabled(
+                        # V10: All confirmation paths → ITM_MOMENTUM
+                        return confirmation_strategy(
                             OptionDirection.PUT,
                             f"STABLE_FALLBACK: QQQ {qqq_move_pct:.2f}% + "
                             f"Score={micro_score:.0f} → PUT",
@@ -1577,29 +1580,7 @@ class MicroRegimeEngine:
             # V6.5: WORSENING moved to momentum_regimes (ITM PUT)
         }
         if micro_regime in caution_regimes:
-            # V2.5: Grind-Up Override - capture strong rallies even in CAUTIOUS regime
-            # Only triggers when: (1) CAUTIOUS regime, (2) QQQ UP > 0.50%, (3) macro safe
-            grind_up_enabled = getattr(config, "GRIND_UP_OVERRIDE_ENABLED", False)
-            grind_up_min_move = getattr(config, "GRIND_UP_MIN_MOVE", 0.50)
-            grind_up_macro_safe = getattr(config, "GRIND_UP_MACRO_SAFE_MIN", 40)
-
-            if grind_up_enabled and micro_regime == MicroRegime.CAUTIOUS:
-                is_strong_rally = qqq_move_pct > grind_up_min_move  # Positive only, not abs()
-                is_macro_safe = macro_regime_score > grind_up_macro_safe
-
-                if is_strong_rally and is_macro_safe:
-                    # Override: Ride the grind-up with CALL
-                    return (
-                        IntradayStrategy.ITM_MOMENTUM,
-                        OptionDirection.CALL,
-                        f"GRIND_UP_OVERRIDE: QQQ +{qqq_move_pct:.2f}% > {grind_up_min_move}% | Macro={macro_regime_score:.1f} > {grind_up_macro_safe}",
-                    )
-                elif is_strong_rally and not is_macro_safe:
-                    # Bear trap protection - log and skip
-                    self.log(
-                        f"MICRO: Grind-Up Rejected (Bear Market Trap Risk) | QQQ +{qqq_move_pct:.2f}% but Macro={macro_regime_score:.1f} <= {grind_up_macro_safe}"
-                    )
-
+            # V10: Grind-Up override removed (CAUTIOUS is in tradeable_regimes, not caution_regimes)
             return IntradayStrategy.NO_TRADE, None, f"Caution regime: {micro_regime.value}"
 
         return IntradayStrategy.NO_TRADE, None, "No matching setup"
@@ -2005,6 +1986,8 @@ class OptionsEngine:
         # Maps spread_key -> last exit signal datetime. If exit fires and close fails,
         # don't re-fire for SPREAD_EXIT_RETRY_MINUTES.
         self._spread_exit_signal_cooldown: Dict[str, datetime] = {}
+        # Track which spreads have already logged the hold guard (log once, not every minute)
+        self._spread_hold_guard_logged: set = set()
 
     def log(self, message: str, trades_only: bool = False) -> None:
         """
@@ -2029,9 +2012,9 @@ class OptionsEngine:
         if symbol is None:
             return ""
         if isinstance(symbol, str):
-            return symbol
+            return symbol.strip().upper()
         try:
-            return str(symbol)
+            return str(symbol).strip().upper()
         except Exception:
             return ""
 
@@ -2961,7 +2944,11 @@ class OptionsEngine:
 
     def _build_spread_key(self, spread: SpreadPosition) -> str:
         """Stable spread key for per-position state."""
-        return f"{self._symbol_str(spread.long_leg.symbol)}|{self._symbol_str(spread.short_leg.symbol)}"
+        return (
+            f"{self._symbol_str(spread.long_leg.symbol)}|"
+            f"{self._symbol_str(spread.short_leg.symbol)}|"
+            f"{str(getattr(spread, 'entry_time', '') or '')}"
+        )
 
     def _get_engine_now_dt(self) -> Optional[datetime]:
         """Best-effort engine timestamp for staged timers."""
@@ -6510,12 +6497,14 @@ class OptionsEngine:
                 mandatory_dte = int(getattr(config, "SPREAD_FORCE_CLOSE_DTE", 1))
                 if 0 <= live_minutes < min_hold_minutes and current_dte > mandatory_dte:
                     spread_key = self._build_spread_key(spread)
-                    self.log(
-                        f"SPREAD_EXIT_GUARD_HOLD: Key={spread_key} | Sig={spread.spread_type} | "
-                        f"Live={live_minutes:.1f}m < Min={min_hold_minutes}m | "
-                        f"DTE={current_dte}",
-                        trades_only=True,
-                    )
+                    if spread_key not in self._spread_hold_guard_logged:
+                        self._spread_hold_guard_logged.add(spread_key)
+                        hold_days = min_hold_minutes / 1440.0
+                        self.log(
+                            f"SPREAD_EXIT_GUARD_HOLD: Key={spread_key} | Sig={spread.spread_type} | "
+                            f"Hold={hold_days:.0f}d ({min_hold_minutes}m) | DTE={current_dte}",
+                            trades_only=True,
+                        )
                     return None
             except Exception:
                 pass
@@ -8638,19 +8627,33 @@ class OptionsEngine:
 
         return position
 
-    def remove_position(self) -> Optional[OptionsPosition]:
+    def remove_position(self, symbol: Optional[str] = None) -> Optional[OptionsPosition]:
         """
-        Remove the current position after exit.
+        Remove the current swing single-leg position after exit.
+
+        Args:
+            symbol: Optional symbol guard. When provided, removal only occurs
+                if it matches the tracked swing position symbol.
 
         Returns:
-            Removed position, or None if no position existed.
+            Removed position, or None if no matching position existed.
         """
-        if self._position is not None:
-            position = self._position
-            self._position = None
-            self.log(f"OPT: POSITION_REMOVED {position.contract.symbol}", trades_only=True)
-            return position
-        return None
+        if self._position is None:
+            return None
+
+        if symbol:
+            try:
+                expected = self._symbol_str(self._position.contract.symbol)
+                actual = self._symbol_str(symbol)
+                if expected != actual:
+                    return None
+            except Exception:
+                return None
+
+        position = self._position
+        self._position = None
+        self.log(f"OPT: POSITION_REMOVED {position.contract.symbol}", trades_only=True)
+        return position
 
     def remove_intraday_position(self) -> Optional[OptionsPosition]:
         """
@@ -8915,6 +8918,7 @@ class OptionsEngine:
             spread_key = self._build_spread_key(spread)
             self._spread_neutrality_warn_by_key.pop(spread_key, None)
             self._spread_exit_signal_cooldown.pop(spread_key, None)  # V9.4 P0: Clear cooldown
+            self._spread_hold_guard_logged.discard(spread_key)
 
             self._spread_position = self._spread_positions[0] if self._spread_positions else None
 
@@ -9051,6 +9055,7 @@ class OptionsEngine:
                 trades_only=True,
             )
             self._spread_neutrality_warn_by_key = {}
+            self._spread_hold_guard_logged.clear()
             self._spread_positions = []
             self._spread_position = None
             self._last_spread_exit_time = None
@@ -9128,6 +9133,7 @@ class OptionsEngine:
             self._spread_positions = []
             self._spread_position = None
             self._spread_neutrality_warn_by_key = {}
+            self._spread_hold_guard_logged.clear()
             cleared.append("spread")
 
         if self._intraday_position is not None:
@@ -9548,6 +9554,7 @@ class OptionsEngine:
         self._vass_cooldown_until_by_signature = {}
         self._vass_last_entry_date_by_direction = {}
         self._spread_neutrality_warn_by_key = {}
+        self._spread_hold_guard_logged.clear()
         self._last_intraday_close_time = None
         self._last_intraday_close_strategy = None
 

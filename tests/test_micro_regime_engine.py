@@ -460,13 +460,13 @@ class TestScoreMoveVelocity:
 class TestRecommendStrategy:
     """Tests for recommend_strategy() method."""
 
-    def test_perfect_mr_regime_recommends_debit_momentum(self, micro_engine):
-        """PERFECT_MR with high score + QQQ UP -> DEBIT_MOMENTUM (confirmation).
+    def test_perfect_mr_regime_recommends_itm_momentum(self, micro_engine):
+        """PERFECT_MR with high score + QQQ UP -> ITM_MOMENTUM (confirmation).
 
-        V6.13: PERFECT_MR implies VIX FALLING. QQQ UP + VIX FALLING = confirmation,
-        which triggers DEBIT_MOMENTUM (ride trend), not DEBIT_FADE (mean reversion).
+        V10: All confirmation paths route to ITM_MOMENTUM (DEBIT_MOMENTUM deprecated).
+        PERFECT_MR implies VIX FALLING. QQQ UP + VIX FALLING = confirmation.
         The legacy recommend_strategy() uses VIX_STABLE, which with high score
-        triggers the STABLE_FALLBACK to DEBIT_MOMENTUM.
+        triggers the STABLE_FALLBACK to ITM_MOMENTUM.
         """
         strategy = micro_engine.recommend_strategy(
             micro_regime=MicroRegime.PERFECT_MR,
@@ -474,7 +474,7 @@ class TestRecommendStrategy:
             vix_current=15.0,
             qqq_move_pct=1.0,
         )
-        assert strategy == IntradayStrategy.DEBIT_MOMENTUM
+        assert strategy == IntradayStrategy.ITM_MOMENTUM
 
     def test_crash_regime_recommends_protective_puts(self, micro_engine):
         """V6.4: CRASH regime -> PROTECTIVE_PUTS (crisis protection, no score required)."""

@@ -2852,6 +2852,7 @@ class AlphaNextGen(QCAlgorithm):
             target_price=position.target_price,
             quantity=qty,
             current_date=today,
+            tag_context=f"MICRO:{getattr(position, 'entry_strategy', 'UNKNOWN')}",
         )
         submitted = False
         if oco_pair:
@@ -3040,8 +3041,10 @@ class AlphaNextGen(QCAlgorithm):
 
         # V8: Backtest log-budget guard for high-frequency MICRO_UPDATE diagnostics.
         micro_dir = state.recommended_direction.value if state.recommended_direction else "NONE"
+        # V10: Add VIX tier for telemetry
+        vix_tier = "LOW" if vix_level_cboe < 18 else "MED" if vix_level_cboe < 25 else "HIGH"
         micro_msg = (
-            f"MICRO_UPDATE: VIX_level={vix_level_cboe:.1f}(CBOE) VIX_dir_proxy={vix_intraday_proxy:.2f} (UVXY {uvxy_change_pct:+.1f}%) | "
+            f"MICRO_UPDATE: VIX_level={vix_level_cboe:.1f}(CBOE) VIX_tier={vix_tier} VIX_dir_proxy={vix_intraday_proxy:.2f} (UVXY {uvxy_change_pct:+.1f}%) | "
             f"Regime={state.micro_regime.value} | Dir={micro_dir} | "
             f"ShockMem={shock_memory_pct:+.1%}"
         )
@@ -3734,13 +3737,17 @@ class AlphaNextGen(QCAlgorithm):
         symbol_norm = self._normalize_symbol_str(symbol)
         if "QQQ" not in symbol_norm or ("C" not in symbol_norm and "P" not in symbol_norm):
             return False
-        return str(order_tag or "").upper().startswith("MICRO:")
+        tag_upper = str(order_tag or "").upper()
+        if tag_upper.startswith("MICRO:") or tag_upper == "MICRO":
+            return True
+        return "MICRO" in tag_upper and "VASS" not in tag_upper
 
     def _build_spread_runtime_key(self, spread: Any) -> str:
         """Build canonical spread key for runtime trackers."""
         return (
             f"{self._normalize_symbol_str(spread.long_leg.symbol)}|"
-            f"{self._normalize_symbol_str(spread.short_leg.symbol)}"
+            f"{self._normalize_symbol_str(spread.short_leg.symbol)}|"
+            f"{str(getattr(spread, 'entry_time', '') or '')}"
         )
 
     def _record_spread_removal(self, reason: str, count: int = 1, context: str = "") -> None:
@@ -5635,6 +5642,33 @@ class AlphaNextGen(QCAlgorithm):
                 else:
                     effective_dte_min = int(getattr(config, "MICRO_DTE_MEDIUM_VIX_MIN", 2))
                     effective_dte_max = int(getattr(config, "MICRO_DTE_MEDIUM_VIX_MAX", 3))
+            except Exception:
+                pass
+
+        # V10: ITM DTE floor overlay — raise min DTE for ITM_MOMENTUM by VIX tier
+        if strategy == IntradayStrategy.ITM_MOMENTUM and vix_current is not None:
+            try:
+                vix_val = float(vix_current)
+                low_thr = float(getattr(config, "MICRO_DTE_LOW_VIX_THRESHOLD", 18.0))
+                high_thr = float(getattr(config, "MICRO_DTE_HIGH_VIX_THRESHOLD", 25.0))
+                if vix_val < low_thr:
+                    itm_floor = int(getattr(config, "MICRO_ITM_DTE_MIN_LOW_VIX", 3))
+                    itm_tier = "LOW"
+                elif vix_val >= high_thr:
+                    itm_floor = int(getattr(config, "MICRO_ITM_DTE_MIN_HIGH_VIX", 2))
+                    itm_tier = "HIGH"
+                else:
+                    itm_floor = int(getattr(config, "MICRO_ITM_DTE_MIN_MED_VIX", 3))
+                    itm_tier = "MED"
+                itm_max = int(getattr(config, "MICRO_ITM_DTE_MAX", 5))
+                effective_dte_min = max(effective_dte_min, itm_floor)
+                effective_dte_max = min(effective_dte_max, itm_max)
+                # V10 telemetry: DTE routing diagnostic (throttled, silent in backtests)
+                if hasattr(self, "LiveMode") and self.LiveMode:
+                    self.Log(
+                        f"INTRADAY_DTE_ROUTING: ITM_MOMENTUM | VIX={vix_val:.1f} tier={itm_tier} | "
+                        f"DTE=[{effective_dte_min}-{effective_dte_max}]"
+                    )
             except Exception:
                 pass
 
@@ -7683,10 +7717,7 @@ class AlphaNextGen(QCAlgorithm):
             return
         active_spread_keys = set()
         for s in spreads:
-            active_spread_keys.add(
-                f"{self._normalize_symbol_str(s.long_leg.symbol)}|"
-                f"{self._normalize_symbol_str(s.short_leg.symbol)}"
-            )
+            active_spread_keys.add(self._build_spread_runtime_key(s))
         for key in list(self._spread_forced_close_retry.keys()):
             if key not in active_spread_keys:
                 self._spread_forced_close_retry.pop(key, None)
@@ -7709,7 +7740,7 @@ class AlphaNextGen(QCAlgorithm):
         for spread in spreads:
             long_symbol = self._normalize_symbol_str(spread.long_leg.symbol)
             short_symbol = self._normalize_symbol_str(spread.short_leg.symbol)
-            spread_key = f"{long_symbol}|{short_symbol}"
+            spread_key = self._build_spread_runtime_key(spread)
 
             # V6.21: If a spread close was canceled, keep retrying close until flat.
             retry_at = self._spread_forced_close_retry.get(spread_key)
@@ -8649,6 +8680,11 @@ class AlphaNextGen(QCAlgorithm):
                                 target_price=position.target_price,
                                 quantity=int(fill_qty),
                                 current_date=str(self.Time.date()),
+                                tag_context=(
+                                    f"MICRO:{getattr(position, 'entry_strategy', 'UNKNOWN')}"
+                                    if self.options_engine.has_intraday_position()
+                                    else "SWING_SINGLE"
+                                ),
                             )
 
                             if oco_pair:
@@ -8667,6 +8703,10 @@ class AlphaNextGen(QCAlgorithm):
                                     "entry_price": position.entry_price,
                                     "entry_time": position.entry_time,
                                     "quantity": abs(int(fill_qty)),
+                                    "entry_strategy": getattr(
+                                        position, "entry_strategy", "UNKNOWN"
+                                    ),
+                                    "entry_tag": order_tag or "",
                                     "entry_dte": int(
                                         getattr(position.contract, "days_to_expiry", -1)
                                     )
@@ -8769,7 +8809,7 @@ class AlphaNextGen(QCAlgorithm):
                             self._greeks_breach_logged = False  # Reset for next position
                         else:
                             # Not tracked as current intraday symbol; fall back to single-leg handling.
-                            removed_position = self.options_engine.remove_position()
+                            removed_position = self.options_engine.remove_position(symbol)
                             if removed_position:
                                 if abs(self._get_option_holding_quantity(symbol)) <= 0:
                                     self._micro_open_symbols.discard(symbol_norm)
@@ -8785,7 +8825,7 @@ class AlphaNextGen(QCAlgorithm):
                             self._greeks_breach_logged = False
                     else:
                         # Single-leg exit (legacy swing)
-                        removed_position = self.options_engine.remove_position()
+                        removed_position = self.options_engine.remove_position(symbol)
                         if removed_position:
                             try:
                                 self.oco_manager.cancel_by_symbol(
@@ -8814,11 +8854,12 @@ class AlphaNextGen(QCAlgorithm):
                                 current_time=str(self.Time),
                             )
                             result_str = "WIN" if is_win else "LOSS"
+                            fallback_strategy = str(snapshot.get("entry_strategy", "UNKNOWN"))
                             self.Log(
                                 f"INTRADAY_RESULT: {result_str} | "
                                 f"Entry=${entry_price:.2f} | Exit=${fill_price:.2f} | "
                                 f"P&L={((fill_price - entry_price) / entry_price):.1%} | "
-                                f"Path=FALLBACK"
+                                f"Strategy={fallback_strategy} | Path=FALLBACK"
                             )
                             self._diag_intraday_result_count += 1
                             self._inc_micro_dte_counter(
@@ -8971,10 +9012,7 @@ class AlphaNextGen(QCAlgorithm):
             return
 
         fill_qty_abs = int(abs(fill_qty))
-        spread_key = (
-            f"{self._normalize_symbol_str(spread.long_leg.symbol)}|"
-            f"{self._normalize_symbol_str(spread.short_leg.symbol)}"
-        )
+        spread_key = self._build_spread_runtime_key(spread)
         tracker = self._spread_close_trackers.get(spread_key)
         if tracker is None:
             tracker = {
@@ -9132,7 +9170,7 @@ class AlphaNextGen(QCAlgorithm):
 
         long_symbol = self._normalize_symbol_str(spread.long_leg.symbol)
         short_symbol = self._normalize_symbol_str(spread.short_leg.symbol)
-        spread_key = f"{long_symbol}|{short_symbol}"
+        spread_key = self._build_spread_runtime_key(spread)
         self._cancel_spread_linked_oco(
             long_symbol, short_symbol, reason="SPREAD_CLOSE_CANCELED_RETRY"
         )
