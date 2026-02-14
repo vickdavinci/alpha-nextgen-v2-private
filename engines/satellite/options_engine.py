@@ -6426,6 +6426,7 @@ class OptionsEngine:
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
                 reason=f"PARTIAL_ASSIGNMENT: Closing orphaned {'long' if is_short_assigned else 'short'} leg",
+                requested_quantity=max(1, int(remaining_qty)),
                 metadata={
                     "exit_type": "PARTIAL_ASSIGNMENT",
                     "assigned_leg": assigned_symbol,
@@ -6976,6 +6977,7 @@ class OptionsEngine:
                         source="OPT",
                         urgency=Urgency.IMMEDIATE,
                         reason=f"FRIDAY_FIREWALL: {close_reason}",
+                        requested_quantity=max(1, int(getattr(position, "num_contracts", 1))),
                     )
                 )
 
@@ -7127,6 +7129,7 @@ class OptionsEngine:
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
                 reason=reason,
+                requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
             )
 
         # Exit 1.5: Strategy-aware trailing stop for intraday strategies
@@ -7155,6 +7158,7 @@ class OptionsEngine:
                             source="OPT",
                             urgency=Urgency.IMMEDIATE,
                             reason=reason,
+                            requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
                         )
 
         # Exit 2: Stop hit
@@ -7167,6 +7171,7 @@ class OptionsEngine:
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
                 reason=reason,
+                requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
             )
 
         # V2.3.10: Exit 3 - DTE exit (prevent expiration/exercise)
@@ -7182,6 +7187,7 @@ class OptionsEngine:
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
                 reason=reason,
+                requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
             )
 
         return None
@@ -7233,6 +7239,7 @@ class OptionsEngine:
             source="OPT",
             urgency=Urgency.IMMEDIATE,
             reason=reason,
+            requested_quantity=max(1, int(getattr(self._position, "num_contracts", 1))),
         )
 
     # =========================================================================
@@ -8368,6 +8375,7 @@ class OptionsEngine:
             source=source,
             urgency=Urgency.IMMEDIATE,
             reason=reason,
+            requested_quantity=max(1, int(getattr(position, "num_contracts", 1))),
         )
 
     def get_micro_regime_state(self) -> MicroRegimeState:

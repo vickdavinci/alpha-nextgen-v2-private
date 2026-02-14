@@ -1449,13 +1449,18 @@ class AlphaNextGen(QCAlgorithm):
                 self.Log(
                     f"PREMARKET_LADDER: Closing stale intraday carry | {intraday_pos.contract.symbol}"
                 )
+                stale_symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
+                stale_qty = abs(self._get_option_holding_quantity(stale_symbol))
+                if stale_qty <= 0:
+                    stale_qty = max(1, int(getattr(intraday_pos, "num_contracts", 1)))
                 self.portfolio_router.receive_signal(
                     TargetWeight(
-                        symbol=self._normalize_symbol_str(intraday_pos.contract.symbol),
+                        symbol=stale_symbol,
                         target_weight=0.0,
                         source="OPT_INTRADAY",
                         urgency=Urgency.IMMEDIATE,
                         reason=f"PREMARKET_STALE_INTRADAY_CLOSE | {self._premarket_vix_ladder_reason}",
+                        requested_quantity=stale_qty,
                     )
                 )
 
@@ -1487,13 +1492,18 @@ class AlphaNextGen(QCAlgorithm):
 
             intraday_pos = self.options_engine.get_intraday_position()
             if intraday_pos is not None:
+                l3_symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
+                l3_qty = abs(self._get_option_holding_quantity(l3_symbol))
+                if l3_qty <= 0:
+                    l3_qty = max(1, int(getattr(intraday_pos, "num_contracts", 1)))
                 self.portfolio_router.receive_signal(
                     TargetWeight(
-                        symbol=self._normalize_symbol_str(intraday_pos.contract.symbol),
+                        symbol=l3_symbol,
                         target_weight=0.0,
                         source="OPT_INTRADAY",
                         urgency=Urgency.IMMEDIATE,
                         reason=f"PREMARKET_VIX_L3_FLATTEN | {self._premarket_vix_ladder_reason}",
+                        requested_quantity=l3_qty,
                     )
                 )
                 queued += 1
@@ -1512,13 +1522,15 @@ class AlphaNextGen(QCAlgorithm):
                     continue
                 if holding.Symbol in tracked_symbols:
                     continue
+                orphan_symbol = self._normalize_symbol_str(holding.Symbol)
                 self.portfolio_router.receive_signal(
                     TargetWeight(
-                        symbol=self._normalize_symbol_str(holding.Symbol),
+                        symbol=orphan_symbol,
                         target_weight=0.0,
                         source="OPT",
                         urgency=Urgency.IMMEDIATE,
                         reason=f"PREMARKET_VIX_L3_ORPHAN_CLOSE | {self._premarket_vix_ladder_reason}",
+                        requested_quantity=abs(int(holding.Quantity)),
                     )
                 )
                 queued += 1
@@ -1582,9 +1594,13 @@ class AlphaNextGen(QCAlgorithm):
                 unique_symbols = list(dict.fromkeys(symbols_to_close))
                 queued = 0
                 for symbol in unique_symbols:
+                    close_symbol = self._normalize_symbol_str(symbol)
+                    close_qty = abs(self._get_option_holding_quantity(close_symbol))
+                    if close_qty <= 0:
+                        continue
                     self.portfolio_router.receive_signal(
                         TargetWeight(
-                            symbol=self._normalize_symbol_str(symbol),
+                            symbol=close_symbol,
                             target_weight=0.0,
                             source="OPT",
                             urgency=Urgency.IMMEDIATE,
@@ -1592,6 +1608,7 @@ class AlphaNextGen(QCAlgorithm):
                                 "PREMARKET_VIX_L2_CALL_DELEVER | "
                                 f"{self._premarket_vix_ladder_reason}"
                             ),
+                            requested_quantity=close_qty,
                         )
                     )
                     queued += 1
@@ -3840,7 +3857,10 @@ class AlphaNextGen(QCAlgorithm):
                 f"Key={spread_key} | FlatStreak={streak}"
             )
             if self.portfolio_router:
-                self.portfolio_router.clear_all_spread_margins()
+                self.portfolio_router.unregister_spread_margin_by_legs(
+                    str(removed.long_leg.symbol),
+                    str(removed.short_leg.symbol),
+                )
 
         return cleared
 
@@ -7448,15 +7468,34 @@ class AlphaNextGen(QCAlgorithm):
             if not self._greeks_breach_logged:
                 self.Log(f"GREEKS_BREACH: {', '.join(reasons)}")
                 self._greeks_breach_logged = True
-            # Emit exit signal for options position
-            signal = TargetWeight(
-                symbol="QQQ_OPT",
-                target_weight=0.0,
-                source="RISK",
-                urgency=Urgency.IMMEDIATE,
-                reason=f"GREEKS_BREACH: {', '.join(reasons)}",
-            )
-            self.portfolio_router.receive_signal(signal)
+            # Emit exit signals for real option holdings (never synthetic symbols).
+            signals_emitted = 0
+            seen_symbols = set()
+            for kvp in self.Portfolio:
+                holding = kvp.Value
+                if (
+                    not holding.Invested
+                    or holding.Symbol.SecurityType != SecurityType.Option
+                    or int(holding.Quantity) == 0
+                ):
+                    continue
+                symbol_str = self._normalize_symbol_str(holding.Symbol)
+                if symbol_str in seen_symbols:
+                    continue
+                seen_symbols.add(symbol_str)
+                self.portfolio_router.receive_signal(
+                    TargetWeight(
+                        symbol=symbol_str,
+                        target_weight=0.0,
+                        source="RISK",
+                        urgency=Urgency.IMMEDIATE,
+                        reason=f"GREEKS_BREACH: {', '.join(reasons)}",
+                        requested_quantity=abs(int(holding.Quantity)),
+                    )
+                )
+                signals_emitted += 1
+            if signals_emitted == 0:
+                self.Log("GREEKS_BREACH_EXIT_SKIP: No live option holdings found")
             return  # Exit already triggered, don't check other exits
 
         # V2.3.11: Check expiring options force exit (15:45 for 0 DTE)
@@ -8454,9 +8493,14 @@ class AlphaNextGen(QCAlgorithm):
             if self.options_engine._pending_spread_long_leg is not None:
                 # V2.21: Parse broker margin for adaptive retry sizing
                 self._parse_and_store_rejection_margin(order_event)
+                pending_long = getattr(self.options_engine, "_pending_spread_long_leg", None)
+                pending_short = getattr(self.options_engine, "_pending_spread_short_leg", None)
                 self.options_engine.cancel_pending_spread_entry()
                 if self.portfolio_router:
-                    self.portfolio_router.clear_all_spread_margins()
+                    self.portfolio_router.unregister_spread_margin_by_legs(
+                        str(pending_long.symbol) if pending_long is not None else "",
+                        str(pending_short.symbol) if pending_short is not None else None,
+                    )
                 # Cooldown: 30 minutes before spread can retry
                 self._options_spread_cooldown_until = self.Time + timedelta(minutes=30)
                 # V3.0 P0-B: Clear main.py spread tracking state on rejection
