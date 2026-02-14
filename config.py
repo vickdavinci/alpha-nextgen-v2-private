@@ -1081,9 +1081,7 @@ SHORT_LEG_ITM_EXIT_THRESHOLD = (
 )
 SPREAD_ASSIGNMENT_GRACE_MINUTES = 45  # V6.15 FIX: Allow spread to stabilize before ITM checks
 SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 15  # Minutes between log messages
-SPREAD_MIN_HOLD_MINUTES = (
-    2880  # V9.7: 2-day min hold (0-1 day exits had 0% WR, -$13,546 in 2017 RCA)
-)
+SPREAD_MIN_HOLD_MINUTES = 10080  # V9.8: 7-day min hold (spreads held 4-14 days had 60-72% WR)
 SPREAD_EXIT_RETRY_MINUTES = (
     15  # V9.4 P0: Cooldown between exit signal retries (prevents per-minute spam)
 )
@@ -1779,34 +1777,32 @@ INTRADAY_ITM_MIN_SCORE = 40  # V6.8: Was 50, capture momentum earlier
 INTRADAY_ITM_START = "10:00"  # Entry window start
 INTRADAY_ITM_END = "14:30"  # Entry window end (earlier than FADE - momentum fades after lunch)
 INTRADAY_ITM_DELTA = 0.70  # ITM delta target
-INTRADAY_ITM_TARGET = 0.20  # V9.7: Capture gamma pops before theta eats them (was 0.35)
+INTRADAY_ITM_TARGET = 0.35  # V9.8: revert to V9.3 (0.20 was noise on ITM options)
 
 # V6.4: DEBIT_MOMENTUM time window (same as ITM_MOMENTUM - both are momentum strategies)
 INTRADAY_DEBIT_MOMENTUM_START = "10:00"  # Entry window start
 INTRADAY_DEBIT_MOMENTUM_END = "14:30"  # Entry window end
-INTRADAY_ITM_STOP = 0.25  # V9.7: Tighter — if going against you, theta wins (was 0.35)
+INTRADAY_ITM_STOP = 0.35  # V9.8: revert to V9.3
 INTRADAY_HIGH_VIX_STOP_MAX_PCT = (
     0.40  # V9.2 RCA: Wider stop cap for VIX>25 regimes (was capped at 28%)
 )
-INTRADAY_ITM_TRAIL_TRIGGER = (
-    0.12  # V9.7: Was 0.20 (= target, trail dead). Activate below target to ride or protect
-)
+INTRADAY_ITM_TRAIL_TRIGGER = 0.20  # V9.8: revert to V9.3 (below 0.35 target, trail works)
 INTRADAY_ITM_TRAIL_PCT = 0.50  # Trail at 50% of gains
 
 # V9.2: Per-strategy intraday exits (previously universal target/stop)
-INTRADAY_DEBIT_FADE_TARGET = 0.25  # V9.7: Faster capture in low VIX (was 0.40)
-INTRADAY_DEBIT_FADE_STOP = 0.25
-INTRADAY_DEBIT_FADE_TRAIL_TRIGGER = (
-    0.15  # V9.7: Was 0.25 (= target, trail dead). Activate below target for MR protection
+INTRADAY_DEBIT_FADE_TARGET = (
+    0.40  # V9.8: revert to V9.3 (0.25 was within bid-ask noise on $0.30 options)
 )
+INTRADAY_DEBIT_FADE_STOP = 0.25
+INTRADAY_DEBIT_FADE_TRAIL_TRIGGER = 0.25  # V9.8: revert to V9.3 (below 0.40 target, trail works)
 INTRADAY_DEBIT_FADE_TRAIL_PCT = 0.50
 
 INTRADAY_DEBIT_MOMENTUM_TARGET = (
-    0.25  # V9.7: ATM has most extrinsic/theta — capture fast (was 0.45)
+    0.45  # V9.8: revert to V9.3 (0.25 was within bid-ask noise on $0.34 options)
 )
-INTRADAY_DEBIT_MOMENTUM_STOP = 0.20  # V9.7: Tighter — more extrinsic = theta wins faster (was 0.30)
+INTRADAY_DEBIT_MOMENTUM_STOP = 0.30  # V9.8: revert to V9.3
 INTRADAY_DEBIT_MOMENTUM_TRAIL_TRIGGER = (
-    0.15  # V9.7: Lock in earlier — low VIX moves don't sustain (was 0.20)
+    0.20  # V9.8: revert to V9.3 (below 0.45 target, trail works)
 )
 INTRADAY_DEBIT_MOMENTUM_TRAIL_PCT = 0.50  # Standard 50% retracement from peak
 
@@ -1831,8 +1827,8 @@ INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES = [
 ]  # Skip weak/choppy transition states for momentum
 
 # ITM_MOMENTUM: Stock replacement needs ITM options (delta 0.60-0.85)
-INTRADAY_ITM_DELTA_MIN = 0.70  # V9.7: More intrinsic = less theta sensitivity (was 0.60)
-INTRADAY_ITM_DELTA_MAX = 0.90  # V9.7: Near stock-replacement (was 0.85)
+INTRADAY_ITM_DELTA_MIN = 0.60  # V9.8: revert to V9.3 (0.70 killed ITM_MOMENTUM — zero trades)
+INTRADAY_ITM_DELTA_MAX = 0.85  # V9.8: revert to V9.3
 
 # Protective Puts (Intraday Hedge)
 INTRADAY_PROTECT_MIN_VIX = 20  # VIX > 20: Add protection
@@ -1887,6 +1883,7 @@ PROTECTIVE_PUTS_DTE_MAX = 7  # Maximum 7 DTE (balance cost vs protection)
 PROTECTIVE_PUTS_DELTA_TARGET = 0.30  # OTM puts (cheaper, more leverage)
 PROTECTIVE_PUTS_DELTA_TOLERANCE = 0.10  # Accept delta 0.20-0.40
 PROTECTIVE_PUTS_STOP_PCT = 0.35  # Tighter stop to reduce repeated deep insurance losses
+INTRADAY_MAX_CONTRACTS = 40  # V9.8: Hard cap for all MICRO intraday entries
 PROTECTIVE_PUTS_MAX_CONTRACTS = (
     5  # V9.2 RCA: Cap contracts to prevent 10+ lot outsized bets in crisis
 )

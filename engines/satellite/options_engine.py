@@ -8033,12 +8033,21 @@ class OptionsEngine:
         # V2.18: Calculate contracts using cap / (premium * 100)
         num_contracts = int(adjusted_cap / (premium * 100))
 
+        # V9.8: Hard cap all MICRO intraday entries to prevent quantity explosions on cheap options.
+        intraday_max_contracts = int(getattr(config, "INTRADAY_MAX_CONTRACTS", 40))
+        if intraday_max_contracts > 0 and num_contracts > intraday_max_contracts:
+            self.log(
+                f"INTRADAY_CAP: {num_contracts} → {intraday_max_contracts} contracts (max)",
+                trades_only=True,
+            )
+            num_contracts = intraday_max_contracts
+
         # V9.2 RCA: Cap protective puts to prevent outsized 10+ contract bets
         # At 3% sizing on cheap OTM puts, uncapped quantity can reach 10-15 contracts,
         # amplifying losses 5× compared to ITM_MOMENTUM's ~2 contracts.
         if is_protective_put:
-            max_protective = getattr(config, "PROTECTIVE_PUTS_MAX_CONTRACTS", 5)
-            if num_contracts > max_protective:
+            max_protective = int(getattr(config, "PROTECTIVE_PUTS_MAX_CONTRACTS", 5))
+            if max_protective > 0 and num_contracts > max_protective:
                 self.log(f"PROTECTIVE_CAP: {num_contracts} → {max_protective} contracts (max)")
                 num_contracts = max_protective
 
