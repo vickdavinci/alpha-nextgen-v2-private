@@ -284,7 +284,9 @@ class AlphaNextGen(QCAlgorithm):
         self._greeks_breach_logged = False  # Log throttle: only log Greeks breach once/position
         self._kill_switch_handled_today = False  # V2.3: Only handle kill switch once per day
         self._margin_cb_in_progress = False  # V2.27: Re-entry guard for margin CB liquidation
-        self._last_vass_rejection_log = None  # V2.10: Throttle VASS rejection logs
+        self._last_vass_rejection_log_by_key: Dict[
+            str, datetime
+        ] = {}  # Keyed throttle for VASS rejections
         self._last_swing_scan_time = None  # V2.19: Throttle swing spread scans (1/hour)
         self._intraday_force_exit_fallback_date = None  # V6.12: Fallback guard (once/day)
         self._mr_force_close_fallback_date = None  # V6.12: MR force close fallback guard
@@ -2390,6 +2392,7 @@ class AlphaNextGen(QCAlgorithm):
         self._spread_ghost_flat_streak_by_key.clear()
         self._spread_ghost_last_log_by_key.clear()
         self._last_intraday_dte_routing_log_by_key.clear()
+        self._last_vass_rejection_log_by_key.clear()
         # V3.0 P1-B: Clean stale pending exit orders at EOD
         if self._pending_exit_orders:
             stale_keys = [
@@ -4794,6 +4797,18 @@ class AlphaNextGen(QCAlgorithm):
                 is_eod_scan,
             )
 
+    def _should_log_vass_rejection(self, reason_key: str) -> bool:
+        """Per-reason throttle for VASS skip/rejection logs to preserve RCA fidelity."""
+        interval_min = int(getattr(config, "VASS_LOG_REJECTION_INTERVAL_MINUTES", 15))
+        now = self.Time
+        last = self._last_vass_rejection_log_by_key.get(reason_key)
+        if last is not None:
+            elapsed = (now - last).total_seconds() / 60.0
+            if elapsed < interval_min:
+                return False
+        self._last_vass_rejection_log_by_key[reason_key] = now
+        return True
+
     def _scan_spread_for_direction(
         self,
         chain,
@@ -4826,11 +4841,11 @@ class AlphaNextGen(QCAlgorithm):
         if not can_swing_vass:
             if "R_SLOT_DIRECTION_OVERLAY" in swing_reason_vass:
                 self._diag_overlay_slot_block_count += 1
-            if (
-                self._last_vass_rejection_log is None
-                or (self.Time - self._last_vass_rejection_log).total_seconds() / 60
-                >= config.VASS_LOG_REJECTION_INTERVAL_MINUTES
-            ):
+            throttle_key = (
+                f"SWING_SLOT_BLOCK|{direction.value}|"
+                f"{'CREDIT' if is_credit else 'DEBIT'}|{swing_reason_vass}"
+            )
+            if self._should_log_vass_rejection(throttle_key):
                 self.Log(
                     f"VASS_SKIPPED: Direction={direction.value} | IV_Env=NA | "
                     f"VIX={self._current_vix:.1f} | Regime={regime_score:.0f} | "
@@ -4838,7 +4853,6 @@ class AlphaNextGen(QCAlgorithm):
                     f"DTE_Ranges={dte_ranges} | ReasonCode=SWING_SLOT_BLOCK | "
                     f"Reason=Swing entry not allowed | ValidationFail={swing_reason_vass}"
                 )
-                self._last_vass_rejection_log = self.Time
             return
 
         required_right = self._strategy_option_right(strategy)
@@ -4852,12 +4866,11 @@ class AlphaNextGen(QCAlgorithm):
             option_right=required_right,
         )
         if len(candidate_contracts) < 2:
-            should_log = (
-                self._last_vass_rejection_log is None
-                or (self.Time - self._last_vass_rejection_log).total_seconds() / 60
-                >= config.VASS_LOG_REJECTION_INTERVAL_MINUTES
+            throttle_key = (
+                f"INSUFFICIENT_CANDIDATES|{direction.value}|"
+                f"{'CREDIT' if is_credit else 'DEBIT'}|{dte_min_all}-{dte_max_all}"
             )
-            if should_log:
+            if self._should_log_vass_rejection(throttle_key):
                 self.Log(
                     f"VASS_REJECTION: Direction={direction.value} | "
                     f"IV_Env={self.options_engine._iv_sensor.classify()} | "
@@ -4866,7 +4879,6 @@ class AlphaNextGen(QCAlgorithm):
                     f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
                     f"DTE_Ranges={dte_ranges} | ReasonCode=INSUFFICIENT_CANDIDATES"
                 )
-                self._last_vass_rejection_log = self.Time
             return
 
         tradeable_eq = self.capital_engine.calculate(
@@ -5665,8 +5677,10 @@ class AlphaNextGen(QCAlgorithm):
                 itm_max = int(getattr(config, "MICRO_ITM_DTE_MAX", 5))
                 effective_dte_min = max(effective_dte_min, itm_floor)
                 effective_dte_max = min(effective_dte_max, itm_max)
-                # V10 telemetry: DTE routing diagnostic (throttled, live-only)
-                if hasattr(self, "LiveMode") and self.LiveMode:
+                # V10 telemetry: DTE routing diagnostic (throttled, live + optional backtest)
+                enable_backtest = bool(getattr(config, "MICRO_DTE_DIAG_LOG_BACKTEST_ENABLED", True))
+                is_live = bool(getattr(self, "LiveMode", False))
+                if is_live or enable_backtest:
                     try:
                         interval_min = int(getattr(config, "MICRO_DTE_DIAG_LOG_INTERVAL_MIN", 30))
                     except Exception:
@@ -7275,56 +7289,51 @@ class AlphaNextGen(QCAlgorithm):
         if signal is None and not spread_cooldown_active:
             self._diag_vass_block_count += 1
             # V2.10 (Pitfall #4): Throttled VASS rejection logging
-            # Log rejections every 15 min for visibility, not every candle to avoid spam
-            should_log = (
-                self._last_vass_rejection_log is None
-                or (self.Time - self._last_vass_rejection_log).total_seconds() / 60
-                >= config.VASS_LOG_REJECTION_INTERVAL_MINUTES
+            fail_stats = (
+                self.options_engine.pop_last_credit_failure_stats()
+                if is_credit
+                else self.options_engine.pop_last_spread_failure_stats()
             )
+            validation_reason = self.options_engine.pop_last_entry_validation_failure()
+            iv_env = (
+                self.options_engine._iv_sensor.classify()
+                if hasattr(self.options_engine, "_iv_sensor")
+                else "UNKNOWN"
+            )
+            skip_reasons = {
+                "R_SLOT_SWING_MAX",
+                "R_SLOT_TOTAL_MAX",
+                "R_SLOT_DIRECTION_MAX",
+                "R_COOLDOWN_DIRECTIONAL",
+            }
+            log_prefix = "VASS_SKIPPED" if (validation_reason in skip_reasons) else "VASS_REJECTION"
+            reason_code = self._canonical_options_reason_code(validation_reason or rejection_code)
+            throttle_key = (
+                f"{reason_code}|{direction.value}|"
+                f"{'CREDIT' if is_credit else 'DEBIT'}|"
+                f"{validation_reason or ''}"
+            )
+            should_log = self._should_log_vass_rejection(throttle_key)
+            reason_text = "No contracts met spread criteria (DTE/delta/credit)"
+            if validation_reason in {
+                "R_SLOT_SWING_MAX",
+                "R_SLOT_DIRECTION_MAX",
+            }:
+                reason_text = "Skipped - existing spread position"
+            elif validation_reason == "R_SLOT_TOTAL_MAX":
+                reason_text = "Skipped - total options slot limit reached"
+            elif validation_reason == "R_COOLDOWN_DIRECTIONAL":
+                reason_text = "Skipped - entry attempt limit reached"
+            elif validation_reason == "R_MARGIN_PRECHECK":
+                reason_text = "Skipped - margin precheck failed"
+            elif validation_reason and validation_reason.startswith("R_CONTRACT_QUALITY:"):
+                reason_text = "Rejected - contract quality: " + validation_reason.split(":", 1)[1]
+            elif validation_reason == "WIN_RATE_GATE_BLOCK":
+                reason_text = "Skipped - win-rate gate shutoff active"
+            elif validation_reason == "TRADE_LIMIT_BLOCK":
+                reason_text = "Skipped - daily trade limit reached"
+
             if should_log:
-                fail_stats = (
-                    self.options_engine.pop_last_credit_failure_stats()
-                    if is_credit
-                    else self.options_engine.pop_last_spread_failure_stats()
-                )
-                validation_reason = self.options_engine.pop_last_entry_validation_failure()
-                iv_env = (
-                    self.options_engine._iv_sensor.classify()
-                    if hasattr(self.options_engine, "_iv_sensor")
-                    else "UNKNOWN"
-                )
-                skip_reasons = {
-                    "R_SLOT_SWING_MAX",
-                    "R_SLOT_TOTAL_MAX",
-                    "R_SLOT_DIRECTION_MAX",
-                    "R_COOLDOWN_DIRECTIONAL",
-                }
-                log_prefix = (
-                    "VASS_SKIPPED" if (validation_reason in skip_reasons) else "VASS_REJECTION"
-                )
-                reason_code = self._canonical_options_reason_code(
-                    validation_reason or rejection_code
-                )
-                reason_text = "No contracts met spread criteria (DTE/delta/credit)"
-                if validation_reason in {
-                    "R_SLOT_SWING_MAX",
-                    "R_SLOT_DIRECTION_MAX",
-                }:
-                    reason_text = "Skipped - existing spread position"
-                elif validation_reason == "R_SLOT_TOTAL_MAX":
-                    reason_text = "Skipped - total options slot limit reached"
-                elif validation_reason == "R_COOLDOWN_DIRECTIONAL":
-                    reason_text = "Skipped - entry attempt limit reached"
-                elif validation_reason == "R_MARGIN_PRECHECK":
-                    reason_text = "Skipped - margin precheck failed"
-                elif validation_reason and validation_reason.startswith("R_CONTRACT_QUALITY:"):
-                    reason_text = (
-                        "Rejected - contract quality: " + validation_reason.split(":", 1)[1]
-                    )
-                elif validation_reason == "WIN_RATE_GATE_BLOCK":
-                    reason_text = "Skipped - win-rate gate shutoff active"
-                elif validation_reason == "TRADE_LIMIT_BLOCK":
-                    reason_text = "Skipped - daily trade limit reached"
                 self.Log(
                     f"{log_prefix}: Direction={direction.value} | "
                     f"IV_Env={iv_env} | VIX={self._current_vix:.1f} | "
@@ -7341,7 +7350,6 @@ class AlphaNextGen(QCAlgorithm):
                         else ""
                     )
                 )
-                self._last_vass_rejection_log = self.Time
 
         # V2.4.1: Single-leg swing fallback - DISABLED by default for safety
         # Single-leg has higher delta exposure and full premium at risk

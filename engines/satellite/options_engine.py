@@ -1938,7 +1938,7 @@ class OptionsEngine:
         # Detailed slot/limit rejection context for MICRO drop telemetry.
         self._last_trade_limit_failure: Optional[str] = None
         self._last_trade_limit_detail: Optional[str] = None
-        self._last_micro_no_trade_log: Optional[str] = None
+        self._last_micro_no_trade_log_by_key: Dict[str, str] = {}
         # MICRO anti-churn: brief cooldown for same strategy after close.
         self._last_intraday_close_time: Optional[datetime] = None
         self._last_intraday_close_strategy: Optional[str] = None
@@ -2387,63 +2387,69 @@ class OptionsEngine:
         # - QQQ flat, whipsaw, or caution regime
         # With V6.8 lowered gates, Micro will trade more often without needing overrides.
         if state.recommended_strategy == IntradayStrategy.NO_TRADE:
-            # Minimal, throttled logging to understand Dir=None / NO_TRADE causes
+            # Minimal, keyed throttle to preserve distinct MICRO_NO_TRADE reasons.
             should_log = True
-            if current_time and self._last_micro_no_trade_log:
+
+            vix_change_pct = (
+                (vix_current - vix_open_for_micro) / vix_open_for_micro * 100
+                if vix_open_for_micro > 0
+                else 0.0
+            )
+            qqq_move_pct = (qqq_current - qqq_open) / qqq_open * 100 if qqq_open > 0 else 0.0
+            if abs(qqq_move_pct) < config.QQQ_NOISE_THRESHOLD:
+                block_code = "QQQ_FLAT"
+            elif state.micro_regime in (
+                MicroRegime.CHOPPY_LOW,
+                MicroRegime.RISK_OFF_LOW,
+                MicroRegime.BREAKING,
+                MicroRegime.UNSTABLE,
+                MicroRegime.VOLATILE,
+            ):
+                block_code = "REGIME_NOT_TRADEABLE"
+            elif state.micro_regime in (MicroRegime.FULL_PANIC, MicroRegime.CRASH) and (
+                qqq_move_pct >= 0
+            ):
+                # V9.2: FULL_PANIC/CRASH are tradeable with QQQ-down confirmation.
+                # Keep telemetry aligned with gating logic instead of reporting generic non-tradeable.
+                block_code = "PANIC_QQQ_GATE"
+            elif (
+                state.micro_regime
+                in (
+                    MicroRegime.NORMAL,
+                    MicroRegime.CAUTION_LOW,
+                    MicroRegime.CAUTIOUS,
+                    MicroRegime.TRANSITION,
+                    MicroRegime.ELEVATED,
+                )
+                and abs(vix_change_pct) <= config.VIX_STABLE_BAND_HIGH
+            ):
+                block_code = "VIX_STABLE_LOW_CONVICTION"
+            else:
+                block_code = "CONFIRMATION_FAIL"
+
+            if current_time:
                 try:
-                    if current_time[:10] == self._last_micro_no_trade_log[:10]:
+                    throttle_key = f"{current_time[:10]}|{block_code}"
+                    last_log = self._last_micro_no_trade_log_by_key.get(throttle_key)
+                    if last_log and last_log[:10] == current_time[:10]:
                         curr_min = int(current_time[11:13]) * 60 + int(current_time[14:16])
-                        last_min = int(self._last_micro_no_trade_log[11:13]) * 60 + int(
-                            self._last_micro_no_trade_log[14:16]
+                        last_min = int(last_log[11:13]) * 60 + int(last_log[14:16])
+                        interval_min = int(
+                            getattr(config, "MICRO_NO_TRADE_LOG_INTERVAL_MINUTES", 5)
                         )
-                        if curr_min - last_min < config.VASS_LOG_REJECTION_INTERVAL_MINUTES:
+                        if curr_min - last_min < interval_min:
                             should_log = False
+                    if should_log:
+                        self._last_micro_no_trade_log_by_key[throttle_key] = current_time
                 except (ValueError, IndexError):
                     pass
 
             if should_log:
-                vix_change_pct = (
-                    (vix_current - vix_open_for_micro) / vix_open_for_micro * 100
-                    if vix_open_for_micro > 0
-                    else 0.0
-                )
-                qqq_move_pct = (qqq_current - qqq_open) / qqq_open * 100 if qqq_open > 0 else 0.0
-                if abs(qqq_move_pct) < config.QQQ_NOISE_THRESHOLD:
-                    block_code = "QQQ_FLAT"
-                elif state.micro_regime in (
-                    MicroRegime.CHOPPY_LOW,
-                    MicroRegime.RISK_OFF_LOW,
-                    MicroRegime.BREAKING,
-                    MicroRegime.UNSTABLE,
-                    MicroRegime.VOLATILE,
-                ):
-                    block_code = "REGIME_NOT_TRADEABLE"
-                elif state.micro_regime in (MicroRegime.FULL_PANIC, MicroRegime.CRASH) and (
-                    qqq_move_pct >= 0
-                ):
-                    # V9.2: FULL_PANIC/CRASH are tradeable with QQQ-down confirmation.
-                    # Keep telemetry aligned with gating logic instead of reporting generic non-tradeable.
-                    block_code = "PANIC_QQQ_GATE"
-                elif (
-                    state.micro_regime
-                    in (
-                        MicroRegime.NORMAL,
-                        MicroRegime.CAUTION_LOW,
-                        MicroRegime.CAUTIOUS,
-                        MicroRegime.TRANSITION,
-                        MicroRegime.ELEVATED,
-                    )
-                    and abs(vix_change_pct) <= config.VIX_STABLE_BAND_HIGH
-                ):
-                    block_code = "VIX_STABLE_LOW_CONVICTION"
-                else:
-                    block_code = "CONFIRMATION_FAIL"
                 self.log(
                     f"MICRO_NO_TRADE[{block_code}]: Regime={state.micro_regime.value} | "
                     f"VIXchg={vix_change_pct:+.2f}% | QQQ={qqq_move_pct:+.2f}% | "
                     f"Score={state.micro_score:.0f} | Dir=NONE | Why={state.recommended_reason}"
                 )
-                self._last_micro_no_trade_log = current_time
             return (
                 False,
                 None,

@@ -1245,6 +1245,7 @@ MICRO_ITM_DTE_MIN_MED_VIX = 3  # MED VIX: reduce theta decay on ITM singles
 MICRO_ITM_DTE_MIN_HIGH_VIX = 2  # HIGH VIX: vol provides buffer
 MICRO_ITM_DTE_MAX = 5  # Unchanged intraday envelope
 MICRO_DTE_DIAG_LOG_INTERVAL_MIN = 30  # Throttle ITM DTE routing diagnostics
+MICRO_DTE_DIAG_LOG_BACKTEST_ENABLED = True  # Keep throttled ITM DTE diagnostics in backtests
 
 # -----------------------------------------------------------------------------
 # V2.3 DEBIT SPREAD CONFIGURATION
@@ -1515,6 +1516,7 @@ GAMMA_PIN_EARLY_EXIT_DTE = 2  # Activate within 2 DTE
 
 # Pitfall #4: VASS Rejection Logging - Throttled logging for silent rejections
 VASS_LOG_REJECTION_INTERVAL_MINUTES = 15  # Log rejections every 15 min (not every candle)
+MICRO_NO_TRADE_LOG_INTERVAL_MINUTES = 5  # Per-block throttle for MICRO_NO_TRADE logs
 
 # -----------------------------------------------------------------------------
 # V2.11: PRE-BACKTEST SAFETY FIXES (Pitfalls #6-8)
