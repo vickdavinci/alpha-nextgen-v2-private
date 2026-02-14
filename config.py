@@ -1244,6 +1244,7 @@ MICRO_ITM_DTE_MIN_LOW_VIX = 3  # LOW VIX: reduce theta decay on ITM singles
 MICRO_ITM_DTE_MIN_MED_VIX = 3  # MED VIX: reduce theta decay on ITM singles
 MICRO_ITM_DTE_MIN_HIGH_VIX = 2  # HIGH VIX: vol provides buffer
 MICRO_ITM_DTE_MAX = 5  # Unchanged intraday envelope
+MICRO_DTE_DIAG_LOG_INTERVAL_MIN = 30  # Throttle ITM DTE routing diagnostics
 
 # -----------------------------------------------------------------------------
 # V2.3 DEBIT SPREAD CONFIGURATION

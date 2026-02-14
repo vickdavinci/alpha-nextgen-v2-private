@@ -385,6 +385,7 @@ class AlphaNextGen(QCAlgorithm):
         self._intraday_regime_score: Optional[float] = None
         self._intraday_regime_updated_at: Optional[datetime] = None
         self._last_regime_effective_log_at: Optional[datetime] = None
+        self._last_intraday_dte_routing_log_by_key: Dict[str, datetime] = {}
 
         # V2.6 Bug #14: Exit order retry tracking
         self._pending_exit_orders: Dict[str, ExitOrderTracker] = {}
@@ -2388,6 +2389,7 @@ class AlphaNextGen(QCAlgorithm):
         self._external_exec_event_logged.clear()
         self._spread_ghost_flat_streak_by_key.clear()
         self._spread_ghost_last_log_by_key.clear()
+        self._last_intraday_dte_routing_log_by_key.clear()
         # V3.0 P1-B: Clean stale pending exit orders at EOD
         if self._pending_exit_orders:
             stale_keys = [
@@ -5663,12 +5665,24 @@ class AlphaNextGen(QCAlgorithm):
                 itm_max = int(getattr(config, "MICRO_ITM_DTE_MAX", 5))
                 effective_dte_min = max(effective_dte_min, itm_floor)
                 effective_dte_max = min(effective_dte_max, itm_max)
-                # V10 telemetry: DTE routing diagnostic (throttled, silent in backtests)
+                # V10 telemetry: DTE routing diagnostic (throttled, live-only)
                 if hasattr(self, "LiveMode") and self.LiveMode:
-                    self.Log(
-                        f"INTRADAY_DTE_ROUTING: ITM_MOMENTUM | VIX={vix_val:.1f} tier={itm_tier} | "
-                        f"DTE=[{effective_dte_min}-{effective_dte_max}]"
+                    try:
+                        interval_min = int(getattr(config, "MICRO_DTE_DIAG_LOG_INTERVAL_MIN", 30))
+                    except Exception:
+                        interval_min = 30
+                    key = f"ITM_MOMENTUM|{itm_tier}|{effective_dte_min}|{effective_dte_max}"
+                    last_log_at = self._last_intraday_dte_routing_log_by_key.get(key)
+                    should_log = (
+                        last_log_at is None
+                        or (self.Time - last_log_at).total_seconds() / 60.0 >= interval_min
                     )
+                    if should_log:
+                        self.Log(
+                            f"INTRADAY_DTE_ROUTING: ITM_MOMENTUM | VIX={vix_val:.1f} tier={itm_tier} | "
+                            f"DTE=[{effective_dte_min}-{effective_dte_max}]"
+                        )
+                        self._last_intraday_dte_routing_log_by_key[key] = self.Time
             except Exception:
                 pass
 
