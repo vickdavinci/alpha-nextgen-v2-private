@@ -2317,9 +2317,14 @@ class AlphaNextGen(QCAlgorithm):
         self._eod_capital_state = capital_state
 
         # 7. Update Cold Start
-        self.cold_start_engine.end_of_day_update(
-            kill_switch_triggered=self.scheduler.is_kill_switch_triggered()
-        )
+        # V10: Fix dual-reset bug — only reset cold start when config allows for the tier.
+        # Previously, end_of_day_update received the raw kill switch flag (True for Tier 2+),
+        # which unconditionally reset cold start, ignoring KS_COLD_START_RESET_ON_TIER_2=False.
+        ks_tier = self._last_risk_result.ks_tier if self._last_risk_result else KSTier.NONE
+        should_reset_cold_start = (
+            ks_tier == KSTier.FULL_EXIT and config.KS_COLD_START_RESET_ON_TIER_3
+        ) or (ks_tier == KSTier.TREND_EXIT and config.KS_COLD_START_RESET_ON_TIER_2)
+        self.cold_start_engine.end_of_day_update(kill_switch_triggered=should_reset_cold_start)
 
     def _on_market_close(self) -> None:
         """
