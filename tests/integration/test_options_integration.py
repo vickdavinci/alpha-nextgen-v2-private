@@ -11,16 +11,17 @@ These tests verify that:
 IMPORTANT: These are integration tests - they test multiple components working together.
 """
 
+from typing import Any, Dict
+from unittest.mock import MagicMock, PropertyMock, patch
+
 import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
-from typing import Dict, Any
 
 # Import components under test
 from engines.satellite.options_engine import OptionsEngine
-from execution.oco_manager import OCOManager, OCOPair, OCOLeg, OCOState
-from portfolio.portfolio_router import PortfolioRouter
-from models.target_weight import TargetWeight
+from execution.oco_manager import OCOLeg, OCOManager, OCOPair, OCOState
 from models.enums import Urgency
+from models.target_weight import TargetWeight
+from portfolio.portfolio_router import PortfolioRouter
 
 
 @pytest.fixture
@@ -124,7 +125,7 @@ class TestOptionsOCOLifecycle:
             stop_price=2.00,  # 20% stop
             target_price=3.75,  # 50% profit
             quantity=10,
-            current_date="2026-01-26"
+            current_date="2026-01-26",
         )
 
         assert pair is not None
@@ -146,7 +147,7 @@ class TestOptionsOCOLifecycle:
             stop_price=2.00,
             target_price=3.75,
             quantity=10,
-            current_date="2026-01-26"
+            current_date="2026-01-26",
         )
 
         success = oco_manager.submit_oco_pair(pair, current_time="2026-01-26 11:30:00")
@@ -170,7 +171,7 @@ class TestOptionsOCOLifecycle:
             stop_price=2.00,
             target_price=3.75,
             quantity=10,
-            current_date="2026-01-26"
+            current_date="2026-01-26",
         )
         oco_manager.submit_oco_pair(pair, current_time="2026-01-26 11:30:00")
 
@@ -182,7 +183,7 @@ class TestOptionsOCOLifecycle:
             broker_order_id=stop_order_id,
             fill_price=1.95,
             fill_quantity=-10,
-            fill_time="2026-01-26 12:00:00"
+            fill_time="2026-01-26 12:00:00",
         )
 
         # Verify state (on_order_fill transitions to CLOSED after trigger)
@@ -203,7 +204,7 @@ class TestOptionsOCOLifecycle:
             stop_price=2.00,
             target_price=3.75,
             quantity=10,
-            current_date="2026-01-26"
+            current_date="2026-01-26",
         )
         oco_manager.submit_oco_pair(pair, current_time="2026-01-26 11:30:00")
 
@@ -214,7 +215,7 @@ class TestOptionsOCOLifecycle:
             broker_order_id=profit_order_id,
             fill_price=3.80,
             fill_quantity=-10,
-            fill_time="2026-01-26 12:00:00"
+            fill_time="2026-01-26 12:00:00",
         )
 
         # Verify state (on_order_fill transitions to CLOSED after trigger)
@@ -233,16 +234,10 @@ class TestOptionsGreeksIntegration:
         Then: Snapshot contains all required Greeks
         """
         # Simulate Greeks data
-        greeks_data = {
-            "delta": 0.55,
-            "gamma": 0.08,
-            "theta": -0.12,
-            "vega": 0.15,
-            "iv": 0.25
-        }
+        greeks_data = {"delta": 0.55, "gamma": 0.08, "theta": -0.12, "vega": 0.15, "iv": 0.25}
 
         # Store Greeks (method may vary based on implementation)
-        if hasattr(options_engine, '_current_greeks'):
+        if hasattr(options_engine, "_current_greeks"):
             options_engine._current_greeks = greeks_data
 
             assert options_engine._current_greeks["delta"] == 0.55
@@ -277,7 +272,7 @@ class TestOptionsPortfolioRouterIntegration:
             target_weight=0.20,
             source="OPT",
             urgency=Urgency.IMMEDIATE,
-            reason="Entry Score=3.5"
+            reason="Entry Score=3.5",
         )
 
         # Verify signal structure
@@ -315,7 +310,7 @@ class TestOptionsStatePersistence:
             stop_price=2.00,
             target_price=3.75,
             quantity=10,
-            current_date="2026-01-26"
+            current_date="2026-01-26",
         )
         oco_manager.submit_oco_pair(pair1, current_time="2026-01-26 11:30:00")
 
@@ -350,7 +345,7 @@ class TestOptionsStatePersistence:
                         "filled": False,
                         "cancelled": False,
                         "fill_price": 0.0,
-                        "fill_time": None
+                        "fill_time": None,
                     },
                     "profit_leg": {
                         "leg_type": "PROFIT",
@@ -361,24 +356,27 @@ class TestOptionsStatePersistence:
                         "filled": False,
                         "cancelled": False,
                         "fill_price": 0.0,
-                        "fill_time": None
+                        "fill_time": None,
                     },
                     "created_at": "2026-01-26",
                     "activated_at": "2026-01-26 11:30:00",
                     "closed_at": None,
-                    "close_reason": ""
+                    "close_reason": "",
                 }
             },
-            "next_oco_number": 2
+            "next_oco_number": 2,
         }
 
         # Create manager and restore state
         manager = OCOManager(mock_algorithm_for_options)
         manager.restore_state(saved_state)
 
-        # Verify pairs restored
-        assert len(manager._active_pairs) == 1
-        assert "OCO-20260126-001" in manager._active_pairs
+        # V10.1: restore_state drops all pairs with broker order IDs as stale
+        # (broker IDs are session-specific). OCO recovery happens via
+        # main._ensure_oco_for_open_options() from live holdings instead.
+        assert len(manager._active_pairs) == 0
+        # But oco_number counter is preserved for ID continuity
+        assert manager._next_oco_number == 2
 
 
 class TestOptionsTimeConstraints:
@@ -400,9 +398,10 @@ class TestOptionsTimeConstraints:
         # In late day, should be capped at 20%
         late_day_hour = 14
         late_day_minute = 30
-        is_late_day = (mock_algorithm_for_options.Time.hour > late_day_hour or
-                      (mock_algorithm_for_options.Time.hour == late_day_hour and
-                       mock_algorithm_for_options.Time.minute >= late_day_minute))
+        is_late_day = mock_algorithm_for_options.Time.hour > late_day_hour or (
+            mock_algorithm_for_options.Time.hour == late_day_hour
+            and mock_algorithm_for_options.Time.minute >= late_day_minute
+        )
 
         assert is_late_day is True
 
@@ -417,8 +416,10 @@ class TestOptionsTimeConstraints:
         mock_algorithm_for_options.Time.hour = 15
         mock_algorithm_for_options.Time.minute = 45
 
-        is_force_close_time = (mock_algorithm_for_options.Time.hour == 15 and
-                               mock_algorithm_for_options.Time.minute >= 45)
+        is_force_close_time = (
+            mock_algorithm_for_options.Time.hour == 15
+            and mock_algorithm_for_options.Time.minute >= 45
+        )
 
         assert is_force_close_time is True
 
@@ -451,10 +452,13 @@ class TestOptionsEntryBlocking:
         entry_end_hour = 14
         entry_end_minute = 30
 
-        is_in_window = (mock_algorithm_for_options.Time.hour >= entry_start_hour and
-                       (mock_algorithm_for_options.Time.hour < entry_end_hour or
-                        (mock_algorithm_for_options.Time.hour == entry_end_hour and
-                         mock_algorithm_for_options.Time.minute <= entry_end_minute)))
+        is_in_window = mock_algorithm_for_options.Time.hour >= entry_start_hour and (
+            mock_algorithm_for_options.Time.hour < entry_end_hour
+            or (
+                mock_algorithm_for_options.Time.hour == entry_end_hour
+                and mock_algorithm_for_options.Time.minute <= entry_end_minute
+            )
+        )
 
         assert is_in_window is False
 
@@ -490,7 +494,7 @@ class TestOptionsErrorHandling:
             stop_price=2.00,
             target_price=3.75,
             quantity=10,
-            current_date="2026-01-26"
+            current_date="2026-01-26",
         )
 
         # With algorithm=None, both legs will succeed with mock IDs
@@ -517,7 +521,7 @@ class TestOptionsErrorHandling:
             stop_price=2.00,
             target_price=3.75,
             quantity=10,
-            current_date="2026-01-26"
+            current_date="2026-01-26",
         )
         oco_manager.submit_oco_pair(pair, current_time="2026-01-26 11:30:00")
 
