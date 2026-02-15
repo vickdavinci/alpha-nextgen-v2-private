@@ -7913,6 +7913,17 @@ class OptionsEngine:
 
             # V6.14 OPT: Avoid buying long PUTs into panic highs; reduce size in elevated fear.
             if direction == OptionDirection.PUT:
+                risk_on_threshold = float(getattr(config, "REGIME_RISK_ON", 70.0))
+                if (
+                    state.micro_regime == MicroRegime.CAUTION_LOW
+                    and macro_regime_score >= risk_on_threshold
+                ):
+                    self.log(
+                        f"INTRADAY: PUT blocked in CAUTION_LOW under RISK_ON macro | "
+                        f"Macro={macro_regime_score:.1f} >= {risk_on_threshold:.1f} | "
+                        f"Regime={state.micro_regime.value}"
+                    )
+                    return fail("E_PUT_GATE_RISK_ON_CAUTION_LOW")
                 vix_for_put = vix_level_override if vix_level_override is not None else vix_current
                 put_entry_vix_max = getattr(config, "PUT_ENTRY_VIX_MAX", 36.0)
                 if vix_for_put > put_entry_vix_max:
