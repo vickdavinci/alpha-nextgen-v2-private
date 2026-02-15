@@ -9,6 +9,7 @@ Applied AFTER the standard minifier. Techniques:
 5. Remove `pass` in non-empty bodies
 """
 
+import argparse
 import ast
 import os
 import re
@@ -356,12 +357,27 @@ def remove_unnecessary_pass(source: str) -> str:
 
 
 def compress_indentation(source: str, target_spaces: int = 1) -> str:
-    """Convert 4-space indentation to target_spaces-space indentation.
+    """Compress indentation to target_spaces while staying idempotent.
 
-    Python only cares about consistent relative indentation, so
-    4-space -> 1-space is safe as long as it's uniform.
+    Important: this must be safe to run multiple times. If a file is already
+    compressed at or below target_spaces, return it unchanged.
     """
     lines = source.splitlines(keepends=True)
+    min_positive_indent = None
+    for line in lines:
+        stripped = line.lstrip(" ")
+        if not stripped:
+            continue
+        indent = len(line) - len(stripped)
+        if indent > 0:
+            min_positive_indent = (
+                indent if min_positive_indent is None else min(min_positive_indent, indent)
+            )
+
+    # Already compressed (or no indentation in file) -> no-op.
+    if min_positive_indent is None or min_positive_indent <= target_spaces:
+        return source
+
     result = []
     for line in lines:
         stripped = line.lstrip(" ")
@@ -369,28 +385,44 @@ def compress_indentation(source: str, target_spaces: int = 1) -> str:
         if indent == 0:
             result.append(line)
         else:
-            # Convert: every 4 spaces -> target_spaces spaces
-            # Handle non-multiples gracefully
-            levels = indent // 4
-            remainder = indent % 4
+            # Convert relative to observed base indent width.
+            levels = indent // min_positive_indent
+            remainder = indent % min_positive_indent
             new_indent = " " * (levels * target_spaces + remainder)
             result.append(new_indent + stripped)
     return "".join(result)
 
 
-def ultra_minify(source: str) -> str:
+def ultra_minify(source: str, target_spaces: int = 2) -> str:
     """Apply all ultra-minification techniques."""
     result = source
     result = strip_inline_comments(result)
     result = remove_type_annotations(result)
     # remove_unnecessary_pass disabled: causes IndentationError on QC after basic minify strips docstrings
     result = remove_blank_lines(result)
-    result = compress_indentation(result, target_spaces=2)
+    result = compress_indentation(result, target_spaces=target_spaces)
     return result
 
 
 def main():
-    workspace = os.path.expanduser("~/Documents/Trading Github/lean-workspace/AlphaNextGen")
+    parser = argparse.ArgumentParser(
+        description="Ultra minify Lean workspace files without breaking syntax."
+    )
+    parser.add_argument(
+        "--workspace",
+        default="~/Documents/Trading Github/lean-workspace/AlphaNextGen",
+        help="Workspace root to minify",
+    )
+    parser.add_argument(
+        "--target-indent",
+        type=int,
+        default=2,
+        help="Target indentation width for compression (default: 2)",
+    )
+    args = parser.parse_args()
+
+    workspace = os.path.expanduser(args.workspace)
+    target_indent = max(1, int(args.target_indent))
 
     if not os.path.isdir(workspace):
         print(f"ERROR: Workspace not found: {workspace}")
@@ -418,7 +450,13 @@ def main():
             size = len(content.encode("utf-8"))
             name = os.path.relpath(filepath, workspace)
 
-            minified = ultra_minify(content)
+            minified = ultra_minify(content, target_spaces=target_indent)
+            # Safety guard: never write syntactically invalid Python.
+            try:
+                ast.parse(minified)
+            except SyntaxError as e:
+                print(f"  {name}: SKIP (syntax guard) [{e.msg}]")
+                minified = content
             new_size = len(minified.encode("utf-8"))
 
             with open(filepath, "w") as fh:

@@ -1988,6 +1988,8 @@ class OptionsEngine:
         self._spread_exit_signal_cooldown: Dict[str, datetime] = {}
         # Track which spreads have already logged the hold guard (log once, not every minute)
         self._spread_hold_guard_logged: set = set()
+        # Throttle force-exit hold-skip logs (symbol -> YYYY-MM-DD).
+        self._intraday_force_exit_hold_skip_log_date: Dict[str, str] = {}
 
     def log(self, message: str, trades_only: bool = False) -> None:
         """
@@ -2026,6 +2028,61 @@ class OptionsEngine:
             return int(hh), int(mm)
         except Exception:
             return 15, 30
+
+    def _is_itm_momentum_strategy_name(self, strategy_name: Optional[str]) -> bool:
+        """True when strategy name maps to ITM momentum."""
+        value = str(strategy_name or "").upper()
+        return value == IntradayStrategy.ITM_MOMENTUM.value
+
+    def _get_position_live_dte(self, position: Optional[OptionsPosition]) -> Optional[int]:
+        """Best-effort live DTE using expiry date and current algorithm time."""
+        if position is None or position.contract is None:
+            return None
+        expiry_str = str(getattr(position.contract, "expiry", "") or "")[:10]
+        if not expiry_str:
+            return None
+        try:
+            expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
+            if self.algorithm is not None and hasattr(self.algorithm, "Time"):
+                current_date = self.algorithm.Time.date()
+            else:
+                current_date = datetime.utcnow().date()
+            return max(0, (expiry_date - current_date).days)
+        except Exception:
+            try:
+                return max(0, int(getattr(position.contract, "days_to_expiry", 0)))
+            except Exception:
+                return None
+
+    def should_hold_intraday_overnight(
+        self,
+        position: Optional[OptionsPosition] = None,
+    ) -> bool:
+        """
+        Return True when the current intraday position is eligible for overnight hold.
+
+        V10.1 policy: only ITM_MOMENTUM positions opened with sufficient entry DTE can
+        bypass the intraday force-close cutoff.
+        """
+        if not bool(getattr(config, "INTRADAY_ITM_HOLD_OVERNIGHT_ENABLED", False)):
+            return False
+        pos = position if position is not None else self._intraday_position
+        if pos is None:
+            return False
+        if not self._is_itm_momentum_strategy_name(getattr(pos, "entry_strategy", "")):
+            return False
+        try:
+            entry_dte = int(getattr(pos.contract, "days_to_expiry", 0))
+        except Exception:
+            entry_dte = 0
+        min_entry_dte = int(getattr(config, "INTRADAY_ITM_HOLD_MIN_ENTRY_DTE", 3))
+        if entry_dte < min_entry_dte:
+            return False
+        live_dte = self._get_position_live_dte(pos)
+        if live_dte is None:
+            return False
+        force_exit_dte = int(getattr(config, "INTRADAY_ITM_FORCE_EXIT_DTE", 1))
+        return live_dte > force_exit_dte
 
     def record_intraday_result(
         self, symbol: str, is_win: bool, current_time: Optional[str] = None
@@ -6154,6 +6211,7 @@ class OptionsEngine:
                     "spread_close_short": True,
                     "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
                     "spread_short_leg_quantity": num_contracts,
+                    "spread_key": self._build_spread_key(spread),
                     "spread_width": spread.width,
                     "is_credit_spread": is_credit_spread,
                     "spread_credit_received": credit_received,
@@ -6298,7 +6356,8 @@ class OptionsEngine:
                     "spread_type": spread.spread_type,
                     "spread_close_short": True,  # V6.5 FIX: Required for combo close
                     "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
-                    "spread_short_leg_quantity": num_contracts,  # V6.5 FIX: Positive for close
+                    "spread_short_leg_quantity": num_contracts,
+                    "spread_key": self._build_spread_key(spread),  # V6.5 FIX: Positive for close
                     "spread_width": spread.width,
                     "is_credit_spread": is_credit_spread,
                     "spread_credit_received": credit_received,
@@ -6549,7 +6608,12 @@ class OptionsEngine:
         )
 
         # V6.22: Transition exit priority - force close wrong-way bullish spreads in STRESS.
-        if exit_reason is None and is_bullish_spread and vix_current is not None:
+        if (
+            exit_reason is None
+            and bool(getattr(config, "SPREAD_OVERLAY_STRESS_EXIT_ENABLED", False))
+            and is_bullish_spread
+            and vix_current is not None
+        ):
             overlay_state = self.get_regime_overlay_state(
                 vix_current=vix_current, regime_score=regime_score
             )
@@ -6827,6 +6891,7 @@ class OptionsEngine:
                     "spread_type": spread.spread_type,
                     "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
                     "spread_short_leg_quantity": spread.num_spreads,
+                    "spread_key": self._build_spread_key(spread),
                     "spread_width": spread.width,
                     "spread_exit_code": exit_code,
                     "is_credit_spread": is_credit_spread,
@@ -6923,6 +6988,7 @@ class OptionsEngine:
                             "spread_close_short": True,
                             "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
                             "spread_short_leg_quantity": spread.num_spreads,
+                            "spread_key": self._build_spread_key(spread),
                         },
                     )
                 )
@@ -7038,6 +7104,7 @@ class OptionsEngine:
                     "spread_close_short": True,
                     "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
                     "spread_short_leg_quantity": spread.num_spreads,
+                    "spread_key": self._build_spread_key(spread),
                     "exit_type": "OVERNIGHT_GAP_PROTECTION",
                 },
             )
@@ -7178,8 +7245,12 @@ class OptionsEngine:
         # Close single-leg options before expiration to avoid:
         # - OTM expiring worthless (100% loss)
         # - ITM being auto-exercised (creates stock position, margin crisis)
-        if current_dte is not None and current_dte <= config.OPTIONS_SINGLE_LEG_DTE_EXIT:
-            reason = f"DTE_EXIT ({current_dte} DTE <= {config.OPTIONS_SINGLE_LEG_DTE_EXIT}) P&L={pnl_pct:.1%}"
+        dte_exit_threshold = int(getattr(config, "OPTIONS_SINGLE_LEG_DTE_EXIT", 4))
+        if self._is_itm_momentum_strategy_name(getattr(pos, "entry_strategy", "")):
+            dte_exit_threshold = int(getattr(config, "INTRADAY_ITM_DTE_EXIT", dte_exit_threshold))
+
+        if current_dte is not None and current_dte <= dte_exit_threshold:
+            reason = f"DTE_EXIT ({current_dte} DTE <= {dte_exit_threshold}) P&L={pnl_pct:.1%}"
             self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
             return TargetWeight(
                 symbol=self._symbol_str(symbol),
@@ -7658,6 +7729,8 @@ class OptionsEngine:
                 f"Symbol={self._intraday_position.symbol if hasattr(self._intraday_position, 'symbol') else self._intraday_position}"
             )
             return fail("E_INTRADAY_HAS_POSITION")
+        if self._pending_intraday_entry:
+            return fail("E_INTRADAY_PENDING_ENTRY")
 
         # V2.9: Check trade limits (Bug #4 fix) - Uses comprehensive counter
         # Replaces V2.3.14 intraday-only check to also enforce global limit
@@ -8167,7 +8240,8 @@ class OptionsEngine:
         """
         Check for forced exit of intraday position at configured intraday cutoff.
 
-        Intraday mode positions MUST be closed by configured force-exit time.
+        Intraday mode positions are normally closed by configured force-exit time.
+        V10.1 exception: hold-enabled ITM_MOMENTUM positions may carry overnight.
 
         Args:
             current_hour: Current hour (0-23) Eastern.
@@ -8193,6 +8267,23 @@ class OptionsEngine:
             return None
 
         symbol = self._intraday_position.contract.symbol
+        symbol_str = self._symbol_str(symbol)
+        if self.should_hold_intraday_overnight(self._intraday_position):
+            if self.algorithm is not None and hasattr(self.algorithm, "Time"):
+                current_date = str(self.algorithm.Time.date())
+            else:
+                current_date = datetime.utcnow().date().isoformat()
+            if self._intraday_force_exit_hold_skip_log_date.get(symbol_str) != current_date:
+                live_dte = self._get_position_live_dte(self._intraday_position)
+                self.log(
+                    f"INTRADAY_FORCE_EXIT_SKIP_HOLD {symbol_str} | "
+                    f"Strategy={getattr(self._intraday_position, 'entry_strategy', 'UNKNOWN')} | "
+                    f"LiveDTE={live_dte}",
+                    trades_only=True,
+                )
+                self._intraday_force_exit_hold_skip_log_date[symbol_str] = current_date
+            return None
+
         entry_price = self._intraday_position.entry_price
         num_contracts = max(1, int(self._intraday_position.num_contracts))
 
@@ -8288,7 +8379,10 @@ class OptionsEngine:
                 metadata={
                     "spread_close_short": True,
                     "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
-                    "spread_short_leg_quantity": num_contracts,  # V6.5 FIX: Required for combo close
+                    "spread_short_leg_quantity": num_contracts,
+                    "spread_key": self._build_spread_key(
+                        spread
+                    ),  # V6.5 FIX: Required for combo close
                     "exit_type": "GAMMA_PIN",
                 },
             )
@@ -9178,6 +9272,7 @@ class OptionsEngine:
         self._pending_target_price = None
         self._pending_entry_strategy = None
         self._entry_attempted_today = False
+        self._intraday_force_exit_hold_skip_log_date = {}
         self._last_intraday_close_time = None
         self._last_intraday_close_strategy = None
 
@@ -9361,12 +9456,12 @@ class OptionsEngine:
         """
         Restore state from ObjectStore.
 
-        CRITICAL: Intraday positions (0-2 DTE) should NEVER be held overnight.
-        If we're restoring state and find an intraday position, it's likely
-        a critical failure that needs immediate attention.
+        Default behavior clears stale intraday positions on restore.
+        V10.1 allows restoring ITM_MOMENTUM intraday positions when hold policy
+        explicitly permits overnight carry.
         """
         # V2.16-BT: Get current date for expiry validation (defensive for tests)
-        algorithm = getattr(self, "_algorithm", None)
+        algorithm = getattr(self, "algorithm", None) or getattr(self, "_algorithm", None)
         if algorithm and hasattr(algorithm, "Time"):
             current_date = algorithm.Time.strftime("%Y-%m-%d")
         else:
@@ -9413,16 +9508,28 @@ class OptionsEngine:
 
         intraday_data = state.get("intraday_position")
         if intraday_data:
-            # CRITICAL FIX: Intraday positions should NEVER exist overnight
-            # If found, it means position wasn't closed by configured cutoff (critical failure)
-            # Force clear and log warning - the position is likely expired or at extreme risk
-            force_hh, force_mm = self._get_intraday_force_exit_hhmm()
-            self.log(
-                "OPT: CRITICAL - Intraday position found on state restore! "
-                f"0-2 DTE options should close by {force_hh:02d}:{force_mm:02d}. "
-                "Position may be expired or at extreme gap risk. Clearing."
-            )
-            self._intraday_position = None
+            position = OptionsPosition.from_dict(intraday_data)
+            contract_expiry = position.contract.expiry if position.contract else None
+            if contract_expiry and contract_expiry < current_date:
+                self.log(
+                    f"OPT: ZOMBIE_CLEAR - Intraday position expired {contract_expiry} < {current_date}. "
+                    "Clearing stale position."
+                )
+                self._intraday_position = None
+            elif self.should_hold_intraday_overnight(position):
+                self._intraday_position = position
+                live_dte = self._get_position_live_dte(position)
+                self.log(
+                    f"OPT: STATE_RESTORE - Hold-enabled intraday position restored | "
+                    f"Strategy={position.entry_strategy} | DTE={live_dte}"
+                )
+            else:
+                force_hh, force_mm = self._get_intraday_force_exit_hhmm()
+                self.log(
+                    "OPT: STATE_RESTORE - Clearing intraday position (non-hold strategy/policy) | "
+                    f"Cutoff={force_hh:02d}:{force_mm:02d}"
+                )
+                self._intraday_position = None
         else:
             self._intraday_position = None
 
@@ -9569,6 +9676,7 @@ class OptionsEngine:
         self._vass_last_entry_date_by_direction = {}
         self._spread_neutrality_warn_by_key = {}
         self._spread_hold_guard_logged.clear()
+        self._intraday_force_exit_hold_skip_log_date = {}
         self._last_intraday_close_time = None
         self._last_intraday_close_strategy = None
 
@@ -9597,6 +9705,7 @@ class OptionsEngine:
 
             # V2.3.3: Reset pending intraday exit flag
             self._pending_intraday_exit = False
+            self._intraday_force_exit_hold_skip_log_date = {}
             self._last_intraday_close_time = None
             self._last_intraday_close_strategy = None
 
@@ -9608,10 +9717,16 @@ class OptionsEngine:
             self._spread_failure_cooldown_until_by_dir = {}
             self._last_spread_scan_time = None
 
-            # Clear intraday position (should not exist overnight)
+            # Clear intraday position unless hold-enabled ITM carry is active.
             if self._intraday_position is not None:
-                self.log("OPT: WARNING - Intraday position found at daily reset, clearing")
-                self._intraday_position = None
+                if self.should_hold_intraday_overnight(self._intraday_position):
+                    self.log(
+                        "OPT: DAILY_RESET_KEEP - preserving hold-enabled intraday position",
+                        trades_only=True,
+                    )
+                else:
+                    self.log("OPT: WARNING - Intraday position found at daily reset, clearing")
+                    self._intraday_position = None
 
             if self._spread_neutrality_warn_by_key:
                 active_keys = {self._build_spread_key(s) for s in self._spread_positions}

@@ -1531,22 +1531,36 @@ class PortfolioRouter:
             Dict of symbol -> AggregatedWeight.
         """
         aggregated: Dict[str, AggregatedWeight] = {}
-        # Track seen (symbol, source) pairs to prevent duplicates from same source
+        # Track seen keys to prevent duplicates from the same source.
+        # Spread closes are keyed by (long, short) legs so concurrent spreads
+        # sharing a long leg do not collapse into malformed combo quantities.
         seen_pairs: Set[tuple] = set()
 
         for weight in weights:
             symbol = weight.symbol
             source = weight.source
-            pair_key = (symbol, source)
+            is_spread_close = bool(
+                weight.metadata and weight.metadata.get("spread_close_short", False)
+            )
+            short_symbol = (
+                str(weight.metadata.get("spread_short_leg_symbol", "")).strip()
+                if is_spread_close and weight.metadata
+                else ""
+            )
+            agg_key = (
+                f"{symbol}::SPREAD::{short_symbol}"
+                if (is_spread_close and short_symbol)
+                else symbol
+            )
+            pair_key = (agg_key, source)
 
-            # Skip duplicate signals from same source for same symbol
-            # This prevents the same strategy from inflating allocations
+            # Skip duplicate signals from same source for same aggregation key.
             if pair_key in seen_pairs:
                 continue
             seen_pairs.add(pair_key)
 
-            if symbol not in aggregated:
-                aggregated[symbol] = AggregatedWeight(
+            if agg_key not in aggregated:
+                aggregated[agg_key] = AggregatedWeight(
                     symbol=symbol,
                     target_weight=0.0,
                     sources=[],
@@ -1554,17 +1568,16 @@ class PortfolioRouter:
                     reasons=[],
                 )
 
-            agg = aggregated[symbol]
+            agg = aggregated[agg_key]
 
             # SUM weights from different sources (allows strategy layering)
-            # Deduplication above prevents same source from adding twice
             agg.target_weight += weight.target_weight
 
             # Track sources
             if weight.source not in agg.sources:
                 agg.sources.append(weight.source)
 
-            # Track reasons (only first reason per source)
+            # Track reasons
             if weight.reason:
                 agg.reasons.append(f"[{weight.source}] {weight.reason}")
 
@@ -1572,11 +1585,11 @@ class PortfolioRouter:
             if weight.urgency == Urgency.IMMEDIATE:
                 agg.urgency = Urgency.IMMEDIATE
 
-            # V2.3.2: Preserve requested_quantity for options
+            # Preserve requested quantity for options
             if weight.requested_quantity is not None:
                 agg.requested_quantity = weight.requested_quantity
 
-            # V2.3: Preserve metadata for spread orders
+            # Preserve metadata for spread/order plumbing
             if weight.metadata is not None:
                 agg.metadata = weight.metadata
 
@@ -1883,7 +1896,8 @@ class PortfolioRouter:
         """
         orders: List[OrderIntent] = []
 
-        for symbol, agg in aggregated.items():
+        for agg_key, agg in aggregated.items():
+            symbol = agg.symbol
             source_tag, trace_id = self._extract_trace_context(agg.metadata, agg.sources)
             # Skip if no price available
             if symbol not in current_prices or current_prices[symbol] <= 0:
@@ -2018,8 +2032,49 @@ class PortfolioRouter:
                         trace_id=trace_id,
                     )
                     continue
+
+                is_spread_close = bool(
+                    agg.metadata and agg.metadata.get("spread_close_short", False)
+                )
                 side = OrderSide.SELL if live_qty > 0 else OrderSide.BUY
-                delta_shares = abs(live_qty)
+                if is_spread_close:
+                    requested_qty = int(agg.requested_quantity or 0)
+                    if requested_qty <= 0 and agg.metadata:
+                        try:
+                            requested_qty = int(
+                                agg.metadata.get("spread_short_leg_quantity", 0) or 0
+                            )
+                        except Exception:
+                            requested_qty = 0
+                    if requested_qty <= 0:
+                        self._record_rejection(
+                            code="R_CLOSE_NO_QTY",
+                            symbol=symbol,
+                            detail="Spread close missing requested_quantity",
+                            stage="INTENT_BUILD",
+                            source_tag=source_tag,
+                            trace_id=trace_id,
+                        )
+                        continue
+                    capped_qty = min(abs(live_qty), requested_qty)
+                    if capped_qty <= 0:
+                        self._record_rejection(
+                            code="R_CLOSE_NO_LIVE_HOLDING",
+                            symbol=symbol,
+                            detail="Spread close has zero capped live quantity",
+                            stage="INTENT_BUILD",
+                            source_tag=source_tag,
+                            trace_id=trace_id,
+                        )
+                        continue
+                    if capped_qty != requested_qty:
+                        self.log(
+                            f"ROUTER: SPREAD_CLOSE_QTY_CAP | {symbol} | "
+                            f"Requested={requested_qty} Live={abs(live_qty)} Used={capped_qty}"
+                        )
+                    delta_shares = capped_qty
+                else:
+                    delta_shares = abs(live_qty)
 
             # V2.3.24: Use lower threshold for intraday options
             # Single option contracts often $500-1,500, below the $2,000 MIN_TRADE_VALUE
@@ -2108,9 +2163,20 @@ class PortfolioRouter:
                     # Entry: BUY long (positive), SELL short (negative)
                     # Exit: SELL long (negative), BUY short (positive)
                     if spread_close_short:
-                        # Closing spread - sell long, buy short
-                        long_qty = -abs(delta_shares)
-                        short_qty = abs(short_leg_qty)  # Positive = BUY back
+                        # Closing spread - sell long, buy short.
+                        # Keep both legs at identical absolute quantity to avoid
+                        # leg mismatch when multiple spreads share symbols.
+                        close_qty = abs(int(delta_shares))
+                        declared_short_qty = abs(int(short_leg_qty))
+                        if declared_short_qty != close_qty:
+                            self.log(
+                                f"ROUTER: SPREAD_CLOSE_QTY_NORMALIZED | {symbol} | "
+                                f"LongQty={close_qty} ShortQty={declared_short_qty} -> {close_qty}"
+                            )
+                        long_qty = -close_qty
+                        short_qty = close_qty  # Positive = BUY back
+                        if agg.metadata is not None:
+                            agg.metadata["spread_short_leg_quantity"] = close_qty
                         combo_reason = f"[OPT] COMBO Close Spread: {reason}"
                     else:
                         # Opening spread - buy long, sell short

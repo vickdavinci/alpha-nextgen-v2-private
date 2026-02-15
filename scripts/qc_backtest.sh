@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# QC Backtest Script - Automated sync, push, and backtest for QuantConnect
+# QC Backtest Script - Automated sync, minify, validate, push, and backtest
 # =============================================================================
 # Usage:
 #   ./scripts/qc_backtest.sh                         # Fire-and-forget (async)
@@ -9,27 +9,29 @@
 #   ./scripts/qc_backtest.sh "My-Name" --open        # Custom name + wait
 #
 # What it does:
-#   1. Syncs ALL project files to lean-workspace/AlphaNextGen
-#   2. Pushes to QuantConnect cloud
-#   3. Starts a backtest with the specified name
-#   4. With --open: Waits for completion and outputs results
-#   5. Prints the backtest URL
+#   1. Syncs project files to lean-workspace/AlphaNextGen
+#   2. Runs standard + ultra minification
+#   3. Validates telemetry/syntax markers after minification
+#   4. Enforces QC per-file size guard pre-push
+#   5. Pushes to QuantConnect cloud
+#   6. Starts a backtest with the specified name
 # =============================================================================
 
-set -e  # Exit on any error
+set -e
 
 # Configuration
 SRC="/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private"
 LEAN_WORKSPACE="/Users/vigneshwaranarumugam/Documents/Trading Github/lean-workspace"
 DEST="$LEAN_WORKSPACE/AlphaNextGen"
 PROJECT_NAME="AlphaNextGen"
+MAX_FILE_BYTES=$((256 * 1024))
 
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 # Parse arguments
 BACKTEST_NAME=""
@@ -47,7 +49,6 @@ done
 if [ -z "$BACKTEST_NAME" ]; then
     cd "$SRC"
     BRANCH=$(git branch --show-current)
-    # Replace slashes with dashes, remove "testing/" prefix
     BACKTEST_NAME=$(echo "$BRANCH" | sed 's|testing/||g' | sed 's|/|-|g')
     BACKTEST_NAME="${BACKTEST_NAME}-$(date +%H%M)"
 fi
@@ -64,78 +65,56 @@ else
 fi
 echo ""
 
-# Step 1: Sync files
-echo -e "${BLUE}[1/3]${NC} Syncing files to lean workspace..."
-
-# Copy main files
-cp "$SRC/main.py" "$SRC/config.py" "$DEST/"
-
-# Sync all directories (remove existing to ensure clean copy)
-for dir in engines portfolio execution models persistence scheduling utils data; do
-    if [ -d "$SRC/$dir" ]; then
-        rm -rf "$DEST/$dir"
-        cp -r "$SRC/$dir" "$DEST/"
-    fi
-done
-
-# Clean __pycache__ and non-essential files from destination
-find "$DEST" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-find "$DEST" -name ".DS_Store" -delete 2>/dev/null || true
-find "$DEST" -name "*.pyc" -delete 2>/dev/null || true
-
-# Count synced files
+# Step 1: Sync
+echo -e "${BLUE}[1/5]${NC} Syncing files to lean workspace..."
+"$SRC/scripts/sync_to_lean.sh" >/dev/null
 FILE_COUNT=$(find "$DEST" -type f -name "*.py" | wc -l | tr -d ' ')
 echo -e "${GREEN}   ✓ Synced $FILE_COUNT Python files${NC}"
 
-# Minify workspace files (strip comments/docstrings to reduce upload size)
-echo -e "${BLUE}[1b/3]${NC} Minifying workspace files..."
-python3.11 "$SRC/scripts/minify_workspace.py"
-echo -e "${GREEN}   ✓ Minified${NC}"
+# Step 2: Minify
+echo -e "${BLUE}[2/5]${NC} Minifying workspace files..."
+python3 "$SRC/scripts/minify_workspace.py"
+python3 "$SRC/scripts/ultra_minify.py" --workspace "$DEST" --target-indent 1
+echo -e "${GREEN}   ✓ Minified (standard + ultra)${NC}"
 
-# Step 2: Push to QC
-echo -e "${BLUE}[2/3]${NC} Pushing to QuantConnect cloud..."
+# Step 3: Validate
+echo -e "${BLUE}[3/5]${NC} Validating minified workspace..."
+python3 "$SRC/scripts/validate_lean_minified.py" --root "$DEST" --strict
+echo -e "${GREEN}   ✓ Validation passed${NC}"
+
+# Step 4: Size guards
+echo -e "${BLUE}[4/5]${NC} Checking QC size limits..."
+LARGEST_FILE_LINE=$(find "$DEST" -type f -name "*.py" -exec wc -c {} + | grep -v ' total$' | sort -nr | head -1)
+LARGEST_SIZE=$(echo "$LARGEST_FILE_LINE" | awk '{print $1}')
+LARGEST_PATH=$(echo "$LARGEST_FILE_LINE" | sed -E 's/^[[:space:]]*[0-9]+[[:space:]]+//')
+echo -e "${YELLOW}   Largest file:${NC} $LARGEST_PATH (${LARGEST_SIZE:-0} bytes)"
+
+if [ "${LARGEST_SIZE:-0}" -gt "$MAX_FILE_BYTES" ]; then
+    echo -e "${RED}   ✗ Size guard FAILED: per-file size exceeds ${MAX_FILE_BYTES} bytes${NC}"
+    exit 1
+fi
+echo -e "${GREEN}   ✓ Size checks passed${NC}"
+
+# Step 5: Push + backtest
+echo -e "${BLUE}[5/5]${NC} Pushing to QuantConnect cloud..."
 cd "$LEAN_WORKSPACE"
 PUSH_OUTPUT=$(lean cloud push --project "$PROJECT_NAME" 2>&1)
 PUSH_EXIT=$?
 echo "$PUSH_OUTPUT"
-if echo "$PUSH_OUTPUT" | grep -q "413\|exceed.*size\|failed"; then
-    echo -e "${RED}   ✗ Push FAILED — files exceed QC size limit${NC}"
-    TOTAL_SIZE=$(find "$DEST" -type f \( -name "*.py" -o -name "*.json" -o -name "*.ipynb" \) -exec wc -c {} + | tail -1 | awk '{print $1}')
-    echo -e "${RED}   Total project size: ${TOTAL_SIZE} bytes${NC}"
-    echo -e "${RED}   QC Trading Firm limit: ~500KB total${NC}"
+if [ "$PUSH_EXIT" -ne 0 ] || echo "$PUSH_OUTPUT" | grep -qi "413\|exceed.*size\|failed"; then
+    echo -e "${RED}   ✗ Push FAILED${NC}"
+    echo -e "${RED}   QC limit: per-file size must be <= 256KB${NC}"
     exit 1
 fi
 echo -e "${GREEN}   ✓ Push complete${NC}"
 
-# Step 3: Start backtest
-echo -e "${BLUE}[3/3]${NC} Starting backtest..."
-
+echo -e "${BLUE}Starting backtest...${NC}"
 if [ -n "$OPEN_FLAG" ]; then
-    # --open mode: Wait for completion and show results
-    echo -e "${YELLOW}   Waiting for backtest to complete...${NC}"
     lean cloud backtest "$PROJECT_NAME" --name "$BACKTEST_NAME" --open 2>&1
-    BACKTEST_STATUS=$?
-
-    echo ""
-    echo -e "${BLUE}╔═══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║                    BACKTEST COMPLETED                         ║${NC}"
-    echo -e "${BLUE}╚═══════════════════════════════════════════════════════════════╝${NC}"
+    echo -e "${GREEN}Backtest completed.${NC}"
 else
-    # Async mode: Fire and forget
     OUTPUT=$(lean cloud backtest "$PROJECT_NAME" --name "$BACKTEST_NAME" 2>&1)
-
-    # Extract URL from output
     BACKTEST_URL=$(echo "$OUTPUT" | grep -o 'https://www.quantconnect.com/project/[^ ]*' | head -1)
-
     echo -e "${GREEN}   ✓ Backtest started${NC}"
-    echo ""
-    echo -e "${BLUE}╔═══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║                      BACKTEST STARTED                         ║${NC}"
-    echo -e "${BLUE}╚═══════════════════════════════════════════════════════════════╝${NC}"
-    echo ""
-    echo -e "${YELLOW}Name:${NC} $BACKTEST_NAME"
-    echo -e "${YELLOW}URL:${NC}  $BACKTEST_URL"
-    echo ""
-    echo -e "${GREEN}View results at:${NC}"
-    echo "$BACKTEST_URL"
+    echo -e "${YELLOW}URL:${NC} $BACKTEST_URL"
 fi

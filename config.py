@@ -1081,7 +1081,7 @@ SHORT_LEG_ITM_EXIT_THRESHOLD = (
 )
 SPREAD_ASSIGNMENT_GRACE_MINUTES = 45  # V6.15 FIX: Allow spread to stabilize before ITM checks
 SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 15  # Minutes between log messages
-SPREAD_MIN_HOLD_MINUTES = 5760  # V9.9: 4-day min hold guard for VASS spreads
+SPREAD_MIN_HOLD_MINUTES = 0  # V10.2: Disabled hold guard; let stop/target/trail manage exits
 SPREAD_EXIT_RETRY_MINUTES = (
     15  # V9.4 P0: Cooldown between exit signal retries (prevents per-minute spam)
 )
@@ -1263,10 +1263,12 @@ SPREAD_REGIME_BEARISH = 50  # V3.0: PUT spreads in Cautious + Bear (regime < 50)
 SPREAD_REGIME_CRISIS = 0  # V3.0: DISABLED — PUT spreads work in ALL bear regimes
 
 # V6.13 P0: Regime deterioration exits for swing spreads
-SPREAD_REGIME_DETERIORATION_EXIT_ENABLED = True
+SPREAD_REGIME_DETERIORATION_EXIT_ENABLED = False  # V10.2: Disabled defensive early exit
 SPREAD_REGIME_DETERIORATION_DELTA = 10  # Require at least 10-point regime drop/rise
 SPREAD_REGIME_DETERIORATION_BULL_EXIT = 60  # Exit bullish spreads if regime <= 60
 SPREAD_REGIME_DETERIORATION_BEAR_EXIT = 55  # Exit bearish spreads if regime >= 55
+# V10.2: Keep spread lifecycle simple; disable overlay-forced close unless explicitly enabled.
+SPREAD_OVERLAY_STRESS_EXIT_ENABLED = False
 
 # VIX filters for entry
 SPREAD_VIX_MAX_BULL = 30  # Max VIX for Bull Call Spread entry
@@ -1841,6 +1843,18 @@ INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES = [
 # ITM_MOMENTUM: Stock replacement needs ITM options (delta 0.60-0.85)
 INTRADAY_ITM_DELTA_MIN = 0.65  # V10: tightened from 0.60 for better ITM quality
 INTRADAY_ITM_DELTA_MAX = 0.80  # V10: tightened from 0.85 to avoid deep ITM illiquidity
+INTRADAY_ITM_HOLD_OVERNIGHT_ENABLED = True  # V10.1: allow ITM holds beyond force-close cutoff
+INTRADAY_ITM_HOLD_MIN_ENTRY_DTE = 3  # Only hold if entry was opened with >=3 DTE
+INTRADAY_ITM_FORCE_EXIT_DTE = 1  # Always force close by EOD once contract reaches 1 DTE
+INTRADAY_ITM_DTE_EXIT = 2  # Software DTE exit for ITM single-legs (strategy-specific)
+INTRADAY_ITM_TARGET_DTE_LOW_VIX = 4  # Prefer longer dated ITM in theta-dominated tape
+INTRADAY_ITM_TARGET_DTE_MED_VIX = 3
+INTRADAY_ITM_TARGET_DTE_HIGH_VIX = 3
+INTRADAY_ITM_OI_SOFT_CAP = 2000  # OI normalization cap for ITM contract scoring
+INTRADAY_ITM_SCORE_DELTA_WEIGHT = 0.45  # Contract selection scoring weights (sum ~= 1.0)
+INTRADAY_ITM_SCORE_DTE_WEIGHT = 0.30
+INTRADAY_ITM_SCORE_SPREAD_WEIGHT = 0.20
+INTRADAY_ITM_SCORE_OI_WEIGHT = 0.05
 
 # Protective Puts (Intraday Hedge)
 INTRADAY_PROTECT_MIN_VIX = 20  # VIX > 20: Add protection
@@ -1917,9 +1931,13 @@ SWING_EXTREME_SPY_DROP = -2.0  # Pause if SPY drops > 2% intraday
 SWING_EXTREME_VIX_SPIKE = 15.0  # Pause if VIX spikes > 15% intraday
 
 # V6.13 P0: Swing spread risk exits (VIX spike + overnight gap protection)
-SWING_VIX_SPIKE_EXIT_ENABLED = True
+SWING_VIX_SPIKE_EXIT_ENABLED = False  # V10.2: Disabled defensive early exit
 SWING_VIX_SPIKE_EXIT_LEVEL = 25.0  # Exit bullish spreads if VIX >= 25
 SWING_VIX_SPIKE_EXIT_5D_PCT = 0.20  # Or if VIX 5D change >= +20%
+
+SPREAD_EXIT_USE_EXECUTABLE_MARKS = (
+    True  # Use long bid / short ask for conservative spread exit marks
+)
 
 SWING_OVERNIGHT_GAP_PROTECTION_ENABLED = True
 SWING_OVERNIGHT_VIX_CLOSE_ALL = 30.0  # Close all spreads if VIX >= 30 at EOD

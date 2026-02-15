@@ -105,12 +105,14 @@ self.log("INTRADAY_SIGNAL: ...", trades_only=False)  # Silent in backtests
 
 **IMPORTANT FOR CLAUDE:** Always use `--open` flag to wait for backtest completion and access results directly. Without `--open`, the backtest runs async and you cannot see the results.
 
-**What the script does:**
-1. Syncs ALL project files (main.py, config.py, engines/, portfolio/, etc.) to lean-workspace
-2. Pushes to QuantConnect cloud via `lean cloud push`
-3. Starts the backtest with specified name
-4. With `--open`: Waits for completion and streams results to terminal
-5. Prints the backtest URL for viewing results
+**What the script does (current):**
+1. Syncs project files to lean-workspace via `scripts/sync_to_lean.sh`
+2. Runs standard + ultra minification
+3. Runs strict telemetry/syntax validation (`scripts/validate_lean_minified.py --strict`)
+4. Enforces QC per-file size guard (`*.py <= 256KB`)
+5. Pushes to QuantConnect cloud via `lean cloud push`
+6. Starts the backtest with specified name
+7. With `--open`: waits for completion and streams results
 
 **Example output:**
 ```
@@ -787,6 +789,7 @@ These agents are defined in `.claude/agents/` and available via the Task tool:
 | **backtest-runner** | Run backtests on QuantConnect with automated sync, push, and log organization | `Use the backtest-runner agent to run Dec 2021 - Feb 2022` |
 | **v3-pre-live-auditor** | Comprehensive pre-live audit checks (state persistence, IBKR rules, assignment handling) | `Use the v3-pre-live-auditor to validate before going live` |
 | **docs-sync** | Update documentation after code changes to keep docs in sync | `Use the docs-sync agent to update docs for my changes` |
+| **trade-analyzer** | Trade-by-trade P&L analysis with log cross-referencing for regime, VIX, entry/exit triggers per trade | `Use the trade-analyzer agent to analyze the V10.1 2023 trades in stage10.1/` |
 
 To invoke an agent with bypass permissions:
 ```

@@ -40,6 +40,11 @@ make branch name=feature/va/my-feature         # Create feature branch
 git status && git branch                        # Check status
 ```
 
+
+### Backtest Pipeline (Mandatory)
+
+Always use `./scripts/qc_backtest.sh`. It now performs sync, minify, strict validation, per-file size guard, push, and backtest in one flow. Do not manually sync/push as primary path.
+
 ### Key Files
 
 | File | Purpose |
