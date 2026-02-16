@@ -317,6 +317,7 @@ class AlphaNextGen(QCAlgorithm):
         # V6.16: Force-close safety guards (prevent duplicate close amplification).
         self._intraday_close_in_progress_symbols = set()
         self._intraday_force_exit_submitted_symbols = {}
+        self._intraday_hold_loss_block_log_date = {}
 
         # V6.14: Pre-market VIX shock ladder state (portfolio-wide options guard)
         self._premarket_vix_ladder_level = 0
@@ -365,7 +366,6 @@ class AlphaNextGen(QCAlgorithm):
         self._diag_spread_removed_fill_path_count = 0
         self._diag_spread_ghost_removed_count = 0
         self._diag_spread_loss_beyond_stop_count = 0
-        self._diag_spread_loss_beyond_hard_stop_count = 0
         self._diag_micro_tag_recovery_count = 0
         self._diag_micro_eod_sweep_close_count = 0
         self._diag_micro_pending_cancel_ignored_count = 0
@@ -1724,7 +1724,38 @@ class AlphaNextGen(QCAlgorithm):
         if not symbol_str or symbol_str != pos_symbol:
             return False
         try:
-            return bool(self.options_engine.should_hold_intraday_overnight(intraday_pos))
+            hold_allowed = bool(self.options_engine.should_hold_intraday_overnight(intraday_pos))
+            if not hold_allowed:
+                return False
+
+            max_loss_pct = float(getattr(config, "INTRADAY_ITM_OVERNIGHT_MAX_LOSS_PCT", 0.15))
+            entry_price = float(getattr(intraday_pos, "entry_price", 0.0) or 0.0)
+            if max_loss_pct <= 0 or entry_price <= 0:
+                return hold_allowed
+
+            current_price = 0.0
+            try:
+                if self.Securities.ContainsKey(intraday_pos.contract.symbol):
+                    current_price = float(self.Securities[intraday_pos.contract.symbol].Price)
+            except Exception:
+                current_price = 0.0
+
+            if current_price <= 0:
+                return hold_allowed
+
+            pnl_pct = (current_price - entry_price) / entry_price
+            if pnl_pct <= -max_loss_pct:
+                current_date = str(self.Time.date())
+                if self._intraday_hold_loss_block_log_date.get(symbol_str) != current_date:
+                    self.Log(
+                        f"INTRADAY_HOLD_BLOCK_LOSS15: {symbol_str} | "
+                        f"PnL={pnl_pct:+.1%} <= -{max_loss_pct:.0%} | "
+                        f"Entry=${entry_price:.2f} | Current=${current_price:.2f}"
+                    )
+                    self._intraday_hold_loss_block_log_date[symbol_str] = current_date
+                return False
+
+            return hold_allowed
         except Exception:
             return False
 
@@ -2441,7 +2472,6 @@ class AlphaNextGen(QCAlgorithm):
         self._diag_spread_removed_fill_path_count = 0
         self._diag_spread_ghost_removed_count = 0
         self._diag_spread_loss_beyond_stop_count = 0
-        self._diag_spread_loss_beyond_hard_stop_count = 0
         self._diag_micro_tag_recovery_count = 0
         self._diag_micro_eod_sweep_close_count = 0
         self._diag_micro_pending_cancel_ignored_count = 0
@@ -2602,20 +2632,6 @@ class AlphaNextGen(QCAlgorithm):
                 self._settlement_cooldown_until = None
 
         return True
-
-    def _get_tradeable_equity_settlement_aware(self) -> float:
-        """
-        V2.9: Get tradeable equity minus unsettled cash.
-
-        This prevents 'Insufficient Funds' errors on post-holiday opens
-        by subtracting Portfolio.UnsettledCash from tradeable equity.
-
-        Returns:
-            Tradeable equity adjusted for unsettled cash.
-        """
-        capital_state = self.capital_engine.calculate(self.Portfolio.TotalPortfolioValue)
-        unsettled = self._get_unsettled_cash()
-        return max(0.0, capital_state.tradeable_eq - unsettled)
 
     def _check_expiration_hammer_v2(self) -> None:
         """
@@ -5627,137 +5643,6 @@ class AlphaNextGen(QCAlgorithm):
         )
         return signal
 
-    def _normalize_option_symbol(self, symbol) -> str:
-        """
-        V2.6 Bug #13: Normalize option symbol for consistent comparison.
-
-        Handles different symbol formats from QC (Symbol objects vs strings)
-        and ensures consistent string representation.
-
-        Args:
-            symbol: QC Symbol object, string, or any object with str() representation.
-
-        Returns:
-            Normalized symbol string (stripped, uppercase).
-        """
-        return str(symbol).strip().upper()
-
-    def _get_contract_prices(self, contract) -> Tuple[float, float]:
-        """
-        Safely get bid/ask prices from an option contract.
-
-        QC's historical options data might not include bid/ask quotes.
-        Falls back to LastPrice if bid/ask not available.
-
-        Args:
-            contract: QC OptionContract from chain.
-
-        Returns:
-            Tuple of (bid_price, ask_price). Both 0 if no price data.
-        """
-        bid = getattr(contract, "BidPrice", 0) or 0
-        ask = getattr(contract, "AskPrice", 0) or 0
-
-        # Fall back to LastPrice if bid/ask not available
-        if bid <= 0 or ask <= 0:
-            last = getattr(contract, "LastPrice", 0) or 0
-            if last > 0:
-                # V2.6 Bug #11: Dynamic spread estimate based on premium
-                # Lower-priced options have wider spreads (% wise)
-                if last < 1.0:
-                    spread_pct = 0.10  # 10% spread for < $1 options
-                elif last < 5.0:
-                    spread_pct = 0.05  # 5% spread for $1-$5 options
-                else:
-                    spread_pct = 0.02  # 2% spread for > $5 options
-
-                half_spread = spread_pct / 2
-                bid = last * (1 - half_spread)
-                ask = last * (1 + half_spread)
-
-        return (bid, ask)
-
-    def _select_best_option_contract(self, chain) -> Optional[OptionContract]:
-        """
-        Select the best QQQ option contract for trading.
-
-        Criteria (V2.1):
-        - ATM or slightly ITM call
-        - DTE from config (1-4 days for daily volatility harvesting)
-        - Sufficient open interest
-        - Tight bid-ask spread
-
-        Args:
-            chain: QuantConnect options chain.
-
-        Returns:
-            OptionContract or None if no suitable contract found.
-        """
-        if chain is None:
-            return None
-
-        qqq_price = self.Securities[self.qqq].Price
-
-        # Filter for calls, ATM±2 strikes, DTE from config (V2.1: 1-4 days)
-        candidates = []
-        for contract in chain:
-            if contract.Right != OptionRight.Call:
-                continue
-
-            # Check DTE from config (V2.1: 1-4 days for daily volatility harvesting)
-            dte = (contract.Expiry - self.Time).days
-            if dte < config.OPTIONS_DTE_MIN or dte > config.OPTIONS_DTE_MAX:
-                continue
-
-            # Check if ATM±2 strikes
-            strike_diff = abs(contract.Strike - qqq_price)
-            if strike_diff > qqq_price * 0.02:  # Within 2% of ATM
-                continue
-
-            # Check liquidity
-            if contract.OpenInterest < config.OPTIONS_MIN_OPEN_INTEREST:
-                continue
-
-            # Check spread - use safe price getter
-            bid, ask = self._get_contract_prices(contract)
-            if bid <= 0 or ask <= 0:
-                continue
-
-            mid_price = (bid + ask) / 2
-            spread_pct = (ask - bid) / mid_price if mid_price > 0 else 1.0
-
-            if spread_pct > config.OPTIONS_SPREAD_WARNING_PCT:
-                continue
-
-            # Create OptionContract object
-            opt_contract = OptionContract(
-                symbol=str(contract.Symbol),
-                underlying="QQQ",
-                direction=OptionDirection.CALL,
-                strike=contract.Strike,
-                expiry=str(contract.Expiry.date()),
-                delta=contract.Greeks.Delta if hasattr(contract, "Greeks") else 0.5,
-                gamma=contract.Greeks.Gamma if hasattr(contract, "Greeks") else 0.0,
-                vega=contract.Greeks.Vega if hasattr(contract, "Greeks") else 0.0,
-                theta=contract.Greeks.Theta if hasattr(contract, "Greeks") else 0.0,
-                bid=bid,
-                ask=ask,
-                mid_price=mid_price,
-                open_interest=contract.OpenInterest,
-                days_to_expiry=dte,
-            )
-
-            # Score by: proximity to ATM + liquidity
-            score = (1.0 / (1.0 + strike_diff)) * (1.0 - spread_pct)
-            candidates.append((score, opt_contract))
-
-        if not candidates:
-            return None
-
-        # Return best candidate
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        return candidates[0][1]
-
     def _select_swing_option_contract(
         self, chain, direction: OptionDirection = None
     ) -> Optional[OptionContract]:
@@ -5858,6 +5743,18 @@ class AlphaNextGen(QCAlgorithm):
         candidates.sort(key=lambda x: x[0], reverse=True)
         return candidates[0][1]
 
+    def _get_contract_prices(self, contract) -> Tuple[float, float]:
+        bid = getattr(contract, "BidPrice", 0) or 0
+        ask = getattr(contract, "AskPrice", 0) or 0
+        if bid > 0 and ask > 0:
+            return (bid, ask)
+        last = getattr(contract, "LastPrice", 0) or 0
+        if last <= 0:
+            return (0, 0)
+        spread_pct = 0.10 if last < 1.0 else (0.05 if last < 5.0 else 0.02)
+        half_spread = spread_pct / 2
+        return (last * (1 - half_spread), last * (1 + half_spread))
+
     def _select_intraday_option_contract(
         self,
         chain,
@@ -5865,32 +5762,7 @@ class AlphaNextGen(QCAlgorithm):
         strategy: IntradayStrategy = None,
         vix_current: Optional[float] = None,
     ) -> Optional[OptionContract]:
-        """
-        V2.3.4: Select QQQ option contract for intraday mode (1-5 DTE).
-
-        V2.14 FIX: Now strategy-aware delta selection:
-        - DEBIT_FADE: Target 0.30 delta (OTM for gamma moves)
-        - ITM_MOMENTUM: Target 0.70 delta (ITM for stock replacement)
-
-        V2.3.4 FIX: Now accepts direction parameter to ensure we select
-        the correct Call/Put based on the fade strategy direction.
-
-        Criteria:
-        - Matches specified direction (CALL or PUT)
-        - Strategy-appropriate delta (0.30 for OTM, 0.70 for ITM)
-        - DTE 1-5 days (V2.13: Weekly expiration)
-        - Sufficient open interest
-        - Tight bid-ask spread
-
-        Args:
-            chain: QuantConnect options chain.
-            direction: Required option direction (CALL or PUT).
-            strategy: V2.14 - Intraday strategy (DEBIT_FADE or ITM_MOMENTUM).
-            vix_current: Current VIX proxy for DTE routing (optional).
-
-        Returns:
-            OptionContract or None if no suitable contract found.
-        """
+        """Select intraday option contract for MICRO entry."""
         if chain is None:
             return None
 
@@ -8464,55 +8336,6 @@ class AlphaNextGen(QCAlgorithm):
             return False
         return True
 
-    def _validate_options_symbol_UNUSED(self) -> bool:
-        """DEPRECATED - Chain validation moved to calling functions."""
-        # Already validated in this session
-        if self._qqq_options_validated:
-            return True
-
-        # Check if symbol is set
-        if self._qqq_option_symbol is None:
-            return False
-
-        # Track validation attempts (log only periodically to avoid spam)
-        self._qqq_options_validation_attempts += 1
-
-        # Try to get the options chain using CurrentSlice
-        try:
-            if self.CurrentSlice is None:
-                return False
-            chain = (
-                self.CurrentSlice.OptionChains[self._qqq_option_symbol]
-                if self._qqq_option_symbol in self.CurrentSlice.OptionChains
-                else None
-            )
-            if chain is None:
-                # Chain not available yet - retry next bar
-                if self._qqq_options_validation_attempts == 1:
-                    self.Log("OPTIONS_VALIDATION: Chain not available, will retry")
-                return False
-
-            # Try to iterate chain (catches malformed data)
-            chain_list = list(chain)
-            if not chain_list:
-                if self._qqq_options_validation_attempts == 1:
-                    self.Log("OPTIONS_VALIDATION: Chain empty, will retry")
-                return False
-
-            # Validation successful
-            self._qqq_options_validated = True
-            self.Log(
-                f"OPTIONS_VALIDATION: Symbol validated after "
-                f"{self._qqq_options_validation_attempts} attempts, "
-                f"{len(chain_list)} contracts available"
-            )
-            return True
-
-        except Exception as e:
-            if self._qqq_options_validation_attempts == 1:
-                self.Log(f"OPTIONS_VALIDATION: Error validating symbol: {e}")
-            return False
-
     def _calculate_iv_rank(self, chain) -> float:
         """
         V2.1: Calculate IV Rank from options chain.
@@ -8743,7 +8566,6 @@ class AlphaNextGen(QCAlgorithm):
             f"SpreadRemovedFillPath={self._diag_spread_removed_fill_path_count} | "
             f"SpreadGhostRemoved={self._diag_spread_ghost_removed_count} | "
             f"SpreadLossBeyondStop={self._diag_spread_loss_beyond_stop_count} | "
-            f"SpreadLossBeyondHardStop={self._diag_spread_loss_beyond_hard_stop_count} | "
             f"MicroTagRecovery={self._diag_micro_tag_recovery_count} | "
             f"MicroEodSweepClose={self._diag_micro_eod_sweep_close_count} | "
             f"MicroPendingCancelIgnored={self._diag_micro_pending_cancel_ignored_count} | "
@@ -9482,22 +9304,13 @@ class AlphaNextGen(QCAlgorithm):
             )
 
             stop_pct = float(getattr(config, "SPREAD_STOP_LOSS_PCT", 0.0))
-            hard_stop_pct = float(getattr(config, "SPREAD_HARD_STOP_LOSS_PCT", 0.0))
             if stop_pct > 0 and pnl_pct <= -stop_pct:
                 self._diag_spread_loss_beyond_stop_count += 1
-                if hard_stop_pct > 0 and pnl_pct <= -hard_stop_pct:
-                    self._diag_spread_loss_beyond_hard_stop_count += 1
-                    self.Log(
-                        f"SPREAD_STOP_BREACH_HARD: Type={spread.spread_type} | "
-                        f"PnL={pnl_pct:+.1%} <= -{hard_stop_pct:.0%} | "
-                        f"Reason={exit_reason}"
-                    )
-                else:
-                    self.Log(
-                        f"SPREAD_STOP_BREACH: Type={spread.spread_type} | "
-                        f"PnL={pnl_pct:+.1%} <= -{stop_pct:.0%} | "
-                        f"Reason={exit_reason}"
-                    )
+                self.Log(
+                    f"SPREAD_STOP_BREACH: Type={spread.spread_type} | "
+                    f"PnL={pnl_pct:+.1%} <= -{stop_pct:.0%} | "
+                    f"Reason={exit_reason}"
+                )
 
             # V6.12: Record spread trade in monthly P&L tracker
             if hasattr(self, "pnl_tracker"):
@@ -9705,54 +9518,6 @@ class AlphaNextGen(QCAlgorithm):
         except Exception as e:
             self.Log(f"SPREAD_ERROR: Emergency close failed | {e}")
 
-    def _force_spread_exit(self, reason: str) -> None:
-        """
-        V2.6 Bug #3/#14: Force exit spread when normal price data unavailable or 0DTE.
-
-        Args:
-            reason: Reason for forced exit (for logging).
-        """
-        spread = self.options_engine.get_spread_position()
-        if spread is None:
-            return
-
-        self.Log(f"SPREAD: FORCE_EXIT | Reason={reason}")
-
-        # Track exit orders for potential retry (Bug #14)
-        self._pending_exit_orders[spread.long_leg.symbol] = ExitOrderTracker(
-            symbol=spread.long_leg.symbol,
-            reason=reason,
-            spread_id=f"{spread.spread_type}_{spread.entry_time}",
-        )
-        self._pending_exit_orders[spread.short_leg.symbol] = ExitOrderTracker(
-            symbol=spread.short_leg.symbol,
-            reason=reason,
-            spread_id=f"{spread.spread_type}_{spread.entry_time}",
-        )
-
-        try:
-            # Close long leg (sell)
-            self.MarketOrder(
-                spread.long_leg.symbol,
-                -spread.num_spreads,
-                tag=f"FORCE_{reason}",
-            )
-            self.Log(
-                f"SPREAD: Force exit long leg | {spread.long_leg.symbol[-20:]} x{spread.num_spreads}"
-            )
-
-            # Close short leg (buy back)
-            self.MarketOrder(
-                spread.short_leg.symbol,
-                spread.num_spreads,
-                tag=f"FORCE_{reason}",
-            )
-            self.Log(
-                f"SPREAD: Force exit short leg | {spread.short_leg.symbol[-20:]} x{spread.num_spreads}"
-            )
-        except Exception as e:
-            self.Log(f"SPREAD_ERROR: Force exit failed | {e}")
-
     def _schedule_exit_retry(self, symbol: str) -> None:
         """
         V2.6 Bug #14: Schedule a retry for a failed exit order.
@@ -9858,25 +9623,6 @@ class AlphaNextGen(QCAlgorithm):
 
         total = sum(volume_window[i] for i in range(volume_window.Count))
         return total / volume_window.Count if volume_window.Count > 0 else 1.0
-
-    def _get_volume_ratio(self, symbol: Symbol, data: Slice) -> float:
-        """
-        Get current volume ratio vs average.
-
-        Args:
-            symbol: Symbol to check.
-            data: Current data slice.
-
-        Returns:
-            Ratio of current volume to average (1.0 = average).
-        """
-        if not data.Bars.ContainsKey(symbol):
-            return 1.0
-
-        current_volume = data.Bars[symbol].Volume
-        # Use a simple approximation - would need historical volume for accurate ratio
-        # For now, assume current volume is at average
-        return 1.0
 
     def _get_current_positions(self) -> Dict[str, float]:
         """
