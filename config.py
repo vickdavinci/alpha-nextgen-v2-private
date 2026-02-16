@@ -1744,7 +1744,9 @@ INTRADAY_CALL_BLOCK_VIX_MIN = 22.0  # Block CALLs earlier when fear rises
 INTRADAY_CALL_BLOCK_REGIME_MAX = 58.0  # Extend block deeper into weak-neutral macro
 # Additional minimal CALL-protection gates (bear-risk controls without major architecture changes)
 CALL_GATE_MA20_ENABLED = True  # Block CALL entries when QQQ is below its 20-day SMA
-CALL_GATE_MA20_BYPASS_REGIME_MIN = 68.0  # Allow CALLs below MA20 in strong bullish macro
+CALL_GATE_MA20_BYPASS_REGIME_MIN = (
+    62.0  # V10.4: Relax bypass to capture bullish continuation under NEUTRAL->RISK_ON
+)
 CALL_GATE_MA20_BYPASS_VIX_MAX = 18.0  # Only bypass when fear is still low
 CALL_GATE_MA20_BYPASS_SIZE_MULT = 0.85  # Reduce size when using MA20 bypass
 CALL_GATE_VIX_5D_RISING_ENABLED = True  # Block CALL entries when 5-day VIX trend is rising

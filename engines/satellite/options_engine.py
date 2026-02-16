@@ -7915,11 +7915,11 @@ class OptionsEngine:
             if direction == OptionDirection.PUT:
                 risk_on_threshold = float(getattr(config, "REGIME_RISK_ON", 70.0))
                 if (
-                    state.micro_regime == MicroRegime.CAUTION_LOW
+                    state.micro_regime in (MicroRegime.CAUTION_LOW, MicroRegime.CAUTIOUS)
                     and macro_regime_score >= risk_on_threshold
                 ):
                     self.log(
-                        f"INTRADAY: PUT blocked in CAUTION_LOW under RISK_ON macro | "
+                        f"INTRADAY: PUT blocked in {state.micro_regime.value} under RISK_ON macro | "
                         f"Macro={macro_regime_score:.1f} >= {risk_on_threshold:.1f} | "
                         f"Regime={state.micro_regime.value}"
                     )
