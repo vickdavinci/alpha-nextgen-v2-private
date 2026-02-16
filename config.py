@@ -1263,12 +1263,12 @@ SPREAD_REGIME_BEARISH = 50  # V3.0: PUT spreads in Cautious + Bear (regime < 50)
 SPREAD_REGIME_CRISIS = 0  # V3.0: DISABLED — PUT spreads work in ALL bear regimes
 
 # V6.13 P0: Regime deterioration exits for swing spreads
-SPREAD_REGIME_DETERIORATION_EXIT_ENABLED = False  # V10.2: Disabled defensive early exit
+SPREAD_REGIME_DETERIORATION_EXIT_ENABLED = True  # V10.3: Re-enabled defensive tail-risk exit
 SPREAD_REGIME_DETERIORATION_DELTA = 10  # Require at least 10-point regime drop/rise
 SPREAD_REGIME_DETERIORATION_BULL_EXIT = 60  # Exit bullish spreads if regime <= 60
 SPREAD_REGIME_DETERIORATION_BEAR_EXIT = 55  # Exit bearish spreads if regime >= 55
 # V10.2: Keep spread lifecycle simple; disable overlay-forced close unless explicitly enabled.
-SPREAD_OVERLAY_STRESS_EXIT_ENABLED = False
+SPREAD_OVERLAY_STRESS_EXIT_ENABLED = True  # V10.3: Re-enabled defensive tail-risk exit
 
 # VIX filters for entry
 SPREAD_VIX_MAX_BULL = 30  # Max VIX for Bull Call Spread entry
@@ -1931,7 +1931,7 @@ SWING_EXTREME_SPY_DROP = -2.0  # Pause if SPY drops > 2% intraday
 SWING_EXTREME_VIX_SPIKE = 15.0  # Pause if VIX spikes > 15% intraday
 
 # V6.13 P0: Swing spread risk exits (VIX spike + overnight gap protection)
-SWING_VIX_SPIKE_EXIT_ENABLED = False  # V10.2: Disabled defensive early exit
+SWING_VIX_SPIKE_EXIT_ENABLED = True  # V10.3: Re-enabled defensive tail-risk exit
 SWING_VIX_SPIKE_EXIT_LEVEL = 25.0  # Exit bullish spreads if VIX >= 25
 SWING_VIX_SPIKE_EXIT_5D_PCT = 0.20  # Or if VIX 5D change >= +20%
 
