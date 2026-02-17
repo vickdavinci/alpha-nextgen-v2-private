@@ -1447,6 +1447,16 @@ class PortfolioRouter:
         """Clear all pending signals without processing."""
         self._pending_weights.clear()
 
+    def get_pending_signals(self) -> List[TargetWeight]:
+        """Return a shallow copy of pending signals."""
+        return list(self._pending_weights)
+
+    def drain_pending_signals(self) -> List[TargetWeight]:
+        """Atomically copy and clear pending signals."""
+        weights = list(self._pending_weights)
+        self._pending_weights.clear()
+        return weights
+
     def clear_last_rejections(self) -> None:
         """Clear structured router rejection buffer."""
         self._last_rejections = []

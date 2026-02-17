@@ -1150,7 +1150,7 @@ class AlphaNextGen(QCAlgorithm):
                     f"Equity=${self.equity_prior_close:,.0f} | Hedges exempt"
                 )
                 self._liquidate_all_spread_aware("GOVERNOR_SHUTDOWN", exempt_symbols=hedge_symbols)
-                self.portfolio_router._pending_weights.clear()
+                self.portfolio_router.clear_pending()
 
         # Set SPY prior close for gap filter
         self.spy_prior_close = self.Securities[self.spy].Close
@@ -1678,12 +1678,12 @@ class AlphaNextGen(QCAlgorithm):
             resolved_direction_str) or None when blocked/no-trade.
         """
         current_date_str = self.Time.strftime("%Y-%m-%d")
-        self.options_engine._iv_sensor.update(self._current_vix, current_date_str)
+        self.options_engine.update_iv_sensor(self._current_vix, current_date_str)
         (
             has_conviction,
             conviction_direction,
             conviction_reason,
-        ) = self.options_engine._iv_sensor.has_conviction()
+        ) = self.options_engine.get_iv_conviction()
         macro_direction = self.options_engine.get_macro_direction(regime_score)
         overlay_state = self.options_engine.get_regime_overlay_state(
             vix_current=self._current_vix, regime_score=regime_score
@@ -2219,21 +2219,20 @@ class AlphaNextGen(QCAlgorithm):
         # If a symbol was marked pending at 15:45 yesterday but is NOT invested
         # by 09:33 today, the MOO order didn't fill. Clear the stale pending
         # to prevent permanently blocking position limit slots.
-        if hasattr(self.trend_engine, "_pending_moo_symbols"):
+        pending_symbols = self.trend_engine.get_pending_moo_symbols()
+        if pending_symbols:
             # V2.24: Log pending state for diagnostics
-            if self.trend_engine._pending_moo_symbols:
-                pending_info = ", ".join(
-                    f"{sym}(since={self.trend_engine._pending_moo_dates.get(sym, '?')})"
-                    for sym in self.trend_engine._pending_moo_symbols
-                )
-                self.Log(
-                    f"TREND: PENDING_MOO_CHECK | Count={len(self.trend_engine._pending_moo_symbols)} | "
-                    f"Symbols=[{pending_info}]"
-                )
+            pending_info = ", ".join(
+                f"{sym}(since={self.trend_engine.get_pending_moo_date(sym) or '?'})"
+                for sym in pending_symbols
+            )
+            self.Log(
+                f"TREND: PENDING_MOO_CHECK | Count={len(pending_symbols)} | "
+                f"Symbols=[{pending_info}]"
+            )
 
             stale_symbols = set()
-            current_date_str = str(self.Time.date())
-            for sym in self.trend_engine._pending_moo_symbols:
+            for sym in pending_symbols:
                 # Check if this pending symbol is actually invested
                 # V6.11: Use config for trend symbols
                 lean_sym = getattr(self, sym.lower(), None) if sym in config.TREND_SYMBOLS else None
@@ -2247,8 +2246,7 @@ class AlphaNextGen(QCAlgorithm):
                         f"Already invested but still in pending set — clearing"
                     )
             for sym in stale_symbols:
-                self.trend_engine._pending_moo_symbols.discard(sym)
-                self.trend_engine._pending_moo_dates.pop(sym, None)
+                self.trend_engine.cancel_pending_moo(sym)
                 self.Log(
                     f"TREND: STALE_MOO_CLEARED {sym} | "
                     f"Pending but not invested at 09:33 - clearing slot"
@@ -2343,11 +2341,7 @@ class AlphaNextGen(QCAlgorithm):
             current_trend_count = sum(
                 1 for sym in trend_symbols if self.Portfolio[getattr(self, sym.lower())].Invested
             )
-            pending_moo_count = (
-                len(self.trend_engine._pending_moo_symbols)
-                if hasattr(self.trend_engine, "_pending_moo_symbols")
-                else 0
-            )
+            pending_moo_count = self.trend_engine.get_pending_moo_count()
             total_committed = current_trend_count + pending_moo_count
 
             if total_committed >= config.MAX_CONCURRENT_TREND_POSITIONS:
@@ -3189,7 +3183,7 @@ class AlphaNextGen(QCAlgorithm):
             vix_intraday_proxy = self._current_vix
 
         # Check for spike using intraday proxy
-        spike_alert = self.options_engine._micro_regime_engine.check_spike_alert(
+        spike_alert = self.options_engine.check_micro_spike_alert(
             vix_current=vix_intraday_proxy,
             vix_5min_ago=self._vix_5min_ago,
             current_time=str(self.Time),
@@ -3255,7 +3249,7 @@ class AlphaNextGen(QCAlgorithm):
             if memory_scale > 1.0:
                 vix_open_for_micro = self._vix_at_open / memory_scale
 
-        state = self.options_engine._micro_regime_engine.update(
+        state = self.options_engine.update_micro_regime_state(
             vix_current=vix_intraday_proxy,  # Use UVXY-derived for direction
             vix_open=vix_open_for_micro,
             qqq_current=qqq_current,
@@ -4590,7 +4584,7 @@ class AlphaNextGen(QCAlgorithm):
         # V2.19 FIX: Inject option prices from pending signal metadata
         # _get_current_prices() only includes HELD options (V2.19 perf fix),
         # but NEW entries aren't held yet. Use price from chain data stored in metadata.
-        for signal in self.portfolio_router._pending_weights:
+        for signal in self.portfolio_router.get_pending_signals():
             if signal.source in ("OPT", "OPT_INTRADAY") and signal.symbol not in current_prices:
                 price = signal.metadata.get("contract_price", 0) if signal.metadata else 0
 
@@ -4648,8 +4642,7 @@ class AlphaNextGen(QCAlgorithm):
 
         try:
             # Get aggregated weights from router
-            weights = self.portfolio_router._pending_weights.copy()
-            self.portfolio_router._pending_weights.clear()
+            weights = self.portfolio_router.drain_pending_signals()
 
             if not weights:
                 return
@@ -4799,11 +4792,7 @@ class AlphaNextGen(QCAlgorithm):
             1 for sym in trend_symbols if self.Portfolio[getattr(self, sym.lower())].Invested
         )
         # V2.18: Also count pending MOO orders to prevent exceeding limit
-        pending_moo_count = (
-            len(self.trend_engine._pending_moo_symbols)
-            if hasattr(self.trend_engine, "_pending_moo_symbols")
-            else 0
-        )
+        pending_moo_count = self.trend_engine.get_pending_moo_count()
         total_committed_positions = current_trend_positions + pending_moo_count
         max_positions = config.MAX_CONCURRENT_TREND_POSITIONS  # Default: 2
         entries_allowed = max_positions - total_committed_positions
@@ -5338,7 +5327,7 @@ class AlphaNextGen(QCAlgorithm):
             if self._should_log_vass_rejection(throttle_key):
                 self.Log(
                     f"VASS_REJECTION: Direction={direction.value} | "
-                    f"IV_Env={self.options_engine._iv_sensor.classify()} | "
+                    f"IV_Env={self.options_engine.get_iv_environment()} | "
                     f"VIX={self._current_vix:.1f} | Regime={regime_score:.0f} | "
                     f"Contracts_checked={len(candidate_contracts)} | "
                     f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
@@ -5502,9 +5491,9 @@ class AlphaNextGen(QCAlgorithm):
         Returns:
             Tuple of (strategy: Optional[SpreadStrategy], dte_min: int, dte_max: int, is_credit: bool)
         """
-        if getattr(config, "VASS_ENABLED", True) and self.options_engine._iv_sensor.is_ready():
-            iv_environment = self.options_engine._iv_sensor.classify()
-            strategy, dte_min, dte_max = self.options_engine._select_strategy(
+        if getattr(config, "VASS_ENABLED", True) and self.options_engine.is_iv_sensor_ready():
+            iv_environment = self.options_engine.get_iv_environment()
+            strategy, dte_min, dte_max = self.options_engine.select_vass_strategy(
                 direction_str, iv_environment
             )
             overlay = str(overlay_state or "").upper()
@@ -7241,8 +7230,8 @@ class AlphaNextGen(QCAlgorithm):
             )
             validation_reason = self.options_engine.pop_last_entry_validation_failure()
             iv_env = (
-                self.options_engine._iv_sensor.classify()
-                if hasattr(self.options_engine, "_iv_sensor")
+                self.options_engine.get_iv_environment()
+                if self.options_engine.is_iv_sensor_ready()
                 else "UNKNOWN"
             )
             skip_reasons = {
@@ -8278,7 +8267,7 @@ class AlphaNextGen(QCAlgorithm):
         # Route 1: Trend symbols - V6.11: Updated to include UGL, UCO
         if symbol in config.TREND_SYMBOLS:
             # Trend MOO recovery — clear stuck pending slot
-            if symbol in self.trend_engine._pending_moo_symbols:
+            if self.trend_engine.is_pending_moo(symbol):
                 self.trend_engine.cancel_pending_moo(symbol)
                 # Cooldown: skip until next EOD cycle (trend signals only fire at 15:45)
                 self._trend_rejection_cooldown_until = self.Time + timedelta(hours=18)
@@ -8374,7 +8363,7 @@ class AlphaNextGen(QCAlgorithm):
         Broker message format:
         "Insufficient buying power... Free Margin: 48927, Maintenance Margin Delta: 56172"
 
-        Stores safety_factor * Free Margin as options_engine._rejection_margin_cap.
+        Stores safety_factor * Free Margin as options-engine rejection margin cap.
         """
         import re
 
@@ -8400,7 +8389,7 @@ class AlphaNextGen(QCAlgorithm):
             if free_margin is not None:
                 safety = getattr(config, "SPREAD_REJECTION_MARGIN_SAFETY", 0.80)
                 cap = free_margin * safety
-                self.options_engine._rejection_margin_cap = cap
+                self.options_engine.set_rejection_margin_cap(cap)
                 self.Log(
                     f"REJECTION_MARGIN: Free=${free_margin:,.0f} | "
                     f"Cap=${cap:,.0f} (x{safety:.0%})"

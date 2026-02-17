@@ -7643,6 +7643,65 @@ class OptionsEngine:
         """Check if strategy is a debit spread (pays premium)."""
         return strategy in (SpreadStrategy.BULL_CALL_DEBIT, SpreadStrategy.BEAR_PUT_DEBIT)
 
+    def update_iv_sensor(self, vix_current: float, current_date: str = "") -> None:
+        """Update IV sensor with current VIX reading and optional date key."""
+        self._iv_sensor.update(vix_current, current_date or None)
+
+    def get_iv_conviction(self) -> Tuple[bool, Optional[str], str]:
+        """Return IV conviction tuple from IV sensor."""
+        return self._iv_sensor.has_conviction()
+
+    def is_iv_sensor_ready(self) -> bool:
+        """True when IV sensor has enough intraday history."""
+        return self._iv_sensor.is_ready()
+
+    def get_iv_environment(self) -> str:
+        """Classify current IV environment (LOW/MEDIUM/HIGH)."""
+        return self._iv_sensor.classify()
+
+    def select_vass_strategy(
+        self,
+        direction: str,
+        iv_environment: str,
+        is_intraday: bool = False,
+    ) -> Tuple[SpreadStrategy, int, int]:
+        """Public wrapper for VASS direction+IV strategy routing."""
+        return self._select_strategy(direction, iv_environment, is_intraday=is_intraday)
+
+    def check_micro_spike_alert(
+        self, vix_current: float, vix_5min_ago: float, current_time: str
+    ) -> bool:
+        """Expose micro spike-alert check without leaking engine internals."""
+        return self._micro_regime_engine.check_spike_alert(vix_current, vix_5min_ago, current_time)
+
+    def update_micro_regime_state(
+        self,
+        vix_current: float,
+        vix_open: float,
+        qqq_current: float,
+        qqq_open: float,
+        current_time: str,
+        macro_regime_score: float = 50.0,
+        vix_level_override: Optional[float] = None,
+    ) -> MicroRegimeState:
+        """Public wrapper for full micro-regime update."""
+        return self._micro_regime_engine.update(
+            vix_current=vix_current,
+            vix_open=vix_open,
+            qqq_current=qqq_current,
+            qqq_open=qqq_open,
+            current_time=current_time,
+            macro_regime_score=macro_regime_score,
+            vix_level_override=vix_level_override,
+        )
+
+    def set_rejection_margin_cap(self, cap: Optional[float]) -> None:
+        """Set/reset adaptive rejection margin cap used by spread sizing."""
+        if cap is None:
+            self._rejection_margin_cap = None
+            return
+        self._rejection_margin_cap = max(0.0, float(cap))
+
     # =========================================================================
     # V2.1.1 SIMPLE INTRADAY FILTERS (FOR SWING MODE)
     # =========================================================================

@@ -758,6 +758,22 @@ class TrendEngine:
             self._pending_moo_dates[symbol] = current_date
         self.log(f"TREND: PENDING_MOO_MARKED {symbol} | Date={current_date}")
 
+    def get_pending_moo_symbols(self) -> List[str]:
+        """Return pending MOO symbols as a deterministic list."""
+        return sorted(self._pending_moo_symbols)
+
+    def get_pending_moo_count(self) -> int:
+        """Return number of pending MOO symbols."""
+        return len(self._pending_moo_symbols)
+
+    def is_pending_moo(self, symbol: str) -> bool:
+        """Check whether symbol is currently tracked as pending MOO."""
+        return symbol in self._pending_moo_symbols
+
+    def get_pending_moo_date(self, symbol: str) -> str:
+        """Get pending-MOO creation date for symbol, if available."""
+        return self._pending_moo_dates.get(symbol, "")
+
     def has_position(self, symbol: str) -> bool:
         """Check if a position exists for symbol."""
         return symbol in self._positions
