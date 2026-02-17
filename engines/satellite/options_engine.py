@@ -7226,17 +7226,28 @@ class OptionsEngine:
             return None
 
         symbol = pos.contract.symbol
+        symbol_str = self._symbol_str(symbol)
         entry_price = pos.entry_price
+        is_intraday_pos = (
+            self._intraday_position is not None
+            and self._intraday_position.contract is not None
+            and self._symbol_str(self._intraday_position.contract.symbol) == symbol_str
+        )
+
+        if is_intraday_pos and self.has_pending_intraday_exit():
+            return None
 
         # Calculate P&L percentage
         pnl_pct = (current_price - entry_price) / entry_price
 
         # Exit 1: Profit target hit (+50%)
         if current_price >= pos.target_price:
+            if is_intraday_pos and not self.mark_pending_intraday_exit(symbol_str):
+                return None
             reason = f"TARGET_HIT +{pnl_pct:.1%} (Price: ${current_price:.2f})"
             self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
             return TargetWeight(
-                symbol=self._symbol_str(symbol),
+                symbol=symbol_str,
                 target_weight=0.0,
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
@@ -7259,13 +7270,15 @@ class OptionsEngine:
                     if trail_stop > pos.stop_price:
                         pos.stop_price = trail_stop
                     if current_price <= pos.stop_price:
+                        if is_intraday_pos and not self.mark_pending_intraday_exit(symbol_str):
+                            return None
                         reason = (
                             f"TRAIL_STOP {pnl_pct:.1%} (High=${pos.highest_price:.2f}, "
                             f"Trail=${pos.stop_price:.2f})"
                         )
                         self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
                         return TargetWeight(
-                            symbol=self._symbol_str(symbol),
+                            symbol=symbol_str,
                             target_weight=0.0,
                             source="OPT",
                             urgency=Urgency.IMMEDIATE,
@@ -7275,10 +7288,12 @@ class OptionsEngine:
 
         # Exit 2: Stop hit
         if current_price <= pos.stop_price:
+            if is_intraday_pos and not self.mark_pending_intraday_exit(symbol_str):
+                return None
             reason = f"STOP_HIT {pnl_pct:.1%} (Price: ${current_price:.2f})"
             self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
             return TargetWeight(
-                symbol=self._symbol_str(symbol),
+                symbol=symbol_str,
                 target_weight=0.0,
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
@@ -7295,10 +7310,12 @@ class OptionsEngine:
             dte_exit_threshold = int(getattr(config, "INTRADAY_ITM_DTE_EXIT", dte_exit_threshold))
 
         if current_dte is not None and current_dte <= dte_exit_threshold:
+            if is_intraday_pos and not self.mark_pending_intraday_exit(symbol_str):
+                return None
             reason = f"DTE_EXIT ({current_dte} DTE <= {dte_exit_threshold}) P&L={pnl_pct:.1%}"
             self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
             return TargetWeight(
-                symbol=self._symbol_str(symbol),
+                symbol=symbol_str,
                 target_weight=0.0,
                 source="OPT",
                 urgency=Urgency.IMMEDIATE,
@@ -8377,7 +8394,7 @@ class OptionsEngine:
             return None
 
         # V2.3.3 FIX #3: Prevent duplicate exit signals while waiting for fill
-        if self._pending_intraday_exit:
+        if self.has_pending_intraday_exit():
             return None
 
         force_hh, force_mm = self._get_intraday_force_exit_hhmm()
@@ -8425,7 +8442,8 @@ class OptionsEngine:
         self.log(f"INTRADAY_FORCE_EXIT {symbol} | {reason}", trades_only=True)
 
         # V2.3.3: Set pending exit flag to prevent duplicate signals
-        self._pending_intraday_exit = True
+        if not self.mark_pending_intraday_exit(symbol_str):
+            return None
 
         return TargetWeight(
             symbol=self._symbol_str(symbol),
@@ -8591,6 +8609,11 @@ class OptionsEngine:
             f"P0 FIX: Unconditionally closing ALL expiring options at 2:00 PM",
             trades_only=True,
         )
+
+        # Keep intraday software exit lock aligned for expiring-day close signals.
+        if self._intraday_position is not None and self._intraday_position is position:
+            if not self.mark_pending_intraday_exit(self._symbol_str(symbol)):
+                return None
 
         return TargetWeight(
             symbol=self._symbol_str(symbol),
@@ -9185,6 +9208,36 @@ class OptionsEngine:
     def has_pending_swing_entry(self) -> bool:
         """True when a single-leg swing entry is pending (not intraday)."""
         return self._pending_contract is not None and not self._pending_intraday_entry
+
+    def has_pending_intraday_exit(self) -> bool:
+        """True when an intraday close signal has already been emitted and is in-flight."""
+        return bool(self._pending_intraday_exit)
+
+    def mark_pending_intraday_exit(self, symbol: Optional[str] = None) -> bool:
+        """
+        Mark intraday close as pending to block duplicate software/force exits.
+
+        Args:
+            symbol: Optional symbol guard. When provided, lock is only set if it
+                matches the tracked intraday position symbol.
+
+        Returns:
+            True when lock was set, else False.
+        """
+        if self._pending_intraday_exit:
+            return False
+
+        if symbol and self._intraday_position is not None and self._intraday_position.contract:
+            try:
+                expected = self._symbol_str(self._intraday_position.contract.symbol)
+                actual = self._symbol_str(symbol)
+                if expected != actual:
+                    return False
+            except Exception:
+                return False
+
+        self._pending_intraday_exit = True
+        return True
 
     def cancel_pending_intraday_exit(self, symbol: Optional[str] = None) -> bool:
         """

@@ -1931,6 +1931,8 @@ class AlphaNextGen(QCAlgorithm):
             return
         if symbol in self._intraday_close_in_progress_symbols:
             return
+        if self._has_open_non_oco_order_for_symbol(symbol):
+            return
         price = self.Securities[symbol].Price if self.Securities.ContainsKey(symbol) else 0
         if price <= 0:
             try:
@@ -2923,6 +2925,9 @@ class AlphaNextGen(QCAlgorithm):
                 except Exception:
                     pass  # If symbol lookup fails, proceed with force close
 
+                if self._has_open_non_oco_order_for_symbol(symbol):
+                    return
+
                 # Cancel active OCO before force-close to avoid orphan sell orders
                 # creating accidental short options after the position is closed.
                 try:
@@ -3037,6 +3042,11 @@ class AlphaNextGen(QCAlgorithm):
 
         # Don't recover OCO while close is in progress for this symbol.
         if symbol in self._intraday_close_in_progress_symbols:
+            return
+
+        # Never re-arm OCO while a non-OCO order is in flight for this symbol.
+        # This avoids submit/cancel races between software exits/retries and OCO recovery.
+        if self._has_open_non_oco_order_for_symbol(symbol):
             return
 
         # Skip OCO recovery in force-close window to avoid close-race amplification.
@@ -4474,6 +4484,20 @@ class AlphaNextGen(QCAlgorithm):
             open_tag = str(getattr(open_order, "Tag", "") or "").upper()
             if tag_filter in open_tag:
                 return True
+        return False
+
+    def _has_open_non_oco_order_for_symbol(self, symbol: str) -> bool:
+        """Return True when symbol has an open non-OCO order (entry/exit in flight)."""
+        symbol_norm = self._normalize_symbol_str(symbol)
+        if not symbol_norm:
+            return False
+        for open_order in self.Transactions.GetOpenOrders():
+            if self._normalize_symbol_str(open_order.Symbol) != symbol_norm:
+                continue
+            open_tag = str(getattr(open_order, "Tag", "") or "").upper()
+            if "OCO_STOP:" in open_tag or "OCO_PROFIT:" in open_tag:
+                continue
+            return True
         return False
 
     def _reconcile_positions(self, mode: str = "sod") -> None:
@@ -7567,6 +7591,8 @@ class AlphaNextGen(QCAlgorithm):
                 if symbol_str in seen_symbols:
                     continue
                 seen_symbols.add(symbol_str)
+                if self._has_open_non_oco_order_for_symbol(symbol_str):
+                    continue
                 self.portfolio_router.receive_signal(
                     TargetWeight(
                         symbol=symbol_str,
@@ -7590,11 +7616,16 @@ class AlphaNextGen(QCAlgorithm):
 
         if any_position is not None:
             # Get contract expiry date
+            any_symbol = self._normalize_symbol_str(any_position.contract.symbol)
             contract_expiry = self._get_option_expiry_date(any_position.contract.symbol, data)
             current_date = str(self.Time.date())
             current_price = self._get_option_current_price(any_position.contract.symbol, data)
 
-            if current_price is not None and contract_expiry is not None:
+            if (
+                current_price is not None
+                and contract_expiry is not None
+                and not self._has_open_non_oco_order_for_symbol(any_symbol)
+            ):
                 signal = self.options_engine.check_expiring_options_force_exit(
                     current_date=current_date,
                     current_hour=self.Time.hour,
@@ -7609,56 +7640,64 @@ class AlphaNextGen(QCAlgorithm):
         # V2.3.10: Check single-leg exit signals (profit target, stop, DTE exit)
         # This prevents options from being held to expiration/exercise
         if position is not None:
-            # Get current option price from chain
-            current_price = self._get_option_current_price(position.contract.symbol, data)
-            current_dte = self._get_option_current_dte(position.contract.symbol, data)
+            swing_symbol = self._normalize_symbol_str(position.contract.symbol)
+            if self._has_open_non_oco_order_for_symbol(swing_symbol):
+                position = None
+            else:
+                # Get current option price from chain
+                current_price = self._get_option_current_price(position.contract.symbol, data)
+                current_dte = self._get_option_current_dte(position.contract.symbol, data)
 
-            if current_price is not None:
-                signal = self.options_engine.check_exit_signals(
-                    current_price=current_price,
-                    current_dte=current_dte,
-                )
-                if signal is not None:
-                    self.portfolio_router.receive_signal(signal)
-                    # V9.2 FIX: Cancel OCO on software exit (swing single-leg)
-                    try:
-                        sym_str = str(position.contract.symbol)
-                        if self.oco_manager.cancel_by_symbol(sym_str, reason="SOFTWARE_EXIT"):
-                            self.Log(
-                                f"OCO_CANCEL: {sym_str} | "
-                                f"Reason=SOFTWARE_EXIT ({signal.reason})"
-                            )
-                    except Exception as e:
-                        self.Log(f"OCO_CANCEL_ERROR: Swing exit OCO cancel | {e}")
+                if current_price is not None:
+                    signal = self.options_engine.check_exit_signals(
+                        current_price=current_price,
+                        current_dte=current_dte,
+                    )
+                    if signal is not None:
+                        self.portfolio_router.receive_signal(signal)
+                        # V9.2 FIX: Cancel OCO on software exit (swing single-leg)
+                        try:
+                            sym_str = str(position.contract.symbol)
+                            if self.oco_manager.cancel_by_symbol(sym_str, reason="SOFTWARE_EXIT"):
+                                self.Log(
+                                    f"OCO_CANCEL: {sym_str} | "
+                                    f"Reason=SOFTWARE_EXIT ({signal.reason})"
+                                )
+                        except Exception as e:
+                            self.Log(f"OCO_CANCEL_ERROR: Swing exit OCO cancel | {e}")
 
         # V6.22 FIX: Software backup for intraday positions (OCO single-point-of-failure fix)
         # Previously intraday had NO software stop/profit/DTE check — relied solely on OCO.
         # If OCO was cancelled (199 events in 2022), position bled until 15:25 forced exit.
         if intraday_position is not None:
-            intra_price = self._get_option_current_price(intraday_position.contract.symbol, data)
-            intra_dte = self._get_option_current_dte(intraday_position.contract.symbol, data)
-
-            if intra_price is not None:
-                signal = self.options_engine.check_exit_signals(
-                    current_price=intra_price,
-                    current_dte=intra_dte,
-                    position=intraday_position,
+            intra_symbol = self._normalize_symbol_str(intraday_position.contract.symbol)
+            if not self._has_open_non_oco_order_for_symbol(intra_symbol):
+                intra_price = self._get_option_current_price(
+                    intraday_position.contract.symbol, data
                 )
-                if signal is not None:
-                    self.portfolio_router.receive_signal(signal)
-                    # V9.2 FIX: Cancel OCO immediately when software backup triggers
-                    # an exit. Without this, the OCO stop/limit orders remain active
-                    # and could fire after the software exit order fills, creating
-                    # accidental short positions from orphaned sell orders.
-                    try:
-                        sym_str = str(intraday_position.contract.symbol)
-                        if self.oco_manager.cancel_by_symbol(sym_str, reason="SOFTWARE_EXIT"):
-                            self.Log(
-                                f"OCO_CANCEL: {sym_str} | "
-                                f"Reason=SOFTWARE_EXIT ({signal.reason})"
-                            )
-                    except Exception as e:
-                        self.Log(f"OCO_CANCEL_ERROR: Software exit OCO cancel | {e}")
+                intra_dte = self._get_option_current_dte(intraday_position.contract.symbol, data)
+
+                if intra_price is not None:
+                    signal = self.options_engine.check_exit_signals(
+                        current_price=intra_price,
+                        current_dte=intra_dte,
+                        position=intraday_position,
+                    )
+                    if signal is not None:
+                        self.portfolio_router.receive_signal(signal)
+                        # V9.2 FIX: Cancel OCO immediately when software backup triggers
+                        # an exit. Without this, the OCO stop/limit orders remain active
+                        # and could fire after the software exit order fills, creating
+                        # accidental short positions from orphaned sell orders.
+                        try:
+                            sym_str = str(intraday_position.contract.symbol)
+                            if self.oco_manager.cancel_by_symbol(sym_str, reason="SOFTWARE_EXIT"):
+                                self.Log(
+                                    f"OCO_CANCEL: {sym_str} | "
+                                    f"Reason=SOFTWARE_EXIT ({signal.reason})"
+                                )
+                        except Exception as e:
+                            self.Log(f"OCO_CANCEL_ERROR: Software exit OCO cancel | {e}")
 
     def _get_fresh_position_greeks(self) -> Optional[GreeksSnapshot]:
         """
@@ -9455,18 +9494,33 @@ class AlphaNextGen(QCAlgorithm):
             return
         self._exit_retry_scheduled_at.pop(tracker_key, None)
 
-        tracker = self._pending_exit_orders[tracker_key]
+        tracker = self._pending_exit_orders.get(tracker_key)
+        if tracker is None:
+            return
         self.Log(
             f"EXIT_RETRY: Retrying exit for {tracker_key[-20:]} (attempt {tracker.retry_count})"
         )
-        if self._has_open_order_for_symbol(tracker_key):
+        if self._has_open_non_oco_order_for_symbol(tracker_key):
             self.Log(
-                f"EXIT_RETRY_DEFER: Open order already exists for {tracker_key[-20:]} | "
+                f"EXIT_RETRY_DEFER: Non-OCO open order already exists for {tracker_key[-20:]} | "
                 "Skipping duplicate retry submit"
             )
+            self._schedule_exit_retry(tracker_key)
             return
 
         try:
+            # Ensure OCO legs are canceled before submitting a retry close.
+            try:
+                self.oco_manager.cancel_by_symbol(tracker_key, reason="EXIT_RETRY")
+            except Exception:
+                pass
+            if self._has_open_order_for_symbol(tracker_key):
+                self.Log(
+                    f"EXIT_RETRY_DEFER: Waiting for prior order cancel/settle | {tracker_key[-20:]}"
+                )
+                self._schedule_exit_retry(tracker_key)
+                return
+
             holding, broker_symbol = self._find_portfolio_holding(tracker_key)
             if holding and holding.Invested:
                 qty = holding.Quantity
