@@ -2029,9 +2029,24 @@ class OptionsEngine:
         except Exception:
             return 15, 30
 
+    def _canonical_intraday_strategy(
+        self, strategy: Optional["IntradayStrategy"]
+    ) -> Optional["IntradayStrategy"]:
+        """Map deprecated strategy aliases to the active runtime strategy."""
+        if strategy == IntradayStrategy.DEBIT_MOMENTUM:
+            return IntradayStrategy.ITM_MOMENTUM
+        return strategy
+
+    def _canonical_intraday_strategy_name(self, strategy_name: Optional[str]) -> str:
+        """Canonical string form used by hold/exit logic."""
+        value = str(strategy_name or "").upper()
+        if value == IntradayStrategy.DEBIT_MOMENTUM.value:
+            return IntradayStrategy.ITM_MOMENTUM.value
+        return value
+
     def _is_itm_momentum_strategy_name(self, strategy_name: Optional[str]) -> bool:
         """True when strategy name maps to ITM momentum."""
-        value = str(strategy_name or "").upper()
+        value = self._canonical_intraday_strategy_name(strategy_name)
         return value == IntradayStrategy.ITM_MOMENTUM.value
 
     def _get_position_live_dte(self, position: Optional[OptionsPosition]) -> Optional[int]:
@@ -4474,6 +4489,7 @@ class OptionsEngine:
             # Use defensive coding in case _state is not initialized (tests)
             state = getattr(self, "_state", None)
             current_strategy = getattr(state, "recommended_strategy", None) if state else None
+            current_strategy = self._canonical_intraday_strategy(current_strategy)
 
             if current_strategy == IntradayStrategy.ITM_MOMENTUM:
                 # ITM_MOMENTUM: Stock replacement needs ITM (0.60-0.85)
@@ -4485,11 +4501,6 @@ class OptionsEngine:
                 delta_min = config.INTRADAY_DEBIT_FADE_DELTA_MIN
                 delta_max = config.INTRADAY_DEBIT_FADE_DELTA_MAX
                 mode_label = "Intraday-FADE"
-            elif current_strategy == IntradayStrategy.DEBIT_MOMENTUM:
-                # V6.4: DEBIT_MOMENTUM: Trend confirmation needs ATM-ish (0.45-0.65)
-                delta_min = config.INTRADAY_DEBIT_MOMENTUM_DELTA_MIN
-                delta_max = config.INTRADAY_DEBIT_MOMENTUM_DELTA_MAX
-                mode_label = "Intraday-MOMENTUM"
             else:
                 # Default for other strategies (CREDIT_SPREAD, etc.)
                 delta_min = config.OPTIONS_INTRADAY_DELTA_MIN
@@ -7160,7 +7171,7 @@ class OptionsEngine:
 
     def _get_intraday_exit_profile(self, entry_strategy: str) -> Tuple[float, Optional[float]]:
         """Return (target_pct, stop_pct_override) for strategy-aware intraday exits."""
-        strategy = str(entry_strategy or "").upper()
+        strategy = self._canonical_intraday_strategy_name(entry_strategy)
         if strategy == IntradayStrategy.ITM_MOMENTUM.value:
             return (
                 float(getattr(config, "INTRADAY_ITM_TARGET", 0.35)),
@@ -7171,17 +7182,12 @@ class OptionsEngine:
                 float(getattr(config, "INTRADAY_DEBIT_FADE_TARGET", 0.40)),
                 float(getattr(config, "INTRADAY_DEBIT_FADE_STOP", 0.25)),
             )
-        if strategy == IntradayStrategy.DEBIT_MOMENTUM.value:
-            return (
-                float(getattr(config, "INTRADAY_DEBIT_MOMENTUM_TARGET", 0.45)),
-                float(getattr(config, "INTRADAY_DEBIT_MOMENTUM_STOP", 0.30)),
-            )
         # Protective puts + swing single-leg keep existing defaults
         return (float(getattr(config, "OPTIONS_PROFIT_TARGET_PCT", 0.60)), None)
 
     def _get_trail_config(self, entry_strategy: str) -> Optional[Tuple[float, float]]:
         """Return (trigger_pct, trail_pct) for intraday strategy trailing stops."""
-        strategy = str(entry_strategy or "").upper()
+        strategy = self._canonical_intraday_strategy_name(entry_strategy)
         if strategy == IntradayStrategy.ITM_MOMENTUM.value:
             return (
                 float(getattr(config, "INTRADAY_ITM_TRAIL_TRIGGER", 0.20)),
@@ -7191,11 +7197,6 @@ class OptionsEngine:
             return (
                 float(getattr(config, "INTRADAY_DEBIT_FADE_TRAIL_TRIGGER", 0.25)),
                 float(getattr(config, "INTRADAY_DEBIT_FADE_TRAIL_PCT", 0.50)),
-            )
-        if strategy == IntradayStrategy.DEBIT_MOMENTUM.value:
-            return (
-                float(getattr(config, "INTRADAY_DEBIT_MOMENTUM_TRAIL_TRIGGER", 0.20)),
-                float(getattr(config, "INTRADAY_DEBIT_MOMENTUM_TRAIL_PCT", 0.50)),
             )
         return None
 
@@ -7806,8 +7807,12 @@ class OptionsEngine:
             )
             return fail("E_INTRADAY_NO_TRADE_STRATEGY", state.micro_regime.value)
 
+        entry_strategy = self._canonical_intraday_strategy(state.recommended_strategy)
+        if entry_strategy is None:
+            return fail("E_INTRADAY_NO_STRATEGY")
+
         # V3.2: Check if strategy is PROTECTIVE_PUTS (crisis hedge)
-        if state.recommended_strategy == IntradayStrategy.PROTECTIVE_PUTS:
+        if entry_strategy == IntradayStrategy.PROTECTIVE_PUTS:
             # V3.2: Actually implement protective puts (was previously just returning None)
             if not getattr(config, "PROTECTIVE_PUTS_ENABLED", True):
                 self.log(
@@ -7847,10 +7852,9 @@ class OptionsEngine:
                 # Fallback to state direction if not passed (backwards compatibility)
                 direction = state.recommended_direction
             if direction is None:
-                self.log(
-                    f"INTRADAY: No direction recommended for {state.recommended_strategy.value}"
-                )
-                return fail("E_INTRADAY_NO_DIRECTION", state.recommended_strategy.value)
+                strategy_value = entry_strategy.value if entry_strategy is not None else "UNKNOWN"
+                self.log(f"INTRADAY: No direction recommended for {strategy_value}")
+                return fail("E_INTRADAY_NO_DIRECTION", strategy_value)
 
             # V9: Keep CAUTION_LOW / TRANSITION participation but cut size.
             if state.micro_regime in (MicroRegime.CAUTION_LOW, MicroRegime.TRANSITION):
@@ -7998,16 +8002,14 @@ class OptionsEngine:
         # Direction comes from Micro Regime Engine's recommend_strategy_and_direction()
         # Conviction resolution (resolve_trade_signal) called in main.py before this function
 
-        # Map strategy to name for logging
-        # V6.5 FIX: Added DEBIT_MOMENTUM and PROTECTIVE_PUTS (were missing, caused "UNKNOWN")
+        # Map strategy to concise logging name (after deprecated-strategy canonicalization).
         strategy_names = {
             IntradayStrategy.DEBIT_FADE: "DEBIT_FADE",
             IntradayStrategy.ITM_MOMENTUM: "ITM_MOM",
             IntradayStrategy.CREDIT_SPREAD: "CREDIT",
-            IntradayStrategy.DEBIT_MOMENTUM: "DEBIT_MOMENTUM",
             IntradayStrategy.PROTECTIVE_PUTS: "PROTECTIVE_PUTS",
         }
-        strategy_name = strategy_names.get(state.recommended_strategy, "UNKNOWN")
+        strategy_name = strategy_names.get(entry_strategy, "UNKNOWN")
 
         # MICRO anti-churn cooldown: avoid immediate re-entry of same strategy.
         cooldown_min = int(getattr(config, "MICRO_SAME_STRATEGY_COOLDOWN_MINUTES", 0))
@@ -8040,7 +8042,7 @@ class OptionsEngine:
         # Check time windows based on strategy (V2.3.19: use config values)
         time_minutes = current_hour * 60 + current_minute
 
-        if state.recommended_strategy == IntradayStrategy.DEBIT_FADE:
+        if entry_strategy == IntradayStrategy.DEBIT_FADE:
             # Parse config time strings (e.g., "10:30" -> 630 minutes)
             fade_start = config.INTRADAY_DEBIT_FADE_START.split(":")
             fade_end = config.INTRADAY_DEBIT_FADE_END.split(":")
@@ -8054,7 +8056,7 @@ class OptionsEngine:
                 )
                 return fail("E_INTRADAY_TIME_WINDOW")
 
-        elif state.recommended_strategy == IntradayStrategy.ITM_MOMENTUM:
+        elif entry_strategy == IntradayStrategy.ITM_MOMENTUM:
             # V10.4: block ITM momentum in CAUTION_LOW only.
             # Keep CAUTIOUS handling in the existing risk-on gating path.
             if state.micro_regime == MicroRegime.CAUTION_LOW:
@@ -8075,32 +8077,6 @@ class OptionsEngine:
                     f"outside window {config.INTRADAY_ITM_START}-{config.INTRADAY_ITM_END}"
                 )
                 return fail("E_INTRADAY_TIME_WINDOW")
-
-        elif state.recommended_strategy == IntradayStrategy.DEBIT_MOMENTUM:
-            if not bool(getattr(config, "INTRADAY_DEBIT_MOMENTUM_ENABLED", True)):
-                self.log("INTRADAY: DEBIT_MOMENTUM disabled by config", trades_only=True)
-                return fail("E_DEBIT_MOMENTUM_DISABLED")
-            # V6.4: DEBIT_MOMENTUM time window (same as ITM_MOMENTUM)
-            momentum_start = config.INTRADAY_DEBIT_MOMENTUM_START.split(":")
-            momentum_end = config.INTRADAY_DEBIT_MOMENTUM_END.split(":")
-            start_time = int(momentum_start[0]) * 60 + int(momentum_start[1])
-            end_time = int(momentum_end[0]) * 60 + int(momentum_end[1])
-            if not (start_time <= time_minutes <= end_time):
-                self.log(
-                    f"INTRADAY_TIME_REJECT: DEBIT_MOMENTUM at {current_hour}:{current_minute:02d} "
-                    f"outside window {config.INTRADAY_DEBIT_MOMENTUM_START}-{config.INTRADAY_DEBIT_MOMENTUM_END}"
-                )
-                return fail("E_INTRADAY_TIME_WINDOW")
-            blocked_regimes = {
-                str(r).upper() for r in getattr(config, "INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES", [])
-            }
-            current_regime_name = state.micro_regime.value.upper()
-            if current_regime_name in blocked_regimes:
-                self.log(
-                    f"INTRADAY: DEBIT_MOMENTUM blocked in regime {state.micro_regime.value}",
-                    trades_only=True,
-                )
-                return fail("E_DEBIT_MOMENTUM_REGIME_BLOCK")
 
         # Check if we have a valid contract
         if best_contract is None:
@@ -8216,7 +8192,7 @@ class OptionsEngine:
         # Without this, register_entry fails with "no pending contract"
         self._pending_contract = best_contract
         self._pending_num_contracts = num_contracts
-        self._pending_entry_strategy = state.recommended_strategy.value
+        self._pending_entry_strategy = entry_strategy.value
 
         # V6.5: Delta-scaled ATR stop calculation
         # Formula: stop_distance = ATR_MULTIPLIER × ATR × abs(delta)
@@ -8243,7 +8219,7 @@ class OptionsEngine:
                 MicroRegime.WORSENING,
             }
             if (
-                state.recommended_strategy == IntradayStrategy.ITM_MOMENTUM
+                entry_strategy == IntradayStrategy.ITM_MOMENTUM
                 and state.micro_regime in high_vix_momentum_regimes
             ):
                 max_stop = getattr(config, "INTRADAY_HIGH_VIX_STOP_MAX_PCT", 0.40)
@@ -8275,7 +8251,7 @@ class OptionsEngine:
         # V10.5: widen ITM stops in MED/HIGH VIX only; keep LOW VIX behavior unchanged.
         if (
             not is_protective_put
-            and state.recommended_strategy == IntradayStrategy.ITM_MOMENTUM
+            and entry_strategy == IntradayStrategy.ITM_MOMENTUM
             and self._pending_stop_pct is not None
         ):
             if vix_current >= 25:
@@ -8312,7 +8288,7 @@ class OptionsEngine:
             reason=reason,
             requested_quantity=num_contracts,  # V2.3.2: Pass calculated contracts
             metadata={
-                "intraday_strategy": self.get_last_intraday_strategy().value,
+                "intraday_strategy": entry_strategy.value,
                 "contract_price": best_contract.mid_price,
             },
         )

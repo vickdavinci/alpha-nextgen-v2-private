@@ -1617,6 +1617,172 @@ class AlphaNextGen(QCAlgorithm):
         except Exception:
             return ""
 
+    def _clear_intraday_close_guard(self, symbol: str) -> None:
+        """Clear intraday close-in-progress guard + per-day submit marker for a symbol."""
+        symbol_norm = self._normalize_symbol_str(symbol)
+        if not symbol_norm:
+            return
+        self._intraday_close_in_progress_symbols.discard(symbol_norm)
+        self._intraday_force_exit_submitted_symbols.pop(symbol_norm, None)
+
+    def _get_valid_options_chain(self, option_chains: Any, mode_label: str):
+        """Return QQQ option chain when present and non-empty, else None with diagnostics."""
+        chain = (
+            option_chains[self._qqq_option_symbol]
+            if self._qqq_option_symbol in option_chains
+            else None
+        )
+        if chain is None:
+            return None
+        try:
+            if not list(chain):
+                self.Log(
+                    f"VASS_REJECTION_GHOST: No contracts in {mode_label} chain | "
+                    "Strike range may be too narrow or data gap"
+                )
+                return None
+        except Exception as e:
+            self.Log(f"OPTIONS_CHAIN_ERROR: Failed to iterate chain: {e}")
+            return None
+        return chain
+
+    def _get_options_market_snapshot(self) -> Tuple[float, float, float, float]:
+        """Shared market snapshot used by EOD + intraday options scans."""
+        qqq_price = self.Securities[self.qqq].Price
+        adx_value = self.qqq_adx.Current.Value
+        ma200_value = self.qqq_sma200.Current.Value
+        ma50_value = (
+            self.qqq_sma50.Current.Value
+            if hasattr(self, "qqq_sma50") and self.qqq_sma50.IsReady
+            else 0.0
+        )
+        return qqq_price, adx_value, ma200_value, ma50_value
+
+    def _log_intraday_signal_dropped(
+        self,
+        signal_id: str,
+        code: str,
+        reason: str,
+        retry_hint: Optional[str],
+        direction: Optional[OptionDirection],
+        strategy: Optional[IntradayStrategy],
+        contract_symbol: str,
+        validation_detail: Optional[str] = None,
+    ) -> None:
+        """Emit standardized MICRO dropped-signal telemetry line."""
+        validation_detail_fragment = (
+            f"ValidationDetail={validation_detail} | " if validation_detail else ""
+        )
+        self.Log(
+            f"INTRADAY_SIGNAL_DROPPED: SignalId={signal_id} | Candidate rejected before order | "
+            f"Code={code} | "
+            f"Reason={reason} | RetryHint={retry_hint} | "
+            f"{validation_detail_fragment}"
+            f"Dir={direction.value if direction else 'NONE'} | "
+            f"Strategy={strategy.value if strategy else 'NONE'} | "
+            f"Contract={contract_symbol}"
+        )
+
+    def _resolve_vass_direction_context(
+        self,
+        regime_score: float,
+        size_multiplier: float,
+        bull_profile_log_prefix: str,
+        clamp_log_prefix: str,
+        shock_log_prefix: str,
+    ) -> Optional[Tuple[OptionDirection, str, Any, float, bool, str, str, str, str,]]:
+        """
+        Resolve VASS direction + sizing context with shared guard rails.
+
+        Returns:
+            Tuple of (direction, direction_str, overlay_state, size_multiplier,
+            has_conviction, conviction_reason, macro_direction, resolve_reason,
+            resolved_direction_str) or None when blocked/no-trade.
+        """
+        current_date_str = self.Time.strftime("%Y-%m-%d")
+        self.options_engine._iv_sensor.update(self._current_vix, current_date_str)
+        (
+            has_conviction,
+            conviction_direction,
+            conviction_reason,
+        ) = self.options_engine._iv_sensor.has_conviction()
+        macro_direction = self.options_engine.get_macro_direction(regime_score)
+        overlay_state = self.options_engine.get_regime_overlay_state(
+            vix_current=self._current_vix, regime_score=regime_score
+        )
+        should_trade, resolved_direction, resolve_reason = self.options_engine.resolve_trade_signal(
+            engine="VASS",
+            engine_direction=conviction_direction,
+            engine_conviction=has_conviction,
+            macro_direction=macro_direction,
+            conviction_strength=None,
+            overlay_state=overlay_state,
+        )
+        if not should_trade:
+            if "E_OVERLAY_STRESS_BULL_BLOCK" in resolve_reason:
+                self._diag_overlay_block_count += 1
+            return None
+
+        if (
+            bool(getattr(config, "VASS_BULL_PROFILE_BEARISH_BLOCK_ENABLED", True))
+            and resolved_direction == "BEARISH"
+            and float(regime_score) >= float(getattr(config, "VASS_BULL_PROFILE_REGIME_MIN", 70.0))
+            and str(overlay_state).upper() in {"NORMAL", "RECOVERY"}
+        ):
+            self.Log(
+                f"{bull_profile_log_prefix}: Bearish VASS blocked in strong bull profile | "
+                f"Regime={float(regime_score):.1f} | Overlay={overlay_state}"
+            )
+            return None
+
+        if (
+            resolved_direction == "BULLISH"
+            and str(macro_direction).upper() == "NEUTRAL"
+            and self._current_vix
+            >= float(getattr(config, "VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX", 18.0))
+        ):
+            self.Log(
+                f"{clamp_log_prefix}: Neutral macro + elevated VIX blocks bullish override | "
+                f"VIX={self._current_vix:.1f} >= {float(getattr(config, 'VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX', 18.0)):.1f} | "
+                f"Resolve={resolve_reason}"
+            )
+            return None
+
+        if "NEUTRAL_ALIGNED_HALF" in resolve_reason:
+            size_multiplier *= config.NEUTRAL_ALIGNED_SIZE_MULT
+
+        if (
+            getattr(config, "SHOCK_MEMORY_FORCE_BEARISH_VASS", True)
+            and self._is_premarket_shock_memory_active()
+            and resolved_direction == "BULLISH"
+        ):
+            resolved_direction = "BEARISH"
+            resolve_reason = f"{resolve_reason} | SHOCK_MEMORY_FORCE_BEARISH"
+            self.Log(
+                f"{shock_log_prefix}: Forcing BEARISH | "
+                f"Shock={self._get_premarket_shock_memory_pct():+.1%} | "
+                f"Reason={resolve_reason}"
+            )
+
+        if resolved_direction == "BULLISH":
+            direction = OptionDirection.CALL
+            direction_str = "BULLISH"
+        else:
+            direction = OptionDirection.PUT
+            direction_str = "BEARISH"
+
+        return (
+            direction,
+            direction_str,
+            overlay_state,
+            size_multiplier,
+            has_conviction,
+            conviction_reason,
+            str(macro_direction),
+            resolve_reason,
+            resolved_direction,
+        )
+
     def _attach_option_trace_metadata(
         self,
         signal: TargetWeight,
@@ -2754,8 +2920,7 @@ class AlphaNextGen(QCAlgorithm):
                             f"Clearing stale _intraday_position"
                         )
                         self.options_engine._intraday_position = None
-                        self._intraday_close_in_progress_symbols.discard(symbol)
-                        self._intraday_force_exit_submitted_symbols.pop(symbol, None)
+                        self._clear_intraday_close_guard(symbol)
                         return
                 except Exception:
                     pass  # If symbol lookup fails, proceed with force close
@@ -2914,13 +3079,11 @@ class AlphaNextGen(QCAlgorithm):
             qc_symbol = self.Symbol(symbol)
             holding = self.Portfolio[qc_symbol]
             if not holding.Invested:
-                self._intraday_close_in_progress_symbols.discard(symbol)
-                self._intraday_force_exit_submitted_symbols.pop(symbol, None)
+                self._clear_intraday_close_guard(symbol)
                 return
             qty = abs(int(holding.Quantity))
             if qty <= 0:
-                self._intraday_close_in_progress_symbols.discard(symbol)
-                self._intraday_force_exit_submitted_symbols.pop(symbol, None)
+                self._clear_intraday_close_guard(symbol)
                 return
         except Exception:
             # Fallback to tracked quantity if symbol lookup fails
@@ -2963,8 +3126,7 @@ class AlphaNextGen(QCAlgorithm):
             if abs(self._get_option_holding_quantity(symbol)) <= 0:
                 stale.append(symbol)
         for symbol in stale:
-            self._intraday_close_in_progress_symbols.discard(symbol)
-            self._intraday_force_exit_submitted_symbols.pop(symbol, None)
+            self._clear_intraday_close_guard(symbol)
 
     def _on_friday_firewall(self) -> None:
         """
@@ -4194,6 +4356,15 @@ class AlphaNextGen(QCAlgorithm):
         except Exception as e:
             self.Log(f"STATE_ERROR: Failed to save state - {e}")
 
+    def _clear_micro_symbol_tracking(self, symbol: str) -> None:
+        """Clear MICRO tracking artifacts for a symbol after flat/orphan handling."""
+        sym_norm = self._normalize_symbol_str(symbol)
+        if not sym_norm:
+            return
+        self._micro_open_symbols.discard(sym_norm)
+        self._intraday_entry_snapshot.pop(sym_norm, None)
+        self._clear_intraday_close_guard(sym_norm)
+
     def _reconcile_positions(self, mode: str = "sod") -> None:
         """
         Reconcile internal position tracking with broker state.
@@ -4329,10 +4500,7 @@ class AlphaNextGen(QCAlgorithm):
                         self.Log(
                             f"RECON_ORPHAN_SKIP: {sym_str} | No live position at liquidation time"
                         )
-                        self._micro_open_symbols.discard(sym_str)
-                        self._intraday_entry_snapshot.pop(sym_str, None)
-                        self._intraday_close_in_progress_symbols.discard(sym_str)
-                        self._intraday_force_exit_submitted_symbols.pop(sym_str, None)
+                        self._clear_micro_symbol_tracking(sym_str)
                         self._recon_orphan_seen_streak.pop(sym_str, None)
                         self._recon_orphan_first_seen_at.pop(sym_str, None)
                         self._recon_orphan_last_log_at.pop(sym_str, None)
@@ -4386,10 +4554,7 @@ class AlphaNextGen(QCAlgorithm):
 
                     self.Liquidate(broker_symbol, tag="RECON_ORPHAN_OPTION")
                     self._recon_orphan_close_submitted[sym_str] = today
-                    self._micro_open_symbols.discard(sym_str)
-                    self._intraday_entry_snapshot.pop(sym_str, None)
-                    self._intraday_close_in_progress_symbols.discard(sym_str)
-                    self._intraday_force_exit_submitted_symbols.pop(sym_str, None)
+                    self._clear_micro_symbol_tracking(sym_str)
                     self._recon_orphan_seen_streak.pop(sym_str, None)
                     self._recon_orphan_first_seen_at.pop(sym_str, None)
                     self._recon_orphan_last_log_at.pop(sym_str, None)
@@ -4814,8 +4979,6 @@ class AlphaNextGen(QCAlgorithm):
             size_multiplier: Position size multiplier (default 1.0). Set to 0.5
                 during cold start to reduce risk while still participating.
         """
-        # Defensive default to avoid NameError in minified/stale variants.
-        ma50_value = 0.0
         size_multiplier *= self._premarket_vix_size_mult
 
         # Skip if indicators not ready
@@ -4891,48 +5054,16 @@ class AlphaNextGen(QCAlgorithm):
         # Get options chain from CurrentSlice (scheduled function, no Slice param)
         if self.CurrentSlice is None:
             return
-        chain = (
-            self.CurrentSlice.OptionChains[self._qqq_option_symbol]
-            if self._qqq_option_symbol in self.CurrentSlice.OptionChains
-            else None
-        )
+        chain = self._get_valid_options_chain(self.CurrentSlice.OptionChains, mode_label="SWING")
         if chain is None:
             return
 
-        # CRITICAL: Verify chain has valid contracts (not empty)
-        # Chain can exist but be empty on first trading day, holidays, or data issues
-        # Wrap in try-catch to handle malformed chain data gracefully
-        try:
-            chain_list = list(chain)
-            if not chain_list:
-                # V2.14 Fix #10: Log VASS_REJECTION_GHOST when chain is empty
-                self.Log(
-                    "VASS_REJECTION_GHOST: No contracts in SWING chain | "
-                    "Strike range may be too narrow or data gap"
-                )
-                return
-        except Exception as e:
-            self.Log(f"OPTIONS_CHAIN_ERROR: Failed to iterate chain: {e}")
-            return
-
         # Get current values
-        qqq_price = self.Securities[self.qqq].Price
-        adx_value = self.qqq_adx.Current.Value
-        ma200_value = self.qqq_sma200.Current.Value
-        ma50_value = (
-            self.qqq_sma50.Current.Value
-            if hasattr(self, "qqq_sma50") and self.qqq_sma50.IsReady
-            else 0.0
-        )
+        qqq_price, adx_value, ma200_value, ma50_value = self._get_options_market_snapshot()
         regime_score = regime_state.smoothed_score
 
         # V2.1: Calculate IV rank from options chain
         iv_rank = self._calculate_iv_rank(chain)
-
-        # V2.23: Update IVSensor BEFORE strategy selection
-        # V5.3: Pass date for daily VIX tracking (conviction logic)
-        current_date_str = self.Time.strftime("%Y-%m-%d")
-        self.options_engine._iv_sensor.update(self._current_vix, current_date_str)
 
         # V5.3: Check position limits before scanning
         can_swing, swing_reason = self.options_engine.can_enter_swing()
@@ -4940,89 +5071,34 @@ class AlphaNextGen(QCAlgorithm):
             # Debug log - skip in backtest to avoid log limits
             return
 
-        # V5.3: Get VASS conviction for potential Macro override
+        context = self._resolve_vass_direction_context(
+            regime_score=regime_score,
+            size_multiplier=size_multiplier,
+            bull_profile_log_prefix="VASS_BULL_PROFILE_BLOCK",
+            clamp_log_prefix="VASS_CLAMP_BLOCK",
+            shock_log_prefix="VASS_SHOCK_OVERRIDE_EOD",
+        )
+        if context is None:
+            return
         (
+            direction,
+            direction_str,
+            _overlay_state,
+            size_multiplier,
             vass_has_conviction,
-            vass_direction,
             vass_reason,
-        ) = self.options_engine._iv_sensor.has_conviction()
-
-        # V5.3: Get Macro direction from regime score
-        macro_direction = self.options_engine.get_macro_direction(regime_score)
-        overlay_state = self.options_engine.get_regime_overlay_state(
-            vix_current=self._current_vix, regime_score=regime_score
-        )
-
-        # V5.3: Resolve trade signal - VASS conviction can override Macro
-        should_trade, resolved_direction, resolve_reason = self.options_engine.resolve_trade_signal(
-            engine="VASS",
-            engine_direction=vass_direction,
-            engine_conviction=vass_has_conviction,
-            macro_direction=macro_direction,
-            conviction_strength=None,
-            overlay_state=overlay_state,
-        )
-
-        if not should_trade:
-            if "E_OVERLAY_STRESS_BULL_BLOCK" in resolve_reason:
-                self._diag_overlay_block_count += 1
-            # Debug log - skip in backtest to avoid log limits
-            return
-
-        if (
-            bool(getattr(config, "VASS_BULL_PROFILE_BEARISH_BLOCK_ENABLED", True))
-            and resolved_direction == "BEARISH"
-            and float(regime_score) >= float(getattr(config, "VASS_BULL_PROFILE_REGIME_MIN", 70.0))
-            and str(overlay_state).upper() in {"NORMAL", "RECOVERY"}
-        ):
-            self.Log(
-                f"VASS_BULL_PROFILE_BLOCK: Bearish VASS blocked in strong bull profile | "
-                f"Regime={float(regime_score):.1f} | Overlay={overlay_state}"
-            )
-            return
-
-        # Bear hardening: do not allow bullish VASS override from NEUTRAL macro
-        # when volatility is already elevated.
-        if (
-            resolved_direction == "BULLISH"
-            and str(macro_direction).upper() == "NEUTRAL"
-            and self._current_vix
-            >= float(getattr(config, "VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX", 18.0))
-        ):
-            self.Log(
-                f"VASS_CLAMP_BLOCK: Neutral macro + elevated VIX blocks bullish override | "
-                f"VIX={self._current_vix:.1f} >= {float(getattr(config, 'VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX', 18.0)):.1f} | "
-                f"Resolve={resolve_reason}"
-            )
-            return
-
-        if "NEUTRAL_ALIGNED_HALF" in resolve_reason:
-            size_multiplier *= config.NEUTRAL_ALIGNED_SIZE_MULT
-
-        # V6.16: Overnight shock memory override for EOD VASS path.
-        if (
-            getattr(config, "SHOCK_MEMORY_FORCE_BEARISH_VASS", True)
-            and self._is_premarket_shock_memory_active()
-            and resolved_direction == "BULLISH"
-        ):
-            resolved_direction = "BEARISH"
-            resolve_reason = f"{resolve_reason} | SHOCK_MEMORY_FORCE_BEARISH"
-            self.Log(
-                f"VASS_SHOCK_OVERRIDE_EOD: Forcing BEARISH | "
-                f"Shock={self._get_premarket_shock_memory_pct():+.1%} | "
-                f"Reason={resolve_reason}"
-            )
+            macro_direction,
+            resolve_reason,
+            resolved_direction,
+        ) = context
 
         # V5.3: Use resolved direction (may be VASS override or Macro alignment)
-        if resolved_direction == "BULLISH":
-            if self._is_premarket_ladder_call_block_active():
-                self.Log(
-                    f"OPTIONS_EOD: CALL blocked by pre-market ladder | {self._premarket_vix_ladder_reason}"
-                )
-                return
-            directions_to_scan = [(OptionDirection.CALL, "BULLISH")]
-        else:  # BEARISH
-            directions_to_scan = [(OptionDirection.PUT, "BEARISH")]
+        if direction == OptionDirection.CALL and self._is_premarket_ladder_call_block_active():
+            self.Log(
+                f"OPTIONS_EOD: CALL blocked by pre-market ladder | {self._premarket_vix_ladder_reason}"
+            )
+            return
+        directions_to_scan = [(direction, direction_str)]
 
         if vass_has_conviction:
             self.Log(
@@ -6643,8 +6719,6 @@ class AlphaNextGen(QCAlgorithm):
         Args:
             data: Current data slice.
         """
-        # Defensive default to avoid NameError in minified/stale variants.
-        ma50_value = 0.0
         # V2.3.20: Calculate size multiplier for cold start
         is_cold_start = self.cold_start_engine.is_cold_start_active()
         size_multiplier = config.OPTIONS_COLD_START_MULTIPLIER if is_cold_start else 1.0
@@ -6750,38 +6824,12 @@ class AlphaNextGen(QCAlgorithm):
             return
 
         # Get options chain
-        chain = (
-            data.OptionChains[self._qqq_option_symbol]
-            if self._qqq_option_symbol in data.OptionChains
-            else None
-        )
+        chain = self._get_valid_options_chain(data.OptionChains, mode_label="INTRADAY")
         if chain is None:
             return
 
-        # CRITICAL: Verify chain has valid contracts (not empty)
-        # Wrap in try-catch to handle malformed chain data gracefully
-        try:
-            chain_list = list(chain)
-            if not chain_list:
-                # V2.14 Fix #10: Log VASS_REJECTION_GHOST when chain is empty
-                self.Log(
-                    "VASS_REJECTION_GHOST: No contracts in INTRADAY chain | "
-                    "Strike range may be too narrow or data gap"
-                )
-                return
-        except Exception as e:
-            self.Log(f"OPTIONS_CHAIN_ERROR: Failed to iterate chain: {e}")
-            return
-
         # Get current values
-        qqq_price = self.Securities[self.qqq].Price
-        adx_value = self.qqq_adx.Current.Value
-        ma200_value = self.qqq_sma200.Current.Value
-        ma50_value = (
-            self.qqq_sma50.Current.Value
-            if hasattr(self, "qqq_sma50") and self.qqq_sma50.IsReady
-            else 0.0
-        )
+        qqq_price, adx_value, ma200_value, ma50_value = self._get_options_market_snapshot()
 
         # V2.4.1: Throttle intraday scanning to every 15 minutes (was every minute)
         # This reduces 95 scans/hour to 4 scans/hour
@@ -6909,13 +6957,14 @@ class AlphaNextGen(QCAlgorithm):
                         # V9.1 FIX: Emit DROPPED log for contract selection failures.
                         # Previously 124 candidates/quarter silently fell through with
                         # no INTRADAY_SIGNAL_DROPPED, making funnel analysis incomplete.
-                        self.Log(
-                            f"INTRADAY_SIGNAL_DROPPED: SignalId={intraday_signal_id} | Candidate rejected before order | "
-                            f"Code=E_NO_CONTRACT_SELECTED | "
-                            f"Reason={signal_reason} | RetryHint=None | "
-                            f"Dir={intraday_direction.value} | "
-                            f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'} | "
-                            f"Contract=NONE"
+                        self._log_intraday_signal_dropped(
+                            signal_id=intraday_signal_id,
+                            code="E_NO_CONTRACT_SELECTED",
+                            reason=signal_reason,
+                            retry_hint="None",
+                            direction=intraday_direction,
+                            strategy=intraday_strategy,
+                            contract_symbol="NONE",
                         )
                         self._diag_intraday_dropped_count += 1
                         self._inc_micro_dte_counter(self._diag_micro_dte_dropped, None)
@@ -6930,13 +6979,14 @@ class AlphaNextGen(QCAlgorithm):
                         f"Bid={intraday_contract.bid} Ask={intraday_contract.ask}"
                     )
                     # V9.1 FIX: Emit DROPPED log for bid/ask rejection
-                    self.Log(
-                        f"INTRADAY_SIGNAL_DROPPED: SignalId={intraday_signal_id} | Candidate rejected before order | "
-                        f"Code=E_BID_ASK_INVALID | "
-                        f"Reason={signal_reason} | RetryHint=None | "
-                        f"Dir={intraday_direction.value if intraday_direction else 'NONE'} | "
-                        f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'} | "
-                        f"Contract={intraday_contract.symbol}"
+                    self._log_intraday_signal_dropped(
+                        signal_id=intraday_signal_id,
+                        code="E_BID_ASK_INVALID",
+                        reason=signal_reason,
+                        retry_hint="None",
+                        direction=intraday_direction,
+                        strategy=intraday_strategy,
+                        contract_symbol=str(intraday_contract.symbol),
                     )
                     self._diag_intraday_dropped_count += 1
                     self._inc_micro_dte_counter(
@@ -7057,19 +7107,17 @@ class AlphaNextGen(QCAlgorithm):
                                 drop_code = "E_INTRADAY_NO_DIRECTION"
 
                             drop_code = self._canonical_options_reason_code(drop_code)
-                            validation_detail_fragment = (
-                                f"ValidationDetail={intraday_validation_detail} | "
-                                if intraday_validation_detail
-                                else ""
-                            )
-                            self.Log(
-                                f"INTRADAY_SIGNAL_DROPPED: SignalId={intraday_signal_id} | Candidate rejected before order | "
-                                f"Code={drop_code} | "
-                                f"Reason={signal_reason} | RetryHint={retry_reason_now} | "
-                                f"{validation_detail_fragment}"
-                                f"Dir={intraday_direction.value if intraday_direction else 'NONE'} | "
-                                f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'} | "
-                                f"Contract={intraday_contract.symbol if intraday_contract else 'NONE'}"
+                            self._log_intraday_signal_dropped(
+                                signal_id=intraday_signal_id,
+                                code=drop_code,
+                                reason=signal_reason,
+                                retry_hint=retry_reason_now,
+                                direction=intraday_direction,
+                                strategy=intraday_strategy,
+                                contract_symbol=str(intraday_contract.symbol)
+                                if intraday_contract
+                                else "NONE",
+                                validation_detail=intraday_validation_detail,
                             )
                             self._diag_intraday_dropped_count += 1
                             self._inc_micro_dte_counter(
@@ -7127,94 +7175,28 @@ class AlphaNextGen(QCAlgorithm):
                 return
         self._last_swing_scan_time = self.Time
 
-        # V2.23: Update IVSensor BEFORE strategy selection
-        # V5.3: Pass date for daily VIX tracking (conviction logic)
-        current_date_str = self.Time.strftime("%Y-%m-%d")
-        self.options_engine._iv_sensor.update(self._current_vix, current_date_str)
-
         regime_score = self._get_effective_regime_score_for_options()
-
-        # V6.0: Add VASS conviction resolution to intraday path (matches EOD path)
-        # Get VASS conviction for potential Macro override
+        context = self._resolve_vass_direction_context(
+            regime_score=regime_score,
+            size_multiplier=size_multiplier,
+            bull_profile_log_prefix="VASS_BULL_PROFILE_BLOCK_INTRADAY",
+            clamp_log_prefix="VASS_CLAMP_BLOCK_INTRADAY",
+            shock_log_prefix="VASS_SHOCK_OVERRIDE",
+        )
+        if context is None:
+            # No trade - either NEUTRAL macro with no conviction, or guarded block.
+            return
         (
+            direction,
+            direction_str,
+            overlay_state,
+            size_multiplier,
             vass_has_conviction,
-            vass_direction,
             vass_reason,
-        ) = self.options_engine._iv_sensor.has_conviction()
-
-        # Get Macro direction from regime score
-        macro_direction = self.options_engine.get_macro_direction(regime_score)
-        overlay_state = self.options_engine.get_regime_overlay_state(
-            vix_current=self._current_vix, regime_score=regime_score
-        )
-
-        # Resolve trade signal - VASS conviction can override Macro
-        should_trade, resolved_direction, resolve_reason = self.options_engine.resolve_trade_signal(
-            engine="VASS",
-            engine_direction=vass_direction,
-            engine_conviction=vass_has_conviction,
-            macro_direction=macro_direction,
-            conviction_strength=None,
-            overlay_state=overlay_state,
-        )
-
-        if not should_trade:
-            if "E_OVERLAY_STRESS_BULL_BLOCK" in resolve_reason:
-                self._diag_overlay_block_count += 1
-            # No trade - either NEUTRAL macro with no conviction, or conflict without conviction
-            return
-
-        if (
-            bool(getattr(config, "VASS_BULL_PROFILE_BEARISH_BLOCK_ENABLED", True))
-            and resolved_direction == "BEARISH"
-            and float(regime_score) >= float(getattr(config, "VASS_BULL_PROFILE_REGIME_MIN", 70.0))
-            and str(overlay_state).upper() in {"NORMAL", "RECOVERY"}
-        ):
-            self.Log(
-                f"VASS_BULL_PROFILE_BLOCK_INTRADAY: Bearish VASS blocked in strong bull profile | "
-                f"Regime={float(regime_score):.1f} | Overlay={overlay_state}"
-            )
-            return
-
-        # Bear hardening: clamp bullish VASS override in elevated VIX when macro is neutral.
-        if (
-            resolved_direction == "BULLISH"
-            and str(macro_direction).upper() == "NEUTRAL"
-            and self._current_vix
-            >= float(getattr(config, "VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX", 18.0))
-        ):
-            self.Log(
-                f"VASS_CLAMP_BLOCK_INTRADAY: Neutral macro + elevated VIX blocks bullish override | "
-                f"VIX={self._current_vix:.1f} >= {float(getattr(config, 'VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX', 18.0)):.1f} | "
-                f"Resolve={resolve_reason}"
-            )
-            return
-
-        if "NEUTRAL_ALIGNED_HALF" in resolve_reason:
-            size_multiplier *= config.NEUTRAL_ALIGNED_SIZE_MULT
-
-        # V6.16: If overnight shock memory is active, force VASS into defensive direction.
-        # This prevents bullish spread selection immediately after large overnight VIX shock.
-        if (
-            getattr(config, "SHOCK_MEMORY_FORCE_BEARISH_VASS", True)
-            and self._is_premarket_shock_memory_active()
-            and resolved_direction == "BULLISH"
-        ):
-            resolved_direction = "BEARISH"
-            resolve_reason = f"{resolve_reason} | SHOCK_MEMORY_FORCE_BEARISH"
-            self.Log(
-                f"VASS_SHOCK_OVERRIDE: Forcing BEARISH | "
-                f"Shock={self._get_premarket_shock_memory_pct():+.1%} | "
-                f"Reason={resolve_reason}"
-            )
-
-        # Use resolved direction (may be VASS override or Macro alignment)
-        if resolved_direction == "BULLISH":
-            direction = OptionDirection.CALL
-            direction_str = "BULLISH"
-        else:  # BEARISH
-            direction = OptionDirection.PUT
-            direction_str = "BEARISH"
+            macro_direction,
+            resolve_reason,
+            resolved_direction,
+        ) = context
 
         # V6.14: L2 call block applies to VASS path too.
         if direction == OptionDirection.CALL and self._is_premarket_ladder_call_block_active():
@@ -8507,8 +8489,7 @@ class AlphaNextGen(QCAlgorithm):
         elif "QQQ" in symbol and ("C" in symbol or "P" in symbol):
             symbol_norm = self._normalize_symbol_str(symbol)
             if self.options_engine.cancel_pending_intraday_exit(symbol_norm):
-                self._intraday_close_in_progress_symbols.discard(symbol_norm)
-                self._intraday_force_exit_submitted_symbols.pop(symbol_norm, None)
+                self._clear_intraday_close_guard(symbol_norm)
                 self.Log(
                     f"OPT_MICRO_EXIT_RECOVERY: Close rejected/canceled | "
                     f"Symbol={symbol_norm} | Exit lock cleared"
