@@ -1962,6 +1962,7 @@ class OptionsEngine:
         # V2.27: Win Rate Gate - rolling spread trade result tracker
         self._spread_result_history: List[bool] = []  # True=win, False=loss
         self._win_rate_shutoff: bool = False  # True when win rate < shutoff threshold
+        self._win_rate_shutoff_date: Optional[str] = None  # YYYY-MM-DD shutoff activation
         self._paper_track_history: List[bool] = []  # Paper trades during shutoff
         # Phase A: prevent burst/repeat VASS spread clustering by signature.
         # signature = strategy|direction|expiry_bucket
@@ -7123,10 +7124,11 @@ class OptionsEngine:
         if not getattr(config, "SWING_OVERNIGHT_GAP_PROTECTION_ENABLED", True):
             return None
 
-        if self._spread_position is None:
+        spreads = self.get_spread_positions()
+        if not spreads:
             return None
 
-        spread = self._spread_position
+        spread = spreads[0]
         entry_date = (
             spread.entry_time.split()[0] if " " in spread.entry_time else spread.entry_time[:10]
         )
@@ -9205,6 +9207,41 @@ class OptionsEngine:
         except Exception:
             return ""
 
+    def get_pending_intraday_partial_oco_seed(
+        self, symbol: str, fill_price: float
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Build temporary OCO pricing for a pending intraday entry partial fill.
+
+        Used when an entry order partially fills before full fill registration.
+        """
+        if (
+            not self._pending_intraday_entry
+            or self._pending_contract is None
+            or fill_price is None
+            or float(fill_price) <= 0
+        ):
+            return None
+
+        symbol_norm = self._symbol_str(symbol)
+        pending_symbol = self._symbol_str(self._pending_contract.symbol)
+        if not symbol_norm or symbol_norm != pending_symbol:
+            return None
+
+        entry_strategy = self._pending_entry_strategy or "SWING_SINGLE"
+        stop_pct = self._pending_stop_pct if self._pending_stop_pct is not None else 0.20
+        target_pct, strategy_floor = self._get_intraday_exit_profile(entry_strategy)
+        if strategy_floor is not None and strategy_floor > 0:
+            stop_pct = max(float(stop_pct), float(strategy_floor))
+
+        entry_px = float(fill_price)
+        return {
+            "entry_price": entry_px,
+            "stop_price": entry_px * (1 - float(stop_pct)),
+            "target_price": entry_px * (1 + float(target_pct)),
+            "entry_strategy": entry_strategy,
+        }
+
     def has_pending_swing_entry(self) -> bool:
         """True when a single-leg swing entry is pending (not intraday)."""
         return self._pending_contract is not None and not self._pending_intraday_entry
@@ -9284,6 +9321,12 @@ class OptionsEngine:
                         spread = s
                         break
             if spread is None:
+                if symbol:
+                    self.log(
+                        f"SPREAD: WARN remove no match for {symbol}, "
+                        f"fallback to first of {len(spreads)} spreads",
+                        trades_only=True,
+                    )
                 spread = spreads[0]
 
             if self._spread_positions:
@@ -9343,6 +9386,37 @@ class OptionsEngine:
             return
 
         if self._win_rate_shutoff:
+            if (
+                self._win_rate_shutoff_date is None
+                and self.algorithm is not None
+                and hasattr(self.algorithm, "Time")
+            ):
+                self._win_rate_shutoff_date = str(self.algorithm.Time.date())
+
+            # Time-based auto-recovery: avoid prolonged degraded sizing lock.
+            max_days = int(getattr(config, "WIN_RATE_GATE_MAX_SHUTOFF_DAYS", 30))
+            if (
+                max_days > 0
+                and self._win_rate_shutoff_date
+                and self.algorithm is not None
+                and hasattr(self.algorithm, "Time")
+            ):
+                try:
+                    shutoff_dt = datetime.strptime(self._win_rate_shutoff_date, "%Y-%m-%d").date()
+                    days_elapsed = (self.algorithm.Time.date() - shutoff_dt).days
+                    if days_elapsed >= max_days:
+                        self._win_rate_shutoff = False
+                        self._win_rate_shutoff_date = None
+                        self._paper_track_history = []
+                        self._spread_result_history = []
+                        self.log(
+                            f"WIN_RATE_GATE: AUTO_RESET | {days_elapsed} days in shutoff",
+                            trades_only=True,
+                        )
+                        return
+                except Exception:
+                    pass
+
             # During shutoff, record to paper history instead
             self._paper_track_history.append(is_win)
             if len(self._paper_track_history) > config.WIN_RATE_LOOKBACK:
@@ -9353,6 +9427,7 @@ class OptionsEngine:
                 paper_wr = sum(self._paper_track_history) / len(self._paper_track_history)
                 if paper_wr >= config.WIN_RATE_RESTART_THRESHOLD:
                     self._win_rate_shutoff = False
+                    self._win_rate_shutoff_date = None
                     self._paper_track_history = []
                     self.log(
                         f"WIN_RATE_GATE: RESUMED | PaperWR={paper_wr:.0%} >= "
@@ -9372,6 +9447,10 @@ class OptionsEngine:
                 wr = sum(self._spread_result_history) / len(self._spread_result_history)
                 if wr < config.WIN_RATE_SHUTOFF_THRESHOLD:
                     self._win_rate_shutoff = True
+                    if self.algorithm is not None and hasattr(self.algorithm, "Time"):
+                        self._win_rate_shutoff_date = str(self.algorithm.Time.date())
+                    else:
+                        self._win_rate_shutoff_date = None
                     self.log(
                         f"WIN_RATE_GATE: SHUTOFF | WinRate={wr:.0%} < "
                         f"{config.WIN_RATE_SHUTOFF_THRESHOLD:.0%} | "
@@ -9700,6 +9779,7 @@ class OptionsEngine:
             # V2.27: Win Rate Gate state
             "spread_result_history": self._spread_result_history,
             "win_rate_shutoff": self._win_rate_shutoff,
+            "win_rate_shutoff_date": self._win_rate_shutoff_date,
             "paper_track_history": self._paper_track_history,
             "vass_last_entry_at_by_signature": {
                 k: v.strftime("%Y-%m-%d %H:%M:%S")
@@ -9869,6 +9949,8 @@ class OptionsEngine:
         # V2.27: Win Rate Gate state
         self._spread_result_history = state.get("spread_result_history", [])
         self._win_rate_shutoff = state.get("win_rate_shutoff", False)
+        raw_shutoff_date = state.get("win_rate_shutoff_date")
+        self._win_rate_shutoff_date = str(raw_shutoff_date)[:10] if raw_shutoff_date else None
         self._paper_track_history = state.get("paper_track_history", [])
         self._vass_last_entry_at_by_signature = {}
         self._vass_cooldown_until_by_signature = {}
@@ -9947,6 +10029,7 @@ class OptionsEngine:
 
         # V2.3.3: Reset pending intraday exit flag
         self._pending_intraday_exit = False
+        self._win_rate_shutoff_date = None
         self._vass_last_entry_at_by_signature = {}
         self._vass_cooldown_until_by_signature = {}
         self._vass_last_entry_date_by_direction = {}

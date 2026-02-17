@@ -2947,10 +2947,17 @@ class AlphaNextGen(QCAlgorithm):
                     # Idempotency: only one force-close submit per symbol per day.
                     submitted_date = self._intraday_force_exit_submitted_symbols.get(signal.symbol)
                     if submitted_date == str(self.Time.date()):
+                        live_qty = abs(self._get_option_holding_quantity(signal.symbol))
+                        if live_qty <= 0:
+                            self.Log(
+                                f"INTRADAY_FORCE_EXIT: SKIP duplicate submit | "
+                                f"{signal.symbol} | Date={submitted_date}"
+                            )
+                            return
                         self.Log(
-                            f"INTRADAY_FORCE_EXIT: SKIP duplicate submit | {signal.symbol} | Date={submitted_date}"
+                            f"INTRADAY_FORCE_EXIT: RETRY | {signal.symbol} | "
+                            f"Qty={live_qty} still held"
                         )
-                        return
                     live_qty = abs(self._get_option_holding_quantity(signal.symbol))
                     if live_qty <= 0:
                         self.Log(f"INTRADAY_FORCE_EXIT: SKIP no live holding | {signal.symbol}")
@@ -3069,7 +3076,7 @@ class AlphaNextGen(QCAlgorithm):
         # Throttle OCO recovery retries per symbol (minutes, not once/day).
         today = str(self.Time.date())
         last_attempt = self._last_oco_recovery_attempt.get(symbol)
-        retry_interval_min = max(1, int(getattr(config, "OCO_RECOVERY_RETRY_MINUTES", 30)))
+        retry_interval_min = max(1, int(getattr(config, "OCO_RECOVERY_RETRY_MINUTES", 5)))
         if isinstance(last_attempt, str):
             # Backward compatibility if old date-string format remains in memory.
             if last_attempt == today:
@@ -3443,9 +3450,41 @@ class AlphaNextGen(QCAlgorithm):
 
             # Route partial fills to spread handler if applicable
             if "QQQ" in symbol and ("C" in symbol or "P" in symbol):
+                symbol_norm = self._normalize_symbol_str(symbol)
                 if self._is_spread_fill_symbol(symbol):
                     # This is a spread fill - accumulate in tracker
                     self._handle_spread_leg_fill(symbol, fill_price, abs(fill_qty))
+                else:
+                    live_qty = abs(self._get_option_holding_quantity(symbol_norm))
+                    sync_qty = live_qty if live_qty > 0 else abs(int(fill_qty))
+                    if sync_qty > 0 and self.options_engine.has_intraday_position():
+                        intraday_pos = self.options_engine.get_intraday_position()
+                        if (
+                            intraday_pos is not None
+                            and intraday_pos.contract is not None
+                            and self._normalize_symbol_str(intraday_pos.contract.symbol)
+                            == symbol_norm
+                            and float(getattr(intraday_pos, "stop_price", 0.0) or 0.0) > 0
+                            and float(getattr(intraday_pos, "target_price", 0.0) or 0.0) > 0
+                        ):
+                            self._sync_intraday_oco(
+                                symbol=symbol_norm,
+                                position=intraday_pos,
+                                quantity=sync_qty,
+                                reason="PARTIAL_FILL",
+                            )
+                    elif sync_qty > 0 and self.options_engine.has_pending_intraday_entry():
+                        oco_seed = self.options_engine.get_pending_intraday_partial_oco_seed(
+                            symbol=symbol_norm,
+                            fill_price=float(fill_price),
+                        )
+                        if oco_seed is not None:
+                            self._sync_intraday_oco(
+                                symbol=symbol_norm,
+                                position=oco_seed,
+                                quantity=sync_qty,
+                                reason="PARTIAL_FILL_PENDING",
+                            )
 
             # Notify execution engine only if the order originated there.
             self._forward_execution_event(
@@ -4109,6 +4148,17 @@ class AlphaNextGen(QCAlgorithm):
             qty = int(max(0, quantity))
             if not symbol_norm or qty <= 0 or position is None:
                 return
+            entry_price = float(getattr(position, "entry_price", 0.0) or 0.0)
+            stop_price = float(getattr(position, "stop_price", 0.0) or 0.0)
+            target_price = float(getattr(position, "target_price", 0.0) or 0.0)
+            entry_strategy = str(getattr(position, "entry_strategy", "UNKNOWN") or "UNKNOWN")
+            if isinstance(position, dict):
+                entry_price = float(position.get("entry_price", entry_price) or 0.0)
+                stop_price = float(position.get("stop_price", stop_price) or 0.0)
+                target_price = float(position.get("target_price", target_price) or 0.0)
+                entry_strategy = str(position.get("entry_strategy", entry_strategy) or "UNKNOWN")
+            if entry_price <= 0 or stop_price <= 0 or target_price <= 0:
+                return
 
             active_pair = self.oco_manager.get_active_pair(symbol_norm)
             if active_pair is not None:
@@ -4123,18 +4173,18 @@ class AlphaNextGen(QCAlgorithm):
 
             oco_pair = self.oco_manager.create_oco_pair(
                 symbol=symbol_norm,
-                entry_price=float(position.entry_price),
-                stop_price=float(position.stop_price),
-                target_price=float(position.target_price),
+                entry_price=entry_price,
+                stop_price=stop_price,
+                target_price=target_price,
                 quantity=qty,
                 current_date=str(self.Time.date()),
-                tag_context=f"MICRO:{getattr(position, 'entry_strategy', 'UNKNOWN')}",
+                tag_context=f"MICRO:{entry_strategy}",
             )
             if oco_pair and self.oco_manager.submit_oco_pair(oco_pair, current_time=str(self.Time)):
                 self.Log(
                     f"OCO_SYNC: {reason} | {symbol_norm} | Qty={qty} | "
-                    f"Stop=${float(position.stop_price):.2f} | "
-                    f"Target=${float(position.target_price):.2f}"
+                    f"Stop=${stop_price:.2f} | "
+                    f"Target=${target_price:.2f}"
                 )
         except Exception as e:
             self.Log(f"OCO_SYNC_ERROR: {symbol} | Reason={reason} | {e}")
@@ -8801,7 +8851,7 @@ class AlphaNextGen(QCAlgorithm):
                                     entry_price=fill_price,
                                     stop_price=position.stop_price,
                                     target_price=position.target_price,
-                                    quantity=int(fill_qty),
+                                    quantity=abs(int(fill_qty)),
                                     current_date=str(self.Time.date()),
                                     tag_context="SWING_SINGLE",
                                 )

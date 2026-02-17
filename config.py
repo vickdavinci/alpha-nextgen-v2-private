@@ -1364,6 +1364,7 @@ WIN_RATE_SHUTOFF_THRESHOLD = 0.20  # Below 20%: STOP all new spread entries
 WIN_RATE_RESTART_THRESHOLD = 0.35  # Resume when paper win rate recovers to 35%
 WIN_RATE_SIZING_REDUCED = 0.75  # Multiplier at REDUCED level
 WIN_RATE_SIZING_MINIMUM = 0.50  # Multiplier at MINIMUM level
+WIN_RATE_GATE_MAX_SHUTOFF_DAYS = 30  # Auto-reset stale shutoff after prolonged degrade window
 # V6.19 O-20: Keep VASS alive in stress periods; avoid full spread-path freeze.
 VASS_WIN_RATE_HARD_BLOCK = False  # If False, shutoff degrades to minimum size instead of blocking
 VASS_WIN_RATE_SHUTOFF_SCALE = 0.40  # Size scale used when shutoff is active and hard block disabled
@@ -1878,7 +1879,7 @@ INTRADAY_PROTECT_DTE_MAX = 7  # Maximum 7 DTE
 # Force close time for intraday
 INTRADAY_FORCE_EXIT_TIME = "15:25"  # V6.15 FIX: Earlier close to avoid OCO race at 15:30
 OCO_RECOVERY_CUTOFF_MINUTES_BEFORE_FORCE_EXIT = 20  # Disable OCO recovery near force-close window
-OCO_RECOVERY_RETRY_MINUTES = 30  # Retry missing OCO creation intraday (bounded cadence)
+OCO_RECOVERY_RETRY_MINUTES = 5  # Retry missing OCO creation intraday (bounded cadence)
 
 # V2.3.16: Direction Conflict Resolution
 # Skip intraday FADE when main regime strongly disagrees
