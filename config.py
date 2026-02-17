@@ -1081,7 +1081,7 @@ SHORT_LEG_ITM_EXIT_THRESHOLD = (
 )
 SPREAD_ASSIGNMENT_GRACE_MINUTES = 45  # V6.15 FIX: Allow spread to stabilize before ITM checks
 SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 15  # Minutes between log messages
-SPREAD_MIN_HOLD_MINUTES = 0  # V10.2: Disabled hold guard; let stop/target/trail manage exits
+SPREAD_MIN_HOLD_MINUTES = 5760  # V10.5: 4-day minimum hold window for VASS spread lifecycle
 SPREAD_EXIT_RETRY_MINUTES = (
     15  # V9.4 P0: Cooldown between exit signal retries (prevents per-minute spam)
 )
@@ -1278,20 +1278,20 @@ SPREAD_VIX_MAX_BULL = 30  # Max VIX for Bull Call Spread entry
 SPREAD_VIX_MAX_BEAR = 35  # Max VIX for Bear Put Spread entry (allow higher)
 # V6.19: Conditional stress override for BULL_CALL_DEBIT (reduces call bias in corrections).
 # Hard block when stress is confirmed; early-stress zone keeps participation at reduced size.
-BULL_CALL_STRESS_BLOCK_VIX = 22.0
-BULL_CALL_STRESS_ACCEL_VIX = 18.0
+BULL_CALL_STRESS_BLOCK_VIX = 26.0
+BULL_CALL_STRESS_ACCEL_VIX = 22.0
 BULL_CALL_STRESS_ACCEL_5D = 0.20  # +20% VIX over 5 sessions
-BULL_CALL_EARLY_STRESS_VIX_LOW = 16.0
-BULL_CALL_EARLY_STRESS_VIX_HIGH = 18.0
+BULL_CALL_EARLY_STRESS_VIX_LOW = 20.0
+BULL_CALL_EARLY_STRESS_VIX_HIGH = 25.0
 BULL_CALL_EARLY_STRESS_SIZE = 0.50
 # Bear hardening: block bullish debit spreads when short-term trend is down.
 VASS_BULL_CALL_MA50_BLOCK_ENABLED = True
 VASS_BULL_CALL_MA50_BLOCK_REGIME_MAX = 60.0
 # V6.22: Fast regime overlay thresholds (shared by resolver, slot caps, and exits).
-REGIME_OVERLAY_STRESS_VIX = 19.0
+REGIME_OVERLAY_STRESS_VIX = 25.0
 REGIME_OVERLAY_STRESS_VIX_5D = 0.12
-REGIME_OVERLAY_EARLY_VIX_LOW = 15.0
-REGIME_OVERLAY_EARLY_VIX_HIGH = 17.0
+REGIME_OVERLAY_EARLY_VIX_LOW = 20.0
+REGIME_OVERLAY_EARLY_VIX_HIGH = 25.0
 
 # Spread width (strike difference between legs)
 # V2.4.3: WIDTH-BASED short leg selection (fixes "delta trap" in backtesting)
@@ -1316,34 +1316,40 @@ VASS_DEBIT_MAX_HOLD_DAYS = 0  # V9.5: disable debit spread time-stop force exit
 VASS_DEBIT_MAX_HOLD_DAYS_LOW_VIX = 0  # V9.5: disable low-VIX debit time-stop override
 VASS_DEBIT_LOW_VIX_THRESHOLD = 16.0
 
+# V10.5: Day-4 EOD decision for VASS debit spreads
+VASS_DAY4_EOD_DECISION_ENABLED = True
+VASS_DAY4_EOD_MIN_HOLD_DAYS = 4
+VASS_DAY4_EOD_KEEP_IF_PNL_GT = 0.00  # Keep on day-4 EOD only if profitable; close otherwise
+VASS_DAY4_EOD_DECISION_TIME = "15:45"
+
 # Exit targets
 # V6.10 P5: Symmetric R:R (40%/40%) - need 1:1 win ratio to break even
 # Was asymmetric (50%/35%) requiring 1.43:1 win ratio
 SPREAD_MAX_DEBIT_TO_WIDTH_PCT = (
     0.55  # V9.1: Block spreads where debit > 55% of width (ensures R:R ≥ 0.82:1)
 )
-SPREAD_PROFIT_TARGET_PCT = 0.40  # V9.4: Lowered from 0.50 (more achievable targets)
-SPREAD_STOP_LOSS_PCT = 0.30  # V9.4: Tightened from 0.40 (caps worst-case at 36% in bull)
-SPREAD_HARD_STOP_LOSS_PCT = 0.40  # V9.4: Lowered from 0.50 (cap above max adaptive of 0.36)
+SPREAD_PROFIT_TARGET_PCT = 0.35  # V10.5: lower base target to improve hit-rate before reversals
+SPREAD_STOP_LOSS_PCT = 0.35  # V10.5: wider base stop to reduce noise stop-outs
+SPREAD_HARD_STOP_LOSS_PCT = 0.50  # V10.5: widen hard cap to avoid premature hard-stop clipping
 SPREAD_HARD_STOP_WIDTH_PCT = 0.35  # Hard cap using spread width (debit spreads)
 SPREAD_STOP_REGIME_MULTIPLIERS = {
-    75: 1.20,  # Bull: give more room (0.30 * 1.2 = 0.36)
-    50: 1.00,  # Neutral: base (0.30)
-    40: 0.85,  # Cautious: tighter (0.30 * 0.85 = 0.255)
-    0: 0.70,  # Bear: tightest (0.30 * 0.70 = 0.21)
+    75: 1.10,  # Bull: slightly wider stop to reduce pullback churn
+    50: 1.00,  # Neutral: base
+    40: 0.95,  # Cautious: near-base (avoid over-tightening)
+    0: 0.90,  # Bear: still tighter, but not extreme noise-sensitive
 }
 
 # V9.4: Spread Trailing Stop — lock in gains after reaching activation threshold
-SPREAD_TRAIL_ACTIVATE_PCT = 0.20  # V10.5: activate trail earlier to lock winners before reversals
-SPREAD_TRAIL_OFFSET_PCT = 0.12  # V10.5: tighter trail to reduce giveback
+SPREAD_TRAIL_ACTIVATE_PCT = 0.28  # V10.5: delay trail activation to reduce premature winner cuts
+SPREAD_TRAIL_OFFSET_PCT = 0.18  # V10.5: wider trail to avoid stop/target competition
 
 # V3.0: Regime-Adaptive Profit Targets
 # V9.4: With 40% base, multipliers give: Bull=36%, Neutral=44%, Cautious/Bear=48%
 SPREAD_PROFIT_REGIME_MULTIPLIERS = {
-    75: 0.90,  # Regime >= 75: 36% target (0.90 × 40% base)
-    50: 1.10,  # Regime 50-74: 44% target
-    40: 1.20,  # Regime 40-49: 48% target
-    0: 1.20,  # Regime < 40: 48% target (ride bear trends)
+    75: 0.95,  # Bull: slightly easier than base to capture trend gains
+    50: 1.00,  # Neutral: base target
+    40: 1.05,  # Cautious: modestly higher target
+    0: 1.10,  # Bear: keep higher target for larger moves
 }
 
 # V9.4: BULL spread entry gates (regime-specific, no impact in bull markets)
@@ -1367,7 +1373,9 @@ WIN_RATE_SIZING_MINIMUM = 0.50  # Multiplier at MINIMUM level
 WIN_RATE_GATE_MAX_SHUTOFF_DAYS = 30  # Auto-reset stale shutoff after prolonged degrade window
 # V6.19 O-20: Keep VASS alive in stress periods; avoid full spread-path freeze.
 VASS_WIN_RATE_HARD_BLOCK = False  # If False, shutoff degrades to minimum size instead of blocking
-VASS_WIN_RATE_SHUTOFF_SCALE = 0.40  # Size scale used when shutoff is active and hard block disabled
+VASS_WIN_RATE_SHUTOFF_SCALE = (
+    0.50  # Soft-mode floor to avoid over-suppressing after kill-switch events
+)
 # In elevated VIX, do not allow VASS bullish conviction to force trades from NEUTRAL macro.
 VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX = 18.0
 VASS_BULL_PROFILE_BEARISH_BLOCK_ENABLED = True
@@ -1576,7 +1584,7 @@ SETTLEMENT_HALT_UNTIL_MINUTE = 30
 # -----------------------------------------------------------------------------
 # V2.12 Fix #3: Hard cap on spread contracts to prevent position accumulation
 # Evidence: V2.11 backtest showed qty=-80 (5× intended) from exit signal bug
-SPREAD_MAX_CONTRACTS = 20  # Hard cap per spread position
+SPREAD_MAX_CONTRACTS = 30  # V10.5: Increased hard cap for VASS spreads
 
 # V5.3: Options Position Limits (Margin Error Prevention)
 # Max concurrent positions: 2 intraday + 5 swings = 7 total
@@ -1588,7 +1596,7 @@ OPTIONS_MAX_SWING_PER_DIRECTION = 3  # Legacy fallback cap if directional pools 
 OPTIONS_MAX_SWING_BULLISH_POSITIONS = 3
 OPTIONS_MAX_SWING_BEARISH_POSITIONS = 3
 MAX_BULLISH_SPREADS_STRESS = 0  # No new bullish spreads in confirmed stress
-MAX_BULLISH_SPREADS_EARLY_STRESS = 1  # Restrict bullish concentration in early stress
+MAX_BULLISH_SPREADS_EARLY_STRESS = 2  # V10.5: keep restrictive but not crippling in early stress
 MAX_BEARISH_SPREADS_STRESS = 3  # Preserve bearish spread capacity in stress
 
 # V2.14 Fix #22: Conservative spread sizing to prevent tier cap violations
@@ -1804,9 +1812,9 @@ INTRADAY_ITM_TARGET = 0.40  # V10.5: improve target hit-rate while keeping posit
 # V6.4: DEBIT_MOMENTUM time window (same as ITM_MOMENTUM - both are momentum strategies)
 INTRADAY_DEBIT_MOMENTUM_START = "10:00"  # Entry window start
 INTRADAY_DEBIT_MOMENTUM_END = "14:30"  # Entry window end
-INTRADAY_ITM_STOP = 0.25  # V10: tighter — ITM moves predictably with delta (was 0.35)
-INTRADAY_ITM_STOP_FLOOR_MED_VIX = 0.30  # V10.5: widen ITM stops in medium VIX
-INTRADAY_ITM_STOP_FLOOR_HIGH_VIX = 0.35  # V10.5: widen ITM stops in high VIX
+INTRADAY_ITM_STOP = 0.28  # V10.5: slightly wider to reduce intraday noise stop-outs
+INTRADAY_ITM_STOP_FLOOR_MED_VIX = 0.33  # V10.5: widen ITM stops in medium VIX
+INTRADAY_ITM_STOP_FLOOR_HIGH_VIX = 0.38  # V10.5: widen ITM stops in high VIX
 INTRADAY_HIGH_VIX_STOP_MAX_PCT = (
     0.40  # V9.2 RCA: Wider stop cap for VIX>25 regimes (was capped at 28%)
 )
@@ -1924,7 +1932,7 @@ PROTECTIVE_PUTS_DTE_MAX = 7  # Maximum 7 DTE (balance cost vs protection)
 PROTECTIVE_PUTS_DELTA_TARGET = 0.30  # OTM puts (cheaper, more leverage)
 PROTECTIVE_PUTS_DELTA_TOLERANCE = 0.10  # Accept delta 0.20-0.40
 PROTECTIVE_PUTS_STOP_PCT = 0.35  # Tighter stop to reduce repeated deep insurance losses
-INTRADAY_MAX_CONTRACTS = 40  # V9.8: Hard cap for all MICRO intraday entries
+INTRADAY_MAX_CONTRACTS = 60  # V10.5: Increased hard cap for all MICRO intraday entries
 INTRADAY_PENDING_ENTRY_STALE_MINUTES = (
     5  # Auto-clear orphan pending entry lock when no open broker order exists
 )

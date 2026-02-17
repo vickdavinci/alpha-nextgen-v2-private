@@ -3007,7 +3007,13 @@ class AlphaNextGen(QCAlgorithm):
                         continue
                     submitted_date = self._intraday_force_exit_submitted_symbols.get(live_symbol)
                     if submitted_date == str(self.Time.date()):
-                        continue
+                        # Retry same-day only if still live and no non-OCO order is active.
+                        if abs(self._get_option_holding_quantity(live_symbol)) <= 0:
+                            self._clear_intraday_close_guard(live_symbol)
+                            continue
+                        if self._has_open_non_oco_order_for_symbol(live_symbol):
+                            continue
+                        self.Log(f"INTRADAY_FORCE_EXIT_SWEEP: RETRY same-day | {live_symbol}")
 
                     try:
                         self.oco_manager.cancel_by_symbol(
@@ -8626,6 +8632,13 @@ class AlphaNextGen(QCAlgorithm):
                 self.Log(
                     f"OPT_MICRO_EXIT_RECOVERY: Close rejected/canceled | "
                     f"Symbol={symbol_norm} | Exit lock cleared"
+                )
+            elif symbol_norm in self._intraday_close_in_progress_symbols:
+                # Clear stale in-progress close guard even when options-engine lock is absent.
+                # Prevents sticky EOD sweep state that blocks OCO recovery/retries.
+                self._clear_intraday_close_guard(symbol_norm)
+                self.Log(
+                    f"OPT_MICRO_EXIT_RECOVERY: Cleared stale close guard | Symbol={symbol_norm}"
                 )
 
             # Check pending state to determine sub-mode (most specific first)

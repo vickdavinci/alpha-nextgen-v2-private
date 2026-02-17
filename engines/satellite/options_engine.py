@@ -6592,6 +6592,58 @@ class OptionsEngine:
                 live_minutes = (self.algorithm.Time - entry_dt).total_seconds() / 60.0
                 mandatory_dte = int(getattr(config, "SPREAD_FORCE_CLOSE_DTE", 1))
                 if 0 <= live_minutes < min_hold_minutes and current_dte > mandatory_dte:
+                    # Catastrophic hard-stop override must remain active even during hold guard.
+                    if spread.spread_type in (
+                        "BULL_CALL",
+                        "BEAR_PUT",
+                        SpreadStrategy.BULL_CALL_DEBIT.value,
+                        SpreadStrategy.BEAR_PUT_DEBIT.value,
+                    ):
+                        entry_debit = float(getattr(spread, "net_debit", 0.0) or 0.0)
+                        if entry_debit > 0:
+                            current_spread_value = float(long_leg_price) - float(short_leg_price)
+                            pnl = current_spread_value - entry_debit
+                            pnl_pct = pnl / entry_debit
+
+                            hard_stop_pct = float(getattr(config, "SPREAD_HARD_STOP_LOSS_PCT", 0.0))
+                            if hard_stop_pct > 0 and pnl_pct <= -hard_stop_pct:
+                                self.log(
+                                    f"SPREAD_HARD_STOP_DURING_HOLD: {pnl_pct:.1%} <= -{hard_stop_pct:.0%} | "
+                                    f"Key={self._build_spread_key(spread)} | Held={live_minutes:.0f}m",
+                                    trades_only=True,
+                                )
+                                spread.is_closing = True
+                                if self.algorithm is not None:
+                                    self._spread_exit_signal_cooldown[
+                                        self._build_spread_key(spread)
+                                    ] = self.algorithm.Time
+                                return [
+                                    TargetWeight(
+                                        symbol=self._symbol_str(spread.long_leg.symbol),
+                                        target_weight=0.0,
+                                        source="OPT",
+                                        urgency=Urgency.IMMEDIATE,
+                                        reason=(
+                                            f"SPREAD_EXIT: SPREAD_HARD_STOP_DURING_HOLD {pnl_pct:.1%} "
+                                            f"(lost > {hard_stop_pct:.0%} hard cap)"
+                                        ),
+                                        requested_quantity=spread.num_spreads,
+                                        metadata={
+                                            "spread_close_short": True,
+                                            "spread_type": spread.spread_type,
+                                            "spread_short_leg_symbol": self._symbol_str(
+                                                spread.short_leg.symbol
+                                            ),
+                                            "spread_short_leg_quantity": spread.num_spreads,
+                                            "spread_key": self._build_spread_key(spread),
+                                            "spread_width": spread.width,
+                                            "spread_exit_code": "SPREAD_HARD_STOP_DURING_HOLD",
+                                            "is_credit_spread": False,
+                                            "spread_credit_received": 0.0,
+                                        },
+                                    )
+                                ]
+
                     spread_key = self._build_spread_key(spread)
                     if spread_key not in self._spread_hold_guard_logged:
                         self._spread_hold_guard_logged.add(spread_key)
@@ -6750,6 +6802,43 @@ class OptionsEngine:
             entry_debit = spread.net_debit
             pnl = current_spread_value - entry_debit
             pnl_pct = pnl / entry_debit if entry_debit > 0 else 0
+
+            # V10.5: Day-4 EOD decision for debit spreads.
+            # Rule: at day-4 EOD, keep only profitable spreads; close flat/losing spreads.
+            # Winners continue under normal exits; non-winners are capital-recycled.
+            if (
+                exit_reason is None
+                and bool(getattr(config, "VASS_DAY4_EOD_DECISION_ENABLED", False))
+                and self.algorithm is not None
+            ):
+                try:
+                    entry_dt = datetime.strptime(spread.entry_time[:19], "%Y-%m-%d %H:%M:%S")
+                    held_days = (self.algorithm.Time.date() - entry_dt.date()).days
+                    decision_days = int(getattr(config, "VASS_DAY4_EOD_MIN_HOLD_DAYS", 4))
+                    decision_time = str(getattr(config, "VASS_DAY4_EOD_DECISION_TIME", "15:45"))
+                    decision_hour, decision_minute = [int(x) for x in decision_time.split(":", 1)]
+                    is_eod_window = self.algorithm.Time.hour > decision_hour or (
+                        self.algorithm.Time.hour == decision_hour
+                        and self.algorithm.Time.minute >= decision_minute
+                    )
+                    if held_days >= decision_days and is_eod_window:
+                        keep_threshold = float(getattr(config, "VASS_DAY4_EOD_KEEP_IF_PNL_GT", 0.0))
+                        if pnl_pct > keep_threshold:
+                            spread_key = self._build_spread_key(spread)
+                            if spread_key not in self._spread_hold_guard_logged:
+                                self._spread_hold_guard_logged.add(spread_key)
+                                self.log(
+                                    f"DAY4_EOD_HOLD: Key={spread_key} | P&L={pnl_pct:.1%} > {keep_threshold:.0%} | "
+                                    f"Held={held_days}d",
+                                    trades_only=True,
+                                )
+                            return None
+                        exit_reason = (
+                            f"DAY4_EOD_CLOSE {pnl_pct:.1%} (<= {keep_threshold:.0%}) | "
+                            f"Held={held_days}d"
+                        )
+                except Exception:
+                    pass
 
             # Exit 1: Profit target (base 50% of max profit)
             # V3.0: Regime-adaptive profit targets - greedy in bull, defensive in bear
@@ -9407,9 +9496,10 @@ class OptionsEngine:
                 if symbol:
                     self.log(
                         f"SPREAD: WARN remove no match for {symbol}, "
-                        f"fallback to first of {len(spreads)} spreads",
+                        f"skip removal across {len(spreads)} active spreads",
                         trades_only=True,
                     )
+                    return None
                 spread = spreads[0]
 
             if self._spread_positions:

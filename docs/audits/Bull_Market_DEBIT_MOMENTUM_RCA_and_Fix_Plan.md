@@ -7,6 +7,101 @@ This document is decision-complete and intended to be implemented directly.
 
 ---
 
+## Current Approved Plan (VASS-First, Clear Scope)
+
+This is the active implementation sequence to stabilize profitability without over-complicating behavior:
+
+1. **VASS day-4 EOD decision rule**
+   - Add a 4-day minimum hold for VASS spreads.
+   - At **day-4 EOD**:
+     - If `PnL > 0%`, keep holding (winner can run).
+     - If `PnL <= 0%`, close the spread to recycle capital.
+   - Keep hard catastrophic protection enabled at all times.
+
+2. **Rebalance stop / trail / target (VASS)**
+   - Widen stop enough to avoid normal noise stop-outs.
+   - Prevent trail from competing too early with the profit target:
+     - later trail activation and/or wider trail offset.
+   - Keep targets reachable (do not require unrealistic multi-day moves).
+
+3. **Risk control simplification**
+   - Keep kill switch as the primary hard brake.
+   - Keep win-rate gate in soft mode only (telemetry + mild scaling), no hard shutoff behavior.
+
+4. **Sizing updates (approved)**
+   - `INTRADAY_MAX_CONTRACTS = 60` (MICRO hard cap).
+   - `SPREAD_MAX_CONTRACTS = 30` (VASS hard cap).
+   - Do not remove caps entirely.
+
+5. **Scope discipline**
+   - Apply these changes to appropriate engines only first (with the approved cap updates).
+   - Do not change unrelated crisis/governor plumbing in the same patch.
+
+6. **Validation windows**
+   - Run and compare: 2017 bull, 2021 bull, 2023 transition bull, Dec 2021-Feb 2022 bear.
+   - Required checks: stop-hit rate, avg hold, avg win/loss, tail-loss count, max drawdown, fee drag, signal funnel.
+
+---
+
+
+## Recommended Parameter Set (Using Existing Adaptive Logic)
+
+Apply these as the first tuning pass (small-step changes):
+
+### VASS (spreads)
+- `SPREAD_STOP_LOSS_PCT = 0.35` (from `0.30`)
+- `SPREAD_HARD_STOP_LOSS_PCT = 0.50` (from `0.40`)
+- `SPREAD_STOP_REGIME_MULTIPLIERS = {75: 1.10, 50: 1.00, 40: 0.95, 0: 0.90}`
+- `SPREAD_TRAIL_ACTIVATE_PCT = 0.28` (from `0.20`)
+- `SPREAD_TRAIL_OFFSET_PCT = 0.18` (from `0.12`)
+- `SPREAD_PROFIT_TARGET_PCT = 0.35` (from `0.40`)
+- `SPREAD_PROFIT_REGIME_MULTIPLIERS = {75: 0.95, 50: 1.00, 40: 1.05, 0: 1.10}`
+
+### MICRO (ITM)
+- `INTRADAY_ITM_STOP = 0.28` (from `0.25`)
+- `INTRADAY_ITM_STOP_FLOOR_MED_VIX = 0.33` (from `0.30`)
+- `INTRADAY_ITM_STOP_FLOOR_HIGH_VIX = 0.38` (from `0.35`)
+- Keep `INTRADAY_ITM_TARGET = 0.40` for this pass
+
+Rationale:
+- Reduce noise stop-outs.
+- Prevent trail from preempting trend winners too early.
+- Keep target reachable while preserving positive R:R.
+
+---
+
+## Overlay/Stress Threshold Alignment (Additive Recommendation)
+
+Two stress systems currently overlap (Regime Overlay and Bull-Call Stress Block) with mismatched thresholds. Keep both systems, but align calibration so normal bull conditions are not treated as stress.
+
+### Recommended first-pass values
+
+#### Regime Overlay
+- `REGIME_OVERLAY_EARLY_VIX_LOW = 20.0`
+- `REGIME_OVERLAY_EARLY_VIX_HIGH = 25.0`
+- `REGIME_OVERLAY_STRESS_VIX = 25.0`
+
+#### Slot caps
+- `MAX_BULLISH_SPREADS_EARLY_STRESS = 2` (from 1)
+- `MAX_BULLISH_SPREADS_STRESS = 0` (keep)
+- `MAX_BEARISH_SPREADS_STRESS = 3` (keep)
+
+#### Bull-call stress block (aligned)
+- `BULL_CALL_EARLY_STRESS_VIX_LOW = 20.0`
+- `BULL_CALL_EARLY_STRESS_VIX_HIGH = 25.0`
+- `BULL_CALL_STRESS_ACCEL_VIX = 22.0`
+- `BULL_CALL_STRESS_BLOCK_VIX = 26.0` (first pass; consider 28.0 only after validation)
+
+### Expected behavior after alignment
+- `VIX < 20`: NORMAL behavior, full bullish capacity.
+- `VIX 20-25`: EARLY_STRESS behavior, reduced bullish sizing/slots.
+- `VIX >= 25`: STRESS behavior, no new bullish VASS spreads.
+
+### Rollout note
+Use `26.0` for hard bull block on first pass to preserve bear protection. Promote to `28.0` only if bull performance improves and bear-risk metrics remain stable.
+
+---
+
 ## Non-Negotiable Constraints
 - No regressions in state consistency (position lifecycle, counters, persistence).
 - No regressions in order safety (OCO linkage, orphan cancellation, forced close behavior).
@@ -100,7 +195,10 @@ Add/ensure these config keys (names must be exact):
 - `GRIND_UP_OVERRIDE_ENABLED = False`  # V10: dead code path, CAUTIOUS not in caution_regimes
 
 ### 7. Keep existing safety caps
-- Keep per-day and per-direction intraday caps unchanged unless separately approved.
+- Keep per-day and per-direction trade caps unchanged.
+- **Update hard contract caps as approved:**
+  - `INTRADAY_MAX_CONTRACTS = 60`
+  - `SPREAD_MAX_CONTRACTS = 30`
 
 ---
 
