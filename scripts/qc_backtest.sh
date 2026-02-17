@@ -24,7 +24,7 @@ SRC="/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-priva
 LEAN_WORKSPACE="/Users/vigneshwaranarumugam/Documents/Trading Github/lean-workspace"
 DEST="$LEAN_WORKSPACE/AlphaNextGen"
 PROJECT_NAME="AlphaNextGen"
-MAX_FILE_BYTES=$((256 * 1024))
+MAX_FILE_CHARS=256000
 
 # Colors for output
 RED='\033[0;31m'
@@ -84,13 +84,13 @@ echo -e "${GREEN}   ✓ Validation passed${NC}"
 
 # Step 4: Size guards
 echo -e "${BLUE}[4/5]${NC} Checking QC size limits..."
-LARGEST_FILE_LINE=$(find "$DEST" -type f -name "*.py" -exec wc -c {} + | grep -v ' total$' | sort -nr | head -1)
+LARGEST_FILE_LINE=$(find "$DEST" -type f -name "*.py" -exec wc -m {} + | grep -v ' total$' | sort -nr | head -1)
 LARGEST_SIZE=$(echo "$LARGEST_FILE_LINE" | awk '{print $1}')
 LARGEST_PATH=$(echo "$LARGEST_FILE_LINE" | sed -E 's/^[[:space:]]*[0-9]+[[:space:]]+//')
-echo -e "${YELLOW}   Largest file:${NC} $LARGEST_PATH (${LARGEST_SIZE:-0} bytes)"
+echo -e "${YELLOW}   Largest file:${NC} $LARGEST_PATH (${LARGEST_SIZE:-0} chars)"
 
-if [ "${LARGEST_SIZE:-0}" -gt "$MAX_FILE_BYTES" ]; then
-    echo -e "${RED}   ✗ Size guard FAILED: per-file size exceeds ${MAX_FILE_BYTES} bytes${NC}"
+if [ "${LARGEST_SIZE:-0}" -gt "$MAX_FILE_CHARS" ]; then
+    echo -e "${RED}   ✗ Size guard FAILED: per-file size exceeds ${MAX_FILE_CHARS} characters${NC}"
     exit 1
 fi
 echo -e "${GREEN}   ✓ Size checks passed${NC}"

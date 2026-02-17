@@ -11,12 +11,19 @@ Applied AFTER the standard minifier. Techniques:
 
 import argparse
 import ast
+import io
 import os
 import re
 import sys
+import tokenize
+
+try:
+    import python_minifier
+except Exception:
+    python_minifier = None
 
 
-def remove_type_annotations(source: str) -> str:
+def remove_type_annotations(source: str, allow_var_annotations: bool = False) -> str:
     """Remove type annotations from function defs and variable assignments using AST."""
     try:
         tree = ast.parse(source)
@@ -87,10 +94,8 @@ def remove_type_annotations(source: str) -> str:
             new_lines.append(cleaned)
             i = j
         else:
-            # Skip variable annotation stripping entirely - it breaks @dataclass fields
-            # which REQUIRE annotations to define __init__ parameters.
-            # The space savings from variable annotations is minimal anyway.
-            if False:
+            # Variable annotation stripping is optional; disable for dataclass-heavy files.
+            if allow_var_annotations:
                 cleaned = _strip_var_annotation(line)
                 new_lines.append(cleaned)
             else:
@@ -252,9 +257,12 @@ def strip_inline_comments(source: str) -> str:
     for line in lines:
         stripped = line.rstrip()
 
-        # Skip full comment lines (already handled by basic minifier)
-        if stripped.lstrip().startswith("#"):
-            result.append(line)
+        # Drop comment-only lines to maximize size reduction.
+        # Preserve shebang / encoding cookie semantics if present.
+        lstripped = stripped.lstrip()
+        if lstripped.startswith("#"):
+            if lstripped.startswith("#!") or "coding" in lstripped[:30]:
+                result.append(line)
             continue
 
         # Find inline comment position (# not inside string)
@@ -317,6 +325,88 @@ def _find_inline_comment(line: str) -> int:
     return -1
 
 
+def remove_standalone_docstrings(source: str) -> str:
+    """Remove standalone triple-quoted docstring/comment blocks."""
+    lines = source.splitlines(keepends=True)
+    out = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.lstrip()
+        if stripped.startswith('"""') or stripped.startswith("'''"):
+            quote = stripped[:3]
+            if stripped.count(quote) >= 2 and stripped.strip() != quote:
+                i += 1
+                continue
+            i += 1
+            while i < len(lines):
+                if quote in lines[i]:
+                    i += 1
+                    break
+                i += 1
+            continue
+        out.append(line)
+        i += 1
+    return "".join(out)
+
+
+def remove_ast_docstrings(source: str) -> str:
+    """Remove real docstring expressions from module/class/function scopes."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return source
+
+    line_starts = [0]
+    for line in source.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+
+    def to_offset(lineno: int, col: int) -> int:
+        return line_starts[lineno - 1] + col
+
+    ranges = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not getattr(node, "body", None):
+            continue
+        first = node.body[0]
+        if not (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+            and hasattr(first, "lineno")
+            and hasattr(first, "end_lineno")
+        ):
+            continue
+
+        start = to_offset(first.lineno, first.col_offset)
+        end = to_offset(first.end_lineno, first.end_col_offset)
+        # Also trim one trailing newline to avoid leaving empty spacer lines.
+        if end < len(source) and source[end : end + 1] == "\n":
+            end += 1
+        ranges.append((start, end))
+
+    if not ranges:
+        return source
+
+    ranges.sort()
+    merged = []
+    for start, end in ranges:
+        if not merged or start > merged[-1][1]:
+            merged.append([start, end])
+        else:
+            merged[-1][1] = max(merged[-1][1], end)
+
+    out = []
+    cursor = 0
+    for start, end in merged:
+        out.append(source[cursor:start])
+        cursor = end
+    out.append(source[cursor:])
+    return "".join(out)
+
+
 def remove_blank_lines(source: str) -> str:
     """Remove ALL blank lines."""
     lines = source.splitlines(keepends=True)
@@ -356,6 +446,61 @@ def remove_unnecessary_pass(source: str) -> str:
     return "".join(result)
 
 
+def compress_string_literal_whitespace(source: str) -> str:
+    """Compress non-semantic whitespace in long non-f string literals."""
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
+    except tokenize.TokenError:
+        return source
+
+    updated = []
+    for tok in tokens:
+        if tok.type != tokenize.STRING:
+            updated.append(tok)
+            continue
+
+        literal = tok.string
+        prefix_match = re.match(r"^([rRbBuUfF]*)", literal)
+        prefix = prefix_match.group(1) if prefix_match else ""
+        if "f" in prefix.lower():
+            updated.append(tok)
+            continue
+
+        try:
+            value = ast.literal_eval(literal)
+        except Exception:
+            updated.append(tok)
+            continue
+
+        if not isinstance(value, str) or len(value) < 40:
+            updated.append(tok)
+            continue
+
+        # Skip regex/escape heavy literals where whitespace can be semantic.
+        if "\\" in value:
+            updated.append(tok)
+            continue
+
+        compact = value.replace(" | ", "|")
+        compact = re.sub(r" {2,}", " ", compact)
+
+        if compact != value:
+            tok = tokenize.TokenInfo(
+                type=tok.type,
+                string=repr(compact),
+                start=tok.start,
+                end=tok.end,
+                line=tok.line,
+            )
+
+        updated.append(tok)
+
+    try:
+        return tokenize.untokenize(updated)
+    except Exception:
+        return source
+
+
 def compress_indentation(source: str, target_spaces: int = 1) -> str:
     """Compress indentation to target_spaces while staying idempotent.
 
@@ -393,15 +538,43 @@ def compress_indentation(source: str, target_spaces: int = 1) -> str:
     return "".join(result)
 
 
-def ultra_minify(source: str, target_spaces: int = 2) -> str:
+def ultra_minify(source: str, target_spaces: int = 2, allow_var_annotations: bool = False) -> str:
     """Apply all ultra-minification techniques."""
     result = source
     result = strip_inline_comments(result)
-    result = remove_type_annotations(result)
+    result = remove_standalone_docstrings(result)
+    result = remove_ast_docstrings(result)
+    result = remove_type_annotations(result, allow_var_annotations=allow_var_annotations)
+    result = compress_string_literal_whitespace(result)
     # remove_unnecessary_pass disabled: causes IndentationError on QC after basic minify strips docstrings
     result = remove_blank_lines(result)
     result = compress_indentation(result, target_spaces=target_spaces)
     return result
+
+
+def python_minifier_fallback(source: str) -> str:
+    """Apply python-minifier when available for extra compression near QC limit."""
+    if python_minifier is None:
+        return source
+    try:
+        result = python_minifier.minify(
+            source,
+            remove_literal_statements=True,
+            combine_imports=True,
+            remove_annotations=True,
+            hoist_literals=False,
+            rename_locals=False,
+            rename_globals=False,
+            remove_object_base=True,
+            convert_posargs_to_args=True,
+            preserve_shebang=True,
+        )
+        ast.parse(result)
+        if len(result) < len(source):
+            return result
+    except Exception:
+        return source
+    return source
 
 
 def main():
@@ -428,7 +601,7 @@ def main():
         print(f"ERROR: Workspace not found: {workspace}")
         sys.exit(1)
 
-    LIMIT = 256 * 1024  # 256 KB per file
+    LIMIT = 256000  # QC hard limit: 256,000 characters per file
     PROJECT_LIMIT = 500 * 1024  # ~500 KB total project for QC
 
     print("=== Ultra Minification (ALL .py files) ===\n")
@@ -450,7 +623,14 @@ def main():
             size = len(content.encode("utf-8"))
             name = os.path.relpath(filepath, workspace)
 
-            minified = ultra_minify(content, target_spaces=target_indent)
+            allow_var_annotations = "@dataclass" not in content
+            minified = ultra_minify(
+                content,
+                target_spaces=target_indent,
+                allow_var_annotations=allow_var_annotations,
+            )
+            if len(minified) > 252000:
+                minified = python_minifier_fallback(minified)
             # Safety guard: never write syntactically invalid Python.
             try:
                 ast.parse(minified)
