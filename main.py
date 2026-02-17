@@ -58,65 +58,7 @@ from utils.monthly_pnl_tracker import MonthlyPnLTracker
 
 
 class AlphaNextGen(QCAlgorithm):
-    """
-    Alpha NextGen - Multi-Strategy Algorithmic Trading System.
-
-    This is the main entry point for the QuantConnect algorithm.
-    Implements Hub-and-Spoke architecture with Portfolio Router as the central hub.
-
-    Architecture:
-        - Portfolio Router (Hub) coordinates all strategy engines (Spokes)
-        - Strategy engines emit TargetWeight intentions
-        - Only Portfolio Router is authorized to place orders
-
-    Attributes:
-        Symbol References:
-            spy, rsp, hyg, ief: Symbol - Proxy symbols for regime calculation
-            tqqq, soxl, qld, sso, tna, fas, tmf, psq: Symbol - Traded symbols
-            traded_symbols: List[Symbol] - All traded symbols
-            proxy_symbols: List[Symbol] - All proxy symbols
-            trend_symbols: List[Symbol] - Trend engine symbols (QLD, SSO, TNA, FAS)
-
-        Engines:
-            regime_engine: RegimeEngine - Market state scoring
-            capital_engine: CapitalEngine - Phase management, tradeable equity
-            risk_engine: RiskEngine - Circuit breakers and safeguards
-            cold_start_engine: ColdStartEngine - Days 1-5 warm entry logic
-            trend_engine: TrendEngine - BB compression breakout signals
-            mr_engine: MeanReversionEngine - Intraday oversold bounce signals
-            hedge_engine: HedgeEngine - Regime-based hedge allocation
-
-        Infrastructure:
-            portfolio_router: PortfolioRouter - Central coordination, order placement
-            execution_engine: ExecutionEngine - Order submission
-            state_manager: StateManager - ObjectStore persistence
-            scheduler: DailyScheduler - Timed events
-
-        Indicators (registered with QC):
-            spy_sma20, spy_sma50, spy_sma200: SimpleMovingAverage - Trend factor
-            spy_atr: AverageTrueRange - Vol shock detection
-            qld_ma200, sso_ma200, tna_ma200, fas_ma200: SMA(200) - Trend direction
-            qld_adx, sso_adx, tna_adx, fas_adx: ADX(14) - Momentum confirmation
-            qld_atr, sso_atr, tna_atr, fas_atr: AverageTrueRange - Chandelier stops
-            tqqq_rsi, soxl_rsi: RelativeStrengthIndex - MR oversold
-
-        Rolling Windows:
-            spy_closes, rsp_closes, hyg_closes, ief_closes: RollingWindow[float]
-
-        Baselines:
-            equity_prior_close: float - For kill switch calculation
-            equity_sod: float - Start of day equity
-            spy_prior_close: float - For gap filter
-            spy_open: float - For panic mode
-
-        Daily Tracking:
-            today_trades: List[str] - Trades executed today
-            today_safeguards: List[str] - Safeguards triggered today
-            symbols_to_skip: Set[str] - Split-frozen symbols
-
-    See: CLAUDE.md for component map and authority rules
-    See: docs/ for full specification
-    """
+    """Main QuantConnect algorithm entrypoint for Alpha NextGen."""
 
     # =========================================================================
     # TYPE HINTS FOR CLASS ATTRIBUTES (initialized in Initialize)
@@ -1724,40 +1666,49 @@ class AlphaNextGen(QCAlgorithm):
         if not symbol_str or symbol_str != pos_symbol:
             return False
         try:
-            hold_allowed = bool(self.options_engine.should_hold_intraday_overnight(intraday_pos))
-            if not hold_allowed:
-                return False
-
-            max_loss_pct = float(getattr(config, "INTRADAY_ITM_OVERNIGHT_MAX_LOSS_PCT", 0.15))
-            entry_price = float(getattr(intraday_pos, "entry_price", 0.0) or 0.0)
-            if max_loss_pct <= 0 or entry_price <= 0:
-                return hold_allowed
-
-            current_price = 0.0
-            try:
-                if self.Securities.ContainsKey(intraday_pos.contract.symbol):
-                    current_price = float(self.Securities[intraday_pos.contract.symbol].Price)
-            except Exception:
-                current_price = 0.0
-
-            if current_price <= 0:
-                return hold_allowed
-
-            pnl_pct = (current_price - entry_price) / entry_price
-            if pnl_pct <= -max_loss_pct:
-                current_date = str(self.Time.date())
-                if self._intraday_hold_loss_block_log_date.get(symbol_str) != current_date:
-                    self.Log(
-                        f"INTRADAY_HOLD_BLOCK_LOSS15: {symbol_str} | "
-                        f"PnL={pnl_pct:+.1%} <= -{max_loss_pct:.0%} | "
-                        f"Entry=${entry_price:.2f} | Current=${current_price:.2f}"
-                    )
-                    self._intraday_hold_loss_block_log_date[symbol_str] = current_date
-                return False
-
-            return hold_allowed
+            return bool(self.options_engine.should_hold_intraday_overnight(intraday_pos))
         except Exception:
             return False
+
+    def _get_option_mark_price(self, symbol: str, fallback: float = 0.0) -> float:
+        """Best-effort option mark for EOD hold checks."""
+        try:
+            if self.Securities.ContainsKey(symbol):
+                sec = self.Securities[symbol]
+                last = float(sec.Price) if sec.Price is not None else 0.0
+                if last > 0:
+                    return last
+                bid = float(sec.BidPrice) if sec.BidPrice is not None else 0.0
+                ask = float(sec.AskPrice) if sec.AskPrice is not None else 0.0
+                if bid > 0 and ask > 0:
+                    return (bid + ask) / 2.0
+        except Exception:
+            pass
+        return fallback
+
+    def _is_micro_eod_loss_breach(
+        self, symbol: str, entry_price: float, current_price: float
+    ) -> bool:
+        """
+        EOD-only MICRO overnight hold guard.
+        Return True when unrealized loss is beyond configured overnight threshold.
+        """
+        max_loss_pct = float(getattr(config, "INTRADAY_ITM_OVERNIGHT_MAX_LOSS_PCT", 0.15))
+        if max_loss_pct <= 0 or entry_price <= 0 or current_price <= 0:
+            return False
+        pnl_pct = (current_price - entry_price) / entry_price
+        if pnl_pct > -max_loss_pct:
+            return False
+        current_date = str(self.Time.date())
+        symbol_str = self._normalize_symbol_str(symbol)
+        if self._intraday_hold_loss_block_log_date.get(symbol_str) != current_date:
+            self.Log(
+                f"INTRADAY_HOLD_BLOCK_LOSS15: {symbol_str} | "
+                f"PnL={pnl_pct:+.1%} <= -{max_loss_pct:.0%} | "
+                f"Entry=${entry_price:.2f} | Current=${current_price:.2f}"
+            )
+            self._intraday_hold_loss_block_log_date[symbol_str] = current_date
+        return True
 
     def _intraday_force_exit_fallback(self) -> None:
         """
@@ -1789,7 +1740,17 @@ class AlphaNextGen(QCAlgorithm):
 
         # Get current option price
         symbol = self._normalize_symbol_str(self.options_engine._intraday_position.contract.symbol)
-        if self._should_hold_intraday_symbol_overnight(symbol):
+        mark_price = self._get_option_mark_price(symbol, fallback=0.0)
+        entry_price = float(
+            getattr(self.options_engine._intraday_position, "entry_price", 0.0) or 0.0
+        )
+        hold_allowed = self._should_hold_intraday_symbol_overnight(symbol)
+        eod_loss_breach = hold_allowed and self._is_micro_eod_loss_breach(
+            symbol=symbol,
+            entry_price=entry_price,
+            current_price=mark_price,
+        )
+        if hold_allowed and not eod_loss_breach:
             self.Log(f"INTRADAY_FORCE_EXIT_FALLBACK: HOLD_SKIP {symbol}")
             self._intraday_force_exit_fallback_date = self.Time.date()
             return
@@ -1816,6 +1777,7 @@ class AlphaNextGen(QCAlgorithm):
             current_hour=self.Time.hour,
             current_minute=self.Time.minute,
             current_price=price,
+            ignore_hold_policy=eod_loss_breach,
         )
         if signal:
             live_qty = abs(self._get_option_holding_quantity(signal.symbol))
@@ -2775,8 +2737,15 @@ class AlphaNextGen(QCAlgorithm):
             # Get current option price
             intraday_pos = self.options_engine._intraday_position
             symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
+            current_price = self._get_option_mark_price(symbol, fallback=intraday_pos.entry_price)
+            hold_allowed = self._should_hold_intraday_symbol_overnight(symbol)
+            eod_loss_breach = hold_allowed and self._is_micro_eod_loss_breach(
+                symbol=symbol,
+                entry_price=float(getattr(intraday_pos, "entry_price", 0.0) or 0.0),
+                current_price=current_price,
+            )
 
-            if self._should_hold_intraday_symbol_overnight(symbol):
+            if hold_allowed and not eod_loss_breach:
                 self.Log(f"INTRADAY_FORCE_EXIT: HOLD_SKIP {symbol} (ITM overnight policy)")
             else:
                 # V2.25 Fix #4: Double-sell guard — verify position is still held
@@ -2794,9 +2763,6 @@ class AlphaNextGen(QCAlgorithm):
                 except Exception:
                     pass  # If symbol lookup fails, proceed with force close
 
-                # Get current price (best effort)
-                current_price = intraday_pos.entry_price  # Fallback
-
                 # Cancel active OCO before force-close to avoid orphan sell orders
                 # creating accidental short options after the position is closed.
                 try:
@@ -2809,6 +2775,7 @@ class AlphaNextGen(QCAlgorithm):
                     current_hour=self.Time.hour,
                     current_minute=self.Time.minute,
                     current_price=current_price,
+                    ignore_hold_policy=eod_loss_breach,
                 )
 
                 if signal:
@@ -2841,8 +2808,23 @@ class AlphaNextGen(QCAlgorithm):
                     live_symbol = self._normalize_symbol_str(holding.Symbol)
                     if live_symbol not in self._micro_open_symbols:
                         continue
-                    if self._should_hold_intraday_symbol_overnight(live_symbol):
-                        continue
+                    hold_allowed = self._should_hold_intraday_symbol_overnight(live_symbol)
+                    if hold_allowed:
+                        entry_price = 0.0
+                        snapshot = self._intraday_entry_snapshot.get(live_symbol, {})
+                        if snapshot and snapshot.get("entry_price", 0) > 0:
+                            entry_price = float(snapshot.get("entry_price", 0.0))
+                        elif holding.AveragePrice > 0:
+                            entry_price = float(holding.AveragePrice)
+                        current_price = self._get_option_mark_price(
+                            live_symbol, fallback=float(holding.Price)
+                        )
+                        if not self._is_micro_eod_loss_breach(
+                            symbol=live_symbol,
+                            entry_price=entry_price,
+                            current_price=current_price,
+                        ):
+                            continue
                     live_qty = int(holding.Quantity)
                     if live_qty == 0:
                         self._micro_open_symbols.discard(live_symbol)
@@ -3211,37 +3193,6 @@ class AlphaNextGen(QCAlgorithm):
             CBOE VIX daily value for level classification.
         """
         return self._current_vix  # Use daily CBOE VIX, NOT UVXY-derived proxy
-
-    def _get_vix_direction(self) -> str:
-        """
-        V2.11 (Pitfall #7): Get VIX DIRECTION from raw UVXY percentage change.
-
-        Uses UVXY percentage change directly for direction classification.
-        This is valid because UVXY tracks VIX direction reliably (~1.5x).
-        Do NOT derive synthetic VIX level for direction - use raw UVXY %.
-
-        Returns:
-            Direction string: FALLING_FAST, FALLING, STABLE, RISING, RISING_FAST, SPIKING
-        """
-        if self._uvxy_at_open <= 0:
-            return "STABLE"
-
-        uvxy_current = self.Securities[self.uvxy].Price
-        uvxy_change_pct = (uvxy_current - self._uvxy_at_open) / self._uvxy_at_open * 100
-
-        # Use raw UVXY % for direction (NOT synthetic VIX level)
-        if uvxy_change_pct < config.VIX_DIRECTION_FALLING_FAST:
-            return "FALLING_FAST"
-        elif uvxy_change_pct < config.VIX_DIRECTION_FALLING:
-            return "FALLING"
-        elif uvxy_change_pct <= config.VIX_DIRECTION_STABLE_HIGH:
-            return "STABLE"
-        elif uvxy_change_pct <= config.VIX_DIRECTION_RISING:
-            return "RISING"
-        elif uvxy_change_pct <= config.VIX_DIRECTION_RISING_FAST:
-            return "RISING_FAST"
-        else:
-            return "SPIKING"
 
     def _should_scan_intraday(self) -> bool:
         """
@@ -7786,128 +7737,50 @@ class AlphaNextGen(QCAlgorithm):
 
         return None
 
-    def _get_option_current_price(self, symbol: str, data: Slice) -> Optional[float]:
-        """
-        V2.3.10: Get current price for an option from the chain.
-
-        Args:
-            symbol: Option symbol string.
-            data: Current data slice.
-
-        Returns:
-            Current mid price or None if not available.
-        """
-        if self._qqq_option_symbol is None:
+    def _find_option_contract(self, symbol: str, data: Slice):
+        if self._qqq_option_symbol is None or self._qqq_option_symbol not in data.OptionChains:
             return None
-
-        chain = (
-            data.OptionChains[self._qqq_option_symbol]
-            if self._qqq_option_symbol in data.OptionChains
-            else None
-        )
-        if chain is None:
-            return None
-
         try:
-            for contract in chain:
+            for contract in data.OptionChains[self._qqq_option_symbol]:
                 if str(contract.Symbol) == symbol:
-                    # Return mid price
-                    bid = contract.BidPrice
-                    ask = contract.AskPrice
-                    if bid > 0 and ask > 0:
-                        return (bid + ask) / 2
-                    elif contract.LastPrice > 0:
-                        return contract.LastPrice
-                    break
+                    return contract
         except Exception:
-            pass
-
+            return None
         return None
+
+    def _get_option_current_price(self, symbol: str, data: Slice) -> Optional[float]:
+        """Get current mid/last price for an option from the chain."""
+        contract = self._find_option_contract(symbol, data)
+        if contract is None:
+            return None
+        bid = contract.BidPrice
+        ask = contract.AskPrice
+        if bid > 0 and ask > 0:
+            return (bid + ask) / 2
+        return contract.LastPrice if contract.LastPrice > 0 else None
 
     def _get_option_current_dte(self, symbol: str, data: Slice) -> Optional[int]:
-        """
-        V2.3.10: Get current days to expiration for an option.
-
-        Args:
-            symbol: Option symbol string.
-            data: Current data slice.
-
-        Returns:
-            Days to expiration or None if not available.
-        """
-        if self._qqq_option_symbol is None:
+        """Get current days-to-expiry for an option symbol."""
+        contract = self._find_option_contract(symbol, data)
+        if contract is None:
             return None
-
-        chain = (
-            data.OptionChains[self._qqq_option_symbol]
-            if self._qqq_option_symbol in data.OptionChains
-            else None
-        )
-        if chain is None:
-            return None
-
-        try:
-            for contract in chain:
-                if str(contract.Symbol) == symbol:
-                    # Calculate DTE from expiry
-                    expiry = contract.Expiry
-                    current_date = self.Time.date()
-                    dte = (expiry.date() - current_date).days
-                    return max(0, dte)  # Ensure non-negative
-        except Exception:
-            pass
-
-        return None
+        dte = (contract.Expiry.date() - self.Time.date()).days
+        return max(0, dte)
 
     def _get_option_expiry_date(self, symbol: str, data: Slice) -> Optional[str]:
-        """
-        V2.3.11: Get expiry date for an option as a string (YYYY-MM-DD).
-
-        Used for expiring options force exit check.
-
-        Args:
-            symbol: Option symbol string.
-            data: Current data slice.
-
-        Returns:
-            Expiry date as string (YYYY-MM-DD) or None if not available.
-        """
-        if self._qqq_option_symbol is None:
-            return None
-
-        chain = (
-            data.OptionChains[self._qqq_option_symbol]
-            if self._qqq_option_symbol in data.OptionChains
-            else None
-        )
-        if chain is None:
-            return None
-
-        try:
-            for contract in chain:
-                if str(contract.Symbol) == symbol:
-                    # Return expiry date as string
-                    return str(contract.Expiry.date())
-        except Exception:
-            pass
-
-        return None
+        """Get expiry date string (YYYY-MM-DD) for an option symbol."""
+        contract = self._find_option_contract(symbol, data)
+        return str(contract.Expiry.date()) if contract is not None else None
 
     def _cancel_spread_linked_oco(self, long_symbol: str, short_symbol: str, reason: str) -> None:
-        """
-        Cancel any OCO siblings tied to spread legs before forced-close retries.
-
-        Spread exits use combo/sequential flow, so stale leg-level OCO orders can
-        race forced closes and create cancel/reject loops.
-        """
+        """Cancel any OCO siblings tied to spread legs before forced-close retries."""
         if not hasattr(self, "oco_manager"):
             return
         for leg_symbol in (long_symbol, short_symbol):
             try:
-                if self.oco_manager.cancel_by_symbol(leg_symbol, reason=reason):
-                    self.Log(f"SPREAD_OCO_CANCEL: {leg_symbol} | Reason={reason}")
-            except Exception as e:
-                self.Log(f"SPREAD_OCO_CANCEL_ERROR: {leg_symbol} | {e}")
+                self.oco_manager.cancel_by_symbol(leg_symbol, reason=reason)
+            except Exception:
+                pass
 
     def _check_spread_exit(self, data: Slice) -> None:
         """

@@ -8247,6 +8247,7 @@ class OptionsEngine:
         current_hour: int,
         current_minute: int,
         current_price: float,
+        ignore_hold_policy: bool = False,
     ) -> Optional[TargetWeight]:
         """
         Check for forced exit of intraday position at configured intraday cutoff.
@@ -8280,20 +8281,27 @@ class OptionsEngine:
         symbol = self._intraday_position.contract.symbol
         symbol_str = self._symbol_str(symbol)
         if self.should_hold_intraday_overnight(self._intraday_position):
-            if self.algorithm is not None and hasattr(self.algorithm, "Time"):
-                current_date = str(self.algorithm.Time.date())
-            else:
-                current_date = datetime.utcnow().date().isoformat()
-            if self._intraday_force_exit_hold_skip_log_date.get(symbol_str) != current_date:
-                live_dte = self._get_position_live_dte(self._intraday_position)
+            if ignore_hold_policy:
                 self.log(
-                    f"INTRADAY_FORCE_EXIT_SKIP_HOLD {symbol_str} | "
-                    f"Strategy={getattr(self._intraday_position, 'entry_strategy', 'UNKNOWN')} | "
-                    f"LiveDTE={live_dte}",
+                    f"INTRADAY_FORCE_EXIT_OVERRIDE_HOLD {symbol_str} | "
+                    f"Strategy={getattr(self._intraday_position, 'entry_strategy', 'UNKNOWN')}",
                     trades_only=True,
                 )
-                self._intraday_force_exit_hold_skip_log_date[symbol_str] = current_date
-            return None
+            else:
+                if self.algorithm is not None and hasattr(self.algorithm, "Time"):
+                    current_date = str(self.algorithm.Time.date())
+                else:
+                    current_date = datetime.utcnow().date().isoformat()
+                if self._intraday_force_exit_hold_skip_log_date.get(symbol_str) != current_date:
+                    live_dte = self._get_position_live_dte(self._intraday_position)
+                    self.log(
+                        f"INTRADAY_FORCE_EXIT_SKIP_HOLD {symbol_str} | "
+                        f"Strategy={getattr(self._intraday_position, 'entry_strategy', 'UNKNOWN')} | "
+                        f"LiveDTE={live_dte}",
+                        trades_only=True,
+                    )
+                    self._intraday_force_exit_hold_skip_log_date[symbol_str] = current_date
+                return None
 
         entry_price = self._intraday_position.entry_price
         num_contracts = max(1, int(self._intraday_position.num_contracts))
