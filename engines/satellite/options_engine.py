@@ -8011,6 +8011,14 @@ class OptionsEngine:
                 return fail("E_INTRADAY_TIME_WINDOW")
 
         elif state.recommended_strategy == IntradayStrategy.ITM_MOMENTUM:
+            # V10.4: block ITM momentum in CAUTION_LOW only.
+            # Keep CAUTIOUS handling in the existing risk-on gating path.
+            if state.micro_regime == MicroRegime.CAUTION_LOW:
+                self.log(
+                    "INTRADAY: ITM_MOMENTUM blocked in regime CAUTION_LOW",
+                    trades_only=True,
+                )
+                return fail("E_ITM_MOMENTUM_REGIME_BLOCK")
             # V2.3.19: Use config values instead of hardcoded
             itm_start = config.INTRADAY_ITM_START.split(":")
             itm_end = config.INTRADAY_ITM_END.split(":")
