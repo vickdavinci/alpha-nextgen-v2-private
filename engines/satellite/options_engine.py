@@ -1945,6 +1945,7 @@ class OptionsEngine:
 
         # V2.3.2 FIX #4: Track if pending entry is intraday (for correct position registration)
         self._pending_intraday_entry: bool = False
+        self._pending_intraday_entry_since: Optional[datetime] = None
 
         # V2.3.3 FIX #3: Prevent duplicate exit signals while waiting for fill
         self._pending_intraday_exit: bool = False
@@ -7853,6 +7854,8 @@ class OptionsEngine:
             )
             return fail("E_INTRADAY_HAS_POSITION")
         if self._pending_intraday_entry:
+            self._clear_stale_pending_intraday_entry_if_orphaned()
+        if self._pending_intraday_entry:
             return fail("E_INTRADAY_PENDING_ENTRY")
 
         # V2.9: Check trade limits (Bug #4 fix) - Uses comprehensive counter
@@ -8265,6 +8268,7 @@ class OptionsEngine:
 
         # V2.3.2 FIX #4: Mark this as intraday entry for correct position tracking
         self._pending_intraday_entry = True
+        self._pending_intraday_entry_since = self.algorithm.Time if self.algorithm else None
 
         # V2.3.10 FIX: Set pending contract for register_entry
         # Without this, register_entry fails with "no pending contract"
@@ -8840,6 +8844,7 @@ class OptionsEngine:
         if is_intraday_fill:
             self._intraday_position = position
             self._pending_intraday_entry = False  # Clear flag
+            self._pending_intraday_entry_since = None
             # Count intraday trades only after a confirmed fill registration.
             intraday_dir = (
                 OptionDirection.CALL
@@ -9172,6 +9177,57 @@ class OptionsEngine:
         self._pending_stop_price = None
         self._pending_target_price = None
 
+    def _clear_stale_pending_intraday_entry_if_orphaned(self) -> None:
+        """
+        Clear stale pending intraday entry lock when no open broker order exists.
+
+        Prevents long-lived E_INTRADAY_PENDING_ENTRY lock after missed/implicit
+        broker cancel events while preserving normal in-flight order behavior.
+        """
+        if not self._pending_intraday_entry:
+            return
+        if self._intraday_position is not None:
+            return
+        if self.algorithm is None or not hasattr(self.algorithm, "Time"):
+            return
+
+        if self._pending_intraday_entry_since is None:
+            self._pending_intraday_entry_since = self.algorithm.Time
+            return
+
+        stale_minutes = int(getattr(config, "INTRADAY_PENDING_ENTRY_STALE_MINUTES", 5))
+        if stale_minutes <= 0:
+            return
+
+        age_minutes = (
+            self.algorithm.Time - self._pending_intraday_entry_since
+        ).total_seconds() / 60.0
+        if age_minutes < stale_minutes:
+            return
+
+        pending_symbol = self.get_pending_entry_contract_symbol()
+        has_open = False
+        try:
+            for open_order in self.algorithm.Transactions.GetOpenOrders():
+                if getattr(open_order.Symbol, "SecurityType", None) != SecurityType.Option:
+                    continue
+                open_symbol = self._symbol_str(open_order.Symbol)
+                if not pending_symbol or open_symbol == pending_symbol:
+                    has_open = True
+                    break
+        except Exception:
+            has_open = True
+
+        if has_open:
+            return
+
+        self.cancel_pending_intraday_entry()
+        self.log(
+            f"OPT_MICRO_RECOVERY: Cleared stale pending intraday entry | "
+            f"Symbol={pending_symbol or 'UNKNOWN'} | AgeMin={age_minutes:.1f}",
+            trades_only=True,
+        )
+
     def cancel_pending_intraday_entry(self) -> None:
         """
         V2.20: Clear pending intraday entry state after broker rejection.
@@ -9182,6 +9238,7 @@ class OptionsEngine:
         """
         if self._pending_intraday_entry:
             self._pending_intraday_entry = False
+            self._pending_intraday_entry_since = None
             self._pending_contract = None
             self._pending_entry_score = None
             self._pending_num_contracts = None
@@ -9206,6 +9263,32 @@ class OptionsEngine:
             return self._symbol_str(self._pending_contract.symbol)
         except Exception:
             return ""
+
+    def get_intraday_partial_fill_oco_seed(
+        self, symbol: str, fill_price: float
+    ) -> Optional[Dict[str, Any]]:
+        """Return OCO seed for intraday/pending partial entry fill, if applicable."""
+        symbol_norm = self._symbol_str(symbol)
+        if not symbol_norm:
+            return None
+
+        if (
+            self._intraday_position is not None
+            and self._intraday_position.contract is not None
+            and self._symbol_str(self._intraday_position.contract.symbol) == symbol_norm
+            and float(getattr(self._intraday_position, "stop_price", 0.0) or 0.0) > 0
+            and float(getattr(self._intraday_position, "target_price", 0.0) or 0.0) > 0
+        ):
+            return {
+                "entry_price": float(getattr(self._intraday_position, "entry_price", 0.0) or 0.0),
+                "stop_price": float(getattr(self._intraday_position, "stop_price", 0.0) or 0.0),
+                "target_price": float(getattr(self._intraday_position, "target_price", 0.0) or 0.0),
+                "entry_strategy": str(
+                    getattr(self._intraday_position, "entry_strategy", "UNKNOWN") or "UNKNOWN"
+                ),
+            }
+
+        return self.get_pending_intraday_partial_oco_seed(symbol=symbol_norm, fill_price=fill_price)
 
     def get_pending_intraday_partial_oco_seed(
         self, symbol: str, fill_price: float
@@ -9604,6 +9687,7 @@ class OptionsEngine:
         # _pending_intraday_exit). Stale pending state = zombie bugs.
         self._pending_contract = None
         self._pending_intraday_entry = False
+        self._pending_intraday_entry_since = None
         self._pending_intraday_exit = False
         self._pending_spread_long_leg = None
         self._pending_spread_short_leg = None
@@ -10026,6 +10110,7 @@ class OptionsEngine:
 
         # V2.3.2: Reset pending intraday entry flag
         self._pending_intraday_entry = False
+        self._pending_intraday_entry_since = None
 
         # V2.3.3: Reset pending intraday exit flag
         self._pending_intraday_exit = False
@@ -10061,6 +10146,7 @@ class OptionsEngine:
 
             # V2.3.2: Reset pending intraday entry flag
             self._pending_intraday_entry = False
+            self._pending_intraday_entry_since = None
 
             # V2.3.3: Reset pending intraday exit flag
             self._pending_intraday_exit = False

@@ -175,6 +175,8 @@ class OCOManager:
         self._active_pairs: Dict[str, OCOPair] = {}  # oco_id -> OCOPair
         self._symbol_to_oco: Dict[str, str] = {}  # symbol -> oco_id
         self._order_to_oco: Dict[int, str] = {}  # broker_order_id -> oco_id
+        # Persist tag hints for lifecycle attribution even if broker/order API returns blank tags.
+        self._order_tag_hints: Dict[int, str] = {}
         self._next_oco_number: int = 1
         self._next_mock_order_id: int = 1  # For testing without algorithm
 
@@ -386,6 +388,13 @@ class OCOManager:
                     leg.trigger_price,
                     tag,
                 )
+            try:
+                order_id = int(ticket.OrderId)
+                self._order_tag_hints[order_id] = tag
+                if len(self._order_tag_hints) > 25000:
+                    self._order_tag_hints.clear()
+            except Exception:
+                pass
             return ticket.OrderId
         except Exception as e:
             self.log(f"OCO: Stop order submission failed: {e}")
@@ -424,6 +433,13 @@ class OCOManager:
                     leg.trigger_price,
                     tag,
                 )
+            try:
+                order_id = int(ticket.OrderId)
+                self._order_tag_hints[order_id] = tag
+                if len(self._order_tag_hints) > 25000:
+                    self._order_tag_hints.clear()
+            except Exception:
+                pass
             return ticket.OrderId
         except Exception as e:
             self.log(f"OCO: Limit order submission failed: {e}")
@@ -687,6 +703,12 @@ class OCOManager:
         """Check if a broker order ID is part of any OCO pair."""
         return broker_order_id in self._order_to_oco
 
+    def get_order_tag_hint(self, broker_order_id: int) -> str:
+        """Return cached OCO tag hint for an order id, if available."""
+        if broker_order_id <= 0:
+            return ""
+        return str(self._order_tag_hints.get(int(broker_order_id), "") or "")
+
     def get_all_active_pairs(self) -> List[OCOPair]:
         """Get all active OCO pairs."""
         return list(self._active_pairs.values())
@@ -721,6 +743,7 @@ class OCOManager:
         self._active_pairs.clear()
         self._symbol_to_oco.clear()
         self._order_to_oco.clear()
+        self._order_tag_hints.clear()
 
         pairs_data = state.get("active_pairs", {})
         restored_pairs = 0
@@ -752,6 +775,7 @@ class OCOManager:
         self._active_pairs.clear()
         self._symbol_to_oco.clear()
         self._order_to_oco.clear()
+        self._order_tag_hints.clear()
         self._next_oco_number = 1
         self._next_mock_order_id = 1
         self.log("OCO: Manager reset")

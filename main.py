@@ -52,7 +52,7 @@ from portfolio.portfolio_router import PortfolioRouter
 from scheduling.daily_scheduler import DailyScheduler
 
 # V6.12: Monthly P&L Tracking
-from utils.monthly_pnl_tracker import MonthlyPnLTracker
+from utils.monthly_pnl_tracker import PNL_TRACKER_KEY, MonthlyPnLTracker
 
 # endregion
 
@@ -138,8 +138,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2023, 1, 1)
-        self.SetEndDate(2023, 12, 31)  # Full-year 2023 backtest
+        self.SetStartDate(2023, 7, 1)
+        self.SetEndDate(2023, 9, 30)  # Smoke test window (Jul-Sep 2023)
         self.SetCash(config.INITIAL_CAPITAL)  # Seed capital from config
 
         # All times are Eastern
@@ -195,6 +195,7 @@ class AlphaNextGen(QCAlgorithm):
                 "ALPHA_NEXTGEN_COLDSTART",
                 "ALPHA_NEXTGEN_STARTUP_GATE",
                 "ALPHA_NEXTGEN_POSITIONS",
+                PNL_TRACKER_KEY,
                 # V3.3 P0: Add options/OCO/regime state keys
                 "options_engine_state",
                 "oco_manager_state",
@@ -332,6 +333,8 @@ class AlphaNextGen(QCAlgorithm):
         self._intraday_regime_updated_at: Optional[datetime] = None
         self._last_regime_effective_log_at: Optional[datetime] = None
         self._last_intraday_dte_routing_log_by_key: Dict[str, datetime] = {}
+        # Preserve best-effort order tags for lifecycle diagnostics when broker tags are blank.
+        self._order_tag_hint_cache: Dict[int, str] = {}
 
         # V2.6 Bug #14: Exit order retry tracking
         self._pending_exit_orders: Dict[str, ExitOrderTracker] = {}
@@ -2616,6 +2619,7 @@ class AlphaNextGen(QCAlgorithm):
         self._last_micro_update_log_time = None
         self._last_spread_construct_fail_log_at = None
         self._external_exec_event_logged.clear()
+        self._order_tag_hint_cache.clear()
         self._spread_ghost_flat_streak_by_key.clear()
         self._spread_ghost_last_log_by_key.clear()
         self._last_intraday_dte_routing_log_by_key.clear()
@@ -3457,24 +3461,8 @@ class AlphaNextGen(QCAlgorithm):
                 else:
                     live_qty = abs(self._get_option_holding_quantity(symbol_norm))
                     sync_qty = live_qty if live_qty > 0 else abs(int(fill_qty))
-                    if sync_qty > 0 and self.options_engine.has_intraday_position():
-                        intraday_pos = self.options_engine.get_intraday_position()
-                        if (
-                            intraday_pos is not None
-                            and intraday_pos.contract is not None
-                            and self._normalize_symbol_str(intraday_pos.contract.symbol)
-                            == symbol_norm
-                            and float(getattr(intraday_pos, "stop_price", 0.0) or 0.0) > 0
-                            and float(getattr(intraday_pos, "target_price", 0.0) or 0.0) > 0
-                        ):
-                            self._sync_intraday_oco(
-                                symbol=symbol_norm,
-                                position=intraday_pos,
-                                quantity=sync_qty,
-                                reason="PARTIAL_FILL",
-                            )
-                    elif sync_qty > 0 and self.options_engine.has_pending_intraday_entry():
-                        oco_seed = self.options_engine.get_pending_intraday_partial_oco_seed(
+                    if sync_qty > 0:
+                        oco_seed = self.options_engine.get_intraday_partial_fill_oco_seed(
                             symbol=symbol_norm,
                             fill_price=float(fill_price),
                         )
@@ -3483,7 +3471,7 @@ class AlphaNextGen(QCAlgorithm):
                                 symbol=symbol_norm,
                                 position=oco_seed,
                                 quantity=sync_qty,
-                                reason="PARTIAL_FILL_PENDING",
+                                reason="PARTIAL_FILL",
                             )
 
             # Notify execution engine only if the order originated there.
@@ -4027,13 +4015,47 @@ class AlphaNextGen(QCAlgorithm):
 
     def _get_order_tag(self, order_event: OrderEvent) -> str:
         """Best-effort extraction of original order tag for fill classification."""
+        order_id = int(getattr(order_event, "OrderId", 0) or 0)
+
+        event_tag = str(getattr(order_event, "Tag", "") or "").strip()
+        if event_tag:
+            self._cache_order_tag_hint(order_id, event_tag)
+            return event_tag
+
         try:
             order = self.Transactions.GetOrderById(order_event.OrderId)
             if order and getattr(order, "Tag", None):
-                return str(order.Tag)
+                order_tag = str(order.Tag).strip()
+                if order_tag:
+                    self._cache_order_tag_hint(order_id, order_tag)
+                    return order_tag
         except Exception:
             pass
+
+        try:
+            if self.oco_manager is not None:
+                hinted = self.oco_manager.get_order_tag_hint(order_id)
+                if hinted:
+                    self._cache_order_tag_hint(order_id, hinted)
+                    return hinted
+        except Exception:
+            pass
+
+        cached = self._order_tag_hint_cache.get(order_id, "")
+        if cached:
+            return cached
         return ""
+
+    def _cache_order_tag_hint(self, order_id: int, tag: str) -> None:
+        """Cache order tag hints for lifecycle attribution when broker tags are blank."""
+        if order_id <= 0:
+            return
+        clean = str(tag or "").strip()
+        if not clean:
+            return
+        self._order_tag_hint_cache[order_id] = clean
+        if len(self._order_tag_hint_cache) > 25000:
+            self._order_tag_hint_cache.clear()
 
     def _extract_trace_id_from_tag(self, order_tag: str) -> str:
         """Extract trace id from order tag (best-effort) for RCA joins."""
@@ -4343,7 +4365,7 @@ class AlphaNextGen(QCAlgorithm):
             return
         order = self.Transactions.GetOrderById(order_event.OrderId)
         order_type = str(getattr(order, "Type", "UNKNOWN")) if order is not None else "UNKNOWN"
-        raw_tag = str(getattr(order, "Tag", "") or "") if order is not None else ""
+        raw_tag = self._get_order_tag(order_event)
         tag = raw_tag if raw_tag else f"NO_TAG:{order_type}"
         msg = str(getattr(order_event, "Message", "") or "")
         self.Log(
@@ -4370,11 +4392,10 @@ class AlphaNextGen(QCAlgorithm):
         if self.execution_engine.get_order_by_broker_id(broker_id) is None:
             if broker_id not in self._external_exec_event_logged:
                 order = self.Transactions.GetOrderById(broker_id)
-                raw_tag = getattr(order, "Tag", "") if order is not None else ""
                 order_type = (
                     str(getattr(order, "Type", "UNKNOWN")) if order is not None else "UNKNOWN"
                 )
-                tag = str(raw_tag or "") if raw_tag is not None else ""
+                tag = self._get_order_tag(order_event)
                 if not tag:
                     tag = f"NO_TAG:{order_type}"
                 self.Log(
@@ -5876,6 +5897,33 @@ class AlphaNextGen(QCAlgorithm):
 
         required_margin = contracts_requested * required_per_contract
         if required_margin <= effective_free_margin:
+            # Align with router options budget gate to avoid margin-pass/router-reject churn.
+            if self.portfolio_router is not None and bool(
+                getattr(config, "OPTIONS_BUDGET_GATE_ENABLED", True)
+            ):
+                budget_required = required_margin
+                try:
+                    # Use router's own combo estimator for consistency with execute() gate.
+                    per_contract, _ = self.portfolio_router._estimate_combo_margin_per_contract(  # type: ignore[attr-defined]
+                        signal.metadata
+                    )
+                    if per_contract > 0:
+                        budget_required = contracts_requested * per_contract
+                except Exception:
+                    pass
+
+                budget_cap = float(self.portfolio_router.get_options_budget_cap())
+                budget_used = float(self.portfolio_router.get_options_budget_used())
+                projected = budget_used + budget_required
+                if budget_cap > 0 and budget_required > 0 and projected > budget_cap:
+                    self._diag_vass_block_count += 1
+                    self.Log(
+                        f"{source_tag}: BLOCKED - options budget precheck | "
+                        f"Used=${budget_used:,.0f} + Req=${budget_required:,.0f} > "
+                        f"Cap=${budget_cap:,.0f} ({(projected / budget_cap):.1%})"
+                    )
+                    return None
+
             self.Log(
                 f"{source_tag}: Margin check passed | Required=${required_margin:,.0f} | "
                 f"Effective Free=${effective_free_margin:,.0f} | Equity=${total_equity:,.0f}"
