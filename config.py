@@ -1267,6 +1267,9 @@ SPREAD_REGIME_DETERIORATION_EXIT_ENABLED = True  # V10.3: Re-enabled defensive t
 SPREAD_REGIME_DETERIORATION_DELTA = 10  # Require at least 10-point regime drop/rise
 SPREAD_REGIME_DETERIORATION_BULL_EXIT = 60  # Exit bullish spreads if regime <= 60
 SPREAD_REGIME_DETERIORATION_BEAR_EXIT = 55  # Exit bearish spreads if regime >= 55
+SPREAD_REGIME_DETERIORATION_MIN_LOSS_PCT = (
+    -0.15
+)  # V10.5: trigger deterioration exit only when already losing
 # V10.2: Keep spread lifecycle simple; disable overlay-forced close unless explicitly enabled.
 SPREAD_OVERLAY_STRESS_EXIT_ENABLED = True  # V10.3: Re-enabled defensive tail-risk exit
 
@@ -1331,8 +1334,8 @@ SPREAD_STOP_REGIME_MULTIPLIERS = {
 }
 
 # V9.4: Spread Trailing Stop — lock in gains after reaching activation threshold
-SPREAD_TRAIL_ACTIVATE_PCT = 0.30  # V9.5 tune: avoid cutting swing winners too early
-SPREAD_TRAIL_OFFSET_PCT = 0.15  # Trail 15% below high-water mark
+SPREAD_TRAIL_ACTIVATE_PCT = 0.20  # V10.5: activate trail earlier to lock winners before reversals
+SPREAD_TRAIL_OFFSET_PCT = 0.12  # V10.5: tighter trail to reduce giveback
 
 # V3.0: Regime-Adaptive Profit Targets
 # V9.4: With 40% base, multipliers give: Bull=36%, Neutral=44%, Cautious/Bear=48%
@@ -1633,6 +1636,9 @@ MICRO_UVXY_BULLISH_THRESHOLD = (
 )  # Restore bullish participation in bull/chop while gates control bear CALLs
 # V6.10: Lower conviction extreme to capture 5-7% moves that were blocked
 MICRO_UVXY_CONVICTION_EXTREME = 0.030  # Slightly easier extreme conviction trigger
+MICRO_CONVICTION_CONFLICT_MULT = (
+    1.50  # V10.5: require stronger UVXY shock when conviction conflicts with micro direction
+)
 # V6.10: Micro fallback + confirmation thresholds (Dir=None tuning)
 MICRO_SCORE_BULLISH_CONFIRM = (
     42.0  # V6.22: lower threshold to let more VIX-STABLE CALL setups through
@@ -1792,12 +1798,14 @@ INTRADAY_ITM_MIN_SCORE = 40  # V6.8: Was 50, capture momentum earlier
 INTRADAY_ITM_START = "10:00"  # Entry window start
 INTRADAY_ITM_END = "14:30"  # Entry window end (earlier than FADE - momentum fades after lunch)
 INTRADAY_ITM_DELTA = 0.70  # ITM delta target
-INTRADAY_ITM_TARGET = 0.45  # V10: wider for uncapped upside (was 0.35)
+INTRADAY_ITM_TARGET = 0.40  # V10.5: improve target hit-rate while keeping positive R:R
 
 # V6.4: DEBIT_MOMENTUM time window (same as ITM_MOMENTUM - both are momentum strategies)
 INTRADAY_DEBIT_MOMENTUM_START = "10:00"  # Entry window start
 INTRADAY_DEBIT_MOMENTUM_END = "14:30"  # Entry window end
 INTRADAY_ITM_STOP = 0.25  # V10: tighter — ITM moves predictably with delta (was 0.35)
+INTRADAY_ITM_STOP_FLOOR_MED_VIX = 0.30  # V10.5: widen ITM stops in medium VIX
+INTRADAY_ITM_STOP_FLOOR_HIGH_VIX = 0.35  # V10.5: widen ITM stops in high VIX
 INTRADAY_HIGH_VIX_STOP_MAX_PCT = (
     0.40  # V9.2 RCA: Wider stop cap for VIX>25 regimes (was capped at 28%)
 )

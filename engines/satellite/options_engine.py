@@ -2531,14 +2531,37 @@ class OptionsEngine:
         # Step 4: Resolve trade signal using shared resolver
         # If conviction is not active, fall back to Micro's computed direction
         # so the resolver doesn't treat it as "no direction".
+        recommended_direction_str = (
+            "BULLISH"
+            if state.recommended_direction == OptionDirection.CALL
+            else "BEARISH"
+            if state.recommended_direction == OptionDirection.PUT
+            else None
+        )
         if has_conviction and conviction_direction:
-            engine_direction = conviction_direction
-        elif state.recommended_direction is not None:
-            engine_direction = (
-                "BULLISH" if state.recommended_direction == OptionDirection.CALL else "BEARISH"
-            )
+            use_conviction_direction = True
+            if (
+                recommended_direction_str is not None
+                and conviction_direction != recommended_direction_str
+            ):
+                # V10.5: Require stronger UVXY shock when conviction conflicts with
+                # Micro regime direction to reduce wrong-way overrides.
+                base_extreme = float(getattr(config, "MICRO_UVXY_CONVICTION_EXTREME", 0.03))
+                conflict_mult = float(getattr(config, "MICRO_CONVICTION_CONFLICT_MULT", 1.5))
+                required_extreme = base_extreme * conflict_mult
+                if abs(uvxy_pct) < required_extreme:
+                    use_conviction_direction = False
+                    self.log(
+                        f"MICRO_CONVICTION_GATED: Conv={conviction_direction} vs Rec={recommended_direction_str} | "
+                        f"|UVXY|={abs(uvxy_pct):.1%} < {required_extreme:.1%}",
+                        trades_only=True,
+                    )
+            if use_conviction_direction:
+                engine_direction = conviction_direction
+            else:
+                engine_direction = recommended_direction_str
         else:
-            engine_direction = None
+            engine_direction = recommended_direction_str
 
         should_trade, resolved_direction, resolve_reason = self.resolve_trade_signal(
             engine="MICRO",
@@ -2547,13 +2570,7 @@ class OptionsEngine:
             macro_direction=macro_direction,
             conviction_strength=uvxy_pct if has_conviction else None,
             engine_regime=state.micro_regime.value if state is not None else None,
-            engine_recommended_direction=(
-                "BULLISH"
-                if state.recommended_direction == OptionDirection.CALL
-                else "BEARISH"
-                if state.recommended_direction == OptionDirection.PUT
-                else None
-            ),
+            engine_recommended_direction=recommended_direction_str,
         )
 
         if not should_trade:
@@ -6636,32 +6653,7 @@ class OptionsEngine:
                     f"VIX_SPIKE_EXIT: 5D change {vix_5d_change:+.0%} >= {vix_spike_5d:.0%}"
                 )
 
-        # ---------------------------------------------------------------------
-        # P0: Regime Deterioration Exit
-        # Close bullish spreads when regime drops sharply, bearish when it improves
-        # ---------------------------------------------------------------------
-        if exit_reason is None and getattr(
-            config, "SPREAD_REGIME_DETERIORATION_EXIT_ENABLED", True
-        ):
-            delta = getattr(config, "SPREAD_REGIME_DETERIORATION_DELTA", 10)
-            bull_exit = getattr(config, "SPREAD_REGIME_DETERIORATION_BULL_EXIT", 60)
-            bear_exit = getattr(config, "SPREAD_REGIME_DETERIORATION_BEAR_EXIT", 55)
-
-            if is_bullish_spread:
-                required_drop = spread.regime_at_entry - delta
-                if regime_score <= bull_exit and regime_score <= required_drop:
-                    exit_reason = (
-                        f"REGIME_DETERIORATION: {spread.regime_at_entry:.0f} → {regime_score:.0f} "
-                        f"(<= {bull_exit}, drop {delta}+)"
-                    )
-            elif is_bearish_spread:
-                required_rise = spread.regime_at_entry + delta
-                if regime_score >= bear_exit and regime_score >= required_rise:
-                    exit_reason = (
-                        f"REGIME_IMPROVEMENT: {spread.regime_at_entry:.0f} → {regime_score:.0f} "
-                        f"(>= {bear_exit}, rise {delta}+)"
-                    )
-
+        # V10.5: Regime deterioration exits are evaluated after P&L is known.
         if is_credit_spread:
             # CREDIT SPREAD P&L: Profit when spread value DECREASES
             # Entry: Received credit (stored as negative net_debit)
@@ -6695,6 +6687,32 @@ class OptionsEngine:
                     f"CREDIT_STOP_LOSS {loss_pct:.1%} "
                     f"(spread value ${current_spread_value:.2f} >= ${stop_threshold:.2f})"
                 )
+
+            # Exit 2B: Regime deterioration de-risk (only once spread is already losing).
+            if exit_reason is None and getattr(
+                config, "SPREAD_REGIME_DETERIORATION_EXIT_ENABLED", True
+            ):
+                min_loss_pct = float(
+                    getattr(config, "SPREAD_REGIME_DETERIORATION_MIN_LOSS_PCT", -0.15)
+                )
+                if pnl_pct <= min_loss_pct:
+                    delta = getattr(config, "SPREAD_REGIME_DETERIORATION_DELTA", 10)
+                    bull_exit = getattr(config, "SPREAD_REGIME_DETERIORATION_BULL_EXIT", 60)
+                    bear_exit = getattr(config, "SPREAD_REGIME_DETERIORATION_BEAR_EXIT", 55)
+                    if is_bullish_spread:
+                        required_drop = spread.regime_at_entry - delta
+                        if regime_score <= bull_exit and regime_score <= required_drop:
+                            exit_reason = (
+                                f"REGIME_DETERIORATION: {spread.regime_at_entry:.0f} → {regime_score:.0f} "
+                                f"(<= {bull_exit}, drop {delta}+, loss {pnl_pct:.1%})"
+                            )
+                    elif is_bearish_spread:
+                        required_rise = spread.regime_at_entry + delta
+                        if regime_score >= bear_exit and regime_score >= required_rise:
+                            exit_reason = (
+                                f"REGIME_IMPROVEMENT: {spread.regime_at_entry:.0f} → {regime_score:.0f} "
+                                f"(>= {bear_exit}, rise {delta}+, loss {pnl_pct:.1%})"
+                            )
 
             # Exit 3: DTE exit (close by 5 DTE)
             if exit_reason is None and current_dte <= config.SPREAD_DTE_EXIT:
@@ -6828,6 +6846,32 @@ class OptionsEngine:
                             )
                     except Exception:
                         pass
+
+            # Exit 3B: Regime deterioration de-risk (only once spread is already losing).
+            if exit_reason is None and getattr(
+                config, "SPREAD_REGIME_DETERIORATION_EXIT_ENABLED", True
+            ):
+                min_loss_pct = float(
+                    getattr(config, "SPREAD_REGIME_DETERIORATION_MIN_LOSS_PCT", -0.15)
+                )
+                if pnl_pct <= min_loss_pct:
+                    delta = getattr(config, "SPREAD_REGIME_DETERIORATION_DELTA", 10)
+                    bull_exit = getattr(config, "SPREAD_REGIME_DETERIORATION_BULL_EXIT", 60)
+                    bear_exit = getattr(config, "SPREAD_REGIME_DETERIORATION_BEAR_EXIT", 55)
+                    if is_bullish_spread:
+                        required_drop = spread.regime_at_entry - delta
+                        if regime_score <= bull_exit and regime_score <= required_drop:
+                            exit_reason = (
+                                f"REGIME_DETERIORATION: {spread.regime_at_entry:.0f} → {regime_score:.0f} "
+                                f"(<= {bull_exit}, drop {delta}+, loss {pnl_pct:.1%})"
+                            )
+                    elif is_bearish_spread:
+                        required_rise = spread.regime_at_entry + delta
+                        if regime_score >= bear_exit and regime_score >= required_rise:
+                            exit_reason = (
+                                f"REGIME_IMPROVEMENT: {spread.regime_at_entry:.0f} → {regime_score:.0f} "
+                                f"(>= {bear_exit}, rise {delta}+, loss {pnl_pct:.1%})"
+                            )
 
             # Exit 4: DTE exit (close by 5 DTE)
             if exit_reason is None and current_dte <= config.SPREAD_DTE_EXIT:
@@ -8227,6 +8271,29 @@ class OptionsEngine:
                 f"STOP_CALC: Protective PUT override → {self._pending_stop_pct:.0%} "
                 f"(config.PROTECTIVE_PUTS_STOP_PCT)"
             )
+
+        # V10.5: widen ITM stops in MED/HIGH VIX only; keep LOW VIX behavior unchanged.
+        if (
+            not is_protective_put
+            and state.recommended_strategy == IntradayStrategy.ITM_MOMENTUM
+            and self._pending_stop_pct is not None
+        ):
+            if vix_current >= 25:
+                itm_stop_floor = float(getattr(config, "INTRADAY_ITM_STOP_FLOOR_HIGH_VIX", 0.35))
+                itm_tier = "HIGH"
+            elif vix_current >= 18:
+                itm_stop_floor = float(getattr(config, "INTRADAY_ITM_STOP_FLOOR_MED_VIX", 0.30))
+                itm_tier = "MED"
+            else:
+                itm_stop_floor = float(getattr(config, "INTRADAY_ITM_STOP", 0.25))
+                itm_tier = "LOW"
+            if self._pending_stop_pct < itm_stop_floor:
+                self.log(
+                    f"STOP_CALC: ITM {itm_tier} VIX floor {itm_stop_floor:.0%} > "
+                    f"ATR {self._pending_stop_pct:.0%} → using floor"
+                )
+                self._pending_stop_pct = itm_stop_floor
+
         self.log(
             f"INTRADAY_SIGNAL: {reason} | Δ={best_contract.delta:.2f} K={best_contract.strike} DTE={best_contract.days_to_expiry} | "
             f"Stop={self._pending_stop_pct:.0%} | TradeCount={self._intraday_trades_today}/{config.INTRADAY_MAX_TRADES_PER_DAY}",
