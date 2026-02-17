@@ -9047,6 +9047,45 @@ class OptionsEngine:
             trades_only=True,
         )
 
+    def has_pending_spread_entry(self) -> bool:
+        """True when both pending spread legs are populated."""
+        return (
+            self._pending_spread_long_leg is not None and self._pending_spread_short_leg is not None
+        )
+
+    def get_pending_spread_legs(self) -> Tuple[Optional[OptionContract], Optional[OptionContract]]:
+        """Expose pending spread legs without direct private-field access."""
+        return self._pending_spread_long_leg, self._pending_spread_short_leg
+
+    def get_pending_spread_tracker_seed(self) -> Optional[dict]:
+        """Return spread tracker seed payload derived from pending spread state."""
+        if not self.has_pending_spread_entry():
+            return None
+        return {
+            "long_leg_symbol": self._symbol_str(self._pending_spread_long_leg.symbol),
+            "short_leg_symbol": self._symbol_str(self._pending_spread_short_leg.symbol),
+            "expected_quantity": int(self._pending_num_contracts or 1),
+            "spread_type": self._pending_spread_type,
+        }
+
+    def clear_pending_spread_state_hard(self) -> None:
+        """
+        Hard reset for stale spread state cleanup.
+
+        Mirrors legacy main.py cleanup fields to preserve behavior.
+        """
+        self._pending_spread_long_leg = None
+        self._pending_spread_short_leg = None
+        self._pending_spread_type = None
+        self._pending_net_debit = None
+        self._pending_max_profit = None
+        self._pending_spread_width = None
+        self._pending_num_contracts = None
+        self._pending_entry_score = None
+        self._pending_stop_pct = None
+        self._pending_stop_price = None
+        self._pending_target_price = None
+
     def cancel_pending_intraday_entry(self) -> None:
         """
         V2.20: Clear pending intraday entry state after broker rejection.
@@ -9068,6 +9107,23 @@ class OptionsEngine:
                 "OPT_MICRO_RECOVERY: Pending intraday entry cancelled | Retry allowed",
                 trades_only=True,
             )
+
+    def has_pending_intraday_entry(self) -> bool:
+        """True when an intraday entry is currently pending."""
+        return bool(self._pending_intraday_entry)
+
+    def get_pending_entry_contract_symbol(self) -> str:
+        """Best-effort symbol for current pending single-leg entry contract."""
+        if self._pending_contract is None:
+            return ""
+        try:
+            return self._symbol_str(self._pending_contract.symbol)
+        except Exception:
+            return ""
+
+    def has_pending_swing_entry(self) -> bool:
+        """True when a single-leg swing entry is pending (not intraday)."""
+        return self._pending_contract is not None and not self._pending_intraday_entry
 
     def cancel_pending_intraday_exit(self, symbol: Optional[str] = None) -> bool:
         """
