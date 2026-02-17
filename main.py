@@ -3604,6 +3604,14 @@ class AlphaNextGen(QCAlgorithm):
         elif orderEvent.Status == OrderStatus.Invalid:
             self.Log(f"INVALID: {orderEvent.Symbol} - {orderEvent.Message}")
             self._log_order_lifecycle_issue(orderEvent, "Invalid")
+            failed_symbol = str(orderEvent.Symbol)
+            failed_symbol_norm = self._normalize_symbol_str(failed_symbol)
+            invalid_order = self.Transactions.GetOrderById(orderEvent.OrderId)
+            invalid_tag = (
+                str(getattr(invalid_order, "Tag", "") or "") if invalid_order is not None else ""
+            )
+            if "RECON_ORPHAN_OPTION" in invalid_tag:
+                self._recon_orphan_close_submitted.pop(failed_symbol_norm, None)
             if "Margin" in str(orderEvent.Message) or "buying power" in str(orderEvent.Message):
                 self._diag_margin_reject_count += 1
             self._forward_execution_event(
@@ -3729,7 +3737,6 @@ class AlphaNextGen(QCAlgorithm):
                 self._margin_call_consecutive_count = 0
 
             # V2.3.6 FIX: Handle spread leg failure - liquidate orphaned leg
-            failed_symbol = str(orderEvent.Symbol)
 
             # Case 1: Short leg failed - liquidate orphaned long leg
             if failed_symbol in self._pending_spread_orders:
@@ -3797,6 +3804,21 @@ class AlphaNextGen(QCAlgorithm):
                     self.Log(f"SPREAD: ERROR buying back orphaned short leg | {e}")
 
             # V2.6 Bug #14: Check if this is a failed exit order that needs retry
+            if failed_symbol not in self._pending_exit_orders and invalid_order is not None:
+                try:
+                    holdings_qty = self.Portfolio[invalid_order.Symbol].Quantity
+                    is_close_side = (invalid_order.Quantity < 0 < holdings_qty) or (
+                        invalid_order.Quantity > 0 > holdings_qty
+                    )
+                except Exception:
+                    is_close_side = False
+                if is_close_side:
+                    self._pending_exit_orders[failed_symbol] = ExitOrderTracker(
+                        symbol=failed_symbol,
+                        order_id=int(orderEvent.OrderId),
+                        reason=(invalid_tag or "INVALID_CLOSE"),
+                    )
+
             if failed_symbol in self._pending_exit_orders:
                 exit_tracker = self._pending_exit_orders[failed_symbol]
                 if exit_tracker.should_retry(config.EXIT_ORDER_RETRY_COUNT):
@@ -3822,6 +3844,14 @@ class AlphaNextGen(QCAlgorithm):
 
         elif orderEvent.Status == OrderStatus.Canceled:
             self._log_order_lifecycle_issue(orderEvent, "Canceled")
+            canceled_symbol = str(orderEvent.Symbol)
+            canceled_symbol_norm = self._normalize_symbol_str(canceled_symbol)
+            canceled_order = self.Transactions.GetOrderById(orderEvent.OrderId)
+            canceled_tag = (
+                str(getattr(canceled_order, "Tag", "") or "") if canceled_order is not None else ""
+            )
+            if "RECON_ORPHAN_OPTION" in canceled_tag:
+                self._recon_orphan_close_submitted.pop(canceled_symbol_norm, None)
             self._forward_execution_event(
                 order_event=orderEvent,
                 status="Canceled",
@@ -3835,8 +3865,49 @@ class AlphaNextGen(QCAlgorithm):
                     event_time=str(self.Time),
                 )
             # V2.20: Event-driven state recovery — notify source engine
-            canceled_symbol = str(orderEvent.Symbol)
             self._queue_spread_close_retry_on_cancel(canceled_symbol, orderEvent)
+
+            # V10.5: Route single-leg close cancels into retry pipeline.
+            is_spread_leg = False
+            for spread in self.options_engine.get_spread_positions():
+                if canceled_symbol_norm in {
+                    self._normalize_symbol_str(spread.long_leg.symbol),
+                    self._normalize_symbol_str(spread.short_leg.symbol),
+                }:
+                    is_spread_leg = True
+                    break
+            if not is_oco_cancel and canceled_order is not None and not is_spread_leg:
+                try:
+                    holdings_qty = self.Portfolio[canceled_order.Symbol].Quantity
+                    is_close_side = (canceled_order.Quantity < 0 < holdings_qty) or (
+                        canceled_order.Quantity > 0 > holdings_qty
+                    )
+                except Exception:
+                    is_close_side = False
+                if is_close_side:
+                    tracker = self._pending_exit_orders.get(canceled_symbol)
+                    if tracker is None:
+                        tracker = ExitOrderTracker(
+                            symbol=canceled_symbol,
+                            order_id=int(orderEvent.OrderId),
+                            reason=(canceled_tag or "CANCELED_CLOSE"),
+                        )
+                        self._pending_exit_orders[canceled_symbol] = tracker
+                    if tracker.should_retry(config.EXIT_ORDER_RETRY_COUNT):
+                        tracker.record_attempt(str(self.Time))
+                        self.Log(
+                            f"EXIT_RETRY: {canceled_symbol[-20:]} attempt "
+                            f"{tracker.retry_count}/{config.EXIT_ORDER_RETRY_COUNT} (Canceled)"
+                        )
+                        self._schedule_exit_retry(canceled_symbol)
+                    else:
+                        self.Log(
+                            f"EXIT_EMERGENCY: {canceled_symbol[-20:]} all retries failed - "
+                            f"forcing market close"
+                        )
+                        self._force_market_close(canceled_symbol)
+                        self._pending_exit_orders.pop(canceled_symbol, None)
+
             # V9.1 FIX: Skip rejection handler for OCO cancels.
             # OCO cancels occur when one leg fills (e.g., profit target hit cancels
             # the paired stop). These are normal operational events, not order failures.
@@ -4338,6 +4409,22 @@ class AlphaNextGen(QCAlgorithm):
         self._intraday_entry_snapshot.pop(sym_norm, None)
         self._clear_intraday_close_guard(sym_norm)
 
+    def _has_open_order_for_symbol(self, symbol: str, tag_contains: str = "") -> bool:
+        """Return True when an open order exists for symbol, optionally filtered by tag."""
+        symbol_norm = self._normalize_symbol_str(symbol)
+        if not symbol_norm:
+            return False
+        tag_filter = str(tag_contains or "").upper().strip()
+        for open_order in self.Transactions.GetOpenOrders():
+            if self._normalize_symbol_str(open_order.Symbol) != symbol_norm:
+                continue
+            if not tag_filter:
+                return True
+            open_tag = str(getattr(open_order, "Tag", "") or "").upper()
+            if tag_filter in open_tag:
+                return True
+        return False
+
     def _reconcile_positions(self, mode: str = "sod") -> None:
         """
         Reconcile internal position tracking with broker state.
@@ -4416,13 +4503,45 @@ class AlphaNextGen(QCAlgorithm):
                         f"Mode={mode_norm.upper()} | Tracked={len(tracked_symbols)}"
                     )
                     tracked_symbols = set()
-                elif self._should_log_backtest_category(
-                    "LOG_SPREAD_RECONCILE_BACKTEST_ENABLED", False
-                ):
-                    self.Log(
-                        f"RECON_INTRADAY_SKIP_ZOMBIE_CLEAR: Tracked={len(tracked_symbols)} | "
-                        f"HoldingOptions={len(option_holdings)}"
+                else:
+                    if self._should_log_backtest_category(
+                        "LOG_SPREAD_RECONCILE_BACKTEST_ENABLED", False
+                    ):
+                        self.Log(
+                            f"RECON_INTRADAY_SKIP_ZOMBIE_CLEAR: Tracked={len(tracked_symbols)} | "
+                            f"HoldingOptions={len(option_holdings)}"
+                        )
+                    # Keep guarded spread ghost policy intact intraday, but clear stale
+                    # single-leg state when broker is flat and no option orders remain.
+                    has_open_option_orders = any(
+                        order.Symbol.SecurityType == SecurityType.Option
+                        for order in self.Transactions.GetOpenOrders()
                     )
+                    if not has_open_option_orders:
+                        intraday_pos = self.options_engine.get_intraday_position()
+                        if intraday_pos is not None:
+                            intraday_sym = self._normalize_symbol_str(intraday_pos.contract.symbol)
+                            self.options_engine.remove_intraday_position()
+                            self._clear_micro_symbol_tracking(intraday_sym)
+                        swing_pos = self.options_engine.get_position()
+                        if swing_pos is not None:
+                            swing_sym = self._normalize_symbol_str(swing_pos.contract.symbol)
+                            self.options_engine.remove_position(swing_sym)
+                            self._clear_micro_symbol_tracking(swing_sym)
+                        if self.options_engine.has_pending_intraday_entry():
+                            self.options_engine.cancel_pending_intraday_entry()
+                        if self.options_engine.has_pending_swing_entry():
+                            self.options_engine.cancel_pending_swing_entry()
+                        self.options_engine.cancel_pending_intraday_exit()
+                        for stale_sym in list(self._micro_open_symbols):
+                            self._clear_micro_symbol_tracking(stale_sym)
+                        tracked_symbols = set()
+                        if self._should_log_backtest_category(
+                            "LOG_SPREAD_RECONCILE_BACKTEST_ENABLED", False
+                        ):
+                            self.Log(
+                                "RECON_INTRADAY_STALE_SINGLE_CLEARED: Broker flat, no open option orders"
+                            )
 
             # Friday sweep is spread-state only to avoid introducing new close-order behavior.
             if mode_norm == "friday":
@@ -4452,18 +4571,17 @@ class AlphaNextGen(QCAlgorithm):
                 try:
                     today = str(self.Time.date())
                     if self._recon_orphan_close_submitted.get(sym_str) == today:
-                        continue
+                        if self._has_open_order_for_symbol(
+                            sym_str, tag_contains="RECON_ORPHAN_OPTION"
+                        ):
+                            continue
+                        self._recon_orphan_close_submitted.pop(sym_str, None)
 
                     # Avoid duplicate orphan close submits while a prior order is still open.
-                    has_pending_orphan_close = False
-                    has_any_open_order = False
-                    for open_order in self.Transactions.GetOpenOrders():
-                        if str(open_order.Symbol) != sym_str:
-                            continue
-                        has_any_open_order = True
-                        if "RECON_ORPHAN_OPTION" in str(getattr(open_order, "Tag", "") or ""):
-                            has_pending_orphan_close = True
-                            break
+                    has_pending_orphan_close = self._has_open_order_for_symbol(
+                        sym_str, tag_contains="RECON_ORPHAN_OPTION"
+                    )
+                    has_any_open_order = self._has_open_order_for_symbol(sym_str)
                     if has_pending_orphan_close:
                         continue
 
@@ -8304,34 +8422,47 @@ class AlphaNextGen(QCAlgorithm):
                 )
 
             # Check pending state to determine sub-mode (most specific first)
+            spread_rejection_handled = False
             if self.options_engine.has_pending_spread_entry():
                 # V2.21: Parse broker margin for adaptive retry sizing
                 self._parse_and_store_rejection_margin(order_event)
                 pending_long, pending_short = self.options_engine.get_pending_spread_legs()
-                self.options_engine.cancel_pending_spread_entry()
-                if self.portfolio_router:
-                    self.portfolio_router.unregister_spread_margin_by_legs(
-                        str(pending_long.symbol) if pending_long is not None else "",
-                        str(pending_short.symbol) if pending_short is not None else None,
-                    )
-                # Cooldown: 30 minutes before spread can retry
-                self._options_spread_cooldown_until = self.Time + timedelta(minutes=30)
-                # V3.0 P0-B: Clear main.py spread tracking state on rejection
-                if self._spread_fill_tracker is not None:
-                    self.Log("REJECTION_CLEANUP: Clearing spread fill tracker")
-                    self._spread_fill_tracker = None
-                if self._pending_spread_orders:
+                pending_symbols = set()
+                if pending_long is not None:
+                    pending_symbols.add(self._normalize_symbol_str(pending_long.symbol))
+                if pending_short is not None:
+                    pending_symbols.add(self._normalize_symbol_str(pending_short.symbol))
+                if symbol_norm in pending_symbols:
+                    self.options_engine.cancel_pending_spread_entry()
+                    if self.portfolio_router:
+                        self.portfolio_router.unregister_spread_margin_by_legs(
+                            str(pending_long.symbol) if pending_long is not None else "",
+                            str(pending_short.symbol) if pending_short is not None else None,
+                        )
+                    # Cooldown: 30 minutes before spread can retry
+                    self._options_spread_cooldown_until = self.Time + timedelta(minutes=30)
+                    # V3.0 P0-B: Clear main.py spread tracking state on rejection
+                    if self._spread_fill_tracker is not None:
+                        self.Log("REJECTION_CLEANUP: Clearing spread fill tracker")
+                        self._spread_fill_tracker = None
+                    if self._pending_spread_orders:
+                        self.Log(
+                            f"REJECTION_CLEANUP: Clearing "
+                            f"{len(self._pending_spread_orders)} pending spread orders"
+                        )
+                        self._pending_spread_orders.clear()
+                        self._pending_spread_orders_reverse.clear()
                     self.Log(
-                        f"REJECTION_CLEANUP: Clearing "
-                        f"{len(self._pending_spread_orders)} pending spread orders"
+                        f"OPT_MACRO_RECOVERY: Spread rejected | Pending + margin cleared | "
+                        f"Cooldown 30min until {self._options_spread_cooldown_until}"
                     )
-                    self._pending_spread_orders.clear()
-                    self._pending_spread_orders_reverse.clear()
-                self.Log(
-                    f"OPT_MACRO_RECOVERY: Spread rejected | Pending + margin cleared | "
-                    f"Cooldown 30min until {self._options_spread_cooldown_until}"
-                )
-            elif self.options_engine.has_pending_intraday_entry():
+                    spread_rejection_handled = True
+                else:
+                    self.Log(
+                        f"OPT_MACRO_RECOVERY: Ignored unmatched spread rejection | "
+                        f"Canceled={symbol_norm} | Pending={','.join(sorted(pending_symbols)) or 'NONE'}"
+                    )
+            if (not spread_rejection_handled) and self.options_engine.has_pending_intraday_entry():
                 pending_symbol = self.options_engine.get_pending_entry_contract_symbol()
                 if pending_symbol and self._normalize_symbol_str(symbol) != pending_symbol:
                     self._diag_micro_pending_cancel_ignored_count += 1
@@ -8347,7 +8478,7 @@ class AlphaNextGen(QCAlgorithm):
                         f"OPT_MICRO_RECOVERY: Intraday rejected | Pending + counter cleared | "
                         f"Cooldown 15min until {self._options_intraday_cooldown_until}"
                     )
-            elif self.options_engine.has_pending_swing_entry():
+            elif (not spread_rejection_handled) and self.options_engine.has_pending_swing_entry():
                 self.options_engine.cancel_pending_swing_entry()
                 # Cooldown: 30 minutes before swing can retry
                 self._options_swing_cooldown_until = self.Time + timedelta(minutes=30)

@@ -9052,6 +9052,8 @@ class OptionsEngine:
         self._pending_net_debit = None
         self._pending_max_profit = None
         self._pending_spread_width = None
+        self._pending_num_contracts = None
+        self._pending_entry_score = None
         self._rejection_margin_cap = None  # V2.21: Clear on successful fill
 
         return spread
