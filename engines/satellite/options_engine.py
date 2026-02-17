@@ -2657,8 +2657,8 @@ class OptionsEngine:
         elif self._spread_position is not None:
             swing_count += 1
 
-        # Count legacy single position if in swing mode
-        if self._swing_position is not None:
+        # Count canonical swing single-leg position only.
+        if self._position is not None:
             swing_count += 1
 
         total_count = intraday_count + swing_count
@@ -9617,13 +9617,15 @@ class OptionsEngine:
 
     def get_state_for_persistence(self) -> Dict[str, Any]:
         """Get state for ObjectStore."""
+        primary_spread = self.get_spread_position()
         return {
             # Legacy position (backwards compatibility)
             "position": self._position.to_dict() if self._position else None,
             "trades_today": self._trades_today,
             "last_trade_date": self._last_trade_date,
             # V2.1.1 dual-mode state
-            "swing_position": (self._swing_position.to_dict() if self._swing_position else None),
+            # Mirror canonical swing position to avoid dual-key drift.
+            "swing_position": (self._position.to_dict() if self._position else None),
             "intraday_position": (
                 self._intraday_position.to_dict() if self._intraday_position else None
             ),
@@ -9635,7 +9637,8 @@ class OptionsEngine:
             "current_mode": self._current_mode.value,
             "micro_regime_state": self._micro_regime_engine.get_state().to_dict(),
             # V2.16-BT: Persist spread position for multi-day backtests
-            "spread_position": (self._spread_position.to_dict() if self._spread_position else None),
+            # Mirror primary from canonical spread list to avoid dual-key drift.
+            "spread_position": (primary_spread.to_dict() if primary_spread else None),
             "spread_positions": [s.to_dict() for s in self.get_spread_positions()],
             # Market open data
             "vix_at_open": self._vix_at_open,
@@ -9719,6 +9722,12 @@ class OptionsEngine:
                 self._swing_position = position
         else:
             self._swing_position = None
+
+        # Canonicalize legacy dual swing keys to prevent slot/state drift.
+        if self._position is None and self._swing_position is not None:
+            self._position = self._swing_position
+        elif self._position is not None and self._swing_position is None:
+            self._swing_position = self._position
 
         intraday_data = state.get("intraday_position")
         if intraday_data:

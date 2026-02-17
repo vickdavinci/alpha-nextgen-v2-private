@@ -2589,17 +2589,11 @@ class AlphaNextGen(QCAlgorithm):
         self._spread_ghost_last_log_by_key.clear()
         self._last_intraday_dte_routing_log_by_key.clear()
         self._last_vass_rejection_log_by_key.clear()
-        # V3.0 P1-B: Clean stale pending exit orders at EOD
+        # V3.0 P1-B: Exit retry trackers are intraday plumbing only; clear daily.
         if self._pending_exit_orders:
-            stale_keys = [
-                k
-                for k, v in self._pending_exit_orders.items()
-                if v.retry_count >= 3 or v.order_id is None
-            ]
-            for k in stale_keys:
-                self._pending_exit_orders.pop(k, None)
-            if stale_keys:
-                self.Log(f"EOD_CLEANUP: Cleared {len(stale_keys)} stale pending exit orders")
+            cleared = len(self._pending_exit_orders)
+            self._pending_exit_orders.clear()
+            self.Log(f"EOD_CLEANUP: Cleared {cleared} pending exit order trackers")
 
         # NOTE: _kill_switch_handled_today is NOT reset here - it resets at 09:25 pre-market
         # Resetting here causes double-trigger since OnData runs at 16:00 after EOD handler
@@ -3600,6 +3594,16 @@ class AlphaNextGen(QCAlgorithm):
                     # Clear spread tracking for this option
                     if symbol in self._pending_spread_orders:
                         self._pending_spread_orders.pop(symbol)
+
+            # Exit retry lifecycle cleanup: once symbol is flat after a fill, clear retry tracker.
+            if (
+                symbol in self._pending_exit_orders
+                and abs(self._get_option_holding_quantity(symbol)) <= 0
+            ):
+                self._pending_exit_orders.pop(symbol, None)
+                self.Log(
+                    f"EXIT_RETRY_CLEANUP: Cleared tracker after successful flat fill | {symbol[-20:]}"
+                )
 
         elif orderEvent.Status == OrderStatus.Invalid:
             self.Log(f"INVALID: {orderEvent.Symbol} - {orderEvent.Message}")
@@ -8424,8 +8428,6 @@ class AlphaNextGen(QCAlgorithm):
             # Check pending state to determine sub-mode (most specific first)
             spread_rejection_handled = False
             if self.options_engine.has_pending_spread_entry():
-                # V2.21: Parse broker margin for adaptive retry sizing
-                self._parse_and_store_rejection_margin(order_event)
                 pending_long, pending_short = self.options_engine.get_pending_spread_legs()
                 pending_symbols = set()
                 if pending_long is not None:
@@ -8433,6 +8435,8 @@ class AlphaNextGen(QCAlgorithm):
                 if pending_short is not None:
                     pending_symbols.add(self._normalize_symbol_str(pending_short.symbol))
                 if symbol_norm in pending_symbols:
+                    # V2.21: Parse broker margin for adaptive retry sizing
+                    self._parse_and_store_rejection_margin(order_event)
                     self.options_engine.cancel_pending_spread_entry()
                     if self.portfolio_router:
                         self.portfolio_router.unregister_spread_margin_by_legs(
@@ -8458,10 +8462,15 @@ class AlphaNextGen(QCAlgorithm):
                     )
                     spread_rejection_handled = True
                 else:
-                    self.Log(
-                        f"OPT_MACRO_RECOVERY: Ignored unmatched spread rejection | "
-                        f"Canceled={symbol_norm} | Pending={','.join(sorted(pending_symbols)) or 'NONE'}"
+                    throttle_key = (
+                        "SPREAD_REJECT_UNMATCHED|"
+                        f"{symbol_norm}|{','.join(sorted(pending_symbols)) or 'NONE'}"
                     )
+                    if self._should_log_vass_rejection(throttle_key):
+                        self.Log(
+                            f"OPT_MACRO_RECOVERY: Ignored unmatched spread rejection | "
+                            f"Canceled={symbol_norm} | Pending={','.join(sorted(pending_symbols)) or 'NONE'}"
+                        )
             if (not spread_rejection_handled) and self.options_engine.has_pending_intraday_entry():
                 pending_symbol = self.options_engine.get_pending_entry_contract_symbol()
                 if pending_symbol and self._normalize_symbol_str(symbol) != pending_symbol:
@@ -9317,22 +9326,31 @@ class AlphaNextGen(QCAlgorithm):
         try:
             # Schedule retry after delay using QC's scheduling
             retry_seconds = config.EXIT_ORDER_RETRY_DELAY_SECONDS
+            retry_dt = self.Time + timedelta(seconds=retry_seconds)
 
             # Use Schedule.On for proper scheduling
             def retry_action():
                 self._retry_exit_order(symbol)
 
-            # Schedule for N seconds from now
+            # Schedule for N seconds from now (handles minute/second rollover safely).
+            date_rule = (
+                self.DateRules.Today
+                if retry_dt.date() == self.Time.date()
+                else self.DateRules.On(retry_dt.year, retry_dt.month, retry_dt.day)
+            )
             self.Schedule.On(
-                self.DateRules.Today,
+                date_rule,
                 self.TimeRules.At(
-                    self.Time.hour,
-                    self.Time.minute,
-                    self.Time.second + retry_seconds,
+                    retry_dt.hour,
+                    retry_dt.minute,
+                    retry_dt.second,
                 ),
                 retry_action,
             )
-            self.Log(f"EXIT_RETRY: Scheduled retry for {symbol[-20:]} in {retry_seconds}s")
+            self.Log(
+                f"EXIT_RETRY: Scheduled retry for {symbol[-20:]} at "
+                f"{retry_dt.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
         except Exception as e:
             self.Log(f"EXIT_RETRY_ERROR: Failed to schedule retry | {e}")
             # Fallback: immediate retry
@@ -9355,7 +9373,12 @@ class AlphaNextGen(QCAlgorithm):
             holding = self.Portfolio.get(symbol)
             if holding and holding.Invested:
                 qty = holding.Quantity
-                self.MarketOrder(symbol, -qty, tag=f"RETRY_{tracker.reason}")
+                ticket = self.MarketOrder(symbol, -qty, tag=f"RETRY_{tracker.reason}")
+                try:
+                    if ticket is not None and hasattr(ticket, "OrderId"):
+                        tracker.order_id = int(ticket.OrderId)
+                except Exception:
+                    pass
                 self.Log(f"EXIT_RETRY: Submitted market order | {symbol[-20:]} x{qty}")
             else:
                 # Position already closed
