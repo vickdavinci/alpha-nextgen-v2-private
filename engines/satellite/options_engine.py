@@ -9093,6 +9093,33 @@ class OptionsEngine:
                 trades_only=True,
             )
 
+    def cancel_pending_intraday_exit(self, symbol: Optional[str] = None) -> bool:
+        """
+        Clear pending intraday exit lock after a rejected/canceled close order.
+
+        Args:
+            symbol: Optional symbol guard. When provided, lock is cleared only if it
+                matches the tracked intraday position symbol.
+
+        Returns:
+            True when lock was cleared, else False.
+        """
+        if not self._pending_intraday_exit:
+            return False
+
+        if symbol and self._intraday_position is not None and self._intraday_position.contract:
+            try:
+                expected = self._symbol_str(self._intraday_position.contract.symbol)
+                actual = self._symbol_str(symbol)
+                if expected != actual:
+                    return False
+            except Exception:
+                return False
+
+        self._pending_intraday_exit = False
+        self.log("OPT_MICRO_RECOVERY: Pending intraday exit lock cleared", trades_only=True)
+        return True
+
     def remove_spread_position(self, symbol: Optional[str] = None) -> Optional[SpreadPosition]:
         """
         V2.3: Remove the current spread position after exit.
@@ -9811,11 +9838,26 @@ class OptionsEngine:
             self._spread_failure_cooldown_until_by_dir = {}
             self._last_spread_scan_time = None
 
-            # Clear intraday position unless hold-enabled ITM carry is active.
+            # Keep intraday state whenever a live broker holding still exists.
+            # This avoids reset->orphan churn when an expected force-close fails.
             if self._intraday_position is not None:
-                if self.should_hold_intraday_overnight(self._intraday_position):
+                keep_position = self.should_hold_intraday_overnight(self._intraday_position)
+                if not keep_position and self.algorithm is not None:
+                    try:
+                        sym = self._intraday_position.contract.symbol
+                        broker_symbol = sym
+                        if isinstance(sym, str):
+                            broker_symbol = self.algorithm.Symbol(sym)
+                        sec = self.algorithm.Portfolio[broker_symbol]
+                        if sec is not None and sec.Invested and abs(int(sec.Quantity)) > 0:
+                            self._intraday_position.num_contracts = abs(int(sec.Quantity))
+                            keep_position = True
+                    except Exception:
+                        keep_position = False
+
+                if keep_position:
                     self.log(
-                        "OPT: DAILY_RESET_KEEP - preserving hold-enabled intraday position",
+                        "OPT: DAILY_RESET_KEEP - preserving live intraday position",
                         trades_only=True,
                     )
                 else:

@@ -1755,7 +1755,6 @@ class AlphaNextGen(QCAlgorithm):
             self._intraday_force_exit_fallback_date = self.Time.date()
             return
         if symbol in self._intraday_close_in_progress_symbols:
-            self._intraday_force_exit_fallback_date = self.Time.date()
             return
         price = self.Securities[symbol].Price if self.Securities.ContainsKey(symbol) else 0
         if price <= 0:
@@ -1770,7 +1769,6 @@ class AlphaNextGen(QCAlgorithm):
 
         if price <= 0:
             self.Log(f"INTRADAY_FORCE_EXIT_FALLBACK: No valid price for {symbol} - skip")
-            self._intraday_force_exit_fallback_date = self.Time.date()
             return
 
         signal = self.options_engine.check_intraday_force_exit(
@@ -1788,9 +1786,8 @@ class AlphaNextGen(QCAlgorithm):
             self.Log(f"INTRADAY_FORCE_EXIT_FALLBACK: Triggered for {symbol}")
             self.portfolio_router.receive_signal(signal)
             self._process_immediate_signals()
-
-        # Always mark as done after 15:35 check to prevent repeated attempts
-        self._intraday_force_exit_fallback_date = self.Time.date()
+            # Mark done after a concrete submit attempt.
+            self._intraday_force_exit_fallback_date = self.Time.date()
 
     def _mr_force_close_fallback(self) -> None:
         """
@@ -3478,13 +3475,17 @@ class AlphaNextGen(QCAlgorithm):
                 status="Invalid",
                 rejection_reason=orderEvent.Message,
             )
-            if self.oco_manager.has_order(orderEvent.OrderId):
+            is_oco_invalid = self.oco_manager.has_order(orderEvent.OrderId)
+            if is_oco_invalid:
                 self.oco_manager.on_order_inactive(
                     broker_order_id=orderEvent.OrderId,
                     status="Invalid",
                     detail=str(orderEvent.Message),
                     event_time=str(self.Time),
                 )
+                # OCO invalid/cancel is operational close-order churn, not entry rejection.
+                # Do not route through margin/rejection recovery flows.
+                return
 
             # V2.4.4 P0 Fix #4: Margin Call Circuit Breaker
             # Track consecutive margin calls and enter cooldown after hitting limit
@@ -4238,6 +4239,12 @@ class AlphaNextGen(QCAlgorithm):
             if single is not None:
                 tracked_symbols.add(str(single.contract.symbol))
 
+            # Keep MICRO tracker symbols in reconcile scope when holdings still exist.
+            # This avoids false orphan liquidations during transient state desync.
+            for sym in list(self._micro_open_symbols):
+                if sym in option_holdings:
+                    tracked_symbols.add(sym)
+
             if tracked_symbols and not option_holdings:
                 if mode_norm != "intraday":
                     spread_count_before = len(self.options_engine.get_spread_positions())
@@ -4322,6 +4329,10 @@ class AlphaNextGen(QCAlgorithm):
                         self.Log(
                             f"RECON_ORPHAN_SKIP: {sym_str} | No live position at liquidation time"
                         )
+                        self._micro_open_symbols.discard(sym_str)
+                        self._intraday_entry_snapshot.pop(sym_str, None)
+                        self._intraday_close_in_progress_symbols.discard(sym_str)
+                        self._intraday_force_exit_submitted_symbols.pop(sym_str, None)
                         self._recon_orphan_seen_streak.pop(sym_str, None)
                         self._recon_orphan_first_seen_at.pop(sym_str, None)
                         self._recon_orphan_last_log_at.pop(sym_str, None)
@@ -4375,6 +4386,10 @@ class AlphaNextGen(QCAlgorithm):
 
                     self.Liquidate(broker_symbol, tag="RECON_ORPHAN_OPTION")
                     self._recon_orphan_close_submitted[sym_str] = today
+                    self._micro_open_symbols.discard(sym_str)
+                    self._intraday_entry_snapshot.pop(sym_str, None)
+                    self._intraday_close_in_progress_symbols.discard(sym_str)
+                    self._intraday_force_exit_submitted_symbols.pop(sym_str, None)
                     self._recon_orphan_seen_streak.pop(sym_str, None)
                     self._recon_orphan_first_seen_at.pop(sym_str, None)
                     self._recon_orphan_last_log_at.pop(sym_str, None)
@@ -8490,6 +8505,15 @@ class AlphaNextGen(QCAlgorithm):
 
         # Route 3: QQQ options
         elif "QQQ" in symbol and ("C" in symbol or "P" in symbol):
+            symbol_norm = self._normalize_symbol_str(symbol)
+            if self.options_engine.cancel_pending_intraday_exit(symbol_norm):
+                self._intraday_close_in_progress_symbols.discard(symbol_norm)
+                self._intraday_force_exit_submitted_symbols.pop(symbol_norm, None)
+                self.Log(
+                    f"OPT_MICRO_EXIT_RECOVERY: Close rejected/canceled | "
+                    f"Symbol={symbol_norm} | Exit lock cleared"
+                )
+
             # Check pending state to determine sub-mode (most specific first)
             if self.options_engine._pending_spread_long_leg is not None:
                 # V2.21: Parse broker margin for adaptive retry sizing
