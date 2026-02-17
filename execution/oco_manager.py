@@ -183,6 +183,12 @@ class OCOManager:
         if self.algorithm:
             self.algorithm.Log(message)
 
+    def _normalize_symbol(self, symbol: Any) -> str:
+        """Normalize symbol-like values to stable uppercase string keys."""
+        if symbol is None:
+            return ""
+        return str(symbol).strip().upper()
+
     def create_oco_pair(
         self,
         symbol: str,
@@ -207,30 +213,36 @@ class OCOManager:
         Returns:
             Created OCOPair (in PENDING state), or None if validation fails.
         """
+        symbol_norm = self._normalize_symbol(symbol)
+        if not symbol_norm:
+            self.log("OCO: REJECTED - Empty symbol")
+            return None
+
         # T-13 FIX: Validate stop_price > 0 before creating OCO pair
         # V6.13: 10 StopMarket orders with Price=0 caused risk mgmt to be disabled
         if stop_price <= 0:
             self.log(
                 f"OCO: REJECTED - Invalid stop_price={stop_price:.2f} <= 0 | "
-                f"Symbol={symbol} | Entry=${entry_price:.2f}"
+                f"Symbol={symbol_norm} | Entry=${entry_price:.2f}"
             )
             return None
 
         if target_price <= 0:
             self.log(
                 f"OCO: REJECTED - Invalid target_price={target_price:.2f} <= 0 | "
-                f"Symbol={symbol} | Entry=${entry_price:.2f}"
+                f"Symbol={symbol_norm} | Entry=${entry_price:.2f}"
             )
             return None
 
         if entry_price <= 0:
             self.log(
-                f"OCO: REJECTED - Invalid entry_price={entry_price:.2f} <= 0 | " f"Symbol={symbol}"
+                f"OCO: REJECTED - Invalid entry_price={entry_price:.2f} <= 0 | "
+                f"Symbol={symbol_norm}"
             )
             return None
 
         if quantity <= 0:
-            self.log(f"OCO: REJECTED - Invalid quantity={quantity} <= 0 | " f"Symbol={symbol}")
+            self.log(f"OCO: REJECTED - Invalid quantity={quantity} <= 0 | Symbol={symbol_norm}")
             return None
 
         # Generate unique OCO ID
@@ -254,7 +266,7 @@ class OCOManager:
         # Create OCO pair
         pair = OCOPair(
             oco_id=oco_id,
-            symbol=symbol,
+            symbol=symbol_norm,
             entry_price=entry_price,
             stop_leg=stop_leg,
             profit_leg=profit_leg,
@@ -264,7 +276,7 @@ class OCOManager:
         )
 
         self.log(
-            f"OCO: CREATED {oco_id} | {symbol} | "
+            f"OCO: CREATED {oco_id} | {symbol_norm} | "
             f"Stop=${stop_price:.2f} | Target=${target_price:.2f} | "
             f"Qty={quantity}"
         )
@@ -607,7 +619,8 @@ class OCOManager:
         Returns:
             True if found and cancelled.
         """
-        oco_id = self._symbol_to_oco.get(symbol)
+        symbol_norm = self._normalize_symbol(symbol)
+        oco_id = self._symbol_to_oco.get(symbol_norm)
         if oco_id is None:
             return False
         return self.cancel_oco_pair(oco_id, reason)
@@ -617,7 +630,10 @@ class OCOManager:
         if pair.oco_id in self._active_pairs:
             del self._active_pairs[pair.oco_id]
 
-        if pair.symbol in self._symbol_to_oco:
+        symbol_norm = self._normalize_symbol(pair.symbol)
+        if symbol_norm in self._symbol_to_oco:
+            del self._symbol_to_oco[symbol_norm]
+        elif pair.symbol in self._symbol_to_oco:
             del self._symbol_to_oco[pair.symbol]
 
         if pair.stop_leg.broker_order_id in self._order_to_oco:
@@ -628,26 +644,32 @@ class OCOManager:
 
     def get_active_pair(self, symbol: str) -> Optional[OCOPair]:
         """Get active OCO pair for a symbol."""
-        oco_id = self._symbol_to_oco.get(symbol)
-        if oco_id:
-            return self._active_pairs.get(oco_id)
-        return None
+        symbol_norm = self._normalize_symbol(symbol)
+        if not symbol_norm:
+            return None
+        if not self.has_active_pair(symbol_norm):
+            return None
+        oco_id = self._symbol_to_oco.get(symbol_norm)
+        return self._active_pairs.get(oco_id) if oco_id else None
 
     def _pair_has_live_broker_orders(self, pair: Optional[OCOPair]) -> bool:
-        """True when at least one leg still has a live broker order ID."""
+        """True when at least one leg still has a broker order ID."""
         if pair is None:
             return False
         return bool(pair.stop_leg.broker_order_id or pair.profit_leg.broker_order_id)
 
     def has_active_pair(self, symbol: str) -> bool:
         """Check if symbol has an active OCO pair."""
-        oco_id = self._symbol_to_oco.get(symbol)
+        symbol_norm = self._normalize_symbol(symbol)
+        if not symbol_norm:
+            return False
+        oco_id = self._symbol_to_oco.get(symbol_norm)
         if not oco_id:
             return False
 
         pair = self._active_pairs.get(oco_id)
         if pair is None:
-            self._symbol_to_oco.pop(symbol, None)
+            self._symbol_to_oco.pop(symbol_norm, None)
             return False
 
         # Defensive cleanup: stale/restored pair without broker IDs is not actionable.

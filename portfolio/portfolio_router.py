@@ -516,15 +516,23 @@ class PortfolioRouter:
         sym = str(symbol).strip()
         return len(sym) > 10 and ("C0" in sym or "P0" in sym)
 
+    def _normalize_symbol_key(self, symbol: Any) -> str:
+        """Normalize symbol-like values to stable uppercase keys."""
+        if symbol is None:
+            return ""
+        return str(symbol).strip().upper()
+
     def _get_live_option_qty(self, symbol: str) -> int:
         """Return live portfolio quantity for symbol (0 when flat/not found)."""
         if not self.algorithm:
             return 0
-        target = str(symbol).strip()
+        target = self._normalize_symbol_key(symbol)
+        if not target:
+            return 0
         try:
             for kvp in self.algorithm.Portfolio:  # type: ignore[attr-defined]
                 holding = kvp.Value
-                if str(holding.Symbol).strip() == target:
+                if self._normalize_symbol_key(holding.Symbol) == target:
                     return int(holding.Quantity)
         except Exception:
             return 0
@@ -1994,16 +2002,7 @@ class PortfolioRouter:
                 and is_closing
                 and (agg.requested_quantity is None or agg.requested_quantity <= 0)
             ):
-                inferred_qty = 0
-                if self.algorithm:
-                    try:
-                        for kvp in self.algorithm.Portfolio:  # type: ignore[attr-defined]
-                            holding = kvp.Value
-                            if str(holding.Symbol) == symbol:
-                                inferred_qty = abs(int(holding.Quantity))
-                                break
-                    except Exception:
-                        inferred_qty = 0
+                inferred_qty = abs(self._get_live_option_qty(symbol))
                 if inferred_qty > 0:
                     agg.requested_quantity = inferred_qty
                     self.log(f"ROUTER: CLOSE_QTY_INFERRED | {symbol} | Qty={inferred_qty}")
@@ -2022,16 +2021,7 @@ class PortfolioRouter:
             # This prevents stale weight snapshots from flipping close side (e.g., BUY on long close)
             # and blocks accidental position amplification during force-close fallback.
             if is_option and is_closing:
-                live_qty = 0
-                if self.algorithm:
-                    try:
-                        for kvp in self.algorithm.Portfolio:  # type: ignore[attr-defined]
-                            holding = kvp.Value
-                            if str(holding.Symbol) == symbol:
-                                live_qty = int(holding.Quantity)
-                                break
-                    except Exception:
-                        live_qty = 0
+                live_qty = self._get_live_option_qty(symbol)
                 if live_qty == 0:
                     self._record_rejection(
                         code="R_CLOSE_NO_LIVE_HOLDING",

@@ -335,6 +335,8 @@ class AlphaNextGen(QCAlgorithm):
 
         # V2.6 Bug #14: Exit order retry tracking
         self._pending_exit_orders: Dict[str, ExitOrderTracker] = {}
+        # Open-order lifecycle guard: avoid stacked retry schedules for same symbol.
+        self._exit_retry_scheduled_at: Dict[str, datetime] = {}
         # V6.22: Persist forced spread-close retries when broker cancels close legs.
         # key = spread key "<long>|<short>", value = next eligible retry time.
         self._spread_forced_close_retry: Dict[str, datetime] = {}
@@ -1782,21 +1784,48 @@ class AlphaNextGen(QCAlgorithm):
 
     def _get_option_holding_quantity(self, symbol) -> int:
         """Get signed live option holding quantity by symbol string."""
-        symbol_str = self._normalize_symbol_str(symbol)
-        if not symbol_str:
+        holding, _ = self._find_portfolio_holding(symbol, security_type=SecurityType.Option)
+        if holding is None or not holding.Invested:
             return 0
+        try:
+            return int(holding.Quantity)
+        except Exception:
+            return 0
+
+    def _find_portfolio_holding(
+        self,
+        symbol,
+        security_type: Optional[SecurityType] = None,
+    ):
+        """Best-effort lookup of a live holding by normalized symbol key."""
+        symbol_norm = self._normalize_symbol_str(symbol)
+        if not symbol_norm:
+            return None, None
         try:
             for kvp in self.Portfolio:
                 holding = kvp.Value
-                if (
-                    holding.Invested
-                    and holding.Symbol.SecurityType == SecurityType.Option
-                    and self._normalize_symbol_str(holding.Symbol) == symbol_str
-                ):
-                    return int(holding.Quantity)
+                if security_type is not None and holding.Symbol.SecurityType != security_type:
+                    continue
+                if self._normalize_symbol_str(holding.Symbol) != symbol_norm:
+                    continue
+                return holding, holding.Symbol
         except Exception:
-            return 0
-        return 0
+            return None, None
+        return None, None
+
+    def _resolve_pending_exit_tracker_key(self, symbol: str) -> Optional[str]:
+        """Resolve pending-exit tracker key by normalized symbol."""
+        symbol_norm = self._normalize_symbol_str(symbol)
+        if not symbol_norm:
+            return None
+        if symbol in self._pending_exit_orders:
+            return symbol
+        if symbol_norm in self._pending_exit_orders:
+            return symbol_norm
+        for key in self._pending_exit_orders.keys():
+            if self._normalize_symbol_str(key) == symbol_norm:
+                return key
+        return None
 
     def _should_hold_intraday_symbol_overnight(self, symbol: str) -> bool:
         """Return True when symbol matches an active hold-enabled intraday ITM position."""
@@ -2593,6 +2622,7 @@ class AlphaNextGen(QCAlgorithm):
         if self._pending_exit_orders:
             cleared = len(self._pending_exit_orders)
             self._pending_exit_orders.clear()
+            self._exit_retry_scheduled_at.clear()
             self.Log(f"EOD_CLEANUP: Cleared {cleared} pending exit order trackers")
 
         # NOTE: _kill_switch_handled_today is NOT reset here - it resets at 09:25 pre-market
@@ -3595,15 +3625,22 @@ class AlphaNextGen(QCAlgorithm):
                     if symbol in self._pending_spread_orders:
                         self._pending_spread_orders.pop(symbol)
 
-            # Exit retry lifecycle cleanup: once symbol is flat after a fill, clear retry tracker.
-            if (
-                symbol in self._pending_exit_orders
-                and abs(self._get_option_holding_quantity(symbol)) <= 0
-            ):
-                self._pending_exit_orders.pop(symbol, None)
-                self.Log(
-                    f"EXIT_RETRY_CLEANUP: Cleared tracker after successful flat fill | {symbol[-20:]}"
-                )
+            # Exit retry lifecycle cleanup: once symbol is flat after a fill, clear retry tracker(s).
+            if abs(self._get_option_holding_quantity(symbol)) <= 0:
+                symbol_norm = self._normalize_symbol_str(symbol)
+                stale_retry_keys = [
+                    key
+                    for key in list(self._pending_exit_orders.keys())
+                    if self._normalize_symbol_str(key) == symbol_norm
+                ]
+                for key in stale_retry_keys:
+                    self._pending_exit_orders.pop(key, None)
+                    self._exit_retry_scheduled_at.pop(key, None)
+                if stale_retry_keys:
+                    self.Log(
+                        f"EXIT_RETRY_CLEANUP: Cleared {len(stale_retry_keys)} tracker(s) after flat fill | "
+                        f"{symbol[-20:]}"
+                    )
 
         elif orderEvent.Status == OrderStatus.Invalid:
             self.Log(f"INVALID: {orderEvent.Symbol} - {orderEvent.Message}")
@@ -3757,7 +3794,9 @@ class AlphaNextGen(QCAlgorithm):
                 # V2.19 FIX: Don't iterate Securities.Keys (20K+ loop)
                 # Just try to access Portfolio directly - returns default if not found
                 try:
-                    holding = self.Portfolio.get(long_leg_symbol)
+                    holding, broker_symbol = self._find_portfolio_holding(
+                        long_leg_symbol, security_type=SecurityType.Option
+                    )
                     if holding and holding.Invested:
                         qty = holding.Quantity
                         orphan_key = f"{self._normalize_symbol_str(long_leg_symbol)}|{self._normalize_symbol_str(failed_symbol)}"
@@ -3766,7 +3805,7 @@ class AlphaNextGen(QCAlgorithm):
                             f"OrderId={orderEvent.OrderId} | SpreadKey={orphan_key} | "
                             f"{long_leg_symbol[-20:]} x{qty}"
                         )
-                        self.MarketOrder(long_leg_symbol, -qty, tag="ORPHAN_LONG")
+                        self.MarketOrder(broker_symbol, -qty, tag="ORPHAN_LONG")
                     else:
                         self.Log(
                             f"SPREAD: No position in long leg - no cleanup needed | "
@@ -3788,7 +3827,9 @@ class AlphaNextGen(QCAlgorithm):
                 # V2.19 FIX: Don't iterate Securities.Keys (20K+ loop)
                 # Just try to access Portfolio directly - returns default if not found
                 try:
-                    holding = self.Portfolio.get(short_leg_symbol)
+                    holding, broker_symbol = self._find_portfolio_holding(
+                        short_leg_symbol, security_type=SecurityType.Option
+                    )
                     if holding and holding.Invested:
                         qty = holding.Quantity
                         orphan_key = f"{self._normalize_symbol_str(failed_symbol)}|{self._normalize_symbol_str(short_leg_symbol)}"
@@ -3798,7 +3839,7 @@ class AlphaNextGen(QCAlgorithm):
                             f"{short_leg_symbol[-20:]} x{abs(qty)}"
                         )
                         # Short leg is negative qty, buy back means positive order
-                        self.MarketOrder(short_leg_symbol, -qty, tag="ORPHAN_SHORT")
+                        self.MarketOrder(broker_symbol, -qty, tag="ORPHAN_SHORT")
                     else:
                         self.Log(
                             f"SPREAD: No position in short leg - no cleanup needed | "
@@ -3840,7 +3881,10 @@ class AlphaNextGen(QCAlgorithm):
                         f"forcing market close"
                     )
                     self._force_market_close(failed_symbol)
-                    self._pending_exit_orders.pop(failed_symbol, None)
+                    failed_key = self._resolve_pending_exit_tracker_key(failed_symbol)
+                    if failed_key is not None:
+                        self._pending_exit_orders.pop(failed_key, None)
+                        self._exit_retry_scheduled_at.pop(failed_key, None)
 
             # V2.20: Event-driven state recovery — notify source engine
             # Runs AFTER existing handlers (margin CB, orphan legs, exit retry)
@@ -3910,7 +3954,10 @@ class AlphaNextGen(QCAlgorithm):
                             f"forcing market close"
                         )
                         self._force_market_close(canceled_symbol)
-                        self._pending_exit_orders.pop(canceled_symbol, None)
+                        canceled_key = self._resolve_pending_exit_tracker_key(canceled_symbol)
+                        if canceled_key is not None:
+                            self._pending_exit_orders.pop(canceled_key, None)
+                            self._exit_retry_scheduled_at.pop(canceled_key, None)
 
             # V9.1 FIX: Skip rejection handler for OCO cancels.
             # OCO cancels occur when one leg fills (e.g., profit target hit cancels
@@ -6400,6 +6447,7 @@ class AlphaNextGen(QCAlgorithm):
             self._pending_spread_orders.clear()
             self._pending_spread_orders_reverse.clear()
             self._pending_exit_orders.clear()
+            self._exit_retry_scheduled_at.clear()
             self.Log("KS_CLEANUP: All engine state reset after Tier 3 liquidation")
 
         # ---- TIER 2: TREND EXIT ----
@@ -7767,6 +7815,24 @@ class AlphaNextGen(QCAlgorithm):
                 retry_reason = self._spread_forced_close_reason.get(
                     spread_key, "CANCELED_CLOSE_RETRY"
                 )
+                # Open-order lifecycle guard: don't stack close submits while either
+                # leg already has a live broker order.
+                if self._has_open_order_for_symbol(long_symbol) or self._has_open_order_for_symbol(
+                    short_symbol
+                ):
+                    retry_minutes = int(getattr(config, "SPREAD_CLOSE_RETRY_INTERVAL_MIN", 5))
+                    self._spread_forced_close_retry[spread_key] = self.Time + timedelta(
+                        minutes=retry_minutes
+                    )
+                    if self._should_log_backtest_category(
+                        "LOG_SPREAD_RECONCILE_BACKTEST_ENABLED", False
+                    ):
+                        self.Log(
+                            f"SPREAD_RETRY_DEFER_OPEN_ORDER: Long={long_symbol} "
+                            f"Short={short_symbol} | RetryIn={retry_minutes}m | "
+                            f"Reason={retry_reason}"
+                        )
+                    continue
                 # D1 fix: cancel any linked OCO orders before each retry/escalation cycle.
                 self._cancel_spread_linked_oco(
                     long_symbol, short_symbol, reason="SPREAD_CLOSE_RETRY"
@@ -8947,15 +9013,18 @@ class AlphaNextGen(QCAlgorithm):
             self._cleanup_stale_spread_state()
             return
 
-        # Record fill by symbol match (using tracker's stored symbols)
-        if tracker.long_leg_symbol == symbol:
+        # Record fill by symbol match (using normalized keys from tracker + event)
+        symbol_norm = self._normalize_symbol_str(symbol)
+        long_norm = self._normalize_symbol_str(tracker.long_leg_symbol)
+        short_norm = self._normalize_symbol_str(tracker.short_leg_symbol)
+        if symbol_norm and symbol_norm == long_norm:
             tracker.record_long_fill(fill_price, fill_qty, str(self.Time))
             self.Log(
                 f"SPREAD: Long leg filled | {symbol[-20:]} @ ${fill_price:.2f} x{fill_qty} | "
                 f"Total={tracker.long_fill_qty}"
             )
 
-        elif tracker.short_leg_symbol == symbol:
+        elif symbol_norm and symbol_norm == short_norm:
             tracker.record_short_fill(fill_price, fill_qty, str(self.Time))
             self.Log(
                 f"SPREAD: Short leg filled | {symbol[-20:]} @ ${fill_price:.2f} x{fill_qty} | "
@@ -9168,12 +9237,15 @@ class AlphaNextGen(QCAlgorithm):
         We only queue retries for active spread symbols where the canceled order
         appears to be reducing an existing position (close-side quantity).
         """
-        if "QQQ" not in symbol or ("C" not in symbol and "P" not in symbol):
+        symbol_norm = self._normalize_symbol_str(symbol)
+        if "QQQ" not in symbol_norm or ("C" not in symbol_norm and "P" not in symbol_norm):
             return
 
         spread = None
         for candidate in self.options_engine.get_spread_positions():
-            if candidate.long_leg.symbol == symbol or candidate.short_leg.symbol == symbol:
+            long_norm = self._normalize_symbol_str(candidate.long_leg.symbol)
+            short_norm = self._normalize_symbol_str(candidate.short_leg.symbol)
+            if symbol_norm in {long_norm, short_norm}:
                 spread = candidate
                 break
         if spread is None:
@@ -9189,13 +9261,11 @@ class AlphaNextGen(QCAlgorithm):
         # Only queue retries for close-side cancels:
         # long-leg close => order qty < 0 while holdings qty > 0
         # short-leg close => order qty > 0 while holdings qty < 0
-        try:
-            holdings_qty = self.Portfolio[order_event.Symbol].Quantity
-            is_close_side = (order.Quantity < 0 < holdings_qty) or (
-                order.Quantity > 0 > holdings_qty
-            )
-        except Exception:
-            is_close_side = False
+        holding, _ = self._find_portfolio_holding(
+            order_event.Symbol, security_type=SecurityType.Option
+        )
+        holdings_qty = int(getattr(holding, "Quantity", 0) or 0) if holding is not None else 0
+        is_close_side = (order.Quantity < 0 < holdings_qty) or (order.Quantity > 0 > holdings_qty)
         if not is_close_side:
             return
 
@@ -9295,22 +9365,26 @@ class AlphaNextGen(QCAlgorithm):
         try:
             # Check long leg
             if tracker.long_leg_symbol:
-                long_holding = self.Portfolio.get(tracker.long_leg_symbol)
+                long_holding, long_symbol = self._find_portfolio_holding(
+                    tracker.long_leg_symbol, security_type=SecurityType.Option
+                )
                 if long_holding and long_holding.Invested:
                     qty = long_holding.Quantity
-                    self.MarketOrder(tracker.long_leg_symbol, -qty, tag="EMERG_QTY_MISMATCH")
+                    self.MarketOrder(long_symbol, -qty, tag="EMERG_QTY_MISMATCH")
                     self.Log(
-                        f"SPREAD: Emergency closed long leg | {tracker.long_leg_symbol} x{qty}"
+                        f"SPREAD: Emergency closed long leg | {self._normalize_symbol_str(long_symbol)} x{qty}"
                     )
 
             # Check short leg
             if tracker.short_leg_symbol:
-                short_holding = self.Portfolio.get(tracker.short_leg_symbol)
+                short_holding, short_symbol = self._find_portfolio_holding(
+                    tracker.short_leg_symbol, security_type=SecurityType.Option
+                )
                 if short_holding and short_holding.Invested:
                     qty = short_holding.Quantity
-                    self.MarketOrder(tracker.short_leg_symbol, -qty, tag="EMERG_QTY_MISMATCH")
+                    self.MarketOrder(short_symbol, -qty, tag="EMERG_QTY_MISMATCH")
                     self.Log(
-                        f"SPREAD: Emergency closed short leg | {tracker.short_leg_symbol} x{qty}"
+                        f"SPREAD: Emergency closed short leg | {self._normalize_symbol_str(short_symbol)} x{qty}"
                     )
 
         except Exception as e:
@@ -9323,14 +9397,25 @@ class AlphaNextGen(QCAlgorithm):
         Args:
             symbol: Symbol that failed to exit.
         """
+        tracker_key = self._resolve_pending_exit_tracker_key(symbol)
+        if tracker_key is None:
+            return
         try:
             # Schedule retry after delay using QC's scheduling
             retry_seconds = config.EXIT_ORDER_RETRY_DELAY_SECONDS
             retry_dt = self.Time + timedelta(seconds=retry_seconds)
+            existing_retry = self._exit_retry_scheduled_at.get(tracker_key)
+            if existing_retry is not None and existing_retry > self.Time:
+                self.Log(
+                    f"EXIT_RETRY: Schedule already pending for {tracker_key[-20:]} | "
+                    f"At={existing_retry.strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                return
 
             # Use Schedule.On for proper scheduling
             def retry_action():
-                self._retry_exit_order(symbol)
+                self._exit_retry_scheduled_at.pop(tracker_key, None)
+                self._retry_exit_order(tracker_key)
 
             # Schedule for N seconds from now (handles minute/second rollover safely).
             date_rule = (
@@ -9347,14 +9432,16 @@ class AlphaNextGen(QCAlgorithm):
                 ),
                 retry_action,
             )
+            self._exit_retry_scheduled_at[tracker_key] = retry_dt
             self.Log(
-                f"EXIT_RETRY: Scheduled retry for {symbol[-20:]} at "
+                f"EXIT_RETRY: Scheduled retry for {tracker_key[-20:]} at "
                 f"{retry_dt.strftime('%Y-%m-%d %H:%M:%S')}"
             )
         except Exception as e:
             self.Log(f"EXIT_RETRY_ERROR: Failed to schedule retry | {e}")
+            self._exit_retry_scheduled_at.pop(tracker_key, None)
             # Fallback: immediate retry
-            self._retry_exit_order(symbol)
+            self._retry_exit_order(tracker_key)
 
     def _retry_exit_order(self, symbol: str) -> None:
         """
@@ -9363,29 +9450,40 @@ class AlphaNextGen(QCAlgorithm):
         Args:
             symbol: Symbol to retry exit for.
         """
-        if symbol not in self._pending_exit_orders:
+        tracker_key = self._resolve_pending_exit_tracker_key(symbol)
+        if tracker_key is None:
+            return
+        self._exit_retry_scheduled_at.pop(tracker_key, None)
+
+        tracker = self._pending_exit_orders[tracker_key]
+        self.Log(
+            f"EXIT_RETRY: Retrying exit for {tracker_key[-20:]} (attempt {tracker.retry_count})"
+        )
+        if self._has_open_order_for_symbol(tracker_key):
+            self.Log(
+                f"EXIT_RETRY_DEFER: Open order already exists for {tracker_key[-20:]} | "
+                "Skipping duplicate retry submit"
+            )
             return
 
-        tracker = self._pending_exit_orders[symbol]
-        self.Log(f"EXIT_RETRY: Retrying exit for {symbol[-20:]} (attempt {tracker.retry_count})")
-
         try:
-            holding = self.Portfolio.get(symbol)
+            holding, broker_symbol = self._find_portfolio_holding(tracker_key)
             if holding and holding.Invested:
                 qty = holding.Quantity
-                ticket = self.MarketOrder(symbol, -qty, tag=f"RETRY_{tracker.reason}")
+                ticket = self.MarketOrder(broker_symbol, -qty, tag=f"RETRY_{tracker.reason}")
                 try:
                     if ticket is not None and hasattr(ticket, "OrderId"):
                         tracker.order_id = int(ticket.OrderId)
                 except Exception:
                     pass
-                self.Log(f"EXIT_RETRY: Submitted market order | {symbol[-20:]} x{qty}")
+                self.Log(f"EXIT_RETRY: Submitted market order | {tracker_key[-20:]} x{qty}")
             else:
                 # Position already closed
-                self._pending_exit_orders.pop(symbol, None)
-                self.Log(f"EXIT_RETRY: Position already closed | {symbol[-20:]}")
+                self._pending_exit_orders.pop(tracker_key, None)
+                self._exit_retry_scheduled_at.pop(tracker_key, None)
+                self.Log(f"EXIT_RETRY: Position already closed | {tracker_key[-20:]}")
         except Exception as e:
-            self.Log(f"EXIT_RETRY_ERROR: Retry failed | {symbol[-20:]} | {e}")
+            self.Log(f"EXIT_RETRY_ERROR: Retry failed | {tracker_key[-20:]} | {e}")
 
     def _force_market_close(self, symbol: str) -> None:
         """
@@ -9398,7 +9496,7 @@ class AlphaNextGen(QCAlgorithm):
         """
         self.Log(f"EXIT_EMERGENCY: Force market close | {symbol[-20:]}")
         try:
-            holding = self.Portfolio.get(symbol)
+            holding, broker_symbol = self._find_portfolio_holding(symbol)
             if holding and holding.Invested:
                 qty = holding.Quantity
 
@@ -9413,7 +9511,7 @@ class AlphaNextGen(QCAlgorithm):
                     )
                 else:
                     # Equity: Use Liquidate for absolute closure
-                    self.Liquidate(symbol, tag="EMERG_ALL_RETRIES_FAILED")
+                    self.Liquidate(broker_symbol, tag="EMERG_ALL_RETRIES_FAILED")
                     self.Log(f"EXIT_EMERGENCY: Liquidated | {symbol[-20:]} x{qty}")
             else:
                 self.Log(f"EXIT_EMERGENCY: No position to close | {symbol[-20:]}")
