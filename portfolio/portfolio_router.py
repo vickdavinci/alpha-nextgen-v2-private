@@ -854,6 +854,16 @@ class PortfolioRouter:
         short_symbol = spread.short_leg.symbol
         num_spreads = spread.num_spreads
 
+        _, _, live_long_qty, live_short_qty = self._get_live_spread_leg_state(
+            long_symbol, short_symbol
+        )
+        if live_long_qty <= 0 and live_short_qty <= 0:
+            self.log(
+                f"ROUTER: SPREAD_CLOSE_ALREADY_FLAT | {reason} | "
+                f"Long={long_symbol} Short={short_symbol}"
+            )
+            return True
+
         self.log(
             f"ROUTER: SPREAD_CLOSE_START | {reason} | "
             f"Type={spread.spread_type} x{num_spreads} | "
@@ -893,6 +903,34 @@ class PortfolioRouter:
 
         return False
 
+    def _get_live_spread_leg_state(
+        self,
+        long_symbol: str,
+        short_symbol: str,
+    ) -> Tuple[Optional[Any], Optional[Any], int, int]:
+        """Resolve live portfolio symbols and quantities for spread legs."""
+        long_qc_symbol = None
+        short_qc_symbol = None
+        live_long_qty = 0
+        live_short_qty = 0
+
+        if not self.algorithm:
+            return long_qc_symbol, short_qc_symbol, live_long_qty, live_short_qty
+
+        for kvp in self.algorithm.Portfolio:  # type: ignore[attr-defined]
+            holding = kvp.Value
+            if not holding.Invested:
+                continue
+            symbol_str = str(holding.Symbol)
+            if long_symbol in symbol_str and holding.Quantity > 0:
+                long_qc_symbol = holding.Symbol
+                live_long_qty = int(holding.Quantity)
+            elif short_symbol in symbol_str and holding.Quantity < 0:
+                short_qc_symbol = holding.Symbol
+                live_short_qty = abs(int(holding.Quantity))
+
+        return long_qc_symbol, short_qc_symbol, live_long_qty, live_short_qty
+
     def _try_combo_close(
         self,
         long_symbol: str,
@@ -912,23 +950,20 @@ class PortfolioRouter:
         try:
             from AlgorithmImports import Leg
 
-            # Find actual QC Symbol objects + live quantities from portfolio
-            long_qc_symbol = None
-            short_qc_symbol = None
-            live_long_qty = 0
-            live_short_qty = 0
+            # Find actual QC Symbol objects + live quantities from portfolio.
+            (
+                long_qc_symbol,
+                short_qc_symbol,
+                live_long_qty,
+                live_short_qty,
+            ) = self._get_live_spread_leg_state(long_symbol, short_symbol)
 
-            for kvp in self.algorithm.Portfolio:  # type: ignore[attr-defined]
-                holding = kvp.Value
-                if not holding.Invested:
-                    continue
-                symbol_str = str(holding.Symbol)
-                if long_symbol in symbol_str and holding.Quantity > 0:
-                    long_qc_symbol = holding.Symbol
-                    live_long_qty = int(holding.Quantity)
-                elif short_symbol in symbol_str and holding.Quantity < 0:
-                    short_qc_symbol = holding.Symbol
-                    live_short_qty = abs(int(holding.Quantity))
+            if live_long_qty <= 0 and live_short_qty <= 0:
+                self.log(
+                    f"ROUTER: COMBO_CLOSE_ALREADY_FLAT | {reason} | "
+                    f"Long={long_symbol} Short={short_symbol}"
+                )
+                return True
 
             if long_qc_symbol is None or short_qc_symbol is None:
                 self.log(
@@ -1008,22 +1043,19 @@ class PortfolioRouter:
             return False
 
         # Find actual QC Symbol objects + live quantities
-        long_qc_symbol = None
-        short_qc_symbol = None
-        live_long_qty = 0
-        live_short_qty = 0
+        (
+            long_qc_symbol,
+            short_qc_symbol,
+            live_long_qty,
+            live_short_qty,
+        ) = self._get_live_spread_leg_state(long_symbol, short_symbol)
 
-        for kvp in self.algorithm.Portfolio:  # type: ignore[attr-defined]
-            holding = kvp.Value
-            if not holding.Invested:
-                continue
-            symbol_str = str(holding.Symbol)
-            if long_symbol in symbol_str and holding.Quantity > 0:
-                long_qc_symbol = holding.Symbol
-                live_long_qty = int(holding.Quantity)
-            elif short_symbol in symbol_str and holding.Quantity < 0:
-                short_qc_symbol = holding.Symbol
-                live_short_qty = abs(int(holding.Quantity))
+        if live_long_qty <= 0 and live_short_qty <= 0:
+            self.log(
+                f"ROUTER: SEQUENTIAL_ALREADY_FLAT | {reason} | "
+                f"Long={long_symbol} Short={short_symbol}"
+            )
+            return True
 
         short_close_qty = live_short_qty
         long_close_qty = live_long_qty
@@ -1050,10 +1082,13 @@ class PortfolioRouter:
             except Exception as e:
                 self.log(f"ROUTER: SEQUENTIAL_SHORT_FAIL | {reason} | {e}")
         else:
-            self.log(
-                f"ROUTER: SEQUENTIAL_SHORT_NOTFOUND | {reason} | {short_symbol} | "
-                f"LiveQty={live_short_qty}"
-            )
+            if live_short_qty <= 0:
+                self.log(f"ROUTER: SEQUENTIAL_SHORT_ALREADY_FLAT | {reason} | {short_symbol}")
+            else:
+                self.log(
+                    f"ROUTER: SEQUENTIAL_SHORT_NOTFOUND | {reason} | {short_symbol} | "
+                    f"LiveQty={live_short_qty}"
+                )
 
         # Step 2: Sell long leg (after short is closed)
         if long_qc_symbol is not None and long_close_qty > 0:
@@ -1074,20 +1109,35 @@ class PortfolioRouter:
             except Exception as e:
                 self.log(f"ROUTER: SEQUENTIAL_LONG_FAIL | {reason} | {e}")
         else:
-            self.log(
-                f"ROUTER: SEQUENTIAL_LONG_NOTFOUND | {reason} | {long_symbol} | "
-                f"LiveQty={live_long_qty}"
-            )
+            if live_long_qty <= 0:
+                self.log(f"ROUTER: SEQUENTIAL_LONG_ALREADY_FLAT | {reason} | {long_symbol}")
+            else:
+                self.log(
+                    f"ROUTER: SEQUENTIAL_LONG_NOTFOUND | {reason} | {long_symbol} | "
+                    f"LiveQty={live_long_qty}"
+                )
 
         if short_closed and long_closed:
             self.log(f"ROUTER: SEQUENTIAL_COMPLETE | {reason}")
             return True
+        elif short_closed and live_long_qty <= 0:
+            self.log(f"ROUTER: SEQUENTIAL_COMPLETE | {reason} | Long already flat")
+            return True
+        elif long_closed and live_short_qty <= 0:
+            self.log(f"ROUTER: SEQUENTIAL_COMPLETE | {reason} | Short already flat")
+            return True
         elif short_closed:
             self.log(
-                f"ROUTER: SEQUENTIAL_PARTIAL | {reason} | "
+                f"ROUTER: SEQUENTIAL_PARTIAL_SUBMITTED | {reason} | "
                 f"SHORT closed, LONG failed - long exposure remains"
             )
             return True
+        elif long_closed:
+            self.log(
+                f"ROUTER: SEQUENTIAL_PARTIAL_SHORT_REMAIN | {reason} | "
+                f"LONG closed, SHORT still open"
+            )
+            return False
         else:
             self.log(f"ROUTER: SEQUENTIAL_FAILED | {reason} | Both legs failed")
             return False
