@@ -1376,7 +1376,8 @@ class AlphaNextGen(QCAlgorithm):
             resolved_direction_str) or None when blocked/no-trade.
         """
         current_date_str = self.Time.strftime("%Y-%m-%d")
-        self.options_engine.update_iv_sensor(self._current_vix, current_date_str)
+        vix_level_for_vass = self._get_vix_level()
+        self.options_engine.update_iv_sensor(vix_level_for_vass, current_date_str)
         (
             has_conviction,
             conviction_direction,
@@ -1384,7 +1385,7 @@ class AlphaNextGen(QCAlgorithm):
         ) = self.options_engine.get_iv_conviction()
         macro_direction = self.options_engine.get_macro_direction(regime_score)
         overlay_state = self.options_engine.get_regime_overlay_state(
-            vix_current=self._current_vix, regime_score=regime_score
+            vix_current=vix_level_for_vass, regime_score=regime_score
         )
         should_trade, resolved_direction, resolve_reason = self.options_engine.resolve_trade_signal(
             engine="VASS",
