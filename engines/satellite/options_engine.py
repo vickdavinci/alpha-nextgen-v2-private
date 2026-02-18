@@ -5225,8 +5225,22 @@ class OptionsEngine:
             return fail_quality("MAX_PROFIT_NON_POSITIVE")
 
         # V10.7: Debit-to-width quality band — reject both too-expensive and too-cheap structures.
-        max_debit_pct = float(getattr(config, "SPREAD_MAX_DEBIT_TO_WIDTH_PCT", 0.38))
+        legacy_max_debit_pct = float(getattr(config, "SPREAD_MAX_DEBIT_TO_WIDTH_PCT", 0.38))
         min_debit_pct = float(getattr(config, "SPREAD_MIN_DEBIT_TO_WIDTH_PCT", 0.28))
+        low_vix_cut = float(getattr(config, "SPREAD_DW_LOW_VIX_MAX", 18.0))
+        high_vix_cut = float(getattr(config, "SPREAD_DW_HIGH_VIX_MIN", 25.0))
+        max_low = float(getattr(config, "SPREAD_MAX_DEBIT_TO_WIDTH_PCT_LOW_VIX", 0.48))
+        max_med = float(getattr(config, "SPREAD_MAX_DEBIT_TO_WIDTH_PCT_MED_VIX", 0.44))
+        max_high = float(getattr(config, "SPREAD_MAX_DEBIT_TO_WIDTH_PCT_HIGH_VIX", 0.40))
+        if vix_current is None:
+            max_debit_pct = legacy_max_debit_pct
+        elif vix_current < low_vix_cut:
+            max_debit_pct = max_low
+        elif vix_current < high_vix_cut:
+            max_debit_pct = max_med
+        else:
+            max_debit_pct = max_high
+
         debit_to_width = net_debit / width if width > 0 else 1.0
         if debit_to_width > max_debit_pct:
             self.log(
@@ -6896,9 +6910,9 @@ class OptionsEngine:
             pnl = current_spread_value - entry_debit
             pnl_pct = pnl / entry_debit if entry_debit > 0 else 0
 
-            # V10.5: Day-4 EOD decision for debit spreads.
-            # Rule: at day-4 EOD, keep only profitable spreads; close flat/losing spreads.
-            # Winners continue under normal exits; non-winners are capital-recycled.
+            # V10.7: Day-4 EOD decision for debit spreads.
+            # Rule: at/after day-4 EOD, close spreads when P&L is above the threshold,
+            # keep only deeper losers for additional recovery time (hard stop still active).
             if (
                 exit_reason is None
                 and bool(getattr(config, "VASS_DAY4_EOD_DECISION_ENABLED", False))
@@ -6915,21 +6929,24 @@ class OptionsEngine:
                         and self.algorithm.Time.minute >= decision_minute
                     )
                     if held_days >= decision_days and is_eod_window:
-                        keep_threshold = float(getattr(config, "VASS_DAY4_EOD_KEEP_IF_PNL_GT", 0.0))
-                        if pnl_pct > keep_threshold:
+                        close_threshold = float(
+                            getattr(config, "VASS_DAY4_EOD_KEEP_IF_PNL_GT", 0.0)
+                        )
+                        if pnl_pct > close_threshold:
+                            exit_reason = (
+                                f"DAY4_EOD_CLOSE {pnl_pct:.1%} (> {close_threshold:.0%}) | "
+                                f"Held={held_days}d"
+                            )
+                        else:
                             spread_key = self._build_spread_key(spread)
                             if spread_key not in self._spread_hold_guard_logged:
                                 self._spread_hold_guard_logged.add(spread_key)
                                 self.log(
-                                    f"DAY4_EOD_HOLD: Key={spread_key} | P&L={pnl_pct:.1%} > {keep_threshold:.0%} | "
+                                    f"DAY4_EOD_KEEP: Key={spread_key} | P&L={pnl_pct:.1%} <= {close_threshold:.0%} | "
                                     f"Held={held_days}d",
                                     trades_only=True,
                                 )
                             return None
-                        exit_reason = (
-                            f"DAY4_EOD_CLOSE {pnl_pct:.1%} (<= {keep_threshold:.0%}) | "
-                            f"Held={held_days}d"
-                        )
                 except Exception:
                     pass
 

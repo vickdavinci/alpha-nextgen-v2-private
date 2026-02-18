@@ -1336,12 +1336,15 @@ VASS_DAY4_EOD_DECISION_TIME = "15:45"
 # Exit targets
 # V6.10 P5: Symmetric R:R (40%/40%) - need 1:1 win ratio to break even
 # Was asymmetric (50%/35%) requiring 1.43:1 win ratio
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT = (
-    0.38  # V10.7: Reject expensive debit spreads with structurally weak payoff profile
-)
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT = 0.38  # Legacy fallback max when adaptive D/W bands are unavailable
 SPREAD_MIN_DEBIT_TO_WIDTH_PCT = (
     0.28  # V10.7: Reject ultra-cheap/low-quality debit structures (balanced D/W band)
 )
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_LOW_VIX = 0.48
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_MED_VIX = 0.44
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_HIGH_VIX = 0.40
+SPREAD_DW_LOW_VIX_MAX = 18.0
+SPREAD_DW_HIGH_VIX_MIN = 25.0
 SPREAD_PROFIT_TARGET_PCT = 0.35  # V10.5: lower base target to improve hit-rate before reversals
 SPREAD_STOP_LOSS_PCT = 0.35  # V10.5: wider base stop to reduce noise stop-outs
 SPREAD_HARD_STOP_LOSS_PCT = 0.50  # V10.5: widen hard cap to avoid premature hard-stop clipping
