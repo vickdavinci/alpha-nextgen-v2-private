@@ -601,7 +601,7 @@ def main():
         print(f"ERROR: Workspace not found: {workspace}")
         sys.exit(1)
 
-    LIMIT = 256000  # QC hard limit: 256,000 characters per file
+    LIMIT = 262144  # QC hard limit: 256 KiB per file
     PROJECT_LIMIT = 500 * 1024  # ~500 KB total project for QC
 
     print("=== Ultra Minification (ALL .py files) ===\n")

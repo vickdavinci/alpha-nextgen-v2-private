@@ -24,7 +24,7 @@ SRC="/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-priva
 LEAN_WORKSPACE="/Users/vigneshwaranarumugam/Documents/Trading Github/lean-workspace"
 DEST="$LEAN_WORKSPACE/AlphaNextGen"
 PROJECT_NAME="AlphaNextGen"
-MAX_FILE_CHARS=256000
+MAX_FILE_CHARS=262144
 
 # Colors for output
 RED='\033[0;31m'
