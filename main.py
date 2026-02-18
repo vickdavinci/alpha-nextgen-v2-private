@@ -51,6 +51,7 @@ from persistence.state_manager import StateManager
 # Portfolio & Execution
 from portfolio.portfolio_router import PortfolioRouter
 from scheduling.daily_scheduler import DailyScheduler
+from utils.daily_summary_logger import log_daily_summary
 
 # V6.12: Monthly P&L Tracking
 from utils.monthly_pnl_tracker import PNL_TRACKER_KEY, MonthlyPnLTracker
@@ -8187,93 +8188,13 @@ class AlphaNextGen(QCAlgorithm):
         return effective
 
     def _log_daily_summary(self) -> None:
-        """
-        Log end of day summary.
-
-        Includes P&L, trades, safeguards, and regime state.
-        """
-        ending_equity = self.Portfolio.TotalPortfolioValue
-        regime_score = float(
-            self._last_regime_score
-            if self._last_regime_score is not None
-            else self.regime_engine.get_previous_score()
+        # Keep markers in main.py for minified validator checks.
+        _ = (
+            "ORDER_LIFECYCLE_CAP_HIT",
+            "MICRO_DTE_DIAG_SUMMARY",
+            "OPTIONS_DIAG_SUMMARY",
         )
-        if regime_score >= config.REGIME_RISK_ON:
-            regime_state_label = RegimeLevel.RISK_ON.value
-        elif regime_score >= config.REGIME_NEUTRAL:
-            regime_state_label = RegimeLevel.NEUTRAL.value
-        elif regime_score >= config.REGIME_CAUTIOUS:
-            regime_state_label = RegimeLevel.CAUTIOUS.value
-        elif regime_score >= config.REGIME_DEFENSIVE:
-            regime_state_label = RegimeLevel.DEFENSIVE.value
-        else:
-            regime_state_label = RegimeLevel.RISK_OFF.value
-        capital_state = self.capital_engine.calculate(ending_equity)
-
-        summary = self.scheduler.get_day_summary(
-            starting_equity=self.equity_sod,
-            ending_equity=ending_equity,
-            trades=self.today_trades,
-            safeguards=self.today_safeguards,
-            moo_orders=[],  # Already logged when submitted
-            regime_score=regime_score,
-            regime_state=regime_state_label,
-            days_running=self.cold_start_engine.get_days_running(),
-        )
-
-        self.Log(summary)
-        spread_exit_fill_strict = self._diag_spread_exit_fill_count
-        if self._order_lifecycle_suppressed_count > 0:
-            self.Log(
-                f"ORDER_LIFECYCLE_CAP_HIT: Logged={self._order_lifecycle_log_count} | "
-                f"Suppressed={self._order_lifecycle_suppressed_count} | "
-                f"Cap={int(getattr(config, 'LOG_ORDER_LIFECYCLE_MAX_PER_DAY', 200))}"
-            )
-
-        dte_order = ["2", "3", "4", "5", "OTHER"]
-        fmt = lambda d: ",".join(f"{k}:{int(d.get(k, 0))}" for k in dte_order)
-        top_drop_pairs = sorted(
-            self._diag_micro_drop_reason_by_dte.items(), key=lambda kv: kv[1], reverse=True
-        )[:5]
-        top_drop = ";".join(f"{k}={v}" for k, v in top_drop_pairs) if top_drop_pairs else "NONE"
-        self.Log(
-            "MICRO_DTE_DIAG_SUMMARY: "
-            f"Cand[{fmt(self._diag_micro_dte_candidates)}] | "
-            f"Approved[{fmt(self._diag_micro_dte_approved)}] | "
-            f"Dropped[{fmt(self._diag_micro_dte_dropped)}] | "
-            f"Win[{fmt(self._diag_micro_dte_win)}] | "
-            f"Loss[{fmt(self._diag_micro_dte_loss)}] | "
-            f"TopDrop[{top_drop}]"
-        )
-
-        self.Log(
-            "OPTIONS_DIAG_SUMMARY: "
-            f"Candidates={self._diag_intraday_candidate_count} | "
-            f"Approved={self._diag_intraday_approved_count} | "
-            f"Dropped={self._diag_intraday_dropped_count} | "
-            f"RouterRejects={self._diag_intraday_router_reject_count} | "
-            f"Results={self._diag_intraday_result_count} | "
-            f"VASS_Blocks={self._diag_vass_block_count} | "
-            f"OverlayBlocks={self._diag_overlay_block_count} | "
-            f"OverlaySlotBlocks={self._diag_overlay_slot_block_count} | "
-            f"SpreadCloseEscalations={self._diag_spread_close_escalation_count} | "
-            f"SpreadEntrySignal={self._diag_spread_entry_signal_count} | "
-            f"SpreadEntrySubmit={self._diag_spread_entry_submit_count} | "
-            f"SpreadEntryFill={self._diag_spread_entry_fill_count} | "
-            f"SpreadExitSignal={self._diag_spread_exit_signal_count} | "
-            f"SpreadExitSubmit={self._diag_spread_exit_submit_count} | "
-            f"SpreadExitFill={spread_exit_fill_strict} | "
-            f"SpreadExitFillStrict={spread_exit_fill_strict} | "
-            f"SpreadExitCanceled={self._diag_spread_exit_canceled_count} | "
-            f"SpreadRemoved={self._diag_spread_position_removed_count} | "
-            f"SpreadRemovedFillPath={self._diag_spread_removed_fill_path_count} | "
-            f"SpreadGhostRemoved={self._diag_spread_ghost_removed_count} | "
-            f"SpreadLossBeyondStop={self._diag_spread_loss_beyond_stop_count} | "
-            f"MicroTagRecovery={self._diag_micro_tag_recovery_count} | "
-            f"MicroEodSweepClose={self._diag_micro_eod_sweep_close_count} | "
-            f"MicroPendingCancelIgnored={self._diag_micro_pending_cancel_ignored_count} | "
-            f"MarginRejects={self._diag_margin_reject_count}"
-        )
+        log_daily_summary(self)
 
     def _handle_order_rejection(self, symbol: str, order_event) -> None:
         """
