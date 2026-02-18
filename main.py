@@ -8719,7 +8719,7 @@ class AlphaNextGen(QCAlgorithm):
                                     )
                             if removed_position and removed_position.entry_price > 0:
                                 is_win = fill_price > removed_position.entry_price
-                                self.options_engine.record_spread_result(is_win)
+                                # V10.8: Do NOT feed MICRO outcomes into VASS spread win-rate / breaker state.
                                 self.options_engine.record_intraday_result(
                                     symbol=symbol,
                                     is_win=is_win,
@@ -8799,7 +8799,6 @@ class AlphaNextGen(QCAlgorithm):
                             self._intraday_entry_snapshot.pop(symbol_norm, None)
                             entry_price = float(snapshot["entry_price"])
                             is_win = fill_price > entry_price
-                            self.options_engine.record_spread_result(is_win)
                             self.options_engine.record_intraday_result(
                                 symbol=symbol,
                                 is_win=is_win,
