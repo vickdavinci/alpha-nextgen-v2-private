@@ -1385,6 +1385,10 @@ VASS_WIN_RATE_HARD_BLOCK = False  # If False, shutoff degrades to minimum size i
 VASS_WIN_RATE_SHUTOFF_SCALE = (
     0.50  # Soft-mode floor to avoid over-suppressing after kill-switch events
 )
+# V10.7: Lightweight VASS loss breaker (separate from win-rate gate).
+VASS_LOSS_BREAKER_ENABLED = True
+VASS_LOSS_BREAKER_THRESHOLD = 3
+VASS_LOSS_BREAKER_PAUSE_DAYS = 1
 # In elevated VIX, do not allow VASS bullish conviction to force trades from NEUTRAL macro.
 VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX = 18.0
 VASS_BULL_PROFILE_BEARISH_BLOCK_ENABLED = True

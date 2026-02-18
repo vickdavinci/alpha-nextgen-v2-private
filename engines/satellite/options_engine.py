@@ -1983,6 +1983,9 @@ class OptionsEngine:
         # CALL-gate tracking: pause new CALLs after repeated losses.
         self._call_consecutive_losses: int = 0
         self._call_cooldown_until_date: Optional[datetime.date] = None
+        # V10.7: Swing loss breaker for VASS spread entries.
+        self._vass_consecutive_losses: int = 0
+        self._vass_loss_breaker_pause_until: Optional[str] = None  # YYYY-MM-DD
 
         # V9.4 P0: Exit signal cooldown — prevent per-minute spam when close order fails.
         # Maps spread_key -> last exit signal datetime. If exit fires and close fails,
@@ -4735,6 +4738,18 @@ class OptionsEngine:
         if day_gap_reason is not None:
             return fail(day_gap_reason)
 
+        if bool(getattr(config, "VASS_LOSS_BREAKER_ENABLED", False)):
+            pause_until = self._vass_loss_breaker_pause_until
+            if pause_until:
+                try:
+                    trade_date = datetime.strptime(str(current_date)[:10], "%Y-%m-%d").date()
+                    pause_date = datetime.strptime(str(pause_until)[:10], "%Y-%m-%d").date()
+                    if trade_date <= pause_date:
+                        return fail("R_VASS_LOSS_BREAKER_PAUSE")
+                    self._vass_loss_breaker_pause_until = None
+                except Exception:
+                    self._vass_loss_breaker_pause_until = None
+
         # Scoped daily attempt budget (per spread key), replaces global one-attempt lock.
         attempt_key = f"DEBIT_{direction.value if direction is not None else 'NONE'}"
         if not self._can_attempt_spread_entry(attempt_key):
@@ -5503,6 +5518,18 @@ class OptionsEngine:
         day_gap_reason = self._check_vass_direction_day_gap(direction, current_date)
         if day_gap_reason is not None:
             return fail(day_gap_reason)
+
+        if bool(getattr(config, "VASS_LOSS_BREAKER_ENABLED", False)):
+            pause_until = self._vass_loss_breaker_pause_until
+            if pause_until:
+                try:
+                    trade_date = datetime.strptime(str(current_date)[:10], "%Y-%m-%d").date()
+                    pause_date = datetime.strptime(str(pause_until)[:10], "%Y-%m-%d").date()
+                    if trade_date <= pause_date:
+                        return fail("R_VASS_LOSS_BREAKER_PAUSE")
+                    self._vass_loss_breaker_pause_until = None
+                except Exception:
+                    self._vass_loss_breaker_pause_until = None
 
         # Scoped daily attempt budget (strategy-specific), replaces global one-attempt lock.
         attempt_key = f"CREDIT_{strategy.value if strategy is not None else 'NONE'}"
@@ -9599,6 +9626,26 @@ class OptionsEngine:
         Args:
             is_win: True if the spread was profitable, False if a loss.
         """
+        if bool(getattr(config, "VASS_LOSS_BREAKER_ENABLED", False)):
+            if is_win:
+                self._vass_consecutive_losses = 0
+                self._vass_loss_breaker_pause_until = None
+            else:
+                self._vass_consecutive_losses += 1
+                threshold = int(getattr(config, "VASS_LOSS_BREAKER_THRESHOLD", 3))
+                if self._vass_consecutive_losses >= threshold:
+                    pause_days = max(1, int(getattr(config, "VASS_LOSS_BREAKER_PAUSE_DAYS", 1)))
+                    if self.algorithm is not None and hasattr(self.algorithm, "Time"):
+                        pause_until = self.algorithm.Time.date() + timedelta(days=pause_days)
+                        self._vass_loss_breaker_pause_until = pause_until.isoformat()
+                        self.log(
+                            "VASS_LOSS_BREAKER_PAUSE | "
+                            f"LossStreak={self._vass_consecutive_losses} | "
+                            f"PauseUntil={self._vass_loss_breaker_pause_until}",
+                            trades_only=True,
+                        )
+                    self._vass_consecutive_losses = 0
+
         if not config.WIN_RATE_GATE_ENABLED:
             return
 
@@ -9999,6 +10046,8 @@ class OptionsEngine:
             "win_rate_shutoff": self._win_rate_shutoff,
             "win_rate_shutoff_date": self._win_rate_shutoff_date,
             "paper_track_history": self._paper_track_history,
+            "vass_consecutive_losses": self._vass_consecutive_losses,
+            "vass_loss_breaker_pause_until": self._vass_loss_breaker_pause_until,
             "vass_last_entry_at_by_signature": {
                 k: v.strftime("%Y-%m-%d %H:%M:%S")
                 for k, v in self._vass_last_entry_at_by_signature.items()
@@ -10170,6 +10219,11 @@ class OptionsEngine:
         raw_shutoff_date = state.get("win_rate_shutoff_date")
         self._win_rate_shutoff_date = str(raw_shutoff_date)[:10] if raw_shutoff_date else None
         self._paper_track_history = state.get("paper_track_history", [])
+        self._vass_consecutive_losses = int(state.get("vass_consecutive_losses", 0) or 0)
+        raw_breaker_pause = state.get("vass_loss_breaker_pause_until")
+        self._vass_loss_breaker_pause_until = (
+            str(raw_breaker_pause)[:10] if raw_breaker_pause else None
+        )
         self._vass_last_entry_at_by_signature = {}
         self._vass_cooldown_until_by_signature = {}
         self._vass_last_entry_date_by_direction = {
@@ -10249,6 +10303,8 @@ class OptionsEngine:
         # V2.3.3: Reset pending intraday exit flag
         self._pending_intraday_exit = False
         self._win_rate_shutoff_date = None
+        self._vass_consecutive_losses = 0
+        self._vass_loss_breaker_pause_until = None
         self._vass_last_entry_at_by_signature = {}
         self._vass_cooldown_until_by_signature = {}
         self._vass_last_entry_date_by_direction = {}
