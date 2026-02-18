@@ -6627,6 +6627,13 @@ class OptionsEngine:
                         entry_debit = float(getattr(spread, "net_debit", 0.0) or 0.0)
                         if entry_debit > 0:
                             current_spread_value = float(long_leg_price) - float(short_leg_price)
+                            if current_spread_value < 0:
+                                self.log(
+                                    f"SPREAD_PNL_CLAMP_APPLIED: HoldGuard | Key={self._build_spread_key(spread)} | "
+                                    f"RawValue=${current_spread_value:.2f} -> $0.00",
+                                    trades_only=True,
+                                )
+                                current_spread_value = 0.0
                             pnl = current_spread_value - entry_debit
                             pnl_pct = pnl / entry_debit
 
@@ -6825,6 +6832,13 @@ class OptionsEngine:
             # DEBIT SPREAD P&L: Original logic
             current_spread_value = long_leg_price - short_leg_price
             entry_debit = spread.net_debit
+            if entry_debit > 0 and current_spread_value < 0:
+                self.log(
+                    f"SPREAD_PNL_CLAMP_APPLIED: ExitCheck | Key={self._build_spread_key(spread)} | "
+                    f"RawValue=${current_spread_value:.2f} -> $0.00",
+                    trades_only=True,
+                )
+                current_spread_value = 0.0
             pnl = current_spread_value - entry_debit
             pnl_pct = pnl / entry_debit if entry_debit > 0 else 0
 
