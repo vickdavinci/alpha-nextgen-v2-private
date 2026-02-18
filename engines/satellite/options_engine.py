@@ -5195,8 +5195,9 @@ class OptionsEngine:
             self.log(f"SPREAD: Entry blocked - max profit ${max_profit:.2f} <= 0")
             return fail_quality("MAX_PROFIT_NON_POSITIVE")
 
-        # V9.1: Debit-to-width quality gate — block spreads with poor R:R
-        max_debit_pct = float(getattr(config, "SPREAD_MAX_DEBIT_TO_WIDTH_PCT", 0.55))
+        # V10.7: Debit-to-width quality band — reject both too-expensive and too-cheap structures.
+        max_debit_pct = float(getattr(config, "SPREAD_MAX_DEBIT_TO_WIDTH_PCT", 0.38))
+        min_debit_pct = float(getattr(config, "SPREAD_MIN_DEBIT_TO_WIDTH_PCT", 0.28))
         debit_to_width = net_debit / width if width > 0 else 1.0
         if debit_to_width > max_debit_pct:
             self.log(
@@ -5205,6 +5206,13 @@ class OptionsEngine:
                 trades_only=True,
             )
             return fail_quality("DEBIT_TO_WIDTH_TOO_HIGH")
+        if debit_to_width < min_debit_pct:
+            self.log(
+                f"SPREAD: Entry blocked - DEBIT_TO_WIDTH {debit_to_width:.1%} < {min_debit_pct:.0%} | "
+                f"Debit=${net_debit:.2f} Width=${width:.0f}",
+                trades_only=True,
+            )
+            return fail_quality("DEBIT_TO_WIDTH_TOO_LOW")
 
         if bool(getattr(config, "SPREAD_ENTRY_COMMISSION_GATE_ENABLED", False)):
             max_profit_dollars = max_profit * 100.0

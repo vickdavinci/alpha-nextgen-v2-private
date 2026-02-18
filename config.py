@@ -1329,7 +1329,10 @@ VASS_DAY4_EOD_DECISION_TIME = "15:45"
 # V6.10 P5: Symmetric R:R (40%/40%) - need 1:1 win ratio to break even
 # Was asymmetric (50%/35%) requiring 1.43:1 win ratio
 SPREAD_MAX_DEBIT_TO_WIDTH_PCT = (
-    0.55  # V9.1: Block spreads where debit > 55% of width (ensures R:R ≥ 0.82:1)
+    0.38  # V10.7: Reject expensive debit spreads with structurally weak payoff profile
+)
+SPREAD_MIN_DEBIT_TO_WIDTH_PCT = (
+    0.28  # V10.7: Reject ultra-cheap/low-quality debit structures (balanced D/W band)
 )
 SPREAD_PROFIT_TARGET_PCT = 0.35  # V10.5: lower base target to improve hit-rate before reversals
 SPREAD_STOP_LOSS_PCT = 0.35  # V10.5: wider base stop to reduce noise stop-outs
