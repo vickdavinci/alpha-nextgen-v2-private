@@ -8263,9 +8263,15 @@ class OptionsEngine:
                         else None
                     )
                     vix_5d_gate = float(getattr(config, "CALL_GATE_VIX_5D_RISING_PCT", 0.10))
-                    if vix_5d_change is not None and vix_5d_change >= vix_5d_gate:
+                    vix_5d_min_vix = float(getattr(config, "CALL_GATE_VIX_5D_MIN_VIX", 18.0))
+                    if (
+                        vix_5d_change is not None
+                        and vix_for_call >= vix_5d_min_vix
+                        and vix_5d_change >= vix_5d_gate
+                    ):
                         self.log(
                             f"INTRADAY: CALL blocked by VIX 5d trend | "
+                            f"VIX={vix_for_call:.1f} >= {vix_5d_min_vix:.1f} | "
                             f"VIX5d={vix_5d_change:+.1%} >= {vix_5d_gate:.1%}"
                         )
                         return fail("E_CALL_GATE_VIX5D")

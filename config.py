@@ -1793,16 +1793,17 @@ INTRADAY_CALL_BLOCK_VIX_MIN = 22.0  # Block CALLs earlier when fear rises
 INTRADAY_CALL_BLOCK_REGIME_MAX = 58.0  # Extend block deeper into weak-neutral macro
 # Additional minimal CALL-protection gates (bear-risk controls without major architecture changes)
 CALL_GATE_MA20_ENABLED = True  # Block CALL entries when QQQ is below its 20-day SMA
-CALL_GATE_MA20_BYPASS_REGIME_MIN = (
-    62.0  # V10.4: Relax bypass to capture bullish continuation under NEUTRAL->RISK_ON
-)
+CALL_GATE_MA20_BYPASS_REGIME_MIN = 58.0  # V10.8: reduce CALL over-blocking in bull/neutral tapes
 CALL_GATE_MA20_BYPASS_VIX_MAX = 18.0  # Only bypass when fear is still low
-CALL_GATE_MA20_BYPASS_SIZE_MULT = 0.85  # Reduce size when using MA20 bypass
+CALL_GATE_MA20_BYPASS_SIZE_MULT = 0.90  # V10.8: lighter haircut when bypass is valid
 CALL_GATE_VIX_5D_RISING_ENABLED = True  # Block CALL entries when 5-day VIX trend is rising
-CALL_GATE_VIX_5D_RISING_PCT = 0.10  # +10% over 5 days
+CALL_GATE_VIX_5D_RISING_PCT = (
+    0.14  # V10.8: require stronger fear acceleration before blocking CALLs
+)
+CALL_GATE_VIX_5D_MIN_VIX = 18.0  # Apply VIX-5d CALL block only once fear reaches elevated band
 CALL_GATE_CONSECUTIVE_LOSS_ENABLED = True  # Pause CALL entries after repeated losses
 CALL_GATE_CONSECUTIVE_LOSSES = 3  # Trigger pause after 3 consecutive CALL losses
-CALL_GATE_LOSS_COOLDOWN_DAYS = 2  # Pause duration
+CALL_GATE_LOSS_COOLDOWN_DAYS = 1  # V10.8: shorter cooldown to avoid prolonged CALL starvation
 
 # V2.19: VIX Floor for DEBIT_FADE
 # In low VIX (<13.5) "apathy" markets, mean reversion fails - trends persist longer
