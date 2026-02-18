@@ -1868,6 +1868,7 @@ INTRADAY_DEBIT_MOMENTUM_ENABLED = (
     False  # V10: deprecated — ITM_MOMENTUM replaces all confirmation paths
 )
 INTRADAY_ITM_MOMENTUM_ENABLED = True  # V10: primary confirmation strategy
+INTRADAY_DEBIT_FADE_ENABLED = False  # V10.7: phase-5 simplification (ITM-only)
 INTRADAY_DEBIT_MOMENTUM_DELTA_MIN = 0.45  # Near ATM for momentum
 INTRADAY_DEBIT_MOMENTUM_DELTA_MAX = 0.65  # Slightly ITM max
 INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES = [

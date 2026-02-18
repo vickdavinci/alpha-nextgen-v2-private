@@ -1360,6 +1360,14 @@ class MicroRegimeEngine:
         ) -> Tuple[IntradayStrategy, Optional[OptionDirection], str]:
             return (IntradayStrategy.ITM_MOMENTUM, direction, reason)
 
+        # V10.7 Phase-5: optional simplification to disable DEBIT_FADE.
+        def divergence_strategy_or_skip(
+            direction: OptionDirection, reason: str
+        ) -> Tuple[IntradayStrategy, Optional[OptionDirection], str]:
+            if bool(getattr(config, "INTRADAY_DEBIT_FADE_ENABLED", False)):
+                return (IntradayStrategy.DEBIT_FADE, direction, reason)
+            return (IntradayStrategy.NO_TRADE, None, f"DEBIT_FADE_DISABLED: {reason}")
+
         # =====================================================================
         # RULE 5: DIVERGENCE/CONFIRMATION LOGIC (V6.5 Fix)
         # =====================================================================
@@ -1438,8 +1446,7 @@ class MicroRegimeEngine:
                             f"HIGH_VIX_DIVERGENCE: QQQ +{qqq_move_pct:.2f}% but VIX {vix_direction.value} "
                             f"(VIX={vix_current:.1f}>=25) → ITM PUT",
                         )
-                    return (
-                        IntradayStrategy.DEBIT_FADE,
+                    return divergence_strategy_or_skip(
                         OptionDirection.PUT,
                         f"DIVERGENCE: QQQ +{qqq_move_pct:.2f}% but VIX {vix_direction.value} → Fade with PUT",
                     )
@@ -1499,8 +1506,7 @@ class MicroRegimeEngine:
                             f"HIGH_VIX_DIVERGENCE: QQQ {qqq_move_pct:.2f}% but VIX {vix_direction.value} "
                             f"(VIX={vix_current:.1f}>=25) → ITM CALL",
                         )
-                    return (
-                        IntradayStrategy.DEBIT_FADE,
+                    return divergence_strategy_or_skip(
                         OptionDirection.CALL,
                         f"DIVERGENCE: QQQ {qqq_move_pct:.2f}% but VIX {vix_direction.value} → Fade with CALL",
                     )
