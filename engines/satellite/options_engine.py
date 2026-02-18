@@ -6963,9 +6963,9 @@ class OptionsEngine:
                         close_threshold = float(
                             getattr(config, "VASS_DAY4_EOD_KEEP_IF_PNL_GT", 0.0)
                         )
-                        if pnl_pct > close_threshold:
+                        if pnl_pct <= close_threshold:
                             exit_reason = (
-                                f"DAY4_EOD_CLOSE {pnl_pct:.1%} (> {close_threshold:.0%}) | "
+                                f"DAY4_EOD_CLOSE {pnl_pct:.1%} (<= {close_threshold:.0%}) | "
                                 f"Held={held_days}d"
                             )
                         else:
@@ -6973,7 +6973,7 @@ class OptionsEngine:
                             if spread_key not in self._spread_hold_guard_logged:
                                 self._spread_hold_guard_logged.add(spread_key)
                                 self.log(
-                                    f"DAY4_EOD_KEEP: Key={spread_key} | P&L={pnl_pct:.1%} <= {close_threshold:.0%} | "
+                                    f"DAY4_EOD_KEEP: Key={spread_key} | P&L={pnl_pct:.1%} > {close_threshold:.0%} | "
                                     f"Held={held_days}d",
                                     trades_only=True,
                                 )

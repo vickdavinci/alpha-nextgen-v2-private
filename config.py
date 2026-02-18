@@ -1332,9 +1332,7 @@ VASS_DEBIT_LOW_VIX_THRESHOLD = 16.0
 # V10.5: Day-4 EOD decision for VASS debit spreads
 VASS_DAY4_EOD_DECISION_ENABLED = True
 VASS_DAY4_EOD_MIN_HOLD_DAYS = 4
-VASS_DAY4_EOD_KEEP_IF_PNL_GT = (
-    -0.20
-)  # Keep on day-4 EOD if loss not worse than -20%; close (-20%, 0] damage band
+VASS_DAY4_EOD_KEEP_IF_PNL_GT = -0.20  # Day-4 EOD: close if P&L <= -20%; keep if P&L > -20%
 VASS_DAY4_EOD_DECISION_TIME = "15:45"
 
 # Exit targets
