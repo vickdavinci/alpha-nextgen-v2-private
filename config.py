@@ -871,6 +871,10 @@ VASS_VIX_5D_BEARISH_THRESHOLD = 0.16  # VIX 5d change > +16% → BEARISH convict
 VASS_VIX_5D_BULLISH_THRESHOLD = -0.20  # VIX 5d change < -20% → BULLISH conviction
 VASS_VIX_20D_STRONG_BEARISH = 0.30  # VIX 20d change > +30% → STRONG BEARISH
 VASS_VIX_20D_STRONG_BULLISH = -0.20  # VIX 20d change < -20% → STRONG BULLISH
+VASS_LOW_VIX_CONVICTION_RELAX_ENABLED = True  # V10.8: broaden conviction in calm low-vol tapes
+VASS_LOW_VIX_CONVICTION_MAX_VIX = 16.0
+VASS_LOW_VIX_5D_CHANGE_THRESHOLD = 0.12  # starter threshold for both bullish/bearish conviction
+VASS_LOW_VIX_CROSSING_DELTA = 0.80  # loosen level-crossing barriers by absolute VIX points
 VASS_EARLY_STRESS_BULL_REQUIRE_CONVICTION = (
     True  # D8: In EARLY_STRESS, block bullish VASS unless conviction is present
 )

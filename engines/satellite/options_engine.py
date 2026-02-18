@@ -562,20 +562,31 @@ class IVSensor:
 
             # Track level crossings
             if self._prev_vix_level is not None:
+                fear_cross_level = float(getattr(config, "VASS_VIX_FEAR_CROSS_LEVEL", 22.0))
+                complacent_cross_level = float(
+                    getattr(config, "VASS_VIX_COMPLACENT_CROSS_LEVEL", 14.0)
+                )
+
+                # V10.8: low-VIX conviction broadening via relaxed crossing levels.
+                if bool(getattr(config, "VASS_LOW_VIX_CONVICTION_RELAX_ENABLED", False)):
+                    low_vix_max = float(getattr(config, "VASS_LOW_VIX_CONVICTION_MAX_VIX", 16.0))
+                    if self._prev_vix_level <= low_vix_max and vix_value <= low_vix_max:
+                        crossing_delta = float(getattr(config, "VASS_LOW_VIX_CROSSING_DELTA", 0.80))
+                        fear_cross_level = max(0.1, fear_cross_level - crossing_delta)
+                        complacent_cross_level = complacent_cross_level + crossing_delta
+
                 # Crossed above fear threshold
-                if self._prev_vix_level < config.VASS_VIX_FEAR_CROSS_LEVEL <= vix_value:
+                if self._prev_vix_level < fear_cross_level <= vix_value:
                     self._crossed_above_fear = True
-                    self._log(
-                        f"VASS: VIX crossed ABOVE {config.VASS_VIX_FEAR_CROSS_LEVEL} (fear threshold)"
-                    )
+                    self._log(f"VASS: VIX crossed ABOVE {fear_cross_level:.1f} (fear threshold)")
                 else:
                     self._crossed_above_fear = False
 
                 # Crossed below complacent threshold
-                if self._prev_vix_level > config.VASS_VIX_COMPLACENT_CROSS_LEVEL >= vix_value:
+                if self._prev_vix_level > complacent_cross_level >= vix_value:
                     self._crossed_below_complacent = True
                     self._log(
-                        f"VASS: VIX crossed BELOW {config.VASS_VIX_COMPLACENT_CROSS_LEVEL} (complacent threshold)"
+                        f"VASS: VIX crossed BELOW {complacent_cross_level:.1f} (complacent threshold)"
                     )
                 else:
                     self._crossed_below_complacent = False
@@ -676,27 +687,47 @@ class IVSensor:
         vix_5d_change = self.get_vix_5d_change()
         vix_20d_change = self.get_vix_20d_change()
 
+        fear_cross_level = float(getattr(config, "VASS_VIX_FEAR_CROSS_LEVEL", 22.0))
+        complacent_cross_level = float(getattr(config, "VASS_VIX_COMPLACENT_CROSS_LEVEL", 14.0))
+        bearish_5d_threshold = float(getattr(config, "VASS_VIX_5D_BEARISH_THRESHOLD", 0.16))
+        bullish_5d_threshold = float(getattr(config, "VASS_VIX_5D_BULLISH_THRESHOLD", -0.20))
+
+        # V10.8: low-VIX conviction broadening (threshold-first, no new indicators).
+        if bool(getattr(config, "VASS_LOW_VIX_CONVICTION_RELAX_ENABLED", False)):
+            smoothed_vix = self.get_smoothed_vix()
+            low_vix_max = float(getattr(config, "VASS_LOW_VIX_CONVICTION_MAX_VIX", 16.0))
+            if smoothed_vix <= low_vix_max:
+                crossing_delta = float(getattr(config, "VASS_LOW_VIX_CROSSING_DELTA", 0.80))
+                fear_cross_level = max(0.1, fear_cross_level - crossing_delta)
+                complacent_cross_level = complacent_cross_level + crossing_delta
+
+                low_vix_5d_threshold = float(
+                    getattr(config, "VASS_LOW_VIX_5D_CHANGE_THRESHOLD", 0.12)
+                )
+                bearish_5d_threshold = min(bearish_5d_threshold, low_vix_5d_threshold)
+                bullish_5d_threshold = max(bullish_5d_threshold, -low_vix_5d_threshold)
+
         # Level crossing conviction (immediate)
         if self._crossed_above_fear:
-            return True, "BEARISH", f"VIX crossed above {config.VASS_VIX_FEAR_CROSS_LEVEL}"
+            return True, "BEARISH", f"VIX crossed above {fear_cross_level:.1f}"
 
         if self._crossed_below_complacent:
-            return True, "BULLISH", f"VIX crossed below {config.VASS_VIX_COMPLACENT_CROSS_LEVEL}"
+            return True, "BULLISH", f"VIX crossed below {complacent_cross_level:.1f}"
 
         # 5-day change conviction (fast-moving fear)
         if vix_5d_change is not None:
-            if vix_5d_change > config.VASS_VIX_5D_BEARISH_THRESHOLD:
+            if vix_5d_change > bearish_5d_threshold:
                 return (
                     True,
                     "BEARISH",
-                    f"VIX 5d change +{vix_5d_change:.0%} > +{config.VASS_VIX_5D_BEARISH_THRESHOLD:.0%}",
+                    f"VIX 5d change +{vix_5d_change:.0%} > +{bearish_5d_threshold:.0%}",
                 )
 
-            if vix_5d_change < config.VASS_VIX_5D_BULLISH_THRESHOLD:
+            if vix_5d_change < bullish_5d_threshold:
                 return (
                     True,
                     "BULLISH",
-                    f"VIX 5d change {vix_5d_change:.0%} < {config.VASS_VIX_5D_BULLISH_THRESHOLD:.0%}",
+                    f"VIX 5d change {vix_5d_change:.0%} < {bullish_5d_threshold:.0%}",
                 )
 
         # 20-day change conviction (sustained direction)
