@@ -1173,6 +1173,9 @@ BEAR_PUT_ENTRY_RELAXED_REGIME_MIN = (
 # V6.22: During confirmed stress, allow tighter BEAR_PUT shorts to keep bearish access alive.
 # V9.4: Lowered from 0.8% to 0.3%. Bear markets need PUT access most — max loss already capped by debit.
 BEAR_PUT_ENTRY_MIN_OTM_PCT_STRESS = 0.005
+VASS_BEAR_FALLBACK_MAX_REGIME = (
+    55.0  # V10.8: allow BEAR_CALL_CREDIT fallback only when regime is sufficiently weak
+)
 
 # Contract Selection
 # Options chain filter (must cover BOTH Intraday 0-2 DTE AND Swing 5-45 DTE)
