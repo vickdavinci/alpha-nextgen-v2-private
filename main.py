@@ -5205,6 +5205,76 @@ class AlphaNextGen(QCAlgorithm):
                         is_eod_scan=is_eod_scan,
                         direction=direction,
                     )
+                    if (
+                        signal is None
+                        and bool(
+                            getattr(config, "VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT", False)
+                        )
+                        and direction == OptionDirection.PUT
+                    ):
+                        validation_reason = self.options_engine.pop_last_entry_validation_failure()
+                        if validation_reason is not None:
+                            self.options_engine.set_last_entry_validation_failure(validation_reason)
+                        if validation_reason and validation_reason.startswith(
+                            "BEAR_PUT_ASSIGNMENT_GATE_"
+                        ):
+                            self.Log(
+                                f"{fallback_log_prefix}: BEAR_PUT blocked ({validation_reason}) | "
+                                "Trying BEAR_CALL_CREDIT fallback"
+                            )
+                            fallback_strategy = SpreadStrategy.BEAR_CALL_CREDIT
+                            fallback_right = self._strategy_option_right(fallback_strategy)
+                            fallback_contracts = self._build_spread_candidate_contracts(
+                                chain,
+                                direction,
+                                dte_min=dte_min_all,
+                                dte_max=dte_max_all,
+                                option_right=fallback_right,
+                            )
+                            credit_spread_legs = (
+                                self.options_engine.select_credit_spread_legs_with_fallback(
+                                    contracts=fallback_contracts,
+                                    strategy=fallback_strategy,
+                                    dte_ranges=dte_ranges,
+                                    current_time=str(self.Time),
+                                )
+                                if len(fallback_contracts) >= 2
+                                else None
+                            )
+                            if credit_spread_legs is not None:
+                                short_leg, long_leg = credit_spread_legs
+                                rejection_code = "CREDIT_ENTRY_VALIDATION_FAILED"
+                                signal = self.options_engine.check_credit_spread_entry_signal(
+                                    regime_score=regime_score,
+                                    vix_current=self._current_vix,
+                                    adx_value=adx_value,
+                                    current_price=qqq_price,
+                                    ma200_value=ma200_value,
+                                    iv_rank=iv_rank,
+                                    current_hour=self.Time.hour,
+                                    current_minute=self.Time.minute,
+                                    current_date=str(self.Time.date()),
+                                    portfolio_value=portfolio_value,
+                                    short_leg_contract=short_leg,
+                                    long_leg_contract=long_leg,
+                                    strategy=fallback_strategy,
+                                    gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
+                                    vol_shock_active=self.risk_engine.is_vol_shock_active(
+                                        self.Time
+                                    ),
+                                    size_multiplier=size_multiplier,
+                                    margin_remaining=margin_remaining,
+                                    is_eod_scan=is_eod_scan,
+                                    direction=direction,
+                                )
+                                if signal is not None:
+                                    self.Log(
+                                        f"{fallback_log_prefix}: BEAR_CALL_CREDIT fallback selected | "
+                                        f"Short={short_leg.strike} Long={long_leg.strike}"
+                                    )
+                            else:
+                                rejection_code = "BEAR_CREDIT_FALLBACK_LEG_SELECTION_FAILED"
+
             else:
                 rejection_code = "DEBIT_LEG_SELECTION_FAILED"
 
