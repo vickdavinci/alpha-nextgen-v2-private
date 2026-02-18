@@ -6716,6 +6716,7 @@ class OptionsEngine:
                 live_minutes = (self.algorithm.Time - entry_dt).total_seconds() / 60.0
                 mandatory_dte = int(getattr(config, "SPREAD_FORCE_CLOSE_DTE", 1))
                 if 0 <= live_minutes < min_hold_minutes and current_dte > mandatory_dte:
+                    hold_guard_bypass = False
                     # Catastrophic hard-stop override must remain active even during hold guard.
                     if spread.spread_type in (
                         "BULL_CALL",
@@ -6775,16 +6776,75 @@ class OptionsEngine:
                                     )
                                 ]
 
-                    spread_key = self._build_spread_key(spread)
-                    if spread_key not in self._spread_hold_guard_logged:
-                        self._spread_hold_guard_logged.add(spread_key)
-                        hold_days = min_hold_minutes / 1440.0
-                        self.log(
-                            f"SPREAD_EXIT_GUARD_HOLD: Key={spread_key} | Sig={spread.spread_type} | "
-                            f"Hold={hold_days:.0f}d ({min_hold_minutes}m) | DTE={current_dte}",
-                            trades_only=True,
-                        )
-                    return None
+                            # EOD risk gate during hold to reduce overnight tail losses.
+                            eod_gate_enabled = bool(
+                                getattr(config, "SPREAD_EOD_HOLD_RISK_GATE_ENABLED", False)
+                            )
+                            eod_gate_pct = float(
+                                getattr(config, "SPREAD_EOD_HOLD_RISK_GATE_PCT", -0.25)
+                            )
+                            if (
+                                eod_gate_enabled
+                                and pnl_pct <= eod_gate_pct
+                                and self.algorithm is not None
+                            ):
+                                eod_hour, eod_min = 15, 45
+                                is_eod = self.algorithm.Time.hour > eod_hour or (
+                                    self.algorithm.Time.hour == eod_hour
+                                    and self.algorithm.Time.minute >= eod_min
+                                )
+                                if is_eod:
+                                    self.log(
+                                        f"SPREAD_EOD_HOLD_RISK_GATE: {pnl_pct:.1%} <= {eod_gate_pct:.0%} | "
+                                        f"Key={self._build_spread_key(spread)} | Held={live_minutes/1440:.0f}d",
+                                        trades_only=True,
+                                    )
+                                    spread.is_closing = True
+                                    self._spread_exit_signal_cooldown[
+                                        self._build_spread_key(spread)
+                                    ] = self.algorithm.Time
+                                    return [
+                                        TargetWeight(
+                                            symbol=self._symbol_str(spread.long_leg.symbol),
+                                            target_weight=0.0,
+                                            source="OPT",
+                                            urgency=Urgency.IMMEDIATE,
+                                            reason=(
+                                                f"SPREAD_EXIT: EOD_HOLD_RISK_GATE {pnl_pct:.1%} "
+                                                f"(<= {eod_gate_pct:.0%} at EOD during hold)"
+                                            ),
+                                            requested_quantity=spread.num_spreads,
+                                            metadata={
+                                                "spread_close_short": True,
+                                                "spread_type": spread.spread_type,
+                                                "spread_short_leg_symbol": self._symbol_str(
+                                                    spread.short_leg.symbol
+                                                ),
+                                                "spread_short_leg_quantity": spread.num_spreads,
+                                                "spread_key": self._build_spread_key(spread),
+                                                "spread_width": spread.width,
+                                                "spread_exit_code": "EOD_HOLD_RISK_GATE",
+                                                "is_credit_spread": False,
+                                                "spread_credit_received": 0.0,
+                                            },
+                                        )
+                                    ]
+
+                            # Profitable debit spreads can bypass hold guard and use normal exit cascade.
+                            if pnl_pct > 0:
+                                hold_guard_bypass = True
+
+                    if not hold_guard_bypass:
+                        spread_key = self._build_spread_key(spread)
+                        if spread_key not in self._spread_hold_guard_logged:
+                            self._spread_hold_guard_logged.add(spread_key)
+                            hold_days = min_hold_minutes / 1440.0
+                            self.log(
+                                f"SPREAD_EXIT_GUARD_HOLD: Key={spread_key} | Sig={spread.spread_type} | "
+                                f"Hold={hold_days:.0f}d ({min_hold_minutes}m) | DTE={current_dte}",
+                                trades_only=True,
+                            )
+                        return None
             except Exception:
                 pass
 

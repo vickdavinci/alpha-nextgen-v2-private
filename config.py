@@ -1334,6 +1334,10 @@ VASS_DAY4_EOD_DECISION_ENABLED = True
 VASS_DAY4_EOD_MIN_HOLD_DAYS = 4
 VASS_DAY4_EOD_KEEP_IF_PNL_GT = -0.20  # Day-4 EOD: close if P&L <= -20%; keep if P&L > -20%
 VASS_DAY4_EOD_DECISION_TIME = "15:45"
+SPREAD_EOD_HOLD_RISK_GATE_ENABLED = (
+    True  # Close hold-window debit spreads at EOD once loss breaches threshold
+)
+SPREAD_EOD_HOLD_RISK_GATE_PCT = -0.25  # EOD hold risk gate threshold (e.g., -25%)
 
 # Exit targets
 # V6.10 P5: Symmetric R:R (40%/40%) - need 1:1 win ratio to break even
