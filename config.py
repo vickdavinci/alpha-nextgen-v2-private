@@ -1801,7 +1801,10 @@ CALL_GATE_VIX_5D_RISING_PCT = (
 CALL_GATE_VIX_5D_MIN_VIX = 20.0  # V10.9: avoid LOW-VIX over-blocking for bullish continuation
 CALL_GATE_CONSECUTIVE_LOSS_ENABLED = True  # Pause CALL entries after repeated losses
 CALL_GATE_CONSECUTIVE_LOSSES = 3  # Trigger pause after 3 consecutive CALL losses
-CALL_GATE_LOSS_COOLDOWN_DAYS = 1  # V10.8: shorter cooldown to avoid prolonged CALL starvation
+CALL_GATE_LOSS_COOLDOWN_DAYS = 1  # Legacy fallback for cooldown days
+CALL_GATE_LOSS_COOLDOWN_DAYS_LOW_VIX = 1  # V10.9: keep short cooldown in low-vol tape
+CALL_GATE_LOSS_COOLDOWN_DAYS_MED_VIX = 1  # V10.9: keep short cooldown in medium-vol tape
+CALL_GATE_LOSS_COOLDOWN_DAYS_HIGH_VIX = 2  # V10.9: conservative cooldown in high-vol tape
 
 # V2.19: VIX Floor for DEBIT_FADE
 # In low VIX (<13.5) "apathy" markets, mean reversion fails - trends persist longer

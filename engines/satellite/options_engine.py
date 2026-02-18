@@ -2173,7 +2173,43 @@ class OptionsEngine:
             if self._call_consecutive_losses < threshold:
                 return
 
-            cooldown_days = int(getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 2))
+            vix_for_cooldown = None
+            try:
+                state = getattr(self._micro_regime_engine, "_state", None)
+                if state is not None:
+                    vix_for_cooldown = float(getattr(state, "vix_current", 0.0) or 0.0)
+            except Exception:
+                vix_for_cooldown = None
+
+            if vix_for_cooldown is None or vix_for_cooldown <= 0:
+                cooldown_days = int(getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 1))
+            else:
+                low_vix_max = float(getattr(config, "VIX_LEVEL_LOW_MAX", 18.0))
+                med_vix_max = float(getattr(config, "VIX_LEVEL_MEDIUM_MAX", 25.0))
+                if vix_for_cooldown < low_vix_max:
+                    cooldown_days = int(
+                        getattr(
+                            config,
+                            "CALL_GATE_LOSS_COOLDOWN_DAYS_LOW_VIX",
+                            getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 1),
+                        )
+                    )
+                elif vix_for_cooldown < med_vix_max:
+                    cooldown_days = int(
+                        getattr(
+                            config,
+                            "CALL_GATE_LOSS_COOLDOWN_DAYS_MED_VIX",
+                            getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 1),
+                        )
+                    )
+                else:
+                    cooldown_days = int(
+                        getattr(
+                            config,
+                            "CALL_GATE_LOSS_COOLDOWN_DAYS_HIGH_VIX",
+                            getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 1),
+                        )
+                    )
             # Parse current_time for cooldown date (required for backtest accuracy)
             if not current_time:
                 self.log("INTRADAY: CALL cooldown skipped - no timestamp", trades_only=True)
@@ -2315,6 +2351,19 @@ class OptionsEngine:
                     "NO_TRADE: VASS_NO_CONVICTION",
                 )
 
+        # V10.9: In CAUTION_LOW, bearish MICRO requires conviction across all macro states.
+        if (
+            engine == "MICRO"
+            and engine_regime == "CAUTION_LOW"
+            and engine_direction == "BEARISH"
+            and not engine_conviction
+        ):
+            return (
+                False,
+                None,
+                "NO_TRADE: MICRO CAUTION_LOW bearish requires conviction",
+            )
+
         # No engine direction = follow Macro if it has a clear direction
         if engine_direction is None:
             if macro_direction in ("BULLISH", "BEARISH"):
@@ -2384,16 +2433,6 @@ class OptionsEngine:
                     f"VETO: {engine} conviction ({engine_direction}) overrides NEUTRAL Macro",
                 )
             else:
-                if (
-                    engine == "MICRO"
-                    and engine_regime == "CAUTION_LOW"
-                    and engine_direction == "BEARISH"
-                ):
-                    return (
-                        False,
-                        None,
-                        "NO_TRADE: MICRO CAUTION_LOW bearish requires conviction",
-                    )
                 return (
                     True,
                     engine_direction,
