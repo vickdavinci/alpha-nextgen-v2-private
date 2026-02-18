@@ -7515,10 +7515,23 @@ class OptionsEngine:
         """Return (target_pct, stop_pct_override) for strategy-aware intraday exits."""
         strategy = self._canonical_intraday_strategy_name(entry_strategy)
         if strategy == IntradayStrategy.ITM_MOMENTUM.value:
-            return (
-                float(getattr(config, "INTRADAY_ITM_TARGET", 0.35)),
-                float(getattr(config, "INTRADAY_ITM_STOP", 0.35)),
-            )
+            # V10.10: OTM-first MICRO pilot uses VIX-tier adaptive target/stop profile.
+            vix_current = 0.0
+            state = getattr(self, "_state", None)
+            if state is not None:
+                vix_current = float(getattr(state, "vix_current", 0.0) or 0.0)
+
+            if vix_current >= 25.0:
+                target_pct = float(getattr(config, "INTRADAY_ITM_TARGET_HIGH_VIX", 0.85))
+                stop_floor = float(getattr(config, "INTRADAY_ITM_STOP_FLOOR_HIGH_VIX", 0.40))
+            elif vix_current >= 18.0:
+                target_pct = float(getattr(config, "INTRADAY_ITM_TARGET_MED_VIX", 0.70))
+                stop_floor = float(getattr(config, "INTRADAY_ITM_STOP_FLOOR_MED_VIX", 0.35))
+            else:
+                target_pct = float(getattr(config, "INTRADAY_ITM_TARGET", 0.60))
+                stop_floor = float(getattr(config, "INTRADAY_ITM_STOP", 0.30))
+
+            return (target_pct, stop_floor)
         if strategy == IntradayStrategy.DEBIT_FADE.value:
             return (
                 float(getattr(config, "INTRADAY_DEBIT_FADE_TARGET", 0.40)),

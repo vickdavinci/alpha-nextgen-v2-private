@@ -1846,18 +1846,18 @@ INTRADAY_ITM_MIN_SCORE = 40  # V6.8: Was 50, capture momentum earlier
 # V2.3.19: Time window moved from hardcoded to config
 INTRADAY_ITM_START = "10:00"  # Entry window start
 INTRADAY_ITM_END = "14:30"  # Entry window end (earlier than FADE - momentum fades after lunch)
-INTRADAY_ITM_DELTA = 0.70  # ITM delta target
-INTRADAY_ITM_TARGET = 0.80  # V10.8: trailing stop is primary exit; target is distant ceiling
+INTRADAY_ITM_DELTA = 0.40  # V10.10: OTM-first MICRO pilot target delta
+INTRADAY_ITM_TARGET = 0.60  # V10.10: LOW-VIX default target for OTM-first MICRO pilot
+INTRADAY_ITM_TARGET_MED_VIX = 0.70  # V10.10: larger MED-VIX target for higher realized ranges
+INTRADAY_ITM_TARGET_HIGH_VIX = 0.85  # V10.10: largest HIGH-VIX target to monetize convex moves
 
 # V6.4: DEBIT_MOMENTUM time window (same as ITM_MOMENTUM - both are momentum strategies)
 INTRADAY_DEBIT_MOMENTUM_START = "10:00"  # Entry window start
 INTRADAY_DEBIT_MOMENTUM_END = "14:30"  # Entry window end
-INTRADAY_ITM_STOP = 0.40  # V10.8: multi-day ITM stop to survive normal 1-2 day noise
-INTRADAY_ITM_STOP_FLOOR_MED_VIX = 0.45  # V10.8: wider ITM stop floor in medium VIX
-INTRADAY_ITM_STOP_FLOOR_HIGH_VIX = 0.50  # V10.8: wider ITM stop floor in high VIX
-INTRADAY_HIGH_VIX_STOP_MAX_PCT = (
-    0.55  # V10.8: allow high-VIX ITM stops to breathe on multi-day holds
-)
+INTRADAY_ITM_STOP = 0.30  # V10.10: LOW-VIX OTM stop
+INTRADAY_ITM_STOP_FLOOR_MED_VIX = 0.35  # V10.10: MED-VIX OTM stop floor
+INTRADAY_ITM_STOP_FLOOR_HIGH_VIX = 0.40  # V10.10: HIGH-VIX OTM stop floor
+INTRADAY_HIGH_VIX_STOP_MAX_PCT = 0.45  # V10.10: cap OTM high-VIX stop widening
 INTRADAY_ITM_TRAIL_TRIGGER = 0.15  # V10.8: start protecting gains earlier on held ITM trades
 INTRADAY_ITM_TRAIL_PCT = 0.40  # V10.8: retain more profits once trail is active
 
@@ -1900,9 +1900,9 @@ INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES = [
     "CRASH",
 ]  # Skip weak/choppy transition states for momentum
 
-# ITM_MOMENTUM: Stock replacement needs ITM options (delta 0.60-0.85)
-INTRADAY_ITM_DELTA_MIN = 0.65  # V10: tightened from 0.60 for better ITM quality
-INTRADAY_ITM_DELTA_MAX = 0.80  # V10: tightened from 0.85 to avoid deep ITM illiquidity
+# ITM_MOMENTUM (OTM-first pilot): use lighter-delta options for intraday convexity
+INTRADAY_ITM_DELTA_MIN = 0.30
+INTRADAY_ITM_DELTA_MAX = 0.50
 INTRADAY_ITM_HOLD_OVERNIGHT_ENABLED = True  # V10.1: allow ITM holds beyond force-close cutoff
 INTRADAY_ITM_HOLD_MIN_ENTRY_DTE = 3  # Only hold if entry was opened with >=3 DTE
 INTRADAY_ITM_OVERNIGHT_MAX_LOSS_PCT = 0.10  # V10.9: base overnight hold loss cap for low/medium VIX
