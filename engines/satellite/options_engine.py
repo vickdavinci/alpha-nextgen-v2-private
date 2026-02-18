@@ -8571,11 +8571,25 @@ class OptionsEngine:
             f"Premium=${premium:.2f} | Qty={num_contracts}"
         )
         if num_contracts <= 0:
-            self.log(
-                f"INTRADAY: Entry blocked - cap ${adjusted_cap:.0f} "
-                f"too small for premium ${premium:.2f}"
-            )
-            return fail("E_INTRADAY_CAP_TOO_SMALL")
+            allow_one_lot = bool(getattr(config, "INTRADAY_ALLOW_ONE_LOT_WHEN_CAP_TIGHT", False))
+            one_lot_max_premium = float(getattr(config, "INTRADAY_ONE_LOT_MAX_PREMIUM", 6.0))
+            if (
+                allow_one_lot
+                and entry_strategy == IntradayStrategy.ITM_MOMENTUM
+                and direction == OptionDirection.CALL
+                and premium <= one_lot_max_premium
+                and adjusted_cap >= premium * 100 * 0.50
+            ):
+                num_contracts = 1
+                self.log(
+                    f"INTRADAY: One-lot fallback applied | Cap=${adjusted_cap:.0f} | Premium=${premium:.2f}"
+                )
+            else:
+                self.log(
+                    f"INTRADAY: Entry blocked - cap ${adjusted_cap:.0f} "
+                    f"too small for premium ${premium:.2f}"
+                )
+                return fail("E_INTRADAY_CAP_TOO_SMALL")
 
         # V2.3.4: Use QQQ direction from state
         qqq_dir_str = state.qqq_direction.value if state.qqq_direction else "UNKNOWN"

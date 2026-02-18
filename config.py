@@ -1903,6 +1903,10 @@ INTRADAY_ITM_OVERNIGHT_MAX_LOSS_PCT = (
 )
 INTRADAY_ITM_FORCE_EXIT_DTE = 1  # Always force close by EOD once contract reaches 1 DTE
 INTRADAY_ITM_DTE_EXIT = 2  # Software DTE exit for ITM single-legs (strategy-specific)
+INTRADAY_ALLOW_ONE_LOT_WHEN_CAP_TIGHT = (
+    True  # V10.9: reduce avoidable CAP_TOO_SMALL drops for valid MICRO CALLs
+)
+INTRADAY_ONE_LOT_MAX_PREMIUM = 6.0  # Safety cap for one-lot fallback premium
 INTRADAY_ITM_TARGET_DTE_LOW_VIX = 4  # Prefer longer dated ITM in theta-dominated tape
 INTRADAY_ITM_TARGET_DTE_MED_VIX = 3
 INTRADAY_ITM_TARGET_DTE_HIGH_VIX = 3
