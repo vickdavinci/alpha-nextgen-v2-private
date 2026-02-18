@@ -2258,6 +2258,23 @@ class OptionsEngine:
                 "NO_TRADE: E_OVERLAY_EARLY_BULL_NO_CONVICTION",
             )
 
+        # V10.7: VASS direction sovereignty.
+        # Conviction decides direction; macro direction remains a risk-state input only.
+        if engine == "VASS" and bool(getattr(config, "VASS_USE_CONVICTION_ONLY_DIRECTION", False)):
+            if engine_conviction and engine_direction in ("BULLISH", "BEARISH"):
+                return (
+                    True,
+                    engine_direction,
+                    f"VASS_CONVICTION_DIRECTION: {engine_direction}",
+                )
+
+            if bool(getattr(config, "VASS_NO_CONVICTION_NO_TRADE", True)):
+                return (
+                    False,
+                    None,
+                    "NO_TRADE: VASS_NO_CONVICTION",
+                )
+
         # No engine direction = follow Macro if it has a clear direction
         if engine_direction is None:
             if macro_direction in ("BULLISH", "BEARISH"):
