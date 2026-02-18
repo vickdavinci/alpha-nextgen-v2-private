@@ -1898,9 +1898,9 @@ INTRADAY_ITM_DELTA_MIN = 0.65  # V10: tightened from 0.60 for better ITM quality
 INTRADAY_ITM_DELTA_MAX = 0.80  # V10: tightened from 0.85 to avoid deep ITM illiquidity
 INTRADAY_ITM_HOLD_OVERNIGHT_ENABLED = True  # V10.1: allow ITM holds beyond force-close cutoff
 INTRADAY_ITM_HOLD_MIN_ENTRY_DTE = 3  # Only hold if entry was opened with >=3 DTE
-INTRADAY_ITM_OVERNIGHT_MAX_LOSS_PCT = (
-    0.10  # V10.9: tighten overnight hold risk cap in low/medium-vol conditions
-)
+INTRADAY_ITM_OVERNIGHT_MAX_LOSS_PCT = 0.10  # V10.9: base overnight hold loss cap for low/medium VIX
+INTRADAY_ITM_OVERNIGHT_MAX_LOSS_PCT_HIGH_VIX = 0.15  # Keep wider cap in high-vol tape
+INTRADAY_ITM_OVERNIGHT_HIGH_VIX_THRESHOLD = 25.0  # Apply high-VIX cap at/above this VIX level
 INTRADAY_ITM_FORCE_EXIT_DTE = 1  # Always force close by EOD once contract reaches 1 DTE
 INTRADAY_ITM_DTE_EXIT = 2  # Software DTE exit for ITM single-legs (strategy-specific)
 INTRADAY_ALLOW_ONE_LOT_WHEN_CAP_TIGHT = (

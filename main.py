@@ -1563,7 +1563,20 @@ class AlphaNextGen(QCAlgorithm):
         EOD-only MICRO overnight hold guard.
         Return True when unrealized loss is beyond configured overnight threshold.
         """
-        max_loss_pct = float(getattr(config, "INTRADAY_ITM_OVERNIGHT_MAX_LOSS_PCT", 0.15))
+        base_loss_pct = float(getattr(config, "INTRADAY_ITM_OVERNIGHT_MAX_LOSS_PCT", 0.10))
+        high_vix_loss_pct = float(
+            getattr(config, "INTRADAY_ITM_OVERNIGHT_MAX_LOSS_PCT_HIGH_VIX", base_loss_pct)
+        )
+        high_vix_threshold = float(
+            getattr(config, "INTRADAY_ITM_OVERNIGHT_HIGH_VIX_THRESHOLD", 25.0)
+        )
+        vix_level = (
+            float(self._get_vix_level())
+            if hasattr(self, "_get_vix_level")
+            else float(self._current_vix)
+        )
+        max_loss_pct = high_vix_loss_pct if vix_level >= high_vix_threshold else base_loss_pct
+
         if max_loss_pct <= 0 or entry_price <= 0 or current_price <= 0:
             return False
         pnl_pct = (current_price - entry_price) / entry_price
@@ -1573,9 +1586,9 @@ class AlphaNextGen(QCAlgorithm):
         symbol_str = self._normalize_symbol_str(symbol)
         if self._intraday_hold_loss_block_log_date.get(symbol_str) != current_date:
             self.Log(
-                f"INTRADAY_HOLD_BLOCK_LOSS15: {symbol_str} | "
+                f"INTRADAY_HOLD_BLOCK_LOSS_CAP: {symbol_str} | "
                 f"PnL={pnl_pct:+.1%} <= -{max_loss_pct:.0%} | "
-                f"Entry=${entry_price:.2f} | Current=${current_price:.2f}"
+                f"VIX={vix_level:.1f} | Entry=${entry_price:.2f} | Current=${current_price:.2f}"
             )
             self._intraday_hold_loss_block_log_date[symbol_str] = current_date
         return True
