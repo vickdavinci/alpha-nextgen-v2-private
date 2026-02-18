@@ -24,7 +24,13 @@ SRC="/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-priva
 LEAN_WORKSPACE="/Users/vigneshwaranarumugam/Documents/Trading Github/lean-workspace"
 DEST="$LEAN_WORKSPACE/AlphaNextGen"
 PROJECT_NAME="AlphaNextGen"
-MAX_FILE_CHARS=262144
+MAX_FILE_CHARS=256000
+
+# Prefer project venv python so optional minifier deps are available.
+PYTHON_BIN="$SRC/venv/bin/python"
+if [ ! -x "$PYTHON_BIN" ]; then
+    PYTHON_BIN="python3"
+fi
 
 # Colors for output
 RED='\033[0;31m'
@@ -73,13 +79,13 @@ echo -e "${GREEN}   ✓ Synced $FILE_COUNT Python files${NC}"
 
 # Step 2: Minify
 echo -e "${BLUE}[2/5]${NC} Minifying workspace files..."
-python3 "$SRC/scripts/minify_workspace.py"
-python3 "$SRC/scripts/ultra_minify.py" --workspace "$DEST" --target-indent 1
+"$PYTHON_BIN" "$SRC/scripts/minify_workspace.py"
+"$PYTHON_BIN" "$SRC/scripts/ultra_minify.py" --workspace "$DEST" --target-indent 1
 echo -e "${GREEN}   ✓ Minified (standard + ultra)${NC}"
 
 # Step 3: Validate
 echo -e "${BLUE}[3/5]${NC} Validating minified workspace..."
-python3 "$SRC/scripts/validate_lean_minified.py" --root "$DEST" --strict
+"$PYTHON_BIN" "$SRC/scripts/validate_lean_minified.py" --root "$DEST" --strict
 echo -e "${GREEN}   ✓ Validation passed${NC}"
 
 # Step 4: Size guards

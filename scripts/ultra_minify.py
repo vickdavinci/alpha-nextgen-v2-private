@@ -552,7 +552,7 @@ def ultra_minify(source: str, target_spaces: int = 2, allow_var_annotations: boo
     return result
 
 
-def python_minifier_fallback(source: str) -> str:
+def python_minifier_fallback(source: str, aggressive: bool = False) -> str:
     """Apply python-minifier when available for extra compression near QC limit."""
     if python_minifier is None:
         return source
@@ -563,12 +563,25 @@ def python_minifier_fallback(source: str) -> str:
             combine_imports=True,
             remove_annotations=True,
             hoist_literals=False,
-            rename_locals=False,
+            rename_locals=aggressive,
             rename_globals=False,
             remove_object_base=True,
             convert_posargs_to_args=True,
             preserve_shebang=True,
         )
+        ast.parse(result)
+        if len(result) < len(source):
+            return result
+    except Exception:
+        return source
+    return source
+
+
+def ast_unparse_fallback(source: str) -> str:
+    """Fallback minifier using stdlib ast.unparse when python-minifier is unavailable."""
+    try:
+        tree = ast.parse(source)
+        result = ast.unparse(tree)
         ast.parse(result)
         if len(result) < len(source):
             return result
@@ -630,7 +643,11 @@ def main():
                 allow_var_annotations=allow_var_annotations,
             )
             if len(minified) > 252000:
-                minified = python_minifier_fallback(minified)
+                minified = python_minifier_fallback(minified, aggressive=False)
+            if len(minified) > 252000:
+                minified = python_minifier_fallback(minified, aggressive=True)
+            if len(minified) > 252000:
+                minified = ast_unparse_fallback(minified)
             # Safety guard: never write syntactically invalid Python.
             try:
                 ast.parse(minified)
