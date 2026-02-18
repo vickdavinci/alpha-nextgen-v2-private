@@ -8371,19 +8371,53 @@ class OptionsEngine:
                         if self._iv_sensor.is_conviction_ready()
                         else None
                     )
-                    vix_5d_gate = float(getattr(config, "CALL_GATE_VIX_5D_RISING_PCT", 0.10))
-                    vix_5d_min_vix = float(getattr(config, "CALL_GATE_VIX_5D_MIN_VIX", 18.0))
-                    if (
-                        vix_5d_change is not None
-                        and vix_for_call >= vix_5d_min_vix
-                        and vix_5d_change >= vix_5d_gate
-                    ):
-                        self.log(
-                            f"INTRADAY: CALL blocked by VIX 5d trend | "
-                            f"VIX={vix_for_call:.1f} >= {vix_5d_min_vix:.1f} | "
-                            f"VIX5d={vix_5d_change:+.1%} >= {vix_5d_gate:.1%}"
-                        )
-                        return fail("E_CALL_GATE_VIX5D")
+                    if vix_5d_change is not None:
+                        low_vix_max = float(getattr(config, "VIX_LEVEL_LOW_MAX", 18.0))
+                        med_vix_max = float(getattr(config, "VIX_LEVEL_MEDIUM_MAX", 25.0))
+                        if vix_for_call < low_vix_max:
+                            vix_tier = "LOW"
+                            gate_enabled = bool(
+                                getattr(config, "CALL_GATE_VIX_5D_RISING_ENABLED_LOW_VIX", False)
+                            )
+                            vix_5d_gate = float(
+                                getattr(
+                                    config,
+                                    "CALL_GATE_VIX_5D_RISING_PCT_LOW_VIX",
+                                    getattr(config, "CALL_GATE_VIX_5D_RISING_PCT", 0.14),
+                                )
+                            )
+                        elif vix_for_call < med_vix_max:
+                            vix_tier = "MED"
+                            gate_enabled = bool(
+                                getattr(config, "CALL_GATE_VIX_5D_RISING_ENABLED_MED_VIX", True)
+                            )
+                            vix_5d_gate = float(
+                                getattr(
+                                    config,
+                                    "CALL_GATE_VIX_5D_RISING_PCT_MED_VIX",
+                                    getattr(config, "CALL_GATE_VIX_5D_RISING_PCT", 0.14),
+                                )
+                            )
+                        else:
+                            vix_tier = "HIGH"
+                            gate_enabled = bool(
+                                getattr(config, "CALL_GATE_VIX_5D_RISING_ENABLED_HIGH_VIX", True)
+                            )
+                            vix_5d_gate = float(
+                                getattr(
+                                    config,
+                                    "CALL_GATE_VIX_5D_RISING_PCT_HIGH_VIX",
+                                    getattr(config, "CALL_GATE_VIX_5D_RISING_PCT", 0.14),
+                                )
+                            )
+
+                        if gate_enabled and vix_5d_change >= vix_5d_gate:
+                            self.log(
+                                f"INTRADAY: CALL blocked by VIX 5d trend | "
+                                f"Tier={vix_tier} | VIX={vix_for_call:.1f} | "
+                                f"VIX5d={vix_5d_change:+.1%} >= {vix_5d_gate:.1%}"
+                            )
+                            return fail("E_CALL_GATE_VIX5D")
 
             # V6.14 OPT: Avoid buying long PUTs into panic highs; reduce size in elevated fear.
             if direction == OptionDirection.PUT:

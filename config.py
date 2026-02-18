@@ -1795,10 +1795,14 @@ CALL_GATE_MA20_BYPASS_REGIME_MIN = 58.0  # V10.8: reduce CALL over-blocking in b
 CALL_GATE_MA20_BYPASS_VIX_MAX = 18.0  # Only bypass when fear is still low
 CALL_GATE_MA20_BYPASS_SIZE_MULT = 0.90  # V10.8: lighter haircut when bypass is valid
 CALL_GATE_VIX_5D_RISING_ENABLED = True  # Block CALL entries when 5-day VIX trend is rising
-CALL_GATE_VIX_5D_RISING_PCT = (
-    0.14  # V10.8: require stronger fear acceleration before blocking CALLs
-)
-CALL_GATE_VIX_5D_MIN_VIX = 20.0  # V10.9: avoid LOW-VIX over-blocking for bullish continuation
+CALL_GATE_VIX_5D_RISING_PCT = 0.14  # Legacy fallback threshold
+CALL_GATE_VIX_5D_RISING_ENABLED_LOW_VIX = False  # V10.9: disable low-VIX VIX5d call gate
+CALL_GATE_VIX_5D_RISING_ENABLED_MED_VIX = True
+CALL_GATE_VIX_5D_RISING_ENABLED_HIGH_VIX = True
+CALL_GATE_VIX_5D_RISING_PCT_LOW_VIX = 0.25  # If enabled, require very strong fear acceleration
+CALL_GATE_VIX_5D_RISING_PCT_MED_VIX = 0.14  # Medium-VIX baseline
+CALL_GATE_VIX_5D_RISING_PCT_HIGH_VIX = 0.10  # Stricter in high-VIX tape
+CALL_GATE_VIX_5D_MIN_VIX = 20.0  # Legacy key retained for backward compatibility
 CALL_GATE_CONSECUTIVE_LOSS_ENABLED = True  # Pause CALL entries after repeated losses
 CALL_GATE_CONSECUTIVE_LOSSES = 3  # Trigger pause after 3 consecutive CALL losses
 CALL_GATE_LOSS_COOLDOWN_DAYS = 1  # Legacy fallback for cooldown days
