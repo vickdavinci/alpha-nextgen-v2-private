@@ -73,8 +73,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2024, 1, 1)
-        self.SetEndDate(2024, 12, 31)  # Full year 2024 backtest window
+        self.SetStartDate(2023, 1, 1)
+        self.SetEndDate(2023, 12, 31)  # Full year 2023 backtest window
         self.SetCash(config.INITIAL_CAPITAL)  # Seed capital from config
 
         # All times are Eastern
@@ -503,6 +503,8 @@ class AlphaNextGen(QCAlgorithm):
         self._vix_5min_ago = 15.0  # V2.1.1: VIX 5 minutes ago for spike detection
         self._vix_15min_ago = 15.0  # V2.3.4: VIX 15 minutes ago for short-term trend
         self._last_vix_spike_log = None  # Log throttle: last VIX spike log time
+        self._last_vix_update_date = None  # V10.8: track last day with fresh CBOE VIX print
+        self._last_vix_stale_log_date = None  # V10.8: stale fallback log throttle
         self._qqq_at_open = 0.0  # V2.1.1: QQQ at market open
 
         # V2.3.4: UVXY as intraday VIX proxy (Minute resolution for direction tracking)
@@ -944,6 +946,7 @@ class AlphaNextGen(QCAlgorithm):
             vix_data = data[self.vix]
             if vix_data is not None:
                 self._current_vix = float(vix_data.Close)
+                self._last_vix_update_date = self.Time.date()
 
         # Update volume rolling windows for MR symbols (daily volume)
         # V6.11: Added SPXL
@@ -3048,9 +3051,38 @@ class AlphaNextGen(QCAlgorithm):
         Do NOT derive synthetic VIX level from UVXY - UVXY can gap up while
         VIX is stable due to contango, causing false level spikes.
 
+        V10.8: when CBOE VIX feed appears stale for multiple sessions,
+        blend in intraday proxy to avoid frozen-level behavior.
+
         Returns:
-            CBOE VIX daily value for level classification.
+            VIX level used for regime classification.
         """
+        stale_threshold = int(getattr(config, "VIX_STALE_MAX_SESSIONS", 3))
+        stale_fallback_enabled = bool(getattr(config, "VIX_STALE_LEVEL_FALLBACK_ENABLED", True))
+        last_update = getattr(self, "_last_vix_update_date", None)
+
+        if (
+            stale_fallback_enabled
+            and stale_threshold > 0
+            and last_update is not None
+            and self.Time.date() is not None
+        ):
+            days_stale = (self.Time.date() - last_update).days
+            if days_stale >= stale_threshold:
+                blend = float(getattr(config, "VIX_STALE_LEVEL_FALLBACK_BLEND", 0.35))
+                blend = max(0.0, min(1.0, blend))
+                proxy = float(self._get_vix_intraday_proxy())
+                fallback_level = float(self._current_vix) * (1.0 - blend) + proxy * blend
+
+                if getattr(self, "_last_vix_stale_log_date", None) != self.Time.date():
+                    self.Log(
+                        "VIX_STALE_LEVEL_FALLBACK: "
+                        f"Current={self._current_vix:.2f} | Proxy={proxy:.2f} | "
+                        f"Blend={blend:.0%} | DaysStale={days_stale}"
+                    )
+                    self._last_vix_stale_log_date = self.Time.date()
+                return fallback_level
+
         return self._current_vix  # Use daily CBOE VIX, NOT UVXY-derived proxy
 
     def _should_scan_intraday(self) -> bool:
