@@ -73,8 +73,8 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2023, 1, 1)
-        self.SetEndDate(2023, 12, 31)  # Full year 2023 backtest window
+        self.SetStartDate(2024, 1, 1)
+        self.SetEndDate(2024, 12, 31)  # Full year 2024 backtest window
         self.SetCash(config.INITIAL_CAPITAL)  # Seed capital from config
 
         # All times are Eastern
