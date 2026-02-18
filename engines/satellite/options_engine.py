@@ -4755,9 +4755,17 @@ class OptionsEngine:
         if not self._can_attempt_spread_entry(attempt_key):
             return fail("R_COOLDOWN_DIRECTIONAL")
 
-        # V2.27/O-20: Win Rate Gate - block or scale down entries
+        # V2.27/O-20: Win Rate Gate - block/scale or monitor-only mode.
         win_rate_scale = self.get_win_rate_scale()
-        if win_rate_scale == 0.0:
+        gate_mode = str(getattr(config, "WIN_RATE_GATE_VASS_EXECUTION_MODE", "enforce")).lower()
+        if gate_mode == "monitor_only":
+            self.log(
+                f"WIN_RATE_GATE: MONITOR_ONLY | RawScale={win_rate_scale:.0%} | "
+                f"Shutoff={self._win_rate_shutoff} | History={self._spread_result_history}",
+                trades_only=True,
+            )
+            win_rate_scale = 1.0
+        elif win_rate_scale == 0.0:
             if getattr(config, "VASS_WIN_RATE_HARD_BLOCK", True):
                 self.log(
                     f"WIN_RATE_GATE: BLOCKED | Shutoff active | "
@@ -5536,9 +5544,17 @@ class OptionsEngine:
         if not self._can_attempt_spread_entry(attempt_key):
             return fail("R_COOLDOWN_DIRECTIONAL")
 
-        # V2.27/O-20: Win Rate Gate - block or scale down entries
+        # V2.27/O-20: Win Rate Gate - block/scale or monitor-only mode.
         win_rate_scale = self.get_win_rate_scale()
-        if win_rate_scale == 0.0:
+        gate_mode = str(getattr(config, "WIN_RATE_GATE_VASS_EXECUTION_MODE", "enforce")).lower()
+        if gate_mode == "monitor_only":
+            self.log(
+                f"WIN_RATE_GATE: CREDIT MONITOR_ONLY | RawScale={win_rate_scale:.0%} | "
+                f"Shutoff={self._win_rate_shutoff} | History={self._spread_result_history}",
+                trades_only=True,
+            )
+            win_rate_scale = 1.0
+        elif win_rate_scale == 0.0:
             if getattr(config, "VASS_WIN_RATE_HARD_BLOCK", True):
                 self.log(
                     f"WIN_RATE_GATE: CREDIT BLOCKED | Shutoff active | "

@@ -670,7 +670,7 @@ KS_COLD_START_RESET_ON_TIER_3 = True  # Reset cold start on Tier 3 (true emergen
 # V2.27: KS Spread Decouple
 # Spreads survive Tier 1 and Tier 2 — they have their own -50% stop (SPREAD_STOP_LOSS_PCT)
 # Only Tier 3 (FULL_EXIT) liquidates spreads
-KILL_SWITCH_SPREAD_DECOUPLE = False  # V9.4: Spreads now liquidated at all KS tiers
+KILL_SWITCH_SPREAD_DECOUPLE = True  # V10.7: Tier-2 kill switch no longer force-liquidates options
 
 # Panic Mode
 PANIC_MODE_PCT = 0.04
@@ -1385,6 +1385,10 @@ VASS_WIN_RATE_HARD_BLOCK = False  # If False, shutoff degrades to minimum size i
 VASS_WIN_RATE_SHUTOFF_SCALE = (
     0.50  # Soft-mode floor to avoid over-suppressing after kill-switch events
 )
+# V10.7: Win-rate gate execution mode for VASS spread entries.
+# - monitor_only: keep telemetry/state tracking but do not block/scale entries.
+# - enforce: apply normal block/scale behavior.
+WIN_RATE_GATE_VASS_EXECUTION_MODE = "monitor_only"
 # V10.7: Lightweight VASS loss breaker (separate from win-rate gate).
 VASS_LOSS_BREAKER_ENABLED = True
 VASS_LOSS_BREAKER_THRESHOLD = 3
