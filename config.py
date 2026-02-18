@@ -1019,7 +1019,7 @@ OPTIONS_ATR_STOP_MULTIPLIER = 0.9  # V6.13 OPT: Slightly tighter ATR base stop
 
 # Floor and cap to prevent extreme stops
 OPTIONS_ATR_STOP_MIN_PCT = 0.12  # V6.13 OPT: Tighter floor in calm conditions
-OPTIONS_ATR_STOP_MAX_PCT = 0.28  # Slightly tighter cap to reduce tail-loss
+OPTIONS_ATR_STOP_MAX_PCT = 0.45  # V10.8: uncap ATR stops for multi-day ITM hold profile
 
 # Whether to use ATR-based stops (set False to use legacy tier-based stops)
 OPTIONS_USE_ATR_STOPS = True
@@ -1842,19 +1842,19 @@ INTRADAY_ITM_MIN_SCORE = 40  # V6.8: Was 50, capture momentum earlier
 INTRADAY_ITM_START = "10:00"  # Entry window start
 INTRADAY_ITM_END = "14:30"  # Entry window end (earlier than FADE - momentum fades after lunch)
 INTRADAY_ITM_DELTA = 0.70  # ITM delta target
-INTRADAY_ITM_TARGET = 0.40  # V10.5: improve target hit-rate while keeping positive R:R
+INTRADAY_ITM_TARGET = 0.80  # V10.8: trailing stop is primary exit; target is distant ceiling
 
 # V6.4: DEBIT_MOMENTUM time window (same as ITM_MOMENTUM - both are momentum strategies)
 INTRADAY_DEBIT_MOMENTUM_START = "10:00"  # Entry window start
 INTRADAY_DEBIT_MOMENTUM_END = "14:30"  # Entry window end
-INTRADAY_ITM_STOP = 0.28  # V10.5: slightly wider to reduce intraday noise stop-outs
-INTRADAY_ITM_STOP_FLOOR_MED_VIX = 0.33  # V10.5: widen ITM stops in medium VIX
-INTRADAY_ITM_STOP_FLOOR_HIGH_VIX = 0.38  # V10.5: widen ITM stops in high VIX
+INTRADAY_ITM_STOP = 0.40  # V10.8: multi-day ITM stop to survive normal 1-2 day noise
+INTRADAY_ITM_STOP_FLOOR_MED_VIX = 0.45  # V10.8: wider ITM stop floor in medium VIX
+INTRADAY_ITM_STOP_FLOOR_HIGH_VIX = 0.50  # V10.8: wider ITM stop floor in high VIX
 INTRADAY_HIGH_VIX_STOP_MAX_PCT = (
-    0.40  # V9.2 RCA: Wider stop cap for VIX>25 regimes (was capped at 28%)
+    0.55  # V10.8: allow high-VIX ITM stops to breathe on multi-day holds
 )
-INTRADAY_ITM_TRAIL_TRIGGER = 0.20  # V9.8: revert to V9.3 (below 0.35 target, trail works)
-INTRADAY_ITM_TRAIL_PCT = 0.50  # Trail at 50% of gains
+INTRADAY_ITM_TRAIL_TRIGGER = 0.15  # V10.8: start protecting gains earlier on held ITM trades
+INTRADAY_ITM_TRAIL_PCT = 0.40  # V10.8: retain more profits once trail is active
 
 # V9.2: Per-strategy intraday exits (previously universal target/stop)
 INTRADAY_DEBIT_FADE_TARGET = (
