@@ -2384,6 +2384,16 @@ class OptionsEngine:
                     f"VETO: {engine} conviction ({engine_direction}) overrides NEUTRAL Macro",
                 )
             else:
+                if (
+                    engine == "MICRO"
+                    and engine_regime == "CAUTION_LOW"
+                    and engine_direction == "BEARISH"
+                ):
+                    return (
+                        False,
+                        None,
+                        "NO_TRADE: MICRO CAUTION_LOW bearish requires conviction",
+                    )
                 return (
                     True,
                     engine_direction,
@@ -2418,9 +2428,9 @@ class OptionsEngine:
 
         if engine == "MICRO" and not engine_conviction:
             return (
-                True,
-                engine_direction,
-                f"MISALIGNED_HALF: {engine}={engine_direction}, Macro={macro_direction}",
+                False,
+                None,
+                f"NO_TRADE: MISALIGNED_NO_CONVICTION {engine}={engine_direction}, Macro={macro_direction}",
             )
 
         if engine_conviction:

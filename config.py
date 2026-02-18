@@ -1671,9 +1671,7 @@ VIX_WHIPSAW_MIN_RANGE = 5.0  # Minimum range % to consider whipsaw
 # Analysis showed Jan 21 (+6.9%), Jan 24 (+7.4%), Jan 25 (+5.3%) missed by narrow margin
 # V6.6: Lowered from ±5% to ±3% based on 2022H1 analysis
 # Only 8% of moves exceeded ±5%, missing many valid conviction signals
-MICRO_UVXY_BEARISH_THRESHOLD = (
-    0.020  # Slightly easier bearish conviction for faster PUT participation
-)
+MICRO_UVXY_BEARISH_THRESHOLD = 0.035  # V10.9: reduce low-vol false bearish conviction flips
 MICRO_UVXY_BULLISH_THRESHOLD = (
     -0.040
 )  # Restore bullish participation in bull/chop while gates control bear CALLs
