@@ -4431,6 +4431,19 @@ class AlphaNextGen(QCAlgorithm):
             for sym_str in orphan_symbols:
                 try:
                     today = str(self.Time.date())
+                    # V10.8: avoid RECON_ORPHAN churn when same-day MICRO sweep/force-close is already active.
+                    sweep_submitted_today = (
+                        self._intraday_force_exit_submitted_symbols.get(sym_str) == today
+                    )
+                    if sweep_submitted_today or sym_str in self._intraday_close_in_progress_symbols:
+                        if self._should_log_backtest_category(
+                            "LOG_SPREAD_RECONCILE_BACKTEST_ENABLED", False
+                        ):
+                            self.Log(
+                                f"RECON_ORPHAN_SKIP_SWEEP_IN_PROGRESS: {sym_str} | Mode={mode_norm.upper()}"
+                            )
+                        continue
+
                     if self._recon_orphan_close_submitted.get(sym_str) == today:
                         if self._has_open_order_for_symbol(
                             sym_str, tag_contains="RECON_ORPHAN_OPTION"
