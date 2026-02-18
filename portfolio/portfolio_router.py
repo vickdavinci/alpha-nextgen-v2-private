@@ -2132,8 +2132,28 @@ class PortfolioRouter:
             if is_option and any(s in ("OPT_INTRADAY", "OPT") for s in agg.sources):
                 min_trade_value = config.MIN_INTRADAY_OPTIONS_TRADE_VALUE
 
-            # Skip if position value below minimum trade size (unless closing)
-            if abs(delta_value) < min_trade_value and not is_closing:
+            # V10.7: Exempt close/protective option intents from min-trade floor.
+            is_protective_intent = False
+            if is_option and agg.metadata:
+                intraday_strategy = str(agg.metadata.get("intraday_strategy", "") or "").upper()
+                vass_strategy = str(agg.metadata.get("vass_strategy", "") or "").upper()
+                reason_blob = " ".join(str(r) for r in agg.reasons).upper() if agg.reasons else ""
+                is_protective_intent = (
+                    intraday_strategy == "PROTECTIVE_PUTS"
+                    or "PROTECTIVE" in vass_strategy
+                    or "PROTECTIVE" in reason_blob
+                )
+
+            close_exempt = bool(getattr(config, "OPTIONS_MIN_TRADE_VALUE_CLOSE_EXEMPT", True))
+            protective_exempt = bool(
+                getattr(config, "OPTIONS_MIN_TRADE_VALUE_PROTECTIVE_EXEMPT", True)
+            )
+            bypass_min_trade = (is_closing and close_exempt) or (
+                is_protective_intent and protective_exempt
+            )
+
+            # Skip if position value below minimum trade size (unless exempt intent)
+            if abs(delta_value) < min_trade_value and not bypass_min_trade:
                 # V2.3.24: Throttle rejection logging to reduce spam
                 should_log = self._should_log_rejection()
                 if should_log:

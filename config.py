@@ -640,6 +640,9 @@ MIN_SHARE_DELTA = 1
 
 # V2.3.24: Lower threshold for intraday options (single contracts often $500-1,500)
 MIN_INTRADAY_OPTIONS_TRADE_VALUE = 500
+# V10.7: Never block close/protective option intents on min trade value floors.
+OPTIONS_MIN_TRADE_VALUE_PROTECTIVE_EXEMPT = True
+OPTIONS_MIN_TRADE_VALUE_CLOSE_EXEMPT = True
 
 # =============================================================================
 # RISK ENGINE
