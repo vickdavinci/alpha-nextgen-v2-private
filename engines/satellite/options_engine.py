@@ -5235,7 +5235,9 @@ class OptionsEngine:
         # V3.0 SCALABILITY FIX: Use percentage-based cap instead of hardcoded dollars
         # At $50K: 15% = $7,500, at $200K: 15% = $30,000 (scales with portfolio)
         portfolio_value = self.algorithm.Portfolio.TotalPortfolioValue if self.algorithm else 50000
-        swing_max_pct = getattr(config, "SWING_SPREAD_MAX_PCT", 0.15)
+        swing_max_pct = getattr(
+            config, "VASS_RISK_PER_TRADE_PCT", getattr(config, "SWING_SPREAD_MAX_PCT", 0.15)
+        )
         swing_max_dollars = portfolio_value * swing_max_pct
         # V2.14: Use conservative net debit for sizing (prevents tier cap violations)
         cost_per_spread = net_debit_for_sizing * 100  # 100 shares per contract
@@ -5330,11 +5332,12 @@ class OptionsEngine:
         # V2.12 Fix #3: Enforce SPREAD_MAX_CONTRACTS hard cap
         # Evidence from V2.11: Position accumulated to 80 contracts (5× intended)
         # This cap prevents runaway position accumulation from exit signal bugs
-        if num_spreads > config.SPREAD_MAX_CONTRACTS:
-            self.log(
-                f"SPREAD_LIMIT: Capped contracts | Requested={num_spreads} > Max={config.SPREAD_MAX_CONTRACTS}"
-            )
-            num_spreads = config.SPREAD_MAX_CONTRACTS
+        hard_cap = int(
+            getattr(config, "SPREAD_MAX_CONTRACTS_HARD_CAP", config.SPREAD_MAX_CONTRACTS)
+        )
+        if num_spreads > hard_cap:
+            self.log(f"SPREAD_LIMIT: Capped contracts | Requested={num_spreads} > Max={hard_cap}")
+            num_spreads = hard_cap
 
         # V6.0 Fix: Assignment-aware sizing using spread width
         # Max loss on spread = width * 100 * contracts (NOT underlying * 100 * contracts)
@@ -5750,7 +5753,9 @@ class OptionsEngine:
         # Size using margin-based calculator
         # V3.0 SCALABILITY FIX: Use percentage-based cap
         portfolio_value = self.algorithm.Portfolio.TotalPortfolioValue if self.algorithm else 50000
-        swing_max_pct = getattr(config, "SWING_SPREAD_MAX_PCT", 0.15)
+        swing_max_pct = getattr(
+            config, "VASS_RISK_PER_TRADE_PCT", getattr(config, "SWING_SPREAD_MAX_PCT", 0.15)
+        )
         swing_max_dollars = portfolio_value * swing_max_pct
         num_spreads, _credit_per, _max_loss_per, _total_margin = self._calculate_credit_spread_size(
             short_leg_contract, long_leg_contract, swing_max_dollars
@@ -5851,12 +5856,12 @@ class OptionsEngine:
             return fail("NUM_SPREADS_NON_POSITIVE_AFTER_MARGIN")
 
         # Enforce hard cap
-        if num_spreads > config.SPREAD_MAX_CONTRACTS:
-            self.log(
-                f"CREDIT_SPREAD_LIMIT: Capped | Requested={num_spreads} > "
-                f"Max={config.SPREAD_MAX_CONTRACTS}"
-            )
-            num_spreads = config.SPREAD_MAX_CONTRACTS
+        hard_cap = int(
+            getattr(config, "SPREAD_MAX_CONTRACTS_HARD_CAP", config.SPREAD_MAX_CONTRACTS)
+        )
+        if num_spreads > hard_cap:
+            self.log(f"CREDIT_SPREAD_LIMIT: Capped | Requested={num_spreads} > " f"Max={hard_cap}")
+            num_spreads = hard_cap
 
         # Calculate max profit and max loss for metadata
         max_profit = credit_received * 100 * num_spreads  # Credit × 100 × contracts

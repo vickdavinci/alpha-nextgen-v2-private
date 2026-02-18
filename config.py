@@ -1554,7 +1554,8 @@ OPTIONS_MAX_MARGIN_PCT = 0.40  # V6.20: Raise margin allowance for options-isola
 # V2.18: Percentage-based Sizing Caps (scales with portfolio)
 # At $75K: 15% = $11,250, 8% = $6,000
 # At $200K: 15% = $30,000, 8% = $16,000
-SWING_SPREAD_MAX_PCT = 0.15  # 15% of portfolio for swing spreads (14-21 DTE)
+SWING_SPREAD_MAX_PCT = 0.15  # 15% legacy cap (kept for backward compatibility)
+VASS_RISK_PER_TRADE_PCT = 0.05  # V10.7: target max risk budget per VASS spread entry
 INTRADAY_SPREAD_MAX_PCT = 0.08  # 8% of portfolio for intraday spreads (1-5 DTE)
 
 # V3.0: Minimum margin percentage to allow options trading
@@ -1593,7 +1594,8 @@ SETTLEMENT_HALT_UNTIL_MINUTE = 30
 # -----------------------------------------------------------------------------
 # V2.12 Fix #3: Hard cap on spread contracts to prevent position accumulation
 # Evidence: V2.11 backtest showed qty=-80 (5× intended) from exit signal bug
-SPREAD_MAX_CONTRACTS = 30  # V10.5: Increased hard cap for VASS spreads
+SPREAD_MAX_CONTRACTS = 30  # Legacy cap (kept for compatibility)
+SPREAD_MAX_CONTRACTS_HARD_CAP = 30  # V10.7: explicit hard cap used by risk-budget sizing
 
 # V5.3: Options Position Limits (Margin Error Prevention)
 # Max concurrent positions: 2 intraday + 5 swings = 7 total
