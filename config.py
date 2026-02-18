@@ -1569,7 +1569,7 @@ MICRO_NO_TRADE_LOG_INTERVAL_MINUTES = 5  # Per-block throttle for MICRO_NO_TRADE
 # V2.12 Fix #4: Raised from $5K to $10K - 8-lot spread requires ~$8K margin
 # V3.0 SCALABILITY FIX: Converted to percentage-based for portfolio scaling
 OPTIONS_MAX_MARGIN_CAP = 50_000  # V6.20: Align hard cap with $100K capital and 50% options profile
-OPTIONS_MAX_MARGIN_PCT = 0.40  # V6.20: Raise margin allowance for options-isolation stress tests
+OPTIONS_MAX_MARGIN_PCT = 0.50  # V10.9: Align with OPTIONS_BUDGET_CAP_PCT so per-scan sizing isn't squeezed when Trend is active
 
 # V2.18: Percentage-based Sizing Caps (scales with portfolio)
 # At $75K: 15% = $11,250, 8% = $6,000
