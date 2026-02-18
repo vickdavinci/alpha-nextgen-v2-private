@@ -8466,6 +8466,20 @@ class OptionsEngine:
 
         # V9.8: Hard cap all MICRO intraday entries to prevent quantity explosions on cheap options.
         intraday_max_contracts = int(getattr(config, "INTRADAY_MAX_CONTRACTS", 40))
+        if bool(getattr(config, "INTRADAY_CONTRACT_CAP_SCALE_WITH_EQUITY", True)):
+            base_equity = float(getattr(config, "INTRADAY_MAX_CONTRACTS_BASE_EQUITY", 100000.0))
+            min_contract_cap = int(getattr(config, "INTRADAY_MAX_CONTRACTS_MIN", 5))
+            if base_equity > 0 and portfolio_value > 0 and intraday_max_contracts > 0:
+                equity_scale = min(1.0, float(portfolio_value) / base_equity)
+                scaled_cap = max(min_contract_cap, int(intraday_max_contracts * equity_scale))
+                if scaled_cap < intraday_max_contracts:
+                    self.log(
+                        f"INTRADAY_CAP_SCALE: BaseCap={intraday_max_contracts} -> {scaled_cap} | "
+                        f"Equity=${portfolio_value:,.0f} | Base=${base_equity:,.0f}",
+                        trades_only=True,
+                    )
+                    intraday_max_contracts = scaled_cap
+
         if intraday_max_contracts > 0 and num_contracts > intraday_max_contracts:
             self.log(
                 f"INTRADAY_CAP: {num_contracts} → {intraday_max_contracts} contracts (max)",

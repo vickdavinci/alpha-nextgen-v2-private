@@ -1969,6 +1969,9 @@ PROTECTIVE_PUTS_DELTA_TARGET = 0.30  # OTM puts (cheaper, more leverage)
 PROTECTIVE_PUTS_DELTA_TOLERANCE = 0.10  # Accept delta 0.20-0.40
 PROTECTIVE_PUTS_STOP_PCT = 0.35  # Tighter stop to reduce repeated deep insurance losses
 INTRADAY_MAX_CONTRACTS = 60  # V10.5: Increased hard cap for all MICRO intraday entries
+INTRADAY_CONTRACT_CAP_SCALE_WITH_EQUITY = True
+INTRADAY_MAX_CONTRACTS_BASE_EQUITY = 100_000
+INTRADAY_MAX_CONTRACTS_MIN = 5
 INTRADAY_PENDING_ENTRY_STALE_MINUTES = (
     5  # Auto-clear orphan pending entry lock when no open broker order exists
 )
