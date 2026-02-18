@@ -1177,9 +1177,7 @@ BEAR_PUT_ENTRY_RELAXED_REGIME_MIN = (
 # V6.22: During confirmed stress, allow tighter BEAR_PUT shorts to keep bearish access alive.
 # V9.4: Lowered from 0.8% to 0.3%. Bear markets need PUT access most — max loss already capped by debit.
 BEAR_PUT_ENTRY_MIN_OTM_PCT_STRESS = 0.005
-VASS_BEAR_FALLBACK_MAX_REGIME = (
-    55.0  # V10.8: allow BEAR_CALL_CREDIT fallback only when regime is sufficiently weak
-)
+VASS_BEAR_FALLBACK_MAX_REGIME = 40.0  # V10.9: fallback only in clearly weak macro regimes
 
 # Contract Selection
 # Options chain filter (must cover BOTH Intraday 0-2 DTE AND Swing 5-45 DTE)
@@ -1313,7 +1311,7 @@ REGIME_OVERLAY_EARLY_VIX_HIGH = 25.0
 SPREAD_SHORT_LEG_BY_WIDTH = True  # V2.4.3: Use strike width for short leg (not delta)
 # V6.10: Spread width settings for QQQ - WIDENED FOR ASSIGNMENT PROTECTION
 # Wider spreads survive larger overnight gaps and reduce assignment risk
-SPREAD_WIDTH_MIN = 4.0  # V6.13 OPT: Improve candidate availability with controlled risk
+SPREAD_WIDTH_MIN = 6.0  # V10.9: wider structures improve max-profit headroom
 SPREAD_WIDTH_MAX = 10.0  # V2.4.3: Maximum $10 spread (caps risk)
 SPREAD_WIDTH_TARGET = 4.0  # V6.13 OPT: Improve fill/constructability in medium IV
 SPREAD_WIDTH_EFFECTIVE_MAX = (
@@ -1346,14 +1344,14 @@ SPREAD_MAX_DEBIT_TO_WIDTH_PCT = 0.38  # Legacy fallback max when adaptive D/W ba
 SPREAD_MIN_DEBIT_TO_WIDTH_PCT = (
     0.28  # V10.7: Reject ultra-cheap/low-quality debit structures (balanced D/W band)
 )
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT_LOW_VIX = 0.48
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT_MED_VIX = 0.44
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT_HIGH_VIX = 0.40
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_LOW_VIX = 0.38
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_MED_VIX = 0.36
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_HIGH_VIX = 0.34
 SPREAD_DW_LOW_VIX_MAX = 18.0
 SPREAD_DW_HIGH_VIX_MIN = 25.0
-SPREAD_PROFIT_TARGET_PCT = 0.35  # V10.5: lower base target to improve hit-rate before reversals
+SPREAD_PROFIT_TARGET_PCT = 0.45  # V10.9: higher target after hold bypass re-enables winner exits
 SPREAD_STOP_LOSS_PCT = 0.35  # V10.5: wider base stop to reduce noise stop-outs
-SPREAD_HARD_STOP_LOSS_PCT = 0.50  # V10.5: widen hard cap to avoid premature hard-stop clipping
+SPREAD_HARD_STOP_LOSS_PCT = 0.40  # V10.9: tighter catastrophic cap to reduce tail losses
 SPREAD_HARD_STOP_WIDTH_PCT = 0.35  # Hard cap using spread width (debit spreads)
 SPREAD_STOP_REGIME_MULTIPLIERS = {
     75: 1.10,  # Bull: slightly wider stop to reduce pullback churn
@@ -1622,12 +1620,12 @@ SPREAD_MAX_CONTRACTS_HARD_CAP = 30  # V10.7: explicit hard cap used by risk-budg
 # V5.3: Options Position Limits (Margin Error Prevention)
 # Max concurrent positions: 2 intraday + 5 swings = 7 total
 OPTIONS_MAX_INTRADAY_POSITIONS = 2  # V8.2: Allow 2 concurrent intraday positions
-OPTIONS_MAX_SWING_POSITIONS = 5  # Expand swing capacity across regimes
+OPTIONS_MAX_SWING_POSITIONS = 4  # V10.9: reduce concentration risk
 OPTIONS_MAX_TOTAL_POSITIONS = 7  # 2 intraday + up to 5 swings
 OPTIONS_MAX_SWING_PER_DIRECTION = 3  # Legacy fallback cap if directional pools are unset
 # V8: Separate directional swing pools (prevents one side from monopolizing all swing slots).
-OPTIONS_MAX_SWING_BULLISH_POSITIONS = 3
-OPTIONS_MAX_SWING_BEARISH_POSITIONS = 3
+OPTIONS_MAX_SWING_BULLISH_POSITIONS = 2
+OPTIONS_MAX_SWING_BEARISH_POSITIONS = 2
 MAX_BULLISH_SPREADS_STRESS = 0  # No new bullish spreads in confirmed stress
 MAX_BULLISH_SPREADS_EARLY_STRESS = 2  # V10.5: keep restrictive but not crippling in early stress
 MAX_BEARISH_SPREADS_STRESS = 3  # Preserve bearish spread capacity in stress
