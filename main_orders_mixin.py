@@ -768,13 +768,26 @@ class MainOrdersMixin:
                                     tag_context="SWING_SINGLE",
                                 )
                                 if oco_pair:
-                                    self.oco_manager.submit_oco_pair(
+                                    submitted = self.oco_manager.submit_oco_pair(
                                         oco_pair, current_time=str(self.Time)
                                     )
+                                    if submitted:
+                                        self.Log(
+                                            f"OPT: OCO pair created | "
+                                            f"Stop=${position.stop_price:.2f} | "
+                                            f"Target=${position.target_price:.2f}"
+                                        )
+                                    else:
+                                        self.Log(
+                                            f"OCO_SYNC_SKIP: Submit failed | Symbol={symbol_norm} | "
+                                            f"Qty={abs(int(fill_qty))} | Stop=${position.stop_price:.2f} | "
+                                            f"Target=${position.target_price:.2f} | Reason=SWING_ENTRY_FILL"
+                                        )
+                                else:
                                     self.Log(
-                                        f"OPT: OCO pair created | "
-                                        f"Stop=${position.stop_price:.2f} | "
-                                        f"Target=${position.target_price:.2f}"
+                                        f"OCO_SYNC_SKIP: Create failed | Symbol={symbol_norm} | "
+                                        f"Qty={abs(int(fill_qty))} | Stop=${position.stop_price:.2f} | "
+                                        f"Target=${position.target_price:.2f} | Reason=SWING_ENTRY_FILL"
                                     )
                             # Record intraday entry snapshot for robust exit accounting.
                             if self.options_engine.has_intraday_position():

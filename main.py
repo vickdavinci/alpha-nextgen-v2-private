@@ -3453,6 +3453,8 @@ class AlphaNextGen(
         text = f"{reason or ''} {order_tag or ''}".upper()
         if "ORPHAN" in text:
             return "ORPHAN"
+        if "RETRY" in text:
+            return "RETRY"
         if "RECON" in text:
             return "RECONCILE"
         if "TRAIL" in text:
@@ -4286,9 +4288,11 @@ class AlphaNextGen(
 
                 # SetHoldings handles sell-before-buy automatically
                 self.SetHoldings(targets)
+            self._capture_router_rejections(stage="EOD")
 
         except Exception as e:
             self.Log(f"SIGNAL_ERROR: Failed to process EOD signals - {e}")
+            self._capture_router_rejections(stage="EOD_ERROR")
 
     def _generate_trend_signals_eod(self, regime_state: RegimeState) -> None:
         """

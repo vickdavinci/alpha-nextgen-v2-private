@@ -209,6 +209,7 @@ class PortfolioRouter:
         self._last_rejections: List[RouterRejection] = []
         self._last_rejection_event_log_by_key: Dict[str, Any] = {}
         self._suppressed_rejection_event_count_by_key: Dict[str, int] = {}
+        self._signal_seq: int = 0
 
         # V2.9: Track open spread margin (Bug #1 fix)
         # Stores {spread_id: margin_reserved} for each open spread
@@ -1473,6 +1474,24 @@ class PortfolioRouter:
     # Step 1: COLLECT
     # =========================================================================
 
+    def _ensure_signal_trace(self, weight: TargetWeight) -> None:
+        """Ensure every signal has stable trace attribution for RCA."""
+        md = dict(weight.metadata or {})
+        if not md.get("trace_source"):
+            md["trace_source"] = str(weight.source or "UNKNOWN")
+        if not md.get("trace_id"):
+            self._signal_seq += 1
+            date_part = "NO_TIME"
+            try:
+                if self.algorithm is not None and hasattr(self.algorithm, "Time"):
+                    date_part = str(self.algorithm.Time).replace(" ", "T")[:19]
+            except Exception:
+                date_part = "NO_TIME"
+            md["trace_id"] = f"SIG-{date_part}-{self._signal_seq}"
+        if not md.get("signal_id"):
+            md["signal_id"] = md.get("trace_id")
+        weight.metadata = md
+
     def receive_signal(self, weight: TargetWeight) -> None:
         """
         Receive a TargetWeight signal from a strategy engine.
@@ -1480,6 +1499,7 @@ class PortfolioRouter:
         Args:
             weight: TargetWeight signal to process.
         """
+        self._ensure_signal_trace(weight)
         self._pending_weights.append(weight)
         self.log(
             f"ROUTER: RECEIVED | {weight.symbol} | "
