@@ -2165,78 +2165,85 @@ class OptionsEngine:
             current_time: Timestamp string (YYYY-MM-DD...) for cooldown date math.
         """
         try:
-            text = str(symbol)
+            symbol_text = str(symbol)
             import re
 
             # OCC-style parse (e.g., QQQ 211203C00403000)
-            is_call = re.search(r"\d{6}C\d{8}", text) is not None
-            if not is_call:
-                return
-
-            if is_win:
-                self._call_consecutive_losses = 0
-                return
-
-            self._call_consecutive_losses += 1
-            if not getattr(config, "CALL_GATE_CONSECUTIVE_LOSS_ENABLED", True):
-                return
-
-            threshold = int(getattr(config, "CALL_GATE_CONSECUTIVE_LOSSES", 3))
-            if self._call_consecutive_losses < threshold:
-                return
-
-            vix_for_cooldown = None
-            try:
-                state = getattr(self._micro_regime_engine, "_state", None)
-                if state is not None:
-                    vix_for_cooldown = float(getattr(state, "vix_current", 0.0) or 0.0)
-            except Exception:
-                vix_for_cooldown = None
-
-            if vix_for_cooldown is None or vix_for_cooldown <= 0:
-                cooldown_days = int(getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 1))
-            else:
-                low_vix_max = float(getattr(config, "VIX_LEVEL_LOW_MAX", 18.0))
-                med_vix_max = float(getattr(config, "VIX_LEVEL_MEDIUM_MAX", 25.0))
-                if vix_for_cooldown < low_vix_max:
-                    cooldown_days = int(
-                        getattr(
-                            config,
-                            "CALL_GATE_LOSS_COOLDOWN_DAYS_LOW_VIX",
-                            getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 1),
-                        )
-                    )
-                elif vix_for_cooldown < med_vix_max:
-                    cooldown_days = int(
-                        getattr(
-                            config,
-                            "CALL_GATE_LOSS_COOLDOWN_DAYS_MED_VIX",
-                            getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 1),
-                        )
-                    )
+            is_call = re.search(r"\d{6}C\d{8}", symbol_text) is not None
+            if is_call:
+                if is_win:
+                    self._call_consecutive_losses = 0
                 else:
-                    cooldown_days = int(
-                        getattr(
-                            config,
-                            "CALL_GATE_LOSS_COOLDOWN_DAYS_HIGH_VIX",
-                            getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 1),
-                        )
-                    )
-            # Parse current_time for cooldown date (required for backtest accuracy)
-            if not current_time:
-                self.log("INTRADAY: CALL cooldown skipped - no timestamp", trades_only=True)
-                return
-            try:
-                trade_date = datetime.strptime(current_time[:10], "%Y-%m-%d").date()
-            except Exception:
-                self.log("INTRADAY: CALL cooldown skipped - invalid timestamp", trades_only=True)
-                return
-            self._call_cooldown_until_date = trade_date + timedelta(days=cooldown_days)
-            self.log(
-                f"INTRADAY: CALL cooldown armed | LossStreak={self._call_consecutive_losses} | "
-                f"Until={self._call_cooldown_until_date.isoformat()}",
-                trades_only=True,
-            )
+                    self._call_consecutive_losses += 1
+                    if getattr(config, "CALL_GATE_CONSECUTIVE_LOSS_ENABLED", True):
+                        threshold = int(getattr(config, "CALL_GATE_CONSECUTIVE_LOSSES", 3))
+                        if self._call_consecutive_losses >= threshold:
+                            vix_for_cooldown = None
+                            try:
+                                state = getattr(self._micro_regime_engine, "_state", None)
+                                if state is not None:
+                                    vix_for_cooldown = float(
+                                        getattr(state, "vix_current", 0.0) or 0.0
+                                    )
+                            except Exception:
+                                vix_for_cooldown = None
+
+                            if vix_for_cooldown is None or vix_for_cooldown <= 0:
+                                cooldown_days = int(
+                                    getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 1)
+                                )
+                            else:
+                                low_vix_max = float(getattr(config, "VIX_LEVEL_LOW_MAX", 18.0))
+                                med_vix_max = float(getattr(config, "VIX_LEVEL_MEDIUM_MAX", 25.0))
+                                if vix_for_cooldown < low_vix_max:
+                                    cooldown_days = int(
+                                        getattr(
+                                            config,
+                                            "CALL_GATE_LOSS_COOLDOWN_DAYS_LOW_VIX",
+                                            getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 1),
+                                        )
+                                    )
+                                elif vix_for_cooldown < med_vix_max:
+                                    cooldown_days = int(
+                                        getattr(
+                                            config,
+                                            "CALL_GATE_LOSS_COOLDOWN_DAYS_MED_VIX",
+                                            getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 1),
+                                        )
+                                    )
+                                else:
+                                    cooldown_days = int(
+                                        getattr(
+                                            config,
+                                            "CALL_GATE_LOSS_COOLDOWN_DAYS_HIGH_VIX",
+                                            getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 1),
+                                        )
+                                    )
+
+                            # Parse current_time for cooldown date (required for backtest accuracy)
+                            if current_time:
+                                try:
+                                    trade_date = datetime.strptime(
+                                        current_time[:10], "%Y-%m-%d"
+                                    ).date()
+                                    self._call_cooldown_until_date = trade_date + timedelta(
+                                        days=cooldown_days
+                                    )
+                                    self.log(
+                                        f"INTRADAY: CALL cooldown armed | LossStreak={self._call_consecutive_losses} | "
+                                        f"Until={self._call_cooldown_until_date.isoformat()}",
+                                        trades_only=True,
+                                    )
+                                except Exception:
+                                    self.log(
+                                        "INTRADAY: CALL cooldown skipped - invalid timestamp",
+                                        trades_only=True,
+                                    )
+                            else:
+                                self.log(
+                                    "INTRADAY: CALL cooldown skipped - no timestamp",
+                                    trades_only=True,
+                                )
         except Exception as e:
             self.log(f"INTRADAY: Failed to record CALL result streak: {e}", trades_only=True)
 
@@ -8364,27 +8371,47 @@ class OptionsEngine:
                 vix20_change = (
                     self._iv_sensor.get_vix_20d_change() if self._iv_sensor is not None else None
                 )
+                effective_vix = float(
+                    vix_level_override if vix_level_override is not None else vix_current
+                )
+                try:
+                    if self.algorithm is not None and hasattr(self.algorithm, "_get_vix_level"):
+                        effective_vix = float(self.algorithm._get_vix_level())
+                except Exception:
+                    pass
+
+                active_itm_positions = 0
+                if self._intraday_position is not None and self._is_itm_momentum_strategy_name(
+                    getattr(self._intraday_position, "entry_strategy", "")
+                ):
+                    active_itm_positions = 1
+
+                trace_id = (
+                    f"ITM|{(current_time or 'NA')[:19]}|{direction.value}|"
+                    f"{entry_strategy.value if entry_strategy else 'NA'}"
+                )
                 itm_ok, itm_code, itm_detail = self._itm_horizon_engine.evaluate_entry(
                     direction=direction,
                     current_time=current_time,
                     current_hour=current_hour,
                     current_minute=current_minute,
+                    trace_id=trace_id,
                     qqq_current=qqq_current,
                     sma20_value=sma20_value,
                     adx_value=adx_value,
-                    vix_current=float(
-                        vix_level_override if vix_level_override is not None else vix_current
-                    ),
+                    vix_current=effective_vix,
                     vix20_change=vix20_change,
                     portfolio_value=float(portfolio_value),
+                    current_itm_positions=active_itm_positions,
                     algorithm=self.algorithm,
                 )
                 self.log(
-                    f"ITM_V2_DECISION|Dir={direction.value}|QQQ={qqq_current:.2f}|"
+                    f"ITM_V2_DECISION|Trace={trace_id}|Dir={direction.value}|QQQ={qqq_current:.2f}|"
                     f"SMA20={sma20_value if sma20_value is not None else 'NA'}|"
                     f"ADX={adx_value if adx_value is not None else 'NA'}|"
-                    f"VIX={float(vix_level_override if vix_level_override is not None else vix_current):.1f}|"
+                    f"VIX={effective_vix:.1f}|"
                     f"VIX20d={vix20_change if vix20_change is not None else 'NA'}|"
+                    f"OpenITM={active_itm_positions}|"
                     f"{'PASS' if itm_ok else 'BLOCK'}|{itm_code}|{itm_detail}",
                     trades_only=True,
                 )
