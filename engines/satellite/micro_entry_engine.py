@@ -1,4 +1,4 @@
-"""Micro entry engine: isolates non-ITM_V2 MICRO entry gating and timing logic."""
+"""Micro entry engine: isolates non-ITM_ENGINE MICRO entry gating and timing logic."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ class MicroEntryEngine:
         state: Any,
         entry_strategy: IntradayStrategy,
         direction: OptionDirection,
-        itm_v2_mode: bool,
+        itm_engine_mode: bool,
         current_time: str,
         size_multiplier: float,
         macro_regime_score: float,
@@ -47,7 +47,7 @@ class MicroEntryEngine:
         call_consecutive_losses: int,
     ) -> Tuple[float, Optional[str], Optional[str]]:
         """Return (new_size_multiplier, fail_code, fail_detail)."""
-        if itm_v2_mode:
+        if itm_engine_mode:
             return size_multiplier, None, None
 
         # MICRO is sovereign from macro regime policy; keep signature stable
@@ -239,7 +239,7 @@ class MicroEntryEngine:
         self,
         *,
         entry_strategy: IntradayStrategy,
-        itm_v2_mode: bool,
+        itm_engine_mode: bool,
         state: Any,
         current_hour: int,
         current_minute: int,
@@ -278,8 +278,8 @@ class MicroEntryEngine:
                 return False, "E_INTRADAY_TIME_WINDOW"
 
         elif entry_strategy == IntradayStrategy.ITM_MOMENTUM:
-            # ITM_V2 owns its own timing checks in ITMHorizonEngine.evaluate_entry().
-            if itm_v2_mode:
+            # ITM_ENGINE owns its own timing checks in ITMHorizonEngine.evaluate_entry().
+            if itm_engine_mode:
                 return True, None
             if state.micro_regime == MicroRegime.CAUTION_LOW:
                 self._log(

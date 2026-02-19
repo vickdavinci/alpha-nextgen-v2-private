@@ -1857,7 +1857,7 @@ class OptionsEngine:
         """
         hold_enabled = bool(getattr(config, "INTRADAY_ITM_HOLD_OVERNIGHT_ENABLED", False))
         if self._itm_horizon_engine.enabled():
-            hold_enabled = bool(getattr(config, "ITM_V2_HOLD_OVERNIGHT_ENABLED", True))
+            hold_enabled = bool(getattr(config, "ITM_HOLD_OVERNIGHT_ENABLED", True))
         if not hold_enabled:
             return False
         pos = position if position is not None else self._intraday_position
@@ -2055,7 +2055,7 @@ class OptionsEngine:
                 algorithm=self.algorithm,
             )
         except Exception as e:
-            self.log(f"ITM_V2: result tracking failed: {e}", trades_only=True)
+            self.log(f"ITM_ENGINE: result tracking failed: {e}", trades_only=True)
 
     # =========================================================================
     # V6.10 P5: CHOPPY MARKET DETECTION
@@ -7511,7 +7511,7 @@ class OptionsEngine:
                 requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
             )
 
-        # ITM_V2 max-hold guard (calendar-based safety cap).
+        # ITM_ENGINE max-hold guard (calendar-based safety cap).
         if self._itm_horizon_engine.enabled() and self._is_itm_momentum_strategy_name(
             getattr(pos, "entry_strategy", "")
         ):
@@ -7537,7 +7537,9 @@ class OptionsEngine:
                 if held_days >= max_hold_days:
                     if is_intraday_pos and not self.mark_pending_intraday_exit(symbol_str):
                         return None
-                    reason = f"ITM_V2_MAX_HOLD ({held_days}d >= {max_hold_days}d) P&L={pnl_pct:.1%}"
+                    reason = (
+                        f"ITM_ENGINE_MAX_HOLD ({held_days}d >= {max_hold_days}d) P&L={pnl_pct:.1%}"
+                    )
                     self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
                     return TargetWeight(
                         symbol=symbol_str,
@@ -7955,13 +7957,13 @@ class OptionsEngine:
         """Public wrapper for VASS direction+IV strategy routing."""
         return self._select_strategy(direction, iv_environment, is_intraday=is_intraday)
 
-    def get_itm_v2_direction_proposal(
+    def get_itm_direction_proposal(
         self,
         qqq_current: float,
     ) -> Tuple[Optional[OptionDirection], str]:
-        """Return ITM_V2 sovereign direction proposal from daily trend context."""
+        """Return ITM_ENGINE sovereign direction proposal from daily trend context."""
         if not self._itm_horizon_engine.enabled():
-            return None, "ITM_V2_DISABLED"
+            return None, "ITM_ENGINE_DISABLED"
         if self.algorithm is None:
             return None, "NO_ALGO"
         qqq_sma20 = getattr(self.algorithm, "qqq_sma20", None)
@@ -7969,7 +7971,7 @@ class OptionsEngine:
             return None, "SMA20_NOT_READY"
 
         sma20 = float(qqq_sma20.Current.Value)
-        band = float(getattr(config, "ITM_V2_SMA_BAND_PCT", 0.003))
+        band = float(getattr(config, "ITM_SMA_BAND_PCT", 0.003))
         upper = sma20 * (1.0 + band)
         lower = sma20 * (1.0 - band)
 
@@ -8144,14 +8146,14 @@ class OptionsEngine:
             # Safety net remains for non-ITM override paths.
             if state.recommended_strategy == IntradayStrategy.NO_TRADE:
                 itm_sovereign_bypass = bool(
-                    getattr(config, "ITM_V2_ENABLED", False)
+                    getattr(config, "ITM_ENGINE_ENABLED", False)
                     and direction is not None
                     and direction in (OptionDirection.CALL, OptionDirection.PUT)
                 )
                 if itm_sovereign_bypass:
                     entry_strategy = IntradayStrategy.ITM_MOMENTUM
                     self.log(
-                        f"INTRADAY: ITM_V2 strategy override from NO_TRADE | "
+                        f"INTRADAY: ITM_ENGINE strategy override from NO_TRADE | "
                         f"Dir={direction.value} | Regime={state.micro_regime.value}",
                         trades_only=True,
                     )
@@ -8166,7 +8168,7 @@ class OptionsEngine:
         if entry_strategy is None:
             return fail("E_INTRADAY_NO_STRATEGY")
 
-        itm_v2_mode = False
+        itm_engine_mode = False
 
         # V3.2: Check if strategy is PROTECTIVE_PUTS (crisis hedge)
         if entry_strategy == IntradayStrategy.PROTECTIVE_PUTS:
@@ -8213,11 +8215,11 @@ class OptionsEngine:
                 self.log(f"INTRADAY: No direction recommended for {strategy_value}")
                 return fail("E_INTRADAY_NO_DIRECTION", strategy_value)
 
-            itm_v2_mode = bool(
+            itm_engine_mode = bool(
                 self._itm_horizon_engine.enabled()
                 and entry_strategy == IntradayStrategy.ITM_MOMENTUM
             )
-            if itm_v2_mode:
+            if itm_engine_mode:
                 qqq_sma20 = getattr(self.algorithm, "qqq_sma20", None) if self.algorithm else None
                 sma20_value = (
                     float(qqq_sma20.Current.Value)
@@ -8270,7 +8272,7 @@ class OptionsEngine:
                     algorithm=self.algorithm,
                 )
                 self.log(
-                    f"ITM_V2_DECISION|Trace={trace_id}|Dir={direction.value}|QQQ={qqq_current:.2f}|"
+                    f"ITM_ENGINE_DECISION|Trace={trace_id}|Dir={direction.value}|QQQ={qqq_current:.2f}|"
                     f"SMA20={sma20_value if sma20_value is not None else 'NA'}|"
                     f"ADX={adx_value if adx_value is not None else 'NA'}|"
                     f"VIX={effective_vix:.1f}|"
@@ -8296,7 +8298,7 @@ class OptionsEngine:
                     state=state,
                     entry_strategy=entry_strategy,
                     direction=direction,
-                    itm_v2_mode=itm_v2_mode,
+                    itm_engine_mode=itm_engine_mode,
                     current_time=current_time,
                     size_multiplier=size_multiplier,
                     macro_regime_score=macro_regime_score,
@@ -8372,7 +8374,7 @@ class OptionsEngine:
         if bool(getattr(config, "MICRO_ENTRY_ENGINE_ENABLED", True)):
             tw_ok, tw_code = self._micro_entry_engine.validate_time_window(
                 entry_strategy=entry_strategy,
-                itm_v2_mode=itm_v2_mode,
+                itm_engine_mode=itm_engine_mode,
                 state=state,
                 current_hour=current_hour,
                 current_minute=current_minute,
@@ -8448,9 +8450,9 @@ class OptionsEngine:
                 )
                 return fail(f"E_INTRADAY_{bucket_name}_BUCKET_EXHAUSTED")
 
-            # ITM_V2 is a sovereign engine: do not couple size to MICRO score ladders.
-            if itm_v2_mode and entry_strategy == IntradayStrategy.ITM_MOMENTUM:
-                strategy_mult = float(getattr(config, "ITM_V2_SIZE_MULT", 1.0) or 1.0)
+            # ITM_ENGINE is a sovereign engine: do not couple size to MICRO score ladders.
+            if itm_engine_mode and entry_strategy == IntradayStrategy.ITM_MOMENTUM:
+                strategy_mult = float(getattr(config, "ITM_SIZE_MULT", 1.0) or 1.0)
                 strategy_mult = max(0.0, strategy_mult)
             else:
                 # OTM micro paths still use MICRO score ladder.
@@ -8502,13 +8504,13 @@ class OptionsEngine:
                     )
                     intraday_max_contracts = scaled_cap
 
-        if itm_v2_mode:
-            itm_v2_cap = int(getattr(config, "ITM_V2_MAX_CONTRACTS_HARD_CAP", 8))
-            if itm_v2_cap > 0:
+        if itm_engine_mode:
+            itm_engine_cap = int(getattr(config, "ITM_MAX_CONTRACTS_HARD_CAP", 8))
+            if itm_engine_cap > 0:
                 intraday_max_contracts = (
-                    itm_v2_cap
+                    itm_engine_cap
                     if intraday_max_contracts <= 0
-                    else min(intraday_max_contracts, itm_v2_cap)
+                    else min(intraday_max_contracts, itm_engine_cap)
                 )
 
         if intraday_max_contracts > 0 and num_contracts > intraday_max_contracts:
@@ -8628,7 +8630,7 @@ class OptionsEngine:
         # V10.5: widen ITM stops in MED/HIGH VIX only; keep LOW VIX behavior unchanged.
         if (
             not is_protective_put
-            and (not itm_v2_mode)
+            and (not itm_engine_mode)
             and entry_strategy == IntradayStrategy.ITM_MOMENTUM
             and self._pending_stop_pct is not None
         ):
@@ -8650,18 +8652,18 @@ class OptionsEngine:
 
         if (
             not is_protective_put
-            and itm_v2_mode
+            and itm_engine_mode
             and entry_strategy == IntradayStrategy.ITM_MOMENTUM
             and self._pending_stop_pct is not None
         ):
-            _, itm_v2_stop, _, _, _ = self._itm_horizon_engine.get_exit_profile()
-            if itm_v2_stop is not None and itm_v2_stop > 0:
-                if abs(float(self._pending_stop_pct) - float(itm_v2_stop)) > 1e-6:
+            _, itm_engine_stop, _, _, _ = self._itm_horizon_engine.get_exit_profile()
+            if itm_engine_stop is not None and itm_engine_stop > 0:
+                if abs(float(self._pending_stop_pct) - float(itm_engine_stop)) > 1e-6:
                     self.log(
-                        f"STOP_CALC: ITM_V2 fixed stop override {self._pending_stop_pct:.0%} -> {itm_v2_stop:.0%}",
+                        f"STOP_CALC: ITM_ENGINE fixed stop override {self._pending_stop_pct:.0%} -> {itm_engine_stop:.0%}",
                         trades_only=True,
                     )
-                self._pending_stop_pct = float(itm_v2_stop)
+                self._pending_stop_pct = float(itm_engine_stop)
 
         self.log(
             f"INTRADAY_SIGNAL: {reason} | Δ={best_contract.delta:.2f} K={best_contract.strike} DTE={best_contract.days_to_expiry} | "

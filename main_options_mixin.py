@@ -25,12 +25,12 @@ class MainOptionsMixin:
 
         # Strategy-aware delta selection (ITM vs MICRO_DEBIT_FADE vs MICRO_OTM_MOMENTUM).
         if strategy == IntradayStrategy.ITM_MOMENTUM:
-            if bool(getattr(config, "ITM_V2_ENABLED", False)):
-                delta_min_v2 = float(getattr(config, "ITM_V2_DELTA_MIN", 0.65))
-                delta_max_v2 = float(getattr(config, "ITM_V2_DELTA_MAX", 0.75))
+            if bool(getattr(config, "ITM_ENGINE_ENABLED", False)):
+                delta_min_v2 = float(getattr(config, "ITM_DELTA_MIN", 0.65))
+                delta_max_v2 = float(getattr(config, "ITM_DELTA_MAX", 0.75))
                 target_delta = (delta_min_v2 + delta_max_v2) / 2.0
                 self.Log(
-                    f"INTRADAY_DELTA: ITM_V2 using delta_mid={target_delta:.2f} "
+                    f"INTRADAY_DELTA: ITM_ENGINE using delta_mid={target_delta:.2f} "
                     f"(range {delta_min_v2:.2f}-{delta_max_v2:.2f})"
                 )
             else:
@@ -86,10 +86,10 @@ class MainOptionsMixin:
 
         # ITM DTE overlay.
         if strategy == IntradayStrategy.ITM_MOMENTUM:
-            if bool(getattr(config, "ITM_V2_ENABLED", False)):
-                effective_dte_min = int(getattr(config, "ITM_V2_DTE_MIN", 5))
-                effective_dte_max = int(getattr(config, "ITM_V2_DTE_MAX", 7))
-                key = f"ITM_V2|{effective_dte_min}|{effective_dte_max}"
+            if bool(getattr(config, "ITM_ENGINE_ENABLED", False)):
+                effective_dte_min = int(getattr(config, "ITM_DTE_MIN", 5))
+                effective_dte_max = int(getattr(config, "ITM_DTE_MAX", 7))
+                key = f"ITM_ENGINE|{effective_dte_min}|{effective_dte_max}"
                 last_log_at = self._last_intraday_dte_routing_log_by_key.get(key)
                 should_log = last_log_at is None or (
                     self.Time - last_log_at
@@ -98,7 +98,7 @@ class MainOptionsMixin:
                 )
                 if should_log:
                     self.Log(
-                        f"INTRADAY_DTE_ROUTING: ITM_V2 fixed window DTE=[{effective_dte_min}-{effective_dte_max}]"
+                        f"INTRADAY_DTE_ROUTING: ITM_ENGINE fixed window DTE=[{effective_dte_min}-{effective_dte_max}]"
                     )
                     self._last_intraday_dte_routing_log_by_key[key] = self.Time
             elif vix_current is not None:
@@ -210,11 +210,11 @@ class MainOptionsMixin:
             contract_delta = abs(contract.Greeks.Delta)
             delta_diff = abs(contract_delta - target_delta)
             if strategy == IntradayStrategy.ITM_MOMENTUM and bool(
-                getattr(config, "ITM_V2_ENABLED", False)
+                getattr(config, "ITM_ENGINE_ENABLED", False)
             ):
-                itm_v2_delta_min = float(getattr(config, "ITM_V2_DELTA_MIN", 0.65))
-                itm_v2_delta_max = float(getattr(config, "ITM_V2_DELTA_MAX", 0.75))
-                if contract_delta < itm_v2_delta_min or contract_delta > itm_v2_delta_max:
+                itm_engine_delta_min = float(getattr(config, "ITM_DELTA_MIN", 0.65))
+                itm_engine_delta_max = float(getattr(config, "ITM_DELTA_MAX", 0.75))
+                if contract_delta < itm_engine_delta_min or contract_delta > itm_engine_delta_max:
                     filter_counts["delta"] += 1
                     continue
             elif delta_diff > config.OPTIONS_DELTA_TOLERANCE:
@@ -273,8 +273,8 @@ class MainOptionsMixin:
                     vix_val = float(vix_current) if vix_current is not None else None
                 except Exception:
                     vix_val = None
-                if bool(getattr(config, "ITM_V2_ENABLED", False)):
-                    target_dte = int(getattr(config, "ITM_V2_TARGET_DTE", 6))
+                if bool(getattr(config, "ITM_ENGINE_ENABLED", False)):
+                    target_dte = int(getattr(config, "ITM_TARGET_DTE", 6))
                 else:
                     low_thr = float(getattr(config, "MICRO_DTE_LOW_VIX_THRESHOLD", 18.0))
                     high_thr = float(getattr(config, "MICRO_DTE_HIGH_VIX_THRESHOLD", 25.0))
@@ -543,8 +543,8 @@ class MainOptionsMixin:
                 )
 
                 forced_intraday_strategy = None
-                if bool(getattr(config, "ITM_V2_ENABLED", False)):
-                    itm_dir, itm_reason = self.options_engine.get_itm_v2_direction_proposal(
+                if bool(getattr(config, "ITM_ENGINE_ENABLED", False)):
+                    itm_dir, itm_reason = self.options_engine.get_itm_direction_proposal(
                         qqq_current=qqq_price
                     )
                     micro_is_no_trade = (
@@ -555,7 +555,7 @@ class MainOptionsMixin:
                         should_trade = True
                         intraday_direction = itm_dir
                         forced_intraday_strategy = IntradayStrategy.ITM_MOMENTUM
-                        signal_reason = f"ITM_V2_SOVEREIGN: {itm_reason}"
+                        signal_reason = f"ITM_ENGINE_SOVEREIGN: {itm_reason}"
                         if micro_state is not None:
                             micro_state.recommended_strategy = IntradayStrategy.ITM_MOMENTUM
                             micro_state.recommended_direction = itm_dir
@@ -584,7 +584,7 @@ class MainOptionsMixin:
                         if retry_strategy == IntradayStrategy.NO_TRADE:
                             retry_strategy = (
                                 IntradayStrategy.ITM_MOMENTUM
-                                if bool(getattr(config, "ITM_V2_ENABLED", False))
+                                if bool(getattr(config, "ITM_ENGINE_ENABLED", False))
                                 else IntradayStrategy.MICRO_DEBIT_FADE
                             )
                         forced_intraday_strategy = retry_strategy
