@@ -2341,13 +2341,16 @@ class OptionsEngine:
             if memory_scale > 1.0:
                 vix_open_for_micro = vix_open / memory_scale
 
+        macro_for_micro = (
+            macro_regime_score if bool(getattr(config, "MICRO_USE_MACRO_IN_STATE", False)) else 50.0
+        )
         state = self._micro_regime_engine.update(
             vix_current=vix_current,
             vix_open=vix_open_for_micro,
             qqq_current=qqq_current,
             qqq_open=qqq_open,
             current_time=current_time,
-            macro_regime_score=macro_regime_score,
+            macro_regime_score=macro_for_micro,
             vix_level_override=vix_level_override,
         )
 
@@ -2439,12 +2442,8 @@ class OptionsEngine:
             vix_level=vix_level_override if vix_level_override else vix_current,
         )
 
-        # Step 3: Get Macro direction
-        macro_direction = self.get_macro_direction(macro_regime_score)
-
-        # Step 4: Resolve trade signal using shared resolver
-        # If conviction is not active, fall back to Micro's computed direction
-        # so the resolver doesn't treat it as "no direction".
+        # Step 3: Resolve direction.
+        # V10.10: MICRO sovereignty option bypasses macro resolver.
         recommended_direction_str = (
             "BULLISH"
             if state.recommended_direction == OptionDirection.CALL
@@ -2477,18 +2476,30 @@ class OptionsEngine:
         else:
             engine_direction = recommended_direction_str
 
-        should_trade, resolved_direction, resolve_reason = self.resolve_trade_signal(
-            engine="MICRO",
-            engine_direction=engine_direction,
-            engine_conviction=has_conviction,
-            macro_direction=macro_direction,
-            conviction_strength=uvxy_pct if has_conviction else None,
-            engine_regime=state.micro_regime.value if state is not None else None,
-            engine_recommended_direction=recommended_direction_str,
-        )
-
-        if not should_trade:
-            return False, None, state, resolve_reason
+        if bool(getattr(config, "MICRO_USE_MACRO_RESOLVER", False)):
+            macro_direction = self.get_macro_direction(macro_regime_score)
+            should_trade, resolved_direction, resolve_reason = self.resolve_trade_signal(
+                engine="MICRO",
+                engine_direction=engine_direction,
+                engine_conviction=has_conviction,
+                macro_direction=macro_direction,
+                conviction_strength=uvxy_pct if has_conviction else None,
+                engine_regime=state.micro_regime.value if state is not None else None,
+                engine_recommended_direction=recommended_direction_str,
+            )
+            if not should_trade:
+                return False, None, state, resolve_reason
+        else:
+            if engine_direction not in ("BULLISH", "BEARISH"):
+                return (
+                    False,
+                    None,
+                    state,
+                    f"NO_TRADE: MICRO_NO_DIRECTION ({state.micro_regime.value})",
+                )
+            should_trade = True
+            resolved_direction = engine_direction
+            resolve_reason = f"MICRO_SOVEREIGN: {resolved_direction}"
 
         # Step 5: Determine final direction
         # V6.4 FIX: Use resolved_direction whenever set (includes FOLLOW_MACRO path)
@@ -8295,7 +8306,9 @@ class OptionsEngine:
         # V3.0 SCALABILITY FIX: Use percentage-based cap instead of hardcoded dollars
         # At $50K: 8% = $4,000, at $200K: 8% = $16,000 (scales with portfolio)
         portfolio_value_for_sizing = (
-            self.algorithm.Portfolio.TotalPortfolioValue if self.algorithm else 50000
+            float(portfolio_value)
+            if portfolio_value and portfolio_value > 0
+            else (self.algorithm.Portfolio.TotalPortfolioValue if self.algorithm else 50000)
         )
 
         # V10.10: Strategy-specific intraday budget slices.

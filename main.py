@@ -3910,12 +3910,21 @@ class AlphaNextGen(QCAlgorithm):
             active_pair = self.oco_manager.get_active_pair(symbol_norm)
             if active_pair is not None:
                 active_qty = abs(int(getattr(active_pair.stop_leg, "quantity", 0) or 0))
-                if active_qty == qty:
+                active_stop = float(getattr(active_pair.stop_leg, "trigger_price", 0.0) or 0.0)
+                active_target = float(getattr(active_pair.profit_leg, "trigger_price", 0.0) or 0.0)
+                price_eps = float(getattr(config, "OCO_RESYNC_PRICE_EPS", 0.01))
+                qty_same = active_qty == qty
+                stop_same = abs(active_stop - stop_price) <= price_eps
+                target_same = abs(active_target - target_price) <= price_eps
+                if qty_same and stop_same and target_same:
                     return
                 self.oco_manager.cancel_by_symbol(symbol_norm, reason=f"OCO_RESYNC_{reason}")
                 self.Log(
                     f"OCO_RESYNC: Cancelled stale OCO | {symbol_norm} | "
-                    f"OldQty={active_qty} NewQty={qty} | Reason={reason}"
+                    f"OldQty={active_qty} NewQty={qty} | "
+                    f"OldStop=${active_stop:.2f} NewStop=${stop_price:.2f} | "
+                    f"OldTarget=${active_target:.2f} NewTarget=${target_price:.2f} | "
+                    f"Reason={reason}"
                 )
 
             oco_pair = self.oco_manager.create_oco_pair(
@@ -6196,14 +6205,17 @@ class AlphaNextGen(QCAlgorithm):
                     vix_val = float(vix_current) if vix_current is not None else None
                 except Exception:
                     vix_val = None
-                low_thr = float(getattr(config, "MICRO_DTE_LOW_VIX_THRESHOLD", 18.0))
-                high_thr = float(getattr(config, "MICRO_DTE_HIGH_VIX_THRESHOLD", 25.0))
-                if vix_val is not None and vix_val < low_thr:
-                    target_dte = int(getattr(config, "INTRADAY_ITM_TARGET_DTE_LOW_VIX", 4))
-                elif vix_val is not None and vix_val >= high_thr:
-                    target_dte = int(getattr(config, "INTRADAY_ITM_TARGET_DTE_HIGH_VIX", 3))
+                if bool(getattr(config, "ITM_V2_ENABLED", False)):
+                    target_dte = int(getattr(config, "ITM_V2_TARGET_DTE", 6))
                 else:
-                    target_dte = int(getattr(config, "INTRADAY_ITM_TARGET_DTE_MED_VIX", 3))
+                    low_thr = float(getattr(config, "MICRO_DTE_LOW_VIX_THRESHOLD", 18.0))
+                    high_thr = float(getattr(config, "MICRO_DTE_HIGH_VIX_THRESHOLD", 25.0))
+                    if vix_val is not None and vix_val < low_thr:
+                        target_dte = int(getattr(config, "INTRADAY_ITM_TARGET_DTE_LOW_VIX", 4))
+                    elif vix_val is not None and vix_val >= high_thr:
+                        target_dte = int(getattr(config, "INTRADAY_ITM_TARGET_DTE_HIGH_VIX", 3))
+                    else:
+                        target_dte = int(getattr(config, "INTRADAY_ITM_TARGET_DTE_MED_VIX", 3))
                 dte_range = max(1, effective_dte_max - effective_dte_min)
                 dte_score = max(0.0, 1.0 - (abs(dte - target_dte) / dte_range))
                 oi_soft_cap = max(1, int(getattr(config, "INTRADAY_ITM_OI_SOFT_CAP", 2000)))
@@ -7117,7 +7129,9 @@ class AlphaNextGen(QCAlgorithm):
                     )
                     # STEP 2: Select contract matching ENGINE recommendation (not hardcoded fade)
                     # V2.14 Fix #20: Pass strategy for delta-aware contract selection
-                    intraday_strategy = self.options_engine.get_last_intraday_strategy()
+                    intraday_strategy = (
+                        forced_intraday_strategy or self.options_engine.get_last_intraday_strategy()
+                    )
                     intraday_contract = self._select_intraday_option_contract(
                         chain,
                         intraday_direction,

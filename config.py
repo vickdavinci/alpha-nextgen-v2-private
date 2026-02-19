@@ -1905,6 +1905,11 @@ INTRADAY_DEBIT_MOMENTUM_ENABLED = (
 INTRADAY_ITM_MOMENTUM_ENABLED = True  # V10: primary confirmation strategy
 MICRO_ENTRY_ENGINE_ENABLED = True  # V10.10: route MICRO gates through dedicated engine
 INTRADAY_DEBIT_FADE_ENABLED = True  # V10.10: re-enable OTM divergence track alongside ITM_V2
+MICRO_USE_MACRO_RESOLVER = False  # V10.10: make MICRO direction sovereign from macro resolver
+MICRO_USE_MACRO_IN_STATE = False  # V10.10: stop passing macro score into MicroRegime state update
+MICRO_USE_MACRO_POLICY_GATES = (
+    False  # V10.10: disable macro-based CALL/PUT gates in MicroEntryEngine
+)
 INTRADAY_DEBIT_MOMENTUM_DELTA_MIN = 0.45  # Near ATM for momentum
 INTRADAY_DEBIT_MOMENTUM_DELTA_MAX = 0.65  # Slightly ITM max
 INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES = [

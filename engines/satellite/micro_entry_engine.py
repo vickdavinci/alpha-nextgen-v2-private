@@ -84,7 +84,11 @@ class MicroEntryEngine:
             vix_for_call = vix_level_override if vix_level_override is not None else vix_current
             call_block_vix = getattr(config, "INTRADAY_CALL_BLOCK_VIX_MIN", 25.0)
             call_block_regime = getattr(config, "INTRADAY_CALL_BLOCK_REGIME_MAX", 55.0)
-            if vix_for_call >= call_block_vix and macro_regime_score <= call_block_regime:
+            if (
+                bool(getattr(config, "MICRO_USE_MACRO_POLICY_GATES", False))
+                and vix_for_call >= call_block_vix
+                and macro_regime_score <= call_block_regime
+            ):
                 self._log(
                     f"INTRADAY: CALL blocked in stress | "
                     f"VIX={vix_for_call:.1f} >= {call_block_vix:.1f} | "
@@ -204,7 +208,8 @@ class MicroEntryEngine:
 
             risk_on_threshold = float(getattr(config, "REGIME_RISK_ON", 70.0))
             if (
-                state.micro_regime in (MicroRegime.CAUTION_LOW, MicroRegime.CAUTIOUS)
+                bool(getattr(config, "MICRO_USE_MACRO_POLICY_GATES", False))
+                and state.micro_regime in (MicroRegime.CAUTION_LOW, MicroRegime.CAUTIOUS)
                 and macro_regime_score >= risk_on_threshold
             ):
                 self._log(
