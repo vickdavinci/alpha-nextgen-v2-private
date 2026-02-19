@@ -1831,14 +1831,12 @@ INTRADAY_DEBIT_FADE_VIX_MIN = 9.0  # Legacy alias (kept for compatibility)
 MICRO_DEBIT_FADE_VIX_MIN = 9.0  # Canonical: ATM fade minimum VIX
 
 # Debit Fade (Mean Reversion) - Gate 3a - The Sniper Window
-INTRADAY_DEBIT_FADE_MIN_SCORE = 32  # Increase DEBIT_FADE throughput while preserving quality filter
 INTRADAY_FADE_MIN_MOVE = 0.35  # Restore intraday participation while keeping noise filter
 # V10: VIX-tier move gates (replace single INTRADAY_FADE_MIN_MOVE for MICRO routing)
 MICRO_MIN_MOVE_LOW_VIX = 0.50  # Stricter for LOW VIX — filter theta-dominated noise
 MICRO_MIN_MOVE_MED_VIX = 0.40  # Standard move gate
 MICRO_MIN_MOVE_HIGH_VIX = 0.40  # Standard move gate
 INTRADAY_FADE_MAX_MOVE = 1.50  # V6.8: Was 1.20, don't block strong bull continuation
-INTRADAY_DEBIT_FADE_VIX_MAX = 25  # VIX < 25
 INTRADAY_DEBIT_FADE_START = "10:00"  # Legacy alias (kept for compatibility)
 INTRADAY_DEBIT_FADE_END = "14:30"  # Legacy alias (kept for compatibility)
 MICRO_DEBIT_FADE_START = "10:00"  # Canonical ATM fade window start
@@ -1861,7 +1859,6 @@ INTRADAY_CREDIT_STOP = 1.0  # Stop if spread doubles
 # ITM Momentum
 INTRADAY_ITM_MIN_VIX = 9.0  # V6.13 OPT: Allow ITM momentum in low-VIX bull regimes
 INTRADAY_ITM_MIN_MOVE = 0.40  # V6.13 OPT: Increase momentum setup availability
-INTRADAY_ITM_MIN_SCORE = 40  # V6.8: Was 50, capture momentum earlier
 # V2.3.19: Time window moved from hardcoded to config
 INTRADAY_ITM_START = "10:00"  # Entry window start
 INTRADAY_ITM_END = "14:30"  # Entry window end (earlier than FADE - momentum fades after lunch)
@@ -1922,7 +1919,6 @@ MICRO_OTM_MOMENTUM_DELTA_MAX = 0.50
 INTRADAY_DEBIT_MOMENTUM_ENABLED = (
     False  # V10: deprecated — ITM_MOMENTUM replaces all confirmation paths
 )
-INTRADAY_ITM_MOMENTUM_ENABLED = True  # V10: primary confirmation strategy
 MICRO_ENTRY_ENGINE_ENABLED = True  # V10.10: route MICRO gates through dedicated engine
 INTRADAY_DEBIT_FADE_ENABLED = True  # Legacy alias
 MICRO_DEBIT_FADE_ENABLED = True  # Canonical ATM fade switch
@@ -1951,9 +1947,6 @@ INTRADAY_ITM_DELTA_MIN = 0.65  # V10: tightened from 0.60 for better ITM quality
 INTRADAY_ITM_DELTA_MAX = 0.80  # V10: tightened from 0.85 to avoid deep ITM illiquidity
 INTRADAY_ITM_HOLD_OVERNIGHT_ENABLED = True  # V10.1: allow ITM holds beyond force-close cutoff
 INTRADAY_ITM_HOLD_MIN_ENTRY_DTE = 3  # Only hold if entry was opened with >=3 DTE
-INTRADAY_ITM_OVERNIGHT_MAX_LOSS_PCT = 0.10  # V10.9: base overnight hold loss cap for low/medium VIX
-INTRADAY_ITM_OVERNIGHT_MAX_LOSS_PCT_HIGH_VIX = 0.15  # Keep wider cap in high-vol tape
-INTRADAY_ITM_OVERNIGHT_HIGH_VIX_THRESHOLD = 25.0  # Apply high-VIX cap at/above this VIX level
 INTRADAY_ITM_FORCE_EXIT_DTE = 1  # Always force close by EOD once contract reaches 1 DTE
 INTRADAY_ITM_DTE_EXIT = 2  # Software DTE exit for ITM single-legs (strategy-specific)
 INTRADAY_ALLOW_ONE_LOT_WHEN_CAP_TIGHT = (
@@ -1975,7 +1968,6 @@ ITM_V2_SHADOW_MODE = False
 ITM_V2_SIZE_MULT = 1.0  # ITM_V2 sizing is sovereign; do not couple to MICRO score ladder
 ITM_V2_DECISION_HOUR = 10
 ITM_V2_DECISION_MINUTE = 30
-ITM_V2_ENTRY_START = "10:30"
 ITM_V2_ENTRY_END = "13:30"
 ITM_V2_SMA_BAND_PCT = 0.003
 ITM_V2_ADX_MIN = 15.0
