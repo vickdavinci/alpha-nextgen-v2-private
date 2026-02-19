@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 
 import config
 from engines.core.risk_engine import GreeksSnapshot
+from engines.satellite.itm_horizon_engine import ITMHorizonEngine
 from models.enums import (
     OptionDirection,  # V6.4: Unified from models.enums (fixes P0 duplicate enum bug)
 )
@@ -1996,6 +1997,7 @@ class OptionsEngine:
             smoothing_minutes=config.VASS_IV_SMOOTHING_MINUTES,
             log_func=self.log,
         )
+        self._itm_horizon_engine = ITMHorizonEngine(log_func=self.log)
 
         # V2.27: Win Rate Gate - rolling spread trade result tracker
         self._spread_result_history: List[bool] = []  # True=win, False=loss
@@ -2132,17 +2134,27 @@ class OptionsEngine:
             entry_dte = int(getattr(pos.contract, "days_to_expiry", 0))
         except Exception:
             entry_dte = 0
+        live_dte = self._get_position_live_dte(pos)
+        if self._itm_horizon_engine.enabled():
+            return self._itm_horizon_engine.should_hold_overnight(
+                entry_dte=entry_dte,
+                live_dte=live_dte,
+            )
+
         min_entry_dte = int(getattr(config, "INTRADAY_ITM_HOLD_MIN_ENTRY_DTE", 3))
         if entry_dte < min_entry_dte:
             return False
-        live_dte = self._get_position_live_dte(pos)
         if live_dte is None:
             return False
         force_exit_dte = int(getattr(config, "INTRADAY_ITM_FORCE_EXIT_DTE", 1))
         return live_dte > force_exit_dte
 
     def record_intraday_result(
-        self, symbol: str, is_win: bool, current_time: Optional[str] = None
+        self,
+        symbol: str,
+        is_win: bool,
+        current_time: Optional[str] = None,
+        strategy: Optional[str] = None,
     ) -> None:
         """
         Track CALL-only consecutive loss streak for adaptive entry cooldown.
@@ -2227,6 +2239,17 @@ class OptionsEngine:
             )
         except Exception as e:
             self.log(f"INTRADAY: Failed to record CALL result streak: {e}", trades_only=True)
+
+        try:
+            self._itm_horizon_engine.on_trade_closed(
+                symbol=symbol,
+                is_win=is_win,
+                current_time=current_time,
+                strategy=strategy,
+                algorithm=self.algorithm,
+            )
+        except Exception as e:
+            self.log(f"ITM_V2: result tracking failed: {e}", trades_only=True)
 
     # =========================================================================
     # V6.10 P5: CHOPPY MARKET DETECTION
@@ -7515,6 +7538,9 @@ class OptionsEngine:
         """Return (target_pct, stop_pct_override) for strategy-aware intraday exits."""
         strategy = self._canonical_intraday_strategy_name(entry_strategy)
         if strategy == IntradayStrategy.ITM_MOMENTUM.value:
+            if self._itm_horizon_engine.enabled():
+                target, stop, _, _, _ = self._itm_horizon_engine.get_exit_profile()
+                return (target, stop)
             return (
                 float(getattr(config, "INTRADAY_ITM_TARGET", 0.35)),
                 float(getattr(config, "INTRADAY_ITM_STOP", 0.35)),
@@ -7531,6 +7557,9 @@ class OptionsEngine:
         """Return (trigger_pct, trail_pct) for intraday strategy trailing stops."""
         strategy = self._canonical_intraday_strategy_name(entry_strategy)
         if strategy == IntradayStrategy.ITM_MOMENTUM.value:
+            if self._itm_horizon_engine.enabled():
+                _, _, trail_trigger, trail_pct, _ = self._itm_horizon_engine.get_exit_profile()
+                return (trail_trigger, trail_pct)
             return (
                 float(getattr(config, "INTRADAY_ITM_TRAIL_TRIGGER", 0.20)),
                 float(getattr(config, "INTRADAY_ITM_TRAIL_PCT", 0.50)),
@@ -7643,13 +7672,50 @@ class OptionsEngine:
                 requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
             )
 
+        # ITM_V2 max-hold guard (calendar-based safety cap).
+        if self._itm_horizon_engine.enabled() and self._is_itm_momentum_strategy_name(
+            getattr(pos, "entry_strategy", "")
+        ):
+            max_hold_days = self._itm_horizon_engine.get_max_hold_days()
+            if max_hold_days > 0:
+                try:
+                    entry_date = datetime.strptime(
+                        str(getattr(pos, "entry_time", ""))[:10], "%Y-%m-%d"
+                    ).date()
+                    now_date = (
+                        self.algorithm.Time.date()
+                        if self.algorithm is not None and hasattr(self.algorithm, "Time")
+                        else datetime.utcnow().date()
+                    )
+                    held_days = (now_date - entry_date).days
+                except Exception:
+                    held_days = 0
+                if held_days >= max_hold_days:
+                    if is_intraday_pos and not self.mark_pending_intraday_exit(symbol_str):
+                        return None
+                    reason = f"ITM_V2_MAX_HOLD ({held_days}d >= {max_hold_days}d) P&L={pnl_pct:.1%}"
+                    self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
+                    return TargetWeight(
+                        symbol=symbol_str,
+                        target_weight=0.0,
+                        source="OPT",
+                        urgency=Urgency.IMMEDIATE,
+                        reason=reason,
+                        requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
+                    )
+
         # V2.3.10: Exit 3 - DTE exit (prevent expiration/exercise)
         # Close single-leg options before expiration to avoid:
         # - OTM expiring worthless (100% loss)
         # - ITM being auto-exercised (creates stock position, margin crisis)
         dte_exit_threshold = int(getattr(config, "OPTIONS_SINGLE_LEG_DTE_EXIT", 4))
         if self._is_itm_momentum_strategy_name(getattr(pos, "entry_strategy", "")):
-            dte_exit_threshold = int(getattr(config, "INTRADAY_ITM_DTE_EXIT", dte_exit_threshold))
+            if self._itm_horizon_engine.enabled():
+                _, _, _, _, dte_exit_threshold = self._itm_horizon_engine.get_exit_profile()
+            else:
+                dte_exit_threshold = int(
+                    getattr(config, "INTRADAY_ITM_DTE_EXIT", dte_exit_threshold)
+                )
 
         if current_dte is not None and current_dte <= dte_exit_threshold:
             if is_intraday_pos and not self.mark_pending_intraday_exit(symbol_str):
@@ -8231,6 +8297,8 @@ class OptionsEngine:
         if entry_strategy is None:
             return fail("E_INTRADAY_NO_STRATEGY")
 
+        itm_v2_mode = False
+
         # V3.2: Check if strategy is PROTECTIVE_PUTS (crisis hedge)
         if entry_strategy == IntradayStrategy.PROTECTIVE_PUTS:
             # V3.2: Actually implement protective puts (was previously just returning None)
@@ -8276,8 +8344,58 @@ class OptionsEngine:
                 self.log(f"INTRADAY: No direction recommended for {strategy_value}")
                 return fail("E_INTRADAY_NO_DIRECTION", strategy_value)
 
+            itm_v2_mode = bool(
+                self._itm_horizon_engine.enabled()
+                and entry_strategy == IntradayStrategy.ITM_MOMENTUM
+            )
+            if itm_v2_mode:
+                qqq_sma20 = getattr(self.algorithm, "qqq_sma20", None) if self.algorithm else None
+                sma20_value = (
+                    float(qqq_sma20.Current.Value)
+                    if qqq_sma20 is not None and getattr(qqq_sma20, "IsReady", False)
+                    else None
+                )
+                qqq_adx = getattr(self.algorithm, "qqq_adx", None) if self.algorithm else None
+                adx_value = (
+                    float(qqq_adx.Current.Value)
+                    if qqq_adx is not None and getattr(qqq_adx, "IsReady", False)
+                    else None
+                )
+                vix20_change = (
+                    self._iv_sensor.get_vix_20d_change() if self._iv_sensor is not None else None
+                )
+                itm_ok, itm_code, itm_detail = self._itm_horizon_engine.evaluate_entry(
+                    direction=direction,
+                    current_time=current_time,
+                    current_hour=current_hour,
+                    current_minute=current_minute,
+                    qqq_current=qqq_current,
+                    sma20_value=sma20_value,
+                    adx_value=adx_value,
+                    vix_current=float(
+                        vix_level_override if vix_level_override is not None else vix_current
+                    ),
+                    vix20_change=vix20_change,
+                    portfolio_value=float(portfolio_value),
+                    algorithm=self.algorithm,
+                )
+                self.log(
+                    f"ITM_V2_DECISION|Dir={direction.value}|QQQ={qqq_current:.2f}|"
+                    f"SMA20={sma20_value if sma20_value is not None else 'NA'}|"
+                    f"ADX={adx_value if adx_value is not None else 'NA'}|"
+                    f"VIX={float(vix_level_override if vix_level_override is not None else vix_current):.1f}|"
+                    f"VIX20d={vix20_change if vix20_change is not None else 'NA'}|"
+                    f"{'PASS' if itm_ok else 'BLOCK'}|{itm_code}|{itm_detail}",
+                    trades_only=True,
+                )
+                if not itm_ok and not self._itm_horizon_engine.shadow_mode():
+                    return fail(itm_code, itm_detail)
+
             # V9: Keep CAUTION_LOW / TRANSITION participation but cut size.
-            if state.micro_regime in (MicroRegime.CAUTION_LOW, MicroRegime.TRANSITION):
+            if (not itm_v2_mode) and state.micro_regime in (
+                MicroRegime.CAUTION_LOW,
+                MicroRegime.TRANSITION,
+            ):
                 caution_scale = float(
                     getattr(
                         config,
@@ -8297,7 +8415,7 @@ class OptionsEngine:
                     size_multiplier = adjusted
 
             # Keep CALL risk constrained in stressed tape.
-            if direction == OptionDirection.CALL:
+            if (not itm_v2_mode) and direction == OptionDirection.CALL:
                 # Gate 1: consecutive CALL-loss cooldown (adaptive pause)
                 if getattr(config, "CALL_GATE_CONSECUTIVE_LOSS_ENABLED", True):
                     trade_date = None
@@ -8420,7 +8538,7 @@ class OptionsEngine:
                             return fail("E_CALL_GATE_VIX5D")
 
             # V6.14 OPT: Avoid buying long PUTs into panic highs; reduce size in elevated fear.
-            if direction == OptionDirection.PUT:
+            if (not itm_v2_mode) and direction == OptionDirection.PUT:
                 risk_on_threshold = float(getattr(config, "REGIME_RISK_ON", 70.0))
                 if (
                     state.micro_regime in (MicroRegime.CAUTION_LOW, MicroRegime.CAUTIOUS)
@@ -8517,24 +8635,30 @@ class OptionsEngine:
                 return fail("E_INTRADAY_TIME_WINDOW")
 
         elif entry_strategy == IntradayStrategy.ITM_MOMENTUM:
-            # V10.4: block ITM momentum in CAUTION_LOW only.
-            # Keep CAUTIOUS handling in the existing risk-on gating path.
-            if state.micro_regime == MicroRegime.CAUTION_LOW:
+            # Legacy CAUTION_LOW block applies only to non-ITM_V2 flow.
+            if (not itm_v2_mode) and state.micro_regime == MicroRegime.CAUTION_LOW:
                 self.log(
                     "INTRADAY: ITM_MOMENTUM blocked in regime CAUTION_LOW",
                     trades_only=True,
                 )
                 return fail("E_ITM_MOMENTUM_REGIME_BLOCK")
-            # V2.3.19: Use config values instead of hardcoded
-            itm_start = config.INTRADAY_ITM_START.split(":")
-            itm_end = config.INTRADAY_ITM_END.split(":")
+
+            if itm_v2_mode:
+                itm_start_cfg = str(
+                    getattr(config, "ITM_V2_ENTRY_START", config.INTRADAY_ITM_START)
+                )
+                itm_end_cfg = str(getattr(config, "ITM_V2_ENTRY_END", config.INTRADAY_ITM_END))
+            else:
+                itm_start_cfg = config.INTRADAY_ITM_START
+                itm_end_cfg = config.INTRADAY_ITM_END
+            itm_start = itm_start_cfg.split(":")
+            itm_end = itm_end_cfg.split(":")
             start_time = int(itm_start[0]) * 60 + int(itm_start[1])
             end_time = int(itm_end[0]) * 60 + int(itm_end[1])
             if not (start_time <= time_minutes <= end_time):
-                # V2.13 Fix #17: Log time window rejection (was silent)
                 self.log(
                     f"INTRADAY_TIME_REJECT: ITM_MOMENTUM at {current_hour}:{current_minute:02d} "
-                    f"outside window {config.INTRADAY_ITM_START}-{config.INTRADAY_ITM_END}"
+                    f"outside window {itm_start_cfg}-{itm_end_cfg}"
                 )
                 return fail("E_INTRADAY_TIME_WINDOW")
 
@@ -8622,6 +8746,15 @@ class OptionsEngine:
                         trades_only=True,
                     )
                     intraday_max_contracts = scaled_cap
+
+        if itm_v2_mode:
+            itm_v2_cap = int(getattr(config, "ITM_V2_MAX_CONTRACTS_HARD_CAP", 8))
+            if itm_v2_cap > 0:
+                intraday_max_contracts = (
+                    itm_v2_cap
+                    if intraday_max_contracts <= 0
+                    else min(intraday_max_contracts, itm_v2_cap)
+                )
 
         if intraday_max_contracts > 0 and num_contracts > intraday_max_contracts:
             self.log(
@@ -10314,6 +10447,7 @@ class OptionsEngine:
                 else None
             ),
             "last_intraday_close_strategy": self._last_intraday_close_strategy,
+            "itm_horizon_state": self._itm_horizon_engine.to_dict(),
         }
 
     def restore_state(self, state: Dict[str, Any]) -> None:
@@ -10516,6 +10650,10 @@ class OptionsEngine:
             except Exception:
                 self._last_intraday_close_time = None
         self._last_intraday_close_strategy = state.get("last_intraday_close_strategy")
+        try:
+            self._itm_horizon_engine.from_dict(state.get("itm_horizon_state", {}) or {})
+        except Exception:
+            self._itm_horizon_engine.reset()
 
     def reset(self) -> None:
         """Reset engine state."""
@@ -10560,6 +10698,7 @@ class OptionsEngine:
         self._intraday_force_exit_hold_skip_log_date = {}
         self._last_intraday_close_time = None
         self._last_intraday_close_strategy = None
+        self._itm_horizon_engine.reset()
 
         self.log("OPT: Engine reset - all positions cleared")
 
@@ -10631,6 +10770,7 @@ class OptionsEngine:
                     k: v for k, v in self._spread_neutrality_warn_by_key.items() if k in active_keys
                 }
 
+            self._itm_horizon_engine.emit_daily_summary(current_date)
             self.log(f"OPT: Daily reset for {current_date}")
 
     # =========================================================================
