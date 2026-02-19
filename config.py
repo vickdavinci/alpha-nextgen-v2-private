@@ -1926,7 +1926,9 @@ INTRADAY_ITM_MOMENTUM_ENABLED = True  # V10: primary confirmation strategy
 MICRO_ENTRY_ENGINE_ENABLED = True  # V10.10: route MICRO gates through dedicated engine
 INTRADAY_DEBIT_FADE_ENABLED = True  # Legacy alias
 MICRO_DEBIT_FADE_ENABLED = True  # Canonical ATM fade switch
-MICRO_OTM_MOMENTUM_ENABLED = False  # Canonical OTM momentum switch (off by default)
+MICRO_OTM_MOMENTUM_ENABLED = True  # Canonical OTM momentum switch
+MICRO_OTM_MOMENTUM_MAX_VIX = 22.0  # Use OTM momentum in low/medium VIX; defer to ITM in higher VIX
+MICRO_OTM_MOMENTUM_MIN_MOVE = 0.40  # Minimum QQQ move to emit OTM momentum confirmations
 MICRO_USE_MACRO_RESOLVER = False  # Deprecated no-op: MICRO macro resolver path removed in V10.10
 MICRO_USE_MACRO_IN_STATE = (
     False  # Deprecated no-op: MICRO state no longer consumes macro score in V10.10

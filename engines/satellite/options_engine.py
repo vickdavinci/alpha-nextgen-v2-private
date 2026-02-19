@@ -1099,10 +1099,21 @@ class MicroRegimeEngine:
             VIXDirection.SPIKING,
         )
 
-        # V10: All confirmation paths route to ITM_MOMENTUM (DEBIT_MOMENTUM deprecated)
+        # Confirmation routing: optionally emit MICRO_OTM_MOMENTUM for intraday momentum,
+        # otherwise fall back to ITM_MOMENTUM (legacy behavior).
         def confirmation_strategy(
             direction: OptionDirection, reason: str
         ) -> Tuple[IntradayStrategy, Optional[OptionDirection], str]:
+            use_otm = bool(getattr(config, "MICRO_OTM_MOMENTUM_ENABLED", False))
+            if use_otm:
+                max_vix = float(getattr(config, "MICRO_OTM_MOMENTUM_MAX_VIX", 22.0))
+                min_move = float(getattr(config, "MICRO_OTM_MOMENTUM_MIN_MOVE", 0.40))
+                if vix_current <= max_vix and abs(qqq_move_pct) >= min_move:
+                    return (
+                        IntradayStrategy.MICRO_OTM_MOMENTUM,
+                        direction,
+                        f"OTM_MOMENTUM: {reason}",
+                    )
             return (IntradayStrategy.ITM_MOMENTUM, direction, reason)
 
         # V10.7 Phase-5: optional simplification to disable DEBIT_FADE.
