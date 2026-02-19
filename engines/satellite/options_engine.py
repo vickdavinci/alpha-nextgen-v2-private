@@ -9822,7 +9822,15 @@ class OptionsEngine:
                         trades_only=True,
                     )
                     return None
-                spread = spreads[0]
+                if len(spreads) == 1:
+                    spread = spreads[0]
+                else:
+                    self.log(
+                        "SPREAD: WARN remove requested without symbol while multiple spreads active | "
+                        f"Count={len(spreads)} | skip removal",
+                        trades_only=True,
+                    )
+                    return None
 
             if self._spread_positions:
                 self._spread_positions = [s for s in self._spread_positions if s is not spread]

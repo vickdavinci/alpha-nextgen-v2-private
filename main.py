@@ -826,7 +826,9 @@ class AlphaNextGen(
             self._refresh_intraday_regime_score,
         )
         # #8 fix: intraday reconciliation checkpoints (zombie/orphan cleanup)
-        for hour, minute in [(11, 30), (13, 30)]:
+        # Add late-day checkpoints so intraday ghost streak policy can converge
+        # before close instead of deferring to next SOD.
+        for hour, minute in [(11, 30), (13, 30), (15, 0), (15, 30)]:
             self.Schedule.On(
                 self.DateRules.EveryDay(),
                 self.TimeRules.At(hour, minute),
@@ -2020,7 +2022,7 @@ class AlphaNextGen(
         now_dt = self.Time
         if self._last_reconcile_positions_run is not None:
             elapsed_min = (now_dt - self._last_reconcile_positions_run).total_seconds() / 60.0
-            if elapsed_min < 45:
+            if elapsed_min < 20:
                 return
         self._reconcile_positions(mode="intraday")
 

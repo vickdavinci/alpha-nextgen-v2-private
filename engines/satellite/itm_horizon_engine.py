@@ -345,7 +345,7 @@ class ITMHorizonEngine:
     def get_exit_profile(self) -> Tuple[float, float, float, float, int]:
         return (
             float(getattr(config, "ITM_TARGET_PCT", 0.35)),
-            float(getattr(config, "ITM_STOP_PCT", 0.22)),
+            float(getattr(config, "ITM_STOP_PCT", 0.35)),
             float(getattr(config, "ITM_TRAIL_TRIGGER", 0.15)),
             float(getattr(config, "ITM_TRAIL_PCT", 0.40)),
             int(getattr(config, "ITM_FORCE_EXIT_DTE", 1)),
