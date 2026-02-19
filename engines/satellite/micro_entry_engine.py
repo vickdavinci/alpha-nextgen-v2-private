@@ -184,6 +184,24 @@ class MicroEntryEngine:
                         return size_multiplier, "E_CALL_GATE_VIX5D", None
 
         if direction == OptionDirection.PUT:
+            if getattr(config, "PUT_GATE_CONSECUTIVE_LOSS_ENABLED", True):
+                trade_date = None
+                try:
+                    trade_date = datetime.strptime(current_time[:10], "%Y-%m-%d").date()
+                except Exception:
+                    trade_date = None
+                if (
+                    trade_date is not None
+                    and getattr(state, "put_cooldown_until_date", None) is not None
+                    and trade_date <= state.put_cooldown_until_date
+                ):
+                    self._log(
+                        f"INTRADAY: PUT blocked - loss cooldown active | "
+                        f"Date={trade_date.isoformat()} <= {state.put_cooldown_until_date.isoformat()} | "
+                        f"LossStreak={getattr(state, 'put_consecutive_losses', 0)}"
+                    )
+                    return size_multiplier, "E_PUT_GATE_LOSS_COOLDOWN", None
+
             risk_on_threshold = float(getattr(config, "REGIME_RISK_ON", 70.0))
             if (
                 state.micro_regime in (MicroRegime.CAUTION_LOW, MicroRegime.CAUTIOUS)
@@ -237,21 +255,18 @@ class MicroEntryEngine:
                 return False, "E_INTRADAY_TIME_WINDOW"
 
         elif entry_strategy == IntradayStrategy.ITM_MOMENTUM:
-            if (not itm_v2_mode) and state.micro_regime == MicroRegime.CAUTION_LOW:
+            # ITM_V2 owns its own timing checks in ITMHorizonEngine.evaluate_entry().
+            if itm_v2_mode:
+                return True, None
+            if state.micro_regime == MicroRegime.CAUTION_LOW:
                 self._log(
                     "INTRADAY: ITM_MOMENTUM blocked in regime CAUTION_LOW",
                     trades_only=True,
                 )
                 return False, "E_ITM_MOMENTUM_REGIME_BLOCK"
 
-            if itm_v2_mode:
-                itm_start_cfg = str(
-                    getattr(config, "ITM_V2_ENTRY_START", config.INTRADAY_ITM_START)
-                )
-                itm_end_cfg = str(getattr(config, "ITM_V2_ENTRY_END", config.INTRADAY_ITM_END))
-            else:
-                itm_start_cfg = config.INTRADAY_ITM_START
-                itm_end_cfg = config.INTRADAY_ITM_END
+            itm_start_cfg = config.INTRADAY_ITM_START
+            itm_end_cfg = config.INTRADAY_ITM_END
             itm_start = itm_start_cfg.split(":")
             itm_end = itm_end_cfg.split(":")
             start_time = int(itm_start[0]) * 60 + int(itm_start[1])

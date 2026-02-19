@@ -1714,6 +1714,8 @@ class OptionsEngine:
         # CALL-gate tracking: pause new CALLs after repeated losses.
         self._call_consecutive_losses: int = 0
         self._call_cooldown_until_date: Optional[datetime.date] = None
+        self._put_consecutive_losses: int = 0
+        self._put_cooldown_until_date: Optional[datetime.date] = None
         # V10.7: Swing loss breaker for VASS spread entries.
         self._vass_consecutive_losses: int = 0
         self._vass_loss_breaker_pause_until: Optional[str] = None  # YYYY-MM-DD
@@ -1851,20 +1853,31 @@ class OptionsEngine:
         current_time: Optional[str] = None,
         strategy: Optional[str] = None,
     ) -> None:
-        """
-        Track CALL-only consecutive loss streak for adaptive entry cooldown.
-
-        Args:
-            symbol: Option symbol string (used to infer CALL/PUT).
-            is_win: True if trade closed profitable.
-            current_time: Timestamp string (YYYY-MM-DD...) for cooldown date math.
-        """
+        """Track directional loss streaks and cooldowns for CALL/PUT intraday entries."""
         try:
             symbol_text = str(symbol)
             import re
 
-            # OCC-style parse (e.g., QQQ 211203C00403000)
             is_call = re.search(r"\d{6}C\d{8}", symbol_text) is not None
+            is_put = re.search(r"\d{6}P\d{8}", symbol_text) is not None
+
+            if current_time:
+                try:
+                    trade_date = datetime.strptime(current_time[:10], "%Y-%m-%d").date()
+                except Exception:
+                    trade_date = None
+            else:
+                trade_date = None
+
+            # expose directional cooldown info to MicroEntryEngine via state payload
+            try:
+                state = getattr(self._micro_regime_engine, "_state", None)
+                if state is not None:
+                    state.put_cooldown_until_date = self._put_cooldown_until_date
+                    state.put_consecutive_losses = self._put_consecutive_losses
+            except Exception:
+                pass
+
             if is_call:
                 if is_win:
                     self._call_consecutive_losses = 0
@@ -1915,32 +1928,85 @@ class OptionsEngine:
                                         )
                                     )
 
-                            # Parse current_time for cooldown date (required for backtest accuracy)
-                            if current_time:
-                                try:
-                                    trade_date = datetime.strptime(
-                                        current_time[:10], "%Y-%m-%d"
-                                    ).date()
-                                    self._call_cooldown_until_date = trade_date + timedelta(
-                                        days=cooldown_days
-                                    )
-                                    self.log(
-                                        f"INTRADAY: CALL cooldown armed | LossStreak={self._call_consecutive_losses} | "
-                                        f"Until={self._call_cooldown_until_date.isoformat()}",
-                                        trades_only=True,
-                                    )
-                                except Exception:
-                                    self.log(
-                                        "INTRADAY: CALL cooldown skipped - invalid timestamp",
-                                        trades_only=True,
-                                    )
-                            else:
+                            if trade_date is not None:
+                                self._call_cooldown_until_date = self._add_trading_days_to_date(
+                                    trade_date, cooldown_days
+                                )
                                 self.log(
-                                    "INTRADAY: CALL cooldown skipped - no timestamp",
+                                    f"INTRADAY: CALL cooldown armed | LossStreak={self._call_consecutive_losses} | "
+                                    f"Until={self._call_cooldown_until_date.isoformat()}",
                                     trades_only=True,
                                 )
+
+            if is_put:
+                if is_win:
+                    self._put_consecutive_losses = 0
+                else:
+                    self._put_consecutive_losses += 1
+                    if getattr(config, "PUT_GATE_CONSECUTIVE_LOSS_ENABLED", True):
+                        threshold = int(getattr(config, "PUT_GATE_CONSECUTIVE_LOSSES", 3))
+                        if self._put_consecutive_losses >= threshold and trade_date is not None:
+                            vix_for_cooldown = None
+                            try:
+                                state = getattr(self._micro_regime_engine, "_state", None)
+                                if state is not None:
+                                    vix_for_cooldown = float(
+                                        getattr(state, "vix_current", 0.0) or 0.0
+                                    )
+                            except Exception:
+                                vix_for_cooldown = None
+
+                            if vix_for_cooldown is None or vix_for_cooldown <= 0:
+                                cooldown_days = int(
+                                    getattr(config, "PUT_GATE_LOSS_COOLDOWN_DAYS", 1)
+                                )
+                            else:
+                                low_vix_max = float(getattr(config, "VIX_LEVEL_LOW_MAX", 18.0))
+                                med_vix_max = float(getattr(config, "VIX_LEVEL_MEDIUM_MAX", 25.0))
+                                if vix_for_cooldown < low_vix_max:
+                                    cooldown_days = int(
+                                        getattr(
+                                            config,
+                                            "PUT_GATE_LOSS_COOLDOWN_DAYS_LOW_VIX",
+                                            getattr(config, "PUT_GATE_LOSS_COOLDOWN_DAYS", 1),
+                                        )
+                                    )
+                                elif vix_for_cooldown < med_vix_max:
+                                    cooldown_days = int(
+                                        getattr(
+                                            config,
+                                            "PUT_GATE_LOSS_COOLDOWN_DAYS_MED_VIX",
+                                            getattr(config, "PUT_GATE_LOSS_COOLDOWN_DAYS", 1),
+                                        )
+                                    )
+                                else:
+                                    cooldown_days = int(
+                                        getattr(
+                                            config,
+                                            "PUT_GATE_LOSS_COOLDOWN_DAYS_HIGH_VIX",
+                                            getattr(config, "PUT_GATE_LOSS_COOLDOWN_DAYS", 1),
+                                        )
+                                    )
+
+                            self._put_cooldown_until_date = self._add_trading_days_to_date(
+                                trade_date, cooldown_days
+                            )
+                            self.log(
+                                f"INTRADAY: PUT cooldown armed | LossStreak={self._put_consecutive_losses} | "
+                                f"Until={self._put_cooldown_until_date.isoformat()}",
+                                trades_only=True,
+                            )
+
+            try:
+                state = getattr(self._micro_regime_engine, "_state", None)
+                if state is not None:
+                    state.put_cooldown_until_date = self._put_cooldown_until_date
+                    state.put_consecutive_losses = self._put_consecutive_losses
+            except Exception:
+                pass
+
         except Exception as e:
-            self.log(f"INTRADAY: Failed to record CALL result streak: {e}", trades_only=True)
+            self.log(f"INTRADAY: Failed to record directional result streak: {e}", trades_only=True)
 
         try:
             self._itm_horizon_engine.on_trade_closed(
@@ -8001,6 +8067,11 @@ class OptionsEngine:
                     return fail(itm_code, itm_detail)
 
             if bool(getattr(config, "MICRO_ENTRY_ENGINE_ENABLED", True)):
+                try:
+                    state.put_cooldown_until_date = self._put_cooldown_until_date
+                    state.put_consecutive_losses = self._put_consecutive_losses
+                except Exception:
+                    pass
                 (
                     size_multiplier,
                     micro_fail_code,
@@ -9890,6 +9961,18 @@ class OptionsEngine:
                 else None
             ),
             "last_intraday_close_strategy": self._last_intraday_close_strategy,
+            "call_consecutive_losses": self._call_consecutive_losses,
+            "call_cooldown_until_date": (
+                self._call_cooldown_until_date.isoformat()
+                if self._call_cooldown_until_date is not None
+                else None
+            ),
+            "put_consecutive_losses": self._put_consecutive_losses,
+            "put_cooldown_until_date": (
+                self._put_cooldown_until_date.isoformat()
+                if self._put_cooldown_until_date is not None
+                else None
+            ),
             "itm_horizon_state": self._itm_horizon_engine.to_dict(),
         }
 
@@ -9983,6 +10066,22 @@ class OptionsEngine:
         self._intraday_trades_today = state.get("intraday_trades_today", 0)
         self._intraday_call_trades_today = state.get("intraday_call_trades_today", 0)
         self._intraday_put_trades_today = state.get("intraday_put_trades_today", 0)
+        self._call_consecutive_losses = int(state.get("call_consecutive_losses", 0) or 0)
+        self._put_consecutive_losses = int(state.get("put_consecutive_losses", 0) or 0)
+        call_cooldown = state.get("call_cooldown_until_date")
+        put_cooldown = state.get("put_cooldown_until_date")
+        try:
+            self._call_cooldown_until_date = (
+                datetime.strptime(call_cooldown, "%Y-%m-%d").date() if call_cooldown else None
+            )
+        except Exception:
+            self._call_cooldown_until_date = None
+        try:
+            self._put_cooldown_until_date = (
+                datetime.strptime(put_cooldown, "%Y-%m-%d").date() if put_cooldown else None
+            )
+        except Exception:
+            self._put_cooldown_until_date = None
         self._swing_trades_today = state.get("swing_trades_today", 0)
         self._total_options_trades_today = state.get(
             "total_options_trades_today", self._trades_today
@@ -10351,3 +10450,13 @@ class OptionsEngine:
                         return reject("R_SLOT_SWING_RESERVE", detail)
 
         return True
+
+    def _add_trading_days_to_date(self, trade_date: datetime.date, days: int) -> datetime.date:
+        """Add trading days (Mon-Fri) to a date."""
+        remaining = max(0, int(days))
+        cursor = trade_date
+        while remaining > 0:
+            cursor = cursor + timedelta(days=1)
+            if cursor.weekday() < 5:
+                remaining -= 1
+        return cursor

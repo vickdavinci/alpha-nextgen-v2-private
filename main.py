@@ -7047,7 +7047,11 @@ class AlphaNextGen(QCAlgorithm):
                     itm_dir, itm_reason = self.options_engine.get_itm_v2_direction_proposal(
                         qqq_current=qqq_price
                     )
-                    if itm_dir is not None:
+                    micro_is_no_trade = (
+                        micro_state is None
+                        or micro_state.recommended_strategy == IntradayStrategy.NO_TRADE
+                    )
+                    if itm_dir is not None and (not should_trade or micro_is_no_trade):
                         should_trade = True
                         intraday_direction = itm_dir
                         forced_intraday_strategy = IntradayStrategy.ITM_MOMENTUM

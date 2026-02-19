@@ -1811,6 +1811,14 @@ CALL_GATE_LOSS_COOLDOWN_DAYS_LOW_VIX = 1  # V10.9: keep short cooldown in low-vo
 CALL_GATE_LOSS_COOLDOWN_DAYS_MED_VIX = 1  # V10.9: keep short cooldown in medium-vol tape
 CALL_GATE_LOSS_COOLDOWN_DAYS_HIGH_VIX = 2  # V10.9: conservative cooldown in high-vol tape
 
+# Symmetric PUT cooldown controls (mirror CALL defaults)
+PUT_GATE_CONSECUTIVE_LOSS_ENABLED = True
+PUT_GATE_CONSECUTIVE_LOSSES = 3
+PUT_GATE_LOSS_COOLDOWN_DAYS = 1
+PUT_GATE_LOSS_COOLDOWN_DAYS_LOW_VIX = 1
+PUT_GATE_LOSS_COOLDOWN_DAYS_MED_VIX = 1
+PUT_GATE_LOSS_COOLDOWN_DAYS_HIGH_VIX = 2
+
 # V2.19: VIX Floor for DEBIT_FADE
 # In low VIX (<13.5) "apathy" markets, mean reversion fails - trends persist longer
 # Evidence: V2.18 backtests showed DEBIT_FADE losses when VIX < 13.5
@@ -1891,7 +1899,7 @@ INTRADAY_DEBIT_MOMENTUM_ENABLED = (
 )
 INTRADAY_ITM_MOMENTUM_ENABLED = True  # V10: primary confirmation strategy
 MICRO_ENTRY_ENGINE_ENABLED = True  # V10.10: route MICRO gates through dedicated engine
-INTRADAY_DEBIT_FADE_ENABLED = False  # V10.7: phase-5 simplification (ITM-only)
+INTRADAY_DEBIT_FADE_ENABLED = True  # V10.10: re-enable OTM divergence track alongside ITM_V2
 INTRADAY_DEBIT_MOMENTUM_DELTA_MIN = 0.45  # Near ATM for momentum
 INTRADAY_DEBIT_MOMENTUM_DELTA_MAX = 0.65  # Slightly ITM max
 INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES = [
