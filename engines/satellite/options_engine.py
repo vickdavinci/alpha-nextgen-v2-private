@@ -1695,6 +1695,7 @@ class OptionsEngine:
         self._itm_horizon_engine = ITMHorizonEngine(log_func=self.log)
         self._micro_entry_engine = MicroEntryEngine(log_func=self.log)
         self._vass_entry_engine = VASSEntryEngine(log_func=self.log)
+        self._vass_entry_engine_enabled = bool(getattr(config, "VASS_ENTRY_ENGINE_ENABLED", True))
 
         # V2.27: Win Rate Gate - rolling spread trade result tracker
         self._spread_result_history: List[bool] = []  # True=win, False=loss
@@ -2868,6 +2869,8 @@ class OptionsEngine:
         now_dt: Optional[datetime],
     ) -> Optional[str]:
         """VASS anti-cluster guard delegated to VASSEntryEngine."""
+        if not self._vass_entry_engine_enabled:
+            return None
         return self._vass_entry_engine.check_similar_entry_guard(
             signature=signature,
             now_dt=now_dt,
@@ -2875,12 +2878,16 @@ class OptionsEngine:
 
     def _record_vass_signature_entry(self, signature: str, entry_dt: Optional[datetime]) -> None:
         """Record VASS signature entry via VASSEntryEngine."""
+        if not self._vass_entry_engine_enabled:
+            return
         self._vass_entry_engine.record_signature_entry(signature=signature, entry_dt=entry_dt)
 
     def _check_vass_direction_day_gap(
         self, direction: Optional[OptionDirection], current_date: str
     ) -> Optional[str]:
         """VASS per-direction day-gap guard delegated to VASSEntryEngine."""
+        if not self._vass_entry_engine_enabled:
+            return None
         return self._vass_entry_engine.check_direction_day_gap(
             direction=direction,
             current_date=current_date,
@@ -2891,6 +2898,8 @@ class OptionsEngine:
         self, direction: Optional[OptionDirection], entry_dt: Optional[datetime]
     ) -> None:
         """Record VASS per-direction entry date via VASSEntryEngine."""
+        if not self._vass_entry_engine_enabled:
+            return
         self._vass_entry_engine.record_direction_day_entry(direction=direction, entry_dt=entry_dt)
 
     def _build_spread_key(self, spread: SpreadPosition) -> str:
@@ -4572,7 +4581,13 @@ class OptionsEngine:
         if day_gap_reason is not None:
             return fail(day_gap_reason)
 
-        if self._vass_entry_engine.should_block_for_loss_breaker(str(current_date)):
+        if self.has_pending_spread_entry():
+            return fail("R_PENDING_SPREAD_ENTRY")
+
+        if (
+            self._vass_entry_engine_enabled
+            and self._vass_entry_engine.should_block_for_loss_breaker(str(current_date))
+        ):
             return fail("R_VASS_LOSS_BREAKER_PAUSE")
 
         # Scoped daily attempt budget (per spread key), replaces global one-attempt lock.
@@ -5096,7 +5111,11 @@ class OptionsEngine:
         # Evidence: Architect found $14K trade vs $5K expected when using allocation-based sizing
         # V3.0 SCALABILITY FIX: Use percentage-based cap instead of hardcoded dollars
         # At $50K: 15% = $7,500, at $200K: 15% = $30,000 (scales with portfolio)
-        portfolio_value = self.algorithm.Portfolio.TotalPortfolioValue if self.algorithm else 50000
+        portfolio_value = (
+            float(portfolio_value)
+            if portfolio_value and portfolio_value > 0
+            else (self.algorithm.Portfolio.TotalPortfolioValue if self.algorithm else 50000)
+        )
         swing_max_pct = getattr(
             config, "VASS_RISK_PER_TRADE_PCT", getattr(config, "SWING_SPREAD_MAX_PCT", 0.15)
         )
@@ -5134,7 +5153,7 @@ class OptionsEngine:
                 self.log(
                     f"SPREAD: Entry blocked - cold start size {size_multiplier:.0%} < min {min_size:.0%}"
                 )
-                return None
+                return fail("COLD_START_BELOW_MIN")
 
             scaled = max(1, int(num_spreads * size_multiplier))
             self.log(
@@ -5374,7 +5393,13 @@ class OptionsEngine:
         if day_gap_reason is not None:
             return fail(day_gap_reason)
 
-        if self._vass_entry_engine.should_block_for_loss_breaker(str(current_date)):
+        if self.has_pending_spread_entry():
+            return fail("R_PENDING_SPREAD_ENTRY")
+
+        if (
+            self._vass_entry_engine_enabled
+            and self._vass_entry_engine.should_block_for_loss_breaker(str(current_date))
+        ):
             return fail("R_VASS_LOSS_BREAKER_PAUSE")
 
         # Scoped daily attempt budget (strategy-specific), replaces global one-attempt lock.
@@ -5633,7 +5658,11 @@ class OptionsEngine:
 
         # Size using margin-based calculator
         # V3.0 SCALABILITY FIX: Use percentage-based cap
-        portfolio_value = self.algorithm.Portfolio.TotalPortfolioValue if self.algorithm else 50000
+        portfolio_value = (
+            float(portfolio_value)
+            if portfolio_value and portfolio_value > 0
+            else (self.algorithm.Portfolio.TotalPortfolioValue if self.algorithm else 50000)
+        )
         swing_max_pct = getattr(
             config, "VASS_RISK_PER_TRADE_PCT", getattr(config, "SWING_SPREAD_MAX_PCT", 0.15)
         )
@@ -5652,14 +5681,6 @@ class OptionsEngine:
 
         if num_spreads <= 0:
             return fail("NUM_SPREADS_NON_POSITIVE")
-
-        # V2.3.20: Apply cold start size multiplier
-        if size_multiplier < 1.0:
-            num_spreads = max(1, int(num_spreads * size_multiplier))
-            self.log(
-                f"CREDIT_SPREAD: Cold start sizing - reduced to {num_spreads} spreads "
-                f"(x{size_multiplier})"
-            )
 
         # V2.27: Apply win rate gate scaling
         if win_rate_scale < 1.0:
@@ -9192,12 +9213,17 @@ class OptionsEngine:
         self._spread_neutrality_warn_by_key.pop(self._build_spread_key(spread), None)
         self._spread_positions.append(spread)
         self._spread_position = self._spread_positions[0] if self._spread_positions else None
+        spread_dir = (
+            OptionDirection.CALL
+            if self._spread_direction_label(spread.spread_type) == "BULLISH"
+            else OptionDirection.PUT
+            if self._spread_direction_label(spread.spread_type) == "BEARISH"
+            else None
+        )
         signature = (
             self._build_vass_signature(
                 spread_type=spread.spread_type,
-                direction=OptionDirection.CALL
-                if "CALL" in str(spread.spread_type).upper()
-                else OptionDirection.PUT,
+                direction=spread_dir,
                 long_leg_contract=spread.long_leg,
             )
             if spread.long_leg is not None
@@ -9208,13 +9234,6 @@ class OptionsEngine:
         except Exception:
             entry_dt = self.algorithm.Time if self.algorithm is not None else None
         self._record_vass_signature_entry(signature, entry_dt)
-        spread_dir = (
-            OptionDirection.CALL
-            if self._spread_direction_label(spread.spread_type) == "BULLISH"
-            else OptionDirection.PUT
-            if self._spread_direction_label(spread.spread_type) == "BEARISH"
-            else None
-        )
         self._record_vass_direction_day_entry(spread_dir, entry_dt)
 
         # V2.9: Update trade counter (Bug #4 fix) - Spreads are always swing mode
@@ -9650,7 +9669,11 @@ class OptionsEngine:
         Args:
             is_win: True if the spread was profitable, False if a loss.
         """
-        if self.algorithm is not None and hasattr(self.algorithm, "Time"):
+        if (
+            self._vass_entry_engine_enabled
+            and self.algorithm is not None
+            and hasattr(self.algorithm, "Time")
+        ):
             pause_until = self._vass_entry_engine.record_spread_result(
                 is_win=is_win,
                 now_dt=self.algorithm.Time,

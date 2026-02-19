@@ -5432,6 +5432,9 @@ class AlphaNextGen(QCAlgorithm):
             self.Portfolio.TotalPortfolioValue
         ).tradeable_eq
         margin_remaining = self.portfolio_router.get_effective_margin_remaining()
+        if self.options_engine.has_pending_spread_entry():
+            self.Log("VASS: Pending spread entry exists - skipping new spread signal")
+            return
         signal, _ = self._build_vass_spread_signal(
             chain=chain,
             candidate_contracts=candidate_contracts,
@@ -5772,6 +5775,7 @@ class AlphaNextGen(QCAlgorithm):
         signal.metadata["spread_short_leg_quantity"] = short_sign * max_contracts
         signal.metadata["spread_long_leg_quantity"] = max_contracts
         signal.metadata["contracts"] = max_contracts
+        signal.requested_quantity = max_contracts
 
         self.Log(
             f"{source_tag}: MARGIN-SIZED DOWN | "
@@ -7436,6 +7440,8 @@ class AlphaNextGen(QCAlgorithm):
 
         if spread_cooldown_active:
             rejection_code = "SPREAD_COOLDOWN_ACTIVE"
+        elif self.options_engine.has_pending_spread_entry():
+            rejection_code = "PENDING_SPREAD_ENTRY"
         else:
             signal, rejection_code = self._build_vass_spread_signal(
                 chain=chain,
@@ -7470,6 +7476,13 @@ class AlphaNextGen(QCAlgorithm):
             signal = self._apply_spread_margin_guard(signal, source_tag="VASS_INTRADAY_SPREAD")
             if signal is None:
                 return
+            short_symbol = (
+                signal.metadata.get("spread_short_leg_symbol", "") if signal.metadata else ""
+            )
+            long_symbol = str(signal.symbol) if signal.symbol else ""
+            if short_symbol and long_symbol:
+                self._pending_spread_orders[short_symbol] = long_symbol
+                self._pending_spread_orders_reverse[long_symbol] = short_symbol
             self._diag_spread_entry_submit_count += 1
             self.portfolio_router.receive_signal(signal)
             # V2.3.13 FIX: MUST process immediately - spread signals use IMMEDIATE urgency
