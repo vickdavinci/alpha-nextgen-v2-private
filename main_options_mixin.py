@@ -603,6 +603,14 @@ class MainOptionsMixin:
                         self.Log(f"INTRADAY: Blocked - {signal_reason}")
                     else:
                         self._diag_intraday_candidate_count += 1
+                        candidate_strategy = (
+                            forced_intraday_strategy
+                            or self.options_engine.get_last_intraday_strategy()
+                        )
+                        self._inc_intraday_engine_counter(
+                            self._diag_intraday_candidates_by_engine,
+                            candidate_strategy,
+                        )
                         self.Log(
                             f"INTRADAY_SIGNAL_CANDIDATE: SignalId={intraday_signal_id} | {signal_reason} | "
                             f"Direction={intraday_direction.value if intraday_direction else 'NONE'}"
@@ -645,6 +653,10 @@ class MainOptionsMixin:
                             contract_symbol="NONE",
                         )
                         self._diag_intraday_dropped_count += 1
+                        self._inc_intraday_engine_counter(
+                            self._diag_intraday_dropped_by_engine,
+                            intraday_strategy,
+                        )
                         self._inc_micro_dte_counter(self._diag_micro_dte_dropped, None)
                         self._record_micro_drop_reason_dte("E_NO_CONTRACT_SELECTED", None)
 
@@ -667,6 +679,10 @@ class MainOptionsMixin:
                         contract_symbol=str(intraday_contract.symbol),
                     )
                     self._diag_intraday_dropped_count += 1
+                    self._inc_intraday_engine_counter(
+                        self._diag_intraday_dropped_by_engine,
+                        intraday_strategy,
+                    )
                     self._inc_micro_dte_counter(
                         self._diag_micro_dte_dropped,
                         getattr(intraday_contract, "days_to_expiry", None),
@@ -723,6 +739,10 @@ class MainOptionsMixin:
                             f"Contract={intraday_contract.symbol if intraday_contract else 'NONE'}"
                         )
                         self._diag_intraday_approved_count += 1
+                        self._inc_intraday_engine_counter(
+                            self._diag_intraday_approved_by_engine,
+                            intraday_strategy,
+                        )
                         self._inc_micro_dte_counter(
                             self._diag_micro_dte_approved,
                             getattr(intraday_contract, "days_to_expiry", None),
@@ -800,6 +820,10 @@ class MainOptionsMixin:
                                 validation_detail=intraday_validation_detail,
                             )
                             self._diag_intraday_dropped_count += 1
+                            self._inc_intraday_engine_counter(
+                                self._diag_intraday_dropped_by_engine,
+                                intraday_strategy,
+                            )
                             self._inc_micro_dte_counter(
                                 self._diag_micro_dte_dropped,
                                 getattr(intraday_contract, "days_to_expiry", None)
@@ -1036,6 +1060,7 @@ class MainOptionsMixin:
             }
             log_prefix = "VASS_SKIPPED" if (validation_reason in skip_reasons) else "VASS_REJECTION"
             reason_code = self._canonical_options_reason_code(validation_reason or rejection_code)
+            self._record_vass_reject_reason(reason_code)
             throttle_key = (
                 f"{reason_code}|{direction.value}|"
                 f"{'CREDIT' if is_credit else 'DEBIT'}|"

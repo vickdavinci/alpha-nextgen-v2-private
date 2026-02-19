@@ -67,6 +67,44 @@ def log_daily_summary(algo) -> None:
         else "NONE"
     )
 
+    def _top_counts(counts: dict, top_n: int = 3) -> str:
+        pairs = sorted((counts or {}).items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+        return ";".join(f"{k}:{int(v)}" for k, v in pairs) if pairs else "NONE"
+
+    def _fmt_engine_top_rejects() -> str:
+        out = []
+        for engine in ("VASS", "MICRO", "ITM"):
+            store = algo._diag_router_reject_reason_counts_by_engine.get(engine, {})
+            out.append(f"{engine}[{_top_counts(store)}]")
+        return " ".join(out)
+
+    def _fmt_engine_exit_diag() -> str:
+        out = []
+        for engine in ("VASS", "MICRO", "ITM"):
+            cnt_store = algo._diag_exit_path_counts_by_engine.get(engine, {})
+            pnl_store = algo._diag_exit_path_pnl_by_engine.get(engine, {})
+            cnt_top = _top_counts(cnt_store)
+            pnl_pairs = sorted(
+                (pnl_store or {}).items(), key=lambda kv: abs(float(kv[1])), reverse=True
+            )[:3]
+            pnl_top = (
+                ";".join(f"{k}:{float(v):+.0f}" for k, v in pnl_pairs) if pnl_pairs else "NONE"
+            )
+            out.append(f"{engine}[C={cnt_top}|P={pnl_top}]")
+        return " ".join(out)
+
+    def _fmt_intraday_funnel_by_engine() -> str:
+        cand = algo._diag_intraday_candidates_by_engine
+        app = algo._diag_intraday_approved_by_engine
+        drp = algo._diag_intraday_dropped_by_engine
+        res = algo._diag_intraday_results_by_engine
+        return (
+            f"ITM({int(cand.get('ITM', 0))}/{int(app.get('ITM', 0))}/{int(drp.get('ITM', 0))}/{int(res.get('ITM', 0))}) "
+            f"MICRO({int(cand.get('MICRO', 0))}/{int(app.get('MICRO', 0))}/{int(drp.get('MICRO', 0))}/{int(res.get('MICRO', 0))})"
+        )
+
+    vass_reject_top = _top_counts(getattr(algo, "_diag_vass_reject_reason_counts", {}), top_n=5)
+
     exit_path_counts = sorted(algo._diag_exit_path_counts.items(), key=lambda kv: kv[0])
     exit_path_pnl = sorted(algo._diag_exit_path_pnl.items(), key=lambda kv: kv[0])
     exit_counts_str = (
@@ -87,6 +125,9 @@ def log_daily_summary(algo) -> None:
     itm_global_pause = str(itm_state.get("pause_until", "") or "")
     itm_call_pause = str(itm_state.get("call_pause_until", "") or "")
     itm_put_pause = str(itm_state.get("put_pause_until", "") or "")
+    itm_dd_blocked = bool(itm_state.get("dd_blocked", False))
+    itm_diag_counts = _top_counts(itm_state.get("diag_counts", {}), top_n=5)
+    itm_diag_blocks = _top_counts(itm_state.get("diag_block_codes", {}), top_n=5)
     suppression_min = int(getattr(algo, "_kill_switch_suppression_minutes", 0) or 0)
     ks_skip_until = str(getattr(algo.risk_engine, "_ks_skip_until_date", "") or "")
     ks_skip_active = bool(ks_skip_until) and str(algo.Time.date()) <= ks_skip_until
@@ -118,11 +159,17 @@ def log_daily_summary(algo) -> None:
         f"MicroEodSweepClose={algo._diag_micro_eod_sweep_close_count} | "
         f"MicroPendingCancelIgnored={algo._diag_micro_pending_cancel_ignored_count} | "
         f"MarginRejects={algo._diag_margin_reject_count} | "
+        f"IntradayByEngine(C/A/D/R)={_fmt_intraday_funnel_by_engine()} | "
         f"TopRouterRejects={top_router_rejects_str} | "
+        f"TopRouterRejectsByEngine={_fmt_engine_top_rejects()} | "
+        f"VASSRejectTop={vass_reject_top} | "
         f"ExitPathCounts={exit_counts_str} | "
         f"ExitPathPnL={exit_pnl_str} | "
+        f"ExitByEngine={_fmt_engine_exit_diag()} | "
         f"KillActive={kill_active} | GovScale={governor_scale:.0%} | "
-        f"ITMDrawdown={itm_drawdown_detail} | ITMPause={itm_global_pause or 'NONE'} | "
+        f"ITMDrawdown={itm_drawdown_detail} | ITMDDBlocked={itm_dd_blocked} | "
+        f"ITMCounts={itm_diag_counts} | ITMBlocks={itm_diag_blocks} | "
+        f"ITMPause={itm_global_pause or 'NONE'} | "
         f"ITMCallPause={itm_call_pause or 'NONE'} | ITMPutPause={itm_put_pause or 'NONE'} | "
         f"KillSuppressMin={suppression_min} | KSSkipActive={ks_skip_active} | "
         f"KSSkipUntil={ks_skip_until or 'NONE'}"

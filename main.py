@@ -258,8 +258,21 @@ class AlphaNextGen(
         self._diag_micro_dte_loss = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
         self._diag_micro_drop_reason_by_dte = {}
         self._diag_router_reject_reason_counts = {}
+        self._diag_router_reject_reason_counts_by_engine = {
+            "VASS": {},
+            "MICRO": {},
+            "ITM": {},
+            "OTHER": {},
+        }
+        self._diag_vass_reject_reason_counts = {}
         self._diag_exit_path_counts = {}
         self._diag_exit_path_pnl = {}
+        self._diag_exit_path_counts_by_engine = {"VASS": {}, "MICRO": {}, "ITM": {}, "OTHER": {}}
+        self._diag_exit_path_pnl_by_engine = {"VASS": {}, "MICRO": {}, "ITM": {}, "OTHER": {}}
+        self._diag_intraday_candidates_by_engine = {"MICRO": 0, "ITM": 0, "OTHER": 0}
+        self._diag_intraday_approved_by_engine = {"MICRO": 0, "ITM": 0, "OTHER": 0}
+        self._diag_intraday_dropped_by_engine = {"MICRO": 0, "ITM": 0, "OTHER": 0}
+        self._diag_intraday_results_by_engine = {"MICRO": 0, "ITM": 0, "OTHER": 0}
         self._last_micro_update_log_signature = None
         self._last_micro_update_log_time = None
         self._last_spread_construct_fail_log_at = None
@@ -2327,8 +2340,23 @@ class AlphaNextGen(
         self._spread_ghost_last_log_by_key.clear()
         self._last_intraday_dte_routing_log_by_key.clear()
         self._diag_router_reject_reason_counts.clear()
+        for _store in self._diag_router_reject_reason_counts_by_engine.values():
+            _store.clear()
+        self._diag_vass_reject_reason_counts.clear()
         self._diag_exit_path_counts.clear()
         self._diag_exit_path_pnl.clear()
+        for _store in self._diag_exit_path_counts_by_engine.values():
+            _store.clear()
+        for _store in self._diag_exit_path_pnl_by_engine.values():
+            _store.clear()
+        for _k in self._diag_intraday_candidates_by_engine.keys():
+            self._diag_intraday_candidates_by_engine[_k] = 0
+        for _k in self._diag_intraday_approved_by_engine.keys():
+            self._diag_intraday_approved_by_engine[_k] = 0
+        for _k in self._diag_intraday_dropped_by_engine.keys():
+            self._diag_intraday_dropped_by_engine[_k] = 0
+        for _k in self._diag_intraday_results_by_engine.keys():
+            self._diag_intraday_results_by_engine[_k] = 0
         self._single_leg_last_exit_reason.clear()
         self._last_vass_rejection_log_by_key.clear()
         # V3.0 P1-B: Exit retry trackers are intraday plumbing only; clear daily.
@@ -3289,6 +3317,39 @@ class AlphaNextGen(
             int(self._diag_micro_drop_reason_by_dte.get(key, 0)) + 1
         )
 
+    def _intraday_engine_bucket_from_strategy(self, strategy: Optional[Any]) -> str:
+        """Normalize intraday strategy into daily summary engine buckets."""
+        name = str(getattr(strategy, "value", strategy) or "").upper()
+        if "ITM_MOMENTUM" in name:
+            return "ITM"
+        if "MICRO_" in name:
+            return "MICRO"
+        return "OTHER"
+
+    def _inc_intraday_engine_counter(self, store: Dict[str, int], strategy: Optional[Any]) -> str:
+        """Increment per-engine intraday diagnostics counter and return bucket."""
+        bucket = self._intraday_engine_bucket_from_strategy(strategy)
+        store[bucket] = int(store.get(bucket, 0)) + 1
+        return bucket
+
+    def _router_engine_bucket(self, source_tag: str, detail: str = "") -> str:
+        """Map router source tags to engine buckets (VASS / ITM / MICRO / OTHER)."""
+        text = f"{source_tag or ''} {detail or ''}".upper()
+        if "VASS" in text:
+            return "VASS"
+        if "ITM" in text:
+            return "ITM"
+        if "MICRO" in text:
+            return "MICRO"
+        return "OTHER"
+
+    def _record_vass_reject_reason(self, reason_code: str) -> None:
+        """Track VASS reject reason counts for daily funnel RCA."""
+        code = str(reason_code or "UNKNOWN")
+        self._diag_vass_reject_reason_counts[code] = (
+            int(self._diag_vass_reject_reason_counts.get(code, 0)) + 1
+        )
+
     def _is_micro_entry_fill(self, symbol: str, fill_qty: float, order_tag: str) -> bool:
         """Classify fill as MICRO entry for recovery and EOD safety sweeps."""
         if fill_qty <= 0:
@@ -3439,10 +3500,17 @@ class AlphaNextGen(
             return
         for rej in rejects:
             code = str(getattr(rej, "code", "UNKNOWN") or "UNKNOWN")
+            source_tag = str(getattr(rej, "source_tag", "") or "")
+            detail = str(getattr(rej, "detail", "") or "")
+            engine_bucket = self._router_engine_bucket(source_tag=source_tag, detail=detail)
             self._diag_intraday_router_reject_count += 1
             self._diag_router_reject_reason_counts[code] = (
                 int(self._diag_router_reject_reason_counts.get(code, 0)) + 1
             )
+            engine_store = self._diag_router_reject_reason_counts_by_engine.setdefault(
+                engine_bucket, {}
+            )
+            engine_store[code] = int(engine_store.get(code, 0)) + 1
         try:
             self.portfolio_router.clear_last_rejections()
         except Exception:
@@ -3469,13 +3537,26 @@ class AlphaNextGen(
             return "EOD"
         return "OTHER"
 
-    def _record_exit_path_pnl(self, reason: str, pnl_dollars: float, order_tag: str = "") -> None:
+    def _record_exit_path_pnl(
+        self,
+        reason: str,
+        pnl_dollars: float,
+        order_tag: str = "",
+        engine_tag: str = "OTHER",
+    ) -> None:
         """Track exit-path counts and realized P&L for daily diagnostics."""
         path = self._classify_exit_path(reason=reason, order_tag=order_tag)
         self._diag_exit_path_counts[path] = int(self._diag_exit_path_counts.get(path, 0)) + 1
         self._diag_exit_path_pnl[path] = float(self._diag_exit_path_pnl.get(path, 0.0)) + float(
             pnl_dollars
         )
+        engine_bucket = str(engine_tag or "OTHER").upper()
+        if engine_bucket not in self._diag_exit_path_counts_by_engine:
+            engine_bucket = "OTHER"
+        cnt_store = self._diag_exit_path_counts_by_engine.setdefault(engine_bucket, {})
+        pnl_store = self._diag_exit_path_pnl_by_engine.setdefault(engine_bucket, {})
+        cnt_store[path] = int(cnt_store.get(path, 0)) + 1
+        pnl_store[path] = float(pnl_store.get(path, 0.0)) + float(pnl_dollars)
 
     def _normalize_spread_close_quantities(self, signal: TargetWeight) -> None:
         """Normalize spread close quantities from live holdings to avoid stale qty closes."""
@@ -4916,6 +4997,7 @@ class AlphaNextGen(
         if not can_swing_vass:
             if "R_SLOT_DIRECTION_OVERLAY" in swing_reason_vass:
                 self._diag_overlay_slot_block_count += 1
+            self._record_vass_reject_reason("SWING_SLOT_BLOCK")
             throttle_key = (
                 f"SWING_SLOT_BLOCK|{direction.value}|"
                 f"{'CREDIT' if is_credit else 'DEBIT'}|{swing_reason_vass}"
@@ -4955,6 +5037,7 @@ class AlphaNextGen(
         )
         if not swing_filters_ok:
             self._diag_vass_block_count += 1
+            self._record_vass_reject_reason("SWING_FILTER")
             throttle_key = (
                 f"SWING_FILTER|{direction.value}|"
                 f"{'CREDIT' if is_credit else 'DEBIT'}|{swing_filter_reason}"
@@ -4979,6 +5062,7 @@ class AlphaNextGen(
             option_right=required_right,
         )
         if len(candidate_contracts) < 2:
+            self._record_vass_reject_reason("INSUFFICIENT_CANDIDATES")
             throttle_key = (
                 f"INSUFFICIENT_CANDIDATES|{direction.value}|"
                 f"{'CREDIT' if is_credit else 'DEBIT'}|{dte_min_all}-{dte_max_all}"
@@ -6990,6 +7074,7 @@ class AlphaNextGen(
             self._record_exit_path_pnl(
                 reason=exit_reason,
                 pnl_dollars=(close_value - spread.net_debit) * 100 * spread.num_spreads,
+                engine_tag="VASS",
             )
 
             stop_pct = float(getattr(config, "SPREAD_STOP_LOSS_PCT", 0.0))

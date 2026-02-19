@@ -882,14 +882,23 @@ class MainOrdersMixin:
                                 cached_reason = self._single_leg_last_exit_reason.pop(
                                     symbol_norm, ""
                                 )
+                                entry_strategy = getattr(removed_position, "entry_strategy", "")
+                                engine_bucket = self._intraday_engine_bucket_from_strategy(
+                                    entry_strategy
+                                )
                                 self._record_exit_path_pnl(
                                     reason=cached_reason,
                                     order_tag=order_tag,
                                     pnl_dollars=(fill_price - removed_position.entry_price)
                                     * 100
                                     * abs(int(fill_qty)),
+                                    engine_tag=engine_bucket,
                                 )
                                 self._diag_intraday_result_count += 1
+                                self._diag_intraday_results_by_engine[engine_bucket] = (
+                                    int(self._diag_intraday_results_by_engine.get(engine_bucket, 0))
+                                    + 1
+                                )
                                 dte_for_result = (
                                     getattr(removed_position.contract, "days_to_expiry", None)
                                     if removed_position is not None and removed_position.contract
@@ -959,6 +968,9 @@ class MainOrdersMixin:
                                     pnl_dollars=(fill_price - removed_position.entry_price)
                                     * 100
                                     * abs(int(fill_qty)),
+                                    engine_tag=self._intraday_engine_bucket_from_strategy(
+                                        getattr(removed_position, "entry_strategy", "")
+                                    ),
                                 )
                         # V6.15: Fallback intraday result accounting for orphan/implicit exits.
                         snapshot = self._intraday_entry_snapshot.get(symbol_norm)
@@ -986,12 +998,24 @@ class MainOrdersMixin:
                                 f"Strategy={fallback_strategy} | Path=FALLBACK"
                             )
                             cached_reason = self._single_leg_last_exit_reason.pop(symbol_norm, "")
+                            fallback_engine_bucket = self._intraday_engine_bucket_from_strategy(
+                                str(snapshot.get("entry_strategy", ""))
+                            )
                             self._record_exit_path_pnl(
                                 reason=cached_reason,
                                 order_tag=order_tag,
                                 pnl_dollars=(fill_price - entry_price) * 100 * abs(int(fill_qty)),
+                                engine_tag=fallback_engine_bucket,
                             )
                             self._diag_intraday_result_count += 1
+                            self._diag_intraday_results_by_engine[fallback_engine_bucket] = (
+                                int(
+                                    self._diag_intraday_results_by_engine.get(
+                                        fallback_engine_bucket, 0
+                                    )
+                                )
+                                + 1
+                            )
                             self._inc_micro_dte_counter(
                                 self._diag_micro_dte_win if is_win else self._diag_micro_dte_loss,
                                 snapshot.get("entry_dte") if snapshot else None,
