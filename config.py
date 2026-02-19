@@ -1850,6 +1850,8 @@ INTRADAY_DEBIT_FADE_START = "10:00"  # Legacy alias (kept for compatibility)
 INTRADAY_DEBIT_FADE_END = "14:30"  # Legacy alias (kept for compatibility)
 MICRO_DEBIT_FADE_START = "10:00"  # Canonical ATM fade window start
 MICRO_DEBIT_FADE_END = "14:30"  # Canonical ATM fade window end
+MICRO_DEBIT_FADE_DTE_MIN = 0  # Strategy-specific fade horizon (same-day/next-day)
+MICRO_DEBIT_FADE_DTE_MAX = 2
 MICRO_OTM_MOMENTUM_START = "10:00"  # Canonical OTM momentum window start
 MICRO_OTM_MOMENTUM_END = "14:30"  # Canonical OTM momentum window end
 MICRO_OTM_MOMENTUM_DTE_MIN = 0  # OTM momentum is same-day/next-day only
@@ -1898,6 +1900,7 @@ INTRADAY_DEBIT_FADE_TRAIL_PCT = 0.50
 
 # Canonical MICRO strategy exits (legacy INTRADAY_DEBIT_FADE_* kept as aliases)
 MICRO_DEBIT_FADE_TARGET = INTRADAY_DEBIT_FADE_TARGET
+MICRO_DEBIT_FADE_TARGET_0DTE = 0.25  # 0DTE fade has shorter runway before noon force-close
 MICRO_DEBIT_FADE_STOP = INTRADAY_DEBIT_FADE_STOP
 MICRO_DEBIT_FADE_TRAIL_TRIGGER = INTRADAY_DEBIT_FADE_TRAIL_TRIGGER
 MICRO_DEBIT_FADE_TRAIL_PCT = INTRADAY_DEBIT_FADE_TRAIL_PCT

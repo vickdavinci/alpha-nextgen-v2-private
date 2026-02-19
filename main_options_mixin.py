@@ -86,6 +86,20 @@ class MainOptionsMixin:
             except Exception:
                 pass
 
+        if strategy in (IntradayStrategy.MICRO_DEBIT_FADE, IntradayStrategy.DEBIT_FADE):
+            effective_dte_min = int(getattr(config, "MICRO_DEBIT_FADE_DTE_MIN", 0))
+            effective_dte_max = int(getattr(config, "MICRO_DEBIT_FADE_DTE_MAX", 2))
+            key = f"MICRO_FADE|{effective_dte_min}|{effective_dte_max}"
+            last_log_at = self._last_intraday_dte_routing_log_by_key.get(key)
+            should_log = last_log_at is None or (
+                self.Time - last_log_at
+            ).total_seconds() / 60.0 >= int(getattr(config, "MICRO_DTE_DIAG_LOG_INTERVAL_MIN", 30))
+            if should_log:
+                self.Log(
+                    f"INTRADAY_DTE_ROUTING: MICRO_DEBIT_FADE fixed window DTE=[{effective_dte_min}-{effective_dte_max}]"
+                )
+                self._last_intraday_dte_routing_log_by_key[key] = self.Time
+
         if strategy == IntradayStrategy.MICRO_OTM_MOMENTUM:
             effective_dte_min = int(getattr(config, "MICRO_OTM_MOMENTUM_DTE_MIN", 0))
             effective_dte_max = int(getattr(config, "MICRO_OTM_MOMENTUM_DTE_MAX", 1))
