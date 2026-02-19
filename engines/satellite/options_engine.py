@@ -8423,181 +8423,32 @@ class OptionsEngine:
                 if not itm_ok and not self._itm_horizon_engine.shadow_mode():
                     return fail(itm_code, itm_detail)
 
-            # V9: Keep CAUTION_LOW / TRANSITION participation but cut size.
-            if (not itm_v2_mode) and state.micro_regime in (
-                MicroRegime.CAUTION_LOW,
-                MicroRegime.TRANSITION,
-            ):
-                caution_scale = float(
-                    getattr(
-                        config,
-                        "CAUTION_LOW_SIZE_MULT"
-                        if state.micro_regime == MicroRegime.CAUTION_LOW
-                        else "TRANSITION_SIZE_MULT",
-                        0.50,
-                    )
+            if bool(getattr(config, "MICRO_ENTRY_ENGINE_ENABLED", True)):
+                (
+                    size_multiplier,
+                    micro_fail_code,
+                    micro_fail_detail,
+                ) = self._micro_entry_engine.apply_pre_contract_gates(
+                    state=state,
+                    entry_strategy=entry_strategy,
+                    direction=direction,
+                    itm_v2_mode=itm_v2_mode,
+                    current_time=current_time,
+                    size_multiplier=size_multiplier,
+                    macro_regime_score=macro_regime_score,
+                    qqq_current=qqq_current,
+                    vix_current=vix_current,
+                    vix_level_override=vix_level_override,
+                    algorithm=self.algorithm,
+                    iv_sensor=self._iv_sensor,
+                    call_cooldown_until_date=self._call_cooldown_until_date,
+                    call_consecutive_losses=self._call_consecutive_losses,
                 )
-                adjusted = min(size_multiplier, caution_scale)
-                if adjusted < size_multiplier:
-                    self.log(
-                        f"INTRADAY: {state.micro_regime.value} size reduction | "
-                        f"Size {size_multiplier:.0%}->{adjusted:.0%}",
-                        trades_only=True,
-                    )
-                    size_multiplier = adjusted
-
-            # Keep CALL risk constrained in stressed tape.
-            if (not itm_v2_mode) and direction == OptionDirection.CALL:
-                # Gate 1: consecutive CALL-loss cooldown (adaptive pause)
-                if getattr(config, "CALL_GATE_CONSECUTIVE_LOSS_ENABLED", True):
-                    trade_date = None
-                    try:
-                        trade_date = datetime.strptime(current_time[:10], "%Y-%m-%d").date()
-                    except Exception:
-                        trade_date = None
-                    if (
-                        trade_date is not None
-                        and self._call_cooldown_until_date is not None
-                        and trade_date <= self._call_cooldown_until_date
-                    ):
-                        self.log(
-                            f"INTRADAY: CALL blocked - loss cooldown active | "
-                            f"Date={trade_date.isoformat()} <= {self._call_cooldown_until_date.isoformat()} | "
-                            f"LossStreak={self._call_consecutive_losses}"
-                        )
-                        return fail("E_CALL_GATE_LOSS_COOLDOWN")
-
-                vix_for_call = vix_level_override if vix_level_override is not None else vix_current
-                call_block_vix = getattr(config, "INTRADAY_CALL_BLOCK_VIX_MIN", 25.0)
-                call_block_regime = getattr(config, "INTRADAY_CALL_BLOCK_REGIME_MAX", 55.0)
-                if vix_for_call >= call_block_vix and macro_regime_score <= call_block_regime:
-                    self.log(
-                        f"INTRADAY: CALL blocked in stress | "
-                        f"VIX={vix_for_call:.1f} >= {call_block_vix:.1f} | "
-                        f"Macro={macro_regime_score:.1f} <= {call_block_regime:.1f}"
-                    )
-                    return fail("E_CALL_GATE_STRESS")
-
-                # Gate 2: trend filter (block CALLs below QQQ SMA20)
-                if getattr(config, "CALL_GATE_MA20_ENABLED", True) and self.algorithm is not None:
-                    qqq_sma20 = getattr(self.algorithm, "qqq_sma20", None)
-                    if qqq_sma20 is not None and getattr(qqq_sma20, "IsReady", False):
-                        sma20_value = float(qqq_sma20.Current.Value)
-                        if qqq_current < sma20_value:
-                            bypass_regime_min = float(
-                                getattr(config, "CALL_GATE_MA20_BYPASS_REGIME_MIN", 68.0)
-                            )
-                            bypass_vix_max = float(
-                                getattr(config, "CALL_GATE_MA20_BYPASS_VIX_MAX", 14.5)
-                            )
-                            bypass_size_mult = float(
-                                getattr(config, "CALL_GATE_MA20_BYPASS_SIZE_MULT", 0.70)
-                            )
-                            can_bypass = (
-                                macro_regime_score >= bypass_regime_min
-                                and vix_for_call <= bypass_vix_max
-                            )
-                            if can_bypass:
-                                size_multiplier *= bypass_size_mult
-                                self.log(
-                                    f"INTRADAY: CALL below MA20 bypassed | "
-                                    f"QQQ={qqq_current:.2f} < SMA20={sma20_value:.2f} | "
-                                    f"Macro={macro_regime_score:.1f} >= {bypass_regime_min:.1f} | "
-                                    f"VIX={vix_for_call:.1f} <= {bypass_vix_max:.1f} | "
-                                    f"SizeMult={size_multiplier:.2f}",
-                                    trades_only=True,
-                                )
-                            else:
-                                self.log(
-                                    f"INTRADAY: CALL blocked below MA20 | "
-                                    f"QQQ={qqq_current:.2f} < SMA20={sma20_value:.2f}"
-                                )
-                                return fail("E_CALL_GATE_MA20")
-
-                # Gate 3: early fear build (5-day VIX trend rising)
-                if getattr(config, "CALL_GATE_VIX_5D_RISING_ENABLED", True):
-                    vix_5d_change = (
-                        self._iv_sensor.get_vix_5d_change()
-                        if self._iv_sensor.is_conviction_ready()
-                        else None
-                    )
-                    if vix_5d_change is not None:
-                        low_vix_max = float(getattr(config, "VIX_LEVEL_LOW_MAX", 18.0))
-                        med_vix_max = float(getattr(config, "VIX_LEVEL_MEDIUM_MAX", 25.0))
-                        if vix_for_call < low_vix_max:
-                            vix_tier = "LOW"
-                            gate_enabled = bool(
-                                getattr(config, "CALL_GATE_VIX_5D_RISING_ENABLED_LOW_VIX", False)
-                            )
-                            vix_5d_gate = float(
-                                getattr(
-                                    config,
-                                    "CALL_GATE_VIX_5D_RISING_PCT_LOW_VIX",
-                                    getattr(config, "CALL_GATE_VIX_5D_RISING_PCT", 0.14),
-                                )
-                            )
-                        elif vix_for_call < med_vix_max:
-                            vix_tier = "MED"
-                            gate_enabled = bool(
-                                getattr(config, "CALL_GATE_VIX_5D_RISING_ENABLED_MED_VIX", True)
-                            )
-                            vix_5d_gate = float(
-                                getattr(
-                                    config,
-                                    "CALL_GATE_VIX_5D_RISING_PCT_MED_VIX",
-                                    getattr(config, "CALL_GATE_VIX_5D_RISING_PCT", 0.14),
-                                )
-                            )
-                        else:
-                            vix_tier = "HIGH"
-                            gate_enabled = bool(
-                                getattr(config, "CALL_GATE_VIX_5D_RISING_ENABLED_HIGH_VIX", True)
-                            )
-                            vix_5d_gate = float(
-                                getattr(
-                                    config,
-                                    "CALL_GATE_VIX_5D_RISING_PCT_HIGH_VIX",
-                                    getattr(config, "CALL_GATE_VIX_5D_RISING_PCT", 0.14),
-                                )
-                            )
-
-                        if gate_enabled and vix_5d_change >= vix_5d_gate:
-                            self.log(
-                                f"INTRADAY: CALL blocked by VIX 5d trend | "
-                                f"Tier={vix_tier} | VIX={vix_for_call:.1f} | "
-                                f"VIX5d={vix_5d_change:+.1%} >= {vix_5d_gate:.1%}"
-                            )
-                            return fail("E_CALL_GATE_VIX5D")
-
-            # V6.14 OPT: Avoid buying long PUTs into panic highs; reduce size in elevated fear.
-            if (not itm_v2_mode) and direction == OptionDirection.PUT:
-                risk_on_threshold = float(getattr(config, "REGIME_RISK_ON", 70.0))
-                if (
-                    state.micro_regime in (MicroRegime.CAUTION_LOW, MicroRegime.CAUTIOUS)
-                    and macro_regime_score >= risk_on_threshold
-                ):
-                    self.log(
-                        f"INTRADAY: PUT blocked in {state.micro_regime.value} under RISK_ON macro | "
-                        f"Macro={macro_regime_score:.1f} >= {risk_on_threshold:.1f} | "
-                        f"Regime={state.micro_regime.value}"
-                    )
-                    return fail("E_PUT_GATE_RISK_ON_CAUTION_LOW")
-                vix_for_put = vix_level_override if vix_level_override is not None else vix_current
-                put_entry_vix_max = getattr(config, "PUT_ENTRY_VIX_MAX", 36.0)
-                if vix_for_put > put_entry_vix_max:
-                    self.log(
-                        f"INTRADAY: PUT blocked - VIX {vix_for_put:.1f} > max {put_entry_vix_max:.1f}"
-                    )
-                    return fail("E_PUT_GATE_VIX_MAX")
-                put_reduce_start = getattr(config, "PUT_SIZE_REDUCTION_VIX_START", 30.0)
-                put_reduce_factor = getattr(config, "PUT_SIZE_REDUCTION_FACTOR", 0.50)
-                if vix_for_put >= put_reduce_start:
-                    size_multiplier *= put_reduce_factor
-                    self.log(
-                        f"INTRADAY: PUT size reduced in high VIX | "
-                        f"VIX={vix_for_put:.1f} >= {put_reduce_start:.1f} | "
-                        f"Multiplier={size_multiplier:.2f}"
-                    )
+                if micro_fail_code is not None:
+                    return fail(micro_fail_code, micro_fail_detail)
+            else:
+                # Fallback to legacy in-engine behavior when carve-out flag is disabled.
+                pass
 
         # V3.2: Governor Gate for intraday (closes gap)
         if getattr(config, "INTRADAY_GOVERNOR_GATE_ENABLED", True) and not is_protective_put:
@@ -8649,50 +8500,19 @@ class OptionsEngine:
                     )
                     return fail("E_INTRADAY_SAME_STRATEGY_COOLDOWN")
 
-        # Check time windows based on strategy (V2.3.19: use config values)
-        time_minutes = current_hour * 60 + current_minute
-
-        if entry_strategy == IntradayStrategy.DEBIT_FADE:
-            # Parse config time strings (e.g., "10:30" -> 630 minutes)
-            fade_start = config.INTRADAY_DEBIT_FADE_START.split(":")
-            fade_end = config.INTRADAY_DEBIT_FADE_END.split(":")
-            start_time = int(fade_start[0]) * 60 + int(fade_start[1])
-            end_time = int(fade_end[0]) * 60 + int(fade_end[1])
-            if not (start_time <= time_minutes <= end_time):
-                # V2.13 Fix #17: Log time window rejection (was silent)
-                self.log(
-                    f"INTRADAY_TIME_REJECT: DEBIT_FADE at {current_hour}:{current_minute:02d} "
-                    f"outside window {config.INTRADAY_DEBIT_FADE_START}-{config.INTRADAY_DEBIT_FADE_END}"
-                )
-                return fail("E_INTRADAY_TIME_WINDOW")
-
-        elif entry_strategy == IntradayStrategy.ITM_MOMENTUM:
-            # Legacy CAUTION_LOW block applies only to non-ITM_V2 flow.
-            if (not itm_v2_mode) and state.micro_regime == MicroRegime.CAUTION_LOW:
-                self.log(
-                    "INTRADAY: ITM_MOMENTUM blocked in regime CAUTION_LOW",
-                    trades_only=True,
-                )
-                return fail("E_ITM_MOMENTUM_REGIME_BLOCK")
-
-            if itm_v2_mode:
-                itm_start_cfg = str(
-                    getattr(config, "ITM_V2_ENTRY_START", config.INTRADAY_ITM_START)
-                )
-                itm_end_cfg = str(getattr(config, "ITM_V2_ENTRY_END", config.INTRADAY_ITM_END))
-            else:
-                itm_start_cfg = config.INTRADAY_ITM_START
-                itm_end_cfg = config.INTRADAY_ITM_END
-            itm_start = itm_start_cfg.split(":")
-            itm_end = itm_end_cfg.split(":")
-            start_time = int(itm_start[0]) * 60 + int(itm_start[1])
-            end_time = int(itm_end[0]) * 60 + int(itm_end[1])
-            if not (start_time <= time_minutes <= end_time):
-                self.log(
-                    f"INTRADAY_TIME_REJECT: ITM_MOMENTUM at {current_hour}:{current_minute:02d} "
-                    f"outside window {itm_start_cfg}-{itm_end_cfg}"
-                )
-                return fail("E_INTRADAY_TIME_WINDOW")
+        if bool(getattr(config, "MICRO_ENTRY_ENGINE_ENABLED", True)):
+            tw_ok, tw_code = self._micro_entry_engine.validate_time_window(
+                entry_strategy=entry_strategy,
+                itm_v2_mode=itm_v2_mode,
+                state=state,
+                current_hour=current_hour,
+                current_minute=current_minute,
+            )
+            if not tw_ok:
+                return fail(tw_code or "E_INTRADAY_TIME_WINDOW")
+        else:
+            # Fallback to legacy in-engine behavior when carve-out flag is disabled.
+            pass
 
         # Check if we have a valid contract
         if best_contract is None:
