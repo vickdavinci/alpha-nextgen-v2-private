@@ -6190,6 +6190,19 @@ class AlphaNextGen(
                                 )
                         except Exception as e:
                             self.Log(f"OCO_CANCEL_ERROR: Software exit OCO cancel | {e}")
+                    else:
+                        # Keep broker OCO rails aligned with software trailing-stop updates.
+                        # Without this, software can tighten stop_price while broker OCO stays stale.
+                        live_qty = abs(self._get_option_holding_quantity(intra_symbol))
+                        if live_qty <= 0:
+                            live_qty = abs(int(getattr(intraday_position, "num_contracts", 0) or 0))
+                        if live_qty > 0:
+                            self._sync_intraday_oco(
+                                symbol=intra_symbol,
+                                position=intraday_position,
+                                quantity=live_qty,
+                                reason="TRAIL_REFRESH",
+                            )
 
     def _get_fresh_position_greeks(self) -> Optional[GreeksSnapshot]:
         """

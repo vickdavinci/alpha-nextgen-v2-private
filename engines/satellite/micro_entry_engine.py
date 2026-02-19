@@ -41,6 +41,10 @@ class MicroEntryEngine:
         if itm_v2_mode:
             return size_multiplier, None, None
 
+        # MICRO is sovereign from macro regime policy; keep signature stable
+        # for compatibility with existing call sites.
+        _ = macro_regime_score
+
         # V9: Keep CAUTION_LOW / TRANSITION participation but cut size.
         if state.micro_regime in (MicroRegime.CAUTION_LOW, MicroRegime.TRANSITION):
             caution_scale = float(
@@ -83,16 +87,10 @@ class MicroEntryEngine:
 
             vix_for_call = vix_level_override if vix_level_override is not None else vix_current
             call_block_vix = getattr(config, "INTRADAY_CALL_BLOCK_VIX_MIN", 25.0)
-            call_block_regime = getattr(config, "INTRADAY_CALL_BLOCK_REGIME_MAX", 55.0)
-            if (
-                bool(getattr(config, "MICRO_USE_MACRO_POLICY_GATES", False))
-                and vix_for_call >= call_block_vix
-                and macro_regime_score <= call_block_regime
-            ):
+            if vix_for_call >= call_block_vix:
                 self._log(
                     f"INTRADAY: CALL blocked in stress | "
-                    f"VIX={vix_for_call:.1f} >= {call_block_vix:.1f} | "
-                    f"Macro={macro_regime_score:.1f} <= {call_block_regime:.1f}"
+                    f"VIX={vix_for_call:.1f} >= {call_block_vix:.1f}"
                 )
                 return size_multiplier, "E_CALL_GATE_STRESS", None
 
@@ -102,25 +100,28 @@ class MicroEntryEngine:
                 if qqq_sma20 is not None and getattr(qqq_sma20, "IsReady", False):
                     sma20_value = float(qqq_sma20.Current.Value)
                     if qqq_current < sma20_value:
-                        bypass_regime_min = float(
-                            getattr(config, "CALL_GATE_MA20_BYPASS_REGIME_MIN", 68.0)
-                        )
                         bypass_vix_max = float(
                             getattr(config, "CALL_GATE_MA20_BYPASS_VIX_MAX", 14.5)
                         )
                         bypass_size_mult = float(
                             getattr(config, "CALL_GATE_MA20_BYPASS_SIZE_MULT", 0.70)
                         )
+                        bullish_regimes = {
+                            MicroRegime.PERFECT_MR,
+                            MicroRegime.GOOD_MR,
+                            MicroRegime.NORMAL,
+                            MicroRegime.RECOVERING,
+                            MicroRegime.IMPROVING,
+                        }
                         can_bypass = (
-                            macro_regime_score >= bypass_regime_min
-                            and vix_for_call <= bypass_vix_max
+                            state.micro_regime in bullish_regimes and vix_for_call <= bypass_vix_max
                         )
                         if can_bypass:
                             size_multiplier *= bypass_size_mult
                             self._log(
                                 f"INTRADAY: CALL below MA20 bypassed | "
                                 f"QQQ={qqq_current:.2f} < SMA20={sma20_value:.2f} | "
-                                f"Macro={macro_regime_score:.1f} >= {bypass_regime_min:.1f} | "
+                                f"Regime={state.micro_regime.value} | "
                                 f"VIX={vix_for_call:.1f} <= {bypass_vix_max:.1f} | "
                                 f"SizeMult={size_multiplier:.2f}",
                                 trades_only=True,
@@ -206,18 +207,6 @@ class MicroEntryEngine:
                     )
                     return size_multiplier, "E_PUT_GATE_LOSS_COOLDOWN", None
 
-            risk_on_threshold = float(getattr(config, "REGIME_RISK_ON", 70.0))
-            if (
-                bool(getattr(config, "MICRO_USE_MACRO_POLICY_GATES", False))
-                and state.micro_regime in (MicroRegime.CAUTION_LOW, MicroRegime.CAUTIOUS)
-                and macro_regime_score >= risk_on_threshold
-            ):
-                self._log(
-                    f"INTRADAY: PUT blocked in {state.micro_regime.value} under RISK_ON macro | "
-                    f"Macro={macro_regime_score:.1f} >= {risk_on_threshold:.1f} | "
-                    f"Regime={state.micro_regime.value}"
-                )
-                return size_multiplier, "E_PUT_GATE_RISK_ON_CAUTION_LOW", None
             vix_for_put = vix_level_override if vix_level_override is not None else vix_current
             put_entry_vix_max = getattr(config, "PUT_ENTRY_VIX_MAX", 36.0)
             if vix_for_put > put_entry_vix_max:

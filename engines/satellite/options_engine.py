@@ -2340,9 +2340,8 @@ class OptionsEngine:
             if memory_scale > 1.0:
                 vix_open_for_micro = vix_open / memory_scale
 
-        macro_for_micro = (
-            macro_regime_score if bool(getattr(config, "MICRO_USE_MACRO_IN_STATE", False)) else 50.0
-        )
+        # MICRO direction/state is sovereign from macro regime context.
+        macro_for_micro = 50.0
         state = self._micro_regime_engine.update(
             vix_current=vix_current,
             vix_open=vix_open_for_micro,
@@ -2475,30 +2474,16 @@ class OptionsEngine:
         else:
             engine_direction = recommended_direction_str
 
-        if bool(getattr(config, "MICRO_USE_MACRO_RESOLVER", False)):
-            macro_direction = self.get_macro_direction(macro_regime_score)
-            should_trade, resolved_direction, resolve_reason = self.resolve_trade_signal(
-                engine="MICRO",
-                engine_direction=engine_direction,
-                engine_conviction=has_conviction,
-                macro_direction=macro_direction,
-                conviction_strength=uvxy_pct if has_conviction else None,
-                engine_regime=state.micro_regime.value if state is not None else None,
-                engine_recommended_direction=recommended_direction_str,
+        if engine_direction not in ("BULLISH", "BEARISH"):
+            return (
+                False,
+                None,
+                state,
+                f"NO_TRADE: MICRO_NO_DIRECTION ({state.micro_regime.value})",
             )
-            if not should_trade:
-                return False, None, state, resolve_reason
-        else:
-            if engine_direction not in ("BULLISH", "BEARISH"):
-                return (
-                    False,
-                    None,
-                    state,
-                    f"NO_TRADE: MICRO_NO_DIRECTION ({state.micro_regime.value})",
-                )
-            should_trade = True
-            resolved_direction = engine_direction
-            resolve_reason = f"MICRO_SOVEREIGN: {resolved_direction}"
+        should_trade = True
+        resolved_direction = engine_direction
+        resolve_reason = f"MICRO_SOVEREIGN: {resolved_direction}"
 
         # Step 5: Determine final direction
         # V6.4 FIX: Use resolved_direction whenever set (includes FOLLOW_MACRO path)
@@ -2517,36 +2502,11 @@ class OptionsEngine:
         if final_direction is None:
             return False, None, state, "NO_DIRECTION: Micro has no recommended direction"
 
-        # Step 6: Direction conflict resolution for FADE strategies
-        # Prevents counter-trend trades in strongly trending markets
-        if state.recommended_strategy == IntradayStrategy.DEBIT_FADE:
-            # Strong bullish regime + PUT = conflict
-            if (
-                macro_regime_score > config.DIRECTION_CONFLICT_BULLISH_THRESHOLD
-                and final_direction == OptionDirection.PUT
-            ):
-                self.log(
-                    f"DIRECTION_CONFLICT: Skipping FADE PUT - regime {macro_regime_score:.1f} "
-                    f"> {config.DIRECTION_CONFLICT_BULLISH_THRESHOLD} (strong bullish)"
-                )
-                return False, None, state, "DIRECTION_CONFLICT: FADE PUT in strong bullish regime"
-
-            # Strong bearish regime + CALL = conflict
-            if (
-                macro_regime_score < config.DIRECTION_CONFLICT_BEARISH_THRESHOLD
-                and final_direction == OptionDirection.CALL
-            ):
-                self.log(
-                    f"DIRECTION_CONFLICT: Skipping FADE CALL - regime {macro_regime_score:.1f} "
-                    f"< {config.DIRECTION_CONFLICT_BEARISH_THRESHOLD} (strong bearish)"
-                )
-                return False, None, state, "DIRECTION_CONFLICT: FADE CALL in strong bearish regime"
-
         # Build reason string for logging
         if has_conviction:
-            reason = f"CONVICTION: {conviction_reason} | Macro={macro_direction} | {resolve_reason}"
+            reason = f"CONVICTION: {conviction_reason} | {resolve_reason}"
         else:
-            reason = f"MICRO_DIRECTION: {final_direction.value} | Macro={macro_direction} | {resolve_reason}"
+            reason = f"MICRO_DIRECTION: {final_direction.value} | {resolve_reason}"
 
         return True, final_direction, state, reason
 
