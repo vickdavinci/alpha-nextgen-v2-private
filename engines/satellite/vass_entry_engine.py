@@ -17,6 +17,8 @@ class VASSEntryEngine:
         self._last_entry_at_by_signature: Dict[str, datetime] = {}
         self._cooldown_until_by_signature: Dict[str, datetime] = {}
         self._last_entry_date_by_direction: Dict[str, str] = {}
+        self._consecutive_losses: int = 0
+        self._loss_breaker_pause_until: Optional[str] = None  # YYYY-MM-DD
 
     def _log(self, message: str, trades_only: bool = False) -> None:
         if self._log_func:
@@ -67,8 +69,6 @@ class VASSEntryEngine:
         key = (direction, iv_environment)
         if key in matrix:
             strategy, dte_min, dte_max = matrix[key]
-            if is_intraday:
-                dte_min, dte_max = 0, 5
             self._log(
                 f"VASS: {direction} + {iv_environment} IV -> {strategy.value} | "
                 f"DTE={dte_min}-{dte_max} | Intraday={is_intraday}"
@@ -79,6 +79,20 @@ class VASSEntryEngine:
         if direction == "BULLISH":
             return spread_strategy_enum.BULL_CALL_DEBIT, 7, 21
         return spread_strategy_enum.BEAR_PUT_DEBIT, 7, 21
+
+    def _parse_hhmm_to_minutes(self, hhmm: str, default_minutes: int) -> int:
+        """Parse HH:MM into minutes-from-midnight; fallback to default on parse failure."""
+        try:
+            parts = str(hhmm).split(":")
+            if len(parts) != 2:
+                return default_minutes
+            hh = int(parts[0])
+            mm = int(parts[1])
+            if hh < 0 or hh > 23 or mm < 0 or mm > 59:
+                return default_minutes
+            return hh * 60 + mm
+        except Exception:
+            return default_minutes
 
     def check_swing_filters(
         self,
@@ -92,7 +106,13 @@ class VASSEntryEngine:
     ) -> Tuple[bool, str]:
         """Simple intraday filters for swing-mode entries."""
         time_minutes = current_hour * 60 + current_minute
-        if not (10 * 60 <= time_minutes <= 14 * 60 + 30):
+        start_minutes = self._parse_hhmm_to_minutes(
+            str(getattr(config, "SWING_TIME_WINDOW_START", "10:00")), 10 * 60
+        )
+        end_minutes = self._parse_hhmm_to_minutes(
+            str(getattr(config, "SWING_TIME_WINDOW_END", "14:30")), 14 * 60 + 30
+        )
+        if not (start_minutes <= time_minutes <= end_minutes):
             return False, "TIME_WINDOW"
 
         if abs(spy_gap_pct) > config.SWING_GAP_THRESHOLD:
@@ -108,6 +128,54 @@ class VASSEntryEngine:
             return False, f"VIX spike +{vix_intraday_change_pct:.1f}% - pause entries"
 
         return True, ""
+
+    def _add_trading_days(self, start: datetime, days: int) -> datetime:
+        """Add trading days (skip weekends) to a datetime."""
+        result = start
+        remaining = max(0, int(days))
+        while remaining > 0:
+            result += timedelta(days=1)
+            if result.weekday() < 5:
+                remaining -= 1
+        return result
+
+    def should_block_for_loss_breaker(self, current_date: str) -> bool:
+        """Return True when VASS loss breaker pause is active for current trading date."""
+        if not bool(getattr(config, "VASS_LOSS_BREAKER_ENABLED", False)):
+            return False
+        pause_until = self._loss_breaker_pause_until
+        if not pause_until:
+            return False
+        try:
+            trade_date = datetime.strptime(str(current_date)[:10], "%Y-%m-%d").date()
+            pause_date = datetime.strptime(str(pause_until)[:10], "%Y-%m-%d").date()
+            if trade_date <= pause_date:
+                return True
+            self._loss_breaker_pause_until = None
+            return False
+        except Exception:
+            self._loss_breaker_pause_until = None
+            return False
+
+    def record_spread_result(self, *, is_win: bool, now_dt: Optional[datetime]) -> Optional[str]:
+        """Update VASS breaker state from spread result; returns pause-until when armed."""
+        if not bool(getattr(config, "VASS_LOSS_BREAKER_ENABLED", False)):
+            return None
+        if is_win:
+            self._consecutive_losses = 0
+            self._loss_breaker_pause_until = None
+            return None
+
+        self._consecutive_losses += 1
+        threshold = int(getattr(config, "VASS_LOSS_BREAKER_THRESHOLD", 3))
+        if self._consecutive_losses < threshold or now_dt is None:
+            return None
+
+        pause_days = max(1, int(getattr(config, "VASS_LOSS_BREAKER_PAUSE_DAYS", 1)))
+        pause_until = self._add_trading_days(now_dt, pause_days)
+        self._loss_breaker_pause_until = pause_until.date().isoformat()
+        self._consecutive_losses = 0
+        return self._loss_breaker_pause_until
 
     def check_similar_entry_guard(
         self,
@@ -202,6 +270,8 @@ class VASSEntryEngine:
                 for k, v in self._cooldown_until_by_signature.items()
             },
             "last_entry_date_by_direction": dict(self._last_entry_date_by_direction),
+            "consecutive_losses": self._consecutive_losses,
+            "loss_breaker_pause_until": self._loss_breaker_pause_until,
         }
 
     def from_dict(self, state: Dict[str, Any]) -> None:
@@ -212,6 +282,9 @@ class VASSEntryEngine:
             for k, v in (state.get("last_entry_date_by_direction", {}) or {}).items()
             if str(k).upper() in {"BULLISH", "BEARISH"} and str(v)
         }
+        self._consecutive_losses = int(state.get("consecutive_losses", 0) or 0)
+        raw_pause = state.get("loss_breaker_pause_until")
+        self._loss_breaker_pause_until = str(raw_pause)[:10] if raw_pause else None
         for k, v in (state.get("last_entry_at_by_signature", {}) or {}).items():
             try:
                 self._last_entry_at_by_signature[str(k)] = datetime.strptime(
@@ -234,3 +307,5 @@ class VASSEntryEngine:
         self._last_entry_at_by_signature = {}
         self._cooldown_until_by_signature = {}
         self._last_entry_date_by_direction = {}
+        self._consecutive_losses = 0
+        self._loss_breaker_pause_until = None
