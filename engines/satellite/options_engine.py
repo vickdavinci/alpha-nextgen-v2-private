@@ -8987,11 +8987,18 @@ class OptionsEngine:
                     )
             return None
 
-        # V2.4.4 P0: Expiration Hammer V2 - ALWAYS close at 2:00 PM on expiration day
-        # Old behavior: Only closed based on conditions/VIX
-        # New behavior: UNCONDITIONALLY close ALL options expiring today
-        force_close_hour = config.OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_HOUR
-        force_close_minute = config.OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE
+        # Strategy-aware expiration hammer cutoff.
+        # MICRO intraday paths are skipped above; PROTECTIVE_PUTS uses a later cutoff.
+        if strategy_name == IntradayStrategy.PROTECTIVE_PUTS.value:
+            force_close_hour = int(
+                getattr(config, "PROTECTIVE_PUTS_EXPIRING_TODAY_FORCE_CLOSE_HOUR", 15)
+            )
+            force_close_minute = int(
+                getattr(config, "PROTECTIVE_PUTS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE", 25)
+            )
+        else:
+            force_close_hour = config.OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_HOUR
+            force_close_minute = config.OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE
 
         force_exit_time = current_hour > force_close_hour or (
             current_hour == force_close_hour and current_minute >= force_close_minute
