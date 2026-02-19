@@ -60,6 +60,7 @@ class MainOrdersMixin:
                         oco_seed = self.options_engine.get_partial_fill_oco_seed(
                             symbol=symbol_norm,
                             fill_price=float(fill_price),
+                            order_tag=order_tag,
                         )
                         if oco_seed is not None:
                             self._sync_intraday_oco(

@@ -1825,6 +1825,19 @@ class OptionsEngine:
         value = self._canonical_intraday_strategy_name(strategy_name)
         return value == IntradayStrategy.ITM_MOMENTUM.value
 
+    def _infer_intraday_strategy_from_order_tag(self, order_tag: Optional[str]) -> str:
+        """Best-effort strategy inference from order tag for partial-fill OCO recovery."""
+        text = str(order_tag or "").upper()
+        if not text:
+            return IntradayStrategy.NO_TRADE.value
+        if "ITM_MOMENTUM" in text or "DEBIT_MOMENTUM" in text:
+            return IntradayStrategy.ITM_MOMENTUM.value
+        if "MICRO_OTM_MOMENTUM" in text:
+            return IntradayStrategy.MICRO_OTM_MOMENTUM.value
+        if "MICRO_DEBIT_FADE" in text or "DEBIT_FADE" in text:
+            return IntradayStrategy.MICRO_DEBIT_FADE.value
+        return IntradayStrategy.NO_TRADE.value
+
     def _get_position_live_dte(self, position: Optional[OptionsPosition]) -> Optional[int]:
         """Best-effort live DTE using expiry date and current algorithm time."""
         if position is None or position.contract is None:
@@ -9626,7 +9639,9 @@ class OptionsEngine:
 
         return self.get_pending_intraday_partial_oco_seed(symbol=symbol_norm, fill_price=fill_price)
 
-    def get_partial_fill_oco_seed(self, symbol: str, fill_price: float) -> Optional[Dict[str, Any]]:
+    def get_partial_fill_oco_seed(
+        self, symbol: str, fill_price: float, order_tag: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         """Return OCO seed for partial fills across intraday and swing single-legs."""
         symbol_norm = self._symbol_str(symbol)
         if not symbol_norm:
@@ -9644,7 +9659,26 @@ class OptionsEngine:
             or self._pending_intraday_entry
             or self._symbol_str(self._pending_contract.symbol) != symbol_norm
         ):
-            return None
+            inferred_strategy = self._infer_intraday_strategy_from_order_tag(order_tag)
+            if inferred_strategy == IntradayStrategy.NO_TRADE.value:
+                return None
+            entry_px = float(fill_price or 0.0)
+            if entry_px <= 0:
+                return None
+            target_pct, stop_pct = self._get_intraday_exit_profile(inferred_strategy)
+            if stop_pct is None or float(stop_pct) <= 0 or float(target_pct) <= 0:
+                return None
+            self.log(
+                f"OCO_PARTIAL_FALLBACK: Strategy={inferred_strategy} | Symbol={symbol_norm} | "
+                f"Entry=${entry_px:.2f}",
+                trades_only=True,
+            )
+            return {
+                "entry_price": entry_px,
+                "stop_price": entry_px * (1 - float(stop_pct)),
+                "target_price": entry_px * (1 + float(target_pct)),
+                "entry_strategy": inferred_strategy,
+            }
 
         stop_price = float(getattr(self, "_pending_stop_price", 0.0) or 0.0)
         target_price = float(getattr(self, "_pending_target_price", 0.0) or 0.0)
