@@ -10297,6 +10297,18 @@ class OptionsEngine:
             "vix_at_open": self._vix_at_open,
             "spy_at_open": self._spy_at_open,
             "spy_gap_pct": self._spy_gap_pct,
+            # Runtime guard/cooldown state (restart-safe)
+            "rejection_margin_cap": self._rejection_margin_cap,
+            "spread_failure_cooldown_until": self._spread_failure_cooldown_until,
+            "spread_failure_cooldown_until_by_dir": dict(
+                self._spread_failure_cooldown_until_by_dir
+            ),
+            "spread_exit_signal_cooldown": {
+                k: v.strftime("%Y-%m-%d %H:%M:%S")
+                for k, v in self._spread_exit_signal_cooldown.items()
+            },
+            "gamma_pin_exit_triggered": bool(self._gamma_pin_exit_triggered),
+            "last_spread_exit_time": self._last_spread_exit_time,
             # V2.27: Win Rate Gate state
             "spread_result_history": self._spread_result_history,
             "win_rate_shutoff": self._win_rate_shutoff,
@@ -10514,6 +10526,37 @@ class OptionsEngine:
         self._vix_at_open = state.get("vix_at_open", 0.0)
         self._spy_at_open = state.get("spy_at_open", 0.0)
         self._spy_gap_pct = state.get("spy_gap_pct", 0.0)
+
+        # Runtime guard/cooldown state (restart-safe)
+        cap = state.get("rejection_margin_cap")
+        try:
+            self._rejection_margin_cap = float(cap) if cap is not None else None
+        except Exception:
+            self._rejection_margin_cap = None
+
+        raw_cooldown = state.get("spread_failure_cooldown_until")
+        self._spread_failure_cooldown_until = str(raw_cooldown) if raw_cooldown else None
+
+        raw_by_dir = state.get("spread_failure_cooldown_until_by_dir", {}) or {}
+        self._spread_failure_cooldown_until_by_dir = {}
+        if isinstance(raw_by_dir, dict):
+            for k, v in raw_by_dir.items():
+                key = str(k).upper()
+                if key in {"BULLISH", "BEARISH", "CALL", "PUT"} and v:
+                    self._spread_failure_cooldown_until_by_dir[key] = str(v)
+
+        self._spread_exit_signal_cooldown = {}
+        for k, v in (state.get("spread_exit_signal_cooldown", {}) or {}).items():
+            try:
+                self._spread_exit_signal_cooldown[str(k)] = datetime.strptime(
+                    str(v)[:19], "%Y-%m-%d %H:%M:%S"
+                )
+            except Exception:
+                continue
+
+        self._gamma_pin_exit_triggered = bool(state.get("gamma_pin_exit_triggered", False))
+        raw_last_exit = state.get("last_spread_exit_time")
+        self._last_spread_exit_time = str(raw_last_exit) if raw_last_exit else None
 
         # V2.27: Win Rate Gate state
         self._spread_result_history = state.get("spread_result_history", [])
