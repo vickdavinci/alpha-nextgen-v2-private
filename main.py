@@ -5900,17 +5900,8 @@ class AlphaNextGen(QCAlgorithm):
 
         # V2.14 Fix #20: Strategy-aware delta selection
         if strategy == IntradayStrategy.ITM_MOMENTUM:
-            if bool(getattr(config, "ITM_V2_ENABLED", False)):
-                delta_min_v2 = float(getattr(config, "ITM_V2_DELTA_MIN", 0.65))
-                delta_max_v2 = float(getattr(config, "ITM_V2_DELTA_MAX", 0.75))
-                target_delta = (delta_min_v2 + delta_max_v2) / 2.0
-                self.Log(
-                    f"INTRADAY_DELTA: ITM_V2 using delta_mid={target_delta:.2f} "
-                    f"(range {delta_min_v2:.2f}-{delta_max_v2:.2f})"
-                )
-            else:
-                target_delta = config.INTRADAY_ITM_DELTA  # 0.70 for stock replacement
-                self.Log(f"INTRADAY_DELTA: ITM_MOMENTUM using delta={target_delta}")
+            target_delta = config.INTRADAY_ITM_DELTA  # 0.70 for stock replacement
+            self.Log(f"INTRADAY_DELTA: ITM_MOMENTUM using delta={target_delta}")
         else:
             target_delta = config.OPTIONS_INTRADAY_DELTA_TARGET  # 0.30 for DEBIT_FADE
 
@@ -5937,65 +5928,46 @@ class AlphaNextGen(QCAlgorithm):
             except Exception:
                 pass
 
-        # ITM DTE overlay.
-        if strategy == IntradayStrategy.ITM_MOMENTUM:
-            if bool(getattr(config, "ITM_V2_ENABLED", False)):
-                effective_dte_min = int(getattr(config, "ITM_V2_DTE_MIN", 5))
-                effective_dte_max = int(getattr(config, "ITM_V2_DTE_MAX", 7))
-                key = f"ITM_V2|{effective_dte_min}|{effective_dte_max}"
-                last_log_at = self._last_intraday_dte_routing_log_by_key.get(key)
-                should_log = last_log_at is None or (
-                    self.Time - last_log_at
-                ).total_seconds() / 60.0 >= int(
-                    getattr(config, "MICRO_DTE_DIAG_LOG_INTERVAL_MIN", 30)
-                )
-                if should_log:
-                    self.Log(
-                        f"INTRADAY_DTE_ROUTING: ITM_V2 fixed window DTE=[{effective_dte_min}-{effective_dte_max}]"
+        # V10: ITM DTE floor overlay — raise min DTE for ITM_MOMENTUM by VIX tier
+        if strategy == IntradayStrategy.ITM_MOMENTUM and vix_current is not None:
+            try:
+                vix_val = float(vix_current)
+                low_thr = float(getattr(config, "MICRO_DTE_LOW_VIX_THRESHOLD", 18.0))
+                high_thr = float(getattr(config, "MICRO_DTE_HIGH_VIX_THRESHOLD", 25.0))
+                if vix_val < low_thr:
+                    itm_floor = int(getattr(config, "MICRO_ITM_DTE_MIN_LOW_VIX", 3))
+                    itm_tier = "LOW"
+                elif vix_val >= high_thr:
+                    itm_floor = int(getattr(config, "MICRO_ITM_DTE_MIN_HIGH_VIX", 2))
+                    itm_tier = "HIGH"
+                else:
+                    itm_floor = int(getattr(config, "MICRO_ITM_DTE_MIN_MED_VIX", 3))
+                    itm_tier = "MED"
+                itm_max = int(getattr(config, "MICRO_ITM_DTE_MAX", 5))
+                effective_dte_min = max(effective_dte_min, itm_floor)
+                effective_dte_max = min(effective_dte_max, itm_max)
+                # V10 telemetry: DTE routing diagnostic (throttled, live + optional backtest)
+                enable_backtest = bool(getattr(config, "MICRO_DTE_DIAG_LOG_BACKTEST_ENABLED", True))
+                is_live = bool(getattr(self, "LiveMode", False))
+                if is_live or enable_backtest:
+                    try:
+                        interval_min = int(getattr(config, "MICRO_DTE_DIAG_LOG_INTERVAL_MIN", 30))
+                    except Exception:
+                        interval_min = 30
+                    key = f"ITM_MOMENTUM|{itm_tier}|{effective_dte_min}|{effective_dte_max}"
+                    last_log_at = self._last_intraday_dte_routing_log_by_key.get(key)
+                    should_log = (
+                        last_log_at is None
+                        or (self.Time - last_log_at).total_seconds() / 60.0 >= interval_min
                     )
-                    self._last_intraday_dte_routing_log_by_key[key] = self.Time
-            elif vix_current is not None:
-                try:
-                    vix_val = float(vix_current)
-                    low_thr = float(getattr(config, "MICRO_DTE_LOW_VIX_THRESHOLD", 18.0))
-                    high_thr = float(getattr(config, "MICRO_DTE_HIGH_VIX_THRESHOLD", 25.0))
-                    if vix_val < low_thr:
-                        itm_floor = int(getattr(config, "MICRO_ITM_DTE_MIN_LOW_VIX", 3))
-                        itm_tier = "LOW"
-                    elif vix_val >= high_thr:
-                        itm_floor = int(getattr(config, "MICRO_ITM_DTE_MIN_HIGH_VIX", 2))
-                        itm_tier = "HIGH"
-                    else:
-                        itm_floor = int(getattr(config, "MICRO_ITM_DTE_MIN_MED_VIX", 3))
-                        itm_tier = "MED"
-                    itm_max = int(getattr(config, "MICRO_ITM_DTE_MAX", 5))
-                    effective_dte_min = max(effective_dte_min, itm_floor)
-                    effective_dte_max = min(effective_dte_max, itm_max)
-                    enable_backtest = bool(
-                        getattr(config, "MICRO_DTE_DIAG_LOG_BACKTEST_ENABLED", True)
-                    )
-                    is_live = bool(getattr(self, "LiveMode", False))
-                    if is_live or enable_backtest:
-                        try:
-                            interval_min = int(
-                                getattr(config, "MICRO_DTE_DIAG_LOG_INTERVAL_MIN", 30)
-                            )
-                        except Exception:
-                            interval_min = 30
-                        key = f"ITM_MOMENTUM|{itm_tier}|{effective_dte_min}|{effective_dte_max}"
-                        last_log_at = self._last_intraday_dte_routing_log_by_key.get(key)
-                        should_log = (
-                            last_log_at is None
-                            or (self.Time - last_log_at).total_seconds() / 60.0 >= interval_min
+                    if should_log:
+                        self.Log(
+                            f"INTRADAY_DTE_ROUTING: ITM_MOMENTUM | VIX={vix_val:.1f} tier={itm_tier} | "
+                            f"DTE=[{effective_dte_min}-{effective_dte_max}]"
                         )
-                        if should_log:
-                            self.Log(
-                                f"INTRADAY_DTE_ROUTING: ITM_MOMENTUM | VIX={vix_val:.1f} tier={itm_tier} | "
-                                f"DTE=[{effective_dte_min}-{effective_dte_max}]"
-                            )
-                            self._last_intraday_dte_routing_log_by_key[key] = self.Time
-                except Exception:
-                    pass
+                        self._last_intraday_dte_routing_log_by_key[key] = self.Time
+            except Exception:
+                pass
 
         # V2.13 Fix #16: Add filter diagnostics to track why contracts are rejected
         filter_counts = {
@@ -6062,15 +6034,7 @@ class AlphaNextGen(QCAlgorithm):
                 continue  # Skip contracts without valid Greeks data
             contract_delta = abs(contract.Greeks.Delta)
             delta_diff = abs(contract_delta - target_delta)
-            if strategy == IntradayStrategy.ITM_MOMENTUM and bool(
-                getattr(config, "ITM_V2_ENABLED", False)
-            ):
-                itm_v2_delta_min = float(getattr(config, "ITM_V2_DELTA_MIN", 0.65))
-                itm_v2_delta_max = float(getattr(config, "ITM_V2_DELTA_MAX", 0.75))
-                if contract_delta < itm_v2_delta_min or contract_delta > itm_v2_delta_max:
-                    filter_counts["delta"] += 1
-                    continue
-            elif delta_diff > config.OPTIONS_DELTA_TOLERANCE:
+            if delta_diff > config.OPTIONS_DELTA_TOLERANCE:
                 filter_counts["delta"] += 1
                 continue
 
@@ -8797,7 +8761,6 @@ class AlphaNextGen(QCAlgorithm):
                                     symbol=symbol,
                                     is_win=is_win,
                                     current_time=str(self.Time),
-                                    strategy=getattr(removed_position, "entry_strategy", ""),
                                 )
                                 result_str = "WIN" if is_win else "LOSS"
                                 self.Log(
@@ -8877,7 +8840,6 @@ class AlphaNextGen(QCAlgorithm):
                                 symbol=symbol,
                                 is_win=is_win,
                                 current_time=str(self.Time),
-                                strategy=str(snapshot.get("entry_strategy", "")),
                             )
                             result_str = "WIN" if is_win else "LOSS"
                             fallback_strategy = str(snapshot.get("entry_strategy", "UNKNOWN"))

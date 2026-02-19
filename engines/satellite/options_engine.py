@@ -2020,17 +2020,6 @@ class OptionsEngine:
         # CALL-gate tracking: pause new CALLs after repeated losses.
         self._call_consecutive_losses: int = 0
         self._call_cooldown_until_date: Optional[datetime.date] = None
-        # ITM_V2 state (feature-flagged): streak breakers + drawdown gate + same-day re-entry guard.
-        self._itm_v2_consecutive_losses: int = 0
-        self._itm_v2_call_consecutive_losses: int = 0
-        self._itm_v2_put_consecutive_losses: int = 0
-        self._itm_v2_pause_until: Optional[str] = None  # YYYY-MM-DD
-        self._itm_v2_call_pause_until: Optional[str] = None  # YYYY-MM-DD
-        self._itm_v2_put_pause_until: Optional[str] = None  # YYYY-MM-DD
-        self._itm_v2_last_exit_date_by_direction: Dict[str, str] = {}
-        self._itm_v2_equity_history: List[Tuple[str, float]] = []
-        self._itm_v2_dd_blocked: bool = False
-        self._itm_v2_diag_counts: Dict[str, int] = {}
         # V10.7: Swing loss breaker for VASS spread entries.
         self._vass_consecutive_losses: int = 0
         self._vass_loss_breaker_pause_until: Optional[str] = None  # YYYY-MM-DD
@@ -2102,286 +2091,6 @@ class OptionsEngine:
         value = self._canonical_intraday_strategy_name(strategy_name)
         return value == IntradayStrategy.ITM_MOMENTUM.value
 
-    def _is_itm_v2_enabled(self) -> bool:
-        """Master switch for ITM_V2 entry logic."""
-        return bool(getattr(config, "ITM_V2_ENABLED", False))
-
-    def _is_itm_v2_shadow_mode(self) -> bool:
-        """When enabled, ITM_V2 decisions are logged but not enforced."""
-        return bool(getattr(config, "ITM_V2_SHADOW_MODE", False))
-
-    def _parse_trade_date_str(self, current_time: Optional[str]) -> Optional[str]:
-        """Return YYYY-MM-DD from current_time/algorithm clock."""
-        if current_time:
-            try:
-                return str(datetime.strptime(current_time[:10], "%Y-%m-%d").date())
-            except Exception:
-                pass
-        if self.algorithm is not None and hasattr(self.algorithm, "Time"):
-            try:
-                return str(self.algorithm.Time.date())
-            except Exception:
-                return None
-        return None
-
-    def _itm_v2_count(self, key: str) -> None:
-        """Increment compact ITM_V2 daily counters."""
-        self._itm_v2_diag_counts[key] = self._itm_v2_diag_counts.get(key, 0) + 1
-
-    def _itm_v2_log_decision(
-        self,
-        *,
-        direction: Optional[OptionDirection],
-        qqq_current: float,
-        sma20_value: Optional[float],
-        adx_value: Optional[float],
-        vix_current: float,
-        vix20_change: Optional[float],
-        passed: bool,
-        code: str,
-        detail: str = "",
-    ) -> None:
-        """Compact decision log for ITM_V2 entry funnel attribution."""
-        dir_txt = direction.value if direction is not None else "NONE"
-        sma_txt = f"{sma20_value:.2f}" if sma20_value is not None else "NA"
-        adx_txt = f"{adx_value:.1f}" if adx_value is not None else "NA"
-        vix20_txt = f"{vix20_change:+.1%}" if vix20_change is not None else "NA"
-        verdict = "PASS" if passed else "BLOCK"
-        msg = (
-            f"ITM_V2_DECISION|Dir={dir_txt}|QQQ={qqq_current:.2f}|SMA20={sma_txt}|ADX={adx_txt}|"
-            f"VIX={vix_current:.1f}|VIX20d={vix20_txt}|{verdict}|{code}"
-        )
-        if detail:
-            msg = f"{msg}|{detail}"
-        self.log(msg, trades_only=True)
-
-    def _itm_v2_update_equity_history(self, trade_date: str, equity: float) -> None:
-        """Store one daily equity point for ITM_V2 drawdown gate."""
-        if not trade_date or equity <= 0:
-            return
-        if not self._itm_v2_equity_history or self._itm_v2_equity_history[-1][0] != trade_date:
-            self._itm_v2_equity_history.append((trade_date, float(equity)))
-        else:
-            self._itm_v2_equity_history[-1] = (trade_date, float(equity))
-        max_keep = max(90, int(getattr(config, "ITM_V2_DD_LOOKBACK_DAYS", 60)) * 3)
-        if len(self._itm_v2_equity_history) > max_keep:
-            self._itm_v2_equity_history = self._itm_v2_equity_history[-max_keep:]
-
-    def _itm_v2_check_drawdown_gate(self, trade_date: str, equity: float) -> Tuple[bool, str]:
-        """Return (allowed, detail) for ITM_V2 drawdown gate."""
-        self._itm_v2_update_equity_history(trade_date, equity)
-        lookback = max(5, int(getattr(config, "ITM_V2_DD_LOOKBACK_DAYS", 60)))
-        block_thr = float(getattr(config, "ITM_V2_DD_BLOCK_THRESHOLD", 0.90))
-        recover_thr = float(getattr(config, "ITM_V2_DD_RECOVER_THRESHOLD", 0.95))
-        recent = self._itm_v2_equity_history[-lookback:]
-        if not recent:
-            return True, "NO_HISTORY"
-        max_equity = max(v for _, v in recent if v > 0)
-        if max_equity <= 0:
-            return True, "NO_PEAK"
-        ratio = float(equity) / float(max_equity)
-        if self._itm_v2_dd_blocked:
-            if ratio >= recover_thr:
-                self._itm_v2_dd_blocked = False
-                self.log(
-                    f"ITM_V2_DD_GATE_RECOVER|Ratio={ratio:.1%} >= {recover_thr:.0%}",
-                    trades_only=True,
-                )
-            else:
-                return False, f"Ratio={ratio:.1%}<{recover_thr:.0%}"
-        if ratio < block_thr:
-            self._itm_v2_dd_blocked = True
-            return False, f"Ratio={ratio:.1%}<{block_thr:.0%}"
-        return True, f"Ratio={ratio:.1%}"
-
-    def _evaluate_itm_v2_entry(
-        self,
-        *,
-        direction: OptionDirection,
-        current_time: Optional[str],
-        current_hour: int,
-        current_minute: int,
-        qqq_current: float,
-        vix_current: float,
-        portfolio_value: float,
-    ) -> Tuple[bool, str, str, Optional[float], Optional[float], Optional[float]]:
-        """
-        Evaluate ITM_V2 rule set.
-
-        Returns:
-            (allowed, code, detail, sma20, adx, vix20_change)
-        """
-        trade_date = self._parse_trade_date_str(current_time)
-        if not trade_date:
-            return False, "E_ITM_V2_NO_DATE", "DATE_PARSE", None, None, None
-
-        # Decision-time floor (10:30 ET default).
-        dec_h = int(getattr(config, "ITM_V2_DECISION_HOUR", 10))
-        dec_m = int(getattr(config, "ITM_V2_DECISION_MINUTE", 30))
-        if (current_hour * 60 + current_minute) < (dec_h * 60 + dec_m):
-            return (
-                False,
-                "E_ITM_V2_DECISION_TIME",
-                f"{current_hour:02d}:{current_minute:02d}",
-                None,
-                None,
-                None,
-            )
-
-        if self.algorithm is None:
-            return False, "E_ITM_V2_NO_ALGO", "", None, None, None
-
-        qqq_sma20 = getattr(self.algorithm, "qqq_sma20", None)
-        if qqq_sma20 is None or not getattr(qqq_sma20, "IsReady", False):
-            return False, "E_ITM_V2_NO_SMA20", "", None, None, None
-        sma20_value = float(qqq_sma20.Current.Value)
-        if sma20_value <= 0:
-            return False, "E_ITM_V2_BAD_SMA20", "", sma20_value, None, None
-
-        band = float(getattr(config, "ITM_V2_SMA_BAND_PCT", 0.003))
-        upper = sma20_value * (1.0 + band)
-        lower = sma20_value * (1.0 - band)
-        if lower <= qqq_current <= upper:
-            return (
-                False,
-                "E_ITM_V2_TREND_NEUTRAL",
-                f"Band={band:.2%}",
-                sma20_value,
-                None,
-                None,
-            )
-        if direction == OptionDirection.CALL and qqq_current <= upper:
-            return (
-                False,
-                "E_ITM_V2_TREND_CALL_BELOW_SMA20",
-                f"QQQ={qqq_current:.2f}<=SMA20+band={upper:.2f}",
-                sma20_value,
-                None,
-                None,
-            )
-        if direction == OptionDirection.PUT and qqq_current >= lower:
-            return (
-                False,
-                "E_ITM_V2_TREND_PUT_ABOVE_SMA20",
-                f"QQQ={qqq_current:.2f}>=SMA20-band={lower:.2f}",
-                sma20_value,
-                None,
-                None,
-            )
-
-        qqq_adx = getattr(self.algorithm, "qqq_adx", None)
-        if qqq_adx is None or not getattr(qqq_adx, "IsReady", False):
-            return False, "E_ITM_V2_NO_ADX", "", sma20_value, None, None
-        adx_value = float(qqq_adx.Current.Value)
-        adx_min = float(getattr(config, "ITM_V2_ADX_MIN", 15.0))
-        if adx_value < adx_min:
-            return (
-                False,
-                "E_ITM_V2_ADX_WEAK",
-                f"ADX={adx_value:.1f}<{adx_min:.1f}",
-                sma20_value,
-                adx_value,
-                None,
-            )
-
-        vix20_change = self._iv_sensor.get_vix_20d_change() if self._iv_sensor is not None else None
-        call_max_vix = float(getattr(config, "ITM_V2_CALL_MAX_VIX", 22.0))
-        call_low_pref = float(getattr(config, "ITM_V2_CALL_LOW_VIX_PREFERRED", 18.0))
-        put_min_vix = float(getattr(config, "ITM_V2_PUT_MIN_VIX", 14.0))
-        put_max_vix = float(getattr(config, "ITM_V2_PUT_MAX_VIX", 35.0))
-        req_vix20_falling = bool(
-            getattr(config, "ITM_V2_REQUIRE_VIX20D_FALLING_FOR_CALL_WHEN_VIX_ABOVE_LOW", True)
-        )
-        if direction == OptionDirection.CALL:
-            if vix_current >= call_max_vix:
-                return (
-                    False,
-                    "E_ITM_V2_VIX_CALL_MAX",
-                    f"VIX={vix_current:.1f}>={call_max_vix:.1f}",
-                    sma20_value,
-                    adx_value,
-                    vix20_change,
-                )
-            if req_vix20_falling and vix_current >= call_low_pref:
-                if vix20_change is None:
-                    return (
-                        False,
-                        "E_ITM_V2_VIX20_MISSING",
-                        "",
-                        sma20_value,
-                        adx_value,
-                        vix20_change,
-                    )
-                if vix20_change > 0:
-                    return (
-                        False,
-                        "E_ITM_V2_VIX20_RISING_CALL",
-                        f"VIX20d={vix20_change:+.1%}",
-                        sma20_value,
-                        adx_value,
-                        vix20_change,
-                    )
-        else:
-            if vix_current < put_min_vix or vix_current >= put_max_vix:
-                return (
-                    False,
-                    "E_ITM_V2_VIX_PUT_BOUNDS",
-                    f"VIX={vix_current:.1f}",
-                    sma20_value,
-                    adx_value,
-                    vix20_change,
-                )
-
-        if bool(getattr(config, "ITM_V2_BLOCK_SAME_DAY_SAME_DIRECTION_REENTRY", True)):
-            dir_key = direction.value.upper()
-            if self._itm_v2_last_exit_date_by_direction.get(dir_key) == trade_date:
-                return (
-                    False,
-                    "E_ITM_V2_REENTRY_SAME_DAY",
-                    dir_key,
-                    sma20_value,
-                    adx_value,
-                    vix20_change,
-                )
-
-        global_pause_until = self._itm_v2_pause_until
-        if global_pause_until and trade_date <= str(global_pause_until):
-            return (
-                False,
-                "E_ITM_V2_BREAKER_GLOBAL",
-                f"Until={global_pause_until}",
-                sma20_value,
-                adx_value,
-                vix20_change,
-            )
-        dir_pause_until = (
-            self._itm_v2_call_pause_until
-            if direction == OptionDirection.CALL
-            else self._itm_v2_put_pause_until
-        )
-        if dir_pause_until and trade_date <= str(dir_pause_until):
-            return (
-                False,
-                "E_ITM_V2_BREAKER_DIRECTIONAL",
-                f"Until={dir_pause_until}",
-                sma20_value,
-                adx_value,
-                vix20_change,
-            )
-
-        dd_ok, dd_detail = self._itm_v2_check_drawdown_gate(trade_date, float(portfolio_value))
-        if not dd_ok:
-            return (
-                False,
-                "E_ITM_V2_DRAWDOWN",
-                dd_detail,
-                sma20_value,
-                adx_value,
-                vix20_change,
-            )
-
-        return True, "ITM_V2_PASS", "PASS", sma20_value, adx_value, vix20_change
-
     def _get_position_live_dte(self, position: Optional[OptionsPosition]) -> Optional[int]:
         """Best-effort live DTE using expiry date and current algorithm time."""
         if position is None or position.contract is None:
@@ -2423,27 +2132,17 @@ class OptionsEngine:
             entry_dte = int(getattr(pos.contract, "days_to_expiry", 0))
         except Exception:
             entry_dte = 0
-        if self._is_itm_v2_enabled() and self._is_itm_momentum_strategy_name(
-            getattr(pos, "entry_strategy", "")
-        ):
-            min_entry_dte = int(getattr(config, "ITM_V2_DTE_MIN", 5))
-            force_exit_dte = int(getattr(config, "ITM_V2_FORCE_EXIT_DTE", 1))
-        else:
-            min_entry_dte = int(getattr(config, "INTRADAY_ITM_HOLD_MIN_ENTRY_DTE", 3))
-            force_exit_dte = int(getattr(config, "INTRADAY_ITM_FORCE_EXIT_DTE", 1))
+        min_entry_dte = int(getattr(config, "INTRADAY_ITM_HOLD_MIN_ENTRY_DTE", 3))
         if entry_dte < min_entry_dte:
             return False
         live_dte = self._get_position_live_dte(pos)
         if live_dte is None:
             return False
+        force_exit_dte = int(getattr(config, "INTRADAY_ITM_FORCE_EXIT_DTE", 1))
         return live_dte > force_exit_dte
 
     def record_intraday_result(
-        self,
-        symbol: str,
-        is_win: bool,
-        current_time: Optional[str] = None,
-        strategy: Optional[str] = None,
+        self, symbol: str, is_win: bool, current_time: Optional[str] = None
     ) -> None:
         """
         Track CALL-only consecutive loss streak for adaptive entry cooldown.
@@ -2528,91 +2227,6 @@ class OptionsEngine:
             )
         except Exception as e:
             self.log(f"INTRADAY: Failed to record CALL result streak: {e}", trades_only=True)
-
-        # ITM_V2 result tracking (independent from legacy CALL gate logic).
-        try:
-            if not self._is_itm_v2_enabled():
-                return
-            strategy_name = str(strategy or "")
-            if strategy_name and not self._is_itm_momentum_strategy_name(strategy_name):
-                return
-
-            text = str(symbol)
-            import re
-
-            is_call = re.search(r"\d{6}C\d{8}", text) is not None
-            is_put = re.search(r"\d{6}P\d{8}", text) is not None
-            direction_key = "CALL" if is_call else "PUT" if is_put else None
-            trade_date = self._parse_trade_date_str(current_time)
-            if trade_date is None or direction_key is None:
-                return
-
-            self._itm_v2_last_exit_date_by_direction[direction_key] = trade_date
-
-            if is_win:
-                self._itm_v2_consecutive_losses = 0
-                if direction_key == "CALL":
-                    self._itm_v2_call_consecutive_losses = 0
-                else:
-                    self._itm_v2_put_consecutive_losses = 0
-                return
-
-            self._itm_v2_consecutive_losses += 1
-            if direction_key == "CALL":
-                self._itm_v2_call_consecutive_losses += 1
-                self._itm_v2_put_consecutive_losses = 0
-            else:
-                self._itm_v2_put_consecutive_losses += 1
-                self._itm_v2_call_consecutive_losses = 0
-
-            # Global breaker.
-            b3 = int(getattr(config, "ITM_V2_BREAKER_3_LOSSES_PAUSE_DAYS", 2))
-            b5 = int(getattr(config, "ITM_V2_BREAKER_5_LOSSES_PAUSE_DAYS", 5))
-            if self._itm_v2_consecutive_losses >= 5:
-                pause_until = datetime.strptime(trade_date, "%Y-%m-%d").date() + timedelta(
-                    days=max(1, b5)
-                )
-                self._itm_v2_pause_until = pause_until.isoformat()
-                self.log(
-                    f"ITM_V2_BREAKER_GLOBAL|Losses={self._itm_v2_consecutive_losses}|Until={self._itm_v2_pause_until}",
-                    trades_only=True,
-                )
-                self._itm_v2_consecutive_losses = 0
-            elif self._itm_v2_consecutive_losses >= 3:
-                pause_until = datetime.strptime(trade_date, "%Y-%m-%d").date() + timedelta(
-                    days=max(1, b3)
-                )
-                self._itm_v2_pause_until = pause_until.isoformat()
-                self.log(
-                    f"ITM_V2_BREAKER_GLOBAL|Losses={self._itm_v2_consecutive_losses}|Until={self._itm_v2_pause_until}",
-                    trades_only=True,
-                )
-
-            # Directional breaker.
-            if bool(getattr(config, "ITM_V2_DIRECTIONAL_BREAKER_ENABLED", True)):
-                dir_days = int(getattr(config, "ITM_V2_DIRECTIONAL_BREAKER_3_LOSSES_PAUSE_DAYS", 2))
-                if direction_key == "CALL" and self._itm_v2_call_consecutive_losses >= 3:
-                    pause_until = datetime.strptime(trade_date, "%Y-%m-%d").date() + timedelta(
-                        days=max(1, dir_days)
-                    )
-                    self._itm_v2_call_pause_until = pause_until.isoformat()
-                    self.log(
-                        f"ITM_V2_BREAKER_CALL|Losses={self._itm_v2_call_consecutive_losses}|Until={self._itm_v2_call_pause_until}",
-                        trades_only=True,
-                    )
-                    self._itm_v2_call_consecutive_losses = 0
-                if direction_key == "PUT" and self._itm_v2_put_consecutive_losses >= 3:
-                    pause_until = datetime.strptime(trade_date, "%Y-%m-%d").date() + timedelta(
-                        days=max(1, dir_days)
-                    )
-                    self._itm_v2_put_pause_until = pause_until.isoformat()
-                    self.log(
-                        f"ITM_V2_BREAKER_PUT|Losses={self._itm_v2_put_consecutive_losses}|Until={self._itm_v2_put_pause_until}",
-                        trades_only=True,
-                    )
-                    self._itm_v2_put_consecutive_losses = 0
-        except Exception as e:
-            self.log(f"ITM_V2: Failed to record result streaks: {e}", trades_only=True)
 
     # =========================================================================
     # V6.10 P5: CHOPPY MARKET DETECTION
@@ -7901,11 +7515,6 @@ class OptionsEngine:
         """Return (target_pct, stop_pct_override) for strategy-aware intraday exits."""
         strategy = self._canonical_intraday_strategy_name(entry_strategy)
         if strategy == IntradayStrategy.ITM_MOMENTUM.value:
-            if self._is_itm_v2_enabled():
-                return (
-                    float(getattr(config, "ITM_V2_TARGET_PCT", 0.35)),
-                    float(getattr(config, "ITM_V2_STOP_PCT", 0.22)),
-                )
             return (
                 float(getattr(config, "INTRADAY_ITM_TARGET", 0.35)),
                 float(getattr(config, "INTRADAY_ITM_STOP", 0.35)),
@@ -7922,11 +7531,6 @@ class OptionsEngine:
         """Return (trigger_pct, trail_pct) for intraday strategy trailing stops."""
         strategy = self._canonical_intraday_strategy_name(entry_strategy)
         if strategy == IntradayStrategy.ITM_MOMENTUM.value:
-            if self._is_itm_v2_enabled():
-                return (
-                    float(getattr(config, "ITM_V2_TRAIL_TRIGGER", 0.15)),
-                    float(getattr(config, "ITM_V2_TRAIL_PCT", 0.40)),
-                )
             return (
                 float(getattr(config, "INTRADAY_ITM_TRAIL_TRIGGER", 0.20)),
                 float(getattr(config, "INTRADAY_ITM_TRAIL_PCT", 0.50)),
@@ -8039,52 +7643,13 @@ class OptionsEngine:
                 requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
             )
 
-        # Exit 2.5: ITM_V2 max-hold guard (calendar-based safety cap).
-        if self._is_itm_v2_enabled() and self._is_itm_momentum_strategy_name(
-            getattr(pos, "entry_strategy", "")
-        ):
-            max_hold_days = int(getattr(config, "ITM_V2_MAX_HOLD_DAYS", 4))
-            if max_hold_days > 0:
-                try:
-                    entry_date = datetime.strptime(
-                        str(getattr(pos, "entry_time", ""))[:10], "%Y-%m-%d"
-                    ).date()
-                    now_date = (
-                        self.algorithm.Time.date()
-                        if self.algorithm is not None and hasattr(self.algorithm, "Time")
-                        else datetime.utcnow().date()
-                    )
-                    held_days = (now_date - entry_date).days
-                except Exception:
-                    held_days = 0
-                if held_days >= max_hold_days:
-                    if is_intraday_pos and not self.mark_pending_intraday_exit(symbol_str):
-                        return None
-                    reason = f"ITM_V2_MAX_HOLD ({held_days}d >= {max_hold_days}d) P&L={pnl_pct:.1%}"
-                    self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
-                    return TargetWeight(
-                        symbol=symbol_str,
-                        target_weight=0.0,
-                        source="OPT",
-                        urgency=Urgency.IMMEDIATE,
-                        reason=reason,
-                        requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
-                    )
-
         # V2.3.10: Exit 3 - DTE exit (prevent expiration/exercise)
         # Close single-leg options before expiration to avoid:
         # - OTM expiring worthless (100% loss)
         # - ITM being auto-exercised (creates stock position, margin crisis)
         dte_exit_threshold = int(getattr(config, "OPTIONS_SINGLE_LEG_DTE_EXIT", 4))
         if self._is_itm_momentum_strategy_name(getattr(pos, "entry_strategy", "")):
-            if self._is_itm_v2_enabled():
-                dte_exit_threshold = int(
-                    getattr(config, "ITM_V2_FORCE_EXIT_DTE", dte_exit_threshold)
-                )
-            else:
-                dte_exit_threshold = int(
-                    getattr(config, "INTRADAY_ITM_DTE_EXIT", dte_exit_threshold)
-                )
+            dte_exit_threshold = int(getattr(config, "INTRADAY_ITM_DTE_EXIT", dte_exit_threshold))
 
         if current_dte is not None and current_dte <= dte_exit_threshold:
             if is_intraday_pos and not self.mark_pending_intraday_exit(symbol_str):
@@ -8666,8 +8231,6 @@ class OptionsEngine:
         if entry_strategy is None:
             return fail("E_INTRADAY_NO_STRATEGY")
 
-        itm_v2_mode = False
-
         # V3.2: Check if strategy is PROTECTIVE_PUTS (crisis hedge)
         if entry_strategy == IntradayStrategy.PROTECTIVE_PUTS:
             # V3.2: Actually implement protective puts (was previously just returning None)
@@ -8713,64 +8276,8 @@ class OptionsEngine:
                 self.log(f"INTRADAY: No direction recommended for {strategy_value}")
                 return fail("E_INTRADAY_NO_DIRECTION", strategy_value)
 
-            itm_v2_mode = bool(
-                self._is_itm_v2_enabled() and entry_strategy == IntradayStrategy.ITM_MOMENTUM
-            )
-            if itm_v2_mode:
-                (
-                    itm_v2_allowed,
-                    itm_v2_code,
-                    itm_v2_detail,
-                    itm_v2_sma20,
-                    itm_v2_adx,
-                    itm_v2_vix20,
-                ) = self._evaluate_itm_v2_entry(
-                    direction=direction,
-                    current_time=current_time,
-                    current_hour=current_hour,
-                    current_minute=current_minute,
-                    qqq_current=qqq_current,
-                    vix_current=float(
-                        vix_level_override if vix_level_override is not None else vix_current
-                    ),
-                    portfolio_value=float(portfolio_value),
-                )
-                self._itm_v2_log_decision(
-                    direction=direction,
-                    qqq_current=qqq_current,
-                    sma20_value=itm_v2_sma20,
-                    adx_value=itm_v2_adx,
-                    vix_current=float(
-                        vix_level_override if vix_level_override is not None else vix_current
-                    ),
-                    vix20_change=itm_v2_vix20,
-                    passed=itm_v2_allowed,
-                    code=itm_v2_code,
-                    detail=itm_v2_detail,
-                )
-                if itm_v2_allowed:
-                    self._itm_v2_count("ITM_V2_Pass")
-                else:
-                    if "TREND" in itm_v2_code:
-                        self._itm_v2_count("ITM_V2_Blocked_Trend")
-                    elif "VIX" in itm_v2_code:
-                        self._itm_v2_count("ITM_V2_Blocked_VIX")
-                    elif "REENTRY" in itm_v2_code:
-                        self._itm_v2_count("ITM_V2_Blocked_Reentry")
-                    elif "BREAKER" in itm_v2_code:
-                        self._itm_v2_count("ITM_V2_Blocked_Breaker")
-                    elif "DRAWDOWN" in itm_v2_code:
-                        self._itm_v2_count("ITM_V2_Blocked_Drawdown")
-                    else:
-                        self._itm_v2_count("ITM_V2_Blocked_Other")
-                    if not self._is_itm_v2_shadow_mode():
-                        return fail(itm_v2_code, itm_v2_detail)
-
             # V9: Keep CAUTION_LOW / TRANSITION participation but cut size.
-            if (not itm_v2_mode) and state.micro_regime in (
-                MicroRegime.CAUTION_LOW,
-                MicroRegime.TRANSITION,
-            ):
+            if state.micro_regime in (MicroRegime.CAUTION_LOW, MicroRegime.TRANSITION):
                 caution_scale = float(
                     getattr(
                         config,
@@ -8790,7 +8297,7 @@ class OptionsEngine:
                     size_multiplier = adjusted
 
             # Keep CALL risk constrained in stressed tape.
-            if (not itm_v2_mode) and direction == OptionDirection.CALL:
+            if direction == OptionDirection.CALL:
                 # Gate 1: consecutive CALL-loss cooldown (adaptive pause)
                 if getattr(config, "CALL_GATE_CONSECUTIVE_LOSS_ENABLED", True):
                     trade_date = None
@@ -8913,7 +8420,7 @@ class OptionsEngine:
                             return fail("E_CALL_GATE_VIX5D")
 
             # V6.14 OPT: Avoid buying long PUTs into panic highs; reduce size in elevated fear.
-            if (not itm_v2_mode) and direction == OptionDirection.PUT:
+            if direction == OptionDirection.PUT:
                 risk_on_threshold = float(getattr(config, "REGIME_RISK_ON", 70.0))
                 if (
                     state.micro_regime in (MicroRegime.CAUTION_LOW, MicroRegime.CAUTIOUS)
@@ -9010,31 +8517,24 @@ class OptionsEngine:
                 return fail("E_INTRADAY_TIME_WINDOW")
 
         elif entry_strategy == IntradayStrategy.ITM_MOMENTUM:
-            # Legacy CAUTION_LOW regime block stays active only for pre-ITM_V2 logic.
-            if (not itm_v2_mode) and state.micro_regime == MicroRegime.CAUTION_LOW:
+            # V10.4: block ITM momentum in CAUTION_LOW only.
+            # Keep CAUTIOUS handling in the existing risk-on gating path.
+            if state.micro_regime == MicroRegime.CAUTION_LOW:
                 self.log(
                     "INTRADAY: ITM_MOMENTUM blocked in regime CAUTION_LOW",
                     trades_only=True,
                 )
                 return fail("E_ITM_MOMENTUM_REGIME_BLOCK")
-
-            if itm_v2_mode:
-                itm_start_cfg = str(
-                    getattr(config, "ITM_V2_ENTRY_START", config.INTRADAY_ITM_START)
-                )
-                itm_end_cfg = str(getattr(config, "ITM_V2_ENTRY_END", config.INTRADAY_ITM_END))
-            else:
-                itm_start_cfg = config.INTRADAY_ITM_START
-                itm_end_cfg = config.INTRADAY_ITM_END
-
-            itm_start = itm_start_cfg.split(":")
-            itm_end = itm_end_cfg.split(":")
+            # V2.3.19: Use config values instead of hardcoded
+            itm_start = config.INTRADAY_ITM_START.split(":")
+            itm_end = config.INTRADAY_ITM_END.split(":")
             start_time = int(itm_start[0]) * 60 + int(itm_start[1])
             end_time = int(itm_end[0]) * 60 + int(itm_end[1])
             if not (start_time <= time_minutes <= end_time):
+                # V2.13 Fix #17: Log time window rejection (was silent)
                 self.log(
                     f"INTRADAY_TIME_REJECT: ITM_MOMENTUM at {current_hour}:{current_minute:02d} "
-                    f"outside window {itm_start_cfg}-{itm_end_cfg}"
+                    f"outside window {config.INTRADAY_ITM_START}-{config.INTRADAY_ITM_END}"
                 )
                 return fail("E_INTRADAY_TIME_WINDOW")
 
@@ -9122,15 +8622,6 @@ class OptionsEngine:
                         trades_only=True,
                     )
                     intraday_max_contracts = scaled_cap
-
-        if itm_v2_mode:
-            itm_v2_cap = int(getattr(config, "ITM_V2_MAX_CONTRACTS_HARD_CAP", 8))
-            if itm_v2_cap > 0:
-                intraday_max_contracts = (
-                    itm_v2_cap
-                    if intraday_max_contracts <= 0
-                    else min(intraday_max_contracts, itm_v2_cap)
-                )
 
         if intraday_max_contracts > 0 and num_contracts > intraday_max_contracts:
             self.log(
@@ -10823,15 +10314,6 @@ class OptionsEngine:
                 else None
             ),
             "last_intraday_close_strategy": self._last_intraday_close_strategy,
-            "itm_v2_consecutive_losses": self._itm_v2_consecutive_losses,
-            "itm_v2_call_consecutive_losses": self._itm_v2_call_consecutive_losses,
-            "itm_v2_put_consecutive_losses": self._itm_v2_put_consecutive_losses,
-            "itm_v2_pause_until": self._itm_v2_pause_until,
-            "itm_v2_call_pause_until": self._itm_v2_call_pause_until,
-            "itm_v2_put_pause_until": self._itm_v2_put_pause_until,
-            "itm_v2_last_exit_date_by_direction": dict(self._itm_v2_last_exit_date_by_direction),
-            "itm_v2_equity_history": list(self._itm_v2_equity_history),
-            "itm_v2_dd_blocked": self._itm_v2_dd_blocked,
         }
 
     def restore_state(self, state: Dict[str, Any]) -> None:
@@ -11035,35 +10517,6 @@ class OptionsEngine:
                 self._last_intraday_close_time = None
         self._last_intraday_close_strategy = state.get("last_intraday_close_strategy")
 
-        self._itm_v2_consecutive_losses = int(state.get("itm_v2_consecutive_losses", 0) or 0)
-        self._itm_v2_call_consecutive_losses = int(
-            state.get("itm_v2_call_consecutive_losses", 0) or 0
-        )
-        self._itm_v2_put_consecutive_losses = int(
-            state.get("itm_v2_put_consecutive_losses", 0) or 0
-        )
-        raw_itm_pause = state.get("itm_v2_pause_until")
-        self._itm_v2_pause_until = str(raw_itm_pause)[:10] if raw_itm_pause else None
-        raw_itm_call_pause = state.get("itm_v2_call_pause_until")
-        self._itm_v2_call_pause_until = str(raw_itm_call_pause)[:10] if raw_itm_call_pause else None
-        raw_itm_put_pause = state.get("itm_v2_put_pause_until")
-        self._itm_v2_put_pause_until = str(raw_itm_put_pause)[:10] if raw_itm_put_pause else None
-        self._itm_v2_last_exit_date_by_direction = {
-            str(k).upper(): str(v)[:10]
-            for k, v in (state.get("itm_v2_last_exit_date_by_direction", {}) or {}).items()
-            if str(k).upper() in {"CALL", "PUT"} and str(v)
-        }
-        self._itm_v2_equity_history = []
-        for row in state.get("itm_v2_equity_history", []) or []:
-            try:
-                dt = str(row[0])[:10]
-                val = float(row[1])
-                if dt and val > 0:
-                    self._itm_v2_equity_history.append((dt, val))
-            except Exception:
-                continue
-        self._itm_v2_dd_blocked = bool(state.get("itm_v2_dd_blocked", False))
-
     def reset(self) -> None:
         """Reset engine state."""
         # Legacy
@@ -11107,16 +10560,6 @@ class OptionsEngine:
         self._intraday_force_exit_hold_skip_log_date = {}
         self._last_intraday_close_time = None
         self._last_intraday_close_strategy = None
-        self._itm_v2_consecutive_losses = 0
-        self._itm_v2_call_consecutive_losses = 0
-        self._itm_v2_put_consecutive_losses = 0
-        self._itm_v2_pause_until = None
-        self._itm_v2_call_pause_until = None
-        self._itm_v2_put_pause_until = None
-        self._itm_v2_last_exit_date_by_direction = {}
-        self._itm_v2_equity_history = []
-        self._itm_v2_dd_blocked = False
-        self._itm_v2_diag_counts = {}
 
         self.log("OPT: Engine reset - all positions cleared")
 
@@ -11187,13 +10630,6 @@ class OptionsEngine:
                 self._spread_neutrality_warn_by_key = {
                     k: v for k, v in self._spread_neutrality_warn_by_key.items() if k in active_keys
                 }
-
-            if self._itm_v2_diag_counts:
-                diag_parts = [f"{k}={v}" for k, v in sorted(self._itm_v2_diag_counts.items())]
-                self.log(
-                    f"ITM_V2_DAILY_SUMMARY|{current_date}|" + "|".join(diag_parts), trades_only=True
-                )
-            self._itm_v2_diag_counts = {}
 
             self.log(f"OPT: Daily reset for {current_date}")
 
