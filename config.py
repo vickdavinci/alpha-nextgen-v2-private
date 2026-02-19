@@ -890,6 +890,7 @@ VASS_SIMILAR_ENTRY_COOLDOWN_DAYS = (
 )
 VASS_SIMILAR_ENTRY_USE_EXPIRY_BUCKET = True  # Use expiry date bucket (fallback to DTE bucket)
 VASS_DIRECTION_DAY_GAP_ENABLED = True  # Hard spacing: max 1 VASS entry per day per direction
+VASS_ENTRY_ENGINE_ENABLED = True  # V10.10: route VASS strategy/filter/guards via dedicated engine
 VASS_USE_CONVICTION_ONLY_DIRECTION = True  # V10.7: VASS direction must follow conviction, not macro
 VASS_NO_CONVICTION_NO_TRADE = True  # V10.7: If VASS has no conviction, skip entry
 VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT = True  # V10.7: Fallback when BEAR_PUT is blocked
