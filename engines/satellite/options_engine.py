@@ -43,6 +43,7 @@ if TYPE_CHECKING:
 import config
 from engines.core.risk_engine import GreeksSnapshot
 from engines.satellite.itm_horizon_engine import ITMHorizonEngine
+from engines.satellite.micro_entry_engine import MicroEntryEngine
 from models.enums import (
     OptionDirection,  # V6.4: Unified from models.enums (fixes P0 duplicate enum bug)
 )
@@ -1998,6 +1999,7 @@ class OptionsEngine:
             log_func=self.log,
         )
         self._itm_horizon_engine = ITMHorizonEngine(log_func=self.log)
+        self._micro_entry_engine = MicroEntryEngine(log_func=self.log)
 
         # V2.27: Win Rate Gate - rolling spread trade result tracker
         self._spread_result_history: List[bool] = []  # True=win, False=loss
