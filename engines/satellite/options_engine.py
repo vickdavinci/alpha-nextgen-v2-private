@@ -7337,7 +7337,12 @@ class OptionsEngine:
                         if self.algorithm is not None and hasattr(self.algorithm, "Time")
                         else datetime.utcnow().date()
                     )
-                    held_days = (now_date - entry_date).days
+                    held_days = 0
+                    cursor = entry_date
+                    while cursor < now_date:
+                        cursor = cursor + timedelta(days=1)
+                        if cursor.weekday() < 5:
+                            held_days += 1
                 except Exception:
                     held_days = 0
                 if held_days >= max_hold_days:
@@ -7668,6 +7673,30 @@ class OptionsEngine:
         """Public wrapper for VASS direction+IV strategy routing."""
         return self._select_strategy(direction, iv_environment, is_intraday=is_intraday)
 
+    def get_itm_v2_direction_proposal(
+        self,
+        qqq_current: float,
+    ) -> Tuple[Optional[OptionDirection], str]:
+        """Return ITM_V2 sovereign direction proposal from daily trend context."""
+        if not self._itm_horizon_engine.enabled():
+            return None, "ITM_V2_DISABLED"
+        if self.algorithm is None:
+            return None, "NO_ALGO"
+        qqq_sma20 = getattr(self.algorithm, "qqq_sma20", None)
+        if qqq_sma20 is None or not getattr(qqq_sma20, "IsReady", False):
+            return None, "SMA20_NOT_READY"
+
+        sma20 = float(qqq_sma20.Current.Value)
+        band = float(getattr(config, "ITM_V2_SMA_BAND_PCT", 0.003))
+        upper = sma20 * (1.0 + band)
+        lower = sma20 * (1.0 - band)
+
+        if qqq_current > upper:
+            return OptionDirection.CALL, f"QQQ {qqq_current:.2f} > SMA20+band {upper:.2f}"
+        if qqq_current < lower:
+            return OptionDirection.PUT, f"QQQ {qqq_current:.2f} < SMA20-band {lower:.2f}"
+        return None, f"TREND_NEUTRAL {lower:.2f}<=QQQ<={upper:.2f}"
+
     def check_micro_spike_alert(
         self, vix_current: float, vix_5min_ago: float, current_time: str
     ) -> bool:
@@ -7735,11 +7764,13 @@ class OptionsEngine:
         current_minute: int,
         current_time: str,
         portfolio_value: float,
+        raw_portfolio_value: Optional[float] = None,
         best_contract: Optional[OptionContract] = None,
         size_multiplier: float = 1.0,
         macro_regime_score: float = 50.0,
         governor_scale: float = 1.0,
         direction: Optional[OptionDirection] = None,
+        forced_entry_strategy: Optional[IntradayStrategy] = None,
         vix_level_override: Optional[float] = None,  # V6.2: CBOE VIX for level consistency
         underlying_atr: float = 0.0,  # V6.5: QQQ ATR for delta-scaled stops
         micro_state: Optional[
@@ -7823,16 +7854,33 @@ class OptionsEngine:
                 vix_level_override=vix_level_override,  # V6.2: Pass through
             )
 
-        # V6.8: NO_TRADE is now blocked earlier in generate_micro_intraday_signal()
-        # This check is a safety net - should never reach here with NO_TRADE
-        if state.recommended_strategy == IntradayStrategy.NO_TRADE:
-            self.log(
-                f"INTRADAY: Blocked - NO_TRADE strategy | "
-                f"Regime={state.micro_regime.value} | Score={state.micro_score:.0f}"
-            )
-            return fail("E_INTRADAY_NO_TRADE_STRATEGY", state.micro_regime.value)
-
-        entry_strategy = self._canonical_intraday_strategy(state.recommended_strategy)
+        # V10.10: allow explicit strategy overrides for retry/ITM sovereign paths.
+        if forced_entry_strategy is not None:
+            entry_strategy = self._canonical_intraday_strategy(forced_entry_strategy)
+        else:
+            # V6.8: NO_TRADE is now blocked earlier in generate_micro_intraday_signal()
+            # Safety net remains for non-ITM override paths.
+            if state.recommended_strategy == IntradayStrategy.NO_TRADE:
+                itm_sovereign_bypass = bool(
+                    getattr(config, "ITM_V2_ENABLED", False)
+                    and direction is not None
+                    and direction in (OptionDirection.CALL, OptionDirection.PUT)
+                )
+                if itm_sovereign_bypass:
+                    entry_strategy = IntradayStrategy.ITM_MOMENTUM
+                    self.log(
+                        f"INTRADAY: ITM_V2 strategy override from NO_TRADE | "
+                        f"Dir={direction.value} | Regime={state.micro_regime.value}",
+                        trades_only=True,
+                    )
+                else:
+                    self.log(
+                        f"INTRADAY: Blocked - NO_TRADE strategy | "
+                        f"Regime={state.micro_regime.value} | Score={state.micro_score:.0f}"
+                    )
+                    return fail("E_INTRADAY_NO_TRADE_STRATEGY", state.micro_regime.value)
+            else:
+                entry_strategy = self._canonical_intraday_strategy(state.recommended_strategy)
         if entry_strategy is None:
             return fail("E_INTRADAY_NO_STRATEGY")
 
@@ -7933,7 +7981,9 @@ class OptionsEngine:
                     adx_value=adx_value,
                     vix_current=effective_vix,
                     vix20_change=vix20_change,
-                    portfolio_value=float(portfolio_value),
+                    portfolio_value=float(
+                        raw_portfolio_value if raw_portfolio_value is not None else portfolio_value
+                    ),
                     current_itm_positions=active_itm_positions,
                     algorithm=self.algorithm,
                 )

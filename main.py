@@ -5883,6 +5883,78 @@ class AlphaNextGen(QCAlgorithm):
         half_spread = spread_pct / 2
         return (last * (1 - half_spread), last * (1 + half_spread))
 
+    def _build_option_contract_from_fill(
+        self,
+        symbol: Any,
+        fill_price: float,
+        direction_hint: Optional[OptionDirection] = None,
+    ) -> Optional[OptionContract]:
+        """Best-effort OptionContract reconstruction for fill recovery paths."""
+        try:
+            sec = self.Securities[symbol] if symbol in self.Securities else None
+        except Exception:
+            sec = None
+
+        try:
+            symbol_obj = symbol
+            symbol_str = str(symbol_obj)
+            strike = float(getattr(getattr(symbol_obj, "ID", None), "StrikePrice", 0.0) or 0.0)
+            expiry_obj = getattr(getattr(symbol_obj, "ID", None), "Date", None)
+            expiry = str(expiry_obj.date()) if expiry_obj is not None else ""
+            right_obj = getattr(getattr(symbol_obj, "ID", None), "OptionRight", None)
+            right_str = str(right_obj).upper() if right_obj is not None else ""
+        except Exception:
+            return None
+
+        if direction_hint is not None:
+            direction = direction_hint
+        elif "PUT" in right_str or right_str.endswith("P"):
+            direction = OptionDirection.PUT
+        else:
+            direction = OptionDirection.CALL
+
+        bid = float(getattr(sec, "BidPrice", 0.0) or 0.0) if sec is not None else 0.0
+        ask = float(getattr(sec, "AskPrice", 0.0) or 0.0) if sec is not None else 0.0
+        mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else float(fill_price)
+
+        delta = 0.0
+        gamma = 0.0
+        vega = 0.0
+        theta = 0.0
+        if sec is not None and hasattr(sec, "Greeks") and sec.Greeks is not None:
+            try:
+                delta = float(abs(sec.Greeks.Delta))
+                gamma = float(sec.Greeks.Gamma)
+                vega = float(sec.Greeks.Vega)
+                theta = float(sec.Greeks.Theta)
+            except Exception:
+                pass
+
+        open_interest = int(getattr(sec, "OpenInterest", 0) or 0) if sec is not None else 0
+        days_to_expiry = 0
+        try:
+            if expiry_obj is not None:
+                days_to_expiry = int((expiry_obj.date() - self.Time.date()).days)
+        except Exception:
+            pass
+
+        return OptionContract(
+            symbol=symbol_str,
+            underlying="QQQ",
+            direction=direction,
+            strike=strike,
+            expiry=expiry,
+            delta=delta,
+            gamma=gamma,
+            vega=vega,
+            theta=theta,
+            bid=bid,
+            ask=ask,
+            mid_price=mid,
+            open_interest=open_interest,
+            days_to_expiry=days_to_expiry,
+        )
+
     def _select_intraday_option_contract(
         self,
         chain,
@@ -6970,6 +7042,20 @@ class AlphaNextGen(QCAlgorithm):
                     f"{self._diag_intraday_candidate_count + 1}"
                 )
 
+                forced_intraday_strategy = None
+                if bool(getattr(config, "ITM_V2_ENABLED", False)):
+                    itm_dir, itm_reason = self.options_engine.get_itm_v2_direction_proposal(
+                        qqq_current=qqq_price
+                    )
+                    if itm_dir is not None:
+                        should_trade = True
+                        intraday_direction = itm_dir
+                        forced_intraday_strategy = IntradayStrategy.ITM_MOMENTUM
+                        signal_reason = f"ITM_V2_SOVEREIGN: {itm_reason}"
+                        if micro_state is not None:
+                            micro_state.recommended_strategy = IntradayStrategy.ITM_MOMENTUM
+                            micro_state.recommended_direction = itm_dir
+
                 if not should_trade:
                     self.Log(f"INTRADAY: Blocked - {signal_reason}")
                     intraday_direction = None
@@ -6990,7 +7076,17 @@ class AlphaNextGen(QCAlgorithm):
                         self._intraday_retry_expires = None
                         self._intraday_retry_direction = None
                         self._intraday_retry_reason_code = None
-                        self.Log(f"INTRADAY_RETRY: {signal_reason}")
+                        retry_strategy = self.options_engine.get_last_intraday_strategy()
+                        if retry_strategy == IntradayStrategy.NO_TRADE:
+                            retry_strategy = (
+                                IntradayStrategy.ITM_MOMENTUM
+                                if bool(getattr(config, "ITM_V2_ENABLED", False))
+                                else IntradayStrategy.DEBIT_FADE
+                            )
+                        forced_intraday_strategy = retry_strategy
+                        self.Log(
+                            f"INTRADAY_RETRY: {signal_reason} | Strategy={retry_strategy.value}"
+                        )
                 else:
                     if (
                         intraday_direction == OptionDirection.CALL
@@ -7099,11 +7195,13 @@ class AlphaNextGen(QCAlgorithm):
                         current_minute=self.Time.minute,
                         current_time=str(self.Time),
                         portfolio_value=effective_portfolio_value,  # V2.11: Margin-capped
+                        raw_portfolio_value=float(self.Portfolio.TotalPortfolioValue),
                         best_contract=intraday_contract,
                         size_multiplier=intraday_size_multiplier,
                         macro_regime_score=regime_score,
                         governor_scale=self._governor_scale,  # V3.2: Intraday Governor gate
                         direction=intraday_direction,  # V6.0: Pass resolved direction
+                        forced_entry_strategy=forced_intraday_strategy,
                         vix_level_override=vix_level_cboe,  # V6.2: CBOE VIX for level
                         underlying_atr=qqq_atr_value,  # V6.5: For delta-scaled ATR stops
                         micro_state=micro_state,  # Reuse approved state; avoid second-update drift
@@ -8675,11 +8773,18 @@ class AlphaNextGen(QCAlgorithm):
                                 f"Symbol={symbol_norm} | Tag={order_tag or 'NO_TAG'}"
                             )
 
+                        recovery_contract = None
+                        if force_intraday_recovery:
+                            recovery_contract = self._build_option_contract_from_fill(
+                                symbol=symbol,
+                                fill_price=fill_price,
+                            )
                         position = self.options_engine.register_entry(
                             fill_price=fill_price,
                             entry_time=str(self.Time),
                             current_date=str(self.Time.date()),
                             force_intraday=force_intraday_recovery,
+                            contract=recovery_contract,
                         )
 
                         if position:
