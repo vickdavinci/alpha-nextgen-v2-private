@@ -1099,8 +1099,8 @@ class MicroRegimeEngine:
             VIXDirection.SPIKING,
         )
 
-        # Confirmation routing: optionally emit MICRO_OTM_MOMENTUM for intraday momentum,
-        # otherwise fall back to ITM_MOMENTUM (legacy behavior).
+        # Confirmation routing: MICRO only emits MICRO_OTM_MOMENTUM.
+        # ITM entries are delegated to ITM_ENGINE sovereign path in main orchestration.
         def confirmation_strategy(
             direction: OptionDirection, reason: str
         ) -> Tuple[IntradayStrategy, Optional[OptionDirection], str]:
@@ -1114,7 +1114,11 @@ class MicroRegimeEngine:
                         direction,
                         f"OTM_MOMENTUM: {reason}",
                     )
-            return (IntradayStrategy.ITM_MOMENTUM, direction, reason)
+            return (
+                IntradayStrategy.NO_TRADE,
+                None,
+                f"MICRO_OTM_GATE_BLOCK: {reason}",
+            )
 
         # V10.7 Phase-5: optional simplification to disable DEBIT_FADE.
         def divergence_strategy_or_skip(
@@ -1159,7 +1163,7 @@ class MicroRegimeEngine:
 
         if micro_regime not in tradeable_regimes:
             # Not a tradeable regime for divergence/confirmation - skip to other rules
-            pass  # Fall through to RULE 6 (ITM_MOMENTUM) and RULE 7 (caution)
+            pass  # Fall through to RULE 6 handoff and RULE 7 (caution)
         else:
             # V2.19: VIX Floor Check - Block trades in "apathy" market
             vix_floor = float(
@@ -1206,13 +1210,13 @@ class MicroRegimeEngine:
                             None,
                             f"FADE blocked: |{qqq_move_pct:.2f}%| > {config.INTRADAY_FADE_MAX_MOVE}% (runaway)",
                         )
-                    # V10: HIGH VIX divergence → ITM_MOMENTUM (no spread cap in volatile market)
+                    # HIGH-VIX divergence is delegated to ITM_ENGINE sovereign path.
                     if vix_current >= 25:
                         return (
-                            IntradayStrategy.ITM_MOMENTUM,
-                            OptionDirection.PUT,
-                            f"HIGH_VIX_DIVERGENCE: QQQ +{qqq_move_pct:.2f}% but VIX {vix_direction.value} "
-                            f"(VIX={vix_current:.1f}>=25) → ITM PUT",
+                            IntradayStrategy.NO_TRADE,
+                            None,
+                            f"MICRO_ITM_HANDOFF: HIGH_VIX_DIVERGENCE PUT | "
+                            f"QQQ +{qqq_move_pct:.2f}% | VIX={vix_current:.1f}",
                         )
                     return divergence_strategy_or_skip(
                         OptionDirection.PUT,
@@ -1233,7 +1237,7 @@ class MicroRegimeEngine:
                         abs(qqq_move_pct) >= config.INTRADAY_QQQ_FALLBACK_MIN_MOVE
                         and micro_score >= config.MICRO_SCORE_BULLISH_CONFIRM
                     ):
-                        # V10: All confirmation paths → ITM_MOMENTUM
+                        # Confirmation paths are MICRO_OTM-only; ITM is sovereign handoff
                         return confirmation_strategy(
                             OptionDirection.CALL,
                             f"STABLE_FALLBACK: QQQ +{qqq_move_pct:.2f}% + "
@@ -1266,13 +1270,13 @@ class MicroRegimeEngine:
                             None,
                             f"FADE blocked: |{qqq_move_pct:.2f}%| > {config.INTRADAY_FADE_MAX_MOVE}% (crash)",
                         )
-                    # V10: HIGH VIX divergence → ITM_MOMENTUM (no spread cap in volatile market)
+                    # HIGH-VIX divergence is delegated to ITM_ENGINE sovereign path.
                     if vix_current >= 25:
                         return (
-                            IntradayStrategy.ITM_MOMENTUM,
-                            OptionDirection.CALL,
-                            f"HIGH_VIX_DIVERGENCE: QQQ {qqq_move_pct:.2f}% but VIX {vix_direction.value} "
-                            f"(VIX={vix_current:.1f}>=25) → ITM CALL",
+                            IntradayStrategy.NO_TRADE,
+                            None,
+                            f"MICRO_ITM_HANDOFF: HIGH_VIX_DIVERGENCE CALL | "
+                            f"QQQ {qqq_move_pct:.2f}% | VIX={vix_current:.1f}",
                         )
                     return divergence_strategy_or_skip(
                         OptionDirection.CALL,
@@ -1286,7 +1290,7 @@ class MicroRegimeEngine:
                         abs(qqq_move_pct) >= config.INTRADAY_QQQ_FALLBACK_MIN_MOVE
                         and micro_score <= config.MICRO_SCORE_BEARISH_CONFIRM
                     ):
-                        # V10: All confirmation paths → ITM_MOMENTUM
+                        # Confirmation paths are MICRO_OTM-only; ITM is sovereign handoff
                         return confirmation_strategy(
                             OptionDirection.PUT,
                             f"STABLE_FALLBACK: QQQ {qqq_move_pct:.2f}% + "
@@ -1300,47 +1304,10 @@ class MicroRegimeEngine:
                     )
 
         # =====================================================================
-        # RULE 6: HIGH VIX MOMENTUM (ITM options for elevated fear)
-        # Only in specific high-fear regimes with sufficient move
-        # V6.5: WORSENING/WORSENING_HIGH always use PUT (VIX rising = fear real)
+        # RULE 6: ITM handoff
+        # MICRO no longer emits ITM_MOMENTUM. ITM entries are delegated to
+        # ITM_ENGINE sovereign path handled by main orchestration.
         # =====================================================================
-        momentum_regimes = {
-            MicroRegime.DETERIORATING,
-            MicroRegime.ELEVATED,
-            MicroRegime.WORSENING,  # V6.5: Added - MEDIUM + RISING, use ITM PUT
-            MicroRegime.WORSENING_HIGH,
-        }
-        if micro_regime in momentum_regimes:
-            if vix_current > config.INTRADAY_ITM_MIN_VIX:
-                if abs(qqq_move_pct) >= config.INTRADAY_ITM_MIN_MOVE:
-                    # V6.5: WORSENING and WORSENING_HIGH - VIX RISING regimes
-                    # V9.2 RCA: Only trade PUT when QQQ confirms downward direction.
-                    # Previously forced PUT regardless of QQQ direction, causing 52%
-                    # wrong-way PUTs against rising markets in 2022.
-                    if micro_regime in (MicroRegime.WORSENING, MicroRegime.WORSENING_HIGH):
-                        if qqq_is_down:
-                            return (
-                                IntradayStrategy.ITM_MOMENTUM,
-                                OptionDirection.PUT,
-                                f"ITM_FEAR: VIX rising in {micro_regime.value}, QQQ {qqq_move_pct:+.2f}% → ITM PUT",
-                            )
-                        return (
-                            IntradayStrategy.NO_TRADE,
-                            None,
-                            f"WORSENING_QQQ_GATE: {micro_regime.value} but QQQ {qqq_move_pct:+.2f}% UP → skip",
-                        )
-                    elif qqq_is_up:
-                        return (
-                            IntradayStrategy.ITM_MOMENTUM,
-                            OptionDirection.CALL,
-                            f"ITM_MOMENTUM: QQQ +{qqq_move_pct:.2f}% in {micro_regime.value}",
-                        )
-                    elif qqq_is_down:
-                        return (
-                            IntradayStrategy.ITM_MOMENTUM,
-                            OptionDirection.PUT,
-                            f"ITM_MOMENTUM: QQQ {qqq_move_pct:.2f}% in {micro_regime.value}",
-                        )
 
         # =====================================================================
         # RULE 7: Caution regimes - tightly constrained participation only
