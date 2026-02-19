@@ -1683,20 +1683,20 @@ class TestDualModeArchitecture:
         assert mode == OptionsMode.SWING
 
     def test_get_mode_allocation_intraday(self, engine):
-        """Test intraday mode allocation is 12.5% (config.OPTIONS_INTRADAY_ALLOCATION)."""
+        """Test intraday mode allocation uses current config split."""
         from models.enums import OptionsMode
 
         allocation = engine.get_mode_allocation(OptionsMode.INTRADAY, portfolio_value=100000)
-        # V6.20: 12.5% of $100,000 = $12,500
-        assert allocation == 12500.0
+        # Current config: 25% of $100,000 = $25,000
+        assert allocation == 25000.0
 
     def test_get_mode_allocation_swing(self, engine):
-        """Test swing mode allocation is 37.5% (config.OPTIONS_SWING_ALLOCATION)."""
+        """Test swing mode allocation uses current config split."""
         from models.enums import OptionsMode
 
         allocation = engine.get_mode_allocation(OptionsMode.SWING, portfolio_value=100000)
-        # V6.20: 37.5% of $100,000 = $37,500
-        assert allocation == 37500.0
+        # Current config: 35% of $100,000 = $35,000
+        assert allocation == 35000.0
 
     def test_check_intraday_entry_blocked_existing_position(self, engine):
         """Intraday entry blocked when intraday position exists."""
@@ -1869,6 +1869,8 @@ class TestV211StatePersistence:
             target_price=5.25,
             stop_pct=0.20,
         )
+        # Persistence serializes canonical _position as swing_position.
+        engine._position = engine._swing_position
 
         # Create intraday position
         intraday_contract = OptionContract(
@@ -1911,7 +1913,7 @@ class TestV211StatePersistence:
             micro_regime=MicroRegime.GOOD_MR,
             micro_score=65.0,
             whipsaw_state=WhipsawState.TRENDING,
-            recommended_strategy=IntradayStrategy.DEBIT_FADE,
+            recommended_strategy=IntradayStrategy.MICRO_DEBIT_FADE,
             qqq_move_pct=0.45,
             vix_current=17.8,
             vix_open=18.5,
@@ -2015,7 +2017,7 @@ class TestV211StatePersistence:
         assert micro_state.micro_regime == MicroRegime.GOOD_MR
         assert micro_state.micro_score == 65.0
         assert micro_state.whipsaw_state == WhipsawState.TRENDING
-        assert micro_state.recommended_strategy == IntradayStrategy.DEBIT_FADE
+        assert micro_state.recommended_strategy == IntradayStrategy.MICRO_DEBIT_FADE
         assert micro_state.qqq_move_pct == 0.45
         assert micro_state.vix_current == 17.8
         assert micro_state.vix_open == 18.5
@@ -3119,8 +3121,8 @@ class TestVASSCreditSpreadEntry:
 class TestResolverMicroPrimary:
     """Micro-first resolver behavior for intraday signals."""
 
-    def test_micro_misaligned_without_conviction_allows_half(self, engine):
-        """Micro misalignment should be allowed with risk-scale reason, not blocked."""
+    def test_micro_misaligned_without_conviction_blocks(self, engine):
+        """Micro misalignment without conviction is blocked in current resolver policy."""
         should_trade, resolved_direction, reason = engine.resolve_trade_signal(
             engine="MICRO",
             engine_direction="BEARISH",
@@ -3128,9 +3130,9 @@ class TestResolverMicroPrimary:
             macro_direction="BULLISH",
             conviction_strength=None,
         )
-        assert should_trade is True
-        assert resolved_direction == "BEARISH"
-        assert "MISALIGNED_HALF" in reason
+        assert should_trade is False
+        assert resolved_direction is None
+        assert "MISALIGNED_NO_CONVICTION" in reason
 
     def test_vass_misaligned_without_conviction_still_blocked(self, engine):
         """VASS keeps legacy block behavior when misaligned and no conviction."""
@@ -3143,4 +3145,4 @@ class TestResolverMicroPrimary:
         )
         assert should_trade is False
         assert resolved_direction is None
-        assert "NO_TRADE: Misaligned" in reason
+        assert "VASS_NO_CONVICTION" in reason

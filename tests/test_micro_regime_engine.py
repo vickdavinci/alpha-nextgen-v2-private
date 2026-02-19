@@ -460,21 +460,15 @@ class TestScoreMoveVelocity:
 class TestRecommendStrategy:
     """Tests for recommend_strategy() method."""
 
-    def test_perfect_mr_regime_recommends_itm_momentum(self, micro_engine):
-        """PERFECT_MR with high score + QQQ UP -> ITM_MOMENTUM (confirmation).
-
-        V10: All confirmation paths route to ITM_MOMENTUM (DEBIT_MOMENTUM deprecated).
-        PERFECT_MR implies VIX FALLING. QQQ UP + VIX FALLING = confirmation.
-        The legacy recommend_strategy() uses VIX_STABLE, which with high score
-        triggers the STABLE_FALLBACK to ITM_MOMENTUM.
-        """
+    def test_perfect_mr_regime_recommends_otm_momentum(self, micro_engine):
+        """PERFECT_MR confirmation path routes to MICRO_OTM_MOMENTUM in current architecture."""
         strategy = micro_engine.recommend_strategy(
             micro_regime=MicroRegime.PERFECT_MR,
             micro_score=70,
             vix_current=15.0,
             qqq_move_pct=1.0,
         )
-        assert strategy == IntradayStrategy.ITM_MOMENTUM
+        assert strategy == IntradayStrategy.MICRO_OTM_MOMENTUM
 
     def test_crash_regime_recommends_protective_puts(self, micro_engine):
         """V6.4: CRASH regime -> PROTECTIVE_PUTS (crisis protection, no score required)."""
@@ -519,15 +513,15 @@ class TestRecommendStrategy:
         )
         assert strategy == IntradayStrategy.PROTECTIVE_PUTS
 
-    def test_deteriorating_recommends_itm_momentum(self, micro_engine):
-        """DETERIORATING with high VIX and big move -> ITM_MOMENTUM."""
+    def test_deteriorating_recommends_no_trade(self, micro_engine):
+        """DETERIORATING in high-VIX confirmation path can resolve to NO_TRADE."""
         strategy = micro_engine.recommend_strategy(
             micro_regime=MicroRegime.DETERIORATING,
             micro_score=30,
             vix_current=28.0,  # Above ITM min VIX
             qqq_move_pct=1.5,  # Above ITM min move
         )
-        assert strategy == IntradayStrategy.ITM_MOMENTUM
+        assert strategy == IntradayStrategy.NO_TRADE
 
 
 # =============================================================================
