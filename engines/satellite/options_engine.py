@@ -3741,19 +3741,30 @@ class OptionsEngine:
             elastic_widen_used = 0.0
 
             for widen in config.ELASTIC_DELTA_STEPS:
+                # V10.10: tighten short-leg delta cap in high-IV environments.
+                smoothed_vix = self._iv_sensor.get_smoothed_vix()
+                high_vix_thr = float(
+                    getattr(config, "CREDIT_SPREAD_SHORT_LEG_HIGH_VIX_THRESHOLD", 25.0)
+                )
+                base_delta_max = float(getattr(config, "CREDIT_SPREAD_SHORT_LEG_DELTA_MAX", 0.45))
+                if smoothed_vix > high_vix_thr:
+                    base_delta_max = float(
+                        getattr(
+                            config, "CREDIT_SPREAD_SHORT_LEG_DELTA_MAX_HIGH_VIX", base_delta_max
+                        )
+                    )
                 delta_min = max(
                     config.ELASTIC_DELTA_FLOOR,
                     config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN - widen,
                 )
                 delta_max = min(
                     config.ELASTIC_DELTA_CEILING,
-                    config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX + widen,
+                    base_delta_max + widen,
                 )
 
                 delta_pass_count = sum(1 for p in puts if delta_min <= abs(p.delta) <= delta_max)
                 # V2.25 Fix #3: IV-adaptive credit floor
                 # Q1 2022: 116 rejections because $0.30 floor too high at VIX > 30
-                smoothed_vix = self._iv_sensor.get_smoothed_vix()
                 effective_min_credit = config.CREDIT_SPREAD_MIN_CREDIT
                 if smoothed_vix > config.CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD:
                     effective_min_credit = config.CREDIT_SPREAD_MIN_CREDIT_HIGH_IV
@@ -3898,18 +3909,29 @@ class OptionsEngine:
             elastic_widen_used = 0.0
 
             for widen in config.ELASTIC_DELTA_STEPS:
+                # V10.10: tighten short-leg delta cap in high-IV environments.
+                smoothed_vix = self._iv_sensor.get_smoothed_vix()
+                high_vix_thr = float(
+                    getattr(config, "CREDIT_SPREAD_SHORT_LEG_HIGH_VIX_THRESHOLD", 25.0)
+                )
+                base_delta_max = float(getattr(config, "CREDIT_SPREAD_SHORT_LEG_DELTA_MAX", 0.45))
+                if smoothed_vix > high_vix_thr:
+                    base_delta_max = float(
+                        getattr(
+                            config, "CREDIT_SPREAD_SHORT_LEG_DELTA_MAX_HIGH_VIX", base_delta_max
+                        )
+                    )
                 delta_min = max(
                     config.ELASTIC_DELTA_FLOOR,
                     config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN - widen,
                 )
                 delta_max = min(
                     config.ELASTIC_DELTA_CEILING,
-                    config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX + widen,
+                    base_delta_max + widen,
                 )
 
                 delta_pass_count = sum(1 for c in calls if delta_min <= abs(c.delta) <= delta_max)
                 # V2.25 Fix #3: IV-adaptive credit floor
-                smoothed_vix = self._iv_sensor.get_smoothed_vix()
                 effective_min_credit = config.CREDIT_SPREAD_MIN_CREDIT
                 if smoothed_vix > config.CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD:
                     effective_min_credit = config.CREDIT_SPREAD_MIN_CREDIT_HIGH_IV

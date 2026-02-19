@@ -77,8 +77,16 @@ class VASSEntryEngine:
 
         self._log(f"VASS: Unknown key {key}, defaulting to MEDIUM debit spread")
         if direction == "BULLISH":
-            return spread_strategy_enum.BULL_CALL_DEBIT, 7, 21
-        return spread_strategy_enum.BEAR_PUT_DEBIT, 7, 21
+            return (
+                spread_strategy_enum.BULL_CALL_DEBIT,
+                config.VASS_MEDIUM_IV_DTE_MIN,
+                config.VASS_MEDIUM_IV_DTE_MAX,
+            )
+        return (
+            spread_strategy_enum.BEAR_PUT_DEBIT,
+            config.VASS_MEDIUM_IV_DTE_MIN,
+            config.VASS_MEDIUM_IV_DTE_MAX,
+        )
 
     def _parse_hhmm_to_minutes(self, hhmm: str, default_minutes: int) -> int:
         """Parse HH:MM into minutes-from-midnight; fallback to default on parse failure."""

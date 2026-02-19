@@ -911,6 +911,8 @@ CREDIT_SPREAD_PROFIT_TARGET = 0.50  # Exit at 50% of max profit
 CREDIT_SPREAD_STOP_MULTIPLIER = 0.40  # V10: tightened from 0.60 (R:R 0.45→0.67)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg delta range (OTM)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.45  # V6.13 OPT: Improve credit spread constructability
+CREDIT_SPREAD_SHORT_LEG_DELTA_MAX_HIGH_VIX = 0.35  # V10.10: tighten short leg delta in high-IV tape
+CREDIT_SPREAD_SHORT_LEG_HIGH_VIX_THRESHOLD = 25.0
 # T-21: Credit-path liquidity quality gates (parity with debit selector).
 CREDIT_SPREAD_MIN_OPEN_INTEREST = 20  # V6.15 TUNE: Improve credit spread constructability
 CREDIT_SPREAD_MAX_SPREAD_PCT = 0.50  # V6.15 TUNE: Loosen spread-quality gate moderately
@@ -1883,7 +1885,7 @@ INTRADAY_ITM_STOP_FLOOR_HIGH_VIX = 0.50  # V10.8: wider ITM stop floor in high V
 INTRADAY_HIGH_VIX_STOP_MAX_PCT = (
     0.55  # V10.8: allow high-VIX ITM stops to breathe on multi-day holds
 )
-INTRADAY_ITM_TRAIL_TRIGGER = 0.15  # V10.8: start protecting gains earlier on held ITM trades
+INTRADAY_ITM_TRAIL_TRIGGER = 0.20  # V10.8: start protecting gains earlier on held ITM trades
 INTRADAY_ITM_TRAIL_PCT = 0.40  # V10.8: retain more profits once trail is active
 
 # V9.2: Per-strategy intraday exits (previously universal target/stop)
@@ -1920,9 +1922,9 @@ INTRADAY_DEBIT_MOMENTUM_TRAIL_PCT = 0.50  # Standard 50% retracement from peak
 INTRADAY_DEBIT_FADE_DELTA_MIN = 0.20  # Legacy alias
 INTRADAY_DEBIT_FADE_DELTA_MAX = 0.50  # Legacy alias
 MICRO_DEBIT_FADE_DELTA_TARGET = 0.45  # ATM fade target delta
-MICRO_DEBIT_FADE_DELTA_MIN = 0.40
-MICRO_DEBIT_FADE_DELTA_MAX = 0.55
-MICRO_OTM_MOMENTUM_DELTA_MIN = 0.30
+MICRO_DEBIT_FADE_DELTA_MIN = 0.42
+MICRO_DEBIT_FADE_DELTA_MAX = 0.52
+MICRO_OTM_MOMENTUM_DELTA_MIN = 0.35
 MICRO_OTM_MOMENTUM_DELTA_MAX = 0.50
 
 # V6.4: DEBIT_MOMENTUM: Trend confirmation needs ATM-ish options (delta 0.45-0.65)
@@ -2005,9 +2007,9 @@ ITM_DTE_MAX = 7
 ITM_TARGET_DTE = 6
 ITM_MAX_CONCURRENT_POSITIONS = 1
 ITM_MAX_CONTRACTS_HARD_CAP = 8
-ITM_TARGET_PCT = 0.35
-ITM_STOP_PCT = 0.35
-ITM_TRAIL_TRIGGER = 0.15
+ITM_TARGET_PCT = 0.38
+ITM_STOP_PCT = 0.30
+ITM_TRAIL_TRIGGER = 0.20
 ITM_TRAIL_PCT = 0.40
 ITM_MAX_HOLD_DAYS = 4
 ITM_FORCE_EXIT_DTE = 1
