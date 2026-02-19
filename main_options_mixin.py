@@ -1,0 +1,1530 @@
+from typing import List, Optional, Tuple
+
+from AlgorithmImports import *
+
+import config
+from engines.satellite.options_engine import OptionContract, SpreadStrategy
+from models.enums import IntradayStrategy, OptionDirection
+
+
+class MainOptionsMixin:
+    """Large options-scan methods extracted from main.py (move-only)."""
+
+    def _select_intraday_option_contract(
+        self,
+        chain,
+        direction: OptionDirection,
+        strategy: IntradayStrategy = None,
+        vix_current: Optional[float] = None,
+    ) -> Optional[OptionContract]:
+        """Select intraday option contract for MICRO entry."""
+        if chain is None:
+            return None
+
+        qqq_price = self.Securities[self.qqq].Price
+
+        # V2.14 Fix #20: Strategy-aware delta selection
+        if strategy == IntradayStrategy.ITM_MOMENTUM:
+            if bool(getattr(config, "ITM_V2_ENABLED", False)):
+                delta_min_v2 = float(getattr(config, "ITM_V2_DELTA_MIN", 0.65))
+                delta_max_v2 = float(getattr(config, "ITM_V2_DELTA_MAX", 0.75))
+                target_delta = (delta_min_v2 + delta_max_v2) / 2.0
+                self.Log(
+                    f"INTRADAY_DELTA: ITM_V2 using delta_mid={target_delta:.2f} "
+                    f"(range {delta_min_v2:.2f}-{delta_max_v2:.2f})"
+                )
+            else:
+                target_delta = config.INTRADAY_ITM_DELTA  # 0.70 for stock replacement
+                self.Log(f"INTRADAY_DELTA: ITM_MOMENTUM using delta={target_delta}")
+        else:
+            target_delta = config.OPTIONS_INTRADAY_DELTA_TARGET  # 0.30 for DEBIT_FADE
+
+        # Determine which OptionRight to filter for
+        required_right = OptionRight.Call if direction == OptionDirection.CALL else OptionRight.Put
+
+        # V9.5: Regime-aware MICRO DTE routing
+        effective_dte_min = int(getattr(config, "OPTIONS_INTRADAY_DTE_MIN", 1))
+        effective_dte_max = int(getattr(config, "OPTIONS_INTRADAY_DTE_MAX", 5))
+        if bool(getattr(config, "MICRO_DTE_ROUTING_ENABLED", False)) and vix_current is not None:
+            try:
+                vix_val = float(vix_current)
+                low_thr = float(getattr(config, "MICRO_DTE_LOW_VIX_THRESHOLD", 16.0))
+                high_thr = float(getattr(config, "MICRO_DTE_HIGH_VIX_THRESHOLD", 25.0))
+                if vix_val < low_thr:
+                    effective_dte_min = int(getattr(config, "MICRO_DTE_LOW_VIX_MIN", 2))
+                    effective_dte_max = int(getattr(config, "MICRO_DTE_LOW_VIX_MAX", 3))
+                elif vix_val >= high_thr:
+                    effective_dte_min = int(getattr(config, "MICRO_DTE_HIGH_VIX_MIN", 2))
+                    effective_dte_max = int(getattr(config, "MICRO_DTE_HIGH_VIX_MAX", 4))
+                else:
+                    effective_dte_min = int(getattr(config, "MICRO_DTE_MEDIUM_VIX_MIN", 2))
+                    effective_dte_max = int(getattr(config, "MICRO_DTE_MEDIUM_VIX_MAX", 3))
+            except Exception:
+                pass
+
+        # ITM DTE overlay.
+        if strategy == IntradayStrategy.ITM_MOMENTUM:
+            if bool(getattr(config, "ITM_V2_ENABLED", False)):
+                effective_dte_min = int(getattr(config, "ITM_V2_DTE_MIN", 5))
+                effective_dte_max = int(getattr(config, "ITM_V2_DTE_MAX", 7))
+                key = f"ITM_V2|{effective_dte_min}|{effective_dte_max}"
+                last_log_at = self._last_intraday_dte_routing_log_by_key.get(key)
+                should_log = last_log_at is None or (
+                    self.Time - last_log_at
+                ).total_seconds() / 60.0 >= int(
+                    getattr(config, "MICRO_DTE_DIAG_LOG_INTERVAL_MIN", 30)
+                )
+                if should_log:
+                    self.Log(
+                        f"INTRADAY_DTE_ROUTING: ITM_V2 fixed window DTE=[{effective_dte_min}-{effective_dte_max}]"
+                    )
+                    self._last_intraday_dte_routing_log_by_key[key] = self.Time
+            elif vix_current is not None:
+                try:
+                    vix_val = float(vix_current)
+                    low_thr = float(getattr(config, "MICRO_DTE_LOW_VIX_THRESHOLD", 18.0))
+                    high_thr = float(getattr(config, "MICRO_DTE_HIGH_VIX_THRESHOLD", 25.0))
+                    if vix_val < low_thr:
+                        itm_floor = int(getattr(config, "MICRO_ITM_DTE_MIN_LOW_VIX", 3))
+                        itm_tier = "LOW"
+                    elif vix_val >= high_thr:
+                        itm_floor = int(getattr(config, "MICRO_ITM_DTE_MIN_HIGH_VIX", 2))
+                        itm_tier = "HIGH"
+                    else:
+                        itm_floor = int(getattr(config, "MICRO_ITM_DTE_MIN_MED_VIX", 3))
+                        itm_tier = "MED"
+                    itm_max = int(getattr(config, "MICRO_ITM_DTE_MAX", 5))
+                    effective_dte_min = max(effective_dte_min, itm_floor)
+                    effective_dte_max = min(effective_dte_max, itm_max)
+                    enable_backtest = bool(
+                        getattr(config, "MICRO_DTE_DIAG_LOG_BACKTEST_ENABLED", True)
+                    )
+                    is_live = bool(getattr(self, "LiveMode", False))
+                    if is_live or enable_backtest:
+                        try:
+                            interval_min = int(
+                                getattr(config, "MICRO_DTE_DIAG_LOG_INTERVAL_MIN", 30)
+                            )
+                        except Exception:
+                            interval_min = 30
+                        key = f"ITM_MOMENTUM|{itm_tier}|{effective_dte_min}|{effective_dte_max}"
+                        last_log_at = self._last_intraday_dte_routing_log_by_key.get(key)
+                        should_log = (
+                            last_log_at is None
+                            or (self.Time - last_log_at).total_seconds() / 60.0 >= interval_min
+                        )
+                        if should_log:
+                            self.Log(
+                                f"INTRADAY_DTE_ROUTING: ITM_MOMENTUM | VIX={vix_val:.1f} tier={itm_tier} | "
+                                f"DTE=[{effective_dte_min}-{effective_dte_max}]"
+                            )
+                            self._last_intraday_dte_routing_log_by_key[key] = self.Time
+                except Exception:
+                    pass
+
+        # V2.13 Fix #16: Add filter diagnostics to track why contracts are rejected
+        filter_counts = {
+            "direction": 0,
+            "dte": 0,
+            "greeks": 0,
+            "delta": 0,
+            "oi": 0,
+            "prices": 0,
+            "spread": 0,
+        }
+        total_contracts = 0
+
+        # Filter for target delta, 1-5 DTE, and MATCHING DIRECTION
+        candidates = []
+        for contract in chain:
+            total_contracts += 1
+
+            # V2.3.4 FIX: Filter by direction FIRST
+            if contract.Right != required_right:
+                filter_counts["direction"] += 1
+                continue
+
+            # V6.0 P0 FIX: Triple validation - contract.Right vs Symbol.ID.OptionRight vs OCC symbol
+            # This catches any internal inconsistency in the contract data
+            symbol_right = contract.Symbol.ID.OptionRight
+            occ_symbol = str(contract.Symbol)
+            # OCC format: "QQQ   YYMMDDCSSSSSSSS" where C/P is at position after date
+            occ_right_char = None
+            for char in occ_symbol:
+                if char in ("C", "P"):
+                    occ_right_char = char
+                    break
+
+            expected_occ_char = "C" if required_right == OptionRight.Call else "P"
+
+            # Validate all three sources agree
+            if contract.Right != symbol_right:
+                self.Log(
+                    f"RIGHT_MISMATCH_BLOCKED: contract.Right={contract.Right} vs "
+                    f"Symbol.ID.OptionRight={symbol_right} | {occ_symbol}"
+                )
+                filter_counts["direction"] += 1
+                continue
+
+            if occ_right_char and occ_right_char != expected_occ_char:
+                self.Log(
+                    f"RIGHT_MISMATCH_BLOCKED: OCC symbol has '{occ_right_char}' but "
+                    f"expected '{expected_occ_char}' | {occ_symbol}"
+                )
+                filter_counts["direction"] += 1
+                continue
+
+            # Check DTE using config values (1-5 for intraday, V2.13)
+            dte = (contract.Expiry - self.Time).days
+            if dte < effective_dte_min or dte > effective_dte_max:
+                filter_counts["dte"] += 1
+                continue
+
+            # V2.3: Get delta and check if within tolerance of target
+            # V2.12 Fix #7: Skip contracts with missing or zero Greeks (backtest data gaps)
+            if not hasattr(contract, "Greeks") or contract.Greeks.Delta == 0:
+                filter_counts["greeks"] += 1
+                continue  # Skip contracts without valid Greeks data
+            contract_delta = abs(contract.Greeks.Delta)
+            delta_diff = abs(contract_delta - target_delta)
+            if strategy == IntradayStrategy.ITM_MOMENTUM and bool(
+                getattr(config, "ITM_V2_ENABLED", False)
+            ):
+                itm_v2_delta_min = float(getattr(config, "ITM_V2_DELTA_MIN", 0.65))
+                itm_v2_delta_max = float(getattr(config, "ITM_V2_DELTA_MAX", 0.75))
+                if contract_delta < itm_v2_delta_min or contract_delta > itm_v2_delta_max:
+                    filter_counts["delta"] += 1
+                    continue
+            elif delta_diff > config.OPTIONS_DELTA_TOLERANCE:
+                filter_counts["delta"] += 1
+                continue
+
+            # Check liquidity (relaxed for 0DTE)
+            if contract.OpenInterest < config.OPTIONS_MIN_OPEN_INTEREST:
+                filter_counts["oi"] += 1
+                continue
+
+            # Check spread - use safe price getter
+            bid, ask = self._get_contract_prices(contract)
+            if bid <= 0 or ask <= 0:
+                filter_counts["prices"] += 1
+                continue
+
+            mid_price = (bid + ask) / 2
+            spread_pct = (ask - bid) / mid_price if mid_price > 0 else 1.0
+
+            if spread_pct > config.OPTIONS_SPREAD_WARNING_PCT:
+                filter_counts["spread"] += 1
+                continue
+
+            # V6.0 P0 FIX: Derive direction from ACTUAL contract.Right, not requested direction
+            # This ensures OptionContract.direction matches what we're actually trading
+            actual_direction = (
+                OptionDirection.CALL if contract.Right == OptionRight.Call else OptionDirection.PUT
+            )
+
+            # Create OptionContract object with direction from actual contract
+            opt_contract = OptionContract(
+                symbol=str(contract.Symbol),
+                underlying="QQQ",
+                direction=actual_direction,
+                strike=contract.Strike,
+                expiry=str(contract.Expiry.date()),
+                delta=contract_delta,
+                gamma=contract.Greeks.Gamma if hasattr(contract, "Greeks") else 0.0,
+                vega=contract.Greeks.Vega if hasattr(contract, "Greeks") else 0.0,
+                theta=contract.Greeks.Theta if hasattr(contract, "Greeks") else 0.0,
+                bid=bid,
+                ask=ask,
+                mid_price=mid_price,
+                open_interest=contract.OpenInterest,
+                days_to_expiry=dte,
+            )
+
+            # Contract scoring:
+            # - ITM_MOMENTUM: target DTE proximity + liquidity/OI quality (multi-day hold intent)
+            # - Others: preserve legacy low-DTE preference
+            delta_score = 1.0 - (delta_diff / config.OPTIONS_DELTA_TOLERANCE)
+            spread_score = 1.0 - spread_pct
+            if strategy == IntradayStrategy.ITM_MOMENTUM:
+                try:
+                    vix_val = float(vix_current) if vix_current is not None else None
+                except Exception:
+                    vix_val = None
+                if bool(getattr(config, "ITM_V2_ENABLED", False)):
+                    target_dte = int(getattr(config, "ITM_V2_TARGET_DTE", 6))
+                else:
+                    low_thr = float(getattr(config, "MICRO_DTE_LOW_VIX_THRESHOLD", 18.0))
+                    high_thr = float(getattr(config, "MICRO_DTE_HIGH_VIX_THRESHOLD", 25.0))
+                    if vix_val is not None and vix_val < low_thr:
+                        target_dte = int(getattr(config, "INTRADAY_ITM_TARGET_DTE_LOW_VIX", 4))
+                    elif vix_val is not None and vix_val >= high_thr:
+                        target_dte = int(getattr(config, "INTRADAY_ITM_TARGET_DTE_HIGH_VIX", 3))
+                    else:
+                        target_dte = int(getattr(config, "INTRADAY_ITM_TARGET_DTE_MED_VIX", 3))
+                dte_range = max(1, effective_dte_max - effective_dte_min)
+                dte_score = max(0.0, 1.0 - (abs(dte - target_dte) / dte_range))
+                oi_soft_cap = max(1, int(getattr(config, "INTRADAY_ITM_OI_SOFT_CAP", 2000)))
+                oi_score = min(float(contract.OpenInterest), float(oi_soft_cap)) / float(
+                    oi_soft_cap
+                )
+
+                w_delta = float(getattr(config, "INTRADAY_ITM_SCORE_DELTA_WEIGHT", 0.45))
+                w_dte = float(getattr(config, "INTRADAY_ITM_SCORE_DTE_WEIGHT", 0.30))
+                w_spread = float(getattr(config, "INTRADAY_ITM_SCORE_SPREAD_WEIGHT", 0.20))
+                w_oi = float(getattr(config, "INTRADAY_ITM_SCORE_OI_WEIGHT", 0.05))
+                weight_sum = max(1e-9, w_delta + w_dte + w_spread + w_oi)
+                score = (
+                    (delta_score * w_delta)
+                    + (dte_score * w_dte)
+                    + (spread_score * w_spread)
+                    + (oi_score * w_oi)
+                ) / weight_sum
+            else:
+                dte_score = 1.0 / (1.0 + dte)  # Legacy: strongly prefer lower DTE
+                score = (delta_score * 0.4) + (dte_score * 0.4) + (spread_score * 0.2)
+            candidates.append((score, opt_contract))
+
+        if not candidates:
+            # V2.13 Fix #16: Log filter diagnostics to identify Black Hole causes
+            # T-17 FIX: Enhanced diagnostics with actionable insights
+            # Calculate where contracts are being lost in the funnel
+            passed_direction = total_contracts - filter_counts["direction"]
+            passed_dte = passed_direction - filter_counts["dte"]
+            passed_greeks = passed_dte - filter_counts["greeks"]
+            passed_delta = passed_greeks - filter_counts["delta"]
+
+            # Identify the primary blocker
+            if filter_counts["direction"] > total_contracts * 0.9:
+                primary_blocker = "DIRECTION (wrong CALL/PUT ratio in chain)"
+            elif filter_counts["dte"] > passed_direction * 0.9:
+                primary_blocker = f"DTE (outside {effective_dte_min}-{effective_dte_max} range)"
+            elif filter_counts["greeks"] > passed_dte * 0.9:
+                primary_blocker = "GREEKS (missing or zero delta data)"
+            elif filter_counts["delta"] > passed_greeks * 0.5:
+                primary_blocker = (
+                    f"DELTA (outside {target_delta:.2f} +/- {config.OPTIONS_DELTA_TOLERANCE})"
+                )
+            elif filter_counts["prices"] > 0:
+                primary_blocker = "PRICES (bid/ask <= 0)"
+            else:
+                primary_blocker = "SPREAD or OI"
+
+            self.Log(
+                f"INTRADAY_FILTER_FAIL: {direction.value} | Total={total_contracts} | "
+                f"Dir={filter_counts['direction']} DTE={filter_counts['dte']} "
+                f"Greeks={filter_counts['greeks']} Delta={filter_counts['delta']} "
+                f"OI={filter_counts['oi']} Prices={filter_counts['prices']} "
+                f"Spread={filter_counts['spread']} | "
+                f"Funnel: {total_contracts}→{passed_direction}→{passed_dte}→{passed_greeks}→{passed_delta} | "
+                f"Blocker={primary_blocker}"
+            )
+            return None
+
+        # Return best candidate (closest to target delta with lowest DTE)
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        best = candidates[0][1]
+        # V6.0 P0 FIX: Log the ACTUAL direction from contract, not requested direction
+        self.Log(
+            f"INTRADAY: Selected {best.direction.value} | Strike={best.strike} | "
+            f"Delta={best.delta:.2f} | DTE={best.days_to_expiry} | Mid=${best.mid_price:.2f} | "
+            f"Symbol={best.symbol}"
+        )
+        return best
+
+    def _scan_options_signals(self, data: Slice) -> None:
+        """
+        V2.1.1: Scan for Options entry signals during intraday session.
+
+        Dual-Mode Architecture:
+        - Swing Mode (5-45 DTE): 4-factor entry scoring
+        - Intraday Mode (0-2 DTE): Micro Regime Engine
+
+        V2.3.20: Now allows options during cold start with 50% sizing.
+
+        Args:
+            data: Current data slice.
+        """
+        # V2.3.20: Calculate size multiplier for cold start
+        is_cold_start = self.cold_start_engine.is_cold_start_active()
+        size_multiplier = config.OPTIONS_COLD_START_MULTIPLIER if is_cold_start else 1.0
+        size_multiplier *= self._premarket_vix_size_mult
+
+        # Skip if indicators not ready
+        if not self.qqq_adx.IsReady or not self.qqq_sma200.IsReady:
+            return
+
+        # V6.14: L3 freeze window blocks all new options entries intraday.
+        if self._is_premarket_ladder_entry_block_active():
+            if self.Time.minute % 15 == 0:
+                until_h, until_m = self._premarket_vix_entry_block_until
+                self.Log(
+                    f"PREMARKET_LADDER_BLOCK: Options blocked until {until_h:02d}:{until_m:02d} | "
+                    f"{self._premarket_vix_ladder_reason}"
+                )
+            return
+
+        # V2.5 PART 19 FIX: Stateless reconciliation - detect zombie state
+        # If internal tracker thinks we have a position, but portfolio is empty,
+        # clear the zombie state to unblock trading
+        if self.options_engine.has_position():
+            actual_option_count = self._get_actual_option_count()
+            if actual_option_count == 0:
+                self.Log(
+                    "OPT_ZOMBIE_FIX: Internal state shows position but portfolio empty - clearing zombie state"
+                )
+                self.options_engine.clear_all_positions()
+            else:
+                # If an intraday position is open, skip intraday scan
+                if self.options_engine.has_intraday_position():
+                    return
+
+        # V2.3 FIX: Skip if kill switch triggered (prevents new entries after liquidation)
+        if self._kill_switch_handled_today:
+            # V2.3 DEBUG: Log once per day when options blocked by kill switch (live only)
+            if self.Time.hour == 10 and self.Time.minute == 30 and self.LiveMode:
+                self.Log("OPT_SCAN: Blocked - Kill switch handled today")
+            return
+
+        # V2.27: Skip-day enforcement after Tier 2+ kill switch
+        if self.risk_engine.is_ks_skip_day(str(self.Time.date())):
+            if self.Time.hour == 10 and self.Time.minute == 30:
+                self.Log("OPT_SCAN: Blocked - KS skip day active")
+            return
+
+        # V2.9: Skip if in settlement cooldown (Bug #6 fix)
+        if not self._can_trade_options_settlement_aware():
+            return
+
+        # V2.11 (Pitfall #6): Margin-aware sizing guard
+        # Check available margin BEFORE calculating any allocation
+        margin_remaining = self.portfolio_router.get_effective_margin_remaining()
+        # V3.0 SCALABILITY FIX: Use percentage-based minimum (was hardcoded $1,000)
+        # At $50K: 2% = $1,000, at $200K: 2% = $4,000 (scales with portfolio)
+        portfolio_value = self.Portfolio.TotalPortfolioValue
+        min_margin_required = portfolio_value * config.OPTIONS_MIN_MARGIN_PCT
+        if margin_remaining < min_margin_required:
+            if self.Time.minute == 0:  # Log once per hour to avoid spam
+                self.Log(
+                    f"OPT_MARGIN_GUARD: Margin ${margin_remaining:,.0f} < "
+                    f"${min_margin_required:,.0f} ({config.OPTIONS_MIN_MARGIN_PCT:.0%} of portfolio) | Options blocked"
+                )
+            return
+
+        # Calculate effective portfolio value capped by available margin
+        # V2.19 FIX: Use min() to cap at OPTIONS_MAX_MARGIN_CAP (not subtract it)
+        # V3.0 SCALABILITY FIX: Use percentage-based cap (OPTIONS_MAX_MARGIN_PCT)
+        base_tradeable = self.capital_engine.calculate(
+            self.Portfolio.TotalPortfolioValue
+        ).tradeable_eq
+        # Cap margin used for options at percentage of portfolio (scales with size)
+        options_max_margin = portfolio_value * config.OPTIONS_MAX_MARGIN_PCT
+        margin_available_for_options = min(margin_remaining, options_max_margin)
+        # max_portfolio_from_margin = margin_available / OPTIONS_SWING_ALLOCATION
+        # This ensures: effective_portfolio * OPTIONS_SWING_ALLOCATION <= margin_available
+        max_portfolio_from_margin = (
+            margin_available_for_options / config.OPTIONS_SWING_ALLOCATION
+            if config.OPTIONS_SWING_ALLOCATION > 0
+            else base_tradeable
+        )
+        effective_portfolio_value = min(base_tradeable, max_portfolio_from_margin)
+
+        if effective_portfolio_value < base_tradeable:
+            self.Log(
+                f"OPT_MARGIN_CAP: Sizing capped by margin | "
+                f"Base=${base_tradeable:,.0f} | Effective=${effective_portfolio_value:,.0f} | "
+                f"Margin_remaining=${margin_remaining:,.0f}"
+            )
+
+        # V2.3.6 FIX: Scan during active window (10:00-15:00)
+        # Removed 10:30 delay - momentum/credit strategies need 10:00-10:30 window
+        # Strategy-specific timing (if needed) should be handled in Options Engine
+        current_hour = self.Time.hour
+        current_minute = self.Time.minute
+        # Before 10:00 or after 15:00 -> skip
+        if current_hour < 10 or current_hour >= 15:
+            return
+
+        # CRITICAL FIX: Validate options symbol is resolved before use
+        if not self._validate_options_symbol():
+            return
+
+        # Get options chain
+        chain = self._get_valid_options_chain(data.OptionChains, mode_label="INTRADAY")
+        if chain is None:
+            return
+
+        # Get current values
+        qqq_price, adx_value, ma200_value, ma50_value = self._get_options_market_snapshot()
+
+        # V2.4.1: Throttle intraday scanning to every 15 minutes (was every minute)
+        # This reduces 95 scans/hour to 4 scans/hour
+        # V2.20: Also check rejection cooldown for intraday mode
+        intraday_cooldown_active = (
+            self._options_intraday_cooldown_until is not None
+            and self.Time < self._options_intraday_cooldown_until
+        )
+        if self._should_scan_intraday() and self._qqq_at_open > 0 and not intraday_cooldown_active:
+            # V5.3: Check position limits before scanning
+            can_intraday, intraday_limit_reason = self.options_engine.can_enter_intraday()
+            if not can_intraday:
+                # V6.2: Log position limit block (was silent - Bug #3 instrumentation)
+                self.Log(f"INTRADAY: Blocked - {intraday_limit_reason}")
+            else:
+                # V2.4.1 FIX: Use UVXY-derived VIX proxy instead of stale daily VIX
+                # self._current_vix is daily close and doesn't change intraday
+                vix_intraday = self._get_vix_intraday_proxy()
+
+                # V6.2: Get CBOE VIX level for consistent Micro Regime classification
+                # This ensures all _micro_regime_engine.update() calls use same VIX level
+                vix_level_cboe = self._get_vix_level()
+
+                # Get macro regime score for direction conflict check
+                regime_score = self._get_effective_regime_score_for_options()
+
+                # V6.3: Calculate UVXY intraday change for conviction check
+                uvxy_pct = 0.0
+                if hasattr(self, "_uvxy_at_open") and self._uvxy_at_open > 0:
+                    uvxy_current = self.Securities[self.uvxy].Price if hasattr(self, "uvxy") else 0
+                    if uvxy_current > 0:
+                        uvxy_pct = (uvxy_current - self._uvxy_at_open) / self._uvxy_at_open
+
+                # V6.3: Unified intraday signal generation (fixes dual-update bug)
+                # Single method handles: update, conviction, resolution, direction conflict
+                # Replaces scattered orchestration that caused state divergence
+                (
+                    should_trade,
+                    intraday_direction,
+                    micro_state,
+                    signal_reason,
+                ) = self.options_engine.generate_micro_intraday_signal(
+                    vix_current=vix_intraday,
+                    vix_open=self._vix_at_open,
+                    qqq_current=qqq_price,
+                    qqq_open=self._qqq_at_open,
+                    uvxy_pct=uvxy_pct,
+                    macro_regime_score=regime_score,
+                    current_time=str(self.Time),
+                    vix_level_override=vix_level_cboe,
+                    premarket_shock_pct=self._get_premarket_shock_memory_pct(),
+                )
+
+                intraday_size_multiplier = size_multiplier
+                if "NEUTRAL_ALIGNED_HALF" in signal_reason:
+                    intraday_size_multiplier *= config.NEUTRAL_ALIGNED_SIZE_MULT
+                if "MISALIGNED_HALF" in signal_reason:
+                    intraday_size_multiplier *= getattr(config, "MICRO_MISALIGNED_SIZE_MULT", 0.50)
+
+                intraday_signal_id = (
+                    f"MICRO-{self.Time.strftime('%Y%m%d-%H%M')}-"
+                    f"{self._diag_intraday_candidate_count + 1}"
+                )
+
+                forced_intraday_strategy = None
+                if bool(getattr(config, "ITM_V2_ENABLED", False)):
+                    itm_dir, itm_reason = self.options_engine.get_itm_v2_direction_proposal(
+                        qqq_current=qqq_price
+                    )
+                    micro_is_no_trade = (
+                        micro_state is None
+                        or micro_state.recommended_strategy == IntradayStrategy.NO_TRADE
+                    )
+                    if itm_dir is not None and (not should_trade or micro_is_no_trade):
+                        should_trade = True
+                        intraday_direction = itm_dir
+                        forced_intraday_strategy = IntradayStrategy.ITM_MOMENTUM
+                        signal_reason = f"ITM_V2_SOVEREIGN: {itm_reason}"
+                        if micro_state is not None:
+                            micro_state.recommended_strategy = IntradayStrategy.ITM_MOMENTUM
+                            micro_state.recommended_direction = itm_dir
+
+                if not should_trade:
+                    self.Log(f"INTRADAY: Blocked - {signal_reason}")
+                    intraday_direction = None
+                    # V6.15: Allow one retry if prior approved signal was dropped for temporary reasons.
+                    if (
+                        self._intraday_retry_once_pending
+                        and self._intraday_retry_expires is not None
+                        and self.Time <= self._intraday_retry_expires
+                        and self._intraday_retry_direction is not None
+                    ):
+                        should_trade = True
+                        intraday_direction = self._intraday_retry_direction
+                        signal_reason = (
+                            f"RETRY_ONCE: {self._intraday_retry_reason_code} | "
+                            f"Reusing prior direction={intraday_direction.value}"
+                        )
+                        self._intraday_retry_once_pending = False
+                        self._intraday_retry_expires = None
+                        self._intraday_retry_direction = None
+                        self._intraday_retry_reason_code = None
+                        retry_strategy = self.options_engine.get_last_intraday_strategy()
+                        if retry_strategy == IntradayStrategy.NO_TRADE:
+                            retry_strategy = (
+                                IntradayStrategy.ITM_MOMENTUM
+                                if bool(getattr(config, "ITM_V2_ENABLED", False))
+                                else IntradayStrategy.DEBIT_FADE
+                            )
+                        forced_intraday_strategy = retry_strategy
+                        self.Log(
+                            f"INTRADAY_RETRY: {signal_reason} | Strategy={retry_strategy.value}"
+                        )
+                else:
+                    if (
+                        intraday_direction == OptionDirection.CALL
+                        and self._is_premarket_ladder_call_block_active()
+                    ):
+                        intraday_direction = None
+                        signal_reason = (
+                            f"PREMARKET_LADDER_CALL_BLOCK: {self._premarket_vix_ladder_reason}"
+                        )
+                        self.Log(f"INTRADAY: Blocked - {signal_reason}")
+                    else:
+                        self._diag_intraday_candidate_count += 1
+                        self.Log(
+                            f"INTRADAY_SIGNAL_CANDIDATE: SignalId={intraday_signal_id} | {signal_reason} | "
+                            f"Direction={intraday_direction.value if intraday_direction else 'NONE'}"
+                        )
+
+                # If engine recommends NO_TRADE or conflict detected, skip contract selection
+                if intraday_direction is None:
+                    intraday_contract = None
+                else:
+                    self.Log(
+                        f"INTRADAY: Proceeding with ladder size mult {self._premarket_vix_size_mult:.2f}"
+                    )
+                    # STEP 2: Select contract matching ENGINE recommendation (not hardcoded fade)
+                    # V2.14 Fix #20: Pass strategy for delta-aware contract selection
+                    intraday_strategy = (
+                        forced_intraday_strategy or self.options_engine.get_last_intraday_strategy()
+                    )
+                    intraday_contract = self._select_intraday_option_contract(
+                        chain,
+                        intraday_direction,
+                        strategy=intraday_strategy,
+                        vix_current=vix_intraday,
+                    )
+                    if intraday_contract is None:
+                        self.Log(
+                            f"INTRADAY: No contract selected | "
+                            f"Dir={intraday_direction.value} | "
+                            f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'}"
+                        )
+                        # V9.1 FIX: Emit DROPPED log for contract selection failures.
+                        # Previously 124 candidates/quarter silently fell through with
+                        # no INTRADAY_SIGNAL_DROPPED, making funnel analysis incomplete.
+                        self._log_intraday_signal_dropped(
+                            signal_id=intraday_signal_id,
+                            code="E_NO_CONTRACT_SELECTED",
+                            reason=signal_reason,
+                            retry_hint="None",
+                            direction=intraday_direction,
+                            strategy=intraday_strategy,
+                            contract_symbol="NONE",
+                        )
+                        self._diag_intraday_dropped_count += 1
+                        self._inc_micro_dte_counter(self._diag_micro_dte_dropped, None)
+                        self._record_micro_drop_reason_dte("E_NO_CONTRACT_SELECTED", None)
+
+                # V2.13 Fix #18: Log bid/ask rejection (was silent)
+                if intraday_contract is not None and (
+                    intraday_contract.bid <= 0 or intraday_contract.ask <= 0
+                ):
+                    self.Log(
+                        f"INTRADAY_PRICE_REJECT: {intraday_contract.symbol} | "
+                        f"Bid={intraday_contract.bid} Ask={intraday_contract.ask}"
+                    )
+                    # V9.1 FIX: Emit DROPPED log for bid/ask rejection
+                    self._log_intraday_signal_dropped(
+                        signal_id=intraday_signal_id,
+                        code="E_BID_ASK_INVALID",
+                        reason=signal_reason,
+                        retry_hint="None",
+                        direction=intraday_direction,
+                        strategy=intraday_strategy,
+                        contract_symbol=str(intraday_contract.symbol),
+                    )
+                    self._diag_intraday_dropped_count += 1
+                    self._inc_micro_dte_counter(
+                        self._diag_micro_dte_dropped,
+                        getattr(intraday_contract, "days_to_expiry", None),
+                    )
+                    self._record_micro_drop_reason_dte(
+                        "E_BID_ASK_INVALID",
+                        getattr(intraday_contract, "days_to_expiry", None),
+                    )
+                    intraday_contract = None  # Clear invalid contract
+
+                # Verify contract has valid bid/ask before proceeding
+                if intraday_contract is not None:
+                    self._inc_micro_dte_counter(
+                        self._diag_micro_dte_candidates,
+                        getattr(intraday_contract, "days_to_expiry", None),
+                    )
+                    # V2.3.20: Pass size_multiplier for cold start reduced sizing
+                    # V2.4.1: Pass UVXY-derived VIX proxy
+                    # V2.5: Pass macro_regime_score for Grind-Up Override
+                    # V2.7: Use tradeable equity (not total portfolio) for cash-only sizing
+                    # V2.11: Use margin-capped effective_portfolio_value (Pitfall #6)
+                    # V3.2: Pass governor_scale for intraday Governor gate
+                    # V6.2: Pass CBOE VIX level for consistent classification
+                    # V6.5: Pass QQQ ATR for delta-scaled stop calculation
+                    qqq_atr_value = self.qqq_atr.Current.Value if self.qqq_atr.IsReady else 0.0
+                    intraday_signal = self.options_engine.check_intraday_entry_signal(
+                        vix_current=vix_intraday,  # V2.4.1: UVXY proxy
+                        vix_open=self._vix_at_open,
+                        qqq_current=qqq_price,
+                        qqq_open=self._qqq_at_open,
+                        current_hour=self.Time.hour,
+                        current_minute=self.Time.minute,
+                        current_time=str(self.Time),
+                        portfolio_value=effective_portfolio_value,  # V2.11: Margin-capped
+                        raw_portfolio_value=float(self.Portfolio.TotalPortfolioValue),
+                        best_contract=intraday_contract,
+                        size_multiplier=intraday_size_multiplier,
+                        macro_regime_score=regime_score,
+                        governor_scale=self._governor_scale,  # V3.2: Intraday Governor gate
+                        direction=intraday_direction,  # V6.0: Pass resolved direction
+                        forced_entry_strategy=forced_intraday_strategy,
+                        vix_level_override=vix_level_cboe,  # V6.2: CBOE VIX for level
+                        underlying_atr=qqq_atr_value,  # V6.5: For delta-scaled ATR stops
+                        micro_state=micro_state,  # Reuse approved state; avoid second-update drift
+                    )
+                    if intraday_signal:
+                        intraday_signal = self._attach_option_trace_metadata(
+                            intraday_signal, source="MICRO"
+                        )
+                        self.Log(
+                            f"INTRADAY_SIGNAL_APPROVED: SignalId={intraday_signal_id} | {signal_reason} | "
+                            f"Direction={intraday_direction.value if intraday_direction else 'NONE'} | "
+                            f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'} | "
+                            f"Contract={intraday_contract.symbol if intraday_contract else 'NONE'}"
+                        )
+                        self._diag_intraday_approved_count += 1
+                        self._inc_micro_dte_counter(
+                            self._diag_micro_dte_approved,
+                            getattr(intraday_contract, "days_to_expiry", None),
+                        )
+                        intraday_trace_id = (
+                            intraday_signal.metadata.get("trace_id", "")
+                            if intraday_signal.metadata
+                            else ""
+                        )
+                        self.portfolio_router.receive_signal(intraday_signal)
+                        # V2.3.13 FIX: MUST process immediately - signal was being queued but never executed!
+                        # The function returns early via swing spread path, so signal was lost
+                        self._process_immediate_signals()
+                        # Clear retry state after successful signal creation.
+                        self._intraday_retry_once_pending = False
+                        self._intraday_retry_expires = None
+                        self._intraday_retry_direction = None
+                        self._intraday_retry_reason_code = None
+                        # Emit explicit router rejection telemetry for this trace if execution blocked.
+                        if intraday_trace_id:
+                            for rej in self.portfolio_router.get_last_rejections():
+                                if rej.trace_id == intraday_trace_id and rej.source_tag.startswith(
+                                    "MICRO"
+                                ):
+                                    self._diag_intraday_router_reject_count += 1
+                                    self.Log(
+                                        f"INTRADAY_ROUTER_REJECTED: SignalId={intraday_signal_id} | "
+                                        f"Trace={rej.trace_id} | Code={rej.code} | Stage={rej.stage} | {rej.detail}"
+                                    )
+                                    break
+                        # V2.3.3 FIX: Don't return here - allow swing check to run too
+                        # Previously returned early, blocking swing spreads entirely
+                    else:
+                        # P1 Fix: Explicitly log approved signals that failed to produce an order
+                        if should_trade:
+                            # V6.15: Canonical drop reason coding for audit/debug.
+                            drop_code = "E_INTRADAY_NO_SIGNAL_UNCLASSIFIED"
+                            (
+                                intraday_validation_reason,
+                                intraday_validation_detail,
+                            ) = self.options_engine.pop_last_intraday_validation_failure()
+                            (
+                                can_retry_now,
+                                retry_reason_now,
+                            ) = self.options_engine.can_enter_intraday()
+                            retry_code_now = (retry_reason_now or "").split(":", 1)[0].strip()
+                            if intraday_validation_reason:
+                                drop_code = intraday_validation_reason
+                            elif not can_retry_now:
+                                drop_code = retry_code_now or "R_SLOT_LIMIT"
+                            elif self._options_intraday_cooldown_until and (
+                                self.Time < self._options_intraday_cooldown_until
+                            ):
+                                drop_code = "R_COOLDOWN_INTRADAY"
+                            elif self._margin_cb_in_progress or self._margin_call_cooldown_until:
+                                drop_code = "R_MARGIN_CB_ACTIVE"
+                            elif self.options_engine.has_intraday_position():
+                                drop_code = "R_DUPLICATE_INTRADAY_POSITION"
+                            elif intraday_contract is None:
+                                drop_code = "E_INTRADAY_NO_CONTRACT"
+                            elif intraday_direction is None:
+                                drop_code = "E_INTRADAY_NO_DIRECTION"
+
+                            drop_code = self._canonical_options_reason_code(drop_code)
+                            self._log_intraday_signal_dropped(
+                                signal_id=intraday_signal_id,
+                                code=drop_code,
+                                reason=signal_reason,
+                                retry_hint=retry_reason_now,
+                                direction=intraday_direction,
+                                strategy=intraday_strategy,
+                                contract_symbol=str(intraday_contract.symbol)
+                                if intraday_contract
+                                else "NONE",
+                                validation_detail=intraday_validation_detail,
+                            )
+                            self._diag_intraday_dropped_count += 1
+                            self._inc_micro_dte_counter(
+                                self._diag_micro_dte_dropped,
+                                getattr(intraday_contract, "days_to_expiry", None)
+                                if intraday_contract is not None
+                                else None,
+                            )
+                            self._record_micro_drop_reason_dte(
+                                drop_code,
+                                getattr(intraday_contract, "days_to_expiry", None)
+                                if intraday_contract is not None
+                                else None,
+                            )
+                            # V6.15: One retry on next eligible scan for temporary drop causes only.
+                            if drop_code in {
+                                "R_SLOT_TOTAL_MAX",
+                                "R_SLOT_INTRADAY_MAX",
+                                "R_COOLDOWN_INTRADAY",
+                                "R_MARGIN_CB_ACTIVE",
+                            }:
+                                self._intraday_retry_once_pending = True
+                                self._intraday_retry_expires = self.Time + timedelta(minutes=20)
+                                self._intraday_retry_direction = intraday_direction
+                                self._intraday_retry_reason_code = drop_code
+                                self.Log(
+                                    f"INTRADAY_RETRY_QUEUED: Code={drop_code} | "
+                                    f"Expires={self._intraday_retry_expires.strftime('%H:%M')}"
+                                )
+
+        # V2.20: Check rejection cooldowns for swing/spread modes
+        swing_cooldown_active = (
+            self._options_swing_cooldown_until is not None
+            and self.Time < self._options_swing_cooldown_until
+        )
+        spread_cooldown_active = (
+            self._options_spread_cooldown_until is not None
+            and self.Time < self._options_spread_cooldown_until
+        )
+        if swing_cooldown_active and spread_cooldown_active:
+            return  # Both modes in cooldown, skip entire swing/spread scan
+        if spread_cooldown_active:
+            # Only spread is in cooldown — skip spread path but allow single-leg swing
+            pass  # Will be checked again below before spread entry
+
+        # V2.3: Check for SWING mode entry using SPREADS
+        # V2.23: VASS routes to credit or debit based on IV environment
+        # - Regime > 60: Bull (Call Debit or Put Credit depending on IV)
+        # - Regime < 45: Bear (Put Debit or Call Credit depending on IV)
+        # - Regime 45-60: No trade (neutral)
+        # V2.24: Throttle swing spread scans to once per 15min (was 30min V2.19, was every minute before)
+        if hasattr(self, "_last_swing_scan_time") and self._last_swing_scan_time is not None:
+            minutes_since = (self.Time - self._last_swing_scan_time).total_seconds() / 60
+            if minutes_since < 15:
+                return
+        self._last_swing_scan_time = self.Time
+
+        regime_score = self._get_effective_regime_score_for_options()
+        context = self._resolve_vass_direction_context(
+            regime_score=regime_score,
+            size_multiplier=size_multiplier,
+            bull_profile_log_prefix="VASS_BULL_PROFILE_BLOCK_INTRADAY",
+            clamp_log_prefix="VASS_CLAMP_BLOCK_INTRADAY",
+            shock_log_prefix="VASS_SHOCK_OVERRIDE",
+        )
+        if context is None:
+            # No trade - either NEUTRAL macro with no conviction, or guarded block.
+            return
+        (
+            direction,
+            direction_str,
+            overlay_state,
+            size_multiplier,
+            vass_has_conviction,
+            vass_reason,
+            macro_direction,
+            resolve_reason,
+            resolved_direction,
+        ) = context
+
+        # V6.14: L2 call block applies to VASS path too.
+        if direction == OptionDirection.CALL and self._is_premarket_ladder_call_block_active():
+            if self.Time.minute % 15 == 0:
+                until_h, until_m = self._premarket_vix_call_block_until
+                self.Log(
+                    f"VASS_BLOCKED: CALL blocked until {until_h:02d}:{until_m:02d} | "
+                    f"{self._premarket_vix_ladder_reason}"
+                )
+            return
+
+        if vass_has_conviction:
+            self.Log(
+                f"OPTIONS_VASS_CONVICTION_INTRADAY: {vass_reason} | Macro={macro_direction} | "
+                f"Resolved={resolved_direction} | {resolve_reason}"
+            )
+
+        spy_open = float(getattr(self.options_engine, "_spy_at_open", 0.0) or 0.0)
+        spy_gap_pct = float(getattr(self.options_engine, "_spy_gap_pct", 0.0) or 0.0)
+        try:
+            spy_current = float(self.Securities[self.spy].Price)
+        except Exception:
+            spy_current = spy_open
+        spy_intraday_change_pct = (
+            ((spy_current - spy_open) / spy_open) * 100.0 if spy_open > 0 else 0.0
+        )
+        vix_intraday_change_pct = (
+            ((float(self._current_vix) - float(self._vix_at_open)) / float(self._vix_at_open))
+            * 100.0
+            if float(self._vix_at_open) > 0
+            else 0.0
+        )
+        swing_filters_ok, swing_filter_reason = self.options_engine.check_swing_filters(
+            direction=direction,
+            spy_gap_pct=spy_gap_pct,
+            spy_intraday_change_pct=spy_intraday_change_pct,
+            vix_intraday_change_pct=vix_intraday_change_pct,
+            current_hour=self.Time.hour,
+            current_minute=self.Time.minute,
+        )
+        if not swing_filters_ok:
+            self._diag_vass_block_count += 1
+            if self.Time.minute % 15 == 0:
+                self.Log(
+                    f"VASS_SKIPPED: Direction={direction.value} | "
+                    f"VIX={self._current_vix:.1f} | Regime={regime_score:.0f} | "
+                    f"ReasonCode=SWING_FILTER | ValidationFail={swing_filter_reason}"
+                )
+            return
+
+        # V2.23: VASS strategy selection — routes to credit or debit
+        strategy, vass_dte_min, vass_dte_max, is_credit = self._route_vass_strategy(
+            direction_str=direction_str,
+            overlay_state=overlay_state,
+        )
+        dte_ranges = self._build_vass_dte_fallbacks(vass_dte_min, vass_dte_max)
+        dte_min_all = min(r[0] for r in dte_ranges)
+        dte_max_all = max(r[1] for r in dte_ranges)
+
+        required_right = self._strategy_option_right(strategy)
+
+        # V2.23: Build candidate contracts with widest VASS DTE range (fallback uses subranges)
+        candidate_contracts = self._build_spread_candidate_contracts(
+            chain,
+            direction,
+            dte_min=dte_min_all,
+            dte_max=dte_max_all,
+            option_right=required_right,
+        )
+        if len(candidate_contracts) < 2:
+            return
+
+        # Calculate IV rank from options chain (V2.1)
+        iv_rank = self._calculate_iv_rank(chain)
+
+        signal = None
+        rejection_code = "UNKNOWN"
+
+        if spread_cooldown_active:
+            rejection_code = "SPREAD_COOLDOWN_ACTIVE"
+        elif self.options_engine.has_pending_spread_entry():
+            rejection_code = "PENDING_SPREAD_ENTRY"
+        else:
+            signal, rejection_code = self._build_vass_spread_signal(
+                chain=chain,
+                candidate_contracts=candidate_contracts,
+                direction=direction,
+                regime_score=regime_score,
+                qqq_price=qqq_price,
+                adx_value=adx_value,
+                ma200_value=ma200_value,
+                ma50_value=ma50_value,
+                iv_rank=iv_rank,
+                size_multiplier=size_multiplier,
+                portfolio_value=effective_portfolio_value,
+                margin_remaining=margin_remaining,
+                strategy=strategy,
+                vass_dte_min=vass_dte_min,
+                vass_dte_max=vass_dte_max,
+                dte_ranges=dte_ranges,
+                is_credit=is_credit,
+                is_eod_scan=False,
+                fallback_log_prefix="VASS_FALLBACK_INTRADAY",
+            )
+
+        if signal:
+            self._diag_spread_entry_signal_count += 1
+            self.Log(
+                f"VASS_ENTRY: {signal.metadata.get('vass_strategy', 'UNKNOWN') if signal.metadata else 'UNKNOWN'} | "
+                f"{signal.symbol} | {signal.reason}"
+            )
+            signal = self._attach_option_trace_metadata(signal, source="VASS")
+            vass_trace_id = signal.metadata.get("trace_id", "") if signal.metadata else ""
+            signal = self._apply_spread_margin_guard(signal, source_tag="VASS_INTRADAY_SPREAD")
+            if signal is None:
+                return
+            short_symbol = (
+                signal.metadata.get("spread_short_leg_symbol", "") if signal.metadata else ""
+            )
+            long_symbol = str(signal.symbol) if signal.symbol else ""
+            if short_symbol and long_symbol:
+                self._pending_spread_orders[short_symbol] = long_symbol
+                self._pending_spread_orders_reverse[long_symbol] = short_symbol
+            self._diag_spread_entry_submit_count += 1
+            self.portfolio_router.receive_signal(signal)
+            # V2.3.13 FIX: MUST process immediately - spread signals use IMMEDIATE urgency
+            self._process_immediate_signals()
+            if vass_trace_id:
+                for rej in self.portfolio_router.get_last_rejections():
+                    if rej.trace_id == vass_trace_id and rej.source_tag.startswith("VASS"):
+                        self.Log(
+                            f"VASS_ROUTER_REJECTED: Trace={rej.trace_id} | "
+                            f"Code={rej.code} | Stage={rej.stage} | {rej.detail}"
+                        )
+                        break
+            return  # Spread trade placed, don't try single-leg
+
+        if signal is None and not spread_cooldown_active:
+            self._diag_vass_block_count += 1
+            # V2.10 (Pitfall #4): Throttled VASS rejection logging
+            fail_stats = (
+                self.options_engine.pop_last_credit_failure_stats()
+                if is_credit
+                else self.options_engine.pop_last_spread_failure_stats()
+            )
+            validation_reason = self.options_engine.pop_last_entry_validation_failure()
+            iv_env = (
+                self.options_engine.get_iv_environment()
+                if self.options_engine.is_iv_sensor_ready()
+                else "UNKNOWN"
+            )
+            skip_reasons = {
+                "R_SLOT_SWING_MAX",
+                "R_SLOT_TOTAL_MAX",
+                "R_SLOT_DIRECTION_MAX",
+                "R_COOLDOWN_DIRECTIONAL",
+            }
+            log_prefix = "VASS_SKIPPED" if (validation_reason in skip_reasons) else "VASS_REJECTION"
+            reason_code = self._canonical_options_reason_code(validation_reason or rejection_code)
+            throttle_key = (
+                f"{reason_code}|{direction.value}|"
+                f"{'CREDIT' if is_credit else 'DEBIT'}|"
+                f"{validation_reason or ''}"
+            )
+            should_log = self._should_log_vass_rejection(throttle_key)
+            reason_text = "No contracts met spread criteria (DTE/delta/credit)"
+            if validation_reason in {
+                "R_SLOT_SWING_MAX",
+                "R_SLOT_DIRECTION_MAX",
+            }:
+                reason_text = "Skipped - existing spread position"
+            elif validation_reason == "R_SLOT_TOTAL_MAX":
+                reason_text = "Skipped - total options slot limit reached"
+            elif validation_reason == "R_COOLDOWN_DIRECTIONAL":
+                reason_text = "Skipped - entry attempt limit reached"
+            elif validation_reason == "R_MARGIN_PRECHECK":
+                reason_text = "Skipped - margin precheck failed"
+            elif validation_reason and validation_reason.startswith("R_CONTRACT_QUALITY:"):
+                reason_text = "Rejected - contract quality: " + validation_reason.split(":", 1)[1]
+            elif validation_reason == "WIN_RATE_GATE_BLOCK":
+                reason_text = "Skipped - win-rate gate shutoff active"
+            elif validation_reason == "TRADE_LIMIT_BLOCK":
+                reason_text = "Skipped - daily trade limit reached"
+
+            if should_log:
+                self.Log(
+                    f"{log_prefix}: Direction={direction.value} | "
+                    f"IV_Env={iv_env} | VIX={self._current_vix:.1f} | "
+                    f"Regime={regime_score:.0f} | "
+                    f"Contracts_checked={len(candidate_contracts)} | "
+                    f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
+                    f"DTE_Ranges={dte_ranges} | "
+                    f"ReasonCode={reason_code} | "
+                    f"Reason={reason_text}"
+                    + (f" | FailStats={fail_stats}" if fail_stats else "")
+                    + (
+                        f" | ValidationFail={validation_reason}"
+                        if (not fail_stats and validation_reason)
+                        else ""
+                    )
+                )
+
+        # V2.4.1: Single-leg swing fallback - DISABLED by default for safety
+        # Single-leg has higher delta exposure and full premium at risk
+        # If spread fails, stay cash (Safety First approach)
+        # V2.20: Also check swing cooldown
+        can_swing, _ = self.options_engine.can_enter_swing()
+        if config.SWING_FALLBACK_ENABLED and can_swing and not swing_cooldown_active:
+            best_contract = self._select_swing_option_contract(chain, direction)
+            if best_contract is not None and best_contract.bid > 0 and best_contract.ask > 0:
+                # V2.3.20: Pass size_multiplier for cold start reduced sizing
+                signal = self.options_engine.check_entry_signal(
+                    adx_value=adx_value,
+                    current_price=qqq_price,
+                    ma200_value=ma200_value,
+                    iv_rank=iv_rank,
+                    best_contract=best_contract,
+                    current_hour=self.Time.hour,
+                    current_minute=self.Time.minute,
+                    current_date=str(self.Time.date()),
+                    portfolio_value=self.Portfolio.TotalPortfolioValue,
+                    regime_score=regime_score,
+                    gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
+                    vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
+                    size_multiplier=size_multiplier,
+                    direction=direction,  # V6.0: Pass conviction-resolved direction
+                )
+
+                if signal:
+                    self.Log(f"SWING_FALLBACK: Single-leg {direction.value} after spread failure")
+                    self.portfolio_router.receive_signal(signal)
+                    self._process_immediate_signals()
+        elif not config.SWING_FALLBACK_ENABLED and can_swing:
+            throttle_min = int(getattr(config, "SPREAD_CONSTRUCTION_FAIL_LOG_INTERVAL_MINUTES", 60))
+            is_live = bool(hasattr(self, "LiveMode") and self.LiveMode)
+            backtest_logs_enabled = bool(
+                getattr(config, "SPREAD_CONSTRUCTION_FAIL_LOG_BACKTEST_ENABLED", False)
+            )
+            if (not is_live) and (not backtest_logs_enabled):
+                return
+            should_log = (
+                self._last_spread_construct_fail_log_at is None
+                or (self.Time - self._last_spread_construct_fail_log_at).total_seconds() / 60.0
+                >= throttle_min
+            )
+            if should_log:
+                self.Log("SWING: Spread construction failed - staying cash (fallback disabled)")
+                self._last_spread_construct_fail_log_at = self.Time
+
+    def _check_spread_exit(self, data: Slice) -> None:
+        """
+        V2.3: Check for spread exit conditions.
+
+        Exit conditions:
+        1. Take profit at 50% of max profit
+        2. Close by 5 DTE (avoid gamma acceleration)
+        3. Regime reversal (Bull exit if < 45, Bear exit if > 60)
+
+        Args:
+            data: Current data slice.
+        """
+        # Plumbing guard: never emit spread-exit orders while the primary market is closed.
+        # Off-hours time-stop signals were creating submit->reconcile churn and masking true fill flow.
+        if not self._is_primary_market_open():
+            return
+
+        spreads = self.options_engine.get_spread_positions()
+        if not spreads:
+            return
+        active_spread_keys = set()
+        for s in spreads:
+            active_spread_keys.add(self._build_spread_runtime_key(s))
+        for key in list(self._spread_forced_close_retry.keys()):
+            if key not in active_spread_keys:
+                self._spread_forced_close_retry.pop(key, None)
+                self._spread_forced_close_reason.pop(key, None)
+                self._spread_forced_close_cancel_counts.pop(key, None)
+                self._spread_forced_close_retry_cycles.pop(key, None)
+                self._spread_last_close_submit_at.pop(key, None)
+        for key in list(self._spread_close_trackers.keys()):
+            if key not in active_spread_keys:
+                self._spread_close_trackers.pop(key, None)
+        for key in list(self._spread_exit_mark_cache.keys()):
+            if key not in active_spread_keys:
+                self._spread_exit_mark_cache.pop(key, None)
+
+        underlying_price = self.Securities["QQQ"].Price
+        current_hour = self.Time.hour
+        current_minute = self.Time.minute
+        available_margin = self.Portfolio.MarginRemaining
+        regime_score = self._get_effective_regime_score_for_options()
+
+        for spread in spreads:
+            long_symbol = self._normalize_symbol_str(spread.long_leg.symbol)
+            short_symbol = self._normalize_symbol_str(spread.short_leg.symbol)
+            spread_key = self._build_spread_runtime_key(spread)
+
+            # V6.21: If a spread close was canceled, keep retrying close until flat.
+            retry_at = self._spread_forced_close_retry.get(spread_key)
+            if retry_at is not None and self.Time >= retry_at:
+                # Prevent same-bar re-escalation while broker events settle.
+                submit_guard_sec = int(getattr(config, "SPREAD_CLOSE_SUBMIT_GUARD_SECONDS", 60))
+                last_submit_at = self._spread_last_close_submit_at.get(spread_key)
+                if last_submit_at is not None:
+                    elapsed_sec = (self.Time - last_submit_at).total_seconds()
+                    if elapsed_sec < submit_guard_sec:
+                        if self._should_log_backtest_category(
+                            "LOG_SPREAD_RECONCILE_BACKTEST_ENABLED", False
+                        ):
+                            self.Log(
+                                f"SPREAD_RETRY_DEFER_RECENT_SUBMIT: Long={long_symbol} "
+                                f"Short={short_symbol} | Elapsed={elapsed_sec:.0f}s < "
+                                f"Guard={submit_guard_sec}s"
+                            )
+                        continue
+                retry_reason = self._spread_forced_close_reason.get(
+                    spread_key, "CANCELED_CLOSE_RETRY"
+                )
+                # Open-order lifecycle guard: don't stack close submits while either
+                # leg already has a live broker order.
+                if self._has_open_order_for_symbol(long_symbol) or self._has_open_order_for_symbol(
+                    short_symbol
+                ):
+                    retry_minutes = int(getattr(config, "SPREAD_CLOSE_RETRY_INTERVAL_MIN", 5))
+                    self._spread_forced_close_retry[spread_key] = self.Time + timedelta(
+                        minutes=retry_minutes
+                    )
+                    if self._should_log_backtest_category(
+                        "LOG_SPREAD_RECONCILE_BACKTEST_ENABLED", False
+                    ):
+                        self.Log(
+                            f"SPREAD_RETRY_DEFER_OPEN_ORDER: Long={long_symbol} "
+                            f"Short={short_symbol} | RetryIn={retry_minutes}m | "
+                            f"Reason={retry_reason}"
+                        )
+                    continue
+                # D1 fix: cancel any linked OCO orders before each retry/escalation cycle.
+                self._cancel_spread_linked_oco(
+                    long_symbol, short_symbol, reason="SPREAD_CLOSE_RETRY"
+                )
+                retry_cycles = self._spread_forced_close_retry_cycles.get(spread_key, 0) + 1
+                self._spread_forced_close_retry_cycles[spread_key] = retry_cycles
+                max_retry_cycles = int(getattr(config, "SPREAD_CLOSE_MAX_RETRY_CYCLES", 12))
+                if retry_cycles >= max_retry_cycles:
+                    self._diag_spread_close_escalation_count += 1
+                    self._diag_spread_exit_signal_count += 1
+                    self._diag_spread_exit_submit_count += 1
+                    self.Log(
+                        f"SPREAD_RETRY_MAX: Escalating to emergency sequential close | "
+                        f"Long={long_symbol} Short={short_symbol} | "
+                        f"Cycles={retry_cycles}/{max_retry_cycles} | Reason={retry_reason}"
+                    )
+                    try:
+                        close_ok = self.portfolio_router.execute_spread_close(
+                            spread=spread,
+                            reason=f"SPREAD_RETRY_MAX:{retry_reason}",
+                            is_emergency=True,
+                        )
+                    except Exception as e:
+                        self._schedule_spread_safe_lock_retry(
+                            spread_key=spread_key,
+                            long_symbol=long_symbol,
+                            short_symbol=short_symbol,
+                            retry_reason=retry_reason,
+                            detail=f"exception={e}",
+                        )
+                        continue
+                    if not close_ok:
+                        self._schedule_spread_safe_lock_retry(
+                            spread_key=spread_key,
+                            long_symbol=long_symbol,
+                            short_symbol=short_symbol,
+                            retry_reason=retry_reason,
+                            detail="execute_spread_close_returned_false",
+                        )
+                        continue
+                    self._spread_forced_close_retry.pop(spread_key, None)
+                    self._spread_forced_close_reason.pop(spread_key, None)
+                    self._spread_forced_close_cancel_counts.pop(spread_key, None)
+                    self._spread_forced_close_retry_cycles.pop(spread_key, None)
+                    self._spread_last_close_submit_at.pop(spread_key, None)
+                    continue
+                self.Log(
+                    f"SPREAD_RETRY: Re-submitting forced close | Long={long_symbol} "
+                    f"Short={short_symbol} | Reason={retry_reason} | "
+                    f"Cycle={retry_cycles}/{max_retry_cycles}"
+                )
+                self._diag_spread_exit_signal_count += 1
+                self._diag_spread_exit_submit_count += 1
+                self.portfolio_router.receive_signal(
+                    TargetWeight(
+                        symbol=long_symbol,
+                        target_weight=0.0,
+                        source="OPT",
+                        urgency=Urgency.IMMEDIATE,
+                        reason=f"SPREAD_CLOSE_RETRY:{retry_reason}",
+                        requested_quantity=spread.num_spreads,
+                        metadata={
+                            "spread_close_short": True,
+                            "spread_short_leg_symbol": short_symbol,
+                            "spread_short_leg_quantity": spread.num_spreads,
+                            "spread_key": self._build_spread_runtime_key(spread),
+                        },
+                    )
+                )
+                self._record_spread_exit_reason(spread_key, f"SPREAD_CLOSE_RETRY:{retry_reason}")
+                # Backoff retries to reduce order spam while preserving persistence.
+                retry_minutes = int(getattr(config, "SPREAD_CLOSE_RETRY_INTERVAL_MIN", 5))
+                self._spread_forced_close_retry[spread_key] = self.Time + timedelta(
+                    minutes=retry_minutes
+                )
+                self._spread_last_close_submit_at[spread_key] = self.Time
+                continue
+
+            current_dte = spread.long_leg.days_to_expiry
+            try:
+                if spread.long_leg.expiry:
+                    from datetime import datetime
+
+                    expiry_date = datetime.strptime(spread.long_leg.expiry, "%Y-%m-%d").date()
+                    current_dte = (expiry_date - self.Time.date()).days
+                    spread.long_leg.days_to_expiry = current_dte
+                    spread.short_leg.days_to_expiry = current_dte
+            except Exception as e:
+                self.Log(f"SPREAD_EXIT_WARNING: Failed to parse spread expiry date: {e}")
+
+            if (
+                current_dte <= 0
+                and self.Time.hour == config.ZERO_DTE_FORCE_EXIT_HOUR
+                and self.Time.minute >= config.ZERO_DTE_FORCE_EXIT_MINUTE
+            ):
+                self.Log(
+                    f"0DTE_FIREWALL: Forcing exit 30 min before close | "
+                    f"Spread={spread.spread_type} | Time={self.Time.strftime('%H:%M')}"
+                )
+                self.portfolio_router.receive_signal(
+                    TargetWeight(
+                        symbol=self._normalize_symbol_str(spread.long_leg.symbol),
+                        target_weight=0.0,
+                        source="OPT",
+                        urgency=Urgency.IMMEDIATE,
+                        reason="0DTE_TIME_DECAY",
+                        requested_quantity=spread.num_spreads,
+                        metadata={
+                            "spread_close_short": True,
+                            "spread_short_leg_symbol": self._normalize_symbol_str(
+                                spread.short_leg.symbol
+                            ),
+                            "spread_short_leg_quantity": spread.num_spreads,
+                            "spread_key": self._build_spread_runtime_key(spread),
+                        },
+                    )
+                )
+                self._record_spread_exit_reason(spread_key, "SPREAD_EXIT: 0DTE_TIME_DECAY")
+                self._diag_spread_exit_signal_count += 1
+                self._diag_spread_exit_submit_count += 1
+                continue
+
+            long_leg_price = None
+            short_leg_price = None
+            try:
+                use_exec_marks = bool(getattr(config, "SPREAD_EXIT_USE_EXECUTABLE_MARKS", True))
+                long_sec = self.Securities.get(spread.long_leg.symbol)
+                if long_sec:
+                    if use_exec_marks and long_sec.BidPrice > 0:
+                        long_leg_price = long_sec.BidPrice
+                    elif long_sec.BidPrice > 0 and long_sec.AskPrice > 0:
+                        long_leg_price = (long_sec.BidPrice + long_sec.AskPrice) / 2
+                    elif long_sec.Price > 0:
+                        long_leg_price = long_sec.Price
+                short_sec = self.Securities.get(spread.short_leg.symbol)
+                if short_sec:
+                    if use_exec_marks and short_sec.AskPrice > 0:
+                        short_leg_price = short_sec.AskPrice
+                    elif short_sec.BidPrice > 0 and short_sec.AskPrice > 0:
+                        short_leg_price = (short_sec.BidPrice + short_sec.AskPrice) / 2
+                    elif short_sec.Price > 0:
+                        short_leg_price = short_sec.Price
+            except Exception:
+                pass
+
+            if long_leg_price is None or short_leg_price is None:
+                cached = self._spread_exit_mark_cache.get(spread_key, {})
+                if long_leg_price is None:
+                    long_leg_price = cached.get("long_leg_price")
+                if short_leg_price is None:
+                    short_leg_price = cached.get("short_leg_price")
+                if long_leg_price is not None and short_leg_price is not None:
+                    self.Log(
+                        f"SPREAD_EXIT_MARK_FALLBACK: Using cached leg marks | "
+                        f"Type={spread.spread_type} | DTE={current_dte}"
+                    )
+                else:
+                    # Time-based exits must still fire even when option quotes are unavailable.
+                    # This avoids holding stale spreads simply because leg marks are missing.
+                    time_exit_reason = None
+                    try:
+                        max_hold_days = int(getattr(config, "VASS_DEBIT_MAX_HOLD_DAYS", 0))
+                        low_vix_days = int(
+                            getattr(config, "VASS_DEBIT_MAX_HOLD_DAYS_LOW_VIX", max_hold_days)
+                        )
+                        low_vix_threshold = float(
+                            getattr(config, "VASS_DEBIT_LOW_VIX_THRESHOLD", 16.0)
+                        )
+                        if (
+                            self._current_vix is not None
+                            and low_vix_days > 0
+                            and float(self._current_vix) < low_vix_threshold
+                        ):
+                            max_hold_days = (
+                                min(max_hold_days, low_vix_days)
+                                if max_hold_days > 0
+                                else low_vix_days
+                            )
+                        if max_hold_days > 0:
+                            from datetime import datetime as _dt
+
+                            entry_dt = _dt.strptime(spread.entry_time[:19], "%Y-%m-%d %H:%M:%S")
+                            held_days = (self.Time.date() - entry_dt.date()).days
+                            if held_days >= max_hold_days:
+                                time_exit_reason = (
+                                    f"SPREAD_TIME_STOP_NO_QUOTE ({held_days}d >= {max_hold_days}d)"
+                                )
+                    except Exception:
+                        pass
+                    if time_exit_reason is None and current_dte <= int(config.SPREAD_DTE_EXIT):
+                        time_exit_reason = f"DTE_EXIT_NO_QUOTE ({current_dte} DTE <= {int(config.SPREAD_DTE_EXIT)})"
+
+                    if time_exit_reason is not None:
+                        self.Log(
+                            f"SPREAD_EXIT_NO_QUOTE_TIME_BASED: {time_exit_reason} | "
+                            f"Type={spread.spread_type}"
+                        )
+                        self.portfolio_router.receive_signal(
+                            TargetWeight(
+                                symbol=long_symbol,
+                                target_weight=0.0,
+                                source="OPT",
+                                urgency=Urgency.IMMEDIATE,
+                                reason=f"SPREAD_EXIT: {time_exit_reason}",
+                                requested_quantity=spread.num_spreads,
+                                metadata={
+                                    "spread_close_short": True,
+                                    "spread_short_leg_symbol": short_symbol,
+                                    "spread_short_leg_quantity": spread.num_spreads,
+                                    "spread_key": self._build_spread_runtime_key(spread),
+                                    "exit_type": "TIME_BASED_NO_QUOTE",
+                                },
+                            )
+                        )
+                        self._record_spread_exit_reason(
+                            spread_key, f"SPREAD_EXIT: {time_exit_reason}"
+                        )
+                        self._diag_spread_exit_signal_count += 1
+                        self._diag_spread_exit_submit_count += 1
+                        continue
+
+                    self.Log(
+                        f"SPREAD_EXIT_SKIPPED_NO_QUOTE: Missing leg marks | "
+                        f"Type={spread.spread_type} | DTE={current_dte} | "
+                        f"LongPx={'NA' if long_leg_price is None else f'{long_leg_price:.2f}'} | "
+                        f"ShortPx={'NA' if short_leg_price is None else f'{short_leg_price:.2f}'}"
+                    )
+                    continue
+
+            self._spread_exit_mark_cache[spread_key] = {
+                "long_leg_price": float(long_leg_price),
+                "short_leg_price": float(short_leg_price),
+                "updated_at": self.Time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+
+            min_hold_minutes = int(getattr(config, "SPREAD_MIN_HOLD_MINUTES", 0))
+            hold_block_active = False
+            if min_hold_minutes > 0:
+                try:
+                    from datetime import datetime as _dt
+
+                    entry_dt = _dt.strptime(spread.entry_time[:19], "%Y-%m-%d %H:%M:%S")
+                    live_minutes = (self.Time - entry_dt).total_seconds() / 60.0
+                    mandatory_dte = int(getattr(config, "SPREAD_FORCE_CLOSE_DTE", 1))
+                    hold_block_active = (
+                        0 <= live_minutes < min_hold_minutes and current_dte > mandatory_dte
+                    )
+                except Exception:
+                    hold_block_active = False
+
+            gamma_pin_signals = self.options_engine.check_gamma_pin_exit(
+                current_price=underlying_price,
+                current_dte=current_dte,
+                spread_override=spread,
+            )
+            if gamma_pin_signals:
+                for signal in gamma_pin_signals:
+                    self._normalize_spread_close_quantities(signal)
+                    self._record_spread_exit_reason(spread_key, signal.reason)
+                    self.portfolio_router.receive_signal(signal)
+                self._diag_spread_exit_signal_count += len(gamma_pin_signals)
+                self._diag_spread_exit_submit_count += len(gamma_pin_signals)
+                continue
+
+            assignment_risk_signals = self.options_engine.check_assignment_risk_exit(
+                underlying_price=underlying_price,
+                current_dte=current_dte,
+                current_hour=current_hour,
+                current_minute=current_minute,
+                available_margin=available_margin,
+                spread_override=spread,
+            )
+            if assignment_risk_signals:
+                for signal in assignment_risk_signals:
+                    self._normalize_spread_close_quantities(signal)
+                    self._record_spread_exit_reason(spread_key, signal.reason)
+                    self.portfolio_router.receive_signal(signal)
+                self._diag_spread_exit_signal_count += len(assignment_risk_signals)
+                self._diag_spread_exit_submit_count += len(assignment_risk_signals)
+                continue
+
+            # V6.22: Transition exit priority - close wrong-way bullish spreads first in STRESS.
+            # Apply this only when anti-churn minimum-hold window has elapsed.
+            if not hold_block_active and bool(
+                getattr(config, "SPREAD_OVERLAY_STRESS_EXIT_ENABLED", False)
+            ):
+                overlay_state = self.options_engine.get_regime_overlay_state(
+                    vix_current=self._current_vix, regime_score=regime_score
+                )
+                spread_type_upper = str(spread.spread_type).upper()
+                is_bullish_spread = spread_type_upper in {
+                    "BULL_CALL",
+                    "BULL_CALL_DEBIT",
+                    "BULL_PUT_CREDIT",
+                }
+                if overlay_state == "STRESS" and is_bullish_spread:
+                    self.Log(
+                        f"SPREAD_OVERLAY_EXIT: Forcing close in STRESS | "
+                        f"Type={spread.spread_type} | VIX={self._current_vix:.1f} | Regime={regime_score:.0f}"
+                    )
+                    self.portfolio_router.receive_signal(
+                        TargetWeight(
+                            symbol=long_symbol,
+                            target_weight=0.0,
+                            source="OPT",
+                            urgency=Urgency.IMMEDIATE,
+                            reason="SPREAD_EXIT: OVERLAY_STRESS_EXIT",
+                            requested_quantity=spread.num_spreads,
+                            metadata={
+                                "spread_close_short": True,
+                                "spread_short_leg_symbol": short_symbol,
+                                "spread_short_leg_quantity": spread.num_spreads,
+                                "spread_key": self._build_spread_runtime_key(spread),
+                                "exit_type": "OVERLAY_STRESS_EXIT",
+                            },
+                        )
+                    )
+                    self._record_spread_exit_reason(spread_key, "SPREAD_EXIT: OVERLAY_STRESS_EXIT")
+                    self._diag_spread_exit_signal_count += 1
+                    self._diag_spread_exit_submit_count += 1
+                    continue
+
+            exit_signals = self.options_engine.check_spread_exit_signals(
+                long_leg_price=long_leg_price,
+                short_leg_price=short_leg_price,
+                regime_score=regime_score,
+                current_dte=current_dte,
+                vix_current=self._current_vix,
+                spread_override=spread,
+            )
+            if exit_signals:
+                for signal in exit_signals:
+                    self._normalize_spread_close_quantities(signal)
+                    self._record_spread_exit_reason(spread_key, signal.reason)
+                    self.portfolio_router.receive_signal(signal)
+                self._diag_spread_exit_signal_count += len(exit_signals)
+                self._diag_spread_exit_submit_count += len(exit_signals)
