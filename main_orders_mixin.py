@@ -889,6 +889,8 @@ class MainOrdersMixin:
                                 cached_reason = self._single_leg_last_exit_reason.pop(
                                     symbol_norm, ""
                                 )
+                                if not cached_reason:
+                                    cached_reason = f"UNATTRIBUTED_EXIT:{self._compact_tag_for_log(order_tag, max_chars=48)}"
                                 entry_strategy = getattr(removed_position, "entry_strategy", "")
                                 engine_bucket = self._intraday_engine_bucket_from_strategy(
                                     entry_strategy
@@ -969,6 +971,8 @@ class MainOrdersMixin:
                                 cached_reason = self._single_leg_last_exit_reason.pop(
                                     symbol_norm, ""
                                 )
+                                if not cached_reason:
+                                    cached_reason = f"UNATTRIBUTED_EXIT:{self._compact_tag_for_log(order_tag, max_chars=48)}"
                                 self._record_exit_path_pnl(
                                     reason=cached_reason,
                                     order_tag=order_tag,
@@ -1005,6 +1009,8 @@ class MainOrdersMixin:
                                 f"Strategy={fallback_strategy} | Path=FALLBACK"
                             )
                             cached_reason = self._single_leg_last_exit_reason.pop(symbol_norm, "")
+                            if not cached_reason:
+                                cached_reason = f"UNATTRIBUTED_EXIT:{self._compact_tag_for_log(order_tag, max_chars=48)}"
                             fallback_engine_bucket = self._intraday_engine_bucket_from_strategy(
                                 str(snapshot.get("entry_strategy", ""))
                             )
