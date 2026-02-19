@@ -882,7 +882,7 @@ VASS_EARLY_STRESS_BULL_STRATEGY_TO_CREDIT = (
     True  # D8: In EARLY_STRESS, remap bullish debit spreads to bullish credit spreads
 )
 VASS_EARLY_STRESS_BEAR_PREFER_CREDIT = (
-    True  # D8: In EARLY_STRESS, prefer bearish credit over bearish debit
+    False  # V10.10: disable broad BEAR_CALL_CREDIT remix; keep explicit fallback path only
 )
 VASS_SIMILAR_ENTRY_MIN_GAP_MINUTES = 15  # Block repeated same-signature entries in burst windows
 VASS_SIMILAR_ENTRY_COOLDOWN_DAYS = (
@@ -892,7 +892,9 @@ VASS_SIMILAR_ENTRY_USE_EXPIRY_BUCKET = True  # Use expiry date bucket (fallback 
 VASS_DIRECTION_DAY_GAP_ENABLED = True  # Hard spacing: max 1 VASS entry per day per direction
 VASS_ENTRY_ENGINE_ENABLED = True  # V10.10: route VASS strategy/filter/guards via dedicated engine
 VASS_USE_CONVICTION_ONLY_DIRECTION = True  # V10.7: VASS direction must follow conviction, not macro
-VASS_NO_CONVICTION_NO_TRADE = True  # V10.7: If VASS has no conviction, skip entry
+VASS_NO_CONVICTION_NO_TRADE = (
+    False  # V10.10: soft mode — no-conviction can still trade through normal VASS gates
+)
 VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT = True  # V10.7: Fallback when BEAR_PUT is blocked
 
 # Level Crossing Thresholds (regime shift signals)
@@ -1169,7 +1171,9 @@ ASSIGNMENT_EXIT_PRIORITY_ENABLED = True
 # For PUTs: ITM = strike > price, OTM = strike < price
 # Example: If MIN_OTM_PCT = 0.03 and QQQ = $350, min short strike = $339.50
 BEAR_PUT_ENTRY_GATE_ENABLED = True
-BEAR_PUT_ENTRY_MIN_OTM_PCT = 0.02  # V6.4 baseline: tighter OTM requirement for assignment safety.
+BEAR_PUT_ENTRY_MIN_OTM_PCT = (
+    0.015  # V10.10: relax slightly to reduce over-blocking of bearish debit entries
+)
 BEAR_PUT_ENTRY_LOW_VIX_THRESHOLD = 18.0  # Relax assignment gate in calmer IV environments
 BEAR_PUT_ENTRY_MIN_OTM_PCT_RELAXED = (
     0.015  # V6.4 baseline relaxed threshold in low-VIX healthy regimes.
