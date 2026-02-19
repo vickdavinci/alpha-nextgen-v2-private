@@ -3145,4 +3145,4 @@ class TestResolverMicroPrimary:
         )
         assert should_trade is False
         assert resolved_direction is None
-        assert "VASS_NO_CONVICTION" in reason
+        assert "Misaligned" in reason

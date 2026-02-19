@@ -1834,9 +1834,9 @@ class OptionsEngine:
             expiry_date = datetime.strptime(expiry_str, "%Y-%m-%d").date()
             if self.algorithm is not None and hasattr(self.algorithm, "Time"):
                 current_date = self.algorithm.Time.date()
-            else:
-                current_date = datetime.utcnow().date()
-            return max(0, (expiry_date - current_date).days)
+                return max(0, (expiry_date - current_date).days)
+            # QC-compliant fallback for unit contexts without algorithm clock.
+            return max(0, int(getattr(position.contract, "days_to_expiry", 0)))
         except Exception:
             try:
                 return max(0, int(getattr(position.contract, "days_to_expiry", 0)))
@@ -7527,7 +7527,7 @@ class OptionsEngine:
                     now_date = (
                         self.algorithm.Time.date()
                         if self.algorithm is not None and hasattr(self.algorithm, "Time")
-                        else datetime.utcnow().date()
+                        else entry_date
                     )
                     held_days = 0
                     cursor = entry_date
@@ -8767,7 +8767,7 @@ class OptionsEngine:
                 if self.algorithm is not None and hasattr(self.algorithm, "Time"):
                     current_date = str(self.algorithm.Time.date())
                 else:
-                    current_date = datetime.utcnow().date().isoformat()
+                    current_date = "NO_ALGO_TIME"
                 if self._intraday_force_exit_hold_skip_log_date.get(symbol_str) != current_date:
                     live_dte = self._get_position_live_dte(self._intraday_position)
                     self.log(

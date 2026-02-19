@@ -177,16 +177,18 @@ class TestMicroRegimeEnum:
 class TestIntradayStrategyEnum:
     """Tests for IntradayStrategy enum."""
 
-    def test_intraday_strategy_has_six_values(self):
-        """IntradayStrategy should have exactly 6 values (V6.5: added DEBIT_MOMENTUM)."""
-        assert len(IntradayStrategy) == 6
+    def test_intraday_strategy_has_eight_values(self):
+        """IntradayStrategy should include legacy + canonical micro strategy aliases."""
+        assert len(IntradayStrategy) == 8
 
     def test_intraday_strategy_expected_values(self):
         """IntradayStrategy should have specific expected values."""
         expected = {
             "NO_TRADE",
             "DEBIT_FADE",
-            "DEBIT_MOMENTUM",  # V6.5: Added for confirmation trades
+            "DEBIT_MOMENTUM",
+            "MICRO_DEBIT_FADE",
+            "MICRO_OTM_MOMENTUM",
             "CREDIT_SPREAD",
             "ITM_MOMENTUM",
             "PROTECTIVE_PUTS",

@@ -28,7 +28,13 @@ from engines.satellite.mean_reversion_engine import MeanReversionEngine
 from execution.execution_engine import ExecutionEngine, OrderState
 from models.enums import Urgency
 from models.target_weight import TargetWeight
-from portfolio.portfolio_router import OrderIntent, OrderSide, OrderType, PortfolioRouter
+from portfolio.portfolio_router import (
+    AggregatedWeight,
+    OrderIntent,
+    OrderSide,
+    OrderType,
+    PortfolioRouter,
+)
 
 
 class MockBroker:
@@ -210,11 +216,13 @@ class TestTrendEntryToFill:
 
         # Create aggregated weight
         aggregated = {
-            "QLD": MagicMock(
+            "QLD": AggregatedWeight(
+                symbol="QLD",
                 target_weight=0.35,
+                sources=["TREND"],
                 urgency=Urgency.EOD,
                 reasons=["MA200 Entry"],
-                metadata=None,  # V2.3: Explicitly set to None to avoid spread handling
+                metadata=None,
             ),
         }
 

@@ -858,7 +858,7 @@ VASS_LOW_IV_DTE_MAX = 45
 VASS_MEDIUM_IV_DTE_MIN = 7  # Medium IV: Weekly expiration
 VASS_MEDIUM_IV_DTE_MAX = 30  # V6.12: Widen for better contract availability
 # V6.6: Widened HIGH IV DTE range - 36 spread failures in 2022H1 due to narrow 7-14 window
-VASS_HIGH_IV_DTE_MIN = 5  # V6.8: Was 7, allow trades in high IV
+VASS_HIGH_IV_DTE_MIN = 7  # V10.10: avoid immediate churn against SPREAD_DTE_EXIT=5
 VASS_HIGH_IV_DTE_MAX = 40  # V6.13.1 OPT: Expand candidate pool (was 28)
 
 # V5.3: VASS Conviction Engine (VIX Direction Tracking)
