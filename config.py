@@ -902,6 +902,8 @@ VASS_VIX_COMPLACENT_CROSS_LEVEL = 14  # VIX crosses below this → BULLISH
 # Credit Spread Constraints
 CREDIT_SPREAD_MIN_CREDIT = 0.20  # V6.10 P3: Was 0.30, lowered to allow more fills
 CREDIT_SPREAD_WIDTH_TARGET = 5.0  # $5 width for credit spreads
+CREDIT_SPREAD_DTE_MIN = 7  # Default credit spread DTE floor (used when no fallback ranges supplied)
+CREDIT_SPREAD_DTE_MAX = 30  # Default credit spread DTE ceiling
 CREDIT_SPREAD_FALLBACK_TO_DEBIT = True  # V6.10 P3: Fall back to debit when credit fails
 CREDIT_SPREAD_PROFIT_TARGET = 0.50  # Exit at 50% of max profit
 CREDIT_SPREAD_STOP_MULTIPLIER = 0.40  # V10: tightened from 0.60 (R:R 0.45→0.67)
@@ -1333,6 +1335,7 @@ VASS_DAY4_EOD_DECISION_ENABLED = True
 VASS_DAY4_EOD_MIN_HOLD_DAYS = 4
 VASS_DAY4_EOD_KEEP_IF_PNL_GT = -0.20  # Day-4 EOD: close if P&L <= -20%; keep if P&L > -20%
 VASS_DAY4_EOD_DECISION_TIME = "15:45"
+SPREAD_CLOSE_SUBMIT_GUARD_SECONDS = 60  # Suppress duplicate close submits within guard window
 SPREAD_EOD_HOLD_RISK_GATE_ENABLED = (
     True  # Close hold-window debit spreads at EOD once loss breaches threshold
 )
@@ -1932,6 +1935,9 @@ MICRO_USE_MACRO_IN_STATE = (
 MICRO_USE_MACRO_POLICY_GATES = (
     False  # Deprecated no-op: macro-based CALL/PUT policy gates removed in V10.10
 )
+MICRO_MISALIGNED_SIZE_MULT = (
+    0.50  # Size haircut when signal direction is misaligned with local context
+)
 INTRADAY_DEBIT_MOMENTUM_DELTA_MIN = 0.45  # Near ATM for momentum
 INTRADAY_DEBIT_MOMENTUM_DELTA_MAX = 0.65  # Slightly ITM max
 INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES = [
@@ -2014,6 +2020,7 @@ INTRADAY_PROTECT_DTE_MAX = 7  # Maximum 7 DTE
 INTRADAY_FORCE_EXIT_TIME = "15:25"  # V6.15 FIX: Earlier close to avoid OCO race at 15:30
 OCO_RECOVERY_CUTOFF_MINUTES_BEFORE_FORCE_EXIT = 20  # Disable OCO recovery near force-close window
 OCO_RECOVERY_RETRY_MINUTES = 5  # Retry missing OCO creation intraday (bounded cadence)
+OCO_RESYNC_PRICE_EPS = 0.01  # Min stop/target delta to trigger OCO reprice sync
 
 # V2.3.16: Direction Conflict Resolution
 # Skip intraday FADE when main regime strongly disagrees
@@ -2309,3 +2316,7 @@ ISOLATION_PANIC_MODE_ENABLED = False  # Panic Mode (SPY -4% liquidation)
 ISOLATION_WEEKLY_BREAKER_ENABLED = False  # Weekly Breaker (5% WTD loss)
 ISOLATION_GAP_FILTER_ENABLED = False  # Gap Filter (SPY -1.5% gap block)
 ISOLATION_VOL_SHOCK_ENABLED = False  # Vol Shock (3× ATR pause)
+
+RECON_INTRADAY_ORPHAN_MIN_STREAK = 2
+RECON_INTRADAY_ORPHAN_MIN_AGE_MINUTES = 20
+RECON_INTRADAY_ORPHAN_LOG_THROTTLE_MINUTES = 30
