@@ -2008,12 +2008,7 @@ class OptionsEngine:
         self._win_rate_shutoff: bool = False  # True when win rate < shutoff threshold
         self._win_rate_shutoff_date: Optional[str] = None  # YYYY-MM-DD shutoff activation
         self._paper_track_history: List[bool] = []  # Paper trades during shutoff
-        # Phase A: prevent burst/repeat VASS spread clustering by signature.
-        # signature = strategy|direction|expiry_bucket
-        self._vass_last_entry_at_by_signature: Dict[str, datetime] = {}
-        self._vass_cooldown_until_by_signature: Dict[str, datetime] = {}
-        # Per-direction day-gap memory for VASS spacing (BULLISH/BEARISH -> YYYY-MM-DD).
-        self._vass_last_entry_date_by_direction: Dict[str, str] = {}
+        # V10.10: VASS anti-cluster/day-gap memory is owned by VASSEntryEngine.
         # Phase C: staged neutrality de-risk memory by spread key.
         # key = "<long_symbol>|<short_symbol>", value = first neutrality timestamp.
         self._spread_neutrality_warn_by_key: Dict[str, datetime] = {}
@@ -3104,83 +3099,31 @@ class OptionsEngine:
         signature: str,
         now_dt: Optional[datetime],
     ) -> Optional[str]:
-        """
-        Return rejection code when same-signature entry is blocked.
-
-        Blocks:
-        - Burst repeats within VASS_SIMILAR_ENTRY_MIN_GAP_MINUTES
-        - Rolling cooldown within VASS_SIMILAR_ENTRY_COOLDOWN_DAYS
-        """
-        if not signature or now_dt is None:
-            return None
-        min_gap_min = int(getattr(config, "VASS_SIMILAR_ENTRY_MIN_GAP_MINUTES", 15))
-        cooldown_days = int(getattr(config, "VASS_SIMILAR_ENTRY_COOLDOWN_DAYS", 3))
-        last_entry = self._vass_last_entry_at_by_signature.get(signature)
-        if last_entry is not None:
-            elapsed_min = (now_dt - last_entry).total_seconds() / 60.0
-            if 0 <= elapsed_min < min_gap_min:
-                self.log(
-                    f"VASS_SIGNATURE_BLOCK: Burst guard | Sig={signature} | "
-                    f"Elapsed={elapsed_min:.1f}m < {min_gap_min}m"
-                )
-                return "E_VASS_SIMILAR_15M_BLOCK"
-        cooldown_until = self._vass_cooldown_until_by_signature.get(signature)
-        if cooldown_until is not None and now_dt < cooldown_until:
-            self.log(
-                f"VASS_SIGNATURE_BLOCK: Cooldown guard | Sig={signature} | "
-                f"Now={now_dt} < Until={cooldown_until}"
-            )
-            return "E_VASS_SIMILAR_3D_COOLDOWN"
-        if self._vass_last_entry_at_by_signature:
-            stale_cutoff = now_dt - timedelta(days=10)
-            stale = [
-                key
-                for key, ts in self._vass_last_entry_at_by_signature.items()
-                if ts < stale_cutoff
-            ]
-            for key in stale:
-                self._vass_last_entry_at_by_signature.pop(key, None)
-                self._vass_cooldown_until_by_signature.pop(key, None)
-        return None
+        """VASS anti-cluster guard delegated to VASSEntryEngine."""
+        return self._vass_entry_engine.check_similar_entry_guard(
+            signature=signature,
+            now_dt=now_dt,
+        )
 
     def _record_vass_signature_entry(self, signature: str, entry_dt: Optional[datetime]) -> None:
-        """Record successful VASS spread entry for anti-cluster guard."""
-        if not signature or entry_dt is None:
-            return
-        cooldown_days = int(getattr(config, "VASS_SIMILAR_ENTRY_COOLDOWN_DAYS", 3))
-        self._vass_last_entry_at_by_signature[signature] = entry_dt
-        self._vass_cooldown_until_by_signature[signature] = entry_dt + timedelta(days=cooldown_days)
+        """Record VASS signature entry via VASSEntryEngine."""
+        self._vass_entry_engine.record_signature_entry(signature=signature, entry_dt=entry_dt)
 
     def _check_vass_direction_day_gap(
         self, direction: Optional[OptionDirection], current_date: str
     ) -> Optional[str]:
-        """Enforce max one VASS spread entry per direction per day."""
-        if not bool(getattr(config, "VASS_DIRECTION_DAY_GAP_ENABLED", True)):
-            return None
-        if direction is None:
-            return None
-        dir_label = "BULLISH" if direction == OptionDirection.CALL else "BEARISH"
-        today = str(current_date or "")[:10]
-        if not today:
-            try:
-                today = str(self.algorithm.Time.date()) if self.algorithm is not None else ""
-            except Exception:
-                today = ""
-        if not today:
-            return None
-        last_date = self._vass_last_entry_date_by_direction.get(dir_label)
-        if last_date == today:
-            return f"R_DIRECTION_DAY_GAP: {dir_label} already entered on {today}"
-        return None
+        """VASS per-direction day-gap guard delegated to VASSEntryEngine."""
+        return self._vass_entry_engine.check_direction_day_gap(
+            direction=direction,
+            current_date=current_date,
+            algorithm=self.algorithm,
+        )
 
     def _record_vass_direction_day_entry(
         self, direction: Optional[OptionDirection], entry_dt: Optional[datetime]
     ) -> None:
-        """Persist day marker for VASS per-direction day-gap guard."""
-        if direction is None or entry_dt is None:
-            return
-        dir_label = "BULLISH" if direction == OptionDirection.CALL else "BEARISH"
-        self._vass_last_entry_date_by_direction[dir_label] = str(entry_dt.date())
+        """Record VASS per-direction entry date via VASSEntryEngine."""
+        self._vass_entry_engine.record_direction_day_entry(direction=direction, entry_dt=entry_dt)
 
     def _build_spread_key(self, spread: SpreadPosition) -> str:
         """Stable spread key for per-position state."""
@@ -7991,88 +7934,13 @@ class OptionsEngine:
         iv_environment: str,  # "LOW", "MEDIUM", "HIGH"
         is_intraday: bool = False,
     ) -> Tuple[SpreadStrategy, int, int]:
-        """
-        V2.8: Select spread strategy based on direction + IV environment.
-
-        Strategy Matrix (V5.3: All DEBIT spreads for gamma capture):
-        - LOW IV + BULLISH → Bull Call Debit (Monthly 30-45 DTE)
-        - LOW IV + BEARISH → Bear Put Debit (Monthly 30-45 DTE)
-        - MEDIUM IV + BULLISH → Bull Call Debit (Weekly 7-21 DTE)
-        - MEDIUM IV + BEARISH → Bear Put Debit (Weekly 7-21 DTE)
-        - HIGH IV + BULLISH → Bull Call Debit (Weekly 7-14 DTE)
-        - HIGH IV + BEARISH → Bear Put Debit (Weekly 7-14 DTE)
-
-        Rationale: In HIGH IV, big moves are expected. Debit spreads are
-        ALIGNED with this (profit from movement). Credit spreads bet AGAINST
-        movement, which contradicts the high IV environment. Spread structure
-        hedges vega risk from IV crush.
-
-        For intraday trades, strategy type comes from matrix but DTE is always
-        nearest weekly (0-5 DTE).
-
-        Args:
-            direction: Market direction ("BULLISH" or "BEARISH")
-            iv_environment: IV tier ("LOW", "MEDIUM", "HIGH")
-            is_intraday: If True, use nearest weekly expiration
-
-        Returns:
-            Tuple of (SpreadStrategy, dte_min, dte_max)
-        """
-        # Strategy Matrix Lookup
-        matrix = {
-            ("BULLISH", "LOW"): (
-                SpreadStrategy.BULL_CALL_DEBIT,
-                config.VASS_LOW_IV_DTE_MIN,
-                config.VASS_LOW_IV_DTE_MAX,
-            ),
-            ("BULLISH", "MEDIUM"): (
-                SpreadStrategy.BULL_CALL_DEBIT,
-                config.VASS_MEDIUM_IV_DTE_MIN,
-                config.VASS_MEDIUM_IV_DTE_MAX,
-            ),
-            ("BULLISH", "HIGH"): (
-                SpreadStrategy.BULL_PUT_CREDIT,  # V6.9: Reverted to V2.8 - sell premium in HIGH IV
-                config.VASS_HIGH_IV_DTE_MIN,
-                config.VASS_HIGH_IV_DTE_MAX,
-            ),
-            ("BEARISH", "LOW"): (
-                SpreadStrategy.BEAR_PUT_DEBIT,
-                config.VASS_LOW_IV_DTE_MIN,
-                config.VASS_LOW_IV_DTE_MAX,
-            ),
-            ("BEARISH", "MEDIUM"): (
-                SpreadStrategy.BEAR_PUT_DEBIT,
-                config.VASS_MEDIUM_IV_DTE_MIN,
-                config.VASS_MEDIUM_IV_DTE_MAX,
-            ),
-            ("BEARISH", "HIGH"): (
-                SpreadStrategy.BEAR_CALL_CREDIT,  # V6.9: Reverted to V2.8 - CALLs have better liquidity than ITM PUTs
-                config.VASS_HIGH_IV_DTE_MIN,
-                config.VASS_HIGH_IV_DTE_MAX,
-            ),
-        }
-
-        key = (direction, iv_environment)
-        if key in matrix:
-            strategy, dte_min, dte_max = matrix[key]
-
-            # For intraday: use strategy type from matrix but nearest weekly DTE
-            if is_intraday:
-                dte_min = 0
-                dte_max = 5  # Nearest weekly expiration
-
-            self.log(
-                f"VASS: {direction} + {iv_environment} IV → {strategy.value} | "
-                f"DTE={dte_min}-{dte_max} | Intraday={is_intraday}"
-            )
-            return (strategy, dte_min, dte_max)
-
-        # Fallback: Medium IV debit spread
-        self.log(f"VASS: Unknown key {key}, defaulting to MEDIUM debit spread")
-        if direction == "BULLISH":
-            return (SpreadStrategy.BULL_CALL_DEBIT, 7, 21)
-        else:
-            return (SpreadStrategy.BEAR_PUT_DEBIT, 7, 21)
+        """VASS strategy routing delegated to VASSEntryEngine."""
+        return self._vass_entry_engine.select_strategy(
+            direction=direction,
+            iv_environment=iv_environment,
+            is_intraday=is_intraday,
+            spread_strategy_enum=SpreadStrategy,
+        )
 
     def is_credit_strategy(self, strategy: SpreadStrategy) -> bool:
         """Check if strategy is a credit spread (collects premium)."""
@@ -8154,51 +8022,15 @@ class OptionsEngine:
         current_hour: int,
         current_minute: int,
     ) -> Tuple[bool, str]:
-        """
-        Check simple intraday filters for Swing Mode (5+ DTE).
-
-        For Swing Mode, we use simple filters instead of Micro Regime.
-        These are lightweight, rule-based checks.
-
-        Args:
-            direction: CALL or PUT.
-            spy_gap_pct: SPY gap from prior close (%).
-            spy_intraday_change_pct: SPY change since open (%).
-            vix_intraday_change_pct: VIX change since open (%).
-            current_hour: Current hour (0-23) Eastern.
-            current_minute: Current minute (0-59).
-
-        Returns:
-            Tuple of (can_enter, reason_if_blocked).
-        """
-        # Filter 1: Time Window (10:00 AM - 2:30 PM ET)
-        time_minutes = current_hour * 60 + current_minute
-        window_start = 10 * 60  # 10:00 AM
-        window_end = 14 * 60 + 30  # 2:30 PM
-
-        if not (window_start <= time_minutes <= window_end):
-            # V2.3 FIX: Only return the message, don't log here (caller logs once)
-            return False, "TIME_WINDOW"
-
-        # Filter 2: Gap Filter
-        if abs(spy_gap_pct) > config.SWING_GAP_THRESHOLD:
-            if direction == OptionDirection.CALL and spy_gap_pct > 0:
-                return False, f"Gap up {spy_gap_pct:.1f}% - reversal risk for calls"
-            if direction == OptionDirection.PUT and spy_gap_pct < 0:
-                return False, f"Gap down {spy_gap_pct:.1f}% - bounce risk for puts"
-
-        # Filter 3: Extreme Move Filter
-        if spy_intraday_change_pct < config.SWING_EXTREME_SPY_DROP:
-            return False, f"SPY extreme drop {spy_intraday_change_pct:.1f}% - pause entries"
-
-        if vix_intraday_change_pct > config.SWING_EXTREME_VIX_SPIKE:
-            return False, f"VIX spike +{vix_intraday_change_pct:.1f}% - pause entries"
-
-        return True, ""
-
-    # =========================================================================
-    # V2.1.1 INTRADAY MODE ENTRY (MICRO REGIME ENGINE)
-    # =========================================================================
+        """Swing-mode entry filters delegated to VASSEntryEngine."""
+        return self._vass_entry_engine.check_swing_filters(
+            direction=direction,
+            spy_gap_pct=spy_gap_pct,
+            spy_intraday_change_pct=spy_intraday_change_pct,
+            vix_intraday_change_pct=vix_intraday_change_pct,
+            current_hour=current_hour,
+            current_minute=current_minute,
+        )
 
     def check_intraday_entry_signal(
         self,
@@ -10304,15 +10136,7 @@ class OptionsEngine:
             "paper_track_history": self._paper_track_history,
             "vass_consecutive_losses": self._vass_consecutive_losses,
             "vass_loss_breaker_pause_until": self._vass_loss_breaker_pause_until,
-            "vass_last_entry_at_by_signature": {
-                k: v.strftime("%Y-%m-%d %H:%M:%S")
-                for k, v in self._vass_last_entry_at_by_signature.items()
-            },
-            "vass_cooldown_until_by_signature": {
-                k: v.strftime("%Y-%m-%d %H:%M:%S")
-                for k, v in self._vass_cooldown_until_by_signature.items()
-            },
-            "vass_last_entry_date_by_direction": dict(self._vass_last_entry_date_by_direction),
+            "vass_entry_state": self._vass_entry_engine.to_dict(),
             "spread_neutrality_warn_by_key": {
                 k: v.strftime("%Y-%m-%d %H:%M:%S")
                 for k, v in self._spread_neutrality_warn_by_key.items()
@@ -10481,27 +10305,21 @@ class OptionsEngine:
         self._vass_loss_breaker_pause_until = (
             str(raw_breaker_pause)[:10] if raw_breaker_pause else None
         )
-        self._vass_last_entry_at_by_signature = {}
-        self._vass_cooldown_until_by_signature = {}
-        self._vass_last_entry_date_by_direction = {
-            str(k).upper(): str(v)[:10]
-            for k, v in (state.get("vass_last_entry_date_by_direction", {}) or {}).items()
-            if str(k).upper() in {"BULLISH", "BEARISH"} and str(v)
-        }
-        for k, v in (state.get("vass_last_entry_at_by_signature", {}) or {}).items():
-            try:
-                self._vass_last_entry_at_by_signature[str(k)] = datetime.strptime(
-                    str(v)[:19], "%Y-%m-%d %H:%M:%S"
-                )
-            except Exception:
-                continue
-        for k, v in (state.get("vass_cooldown_until_by_signature", {}) or {}).items():
-            try:
-                self._vass_cooldown_until_by_signature[str(k)] = datetime.strptime(
-                    str(v)[:19], "%Y-%m-%d %H:%M:%S"
-                )
-            except Exception:
-                continue
+        vass_state = state.get("vass_entry_state")
+        if not isinstance(vass_state, dict):
+            # Backward-compat restore from legacy top-level keys.
+            vass_state = {
+                "last_entry_at_by_signature": state.get("vass_last_entry_at_by_signature", {})
+                or {},
+                "cooldown_until_by_signature": state.get("vass_cooldown_until_by_signature", {})
+                or {},
+                "last_entry_date_by_direction": state.get("vass_last_entry_date_by_direction", {})
+                or {},
+            }
+        try:
+            self._vass_entry_engine.from_dict(vass_state)
+        except Exception:
+            self._vass_entry_engine.reset()
         self._spread_neutrality_warn_by_key = {}
         for k, v in (state.get("spread_neutrality_warn_by_key", {}) or {}).items():
             try:
@@ -10566,9 +10384,7 @@ class OptionsEngine:
         self._win_rate_shutoff_date = None
         self._vass_consecutive_losses = 0
         self._vass_loss_breaker_pause_until = None
-        self._vass_last_entry_at_by_signature = {}
-        self._vass_cooldown_until_by_signature = {}
-        self._vass_last_entry_date_by_direction = {}
+        self._vass_entry_engine.reset()
         self._spread_neutrality_warn_by_key = {}
         self._spread_hold_guard_logged.clear()
         self._intraday_force_exit_hold_skip_log_date = {}
