@@ -266,6 +266,9 @@ class AlphaNextGen(
         self._last_intraday_dte_routing_log_by_key = {}
         # Preserve best-effort order tags for lifecycle diagnostics when broker tags are blank.
         self._order_tag_hint_cache = {}
+        # Per-symbol last order tag/fill time for lifecycle attribution and reconcile guard.
+        self._last_option_fill_tag_by_symbol = {}
+        self._last_option_fill_time_by_symbol = {}
 
         # V2.6 Bug #14: Exit order retry tracking
         self._pending_exit_orders = {}
@@ -3193,6 +3196,35 @@ class AlphaNextGen(
         if len(self._order_tag_hint_cache) > 25000:
             self._order_tag_hint_cache.clear()
 
+    def _cache_symbol_fill_tag(self, symbol: str, tag: str) -> None:
+        """Cache last non-empty fill tag per option symbol for telemetry fallback/reconcile guards."""
+        sym = self._normalize_symbol_str(symbol)
+        clean = str(tag or "").strip()
+        if not sym or not clean:
+            return
+        self._last_option_fill_tag_by_symbol[sym] = clean
+        self._last_option_fill_time_by_symbol[sym] = self.Time
+        if len(self._last_option_fill_tag_by_symbol) > 5000:
+            self._last_option_fill_tag_by_symbol.clear()
+            self._last_option_fill_time_by_symbol.clear()
+
+    def _get_recent_symbol_fill_tag(self, symbol: str, max_age_minutes: int = 240) -> str:
+        """Return last cached fill tag for symbol when fresh enough."""
+        sym = self._normalize_symbol_str(symbol)
+        if not sym:
+            return ""
+        tag = str(self._last_option_fill_tag_by_symbol.get(sym, "") or "").strip()
+        ts = self._last_option_fill_time_by_symbol.get(sym)
+        if not tag or ts is None:
+            return ""
+        try:
+            age = (self.Time - ts).total_seconds() / 60.0
+            if age > float(max_age_minutes):
+                return ""
+        except Exception:
+            return ""
+        return tag
+
     def _extract_trace_id_from_tag(self, order_tag: str) -> str:
         """Extract trace id from order tag (best-effort) for RCA joins."""
         if not order_tag:
@@ -3917,6 +3949,15 @@ class AlphaNextGen(
                         continue
 
                     if mode_norm == "intraday":
+                        recent_tag = self._get_recent_symbol_fill_tag(sym_str, max_age_minutes=90)
+                        if recent_tag:
+                            if self._should_log_backtest_category(
+                                "LOG_SPREAD_RECONCILE_BACKTEST_ENABLED", False
+                            ):
+                                self.Log(
+                                    f"RECON_ORPHAN_SKIP_RECENT_FILL: {sym_str} | Tag={recent_tag}"
+                                )
+                            continue
                         first_seen = self._recon_orphan_first_seen_at.get(sym_str)
                         if first_seen is None:
                             first_seen = self.Time
