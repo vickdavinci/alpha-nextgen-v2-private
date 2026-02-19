@@ -76,6 +76,7 @@ class MainOrdersMixin:
                 fill_price=fill_price,
                 fill_quantity=fill_qty,
             )
+            self._save_state_throttled("ORDER_PARTIAL_FILL", min_minutes=3)
             return  # Don't fall through to other handlers
 
         if orderEvent.Status == OrderStatus.Filled:
@@ -274,6 +275,8 @@ class MainOrdersMixin:
                         f"{symbol[-20:]}"
                     )
 
+            self._save_state_throttled("ORDER_FILLED", min_minutes=3)
+
         elif orderEvent.Status == OrderStatus.Invalid:
             self.Log(f"INVALID: {orderEvent.Symbol} - {orderEvent.Message}")
             self._log_order_lifecycle_issue(orderEvent, "Invalid")
@@ -302,6 +305,7 @@ class MainOrdersMixin:
                 )
                 # OCO invalid/cancel is operational close-order churn, not entry rejection.
                 # Do not route through margin/rejection recovery flows.
+                self._save_state_throttled("ORDER_INVALID_OCO", min_minutes=3)
                 return
 
             # V2.4.4 P0 Fix #4: Margin Call Circuit Breaker
@@ -521,6 +525,7 @@ class MainOrdersMixin:
             # V2.20: Event-driven state recovery — notify source engine
             # Runs AFTER existing handlers (margin CB, orphan legs, exit retry)
             self._handle_order_rejection(failed_symbol, orderEvent)
+            self._save_state_throttled("ORDER_INVALID", min_minutes=3)
 
         elif orderEvent.Status == OrderStatus.Canceled:
             self._log_order_lifecycle_issue(orderEvent, "Canceled")
@@ -600,6 +605,7 @@ class MainOrdersMixin:
             # INTRADAY because OCO cancel wiped _pending_intraday_entry flag).
             if not is_oco_cancel:
                 self._handle_order_rejection(canceled_symbol, orderEvent)
+            self._save_state_throttled("ORDER_CANCELED", min_minutes=3)
 
     def _on_fill(
         self,

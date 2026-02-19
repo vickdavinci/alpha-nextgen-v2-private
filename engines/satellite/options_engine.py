@@ -10242,6 +10242,19 @@ class OptionsEngine:
             "total_options_trades_today": self._total_options_trades_today,
             "current_mode": self._current_mode.value,
             "micro_regime_state": self._micro_regime_engine.get_state().to_dict(),
+            "micro_regime_runtime_state": {
+                "vix_history": [
+                    {
+                        "timestamp": snap.timestamp,
+                        "value": float(snap.value),
+                        "change_from_open_pct": float(snap.change_from_open_pct),
+                    }
+                    for snap in list(self._micro_regime_engine._vix_history)
+                ],
+                "vix_15min_ago": float(self._micro_regime_engine._vix_15min_ago),
+                "vix_30min_ago": float(self._micro_regime_engine._vix_30min_ago),
+                "qqq_open": float(self._micro_regime_engine._qqq_open),
+            },
             # V2.16-BT: Persist spread position for multi-day backtests
             # Mirror primary from canonical spread list to avoid dual-key drift.
             "spread_position": (primary_spread.to_dict() if primary_spread else None),
@@ -10436,6 +10449,33 @@ class OptionsEngine:
         if micro_state_data:
             self._micro_regime_engine._state = MicroRegimeState.from_dict(micro_state_data)
 
+        runtime_state = state.get("micro_regime_runtime_state", {}) or {}
+        try:
+            self._micro_regime_engine._vix_history.clear()
+            for row in runtime_state.get("vix_history", []) or []:
+                try:
+                    self._micro_regime_engine._vix_history.append(
+                        VIXSnapshot(
+                            timestamp=str(row.get("timestamp", "")),
+                            value=float(row.get("value", 0.0) or 0.0),
+                            change_from_open_pct=float(row.get("change_from_open_pct", 0.0) or 0.0),
+                        )
+                    )
+                except Exception:
+                    continue
+            self._micro_regime_engine._vix_15min_ago = float(
+                runtime_state.get("vix_15min_ago", 0.0) or 0.0
+            )
+            self._micro_regime_engine._vix_30min_ago = float(
+                runtime_state.get("vix_30min_ago", 0.0) or 0.0
+            )
+            self._micro_regime_engine._qqq_open = float(runtime_state.get("qqq_open", 0.0) or 0.0)
+        except Exception:
+            self._micro_regime_engine._vix_history.clear()
+            self._micro_regime_engine._vix_15min_ago = 0.0
+            self._micro_regime_engine._vix_30min_ago = 0.0
+            self._micro_regime_engine._qqq_open = 0.0
+
         # Market open data
         self._vix_at_open = state.get("vix_at_open", 0.0)
         self._spy_at_open = state.get("spy_at_open", 0.0)
@@ -10531,6 +10571,25 @@ class OptionsEngine:
 
         # V2.3.3: Reset pending intraday exit flag
         self._pending_intraday_exit = False
+        self._rejection_margin_cap = None
+        self._spread_failure_cooldown_until = None
+        self._spread_failure_cooldown_until_by_dir = {}
+        self._last_spread_scan_time = None
+        self._last_spread_failure_stats = None
+        self._last_credit_failure_stats = None
+        self._last_entry_validation_failure = None
+        self._last_intraday_validation_failure = None
+        self._last_intraday_validation_detail = None
+        self._last_trade_limit_failure = None
+        self._last_trade_limit_detail = None
+        self._spread_exit_signal_cooldown = {}
+        self._call_consecutive_losses = 0
+        self._call_cooldown_until_date = None
+        self._put_consecutive_losses = 0
+        self._put_cooldown_until_date = None
+        self._spread_result_history = []
+        self._paper_track_history = []
+        self._win_rate_shutoff = False
         self._win_rate_shutoff_date = None
         self._vass_entry_engine.reset()
         self._spread_neutrality_warn_by_key = {}

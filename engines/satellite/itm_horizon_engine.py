@@ -263,7 +263,8 @@ class ITMHorizonEngine:
     ) -> None:
         if not self.enabled():
             return
-        if str(strategy or "") != "ITM_MOMENTUM":
+        strategy_name = str(getattr(strategy, "value", strategy) or "").upper()
+        if strategy_name not in {"ITM_MOMENTUM", "DEBIT_MOMENTUM"}:
             return
 
         trade_date = self._parse_trade_date(current_time, algorithm=algorithm)

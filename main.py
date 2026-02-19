@@ -285,6 +285,8 @@ class AlphaNextGen(
         # Per-symbol last order tag/fill time for lifecycle attribution and reconcile guard.
         self._last_option_fill_tag_by_symbol = {}
         self._last_option_fill_time_by_symbol = {}
+        # Throttled intraday ObjectStore persistence marker (live-mode safety).
+        self._last_state_persist_at = None
 
         # V2.6 Bug #14: Exit order retry tracking
         self._pending_exit_orders = {}
@@ -3862,6 +3864,28 @@ class AlphaNextGen(
 
         except Exception as e:
             self.Log(f"STATE_ERROR: Failed to save state - {e}")
+
+    def _save_state_throttled(self, reason: str, min_minutes: int = 5) -> None:
+        """Best-effort intraday persistence, throttled to reduce ObjectStore churn."""
+        if not bool(getattr(self, "LiveMode", False)):
+            return
+        now_dt = self.Time if hasattr(self, "Time") else None
+        if now_dt is None:
+            return
+        last_dt = getattr(self, "_last_state_persist_at", None)
+        if last_dt is not None:
+            try:
+                elapsed_min = (now_dt - last_dt).total_seconds() / 60.0
+                if elapsed_min < float(max(1, int(min_minutes))):
+                    return
+            except Exception:
+                pass
+        try:
+            self._save_state()
+            self._last_state_persist_at = now_dt
+            self.Log(f"STATE_SNAPSHOT: Saved ({reason}) | {now_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+        except Exception as e:
+            self.Log(f"STATE_WARN: Throttled save failed ({reason}) - {e}")
 
     def _clear_micro_symbol_tracking(self, symbol: str) -> None:
         """Clear MICRO tracking artifacts for a symbol after flat/orphan handling."""
