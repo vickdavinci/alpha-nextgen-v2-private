@@ -5104,6 +5104,11 @@ class OptionsEngine:
         vass_abs_cap = float(getattr(config, "VASS_MAX_RISK_DOLLARS", 0.0) or 0.0)
         if vass_abs_cap > 0:
             swing_max_dollars = min(swing_max_dollars, vass_abs_cap)
+        remaining_vass = self._get_bucket_remaining_dollars("VASS", float(portfolio_value))
+        swing_max_dollars = min(swing_max_dollars, remaining_vass)
+        if swing_max_dollars <= 0:
+            self.log("SPREAD: Entry blocked - VASS bucket exhausted", trades_only=True)
+            return fail("R_BUCKET_VASS_EXHAUSTED")
         # V2.14: Use conservative net debit for sizing (prevents tier cap violations)
         cost_per_spread = net_debit_for_sizing * 100  # 100 shares per contract
         num_spreads = int(swing_max_dollars / cost_per_spread)
@@ -5645,6 +5650,11 @@ class OptionsEngine:
         vass_abs_cap = float(getattr(config, "VASS_MAX_RISK_DOLLARS", 0.0) or 0.0)
         if vass_abs_cap > 0:
             swing_max_dollars = min(swing_max_dollars, vass_abs_cap)
+        remaining_vass = self._get_bucket_remaining_dollars("VASS", float(portfolio_value))
+        swing_max_dollars = min(swing_max_dollars, remaining_vass)
+        if swing_max_dollars <= 0:
+            self.log("CREDIT_SPREAD: Entry blocked - VASS bucket exhausted", trades_only=True)
+            return fail("R_BUCKET_VASS_EXHAUSTED")
         num_spreads, _credit_per, _max_loss_per, _total_margin = self._calculate_credit_spread_size(
             short_leg_contract, long_leg_contract, swing_max_dollars
         )
@@ -7664,6 +7674,99 @@ class OptionsEngine:
 
         return (max_contracts, credit_received, margin_per_spread, total_margin)
 
+    def _classify_intraday_bucket(self, strategy_name: str) -> str:
+        """Map intraday strategy names to reservation buckets."""
+        name = str(strategy_name or "").upper()
+        if "ITM_MOMENTUM" in name:
+            return "ITM"
+        return "OTM"
+
+    def _get_reserved_bucket_usage_dollars(self) -> Dict[str, float]:
+        """Current reserved capital-at-risk usage per options bucket."""
+        usage = {"VASS": 0.0, "ITM": 0.0, "OTM": 0.0}
+
+        # Active swing spreads (VASS)
+        for spread in self.get_spread_positions():
+            try:
+                spread_type = str(getattr(spread, "spread_type", "") or "").upper()
+                num = max(1, int(getattr(spread, "num_spreads", 1) or 1))
+                width = float(getattr(spread, "width", 0.0) or 0.0)
+                net_debit = float(getattr(spread, "net_debit", 0.0) or 0.0)
+                if "CREDIT" in spread_type:
+                    credit = abs(net_debit)
+                    per_spread_risk = max(0.0, (width - credit) * 100.0)
+                else:
+                    per_spread_risk = max(0.0, net_debit * 100.0)
+                usage["VASS"] += per_spread_risk * num
+            except Exception:
+                continue
+
+        # Pending spread entry
+        if self._pending_spread_type is not None and self._pending_num_contracts is not None:
+            try:
+                spread_type = str(self._pending_spread_type or "").upper()
+                num = max(1, int(self._pending_num_contracts or 1))
+                width = float(self._pending_spread_width or 0.0)
+                net_debit = float(self._pending_net_debit or 0.0)
+                if "CREDIT" in spread_type:
+                    credit = abs(net_debit)
+                    per_spread_risk = max(0.0, (width - credit) * 100.0)
+                else:
+                    per_spread_risk = max(0.0, net_debit * 100.0)
+                usage["VASS"] += per_spread_risk * num
+            except Exception:
+                pass
+
+        # Active intraday position
+        if self._intraday_position is not None:
+            try:
+                bucket = self._classify_intraday_bucket(
+                    str(getattr(self._intraday_position, "entry_strategy", "") or "")
+                )
+                risk = (
+                    float(getattr(self._intraday_position, "entry_price", 0.0) or 0.0)
+                    * max(1, int(getattr(self._intraday_position, "num_contracts", 1) or 1))
+                    * 100.0
+                )
+                usage[bucket] += max(0.0, risk)
+            except Exception:
+                pass
+
+        # Pending intraday entry
+        if self._pending_intraday_entry and self._pending_num_contracts is not None:
+            try:
+                strategy = str(self._pending_entry_strategy or "")
+                bucket = self._classify_intraday_bucket(strategy)
+                premium = float(
+                    getattr(self._pending_contract, "mid_price", 0.0)
+                    if self._pending_contract
+                    else 0.0
+                )
+                risk = premium * max(1, int(self._pending_num_contracts or 1)) * 100.0
+                usage[bucket] += max(0.0, risk)
+            except Exception:
+                pass
+
+        return usage
+
+    def _get_bucket_remaining_dollars(self, bucket: str, portfolio_value: float) -> float:
+        """Hard reservation remaining dollars for the requested bucket."""
+        usage = self._get_reserved_bucket_usage_dollars()
+        bucket_u = str(bucket or "").upper()
+        cap = 0.0
+        if bucket_u == "VASS":
+            cap = float(getattr(config, "VASS_MAX_RISK_DOLLARS", 0.0) or 0.0)
+        elif bucket_u == "ITM":
+            cap = float(getattr(config, "INTRADAY_ITM_MAX_DOLLARS", 0.0) or 0.0)
+            if cap <= 0:
+                cap = float(portfolio_value) * float(getattr(config, "INTRADAY_ITM_MAX_PCT", 0.15))
+        elif bucket_u == "OTM":
+            cap = float(getattr(config, "INTRADAY_OTM_MAX_DOLLARS", 0.0) or 0.0)
+            if cap <= 0:
+                cap = float(portfolio_value) * float(getattr(config, "INTRADAY_OTM_MAX_PCT", 0.10))
+        used = float(usage.get(bucket_u, 0.0))
+        return max(0.0, cap - used)
+
     def get_mode_allocation(
         self, mode: OptionsMode, portfolio_value: float, size_multiplier: float = 1.0
     ) -> float:
@@ -8217,6 +8320,17 @@ class OptionsEngine:
             intraday_max_dollars = portfolio_value_for_sizing * intraday_max_pct
             if intraday_abs_cap > 0:
                 intraday_max_dollars = min(intraday_max_dollars, intraday_abs_cap)
+            bucket_name = "ITM" if entry_strategy == IntradayStrategy.ITM_MOMENTUM else "OTM"
+            remaining_bucket = self._get_bucket_remaining_dollars(
+                bucket_name, float(portfolio_value_for_sizing)
+            )
+            intraday_max_dollars = min(intraday_max_dollars, remaining_bucket)
+            if intraday_max_dollars <= 0:
+                self.log(
+                    f"INTRADAY: Entry blocked - {bucket_name} bucket exhausted",
+                    trades_only=True,
+                )
+                return fail(f"E_INTRADAY_{bucket_name}_BUCKET_EXHAUSTED")
 
             # Adjust size based on micro score
             if state.micro_score >= config.MICRO_SCORE_PRIME_MR:
