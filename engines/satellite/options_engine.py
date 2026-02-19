@@ -8311,23 +8311,27 @@ class OptionsEngine:
                 )
                 return fail(f"E_INTRADAY_{bucket_name}_BUCKET_EXHAUSTED")
 
-            # Adjust size based on micro score
-            if state.micro_score >= config.MICRO_SCORE_PRIME_MR:
-                micro_mult = 1.0  # Full size
-            elif state.micro_score >= config.MICRO_SCORE_GOOD_MR:
-                micro_mult = 1.0  # Full size
-            elif state.micro_score >= config.MICRO_SCORE_MODERATE:
-                micro_mult = 0.5  # Half size
+            # ITM_V2 is a sovereign engine: do not couple size to MICRO score ladders.
+            if itm_v2_mode and entry_strategy == IntradayStrategy.ITM_MOMENTUM:
+                strategy_mult = float(getattr(config, "ITM_V2_SIZE_MULT", 1.0) or 1.0)
+                strategy_mult = max(0.0, strategy_mult)
             else:
-                micro_mult = 0.5  # Half size
+                # OTM micro paths still use MICRO score ladder.
+                if state.micro_score >= config.MICRO_SCORE_PRIME_MR:
+                    strategy_mult = 1.0  # Full size
+                elif state.micro_score >= config.MICRO_SCORE_GOOD_MR:
+                    strategy_mult = 1.0  # Full size
+                elif state.micro_score >= config.MICRO_SCORE_MODERATE:
+                    strategy_mult = 0.5  # Half size
+                else:
+                    strategy_mult = 0.5  # Half size
 
-            # V6.14 OPT: Reduce size in fragile transition states even when tradable.
-            if state.micro_regime in (MicroRegime.ELEVATED, MicroRegime.WORSENING):
-                micro_mult = min(micro_mult, 0.5)
+                # V6.14 OPT: Reduce size in fragile transition states even when tradable.
+                if state.micro_regime in (MicroRegime.ELEVATED, MicroRegime.WORSENING):
+                    strategy_mult = min(strategy_mult, 0.5)
 
-            # V6.0: Apply combined multipliers (cold_start × governor × micro)
-            # Macro gate removed - conviction resolution handles direction
-            combined_mult = size_multiplier * governor_scale * micro_mult
+            # V6.0: Apply combined multipliers (cold_start × governor × strategy)
+            combined_mult = size_multiplier * governor_scale * strategy_mult
             min_combined = getattr(config, "OPTIONS_MIN_COMBINED_SIZE_PCT", 0.10)
             if combined_mult < min_combined:
                 self.log(
@@ -8336,7 +8340,7 @@ class OptionsEngine:
                 return fail("E_INTRADAY_COMBINED_SIZE_MIN")
 
             adjusted_cap = intraday_max_dollars * combined_mult
-            size_mult = micro_mult  # For logging compatibility
+            size_mult = strategy_mult  # For logging compatibility
         premium = best_contract.mid_price
         if premium <= 0:
             self.log("INTRADAY: Entry blocked - invalid premium price")
@@ -8528,9 +8532,18 @@ class OptionsEngine:
             trades_only=True,
         )
 
-        # V2.4.1 FIX: Use config allocation value, not size_mult
-        # Was returning 1.0/0.5 instead of actual allocation (0.0625)
-        actual_target_weight = config.OPTIONS_INTRADAY_ALLOCATION * size_mult
+        # Keep source weights strategy-specific so telemetry reflects ITM/OTM separation.
+        if entry_strategy == IntradayStrategy.ITM_MOMENTUM:
+            base_weight = float(
+                getattr(config, "INTRADAY_ITM_MAX_PCT", config.OPTIONS_INTRADAY_ALLOCATION)
+            )
+        elif entry_strategy in (IntradayStrategy.DEBIT_FADE, IntradayStrategy.CREDIT_SPREAD):
+            base_weight = float(
+                getattr(config, "INTRADAY_OTM_MAX_PCT", config.OPTIONS_INTRADAY_ALLOCATION)
+            )
+        else:
+            base_weight = float(config.OPTIONS_INTRADAY_ALLOCATION)
+        actual_target_weight = base_weight * size_mult
 
         return TargetWeight(
             symbol=self._symbol_str(best_contract.symbol),

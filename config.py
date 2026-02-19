@@ -949,7 +949,7 @@ MICRO_SAME_STRATEGY_COOLDOWN_MINUTES = (
 MAX_OPTIONS_TRADES_PER_DAY = 5
 MAX_SWING_TRADES_PER_DAY = 3
 # Reserve swing capacity so intraday activity cannot fully starve VASS entries.
-OPTIONS_RESERVE_SWING_DAILY_SLOTS_ENABLED = False
+OPTIONS_RESERVE_SWING_DAILY_SLOTS_ENABLED = True
 OPTIONS_MIN_SWING_SLOTS_PER_DAY = 1
 OPTIONS_RESERVE_INTRADAY_DAILY_SLOTS_ENABLED = False
 OPTIONS_MIN_INTRADAY_SLOTS_PER_DAY = 1
@@ -1625,7 +1625,7 @@ SPREAD_MAX_CONTRACTS_HARD_CAP = 30  # V10.7: explicit hard cap used by risk-budg
 
 # V5.3: Options Position Limits (Margin Error Prevention)
 # Max concurrent positions: 2 intraday + 5 swings = 7 total
-OPTIONS_MAX_INTRADAY_POSITIONS = 2  # V8.2: Allow 2 concurrent intraday positions
+OPTIONS_MAX_INTRADAY_POSITIONS = 1  # Intraday engine tracks a single live position object
 OPTIONS_MAX_SWING_POSITIONS = 4  # V10.9: reduce concentration risk
 OPTIONS_MAX_TOTAL_POSITIONS = 7  # 2 intraday + up to 5 swings
 OPTIONS_MAX_SWING_PER_DIRECTION = 3  # Legacy fallback cap if directional pools are unset
@@ -1948,6 +1948,7 @@ INTRADAY_ITM_SCORE_OI_WEIGHT = 0.05
 # ITM_V2 (isolated horizon engine; feature-flagged)
 ITM_V2_ENABLED = True
 ITM_V2_SHADOW_MODE = False
+ITM_V2_SIZE_MULT = 1.0  # ITM_V2 sizing is sovereign; do not couple to MICRO score ladder
 ITM_V2_DECISION_HOUR = 10
 ITM_V2_DECISION_MINUTE = 30
 ITM_V2_ENTRY_START = "10:30"
@@ -1984,6 +1985,8 @@ ITM_V2_HOLD_OVERNIGHT_ENABLED = True
 ITM_V2_OVERNIGHT_MAX_LOSS_PCT = 0.10
 ITM_V2_OVERNIGHT_MAX_LOSS_PCT_HIGH_VIX = 0.15
 ITM_V2_OVERNIGHT_HIGH_VIX_THRESHOLD = 25.0
+
+# Legacy ITM knobs below this line are fallback-only when ITM_V2_ENABLED = False.
 
 # Protective Puts (Intraday Hedge)
 INTRADAY_PROTECT_MIN_VIX = 20  # VIX > 20: Add protection
