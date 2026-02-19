@@ -286,10 +286,8 @@ class ITMHorizonEngine:
         self._consecutive_losses += 1
         if direction_key == "CALL":
             self._call_consecutive_losses += 1
-            self._put_consecutive_losses = 0
         else:
             self._put_consecutive_losses += 1
-            self._call_consecutive_losses = 0
 
         b3 = int(getattr(config, "ITM_V2_BREAKER_3_LOSSES_PAUSE_DAYS", 2))
         b5 = int(getattr(config, "ITM_V2_BREAKER_5_LOSSES_PAUSE_DAYS", 5))
