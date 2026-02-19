@@ -5402,6 +5402,44 @@ class AlphaNextGen(QCAlgorithm):
                 )
             return
 
+        spy_open = float(getattr(self.options_engine, "_spy_at_open", 0.0) or 0.0)
+        spy_gap_pct = float(getattr(self.options_engine, "_spy_gap_pct", 0.0) or 0.0)
+        try:
+            spy_current = float(self.Securities[self.spy].Price)
+        except Exception:
+            spy_current = spy_open
+        spy_intraday_change_pct = (
+            ((spy_current - spy_open) / spy_open) * 100.0 if spy_open > 0 else 0.0
+        )
+        vix_intraday_change_pct = (
+            ((float(self._current_vix) - float(self._vix_at_open)) / float(self._vix_at_open))
+            * 100.0
+            if float(self._vix_at_open) > 0
+            else 0.0
+        )
+        swing_filters_ok, swing_filter_reason = self.options_engine.check_swing_filters(
+            direction=direction,
+            spy_gap_pct=spy_gap_pct,
+            spy_intraday_change_pct=spy_intraday_change_pct,
+            vix_intraday_change_pct=vix_intraday_change_pct,
+            current_hour=self.Time.hour,
+            current_minute=self.Time.minute,
+        )
+        if not swing_filters_ok:
+            self._diag_vass_block_count += 1
+            throttle_key = (
+                f"SWING_FILTER|{direction.value}|"
+                f"{'CREDIT' if is_credit else 'DEBIT'}|{swing_filter_reason}"
+            )
+            if self._should_log_vass_rejection(throttle_key):
+                self.Log(
+                    f"VASS_SKIPPED: Direction={direction.value} | "
+                    f"VIX={self._current_vix:.1f} | Regime={regime_score:.0f} | "
+                    f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
+                    f"ReasonCode=SWING_FILTER | ValidationFail={swing_filter_reason}"
+                )
+            return
+
         required_right = self._strategy_option_right(strategy)
 
         # V2.23: Build candidate contracts with widest VASS DTE range (fallback uses subranges)
@@ -7409,6 +7447,39 @@ class AlphaNextGen(QCAlgorithm):
                 f"OPTIONS_VASS_CONVICTION_INTRADAY: {vass_reason} | Macro={macro_direction} | "
                 f"Resolved={resolved_direction} | {resolve_reason}"
             )
+
+        spy_open = float(getattr(self.options_engine, "_spy_at_open", 0.0) or 0.0)
+        spy_gap_pct = float(getattr(self.options_engine, "_spy_gap_pct", 0.0) or 0.0)
+        try:
+            spy_current = float(self.Securities[self.spy].Price)
+        except Exception:
+            spy_current = spy_open
+        spy_intraday_change_pct = (
+            ((spy_current - spy_open) / spy_open) * 100.0 if spy_open > 0 else 0.0
+        )
+        vix_intraday_change_pct = (
+            ((float(self._current_vix) - float(self._vix_at_open)) / float(self._vix_at_open))
+            * 100.0
+            if float(self._vix_at_open) > 0
+            else 0.0
+        )
+        swing_filters_ok, swing_filter_reason = self.options_engine.check_swing_filters(
+            direction=direction,
+            spy_gap_pct=spy_gap_pct,
+            spy_intraday_change_pct=spy_intraday_change_pct,
+            vix_intraday_change_pct=vix_intraday_change_pct,
+            current_hour=self.Time.hour,
+            current_minute=self.Time.minute,
+        )
+        if not swing_filters_ok:
+            self._diag_vass_block_count += 1
+            if self.Time.minute % 15 == 0:
+                self.Log(
+                    f"VASS_SKIPPED: Direction={direction.value} | "
+                    f"VIX={self._current_vix:.1f} | Regime={regime_score:.0f} | "
+                    f"ReasonCode=SWING_FILTER | ValidationFail={swing_filter_reason}"
+                )
+            return
 
         # V2.23: VASS strategy selection — routes to credit or debit
         strategy, vass_dte_min, vass_dte_max, is_credit = self._route_vass_strategy(

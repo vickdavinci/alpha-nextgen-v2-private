@@ -257,7 +257,7 @@ class ITMHorizonEngine:
     ) -> None:
         if not self.enabled():
             return
-        if str(strategy or "") not in {"ITM_MOMENTUM", "DEBIT_MOMENTUM"}:
+        if str(strategy or "") != "ITM_MOMENTUM":
             return
 
         trade_date = self._parse_trade_date(current_time, algorithm=algorithm)
