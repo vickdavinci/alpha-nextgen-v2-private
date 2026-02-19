@@ -84,6 +84,20 @@ class MainOptionsMixin:
             except Exception:
                 pass
 
+        if strategy == IntradayStrategy.MICRO_OTM_MOMENTUM:
+            effective_dte_min = int(getattr(config, "MICRO_OTM_MOMENTUM_DTE_MIN", 0))
+            effective_dte_max = int(getattr(config, "MICRO_OTM_MOMENTUM_DTE_MAX", 1))
+            key = f"MICRO_OTM|{effective_dte_min}|{effective_dte_max}"
+            last_log_at = self._last_intraday_dte_routing_log_by_key.get(key)
+            should_log = last_log_at is None or (
+                self.Time - last_log_at
+            ).total_seconds() / 60.0 >= int(getattr(config, "MICRO_DTE_DIAG_LOG_INTERVAL_MIN", 30))
+            if should_log:
+                self.Log(
+                    f"INTRADAY_DTE_ROUTING: MICRO_OTM_MOMENTUM fixed window DTE=[{effective_dte_min}-{effective_dte_max}]"
+                )
+                self._last_intraday_dte_routing_log_by_key[key] = self.Time
+
         # ITM DTE overlay.
         if strategy == IntradayStrategy.ITM_MOMENTUM:
             if bool(getattr(config, "ITM_ENGINE_ENABLED", False)):

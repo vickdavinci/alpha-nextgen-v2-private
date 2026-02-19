@@ -7535,6 +7535,7 @@ class OptionsEngine:
         # - OTM expiring worthless (100% loss)
         # - ITM being auto-exercised (creates stock position, margin crisis)
         dte_exit_threshold = int(getattr(config, "OPTIONS_SINGLE_LEG_DTE_EXIT", 4))
+        strategy_name = self._canonical_intraday_strategy_name(getattr(pos, "entry_strategy", ""))
         if self._is_itm_momentum_strategy_name(getattr(pos, "entry_strategy", "")):
             if self._itm_horizon_engine.enabled():
                 _, _, _, _, dte_exit_threshold = self._itm_horizon_engine.get_exit_profile()
@@ -7542,6 +7543,14 @@ class OptionsEngine:
                 dte_exit_threshold = int(
                     getattr(config, "INTRADAY_ITM_DTE_EXIT", dte_exit_threshold)
                 )
+        elif strategy_name == IntradayStrategy.MICRO_DEBIT_FADE.value:
+            dte_exit_threshold = int(
+                getattr(config, "MICRO_DEBIT_FADE_DTE_EXIT", dte_exit_threshold)
+            )
+        elif strategy_name == IntradayStrategy.MICRO_OTM_MOMENTUM.value:
+            dte_exit_threshold = int(
+                getattr(config, "MICRO_OTM_MOMENTUM_DTE_EXIT", dte_exit_threshold)
+            )
 
         if current_dte is not None and current_dte <= dte_exit_threshold:
             if is_intraday_pos and not self.mark_pending_intraday_exit(symbol_str):
