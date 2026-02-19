@@ -8447,8 +8447,11 @@ class OptionsEngine:
                 if micro_fail_code is not None:
                     return fail(micro_fail_code, micro_fail_detail)
             else:
-                # Fallback to legacy in-engine behavior when carve-out flag is disabled.
-                pass
+                self.log(
+                    "INTRADAY: MICRO_ENTRY_ENGINE disabled - legacy fallback removed; blocking entry",
+                    trades_only=True,
+                )
+                return fail("E_MICRO_ENGINE_DISABLED")
 
         # V3.2: Governor Gate for intraday (closes gap)
         if getattr(config, "INTRADAY_GOVERNOR_GATE_ENABLED", True) and not is_protective_put:
@@ -8511,8 +8514,11 @@ class OptionsEngine:
             if not tw_ok:
                 return fail(tw_code or "E_INTRADAY_TIME_WINDOW")
         else:
-            # Fallback to legacy in-engine behavior when carve-out flag is disabled.
-            pass
+            self.log(
+                "INTRADAY: MICRO_ENTRY_ENGINE disabled - legacy fallback removed; blocking entry",
+                trades_only=True,
+            )
+            return fail("E_MICRO_ENGINE_DISABLED")
 
         # Check if we have a valid contract
         if best_contract is None:
@@ -8725,6 +8731,7 @@ class OptionsEngine:
         # V10.5: widen ITM stops in MED/HIGH VIX only; keep LOW VIX behavior unchanged.
         if (
             not is_protective_put
+            and (not itm_v2_mode)
             and entry_strategy == IntradayStrategy.ITM_MOMENTUM
             and self._pending_stop_pct is not None
         ):
@@ -8743,6 +8750,21 @@ class OptionsEngine:
                     f"ATR {self._pending_stop_pct:.0%} → using floor"
                 )
                 self._pending_stop_pct = itm_stop_floor
+
+        if (
+            not is_protective_put
+            and itm_v2_mode
+            and entry_strategy == IntradayStrategy.ITM_MOMENTUM
+            and self._pending_stop_pct is not None
+        ):
+            _, itm_v2_stop, _, _, _ = self._itm_horizon_engine.get_exit_profile()
+            if itm_v2_stop is not None and itm_v2_stop > 0:
+                if abs(float(self._pending_stop_pct) - float(itm_v2_stop)) > 1e-6:
+                    self.log(
+                        f"STOP_CALC: ITM_V2 fixed stop override {self._pending_stop_pct:.0%} -> {itm_v2_stop:.0%}",
+                        trades_only=True,
+                    )
+                self._pending_stop_pct = float(itm_v2_stop)
 
         self.log(
             f"INTRADAY_SIGNAL: {reason} | Δ={best_contract.delta:.2f} K={best_contract.strike} DTE={best_contract.days_to_expiry} | "
