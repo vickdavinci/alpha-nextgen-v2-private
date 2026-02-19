@@ -7136,6 +7136,11 @@ class AlphaNextGen(
                     count=1,
                     context="FILL_CLOSE_RECONCILED",
                 )
+                if self.portfolio_router:
+                    self.portfolio_router.unregister_spread_margin_by_legs(
+                        str(removed.long_leg.symbol),
+                        str(removed.short_leg.symbol),
+                    )
             else:
                 self.Log(
                     "SPREAD_DIAG_WARNING: Fill-path counter skipped | "
