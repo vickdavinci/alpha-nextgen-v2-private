@@ -1753,6 +1753,8 @@ class OptionsEngine:
         self._spread_hold_guard_logged: set = set()
         # Throttle force-exit hold-skip logs (symbol -> YYYY-MM-DD).
         self._intraday_force_exit_hold_skip_log_date: Dict[str, str] = {}
+        # Throttle expiration-hammer skip logs for MICRO intraday strategies.
+        self._expiring_hammer_skip_log_date: Dict[str, str] = {}
 
     def log(self, message: str, trades_only: bool = False) -> None:
         """
@@ -8962,6 +8964,27 @@ class OptionsEngine:
         # Check if ANY position exists (swing or intraday)
         position = self._position or self._intraday_position
         if position is None:
+            return None
+
+        # MICRO intraday strategies are explicitly managed by intraday force-exit rules.
+        # Keep noon expiration hammer active for PROTECTIVE_PUTS and non-MICRO positions.
+        strategy_name = self._canonical_intraday_strategy_name(
+            getattr(position, "entry_strategy", None)
+        )
+        if strategy_name in (
+            IntradayStrategy.MICRO_DEBIT_FADE.value,
+            IntradayStrategy.MICRO_OTM_MOMENTUM.value,
+        ):
+            symbol_str = self._symbol_str(getattr(position.contract, "symbol", ""))
+            if symbol_str:
+                last_logged = self._expiring_hammer_skip_log_date.get(symbol_str)
+                if last_logged != current_date:
+                    self._expiring_hammer_skip_log_date[symbol_str] = current_date
+                    self.log(
+                        f"EXPIRATION_HAMMER_V2_SKIP: {symbol_str} | "
+                        f"Strategy={strategy_name} managed by intraday force exit",
+                        trades_only=True,
+                    )
             return None
 
         # V2.4.4 P0: Expiration Hammer V2 - ALWAYS close at 2:00 PM on expiration day
