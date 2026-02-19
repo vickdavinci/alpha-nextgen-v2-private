@@ -1563,13 +1563,11 @@ class AlphaNextGen(QCAlgorithm):
         EOD-only MICRO overnight hold guard.
         Return True when unrealized loss is beyond configured overnight threshold.
         """
-        base_loss_pct = float(getattr(config, "INTRADAY_ITM_OVERNIGHT_MAX_LOSS_PCT", 0.10))
+        base_loss_pct = float(getattr(config, "ITM_V2_OVERNIGHT_MAX_LOSS_PCT", 0.10))
         high_vix_loss_pct = float(
-            getattr(config, "INTRADAY_ITM_OVERNIGHT_MAX_LOSS_PCT_HIGH_VIX", base_loss_pct)
+            getattr(config, "ITM_V2_OVERNIGHT_MAX_LOSS_PCT_HIGH_VIX", base_loss_pct)
         )
-        high_vix_threshold = float(
-            getattr(config, "INTRADAY_ITM_OVERNIGHT_HIGH_VIX_THRESHOLD", 25.0)
-        )
+        high_vix_threshold = float(getattr(config, "ITM_V2_OVERNIGHT_HIGH_VIX_THRESHOLD", 25.0))
         vix_level = (
             float(self._get_vix_level())
             if hasattr(self, "_get_vix_level")

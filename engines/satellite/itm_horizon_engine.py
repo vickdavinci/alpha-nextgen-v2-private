@@ -327,7 +327,7 @@ class ITMHorizonEngine:
     def should_hold_overnight(self, *, entry_dte: int, live_dte: Optional[int]) -> bool:
         if not self.enabled():
             return False
-        if not bool(getattr(config, "INTRADAY_ITM_HOLD_OVERNIGHT_ENABLED", False)):
+        if not bool(getattr(config, "ITM_V2_HOLD_OVERNIGHT_ENABLED", True)):
             return False
         min_entry_dte = int(getattr(config, "ITM_V2_DTE_MIN", 5))
         if entry_dte < min_entry_dte:

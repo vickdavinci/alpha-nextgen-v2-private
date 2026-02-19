@@ -2123,7 +2123,10 @@ class OptionsEngine:
         V10.1 policy: only ITM_MOMENTUM positions opened with sufficient entry DTE can
         bypass the intraday force-close cutoff.
         """
-        if not bool(getattr(config, "INTRADAY_ITM_HOLD_OVERNIGHT_ENABLED", False)):
+        hold_enabled = bool(getattr(config, "INTRADAY_ITM_HOLD_OVERNIGHT_ENABLED", False))
+        if self._itm_horizon_engine.enabled():
+            hold_enabled = bool(getattr(config, "ITM_V2_HOLD_OVERNIGHT_ENABLED", True))
+        if not hold_enabled:
             return False
         pos = position if position is not None else self._intraday_position
         if pos is None:
