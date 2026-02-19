@@ -5101,6 +5101,9 @@ class OptionsEngine:
             config, "VASS_RISK_PER_TRADE_PCT", getattr(config, "SWING_SPREAD_MAX_PCT", 0.15)
         )
         swing_max_dollars = portfolio_value * swing_max_pct
+        vass_abs_cap = float(getattr(config, "VASS_MAX_RISK_DOLLARS", 0.0) or 0.0)
+        if vass_abs_cap > 0:
+            swing_max_dollars = min(swing_max_dollars, vass_abs_cap)
         # V2.14: Use conservative net debit for sizing (prevents tier cap violations)
         cost_per_spread = net_debit_for_sizing * 100  # 100 shares per contract
         num_spreads = int(swing_max_dollars / cost_per_spread)
@@ -5639,6 +5642,9 @@ class OptionsEngine:
             config, "VASS_RISK_PER_TRADE_PCT", getattr(config, "SWING_SPREAD_MAX_PCT", 0.15)
         )
         swing_max_dollars = portfolio_value * swing_max_pct
+        vass_abs_cap = float(getattr(config, "VASS_MAX_RISK_DOLLARS", 0.0) or 0.0)
+        if vass_abs_cap > 0:
+            swing_max_dollars = min(swing_max_dollars, vass_abs_cap)
         num_spreads, _credit_per, _max_loss_per, _total_margin = self._calculate_credit_spread_size(
             short_leg_contract, long_leg_contract, swing_max_dollars
         )
@@ -8189,9 +8195,16 @@ class OptionsEngine:
             self.algorithm.Portfolio.TotalPortfolioValue if self.algorithm else 50000
         )
 
-        # V3.2: Protective puts use fixed sizing, regular intraday uses score-based
-        # V6.6: Define intraday_max_pct before branch to avoid unbound variable error
+        # V10.10: Strategy-specific intraday budget slices.
+        # ITM uses dedicated 15%/$15k budget, OTM (DEBIT_FADE/CREDIT) uses 10%/$10k.
         intraday_max_pct = getattr(config, "INTRADAY_SPREAD_MAX_PCT", 0.08)
+        intraday_abs_cap = 0.0
+        if entry_strategy == IntradayStrategy.ITM_MOMENTUM:
+            intraday_max_pct = float(getattr(config, "INTRADAY_ITM_MAX_PCT", intraday_max_pct))
+            intraday_abs_cap = float(getattr(config, "INTRADAY_ITM_MAX_DOLLARS", 0.0) or 0.0)
+        elif entry_strategy in (IntradayStrategy.DEBIT_FADE, IntradayStrategy.CREDIT_SPREAD):
+            intraday_max_pct = float(getattr(config, "INTRADAY_OTM_MAX_PCT", intraday_max_pct))
+            intraday_abs_cap = float(getattr(config, "INTRADAY_OTM_MAX_DOLLARS", 0.0) or 0.0)
 
         if is_protective_put:
             # Protective puts: fixed percentage, already scaled by Governor
@@ -8202,6 +8215,8 @@ class OptionsEngine:
             intraday_max_pct = protective_size_pct  # For logging
         else:
             intraday_max_dollars = portfolio_value_for_sizing * intraday_max_pct
+            if intraday_abs_cap > 0:
+                intraday_max_dollars = min(intraday_max_dollars, intraday_abs_cap)
 
             # Adjust size based on micro score
             if state.micro_score >= config.MICRO_SCORE_PRIME_MR:

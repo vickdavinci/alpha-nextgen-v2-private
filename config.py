@@ -585,7 +585,7 @@ TREND_SYMBOL_ALLOCATIONS = {
     "UGL": 0.10,  # 10% - 2× Gold (commodity hedge, uncorrelated)
     "UCO": 0.08,  # 8% - 2× Crude Oil (energy/inflation hedge)
 }
-TREND_TOTAL_ALLOCATION = 0.40  # 40% total
+TREND_TOTAL_ALLOCATION = 0.30  # 30% total (rest-engine budget target)
 
 # =============================================================================
 # V2.4 STRUCTURAL TREND - SMA50 + HARD STOP
@@ -825,9 +825,9 @@ OPTIONS_UNDERLYING = "QQQ"
 # -----------------------------------------------------------------------------
 # V6.20 DUAL-MODE ALLOCATION (50% total, 75/25 split)
 # -----------------------------------------------------------------------------
-OPTIONS_TOTAL_ALLOCATION = 0.50  # 50% total options budget
-OPTIONS_SWING_ALLOCATION = 0.375  # 37.5% for Swing Mode (75% of 50%)
-OPTIONS_INTRADAY_ALLOCATION = 0.125  # 12.5% for Intraday Mode (25% of 50%)
+OPTIONS_TOTAL_ALLOCATION = 0.60  # 60% total options budget (VASS 35% + ITM 15% + OTM 10%)
+OPTIONS_SWING_ALLOCATION = 0.35  # 35% reserved for VASS swing engine
+OPTIONS_INTRADAY_ALLOCATION = 0.25  # 25% reserved for intraday options engines (ITM+OTM)
 
 # V2.7: Tiered Options Dollar Caps
 # Prevents oversizing on small accounts while allowing growth on larger accounts
@@ -1576,8 +1576,13 @@ OPTIONS_MAX_MARGIN_PCT = 0.50  # V10.9: Align with OPTIONS_BUDGET_CAP_PCT so per
 # At $75K: 15% = $11,250, 8% = $6,000
 # At $200K: 15% = $30,000, 8% = $16,000
 SWING_SPREAD_MAX_PCT = 0.15  # 15% legacy cap (kept for backward compatibility)
-VASS_RISK_PER_TRADE_PCT = 0.05  # V10.7: target max risk budget per VASS spread entry
-INTRADAY_SPREAD_MAX_PCT = 0.08  # 8% of portfolio for intraday spreads (1-5 DTE)
+VASS_RISK_PER_TRADE_PCT = 0.35  # V10.10: target 35% ($35k on $100k) VASS budget cap
+INTRADAY_SPREAD_MAX_PCT = 0.08  # Legacy fallback for intraday sizing
+VASS_MAX_RISK_DOLLARS = 35000  # Absolute cap for VASS sizing budget
+INTRADAY_ITM_MAX_PCT = 0.15  # ITM budget slice (15% / $15k on $100k)
+INTRADAY_ITM_MAX_DOLLARS = 15000  # Absolute ITM budget cap
+INTRADAY_OTM_MAX_PCT = 0.10  # OTM budget slice (10% / $10k on $100k)
+INTRADAY_OTM_MAX_DOLLARS = 10000  # Absolute OTM budget cap
 
 # V3.0: Minimum margin percentage to allow options trading
 # Replaces hardcoded $1,000 check in main.py
