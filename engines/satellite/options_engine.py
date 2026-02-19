@@ -616,7 +616,9 @@ class MicroRegimeState:
             micro_regime=MicroRegime(data.get("micro_regime", "NORMAL")),
             micro_score=data.get("micro_score", 50.0),
             whipsaw_state=WhipsawState(data.get("whipsaw_state", "TRENDING")),
-            recommended_strategy=IntradayStrategy(data.get("recommended_strategy", "NO_TRADE")),
+            recommended_strategy=IntradayStrategy(
+                _normalize_intraday_strategy_value(data.get("recommended_strategy", "NO_TRADE"))
+            ),
             qqq_move_pct=data.get("qqq_move_pct", 0.0),
             vix_current=data.get("vix_current", 15.0),
             vix_open=data.get("vix_open", 15.0),
@@ -632,6 +634,22 @@ class MicroRegimeState:
 
             state.recommended_direction = OptionDirection(rec_dir)
         return state
+
+
+def _normalize_intraday_strategy_value(strategy_value: Any) -> str:
+    """Map legacy/new intraday strategy labels to canonical runtime values."""
+    value = str(strategy_value or "NO_TRADE").strip().upper()
+    aliases = {
+        "DEBIT_MOMENTUM": IntradayStrategy.ITM_MOMENTUM.value,
+        "DEBIT_FADE": IntradayStrategy.MICRO_DEBIT_FADE.value,
+        "MICRO_DEBIT_FADE": IntradayStrategy.MICRO_DEBIT_FADE.value,
+        "MICRO_OTM_MOMENTUM": IntradayStrategy.MICRO_OTM_MOMENTUM.value,
+        "ITM_MOMENTUM": IntradayStrategy.ITM_MOMENTUM.value,
+        "CREDIT_SPREAD": IntradayStrategy.CREDIT_SPREAD.value,
+        "PROTECTIVE_PUTS": IntradayStrategy.PROTECTIVE_PUTS.value,
+        "NO_TRADE": IntradayStrategy.NO_TRADE.value,
+    }
+    return aliases.get(value, IntradayStrategy.NO_TRADE.value)
 
 
 class MicroRegimeEngine:
@@ -1091,9 +1109,15 @@ class MicroRegimeEngine:
         def divergence_strategy_or_skip(
             direction: OptionDirection, reason: str
         ) -> Tuple[IntradayStrategy, Optional[OptionDirection], str]:
-            if bool(getattr(config, "INTRADAY_DEBIT_FADE_ENABLED", False)):
-                return (IntradayStrategy.DEBIT_FADE, direction, reason)
-            return (IntradayStrategy.NO_TRADE, None, f"DEBIT_FADE_DISABLED: {reason}")
+            if bool(
+                getattr(
+                    config,
+                    "MICRO_DEBIT_FADE_ENABLED",
+                    getattr(config, "INTRADAY_DEBIT_FADE_ENABLED", False),
+                )
+            ):
+                return (IntradayStrategy.MICRO_DEBIT_FADE, direction, reason)
+            return (IntradayStrategy.NO_TRADE, None, f"MICRO_DEBIT_FADE_DISABLED: {reason}")
 
         # =====================================================================
         # RULE 5: DIVERGENCE/CONFIRMATION LOGIC (V6.5 Fix)
@@ -1127,7 +1151,13 @@ class MicroRegimeEngine:
             pass  # Fall through to RULE 6 (ITM_MOMENTUM) and RULE 7 (caution)
         else:
             # V2.19: VIX Floor Check - Block trades in "apathy" market
-            vix_floor = getattr(config, "INTRADAY_DEBIT_FADE_VIX_MIN", 13.5)
+            vix_floor = float(
+                getattr(
+                    config,
+                    "MICRO_DEBIT_FADE_VIX_MIN",
+                    getattr(config, "INTRADAY_DEBIT_FADE_VIX_MIN", 13.5),
+                )
+            )
             if vix_current < vix_floor:
                 return (
                     IntradayStrategy.NO_TRADE,
@@ -1769,17 +1799,15 @@ class OptionsEngine:
     def _canonical_intraday_strategy(
         self, strategy: Optional["IntradayStrategy"]
     ) -> Optional["IntradayStrategy"]:
-        """Map deprecated strategy aliases to the active runtime strategy."""
-        if strategy == IntradayStrategy.DEBIT_MOMENTUM:
-            return IntradayStrategy.ITM_MOMENTUM
-        return strategy
+        """Map legacy strategy aliases to canonical runtime strategy."""
+        if strategy is None:
+            return None
+        value = _normalize_intraday_strategy_value(getattr(strategy, "value", strategy))
+        return IntradayStrategy(value)
 
     def _canonical_intraday_strategy_name(self, strategy_name: Optional[str]) -> str:
         """Canonical string form used by hold/exit logic."""
-        value = str(strategy_name or "").upper()
-        if value == IntradayStrategy.DEBIT_MOMENTUM.value:
-            return IntradayStrategy.ITM_MOMENTUM.value
-        return value
+        return _normalize_intraday_strategy_value(strategy_name)
 
     def _is_itm_momentum_strategy_name(self, strategy_name: Optional[str]) -> bool:
         """True when strategy name maps to ITM momentum."""
@@ -4321,11 +4349,44 @@ class OptionsEngine:
                 delta_min = config.INTRADAY_ITM_DELTA_MIN
                 delta_max = config.INTRADAY_ITM_DELTA_MAX
                 mode_label = "Intraday-ITM"
-            elif current_strategy == IntradayStrategy.DEBIT_FADE:
-                # DEBIT_FADE: Mean reversion needs OTM (0.20-0.50)
-                delta_min = config.INTRADAY_DEBIT_FADE_DELTA_MIN
-                delta_max = config.INTRADAY_DEBIT_FADE_DELTA_MAX
-                mode_label = "Intraday-FADE"
+            elif current_strategy in (
+                IntradayStrategy.MICRO_DEBIT_FADE,
+                IntradayStrategy.MICRO_OTM_MOMENTUM,
+                IntradayStrategy.DEBIT_FADE,
+            ):
+                # MICRO fade/momentum tracks use dedicated delta bands.
+                if current_strategy == IntradayStrategy.MICRO_DEBIT_FADE:
+                    delta_min = float(
+                        getattr(
+                            config,
+                            "MICRO_DEBIT_FADE_DELTA_MIN",
+                            getattr(config, "INTRADAY_DEBIT_FADE_DELTA_MIN", 0.20),
+                        )
+                    )
+                    delta_max = float(
+                        getattr(
+                            config,
+                            "MICRO_DEBIT_FADE_DELTA_MAX",
+                            getattr(config, "INTRADAY_DEBIT_FADE_DELTA_MAX", 0.50),
+                        )
+                    )
+                    mode_label = "Intraday-MICRO_FADE"
+                else:
+                    delta_min = float(
+                        getattr(
+                            config,
+                            "MICRO_OTM_MOMENTUM_DELTA_MIN",
+                            getattr(config, "INTRADAY_DEBIT_FADE_DELTA_MIN", 0.20),
+                        )
+                    )
+                    delta_max = float(
+                        getattr(
+                            config,
+                            "MICRO_OTM_MOMENTUM_DELTA_MAX",
+                            getattr(config, "INTRADAY_DEBIT_FADE_DELTA_MAX", 0.50),
+                        )
+                    )
+                    mode_label = "Intraday-MICRO_OTM"
             else:
                 # Default for other strategies (CREDIT_SPREAD, etc.)
                 delta_min = config.OPTIONS_INTRADAY_DELTA_MIN
@@ -7254,10 +7315,39 @@ class OptionsEngine:
                 float(getattr(config, "INTRADAY_ITM_TARGET", 0.35)),
                 float(getattr(config, "INTRADAY_ITM_STOP", 0.35)),
             )
-        if strategy == IntradayStrategy.DEBIT_FADE.value:
+        if strategy == IntradayStrategy.MICRO_DEBIT_FADE.value:
             return (
-                float(getattr(config, "INTRADAY_DEBIT_FADE_TARGET", 0.40)),
-                float(getattr(config, "INTRADAY_DEBIT_FADE_STOP", 0.25)),
+                float(
+                    getattr(
+                        config,
+                        "MICRO_DEBIT_FADE_TARGET",
+                        getattr(config, "INTRADAY_DEBIT_FADE_TARGET", 0.40),
+                    )
+                ),
+                float(
+                    getattr(
+                        config,
+                        "MICRO_DEBIT_FADE_STOP",
+                        getattr(config, "INTRADAY_DEBIT_FADE_STOP", 0.25),
+                    )
+                ),
+            )
+        if strategy == IntradayStrategy.MICRO_OTM_MOMENTUM.value:
+            return (
+                float(
+                    getattr(
+                        config,
+                        "MICRO_OTM_MOMENTUM_TARGET",
+                        getattr(config, "INTRADAY_DEBIT_FADE_TARGET", 0.40),
+                    )
+                ),
+                float(
+                    getattr(
+                        config,
+                        "MICRO_OTM_MOMENTUM_STOP",
+                        getattr(config, "INTRADAY_DEBIT_FADE_STOP", 0.25),
+                    )
+                ),
             )
         # Protective puts + swing single-leg keep existing defaults
         return (float(getattr(config, "OPTIONS_PROFIT_TARGET_PCT", 0.60)), None)
@@ -7273,10 +7363,39 @@ class OptionsEngine:
                 float(getattr(config, "INTRADAY_ITM_TRAIL_TRIGGER", 0.20)),
                 float(getattr(config, "INTRADAY_ITM_TRAIL_PCT", 0.50)),
             )
-        if strategy == IntradayStrategy.DEBIT_FADE.value:
+        if strategy == IntradayStrategy.MICRO_DEBIT_FADE.value:
             return (
-                float(getattr(config, "INTRADAY_DEBIT_FADE_TRAIL_TRIGGER", 0.25)),
-                float(getattr(config, "INTRADAY_DEBIT_FADE_TRAIL_PCT", 0.50)),
+                float(
+                    getattr(
+                        config,
+                        "MICRO_DEBIT_FADE_TRAIL_TRIGGER",
+                        getattr(config, "INTRADAY_DEBIT_FADE_TRAIL_TRIGGER", 0.25),
+                    )
+                ),
+                float(
+                    getattr(
+                        config,
+                        "MICRO_DEBIT_FADE_TRAIL_PCT",
+                        getattr(config, "INTRADAY_DEBIT_FADE_TRAIL_PCT", 0.50),
+                    )
+                ),
+            )
+        if strategy == IntradayStrategy.MICRO_OTM_MOMENTUM.value:
+            return (
+                float(
+                    getattr(
+                        config,
+                        "MICRO_OTM_MOMENTUM_TRAIL_TRIGGER",
+                        getattr(config, "INTRADAY_DEBIT_FADE_TRAIL_TRIGGER", 0.25),
+                    )
+                ),
+                float(
+                    getattr(
+                        config,
+                        "MICRO_OTM_MOMENTUM_TRAIL_PCT",
+                        getattr(config, "INTRADAY_DEBIT_FADE_TRAIL_PCT", 0.50),
+                    )
+                ),
             )
         return None
 
@@ -8202,7 +8321,9 @@ class OptionsEngine:
 
         # Map strategy to concise logging name (after deprecated-strategy canonicalization).
         strategy_names = {
-            IntradayStrategy.DEBIT_FADE: "DEBIT_FADE",
+            IntradayStrategy.MICRO_DEBIT_FADE: "MICRO_FADE",
+            IntradayStrategy.MICRO_OTM_MOMENTUM: "MICRO_OTM",
+            IntradayStrategy.DEBIT_FADE: "MICRO_FADE",  # legacy alias
             IntradayStrategy.ITM_MOMENTUM: "ITM_MOM",
             IntradayStrategy.CREDIT_SPREAD: "CREDIT",
             IntradayStrategy.PROTECTIVE_PUTS: "PROTECTIVE_PUTS",
@@ -8284,7 +8405,12 @@ class OptionsEngine:
         if entry_strategy == IntradayStrategy.ITM_MOMENTUM:
             intraday_max_pct = float(getattr(config, "INTRADAY_ITM_MAX_PCT", intraday_max_pct))
             intraday_abs_cap = float(getattr(config, "INTRADAY_ITM_MAX_DOLLARS", 0.0) or 0.0)
-        elif entry_strategy in (IntradayStrategy.DEBIT_FADE, IntradayStrategy.CREDIT_SPREAD):
+        elif entry_strategy in (
+            IntradayStrategy.MICRO_DEBIT_FADE,
+            IntradayStrategy.MICRO_OTM_MOMENTUM,
+            IntradayStrategy.DEBIT_FADE,
+            IntradayStrategy.CREDIT_SPREAD,
+        ):
             intraday_max_pct = float(getattr(config, "INTRADAY_OTM_MAX_PCT", intraday_max_pct))
             intraday_abs_cap = float(getattr(config, "INTRADAY_OTM_MAX_DOLLARS", 0.0) or 0.0)
 
@@ -8537,7 +8663,12 @@ class OptionsEngine:
             base_weight = float(
                 getattr(config, "INTRADAY_ITM_MAX_PCT", config.OPTIONS_INTRADAY_ALLOCATION)
             )
-        elif entry_strategy in (IntradayStrategy.DEBIT_FADE, IntradayStrategy.CREDIT_SPREAD):
+        elif entry_strategy in (
+            IntradayStrategy.MICRO_DEBIT_FADE,
+            IntradayStrategy.MICRO_OTM_MOMENTUM,
+            IntradayStrategy.DEBIT_FADE,
+            IntradayStrategy.CREDIT_SPREAD,
+        ):
             base_weight = float(
                 getattr(config, "INTRADAY_OTM_MAX_PCT", config.OPTIONS_INTRADAY_ALLOCATION)
             )
@@ -8882,7 +9013,11 @@ class OptionsEngine:
         # V2.3.16: Direction conflict resolution for FADE strategies
         # Skip intraday FADE when macro regime strongly disagrees with direction
         # This prevents counter-trend trades in strongly trending markets
-        if state.recommended_strategy == IntradayStrategy.DEBIT_FADE:
+        if state.recommended_strategy in (
+            IntradayStrategy.MICRO_DEBIT_FADE,
+            IntradayStrategy.MICRO_OTM_MOMENTUM,
+            IntradayStrategy.DEBIT_FADE,
+        ):
             # Strong bullish regime + FADE PUT (fading rally) = conflict
             if (
                 regime_score > config.DIRECTION_CONFLICT_BULLISH_THRESHOLD
@@ -8912,7 +9047,7 @@ class OptionsEngine:
         V2.3.16: Get the last recommended intraday strategy.
 
         Returns:
-            IntradayStrategy enum (DEBIT_FADE, ITM_MOMENTUM, NO_TRADE, etc.)
+            IntradayStrategy enum (MICRO_DEBIT_FADE, MICRO_OTM_MOMENTUM, ITM_MOMENTUM, NO_TRADE, etc.)
         """
         return self._micro_regime_engine.get_state().recommended_strategy
 

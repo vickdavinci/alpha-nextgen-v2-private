@@ -155,8 +155,10 @@ class IntradayStrategy(Enum):
     V6.5: Added DEBIT_MOMENTUM for confirmed trend-following.
     """
 
-    DEBIT_FADE = "DEBIT_FADE"  # Divergence: fade the move (opposite direction)
-    DEBIT_MOMENTUM = "DEBIT_MOMENTUM"  # V6.5: Confirmation: ride the trend (same direction)
+    MICRO_DEBIT_FADE = "MICRO_DEBIT_FADE"  # ATM divergence fade (opposite direction)
+    MICRO_OTM_MOMENTUM = "MICRO_OTM_MOMENTUM"  # OTM directional momentum
+    DEBIT_FADE = "DEBIT_FADE"  # Legacy alias retained for backward compatibility
+    DEBIT_MOMENTUM = "DEBIT_MOMENTUM"  # V6.5: deprecated alias -> ITM_MOMENTUM
     CREDIT_SPREAD = "CREDIT_SPREAD"  # Premium collection
     ITM_MOMENTUM = "ITM_MOMENTUM"  # Ride the move with ITM options (high VIX)
     PROTECTIVE_PUTS = "PROTECTIVE_PUTS"  # Hedge during uncertainty

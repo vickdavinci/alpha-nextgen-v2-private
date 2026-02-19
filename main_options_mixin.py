@@ -23,7 +23,7 @@ class MainOptionsMixin:
 
         qqq_price = self.Securities[self.qqq].Price
 
-        # V2.14 Fix #20: Strategy-aware delta selection
+        # Strategy-aware delta selection (ITM vs MICRO_DEBIT_FADE vs MICRO_OTM_MOMENTUM).
         if strategy == IntradayStrategy.ITM_MOMENTUM:
             if bool(getattr(config, "ITM_V2_ENABLED", False)):
                 delta_min_v2 = float(getattr(config, "ITM_V2_DELTA_MIN", 0.65))
@@ -34,10 +34,32 @@ class MainOptionsMixin:
                     f"(range {delta_min_v2:.2f}-{delta_max_v2:.2f})"
                 )
             else:
-                target_delta = config.INTRADAY_ITM_DELTA  # 0.70 for stock replacement
+                target_delta = config.INTRADAY_ITM_DELTA
                 self.Log(f"INTRADAY_DELTA: ITM_MOMENTUM using delta={target_delta}")
+        elif strategy in (IntradayStrategy.MICRO_DEBIT_FADE, IntradayStrategy.DEBIT_FADE):
+            target_delta = float(
+                getattr(
+                    config, "MICRO_DEBIT_FADE_DELTA_TARGET", config.OPTIONS_INTRADAY_DELTA_TARGET
+                )
+            )
+        elif strategy == IntradayStrategy.MICRO_OTM_MOMENTUM:
+            delta_min = float(
+                getattr(
+                    config,
+                    "MICRO_OTM_MOMENTUM_DELTA_MIN",
+                    getattr(config, "INTRADAY_DEBIT_FADE_DELTA_MIN", 0.20),
+                )
+            )
+            delta_max = float(
+                getattr(
+                    config,
+                    "MICRO_OTM_MOMENTUM_DELTA_MAX",
+                    getattr(config, "INTRADAY_DEBIT_FADE_DELTA_MAX", 0.50),
+                )
+            )
+            target_delta = (delta_min + delta_max) / 2.0
         else:
-            target_delta = config.OPTIONS_INTRADAY_DELTA_TARGET  # 0.30 for DEBIT_FADE
+            target_delta = config.OPTIONS_INTRADAY_DELTA_TARGET
 
         # Determine which OptionRight to filter for
         required_right = OptionRight.Call if direction == OptionDirection.CALL else OptionRight.Put
@@ -563,7 +585,7 @@ class MainOptionsMixin:
                             retry_strategy = (
                                 IntradayStrategy.ITM_MOMENTUM
                                 if bool(getattr(config, "ITM_V2_ENABLED", False))
-                                else IntradayStrategy.DEBIT_FADE
+                                else IntradayStrategy.MICRO_DEBIT_FADE
                             )
                         forced_intraday_strategy = retry_strategy
                         self.Log(

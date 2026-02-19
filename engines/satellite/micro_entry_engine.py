@@ -19,6 +19,15 @@ class MicroEntryEngine:
         if self._log_func:
             self._log_func(message, trades_only)
 
+    def _is_micro_fade_strategy(self, entry_strategy: IntradayStrategy) -> bool:
+        return entry_strategy in (
+            IntradayStrategy.MICRO_DEBIT_FADE,
+            IntradayStrategy.DEBIT_FADE,
+        )
+
+    def _is_micro_otm_strategy(self, entry_strategy: IntradayStrategy) -> bool:
+        return entry_strategy == IntradayStrategy.MICRO_OTM_MOMENTUM
+
     def apply_pre_contract_gates(
         self,
         *,
@@ -236,15 +245,35 @@ class MicroEntryEngine:
         current_minute: int,
     ) -> Tuple[bool, Optional[str]]:
         time_minutes = current_hour * 60 + current_minute
-        if entry_strategy == IntradayStrategy.DEBIT_FADE:
-            fade_start = config.INTRADAY_DEBIT_FADE_START.split(":")
-            fade_end = config.INTRADAY_DEBIT_FADE_END.split(":")
+        if self._is_micro_fade_strategy(entry_strategy) or self._is_micro_otm_strategy(
+            entry_strategy
+        ):
+            fade_start_cfg = str(
+                getattr(
+                    config,
+                    "MICRO_DEBIT_FADE_START"
+                    if self._is_micro_fade_strategy(entry_strategy)
+                    else "MICRO_OTM_MOMENTUM_START",
+                    config.INTRADAY_DEBIT_FADE_START,
+                )
+            )
+            fade_end_cfg = str(
+                getattr(
+                    config,
+                    "MICRO_DEBIT_FADE_END"
+                    if self._is_micro_fade_strategy(entry_strategy)
+                    else "MICRO_OTM_MOMENTUM_END",
+                    config.INTRADAY_DEBIT_FADE_END,
+                )
+            )
+            fade_start = fade_start_cfg.split(":")
+            fade_end = fade_end_cfg.split(":")
             start_time = int(fade_start[0]) * 60 + int(fade_start[1])
             end_time = int(fade_end[0]) * 60 + int(fade_end[1])
             if not (start_time <= time_minutes <= end_time):
                 self._log(
-                    f"INTRADAY_TIME_REJECT: DEBIT_FADE at {current_hour}:{current_minute:02d} "
-                    f"outside window {config.INTRADAY_DEBIT_FADE_START}-{config.INTRADAY_DEBIT_FADE_END}"
+                    f"INTRADAY_TIME_REJECT: {entry_strategy.value} at {current_hour}:{current_minute:02d} "
+                    f"outside window {fade_start_cfg}-{fade_end_cfg}"
                 )
                 return False, "E_INTRADAY_TIME_WINDOW"
 

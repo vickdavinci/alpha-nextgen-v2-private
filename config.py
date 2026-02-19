@@ -1827,7 +1827,8 @@ PUT_GATE_LOSS_COOLDOWN_DAYS_HIGH_VIX = 2
 # V2.19: VIX Floor for DEBIT_FADE
 # In low VIX (<13.5) "apathy" markets, mean reversion fails - trends persist longer
 # Evidence: V2.18 backtests showed DEBIT_FADE losses when VIX < 13.5
-INTRADAY_DEBIT_FADE_VIX_MIN = 9.0  # Slightly wider low-vol participation
+INTRADAY_DEBIT_FADE_VIX_MIN = 9.0  # Legacy alias (kept for compatibility)
+MICRO_DEBIT_FADE_VIX_MIN = 9.0  # Canonical: ATM fade minimum VIX
 
 # Debit Fade (Mean Reversion) - Gate 3a - The Sniper Window
 INTRADAY_DEBIT_FADE_MIN_SCORE = 32  # Increase DEBIT_FADE throughput while preserving quality filter
@@ -1838,8 +1839,12 @@ MICRO_MIN_MOVE_MED_VIX = 0.40  # Standard move gate
 MICRO_MIN_MOVE_HIGH_VIX = 0.40  # Standard move gate
 INTRADAY_FADE_MAX_MOVE = 1.50  # V6.8: Was 1.20, don't block strong bull continuation
 INTRADAY_DEBIT_FADE_VIX_MAX = 25  # VIX < 25
-INTRADAY_DEBIT_FADE_START = "10:00"  # Include early-session mean-reversion setups
-INTRADAY_DEBIT_FADE_END = "14:30"  # Extend late-session setup coverage
+INTRADAY_DEBIT_FADE_START = "10:00"  # Legacy alias (kept for compatibility)
+INTRADAY_DEBIT_FADE_END = "14:30"  # Legacy alias (kept for compatibility)
+MICRO_DEBIT_FADE_START = "10:00"  # Canonical ATM fade window start
+MICRO_DEBIT_FADE_END = "14:30"  # Canonical ATM fade window end
+MICRO_OTM_MOMENTUM_START = "10:00"  # Canonical OTM momentum window start
+MICRO_OTM_MOMENTUM_END = "14:30"  # Canonical OTM momentum window end
 INTRADAY_DEBIT_SPREAD_WIDTH = 2.00  # $2.00 spread width
 INTRADAY_DEBIT_FULL_SIZE = 4  # Full size: 4 spreads
 INTRADAY_DEBIT_HALF_SIZE = 2  # Half size: 2 spreads
@@ -1883,6 +1888,16 @@ INTRADAY_DEBIT_FADE_STOP = 0.25
 INTRADAY_DEBIT_FADE_TRAIL_TRIGGER = 0.25  # V9.8: revert to V9.3 (below 0.40 target, trail works)
 INTRADAY_DEBIT_FADE_TRAIL_PCT = 0.50
 
+# Canonical MICRO strategy exits (legacy INTRADAY_DEBIT_FADE_* kept as aliases)
+MICRO_DEBIT_FADE_TARGET = INTRADAY_DEBIT_FADE_TARGET
+MICRO_DEBIT_FADE_STOP = INTRADAY_DEBIT_FADE_STOP
+MICRO_DEBIT_FADE_TRAIL_TRIGGER = INTRADAY_DEBIT_FADE_TRAIL_TRIGGER
+MICRO_DEBIT_FADE_TRAIL_PCT = INTRADAY_DEBIT_FADE_TRAIL_PCT
+MICRO_OTM_MOMENTUM_TARGET = 0.45
+MICRO_OTM_MOMENTUM_STOP = 0.30
+MICRO_OTM_MOMENTUM_TRAIL_TRIGGER = 0.20
+MICRO_OTM_MOMENTUM_TRAIL_PCT = 0.50
+
 INTRADAY_DEBIT_MOMENTUM_TARGET = (
     0.45  # V9.8: revert to V9.3 (0.25 was within bid-ask noise on $0.34 options)
 )
@@ -1894,8 +1909,13 @@ INTRADAY_DEBIT_MOMENTUM_TRAIL_PCT = 0.50  # Standard 50% retracement from peak
 
 # V2.15: Strategy-aware intraday delta bounds
 # DEBIT_FADE: Mean reversion needs OTM options (delta 0.20-0.50)
-INTRADAY_DEBIT_FADE_DELTA_MIN = 0.20  # OTM for mean reversion
-INTRADAY_DEBIT_FADE_DELTA_MAX = 0.50  # Near ATM max
+INTRADAY_DEBIT_FADE_DELTA_MIN = 0.20  # Legacy alias
+INTRADAY_DEBIT_FADE_DELTA_MAX = 0.50  # Legacy alias
+MICRO_DEBIT_FADE_DELTA_TARGET = 0.45  # ATM fade target delta
+MICRO_DEBIT_FADE_DELTA_MIN = 0.40
+MICRO_DEBIT_FADE_DELTA_MAX = 0.55
+MICRO_OTM_MOMENTUM_DELTA_MIN = 0.30
+MICRO_OTM_MOMENTUM_DELTA_MAX = 0.50
 
 # V6.4: DEBIT_MOMENTUM: Trend confirmation needs ATM-ish options (delta 0.45-0.65)
 # Between DEBIT_FADE (OTM) and ITM_MOMENTUM (ITM) - captures directional moves
@@ -1904,7 +1924,9 @@ INTRADAY_DEBIT_MOMENTUM_ENABLED = (
 )
 INTRADAY_ITM_MOMENTUM_ENABLED = True  # V10: primary confirmation strategy
 MICRO_ENTRY_ENGINE_ENABLED = True  # V10.10: route MICRO gates through dedicated engine
-INTRADAY_DEBIT_FADE_ENABLED = True  # V10.10: re-enable OTM divergence track alongside ITM_V2
+INTRADAY_DEBIT_FADE_ENABLED = True  # Legacy alias
+MICRO_DEBIT_FADE_ENABLED = True  # Canonical ATM fade switch
+MICRO_OTM_MOMENTUM_ENABLED = False  # Canonical OTM momentum switch (off by default)
 MICRO_USE_MACRO_RESOLVER = False  # Deprecated no-op: MICRO macro resolver path removed in V10.10
 MICRO_USE_MACRO_IN_STATE = (
     False  # Deprecated no-op: MICRO state no longer consumes macro score in V10.10
