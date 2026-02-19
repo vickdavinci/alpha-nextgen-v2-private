@@ -58,6 +58,8 @@ class MainOptionsMixin:
                 )
             )
             target_delta = (delta_min + delta_max) / 2.0
+        elif strategy == IntradayStrategy.PROTECTIVE_PUTS:
+            target_delta = float(getattr(config, "PROTECTIVE_PUTS_DELTA_TARGET", 0.45))
         else:
             target_delta = config.OPTIONS_INTRADAY_DELTA_TARGET
 
@@ -95,6 +97,20 @@ class MainOptionsMixin:
             if should_log:
                 self.Log(
                     f"INTRADAY_DTE_ROUTING: MICRO_OTM_MOMENTUM fixed window DTE=[{effective_dte_min}-{effective_dte_max}]"
+                )
+                self._last_intraday_dte_routing_log_by_key[key] = self.Time
+
+        if strategy == IntradayStrategy.PROTECTIVE_PUTS:
+            effective_dte_min = int(getattr(config, "PROTECTIVE_PUTS_DTE_MIN", 0))
+            effective_dte_max = int(getattr(config, "PROTECTIVE_PUTS_DTE_MAX", 2))
+            key = f"PROTECTIVE_PUTS|{effective_dte_min}|{effective_dte_max}"
+            last_log_at = self._last_intraday_dte_routing_log_by_key.get(key)
+            should_log = last_log_at is None or (
+                self.Time - last_log_at
+            ).total_seconds() / 60.0 >= int(getattr(config, "MICRO_DTE_DIAG_LOG_INTERVAL_MIN", 30))
+            if should_log:
+                self.Log(
+                    f"INTRADAY_DTE_ROUTING: PROTECTIVE_PUTS fixed window DTE=[{effective_dte_min}-{effective_dte_max}]"
                 )
                 self._last_intraday_dte_routing_log_by_key[key] = self.Time
 
@@ -231,9 +247,16 @@ class MainOptionsMixin:
                 if contract_delta < itm_engine_delta_min or contract_delta > itm_engine_delta_max:
                     filter_counts["delta"] += 1
                     continue
-            elif delta_diff > config.OPTIONS_DELTA_TOLERANCE:
-                filter_counts["delta"] += 1
-                continue
+            else:
+                if strategy == IntradayStrategy.PROTECTIVE_PUTS:
+                    delta_tolerance = float(
+                        getattr(config, "PROTECTIVE_PUTS_DELTA_TOLERANCE", 0.12)
+                    )
+                else:
+                    delta_tolerance = float(getattr(config, "OPTIONS_DELTA_TOLERANCE", 0.10))
+                if delta_diff > delta_tolerance:
+                    filter_counts["delta"] += 1
+                    continue
 
             # Check liquidity (relaxed for 0DTE)
             if contract.OpenInterest < config.OPTIONS_MIN_OPEN_INTEREST:

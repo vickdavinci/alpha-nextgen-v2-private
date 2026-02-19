@@ -2064,11 +2064,17 @@ INTRADAY_GOVERNOR_GATE_ENABLED = True
 # This supplements TMF/PSQ hedging with direct options protection
 PROTECTIVE_PUTS_ENABLED = True
 PROTECTIVE_PUTS_SIZE_PCT = 0.03  # Reduce insurance drag while preserving crash hedge
-PROTECTIVE_PUTS_DTE_MIN = 3  # Minimum 3 DTE (time for recovery)
-PROTECTIVE_PUTS_DTE_MAX = 7  # Maximum 7 DTE (balance cost vs protection)
-PROTECTIVE_PUTS_DELTA_TARGET = 0.30  # OTM puts (cheaper, more leverage)
-PROTECTIVE_PUTS_DELTA_TOLERANCE = 0.10  # Accept delta 0.20-0.40
-PROTECTIVE_PUTS_STOP_PCT = 0.35  # Tighter stop to reduce repeated deep insurance losses
+PROTECTIVE_PUTS_DTE_MIN = 0  # Crash-day hedge: allow same-day/near-term convexity
+PROTECTIVE_PUTS_DTE_MAX = 2  # Keep gamma high for same-day crash response
+PROTECTIVE_PUTS_DELTA_TARGET = 0.45  # Near-ATM puts for stronger same-day hedge beta
+PROTECTIVE_PUTS_DELTA_TOLERANCE = 0.12  # Accept ~0.33-0.57 delta band
+PROTECTIVE_PUTS_STOP_PCT = 0.30  # Cut failed crash hedges faster when shock fades
+PROTECTIVE_PUTS_TARGET_PCT = 0.30  # Realistic intraday crash capture target
+PROTECTIVE_PUTS_DTE_EXIT = 0  # Keep same-day hedges alive until force-exit unless stop/target hit
+PROTECTIVE_PUTS_CRASH_TRIGGER_ENABLED = True
+PROTECTIVE_PUTS_QQQ_DROP_TRIGGER_PCT = -1.0  # Trigger hedge on >=1% intraday QQQ drop
+PROTECTIVE_PUTS_VIX_MIN_TRIGGER = 18.0  # Require elevated fear backdrop for crash trigger
+PROTECTIVE_PUTS_REQUIRE_VIX_RISING = True
 INTRADAY_MAX_CONTRACTS = 60  # V10.5: Increased hard cap for all MICRO intraday entries
 INTRADAY_CONTRACT_CAP_SCALE_WITH_EQUITY = True
 INTRADAY_MAX_CONTRACTS_BASE_EQUITY = 100_000

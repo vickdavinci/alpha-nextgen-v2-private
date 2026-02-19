@@ -1039,6 +1039,24 @@ class MicroRegimeEngine:
         if qqq_move == QQQMove.FLAT:
             return IntradayStrategy.NO_TRADE, None, "QQQ flat - no edge"
 
+        # Fast crash-day trigger: fire protective puts before regime labels fully catch up.
+        if bool(getattr(config, "PROTECTIVE_PUTS_CRASH_TRIGGER_ENABLED", True)):
+            crash_drop_pct = float(getattr(config, "PROTECTIVE_PUTS_QQQ_DROP_TRIGGER_PCT", -1.0))
+            vix_min = float(getattr(config, "PROTECTIVE_PUTS_VIX_MIN_TRIGGER", 18.0))
+            require_vix_rising = bool(getattr(config, "PROTECTIVE_PUTS_REQUIRE_VIX_RISING", True))
+            vix_rising_now = vix_direction in (
+                VIXDirection.RISING,
+                VIXDirection.RISING_FAST,
+                VIXDirection.SPIKING,
+            )
+            vix_ok = vix_current >= vix_min and (vix_rising_now or not require_vix_rising)
+            if qqq_move_pct <= crash_drop_pct and vix_ok:
+                return (
+                    IntradayStrategy.PROTECTIVE_PUTS,
+                    OptionDirection.PUT,
+                    f"Crash trigger: QQQ {qqq_move_pct:+.2f}% | VIX {vix_current:.1f} {vix_direction.value}",
+                )
+
         # =====================================================================
         # RULE 2: Danger regimes - No trade or protective only
         # =====================================================================
@@ -7340,7 +7358,12 @@ class OptionsEngine:
                     )
                 ),
             )
-        # Protective puts + swing single-leg keep existing defaults
+        if strategy == IntradayStrategy.PROTECTIVE_PUTS.value:
+            return (
+                float(getattr(config, "PROTECTIVE_PUTS_TARGET_PCT", 0.30)),
+                float(getattr(config, "PROTECTIVE_PUTS_STOP_PCT", 0.30)),
+            )
+        # Swing single-leg fallback keeps existing defaults.
         return (float(getattr(config, "OPTIONS_PROFIT_TARGET_PCT", 0.60)), None)
 
     def _get_trail_config(self, entry_strategy: str) -> Optional[Tuple[float, float]]:
@@ -7550,6 +7573,10 @@ class OptionsEngine:
         elif strategy_name == IntradayStrategy.MICRO_OTM_MOMENTUM.value:
             dte_exit_threshold = int(
                 getattr(config, "MICRO_OTM_MOMENTUM_DTE_EXIT", dte_exit_threshold)
+            )
+        elif strategy_name == IntradayStrategy.PROTECTIVE_PUTS.value:
+            dte_exit_threshold = int(
+                getattr(config, "PROTECTIVE_PUTS_DTE_EXIT", dte_exit_threshold)
             )
 
         if current_dte is not None and current_dte <= dte_exit_threshold:
