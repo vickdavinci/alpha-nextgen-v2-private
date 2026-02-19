@@ -8994,7 +8994,7 @@ class OptionsEngine:
                 getattr(config, "PROTECTIVE_PUTS_EXPIRING_TODAY_FORCE_CLOSE_HOUR", 15)
             )
             force_close_minute = int(
-                getattr(config, "PROTECTIVE_PUTS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE", 25)
+                getattr(config, "PROTECTIVE_PUTS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE", 15)
             )
         else:
             force_close_hour = config.OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_HOUR

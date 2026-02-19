@@ -1056,7 +1056,7 @@ OPTIONS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE = 0
 # Protective puts can hold longer intraday to keep crash-hedge coverage alive.
 # Applies only on expiration day (same-day expiry hedge contracts).
 PROTECTIVE_PUTS_EXPIRING_TODAY_FORCE_CLOSE_HOUR = 15
-PROTECTIVE_PUTS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE = 25
+PROTECTIVE_PUTS_EXPIRING_TODAY_FORCE_CLOSE_MINUTE = 15
 
 # V2.28: Early exercise guard — force close ITM single-leg options near expiry
 # Prevents costly early exercise (Q1 2022: 2 exercises cost -$5,614)
