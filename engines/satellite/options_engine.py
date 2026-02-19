@@ -7195,44 +7195,49 @@ class OptionsEngine:
         if not spreads:
             return None
 
-        spread = spreads[0]
-        entry_date = (
-            spread.entry_time.split()[0] if " " in spread.entry_time else spread.entry_time[:10]
-        )
-        is_fresh_trade = entry_date == current_date
-
         close_all_threshold = getattr(config, "SWING_OVERNIGHT_VIX_CLOSE_ALL", 30.0)
         close_fresh_threshold = getattr(config, "SWING_OVERNIGHT_VIX_CLOSE_FRESH", 22.0)
 
-        if current_vix >= close_all_threshold:
-            reason = f"OVERNIGHT_GAP_PROTECTION: VIX {current_vix:.1f} >= {close_all_threshold}"
-        elif is_fresh_trade and current_vix >= close_fresh_threshold:
-            reason = f"OVERNIGHT_GAP_PROTECTION: Fresh trade + VIX {current_vix:.1f} >= {close_fresh_threshold}"
-        else:
-            return None
-
-        self.log(
-            f"OVERNIGHT_GAP_PROTECTION: Closing spread | {reason} | Entry={entry_date} Fresh={is_fresh_trade}",
-            trades_only=True,
-        )
-
-        return [
-            TargetWeight(
-                symbol=self._symbol_str(spread.long_leg.symbol),
-                target_weight=0.0,
-                source="OPT",
-                urgency=Urgency.IMMEDIATE,
-                reason=reason,
-                requested_quantity=spread.num_spreads,
-                metadata={
-                    "spread_close_short": True,
-                    "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
-                    "spread_short_leg_quantity": spread.num_spreads,
-                    "spread_key": self._build_spread_key(spread),
-                    "exit_type": "OVERNIGHT_GAP_PROTECTION",
-                },
+        exit_signals: List[TargetWeight] = []
+        for spread in spreads:
+            entry_date = (
+                spread.entry_time.split()[0] if " " in spread.entry_time else spread.entry_time[:10]
             )
-        ]
+            is_fresh_trade = entry_date == current_date
+
+            reason = None
+            if current_vix >= close_all_threshold:
+                reason = f"OVERNIGHT_GAP_PROTECTION: VIX {current_vix:.1f} >= {close_all_threshold}"
+            elif is_fresh_trade and current_vix >= close_fresh_threshold:
+                reason = f"OVERNIGHT_GAP_PROTECTION: Fresh trade + VIX {current_vix:.1f} >= {close_fresh_threshold}"
+
+            if reason is None:
+                continue
+
+            self.log(
+                f"OVERNIGHT_GAP_PROTECTION: Closing spread | {reason} | "
+                f"Entry={entry_date} Fresh={is_fresh_trade}",
+                trades_only=True,
+            )
+            exit_signals.append(
+                TargetWeight(
+                    symbol=self._symbol_str(spread.long_leg.symbol),
+                    target_weight=0.0,
+                    source="OPT",
+                    urgency=Urgency.IMMEDIATE,
+                    reason=reason,
+                    requested_quantity=spread.num_spreads,
+                    metadata={
+                        "spread_close_short": True,
+                        "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
+                        "spread_short_leg_quantity": spread.num_spreads,
+                        "spread_key": self._build_spread_key(spread),
+                        "exit_type": "OVERNIGHT_GAP_PROTECTION",
+                    },
+                )
+            )
+
+        return exit_signals if exit_signals else None
 
     # =========================================================================
     # EXIT SIGNALS
@@ -8799,6 +8804,13 @@ class OptionsEngine:
         """Get current Micro Regime Engine state."""
         return self._micro_regime_engine.get_state()
 
+    def get_itm_horizon_state(self) -> Dict[str, Any]:
+        """Return ITM horizon state for diagnostics summaries."""
+        try:
+            return dict(self._itm_horizon_engine.to_dict())
+        except Exception:
+            return {}
+
     def get_intraday_direction(
         self,
         vix_current: float,
@@ -9452,6 +9464,44 @@ class OptionsEngine:
             }
 
         return self.get_pending_intraday_partial_oco_seed(symbol=symbol_norm, fill_price=fill_price)
+
+    def get_partial_fill_oco_seed(self, symbol: str, fill_price: float) -> Optional[Dict[str, Any]]:
+        """Return OCO seed for partial fills across intraday and swing single-legs."""
+        symbol_norm = self._symbol_str(symbol)
+        if not symbol_norm:
+            return None
+
+        intraday_seed = self.get_intraday_partial_fill_oco_seed(
+            symbol=symbol_norm,
+            fill_price=fill_price,
+        )
+        if intraday_seed is not None:
+            return intraday_seed
+
+        if (
+            self._pending_contract is None
+            or self._pending_intraday_entry
+            or self._symbol_str(self._pending_contract.symbol) != symbol_norm
+        ):
+            return None
+
+        stop_price = float(getattr(self, "_pending_stop_price", 0.0) or 0.0)
+        target_price = float(getattr(self, "_pending_target_price", 0.0) or 0.0)
+        if stop_price <= 0 or target_price <= 0:
+            return None
+
+        entry_px = float(fill_price or 0.0)
+        if entry_px <= 0:
+            entry_px = float(getattr(self._pending_contract, "mid_price", 0.0) or 0.0)
+        if entry_px <= 0:
+            return None
+
+        return {
+            "entry_price": entry_px,
+            "stop_price": stop_price,
+            "target_price": target_price,
+            "entry_strategy": str(self._pending_entry_strategy or "SWING_SINGLE"),
+        }
 
     def get_pending_intraday_partial_oco_seed(
         self, symbol: str, fill_price: float

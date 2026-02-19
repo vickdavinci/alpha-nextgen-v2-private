@@ -257,6 +257,9 @@ class AlphaNextGen(
         self._diag_micro_dte_win = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
         self._diag_micro_dte_loss = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
         self._diag_micro_drop_reason_by_dte = {}
+        self._diag_router_reject_reason_counts = {}
+        self._diag_exit_path_counts = {}
+        self._diag_exit_path_pnl = {}
         self._last_micro_update_log_signature = None
         self._last_micro_update_log_time = None
         self._last_spread_construct_fail_log_at = None
@@ -284,6 +287,7 @@ class AlphaNextGen(
         # Last known spread leg marks to avoid skipping exit checks on transient quote gaps.
         self._spread_exit_mark_cache = {}
         self._spread_last_exit_reason = {}
+        self._single_leg_last_exit_reason = {}
         # Track consecutive intraday ghost detections by spread key.
         self._spread_ghost_flat_streak_by_key = {}
         self._spread_ghost_last_log_by_key = {}
@@ -2322,6 +2326,10 @@ class AlphaNextGen(
         self._spread_ghost_flat_streak_by_key.clear()
         self._spread_ghost_last_log_by_key.clear()
         self._last_intraday_dte_routing_log_by_key.clear()
+        self._diag_router_reject_reason_counts.clear()
+        self._diag_exit_path_counts.clear()
+        self._diag_exit_path_pnl.clear()
+        self._single_leg_last_exit_reason.clear()
         self._last_vass_rejection_log_by_key.clear()
         # V3.0 P1-B: Exit retry trackers are intraday plumbing only; clear daily.
         if self._pending_exit_orders:
@@ -3336,7 +3344,18 @@ class AlphaNextGen(
         try:
             symbol_norm = self._normalize_symbol_str(symbol)
             qty = int(max(0, quantity))
-            if not symbol_norm or qty <= 0 or position is None:
+            if not symbol_norm:
+                self.Log(f"OCO_SYNC_SKIP: Invalid symbol | Raw={symbol} | Reason={reason}")
+                return
+            if qty <= 0:
+                self.Log(
+                    f"OCO_SYNC_SKIP: Non-positive quantity | Symbol={symbol_norm} | Qty={qty} | Reason={reason}"
+                )
+                return
+            if position is None:
+                self.Log(
+                    f"OCO_SYNC_SKIP: Missing position seed | Symbol={symbol_norm} | Reason={reason}"
+                )
                 return
             entry_price = float(getattr(position, "entry_price", 0.0) or 0.0)
             stop_price = float(getattr(position, "stop_price", 0.0) or 0.0)
@@ -3348,6 +3367,11 @@ class AlphaNextGen(
                 target_price = float(position.get("target_price", target_price) or 0.0)
                 entry_strategy = str(position.get("entry_strategy", entry_strategy) or "UNKNOWN")
             if entry_price <= 0 or stop_price <= 0 or target_price <= 0:
+                self.Log(
+                    f"OCO_SYNC_SKIP: Invalid OCO prices | Symbol={symbol_norm} | "
+                    f"Entry={entry_price:.2f} Stop={stop_price:.2f} Target={target_price:.2f} | "
+                    f"Reason={reason}"
+                )
                 return
 
             active_pair = self.oco_manager.get_active_pair(symbol_norm)
@@ -3404,6 +3428,52 @@ class AlphaNextGen(
         if not reason_str:
             return
         self._spread_last_exit_reason[spread_key] = reason_str[:180]
+
+    def _capture_router_rejections(self, stage: str) -> None:
+        """Aggregate router rejection telemetry for daily summary RCA."""
+        try:
+            rejects = self.portfolio_router.get_last_rejections()
+        except Exception:
+            return
+        if not rejects:
+            return
+        for rej in rejects:
+            code = str(getattr(rej, "code", "UNKNOWN") or "UNKNOWN")
+            self._diag_intraday_router_reject_count += 1
+            self._diag_router_reject_reason_counts[code] = (
+                int(self._diag_router_reject_reason_counts.get(code, 0)) + 1
+            )
+        try:
+            self.portfolio_router.clear_last_rejections()
+        except Exception:
+            pass
+
+    def _classify_exit_path(self, reason: str, order_tag: str = "") -> str:
+        """Classify exit path for daily P&L attribution."""
+        text = f"{reason or ''} {order_tag or ''}".upper()
+        if "ORPHAN" in text:
+            return "ORPHAN"
+        if "RECON" in text:
+            return "RECONCILE"
+        if "TRAIL" in text:
+            return "TRAIL"
+        if "TARGET" in text or "PROFIT" in text:
+            return "TARGET"
+        if "STOP" in text or "HARD_STOP" in text:
+            return "STOP"
+        if "DTE" in text or "FORCE_EXIT_DTE" in text:
+            return "DTE"
+        if "EOD" in text or "SWEEP" in text or "FRIDAY" in text:
+            return "EOD"
+        return "OTHER"
+
+    def _record_exit_path_pnl(self, reason: str, pnl_dollars: float, order_tag: str = "") -> None:
+        """Track exit-path counts and realized P&L for daily diagnostics."""
+        path = self._classify_exit_path(reason=reason, order_tag=order_tag)
+        self._diag_exit_path_counts[path] = int(self._diag_exit_path_counts.get(path, 0)) + 1
+        self._diag_exit_path_pnl[path] = float(self._diag_exit_path_pnl.get(path, 0.0)) + float(
+            pnl_dollars
+        )
 
     def _normalize_spread_close_quantities(self, signal: TargetWeight) -> None:
         """Normalize spread close quantities from live holdings to avoid stale qty closes."""
@@ -4088,8 +4158,10 @@ class AlphaNextGen(
                 locked_amount=capital_state.locked_amount,
                 current_time=str(self.Time),
             )
+            self._capture_router_rejections(stage="IMMEDIATE")
         except Exception as e:
             self.Log(f"SIGNAL_ERROR: Failed to process immediate signals - {e}")
+            self._capture_router_rejections(stage="IMMEDIATE_ERROR")
 
     def _process_eod_signals(self, capital_state: CapitalState) -> None:
         """
@@ -6146,6 +6218,9 @@ class AlphaNextGen(
                         current_dte=current_dte,
                     )
                     if signal is not None:
+                        self._single_leg_last_exit_reason[swing_symbol] = str(
+                            getattr(signal, "reason", "") or ""
+                        )[:180]
                         self.portfolio_router.receive_signal(signal)
                         # V9.2 FIX: Cancel OCO on software exit (swing single-leg)
                         try:
@@ -6176,6 +6251,9 @@ class AlphaNextGen(
                         position=intraday_position,
                     )
                     if signal is not None:
+                        self._single_leg_last_exit_reason[intra_symbol] = str(
+                            getattr(signal, "reason", "") or ""
+                        )[:180]
                         self.portfolio_router.receive_signal(signal)
                         # V9.2 FIX: Cancel OCO immediately when software backup triggers
                         # an exit. Without this, the OCO stop/limit orders remain active
@@ -6904,6 +6982,10 @@ class AlphaNextGen(
                 f"SPREAD: EXIT | Reason={exit_reason} | "
                 f"Type={spread.spread_type} | Entry={spread.net_debit:.2f} | "
                 f"Close={close_value:.2f} | PnL={pnl_pct:+.1%}"
+            )
+            self._record_exit_path_pnl(
+                reason=exit_reason,
+                pnl_dollars=(close_value - spread.net_debit) * 100 * spread.num_spreads,
             )
 
             stop_pct = float(getattr(config, "SPREAD_STOP_LOSS_PCT", 0.0))

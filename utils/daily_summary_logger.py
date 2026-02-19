@@ -58,6 +58,39 @@ def log_daily_summary(algo) -> None:
         f"TopDrop[{top_drop}]"
     )
 
+    top_router_rejects = sorted(
+        algo._diag_router_reject_reason_counts.items(), key=lambda kv: kv[1], reverse=True
+    )[:5]
+    top_router_rejects_str = (
+        ";".join(f"{code}:{count}" for code, count in top_router_rejects)
+        if top_router_rejects
+        else "NONE"
+    )
+
+    exit_path_counts = sorted(algo._diag_exit_path_counts.items(), key=lambda kv: kv[0])
+    exit_path_pnl = sorted(algo._diag_exit_path_pnl.items(), key=lambda kv: kv[0])
+    exit_counts_str = (
+        ";".join(f"{k}:{int(v)}" for k, v in exit_path_counts) if exit_path_counts else "NONE"
+    )
+    exit_pnl_str = (
+        ";".join(f"{k}:{float(v):+.0f}" for k, v in exit_path_pnl) if exit_path_pnl else "NONE"
+    )
+
+    kill_active = bool(algo.risk_engine.is_kill_switch_active())
+    governor_scale = float(getattr(algo, "_governor_scale", 1.0) or 0.0)
+    itm_state = {}
+    try:
+        itm_state = algo.options_engine.get_itm_horizon_state() or {}
+    except Exception:
+        itm_state = {}
+    itm_drawdown_detail = str(itm_state.get("last_drawdown_detail", "NA") or "NA")
+    itm_global_pause = str(itm_state.get("pause_until", "") or "")
+    itm_call_pause = str(itm_state.get("call_pause_until", "") or "")
+    itm_put_pause = str(itm_state.get("put_pause_until", "") or "")
+    suppression_min = int(getattr(algo, "_kill_switch_suppression_minutes", 0) or 0)
+    ks_skip_until = str(getattr(algo.risk_engine, "_ks_skip_until_date", "") or "")
+    ks_skip_active = bool(ks_skip_until) and str(algo.Time.date()) <= ks_skip_until
+
     algo.Log(
         "OPTIONS_DIAG_SUMMARY: "
         f"Candidates={algo._diag_intraday_candidate_count} | "
@@ -84,5 +117,13 @@ def log_daily_summary(algo) -> None:
         f"MicroTagRecovery={algo._diag_micro_tag_recovery_count} | "
         f"MicroEodSweepClose={algo._diag_micro_eod_sweep_close_count} | "
         f"MicroPendingCancelIgnored={algo._diag_micro_pending_cancel_ignored_count} | "
-        f"MarginRejects={algo._diag_margin_reject_count}"
+        f"MarginRejects={algo._diag_margin_reject_count} | "
+        f"TopRouterRejects={top_router_rejects_str} | "
+        f"ExitPathCounts={exit_counts_str} | "
+        f"ExitPathPnL={exit_pnl_str} | "
+        f"KillActive={kill_active} | GovScale={governor_scale:.0%} | "
+        f"ITMDrawdown={itm_drawdown_detail} | ITMPause={itm_global_pause or 'NONE'} | "
+        f"ITMCallPause={itm_call_pause or 'NONE'} | ITMPutPause={itm_put_pause or 'NONE'} | "
+        f"KillSuppressMin={suppression_min} | KSSkipActive={ks_skip_active} | "
+        f"KSSkipUntil={ks_skip_until or 'NONE'}"
     )

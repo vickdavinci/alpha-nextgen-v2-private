@@ -57,7 +57,7 @@ class MainOrdersMixin:
                     live_qty = abs(self._get_option_holding_quantity(symbol_norm))
                     sync_qty = live_qty if live_qty > 0 else abs(int(fill_qty))
                     if sync_qty > 0:
-                        oco_seed = self.options_engine.get_intraday_partial_fill_oco_seed(
+                        oco_seed = self.options_engine.get_partial_fill_oco_seed(
                             symbol=symbol_norm,
                             fill_price=float(fill_price),
                         )
@@ -866,6 +866,16 @@ class MainOrdersMixin:
                                     f"Entry=${removed_position.entry_price:.2f} | Exit=${fill_price:.2f} | "
                                     f"P&L={((fill_price - removed_position.entry_price) / removed_position.entry_price):.1%}"
                                 )
+                                cached_reason = self._single_leg_last_exit_reason.pop(
+                                    symbol_norm, ""
+                                )
+                                self._record_exit_path_pnl(
+                                    reason=cached_reason,
+                                    order_tag=order_tag,
+                                    pnl_dollars=(fill_price - removed_position.entry_price)
+                                    * 100
+                                    * abs(int(fill_qty)),
+                                )
                                 self._diag_intraday_result_count += 1
                                 dte_for_result = (
                                     getattr(removed_position.contract, "days_to_expiry", None)
@@ -923,6 +933,20 @@ class MainOrdersMixin:
                                 self.Log(
                                     f"OCO_CLEANUP_ERROR: {removed_position.contract.symbol} | {e}"
                                 )
+                            if (
+                                float(getattr(removed_position, "entry_price", 0.0) or 0.0) > 0
+                                and self._intraday_entry_snapshot.get(symbol_norm) is None
+                            ):
+                                cached_reason = self._single_leg_last_exit_reason.pop(
+                                    symbol_norm, ""
+                                )
+                                self._record_exit_path_pnl(
+                                    reason=cached_reason,
+                                    order_tag=order_tag,
+                                    pnl_dollars=(fill_price - removed_position.entry_price)
+                                    * 100
+                                    * abs(int(fill_qty)),
+                                )
                         # V6.15: Fallback intraday result accounting for orphan/implicit exits.
                         snapshot = self._intraday_entry_snapshot.get(symbol_norm)
                         live_qty_after_fill = abs(self._get_option_holding_quantity(symbol))
@@ -947,6 +971,12 @@ class MainOrdersMixin:
                                 f"Entry=${entry_price:.2f} | Exit=${fill_price:.2f} | "
                                 f"P&L={((fill_price - entry_price) / entry_price):.1%} | "
                                 f"Strategy={fallback_strategy} | Path=FALLBACK"
+                            )
+                            cached_reason = self._single_leg_last_exit_reason.pop(symbol_norm, "")
+                            self._record_exit_path_pnl(
+                                reason=cached_reason,
+                                order_tag=order_tag,
+                                pnl_dollars=(fill_price - entry_price) * 100 * abs(int(fill_qty)),
                             )
                             self._diag_intraday_result_count += 1
                             self._inc_micro_dte_counter(
