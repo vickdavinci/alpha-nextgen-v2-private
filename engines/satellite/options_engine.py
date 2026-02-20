@@ -7409,7 +7409,12 @@ class OptionsEngine:
         strategy = self._canonical_intraday_strategy_name(entry_strategy)
         if strategy == IntradayStrategy.ITM_MOMENTUM.value:
             if self._itm_horizon_engine.enabled():
-                target, stop, _, _, _ = self._itm_horizon_engine.get_exit_profile()
+                vix_for_itm = None
+                try:
+                    vix_for_itm = float(self._iv_sensor.get_smoothed_vix())
+                except Exception:
+                    vix_for_itm = None
+                target, stop, _, _, _ = self._itm_horizon_engine.get_exit_profile(vix_for_itm)
                 return (target, stop)
             return (
                 float(getattr(config, "INTRADAY_ITM_TARGET", 0.35)),
@@ -7490,7 +7495,14 @@ class OptionsEngine:
         strategy = self._canonical_intraday_strategy_name(entry_strategy)
         if strategy == IntradayStrategy.ITM_MOMENTUM.value:
             if self._itm_horizon_engine.enabled():
-                _, _, trail_trigger, trail_pct, _ = self._itm_horizon_engine.get_exit_profile()
+                vix_for_itm = None
+                try:
+                    vix_for_itm = float(self._iv_sensor.get_smoothed_vix())
+                except Exception:
+                    vix_for_itm = None
+                _, _, trail_trigger, trail_pct, _ = self._itm_horizon_engine.get_exit_profile(
+                    vix_for_itm
+                )
                 return (trail_trigger, trail_pct)
             return (
                 float(getattr(config, "INTRADAY_ITM_TRAIL_TRIGGER", 0.20)),
@@ -7629,6 +7641,23 @@ class OptionsEngine:
                 requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
             )
 
+        # ITM_ENGINE anti-roundtrip floor: once meaningful MFE is reached, ratchet stop floor.
+        if self._is_itm_momentum_strategy_name(getattr(pos, "entry_strategy", "")):
+            gain_pct_now = (current_price - entry_price) / entry_price if entry_price > 0 else 0.0
+            be_trigger = float(getattr(config, "ITM_PROFIT_LOCK_BREAKEVEN_TRIGGER", 0.20))
+            be_floor_pct = float(getattr(config, "ITM_PROFIT_LOCK_BREAKEVEN_FLOOR_PCT", 0.01))
+            strong_trigger = float(getattr(config, "ITM_PROFIT_LOCK_STRONG_TRIGGER", 0.35))
+            strong_floor_pct = float(getattr(config, "ITM_PROFIT_LOCK_STRONG_FLOOR_PCT", 0.10))
+            floor_pct = 0.0
+            if gain_pct_now >= strong_trigger:
+                floor_pct = strong_floor_pct
+            elif gain_pct_now >= be_trigger:
+                floor_pct = be_floor_pct
+            if floor_pct > 0:
+                floor_price = entry_price * (1.0 + floor_pct)
+                if floor_price > pos.stop_price:
+                    pos.stop_price = floor_price
+
         # Exit 1.5: Strategy-aware trailing stop for intraday strategies
         if pos.entry_strategy and pos.entry_strategy.upper() != "PROTECTIVE_PUTS":
             if current_price > pos.highest_price:
@@ -7721,7 +7750,14 @@ class OptionsEngine:
         dte_exit_threshold = int(getattr(config, "OPTIONS_SINGLE_LEG_DTE_EXIT", 4))
         if self._is_itm_momentum_strategy_name(getattr(pos, "entry_strategy", "")):
             if self._itm_horizon_engine.enabled():
-                _, _, _, _, dte_exit_threshold = self._itm_horizon_engine.get_exit_profile()
+                vix_for_itm = None
+                try:
+                    vix_for_itm = float(self._iv_sensor.get_smoothed_vix())
+                except Exception:
+                    vix_for_itm = None
+                _, _, _, _, dte_exit_threshold = self._itm_horizon_engine.get_exit_profile(
+                    vix_for_itm
+                )
             else:
                 dte_exit_threshold = int(
                     getattr(config, "INTRADAY_ITM_DTE_EXIT", dte_exit_threshold)
@@ -8870,7 +8906,7 @@ class OptionsEngine:
             and entry_strategy == IntradayStrategy.ITM_MOMENTUM
             and self._pending_stop_pct is not None
         ):
-            _, itm_engine_stop, _, _, _ = self._itm_horizon_engine.get_exit_profile()
+            _, itm_engine_stop, _, _, _ = self._itm_horizon_engine.get_exit_profile(vix_current)
             if itm_engine_stop is not None and itm_engine_stop > 0:
                 if abs(float(self._pending_stop_pct) - float(itm_engine_stop)) > 1e-6:
                     self.log(

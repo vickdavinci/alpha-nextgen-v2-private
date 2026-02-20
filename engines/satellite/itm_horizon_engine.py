@@ -343,13 +343,43 @@ class ITMHorizonEngine:
         force_exit_dte = int(getattr(config, "ITM_FORCE_EXIT_DTE", 1))
         return live_dte > force_exit_dte
 
-    def get_exit_profile(self) -> Tuple[float, float, float, float, int]:
+    def get_exit_profile(
+        self, vix_current: Optional[float] = None
+    ) -> Tuple[float, float, float, float, int]:
+        if bool(getattr(config, "ITM_TIERED_EXIT_ENABLED", False)):
+            med_vix = float(getattr(config, "ITM_MED_VIX_THRESHOLD", 18.0))
+            high_vix = float(getattr(config, "ITM_HIGH_VIX_THRESHOLD", 25.0))
+            vix_val = float(vix_current) if vix_current is not None else med_vix
+            if vix_val >= high_vix:
+                return (
+                    float(getattr(config, "ITM_TARGET_PCT_HIGH_VIX", 0.45)),
+                    float(getattr(config, "ITM_STOP_PCT_HIGH_VIX", 0.28)),
+                    float(getattr(config, "ITM_TRAIL_TRIGGER_HIGH_VIX", 0.25)),
+                    float(getattr(config, "ITM_TRAIL_PCT_HIGH_VIX", 0.35)),
+                    int(getattr(config, "ITM_FORCE_EXIT_DTE", 8)),
+                )
+            if vix_val >= med_vix:
+                return (
+                    float(getattr(config, "ITM_TARGET_PCT_MED_VIX", 0.40)),
+                    float(getattr(config, "ITM_STOP_PCT_MED_VIX", 0.25)),
+                    float(getattr(config, "ITM_TRAIL_TRIGGER_MED_VIX", 0.22)),
+                    float(getattr(config, "ITM_TRAIL_PCT_MED_VIX", 0.32)),
+                    int(getattr(config, "ITM_FORCE_EXIT_DTE", 8)),
+                )
+            return (
+                float(getattr(config, "ITM_TARGET_PCT_LOW_VIX", 0.35)),
+                float(getattr(config, "ITM_STOP_PCT_LOW_VIX", 0.22)),
+                float(getattr(config, "ITM_TRAIL_TRIGGER_LOW_VIX", 0.20)),
+                float(getattr(config, "ITM_TRAIL_PCT_LOW_VIX", 0.30)),
+                int(getattr(config, "ITM_FORCE_EXIT_DTE", 8)),
+            )
+
         return (
-            float(getattr(config, "ITM_TARGET_PCT", 0.35)),
-            float(getattr(config, "ITM_STOP_PCT", 0.35)),
-            float(getattr(config, "ITM_TRAIL_TRIGGER", 0.15)),
-            float(getattr(config, "ITM_TRAIL_PCT", 0.40)),
-            int(getattr(config, "ITM_FORCE_EXIT_DTE", 1)),
+            float(getattr(config, "ITM_TARGET_PCT", 0.40)),
+            float(getattr(config, "ITM_STOP_PCT", 0.25)),
+            float(getattr(config, "ITM_TRAIL_TRIGGER", 0.22)),
+            float(getattr(config, "ITM_TRAIL_PCT", 0.32)),
+            int(getattr(config, "ITM_FORCE_EXIT_DTE", 8)),
         )
 
     def get_max_hold_days(self) -> int:
