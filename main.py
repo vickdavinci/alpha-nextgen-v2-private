@@ -1597,39 +1597,107 @@ class AlphaNextGen(QCAlgorithm):
             pass
         return fallback
 
+    def _is_itm_overnight_thesis_broken(self, symbol: str) -> bool:
+        """Return True when ITM directional thesis is broken vs SMA20 band."""
+        symbol_norm = self._normalize_symbol_str(symbol)
+        if not symbol_norm:
+            return False
+        is_call = "C" in symbol_norm
+        is_put = "P" in symbol_norm
+        if not is_call and not is_put:
+            return False
+
+        qqq_sma20 = getattr(self, "qqq_sma20", None)
+        if qqq_sma20 is None or not getattr(qqq_sma20, "IsReady", False):
+            return False
+        try:
+            qqq_price = float(self.Securities[self.qqq].Price)
+            sma20 = float(qqq_sma20.Current.Value)
+        except Exception:
+            return False
+        if qqq_price <= 0 or sma20 <= 0:
+            return False
+
+        band = float(getattr(config, "ITM_SMA_BAND_PCT", 0.003))
+        upper = sma20 * (1.0 + band)
+        lower = sma20 * (1.0 - band)
+        if is_call and qqq_price <= upper:
+            return True
+        if is_put and qqq_price >= lower:
+            return True
+        return False
+
     def _is_micro_eod_loss_breach(
         self, symbol: str, entry_price: float, current_price: float
     ) -> bool:
         """
-        EOD-only MICRO overnight hold guard.
-        Return True when unrealized loss is beyond configured overnight threshold.
+        EOD-only ITM hold guard with staged loss handling.
+
+        Stage A: warning at mild drawdown (log/telemetry only).
+        Stage B: force close at deeper drawdown, optionally requiring thesis break.
+        Emergency: always close at catastrophic drawdown.
         """
-        base_loss_pct = float(getattr(config, "ITM_OVERNIGHT_MAX_LOSS_PCT", 0.10))
-        high_vix_loss_pct = float(
-            getattr(config, "ITM_OVERNIGHT_MAX_LOSS_PCT_HIGH_VIX", base_loss_pct)
-        )
-        high_vix_threshold = float(getattr(config, "ITM_OVERNIGHT_HIGH_VIX_THRESHOLD", 25.0))
         vix_level = (
             float(self._get_vix_level())
             if hasattr(self, "_get_vix_level")
             else float(self._current_vix)
         )
-        max_loss_pct = high_vix_loss_pct if vix_level >= high_vix_threshold else base_loss_pct
 
-        if max_loss_pct <= 0 or entry_price <= 0 or current_price <= 0:
+        warn_loss_pct = float(getattr(config, "ITM_OVERNIGHT_WARN_LOSS_PCT", 0.12))
+        low_cut = float(getattr(config, "ITM_OVERNIGHT_EOD_EXIT_LOSS_PCT_LOW_VIX", 0.18))
+        med_cut = float(getattr(config, "ITM_OVERNIGHT_EOD_EXIT_LOSS_PCT_MED_VIX", 0.20))
+        high_cut = float(getattr(config, "ITM_OVERNIGHT_EOD_EXIT_LOSS_PCT_HIGH_VIX", 0.24))
+        high_vix_threshold = float(getattr(config, "ITM_OVERNIGHT_HIGH_VIX_THRESHOLD", 25.0))
+        med_vix_threshold = float(getattr(config, "ITM_OVERNIGHT_MED_VIX_THRESHOLD", 18.0))
+        emergency_loss_pct = float(getattr(config, "ITM_OVERNIGHT_EMERGENCY_LOSS_PCT", 0.30))
+        require_thesis_break = bool(
+            getattr(config, "ITM_OVERNIGHT_EOD_EXIT_REQUIRE_THESIS_BREAK", True)
+        )
+
+        if entry_price <= 0 or current_price <= 0:
             return False
+
+        if vix_level >= high_vix_threshold:
+            cut_loss_pct = high_cut
+        elif vix_level >= med_vix_threshold:
+            cut_loss_pct = med_cut
+        else:
+            cut_loss_pct = low_cut
+
         pnl_pct = (current_price - entry_price) / entry_price
-        if pnl_pct > -max_loss_pct:
-            return False
         current_date = str(self.Time.date())
         symbol_str = self._normalize_symbol_str(symbol)
-        if self._intraday_hold_loss_block_log_date.get(symbol_str) != current_date:
+
+        if (
+            pnl_pct <= -warn_loss_pct
+            and self._intraday_hold_loss_block_log_date.get(symbol_str) != current_date
+        ):
             self.Log(
-                f"INTRADAY_HOLD_BLOCK_LOSS_CAP: {symbol_str} | "
-                f"PnL={pnl_pct:+.1%} <= -{max_loss_pct:.0%} | "
+                f"INTRADAY_HOLD_WARN: {symbol_str} | PnL={pnl_pct:+.1%} <= -{warn_loss_pct:.0%} | "
                 f"VIX={vix_level:.1f} | Entry=${entry_price:.2f} | Current=${current_price:.2f}"
             )
             self._intraday_hold_loss_block_log_date[symbol_str] = current_date
+
+        if pnl_pct <= -emergency_loss_pct:
+            self.Log(
+                f"INTRADAY_HOLD_EMERGENCY_EXIT: {symbol_str} | "
+                f"PnL={pnl_pct:+.1%} <= -{emergency_loss_pct:.0%}"
+            )
+            return True
+
+        if pnl_pct > -cut_loss_pct:
+            return False
+
+        thesis_broken = self._is_itm_overnight_thesis_broken(symbol_str)
+        if require_thesis_break and not thesis_broken:
+            return False
+
+        self.Log(
+            f"INTRADAY_HOLD_BLOCK_LOSS_CAP: {symbol_str} | "
+            f"PnL={pnl_pct:+.1%} <= -{cut_loss_pct:.0%} | "
+            f"VIX={vix_level:.1f} | ThesisBroken={thesis_broken} | "
+            f"Entry=${entry_price:.2f} | Current=${current_price:.2f}"
+        )
         return True
 
     def _intraday_force_exit_fallback(self) -> None:
