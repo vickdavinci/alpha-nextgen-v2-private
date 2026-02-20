@@ -1629,6 +1629,7 @@ class OptionsEngine:
         # Position tracking (separate for each mode)
         self._swing_position: Optional[OptionsPosition] = None
         self._intraday_position: Optional[OptionsPosition] = None
+        self._intraday_position_engine: Optional[str] = None  # MICRO/ITM ownership
 
         # V2.3: Spread position tracking (replaces single-leg for swing mode)
         self._spread_position: Optional[SpreadPosition] = None
@@ -9397,6 +9398,9 @@ class OptionsEngine:
         # V2.3.2 FIX #4: Track position in correct variable based on mode
         if is_intraday_fill:
             self._intraday_position = position
+            self._intraday_position_engine = self._intraday_engine_lane_from_strategy(
+                entry_strategy
+            )
             self._pending_intraday_entry = False  # Clear flag
             self._pending_intraday_entry_since = None
             self._pending_intraday_entry_engine = None
@@ -9491,6 +9495,7 @@ class OptionsEngine:
         if self._intraday_position is not None:
             position = self._intraday_position
             self._intraday_position = None
+            self._intraday_position_engine = None
             try:
                 strategy = str(getattr(position, "entry_strategy", "") or "UNKNOWN")
             except Exception:
@@ -10350,13 +10355,29 @@ class OptionsEngine:
                 trades_only=True,
             )
 
-    def has_intraday_position(self) -> bool:
-        """V2.3.2: Check if an intraday position exists (tracked separately for timed force close)."""
-        return self._intraday_position is not None
+    def has_intraday_position(self, engine: Optional[str] = None) -> bool:
+        """V2.3.2: Check if an intraday position exists (optionally by engine lane)."""
+        if self._intraday_position is None:
+            return False
+        if engine is None:
+            return True
+        eng = str(engine).upper()
+        return (self._intraday_position_engine or "").upper() == eng
 
-    def get_intraday_position(self) -> Optional[OptionsPosition]:
-        """V2.3.2: Get current intraday position."""
+    def get_intraday_position(self, engine: Optional[str] = None) -> Optional[OptionsPosition]:
+        """V2.3.2: Get current intraday position (optionally by engine lane)."""
+        if self._intraday_position is None:
+            return None
+        if engine is None:
+            return self._intraday_position
+        eng = str(engine).upper()
+        if (self._intraday_position_engine or "").upper() != eng:
+            return None
         return self._intraday_position
+
+    def get_intraday_position_engine(self) -> Optional[str]:
+        """Return ownership lane (MICRO/ITM) for the tracked intraday position."""
+        return self._intraday_position_engine
 
     def has_position(self) -> bool:
         """Check if any position exists (single-leg, spread, or intraday)."""
@@ -10399,6 +10420,7 @@ class OptionsEngine:
 
         if self._intraday_position is not None:
             self._intraday_position = None
+            self._intraday_position_engine = None
             cleared.append("intraday")
 
         # V2.16-BT: Also clear swing position (V2.1.1 dual-mode)
@@ -10572,6 +10594,7 @@ class OptionsEngine:
             "intraday_position": (
                 self._intraday_position.to_dict() if self._intraday_position else None
             ),
+            "intraday_position_engine": self._intraday_position_engine,
             "intraday_trades_today": self._intraday_trades_today,
             "intraday_call_trades_today": self._intraday_call_trades_today,
             "intraday_put_trades_today": self._intraday_put_trades_today,
@@ -10716,8 +10739,12 @@ class OptionsEngine:
                     "Clearing stale position."
                 )
                 self._intraday_position = None
+                self._intraday_position_engine = None
             elif self.should_hold_intraday_overnight(position):
                 self._intraday_position = position
+                self._intraday_position_engine = self._intraday_engine_lane_from_strategy(
+                    position.entry_strategy
+                )
                 live_dte = self._get_position_live_dte(position)
                 self.log(
                     f"OPT: STATE_RESTORE - Hold-enabled intraday position restored | "
@@ -10730,8 +10757,14 @@ class OptionsEngine:
                     f"Cutoff={force_hh:02d}:{force_mm:02d}"
                 )
                 self._intraday_position = None
+                self._intraday_position_engine = None
         else:
             self._intraday_position = None
+            self._intraday_position_engine = None
+
+        self._intraday_position_engine = state.get("intraday_position_engine")
+        if self._intraday_position is None:
+            self._intraday_position_engine = None
 
         self._pending_intraday_entry_engine = state.get("pending_intraday_entry_engine")
         self._pending_intraday_exit_engine = state.get("pending_intraday_exit_engine")
@@ -11014,6 +11047,8 @@ class OptionsEngine:
             # V2.3.3: Reset pending intraday exit flag
             self._pending_intraday_exit = False
             self._pending_intraday_exit_engine = None
+            if self._intraday_position is None:
+                self._intraday_position_engine = None
             self._intraday_force_exit_hold_skip_log_date = {}
             self._last_intraday_close_time = None
             self._last_intraday_close_strategy = None
