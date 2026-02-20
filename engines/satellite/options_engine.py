@@ -3381,6 +3381,8 @@ class OptionsEngine:
         if target_width is None:
             target_width = config.SPREAD_WIDTH_TARGET
 
+        effective_width_min = self._get_effective_spread_width_min()
+
         # Filter contracts by direction
         filtered = [c for c in contracts if c.direction == direction]
 
@@ -3524,7 +3526,7 @@ class OptionsEngine:
             # V2.4.3: Filter by WIDTH, not delta
             if config.SPREAD_SHORT_LEG_BY_WIDTH:
                 # Width-based selection: must be within min/max width bounds
-                if width < config.SPREAD_WIDTH_MIN or width > config.SPREAD_WIDTH_MAX:
+                if width < effective_width_min or width > config.SPREAD_WIDTH_MAX:
                     continue
                 # Delta is soft preference only (no hard filter)
                 delta_abs = abs(c.delta) if c.delta else 0.30  # Default if missing
@@ -3542,7 +3544,7 @@ class OptionsEngine:
         if not short_candidates:
             self.log(
                 f"SPREAD: No valid short leg | LongStrike={long_leg.strike} | "
-                f"WidthRange=${config.SPREAD_WIDTH_MIN}-${config.SPREAD_WIDTH_MAX}"
+                f"WidthRange=${effective_width_min:.0f}-${config.SPREAD_WIDTH_MAX:.0f}"
             )
             if set_cooldown:
                 self._set_spread_failure_cooldown(current_time, direction=direction)
@@ -3703,6 +3705,8 @@ class OptionsEngine:
         if not contracts:
             self.log("VASS: No contracts provided for credit spread selection")
             return None
+
+        effective_width_min = self._get_effective_spread_width_min()
 
         # Filter by DTE
         dte_filtered = [c for c in contracts if dte_min <= c.days_to_expiry <= dte_max]
@@ -3866,7 +3870,7 @@ class OptionsEngine:
                     for p in puts
                     if p.strike < short_leg.strike
                     and p.expiry == short_leg.expiry
-                    and config.SPREAD_WIDTH_MIN
+                    and effective_width_min
                     <= (short_leg.strike - p.strike)
                     <= config.SPREAD_WIDTH_MAX
                     and p.ask > 0
@@ -4032,7 +4036,7 @@ class OptionsEngine:
                     for c in calls
                     if c.strike > short_leg.strike
                     and c.expiry == short_leg.expiry
-                    and config.SPREAD_WIDTH_MIN
+                    and effective_width_min
                     <= (c.strike - short_leg.strike)
                     <= config.SPREAD_WIDTH_MAX
                     and c.ask > 0
@@ -4204,6 +4208,23 @@ class OptionsEngine:
         if smoothed_vix > medium_threshold:
             return float(getattr(config, "CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_MEDIUM_IV", 0.32))
         return float(getattr(config, "CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT", 0.35))
+
+    def _get_effective_spread_width_min(self, vix_current: Optional[float] = None) -> float:
+        """Return VIX-adaptive minimum spread width for debit/credit leg construction."""
+        base_min = float(getattr(config, "SPREAD_WIDTH_MIN", 4.0))
+        low_min = float(getattr(config, "SPREAD_WIDTH_MIN_LOW_VIX", base_min))
+        low_threshold = float(getattr(config, "SPREAD_WIDTH_LOW_VIX_THRESHOLD", 18.0))
+
+        smoothed_vix = self._iv_sensor.get_smoothed_vix()
+        if vix_current is not None:
+            try:
+                smoothed_vix = max(smoothed_vix, float(vix_current))
+            except (TypeError, ValueError):
+                pass
+
+        if smoothed_vix < low_threshold:
+            return max(1.0, low_min)
+        return max(1.0, base_min)
 
     def estimate_spread_margin_per_contract(
         self,
@@ -5087,9 +5108,16 @@ class OptionsEngine:
                 )
                 return fail_quality("SHORT_DELTA_ABOVE_MAX")
 
-        # V2.3.8: Calculate spread width (for P/L calculation only, not filtering)
-        # Removed width validation - delta drives selection now (PART 14 Pitfall 4)
+        # V2.3.8: Calculate spread width and enforce VIX-adaptive minimum width.
         width = abs(short_leg_contract.strike - long_leg_contract.strike)
+        effective_width_min = self._get_effective_spread_width_min(vix_current=vix_current)
+        if width < effective_width_min or width > config.SPREAD_WIDTH_MAX:
+            self.log(
+                f"SPREAD: Entry blocked - width ${width:.0f} outside "
+                f"${effective_width_min:.0f}-${config.SPREAD_WIDTH_MAX:.0f}",
+                trades_only=True,
+            )
+            return fail_quality("WIDTH_OUT_OF_RANGE")
 
         # Calculate entry score
         entry_score = self.calculate_entry_score(

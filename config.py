@@ -855,11 +855,11 @@ VASS_IV_SMOOTHING_MINUTES = 30  # SMA window to prevent strategy flickering
 # DTE Ranges by IV Environment (Swing Mode)
 VASS_LOW_IV_DTE_MIN = 30  # Low IV: Monthly expiration
 VASS_LOW_IV_DTE_MAX = 45
-VASS_MEDIUM_IV_DTE_MIN = 7  # Medium IV: Weekly expiration
+VASS_MEDIUM_IV_DTE_MIN = 14  # Medium IV debit spreads: avoid 7-13 DTE gamma zone
 VASS_MEDIUM_IV_DTE_MAX = 30  # V6.12: Widen for better contract availability
 # V6.6: Widened HIGH IV DTE range - 36 spread failures in 2022H1 due to narrow 7-14 window
 VASS_HIGH_IV_DTE_MIN = 7  # V10.10: avoid immediate churn against SPREAD_DTE_EXIT=5
-VASS_HIGH_IV_DTE_MAX = 40  # V6.13.1 OPT: Expand candidate pool (was 28)
+VASS_HIGH_IV_DTE_MAX = 21  # High-IV credit spreads: keep in theta-efficient window
 
 # V5.3: VASS Conviction Engine (VIX Direction Tracking)
 # VASS tracks weekly (5d) and monthly (20d) VIX to determine conviction
@@ -1291,7 +1291,7 @@ MICRO_DTE_DIAG_LOG_BACKTEST_ENABLED = True  # Keep throttled ITM DTE diagnostics
 #   Bear (0-29): PUT spreads active
 
 # Regime thresholds for spread direction (V3.0: thesis-aligned)
-SPREAD_REGIME_BULLISH = 70  # V3.0: CALL spreads ONLY in Bull (regime > 70)
+SPREAD_REGIME_BULLISH = 60  # Allow bullish debit spreads in neutral-high bullish lean
 SPREAD_REGIME_BEARISH = 50  # V3.0: PUT spreads in Cautious + Bear (regime < 50)
 SPREAD_REGIME_CRISIS = 0  # V3.0: DISABLED — PUT spreads work in ALL bear regimes
 
@@ -1333,7 +1333,9 @@ REGIME_OVERLAY_EARLY_VIX_HIGH = 25.0
 SPREAD_SHORT_LEG_BY_WIDTH = True  # V2.4.3: Use strike width for short leg (not delta)
 # V6.10: Spread width settings for QQQ - WIDENED FOR ASSIGNMENT PROTECTION
 # Wider spreads survive larger overnight gaps and reduce assignment risk
-SPREAD_WIDTH_MIN = 5.0  # V10.10 diagnostic: improve VASS constructability
+SPREAD_WIDTH_MIN = 4.0  # Base min width for debit/credit spread construction
+SPREAD_WIDTH_MIN_LOW_VIX = 3.0  # Allow narrower widths in low-VIX to improve debit/width
+SPREAD_WIDTH_LOW_VIX_THRESHOLD = 18.0  # VIX threshold for low-width allowance
 SPREAD_WIDTH_MAX = 10.0  # V2.4.3: Maximum $10 spread (caps risk)
 SPREAD_WIDTH_TARGET = 4.0  # V6.13 OPT: Improve fill/constructability in medium IV
 SPREAD_WIDTH_EFFECTIVE_MAX = (
@@ -1363,13 +1365,13 @@ SPREAD_EOD_HOLD_RISK_GATE_PCT = -0.25  # EOD hold risk gate threshold (e.g., -25
 # Exit targets
 # V6.10 P5: Symmetric R:R (40%/40%) - need 1:1 win ratio to break even
 # Was asymmetric (50%/35%) requiring 1.43:1 win ratio
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT = 0.38  # Legacy fallback max when adaptive D/W bands are unavailable
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT = 0.44  # Legacy fallback aligned to MED-VIX band
 SPREAD_MIN_DEBIT_TO_WIDTH_PCT = (
     0.28  # V10.7: Reject ultra-cheap/low-quality debit structures (balanced D/W band)
 )
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT_LOW_VIX = 0.38
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT_MED_VIX = 0.36
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT_HIGH_VIX = 0.34
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_LOW_VIX = 0.48
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_MED_VIX = 0.44
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_HIGH_VIX = 0.40
 SPREAD_DW_LOW_VIX_MAX = 18.0
 SPREAD_DW_HIGH_VIX_MIN = 25.0
 SPREAD_PROFIT_TARGET_PCT = (
