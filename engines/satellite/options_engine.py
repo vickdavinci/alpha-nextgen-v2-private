@@ -7448,6 +7448,27 @@ class OptionsEngine:
                 ),
             )
         if strategy == IntradayStrategy.MICRO_OTM_MOMENTUM.value:
+            if bool(getattr(config, "MICRO_OTM_TIERED_RISK_ENABLED", False)):
+                try:
+                    vix_val = float(self._iv_sensor.get_smoothed_vix())
+                except Exception:
+                    vix_val = float(getattr(config, "MICRO_OTM_VIX_MED_MAX", 22.0))
+                low_max = float(getattr(config, "MICRO_OTM_VIX_LOW_MAX", 16.0))
+                med_max = float(getattr(config, "MICRO_OTM_VIX_MED_MAX", 22.0))
+                if vix_val < low_max:
+                    return (
+                        float(getattr(config, "MICRO_OTM_TARGET_LOW_VIX", 0.45)),
+                        float(getattr(config, "MICRO_OTM_STOP_LOW_VIX", 0.30)),
+                    )
+                if vix_val < med_max:
+                    return (
+                        float(getattr(config, "MICRO_OTM_TARGET_MED_VIX", 0.60)),
+                        float(getattr(config, "MICRO_OTM_STOP_MED_VIX", 0.35)),
+                    )
+                return (
+                    float(getattr(config, "MICRO_OTM_TARGET_HIGH_VIX", 0.80)),
+                    float(getattr(config, "MICRO_OTM_STOP_HIGH_VIX", 0.40)),
+                )
             return (
                 float(
                     getattr(
@@ -7536,6 +7557,27 @@ class OptionsEngine:
                 ),
             )
         if strategy == IntradayStrategy.MICRO_OTM_MOMENTUM.value:
+            if bool(getattr(config, "MICRO_OTM_TIERED_RISK_ENABLED", False)):
+                try:
+                    vix_val = float(self._iv_sensor.get_smoothed_vix())
+                except Exception:
+                    vix_val = float(getattr(config, "MICRO_OTM_VIX_MED_MAX", 22.0))
+                low_max = float(getattr(config, "MICRO_OTM_VIX_LOW_MAX", 16.0))
+                med_max = float(getattr(config, "MICRO_OTM_VIX_MED_MAX", 22.0))
+                if vix_val < low_max:
+                    return (
+                        float(getattr(config, "MICRO_OTM_TRAIL_TRIGGER_LOW_VIX", 0.20)),
+                        float(getattr(config, "MICRO_OTM_TRAIL_PCT_LOW_VIX", 0.35)),
+                    )
+                if vix_val < med_max:
+                    return (
+                        float(getattr(config, "MICRO_OTM_TRAIL_TRIGGER_MED_VIX", 0.28)),
+                        float(getattr(config, "MICRO_OTM_TRAIL_PCT_MED_VIX", 0.45)),
+                    )
+                return (
+                    float(getattr(config, "MICRO_OTM_TRAIL_TRIGGER_HIGH_VIX", 0.25)),
+                    float(getattr(config, "MICRO_OTM_TRAIL_PCT_HIGH_VIX", 0.50)),
+                )
             return (
                 float(
                     getattr(
@@ -8720,6 +8762,20 @@ class OptionsEngine:
                 if state.micro_regime in (MicroRegime.ELEVATED, MicroRegime.WORSENING):
                     strategy_mult = min(strategy_mult, 0.5)
 
+                if entry_strategy == IntradayStrategy.MICRO_OTM_MOMENTUM and bool(
+                    getattr(config, "MICRO_OTM_TIERED_RISK_ENABLED", False)
+                ):
+                    low_max = float(getattr(config, "MICRO_OTM_VIX_LOW_MAX", 16.0))
+                    med_max = float(getattr(config, "MICRO_OTM_VIX_MED_MAX", 22.0))
+                    vix_val = float(vix_current) if vix_current is not None else med_max
+                    if vix_val < low_max:
+                        otm_size = float(getattr(config, "MICRO_OTM_SIZE_MULT_LOW_VIX", 1.0))
+                    elif vix_val < med_max:
+                        otm_size = float(getattr(config, "MICRO_OTM_SIZE_MULT_MED_VIX", 1.0))
+                    else:
+                        otm_size = float(getattr(config, "MICRO_OTM_SIZE_MULT_HIGH_VIX", 0.60))
+                    strategy_mult *= max(0.0, otm_size)
+
             # V6.0: Apply combined multipliers (cold_start × governor × strategy)
             combined_mult = size_multiplier * governor_scale * strategy_mult
             min_combined = getattr(config, "OPTIONS_MIN_COMBINED_SIZE_PCT", 0.10)
@@ -8888,7 +8944,18 @@ class OptionsEngine:
             and entry_strategy == IntradayStrategy.MICRO_OTM_MOMENTUM
             and self._pending_stop_pct is not None
         ):
-            otm_fixed_stop = float(getattr(config, "MICRO_OTM_MOMENTUM_STOP", 0.35))
+            if bool(getattr(config, "MICRO_OTM_TIERED_RISK_ENABLED", False)):
+                low_max = float(getattr(config, "MICRO_OTM_VIX_LOW_MAX", 16.0))
+                med_max = float(getattr(config, "MICRO_OTM_VIX_MED_MAX", 22.0))
+                vix_val = float(vix_current) if vix_current is not None else med_max
+                if vix_val < low_max:
+                    otm_fixed_stop = float(getattr(config, "MICRO_OTM_STOP_LOW_VIX", 0.30))
+                elif vix_val < med_max:
+                    otm_fixed_stop = float(getattr(config, "MICRO_OTM_STOP_MED_VIX", 0.35))
+                else:
+                    otm_fixed_stop = float(getattr(config, "MICRO_OTM_STOP_HIGH_VIX", 0.40))
+            else:
+                otm_fixed_stop = float(getattr(config, "MICRO_OTM_MOMENTUM_STOP", 0.35))
             if abs(float(self._pending_stop_pct) - otm_fixed_stop) > 1e-6:
                 self.log(
                     f"STOP_CALC: MICRO_OTM fixed stop override {self._pending_stop_pct:.0%} -> {otm_fixed_stop:.0%}",
