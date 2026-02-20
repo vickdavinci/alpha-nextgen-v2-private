@@ -1277,7 +1277,7 @@ MICRO_ITM_DTE_MIN_LOW_VIX = 3  # LOW VIX: reduce theta decay on ITM singles
 MICRO_ITM_DTE_MIN_MED_VIX = 3  # MED VIX: reduce theta decay on ITM singles
 MICRO_ITM_DTE_MIN_HIGH_VIX = 2  # HIGH VIX: vol provides buffer
 MICRO_ITM_DTE_MAX = 5  # Unchanged intraday envelope
-MICRO_DTE_DIAG_LOG_INTERVAL_MIN = 30  # Throttle ITM DTE routing diagnostics
+MICRO_DTE_DIAG_LOG_INTERVAL_MIN = 120  # Throttle ITM DTE routing diagnostics
 MICRO_DTE_DIAG_LOG_BACKTEST_ENABLED = True  # Keep throttled ITM DTE diagnostics in backtests
 
 # -----------------------------------------------------------------------------
@@ -1581,8 +1581,8 @@ GAMMA_PIN_BUFFER_PCT = 0.005  # 0.5% buffer zone around short strike
 GAMMA_PIN_EARLY_EXIT_DTE = 2  # Activate within 2 DTE
 
 # Pitfall #4: VASS Rejection Logging - Throttled logging for silent rejections
-VASS_LOG_REJECTION_INTERVAL_MINUTES = 15  # Log rejections every 15 min (not every candle)
-MICRO_NO_TRADE_LOG_INTERVAL_MINUTES = 5  # Per-block throttle for MICRO_NO_TRADE logs
+VASS_LOG_REJECTION_INTERVAL_MINUTES = 60  # Log rejections every 15 min (not every candle)
+MICRO_NO_TRADE_LOG_INTERVAL_MINUTES = 30  # Per-block throttle for MICRO_NO_TRADE logs
 
 # -----------------------------------------------------------------------------
 # V2.11: PRE-BACKTEST SAFETY FIXES (Pitfalls #6-8)
@@ -2205,7 +2205,7 @@ LOG_THROTTLE_MINUTES = 15  # VIX spike log throttle interval
 LOG_VIX_SPIKE_MIN_MOVE = 2.0  # Minimum VIX move to bypass throttle
 MARGIN_TRACK_LOG_BACKTEST_ENABLED = False  # Suppress minute-level margin spam in backtests
 MARGIN_TRACK_LOG_LIVE_ENABLED = True  # Keep margin visibility in live trading
-MICRO_UPDATE_LOG_BACKTEST_ENABLED = True  # Keep micro logs in backtest, but throttle heavily
+MICRO_UPDATE_LOG_BACKTEST_ENABLED = False  # Keep micro logs in backtest, but throttle heavily
 MICRO_UPDATE_LOG_ON_CHANGE_ONLY = True  # Backtest: log only on state change (+heartbeat)
 MICRO_UPDATE_LOG_MINUTES = 60  # Heartbeat interval when micro state remains unchanged
 SPREAD_CONSTRUCTION_FAIL_LOG_INTERVAL_MINUTES = 60  # Throttle repeated spread-build failure logs
@@ -2214,9 +2214,9 @@ LOG_SPREAD_RECONCILE_BACKTEST_ENABLED = (
     False  # Suppress repetitive reconcile-clear logs in backtests
 )
 LOG_ORDER_LIFECYCLE_BACKTEST_ENABLED = (
-    True  # Keep compact invalid/cancel attribution logs in backtests
+    False  # Full-year backtests: rely on daily summaries to stay within log budget
 )
-LOG_ORDER_LIFECYCLE_MAX_PER_DAY = 200  # Guardrail for lifecycle log budget
+LOG_ORDER_LIFECYCLE_MAX_PER_DAY = 50  # Guardrail for lifecycle log budget
 SPREAD_GHOST_INTRADAY_CLEAR_CONSECUTIVE = (
     2  # Intraday guarded clear requires N consecutive flat checks
 )

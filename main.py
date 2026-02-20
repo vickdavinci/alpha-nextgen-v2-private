@@ -178,6 +178,9 @@ class AlphaNextGen(QCAlgorithm):
         self._last_vass_rejection_log_by_key: Dict[
             str, datetime
         ] = {}  # Keyed throttle for VASS rejections
+        self._last_intraday_diag_log_by_key: Dict[
+            str, datetime
+        ] = {}  # Keyed throttle for high-frequency intraday candidate/drop diagnostics
         self._last_swing_scan_time = None  # V2.19: Throttle swing spread scans (1/hour)
         self._intraday_force_exit_fallback_date = None  # V6.12: Fallback guard (once/day)
         self._mr_force_close_fallback_date = None  # V6.12: MR force close fallback guard
@@ -1375,6 +1378,18 @@ class AlphaNextGen(QCAlgorithm):
         )
         return qqq_price, adx_value, ma200_value, ma50_value
 
+    def _should_log_intraday_diag(self, reason_key: str) -> bool:
+        """Throttle high-frequency intraday candidate/drop telemetry in backtests."""
+        interval_min = int(getattr(config, "REJECTION_EVENT_LOG_THROTTLE_MINUTES", 5))
+        now = self.Time
+        last = self._last_intraday_diag_log_by_key.get(reason_key)
+        if last is not None:
+            elapsed = (now - last).total_seconds() / 60.0
+            if elapsed < interval_min:
+                return False
+        self._last_intraday_diag_log_by_key[reason_key] = now
+        return True
+
     def _log_intraday_signal_dropped(
         self,
         signal_id: str,
@@ -1390,15 +1405,17 @@ class AlphaNextGen(QCAlgorithm):
         validation_detail_fragment = (
             f"ValidationDetail={validation_detail} | " if validation_detail else ""
         )
-        self.Log(
-            f"INTRADAY_SIGNAL_DROPPED: SignalId={signal_id} | Candidate rejected before order | "
-            f"Code={code} | "
-            f"Reason={reason} | RetryHint={retry_hint} | "
-            f"{validation_detail_fragment}"
-            f"Dir={direction.value if direction else 'NONE'} | "
-            f"Strategy={strategy.value if strategy else 'NONE'} | "
-            f"Contract={contract_symbol}"
-        )
+        throttle_key = f"DROP:{code}:{direction.value if direction else 'NONE'}:{strategy.value if strategy else 'NONE'}"
+        if self._should_log_intraday_diag(throttle_key):
+            self.Log(
+                f"INTRADAY_SIGNAL_DROPPED: SignalId={signal_id} | Candidate rejected before order | "
+                f"Code={code} | "
+                f"Reason={reason} | RetryHint={retry_hint} | "
+                f"{validation_detail_fragment}"
+                f"Dir={direction.value if direction else 'NONE'} | "
+                f"Strategy={strategy.value if strategy else 'NONE'} | "
+                f"Contract={contract_symbol}"
+            )
 
     def _resolve_vass_direction_context(
         self,

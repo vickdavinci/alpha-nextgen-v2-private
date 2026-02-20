@@ -31,6 +31,13 @@ class MainOrdersMixin:
             fill_qty = orderEvent.FillQuantity
 
             order_tag = self._get_order_tag(orderEvent)
+            if not order_tag and fill_qty < 0:
+                # Backfill blank broker exit tags from recent symbol tag cache so exit attribution remains analyzable.
+                order_tag = self._get_recent_symbol_fill_tag(symbol)
+                if order_tag:
+                    self.Log(
+                        f"EXIT_TAG_BACKFILL: {symbol[-20:]} | OrderId={orderEvent.OrderId} | Tag={self._compact_tag_for_log(order_tag)}"
+                    )
             order_type = "UNKNOWN"
             try:
                 order = self.Transactions.GetOrderById(orderEvent.OrderId)

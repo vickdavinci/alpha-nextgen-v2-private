@@ -2255,9 +2255,14 @@ class PortfolioRouter:
                         tag = "MICRO:UNKNOWN"
                 elif any(s == "OPT" for s in agg.sources):
                     vass_strategy = None
+                    spread_type = None
                     if agg.metadata:
                         vass_strategy = agg.metadata.get("vass_strategy")
-                    tag = f"VASS:{vass_strategy}" if vass_strategy else "VASS:UNKNOWN"
+                        spread_type = agg.metadata.get("spread_type")
+                    vass_tag_value = str(
+                        vass_strategy or spread_type or source_tag or "VASS_UNCLASSIFIED"
+                    )
+                    tag = f"VASS:{vass_tag_value}"
 
             # Fallback for non-option paths or missing metadata.
             if not tag:

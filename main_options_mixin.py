@@ -4,7 +4,8 @@ from AlgorithmImports import *
 
 import config
 from engines.satellite.options_engine import OptionContract, SpreadStrategy
-from models.enums import IntradayStrategy, OptionDirection
+from models.enums import IntradayStrategy, OptionDirection, Urgency
+from models.target_weight import TargetWeight
 
 
 class MainOptionsMixin:
@@ -661,10 +662,13 @@ class MainOptionsMixin:
                             self._diag_intraday_candidates_by_engine,
                             candidate_strategy,
                         )
-                        self.Log(
-                            f"INTRADAY_SIGNAL_CANDIDATE: SignalId={intraday_signal_id} | {signal_reason} | "
-                            f"Direction={intraday_direction.value if intraday_direction else 'NONE'}"
-                        )
+                        if self._should_log_intraday_diag(
+                            f"CAND:{intraday_direction.value if intraday_direction else 'NONE'}"
+                        ):
+                            self.Log(
+                                f"INTRADAY_SIGNAL_CANDIDATE: SignalId={intraday_signal_id} | {signal_reason} | "
+                                f"Direction={intraday_direction.value if intraday_direction else 'NONE'}"
+                            )
 
                 # If engine recommends NO_TRADE or conflict detected, skip contract selection
                 if intraday_direction is None:
@@ -921,10 +925,11 @@ class MainOptionsMixin:
                 self._diag_intraday_candidates_by_engine,
                 IntradayStrategy.ITM_MOMENTUM,
             )
-            self.Log(
-                f"INTRADAY_SIGNAL_CANDIDATE: SignalId={itm_signal_id} | "
-                f"ITM_ENGINE_EXPLICIT: {itm_reason} | Direction={itm_dir.value}"
-            )
+            if self._should_log_intraday_diag(f"CAND:{itm_dir.value}"):
+                self.Log(
+                    f"INTRADAY_SIGNAL_CANDIDATE: SignalId={itm_signal_id} | "
+                    f"ITM_ENGINE_EXPLICIT: {itm_reason} | Direction={itm_dir.value}"
+                )
 
             itm_contract = self._select_intraday_option_contract(
                 chain,
