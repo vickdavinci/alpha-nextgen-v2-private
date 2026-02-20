@@ -1727,6 +1727,65 @@ class AlphaNextGen(QCAlgorithm):
         )
         return True
 
+    def _should_itm_eod_harvest(
+        self,
+        *,
+        symbol: str,
+        intraday_pos: Any,
+        entry_price: float,
+        current_price: float,
+    ) -> bool:
+        """Conditional ITM EOD harvest: close >=15% winners when conditions weaken."""
+        if not bool(getattr(config, "ITM_EOD_HARVEST_15_ENABLED", True)):
+            return False
+        try:
+            strategy = str(getattr(intraday_pos, "entry_strategy", "") or "")
+            if strategy.upper() != "ITM_MOMENTUM":
+                return False
+            if entry_price <= 0 or current_price <= 0:
+                return False
+            pnl_pct = (current_price - entry_price) / entry_price
+            trigger = float(getattr(config, "ITM_EOD_HARVEST_TRIGGER_PCT", 0.15))
+            if pnl_pct < trigger:
+                return False
+            require_weakening = bool(getattr(config, "ITM_EOD_HARVEST_REQUIRE_WEAKENING", True))
+            if not require_weakening:
+                return True
+
+            regime_now = float(getattr(self, "_last_regime_score", 50.0) or 50.0)
+            regime_max = float(getattr(config, "ITM_EOD_HARVEST_REGIME_MAX", 60.0))
+            weakening = regime_now <= regime_max
+
+            symbol_norm = self._normalize_symbol_str(symbol)
+            is_call = "C" in symbol_norm
+            is_put = "P" in symbol_norm
+            try:
+                vix_5d = (
+                    self.options_engine._iv_sensor.get_vix_5d_change()
+                    if hasattr(self, "options_engine") and self.options_engine is not None
+                    else None
+                )
+            except Exception:
+                vix_5d = None
+            if vix_5d is not None:
+                vix_5d = float(vix_5d)
+                call_adv = float(getattr(config, "ITM_EOD_HARVEST_VIX5D_CALL_ADVERSE", 0.05))
+                put_adv = float(getattr(config, "ITM_EOD_HARVEST_VIX5D_PUT_ADVERSE", -0.05))
+                if is_call and vix_5d >= call_adv:
+                    weakening = True
+                if is_put and vix_5d <= put_adv:
+                    weakening = True
+
+            if weakening:
+                self.Log(
+                    f"ITM_EOD_HARVEST_TRIGGER: {symbol_norm} | PnL={pnl_pct:+.1%} >= {trigger:.0%} | "
+                    f"Regime={regime_now:.1f} | Weakening=True"
+                )
+                return True
+            return False
+        except Exception:
+            return False
+
     def _intraday_force_exit_fallback(self) -> None:
         """
         V6.12: Safety net - force-close intraday position after configured close +5min if scheduled close missed.
@@ -1769,7 +1828,13 @@ class AlphaNextGen(QCAlgorithm):
             entry_price=entry_price,
             current_price=mark_price,
         )
-        if hold_allowed and not eod_loss_breach:
+        itm_eod_harvest = hold_allowed and self._should_itm_eod_harvest(
+            symbol=symbol,
+            intraday_pos=intraday_pos,
+            entry_price=entry_price,
+            current_price=mark_price,
+        )
+        if hold_allowed and not eod_loss_breach and not itm_eod_harvest:
             self.Log(f"INTRADAY_FORCE_EXIT_FALLBACK: HOLD_SKIP {symbol}")
             self._intraday_force_exit_fallback_date = self.Time.date()
             return
@@ -1796,7 +1861,7 @@ class AlphaNextGen(QCAlgorithm):
             current_hour=self.Time.hour,
             current_minute=self.Time.minute,
             current_price=price,
-            ignore_hold_policy=eod_loss_breach,
+            ignore_hold_policy=(eod_loss_breach or itm_eod_harvest),
         )
         if signal:
             live_qty = abs(self._get_option_holding_quantity(signal.symbol))
@@ -2754,13 +2819,20 @@ class AlphaNextGen(QCAlgorithm):
             symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
             current_price = self._get_option_mark_price(symbol, fallback=intraday_pos.entry_price)
             hold_allowed = self._should_hold_intraday_symbol_overnight(symbol)
+            entry_price = float(getattr(intraday_pos, "entry_price", 0.0) or 0.0)
             eod_loss_breach = hold_allowed and self._is_micro_eod_loss_breach(
                 symbol=symbol,
-                entry_price=float(getattr(intraday_pos, "entry_price", 0.0) or 0.0),
+                entry_price=entry_price,
+                current_price=current_price,
+            )
+            itm_eod_harvest = hold_allowed and self._should_itm_eod_harvest(
+                symbol=symbol,
+                intraday_pos=intraday_pos,
+                entry_price=entry_price,
                 current_price=current_price,
             )
 
-            if hold_allowed and not eod_loss_breach:
+            if hold_allowed and not eod_loss_breach and not itm_eod_harvest:
                 self.Log(f"INTRADAY_FORCE_EXIT: HOLD_SKIP {symbol} (ITM overnight policy)")
             else:
                 # V2.25 Fix #4: Double-sell guard — verify position is still held
@@ -2792,7 +2864,7 @@ class AlphaNextGen(QCAlgorithm):
                     current_hour=self.Time.hour,
                     current_minute=self.Time.minute,
                     current_price=current_price,
-                    ignore_hold_policy=eod_loss_breach,
+                    ignore_hold_policy=(eod_loss_breach or itm_eod_harvest),
                 )
 
                 if signal:

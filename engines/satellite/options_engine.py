@@ -262,6 +262,8 @@ class SpreadPosition:
     regime_at_entry: float  # Regime score at entry
     is_closing: bool = False  # V2.12 Fix #2: Prevent duplicate exit signals
     highest_pnl_pct: float = 0.0  # V9.4: Track high-water mark for trailing stop
+    highest_pnl_max_profit_pct: float = 0.0  # V10.15: MFE as % of max profit
+    mfe_lock_tier: int = 0  # V10.15: 0=none, 1=breakeven+fees, 2=harvest floor
 
     @property
     def profit_target(self) -> float:
@@ -292,6 +294,8 @@ class SpreadPosition:
             "regime_at_entry": self.regime_at_entry,
             "is_closing": self.is_closing,
             "highest_pnl_pct": self.highest_pnl_pct,
+            "highest_pnl_max_profit_pct": self.highest_pnl_max_profit_pct,
+            "mfe_lock_tier": self.mfe_lock_tier,
         }
 
     @classmethod
@@ -310,6 +314,8 @@ class SpreadPosition:
             regime_at_entry=data["regime_at_entry"],
             is_closing=data.get("is_closing", False),  # V2.12: Default False for backwards compat
             highest_pnl_pct=data.get("highest_pnl_pct", 0.0),  # V9.4: Trailing stop HWM
+            highest_pnl_max_profit_pct=data.get("highest_pnl_max_profit_pct", 0.0),
+            mfe_lock_tier=int(data.get("mfe_lock_tier", 0) or 0),
         )
 
 
@@ -6868,6 +6874,36 @@ class OptionsEngine:
             pnl = entry_credit - current_spread_value
             pnl_pct = pnl / spread.max_profit if spread.max_profit > 0 else 0
 
+            # V10.15: Track MFE relative to max profit for harvesting locks.
+            mfe_ratio = pnl / spread.max_profit if spread.max_profit > 0 else 0.0
+            if mfe_ratio > spread.highest_pnl_max_profit_pct:
+                spread.highest_pnl_max_profit_pct = mfe_ratio
+
+            if bool(getattr(config, "VASS_MFE_LOCK_ENABLED", True)) and spread.max_profit > 0:
+                t1 = float(getattr(config, "VASS_MFE_T1_TRIGGER", 0.25))
+                t2 = float(getattr(config, "VASS_MFE_T2_TRIGGER", 0.45))
+                floor_t2_pct = float(getattr(config, "VASS_MFE_T2_FLOOR_PCT", 0.15))
+                commission_cost = spread.num_spreads * config.SPREAD_COMMISSION_PER_CONTRACT
+                commission_per_share = (
+                    commission_cost / (spread.num_spreads * 100) if spread.num_spreads > 0 else 0.0
+                )
+                if spread.highest_pnl_max_profit_pct >= t2:
+                    spread.mfe_lock_tier = max(spread.mfe_lock_tier, 2)
+                elif spread.highest_pnl_max_profit_pct >= t1:
+                    spread.mfe_lock_tier = max(spread.mfe_lock_tier, 1)
+
+                floor_pnl = None
+                if spread.mfe_lock_tier >= 2:
+                    floor_pnl = spread.max_profit * floor_t2_pct + commission_per_share
+                elif spread.mfe_lock_tier >= 1:
+                    floor_pnl = commission_per_share
+
+                if floor_pnl is not None and pnl <= floor_pnl:
+                    exit_reason = (
+                        f"MFE_LOCK_T{spread.mfe_lock_tier} {pnl:.1%} (MFE={spread.highest_pnl_max_profit_pct:.1%}, "
+                        f"Floor=${floor_pnl:.2f})"
+                    )
+
             # Exit 1: Credit Profit Target (50% of max profit)
             profit_target = spread.max_profit * config.CREDIT_SPREAD_PROFIT_TARGET
             if pnl >= profit_target:
@@ -6947,6 +6983,36 @@ class OptionsEngine:
                 current_spread_value = 0.0
             pnl = current_spread_value - entry_debit
             pnl_pct = pnl / entry_debit if entry_debit > 0 else 0
+
+            # V10.15: Track MFE relative to max profit for harvesting locks.
+            mfe_ratio = pnl / spread.max_profit if spread.max_profit > 0 else 0.0
+            if mfe_ratio > spread.highest_pnl_max_profit_pct:
+                spread.highest_pnl_max_profit_pct = mfe_ratio
+
+            if bool(getattr(config, "VASS_MFE_LOCK_ENABLED", True)) and spread.max_profit > 0:
+                t1 = float(getattr(config, "VASS_MFE_T1_TRIGGER", 0.25))
+                t2 = float(getattr(config, "VASS_MFE_T2_TRIGGER", 0.45))
+                floor_t2_pct = float(getattr(config, "VASS_MFE_T2_FLOOR_PCT", 0.15))
+                commission_cost = spread.num_spreads * config.SPREAD_COMMISSION_PER_CONTRACT
+                commission_per_share = (
+                    commission_cost / (spread.num_spreads * 100) if spread.num_spreads > 0 else 0.0
+                )
+                if spread.highest_pnl_max_profit_pct >= t2:
+                    spread.mfe_lock_tier = max(spread.mfe_lock_tier, 2)
+                elif spread.highest_pnl_max_profit_pct >= t1:
+                    spread.mfe_lock_tier = max(spread.mfe_lock_tier, 1)
+
+                floor_pnl = None
+                if spread.mfe_lock_tier >= 2:
+                    floor_pnl = spread.max_profit * floor_t2_pct + commission_per_share
+                elif spread.mfe_lock_tier >= 1:
+                    floor_pnl = commission_per_share
+
+                if floor_pnl is not None and pnl <= floor_pnl:
+                    exit_reason = (
+                        f"MFE_LOCK_T{spread.mfe_lock_tier} {pnl_pct:.1%} "
+                        f"(MFE={spread.highest_pnl_max_profit_pct:.1%}, Floor=${floor_pnl:.2f})"
+                    )
 
             # V10.7: Day-4 EOD decision for debit spreads.
             # Rule: at/after day-4 EOD, close spreads when P&L is above the threshold,
@@ -7695,15 +7761,16 @@ class OptionsEngine:
 
         # ITM_ENGINE anti-roundtrip floor: once meaningful MFE is reached, ratchet stop floor.
         if self._is_itm_momentum_strategy_name(getattr(pos, "entry_strategy", "")):
-            gain_pct_now = (current_price - entry_price) / entry_price if entry_price > 0 else 0.0
+            peak_price = max(float(getattr(pos, "highest_price", 0.0) or 0.0), float(current_price))
+            mfe_gain_pct = (peak_price - entry_price) / entry_price if entry_price > 0 else 0.0
             be_trigger = float(getattr(config, "ITM_PROFIT_LOCK_BREAKEVEN_TRIGGER", 0.20))
             be_floor_pct = float(getattr(config, "ITM_PROFIT_LOCK_BREAKEVEN_FLOOR_PCT", 0.01))
             strong_trigger = float(getattr(config, "ITM_PROFIT_LOCK_STRONG_TRIGGER", 0.35))
             strong_floor_pct = float(getattr(config, "ITM_PROFIT_LOCK_STRONG_FLOOR_PCT", 0.10))
             floor_pct = 0.0
-            if gain_pct_now >= strong_trigger:
+            if mfe_gain_pct >= strong_trigger:
                 floor_pct = strong_floor_pct
-            elif gain_pct_now >= be_trigger:
+            elif mfe_gain_pct >= be_trigger:
                 floor_pct = be_floor_pct
             if floor_pct > 0:
                 floor_price = entry_price * (1.0 + floor_pct)

@@ -1391,6 +1391,12 @@ SPREAD_STOP_REGIME_MULTIPLIERS = {
 SPREAD_TRAIL_ACTIVATE_PCT = 0.22  # V10.11: earlier trail activation to reduce round-trip giveback
 SPREAD_TRAIL_OFFSET_PCT = 0.15  # V10.11: tighter trailing offset once activated
 
+# V10.15: VASS MFE harvesting locks (target-relative)
+VASS_MFE_LOCK_ENABLED = True
+VASS_MFE_T1_TRIGGER = 0.25  # 25% of max profit reached
+VASS_MFE_T2_TRIGGER = 0.45  # 45% of max profit reached
+VASS_MFE_T2_FLOOR_PCT = 0.15  # Lock +15% floor once T2 reached
+
 # V3.0: Regime-Adaptive Profit Targets
 # V9.4: With 40% base, multipliers give: Bull=36%, Neutral=44%, Cautious/Bear=48%
 SPREAD_PROFIT_REGIME_MULTIPLIERS = {
@@ -2106,6 +2112,14 @@ ITM_PROFIT_LOCK_BREAKEVEN_TRIGGER = 0.20
 ITM_PROFIT_LOCK_BREAKEVEN_FLOOR_PCT = 0.01
 ITM_PROFIT_LOCK_STRONG_TRIGGER = 0.35
 ITM_PROFIT_LOCK_STRONG_FLOOR_PCT = 0.10
+
+# V10.15: Conditional ITM EOD harvest for late-day winner protection
+ITM_EOD_HARVEST_15_ENABLED = True
+ITM_EOD_HARVEST_TRIGGER_PCT = 0.15
+ITM_EOD_HARVEST_REQUIRE_WEAKENING = True
+ITM_EOD_HARVEST_REGIME_MAX = 60.0
+ITM_EOD_HARVEST_VIX5D_CALL_ADVERSE = 0.05
+ITM_EOD_HARVEST_VIX5D_PUT_ADVERSE = -0.05
 
 # Canonical ITM alias wiring (prevents drift between ITM_ENGINE and legacy fallback keys).
 INTRADAY_ITM_DELTA_MIN = ITM_DELTA_MIN
