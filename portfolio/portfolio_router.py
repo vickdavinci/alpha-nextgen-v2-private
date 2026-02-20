@@ -1364,7 +1364,10 @@ class PortfolioRouter:
                     try:
                         ticket = self.algorithm.MarketOrder(symbol, quantity, tag=tag)
                     except TypeError:
-                        ticket = self.algorithm.MarketOrder(symbol, quantity)
+                        try:
+                            ticket = self.algorithm.MarketOrder(symbol, quantity, tag)
+                        except TypeError:
+                            ticket = self.algorithm.MarketOrder(symbol, quantity)
                 else:
                     ticket = self.algorithm.MarketOrder(symbol, quantity)
                 self._cache_submitted_order_tags(ticket, str(tag or ""))
@@ -1387,7 +1390,10 @@ class PortfolioRouter:
                 try:
                     ticket = self.algorithm.LimitOrder(symbol, quantity, limit_price, tag=tag)
                 except TypeError:
-                    ticket = self.algorithm.LimitOrder(symbol, quantity, limit_price)
+                    try:
+                        ticket = self.algorithm.LimitOrder(symbol, quantity, limit_price, tag)
+                    except TypeError:
+                        ticket = self.algorithm.LimitOrder(symbol, quantity, limit_price)
             else:
                 ticket = self.algorithm.LimitOrder(symbol, quantity, limit_price)
             self._cache_submitted_order_tags(ticket, str(tag or ""))
@@ -2887,9 +2893,14 @@ class PortfolioRouter:
                                 order.symbol, quantity, tag=effective_tag
                             )
                         except TypeError:
-                            ticket = self.algorithm.MarketOrder(  # type: ignore[attr-defined]
-                                order.symbol, quantity
-                            )
+                            try:
+                                ticket = self.algorithm.MarketOrder(  # type: ignore[attr-defined]
+                                    order.symbol, quantity, effective_tag
+                                )
+                            except TypeError:
+                                ticket = self.algorithm.MarketOrder(  # type: ignore[attr-defined]
+                                    order.symbol, quantity
+                                )
                         self._cache_submitted_order_tags(ticket, effective_tag)
                         self.log(
                             f"ROUTER: MARKET_ORDER | {order.side.value} {order.quantity} {order.symbol}"
@@ -2903,9 +2914,14 @@ class PortfolioRouter:
                             order.symbol, quantity, tag=effective_tag
                         )
                     except TypeError:
-                        ticket = self.algorithm.MarketOnCloseOrder(  # type: ignore[attr-defined]
-                            order.symbol, quantity
-                        )
+                        try:
+                            ticket = self.algorithm.MarketOnCloseOrder(  # type: ignore[attr-defined]
+                                order.symbol, quantity, effective_tag
+                            )
+                        except TypeError:
+                            ticket = self.algorithm.MarketOnCloseOrder(  # type: ignore[attr-defined]
+                                order.symbol, quantity
+                            )
                     self._cache_submitted_order_tags(ticket, effective_tag)
                     self.log(
                         f"ROUTER: MOC_ORDER | {order.side.value} {order.quantity} {order.symbol}"
@@ -2918,9 +2934,14 @@ class PortfolioRouter:
                             order.symbol, quantity, tag=effective_tag
                         )
                     except TypeError:
-                        ticket = self.algorithm.MarketOnOpenOrder(  # type: ignore[attr-defined]
-                            order.symbol, quantity
-                        )
+                        try:
+                            ticket = self.algorithm.MarketOnOpenOrder(  # type: ignore[attr-defined]
+                                order.symbol, quantity, effective_tag
+                            )
+                        except TypeError:
+                            ticket = self.algorithm.MarketOnOpenOrder(  # type: ignore[attr-defined]
+                                order.symbol, quantity
+                            )
                     self._cache_submitted_order_tags(ticket, effective_tag)
                     self.log(
                         f"ROUTER: MOO_ORDER | {order.side.value} {order.quantity} {order.symbol}"
