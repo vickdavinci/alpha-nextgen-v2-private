@@ -6801,10 +6801,14 @@ class AlphaNextGen(QCAlgorithm):
             regime_state = self._calculate_regime(read_only=True)
             self._intraday_regime_score = float(regime_state.smoothed_score)
             self._intraday_regime_updated_at = self.Time
-            self.Log(
-                f"REGIME_REFRESH_INTRADAY: Score={self._intraday_regime_score:.1f} | "
-                f"Time={self.Time.strftime('%H:%M')}"
-            )
+            # Keep one refresh log per day to preserve RCA signal while reducing volume.
+            refresh_day = self.Time.strftime("%Y-%m-%d")
+            if getattr(self, "_last_regime_refresh_log_day", None) != refresh_day:
+                self.Log(
+                    f"REGIME_REFRESH_INTRADAY: Score={self._intraday_regime_score:.1f} | "
+                    f"Time={self.Time.strftime('%H:%M')}"
+                )
+                self._last_regime_refresh_log_day = refresh_day
         except Exception as e:
             self.Log(f"REGIME_REFRESH_INTRADAY_ERROR: {e}")
 

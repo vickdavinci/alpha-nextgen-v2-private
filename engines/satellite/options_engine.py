@@ -1729,6 +1729,7 @@ class OptionsEngine:
         self._win_rate_shutoff: bool = False  # True when win rate < shutoff threshold
         self._win_rate_shutoff_date: Optional[str] = None  # YYYY-MM-DD shutoff activation
         self._paper_track_history: List[bool] = []  # Paper trades during shutoff
+        self._last_win_rate_monitor_log_key: Optional[str] = None
         # V10.10: VASS anti-cluster/day-gap memory is owned by VASSEntryEngine.
         # Phase C: staged neutrality de-risk memory by spread key.
         # key = "<long_symbol>|<short_symbol>", value = first neutrality timestamp.
@@ -4655,11 +4656,20 @@ class OptionsEngine:
         win_rate_scale = self.get_win_rate_scale()
         gate_mode = str(getattr(config, "WIN_RATE_GATE_VASS_EXECUTION_MODE", "enforce")).lower()
         if gate_mode == "monitor_only":
-            self.log(
-                f"WIN_RATE_GATE: MONITOR_ONLY | RawScale={win_rate_scale:.0%} | "
-                f"Shutoff={self._win_rate_shutoff} | History={self._spread_result_history}",
-                trades_only=True,
+            # Log monitor-only state once per day unless state changed.
+            monitor_day = str(self.algorithm.Time.date()) if self.algorithm is not None else "NONE"
+            monitor_key = (
+                f"{monitor_day}|{self._win_rate_shutoff}|"
+                f"{len(self._spread_result_history)}|"
+                f"{sum(1 for x in self._spread_result_history if x)}"
             )
+            if monitor_key != self._last_win_rate_monitor_log_key:
+                self.log(
+                    f"WIN_RATE_GATE: MONITOR_ONLY | RawScale={win_rate_scale:.0%} | "
+                    f"Shutoff={self._win_rate_shutoff} | History={self._spread_result_history}",
+                    trades_only=True,
+                )
+                self._last_win_rate_monitor_log_key = monitor_key
             win_rate_scale = 1.0
         elif win_rate_scale == 0.0:
             if getattr(config, "VASS_WIN_RATE_HARD_BLOCK", True):

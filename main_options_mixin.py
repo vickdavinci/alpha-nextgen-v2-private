@@ -25,18 +25,33 @@ class MainOptionsMixin:
         qqq_price = self.Securities[self.qqq].Price
 
         # Strategy-aware delta selection (ITM vs MICRO_DEBIT_FADE vs MICRO_OTM_MOMENTUM).
+        if not hasattr(self, "_intraday_delta_log_by_key"):
+            self._intraday_delta_log_by_key = {}
+
+        def _log_intraday_delta_once(key: str, message: str) -> None:
+            day = self.Time.strftime("%Y-%m-%d") if hasattr(self, "Time") else "NA"
+            throttle_key = f"{day}|{key}"
+            if self._intraday_delta_log_by_key.get(throttle_key):
+                return
+            self._intraday_delta_log_by_key[throttle_key] = True
+            self.Log(message)
+
         if strategy == IntradayStrategy.ITM_MOMENTUM:
             if bool(getattr(config, "ITM_ENGINE_ENABLED", False)):
                 delta_min_v2 = float(getattr(config, "ITM_DELTA_MIN", 0.65))
                 delta_max_v2 = float(getattr(config, "ITM_DELTA_MAX", 0.75))
                 target_delta = (delta_min_v2 + delta_max_v2) / 2.0
-                self.Log(
+                _log_intraday_delta_once(
+                    "ITM_ENGINE",
                     f"INTRADAY_DELTA: ITM_ENGINE using delta_mid={target_delta:.2f} "
-                    f"(range {delta_min_v2:.2f}-{delta_max_v2:.2f})"
+                    f"(range {delta_min_v2:.2f}-{delta_max_v2:.2f})",
                 )
             else:
                 target_delta = config.INTRADAY_ITM_DELTA
-                self.Log(f"INTRADAY_DELTA: ITM_MOMENTUM using delta={target_delta}")
+                _log_intraday_delta_once(
+                    "ITM_LEGACY",
+                    f"INTRADAY_DELTA: ITM_MOMENTUM using delta={target_delta}",
+                )
         elif strategy in (IntradayStrategy.MICRO_DEBIT_FADE, IntradayStrategy.DEBIT_FADE):
             target_delta = float(
                 getattr(
