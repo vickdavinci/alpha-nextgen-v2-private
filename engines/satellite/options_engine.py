@@ -7405,6 +7405,20 @@ class OptionsEngine:
                 return float(getattr(config, "MICRO_DEBIT_FADE_TARGET_0DTE", target_pct))
         return float(target_pct)
 
+    def _apply_intraday_stop_overrides(
+        self,
+        *,
+        entry_strategy: str,
+        stop_pct: float,
+        current_dte: Optional[int],
+    ) -> float:
+        """Apply strategy-specific stop overrides (e.g., 0DTE fade profile)."""
+        strategy = self._canonical_intraday_strategy_name(entry_strategy)
+        if strategy == IntradayStrategy.MICRO_DEBIT_FADE.value and current_dte is not None:
+            if int(current_dte) <= 0:
+                return float(getattr(config, "MICRO_DEBIT_FADE_STOP_0DTE", stop_pct))
+        return float(stop_pct)
+
     def _get_trail_config(self, entry_strategy: str) -> Optional[Tuple[float, float]]:
         """Return (trigger_pct, trail_pct) for intraday strategy trailing stops."""
         strategy = self._canonical_intraday_strategy_name(entry_strategy)
@@ -9225,12 +9239,19 @@ class OptionsEngine:
         is_intraday_fill = self._pending_intraday_entry or force_intraday
         if is_intraday_fill:
             target_pct, strategy_floor = self._get_intraday_exit_profile(entry_strategy)
+            current_dte = int(getattr(contract, "days_to_expiry", 0))
             target_pct = self._apply_intraday_target_overrides(
                 entry_strategy=entry_strategy,
                 target_pct=float(target_pct),
-                current_dte=int(getattr(contract, "days_to_expiry", 0)),
+                current_dte=current_dte,
+            )
+            stop_pct = self._apply_intraday_stop_overrides(
+                entry_strategy=entry_strategy,
+                stop_pct=float(stop_pct),
+                current_dte=current_dte,
             )
             target_price = fill_price * (1 + target_pct)
+            stop_price = fill_price * (1 - stop_pct)
             if strategy_floor is not None and strategy_floor > 0:
                 # V9.2 FIX: Use max(ATR stop, strategy floor) to preserve ATR adaptive
                 # intelligence. The ATR stop accounts for market volatility (wider in
@@ -9797,10 +9818,16 @@ class OptionsEngine:
         entry_strategy = self._pending_entry_strategy or "SWING_SINGLE"
         stop_pct = self._pending_stop_pct if self._pending_stop_pct is not None else 0.20
         target_pct, strategy_floor = self._get_intraday_exit_profile(entry_strategy)
+        current_dte = int(getattr(self._pending_contract, "days_to_expiry", 0))
         target_pct = self._apply_intraday_target_overrides(
             entry_strategy=entry_strategy,
             target_pct=float(target_pct),
-            current_dte=int(getattr(self._pending_contract, "days_to_expiry", 0)),
+            current_dte=current_dte,
+        )
+        stop_pct = self._apply_intraday_stop_overrides(
+            entry_strategy=entry_strategy,
+            stop_pct=float(stop_pct),
+            current_dte=current_dte,
         )
         if strategy_floor is not None and strategy_floor > 0:
             stop_pct = max(float(stop_pct), float(strategy_floor))

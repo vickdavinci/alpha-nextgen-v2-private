@@ -18,7 +18,7 @@ MAX_SINGLE_POSITION_PCT = 0.40  # V3.0: Max weight for any single position (was 
 
 TARGET_VOLATILITY = 0.20
 # V2.3.17: Kill switch raised from 3% to 5% (reduces false triggers in volatile markets)
-KILL_SWITCH_PCT = 0.05  # V3.0: Unified (was phase-dependent)
+KILL_SWITCH_PCT = 0.99  # Backtest mode: effectively disable binary kill switch
 
 # Lockbox
 LOCKBOX_MILESTONES = [100_000, 200_000]
@@ -650,7 +650,7 @@ OPTIONS_MIN_TRADE_VALUE_CLOSE_EXEMPT = True
 
 # Kill Switch (V1: Nuclear option - liquidate ALL)
 # V2.3.17: Raised from 3% to 5% to reduce false triggers in volatile markets
-KILL_SWITCH_PCT = 0.05  # Legacy fallback (used when KS_GRADUATED_ENABLED = False)
+KILL_SWITCH_PCT = 0.99  # Backtest mode: effectively disable legacy kill switch
 # V2.16-BT: Preemptive kill switch when panic mode active AND approaching threshold
 # Closes gap between panic mode (4%) and kill switch (5%) where hedges could lose value
 KILL_SWITCH_PREEMPTIVE_PCT = 0.045  # 4.5% - triggers kill switch when in panic mode
@@ -658,9 +658,9 @@ KILL_SWITCH_PREEMPTIVE_PCT = 0.045  # 4.5% - triggers kill switch when in panic 
 # V2.27: Graduated Kill Switch (replaces binary -5% nuclear option)
 # 3-tier response: REDUCE → TREND_EXIT → FULL_EXIT
 KS_GRADUATED_ENABLED = True
-KS_TIER_1_PCT = 0.02  # -2% daily loss → REDUCE (halve trend, block new options)
-KS_TIER_2_PCT = 0.04  # -4% daily loss → TREND_EXIT (liquidate trend, keep spreads)
-KS_TIER_3_PCT = 0.06  # -6% daily loss → FULL_EXIT (liquidate everything)
+KS_TIER_1_PCT = 0.95  # Backtest mode: effectively disable graduated kill switch
+KS_TIER_2_PCT = 0.97  # Backtest mode: effectively disable graduated kill switch
+KS_TIER_3_PCT = 0.99  # Backtest mode: effectively disable graduated kill switch
 KS_TIER_1_TREND_REDUCTION = 0.50  # Reduce trend allocation by 50% at Tier 1
 KS_TIER_1_BLOCK_NEW_OPTIONS = True  # Block new option entries at Tier 1
 KS_SKIP_DAYS = 1  # Block new entries for 1 day after Tier 2+
@@ -1325,7 +1325,7 @@ REGIME_OVERLAY_EARLY_VIX_HIGH = 25.0
 SPREAD_SHORT_LEG_BY_WIDTH = True  # V2.4.3: Use strike width for short leg (not delta)
 # V6.10: Spread width settings for QQQ - WIDENED FOR ASSIGNMENT PROTECTION
 # Wider spreads survive larger overnight gaps and reduce assignment risk
-SPREAD_WIDTH_MIN = 6.0  # V10.9: wider structures improve max-profit headroom
+SPREAD_WIDTH_MIN = 5.0  # V10.10 diagnostic: improve VASS constructability
 SPREAD_WIDTH_MAX = 10.0  # V2.4.3: Maximum $10 spread (caps risk)
 SPREAD_WIDTH_TARGET = 4.0  # V6.13 OPT: Improve fill/constructability in medium IV
 SPREAD_WIDTH_EFFECTIVE_MAX = (
@@ -1359,9 +1359,9 @@ SPREAD_MAX_DEBIT_TO_WIDTH_PCT = 0.38  # Legacy fallback max when adaptive D/W ba
 SPREAD_MIN_DEBIT_TO_WIDTH_PCT = (
     0.28  # V10.7: Reject ultra-cheap/low-quality debit structures (balanced D/W band)
 )
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT_LOW_VIX = 0.38
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT_MED_VIX = 0.36
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT_HIGH_VIX = 0.34
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_LOW_VIX = 0.50
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_MED_VIX = 0.48
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_HIGH_VIX = 0.44
 SPREAD_DW_LOW_VIX_MAX = 18.0
 SPREAD_DW_HIGH_VIX_MIN = 25.0
 SPREAD_PROFIT_TARGET_PCT = 0.45  # V10.9: higher target after hold bypass re-enables winner exits
@@ -1896,9 +1896,7 @@ INTRADAY_ITM_TRAIL_TRIGGER = 0.20  # V10.8: start protecting gains earlier on he
 INTRADAY_ITM_TRAIL_PCT = 0.40  # V10.8: retain more profits once trail is active
 
 # V9.2: Per-strategy intraday exits (previously universal target/stop)
-INTRADAY_DEBIT_FADE_TARGET = (
-    0.40  # V9.8: revert to V9.3 (0.25 was within bid-ask noise on $0.30 options)
-)
+INTRADAY_DEBIT_FADE_TARGET = 0.35  # V10.10: improve DEBIT_FADE R:R for 1-2 DTE
 INTRADAY_DEBIT_FADE_STOP = 0.25
 INTRADAY_DEBIT_FADE_TRAIL_TRIGGER = 0.25  # V9.8: revert to V9.3 (below 0.40 target, trail works)
 INTRADAY_DEBIT_FADE_TRAIL_PCT = 0.50
@@ -1907,6 +1905,7 @@ INTRADAY_DEBIT_FADE_TRAIL_PCT = 0.50
 MICRO_DEBIT_FADE_TARGET = INTRADAY_DEBIT_FADE_TARGET
 MICRO_DEBIT_FADE_TARGET_0DTE = 0.25  # 0DTE fade has shorter runway before noon force-close
 MICRO_DEBIT_FADE_STOP = INTRADAY_DEBIT_FADE_STOP
+MICRO_DEBIT_FADE_STOP_0DTE = 0.20  # 0DTE fade: tighter risk due to shorter thesis window
 MICRO_DEBIT_FADE_TRAIL_TRIGGER = INTRADAY_DEBIT_FADE_TRAIL_TRIGGER
 MICRO_DEBIT_FADE_TRAIL_PCT = INTRADAY_DEBIT_FADE_TRAIL_PCT
 MICRO_DEBIT_FADE_DTE_EXIT = 0  # Let intraday force-exit manage same-day lifecycle
@@ -1990,9 +1989,9 @@ INTRADAY_ITM_SCORE_OI_WEIGHT = 0.05
 ITM_ENGINE_ENABLED = True
 ITM_SHADOW_MODE = False
 ITM_SIZE_MULT = 1.0  # ITM_ENGINE sizing is sovereign; do not couple to MICRO score ladder
-ITM_DECISION_HOUR = 10
-ITM_DECISION_MINUTE = 30
-ITM_ENTRY_END = "13:30"
+ITM_DECISION_HOUR = 9
+ITM_DECISION_MINUTE = 45
+ITM_ENTRY_END = "14:45"
 ITM_SMA_BAND_PCT = 0.003
 ITM_ADX_MIN = 15.0
 ITM_CALL_MAX_VIX = 22.0
@@ -2005,6 +2004,7 @@ ITM_BREAKER_3_LOSSES_PAUSE_DAYS = 2
 ITM_BREAKER_5_LOSSES_PAUSE_DAYS = 5
 ITM_DIRECTIONAL_BREAKER_ENABLED = True
 ITM_DIRECTIONAL_BREAKER_3_LOSSES_PAUSE_DAYS = 2
+ITM_DD_GATE_ENABLED = False  # Backtest mode: disable ITM drawdown gate
 ITM_DD_BLOCK_THRESHOLD = 0.90
 ITM_DD_RECOVER_THRESHOLD = 0.95
 ITM_DD_LOOKBACK_DAYS = 60
@@ -2332,7 +2332,7 @@ ISOLATION_HEDGE_ENABLED = False  # Hedge Engine (SH) - V6.11 updated
 ISOLATION_YIELD_ENABLED = False  # Yield Sleeve (SHV)
 
 # Safeguard enables (only checked when ISOLATION_TEST_MODE = True)
-ISOLATION_KILL_SWITCH_ENABLED = True  # Kill Switch (5% daily loss)
+ISOLATION_KILL_SWITCH_ENABLED = False  # Backtest mode: disable isolation kill switch
 ISOLATION_STARTUP_GATE_ENABLED = False  # Startup Gate (15-day warmup)
 ISOLATION_COLD_START_ENABLED = False  # Cold Start (days 1-5 restrictions)
 ISOLATION_DRAWDOWN_GOVERNOR_ENABLED = False  # Drawdown Governor (position scaling)

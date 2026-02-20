@@ -551,8 +551,9 @@ class MainOrdersMixin:
                     detail=str(getattr(orderEvent, "Message", "")),
                     event_time=str(self.Time),
                 )
-            # V2.20: Event-driven state recovery — notify source engine
-            self._queue_spread_close_retry_on_cancel(canceled_symbol, orderEvent)
+            # Do not escalate expected OCO sibling cancels into spread-close retry churn.
+            if not is_oco_cancel:
+                self._queue_spread_close_retry_on_cancel(canceled_symbol, orderEvent)
 
             # V10.5: Route single-leg close cancels into retry pipeline.
             is_spread_leg = False

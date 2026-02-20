@@ -235,6 +235,36 @@ class PortfolioRouter:
                     return
             self.algorithm.Log(message)  # type: ignore[attr-defined]
 
+    def _cache_submitted_order_tags(self, ticket_or_tickets: Any, tag: str) -> None:
+        """Backfill order-id -> tag hints when broker lifecycle events omit tags."""
+        if self.algorithm is None:
+            return
+        clean_tag = str(tag or "").strip()
+        if not clean_tag:
+            return
+        cache_fn = getattr(self.algorithm, "_cache_order_tag_hint", None)
+        if not callable(cache_fn):
+            return
+
+        def _cache_ticket(ticket: Any) -> None:
+            if ticket is None:
+                return
+            try:
+                order_id = int(getattr(ticket, "OrderId", 0) or 0)
+            except Exception:
+                order_id = 0
+            if order_id > 0:
+                try:
+                    cache_fn(order_id, clean_tag)
+                except Exception:
+                    pass
+
+        if isinstance(ticket_or_tickets, (list, tuple)):
+            for ticket in ticket_or_tickets:
+                _cache_ticket(ticket)
+            return
+        _cache_ticket(ticket_or_tickets)
+
     def _apply_isolation_source_limits(self) -> None:
         """
         In isolation mode, disabled engines should not retain budget.
@@ -1329,13 +1359,15 @@ class PortfolioRouter:
         if not use_limits:
             # Fall back to market order
             try:
+                ticket = None
                 if tag:
                     try:
-                        self.algorithm.MarketOrder(symbol, quantity, tag=tag)
+                        ticket = self.algorithm.MarketOrder(symbol, quantity, tag=tag)
                     except TypeError:
-                        self.algorithm.MarketOrder(symbol, quantity)
+                        ticket = self.algorithm.MarketOrder(symbol, quantity)
                 else:
-                    self.algorithm.MarketOrder(symbol, quantity)
+                    ticket = self.algorithm.MarketOrder(symbol, quantity)
+                self._cache_submitted_order_tags(ticket, str(tag or ""))
                 self.log(f"MARKET_ORDER: {symbol} | Qty={quantity} | {reason}")
                 return True
             except Exception as e:
@@ -1350,13 +1382,15 @@ class PortfolioRouter:
             return False
 
         try:
+            ticket = None
             if tag:
                 try:
-                    self.algorithm.LimitOrder(symbol, quantity, limit_price, tag=tag)
+                    ticket = self.algorithm.LimitOrder(symbol, quantity, limit_price, tag=tag)
                 except TypeError:
-                    self.algorithm.LimitOrder(symbol, quantity, limit_price)
+                    ticket = self.algorithm.LimitOrder(symbol, quantity, limit_price)
             else:
-                self.algorithm.LimitOrder(symbol, quantity, limit_price)
+                ticket = self.algorithm.LimitOrder(symbol, quantity, limit_price)
+            self._cache_submitted_order_tags(ticket, str(tag or ""))
             self.log(
                 f"LIMIT_ORDER: {symbol} | Qty={quantity} | " f"Limit=${limit_price:.2f} | {reason}"
             )
@@ -2234,6 +2268,10 @@ class PortfolioRouter:
                 else:
                     tag = "UNCLASSIFIED"
 
+            # Preserve signal->order->fill trace linkage in order tags for RCA.
+            if trace_id and "trace=" not in tag.lower():
+                tag = f"{tag}|trace={trace_id}"
+
             orders.append(
                 OrderIntent(
                     symbol=symbol,
@@ -2775,12 +2813,16 @@ class PortfolioRouter:
                     ]
 
                     # Submit combo order - broker calculates NET margin (spread margin)
+                    combo_tickets = None
                     try:
-                        self.algorithm.ComboMarketOrder(  # type: ignore[attr-defined]
+                        combo_tickets = self.algorithm.ComboMarketOrder(  # type: ignore[attr-defined]
                             legs, num_spreads, tag=effective_tag
                         )
                     except TypeError:
-                        self.algorithm.ComboMarketOrder(legs, num_spreads)  # type: ignore[attr-defined]
+                        combo_tickets = self.algorithm.ComboMarketOrder(  # type: ignore[attr-defined]
+                            legs, num_spreads
+                        )
+                    self._cache_submitted_order_tags(combo_tickets, effective_tag)
                     self.log(
                         f"ROUTER: COMBO_MARKET_ORDER | "
                         f"Long={order.symbol} x{num_spreads} (ratio={long_ratio}) + "
@@ -2834,35 +2876,47 @@ class PortfolioRouter:
                             )
                             continue
                     else:
+                        ticket = None
                         try:
-                            self.algorithm.MarketOrder(  # type: ignore[attr-defined]
+                            ticket = self.algorithm.MarketOrder(  # type: ignore[attr-defined]
                                 order.symbol, quantity, tag=effective_tag
                             )
                         except TypeError:
-                            self.algorithm.MarketOrder(order.symbol, quantity)  # type: ignore[attr-defined]
+                            ticket = self.algorithm.MarketOrder(  # type: ignore[attr-defined]
+                                order.symbol, quantity
+                            )
+                        self._cache_submitted_order_tags(ticket, effective_tag)
                         self.log(
                             f"ROUTER: MARKET_ORDER | {order.side.value} {order.quantity} {order.symbol}"
                             + f" | Tag={effective_tag}"
                         )
                 elif order.order_type == OrderType.MOC:
                     # V2.4.2: Market-On-Close for same-day trend entries
+                    ticket = None
                     try:
-                        self.algorithm.MarketOnCloseOrder(  # type: ignore[attr-defined]
+                        ticket = self.algorithm.MarketOnCloseOrder(  # type: ignore[attr-defined]
                             order.symbol, quantity, tag=effective_tag
                         )
                     except TypeError:
-                        self.algorithm.MarketOnCloseOrder(order.symbol, quantity)  # type: ignore[attr-defined]
+                        ticket = self.algorithm.MarketOnCloseOrder(  # type: ignore[attr-defined]
+                            order.symbol, quantity
+                        )
+                    self._cache_submitted_order_tags(ticket, effective_tag)
                     self.log(
                         f"ROUTER: MOC_ORDER | {order.side.value} {order.quantity} {order.symbol}"
                         + f" | Tag={effective_tag}"
                     )
                 else:  # MOO
+                    ticket = None
                     try:
-                        self.algorithm.MarketOnOpenOrder(  # type: ignore[attr-defined]
+                        ticket = self.algorithm.MarketOnOpenOrder(  # type: ignore[attr-defined]
                             order.symbol, quantity, tag=effective_tag
                         )
                     except TypeError:
-                        self.algorithm.MarketOnOpenOrder(order.symbol, quantity)  # type: ignore[attr-defined]
+                        ticket = self.algorithm.MarketOnOpenOrder(  # type: ignore[attr-defined]
+                            order.symbol, quantity
+                        )
+                    self._cache_submitted_order_tags(ticket, effective_tag)
                     self.log(
                         f"ROUTER: MOO_ORDER | {order.side.value} {order.quantity} {order.symbol}"
                         + f" | Tag={effective_tag}"

@@ -240,10 +240,11 @@ class ITMHorizonEngine:
             self._count("ITM_ENGINE_Blocked_Breaker")
             return self._fail("E_ITM_ENGINE_BREAKER_DIRECTIONAL", f"Until={dir_pause_until}")
 
-        dd_ok, dd_detail = self._drawdown_allows(trade_date, float(portfolio_value))
-        if not dd_ok:
-            self._count("ITM_ENGINE_Blocked_Drawdown")
-            return self._fail("E_ITM_ENGINE_DRAWDOWN", dd_detail)
+        if bool(getattr(config, "ITM_DD_GATE_ENABLED", True)):
+            dd_ok, dd_detail = self._drawdown_allows(trade_date, float(portfolio_value))
+            if not dd_ok:
+                self._count("ITM_ENGINE_Blocked_Drawdown")
+                return self._fail("E_ITM_ENGINE_DRAWDOWN", dd_detail)
 
         self._count("ITM_ENGINE_Pass")
         if trace_id:
