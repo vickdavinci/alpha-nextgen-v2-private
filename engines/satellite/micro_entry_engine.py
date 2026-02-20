@@ -277,28 +277,7 @@ class MicroEntryEngine:
                 )
                 return False, "E_INTRADAY_TIME_WINDOW"
 
-        elif entry_strategy == IntradayStrategy.ITM_MOMENTUM:
-            # ITM_ENGINE owns its own timing checks in ITMHorizonEngine.evaluate_entry().
-            if itm_engine_mode:
-                return True, None
-            if state.micro_regime == MicroRegime.CAUTION_LOW:
-                self._log(
-                    "INTRADAY: ITM_MOMENTUM blocked in regime CAUTION_LOW",
-                    trades_only=True,
-                )
-                return False, "E_ITM_MOMENTUM_REGIME_BLOCK"
-
-            itm_start_cfg = config.INTRADAY_ITM_START
-            itm_end_cfg = config.INTRADAY_ITM_END
-            itm_start = itm_start_cfg.split(":")
-            itm_end = itm_end_cfg.split(":")
-            start_time = int(itm_start[0]) * 60 + int(itm_start[1])
-            end_time = int(itm_end[0]) * 60 + int(itm_end[1])
-            if not (start_time <= time_minutes <= end_time):
-                self._log(
-                    f"INTRADAY_TIME_REJECT: ITM_MOMENTUM at {current_hour}:{current_minute:02d} "
-                    f"outside window {itm_start_cfg}-{itm_end_cfg}"
-                )
-                return False, "E_INTRADAY_TIME_WINDOW"
-
+        # ITM_MOMENTUM is handled by ITMHorizonEngine sovereign path.
+        _ = itm_engine_mode
+        _ = state
         return True, None

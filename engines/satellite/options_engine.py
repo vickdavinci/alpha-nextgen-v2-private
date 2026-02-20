@@ -8443,7 +8443,13 @@ class OptionsEngine:
                 if not itm_ok and not self._itm_horizon_engine.shadow_mode():
                     return fail(itm_code, itm_detail)
 
-            if bool(getattr(config, "MICRO_ENTRY_ENGINE_ENABLED", True)):
+            use_micro_entry_engine = entry_strategy in (
+                IntradayStrategy.MICRO_DEBIT_FADE,
+                IntradayStrategy.MICRO_OTM_MOMENTUM,
+                IntradayStrategy.DEBIT_FADE,
+                IntradayStrategy.CREDIT_SPREAD,
+            )
+            if use_micro_entry_engine and bool(getattr(config, "MICRO_ENTRY_ENGINE_ENABLED", True)):
                 try:
                     state.put_cooldown_until_date = self._put_cooldown_until_date
                     state.put_consecutive_losses = self._put_consecutive_losses
@@ -8471,7 +8477,7 @@ class OptionsEngine:
                 )
                 if micro_fail_code is not None:
                     return fail(micro_fail_code, micro_fail_detail)
-            else:
+            elif use_micro_entry_engine:
                 self.log(
                     "INTRADAY: MICRO_ENTRY_ENGINE disabled - legacy fallback removed; blocking entry",
                     trades_only=True,
@@ -8530,7 +8536,13 @@ class OptionsEngine:
                     )
                     return fail("E_INTRADAY_SAME_STRATEGY_COOLDOWN")
 
-        if bool(getattr(config, "MICRO_ENTRY_ENGINE_ENABLED", True)):
+        use_micro_entry_engine = entry_strategy in (
+            IntradayStrategy.MICRO_DEBIT_FADE,
+            IntradayStrategy.MICRO_OTM_MOMENTUM,
+            IntradayStrategy.DEBIT_FADE,
+            IntradayStrategy.CREDIT_SPREAD,
+        )
+        if use_micro_entry_engine and bool(getattr(config, "MICRO_ENTRY_ENGINE_ENABLED", True)):
             tw_ok, tw_code = self._micro_entry_engine.validate_time_window(
                 entry_strategy=entry_strategy,
                 itm_engine_mode=itm_engine_mode,
@@ -8540,7 +8552,7 @@ class OptionsEngine:
             )
             if not tw_ok:
                 return fail(tw_code or "E_INTRADAY_TIME_WINDOW")
-        else:
+        elif use_micro_entry_engine:
             self.log(
                 "INTRADAY: MICRO_ENTRY_ENGINE disabled - legacy fallback removed; blocking entry",
                 trades_only=True,
