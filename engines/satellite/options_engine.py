@@ -4409,9 +4409,13 @@ class OptionsEngine:
             current_strategy = self._canonical_intraday_strategy(current_strategy)
 
             if current_strategy == IntradayStrategy.ITM_MOMENTUM:
-                # ITM_MOMENTUM: Stock replacement needs ITM (0.60-0.85)
-                delta_min = config.INTRADAY_ITM_DELTA_MIN
-                delta_max = config.INTRADAY_ITM_DELTA_MAX
+                # ITM_ENGINE canonical delta source: use ITM_* when enabled.
+                if bool(getattr(config, "ITM_ENGINE_ENABLED", False)):
+                    delta_min = float(getattr(config, "ITM_DELTA_MIN", 0.70))
+                    delta_max = float(getattr(config, "ITM_DELTA_MAX", 0.80))
+                else:
+                    delta_min = float(getattr(config, "INTRADAY_ITM_DELTA_MIN", 0.70))
+                    delta_max = float(getattr(config, "INTRADAY_ITM_DELTA_MAX", 0.80))
                 mode_label = "Intraday-ITM"
             elif current_strategy in (
                 IntradayStrategy.MICRO_DEBIT_FADE,
