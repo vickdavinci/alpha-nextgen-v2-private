@@ -7526,6 +7526,46 @@ class OptionsEngine:
 
         # Calculate P&L percentage
         pnl_pct = (current_price - entry_price) / entry_price
+        strategy_name = self._canonical_intraday_strategy_name(getattr(pos, "entry_strategy", ""))
+
+        # Exit 0: Stagnation timer for MICRO intraday strategies.
+        # If the trade stays near-flat for too long, exit before theta/chop bleeds it out.
+        if (
+            is_intraday_pos
+            and strategy_name
+            in (
+                IntradayStrategy.MICRO_DEBIT_FADE.value,
+                IntradayStrategy.MICRO_OTM_MOMENTUM.value,
+            )
+            and bool(getattr(config, "MICRO_STAGNATION_EXIT_ENABLED", False))
+            and self.algorithm is not None
+            and hasattr(self.algorithm, "Time")
+        ):
+            try:
+                entry_dt = datetime.strptime(
+                    str(getattr(pos, "entry_time", ""))[:19], "%Y-%m-%d %H:%M:%S"
+                )
+                held_minutes = (self.algorithm.Time - entry_dt).total_seconds() / 60.0
+            except Exception:
+                held_minutes = 0.0
+            min_hold_minutes = float(getattr(config, "MICRO_STAGNATION_MIN_HOLD_MINUTES", 60))
+            flat_band = float(getattr(config, "MICRO_STAGNATION_FLAT_BAND_PCT", 0.10))
+            if held_minutes >= min_hold_minutes and abs(pnl_pct) <= flat_band:
+                if not self.mark_pending_intraday_exit(symbol_str):
+                    return None
+                reason = (
+                    f"MICRO_STAGNATION_EXIT {pnl_pct:+.1%} "
+                    f"(Held={held_minutes:.0f}m, FlatBand=+/-{flat_band:.0%})"
+                )
+                self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
+                return TargetWeight(
+                    symbol=symbol_str,
+                    target_weight=0.0,
+                    source="OPT",
+                    urgency=Urgency.IMMEDIATE,
+                    reason=reason,
+                    requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
+                )
 
         # Exit 1: Profit target hit (+50%)
         if current_price >= pos.target_price:
@@ -7632,7 +7672,6 @@ class OptionsEngine:
         # - OTM expiring worthless (100% loss)
         # - ITM being auto-exercised (creates stock position, margin crisis)
         dte_exit_threshold = int(getattr(config, "OPTIONS_SINGLE_LEG_DTE_EXIT", 4))
-        strategy_name = self._canonical_intraday_strategy_name(getattr(pos, "entry_strategy", ""))
         if self._is_itm_momentum_strategy_name(getattr(pos, "entry_strategy", "")):
             if self._itm_horizon_engine.enabled():
                 _, _, _, _, dte_exit_threshold = self._itm_horizon_engine.get_exit_profile()

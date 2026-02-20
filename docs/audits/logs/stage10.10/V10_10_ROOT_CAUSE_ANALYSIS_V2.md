@@ -188,3 +188,20 @@ This is fixable, but requires **sequenced, minimal structural corrections** rath
   - Reason: avoid over-tightening multi-day ITM exits.
 - MICRO regime universe not narrowed to only `GOOD_MR`.
   - Reason: would over-choke signal flow.
+
+### V10.11 Round-Trip Risk Mitigation (Applied)
+
+- **VASS trailing stop tightened to reduce profit giveback:**
+  - `SPREAD_TRAIL_ACTIVATE_PCT: 0.28 -> 0.22`
+  - `SPREAD_TRAIL_OFFSET_PCT: 0.18 -> 0.15`
+  - Goal: start trailing earlier and retain more open profit once spreads are in the money.
+
+- **MICRO stagnation time-stop added (config + logic):**
+  - `MICRO_STAGNATION_EXIT_ENABLED = True`
+  - `MICRO_STAGNATION_MIN_HOLD_MINUTES = 60`
+  - `MICRO_STAGNATION_FLAT_BAND_PCT = 0.10`
+  - Behavior: for `MICRO_DEBIT_FADE` / `MICRO_OTM_MOMENTUM`, if held >= 60 minutes and P&L remains within +/-10%, exit early with `MICRO_STAGNATION_EXIT`.
+
+- **ITM stop architecture unchanged in this patch:**
+  - Keep `ITM_TARGET_PCT=0.40`, `ITM_STOP_PCT=0.30`
+  - Reason: avoid over-tightening multi-day ITM profile before re-measuring under the new anti-round-trip controls.

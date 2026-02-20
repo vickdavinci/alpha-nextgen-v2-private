@@ -1386,8 +1386,8 @@ SPREAD_STOP_REGIME_MULTIPLIERS = {
 }
 
 # V9.4: Spread Trailing Stop — lock in gains after reaching activation threshold
-SPREAD_TRAIL_ACTIVATE_PCT = 0.28  # V10.5: delay trail activation to reduce premature winner cuts
-SPREAD_TRAIL_OFFSET_PCT = 0.18  # V10.5: wider trail to avoid stop/target competition
+SPREAD_TRAIL_ACTIVATE_PCT = 0.22  # V10.11: earlier trail activation to reduce round-trip giveback
+SPREAD_TRAIL_OFFSET_PCT = 0.15  # V10.11: tighter trailing offset once activated
 
 # V3.0: Regime-Adaptive Profit Targets
 # V9.4: With 40% base, multipliers give: Bull=36%, Neutral=44%, Cautious/Bear=48%
@@ -1924,6 +1924,9 @@ MICRO_OTM_MOMENTUM_STOP = 0.35
 MICRO_OTM_MOMENTUM_TRAIL_TRIGGER = 0.35
 MICRO_OTM_MOMENTUM_TRAIL_PCT = 0.50
 MICRO_OTM_MOMENTUM_DTE_EXIT = 0  # 0/1 DTE strategy closes via intraday force-exit
+MICRO_STAGNATION_EXIT_ENABLED = True  # V10.11: close flat MICRO positions that stall intraday
+MICRO_STAGNATION_MIN_HOLD_MINUTES = 60  # Require at least 60 minutes before stagnation check
+MICRO_STAGNATION_FLAT_BAND_PCT = 0.10  # Treat +/-10% as flat for intraday MICRO exits
 
 INTRADAY_DEBIT_MOMENTUM_TARGET = (
     0.45  # V9.8: revert to V9.3 (0.25 was within bid-ask noise on $0.34 options)
