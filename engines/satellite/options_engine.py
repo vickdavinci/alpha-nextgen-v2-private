@@ -1706,9 +1706,11 @@ class OptionsEngine:
         # V2.3.2 FIX #4: Track if pending entry is intraday (for correct position registration)
         self._pending_intraday_entry: bool = False
         self._pending_intraday_entry_since: Optional[datetime] = None
+        self._pending_intraday_entry_engine: Optional[str] = None  # MICRO/ITM lane
 
         # V2.3.3 FIX #3: Prevent duplicate exit signals while waiting for fill
         self._pending_intraday_exit: bool = False
+        self._pending_intraday_exit_engine: Optional[str] = None  # MICRO/ITM lane
 
         # V2.6 Bug #16: Post-trade margin cooldown tracking
         # After closing a spread, wait before new entry (T+1 settlement)
@@ -1813,6 +1815,10 @@ class OptionsEngine:
         """True when strategy name maps to ITM momentum."""
         value = self._canonical_intraday_strategy_name(strategy_name)
         return value == IntradayStrategy.ITM_MOMENTUM.value
+
+    def _intraday_engine_lane_from_strategy(self, strategy_name: Optional[str]) -> str:
+        """Map strategy to engine lane key used by pending-entry/exit locks."""
+        return "ITM" if self._is_itm_momentum_strategy_name(strategy_name) else "MICRO"
 
     def _infer_intraday_strategy_from_order_tag(self, order_tag: Optional[str]) -> str:
         """Best-effort strategy inference from order tag for partial-fill OCO recovery."""
@@ -7531,7 +7537,9 @@ class OptionsEngine:
             and self._symbol_str(self._intraday_position.contract.symbol) == symbol_str
         )
 
-        if is_intraday_pos and self.has_pending_intraday_exit():
+        if is_intraday_pos and self.has_pending_intraday_exit(
+            engine=self._intraday_engine_lane_from_strategy(getattr(pos, "entry_strategy", ""))
+        ):
             return None
 
         # Calculate P&L percentage
@@ -8255,8 +8263,6 @@ class OptionsEngine:
             return fail("E_INTRADAY_HAS_POSITION")
         if self._pending_intraday_entry:
             self._clear_stale_pending_intraday_entry_if_orphaned()
-        if self._pending_intraday_entry:
-            return fail("E_INTRADAY_PENDING_ENTRY")
 
         # V2.9: Check trade limits (Bug #4 fix) - Uses comprehensive counter
         # Replaces V2.3.14 intraday-only check to also enforce global limit
@@ -8315,6 +8321,10 @@ class OptionsEngine:
                 entry_strategy = self._canonical_intraday_strategy(state.recommended_strategy)
         if entry_strategy is None:
             return fail("E_INTRADAY_NO_STRATEGY")
+
+        pending_lane = self._intraday_engine_lane_from_strategy(entry_strategy.value)
+        if self.has_pending_intraday_entry(engine=pending_lane):
+            return fail("E_INTRADAY_PENDING_ENTRY", pending_lane)
 
         itm_engine_mode = False
 
@@ -8714,6 +8724,9 @@ class OptionsEngine:
         # V2.3.2 FIX #4: Mark this as intraday entry for correct position tracking
         self._pending_intraday_entry = True
         self._pending_intraday_entry_since = self.algorithm.Time if self.algorithm else None
+        self._pending_intraday_entry_engine = self._intraday_engine_lane_from_strategy(
+            entry_strategy.value
+        )
 
         # V2.3.10 FIX: Set pending contract for register_entry
         # Without this, register_entry fails with "no pending contract"
@@ -9386,6 +9399,7 @@ class OptionsEngine:
             self._intraday_position = position
             self._pending_intraday_entry = False  # Clear flag
             self._pending_intraday_entry_since = None
+            self._pending_intraday_entry_engine = None
             # Count intraday trades only after a confirmed fill registration.
             intraday_dir = (
                 OptionDirection.CALL
@@ -9472,6 +9486,7 @@ class OptionsEngine:
         """
         # V2.3.3: Clear pending exit flag when position is removed
         self._pending_intraday_exit = False
+        self._pending_intraday_exit_engine = None
 
         if self._intraday_position is not None:
             position = self._intraday_position
@@ -9821,32 +9836,42 @@ class OptionsEngine:
             trades_only=True,
         )
 
-    def cancel_pending_intraday_entry(self) -> None:
+    def cancel_pending_intraday_entry(self, engine: Optional[str] = None) -> None:
         """
         V2.20: Clear pending intraday entry state after broker rejection.
 
-        Resets intraday pending fields after broker rejection/cancel.
-        Intraday counters are fill-based, so no decrement rollback is needed.
-        Called by main._handle_order_rejection().
+        When engine is provided (MICRO/ITM), only clears matching lane lock.
         """
-        if self._pending_intraday_entry:
-            self._pending_intraday_entry = False
-            self._pending_intraday_entry_since = None
-            self._pending_contract = None
-            self._pending_entry_score = None
-            self._pending_num_contracts = None
-            self._pending_stop_pct = None
-            self._pending_stop_price = None
-            self._pending_target_price = None
-            self._pending_entry_strategy = None
-            self.log(
-                "OPT_MICRO_RECOVERY: Pending intraday entry cancelled | Retry allowed",
-                trades_only=True,
-            )
+        if not self._pending_intraday_entry:
+            return
+        if engine is not None:
+            eng = str(engine).upper()
+            if (self._pending_intraday_entry_engine or "").upper() != eng:
+                return
 
-    def has_pending_intraday_entry(self) -> bool:
+        self._pending_intraday_entry = False
+        self._pending_intraday_entry_since = None
+        self._pending_intraday_entry_engine = None
+        self._pending_contract = None
+        self._pending_entry_score = None
+        self._pending_num_contracts = None
+        self._pending_stop_pct = None
+        self._pending_stop_price = None
+        self._pending_target_price = None
+        self._pending_entry_strategy = None
+        self.log(
+            "OPT_MICRO_RECOVERY: Pending intraday entry cancelled | Retry allowed",
+            trades_only=True,
+        )
+
+    def has_pending_intraday_entry(self, engine: Optional[str] = None) -> bool:
         """True when an intraday entry is currently pending."""
-        return bool(self._pending_intraday_entry)
+        if not self._pending_intraday_entry:
+            return False
+        if engine is None:
+            return True
+        eng = str(engine).upper()
+        return (self._pending_intraday_entry_engine or "").upper() == eng
 
     def get_pending_entry_contract_symbol(self) -> str:
         """Best-effort symbol for current pending single-leg entry contract."""
@@ -9992,9 +10017,14 @@ class OptionsEngine:
         """True when a single-leg swing entry is pending (not intraday)."""
         return self._pending_contract is not None and not self._pending_intraday_entry
 
-    def has_pending_intraday_exit(self) -> bool:
+    def has_pending_intraday_exit(self, engine: Optional[str] = None) -> bool:
         """True when an intraday close signal has already been emitted and is in-flight."""
-        return bool(self._pending_intraday_exit)
+        if not self._pending_intraday_exit:
+            return False
+        if engine is None:
+            return True
+        eng = str(engine).upper()
+        return (self._pending_intraday_exit_engine or "").upper() == eng
 
     def mark_pending_intraday_exit(self, symbol: Optional[str] = None) -> bool:
         """
@@ -10020,6 +10050,12 @@ class OptionsEngine:
                 return False
 
         self._pending_intraday_exit = True
+        strategy_name = (
+            getattr(self._intraday_position, "entry_strategy", "")
+            if self._intraday_position is not None
+            else ""
+        )
+        self._pending_intraday_exit_engine = self._intraday_engine_lane_from_strategy(strategy_name)
         return True
 
     def cancel_pending_intraday_exit(self, symbol: Optional[str] = None) -> bool:
@@ -10046,6 +10082,7 @@ class OptionsEngine:
                 return False
 
         self._pending_intraday_exit = False
+        self._pending_intraday_exit_engine = None
         self.log("OPT_MICRO_RECOVERY: Pending intraday exit lock cleared", trades_only=True)
         return True
 
@@ -10375,7 +10412,9 @@ class OptionsEngine:
         self._pending_contract = None
         self._pending_intraday_entry = False
         self._pending_intraday_entry_since = None
+        self._pending_intraday_entry_engine = None
         self._pending_intraday_exit = False
+        self._pending_intraday_exit_engine = None
         self._pending_spread_long_leg = None
         self._pending_spread_short_leg = None
         self._pending_spread_width = None
@@ -10590,6 +10629,8 @@ class OptionsEngine:
                 else None
             ),
             "last_intraday_close_strategy": self._last_intraday_close_strategy,
+            "pending_intraday_entry_engine": self._pending_intraday_entry_engine,
+            "pending_intraday_exit_engine": self._pending_intraday_exit_engine,
             "call_consecutive_losses": self._call_consecutive_losses,
             "call_cooldown_until_date": (
                 self._call_cooldown_until_date.isoformat()
@@ -10692,6 +10733,8 @@ class OptionsEngine:
         else:
             self._intraday_position = None
 
+        self._pending_intraday_entry_engine = state.get("pending_intraday_entry_engine")
+        self._pending_intraday_exit_engine = state.get("pending_intraday_exit_engine")
         self._intraday_trades_today = state.get("intraday_trades_today", 0)
         self._intraday_call_trades_today = state.get("intraday_call_trades_today", 0)
         self._intraday_put_trades_today = state.get("intraday_put_trades_today", 0)
@@ -10910,9 +10953,11 @@ class OptionsEngine:
         # V2.3.2: Reset pending intraday entry flag
         self._pending_intraday_entry = False
         self._pending_intraday_entry_since = None
+        self._pending_intraday_entry_engine = None
 
         # V2.3.3: Reset pending intraday exit flag
         self._pending_intraday_exit = False
+        self._pending_intraday_exit_engine = None
         self._rejection_margin_cap = None
         self._spread_failure_cooldown_until = None
         self._spread_failure_cooldown_until_by_dir = {}
@@ -10964,9 +11009,11 @@ class OptionsEngine:
             # V2.3.2: Reset pending intraday entry flag
             self._pending_intraday_entry = False
             self._pending_intraday_entry_since = None
+            self._pending_intraday_entry_engine = None
 
             # V2.3.3: Reset pending intraday exit flag
             self._pending_intraday_exit = False
+            self._pending_intraday_exit_engine = None
             self._intraday_force_exit_hold_skip_log_date = {}
             self._last_intraday_close_time = None
             self._last_intraday_close_strategy = None
