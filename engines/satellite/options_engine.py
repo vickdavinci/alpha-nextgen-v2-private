@@ -6594,6 +6594,31 @@ class OptionsEngine:
             )
         ]
 
+    def _record_vass_mfe_diag(self, spread: SpreadPosition, prev_tier: int) -> None:
+        """Record VASS MFE telemetry into algorithm-level daily counters."""
+        algo = self.algorithm
+        if algo is None:
+            return
+        try:
+            peak = float(getattr(spread, "highest_pnl_max_profit_pct", 0.0) or 0.0)
+            if hasattr(algo, "_diag_vass_mfe_peak_max_profit_pct"):
+                algo._diag_vass_mfe_peak_max_profit_pct = max(
+                    float(getattr(algo, "_diag_vass_mfe_peak_max_profit_pct", 0.0) or 0.0),
+                    peak,
+                )
+            curr_tier = int(getattr(spread, "mfe_lock_tier", 0) or 0)
+            if curr_tier > int(prev_tier):
+                if curr_tier >= 1 and hasattr(algo, "_diag_vass_mfe_t1_hits"):
+                    algo._diag_vass_mfe_t1_hits = (
+                        int(getattr(algo, "_diag_vass_mfe_t1_hits", 0) or 0) + 1
+                    )
+                if curr_tier >= 2 and hasattr(algo, "_diag_vass_mfe_t2_hits"):
+                    algo._diag_vass_mfe_t2_hits = (
+                        int(getattr(algo, "_diag_vass_mfe_t2_hits", 0) or 0) + 1
+                    )
+        except Exception:
+            return
+
     # =========================================================================
     # V2.3 SPREAD EXIT SIGNALS
     # =========================================================================
@@ -6880,6 +6905,7 @@ class OptionsEngine:
                 spread.highest_pnl_max_profit_pct = mfe_ratio
 
             if bool(getattr(config, "VASS_MFE_LOCK_ENABLED", True)) and spread.max_profit > 0:
+                prev_tier = int(getattr(spread, "mfe_lock_tier", 0) or 0)
                 t1 = float(getattr(config, "VASS_MFE_T1_TRIGGER", 0.25))
                 t2 = float(getattr(config, "VASS_MFE_T2_TRIGGER", 0.45))
                 floor_t2_pct = float(getattr(config, "VASS_MFE_T2_FLOOR_PCT", 0.15))
@@ -6891,6 +6917,7 @@ class OptionsEngine:
                     spread.mfe_lock_tier = max(spread.mfe_lock_tier, 2)
                 elif spread.highest_pnl_max_profit_pct >= t1:
                     spread.mfe_lock_tier = max(spread.mfe_lock_tier, 1)
+                self._record_vass_mfe_diag(spread, prev_tier)
 
                 floor_pnl = None
                 if spread.mfe_lock_tier >= 2:
@@ -6899,10 +6926,33 @@ class OptionsEngine:
                     floor_pnl = commission_per_share
 
                 if floor_pnl is not None and pnl <= floor_pnl:
+                    if self.algorithm is not None and hasattr(
+                        self.algorithm, "_diag_vass_mfe_lock_exits"
+                    ):
+                        self.algorithm._diag_vass_mfe_lock_exits = (
+                            int(getattr(self.algorithm, "_diag_vass_mfe_lock_exits", 0) or 0) + 1
+                        )
                     exit_reason = (
                         f"MFE_LOCK_T{spread.mfe_lock_tier} {pnl:.1%} (MFE={spread.highest_pnl_max_profit_pct:.1%}, "
                         f"Floor=${floor_pnl:.2f})"
                     )
+
+            if (
+                exit_reason is None
+                and bool(getattr(config, "VASS_TAIL_RISK_CAP_ENABLED", True))
+                and pnl < 0
+                and self.algorithm is not None
+            ):
+                equity = float(getattr(self.algorithm.Portfolio, "TotalPortfolioValue", 0.0) or 0.0)
+                cap_pct = float(getattr(config, "VASS_TAIL_RISK_CAP_PCT_EQUITY", 0.015))
+                loss_dollars = abs(float(pnl)) * 100.0 * max(1, int(spread.num_spreads))
+                cap_dollars = max(0.0, equity * cap_pct)
+                if cap_dollars > 0 and loss_dollars >= cap_dollars:
+                    if hasattr(self.algorithm, "_diag_vass_tail_cap_exits"):
+                        self.algorithm._diag_vass_tail_cap_exits = (
+                            int(getattr(self.algorithm, "_diag_vass_tail_cap_exits", 0) or 0) + 1
+                        )
+                    exit_reason = f"VASS_TAIL_RISK_CAP: Loss=${loss_dollars:.0f} >= Cap=${cap_dollars:.0f} ({cap_pct:.1%} eq)"
 
             # Exit 1: Credit Profit Target (50% of max profit)
             profit_target = spread.max_profit * config.CREDIT_SPREAD_PROFIT_TARGET
@@ -6990,6 +7040,7 @@ class OptionsEngine:
                 spread.highest_pnl_max_profit_pct = mfe_ratio
 
             if bool(getattr(config, "VASS_MFE_LOCK_ENABLED", True)) and spread.max_profit > 0:
+                prev_tier = int(getattr(spread, "mfe_lock_tier", 0) or 0)
                 t1 = float(getattr(config, "VASS_MFE_T1_TRIGGER", 0.25))
                 t2 = float(getattr(config, "VASS_MFE_T2_TRIGGER", 0.45))
                 floor_t2_pct = float(getattr(config, "VASS_MFE_T2_FLOOR_PCT", 0.15))
@@ -7001,6 +7052,7 @@ class OptionsEngine:
                     spread.mfe_lock_tier = max(spread.mfe_lock_tier, 2)
                 elif spread.highest_pnl_max_profit_pct >= t1:
                     spread.mfe_lock_tier = max(spread.mfe_lock_tier, 1)
+                self._record_vass_mfe_diag(spread, prev_tier)
 
                 floor_pnl = None
                 if spread.mfe_lock_tier >= 2:
@@ -7009,10 +7061,33 @@ class OptionsEngine:
                     floor_pnl = commission_per_share
 
                 if floor_pnl is not None and pnl <= floor_pnl:
+                    if self.algorithm is not None and hasattr(
+                        self.algorithm, "_diag_vass_mfe_lock_exits"
+                    ):
+                        self.algorithm._diag_vass_mfe_lock_exits = (
+                            int(getattr(self.algorithm, "_diag_vass_mfe_lock_exits", 0) or 0) + 1
+                        )
                     exit_reason = (
                         f"MFE_LOCK_T{spread.mfe_lock_tier} {pnl_pct:.1%} "
                         f"(MFE={spread.highest_pnl_max_profit_pct:.1%}, Floor=${floor_pnl:.2f})"
                     )
+
+            if (
+                exit_reason is None
+                and bool(getattr(config, "VASS_TAIL_RISK_CAP_ENABLED", True))
+                and pnl < 0
+                and self.algorithm is not None
+            ):
+                equity = float(getattr(self.algorithm.Portfolio, "TotalPortfolioValue", 0.0) or 0.0)
+                cap_pct = float(getattr(config, "VASS_TAIL_RISK_CAP_PCT_EQUITY", 0.015))
+                loss_dollars = abs(float(pnl)) * 100.0 * max(1, int(spread.num_spreads))
+                cap_dollars = max(0.0, equity * cap_pct)
+                if cap_dollars > 0 and loss_dollars >= cap_dollars:
+                    if hasattr(self.algorithm, "_diag_vass_tail_cap_exits"):
+                        self.algorithm._diag_vass_tail_cap_exits = (
+                            int(getattr(self.algorithm, "_diag_vass_tail_cap_exits", 0) or 0) + 1
+                        )
+                    exit_reason = f"VASS_TAIL_RISK_CAP: Loss=${loss_dollars:.0f} >= Cap=${cap_dollars:.0f} ({cap_pct:.1%} eq)"
 
             # V10.7: Day-4 EOD decision for debit spreads.
             # Rule: at/after day-4 EOD, close spreads when P&L is above the threshold,

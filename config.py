@@ -1396,6 +1396,8 @@ VASS_MFE_LOCK_ENABLED = True
 VASS_MFE_T1_TRIGGER = 0.25  # 25% of max profit reached
 VASS_MFE_T2_TRIGGER = 0.45  # 45% of max profit reached
 VASS_MFE_T2_FLOOR_PCT = 0.15  # Lock +15% floor once T2 reached
+VASS_TAIL_RISK_CAP_ENABLED = True  # Emergency per-trade account-risk kill switch
+VASS_TAIL_RISK_CAP_PCT_EQUITY = 0.015  # Cap spread loss at 1.5% of portfolio equity
 
 # V3.0: Regime-Adaptive Profit Targets
 # V9.4: With 40% base, multipliers give: Bull=36%, Neutral=44%, Cautious/Bear=48%

@@ -142,6 +142,11 @@ def log_daily_summary(algo) -> None:
     suppression_min = int(getattr(algo, "_kill_switch_suppression_minutes", 0) or 0)
     ks_skip_until = str(getattr(algo.risk_engine, "_ks_skip_until_date", "") or "")
     ks_skip_active = bool(ks_skip_until) and str(algo.Time.date()) <= ks_skip_until
+    vass_mfe_peak = float(getattr(algo, "_diag_vass_mfe_peak_max_profit_pct", 0.0) or 0.0)
+    vass_mfe_t1 = int(getattr(algo, "_diag_vass_mfe_t1_hits", 0) or 0)
+    vass_mfe_t2 = int(getattr(algo, "_diag_vass_mfe_t2_hits", 0) or 0)
+    vass_mfe_lock_exits = int(getattr(algo, "_diag_vass_mfe_lock_exits", 0) or 0)
+    vass_tail_cap_exits = int(getattr(algo, "_diag_vass_tail_cap_exits", 0) or 0)
 
     algo.Log(
         "OPTIONS_DIAG_SUMMARY: "
@@ -176,6 +181,7 @@ def log_daily_summary(algo) -> None:
         f"TopRouterRejects={top_router_rejects_str} | "
         f"TopRouterRejectsByEngine={_fmt_engine_top_rejects()} | "
         f"VASSRejectTop={vass_reject_top} | "
+        f"VASSMFE(Peak/T1/T2/Lock/Tail)={vass_mfe_peak:.1%}/{vass_mfe_t1}/{vass_mfe_t2}/{vass_mfe_lock_exits}/{vass_tail_cap_exits} | "
         f"ExitPathCounts={exit_counts_str} | "
         f"ExitPathPnL={exit_pnl_str} | "
         f"ExitByEngine={_fmt_engine_exit_diag()} | "
