@@ -7,6 +7,36 @@ from engines.satellite.options_engine import ExitOrderTracker
 class MainOrdersMixin:
     """Large order/fill lifecycle methods extracted from main.py (move-only)."""
 
+    def _cancel_residual_option_orders(self, symbol: Symbol, reason: str = "") -> int:
+        """Cancel residual same-symbol non-OCO open orders once position is flat."""
+        try:
+            symbol_norm = self._normalize_symbol_str(symbol)
+            canceled = 0
+            for order in list(self.Transactions.GetOpenOrders()):
+                try:
+                    order_norm = self._normalize_symbol_str(order.Symbol)
+                    if order_norm != symbol_norm:
+                        continue
+                    tag = str(getattr(order, "Tag", "") or "")
+                    tag_u = tag.upper()
+                    # Keep OCO rails and spread-managed combo legs untouched here.
+                    if tag_u.startswith("OCO_STOP:") or tag_u.startswith("OCO_PROFIT:"):
+                        continue
+                    if "SPREAD_CLOSE" in tag_u or "SPREAD_CLOSE_RETRY" in tag_u:
+                        continue
+                    self.Transactions.CancelOrder(order.Id)
+                    canceled += 1
+                except Exception:
+                    continue
+            if canceled > 0:
+                self.Log(
+                    f"RESIDUAL_ORDER_CANCEL: {symbol_norm} | Canceled={canceled} | Reason={reason or 'NA'}"
+                )
+            return canceled
+        except Exception as e:
+            self.Log(f"RESIDUAL_ORDER_CANCEL_ERROR: {symbol} | {e}")
+            return 0
+
     def OnOrderEvent(self, orderEvent: OrderEvent) -> None:
         """
         Handle order status changes.
