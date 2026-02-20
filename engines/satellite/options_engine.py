@@ -8288,6 +8288,13 @@ class OptionsEngine:
             if state.recommended_strategy == IntradayStrategy.NO_TRADE:
                 itm_sovereign_bypass = bool(
                     getattr(config, "ITM_ENGINE_ENABLED", False)
+                    and bool(
+                        getattr(
+                            config,
+                            "ITM_ALLOW_SOVEREIGN_PROMOTION_FROM_MICRO",
+                            False,
+                        )
+                    )
                     and direction is not None
                     and direction in (OptionDirection.CALL, OptionDirection.PUT)
                 )

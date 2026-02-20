@@ -648,11 +648,8 @@ class MainOptionsMixin:
                         self._intraday_retry_reason_code = None
                         retry_strategy = self.options_engine.get_last_intraday_strategy()
                         if retry_strategy == IntradayStrategy.NO_TRADE:
-                            retry_strategy = (
-                                IntradayStrategy.ITM_MOMENTUM
-                                if bool(getattr(config, "ITM_ENGINE_ENABLED", False))
-                                else IntradayStrategy.MICRO_DEBIT_FADE
-                            )
+                            # Keep retry in MICRO lane; ITM has its own explicit scan path.
+                            retry_strategy = IntradayStrategy.MICRO_OTM_MOMENTUM
                         forced_intraday_strategy = retry_strategy
                         self.Log(
                             f"INTRADAY_RETRY: {signal_reason} | Strategy={retry_strategy.value}"

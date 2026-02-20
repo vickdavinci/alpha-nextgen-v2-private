@@ -2001,6 +2001,7 @@ INTRADAY_ITM_SCORE_OI_WEIGHT = 0.05
 # ITM_ENGINE (isolated horizon engine; feature-flagged)
 ITM_ENGINE_ENABLED = True
 ITM_SHADOW_MODE = False
+ITM_ALLOW_SOVEREIGN_PROMOTION_FROM_MICRO = False  # Keep MICRO/ITM entry paths separated
 ITM_SIZE_MULT = 1.0  # ITM_ENGINE sizing is sovereign; do not couple to MICRO score ladder
 ITM_DECISION_HOUR = 9
 ITM_DECISION_MINUTE = 45
