@@ -6653,8 +6653,14 @@ class OptionsEngine:
                 live_minutes = (self.algorithm.Time - entry_dt).total_seconds() / 60.0
                 mandatory_dte = int(getattr(config, "SPREAD_FORCE_CLOSE_DTE", 1))
                 if 0 <= live_minutes < min_hold_minutes and current_dte > mandatory_dte:
-                    hold_guard_bypass = False
-                    # Catastrophic hard-stop override must remain active even during hold guard.
+                    hold_guard_bypass = spread.spread_type in (
+                        "BULL_PUT_CREDIT",
+                        "BEAR_CALL_CREDIT",
+                        SpreadStrategy.BULL_PUT_CREDIT.value,
+                        SpreadStrategy.BEAR_CALL_CREDIT.value,
+                    )
+                    # Credit spreads should not be forced through the debit hold window.
+                    # Let credit stop/target logic run immediately under current market conditions.
                     if spread.spread_type in (
                         "BULL_CALL",
                         "BEAR_PUT",
