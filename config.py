@@ -1187,7 +1187,7 @@ BEAR_PUT_ENTRY_MIN_OTM_PCT = (
 )
 BEAR_PUT_ENTRY_LOW_VIX_THRESHOLD = 18.0  # Relax assignment gate in calmer IV environments
 BEAR_PUT_ENTRY_MIN_OTM_PCT_RELAXED = (
-    0.015  # V6.4 baseline relaxed threshold in low-VIX healthy regimes.
+    0.010  # V10.11: relax assignment gate to restore bearish debit access without removing guard
 )
 BEAR_PUT_ENTRY_RELAXED_REGIME_MIN = (
     60.0  # Require healthy regime before applying relaxed OTM threshold
@@ -1367,12 +1367,14 @@ SPREAD_MAX_DEBIT_TO_WIDTH_PCT = 0.38  # Legacy fallback max when adaptive D/W ba
 SPREAD_MIN_DEBIT_TO_WIDTH_PCT = (
     0.28  # V10.7: Reject ultra-cheap/low-quality debit structures (balanced D/W band)
 )
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT_LOW_VIX = 0.46
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT_MED_VIX = 0.44
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT_HIGH_VIX = 0.40
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_LOW_VIX = 0.38
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_MED_VIX = 0.36
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_HIGH_VIX = 0.34
 SPREAD_DW_LOW_VIX_MAX = 18.0
 SPREAD_DW_HIGH_VIX_MIN = 25.0
-SPREAD_PROFIT_TARGET_PCT = 0.48  # V10.9: higher target after hold bypass re-enables winner exits
+SPREAD_PROFIT_TARGET_PCT = (
+    0.40  # V10.11: reduce target to improve realization while preserving hold thesis
+)
 SPREAD_STOP_LOSS_PCT = 0.35  # V10.5: wider base stop to reduce noise stop-outs
 SPREAD_HARD_STOP_LOSS_PCT = 0.40  # V10.9: tighter catastrophic cap to reduce tail losses
 SPREAD_HARD_STOP_WIDTH_PCT = 0.35  # Hard cap using spread width (debit spreads)
