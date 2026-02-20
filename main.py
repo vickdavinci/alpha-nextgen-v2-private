@@ -74,6 +74,7 @@ class AlphaNextGen(QCAlgorithm):
     _check_spread_exit = MainOptionsMixin._check_spread_exit
     OnOrderEvent = MainOrdersMixin.OnOrderEvent
     _on_fill = MainOrdersMixin._on_fill
+    _cancel_residual_option_orders = MainOrdersMixin._cancel_residual_option_orders
 
     def Initialize(self) -> None:
         # Algorithm bootstrap entrypoint.
