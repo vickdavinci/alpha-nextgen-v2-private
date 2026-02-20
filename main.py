@@ -306,6 +306,8 @@ class AlphaNextGen(QCAlgorithm):
         # Per-symbol last order tag/fill time for lifecycle attribution and reconcile guard.
         self._last_option_fill_tag_by_symbol = {}
         self._last_option_fill_time_by_symbol = {}
+        self._order_tag_map_logged_ids = set()
+        self._order_tag_resolve_logged_ids = set()
         # Throttled intraday ObjectStore persistence marker (live-mode safety).
         self._last_state_persist_at = None
 
@@ -3299,13 +3301,63 @@ class AlphaNextGen(QCAlgorithm):
             return True
         return bool(getattr(config, config_flag, default))
 
+    def _record_order_tag_map(self, order_id: int, symbol: str, tag: str, source: str) -> None:
+        """Emit deterministic order-id -> tag mapping for RCA even when broker CSV drops tags."""
+        try:
+            oid = int(order_id or 0)
+        except Exception:
+            oid = 0
+        clean_tag = str(tag or "").strip()
+        if oid <= 0 or not clean_tag:
+            return
+        if oid in self._order_tag_map_logged_ids:
+            return
+        self._order_tag_map_logged_ids.add(oid)
+        if len(self._order_tag_map_logged_ids) > 50000:
+            self._order_tag_map_logged_ids.clear()
+        trace_id = self._extract_trace_id_from_tag(clean_tag) or "NONE"
+        sym = self._normalize_symbol_str(symbol)
+        self.Log(
+            f"ORDER_TAG_MAP: OrderId={oid} | Symbol={sym or symbol} | Source={source} | "
+            f"Tag={self._compact_tag_for_log(clean_tag)} | Trace={trace_id}"
+        )
+
+    def _record_order_tag_resolve(
+        self,
+        order_id: int,
+        symbol: str,
+        resolved_tag: str,
+        source: str,
+    ) -> None:
+        """Log how lifecycle events resolve tags (event/order/oco/cache/symbol-cache)."""
+        try:
+            oid = int(order_id or 0)
+        except Exception:
+            oid = 0
+        clean_tag = str(resolved_tag or "").strip()
+        if oid <= 0 or not clean_tag:
+            return
+        if oid in self._order_tag_resolve_logged_ids:
+            return
+        self._order_tag_resolve_logged_ids.add(oid)
+        if len(self._order_tag_resolve_logged_ids) > 50000:
+            self._order_tag_resolve_logged_ids.clear()
+        trace_id = self._extract_trace_id_from_tag(clean_tag) or "NONE"
+        sym = self._normalize_symbol_str(symbol)
+        self.Log(
+            f"ORDER_TAG_RESOLVE: OrderId={oid} | Symbol={sym or symbol} | Source={source} | "
+            f"Tag={self._compact_tag_for_log(clean_tag)} | Trace={trace_id}"
+        )
+
     def _get_order_tag(self, order_event: OrderEvent) -> str:
         """Best-effort extraction of original order tag for fill classification."""
         order_id = int(getattr(order_event, "OrderId", 0) or 0)
+        symbol = str(getattr(order_event, "Symbol", "") or "")
 
         event_tag = str(getattr(order_event, "Tag", "") or "").strip()
         if event_tag:
             self._cache_order_tag_hint(order_id, event_tag)
+            self._record_order_tag_resolve(order_id, symbol, event_tag, "event")
             return event_tag
 
         try:
@@ -3314,6 +3366,7 @@ class AlphaNextGen(QCAlgorithm):
                 order_tag = str(order.Tag).strip()
                 if order_tag:
                     self._cache_order_tag_hint(order_id, order_tag)
+                    self._record_order_tag_resolve(order_id, symbol, order_tag, "order")
                     return order_tag
         except Exception:
             pass
@@ -3323,19 +3376,20 @@ class AlphaNextGen(QCAlgorithm):
                 hinted = self.oco_manager.get_order_tag_hint(order_id)
                 if hinted:
                     self._cache_order_tag_hint(order_id, hinted)
+                    self._record_order_tag_resolve(order_id, symbol, hinted, "oco")
                     return hinted
         except Exception:
             pass
 
         cached = self._order_tag_hint_cache.get(order_id, "")
         if cached:
+            self._record_order_tag_resolve(order_id, symbol, cached, "cache")
             return cached
 
         # Last-resort fallback for broker events that drop order tags on cancel/fill.
-        symbol_hint = self._get_recent_symbol_fill_tag(
-            str(getattr(order_event, "Symbol", "")), max_age_minutes=480
-        )
+        symbol_hint = self._get_recent_symbol_fill_tag(symbol, max_age_minutes=480)
         if symbol_hint:
+            self._record_order_tag_resolve(order_id, symbol, symbol_hint, "symbol_cache")
             return symbol_hint
         return ""
 

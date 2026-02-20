@@ -258,6 +258,14 @@ class PortfolioRouter:
                     cache_fn(order_id, clean_tag)
                 except Exception:
                     pass
+                try:
+                    map_fn = getattr(self.algorithm, "_record_order_tag_map", None)
+                    if callable(map_fn):
+                        map_fn(
+                            order_id, str(getattr(ticket, "Symbol", "")), clean_tag, "router_submit"
+                        )
+                except Exception:
+                    pass
 
         if isinstance(ticket_or_tickets, (list, tuple)):
             for ticket in ticket_or_tickets:
