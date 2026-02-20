@@ -1106,7 +1106,7 @@ SHORT_LEG_ITM_EXIT_THRESHOLD = (
     0.035  # Raised to reduce noise exits; trigger only on deeper ITM risk
 )
 SPREAD_ASSIGNMENT_GRACE_MINUTES = 45  # V6.15 FIX: Allow spread to stabilize before ITM checks
-SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 15  # Minutes between log messages
+SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 30  # Minutes between log messages
 SPREAD_MIN_HOLD_MINUTES = 5760  # V10.5: 4-day minimum hold window for VASS spread lifecycle
 SPREAD_EXIT_RETRY_MINUTES = (
     15  # V9.4 P0: Cooldown between exit signal retries (prevents per-minute spam)
@@ -1278,7 +1278,7 @@ MICRO_ITM_DTE_MIN_MED_VIX = 3  # MED VIX: reduce theta decay on ITM singles
 MICRO_ITM_DTE_MIN_HIGH_VIX = 2  # HIGH VIX: vol provides buffer
 MICRO_ITM_DTE_MAX = 5  # Unchanged intraday envelope
 MICRO_DTE_DIAG_LOG_INTERVAL_MIN = 120  # Throttle ITM DTE routing diagnostics
-MICRO_DTE_DIAG_LOG_BACKTEST_ENABLED = True  # Keep throttled ITM DTE diagnostics in backtests
+MICRO_DTE_DIAG_LOG_BACKTEST_ENABLED = False  # Keep throttled ITM DTE diagnostics in backtests
 
 # -----------------------------------------------------------------------------
 # V2.3 DEBIT SPREAD CONFIGURATION
@@ -1585,8 +1585,8 @@ GAMMA_PIN_BUFFER_PCT = 0.005  # 0.5% buffer zone around short strike
 GAMMA_PIN_EARLY_EXIT_DTE = 2  # Activate within 2 DTE
 
 # Pitfall #4: VASS Rejection Logging - Throttled logging for silent rejections
-VASS_LOG_REJECTION_INTERVAL_MINUTES = 15  # Log rejections every 15 min (not every candle)
-MICRO_NO_TRADE_LOG_INTERVAL_MINUTES = 10  # Per-block throttle for MICRO_NO_TRADE logs
+VASS_LOG_REJECTION_INTERVAL_MINUTES = 30  # Log rejections every 15 min (not every candle)
+MICRO_NO_TRADE_LOG_INTERVAL_MINUTES = 30  # Per-block throttle for MICRO_NO_TRADE logs
 
 # -----------------------------------------------------------------------------
 # V2.11: PRE-BACKTEST SAFETY FIXES (Pitfalls #6-8)
@@ -2281,14 +2281,14 @@ MICRO_UPDATE_LOG_BACKTEST_ENABLED = False  # Keep micro logs in backtest, but th
 MICRO_UPDATE_LOG_ON_CHANGE_ONLY = True  # Backtest: log only on state change (+heartbeat)
 MICRO_UPDATE_LOG_MINUTES = 60  # Heartbeat interval when micro state remains unchanged
 SPREAD_CONSTRUCTION_FAIL_LOG_INTERVAL_MINUTES = 60  # Throttle repeated spread-build failure logs
-SPREAD_CONSTRUCTION_FAIL_LOG_BACKTEST_ENABLED = True  # Backtest: keep for RCA (still throttled)
+SPREAD_CONSTRUCTION_FAIL_LOG_BACKTEST_ENABLED = False  # Backtest: keep for RCA (still throttled)
 LOG_SPREAD_RECONCILE_BACKTEST_ENABLED = (
     False  # Suppress repetitive reconcile-clear logs in backtests
 )
 LOG_ORDER_LIFECYCLE_BACKTEST_ENABLED = (
     False  # Full-year backtests: rely on daily summaries to stay within log budget
 )
-LOG_ORDER_LIFECYCLE_MAX_PER_DAY = 50  # Guardrail for lifecycle log budget
+LOG_ORDER_LIFECYCLE_MAX_PER_DAY = 20  # Guardrail for lifecycle log budget
 SPREAD_GHOST_INTRADAY_CLEAR_CONSECUTIVE = (
     2  # Intraday guarded clear requires N consecutive flat checks
 )
@@ -2342,8 +2342,8 @@ EXPIRATION_HAMMER_CLOSE_ALL = True  # Close ALL options expiring today at 2 PM
 
 # V2.3.24: Rejection log throttle to reduce log spam
 # Only log MIN_TRADE_VALUE rejections once per interval
-REJECTION_LOG_THROTTLE_MINUTES = 15
-REJECTION_EVENT_LOG_THROTTLE_MINUTES = 5  # Throttle repeated ROUTER_REJECT lines by code/stage
+REJECTION_LOG_THROTTLE_MINUTES = 30
+REJECTION_EVENT_LOG_THROTTLE_MINUTES = 15  # Throttle repeated ROUTER_REJECT lines by code/stage
 
 # =============================================================================
 # SCHEDULING
