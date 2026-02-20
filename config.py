@@ -1581,8 +1581,8 @@ GAMMA_PIN_BUFFER_PCT = 0.005  # 0.5% buffer zone around short strike
 GAMMA_PIN_EARLY_EXIT_DTE = 2  # Activate within 2 DTE
 
 # Pitfall #4: VASS Rejection Logging - Throttled logging for silent rejections
-VASS_LOG_REJECTION_INTERVAL_MINUTES = 60  # Log rejections every 15 min (not every candle)
-MICRO_NO_TRADE_LOG_INTERVAL_MINUTES = 30  # Per-block throttle for MICRO_NO_TRADE logs
+VASS_LOG_REJECTION_INTERVAL_MINUTES = 15  # Log rejections every 15 min (not every candle)
+MICRO_NO_TRADE_LOG_INTERVAL_MINUTES = 10  # Per-block throttle for MICRO_NO_TRADE logs
 
 # -----------------------------------------------------------------------------
 # V2.11: PRE-BACKTEST SAFETY FIXES (Pitfalls #6-8)
