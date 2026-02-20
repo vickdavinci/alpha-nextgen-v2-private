@@ -410,10 +410,35 @@ class ExecutionEngine:
         try:
             order.submitted_at = self._get_time()
 
+            tag = f"EXEC:{order.order_id}|{order.get_side()}|{order.symbol}"
             if order.order_type == OrderType.MARKET:
-                ticket = self.algorithm.MarketOrder(order.symbol, order.quantity)  # type: ignore[attr-defined]
+                try:
+                    ticket = self.algorithm.MarketOrder(  # type: ignore[attr-defined]
+                        order.symbol, order.quantity, tag=tag
+                    )
+                except TypeError:
+                    try:
+                        ticket = self.algorithm.MarketOrder(  # type: ignore[attr-defined]
+                            order.symbol, order.quantity, tag
+                        )
+                    except TypeError:
+                        ticket = self.algorithm.MarketOrder(  # type: ignore[attr-defined]
+                            order.symbol, order.quantity
+                        )
             else:
-                ticket = self.algorithm.MarketOnOpenOrder(order.symbol, order.quantity)  # type: ignore[attr-defined]
+                try:
+                    ticket = self.algorithm.MarketOnOpenOrder(  # type: ignore[attr-defined]
+                        order.symbol, order.quantity, tag=tag
+                    )
+                except TypeError:
+                    try:
+                        ticket = self.algorithm.MarketOnOpenOrder(  # type: ignore[attr-defined]
+                            order.symbol, order.quantity, tag
+                        )
+                    except TypeError:
+                        ticket = self.algorithm.MarketOnOpenOrder(  # type: ignore[attr-defined]
+                            order.symbol, order.quantity
+                        )
 
             # Store broker order ID mapping
             broker_id = ticket.OrderId  # type: ignore[attr-defined]

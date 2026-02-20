@@ -2251,6 +2251,35 @@ class PortfolioRouter:
                     if agg.metadata:
                         intraday_strategy = agg.metadata.get("intraday_strategy")
                     intraday_strategy = str(intraday_strategy or "").strip().upper()
+                    if not intraday_strategy:
+                        reason_blob_upper = ("; ".join(agg.reasons)).upper() if agg.reasons else ""
+                        source_blob_upper = str(source_tag or "").upper()
+                        if (
+                            "ITM_MOMENTUM" in reason_blob_upper
+                            or "ITM_MOMENTUM" in source_blob_upper
+                        ):
+                            intraday_strategy = "ITM_MOMENTUM"
+                        elif (
+                            "PROTECTIVE_PUTS" in reason_blob_upper
+                            or "PROTECTIVE_PUTS" in source_blob_upper
+                            or "PROTECTIVE" in reason_blob_upper
+                        ):
+                            intraday_strategy = "PROTECTIVE_PUTS"
+                        elif (
+                            "MICRO_DEBIT_FADE" in reason_blob_upper
+                            or "DEBIT_FADE" in reason_blob_upper
+                        ):
+                            intraday_strategy = "MICRO_DEBIT_FADE"
+                        elif (
+                            "MICRO_OTM_MOMENTUM" in reason_blob_upper
+                            or "OTM_MOMENTUM" in reason_blob_upper
+                        ):
+                            intraday_strategy = "MICRO_OTM_MOMENTUM"
+                        elif (
+                            "MICRO_EOD_SWEEP" in reason_blob_upper
+                            or "INTRADAY_FORCE_EXIT" in reason_blob_upper
+                        ):
+                            intraday_strategy = "MICRO_OTM_MOMENTUM"
                     if "ITM_MOMENTUM" in intraday_strategy:
                         tag = f"ITM:{intraday_strategy}"
                     elif "PROTECTIVE_PUTS" in intraday_strategy:
@@ -2258,7 +2287,7 @@ class PortfolioRouter:
                     elif intraday_strategy:
                         tag = f"MICRO:{intraday_strategy}"
                     else:
-                        tag = "MICRO:UNKNOWN"
+                        tag = "MICRO:UNCLASSIFIED"
                 elif any(s == "OPT" for s in agg.sources):
                     vass_strategy = None
                     spread_type = None
