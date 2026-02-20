@@ -888,6 +888,12 @@ class MainOrdersMixin:
                                     self.Log(
                                         f"OCO_CLEANUP_ERROR: {removed_position.contract.symbol} | {e}"
                                     )
+                                # P0 plumbing: when position is now flat, cancel any residual
+                                # same-symbol non-OCO orders to prevent accidental short opens.
+                                self._cancel_residual_option_orders(
+                                    removed_position.contract.symbol,
+                                    reason="INTRADAY_FLAT_FILLED",
+                                )
                             if removed_position and removed_position.entry_price > 0:
                                 is_win = fill_price > removed_position.entry_price
                                 # V10.8: Do NOT feed MICRO outcomes into VASS spread win-rate / breaker state.
