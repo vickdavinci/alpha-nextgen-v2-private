@@ -276,8 +276,9 @@ class MonthlyPnLTracker:
 
         # Log trade
         win_str = "WIN" if is_win else "LOSS"
+        display_symbol = symbol if str(symbol).startswith("SPREAD:") else str(symbol)[-15:]
         self.log(
-            f"PNL_TRACK: {win_str} | {engine_category} | {symbol[-15:]} | "
+            f"PNL_TRACK: {win_str} | {engine_category} | {display_symbol} | "
             f"P&L=${realized_pnl_calc:+,.0f} | Entry=${entry_price:.2f} Exit=${exit_price:.2f} | "
             f"Qty={quantity} | Month={month}"
         )

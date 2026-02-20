@@ -2972,7 +2972,7 @@ class AlphaNextGen(QCAlgorithm):
             target_price=position.target_price,
             quantity=qty,
             current_date=today,
-            tag_context=f"MICRO:{getattr(position, 'entry_strategy', 'UNKNOWN')}",
+            tag_context=f"{self._oco_engine_prefix_for_strategy(getattr(position, 'entry_strategy', 'UNKNOWN'))}:{getattr(position, 'entry_strategy', 'UNKNOWN')}",
         )
         submitted = False
         if oco_pair:
@@ -3000,6 +3000,21 @@ class AlphaNextGen(QCAlgorithm):
                 stale.append(symbol)
         for symbol in stale:
             self._clear_intraday_close_guard(symbol)
+
+    def _oco_engine_prefix_for_strategy(self, entry_strategy: str) -> str:
+        """Map strategy tag to stable engine prefix for OCO attribution."""
+        strategy = str(entry_strategy or "UNKNOWN").upper()
+        if strategy == "ITM_MOMENTUM":
+            return "ITM"
+        if strategy == "PROTECTIVE_PUTS":
+            return "HEDGE"
+        if strategy.startswith("MICRO_") or strategy in (
+            "DEBIT_FADE",
+            "OTM_MOMENTUM",
+            "INTRADAY_DEBIT_FADE",
+        ):
+            return "MICRO"
+        return "OPT"
 
     def _on_friday_firewall(self) -> None:
         """
@@ -3643,7 +3658,8 @@ class AlphaNextGen(QCAlgorithm):
             if not entry_tag_hint:
                 entry_tag_hint = self._get_recent_symbol_fill_tag(symbol_norm, max_age_minutes=240)
             trace_id = self._extract_trace_id_from_tag(entry_tag_hint)
-            tag_context = f"MICRO:{entry_strategy}"
+            engine_prefix = self._oco_engine_prefix_for_strategy(entry_strategy)
+            tag_context = f"{engine_prefix}:{entry_strategy}"
             if trace_id:
                 tag_context = f"{tag_context}|trace={trace_id}"
 
