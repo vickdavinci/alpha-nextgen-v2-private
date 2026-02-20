@@ -111,6 +111,7 @@ class VASSEntryEngine:
         vix_intraday_change_pct: float,
         current_hour: int,
         current_minute: int,
+        enforce_time_window: bool = True,
     ) -> Tuple[bool, str]:
         """Simple intraday filters for swing-mode entries."""
         time_minutes = current_hour * 60 + current_minute
@@ -120,7 +121,7 @@ class VASSEntryEngine:
         end_minutes = self._parse_hhmm_to_minutes(
             str(getattr(config, "SWING_TIME_WINDOW_END", "14:30")), 14 * 60 + 30
         )
-        if not (start_minutes <= time_minutes <= end_minutes):
+        if enforce_time_window and not (start_minutes <= time_minutes <= end_minutes):
             return False, "TIME_WINDOW"
 
         if abs(spy_gap_pct) > config.SWING_GAP_THRESHOLD:

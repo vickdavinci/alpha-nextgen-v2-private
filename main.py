@@ -3234,6 +3234,13 @@ class AlphaNextGen(QCAlgorithm):
         cached = self._order_tag_hint_cache.get(order_id, "")
         if cached:
             return cached
+
+        # Last-resort fallback for broker events that drop order tags on cancel/fill.
+        symbol_hint = self._get_recent_symbol_fill_tag(
+            str(getattr(order_event, "Symbol", "")), max_age_minutes=480
+        )
+        if symbol_hint:
+            return symbol_hint
         return ""
 
     def _cache_order_tag_hint(self, order_id: int, tag: str) -> None:
@@ -3470,6 +3477,16 @@ class AlphaNextGen(QCAlgorithm):
                     f"Reason={reason}"
                 )
 
+            entry_tag_hint = ""
+            if isinstance(position, dict):
+                entry_tag_hint = str(position.get("entry_tag", "") or "")
+            if not entry_tag_hint:
+                entry_tag_hint = self._get_recent_symbol_fill_tag(symbol_norm, max_age_minutes=240)
+            trace_id = self._extract_trace_id_from_tag(entry_tag_hint)
+            tag_context = f"MICRO:{entry_strategy}"
+            if trace_id:
+                tag_context = f"{tag_context}|trace={trace_id}"
+
             oco_pair = self.oco_manager.create_oco_pair(
                 symbol=symbol_norm,
                 entry_price=entry_price,
@@ -3477,7 +3494,7 @@ class AlphaNextGen(QCAlgorithm):
                 target_price=target_price,
                 quantity=qty,
                 current_date=str(self.Time.date()),
-                tag_context=f"MICRO:{entry_strategy}",
+                tag_context=tag_context,
             )
             if oco_pair and self.oco_manager.submit_oco_pair(oco_pair, current_time=str(self.Time)):
                 self.Log(
@@ -5071,6 +5088,7 @@ class AlphaNextGen(QCAlgorithm):
             vix_intraday_change_pct=vix_intraday_change_pct,
             current_hour=self.Time.hour,
             current_minute=self.Time.minute,
+            is_eod_scan=is_eod_scan,
         )
         if not swing_filters_ok:
             self._diag_vass_block_count += 1

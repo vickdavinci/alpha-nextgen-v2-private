@@ -40,6 +40,8 @@ class MainOrdersMixin:
                 pass
             trace_id = self._extract_trace_id_from_tag(order_tag) or "NONE"
             compact_tag = self._compact_tag_for_log(order_tag)
+            if order_tag:
+                self._cache_symbol_fill_tag(symbol, order_tag)
 
             self.Log(
                 f"PARTIAL_FILL: {symbol[-20:]} | Qty={fill_qty} @ ${fill_price:.2f} | "
@@ -97,6 +99,8 @@ class MainOrdersMixin:
                 pass
             trace_id = self._extract_trace_id_from_tag(order_tag) or "NONE"
             compact_tag = self._compact_tag_for_log(order_tag)
+            if order_tag:
+                self._cache_symbol_fill_tag(symbol, order_tag)
             self.Log(
                 f"FILL: {direction} {abs(fill_qty)} {symbol} @ ${fill_price:.2f} | "
                 f"OrderId={orderEvent.OrderId} | Type={order_type} | "
@@ -544,6 +548,10 @@ class MainOrdersMixin:
                 status="Canceled",
             )
             is_oco_cancel = self.oco_manager.has_order(orderEvent.OrderId)
+            if not is_oco_cancel:
+                tag_upper = canceled_tag.upper()
+                if tag_upper.startswith("OCO_STOP:") or tag_upper.startswith("OCO_PROFIT:"):
+                    is_oco_cancel = True
             if is_oco_cancel:
                 self.oco_manager.on_order_inactive(
                     broker_order_id=orderEvent.OrderId,

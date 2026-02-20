@@ -1674,6 +1674,7 @@ class OptionsEngine:
         self._pending_net_debit: Optional[float] = None
         self._pending_max_profit: Optional[float] = None
         self._pending_spread_width: Optional[float] = None
+        self._pending_spread_entry_since: Optional[datetime] = None
 
         # V2.3 FIX: Prevent order spam - track failed entry attempts
         self._entry_attempted_today: bool = False
@@ -5307,6 +5308,9 @@ class OptionsEngine:
         self._pending_net_debit = net_debit
         self._pending_max_profit = max_profit
         self._pending_spread_width = width
+        self._pending_spread_entry_since = (
+            self.algorithm.Time if self.algorithm is not None else None
+        )
         self._pending_num_contracts = num_spreads
         self._pending_entry_score = entry_score.total
 
@@ -5842,6 +5846,9 @@ class OptionsEngine:
         self._pending_net_debit = -credit_received  # Negative = credit received
         self._pending_max_profit = credit_received  # Max profit per spread = credit
         self._pending_spread_width = width
+        self._pending_spread_entry_since = (
+            self.algorithm.Time if self.algorithm is not None else None
+        )
         self._pending_num_contracts = num_spreads
         self._pending_entry_score = entry_score.total
 
@@ -8096,6 +8103,7 @@ class OptionsEngine:
         vix_intraday_change_pct: float,
         current_hour: int,
         current_minute: int,
+        is_eod_scan: bool = False,
     ) -> Tuple[bool, str]:
         """Swing-mode entry filters delegated to VASSEntryEngine."""
         return self._vass_entry_engine.check_swing_filters(
@@ -8105,6 +8113,7 @@ class OptionsEngine:
             vix_intraday_change_pct=vix_intraday_change_pct,
             current_hour=current_hour,
             current_minute=current_minute,
+            enforce_time_window=not bool(is_eod_scan),
         )
 
     def check_intraday_entry_signal(
@@ -9527,6 +9536,7 @@ class OptionsEngine:
         self._pending_net_debit = None
         self._pending_max_profit = None
         self._pending_spread_width = None
+        self._pending_spread_entry_since = None
         self._pending_num_contracts = None
         self._pending_entry_score = None
         self._rejection_margin_cap = None  # V2.21: Clear on successful fill
@@ -9576,6 +9586,7 @@ class OptionsEngine:
         self._pending_net_debit = None
         self._pending_max_profit = None
         self._pending_spread_width = None
+        self._pending_spread_entry_since = None
         self._pending_num_contracts = None
         self._pending_entry_score = None
         self.log(
@@ -9583,8 +9594,59 @@ class OptionsEngine:
             trades_only=True,
         )
 
+    def _clear_stale_pending_spread_entry_if_orphaned(self) -> None:
+        """Clear stale pending spread lock when no matching open leg orders exist."""
+        if self._pending_spread_long_leg is None or self._pending_spread_short_leg is None:
+            return
+        if self.algorithm is None or not hasattr(self.algorithm, "Time"):
+            return
+
+        if self._pending_spread_entry_since is None:
+            self._pending_spread_entry_since = self.algorithm.Time
+            return
+
+        stale_minutes = int(getattr(config, "SPREAD_PENDING_ENTRY_STALE_MINUTES", 7))
+        if stale_minutes <= 0:
+            return
+
+        age_minutes = (
+            self.algorithm.Time - self._pending_spread_entry_since
+        ).total_seconds() / 60.0
+        if age_minutes < stale_minutes:
+            return
+
+        pending_symbols = {
+            self._symbol_str(self._pending_spread_long_leg.symbol),
+            self._symbol_str(self._pending_spread_short_leg.symbol),
+        }
+        pending_symbols = {s for s in pending_symbols if s}
+
+        has_open_orders = False
+        try:
+            for open_order in self.algorithm.Transactions.GetOpenOrders():
+                if getattr(open_order.Symbol, "SecurityType", None) != SecurityType.Option:
+                    continue
+                open_sym = self._symbol_str(open_order.Symbol)
+                if open_sym in pending_symbols:
+                    has_open_orders = True
+                    break
+        except Exception:
+            # Do not clear state when broker/order query fails.
+            return
+
+        if has_open_orders:
+            return
+
+        self.cancel_pending_spread_entry()
+        self.log(
+            f"OPT_MACRO_RECOVERY: Cleared stale pending spread entry | "
+            f"AgeMin={age_minutes:.1f} | Pending={','.join(sorted(pending_symbols)) or 'NONE'}",
+            trades_only=True,
+        )
+
     def has_pending_spread_entry(self) -> bool:
         """True when both pending spread legs are populated."""
+        self._clear_stale_pending_spread_entry_if_orphaned()
         return (
             self._pending_spread_long_leg is not None and self._pending_spread_short_leg is not None
         )
@@ -9616,6 +9678,7 @@ class OptionsEngine:
         self._pending_net_debit = None
         self._pending_max_profit = None
         self._pending_spread_width = None
+        self._pending_spread_entry_since = None
         self._pending_num_contracts = None
         self._pending_entry_score = None
         self._pending_stop_pct = None
@@ -10231,6 +10294,7 @@ class OptionsEngine:
         self._pending_spread_long_leg = None
         self._pending_spread_short_leg = None
         self._pending_spread_width = None
+        self._pending_spread_entry_since = None
         self._pending_spread_type = None
         self._pending_net_debit = None
         self._pending_max_profit = None
