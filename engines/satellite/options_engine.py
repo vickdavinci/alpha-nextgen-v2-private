@@ -8254,14 +8254,6 @@ class OptionsEngine:
         # Reset previous validation reason for this attempt
         self.set_last_intraday_validation_failure(None, None)
 
-        # Check if already have intraday position
-        if self._intraday_position is not None:
-            # V6.2: Log position block (was silent - Bug #3 instrumentation)
-            self.log(
-                f"INTRADAY: Blocked - already has position | "
-                f"Symbol={self._intraday_position.symbol if hasattr(self._intraday_position, 'symbol') else self._intraday_position}"
-            )
-            return fail("E_INTRADAY_HAS_POSITION")
         if self._pending_intraday_entry:
             self._clear_stale_pending_intraday_entry_if_orphaned()
 
@@ -8326,6 +8318,11 @@ class OptionsEngine:
         pending_lane = self._intraday_engine_lane_from_strategy(entry_strategy.value)
         if self.has_pending_intraday_entry(engine=pending_lane):
             return fail("E_INTRADAY_PENDING_ENTRY", pending_lane)
+        if self.has_intraday_position(engine=pending_lane):
+            return fail("E_INTRADAY_HAS_POSITION", pending_lane)
+        if self.has_intraday_position():
+            owner_lane = self.get_intraday_position_engine() or "UNKNOWN"
+            return fail("E_INTRADAY_OTHER_ENGINE_POSITION", owner_lane)
 
         itm_engine_mode = False
 

@@ -97,6 +97,13 @@ class MainOrdersMixin:
             direction = "BUY" if fill_qty > 0 else "SELL"
 
             order_tag = self._get_order_tag(orderEvent)
+            if not order_tag and fill_qty < 0:
+                # Backfill blank broker exit tags from recent symbol tag cache.
+                order_tag = self._get_recent_symbol_fill_tag(symbol)
+                if order_tag:
+                    self.Log(
+                        f"EXIT_TAG_BACKFILL: {symbol[-20:]} | OrderId={orderEvent.OrderId} | Tag={self._compact_tag_for_log(order_tag)}"
+                    )
             order_type = "UNKNOWN"
             try:
                 order = self.Transactions.GetOrderById(orderEvent.OrderId)
@@ -299,6 +306,8 @@ class MainOrdersMixin:
             invalid_tag = (
                 str(getattr(invalid_order, "Tag", "") or "") if invalid_order is not None else ""
             )
+            if not invalid_tag:
+                invalid_tag = self._get_recent_symbol_fill_tag(failed_symbol) or ""
             if "RECON_ORPHAN_OPTION" in invalid_tag:
                 self._recon_orphan_close_submitted.pop(failed_symbol_norm, None)
             if "Margin" in str(orderEvent.Message) or "buying power" in str(orderEvent.Message):
@@ -548,6 +557,8 @@ class MainOrdersMixin:
             canceled_tag = (
                 str(getattr(canceled_order, "Tag", "") or "") if canceled_order is not None else ""
             )
+            if not canceled_tag:
+                canceled_tag = self._get_recent_symbol_fill_tag(canceled_symbol) or ""
             if "RECON_ORPHAN_OPTION" in canceled_tag:
                 self._recon_orphan_close_submitted.pop(canceled_symbol_norm, None)
             self._forward_execution_event(
