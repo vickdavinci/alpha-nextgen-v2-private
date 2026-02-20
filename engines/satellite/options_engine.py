@@ -8719,6 +8719,21 @@ class OptionsEngine:
                 f"(config.PROTECTIVE_PUTS_STOP_PCT)"
             )
 
+        # V10.10: OTM momentum uses a fixed strategy stop to avoid ATR-driven widening.
+        # ATR expansion was pushing realized OTM losses much wider than intended risk.
+        if (
+            not is_protective_put
+            and entry_strategy == IntradayStrategy.MICRO_OTM_MOMENTUM
+            and self._pending_stop_pct is not None
+        ):
+            otm_fixed_stop = float(getattr(config, "MICRO_OTM_MOMENTUM_STOP", 0.35))
+            if abs(float(self._pending_stop_pct) - otm_fixed_stop) > 1e-6:
+                self.log(
+                    f"STOP_CALC: MICRO_OTM fixed stop override {self._pending_stop_pct:.0%} -> {otm_fixed_stop:.0%}",
+                    trades_only=True,
+                )
+            self._pending_stop_pct = otm_fixed_stop
+
         # V10.5: widen ITM stops in MED/HIGH VIX only; keep LOW VIX behavior unchanged.
         if (
             not is_protective_put
