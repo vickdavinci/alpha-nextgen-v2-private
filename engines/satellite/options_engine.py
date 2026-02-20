@@ -8694,8 +8694,17 @@ class OptionsEngine:
 
             # ITM_ENGINE is a sovereign engine: do not couple size to MICRO score ladders.
             if itm_engine_mode and entry_strategy == IntradayStrategy.ITM_MOMENTUM:
-                strategy_mult = float(getattr(config, "ITM_SIZE_MULT", 1.0) or 1.0)
-                strategy_mult = max(0.0, strategy_mult)
+                base_mult = float(getattr(config, "ITM_SIZE_MULT", 1.0) or 1.0)
+                med_vix_thr = float(getattr(config, "ITM_MED_VIX_THRESHOLD", 18.0))
+                high_vix_thr = float(getattr(config, "ITM_HIGH_VIX_THRESHOLD", 25.0))
+                vix_val = float(vix_current) if vix_current is not None else med_vix_thr
+                if vix_val >= high_vix_thr:
+                    tier_mult = float(getattr(config, "ITM_SIZE_MULT_HIGH_VIX", 0.50))
+                elif vix_val >= med_vix_thr:
+                    tier_mult = float(getattr(config, "ITM_SIZE_MULT_MED_VIX", 0.75))
+                else:
+                    tier_mult = float(getattr(config, "ITM_SIZE_MULT_LOW_VIX", 1.00))
+                strategy_mult = max(0.0, base_mult * tier_mult)
             else:
                 # OTM micro paths still use MICRO score ladder.
                 if state.micro_score >= config.MICRO_SCORE_PRIME_MR:
@@ -8918,12 +8927,31 @@ class OptionsEngine:
         ):
             _, itm_engine_stop, _, _, _ = self._itm_horizon_engine.get_exit_profile(vix_current)
             if itm_engine_stop is not None and itm_engine_stop > 0:
-                if abs(float(self._pending_stop_pct) - float(itm_engine_stop)) > 1e-6:
+                atr_stop = float(self._pending_stop_pct)
+                final_itm_stop = float(itm_engine_stop)
+                if bool(getattr(config, "ITM_ATR_GUARDRAIL_ENABLED", True)):
+                    med_vix_thr = float(getattr(config, "ITM_MED_VIX_THRESHOLD", 18.0))
+                    high_vix_thr = float(getattr(config, "ITM_HIGH_VIX_THRESHOLD", 25.0))
+                    vix_val = float(vix_current) if vix_current is not None else med_vix_thr
+                    if vix_val >= high_vix_thr:
+                        max_itm_stop = float(
+                            getattr(config, "ITM_ATR_GUARDRAIL_MAX_STOP_HIGH_VIX", 0.40)
+                        )
+                    elif vix_val >= med_vix_thr:
+                        max_itm_stop = float(
+                            getattr(config, "ITM_ATR_GUARDRAIL_MAX_STOP_MED_VIX", 0.35)
+                        )
+                    else:
+                        max_itm_stop = float(
+                            getattr(config, "ITM_ATR_GUARDRAIL_MAX_STOP_LOW_VIX", 0.30)
+                        )
+                    final_itm_stop = min(max_itm_stop, max(float(itm_engine_stop), atr_stop))
+                if abs(float(self._pending_stop_pct) - float(final_itm_stop)) > 1e-6:
                     self.log(
-                        f"STOP_CALC: ITM_ENGINE fixed stop override {self._pending_stop_pct:.0%} -> {itm_engine_stop:.0%}",
+                        f"STOP_CALC: ITM_ENGINE stop floor {itm_engine_stop:.0%}, ATR {atr_stop:.0%} -> {final_itm_stop:.0%}",
                         trades_only=True,
                     )
-                self._pending_stop_pct = float(itm_engine_stop)
+                self._pending_stop_pct = float(final_itm_stop)
 
         self.log(
             f"INTRADAY_SIGNAL: {reason} | Δ={best_contract.delta:.2f} K={best_contract.strike} DTE={best_contract.days_to_expiry} | "
