@@ -1323,6 +1323,10 @@ class MainOptionsMixin:
         Args:
             data: Current data slice.
         """
+        # Defensive local import for minified/backtest packaging variants.
+        # Ensures spread-exit signals always have TargetWeight available.
+        from models.target_weight import TargetWeight
+
         # Plumbing guard: never emit spread-exit orders while the primary market is closed.
         # Off-hours time-stop signals were creating submit->reconcile churn and masking true fill flow.
         if not self._is_primary_market_open():
