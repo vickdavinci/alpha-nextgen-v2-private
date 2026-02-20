@@ -891,11 +891,15 @@ VASS_SIMILAR_ENTRY_COOLDOWN_DAYS = (
 VASS_SIMILAR_ENTRY_USE_EXPIRY_BUCKET = True  # Use expiry date bucket (fallback to DTE bucket)
 VASS_DIRECTION_DAY_GAP_ENABLED = True  # Hard spacing: max 1 VASS entry per day per direction
 VASS_ENTRY_ENGINE_ENABLED = True  # V10.10: route VASS strategy/filter/guards via dedicated engine
-VASS_USE_CONVICTION_ONLY_DIRECTION = True  # V10.7: VASS direction must follow conviction, not macro
+VASS_USE_CONVICTION_ONLY_DIRECTION = (
+    False  # V10.7: VASS direction must follow conviction, not macro
+)
 VASS_NO_CONVICTION_NO_TRADE = (
     False  # V10.10: soft mode — no-conviction can still trade through normal VASS gates
 )
-VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT = True  # V10.7: Fallback when BEAR_PUT is blocked
+VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT = (
+    False  # V10.10 tuning: disable bearish credit fallback while BEAR_PUT gating is rebalanced
+)
 
 # Level Crossing Thresholds (regime shift signals)
 VASS_VIX_FEAR_CROSS_LEVEL = 23  # VIX crosses above this → BEARISH
@@ -1191,6 +1195,10 @@ BEAR_PUT_ENTRY_RELAXED_REGIME_MIN = (
 # V6.22: During confirmed stress, allow tighter BEAR_PUT shorts to keep bearish access alive.
 # V9.4: Lowered from 0.8% to 0.3%. Bear markets need PUT access most — max loss already capped by debit.
 BEAR_PUT_ENTRY_MIN_OTM_PCT_STRESS = 0.005
+BEAR_PUT_ASSIGNMENT_HARD_BLOCK_VIX = 28.0  # V10.10: only enforce assignment gate in high-stress IV
+BEAR_PUT_ASSIGNMENT_HARD_BLOCK_REGIME_MAX = (
+    40.0  # V10.10: only enforce assignment gate in deep risk-off regime
+)
 VASS_BEAR_FALLBACK_MAX_REGIME = 40.0  # V10.9: fallback only in clearly weak macro regimes
 
 # Contract Selection
@@ -1359,9 +1367,9 @@ SPREAD_MAX_DEBIT_TO_WIDTH_PCT = 0.38  # Legacy fallback max when adaptive D/W ba
 SPREAD_MIN_DEBIT_TO_WIDTH_PCT = (
     0.28  # V10.7: Reject ultra-cheap/low-quality debit structures (balanced D/W band)
 )
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT_LOW_VIX = 0.50
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT_MED_VIX = 0.48
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT_HIGH_VIX = 0.44
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_LOW_VIX = 0.46
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_MED_VIX = 0.44
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_HIGH_VIX = 0.40
 SPREAD_DW_LOW_VIX_MAX = 18.0
 SPREAD_DW_HIGH_VIX_MIN = 25.0
 SPREAD_PROFIT_TARGET_PCT = 0.45  # V10.9: higher target after hold bypass re-enables winner exits
@@ -1635,7 +1643,9 @@ SETTLEMENT_HALT_UNTIL_MINUTE = 30
 # V2.12 Fix #3: Hard cap on spread contracts to prevent position accumulation
 # Evidence: V2.11 backtest showed qty=-80 (5× intended) from exit signal bug
 SPREAD_MAX_CONTRACTS = 30  # Legacy cap (kept for compatibility)
-SPREAD_MAX_CONTRACTS_HARD_CAP = 30  # V10.7: explicit hard cap used by risk-budget sizing
+SPREAD_MAX_CONTRACTS_HARD_CAP = (
+    20  # V10.10 tuning: reduce VASS tail-loss blast radius while preserving throughput
+)
 
 # V5.3: Options Position Limits (Margin Error Prevention)
 # Max concurrent positions: 2 intraday + 5 swings = 7 total

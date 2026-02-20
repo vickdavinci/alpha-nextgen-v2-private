@@ -4862,36 +4862,50 @@ class OptionsEngine:
             and short_leg_contract is not None
             and current_price > 0
         ):
-            min_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT", 0.03))
-            stress_otm_pct = float(
-                getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT_STRESS", min_otm_pct)
+            hard_block_vix = float(getattr(config, "BEAR_PUT_ASSIGNMENT_HARD_BLOCK_VIX", 28.0))
+            hard_block_regime_max = float(
+                getattr(config, "BEAR_PUT_ASSIGNMENT_HARD_BLOCK_REGIME_MAX", 40.0)
             )
-            low_vix_threshold = float(getattr(config, "BEAR_PUT_ENTRY_LOW_VIX_THRESHOLD", 18.0))
-            relaxed_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT_RELAXED", 0.015))
-            relaxed_regime_min = float(getattr(config, "BEAR_PUT_ENTRY_RELAXED_REGIME_MIN", 60.0))
-            gate_profile = "BASE"
-            if overlay_state in {"STRESS", "EARLY_STRESS"}:
-                min_otm_pct = min(min_otm_pct, stress_otm_pct)
-                gate_profile = "STRESS"
-            if (
-                vix_current <= low_vix_threshold
-                and regime_score >= relaxed_regime_min
-                and gate_profile == "BASE"
-            ):
-                min_otm_pct = min(min_otm_pct, relaxed_otm_pct)
-                gate_profile = "LOW_VIX_RELAXED"
-            short_strike = short_leg_contract.strike
-            # For PUTs: OTM when strike < price, ITM when strike > price
-            # Calculate how far OTM the short strike is (negative = ITM)
-            otm_pct = (current_price - short_strike) / current_price
-            if otm_pct < min_otm_pct:
-                self.log(
-                    f"SPREAD: Entry blocked - BEAR_PUT assignment risk | "
-                    f"Short strike {short_strike:.0f} is {otm_pct:.1%} OTM "
-                    f"(min {min_otm_pct:.1%}) | "
-                    f"QQQ={current_price:.2f}"
+            enforce_assignment_gate = (
+                overlay_state in {"STRESS", "EARLY_STRESS"}
+                or vix_current >= hard_block_vix
+                or regime_score <= hard_block_regime_max
+            )
+            if enforce_assignment_gate:
+                min_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT", 0.03))
+                stress_otm_pct = float(
+                    getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT_STRESS", min_otm_pct)
                 )
-                return fail(f"BEAR_PUT_ASSIGNMENT_GATE_{gate_profile}")
+                low_vix_threshold = float(getattr(config, "BEAR_PUT_ENTRY_LOW_VIX_THRESHOLD", 18.0))
+                relaxed_otm_pct = float(
+                    getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT_RELAXED", 0.015)
+                )
+                relaxed_regime_min = float(
+                    getattr(config, "BEAR_PUT_ENTRY_RELAXED_REGIME_MIN", 60.0)
+                )
+                gate_profile = "BASE"
+                if overlay_state in {"STRESS", "EARLY_STRESS"}:
+                    min_otm_pct = min(min_otm_pct, stress_otm_pct)
+                    gate_profile = "STRESS"
+                if (
+                    vix_current <= low_vix_threshold
+                    and regime_score >= relaxed_regime_min
+                    and gate_profile == "BASE"
+                ):
+                    min_otm_pct = min(min_otm_pct, relaxed_otm_pct)
+                    gate_profile = "LOW_VIX_RELAXED"
+                short_strike = short_leg_contract.strike
+                # For PUTs: OTM when strike < price, ITM when strike > price
+                # Calculate how far OTM the short strike is (negative = ITM)
+                otm_pct = (current_price - short_strike) / current_price
+                if otm_pct < min_otm_pct:
+                    self.log(
+                        f"SPREAD: Entry blocked - BEAR_PUT assignment risk | "
+                        f"Short strike {short_strike:.0f} is {otm_pct:.1%} OTM "
+                        f"(min {min_otm_pct:.1%}) | "
+                        f"QQQ={current_price:.2f}"
+                    )
+                    return fail(f"BEAR_PUT_ASSIGNMENT_GATE_{gate_profile}")
 
         # VIX filter
         if vix_current > vix_max:
