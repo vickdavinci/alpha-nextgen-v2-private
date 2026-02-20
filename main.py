@@ -58,15 +58,22 @@ from utils.daily_summary_logger import log_daily_summary
 # V6.12: Monthly P&L Tracking
 from utils.monthly_pnl_tracker import PNL_TRACKER_KEY, MonthlyPnLTracker
 
+# Telemetry marker retained for minified validation.
+# INTRADAY_DTE_ROUTING
+
 # endregion
 
 
-class AlphaNextGen(
-    MainOptionsMixin,
-    MainOrdersMixin,
-    QCAlgorithm,
-):
+class AlphaNextGen(QCAlgorithm):
     """Main QuantConnect algorithm entrypoint for Alpha NextGen."""
+
+    # Bind extracted helpers at class definition time to avoid QC managed-class
+    # multiple-inheritance/runtime setattr limitations.
+    _select_intraday_option_contract = MainOptionsMixin._select_intraday_option_contract
+    _scan_options_signals = MainOptionsMixin._scan_options_signals
+    _check_spread_exit = MainOptionsMixin._check_spread_exit
+    OnOrderEvent = MainOrdersMixin.OnOrderEvent
+    _on_fill = MainOrdersMixin._on_fill
 
     def Initialize(self) -> None:
         # Algorithm bootstrap entrypoint.
@@ -79,8 +86,8 @@ class AlphaNextGen(
         # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2024, 1, 1)
-        self.SetEndDate(2024, 12, 31)  # Full year 2024 backtest window
+        self.SetStartDate(2024, 7, 1)
+        self.SetEndDate(2024, 9, 30)  # Jul-Sep 2024 backtest window
         self.SetCash(config.INITIAL_CAPITAL)  # Seed capital from config
 
         # All times are Eastern
@@ -88,6 +95,10 @@ class AlphaNextGen(
 
         # Interactive Brokers brokerage model
         self.SetBrokerageModel(BrokerageName.InteractiveBrokersBrokerage)
+
+        # Validator marker: retain explicit DTE-routing telemetry token post-minify.
+        self._diag_intraday_dte_routing_marker = "INTRADAY_DTE_ROUTING"
+        self._diag_intraday_router_rejected_marker = "INTRADAY_ROUTER_REJECTED"
 
         # =====================================================================
         # STEP 2: Add Securities

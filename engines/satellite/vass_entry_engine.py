@@ -310,6 +310,7 @@ class VASSEntryEngine:
 
     def reset_daily(self) -> None:
         """No-op for now; guards are multi-day by design."""
+        pass
 
     def reset(self) -> None:
         self._last_entry_at_by_signature = {}

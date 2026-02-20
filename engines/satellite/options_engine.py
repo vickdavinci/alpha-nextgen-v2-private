@@ -3031,7 +3031,8 @@ class OptionsEngine:
             if direction:
                 if not hasattr(self, "_spread_failure_cooldown_until_by_dir"):
                     self._spread_failure_cooldown_until_by_dir = {}
-                self._spread_failure_cooldown_until_by_dir[direction] = cooldown_until
+                dir_key = direction.value if hasattr(direction, "value") else str(direction)
+                self._spread_failure_cooldown_until_by_dir[str(dir_key).upper()] = cooldown_until
             else:
                 self._spread_failure_cooldown_until = cooldown_until
             self.log(
@@ -10387,9 +10388,10 @@ class OptionsEngine:
             # Runtime guard/cooldown state (restart-safe)
             "rejection_margin_cap": self._rejection_margin_cap,
             "spread_failure_cooldown_until": self._spread_failure_cooldown_until,
-            "spread_failure_cooldown_until_by_dir": dict(
-                self._spread_failure_cooldown_until_by_dir
-            ),
+            "spread_failure_cooldown_until_by_dir": {
+                str(k.value if hasattr(k, "value") else k).upper(): str(v)
+                for k, v in self._spread_failure_cooldown_until_by_dir.items()
+            },
             "spread_exit_signal_cooldown": {
                 k: v.strftime("%Y-%m-%d %H:%M:%S")
                 for k, v in self._spread_exit_signal_cooldown.items()

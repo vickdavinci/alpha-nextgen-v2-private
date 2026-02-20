@@ -2203,18 +2203,36 @@ class PortfolioRouter:
                 order_type = OrderType.MOO
 
             reason = "; ".join(agg.reasons) if agg.reasons else "No reason provided"
+            # Ensure every intent has a deterministic, non-empty tag for lifecycle attribution.
             tag = None
             if is_option:
                 if any(s == "OPT_INTRADAY" for s in agg.sources):
                     intraday_strategy = None
                     if agg.metadata:
                         intraday_strategy = agg.metadata.get("intraday_strategy")
-                    tag = f"MICRO:{intraday_strategy}" if intraday_strategy else "MICRO"
+                    intraday_strategy = str(intraday_strategy or "").strip().upper()
+                    if "ITM_MOMENTUM" in intraday_strategy:
+                        tag = f"ITM:{intraday_strategy}"
+                    elif "PROTECTIVE_PUTS" in intraday_strategy:
+                        tag = f"HEDGE:{intraday_strategy}"
+                    elif intraday_strategy:
+                        tag = f"MICRO:{intraday_strategy}"
+                    else:
+                        tag = "MICRO:UNKNOWN"
                 elif any(s == "OPT" for s in agg.sources):
                     vass_strategy = None
                     if agg.metadata:
                         vass_strategy = agg.metadata.get("vass_strategy")
-                    tag = f"VASS:{vass_strategy}" if vass_strategy else "VASS"
+                    tag = f"VASS:{vass_strategy}" if vass_strategy else "VASS:UNKNOWN"
+
+            # Fallback for non-option paths or missing metadata.
+            if not tag:
+                if source_tag:
+                    tag = str(source_tag)
+                elif agg.sources:
+                    tag = str(agg.sources[0])
+                else:
+                    tag = "UNCLASSIFIED"
 
             orders.append(
                 OrderIntent(

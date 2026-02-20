@@ -37,6 +37,8 @@ fi
 echo "Syncing core files..."
 cp "$SRC/main.py" "$DST/"
 cp "$SRC/config.py" "$DST/"
+cp "$SRC/main_options_mixin.py" "$DST/"
+cp "$SRC/main_orders_mixin.py" "$DST/"
 
 DIRS="engines portfolio execution models persistence scheduling data utils"
 for dir in $DIRS; do

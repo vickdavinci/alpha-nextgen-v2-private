@@ -642,9 +642,11 @@ def main():
                 target_spaces=target_indent,
                 allow_var_annotations=allow_var_annotations,
             )
-            if len(minified) > 252000:
+            # Run structural minifier on medium/large files too (not only near 256KB)
+            # to reduce total project payload for cloud push while preserving syntax.
+            if len(minified) > 50000:
                 minified = python_minifier_fallback(minified, aggressive=False)
-            if len(minified) > 252000:
+            if len(minified) > 120000:
                 minified = python_minifier_fallback(minified, aggressive=True)
             if len(minified) > 252000:
                 minified = ast_unparse_fallback(minified)
