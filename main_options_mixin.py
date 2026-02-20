@@ -133,6 +133,13 @@ class MainOptionsMixin:
         if strategy == IntradayStrategy.PROTECTIVE_PUTS:
             effective_dte_min = int(getattr(config, "PROTECTIVE_PUTS_DTE_MIN", 0))
             effective_dte_max = int(getattr(config, "PROTECTIVE_PUTS_DTE_MAX", 2))
+            # Late-day crash hedges should avoid 0DTE decay/expiry risk.
+            late_hour = int(getattr(config, "PROTECTIVE_PUTS_LATE_DAY_MIN_DTE_HOUR", 13))
+            try:
+                if hasattr(self, "Time") and int(self.Time.hour) >= late_hour:
+                    effective_dte_min = max(effective_dte_min, 1)
+            except Exception:
+                pass
             key = f"PROTECTIVE_PUTS|{effective_dte_min}|{effective_dte_max}"
             last_log_at = self._last_intraday_dte_routing_log_by_key.get(key)
             should_log = last_log_at is None or (

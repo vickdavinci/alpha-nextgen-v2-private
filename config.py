@@ -1853,8 +1853,8 @@ PUT_GATE_LOSS_COOLDOWN_DAYS_HIGH_VIX = 2
 # V2.19: VIX Floor for DEBIT_FADE
 # In low VIX (<13.5) "apathy" markets, mean reversion fails - trends persist longer
 # Evidence: V2.18 backtests showed DEBIT_FADE losses when VIX < 13.5
-INTRADAY_DEBIT_FADE_VIX_MIN = 9.0  # Legacy alias (kept for compatibility)
-MICRO_DEBIT_FADE_VIX_MIN = 9.0  # Canonical: ATM fade minimum VIX
+INTRADAY_DEBIT_FADE_VIX_MIN = 12.0  # Legacy alias (kept for compatibility)
+MICRO_DEBIT_FADE_VIX_MIN = 12.0  # Canonical: ATM fade minimum VIX
 
 # Debit Fade (Mean Reversion) - Gate 3a - The Sniper Window
 INTRADAY_FADE_MIN_MOVE = 0.35  # Restore intraday participation while keeping noise filter
@@ -1911,7 +1911,7 @@ INTRADAY_ITM_TRAIL_PCT = 0.32  # V10.8: retain more profits once trail is active
 INTRADAY_DEBIT_FADE_TARGET = 0.35  # V10.10: improve DEBIT_FADE R:R for 1-2 DTE
 INTRADAY_DEBIT_FADE_STOP = 0.25
 INTRADAY_DEBIT_FADE_TRAIL_TRIGGER = 0.25  # V9.8: revert to V9.3 (below 0.40 target, trail works)
-INTRADAY_DEBIT_FADE_TRAIL_PCT = 0.50
+INTRADAY_DEBIT_FADE_TRAIL_PCT = 0.30
 
 # Canonical MICRO strategy exits (legacy INTRADAY_DEBIT_FADE_* kept as aliases)
 MICRO_DEBIT_FADE_TARGET = INTRADAY_DEBIT_FADE_TARGET
@@ -2030,6 +2030,7 @@ ITM_SIZE_MULT = 1.0  # ITM_ENGINE sizing is sovereign; do not couple to MICRO sc
 ITM_SIZE_MULT_LOW_VIX = 1.00
 ITM_SIZE_MULT_MED_VIX = 0.75
 ITM_SIZE_MULT_HIGH_VIX = 0.50
+MICRO_SIZE_MULT_MID_CONVICTION = 0.75  # MICRO score band 60-79
 
 ITM_DECISION_HOUR = 10
 ITM_DECISION_MINUTE = 30
@@ -2174,8 +2175,9 @@ PROTECTIVE_PUTS_TARGET_PCT = 0.60  # Crash hedge convexity target for near-ATM p
 PROTECTIVE_PUTS_DTE_EXIT = 0  # Keep same-day hedges alive until force-exit unless stop/target hit
 PROTECTIVE_PUTS_CRASH_TRIGGER_ENABLED = True
 PROTECTIVE_PUTS_QQQ_DROP_TRIGGER_PCT = -1.0  # Trigger hedge on >=1% intraday QQQ drop
-PROTECTIVE_PUTS_VIX_MIN_TRIGGER = 18.0  # Require elevated fear backdrop for crash trigger
+PROTECTIVE_PUTS_VIX_MIN_TRIGGER = 15.0  # Allow earlier crash-day hedges in rising-vol tapes
 PROTECTIVE_PUTS_REQUIRE_VIX_RISING = True
+PROTECTIVE_PUTS_LATE_DAY_MIN_DTE_HOUR = 13  # After this hour, avoid opening new 0DTE hedges
 INTRADAY_MAX_CONTRACTS = 60  # V10.5: Increased hard cap for all MICRO intraday entries
 INTRADAY_CONTRACT_CAP_SCALE_WITH_EQUITY = True
 INTRADAY_MAX_CONTRACTS_BASE_EQUITY = 100_000

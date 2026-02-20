@@ -8752,7 +8752,7 @@ class OptionsEngine:
                 if state.micro_score >= config.MICRO_SCORE_PRIME_MR:
                     strategy_mult = 1.0  # Full size
                 elif state.micro_score >= config.MICRO_SCORE_GOOD_MR:
-                    strategy_mult = 1.0  # Full size
+                    strategy_mult = float(getattr(config, "MICRO_SIZE_MULT_MID_CONVICTION", 0.75))
                 elif state.micro_score >= config.MICRO_SCORE_MODERATE:
                     strategy_mult = 0.5  # Half size
                 else:
