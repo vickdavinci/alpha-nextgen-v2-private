@@ -537,6 +537,14 @@ class MainOptionsMixin:
             self._options_intraday_cooldown_until is not None
             and self.Time < self._options_intraday_cooldown_until
         )
+        # Defaults for explicit ITM pass (only used when intraday scan context is ready).
+        itm_dir = None
+        itm_reason = ""
+        micro_state = None
+        vix_intraday = 0.0
+        vix_level_cboe = None
+        regime_score = self._get_effective_regime_score_for_options()
+        intraday_scan_context_ready = False
         if self._should_scan_intraday() and self._qqq_at_open > 0 and not intraday_cooldown_active:
             # V5.3: Check position limits before scanning
             can_intraday, intraday_limit_reason = self.options_engine.can_enter_intraday()
@@ -561,6 +569,8 @@ class MainOptionsMixin:
                     uvxy_current = self.Securities[self.uvxy].Price if hasattr(self, "uvxy") else 0
                     if uvxy_current > 0:
                         uvxy_pct = (uvxy_current - self._uvxy_at_open) / self._uvxy_at_open
+
+                intraday_scan_context_ready = True
 
                 # V6.3: Unified intraday signal generation (fixes dual-update bug)
                 # Single method handles: update, conviction, resolution, direction conflict
@@ -592,24 +602,13 @@ class MainOptionsMixin:
                     f"MICRO-{self.Time.strftime('%Y%m%d-%H%M')}-"
                     f"{self._diag_intraday_candidate_count + 1}"
                 )
+                micro_signal_submitted = False
 
                 forced_intraday_strategy = None
                 if bool(getattr(config, "ITM_ENGINE_ENABLED", False)):
                     itm_dir, itm_reason = self.options_engine.get_itm_direction_proposal(
                         qqq_current=qqq_price
                     )
-                    micro_is_no_trade = (
-                        micro_state is None
-                        or micro_state.recommended_strategy == IntradayStrategy.NO_TRADE
-                    )
-                    if itm_dir is not None and (not should_trade or micro_is_no_trade):
-                        should_trade = True
-                        intraday_direction = itm_dir
-                        forced_intraday_strategy = IntradayStrategy.ITM_MOMENTUM
-                        signal_reason = f"ITM_ENGINE_SOVEREIGN: {itm_reason}"
-                        if micro_state is not None:
-                            micro_state.recommended_strategy = IntradayStrategy.ITM_MOMENTUM
-                            micro_state.recommended_direction = itm_dir
 
                 if not should_trade:
                     self.Log(f"INTRADAY: Blocked - {signal_reason}")
@@ -804,6 +803,7 @@ class MainOptionsMixin:
                             else ""
                         )
                         self.portfolio_router.receive_signal(intraday_signal)
+                        micro_signal_submitted = True
                         # V2.3.13 FIX: MUST process immediately - signal was being queued but never executed!
                         # The function returns early via swing spread path, so signal was lost
                         self._process_immediate_signals()
@@ -902,6 +902,110 @@ class MainOptionsMixin:
                                     f"INTRADAY_RETRY_QUEUED: Code={drop_code} | "
                                     f"Expires={self._intraday_retry_expires.strftime('%H:%M')}"
                                 )
+
+        # Explicit ITM scan path (separate from MICRO signal ownership).
+        if (
+            bool(getattr(config, "ITM_ENGINE_ENABLED", False))
+            and intraday_scan_context_ready
+            and not locals().get("micro_signal_submitted", False)
+            and itm_dir is not None
+            and not self.options_engine.has_intraday_position()
+        ):
+            itm_signal_id = (
+                f"ITM-{self.Time.strftime('%Y%m%d-%H%M')}-"
+                f"{self._diag_intraday_candidate_count + 1}"
+            )
+            itm_reason = itm_reason or "EXPLICIT_ITM_SCAN"
+            self._diag_intraday_candidate_count += 1
+            self._inc_intraday_engine_counter(
+                self._diag_intraday_candidates_by_engine,
+                IntradayStrategy.ITM_MOMENTUM,
+            )
+            self.Log(
+                f"INTRADAY_SIGNAL_CANDIDATE: SignalId={itm_signal_id} | "
+                f"ITM_ENGINE_EXPLICIT: {itm_reason} | Direction={itm_dir.value}"
+            )
+
+            itm_contract = self._select_intraday_option_contract(
+                chain,
+                itm_dir,
+                strategy=IntradayStrategy.ITM_MOMENTUM,
+                vix_current=vix_intraday,
+            )
+            if itm_contract is None:
+                self._log_intraday_signal_dropped(
+                    signal_id=itm_signal_id,
+                    code="E_NO_CONTRACT_SELECTED",
+                    reason=f"ITM_ENGINE_EXPLICIT: {itm_reason}",
+                    retry_hint="None",
+                    direction=itm_dir,
+                    strategy=IntradayStrategy.ITM_MOMENTUM,
+                    contract_symbol="NONE",
+                )
+                self._diag_intraday_dropped_count += 1
+                self._inc_intraday_engine_counter(
+                    self._diag_intraday_dropped_by_engine,
+                    IntradayStrategy.ITM_MOMENTUM,
+                )
+            else:
+                qqq_atr_value = self.qqq_atr.Current.Value if self.qqq_atr.IsReady else 0.0
+                itm_signal = self.options_engine.check_intraday_entry_signal(
+                    vix_current=vix_intraday,
+                    vix_open=self._vix_at_open,
+                    qqq_current=qqq_price,
+                    qqq_open=self._qqq_at_open,
+                    current_hour=self.Time.hour,
+                    current_minute=self.Time.minute,
+                    current_time=str(self.Time),
+                    portfolio_value=effective_portfolio_value,
+                    raw_portfolio_value=float(self.Portfolio.TotalPortfolioValue),
+                    best_contract=itm_contract,
+                    size_multiplier=size_multiplier,
+                    macro_regime_score=regime_score,
+                    governor_scale=self._governor_scale,
+                    direction=itm_dir,
+                    forced_entry_strategy=IntradayStrategy.ITM_MOMENTUM,
+                    vix_level_override=vix_level_cboe,
+                    underlying_atr=qqq_atr_value,
+                    micro_state=micro_state,
+                )
+                if itm_signal is not None:
+                    itm_signal = self._attach_option_trace_metadata(itm_signal, source="ITM")
+                    self.Log(
+                        f"INTRADAY_SIGNAL_APPROVED: SignalId={itm_signal_id} | "
+                        f"ITM_ENGINE_EXPLICIT: {itm_reason} | Direction={itm_dir.value} | "
+                        f"Strategy=ITM_MOMENTUM | Contract={itm_contract.symbol}"
+                    )
+                    self._diag_intraday_approved_count += 1
+                    self._inc_intraday_engine_counter(
+                        self._diag_intraday_approved_by_engine,
+                        IntradayStrategy.ITM_MOMENTUM,
+                    )
+                    self.portfolio_router.receive_signal(itm_signal)
+                    self._process_immediate_signals()
+                else:
+                    (
+                        itm_validation_reason,
+                        itm_validation_detail,
+                    ) = self.options_engine.pop_last_intraday_validation_failure()
+                    drop_code = self._canonical_options_reason_code(
+                        itm_validation_reason or "E_INTRADAY_NO_SIGNAL_UNCLASSIFIED"
+                    )
+                    self._log_intraday_signal_dropped(
+                        signal_id=itm_signal_id,
+                        code=drop_code,
+                        reason=f"ITM_ENGINE_EXPLICIT: {itm_reason}",
+                        retry_hint="None",
+                        direction=itm_dir,
+                        strategy=IntradayStrategy.ITM_MOMENTUM,
+                        contract_symbol=str(itm_contract.symbol),
+                        validation_detail=itm_validation_detail,
+                    )
+                    self._diag_intraday_dropped_count += 1
+                    self._inc_intraday_engine_counter(
+                        self._diag_intraday_dropped_by_engine,
+                        IntradayStrategy.ITM_MOMENTUM,
+                    )
 
         # V2.20: Check rejection cooldowns for swing/spread modes
         swing_cooldown_active = (
