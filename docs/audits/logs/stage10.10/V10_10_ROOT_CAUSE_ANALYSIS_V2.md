@@ -205,3 +205,15 @@ This is fixable, but requires **sequenced, minimal structural corrections** rath
 - **ITM stop architecture unchanged in this patch:**
   - Keep `ITM_TARGET_PCT=0.40`, `ITM_STOP_PCT=0.30`
   - Reason: avoid over-tightening multi-day ITM profile before re-measuring under the new anti-round-trip controls.
+
+### Telemetry Preservation Update (V10.11)
+
+To ensure no signal-flow information is lost under log throttles, intraday drop reasons are now counted independently of log emission:
+
+- Added persistent counters for total intraday drop reasons and per-engine drop reasons.
+- Counters increment on every dropped signal event before throttled logging.
+- Daily summary now includes:
+  - `IntradayDropTop=...`
+  - `IntradayDropByEngine=MICRO[...] ITM[...] OTHER[...]`
+
+This preserves RCA fidelity even when per-event logs are rate-limited for log-budget safety.

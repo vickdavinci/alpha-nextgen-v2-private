@@ -286,6 +286,12 @@ class AlphaNextGen(QCAlgorithm):
         self._diag_intraday_candidates_by_engine = {"MICRO": 0, "ITM": 0, "OTHER": 0}
         self._diag_intraday_approved_by_engine = {"MICRO": 0, "ITM": 0, "OTHER": 0}
         self._diag_intraday_dropped_by_engine = {"MICRO": 0, "ITM": 0, "OTHER": 0}
+        self._diag_intraday_drop_reason_counts = {}
+        self._diag_intraday_drop_reason_counts_by_engine = {
+            "MICRO": {},
+            "ITM": {},
+            "OTHER": {},
+        }
         self._diag_intraday_results_by_engine = {"MICRO": 0, "ITM": 0, "OTHER": 0}
         self._last_micro_update_log_signature = None
         self._last_micro_update_log_time = None
@@ -1406,6 +1412,7 @@ class AlphaNextGen(QCAlgorithm):
             f"ValidationDetail={validation_detail} | " if validation_detail else ""
         )
         throttle_key = f"DROP:{code}:{direction.value if direction else 'NONE'}:{strategy.value if strategy else 'NONE'}"
+        self._record_intraday_drop_reason(code, strategy)
         if self._should_log_intraday_diag(throttle_key):
             self.Log(
                 f"INTRADAY_SIGNAL_DROPPED: SignalId={signal_id} | Candidate rejected before order | "
@@ -2455,6 +2462,9 @@ class AlphaNextGen(QCAlgorithm):
             self._diag_intraday_approved_by_engine[_k] = 0
         for _k in self._diag_intraday_dropped_by_engine.keys():
             self._diag_intraday_dropped_by_engine[_k] = 0
+        self._diag_intraday_drop_reason_counts.clear()
+        for _store in self._diag_intraday_drop_reason_counts_by_engine.values():
+            _store.clear()
         for _k in self._diag_intraday_results_by_engine.keys():
             self._diag_intraday_results_by_engine[_k] = 0
         self._single_leg_last_exit_reason.clear()
@@ -3438,6 +3448,16 @@ class AlphaNextGen(QCAlgorithm):
         bucket = self._intraday_engine_bucket_from_strategy(strategy)
         store[bucket] = int(store.get(bucket, 0)) + 1
         return bucket
+
+    def _record_intraday_drop_reason(self, code: str, strategy: Optional[Any]) -> None:
+        """Persist drop-reason metrics independent of log throttling."""
+        reason = self._canonical_options_reason_code(code or "E_UNKNOWN")
+        self._diag_intraday_drop_reason_counts[reason] = (
+            int(self._diag_intraday_drop_reason_counts.get(reason, 0)) + 1
+        )
+        bucket = self._intraday_engine_bucket_from_strategy(strategy)
+        store = self._diag_intraday_drop_reason_counts_by_engine.setdefault(bucket, {})
+        store[reason] = int(store.get(reason, 0)) + 1
 
     def _router_engine_bucket(self, source_tag: str, detail: str = "") -> str:
         """Map router source tags to engine buckets (VASS / ITM / MICRO / OTHER)."""

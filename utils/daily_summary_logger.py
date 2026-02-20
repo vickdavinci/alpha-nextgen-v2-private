@@ -103,7 +103,18 @@ def log_daily_summary(algo) -> None:
             f"MICRO({int(cand.get('MICRO', 0))}/{int(app.get('MICRO', 0))}/{int(drp.get('MICRO', 0))}/{int(res.get('MICRO', 0))})"
         )
 
+    def _fmt_intraday_drop_reasons_by_engine() -> str:
+        out = []
+        stores = getattr(algo, "_diag_intraday_drop_reason_counts_by_engine", {})
+        for engine in ("MICRO", "ITM", "OTHER"):
+            out.append(f"{engine}[{_top_counts(stores.get(engine, {}), top_n=3)}]")
+        return " ".join(out)
+
     vass_reject_top = _top_counts(getattr(algo, "_diag_vass_reject_reason_counts", {}), top_n=5)
+    intraday_drop_top = _top_counts(
+        getattr(algo, "_diag_intraday_drop_reason_counts", {}),
+        top_n=8,
+    )
 
     exit_path_counts = sorted(algo._diag_exit_path_counts.items(), key=lambda kv: kv[0])
     exit_path_pnl = sorted(algo._diag_exit_path_pnl.items(), key=lambda kv: kv[0])
@@ -160,6 +171,8 @@ def log_daily_summary(algo) -> None:
         f"MicroPendingCancelIgnored={algo._diag_micro_pending_cancel_ignored_count} | "
         f"MarginRejects={algo._diag_margin_reject_count} | "
         f"IntradayByEngine(C/A/D/R)={_fmt_intraday_funnel_by_engine()} | "
+        f"IntradayDropTop={intraday_drop_top} | "
+        f"IntradayDropByEngine={_fmt_intraday_drop_reasons_by_engine()} | "
         f"TopRouterRejects={top_router_rejects_str} | "
         f"TopRouterRejectsByEngine={_fmt_engine_top_rejects()} | "
         f"VASSRejectTop={vass_reject_top} | "
