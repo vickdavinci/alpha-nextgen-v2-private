@@ -2864,9 +2864,13 @@ class OptionsEngine:
             return "RECOVERY"
         return "NORMAL"
 
-    def can_enter_intraday(self) -> Tuple[bool, str]:
+    def can_enter_single_leg(self) -> Tuple[bool, str]:
         """
-        V5.3: Check if intraday entry is allowed.
+        Check if a new single-leg options entry is allowed.
+
+        Note:
+            This is the canonical slot gate for MICRO/ITM single-leg lanes.
+            `can_enter_intraday()` remains as a backward-compatible alias.
 
         Returns:
             Tuple of (allowed, reason)
@@ -2879,13 +2883,24 @@ class OptionsEngine:
                 f"R_SLOT_TOTAL_MAX: {total_count} >= {config.OPTIONS_MAX_TOTAL_POSITIONS}",
             )
 
-        if intraday_count >= config.OPTIONS_MAX_INTRADAY_POSITIONS:
+        single_leg_cap = int(
+            getattr(config, "SINGLE_LEG_MAX_POSITIONS", config.OPTIONS_MAX_INTRADAY_POSITIONS)
+        )
+        if intraday_count >= single_leg_cap:
             return (
                 False,
-                f"R_SLOT_INTRADAY_MAX: {intraday_count} >= {config.OPTIONS_MAX_INTRADAY_POSITIONS}",
+                f"R_SLOT_INTRADAY_MAX: {intraday_count} >= {single_leg_cap}",
             )
 
         return True, "R_OK"
+
+    def can_enter_intraday(self) -> Tuple[bool, str]:
+        """
+        Backward-compatible alias for legacy call-sites.
+
+        Use `can_enter_single_leg()` in new code.
+        """
+        return self.can_enter_single_leg()
 
     def can_enter_swing(
         self,
@@ -8694,9 +8709,33 @@ class OptionsEngine:
         if entry_strategy is None:
             return fail("E_INTRADAY_NO_STRATEGY")
 
+        # Engine-sovereign daily caps (avoid MICRO/ITM cross-throttling).
+        if self._is_itm_momentum_strategy_name(entry_strategy.value):
+            itm_cap = int(getattr(config, "ITM_MAX_TRADES_PER_DAY", 0) or 0)
+            if itm_cap > 0 and self._intraday_itm_trades_today >= itm_cap:
+                return fail(
+                    "R_ITM_DAILY_CAP",
+                    f"ITM={self._intraday_itm_trades_today}/{itm_cap}",
+                )
+        else:
+            micro_cap = int(getattr(config, "MICRO_MAX_TRADES_PER_DAY", 0) or 0)
+            if micro_cap > 0 and self._intraday_micro_trades_today >= micro_cap:
+                return fail(
+                    "R_MICRO_DAILY_CAP",
+                    f"MICRO={self._intraday_micro_trades_today}/{micro_cap}",
+                )
+
         pending_lane = self._intraday_engine_lane_from_strategy(entry_strategy.value)
         if self.has_pending_intraday_entry(engine=pending_lane):
             return fail("E_INTRADAY_PENDING_ENTRY", pending_lane)
+        if pending_lane == "MICRO":
+            micro_concurrent_cap = int(getattr(config, "MICRO_MAX_CONCURRENT_POSITIONS", 1))
+            current_micro_positions = 1 if self.has_intraday_position(engine="MICRO") else 0
+            if current_micro_positions >= micro_concurrent_cap:
+                return fail(
+                    "R_MICRO_CONCURRENT_CAP",
+                    f"MICRO={current_micro_positions}/{micro_concurrent_cap}",
+                )
         if self.has_intraday_position(engine=pending_lane):
             return fail("E_INTRADAY_HAS_POSITION", pending_lane)
         # Engine isolation: do not hard-block this entry because another intraday
