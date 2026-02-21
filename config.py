@@ -847,9 +847,7 @@ VASS_ENABLED = True  # Master switch for VASS
 # IV Environment Classification Thresholds
 # V6.6: Adjusted based on 2022H1 VIX distribution (16.6-32.0 range observed)
 VASS_IV_LOW_THRESHOLD = 16  # V6.6: Was 15, raised to match data distribution
-VASS_IV_HIGH_THRESHOLD = (
-    25  # V6.9: Reverted to 25 - HIGH IV must use CREDIT spreads per V2.8 design
-)
+VASS_IV_HIGH_THRESHOLD = 22  # V10.16: route elevated-IV tape to credit spreads earlier
 VASS_IV_SMOOTHING_MINUTES = 30  # SMA window to prevent strategy flickering
 
 # DTE Ranges by IV Environment (Swing Mode)
@@ -873,7 +871,7 @@ VASS_VIX_20D_STRONG_BEARISH = 0.30  # VIX 20d change > +30% → STRONG BEARISH
 VASS_VIX_20D_STRONG_BULLISH = -0.20  # VIX 20d change < -20% → STRONG BULLISH
 VASS_LOW_VIX_CONVICTION_RELAX_ENABLED = True  # V10.8: broaden conviction in calm low-vol tapes
 VASS_LOW_VIX_CONVICTION_MAX_VIX = 16.0
-VASS_LOW_VIX_5D_CHANGE_THRESHOLD = 0.12  # starter threshold for both bullish/bearish conviction
+VASS_LOW_VIX_5D_CHANGE_THRESHOLD = 0.08  # V10.16: improve low-VIX conviction activation
 VASS_LOW_VIX_CROSSING_DELTA = 0.80  # loosen level-crossing barriers by absolute VIX points
 VASS_EARLY_STRESS_BULL_REQUIRE_CONVICTION = (
     True  # D8: In EARLY_STRESS, block bullish VASS unless conviction is present
@@ -945,7 +943,11 @@ CREDIT_SPREAD_MEDIUM_IV_VIX_THRESHOLD = 20.0  # VIX level for medium-IV tier
 
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
 # V2.3.15: Sniper Logic - allow one retry, not machine gun
-INTRADAY_MAX_TRADES_PER_DAY = 4  # V9.7: revert to V9.3 (V9.5 halved this, killed MICRO volume)
+INTRADAY_MAX_TRADES_PER_DAY = 4  # Shared intraday cap (disabled by default for engine isolation)
+INTRADAY_ENFORCE_SHARED_DAILY_CAP = False
+INTRADAY_ENFORCE_SHARED_DIRECTION_CAP = False
+ITM_MAX_TRADES_PER_DAY = 4
+MICRO_MAX_TRADES_PER_DAY = 6
 INTRADAY_MAX_TRADES_PER_DIRECTION_PER_DAY = (
     2  # Hard cap per intraday direction (CALL/PUT) to curb same-side churn.
 )
@@ -1365,15 +1367,22 @@ SPREAD_EOD_HOLD_RISK_GATE_PCT = -0.25  # EOD hold risk gate threshold (e.g., -25
 # Exit targets
 # V6.10 P5: Symmetric R:R (40%/40%) - need 1:1 win ratio to break even
 # Was asymmetric (50%/35%) requiring 1.43:1 win ratio
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT = 0.44  # Legacy fallback aligned to MED-VIX band
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT = 0.44  # Legacy fallback (kept for backward compatibility)
 SPREAD_MIN_DEBIT_TO_WIDTH_PCT = (
     0.28  # V10.7: Reject ultra-cheap/low-quality debit structures (balanced D/W band)
 )
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT_LOW_VIX = 0.48
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT_MED_VIX = 0.44
-SPREAD_MAX_DEBIT_TO_WIDTH_PCT_HIGH_VIX = 0.40
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_LOW_VIX = 0.48  # Legacy fallback (deprecated by adaptive D/W)
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_MED_VIX = 0.44  # Legacy fallback (deprecated by adaptive D/W)
+SPREAD_MAX_DEBIT_TO_WIDTH_PCT_HIGH_VIX = 0.40  # Legacy fallback (deprecated by adaptive D/W)
 SPREAD_DW_LOW_VIX_MAX = 18.0
 SPREAD_DW_HIGH_VIX_MIN = 25.0
+SPREAD_DW_CAP_PANIC = 0.28  # VIX > 35
+SPREAD_DW_CAP_HIGH = 0.32  # 25 <= VIX < 35
+SPREAD_DW_CAP_ELEVATED = 0.36  # 18 <= VIX < 25
+SPREAD_DW_CAP_NORMAL = 0.42  # 13 <= VIX < 18
+SPREAD_DW_CAP_COMPRESSED = 0.48  # VIX < 13
+SPREAD_DW_ABSOLUTE_CAP = 2.00  # Max debit dollars on $5 spread in very calm IV
+SPREAD_DW_ABSOLUTE_CAP_VIX = 15.0
 SPREAD_PROFIT_TARGET_PCT = (
     0.40  # V10.11: reduce target to improve realization while preserving hold thesis
 )
@@ -1721,10 +1730,16 @@ MICRO_CONVICTION_CONFLICT_MULT = (
     1.50  # V10.5: require stronger UVXY shock when conviction conflicts with micro direction
 )
 # V6.10: Micro fallback + confirmation thresholds (Dir=None tuning)
-MICRO_SCORE_BULLISH_CONFIRM = (
-    42.0  # V6.22: lower threshold to let more VIX-STABLE CALL setups through
-)
-MICRO_SCORE_BEARISH_CONFIRM = 50.0  # D7: Slightly easier bearish confirmation in downtrends
+MICRO_SCORE_BULLISH_CONFIRM = 42.0  # Legacy fallback (deprecated by VIX-tier confirm thresholds)
+MICRO_SCORE_BEARISH_CONFIRM = 50.0  # Legacy fallback (deprecated by VIX-tier confirm thresholds)
+MICRO_SCORE_BULLISH_CONFIRM_LOW_VIX = 48.0
+MICRO_SCORE_BEARISH_CONFIRM_LOW_VIX = 55.0
+MICRO_SCORE_BULLISH_CONFIRM_HIGH_VIX = 45.0
+MICRO_SCORE_BEARISH_CONFIRM_HIGH_VIX = 44.0
+MICRO_SCORE_HIGH_VIX_MIN = 25.0
+MICRO_SCORE_LOW_VIX_MAX = 18.0
+MICRO_VIX_CALM_SCORE_LOW_VIX = 15
+MICRO_VIX_CALM_SCORE_DEFAULT = 25
 INTRADAY_QQQ_FALLBACK_MIN_MOVE = 0.08  # V8.2 MICRO revive: reduce fallback move floor
 MICRO_VIX_CRISIS_LEVEL = 35  # VIX > 35 → CRISIS (BEARISH conviction)
 MICRO_VIX_COMPLACENT_LEVEL = 12  # VIX < 12 → COMPLACENT (BULLISH conviction)
@@ -2043,12 +2058,17 @@ MICRO_SIZE_MULT_MID_CONVICTION = 0.75  # MICRO score band 60-79
 ITM_DECISION_HOUR = 10
 ITM_DECISION_MINUTE = 30
 ITM_ENTRY_END = "13:00"
-ITM_SMA_BAND_PCT = 0.015
+ITM_SMA_BAND_PCT = 0.015  # Legacy fallback (deprecated by VIX-tier bands)
+ITM_SMA_BAND_PCT_LOW_VIX = 0.012
+ITM_SMA_BAND_PCT_MED_VIX = 0.015
+ITM_SMA_BAND_PCT_HIGH_VIX = 0.025
+ITM_PUT_MAX_REGIME = 70
+ITM_CALL_MIN_REGIME = 35
 ITM_ADX_MIN = 20.0
-ITM_CALL_MAX_VIX = 22.0
-ITM_CALL_LOW_VIX_PREFERRED = 18.0
+ITM_CALL_MAX_VIX = 24.0
+ITM_CALL_LOW_VIX_PREFERRED = 14.0
 ITM_REQUIRE_VIX20D_FALLING_FOR_CALL_WHEN_VIX_ABOVE_LOW = True
-ITM_PUT_MIN_VIX = 15.0
+ITM_PUT_MIN_VIX = 12.0
 ITM_PUT_MAX_VIX = 35.0
 ITM_BLOCK_SAME_DAY_SAME_DIRECTION_REENTRY = True
 ITM_BREAKER_3_LOSSES_PAUSE_DAYS = 1
@@ -2065,6 +2085,7 @@ ITM_DTE_MIN = 14
 ITM_DTE_MAX = 21
 ITM_TARGET_DTE = 17
 ITM_MAX_CONCURRENT_POSITIONS = 1
+ITM_DTE_DIAG_LOG_INTERVAL_MIN = 30
 MICRO_MAX_CONCURRENT_POSITIONS = 1
 ITM_MAX_CONTRACTS_HARD_CAP = 6
 ITM_TARGET_PCT = 0.40
@@ -2091,7 +2112,7 @@ ITM_OVERNIGHT_MAX_LOSS_PCT_HIGH_VIX = ITM_OVERNIGHT_EOD_EXIT_LOSS_PCT_HIGH_VIX
 ITM_TIERED_EXIT_ENABLED = True
 ITM_MED_VIX_THRESHOLD = 18.0
 ITM_HIGH_VIX_THRESHOLD = 25.0
-ITM_TARGET_PCT_LOW_VIX = 0.35
+ITM_TARGET_PCT_LOW_VIX = 0.25
 ITM_TARGET_PCT_MED_VIX = 0.40
 ITM_TARGET_PCT_HIGH_VIX = 0.45
 ITM_STOP_PCT_LOW_VIX = 0.22

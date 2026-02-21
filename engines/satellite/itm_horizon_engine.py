@@ -170,7 +170,18 @@ class ITMHorizonEngine:
             self._count("ITM_ENGINE_Blocked_Trend")
             return self._fail("E_ITM_ENGINE_NO_SMA20", "")
 
-        band = float(getattr(config, "ITM_SMA_BAND_PCT", 0.003))
+        if vix_current >= float(getattr(config, "ITM_HIGH_VIX_THRESHOLD", 25.0)):
+            band = float(getattr(config, "ITM_SMA_BAND_PCT_HIGH_VIX", 0.025))
+        elif vix_current >= float(getattr(config, "ITM_MED_VIX_THRESHOLD", 18.0)):
+            band = float(getattr(config, "ITM_SMA_BAND_PCT_MED_VIX", 0.015))
+        else:
+            band = float(
+                getattr(
+                    config,
+                    "ITM_SMA_BAND_PCT_LOW_VIX",
+                    float(getattr(config, "ITM_SMA_BAND_PCT", 0.015)),
+                )
+            )
         upper = sma20_value * (1.0 + band)
         lower = sma20_value * (1.0 - band)
         if lower <= qqq_current <= upper:

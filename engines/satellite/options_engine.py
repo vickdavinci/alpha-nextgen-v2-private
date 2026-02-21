@@ -770,7 +770,13 @@ class MicroRegimeEngine:
         if vix_value < config.VIX_LEVEL_VERY_CALM_MAX:  # V2.3.11: < 11.5 (was 15)
             return VIXLevel.LOW, config.MICRO_SCORE_VIX_VERY_CALM
         elif vix_value < config.VIX_LEVEL_CALM_MAX:  # V2.3.11: < 15 (was 18)
-            return VIXLevel.LOW, config.MICRO_SCORE_VIX_CALM
+            calm_score = int(
+                getattr(config, "MICRO_VIX_CALM_SCORE_DEFAULT", config.MICRO_SCORE_VIX_CALM)
+            )
+            low_vix_max = float(getattr(config, "MICRO_SCORE_LOW_VIX_MAX", 18.0))
+            if vix_value < low_vix_max:
+                calm_score = int(getattr(config, "MICRO_VIX_CALM_SCORE_LOW_VIX", calm_score))
+            return VIXLevel.LOW, calm_score
         elif vix_value < config.VIX_LEVEL_NORMAL_MAX:  # V2.3.11: < 18 (unchanged)
             return VIXLevel.LOW, config.MICRO_SCORE_VIX_NORMAL
         elif vix_value < config.VIX_LEVEL_ELEVATED_MAX:  # V2.23.1: < 22 (was hardcoded)
@@ -1257,9 +1263,10 @@ class MicroRegimeEngine:
                 elif vix_direction == VIXDirection.STABLE:
                     # V6.9: VIX stable fallback + 2-of-3 confirmation
                     # Require strong QQQ move AND bullish micro score to take CALL
-                    if (
-                        abs(qqq_move_pct) >= config.INTRADAY_QQQ_FALLBACK_MIN_MOVE
-                        and micro_score >= config.MICRO_SCORE_BULLISH_CONFIRM
+                    if abs(
+                        qqq_move_pct
+                    ) >= config.INTRADAY_QQQ_FALLBACK_MIN_MOVE and micro_score >= self._resolve_micro_bullish_confirm_threshold(
+                        vix_current
                     ):
                         # Confirmation paths are MICRO_OTM-only; ITM is sovereign handoff
                         return confirmation_strategy(
@@ -1271,7 +1278,7 @@ class MicroRegimeEngine:
                         IntradayStrategy.NO_TRADE,
                         None,
                         f"STABLE_NO_TRADE: QQQ +{qqq_move_pct:.2f}% "
-                        f"Score={micro_score:.0f} (<{config.MICRO_SCORE_BULLISH_CONFIRM})",
+                        f"Score={micro_score:.0f} (<{self._resolve_micro_bullish_confirm_threshold(vix_current):.0f})",
                     )
 
             # =================================================================
@@ -1310,9 +1317,10 @@ class MicroRegimeEngine:
                 elif vix_direction == VIXDirection.STABLE:
                     # V6.9: VIX stable fallback + 2-of-3 confirmation
                     # Require strong QQQ move AND bearish micro score to take PUT
-                    if (
-                        abs(qqq_move_pct) >= config.INTRADAY_QQQ_FALLBACK_MIN_MOVE
-                        and micro_score <= config.MICRO_SCORE_BEARISH_CONFIRM
+                    if abs(
+                        qqq_move_pct
+                    ) >= config.INTRADAY_QQQ_FALLBACK_MIN_MOVE and micro_score <= self._resolve_micro_bearish_confirm_threshold(
+                        vix_current
                     ):
                         # Confirmation paths are MICRO_OTM-only; ITM is sovereign handoff
                         return confirmation_strategy(
@@ -1324,7 +1332,7 @@ class MicroRegimeEngine:
                         IntradayStrategy.NO_TRADE,
                         None,
                         f"STABLE_NO_TRADE: QQQ {qqq_move_pct:.2f}% "
-                        f"Score={micro_score:.0f} (>{config.MICRO_SCORE_BEARISH_CONFIRM})",
+                        f"Score={micro_score:.0f} (>{self._resolve_micro_bearish_confirm_threshold(vix_current):.0f})",
                     )
 
         # =====================================================================
@@ -4759,6 +4767,24 @@ class OptionsEngine:
     # V2.3 DEBIT SPREAD ENTRY SIGNAL
     # =========================================================================
 
+    def _get_spread_debit_width_cap(self, vix_level: Optional[float]) -> float:
+        """Resolve adaptive debit/width cap by current VIX band."""
+        if vix_level is None:
+            return float(getattr(config, "SPREAD_DW_CAP_NORMAL", 0.42))
+        try:
+            vix = float(vix_level)
+        except Exception:
+            return float(getattr(config, "SPREAD_DW_CAP_NORMAL", 0.42))
+        if vix > 35:
+            return float(getattr(config, "SPREAD_DW_CAP_PANIC", 0.28))
+        if vix >= 25:
+            return float(getattr(config, "SPREAD_DW_CAP_HIGH", 0.32))
+        if vix >= 18:
+            return float(getattr(config, "SPREAD_DW_CAP_ELEVATED", 0.36))
+        if vix >= 13:
+            return float(getattr(config, "SPREAD_DW_CAP_NORMAL", 0.42))
+        return float(getattr(config, "SPREAD_DW_CAP_COMPRESSED", 0.48))
+
     def check_spread_entry_signal(
         self,
         regime_score: float,
@@ -5351,24 +5377,20 @@ class OptionsEngine:
             self.log(f"SPREAD: Entry blocked - max profit ${max_profit:.2f} <= 0")
             return fail_quality("MAX_PROFIT_NON_POSITIVE")
 
-        # V10.7: Debit-to-width quality band — reject both too-expensive and too-cheap structures.
-        legacy_max_debit_pct = float(getattr(config, "SPREAD_MAX_DEBIT_TO_WIDTH_PCT", 0.38))
+        # V10.16: Adaptive debit-to-width quality cap by current VIX regime.
         min_debit_pct = float(getattr(config, "SPREAD_MIN_DEBIT_TO_WIDTH_PCT", 0.28))
-        low_vix_cut = float(getattr(config, "SPREAD_DW_LOW_VIX_MAX", 18.0))
-        high_vix_cut = float(getattr(config, "SPREAD_DW_HIGH_VIX_MIN", 25.0))
-        max_low = float(getattr(config, "SPREAD_MAX_DEBIT_TO_WIDTH_PCT_LOW_VIX", 0.48))
-        max_med = float(getattr(config, "SPREAD_MAX_DEBIT_TO_WIDTH_PCT_MED_VIX", 0.44))
-        max_high = float(getattr(config, "SPREAD_MAX_DEBIT_TO_WIDTH_PCT_HIGH_VIX", 0.40))
-        if vix_current is None:
-            max_debit_pct = legacy_max_debit_pct
-        elif vix_current < low_vix_cut:
-            max_debit_pct = max_low
-        elif vix_current < high_vix_cut:
-            max_debit_pct = max_med
-        else:
-            max_debit_pct = max_high
+        max_debit_pct = self._get_spread_debit_width_cap(vix_current)
 
         debit_to_width = net_debit / width if width > 0 else 1.0
+        abs_cap_vix = float(getattr(config, "SPREAD_DW_ABSOLUTE_CAP_VIX", 15.0))
+        abs_cap = float(getattr(config, "SPREAD_DW_ABSOLUTE_CAP", 2.00))
+        if vix_current is not None and float(vix_current) < abs_cap_vix and net_debit > abs_cap:
+            self.log(
+                f"SPREAD: Entry blocked - ABS_DEBIT_CAP ${net_debit:.2f} > ${abs_cap:.2f} | VIX={float(vix_current):.1f}",
+                trades_only=True,
+            )
+            return fail_quality("DEBIT_ABSOLUTE_CAP_EXCEEDED")
+
         if debit_to_width > max_debit_pct:
             self.log(
                 f"SPREAD: Entry blocked - DEBIT_TO_WIDTH {debit_to_width:.1%} > {max_debit_pct:.0%} | "
@@ -8539,13 +8561,40 @@ class OptionsEngine:
             return None, "SMA20_NOT_READY"
 
         sma20 = float(qqq_sma20.Current.Value)
-        band = float(getattr(config, "ITM_SMA_BAND_PCT", 0.003))
+        vix_level = None
+        try:
+            if hasattr(self.algorithm, "_get_vix_level"):
+                vix_level = float(self.algorithm._get_vix_level())
+        except Exception:
+            vix_level = None
+        if vix_level is not None and vix_level >= float(
+            getattr(config, "ITM_HIGH_VIX_THRESHOLD", 25.0)
+        ):
+            band = float(getattr(config, "ITM_SMA_BAND_PCT_HIGH_VIX", 0.025))
+        elif vix_level is not None and vix_level >= float(
+            getattr(config, "ITM_MED_VIX_THRESHOLD", 18.0)
+        ):
+            band = float(getattr(config, "ITM_SMA_BAND_PCT_MED_VIX", 0.015))
+        else:
+            band = float(
+                getattr(
+                    config,
+                    "ITM_SMA_BAND_PCT_LOW_VIX",
+                    float(getattr(config, "ITM_SMA_BAND_PCT", 0.015)),
+                )
+            )
+
         upper = sma20 * (1.0 + band)
         lower = sma20 * (1.0 - band)
+        regime = float(getattr(self.algorithm, "_current_regime_score", 50.0) or 50.0)
 
         if qqq_current > upper:
+            if regime < float(getattr(config, "ITM_CALL_MIN_REGIME", 35.0)):
+                return None, f"REGIME_RISKOFF_NO_CALL: Regime={regime:.0f}"
             return OptionDirection.CALL, f"QQQ {qqq_current:.2f} > SMA20+band {upper:.2f}"
         if qqq_current < lower:
+            if regime > float(getattr(config, "ITM_PUT_MAX_REGIME", 70.0)):
+                return None, f"REGIME_BULL_NO_PUT: Regime={regime:.0f}"
             return OptionDirection.PUT, f"QQQ {qqq_current:.2f} < SMA20-band {lower:.2f}"
         return None, f"TREND_NEUTRAL {lower:.2f}<=QQQ<={upper:.2f}"
 
