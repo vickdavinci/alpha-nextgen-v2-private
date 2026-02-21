@@ -1834,6 +1834,70 @@ class OptionsEngine:
         """Map strategy to engine lane key used by pending-entry/exit locks."""
         return "ITM" if self._is_itm_momentum_strategy_name(strategy_name) else "MICRO"
 
+    def _pending_intraday_entry_key(self, symbol: str, lane: Optional[str]) -> str:
+        """Build stable pending-entry key with lane isolation."""
+        symbol_norm = self._symbol_str(symbol)
+        lane_norm = str(lane or "").upper()
+        if not lane_norm:
+            return symbol_norm
+        return f"{lane_norm}|{symbol_norm}"
+
+    def _pending_intraday_symbol_from_key(self, key: str) -> str:
+        key_text = str(key or "")
+        if "|" in key_text:
+            return self._symbol_str(key_text.split("|", 1)[1])
+        return self._symbol_str(key_text)
+
+    def _find_pending_intraday_entry_key(
+        self, symbol: str, lane: Optional[str] = None
+    ) -> Optional[str]:
+        """Find pending-entry key by symbol (+ optional lane), backward compatible."""
+        symbol_norm = self._symbol_str(symbol)
+        if not symbol_norm:
+            return None
+        lane_norm = str(lane or "").upper()
+        if lane_norm:
+            direct_key = self._pending_intraday_entry_key(symbol_norm, lane_norm)
+            if direct_key in self._pending_intraday_entries:
+                return direct_key
+
+        if symbol_norm in self._pending_intraday_entries:
+            payload = self._pending_intraday_entries.get(symbol_norm) or {}
+            payload_lane = str(payload.get("lane", "")).upper()
+            if not lane_norm or payload_lane == lane_norm:
+                return symbol_norm
+
+        for key, payload in self._pending_intraday_entries.items():
+            payload_sym = self._symbol_str(payload.get("symbol", "")) if isinstance(payload, dict) else ""
+            if not payload_sym:
+                payload_sym = self._pending_intraday_symbol_from_key(key)
+            if payload_sym != symbol_norm:
+                continue
+            if lane_norm:
+                payload_lane = str((payload or {}).get("lane", "")).upper()
+                if payload_lane and payload_lane != lane_norm:
+                    continue
+            return key
+        return None
+
+    def _get_pending_intraday_entry_payload(
+        self, symbol: str, lane: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        key = self._find_pending_intraday_entry_key(symbol=symbol, lane=lane)
+        if not key:
+            return None
+        payload = self._pending_intraday_entries.get(key)
+        return payload if isinstance(payload, dict) else None
+
+    def _pop_pending_intraday_entry_payload(
+        self, symbol: str, lane: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        key = self._find_pending_intraday_entry_key(symbol=symbol, lane=lane)
+        if not key:
+            return None
+        payload = self._pending_intraday_entries.pop(key, None)
+        return payload if isinstance(payload, dict) else None
+
     def _get_intraday_lane_position(self, lane: str) -> Optional[OptionsPosition]:
         lane_key = str(lane or "").upper()
         pos = self._intraday_positions.get(lane_key)
@@ -9221,8 +9285,23 @@ class OptionsEngine:
             trades_only=True,
         )
         pending_symbol_norm = self._symbol_str(best_contract.symbol)
-        self._pending_intraday_entries[pending_symbol_norm] = {
-            "lane": self._intraday_engine_lane_from_strategy(entry_strategy.value),
+        pending_lane = self._intraday_engine_lane_from_strategy(entry_strategy.value)
+        existing_key = self._find_pending_intraday_entry_key(symbol=pending_symbol_norm)
+        if existing_key is not None:
+            existing_payload = self._pending_intraday_entries.get(existing_key) or {}
+            existing_lane = str(existing_payload.get("lane", "")).upper()
+            if existing_lane and existing_lane != pending_lane:
+                return fail(
+                    "E_INTRADAY_PENDING_SYMBOL_CONFLICT",
+                    f"{pending_symbol_norm} already pending in lane={existing_lane}",
+                )
+        pending_key = self._pending_intraday_entry_key(
+            symbol=pending_symbol_norm,
+            lane=pending_lane,
+        )
+        self._pending_intraday_entries[pending_key] = {
+            "symbol": pending_symbol_norm,
+            "lane": pending_lane,
             "contract": best_contract,
             "entry_score": float(entry_score.total),
             "num_contracts": int(num_contracts),
@@ -9717,7 +9796,7 @@ class OptionsEngine:
         pending_payload = None
         symbol_norm = self._symbol_str(symbol) if symbol else ""
         if symbol_norm:
-            pending_payload = self._pending_intraday_entries.get(symbol_norm)
+            pending_payload = self._get_pending_intraday_entry_payload(symbol=symbol_norm)
 
         # Use pending values from check_entry_signal
         if contract is None:
@@ -9824,7 +9903,7 @@ class OptionsEngine:
             lane = self._intraday_engine_lane_from_strategy(entry_strategy)
             self._set_intraday_lane_position(lane, position)
             if symbol_norm:
-                self._pending_intraday_entries.pop(symbol_norm, None)
+                self._pop_pending_intraday_entry_payload(symbol=symbol_norm, lane=lane)
             self._pending_intraday_entry = bool(self._pending_intraday_entries)
             self._pending_intraday_entry_since = (
                 None if not self._pending_intraday_entries else self._pending_intraday_entry_since
@@ -10258,26 +10337,46 @@ class OptionsEngine:
         if age_minutes < stale_minutes:
             return
 
-        pending_symbol = self.get_pending_entry_contract_symbol()
-        has_open = False
+        open_option_symbols = set()
         try:
             for open_order in self.algorithm.Transactions.GetOpenOrders():
                 if getattr(open_order.Symbol, "SecurityType", None) != SecurityType.Option:
                     continue
-                open_symbol = self._symbol_str(open_order.Symbol)
-                if not pending_symbol or open_symbol == pending_symbol:
-                    has_open = True
-                    break
+                open_option_symbols.add(self._symbol_str(open_order.Symbol))
         except Exception:
-            has_open = True
-
-        if has_open:
             return
 
-        self.cancel_pending_intraday_entry()
+        cleared_keys = []
+        for key, payload in list(self._pending_intraday_entries.items()):
+            symbol_norm = self._symbol_str(payload.get("symbol", "")) if isinstance(payload, dict) else ""
+            if not symbol_norm:
+                symbol_norm = self._pending_intraday_symbol_from_key(key)
+            if symbol_norm and symbol_norm in open_option_symbols:
+                continue
+            self._pending_intraday_entries.pop(key, None)
+            cleared_keys.append(key)
+
+        if not cleared_keys:
+            return
+
+        self._pending_intraday_entry = bool(self._pending_intraday_entries)
+        self._pending_intraday_entry_since = (
+            None if not self._pending_intraday_entries else self._pending_intraday_entry_since
+        )
+        self._pending_intraday_entry_engine = (
+            None if not self._pending_intraday_entries else self._pending_intraday_entry_engine
+        )
+        if not self._pending_intraday_entries:
+            self._pending_contract = None
+            self._pending_entry_score = None
+            self._pending_num_contracts = None
+            self._pending_stop_pct = None
+            self._pending_stop_price = None
+            self._pending_target_price = None
+            self._pending_entry_strategy = None
         self.log(
             f"OPT_MICRO_RECOVERY: Cleared stale pending intraday entry | "
-            f"Symbol={pending_symbol or 'UNKNOWN'} | AgeMin={age_minutes:.1f}",
+            f"Count={len(cleared_keys)} | AgeMin={age_minutes:.1f}",
             trades_only=True,
         )
 
@@ -10334,7 +10433,13 @@ class OptionsEngine:
         """Best-effort symbol for current pending single-leg entry contract."""
         if self._pending_intraday_entries:
             try:
-                return next(iter(self._pending_intraday_entries.keys()))
+                payload = next(iter(self._pending_intraday_entries.values()))
+                if isinstance(payload, dict):
+                    sym = self._symbol_str(payload.get("symbol", ""))
+                    if sym:
+                        return sym
+                key = next(iter(self._pending_intraday_entries.keys()))
+                return self._pending_intraday_symbol_from_key(key)
             except Exception:
                 return ""
         if self._pending_contract is None:
@@ -10443,7 +10548,7 @@ class OptionsEngine:
         if not symbol_norm:
             return None
 
-        payload = self._pending_intraday_entries.get(symbol_norm)
+        payload = self._get_pending_intraday_entry_payload(symbol=symbol_norm)
         if payload is not None:
             entry_strategy = str(payload.get("entry_strategy") or "SWING_SINGLE")
             stop_pct = float(
@@ -11134,6 +11239,7 @@ class OptionsEngine:
             "pending_intraday_exit_engine": self._pending_intraday_exit_engine,
             "pending_intraday_entries": {
                 k: {
+                    "symbol": v.get("symbol"),
                     "lane": v.get("lane"),
                     "entry_score": v.get("entry_score"),
                     "num_contracts": v.get("num_contracts"),
@@ -11291,8 +11397,12 @@ class OptionsEngine:
         self._pending_intraday_entries = {}
         for sym, row in (state.get("pending_intraday_entries") or {}).items():
             if isinstance(row, dict):
-                self._pending_intraday_entries[str(sym)] = {
-                    "lane": row.get("lane"),
+                lane = str(row.get("lane") or "").upper()
+                symbol_norm = self._symbol_str(row.get("symbol") or sym)
+                key = self._pending_intraday_entry_key(symbol=symbol_norm, lane=lane)
+                self._pending_intraday_entries[key] = {
+                    "symbol": symbol_norm,
+                    "lane": lane,
                     "entry_score": row.get("entry_score"),
                     "num_contracts": row.get("num_contracts"),
                     "entry_strategy": row.get("entry_strategy"),
