@@ -69,6 +69,10 @@ class AlphaNextGen(QCAlgorithm):
 
     # Bind extracted helpers at class definition time to avoid QC managed-class
     # multiple-inheritance/runtime setattr limitations.
+    _normalize_intraday_lane = MainOptionsMixin._normalize_intraday_lane
+    _set_intraday_lane_cooldown = MainOptionsMixin._set_intraday_lane_cooldown
+    _get_intraday_lane_cooldown_until = MainOptionsMixin._get_intraday_lane_cooldown_until
+    _is_intraday_lane_cooldown_active = MainOptionsMixin._is_intraday_lane_cooldown_active
     _select_intraday_option_contract = MainOptionsMixin._select_intraday_option_contract
     _scan_options_signals = MainOptionsMixin._scan_options_signals
     _check_spread_exit = MainOptionsMixin._check_spread_exit
@@ -182,6 +186,10 @@ class AlphaNextGen(QCAlgorithm):
         self._last_intraday_diag_log_by_key: Dict[
             str, datetime
         ] = {}  # Keyed throttle for high-frequency intraday candidate/drop diagnostics
+        # Signal-id event ledgers keep funnel telemetry deterministic.
+        self._diag_intraday_candidate_ids_logged = set()
+        self._diag_intraday_approved_ids_logged = set()
+        self._diag_intraday_dropped_ids_logged = set()
         self._last_swing_scan_time = None  # V2.19: Throttle swing spread scans (1/hour)
         self._intraday_force_exit_fallback_date = None  # V6.12: Fallback guard (once/day)
         self._mr_force_close_fallback_date = None  # V6.12: MR force close fallback guard
@@ -1408,6 +1416,23 @@ class AlphaNextGen(QCAlgorithm):
         self._last_intraday_diag_log_by_key[reason_key] = now
         return True
 
+    def _mark_intraday_signal_event(self, event_type: str, signal_id: Optional[str]) -> bool:
+        """Return True only on first observation of a signal-id event type."""
+        sid = str(signal_id or "").strip()
+        if not sid:
+            return True
+        event_key = str(event_type or "").upper()
+        if event_key == "CANDIDATE":
+            store = self._diag_intraday_candidate_ids_logged
+        elif event_key == "APPROVED":
+            store = self._diag_intraday_approved_ids_logged
+        else:
+            store = self._diag_intraday_dropped_ids_logged
+        if sid in store:
+            return False
+        store.add(sid)
+        return True
+
     def _log_intraday_signal_dropped(
         self,
         signal_id: str,
@@ -1418,23 +1443,24 @@ class AlphaNextGen(QCAlgorithm):
         strategy: Optional[IntradayStrategy],
         contract_symbol: str,
         validation_detail: Optional[str] = None,
-    ) -> None:
+    ) -> bool:
         """Emit standardized MICRO dropped-signal telemetry line."""
+        if not self._mark_intraday_signal_event("DROPPED", signal_id):
+            return False
         validation_detail_fragment = (
             f"ValidationDetail={validation_detail} | " if validation_detail else ""
         )
-        throttle_key = f"DROP:{code}:{direction.value if direction else 'NONE'}:{strategy.value if strategy else 'NONE'}"
         self._record_intraday_drop_reason(code, strategy)
-        if self._should_log_intraday_diag(throttle_key):
-            self.Log(
-                f"INTRADAY_SIGNAL_DROPPED: SignalId={signal_id} | Candidate rejected before order | "
-                f"Code={code} | "
-                f"Reason={reason} | RetryHint={retry_hint} | "
-                f"{validation_detail_fragment}"
-                f"Dir={direction.value if direction else 'NONE'} | "
-                f"Strategy={strategy.value if strategy else 'NONE'} | "
-                f"Contract={contract_symbol}"
-            )
+        self.Log(
+            f"INTRADAY_SIGNAL_DROPPED: SignalId={signal_id} | Candidate rejected before order | "
+            f"Code={code} | "
+            f"Reason={reason} | RetryHint={retry_hint} | "
+            f"{validation_detail_fragment}"
+            f"Dir={direction.value if direction else 'NONE'} | "
+            f"Strategy={strategy.value if strategy else 'NONE'} | "
+            f"Contract={contract_symbol}"
+        )
+        return True
 
     def _resolve_vass_direction_context(
         self,
@@ -2559,6 +2585,9 @@ class AlphaNextGen(QCAlgorithm):
             _store.clear()
         for _k in self._diag_intraday_results_by_engine.keys():
             self._diag_intraday_results_by_engine[_k] = 0
+        self._diag_intraday_candidate_ids_logged.clear()
+        self._diag_intraday_approved_ids_logged.clear()
+        self._diag_intraday_dropped_ids_logged.clear()
         self._single_leg_last_exit_reason.clear()
         self._last_vass_rejection_log_by_key.clear()
         # V3.0 P1-B: Exit retry trackers are intraday plumbing only; clear daily.
@@ -7043,9 +7072,7 @@ class AlphaNextGen(QCAlgorithm):
             self._options_intraday_cooldown_until_by_lane = {"MICRO": None, "ITM": None}
         self._options_intraday_cooldown_until_by_lane[lane_key] = until_dt
         active = [
-            dt
-            for dt in self._options_intraday_cooldown_until_by_lane.values()
-            if dt is not None
+            dt for dt in self._options_intraday_cooldown_until_by_lane.values() if dt is not None
         ]
         self._options_intraday_cooldown_until = max(active) if active else None
 

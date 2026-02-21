@@ -1001,6 +1001,34 @@ class MicroRegimeEngine:
         else:
             return config.MICRO_SCORE_VELOCITY_SPIKE
 
+    def _resolve_micro_bullish_confirm_threshold(self, vix_current: float) -> float:
+        """Resolve bullish confirmation score threshold by VIX tier."""
+        if vix_current >= float(getattr(config, "MICRO_SCORE_BULLISH_HIGH_VIX_MIN", 25.0)):
+            return float(getattr(config, "MICRO_SCORE_BULLISH_CONFIRM_HIGH_VIX", 45.0))
+        if vix_current < float(getattr(config, "MICRO_SCORE_BULLISH_LOW_VIX_MAX", 18.0)):
+            return float(
+                getattr(
+                    config,
+                    "MICRO_SCORE_BULLISH_CONFIRM_LOW_VIX",
+                    getattr(config, "MICRO_SCORE_BULLISH_CONFIRM", 42.0),
+                )
+            )
+        return float(getattr(config, "MICRO_SCORE_BULLISH_CONFIRM", 42.0))
+
+    def _resolve_micro_bearish_confirm_threshold(self, vix_current: float) -> float:
+        """Resolve bearish confirmation score threshold by VIX tier."""
+        if vix_current >= float(getattr(config, "MICRO_SCORE_BEARISH_HIGH_VIX_MIN", 25.0)):
+            return float(getattr(config, "MICRO_SCORE_BEARISH_CONFIRM_HIGH_VIX", 42.0))
+        if vix_current < float(getattr(config, "MICRO_SCORE_BEARISH_LOW_VIX_MAX", 18.0)):
+            return float(
+                getattr(
+                    config,
+                    "MICRO_SCORE_BEARISH_CONFIRM_LOW_VIX",
+                    getattr(config, "MICRO_SCORE_BEARISH_CONFIRM", 50.0),
+                )
+            )
+        return float(getattr(config, "MICRO_SCORE_BEARISH_CONFIRM", 50.0))
+
     # =========================================================================
     # V2.3.4: STRATEGY & DIRECTION RECOMMENDATION (Combined Decision)
     # =========================================================================
@@ -2918,6 +2946,53 @@ class OptionsEngine:
             )
 
         return True, "R_OK"
+
+    def preflight_intraday_entry(
+        self,
+        strategy: Optional["IntradayStrategy"],
+        direction: Optional[OptionDirection] = None,
+    ) -> Tuple[bool, str, Optional[str]]:
+        """
+        Fast preflight for single-leg intraday submission.
+
+        This is intentionally lightweight and lane-aware so callers can avoid
+        generating candidates that are guaranteed to be dropped.
+        """
+        strategy_name = (
+            self._canonical_intraday_strategy(strategy).value if strategy is not None else ""
+        )
+        lane = self._intraday_engine_lane_from_strategy(strategy_name)
+
+        if self._pending_intraday_entry or self._pending_intraday_entries:
+            self._clear_stale_pending_intraday_entry_if_orphaned()
+        if self.has_pending_intraday_entry(engine=lane):
+            return False, "E_INTRADAY_PENDING_ENTRY", lane
+
+        lane_cap = int(
+            getattr(
+                config,
+                "ITM_MAX_CONCURRENT_POSITIONS"
+                if lane == "ITM"
+                else "MICRO_MAX_CONCURRENT_POSITIONS",
+                1,
+            )
+            or 0
+        )
+        lane_positions = len(self._intraday_positions.get(lane) or [])
+        if lane_cap > 0 and lane_positions >= lane_cap:
+            code = "R_ITM_CONCURRENT_CAP" if lane == "ITM" else "R_MICRO_CONCURRENT_CAP"
+            return False, code, f"{lane}={lane_positions}/{lane_cap}"
+
+        can_single_leg, reason = self.can_enter_single_leg()
+        if not can_single_leg:
+            code = str(reason or "R_SLOT_LIMIT").split(":", 1)[0].strip() or "R_SLOT_LIMIT"
+            return False, code, reason
+
+        if not self._can_trade_options(OptionsMode.INTRADAY, direction=direction):
+            tl_reason, tl_detail = self.pop_last_trade_limit_failure()
+            return False, tl_reason or "E_INTRADAY_TRADE_LIMIT", tl_detail
+
+        return True, "R_OK", None
 
     def can_enter_intraday(self) -> Tuple[bool, str]:
         """
@@ -8723,7 +8798,7 @@ class OptionsEngine:
         # Reset previous validation reason for this attempt
         self.set_last_intraday_validation_failure(None, None)
 
-        if self._pending_intraday_entry:
+        if self._pending_intraday_entry or self._pending_intraday_entries:
             self._clear_stale_pending_intraday_entry_if_orphaned()
 
         # V2.9: Check trade limits (Bug #4 fix) - Uses comprehensive counter
@@ -9420,7 +9495,9 @@ class OptionsEngine:
             "symbol": pending_symbol_norm,
             "lane": pending_lane,
             "contract": best_contract,
-            "entry_score": float(entry_score.total),
+            "entry_score": float(
+                self._pending_entry_score if self._pending_entry_score is not None else 0.0
+            ),
             "num_contracts": int(num_contracts),
             "entry_strategy": entry_strategy.value,
             "stop_pct": float(self._pending_stop_pct or 0.0),
@@ -10494,11 +10571,14 @@ class OptionsEngine:
         if stale_minutes <= 0:
             return
 
-        age_minutes = (
-            self.algorithm.Time - self._pending_intraday_entry_since
-        ).total_seconds() / 60.0
+        age_seconds = (self.algorithm.Time - self._pending_intraday_entry_since).total_seconds()
+        age_minutes = age_seconds / 60.0
         if age_minutes < stale_minutes:
-            return
+            fast_clear_seconds = int(
+                getattr(config, "INTRADAY_PENDING_ENTRY_FAST_CLEAR_SECONDS", 90)
+            )
+            if fast_clear_seconds <= 0 or age_seconds < fast_clear_seconds:
+                return
 
         open_option_symbols = set()
         try:
@@ -10609,6 +10689,8 @@ class OptionsEngine:
 
     def has_pending_intraday_entry(self, engine: Optional[str] = None) -> bool:
         """True when an intraday entry is currently pending."""
+        if self._pending_intraday_entry or self._pending_intraday_entries:
+            self._clear_stale_pending_intraday_entry_if_orphaned()
         if engine is None:
             return bool(self._pending_intraday_entries) or self._pending_intraday_entry
         eng = str(engine).upper()
