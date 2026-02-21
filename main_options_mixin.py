@@ -571,7 +571,7 @@ class MainOptionsMixin:
         intraday_scan_context_ready = False
         if self._should_scan_intraday() and self._qqq_at_open > 0 and not intraday_cooldown_active:
             # V5.3: Check position limits before scanning
-            can_intraday, intraday_limit_reason = self.options_engine.can_enter_intraday()
+            can_intraday, intraday_limit_reason = self.options_engine.can_enter_single_leg()
             if not can_intraday:
                 # V6.2: Log position limit block (was silent - Bug #3 instrumentation)
                 self.Log(f"INTRADAY: Blocked - {intraday_limit_reason}")
@@ -862,7 +862,7 @@ class MainOptionsMixin:
                             (
                                 can_retry_now,
                                 retry_reason_now,
-                            ) = self.options_engine.can_enter_intraday()
+                            ) = self.options_engine.can_enter_single_leg()
                             retry_code_now = (retry_reason_now or "").split(":", 1)[0].strip()
                             if intraday_validation_reason:
                                 drop_code = intraday_validation_reason
@@ -922,6 +922,7 @@ class MainOptionsMixin:
                             if drop_code in {
                                 "R_SLOT_TOTAL_MAX",
                                 "R_SLOT_INTRADAY_MAX",
+                                "R_SLOT_SINGLE_LEG_MAX",
                                 "R_COOLDOWN_INTRADAY",
                                 "R_MARGIN_CB_ACTIVE",
                             }:

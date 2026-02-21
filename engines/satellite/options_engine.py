@@ -2889,7 +2889,7 @@ class OptionsEngine:
         if intraday_count >= single_leg_cap:
             return (
                 False,
-                f"R_SLOT_INTRADAY_MAX: {intraday_count} >= {single_leg_cap}",
+                f"R_SLOT_SINGLE_LEG_MAX: {intraday_count} >= {single_leg_cap}",
             )
 
         return True, "R_OK"
