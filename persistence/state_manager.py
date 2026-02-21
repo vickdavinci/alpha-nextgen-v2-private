@@ -574,6 +574,15 @@ class StateManager:
         """
         saved = 0
 
+        if (
+            execution_engine is None
+            and self.algorithm
+            and hasattr(self.algorithm, "execution_engine")
+        ):
+            execution_engine = getattr(self.algorithm, "execution_engine", None)
+        if router is None and self.algorithm and hasattr(self.algorithm, "portfolio_router"):
+            router = getattr(self.algorithm, "portfolio_router", None)
+
         if capital_engine:
             if self.save_capital_state(capital_engine):
                 saved += 1
@@ -621,6 +630,8 @@ class StateManager:
         cold_start_engine: Optional[Any] = None,
         regime_engine: Optional[Any] = None,
         risk_engine: Optional[Any] = None,
+        execution_engine: Optional[Any] = None,
+        router: Optional[Any] = None,
         startup_gate: Optional[Any] = None,
     ) -> int:
         """
@@ -631,12 +642,23 @@ class StateManager:
             cold_start_engine: Cold start engine instance.
             regime_engine: Regime engine instance.
             risk_engine: Risk engine instance.
+            execution_engine: Execution engine instance.
+            router: Portfolio router instance.
             startup_gate: Startup gate instance (V2.29).
 
         Returns:
             Number of categories successfully loaded.
         """
         loaded = 0
+
+        if (
+            execution_engine is None
+            and self.algorithm
+            and hasattr(self.algorithm, "execution_engine")
+        ):
+            execution_engine = getattr(self.algorithm, "execution_engine", None)
+        if router is None and self.algorithm and hasattr(self.algorithm, "portfolio_router"):
+            router = getattr(self.algorithm, "portfolio_router", None)
 
         if capital_engine:
             if self.load_capital_state(capital_engine):
@@ -661,6 +683,18 @@ class StateManager:
 
         if risk_engine:
             if self.load_risk_state(risk_engine):
+                loaded += 1
+
+        if execution_engine and hasattr(execution_engine, "restore_state"):
+            execution_state = self.load_execution_state()
+            if execution_state:
+                execution_engine.restore_state(execution_state)
+                loaded += 1
+
+        if router and hasattr(router, "restore_state"):
+            router_state = self.load_router_state()
+            if router_state:
+                router.restore_state(router_state)
                 loaded += 1
 
         self._load_count += 1

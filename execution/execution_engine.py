@@ -131,6 +131,41 @@ class OrderRecord:
             "rejection_reason": self.rejection_reason,
         }
 
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "OrderRecord":
+        """Deserialize from persisted payload."""
+        created_at_raw = data.get("created_at")
+        submitted_at_raw = data.get("submitted_at")
+        filled_at_raw = data.get("filled_at")
+
+        def _parse_dt(text: Any) -> Optional[datetime]:
+            if not text:
+                return None
+            try:
+                return datetime.fromisoformat(str(text))
+            except Exception:
+                return None
+
+        return cls(
+            order_id=str(data.get("order_id", "")),
+            symbol=str(data.get("symbol", "")),
+            quantity=int(data.get("quantity", 0) or 0),
+            order_type=OrderType(str(data.get("order_type", OrderType.MARKET.value))),
+            state=OrderState(str(data.get("state", OrderState.PENDING.value))),
+            strategy=str(data.get("strategy", "") or ""),
+            signal_type=str(data.get("signal_type", "") or ""),
+            reason=str(data.get("reason", "") or ""),
+            created_at=_parse_dt(created_at_raw),
+            submitted_at=_parse_dt(submitted_at_raw),
+            filled_at=_parse_dt(filled_at_raw),
+            fill_price=float(data.get("fill_price", 0.0) or 0.0),
+            fill_quantity=int(data.get("fill_quantity", 0) or 0),
+            broker_order_id=(
+                int(data["broker_order_id"]) if data.get("broker_order_id") is not None else None
+            ),
+            rejection_reason=str(data.get("rejection_reason", "") or ""),
+        )
+
 
 @dataclass
 class ExecutionResult:
@@ -212,6 +247,13 @@ class ExecutionEngine:
         if self.algorithm:
             return self.algorithm.Time  # type: ignore[attr-defined]
         return None
+
+    def _enqueue_moo_fallback(self, order_id: str) -> None:
+        """Queue fallback once per order id."""
+        if not order_id:
+            return
+        if order_id not in self._moo_fallback_queue:
+            self._moo_fallback_queue.append(order_id)
 
     def _generate_order_id(self) -> str:
         """Generate unique order ID."""
@@ -665,7 +707,7 @@ class ExecutionEngine:
 
             # If submission failed, queue for fallback
             if not result.success:
-                self._moo_fallback_queue.append(order_id)
+                self._enqueue_moo_fallback(order_id)
 
         # Clear pending queue
         self._pending_moo_orders.clear()
@@ -690,7 +732,8 @@ class ExecutionEngine:
 
         self.log(f"EXEC: MOO_FALLBACK | Checking {len(self._moo_fallback_queue)} orders")
 
-        for order_id in self._moo_fallback_queue.copy():
+        fallback_ids = list(dict.fromkeys(self._moo_fallback_queue))
+        for order_id in fallback_ids:
             order = self._orders.get(order_id)
             if not order:
                 continue
@@ -787,7 +830,7 @@ class ExecutionEngine:
 
             # If this was a MOO order, add to fallback queue
             if order.order_type == OrderType.MOO:
-                self._moo_fallback_queue.append(order_id)
+                self._enqueue_moo_fallback(order_id)
 
         elif status == "Canceled":
             order.state = OrderState.CANCELLED
@@ -818,7 +861,7 @@ class ExecutionEngine:
                     )
                 else:
                     # Non-critical MOO cancelled - add to fallback queue for 09:31 check
-                    self._moo_fallback_queue.append(order_id)
+                    self._enqueue_moo_fallback(order_id)
 
     # =========================================================================
     # Kill Switch Support
@@ -992,6 +1035,43 @@ class ExecutionEngine:
             "pending_moo_orders": self._pending_moo_orders,
             "moo_fallback_queue": self._moo_fallback_queue,
         }
+
+    def restore_state(self, state: Dict[str, Any]) -> None:
+        """Restore state from ObjectStore payload."""
+        if not isinstance(state, dict):
+            return
+
+        try:
+            self._order_counter = int(state.get("order_counter", 0) or 0)
+        except (TypeError, ValueError):
+            self._order_counter = 0
+
+        self._orders = {}
+        self._broker_order_map = {}
+        for order_id, payload in (state.get("orders", {}) or {}).items():
+            if not isinstance(payload, dict):
+                continue
+            try:
+                restored = OrderRecord.from_dict(payload)
+            except Exception:
+                continue
+            key = str(order_id or restored.order_id or "")
+            if not key:
+                continue
+            restored.order_id = key
+            self._orders[key] = restored
+            if restored.broker_order_id is not None:
+                self._broker_order_map[int(restored.broker_order_id)] = key
+
+        self._pending_moo_orders = []
+        for order_id in state.get("pending_moo_orders", []) or []:
+            oid = str(order_id or "")
+            if oid and oid not in self._pending_moo_orders:
+                self._pending_moo_orders.append(oid)
+
+        self._moo_fallback_queue = []
+        for order_id in state.get("moo_fallback_queue", []) or []:
+            self._enqueue_moo_fallback(str(order_id or ""))
 
     def reset(self) -> None:
         """Reset engine state (e.g., after kill switch)."""

@@ -14,17 +14,17 @@ Spec: docs/15-state-persistence.md
 """
 
 import json
-import pytest
 from unittest.mock import MagicMock
 
+import pytest
+
 from persistence.state_manager import (
+    SCHEMA_VERSION,
     PositionState,
     ReconciliationResult,
     StateKeys,
     StateManager,
-    SCHEMA_VERSION,
 )
-
 
 # =============================================================================
 # Fixtures
@@ -72,6 +72,32 @@ def mock_risk_engine() -> MagicMock:
         "weekly_breaker_active": False,
     }
     return engine
+
+
+@pytest.fixture
+def mock_execution_engine() -> MagicMock:
+    """Create mock execution engine."""
+    engine = MagicMock()
+    engine.get_state_for_persistence.return_value = {
+        "order_counter": 3,
+        "orders": {},
+        "pending_moo_orders": [],
+        "moo_fallback_queue": [],
+    }
+    return engine
+
+
+@pytest.fixture
+def mock_router() -> MagicMock:
+    """Create mock portfolio router."""
+    router = MagicMock()
+    router.get_state_for_persistence.return_value = {
+        "pending_count": 0,
+        "last_order_count": 0,
+        "risk_status": True,
+        "open_spread_margin": {},
+    }
+    return router
 
 
 # =============================================================================
@@ -320,18 +346,14 @@ class TestPositionStatePersistence:
 class TestRiskState:
     """Tests for risk state persistence."""
 
-    def test_save_risk_state(
-        self, manager: StateManager, mock_risk_engine: MagicMock
-    ) -> None:
+    def test_save_risk_state(self, manager: StateManager, mock_risk_engine: MagicMock) -> None:
         """Test saving risk state."""
         result = manager.save_risk_state(mock_risk_engine)
 
         assert result is True
         assert StateKeys.RISK in manager._mock_store
 
-    def test_load_risk_state(
-        self, manager: StateManager, mock_risk_engine: MagicMock
-    ) -> None:
+    def test_load_risk_state(self, manager: StateManager, mock_risk_engine: MagicMock) -> None:
         """Test loading risk state."""
         manager.save_risk_state(mock_risk_engine)
 
@@ -534,6 +556,8 @@ class TestBulkOperations:
         mock_capital_engine: MagicMock,
         mock_cold_start_engine: MagicMock,
         mock_risk_engine: MagicMock,
+        mock_execution_engine: MagicMock,
+        mock_router: MagicMock,
     ) -> None:
         """Test saving all state categories."""
         manager.add_position("QLD", 85.00, "2024-01-15", "TREND", 100)
@@ -542,6 +566,8 @@ class TestBulkOperations:
             capital_engine=mock_capital_engine,
             cold_start_engine=mock_cold_start_engine,
             risk_engine=mock_risk_engine,
+            execution_engine=mock_execution_engine,
+            router=mock_router,
         )
 
         assert saved >= 3  # At least capital, coldstart, risk
@@ -552,6 +578,8 @@ class TestBulkOperations:
         mock_capital_engine: MagicMock,
         mock_cold_start_engine: MagicMock,
         mock_risk_engine: MagicMock,
+        mock_execution_engine: MagicMock,
+        mock_router: MagicMock,
     ) -> None:
         """Test loading all state categories."""
         # First save
@@ -559,6 +587,8 @@ class TestBulkOperations:
             capital_engine=mock_capital_engine,
             cold_start_engine=mock_cold_start_engine,
             risk_engine=mock_risk_engine,
+            execution_engine=mock_execution_engine,
+            router=mock_router,
         )
 
         # Then load
@@ -566,9 +596,25 @@ class TestBulkOperations:
             capital_engine=mock_capital_engine,
             cold_start_engine=mock_cold_start_engine,
             risk_engine=mock_risk_engine,
+            execution_engine=mock_execution_engine,
+            router=mock_router,
         )
 
         assert loaded >= 2  # At least capital, coldstart loaded
+
+    def test_load_all_restores_execution_and_router(
+        self,
+        manager: StateManager,
+        mock_execution_engine: MagicMock,
+        mock_router: MagicMock,
+    ) -> None:
+        """Execution and router state payloads should be restored through load_all."""
+        manager.save_all(execution_engine=mock_execution_engine, router=mock_router)
+
+        manager.load_all(execution_engine=mock_execution_engine, router=mock_router)
+
+        mock_execution_engine.restore_state.assert_called_once()
+        mock_router.restore_state.assert_called_once()
 
 
 # =============================================================================
@@ -579,9 +625,7 @@ class TestBulkOperations:
 class TestResetOperations:
     """Tests for reset operations."""
 
-    def test_reset_all(
-        self, manager: StateManager, mock_capital_engine: MagicMock
-    ) -> None:
+    def test_reset_all(self, manager: StateManager, mock_capital_engine: MagicMock) -> None:
         """Test resetting all state."""
         manager.save_capital_state(mock_capital_engine)
         manager.add_position("QLD", 85.00, "2024-01-15", "TREND", 100)
@@ -591,9 +635,7 @@ class TestResetOperations:
         assert len(manager._mock_store) == 0
         assert len(manager._positions) == 0
 
-    def test_reset_category(
-        self, manager: StateManager, mock_capital_engine: MagicMock
-    ) -> None:
+    def test_reset_category(self, manager: StateManager, mock_capital_engine: MagicMock) -> None:
         """Test resetting a specific category."""
         manager.save_capital_state(mock_capital_engine)
         manager.add_position("QLD", 85.00, "2024-01-15", "TREND", 100)

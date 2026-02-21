@@ -244,6 +244,35 @@ class TestAggregate:
         assert "TMF" in result
         assert "SHV" in result
 
+    def test_aggregate_intraday_same_symbol_keeps_lane_isolation(self):
+        """OPT_INTRADAY signals from ITM and MICRO lanes must not collapse."""
+        router = PortfolioRouter()
+
+        weights = [
+            TargetWeight(
+                "QQQ 260130C00500000",
+                0.10,
+                "OPT_INTRADAY",
+                Urgency.IMMEDIATE,
+                "MICRO entry",
+                metadata={"intraday_strategy": "MICRO_DEBIT_FADE", "trace_source": "MICRO"},
+            ),
+            TargetWeight(
+                "QQQ 260130C00500000",
+                0.15,
+                "OPT_INTRADAY",
+                Urgency.IMMEDIATE,
+                "ITM entry",
+                metadata={"intraday_strategy": "ITM_MOMENTUM", "trace_source": "ITM"},
+            ),
+        ]
+
+        result = router.aggregate_weights(weights)
+
+        assert len(result) == 2
+        weights_out = sorted(agg.target_weight for agg in result.values())
+        assert weights_out == [0.10, 0.15]
+
 
 class TestValidate:
     """Tests for Step 3: Validate."""
@@ -674,6 +703,19 @@ class TestStateManagement:
         assert state["pending_count"] == 1
         assert state["risk_status"] is False
 
+    def test_restore_state(self):
+        """Test restoring persisted router state."""
+        router = PortfolioRouter()
+        state = {
+            "risk_status": False,
+            "open_spread_margin": {"LONG|SHORT": 750.0},
+        }
+
+        router.restore_state(state)
+
+        assert router.get_risk_status() is False
+        assert router.get_reserved_spread_margin() == 750.0
+
     def test_reset(self):
         """Test resetting router state."""
         router = PortfolioRouter()
@@ -686,6 +728,15 @@ class TestStateManagement:
         assert router.get_pending_count() == 0
         assert router.get_risk_status() is True
         assert len(router.get_last_orders()) == 0
+
+    def test_reset_clears_open_spread_margin(self):
+        """Reset must clear spread margin reservations to avoid ghost margin."""
+        router = PortfolioRouter()
+        router.register_spread_margin("LONG_LEG", 1200.0, short_symbol="SHORT_LEG")
+        assert router.get_reserved_spread_margin() == 1200.0
+
+        router.reset()
+        assert router.get_reserved_spread_margin() == 0.0
 
 
 class TestOrderEnums:

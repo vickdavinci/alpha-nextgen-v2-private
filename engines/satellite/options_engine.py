@@ -1743,8 +1743,14 @@ class OptionsEngine:
         self._last_spread_failure_stats: Optional[str] = None
         self._last_credit_failure_stats: Optional[str] = None
         self._last_entry_validation_failure: Optional[str] = None
-        self._last_intraday_validation_failure: Optional[str] = None
-        self._last_intraday_validation_detail: Optional[str] = None
+        self._last_intraday_validation_failure_by_lane: Dict[str, Optional[str]] = {
+            "MICRO": None,
+            "ITM": None,
+        }
+        self._last_intraday_validation_detail_by_lane: Dict[str, Optional[str]] = {
+            "MICRO": None,
+            "ITM": None,
+        }
         # Detailed slot/limit rejection context for MICRO drop telemetry.
         self._last_trade_limit_failure: Optional[str] = None
         self._last_trade_limit_detail: Optional[str] = None
@@ -1969,12 +1975,6 @@ class OptionsEngine:
         lane_positions = self._intraday_positions.get(lane_key) or []
         if lane_positions:
             return lane_positions[0]
-        # Legacy fallback
-        if (
-            self._intraday_position is not None
-            and (self._intraday_position_engine or "").upper() == lane_key
-        ):
-            return self._intraday_position
         return None
 
     def _set_intraday_lane_position(self, lane: str, position: Optional[OptionsPosition]) -> None:
@@ -2001,12 +2001,6 @@ class OptionsEngine:
                     and self._symbol_key(pos.contract.symbol) == symbol_norm
                 ):
                     return lane
-        if (
-            self._intraday_position is not None
-            and self._intraday_position.contract is not None
-            and self._symbol_key(self._intraday_position.contract.symbol) == symbol_norm
-        ):
-            return (self._intraday_position_engine or "MICRO").upper()
         return None
 
     def get_intraday_positions(self) -> List[OptionsPosition]:
@@ -2016,8 +2010,6 @@ class OptionsEngine:
             for pos in lane_positions:
                 if pos is not None:
                     positions.append(pos)
-        if not positions and self._intraday_position is not None:
-            positions.append(self._intraday_position)
         return positions
 
     def _infer_intraday_strategy_from_order_tag(self, order_tag: Optional[str]) -> str:
@@ -4417,17 +4409,40 @@ class OptionsEngine:
         self._last_entry_validation_failure = None
         return reason
 
-    def set_last_intraday_validation_failure(
-        self, reason: Optional[str], detail: Optional[str] = None
-    ) -> None:
-        self._last_intraday_validation_failure = reason
-        self._last_intraday_validation_detail = detail
+    def _normalize_intraday_lane(self, lane: Optional[str]) -> str:
+        lane_key = str(lane or "").upper()
+        return lane_key if lane_key in ("MICRO", "ITM") else "MICRO"
 
-    def pop_last_intraday_validation_failure(self) -> Tuple[Optional[str], Optional[str]]:
-        reason = self._last_intraday_validation_failure
-        detail = self._last_intraday_validation_detail
-        self._last_intraday_validation_failure = None
-        self._last_intraday_validation_detail = None
+    def _ensure_intraday_validation_failure_buffers(self) -> None:
+        failures = getattr(self, "_last_intraday_validation_failure_by_lane", None)
+        details = getattr(self, "_last_intraday_validation_detail_by_lane", None)
+        if not isinstance(failures, dict):
+            failures = {}
+        if not isinstance(details, dict):
+            details = {}
+        for lane in ("MICRO", "ITM"):
+            failures.setdefault(lane, None)
+            details.setdefault(lane, None)
+        self._last_intraday_validation_failure_by_lane = failures
+        self._last_intraday_validation_detail_by_lane = details
+
+    def set_last_intraday_validation_failure(
+        self, lane: Optional[str], reason: Optional[str], detail: Optional[str] = None
+    ) -> None:
+        self._ensure_intraday_validation_failure_buffers()
+        lane_key = self._normalize_intraday_lane(lane)
+        self._last_intraday_validation_failure_by_lane[lane_key] = reason
+        self._last_intraday_validation_detail_by_lane[lane_key] = detail
+
+    def pop_last_intraday_validation_failure(
+        self, lane: Optional[str]
+    ) -> Tuple[Optional[str], Optional[str]]:
+        self._ensure_intraday_validation_failure_buffers()
+        lane_key = self._normalize_intraday_lane(lane)
+        reason = self._last_intraday_validation_failure_by_lane.get(lane_key)
+        detail = self._last_intraday_validation_detail_by_lane.get(lane_key)
+        self._last_intraday_validation_failure_by_lane[lane_key] = None
+        self._last_intraday_validation_detail_by_lane[lane_key] = None
         return reason, detail
 
     def set_last_trade_limit_failure(
@@ -8803,12 +8818,22 @@ class OptionsEngine:
             TargetWeight for intraday entry, or None.
         """
 
+        validation_lane = self._intraday_engine_lane_from_strategy(
+            self._canonical_intraday_strategy_name(
+                (
+                    getattr(forced_entry_strategy, "value", forced_entry_strategy)
+                    if forced_entry_strategy is not None
+                    else None
+                )
+            )
+        )
+
         def fail(reason: str, detail: Optional[str] = None) -> Optional[TargetWeight]:
-            self.set_last_intraday_validation_failure(reason, detail)
+            self.set_last_intraday_validation_failure(validation_lane, reason, detail)
             return None
 
         # Reset previous validation reason for this attempt
-        self.set_last_intraday_validation_failure(None, None)
+        self.set_last_intraday_validation_failure(validation_lane, None, None)
 
         if self._pending_intraday_entry or self._pending_intraday_entries:
             self._clear_stale_pending_intraday_entry_if_orphaned()
@@ -8868,6 +8893,8 @@ class OptionsEngine:
                 entry_strategy = self._canonical_intraday_strategy(state.recommended_strategy)
         if entry_strategy is None:
             return fail("E_INTRADAY_NO_STRATEGY")
+        validation_lane = self._intraday_engine_lane_from_strategy(entry_strategy.value)
+        self.set_last_intraday_validation_failure(validation_lane, None, None)
 
         # Engine-sovereign daily caps (avoid MICRO/ITM cross-throttling).
         if self._is_itm_momentum_strategy_name(entry_strategy.value):
@@ -11369,9 +11396,7 @@ class OptionsEngine:
     def has_intraday_position(self, engine: Optional[str] = None) -> bool:
         """V2.3.2: Check if an intraday position exists (optionally by engine lane)."""
         if engine is None:
-            return any(len(v or []) > 0 for v in self._intraday_positions.values()) or (
-                self._intraday_position is not None
-            )
+            return any(len(v or []) > 0 for v in self._intraday_positions.values())
         eng = str(engine).upper()
         return len(self._intraday_positions.get(eng) or []) > 0
 
@@ -11797,6 +11822,27 @@ class OptionsEngine:
             self._intraday_position = None
             self._intraday_position_engine = None
 
+        def _should_restore_intraday_position(
+            position: Optional[OptionsPosition], lane_hint: str
+        ) -> bool:
+            if position is None or position.contract is None:
+                return False
+            contract_expiry = position.contract.expiry if position.contract else None
+            if contract_expiry and contract_expiry < current_date:
+                self.log(
+                    f"OPT: ZOMBIE_CLEAR - Intraday position expired {contract_expiry} < {current_date}. "
+                    f"Clearing stale position | Lane={lane_hint}"
+                )
+                return False
+            if self.should_hold_intraday_overnight(position):
+                return True
+            force_hh, force_mm = self._get_intraday_force_exit_hhmm()
+            self.log(
+                "OPT: STATE_RESTORE - Clearing intraday lane position (non-hold strategy/policy) | "
+                f"Lane={lane_hint} | Cutoff={force_hh:02d}:{force_mm:02d}"
+            )
+            return False
+
         intraday_positions_data = state.get("intraday_positions") or {}
         if isinstance(intraday_positions_data, dict) and intraday_positions_data:
             self._intraday_positions = {"MICRO": [], "ITM": []}
@@ -11808,14 +11854,20 @@ class OptionsEngine:
                         if not item:
                             continue
                         try:
-                            restored.append(OptionsPosition.from_dict(item))
+                            pos = OptionsPosition.from_dict(item)
+                            if _should_restore_intraday_position(pos, lane):
+                                restored.append(pos)
                         except Exception:
                             continue
                     self._intraday_positions[lane] = restored
                 elif isinstance(row, dict):
                     # Backward compatibility: single-position payload.
                     try:
-                        self._intraday_positions[lane] = [OptionsPosition.from_dict(row)]
+                        pos = OptionsPosition.from_dict(row)
+                        if _should_restore_intraday_position(pos, lane):
+                            self._intraday_positions[lane] = [pos]
+                        else:
+                            self._intraday_positions[lane] = []
                     except Exception:
                         self._intraday_positions[lane] = []
             self._refresh_legacy_intraday_mirrors()
@@ -12083,10 +12135,13 @@ class OptionsEngine:
         self._pending_intraday_entry = False
         self._pending_intraday_entry_since = None
         self._pending_intraday_entry_engine = None
+        self._pending_intraday_entries = {}
 
         # V2.3.3: Reset pending intraday exit flag
         self._pending_intraday_exit = False
         self._pending_intraday_exit_engine = None
+        self._pending_intraday_exit_lanes = set()
+        self._pending_intraday_exit_symbols = set()
         self._rejection_margin_cap = None
         self._spread_failure_cooldown_until = None
         self._spread_failure_cooldown_until_by_dir = {}
@@ -12094,8 +12149,8 @@ class OptionsEngine:
         self._last_spread_failure_stats = None
         self._last_credit_failure_stats = None
         self._last_entry_validation_failure = None
-        self._last_intraday_validation_failure = None
-        self._last_intraday_validation_detail = None
+        self._last_intraday_validation_failure_by_lane = {"MICRO": None, "ITM": None}
+        self._last_intraday_validation_detail_by_lane = {"MICRO": None, "ITM": None}
         self._last_trade_limit_failure = None
         self._last_trade_limit_detail = None
         self._spread_exit_signal_cooldown = {}

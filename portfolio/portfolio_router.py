@@ -1683,11 +1683,25 @@ class PortfolioRouter:
                 if is_spread_close and weight.metadata
                 else ""
             )
-            agg_key = (
-                f"{symbol}::SPREAD::{short_symbol}"
-                if (is_spread_close and short_symbol)
-                else symbol
-            )
+            agg_key = symbol
+            if is_spread_close and short_symbol:
+                agg_key = f"{symbol}::SPREAD::{short_symbol}"
+            elif source == "OPT_INTRADAY":
+                lane_tag = ""
+                if isinstance(weight.metadata, dict):
+                    trace_source = str(weight.metadata.get("trace_source", "") or "").upper()
+                    if trace_source.startswith("ITM"):
+                        lane_tag = "ITM"
+                    elif trace_source.startswith("MICRO"):
+                        lane_tag = "MICRO"
+                    if not lane_tag:
+                        strategy = str(weight.metadata.get("intraday_strategy", "") or "").upper()
+                        if "ITM" in strategy:
+                            lane_tag = "ITM"
+                        elif strategy:
+                            lane_tag = "MICRO"
+                if lane_tag:
+                    agg_key = f"{symbol}::INTRADAY::{lane_tag}"
             pair_key = (agg_key, source)
 
             # Skip duplicate signals from same source for same aggregation key.
@@ -3306,7 +3320,34 @@ class PortfolioRouter:
             "pending_count": len(self._pending_weights),
             "last_order_count": len(self._last_orders),
             "risk_status": self._risk_engine_go,
+            "open_spread_margin": dict(self._open_spread_margin),
         }
+
+    def restore_state(self, state: Dict[str, Any]) -> None:
+        """Restore router state from ObjectStore payload."""
+        if not isinstance(state, dict):
+            return
+
+        self._pending_weights.clear()
+        self._last_orders.clear()
+        self._risk_engine_go = bool(state.get("risk_status", True))
+        self._last_execution_minute = None
+        self._executed_this_minute.clear()
+        self._last_eod_date = None
+
+        self._open_spread_margin = {}
+        raw_margins = state.get("open_spread_margin", {}) or {}
+        if isinstance(raw_margins, dict):
+            for key, value in raw_margins.items():
+                key_text = str(key or "").strip()
+                if not key_text:
+                    continue
+                try:
+                    margin_reserved = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if margin_reserved > 0:
+                    self._open_spread_margin[key_text] = margin_reserved
 
     def reset(self) -> None:
         """Reset router state."""
@@ -3321,4 +3362,5 @@ class PortfolioRouter:
         self._rejection_log_count = 0
         self._last_rejection_event_log_by_key.clear()
         self._suppressed_rejection_event_count_by_key.clear()
+        self._open_spread_margin.clear()
         self.log("ROUTER: RESET")

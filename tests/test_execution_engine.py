@@ -14,8 +14,9 @@ Tests order submission to broker:
 Spec: docs/13-execution-engine.md
 """
 
-import pytest
 from datetime import datetime
+
+import pytest
 
 from execution.execution_engine import (
     ExecutionEngine,
@@ -24,7 +25,6 @@ from execution.execution_engine import (
     OrderState,
     OrderType,
 )
-
 
 # =============================================================================
 # Fixtures
@@ -295,6 +295,20 @@ class TestMOOFallback:
         assert engine.get_fallback_queue_count() == 1
         engine.check_moo_fallbacks()
         assert engine.get_fallback_queue_count() == 0
+
+    def test_fallback_deduplicates_duplicate_queue_entries(self, engine: ExecutionEngine) -> None:
+        """Duplicate fallback queue entries must not trigger duplicate market fallbacks."""
+        order_id = engine.queue_moo_order("QLD", 100, "TREND", "ENTRY", "Test")
+        engine.submit_pending_moo_orders()
+
+        order = engine.get_order(order_id)
+        assert order is not None
+        order.state = OrderState.REJECTED
+        engine._moo_fallback_queue.append(order_id)
+        engine._moo_fallback_queue.append(order_id)
+
+        results = engine.check_moo_fallbacks()
+        assert len(results) == 1
 
 
 # =============================================================================
@@ -575,6 +589,28 @@ class TestStateManagement:
         assert "orders" in state
         assert "pending_moo_orders" in state
         assert "moo_fallback_queue" in state
+
+    def test_restore_state_round_trip(self, engine: ExecutionEngine) -> None:
+        """Execution state should restore orders and queues consistently."""
+        result = engine.submit_market_order("QLD", 100, "TREND", "ENTRY", "Test")
+        order = engine.get_order(result.order_id)
+        assert order is not None
+        order.state = OrderState.REJECTED
+        order.broker_order_id = 12345
+        engine._broker_order_map[12345] = order.order_id
+        engine._moo_fallback_queue.append(order.order_id)
+
+        state = engine.get_state_for_persistence()
+
+        restored = ExecutionEngine(algorithm=None)
+        restored.restore_state(state)
+
+        restored_order = restored.get_order(order.order_id)
+        assert restored_order is not None
+        assert restored_order.state == OrderState.REJECTED
+        assert restored_order.broker_order_id == 12345
+        assert restored.get_order_by_broker_id(12345) is not None
+        assert restored.get_fallback_queue_count() == 1
 
 
 # =============================================================================
