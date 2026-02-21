@@ -1636,6 +1636,11 @@ class OptionsEngine:
         self._swing_position: Optional[OptionsPosition] = None
         self._intraday_position: Optional[OptionsPosition] = None
         self._intraday_position_engine: Optional[str] = None  # MICRO/ITM ownership
+        # Engine-isolated intraday position containers.
+        self._intraday_positions: Dict[str, Optional[OptionsPosition]] = {
+            "MICRO": None,
+            "ITM": None,
+        }
 
         # V2.3: Spread position tracking (replaces single-leg for swing mode)
         self._spread_position: Optional[SpreadPosition] = None
@@ -1714,10 +1719,12 @@ class OptionsEngine:
         self._pending_intraday_entry: bool = False
         self._pending_intraday_entry_since: Optional[datetime] = None
         self._pending_intraday_entry_engine: Optional[str] = None  # MICRO/ITM lane
+        self._pending_intraday_entries: Dict[str, Dict[str, Any]] = {}  # symbol -> pending payload
 
         # V2.3.3 FIX #3: Prevent duplicate exit signals while waiting for fill
         self._pending_intraday_exit: bool = False
         self._pending_intraday_exit_engine: Optional[str] = None  # MICRO/ITM lane
+        self._pending_intraday_exit_lanes: set = set()
 
         # V2.6 Bug #16: Post-trade margin cooldown tracking
         # After closing a spread, wait before new entry (T+1 settlement)
@@ -1826,6 +1833,71 @@ class OptionsEngine:
     def _intraday_engine_lane_from_strategy(self, strategy_name: Optional[str]) -> str:
         """Map strategy to engine lane key used by pending-entry/exit locks."""
         return "ITM" if self._is_itm_momentum_strategy_name(strategy_name) else "MICRO"
+
+    def _get_intraday_lane_position(self, lane: str) -> Optional[OptionsPosition]:
+        lane_key = str(lane or "").upper()
+        pos = self._intraday_positions.get(lane_key)
+        if pos is not None:
+            return pos
+        # Legacy fallback
+        if (
+            self._intraday_position is not None
+            and (self._intraday_position_engine or "").upper() == lane_key
+        ):
+            return self._intraday_position
+        return None
+
+    def _set_intraday_lane_position(self, lane: str, position: Optional[OptionsPosition]) -> None:
+        lane_key = str(lane or "").upper()
+        if lane_key not in self._intraday_positions:
+            self._intraday_positions[lane_key] = None
+        self._intraday_positions[lane_key] = position
+        # Maintain legacy mirrors for compatibility with existing call paths.
+        self._intraday_position_engine = (
+            lane_key if position is not None else self._intraday_position_engine
+        )
+        if position is not None:
+            self._intraday_position = position
+        else:
+            for k in ("ITM", "MICRO"):
+                p = self._intraday_positions.get(k)
+                if p is not None:
+                    self._intraday_position = p
+                    self._intraday_position_engine = k
+                    break
+            else:
+                self._intraday_position = None
+                self._intraday_position_engine = None
+
+    def _find_intraday_lane_by_symbol(self, symbol: str) -> Optional[str]:
+        symbol_norm = self._symbol_str(symbol)
+        if not symbol_norm:
+            return None
+        for lane in ("ITM", "MICRO"):
+            pos = self._intraday_positions.get(lane)
+            if (
+                pos is not None
+                and pos.contract is not None
+                and self._symbol_str(pos.contract.symbol) == symbol_norm
+            ):
+                return lane
+        if (
+            self._intraday_position is not None
+            and self._intraday_position.contract is not None
+            and self._symbol_str(self._intraday_position.contract.symbol) == symbol_norm
+        ):
+            return (self._intraday_position_engine or "MICRO").upper()
+        return None
+
+    def get_intraday_positions(self) -> List[OptionsPosition]:
+        positions: List[OptionsPosition] = []
+        for lane in ("ITM", "MICRO"):
+            pos = self._intraday_positions.get(lane)
+            if pos is not None:
+                positions.append(pos)
+        if not positions and self._intraday_position is not None:
+            positions.append(self._intraday_position)
+        return positions
 
     def _infer_intraday_strategy_from_order_tag(self, order_tag: Optional[str]) -> str:
         """Best-effort strategy inference from order tag for partial-fill OCO recovery."""
@@ -2571,7 +2643,7 @@ class OptionsEngine:
         Returns:
             Tuple of (intraday_count, swing_count, total_count)
         """
-        intraday_count = 1 if self._intraday_position is not None else 0
+        intraday_count = len([p for p in self.get_intraday_positions() if p is not None])
         swing_count = 0
 
         # Count spread positions
@@ -7765,11 +7837,7 @@ class OptionsEngine:
         symbol = pos.contract.symbol
         symbol_str = self._symbol_str(symbol)
         entry_price = pos.entry_price
-        is_intraday_pos = (
-            self._intraday_position is not None
-            and self._intraday_position.contract is not None
-            and self._symbol_str(self._intraday_position.contract.symbol) == symbol_str
-        )
+        is_intraday_pos = self._find_intraday_lane_by_symbol(symbol_str) is not None
 
         if is_intraday_pos and self.has_pending_intraday_exit(
             engine=self._intraday_engine_lane_from_strategy(getattr(pos, "entry_strategy", ""))
@@ -8232,15 +8300,15 @@ class OptionsEngine:
             except Exception:
                 pass
 
-        # Active intraday position
-        if self._intraday_position is not None:
+        # Active intraday positions
+        for intraday_pos in self.get_intraday_positions():
             try:
                 bucket = self._classify_intraday_bucket(
-                    str(getattr(self._intraday_position, "entry_strategy", "") or "")
+                    str(getattr(intraday_pos, "entry_strategy", "") or "")
                 )
                 risk = (
-                    float(getattr(self._intraday_position, "entry_price", 0.0) or 0.0)
-                    * max(1, int(getattr(self._intraday_position, "num_contracts", 1) or 1))
+                    float(getattr(intraday_pos, "entry_price", 0.0) or 0.0)
+                    * max(1, int(getattr(intraday_pos, "num_contracts", 1) or 1))
                     * 100.0
                 )
                 usage[bucket] += max(0.0, risk)
@@ -8543,18 +8611,7 @@ class OptionsEngine:
             # V6.8: NO_TRADE is now blocked earlier in generate_micro_intraday_signal()
             # Safety net remains for non-ITM override paths.
             if state.recommended_strategy == IntradayStrategy.NO_TRADE:
-                itm_sovereign_bypass = bool(
-                    getattr(config, "ITM_ENGINE_ENABLED", False)
-                    and bool(
-                        getattr(
-                            config,
-                            "ITM_ALLOW_SOVEREIGN_PROMOTION_FROM_MICRO",
-                            False,
-                        )
-                    )
-                    and direction is not None
-                    and direction in (OptionDirection.CALL, OptionDirection.PUT)
-                )
+                itm_sovereign_bypass = False
                 if itm_sovereign_bypass:
                     entry_strategy = IntradayStrategy.ITM_MOMENTUM
                     self.log(
@@ -8658,11 +8715,7 @@ class OptionsEngine:
                 except Exception:
                     pass
 
-                active_itm_positions = 0
-                if self._intraday_position is not None and self._is_itm_momentum_strategy_name(
-                    getattr(self._intraday_position, "entry_strategy", "")
-                ):
-                    active_itm_positions = 1
+                active_itm_positions = 1 if self.has_intraday_position(engine="ITM") else 0
 
                 trace_id = (
                     f"ITM|{(current_time or 'NA')[:19]}|{direction.value}|"
@@ -9167,6 +9220,15 @@ class OptionsEngine:
             f"Stop={self._pending_stop_pct:.0%} | TradeCount={self._intraday_trades_today}/{config.INTRADAY_MAX_TRADES_PER_DAY}",
             trades_only=True,
         )
+        pending_symbol_norm = self._symbol_str(best_contract.symbol)
+        self._pending_intraday_entries[pending_symbol_norm] = {
+            "lane": self._intraday_engine_lane_from_strategy(entry_strategy.value),
+            "contract": best_contract,
+            "entry_score": float(entry_score.total),
+            "num_contracts": int(num_contracts),
+            "entry_strategy": entry_strategy.value,
+            "stop_pct": float(self._pending_stop_pct or 0.0),
+        }
 
         # Keep source weights strategy-specific so telemetry reflects ITM/OTM separation.
         if entry_strategy == IntradayStrategy.ITM_MOMENTUM:
@@ -9205,6 +9267,7 @@ class OptionsEngine:
         current_minute: int,
         current_price: float,
         ignore_hold_policy: bool = False,
+        engine: Optional[str] = None,
     ) -> Optional[TargetWeight]:
         """
         Check for forced exit of intraday position at configured intraday cutoff.
@@ -9220,11 +9283,15 @@ class OptionsEngine:
         Returns:
             TargetWeight for forced exit, or None.
         """
-        if self._intraday_position is None:
+        position = self.get_intraday_position(engine=engine)
+        if position is None:
             return None
 
         # V2.3.3 FIX #3: Prevent duplicate exit signals while waiting for fill
-        if self.has_pending_intraday_exit():
+        lane = engine or self._intraday_engine_lane_from_strategy(
+            getattr(position, "entry_strategy", "")
+        )
+        if self.has_pending_intraday_exit(engine=lane):
             return None
 
         force_hh, force_mm = self._get_intraday_force_exit_hhmm()
@@ -9235,13 +9302,13 @@ class OptionsEngine:
         if not force_exit_time:
             return None
 
-        symbol = self._intraday_position.contract.symbol
+        symbol = position.contract.symbol
         symbol_str = self._symbol_str(symbol)
-        if self.should_hold_intraday_overnight(self._intraday_position):
+        if self.should_hold_intraday_overnight(position):
             if ignore_hold_policy:
                 self.log(
                     f"INTRADAY_FORCE_EXIT_OVERRIDE_HOLD {symbol_str} | "
-                    f"Strategy={getattr(self._intraday_position, 'entry_strategy', 'UNKNOWN')}",
+                    f"Strategy={getattr(position, 'entry_strategy', 'UNKNOWN')}",
                     trades_only=True,
                 )
             else:
@@ -9250,18 +9317,18 @@ class OptionsEngine:
                 else:
                     current_date = "NO_ALGO_TIME"
                 if self._intraday_force_exit_hold_skip_log_date.get(symbol_str) != current_date:
-                    live_dte = self._get_position_live_dte(self._intraday_position)
+                    live_dte = self._get_position_live_dte(position)
                     self.log(
                         f"INTRADAY_FORCE_EXIT_SKIP_HOLD {symbol_str} | "
-                        f"Strategy={getattr(self._intraday_position, 'entry_strategy', 'UNKNOWN')} | "
+                        f"Strategy={getattr(position, 'entry_strategy', 'UNKNOWN')} | "
                         f"LiveDTE={live_dte}",
                         trades_only=True,
                     )
                     self._intraday_force_exit_hold_skip_log_date[symbol_str] = current_date
                 return None
 
-        entry_price = self._intraday_position.entry_price
-        num_contracts = max(1, int(self._intraday_position.num_contracts))
+        entry_price = position.entry_price
+        num_contracts = max(1, int(position.num_contracts))
 
         pnl_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0
 
@@ -9372,6 +9439,7 @@ class OptionsEngine:
         current_minute: int,
         current_price: float,
         contract_expiry_date: str,
+        position: Optional[OptionsPosition] = None,
     ) -> Optional[TargetWeight]:
         """
         V2.4.4 P0: EXPIRATION HAMMER V2 - Force close ALL options expiring TODAY.
@@ -9404,8 +9472,8 @@ class OptionsEngine:
         if current_date != contract_expiry_date:
             return None
 
-        # Check if ANY position exists (swing or intraday)
-        position = self._position or self._intraday_position
+        # Position is expected from caller; legacy fallback kept for compatibility.
+        position = position or self._position or self.get_intraday_position()
         if position is None:
             return None
 
@@ -9452,7 +9520,11 @@ class OptionsEngine:
 
         symbol = position.contract.symbol
         entry_price = position.entry_price
-        source = "OPT_INTRADAY" if self._intraday_position else "OPT_SWING"
+        source = (
+            "OPT_INTRADAY"
+            if self._find_intraday_lane_by_symbol(self._symbol_str(symbol)) is not None
+            else "OPT_SWING"
+        )
 
         pnl_pct = (current_price - entry_price) / entry_price if entry_price > 0 else 0
 
@@ -9469,7 +9541,7 @@ class OptionsEngine:
         )
 
         # Keep intraday software exit lock aligned for expiring-day close signals.
-        if self._intraday_position is not None and self._intraday_position is position:
+        if self._find_intraday_lane_by_symbol(self._symbol_str(symbol)) is not None:
             if not self.mark_pending_intraday_exit(self._symbol_str(symbol)):
                 return None
 
@@ -9626,6 +9698,7 @@ class OptionsEngine:
         current_date: str,
         contract: Optional[OptionContract] = None,
         force_intraday: bool = False,
+        symbol: Optional[str] = None,
     ) -> Optional[OptionsPosition]:
         """
         Register a new options position after fill.
@@ -9641,9 +9714,18 @@ class OptionsEngine:
         Returns:
             Created OptionsPosition, or None if no pending contract exists.
         """
+        pending_payload = None
+        symbol_norm = self._symbol_str(symbol) if symbol else ""
+        if symbol_norm:
+            pending_payload = self._pending_intraday_entries.get(symbol_norm)
+
         # Use pending values from check_entry_signal
         if contract is None:
-            contract = self._pending_contract
+            contract = (
+                pending_payload.get("contract")
+                if pending_payload is not None
+                else self._pending_contract
+            )
 
         # Guard: If no pending contract exists, we can't register entry
         # This can happen if fill occurs for an order placed outside our signal flow
@@ -9653,18 +9735,40 @@ class OptionsEngine:
 
         # Use pending values if set, otherwise defaults
         # Note: getattr defaults don't work when attr exists but is None
-        entry_score = self._pending_entry_score if self._pending_entry_score is not None else 3.0
-        num_contracts = (
-            self._pending_num_contracts if self._pending_num_contracts is not None else 1
+        entry_score = (
+            pending_payload.get("entry_score")
+            if pending_payload is not None and pending_payload.get("entry_score") is not None
+            else self._pending_entry_score
+            if self._pending_entry_score is not None
+            else 3.0
         )
-        stop_pct = self._pending_stop_pct if self._pending_stop_pct is not None else 0.20
+        num_contracts = (
+            pending_payload.get("num_contracts")
+            if pending_payload is not None and pending_payload.get("num_contracts") is not None
+            else self._pending_num_contracts
+            if self._pending_num_contracts is not None
+            else 1
+        )
+        stop_pct = (
+            pending_payload.get("stop_pct")
+            if pending_payload is not None and pending_payload.get("stop_pct") is not None
+            else self._pending_stop_pct
+            if self._pending_stop_pct is not None
+            else 0.20
+        )
 
-        entry_strategy = self._pending_entry_strategy or "SWING_SINGLE"
+        entry_strategy = (
+            pending_payload.get("entry_strategy")
+            if pending_payload is not None and pending_payload.get("entry_strategy")
+            else self._pending_entry_strategy or "SWING_SINGLE"
+        )
 
         # Recalculate stop and target based on actual fill price
         stop_price = fill_price * (1 - stop_pct)
 
-        is_intraday_fill = self._pending_intraday_entry or force_intraday
+        is_intraday_fill = (
+            force_intraday or pending_payload is not None or self._pending_intraday_entry
+        )
         if is_intraday_fill:
             target_pct, strategy_floor = self._get_intraday_exit_profile(entry_strategy)
             current_dte = int(getattr(contract, "days_to_expiry", 0))
@@ -9717,13 +9821,17 @@ class OptionsEngine:
 
         # V2.3.2 FIX #4: Track position in correct variable based on mode
         if is_intraday_fill:
-            self._intraday_position = position
-            self._intraday_position_engine = self._intraday_engine_lane_from_strategy(
-                entry_strategy
+            lane = self._intraday_engine_lane_from_strategy(entry_strategy)
+            self._set_intraday_lane_position(lane, position)
+            if symbol_norm:
+                self._pending_intraday_entries.pop(symbol_norm, None)
+            self._pending_intraday_entry = bool(self._pending_intraday_entries)
+            self._pending_intraday_entry_since = (
+                None if not self._pending_intraday_entries else self._pending_intraday_entry_since
             )
-            self._pending_intraday_entry = False  # Clear flag
-            self._pending_intraday_entry_since = None
-            self._pending_intraday_entry_engine = None
+            self._pending_intraday_entry_engine = (
+                None if not self._pending_intraday_entries else self._pending_intraday_entry_engine
+            )
             # Count intraday trades only after a confirmed fill registration.
             intraday_dir = (
                 OptionDirection.CALL
@@ -9801,36 +9909,48 @@ class OptionsEngine:
         self.log(f"OPT: POSITION_REMOVED {position.contract.symbol}", trades_only=True)
         return position
 
-    def remove_intraday_position(self) -> Optional[OptionsPosition]:
+    def remove_intraday_position(
+        self, symbol: Optional[str] = None, engine: Optional[str] = None
+    ) -> Optional[OptionsPosition]:
         """
         V2.3.2: Remove the current intraday position after exit.
 
         Returns:
             Removed intraday position, or None if no position existed.
         """
-        # V2.3.3: Clear pending exit flag when position is removed
-        self._pending_intraday_exit = False
-        self._pending_intraday_exit_engine = None
 
-        if self._intraday_position is not None:
-            position = self._intraday_position
-            self._intraday_position = None
-            self._intraday_position_engine = None
-            try:
-                strategy = str(getattr(position, "entry_strategy", "") or "UNKNOWN")
-            except Exception:
-                strategy = "UNKNOWN"
-            self._last_intraday_close_strategy = strategy
-            self._last_intraday_close_time = (
-                self.algorithm.Time if self.algorithm is not None else None
-            )
-            self.log(
-                f"OPT: INTRADAY_POSITION_REMOVED {position.contract.symbol} | "
-                f"Strategy={strategy}",
-                trades_only=True,
-            )
-            return position
-        return None
+        lane = None
+        if symbol:
+            lane = self._find_intraday_lane_by_symbol(symbol)
+            if lane is None:
+                return None
+        elif engine is not None:
+            lane = str(engine).upper()
+        else:
+            lane = self.get_intraday_position_engine()
+
+        if not lane:
+            return None
+        position = self._get_intraday_lane_position(lane)
+        if position is None:
+            return None
+
+        self._set_intraday_lane_position(lane, None)
+        self._pending_intraday_exit_lanes.discard(str(lane).upper())
+        if not self._pending_intraday_exit_lanes:
+            self._pending_intraday_exit = False
+            self._pending_intraday_exit_engine = None
+        try:
+            strategy = str(getattr(position, "entry_strategy", "") or "UNKNOWN")
+        except Exception:
+            strategy = "UNKNOWN"
+        self._last_intraday_close_strategy = strategy
+        self._last_intraday_close_time = self.algorithm.Time if self.algorithm is not None else None
+        self.log(
+            f"OPT: INTRADAY_POSITION_REMOVED {position.contract.symbol} | " f"Strategy={strategy}",
+            trades_only=True,
+        )
+        return position
 
     # =========================================================================
     # V2.3 SPREAD POSITION MANAGEMENT
@@ -10117,9 +10237,9 @@ class OptionsEngine:
         Prevents long-lived E_INTRADAY_PENDING_ENTRY lock after missed/implicit
         broker cancel events while preserving normal in-flight order behavior.
         """
-        if not self._pending_intraday_entry:
+        if not self._pending_intraday_entries and not self._pending_intraday_entry:
             return
-        if self._intraday_position is not None:
+        if self.has_intraday_position():
             return
         if self.algorithm is None or not hasattr(self.algorithm, "Time"):
             return
@@ -10167,23 +10287,31 @@ class OptionsEngine:
 
         When engine is provided (MICRO/ITM), only clears matching lane lock.
         """
-        if not self._pending_intraday_entry:
-            return
-        if engine is not None:
+        if engine is None:
+            self._pending_intraday_entries = {}
+        else:
             eng = str(engine).upper()
-            if (self._pending_intraday_entry_engine or "").upper() != eng:
-                return
+            self._pending_intraday_entries = {
+                k: v
+                for k, v in self._pending_intraday_entries.items()
+                if str(v.get("lane", "")).upper() != eng
+            }
 
-        self._pending_intraday_entry = False
-        self._pending_intraday_entry_since = None
-        self._pending_intraday_entry_engine = None
-        self._pending_contract = None
-        self._pending_entry_score = None
-        self._pending_num_contracts = None
-        self._pending_stop_pct = None
-        self._pending_stop_price = None
-        self._pending_target_price = None
-        self._pending_entry_strategy = None
+        self._pending_intraday_entry = bool(self._pending_intraday_entries)
+        self._pending_intraday_entry_since = (
+            None if not self._pending_intraday_entries else self._pending_intraday_entry_since
+        )
+        self._pending_intraday_entry_engine = (
+            None if not self._pending_intraday_entries else self._pending_intraday_entry_engine
+        )
+        if not self._pending_intraday_entries:
+            self._pending_contract = None
+            self._pending_entry_score = None
+            self._pending_num_contracts = None
+            self._pending_stop_pct = None
+            self._pending_stop_price = None
+            self._pending_target_price = None
+            self._pending_entry_strategy = None
         self.log(
             "OPT_MICRO_RECOVERY: Pending intraday entry cancelled | Retry allowed",
             trades_only=True,
@@ -10191,15 +10319,24 @@ class OptionsEngine:
 
     def has_pending_intraday_entry(self, engine: Optional[str] = None) -> bool:
         """True when an intraday entry is currently pending."""
-        if not self._pending_intraday_entry:
-            return False
         if engine is None:
-            return True
+            return bool(self._pending_intraday_entries) or self._pending_intraday_entry
         eng = str(engine).upper()
-        return (self._pending_intraday_entry_engine or "").upper() == eng
+        for payload in self._pending_intraday_entries.values():
+            if str(payload.get("lane", "")).upper() == eng:
+                return True
+        return (
+            self._pending_intraday_entry
+            and (self._pending_intraday_entry_engine or "").upper() == eng
+        )
 
     def get_pending_entry_contract_symbol(self) -> str:
         """Best-effort symbol for current pending single-leg entry contract."""
+        if self._pending_intraday_entries:
+            try:
+                return next(iter(self._pending_intraday_entries.keys()))
+            except Exception:
+                return ""
         if self._pending_contract is None:
             return ""
         try:
@@ -10215,20 +10352,19 @@ class OptionsEngine:
         if not symbol_norm:
             return None
 
+        lane = self._find_intraday_lane_by_symbol(symbol_norm)
+        pos = self._get_intraday_lane_position(lane) if lane else None
         if (
-            self._intraday_position is not None
-            and self._intraday_position.contract is not None
-            and self._symbol_str(self._intraday_position.contract.symbol) == symbol_norm
-            and float(getattr(self._intraday_position, "stop_price", 0.0) or 0.0) > 0
-            and float(getattr(self._intraday_position, "target_price", 0.0) or 0.0) > 0
+            pos is not None
+            and pos.contract is not None
+            and float(getattr(pos, "stop_price", 0.0) or 0.0) > 0
+            and float(getattr(pos, "target_price", 0.0) or 0.0) > 0
         ):
             return {
-                "entry_price": float(getattr(self._intraday_position, "entry_price", 0.0) or 0.0),
-                "stop_price": float(getattr(self._intraday_position, "stop_price", 0.0) or 0.0),
-                "target_price": float(getattr(self._intraday_position, "target_price", 0.0) or 0.0),
-                "entry_strategy": str(
-                    getattr(self._intraday_position, "entry_strategy", "UNKNOWN") or "UNKNOWN"
-                ),
+                "entry_price": float(getattr(pos, "entry_price", 0.0) or 0.0),
+                "stop_price": float(getattr(pos, "stop_price", 0.0) or 0.0),
+                "target_price": float(getattr(pos, "target_price", 0.0) or 0.0),
+                "entry_strategy": str(getattr(pos, "entry_strategy", "UNKNOWN") or "UNKNOWN"),
             }
 
         return self.get_pending_intraday_partial_oco_seed(symbol=symbol_norm, fill_price=fill_price)
@@ -10300,21 +10436,29 @@ class OptionsEngine:
 
         Used when an entry order partially fills before full fill registration.
         """
-        if (
-            not self._pending_intraday_entry
-            or self._pending_contract is None
-            or fill_price is None
-            or float(fill_price) <= 0
-        ):
+        if fill_price is None or float(fill_price) <= 0:
             return None
 
         symbol_norm = self._symbol_str(symbol)
-        pending_symbol = self._symbol_str(self._pending_contract.symbol)
-        if not symbol_norm or symbol_norm != pending_symbol:
+        if not symbol_norm:
             return None
 
-        entry_strategy = self._pending_entry_strategy or "SWING_SINGLE"
-        stop_pct = self._pending_stop_pct if self._pending_stop_pct is not None else 0.20
+        payload = self._pending_intraday_entries.get(symbol_norm)
+        if payload is not None:
+            entry_strategy = str(payload.get("entry_strategy") or "SWING_SINGLE")
+            stop_pct = float(
+                payload.get("stop_pct") if payload.get("stop_pct") is not None else 0.20
+            )
+            current_dte = 0
+        else:
+            if not self._pending_intraday_entry or self._pending_contract is None:
+                return None
+            pending_symbol = self._symbol_str(self._pending_contract.symbol)
+            if symbol_norm != pending_symbol:
+                return None
+            entry_strategy = self._pending_entry_strategy or "SWING_SINGLE"
+            stop_pct = self._pending_stop_pct if self._pending_stop_pct is not None else 0.20
+            # current_dte set from pending payload fallback above.
         target_pct, strategy_floor = self._get_intraday_exit_profile(entry_strategy)
         current_dte = int(getattr(self._pending_contract, "days_to_expiry", 0))
         target_pct = self._apply_intraday_target_overrides(
@@ -10344,12 +10488,13 @@ class OptionsEngine:
 
     def has_pending_intraday_exit(self, engine: Optional[str] = None) -> bool:
         """True when an intraday close signal has already been emitted and is in-flight."""
-        if not self._pending_intraday_exit:
-            return False
         if engine is None:
-            return True
+            return bool(self._pending_intraday_exit_lanes) or self._pending_intraday_exit
         eng = str(engine).upper()
-        return (self._pending_intraday_exit_engine or "").upper() == eng
+        return eng in self._pending_intraday_exit_lanes or (
+            self._pending_intraday_exit
+            and (self._pending_intraday_exit_engine or "").upper() == eng
+        )
 
     def mark_pending_intraday_exit(self, symbol: Optional[str] = None) -> bool:
         """
@@ -10362,25 +10507,24 @@ class OptionsEngine:
         Returns:
             True when lock was set, else False.
         """
-        if self._pending_intraday_exit:
-            return False
-
-        if symbol and self._intraday_position is not None and self._intraday_position.contract:
-            try:
-                expected = self._symbol_str(self._intraday_position.contract.symbol)
-                actual = self._symbol_str(symbol)
-                if expected != actual:
-                    return False
-            except Exception:
+        target_lane = None
+        if symbol:
+            target_lane = self._find_intraday_lane_by_symbol(symbol)
+            if target_lane is None:
+                return False
+        elif self._pending_intraday_exit_engine:
+            target_lane = str(self._pending_intraday_exit_engine).upper()
+        else:
+            target_lane = self.get_intraday_position_engine()
+            if target_lane is None:
                 return False
 
+        lane_key = str(target_lane).upper()
+        if lane_key in self._pending_intraday_exit_lanes:
+            return False
         self._pending_intraday_exit = True
-        strategy_name = (
-            getattr(self._intraday_position, "entry_strategy", "")
-            if self._intraday_position is not None
-            else ""
-        )
-        self._pending_intraday_exit_engine = self._intraday_engine_lane_from_strategy(strategy_name)
+        self._pending_intraday_exit_engine = target_lane
+        self._pending_intraday_exit_lanes.add(lane_key)
         return True
 
     def cancel_pending_intraday_exit(self, symbol: Optional[str] = None) -> bool:
@@ -10394,20 +10538,26 @@ class OptionsEngine:
         Returns:
             True when lock was cleared, else False.
         """
-        if not self._pending_intraday_exit:
+        if not self._pending_intraday_exit_lanes and not self._pending_intraday_exit:
             return False
 
-        if symbol and self._intraday_position is not None and self._intraday_position.contract:
-            try:
-                expected = self._symbol_str(self._intraday_position.contract.symbol)
-                actual = self._symbol_str(symbol)
-                if expected != actual:
-                    return False
-            except Exception:
+        if symbol:
+            lane = self._find_intraday_lane_by_symbol(symbol)
+            if lane is None:
+                return False
+            if (
+                self._pending_intraday_exit_engine
+                and str(self._pending_intraday_exit_engine).upper() != str(lane).upper()
+            ):
                 return False
 
-        self._pending_intraday_exit = False
-        self._pending_intraday_exit_engine = None
+        if self._pending_intraday_exit_engine:
+            self._pending_intraday_exit_lanes.discard(
+                str(self._pending_intraday_exit_engine).upper()
+            )
+        if not self._pending_intraday_exit_lanes:
+            self._pending_intraday_exit = False
+            self._pending_intraday_exit_engine = None
         self.log("OPT_MICRO_RECOVERY: Pending intraday exit lock cleared", trades_only=True)
         return True
 
@@ -10677,34 +10827,33 @@ class OptionsEngine:
 
     def has_intraday_position(self, engine: Optional[str] = None) -> bool:
         """V2.3.2: Check if an intraday position exists (optionally by engine lane)."""
-        if self._intraday_position is None:
-            return False
         if engine is None:
-            return True
+            return (
+                any(p is not None for p in self._intraday_positions.values())
+                or self._intraday_position is not None
+            )
         eng = str(engine).upper()
-        return (self._intraday_position_engine or "").upper() == eng
+        return self._get_intraday_lane_position(eng) is not None
 
     def get_intraday_position(self, engine: Optional[str] = None) -> Optional[OptionsPosition]:
         """V2.3.2: Get current intraday position (optionally by engine lane)."""
-        if self._intraday_position is None:
-            return None
-        if engine is None:
-            return self._intraday_position
-        eng = str(engine).upper()
-        if (self._intraday_position_engine or "").upper() != eng:
-            return None
-        return self._intraday_position
+        if engine is not None:
+            return self._get_intraday_lane_position(str(engine).upper())
+        # Deterministic default for legacy callers.
+        return self._get_intraday_lane_position("ITM") or self._get_intraday_lane_position("MICRO")
 
     def get_intraday_position_engine(self) -> Optional[str]:
-        """Return ownership lane (MICRO/ITM) for the tracked intraday position."""
-        return self._intraday_position_engine
+        """Return default ownership lane for legacy callers."""
+        if self._get_intraday_lane_position("ITM") is not None:
+            return "ITM"
+        if self._get_intraday_lane_position("MICRO") is not None:
+            return "MICRO"
+        return None
 
     def has_position(self) -> bool:
         """Check if any position exists (single-leg, spread, or intraday)."""
         return (
-            self._position is not None
-            or self.has_spread_position()
-            or self._intraday_position is not None
+            self._position is not None or self.has_spread_position() or self.has_intraday_position()
         )
 
     def get_position(self) -> Optional[OptionsPosition]:
@@ -10738,9 +10887,12 @@ class OptionsEngine:
             self._spread_hold_guard_logged.clear()
             cleared.append("spread")
 
-        if self._intraday_position is not None:
+        if self._intraday_position is not None or any(
+            v is not None for v in self._intraday_positions.values()
+        ):
             self._intraday_position = None
             self._intraday_position_engine = None
+            self._intraday_positions = {"MICRO": None, "ITM": None}
             cleared.append("intraday")
 
         # V2.16-BT: Also clear swing position (V2.1.1 dual-mode)
@@ -10755,8 +10907,10 @@ class OptionsEngine:
         self._pending_intraday_entry = False
         self._pending_intraday_entry_since = None
         self._pending_intraday_entry_engine = None
+        self._pending_intraday_entries = {}
         self._pending_intraday_exit = False
         self._pending_intraday_exit_engine = None
+        self._pending_intraday_exit_lanes = set()
         self._pending_spread_long_leg = None
         self._pending_spread_short_leg = None
         self._pending_spread_width = None
@@ -10914,6 +11068,10 @@ class OptionsEngine:
             "intraday_position": (
                 self._intraday_position.to_dict() if self._intraday_position else None
             ),
+            "intraday_positions": {
+                k: (v.to_dict() if v is not None else None)
+                for k, v in self._intraday_positions.items()
+            },
             "intraday_position_engine": self._intraday_position_engine,
             "intraday_trades_today": self._intraday_trades_today,
             "intraday_call_trades_today": self._intraday_call_trades_today,
@@ -10974,6 +11132,17 @@ class OptionsEngine:
             "last_intraday_close_strategy": self._last_intraday_close_strategy,
             "pending_intraday_entry_engine": self._pending_intraday_entry_engine,
             "pending_intraday_exit_engine": self._pending_intraday_exit_engine,
+            "pending_intraday_entries": {
+                k: {
+                    "lane": v.get("lane"),
+                    "entry_score": v.get("entry_score"),
+                    "num_contracts": v.get("num_contracts"),
+                    "entry_strategy": v.get("entry_strategy"),
+                    "stop_pct": v.get("stop_pct"),
+                }
+                for k, v in self._pending_intraday_entries.items()
+            },
+            "pending_intraday_exit_lanes": list(self._pending_intraday_exit_lanes),
             "call_consecutive_losses": self._call_consecutive_losses,
             "call_cooldown_until_date": (
                 self._call_cooldown_until_date.isoformat()
@@ -11082,12 +11251,56 @@ class OptionsEngine:
             self._intraday_position = None
             self._intraday_position_engine = None
 
-        self._intraday_position_engine = state.get("intraday_position_engine")
+        intraday_positions_data = state.get("intraday_positions") or {}
+        if isinstance(intraday_positions_data, dict) and intraday_positions_data:
+            self._intraday_positions = {"MICRO": None, "ITM": None}
+            for lane in ("MICRO", "ITM"):
+                row = intraday_positions_data.get(lane)
+                if row:
+                    try:
+                        self._intraday_positions[lane] = OptionsPosition.from_dict(row)
+                    except Exception:
+                        self._intraday_positions[lane] = None
+            # Rebuild legacy mirrors from lane containers.
+            self._intraday_position = self._intraday_positions.get(
+                "ITM"
+            ) or self._intraday_positions.get("MICRO")
+            self._intraday_position_engine = (
+                "ITM"
+                if self._intraday_positions.get("ITM") is not None
+                else "MICRO"
+                if self._intraday_positions.get("MICRO") is not None
+                else None
+            )
+        else:
+            self._intraday_positions = {"MICRO": None, "ITM": None}
+            if self._intraday_position is not None:
+                lane = self._intraday_engine_lane_from_strategy(
+                    getattr(self._intraday_position, "entry_strategy", "")
+                )
+                self._intraday_positions[lane] = self._intraday_position
+
+        self._intraday_position_engine = (
+            state.get("intraday_position_engine") or self._intraday_position_engine
+        )
         if self._intraday_position is None:
             self._intraday_position_engine = None
 
         self._pending_intraday_entry_engine = state.get("pending_intraday_entry_engine")
         self._pending_intraday_exit_engine = state.get("pending_intraday_exit_engine")
+        self._pending_intraday_entries = {}
+        for sym, row in (state.get("pending_intraday_entries") or {}).items():
+            if isinstance(row, dict):
+                self._pending_intraday_entries[str(sym)] = {
+                    "lane": row.get("lane"),
+                    "entry_score": row.get("entry_score"),
+                    "num_contracts": row.get("num_contracts"),
+                    "entry_strategy": row.get("entry_strategy"),
+                    "stop_pct": row.get("stop_pct"),
+                }
+        self._pending_intraday_exit_lanes = set(
+            str(x).upper() for x in (state.get("pending_intraday_exit_lanes") or []) if x
+        )
         self._intraday_trades_today = state.get("intraday_trades_today", 0)
         self._intraday_call_trades_today = state.get("intraday_call_trades_today", 0)
         self._intraday_put_trades_today = state.get("intraday_put_trades_today", 0)
@@ -11287,6 +11500,8 @@ class OptionsEngine:
         # V2.1.1
         self._swing_position = None
         self._intraday_position = None
+        self._intraday_position_engine = None
+        self._intraday_positions = {"MICRO": None, "ITM": None}
         self._spread_positions = []
         self._spread_position = None
         self._intraday_trades_today = 0
@@ -11363,11 +11578,13 @@ class OptionsEngine:
             self._pending_intraday_entry = False
             self._pending_intraday_entry_since = None
             self._pending_intraday_entry_engine = None
+            self._pending_intraday_entries = {}
 
             # V2.3.3: Reset pending intraday exit flag
             self._pending_intraday_exit = False
             self._pending_intraday_exit_engine = None
-            if self._intraday_position is None:
+            self._pending_intraday_exit_lanes = set()
+            if not self.has_intraday_position():
                 self._intraday_position_engine = None
             self._intraday_force_exit_hold_skip_log_date = {}
             self._last_intraday_close_time = None
@@ -11383,29 +11600,33 @@ class OptionsEngine:
 
             # Keep intraday state whenever a live broker holding still exists.
             # This avoids reset->orphan churn when an expected force-close fails.
-            if self._intraday_position is not None:
-                keep_position = self.should_hold_intraday_overnight(self._intraday_position)
+            for lane, intraday_pos in list(self._intraday_positions.items()):
+                if intraday_pos is None:
+                    continue
+                keep_position = self.should_hold_intraday_overnight(intraday_pos)
                 if not keep_position and self.algorithm is not None:
                     try:
-                        sym = self._intraday_position.contract.symbol
+                        sym = intraday_pos.contract.symbol
                         broker_symbol = sym
                         if isinstance(sym, str):
                             broker_symbol = self.algorithm.Symbol(sym)
                         sec = self.algorithm.Portfolio[broker_symbol]
                         if sec is not None and sec.Invested and abs(int(sec.Quantity)) > 0:
-                            self._intraday_position.num_contracts = abs(int(sec.Quantity))
+                            intraday_pos.num_contracts = abs(int(sec.Quantity))
                             keep_position = True
                     except Exception:
                         keep_position = False
 
                 if keep_position:
                     self.log(
-                        "OPT: DAILY_RESET_KEEP - preserving live intraday position",
+                        f"OPT: DAILY_RESET_KEEP - preserving live intraday position | Lane={lane}",
                         trades_only=True,
                     )
                 else:
-                    self.log("OPT: WARNING - Intraday position found at daily reset, clearing")
-                    self._intraday_position = None
+                    self.log(
+                        f"OPT: WARNING - Intraday position found at daily reset, clearing | Lane={lane}"
+                    )
+                    self._set_intraday_lane_position(lane, None)
 
             if self._spread_neutrality_warn_by_key:
                 active_keys = {self._build_spread_key(s) for s in self._spread_positions}

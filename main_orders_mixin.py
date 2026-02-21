@@ -808,6 +808,7 @@ class MainOrdersMixin:
                             current_date=str(self.Time.date()),
                             force_intraday=force_intraday_recovery,
                             contract=recovery_contract,
+                            symbol=symbol_norm,
                         )
 
                         if position:
@@ -893,7 +894,14 @@ class MainOrdersMixin:
                         self._handle_spread_leg_close(symbol, fill_price, fill_qty)
                     elif self.options_engine.has_intraday_position():
                         # P0 fix: keep intraday state until symbol is fully flat.
-                        intraday_pos = self.options_engine.get_intraday_position()
+                        intraday_lane = self.options_engine._find_intraday_lane_by_symbol(
+                            symbol_norm
+                        )
+                        intraday_pos = (
+                            self.options_engine.get_intraday_position(engine=intraday_lane)
+                            if intraday_lane is not None
+                            else self.options_engine.get_intraday_position()
+                        )
                         intraday_symbol_norm = (
                             self._normalize_symbol_str(intraday_pos.contract.symbol)
                             if intraday_pos is not None and intraday_pos.contract is not None
@@ -917,7 +925,9 @@ class MainOrdersMixin:
                                 self._greeks_breach_logged = False
                                 return
 
-                            removed_position = self.options_engine.remove_intraday_position()
+                            removed_position = self.options_engine.remove_intraday_position(
+                                symbol=symbol_norm
+                            )
                             if removed_position:
                                 # Cancel any lingering OCO pair after explicit close fill.
                                 try:

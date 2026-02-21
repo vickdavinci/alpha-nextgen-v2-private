@@ -1661,7 +1661,7 @@ SPREAD_MAX_CONTRACTS_HARD_CAP = (
 
 # V5.3: Options Position Limits (Margin Error Prevention)
 # Max concurrent positions: 2 intraday + 5 swings = 7 total
-OPTIONS_MAX_INTRADAY_POSITIONS = 1  # Intraday engine tracks a single live position object
+OPTIONS_MAX_INTRADAY_POSITIONS = 2  # One slot each for MICRO + ITM isolated lanes
 OPTIONS_MAX_SWING_POSITIONS = 4  # V10.9: reduce concentration risk
 OPTIONS_MAX_TOTAL_POSITIONS = 7  # 2 intraday + up to 5 swings
 OPTIONS_MAX_SWING_PER_DIRECTION = 3  # Legacy fallback cap if directional pools are unset
@@ -2065,6 +2065,7 @@ ITM_DTE_MIN = 14
 ITM_DTE_MAX = 21
 ITM_TARGET_DTE = 17
 ITM_MAX_CONCURRENT_POSITIONS = 1
+MICRO_MAX_CONCURRENT_POSITIONS = 1
 ITM_MAX_CONTRACTS_HARD_CAP = 6
 ITM_TARGET_PCT = 0.40
 ITM_STOP_PCT = 0.25

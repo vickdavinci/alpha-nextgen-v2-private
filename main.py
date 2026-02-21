@@ -1601,12 +1601,18 @@ class AlphaNextGen(QCAlgorithm):
         """Return True when symbol matches an active hold-enabled intraday ITM position."""
         if not hasattr(self, "options_engine") or self.options_engine is None:
             return False
-        intraday_pos = self.options_engine.get_intraday_position()
-        if intraday_pos is None or intraday_pos.contract is None:
-            return False
         symbol_str = self._normalize_symbol_str(symbol)
-        pos_symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
-        if not symbol_str or symbol_str != pos_symbol:
+        if not symbol_str:
+            return False
+        intraday_pos = None
+        for p in self.options_engine.get_intraday_positions():
+            if p is None or p.contract is None:
+                continue
+            pos_symbol = self._normalize_symbol_str(p.contract.symbol)
+            if pos_symbol == symbol_str:
+                intraday_pos = p
+                break
+        if intraday_pos is None:
             return False
         try:
             return bool(self.options_engine.should_hold_intraday_overnight(intraday_pos))
@@ -1814,71 +1820,73 @@ class AlphaNextGen(QCAlgorithm):
         ):
             return
 
-        # Check if we have an intraday position
+        # Check if we have intraday positions
         if not hasattr(self, "options_engine") or not self.options_engine.has_intraday_position():
             self._intraday_force_exit_fallback_date = self.Time.date()
             return
 
-        # Get current option price
-        intraday_pos = self.options_engine.get_intraday_position()
-        if intraday_pos is None or intraday_pos.contract is None:
-            self._intraday_force_exit_fallback_date = self.Time.date()
-            return
-        symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
-        mark_price = self._get_option_mark_price(symbol, fallback=0.0)
-        entry_price = float(getattr(intraday_pos, "entry_price", 0.0) or 0.0)
-        hold_allowed = self._should_hold_intraday_symbol_overnight(symbol)
-        eod_loss_breach = hold_allowed and self._is_micro_eod_loss_breach(
-            symbol=symbol,
-            entry_price=entry_price,
-            current_price=mark_price,
-        )
-        itm_eod_harvest = hold_allowed and self._should_itm_eod_harvest(
-            symbol=symbol,
-            intraday_pos=intraday_pos,
-            entry_price=entry_price,
-            current_price=mark_price,
-        )
-        if hold_allowed and not eod_loss_breach and not itm_eod_harvest:
-            self.Log(f"INTRADAY_FORCE_EXIT_FALLBACK: HOLD_SKIP {symbol}")
-            self._intraday_force_exit_fallback_date = self.Time.date()
-            return
-        if symbol in self._intraday_close_in_progress_symbols:
-            return
-        if self._has_open_non_oco_order_for_symbol(symbol):
-            return
-        price = self.Securities[symbol].Price if self.Securities.ContainsKey(symbol) else 0
-        if price <= 0:
-            try:
-                sec = self.Securities[symbol]
-                bid = sec.BidPrice or 0
-                ask = sec.AskPrice or 0
-                if bid > 0 and ask > 0:
-                    price = (bid + ask) / 2
-            except Exception:
-                price = 0
+        submitted_any = False
+        for intraday_pos in self.options_engine.get_intraday_positions():
+            if intraday_pos is None or intraday_pos.contract is None:
+                continue
+            symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
+            mark_price = self._get_option_mark_price(symbol, fallback=0.0)
+            entry_price = float(getattr(intraday_pos, "entry_price", 0.0) or 0.0)
+            hold_allowed = self._should_hold_intraday_symbol_overnight(symbol)
+            eod_loss_breach = hold_allowed and self._is_micro_eod_loss_breach(
+                symbol=symbol,
+                entry_price=entry_price,
+                current_price=mark_price,
+            )
+            itm_eod_harvest = hold_allowed and self._should_itm_eod_harvest(
+                symbol=symbol,
+                intraday_pos=intraday_pos,
+                entry_price=entry_price,
+                current_price=mark_price,
+            )
+            if hold_allowed and not eod_loss_breach and not itm_eod_harvest:
+                self.Log(f"INTRADAY_FORCE_EXIT_FALLBACK: HOLD_SKIP {symbol}")
+                continue
+            if symbol in self._intraday_close_in_progress_symbols:
+                continue
+            if self._has_open_non_oco_order_for_symbol(symbol):
+                continue
+            price = self.Securities[symbol].Price if self.Securities.ContainsKey(symbol) else 0
+            if price <= 0:
+                try:
+                    sec = self.Securities[symbol]
+                    bid = sec.BidPrice or 0
+                    ask = sec.AskPrice or 0
+                    if bid > 0 and ask > 0:
+                        price = (bid + ask) / 2
+                except Exception:
+                    price = 0
 
-        if price <= 0:
-            self.Log(f"INTRADAY_FORCE_EXIT_FALLBACK: No valid price for {symbol} - skip")
-            return
+            if price <= 0:
+                self.Log(f"INTRADAY_FORCE_EXIT_FALLBACK: No valid price for {symbol} - skip")
+                continue
 
-        signal = self.options_engine.check_intraday_force_exit(
-            current_hour=self.Time.hour,
-            current_minute=self.Time.minute,
-            current_price=price,
-            ignore_hold_policy=(eod_loss_breach or itm_eod_harvest),
-        )
-        if signal:
-            live_qty = abs(self._get_option_holding_quantity(signal.symbol))
-            if live_qty > 0:
-                signal.requested_quantity = live_qty
-            self._intraday_close_in_progress_symbols.add(signal.symbol)
-            self._intraday_force_exit_submitted_symbols[signal.symbol] = str(self.Time.date())
-            self.Log(f"INTRADAY_FORCE_EXIT_FALLBACK: Triggered for {symbol}")
-            self.portfolio_router.receive_signal(signal)
+            signal = self.options_engine.check_intraday_force_exit(
+                current_hour=self.Time.hour,
+                current_minute=self.Time.minute,
+                current_price=price,
+                ignore_hold_policy=(eod_loss_breach or itm_eod_harvest),
+                engine=self.options_engine._find_intraday_lane_by_symbol(symbol),
+            )
+            if signal:
+                live_qty = abs(self._get_option_holding_quantity(signal.symbol))
+                if live_qty > 0:
+                    signal.requested_quantity = live_qty
+                self._intraday_close_in_progress_symbols.add(signal.symbol)
+                self._intraday_force_exit_submitted_symbols[signal.symbol] = str(self.Time.date())
+                self.Log(f"INTRADAY_FORCE_EXIT_FALLBACK: Triggered for {symbol}")
+                self.portfolio_router.receive_signal(signal)
+                submitted_any = True
+
+        if submitted_any:
             self._process_immediate_signals()
-            # Mark done after a concrete submit attempt.
-            self._intraday_force_exit_fallback_date = self.Time.date()
+        # Mark done after handling concrete submit attempts.
+        self._intraday_force_exit_fallback_date = self.Time.date()
 
     def _mr_force_close_fallback(self) -> None:
         """
@@ -2822,9 +2830,10 @@ class AlphaNextGen(QCAlgorithm):
         # V2.4.4 P0: Run Expiration Hammer V2 as part of force close
         self._check_expiration_hammer_v2()
 
-        # Check for intraday position to close
-        intraday_pos = self.options_engine.get_intraday_position()
-        if intraday_pos is not None:
+        # Check for intraday positions to close
+        for intraday_pos in self.options_engine.get_intraday_positions():
+            if intraday_pos is None:
+                continue
             # Get current option price
             symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
             current_price = self._get_option_mark_price(symbol, fallback=intraday_pos.entry_price)
@@ -2844,65 +2853,65 @@ class AlphaNextGen(QCAlgorithm):
 
             if hold_allowed and not eod_loss_breach and not itm_eod_harvest:
                 self.Log(f"INTRADAY_FORCE_EXIT: HOLD_SKIP {symbol} (ITM overnight policy)")
-            else:
-                # V2.25 Fix #4: Double-sell guard — verify position is still held
-                # Prevents creating orphan shorts if limit/profit-target already closed
-                try:
-                    if not self.Portfolio[intraday_pos.contract.symbol].Invested:
-                        self.Log(
-                            f"INTRADAY_FORCE_EXIT: SKIP | {symbol} already closed | "
-                            f"Clearing stale _intraday_position"
-                        )
-                        self.options_engine.remove_intraday_position()
-                        self._clear_intraday_close_guard(symbol)
-                        return
-                except Exception:
-                    pass  # If symbol lookup fails, proceed with force close
+                continue
 
-                if self._has_open_non_oco_order_for_symbol(symbol):
-                    return
+            # V2.25 Fix #4: Double-sell guard — verify position is still held
+            # Prevents creating orphan shorts if limit/profit-target already closed
+            try:
+                if not self.Portfolio[intraday_pos.contract.symbol].Invested:
+                    self.Log(
+                        f"INTRADAY_FORCE_EXIT: SKIP | {symbol} already closed | "
+                        f"Clearing stale _intraday_position"
+                    )
+                    self.options_engine.remove_intraday_position(symbol=symbol)
+                    self._clear_intraday_close_guard(symbol)
+                    continue
+            except Exception:
+                pass  # If symbol lookup fails, proceed with force close
 
-                # Cancel active OCO before force-close to avoid orphan sell orders
-                # creating accidental short options after the position is closed.
-                try:
-                    if self.oco_manager.cancel_by_symbol(symbol, reason="INTRADAY_FORCE_CLOSE"):
-                        self.Log(f"INTRADAY_FORCE_EXIT: Cancelled active OCO for {symbol}")
-                except Exception as e:
-                    self.Log(f"INTRADAY_FORCE_EXIT: OCO cancel failed for {symbol} | {e}")
+            if self._has_open_non_oco_order_for_symbol(symbol):
+                continue
 
-                signal = self.options_engine.check_intraday_force_exit(
-                    current_hour=self.Time.hour,
-                    current_minute=self.Time.minute,
-                    current_price=current_price,
-                    ignore_hold_policy=(eod_loss_breach or itm_eod_harvest),
-                )
+            # Cancel active OCO before force-close to avoid orphan sell orders
+            # creating accidental short options after the position is closed.
+            try:
+                if self.oco_manager.cancel_by_symbol(symbol, reason="INTRADAY_FORCE_CLOSE"):
+                    self.Log(f"INTRADAY_FORCE_EXIT: Cancelled active OCO for {symbol}")
+            except Exception as e:
+                self.Log(f"INTRADAY_FORCE_EXIT: OCO cancel failed for {symbol} | {e}")
 
-                if signal:
-                    # Idempotency: only one force-close submit per symbol per day.
-                    submitted_date = self._intraday_force_exit_submitted_symbols.get(signal.symbol)
-                    if submitted_date == str(self.Time.date()):
-                        live_qty = abs(self._get_option_holding_quantity(signal.symbol))
-                        if live_qty <= 0:
-                            self.Log(
-                                f"INTRADAY_FORCE_EXIT: SKIP duplicate submit | "
-                                f"{signal.symbol} | Date={submitted_date}"
-                            )
-                            return
-                        self.Log(
-                            f"INTRADAY_FORCE_EXIT: RETRY | {signal.symbol} | "
-                            f"Qty={live_qty} still held"
-                        )
+            signal = self.options_engine.check_intraday_force_exit(
+                current_hour=self.Time.hour,
+                current_minute=self.Time.minute,
+                current_price=current_price,
+                ignore_hold_policy=(eod_loss_breach or itm_eod_harvest),
+                engine=self.options_engine._find_intraday_lane_by_symbol(symbol),
+            )
+
+            if signal:
+                # Idempotency: only one force-close submit per symbol per day.
+                submitted_date = self._intraday_force_exit_submitted_symbols.get(signal.symbol)
+                if submitted_date == str(self.Time.date()):
                     live_qty = abs(self._get_option_holding_quantity(signal.symbol))
                     if live_qty <= 0:
-                        self.Log(f"INTRADAY_FORCE_EXIT: SKIP no live holding | {signal.symbol}")
-                        return
-                    signal.requested_quantity = live_qty
-                    self._intraday_close_in_progress_symbols.add(signal.symbol)
-                    self._intraday_force_exit_submitted_symbols[signal.symbol] = str(
-                        self.Time.date()
+                        self.Log(
+                            f"INTRADAY_FORCE_EXIT: SKIP duplicate submit | "
+                            f"{signal.symbol} | Date={submitted_date}"
+                        )
+                        continue
+                    self.Log(
+                        f"INTRADAY_FORCE_EXIT: RETRY | {signal.symbol} | "
+                        f"Qty={live_qty} still held"
                     )
-                    self.portfolio_router.receive_signal(signal)
-                    self._process_immediate_signals()
+                live_qty = abs(self._get_option_holding_quantity(signal.symbol))
+                if live_qty <= 0:
+                    self.Log(f"INTRADAY_FORCE_EXIT: SKIP no live holding | {signal.symbol}")
+                    continue
+                signal.requested_quantity = live_qty
+                self._intraday_close_in_progress_symbols.add(signal.symbol)
+                self._intraday_force_exit_submitted_symbols[signal.symbol] = str(self.Time.date())
+                self.portfolio_router.receive_signal(signal)
+                self._process_immediate_signals()
 
         # Safety net: close any live MICRO-tagged holdings even if intraday state is missing.
         # This prevents overnight orphan risk from fill/cancel race conditions.
@@ -2981,7 +2990,15 @@ class AlphaNextGen(QCAlgorithm):
         if self.options_engine.has_spread_position():
             return
 
-        position = self.options_engine.get_intraday_position() or self.options_engine.get_position()
+        positions_for_oco = self.options_engine.get_intraday_positions()
+        if not positions_for_oco:
+            swing_pos = self.options_engine.get_position()
+            if swing_pos is not None:
+                positions_for_oco = [swing_pos]
+        if not positions_for_oco:
+            return
+        # Process one symbol per call to limit churn.
+        position = positions_for_oco[0]
         if position is None or position.contract is None:
             return
 
@@ -4251,9 +4268,9 @@ class AlphaNextGen(QCAlgorithm):
                 tracked_symbols.add(str(spread.long_leg.symbol))
                 tracked_symbols.add(str(spread.short_leg.symbol))
 
-            intraday = self.options_engine.get_intraday_position()
-            if intraday is not None:
-                tracked_symbols.add(str(intraday.contract.symbol))
+            for intraday in self.options_engine.get_intraday_positions():
+                if intraday is not None and intraday.contract is not None:
+                    tracked_symbols.add(str(intraday.contract.symbol))
 
             single = self.options_engine.get_position()
             if single is not None:
@@ -4308,11 +4325,13 @@ class AlphaNextGen(QCAlgorithm):
                         for order in self.Transactions.GetOpenOrders()
                     )
                     if not has_open_option_orders:
-                        intraday_pos = self.options_engine.get_intraday_position()
-                        if intraday_pos is not None:
-                            intraday_sym = self._normalize_symbol_str(intraday_pos.contract.symbol)
-                            self.options_engine.remove_intraday_position()
-                            self._clear_micro_symbol_tracking(intraday_sym)
+                        for intraday_pos in self.options_engine.get_intraday_positions():
+                            if intraday_pos is not None and intraday_pos.contract is not None:
+                                intraday_sym = self._normalize_symbol_str(
+                                    intraday_pos.contract.symbol
+                                )
+                                self.options_engine.remove_intraday_position(symbol=intraday_sym)
+                                self._clear_micro_symbol_tracking(intraday_sym)
                         swing_pos = self.options_engine.get_position()
                         if swing_pos is not None:
                             swing_sym = self._normalize_symbol_str(swing_pos.contract.symbol)
@@ -6576,10 +6595,13 @@ class AlphaNextGen(QCAlgorithm):
         # V2.3.11: Check expiring options force exit (15:45 for 0 DTE)
         # CRITICAL: Prevents auto-exercise of ITM options held into close
         position = self.options_engine.get_position()
-        intraday_position = self.options_engine.get_intraday_position()
-        any_position = position or intraday_position
+        intraday_positions = self.options_engine.get_intraday_positions()
+        expiring_candidates = []
+        if position is not None:
+            expiring_candidates.append(position)
+        expiring_candidates.extend(intraday_positions)
 
-        if any_position is not None:
+        for any_position in expiring_candidates:
             # Get contract expiry date
             any_symbol = self._normalize_symbol_str(any_position.contract.symbol)
             contract_expiry = self._get_option_expiry_date(any_position.contract.symbol, data)
@@ -6597,6 +6619,7 @@ class AlphaNextGen(QCAlgorithm):
                     current_minute=self.Time.minute,
                     current_price=current_price,
                     contract_expiry_date=contract_expiry,
+                    position=any_position,
                 )
                 if signal is not None:
                     self.portfolio_router.receive_signal(signal)
@@ -6637,7 +6660,7 @@ class AlphaNextGen(QCAlgorithm):
         # V6.22 FIX: Software backup for intraday positions (OCO single-point-of-failure fix)
         # Previously intraday had NO software stop/profit/DTE check — relied solely on OCO.
         # If OCO was cancelled (199 events in 2022), position bled until 15:25 forced exit.
-        if intraday_position is not None:
+        for intraday_position in intraday_positions:
             intra_symbol = self._normalize_symbol_str(intraday_position.contract.symbol)
             if not self._has_open_non_oco_order_for_symbol(intra_symbol):
                 intra_price = self._get_option_current_price(
