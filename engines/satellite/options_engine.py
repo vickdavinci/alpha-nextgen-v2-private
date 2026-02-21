@@ -8578,9 +8578,9 @@ class OptionsEngine:
             return fail("E_INTRADAY_PENDING_ENTRY", pending_lane)
         if self.has_intraday_position(engine=pending_lane):
             return fail("E_INTRADAY_HAS_POSITION", pending_lane)
-        if self.has_intraday_position():
-            owner_lane = self.get_intraday_position_engine() or "UNKNOWN"
-            return fail("E_INTRADAY_OTHER_ENGINE_POSITION", owner_lane)
+        # Engine isolation: do not hard-block this entry because another intraday
+        # engine currently owns a position. Concurrency/arbitration is governed by
+        # slot caps, per-engine limits, and router margin checks.
 
         itm_engine_mode = False
 

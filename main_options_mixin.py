@@ -471,9 +471,10 @@ class MainOptionsMixin:
                 )
                 self.options_engine.clear_all_positions()
             else:
-                # If an intraday position is open, skip intraday scan
-                if self.options_engine.has_intraday_position():
-                    return
+                # Engine isolation: do not short-circuit scans just because an
+                # intraday engine already has a position. Entry arbitration is
+                # handled downstream by slot/router/risk checks.
+                pass
 
         # V2.3 FIX: Skip if kill switch triggered (prevents new entries after liquidation)
         if self._kill_switch_handled_today:
@@ -873,7 +874,14 @@ class MainOptionsMixin:
                                 drop_code = "R_COOLDOWN_INTRADAY"
                             elif self._margin_cb_in_progress or self._margin_call_cooldown_until:
                                 drop_code = "R_MARGIN_CB_ACTIVE"
-                            elif self.options_engine.has_intraday_position():
+                            elif (
+                                intraday_strategy is not None
+                                and self.options_engine.has_intraday_position(
+                                    engine=self.options_engine._intraday_engine_lane_from_strategy(
+                                        intraday_strategy.value
+                                    )
+                                )
+                            ):
                                 drop_code = "R_DUPLICATE_INTRADAY_POSITION"
                             elif intraday_contract is None:
                                 drop_code = "E_INTRADAY_NO_CONTRACT"
@@ -926,13 +934,13 @@ class MainOptionsMixin:
                                     f"Expires={self._intraday_retry_expires.strftime('%H:%M')}"
                                 )
 
-        # Explicit ITM scan path (separate from MICRO signal ownership).
+        # Explicit ITM scan path.
+        # Isolation rule: ITM evaluation is independent from MICRO submission in
+        # the same scan cycle; coordination happens at slot/position/router layers.
         if (
             bool(getattr(config, "ITM_ENGINE_ENABLED", False))
             and intraday_scan_context_ready
-            and not locals().get("micro_signal_submitted", False)
             and itm_dir is not None
-            and not self.options_engine.has_intraday_position()
         ):
             itm_signal_id = (
                 f"ITM-{self.Time.strftime('%Y%m%d-%H%M')}-"
@@ -991,7 +999,8 @@ class MainOptionsMixin:
                     forced_entry_strategy=IntradayStrategy.ITM_MOMENTUM,
                     vix_level_override=vix_level_cboe,
                     underlying_atr=qqq_atr_value,
-                    micro_state=micro_state,
+                    # Keep ITM sovereign from MICRO state/update flow.
+                    micro_state=None,
                 )
                 if itm_signal is not None:
                     itm_signal = self._attach_option_trace_metadata(itm_signal, source="ITM")
