@@ -1727,6 +1727,7 @@ class OptionsEngine:
         self._pending_intraday_exit: bool = False
         self._pending_intraday_exit_engine: Optional[str] = None  # MICRO/ITM lane
         self._pending_intraday_exit_lanes: set = set()
+        self._pending_intraday_exit_symbols: set = set()
 
         # V2.6 Bug #16: Post-trade margin cooldown tracking
         # After closing a spread, wait before new entry (T+1 settlement)
@@ -7934,9 +7935,7 @@ class OptionsEngine:
         entry_price = pos.entry_price
         is_intraday_pos = self._find_intraday_lane_by_symbol(symbol_str) is not None
 
-        if is_intraday_pos and self.has_pending_intraday_exit(
-            engine=self._intraday_engine_lane_from_strategy(getattr(pos, "entry_strategy", ""))
-        ):
+        if is_intraday_pos and self.has_pending_intraday_exit(symbol=symbol_str):
             return None
 
         # Calculate P&L percentage
@@ -9416,6 +9415,7 @@ class OptionsEngine:
         current_price: float,
         ignore_hold_policy: bool = False,
         engine: Optional[str] = None,
+        symbol: Optional[str] = None,
     ) -> Optional[TargetWeight]:
         """
         Check for forced exit of intraday position at configured intraday cutoff.
@@ -9431,15 +9431,35 @@ class OptionsEngine:
         Returns:
             TargetWeight for forced exit, or None.
         """
-        position = self.get_intraday_position(engine=engine)
+        symbol_key = self._normalize_symbol_key(symbol)
+        position = None
+        lane = None
+        if symbol_key is not None:
+            lane = self._find_intraday_lane_by_symbol(symbol_key)
+            if lane is None:
+                return None
+            for pos in self._intraday_positions.get(lane) or []:
+                if (
+                    pos is not None
+                    and pos.contract is not None
+                    and self._symbol_str(pos.contract.symbol) == symbol_key
+                ):
+                    position = pos
+                    break
+        else:
+            position = self.get_intraday_position(engine=engine)
+            lane = (
+                engine
+                or self._intraday_engine_lane_from_strategy(getattr(position, "entry_strategy", ""))
+                if position is not None
+                else None
+            )
+
         if position is None:
             return None
 
         # V2.3.3 FIX #3: Prevent duplicate exit signals while waiting for fill
-        lane = engine or self._intraday_engine_lane_from_strategy(
-            getattr(position, "entry_strategy", "")
-        )
-        if self.has_pending_intraday_exit(engine=lane):
+        if self.has_pending_intraday_exit(symbol=self._symbol_str(position.contract.symbol)):
             return None
 
         force_hh, force_mm = self._get_intraday_force_exit_hhmm()
@@ -10105,10 +10125,14 @@ class OptionsEngine:
 
         self._intraday_positions[lane_key] = lane_positions
         self._refresh_legacy_intraday_mirrors()
+        try:
+            removed_symbol_key = self._symbol_str(position.contract.symbol)
+        except Exception:
+            removed_symbol_key = None
         self._pending_intraday_exit_lanes.discard(lane_key)
-        if not self._pending_intraday_exit_lanes:
-            self._pending_intraday_exit = False
-            self._pending_intraday_exit_engine = None
+        if removed_symbol_key:
+            self._pending_intraday_exit_symbols.discard(removed_symbol_key)
+        self._sync_pending_intraday_exit_flags()
         try:
             strategy = str(getattr(position, "entry_strategy", "") or "UNKNOWN")
         except Exception:
@@ -10682,14 +10706,36 @@ class OptionsEngine:
             "entry_strategy": entry_strategy,
         }
 
+    def _normalize_symbol_key(self, symbol: Optional[str]) -> Optional[str]:
+        sym = self._symbol_str(symbol) if symbol else ""
+        return sym or None
+
+    def _sync_pending_intraday_exit_flags(self) -> None:
+        active = bool(self._pending_intraday_exit_lanes) or bool(
+            self._pending_intraday_exit_symbols
+        )
+        self._pending_intraday_exit = active
+        if not active:
+            self._pending_intraday_exit_engine = None
+
     def has_pending_swing_entry(self) -> bool:
         """True when a single-leg swing entry is pending (not intraday)."""
         return self._pending_contract is not None and not self._pending_intraday_entry
 
-    def has_pending_intraday_exit(self, engine: Optional[str] = None) -> bool:
+    def has_pending_intraday_exit(
+        self, engine: Optional[str] = None, symbol: Optional[str] = None
+    ) -> bool:
         """True when an intraday close signal has already been emitted and is in-flight."""
+        symbol_key = self._normalize_symbol_key(symbol)
+        if symbol_key is not None:
+            return symbol_key in self._pending_intraday_exit_symbols
+
         if engine is None:
-            return bool(self._pending_intraday_exit_lanes) or self._pending_intraday_exit
+            return (
+                bool(self._pending_intraday_exit_symbols)
+                or bool(self._pending_intraday_exit_lanes)
+                or self._pending_intraday_exit
+            )
         eng = str(engine).upper()
         return eng in self._pending_intraday_exit_lanes or (
             self._pending_intraday_exit
@@ -10701,18 +10747,24 @@ class OptionsEngine:
         Mark intraday close as pending to block duplicate software/force exits.
 
         Args:
-            symbol: Optional symbol guard. When provided, lock is only set if it
-                matches the tracked intraday position symbol.
+            symbol: Optional symbol guard. Symbol-scoped locks are preferred for
+                multi-position lanes.
 
         Returns:
             True when lock was set, else False.
         """
-        target_lane = None
-        if symbol:
-            target_lane = self._find_intraday_lane_by_symbol(symbol)
-            if target_lane is None:
+        symbol_key = self._normalize_symbol_key(symbol)
+        if symbol_key is not None:
+            if self._find_intraday_lane_by_symbol(symbol_key) is None:
                 return False
-        elif self._pending_intraday_exit_engine:
+            if symbol_key in self._pending_intraday_exit_symbols:
+                return False
+            self._pending_intraday_exit_symbols.add(symbol_key)
+            self._sync_pending_intraday_exit_flags()
+            return True
+
+        target_lane = None
+        if self._pending_intraday_exit_engine:
             target_lane = str(self._pending_intraday_exit_engine).upper()
         else:
             target_lane = self.get_intraday_position_engine()
@@ -10722,9 +10774,9 @@ class OptionsEngine:
         lane_key = str(target_lane).upper()
         if lane_key in self._pending_intraday_exit_lanes:
             return False
-        self._pending_intraday_exit = True
         self._pending_intraday_exit_engine = target_lane
         self._pending_intraday_exit_lanes.add(lane_key)
+        self._sync_pending_intraday_exit_flags()
         return True
 
     def cancel_pending_intraday_exit(self, symbol: Optional[str] = None) -> bool:
@@ -10732,32 +10784,33 @@ class OptionsEngine:
         Clear pending intraday exit lock after a rejected/canceled close order.
 
         Args:
-            symbol: Optional symbol guard. When provided, lock is cleared only if it
-                matches the tracked intraday position symbol.
+            symbol: Optional symbol guard. When provided, clears symbol-scoped lock.
 
         Returns:
             True when lock was cleared, else False.
         """
-        if not self._pending_intraday_exit_lanes and not self._pending_intraday_exit:
+        symbol_key = self._normalize_symbol_key(symbol)
+        if symbol_key is not None:
+            if symbol_key not in self._pending_intraday_exit_symbols:
+                return False
+            self._pending_intraday_exit_symbols.discard(symbol_key)
+            self._sync_pending_intraday_exit_flags()
+            self.log(
+                f"OPT_MICRO_RECOVERY: Pending intraday exit lock cleared | Symbol={symbol_key}",
+                trades_only=True,
+            )
+            return True
+
+        if (
+            not self._pending_intraday_exit_lanes
+            and not self._pending_intraday_exit_symbols
+            and not self._pending_intraday_exit
+        ):
             return False
 
-        if symbol:
-            lane = self._find_intraday_lane_by_symbol(symbol)
-            if lane is None:
-                return False
-            if (
-                self._pending_intraday_exit_engine
-                and str(self._pending_intraday_exit_engine).upper() != str(lane).upper()
-            ):
-                return False
-
-        if self._pending_intraday_exit_engine:
-            self._pending_intraday_exit_lanes.discard(
-                str(self._pending_intraday_exit_engine).upper()
-            )
-        if not self._pending_intraday_exit_lanes:
-            self._pending_intraday_exit = False
-            self._pending_intraday_exit_engine = None
+        self._pending_intraday_exit_lanes.clear()
+        self._pending_intraday_exit_symbols.clear()
+        self._sync_pending_intraday_exit_flags()
         self.log("OPT_MICRO_RECOVERY: Pending intraday exit lock cleared", trades_only=True)
         return True
 
@@ -11110,6 +11163,7 @@ class OptionsEngine:
         self._pending_intraday_exit = False
         self._pending_intraday_exit_engine = None
         self._pending_intraday_exit_lanes = set()
+        self._pending_intraday_exit_symbols = set()
         self._pending_spread_long_leg = None
         self._pending_spread_short_leg = None
         self._pending_spread_width = None
@@ -11345,6 +11399,7 @@ class OptionsEngine:
                 for k, v in self._pending_intraday_entries.items()
             },
             "pending_intraday_exit_lanes": list(self._pending_intraday_exit_lanes),
+            "pending_intraday_exit_symbols": list(self._pending_intraday_exit_symbols),
             "call_consecutive_losses": self._call_consecutive_losses,
             "call_cooldown_until_date": (
                 self._call_cooldown_until_date.isoformat()
@@ -11508,6 +11563,11 @@ class OptionsEngine:
         self._pending_intraday_exit_lanes = set(
             str(x).upper() for x in (state.get("pending_intraday_exit_lanes") or []) if x
         )
+        self._pending_intraday_exit_symbols = set(
+            self._symbol_str(x) for x in (state.get("pending_intraday_exit_symbols") or []) if x
+        )
+        self._pending_intraday_exit_symbols.discard("")
+        self._sync_pending_intraday_exit_flags()
         self._intraday_trades_today = state.get("intraday_trades_today", 0)
         self._intraday_call_trades_today = state.get("intraday_call_trades_today", 0)
         self._intraday_put_trades_today = state.get("intraday_put_trades_today", 0)
@@ -11797,6 +11857,7 @@ class OptionsEngine:
             self._pending_intraday_exit = False
             self._pending_intraday_exit_engine = None
             self._pending_intraday_exit_lanes = set()
+            self._pending_intraday_exit_symbols = set()
             if not self.has_intraday_position():
                 self._intraday_position_engine = None
             self._intraday_force_exit_hold_skip_log_date = {}

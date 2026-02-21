@@ -1872,6 +1872,7 @@ class AlphaNextGen(QCAlgorithm):
                 current_price=price,
                 ignore_hold_policy=(eod_loss_breach or itm_eod_harvest),
                 engine=self.options_engine._find_intraday_lane_by_symbol(symbol),
+                symbol=symbol,
             )
             if signal:
                 live_qty = abs(self._get_option_holding_quantity(signal.symbol))
@@ -2886,6 +2887,7 @@ class AlphaNextGen(QCAlgorithm):
                 current_price=current_price,
                 ignore_hold_policy=(eod_loss_breach or itm_eod_harvest),
                 engine=self.options_engine._find_intraday_lane_by_symbol(symbol),
+                symbol=symbol,
             )
 
             if signal:
