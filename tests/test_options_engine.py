@@ -13,9 +13,12 @@ Tests cover:
 Spec: docs/v2-specs/V2_1_COMPLETE_ARCHITECTURE.txt (Part 2, Engine 3)
 """
 
+from datetime import datetime, timedelta
+
 import pytest
 
 import config
+from engines.satellite import options_engine as options_engine_module
 from engines.satellite.options_engine import (
     EntryScore,
     IVSensor,
@@ -2475,6 +2478,151 @@ class TestRejectionRecovery:
         assert engine._intraday_trades_today == 2
         assert engine._total_options_trades_today == 3
         assert engine._trades_today == 3
+
+
+class TestPendingIntradayEntryMaintenance:
+    """Pending-entry plumbing hardening tests (lane isolation + stale cleanup)."""
+
+    class _DummySymbol:
+        def __init__(self, text: str):
+            self._text = text
+            self.SecurityType = "OPTION"
+
+        def __str__(self):
+            return self._text
+
+    class _DummyOpenOrder:
+        def __init__(self, oid: int, symbol_text: str, quantity: float):
+            self.Id = oid
+            self.Symbol = TestPendingIntradayEntryMaintenance._DummySymbol(symbol_text)
+            self.Quantity = quantity
+
+    class _DummyTransactions:
+        def __init__(self, open_orders):
+            self._open_orders = list(open_orders)
+            self.cancel_requests = []
+
+        def GetOpenOrders(self):
+            return list(self._open_orders)
+
+        def CancelOrder(self, order_id, tag=""):
+            self.cancel_requests.append((int(order_id), str(tag)))
+
+    class _DummyAlgorithm:
+        def __init__(self, now: datetime, open_orders):
+            self.Time = now
+            self.Transactions = TestPendingIntradayEntryMaintenance._DummyTransactions(open_orders)
+            self._logs = []
+
+        def Log(self, message):
+            self._logs.append(str(message))
+
+    def _make_intraday_position(self, symbol_text: str, strategy: str = "ITM_MOMENTUM"):
+        contract = OptionContract(
+            symbol=symbol_text,
+            underlying="QQQ",
+            direction=OptionDirection.PUT if "P" in symbol_text else OptionDirection.CALL,
+            strike=480.0,
+            expiry="2027-12-31",
+            delta=0.75,
+            bid=10.0,
+            ask=10.5,
+            mid_price=10.25,
+            open_interest=1000,
+            days_to_expiry=14,
+        )
+        return OptionsPosition(
+            contract=contract,
+            entry_price=10.25,
+            entry_time="2027-01-01 10:30:00",
+            entry_score=3.5,
+            num_contracts=1,
+            stop_price=7.5,
+            target_price=12.5,
+            stop_pct=0.25,
+            entry_strategy=strategy,
+            highest_price=10.25,
+        )
+
+    def test_clears_stale_pending_when_only_exit_orders_remain(self, engine, monkeypatch):
+        monkeypatch.setattr(
+            options_engine_module,
+            "SecurityType",
+            type("SecurityType", (), {"Option": "OPTION"}),
+            raising=False,
+        )
+        now = datetime(2027, 1, 4, 12, 0, 0)
+        algo = self._DummyAlgorithm(
+            now=now,
+            open_orders=[
+                # Negative qty = OCO exit order (should NOT keep entry pending lock alive)
+                self._DummyOpenOrder(oid=9001, symbol_text="QQQ   270119P00480000", quantity=-1),
+            ],
+        )
+        engine.algorithm = algo
+        engine._pending_intraday_entry = True
+        engine._pending_intraday_entry_since = now - timedelta(minutes=20)
+        key = engine._pending_intraday_entry_key("QQQ 270119P00480000", "ITM")
+        engine._pending_intraday_entries[key] = {
+            "symbol": "QQQ 270119P00480000",
+            "lane": "ITM",
+            "entry_strategy": "ITM_MOMENTUM",
+            "created_at": (now - timedelta(minutes=20)).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        engine._intraday_positions["ITM"] = [
+            self._make_intraday_position("QQQ 270119P00480000", strategy="ITM_MOMENTUM")
+        ]
+        engine._intraday_positions["MICRO"] = []
+
+        engine._clear_stale_pending_intraday_entry_if_orphaned()
+
+        assert engine._pending_intraday_entries == {}
+        assert engine._pending_intraday_entry is False
+
+    def test_requests_cancel_for_aged_open_entry_order(self, engine, monkeypatch):
+        monkeypatch.setattr(
+            options_engine_module,
+            "SecurityType",
+            type("SecurityType", (), {"Option": "OPTION"}),
+            raising=False,
+        )
+        now = datetime(2027, 1, 4, 12, 0, 0)
+        algo = self._DummyAlgorithm(
+            now=now,
+            open_orders=[
+                # Positive qty = live entry order
+                self._DummyOpenOrder(oid=9101, symbol_text="QQQ   270105P00470000", quantity=2),
+            ],
+        )
+        engine.algorithm = algo
+        engine._pending_intraday_entry = True
+        engine._pending_intraday_entry_since = now - timedelta(minutes=40)
+        key = engine._pending_intraday_entry_key("QQQ 270105P00470000", "MICRO")
+        engine._pending_intraday_entries[key] = {
+            "symbol": "QQQ 270105P00470000",
+            "lane": "MICRO",
+            "entry_strategy": "MICRO_OTM_MOMENTUM",
+            "created_at": (now - timedelta(minutes=40)).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        engine._intraday_positions["ITM"] = []
+        engine._intraday_positions["MICRO"] = []
+
+        engine._clear_stale_pending_intraday_entry_if_orphaned()
+
+        assert key in engine._pending_intraday_entries
+        assert len(algo.Transactions.cancel_requests) == 1
+        assert algo.Transactions.cancel_requests[0][0] == 9101
+
+    def test_pending_key_match_ignores_symbol_spacing(self, engine):
+        key = engine._pending_intraday_entry_key("QQQ 270105P00470000", "MICRO")
+        engine._pending_intraday_entries[key] = {
+            "symbol": "QQQ 270105P00470000",
+            "lane": "MICRO",
+        }
+
+        found = engine._find_pending_intraday_entry_key("QQQ   270105P00470000", lane="MICRO")
+
+        assert found == key
 
 
 class TestRejectionAwareSizing:

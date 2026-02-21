@@ -1403,6 +1403,11 @@ class MainOptionsMixin:
         elif self.options_engine.has_pending_spread_entry():
             rejection_code = "PENDING_SPREAD_ENTRY"
         else:
+            # Clear stale validation/failure artifacts so VASS rejection telemetry
+            # reflects only the current scan attempt.
+            self.options_engine.pop_last_entry_validation_failure()
+            self.options_engine.pop_last_credit_failure_stats()
+            self.options_engine.pop_last_spread_failure_stats()
             signal, rejection_code = self._build_vass_spread_signal(
                 chain=chain,
                 candidate_contracts=candidate_contracts,
