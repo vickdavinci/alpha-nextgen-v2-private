@@ -10565,17 +10565,6 @@ class OptionsEngine:
                 if isinstance(payload, dict):
                     lane = str(payload.get("lane", "")).upper()
                     cleared_lane = lane or None
-            elif engine is not None:
-                # Fallback: symbol key not found, clear lane if caller explicitly requested.
-                eng = str(engine).upper()
-                before = len(self._pending_intraday_entries)
-                self._pending_intraday_entries = {
-                    k: v
-                    for k, v in self._pending_intraday_entries.items()
-                    if str(v.get("lane", "")).upper() != eng
-                }
-                if len(self._pending_intraday_entries) < before:
-                    cleared_lane = eng
         elif engine is None:
             if self._pending_intraday_entries:
                 lanes = {
@@ -10635,11 +10624,13 @@ class OptionsEngine:
         """Best-effort lane lookup for a pending intraday entry."""
         if symbol is not None:
             key = self._find_pending_intraday_entry_key(symbol=symbol)
-            if key is not None:
-                payload = self._pending_intraday_entries.get(key) or {}
-                lane = str(payload.get("lane", "")).upper()
-                if lane:
-                    return lane
+            if key is None:
+                return None
+            payload = self._pending_intraday_entries.get(key) or {}
+            lane = str(payload.get("lane", "")).upper()
+            if lane:
+                return lane
+            return None
         if self._pending_intraday_entries:
             try:
                 payload = next(iter(self._pending_intraday_entries.values()))
