@@ -197,7 +197,11 @@ class AlphaNextGen(QCAlgorithm):
         # Prevents "machine gun" retries while allowing other strategies to continue
         self._trend_rejection_cooldown_until = None  # Trend: skip until next EOD cycle
         self._options_swing_cooldown_until = None  # Options Swing: 30 min cooldown
-        self._options_intraday_cooldown_until = None  # Options Intraday: 15 min cooldown
+        self._options_intraday_cooldown_until = None  # Legacy aggregate cooldown view
+        self._options_intraday_cooldown_until_by_lane = {
+            "MICRO": None,
+            "ITM": None,
+        }  # Lane-scoped cooldowns
         self._options_spread_cooldown_until = None  # Options Spread: 30 min cooldown
         self._mr_rejection_cooldown_until = None  # Mean Reversion: 15 min cooldown
         # V6.15: One-shot retry for temporary intraday drops (slot/cooldown/margin timing).
@@ -2487,6 +2491,7 @@ class AlphaNextGen(QCAlgorithm):
         self._trend_rejection_cooldown_until = None
         self._options_swing_cooldown_until = None
         self._options_intraday_cooldown_until = None
+        self._options_intraday_cooldown_until_by_lane = {"MICRO": None, "ITM": None}
         self._options_spread_cooldown_until = None
         self._mr_rejection_cooldown_until = None
         self._diag_margin_reject_count = 0
@@ -7023,6 +7028,27 @@ class AlphaNextGen(QCAlgorithm):
         )
         log_daily_summary(self)
 
+    def _get_intraday_lane_cooldown_until(self, lane: str):
+        lane_key = str(lane or "").upper()
+        bucket = getattr(self, "_options_intraday_cooldown_until_by_lane", None)
+        if isinstance(bucket, dict):
+            return bucket.get(lane_key)
+        return self._options_intraday_cooldown_until
+
+    def _set_intraday_lane_cooldown(self, lane: str, until_dt) -> None:
+        lane_key = str(lane or "").upper()
+        if lane_key not in ("MICRO", "ITM"):
+            lane_key = "MICRO"
+        if not isinstance(getattr(self, "_options_intraday_cooldown_until_by_lane", None), dict):
+            self._options_intraday_cooldown_until_by_lane = {"MICRO": None, "ITM": None}
+        self._options_intraday_cooldown_until_by_lane[lane_key] = until_dt
+        active = [
+            dt
+            for dt in self._options_intraday_cooldown_until_by_lane.values()
+            if dt is not None
+        ]
+        self._options_intraday_cooldown_until = max(active) if active else None
+
     def _handle_order_rejection(self, symbol: str, order_event) -> None:
         """
         V2.20: Event-driven state recovery on order rejection/cancellation.
@@ -7131,19 +7157,25 @@ class AlphaNextGen(QCAlgorithm):
                         )
             if (not spread_rejection_handled) and self.options_engine.has_pending_intraday_entry():
                 pending_symbol = self.options_engine.get_pending_entry_contract_symbol()
-                if pending_symbol and self._normalize_symbol_str(symbol) != pending_symbol:
+                pending_lane = self.options_engine.get_pending_intraday_entry_lane(symbol_norm)
+                if pending_lane is None:
                     self._diag_micro_pending_cancel_ignored_count += 1
                     self.Log(
-                        f"OPT_MICRO_RECOVERY: Ignored unmatched cancel | "
-                        f"Canceled={self._normalize_symbol_str(symbol)} Pending={pending_symbol}"
+                        f"OPT_INTRADAY_RECOVERY: Ignored unmatched cancel | "
+                        f"Canceled={symbol_norm} Pending={pending_symbol or 'UNKNOWN'}"
                     )
                 else:
-                    self.options_engine.cancel_pending_intraday_entry()
-                    # Cooldown: 15 minutes before intraday can retry
-                    self._options_intraday_cooldown_until = self.Time + timedelta(minutes=15)
+                    cleared_lane = self.options_engine.cancel_pending_intraday_entry(
+                        engine=pending_lane,
+                        symbol=symbol_norm,
+                    )
+                    lane = str(cleared_lane or pending_lane or "MICRO").upper()
+                    # Cooldown: 15 minutes before the rejected lane can retry.
+                    lane_cooldown_until = self.Time + timedelta(minutes=15)
+                    self._set_intraday_lane_cooldown(lane, lane_cooldown_until)
                     self.Log(
-                        f"OPT_MICRO_RECOVERY: Intraday rejected | Pending + counter cleared | "
-                        f"Cooldown 15min until {self._options_intraday_cooldown_until}"
+                        f"OPT_INTRADAY_RECOVERY: Intraday rejected | Lane={lane} | "
+                        f"Pending + counter cleared | Cooldown 15min until {lane_cooldown_until}"
                     )
             elif (not spread_rejection_handled) and self.options_engine.has_pending_swing_entry():
                 self.options_engine.cancel_pending_swing_entry()

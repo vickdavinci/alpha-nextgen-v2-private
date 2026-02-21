@@ -10496,21 +10496,57 @@ class OptionsEngine:
             trades_only=True,
         )
 
-    def cancel_pending_intraday_entry(self, engine: Optional[str] = None) -> None:
+    def cancel_pending_intraday_entry(
+        self, engine: Optional[str] = None, symbol: Optional[str] = None
+    ) -> Optional[str]:
         """
         V2.20: Clear pending intraday entry state after broker rejection.
 
+        When symbol is provided, clears only that pending symbol (optionally scoped by lane).
         When engine is provided (MICRO/ITM), only clears matching lane lock.
+
+        Returns:
+            Cleared lane name when identifiable, else None.
         """
-        if engine is None:
+        cleared_lane: Optional[str] = None
+        if symbol is not None:
+            key = self._find_pending_intraday_entry_key(symbol=symbol, lane=engine)
+            if key is not None:
+                payload = self._pending_intraday_entries.pop(key, None)
+                if isinstance(payload, dict):
+                    lane = str(payload.get("lane", "")).upper()
+                    cleared_lane = lane or None
+            elif engine is not None:
+                # Fallback: symbol key not found, clear lane if caller explicitly requested.
+                eng = str(engine).upper()
+                before = len(self._pending_intraday_entries)
+                self._pending_intraday_entries = {
+                    k: v
+                    for k, v in self._pending_intraday_entries.items()
+                    if str(v.get("lane", "")).upper() != eng
+                }
+                if len(self._pending_intraday_entries) < before:
+                    cleared_lane = eng
+        elif engine is None:
+            if self._pending_intraday_entries:
+                lanes = {
+                    str(v.get("lane", "")).upper()
+                    for v in self._pending_intraday_entries.values()
+                    if isinstance(v, dict) and v.get("lane")
+                }
+                if len(lanes) == 1:
+                    cleared_lane = next(iter(lanes))
             self._pending_intraday_entries = {}
         else:
             eng = str(engine).upper()
+            before = len(self._pending_intraday_entries)
             self._pending_intraday_entries = {
                 k: v
                 for k, v in self._pending_intraday_entries.items()
                 if str(v.get("lane", "")).upper() != eng
             }
+            if len(self._pending_intraday_entries) < before:
+                cleared_lane = eng
 
         self._pending_intraday_entry = bool(self._pending_intraday_entries)
         self._pending_intraday_entry_since = (
@@ -10531,6 +10567,7 @@ class OptionsEngine:
             "OPT_MICRO_RECOVERY: Pending intraday entry cancelled | Retry allowed",
             trades_only=True,
         )
+        return cleared_lane
 
     def has_pending_intraday_entry(self, engine: Optional[str] = None) -> bool:
         """True when an intraday entry is currently pending."""
@@ -10544,6 +10581,28 @@ class OptionsEngine:
             self._pending_intraday_entry
             and (self._pending_intraday_entry_engine or "").upper() == eng
         )
+
+    def get_pending_intraday_entry_lane(self, symbol: Optional[str] = None) -> Optional[str]:
+        """Best-effort lane lookup for a pending intraday entry."""
+        if symbol is not None:
+            key = self._find_pending_intraday_entry_key(symbol=symbol)
+            if key is not None:
+                payload = self._pending_intraday_entries.get(key) or {}
+                lane = str(payload.get("lane", "")).upper()
+                if lane:
+                    return lane
+        if self._pending_intraday_entries:
+            try:
+                payload = next(iter(self._pending_intraday_entries.values()))
+                lane = str(payload.get("lane", "")).upper() if isinstance(payload, dict) else ""
+                if lane:
+                    return lane
+            except Exception:
+                pass
+        if self._pending_intraday_entry_engine:
+            lane = str(self._pending_intraday_entry_engine).upper()
+            return lane or None
+        return None
 
     def get_pending_entry_contract_symbol(self) -> str:
         """Best-effort symbol for current pending single-leg entry contract."""

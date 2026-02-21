@@ -11,6 +11,41 @@ from models.target_weight import TargetWeight
 class MainOptionsMixin:
     """Large options-scan methods extracted from main.py (move-only)."""
 
+    def _normalize_intraday_lane(self, lane: Optional[str]) -> str:
+        lane_key = str(lane or "").upper()
+        return lane_key if lane_key in ("MICRO", "ITM") else "MICRO"
+
+    def _set_intraday_lane_cooldown(self, lane: Optional[str], until: Optional[datetime]) -> None:
+        lane_key = self._normalize_intraday_lane(lane)
+        bucket = getattr(self, "_options_intraday_cooldown_until_by_lane", None)
+        if not isinstance(bucket, dict):
+            bucket = {"MICRO": None, "ITM": None}
+            self._options_intraday_cooldown_until_by_lane = bucket
+        bucket[lane_key] = until
+        # Keep legacy aggregate field updated for existing telemetry/reporting.
+        active_until = [dt for dt in bucket.values() if dt is not None]
+        self._options_intraday_cooldown_until = max(active_until) if active_until else None
+
+    def _get_intraday_lane_cooldown_until(self, lane: Optional[str]) -> Optional[datetime]:
+        lane_key = self._normalize_intraday_lane(lane)
+        bucket = getattr(self, "_options_intraday_cooldown_until_by_lane", None)
+        if isinstance(bucket, dict):
+            return bucket.get(lane_key)
+        return getattr(self, "_options_intraday_cooldown_until", None)
+
+    def _is_intraday_lane_cooldown_active(self, lane: Optional[str]) -> bool:
+        lane_key = self._normalize_intraday_lane(lane)
+        until = self._get_intraday_lane_cooldown_until(lane_key)
+        if until is None:
+            return False
+        now = getattr(self, "Time", None)
+        if now is None:
+            return True
+        if now >= until:
+            self._set_intraday_lane_cooldown(lane_key, None)
+            return False
+        return True
+
     def _select_intraday_option_contract(
         self,
         chain,
@@ -556,10 +591,11 @@ class MainOptionsMixin:
 
         # V2.4.1: Throttle intraday scanning to every 15 minutes (was every minute)
         # This reduces 95 scans/hour to 4 scans/hour
-        # V2.20: Also check rejection cooldown for intraday mode
+        # V10.16: lane-scoped rejection cooldowns (MICRO/ITM independent).
+        micro_intraday_cooldown_active = self._is_intraday_lane_cooldown_active("MICRO")
+        itm_intraday_cooldown_active = self._is_intraday_lane_cooldown_active("ITM")
         intraday_cooldown_active = (
-            self._options_intraday_cooldown_until is not None
-            and self.Time < self._options_intraday_cooldown_until
+            micro_intraday_cooldown_active and itm_intraday_cooldown_active
         )
         # Defaults for explicit ITM pass (only used when intraday scan context is ready).
         itm_dir = None
@@ -634,11 +670,19 @@ class MainOptionsMixin:
                         qqq_current=qqq_price
                     )
 
+                if micro_intraday_cooldown_active:
+                    should_trade = False
+                    intraday_direction = None
+                    signal_reason = "R_COOLDOWN_INTRADAY_MICRO"
+
                 if not should_trade:
                     self.Log(f"INTRADAY: Blocked - {signal_reason}")
                     intraday_direction = None
                     # V6.15: Allow one retry if prior approved signal was dropped for temporary reasons.
                     if (
+                        not micro_intraday_cooldown_active
+                        and signal_reason != "R_COOLDOWN_INTRADAY_MICRO"
+                        and
                         self._intraday_retry_once_pending
                         and self._intraday_retry_expires is not None
                         and self.Time <= self._intraday_retry_expires
@@ -868,9 +912,7 @@ class MainOptionsMixin:
                                 drop_code = intraday_validation_reason
                             elif not can_retry_now:
                                 drop_code = retry_code_now or "R_SLOT_LIMIT"
-                            elif self._options_intraday_cooldown_until and (
-                                self.Time < self._options_intraday_cooldown_until
-                            ):
+                            elif micro_intraday_cooldown_active:
                                 drop_code = "R_COOLDOWN_INTRADAY"
                             elif self._margin_cb_in_progress or self._margin_call_cooldown_until:
                                 drop_code = "R_MARGIN_CB_ACTIVE"
@@ -942,6 +984,7 @@ class MainOptionsMixin:
             bool(getattr(config, "ITM_ENGINE_ENABLED", False))
             and intraday_scan_context_ready
             and itm_dir is not None
+            and not itm_intraday_cooldown_active
         ):
             itm_signal_id = (
                 f"ITM-{self.Time.strftime('%Y%m%d-%H%M')}-"
