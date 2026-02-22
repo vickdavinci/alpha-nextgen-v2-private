@@ -1986,6 +1986,10 @@ MICRO_DEBIT_FADE_STOP_0DTE = 0.20  # 0DTE fade: tighter risk due to shorter thes
 MICRO_DEBIT_FADE_TRAIL_TRIGGER = INTRADAY_DEBIT_FADE_TRAIL_TRIGGER
 MICRO_DEBIT_FADE_TRAIL_PCT = INTRADAY_DEBIT_FADE_TRAIL_PCT
 MICRO_DEBIT_FADE_DTE_EXIT = 0  # Let intraday force-exit manage same-day lifecycle
+MICRO_DEBIT_FADE_MAX_HOLD_MINUTES = 70  # V10.34: mean-reversion thesis should resolve quickly
+MICRO_DEBIT_FADE_MAX_HOLD_PROFIT_EXEMPT_PCT = (
+    0.20  # Keep strong winners; cut slower fades before theta dominates
+)
 MICRO_OTM_MOMENTUM_TARGET = 0.75
 MICRO_OTM_MOMENTUM_STOP = 0.30
 MICRO_OTM_MOMENTUM_TRAIL_TRIGGER = 0.30
@@ -2051,6 +2055,9 @@ MICRO_OTM_MOMENTUM_MAX_VIX = (
 MICRO_OTM_MOMENTUM_MIN_MOVE = 0.50  # V10.30: reduce fast-reversal OTM entries in weak tapes
 MICRO_OTM_MOMENTUM_MIN_MOVE_CALL = 0.55  # V10.33: require stronger confirmation for CALL momentum
 MICRO_OTM_MOMENTUM_MIN_MOVE_PUT = 0.60  # V10.33: require stronger confirmation for PUT momentum
+MICRO_OTM_PUT_MAX_MACRO_SCORE = (
+    54.0  # V10.34: skip bearish OTM momentum unless macro backdrop is clearly risk-off
+)
 MICRO_OTM_BULLISH_CONFIRM_SCORE_BUFFER = (
     4.0  # V10.33: CALL momentum needs higher micro-score than baseline confirm gate
 )

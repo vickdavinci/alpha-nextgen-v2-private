@@ -1188,6 +1188,15 @@ class MicroRegimeEngine:
                             None,
                             f"MICRO_OTM_GATE_BLOCK: weak bearish score {micro_score:.0f} > {score_ceiling:.0f}",
                         )
+                    macro_score_ceiling = float(
+                        getattr(config, "MICRO_OTM_PUT_MAX_MACRO_SCORE", 100.0)
+                    )
+                    if macro_regime_score > macro_score_ceiling:
+                        return (
+                            IntradayStrategy.NO_TRADE,
+                            None,
+                            f"MICRO_OTM_GATE_BLOCK: macro {macro_regime_score:.0f} > {macro_score_ceiling:.0f} for PUT",
+                        )
                 if vix_current <= max_vix and abs(qqq_move_pct) >= min_move:
                     return (
                         IntradayStrategy.MICRO_OTM_MOMENTUM,
@@ -8326,6 +8335,38 @@ class OptionsEngine:
                     return None
                 reason = (
                     f"MICRO_OTM_MAX_HOLD {pnl_pct:+.1%} "
+                    f"(Held={held_minutes:.0f}m >= {max_hold_minutes:.0f}m, "
+                    f"Exempt>={profit_exempt:.0%})"
+                )
+                self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
+                return TargetWeight(
+                    symbol=symbol_str,
+                    target_weight=0.0,
+                    source="OPT",
+                    urgency=Urgency.IMMEDIATE,
+                    reason=reason,
+                    requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
+                )
+
+        # DEBIT_FADE theta guard: mean-reversion trades should resolve quickly.
+        if (
+            is_intraday_pos
+            and strategy_name == IntradayStrategy.MICRO_DEBIT_FADE.value
+            and held_minutes is not None
+        ):
+            max_hold_minutes = float(getattr(config, "MICRO_DEBIT_FADE_MAX_HOLD_MINUTES", 0))
+            profit_exempt = float(
+                getattr(config, "MICRO_DEBIT_FADE_MAX_HOLD_PROFIT_EXEMPT_PCT", 0.20)
+            )
+            if (
+                max_hold_minutes > 0
+                and held_minutes >= max_hold_minutes
+                and pnl_pct < profit_exempt
+            ):
+                if not self.mark_pending_intraday_exit(symbol_str):
+                    return None
+                reason = (
+                    f"MICRO_FADE_MAX_HOLD {pnl_pct:+.1%} "
                     f"(Held={held_minutes:.0f}m >= {max_hold_minutes:.0f}m, "
                     f"Exempt>={profit_exempt:.0%})"
                 )
