@@ -108,18 +108,22 @@ echo -e "${BLUE}[5/5]${NC} Pushing to QuantConnect cloud..."
 find "$DEST" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 find "$DEST" -name "*.pyc" -delete 2>/dev/null || true
 cd "$LEAN_WORKSPACE"
+set +e
 PUSH_OUTPUT=$(lean cloud push --project "$PROJECT_NAME" 2>&1)
 PUSH_EXIT=$?
+set -e
 echo "$PUSH_OUTPUT"
 if [ "$PUSH_EXIT" -ne 0 ] || echo "$PUSH_OUTPUT" | grep -qi "413\|exceed.*size\|failed"; then
     if echo "$PUSH_OUTPUT" | grep -qi "413\|exceed.*size"; then
         echo -e "${YELLOW}   ! Bulk push hit payload size limit (HTTP 413); trying per-file fallback...${NC}"
+        set +e
         FALLBACK_OUTPUT=$(
             "$PYTHON_BIN" "$SRC/scripts/qc_push_individual.py" \
                 --workspace "$DEST" \
                 --project-id "$QC_PROJECT_ID" 2>&1
         )
         FALLBACK_EXIT=$?
+        set -e
         echo "$FALLBACK_OUTPUT"
         if [ "$FALLBACK_EXIT" -ne 0 ]; then
             echo -e "${RED}   ✗ Per-file fallback push FAILED${NC}"
