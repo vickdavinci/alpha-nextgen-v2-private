@@ -5557,6 +5557,33 @@ class OptionsEngine:
             )
             return fail_quality("DEBIT_TO_WIDTH_TOO_LOW")
 
+        # Production friction gate: entry friction should not consume too much of
+        # expected target profit.
+        if bool(getattr(config, "SPREAD_ENTRY_FRICTION_GATE_ENABLED", True)):
+            entry_friction = max(0.0, conservative_net_debit - net_debit)
+            base_profit_pct = float(getattr(config, "SPREAD_PROFIT_TARGET_PCT", 0.50))
+            profit_multipliers = getattr(
+                config, "SPREAD_PROFIT_REGIME_MULTIPLIERS", {75: 1.0, 50: 1.0, 40: 1.0, 0: 1.0}
+            )
+            profit_multiplier = 1.0
+            for threshold in sorted(profit_multipliers.keys(), reverse=True):
+                if regime_score >= threshold:
+                    profit_multiplier = float(profit_multipliers[threshold])
+                    break
+            adaptive_profit_pct = base_profit_pct * profit_multiplier
+            expected_target_profit = max_profit * adaptive_profit_pct
+            if expected_target_profit > 0:
+                friction_to_target = entry_friction / expected_target_profit
+                friction_cap = float(getattr(config, "SPREAD_ENTRY_FRICTION_TO_TARGET_MAX", 0.35))
+                if friction_to_target > friction_cap:
+                    self.log(
+                        f"SPREAD: Entry blocked - FRICTION_TO_TARGET {friction_to_target:.1%} > "
+                        f"{friction_cap:.0%} | Friction=${entry_friction:.2f} "
+                        f"TargetProfit=${expected_target_profit:.2f}",
+                        trades_only=True,
+                    )
+                    return fail_quality("FRICTION_TO_TARGET_TOO_HIGH")
+
         if bool(getattr(config, "SPREAD_ENTRY_COMMISSION_GATE_ENABLED", False)):
             max_profit_dollars = max_profit * 100.0
             commission_per_spread = float(getattr(config, "SPREAD_COMMISSION_PER_CONTRACT", 2.60))
@@ -9224,6 +9251,38 @@ class OptionsEngine:
                 f"but contract is {best_contract.direction.value}, skipping"
             )
             return fail("E_INTRADAY_DIRECTION_MISMATCH")
+
+        # Production friction cap: block entries where bid/ask friction is too high
+        # for the owning lane.
+        strategy_for_friction = self._canonical_intraday_strategy_name(
+            entry_strategy.value if entry_strategy is not None else ""
+        )
+        if strategy_for_friction in (
+            IntradayStrategy.ITM_MOMENTUM.value,
+            IntradayStrategy.PROTECTIVE_PUTS.value,
+        ):
+            max_friction_pct = float(getattr(config, "INTRADAY_ITM_MAX_BID_ASK_SPREAD_PCT", 0.12))
+        elif strategy_for_friction in (
+            IntradayStrategy.MICRO_DEBIT_FADE.value,
+            IntradayStrategy.MICRO_OTM_MOMENTUM.value,
+            IntradayStrategy.DEBIT_FADE.value,
+            IntradayStrategy.CREDIT_SPREAD.value,
+        ):
+            max_friction_pct = float(getattr(config, "INTRADAY_MICRO_MAX_BID_ASK_SPREAD_PCT", 0.10))
+        else:
+            max_friction_pct = float(getattr(config, "OPTIONS_SPREAD_MAX_PCT", 0.14))
+
+        contract_spread_pct = float(getattr(best_contract, "spread_pct", 1.0) or 1.0)
+        if contract_spread_pct > max_friction_pct:
+            self.log(
+                f"INTRADAY: Entry blocked - friction {contract_spread_pct:.1%} > "
+                f"{max_friction_pct:.0%} | Strategy={strategy_for_friction}",
+                trades_only=True,
+            )
+            return fail(
+                "E_INTRADAY_FRICTION_CAP",
+                f"{contract_spread_pct:.1%}>{max_friction_pct:.0%}|{strategy_for_friction}",
+            )
 
         # V2.18: Use sizing cap (Fix for MarginBuyingPower sizing bug)
         # V3.0 SCALABILITY FIX: Use percentage-based cap instead of hardcoded dollars

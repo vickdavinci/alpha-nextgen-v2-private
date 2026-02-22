@@ -1414,6 +1414,10 @@ VASS_MFE_T2_TRIGGER = 0.45  # 45% of max profit reached
 VASS_MFE_T2_FLOOR_PCT = 0.15  # Lock +15% floor once T2 reached
 VASS_TAIL_RISK_CAP_ENABLED = True  # Emergency per-trade account-risk kill switch
 VASS_TAIL_RISK_CAP_PCT_EQUITY = 0.015  # Cap spread loss at 1.5% of portfolio equity
+# Entry friction sanity: reject spreads where expected entry friction consumes too much
+# of expected target profit (production-quality cost control).
+SPREAD_ENTRY_FRICTION_GATE_ENABLED = True
+SPREAD_ENTRY_FRICTION_TO_TARGET_MAX = 0.35  # Max friction / expected target-profit ratio
 
 # V3.0: Regime-Adaptive Profit Targets
 # V9.4: With 40% base, multipliers give: Bull=36%, Neutral=44%, Cautious/Bear=48%
@@ -1929,6 +1933,9 @@ INTRADAY_ITM_START = "10:00"  # Entry window start
 INTRADAY_ITM_END = "14:30"  # Entry window end (earlier than FADE - momentum fades after lunch)
 INTRADAY_ITM_DELTA = 0.70  # ITM delta target
 INTRADAY_ITM_TARGET = 0.80  # V10.8: trailing stop is primary exit; target is distant ceiling
+# Production friction caps (single-leg options): tighter than global defaults.
+INTRADAY_ITM_MAX_BID_ASK_SPREAD_PCT = 0.12
+INTRADAY_MICRO_MAX_BID_ASK_SPREAD_PCT = 0.10
 
 # V6.4: DEBIT_MOMENTUM time window (same as ITM_MOMENTUM - both are momentum strategies)
 INTRADAY_DEBIT_MOMENTUM_START = "10:00"  # Entry window start
