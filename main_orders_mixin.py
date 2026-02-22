@@ -223,7 +223,12 @@ class MainOrdersMixin:
                         f"{symbol} x{fill_qty} @ ${fill_price:.2f} | LIQUIDATING IMMEDIATELY"
                     )
                     # Immediately liquidate the options position
-                    self.MarketOrder(orderEvent.Symbol, -fill_qty, tag="KILL_SWITCH_ON_FILL")
+                    self._submit_option_close_market_order(
+                        symbol=orderEvent.Symbol,
+                        quantity=-fill_qty,
+                        reason="KILL_SWITCH_ON_FILL",
+                        tag_hint=order_tag,
+                    )
 
             # V2.25 Fix #1: Exercise/Assignment Detection
             # Was unreachable dead code (elif after if Filled:). Moved inside.
@@ -493,7 +498,12 @@ class MainOrdersMixin:
                             f"OrderId={orderEvent.OrderId} | SpreadKey={orphan_key} | "
                             f"{long_leg_symbol[-20:]} x{qty}"
                         )
-                        self.MarketOrder(broker_symbol, -qty, tag="ORPHAN_LONG")
+                        self._submit_option_close_market_order(
+                            symbol=broker_symbol,
+                            quantity=-qty,
+                            reason="ORPHAN_LONG",
+                            engine_hint="VASS",
+                        )
                     else:
                         self.Log(
                             f"SPREAD: No position in long leg - no cleanup needed | "
@@ -527,7 +537,12 @@ class MainOrdersMixin:
                             f"{short_leg_symbol[-20:]} x{abs(qty)}"
                         )
                         # Short leg is negative qty, buy back means positive order
-                        self.MarketOrder(broker_symbol, -qty, tag="ORPHAN_SHORT")
+                        self._submit_option_close_market_order(
+                            symbol=broker_symbol,
+                            quantity=-qty,
+                            reason="ORPHAN_SHORT",
+                            engine_hint="VASS",
+                        )
                     else:
                         self.Log(
                             f"SPREAD: No position in short leg - no cleanup needed | "

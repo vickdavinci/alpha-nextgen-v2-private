@@ -506,7 +506,7 @@ class AlphaNextGen(QCAlgorithm):
         # =====================================================================
         # STEP 9B: V6.12 FALLBACK INTRADAY FORCE-CLOSE (safety net)
         # =====================================================================
-        # If the scheduled 15:30 close missed, enforce once after 15:35.
+        # If the scheduled force-close misses, enforce once after +5 minutes.
         self._intraday_force_exit_fallback()
 
         # =====================================================================
@@ -810,11 +810,11 @@ class AlphaNextGen(QCAlgorithm):
         # causing NO EOD events to fire. This resulted in:
         # - Positions held overnight when they should close
         # - OCO orders never triggered (0% trigger rate across all backtests)
-        # - Missing 15:30/15:45/16:00 processing
+        # - Missing intraday force-close / 15:45 / 16:00 processing
         #
         # These static schedules act as a fallback for normal trading days (4:00 PM close).
         # For early close days, dynamic scheduling should override these times.
-        intraday_force_exit = getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:30")
+        intraday_force_exit = getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15")
         intraday_force_hour, intraday_force_minute = map(int, intraday_force_exit.split(":"))
         self.Schedule.On(
             self.DateRules.EveryDay(),
@@ -1151,8 +1151,8 @@ class AlphaNextGen(QCAlgorithm):
         close events relative to that time.
 
         Handles:
-            - Normal days (4:00 PM close): Events at 15:30/15:45/16:00
-            - Early close days (1:00 PM): Events at 12:30/12:45/13:00
+            - Normal days (4:00 PM close): Events at 15:15/15:45/16:00
+            - Early close days (1:00 PM): Events at 12:15/12:45/13:00
         """
         try:
             # Get actual market close time for today
@@ -1161,7 +1161,7 @@ class AlphaNextGen(QCAlgorithm):
             is_normal_close = market_close.hour == 16 and market_close.minute == 0
 
             # #10 fix: avoid duplicate static+dynamic schedules on normal close days.
-            # Static fallback schedules already exist for 15:30/15:45/16:00.
+            # Static fallback schedules already exist for configured force-close/15:45/16:00.
             if not is_normal_close:
                 self.scheduler.schedule_dynamic_eod_events(market_close)
             else:
@@ -1172,9 +1172,9 @@ class AlphaNextGen(QCAlgorithm):
             # Also schedule intraday options force close dynamically
             from datetime import timedelta
 
-            opt_offset = getattr(config, "INTRADAY_OPTIONS_OFFSET_MINUTES", 30)
+            opt_offset = getattr(config, "INTRADAY_OPTIONS_OFFSET_MINUTES", 45)
             opt_close_time = market_close - timedelta(minutes=opt_offset)
-            static_force_exit = getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:30")
+            static_force_exit = getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15")
             static_h, static_m = map(int, static_force_exit.split(":"))
             # Keep dynamic scheduling for early-close sessions or when dynamic time differs.
             if not (
@@ -1621,6 +1621,188 @@ class AlphaNextGen(QCAlgorithm):
             return None, None
         return None, None
 
+    def _infer_option_engine_bucket_for_symbol(
+        self,
+        symbol: Any,
+        tag_hint: str = "",
+        strategy_hint: Optional[Any] = None,
+    ) -> str:
+        """Best-effort engine attribution for option-exit telemetry isolation."""
+        hint_text = str(tag_hint or "").upper()
+        if "VASS" in hint_text:
+            return "VASS"
+        if "ITM" in hint_text:
+            return "ITM"
+        if "MICRO" in hint_text:
+            return "MICRO"
+
+        strategy_bucket = self._intraday_engine_bucket_from_strategy(strategy_hint)
+        if strategy_bucket in {"MICRO", "ITM"}:
+            return strategy_bucket
+
+        symbol_norm = self._normalize_symbol_str(symbol)
+        if not symbol_norm:
+            return "OTHER"
+
+        if symbol_norm in getattr(self, "_micro_open_symbols", set()):
+            return "MICRO"
+
+        try:
+            for intraday_pos in self.options_engine.get_intraday_positions():
+                if intraday_pos is None or intraday_pos.contract is None:
+                    continue
+                pos_symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
+                if pos_symbol != symbol_norm:
+                    continue
+                bucket = self._intraday_engine_bucket_from_strategy(
+                    getattr(intraday_pos, "entry_strategy", "")
+                )
+                if bucket in {"MICRO", "ITM"}:
+                    return bucket
+        except Exception:
+            pass
+
+        try:
+            for spread in self.options_engine.get_spread_positions():
+                if spread is None:
+                    continue
+                long_norm = self._normalize_symbol_str(getattr(spread.long_leg, "symbol", ""))
+                short_norm = self._normalize_symbol_str(getattr(spread.short_leg, "symbol", ""))
+                if symbol_norm in {long_norm, short_norm}:
+                    return "VASS"
+        except Exception:
+            pass
+
+        recent_tag = str(
+            self._get_recent_symbol_fill_tag(symbol_norm, max_age_minutes=480) or ""
+        ).upper()
+        if "VASS" in recent_tag:
+            return "VASS"
+        if "ITM" in recent_tag:
+            return "ITM"
+        if "MICRO" in recent_tag:
+            return "MICRO"
+        return "OTHER"
+
+    def _build_option_exit_tag(
+        self,
+        base_reason: str,
+        symbol: Any,
+        engine_hint: str = "",
+        tag_hint: str = "",
+        strategy_hint: Optional[Any] = None,
+    ) -> str:
+        """Attach stable engine prefix to direct option-exit tags."""
+        reason = str(base_reason or "OPTION_EXIT").strip().upper()
+        if not reason:
+            reason = "OPTION_EXIT"
+        for prefix in ("VASS:", "MICRO:", "ITM:", "OTHER:"):
+            if reason.startswith(prefix):
+                return reason
+
+        bucket = str(engine_hint or "").upper().strip()
+        if bucket not in {"VASS", "MICRO", "ITM", "OTHER"}:
+            bucket = self._infer_option_engine_bucket_for_symbol(
+                symbol=symbol,
+                tag_hint=tag_hint,
+                strategy_hint=strategy_hint,
+            )
+        return f"{bucket}:{reason}"
+
+    def _cancel_all_open_orders_for_symbol(self, symbol: Any, reason: str = "") -> Tuple[int, int]:
+        """Cancel all open orders for symbol before direct option-close submission."""
+        symbol_norm = self._normalize_symbol_str(symbol)
+        if not symbol_norm:
+            return 0, 0
+
+        canceled = 0
+        cancel_errors = 0
+        try:
+            for open_order in list(self.Transactions.GetOpenOrders()):
+                try:
+                    if self._normalize_symbol_str(open_order.Symbol) != symbol_norm:
+                        continue
+                    order_id = int(getattr(open_order, "Id", 0) or 0)
+                    if order_id <= 0:
+                        order_id = int(getattr(open_order, "OrderId", 0) or 0)
+                    if order_id <= 0:
+                        continue
+                    self.Transactions.CancelOrder(order_id)
+                    canceled += 1
+                except Exception:
+                    cancel_errors += 1
+        except Exception:
+            cancel_errors += 1
+
+        if canceled > 0 or cancel_errors > 0:
+            self.Log(
+                f"EXIT_PRECLEAR_CANCEL: Symbol={symbol_norm} | Canceled={canceled} | "
+                f"CancelErrors={cancel_errors} | Reason={reason or 'NA'}"
+            )
+        return canceled, cancel_errors
+
+    def _submit_option_close_market_order(
+        self,
+        symbol: Any,
+        quantity: int,
+        reason: str,
+        engine_hint: str = "",
+        tag_hint: str = "",
+        strategy_hint: Optional[Any] = None,
+    ):
+        """Direct options close helper with pre-cancel and engine-scoped telemetry tag."""
+        try:
+            close_qty = int(quantity)
+        except Exception:
+            close_qty = 0
+        if close_qty == 0:
+            return None
+
+        symbol_norm = self._normalize_symbol_str(symbol)
+        if not symbol_norm:
+            return None
+
+        try:
+            self.oco_manager.cancel_by_symbol(symbol_norm, reason=f"{reason}_PRECLEAR")
+        except Exception:
+            pass
+
+        canceled, cancel_errors = self._cancel_all_open_orders_for_symbol(
+            symbol=symbol_norm, reason=reason
+        )
+        remaining = 0
+        try:
+            for open_order in self.Transactions.GetOpenOrders():
+                if self._normalize_symbol_str(open_order.Symbol) == symbol_norm:
+                    remaining += 1
+        except Exception:
+            remaining = 0
+        if canceled > 0 or cancel_errors > 0 or remaining > 0:
+            self.Log(
+                f"EXIT_PRECLEAR_DIRECT: Symbol={symbol_norm} | Canceled={canceled} | "
+                f"Remaining={remaining} | CancelErrors={cancel_errors} | Submit=True"
+            )
+
+        order_tag = self._build_option_exit_tag(
+            base_reason=reason,
+            symbol=symbol_norm,
+            engine_hint=engine_hint,
+            tag_hint=tag_hint,
+            strategy_hint=strategy_hint,
+        )
+        ticket = self.MarketOrder(symbol, close_qty, tag=order_tag)
+        try:
+            if ticket is not None and hasattr(ticket, "OrderId"):
+                self._record_order_tag_map(
+                    int(ticket.OrderId),
+                    symbol_norm,
+                    order_tag,
+                    source="DIRECT_OPTION_CLOSE",
+                )
+        except Exception:
+            pass
+        return ticket
+
     def _resolve_pending_exit_tracker_key(self, symbol: str) -> Optional[str]:
         """Resolve pending-exit tracker key by normalized symbol."""
         symbol_norm = self._normalize_symbol_str(symbol)
@@ -1846,7 +2028,7 @@ class AlphaNextGen(QCAlgorithm):
             return
 
         # Only after configured force-close + 5 minutes.
-        exit_time = getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:30")
+        exit_time = getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15")
         exit_hour, exit_minute = map(int, exit_time.split(":"))
         fallback_hour = exit_hour
         fallback_minute = exit_minute + 5
@@ -2001,7 +2183,11 @@ class AlphaNextGen(QCAlgorithm):
             try:
                 # qty is negative, so we buy abs(qty) to close
                 close_qty = abs(qty)
-                self.MarketOrder(symbol, close_qty, tag=reason)
+                self._submit_option_close_market_order(
+                    symbol=symbol,
+                    quantity=close_qty,
+                    reason=reason,
+                )
                 self.Log(f"{reason}: Closed short option {str(symbol)[-21:]} x{close_qty}")
             except Exception as e:
                 self.Log(f"{reason}: Failed to close short {str(symbol)[-21:]} | {e}")
@@ -2009,7 +2195,11 @@ class AlphaNextGen(QCAlgorithm):
         # Step 2: Sell ALL long options (safe now - all shorts closed)
         for symbol, qty in long_options:
             try:
-                self.MarketOrder(symbol, -qty, tag=reason)
+                self._submit_option_close_market_order(
+                    symbol=symbol,
+                    quantity=-qty,
+                    reason=reason,
+                )
                 self.Log(f"{reason}: Closed long option {str(symbol)[-21:]} x{qty}")
             except Exception as e:
                 self.Log(f"{reason}: Failed to close long {str(symbol)[-21:]} | {e}")
@@ -2096,7 +2286,11 @@ class AlphaNextGen(QCAlgorithm):
         for symbol, qty in short_options:
             try:
                 close_qty = abs(qty)
-                self.MarketOrder(symbol, close_qty, tag=reason)
+                self._submit_option_close_market_order(
+                    symbol=symbol,
+                    quantity=close_qty,
+                    reason=reason,
+                )
                 self.Log(f"{reason}: Closed SHORT {str(symbol)[-21:]} x{close_qty}")
             except Exception as e:
                 self.Log(f"{reason}: FAILED short close {str(symbol)[-21:]} | {e}")
@@ -2104,7 +2298,11 @@ class AlphaNextGen(QCAlgorithm):
         # THEN close ALL longs (sell to close) - safe now, no naked shorts
         for symbol, qty in long_options:
             try:
-                self.MarketOrder(symbol, -qty, tag=reason)
+                self._submit_option_close_market_order(
+                    symbol=symbol,
+                    quantity=-qty,
+                    reason=reason,
+                )
                 self.Log(f"{reason}: Closed LONG {str(symbol)[-21:]} x{qty}")
             except Exception as e:
                 self.Log(f"{reason}: FAILED long close {str(symbol)[-21:]} | {e}")
@@ -2858,7 +3056,7 @@ class AlphaNextGen(QCAlgorithm):
 
     def _on_intraday_options_force_close(self) -> None:
         """
-        V2.1.1: Intraday options force close at 15:30 ET.
+        V2.1.1: Intraday options force close at configured force-exit time.
 
         Forces close of all intraday mode options positions (0-2 DTE).
         These must close 30 minutes before market close.
@@ -3012,7 +3210,12 @@ class AlphaNextGen(QCAlgorithm):
                         f"INTRADAY_FORCE_EXIT_SWEEP: Closing MICRO holding from holdings ledger | "
                         f"{live_symbol} | Qty={live_qty}"
                     )
-                    self.MarketOrder(holding.Symbol, -live_qty, tag="MICRO_EOD_SWEEP")
+                    self._submit_option_close_market_order(
+                        symbol=holding.Symbol,
+                        quantity=-live_qty,
+                        reason="MICRO_EOD_SWEEP",
+                        engine_hint="MICRO",
+                    )
                 except Exception as e:
                     self.Log(f"INTRADAY_FORCE_EXIT_SWEEP_ERROR: {e}")
 
@@ -3060,7 +3263,7 @@ class AlphaNextGen(QCAlgorithm):
         # Skip OCO recovery in force-close window to avoid close-race amplification.
         try:
             exit_hour, exit_min = map(
-                int, getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:25").split(":")
+                int, getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15").split(":")
             )
             cutoff = int(getattr(config, "OCO_RECOVERY_CUTOFF_MINUTES_BEFORE_FORCE_EXIT", 20))
             now_minutes = self.Time.hour * 60 + self.Time.minute
@@ -4518,7 +4721,18 @@ class AlphaNextGen(QCAlgorithm):
                                 self._recon_orphan_last_log_at[sym_str] = self.Time
                             continue
 
-                    self.Liquidate(broker_symbol, tag="RECON_ORPHAN_OPTION")
+                    close_qty = -int(holding.Quantity)
+                    ticket = self._submit_option_close_market_order(
+                        symbol=broker_symbol,
+                        quantity=close_qty,
+                        reason="RECON_ORPHAN_OPTION",
+                    )
+                    if ticket is None:
+                        self.Log(
+                            f"RECON_ORPHAN_CLOSE_SKIPPED: {sym_str} | Qty={holding.Quantity} | "
+                            "Reason=NoCloseQuantity"
+                        )
+                        continue
                     self._recon_orphan_close_submitted[sym_str] = today
                     self._clear_micro_symbol_tracking(sym_str)
                     self._recon_orphan_seen_streak.pop(sym_str, None)
@@ -6285,14 +6499,22 @@ class AlphaNextGen(QCAlgorithm):
         for symbol, qty in short_options:
             try:
                 close_qty = abs(qty)
-                self.MarketOrder(symbol, close_qty, tag="KS_SINGLE_LEG")
+                self._submit_option_close_market_order(
+                    symbol=symbol,
+                    quantity=close_qty,
+                    reason="KS_SINGLE_LEG",
+                )
                 self.Log(f"KS_SINGLE_LEG: Closed SHORT {str(symbol)[-21:]} x{close_qty}")
             except Exception as e:
                 self.Log(f"KS_SINGLE_LEG: FAILED short close {str(symbol)[-21:]} | {e}")
 
         for symbol, qty in long_options:
             try:
-                self.MarketOrder(symbol, -qty, tag="KS_SINGLE_LEG")
+                self._submit_option_close_market_order(
+                    symbol=symbol,
+                    quantity=-qty,
+                    reason="KS_SINGLE_LEG",
+                )
                 self.Log(f"KS_SINGLE_LEG: Closed LONG {str(symbol)[-21:]} x{qty}")
             except Exception as e:
                 self.Log(f"KS_SINGLE_LEG: FAILED long close {str(symbol)[-21:]} | {e}")
@@ -6695,7 +6917,7 @@ class AlphaNextGen(QCAlgorithm):
 
         # V6.22 FIX: Software backup for intraday positions (OCO single-point-of-failure fix)
         # Previously intraday had NO software stop/profit/DTE check — relied solely on OCO.
-        # If OCO was cancelled (199 events in 2022), position bled until 15:25 forced exit.
+        # If OCO was cancelled (199 events in 2022), position bled until force-exit.
         for intraday_position in intraday_positions:
             intra_symbol = self._normalize_symbol_str(intraday_position.contract.symbol)
             if not self._has_open_non_oco_order_for_symbol(intra_symbol):
@@ -7677,7 +7899,12 @@ class AlphaNextGen(QCAlgorithm):
                 )
                 if long_holding and long_holding.Invested:
                     qty = long_holding.Quantity
-                    self.MarketOrder(long_symbol, -qty, tag="EMERG_QTY_MISMATCH")
+                    self._submit_option_close_market_order(
+                        symbol=long_symbol,
+                        quantity=-qty,
+                        reason="EMERG_QTY_MISMATCH",
+                        engine_hint="VASS",
+                    )
                     self.Log(
                         f"SPREAD: Emergency closed long leg | {self._normalize_symbol_str(long_symbol)} x{qty}"
                     )
@@ -7689,7 +7916,12 @@ class AlphaNextGen(QCAlgorithm):
                 )
                 if short_holding and short_holding.Invested:
                     qty = short_holding.Quantity
-                    self.MarketOrder(short_symbol, -qty, tag="EMERG_QTY_MISMATCH")
+                    self._submit_option_close_market_order(
+                        symbol=short_symbol,
+                        quantity=-qty,
+                        reason="EMERG_QTY_MISMATCH",
+                        engine_hint="VASS",
+                    )
                     self.Log(
                         f"SPREAD: Emergency closed short leg | {self._normalize_symbol_str(short_symbol)} x{qty}"
                     )
@@ -7792,7 +8024,12 @@ class AlphaNextGen(QCAlgorithm):
             holding, broker_symbol = self._find_portfolio_holding(tracker_key)
             if holding and holding.Invested:
                 qty = holding.Quantity
-                ticket = self.MarketOrder(broker_symbol, -qty, tag=f"RETRY_{tracker.reason}")
+                ticket = self._submit_option_close_market_order(
+                    symbol=broker_symbol,
+                    quantity=-qty,
+                    reason=f"RETRY_{tracker.reason}",
+                    tag_hint=str(getattr(tracker, "reason", "") or ""),
+                )
                 try:
                     if ticket is not None and hasattr(ticket, "OrderId"):
                         tracker.order_id = int(ticket.OrderId)

@@ -222,7 +222,7 @@ class DailyScheduler:
 
         # Get offset from config (default 15 minutes)
         eod_offset = getattr(config, "EOD_OFFSET_MINUTES", 15)
-        intraday_opt_offset = getattr(config, "INTRADAY_OPTIONS_OFFSET_MINUTES", 30)
+        intraday_opt_offset = getattr(config, "INTRADAY_OPTIONS_OFFSET_MINUTES", 45)
 
         # Calculate dynamic times
         eod_time = market_close - timedelta(minutes=eod_offset)

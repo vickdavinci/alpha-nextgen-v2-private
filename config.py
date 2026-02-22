@@ -2180,7 +2180,7 @@ INTRADAY_PROTECT_DTE_MIN = 3  # Minimum 3 DTE
 INTRADAY_PROTECT_DTE_MAX = 7  # Maximum 7 DTE
 
 # Force close time for intraday
-INTRADAY_FORCE_EXIT_TIME = "15:25"  # V6.15 FIX: Earlier close to avoid OCO race at 15:30
+INTRADAY_FORCE_EXIT_TIME = "15:15"  # Close before end-of-day liquidity decay window
 OCO_RECOVERY_CUTOFF_MINUTES_BEFORE_FORCE_EXIT = 20  # Disable OCO recovery near force-close window
 OCO_RECOVERY_RETRY_MINUTES = 5  # Retry missing OCO creation intraday (bounded cadence)
 OCO_RESYNC_PRICE_EPS = 0.01  # Min stop/target delta to trigger OCO reprice sync
@@ -2323,7 +2323,7 @@ CONNECTION_TIMEOUT_MIN = 5
 # EOD events are scheduled dynamically based on actual market close time.
 # On early close days (1:00 PM), events fire earlier automatically.
 EOD_OFFSET_MINUTES = 15  # MR force close & EOD processing = market_close - 15 min
-INTRADAY_OPTIONS_OFFSET_MINUTES = 35  # V6.15 FIX: Align dynamic close with 15:25 fallback
+INTRADAY_OPTIONS_OFFSET_MINUTES = 45  # Align dynamic close with 15:15 force-exit
 
 # =============================================================================
 # LOG THROTTLING (Pre-QC Local Testing)
