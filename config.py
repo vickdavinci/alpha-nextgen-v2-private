@@ -951,9 +951,11 @@ CREDIT_SPREAD_MIN_CREDIT_HIGH_IV = 0.10  # V6.13.1 OPT: More credit spread fills
 CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD = 30.0  # VIX level above which reduced floor applies
 # V9.2: Structural credit quality floor (prevents low-credit, high-max-loss structures)
 # Three-tier system: strict in calm markets, relaxed as VIX rises and credit widens
-CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT = 0.35  # VIX < 20: strict quality gate
-CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_MEDIUM_IV = 0.32  # VIX 20-30: moderate relaxation
-CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV = 0.30  # VIX > 30: widest relaxation
+CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT = 0.38  # V10.32: improve base credit quality in calm tape
+CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_MEDIUM_IV = (
+    0.35  # V10.32: tighten medium-IV credit quality floor
+)
+CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV = 0.32  # V10.32: keep quality floor in high-IV stress
 CREDIT_SPREAD_MEDIUM_IV_VIX_THRESHOLD = 20.0  # VIX level for medium-IV tier
 
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
@@ -1451,7 +1453,7 @@ VASS_BULL_DEBIT_MIN_DAY_CHANGE_PCT = (
 )
 
 # V9.7: BEAR_PUT entry gate — block in RISK_ON (12.5% WR in 2017 full-year RCA)
-VASS_BEAR_PUT_REGIME_MAX = 64  # V10.29: further limit bearish spreads to weaker macro states
+VASS_BEAR_PUT_REGIME_MAX = 60  # V10.32: require clearer macro weakness for bearish debit spreads
 
 # V2.27: Win Rate Gate (Options Self-Correcting Throttle)
 # Rolling window of recent closed spread trades. Scales down/shuts off when losing.
@@ -1927,7 +1929,7 @@ MICRO_DEBIT_FADE_START = "10:00"  # Canonical ATM fade window start
 MICRO_DEBIT_FADE_END = "14:30"  # Canonical ATM fade window end
 MICRO_DEBIT_FADE_DTE_MIN = 0  # Strategy-specific fade horizon (same-day/next-day)
 MICRO_DEBIT_FADE_DTE_MAX = 2
-MICRO_OTM_MOMENTUM_START = "10:00"  # Canonical OTM momentum window start
+MICRO_OTM_MOMENTUM_START = "10:10"  # V10.32: avoid early-open noise burst
 MICRO_OTM_MOMENTUM_END = "14:30"  # Canonical OTM momentum window end
 MICRO_OTM_MOMENTUM_DTE_MIN = 0  # OTM momentum is same-day/next-day only
 MICRO_OTM_MOMENTUM_DTE_MAX = 1
@@ -1998,9 +2000,9 @@ MICRO_OTM_TARGET_HIGH_VIX = 0.80
 MICRO_OTM_STOP_LOW_VIX = 0.30
 MICRO_OTM_STOP_MED_VIX = 0.35
 MICRO_OTM_STOP_HIGH_VIX = 0.40
-MICRO_OTM_TRAIL_TRIGGER_LOW_VIX = 0.20
-MICRO_OTM_TRAIL_TRIGGER_MED_VIX = 0.28
-MICRO_OTM_TRAIL_TRIGGER_HIGH_VIX = 0.25
+MICRO_OTM_TRAIL_TRIGGER_LOW_VIX = 0.32
+MICRO_OTM_TRAIL_TRIGGER_MED_VIX = 0.40
+MICRO_OTM_TRAIL_TRIGGER_HIGH_VIX = 0.35
 MICRO_OTM_TRAIL_PCT_LOW_VIX = 0.35
 MICRO_OTM_TRAIL_PCT_MED_VIX = 0.45
 MICRO_OTM_TRAIL_PCT_HIGH_VIX = 0.50
@@ -2105,8 +2107,8 @@ ITM_SMA_BAND_PCT_HIGH_VIX = 0.025
 ITM_PUT_MAX_REGIME = 70
 ITM_CALL_MIN_REGIME = 50
 ITM_ADX_MIN = 20.0
-ITM_CALL_ADX_MIN = 22.0  # V10.18: stronger trend quality required for ITM CALL entries
-ITM_CALL_MAX_VIX = 22.0
+ITM_CALL_ADX_MIN = 24.0  # V10.32: require stronger trend persistence for ITM CALL entries
+ITM_CALL_MAX_VIX = 20.0  # V10.32: avoid ITM CALLs in elevated fear tape
 ITM_CALL_LOW_VIX_PREFERRED = 14.0
 ITM_REQUIRE_VIX20D_FALLING_FOR_CALL_WHEN_VIX_ABOVE_LOW = True
 ITM_PUT_MIN_VIX = 12.0
@@ -2270,7 +2272,7 @@ PROTECTIVE_PUTS_QQQ_DROP_TRIGGER_PCT = -1.0  # Trigger hedge on >=1% intraday QQ
 PROTECTIVE_PUTS_VIX_MIN_TRIGGER = 15.0  # Allow earlier crash-day hedges in rising-vol tapes
 PROTECTIVE_PUTS_REQUIRE_VIX_RISING = True
 PROTECTIVE_PUTS_LATE_DAY_MIN_DTE_HOUR = 13  # After this hour, avoid opening new 0DTE hedges
-INTRADAY_MAX_CONTRACTS = 60  # V10.5: Increased hard cap for all MICRO intraday entries
+INTRADAY_MAX_CONTRACTS = 50  # V10.32: reduce tail-risk concentration from intraday clustering
 INTRADAY_CONTRACT_CAP_SCALE_WITH_EQUITY = True
 INTRADAY_MAX_CONTRACTS_BASE_EQUITY = 100_000
 INTRADAY_MAX_CONTRACTS_MIN = 5
