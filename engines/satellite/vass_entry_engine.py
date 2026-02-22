@@ -149,6 +149,59 @@ class VASSEntryEngine:
 
         return True, ""
 
+    def check_bull_debit_trend_confirmation(
+        self,
+        *,
+        vix_current: Optional[float],
+        current_price: float,
+        qqq_open: Optional[float],
+        qqq_sma20: Optional[float],
+        qqq_sma20_ready: bool,
+    ) -> Tuple[bool, str, str]:
+        """Scoped trend confirmation for bullish debit spreads in low/medium-IV tape."""
+        if not bool(getattr(config, "VASS_BULL_DEBIT_TREND_CONFIRM_ENABLED", False)):
+            return True, "R_OK", "DISABLED"
+
+        scoped_max_vix = float(
+            getattr(
+                config,
+                "VASS_BULL_DEBIT_TREND_CONFIRM_MAX_VIX",
+                float(getattr(config, "VASS_IV_HIGH_THRESHOLD", 22.0)),
+            )
+        )
+        if vix_current is not None and float(vix_current) >= scoped_max_vix:
+            return (
+                True,
+                "R_OK",
+                f"SCOPE_BYPASS: VIX {float(vix_current):.1f} >= {scoped_max_vix:.1f}",
+            )
+
+        if (
+            bool(getattr(config, "VASS_BULL_DEBIT_REQUIRE_MA20", True))
+            and qqq_sma20_ready
+            and qqq_sma20 is not None
+            and current_price <= float(qqq_sma20)
+        ):
+            return (
+                False,
+                "R_BULL_DEBIT_TREND_MA20",
+                f"QQQ {current_price:.2f} <= MA20 {float(qqq_sma20):.2f}",
+            )
+
+        if bool(getattr(config, "VASS_BULL_DEBIT_REQUIRE_POSITIVE_DAY", True)):
+            if qqq_open is not None and float(qqq_open) > 0:
+                day_change_pct = ((current_price - float(qqq_open)) / float(qqq_open)) * 100.0
+                min_day_change = float(getattr(config, "VASS_BULL_DEBIT_MIN_DAY_CHANGE_PCT", 0.20))
+                if day_change_pct < min_day_change:
+                    return (
+                        False,
+                        "R_BULL_DEBIT_TREND_DAY",
+                        f"QQQ day {day_change_pct:+.2f}% < +{min_day_change:.2f}% "
+                        f"(QQQ={current_price:.2f}, Open={float(qqq_open):.2f})",
+                    )
+
+        return True, "R_OK", "PASS"
+
     def _add_trading_days(self, start: datetime, days: int) -> datetime:
         """Add trading days (skip weekends) to a datetime."""
         result = start

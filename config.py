@@ -1431,6 +1431,13 @@ SPREAD_PROFIT_REGIME_MULTIPLIERS = {
 # V9.4: BULL spread entry gates (regime-specific, no impact in bull markets)
 VASS_BULL_SPREAD_REGIME_MIN = 55  # Block BULL_CALL when regime < 55
 VASS_BULL_MA20_GATE_ENABLED = False  # V9.5 tune: disable for VASS swing pullback participation
+# V10.16.1: Scoped bullish trend confirmation for debit BULL_CALL in low/medium IV.
+# Avoids local-top entries without globally reintroducing MA20 starvation.
+VASS_BULL_DEBIT_TREND_CONFIRM_ENABLED = True
+VASS_BULL_DEBIT_TREND_CONFIRM_MAX_VIX = 22.0  # Apply only in LOW/MEDIUM IV tape
+VASS_BULL_DEBIT_REQUIRE_MA20 = True
+VASS_BULL_DEBIT_REQUIRE_POSITIVE_DAY = True
+VASS_BULL_DEBIT_MIN_DAY_CHANGE_PCT = 0.20  # Require QQQ +0.20% vs session open
 
 # V9.7: BEAR_PUT entry gate — block in RISK_ON (12.5% WR in 2017 full-year RCA)
 VASS_BEAR_PUT_REGIME_MAX = 70  # Block BEAR_PUT_DEBIT when regime >= 70 (RISK_ON)

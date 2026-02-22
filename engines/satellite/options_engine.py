@@ -8725,6 +8725,24 @@ class OptionsEngine:
         """Public wrapper for VASS direction+IV strategy routing."""
         return self._select_strategy(direction, iv_environment, is_intraday=is_intraday)
 
+    def check_vass_bull_debit_trend_confirmation(
+        self,
+        *,
+        vix_current: Optional[float],
+        current_price: float,
+        qqq_open: Optional[float],
+        qqq_sma20: Optional[float],
+        qqq_sma20_ready: bool,
+    ) -> Tuple[bool, str, str]:
+        """Delegate VASS bullish debit trend confirmation to VASSEntryEngine."""
+        return self._vass_entry_engine.check_bull_debit_trend_confirmation(
+            vix_current=vix_current,
+            current_price=current_price,
+            qqq_open=qqq_open,
+            qqq_sma20=qqq_sma20,
+            qqq_sma20_ready=qqq_sma20_ready,
+        )
+
     def get_itm_direction_proposal(
         self,
         qqq_current: float,

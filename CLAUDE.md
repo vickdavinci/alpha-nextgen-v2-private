@@ -306,6 +306,32 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 
 ---
 
+## Options Architecture Decision (V10.16)
+
+This is the current boundary for VASS path ownership. Follow this unless an explicit refactor changes it.
+
+- `VASSEntryEngine` owns:
+  - VASS strategy routing matrix (direction x IV regime)
+  - VASS-specific anti-cluster/day-gap/swing filter guards
+  - VASS lifecycle throttles that are not contract-economics checks
+- `OptionsEngine` currently owns the final spread validation choke-points:
+  - `check_spread_entry_signal()` for debit spreads
+  - `check_credit_spread_entry_signal()` for credit spreads
+  - shared spread economics and contract-quality validation (D/W caps, absolute debit caps, sizing, margin checks)
+- `main.py` orchestrates flow and calls `OptionsEngine` validators after VASS route selection.
+
+### Practical Rule For New Changes
+
+- If the logic is VASS policy/routing intent, prefer `VASSEntryEngine`.
+- If the logic is spread economics/quality or shared debit/credit validation, keep it in `OptionsEngine`.
+- If a VASS-only guard must be added quickly before refactor, it may be placed in `OptionsEngine` validation path, but must be clearly labeled as VASS-scoped and added to this section.
+
+### Current Exception (Documented)
+
+- No active exception. Scoped bullish debit trend confirmation (`R_BULL_DEBIT_TREND_MA20`, `R_BULL_DEBIT_TREND_DAY`) is owned by `VASSEntryEngine` and invoked from the VASS route in `main.py` before debit spread validation.
+
+---
+
 ## Feature Branches (Not on develop)
 
 Some features are developed on separate branches to keep core trading logic clean:

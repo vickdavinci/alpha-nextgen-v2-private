@@ -2935,6 +2935,48 @@ class TestRejectionAwareSizing:
         assert signal is None
         assert engine._entry_attempted_today is False
 
+    def test_vass_scoped_bull_debit_trend_blocks_below_ma20(self, engine):
+        """Scoped trend confirmation blocks low/medium-IV BULL_CALL when QQQ is below MA20."""
+        ok, code, detail = engine.check_vass_bull_debit_trend_confirmation(
+            vix_current=18.0,
+            current_price=302.0,
+            qqq_open=300.0,
+            qqq_sma20=305.0,
+            qqq_sma20_ready=True,
+        )
+
+        assert ok is False
+        assert code == "R_BULL_DEBIT_TREND_MA20"
+        assert "MA20" in detail
+
+    def test_vass_scoped_bull_debit_trend_blocks_weak_day_move(self, engine):
+        """Scoped trend confirmation blocks low/medium-IV BULL_CALL when day move is weak."""
+        ok, code, detail = engine.check_vass_bull_debit_trend_confirmation(
+            vix_current=18.0,
+            current_price=302.0,
+            qqq_open=301.9,  # about +0.03%
+            qqq_sma20=295.0,
+            qqq_sma20_ready=True,
+        )
+
+        assert ok is False
+        assert code == "R_BULL_DEBIT_TREND_DAY"
+        assert "QQQ day" in detail
+
+    def test_vass_scoped_bull_debit_trend_not_applied_outside_scope(self, engine):
+        """Scoped trend confirmation should bypass when VIX is above configured scope."""
+        ok, code, detail = engine.check_vass_bull_debit_trend_confirmation(
+            vix_current=22.5,
+            current_price=302.0,
+            qqq_open=300.0,
+            qqq_sma20=305.0,
+            qqq_sma20_ready=True,
+        )
+
+        assert ok is True
+        assert code == "R_OK"
+        assert "SCOPE_BYPASS" in detail
+
 
 # =============================================================================
 # V2.22: NEUTRALITY EXIT (HYSTERESIS SHIELD) TESTS

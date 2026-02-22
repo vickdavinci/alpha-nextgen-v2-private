@@ -5357,10 +5357,48 @@ class AlphaNextGen(QCAlgorithm):
 
         def _attempt_debit_route(
             route_contracts: List[OptionContract],
+            route_strategy: SpreadStrategy,
         ) -> Tuple[Optional[TargetWeight], str, Optional[str]]:
             pool = list(route_contracts)
             last_validation_reason: Optional[str] = None
             route_rejection = "DEBIT_LEG_SELECTION_FAILED"
+
+            if route_strategy == SpreadStrategy.BULL_CALL_DEBIT:
+                qqq_open = float(getattr(self, "_qqq_at_open", 0.0) or 0.0)
+                if qqq_open <= 0:
+                    try:
+                        qqq_open = float(self.Securities[self.qqq].Open)
+                    except Exception:
+                        qqq_open = 0.0
+
+                qqq_sma20 = getattr(self, "qqq_sma20", None)
+                qqq_sma20_ready = bool(
+                    qqq_sma20 is not None and getattr(qqq_sma20, "IsReady", False)
+                )
+                qqq_sma20_value = (
+                    float(qqq_sma20.Current.Value)
+                    if qqq_sma20_ready and getattr(qqq_sma20, "Current", None) is not None
+                    else None
+                )
+
+                (
+                    trend_ok,
+                    trend_code,
+                    trend_detail,
+                ) = self.options_engine.check_vass_bull_debit_trend_confirmation(
+                    vix_current=self._current_vix,
+                    current_price=qqq_price,
+                    qqq_open=qqq_open if qqq_open > 0 else None,
+                    qqq_sma20=qqq_sma20_value,
+                    qqq_sma20_ready=qqq_sma20_ready,
+                )
+                if not trend_ok:
+                    self.options_engine.set_last_entry_validation_failure(trend_code)
+                    self.Log(
+                        f"{fallback_log_prefix}: BULL_CALL trend confirmation blocked | "
+                        f"{trend_code} | {trend_detail}"
+                    )
+                    return None, "DEBIT_TREND_CONFIRM_BLOCK", trend_code
 
             for attempt in range(max_attempts):
                 if len(pool) < 2:
@@ -5505,7 +5543,8 @@ class AlphaNextGen(QCAlgorithm):
             )
         else:
             signal, rejection_code, last_validation_reason = _attempt_debit_route(
-                candidate_contracts
+                candidate_contracts,
+                strategy,
             )
 
         if signal is not None:
@@ -5535,7 +5574,8 @@ class AlphaNextGen(QCAlgorithm):
                         )
                     else:
                         signal, rejection_code, last_validation_reason = _attempt_debit_route(
-                            fallback_contracts
+                            fallback_contracts,
+                            fallback_strategy,
                         )
                     if signal is not None:
                         return signal, rejection_code
