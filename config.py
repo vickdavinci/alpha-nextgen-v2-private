@@ -1445,7 +1445,7 @@ VASS_BULL_DEBIT_MIN_DAY_CHANGE_PCT = 0.20  # Require QQQ +0.20% vs session open
 
 # V9.7: BEAR_PUT entry gate — block in RISK_ON (12.5% WR in 2017 full-year RCA)
 VASS_BEAR_PUT_REGIME_MAX = (
-    72  # V10.22: allow limited bearish participation in high-neutral transitions
+    68  # V10.28: tighten bearish spread participation in high-neutral/risk-on regimes
 )
 
 # V2.27: Win Rate Gate (Options Self-Correcting Throttle)
@@ -1891,8 +1891,8 @@ CALL_GATE_VIX_5D_MIN_VIX = 20.0  # Legacy key retained for backward compatibilit
 CALL_GATE_CONSECUTIVE_LOSS_ENABLED = True  # Pause CALL entries after repeated losses
 CALL_GATE_CONSECUTIVE_LOSSES = 3  # Trigger pause after 3 consecutive CALL losses
 CALL_GATE_LOSS_COOLDOWN_DAYS = 1  # Legacy fallback for cooldown days
-CALL_GATE_LOSS_COOLDOWN_DAYS_LOW_VIX = 1  # V10.9: keep short cooldown in low-vol tape
-CALL_GATE_LOSS_COOLDOWN_DAYS_MED_VIX = 1  # V10.9: keep short cooldown in medium-vol tape
+CALL_GATE_LOSS_COOLDOWN_DAYS_LOW_VIX = 2  # V10.28: reduce repeat CALL churn after loss clusters
+CALL_GATE_LOSS_COOLDOWN_DAYS_MED_VIX = 2  # V10.28: reduce repeat CALL churn after loss clusters
 CALL_GATE_LOSS_COOLDOWN_DAYS_HIGH_VIX = 2  # V10.9: conservative cooldown in high-vol tape
 
 # Symmetric PUT cooldown controls (mirror CALL defaults)
