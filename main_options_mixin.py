@@ -1,4 +1,7 @@
-from typing import List, Optional, Tuple
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
 
 from AlgorithmImports import *
 
@@ -45,6 +48,59 @@ class MainOptionsMixin:
             self._set_intraday_lane_cooldown(lane_key, None)
             return False
         return True
+
+    def _get_intraday_retry_state(self, lane: Optional[str]) -> Dict[str, Any]:
+        lane_key = self._normalize_intraday_lane(lane)
+        bucket = getattr(self, "_intraday_retry_state_by_lane", None)
+        if not isinstance(bucket, dict):
+            bucket = {}
+        lane_state = bucket.get(lane_key)
+        if not isinstance(lane_state, dict):
+            lane_state = {}
+        lane_state.setdefault("pending", False)
+        lane_state.setdefault("expires", None)
+        lane_state.setdefault("direction", None)
+        lane_state.setdefault("reason_code", None)
+        bucket[lane_key] = lane_state
+        self._intraday_retry_state_by_lane = bucket
+        return lane_state
+
+    def _clear_intraday_retry(self, lane: Optional[str]) -> None:
+        state = self._get_intraday_retry_state(lane)
+        state["pending"] = False
+        state["expires"] = None
+        state["direction"] = None
+        state["reason_code"] = None
+
+    def _queue_intraday_retry(
+        self,
+        lane: Optional[str],
+        direction: Optional[OptionDirection],
+        reason_code: str,
+        expires_at: Optional[datetime],
+    ) -> None:
+        if direction is None or expires_at is None:
+            self._clear_intraday_retry(lane)
+            return
+        state = self._get_intraday_retry_state(lane)
+        state["pending"] = True
+        state["expires"] = expires_at
+        state["direction"] = direction
+        state["reason_code"] = str(reason_code or "")
+
+    def _consume_intraday_retry(self, lane: Optional[str]) -> Optional[Tuple[OptionDirection, str]]:
+        state = self._get_intraday_retry_state(lane)
+        if not bool(state.get("pending", False)):
+            return None
+        expires = state.get("expires")
+        direction = state.get("direction")
+        reason_code = str(state.get("reason_code") or "")
+        now = getattr(self, "Time", None)
+        if now is None or expires is None or now > expires or direction is None:
+            self._clear_intraday_retry(lane)
+            return None
+        self._clear_intraday_retry(lane)
+        return direction, reason_code
 
     def _select_intraday_option_contract(
         self,
@@ -753,24 +809,20 @@ class MainOptionsMixin:
                     self.Log(f"INTRADAY: Blocked - {signal_reason}")
                     intraday_direction = None
                     # V6.15: Allow one retry if prior approved signal was dropped for temporary reasons.
+                    retry_payload = None
                     if (
                         not micro_intraday_cooldown_active
                         and signal_reason != "R_COOLDOWN_INTRADAY_MICRO"
-                        and self._intraday_retry_once_pending
-                        and self._intraday_retry_expires is not None
-                        and self.Time <= self._intraday_retry_expires
-                        and self._intraday_retry_direction is not None
                     ):
+                        retry_payload = self._consume_intraday_retry("MICRO")
+                    if retry_payload is not None:
+                        retry_direction, retry_reason_code = retry_payload
                         should_trade = True
-                        intraday_direction = self._intraday_retry_direction
+                        intraday_direction = retry_direction
                         signal_reason = (
-                            f"RETRY_ONCE: {self._intraday_retry_reason_code} | "
+                            f"RETRY_ONCE: {retry_reason_code} | "
                             f"Reusing prior direction={intraday_direction.value}"
                         )
-                        self._intraday_retry_once_pending = False
-                        self._intraday_retry_expires = None
-                        self._intraday_retry_direction = None
-                        self._intraday_retry_reason_code = None
                         retry_strategy = self.options_engine.get_last_intraday_strategy()
                         if retry_strategy == IntradayStrategy.NO_TRADE:
                             # Keep retry in MICRO lane; ITM has its own explicit scan path.
@@ -968,10 +1020,7 @@ class MainOptionsMixin:
                         # The function returns early via swing spread path, so signal was lost
                         self._process_immediate_signals()
                         # Clear retry state after successful signal creation.
-                        self._intraday_retry_once_pending = False
-                        self._intraday_retry_expires = None
-                        self._intraday_retry_direction = None
-                        self._intraday_retry_reason_code = None
+                        self._clear_intraday_retry("MICRO")
                         # Emit explicit router rejection telemetry for this trace if execution blocked.
                         if intraday_trace_id:
                             for rej in self.portfolio_router.get_last_rejections():
@@ -1034,7 +1083,9 @@ class MainOptionsMixin:
                             (
                                 intraday_validation_reason,
                                 intraday_validation_detail,
-                            ) = self.options_engine.pop_last_intraday_validation_failure()
+                            ) = self.options_engine.pop_last_intraday_validation_failure(
+                                lane="MICRO"
+                            )
                             (
                                 can_retry_now,
                                 retry_reason_now,
@@ -1101,13 +1152,16 @@ class MainOptionsMixin:
                                 "R_COOLDOWN_INTRADAY",
                                 "R_MARGIN_CB_ACTIVE",
                             }:
-                                self._intraday_retry_once_pending = True
-                                self._intraday_retry_expires = self.Time + timedelta(minutes=20)
-                                self._intraday_retry_direction = intraday_direction
-                                self._intraday_retry_reason_code = drop_code
+                                retry_expires = self.Time + timedelta(minutes=20)
+                                self._queue_intraday_retry(
+                                    lane="MICRO",
+                                    direction=intraday_direction,
+                                    reason_code=drop_code,
+                                    expires_at=retry_expires,
+                                )
                                 self.Log(
                                     f"INTRADAY_RETRY_QUEUED: Code={drop_code} | "
-                                    f"Expires={self._intraday_retry_expires.strftime('%H:%M')}"
+                                    f"Expires={retry_expires.strftime('%H:%M')}"
                                 )
 
         # Explicit ITM scan path.
@@ -1250,7 +1304,7 @@ class MainOptionsMixin:
                         (
                             itm_validation_reason,
                             itm_validation_detail,
-                        ) = self.options_engine.pop_last_intraday_validation_failure()
+                        ) = self.options_engine.pop_last_intraday_validation_failure(lane="ITM")
                         drop_code = self._canonical_options_reason_code(
                             itm_validation_reason or "E_INTRADAY_NO_SIGNAL_UNCLASSIFIED"
                         )

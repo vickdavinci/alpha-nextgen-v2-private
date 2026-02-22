@@ -29,6 +29,7 @@ from engines.satellite.options_engine import (
     SpreadPosition,
     SpreadStrategy,
 )
+from main_options_mixin import MainOptionsMixin
 from models.enums import Urgency
 
 # =============================================================================
@@ -1716,7 +1717,7 @@ class TestDualModeArchitecture:
             days_to_expiry=1,
         )
 
-        engine._intraday_position = OptionsPosition(
+        position = OptionsPosition(
             contract=contract,
             entry_price=1.00,
             entry_time="10:00:00",
@@ -1726,6 +1727,8 @@ class TestDualModeArchitecture:
             target_price=1.50,
             stop_pct=0.20,
         )
+        engine._intraday_positions["MICRO"] = [position]
+        engine._refresh_legacy_intraday_mirrors()
 
         # Try to enter again
         result = engine.check_intraday_entry_signal(
@@ -1762,7 +1765,7 @@ class TestIntradayForceExit:
             days_to_expiry=1,
         )
 
-        engine._intraday_position = OptionsPosition(
+        position = OptionsPosition(
             contract=contract,
             entry_price=1.00,
             entry_time="10:30:00",
@@ -1772,6 +1775,8 @@ class TestIntradayForceExit:
             target_price=1.50,
             stop_pct=0.20,
         )
+        engine._intraday_positions["MICRO"] = [position]
+        engine._refresh_legacy_intraday_mirrors()
 
         return engine
 
@@ -2255,7 +2260,7 @@ class TestDailyResetV211:
             days_to_expiry=1,
         )
 
-        engine._intraday_position = OptionsPosition(
+        position = OptionsPosition(
             contract=contract,
             entry_price=1.00,
             entry_time="15:00:00",
@@ -2265,6 +2270,8 @@ class TestDailyResetV211:
             target_price=1.50,
             stop_pct=0.20,
         )
+        engine._intraday_positions["MICRO"] = [position]
+        engine._refresh_legacy_intraday_mirrors()
 
         engine._intraday_trades_today = 2
         engine._last_trade_date = "2026-01-26"
@@ -2319,8 +2326,8 @@ class TestClearAllPositions:
 
     def test_clear_all_positions_clears_intraday(self, engine):
         """Test clear_all_positions clears intraday position."""
-        # Simulate a zombie intraday position
-        engine._intraday_position = "ZOMBIE_INTRADAY"  # Any non-None value
+        # Simulate lane-backed intraday state.
+        engine._intraday_positions["MICRO"] = ["ZOMBIE_INTRADAY"]  # Any non-empty payload
 
         assert engine.has_intraday_position() is True
 
@@ -2625,6 +2632,87 @@ class TestPendingIntradayEntryMaintenance:
         assert found == key
 
 
+class TestIntradayLaneIsolation:
+    """Lane isolation guardrails for intraday plumbing."""
+
+    def test_legacy_intraday_mirror_not_used_as_lane_source_of_truth(self, engine):
+        contract = OptionContract(
+            symbol="QQQ 270119P00480000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=480.0,
+            expiry="2027-01-19",
+            delta=0.75,
+            bid=10.0,
+            ask=10.5,
+            mid_price=10.25,
+            open_interest=1000,
+            days_to_expiry=14,
+        )
+        engine._intraday_position = OptionsPosition(
+            contract=contract,
+            entry_price=10.25,
+            entry_time="2027-01-01 10:30:00",
+            entry_score=3.5,
+            num_contracts=1,
+            stop_price=7.5,
+            target_price=12.5,
+            stop_pct=0.25,
+            entry_strategy="ITM_MOMENTUM",
+            highest_price=10.25,
+        )
+
+        assert engine.has_intraday_position() is False
+        assert engine.get_intraday_positions() == []
+        assert engine._find_intraday_lane_by_symbol("QQQ 270119P00480000") is None
+
+    def test_intraday_validation_failure_is_lane_scoped(self, engine):
+        engine.set_last_intraday_validation_failure("MICRO", "E_MICRO_A", "micro detail")
+        engine.set_last_intraday_validation_failure("ITM", "E_ITM_A", "itm detail")
+
+        micro_reason, micro_detail = engine.pop_last_intraday_validation_failure("MICRO")
+        itm_reason, itm_detail = engine.pop_last_intraday_validation_failure("ITM")
+
+        assert micro_reason == "E_MICRO_A"
+        assert micro_detail == "micro detail"
+        assert itm_reason == "E_ITM_A"
+        assert itm_detail == "itm detail"
+
+
+class TestIntradayRetryIsolation:
+    """Lane-scoped retry helper behavior in MainOptionsMixin."""
+
+    class _Harness(MainOptionsMixin):
+        pass
+
+    def test_retry_state_is_lane_scoped(self):
+        harness = self._Harness()
+        harness.Time = datetime(2027, 1, 4, 12, 0, 0)
+        harness._intraday_retry_state_by_lane = {
+            "MICRO": {"pending": False, "expires": None, "direction": None, "reason_code": None},
+            "ITM": {"pending": False, "expires": None, "direction": None, "reason_code": None},
+        }
+
+        expires_at = harness.Time + timedelta(minutes=20)
+        harness._queue_intraday_retry(
+            lane="MICRO",
+            direction=OptionDirection.CALL,
+            reason_code="R_SLOT_TOTAL_MAX",
+            expires_at=expires_at,
+        )
+
+        assert harness._get_intraday_retry_state("MICRO")["pending"] is True
+        assert harness._get_intraday_retry_state("ITM")["pending"] is False
+        assert harness._consume_intraday_retry("ITM") is None
+
+        consumed = harness._consume_intraday_retry("MICRO")
+        assert consumed is not None
+        direction, reason_code = consumed
+        assert direction == OptionDirection.CALL
+        assert reason_code == "R_SLOT_TOTAL_MAX"
+        assert harness._get_intraday_retry_state("MICRO")["pending"] is False
+
+
 class TestRejectionAwareSizing:
     """V2.21: Tests for rejection-aware spread sizing (margin estimation + cap)."""
 
@@ -2713,6 +2801,58 @@ class TestRejectionAwareSizing:
             # Without margin constraint, uses full dollar cap
             # $7500 / $275 = 27 contracts
             assert engine._pending_num_contracts >= 20  # Not scaled down
+
+    def test_low_vix_abs_debit_cap_scales_with_width(self, engine):
+        """Low-VIX absolute debit cap scales with width (not fixed $2 on all widths)."""
+        long_leg = OptionContract(
+            symbol="QQQ 271231C00300000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=0.60,
+            bid=5.00,
+            ask=5.50,
+            mid_price=5.25,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_leg = OptionContract(
+            symbol="QQQ 271231C00307000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=307.0,
+            expiry="2027-12-31",
+            delta=0.32,
+            bid=2.80,
+            ask=3.20,
+            mid_price=3.00,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+
+        signal = engine.check_spread_entry_signal(
+            regime_score=70.0,
+            vix_current=12.0,  # compressed IV -> low-VIX absolute debit gate active
+            adx_value=30.0,
+            current_price=302.0,
+            ma200_value=280.0,
+            iv_rank=50.0,
+            current_hour=10,
+            current_minute=30,
+            current_date="2027-01-15",
+            portfolio_value=200000.0,
+            long_leg_contract=long_leg,
+            short_leg_contract=short_leg,
+            gap_filter_triggered=False,
+            vol_shock_active=False,
+            size_multiplier=1.0,
+            margin_remaining=None,
+            direction=OptionDirection.CALL,
+        )
+
+        # Net debit = 2.25 on $7 width. Width-scaled cap is $2.80, so this should pass.
+        assert signal is not None
 
     def test_rejection_cap_constrains_sizing(self, engine, spread_contracts):
         """Post-rejection cap should further constrain sizing."""
@@ -3106,9 +3246,16 @@ class TestVASSCreditSpreadEntry:
         assert dte_max == config.VASS_LOW_IV_DTE_MAX
 
     def test_select_strategy_medium_iv_bullish(self, engine):
-        """MEDIUM IV + BULLISH should select Bull Call Debit with weekly DTE."""
+        """MEDIUM IV + BULLISH should select Bull Put Credit with medium DTE."""
         strategy, dte_min, dte_max = engine._select_strategy("BULLISH", "MEDIUM")
-        assert strategy == SpreadStrategy.BULL_CALL_DEBIT
+        assert strategy == SpreadStrategy.BULL_PUT_CREDIT
+        assert dte_min == config.VASS_MEDIUM_IV_DTE_MIN
+        assert dte_max == config.VASS_MEDIUM_IV_DTE_MAX
+
+    def test_select_strategy_medium_iv_bearish(self, engine):
+        """MEDIUM IV + BEARISH should select Bear Call Credit with medium DTE."""
+        strategy, dte_min, dte_max = engine._select_strategy("BEARISH", "MEDIUM")
+        assert strategy == SpreadStrategy.BEAR_CALL_CREDIT
         assert dte_min == config.VASS_MEDIUM_IV_DTE_MIN
         assert dte_max == config.VASS_MEDIUM_IV_DTE_MAX
 

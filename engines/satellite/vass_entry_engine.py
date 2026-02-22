@@ -33,6 +33,17 @@ class VASSEntryEngine:
         spread_strategy_enum: Any,
     ) -> Tuple[Any, int, int]:
         """Return (SpreadStrategy, dte_min, dte_max) for VASS routing."""
+        medium_credit_prefer = bool(getattr(config, "VASS_MEDIUM_IV_PREFER_CREDIT", True))
+        bull_medium_strategy = (
+            spread_strategy_enum.BULL_PUT_CREDIT
+            if medium_credit_prefer
+            else spread_strategy_enum.BULL_CALL_DEBIT
+        )
+        bear_medium_strategy = (
+            spread_strategy_enum.BEAR_CALL_CREDIT
+            if medium_credit_prefer
+            else spread_strategy_enum.BEAR_PUT_DEBIT
+        )
         matrix = {
             ("BULLISH", "LOW"): (
                 spread_strategy_enum.BULL_CALL_DEBIT,
@@ -40,7 +51,7 @@ class VASSEntryEngine:
                 config.VASS_LOW_IV_DTE_MAX,
             ),
             ("BULLISH", "MEDIUM"): (
-                spread_strategy_enum.BULL_CALL_DEBIT,
+                bull_medium_strategy,
                 config.VASS_MEDIUM_IV_DTE_MIN,
                 config.VASS_MEDIUM_IV_DTE_MAX,
             ),
@@ -55,7 +66,7 @@ class VASSEntryEngine:
                 config.VASS_LOW_IV_DTE_MAX,
             ),
             ("BEARISH", "MEDIUM"): (
-                spread_strategy_enum.BEAR_PUT_DEBIT,
+                bear_medium_strategy,
                 config.VASS_MEDIUM_IV_DTE_MIN,
                 config.VASS_MEDIUM_IV_DTE_MAX,
             ),

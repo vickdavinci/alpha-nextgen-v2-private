@@ -48,7 +48,7 @@ from models.enums import IntradayStrategy, OptionDirection, RegimeLevel, Urgency
 from models.target_weight import TargetWeight
 
 # Infrastructure
-from persistence.state_manager import StateManager
+from persistence.state_manager import StateKeys, StateManager
 
 # Portfolio & Execution
 from portfolio.portfolio_router import PortfolioRouter
@@ -144,13 +144,10 @@ class AlphaNextGen(QCAlgorithm):
         # can cause ZERO TRADES (as seen in V3.0-70pct-profit-2017 backtest)
         if not self.LiveMode:
             state_keys = [
-                "ALPHA_NEXTGEN_RISK",
-                "ALPHA_NEXTGEN_CAPITAL",
-                "ALPHA_NEXTGEN_COLDSTART",
-                "ALPHA_NEXTGEN_STARTUP_GATE",
-                "ALPHA_NEXTGEN_POSITIONS",
+                # StateManager-backed keys (keep in sync with persistence layer).
+                *StateKeys.ALL_KEYS,
                 PNL_TRACKER_KEY,
-                # V3.3 P0: Add options/OCO/regime state keys
+                # V3.3 P0: Legacy/custom state keys.
                 "options_engine_state",
                 "oco_manager_state",
                 "regime_engine_state",
@@ -213,10 +210,21 @@ class AlphaNextGen(QCAlgorithm):
         self._options_spread_cooldown_until = None  # Options Spread: 30 min cooldown
         self._mr_rejection_cooldown_until = None  # Mean Reversion: 15 min cooldown
         # V6.15: One-shot retry for temporary intraday drops (slot/cooldown/margin timing).
-        self._intraday_retry_once_pending = False
-        self._intraday_retry_expires = None
-        self._intraday_retry_direction = None
-        self._intraday_retry_reason_code = None
+        # Lane-scoped to prevent MICRO/ITM cross-bleed in retry behavior.
+        self._intraday_retry_state_by_lane = {
+            "MICRO": {
+                "pending": False,
+                "expires": None,
+                "direction": None,
+                "reason_code": None,
+            },
+            "ITM": {
+                "pending": False,
+                "expires": None,
+                "direction": None,
+                "reason_code": None,
+            },
+        }
         # V6.15: Fallback ledger to ensure intraday exits always emit INTRADAY_RESULT.
         self._intraday_entry_snapshot = {}
         # Track live MICRO symbols from fill tags so EOD sweep can recover from state races.
@@ -5115,222 +5123,214 @@ class AlphaNextGen(QCAlgorithm):
         signal: Optional[TargetWeight] = None
         dte_min_all = min(r[0] for r in dte_ranges)
         dte_max_all = max(r[1] for r in dte_ranges)
+        now_str = str(self.Time)
+        max_attempts = max(1, int(getattr(config, "VASS_ROUTE_MAX_CANDIDATE_ATTEMPTS", 3)))
+        allow_opposite_fallback = bool(
+            getattr(config, "VASS_OPPOSITE_ROUTE_FALLBACK_ENABLED", True)
+        )
 
-        if is_credit:
-            spread_legs = self.options_engine.select_credit_spread_legs_with_fallback(
-                contracts=candidate_contracts,
-                strategy=strategy,
-                dte_ranges=dte_ranges,
-                current_time=str(self.Time),
-            )
-            if spread_legs is not None:
-                short_leg, long_leg = spread_legs  # Credit returns (short, long)
-                rejection_code = "CREDIT_ENTRY_VALIDATION_FAILED"
-                if (
-                    short_leg.bid > 0
-                    and short_leg.ask > 0
-                    and long_leg.bid > 0
-                    and long_leg.ask > 0
-                ):
-                    signal = self.options_engine.check_credit_spread_entry_signal(
-                        regime_score=regime_score,
-                        vix_current=self._current_vix,
-                        adx_value=adx_value,
-                        current_price=qqq_price,
-                        ma200_value=ma200_value,
-                        iv_rank=iv_rank,
-                        current_hour=self.Time.hour,
-                        current_minute=self.Time.minute,
-                        current_date=str(self.Time.date()),
-                        portfolio_value=portfolio_value,
-                        short_leg_contract=short_leg,
-                        long_leg_contract=long_leg,
-                        strategy=strategy,
-                        gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
-                        vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
-                        size_multiplier=size_multiplier,
-                        margin_remaining=margin_remaining,
-                        is_eod_scan=is_eod_scan,
-                        direction=direction,
-                    )
-            else:
-                rejection_code = "CREDIT_LEG_SELECTION_FAILED"
-                fallback_enabled = getattr(config, "CREDIT_SPREAD_FALLBACK_TO_DEBIT", False)
-                if fallback_enabled and direction == OptionDirection.PUT:
-                    fallback_strategy = SpreadStrategy.BEAR_PUT_DEBIT
-                    fallback_right = self._strategy_option_right(fallback_strategy)
-                    fallback_contracts = self._build_spread_candidate_contracts(
-                        chain,
-                        direction,
-                        dte_min=dte_min_all,
-                        dte_max=dte_max_all,
-                        option_right=fallback_right,
-                    )
-                    self.Log(
-                        f"{fallback_log_prefix}: CREDIT spread failed for PUT | "
-                        f"Trying BEAR_PUT_DEBIT fallback | Strategy={strategy.value}"
-                    )
-                    debit_spread_legs = (
-                        self.options_engine.select_spread_legs_with_fallback(
-                            contracts=fallback_contracts,
-                            direction=direction,
-                            current_time=str(self.Time),
-                            dte_ranges=dte_ranges,
-                        )
-                        if len(fallback_contracts) >= 2
-                        else None
-                    )
-                    if debit_spread_legs is not None:
-                        rejection_code = "DEBIT_ENTRY_VALIDATION_FAILED"
-                        long_leg, short_leg = debit_spread_legs
-                        if long_leg.ask > 0 and short_leg.bid > 0 and short_leg.ask > 0:
-                            self.Log(
-                                f"{fallback_log_prefix}: DEBIT spread found | "
-                                f"Long={long_leg.strike} | Short={short_leg.strike}"
-                            )
-                            signal = self.options_engine.check_spread_entry_signal(
-                                regime_score=regime_score,
-                                vix_current=self._current_vix,
-                                adx_value=adx_value,
-                                current_price=qqq_price,
-                                ma200_value=ma200_value,
-                                ma50_value=ma50_value,
-                                iv_rank=iv_rank,
-                                current_hour=self.Time.hour,
-                                current_minute=self.Time.minute,
-                                current_date=str(self.Time.date()),
-                                portfolio_value=portfolio_value,
-                                long_leg_contract=long_leg,
-                                short_leg_contract=short_leg,
-                                gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
-                                vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
-                                size_multiplier=size_multiplier,
-                                margin_remaining=margin_remaining,
-                                dte_min=vass_dte_min,
-                                dte_max=vass_dte_max,
-                                is_eod_scan=is_eod_scan,
-                                direction=direction,
-                            )
-                    else:
-                        rejection_code = "DEBIT_FALLBACK_LEG_SELECTION_FAILED"
-        else:
-            spread_legs = self.options_engine.select_spread_legs_with_fallback(
-                contracts=candidate_contracts,
-                direction=direction,
-                current_time=str(self.Time),
-                dte_ranges=dte_ranges,
-            )
-            if spread_legs is not None:
-                rejection_code = "DEBIT_ENTRY_VALIDATION_FAILED"
+        def _is_quality_failure(reason: Optional[str]) -> bool:
+            return bool(reason and str(reason).startswith("R_CONTRACT_QUALITY:"))
+
+        def _opposite_strategy(primary: SpreadStrategy) -> Optional[SpreadStrategy]:
+            mapping = {
+                SpreadStrategy.BULL_CALL_DEBIT: SpreadStrategy.BULL_PUT_CREDIT,
+                SpreadStrategy.BEAR_PUT_DEBIT: SpreadStrategy.BEAR_CALL_CREDIT,
+                SpreadStrategy.BULL_PUT_CREDIT: SpreadStrategy.BULL_CALL_DEBIT,
+                SpreadStrategy.BEAR_CALL_CREDIT: SpreadStrategy.BEAR_PUT_DEBIT,
+            }
+            return mapping.get(primary)
+
+        def _attempt_debit_route(
+            route_contracts: List[OptionContract],
+        ) -> Tuple[Optional[TargetWeight], str, Optional[str]]:
+            pool = list(route_contracts)
+            last_validation_reason: Optional[str] = None
+            route_rejection = "DEBIT_LEG_SELECTION_FAILED"
+
+            for attempt in range(max_attempts):
+                if len(pool) < 2:
+                    break
+                spread_legs = self.options_engine.select_spread_legs_with_fallback(
+                    contracts=pool,
+                    direction=direction,
+                    current_time=now_str,
+                    dte_ranges=dte_ranges,
+                    set_cooldown=(attempt == max_attempts - 1),
+                )
+                if spread_legs is None:
+                    break
+
                 long_leg, short_leg = spread_legs
-                if long_leg.ask > 0 and short_leg.bid > 0 and short_leg.ask > 0:
-                    signal = self.options_engine.check_spread_entry_signal(
-                        regime_score=regime_score,
-                        vix_current=self._current_vix,
-                        adx_value=adx_value,
-                        current_price=qqq_price,
-                        ma200_value=ma200_value,
-                        ma50_value=ma50_value,
-                        iv_rank=iv_rank,
-                        current_hour=self.Time.hour,
-                        current_minute=self.Time.minute,
-                        current_date=str(self.Time.date()),
-                        portfolio_value=portfolio_value,
-                        long_leg_contract=long_leg,
-                        short_leg_contract=short_leg,
-                        gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
-                        vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
-                        size_multiplier=size_multiplier,
-                        margin_remaining=margin_remaining,
-                        dte_min=vass_dte_min,
-                        dte_max=vass_dte_max,
-                        is_eod_scan=is_eod_scan,
-                        direction=direction,
+                route_rejection = "DEBIT_ENTRY_VALIDATION_FAILED"
+
+                if not (long_leg.ask > 0 and short_leg.bid > 0 and short_leg.ask > 0):
+                    route_rejection = "DEBIT_ENTRY_QUOTES_INVALID"
+                    drop_syms = {str(long_leg.symbol), str(short_leg.symbol)}
+                    pool = [c for c in pool if str(c.symbol) not in drop_syms]
+                    continue
+
+                route_signal = self.options_engine.check_spread_entry_signal(
+                    regime_score=regime_score,
+                    vix_current=self._current_vix,
+                    adx_value=adx_value,
+                    current_price=qqq_price,
+                    ma200_value=ma200_value,
+                    ma50_value=ma50_value,
+                    iv_rank=iv_rank,
+                    current_hour=self.Time.hour,
+                    current_minute=self.Time.minute,
+                    current_date=str(self.Time.date()),
+                    portfolio_value=portfolio_value,
+                    long_leg_contract=long_leg,
+                    short_leg_contract=short_leg,
+                    gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
+                    vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
+                    size_multiplier=size_multiplier,
+                    margin_remaining=margin_remaining,
+                    dte_min=vass_dte_min,
+                    dte_max=vass_dte_max,
+                    is_eod_scan=is_eod_scan,
+                    direction=direction,
+                )
+                if route_signal is not None:
+                    return route_signal, route_rejection, None
+
+                last_validation_reason = self.options_engine.pop_last_entry_validation_failure()
+                retryable_quality = (
+                    _is_quality_failure(last_validation_reason) and attempt < max_attempts - 1
+                )
+                if retryable_quality:
+                    self.Log(
+                        f"{fallback_log_prefix}: DEBIT quality reject ({last_validation_reason}) | "
+                        f"Trying alternate candidate {attempt + 2}/{max_attempts}"
                     )
-                    if (
-                        signal is None
-                        and bool(
-                            getattr(config, "VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT", False)
+                    # Drop only the short leg to keep long-leg directional intent and
+                    # search for a better-priced width pairing.
+                    pool = [c for c in pool if str(c.symbol) != str(short_leg.symbol)]
+                    continue
+                break
+
+            return None, route_rejection, last_validation_reason
+
+        def _attempt_credit_route(
+            route_contracts: List[OptionContract],
+            route_strategy: SpreadStrategy,
+        ) -> Tuple[Optional[TargetWeight], str, Optional[str]]:
+            pool = list(route_contracts)
+            last_validation_reason: Optional[str] = None
+            route_rejection = "CREDIT_LEG_SELECTION_FAILED"
+
+            for attempt in range(max_attempts):
+                if len(pool) < 2:
+                    break
+                spread_legs = self.options_engine.select_credit_spread_legs_with_fallback(
+                    contracts=pool,
+                    strategy=route_strategy,
+                    dte_ranges=dte_ranges,
+                    current_time=now_str,
+                    set_cooldown=(attempt == max_attempts - 1),
+                )
+                if spread_legs is None:
+                    break
+
+                short_leg, long_leg = spread_legs
+                route_rejection = "CREDIT_ENTRY_VALIDATION_FAILED"
+
+                if not (short_leg.bid > 0 and short_leg.ask > 0 and long_leg.ask > 0):
+                    route_rejection = "CREDIT_ENTRY_QUOTES_INVALID"
+                    drop_syms = {str(short_leg.symbol), str(long_leg.symbol)}
+                    pool = [c for c in pool if str(c.symbol) not in drop_syms]
+                    continue
+
+                route_signal = self.options_engine.check_credit_spread_entry_signal(
+                    regime_score=regime_score,
+                    vix_current=self._current_vix,
+                    adx_value=adx_value,
+                    current_price=qqq_price,
+                    ma200_value=ma200_value,
+                    iv_rank=iv_rank,
+                    current_hour=self.Time.hour,
+                    current_minute=self.Time.minute,
+                    current_date=str(self.Time.date()),
+                    portfolio_value=portfolio_value,
+                    short_leg_contract=short_leg,
+                    long_leg_contract=long_leg,
+                    strategy=route_strategy,
+                    gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
+                    vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
+                    size_multiplier=size_multiplier,
+                    margin_remaining=margin_remaining,
+                    is_eod_scan=is_eod_scan,
+                    direction=direction,
+                )
+                if route_signal is not None:
+                    return route_signal, route_rejection, None
+
+                last_validation_reason = self.options_engine.pop_last_entry_validation_failure()
+                retryable_quality = (
+                    _is_quality_failure(last_validation_reason) and attempt < max_attempts - 1
+                )
+                if retryable_quality:
+                    self.Log(
+                        f"{fallback_log_prefix}: CREDIT quality reject ({last_validation_reason}) | "
+                        f"Trying alternate candidate {attempt + 2}/{max_attempts}"
+                    )
+                    # Credit quality is mostly driven by short leg economics.
+                    pool = [c for c in pool if str(c.symbol) != str(short_leg.symbol)]
+                    continue
+                break
+
+            return None, route_rejection, last_validation_reason
+
+        # Primary route attempt.
+        last_validation_reason: Optional[str] = None
+        if is_credit:
+            signal, rejection_code, last_validation_reason = _attempt_credit_route(
+                candidate_contracts, strategy
+            )
+        else:
+            signal, rejection_code, last_validation_reason = _attempt_debit_route(
+                candidate_contracts
+            )
+
+        if signal is not None:
+            return signal, rejection_code
+
+        # One opposite-route fallback attempt (quality-first, bounded).
+        if allow_opposite_fallback:
+            fallback_strategy = _opposite_strategy(strategy)
+            if fallback_strategy is not None:
+                fallback_is_credit = self.options_engine.is_credit_strategy(fallback_strategy)
+                fallback_right = self._strategy_option_right(fallback_strategy)
+                fallback_contracts = self._build_spread_candidate_contracts(
+                    chain,
+                    direction,
+                    dte_min=dte_min_all,
+                    dte_max=dte_max_all,
+                    option_right=fallback_right,
+                )
+                if len(fallback_contracts) >= 2:
+                    self.Log(
+                        f"{fallback_log_prefix}: Primary {strategy.value} failed | "
+                        f"Trying opposite {fallback_strategy.value}"
+                    )
+                    if fallback_is_credit:
+                        signal, rejection_code, last_validation_reason = _attempt_credit_route(
+                            fallback_contracts, fallback_strategy
                         )
-                        and direction == OptionDirection.PUT
-                    ):
-                        validation_reason = self.options_engine.pop_last_entry_validation_failure()
-                        if validation_reason is not None:
-                            self.options_engine.set_last_entry_validation_failure(validation_reason)
-                        if validation_reason and validation_reason.startswith(
-                            "BEAR_PUT_ASSIGNMENT_GATE_"
-                        ):
-                            fallback_regime_max = float(
-                                getattr(config, "VASS_BEAR_FALLBACK_MAX_REGIME", 55.0)
-                            )
-                            if regime_score > fallback_regime_max:
-                                self.Log(
-                                    f"{fallback_log_prefix}: BEAR_PUT blocked ({validation_reason}) | "
-                                    f"Fallback skipped (Regime {regime_score:.1f} > {fallback_regime_max:.1f})"
-                                )
-                                rejection_code = "BEAR_FALLBACK_REGIME_BLOCK"
-                            else:
-                                self.Log(
-                                    f"{fallback_log_prefix}: BEAR_PUT blocked ({validation_reason}) | "
-                                    "Trying BEAR_CALL_CREDIT fallback"
-                                )
-                                fallback_strategy = SpreadStrategy.BEAR_CALL_CREDIT
-                                fallback_right = self._strategy_option_right(fallback_strategy)
-                                fallback_contracts = self._build_spread_candidate_contracts(
-                                    chain,
-                                    direction,
-                                    dte_min=dte_min_all,
-                                    dte_max=dte_max_all,
-                                    option_right=fallback_right,
-                                )
-                                credit_spread_legs = (
-                                    self.options_engine.select_credit_spread_legs_with_fallback(
-                                        contracts=fallback_contracts,
-                                        strategy=fallback_strategy,
-                                        dte_ranges=dte_ranges,
-                                        current_time=str(self.Time),
-                                    )
-                                    if len(fallback_contracts) >= 2
-                                    else None
-                                )
-                                if credit_spread_legs is not None:
-                                    short_leg, long_leg = credit_spread_legs
-                                    rejection_code = "CREDIT_ENTRY_VALIDATION_FAILED"
-                                    signal = self.options_engine.check_credit_spread_entry_signal(
-                                        regime_score=regime_score,
-                                        vix_current=self._current_vix,
-                                        adx_value=adx_value,
-                                        current_price=qqq_price,
-                                        ma200_value=ma200_value,
-                                        iv_rank=iv_rank,
-                                        current_hour=self.Time.hour,
-                                        current_minute=self.Time.minute,
-                                        current_date=str(self.Time.date()),
-                                        portfolio_value=portfolio_value,
-                                        short_leg_contract=short_leg,
-                                        long_leg_contract=long_leg,
-                                        strategy=fallback_strategy,
-                                        gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
-                                        vol_shock_active=self.risk_engine.is_vol_shock_active(
-                                            self.Time
-                                        ),
-                                        size_multiplier=size_multiplier,
-                                        margin_remaining=margin_remaining,
-                                        is_eod_scan=is_eod_scan,
-                                        direction=direction,
-                                    )
-                                    if signal is not None:
-                                        self.Log(
-                                            f"{fallback_log_prefix}: BEAR_CALL_CREDIT fallback selected | "
-                                            f"Short={short_leg.strike} Long={long_leg.strike}"
-                                        )
-                                else:
-                                    rejection_code = "BEAR_CREDIT_FALLBACK_LEG_SELECTION_FAILED"
+                    else:
+                        signal, rejection_code, last_validation_reason = _attempt_debit_route(
+                            fallback_contracts
+                        )
+                    if signal is not None:
+                        return signal, rejection_code
+                else:
+                    rejection_code = "OPPOSITE_ROUTE_INSUFFICIENT_CANDIDATES"
 
-            else:
-                rejection_code = "DEBIT_LEG_SELECTION_FAILED"
-
-        return signal, rejection_code
+        if last_validation_reason is not None:
+            self.options_engine.set_last_entry_validation_failure(last_validation_reason)
+        return None, rejection_code
 
     def _scan_spread_for_direction(
         self,

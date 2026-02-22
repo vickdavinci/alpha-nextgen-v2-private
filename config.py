@@ -882,6 +882,13 @@ VASS_EARLY_STRESS_BULL_STRATEGY_TO_CREDIT = (
 VASS_EARLY_STRESS_BEAR_PREFER_CREDIT = (
     False  # V10.10: disable broad BEAR_CALL_CREDIT remix; keep explicit fallback path only
 )
+VASS_MEDIUM_IV_PREFER_CREDIT = (
+    True  # V10.17: medium-IV tapes route to credit-first, then opposite-route fallback
+)
+VASS_OPPOSITE_ROUTE_FALLBACK_ENABLED = (
+    True  # V10.17: after primary route fails quality, try one opposite-route attempt
+)
+VASS_ROUTE_MAX_CANDIDATE_ATTEMPTS = 3  # V10.17: evaluate top-N candidates before final rejection
 VASS_SIMILAR_ENTRY_MIN_GAP_MINUTES = 15  # Block repeated same-signature entries in burst windows
 VASS_SIMILAR_ENTRY_COOLDOWN_DAYS = (
     2  # Shorter cooldown to avoid over-throttling quality follow-through

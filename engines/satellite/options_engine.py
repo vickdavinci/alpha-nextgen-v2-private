@@ -3846,6 +3846,7 @@ class OptionsEngine:
         dte_ranges: List[Tuple[int, int]],
         target_width: float = None,
         current_time: str = None,
+        set_cooldown: bool = True,
     ) -> Optional[tuple]:
         """
         V6.12: Try multiple DTE ranges before applying failure cooldown.
@@ -3885,7 +3886,8 @@ class OptionsEngine:
                 failure_stats.append(stats)
 
         # All ranges failed -> apply cooldown once
-        self._set_spread_failure_cooldown(current_time, direction=direction)
+        if set_cooldown:
+            self._set_spread_failure_cooldown(current_time, direction=direction)
         if failure_stats:
             summary = "; ".join(
                 [
@@ -4341,6 +4343,7 @@ class OptionsEngine:
         strategy: SpreadStrategy,
         dte_ranges: List[Tuple[int, int]],
         current_time: Optional[str] = None,
+        set_cooldown: bool = True,
     ) -> Optional[Tuple[OptionContract, OptionContract]]:
         """
         V6.12: Try multiple DTE ranges for credit spreads before cooldown.
@@ -4377,7 +4380,8 @@ class OptionsEngine:
                 failure_stats.append(stats)
 
         cooldown_key = strategy.value if hasattr(strategy, "value") else str(strategy)
-        self._set_spread_failure_cooldown(current_time, direction=cooldown_key)
+        if set_cooldown:
+            self._set_spread_failure_cooldown(current_time, direction=cooldown_key)
         if failure_stats:
             summary = "; ".join(
                 [
@@ -5486,9 +5490,17 @@ class OptionsEngine:
         debit_to_width = net_debit / width if width > 0 else 1.0
         abs_cap_vix = float(getattr(config, "SPREAD_DW_ABSOLUTE_CAP_VIX", 15.0))
         abs_cap = float(getattr(config, "SPREAD_DW_ABSOLUTE_CAP", 2.00))
-        if vix_current is not None and float(vix_current) < abs_cap_vix and net_debit > abs_cap:
+        # Scale low-VIX absolute debit cap with width so wider spreads are not
+        # over-blocked by a flat $2 cap tuned for $5 structures.
+        abs_cap_scaled = abs_cap * (width / 5.0) if width > 0 else abs_cap
+        if (
+            vix_current is not None
+            and float(vix_current) < abs_cap_vix
+            and net_debit > abs_cap_scaled
+        ):
             self.log(
-                f"SPREAD: Entry blocked - ABS_DEBIT_CAP ${net_debit:.2f} > ${abs_cap:.2f} | VIX={float(vix_current):.1f}",
+                f"SPREAD: Entry blocked - ABS_DEBIT_CAP ${net_debit:.2f} > ${abs_cap_scaled:.2f} | "
+                f"VIX={float(vix_current):.1f} | Width=${width:.0f}",
                 trades_only=True,
             )
             return fail_quality("DEBIT_ABSOLUTE_CAP_EXCEEDED")
