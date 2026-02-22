@@ -260,7 +260,12 @@ V53_SPIKE_CAP_THRESHOLD = 0.28  # VIX up >28% in 5 days triggers cap
 # V6.6: Lowered from 45 to 38 to force DEFENSIVE during VIX spikes
 # 45 only reached CAUTIOUS (40-49), missing the defensive posture needed
 V53_SPIKE_CAP_MAX_SCORE = 38  # Cap score at DEFENSIVE during spike
-V53_SPIKE_CAP_DECAY_DAYS = 3  # Cap persists for 3 days
+V53_SPIKE_CAP_DECAY_DAYS = 2  # V10.31: shorten sticky post-shock penalty window
+V53_SPIKE_CAP_EARLY_RELEASE_ENABLED = True
+V53_SPIKE_CAP_EARLY_RELEASE_5D_MAX = (
+    0.12  # V10.31: release spike cap once 5d VIX surge cools below +12%
+)
+V53_SPIKE_CAP_EARLY_RELEASE_VIX_MAX = 22.0  # V10.31: only release once VIX itself normalizes
 
 # Phase 2: Breadth Decay Penalty
 # Detects distribution (smart money selling) before price confirms

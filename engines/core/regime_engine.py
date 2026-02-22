@@ -1414,9 +1414,30 @@ class RegimeEngine:
                     f"REGIME V5.3: SPIKE CAP ACTIVATED - VIX={vix_level:.1f} 5d change={vix_5d_change:.1%}"
                 )
 
-            # Decay spike cap
+            # Decay spike cap (with early-release when shock cools).
             if self._v53_spike_cap_active:
-                if self._v53_spike_cap_days_remaining > 0:
+                early_release_enabled = bool(
+                    getattr(config, "V53_SPIKE_CAP_EARLY_RELEASE_ENABLED", False)
+                )
+                early_release_5d_max = float(
+                    getattr(config, "V53_SPIKE_CAP_EARLY_RELEASE_5D_MAX", 0.12)
+                )
+                early_release_vix_max = float(
+                    getattr(config, "V53_SPIKE_CAP_EARLY_RELEASE_VIX_MAX", 22.0)
+                )
+                should_release_early = (
+                    early_release_enabled
+                    and vix_5d_change <= early_release_5d_max
+                    and vix_level <= early_release_vix_max
+                )
+                if should_release_early:
+                    self._v53_spike_cap_active = False
+                    self._v53_spike_cap_days_remaining = 0
+                    self.log(
+                        "REGIME V5.3: Spike cap early release - "
+                        f"VIX={vix_level:.1f}, VIX5d={vix_5d_change:.1%}"
+                    )
+                elif self._v53_spike_cap_days_remaining > 0:
                     self._v53_spike_cap_days_remaining -= 1
                     spike_cap_active = True
                 else:
