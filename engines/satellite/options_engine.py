@@ -10817,7 +10817,10 @@ class OptionsEngine:
 
         for open_order in open_orders:
             try:
-                if getattr(open_order.Symbol, "SecurityType", None) != SecurityType.Option:
+                open_symbol = getattr(open_order, "Symbol", None)
+                if open_symbol is None:
+                    continue
+                if getattr(open_symbol, "SecurityType", None) != SecurityType.Option:
                     continue
                 # Ignore obvious close-path tags so they don't hold entry locks open.
                 order_tag = str(getattr(open_order, "Tag", "") or "").upper()
@@ -10833,7 +10836,7 @@ class OptionsEngine:
                 if order_qty <= 0:
                     # Entry-pending logic should ignore OCO stop/profit exits (negative qty).
                     continue
-                symbol_key = self._symbol_key(open_order.Symbol)
+                symbol_key = self._symbol_key(open_symbol)
                 if not symbol_key:
                     continue
                 oid = getattr(open_order, "Id", None)
