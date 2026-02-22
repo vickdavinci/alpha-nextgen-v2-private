@@ -1724,6 +1724,9 @@ VIX_DIRECTION_STABLE_HIGH = 1.0  # V6.6: Was +2.0, narrowed to capture more sign
 # V6.9: VIX-adaptive STABLE band (for Dir=None tuning)
 VIX_STABLE_LOW_VIX_MAX = 15.0  # Low VIX regime
 VIX_STABLE_HIGH_VIX_MIN = 25.0  # High VIX regime
+# Runtime hardening: default to Index subscription to avoid intermittent
+# CBOE custom-data reader failures on QC cloud nodes.
+VIX_DATA_SOURCE = "INDEX"  # INDEX or CBOE
 VIX_STALE_MAX_SESSIONS = 3  # V10.8: stale CBOE feed threshold (sessions)
 VIX_STALE_LEVEL_FALLBACK_ENABLED = True  # Blend intraday proxy when stale
 VIX_STALE_LEVEL_FALLBACK_BLEND = 0.35  # 35% proxy / 65% last reliable CBOE level

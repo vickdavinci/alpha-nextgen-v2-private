@@ -575,9 +575,13 @@ class AlphaNextGen(QCAlgorithm):
         self.ief = self.AddEquity("IEF", Resolution.Minute).Symbol
 
         # V2.1: VIX for Mean Reversion regime filter
-        # NOTE: CBOE VIX only supports Daily resolution in QC backtests
-        # For intraday VIX direction, we use UVXY (1.5x VIX ETF) as proxy
-        self.vix = self.AddData(CBOE, "VIX", Resolution.Daily).Symbol
+        # Default to Index subscription for cloud runtime stability; keep CBOE
+        # custom data as explicit fallback option.
+        vix_data_source = str(getattr(config, "VIX_DATA_SOURCE", "INDEX")).upper()
+        if vix_data_source == "CBOE":
+            self.vix = self.AddData(CBOE, "VIX", Resolution.Daily).Symbol
+        else:
+            self.vix = self.AddIndex("VIX", Resolution.Daily).Symbol
         self._current_vix = 15.0  # Default to normal regime until data arrives
         self._vix_at_open = 15.0  # V2.1.1: VIX at market open for micro regime
         self._vix_5min_ago = 15.0  # V2.1.1: VIX 5 minutes ago for spike detection
@@ -623,6 +627,7 @@ class AlphaNextGen(QCAlgorithm):
             f"INIT: Added {len(self.traded_symbols)} traded symbols, "
             f"{len(self.proxy_symbols)} proxy symbols"
         )
+        self.Log(f"INIT: VIX data source={vix_data_source}")
 
     def _setup_indicators(self) -> None:
         """
