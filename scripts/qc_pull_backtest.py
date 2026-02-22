@@ -187,8 +187,14 @@ class QCClient:
 
     def get_trades(self, backtest):
         """Extract trades from backtest total performance."""
-        perf = backtest.get("totalPerformance", {})
-        closed_trades = perf.get("closedTrades", [])
+        perf = backtest.get("totalPerformance") or {}
+        if not isinstance(perf, dict):
+            return []
+
+        closed_trades = perf.get("closedTrades") or []
+        if not isinstance(closed_trades, list):
+            return []
+
         return closed_trades
 
 
