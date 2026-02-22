@@ -3819,22 +3819,59 @@ class OptionsEngine:
         if not preferred:
             preferred = short_candidates  # Fall back to all if none within cap
 
+        # Lightweight quality tie-breaker:
+        # Keep D/W as primary objective, then prefer short-leg deltas in a broad
+        # VIX-adaptive band when D/W is effectively tied. This improves candidate
+        # quality without adding new hard-reject paths.
+        vix_for_pref = None
+        try:
+            vix_for_pref = float(self._iv_sensor.get_smoothed_vix())
+        except Exception:
+            vix_for_pref = None
+
+        if vix_for_pref is None:
+            pref_min, pref_max, pref_target = (0.18, 0.45, 0.30)
+        elif vix_for_pref >= 35.0:
+            pref_min, pref_max, pref_target = (0.12, 0.32, 0.22)
+        elif vix_for_pref >= 25.0:
+            pref_min, pref_max, pref_target = (0.14, 0.36, 0.25)
+        elif vix_for_pref >= 18.0:
+            pref_min, pref_max, pref_target = (0.16, 0.42, 0.28)
+        else:
+            pref_min, pref_max, pref_target = (0.20, 0.50, 0.35)
+
         # Estimate debit for R:R sort: long_leg.mid - short_candidate.mid
-        # Lower debit_to_width = better R:R
+        # Lower debit_to_width = better R:R.
+        # Use 1%-bucketed D/W as first key so delta preference acts as soft tie-breaker.
         def rr_sort_key(x):
             candidate, width, delta_abs = x
             estimated_debit = long_leg.mid_price - candidate.mid_price
             debit_to_width = estimated_debit / width if width > 0 else 1.0
-            return (debit_to_width, -width)  # Tiebreak: prefer wider at same R:R
+            debit_bucket = round(max(0.0, debit_to_width), 2)
+            if pref_min <= delta_abs <= pref_max:
+                delta_band_penalty = 0.0
+            else:
+                delta_band_penalty = min(abs(delta_abs - pref_min), abs(delta_abs - pref_max))
+            return (
+                debit_bucket,
+                delta_band_penalty,
+                abs(delta_abs - pref_target),
+                debit_to_width,
+                -width,
+            )
 
         preferred.sort(key=rr_sort_key)
         short_candidates = preferred
         short_leg = short_candidates[0][0]
         actual_width = abs(short_leg.strike - long_leg.strike)
 
+        chosen_debit = long_leg.mid_price - short_leg.mid_price
+        chosen_dw = chosen_debit / actual_width if actual_width > 0 else 1.0
+
         self.log(
             f"SPREAD: Selected legs | Long={long_leg.strike} (delta={long_leg.delta:.2f}) | "
-            f"Short={short_leg.strike} (delta={short_leg.delta:.2f}) | Width=${actual_width:.0f}"
+            f"Short={short_leg.strike} (delta={short_leg.delta:.2f}) | Width=${actual_width:.0f} | "
+            f"DW~{chosen_dw:.1%} | DeltaPref={pref_min:.2f}-{pref_max:.2f} (target {pref_target:.2f})"
         )
 
         return (long_leg, short_leg)

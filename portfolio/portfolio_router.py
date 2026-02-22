@@ -210,6 +210,8 @@ class PortfolioRouter:
         self._last_rejection_event_log_by_key: Dict[str, Any] = {}
         self._suppressed_rejection_event_count_by_key: Dict[str, int] = {}
         self._signal_seq: int = 0
+        # Exit pre-clear barrier state: key -> first observed timestamp while waiting for cancels.
+        self._exit_preclear_pending_since: Dict[str, Any] = {}
 
         # V2.9: Track open spread margin (Bug #1 fix)
         # Stores {spread_id: margin_reserved} for each open spread
@@ -596,6 +598,113 @@ class PortfolioRouter:
 
         return (order.side == OrderSide.BUY and live_qty < 0) or (
             order.side == OrderSide.SELL and live_qty > 0
+        )
+
+    def _get_open_orders_for_symbols(self, symbols: List[str]) -> List[Any]:
+        """Return live open broker orders whose symbol matches any provided key."""
+        if not self.algorithm:
+            return []
+        wanted = {self._normalize_symbol_key(s) for s in symbols if self._normalize_symbol_key(s)}
+        if not wanted:
+            return []
+        matches: List[Any] = []
+        try:
+            for open_order in self.algorithm.Transactions.GetOpenOrders():  # type: ignore[attr-defined]
+                symbol_key = self._normalize_symbol_key(getattr(open_order, "Symbol", None))
+                if symbol_key in wanted:
+                    matches.append(open_order)
+        except Exception as e:
+            self.log(f"ROUTER_EXIT_PRECLEAR_SCAN_ERROR: {e}")
+            return []
+        return matches
+
+    def _cancel_open_orders_for_symbols(self, symbols: List[str]) -> Tuple[int, int]:
+        """Cancel all open broker orders for symbols; returns (canceled, cancel_errors)."""
+        if not self.algorithm:
+            return 0, 0
+        open_orders = self._get_open_orders_for_symbols(symbols)
+        canceled = 0
+        cancel_errors = 0
+        for open_order in open_orders:
+            try:
+                order_id = int(getattr(open_order, "Id", 0) or 0)
+                if order_id <= 0:
+                    order_id = int(getattr(open_order, "OrderId", 0) or 0)
+                if order_id <= 0:
+                    continue
+                self.algorithm.Transactions.CancelOrder(order_id)  # type: ignore[attr-defined]
+                canceled += 1
+            except Exception as e:
+                cancel_errors += 1
+                self.log(
+                    f"ROUTER_EXIT_PRECLEAR_CANCEL_ERROR: "
+                    f"Symbol={getattr(open_order, 'Symbol', '')} | {e}"
+                )
+        return canceled, cancel_errors
+
+    def _run_option_exit_preclear(self, order: "OrderIntent") -> Tuple[bool, str]:
+        """
+        Plumbing guard for option exits:
+        1) cancel all same-symbol open orders,
+        2) wait until broker reports no open orders,
+        3) allow submit after timeout as a safety release.
+        """
+        if not self._is_option_close_order(order):
+            return True, ""
+
+        symbols = [order.symbol]
+        if order.is_combo and order.combo_short_symbol:
+            symbols.append(order.combo_short_symbol)
+
+        normalized = sorted(
+            {self._normalize_symbol_key(s) for s in symbols if self._normalize_symbol_key(s)}
+        )
+        if not normalized:
+            return True, ""
+
+        key = "|".join(normalized)
+        open_before = self._get_open_orders_for_symbols(normalized)
+        if not open_before:
+            self._exit_preclear_pending_since.pop(key, None)
+            return True, ""
+
+        canceled, cancel_errors = self._cancel_open_orders_for_symbols(normalized)
+        remaining = len(self._get_open_orders_for_symbols(normalized))
+        if remaining <= 0:
+            self._exit_preclear_pending_since.pop(key, None)
+            return (
+                True,
+                f"EXIT_PRE_CLEAR_OK: Symbols={','.join(normalized)} | Canceled={canceled}",
+            )
+
+        timeout_sec = max(1, int(getattr(config, "EXIT_PRE_CLEAR_TIMEOUT_SECONDS", 30)))
+        now = getattr(self.algorithm, "Time", None) if self.algorithm else None
+        first_seen = self._exit_preclear_pending_since.get(key)
+        if first_seen is None:
+            self._exit_preclear_pending_since[key] = now
+            first_seen = now
+
+        elapsed_sec = 0.0
+        try:
+            if first_seen is not None and now is not None:
+                elapsed_sec = max(0.0, float((now - first_seen).total_seconds()))
+        except Exception:
+            elapsed_sec = 0.0
+
+        if elapsed_sec >= timeout_sec:
+            self._exit_preclear_pending_since.pop(key, None)
+            return (
+                True,
+                "EXIT_PRE_CLEAR_TIMEOUT: "
+                f"Symbols={','.join(normalized)} | Remaining={remaining} | "
+                f"Elapsed={elapsed_sec:.0f}s >= {timeout_sec}s | Continuing",
+            )
+
+        return (
+            False,
+            "EXIT_PRE_CLEAR_PENDING: "
+            f"Symbols={','.join(normalized)} | Canceled={canceled} | Remaining={remaining} | "
+            f"CancelErrors={cancel_errors} | Elapsed={elapsed_sec:.0f}s/{timeout_sec}s",
         )
 
     def _estimate_option_order_margin_requirement(self, order: "OrderIntent") -> float:
@@ -2591,6 +2700,22 @@ class PortfolioRouter:
                 )
                 continue
 
+            # Option-exit plumbing guard: clear same-symbol open orders before close submit.
+            preclear_ok, preclear_detail = self._run_option_exit_preclear(order)
+            if not preclear_ok:
+                self.log(f"ROUTER: {preclear_detail}")
+                self._record_rejection(
+                    code="R_EXIT_PRECLEAR_PENDING",
+                    symbol=order.symbol,
+                    detail=preclear_detail,
+                    stage="EXECUTE",
+                    source_tag=source_tag,
+                    trace_id=trace_id,
+                )
+                continue
+            if preclear_detail:
+                self.log(f"ROUTER: {preclear_detail}")
+
             # V8.2: Primary options budget gate (simple cap aligned to partition).
             # This runs before generic margin-util checks to avoid over-throttling.
             options_budget_allowed, options_budget_reason = self.check_options_budget_gate(order)
@@ -3334,6 +3459,7 @@ class PortfolioRouter:
         self._last_execution_minute = None
         self._executed_this_minute.clear()
         self._last_eod_date = None
+        self._exit_preclear_pending_since.clear()
 
         self._open_spread_margin = {}
         raw_margins = state.get("open_spread_margin", {}) or {}
@@ -3357,6 +3483,7 @@ class PortfolioRouter:
         self._last_execution_minute = None
         self._executed_this_minute.clear()
         self._last_eod_date = None
+        self._exit_preclear_pending_since.clear()
         # V2.3.24: Reset rejection log throttle
         self._last_rejection_log_time = None
         self._rejection_log_count = 0
