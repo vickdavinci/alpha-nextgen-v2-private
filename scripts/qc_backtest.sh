@@ -24,6 +24,7 @@ SRC="/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-priva
 LEAN_WORKSPACE="/Users/vigneshwaranarumugam/Documents/Trading Github/lean-workspace"
 DEST="$LEAN_WORKSPACE/AlphaNextGen"
 PROJECT_NAME="AlphaNextGen"
+QC_PROJECT_ID="27678023"
 MAX_FILE_CHARS=256000
 
 # Prefer project venv python so optional minifier deps are available.
@@ -103,16 +104,35 @@ echo -e "${GREEN}   ✓ Size checks passed${NC}"
 
 # Step 5: Push + backtest
 echo -e "${BLUE}[5/5]${NC} Pushing to QuantConnect cloud..."
+# Validation step compiles files and may create __pycache__/\*.pyc; remove before push.
+find "$DEST" -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+find "$DEST" -name "*.pyc" -delete 2>/dev/null || true
 cd "$LEAN_WORKSPACE"
 PUSH_OUTPUT=$(lean cloud push --project "$PROJECT_NAME" 2>&1)
 PUSH_EXIT=$?
 echo "$PUSH_OUTPUT"
 if [ "$PUSH_EXIT" -ne 0 ] || echo "$PUSH_OUTPUT" | grep -qi "413\|exceed.*size\|failed"; then
-    echo -e "${RED}   ✗ Push FAILED${NC}"
-    echo -e "${RED}   QC limit: per-file size must be <= 256KB${NC}"
-    exit 1
+    if echo "$PUSH_OUTPUT" | grep -qi "413\|exceed.*size"; then
+        echo -e "${YELLOW}   ! Bulk push hit payload size limit (HTTP 413); trying per-file fallback...${NC}"
+        FALLBACK_OUTPUT=$(
+            "$PYTHON_BIN" "$SRC/scripts/qc_push_individual.py" \
+                --workspace "$DEST" \
+                --project-id "$QC_PROJECT_ID" 2>&1
+        )
+        FALLBACK_EXIT=$?
+        echo "$FALLBACK_OUTPUT"
+        if [ "$FALLBACK_EXIT" -ne 0 ]; then
+            echo -e "${RED}   ✗ Per-file fallback push FAILED${NC}"
+            exit 1
+        fi
+        echo -e "${GREEN}   ✓ Push complete (per-file fallback)${NC}"
+    else
+        echo -e "${RED}   ✗ Push FAILED${NC}"
+        exit 1
+    fi
+else
+    echo -e "${GREEN}   ✓ Push complete${NC}"
 fi
-echo -e "${GREEN}   ✓ Push complete${NC}"
 
 echo -e "${BLUE}Starting backtest...${NC}"
 if [ -n "$OPEN_FLAG" ]; then
