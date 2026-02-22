@@ -1444,9 +1444,7 @@ VASS_BULL_DEBIT_REQUIRE_POSITIVE_DAY = True
 VASS_BULL_DEBIT_MIN_DAY_CHANGE_PCT = 0.20  # Require QQQ +0.20% vs session open
 
 # V9.7: BEAR_PUT entry gate — block in RISK_ON (12.5% WR in 2017 full-year RCA)
-VASS_BEAR_PUT_REGIME_MAX = (
-    68  # V10.28: tighten bearish spread participation in high-neutral/risk-on regimes
-)
+VASS_BEAR_PUT_REGIME_MAX = 64  # V10.29: further limit bearish spreads to weaker macro states
 
 # V2.27: Win Rate Gate (Options Self-Correcting Throttle)
 # Rolling window of recent closed spread trades. Scales down/shuts off when losing.
@@ -1872,7 +1870,7 @@ SPREAD_EXPIRY_BULL_PROFILE_VIX_MAX = 18.0
 PUT_ENTRY_VIX_MAX = 38.0  # Allow more participation before panic cap
 PUT_SIZE_REDUCTION_VIX_START = 32.0  # Delay PUT size haircut for trend capture
 PUT_SIZE_REDUCTION_FACTOR = 0.60  # Less aggressive downsizing above threshold
-INTRADAY_CALL_BLOCK_VIX_MIN = 25.0  # V10.9: keep CALL stress block for elevated/high VIX only
+INTRADAY_CALL_BLOCK_VIX_MIN = 20.0  # V10.29: block CALLs earlier as fear rises into medium-high VIX
 INTRADAY_CALL_BLOCK_REGIME_MAX = 55.0  # V10.9: reduce over-blocking in neutral-to-bull macro
 # Additional minimal CALL-protection gates (bear-risk controls without major architecture changes)
 CALL_GATE_MA20_ENABLED = True  # Block CALL entries when QQQ is below its 20-day SMA
@@ -1889,7 +1887,7 @@ CALL_GATE_VIX_5D_RISING_PCT_MED_VIX = 0.14  # Medium-VIX baseline
 CALL_GATE_VIX_5D_RISING_PCT_HIGH_VIX = 0.10  # Stricter in high-VIX tape
 CALL_GATE_VIX_5D_MIN_VIX = 20.0  # Legacy key retained for backward compatibility
 CALL_GATE_CONSECUTIVE_LOSS_ENABLED = True  # Pause CALL entries after repeated losses
-CALL_GATE_CONSECUTIVE_LOSSES = 3  # Trigger pause after 3 consecutive CALL losses
+CALL_GATE_CONSECUTIVE_LOSSES = 2  # V10.29: trigger CALL cooldown sooner after loss clustering
 CALL_GATE_LOSS_COOLDOWN_DAYS = 1  # Legacy fallback for cooldown days
 CALL_GATE_LOSS_COOLDOWN_DAYS_LOW_VIX = 2  # V10.28: reduce repeat CALL churn after loss clusters
 CALL_GATE_LOSS_COOLDOWN_DAYS_MED_VIX = 2  # V10.28: reduce repeat CALL churn after loss clusters
