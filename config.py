@@ -287,7 +287,7 @@ WEIGHT_CREDIT = 0.15  # Leading indicator (unchanged)
 WEIGHT_CHOP = 0.10  # V3.0: ADX trend quality, increased from 0.05
 
 # Smoothing
-REGIME_SMOOTHING_ALPHA = 0.30
+REGIME_SMOOTHING_ALPHA = 0.40  # V10.22: slightly faster macro response to reduce transition lag
 
 # Thresholds
 REGIME_RISK_ON = 70
@@ -1444,7 +1444,9 @@ VASS_BULL_DEBIT_REQUIRE_POSITIVE_DAY = True
 VASS_BULL_DEBIT_MIN_DAY_CHANGE_PCT = 0.20  # Require QQQ +0.20% vs session open
 
 # V9.7: BEAR_PUT entry gate — block in RISK_ON (12.5% WR in 2017 full-year RCA)
-VASS_BEAR_PUT_REGIME_MAX = 70  # Block BEAR_PUT_DEBIT when regime >= 70 (RISK_ON)
+VASS_BEAR_PUT_REGIME_MAX = (
+    72  # V10.22: allow limited bearish participation in high-neutral transitions
+)
 
 # V2.27: Win Rate Gate (Options Self-Correcting Throttle)
 # Rolling window of recent closed spread trades. Scales down/shuts off when losing.
@@ -1474,7 +1476,7 @@ VASS_LOSS_BREAKER_PAUSE_DAYS = 1
 # In elevated VIX, do not allow VASS bullish conviction to force trades from NEUTRAL macro.
 VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX = 18.0
 VASS_BULL_PROFILE_BEARISH_BLOCK_ENABLED = True
-VASS_BULL_PROFILE_REGIME_MIN = 65.0  # V10.17: block bearish VASS earlier in strong bull profile
+VASS_BULL_PROFILE_REGIME_MIN = 72.0  # V10.22: only block bearish VASS in stronger bull regimes
 # V6.1: Removed SPREAD_REGIME_EXIT_BULL/BEAR - legacy logic conflicted with conviction-based entry
 # Spreads now exit via: STOP_LOSS, PROFIT_TARGET, DTE_EXIT, NEUTRALITY_EXIT
 
@@ -2056,7 +2058,9 @@ INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES = [
 # ITM_MOMENTUM: Stock replacement needs ITM options (delta 0.60-0.85)
 INTRADAY_ITM_DELTA_MIN = 0.70  # Legacy fallback aligned to ITM_ENGINE stock-replacement profile
 INTRADAY_ITM_DELTA_MAX = 0.80  # V10: tightened from 0.85 to avoid deep ITM illiquidity
-INTRADAY_ITM_HOLD_OVERNIGHT_ENABLED = True  # V10.1: allow ITM holds beyond force-close cutoff
+INTRADAY_ITM_HOLD_OVERNIGHT_ENABLED = (
+    False  # V10.22: disable overnight ITM carry to cut tail losses
+)
 INTRADAY_ITM_HOLD_MIN_ENTRY_DTE = 3  # Only hold if entry was opened with >=3 DTE
 INTRADAY_ITM_FORCE_EXIT_DTE = 8  # Legacy fallback: exit before gamma-acceleration zone
 INTRADAY_ITM_DTE_EXIT = 2  # Software DTE exit for ITM single-legs (strategy-specific)
@@ -2123,7 +2127,7 @@ ITM_TRAIL_TRIGGER = 0.22
 ITM_TRAIL_PCT = 0.32
 ITM_MAX_HOLD_DAYS = 4
 ITM_FORCE_EXIT_DTE = 8
-ITM_HOLD_OVERNIGHT_ENABLED = True
+ITM_HOLD_OVERNIGHT_ENABLED = False  # V10.22: intraday-close ITM path for smoke stability
 # ITM weekend/holiday carry guard (targeted protection, avoids blanket quarantine).
 ITM_WEEKEND_GUARD_ENABLED = True
 ITM_WEEKEND_MIN_LIVE_DTE_TO_HOLD = 10
@@ -2271,7 +2275,7 @@ INTRADAY_PENDING_ENTRY_HARD_CLEAR_MINUTES = (
     30  # V10.19: force-clear stale pending lock to avoid multi-hour lane starvation
 )
 EXIT_PRE_CLEAR_ALLOW_IMMEDIATE_INTRADAY_CLOSE = (
-    False  # V10.21: disable immediate bypass until close-quality impact is validated
+    True  # V10.22: restore time-critical intraday close bypass to reduce stale close latency
 )
 PROTECTIVE_PUTS_MAX_CONTRACTS = (
     5  # V9.2 RCA: Cap contracts to prevent 10+ lot outsized bets in crisis
