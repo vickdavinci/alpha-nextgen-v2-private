@@ -1166,6 +1166,28 @@ class MicroRegimeEngine:
             if use_otm:
                 max_vix = float(getattr(config, "MICRO_OTM_MOMENTUM_MAX_VIX", 22.0))
                 min_move = float(getattr(config, "MICRO_OTM_MOMENTUM_MIN_MOVE", 0.40))
+                if direction == OptionDirection.CALL:
+                    min_move = float(getattr(config, "MICRO_OTM_MOMENTUM_MIN_MOVE_CALL", min_move))
+                    score_floor = self._resolve_micro_bullish_confirm_threshold(
+                        vix_current
+                    ) + float(getattr(config, "MICRO_OTM_BULLISH_CONFIRM_SCORE_BUFFER", 0.0))
+                    if micro_score < score_floor:
+                        return (
+                            IntradayStrategy.NO_TRADE,
+                            None,
+                            f"MICRO_OTM_GATE_BLOCK: weak bullish score {micro_score:.0f} < {score_floor:.0f}",
+                        )
+                elif direction == OptionDirection.PUT:
+                    min_move = float(getattr(config, "MICRO_OTM_MOMENTUM_MIN_MOVE_PUT", min_move))
+                    score_ceiling = self._resolve_micro_bearish_confirm_threshold(
+                        vix_current
+                    ) - float(getattr(config, "MICRO_OTM_BEARISH_CONFIRM_SCORE_BUFFER", 0.0))
+                    if micro_score > score_ceiling:
+                        return (
+                            IntradayStrategy.NO_TRADE,
+                            None,
+                            f"MICRO_OTM_GATE_BLOCK: weak bearish score {micro_score:.0f} > {score_ceiling:.0f}",
+                        )
                 if vix_current <= max_vix and abs(qqq_move_pct) >= min_move:
                     return (
                         IntradayStrategy.MICRO_OTM_MOMENTUM,
@@ -8167,6 +8189,15 @@ class OptionsEngine:
         # Calculate P&L percentage
         pnl_pct = (current_price - entry_price) / entry_price
         strategy_name = self._canonical_intraday_strategy_name(getattr(pos, "entry_strategy", ""))
+        held_minutes: Optional[float] = None
+        if is_intraday_pos and self.algorithm is not None and hasattr(self.algorithm, "Time"):
+            try:
+                entry_dt = datetime.strptime(
+                    str(getattr(pos, "entry_time", ""))[:19], "%Y-%m-%d %H:%M:%S"
+                )
+                held_minutes = (self.algorithm.Time - entry_dt).total_seconds() / 60.0
+            except Exception:
+                held_minutes = None
 
         # Exit 0: Stagnation timer for MICRO intraday strategies.
         # If the trade stays near-flat for too long, exit before theta/chop bleeds it out.
@@ -8178,16 +8209,8 @@ class OptionsEngine:
                 IntradayStrategy.MICRO_OTM_MOMENTUM.value,
             )
             and bool(getattr(config, "MICRO_STAGNATION_EXIT_ENABLED", False))
-            and self.algorithm is not None
-            and hasattr(self.algorithm, "Time")
+            and held_minutes is not None
         ):
-            try:
-                entry_dt = datetime.strptime(
-                    str(getattr(pos, "entry_time", ""))[:19], "%Y-%m-%d %H:%M:%S"
-                )
-                held_minutes = (self.algorithm.Time - entry_dt).total_seconds() / 60.0
-            except Exception:
-                held_minutes = 0.0
             min_hold_minutes = float(getattr(config, "MICRO_STAGNATION_MIN_HOLD_MINUTES", 60))
             flat_band = float(getattr(config, "MICRO_STAGNATION_FLAT_BAND_PCT", 0.10))
             if held_minutes >= min_hold_minutes and abs(pnl_pct) <= flat_band:
@@ -8285,6 +8308,36 @@ class OptionsEngine:
                 reason=reason,
                 requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
             )
+
+        # OTM momentum theta guard: exit stale 0-1DTE trades that fail to reach a healthy cushion.
+        if (
+            is_intraday_pos
+            and strategy_name == IntradayStrategy.MICRO_OTM_MOMENTUM.value
+            and held_minutes is not None
+        ):
+            max_hold_minutes = float(getattr(config, "MICRO_OTM_MAX_HOLD_MINUTES", 0))
+            profit_exempt = float(getattr(config, "MICRO_OTM_MAX_HOLD_PROFIT_EXEMPT_PCT", 0.35))
+            if (
+                max_hold_minutes > 0
+                and held_minutes >= max_hold_minutes
+                and pnl_pct < profit_exempt
+            ):
+                if not self.mark_pending_intraday_exit(symbol_str):
+                    return None
+                reason = (
+                    f"MICRO_OTM_MAX_HOLD {pnl_pct:+.1%} "
+                    f"(Held={held_minutes:.0f}m >= {max_hold_minutes:.0f}m, "
+                    f"Exempt>={profit_exempt:.0%})"
+                )
+                self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
+                return TargetWeight(
+                    symbol=symbol_str,
+                    target_weight=0.0,
+                    source="OPT",
+                    urgency=Urgency.IMMEDIATE,
+                    reason=reason,
+                    requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
+                )
 
         # ITM_ENGINE max-hold guard (calendar-based safety cap).
         if self._itm_horizon_engine.enabled() and self._is_itm_momentum_strategy_name(
