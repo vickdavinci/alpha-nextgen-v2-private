@@ -1862,12 +1862,12 @@ class OptionsEngine:
 
     def _get_intraday_force_exit_hhmm(self) -> Tuple[int, int]:
         """Return configured intraday force-exit time as (hour, minute)."""
-        force_exit_cfg = str(getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:30"))
+        force_exit_cfg = str(getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15"))
         try:
             hh, mm = force_exit_cfg.split(":")
             return int(hh), int(mm)
         except Exception:
-            return 15, 30
+            return 15, 15
 
     def _canonical_intraday_strategy(
         self, strategy: Optional["IntradayStrategy"]

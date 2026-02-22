@@ -1167,11 +1167,15 @@ class MainOptionsMixin:
         # Explicit ITM scan path.
         # Isolation rule: ITM evaluation is independent from MICRO submission in
         # the same scan cycle; coordination happens at slot/position/router layers.
+        itm_weekend_cutoff_active = bool(
+            getattr(self, "_is_itm_weekend_entry_cutoff_active", lambda: False)()
+        )
         if (
             bool(getattr(config, "ITM_ENGINE_ENABLED", False))
             and intraday_scan_context_ready
             and itm_dir is not None
             and not itm_intraday_cooldown_active
+            and not itm_weekend_cutoff_active
         ):
             (
                 itm_preflight_ok,
@@ -1228,6 +1232,13 @@ class MainOptionsMixin:
                         )
                 else:
                     qqq_atr_value = self.qqq_atr.Current.Value if self.qqq_atr.IsReady else 0.0
+                    itm_entry_size_multiplier = float(size_multiplier)
+                    if bool(
+                        getattr(config, "ITM_WEEKEND_CARRY_SIZE_HAIRCUT_ENABLED", True)
+                    ) and bool(getattr(self, "_is_itm_weekend_firewall_day", lambda: False)()):
+                        carry_mult = float(getattr(config, "ITM_WEEKEND_CARRY_SIZE_MULT", 0.70))
+                        carry_mult = max(0.10, min(1.0, carry_mult))
+                        itm_entry_size_multiplier *= carry_mult
                     itm_signal = self.options_engine.check_intraday_entry_signal(
                         vix_current=vix_intraday,
                         vix_open=self._vix_at_open,
@@ -1239,7 +1250,7 @@ class MainOptionsMixin:
                         portfolio_value=effective_portfolio_value,
                         raw_portfolio_value=float(self.Portfolio.TotalPortfolioValue),
                         best_contract=itm_contract,
-                        size_multiplier=size_multiplier,
+                        size_multiplier=itm_entry_size_multiplier,
                         macro_regime_score=regime_score,
                         governor_scale=self._governor_scale,
                         direction=itm_dir,
@@ -1324,6 +1335,19 @@ class MainOptionsMixin:
                                 self._diag_intraday_dropped_by_engine,
                                 IntradayStrategy.ITM_MOMENTUM,
                             )
+        elif (
+            bool(getattr(config, "ITM_ENGINE_ENABLED", False))
+            and intraday_scan_context_ready
+            and itm_dir is not None
+            and itm_weekend_cutoff_active
+        ):
+            self.Log(
+                "ITM_WEEKEND_ENTRY_BLOCK: "
+                f"Cutoff active at {self.Time.strftime('%H:%M')} | "
+                f"Dir={itm_dir.value} | Cutoff="
+                f"{int(getattr(config, 'ITM_WEEKEND_ENTRY_CUTOFF_HOUR', 13)):02d}:"
+                f"{int(getattr(config, 'ITM_WEEKEND_ENTRY_CUTOFF_MINUTE', 30)):02d}"
+            )
 
         # V2.20: Check rejection cooldowns for swing/spread modes
         swing_cooldown_active = (

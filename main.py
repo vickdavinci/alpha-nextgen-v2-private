@@ -1137,6 +1137,8 @@ class AlphaNextGen(QCAlgorithm):
         # Check if any short legs went ITM overnight and queue for close
         if getattr(config, "PREMARKET_ITM_CHECK_ENABLED", True):
             self._check_premarket_itm_shorts()
+        # Weekend/holiday ITM guard: queue exits on adverse post-gap open risk.
+        self._queue_itm_weekend_gap_exit_signals()
 
         # V3.0: Schedule dynamic EOD events based on actual market close time
         # Handles early close days (1:00 PM) automatically
@@ -1838,6 +1840,233 @@ class AlphaNextGen(QCAlgorithm):
             return bool(self.options_engine.should_hold_intraday_overnight(intraday_pos))
         except Exception:
             return False
+
+    def _is_itm_weekend_firewall_day(self) -> bool:
+        """Return True on Friday/holiday-eve sessions where weekend carry risk applies."""
+        if not bool(getattr(config, "ITM_WEEKEND_GUARD_ENABLED", True)):
+            return False
+        try:
+            return bool(is_expiration_firewall_day(self))
+        except Exception:
+            return False
+
+    def _is_itm_weekend_entry_cutoff_active(self) -> bool:
+        """Block new ITM entries late on weekend-risk sessions."""
+        if not self._is_itm_weekend_firewall_day():
+            return False
+        cutoff_hour = int(getattr(config, "ITM_WEEKEND_ENTRY_CUTOFF_HOUR", 13))
+        cutoff_min = int(getattr(config, "ITM_WEEKEND_ENTRY_CUTOFF_MINUTE", 30))
+        now_min = self.Time.hour * 60 + self.Time.minute
+        cutoff_total = cutoff_hour * 60 + cutoff_min
+        return now_min >= cutoff_total
+
+    def _get_itm_weekend_vix_5d_change(self) -> Optional[float]:
+        """Best-effort VIX 5D change for weekend risk screening."""
+        try:
+            if not hasattr(self, "options_engine") or self.options_engine is None:
+                return None
+            if not hasattr(self.options_engine, "_iv_sensor"):
+                return None
+            value = self.options_engine._iv_sensor.get_vix_5d_change()
+            if value is None:
+                return None
+            return float(value)
+        except Exception:
+            return None
+
+    def _get_intraday_position_entry_price(self, symbol: str, intraday_pos: Any) -> float:
+        """Resolve best entry-price source for intraday weekend guards."""
+        snapshot = self._intraday_entry_snapshot.get(symbol, {})
+        if snapshot and snapshot.get("entry_price", 0) > 0:
+            return float(snapshot.get("entry_price", 0.0))
+        entry_price = float(getattr(intraday_pos, "entry_price", 0.0) or 0.0)
+        if entry_price > 0:
+            return entry_price
+        holding, _ = self._find_portfolio_holding(symbol, security_type=SecurityType.Option)
+        if holding and getattr(holding, "AveragePrice", 0) > 0:
+            return float(holding.AveragePrice)
+        return 0.0
+
+    def _evaluate_itm_weekend_hold_risk(
+        self,
+        *,
+        symbol: str,
+        intraday_pos: Any,
+        current_price: float,
+        current_vix: float,
+        vix_5d_change: Optional[float],
+    ) -> Optional[str]:
+        """
+        Return weekend guard reason when ITM carry is too risky, else None.
+
+        Keep logic simple and explicit:
+        - Require minimum live DTE,
+        - reject high vol / rising vol,
+        - reject thesis break,
+        - require profit cushion into weekend.
+        """
+        symbol_norm = self._normalize_symbol_str(symbol)
+        entry_price = self._get_intraday_position_entry_price(symbol_norm, intraday_pos)
+        if entry_price <= 0 or current_price <= 0:
+            return "INVALID_PRICE_CONTEXT"
+
+        pnl_pct = (current_price - entry_price) / entry_price
+        min_live_dte = int(getattr(config, "ITM_WEEKEND_MIN_LIVE_DTE_TO_HOLD", 10))
+        max_vix = float(getattr(config, "ITM_WEEKEND_VIX_MAX_TO_HOLD", 22.0))
+        max_vix_5d = float(getattr(config, "ITM_WEEKEND_VIX_5D_MAX_TO_HOLD", 0.08))
+        min_cushion = float(getattr(config, "ITM_WEEKEND_MIN_PNL_CUSHION_TO_HOLD", 0.10))
+
+        live_dte = None
+        try:
+            live_dte = self.options_engine._get_position_live_dte(intraday_pos)
+        except Exception:
+            live_dte = None
+        if live_dte is None or int(live_dte) < min_live_dte:
+            return f"LIVE_DTE_LOW ({live_dte}<{min_live_dte})"
+        if float(current_vix) >= max_vix:
+            return f"VIX_HIGH ({float(current_vix):.1f}>={max_vix:.1f})"
+        if vix_5d_change is not None and float(vix_5d_change) >= max_vix_5d:
+            return f"VIX_5D_RISING ({float(vix_5d_change):+.1%}>={max_vix_5d:.0%})"
+        if self._is_itm_overnight_thesis_broken(symbol_norm):
+            return "THESIS_BROKEN"
+        if pnl_pct < min_cushion:
+            return f"LOW_PNL_CUSHION ({pnl_pct:+.1%}<{min_cushion:.0%})"
+        return None
+
+    def _collect_itm_weekend_firewall_signals(self, current_vix: float) -> List[TargetWeight]:
+        """Build Friday/holiday-eve ITM close signals for risky carries."""
+        if not self._is_itm_weekend_firewall_day():
+            return []
+        signals: List[TargetWeight] = []
+        vix_5d_change = self._get_itm_weekend_vix_5d_change()
+
+        for intraday_pos in self.options_engine.get_intraday_positions():
+            if intraday_pos is None or intraday_pos.contract is None:
+                continue
+            strategy = str(getattr(intraday_pos, "entry_strategy", "") or "").upper()
+            if strategy != "ITM_MOMENTUM":
+                continue
+            if not self.options_engine.should_hold_intraday_overnight(intraday_pos):
+                continue
+
+            symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
+            live_qty = abs(self._get_option_holding_quantity(symbol))
+            if live_qty <= 0:
+                continue
+
+            current_price = self._get_option_mark_price(
+                symbol,
+                fallback=float(getattr(intraday_pos, "entry_price", 0.0) or 0.0),
+            )
+            if current_price <= 0:
+                continue
+
+            weekend_reason = self._evaluate_itm_weekend_hold_risk(
+                symbol=symbol,
+                intraday_pos=intraday_pos,
+                current_price=current_price,
+                current_vix=current_vix,
+                vix_5d_change=vix_5d_change,
+            )
+            if not weekend_reason:
+                continue
+
+            signals.append(
+                TargetWeight(
+                    symbol=symbol,
+                    target_weight=0.0,
+                    source="OPT_INTRADAY",
+                    urgency=Urgency.IMMEDIATE,
+                    reason=f"FRIDAY_FIREWALL_ITM: {weekend_reason}",
+                    requested_quantity=live_qty,
+                    metadata={
+                        "intraday_strategy": "ITM_MOMENTUM",
+                        "weekend_guard": "FRIDAY",
+                    },
+                )
+            )
+            self.Log(
+                f"FRIDAY_FIREWALL_ITM: Closing {symbol} | Reason={weekend_reason} | "
+                f"Qty={live_qty} | VIX={current_vix:.1f}"
+            )
+        return signals
+
+    def _queue_itm_weekend_gap_exit_signals(self) -> None:
+        """Queue post-weekend/holiday ITM exits on adverse gap or vol shock."""
+        if not bool(getattr(config, "ITM_WEEKEND_GAP_EXIT_ENABLED", True)):
+            return
+        if self._last_market_close_check is None:
+            return
+        days_gap = (self.Time.date() - self._last_market_close_check).days
+        if days_gap < 3:
+            return
+
+        qqq_prior_close = float(self.Securities[self.qqq].Close or 0.0)
+        qqq_now = float(self.Securities[self.qqq].Price or 0.0)
+        if qqq_prior_close <= 0 or qqq_now <= 0:
+            return
+
+        adverse_gap_threshold = float(getattr(config, "ITM_WEEKEND_GAP_ADVERSE_PCT", 0.01))
+        vix_shock_threshold = float(getattr(config, "ITM_WEEKEND_GAP_VIX_SHOCK_PCT", 0.15))
+        qqq_gap_pct = (qqq_now - qqq_prior_close) / qqq_prior_close
+        vix_shock_pct = max(0.0, float(self._get_premarket_vix_gap_proxy_pct()) / 100.0)
+
+        queued = 0
+        for intraday_pos in self.options_engine.get_intraday_positions():
+            if intraday_pos is None or intraday_pos.contract is None:
+                continue
+            strategy = str(getattr(intraday_pos, "entry_strategy", "") or "").upper()
+            if strategy != "ITM_MOMENTUM":
+                continue
+            if not self.options_engine.should_hold_intraday_overnight(intraday_pos):
+                continue
+
+            symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
+            is_call = "C" in symbol
+            is_put = "P" in symbol
+            adverse_gap = (is_call and qqq_gap_pct <= -adverse_gap_threshold) or (
+                is_put and qqq_gap_pct >= adverse_gap_threshold
+            )
+            vix_shock = vix_shock_pct >= vix_shock_threshold
+            if not adverse_gap and not vix_shock:
+                continue
+
+            live_qty = abs(self._get_option_holding_quantity(symbol))
+            if live_qty <= 0:
+                continue
+
+            reasons = []
+            if adverse_gap:
+                reasons.append(f"ADVERSE_GAP {qqq_gap_pct:+.2%}")
+            if vix_shock:
+                reasons.append(f"VIX_SHOCK {vix_shock_pct:+.1%}")
+            reason_text = " + ".join(reasons) if reasons else "POST_GAP_RISK"
+
+            self.portfolio_router.receive_signal(
+                TargetWeight(
+                    symbol=symbol,
+                    target_weight=0.0,
+                    source="OPT_INTRADAY",
+                    urgency=Urgency.IMMEDIATE,
+                    reason=f"ITM_WEEKEND_GAP_EXIT: {reason_text}",
+                    requested_quantity=live_qty,
+                    metadata={
+                        "intraday_strategy": "ITM_MOMENTUM",
+                        "weekend_guard": "POST_GAP",
+                    },
+                )
+            )
+            queued += 1
+            self.Log(
+                f"ITM_WEEKEND_GAP_EXIT_QUEUED: {symbol} | Reason={reason_text} | "
+                f"Qty={live_qty} | GapDays={days_gap}"
+            )
+
+        if queued > 0:
+            self.Log(
+                f"ITM_WEEKEND_GAP_EXIT: Queued={queued} | QQQ_Gap={qqq_gap_pct:+.2%} | "
+                f"VIX_Shock={vix_shock_pct:+.1%} | GapDays={days_gap}"
+            )
 
     def _get_option_mark_price(self, symbol: str, fallback: float = 0.0) -> float:
         """Best-effort option mark for EOD hold checks."""
@@ -2701,6 +2930,7 @@ class AlphaNextGen(QCAlgorithm):
         uvxy_close = self.Securities[self.uvxy].Close if hasattr(self, "uvxy") else 0.0
         if uvxy_close > 0:
             self._uvxy_prior_close = uvxy_close
+        self._last_market_close_check = self.Time.date()
 
         # V6.12: Log EOD P&L summary
         if hasattr(self, "pnl_tracker"):
@@ -3400,8 +3630,11 @@ class AlphaNextGen(QCAlgorithm):
             if signals:
                 swing_signals.extend(signals)
 
-        if swing_signals:
-            for signal in swing_signals:
+        itm_signals = self._collect_itm_weekend_firewall_signals(current_vix=vix_current)
+        firewall_signals = swing_signals + itm_signals
+
+        if firewall_signals:
+            for signal in firewall_signals:
                 self.Log(f"FRIDAY_FIREWALL: {signal.reason} | VIX={vix_current:.1f}")
                 self.portfolio_router.receive_signal(signal)
 
