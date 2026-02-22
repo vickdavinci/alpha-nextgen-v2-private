@@ -2017,9 +2017,13 @@ class OptionsEngine:
         text = str(order_tag or "").upper()
         if not text:
             return IntradayStrategy.NO_TRADE.value
+        if "PROTECTIVE_PUTS" in text or text.startswith("HEDGE:"):
+            return IntradayStrategy.PROTECTIVE_PUTS.value
         if "ITM_MOMENTUM" in text or "DEBIT_MOMENTUM" in text:
             return IntradayStrategy.ITM_MOMENTUM.value
         if "MICRO_OTM_MOMENTUM" in text:
+            return IntradayStrategy.MICRO_OTM_MOMENTUM.value
+        if "MICRO_EOD_SWEEP" in text:
             return IntradayStrategy.MICRO_OTM_MOMENTUM.value
         if "MICRO_DEBIT_FADE" in text or "DEBIT_FADE" in text:
             return IntradayStrategy.MICRO_DEBIT_FADE.value
@@ -10185,6 +10189,7 @@ class OptionsEngine:
         contract: Optional[OptionContract] = None,
         force_intraday: bool = False,
         symbol: Optional[str] = None,
+        order_tag: Optional[str] = None,
     ) -> Optional[OptionsPosition]:
         """
         Register a new options position after fill.
@@ -10196,6 +10201,7 @@ class OptionsEngine:
             contract: Option contract (uses pending if not provided).
             force_intraday: If True, classify fill as intraday even when pending
                 flag was cleared by a cancel/fallback race.
+            order_tag: Optional broker order tag used for recovery strategy inference.
 
         Returns:
             Created OptionsPosition, or None if no pending contract exists.
@@ -10243,11 +10249,23 @@ class OptionsEngine:
             else 0.20
         )
 
-        entry_strategy = (
+        recovered_strategy = None
+        if force_intraday and pending_payload is None:
+            inferred = self._infer_intraday_strategy_from_order_tag(order_tag)
+            if inferred and inferred != IntradayStrategy.NO_TRADE.value:
+                recovered_strategy = inferred
+
+        entry_strategy = recovered_strategy or (
             pending_payload.get("entry_strategy")
             if pending_payload is not None and pending_payload.get("entry_strategy")
             else self._pending_entry_strategy or "SWING_SINGLE"
         )
+        if recovered_strategy is not None:
+            self.log(
+                f"INTRADAY_RECOVERY_STRATEGY: Symbol={self._symbol_str(contract.symbol)} | "
+                f"Strategy={recovered_strategy} | Tag={str(order_tag or 'NO_TAG')[:120]}",
+                trades_only=True,
+            )
 
         # Recalculate stop and target based on actual fill price
         stop_price = fill_price * (1 - stop_pct)
@@ -10765,6 +10783,7 @@ class OptionsEngine:
         fast_clear_seconds = int(getattr(config, "INTRADAY_PENDING_ENTRY_FAST_CLEAR_SECONDS", 90))
         cancel_after_minutes = int(getattr(config, "INTRADAY_PENDING_ENTRY_CANCEL_MINUTES", 20))
         cancel_after_seconds = max(0, cancel_after_minutes * 60)
+        hard_clear_minutes = int(getattr(config, "INTRADAY_PENDING_ENTRY_HARD_CLEAR_MINUTES", 60))
 
         # Normalize legacy single-pending fields into lane-keyed payloads.
         if not self._pending_intraday_entries and self._pending_intraday_entry:
@@ -10789,9 +10808,26 @@ class OptionsEngine:
                 }
 
         open_entry_order_ids_by_symbol = {}
+        scan_errors = 0
+        open_orders = []
         try:
-            for open_order in self.algorithm.Transactions.GetOpenOrders():
+            open_orders = list(self.algorithm.Transactions.GetOpenOrders())
+        except Exception:
+            open_orders = []
+
+        for open_order in open_orders:
+            try:
                 if getattr(open_order.Symbol, "SecurityType", None) != SecurityType.Option:
+                    continue
+                # Ignore obvious close-path tags so they don't hold entry locks open.
+                order_tag = str(getattr(open_order, "Tag", "") or "").upper()
+                if (
+                    "OCO_" in order_tag
+                    or "FORCE_CLOSE" in order_tag
+                    or "INTRADAY_TIME_EXIT" in order_tag
+                    or "SPREAD_CLOSE" in order_tag
+                    or "RECON_ORPHAN" in order_tag
+                ):
                     continue
                 order_qty = float(getattr(open_order, "Quantity", 0) or 0)
                 if order_qty <= 0:
@@ -10806,8 +10842,9 @@ class OptionsEngine:
                 if oid is None:
                     continue
                 open_entry_order_ids_by_symbol.setdefault(symbol_key, []).append(int(oid))
-        except Exception:
-            return
+            except Exception:
+                scan_errors += 1
+                continue
 
         def _parse_created_at(payload: Optional[Dict[str, Any]]) -> datetime:
             if isinstance(payload, dict):
@@ -10866,6 +10903,16 @@ class OptionsEngine:
                             cancel_requests += 1
                         except Exception:
                             continue
+                # Safety release: never allow a lane lock to persist for hours.
+                if hard_clear_minutes > 0 and age_minutes >= hard_clear_minutes:
+                    self._pending_intraday_entries.pop(key, None)
+                    cleared_keys.append(key)
+                    self.log(
+                        f"INTRADAY_PENDING_HARD_CLEAR: Lane={lane or 'UNKNOWN'} | "
+                        f"Symbol={symbol_norm} | AgeMin={age_minutes:.1f} | "
+                        f"OpenOrders={len(open_entry_order_ids)}",
+                        trades_only=True,
+                    )
                 continue
 
             # If lane already has a live position, pending-entry lock is stale.
@@ -10884,6 +10931,11 @@ class OptionsEngine:
             cleared_keys.append(key)
 
         if not cleared_keys and cancel_requests <= 0:
+            if scan_errors > 0:
+                self.log(
+                    f"OPT_MICRO_RECOVERY: Pending scan errors | Count={scan_errors}",
+                    trades_only=True,
+                )
             return
 
         self._pending_intraday_entry = bool(self._pending_intraday_entries)
@@ -10903,7 +10955,7 @@ class OptionsEngine:
             self._pending_entry_strategy = None
         self.log(
             f"OPT_MICRO_RECOVERY: Pending entry maintenance | Cleared={len(cleared_keys)} | "
-            f"CancelReq={cancel_requests} | MaxAgeMin={max_age_minutes:.1f}",
+            f"CancelReq={cancel_requests} | MaxAgeMin={max_age_minutes:.1f} | ScanErr={scan_errors}",
             trades_only=True,
         )
 

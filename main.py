@@ -4140,7 +4140,12 @@ class AlphaNextGen(QCAlgorithm):
         tag_upper = str(order_tag or "").upper()
         if tag_upper.startswith("MICRO:") or tag_upper == "MICRO":
             return True
-        return "MICRO" in tag_upper and "VASS" not in tag_upper
+        if tag_upper.startswith("HEDGE:") or tag_upper == "HEDGE":
+            return True
+        # Some broker fills resolve tag from trace fallback. Treat MICRO traces as intraday.
+        if "|TRACE=MICRO_" in tag_upper and "VASS" not in tag_upper and "ITM:" not in tag_upper:
+            return True
+        return False
 
     def _is_spread_fill_symbol(self, symbol: str) -> bool:
         """

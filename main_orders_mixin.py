@@ -824,6 +824,7 @@ class MainOrdersMixin:
                             force_intraday=force_intraday_recovery,
                             contract=recovery_contract,
                             symbol=symbol_norm,
+                            order_tag=order_tag,
                         )
 
                         if position:

@@ -2267,6 +2267,12 @@ INTRADAY_PENDING_ENTRY_STALE_MINUTES = (
 )
 INTRADAY_PENDING_ENTRY_FAST_CLEAR_SECONDS = 60
 INTRADAY_PENDING_ENTRY_CANCEL_MINUTES = 5  # V10.18: cancel stale live entry orders sooner
+INTRADAY_PENDING_ENTRY_HARD_CLEAR_MINUTES = (
+    30  # V10.19: force-clear stale pending lock to avoid multi-hour lane starvation
+)
+EXIT_PRE_CLEAR_ALLOW_IMMEDIATE_INTRADAY_CLOSE = (
+    True  # V10.19: after cancel request, allow time-critical intraday close submit immediately
+)
 PROTECTIVE_PUTS_MAX_CONTRACTS = (
     5  # V9.2 RCA: Cap contracts to prevent 10+ lot outsized bets in crisis
 )

@@ -677,6 +677,28 @@ class PortfolioRouter:
                 f"EXIT_PRE_CLEAR_OK: Symbols={','.join(normalized)} | Canceled={canceled}",
             )
 
+        # For time-critical intraday forced exits, avoid 15-minute close latency caused by
+        # waiting for cancel acknowledgment in a bar-based execution loop.
+        reason_upper = str(getattr(order, "reason", "") or "").upper()
+        intraday_time_critical = (
+            "INTRADAY_FORCE_EXIT" in reason_upper
+            or "INTRADAY_TIME_EXIT_1515" in reason_upper
+            or "INTRADAY_FORCE_CLOSE" in reason_upper
+        )
+        if (
+            bool(getattr(config, "EXIT_PRE_CLEAR_ALLOW_IMMEDIATE_INTRADAY_CLOSE", True))
+            and intraday_time_critical
+            and canceled > 0
+            and not order.is_combo
+        ):
+            self._exit_preclear_pending_since.pop(key, None)
+            return (
+                True,
+                "EXIT_PRE_CLEAR_BYPASS: "
+                f"Symbols={','.join(normalized)} | Canceled={canceled} | Remaining={remaining} | "
+                "Reason=INTRADAY_TIME_CRITICAL",
+            )
+
         timeout_sec = max(1, int(getattr(config, "EXIT_PRE_CLEAR_TIMEOUT_SECONDS", 30)))
         now = getattr(self.algorithm, "Time", None) if self.algorithm else None
         first_seen = self._exit_preclear_pending_since.get(key)
