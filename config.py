@@ -865,7 +865,7 @@ VASS_VIX_5D_PERIOD = 5  # Weekly VIX lookback (days)
 VASS_VIX_20D_PERIOD = 20  # Monthly VIX lookback (days)
 
 # Conviction Thresholds (% change triggers override of Macro)
-VASS_VIX_5D_BEARISH_THRESHOLD = 0.16  # VIX 5d change > +16% → BEARISH conviction
+VASS_VIX_5D_BEARISH_THRESHOLD = 0.20  # V10.30: reduce bearish stickiness during rebound transitions
 VASS_VIX_5D_BULLISH_THRESHOLD = -0.20  # VIX 5d change < -20% → BULLISH conviction
 VASS_VIX_20D_STRONG_BEARISH = 0.30  # VIX 20d change > +30% → STRONG BEARISH
 VASS_VIX_20D_STRONG_BULLISH = -0.20  # VIX 20d change < -20% → STRONG BULLISH
@@ -1389,8 +1389,8 @@ SPREAD_DW_LOW_VIX_MAX = 18.0
 SPREAD_DW_HIGH_VIX_MIN = 25.0
 SPREAD_DW_CAP_PANIC = 0.28  # VIX > 35
 SPREAD_DW_CAP_HIGH = 0.32  # 25 <= VIX < 35
-SPREAD_DW_CAP_ELEVATED = 0.36  # 18 <= VIX < 25
-SPREAD_DW_CAP_NORMAL = 0.42  # 13 <= VIX < 18
+SPREAD_DW_CAP_ELEVATED = 0.39  # V10.30: ease debit constructability in elevated-but-normalizing IV
+SPREAD_DW_CAP_NORMAL = 0.46  # V10.30: reduce false contract-quality starvation in calm rebounds
 SPREAD_DW_CAP_COMPRESSED = 0.48  # VIX < 13
 SPREAD_DW_ABSOLUTE_CAP = 2.00  # Max debit dollars on $5 spread in very calm IV
 SPREAD_DW_ABSOLUTE_CAP_VIX = 15.0
@@ -1441,7 +1441,9 @@ VASS_BULL_DEBIT_TREND_CONFIRM_ENABLED = True
 VASS_BULL_DEBIT_TREND_CONFIRM_MAX_VIX = 22.0  # Apply only in LOW/MEDIUM IV tape
 VASS_BULL_DEBIT_REQUIRE_MA20 = True
 VASS_BULL_DEBIT_REQUIRE_POSITIVE_DAY = True
-VASS_BULL_DEBIT_MIN_DAY_CHANGE_PCT = 0.20  # Require QQQ +0.20% vs session open
+VASS_BULL_DEBIT_MIN_DAY_CHANGE_PCT = (
+    0.08  # V10.30: permit gradual uptrend participation in low-vol tape
+)
 
 # V9.7: BEAR_PUT entry gate — block in RISK_ON (12.5% WR in 2017 full-year RCA)
 VASS_BEAR_PUT_REGIME_MAX = 64  # V10.29: further limit bearish spreads to weaker macro states
@@ -1911,7 +1913,7 @@ MICRO_DEBIT_FADE_VIX_MIN = 12.0  # Canonical: ATM fade minimum VIX
 INTRADAY_FADE_MIN_MOVE = 0.35  # Restore intraday participation while keeping noise filter
 # V10: VIX-tier move gates (replace single INTRADAY_FADE_MIN_MOVE for MICRO routing)
 MICRO_MIN_MOVE_LOW_VIX = 0.50  # Stricter for LOW VIX — filter theta-dominated noise
-MICRO_MIN_MOVE_MED_VIX = 0.40  # Standard move gate
+MICRO_MIN_MOVE_MED_VIX = 0.45  # V10.30: filter borderline momentum noise in medium VIX
 MICRO_MIN_MOVE_HIGH_VIX = 0.40  # Standard move gate
 INTRADAY_FADE_MAX_MOVE = 1.50  # V6.8: Was 1.20, don't block strong bull continuation
 INTRADAY_DEBIT_FADE_START = "10:00"  # Legacy alias (kept for compatibility)
@@ -2035,7 +2037,7 @@ MICRO_OTM_MOMENTUM_ENABLED = True  # Canonical OTM momentum switch
 MICRO_OTM_MOMENTUM_MAX_VIX = (
     35.0  # Trade OTM through high-VIX tier (22-35) with reduced size; block >35
 )
-MICRO_OTM_MOMENTUM_MIN_MOVE = 0.40  # Minimum QQQ move to emit OTM momentum confirmations
+MICRO_OTM_MOMENTUM_MIN_MOVE = 0.50  # V10.30: reduce fast-reversal OTM entries in weak tapes
 MICRO_USE_MACRO_RESOLVER = False  # Deprecated no-op: MICRO macro resolver path removed in V10.10
 MICRO_USE_MACRO_IN_STATE = (
     False  # Deprecated no-op: MICRO state no longer consumes macro score in V10.10
