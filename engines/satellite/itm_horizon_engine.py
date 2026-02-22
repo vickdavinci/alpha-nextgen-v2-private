@@ -201,6 +201,8 @@ class ITMHorizonEngine:
             )
 
         adx_min = float(getattr(config, "ITM_ADX_MIN", 15.0))
+        if direction == OptionDirection.CALL:
+            adx_min = max(adx_min, float(getattr(config, "ITM_CALL_ADX_MIN", adx_min)))
         if adx_value is None or adx_value < adx_min:
             self._count("ITM_ENGINE_Blocked_Trend")
             return self._fail(

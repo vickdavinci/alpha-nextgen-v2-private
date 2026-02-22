@@ -1871,8 +1871,8 @@ INTRADAY_CALL_BLOCK_VIX_MIN = 25.0  # V10.9: keep CALL stress block for elevated
 INTRADAY_CALL_BLOCK_REGIME_MAX = 55.0  # V10.9: reduce over-blocking in neutral-to-bull macro
 # Additional minimal CALL-protection gates (bear-risk controls without major architecture changes)
 CALL_GATE_MA20_ENABLED = True  # Block CALL entries when QQQ is below its 20-day SMA
-CALL_GATE_MA20_BYPASS_REGIME_MIN = 58.0  # V10.8: reduce CALL over-blocking in bull/neutral tapes
-CALL_GATE_MA20_BYPASS_VIX_MAX = 18.0  # Only bypass when fear is still low
+CALL_GATE_MA20_BYPASS_REGIME_MIN = 65.0  # V10.18: allow bypass only in stronger bull tapes
+CALL_GATE_MA20_BYPASS_VIX_MAX = 16.0  # V10.18: tighter low-fear requirement for CALL bypass
 CALL_GATE_MA20_BYPASS_SIZE_MULT = 0.90  # V10.8: lighter haircut when bypass is valid
 CALL_GATE_VIX_5D_RISING_ENABLED = True  # Block CALL entries when 5-day VIX trend is rising
 CALL_GATE_VIX_5D_RISING_PCT = 0.14  # Legacy fallback threshold
@@ -1973,8 +1973,8 @@ MICRO_DEBIT_FADE_TRAIL_TRIGGER = INTRADAY_DEBIT_FADE_TRAIL_TRIGGER
 MICRO_DEBIT_FADE_TRAIL_PCT = INTRADAY_DEBIT_FADE_TRAIL_PCT
 MICRO_DEBIT_FADE_DTE_EXIT = 0  # Let intraday force-exit manage same-day lifecycle
 MICRO_OTM_MOMENTUM_TARGET = 0.75
-MICRO_OTM_MOMENTUM_STOP = 0.35
-MICRO_OTM_MOMENTUM_TRAIL_TRIGGER = 0.35
+MICRO_OTM_MOMENTUM_STOP = 0.30
+MICRO_OTM_MOMENTUM_TRAIL_TRIGGER = 0.30
 MICRO_OTM_MOMENTUM_TRAIL_PCT = 0.50
 MICRO_OTM_MOMENTUM_DTE_EXIT = 0  # 0/1 DTE strategy closes via intraday force-exit
 
@@ -1994,8 +1994,8 @@ MICRO_OTM_TRAIL_TRIGGER_HIGH_VIX = 0.25
 MICRO_OTM_TRAIL_PCT_LOW_VIX = 0.35
 MICRO_OTM_TRAIL_PCT_MED_VIX = 0.45
 MICRO_OTM_TRAIL_PCT_HIGH_VIX = 0.50
-MICRO_OTM_SIZE_MULT_LOW_VIX = 1.00
-MICRO_OTM_SIZE_MULT_MED_VIX = 1.00
+MICRO_OTM_SIZE_MULT_LOW_VIX = 0.85
+MICRO_OTM_SIZE_MULT_MED_VIX = 0.85
 MICRO_OTM_SIZE_MULT_HIGH_VIX = 0.60
 MICRO_STAGNATION_EXIT_ENABLED = True  # V10.11: close flat MICRO positions that stall intraday
 MICRO_STAGNATION_MIN_HOLD_MINUTES = 60  # Require at least 60 minutes before stagnation check
@@ -2091,9 +2091,10 @@ ITM_SMA_BAND_PCT_LOW_VIX = 0.012
 ITM_SMA_BAND_PCT_MED_VIX = 0.015
 ITM_SMA_BAND_PCT_HIGH_VIX = 0.025
 ITM_PUT_MAX_REGIME = 70
-ITM_CALL_MIN_REGIME = 35
+ITM_CALL_MIN_REGIME = 50
 ITM_ADX_MIN = 20.0
-ITM_CALL_MAX_VIX = 24.0
+ITM_CALL_ADX_MIN = 22.0  # V10.18: stronger trend quality required for ITM CALL entries
+ITM_CALL_MAX_VIX = 22.0
 ITM_CALL_LOW_VIX_PREFERRED = 14.0
 ITM_REQUIRE_VIX20D_FALLING_FOR_CALL_WHEN_VIX_ABOVE_LOW = True
 ITM_PUT_MIN_VIX = 12.0
@@ -2264,6 +2265,8 @@ INTRADAY_MAX_CONTRACTS_MIN = 5
 INTRADAY_PENDING_ENTRY_STALE_MINUTES = (
     5  # Auto-clear orphan pending entry lock when no open broker order exists
 )
+INTRADAY_PENDING_ENTRY_FAST_CLEAR_SECONDS = 60
+INTRADAY_PENDING_ENTRY_CANCEL_MINUTES = 5  # V10.18: cancel stale live entry orders sooner
 PROTECTIVE_PUTS_MAX_CONTRACTS = (
     5  # V9.2 RCA: Cap contracts to prevent 10+ lot outsized bets in crisis
 )
