@@ -3059,7 +3059,7 @@ class AlphaNextGen(QCAlgorithm):
         V2.1.1: Intraday options force close at configured force-exit time.
 
         Forces close of all intraday mode options positions (0-2 DTE).
-        These must close 30 minutes before market close.
+        These must close before the final liquidity fade into the close.
         """
         # Skip during warmup
         if self.IsWarmingUp:
