@@ -6244,6 +6244,28 @@ class OptionsEngine:
                     )
                     num_spreads = max_by_margin
 
+        # V10.17: Cap credit spread sizing by theoretical max loss budget.
+        max_loss_cap_pct = float(getattr(config, "CREDIT_SPREAD_MAX_LOSS_PCT_EQUITY", 0.0))
+        if max_loss_cap_pct > 0 and width > 0:
+            max_loss_per_spread = max(0.0, (width - credit_received) * 100.0)
+            if max_loss_per_spread > 0:
+                max_loss_budget = float(portfolio_value) * max_loss_cap_pct
+                max_by_theoretical_loss = int(max_loss_budget / max_loss_per_spread)
+                if max_by_theoretical_loss < num_spreads:
+                    self.log(
+                        f"CREDIT_SIZING: MAX_LOSS_CAP | {num_spreads} -> {max_by_theoretical_loss} spreads | "
+                        f"Budget=${max_loss_budget:,.0f} ({max_loss_cap_pct:.2%} eq) | "
+                        f"PerSpreadMaxLoss=${max_loss_per_spread:,.0f}",
+                        trades_only=True,
+                    )
+                    num_spreads = max_by_theoretical_loss
+                if num_spreads <= 0:
+                    self.log(
+                        "CREDIT_SPREAD: Entry blocked - max-loss budget below one spread",
+                        trades_only=True,
+                    )
+                    return fail("R_CREDIT_MAX_LOSS_CAP")
+
         # V2.21: Floor at MIN_SPREAD_CONTRACTS
         min_contracts = getattr(config, "MIN_SPREAD_CONTRACTS", 2)
         if 0 < num_spreads < min_contracts:

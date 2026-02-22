@@ -917,7 +917,10 @@ CREDIT_SPREAD_DTE_MIN = 7  # Default credit spread DTE floor (used when no fallb
 CREDIT_SPREAD_DTE_MAX = 30  # Default credit spread DTE ceiling
 CREDIT_SPREAD_FALLBACK_TO_DEBIT = True  # V6.10 P3: Fall back to debit when credit fails
 CREDIT_SPREAD_PROFIT_TARGET = 0.50  # Exit at 50% of max profit
-CREDIT_SPREAD_STOP_MULTIPLIER = 0.40  # V10: tightened from 0.60 (R:R 0.45→0.67)
+CREDIT_SPREAD_STOP_MULTIPLIER = 0.35  # V10.17: trim left-tail bleed on failed credit spreads
+CREDIT_SPREAD_MAX_LOSS_PCT_EQUITY = (
+    0.0125  # V10.17: cap theoretical max-loss sizing to 1.25% equity
+)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg delta range (OTM)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.45  # V6.13 OPT: Improve credit spread constructability
 CREDIT_SPREAD_SHORT_LEG_DELTA_MAX_HIGH_VIX = 0.35  # V10.10: tighten short leg delta in high-IV tape
@@ -1209,6 +1212,7 @@ BEAR_PUT_ASSIGNMENT_HARD_BLOCK_REGIME_MAX = (
     40.0  # V10.10: only enforce assignment gate in deep risk-off regime
 )
 VASS_BEAR_FALLBACK_MAX_REGIME = 40.0  # V10.9: fallback only in clearly weak macro regimes
+VASS_BEAR_FALLBACK_MIN_VIX = 20.0  # V10.17: require elevated fear before bearish credit fallback
 
 # Contract Selection
 # Options chain filter (must cover BOTH Intraday 0-2 DTE AND Swing 5-45 DTE)
@@ -1470,9 +1474,7 @@ VASS_LOSS_BREAKER_PAUSE_DAYS = 1
 # In elevated VIX, do not allow VASS bullish conviction to force trades from NEUTRAL macro.
 VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX = 18.0
 VASS_BULL_PROFILE_BEARISH_BLOCK_ENABLED = True
-VASS_BULL_PROFILE_REGIME_MIN = (
-    70.0  # Strong-bull profile threshold for blocking bearish VASS entries
-)
+VASS_BULL_PROFILE_REGIME_MIN = 65.0  # V10.17: block bearish VASS earlier in strong bull profile
 # V6.1: Removed SPREAD_REGIME_EXIT_BULL/BEAR - legacy logic conflicted with conviction-based entry
 # Spreads now exit via: STOP_LOSS, PROFIT_TARGET, DTE_EXIT, NEUTRALITY_EXIT
 

@@ -73,6 +73,10 @@ class AlphaNextGen(QCAlgorithm):
     _set_intraday_lane_cooldown = MainOptionsMixin._set_intraday_lane_cooldown
     _get_intraday_lane_cooldown_until = MainOptionsMixin._get_intraday_lane_cooldown_until
     _is_intraday_lane_cooldown_active = MainOptionsMixin._is_intraday_lane_cooldown_active
+    _get_intraday_retry_state = MainOptionsMixin._get_intraday_retry_state
+    _clear_intraday_retry = MainOptionsMixin._clear_intraday_retry
+    _queue_intraday_retry = MainOptionsMixin._queue_intraday_retry
+    _consume_intraday_retry = MainOptionsMixin._consume_intraday_retry
     _select_intraday_option_contract = MainOptionsMixin._select_intraday_option_contract
     _scan_options_signals = MainOptionsMixin._scan_options_signals
     _check_spread_exit = MainOptionsMixin._check_spread_exit
@@ -5786,6 +5790,32 @@ class AlphaNextGen(QCAlgorithm):
         # One opposite-route fallback attempt (quality-first, bounded).
         if allow_opposite_fallback:
             fallback_strategy = _opposite_strategy(strategy)
+            if fallback_strategy is not None:
+                if (
+                    strategy == SpreadStrategy.BEAR_PUT_DEBIT
+                    and fallback_strategy == SpreadStrategy.BEAR_CALL_CREDIT
+                ):
+                    if not bool(
+                        getattr(config, "VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT", False)
+                    ):
+                        rejection_code = "R_BEAR_FALLBACK_DISABLED"
+                        self.Log(
+                            f"{fallback_log_prefix}: Skip opposite {fallback_strategy.value} | "
+                            f"Policy disabled"
+                        )
+                        fallback_strategy = None
+                    else:
+                        max_regime = float(getattr(config, "VASS_BEAR_FALLBACK_MAX_REGIME", 40.0))
+                        min_vix = float(getattr(config, "VASS_BEAR_FALLBACK_MIN_VIX", 0.0))
+                        vix_now = float(getattr(self, "_current_vix", 0.0) or 0.0)
+                        if regime_score > max_regime or (min_vix > 0 and vix_now < min_vix):
+                            rejection_code = "R_BEAR_FALLBACK_POLICY"
+                            self.Log(
+                                f"{fallback_log_prefix}: Skip opposite {fallback_strategy.value} | "
+                                f"Regime={regime_score:.1f}>{max_regime:.1f} or VIX={vix_now:.1f}<{min_vix:.1f}"
+                            )
+                            fallback_strategy = None
+
             if fallback_strategy is not None:
                 fallback_is_credit = self.options_engine.is_credit_strategy(fallback_strategy)
                 fallback_right = self._strategy_option_right(fallback_strategy)
