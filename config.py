@@ -871,7 +871,7 @@ VASS_VIX_20D_PERIOD = 20  # Monthly VIX lookback (days)
 
 # Conviction Thresholds (% change triggers override of Macro)
 VASS_VIX_5D_BEARISH_THRESHOLD = (
-    0.18  # V10.33: unwind bearish conviction earlier on rebound transitions
+    0.20  # V10.35: restore bearish conviction floor after V10.33 overshoot
 )
 VASS_VIX_5D_BULLISH_THRESHOLD = -0.20  # VIX 5d change < -20% → BULLISH conviction
 VASS_VIX_20D_STRONG_BEARISH = 0.30  # VIX 20d change > +30% → STRONG BEARISH
@@ -2047,7 +2047,7 @@ INTRADAY_DEBIT_MOMENTUM_ENABLED = (
 )
 MICRO_ENTRY_ENGINE_ENABLED = True  # V10.10: route MICRO gates through dedicated engine
 INTRADAY_DEBIT_FADE_ENABLED = True  # Legacy alias
-MICRO_DEBIT_FADE_ENABLED = True  # Canonical ATM fade switch
+MICRO_DEBIT_FADE_ENABLED = False  # V10.35: disable persistent-loss fade path pending redesign
 MICRO_OTM_MOMENTUM_ENABLED = True  # Canonical OTM momentum switch
 MICRO_OTM_MOMENTUM_MAX_VIX = (
     35.0  # Trade OTM through high-VIX tier (22-35) with reduced size; block >35
@@ -2056,7 +2056,7 @@ MICRO_OTM_MOMENTUM_MIN_MOVE = 0.50  # V10.30: reduce fast-reversal OTM entries i
 MICRO_OTM_MOMENTUM_MIN_MOVE_CALL = 0.55  # V10.33: require stronger confirmation for CALL momentum
 MICRO_OTM_MOMENTUM_MIN_MOVE_PUT = 0.60  # V10.33: require stronger confirmation for PUT momentum
 MICRO_OTM_PUT_MAX_MACRO_SCORE = (
-    54.0  # V10.34: skip bearish OTM momentum unless macro backdrop is clearly risk-off
+    45.0  # V10.35: allow bearish OTM only in clearly risk-off macro conditions
 )
 MICRO_OTM_BULLISH_CONFIRM_SCORE_BUFFER = (
     4.0  # V10.33: CALL momentum needs higher micro-score than baseline confirm gate
