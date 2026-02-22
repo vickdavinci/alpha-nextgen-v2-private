@@ -13,10 +13,10 @@ import json
 import os
 import sys
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Iterable, List, Tuple
+
+import requests
 
 DEFAULT_PROJECT_ID = 27678023
 CREDENTIALS_FILE = Path.home() / ".lean" / "credentials"
@@ -36,37 +36,29 @@ def make_auth_headers(api_token: str) -> Tuple[str, dict]:
     return digest, {"Timestamp": ts, "Content-Type": "application/json"}
 
 
-def qc_post(
-    endpoint: str,
-    body: dict,
-    user_id: str,
-    api_token: str,
-) -> dict:
+def qc_post(endpoint: str, body: dict, user_id: str, api_token: str) -> dict:
     digest, headers = make_auth_headers(api_token)
-    req = urllib.request.Request(
-        url=f"{API_BASE}/{endpoint}",
-        data=json.dumps(body).encode("utf-8"),
+    response = requests.post(
+        f"{API_BASE}/{endpoint}",
+        json=body,
         headers=headers,
-        method="POST",
+        auth=(user_id, digest),
+        timeout=60,
     )
-    password_mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
-    password_mgr.add_password(None, f"{API_BASE}/", user_id, digest)
-    auth_handler = urllib.request.HTTPBasicAuthHandler(password_mgr)
-    opener = urllib.request.build_opener(auth_handler)
     try:
-        with opener.open(req, timeout=60) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as err:
-        detail = err.read().decode("utf-8", errors="ignore")
-        raise RuntimeError(f"HTTP {err.code}: {detail}") from err
+        data = response.json()
+    except Exception:
+        data = {}
+    if response.status_code >= 400:
+        detail = response.text.strip()
+        if data:
+            detail = json.dumps(data)
+        raise RuntimeError(f"HTTP {response.status_code}: {detail}")
+    return data
 
 
 def discover_files(workspace: Path) -> List[Path]:
-    files = sorted(workspace.rglob("*.py"))
-    cfg = workspace / "config.json"
-    if cfg.exists():
-        files.append(cfg)
-    return files
+    return sorted(workspace.rglob("*.py"))
 
 
 def push_file(
