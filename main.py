@@ -1206,12 +1206,15 @@ class AlphaNextGen(QCAlgorithm):
         """Resolve today's primary-session close time for SPY exchange hours."""
         try:
             exchange_hours = self.Securities[self.spy].Exchange.Hours
-            prev_close = exchange_hours.GetPreviousMarketClose(self.Time, False)
-            if prev_close.date() == self.Time.date():
-                return prev_close
             next_close = exchange_hours.GetNextMarketClose(self.Time, False)
             if next_close.date() == self.Time.date():
                 return next_close
+            # Compatibility path: some QC engine builds can return next-session close.
+            # Re-anchor to today's midnight and ask for the next close from there.
+            today_anchor = datetime(self.Time.year, self.Time.month, self.Time.day)
+            anchor_close = exchange_hours.GetNextMarketClose(today_anchor, False)
+            if anchor_close.date() == self.Time.date():
+                return anchor_close
         except Exception:
             return None
         return None
