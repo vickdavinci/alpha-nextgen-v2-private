@@ -89,15 +89,21 @@ class AlphaNextGen(QCAlgorithm):
         # =====================================================================
         # STEP 1: Basic Setup
         # =====================================================================
-        # Stage 1: 1-day test (Jan 2, 2024 - first trading day)
-        # Change these dates for different test stages:
-        # Stage 2: SetStartDate(2024, 1, 1), SetEndDate(2024, 1, 31) - 30 days
-        # Stage 3: SetStartDate(2024, 1, 1), SetEndDate(2024, 3, 31) - 3 months
-        # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
-        # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
-        self.SetStartDate(2024, 7, 1)
-        self.SetEndDate(2024, 9, 30)  # Smoke window: Jul-Sep 2024
+        # Full-year backtest window with optional year override via QC parameter.
+        # Example: --parameter backtest_year 2023
+        backtest_year = 2024
+        backtest_year_param = str(self.GetParameter("backtest_year") or "").strip()
+        if backtest_year_param:
+            try:
+                parsed_year = int(backtest_year_param)
+                if 2000 <= parsed_year <= 2100:
+                    backtest_year = parsed_year
+            except (TypeError, ValueError):
+                pass
+        self.SetStartDate(backtest_year, 1, 1)
+        self.SetEndDate(backtest_year, 12, 31)
         self.SetCash(config.INITIAL_CAPITAL)  # Seed capital from config
+        self.Log(f"INIT: BacktestYear={backtest_year}")
 
         # All times are Eastern
         self.SetTimeZone("America/New_York")

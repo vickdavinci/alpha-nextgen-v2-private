@@ -1177,6 +1177,15 @@ class MicroRegimeEngine:
                             None,
                             f"MICRO_OTM_GATE_BLOCK: weak bullish score {micro_score:.0f} < {score_floor:.0f}",
                         )
+                    macro_score_floor = float(
+                        getattr(config, "MICRO_OTM_CALL_MIN_MACRO_SCORE", 0.0)
+                    )
+                    if macro_regime_score < macro_score_floor:
+                        return (
+                            IntradayStrategy.NO_TRADE,
+                            None,
+                            f"MICRO_OTM_GATE_BLOCK: macro {macro_regime_score:.0f} < {macro_score_floor:.0f} for CALL",
+                        )
                 elif direction == OptionDirection.PUT:
                     min_move = float(getattr(config, "MICRO_OTM_MOMENTUM_MIN_MOVE_PUT", min_move))
                     score_ceiling = self._resolve_micro_bearish_confirm_threshold(
@@ -3164,9 +3173,11 @@ class OptionsEngine:
         Returns:
             "BULLISH", "BEARISH", or "NEUTRAL"
         """
-        if macro_regime_score > 60:
+        bullish_min = float(getattr(config, "MACRO_DIRECTION_BULLISH_MIN", 55.0))
+        bearish_max = float(getattr(config, "MACRO_DIRECTION_BEARISH_MAX", 45.0))
+        if macro_regime_score > bullish_min:
             return "BULLISH"
-        elif macro_regime_score < 40:
+        elif macro_regime_score < bearish_max:
             return "BEARISH"
         else:
             return "NEUTRAL"

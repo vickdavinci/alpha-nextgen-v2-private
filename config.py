@@ -1496,7 +1496,9 @@ VASS_LOSS_BREAKER_ENABLED = True
 VASS_LOSS_BREAKER_THRESHOLD = 3
 VASS_LOSS_BREAKER_PAUSE_DAYS = 1
 # In elevated VIX, do not allow VASS bullish conviction to force trades from NEUTRAL macro.
-VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX = 18.0
+VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX = 20.0
+MACRO_DIRECTION_BULLISH_MIN = 55.0
+MACRO_DIRECTION_BEARISH_MAX = 45.0
 VASS_BULL_PROFILE_BEARISH_BLOCK_ENABLED = True
 VASS_BULL_PROFILE_REGIME_MIN = 72.0  # V10.22: only block bearish VASS in stronger bull regimes
 VASS_BULL_TRANSITION_MIN_REGIME = 50.0  # Allow only strong recovery overrides below default floor
@@ -2072,6 +2074,9 @@ MICRO_OTM_MOMENTUM_MAX_VIX = (
 MICRO_OTM_MOMENTUM_MIN_MOVE = 0.50  # V10.30: reduce fast-reversal OTM entries in weak tapes
 MICRO_OTM_MOMENTUM_MIN_MOVE_CALL = 0.55  # V10.33: require stronger confirmation for CALL momentum
 MICRO_OTM_MOMENTUM_MIN_MOVE_PUT = 0.60  # V10.33: require stronger confirmation for PUT momentum
+MICRO_OTM_CALL_MIN_MACRO_SCORE = (
+    45.0  # V10.39: require at least neutralizing macro strength for bullish OTM momentum
+)
 MICRO_OTM_PUT_MAX_MACRO_SCORE = (
     45.0  # V10.35: allow bearish OTM only in clearly risk-off macro conditions
 )
