@@ -461,6 +461,45 @@ def _get_observability_prefix(config_attr: str, default_prefix: str) -> str:
     return safe or default_prefix
 
 
+def _sanitize_run_suffix(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "")).strip("_")
+
+
+def _extract_backtest_run_label(backtest: dict) -> str:
+    """Best-effort run_label extraction from QC backtest payload."""
+    params = backtest.get("parameters")
+    if isinstance(params, dict):
+        label = str(params.get("run_label", "") or "").strip()
+        if label:
+            return label
+    if isinstance(params, list):
+        for item in params:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "") or item.get("key", "") or "").strip().lower()
+            if name != "run_label":
+                continue
+            value = str(item.get("value", "") or "").strip()
+            if value:
+                return value
+    return ""
+
+
+def _build_run_suffix_candidates(run_name: str, backtest: dict, year: int) -> list:
+    """Candidate run suffixes used by algorithm ObjectStore key builder."""
+    candidates = []
+    for raw in (
+        run_name,
+        str(backtest.get("name", "") or ""),
+        _extract_backtest_run_label(backtest),
+        f"year_{year}",
+    ):
+        safe = _sanitize_run_suffix(raw)
+        if safe and safe not in candidates:
+            candidates.append(safe)
+    return candidates
+
+
 def pull_observability_artifacts(run_name: str, backtest: dict, output_dir: Path) -> dict:
     """
     Pull structured telemetry artifacts from QC Object Store.
@@ -473,19 +512,32 @@ def pull_observability_artifacts(run_name: str, backtest: dict, output_dir: Path
         return results
 
     year = infer_backtest_year(run_name, backtest)
-    run_safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(run_name or "")).strip("_") or "run"
+    run_safe = _sanitize_run_suffix(run_name) or "run"
+    run_suffix_candidates = _build_run_suffix_candidates(run_name, backtest, year)
 
     print("\nFetching observability artifacts from Object Store...")
     for label, config_attr, default_prefix in OBSERVABILITY_ARTIFACT_SPECS:
         prefix = _get_observability_prefix(config_attr, default_prefix)
-        key = f"{prefix}__{run_safe}_{year}.csv"
-        cmd = ["lean", "cloud", "object-store", "get", key, "--destination-folder", str(output_dir)]
-        proc = subprocess.run(cmd, capture_output=True, text=True)
-        if proc.returncode != 0:
-            continue
-
-        downloaded = output_dir / key
-        if not downloaded.exists():
+        downloaded = None
+        for run_suffix in run_suffix_candidates:
+            key = f"{prefix}__{run_suffix}_{year}.csv"
+            cmd = [
+                "lean",
+                "cloud",
+                "object-store",
+                "get",
+                key,
+                "--destination-folder",
+                str(output_dir),
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                continue
+            maybe_file = output_dir / key
+            if maybe_file.exists():
+                downloaded = maybe_file
+                break
+        if downloaded is None:
             continue
 
         target = output_dir / f"{run_safe}_{label}.csv"

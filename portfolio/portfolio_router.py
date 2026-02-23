@@ -271,15 +271,24 @@ class PortfolioRouter:
                 try:
                     event_fn = getattr(self.algorithm, "_record_order_lifecycle_event", None)
                     if callable(event_fn):
+                        try:
+                            qty = int(getattr(ticket, "Quantity", 0) or 0)
+                        except Exception:
+                            qty = 0
+                        try:
+                            trace_fn = getattr(self.algorithm, "_extract_trace_id_from_tag", None)
+                            trace_id = str(trace_fn(clean_tag) or "") if callable(trace_fn) else ""
+                        except Exception:
+                            trace_id = ""
                         event_fn(
                             status="SUBMITTED",
                             order_id=order_id,
                             symbol=str(getattr(ticket, "Symbol", "")),
-                            quantity=0,
+                            quantity=qty,
                             fill_price=0.0,
-                            order_type="",
+                            order_type=str(getattr(ticket, "OrderType", "") or ""),
                             order_tag=clean_tag,
-                            trace_id="",
+                            trace_id=trace_id,
                             message="",
                             source="ROUTER_SUBMIT",
                         )

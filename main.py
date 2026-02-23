@@ -383,6 +383,7 @@ class AlphaNextGen(QCAlgorithm):
             "ITM": {},
             "OTHER": {},
         }
+        self._recent_router_rejections: List[Any] = []
         self._diag_vass_reject_reason_counts = {}
         self._diag_vass_mfe_peak_max_profit_pct = 0.0
         self._diag_vass_mfe_t1_hits = 0
@@ -416,6 +417,7 @@ class AlphaNextGen(QCAlgorithm):
         self._regime_overlay_state = "STABLE"
         self._regime_overlay_candidate_state = "STABLE"
         self._regime_overlay_candidate_streak = 0
+        self._regime_detector_sample_seq = 0
         self._regime_detector_last_update_key = None
         self._regime_detector_last_raw = {}
         self._regime_decision_records: List[Dict[str, Any]] = []
@@ -445,6 +447,8 @@ class AlphaNextGen(QCAlgorithm):
         self._order_tag_resolve_logged_ids = set()
         # Throttled intraday ObjectStore persistence marker (live-mode safety).
         self._last_state_persist_at = None
+        # Daily guard to keep regime proxy rolling windows on day cadence.
+        self._daily_proxy_window_last_update: Dict[str, Any] = {}
 
         # V2.6 Bug #14: Exit order retry tracking
         self._pending_exit_orders = {}
@@ -984,6 +988,13 @@ class AlphaNextGen(QCAlgorithm):
                 self.TimeRules.At(hour, minute),
                 self._refresh_intraday_regime_score,
             )
+        # Periodic observability checkpoint flush so runtime errors don't wipe full-day telemetry.
+        for hour, minute in [(11, 0), (13, 0), (15, 0)]:
+            self.Schedule.On(
+                self.DateRules.EveryDay(),
+                self.TimeRules.At(hour, minute),
+                self._on_observability_checkpoint,
+            )
         # #8 fix: intraday reconciliation checkpoints (zombie/orphan cleanup)
         # Add late-day checkpoints so intraday ghost streak policy can converge
         # before close instead of deferring to next SOD.
@@ -1120,15 +1131,25 @@ class AlphaNextGen(QCAlgorithm):
         Called once per minute, but only updates at end of day bar.
         For intraday, uses current price as proxy for close.
         """
-        # Get current prices (use close for historical, current for live)
-        if data.Bars.ContainsKey(self.spy):
-            self.spy_closes.Add(self.Securities[self.spy].Close)
-        if data.Bars.ContainsKey(self.rsp):
-            self.rsp_closes.Add(self.Securities[self.rsp].Close)
-        if data.Bars.ContainsKey(self.hyg):
-            self.hyg_closes.Add(self.Securities[self.hyg].Close)
-        if data.Bars.ContainsKey(self.ief):
-            self.ief_closes.Add(self.Securities[self.ief].Close)
+        # Keep macro proxy rolling windows on day cadence so regime lookbacks remain
+        # comparable to daily-tuned thresholds and factors.
+        day_key = self.Time.date()
+
+        def _append_daily_proxy(symbol: Symbol, window: RollingWindow[float], key: str) -> None:
+            if not data.Bars.ContainsKey(symbol):
+                return
+            # Use late-session bar as daily-close proxy for day-scale regime factors.
+            if self.Time.hour < 15 or (self.Time.hour == 15 and self.Time.minute < 55):
+                return
+            if self._daily_proxy_window_last_update.get(key) == day_key:
+                return
+            window.Add(float(self.Securities[symbol].Close))
+            self._daily_proxy_window_last_update[key] = day_key
+
+        _append_daily_proxy(self.spy, self.spy_closes, "SPY")
+        _append_daily_proxy(self.rsp, self.rsp_closes, "RSP")
+        _append_daily_proxy(self.hyg, self.hyg_closes, "HYG")
+        _append_daily_proxy(self.ief, self.ief_closes, "IEF")
 
         # V2.1: Update VIX value for MR regime filter
         if data.ContainsKey(self.vix):
@@ -1145,6 +1166,17 @@ class AlphaNextGen(QCAlgorithm):
             self.soxl_volumes.Add(float(data.Bars[self.soxl].Volume))
         if data.Bars.ContainsKey(self.spxl):
             self.spxl_volumes.Add(float(data.Bars[self.spxl].Volume))
+
+    def _on_observability_checkpoint(self) -> None:
+        """Periodic telemetry checkpoint to persist RCA artifacts mid-session."""
+        if self.IsWarmingUp:
+            return
+        self._record_regime_timeline_event(source="PERIODIC_CHECKPOINT")
+        self._flush_regime_decision_artifact()
+        self._flush_regime_timeline_artifact()
+        self._flush_signal_lifecycle_artifact()
+        self._flush_router_rejection_artifact()
+        self._flush_order_lifecycle_artifact()
 
     # =========================================================================
     # SCHEDULED EVENT HANDLERS
@@ -3147,6 +3179,7 @@ class AlphaNextGen(QCAlgorithm):
         self._last_regime_score = regime_state.smoothed_score
         self._last_regime_momentum_roc = float(getattr(regime_state, "momentum_roc", 0.0) or 0.0)
         self._last_regime_vix_5d_change = float(getattr(regime_state, "vix_5d_change", 0.0) or 0.0)
+        self._regime_detector_sample_seq = int(getattr(self, "_regime_detector_sample_seq", 0)) + 1
 
         # V6.0: Update Startup Gate (time-based, no regime dependency)
         if not self.startup_gate.is_fully_armed():
@@ -3305,6 +3338,7 @@ class AlphaNextGen(QCAlgorithm):
         self._spread_ghost_flat_streak_by_key.clear()
         self._spread_ghost_last_log_by_key.clear()
         self._last_intraday_dte_routing_log_by_key.clear()
+        self._recent_router_rejections.clear()
         self._diag_router_reject_reason_counts.clear()
         for _store in self._diag_router_reject_reason_counts_by_engine.values():
             _store.clear()
@@ -4642,7 +4676,9 @@ class AlphaNextGen(QCAlgorithm):
         try:
             rejects = self.portfolio_router.get_last_rejections()
         except Exception:
+            self._recent_router_rejections = []
             return
+        self._recent_router_rejections = list(rejects)
         if not rejects:
             return
         for rej in rejects:
@@ -4671,6 +4707,10 @@ class AlphaNextGen(QCAlgorithm):
             self.portfolio_router.clear_last_rejections()
         except Exception:
             pass
+
+    def _get_recent_router_rejections(self) -> List[Any]:
+        """Last captured router rejection snapshot for trace-level attribution."""
+        return list(getattr(self, "_recent_router_rejections", []) or [])
 
     def _record_router_rejection_event(
         self,
@@ -8012,6 +8052,9 @@ class AlphaNextGen(QCAlgorithm):
                 getattr(regime_state, "vix_5d_change", 0.0) or 0.0
             )
             self._intraday_regime_updated_at = self.Time
+            self._regime_detector_sample_seq = (
+                int(getattr(self, "_regime_detector_sample_seq", 0)) + 1
+            )
             # Keep one refresh log per day to preserve RCA signal while reducing volume.
             refresh_day = self.Time.strftime("%Y-%m-%d")
             if getattr(self, "_last_regime_refresh_log_day", None) != refresh_day:
@@ -8074,9 +8117,11 @@ class AlphaNextGen(QCAlgorithm):
     def _update_regime_detector_state(
         self,
         effective: float,
+        detector_score: float,
         delta: float,
         momentum_roc: float,
         vix_5d_change: float,
+        sample_seq: int,
     ) -> Dict[str, Any]:
         """Compute transition raw signals and advance base/overlay detector state."""
         recovery_delta_min = float(getattr(config, "REGIME_TRANSITION_RECOVERY_DELTA_MIN", 2.0))
@@ -8106,7 +8151,7 @@ class AlphaNextGen(QCAlgorithm):
             and vix_5d_change >= deterioration_vix_5d_min
         )
         raw_ambiguous = (
-            ambiguous_low <= effective <= ambiguous_high
+            ambiguous_low <= detector_score <= ambiguous_high
             and abs(delta) <= ambiguous_delta_max
             and not raw_recovery
             and not raw_deterioration
@@ -8119,9 +8164,9 @@ class AlphaNextGen(QCAlgorithm):
         elif raw_ambiguous:
             overlay_candidate = "AMBIGUOUS"
 
-        now_key = self.Time.strftime("%Y-%m-%d %H:%M")
+        now_key = f"SEQ:{int(sample_seq)}"
         if self._regime_detector_last_update_key != now_key:
-            base_candidate = self._evaluate_base_regime_candidate(effective)
+            base_candidate = self._evaluate_base_regime_candidate(detector_score)
             if bool(getattr(config, "REGIME_BASE_STATE_MACHINE_ENABLED", True)):
                 (
                     self._regime_base_state,
@@ -8159,7 +8204,9 @@ class AlphaNextGen(QCAlgorithm):
             "raw_deterioration": bool(raw_deterioration),
             "raw_ambiguous": bool(raw_ambiguous),
             "overlay_candidate": overlay_candidate,
-            "base_candidate": self._evaluate_base_regime_candidate(effective),
+            "base_candidate": self._evaluate_base_regime_candidate(detector_score),
+            "detector_score": float(detector_score),
+            "sample_seq": int(sample_seq),
         }
         return dict(self._regime_detector_last_raw)
 
@@ -8172,6 +8219,7 @@ class AlphaNextGen(QCAlgorithm):
             float(intraday_score_raw) if intraday_score_raw is not None else float(eod_score)
         )
         delta = float(intraday_score - eod_score)
+        detector_score = float(intraday_score if intraday_score_raw is not None else effective)
         momentum_roc = getattr(self, "_intraday_regime_momentum_roc", None)
         if momentum_roc is None:
             momentum_roc = getattr(self, "_last_regime_momentum_roc", 0.0)
@@ -8183,9 +8231,11 @@ class AlphaNextGen(QCAlgorithm):
 
         raw = self._update_regime_detector_state(
             effective=effective,
+            detector_score=detector_score,
             delta=delta,
             momentum_roc=momentum_roc,
             vix_5d_change=vix_5d_change,
+            sample_seq=int(getattr(self, "_regime_detector_sample_seq", 0)),
         )
         transition_overlay = str(getattr(self, "_regime_overlay_state", "STABLE")).upper()
         strong_recovery = transition_overlay == "RECOVERY"
@@ -8199,6 +8249,7 @@ class AlphaNextGen(QCAlgorithm):
 
         return {
             "effective_score": float(effective),
+            "detector_score": float(detector_score),
             "eod_score": float(eod_score),
             "intraday_score": float(intraday_score),
             "delta": float(delta),
@@ -8215,6 +8266,9 @@ class AlphaNextGen(QCAlgorithm):
             "raw_ambiguous": bool(raw.get("raw_ambiguous", False)),
             "overlay_candidate": str(raw.get("overlay_candidate", "STABLE")).upper(),
             "base_candidate": str(raw.get("base_candidate", "NEUTRAL")).upper(),
+            "sample_seq": int(
+                raw.get("sample_seq", getattr(self, "_regime_detector_sample_seq", 0))
+            ),
         }
 
     def _record_regime_decision_event(
@@ -8308,6 +8362,7 @@ class AlphaNextGen(QCAlgorithm):
                 "time": self.Time.strftime("%Y-%m-%d %H:%M:%S"),
                 "source": str(source or ""),
                 "effective_score": f"{float(ctx.get('effective_score', 0.0)):.2f}",
+                "detector_score": f"{float(ctx.get('detector_score', ctx.get('intraday_score', 0.0))):.2f}",
                 "eod_score": f"{float(ctx.get('eod_score', 0.0)):.2f}",
                 "intraday_score": f"{float(ctx.get('intraday_score', 0.0)):.2f}",
                 "delta": f"{float(ctx.get('delta', 0.0)):+.2f}",
@@ -8325,6 +8380,7 @@ class AlphaNextGen(QCAlgorithm):
                 "ambiguous": "1" if bool(ctx.get("ambiguous", False)) else "0",
                 "base_candidate": str(ctx.get("base_candidate", "NEUTRAL")),
                 "overlay_candidate": str(ctx.get("overlay_candidate", "STABLE")),
+                "sample_seq": str(int(ctx.get("sample_seq", 0))),
                 "transition_score": f"{float(ctx.get('transition_score', ctx.get('effective_score', 0.0))):.2f}",
             },
         )
@@ -8436,6 +8492,7 @@ class AlphaNextGen(QCAlgorithm):
                 "time",
                 "source",
                 "effective_score",
+                "detector_score",
                 "eod_score",
                 "intraday_score",
                 "delta",
@@ -8451,6 +8508,7 @@ class AlphaNextGen(QCAlgorithm):
                 "ambiguous",
                 "base_candidate",
                 "overlay_candidate",
+                "sample_seq",
                 "transition_score",
             ],
             rows=self._regime_timeline_records,

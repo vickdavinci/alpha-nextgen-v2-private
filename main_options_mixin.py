@@ -856,12 +856,34 @@ class MainOptionsMixin:
                             direction=intraday_direction,
                         )
                         if not preflight_ok:
+                            blocked_direction = intraday_direction
                             intraday_direction = None
                             detail = str(preflight_detail or "").strip()
                             signal_reason = (
                                 f"{preflight_code}: {detail}" if detail else str(preflight_code)
                             )
                             self.Log(f"INTRADAY: Blocked - {signal_reason}")
+                            drop_code = self._canonical_options_reason_code(
+                                str(preflight_code or "E_PREFLIGHT_BLOCK")
+                            )
+                            drop_logged = self._log_intraday_signal_dropped(
+                                signal_id=intraday_signal_id,
+                                code=drop_code,
+                                reason=signal_reason,
+                                retry_hint="None",
+                                direction=blocked_direction,
+                                strategy=candidate_strategy,
+                                contract_symbol="NONE",
+                                validation_detail=detail,
+                            )
+                            if drop_logged:
+                                self._diag_intraday_dropped_count += 1
+                                self._inc_intraday_engine_counter(
+                                    self._diag_intraday_dropped_by_engine,
+                                    candidate_strategy,
+                                )
+                                self._inc_micro_dte_counter(self._diag_micro_dte_dropped, None)
+                                self._record_micro_drop_reason_dte(drop_code, None)
                         elif self._mark_intraday_signal_event("CANDIDATE", intraday_signal_id):
                             self._diag_intraday_candidate_count += 1
                             self._inc_intraday_engine_counter(
@@ -1054,7 +1076,7 @@ class MainOptionsMixin:
                         self._clear_intraday_retry("MICRO")
                         # Emit explicit router rejection telemetry for this trace if execution blocked.
                         if intraday_trace_id:
-                            for rej in self.portfolio_router.get_last_rejections():
+                            for rej in self._get_recent_router_rejections():
                                 if rej.trace_id == intraday_trace_id and rej.source_tag.startswith(
                                     "MICRO"
                                 ):
@@ -1208,6 +1230,11 @@ class MainOptionsMixin:
             and not itm_intraday_cooldown_active
             and not itm_weekend_cutoff_active
         ):
+            itm_signal_id = (
+                f"ITM-{self.Time.strftime('%Y%m%d-%H%M')}-"
+                f"{self._diag_intraday_candidate_count + 1}"
+            )
+            itm_reason = itm_reason or "EXPLICIT_ITM_SCAN"
             (
                 itm_preflight_ok,
                 itm_preflight_code,
@@ -1222,12 +1249,26 @@ class MainOptionsMixin:
                     f"{itm_preflight_code}: {detail}" if detail else str(itm_preflight_code)
                 )
                 self.Log(f"INTRADAY: Blocked - {block_reason}")
-            else:
-                itm_signal_id = (
-                    f"ITM-{self.Time.strftime('%Y%m%d-%H%M')}-"
-                    f"{self._diag_intraday_candidate_count + 1}"
+                drop_code = self._canonical_options_reason_code(
+                    str(itm_preflight_code or "E_PREFLIGHT_BLOCK")
                 )
-                itm_reason = itm_reason or "EXPLICIT_ITM_SCAN"
+                drop_logged = self._log_intraday_signal_dropped(
+                    signal_id=itm_signal_id,
+                    code=drop_code,
+                    reason=f"ITM_ENGINE_EXPLICIT: {block_reason}",
+                    retry_hint="None",
+                    direction=itm_dir,
+                    strategy=IntradayStrategy.ITM_MOMENTUM,
+                    contract_symbol="NONE",
+                    validation_detail=detail,
+                )
+                if drop_logged:
+                    self._diag_intraday_dropped_count += 1
+                    self._inc_intraday_engine_counter(
+                        self._diag_intraday_dropped_by_engine,
+                        IntradayStrategy.ITM_MOMENTUM,
+                    )
+            else:
                 if self._mark_intraday_signal_event("CANDIDATE", itm_signal_id):
                     self._diag_intraday_candidate_count += 1
                     self._inc_intraday_engine_counter(
@@ -1335,7 +1376,7 @@ class MainOptionsMixin:
                         self.portfolio_router.receive_signal(itm_signal)
                         self._process_immediate_signals()
                         if itm_trace_id:
-                            for rej in self.portfolio_router.get_last_rejections():
+                            for rej in self._get_recent_router_rejections():
                                 if rej.trace_id == itm_trace_id and rej.source_tag.startswith(
                                     "ITM"
                                 ):
@@ -1635,7 +1676,7 @@ class MainOptionsMixin:
             # V2.3.13 FIX: MUST process immediately - spread signals use IMMEDIATE urgency
             self._process_immediate_signals()
             if vass_trace_id:
-                for rej in self.portfolio_router.get_last_rejections():
+                for rej in self._get_recent_router_rejections():
                     if rej.trace_id == vass_trace_id and rej.source_tag.startswith("VASS"):
                         self.Log(
                             f"VASS_ROUTER_REJECTED: Trace={rej.trace_id} | "
