@@ -2784,6 +2784,40 @@ class OptionsEngine:
         if final_direction is None:
             return False, None, state, "NO_DIRECTION: Micro has no recommended direction"
 
+        transition_ctx = self._get_regime_transition_context(macro_regime_score)
+        if bool(getattr(config, "MICRO_TRANSITION_GUARD_ENABLED", False)):
+            if bool(getattr(config, "MICRO_TRANSITION_BLOCK_AMBIGUOUS", True)) and bool(
+                transition_ctx.get("ambiguous", False)
+            ):
+                return (
+                    False,
+                    None,
+                    state,
+                    "NO_TRADE: MICRO_TRANSITION_AMBIGUOUS",
+                )
+            if (
+                final_direction == OptionDirection.CALL
+                and bool(getattr(config, "MICRO_TRANSITION_BLOCK_CALL_ON_DETERIORATION", True))
+                and bool(transition_ctx.get("strong_deterioration", False))
+            ):
+                return (
+                    False,
+                    None,
+                    state,
+                    "NO_TRADE: MICRO_TRANSITION_BLOCK_CALL_ON_DETERIORATION",
+                )
+            if (
+                final_direction == OptionDirection.PUT
+                and bool(getattr(config, "MICRO_TRANSITION_BLOCK_PUT_ON_RECOVERY", True))
+                and bool(transition_ctx.get("strong_recovery", False))
+            ):
+                return (
+                    False,
+                    None,
+                    state,
+                    "NO_TRADE: MICRO_TRANSITION_BLOCK_PUT_ON_RECOVERY",
+                )
+
         # Build reason string for logging
         if has_conviction:
             reason = f"CONVICTION: {conviction_reason} | {resolve_reason}"
@@ -2955,6 +2989,25 @@ class OptionsEngine:
         if vix < early_low and vix_5d_change is not None and vix_5d_change <= -0.05:
             return "RECOVERY"
         return "NORMAL"
+
+    def _get_regime_transition_context(
+        self, regime_score: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """Fetch transition context from algorithm if available."""
+        ctx: Dict[str, Any] = {}
+        if self.algorithm is not None and hasattr(self.algorithm, "_get_regime_transition_context"):
+            try:
+                raw = self.algorithm._get_regime_transition_context()
+                if isinstance(raw, dict):
+                    ctx = dict(raw)
+            except Exception:
+                ctx = {}
+        if "effective_score" not in ctx and regime_score is not None:
+            try:
+                ctx["effective_score"] = float(regime_score)
+            except Exception:
+                pass
+        return ctx
 
     def can_enter_single_leg(self) -> Tuple[bool, str]:
         """
@@ -5167,6 +5220,14 @@ class OptionsEngine:
             self.log("SPREAD: No entry - direction not provided (conviction resolution required)")
             return fail("DIRECTION_MISSING")
 
+        transition_ctx = self._get_regime_transition_context(regime_score=regime_score)
+        transition_regime = float(
+            max(
+                float(regime_score),
+                float(transition_ctx.get("transition_score", regime_score) or regime_score),
+            )
+        )
+
         # Derive spread type and VIX max from direction
         if direction == OptionDirection.CALL:
             spread_type = "BULL_CALL"
@@ -5174,6 +5235,41 @@ class OptionsEngine:
         else:
             spread_type = "BEAR_PUT"
             vix_max = config.SPREAD_VIX_MAX_BEAR
+
+        if (
+            bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
+            and bool(getattr(config, "VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION", True))
+            and spread_type == "BULL_CALL"
+            and bool(transition_ctx.get("strong_deterioration", False))
+        ):
+            self.log(
+                f"SPREAD: BULL_CALL blocked by transition deterioration | "
+                f"Regime={regime_score:.1f} | Delta={float(transition_ctx.get('delta', 0.0)):+.1f}"
+            )
+            return fail("R_VASS_BULL_TRANSITION_BLOCK")
+
+        if (
+            bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
+            and bool(getattr(config, "VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY", True))
+            and spread_type == "BEAR_PUT"
+            and bool(transition_ctx.get("strong_recovery", False))
+        ):
+            self.log(
+                f"SPREAD: BEAR_PUT blocked by transition recovery | "
+                f"Regime={regime_score:.1f} | Delta={float(transition_ctx.get('delta', 0.0)):+.1f}"
+            )
+            return fail("R_VASS_BEAR_TRANSITION_BLOCK")
+
+        if (
+            bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
+            and bool(getattr(config, "VASS_TRANSITION_BLOCK_AMBIGUOUS", True))
+            and bool(transition_ctx.get("ambiguous", False))
+        ):
+            self.log(
+                f"SPREAD: blocked in ambiguous transition zone | "
+                f"Regime={regime_score:.1f} | Delta={float(transition_ctx.get('delta', 0.0)):+.1f}"
+            )
+            return fail("R_VASS_TRANSITION_AMBIGUOUS")
 
         # V9.7: Block BEAR_PUT_DEBIT in RISK_ON — 12.5% WR in 2017 (regime was 88% RISK_ON)
         bear_put_risk_on_max = float(getattr(config, "VASS_BEAR_PUT_REGIME_MAX", 0))
@@ -5191,11 +5287,24 @@ class OptionsEngine:
         # V9.4 F4: Require minimum regime for BULL spread entries
         bull_regime_min = float(getattr(config, "VASS_BULL_SPREAD_REGIME_MIN", 0))
         if bull_regime_min > 0 and spread_type == "BULL_CALL" and regime_score < bull_regime_min:
-            self.log(
-                f"SPREAD: BULL_CALL blocked by regime floor | "
-                f"Regime={regime_score:.1f} < {bull_regime_min:.0f}"
+            transition_override = (
+                bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
+                and bool(transition_ctx.get("strong_recovery", False))
+                and transition_regime
+                >= float(getattr(config, "VASS_BULL_TRANSITION_MIN_REGIME", bull_regime_min))
             )
-            return fail("R_BULL_REGIME_FLOOR")
+            if transition_override:
+                self.log(
+                    f"SPREAD: BULL_CALL transition override | "
+                    f"Regime={transition_regime:.1f} < Floor={bull_regime_min:.0f} | "
+                    f"Delta={float(transition_ctx.get('delta', 0.0)):+.1f}"
+                )
+            else:
+                self.log(
+                    f"SPREAD: BULL_CALL blocked by regime floor | "
+                    f"Regime={regime_score:.1f} < {bull_regime_min:.0f}"
+                )
+                return fail("R_BULL_REGIME_FLOOR")
 
         # V9.4 F5: Block BULL spreads when QQQ is below 20MA (trend confirmation)
         if (
@@ -6034,6 +6143,24 @@ class OptionsEngine:
             )
             return fail("DIRECTION_MISSING")
 
+        transition_ctx = self._get_regime_transition_context(regime_score=regime_score)
+        transition_regime = float(
+            max(
+                float(regime_score),
+                float(transition_ctx.get("transition_score", regime_score) or regime_score),
+            )
+        )
+        if (
+            bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
+            and bool(getattr(config, "VASS_TRANSITION_BLOCK_AMBIGUOUS", True))
+            and bool(transition_ctx.get("ambiguous", False))
+        ):
+            self.log(
+                f"CREDIT_SPREAD: blocked in ambiguous transition zone | "
+                f"Regime={regime_score:.1f} | Delta={float(transition_ctx.get('delta', 0.0)):+.1f}"
+            )
+            return fail("R_VASS_TRANSITION_AMBIGUOUS")
+
         if overlay_state == "STRESS" and strategy == SpreadStrategy.BULL_PUT_CREDIT:
             self.log(
                 f"CREDIT_SPREAD: BULL_PUT_CREDIT blocked by overlay | "
@@ -6068,6 +6195,55 @@ class OptionsEngine:
 
         # Determine spread type from strategy
         spread_type = strategy.value  # "BULL_PUT_CREDIT" or "BEAR_CALL_CREDIT"
+
+        if (
+            bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
+            and bool(getattr(config, "VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION", True))
+            and strategy == SpreadStrategy.BULL_PUT_CREDIT
+            and bool(transition_ctx.get("strong_deterioration", False))
+        ):
+            self.log(
+                f"CREDIT_SPREAD: BULL_PUT_CREDIT blocked by transition deterioration | "
+                f"Regime={regime_score:.1f} | Delta={float(transition_ctx.get('delta', 0.0)):+.1f}"
+            )
+            return fail("R_VASS_BULL_TRANSITION_BLOCK")
+
+        if (
+            bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
+            and bool(getattr(config, "VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY", True))
+            and strategy == SpreadStrategy.BEAR_CALL_CREDIT
+            and bool(transition_ctx.get("strong_recovery", False))
+        ):
+            self.log(
+                f"CREDIT_SPREAD: BEAR_CALL_CREDIT blocked by transition recovery | "
+                f"Regime={regime_score:.1f} | Delta={float(transition_ctx.get('delta', 0.0)):+.1f}"
+            )
+            return fail("R_VASS_BEAR_TRANSITION_BLOCK")
+
+        bull_regime_min = float(getattr(config, "VASS_BULL_SPREAD_REGIME_MIN", 0))
+        if (
+            strategy == SpreadStrategy.BULL_PUT_CREDIT
+            and bull_regime_min > 0
+            and regime_score < bull_regime_min
+        ):
+            transition_override = (
+                bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
+                and bool(transition_ctx.get("strong_recovery", False))
+                and transition_regime
+                >= float(getattr(config, "VASS_BULL_TRANSITION_MIN_REGIME", bull_regime_min))
+            )
+            if transition_override:
+                self.log(
+                    f"CREDIT_SPREAD: BULL_PUT transition override | "
+                    f"Regime={transition_regime:.1f} < Floor={bull_regime_min:.0f} | "
+                    f"Delta={float(transition_ctx.get('delta', 0.0)):+.1f}"
+                )
+            else:
+                self.log(
+                    f"CREDIT_SPREAD: BULL_PUT blocked by regime floor | "
+                    f"Regime={regime_score:.1f} < {bull_regime_min:.0f}"
+                )
+                return fail("R_BULL_REGIME_FLOOR")
 
         now_dt = self._parse_dt(current_date, current_hour, current_minute)
         signature = self._build_vass_signature(
@@ -8902,15 +9078,82 @@ class OptionsEngine:
 
         upper = sma20 * (1.0 + band)
         lower = sma20 * (1.0 - band)
-        regime = float(getattr(self.algorithm, "_current_regime_score", 50.0) or 50.0)
+        transition_ctx = self._get_regime_transition_context()
+        regime = float(transition_ctx.get("effective_score", 50.0) or 50.0)
+        if not transition_ctx and hasattr(
+            self.algorithm, "_get_effective_regime_score_for_options"
+        ):
+            try:
+                regime = float(self.algorithm._get_effective_regime_score_for_options())
+            except Exception:
+                regime = float(getattr(self.algorithm, "_last_regime_score", 50.0) or 50.0)
+        regime_for_itm = regime
+        if bool(transition_ctx.get("strong_recovery", False)):
+            regime_for_itm = max(
+                regime_for_itm,
+                float(transition_ctx.get("transition_score", regime_for_itm)),
+            )
+
+        if (
+            bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
+            and bool(getattr(config, "ITM_TRANSITION_BLOCK_AMBIGUOUS", True))
+            and bool(transition_ctx.get("ambiguous", False))
+        ):
+            return (
+                None,
+                f"REGIME_TRANSITION_AMBIGUOUS: Regime={regime:.1f} "
+                f"Delta={float(transition_ctx.get('delta', 0.0)):+.1f}",
+            )
 
         if qqq_current > upper:
-            if regime < float(getattr(config, "ITM_CALL_MIN_REGIME", 35.0)):
-                return None, f"REGIME_RISKOFF_NO_CALL: Regime={regime:.0f}"
+            if (
+                bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
+                and bool(getattr(config, "ITM_TRANSITION_BLOCK_BULL_ON_DETERIORATION", True))
+                and bool(transition_ctx.get("strong_deterioration", False))
+            ):
+                return (
+                    None,
+                    f"REGIME_DOWNSHIFT_NO_CALL: Regime={regime_for_itm:.1f} "
+                    f"Delta={float(transition_ctx.get('delta', 0.0)):+.1f}",
+                )
+            call_gate = float(getattr(config, "ITM_CALL_MIN_REGIME", 35.0))
+            if regime_for_itm < call_gate:
+                transition_min = float(getattr(config, "ITM_CALL_TRANSITION_MIN_REGIME", call_gate))
+                if (
+                    bool(transition_ctx.get("strong_recovery", False))
+                    and regime_for_itm >= transition_min
+                ):
+                    return (
+                        OptionDirection.CALL,
+                        f"QQQ {qqq_current:.2f} > SMA20+band {upper:.2f} | "
+                        f"TRANSITION_RECOVERY_OVERRIDE Regime={regime_for_itm:.1f}",
+                    )
+                return None, f"REGIME_RISKOFF_NO_CALL: Regime={regime_for_itm:.1f}"
             return OptionDirection.CALL, f"QQQ {qqq_current:.2f} > SMA20+band {upper:.2f}"
         if qqq_current < lower:
-            if regime > float(getattr(config, "ITM_PUT_MAX_REGIME", 70.0)):
-                return None, f"REGIME_BULL_NO_PUT: Regime={regime:.0f}"
+            if (
+                bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
+                and bool(getattr(config, "ITM_TRANSITION_BLOCK_BEAR_ON_RECOVERY", True))
+                and bool(transition_ctx.get("strong_recovery", False))
+            ):
+                return (
+                    None,
+                    f"REGIME_RECOVERY_NO_PUT: Regime={regime_for_itm:.1f} "
+                    f"Delta={float(transition_ctx.get('delta', 0.0)):+.1f}",
+                )
+            put_gate = float(getattr(config, "ITM_PUT_MAX_REGIME", 70.0))
+            if regime_for_itm > put_gate:
+                transition_max = float(getattr(config, "ITM_PUT_TRANSITION_MAX_REGIME", put_gate))
+                if (
+                    bool(transition_ctx.get("strong_deterioration", False))
+                    and regime_for_itm <= transition_max
+                ):
+                    return (
+                        OptionDirection.PUT,
+                        f"QQQ {qqq_current:.2f} < SMA20-band {lower:.2f} | "
+                        f"TRANSITION_DOWNSHIFT_OVERRIDE Regime={regime_for_itm:.1f}",
+                    )
+                return None, f"REGIME_BULL_NO_PUT: Regime={regime_for_itm:.1f}"
             return OptionDirection.PUT, f"QQQ {qqq_current:.2f} < SMA20-band {lower:.2f}"
         return None, f"TREND_NEUTRAL {lower:.2f}<=QQQ<={upper:.2f}"
 

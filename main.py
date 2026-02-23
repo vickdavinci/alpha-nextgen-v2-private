@@ -96,7 +96,7 @@ class AlphaNextGen(QCAlgorithm):
         # Stage 4: SetStartDate(2024, 1, 1), SetEndDate(2024, 12, 31) - 1 year
         # Stage 5: SetStartDate(2020, 1, 1), SetEndDate(2024, 12, 31) - 5 years
         self.SetStartDate(2024, 7, 1)
-        self.SetEndDate(2024, 9, 30)  # Jul-Sep 2024 backtest window
+        self.SetEndDate(2024, 9, 30)  # Smoke window: Jul-Sep 2024
         self.SetCash(config.INITIAL_CAPITAL)  # Seed capital from config
 
         # All times are Eastern
@@ -328,6 +328,8 @@ class AlphaNextGen(QCAlgorithm):
         self._last_spread_construct_fail_log_at = None
         self._intraday_regime_score = None
         self._intraday_regime_updated_at = None
+        self._intraday_regime_momentum_roc = None
+        self._intraday_regime_vix_5d_change = None
         self._last_regime_effective_log_at = None
         self._last_intraday_dte_routing_log_by_key = {}
         # Preserve best-effort order tags for lifecycle diagnostics when broker tags are blank.
@@ -753,6 +755,8 @@ class AlphaNextGen(QCAlgorithm):
 
         # Store last regime score for intraday use
         self._last_regime_score = 50.0
+        self._last_regime_momentum_roc = 0.0
+        self._last_regime_vix_5d_change = 0.0
 
         # Store capital state for EOD->Market Close handoff
         self._eod_capital_state = None
@@ -1498,6 +1502,25 @@ class AlphaNextGen(QCAlgorithm):
             resolved_direction_str) or None when blocked/no-trade.
         """
         current_date_str = self.Time.strftime("%Y-%m-%d")
+        transition_ctx = self._get_regime_transition_context()
+        regime_for_vass = float(regime_score)
+        if bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True)):
+            if bool(getattr(config, "VASS_TRANSITION_BLOCK_AMBIGUOUS", True)) and bool(
+                transition_ctx.get("ambiguous", False)
+            ):
+                self.Log(
+                    f"VASS_TRANSITION_BLOCK: ambiguous macro handoff | "
+                    f"Eff={float(transition_ctx.get('effective_score', regime_score)):.1f} | "
+                    f"Delta={float(transition_ctx.get('delta', 0.0)):+.1f} | "
+                    f"MOM={float(transition_ctx.get('momentum_roc', 0.0)):+.2%}"
+                )
+                return None
+            if bool(transition_ctx.get("strong_recovery", False)):
+                regime_for_vass = max(
+                    regime_for_vass,
+                    float(transition_ctx.get("transition_score", regime_for_vass)),
+                )
+
         vix_level_for_vass = self._get_vix_level()
         self.options_engine.update_iv_sensor(vix_level_for_vass, current_date_str)
         (
@@ -1505,9 +1528,9 @@ class AlphaNextGen(QCAlgorithm):
             conviction_direction,
             conviction_reason,
         ) = self.options_engine.get_iv_conviction()
-        macro_direction = self.options_engine.get_macro_direction(regime_score)
+        macro_direction = self.options_engine.get_macro_direction(regime_for_vass)
         overlay_state = self.options_engine.get_regime_overlay_state(
-            vix_current=vix_level_for_vass, regime_score=regime_score
+            vix_current=vix_level_for_vass, regime_score=regime_for_vass
         )
         should_trade, resolved_direction, resolve_reason = self.options_engine.resolve_trade_signal(
             engine="VASS",
@@ -1525,12 +1548,13 @@ class AlphaNextGen(QCAlgorithm):
         if (
             bool(getattr(config, "VASS_BULL_PROFILE_BEARISH_BLOCK_ENABLED", True))
             and resolved_direction == "BEARISH"
-            and float(regime_score) >= float(getattr(config, "VASS_BULL_PROFILE_REGIME_MIN", 70.0))
+            and float(regime_for_vass)
+            >= float(getattr(config, "VASS_BULL_PROFILE_REGIME_MIN", 70.0))
             and str(overlay_state).upper() in {"NORMAL", "RECOVERY"}
         ):
             self.Log(
                 f"{bull_profile_log_prefix}: Bearish VASS blocked in strong bull profile | "
-                f"Regime={float(regime_score):.1f} | Overlay={overlay_state}"
+                f"Regime={float(regime_for_vass):.1f} | Overlay={overlay_state}"
             )
             return None
 
@@ -1544,6 +1568,34 @@ class AlphaNextGen(QCAlgorithm):
                 f"{clamp_log_prefix}: Neutral macro + elevated VIX blocks bullish override | "
                 f"VIX={self._current_vix:.1f} >= {float(getattr(config, 'VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX', 18.0)):.1f} | "
                 f"Resolve={resolve_reason}"
+            )
+            return None
+
+        if (
+            bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
+            and resolved_direction == "BULLISH"
+            and bool(getattr(config, "VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION", True))
+            and bool(transition_ctx.get("strong_deterioration", False))
+        ):
+            self.Log(
+                f"VASS_TRANSITION_BLOCK: bullish blocked during deterioration | "
+                f"Eff={float(transition_ctx.get('effective_score', regime_for_vass)):.1f} | "
+                f"Delta={float(transition_ctx.get('delta', 0.0)):+.1f} | "
+                f"MOM={float(transition_ctx.get('momentum_roc', 0.0)):+.2%}"
+            )
+            return None
+
+        if (
+            bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
+            and resolved_direction == "BEARISH"
+            and bool(getattr(config, "VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY", True))
+            and bool(transition_ctx.get("strong_recovery", False))
+        ):
+            self.Log(
+                f"VASS_TRANSITION_BLOCK: bearish blocked during recovery | "
+                f"Eff={float(transition_ctx.get('effective_score', regime_for_vass)):.1f} | "
+                f"Delta={float(transition_ctx.get('delta', 0.0)):+.1f} | "
+                f"MOM={float(transition_ctx.get('momentum_roc', 0.0)):+.2%}"
             )
             return None
 
@@ -2853,6 +2905,8 @@ class AlphaNextGen(QCAlgorithm):
         regime_state = self._calculate_regime()
         # Store for intraday MR scanning
         self._last_regime_score = regime_state.smoothed_score
+        self._last_regime_momentum_roc = float(getattr(regime_state, "momentum_roc", 0.0) or 0.0)
+        self._last_regime_vix_5d_change = float(getattr(regime_state, "vix_5d_change", 0.0) or 0.0)
 
         # V6.0: Update Startup Gate (time-based, no regime dependency)
         if not self.startup_gate.is_fully_armed():
@@ -7547,6 +7601,12 @@ class AlphaNextGen(QCAlgorithm):
         try:
             regime_state = self._calculate_regime(read_only=True)
             self._intraday_regime_score = float(regime_state.smoothed_score)
+            self._intraday_regime_momentum_roc = float(
+                getattr(regime_state, "momentum_roc", 0.0) or 0.0
+            )
+            self._intraday_regime_vix_5d_change = float(
+                getattr(regime_state, "vix_5d_change", 0.0) or 0.0
+            )
             self._intraday_regime_updated_at = self.Time
             # Keep one refresh log per day to preserve RCA signal while reducing volume.
             refresh_day = self.Time.strftime("%Y-%m-%d")
@@ -7558,6 +7618,78 @@ class AlphaNextGen(QCAlgorithm):
                 self._last_regime_refresh_log_day = refresh_day
         except Exception as e:
             self.Log(f"REGIME_REFRESH_INTRADAY_ERROR: {e}")
+
+    def _get_regime_transition_context(self) -> Dict[str, float]:
+        """Build macro transition context for ITM/VASS turn handling."""
+        effective = float(self._get_effective_regime_score_for_options())
+        eod_score = float(getattr(self, "_last_regime_score", effective) or effective)
+        intraday_score_raw = getattr(self, "_intraday_regime_score", None)
+        intraday_score = (
+            float(intraday_score_raw) if intraday_score_raw is not None else float(eod_score)
+        )
+        delta = float(intraday_score - eod_score)
+
+        momentum_roc = getattr(self, "_intraday_regime_momentum_roc", None)
+        if momentum_roc is None:
+            momentum_roc = getattr(self, "_last_regime_momentum_roc", 0.0)
+        vix_5d_change = getattr(self, "_intraday_regime_vix_5d_change", None)
+        if vix_5d_change is None:
+            vix_5d_change = getattr(self, "_last_regime_vix_5d_change", 0.0)
+        momentum_roc = float(momentum_roc or 0.0)
+        vix_5d_change = float(vix_5d_change or 0.0)
+
+        recovery_delta_min = float(getattr(config, "REGIME_TRANSITION_RECOVERY_DELTA_MIN", 3.0))
+        recovery_mom_min = float(getattr(config, "REGIME_TRANSITION_RECOVERY_MOMENTUM_MIN", 0.015))
+        recovery_vix_5d_max = float(getattr(config, "REGIME_TRANSITION_RECOVERY_VIX_5D_MAX", 0.05))
+
+        deterioration_delta_max = float(
+            getattr(config, "REGIME_TRANSITION_DETERIORATION_DELTA_MAX", -3.0)
+        )
+        deterioration_mom_max = float(
+            getattr(config, "REGIME_TRANSITION_DETERIORATION_MOMENTUM_MAX", -0.015)
+        )
+        deterioration_vix_5d_min = float(
+            getattr(config, "REGIME_TRANSITION_DETERIORATION_VIX_5D_MIN", 0.10)
+        )
+
+        strong_recovery = (
+            delta >= recovery_delta_min
+            and momentum_roc >= recovery_mom_min
+            and vix_5d_change <= recovery_vix_5d_max
+        )
+        strong_deterioration = (
+            delta <= deterioration_delta_max
+            and momentum_roc <= deterioration_mom_max
+            and vix_5d_change >= deterioration_vix_5d_min
+        )
+
+        ambiguous_low = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_LOW", 47.0))
+        ambiguous_high = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_HIGH", 55.0))
+        ambiguous_delta_max = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_DELTA_MAX", 2.0))
+        ambiguous = (
+            ambiguous_low <= effective <= ambiguous_high
+            and abs(delta) <= ambiguous_delta_max
+            and not strong_recovery
+            and not strong_deterioration
+        )
+
+        transition_score = effective
+        if strong_recovery and intraday_score > effective:
+            lift_max = float(getattr(config, "REGIME_TRANSITION_RECOVERY_SCORE_LIFT_MAX", 8.0))
+            transition_score = min(intraday_score, effective + lift_max)
+
+        return {
+            "effective_score": float(effective),
+            "eod_score": float(eod_score),
+            "intraday_score": float(intraday_score),
+            "delta": float(delta),
+            "momentum_roc": float(momentum_roc),
+            "vix_5d_change": float(vix_5d_change),
+            "strong_recovery": bool(strong_recovery),
+            "strong_deterioration": bool(strong_deterioration),
+            "ambiguous": bool(ambiguous),
+            "transition_score": float(transition_score),
+        }
 
     def _get_effective_regime_score_for_options(self) -> float:
         """
