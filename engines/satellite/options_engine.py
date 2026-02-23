@@ -3233,6 +3233,10 @@ class OptionsEngine:
                 handoff_enabled = bool(
                     getattr(config, "MICRO_TRANSITION_HANDOFF_THROTTLE_ENABLED", True)
                 )
+            elif engine_key == "VASS":
+                handoff_enabled = bool(
+                    getattr(config, "VASS_TRANSITION_HANDOFF_THROTTLE_ENABLED", True)
+                )
             elif engine_key == "HEDGE":
                 handoff_enabled = bool(
                     getattr(config, "HEDGE_TRANSITION_HANDOFF_THROTTLE_ENABLED", True)
@@ -5568,41 +5572,26 @@ class OptionsEngine:
             spread_type == "BULL_CALL"
             and (base_regime == "BULLISH" or transition_overlay == "RECOVERY")
         )
-
-        if (
-            bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
-            and bool(getattr(config, "VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION", True))
-            and spread_type == "BULL_CALL"
-            and bool(transition_ctx.get("strong_deterioration", False))
-        ):
+        policy_gate, policy_reason = self.evaluate_transition_policy_block(
+            engine="VASS",
+            direction=direction,
+            transition_ctx=transition_ctx,
+        )
+        if policy_gate:
+            gate_to_reason = {
+                "VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION": "R_VASS_BULL_TRANSITION_BLOCK",
+                "VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY": "R_VASS_BEAR_TRANSITION_BLOCK",
+                "VASS_TRANSITION_BLOCK_AMBIGUOUS": "R_VASS_TRANSITION_AMBIGUOUS",
+                "TRANSITION_HANDOFF_PUT_THROTTLE": "R_VASS_HANDOFF_PUT_THROTTLE",
+                "TRANSITION_HANDOFF_CALL_THROTTLE": "R_VASS_HANDOFF_CALL_THROTTLE",
+            }
+            mapped_reason = gate_to_reason.get(policy_gate, policy_gate)
             self.log(
-                f"SPREAD: BULL_CALL blocked by transition deterioration | "
+                f"SPREAD: {spread_type} blocked by transition policy | "
+                f"Gate={policy_gate} | {policy_reason} | "
                 f"Regime={regime_score:.1f} | Delta={float(transition_ctx.get('delta', 0.0)):+.1f}"
             )
-            return fail("R_VASS_BULL_TRANSITION_BLOCK")
-
-        if (
-            bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
-            and bool(getattr(config, "VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY", True))
-            and spread_type == "BEAR_PUT"
-            and bool(transition_ctx.get("strong_recovery", False))
-        ):
-            self.log(
-                f"SPREAD: BEAR_PUT blocked by transition recovery | "
-                f"Regime={regime_score:.1f} | Delta={float(transition_ctx.get('delta', 0.0)):+.1f}"
-            )
-            return fail("R_VASS_BEAR_TRANSITION_BLOCK")
-
-        if (
-            bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
-            and bool(getattr(config, "VASS_TRANSITION_BLOCK_AMBIGUOUS", True))
-            and bool(transition_ctx.get("ambiguous", False))
-        ):
-            self.log(
-                f"SPREAD: blocked in ambiguous transition zone | "
-                f"Regime={regime_score:.1f} | Delta={float(transition_ctx.get('delta', 0.0)):+.1f}"
-            )
-            return fail("R_VASS_TRANSITION_AMBIGUOUS")
+            return fail(mapped_reason)
 
         # V9.7: Block BEAR_PUT_DEBIT in RISK_ON — 12.5% WR in 2017 (regime was 88% RISK_ON)
         bear_put_risk_on_max = float(getattr(config, "VASS_BEAR_PUT_REGIME_MAX", 0))
@@ -6538,30 +6527,31 @@ class OptionsEngine:
 
         # Determine spread type from strategy
         spread_type = strategy.value  # "BULL_PUT_CREDIT" or "BEAR_CALL_CREDIT"
-
-        if (
-            bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
-            and bool(getattr(config, "VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION", True))
-            and strategy == SpreadStrategy.BULL_PUT_CREDIT
-            and bool(transition_ctx.get("strong_deterioration", False))
-        ):
+        transition_bias = (
+            OptionDirection.CALL
+            if strategy == SpreadStrategy.BULL_PUT_CREDIT
+            else OptionDirection.PUT
+        )
+        policy_gate, policy_reason = self.evaluate_transition_policy_block(
+            engine="VASS",
+            direction=transition_bias,
+            transition_ctx=transition_ctx,
+        )
+        if policy_gate:
+            gate_to_reason = {
+                "VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION": "R_VASS_BULL_TRANSITION_BLOCK",
+                "VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY": "R_VASS_BEAR_TRANSITION_BLOCK",
+                "VASS_TRANSITION_BLOCK_AMBIGUOUS": "R_VASS_TRANSITION_AMBIGUOUS",
+                "TRANSITION_HANDOFF_PUT_THROTTLE": "R_VASS_HANDOFF_PUT_THROTTLE",
+                "TRANSITION_HANDOFF_CALL_THROTTLE": "R_VASS_HANDOFF_CALL_THROTTLE",
+            }
+            mapped_reason = gate_to_reason.get(policy_gate, policy_gate)
             self.log(
-                f"CREDIT_SPREAD: BULL_PUT_CREDIT blocked by transition deterioration | "
+                f"CREDIT_SPREAD: {spread_type} blocked by transition policy | "
+                f"Gate={policy_gate} | {policy_reason} | "
                 f"Regime={regime_score:.1f} | Delta={float(transition_ctx.get('delta', 0.0)):+.1f}"
             )
-            return fail("R_VASS_BULL_TRANSITION_BLOCK")
-
-        if (
-            bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
-            and bool(getattr(config, "VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY", True))
-            and strategy == SpreadStrategy.BEAR_CALL_CREDIT
-            and bool(transition_ctx.get("strong_recovery", False))
-        ):
-            self.log(
-                f"CREDIT_SPREAD: BEAR_CALL_CREDIT blocked by transition recovery | "
-                f"Regime={regime_score:.1f} | Delta={float(transition_ctx.get('delta', 0.0)):+.1f}"
-            )
-            return fail("R_VASS_BEAR_TRANSITION_BLOCK")
+            return fail(mapped_reason)
 
         bull_regime_min = float(getattr(config, "VASS_BULL_SPREAD_REGIME_MIN", 0))
         if (

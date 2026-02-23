@@ -8384,6 +8384,18 @@ class AlphaNextGen(QCAlgorithm):
         deterioration_vix_5d_min = float(
             getattr(config, "REGIME_TRANSITION_DETERIORATION_VIX_5D_MIN", 0.10)
         )
+        deterioration_fast_eod_delta_max = float(
+            getattr(config, "REGIME_TRANSITION_DETERIORATION_FAST_EOD_DELTA_MAX", -1.8)
+        )
+        deterioration_fast_mom_max = float(
+            getattr(config, "REGIME_TRANSITION_DETERIORATION_FAST_MOMENTUM_MAX", -0.020)
+        )
+        deterioration_fast_vix_5d_min = float(
+            getattr(config, "REGIME_TRANSITION_DETERIORATION_FAST_VIX_5D_MIN", 0.12)
+        )
+        deterioration_fast_detector_delta_max = float(
+            getattr(config, "REGIME_TRANSITION_DETERIORATION_FAST_DETECTOR_DELTA_MAX", -0.05)
+        )
         ambiguous_low = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_LOW", 47.0))
         ambiguous_high = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_HIGH", 55.0))
         ambiguous_delta_max = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_DELTA_MAX", 1.5))
@@ -8418,11 +8430,17 @@ class AlphaNextGen(QCAlgorithm):
             eod_delta <= deterioration_delta_max
             and detector_delta <= deterioration_eod_agreement_max
         )
+        deterioration_by_fast = (
+            eod_delta <= deterioration_fast_eod_delta_max
+            and momentum_roc <= deterioration_fast_mom_max
+            and vix_5d_change >= deterioration_fast_vix_5d_min
+            and detector_delta <= deterioration_fast_detector_delta_max
+        )
         raw_deterioration = (
             (deterioration_by_detector or deterioration_by_eod)
             and momentum_roc <= deterioration_mom_max
             and vix_5d_change >= deterioration_vix_5d_min
-        )
+        ) or deterioration_by_fast
         ambiguous_by_detector = abs(detector_delta) <= ambiguous_detector_delta_max
         ambiguous_by_eod = abs(eod_delta) <= ambiguous_delta_max
         raw_ambiguous = (
@@ -8442,7 +8460,11 @@ class AlphaNextGen(QCAlgorithm):
                 else:
                     self._inc_transition_path_counter("RECOVERY_EOD")
             elif raw_deterioration:
-                if deterioration_by_detector and deterioration_by_eod:
+                if deterioration_by_fast and not (
+                    deterioration_by_detector or deterioration_by_eod
+                ):
+                    self._inc_transition_path_counter("DETERIORATION_FAST")
+                elif deterioration_by_detector and deterioration_by_eod:
                     self._inc_transition_path_counter("DETERIORATION_BOTH")
                 elif deterioration_by_detector:
                     self._inc_transition_path_counter("DETERIORATION_DETECTOR")
@@ -8552,6 +8574,7 @@ class AlphaNextGen(QCAlgorithm):
             "recovery_by_eod": bool(recovery_by_eod),
             "deterioration_by_detector": bool(deterioration_by_detector),
             "deterioration_by_eod": bool(deterioration_by_eod),
+            "deterioration_by_fast": bool(deterioration_by_fast),
             "recovery_eod_agreement_min": float(recovery_eod_agreement_min),
             "deterioration_eod_agreement_max": float(deterioration_eod_agreement_max),
             "ambiguous_by_detector": bool(ambiguous_by_detector),
@@ -8629,6 +8652,7 @@ class AlphaNextGen(QCAlgorithm):
             "recovery_by_eod": bool(raw.get("recovery_by_eod", False)),
             "deterioration_by_detector": bool(raw.get("deterioration_by_detector", False)),
             "deterioration_by_eod": bool(raw.get("deterioration_by_eod", False)),
+            "deterioration_by_fast": bool(raw.get("deterioration_by_fast", False)),
             "overlay_candidate": str(raw.get("overlay_candidate", "STABLE")).upper(),
             "base_candidate": str(raw.get("base_candidate", "NEUTRAL")).upper(),
             "sample_seq": sample_seq,
@@ -8743,6 +8767,9 @@ class AlphaNextGen(QCAlgorithm):
                 "raw_recovery": "1" if bool(ctx.get("raw_recovery", False)) else "0",
                 "raw_deterioration": "1" if bool(ctx.get("raw_deterioration", False)) else "0",
                 "raw_ambiguous": "1" if bool(ctx.get("raw_ambiguous", False)) else "0",
+                "deterioration_by_fast": "1"
+                if bool(ctx.get("deterioration_by_fast", False))
+                else "0",
                 "strong_recovery": "1" if bool(ctx.get("strong_recovery", False)) else "0",
                 "strong_deterioration": "1"
                 if bool(ctx.get("strong_deterioration", False))
@@ -8985,6 +9012,7 @@ class AlphaNextGen(QCAlgorithm):
                 "raw_recovery",
                 "raw_deterioration",
                 "raw_ambiguous",
+                "deterioration_by_fast",
                 "strong_recovery",
                 "strong_deterioration",
                 "ambiguous",
