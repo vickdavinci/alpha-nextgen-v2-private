@@ -209,6 +209,11 @@ class IVSensor:
         complacent_cross_level = float(getattr(config, "VASS_VIX_COMPLACENT_CROSS_LEVEL", 14.0))
         bearish_5d_threshold = float(getattr(config, "VASS_VIX_5D_BEARISH_THRESHOLD", 0.16))
         bullish_5d_threshold = float(getattr(config, "VASS_VIX_5D_BULLISH_THRESHOLD", -0.20))
+        bearish_veto_min_vix = float(getattr(config, "VASS_VIX_BEARISH_VETO_MIN_LEVEL", 18.0))
+        bearish_veto_5d_min_change = float(
+            getattr(config, "VASS_VIX_BEARISH_VETO_5D_MIN_CHANGE", 0.25)
+        )
+        current_vix_level = self.get_smoothed_vix()
 
         # V10.8: low-VIX conviction broadening (threshold-first, no new indicators).
         if bool(getattr(config, "VASS_LOW_VIX_CONVICTION_RELAX_ENABLED", False)):
@@ -234,11 +239,16 @@ class IVSensor:
 
         # 5-day change conviction (fast-moving fear)
         if vix_5d_change is not None:
-            if vix_5d_change > bearish_5d_threshold:
+            effective_bearish_5d_threshold = max(bearish_5d_threshold, bearish_veto_5d_min_change)
+            if (
+                vix_5d_change > effective_bearish_5d_threshold
+                and current_vix_level >= bearish_veto_min_vix
+            ):
                 return (
                     True,
                     "BEARISH",
-                    f"VIX 5d change +{vix_5d_change:.0%} > +{bearish_5d_threshold:.0%}",
+                    f"VIX 5d change +{vix_5d_change:.0%} > +{effective_bearish_5d_threshold:.0%} "
+                    f"and VIX {current_vix_level:.1f} >= {bearish_veto_min_vix:.1f}",
                 )
 
             if vix_5d_change < bullish_5d_threshold:
@@ -250,11 +260,16 @@ class IVSensor:
 
         # 20-day change conviction (sustained direction)
         if vix_20d_change is not None:
-            if vix_20d_change > config.VASS_VIX_20D_STRONG_BEARISH:
+            if (
+                vix_20d_change > config.VASS_VIX_20D_STRONG_BEARISH
+                and current_vix_level >= bearish_veto_min_vix
+            ):
                 return (
                     True,
                     "BEARISH",
-                    f"VIX 20d change +{vix_20d_change:.0%} > +{config.VASS_VIX_20D_STRONG_BEARISH:.0%} (STRONG)",
+                    f"VIX 20d change +{vix_20d_change:.0%} > "
+                    f"+{config.VASS_VIX_20D_STRONG_BEARISH:.0%} (STRONG) and "
+                    f"VIX {current_vix_level:.1f} >= {bearish_veto_min_vix:.1f}",
                 )
 
             if vix_20d_change < config.VASS_VIX_20D_STRONG_BULLISH:

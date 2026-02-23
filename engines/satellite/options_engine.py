@@ -1068,6 +1068,7 @@ class MicroRegimeEngine:
         qqq_move: QQQMove,
         qqq_move_pct: float,
         macro_regime_score: float = 50.0,
+        qqq_atr_pct: Optional[float] = None,
     ) -> Tuple[IntradayStrategy, Optional[OptionDirection], str]:
         """
         V2.3.4: Recommend intraday strategy AND direction based on regime + QQQ move.
@@ -1095,6 +1096,7 @@ class MicroRegimeEngine:
             qqq_move: QQQ move classification (UP, DOWN, FLAT).
             qqq_move_pct: QQQ move percentage (signed).
             macro_regime_score: V2.5 - Macro regime score for Grind-Up Override (default 50).
+            qqq_atr_pct: Optional QQQ ATR as percent of price for adaptive move gating.
 
         Returns:
             Tuple of (IntradayStrategy, OptionDirection or None, reason string).
@@ -1352,11 +1354,18 @@ class MicroRegimeEngine:
             else:
                 min_move_gate = float(getattr(config, "MICRO_MIN_MOVE_HIGH_VIX", 0.40))
                 vix_tier_label = "HIGH"
+            if bool(getattr(config, "MICRO_ATR_MIN_MOVE_ENABLED", False)) and qqq_atr_pct:
+                atr_mult = float(getattr(config, "MICRO_ATR_MIN_MOVE_MULTIPLIER", 0.50))
+                atr_floor = float(getattr(config, "MICRO_ATR_MIN_MOVE_FLOOR_PCT", 0.12))
+                atr_cap = float(getattr(config, "MICRO_ATR_MIN_MOVE_CAP_PCT", 0.60))
+                atr_gate = max(atr_floor, min(atr_cap, float(qqq_atr_pct) * atr_mult))
+                min_move_gate = min(min_move_gate, atr_gate)
             if abs(qqq_move_pct) < min_move_gate:
                 return (
                     IntradayStrategy.NO_TRADE,
                     None,
-                    f"MIN_MOVE_{vix_tier_label}: |{qqq_move_pct:.2f}%| < {min_move_gate}% (VIX={vix_current:.1f})",
+                    f"MIN_MOVE_{vix_tier_label}: |{qqq_move_pct:.2f}%| < {min_move_gate:.2f}% "
+                    f"(VIX={vix_current:.1f}, ATR%={float(qqq_atr_pct or 0.0):.2f})",
                 )
 
             # =================================================================
@@ -1538,6 +1547,7 @@ class MicroRegimeEngine:
         move_duration_minutes: int = 120,
         macro_regime_score: float = 50.0,
         vix_level_override: Optional[float] = None,
+        qqq_atr_pct: Optional[float] = None,
     ) -> MicroRegimeState:
         """
         Full update cycle for Micro Regime Engine.
@@ -1555,6 +1565,7 @@ class MicroRegimeEngine:
             vix_level_override: V2.11 - If provided, use this for LEVEL classification
                                instead of vix_current. This allows using CBOE VIX for
                                level while using UVXY proxy for direction.
+            qqq_atr_pct: Optional QQQ ATR as percent-of-price for adaptive move gate.
 
         Returns:
             Updated MicroRegimeState.
@@ -1608,6 +1619,7 @@ class MicroRegimeEngine:
             qqq_move=self._state.qqq_direction,
             qqq_move_pct=signed_move_pct,
             macro_regime_score=macro_regime_score,
+            qqq_atr_pct=qqq_atr_pct,
         )
         self._state.recommended_strategy = strategy
         self._state.recommended_direction = direction
@@ -2717,6 +2729,18 @@ class OptionsEngine:
             macro_for_micro = float(macro_regime_score)
         except Exception:
             macro_for_micro = 50.0
+        qqq_atr_pct = None
+        if self.algorithm is not None and qqq_current > 0:
+            try:
+                qqq_atr_indicator = getattr(self.algorithm, "qqq_atr", None)
+                if qqq_atr_indicator is not None and bool(
+                    getattr(qqq_atr_indicator, "IsReady", False)
+                ):
+                    qqq_atr_value = float(qqq_atr_indicator.Current.Value)
+                    if qqq_atr_value > 0:
+                        qqq_atr_pct = (qqq_atr_value / float(qqq_current)) * 100.0
+            except Exception:
+                qqq_atr_pct = None
         state = self._micro_regime_engine.update(
             vix_current=vix_current,
             vix_open=vix_open_for_micro,
@@ -2725,6 +2749,7 @@ class OptionsEngine:
             current_time=current_time,
             macro_regime_score=macro_for_micro,
             vix_level_override=vix_level_override,
+            qqq_atr_pct=qqq_atr_pct,
         )
 
         # V6.8 P0 FIX: If Micro returns NO_TRADE, skip entirely - no conviction override
@@ -3813,9 +3838,13 @@ class OptionsEngine:
         stop_pct = tier["stop_pct"]
         base_contracts = tier["contracts"]
 
-        # V2.3.8: Use tighter stops for 0DTE (PART 14 Pitfall 2)
-        # 0DTE options move fast - slippage can double the intended loss
-        if days_to_expiry is not None and days_to_expiry <= 1:
+        # V2.3.8: Optional fixed 0DTE stop override.
+        # V12.0 keeps this disabled by default so ATR-based stop logic remains sovereign.
+        if (
+            days_to_expiry is not None
+            and days_to_expiry <= 1
+            and bool(getattr(config, "OPTIONS_0DTE_STATIC_STOP_OVERRIDE_ENABLED", False))
+        ):
             stop_pct = config.OPTIONS_0DTE_STOP_PCT
             self.log(f"POSITION_SIZE: Using 0DTE tight stop {stop_pct:.0%} (DTE={days_to_expiry})")
 
@@ -5223,6 +5252,25 @@ class OptionsEngine:
             return float(getattr(config, "SPREAD_DW_CAP_NORMAL", 0.42))
         return float(getattr(config, "SPREAD_DW_CAP_COMPRESSED", 0.48))
 
+    def _get_spread_absolute_debit_cap(self, vix_level: Optional[float], width: float) -> float:
+        """Resolve width-scaled absolute debit cap for debit spreads."""
+        base_cap = float(getattr(config, "SPREAD_DW_ABSOLUTE_CAP", 2.00))
+        if bool(getattr(config, "SPREAD_DW_ABSOLUTE_CAP_DYNAMIC_ENABLED", False)):
+            try:
+                vix_value = float(vix_level) if vix_level is not None else 20.0
+            except Exception:
+                vix_value = 20.0
+            vix_floor = max(0.1, float(getattr(config, "SPREAD_DW_ABSOLUTE_CAP_VIX_FLOOR", 10.0)))
+            baseline = float(getattr(config, "SPREAD_DW_ABSOLUTE_CAP_BASELINE", 1.00))
+            vix_scale = float(getattr(config, "SPREAD_DW_ABSOLUTE_CAP_VIX_SCALE", 20.0))
+            cap_min = float(getattr(config, "SPREAD_DW_ABSOLUTE_CAP_MIN", 1.60))
+            cap_max = float(getattr(config, "SPREAD_DW_ABSOLUTE_CAP_MAX", 2.60))
+            dynamic_cap = baseline * (1.0 + (vix_scale / max(vix_value, vix_floor)))
+            base_cap = max(cap_min, min(cap_max, dynamic_cap))
+        if width <= 0:
+            return base_cap
+        return base_cap * (width / 5.0)
+
     def check_spread_entry_signal(
         self,
         regime_score: float,
@@ -5877,18 +5925,16 @@ class OptionsEngine:
 
         debit_to_width = net_debit / width if width > 0 else 1.0
         abs_cap_vix = float(getattr(config, "SPREAD_DW_ABSOLUTE_CAP_VIX", 15.0))
-        abs_cap = float(getattr(config, "SPREAD_DW_ABSOLUTE_CAP", 2.00))
-        # Scale low-VIX absolute debit cap with width so wider spreads are not
-        # over-blocked by a flat $2 cap tuned for $5 structures.
-        abs_cap_scaled = abs_cap * (width / 5.0) if width > 0 else abs_cap
-        if (
-            vix_current is not None
-            and float(vix_current) < abs_cap_vix
-            and net_debit > abs_cap_scaled
-        ):
+        abs_cap_scaled = self._get_spread_absolute_debit_cap(vix_current, width)
+        dynamic_abs_cap = bool(getattr(config, "SPREAD_DW_ABSOLUTE_CAP_DYNAMIC_ENABLED", False))
+        should_apply_abs_cap = dynamic_abs_cap or (
+            vix_current is not None and float(vix_current) < abs_cap_vix
+        )
+        if should_apply_abs_cap and net_debit > abs_cap_scaled:
+            vix_label = f"{float(vix_current):.1f}" if vix_current is not None else "NA"
             self.log(
                 f"SPREAD: Entry blocked - ABS_DEBIT_CAP ${net_debit:.2f} > ${abs_cap_scaled:.2f} | "
-                f"VIX={float(vix_current):.1f} | Width=${width:.0f}",
+                f"VIX={vix_label} | Width=${width:.0f}",
                 trades_only=True,
             )
             return fail_quality("DEBIT_ABSOLUTE_CAP_EXCEEDED")
@@ -9634,6 +9680,18 @@ class OptionsEngine:
                 # ITM sovereign path: read current MICRO state without mutating it.
                 state = self._micro_regime_engine.get_state()
             else:
+                qqq_atr_pct = None
+                if qqq_current > 0 and self.algorithm is not None:
+                    try:
+                        qqq_atr_indicator = getattr(self.algorithm, "qqq_atr", None)
+                        if qqq_atr_indicator is not None and bool(
+                            getattr(qqq_atr_indicator, "IsReady", False)
+                        ):
+                            qqq_atr_value = float(qqq_atr_indicator.Current.Value)
+                            if qqq_atr_value > 0:
+                                qqq_atr_pct = (qqq_atr_value / float(qqq_current)) * 100.0
+                    except Exception:
+                        qqq_atr_pct = None
                 state = self._micro_regime_engine.update(
                     vix_current=vix_current,
                     vix_open=vix_open,
@@ -9642,6 +9700,7 @@ class OptionsEngine:
                     current_time=current_time,
                     macro_regime_score=macro_regime_score,
                     vix_level_override=vix_level_override,  # V6.2: Pass through
+                    qqq_atr_pct=qqq_atr_pct,
                 )
 
         # V10.10: allow explicit strategy overrides for retry/ITM sovereign paths.
@@ -10220,8 +10279,21 @@ class OptionsEngine:
             )
             self._pending_stop_pct = final_stop_pct
         else:
-            # Fallback to legacy fixed percentage stop
-            self._pending_stop_pct = config.OPTIONS_0DTE_STOP_PCT
+            # Fallback path when ATR is unavailable.
+            # Keep fixed 0DTE override optional; otherwise use strategy stop baseline.
+            use_static_0dte = bool(
+                getattr(config, "OPTIONS_0DTE_STATIC_STOP_OVERRIDE_ENABLED", False)
+            ) and bool(best_contract is not None and best_contract.days_to_expiry <= 1)
+            if use_static_0dte:
+                self._pending_stop_pct = float(getattr(config, "OPTIONS_0DTE_STOP_PCT", 0.25))
+            elif entry_strategy == IntradayStrategy.ITM_MOMENTUM:
+                self._pending_stop_pct = float(getattr(config, "INTRADAY_ITM_STOP", 0.40))
+            elif entry_strategy == IntradayStrategy.MICRO_OTM_MOMENTUM:
+                self._pending_stop_pct = float(getattr(config, "MICRO_OTM_MOMENTUM_STOP", 0.30))
+            elif entry_strategy == IntradayStrategy.MICRO_DEBIT_FADE:
+                self._pending_stop_pct = float(getattr(config, "MICRO_DEBIT_FADE_STOP", 0.25))
+            else:
+                self._pending_stop_pct = float(getattr(config, "OPTIONS_ATR_STOP_MIN_PCT", 0.12))
             if underlying_atr <= 0:
                 self.log(f"STOP_CALC: ATR not ready, using fixed {self._pending_stop_pct:.0%} stop")
 

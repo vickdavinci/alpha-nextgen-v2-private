@@ -277,6 +277,11 @@ V53_BREADTH_5D_DECAY_THRESHOLD = -0.01  # V6.9: Trigger earlier (-1% vs -2%)
 V53_BREADTH_10D_DECAY_THRESHOLD = -0.03  # V6.9: Trigger earlier (-3% vs -4%)
 V53_BREADTH_5D_PENALTY = 8  # V6.9: Increase penalty to pull regime down faster
 V53_BREADTH_10D_PENALTY = 12  # V6.9: Stronger 10d decay penalty (stacks with 5d)
+# V12.0: Elastic breadth penalty - avoid over-penalizing narrow leadership in strong uptrends.
+V53_BREADTH_PENALTY_ELASTIC_ENABLED = True
+V53_BREADTH_PENALTY_STRONG_TREND_SCORE = 75.0
+V53_BREADTH_PENALTY_WEAK_TREND_SCORE = 50.0
+V53_BREADTH_PENALTY_STRONG_TREND_CAP = 5.0
 
 # -----------------------------------------------------------------------------
 # LEGACY 7-FACTOR WEIGHTS (V3.0) - Used if V3_REGIME_SIMPLIFIED_ENABLED = False
@@ -929,6 +934,9 @@ VASS_VIX_5D_BEARISH_THRESHOLD = (
 VASS_VIX_5D_BULLISH_THRESHOLD = -0.20  # VIX 5d change < -20% → BULLISH conviction
 VASS_VIX_20D_STRONG_BEARISH = 0.30  # VIX 20d change > +30% → STRONG BEARISH
 VASS_VIX_20D_STRONG_BULLISH = -0.20  # VIX 20d change < -20% → STRONG BULLISH
+# V12.0: Bearish conviction requires both velocity and absolute stress floor.
+VASS_VIX_BEARISH_VETO_MIN_LEVEL = 18.0
+VASS_VIX_BEARISH_VETO_5D_MIN_CHANGE = 0.25
 VASS_LOW_VIX_CONVICTION_RELAX_ENABLED = True  # V10.8: broaden conviction in calm low-vol tapes
 VASS_LOW_VIX_CONVICTION_MAX_VIX = 16.0
 VASS_LOW_VIX_5D_CHANGE_THRESHOLD = 0.08  # V10.16: improve low-VIX conviction activation
@@ -1086,7 +1094,10 @@ OPTIONS_STOP_TIERS = {
 # V2.3.8: 0DTE-specific stop override (PART 14 Pitfall 2)
 # 0DTE options move extremely fast - by time stop triggers, slippage can double the loss
 # NOTE: StopMarketOrder fills at next available price after trigger, not the stop price
-OPTIONS_0DTE_STOP_PCT = 0.15  # -15% stop for 0DTE
+OPTIONS_0DTE_STOP_PCT = 0.25  # Legacy fallback when ATR stop cannot be computed
+OPTIONS_0DTE_STATIC_STOP_OVERRIDE_ENABLED = (
+    False  # V12.0: Keep ATR stops sovereign; disable fixed 0DTE override in normal flow
+)
 
 # =============================================================================
 # V6.5: DELTA-SCALED ATR STOP CALIBRATION
@@ -1100,7 +1111,7 @@ OPTIONS_0DTE_STOP_PCT = 0.15  # -15% stop for 0DTE
 #   If entry=$3.50, stop=$0.80 (77% stop)
 
 # ATR multiplier for stop calculation (Chandelier-style)
-OPTIONS_ATR_STOP_MULTIPLIER = 0.9  # V6.13 OPT: Slightly tighter ATR base stop
+OPTIONS_ATR_STOP_MULTIPLIER = 2.5  # V12.0: ATR-first stop sizing for intraday options
 
 # Floor and cap to prevent extreme stops
 OPTIONS_ATR_STOP_MIN_PCT = 0.12  # V6.13 OPT: Tighter floor in calm conditions
@@ -1456,6 +1467,13 @@ SPREAD_DW_CAP_NORMAL = 0.46  # V10.30: reduce false contract-quality starvation 
 SPREAD_DW_CAP_COMPRESSED = 0.48  # VIX < 13
 SPREAD_DW_ABSOLUTE_CAP = 2.00  # Max debit dollars on $5 spread in very calm IV
 SPREAD_DW_ABSOLUTE_CAP_VIX = 15.0
+# V12.0: Elastic absolute debit cap (inversely scaled by VIX, bounded).
+SPREAD_DW_ABSOLUTE_CAP_DYNAMIC_ENABLED = True
+SPREAD_DW_ABSOLUTE_CAP_BASELINE = 1.00
+SPREAD_DW_ABSOLUTE_CAP_VIX_SCALE = 20.0
+SPREAD_DW_ABSOLUTE_CAP_VIX_FLOOR = 10.0
+SPREAD_DW_ABSOLUTE_CAP_MIN = 1.60
+SPREAD_DW_ABSOLUTE_CAP_MAX = 2.60
 SPREAD_PROFIT_TARGET_PCT = (
     0.40  # V10.11: reduce target to improve realization while preserving hold thesis
 )
@@ -1983,6 +2001,11 @@ INTRADAY_FADE_MIN_MOVE = 0.35  # Restore intraday participation while keeping no
 MICRO_MIN_MOVE_LOW_VIX = 0.50  # Stricter for LOW VIX — filter theta-dominated noise
 MICRO_MIN_MOVE_MED_VIX = 0.45  # V10.30: filter borderline momentum noise in medium VIX
 MICRO_MIN_MOVE_HIGH_VIX = 0.40  # Standard move gate
+# V12.0: ATR-indexed move gate (can relax fixed gates in quiet tape).
+MICRO_ATR_MIN_MOVE_ENABLED = True
+MICRO_ATR_MIN_MOVE_MULTIPLIER = 0.50
+MICRO_ATR_MIN_MOVE_FLOOR_PCT = 0.12
+MICRO_ATR_MIN_MOVE_CAP_PCT = 0.60
 INTRADAY_FADE_MAX_MOVE = 1.50  # V6.8: Was 1.20, don't block strong bull continuation
 INTRADAY_DEBIT_FADE_START = "10:00"  # Legacy alias (kept for compatibility)
 INTRADAY_DEBIT_FADE_END = "14:30"  # Legacy alias (kept for compatibility)

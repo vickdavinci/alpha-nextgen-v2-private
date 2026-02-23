@@ -1385,14 +1385,48 @@ class RegimeEngine:
         # Calculate breadth decay penalty
         breadth_pen = 0.0
         if getattr(config, "V53_BREADTH_DECAY_ENABLED", True):
+            penalty_5d = float(getattr(config, "V53_BREADTH_5D_PENALTY", 5.0))
+            penalty_10d = float(getattr(config, "V53_BREADTH_10D_PENALTY", 8.0))
             breadth_pen = breadth_decay_penalty(
                 rsp_spy_ratio_5d_change=rsp_spy_5d_change,
                 rsp_spy_ratio_10d_change=rsp_spy_10d_change,
                 threshold_5d=getattr(config, "V53_BREADTH_5D_DECAY_THRESHOLD", -0.10),
                 threshold_10d=getattr(config, "V53_BREADTH_10D_DECAY_THRESHOLD", -0.15),
-                penalty_5d=getattr(config, "V53_BREADTH_5D_PENALTY", 5.0),
-                penalty_10d=getattr(config, "V53_BREADTH_10D_PENALTY", 8.0),
+                penalty_5d=penalty_5d,
+                penalty_10d=penalty_10d,
             )
+            if breadth_pen > 0 and bool(
+                getattr(config, "V53_BREADTH_PENALTY_ELASTIC_ENABLED", True)
+            ):
+                strong_trend_score = float(
+                    getattr(config, "V53_BREADTH_PENALTY_STRONG_TREND_SCORE", 75.0)
+                )
+                weak_trend_score = float(
+                    getattr(config, "V53_BREADTH_PENALTY_WEAK_TREND_SCORE", 50.0)
+                )
+                strong_trend_cap = float(
+                    getattr(config, "V53_BREADTH_PENALTY_STRONG_TREND_CAP", 5.0)
+                )
+                max_penalty = max(strong_trend_cap, penalty_5d + penalty_10d)
+                # Defensive guard when thresholds are misconfigured.
+                if strong_trend_score <= weak_trend_score:
+                    strong_trend_score = weak_trend_score + 1.0
+                if trend_score >= strong_trend_score:
+                    elastic_cap = strong_trend_cap
+                elif trend_score <= weak_trend_score:
+                    elastic_cap = max_penalty
+                else:
+                    weight = (strong_trend_score - trend_score) / (
+                        strong_trend_score - weak_trend_score
+                    )
+                    elastic_cap = strong_trend_cap + weight * (max_penalty - strong_trend_cap)
+                adjusted_penalty = min(float(breadth_pen), float(elastic_cap))
+                if adjusted_penalty + 1e-6 < float(breadth_pen):
+                    self.log(
+                        f"REGIME V5.3: Breadth penalty elastic cap {breadth_pen:.1f} -> {adjusted_penalty:.1f} | "
+                        f"Trend={trend_score:.1f} | Cap={elastic_cap:.1f}"
+                    )
+                breadth_pen = adjusted_penalty
             if breadth_pen > 0:
                 self.log(
                     f"REGIME V5.3: Breadth decay penalty={breadth_pen:.0f} | 5d={rsp_spy_5d_change:.1%} 10d={rsp_spy_10d_change:.1%}"
