@@ -2561,6 +2561,12 @@ class OptionsEngine:
         # Case 2: Macro is NEUTRAL (no strong opinion)
         if macro_direction == "NEUTRAL":
             if engine_conviction:
+                if not allow_macro_veto:
+                    return (
+                        False,
+                        None,
+                        f"NO_TRADE: {engine} conviction present but hard-veto guard not satisfied",
+                    )
                 # V6.9: Only allow MICRO to VETO NEUTRAL on extreme UVXY moves
                 if engine == "MICRO" and conviction_strength is not None:
                     if abs(conviction_strength) < config.MICRO_UVXY_CONVICTION_EXTREME:
@@ -3169,7 +3175,7 @@ class OptionsEngine:
             else self._get_regime_transition_context()
         )
         engine_key = str(engine or "").upper()
-        if engine_key not in {"MICRO", "ITM", "VASS"}:
+        if engine_key not in {"MICRO", "ITM", "VASS", "HEDGE"}:
             return "", ""
 
         if engine_key == "MICRO":
@@ -3186,13 +3192,20 @@ class OptionsEngine:
             ambiguous_gate = "REGIME_TRANSITION_AMBIGUOUS"
             call_det_gate = "REGIME_DOWNSHIFT_NO_CALL"
             put_rec_gate = "REGIME_RECOVERY_NO_PUT"
-        else:  # VASS
+        elif engine_key == "VASS":
             ambiguous_key = "VASS_TRANSITION_BLOCK_AMBIGUOUS"
             call_det_key = "VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION"
             put_rec_key = "VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY"
             ambiguous_gate = "VASS_TRANSITION_BLOCK_AMBIGUOUS"
             call_det_gate = "VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION"
             put_rec_gate = "VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY"
+        else:  # HEDGE (protective hedges/throttle-only handoff policies)
+            ambiguous_key = "ITM_TRANSITION_BLOCK_AMBIGUOUS"
+            call_det_key = "ITM_TRANSITION_BLOCK_BULL_ON_DETERIORATION"
+            put_rec_key = "ITM_TRANSITION_BLOCK_BEAR_ON_RECOVERY"
+            ambiguous_gate = "HEDGE_TRANSITION_AMBIGUOUS"
+            call_det_gate = "HEDGE_TRANSITION_BLOCK_BULL_ON_DETERIORATION"
+            put_rec_gate = "HEDGE_TRANSITION_BLOCK_BEAR_ON_RECOVERY"
 
         if bool(getattr(config, ambiguous_key, True)) and bool(ctx.get("ambiguous", False)):
             return ambiguous_gate, "ambiguous transition state"
@@ -3210,6 +3223,58 @@ class OptionsEngine:
             and bool(ctx.get("strong_recovery", False))
         ):
             return put_rec_gate, "bearish blocked during recovery"
+
+        if bool(getattr(config, "TRANSITION_HANDOFF_THROTTLE_ENABLED", True)):
+            if engine_key == "ITM":
+                handoff_enabled = bool(
+                    getattr(config, "ITM_TRANSITION_HANDOFF_THROTTLE_ENABLED", True)
+                )
+            elif engine_key == "MICRO":
+                handoff_enabled = bool(
+                    getattr(config, "MICRO_TRANSITION_HANDOFF_THROTTLE_ENABLED", True)
+                )
+            elif engine_key == "HEDGE":
+                handoff_enabled = bool(
+                    getattr(config, "HEDGE_TRANSITION_HANDOFF_THROTTLE_ENABLED", True)
+                )
+            else:
+                handoff_enabled = False
+            if handoff_enabled and direction in (OptionDirection.CALL, OptionDirection.PUT):
+                overlay = str(ctx.get("transition_overlay", "")).upper()
+                bars_since_flip = int(ctx.get("overlay_bars_since_flip", 999) or 999)
+                handoff_bars = max(1, int(getattr(config, "TRANSITION_HANDOFF_BARS", 2)))
+                delta = float(ctx.get("delta", 0.0) or 0.0)
+                momentum = float(ctx.get("momentum_roc", 0.0) or 0.0)
+                hard_downside = delta <= float(
+                    getattr(config, "TRANSITION_HANDOFF_HARD_DOWNSIDE_DELTA_MAX", -2.5)
+                ) and momentum <= float(
+                    getattr(config, "TRANSITION_HANDOFF_HARD_DOWNSIDE_MOM_MAX", -0.02)
+                )
+                hard_upside = delta >= float(
+                    getattr(config, "TRANSITION_HANDOFF_HARD_UPSIDE_DELTA_MIN", 2.5)
+                ) and momentum >= float(
+                    getattr(config, "TRANSITION_HANDOFF_HARD_UPSIDE_MOM_MIN", 0.02)
+                )
+                if (
+                    direction == OptionDirection.PUT
+                    and overlay == "RECOVERY"
+                    and bars_since_flip < handoff_bars
+                    and not hard_downside
+                ):
+                    return (
+                        "TRANSITION_HANDOFF_PUT_THROTTLE",
+                        f"PUT throttled {bars_since_flip}/{handoff_bars} bars into RECOVERY",
+                    )
+                if (
+                    direction == OptionDirection.CALL
+                    and overlay == "DETERIORATION"
+                    and bars_since_flip < handoff_bars
+                    and not hard_upside
+                ):
+                    return (
+                        "TRANSITION_HANDOFF_CALL_THROTTLE",
+                        f"CALL throttled {bars_since_flip}/{handoff_bars} bars into DETERIORATION",
+                    )
 
         return "", ""
 
@@ -5489,6 +5554,8 @@ class OptionsEngine:
                 float(transition_ctx.get("transition_score", regime_score) or regime_score),
             )
         )
+        base_regime = str(transition_ctx.get("base_regime", "") or "").upper()
+        transition_overlay = str(transition_ctx.get("transition_overlay", "") or "").upper()
 
         # Derive spread type and VIX max from direction
         if direction == OptionDirection.CALL:
@@ -5497,6 +5564,10 @@ class OptionsEngine:
         else:
             spread_type = "BEAR_PUT"
             vix_max = config.SPREAD_VIX_MAX_BEAR
+        recovery_relax_active = bool(getattr(config, "VASS_RECOVERY_RELAX_ENABLED", True)) and (
+            spread_type == "BULL_CALL"
+            and (base_regime == "BULLISH" or transition_overlay == "RECOVERY")
+        )
 
         if (
             bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
@@ -5577,10 +5648,17 @@ class OptionsEngine:
             qqq_sma20 = getattr(self.algorithm, "qqq_sma20", None)
             if qqq_sma20 is not None and getattr(qqq_sma20, "IsReady", False):
                 sma20_value = float(qqq_sma20.Current.Value)
-                if current_price < sma20_value:
+                ma20_floor = sma20_value
+                if recovery_relax_active:
+                    ma20_tol = float(
+                        getattr(config, "VASS_RECOVERY_RELAX_MA20_TOLERANCE_PCT", 0.003)
+                    )
+                    ma20_floor = sma20_value * (1.0 - max(0.0, ma20_tol))
+                if current_price < ma20_floor:
                     self.log(
                         f"SPREAD: BULL_CALL blocked by MA20 gate | "
-                        f"QQQ={current_price:.2f} < MA20={sma20_value:.2f}"
+                        f"QQQ={current_price:.2f} < MA20 floor={ma20_floor:.2f} "
+                        f"(MA20={sma20_value:.2f})"
                     )
                     return fail("R_BULL_MA20_GATE")
 
@@ -5929,6 +6007,10 @@ class OptionsEngine:
         # V10.16: Adaptive debit-to-width quality cap by current VIX regime.
         min_debit_pct = float(getattr(config, "SPREAD_MIN_DEBIT_TO_WIDTH_PCT", 0.28))
         max_debit_pct = self._get_spread_debit_width_cap(vix_current)
+        if recovery_relax_active:
+            relaxed_cap_max = float(getattr(config, "VASS_RECOVERY_RELAX_MAX_DW_CAP", 0.55))
+            relaxed_cap_bump = float(getattr(config, "VASS_RECOVERY_RELAX_DW_CAP_BUMP", 0.09))
+            max_debit_pct = min(relaxed_cap_max, max_debit_pct + max(0.0, relaxed_cap_bump))
 
         debit_to_width = net_debit / width if width > 0 else 1.0
         abs_cap_vix = float(getattr(config, "SPREAD_DW_ABSOLUTE_CAP_VIX", 15.0))
@@ -9296,12 +9378,25 @@ class OptionsEngine:
         qqq_sma20_ready: bool,
     ) -> Tuple[bool, str, str]:
         """Delegate VASS bullish debit trend confirmation to VASSEntryEngine."""
+        transition_ctx = self._get_regime_transition_context()
+        base_regime = str(transition_ctx.get("base_regime", "") or "").upper()
+        transition_overlay = str(transition_ctx.get("transition_overlay", "") or "").upper()
+        recovery_relax = bool(getattr(config, "VASS_RECOVERY_RELAX_ENABLED", True)) and (
+            base_regime == "BULLISH" or transition_overlay == "RECOVERY"
+        )
         return self._vass_entry_engine.check_bull_debit_trend_confirmation(
             vix_current=vix_current,
             current_price=current_price,
             qqq_open=qqq_open,
             qqq_sma20=qqq_sma20,
             qqq_sma20_ready=qqq_sma20_ready,
+            relax_recovery=recovery_relax,
+            relaxed_day_min_change_pct=float(
+                getattr(config, "VASS_RECOVERY_RELAX_DAY_MIN_CHANGE_PCT", -0.05)
+            ),
+            ma20_tolerance_pct=float(
+                getattr(config, "VASS_RECOVERY_RELAX_MA20_TOLERANCE_PCT", 0.003)
+            ),
         )
 
     def get_itm_direction_proposal(
@@ -9933,6 +10028,24 @@ class OptionsEngine:
                     trades_only=True,
                 )
                 return fail("E_MICRO_ENGINE_DISABLED")
+
+        transition_engine = None
+        if is_protective_put:
+            transition_engine = "HEDGE"
+        elif itm_engine_mode:
+            transition_engine = "ITM"
+        if transition_engine is not None and direction in (
+            OptionDirection.CALL,
+            OptionDirection.PUT,
+        ):
+            transition_ctx = self._get_regime_transition_context(macro_regime_score)
+            block_gate, block_reason = self.evaluate_transition_policy_block(
+                engine=transition_engine,
+                direction=direction,
+                transition_ctx=transition_ctx,
+            )
+            if block_gate:
+                return fail(block_gate, block_reason)
 
         # V3.2: Governor Gate for intraday (closes gap)
         if getattr(config, "INTRADAY_GOVERNOR_GATE_ENABLED", True) and not is_protective_put:

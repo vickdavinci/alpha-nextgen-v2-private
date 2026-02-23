@@ -1,9 +1,12 @@
 # region imports
 # Type hints
 import csv
+import gzip
 import io
 import json
 import re
+from base64 import b64encode
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from AlgorithmImports import *
@@ -142,8 +145,10 @@ class AlphaNextGen(QCAlgorithm):
         # =====================================================================
         # STEP 1: Basic Setup
         # =====================================================================
-        # Full-year backtest window with optional year override via QC parameter.
-        # Example: --parameter backtest_year 2023
+        # Full-year backtest window with optional year/date overrides via QC parameters.
+        # Examples:
+        #   --parameter backtest_year 2023
+        #   --parameter start_date 2024-06-01 --parameter end_date 2024-12-31
         backtest_year = 2024
         backtest_year_param = str(self.GetParameter("backtest_year") or "").strip()
         if backtest_year_param:
@@ -153,17 +158,49 @@ class AlphaNextGen(QCAlgorithm):
                     backtest_year = parsed_year
             except (TypeError, ValueError):
                 pass
+        start_date_param = str(self.GetParameter("start_date") or "").strip()
+        end_date_param = str(self.GetParameter("end_date") or "").strip()
+        custom_start = None
+        custom_end = None
+        if start_date_param:
+            try:
+                custom_start = datetime.strptime(start_date_param, "%Y-%m-%d")
+            except ValueError:
+                self.Log(f"INIT_WARN: Invalid start_date '{start_date_param}', expected YYYY-MM-DD")
+        if end_date_param:
+            try:
+                custom_end = datetime.strptime(end_date_param, "%Y-%m-%d")
+            except ValueError:
+                self.Log(f"INIT_WARN: Invalid end_date '{end_date_param}', expected YYYY-MM-DD")
         run_label = str(self.GetParameter("run_label") or "").strip()
+        if custom_start is not None and custom_end is None:
+            custom_end = datetime(custom_start.year, 12, 31)
+        if custom_end is not None and custom_start is None:
+            custom_start = datetime(custom_end.year, 1, 1)
+        if custom_start is not None and custom_end is not None and custom_end < custom_start:
+            self.Log(
+                f"INIT_WARN: end_date {custom_end:%Y-%m-%d} is before start_date {custom_start:%Y-%m-%d}; "
+                "falling back to full-year window"
+            )
+            custom_start = None
+            custom_end = None
+        if custom_start is not None and custom_end is not None:
+            backtest_year = custom_start.year
         self._backtest_year = backtest_year
         self._run_label = run_label
-        self.SetStartDate(backtest_year, 1, 1)
-        self.SetEndDate(backtest_year, 12, 31)
+        if custom_start is not None and custom_end is not None:
+            self.SetStartDate(custom_start.year, custom_start.month, custom_start.day)
+            self.SetEndDate(custom_end.year, custom_end.month, custom_end.day)
+            date_window_label = f"{custom_start:%Y-%m-%d}..{custom_end:%Y-%m-%d}"
+        else:
+            self.SetStartDate(backtest_year, 1, 1)
+            self.SetEndDate(backtest_year, 12, 31)
+            date_window_label = f"{backtest_year}-01-01..{backtest_year}-12-31"
         self.SetCash(config.INITIAL_CAPITAL)  # Seed capital from config
         run_label_display = run_label if run_label else "DEFAULT"
         self.Log(f"INIT: BacktestYear={backtest_year} | RunLabel={run_label_display}")
         self.Log(
-            "INIT: DateWindow="
-            f"{backtest_year}-01-01..{backtest_year}-12-31"
+            f"INIT: DateWindow={date_window_label}"
             f" | EffectiveStart={self.StartDate:%Y-%m-%d}"
             f" | EffectiveEnd={self.EndDate:%Y-%m-%d}"
         )
@@ -422,9 +459,11 @@ class AlphaNextGen(QCAlgorithm):
         self._regime_base_state = "NEUTRAL"
         self._regime_base_candidate_state = "NEUTRAL"
         self._regime_base_candidate_streak = 0
+        self._regime_base_state_enter_seq = 0
         self._regime_overlay_state = "STABLE"
         self._regime_overlay_candidate_state = "STABLE"
         self._regime_overlay_candidate_streak = 0
+        self._regime_overlay_state_enter_seq = 0
         self._regime_overlay_ambiguous_bars = 0
         self._regime_detector_sample_seq = 0
         self._regime_detector_prev_score: Optional[float] = None
@@ -445,6 +484,7 @@ class AlphaNextGen(QCAlgorithm):
         self._order_lifecycle_records: List[Dict[str, Any]] = []
         self._order_lifecycle_overflow_logged = False
         self._order_lifecycle_observability_key = self._build_order_lifecycle_observability_key()
+        self._observability_log_fallback_signature_by_key: Dict[str, str] = {}
         self._diag_vass_signal_seq = 0
         self._last_regime_effective_log_at = None
         self._last_intraday_dte_routing_log_by_key = {}
@@ -1874,14 +1914,12 @@ class AlphaNextGen(QCAlgorithm):
         ) = self.options_engine.get_iv_conviction()
         macro_direction = self.options_engine.get_macro_direction(regime_for_vass)
         allow_macro_veto = True
-        if (
-            has_conviction
-            and conviction_direction == "BEARISH"
-            and str(macro_direction).upper() == "BULLISH"
-        ):
+        if has_conviction and conviction_direction == "BEARISH":
             allow_macro_veto, veto_reason = self.options_engine.get_iv_bearish_veto_status()
             if not allow_macro_veto:
-                conviction_reason = f"{conviction_reason} | SOFT_ONLY={veto_reason}"
+                has_conviction = False
+                conviction_direction = None
+                conviction_reason = f"{conviction_reason} | HARD_VETO_BLOCK={veto_reason}"
         overlay_state = self.options_engine.get_regime_overlay_state(
             vix_current=vix_level_for_vass, regime_score=regime_for_vass
         )
@@ -8326,6 +8364,9 @@ class AlphaNextGen(QCAlgorithm):
         recovery_detector_delta_min = float(
             getattr(config, "REGIME_TRANSITION_RECOVERY_DETECTOR_DELTA_MIN", 0.8)
         )
+        recovery_eod_agreement_min = float(
+            getattr(config, "REGIME_TRANSITION_RECOVERY_EOD_AGREEMENT_MIN", 0.15)
+        )
         recovery_mom_min = float(getattr(config, "REGIME_TRANSITION_RECOVERY_MOMENTUM_MIN", 0.015))
         recovery_vix_5d_max = float(getattr(config, "REGIME_TRANSITION_RECOVERY_VIX_5D_MAX", 0.05))
         deterioration_delta_max = float(
@@ -8333,6 +8374,9 @@ class AlphaNextGen(QCAlgorithm):
         )
         deterioration_detector_delta_max = float(
             getattr(config, "REGIME_TRANSITION_DETERIORATION_DETECTOR_DELTA_MAX", -0.8)
+        )
+        deterioration_eod_agreement_max = float(
+            getattr(config, "REGIME_TRANSITION_DETERIORATION_EOD_AGREEMENT_MAX", -0.15)
         )
         deterioration_mom_max = float(
             getattr(config, "REGIME_TRANSITION_DETERIORATION_MOMENTUM_MAX", -0.015)
@@ -8361,14 +8405,19 @@ class AlphaNextGen(QCAlgorithm):
             detector_delta = float(self._regime_detector_last_raw.get("detector_delta", 0.0) or 0.0)
 
         recovery_by_detector = detector_delta >= recovery_detector_delta_min
-        recovery_by_eod = eod_delta >= recovery_delta_min
+        recovery_by_eod = (
+            eod_delta >= recovery_delta_min and detector_delta >= recovery_eod_agreement_min
+        )
         raw_recovery = (
             (recovery_by_detector or recovery_by_eod)
             and momentum_roc >= recovery_mom_min
             and vix_5d_change <= recovery_vix_5d_max
         )
         deterioration_by_detector = detector_delta <= deterioration_detector_delta_max
-        deterioration_by_eod = eod_delta <= deterioration_delta_max
+        deterioration_by_eod = (
+            eod_delta <= deterioration_delta_max
+            and detector_delta <= deterioration_eod_agreement_max
+        )
         raw_deterioration = (
             (deterioration_by_detector or deterioration_by_eod)
             and momentum_roc <= deterioration_mom_max
@@ -8411,6 +8460,26 @@ class AlphaNextGen(QCAlgorithm):
 
         if is_new_sample:
             base_candidate = self._evaluate_base_regime_candidate(detector_score)
+            prev_base_state = str(getattr(self, "_regime_base_state", "NEUTRAL")).upper()
+            prev_overlay_state = str(getattr(self, "_regime_overlay_state", "STABLE")).upper()
+            overlay_dwell = int(getattr(config, "REGIME_OVERLAY_STATE_DWELL_BARS", 2))
+            if overlay_candidate == "RECOVERY":
+                overlay_dwell = int(
+                    getattr(config, "REGIME_OVERLAY_DWELL_RECOVERY_BARS", overlay_dwell)
+                )
+            elif overlay_candidate == "DETERIORATION":
+                overlay_dwell = int(
+                    getattr(config, "REGIME_OVERLAY_DWELL_DETERIORATION_BARS", overlay_dwell)
+                )
+            elif overlay_candidate == "AMBIGUOUS":
+                overlay_dwell = int(
+                    getattr(config, "REGIME_OVERLAY_DWELL_AMBIGUOUS_BARS", overlay_dwell)
+                )
+            if prev_overlay_state == "DETERIORATION" and overlay_candidate != "DETERIORATION":
+                overlay_dwell = max(
+                    overlay_dwell,
+                    int(getattr(config, "REGIME_OVERLAY_EXIT_DETERIORATION_DWELL_BARS", 3)),
+                )
             if bool(getattr(config, "REGIME_BASE_STATE_MACHINE_ENABLED", True)):
                 (
                     self._regime_base_state,
@@ -8432,7 +8501,7 @@ class AlphaNextGen(QCAlgorithm):
                     candidate_state=self._regime_overlay_candidate_state,
                     candidate_streak=self._regime_overlay_candidate_streak,
                     desired_state=overlay_candidate,
-                    dwell_required=int(getattr(config, "REGIME_OVERLAY_STATE_DWELL_BARS", 2)),
+                    dwell_required=overlay_dwell,
                 )
             else:
                 self._regime_base_state = base_candidate
@@ -8441,6 +8510,15 @@ class AlphaNextGen(QCAlgorithm):
                 self._regime_overlay_candidate_state = overlay_candidate
                 self._regime_base_candidate_streak = 0
                 self._regime_overlay_candidate_streak = 0
+            current_seq = int(sample_seq)
+            if str(self._regime_base_state).upper() != prev_base_state:
+                self._regime_base_state_enter_seq = current_seq
+            elif int(getattr(self, "_regime_base_state_enter_seq", 0)) <= 0:
+                self._regime_base_state_enter_seq = current_seq
+            if str(self._regime_overlay_state).upper() != prev_overlay_state:
+                self._regime_overlay_state_enter_seq = current_seq
+            elif int(getattr(self, "_regime_overlay_state_enter_seq", 0)) <= 0:
+                self._regime_overlay_state_enter_seq = current_seq
             if self._regime_overlay_state == "AMBIGUOUS":
                 self._regime_overlay_ambiguous_bars = (
                     int(getattr(self, "_regime_overlay_ambiguous_bars", 0)) + 1
@@ -8474,6 +8552,8 @@ class AlphaNextGen(QCAlgorithm):
             "recovery_by_eod": bool(recovery_by_eod),
             "deterioration_by_detector": bool(deterioration_by_detector),
             "deterioration_by_eod": bool(deterioration_by_eod),
+            "recovery_eod_agreement_min": float(recovery_eod_agreement_min),
+            "deterioration_eod_agreement_max": float(deterioration_eod_agreement_max),
             "ambiguous_by_detector": bool(ambiguous_by_detector),
             "ambiguous_by_eod": bool(ambiguous_by_eod),
             # Backward-compatible alias expected by existing guards/log readers.
@@ -8514,6 +8594,11 @@ class AlphaNextGen(QCAlgorithm):
         strong_recovery = transition_overlay == "RECOVERY"
         strong_deterioration = transition_overlay == "DETERIORATION"
         ambiguous = transition_overlay == "AMBIGUOUS"
+        sample_seq = int(raw.get("sample_seq", getattr(self, "_regime_detector_sample_seq", 0)))
+        overlay_enter_seq = int(
+            getattr(self, "_regime_overlay_state_enter_seq", sample_seq) or sample_seq
+        )
+        overlay_bars_since_flip = max(0, sample_seq - overlay_enter_seq)
 
         transition_score = effective
         if strong_recovery and intraday_score > effective:
@@ -8534,6 +8619,7 @@ class AlphaNextGen(QCAlgorithm):
             "strong_recovery": bool(strong_recovery),
             "strong_deterioration": bool(strong_deterioration),
             "ambiguous": bool(ambiguous),
+            "overlay_bars_since_flip": int(overlay_bars_since_flip),
             "transition_score": float(transition_score),
             "raw_recovery": bool(raw.get("raw_recovery", False)),
             "raw_deterioration": bool(raw.get("raw_deterioration", False)),
@@ -8545,9 +8631,7 @@ class AlphaNextGen(QCAlgorithm):
             "deterioration_by_eod": bool(raw.get("deterioration_by_eod", False)),
             "overlay_candidate": str(raw.get("overlay_candidate", "STABLE")).upper(),
             "base_candidate": str(raw.get("base_candidate", "NEUTRAL")).upper(),
-            "sample_seq": int(
-                raw.get("sample_seq", getattr(self, "_regime_detector_sample_seq", 0))
-            ),
+            "sample_seq": sample_seq,
         }
 
     def _record_regime_decision_event(
@@ -8585,6 +8669,8 @@ class AlphaNextGen(QCAlgorithm):
                 "eod_delta": f"{float(ctx.get('eod_delta', 0.0)):+.2f}",
                 "momentum_roc": f"{float(ctx.get('momentum_roc', 0.0)):+.5f}",
                 "vix_5d_change": f"{float(ctx.get('vix_5d_change', 0.0)):+.5f}",
+                "base_regime": str(ctx.get("base_regime", "NEUTRAL")),
+                "transition_overlay": str(ctx.get("transition_overlay", "STABLE")),
                 "regime_state": f"{str(ctx.get('base_regime', 'NEUTRAL'))}|{str(ctx.get('transition_overlay', 'STABLE'))}",
                 "engine": str(engine or "").upper(),
                 "engine_decision": str(engine_decision or "").upper(),
@@ -8610,6 +8696,8 @@ class AlphaNextGen(QCAlgorithm):
             "eod_delta",
             "momentum_roc",
             "vix_5d_change",
+            "base_regime",
+            "transition_overlay",
             "regime_state",
             "engine",
             "engine_decision",
@@ -8662,6 +8750,7 @@ class AlphaNextGen(QCAlgorithm):
                 "ambiguous": "1" if bool(ctx.get("ambiguous", False)) else "0",
                 "base_candidate": str(ctx.get("base_candidate", "NEUTRAL")),
                 "overlay_candidate": str(ctx.get("overlay_candidate", "STABLE")),
+                "overlay_bars_since_flip": str(int(ctx.get("overlay_bars_since_flip", 0))),
                 "sample_seq": str(int(ctx.get("sample_seq", 0))),
                 "transition_score": f"{float(ctx.get('transition_score', ctx.get('effective_score', 0.0))):.2f}",
             },
@@ -8679,6 +8768,13 @@ class AlphaNextGen(QCAlgorithm):
             return
         retries = max(1, int(getattr(config, "OBSERVABILITY_OBJECTSTORE_SAVE_RETRIES", 2)))
 
+        def _render_csv(payload_rows: List[Dict[str, Any]]) -> str:
+            output = io.StringIO()
+            writer = csv.DictWriter(output, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(payload_rows)
+            return output.getvalue()
+
         def _save_text(target_key: str, payload: str) -> bool:
             for attempt in range(1, retries + 1):
                 try:
@@ -8692,25 +8788,72 @@ class AlphaNextGen(QCAlgorithm):
                         return False
             return False
 
+        def _should_fallback_to_logs() -> bool:
+            if not bool(getattr(config, "OBSERVABILITY_LOG_FALLBACK_ENABLED", False)):
+                return False
+            key_norm = str(key or "")
+            if key_norm == str(getattr(self, "_regime_observability_key", "")):
+                return bool(getattr(config, "REGIME_OBSERVABILITY_LOG_FALLBACK_ENABLED", True))
+            if key_norm == str(getattr(self, "_regime_timeline_observability_key", "")):
+                return bool(getattr(config, "REGIME_TIMELINE_LOG_FALLBACK_ENABLED", True))
+            if key_norm == str(getattr(self, "_signal_lifecycle_observability_key", "")):
+                return bool(getattr(config, "SIGNAL_LIFECYCLE_LOG_FALLBACK_ENABLED", False))
+            if key_norm == str(getattr(self, "_router_rejection_observability_key", "")):
+                return bool(getattr(config, "ROUTER_REJECTION_LOG_FALLBACK_ENABLED", False))
+            if key_norm == str(getattr(self, "_order_lifecycle_observability_key", "")):
+                return bool(getattr(config, "ORDER_LIFECYCLE_LOG_FALLBACK_ENABLED", False))
+            return False
+
+        def _emit_log_fallback(payload_csv: str) -> None:
+            if not payload_csv or not _should_fallback_to_logs():
+                return
+            signature = f"{len(rows)}|{len(payload_csv)}"
+            last_signature = self._observability_log_fallback_signature_by_key.get(key)
+            if signature == last_signature:
+                return
+            try:
+                compressed = gzip.compress(payload_csv.encode("utf-8"))
+                encoded = b64encode(compressed).decode("ascii")
+            except Exception as e:
+                self.Log(f"OBS_FALLBACK_ENCODE_ERROR: Key={key} | {e}")
+                return
+
+            chunk_size = max(
+                512,
+                int(getattr(config, "OBSERVABILITY_LOG_FALLBACK_CHUNK_SIZE", 3400)),
+            )
+            total_parts = (len(encoded) + chunk_size - 1) // chunk_size
+            self.Log(
+                f"OBS_FALLBACK_BEGIN: Key={key} | Rows={len(rows)} | "
+                f"Bytes={len(payload_csv)} | Parts={total_parts} | Encoding=gzip+base64"
+            )
+            for idx in range(total_parts):
+                start = idx * chunk_size
+                end = min((idx + 1) * chunk_size, len(encoded))
+                self.Log(
+                    f"OBS_FALLBACK_PART: Key={key} | Part={idx + 1}/{total_parts} | Data={encoded[start:end]}"
+                )
+            self.Log(f"OBS_FALLBACK_END: Key={key} | Rows={len(rows)} | Parts={total_parts}")
+            self._observability_log_fallback_signature_by_key[key] = signature
+
+        fallback_csv: Optional[str] = None
         shard_enabled = bool(getattr(config, "OBSERVABILITY_OBJECTSTORE_SHARD_ENABLED", True))
         shard_max_rows = int(getattr(config, "OBSERVABILITY_OBJECTSTORE_SHARD_MAX_ROWS", 12000))
         max_shards = max(1, int(getattr(config, "OBSERVABILITY_OBJECTSTORE_MAX_SHARDS", 32)))
         if not shard_enabled or shard_max_rows <= 0 or len(rows) <= shard_max_rows:
-            output = io.StringIO()
-            writer = csv.DictWriter(output, fieldnames=fields)
-            writer.writeheader()
-            writer.writerows(rows)
-            _save_text(key, output.getvalue())
+            fallback_csv = _render_csv(rows)
+            saved = _save_text(key, fallback_csv)
+            if not saved:
+                _emit_log_fallback(fallback_csv)
             return
 
         shard_total = (len(rows) + shard_max_rows - 1) // shard_max_rows
         shard_total = min(shard_total, max_shards)
         if shard_total <= 1:
-            output = io.StringIO()
-            writer = csv.DictWriter(output, fieldnames=fields)
-            writer.writeheader()
-            writer.writerows(rows)
-            _save_text(key, output.getvalue())
+            fallback_csv = _render_csv(rows)
+            saved = _save_text(key, fallback_csv)
+            if not saved:
+                _emit_log_fallback(fallback_csv)
             return
 
         adjusted_rows_per_shard = (len(rows) + shard_total - 1) // shard_total
@@ -8723,12 +8866,9 @@ class AlphaNextGen(QCAlgorithm):
             shard_rows = rows[start:end]
             if not shard_rows:
                 continue
-            output = io.StringIO()
-            writer = csv.DictWriter(output, fieldnames=fields)
-            writer.writeheader()
-            writer.writerows(shard_rows)
+            part_csv = _render_csv(shard_rows)
             part_key = f"{key_root}__part{shard_idx + 1:03d}.csv"
-            if not _save_text(part_key, output.getvalue()):
+            if not _save_text(part_key, part_csv):
                 wrote_all = False
         if wrote_all:
             manifest = {
@@ -8738,7 +8878,12 @@ class AlphaNextGen(QCAlgorithm):
                 "fields": fields,
                 "timestamp": self.Time.strftime("%Y-%m-%d %H:%M:%S"),
             }
-            _save_text(manifest_key, json.dumps(manifest, separators=(",", ":")))
+            if not _save_text(manifest_key, json.dumps(manifest, separators=(",", ":"))):
+                wrote_all = False
+        if not wrote_all:
+            if fallback_csv is None:
+                fallback_csv = _render_csv(rows)
+            _emit_log_fallback(fallback_csv)
 
     def _flush_signal_lifecycle_artifact(self) -> None:
         if not bool(getattr(config, "SIGNAL_LIFECYCLE_OBSERVABILITY_ENABLED", True)):
@@ -8845,6 +8990,7 @@ class AlphaNextGen(QCAlgorithm):
                 "ambiguous",
                 "base_candidate",
                 "overlay_candidate",
+                "overlay_bars_since_flip",
                 "sample_seq",
                 "transition_score",
             ],

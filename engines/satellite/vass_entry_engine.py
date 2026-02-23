@@ -157,6 +157,9 @@ class VASSEntryEngine:
         qqq_open: Optional[float],
         qqq_sma20: Optional[float],
         qqq_sma20_ready: bool,
+        relax_recovery: bool = False,
+        relaxed_day_min_change_pct: Optional[float] = None,
+        ma20_tolerance_pct: Optional[float] = None,
     ) -> Tuple[bool, str, str]:
         """Scoped trend confirmation for bullish debit spreads in low/medium-IV tape."""
         if not bool(getattr(config, "VASS_BULL_DEBIT_TREND_CONFIRM_ENABLED", False)):
@@ -180,23 +183,38 @@ class VASSEntryEngine:
             bool(getattr(config, "VASS_BULL_DEBIT_REQUIRE_MA20", True))
             and qqq_sma20_ready
             and qqq_sma20 is not None
-            and current_price <= float(qqq_sma20)
         ):
-            return (
-                False,
-                "R_BULL_DEBIT_TREND_MA20",
-                f"QQQ {current_price:.2f} <= MA20 {float(qqq_sma20):.2f}",
-            )
+            ma20_value = float(qqq_sma20)
+            effective_ma20_floor = ma20_value
+            if relax_recovery:
+                tolerance = float(
+                    ma20_tolerance_pct
+                    if ma20_tolerance_pct is not None
+                    else getattr(config, "VASS_RECOVERY_RELAX_MA20_TOLERANCE_PCT", 0.003)
+                )
+                if tolerance > 0:
+                    effective_ma20_floor = ma20_value * (1.0 - tolerance)
+            if current_price <= effective_ma20_floor:
+                return (
+                    False,
+                    "R_BULL_DEBIT_TREND_MA20",
+                    f"QQQ {current_price:.2f} <= MA20 floor {effective_ma20_floor:.2f} "
+                    f"(MA20 {ma20_value:.2f})",
+                )
 
         if bool(getattr(config, "VASS_BULL_DEBIT_REQUIRE_POSITIVE_DAY", True)):
             if qqq_open is not None and float(qqq_open) > 0:
                 day_change_pct = ((current_price - float(qqq_open)) / float(qqq_open)) * 100.0
-                min_day_change = float(getattr(config, "VASS_BULL_DEBIT_MIN_DAY_CHANGE_PCT", 0.20))
+                min_day_change = float(
+                    relaxed_day_min_change_pct
+                    if (relax_recovery and relaxed_day_min_change_pct is not None)
+                    else getattr(config, "VASS_BULL_DEBIT_MIN_DAY_CHANGE_PCT", 0.20)
+                )
                 if day_change_pct < min_day_change:
                     return (
                         False,
                         "R_BULL_DEBIT_TREND_DAY",
-                        f"QQQ day {day_change_pct:+.2f}% < +{min_day_change:.2f}% "
+                        f"QQQ day {day_change_pct:+.2f}% < {min_day_change:+.2f}% "
                         f"(QQQ={current_price:.2f}, Open={float(qqq_open):.2f})",
                     )
 
