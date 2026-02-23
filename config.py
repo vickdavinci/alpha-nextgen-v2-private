@@ -348,6 +348,10 @@ ORDER_LIFECYCLE_OBSERVABILITY_ENABLED = True
 ORDER_LIFECYCLE_OBSERVABILITY_MAX_ROWS = 50000
 ORDER_LIFECYCLE_OBJECTSTORE_ENABLED = True
 ORDER_LIFECYCLE_OBJECTSTORE_KEY_PREFIX = "order_lifecycle_observability"
+OBSERVABILITY_OBJECTSTORE_SHARD_ENABLED = True
+OBSERVABILITY_OBJECTSTORE_SHARD_MAX_ROWS = 12000
+OBSERVABILITY_OBJECTSTORE_MAX_SHARDS = 32
+OBSERVABILITY_OBJECTSTORE_SAVE_RETRIES = 2
 
 # Trend Factor
 SMA_FAST = 20
@@ -2477,6 +2481,20 @@ LOG_ORDER_LIFECYCLE_BACKTEST_ENABLED = (
     False  # Full-year backtests: rely on daily summaries to stay within log budget
 )
 LOG_ORDER_LIFECYCLE_MAX_PER_DAY = 20  # Guardrail for lifecycle log budget
+LOG_INTRADAY_BLOCKED_BACKTEST_ENABLED = False  # Keep drop reasons in artifacts; sample console
+LOG_INTRADAY_CANDIDATE_BACKTEST_ENABLED = (
+    False  # Candidate details captured in signal lifecycle CSV
+)
+LOG_INTRADAY_DROPPED_BACKTEST_ENABLED = False  # Drop RCA preserved in signal lifecycle CSV
+LOG_VASS_FALLBACK_BACKTEST_ENABLED = (
+    False  # Fallback retry detail captured via lifecycle + counters
+)
+LOG_WIN_RATE_GATE_BACKTEST_ENABLED = False  # Keep win-rate gate details sampled in full-year runs
+LOG_REGIME_ENGINE_DETAIL_BACKTEST_ENABLED = (
+    False  # Suppress minute-level regime factor dumps in backtests
+)
+LOG_HIGHFREQ_SAMPLE_FIRST_N_PER_KEY = 1  # Backtest console: keep first occurrence per key/day
+LOG_HIGHFREQ_SAMPLE_EVERY_N = 25  # Then log every Nth repeat for continuity
 SPREAD_GHOST_INTRADAY_CLEAR_CONSECUTIVE = (
     2  # Intraday guarded clear requires N consecutive flat checks
 )

@@ -34,6 +34,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import List, Optional
 
 try:
     import requests
@@ -73,6 +74,7 @@ OBSERVABILITY_ARTIFACT_SPECS = (
         "order_lifecycle_observability",
     ),
 )
+OBSERVABILITY_PART_MAX_FETCH = 64
 
 
 # ============================================================================
@@ -500,6 +502,62 @@ def _build_run_suffix_candidates(run_name: str, backtest: dict, year: int) -> li
     return candidates
 
 
+def _artifact_manifest_key(base_key: str) -> str:
+    stem = base_key[:-4] if base_key.endswith(".csv") else base_key
+    return f"{stem}__manifest.json"
+
+
+def _artifact_part_key(base_key: str, idx: int) -> str:
+    stem = base_key[:-4] if base_key.endswith(".csv") else base_key
+    return f"{stem}__part{idx:03d}.csv"
+
+
+def _lean_object_store_get(key: str, output_dir: Path) -> Optional[Path]:
+    cmd = [
+        "lean",
+        "cloud",
+        "object-store",
+        "get",
+        key,
+        "--destination-folder",
+        str(output_dir),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        return None
+    maybe_file = output_dir / key
+    return maybe_file if maybe_file.exists() else None
+
+
+def _load_shard_manifest(manifest_path: Path) -> dict:
+    try:
+        with open(manifest_path) as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _merge_part_files(part_files: List[Path], target: Path) -> bool:
+    if not part_files:
+        return False
+    with open(target, "w", encoding="utf-8", newline="") as out:
+        wrote_header = False
+        for idx, path in enumerate(part_files):
+            with open(path, "r", encoding="utf-8", errors="ignore") as src:
+                lines = src.read().splitlines()
+            if not lines:
+                continue
+            if not wrote_header:
+                out.write("\n".join(lines))
+                out.write("\n")
+                wrote_header = True
+                continue
+            out.write("\n".join(lines[1:]))
+            out.write("\n")
+    return wrote_header
+
+
 def pull_observability_artifacts(run_name: str, backtest: dict, output_dir: Path) -> dict:
     """
     Pull structured telemetry artifacts from QC Object Store.
@@ -521,30 +579,70 @@ def pull_observability_artifacts(run_name: str, backtest: dict, output_dir: Path
         downloaded = None
         for run_suffix in run_suffix_candidates:
             key = f"{prefix}__{run_suffix}_{year}.csv"
-            cmd = [
-                "lean",
-                "cloud",
-                "object-store",
-                "get",
-                key,
-                "--destination-folder",
-                str(output_dir),
-            ]
-            proc = subprocess.run(cmd, capture_output=True, text=True)
-            if proc.returncode != 0:
-                continue
-            maybe_file = output_dir / key
-            if maybe_file.exists():
+            maybe_file = _lean_object_store_get(key, output_dir)
+            if maybe_file is not None:
                 downloaded = maybe_file
                 break
+
+            manifest_key = _artifact_manifest_key(key)
+            manifest_file = _lean_object_store_get(manifest_key, output_dir)
+            part_files = []
+            if manifest_file is not None:
+                manifest = _load_shard_manifest(manifest_file)
+                expected_parts = int(manifest.get("parts", 0) or 0)
+                for idx in range(1, expected_parts + 1):
+                    part_key = _artifact_part_key(key, idx)
+                    part_file = _lean_object_store_get(part_key, output_dir)
+                    if part_file is None:
+                        part_files = []
+                        break
+                    part_files.append(part_file)
+                if part_files:
+                    shard_target = output_dir / f"{run_safe}_{label}.csv"
+                    if shard_target.exists():
+                        shard_target.unlink()
+                    if _merge_part_files(part_files, shard_target):
+                        downloaded = shard_target
+                        print(f"  Saved (sharded): {downloaded}")
+                        for part_file in part_files:
+                            if part_file.exists():
+                                part_file.unlink()
+                        if manifest_file.exists():
+                            manifest_file.unlink()
+                        break
+
+            # Fallback for legacy sharded runs without manifest.
+            if downloaded is None:
+                part_files = []
+                for idx in range(1, OBSERVABILITY_PART_MAX_FETCH + 1):
+                    part_key = _artifact_part_key(key, idx)
+                    part_file = _lean_object_store_get(part_key, output_dir)
+                    if part_file is None:
+                        if idx == 1:
+                            break
+                        break
+                    part_files.append(part_file)
+                if part_files:
+                    shard_target = output_dir / f"{run_safe}_{label}.csv"
+                    if shard_target.exists():
+                        shard_target.unlink()
+                    if _merge_part_files(part_files, shard_target):
+                        downloaded = shard_target
+                        print(f"  Saved (sharded, legacy): {downloaded}")
+                        for part_file in part_files:
+                            if part_file.exists():
+                                part_file.unlink()
+                        break
+
         if downloaded is None:
             continue
 
         target = output_dir / f"{run_safe}_{label}.csv"
-        if target.exists():
-            target.unlink()
-        downloaded.rename(target)
-        print(f"  Saved: {target}")
+        if downloaded != target:
+            if target.exists():
+                target.unlink()
+            downloaded.rename(target)
+            print(f"  Saved: {target}")
         results[label] = target
 
     if not results:

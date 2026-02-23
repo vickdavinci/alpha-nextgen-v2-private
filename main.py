@@ -267,6 +267,8 @@ class AlphaNextGen(QCAlgorithm):
         self._last_intraday_diag_log_by_key: Dict[
             str, datetime
         ] = {}  # Keyed throttle for high-frequency intraday candidate/drop diagnostics
+        self._high_freq_log_seen_counts: Dict[str, int] = {}
+        self._high_freq_log_suppressed_counts: Dict[str, int] = {}
         # Signal-id event ledgers keep funnel telemetry deterministic.
         self._diag_intraday_candidate_ids_logged = set()
         self._diag_intraday_approved_ids_logged = set()
@@ -1648,6 +1650,58 @@ class AlphaNextGen(QCAlgorithm):
         self._last_intraday_diag_log_by_key[reason_key] = now
         return True
 
+    def _should_log_high_frequency_backtest(
+        self,
+        *,
+        config_flag: str,
+        category: str,
+        reason_key: str,
+        default_backtest_enabled: bool = False,
+    ) -> bool:
+        """Backtest-aware sampled logging gate for high-volume diagnostic categories."""
+        if self._should_log_backtest_category(config_flag, default_backtest_enabled):
+            return True
+
+        day_token = (
+            self.Time.strftime("%Y-%m-%d")
+            if hasattr(self, "Time") and self.Time is not None
+            else "UNKNOWN_DAY"
+        )
+        category_token = str(category or "GENERAL").strip().upper() or "GENERAL"
+        reason_token = str(reason_key or "GENERIC").strip().upper()[:120] or "GENERIC"
+        sample_key = f"{day_token}|{category_token}|{reason_token}"
+        seen = int(self._high_freq_log_seen_counts.get(sample_key, 0)) + 1
+        self._high_freq_log_seen_counts[sample_key] = seen
+
+        first_n = max(0, int(getattr(config, "LOG_HIGHFREQ_SAMPLE_FIRST_N_PER_KEY", 1)))
+        every_n = max(0, int(getattr(config, "LOG_HIGHFREQ_SAMPLE_EVERY_N", 0)))
+        should_log = seen <= first_n or (every_n > 0 and seen % every_n == 0)
+        if not should_log:
+            self._high_freq_log_suppressed_counts[category_token] = (
+                int(self._high_freq_log_suppressed_counts.get(category_token, 0)) + 1
+            )
+        return should_log
+
+    def _log_high_frequency_event(
+        self,
+        *,
+        config_flag: str,
+        category: str,
+        reason_key: str,
+        message: str,
+        default_backtest_enabled: bool = False,
+    ) -> bool:
+        """Emit high-frequency diagnostic logs with backtest sampling controls."""
+        if not self._should_log_high_frequency_backtest(
+            config_flag=config_flag,
+            category=category,
+            reason_key=reason_key,
+            default_backtest_enabled=default_backtest_enabled,
+        ):
+            return False
+        self.Log(message)
+        return True
+
     def _mark_intraday_signal_event(self, event_type: str, signal_id: Optional[str]) -> bool:
         """Return True only on first observation of a signal-id event type."""
         sid = str(signal_id or "").strip()
@@ -1738,21 +1792,28 @@ class AlphaNextGen(QCAlgorithm):
             f"ValidationDetail={validation_detail} | " if validation_detail else ""
         )
         self._record_intraday_drop_reason(code, strategy)
-        self.Log(
+        strategy_name = strategy.value if strategy is not None else ""
+        direction_name = direction.value if direction is not None else "NONE"
+        drop_message = (
             f"INTRADAY_SIGNAL_DROPPED: SignalId={signal_id} | Candidate rejected before order | "
             f"Code={code} | "
             f"Reason={reason} | RetryHint={retry_hint} | "
             f"{validation_detail_fragment}"
-            f"Dir={direction.value if direction else 'NONE'} | "
-            f"Strategy={strategy.value if strategy else 'NONE'} | "
+            f"Dir={direction_name} | "
+            f"Strategy={strategy_name or 'NONE'} | "
             f"Contract={contract_symbol}"
         )
-        strategy_name = strategy.value if strategy is not None else ""
+        self._log_high_frequency_event(
+            config_flag="LOG_INTRADAY_DROPPED_BACKTEST_ENABLED",
+            category="INTRADAY_DROPPED",
+            reason_key=f"{self._canonical_options_reason_code(code)}|{strategy_name or 'NONE'}",
+            message=drop_message,
+        )
         self._record_signal_lifecycle_event(
             engine=self._intraday_engine_bucket_from_strategy(strategy),
             event="DROPPED",
             signal_id=signal_id,
-            direction=direction.value if direction else "",
+            direction=direction_name if direction is not None else "",
             strategy=strategy_name,
             code=self._canonical_options_reason_code(code),
             gate_name=self._canonical_options_reason_code(code),
@@ -3437,6 +3498,9 @@ class AlphaNextGen(QCAlgorithm):
         self._diag_intraday_dropped_ids_logged.clear()
         self._single_leg_last_exit_reason.clear()
         self._last_vass_rejection_log_by_key.clear()
+        self._last_intraday_diag_log_by_key.clear()
+        self._high_freq_log_seen_counts.clear()
+        self._high_freq_log_suppressed_counts.clear()
         # V3.0 P1-B: Exit retry trackers are intraday plumbing only; clear daily.
         if self._pending_exit_orders:
             cleared = len(self._pending_exit_orders)
@@ -6143,9 +6207,14 @@ class AlphaNextGen(QCAlgorithm):
                 )
                 if not trend_ok:
                     self.options_engine.set_last_entry_validation_failure(trend_code)
-                    self.Log(
-                        f"{fallback_log_prefix}: BULL_CALL trend confirmation blocked | "
-                        f"{trend_code} | {trend_detail}"
+                    self._log_high_frequency_event(
+                        config_flag="LOG_VASS_FALLBACK_BACKTEST_ENABLED",
+                        category="VASS_FALLBACK",
+                        reason_key=f"TREND_CONFIRM_BLOCK|{trend_code}",
+                        message=(
+                            f"{fallback_log_prefix}: BULL_CALL trend confirmation blocked | "
+                            f"{trend_code} | {trend_detail}"
+                        ),
                     )
                     return None, "DEBIT_TREND_CONFIRM_BLOCK", trend_code
 
@@ -6202,9 +6271,14 @@ class AlphaNextGen(QCAlgorithm):
                     _is_quality_failure(last_validation_reason) and attempt < max_attempts - 1
                 )
                 if retryable_quality:
-                    self.Log(
-                        f"{fallback_log_prefix}: DEBIT quality reject ({last_validation_reason}) | "
-                        f"Trying alternate candidate {attempt + 2}/{max_attempts}"
+                    self._log_high_frequency_event(
+                        config_flag="LOG_VASS_FALLBACK_BACKTEST_ENABLED",
+                        category="VASS_FALLBACK",
+                        reason_key="DEBIT_QUALITY_RETRY",
+                        message=(
+                            f"{fallback_log_prefix}: DEBIT quality reject ({last_validation_reason}) | "
+                            f"Trying alternate candidate {attempt + 2}/{max_attempts}"
+                        ),
                     )
                     # Drop only the short leg to keep long-leg directional intent and
                     # search for a better-priced width pairing.
@@ -6273,9 +6347,14 @@ class AlphaNextGen(QCAlgorithm):
                     _is_quality_failure(last_validation_reason) and attempt < max_attempts - 1
                 )
                 if retryable_quality:
-                    self.Log(
-                        f"{fallback_log_prefix}: CREDIT quality reject ({last_validation_reason}) | "
-                        f"Trying alternate candidate {attempt + 2}/{max_attempts}"
+                    self._log_high_frequency_event(
+                        config_flag="LOG_VASS_FALLBACK_BACKTEST_ENABLED",
+                        category="VASS_FALLBACK",
+                        reason_key="CREDIT_QUALITY_RETRY",
+                        message=(
+                            f"{fallback_log_prefix}: CREDIT quality reject ({last_validation_reason}) | "
+                            f"Trying alternate candidate {attempt + 2}/{max_attempts}"
+                        ),
                     )
                     # Credit quality is mostly driven by short leg economics.
                     pool = [c for c in pool if str(c.symbol) != str(short_leg.symbol)]
@@ -6311,9 +6390,14 @@ class AlphaNextGen(QCAlgorithm):
                         getattr(config, "VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT", False)
                     ):
                         rejection_code = "R_BEAR_FALLBACK_DISABLED"
-                        self.Log(
-                            f"{fallback_log_prefix}: Skip opposite {fallback_strategy.value} | "
-                            f"Policy disabled"
+                        self._log_high_frequency_event(
+                            config_flag="LOG_VASS_FALLBACK_BACKTEST_ENABLED",
+                            category="VASS_FALLBACK",
+                            reason_key="BEAR_FALLBACK_DISABLED",
+                            message=(
+                                f"{fallback_log_prefix}: Skip opposite {fallback_strategy.value} | "
+                                f"Policy disabled"
+                            ),
                         )
                         fallback_strategy = None
                     else:
@@ -6322,9 +6406,14 @@ class AlphaNextGen(QCAlgorithm):
                         vix_now = float(getattr(self, "_current_vix", 0.0) or 0.0)
                         if regime_score > max_regime or (min_vix > 0 and vix_now < min_vix):
                             rejection_code = "R_BEAR_FALLBACK_POLICY"
-                            self.Log(
-                                f"{fallback_log_prefix}: Skip opposite {fallback_strategy.value} | "
-                                f"Regime={regime_score:.1f}>{max_regime:.1f} or VIX={vix_now:.1f}<{min_vix:.1f}"
+                            self._log_high_frequency_event(
+                                config_flag="LOG_VASS_FALLBACK_BACKTEST_ENABLED",
+                                category="VASS_FALLBACK",
+                                reason_key="BEAR_FALLBACK_POLICY",
+                                message=(
+                                    f"{fallback_log_prefix}: Skip opposite {fallback_strategy.value} | "
+                                    f"Regime={regime_score:.1f}>{max_regime:.1f} or VIX={vix_now:.1f}<{min_vix:.1f}"
+                                ),
                             )
                             fallback_strategy = None
 
@@ -6339,9 +6428,14 @@ class AlphaNextGen(QCAlgorithm):
                     option_right=fallback_right,
                 )
                 if len(fallback_contracts) >= 2:
-                    self.Log(
-                        f"{fallback_log_prefix}: Primary {strategy.value} failed | "
-                        f"Trying opposite {fallback_strategy.value}"
+                    self._log_high_frequency_event(
+                        config_flag="LOG_VASS_FALLBACK_BACKTEST_ENABLED",
+                        category="VASS_FALLBACK",
+                        reason_key=f"TRY_OPPOSITE|{strategy.value}|{fallback_strategy.value}",
+                        message=(
+                            f"{fallback_log_prefix}: Primary {strategy.value} failed | "
+                            f"Trying opposite {fallback_strategy.value}"
+                        ),
                     )
                     if fallback_is_credit:
                         signal, rejection_code, last_validation_reason = _attempt_credit_route(
@@ -8573,14 +8667,68 @@ class AlphaNextGen(QCAlgorithm):
         """Common CSV artifact serializer for observability channels."""
         if not key or not rows:
             return
-        output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(rows)
-        try:
-            self.ObjectStore.Save(key, output.getvalue())
-        except Exception as e:
-            self.Log(f"{error_prefix}: {e}")
+        retries = max(1, int(getattr(config, "OBSERVABILITY_OBJECTSTORE_SAVE_RETRIES", 2)))
+
+        def _save_text(target_key: str, payload: str) -> bool:
+            for attempt in range(1, retries + 1):
+                try:
+                    save_result = self.ObjectStore.Save(target_key, payload)
+                    if save_result is False:
+                        raise RuntimeError("ObjectStore.Save returned False")
+                    return True
+                except Exception as e:
+                    if attempt >= retries:
+                        self.Log(f"{error_prefix}: key={target_key} | attempt={attempt} | {e}")
+                        return False
+            return False
+
+        shard_enabled = bool(getattr(config, "OBSERVABILITY_OBJECTSTORE_SHARD_ENABLED", True))
+        shard_max_rows = int(getattr(config, "OBSERVABILITY_OBJECTSTORE_SHARD_MAX_ROWS", 12000))
+        max_shards = max(1, int(getattr(config, "OBSERVABILITY_OBJECTSTORE_MAX_SHARDS", 32)))
+        if not shard_enabled or shard_max_rows <= 0 or len(rows) <= shard_max_rows:
+            output = io.StringIO()
+            writer = csv.DictWriter(output, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+            _save_text(key, output.getvalue())
+            return
+
+        shard_total = (len(rows) + shard_max_rows - 1) // shard_max_rows
+        shard_total = min(shard_total, max_shards)
+        if shard_total <= 1:
+            output = io.StringIO()
+            writer = csv.DictWriter(output, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+            _save_text(key, output.getvalue())
+            return
+
+        adjusted_rows_per_shard = (len(rows) + shard_total - 1) // shard_total
+        key_root = key[:-4] if key.endswith(".csv") else key
+        manifest_key = f"{key_root}__manifest.json"
+        wrote_all = True
+        for shard_idx in range(shard_total):
+            start = shard_idx * adjusted_rows_per_shard
+            end = min((shard_idx + 1) * adjusted_rows_per_shard, len(rows))
+            shard_rows = rows[start:end]
+            if not shard_rows:
+                continue
+            output = io.StringIO()
+            writer = csv.DictWriter(output, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(shard_rows)
+            part_key = f"{key_root}__part{shard_idx + 1:03d}.csv"
+            if not _save_text(part_key, output.getvalue()):
+                wrote_all = False
+        if wrote_all:
+            manifest = {
+                "base_key": key,
+                "parts": shard_total,
+                "rows": len(rows),
+                "fields": fields,
+                "timestamp": self.Time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            _save_text(manifest_key, json.dumps(manifest, separators=(",", ":")))
 
     def _flush_signal_lifecycle_artifact(self) -> None:
         if not bool(getattr(config, "SIGNAL_LIFECYCLE_OBSERVABILITY_ENABLED", True)):

@@ -1935,12 +1935,27 @@ class OptionsEngine:
                         If False, only log in LiveMode (for diagnostics).
         """
         if self.algorithm:
+            is_live = bool(hasattr(self.algorithm, "LiveMode") and self.algorithm.LiveMode)
+            text = str(message or "")
             # V2.18.1: Fixed - was logging everything in debug mode, causing backtest timeout
             # Only log if: trades_only=True OR we're in LiveMode
             if trades_only:
-                self.algorithm.Log(message)
-            elif hasattr(self.algorithm, "LiveMode") and self.algorithm.LiveMode:
-                self.algorithm.Log(message)
+                if (not is_live) and text.startswith("WIN_RATE_GATE:"):
+                    helper = getattr(self.algorithm, "_log_high_frequency_event", None)
+                    if callable(helper):
+                        gate_key = text.split("|", 1)[0].strip().replace(" ", "_")
+                        helper(
+                            config_flag="LOG_WIN_RATE_GATE_BACKTEST_ENABLED",
+                            category="WIN_RATE_GATE",
+                            reason_key=gate_key,
+                            message=text,
+                        )
+                    elif bool(getattr(config, "LOG_WIN_RATE_GATE_BACKTEST_ENABLED", False)):
+                        self.algorithm.Log(text)
+                else:
+                    self.algorithm.Log(text)
+            elif is_live:
+                self.algorithm.Log(text)
             # In backtest mode with trades_only=False, skip logging (silent)
 
     def _symbol_str(self, symbol) -> str:

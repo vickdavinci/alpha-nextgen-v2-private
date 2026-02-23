@@ -305,6 +305,21 @@ class RegimeEngine:
     def log(self, message: str) -> None:
         """Log message via algorithm or print for testing."""
         if self.algorithm:
+            try:
+                if hasattr(self.algorithm, "_should_log_backtest_category"):
+                    allow = self.algorithm._should_log_backtest_category(
+                        "LOG_REGIME_ENGINE_DETAIL_BACKTEST_ENABLED",
+                        False,
+                    )
+                else:
+                    is_live = bool(hasattr(self.algorithm, "LiveMode") and self.algorithm.LiveMode)
+                    allow = is_live or bool(
+                        getattr(config, "LOG_REGIME_ENGINE_DETAIL_BACKTEST_ENABLED", False)
+                    )
+                if not allow:
+                    return
+            except Exception:
+                pass
             self.algorithm.Log(message)
 
     def calculate(

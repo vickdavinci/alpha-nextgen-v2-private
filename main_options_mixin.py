@@ -739,7 +739,12 @@ class MainOptionsMixin:
             can_intraday, intraday_limit_reason = self.options_engine.can_enter_single_leg()
             if not can_intraday:
                 # V6.2: Log position limit block (was silent - Bug #3 instrumentation)
-                self.Log(f"INTRADAY: Blocked - {intraday_limit_reason}")
+                self._log_high_frequency_event(
+                    config_flag="LOG_INTRADAY_BLOCKED_BACKTEST_ENABLED",
+                    category="INTRADAY_BLOCKED",
+                    reason_key=self._canonical_options_reason_code(intraday_limit_reason),
+                    message=f"INTRADAY: Blocked - {intraday_limit_reason}",
+                )
             else:
                 # V2.4.1 FIX: Use UVXY-derived VIX proxy instead of stale daily VIX
                 # self._current_vix is daily close and doesn't change intraday
@@ -806,7 +811,12 @@ class MainOptionsMixin:
                     signal_reason = "R_COOLDOWN_INTRADAY_MICRO"
 
                 if not should_trade:
-                    self.Log(f"INTRADAY: Blocked - {signal_reason}")
+                    self._log_high_frequency_event(
+                        config_flag="LOG_INTRADAY_BLOCKED_BACKTEST_ENABLED",
+                        category="INTRADAY_BLOCKED",
+                        reason_key=self._canonical_options_reason_code(signal_reason),
+                        message=f"INTRADAY: Blocked - {signal_reason}",
+                    )
                     intraday_direction = None
                     # V6.15: Allow one retry if prior approved signal was dropped for temporary reasons.
                     retry_payload = None
@@ -840,7 +850,12 @@ class MainOptionsMixin:
                         signal_reason = (
                             f"PREMARKET_LADDER_CALL_BLOCK: {self._premarket_vix_ladder_reason}"
                         )
-                        self.Log(f"INTRADAY: Blocked - {signal_reason}")
+                        self._log_high_frequency_event(
+                            config_flag="LOG_INTRADAY_BLOCKED_BACKTEST_ENABLED",
+                            category="INTRADAY_BLOCKED",
+                            reason_key="PREMARKET_LADDER_CALL_BLOCK",
+                            message=f"INTRADAY: Blocked - {signal_reason}",
+                        )
                     else:
                         candidate_strategy = (
                             forced_intraday_strategy
@@ -862,7 +877,12 @@ class MainOptionsMixin:
                             signal_reason = (
                                 f"{preflight_code}: {detail}" if detail else str(preflight_code)
                             )
-                            self.Log(f"INTRADAY: Blocked - {signal_reason}")
+                            self._log_high_frequency_event(
+                                config_flag="LOG_INTRADAY_BLOCKED_BACKTEST_ENABLED",
+                                category="INTRADAY_BLOCKED",
+                                reason_key=self._canonical_options_reason_code(preflight_code),
+                                message=f"INTRADAY: Blocked - {signal_reason}",
+                            )
                             drop_code = self._canonical_options_reason_code(
                                 str(preflight_code or "E_PREFLIGHT_BLOCK")
                             )
@@ -890,9 +910,17 @@ class MainOptionsMixin:
                                 self._diag_intraday_candidates_by_engine,
                                 candidate_strategy,
                             )
-                            self.Log(
-                                f"INTRADAY_SIGNAL_CANDIDATE: SignalId={intraday_signal_id} | {signal_reason} | "
-                                f"Direction={intraday_direction.value if intraday_direction else 'NONE'}"
+                            self._log_high_frequency_event(
+                                config_flag="LOG_INTRADAY_CANDIDATE_BACKTEST_ENABLED",
+                                category="INTRADAY_CANDIDATE",
+                                reason_key=(
+                                    f"{candidate_strategy.value if candidate_strategy else 'NONE'}|"
+                                    f"{intraday_direction.value if intraday_direction else 'NONE'}"
+                                ),
+                                message=(
+                                    f"INTRADAY_SIGNAL_CANDIDATE: SignalId={intraday_signal_id} | {signal_reason} | "
+                                    f"Direction={intraday_direction.value if intraday_direction else 'NONE'}"
+                                ),
                             )
                             self._record_signal_lifecycle_event(
                                 engine=self._intraday_engine_bucket_from_strategy(
@@ -1248,7 +1276,12 @@ class MainOptionsMixin:
                 block_reason = (
                     f"{itm_preflight_code}: {detail}" if detail else str(itm_preflight_code)
                 )
-                self.Log(f"INTRADAY: Blocked - {block_reason}")
+                self._log_high_frequency_event(
+                    config_flag="LOG_INTRADAY_BLOCKED_BACKTEST_ENABLED",
+                    category="INTRADAY_BLOCKED",
+                    reason_key=self._canonical_options_reason_code(itm_preflight_code),
+                    message=f"INTRADAY: Blocked - {block_reason}",
+                )
                 drop_code = self._canonical_options_reason_code(
                     str(itm_preflight_code or "E_PREFLIGHT_BLOCK")
                 )
@@ -1275,9 +1308,14 @@ class MainOptionsMixin:
                         self._diag_intraday_candidates_by_engine,
                         IntradayStrategy.ITM_MOMENTUM,
                     )
-                    self.Log(
-                        f"INTRADAY_SIGNAL_CANDIDATE: SignalId={itm_signal_id} | "
-                        f"ITM_ENGINE_EXPLICIT: {itm_reason} | Direction={itm_dir.value}"
+                    self._log_high_frequency_event(
+                        config_flag="LOG_INTRADAY_CANDIDATE_BACKTEST_ENABLED",
+                        category="INTRADAY_CANDIDATE",
+                        reason_key=f"ITM_MOMENTUM|{itm_dir.value if itm_dir else 'NONE'}",
+                        message=(
+                            f"INTRADAY_SIGNAL_CANDIDATE: SignalId={itm_signal_id} | "
+                            f"ITM_ENGINE_EXPLICIT: {itm_reason} | Direction={itm_dir.value}"
+                        ),
                     )
                     self._record_signal_lifecycle_event(
                         engine="ITM",

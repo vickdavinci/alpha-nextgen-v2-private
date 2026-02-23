@@ -41,6 +41,17 @@ def log_daily_summary(algo) -> None:
             f"Suppressed={algo._order_lifecycle_suppressed_count} | "
             f"Cap={int(getattr(config, 'LOG_ORDER_LIFECYCLE_MAX_PER_DAY', 200))}"
         )
+    sampled_suppressed = getattr(algo, "_high_freq_log_suppressed_counts", {}) or {}
+    if sampled_suppressed:
+        top_sampled = sorted(sampled_suppressed.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        top_sampled_str = ";".join(f"{k}:{int(v)}" for k, v in top_sampled)
+        algo.Log(
+            "LOG_BUDGET_SUMMARY: "
+            f"Suppressed={int(sum(sampled_suppressed.values()))} | "
+            f"Top={top_sampled_str} | "
+            f"SampleFirstN={int(getattr(config, 'LOG_HIGHFREQ_SAMPLE_FIRST_N_PER_KEY', 1))} | "
+            f"SampleEveryN={int(getattr(config, 'LOG_HIGHFREQ_SAMPLE_EVERY_N', 0))}"
+        )
 
     dte_order = ["2", "3", "4", "5", "OTHER"]
     fmt = lambda d: ",".join(f"{k}:{int(d.get(k, 0))}" for k in dte_order)
