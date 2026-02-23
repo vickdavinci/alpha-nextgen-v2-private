@@ -675,9 +675,10 @@ class MicroRegimeEngine:
     - Layer 4 (30 min): Full regime recalculation
     """
 
-    def __init__(self, log_func=None):
+    def __init__(self, log_func=None, regime_decision_cb=None):
         """Initialize Micro Regime Engine."""
         self._log_func = log_func
+        self._regime_decision_cb = regime_decision_cb
         self._state = MicroRegimeState()
         # Rolling 1-hour VIX history (12 data points at 5-min intervals)
         self._vix_history: Deque[VIXSnapshot] = deque(maxlen=12)
@@ -689,6 +690,31 @@ class MicroRegimeEngine:
         """Log via provided function or skip."""
         if self._log_func:
             self._log_func(f"MICRO: {message}")
+
+    def _record_regime_decision(
+        self,
+        engine: str,
+        decision: str,
+        strategy_attempted: str,
+        gate_name: str,
+        threshold_snapshot: Optional[Any] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Forward structured regime decision telemetry when callback is available."""
+        cb = getattr(self, "_regime_decision_cb", None)
+        if cb is None:
+            return
+        try:
+            cb(
+                engine=engine,
+                decision=decision,
+                strategy_attempted=strategy_attempted,
+                gate_name=gate_name,
+                threshold_snapshot=threshold_snapshot,
+                context=context,
+            )
+        except Exception:
+            return
 
     # =========================================================================
     # VIX DIRECTION CLASSIFICATION
@@ -1779,7 +1805,9 @@ class OptionsEngine:
         self._current_mode: OptionsMode = OptionsMode.SWING
 
         # V2.1.1: Micro Regime Engine for intraday trading
-        self._micro_regime_engine = MicroRegimeEngine(log_func=self.log)
+        self._micro_regime_engine = MicroRegimeEngine(
+            log_func=self.log, regime_decision_cb=self._record_regime_decision
+        )
 
         # V2.1.1: VIX tracking for simple intraday filters (Swing Mode)
         self._vix_at_open: float = 0.0
