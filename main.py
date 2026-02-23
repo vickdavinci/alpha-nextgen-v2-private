@@ -871,21 +871,15 @@ class AlphaNextGen(QCAlgorithm):
         # Phase A: intraday macro-regime refresh to reduce stale EOD lag for options gating.
         # Add an early-session refresh so options are not anchored to yesterday's regime
         # during the first half of the trading day.
-        self.Schedule.On(
-            self.DateRules.EveryDay(),
-            self.TimeRules.At(9, 35),
-            self._refresh_intraday_regime_score,
+        refresh_times = (
+            [(9, 35)] + [(hour, minute) for hour in range(10, 15) for minute in (0, 30)] + [(15, 0)]
         )
-        self.Schedule.On(
-            self.DateRules.EveryDay(),
-            self.TimeRules.At(12, 0),
-            self._refresh_intraday_regime_score,
-        )
-        self.Schedule.On(
-            self.DateRules.EveryDay(),
-            self.TimeRules.At(14, 0),
-            self._refresh_intraday_regime_score,
-        )
+        for hour, minute in refresh_times:
+            self.Schedule.On(
+                self.DateRules.EveryDay(),
+                self.TimeRules.At(hour, minute),
+                self._refresh_intraday_regime_score,
+            )
         # #8 fix: intraday reconciliation checkpoints (zombie/orphan cleanup)
         # Add late-day checkpoints so intraday ghost streak policy can converge
         # before close instead of deferring to next SOD.
