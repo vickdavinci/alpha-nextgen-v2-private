@@ -268,6 +268,23 @@ class PortfolioRouter:
                         )
                 except Exception:
                     pass
+                try:
+                    event_fn = getattr(self.algorithm, "_record_order_lifecycle_event", None)
+                    if callable(event_fn):
+                        event_fn(
+                            status="SUBMITTED",
+                            order_id=order_id,
+                            symbol=str(getattr(ticket, "Symbol", "")),
+                            quantity=0,
+                            fill_price=0.0,
+                            order_type="",
+                            order_tag=clean_tag,
+                            trace_id="",
+                            message="",
+                            source="ROUTER_SUBMIT",
+                        )
+                except Exception:
+                    pass
 
         if isinstance(ticket_or_tickets, (list, tuple)):
             for ticket in ticket_or_tickets:

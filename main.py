@@ -3,6 +3,7 @@
 import csv
 import io
 import json
+import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from AlgorithmImports import *
@@ -86,6 +87,56 @@ class AlphaNextGen(QCAlgorithm):
     _on_fill = MainOrdersMixin._on_fill
     _cancel_residual_option_orders = MainOrdersMixin._cancel_residual_option_orders
 
+    @staticmethod
+    def _safe_objectstore_key_component(raw: Any, default: str = "default") -> str:
+        text = str(raw or "").strip()
+        if not text:
+            return default
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", text)
+        safe = re.sub(r"_+", "_", safe).strip("_")
+        return safe or default
+
+    def _build_regime_observability_key(self) -> str:
+        return self._build_observability_key(
+            prefix_config_name="REGIME_OBSERVABILITY_OBJECTSTORE_KEY_PREFIX",
+            default_prefix="regime_observability",
+        )
+
+    def _build_observability_key(self, prefix_config_name: str, default_prefix: str) -> str:
+        prefix = self._safe_objectstore_key_component(
+            getattr(config, prefix_config_name, default_prefix),
+            default=default_prefix,
+        )
+        run_suffix_raw = self._run_label or f"year_{self._backtest_year}"
+        run_suffix = self._safe_objectstore_key_component(run_suffix_raw, default="run")
+        year = self._safe_objectstore_key_component(self._backtest_year, default="year")
+        # LocalObjectStore does not support path-style keys ("/"), so keep this flat.
+        return f"{prefix}__{run_suffix}_{year}.csv"
+
+    def _build_regime_timeline_observability_key(self) -> str:
+        return self._build_observability_key(
+            prefix_config_name="REGIME_TIMELINE_OBJECTSTORE_KEY_PREFIX",
+            default_prefix="regime_timeline_observability",
+        )
+
+    def _build_signal_lifecycle_observability_key(self) -> str:
+        return self._build_observability_key(
+            prefix_config_name="SIGNAL_LIFECYCLE_OBJECTSTORE_KEY_PREFIX",
+            default_prefix="signal_lifecycle_observability",
+        )
+
+    def _build_router_rejection_observability_key(self) -> str:
+        return self._build_observability_key(
+            prefix_config_name="ROUTER_REJECTION_OBJECTSTORE_KEY_PREFIX",
+            default_prefix="router_rejection_observability",
+        )
+
+    def _build_order_lifecycle_observability_key(self) -> str:
+        return self._build_observability_key(
+            prefix_config_name="ORDER_LIFECYCLE_OBJECTSTORE_KEY_PREFIX",
+            default_prefix="order_lifecycle_observability",
+        )
+
     def Initialize(self) -> None:
         # Algorithm bootstrap entrypoint.
         # =====================================================================
@@ -108,9 +159,15 @@ class AlphaNextGen(QCAlgorithm):
         self.SetStartDate(backtest_year, 1, 1)
         self.SetEndDate(backtest_year, 12, 31)
         self.SetCash(config.INITIAL_CAPITAL)  # Seed capital from config
+        run_label_display = run_label if run_label else "DEFAULT"
+        self.Log(f"INIT: BacktestYear={backtest_year} | RunLabel={run_label_display}")
         self.Log(
-            f"INIT: BacktestYear={backtest_year} | RunLabel={run_label if run_label else 'DEFAULT'}"
+            "INIT: DateWindow="
+            f"{backtest_year}-01-01..{backtest_year}-12-31"
+            f" | EffectiveStart={self.StartDate:%Y-%m-%d}"
+            f" | EffectiveEnd={self.EndDate:%Y-%m-%d}"
         )
+        self.Log(f"INIT: RegimeObservabilityKey={self._build_regime_observability_key()}")
 
         # All times are Eastern
         self.SetTimeZone("America/New_York")
@@ -172,15 +229,16 @@ class AlphaNextGen(QCAlgorithm):
             for key in state_keys:
                 if self.ObjectStore.ContainsKey(key):
                     self.ObjectStore.Delete(key)
-            observability_prefix = str(
-                getattr(
-                    config, "REGIME_OBSERVABILITY_OBJECTSTORE_KEY_PREFIX", "regime_observability"
-                )
-            ).strip("/")
-            run_suffix = self._run_label or f"year_{self._backtest_year}"
-            observability_key = f"{observability_prefix}/{run_suffix}_{self._backtest_year}.csv"
-            if self.ObjectStore.ContainsKey(observability_key):
-                self.ObjectStore.Delete(observability_key)
+            observability_keys = [
+                self._build_regime_observability_key(),
+                self._build_regime_timeline_observability_key(),
+                self._build_signal_lifecycle_observability_key(),
+                self._build_router_rejection_observability_key(),
+                self._build_order_lifecycle_observability_key(),
+            ]
+            for observability_key in observability_keys:
+                if self.ObjectStore.ContainsKey(observability_key):
+                    self.ObjectStore.Delete(observability_key)
 
         # =====================================================================
         # STEP 8: Load Persisted State
@@ -362,13 +420,20 @@ class AlphaNextGen(QCAlgorithm):
         self._regime_detector_last_raw = {}
         self._regime_decision_records: List[Dict[str, Any]] = []
         self._regime_decision_overflow_logged = False
-        observability_prefix = str(
-            getattr(config, "REGIME_OBSERVABILITY_OBJECTSTORE_KEY_PREFIX", "regime_observability")
-        ).strip("/")
-        run_suffix = self._run_label or f"year_{self._backtest_year}"
-        self._regime_observability_key = (
-            f"{observability_prefix}/{run_suffix}_{self._backtest_year}.csv"
-        )
+        self._regime_observability_key = self._build_regime_observability_key()
+        self._regime_timeline_records: List[Dict[str, Any]] = []
+        self._regime_timeline_overflow_logged = False
+        self._regime_timeline_observability_key = self._build_regime_timeline_observability_key()
+        self._signal_lifecycle_records: List[Dict[str, Any]] = []
+        self._signal_lifecycle_overflow_logged = False
+        self._signal_lifecycle_observability_key = self._build_signal_lifecycle_observability_key()
+        self._router_rejection_records: List[Dict[str, Any]] = []
+        self._router_rejection_overflow_logged = False
+        self._router_rejection_observability_key = self._build_router_rejection_observability_key()
+        self._order_lifecycle_records: List[Dict[str, Any]] = []
+        self._order_lifecycle_overflow_logged = False
+        self._order_lifecycle_observability_key = self._build_order_lifecycle_observability_key()
+        self._diag_vass_signal_seq = 0
         self._last_regime_effective_log_at = None
         self._last_intraday_dte_routing_log_by_key = {}
         # Preserve best-effort order tags for lifecycle diagnostics when broker tags are blank.
@@ -1489,6 +1554,61 @@ class AlphaNextGen(QCAlgorithm):
         store.add(sid)
         return True
 
+    def _append_observability_record(
+        self,
+        records: List[Dict[str, Any]],
+        overflow_attr: str,
+        max_rows: int,
+        overflow_log_prefix: str,
+        row: Dict[str, Any],
+    ) -> None:
+        """Append bounded observability row with single overflow warning."""
+        if len(records) >= max_rows:
+            if not bool(getattr(self, overflow_attr, False)):
+                self.Log(
+                    f"{overflow_log_prefix}: buffer full at {max_rows} rows | further rows dropped"
+                )
+                setattr(self, overflow_attr, True)
+            return
+        records.append(row)
+
+    def _record_signal_lifecycle_event(
+        self,
+        engine: str,
+        event: str,
+        signal_id: str,
+        trace_id: str = "",
+        direction: str = "",
+        strategy: str = "",
+        code: str = "",
+        gate_name: str = "",
+        reason: str = "",
+        contract_symbol: str = "",
+    ) -> None:
+        """Capture signal lifecycle telemetry in structured artifact rows."""
+        if not bool(getattr(config, "SIGNAL_LIFECYCLE_OBSERVABILITY_ENABLED", True)):
+            return
+        max_rows = int(getattr(config, "SIGNAL_LIFECYCLE_OBSERVABILITY_MAX_ROWS", 50000))
+        self._append_observability_record(
+            records=self._signal_lifecycle_records,
+            overflow_attr="_signal_lifecycle_overflow_logged",
+            max_rows=max_rows,
+            overflow_log_prefix="SIGNAL_LIFECYCLE_OBSERVABILITY",
+            row={
+                "time": self.Time.strftime("%Y-%m-%d %H:%M:%S"),
+                "engine": str(engine or "UNKNOWN").upper(),
+                "event": str(event or "").upper(),
+                "signal_id": str(signal_id or ""),
+                "trace_id": str(trace_id or ""),
+                "direction": str(direction or ""),
+                "strategy": str(strategy or ""),
+                "code": str(code or ""),
+                "gate_name": str(gate_name or ""),
+                "reason": str(reason or ""),
+                "contract_symbol": str(contract_symbol or ""),
+            },
+        )
+
     def _log_intraday_signal_dropped(
         self,
         signal_id: str,
@@ -1515,6 +1635,18 @@ class AlphaNextGen(QCAlgorithm):
             f"Dir={direction.value if direction else 'NONE'} | "
             f"Strategy={strategy.value if strategy else 'NONE'} | "
             f"Contract={contract_symbol}"
+        )
+        strategy_name = strategy.value if strategy is not None else ""
+        self._record_signal_lifecycle_event(
+            engine=self._intraday_engine_bucket_from_strategy(strategy),
+            event="DROPPED",
+            signal_id=signal_id,
+            direction=direction.value if direction else "",
+            strategy=strategy_name,
+            code=self._canonical_options_reason_code(code),
+            gate_name=self._canonical_options_reason_code(code),
+            reason=reason,
+            contract_symbol=contract_symbol,
         )
         return True
 
@@ -1951,10 +2083,23 @@ class AlphaNextGen(QCAlgorithm):
         ticket = self.MarketOrder(symbol, close_qty, tag=order_tag)
         try:
             if ticket is not None and hasattr(ticket, "OrderId"):
+                order_id = int(ticket.OrderId)
                 self._record_order_tag_map(
-                    int(ticket.OrderId),
+                    order_id,
                     symbol_norm,
                     order_tag,
+                    source="DIRECT_OPTION_CLOSE",
+                )
+                self._record_order_lifecycle_event(
+                    status="SUBMITTED",
+                    order_id=order_id,
+                    symbol=symbol_norm,
+                    quantity=int(close_qty),
+                    fill_price=0.0,
+                    order_type="MARKET",
+                    order_tag=order_tag,
+                    trace_id=self._extract_trace_id_from_tag(order_tag),
+                    message=str(reason or ""),
                     source="DIRECT_OPTION_CLOSE",
                 )
         except Exception:
@@ -3080,7 +3225,12 @@ class AlphaNextGen(QCAlgorithm):
             self._process_eod_signals(self._eod_capital_state)
             self._eod_capital_state = None
 
+        self._record_regime_timeline_event(source="MARKET_CLOSE")
         self._flush_regime_decision_artifact()
+        self._flush_regime_timeline_artifact()
+        self._flush_signal_lifecycle_artifact()
+        self._flush_router_rejection_artifact()
+        self._flush_order_lifecycle_artifact()
 
         # Save all state
         self._save_state()
@@ -3199,6 +3349,10 @@ class AlphaNextGen(QCAlgorithm):
     def OnEndOfAlgorithm(self) -> None:
         """Flush end-of-run observability artifacts."""
         self._flush_regime_decision_artifact()
+        self._flush_regime_timeline_artifact()
+        self._flush_signal_lifecycle_artifact()
+        self._flush_router_rejection_artifact()
+        self._flush_order_lifecycle_artifact()
 
     def _on_weekly_reset(self) -> None:
         """
@@ -4107,6 +4261,43 @@ class AlphaNextGen(QCAlgorithm):
             f"Tag={self._compact_tag_for_log(clean_tag)} | Trace={trace_id}"
         )
 
+    def _record_order_lifecycle_event(
+        self,
+        status: str,
+        order_id: int,
+        symbol: str,
+        quantity: int = 0,
+        fill_price: float = 0.0,
+        order_type: str = "",
+        order_tag: str = "",
+        trace_id: str = "",
+        message: str = "",
+        source: str = "",
+    ) -> None:
+        """Persist order lifecycle records independent of console log budget."""
+        if not bool(getattr(config, "ORDER_LIFECYCLE_OBSERVABILITY_ENABLED", True)):
+            return
+        max_rows = int(getattr(config, "ORDER_LIFECYCLE_OBSERVABILITY_MAX_ROWS", 50000))
+        self._append_observability_record(
+            records=self._order_lifecycle_records,
+            overflow_attr="_order_lifecycle_overflow_logged",
+            max_rows=max_rows,
+            overflow_log_prefix="ORDER_LIFECYCLE_OBSERVABILITY",
+            row={
+                "time": self.Time.strftime("%Y-%m-%d %H:%M:%S"),
+                "status": str(status or "").upper(),
+                "order_id": str(int(order_id or 0)),
+                "symbol": str(symbol or ""),
+                "quantity": str(int(quantity or 0)),
+                "fill_price": f"{float(fill_price or 0.0):.6f}",
+                "order_type": str(order_type or ""),
+                "order_tag": str(order_tag or ""),
+                "trace_id": str(trace_id or ""),
+                "message": str(message or ""),
+                "source": str(source or ""),
+            },
+        )
+
     def _get_order_tag(self, order_event: OrderEvent) -> str:
         """Best-effort extraction of original order tag for fill classification."""
         order_id = int(getattr(order_event, "OrderId", 0) or 0)
@@ -4467,10 +4658,50 @@ class AlphaNextGen(QCAlgorithm):
                 engine_bucket, {}
             )
             engine_store[code] = int(engine_store.get(code, 0)) + 1
+            self._record_router_rejection_event(
+                stage=stage,
+                code=code,
+                symbol=str(getattr(rej, "symbol", "") or ""),
+                source_tag=source_tag,
+                trace_id=str(getattr(rej, "trace_id", "") or ""),
+                detail=detail,
+                engine_bucket=engine_bucket,
+            )
         try:
             self.portfolio_router.clear_last_rejections()
         except Exception:
             pass
+
+    def _record_router_rejection_event(
+        self,
+        stage: str,
+        code: str,
+        symbol: str,
+        source_tag: str,
+        trace_id: str,
+        detail: str,
+        engine_bucket: str,
+    ) -> None:
+        """Persist router rejection details for RCA without relying on console logs."""
+        if not bool(getattr(config, "ROUTER_REJECTION_OBSERVABILITY_ENABLED", True)):
+            return
+        max_rows = int(getattr(config, "ROUTER_REJECTION_OBSERVABILITY_MAX_ROWS", 25000))
+        self._append_observability_record(
+            records=self._router_rejection_records,
+            overflow_attr="_router_rejection_overflow_logged",
+            max_rows=max_rows,
+            overflow_log_prefix="ROUTER_REJECTION_OBSERVABILITY",
+            row={
+                "time": self.Time.strftime("%Y-%m-%d %H:%M:%S"),
+                "stage": str(stage or ""),
+                "code": str(code or "UNKNOWN"),
+                "symbol": str(symbol or ""),
+                "source_tag": str(source_tag or ""),
+                "trace_id": str(trace_id or ""),
+                "detail": str(detail or ""),
+                "engine": str(engine_bucket or "OTHER").upper(),
+            },
+        )
 
     def _classify_exit_path(self, reason: str, order_tag: str = "") -> str:
         """Classify exit path for daily P&L attribution."""
@@ -6111,6 +6342,8 @@ class AlphaNextGen(QCAlgorithm):
             dte_max=dte_max_all,
             option_right=required_right,
         )
+        self._diag_vass_signal_seq = int(getattr(self, "_diag_vass_signal_seq", 0)) + 1
+        vass_signal_id = f"VASS-{self.Time.strftime('%Y%m%d-%H%M')}-{self._diag_vass_signal_seq}"
         if len(candidate_contracts) < 2:
             self._record_vass_reject_reason("INSUFFICIENT_CANDIDATES")
             throttle_key = (
@@ -6126,7 +6359,29 @@ class AlphaNextGen(QCAlgorithm):
                     f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
                     f"DTE_Ranges={dte_ranges} | ReasonCode=INSUFFICIENT_CANDIDATES"
                 )
+            self._record_signal_lifecycle_event(
+                engine="VASS",
+                event="DROPPED",
+                signal_id=vass_signal_id,
+                direction=direction.value if direction else "",
+                strategy=strategy.value if strategy else "",
+                code="INSUFFICIENT_CANDIDATES",
+                gate_name="VASS_CANDIDATE_CONTRACTS",
+                reason="No contracts met spread criteria",
+                contract_symbol="",
+            )
             return
+        self._record_signal_lifecycle_event(
+            engine="VASS",
+            event="CANDIDATE",
+            signal_id=vass_signal_id,
+            direction=direction.value if direction else "",
+            strategy=strategy.value if strategy else "",
+            code="R_OK",
+            gate_name="VASS_SIGNAL_CANDIDATE",
+            reason=f"Contracts={len(candidate_contracts)}",
+            contract_symbol="",
+        )
 
         tradeable_eq = self.capital_engine.calculate(
             self.Portfolio.TotalPortfolioValue
@@ -6134,8 +6389,19 @@ class AlphaNextGen(QCAlgorithm):
         margin_remaining = self.portfolio_router.get_effective_margin_remaining()
         if self.options_engine.has_pending_spread_entry():
             self.Log("VASS: Pending spread entry exists - skipping new spread signal")
+            self._record_signal_lifecycle_event(
+                engine="VASS",
+                event="DROPPED",
+                signal_id=vass_signal_id,
+                direction=direction.value if direction else "",
+                strategy=strategy.value if strategy else "",
+                code="R_PENDING_SPREAD_ENTRY",
+                gate_name="PENDING_SPREAD_ENTRY",
+                reason="Pending spread entry exists",
+                contract_symbol="",
+            )
             return
-        signal, _ = self._build_vass_spread_signal(
+        signal, rejection_code = self._build_vass_spread_signal(
             chain=chain,
             candidate_contracts=candidate_contracts,
             direction=direction,
@@ -6163,8 +6429,33 @@ class AlphaNextGen(QCAlgorithm):
                 f"{signal.symbol} | {signal.reason}"
             )
             signal = self._attach_option_trace_metadata(signal, source="VASS")
+            vass_trace_id = signal.metadata.get("trace_id", "") if signal.metadata else ""
+            self._record_signal_lifecycle_event(
+                engine="VASS",
+                event="APPROVED",
+                signal_id=vass_signal_id,
+                trace_id=vass_trace_id,
+                direction=direction.value if direction else "",
+                strategy=strategy.value if strategy else "",
+                code="R_OK",
+                gate_name="VASS_ENTRY",
+                reason=str(signal.reason or ""),
+                contract_symbol=str(signal.symbol),
+            )
             signal = self._apply_spread_margin_guard(signal, source_tag="VASS_SPREAD")
             if signal is None:
+                self._record_signal_lifecycle_event(
+                    engine="VASS",
+                    event="DROPPED",
+                    signal_id=vass_signal_id,
+                    trace_id=vass_trace_id,
+                    direction=direction.value if direction else "",
+                    strategy=strategy.value if strategy else "",
+                    code="R_MARGIN_PRECHECK",
+                    gate_name="VASS_MARGIN_GUARD",
+                    reason="Signal dropped by spread margin guard",
+                    contract_symbol="",
+                )
                 return
 
             # V2.3.6: Track spread order pair for failure handling
@@ -6180,6 +6471,18 @@ class AlphaNextGen(QCAlgorithm):
                 )
 
             self.portfolio_router.receive_signal(signal)
+        else:
+            self._record_signal_lifecycle_event(
+                engine="VASS",
+                event="DROPPED",
+                signal_id=vass_signal_id,
+                direction=direction.value if direction else "",
+                strategy=strategy.value if strategy else "",
+                code=self._canonical_options_reason_code(rejection_code or "UNKNOWN"),
+                gate_name=str(rejection_code or "UNKNOWN"),
+                reason="No spread signal produced",
+                contract_symbol="",
+            )
 
     def _build_spread_candidate_contracts(
         self,
@@ -7717,6 +8020,7 @@ class AlphaNextGen(QCAlgorithm):
                     f"Time={self.Time.strftime('%H:%M')}"
                 )
                 self._last_regime_refresh_log_day = refresh_day
+            self._record_regime_timeline_event(source="INTRADAY_REFRESH")
         except Exception as e:
             self.Log(f"REGIME_REFRESH_INTRADAY_ERROR: {e}")
 
@@ -7926,13 +8230,6 @@ class AlphaNextGen(QCAlgorithm):
         if not bool(getattr(config, "REGIME_OBSERVABILITY_ENABLED", True)):
             return
         max_rows = int(getattr(config, "REGIME_OBSERVABILITY_MAX_ROWS", 50000))
-        if len(self._regime_decision_records) >= max_rows:
-            if not self._regime_decision_overflow_logged:
-                self.Log(
-                    f"REGIME_OBSERVABILITY: buffer full at {max_rows} rows | further rows dropped"
-                )
-                self._regime_decision_overflow_logged = True
-            return
         ctx = context if isinstance(context, dict) else self._get_regime_transition_context()
         if isinstance(threshold_snapshot, dict):
             threshold_payload = json.dumps(
@@ -7942,8 +8239,12 @@ class AlphaNextGen(QCAlgorithm):
             threshold_payload = ""
         else:
             threshold_payload = str(threshold_snapshot)
-        self._regime_decision_records.append(
-            {
+        self._append_observability_record(
+            records=self._regime_decision_records,
+            overflow_attr="_regime_decision_overflow_logged",
+            max_rows=max_rows,
+            overflow_log_prefix="REGIME_OBSERVABILITY",
+            row={
                 "time": self.Time.strftime("%Y-%m-%d %H:%M:%S"),
                 "eod_score": f"{float(ctx.get('eod_score', 0.0)):.2f}",
                 "intraday_score": f"{float(ctx.get('intraday_score', 0.0)):.2f}",
@@ -7956,7 +8257,7 @@ class AlphaNextGen(QCAlgorithm):
                 "strategy_attempted": str(strategy_attempted or ""),
                 "gate_name": str(gate_name or ""),
                 "threshold_snapshot": threshold_payload,
-            }
+            },
         )
 
     def _flush_regime_decision_artifact(self) -> None:
@@ -7967,7 +8268,6 @@ class AlphaNextGen(QCAlgorithm):
             return
         if not self._regime_decision_records:
             return
-        output = io.StringIO()
         fields = [
             "time",
             "eod_score",
@@ -7982,13 +8282,180 @@ class AlphaNextGen(QCAlgorithm):
             "gate_name",
             "threshold_snapshot",
         ]
+        self._save_observability_csv_artifact(
+            key=self._regime_observability_key,
+            fields=fields,
+            rows=self._regime_decision_records,
+            error_prefix="REGIME_OBSERVABILITY_SAVE_ERROR",
+        )
+
+    def _record_regime_timeline_event(
+        self,
+        source: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Capture periodic regime detector timeline snapshots."""
+        if not bool(getattr(config, "REGIME_TIMELINE_OBSERVABILITY_ENABLED", True)):
+            return
+        max_rows = int(getattr(config, "REGIME_TIMELINE_OBSERVABILITY_MAX_ROWS", 12000))
+        ctx = context if isinstance(context, dict) else self._get_regime_transition_context()
+        self._append_observability_record(
+            records=self._regime_timeline_records,
+            overflow_attr="_regime_timeline_overflow_logged",
+            max_rows=max_rows,
+            overflow_log_prefix="REGIME_TIMELINE_OBSERVABILITY",
+            row={
+                "time": self.Time.strftime("%Y-%m-%d %H:%M:%S"),
+                "source": str(source or ""),
+                "effective_score": f"{float(ctx.get('effective_score', 0.0)):.2f}",
+                "eod_score": f"{float(ctx.get('eod_score', 0.0)):.2f}",
+                "intraday_score": f"{float(ctx.get('intraday_score', 0.0)):.2f}",
+                "delta": f"{float(ctx.get('delta', 0.0)):+.2f}",
+                "momentum_roc": f"{float(ctx.get('momentum_roc', 0.0)):+.5f}",
+                "vix_5d_change": f"{float(ctx.get('vix_5d_change', 0.0)):+.5f}",
+                "base_regime": str(ctx.get("base_regime", "NEUTRAL")),
+                "transition_overlay": str(ctx.get("transition_overlay", "STABLE")),
+                "raw_recovery": "1" if bool(ctx.get("raw_recovery", False)) else "0",
+                "raw_deterioration": "1" if bool(ctx.get("raw_deterioration", False)) else "0",
+                "raw_ambiguous": "1" if bool(ctx.get("raw_ambiguous", False)) else "0",
+                "strong_recovery": "1" if bool(ctx.get("strong_recovery", False)) else "0",
+                "strong_deterioration": "1"
+                if bool(ctx.get("strong_deterioration", False))
+                else "0",
+                "ambiguous": "1" if bool(ctx.get("ambiguous", False)) else "0",
+                "base_candidate": str(ctx.get("base_candidate", "NEUTRAL")),
+                "overlay_candidate": str(ctx.get("overlay_candidate", "STABLE")),
+                "transition_score": f"{float(ctx.get('transition_score', ctx.get('effective_score', 0.0))):.2f}",
+            },
+        )
+
+    def _save_observability_csv_artifact(
+        self,
+        key: str,
+        fields: List[str],
+        rows: List[Dict[str, Any]],
+        error_prefix: str,
+    ) -> None:
+        """Common CSV artifact serializer for observability channels."""
+        if not key or not rows:
+            return
+        output = io.StringIO()
         writer = csv.DictWriter(output, fieldnames=fields)
         writer.writeheader()
-        writer.writerows(self._regime_decision_records)
+        writer.writerows(rows)
         try:
-            self.ObjectStore.Save(self._regime_observability_key, output.getvalue())
+            self.ObjectStore.Save(key, output.getvalue())
         except Exception as e:
-            self.Log(f"REGIME_OBSERVABILITY_SAVE_ERROR: {e}")
+            self.Log(f"{error_prefix}: {e}")
+
+    def _flush_signal_lifecycle_artifact(self) -> None:
+        if not bool(getattr(config, "SIGNAL_LIFECYCLE_OBSERVABILITY_ENABLED", True)):
+            return
+        if not bool(getattr(config, "SIGNAL_LIFECYCLE_OBJECTSTORE_ENABLED", True)):
+            return
+        if not self._signal_lifecycle_records:
+            return
+        self._save_observability_csv_artifact(
+            key=self._signal_lifecycle_observability_key,
+            fields=[
+                "time",
+                "engine",
+                "event",
+                "signal_id",
+                "trace_id",
+                "direction",
+                "strategy",
+                "code",
+                "gate_name",
+                "reason",
+                "contract_symbol",
+            ],
+            rows=self._signal_lifecycle_records,
+            error_prefix="SIGNAL_LIFECYCLE_SAVE_ERROR",
+        )
+
+    def _flush_router_rejection_artifact(self) -> None:
+        if not bool(getattr(config, "ROUTER_REJECTION_OBSERVABILITY_ENABLED", True)):
+            return
+        if not bool(getattr(config, "ROUTER_REJECTION_OBJECTSTORE_ENABLED", True)):
+            return
+        if not self._router_rejection_records:
+            return
+        self._save_observability_csv_artifact(
+            key=self._router_rejection_observability_key,
+            fields=[
+                "time",
+                "stage",
+                "code",
+                "symbol",
+                "source_tag",
+                "trace_id",
+                "detail",
+                "engine",
+            ],
+            rows=self._router_rejection_records,
+            error_prefix="ROUTER_REJECTION_SAVE_ERROR",
+        )
+
+    def _flush_order_lifecycle_artifact(self) -> None:
+        if not bool(getattr(config, "ORDER_LIFECYCLE_OBSERVABILITY_ENABLED", True)):
+            return
+        if not bool(getattr(config, "ORDER_LIFECYCLE_OBJECTSTORE_ENABLED", True)):
+            return
+        if not self._order_lifecycle_records:
+            return
+        self._save_observability_csv_artifact(
+            key=self._order_lifecycle_observability_key,
+            fields=[
+                "time",
+                "status",
+                "order_id",
+                "symbol",
+                "quantity",
+                "fill_price",
+                "order_type",
+                "order_tag",
+                "trace_id",
+                "message",
+                "source",
+            ],
+            rows=self._order_lifecycle_records,
+            error_prefix="ORDER_LIFECYCLE_SAVE_ERROR",
+        )
+
+    def _flush_regime_timeline_artifact(self) -> None:
+        if not bool(getattr(config, "REGIME_TIMELINE_OBSERVABILITY_ENABLED", True)):
+            return
+        if not bool(getattr(config, "REGIME_TIMELINE_OBJECTSTORE_ENABLED", True)):
+            return
+        if not self._regime_timeline_records:
+            return
+        self._save_observability_csv_artifact(
+            key=self._regime_timeline_observability_key,
+            fields=[
+                "time",
+                "source",
+                "effective_score",
+                "eod_score",
+                "intraday_score",
+                "delta",
+                "momentum_roc",
+                "vix_5d_change",
+                "base_regime",
+                "transition_overlay",
+                "raw_recovery",
+                "raw_deterioration",
+                "raw_ambiguous",
+                "strong_recovery",
+                "strong_deterioration",
+                "ambiguous",
+                "base_candidate",
+                "overlay_candidate",
+                "transition_score",
+            ],
+            rows=self._regime_timeline_records,
+            error_prefix="REGIME_TIMELINE_SAVE_ERROR",
+        )
 
     def _get_effective_regime_score_for_options(self) -> float:
         """

@@ -28,6 +28,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -47,6 +49,30 @@ except ImportError:
 PROJECT_ID = 27678023  # AlphaNextGen cloud project
 OUTPUT_DIR = Path("docs/audits/logs/stage4")
 CREDENTIALS_FILE = Path.home() / ".lean" / "credentials"
+
+OBSERVABILITY_ARTIFACT_SPECS = (
+    ("regime_decisions", "REGIME_OBSERVABILITY_OBJECTSTORE_KEY_PREFIX", "regime_observability"),
+    (
+        "regime_timeline",
+        "REGIME_TIMELINE_OBJECTSTORE_KEY_PREFIX",
+        "regime_timeline_observability",
+    ),
+    (
+        "signal_lifecycle",
+        "SIGNAL_LIFECYCLE_OBJECTSTORE_KEY_PREFIX",
+        "signal_lifecycle_observability",
+    ),
+    (
+        "router_rejections",
+        "ROUTER_REJECTION_OBJECTSTORE_KEY_PREFIX",
+        "router_rejection_observability",
+    ),
+    (
+        "order_lifecycle",
+        "ORDER_LIFECYCLE_OBJECTSTORE_KEY_PREFIX",
+        "order_lifecycle_observability",
+    ),
+)
 
 
 # ============================================================================
@@ -410,6 +436,109 @@ def find_backtest(client, search_term, project_id=PROJECT_ID):
     return None
 
 
+def infer_backtest_year(backtest_name: str, backtest: dict) -> int:
+    """Infer expected backtest year from run name, falling back to backtestStart."""
+    m = re.search(r"full\s*year[_-]?(\d{4})", str(backtest_name or ""), flags=re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    start = str(backtest.get("backtestStart", "") or "")
+    if re.match(r"^\d{4}-\d{2}-\d{2}", start):
+        return int(start[:4])
+    created = str(backtest.get("created", "") or "")
+    if re.match(r"^\d{4}-\d{2}-\d{2}", created):
+        return int(created[:4])
+    return datetime.now().year
+
+
+def _get_observability_prefix(config_attr: str, default_prefix: str) -> str:
+    try:
+        import config as algo_config  # type: ignore
+
+        raw = str(getattr(algo_config, config_attr, default_prefix) or default_prefix)
+    except Exception:
+        raw = default_prefix
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("_")
+    return safe or default_prefix
+
+
+def pull_observability_artifacts(run_name: str, backtest: dict, output_dir: Path) -> dict:
+    """
+    Pull structured telemetry artifacts from QC Object Store.
+
+    Returns dict: artifact_label -> local_path for downloaded files.
+    """
+    results = {}
+    if shutil.which("lean") is None:
+        print("  Skipping observability pull: `lean` CLI not found")
+        return results
+
+    year = infer_backtest_year(run_name, backtest)
+    run_safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(run_name or "")).strip("_") or "run"
+
+    print("\nFetching observability artifacts from Object Store...")
+    for label, config_attr, default_prefix in OBSERVABILITY_ARTIFACT_SPECS:
+        prefix = _get_observability_prefix(config_attr, default_prefix)
+        key = f"{prefix}__{run_safe}_{year}.csv"
+        cmd = ["lean", "cloud", "object-store", "get", key, "--destination-folder", str(output_dir)]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            continue
+
+        downloaded = output_dir / key
+        if not downloaded.exists():
+            continue
+
+        target = output_dir / f"{run_safe}_{label}.csv"
+        if target.exists():
+            target.unlink()
+        downloaded.rename(target)
+        print(f"  Saved: {target}")
+        results[label] = target
+
+    if not results:
+        print("  No observability artifacts found for this run label/year")
+    return results
+
+
+def generate_reports_for_run(stage_dir: Path, run_name: str) -> bool:
+    """Generate synced REPORT/SIGNAL_FLOW/TRADE_DETAIL files for a pulled run."""
+    required = (
+        stage_dir / f"{run_name}_logs.txt",
+        stage_dir / f"{run_name}_trades.csv",
+        stage_dir / f"{run_name}_overview.txt",
+    )
+    missing = [str(p.name) for p in required if not p.exists()]
+    if missing:
+        print("  Skipping report generation (missing artifacts): " + ", ".join(missing))
+        return True
+
+    script_path = Path(__file__).resolve().parent / "generate_run_reports.py"
+    if not script_path.exists():
+        print(f"  Error: report generator not found: {script_path}")
+        return False
+
+    cmd = [
+        sys.executable,
+        str(script_path),
+        "--stage-dir",
+        str(stage_dir),
+        "--run-name",
+        run_name,
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        print("  Report generation failed:")
+        if proc.stderr.strip():
+            print(proc.stderr.strip())
+        if proc.stdout.strip():
+            print(proc.stdout.strip())
+        return False
+
+    if proc.stdout.strip():
+        print(proc.stdout.strip())
+    return True
+
+
 def pull_backtest_data(
     client,
     backtest_id,
@@ -418,7 +547,9 @@ def pull_backtest_data(
     pull_orders=True,
     pull_trades=True,
     pull_overview=True,
+    pull_observability=True,
     output_dir=OUTPUT_DIR,
+    generate_reports=True,
 ):
     """Pull all requested data for a backtest."""
 
@@ -500,11 +631,21 @@ def pull_backtest_data(
         print(f"  Saved: {trades_file}")
         results["trades"] = trades_file
 
+    if pull_observability:
+        obs_files = pull_observability_artifacts(name, backtest, output_dir)
+        for label, fpath in obs_files.items():
+            results[f"obs_{label}"] = fpath
+
     print(f"\n{'='*50}")
     print(f"Complete! Files saved to {output_dir}/")
     for dtype, fpath in results.items():
         size = os.path.getsize(fpath)
         print(f"  {dtype:10s}: {fpath.name} ({size:,} bytes)")
+
+    if generate_reports and any([pull_logs, pull_orders, pull_trades, pull_overview]):
+        print("\nGenerating synced reports...")
+        if not generate_reports_for_run(output_dir, safe_name):
+            return False
 
     return True
 
@@ -568,6 +709,16 @@ Examples:
     parser.add_argument("--orders", action="store_true", help="Pull orders")
     parser.add_argument("--trades", action="store_true", help="Pull trades")
     parser.add_argument("--overview", action="store_true", help="Pull overview/statistics")
+    parser.add_argument(
+        "--skip-reports",
+        action="store_true",
+        help="Skip auto-generation of run reports after pull",
+    )
+    parser.add_argument(
+        "--skip-observability",
+        action="store_true",
+        help="Skip pulling structured observability CSV artifacts from Object Store",
+    )
 
     args = parser.parse_args()
 
@@ -611,7 +762,9 @@ Examples:
         pull_orders=pull_orders,
         pull_trades=pull_trades,
         pull_overview=pull_overview,
+        pull_observability=not args.skip_observability,
         output_dir=args.output,
+        generate_reports=not args.skip_reports,
     )
 
     return 0 if success else 1

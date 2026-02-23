@@ -16,12 +16,13 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 STARTING_CAPITAL = 100000.0
 TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}) ")
 OPTION_TYPE_RE = re.compile(r"[CP](\d{8})$")
 REASON_CODE_RE = re.compile(r"\b(?:[ER]_[A-Z0-9_]+|[A-Z]{2,}_[A-Z0-9_]{3,})\b")
+YEAR_FROM_RUN_RE = re.compile(r"fullyear[_-]?(\d{4})", re.IGNORECASE)
 
 
 @dataclass
@@ -207,6 +208,119 @@ def parse_date_from_iso(value: str) -> str:
     return value[:10]
 
 
+def normalize_name_token(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
+
+
+def parse_log_header_metadata(lines: List[str]) -> Dict[str, str]:
+    metadata: Dict[str, str] = {}
+    for line in lines[:40]:
+        if line.startswith("# Backtest:"):
+            metadata["backtest_name"] = line.split(":", 1)[1].strip()
+        elif line.startswith("# Backtest ID:"):
+            metadata["backtest_id"] = line.split(":", 1)[1].strip()
+        elif line.startswith("# Project ID:"):
+            metadata["project_id"] = line.split(":", 1)[1].strip()
+    return metadata
+
+
+def parse_overview_metadata(overview_text: str) -> Dict[str, str]:
+    metadata: Dict[str, str] = {}
+    if not overview_text:
+        return metadata
+    for line in overview_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("BACKTEST OVERVIEW:"):
+            metadata["backtest_name"] = stripped.split(":", 1)[1].strip()
+        elif stripped.startswith("Backtest ID:"):
+            metadata["backtest_id"] = stripped.split(":", 1)[1].strip()
+        elif stripped.startswith("Project ID:"):
+            metadata["project_id"] = stripped.split(":", 1)[1].strip()
+        elif stripped.startswith("Backtest Start:"):
+            metadata["backtest_start"] = stripped.split(":", 1)[1].strip()
+        elif stripped.startswith("Backtest End:"):
+            metadata["backtest_end"] = stripped.split(":", 1)[1].strip()
+    return metadata
+
+
+def infer_expected_year_from_run_name(run_name: str) -> int:
+    match = YEAR_FROM_RUN_RE.search(run_name or "")
+    if not match:
+        return 0
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return 0
+
+
+def validate_artifact_integrity(
+    run_name: str,
+    trades: List[TradeRow],
+    log_meta: Dict[str, str],
+    overview_meta: Dict[str, str],
+) -> Dict[str, Any]:
+    errors: List[str] = []
+    checks: Dict[str, bool] = {}
+
+    run_token = normalize_name_token(run_name)
+    log_name = log_meta.get("backtest_name", "")
+    overview_name = overview_meta.get("backtest_name", "")
+    log_id = log_meta.get("backtest_id", "")
+    overview_id = overview_meta.get("backtest_id", "")
+
+    checks["run_name_matches_log_header"] = bool(log_name) and (
+        normalize_name_token(log_name) == run_token
+    )
+    checks["run_name_matches_overview_header"] = bool(overview_name) and (
+        normalize_name_token(overview_name) == run_token
+    )
+    checks["log_id_matches_overview_id"] = bool(log_id and overview_id and log_id == overview_id)
+
+    if log_name and not checks["run_name_matches_log_header"]:
+        errors.append(
+            f"Run/file name mismatch vs log header: file={run_name} log_header={log_name}"
+        )
+    if overview_name and not checks["run_name_matches_overview_header"]:
+        errors.append(
+            f"Run/file name mismatch vs overview header: file={run_name} overview={overview_name}"
+        )
+    if log_id and overview_id and not checks["log_id_matches_overview_id"]:
+        errors.append(f"Backtest ID mismatch: logs={log_id} overview={overview_id}")
+
+    expected_year = infer_expected_year_from_run_name(run_name)
+    trade_dates = [parse_date_from_iso(t.entry_time) for t in trades if t.entry_time]
+    trade_start = min(trade_dates) if trade_dates else ""
+    trade_end = max(trade_dates) if trade_dates else ""
+    overview_start = (overview_meta.get("backtest_start", "") or "")[:10]
+    overview_end = (overview_meta.get("backtest_end", "") or "")[:10]
+
+    checks["expected_year_matches_overview"] = True
+    checks["expected_year_matches_trades"] = True
+    if expected_year:
+        if overview_start and not overview_start.startswith(str(expected_year)):
+            checks["expected_year_matches_overview"] = False
+            errors.append(
+                f"Run expected FullYear{expected_year} but overview start is {overview_start}"
+            )
+        if trade_start and not trade_start.startswith(str(expected_year)):
+            checks["expected_year_matches_trades"] = False
+            errors.append(f"Run expected FullYear{expected_year} but trade start is {trade_start}")
+
+    return {
+        "errors": errors,
+        "checks": checks,
+        "expected_year": expected_year,
+        "trade_start": trade_start,
+        "trade_end": trade_end,
+        "overview_start": overview_start,
+        "overview_end": overview_end,
+        "log_name": log_name,
+        "overview_name": overview_name,
+        "log_id": log_id,
+        "overview_id": overview_id,
+    }
+
+
 def infer_date_range_from_logs(lines: Iterable[str]) -> Tuple[str, str]:
     first = ""
     last = ""
@@ -286,7 +400,15 @@ def parse_logs(lines: List[str]) -> Dict[str, object]:
         # Runtime anomalies.
         if any(
             k in line
-            for k in ("Error invoking", "Runtime Error", "EXCEPTION", "Traceback", "Order Error:")
+            for k in (
+                "Error invoking",
+                "Runtime Error",
+                "EXCEPTION",
+                "Traceback",
+                "Order Error:",
+                "REGIME_OBSERVABILITY_SAVE_ERROR",
+                "maximum of 5120kb of log data per backtest",
+            )
         ):
             anomalies.append(line)
 
@@ -355,8 +477,10 @@ def summarize_trades(trades: List[TradeRow]) -> Dict[str, object]:
     losses = total - wins
     pnl = sum(t.pnl for t in trades)
     fees = sum(t.fees for t in trades)
+    net_pnl = pnl - fees
     win_rate = (100.0 * wins / total) if total else 0.0
     gross_return_pct = 100.0 * pnl / STARTING_CAPITAL
+    net_return_pct = 100.0 * net_pnl / STARTING_CAPITAL
 
     by_engine: Dict[str, List[TradeRow]] = defaultdict(list)
     by_strategy: Dict[str, List[TradeRow]] = defaultdict(list)
@@ -371,7 +495,9 @@ def summarize_trades(trades: List[TradeRow]) -> Dict[str, object]:
         "win_rate": win_rate,
         "pnl": pnl,
         "fees": fees,
+        "net_pnl": net_pnl,
         "gross_return_pct": gross_return_pct,
+        "net_return_pct": net_return_pct,
         "by_engine": by_engine,
         "by_strategy": by_strategy,
     }
@@ -412,6 +538,7 @@ def write_performance_report(
     trade_summary: Dict[str, object],
     log_summary: Dict[str, object],
     log_dates: Tuple[str, str],
+    integrity: Dict[str, Any],
 ) -> None:
     first_log_date, last_log_date = log_dates
     trade_dates = [parse_date_from_iso(t.entry_time) for t in trades if t.entry_time]
@@ -426,8 +553,12 @@ def write_performance_report(
     lines.append(f"# {run_name} REPORT")
     lines.append("")
     lines.append("## Executive Summary")
-    lines.append(f"- Net P&L (trades.csv): **{fmt_money(trade_summary['pnl'])}**")
-    lines.append(f"- Return on $100k baseline: **{fmt_pct(trade_summary['gross_return_pct'])}**")
+    lines.append(f"- Gross trade P&L (trades.csv): **{fmt_money(trade_summary['pnl'])}**")
+    lines.append(f"- Net P&L after fees: **{fmt_money(trade_summary['net_pnl'])}**")
+    lines.append(
+        f"- Gross return on $100k baseline: **{fmt_pct(trade_summary['gross_return_pct'])}**"
+    )
+    lines.append(f"- Net return after fees: **{fmt_pct(trade_summary['net_return_pct'])}**")
     lines.append(
         f"- Trades / Win rate: **{trade_summary['total']}** / **{fmt_pct(trade_summary['win_rate'])}**"
     )
@@ -455,12 +586,48 @@ def write_performance_report(
             )
             else " ",
         ),
+        (
+            "Run name matches log header",
+            "x" if integrity["checks"].get("run_name_matches_log_header") else " ",
+        ),
+        (
+            "Run name matches overview header",
+            "x" if integrity["checks"].get("run_name_matches_overview_header") else " ",
+        ),
+        (
+            "Backtest ID matches across logs and overview",
+            "x" if integrity["checks"].get("log_id_matches_overview_id") else " ",
+        ),
+        (
+            "Expected year matches overview range",
+            "x" if integrity["checks"].get("expected_year_matches_overview", True) else " ",
+        ),
+        (
+            "Expected year matches trade range",
+            "x" if integrity["checks"].get("expected_year_matches_trades", True) else " ",
+        ),
     ]
     for text, mark in checks:
         lines.append(f"- [{mark}] {text}")
     lines.append("")
     lines.append(f"- Log date range: `{first_log_date}` to `{last_log_date}`")
     lines.append(f"- Trade date range: `{trade_start}` to `{trade_end}`")
+    lines.append(
+        f"- Log header: `{integrity.get('log_name','')}` | Backtest ID: `{integrity.get('log_id','')}`"
+    )
+    lines.append(
+        f"- Overview header: `{integrity.get('overview_name','')}` | Backtest ID: `{integrity.get('overview_id','')}`"
+    )
+    if integrity.get("expected_year"):
+        lines.append(
+            f"- Expected FullYear: `{integrity['expected_year']}` | "
+            f"Overview range: `{integrity.get('overview_start','')}` to `{integrity.get('overview_end','')}`"
+        )
+    if integrity.get("errors"):
+        lines.append("")
+        lines.append("- Integrity errors:")
+        for item in integrity["errors"][:10]:
+            lines.append(f"  - `{item}`")
     lines.append("")
 
     lines.append("## Core Metrics")
@@ -472,9 +639,11 @@ def write_performance_report(
                 ["Wins", str(trade_summary["wins"])],
                 ["Losses", str(trade_summary["losses"])],
                 ["Win Rate", fmt_pct(trade_summary["win_rate"])],
-                ["Gross P&L", fmt_money(trade_summary["pnl"])],
+                ["Gross trade P&L", fmt_money(trade_summary["pnl"])],
                 ["Fees", fmt_money(trade_summary["fees"])],
+                ["Net P&L after fees", fmt_money(trade_summary["net_pnl"])],
                 ["Gross Return (100k baseline)", fmt_pct(trade_summary["gross_return_pct"])],
+                ["Net Return After Fees (100k baseline)", fmt_pct(trade_summary["net_return_pct"])],
             ],
         )
     )
@@ -556,8 +725,12 @@ def write_performance_report(
         lines.append("- P0: resolve runtime/plumbing issue before evaluating alpha quality.")
         lines.append("- P1: rerun smoke window after runtime fix and regenerate reports.")
     else:
-        if trade_summary["gross_return_pct"] < 2.0:
+        if trade_summary["net_return_pct"] < 2.0:
             lines.append("- P0: smoke performance is below the +2% QQQ reference; continue tuning.")
+        if integrity.get("errors"):
+            lines.append(
+                "- P0: artifact integrity mismatch; rerun pull/report generation before RCA."
+            )
         if any("Error invoking" in x for x in anomalies):
             lines.append("- P0: runtime data-read errors must be treated as infra blockers.")
         lines.append("- P1: reduce dominant rejection reasons shown in signal-flow report.")
@@ -586,6 +759,14 @@ def write_signal_flow_report(
     micro_generated_total = sum(micro_generated.values())
     vass_rejected = sum(vass_reasons.values())
     micro_rejected = sum(micro_reasons.values())
+    if vass_generated_total <= 0 or len(vass_exec) > vass_generated_total:
+        vass_exec_rate = "N/A"
+    else:
+        vass_exec_rate = fmt_pct(100.0 * len(vass_exec) / vass_generated_total)
+    if micro_generated_total <= 0 or len(micro_exec) > micro_generated_total:
+        micro_exec_rate = "N/A"
+    else:
+        micro_exec_rate = fmt_pct(100.0 * len(micro_exec) / micro_generated_total)
 
     lines: List[str] = []
     lines.append(f"# {run_name} SIGNAL FLOW REPORT")
@@ -600,22 +781,14 @@ def write_signal_flow_report(
                     str(vass_generated_total),
                     str(vass_rejected),
                     str(len(vass_exec)),
-                    fmt_pct(
-                        100.0 * len(vass_exec) / vass_generated_total
-                        if vass_generated_total
-                        else 0.0
-                    ),
+                    vass_exec_rate,
                 ],
                 [
                     "MICRO",
                     str(micro_generated_total),
                     str(micro_rejected),
                     str(len(micro_exec)),
-                    fmt_pct(
-                        100.0 * len(micro_exec) / micro_generated_total
-                        if micro_generated_total
-                        else 0.0
-                    ),
+                    micro_exec_rate,
                 ],
             ],
         )
@@ -816,6 +989,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Generate run reports from QC artifacts")
     parser.add_argument("--stage-dir", required=True, help="Directory containing run artifacts")
     parser.add_argument("--run-name", help="Run prefix (without _logs/_orders/_trades suffix)")
+    parser.add_argument(
+        "--allow-mismatch",
+        action="store_true",
+        help="Allow run/header/year mismatches (default: fail fast on mismatch)",
+    )
     args = parser.parse_args()
 
     stage_dir = Path(args.stage_dir)
@@ -828,15 +1006,31 @@ def main() -> int:
     trades_path = stage_dir / f"{run_name}_trades.csv"
     overview_path = stage_dir / f"{run_name}_overview.txt"
 
+    if not logs_path.exists():
+        raise SystemExit(f"Missing logs file: {logs_path}")
+    if not trades_path.exists():
+        raise SystemExit(f"Missing trades file: {trades_path}")
+    if not overview_path.exists():
+        raise SystemExit(f"Missing overview file: {overview_path}")
+
     orders = read_orders(orders_path)
     trades = read_trades(trades_path, orders)
     lines = read_lines(logs_path)
+    overview_text = overview_path.read_text()
+    log_meta = parse_log_header_metadata(lines)
+    overview_meta = parse_overview_metadata(overview_text)
+    integrity = validate_artifact_integrity(run_name, trades, log_meta, overview_meta)
+    if integrity["errors"] and not args.allow_mismatch:
+        joined = "\n".join(f"- {msg}" for msg in integrity["errors"])
+        raise SystemExit(
+            "Artifact integrity check failed. Use --allow-mismatch to override.\n" f"{joined}"
+        )
     log_summary = parse_logs(lines)
-    overview_errors = parse_overview_errors(
-        overview_path.read_text() if overview_path.exists() else ""
-    )
+    overview_errors = parse_overview_errors(overview_text)
     if overview_errors:
         log_summary["anomalies"] = list(log_summary["anomalies"]) + overview_errors
+    if integrity["errors"]:
+        log_summary["anomalies"] = list(log_summary["anomalies"]) + integrity["errors"]
     trade_summary = summarize_trades(trades)
     log_dates = infer_date_range_from_logs(lines)
 
@@ -844,7 +1038,15 @@ def main() -> int:
     flow_path = stage_dir / f"{run_name}_SIGNAL_FLOW_REPORT.md"
     detail_path = stage_dir / f"{run_name}_TRADE_DETAIL_REPORT.md"
 
-    write_performance_report(report_path, run_name, trades, trade_summary, log_summary, log_dates)
+    write_performance_report(
+        report_path,
+        run_name,
+        trades,
+        trade_summary,
+        log_summary,
+        log_dates,
+        integrity,
+    )
     write_signal_flow_report(flow_path, run_name, trades, trade_summary, log_summary)
     write_trade_detail_report(detail_path, run_name, trades, trade_summary)
 

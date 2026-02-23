@@ -86,6 +86,18 @@ class MainOrdersMixin:
                 f"OrderId={orderEvent.OrderId} | Type={order_type} | "
                 f"Tag={compact_tag} | Trace={trace_id}"
             )
+            self._record_order_lifecycle_event(
+                status="PARTIALLY_FILLED",
+                order_id=orderEvent.OrderId,
+                symbol=symbol,
+                quantity=int(fill_qty),
+                fill_price=float(fill_price),
+                order_type=order_type,
+                order_tag=order_tag,
+                trace_id=trace_id,
+                message=str(getattr(orderEvent, "Message", "") or ""),
+                source="ON_ORDER_EVENT",
+            )
 
             # Route partial fills to spread handler if applicable
             if "QQQ" in symbol and ("C" in symbol or "P" in symbol):
@@ -149,6 +161,18 @@ class MainOrdersMixin:
                 f"FILL: {direction} {abs(fill_qty)} {symbol} @ ${fill_price:.2f} | "
                 f"OrderId={orderEvent.OrderId} | Type={order_type} | "
                 f"Tag={compact_tag} | Trace={trace_id}"
+            )
+            self._record_order_lifecycle_event(
+                status="FILLED",
+                order_id=orderEvent.OrderId,
+                symbol=symbol,
+                quantity=int(fill_qty),
+                fill_price=float(fill_price),
+                order_type=order_type,
+                order_tag=order_tag,
+                trace_id=trace_id,
+                message=str(getattr(orderEvent, "Message", "") or ""),
+                source="ON_ORDER_EVENT",
             )
 
             # V2.14 Fix #12: SLIPPAGE_EXCEEDED check
@@ -343,6 +367,24 @@ class MainOrdersMixin:
             )
             if not invalid_tag:
                 invalid_tag = self._get_recent_symbol_fill_tag(failed_symbol) or ""
+            invalid_trace_id = self._extract_trace_id_from_tag(invalid_tag) or "NONE"
+            invalid_type = (
+                str(getattr(invalid_order, "Type", "UNKNOWN"))
+                if invalid_order is not None
+                else "UNKNOWN"
+            )
+            self._record_order_lifecycle_event(
+                status="INVALID",
+                order_id=orderEvent.OrderId,
+                symbol=failed_symbol,
+                quantity=int(getattr(orderEvent, "FillQuantity", 0) or 0),
+                fill_price=float(getattr(orderEvent, "FillPrice", 0.0) or 0.0),
+                order_type=invalid_type,
+                order_tag=invalid_tag,
+                trace_id=invalid_trace_id,
+                message=str(getattr(orderEvent, "Message", "") or ""),
+                source="ON_ORDER_EVENT",
+            )
             if "RECON_ORPHAN_OPTION" in invalid_tag:
                 self._recon_orphan_close_submitted.pop(failed_symbol_norm, None)
             if "Margin" in str(orderEvent.Message) or "buying power" in str(orderEvent.Message):
@@ -604,6 +646,24 @@ class MainOrdersMixin:
             )
             if not canceled_tag:
                 canceled_tag = self._get_recent_symbol_fill_tag(canceled_symbol) or ""
+            canceled_trace_id = self._extract_trace_id_from_tag(canceled_tag) or "NONE"
+            canceled_type = (
+                str(getattr(canceled_order, "Type", "UNKNOWN"))
+                if canceled_order is not None
+                else "UNKNOWN"
+            )
+            self._record_order_lifecycle_event(
+                status="CANCELED",
+                order_id=orderEvent.OrderId,
+                symbol=canceled_symbol,
+                quantity=int(getattr(orderEvent, "FillQuantity", 0) or 0),
+                fill_price=float(getattr(orderEvent, "FillPrice", 0.0) or 0.0),
+                order_type=canceled_type,
+                order_tag=canceled_tag,
+                trace_id=canceled_trace_id,
+                message=str(getattr(orderEvent, "Message", "") or ""),
+                source="ON_ORDER_EVENT",
+            )
             if "RECON_ORPHAN_OPTION" in canceled_tag:
                 self._recon_orphan_close_submitted.pop(canceled_symbol_norm, None)
             self._forward_execution_event(

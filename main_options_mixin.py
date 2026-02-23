@@ -872,6 +872,19 @@ class MainOptionsMixin:
                                 f"INTRADAY_SIGNAL_CANDIDATE: SignalId={intraday_signal_id} | {signal_reason} | "
                                 f"Direction={intraday_direction.value if intraday_direction else 'NONE'}"
                             )
+                            self._record_signal_lifecycle_event(
+                                engine=self._intraday_engine_bucket_from_strategy(
+                                    candidate_strategy
+                                ),
+                                event="CANDIDATE",
+                                signal_id=intraday_signal_id,
+                                direction=intraday_direction.value if intraday_direction else "",
+                                strategy=candidate_strategy.value if candidate_strategy else "",
+                                code="R_OK",
+                                gate_name="INTRADAY_SIGNAL_CANDIDATE",
+                                reason=signal_reason,
+                                contract_symbol="",
+                            )
 
                 # If engine recommends NO_TRADE or conflict detected, skip contract selection
                 if intraday_direction is None:
@@ -1004,6 +1017,24 @@ class MainOptionsMixin:
                             self._inc_intraday_engine_counter(
                                 self._diag_intraday_approved_by_engine,
                                 intraday_strategy,
+                            )
+                            self._record_signal_lifecycle_event(
+                                engine=self._intraday_engine_bucket_from_strategy(
+                                    intraday_strategy
+                                ),
+                                event="APPROVED",
+                                signal_id=intraday_signal_id,
+                                trace_id=intraday_signal.metadata.get("trace_id", "")
+                                if intraday_signal.metadata
+                                else "",
+                                direction=intraday_direction.value if intraday_direction else "",
+                                strategy=intraday_strategy.value if intraday_strategy else "",
+                                code="R_OK",
+                                gate_name="INTRADAY_SIGNAL_APPROVED",
+                                reason=signal_reason,
+                                contract_symbol=str(intraday_contract.symbol)
+                                if intraday_contract is not None
+                                else "",
                             )
                         self._inc_micro_dte_counter(
                             self._diag_micro_dte_approved,
@@ -1207,6 +1238,17 @@ class MainOptionsMixin:
                         f"INTRADAY_SIGNAL_CANDIDATE: SignalId={itm_signal_id} | "
                         f"ITM_ENGINE_EXPLICIT: {itm_reason} | Direction={itm_dir.value}"
                     )
+                    self._record_signal_lifecycle_event(
+                        engine="ITM",
+                        event="CANDIDATE",
+                        signal_id=itm_signal_id,
+                        direction=itm_dir.value if itm_dir else "",
+                        strategy=IntradayStrategy.ITM_MOMENTUM.value,
+                        code="R_OK",
+                        gate_name="INTRADAY_SIGNAL_CANDIDATE",
+                        reason=f"ITM_ENGINE_EXPLICIT: {itm_reason}",
+                        contract_symbol="",
+                    )
 
                 itm_contract = self._select_intraday_option_contract(
                     chain,
@@ -1272,6 +1314,20 @@ class MainOptionsMixin:
                             self._inc_intraday_engine_counter(
                                 self._diag_intraday_approved_by_engine,
                                 IntradayStrategy.ITM_MOMENTUM,
+                            )
+                            self._record_signal_lifecycle_event(
+                                engine="ITM",
+                                event="APPROVED",
+                                signal_id=itm_signal_id,
+                                trace_id=itm_signal.metadata.get("trace_id", "")
+                                if itm_signal.metadata
+                                else "",
+                                direction=itm_dir.value if itm_dir else "",
+                                strategy=IntradayStrategy.ITM_MOMENTUM.value,
+                                code="R_OK",
+                                gate_name="INTRADAY_SIGNAL_APPROVED",
+                                reason=f"ITM_ENGINE_EXPLICIT: {itm_reason}",
+                                contract_symbol=str(itm_contract.symbol),
                             )
                         itm_trace_id = (
                             itm_signal.metadata.get("trace_id", "") if itm_signal.metadata else ""
@@ -1467,8 +1523,32 @@ class MainOptionsMixin:
             dte_max=dte_max_all,
             option_right=required_right,
         )
+        self._diag_vass_signal_seq = int(getattr(self, "_diag_vass_signal_seq", 0)) + 1
+        vass_signal_id = f"VASS-{self.Time.strftime('%Y%m%d-%H%M')}-{self._diag_vass_signal_seq}"
         if len(candidate_contracts) < 2:
+            self._record_signal_lifecycle_event(
+                engine="VASS",
+                event="DROPPED",
+                signal_id=vass_signal_id,
+                direction=direction.value if direction else "",
+                strategy=strategy.value if strategy else "",
+                code="INSUFFICIENT_CANDIDATES",
+                gate_name="VASS_CANDIDATE_CONTRACTS",
+                reason="No contracts met spread criteria",
+                contract_symbol="",
+            )
             return
+        self._record_signal_lifecycle_event(
+            engine="VASS",
+            event="CANDIDATE",
+            signal_id=vass_signal_id,
+            direction=direction.value if direction else "",
+            strategy=strategy.value if strategy else "",
+            code="R_OK",
+            gate_name="VASS_SIGNAL_CANDIDATE",
+            reason=f"Contracts={len(candidate_contracts)}",
+            contract_symbol="",
+        )
 
         # Calculate IV rank from options chain (V2.1)
         iv_rank = self._calculate_iv_rank(chain)
@@ -1516,8 +1596,32 @@ class MainOptionsMixin:
             )
             signal = self._attach_option_trace_metadata(signal, source="VASS")
             vass_trace_id = signal.metadata.get("trace_id", "") if signal.metadata else ""
+            self._record_signal_lifecycle_event(
+                engine="VASS",
+                event="APPROVED",
+                signal_id=vass_signal_id,
+                trace_id=vass_trace_id,
+                direction=direction.value if direction else "",
+                strategy=strategy.value if strategy else "",
+                code="R_OK",
+                gate_name="VASS_ENTRY",
+                reason=str(signal.reason or ""),
+                contract_symbol=str(signal.symbol),
+            )
             signal = self._apply_spread_margin_guard(signal, source_tag="VASS_INTRADAY_SPREAD")
             if signal is None:
+                self._record_signal_lifecycle_event(
+                    engine="VASS",
+                    event="DROPPED",
+                    signal_id=vass_signal_id,
+                    trace_id=vass_trace_id,
+                    direction=direction.value if direction else "",
+                    strategy=strategy.value if strategy else "",
+                    code="R_MARGIN_PRECHECK",
+                    gate_name="VASS_MARGIN_GUARD",
+                    reason="Signal dropped by spread margin guard",
+                    contract_symbol="",
+                )
                 return
             short_symbol = (
                 signal.metadata.get("spread_short_leg_symbol", "") if signal.metadata else ""
@@ -1536,6 +1640,18 @@ class MainOptionsMixin:
                         self.Log(
                             f"VASS_ROUTER_REJECTED: Trace={rej.trace_id} | "
                             f"Code={rej.code} | Stage={rej.stage} | {rej.detail}"
+                        )
+                        self._record_signal_lifecycle_event(
+                            engine="VASS",
+                            event="ROUTER_REJECTED",
+                            signal_id=vass_signal_id,
+                            trace_id=vass_trace_id,
+                            direction=direction.value if direction else "",
+                            strategy=strategy.value if strategy else "",
+                            code=str(rej.code or "E_ROUTER_REJECT"),
+                            gate_name=str(rej.stage or "ROUTER"),
+                            reason=str(rej.detail or ""),
+                            contract_symbol=str(signal.symbol),
                         )
                         break
             return  # Spread trade placed, don't try single-leg
@@ -1605,6 +1721,17 @@ class MainOptionsMixin:
                         else ""
                     )
                 )
+            self._record_signal_lifecycle_event(
+                engine="VASS",
+                event="DROPPED",
+                signal_id=vass_signal_id,
+                direction=direction.value if direction else "",
+                strategy=strategy.value if strategy else "",
+                code=reason_code,
+                gate_name=str(validation_reason or rejection_code),
+                reason=reason_text,
+                contract_symbol="",
+            )
 
         # V2.4.1: Single-leg swing fallback - DISABLED by default for safety
         # Single-leg has higher delta exposure and full premium at risk
