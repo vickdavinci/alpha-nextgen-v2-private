@@ -1,5 +1,7 @@
 # region imports
 # Type hints
+import csv
+import io
 import json
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -100,10 +102,15 @@ class AlphaNextGen(QCAlgorithm):
                     backtest_year = parsed_year
             except (TypeError, ValueError):
                 pass
+        run_label = str(self.GetParameter("run_label") or "").strip()
+        self._backtest_year = backtest_year
+        self._run_label = run_label
         self.SetStartDate(backtest_year, 1, 1)
         self.SetEndDate(backtest_year, 12, 31)
         self.SetCash(config.INITIAL_CAPITAL)  # Seed capital from config
-        self.Log(f"INIT: BacktestYear={backtest_year}")
+        self.Log(
+            f"INIT: BacktestYear={backtest_year} | RunLabel={run_label if run_label else 'DEFAULT'}"
+        )
 
         # All times are Eastern
         self.SetTimeZone("America/New_York")
@@ -165,6 +172,15 @@ class AlphaNextGen(QCAlgorithm):
             for key in state_keys:
                 if self.ObjectStore.ContainsKey(key):
                     self.ObjectStore.Delete(key)
+            observability_prefix = str(
+                getattr(
+                    config, "REGIME_OBSERVABILITY_OBJECTSTORE_KEY_PREFIX", "regime_observability"
+                )
+            ).strip("/")
+            run_suffix = self._run_label or f"year_{self._backtest_year}"
+            observability_key = f"{observability_prefix}/{run_suffix}_{self._backtest_year}.csv"
+            if self.ObjectStore.ContainsKey(observability_key):
+                self.ObjectStore.Delete(observability_key)
 
         # =====================================================================
         # STEP 8: Load Persisted State
@@ -336,6 +352,23 @@ class AlphaNextGen(QCAlgorithm):
         self._intraday_regime_updated_at = None
         self._intraday_regime_momentum_roc = None
         self._intraday_regime_vix_5d_change = None
+        self._regime_base_state = "NEUTRAL"
+        self._regime_base_candidate_state = "NEUTRAL"
+        self._regime_base_candidate_streak = 0
+        self._regime_overlay_state = "STABLE"
+        self._regime_overlay_candidate_state = "STABLE"
+        self._regime_overlay_candidate_streak = 0
+        self._regime_detector_last_update_key = None
+        self._regime_detector_last_raw = {}
+        self._regime_decision_records: List[Dict[str, Any]] = []
+        self._regime_decision_overflow_logged = False
+        observability_prefix = str(
+            getattr(config, "REGIME_OBSERVABILITY_OBJECTSTORE_KEY_PREFIX", "regime_observability")
+        ).strip("/")
+        run_suffix = self._run_label or f"year_{self._backtest_year}"
+        self._regime_observability_key = (
+            f"{observability_prefix}/{run_suffix}_{self._backtest_year}.csv"
+        )
         self._last_regime_effective_log_at = None
         self._last_intraday_dte_routing_log_by_key = {}
         # Preserve best-effort order tags for lifecycle diagnostics when broker tags are blank.
@@ -1508,6 +1541,14 @@ class AlphaNextGen(QCAlgorithm):
             if bool(getattr(config, "VASS_TRANSITION_BLOCK_AMBIGUOUS", True)) and bool(
                 transition_ctx.get("ambiguous", False)
             ):
+                self._record_regime_decision_event(
+                    engine="VASS",
+                    engine_decision="BLOCK",
+                    strategy_attempted="VASS_DIRECTION",
+                    gate_name="VASS_TRANSITION_BLOCK_AMBIGUOUS",
+                    threshold_snapshot={"overlay": transition_ctx.get("transition_overlay", "")},
+                    context=transition_ctx,
+                )
                 self.Log(
                     f"VASS_TRANSITION_BLOCK: ambiguous macro handoff | "
                     f"Eff={float(transition_ctx.get('effective_score', regime_score)):.1f} | "
@@ -1541,6 +1582,14 @@ class AlphaNextGen(QCAlgorithm):
             overlay_state=overlay_state,
         )
         if not should_trade:
+            self._record_regime_decision_event(
+                engine="VASS",
+                engine_decision="BLOCK",
+                strategy_attempted="VASS_DIRECTION",
+                gate_name="VASS_RESOLVER_NO_TRADE",
+                threshold_snapshot={"resolve_reason": resolve_reason},
+                context=transition_ctx,
+            )
             if "E_OVERLAY_STRESS_BULL_BLOCK" in resolve_reason:
                 self._diag_overlay_block_count += 1
             return None
@@ -1552,6 +1601,16 @@ class AlphaNextGen(QCAlgorithm):
             >= float(getattr(config, "VASS_BULL_PROFILE_REGIME_MIN", 70.0))
             and str(overlay_state).upper() in {"NORMAL", "RECOVERY"}
         ):
+            self._record_regime_decision_event(
+                engine="VASS",
+                engine_decision="BLOCK",
+                strategy_attempted="VASS_BEARISH",
+                gate_name="VASS_BULL_PROFILE_BEARISH_BLOCK",
+                threshold_snapshot={
+                    "regime_min": float(getattr(config, "VASS_BULL_PROFILE_REGIME_MIN", 70.0))
+                },
+                context=transition_ctx,
+            )
             self.Log(
                 f"{bull_profile_log_prefix}: Bearish VASS blocked in strong bull profile | "
                 f"Regime={float(regime_for_vass):.1f} | Overlay={overlay_state}"
@@ -1562,11 +1621,21 @@ class AlphaNextGen(QCAlgorithm):
             resolved_direction == "BULLISH"
             and str(macro_direction).upper() == "NEUTRAL"
             and self._current_vix
-            >= float(getattr(config, "VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX", 18.0))
+            >= float(getattr(config, "VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX", 20.0))
         ):
+            self._record_regime_decision_event(
+                engine="VASS",
+                engine_decision="BLOCK",
+                strategy_attempted="VASS_BULLISH",
+                gate_name="VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX",
+                threshold_snapshot={
+                    "vix_limit": float(getattr(config, "VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX", 20.0))
+                },
+                context=transition_ctx,
+            )
             self.Log(
                 f"{clamp_log_prefix}: Neutral macro + elevated VIX blocks bullish override | "
-                f"VIX={self._current_vix:.1f} >= {float(getattr(config, 'VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX', 18.0)):.1f} | "
+                f"VIX={self._current_vix:.1f} >= {float(getattr(config, 'VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX', 20.0)):.1f} | "
                 f"Resolve={resolve_reason}"
             )
             return None
@@ -1577,6 +1646,13 @@ class AlphaNextGen(QCAlgorithm):
             and bool(getattr(config, "VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION", True))
             and bool(transition_ctx.get("strong_deterioration", False))
         ):
+            self._record_regime_decision_event(
+                engine="VASS",
+                engine_decision="BLOCK",
+                strategy_attempted="VASS_BULLISH",
+                gate_name="VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION",
+                context=transition_ctx,
+            )
             self.Log(
                 f"VASS_TRANSITION_BLOCK: bullish blocked during deterioration | "
                 f"Eff={float(transition_ctx.get('effective_score', regime_for_vass)):.1f} | "
@@ -1591,6 +1667,13 @@ class AlphaNextGen(QCAlgorithm):
             and bool(getattr(config, "VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY", True))
             and bool(transition_ctx.get("strong_recovery", False))
         ):
+            self._record_regime_decision_event(
+                engine="VASS",
+                engine_decision="BLOCK",
+                strategy_attempted="VASS_BEARISH",
+                gate_name="VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY",
+                context=transition_ctx,
+            )
             self.Log(
                 f"VASS_TRANSITION_BLOCK: bearish blocked during recovery | "
                 f"Eff={float(transition_ctx.get('effective_score', regime_for_vass)):.1f} | "
@@ -1621,6 +1704,18 @@ class AlphaNextGen(QCAlgorithm):
         else:
             direction = OptionDirection.PUT
             direction_str = "BEARISH"
+
+        self._record_regime_decision_event(
+            engine="VASS",
+            engine_decision="ALLOW",
+            strategy_attempted=f"VASS_{direction_str}",
+            gate_name="VASS_DIRECTION_RESOLVED",
+            threshold_snapshot={
+                "macro_direction": str(macro_direction),
+                "overlay_state": str(overlay_state),
+            },
+            context=transition_ctx,
+        )
 
         return (
             direction,
@@ -2985,6 +3080,8 @@ class AlphaNextGen(QCAlgorithm):
             self._process_eod_signals(self._eod_capital_state)
             self._eod_capital_state = None
 
+        self._flush_regime_decision_artifact()
+
         # Save all state
         self._save_state()
 
@@ -3098,6 +3195,10 @@ class AlphaNextGen(QCAlgorithm):
 
         # NOTE: _kill_switch_handled_today is NOT reset here - it resets at 09:25 pre-market
         # Resetting here causes double-trigger since OnData runs at 16:00 after EOD handler
+
+    def OnEndOfAlgorithm(self) -> None:
+        """Flush end-of-run observability artifacts."""
+        self._flush_regime_decision_artifact()
 
     def _on_weekly_reset(self) -> None:
         """
@@ -7619,8 +7720,147 @@ class AlphaNextGen(QCAlgorithm):
         except Exception as e:
             self.Log(f"REGIME_REFRESH_INTRADAY_ERROR: {e}")
 
-    def _get_regime_transition_context(self) -> Dict[str, float]:
-        """Build macro transition context for ITM/VASS turn handling."""
+    def _evaluate_base_regime_candidate(self, effective_score: float) -> str:
+        """State-machine candidate for macro base regime with hysteresis thresholds."""
+        bull_enter = float(getattr(config, "REGIME_BASE_BULL_ENTER", 57.0))
+        bull_exit = float(getattr(config, "REGIME_BASE_BULL_EXIT", 53.0))
+        bear_enter = float(getattr(config, "REGIME_BASE_BEAR_ENTER", 43.0))
+        bear_exit = float(getattr(config, "REGIME_BASE_BEAR_EXIT", 47.0))
+        current = str(getattr(self, "_regime_base_state", "NEUTRAL")).upper()
+
+        if current == "BULLISH":
+            if effective_score < bull_exit:
+                return "BEARISH" if effective_score <= bear_enter else "NEUTRAL"
+            return "BULLISH"
+        if current == "BEARISH":
+            if effective_score > bear_exit:
+                return "BULLISH" if effective_score >= bull_enter else "NEUTRAL"
+            return "BEARISH"
+        if effective_score >= bull_enter:
+            return "BULLISH"
+        if effective_score <= bear_enter:
+            return "BEARISH"
+        return "NEUTRAL"
+
+    def _advance_detector_state(
+        self,
+        current_state: str,
+        candidate_state: str,
+        candidate_streak: int,
+        desired_state: str,
+        dwell_required: int,
+    ) -> Tuple[str, str, int]:
+        """Advance state-machine with dwell bars."""
+        desired = str(desired_state or "").upper() or current_state
+        current = str(current_state or "").upper() or "NEUTRAL"
+        candidate = str(candidate_state or current).upper()
+        dwell = max(int(dwell_required), 1)
+
+        if desired == current:
+            return current, desired, 0
+        if desired == candidate:
+            streak = int(candidate_streak) + 1
+        else:
+            candidate = desired
+            streak = 1
+        if streak >= dwell:
+            return desired, desired, 0
+        return current, candidate, streak
+
+    def _update_regime_detector_state(
+        self,
+        effective: float,
+        delta: float,
+        momentum_roc: float,
+        vix_5d_change: float,
+    ) -> Dict[str, Any]:
+        """Compute transition raw signals and advance base/overlay detector state."""
+        recovery_delta_min = float(getattr(config, "REGIME_TRANSITION_RECOVERY_DELTA_MIN", 2.0))
+        recovery_mom_min = float(getattr(config, "REGIME_TRANSITION_RECOVERY_MOMENTUM_MIN", 0.015))
+        recovery_vix_5d_max = float(getattr(config, "REGIME_TRANSITION_RECOVERY_VIX_5D_MAX", 0.05))
+        deterioration_delta_max = float(
+            getattr(config, "REGIME_TRANSITION_DETERIORATION_DELTA_MAX", -2.0)
+        )
+        deterioration_mom_max = float(
+            getattr(config, "REGIME_TRANSITION_DETERIORATION_MOMENTUM_MAX", -0.015)
+        )
+        deterioration_vix_5d_min = float(
+            getattr(config, "REGIME_TRANSITION_DETERIORATION_VIX_5D_MIN", 0.10)
+        )
+        ambiguous_low = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_LOW", 47.0))
+        ambiguous_high = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_HIGH", 55.0))
+        ambiguous_delta_max = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_DELTA_MAX", 1.5))
+
+        raw_recovery = (
+            delta >= recovery_delta_min
+            and momentum_roc >= recovery_mom_min
+            and vix_5d_change <= recovery_vix_5d_max
+        )
+        raw_deterioration = (
+            delta <= deterioration_delta_max
+            and momentum_roc <= deterioration_mom_max
+            and vix_5d_change >= deterioration_vix_5d_min
+        )
+        raw_ambiguous = (
+            ambiguous_low <= effective <= ambiguous_high
+            and abs(delta) <= ambiguous_delta_max
+            and not raw_recovery
+            and not raw_deterioration
+        )
+        overlay_candidate = "STABLE"
+        if raw_recovery:
+            overlay_candidate = "RECOVERY"
+        elif raw_deterioration:
+            overlay_candidate = "DETERIORATION"
+        elif raw_ambiguous:
+            overlay_candidate = "AMBIGUOUS"
+
+        now_key = self.Time.strftime("%Y-%m-%d %H:%M")
+        if self._regime_detector_last_update_key != now_key:
+            base_candidate = self._evaluate_base_regime_candidate(effective)
+            if bool(getattr(config, "REGIME_BASE_STATE_MACHINE_ENABLED", True)):
+                (
+                    self._regime_base_state,
+                    self._regime_base_candidate_state,
+                    self._regime_base_candidate_streak,
+                ) = self._advance_detector_state(
+                    current_state=self._regime_base_state,
+                    candidate_state=self._regime_base_candidate_state,
+                    candidate_streak=self._regime_base_candidate_streak,
+                    desired_state=base_candidate,
+                    dwell_required=int(getattr(config, "REGIME_BASE_STATE_DWELL_BARS", 2)),
+                )
+                (
+                    self._regime_overlay_state,
+                    self._regime_overlay_candidate_state,
+                    self._regime_overlay_candidate_streak,
+                ) = self._advance_detector_state(
+                    current_state=self._regime_overlay_state,
+                    candidate_state=self._regime_overlay_candidate_state,
+                    candidate_streak=self._regime_overlay_candidate_streak,
+                    desired_state=overlay_candidate,
+                    dwell_required=int(getattr(config, "REGIME_OVERLAY_STATE_DWELL_BARS", 2)),
+                )
+            else:
+                self._regime_base_state = base_candidate
+                self._regime_overlay_state = overlay_candidate
+                self._regime_base_candidate_state = base_candidate
+                self._regime_overlay_candidate_state = overlay_candidate
+                self._regime_base_candidate_streak = 0
+                self._regime_overlay_candidate_streak = 0
+            self._regime_detector_last_update_key = now_key
+
+        self._regime_detector_last_raw = {
+            "raw_recovery": bool(raw_recovery),
+            "raw_deterioration": bool(raw_deterioration),
+            "raw_ambiguous": bool(raw_ambiguous),
+            "overlay_candidate": overlay_candidate,
+            "base_candidate": self._evaluate_base_regime_candidate(effective),
+        }
+        return dict(self._regime_detector_last_raw)
+
+    def _get_regime_transition_context(self) -> Dict[str, Any]:
+        """Build macro detector context with base regime + transition overlay state-machine."""
         effective = float(self._get_effective_regime_score_for_options())
         eod_score = float(getattr(self, "_last_regime_score", effective) or effective)
         intraday_score_raw = getattr(self, "_intraday_regime_score", None)
@@ -7628,7 +7868,6 @@ class AlphaNextGen(QCAlgorithm):
             float(intraday_score_raw) if intraday_score_raw is not None else float(eod_score)
         )
         delta = float(intraday_score - eod_score)
-
         momentum_roc = getattr(self, "_intraday_regime_momentum_roc", None)
         if momentum_roc is None:
             momentum_roc = getattr(self, "_last_regime_momentum_roc", 0.0)
@@ -7638,40 +7877,16 @@ class AlphaNextGen(QCAlgorithm):
         momentum_roc = float(momentum_roc or 0.0)
         vix_5d_change = float(vix_5d_change or 0.0)
 
-        recovery_delta_min = float(getattr(config, "REGIME_TRANSITION_RECOVERY_DELTA_MIN", 3.0))
-        recovery_mom_min = float(getattr(config, "REGIME_TRANSITION_RECOVERY_MOMENTUM_MIN", 0.015))
-        recovery_vix_5d_max = float(getattr(config, "REGIME_TRANSITION_RECOVERY_VIX_5D_MAX", 0.05))
-
-        deterioration_delta_max = float(
-            getattr(config, "REGIME_TRANSITION_DETERIORATION_DELTA_MAX", -3.0)
+        raw = self._update_regime_detector_state(
+            effective=effective,
+            delta=delta,
+            momentum_roc=momentum_roc,
+            vix_5d_change=vix_5d_change,
         )
-        deterioration_mom_max = float(
-            getattr(config, "REGIME_TRANSITION_DETERIORATION_MOMENTUM_MAX", -0.015)
-        )
-        deterioration_vix_5d_min = float(
-            getattr(config, "REGIME_TRANSITION_DETERIORATION_VIX_5D_MIN", 0.10)
-        )
-
-        strong_recovery = (
-            delta >= recovery_delta_min
-            and momentum_roc >= recovery_mom_min
-            and vix_5d_change <= recovery_vix_5d_max
-        )
-        strong_deterioration = (
-            delta <= deterioration_delta_max
-            and momentum_roc <= deterioration_mom_max
-            and vix_5d_change >= deterioration_vix_5d_min
-        )
-
-        ambiguous_low = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_LOW", 47.0))
-        ambiguous_high = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_HIGH", 55.0))
-        ambiguous_delta_max = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_DELTA_MAX", 2.0))
-        ambiguous = (
-            ambiguous_low <= effective <= ambiguous_high
-            and abs(delta) <= ambiguous_delta_max
-            and not strong_recovery
-            and not strong_deterioration
-        )
+        transition_overlay = str(getattr(self, "_regime_overlay_state", "STABLE")).upper()
+        strong_recovery = transition_overlay == "RECOVERY"
+        strong_deterioration = transition_overlay == "DETERIORATION"
+        ambiguous = transition_overlay == "AMBIGUOUS"
 
         transition_score = effective
         if strong_recovery and intraday_score > effective:
@@ -7685,11 +7900,95 @@ class AlphaNextGen(QCAlgorithm):
             "delta": float(delta),
             "momentum_roc": float(momentum_roc),
             "vix_5d_change": float(vix_5d_change),
+            "base_regime": str(getattr(self, "_regime_base_state", "NEUTRAL")).upper(),
+            "transition_overlay": transition_overlay,
             "strong_recovery": bool(strong_recovery),
             "strong_deterioration": bool(strong_deterioration),
             "ambiguous": bool(ambiguous),
             "transition_score": float(transition_score),
+            "raw_recovery": bool(raw.get("raw_recovery", False)),
+            "raw_deterioration": bool(raw.get("raw_deterioration", False)),
+            "raw_ambiguous": bool(raw.get("raw_ambiguous", False)),
+            "overlay_candidate": str(raw.get("overlay_candidate", "STABLE")).upper(),
+            "base_candidate": str(raw.get("base_candidate", "NEUTRAL")).upper(),
         }
+
+    def _record_regime_decision_event(
+        self,
+        engine: str,
+        engine_decision: str,
+        strategy_attempted: str = "",
+        gate_name: str = "",
+        threshold_snapshot: Optional[Any] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Append structured regime decision telemetry row for post-run artifact analysis."""
+        if not bool(getattr(config, "REGIME_OBSERVABILITY_ENABLED", True)):
+            return
+        max_rows = int(getattr(config, "REGIME_OBSERVABILITY_MAX_ROWS", 50000))
+        if len(self._regime_decision_records) >= max_rows:
+            if not self._regime_decision_overflow_logged:
+                self.Log(
+                    f"REGIME_OBSERVABILITY: buffer full at {max_rows} rows | further rows dropped"
+                )
+                self._regime_decision_overflow_logged = True
+            return
+        ctx = context if isinstance(context, dict) else self._get_regime_transition_context()
+        if isinstance(threshold_snapshot, dict):
+            threshold_payload = json.dumps(
+                threshold_snapshot, sort_keys=True, separators=(",", ":")
+            )
+        elif threshold_snapshot is None:
+            threshold_payload = ""
+        else:
+            threshold_payload = str(threshold_snapshot)
+        self._regime_decision_records.append(
+            {
+                "time": self.Time.strftime("%Y-%m-%d %H:%M:%S"),
+                "eod_score": f"{float(ctx.get('eod_score', 0.0)):.2f}",
+                "intraday_score": f"{float(ctx.get('intraday_score', 0.0)):.2f}",
+                "delta": f"{float(ctx.get('delta', 0.0)):+.2f}",
+                "momentum_roc": f"{float(ctx.get('momentum_roc', 0.0)):+.5f}",
+                "vix_5d_change": f"{float(ctx.get('vix_5d_change', 0.0)):+.5f}",
+                "regime_state": f"{str(ctx.get('base_regime', 'NEUTRAL'))}|{str(ctx.get('transition_overlay', 'STABLE'))}",
+                "engine": str(engine or "").upper(),
+                "engine_decision": str(engine_decision or "").upper(),
+                "strategy_attempted": str(strategy_attempted or ""),
+                "gate_name": str(gate_name or ""),
+                "threshold_snapshot": threshold_payload,
+            }
+        )
+
+    def _flush_regime_decision_artifact(self) -> None:
+        """Persist structured regime decision rows to ObjectStore CSV artifact."""
+        if not bool(getattr(config, "REGIME_OBSERVABILITY_ENABLED", True)):
+            return
+        if not bool(getattr(config, "REGIME_OBSERVABILITY_OBJECTSTORE_ENABLED", True)):
+            return
+        if not self._regime_decision_records:
+            return
+        output = io.StringIO()
+        fields = [
+            "time",
+            "eod_score",
+            "intraday_score",
+            "delta",
+            "momentum_roc",
+            "vix_5d_change",
+            "regime_state",
+            "engine",
+            "engine_decision",
+            "strategy_attempted",
+            "gate_name",
+            "threshold_snapshot",
+        ]
+        writer = csv.DictWriter(output, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(self._regime_decision_records)
+        try:
+            self.ObjectStore.Save(self._regime_observability_key, output.getvalue())
+        except Exception as e:
+            self.Log(f"REGIME_OBSERVABILITY_SAVE_ERROR: {e}")
 
     def _get_effective_regime_score_for_options(self) -> float:
         """

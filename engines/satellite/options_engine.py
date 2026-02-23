@@ -1172,6 +1172,13 @@ class MicroRegimeEngine:
                         vix_current
                     ) + float(getattr(config, "MICRO_OTM_BULLISH_CONFIRM_SCORE_BUFFER", 0.0))
                     if micro_score < score_floor:
+                        self._record_regime_decision(
+                            engine="MICRO",
+                            decision="BLOCK",
+                            strategy_attempted="MICRO_OTM_MOMENTUM_CALL",
+                            gate_name="MICRO_OTM_BULLISH_SCORE_FLOOR",
+                            threshold_snapshot={"score_floor": score_floor},
+                        )
                         return (
                             IntradayStrategy.NO_TRADE,
                             None,
@@ -1181,6 +1188,13 @@ class MicroRegimeEngine:
                         getattr(config, "MICRO_OTM_CALL_MIN_MACRO_SCORE", 0.0)
                     )
                     if macro_regime_score < macro_score_floor:
+                        self._record_regime_decision(
+                            engine="MICRO",
+                            decision="BLOCK",
+                            strategy_attempted="MICRO_OTM_MOMENTUM_CALL",
+                            gate_name="MICRO_OTM_CALL_MIN_MACRO_SCORE",
+                            threshold_snapshot={"macro_score_floor": macro_score_floor},
+                        )
                         return (
                             IntradayStrategy.NO_TRADE,
                             None,
@@ -1192,6 +1206,13 @@ class MicroRegimeEngine:
                         vix_current
                     ) - float(getattr(config, "MICRO_OTM_BEARISH_CONFIRM_SCORE_BUFFER", 0.0))
                     if micro_score > score_ceiling:
+                        self._record_regime_decision(
+                            engine="MICRO",
+                            decision="BLOCK",
+                            strategy_attempted="MICRO_OTM_MOMENTUM_PUT",
+                            gate_name="MICRO_OTM_BEARISH_SCORE_CEILING",
+                            threshold_snapshot={"score_ceiling": score_ceiling},
+                        )
                         return (
                             IntradayStrategy.NO_TRADE,
                             None,
@@ -1201,12 +1222,29 @@ class MicroRegimeEngine:
                         getattr(config, "MICRO_OTM_PUT_MAX_MACRO_SCORE", 100.0)
                     )
                     if macro_regime_score > macro_score_ceiling:
+                        self._record_regime_decision(
+                            engine="MICRO",
+                            decision="BLOCK",
+                            strategy_attempted="MICRO_OTM_MOMENTUM_PUT",
+                            gate_name="MICRO_OTM_PUT_MAX_MACRO_SCORE",
+                            threshold_snapshot={"macro_score_ceiling": macro_score_ceiling},
+                        )
                         return (
                             IntradayStrategy.NO_TRADE,
                             None,
                             f"MICRO_OTM_GATE_BLOCK: macro {macro_regime_score:.0f} > {macro_score_ceiling:.0f} for PUT",
                         )
                 if vix_current <= max_vix and abs(qqq_move_pct) >= min_move:
+                    self._record_regime_decision(
+                        engine="MICRO",
+                        decision="ALLOW",
+                        strategy_attempted=f"MICRO_OTM_MOMENTUM_{direction.value}",
+                        gate_name="MICRO_OTM_CONFIRMED",
+                        threshold_snapshot={
+                            "max_vix": max_vix,
+                            "min_move": min_move,
+                        },
+                    )
                     return (
                         IntradayStrategy.MICRO_OTM_MOMENTUM,
                         direction,
@@ -2766,6 +2804,12 @@ class OptionsEngine:
             engine_direction = recommended_direction_str
 
         if engine_direction not in ("BULLISH", "BEARISH"):
+            self._record_regime_decision(
+                engine="MICRO",
+                decision="BLOCK",
+                strategy_attempted="MICRO_INTRADAY_SIGNAL",
+                gate_name="MICRO_NO_DIRECTION",
+            )
             return (
                 False,
                 None,
@@ -2791,6 +2835,12 @@ class OptionsEngine:
 
         # If still no direction, can't trade
         if final_direction is None:
+            self._record_regime_decision(
+                engine="MICRO",
+                decision="BLOCK",
+                strategy_attempted="MICRO_INTRADAY_SIGNAL",
+                gate_name="MICRO_FINAL_DIRECTION_NONE",
+            )
             return False, None, state, "NO_DIRECTION: Micro has no recommended direction"
 
         transition_ctx = self._get_regime_transition_context(macro_regime_score)
@@ -2798,6 +2848,14 @@ class OptionsEngine:
             if bool(getattr(config, "MICRO_TRANSITION_BLOCK_AMBIGUOUS", True)) and bool(
                 transition_ctx.get("ambiguous", False)
             ):
+                self._record_regime_decision(
+                    engine="MICRO",
+                    decision="BLOCK",
+                    strategy_attempted=f"MICRO_{final_direction.value}",
+                    gate_name="MICRO_TRANSITION_AMBIGUOUS",
+                    threshold_snapshot={"overlay": transition_ctx.get("transition_overlay", "")},
+                    context=transition_ctx,
+                )
                 return (
                     False,
                     None,
@@ -2809,6 +2867,13 @@ class OptionsEngine:
                 and bool(getattr(config, "MICRO_TRANSITION_BLOCK_CALL_ON_DETERIORATION", True))
                 and bool(transition_ctx.get("strong_deterioration", False))
             ):
+                self._record_regime_decision(
+                    engine="MICRO",
+                    decision="BLOCK",
+                    strategy_attempted="MICRO_CALL",
+                    gate_name="MICRO_TRANSITION_BLOCK_CALL_ON_DETERIORATION",
+                    context=transition_ctx,
+                )
                 return (
                     False,
                     None,
@@ -2820,6 +2885,13 @@ class OptionsEngine:
                 and bool(getattr(config, "MICRO_TRANSITION_BLOCK_PUT_ON_RECOVERY", True))
                 and bool(transition_ctx.get("strong_recovery", False))
             ):
+                self._record_regime_decision(
+                    engine="MICRO",
+                    decision="BLOCK",
+                    strategy_attempted="MICRO_PUT",
+                    gate_name="MICRO_TRANSITION_BLOCK_PUT_ON_RECOVERY",
+                    context=transition_ctx,
+                )
                 return (
                     False,
                     None,
@@ -2833,6 +2905,14 @@ class OptionsEngine:
         else:
             reason = f"MICRO_DIRECTION: {final_direction.value} | {resolve_reason}"
 
+        self._record_regime_decision(
+            engine="MICRO",
+            decision="ALLOW",
+            strategy_attempted=f"MICRO_{final_direction.value}",
+            gate_name="MICRO_DIRECTION_RESOLVED",
+            threshold_snapshot={"has_conviction": bool(has_conviction)},
+            context=transition_ctx,
+        )
         return True, final_direction, state, reason
 
     def count_options_positions(self) -> Tuple[int, int, int]:
@@ -3017,6 +3097,30 @@ class OptionsEngine:
             except Exception:
                 pass
         return ctx
+
+    def _record_regime_decision(
+        self,
+        engine: str,
+        decision: str,
+        strategy_attempted: str,
+        gate_name: str,
+        threshold_snapshot: Optional[Any] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Forward structured regime decision telemetry to algorithm artifact writer."""
+        if self.algorithm is None or not hasattr(self.algorithm, "_record_regime_decision_event"):
+            return
+        try:
+            self.algorithm._record_regime_decision_event(
+                engine=engine,
+                engine_decision=decision,
+                strategy_attempted=strategy_attempted,
+                gate_name=gate_name,
+                threshold_snapshot=threshold_snapshot,
+                context=context,
+            )
+        except Exception:
+            pass
 
     def can_enter_single_leg(self) -> Tuple[bool, str]:
         """
@@ -9110,6 +9214,24 @@ class OptionsEngine:
             and bool(getattr(config, "ITM_TRANSITION_BLOCK_AMBIGUOUS", True))
             and bool(transition_ctx.get("ambiguous", False))
         ):
+            self._record_regime_decision(
+                engine="ITM",
+                decision="BLOCK",
+                strategy_attempted="ITM_MOMENTUM",
+                gate_name="REGIME_TRANSITION_AMBIGUOUS",
+                threshold_snapshot={
+                    "ambiguous_low": float(
+                        getattr(config, "REGIME_TRANSITION_AMBIGUOUS_LOW", 47.0)
+                    ),
+                    "ambiguous_high": float(
+                        getattr(config, "REGIME_TRANSITION_AMBIGUOUS_HIGH", 55.0)
+                    ),
+                    "ambiguous_delta_max": float(
+                        getattr(config, "REGIME_TRANSITION_AMBIGUOUS_DELTA_MAX", 1.5)
+                    ),
+                },
+                context=transition_ctx,
+            )
             return (
                 None,
                 f"REGIME_TRANSITION_AMBIGUOUS: Regime={regime:.1f} "
@@ -9122,6 +9244,21 @@ class OptionsEngine:
                 and bool(getattr(config, "ITM_TRANSITION_BLOCK_BULL_ON_DETERIORATION", True))
                 and bool(transition_ctx.get("strong_deterioration", False))
             ):
+                self._record_regime_decision(
+                    engine="ITM",
+                    decision="BLOCK",
+                    strategy_attempted="ITM_MOMENTUM_CALL",
+                    gate_name="REGIME_DOWNSHIFT_NO_CALL",
+                    threshold_snapshot={
+                        "delta_max": float(
+                            getattr(config, "REGIME_TRANSITION_DETERIORATION_DELTA_MAX", -2.0)
+                        ),
+                        "momentum_max": float(
+                            getattr(config, "REGIME_TRANSITION_DETERIORATION_MOMENTUM_MAX", -0.015)
+                        ),
+                    },
+                    context=transition_ctx,
+                )
                 return (
                     None,
                     f"REGIME_DOWNSHIFT_NO_CALL: Regime={regime_for_itm:.1f} "
@@ -9134,12 +9271,39 @@ class OptionsEngine:
                     bool(transition_ctx.get("strong_recovery", False))
                     and regime_for_itm >= transition_min
                 ):
+                    self._record_regime_decision(
+                        engine="ITM",
+                        decision="ALLOW",
+                        strategy_attempted="ITM_MOMENTUM_CALL",
+                        gate_name="TRANSITION_RECOVERY_OVERRIDE",
+                        threshold_snapshot={
+                            "call_gate": call_gate,
+                            "transition_min": transition_min,
+                        },
+                        context=transition_ctx,
+                    )
                     return (
                         OptionDirection.CALL,
                         f"QQQ {qqq_current:.2f} > SMA20+band {upper:.2f} | "
                         f"TRANSITION_RECOVERY_OVERRIDE Regime={regime_for_itm:.1f}",
                     )
+                self._record_regime_decision(
+                    engine="ITM",
+                    decision="BLOCK",
+                    strategy_attempted="ITM_MOMENTUM_CALL",
+                    gate_name="REGIME_RISKOFF_NO_CALL",
+                    threshold_snapshot={"call_gate": call_gate},
+                    context=transition_ctx,
+                )
                 return None, f"REGIME_RISKOFF_NO_CALL: Regime={regime_for_itm:.1f}"
+            self._record_regime_decision(
+                engine="ITM",
+                decision="ALLOW",
+                strategy_attempted="ITM_MOMENTUM_CALL",
+                gate_name="TREND_BREAKOUT_CALL",
+                threshold_snapshot={"sma20_band_pct": band, "call_gate": call_gate},
+                context=transition_ctx,
+            )
             return OptionDirection.CALL, f"QQQ {qqq_current:.2f} > SMA20+band {upper:.2f}"
         if qqq_current < lower:
             if (
@@ -9147,6 +9311,21 @@ class OptionsEngine:
                 and bool(getattr(config, "ITM_TRANSITION_BLOCK_BEAR_ON_RECOVERY", True))
                 and bool(transition_ctx.get("strong_recovery", False))
             ):
+                self._record_regime_decision(
+                    engine="ITM",
+                    decision="BLOCK",
+                    strategy_attempted="ITM_MOMENTUM_PUT",
+                    gate_name="REGIME_RECOVERY_NO_PUT",
+                    threshold_snapshot={
+                        "delta_min": float(
+                            getattr(config, "REGIME_TRANSITION_RECOVERY_DELTA_MIN", 2.0)
+                        ),
+                        "momentum_min": float(
+                            getattr(config, "REGIME_TRANSITION_RECOVERY_MOMENTUM_MIN", 0.015)
+                        ),
+                    },
+                    context=transition_ctx,
+                )
                 return (
                     None,
                     f"REGIME_RECOVERY_NO_PUT: Regime={regime_for_itm:.1f} "
@@ -9159,13 +9338,48 @@ class OptionsEngine:
                     bool(transition_ctx.get("strong_deterioration", False))
                     and regime_for_itm <= transition_max
                 ):
+                    self._record_regime_decision(
+                        engine="ITM",
+                        decision="ALLOW",
+                        strategy_attempted="ITM_MOMENTUM_PUT",
+                        gate_name="TRANSITION_DOWNSHIFT_OVERRIDE",
+                        threshold_snapshot={
+                            "put_gate": put_gate,
+                            "transition_max": transition_max,
+                        },
+                        context=transition_ctx,
+                    )
                     return (
                         OptionDirection.PUT,
                         f"QQQ {qqq_current:.2f} < SMA20-band {lower:.2f} | "
                         f"TRANSITION_DOWNSHIFT_OVERRIDE Regime={regime_for_itm:.1f}",
                     )
+                self._record_regime_decision(
+                    engine="ITM",
+                    decision="BLOCK",
+                    strategy_attempted="ITM_MOMENTUM_PUT",
+                    gate_name="REGIME_BULL_NO_PUT",
+                    threshold_snapshot={"put_gate": put_gate},
+                    context=transition_ctx,
+                )
                 return None, f"REGIME_BULL_NO_PUT: Regime={regime_for_itm:.1f}"
+            self._record_regime_decision(
+                engine="ITM",
+                decision="ALLOW",
+                strategy_attempted="ITM_MOMENTUM_PUT",
+                gate_name="TREND_BREAKDOWN_PUT",
+                threshold_snapshot={"sma20_band_pct": band, "put_gate": put_gate},
+                context=transition_ctx,
+            )
             return OptionDirection.PUT, f"QQQ {qqq_current:.2f} < SMA20-band {lower:.2f}"
+        self._record_regime_decision(
+            engine="ITM",
+            decision="BLOCK",
+            strategy_attempted="ITM_MOMENTUM",
+            gate_name="TREND_NEUTRAL",
+            threshold_snapshot={"upper": upper, "lower": lower},
+            context=transition_ctx,
+        )
         return None, f"TREND_NEUTRAL {lower:.2f}<=QQQ<={upper:.2f}"
 
     def check_micro_spike_alert(
