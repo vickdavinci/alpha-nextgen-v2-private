@@ -279,6 +279,10 @@ class AlphaNextGen(QCAlgorithm):
         self._mr_force_close_ran_date = None
         self._eod_processing_ran_date = None
         self._market_close_ran_date = None
+        # Initialize detector state.
+        self._regime_detector_prev_score = None
+        self._regime_detector_last_update_key = None
+        self._regime_detector_last_raw = {}
         # Intraday reconciliation cadence (reduce zombie/orphan persistence).
         self._last_reconcile_positions_run = None
 
@@ -385,6 +389,7 @@ class AlphaNextGen(QCAlgorithm):
         }
         self._recent_router_rejections: List[Any] = []
         self._diag_vass_reject_reason_counts = {}
+        self._diag_transition_path_counts: Dict[str, int] = {}
         self._diag_vass_mfe_peak_max_profit_pct = 0.0
         self._diag_vass_mfe_t1_hits = 0
         self._diag_vass_mfe_t2_hits = 0
@@ -1153,7 +1158,7 @@ class AlphaNextGen(QCAlgorithm):
         day_key = self.Time.date()
         market_close_dt = self._get_primary_market_close_time()
         close_buffer_minutes = max(
-            int(getattr(config, "REGIME_PROXY_CLOSE_BUFFER_MINUTES", 20)),
+            int(getattr(config, "REGIME_PROXY_CLOSE_BUFFER_MINUTES", 0)),
             0,
         )
         market_close_cutoff = (
@@ -1267,6 +1272,10 @@ class AlphaNextGen(QCAlgorithm):
         self._mr_force_close_ran_date = None
         self._eod_processing_ran_date = None
         self._market_close_ran_date = None
+        # Reset detector sample continuity so day-open doesn't inherit prior-day delta.
+        self._regime_detector_prev_score = None
+        self._regime_detector_last_update_key = None
+        self._regime_detector_last_raw = {}
 
         # V2.3 FIX: Reset options engine daily state (entry flags, trade counters)
         current_date_str = str(self.Time.date())
@@ -2970,6 +2979,11 @@ class AlphaNextGen(QCAlgorithm):
         if self.IsWarmingUp:
             return
 
+        # Defensive day-open reset in case pre-market callback was skipped.
+        self._regime_detector_prev_score = None
+        self._regime_detector_last_update_key = None
+        self._regime_detector_last_raw = {}
+
         self.equity_sod = self.Portfolio.TotalPortfolioValue
         self.risk_engine.set_equity_sod(self.equity_sod)
 
@@ -3410,6 +3424,7 @@ class AlphaNextGen(QCAlgorithm):
         self._diag_intraday_drop_reason_counts.clear()
         for _store in self._diag_intraday_drop_reason_counts_by_engine.values():
             _store.clear()
+        self._diag_transition_path_counts.clear()
         for _k in self._diag_intraday_results_by_engine.keys():
             self._diag_intraday_results_by_engine[_k] = 0
         self._diag_intraday_candidate_ids_logged.clear()
@@ -4560,6 +4575,15 @@ class AlphaNextGen(QCAlgorithm):
         code = str(reason_code or "UNKNOWN")
         self._diag_vass_reject_reason_counts[code] = (
             int(self._diag_vass_reject_reason_counts.get(code, 0)) + 1
+        )
+
+    def _inc_transition_path_counter(self, key: str) -> None:
+        """Track detector/eod transition trigger path usage for daily RCA."""
+        label = str(key or "").strip().upper()
+        if not label:
+            return
+        self._diag_transition_path_counts[label] = (
+            int(self._diag_transition_path_counts.get(label, 0)) + 1
         )
 
     def _is_micro_entry_fill(self, symbol: str, fill_qty: float, order_tag: str) -> bool:
@@ -8172,10 +8196,16 @@ class AlphaNextGen(QCAlgorithm):
     ) -> Dict[str, Any]:
         """Compute transition raw signals and advance base/overlay detector state."""
         recovery_delta_min = float(getattr(config, "REGIME_TRANSITION_RECOVERY_DELTA_MIN", 2.0))
+        recovery_detector_delta_min = float(
+            getattr(config, "REGIME_TRANSITION_RECOVERY_DETECTOR_DELTA_MIN", 0.8)
+        )
         recovery_mom_min = float(getattr(config, "REGIME_TRANSITION_RECOVERY_MOMENTUM_MIN", 0.015))
         recovery_vix_5d_max = float(getattr(config, "REGIME_TRANSITION_RECOVERY_VIX_5D_MAX", 0.05))
         deterioration_delta_max = float(
             getattr(config, "REGIME_TRANSITION_DETERIORATION_DELTA_MAX", -2.0)
+        )
+        deterioration_detector_delta_max = float(
+            getattr(config, "REGIME_TRANSITION_DETERIORATION_DETECTOR_DELTA_MAX", -0.8)
         )
         deterioration_mom_max = float(
             getattr(config, "REGIME_TRANSITION_DETERIORATION_MOMENTUM_MAX", -0.015)
@@ -8186,9 +8216,13 @@ class AlphaNextGen(QCAlgorithm):
         ambiguous_low = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_LOW", 47.0))
         ambiguous_high = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_HIGH", 55.0))
         ambiguous_delta_max = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_DELTA_MAX", 1.5))
+        ambiguous_detector_delta_max = float(
+            getattr(config, "REGIME_TRANSITION_AMBIGUOUS_DETECTOR_DELTA_MAX", 0.8)
+        )
 
         now_key = f"SEQ:{int(sample_seq)}"
-        if self._regime_detector_last_update_key != now_key:
+        is_new_sample = self._regime_detector_last_update_key != now_key
+        if is_new_sample:
             prev_score = getattr(self, "_regime_detector_prev_score", None)
             if prev_score is None:
                 detector_delta = 0.0
@@ -8198,22 +8232,46 @@ class AlphaNextGen(QCAlgorithm):
         else:
             detector_delta = float(self._regime_detector_last_raw.get("detector_delta", 0.0) or 0.0)
 
+        recovery_by_detector = detector_delta >= recovery_detector_delta_min
+        recovery_by_eod = eod_delta >= recovery_delta_min
         raw_recovery = (
-            detector_delta >= recovery_delta_min
+            (recovery_by_detector or recovery_by_eod)
             and momentum_roc >= recovery_mom_min
             and vix_5d_change <= recovery_vix_5d_max
         )
+        deterioration_by_detector = detector_delta <= deterioration_detector_delta_max
+        deterioration_by_eod = eod_delta <= deterioration_delta_max
         raw_deterioration = (
-            detector_delta <= deterioration_delta_max
+            (deterioration_by_detector or deterioration_by_eod)
             and momentum_roc <= deterioration_mom_max
             and vix_5d_change >= deterioration_vix_5d_min
         )
+        ambiguous_by_detector = abs(detector_delta) <= ambiguous_detector_delta_max
+        ambiguous_by_eod = abs(eod_delta) <= ambiguous_delta_max
         raw_ambiguous = (
             ambiguous_low <= detector_score <= ambiguous_high
-            and abs(detector_delta) <= ambiguous_delta_max
+            and ambiguous_by_detector
+            and ambiguous_by_eod
             and not raw_recovery
             and not raw_deterioration
         )
+        if is_new_sample:
+            if raw_recovery:
+                if recovery_by_detector and recovery_by_eod:
+                    self._inc_transition_path_counter("RECOVERY_BOTH")
+                elif recovery_by_detector:
+                    self._inc_transition_path_counter("RECOVERY_DETECTOR")
+                else:
+                    self._inc_transition_path_counter("RECOVERY_EOD")
+            elif raw_deterioration:
+                if deterioration_by_detector and deterioration_by_eod:
+                    self._inc_transition_path_counter("DETERIORATION_BOTH")
+                elif deterioration_by_detector:
+                    self._inc_transition_path_counter("DETERIORATION_DETECTOR")
+                else:
+                    self._inc_transition_path_counter("DETERIORATION_EOD")
+            elif raw_ambiguous:
+                self._inc_transition_path_counter("AMBIGUOUS_BOTH")
         overlay_candidate = "STABLE"
         if raw_recovery:
             overlay_candidate = "RECOVERY"
@@ -8222,7 +8280,7 @@ class AlphaNextGen(QCAlgorithm):
         elif raw_ambiguous:
             overlay_candidate = "AMBIGUOUS"
 
-        if self._regime_detector_last_update_key != now_key:
+        if is_new_sample:
             base_candidate = self._evaluate_base_regime_candidate(detector_score)
             if bool(getattr(config, "REGIME_BASE_STATE_MACHINE_ENABLED", True)):
                 (
@@ -8265,6 +8323,12 @@ class AlphaNextGen(QCAlgorithm):
             "detector_score": float(detector_score),
             "detector_delta": float(detector_delta),
             "eod_delta": float(eod_delta),
+            "recovery_by_detector": bool(recovery_by_detector),
+            "recovery_by_eod": bool(recovery_by_eod),
+            "deterioration_by_detector": bool(deterioration_by_detector),
+            "deterioration_by_eod": bool(deterioration_by_eod),
+            "ambiguous_by_detector": bool(ambiguous_by_detector),
+            "ambiguous_by_eod": bool(ambiguous_by_eod),
             # Backward-compatible alias expected by existing guards/log readers.
             "delta": float(detector_delta),
             "sample_seq": int(sample_seq),
@@ -8327,6 +8391,10 @@ class AlphaNextGen(QCAlgorithm):
             "raw_recovery": bool(raw.get("raw_recovery", False)),
             "raw_deterioration": bool(raw.get("raw_deterioration", False)),
             "raw_ambiguous": bool(raw.get("raw_ambiguous", False)),
+            "recovery_by_detector": bool(raw.get("recovery_by_detector", False)),
+            "recovery_by_eod": bool(raw.get("recovery_by_eod", False)),
+            "deterioration_by_detector": bool(raw.get("deterioration_by_detector", False)),
+            "deterioration_by_eod": bool(raw.get("deterioration_by_eod", False)),
             "overlay_candidate": str(raw.get("overlay_candidate", "STABLE")).upper(),
             "base_candidate": str(raw.get("base_candidate", "NEUTRAL")).upper(),
             "sample_seq": int(
@@ -8638,6 +8706,19 @@ class AlphaNextGen(QCAlgorithm):
             "MICRO_DTE_DIAG_SUMMARY",
             "OPTIONS_DIAG_SUMMARY",
         )
+        transition_keys = [
+            "RECOVERY_DETECTOR",
+            "RECOVERY_EOD",
+            "RECOVERY_BOTH",
+            "DETERIORATION_DETECTOR",
+            "DETERIORATION_EOD",
+            "DETERIORATION_BOTH",
+            "AMBIGUOUS_BOTH",
+        ]
+        transition_summary = " | ".join(
+            f"{key}={int(self._diag_transition_path_counts.get(key, 0))}" for key in transition_keys
+        )
+        self.Log(f"REGIME_TRANSITION_PATH_SUMMARY: {transition_summary}")
         log_daily_summary(self)
 
     def _get_intraday_lane_cooldown_until(self, lane: str):
