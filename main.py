@@ -283,6 +283,7 @@ class AlphaNextGen(QCAlgorithm):
         self._regime_detector_prev_score = None
         self._regime_detector_last_update_key = None
         self._regime_detector_last_raw = {}
+        self._regime_overlay_ambiguous_bars = 0
         # Intraday reconciliation cadence (reduce zombie/orphan persistence).
         self._last_reconcile_positions_run = None
 
@@ -422,6 +423,7 @@ class AlphaNextGen(QCAlgorithm):
         self._regime_overlay_state = "STABLE"
         self._regime_overlay_candidate_state = "STABLE"
         self._regime_overlay_candidate_streak = 0
+        self._regime_overlay_ambiguous_bars = 0
         self._regime_detector_sample_seq = 0
         self._regime_detector_prev_score: Optional[float] = None
         self._regime_detector_last_update_key = None
@@ -1275,10 +1277,10 @@ class AlphaNextGen(QCAlgorithm):
         self._mr_force_close_ran_date = None
         self._eod_processing_ran_date = None
         self._market_close_ran_date = None
-        # Reset detector sample continuity so day-open doesn't inherit prior-day delta.
-        self._regime_detector_prev_score = None
+        # Reset sample key continuity only; keep prior score for overnight transition detection.
         self._regime_detector_last_update_key = None
         self._regime_detector_last_raw = {}
+        self._regime_overlay_ambiguous_bars = 0
 
         # V2.3 FIX: Reset options engine daily state (entry flags, trade counters)
         current_date_str = str(self.Time.date())
@@ -2983,9 +2985,9 @@ class AlphaNextGen(QCAlgorithm):
             return
 
         # Defensive day-open reset in case pre-market callback was skipped.
-        self._regime_detector_prev_score = None
         self._regime_detector_last_update_key = None
         self._regime_detector_last_raw = {}
+        self._regime_overlay_ambiguous_bars = 0
 
         self.equity_sod = self.Portfolio.TotalPortfolioValue
         self.risk_engine.set_equity_sod(self.equity_sod)
@@ -8091,6 +8093,24 @@ class AlphaNextGen(QCAlgorithm):
         rsp_prices = list(self.rsp_closes) if self.rsp_closes.IsReady else []
         hyg_prices = list(self.hyg_closes) if self.hyg_closes.IsReady else []
         ief_prices = list(self.ief_closes) if self.ief_closes.IsReady else []
+        if read_only:
+            # Use live proxy marks intraday so detector deltas reflect tape changes.
+            def _overlay_live_proxy(symbol: Symbol, prices: List[float]) -> None:
+                if not prices:
+                    return
+                try:
+                    latest = float(self.Securities[symbol].Price)
+                    if latest <= 0:
+                        latest = float(self.Securities[symbol].Close)
+                except Exception:
+                    return
+                if latest > 0:
+                    prices[-1] = latest
+
+            _overlay_live_proxy(self.spy, spy_prices)
+            _overlay_live_proxy(self.rsp, rsp_prices)
+            _overlay_live_proxy(self.hyg, hyg_prices)
+            _overlay_live_proxy(self.ief, ief_prices)
 
         # V2.26: Pass VIX + SPY ADX to regime calculation
         # V3.7: Pass actual 52-week high for drawdown factor (CRITICAL FIX)
@@ -8222,6 +8242,7 @@ class AlphaNextGen(QCAlgorithm):
         ambiguous_detector_delta_max = float(
             getattr(config, "REGIME_TRANSITION_AMBIGUOUS_DETECTOR_DELTA_MAX", 0.8)
         )
+        ambiguous_max_bars = int(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_MAX_BARS", 6))
 
         now_key = f"SEQ:{int(sample_seq)}"
         is_new_sample = self._regime_detector_last_update_key != now_key
@@ -8258,6 +8279,7 @@ class AlphaNextGen(QCAlgorithm):
             and not raw_recovery
             and not raw_deterioration
         )
+        ambiguous_timed_out = False
         if is_new_sample:
             if raw_recovery:
                 if recovery_by_detector and recovery_by_eod:
@@ -8315,12 +8337,30 @@ class AlphaNextGen(QCAlgorithm):
                 self._regime_overlay_candidate_state = overlay_candidate
                 self._regime_base_candidate_streak = 0
                 self._regime_overlay_candidate_streak = 0
+            if self._regime_overlay_state == "AMBIGUOUS":
+                self._regime_overlay_ambiguous_bars = (
+                    int(getattr(self, "_regime_overlay_ambiguous_bars", 0)) + 1
+                )
+            else:
+                self._regime_overlay_ambiguous_bars = 0
+            if (
+                ambiguous_max_bars > 0
+                and self._regime_overlay_state == "AMBIGUOUS"
+                and self._regime_overlay_ambiguous_bars >= ambiguous_max_bars
+            ):
+                self._regime_overlay_state = "STABLE"
+                self._regime_overlay_candidate_state = "STABLE"
+                self._regime_overlay_candidate_streak = 0
+                self._regime_overlay_ambiguous_bars = 0
+                ambiguous_timed_out = True
+                self._inc_transition_path_counter("AMBIGUOUS_TIMEOUT")
             self._regime_detector_last_update_key = now_key
 
         self._regime_detector_last_raw = {
             "raw_recovery": bool(raw_recovery),
             "raw_deterioration": bool(raw_deterioration),
             "raw_ambiguous": bool(raw_ambiguous),
+            "ambiguous_timed_out": bool(ambiguous_timed_out),
             "overlay_candidate": overlay_candidate,
             "base_candidate": self._evaluate_base_regime_candidate(detector_score),
             "detector_score": float(detector_score),
@@ -8394,6 +8434,7 @@ class AlphaNextGen(QCAlgorithm):
             "raw_recovery": bool(raw.get("raw_recovery", False)),
             "raw_deterioration": bool(raw.get("raw_deterioration", False)),
             "raw_ambiguous": bool(raw.get("raw_ambiguous", False)),
+            "ambiguous_timed_out": bool(raw.get("ambiguous_timed_out", False)),
             "recovery_by_detector": bool(raw.get("recovery_by_detector", False)),
             "recovery_by_eod": bool(raw.get("recovery_by_eod", False)),
             "deterioration_by_detector": bool(raw.get("deterioration_by_detector", False)),
@@ -8717,6 +8758,7 @@ class AlphaNextGen(QCAlgorithm):
             "DETERIORATION_EOD",
             "DETERIORATION_BOTH",
             "AMBIGUOUS_BOTH",
+            "AMBIGUOUS_TIMEOUT",
         ]
         transition_summary = " | ".join(
             f"{key}={int(self._diag_transition_path_counts.get(key, 0))}" for key in transition_keys
