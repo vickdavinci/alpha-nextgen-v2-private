@@ -1134,12 +1134,16 @@ class AlphaNextGen(QCAlgorithm):
         # Keep macro proxy rolling windows on day cadence so regime lookbacks remain
         # comparable to daily-tuned thresholds and factors.
         day_key = self.Time.date()
+        market_close_dt = self._get_primary_market_close_time()
 
         def _append_daily_proxy(symbol: Symbol, window: RollingWindow[float], key: str) -> None:
             if not data.Bars.ContainsKey(symbol):
                 return
-            # Use late-session bar as daily-close proxy for day-scale regime factors.
-            if self.Time.hour < 15 or (self.Time.hour == 15 and self.Time.minute < 55):
+            # Gate updates to session close (supports early-close calendars).
+            if market_close_dt is not None:
+                if self.Time < market_close_dt:
+                    return
+            elif self.Time.hour < 16:
                 return
             if self._daily_proxy_window_last_update.get(key) == day_key:
                 return
@@ -1167,6 +1171,20 @@ class AlphaNextGen(QCAlgorithm):
         if data.Bars.ContainsKey(self.spxl):
             self.spxl_volumes.Add(float(data.Bars[self.spxl].Volume))
 
+    def _get_primary_market_close_time(self) -> Optional[datetime]:
+        """Resolve today's primary-session close time for SPY exchange hours."""
+        try:
+            exchange_hours = self.Securities[self.spy].Exchange.Hours
+            prev_close = exchange_hours.GetPreviousMarketClose(self.Time, False)
+            if prev_close.date() == self.Time.date():
+                return prev_close
+            next_close = exchange_hours.GetNextMarketClose(self.Time, False)
+            if next_close.date() == self.Time.date():
+                return next_close
+        except Exception:
+            return None
+        return None
+
     def _on_observability_checkpoint(self) -> None:
         """Periodic telemetry checkpoint to persist RCA artifacts mid-session."""
         if self.IsWarmingUp:
@@ -1177,6 +1195,27 @@ class AlphaNextGen(QCAlgorithm):
         self._flush_signal_lifecycle_artifact()
         self._flush_router_rejection_artifact()
         self._flush_order_lifecycle_artifact()
+
+    def _ensure_daily_proxy_windows_snapshot(self) -> None:
+        """Backfill daily proxy windows from latest closes when intraday feed missed close bar."""
+        day_key = self.Time.date()
+        symbols = (
+            (self.spy, self.spy_closes, "SPY"),
+            (self.rsp, self.rsp_closes, "RSP"),
+            (self.hyg, self.hyg_closes, "HYG"),
+            (self.ief, self.ief_closes, "IEF"),
+        )
+        for symbol, window, key in symbols:
+            if self._daily_proxy_window_last_update.get(key) == day_key:
+                continue
+            try:
+                close_px = float(self.Securities[symbol].Close)
+            except Exception:
+                continue
+            if close_px <= 0:
+                continue
+            window.Add(close_px)
+            self._daily_proxy_window_last_update[key] = day_key
 
     # =========================================================================
     # SCHEDULED EVENT HANDLERS
@@ -3258,6 +3297,7 @@ class AlphaNextGen(QCAlgorithm):
             self._process_eod_signals(self._eod_capital_state)
             self._eod_capital_state = None
 
+        self._ensure_daily_proxy_windows_snapshot()
         self._record_regime_timeline_event(source="MARKET_CLOSE")
         self._flush_regime_decision_artifact()
         self._flush_regime_timeline_artifact()
