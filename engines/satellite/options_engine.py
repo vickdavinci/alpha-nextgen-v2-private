@@ -2460,6 +2460,7 @@ class OptionsEngine:
         overlay_state: Optional[
             str
         ] = None,  # V6.22: Fast overlay (NORMAL/EARLY_STRESS/STRESS/RECOVERY)
+        allow_macro_veto: bool = True,  # Optional hard-veto guard for conviction overrides
     ) -> Tuple[bool, Optional[str], str]:
         """
         V5.3: Resolve whether to trade based on engine signal vs macro.
@@ -2647,6 +2648,12 @@ class OptionsEngine:
             )
 
         if engine_conviction:
+            if not allow_macro_veto:
+                return (
+                    False,
+                    None,
+                    f"NO_TRADE: {engine} conviction present but hard-veto guard not satisfied",
+                )
             # V6.9: Never allow CALL overrides in BEARISH macro (prevent bull bias in bear markets)
             if engine != "MICRO" and macro_direction == "BEARISH" and engine_direction == "BULLISH":
                 return (
@@ -5927,7 +5934,8 @@ class OptionsEngine:
         abs_cap_vix = float(getattr(config, "SPREAD_DW_ABSOLUTE_CAP_VIX", 15.0))
         abs_cap_scaled = self._get_spread_absolute_debit_cap(vix_current, width)
         dynamic_abs_cap = bool(getattr(config, "SPREAD_DW_ABSOLUTE_CAP_DYNAMIC_ENABLED", False))
-        should_apply_abs_cap = dynamic_abs_cap or (
+        apply_all_vix = bool(getattr(config, "SPREAD_DW_ABSOLUTE_CAP_APPLY_ALL_VIX", False))
+        should_apply_abs_cap = (dynamic_abs_cap and apply_all_vix) or (
             vix_current is not None and float(vix_current) < abs_cap_vix
         )
         if should_apply_abs_cap and net_debit > abs_cap_scaled:
@@ -9257,6 +9265,10 @@ class OptionsEngine:
         """Return IV conviction tuple from IV sensor."""
         return self._iv_sensor.has_conviction()
 
+    def get_iv_bearish_veto_status(self) -> Tuple[bool, str]:
+        """Return strict bearish hard-veto eligibility from IV sensor."""
+        return self._iv_sensor.is_bearish_veto_ready()
+
     def is_iv_sensor_ready(self) -> bool:
         """True when IV sensor has enough intraday history."""
         return self._iv_sensor.is_ready()
@@ -10307,12 +10319,13 @@ class OptionsEngine:
                 f"(config.PROTECTIVE_PUTS_STOP_PCT)"
             )
 
-        # V10.10: OTM momentum uses a fixed strategy stop to avoid ATR-driven widening.
-        # ATR expansion was pushing realized OTM losses much wider than intended risk.
+        # Optional fixed stop override for MICRO_OTM.
+        # Keep disabled by default so ATR-stop elasticity remains effective.
         if (
             not is_protective_put
             and entry_strategy == IntradayStrategy.MICRO_OTM_MOMENTUM
             and self._pending_stop_pct is not None
+            and bool(getattr(config, "MICRO_OTM_FIXED_STOP_OVERRIDE_ENABLED", False))
         ):
             if bool(getattr(config, "MICRO_OTM_TIERED_RISK_ENABLED", False)):
                 low_max = float(getattr(config, "MICRO_OTM_VIX_LOW_MAX", 16.0))

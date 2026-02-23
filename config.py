@@ -1469,6 +1469,9 @@ SPREAD_DW_ABSOLUTE_CAP = 2.00  # Max debit dollars on $5 spread in very calm IV
 SPREAD_DW_ABSOLUTE_CAP_VIX = 15.0
 # V12.0: Elastic absolute debit cap (inversely scaled by VIX, bounded).
 SPREAD_DW_ABSOLUTE_CAP_DYNAMIC_ENABLED = True
+SPREAD_DW_ABSOLUTE_CAP_APPLY_ALL_VIX = (
+    False  # Keep absolute cap scoped to calm IV unless explicitly enabled
+)
 SPREAD_DW_ABSOLUTE_CAP_BASELINE = 1.00
 SPREAD_DW_ABSOLUTE_CAP_VIX_SCALE = 20.0
 SPREAD_DW_ABSOLUTE_CAP_VIX_FLOOR = 10.0
@@ -2080,6 +2083,9 @@ MICRO_OTM_MOMENTUM_DTE_EXIT = 0  # 0/1 DTE strategy closes via intraday force-ex
 
 # MICRO OTM momentum tiered risk profile (V10.14)
 MICRO_OTM_TIERED_RISK_ENABLED = True
+MICRO_OTM_FIXED_STOP_OVERRIDE_ENABLED = (
+    False  # Keep ATR stop sovereign for OTM momentum unless explicitly forcing fixed-tier stops
+)
 MICRO_OTM_VIX_LOW_MAX = 16.0
 MICRO_OTM_VIX_MED_MAX = 22.0
 MICRO_OTM_TARGET_LOW_VIX = 0.45

@@ -1873,6 +1873,15 @@ class AlphaNextGen(QCAlgorithm):
             conviction_reason,
         ) = self.options_engine.get_iv_conviction()
         macro_direction = self.options_engine.get_macro_direction(regime_for_vass)
+        allow_macro_veto = True
+        if (
+            has_conviction
+            and conviction_direction == "BEARISH"
+            and str(macro_direction).upper() == "BULLISH"
+        ):
+            allow_macro_veto, veto_reason = self.options_engine.get_iv_bearish_veto_status()
+            if not allow_macro_veto:
+                conviction_reason = f"{conviction_reason} | SOFT_ONLY={veto_reason}"
         overlay_state = self.options_engine.get_regime_overlay_state(
             vix_current=vix_level_for_vass, regime_score=regime_for_vass
         )
@@ -1883,6 +1892,7 @@ class AlphaNextGen(QCAlgorithm):
             macro_direction=macro_direction,
             conviction_strength=None,
             overlay_state=overlay_state,
+            allow_macro_veto=allow_macro_veto,
         )
         if not should_trade:
             self._record_regime_decision_event(
