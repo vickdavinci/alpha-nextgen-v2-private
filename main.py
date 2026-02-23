@@ -418,6 +418,7 @@ class AlphaNextGen(QCAlgorithm):
         self._regime_overlay_candidate_state = "STABLE"
         self._regime_overlay_candidate_streak = 0
         self._regime_detector_sample_seq = 0
+        self._regime_detector_prev_score: Optional[float] = None
         self._regime_detector_last_update_key = None
         self._regime_detector_last_raw = {}
         self._regime_decision_records: List[Dict[str, Any]] = []
@@ -979,9 +980,25 @@ class AlphaNextGen(QCAlgorithm):
         # Phase A: intraday macro-regime refresh to reduce stale EOD lag for options gating.
         # Add an early-session refresh so options are not anchored to yesterday's regime
         # during the first half of the trading day.
-        refresh_times = (
-            [(9, 35)] + [(hour, minute) for hour in range(10, 15) for minute in (0, 30)] + [(15, 0)]
-        )
+        refresh_times = [
+            # Fast cadence around the open (regime turns cluster here).
+            (9, 35),
+            (9, 50),
+            (10, 5),
+            (10, 20),
+            (10, 35),
+            (10, 50),
+            (11, 0),
+            # Slower cadence later in the session.
+            (11, 30),
+            (12, 0),
+            (12, 30),
+            (13, 0),
+            (13, 30),
+            (14, 0),
+            (14, 30),
+            (15, 0),
+        ]
         for hour, minute in refresh_times:
             self.Schedule.On(
                 self.DateRules.EveryDay(),
@@ -1135,15 +1152,24 @@ class AlphaNextGen(QCAlgorithm):
         # comparable to daily-tuned thresholds and factors.
         day_key = self.Time.date()
         market_close_dt = self._get_primary_market_close_time()
+        close_buffer_minutes = max(
+            int(getattr(config, "REGIME_PROXY_CLOSE_BUFFER_MINUTES", 20)),
+            0,
+        )
+        market_close_cutoff = (
+            market_close_dt - timedelta(minutes=close_buffer_minutes)
+            if market_close_dt is not None
+            else None
+        )
 
         def _append_daily_proxy(symbol: Symbol, window: RollingWindow[float], key: str) -> None:
             if not data.Bars.ContainsKey(symbol):
                 return
-            # Gate updates to session close (supports early-close calendars).
-            if market_close_dt is not None:
-                if self.Time < market_close_dt:
+            # Gate updates to near-close window (supports early-close calendars).
+            if market_close_cutoff is not None:
+                if self.Time < market_close_cutoff:
                     return
-            elif self.Time.hour < 16:
+            elif self.Time.hour < 15 or (self.Time.hour == 15 and self.Time.minute < 40):
                 return
             if self._daily_proxy_window_last_update.get(key) == day_key:
                 return
@@ -1739,31 +1765,30 @@ class AlphaNextGen(QCAlgorithm):
         """
         current_date_str = self.Time.strftime("%Y-%m-%d")
         transition_ctx = self._get_regime_transition_context()
-        regime_for_vass = float(regime_score)
-        if bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True)):
-            if bool(getattr(config, "VASS_TRANSITION_BLOCK_AMBIGUOUS", True)) and bool(
-                transition_ctx.get("ambiguous", False)
-            ):
-                self._record_regime_decision_event(
-                    engine="VASS",
-                    engine_decision="BLOCK",
-                    strategy_attempted="VASS_DIRECTION",
-                    gate_name="VASS_TRANSITION_BLOCK_AMBIGUOUS",
-                    threshold_snapshot={"overlay": transition_ctx.get("transition_overlay", "")},
-                    context=transition_ctx,
-                )
-                self.Log(
-                    f"VASS_TRANSITION_BLOCK: ambiguous macro handoff | "
-                    f"Eff={float(transition_ctx.get('effective_score', regime_score)):.1f} | "
-                    f"Delta={float(transition_ctx.get('delta', 0.0)):+.1f} | "
-                    f"MOM={float(transition_ctx.get('momentum_roc', 0.0)):+.2%}"
-                )
-                return None
-            if bool(transition_ctx.get("strong_recovery", False)):
-                regime_for_vass = max(
-                    regime_for_vass,
-                    float(transition_ctx.get("transition_score", regime_for_vass)),
-                )
+        regime_for_vass = float(
+            transition_ctx.get("transition_score", regime_score) or regime_score
+        )
+        block_gate, block_reason = self.options_engine.evaluate_transition_policy_block(
+            engine="VASS",
+            direction=None,
+            transition_ctx=transition_ctx,
+        )
+        if block_gate:
+            self._record_regime_decision_event(
+                engine="VASS",
+                engine_decision="BLOCK",
+                strategy_attempted="VASS_DIRECTION",
+                gate_name=block_gate,
+                threshold_snapshot={"overlay": transition_ctx.get("transition_overlay", "")},
+                context=transition_ctx,
+            )
+            self.Log(
+                f"VASS_TRANSITION_BLOCK: {block_reason} | "
+                f"Eff={float(transition_ctx.get('effective_score', regime_score)):.1f} | "
+                f"Delta={float(transition_ctx.get('delta', 0.0)):+.1f} | "
+                f"MOM={float(transition_ctx.get('momentum_roc', 0.0)):+.2%}"
+            )
+            return None
 
         vix_level_for_vass = self._get_vix_level()
         self.options_engine.update_iv_sensor(vix_level_for_vass, current_date_str)
@@ -1843,42 +1868,24 @@ class AlphaNextGen(QCAlgorithm):
             )
             return None
 
-        if (
-            bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
-            and resolved_direction == "BULLISH"
-            and bool(getattr(config, "VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION", True))
-            and bool(transition_ctx.get("strong_deterioration", False))
-        ):
+        resolved_option_dir = (
+            OptionDirection.CALL if resolved_direction == "BULLISH" else OptionDirection.PUT
+        )
+        block_gate, block_reason = self.options_engine.evaluate_transition_policy_block(
+            engine="VASS",
+            direction=resolved_option_dir,
+            transition_ctx=transition_ctx,
+        )
+        if block_gate:
             self._record_regime_decision_event(
                 engine="VASS",
                 engine_decision="BLOCK",
-                strategy_attempted="VASS_BULLISH",
-                gate_name="VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION",
+                strategy_attempted=f"VASS_{resolved_direction}",
+                gate_name=block_gate,
                 context=transition_ctx,
             )
             self.Log(
-                f"VASS_TRANSITION_BLOCK: bullish blocked during deterioration | "
-                f"Eff={float(transition_ctx.get('effective_score', regime_for_vass)):.1f} | "
-                f"Delta={float(transition_ctx.get('delta', 0.0)):+.1f} | "
-                f"MOM={float(transition_ctx.get('momentum_roc', 0.0)):+.2%}"
-            )
-            return None
-
-        if (
-            bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
-            and resolved_direction == "BEARISH"
-            and bool(getattr(config, "VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY", True))
-            and bool(transition_ctx.get("strong_recovery", False))
-        ):
-            self._record_regime_decision_event(
-                engine="VASS",
-                engine_decision="BLOCK",
-                strategy_attempted="VASS_BEARISH",
-                gate_name="VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY",
-                context=transition_ctx,
-            )
-            self.Log(
-                f"VASS_TRANSITION_BLOCK: bearish blocked during recovery | "
+                f"VASS_TRANSITION_BLOCK: {block_reason} | "
                 f"Eff={float(transition_ctx.get('effective_score', regime_for_vass)):.1f} | "
                 f"Delta={float(transition_ctx.get('delta', 0.0)):+.1f} | "
                 f"MOM={float(transition_ctx.get('momentum_roc', 0.0)):+.2%}"
@@ -5948,7 +5955,7 @@ class AlphaNextGen(QCAlgorithm):
 
         # Get current values
         qqq_price, adx_value, ma200_value, ma50_value = self._get_options_market_snapshot()
-        regime_score = regime_state.smoothed_score
+        regime_score = self._get_decision_regime_score_for_options()
 
         # V2.1: Calculate IV rank from options chain
         iv_rank = self._calculate_iv_rank(chain)
@@ -8158,7 +8165,7 @@ class AlphaNextGen(QCAlgorithm):
         self,
         effective: float,
         detector_score: float,
-        delta: float,
+        eod_delta: float,
         momentum_roc: float,
         vix_5d_change: float,
         sample_seq: int,
@@ -8180,19 +8187,30 @@ class AlphaNextGen(QCAlgorithm):
         ambiguous_high = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_HIGH", 55.0))
         ambiguous_delta_max = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_DELTA_MAX", 1.5))
 
+        now_key = f"SEQ:{int(sample_seq)}"
+        if self._regime_detector_last_update_key != now_key:
+            prev_score = getattr(self, "_regime_detector_prev_score", None)
+            if prev_score is None:
+                detector_delta = 0.0
+            else:
+                detector_delta = float(detector_score - float(prev_score))
+            self._regime_detector_prev_score = float(detector_score)
+        else:
+            detector_delta = float(self._regime_detector_last_raw.get("detector_delta", 0.0) or 0.0)
+
         raw_recovery = (
-            delta >= recovery_delta_min
+            detector_delta >= recovery_delta_min
             and momentum_roc >= recovery_mom_min
             and vix_5d_change <= recovery_vix_5d_max
         )
         raw_deterioration = (
-            delta <= deterioration_delta_max
+            detector_delta <= deterioration_delta_max
             and momentum_roc <= deterioration_mom_max
             and vix_5d_change >= deterioration_vix_5d_min
         )
         raw_ambiguous = (
             ambiguous_low <= detector_score <= ambiguous_high
-            and abs(delta) <= ambiguous_delta_max
+            and abs(detector_delta) <= ambiguous_delta_max
             and not raw_recovery
             and not raw_deterioration
         )
@@ -8204,7 +8222,6 @@ class AlphaNextGen(QCAlgorithm):
         elif raw_ambiguous:
             overlay_candidate = "AMBIGUOUS"
 
-        now_key = f"SEQ:{int(sample_seq)}"
         if self._regime_detector_last_update_key != now_key:
             base_candidate = self._evaluate_base_regime_candidate(detector_score)
             if bool(getattr(config, "REGIME_BASE_STATE_MACHINE_ENABLED", True)):
@@ -8246,6 +8263,10 @@ class AlphaNextGen(QCAlgorithm):
             "overlay_candidate": overlay_candidate,
             "base_candidate": self._evaluate_base_regime_candidate(detector_score),
             "detector_score": float(detector_score),
+            "detector_delta": float(detector_delta),
+            "eod_delta": float(eod_delta),
+            # Backward-compatible alias expected by existing guards/log readers.
+            "delta": float(detector_delta),
             "sample_seq": int(sample_seq),
         }
         return dict(self._regime_detector_last_raw)
@@ -8258,7 +8279,7 @@ class AlphaNextGen(QCAlgorithm):
         intraday_score = (
             float(intraday_score_raw) if intraday_score_raw is not None else float(eod_score)
         )
-        delta = float(intraday_score - eod_score)
+        eod_delta = float(intraday_score - eod_score)
         detector_score = float(intraday_score if intraday_score_raw is not None else effective)
         momentum_roc = getattr(self, "_intraday_regime_momentum_roc", None)
         if momentum_roc is None:
@@ -8272,11 +8293,12 @@ class AlphaNextGen(QCAlgorithm):
         raw = self._update_regime_detector_state(
             effective=effective,
             detector_score=detector_score,
-            delta=delta,
+            eod_delta=eod_delta,
             momentum_roc=momentum_roc,
             vix_5d_change=vix_5d_change,
             sample_seq=int(getattr(self, "_regime_detector_sample_seq", 0)),
         )
+        detector_delta = float(raw.get("detector_delta", raw.get("delta", 0.0)) or 0.0)
         transition_overlay = str(getattr(self, "_regime_overlay_state", "STABLE")).upper()
         strong_recovery = transition_overlay == "RECOVERY"
         strong_deterioration = transition_overlay == "DETERIORATION"
@@ -8292,7 +8314,8 @@ class AlphaNextGen(QCAlgorithm):
             "detector_score": float(detector_score),
             "eod_score": float(eod_score),
             "intraday_score": float(intraday_score),
-            "delta": float(delta),
+            "delta": float(detector_delta),
+            "eod_delta": float(eod_delta),
             "momentum_roc": float(momentum_roc),
             "vix_5d_change": float(vix_5d_change),
             "base_regime": str(getattr(self, "_regime_base_state", "NEUTRAL")).upper(),
@@ -8343,6 +8366,7 @@ class AlphaNextGen(QCAlgorithm):
                 "eod_score": f"{float(ctx.get('eod_score', 0.0)):.2f}",
                 "intraday_score": f"{float(ctx.get('intraday_score', 0.0)):.2f}",
                 "delta": f"{float(ctx.get('delta', 0.0)):+.2f}",
+                "eod_delta": f"{float(ctx.get('eod_delta', 0.0)):+.2f}",
                 "momentum_roc": f"{float(ctx.get('momentum_roc', 0.0)):+.5f}",
                 "vix_5d_change": f"{float(ctx.get('vix_5d_change', 0.0)):+.5f}",
                 "regime_state": f"{str(ctx.get('base_regime', 'NEUTRAL'))}|{str(ctx.get('transition_overlay', 'STABLE'))}",
@@ -8367,6 +8391,7 @@ class AlphaNextGen(QCAlgorithm):
             "eod_score",
             "intraday_score",
             "delta",
+            "eod_delta",
             "momentum_roc",
             "vix_5d_change",
             "regime_state",
@@ -8406,6 +8431,7 @@ class AlphaNextGen(QCAlgorithm):
                 "eod_score": f"{float(ctx.get('eod_score', 0.0)):.2f}",
                 "intraday_score": f"{float(ctx.get('intraday_score', 0.0)):.2f}",
                 "delta": f"{float(ctx.get('delta', 0.0)):+.2f}",
+                "eod_delta": f"{float(ctx.get('eod_delta', 0.0)):+.2f}",
                 "momentum_roc": f"{float(ctx.get('momentum_roc', 0.0)):+.5f}",
                 "vix_5d_change": f"{float(ctx.get('vix_5d_change', 0.0)):+.5f}",
                 "base_regime": str(ctx.get("base_regime", "NEUTRAL")),
@@ -8536,6 +8562,7 @@ class AlphaNextGen(QCAlgorithm):
                 "eod_score",
                 "intraday_score",
                 "delta",
+                "eod_delta",
                 "momentum_roc",
                 "vix_5d_change",
                 "base_regime",
@@ -8578,6 +8605,31 @@ class AlphaNextGen(QCAlgorithm):
                 )
                 self._last_regime_effective_log_at = self.Time
         return effective
+
+    def _get_decision_regime_score_for_options(self) -> float:
+        """
+        Decision score for options entries.
+
+        Keep `_get_effective_regime_score_for_options()` for defensive/risk gating,
+        but route entry-direction decisions through transition-aware score.
+        """
+        base = float(self._get_effective_regime_score_for_options())
+        try:
+            ctx = self._get_regime_transition_context()
+        except Exception:
+            return base
+        if not isinstance(ctx, dict):
+            return base
+        try:
+            return float(
+                ctx.get(
+                    "transition_score",
+                    ctx.get("detector_score", ctx.get("effective_score", base)),
+                )
+                or base
+            )
+        except Exception:
+            return base
 
     def _log_daily_summary(self) -> None:
         # Keep markers in main.py for minified validator checks.

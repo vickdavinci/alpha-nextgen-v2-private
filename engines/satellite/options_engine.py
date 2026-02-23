@@ -2697,8 +2697,11 @@ class OptionsEngine:
             if memory_scale > 1.0:
                 vix_open_for_micro = vix_open / memory_scale
 
-        # MICRO direction/state is sovereign from macro regime context.
-        macro_for_micro = 50.0
+        # MICRO owns intraday direction, but macro score is still used by policy gates.
+        try:
+            macro_for_micro = float(macro_regime_score)
+        except Exception:
+            macro_for_micro = 50.0
         state = self._micro_regime_engine.update(
             vix_current=vix_current,
             vix_open=vix_open_for_micro,
@@ -2873,14 +2876,17 @@ class OptionsEngine:
 
         transition_ctx = self._get_regime_transition_context(macro_regime_score)
         if bool(getattr(config, "MICRO_TRANSITION_GUARD_ENABLED", False)):
-            if bool(getattr(config, "MICRO_TRANSITION_BLOCK_AMBIGUOUS", True)) and bool(
-                transition_ctx.get("ambiguous", False)
-            ):
+            block_gate, block_reason = self.evaluate_transition_policy_block(
+                engine="MICRO",
+                direction=final_direction,
+                transition_ctx=transition_ctx,
+            )
+            if block_gate:
                 self._record_regime_decision(
                     engine="MICRO",
                     decision="BLOCK",
                     strategy_attempted=f"MICRO_{final_direction.value}",
-                    gate_name="MICRO_TRANSITION_AMBIGUOUS",
+                    gate_name=block_gate,
                     threshold_snapshot={"overlay": transition_ctx.get("transition_overlay", "")},
                     context=transition_ctx,
                 )
@@ -2888,43 +2894,7 @@ class OptionsEngine:
                     False,
                     None,
                     state,
-                    "NO_TRADE: MICRO_TRANSITION_AMBIGUOUS",
-                )
-            if (
-                final_direction == OptionDirection.CALL
-                and bool(getattr(config, "MICRO_TRANSITION_BLOCK_CALL_ON_DETERIORATION", True))
-                and bool(transition_ctx.get("strong_deterioration", False))
-            ):
-                self._record_regime_decision(
-                    engine="MICRO",
-                    decision="BLOCK",
-                    strategy_attempted="MICRO_CALL",
-                    gate_name="MICRO_TRANSITION_BLOCK_CALL_ON_DETERIORATION",
-                    context=transition_ctx,
-                )
-                return (
-                    False,
-                    None,
-                    state,
-                    "NO_TRADE: MICRO_TRANSITION_BLOCK_CALL_ON_DETERIORATION",
-                )
-            if (
-                final_direction == OptionDirection.PUT
-                and bool(getattr(config, "MICRO_TRANSITION_BLOCK_PUT_ON_RECOVERY", True))
-                and bool(transition_ctx.get("strong_recovery", False))
-            ):
-                self._record_regime_decision(
-                    engine="MICRO",
-                    decision="BLOCK",
-                    strategy_attempted="MICRO_PUT",
-                    gate_name="MICRO_TRANSITION_BLOCK_PUT_ON_RECOVERY",
-                    context=transition_ctx,
-                )
-                return (
-                    False,
-                    None,
-                    state,
-                    "NO_TRADE: MICRO_TRANSITION_BLOCK_PUT_ON_RECOVERY",
+                    f"NO_TRADE: {block_gate} ({block_reason})",
                 )
 
         # Build reason string for logging
@@ -3124,7 +3094,77 @@ class OptionsEngine:
                 ctx["effective_score"] = float(regime_score)
             except Exception:
                 pass
+        if "transition_score" not in ctx and "effective_score" in ctx:
+            try:
+                ctx["transition_score"] = float(ctx.get("effective_score"))
+            except Exception:
+                pass
         return ctx
+
+    def evaluate_transition_policy_block(
+        self,
+        engine: str,
+        direction: Optional[OptionDirection],
+        transition_ctx: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[str, str]:
+        """
+        Unified transition-policy gate for MICRO/ITM/VASS.
+
+        Returns:
+            (gate_name, reason). Empty gate_name means no block.
+        """
+        if not bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True)):
+            return "", ""
+
+        ctx = (
+            transition_ctx
+            if isinstance(transition_ctx, dict)
+            else self._get_regime_transition_context()
+        )
+        engine_key = str(engine or "").upper()
+        if engine_key not in {"MICRO", "ITM", "VASS"}:
+            return "", ""
+
+        if engine_key == "MICRO":
+            ambiguous_key = "MICRO_TRANSITION_BLOCK_AMBIGUOUS"
+            call_det_key = "MICRO_TRANSITION_BLOCK_CALL_ON_DETERIORATION"
+            put_rec_key = "MICRO_TRANSITION_BLOCK_PUT_ON_RECOVERY"
+            ambiguous_gate = "MICRO_TRANSITION_AMBIGUOUS"
+            call_det_gate = "MICRO_TRANSITION_BLOCK_CALL_ON_DETERIORATION"
+            put_rec_gate = "MICRO_TRANSITION_BLOCK_PUT_ON_RECOVERY"
+        elif engine_key == "ITM":
+            ambiguous_key = "ITM_TRANSITION_BLOCK_AMBIGUOUS"
+            call_det_key = "ITM_TRANSITION_BLOCK_BULL_ON_DETERIORATION"
+            put_rec_key = "ITM_TRANSITION_BLOCK_BEAR_ON_RECOVERY"
+            ambiguous_gate = "REGIME_TRANSITION_AMBIGUOUS"
+            call_det_gate = "REGIME_DOWNSHIFT_NO_CALL"
+            put_rec_gate = "REGIME_RECOVERY_NO_PUT"
+        else:  # VASS
+            ambiguous_key = "VASS_TRANSITION_BLOCK_AMBIGUOUS"
+            call_det_key = "VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION"
+            put_rec_key = "VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY"
+            ambiguous_gate = "VASS_TRANSITION_BLOCK_AMBIGUOUS"
+            call_det_gate = "VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION"
+            put_rec_gate = "VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY"
+
+        if bool(getattr(config, ambiguous_key, True)) and bool(ctx.get("ambiguous", False)):
+            return ambiguous_gate, "ambiguous transition state"
+
+        if (
+            direction == OptionDirection.CALL
+            and bool(getattr(config, call_det_key, True))
+            and bool(ctx.get("strong_deterioration", False))
+        ):
+            return call_det_gate, "bullish blocked during deterioration"
+
+        if (
+            direction == OptionDirection.PUT
+            and bool(getattr(config, put_rec_key, True))
+            and bool(ctx.get("strong_recovery", False))
+        ):
+            return put_rec_gate, "bearish blocked during recovery"
+
+        return "", ""
 
     def _record_regime_decision(
         self,
@@ -3305,6 +3345,15 @@ class OptionsEngine:
         Returns:
             "BULLISH", "BEARISH", or "NEUTRAL"
         """
+        # Prefer regime state-machine output when available.
+        transition_ctx = self._get_regime_transition_context(macro_regime_score)
+        base_regime = str(transition_ctx.get("base_regime", "") or "").upper()
+        transition_overlay = str(transition_ctx.get("transition_overlay", "") or "").upper()
+        if transition_overlay == "AMBIGUOUS":
+            return "NEUTRAL"
+        if base_regime in {"BULLISH", "BEARISH"}:
+            return base_regime
+
         bullish_min = float(getattr(config, "MACRO_DIRECTION_BULLISH_MIN", 55.0))
         bearish_max = float(getattr(config, "MACRO_DIRECTION_BEARISH_MAX", 45.0))
         if macro_regime_score > bullish_min:
@@ -9222,31 +9271,31 @@ class OptionsEngine:
         upper = sma20 * (1.0 + band)
         lower = sma20 * (1.0 - band)
         transition_ctx = self._get_regime_transition_context()
-        regime = float(transition_ctx.get("effective_score", 50.0) or 50.0)
-        if not transition_ctx and hasattr(
-            self.algorithm, "_get_effective_regime_score_for_options"
-        ):
+        regime = float(
+            transition_ctx.get(
+                "transition_score",
+                transition_ctx.get("effective_score", 50.0),
+            )
+            or 50.0
+        )
+        if not transition_ctx and hasattr(self.algorithm, "_get_decision_regime_score_for_options"):
             try:
-                regime = float(self.algorithm._get_effective_regime_score_for_options())
+                regime = float(self.algorithm._get_decision_regime_score_for_options())
             except Exception:
                 regime = float(getattr(self.algorithm, "_last_regime_score", 50.0) or 50.0)
         regime_for_itm = regime
-        if bool(transition_ctx.get("strong_recovery", False)):
-            regime_for_itm = max(
-                regime_for_itm,
-                float(transition_ctx.get("transition_score", regime_for_itm)),
-            )
 
-        if (
-            bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
-            and bool(getattr(config, "ITM_TRANSITION_BLOCK_AMBIGUOUS", True))
-            and bool(transition_ctx.get("ambiguous", False))
-        ):
+        block_gate, _ = self.evaluate_transition_policy_block(
+            engine="ITM",
+            direction=None,
+            transition_ctx=transition_ctx,
+        )
+        if block_gate == "REGIME_TRANSITION_AMBIGUOUS":
             self._record_regime_decision(
                 engine="ITM",
                 decision="BLOCK",
                 strategy_attempted="ITM_MOMENTUM",
-                gate_name="REGIME_TRANSITION_AMBIGUOUS",
+                gate_name=block_gate,
                 threshold_snapshot={
                     "ambiguous_low": float(
                         getattr(config, "REGIME_TRANSITION_AMBIGUOUS_LOW", 47.0)
@@ -9267,16 +9316,17 @@ class OptionsEngine:
             )
 
         if qqq_current > upper:
-            if (
-                bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
-                and bool(getattr(config, "ITM_TRANSITION_BLOCK_BULL_ON_DETERIORATION", True))
-                and bool(transition_ctx.get("strong_deterioration", False))
-            ):
+            block_gate, _ = self.evaluate_transition_policy_block(
+                engine="ITM",
+                direction=OptionDirection.CALL,
+                transition_ctx=transition_ctx,
+            )
+            if block_gate == "REGIME_DOWNSHIFT_NO_CALL":
                 self._record_regime_decision(
                     engine="ITM",
                     decision="BLOCK",
                     strategy_attempted="ITM_MOMENTUM_CALL",
-                    gate_name="REGIME_DOWNSHIFT_NO_CALL",
+                    gate_name=block_gate,
                     threshold_snapshot={
                         "delta_max": float(
                             getattr(config, "REGIME_TRANSITION_DETERIORATION_DELTA_MAX", -2.0)
@@ -9334,16 +9384,17 @@ class OptionsEngine:
             )
             return OptionDirection.CALL, f"QQQ {qqq_current:.2f} > SMA20+band {upper:.2f}"
         if qqq_current < lower:
-            if (
-                bool(getattr(config, "REGIME_TRANSITION_GUARD_ENABLED", True))
-                and bool(getattr(config, "ITM_TRANSITION_BLOCK_BEAR_ON_RECOVERY", True))
-                and bool(transition_ctx.get("strong_recovery", False))
-            ):
+            block_gate, _ = self.evaluate_transition_policy_block(
+                engine="ITM",
+                direction=OptionDirection.PUT,
+                transition_ctx=transition_ctx,
+            )
+            if block_gate == "REGIME_RECOVERY_NO_PUT":
                 self._record_regime_decision(
                     engine="ITM",
                     decision="BLOCK",
                     strategy_attempted="ITM_MOMENTUM_PUT",
-                    gate_name="REGIME_RECOVERY_NO_PUT",
+                    gate_name=block_gate,
                     threshold_snapshot={
                         "delta_min": float(
                             getattr(config, "REGIME_TRANSITION_RECOVERY_DELTA_MIN", 2.0)

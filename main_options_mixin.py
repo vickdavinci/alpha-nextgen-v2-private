@@ -732,7 +732,7 @@ class MainOptionsMixin:
         micro_state = None
         vix_intraday = 0.0
         vix_level_cboe = None
-        regime_score = self._get_effective_regime_score_for_options()
+        regime_score = self._get_decision_regime_score_for_options()
         intraday_scan_context_ready = False
         if self._should_scan_intraday() and self._qqq_at_open > 0 and not intraday_cooldown_active:
             # V5.3: Check position limits before scanning
@@ -750,7 +750,7 @@ class MainOptionsMixin:
                 vix_level_cboe = self._get_vix_level()
 
                 # Get macro regime score for direction conflict check
-                regime_score = self._get_effective_regime_score_for_options()
+                regime_score = self._get_decision_regime_score_for_options()
 
                 # V6.3: Calculate UVXY intraday change for conviction check
                 uvxy_pct = 0.0
@@ -1473,7 +1473,7 @@ class MainOptionsMixin:
                 return
         self._last_swing_scan_time = self.Time
 
-        regime_score = self._get_effective_regime_score_for_options()
+        regime_score = self._get_decision_regime_score_for_options()
         context = self._resolve_vass_direction_context(
             regime_score=regime_score,
             size_multiplier=size_multiplier,
