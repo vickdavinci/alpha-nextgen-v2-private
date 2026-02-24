@@ -140,6 +140,7 @@ class AlphaNextGen(QCAlgorithm):
     _generate_options_signals = MainSignalGenerationMixin._generate_options_signals
     _handle_kill_switch = MainSignalGenerationMixin._handle_kill_switch
     _scan_mr_signals = MainSignalGenerationMixin._scan_mr_signals
+    _on_mr_force_close = MainSignalGenerationMixin._on_mr_force_close
     _save_observability_csv_artifact = MainObservabilityMixin._save_observability_csv_artifact
     _on_pre_market_setup = MainPremarketMixin._on_pre_market_setup
     _on_sod_baseline = MainPremarketMixin._on_sod_baseline
@@ -1909,44 +1910,6 @@ class AlphaNextGen(QCAlgorithm):
         if self.IsWarmingUp:
             return
         # Time guard tracking is handled by scheduler, no logging needed
-
-    def _on_mr_force_close(self) -> None:
-        """
-        MR force close at 15:45 ET.
-
-        Forces close of all Mean Reversion positions (TQQQ, SOXL).
-        These are intraday-only symbols that cannot be held overnight.
-        """
-        # Skip during warmup - no orders allowed
-        if self.IsWarmingUp:
-            return
-        if self._mr_force_close_ran_date == self.Time.date():
-            return
-        self._mr_force_close_ran_date = self.Time.date()
-
-        # V6.11: Check all MR symbols (TQQQ, SOXL, SPXL)
-        for mr_symbol, mr_name in [(self.tqqq, "TQQQ"), (self.soxl, "SOXL"), (self.spxl, "SPXL")]:
-            if self.Portfolio[mr_symbol].Invested:
-                signal = TargetWeight(
-                    symbol=mr_name,
-                    target_weight=0.0,
-                    source="MR",
-                    urgency=Urgency.IMMEDIATE,
-                    reason="TIME_EXIT_15:45",
-                )
-                self.portfolio_router.receive_signal(signal)
-
-        # Process the signals immediately
-        self._process_immediate_signals()
-
-        # CRITICAL FAILSAFE: Direct Liquidate() call to ensure 3x ETFs are closed
-        # This runs AFTER signal processing as a belt-and-suspenders safety measure
-        # 3x ETFs held overnight can suffer catastrophic losses from gaps
-        # V6.11: Updated for all MR symbols
-        for mr_symbol, mr_name in [(self.tqqq, "TQQQ"), (self.soxl, "SOXL"), (self.spxl, "SPXL")]:
-            if self.Portfolio[mr_symbol].Invested:
-                self.Log(f"MR_FAILSAFE: Force liquidating {mr_name} via direct Liquidate()")
-                self.Liquidate(mr_symbol, tag="MR_FAILSAFE_15:45")
 
     def _on_eod_processing(self) -> None:
         """
