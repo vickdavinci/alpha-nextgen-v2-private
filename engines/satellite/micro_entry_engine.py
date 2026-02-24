@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import config
 from models.enums import IntradayStrategy, MicroRegime, OptionDirection
@@ -27,6 +27,63 @@ class MicroEntryEngine:
 
     def _is_micro_otm_strategy(self, entry_strategy: IntradayStrategy) -> bool:
         return entry_strategy == IntradayStrategy.MICRO_OTM_MOMENTUM
+
+    def validate_lane_caps(
+        self,
+        *,
+        entry_strategy: IntradayStrategy,
+        intraday_positions: Dict[str, Any],
+        has_pending_intraday_entry: Callable[[Optional[str]], bool],
+        intraday_itm_trades_today: int,
+        intraday_micro_trades_today: int,
+        lane_resolver: Callable[[str], str],
+    ) -> Tuple[bool, Optional[str], Optional[str], str]:
+        """Validate per-lane daily caps, pending entry lock, and concurrent caps."""
+        pending_lane = lane_resolver(entry_strategy.value)
+
+        # Engine-sovereign daily caps (avoid MICRO/ITM cross-throttling).
+        if pending_lane == "ITM":
+            itm_cap = int(getattr(config, "ITM_MAX_TRADES_PER_DAY", 0) or 0)
+            if itm_cap > 0 and intraday_itm_trades_today >= itm_cap:
+                return (
+                    False,
+                    "R_ITM_DAILY_CAP",
+                    f"ITM={intraday_itm_trades_today}/{itm_cap}",
+                    pending_lane,
+                )
+        else:
+            micro_cap = int(getattr(config, "MICRO_MAX_TRADES_PER_DAY", 0) or 0)
+            if micro_cap > 0 and intraday_micro_trades_today >= micro_cap:
+                return (
+                    False,
+                    "R_MICRO_DAILY_CAP",
+                    f"MICRO={intraday_micro_trades_today}/{micro_cap}",
+                    pending_lane,
+                )
+
+        if has_pending_intraday_entry(pending_lane):
+            return False, "E_INTRADAY_PENDING_ENTRY", pending_lane, pending_lane
+
+        lane_cap = int(
+            getattr(
+                config,
+                "ITM_MAX_CONCURRENT_POSITIONS"
+                if pending_lane == "ITM"
+                else "MICRO_MAX_CONCURRENT_POSITIONS",
+                1,
+            )
+            or 0
+        )
+        current_lane_positions = len(intraday_positions.get(pending_lane) or [])
+        if lane_cap > 0 and current_lane_positions >= lane_cap:
+            cap_code = "R_ITM_CONCURRENT_CAP" if pending_lane == "ITM" else "R_MICRO_CONCURRENT_CAP"
+            return (
+                False,
+                cap_code,
+                f"{pending_lane}={current_lane_positions}/{lane_cap}",
+                pending_lane,
+            )
+        return True, None, None, pending_lane
 
     def apply_pre_contract_gates(
         self,

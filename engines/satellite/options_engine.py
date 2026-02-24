@@ -10320,40 +10320,16 @@ class OptionsEngine:
         validation_lane = self._intraday_engine_lane_from_strategy(entry_strategy.value)
         self.set_last_intraday_validation_failure(validation_lane, None, None)
 
-        # Engine-sovereign daily caps (avoid MICRO/ITM cross-throttling).
-        if self._is_itm_momentum_strategy_name(entry_strategy.value):
-            itm_cap = int(getattr(config, "ITM_MAX_TRADES_PER_DAY", 0) or 0)
-            if itm_cap > 0 and self._intraday_itm_trades_today >= itm_cap:
-                return fail(
-                    "R_ITM_DAILY_CAP",
-                    f"ITM={self._intraday_itm_trades_today}/{itm_cap}",
-                )
-        else:
-            micro_cap = int(getattr(config, "MICRO_MAX_TRADES_PER_DAY", 0) or 0)
-            if micro_cap > 0 and self._intraday_micro_trades_today >= micro_cap:
-                return fail(
-                    "R_MICRO_DAILY_CAP",
-                    f"MICRO={self._intraday_micro_trades_today}/{micro_cap}",
-                )
-
-        pending_lane = self._intraday_engine_lane_from_strategy(entry_strategy.value)
-        if self.has_pending_intraday_entry(engine=pending_lane):
-            return fail("E_INTRADAY_PENDING_ENTRY", pending_lane)
-
-        lane_cap = int(
-            getattr(
-                config,
-                "ITM_MAX_CONCURRENT_POSITIONS"
-                if pending_lane == "ITM"
-                else "MICRO_MAX_CONCURRENT_POSITIONS",
-                1,
-            )
-            or 0
+        lane_ok, lane_code, lane_detail, pending_lane = self._micro_entry_engine.validate_lane_caps(
+            entry_strategy=entry_strategy,
+            intraday_positions=self._intraday_positions,
+            has_pending_intraday_entry=self.has_pending_intraday_entry,
+            intraday_itm_trades_today=self._intraday_itm_trades_today,
+            intraday_micro_trades_today=self._intraday_micro_trades_today,
+            lane_resolver=self._intraday_engine_lane_from_strategy,
         )
-        current_lane_positions = len(self._intraday_positions.get(pending_lane) or [])
-        if lane_cap > 0 and current_lane_positions >= lane_cap:
-            cap_code = "R_ITM_CONCURRENT_CAP" if pending_lane == "ITM" else "R_MICRO_CONCURRENT_CAP"
-            return fail(cap_code, f"{pending_lane}={current_lane_positions}/{lane_cap}")
+        if not lane_ok:
+            return fail(lane_code or "E_INTRADAY_LANE_CAP", lane_detail)
         # Engine isolation: do not hard-block this entry because another intraday
         # engine currently owns a position. Concurrency/arbitration is governed by
         # slot caps, per-engine limits, and router margin checks.
