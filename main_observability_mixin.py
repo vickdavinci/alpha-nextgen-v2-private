@@ -159,6 +159,13 @@ class MainObservabilityMixin:
         self._flush_router_rejection_artifact()
         self._flush_order_lifecycle_artifact()
 
+    def _should_log_backtest_category(self, config_flag: str, default: bool = True) -> bool:
+        """Return whether a log category is enabled for current run mode."""
+        is_live = bool(hasattr(self, "LiveMode") and self.LiveMode)
+        if is_live:
+            return True
+        return bool(getattr(config, config_flag, default))
+
     def _ensure_daily_proxy_windows_snapshot(self) -> None:
         """Backfill daily proxy windows from latest closes when intraday feed missed close bar."""
         day_key = self.Time.date()

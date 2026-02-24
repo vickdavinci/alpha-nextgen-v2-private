@@ -164,6 +164,7 @@ class AlphaNextGen(QCAlgorithm):
     OnEndOfAlgorithm = MainObservabilityMixin.OnEndOfAlgorithm
     _save_observability_csv_artifact = MainObservabilityMixin._save_observability_csv_artifact
     _on_observability_checkpoint = MainObservabilityMixin._on_observability_checkpoint
+    _should_log_backtest_category = MainObservabilityMixin._should_log_backtest_category
     _ensure_daily_proxy_windows_snapshot = (
         MainObservabilityMixin._ensure_daily_proxy_windows_snapshot
     )
@@ -1587,13 +1588,6 @@ class AlphaNextGen(QCAlgorithm):
     # =========================================================================
     # ORDER EVENT HANDLER
     # =========================================================================
-
-    def _should_log_backtest_category(self, config_flag: str, default: bool = True) -> bool:
-        """Return whether a log category is enabled for current run mode."""
-        is_live = bool(hasattr(self, "LiveMode") and self.LiveMode)
-        if is_live:
-            return True
-        return bool(getattr(config, config_flag, default))
 
     def _record_order_tag_map(self, order_id: int, symbol: str, tag: str, source: str) -> None:
         """Emit deterministic order-id -> tag mapping for RCA even when broker CSV drops tags."""
