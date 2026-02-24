@@ -5069,22 +5069,16 @@ class OptionsEngine:
         )
 
     def pop_last_spread_failure_stats(self) -> Optional[str]:
-        stats = self._last_spread_failure_stats
-        self._last_spread_failure_stats = None
-        return stats
+        return self._vass_entry_engine.pop_last_spread_failure_stats(host=self)
 
     def pop_last_credit_failure_stats(self) -> Optional[str]:
-        stats = self._last_credit_failure_stats
-        self._last_credit_failure_stats = None
-        return stats
+        return self._vass_entry_engine.pop_last_credit_failure_stats(host=self)
 
     def set_last_entry_validation_failure(self, reason: Optional[str]) -> None:
-        self._last_entry_validation_failure = reason
+        self._vass_entry_engine.set_last_entry_validation_failure(host=self, reason=reason)
 
     def pop_last_entry_validation_failure(self) -> Optional[str]:
-        reason = self._last_entry_validation_failure
-        self._last_entry_validation_failure = None
-        return reason
+        return self._vass_entry_engine.pop_last_entry_validation_failure(host=self)
 
     def _normalize_intraday_lane(self, lane: Optional[str]) -> str:
         lane_key = str(lane or "").upper()

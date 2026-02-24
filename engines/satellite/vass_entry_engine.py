@@ -1489,6 +1489,28 @@ class VASSEntryEngine:
             host._last_credit_failure_stats = summary
         return None
 
+    def pop_last_spread_failure_stats(self, *, host: Any) -> Optional[str]:
+        """Pop and clear last debit spread construction failure diagnostics."""
+        stats = host._last_spread_failure_stats
+        host._last_spread_failure_stats = None
+        return stats
+
+    def pop_last_credit_failure_stats(self, *, host: Any) -> Optional[str]:
+        """Pop and clear last credit spread construction failure diagnostics."""
+        stats = host._last_credit_failure_stats
+        host._last_credit_failure_stats = None
+        return stats
+
+    def set_last_entry_validation_failure(self, *, host: Any, reason: Optional[str]) -> None:
+        """Set last VASS entry validation failure reason for downstream logging."""
+        host._last_entry_validation_failure = reason
+
+    def pop_last_entry_validation_failure(self, *, host: Any) -> Optional[str]:
+        """Pop and clear last VASS entry validation failure reason."""
+        reason = host._last_entry_validation_failure
+        host._last_entry_validation_failure = None
+        return reason
+
     def build_spread_signal(
         self,
         *,
