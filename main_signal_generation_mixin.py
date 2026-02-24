@@ -11,6 +11,80 @@ from models.target_weight import TargetWeight
 
 
 class MainSignalGenerationMixin:
+    def _process_immediate_signals(self) -> None:
+        """
+        Process pending signals with IMMEDIATE urgency.
+
+        Routes to PortfolioRouter which validates and executes via MarketOrder.
+        """
+        # V2.18: Block immediate orders in market close blackout window (RPT-5 fix)
+        if self._is_market_close_blackout():
+            pending_count = self.portfolio_router.get_pending_count()
+            if pending_count > 0:
+                self.Log(
+                    f"MARKET_CLOSE_GUARD: {pending_count} immediate orders blocked | "
+                    f"Time={self.Time.strftime('%H:%M')} in 15:58-16:00 blackout"
+                )
+                # Clear pending to prevent them executing at wrong time
+                self.portfolio_router.clear_pending()
+            return
+
+        # Skip if no pending signals
+        if self.portfolio_router.get_pending_count() == 0:
+            return
+
+        # Get current state
+        capital_state = self.capital_engine.calculate(self.Portfolio.TotalPortfolioValue)
+        current_positions = self._get_current_positions()
+        current_prices = self._get_current_prices()
+
+        # V2.19 FIX: Inject option prices from pending signal metadata
+        # _get_current_prices() only includes HELD options (V2.19 perf fix),
+        # but NEW entries aren't held yet. Use price from chain data stored in metadata.
+        for signal in self.portfolio_router.get_pending_signals():
+            if signal.source in ("OPT", "OPT_INTRADAY") and signal.symbol not in current_prices:
+                price = signal.metadata.get("contract_price", 0) if signal.metadata else 0
+
+                # V6.12: Fallback to bid/ask mid if metadata price is 0
+                if price <= 0 and self.Securities.ContainsKey(signal.symbol):
+                    try:
+                        sec = self.Securities[signal.symbol]
+                        bid = sec.BidPrice or 0
+                        ask = sec.AskPrice or 0
+                        if bid > 0 and ask > 0:
+                            price = (bid + ask) / 2
+                            self.Log(
+                                f"V2.19_INJECT_FALLBACK: {signal.symbol} | "
+                                f"Using bid/ask mid=${price:.2f} (bid={bid:.2f}, ask={ask:.2f})"
+                            )
+                    except Exception:
+                        pass  # Keep price as 0, will be logged below
+
+                if price > 0:
+                    current_prices[signal.symbol] = price
+                else:
+                    self.Log(
+                        f"V2.19_INJECT_WARNING: {signal.symbol} | price=0 | "
+                        f"No valid price found - sizing may be incorrect"
+                    )
+
+        try:
+            # Calculate max single position in dollars from percentage
+            max_single_position = capital_state.tradeable_eq * config.MAX_SINGLE_POSITION_PCT
+            self.portfolio_router.process_immediate(
+                tradeable_equity=capital_state.tradeable_eq,
+                current_positions=current_positions,
+                current_prices=current_prices,
+                max_single_position=max_single_position,
+                available_cash=self.Portfolio.Cash,
+                locked_amount=capital_state.locked_amount,
+                current_time=str(self.Time),
+            )
+            self._capture_router_rejections(stage="IMMEDIATE")
+        except Exception as e:
+            self.Log(f"SIGNAL_ERROR: Failed to process immediate signals - {e}")
+            self._capture_router_rejections(stage="IMMEDIATE_ERROR")
+
     def _process_eod_signals(self, capital_state: CapitalState) -> None:
         """
         Process pending signals with EOD urgency using SetHoldings.
