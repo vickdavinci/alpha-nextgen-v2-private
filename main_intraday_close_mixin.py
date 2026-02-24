@@ -198,7 +198,7 @@ class MainIntradayCloseMixin:
                 current_minute=self.Time.minute,
                 current_price=current_price,
                 ignore_hold_policy=(eod_loss_breach or itm_eod_harvest),
-                engine=self.options_engine._find_intraday_lane_by_symbol(symbol),
+                engine=self.options_engine.find_intraday_lane_by_symbol(symbol),
                 symbol=symbol,
             )
 
@@ -668,7 +668,7 @@ class MainIntradayCloseMixin:
                 current_minute=self.Time.minute,
                 current_price=price,
                 ignore_hold_policy=(eod_loss_breach or itm_eod_harvest),
-                engine=self.options_engine._find_intraday_lane_by_symbol(symbol),
+                engine=self.options_engine.find_intraday_lane_by_symbol(symbol),
                 symbol=symbol,
             )
             if signal:

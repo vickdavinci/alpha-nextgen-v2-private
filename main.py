@@ -1213,7 +1213,7 @@ class AlphaNextGen(QCAlgorithm):
                 return None
             if not hasattr(self.options_engine, "_iv_sensor"):
                 return None
-            value = self.options_engine._iv_sensor.get_vix_5d_change()
+            value = self.options_engine.get_vix_5d_change()
             if value is None:
                 return None
             return float(value)
@@ -1264,7 +1264,7 @@ class AlphaNextGen(QCAlgorithm):
 
         live_dte = None
         try:
-            live_dte = self.options_engine._get_position_live_dte(intraday_pos)
+            live_dte = self.options_engine.get_position_live_dte(intraday_pos)
         except Exception:
             live_dte = None
         if live_dte is None or int(live_dte) < min_live_dte:
@@ -1490,7 +1490,7 @@ class AlphaNextGen(QCAlgorithm):
             is_put = "P" in symbol_norm
             try:
                 vix_5d = (
-                    self.options_engine._iv_sensor.get_vix_5d_change()
+                    self.options_engine.get_vix_5d_change()
                     if hasattr(self, "options_engine") and self.options_engine is not None
                     else None
                 )

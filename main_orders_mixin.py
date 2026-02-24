@@ -1879,7 +1879,7 @@ class MainOrdersMixin:
                         self._handle_spread_leg_close(symbol, fill_price, fill_qty)
                     elif self.options_engine.has_intraday_position():
                         # P0 fix: keep intraday state until symbol is fully flat.
-                        intraday_lane = self.options_engine._find_intraday_lane_by_symbol(
+                        intraday_lane = self.options_engine.find_intraday_lane_by_symbol(
                             symbol_norm
                         )
                         intraday_pos = (

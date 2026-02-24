@@ -431,6 +431,21 @@ class OptionsEngine:
             return self._symbol_key(key_text.split("|", 1)[1])
         return self._symbol_key(key_text)
 
+    def get_vix_5d_change(self) -> Optional[float]:
+        """Public accessor for current VIX 5D change."""
+        try:
+            return self._iv_sensor.get_vix_5d_change()
+        except Exception:
+            return None
+
+    def get_position_live_dte(self, position: Optional[OptionsPosition]) -> Optional[int]:
+        """Public wrapper for live DTE resolution."""
+        return self._get_position_live_dte(position)
+
+    def find_intraday_lane_by_symbol(self, symbol: Optional[str]) -> Optional[str]:
+        """Public wrapper for intraday lane lookup."""
+        return self._find_intraday_lane_by_symbol(symbol)
+
     def _find_pending_intraday_entry_key(
         self, symbol: str, lane: Optional[str] = None
     ) -> Optional[str]:

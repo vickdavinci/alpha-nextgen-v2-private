@@ -540,7 +540,7 @@ class MainRegimeMixin:
             if live_qty <= 0:
                 continue
 
-            lane = self.options_engine._find_intraday_lane_by_symbol(symbol_key)
+            lane = self.options_engine.find_intraday_lane_by_symbol(symbol_key)
             engine_bucket = "ITM" if str(lane or "").upper() == "ITM" else "MICRO"
             self.portfolio_router.receive_signal(
                 TargetWeight(
