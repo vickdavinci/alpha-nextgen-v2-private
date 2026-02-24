@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from AlgorithmImports import SecurityType, Slice
 
 import config
@@ -39,6 +41,128 @@ class MainReconcileMixin:
             return
         self._friday_spread_reconcile_date = today
         self._reconcile_positions(mode="friday")
+
+    def _build_spread_runtime_key(self, spread: Any) -> str:
+        """Build canonical spread key for runtime trackers."""
+        return (
+            f"{self._normalize_symbol_str(spread.long_leg.symbol)}|"
+            f"{self._normalize_symbol_str(spread.short_leg.symbol)}|"
+            f"{str(getattr(spread, 'entry_time', '') or '')}"
+        )
+
+    def _record_spread_exit_reason(self, spread_key: str, reason: str) -> None:
+        """Persist latest spread exit reason for fill-path attribution."""
+        if not spread_key:
+            return
+        reason_str = str(reason or "").strip()
+        if not reason_str:
+            return
+        self._spread_last_exit_reason[spread_key] = reason_str[:180]
+
+    def _record_spread_removal(self, reason: str, count: int = 1, context: str = "") -> None:
+        """Centralized spread-removal diagnostics accounting."""
+        if count <= 0:
+            return
+        self._diag_spread_position_removed_count += count
+        if reason == "fill_path":
+            self._diag_spread_removed_fill_path_count += count
+        elif reason == "ghost_path":
+            self._diag_spread_ghost_removed_count += count
+        else:
+            self.Log(
+                f"SPREAD_DIAG_WARNING: Unknown removal reason '{reason}' | "
+                f"Count={count} | Context={context}"
+            )
+
+    def _reconcile_spread_ghosts(self, mode: str) -> int:
+        """
+        Reconcile spread state ghosts with mode-aware clearing policy.
+
+        Modes:
+            - sod: immediate guarded clear when both legs are flat
+            - friday: immediate guarded clear once per day sweep
+            - intraday: non-destructive health check; emergency clear only after
+              N consecutive flat detections
+        """
+        mode_norm = str(mode or "sod").strip().lower()
+        spreads = list(self.options_engine.get_spread_positions())
+        if not spreads:
+            return 0
+
+        threshold = max(1, int(getattr(config, "SPREAD_GHOST_INTRADAY_CLEAR_CONSECUTIVE", 2)))
+        health_log_minutes = max(1, int(getattr(config, "SPREAD_GHOST_HEALTH_LOG_MINUTES", 60)))
+        cleared = 0
+
+        for spread in spreads:
+            spread_key = self._build_spread_runtime_key(spread)
+
+            long_held = self.Portfolio[spread.long_leg.symbol].Invested
+            short_held = self.Portfolio[spread.short_leg.symbol].Invested
+            if long_held or short_held:
+                self._spread_ghost_flat_streak_by_key.pop(spread_key, None)
+                self._spread_ghost_last_log_by_key.pop(spread_key, None)
+                continue
+
+            streak = self._spread_ghost_flat_streak_by_key.get(spread_key, 0) + 1
+            self._spread_ghost_flat_streak_by_key[spread_key] = streak
+
+            should_clear = mode_norm in {"sod", "friday"}
+            if mode_norm == "intraday" and streak >= threshold:
+                should_clear = True
+
+            last_log = self._spread_ghost_last_log_by_key.get(spread_key)
+            due = (
+                last_log is None
+                or (self.Time - last_log).total_seconds() / 60.0 >= health_log_minutes
+            )
+            if (due or should_clear) and self._should_log_backtest_category(
+                "LOG_SPREAD_RECONCILE_BACKTEST_ENABLED", False
+            ):
+                self.Log(
+                    f"SPREAD_GHOST_HEALTH: Mode={mode_norm.upper()} | "
+                    f"Key={spread_key} | FlatStreak={streak} | "
+                    f"Threshold={threshold}"
+                )
+                self._spread_ghost_last_log_by_key[spread_key] = self.Time
+
+            if not should_clear:
+                continue
+
+            self._clear_spread_runtime_trackers_by_key(spread_key)
+            removed = self.options_engine.remove_spread_position(str(spread.long_leg.symbol))
+            if removed is None:
+                continue
+
+            self._record_spread_removal(
+                reason="ghost_path",
+                count=1,
+                context=f"RECON_{mode_norm.upper()}_BOTH_LEGS_FLAT",
+            )
+            cleared += 1
+            self.Log(
+                f"SPREAD_GHOST_CLEAR: Mode={mode_norm.upper()} | "
+                f"Key={spread_key} | FlatStreak={streak}"
+            )
+            if self.portfolio_router:
+                self.portfolio_router.unregister_spread_margin_by_legs(
+                    str(removed.long_leg.symbol),
+                    str(removed.short_leg.symbol),
+                )
+
+        return cleared
+
+    def _clear_spread_runtime_trackers_by_key(self, spread_key: str) -> None:
+        """Clear runtime tracker maps for a spread key (long|short)."""
+        self._spread_close_trackers.pop(spread_key, None)
+        self._spread_forced_close_retry.pop(spread_key, None)
+        self._spread_forced_close_reason.pop(spread_key, None)
+        self._spread_forced_close_cancel_counts.pop(spread_key, None)
+        self._spread_forced_close_retry_cycles.pop(spread_key, None)
+        self._spread_last_close_submit_at.pop(spread_key, None)
+        self._spread_last_exit_reason.pop(spread_key, None)
+        self._spread_exit_mark_cache.pop(spread_key, None)
+        self._spread_ghost_flat_streak_by_key.pop(spread_key, None)
+        self._spread_ghost_last_log_by_key.pop(spread_key, None)
 
     def _check_splits(self, data: Slice) -> bool:
         """
