@@ -175,50 +175,87 @@ def log_daily_summary(algo) -> None:
     vass_mfe_lock_exits = int(getattr(algo, "_diag_vass_mfe_lock_exits", 0) or 0)
     vass_tail_cap_exits = int(getattr(algo, "_diag_vass_tail_cap_exits", 0) or 0)
 
-    algo.Log(
-        "OPTIONS_DIAG_SUMMARY: "
-        f"Candidates={algo._diag_intraday_candidate_count} | "
-        f"Approved={algo._diag_intraday_approved_count} | "
-        f"Dropped={algo._diag_intraday_dropped_count} | "
-        f"RouterRejects={algo._diag_intraday_router_reject_count} | "
-        f"Results={algo._diag_intraday_result_count} | "
-        f"VASS_Blocks={algo._diag_vass_block_count} | "
-        f"OverlayBlocks={algo._diag_overlay_block_count} | "
-        f"OverlaySlotBlocks={algo._diag_overlay_slot_block_count} | "
-        f"SpreadCloseEscalations={algo._diag_spread_close_escalation_count} | "
-        f"SpreadEntrySignal={algo._diag_spread_entry_signal_count} | "
-        f"SpreadEntrySubmit={algo._diag_spread_entry_submit_count} | "
-        f"SpreadEntryFill={algo._diag_spread_entry_fill_count} | "
-        f"SpreadExitSignal={algo._diag_spread_exit_signal_count} | "
-        f"SpreadExitSubmit={algo._diag_spread_exit_submit_count} | "
-        f"SpreadExitFill={spread_exit_fill_strict} | "
-        f"SpreadExitFillStrict={spread_exit_fill_strict} | "
-        f"SpreadExitCanceled={algo._diag_spread_exit_canceled_count} | "
-        f"SpreadRemoved={algo._diag_spread_position_removed_count} | "
-        f"SpreadRemovedFillPath={algo._diag_spread_removed_fill_path_count} | "
-        f"SpreadGhostRemoved={algo._diag_spread_ghost_removed_count} | "
-        f"SpreadLossBeyondStop={algo._diag_spread_loss_beyond_stop_count} | "
-        f"MicroTagRecovery={algo._diag_micro_tag_recovery_count} | "
-        f"MicroEodSweepClose={algo._diag_micro_eod_sweep_close_count} | "
-        f"MicroPendingCancelIgnored={algo._diag_micro_pending_cancel_ignored_count} | "
-        f"MarginRejects={algo._diag_margin_reject_count} | "
-        f"IntradayByEngine(C/A/D/R)={_fmt_intraday_funnel_by_engine()} | "
-        f"IntradayDropTop={intraday_drop_top} | "
-        f"IntradayDropByEngine={_fmt_intraday_drop_reasons_by_engine()} | "
-        f"TopRouterRejects={top_router_rejects_str} | "
-        f"TopRouterRejectsByEngine={_fmt_engine_top_rejects()} | "
-        f"VASSRejectTop={vass_reject_top} | "
-        f"VASSMFE(Peak/T1/T2/Lock/Tail)={vass_mfe_peak:.1%}/{vass_mfe_t1}/{vass_mfe_t2}/{vass_mfe_lock_exits}/{vass_tail_cap_exits} | "
-        f"TransitionDeRisk={_fmt_transition_derisk_totals()} | "
-        f"TransitionDeRiskByEngine={_fmt_transition_derisk_by_engine()} | "
-        f"ExitPathCounts={exit_counts_str} | "
-        f"ExitPathPnL={exit_pnl_str} | "
-        f"ExitByEngine={_fmt_engine_exit_diag()} | "
-        f"KillActive={kill_active} | GovScale={governor_scale:.0%} | "
-        f"ITMDrawdown={itm_drawdown_detail} | ITMDDBlocked={itm_dd_blocked} | "
-        f"ITMCounts={itm_diag_counts} | ITMBlocks={itm_diag_blocks} | "
-        f"ITMPause={itm_global_pause or 'NONE'} | "
-        f"ITMCallPause={itm_call_pause or 'NONE'} | ITMPutPause={itm_put_pause or 'NONE'} | "
-        f"KillSuppressMin={suppression_min} | KSSkipActive={ks_skip_active} | "
-        f"KSSkipUntil={ks_skip_until or 'NONE'}"
-    )
+    compact_parts = [
+        f"C={algo._diag_intraday_candidate_count}",
+        f"A={algo._diag_intraday_approved_count}",
+        f"D={algo._diag_intraday_dropped_count}",
+        f"RR={algo._diag_intraday_router_reject_count}",
+        f"R={algo._diag_intraday_result_count}",
+        f"VB={algo._diag_vass_block_count}",
+        f"SE={algo._diag_spread_entry_signal_count}/{algo._diag_spread_entry_submit_count}/{algo._diag_spread_entry_fill_count}",
+        f"SX={algo._diag_spread_exit_signal_count}/{algo._diag_spread_exit_submit_count}/{spread_exit_fill_strict}",
+        f"IE={_fmt_intraday_funnel_by_engine()}",
+    ]
+    sparse_counts = [
+        ("OB", algo._diag_overlay_block_count),
+        ("OSB", algo._diag_overlay_slot_block_count),
+        ("SCE", algo._diag_spread_close_escalation_count),
+        ("SXC", algo._diag_spread_exit_canceled_count),
+        ("SR", algo._diag_spread_position_removed_count),
+        ("SRF", algo._diag_spread_removed_fill_path_count),
+        ("SGR", algo._diag_spread_ghost_removed_count),
+        ("SLS", algo._diag_spread_loss_beyond_stop_count),
+        ("MTR", algo._diag_micro_tag_recovery_count),
+        ("MES", algo._diag_micro_eod_sweep_close_count),
+        ("MPCI", algo._diag_micro_pending_cancel_ignored_count),
+        ("MRG", algo._diag_margin_reject_count),
+    ]
+    compact_parts.extend(f"{k}={int(v)}" for k, v in sparse_counts if int(v) != 0)
+    if intraday_drop_top != "NONE":
+        compact_parts.append(f"Drop={intraday_drop_top}")
+    intraday_drop_by_engine = _fmt_intraday_drop_reasons_by_engine()
+    if intraday_drop_by_engine != "MICRO[NONE] ITM[NONE] OTHER[NONE]":
+        compact_parts.append(f"DropEng={intraday_drop_by_engine}")
+    if top_router_rejects_str != "NONE":
+        compact_parts.append(f"Rj={top_router_rejects_str}")
+    router_by_engine = _fmt_engine_top_rejects()
+    if router_by_engine != "VASS[NONE] MICRO[NONE] ITM[NONE]":
+        compact_parts.append(f"RjEng={router_by_engine}")
+    if vass_reject_top != "NONE":
+        compact_parts.append(f"Vj={vass_reject_top}")
+    if (
+        vass_mfe_peak > 0
+        or vass_mfe_t1 > 0
+        or vass_mfe_t2 > 0
+        or vass_mfe_lock_exits > 0
+        or vass_tail_cap_exits > 0
+    ):
+        compact_parts.append(
+            f"VMFE={vass_mfe_peak:.1%}/{vass_mfe_t1}/{vass_mfe_t2}/{vass_mfe_lock_exits}/{vass_tail_cap_exits}"
+        )
+    transition_total = _fmt_transition_derisk_totals()
+    if transition_total != "DET:0;REC:0":
+        compact_parts.append(f"TD={transition_total}")
+    transition_by_engine = _fmt_transition_derisk_by_engine()
+    if transition_by_engine != "VASS[DET:0;REC:0] ITM[DET:0;REC:0] MICRO[DET:0;REC:0]":
+        compact_parts.append(f"TDE={transition_by_engine}")
+    if exit_counts_str != "NONE":
+        compact_parts.append(f"ExitC={exit_counts_str}")
+    if exit_pnl_str != "NONE":
+        compact_parts.append(f"ExitP={exit_pnl_str}")
+    exit_by_engine = _fmt_engine_exit_diag()
+    if exit_by_engine != "VASS[C=NONE|P=NONE] MICRO[C=NONE|P=NONE] ITM[C=NONE|P=NONE]":
+        compact_parts.append(f"ExitE={exit_by_engine}")
+    compact_parts.append(f"Kill={int(kill_active)}")
+    compact_parts.append(f"Gov={governor_scale:.0%}")
+    if itm_drawdown_detail != "NA":
+        compact_parts.append(f"ITMDD={itm_drawdown_detail}")
+    if itm_dd_blocked:
+        compact_parts.append("ITMDB=1")
+    if itm_diag_counts != "NONE":
+        compact_parts.append(f"ITMC={itm_diag_counts}")
+    if itm_diag_blocks != "NONE":
+        compact_parts.append(f"ITMB={itm_diag_blocks}")
+    if itm_global_pause:
+        compact_parts.append(f"ITMP={itm_global_pause}")
+    if itm_call_pause:
+        compact_parts.append(f"ITMCP={itm_call_pause}")
+    if itm_put_pause:
+        compact_parts.append(f"ITMPP={itm_put_pause}")
+    if suppression_min > 0:
+        compact_parts.append(f"KSM={suppression_min}")
+    if ks_skip_active:
+        compact_parts.append("KSSA=1")
+    if ks_skip_until:
+        compact_parts.append(f"KSU={ks_skip_until}")
+    algo.Log("OPTIONS_DIAG_SUMMARY: " + " | ".join(compact_parts))
