@@ -150,3 +150,24 @@ class MainObservabilityMixin:
         self._flush_signal_lifecycle_artifact()
         self._flush_router_rejection_artifact()
         self._flush_order_lifecycle_artifact()
+
+    def _ensure_daily_proxy_windows_snapshot(self) -> None:
+        """Backfill daily proxy windows from latest closes when intraday feed missed close bar."""
+        day_key = self.Time.date()
+        symbols = (
+            (self.spy, self.spy_closes, "SPY"),
+            (self.rsp, self.rsp_closes, "RSP"),
+            (self.hyg, self.hyg_closes, "HYG"),
+            (self.ief, self.ief_closes, "IEF"),
+        )
+        for symbol, window, key in symbols:
+            if self._daily_proxy_window_last_update.get(key) == day_key:
+                continue
+            try:
+                close_px = float(self.Securities[symbol].Close)
+            except Exception:
+                continue
+            if close_px <= 0:
+                continue
+            window.Add(close_px)
+            self._daily_proxy_window_last_update[key] = day_key

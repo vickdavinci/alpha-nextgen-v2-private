@@ -144,6 +144,9 @@ class AlphaNextGen(QCAlgorithm):
     _on_mr_force_close = MainSignalGenerationMixin._on_mr_force_close
     _save_observability_csv_artifact = MainObservabilityMixin._save_observability_csv_artifact
     _on_observability_checkpoint = MainObservabilityMixin._on_observability_checkpoint
+    _ensure_daily_proxy_windows_snapshot = (
+        MainObservabilityMixin._ensure_daily_proxy_windows_snapshot
+    )
     _on_pre_market_setup = MainPremarketMixin._on_pre_market_setup
     _on_sod_baseline = MainPremarketMixin._on_sod_baseline
     _schedule_dynamic_eod_events = MainPremarketMixin._schedule_dynamic_eod_events
@@ -773,27 +776,6 @@ class AlphaNextGen(QCAlgorithm):
         except Exception:
             return None
         return None
-
-    def _ensure_daily_proxy_windows_snapshot(self) -> None:
-        """Backfill daily proxy windows from latest closes when intraday feed missed close bar."""
-        day_key = self.Time.date()
-        symbols = (
-            (self.spy, self.spy_closes, "SPY"),
-            (self.rsp, self.rsp_closes, "RSP"),
-            (self.hyg, self.hyg_closes, "HYG"),
-            (self.ief, self.ief_closes, "IEF"),
-        )
-        for symbol, window, key in symbols:
-            if self._daily_proxy_window_last_update.get(key) == day_key:
-                continue
-            try:
-                close_px = float(self.Securities[symbol].Close)
-            except Exception:
-                continue
-            if close_px <= 0:
-                continue
-            window.Add(close_px)
-            self._daily_proxy_window_last_update[key] = day_key
 
     # =========================================================================
     # SCHEDULED EVENT HANDLERS
