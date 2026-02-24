@@ -1762,3 +1762,50 @@ class MainOptionsMixin:
                     self.portfolio_router.receive_signal(signal)
                 self._diag_spread_exit_signal_count += len(exit_signals)
                 self._diag_spread_exit_submit_count += len(exit_signals)
+
+    def _on_vix_spike_check(self) -> None:
+        """
+        V2.1.1: Layer 1 VIX spike detection (every 5 minutes).
+
+        V2.3.4: Uses UVXY as intraday proxy since CBOE VIX only supports Daily.
+        Checks for sudden VIX spikes (>3% in 5 minutes via UVXY).
+        Sets spike alert cooldown if triggered.
+        """
+        # Skip during warmup
+        if self.IsWarmingUp:
+            return
+
+        # V2.3.4: Use UVXY for intraday spike detection
+        uvxy_current = self.Securities[self.uvxy].Price
+        if self._uvxy_at_open > 0:
+            uvxy_change_pct = (uvxy_current - self._uvxy_at_open) / self._uvxy_at_open * 100
+            # Derive VIX proxy from UVXY change
+            vix_intraday_proxy = self._vix_at_open * (1 + uvxy_change_pct / 150)
+        else:
+            vix_intraday_proxy = self._current_vix
+
+        # Check for spike using intraday proxy
+        spike_alert = self.options_engine.check_micro_spike_alert(
+            vix_current=vix_intraday_proxy,
+            vix_5min_ago=self._vix_5min_ago,
+            current_time=str(self.Time),
+        )
+
+        if spike_alert:
+            # Throttle VIX spike logs: 1 per LOG_THROTTLE_MINUTES OR if move > threshold
+            vix_move = abs(vix_intraday_proxy - self._vix_5min_ago)
+            should_log = (
+                not hasattr(self, "_last_vix_spike_log")
+                or self._last_vix_spike_log is None
+                or (self.Time - self._last_vix_spike_log).total_seconds() / 60
+                > config.LOG_THROTTLE_MINUTES
+                or vix_move >= config.LOG_VIX_SPIKE_MIN_MOVE
+            )
+            if should_log:
+                self.Log(
+                    f"VIX_SPIKE: {self._vix_5min_ago:.1f} -> {vix_intraday_proxy:.1f} (via UVXY)"
+                )
+                self._last_vix_spike_log = self.Time
+
+        # Update 5-min ago value for next check (using proxy)
+        self._vix_5min_ago = vix_intraday_proxy
