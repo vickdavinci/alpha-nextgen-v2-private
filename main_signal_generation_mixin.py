@@ -869,6 +869,28 @@ class MainSignalGenerationMixin:
             if signal:
                 self.portfolio_router.receive_signal(signal)
 
+    def _on_time_guard_start(self) -> None:
+        """
+        Time guard start at 13:55 ET.
+
+        Blocks all entries during Fed announcement window (13:55 - 14:10).
+        """
+        # Skip during warmup - no logging needed
+        if self.IsWarmingUp:
+            return
+        # Time guard tracking is handled by scheduler, no logging needed
+
+    def _on_time_guard_end(self) -> None:
+        """
+        Time guard end at 14:10 ET.
+
+        Resumes normal trading after Fed window.
+        """
+        # Skip during warmup - no logging needed
+        if self.IsWarmingUp:
+            return
+        # Time guard tracking is handled by scheduler, no logging needed
+
     def _on_mr_force_close(self) -> None:
         """
         MR force close at 15:45 ET.

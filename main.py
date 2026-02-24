@@ -142,6 +142,8 @@ class AlphaNextGen(QCAlgorithm):
     _on_eod_processing = MainSignalGenerationMixin._on_eod_processing
     _handle_kill_switch = MainSignalGenerationMixin._handle_kill_switch
     _scan_mr_signals = MainSignalGenerationMixin._scan_mr_signals
+    _on_time_guard_start = MainSignalGenerationMixin._on_time_guard_start
+    _on_time_guard_end = MainSignalGenerationMixin._on_time_guard_end
     _on_mr_force_close = MainSignalGenerationMixin._on_mr_force_close
     _save_observability_csv_artifact = MainObservabilityMixin._save_observability_csv_artifact
     _on_observability_checkpoint = MainObservabilityMixin._on_observability_checkpoint
@@ -1846,28 +1848,6 @@ class AlphaNextGen(QCAlgorithm):
             else:
                 self.portfolio_router.receive_signal(signal)
                 self._process_immediate_signals()
-
-    def _on_time_guard_start(self) -> None:
-        """
-        Time guard start at 13:55 ET.
-
-        Blocks all entries during Fed announcement window (13:55 - 14:10).
-        """
-        # Skip during warmup - no logging needed
-        if self.IsWarmingUp:
-            return
-        # Time guard tracking is handled by scheduler, no logging needed
-
-    def _on_time_guard_end(self) -> None:
-        """
-        Time guard end at 14:10 ET.
-
-        Resumes normal trading after Fed window.
-        """
-        # Skip during warmup - no logging needed
-        if self.IsWarmingUp:
-            return
-        # Time guard tracking is handled by scheduler, no logging needed
 
     def OnEndOfAlgorithm(self) -> None:
         """Flush end-of-run observability artifacts."""
