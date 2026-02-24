@@ -104,6 +104,7 @@ class AlphaNextGen(QCAlgorithm):
     _on_friday_firewall = MainOptionsMixin._on_friday_firewall
     _get_vix_intraday_proxy = MainOptionsMixin._get_vix_intraday_proxy
     _get_vix_level = MainOptionsMixin._get_vix_level
+    _should_scan_intraday = MainOptionsMixin._should_scan_intraday
     _is_terminal_exit_retry_tag = MainOrdersMixin._is_terminal_exit_retry_tag
     _on_moo_fallback = MainOrdersMixin._on_moo_fallback
     _sync_intraday_oco = MainOrdersMixin._sync_intraday_oco
@@ -1800,27 +1801,6 @@ class AlphaNextGen(QCAlgorithm):
         ):
             return "MICRO"
         return "OPT"
-
-    def _should_scan_intraday(self) -> bool:
-        """
-        V2.4.1: Check if enough time passed since last intraday scan.
-
-        Implements 15-minute throttle to reduce intraday scanning from
-        95 scans/hour (every minute) to 4 scans/hour (every 15 minutes).
-
-        Returns:
-            True if throttle allows scanning, False otherwise.
-        """
-        if self._last_intraday_scan is None:
-            self._last_intraday_scan = self.Time
-            return True
-
-        elapsed_seconds = (self.Time - self._last_intraday_scan).total_seconds()
-        if elapsed_seconds >= 900:  # 15 minutes = 900 seconds
-            self._last_intraday_scan = self.Time
-            return True
-
-        return False
 
     def _is_market_close_blackout(self) -> bool:
         """

@@ -2015,3 +2015,24 @@ class MainOptionsMixin:
                 return fallback_level
 
         return self._current_vix  # Use daily CBOE VIX, NOT UVXY-derived proxy
+
+    def _should_scan_intraday(self) -> bool:
+        """
+        V2.4.1: Check if enough time passed since last intraday scan.
+
+        Implements 15-minute throttle to reduce intraday scanning from
+        95 scans/hour (every minute) to 4 scans/hour (every 15 minutes).
+
+        Returns:
+            True if throttle allows scanning, False otherwise.
+        """
+        if self._last_intraday_scan is None:
+            self._last_intraday_scan = self.Time
+            return True
+
+        elapsed_seconds = (self.Time - self._last_intraday_scan).total_seconds()
+        if elapsed_seconds >= 900:  # 15 minutes = 900 seconds
+            self._last_intraday_scan = self.Time
+            return True
+
+        return False
