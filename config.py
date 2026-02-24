@@ -1501,6 +1501,23 @@ SPREAD_PROFIT_TARGET_PCT = (
 SPREAD_STOP_LOSS_PCT = 0.35  # V10.5: wider base stop to reduce noise stop-outs
 SPREAD_HARD_STOP_LOSS_PCT = 0.40  # V10.9: tighter catastrophic cap to reduce tail losses
 SPREAD_HARD_STOP_WIDTH_PCT = 0.35  # Hard cap using spread width (debit spreads)
+# V12.2: Tiered VASS debit exits (frozen by entry VIX to avoid intra-trade tier flip).
+VASS_EXIT_TIERED_ENABLED = True
+VASS_EXIT_USE_ENTRY_VIX_TIER = True
+VASS_EXIT_VIX_LOW_MAX = 18.0
+VASS_EXIT_VIX_HIGH_MIN = 25.0
+VASS_TARGET_PCT_LOW_VIX = 0.35
+VASS_TARGET_PCT_MED_VIX = 0.40
+VASS_TARGET_PCT_HIGH_VIX = 0.50
+VASS_STOP_PCT_LOW_VIX = 0.25
+VASS_STOP_PCT_MED_VIX = 0.35
+VASS_STOP_PCT_HIGH_VIX = 0.40
+VASS_TRAIL_ACTIVATE_LOW_VIX = 0.18
+VASS_TRAIL_ACTIVATE_MED_VIX = 0.22
+VASS_TRAIL_ACTIVATE_HIGH_VIX = 0.28
+VASS_TRAIL_OFFSET_LOW_VIX = 0.12
+VASS_TRAIL_OFFSET_MED_VIX = 0.15
+VASS_TRAIL_OFFSET_HIGH_VIX = 0.20
 SPREAD_STOP_REGIME_MULTIPLIERS = {
     75: 1.10,  # Bull: slightly wider stop to reduce pullback churn
     50: 1.00,  # Neutral: base
@@ -1517,6 +1534,9 @@ VASS_MFE_LOCK_ENABLED = True
 VASS_MFE_T1_TRIGGER = 0.25  # 25% of max profit reached
 VASS_MFE_T2_TRIGGER = 0.45  # 45% of max profit reached
 VASS_MFE_T2_FLOOR_PCT = 0.15  # Lock +15% floor once T2 reached
+VASS_MFE_T2_FLOOR_LOW_VIX = 0.12
+VASS_MFE_T2_FLOOR_MED_VIX = 0.18
+VASS_MFE_T2_FLOOR_HIGH_VIX = 0.25
 VASS_TAIL_RISK_CAP_ENABLED = True  # Emergency per-trade account-risk kill switch
 VASS_TAIL_RISK_CAP_PCT_EQUITY = 0.015  # Cap spread loss at 1.5% of portfolio equity
 # Entry friction sanity: reject spreads where expected entry friction consumes too much

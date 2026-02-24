@@ -260,6 +260,7 @@ class SpreadPosition:
     entry_score: float
     num_spreads: int  # Number of spread contracts
     regime_at_entry: float  # Regime score at entry
+    entry_vix: Optional[float] = None  # V12.2: freeze exit tier using entry-time VIX
     is_closing: bool = False  # V2.12 Fix #2: Prevent duplicate exit signals
     highest_pnl_pct: float = 0.0  # V9.4: Track high-water mark for trailing stop
     highest_pnl_max_profit_pct: float = 0.0  # V10.15: MFE as % of max profit
@@ -292,6 +293,7 @@ class SpreadPosition:
             "entry_score": self.entry_score,
             "num_spreads": self.num_spreads,
             "regime_at_entry": self.regime_at_entry,
+            "entry_vix": self.entry_vix,
             "is_closing": self.is_closing,
             "highest_pnl_pct": self.highest_pnl_pct,
             "highest_pnl_max_profit_pct": self.highest_pnl_max_profit_pct,
@@ -312,6 +314,7 @@ class SpreadPosition:
             entry_score=data["entry_score"],
             num_spreads=data["num_spreads"],
             regime_at_entry=data["regime_at_entry"],
+            entry_vix=data.get("entry_vix"),
             is_closing=data.get("is_closing", False),  # V2.12: Default False for backwards compat
             highest_pnl_pct=data.get("highest_pnl_pct", 0.0),  # V9.4: Trailing stop HWM
             highest_pnl_max_profit_pct=data.get("highest_pnl_max_profit_pct", 0.0),
@@ -1842,6 +1845,7 @@ class OptionsEngine:
         self._pending_net_debit: Optional[float] = None
         self._pending_max_profit: Optional[float] = None
         self._pending_spread_width: Optional[float] = None
+        self._pending_spread_entry_vix: Optional[float] = None
         self._pending_spread_entry_since: Optional[datetime] = None
 
         # V2.3 FIX: Prevent order spam - track failed entry attempts
@@ -6245,6 +6249,7 @@ class OptionsEngine:
         self._pending_net_debit = net_debit
         self._pending_max_profit = max_profit
         self._pending_spread_width = width
+        self._pending_spread_entry_vix = float(vix_current) if vix_current is not None else None
         self._pending_spread_entry_since = (
             self.algorithm.Time if self.algorithm is not None else None
         )
@@ -6873,6 +6878,7 @@ class OptionsEngine:
         self._pending_net_debit = -credit_received  # Negative = credit received
         self._pending_max_profit = credit_received  # Max profit per spread = credit
         self._pending_spread_width = width
+        self._pending_spread_entry_vix = float(vix_current) if vix_current is not None else None
         self._pending_spread_entry_since = (
             self.algorithm.Time if self.algorithm is not None else None
         )
@@ -7577,6 +7583,88 @@ class OptionsEngine:
         except Exception:
             return
 
+    def _get_vass_exit_profile(
+        self, spread: SpreadPosition, vix_current: Optional[float]
+    ) -> Dict[str, Any]:
+        """
+        Resolve VASS debit exit profile using a frozen tier.
+
+        Tier is anchored to entry VIX when available to avoid intra-trade profile
+        flipping during volatility spikes/drops.
+        """
+        base_profile: Dict[str, Any] = {
+            "tier": "MED",
+            "ref_vix": float(vix_current) if vix_current is not None else None,
+            "target_pct": float(getattr(config, "SPREAD_PROFIT_TARGET_PCT", 0.40)),
+            "stop_pct": float(getattr(config, "SPREAD_STOP_LOSS_PCT", 0.35)),
+            "trail_activate_pct": float(getattr(config, "SPREAD_TRAIL_ACTIVATE_PCT", 0.22)),
+            "trail_offset_pct": float(getattr(config, "SPREAD_TRAIL_OFFSET_PCT", 0.15)),
+            "mfe_t2_floor_pct": float(getattr(config, "VASS_MFE_T2_FLOOR_PCT", 0.15)),
+        }
+        if not bool(getattr(config, "VASS_EXIT_TIERED_ENABLED", False)):
+            return base_profile
+
+        use_entry_tier = bool(getattr(config, "VASS_EXIT_USE_ENTRY_VIX_TIER", True))
+        entry_vix = getattr(spread, "entry_vix", None)
+        ref_vix = (
+            float(entry_vix)
+            if use_entry_tier and entry_vix is not None
+            else float(vix_current)
+            if vix_current is not None
+            else float(entry_vix)
+            if entry_vix is not None
+            else None
+        )
+        if ref_vix is None:
+            return base_profile
+
+        low_max = float(getattr(config, "VASS_EXIT_VIX_LOW_MAX", 18.0))
+        high_min = float(getattr(config, "VASS_EXIT_VIX_HIGH_MIN", 25.0))
+        profile = dict(base_profile)
+        profile["ref_vix"] = ref_vix
+
+        if ref_vix < low_max:
+            profile.update(
+                {
+                    "tier": "LOW",
+                    "target_pct": float(getattr(config, "VASS_TARGET_PCT_LOW_VIX", 0.35)),
+                    "stop_pct": float(getattr(config, "VASS_STOP_PCT_LOW_VIX", 0.25)),
+                    "trail_activate_pct": float(
+                        getattr(config, "VASS_TRAIL_ACTIVATE_LOW_VIX", 0.18)
+                    ),
+                    "trail_offset_pct": float(getattr(config, "VASS_TRAIL_OFFSET_LOW_VIX", 0.12)),
+                    "mfe_t2_floor_pct": float(getattr(config, "VASS_MFE_T2_FLOOR_LOW_VIX", 0.12)),
+                }
+            )
+            return profile
+
+        if ref_vix >= high_min:
+            profile.update(
+                {
+                    "tier": "HIGH",
+                    "target_pct": float(getattr(config, "VASS_TARGET_PCT_HIGH_VIX", 0.50)),
+                    "stop_pct": float(getattr(config, "VASS_STOP_PCT_HIGH_VIX", 0.40)),
+                    "trail_activate_pct": float(
+                        getattr(config, "VASS_TRAIL_ACTIVATE_HIGH_VIX", 0.28)
+                    ),
+                    "trail_offset_pct": float(getattr(config, "VASS_TRAIL_OFFSET_HIGH_VIX", 0.20)),
+                    "mfe_t2_floor_pct": float(getattr(config, "VASS_MFE_T2_FLOOR_HIGH_VIX", 0.25)),
+                }
+            )
+            return profile
+
+        profile.update(
+            {
+                "tier": "MED",
+                "target_pct": float(getattr(config, "VASS_TARGET_PCT_MED_VIX", 0.40)),
+                "stop_pct": float(getattr(config, "VASS_STOP_PCT_MED_VIX", 0.35)),
+                "trail_activate_pct": float(getattr(config, "VASS_TRAIL_ACTIVATE_MED_VIX", 0.22)),
+                "trail_offset_pct": float(getattr(config, "VASS_TRAIL_OFFSET_MED_VIX", 0.15)),
+                "mfe_t2_floor_pct": float(getattr(config, "VASS_MFE_T2_FLOOR_MED_VIX", 0.18)),
+            }
+        )
+        return profile
+
     # =========================================================================
     # V2.3 SPREAD EXIT SIGNALS
     # =========================================================================
@@ -7624,6 +7712,15 @@ class OptionsEngine:
         # V2.12 Fix #2: Don't fire duplicate exit signals while closing
         if spread.is_closing:
             return None
+
+        vass_exit_profile = self._get_vass_exit_profile(spread=spread, vix_current=vix_current)
+        vass_tier = str(vass_exit_profile.get("tier", "MED"))
+        vass_ref_vix = vass_exit_profile.get("ref_vix")
+        vass_profile_tag = (
+            f"Tier={vass_tier}"
+            if vass_ref_vix is None
+            else f"Tier={vass_tier} RefVIX={float(vass_ref_vix):.1f}"
+        )
 
         # V9.4 P0: Exit signal cooldown — if a previous exit signal was sent but the
         # close order failed (margin, liquidity, etc.), don't re-fire every minute.
@@ -7866,7 +7963,7 @@ class OptionsEngine:
                 prev_tier = int(getattr(spread, "mfe_lock_tier", 0) or 0)
                 t1 = float(getattr(config, "VASS_MFE_T1_TRIGGER", 0.25))
                 t2 = float(getattr(config, "VASS_MFE_T2_TRIGGER", 0.45))
-                floor_t2_pct = float(getattr(config, "VASS_MFE_T2_FLOOR_PCT", 0.15))
+                floor_t2_pct = float(vass_exit_profile.get("mfe_t2_floor_pct", 0.15))
                 commission_cost = spread.num_spreads * config.SPREAD_COMMISSION_PER_CONTRACT
                 commission_per_share = (
                     commission_cost / (spread.num_spreads * 100) if spread.num_spreads > 0 else 0.0
@@ -7892,7 +7989,7 @@ class OptionsEngine:
                         )
                     exit_reason = (
                         f"MFE_LOCK_T{spread.mfe_lock_tier} {pnl:.1%} (MFE={spread.highest_pnl_max_profit_pct:.1%}, "
-                        f"Floor=${floor_pnl:.2f})"
+                        f"Floor=${floor_pnl:.2f}, {vass_profile_tag})"
                     )
 
             if (
@@ -8001,7 +8098,7 @@ class OptionsEngine:
                 prev_tier = int(getattr(spread, "mfe_lock_tier", 0) or 0)
                 t1 = float(getattr(config, "VASS_MFE_T1_TRIGGER", 0.25))
                 t2 = float(getattr(config, "VASS_MFE_T2_TRIGGER", 0.45))
-                floor_t2_pct = float(getattr(config, "VASS_MFE_T2_FLOOR_PCT", 0.15))
+                floor_t2_pct = float(vass_exit_profile.get("mfe_t2_floor_pct", 0.15))
                 commission_cost = spread.num_spreads * config.SPREAD_COMMISSION_PER_CONTRACT
                 commission_per_share = (
                     commission_cost / (spread.num_spreads * 100) if spread.num_spreads > 0 else 0.0
@@ -8027,7 +8124,7 @@ class OptionsEngine:
                         )
                     exit_reason = (
                         f"MFE_LOCK_T{spread.mfe_lock_tier} {pnl_pct:.1%} "
-                        f"(MFE={spread.highest_pnl_max_profit_pct:.1%}, Floor=${floor_pnl:.2f})"
+                        f"(MFE={spread.highest_pnl_max_profit_pct:.1%}, Floor=${floor_pnl:.2f}, {vass_profile_tag})"
                     )
 
             if (
@@ -8089,7 +8186,9 @@ class OptionsEngine:
 
             # Exit 1: Profit target (base 50% of max profit)
             # V3.0: Regime-adaptive profit targets - greedy in bull, defensive in bear
-            base_profit_pct = config.SPREAD_PROFIT_TARGET_PCT
+            base_profit_pct = float(
+                vass_exit_profile.get("target_pct", config.SPREAD_PROFIT_TARGET_PCT)
+            )
             profit_multipliers = getattr(
                 config, "SPREAD_PROFIT_REGIME_MULTIPLIERS", {75: 1.0, 50: 1.0, 40: 1.0, 0: 1.0}
             )
@@ -8119,13 +8218,13 @@ class OptionsEngine:
                 exit_reason = (
                     f"PROFIT_TARGET +{pnl_pct:.1%} (Net ${net_pnl:.2f} >= ${raw_profit_target:.2f}) | "
                     f"Target {adaptive_profit_pct:.0%} (regime {regime_score:.0f}) | "
-                    f"Gross ${pnl:.2f} - Commission ${commission_cost:.2f}"
+                    f"Gross ${pnl:.2f} - Commission ${commission_cost:.2f} | {vass_profile_tag}"
                 )
 
             # Exit 1B: TRAILING STOP — lock in gains after reaching activation threshold
             # V9.4: Once spread reaches +X% unrealized, trail stop from high-water mark
-            trail_activate_pct = float(getattr(config, "SPREAD_TRAIL_ACTIVATE_PCT", 0.20))
-            trail_offset_pct = float(getattr(config, "SPREAD_TRAIL_OFFSET_PCT", 0.15))
+            trail_activate_pct = float(vass_exit_profile.get("trail_activate_pct", 0.20))
+            trail_offset_pct = float(vass_exit_profile.get("trail_offset_pct", 0.15))
             if exit_reason is None and pnl_pct > 0:
                 # Update high-water mark
                 if pnl_pct > spread.highest_pnl_pct:
@@ -8136,7 +8235,7 @@ class OptionsEngine:
                     if pnl_pct <= trail_stop_level:
                         exit_reason = (
                             f"TRAIL_STOP {pnl_pct:.1%} "
-                            f"(High={spread.highest_pnl_pct:.1%}, Trail={trail_stop_level:.1%})"
+                            f"(High={spread.highest_pnl_pct:.1%}, Trail={trail_stop_level:.1%}, {vass_profile_tag})"
                         )
 
             # Exit 2: STOP LOSS
@@ -8155,7 +8254,9 @@ class OptionsEngine:
                 if hard_stop_pct > 0 and pnl_pct <= -hard_stop_pct:
                     exit_reason = f"SPREAD_HARD_STOP_TRIGGERED_PCT {pnl_pct:.1%} (lost > {hard_stop_pct:.0%} hard cap)"
             if exit_reason is None and pnl_pct < 0:
-                base_stop_pct = config.SPREAD_STOP_LOSS_PCT
+                base_stop_pct = float(
+                    vass_exit_profile.get("stop_pct", config.SPREAD_STOP_LOSS_PCT)
+                )
                 stop_multipliers = getattr(
                     config, "SPREAD_STOP_REGIME_MULTIPLIERS", {75: 1.0, 50: 1.0, 40: 1.0, 0: 1.0}
                 )
@@ -8165,10 +8266,11 @@ class OptionsEngine:
                         stop_multiplier = stop_multipliers[threshold]
                         break
                 adaptive_stop_pct = base_stop_pct * stop_multiplier
+                hard_cap_pct = float(getattr(config, "SPREAD_HARD_STOP_LOSS_PCT", 0.0))
+                if hard_cap_pct > 0:
+                    adaptive_stop_pct = min(adaptive_stop_pct, hard_cap_pct)
                 if pnl_pct < -adaptive_stop_pct:
-                    exit_reason = (
-                        f"STOP_LOSS {pnl_pct:.1%} (lost > {adaptive_stop_pct:.0%} of entry)"
-                    )
+                    exit_reason = f"STOP_LOSS {pnl_pct:.1%} (lost > {adaptive_stop_pct:.0%} of entry, {vass_profile_tag})"
 
             # Exit 3: Time stop for debit spreads (hold window cap).
             if exit_reason is None and self.algorithm is not None:
@@ -11411,6 +11513,7 @@ class OptionsEngine:
             entry_score=entry_score,
             num_spreads=num_spreads,
             regime_at_entry=regime_score,
+            entry_vix=self._pending_spread_entry_vix,
         )
 
         self._spread_neutrality_warn_by_key.pop(self._build_spread_key(spread), None)
@@ -11488,6 +11591,7 @@ class OptionsEngine:
         self._pending_net_debit = None
         self._pending_max_profit = None
         self._pending_spread_width = None
+        self._pending_spread_entry_vix = None
         self._pending_spread_entry_since = None
         self._pending_num_contracts = None
         self._pending_entry_score = None
@@ -11538,6 +11642,7 @@ class OptionsEngine:
         self._pending_net_debit = None
         self._pending_max_profit = None
         self._pending_spread_width = None
+        self._pending_spread_entry_vix = None
         self._pending_spread_entry_since = None
         self._pending_num_contracts = None
         self._pending_entry_score = None
@@ -11630,6 +11735,7 @@ class OptionsEngine:
         self._pending_net_debit = None
         self._pending_max_profit = None
         self._pending_spread_width = None
+        self._pending_spread_entry_vix = None
         self._pending_spread_entry_since = None
         self._pending_num_contracts = None
         self._pending_entry_score = None
@@ -12561,6 +12667,7 @@ class OptionsEngine:
         self._pending_spread_long_leg = None
         self._pending_spread_short_leg = None
         self._pending_spread_width = None
+        self._pending_spread_entry_vix = None
         self._pending_spread_entry_since = None
         self._pending_spread_type = None
         self._pending_net_debit = None
