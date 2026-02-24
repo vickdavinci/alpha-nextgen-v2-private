@@ -8,6 +8,8 @@ import re
 from base64 import b64encode
 from typing import Any, Dict, List, Optional
 
+from AlgorithmImports import QCAlgorithm
+
 import config
 
 
@@ -29,6 +31,92 @@ class MainObservabilityMixin:
         self._flush_signal_lifecycle_artifact()
         self._flush_router_rejection_artifact()
         self._flush_order_lifecycle_artifact()
+
+    def _ensure_log_budget_state(self) -> None:
+        if not hasattr(self, "_log_budget_bytes_used"):
+            self._log_budget_bytes_used = 0
+        if not hasattr(self, "_log_budget_survival_mode"):
+            self._log_budget_survival_mode = False
+        if not hasattr(self, "_log_budget_extreme_mode"):
+            self._log_budget_extreme_mode = False
+        if not hasattr(self, "_log_budget_suppressed_total"):
+            self._log_budget_suppressed_total = 0
+        if not hasattr(self, "_log_budget_suppressed_by_priority"):
+            self._log_budget_suppressed_by_priority = {"P1": 0, "P2": 0, "P3": 0}
+
+    def _is_log_budget_enforced(self) -> bool:
+        if not bool(getattr(config, "LOG_BUDGET_GUARD_ENABLED", True)):
+            return False
+        is_live = bool(hasattr(self, "LiveMode") and self.LiveMode)
+        if is_live:
+            return bool(getattr(config, "LOG_BUDGET_GUARD_LIVE_ENABLED", False))
+        return bool(getattr(config, "LOG_BUDGET_GUARD_BACKTEST_ENABLED", True))
+
+    def _estimate_log_bytes(self, message: Any) -> int:
+        text = str(message or "")
+        try:
+            payload = len(text.encode("utf-8"))
+        except Exception:
+            payload = len(text)
+        overhead = max(0, int(getattr(config, "LOG_BUDGET_ESTIMATED_OVERHEAD_BYTES_PER_LINE", 50)))
+        return payload + overhead
+
+    def _emit_log_raw(self, message: Any) -> None:
+        text = str(message or "")
+        QCAlgorithm.Log(self, text)
+        self._log_budget_bytes_used = int(getattr(self, "_log_budget_bytes_used", 0)) + int(
+            self._estimate_log_bytes(text)
+        )
+
+    def _budget_log(self, message: Any, priority: int = 2) -> bool:
+        """Priority-based log gate.
+
+        Priority 1: always keep (fills/exits/errors/daily summaries)
+        Priority 2: normal diagnostics, suppressed only in extreme mode
+        Priority 3: high-frequency diagnostics, suppressed in survival mode
+        """
+        self._ensure_log_budget_state()
+        p = max(1, min(3, int(priority)))
+        enforce = self._is_log_budget_enforced()
+        used = int(getattr(self, "_log_budget_bytes_used", 0))
+        soft_limit = max(0, int(getattr(config, "LOG_BUDGET_SOFT_LIMIT_BYTES", 4_000_000)))
+        extreme_limit = max(
+            soft_limit,
+            int(getattr(config, "LOG_BUDGET_EXTREME_LIMIT_BYTES", 4_500_000)),
+        )
+
+        if enforce and used >= soft_limit and not bool(self._log_budget_survival_mode):
+            self._log_budget_survival_mode = True
+            self._emit_log_raw(
+                "LOG_BUDGET_SURVIVAL: Entered survival mode "
+                f"at {used / 1024 / 1024:.2f}MB | suppressing P3 logs"
+            )
+        if enforce and used >= extreme_limit and not bool(self._log_budget_extreme_mode):
+            self._log_budget_extreme_mode = True
+            self._emit_log_raw(
+                "LOG_BUDGET_EXTREME: Entered extreme survival mode "
+                f"at {used / 1024 / 1024:.2f}MB | suppressing P2/P3 logs"
+            )
+
+        should_suppress = False
+        if enforce and p >= 3 and used >= soft_limit:
+            should_suppress = True
+        if enforce and p >= 2 and used >= extreme_limit:
+            should_suppress = True
+        if should_suppress:
+            self._log_budget_suppressed_total = (
+                int(getattr(self, "_log_budget_suppressed_total", 0)) + 1
+            )
+            bucket = f"P{p}"
+            suppressed_by_priority = dict(
+                getattr(self, "_log_budget_suppressed_by_priority", {}) or {}
+            )
+            suppressed_by_priority[bucket] = int(suppressed_by_priority.get(bucket, 0)) + 1
+            self._log_budget_suppressed_by_priority = suppressed_by_priority
+            return False
+
+        self._emit_log_raw(message)
+        return True
 
     def _save_observability_csv_artifact(
         self,
