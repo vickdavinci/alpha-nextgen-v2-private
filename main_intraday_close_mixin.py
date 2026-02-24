@@ -501,3 +501,95 @@ class MainIntradayCloseMixin:
             f"Short opts={len(short_options)} | Long opts={len(long_options)} | "
             f"Equity={len(equity_positions)} | Total={total_closed}"
         )
+
+    def _close_options_atomic(
+        self,
+        symbols_to_close: list = None,
+        reason: str = "OPTIONS_CLOSE",
+        clear_tracking: bool = True,
+    ) -> int:
+        """
+        V2.33: ATOMIC options close - ALWAYS closes shorts first, then longs.
+
+        This is the ONLY method that should be used to close options positions.
+        NEVER call Liquidate() directly on option symbols!
+
+        Args:
+            symbols_to_close: Optional list of specific option symbols to close.
+                            If None, closes ALL options in portfolio.
+            reason: Tag for logging and order tracking.
+            clear_tracking: Whether to clear options engine tracking state.
+
+        Returns:
+            Number of options positions closed.
+        """
+        # Collect options to close (from specific list or entire portfolio)
+        short_options = []  # (symbol, qty) - shorts have negative qty
+        long_options = []  # (symbol, qty) - longs have positive qty
+
+        if symbols_to_close is not None:
+            # Close specific symbols
+            for symbol in symbols_to_close:
+                if symbol in self.Portfolio and self.Portfolio[symbol].Invested:
+                    holding = self.Portfolio[symbol]
+                    if holding.Symbol.SecurityType == SecurityType.Option:
+                        if holding.Quantity < 0:
+                            short_options.append((holding.Symbol, holding.Quantity))
+                        else:
+                            long_options.append((holding.Symbol, holding.Quantity))
+        else:
+            # Close all options in portfolio
+            for kvp in self.Portfolio:
+                holding = kvp.Value
+                if holding.Invested and holding.Symbol.SecurityType == SecurityType.Option:
+                    if holding.Quantity < 0:
+                        short_options.append((holding.Symbol, holding.Quantity))
+                    else:
+                        long_options.append((holding.Symbol, holding.Quantity))
+
+        # CRITICAL: Close ALL shorts FIRST (buy to close)
+        for symbol, qty in short_options:
+            try:
+                close_qty = abs(qty)
+                self._submit_option_close_market_order(
+                    symbol=symbol,
+                    quantity=close_qty,
+                    reason=reason,
+                )
+                self.Log(f"{reason}: Closed SHORT {str(symbol)[-21:]} x{close_qty}")
+            except Exception as e:
+                self.Log(f"{reason}: FAILED short close {str(symbol)[-21:]} | {e}")
+
+        # THEN close ALL longs (sell to close) - safe now, no naked shorts
+        for symbol, qty in long_options:
+            try:
+                self._submit_option_close_market_order(
+                    symbol=symbol,
+                    quantity=-qty,
+                    reason=reason,
+                )
+                self.Log(f"{reason}: Closed LONG {str(symbol)[-21:]} x{qty}")
+            except Exception as e:
+                self.Log(f"{reason}: FAILED long close {str(symbol)[-21:]} | {e}")
+
+        # Clear tracking state if requested
+        if clear_tracking:
+            if self.options_engine:
+                self.options_engine.clear_spread_position()
+                self.options_engine.cancel_pending_spread_entry()
+                self.options_engine.cancel_pending_intraday_entry()
+            if self.portfolio_router:
+                self.portfolio_router.clear_all_spread_margins()
+            if self._spread_fill_tracker is not None:
+                self._spread_fill_tracker = None
+            if self._pending_spread_orders:
+                self._pending_spread_orders.clear()
+                self._pending_spread_orders_reverse.clear()
+
+        total_closed = len(short_options) + len(long_options)
+        if total_closed > 0:
+            self.Log(
+                f"{reason}: Atomic close complete | "
+                f"Shorts={len(short_options)} Longs={len(long_options)}"
+            )
+        return total_closed
