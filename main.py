@@ -10242,20 +10242,39 @@ class AlphaNextGen(QCAlgorithm):
         Args:
             symbol: Symbol to force close.
         """
+        symbol_norm = self._normalize_symbol_str(symbol)
+        if not symbol_norm:
+            return
+        if not hasattr(self, "_force_market_close_inflight"):
+            self._force_market_close_inflight = set()
+        if symbol_norm in self._force_market_close_inflight:
+            self.Log(
+                f"EXIT_EMERGENCY_REENTRY_SKIP: {symbol_norm[-20:]} | "
+                "Reason=Already processing forced close for symbol"
+            )
+            return
+        self._force_market_close_inflight.add(symbol_norm)
         self.Log(f"EXIT_EMERGENCY: Force market close | {symbol[-20:]}")
         try:
             holding, broker_symbol = self._find_portfolio_holding(symbol)
             if holding and holding.Invested:
                 qty = holding.Quantity
 
-                # V2.33: If this is an option, use atomic close for safety
-                # This ensures shorts close before longs even in emergency
+                # Single-symbol forced close path: submit direct close and avoid
+                # re-entering atomic close loops from inside OnOrderEvent callbacks.
                 if holding.Symbol.SecurityType == SecurityType.Option:
-                    self.Log(f"EXIT_EMERGENCY: Using atomic close for option | {symbol[-20:]}")
-                    self._close_options_atomic(
-                        symbols_to_close=[holding.Symbol],
+                    engine_bucket = self._infer_option_engine_bucket_for_symbol(
+                        symbol=broker_symbol
+                    )
+                    self.Log(
+                        f"EXIT_EMERGENCY: Direct option close submit | {symbol[-20:]} | "
+                        f"Engine={engine_bucket}"
+                    )
+                    self._submit_option_close_market_order(
+                        symbol=broker_symbol,
+                        quantity=-qty,
                         reason="EMERG_OPTION_RETRY_EXHAUSTED",
-                        clear_tracking=False,  # Don't clear other tracking state
+                        engine_hint=engine_bucket,
                     )
                 else:
                     # Equity: Use Liquidate for absolute closure
@@ -10265,6 +10284,8 @@ class AlphaNextGen(QCAlgorithm):
                 self.Log(f"EXIT_EMERGENCY: No position to close | {symbol[-20:]}")
         except Exception as e:
             self.Log(f"EXIT_EMERGENCY_ERROR: Liquidate failed | {e}")
+        finally:
+            self._force_market_close_inflight.discard(symbol_norm)
 
     def _get_average_volume(self, volume_window: RollingWindow) -> float:
         """

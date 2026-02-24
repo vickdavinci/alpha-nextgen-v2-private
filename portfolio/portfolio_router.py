@@ -1703,16 +1703,19 @@ class PortfolioRouter:
                     exit_net_value = long_bid - short_ask
                     net_floor = float(getattr(config, "SPREAD_EXIT_NET_VALUE_FLOOR", 0.0))
                     net_tol = float(getattr(config, "SPREAD_EXIT_NET_VALUE_TOLERANCE", -0.05))
-                    if exit_net_value < (net_floor + net_tol):
+                    is_credit = bool(md.get("is_credit_spread", False)) or (
+                        "CREDIT" in str(md.get("spread_type", "")).upper()
+                    )
+                    # Debit spreads should normally exit for a non-negative net credit.
+                    # Credit spreads often close for a net debit (negative net value),
+                    # so this guard must not block them.
+                    if (not is_credit) and exit_net_value < (net_floor + net_tol):
                         return (
                             False,
                             "EXIT_NET_VALUE_NEGATIVE "
                             f"Net={exit_net_value:.4f} < Floor={net_floor + net_tol:.4f} | "
                             f"LongBid={long_bid:.4f} ShortAsk={short_ask:.4f}",
                         )
-                    is_credit = bool(md.get("is_credit_spread", False)) or (
-                        "CREDIT" in str(md.get("spread_type", "")).upper()
-                    )
                     if not is_credit:
                         try:
                             entry_debit = float(md.get("spread_entry_debit", 0.0) or 0.0)

@@ -7,6 +7,30 @@ from engines.satellite.options_engine import ExitOrderTracker
 class MainOrdersMixin:
     """Large order/fill lifecycle methods extracted from main.py (move-only)."""
 
+    def _is_terminal_exit_retry_tag(self, tag_text: str) -> bool:
+        """
+        Identify close-order tags that should never enter retry->emergency recursion.
+
+        These tags already represent forced-risk actions (assignment/emergency/orphan).
+        If they fail, we log and defer to reconciliation instead of recursively
+        resubmitting from inside OnOrderEvent.
+        """
+        tag_u = str(tag_text or "").upper()
+        if not tag_u:
+            return False
+        terminal_markers = (
+            "EMERG_OPTION_RETRY_EXHAUSTED",
+            "EMERG_",
+            "PARTIAL_ASSIGNMENT",
+            "ORPHAN_",
+            "RECON_ORPHAN_OPTION",
+            "KILL_SWITCH",
+            "KS_",
+            "MARGIN_CB",
+            "EXERCISE_",
+        )
+        return any(marker in tag_u for marker in terminal_markers)
+
     def _cancel_residual_option_orders(self, symbol: Symbol, reason: str = "") -> int:
         """Cancel residual same-symbol non-OCO open orders once position is flat."""
         try:
@@ -270,11 +294,32 @@ class MainOrdersMixin:
                     symbol, abs(fill_qty)
                 )
                 if partial_signals:
-                    self.portfolio_router.receive_signals(partial_signals)
-                    self.Log(
-                        f"PARTIAL_ASSIGNMENT_SUBMITTED: {symbol} | "
-                        f"Signals={len(partial_signals)}"
-                    )
+                    sanitized_signals = []
+                    for signal in partial_signals:
+                        try:
+                            signal_symbol = self._normalize_symbol_str(signal.symbol)
+                            live_qty = abs(int(self._get_option_holding_quantity(signal_symbol)))
+                        except Exception:
+                            live_qty = 0
+                        if live_qty <= 0:
+                            self.Log(
+                                f"PARTIAL_ASSIGNMENT_SKIP_NO_HOLDING: {signal.symbol} | "
+                                "Reason=No live orphan leg quantity"
+                            )
+                            continue
+                        signal.requested_quantity = live_qty
+                        sanitized_signals.append(signal)
+                    if sanitized_signals:
+                        self.portfolio_router.receive_signals(sanitized_signals)
+                        self.Log(
+                            f"PARTIAL_ASSIGNMENT_SUBMITTED: {symbol} | "
+                            f"Signals={len(sanitized_signals)}"
+                        )
+                    else:
+                        self.Log(
+                            f"PARTIAL_ASSIGNMENT_SKIP: {symbol} | "
+                            "Reason=No tradable orphan leg after live-qty check"
+                        )
 
                 self.Log(
                     f"EXERCISE_DETECTED: {symbol} | Qty={fill_qty} | "
@@ -389,6 +434,8 @@ class MainOrdersMixin:
                 self._recon_orphan_close_submitted.pop(failed_symbol_norm, None)
             if "Margin" in str(orderEvent.Message) or "buying power" in str(orderEvent.Message):
                 self._diag_margin_reject_count += 1
+            invalid_tag_upper = str(invalid_tag or "").upper()
+            invalid_terminal_retry = self._is_terminal_exit_retry_tag(invalid_tag_upper)
             self._forward_execution_event(
                 order_event=orderEvent,
                 status="Invalid",
@@ -594,7 +641,11 @@ class MainOrdersMixin:
                     self.Log(f"SPREAD: ERROR buying back orphaned short leg | {e}")
 
             # V2.6 Bug #14: Check if this is a failed exit order that needs retry
-            if failed_symbol not in self._pending_exit_orders and invalid_order is not None:
+            if (
+                failed_symbol not in self._pending_exit_orders
+                and invalid_order is not None
+                and not invalid_terminal_retry
+            ):
                 try:
                     holdings_qty = self.Portfolio[invalid_order.Symbol].Quantity
                     is_close_side = (invalid_order.Quantity < 0 < holdings_qty) or (
@@ -620,16 +671,22 @@ class MainOrdersMixin:
                     # Schedule retry after delay
                     self._schedule_exit_retry(failed_symbol)
                 else:
-                    # All retries exhausted - emergency close
-                    self.Log(
-                        f"EXIT_EMERGENCY: {failed_symbol[-20:]} all retries failed - "
-                        f"forcing market close"
-                    )
-                    self._force_market_close(failed_symbol)
                     failed_key = self._resolve_pending_exit_tracker_key(failed_symbol)
                     if failed_key is not None:
                         self._pending_exit_orders.pop(failed_key, None)
                         self._exit_retry_scheduled_at.pop(failed_key, None)
+                    # All retries exhausted - emergency close
+                    if invalid_terminal_retry:
+                        self.Log(
+                            f"EXIT_EMERGENCY_SKIP: {failed_symbol[-20:]} retries exhausted for "
+                            "terminal forced-close tag; deferring to reconciliation"
+                        )
+                    else:
+                        self.Log(
+                            f"EXIT_EMERGENCY: {failed_symbol[-20:]} all retries failed - "
+                            f"forcing market close"
+                        )
+                        self._force_market_close(failed_symbol)
 
             # V2.20: Event-driven state recovery — notify source engine
             # Runs AFTER existing handlers (margin CB, orphan legs, exit retry)
@@ -644,8 +701,12 @@ class MainOrdersMixin:
             canceled_tag = (
                 str(getattr(canceled_order, "Tag", "") or "") if canceled_order is not None else ""
             )
+            canceled_tag_upper = canceled_tag.upper()
+            canceled_terminal_retry = self._is_terminal_exit_retry_tag(canceled_tag_upper)
             if not canceled_tag:
                 canceled_tag = self._get_recent_symbol_fill_tag(canceled_symbol) or ""
+                canceled_tag_upper = canceled_tag.upper()
+                canceled_terminal_retry = self._is_terminal_exit_retry_tag(canceled_tag_upper)
             canceled_trace_id = self._extract_trace_id_from_tag(canceled_tag) or "NONE"
             canceled_type = (
                 str(getattr(canceled_order, "Type", "UNKNOWN"))
@@ -703,7 +764,7 @@ class MainOrdersMixin:
                     )
                 except Exception:
                     is_close_side = False
-                if is_close_side:
+                if is_close_side and not canceled_terminal_retry:
                     tracker = self._pending_exit_orders.get(canceled_symbol)
                     if tracker is None:
                         tracker = ExitOrderTracker(
@@ -720,15 +781,15 @@ class MainOrdersMixin:
                         )
                         self._schedule_exit_retry(canceled_symbol)
                     else:
+                        canceled_key = self._resolve_pending_exit_tracker_key(canceled_symbol)
+                        if canceled_key is not None:
+                            self._pending_exit_orders.pop(canceled_key, None)
+                            self._exit_retry_scheduled_at.pop(canceled_key, None)
                         self.Log(
                             f"EXIT_EMERGENCY: {canceled_symbol[-20:]} all retries failed - "
                             f"forcing market close"
                         )
                         self._force_market_close(canceled_symbol)
-                        canceled_key = self._resolve_pending_exit_tracker_key(canceled_symbol)
-                        if canceled_key is not None:
-                            self._pending_exit_orders.pop(canceled_key, None)
-                            self._exit_retry_scheduled_at.pop(canceled_key, None)
 
             # V9.1 FIX: Skip rejection handler for OCO cancels.
             # OCO cancels occur when one leg fills (e.g., profit target hit cancels
