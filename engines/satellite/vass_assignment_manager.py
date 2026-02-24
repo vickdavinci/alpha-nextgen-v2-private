@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import config
-from models.enums import SpreadStrategy, Urgency
+from engines.satellite.options_primitives import SpreadStrategy
+from models.enums import Urgency
 from models.target_weight import TargetWeight
 
 
