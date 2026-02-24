@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from AlgorithmImports import SecurityType
+from AlgorithmImports import SecurityType, Slice
 
 import config
 
@@ -39,6 +39,44 @@ class MainReconcileMixin:
             return
         self._friday_spread_reconcile_date = today
         self._reconcile_positions(mode="friday")
+
+    def _check_splits(self, data: Slice) -> bool:
+        """
+        Check for stock splits on proxy and traded symbols.
+
+        Split handling:
+            - Proxy symbol split (SPY, RSP, HYG, IEF): Freeze ALL processing
+            - Traded symbol split: Freeze only that symbol
+
+        Args:
+            data: Current data slice from OnData.
+
+        Returns:
+            True if proxy split detected (freeze all), False otherwise.
+        """
+        # Check proxy symbols - freeze EVERYTHING if any split
+        for proxy in self.proxy_symbols:
+            if data.Splits.ContainsKey(proxy):
+                # Only log split once per symbol per day
+                proxy_str = str(proxy)
+                if proxy_str not in self._splits_logged_today:
+                    self.Log(f"SPLIT: {proxy_str} (proxy) - freezing all")
+                    self._splits_logged_today.add(proxy_str)
+                return True
+
+        # Check traded symbols - freeze only that symbol
+        for symbol in self.traded_symbols:
+            if data.Splits.ContainsKey(symbol):
+                symbol_str = str(symbol)
+                self.symbols_to_skip.add(symbol_str)
+                # Register with risk engine for tracking
+                self.risk_engine.register_split(symbol_str)
+                # Only log split once per symbol per day
+                if symbol_str not in self._splits_logged_today:
+                    self.Log(f"SPLIT: {symbol_str} - freezing symbol")
+                    self._splits_logged_today.add(symbol_str)
+
+        return False
 
     def _reconcile_positions(self, mode: str = "sod") -> None:
         """
