@@ -57,6 +57,7 @@ from engines.satellite.options_expiration_exit import check_expiring_options_for
 from engines.satellite.options_intraday_entry import check_intraday_entry_signal_impl
 from engines.satellite.options_micro_signal import generate_micro_intraday_signal_impl
 from engines.satellite.options_pending_guard import (
+    cancel_pending_intraday_entry_impl,
     clear_stale_pending_intraday_entry_if_orphaned_impl,
     clear_stale_pending_spread_entry_if_orphaned_impl,
 )
@@ -4004,55 +4005,7 @@ class OptionsEngine:
         Returns:
             Cleared lane name when identifiable, else None.
         """
-        cleared_lane: Optional[str] = None
-        if symbol is not None:
-            key = self._find_pending_intraday_entry_key(symbol=symbol, lane=engine)
-            if key is not None:
-                payload = self._pending_intraday_entries.pop(key, None)
-                if isinstance(payload, dict):
-                    lane = str(payload.get("lane", "")).upper()
-                    cleared_lane = lane or None
-        elif engine is None:
-            if self._pending_intraday_entries:
-                lanes = {
-                    str(v.get("lane", "")).upper()
-                    for v in self._pending_intraday_entries.values()
-                    if isinstance(v, dict) and v.get("lane")
-                }
-                if len(lanes) == 1:
-                    cleared_lane = next(iter(lanes))
-            self._pending_intraday_entries = {}
-        else:
-            eng = str(engine).upper()
-            before = len(self._pending_intraday_entries)
-            self._pending_intraday_entries = {
-                k: v
-                for k, v in self._pending_intraday_entries.items()
-                if str(v.get("lane", "")).upper() != eng
-            }
-            if len(self._pending_intraday_entries) < before:
-                cleared_lane = eng
-
-        self._pending_intraday_entry = bool(self._pending_intraday_entries)
-        self._pending_intraday_entry_since = (
-            None if not self._pending_intraday_entries else self._pending_intraday_entry_since
-        )
-        self._pending_intraday_entry_engine = (
-            None if not self._pending_intraday_entries else self._pending_intraday_entry_engine
-        )
-        if not self._pending_intraday_entries:
-            self._pending_contract = None
-            self._pending_entry_score = None
-            self._pending_num_contracts = None
-            self._pending_stop_pct = None
-            self._pending_stop_price = None
-            self._pending_target_price = None
-            self._pending_entry_strategy = None
-        self.log(
-            "OPT_MICRO_RECOVERY: Pending intraday entry cancelled | Retry allowed",
-            trades_only=True,
-        )
-        return cleared_lane
+        return cancel_pending_intraday_entry_impl(self, engine=engine, symbol=symbol)
 
     def has_pending_intraday_entry(self, engine: Optional[str] = None) -> bool:
         """True when an intraday entry is currently pending."""
