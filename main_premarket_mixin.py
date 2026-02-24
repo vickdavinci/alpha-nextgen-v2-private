@@ -259,6 +259,48 @@ class MainPremarketMixin:
             # Fallback for older QC versions that may not have UnsettledCash
             return 0.0
 
+    def _check_settlement_cooldown(self) -> None:
+        """
+        V2.11: Smart settlement cooldown with threshold gate.
+
+        Called at SOD baseline (09:33) to set settlement cooldown if:
+        1. This is the first bar after a market gap (weekend/holiday)
+        2. UnsettledCash > 10% of portfolio (material amount)
+
+        V2.11 Change: Only halt if UnsettledCash is material (>10% of portfolio),
+        and halt until 10:30 AM specifically (not arbitrary 60 min from now).
+        This prevents unnecessary halts for small UnsettledCash amounts.
+        """
+        if not config.SETTLEMENT_AWARE_TRADING:
+            return
+
+        if self._is_first_bar_after_market_gap():
+            unsettled = self._get_unsettled_cash()
+            portfolio_value = self.Portfolio.TotalPortfolioValue
+            unsettled_pct = unsettled / portfolio_value if portfolio_value > 0 else 0
+
+            # V2.11: Only trigger if UnsettledCash > threshold (10% of portfolio)
+            if unsettled_pct < config.SETTLEMENT_UNSETTLED_THRESHOLD_PCT:
+                self.Log(
+                    f"SETTLEMENT: Gap detected | UnsettledCash=${unsettled:,.0f} "
+                    f"({unsettled_pct:.1%}) below {config.SETTLEMENT_UNSETTLED_THRESHOLD_PCT:.0%} threshold | "
+                    f"Trading allowed"
+                )
+                return
+
+            # V2.11: Halt until 10:30 AM (not 60 min from now)
+            self._settlement_cooldown_until = self.Time.replace(
+                hour=config.SETTLEMENT_HALT_UNTIL_HOUR,
+                minute=config.SETTLEMENT_HALT_UNTIL_MINUTE,
+                second=0,
+                microsecond=0,
+            )
+            self.Log(
+                f"SETTLEMENT_HALT: UnsettledCash=${unsettled:,.0f} ({unsettled_pct:.1%}) > "
+                f"{config.SETTLEMENT_UNSETTLED_THRESHOLD_PCT:.0%} threshold | "
+                f"Halting until {self._settlement_cooldown_until.strftime('%H:%M')}"
+            )
+
     def _schedule_dynamic_eod_events(self) -> None:
         """
         V3.0: Schedule EOD events dynamically based on actual market close time.
