@@ -316,3 +316,64 @@ def cancel_pending_intraday_entry_impl(
         trades_only=True,
     )
     return cleared_lane
+
+
+def has_pending_intraday_entry_impl(self, engine: Optional[str] = None) -> bool:
+    """True when an intraday entry is currently pending."""
+    if self._pending_intraday_entry or self._pending_intraday_entries:
+        self._clear_stale_pending_intraday_entry_if_orphaned()
+    if engine is None:
+        return bool(self._pending_intraday_entries) or self._pending_intraday_entry
+    eng = str(engine).upper()
+    for payload in self._pending_intraday_entries.values():
+        if str(payload.get("lane", "")).upper() == eng:
+            return True
+    return (
+        self._pending_intraday_entry and (self._pending_intraday_entry_engine or "").upper() == eng
+    )
+
+
+def get_pending_intraday_entry_lane_impl(self, symbol: Optional[str] = None) -> Optional[str]:
+    """Best-effort lane lookup for a pending intraday entry."""
+    if symbol is not None:
+        key = self._find_pending_intraday_entry_key(symbol=symbol)
+        if key is None:
+            return None
+        payload = self._pending_intraday_entries.get(key) or {}
+        lane = str(payload.get("lane", "")).upper()
+        if lane:
+            return lane
+        return None
+    if self._pending_intraday_entries:
+        try:
+            payload = next(iter(self._pending_intraday_entries.values()))
+            lane = str(payload.get("lane", "")).upper() if isinstance(payload, dict) else ""
+            if lane:
+                return lane
+        except Exception:
+            pass
+    if self._pending_intraday_entry_engine:
+        lane = str(self._pending_intraday_entry_engine).upper()
+        return lane or None
+    return None
+
+
+def get_pending_entry_contract_symbol_impl(self) -> str:
+    """Best-effort symbol for current pending single-leg entry contract."""
+    if self._pending_intraday_entries:
+        try:
+            payload = next(iter(self._pending_intraday_entries.values()))
+            if isinstance(payload, dict):
+                sym = self._symbol_str(payload.get("symbol", ""))
+                if sym:
+                    return sym
+            key = next(iter(self._pending_intraday_entries.keys()))
+            return self._pending_intraday_symbol_from_key(key)
+        except Exception:
+            return ""
+    if self._pending_contract is None:
+        return ""
+    try:
+        return self._symbol_str(self._pending_contract.symbol)
+    except Exception:
+        return ""
