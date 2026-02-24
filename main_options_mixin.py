@@ -455,6 +455,9 @@ class MainOptionsMixin:
         contract = self._find_option_contract(symbol, data)
         return str(contract.Expiry.date()) if contract is not None else None
 
+    def _get_contract_prices(self, contract) -> Tuple[float, float]:
+        return self.options_engine.get_contract_prices(contract)
+
     def _select_intraday_option_contract(
         self,
         chain,

@@ -119,6 +119,7 @@ class AlphaNextGen(QCAlgorithm):
     _get_option_current_price = MainOptionsMixin._get_option_current_price
     _get_option_current_dte = MainOptionsMixin._get_option_current_dte
     _get_option_expiry_date = MainOptionsMixin._get_option_expiry_date
+    _get_contract_prices = MainOptionsMixin._get_contract_prices
     _is_terminal_exit_retry_tag = MainOrdersMixin._is_terminal_exit_retry_tag
     _on_moo_fallback = MainOrdersMixin._on_moo_fallback
     _cleanup_stale_orders = MainOrdersMixin._cleanup_stale_orders
@@ -1659,9 +1660,6 @@ class AlphaNextGen(QCAlgorithm):
     # =========================================================================
     # SIGNAL PROCESSING HELPERS
     # =========================================================================
-
-    def _get_contract_prices(self, contract) -> Tuple[float, float]:
-        return self.options_engine.get_contract_prices(contract)
 
     def _generate_options_signals_gated(
         self, regime_state: RegimeState, capital_state: CapitalState
