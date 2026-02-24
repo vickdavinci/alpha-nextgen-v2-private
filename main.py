@@ -118,6 +118,7 @@ class AlphaNextGen(QCAlgorithm):
     _apply_transition_handoff_open_position_derisk = (
         MainRegimeMixin._apply_transition_handoff_open_position_derisk
     )
+    _is_primary_market_open = MainReconcileMixin._is_primary_market_open
     _reconcile_positions = MainReconcileMixin._reconcile_positions
     _check_expiration_hammer_v2 = MainIntradayCloseMixin._check_expiration_hammer_v2
     _close_options_atomic = MainIntradayCloseMixin._close_options_atomic
@@ -1914,15 +1915,6 @@ class AlphaNextGen(QCAlgorithm):
             if elapsed_min < 20:
                 return
         self._reconcile_positions(mode="intraday")
-
-    def _is_primary_market_open(self) -> bool:
-        """Return True when the primary equity market session is open."""
-        try:
-            exchange_hours = self.Securities[self.qqq].Exchange.Hours
-            return bool(exchange_hours.IsOpen(self.Time, False))
-        except Exception:
-            # Conservative fallback if exchange metadata is unavailable.
-            return self.Time.weekday() < 5
 
     def _on_warm_entry_check(self) -> None:
         """

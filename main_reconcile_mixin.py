@@ -6,6 +6,15 @@ import config
 
 
 class MainReconcileMixin:
+    def _is_primary_market_open(self) -> bool:
+        """Return True when the primary equity market session is open."""
+        try:
+            exchange_hours = self.Securities[self.qqq].Exchange.Hours
+            return bool(exchange_hours.IsOpen(self.Time, False))
+        except Exception:
+            # Conservative fallback if exchange metadata is unavailable.
+            return self.Time.weekday() < 5
+
     def _reconcile_positions(self, mode: str = "sod") -> None:
         """
         Reconcile internal position tracking with broker state.
