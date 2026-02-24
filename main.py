@@ -6476,6 +6476,7 @@ class AlphaNextGen(QCAlgorithm):
                     dte_max=vass_dte_max,
                     is_eod_scan=is_eod_scan,
                     direction=direction,
+                    candidate_contracts=pool,
                 )
                 if route_signal is not None:
                     return route_signal, route_rejection, None

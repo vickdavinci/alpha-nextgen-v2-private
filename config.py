@@ -1221,6 +1221,13 @@ SPREAD_HOLD_GUARD_SEVERE_STOP_MULTIPLIER = 1.10
 SPREAD_HOLD_GUARD_LOSS_BYPASS_STOP_FRACTION = (
     0.75  # Bypass hold guard once loss reaches 75% of adaptive stop threshold
 )
+SPREAD_EOD_GATE_MIN_HOLD_MINUTES = (
+    240  # Don't fire EOD hold-risk gate until spread has had at least 4h to work
+)
+VASS_EOD_GATE_BLOCK_SAME_DAY_REENTRY = True
+VASS_EOD_GATE_DIRECTION_COOLDOWN_MINUTES = (
+    240  # Post EOD-gate directional cooldown to avoid same-day re-entry churn
+)
 SPREAD_EXIT_RETRY_MINUTES = (
     15  # V9.4 P0: Cooldown between exit signal retries (prevents per-minute spam)
 )
@@ -1311,6 +1318,9 @@ BEAR_PUT_ENTRY_MIN_OTM_PCT_STRESS = 0.005
 BEAR_PUT_ASSIGNMENT_HARD_BLOCK_VIX = 28.0  # V10.10: only enforce assignment gate in high-stress IV
 BEAR_PUT_ASSIGNMENT_HARD_BLOCK_REGIME_MAX = (
     40.0  # V10.10: only enforce assignment gate in deep risk-off regime
+)
+BEAR_PUT_ASSIGNMENT_RESELECT_ENABLED = (
+    True  # On assignment-gate fail, retry with a farther OTM short PUT from current candidate pool
 )
 VASS_BEAR_FALLBACK_MAX_REGIME = 40.0  # V10.9: fallback only in clearly weak macro regimes
 VASS_BEAR_FALLBACK_MIN_VIX = 20.0  # V10.17: require elevated fear before bearish credit fallback

@@ -3104,6 +3104,118 @@ class OptionsEngine:
             return "BEARISH"
         return None
 
+    def _resolve_put_assignment_gate_profile(
+        self,
+        *,
+        overlay_state: str,
+        vix_current: float,
+        regime_score: float,
+    ) -> Tuple[bool, float, str]:
+        """Return (enforce_gate, min_otm_pct, profile) for short-PUT assignment guard."""
+        hard_block_vix = float(getattr(config, "BEAR_PUT_ASSIGNMENT_HARD_BLOCK_VIX", 28.0))
+        hard_block_regime_max = float(
+            getattr(config, "BEAR_PUT_ASSIGNMENT_HARD_BLOCK_REGIME_MAX", 40.0)
+        )
+        enforce_assignment_gate = (
+            overlay_state in {"STRESS", "EARLY_STRESS"}
+            or vix_current >= hard_block_vix
+            or regime_score <= hard_block_regime_max
+        )
+        min_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT", 0.03))
+        stress_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT_STRESS", min_otm_pct))
+        low_vix_threshold = float(getattr(config, "BEAR_PUT_ENTRY_LOW_VIX_THRESHOLD", 18.0))
+        relaxed_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT_RELAXED", 0.015))
+        relaxed_regime_min = float(getattr(config, "BEAR_PUT_ENTRY_RELAXED_REGIME_MIN", 60.0))
+        gate_profile = "BASE"
+        if overlay_state in {"STRESS", "EARLY_STRESS"}:
+            min_otm_pct = min(min_otm_pct, stress_otm_pct)
+            gate_profile = "STRESS"
+        if (
+            vix_current <= low_vix_threshold
+            and regime_score >= relaxed_regime_min
+            and gate_profile == "BASE"
+        ):
+            min_otm_pct = min(min_otm_pct, relaxed_otm_pct)
+            gate_profile = "LOW_VIX_RELAXED"
+        return enforce_assignment_gate, float(min_otm_pct), gate_profile
+
+    def _find_safer_bear_put_short_leg(
+        self,
+        *,
+        contracts: Optional[List[OptionContract]],
+        long_leg_contract: OptionContract,
+        current_price: float,
+        min_otm_pct: float,
+    ) -> Optional[OptionContract]:
+        """
+        Pick a farther-OTM short PUT for BEAR_PUT debit when assignment gate blocks the initial leg.
+        """
+        if not contracts or current_price <= 0:
+            return None
+        effective_width_min = self._get_effective_spread_width_min()
+        width_max = float(getattr(config, "SPREAD_WIDTH_MAX", 10.0))
+        oi_min_short = max(0, int(getattr(config, "OPTIONS_MIN_OPEN_INTEREST_PUT", 25)) // 2)
+        spread_warn_short = float(getattr(config, "OPTIONS_SPREAD_WARNING_PCT_PUT", 0.35))
+        target_width = float(getattr(config, "SPREAD_WIDTH_TARGET", 5.0))
+        long_symbol = str(long_leg_contract.symbol)
+        long_strike = float(long_leg_contract.strike)
+        long_dte = int(long_leg_contract.days_to_expiry)
+
+        candidates: List[Tuple[float, float, float, OptionContract]] = []
+        for contract in contracts:
+            if contract is None or contract.direction != OptionDirection.PUT:
+                continue
+            if str(contract.symbol) == long_symbol:
+                continue
+            if int(contract.days_to_expiry) != long_dte:
+                continue
+            strike = float(contract.strike)
+            # BEAR_PUT short leg must remain below long strike (OTM).
+            if strike >= long_strike:
+                continue
+            width = abs(long_strike - strike)
+            if width < effective_width_min or width > width_max:
+                continue
+            if int(contract.open_interest) < oi_min_short:
+                continue
+            if float(contract.spread_pct) > spread_warn_short:
+                continue
+            otm_pct = (current_price - strike) / current_price
+            if otm_pct < min_otm_pct:
+                continue
+            width_penalty = abs(width - target_width)
+            delta_pref = abs(abs(float(getattr(contract, "delta", 0.30) or 0.30)) - 0.28)
+            # Prefer closest width to target, then deeper OTM, then delta quality.
+            candidates.append((width_penalty, -otm_pct, delta_pref, contract))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda row: (row[0], row[1], row[2]))
+        return candidates[0][3]
+
+    def _set_directional_spread_cooldown(
+        self,
+        *,
+        cooldown_key: str,
+        minutes: int,
+        reason: str,
+    ) -> None:
+        """Apply targeted spread-entry cooldown on a key used by leg selectors."""
+        if minutes <= 0 or self.algorithm is None:
+            return
+        key = str(cooldown_key or "").upper()
+        if not key:
+            return
+        until_dt = self.algorithm.Time + timedelta(minutes=max(0, int(minutes)))
+        until_text = until_dt.strftime("%Y-%m-%d %H:%M:%S")
+        if not hasattr(self, "_spread_failure_cooldown_until_by_dir"):
+            self._spread_failure_cooldown_until_by_dir = {}
+        self._spread_failure_cooldown_until_by_dir[key] = until_text
+        self.log(
+            f"SPREAD_COOLDOWN_SET: {reason} | Key={key} | Minutes={int(minutes)} | Until={until_text}",
+            trades_only=True,
+        )
+
     def get_regime_overlay_state(
         self, vix_current: Optional[float], regime_score: Optional[float] = None
     ) -> str:
@@ -4420,6 +4532,7 @@ class OptionsEngine:
         # T-22: Use strategy-scoped cooldown keys so one credit side cannot block the other.
         cooldown_key = strategy.value if hasattr(strategy, "value") else str(strategy)
         legacy_credit_key = "CREDIT"
+        direction_alias_key = "CALL" if strategy == SpreadStrategy.BULL_PUT_CREDIT else "PUT"
 
         # Keep credit spread cooldown handling consistent with debit spread path.
         if current_time:
@@ -4428,11 +4541,14 @@ class OptionsEngine:
                     until = self._spread_failure_cooldown_until_by_dir.get(cooldown_key)
                     if until is None:
                         until = self._spread_failure_cooldown_until_by_dir.get(legacy_credit_key)
+                    if until is None:
+                        until = self._spread_failure_cooldown_until_by_dir.get(direction_alias_key)
                     if until and current_time < until:
                         return None
                     elif until:
                         self._spread_failure_cooldown_until_by_dir.pop(cooldown_key, None)
                         self._spread_failure_cooldown_until_by_dir.pop(legacy_credit_key, None)
+                        self._spread_failure_cooldown_until_by_dir.pop(direction_alias_key, None)
                 elif self._spread_failure_cooldown_until:
                     if current_time < self._spread_failure_cooldown_until:
                         return None
@@ -5409,6 +5525,7 @@ class OptionsEngine:
         is_eod_scan: bool = False,
         direction: Optional[OptionDirection] = None,
         ma50_value: float = 0.0,
+        candidate_contracts: Optional[List[OptionContract]] = None,
     ) -> Optional[TargetWeight]:
         """
         V2.3: Check for debit spread entry signal.
@@ -5439,6 +5556,8 @@ class OptionsEngine:
             direction: V6.0: Direction from conviction resolution (CALL or PUT).
             ma50_value: Optional 50-day moving average used for bullish debit
                 trend blocking during bear transitions.
+            candidate_contracts: Optional same-cycle candidate pool for leg-reselection
+                recovery when assignment gate rejects initial short leg.
 
         Returns:
             TargetWeight for spread entry (with short leg in metadata), or None.
@@ -5759,41 +5878,53 @@ class OptionsEngine:
             and short_leg_contract is not None
             and current_price > 0
         ):
-            hard_block_vix = float(getattr(config, "BEAR_PUT_ASSIGNMENT_HARD_BLOCK_VIX", 28.0))
-            hard_block_regime_max = float(
-                getattr(config, "BEAR_PUT_ASSIGNMENT_HARD_BLOCK_REGIME_MAX", 40.0)
-            )
-            enforce_assignment_gate = (
-                overlay_state in {"STRESS", "EARLY_STRESS"}
-                or vix_current >= hard_block_vix
-                or regime_score <= hard_block_regime_max
+            (
+                enforce_assignment_gate,
+                min_otm_pct,
+                gate_profile,
+            ) = self._resolve_put_assignment_gate_profile(
+                overlay_state=overlay_state,
+                vix_current=vix_current,
+                regime_score=regime_score,
             )
             if enforce_assignment_gate:
-                min_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT", 0.03))
-                stress_otm_pct = float(
-                    getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT_STRESS", min_otm_pct)
-                )
-                low_vix_threshold = float(getattr(config, "BEAR_PUT_ENTRY_LOW_VIX_THRESHOLD", 18.0))
-                relaxed_otm_pct = float(
-                    getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT_RELAXED", 0.015)
-                )
-                relaxed_regime_min = float(
-                    getattr(config, "BEAR_PUT_ENTRY_RELAXED_REGIME_MIN", 60.0)
-                )
-                gate_profile = "BASE"
-                if overlay_state in {"STRESS", "EARLY_STRESS"}:
-                    min_otm_pct = min(min_otm_pct, stress_otm_pct)
-                    gate_profile = "STRESS"
-                if (
-                    vix_current <= low_vix_threshold
-                    and regime_score >= relaxed_regime_min
-                    and gate_profile == "BASE"
-                ):
-                    min_otm_pct = min(min_otm_pct, relaxed_otm_pct)
-                    gate_profile = "LOW_VIX_RELAXED"
                 short_strike = short_leg_contract.strike
                 # For PUTs: OTM when strike < price, ITM when strike > price
                 # Calculate how far OTM the short strike is (negative = ITM)
+                otm_pct = (current_price - short_strike) / current_price
+                if otm_pct < min_otm_pct:
+                    replacement_short = None
+                    if bool(getattr(config, "BEAR_PUT_ASSIGNMENT_RESELECT_ENABLED", True)):
+                        replacement_short = self._find_safer_bear_put_short_leg(
+                            contracts=candidate_contracts,
+                            long_leg_contract=long_leg_contract,
+                            current_price=current_price,
+                            min_otm_pct=min_otm_pct,
+                        )
+                    if replacement_short is not None and str(replacement_short.symbol) != str(
+                        short_leg_contract.symbol
+                    ):
+                        old_short = short_leg_contract
+                        short_leg_contract = replacement_short
+                        new_otm_pct = (current_price - short_leg_contract.strike) / current_price
+                        self.log(
+                            f"SPREAD: BEAR_PUT assignment reselect | "
+                            f"Old={old_short.strike:.0f} ({otm_pct:.1%}) -> "
+                            f"New={short_leg_contract.strike:.0f} ({new_otm_pct:.1%}) | "
+                            f"Min={min_otm_pct:.1%} | Profile={gate_profile}",
+                            trades_only=True,
+                        )
+                    else:
+                        self.log(
+                            f"SPREAD: Entry blocked - BEAR_PUT assignment risk | "
+                            f"Short strike {short_strike:.0f} is {otm_pct:.1%} OTM "
+                            f"(min {min_otm_pct:.1%}) | "
+                            f"QQQ={current_price:.2f}"
+                        )
+                        return fail(f"BEAR_PUT_ASSIGNMENT_GATE_{gate_profile}")
+
+                # Re-validate OTM requirement after optional reselect.
+                short_strike = short_leg_contract.strike
                 otm_pct = (current_price - short_strike) / current_price
                 if otm_pct < min_otm_pct:
                     self.log(
@@ -7908,6 +8039,9 @@ class OptionsEngine:
                                 getattr(config, "SPREAD_EOD_HOLD_RISK_GATE_ENABLED", False)
                             )
                             eod_gate_pct = float(vass_exit_profile.get("eod_gate_pct", -0.25))
+                            eod_gate_min_hold_minutes = int(
+                                getattr(config, "SPREAD_EOD_GATE_MIN_HOLD_MINUTES", 0)
+                            )
                             if (
                                 eod_gate_enabled
                                 and pnl_pct <= eod_gate_pct
@@ -7918,12 +8052,57 @@ class OptionsEngine:
                                     self.algorithm.Time.hour == eod_hour
                                     and self.algorithm.Time.minute >= eod_min
                                 )
-                                if is_eod:
+                                if is_eod and live_minutes >= max(0, eod_gate_min_hold_minutes):
                                     self.log(
                                         f"SPREAD_EOD_HOLD_RISK_GATE: {pnl_pct:.1%} <= {eod_gate_pct:.0%} | "
                                         f"Key={self._build_spread_key(spread)} | Held={live_minutes/1440:.0f}d",
                                         trades_only=True,
                                     )
+                                    if bool(
+                                        getattr(
+                                            config,
+                                            "VASS_EOD_GATE_BLOCK_SAME_DAY_REENTRY",
+                                            True,
+                                        )
+                                    ):
+                                        spread_dir_label = self._spread_direction_label(
+                                            spread.spread_type
+                                        )
+                                        spread_dir = None
+                                        if spread_dir_label == "BULLISH":
+                                            spread_dir = OptionDirection.CALL
+                                        elif spread_dir_label == "BEARISH":
+                                            spread_dir = OptionDirection.PUT
+                                        if spread_dir is not None:
+                                            self._record_vass_direction_day_entry(
+                                                spread_dir,
+                                                self.algorithm.Time,
+                                            )
+                                            cooldown_minutes = int(
+                                                getattr(
+                                                    config,
+                                                    "VASS_EOD_GATE_DIRECTION_COOLDOWN_MINUTES",
+                                                    0,
+                                                )
+                                            )
+                                            if cooldown_minutes > 0:
+                                                self._set_directional_spread_cooldown(
+                                                    cooldown_key=spread_dir.value,
+                                                    minutes=cooldown_minutes,
+                                                    reason="EOD_HOLD_RISK_GATE",
+                                                )
+                                                if spread_dir == OptionDirection.CALL:
+                                                    self._set_directional_spread_cooldown(
+                                                        cooldown_key=SpreadStrategy.BULL_PUT_CREDIT.value,
+                                                        minutes=cooldown_minutes,
+                                                        reason="EOD_HOLD_RISK_GATE",
+                                                    )
+                                                else:
+                                                    self._set_directional_spread_cooldown(
+                                                        cooldown_key=SpreadStrategy.BEAR_CALL_CREDIT.value,
+                                                        minutes=cooldown_minutes,
+                                                        reason="EOD_HOLD_RISK_GATE",
+                                                    )
                                     spread.is_closing = True
                                     self._spread_exit_signal_cooldown[
                                         self._build_spread_key(spread)
