@@ -96,6 +96,7 @@ class AlphaNextGen(QCAlgorithm):
     _select_swing_option_contract = MainOptionsMixin._select_swing_option_contract
     _apply_spread_margin_guard = MainOptionsMixin._apply_spread_margin_guard
     _build_option_contract_from_fill = MainOptionsMixin._build_option_contract_from_fill
+    _canonical_options_reason_code = MainOptionsMixin._canonical_options_reason_code
     _scan_options_signals = MainOptionsMixin._scan_options_signals
     _check_spread_exit = MainOptionsMixin._check_spread_exit
     _is_terminal_exit_retry_tag = MainOrdersMixin._is_terminal_exit_retry_tag
@@ -3799,38 +3800,6 @@ class AlphaNextGen(QCAlgorithm):
     # =========================================================================
     # SIGNAL PROCESSING HELPERS
     # =========================================================================
-
-    def _canonical_options_reason_code(self, code: Optional[str]) -> str:
-        """
-        Normalize legacy/mixed reason codes to explicit E_*/R_* taxonomy.
-        """
-        raw = (code or "").strip()
-        if not raw:
-            return "E_NO_REASON_UNCLASSIFIED"
-        if raw.startswith(("E_", "R_")):
-            return raw
-
-        mapping = {
-            "TRADE_LIMIT_BLOCK": "R_TRADE_LIMIT",
-            "TIME_WINDOW_BLOCK": "E_TIME_WINDOW",
-            "GAP_FILTER_BLOCK": "E_GAP_FILTER",
-            "VOL_SHOCK_BLOCK": "E_VOL_SHOCK",
-            "VIX_MAX_BLOCK": "E_VIX_MAX",
-            "PUT_ENTRY_VIX_MAX_BLOCK": "E_PUT_VIX_MAX",
-            "WIN_RATE_GATE_BLOCK": "R_WIN_RATE_GATE",
-            "REGIME_CRISIS_BLOCK": "E_REGIME_CRISIS",
-            "DIRECTION_MISSING": "E_DIRECTION_MISSING",
-            "BULL_CALL_STRESS_BLOCK": "E_CALL_GATE_STRESS",
-            "SPREAD_COOLDOWN_ACTIVE": "R_SPREAD_COOLDOWN",
-            "CREDIT_ENTRY_VALIDATION_FAILED": "R_SPREAD_SELECTION_FAIL_UNCLASSIFIED",
-            "DEBIT_ENTRY_VALIDATION_FAILED": "R_SPREAD_SELECTION_FAIL_UNCLASSIFIED",
-            "UNKNOWN": "E_UNKNOWN_UNCLASSIFIED",
-        }
-        if raw in mapping:
-            return mapping[raw]
-        if raw.startswith("BEAR_PUT_ASSIGNMENT_GATE_"):
-            return f"R_{raw}"
-        return f"E_{raw}"
 
     def _get_contract_prices(self, contract) -> Tuple[float, float]:
         return self.options_engine.get_contract_prices(contract)
