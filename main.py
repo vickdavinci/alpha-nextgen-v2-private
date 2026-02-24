@@ -2632,25 +2632,6 @@ class AlphaNextGen(QCAlgorithm):
         self.Log(f"REGIME_TRANSITION_PATH_SUMMARY: {transition_summary}")
         log_daily_summary(self)
 
-    def _get_intraday_lane_cooldown_until(self, lane: str):
-        lane_key = str(lane or "").upper()
-        bucket = getattr(self, "_options_intraday_cooldown_until_by_lane", None)
-        if isinstance(bucket, dict):
-            return bucket.get(lane_key)
-        return self._options_intraday_cooldown_until
-
-    def _set_intraday_lane_cooldown(self, lane: str, until_dt) -> None:
-        lane_key = str(lane or "").upper()
-        if lane_key not in ("MICRO", "ITM"):
-            lane_key = "MICRO"
-        if not isinstance(getattr(self, "_options_intraday_cooldown_until_by_lane", None), dict):
-            self._options_intraday_cooldown_until_by_lane = {"MICRO": None, "ITM": None}
-        self._options_intraday_cooldown_until_by_lane[lane_key] = until_dt
-        active = [
-            dt for dt in self._options_intraday_cooldown_until_by_lane.values() if dt is not None
-        ]
-        self._options_intraday_cooldown_until = max(active) if active else None
-
     def _parse_and_store_rejection_margin(self, order_event) -> None:
         """
         V2.21: Parse broker Free Margin from rejection message for adaptive retry.
