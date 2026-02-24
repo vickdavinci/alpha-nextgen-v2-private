@@ -1868,10 +1868,8 @@ SETTLEMENT_HALT_UNTIL_MINUTE = 30
 # -----------------------------------------------------------------------------
 # V2.12 Fix #3: Hard cap on spread contracts to prevent position accumulation
 # Evidence: V2.11 backtest showed qty=-80 (5× intended) from exit signal bug
-SPREAD_MAX_CONTRACTS = 30  # Legacy cap (kept for compatibility)
-SPREAD_MAX_CONTRACTS_HARD_CAP = (
-    20  # V10.10 tuning: reduce VASS tail-loss blast radius while preserving throughput
-)
+SPREAD_MAX_CONTRACTS = 15  # V12.4: align VASS spread sizing cap with reduced tail-risk objective
+SPREAD_MAX_CONTRACTS_HARD_CAP = 15  # V12.4: enforce max 15 spread contracts per VASS entry
 
 # V5.3: Options Position Limits (Margin Error Prevention)
 # Max concurrent positions: 2 intraday + 5 swings = 7 total
