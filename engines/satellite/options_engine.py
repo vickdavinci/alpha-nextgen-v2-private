@@ -5887,6 +5887,38 @@ class OptionsEngine:
             )
             return fail_quality("SHORT_LEG_DIRECTION_MISMATCH")
 
+        if (
+            spread_type == "BULL_CALL"
+            and bool(getattr(config, "VASS_BULL_SHORT_CALL_DISTANCE_GUARD_ENABLED", True))
+            and current_price > 0
+        ):
+            short_otm_pct = (float(short_leg_contract.strike) - float(current_price)) / float(
+                current_price
+            )
+            base_min_otm_pct = max(
+                0.0, float(getattr(config, "VASS_BULL_SHORT_CALL_MIN_OTM_PCT", 0.008))
+            )
+            atr_floor_pct = 0.0
+            atr_pct = self._resolve_qqq_atr_pct(underlying_price=current_price)
+            if atr_pct is not None and atr_pct > 0:
+                atr_mult = max(
+                    0.0, float(getattr(config, "VASS_BULL_SHORT_CALL_MIN_ATR_MULT", 0.60))
+                )
+                atr_floor_pct = float(atr_pct) * atr_mult
+            min_short_otm_pct = max(base_min_otm_pct, atr_floor_pct)
+            if short_otm_pct < min_short_otm_pct:
+                self.log(
+                    f"SPREAD: Entry blocked - short CALL too close to spot | "
+                    f"ShortOTM={short_otm_pct:.2%} < Min={min_short_otm_pct:.2%} | "
+                    f"Short={float(short_leg_contract.strike):.2f} Spot={float(current_price):.2f} "
+                    f"(ATR%={atr_pct:.2%})"
+                    if atr_pct is not None
+                    else f"SPREAD: Entry blocked - short CALL too close to spot | "
+                    f"ShortOTM={short_otm_pct:.2%} < Min={min_short_otm_pct:.2%} | "
+                    f"Short={float(short_leg_contract.strike):.2f} Spot={float(current_price):.2f}"
+                )
+                return fail_quality("SHORT_CALL_DISTANCE_TOO_TIGHT")
+
         # Validate DTE range — use VASS-aware bounds if provided
         effective_dte_min = dte_min if dte_min is not None else config.SPREAD_DTE_MIN
         effective_dte_max = dte_max if dte_max is not None else config.SPREAD_DTE_MAX
