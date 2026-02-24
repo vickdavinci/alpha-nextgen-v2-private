@@ -1740,7 +1740,7 @@ class MainOptionsMixin:
             transition_ctx.get("transition_score", self._get_decision_regime_score_for_options())
             or self._get_decision_regime_score_for_options()
         )
-        context = self._resolve_vass_direction_context(
+        context = self.options_engine.resolve_vass_direction_context(
             regime_score=regime_score,
             size_multiplier=size_multiplier,
             bull_profile_log_prefix="VASS_BULL_PROFILE_BLOCK_INTRADAY",
@@ -1813,20 +1813,20 @@ class MainOptionsMixin:
             return
 
         # V2.23: VASS strategy selection — routes to credit or debit
-        strategy, vass_dte_min, vass_dte_max, is_credit = self._route_vass_strategy(
-            direction_str=direction_str,
+        strategy, vass_dte_min, vass_dte_max, is_credit = self.options_engine.resolve_vass_strategy(
+            direction=direction_str,
             overlay_state=overlay_state,
         )
-        dte_ranges = self._build_vass_dte_fallbacks(vass_dte_min, vass_dte_max)
+        dte_ranges = self.options_engine.build_vass_dte_fallbacks(vass_dte_min, vass_dte_max)
         dte_min_all = min(r[0] for r in dte_ranges)
         dte_max_all = max(r[1] for r in dte_ranges)
 
-        required_right = self._strategy_option_right(strategy)
+        required_right = self.options_engine.strategy_option_right(strategy)
 
         # V2.23: Build candidate contracts with widest VASS DTE range (fallback uses subranges)
-        candidate_contracts = self._build_spread_candidate_contracts(
-            chain,
-            direction,
+        candidate_contracts = self.options_engine.build_vass_candidate_contracts(
+            chain=chain,
+            direction=direction,
             dte_min=dte_min_all,
             dte_max=dte_max_all,
             option_right=required_right,
@@ -1874,7 +1874,7 @@ class MainOptionsMixin:
             self.options_engine.pop_last_entry_validation_failure()
             self.options_engine.pop_last_credit_failure_stats()
             self.options_engine.pop_last_spread_failure_stats()
-            signal, rejection_code = self._build_vass_spread_signal(
+            signal, rejection_code = self.options_engine.build_vass_spread_signal(
                 chain=chain,
                 candidate_contracts=candidate_contracts,
                 direction=direction,
@@ -1992,7 +1992,7 @@ class MainOptionsMixin:
                 f"{'CREDIT' if is_credit else 'DEBIT'}|"
                 f"{validation_reason or ''}"
             )
-            should_log = self._should_log_vass_rejection(throttle_key)
+            should_log = self.options_engine.should_log_vass_rejection(throttle_key)
             reason_text = "No contracts met spread criteria (DTE/delta/credit)"
             if validation_reason in {
                 "R_SLOT_SWING_MAX",
