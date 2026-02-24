@@ -1373,6 +1373,122 @@ class VASSEntryEngine:
                 contract_symbol="",
             )
 
+    def select_spread_legs_with_fallback(
+        self,
+        *,
+        host: Any,
+        contracts: list[Any],
+        direction: OptionDirection,
+        dte_ranges: list[Tuple[int, int]],
+        target_width: Optional[float] = None,
+        current_time: Optional[str] = None,
+        set_cooldown: bool = True,
+    ) -> Optional[tuple[Any, Any]]:
+        """Try multiple DTE ranges before applying debit spread failure cooldown."""
+        if not dte_ranges:
+            return host.select_spread_legs(
+                contracts=contracts,
+                direction=direction,
+                target_width=target_width,
+                current_time=current_time,
+            )
+
+        failure_stats = []
+        for dte_min, dte_max in dte_ranges:
+            stats: Dict[str, Any] = {}
+            spread_legs = host.select_spread_legs(
+                contracts=contracts,
+                direction=direction,
+                target_width=target_width,
+                current_time=current_time,
+                dte_min=dte_min,
+                dte_max=dte_max,
+                set_cooldown=False,
+                log_filters=False,
+                debug_stats=stats,
+            )
+            if spread_legs is not None:
+                if dte_min is not None and dte_max is not None:
+                    host.log(
+                        f"SPREAD: Fallback DTE used | Range={dte_min}-{dte_max} | "
+                        f"Direction={direction.value}"
+                    )
+                return spread_legs
+            if stats:
+                failure_stats.append(stats)
+
+        if set_cooldown:
+            host._set_spread_failure_cooldown(current_time, direction=direction)
+        if failure_stats:
+            summary = "; ".join(
+                [
+                    f"{s.get('dte_range')}|DTE={s.get('dte_pass')}|"
+                    f"Delta={s.get('delta_pass')}|OI={s.get('oi_pass')}|"
+                    f"Spread={s.get('spread_pass')}|Widen={s.get('elastic_widen')}"
+                    for s in failure_stats
+                ]
+            )
+            host._last_spread_failure_stats = summary
+        return None
+
+    def select_credit_spread_legs_with_fallback(
+        self,
+        *,
+        host: Any,
+        contracts: list[Any],
+        strategy: Any,
+        dte_ranges: list[Tuple[int, int]],
+        current_time: Optional[str] = None,
+        set_cooldown: bool = True,
+    ) -> Optional[tuple[Any, Any]]:
+        """Try multiple DTE ranges before applying credit spread failure cooldown."""
+        if not dte_ranges:
+            return host.select_credit_spread_legs(
+                contracts=contracts,
+                strategy=strategy,
+                dte_min=config.CREDIT_SPREAD_DTE_MIN,
+                dte_max=config.CREDIT_SPREAD_DTE_MAX,
+                current_time=current_time,
+            )
+
+        failure_stats = []
+        for dte_min, dte_max in dte_ranges:
+            stats: Dict[str, Any] = {}
+            spread_legs = host.select_credit_spread_legs(
+                contracts=contracts,
+                strategy=strategy,
+                dte_min=dte_min,
+                dte_max=dte_max,
+                current_time=current_time,
+                set_cooldown=False,
+                log_filters=False,
+                debug_stats=stats,
+            )
+            if spread_legs is not None:
+                host.log(
+                    f"VASS: Credit fallback DTE used | Range={dte_min}-{dte_max} | "
+                    f"Strategy={strategy.value}"
+                )
+                return spread_legs
+            if stats:
+                failure_stats.append(stats)
+
+        cooldown_key = strategy.value if hasattr(strategy, "value") else str(strategy)
+        if set_cooldown:
+            host._set_spread_failure_cooldown(current_time, direction=cooldown_key)
+        if failure_stats:
+            summary = "; ".join(
+                [
+                    f"{s.get('dte_range')}|DTE={s.get('dte_pass')}|"
+                    f"Delta={s.get('delta_pass')}|Credit={s.get('credit_pass')}|"
+                    f"OI={s.get('oi_pass')}|Spread={s.get('spread_pass')}|"
+                    f"Widen={s.get('elastic_widen')}|MinCred={s.get('min_credit')}"
+                    for s in failure_stats
+                ]
+            )
+            host._last_credit_failure_stats = summary
+        return None
+
     def build_spread_signal(
         self,
         *,

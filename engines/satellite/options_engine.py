@@ -4598,57 +4598,16 @@ class OptionsEngine:
         current_time: str = None,
         set_cooldown: bool = True,
     ) -> Optional[tuple]:
-        """
-        V6.12: Try multiple DTE ranges before applying failure cooldown.
-
-        This avoids "cooldown trap" when the primary DTE window has no valid contracts.
-        """
-        if not dte_ranges:
-            return self.select_spread_legs(
-                contracts=contracts,
-                direction=direction,
-                target_width=target_width,
-                current_time=current_time,
-            )
-
-        failure_stats = []
-        for dte_min, dte_max in dte_ranges:
-            stats: Dict[str, Any] = {}
-            spread_legs = self.select_spread_legs(
-                contracts=contracts,
-                direction=direction,
-                target_width=target_width,
-                current_time=current_time,
-                dte_min=dte_min,
-                dte_max=dte_max,
-                set_cooldown=False,
-                log_filters=False,
-                debug_stats=stats,
-            )
-            if spread_legs is not None:
-                if dte_min is not None and dte_max is not None:
-                    self.log(
-                        f"SPREAD: Fallback DTE used | Range={dte_min}-{dte_max} | "
-                        f"Direction={direction.value}"
-                    )
-                return spread_legs
-            if stats:
-                failure_stats.append(stats)
-
-        # All ranges failed -> apply cooldown once
-        if set_cooldown:
-            self._set_spread_failure_cooldown(current_time, direction=direction)
-        if failure_stats:
-            summary = "; ".join(
-                [
-                    f"{s.get('dte_range')}|DTE={s.get('dte_pass')}|"
-                    f"Delta={s.get('delta_pass')}|OI={s.get('oi_pass')}|"
-                    f"Spread={s.get('spread_pass')}|Widen={s.get('elastic_widen')}"
-                    for s in failure_stats
-                ]
-            )
-            self._last_spread_failure_stats = summary
-        return None
+        """Try multiple DTE ranges before applying spread failure cooldown."""
+        return self._vass_entry_engine.select_spread_legs_with_fallback(
+            host=self,
+            contracts=contracts,
+            direction=direction,
+            dte_ranges=dte_ranges,
+            target_width=target_width,
+            current_time=current_time,
+            set_cooldown=set_cooldown,
+        )
 
     # =========================================================================
     # V2.8: CREDIT SPREAD LEG SELECTION (VASS)
@@ -5099,55 +5058,15 @@ class OptionsEngine:
         current_time: Optional[str] = None,
         set_cooldown: bool = True,
     ) -> Optional[Tuple[OptionContract, OptionContract]]:
-        """
-        V6.12: Try multiple DTE ranges for credit spreads before cooldown.
-        """
-        if not dte_ranges:
-            return self.select_credit_spread_legs(
-                contracts=contracts,
-                strategy=strategy,
-                dte_min=config.CREDIT_SPREAD_DTE_MIN,
-                dte_max=config.CREDIT_SPREAD_DTE_MAX,
-                current_time=current_time,
-            )
-
-        failure_stats = []
-        for dte_min, dte_max in dte_ranges:
-            stats: Dict[str, Any] = {}
-            spread_legs = self.select_credit_spread_legs(
-                contracts=contracts,
-                strategy=strategy,
-                dte_min=dte_min,
-                dte_max=dte_max,
-                current_time=current_time,
-                set_cooldown=False,
-                log_filters=False,
-                debug_stats=stats,
-            )
-            if spread_legs is not None:
-                self.log(
-                    f"VASS: Credit fallback DTE used | Range={dte_min}-{dte_max} | "
-                    f"Strategy={strategy.value}"
-                )
-                return spread_legs
-            if stats:
-                failure_stats.append(stats)
-
-        cooldown_key = strategy.value if hasattr(strategy, "value") else str(strategy)
-        if set_cooldown:
-            self._set_spread_failure_cooldown(current_time, direction=cooldown_key)
-        if failure_stats:
-            summary = "; ".join(
-                [
-                    f"{s.get('dte_range')}|DTE={s.get('dte_pass')}|"
-                    f"Delta={s.get('delta_pass')}|Credit={s.get('credit_pass')}|"
-                    f"OI={s.get('oi_pass')}|Spread={s.get('spread_pass')}|"
-                    f"Widen={s.get('elastic_widen')}|MinCred={s.get('min_credit')}"
-                    for s in failure_stats
-                ]
-            )
-            self._last_credit_failure_stats = summary
-        return None
+        """Try multiple DTE ranges for credit spreads before cooldown."""
+        return self._vass_entry_engine.select_credit_spread_legs_with_fallback(
+            host=self,
+            contracts=contracts,
+            strategy=strategy,
+            dte_ranges=dte_ranges,
+            current_time=current_time,
+            set_cooldown=set_cooldown,
+        )
 
     def pop_last_spread_failure_stats(self) -> Optional[str]:
         stats = self._last_spread_failure_stats
