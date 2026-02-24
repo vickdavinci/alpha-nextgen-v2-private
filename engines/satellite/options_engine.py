@@ -8408,9 +8408,17 @@ class OptionsEngine:
                             f"{width_stop_pct:.0%} of width ${float(spread.width):.2f})"
                         )
             if exit_reason is None and pnl_pct < 0:
-                hard_stop_pct = float(getattr(config, "SPREAD_HARD_STOP_LOSS_PCT", 0.0))
+                hard_stop_pct = float(
+                    vass_exit_profile.get(
+                        "hard_stop_pct",
+                        getattr(config, "SPREAD_HARD_STOP_LOSS_PCT", 0.0),
+                    )
+                )
                 if hard_stop_pct > 0 and pnl_pct <= -hard_stop_pct:
-                    exit_reason = f"SPREAD_HARD_STOP_TRIGGERED_PCT {pnl_pct:.1%} (lost > {hard_stop_pct:.0%} hard cap)"
+                    exit_reason = (
+                        f"SPREAD_HARD_STOP_TRIGGERED_PCT {pnl_pct:.1%} "
+                        f"(lost > {hard_stop_pct:.0%} hard cap, {vass_profile_tag})"
+                    )
             if exit_reason is None and pnl_pct < 0:
                 base_stop_pct = float(
                     vass_exit_profile.get("stop_pct", config.SPREAD_STOP_LOSS_PCT)
@@ -8424,7 +8432,12 @@ class OptionsEngine:
                         stop_multiplier = stop_multipliers[threshold]
                         break
                 adaptive_stop_pct = base_stop_pct * stop_multiplier
-                hard_cap_pct = float(getattr(config, "SPREAD_HARD_STOP_LOSS_PCT", 0.0))
+                hard_cap_pct = float(
+                    vass_exit_profile.get(
+                        "hard_stop_pct",
+                        getattr(config, "SPREAD_HARD_STOP_LOSS_PCT", 0.0),
+                    )
+                )
                 if hard_cap_pct > 0:
                     adaptive_stop_pct = min(adaptive_stop_pct, hard_cap_pct)
                 if pnl_pct < -adaptive_stop_pct:
