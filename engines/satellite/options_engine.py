@@ -11375,11 +11375,10 @@ class OptionsEngine:
         # Direction comes from Micro Regime Engine's recommend_strategy_and_direction()
         # Conviction resolution (resolve_trade_signal) called in main.py before this function
 
-        # Map strategy to concise logging name (after deprecated-strategy canonicalization).
         strategy_names = {
             IntradayStrategy.MICRO_DEBIT_FADE: "MICRO_FADE",
             IntradayStrategy.MICRO_OTM_MOMENTUM: "MICRO_OTM",
-            IntradayStrategy.DEBIT_FADE: "MICRO_FADE",  # legacy alias
+            IntradayStrategy.DEBIT_FADE: "MICRO_FADE",
             IntradayStrategy.ITM_MOMENTUM: "ITM_MOM",
             IntradayStrategy.CREDIT_SPREAD: "CREDIT",
             IntradayStrategy.PROTECTIVE_PUTS: "PROTECTIVE_PUTS",
@@ -11437,19 +11436,29 @@ class OptionsEngine:
             )
             return fail("E_MICRO_ENGINE_DISABLED")
 
-        # Check if we have a valid contract
-        if best_contract is None:
-            self.log(f"INTRADAY: {strategy_name} signal but no contract available")
-            return fail("E_INTRADAY_NO_CONTRACT", strategy_name)
-
-        # V2.3 FIX: Validate contract direction matches signal direction
-        # The contract was selected before direction was determined, so we must verify
-        if best_contract.direction != direction:
-            self.log(
-                f"INTRADAY: Direction mismatch - signal wants {direction.value} "
-                f"but contract is {best_contract.direction.value}, skipping"
-            )
-            return fail("E_INTRADAY_DIRECTION_MISMATCH")
+        (
+            contract_ok,
+            contract_code,
+            contract_detail,
+            strategy_name,
+        ) = self._micro_entry_engine.validate_contract_selection(
+            entry_strategy=entry_strategy,
+            best_contract=best_contract,
+            direction=direction,
+        )
+        if not contract_ok:
+            if contract_code == "E_INTRADAY_NO_CONTRACT":
+                self.log(f"INTRADAY: {strategy_name} signal but no contract available")
+            elif (
+                contract_code == "E_INTRADAY_DIRECTION_MISMATCH"
+                and best_contract is not None
+                and direction is not None
+            ):
+                self.log(
+                    f"INTRADAY: Direction mismatch - signal wants {direction.value} "
+                    f"but contract is {best_contract.direction.value}, skipping"
+                )
+            return fail(contract_code or "E_INTRADAY_CONTRACT", contract_detail)
 
         strategy_for_friction = self._canonical_intraday_strategy_name(
             entry_strategy.value if entry_strategy is not None else ""

@@ -116,6 +116,32 @@ class MicroEntryEngine:
             )
         return True, None, None
 
+    def validate_contract_selection(
+        self,
+        *,
+        entry_strategy: IntradayStrategy,
+        best_contract: Any,
+        direction: Optional[OptionDirection],
+    ) -> Tuple[bool, Optional[str], Optional[str], str]:
+        """Validate selected contract presence and directional alignment."""
+        strategy_names = {
+            IntradayStrategy.MICRO_DEBIT_FADE: "MICRO_FADE",
+            IntradayStrategy.MICRO_OTM_MOMENTUM: "MICRO_OTM",
+            IntradayStrategy.DEBIT_FADE: "MICRO_FADE",
+            IntradayStrategy.ITM_MOMENTUM: "ITM_MOM",
+            IntradayStrategy.CREDIT_SPREAD: "CREDIT",
+            IntradayStrategy.PROTECTIVE_PUTS: "PROTECTIVE_PUTS",
+        }
+        strategy_name = strategy_names.get(entry_strategy, "UNKNOWN")
+
+        if best_contract is None:
+            return False, "E_INTRADAY_NO_CONTRACT", strategy_name, strategy_name
+
+        if direction is not None and getattr(best_contract, "direction", None) != direction:
+            return False, "E_INTRADAY_DIRECTION_MISMATCH", None, strategy_name
+
+        return True, None, None, strategy_name
+
     def apply_pre_contract_gates(
         self,
         *,
