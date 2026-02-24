@@ -810,6 +810,106 @@ class MainOptionsMixin:
         )
         return best
 
+    def _select_swing_option_contract(
+        self, chain, direction: OptionDirection = None
+    ) -> Optional[OptionContract]:
+        """
+        V2.3: Select QQQ option contract for SWING mode (5-45 DTE).
+
+        Target delta: 0.70 (slightly ITM for higher directional exposure)
+
+        Criteria:
+        - Target 0.70 delta (±0.15 tolerance)
+        - DTE 5-45 days (swing mode only)
+        - Sufficient open interest
+        - Tight bid-ask spread
+
+        Args:
+            chain: QuantConnect options chain.
+            direction: OptionDirection.CALL or OptionDirection.PUT (default: CALL)
+
+        Returns:
+            OptionContract or None if no suitable contract found.
+        """
+        if chain is None:
+            return None
+
+        # Default to CALL if direction not specified
+        if direction is None:
+            direction = OptionDirection.CALL
+
+        qqq_price = self.Securities[self.qqq].Price
+        target_delta = config.OPTIONS_SWING_DELTA_TARGET  # 0.70
+
+        # Determine which option right to filter for
+        target_right = OptionRight.Call if direction == OptionDirection.CALL else OptionRight.Put
+
+        # Filter for target direction, target delta, SWING DTE (5-45 days)
+        candidates = []
+        for contract in chain:
+            if contract.Right != target_right:
+                continue
+
+            # Check SWING DTE range (5-45 days per spec)
+            dte = (contract.Expiry - self.Time).days
+            if dte < config.OPTIONS_SWING_DTE_MIN or dte > config.OPTIONS_SWING_DTE_MAX:
+                continue
+
+            # V2.3: Get delta and check if within tolerance of target
+            # V2.12 Fix #7: Skip contracts with missing or zero Greeks (backtest data gaps)
+            if not hasattr(contract, "Greeks") or contract.Greeks.Delta == 0:
+                continue  # Skip contracts without valid Greeks data
+            contract_delta = abs(contract.Greeks.Delta)
+            delta_diff = abs(contract_delta - target_delta)
+            if delta_diff > config.OPTIONS_DELTA_TOLERANCE:
+                continue
+
+            # Check liquidity
+            if contract.OpenInterest < config.OPTIONS_MIN_OPEN_INTEREST:
+                continue
+
+            # Check spread - use safe price getter
+            bid, ask = self._get_contract_prices(contract)
+            if bid <= 0 or ask <= 0:
+                continue
+
+            mid_price = (bid + ask) / 2
+            spread_pct = (ask - bid) / mid_price if mid_price > 0 else 1.0
+
+            if spread_pct > config.OPTIONS_SPREAD_WARNING_PCT:
+                continue
+
+            # Create OptionContract object with specified direction (CALL or PUT)
+            opt_contract = OptionContract(
+                symbol=str(contract.Symbol),
+                underlying="QQQ",
+                direction=direction,  # V2.3: Use direction parameter
+                strike=contract.Strike,
+                expiry=str(contract.Expiry.date()),
+                delta=contract_delta,
+                gamma=contract.Greeks.Gamma if hasattr(contract, "Greeks") else 0.0,
+                vega=contract.Greeks.Vega if hasattr(contract, "Greeks") else 0.0,
+                theta=contract.Greeks.Theta if hasattr(contract, "Greeks") else 0.0,
+                bid=bid,
+                ask=ask,
+                mid_price=mid_price,
+                open_interest=contract.OpenInterest,
+                days_to_expiry=dte,
+            )
+
+            # V2.3: Score by proximity to target delta (0.70) + liquidity
+            delta_score = 1.0 - (delta_diff / config.OPTIONS_DELTA_TOLERANCE)
+            liquidity_score = 1.0 - spread_pct
+            score = (delta_score * 0.7) + (liquidity_score * 0.3)
+            candidates.append((score, opt_contract))
+
+        if not candidates:
+            return None
+
+        # Return best candidate (closest to target delta with good liquidity)
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+
     def _scan_options_signals(self, data: Slice) -> None:
         """
         V2.1.1: Scan for Options entry signals during intraday session.
