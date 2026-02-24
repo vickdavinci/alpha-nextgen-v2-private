@@ -61,8 +61,12 @@ from engines.satellite.options_pending_guard import (
     clear_stale_pending_spread_entry_if_orphaned_impl,
 )
 from engines.satellite.options_position_manager import (
+    clear_all_positions_impl,
     register_entry_impl,
     register_spread_entry_impl,
+    remove_intraday_position_impl,
+    remove_position_impl,
+    remove_spread_position_impl,
 )
 from engines.satellite.options_primitives import (
     EntryScore,
@@ -3834,22 +3838,7 @@ class OptionsEngine:
         Returns:
             Removed position, or None if no matching position existed.
         """
-        if self._position is None:
-            return None
-
-        if symbol:
-            try:
-                expected = self._symbol_str(self._position.contract.symbol)
-                actual = self._symbol_str(symbol)
-                if expected != actual:
-                    return None
-            except Exception:
-                return None
-
-        position = self._position
-        self._position = None
-        self.log(f"OPT: POSITION_REMOVED {position.contract.symbol}", trades_only=True)
-        return position
+        return remove_position_impl(self, symbol=symbol)
 
     def remove_intraday_position(
         self, symbol: Optional[str] = None, engine: Optional[str] = None
@@ -3860,62 +3849,7 @@ class OptionsEngine:
         Returns:
             Removed intraday position, or None if no position existed.
         """
-
-        lane = None
-        if symbol:
-            lane = self._find_intraday_lane_by_symbol(symbol)
-            if lane is None:
-                return None
-        elif engine is not None:
-            lane = str(engine).upper()
-        else:
-            lane = self.get_intraday_position_engine()
-
-        if not lane:
-            return None
-        lane_key = str(lane).upper()
-        lane_positions = self._intraday_positions.get(lane_key) or []
-        if not lane_positions:
-            return None
-
-        position = None
-        if symbol:
-            symbol_norm = self._symbol_str(symbol)
-            for idx, pos in enumerate(list(lane_positions)):
-                if (
-                    pos is not None
-                    and pos.contract is not None
-                    and self._symbol_str(pos.contract.symbol) == symbol_norm
-                ):
-                    position = pos
-                    del lane_positions[idx]
-                    break
-            if position is None:
-                return None
-        else:
-            position = lane_positions.pop(0)
-
-        self._intraday_positions[lane_key] = lane_positions
-        self._refresh_legacy_intraday_mirrors()
-        try:
-            removed_symbol_key = self._symbol_str(position.contract.symbol)
-        except Exception:
-            removed_symbol_key = None
-        self._pending_intraday_exit_lanes.discard(lane_key)
-        if removed_symbol_key:
-            self._pending_intraday_exit_symbols.discard(removed_symbol_key)
-        self._sync_pending_intraday_exit_flags()
-        try:
-            strategy = str(getattr(position, "entry_strategy", "") or "UNKNOWN")
-        except Exception:
-            strategy = "UNKNOWN"
-        self._last_intraday_close_strategy = strategy
-        self._last_intraday_close_time = self.algorithm.Time if self.algorithm is not None else None
-        self.log(
-            f"OPT: INTRADAY_POSITION_REMOVED {position.contract.symbol} | " f"Strategy={strategy}",
-            trades_only=True,
-        )
-        return position
+        return remove_intraday_position_impl(self, symbol=symbol, engine=engine)
 
     # =========================================================================
     # V2.3 SPREAD POSITION MANAGEMENT
@@ -4436,65 +4370,7 @@ class OptionsEngine:
         Returns:
             Removed spread position, or None if no spread existed.
         """
-        spreads = self.get_spread_positions()
-        if spreads:
-            spread = None
-            if symbol:
-                sym = str(symbol)
-                for s in spreads:
-                    if str(s.long_leg.symbol) == sym or str(s.short_leg.symbol) == sym:
-                        spread = s
-                        break
-            if spread is None:
-                if symbol:
-                    self.log(
-                        f"SPREAD: WARN remove no match for {symbol}, "
-                        f"skip removal across {len(spreads)} active spreads",
-                        trades_only=True,
-                    )
-                    return None
-                if len(spreads) == 1:
-                    spread = spreads[0]
-                else:
-                    self.log(
-                        "SPREAD: WARN remove requested without symbol while multiple spreads active | "
-                        f"Count={len(spreads)} | skip removal",
-                        trades_only=True,
-                    )
-                    return None
-
-            if self._spread_positions:
-                self._spread_positions = [s for s in self._spread_positions if s is not spread]
-            elif self._spread_position is spread:
-                self._spread_position = None
-            spread_key = self._build_spread_key(spread)
-            self._spread_neutrality_warn_by_key.pop(spread_key, None)
-            self._spread_exit_signal_cooldown.pop(spread_key, None)  # V9.4 P0: Clear cooldown
-            self._spread_hold_guard_logged.discard(spread_key)
-
-            self._spread_position = self._spread_positions[0] if self._spread_positions else None
-
-            # V6.5 FIX: Reset gamma pin flag when position is closed
-            if not self._spread_positions:
-                self._gamma_pin_exit_triggered = False
-
-            # V2.6 Bug #16: Record exit time for margin cooldown
-            # After closing a spread, broker takes T+1 to settle margin
-            # Use algorithm.Time for QC compliance (not system time)
-            if self.algorithm is not None and hasattr(self.algorithm, "Time"):
-                self._last_spread_exit_time = self.algorithm.Time.strftime("%Y-%m-%d %H:%M:%S")
-            else:
-                # Fallback for testing without algorithm context
-                self._last_spread_exit_time = "1970-01-01 00:00:00"
-
-            self.log(
-                f"SPREAD: POSITION_REMOVED | {spread.spread_type} | "
-                f"Long={spread.long_leg.symbol} Short={spread.short_leg.symbol} | "
-                f"Cooldown until {config.OPTIONS_POST_TRADE_COOLDOWN_MINUTES}min after exit",
-                trades_only=True,
-            )
-            return spread
-        return None
+        return remove_spread_position_impl(self, symbol=symbol)
 
     def has_spread_position(self) -> bool:
         """V2.3: Check if a spread position exists."""
@@ -4738,68 +4614,7 @@ class OptionsEngine:
         Solution: Use stateless tracking - clear all internal state when
         positions are forcibly closed by kill switch.
         """
-        cleared = []
-
-        if self._position is not None:
-            self._position = None
-            cleared.append("single-leg")
-
-        if self.has_spread_position():
-            self._spread_positions = []
-            self._spread_position = None
-            self._spread_neutrality_warn_by_key = {}
-            self._spread_hold_guard_logged.clear()
-            cleared.append("spread")
-
-        if self._intraday_position is not None or any(
-            len(v or []) > 0 for v in self._intraday_positions.values()
-        ):
-            self._intraday_position = None
-            self._intraday_position_engine = None
-            self._intraday_positions = {"MICRO": [], "ITM": []}
-            cleared.append("intraday")
-
-        # V2.16-BT: Also clear swing position (V2.1.1 dual-mode)
-        if self._swing_position is not None:
-            self._swing_position = None
-            cleared.append("swing")
-
-        # Clear ALL pending state — every _pending_* and _entry_* field from __init__
-        # V2.30: Complete list (V2.29 missed _pending_stop_price, _pending_target_price,
-        # _pending_intraday_exit). Stale pending state = zombie bugs.
-        self._pending_contract = None
-        self._pending_intraday_entry = False
-        self._pending_intraday_entry_since = None
-        self._pending_intraday_entry_engine = None
-        self._pending_intraday_entries = {}
-        self._pending_intraday_exit = False
-        self._pending_intraday_exit_engine = None
-        self._pending_intraday_exit_lanes = set()
-        self._pending_intraday_exit_symbols = set()
-        self._pending_spread_long_leg = None
-        self._pending_spread_short_leg = None
-        self._pending_spread_width = None
-        self._pending_spread_entry_vix = None
-        self._pending_spread_entry_since = None
-        self._pending_spread_type = None
-        self._pending_net_debit = None
-        self._pending_max_profit = None
-        self._pending_num_contracts = None
-        self._pending_entry_score = None
-        self._pending_stop_pct = None
-        self._pending_stop_price = None
-        self._pending_target_price = None
-        self._pending_entry_strategy = None
-        self._entry_attempted_today = False
-        self._intraday_force_exit_hold_skip_log_date = {}
-        self._last_intraday_close_time = None
-        self._last_intraday_close_strategy = None
-
-        if cleared:
-            self.log(
-                f"OPT: CLEAR_ALL_POSITIONS (kill switch) | Cleared: {', '.join(cleared)}",
-                trades_only=True,
-            )
+        clear_all_positions_impl(self)
 
     # =========================================================================
     # GREEKS MONITORING (V2.1 RSK-2)
