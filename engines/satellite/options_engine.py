@@ -63,11 +63,16 @@ from engines.satellite.options_partial_oco import (
 )
 from engines.satellite.options_pending_guard import (
     cancel_pending_intraday_entry_impl,
+    cancel_pending_intraday_exit_impl,
     clear_stale_pending_intraday_entry_if_orphaned_impl,
     clear_stale_pending_spread_entry_if_orphaned_impl,
     get_pending_entry_contract_symbol_impl,
     get_pending_intraday_entry_lane_impl,
     has_pending_intraday_entry_impl,
+    has_pending_intraday_exit_impl,
+    mark_pending_intraday_exit_impl,
+    normalize_symbol_key_impl,
+    sync_pending_intraday_exit_flags_impl,
 )
 from engines.satellite.options_position_manager import (
     clear_all_positions_impl,
@@ -4059,16 +4064,10 @@ class OptionsEngine:
         )
 
     def _normalize_symbol_key(self, symbol: Optional[str]) -> Optional[str]:
-        sym = self._symbol_str(symbol) if symbol else ""
-        return sym or None
+        return normalize_symbol_key_impl(self, symbol=symbol)
 
     def _sync_pending_intraday_exit_flags(self) -> None:
-        active = bool(self._pending_intraday_exit_lanes) or bool(
-            self._pending_intraday_exit_symbols
-        )
-        self._pending_intraday_exit = active
-        if not active:
-            self._pending_intraday_exit_engine = None
+        sync_pending_intraday_exit_flags_impl(self)
 
     def has_pending_swing_entry(self) -> bool:
         """True when a single-leg swing entry is pending (not intraday)."""
@@ -4078,21 +4077,7 @@ class OptionsEngine:
         self, engine: Optional[str] = None, symbol: Optional[str] = None
     ) -> bool:
         """True when an intraday close signal has already been emitted and is in-flight."""
-        symbol_key = self._normalize_symbol_key(symbol)
-        if symbol_key is not None:
-            return symbol_key in self._pending_intraday_exit_symbols
-
-        if engine is None:
-            return (
-                bool(self._pending_intraday_exit_symbols)
-                or bool(self._pending_intraday_exit_lanes)
-                or self._pending_intraday_exit
-            )
-        eng = str(engine).upper()
-        return eng in self._pending_intraday_exit_lanes or (
-            self._pending_intraday_exit
-            and (self._pending_intraday_exit_engine or "").upper() == eng
-        )
+        return has_pending_intraday_exit_impl(self, engine=engine, symbol=symbol)
 
     def mark_pending_intraday_exit(self, symbol: Optional[str] = None) -> bool:
         """
@@ -4105,31 +4090,7 @@ class OptionsEngine:
         Returns:
             True when lock was set, else False.
         """
-        symbol_key = self._normalize_symbol_key(symbol)
-        if symbol_key is not None:
-            if self._find_intraday_lane_by_symbol(symbol_key) is None:
-                return False
-            if symbol_key in self._pending_intraday_exit_symbols:
-                return False
-            self._pending_intraday_exit_symbols.add(symbol_key)
-            self._sync_pending_intraday_exit_flags()
-            return True
-
-        target_lane = None
-        if self._pending_intraday_exit_engine:
-            target_lane = str(self._pending_intraday_exit_engine).upper()
-        else:
-            target_lane = self.get_intraday_position_engine()
-            if target_lane is None:
-                return False
-
-        lane_key = str(target_lane).upper()
-        if lane_key in self._pending_intraday_exit_lanes:
-            return False
-        self._pending_intraday_exit_engine = target_lane
-        self._pending_intraday_exit_lanes.add(lane_key)
-        self._sync_pending_intraday_exit_flags()
-        return True
+        return mark_pending_intraday_exit_impl(self, symbol=symbol)
 
     def cancel_pending_intraday_exit(self, symbol: Optional[str] = None) -> bool:
         """
@@ -4141,30 +4102,7 @@ class OptionsEngine:
         Returns:
             True when lock was cleared, else False.
         """
-        symbol_key = self._normalize_symbol_key(symbol)
-        if symbol_key is not None:
-            if symbol_key not in self._pending_intraday_exit_symbols:
-                return False
-            self._pending_intraday_exit_symbols.discard(symbol_key)
-            self._sync_pending_intraday_exit_flags()
-            self.log(
-                f"OPT_MICRO_RECOVERY: Pending intraday exit lock cleared | Symbol={symbol_key}",
-                trades_only=True,
-            )
-            return True
-
-        if (
-            not self._pending_intraday_exit_lanes
-            and not self._pending_intraday_exit_symbols
-            and not self._pending_intraday_exit
-        ):
-            return False
-
-        self._pending_intraday_exit_lanes.clear()
-        self._pending_intraday_exit_symbols.clear()
-        self._sync_pending_intraday_exit_flags()
-        self.log("OPT_MICRO_RECOVERY: Pending intraday exit lock cleared", trades_only=True)
-        return True
+        return cancel_pending_intraday_exit_impl(self, symbol=symbol)
 
     def remove_spread_position(self, symbol: Optional[str] = None) -> Optional[SpreadPosition]:
         """

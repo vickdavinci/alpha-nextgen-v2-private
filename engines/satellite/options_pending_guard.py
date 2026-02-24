@@ -377,3 +377,96 @@ def get_pending_entry_contract_symbol_impl(self) -> str:
         return self._symbol_str(self._pending_contract.symbol)
     except Exception:
         return ""
+
+
+def normalize_symbol_key_impl(self, symbol: Optional[str]) -> Optional[str]:
+    sym = self._symbol_str(symbol) if symbol else ""
+    return sym or None
+
+
+def sync_pending_intraday_exit_flags_impl(self) -> None:
+    active = bool(self._pending_intraday_exit_lanes) or bool(self._pending_intraday_exit_symbols)
+    self._pending_intraday_exit = active
+    if not active:
+        self._pending_intraday_exit_engine = None
+
+
+def has_pending_intraday_exit_impl(
+    self, engine: Optional[str] = None, symbol: Optional[str] = None
+) -> bool:
+    """True when an intraday close signal has already been emitted and is in-flight."""
+    symbol_key = self._normalize_symbol_key(symbol)
+    if symbol_key is not None:
+        return symbol_key in self._pending_intraday_exit_symbols
+
+    if engine is None:
+        return (
+            bool(self._pending_intraday_exit_symbols)
+            or bool(self._pending_intraday_exit_lanes)
+            or self._pending_intraday_exit
+        )
+    eng = str(engine).upper()
+    return eng in self._pending_intraday_exit_lanes or (
+        self._pending_intraday_exit and (self._pending_intraday_exit_engine or "").upper() == eng
+    )
+
+
+def mark_pending_intraday_exit_impl(self, symbol: Optional[str] = None) -> bool:
+    """
+    Mark intraday close as pending to block duplicate software/force exits.
+    """
+    symbol_key = self._normalize_symbol_key(symbol)
+    if symbol_key is not None:
+        if self._find_intraday_lane_by_symbol(symbol_key) is None:
+            return False
+        if symbol_key in self._pending_intraday_exit_symbols:
+            return False
+        self._pending_intraday_exit_symbols.add(symbol_key)
+        self._sync_pending_intraday_exit_flags()
+        return True
+
+    target_lane = None
+    if self._pending_intraday_exit_engine:
+        target_lane = str(self._pending_intraday_exit_engine).upper()
+    else:
+        target_lane = self.get_intraday_position_engine()
+        if target_lane is None:
+            return False
+
+    lane_key = str(target_lane).upper()
+    if lane_key in self._pending_intraday_exit_lanes:
+        return False
+    self._pending_intraday_exit_engine = target_lane
+    self._pending_intraday_exit_lanes.add(lane_key)
+    self._sync_pending_intraday_exit_flags()
+    return True
+
+
+def cancel_pending_intraday_exit_impl(self, symbol: Optional[str] = None) -> bool:
+    """
+    Clear pending intraday exit lock after a rejected/canceled close order.
+    """
+    symbol_key = self._normalize_symbol_key(symbol)
+    if symbol_key is not None:
+        if symbol_key not in self._pending_intraday_exit_symbols:
+            return False
+        self._pending_intraday_exit_symbols.discard(symbol_key)
+        self._sync_pending_intraday_exit_flags()
+        self.log(
+            f"OPT_MICRO_RECOVERY: Pending intraday exit lock cleared | Symbol={symbol_key}",
+            trades_only=True,
+        )
+        return True
+
+    if (
+        not self._pending_intraday_exit_lanes
+        and not self._pending_intraday_exit_symbols
+        and not self._pending_intraday_exit
+    ):
+        return False
+
+    self._pending_intraday_exit_lanes.clear()
+    self._pending_intraday_exit_symbols.clear()
+    self._sync_pending_intraday_exit_flags()
+    self.log("OPT_MICRO_RECOVERY: Pending intraday exit lock cleared", trades_only=True)
+    return True
