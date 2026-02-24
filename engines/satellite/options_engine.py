@@ -93,6 +93,7 @@ from engines.satellite.options_primitives import (
     SpreadFillTracker,
     SpreadPosition,
     SpreadStrategy,
+    _normalize_intraday_strategy_value,
     get_expiration_firewall_day,
     is_expiration_firewall_day,
 )
