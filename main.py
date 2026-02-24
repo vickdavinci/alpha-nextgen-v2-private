@@ -114,6 +114,7 @@ class AlphaNextGen(QCAlgorithm):
     _record_vass_reject_reason = MainOptionsMixin._record_vass_reject_reason
     _inc_transition_path_counter = MainOptionsMixin._inc_transition_path_counter
     _normalize_spread_close_quantities = MainOptionsMixin._normalize_spread_close_quantities
+    _clear_micro_symbol_tracking = MainOptionsMixin._clear_micro_symbol_tracking
     _is_terminal_exit_retry_tag = MainOrdersMixin._is_terminal_exit_retry_tag
     _on_moo_fallback = MainOrdersMixin._on_moo_fallback
     _cleanup_stale_orders = MainOrdersMixin._cleanup_stale_orders
@@ -1650,15 +1651,6 @@ class AlphaNextGen(QCAlgorithm):
             self.Log(f"STATE_SNAPSHOT: Saved ({reason}) | {now_dt.strftime('%Y-%m-%d %H:%M:%S')}")
         except Exception as e:
             self.Log(f"STATE_WARN: Throttled save failed ({reason}) - {e}")
-
-    def _clear_micro_symbol_tracking(self, symbol: str) -> None:
-        """Clear MICRO tracking artifacts for a symbol after flat/orphan handling."""
-        sym_norm = self._normalize_symbol_str(symbol)
-        if not sym_norm:
-            return
-        self._micro_open_symbols.discard(sym_norm)
-        self._intraday_entry_snapshot.pop(sym_norm, None)
-        self._clear_intraday_close_guard(sym_norm)
 
     # =========================================================================
     # SIGNAL PROCESSING HELPERS

@@ -411,6 +411,15 @@ class MainOptionsMixin:
         except Exception:
             return
 
+    def _clear_micro_symbol_tracking(self, symbol: str) -> None:
+        """Clear MICRO tracking artifacts for a symbol after flat/orphan handling."""
+        sym_norm = self._normalize_symbol_str(symbol)
+        if not sym_norm:
+            return
+        self._micro_open_symbols.discard(sym_norm)
+        self._intraday_entry_snapshot.pop(sym_norm, None)
+        self._clear_intraday_close_guard(sym_norm)
+
     def _select_intraday_option_contract(
         self,
         chain,
