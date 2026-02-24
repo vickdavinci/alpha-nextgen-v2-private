@@ -685,3 +685,14 @@ class MainIntradayCloseMixin:
             self._process_immediate_signals()
         # Mark done after handling concrete submit attempts.
         self._intraday_force_exit_fallback_date = self.Time.date()
+
+    def _reconcile_intraday_close_guards(self) -> None:
+        """Clear stale close-in-progress guards after positions are flat."""
+        if not self._intraday_close_in_progress_symbols:
+            return
+        stale = []
+        for symbol in self._intraday_close_in_progress_symbols:
+            if abs(self._get_option_holding_quantity(symbol)) <= 0:
+                stale.append(symbol)
+        for symbol in stale:
+            self._clear_intraday_close_guard(symbol)

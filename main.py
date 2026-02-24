@@ -135,6 +135,7 @@ class AlphaNextGen(QCAlgorithm):
     _close_options_atomic = MainIntradayCloseMixin._close_options_atomic
     _on_intraday_options_force_close = MainIntradayCloseMixin._on_intraday_options_force_close
     _intraday_force_exit_fallback = MainIntradayCloseMixin._intraday_force_exit_fallback
+    _reconcile_intraday_close_guards = MainIntradayCloseMixin._reconcile_intraday_close_guards
     _ensure_oco_for_open_options = MainIntradayCloseMixin._ensure_oco_for_open_options
     _liquidate_all_spread_aware = MainIntradayCloseMixin._liquidate_all_spread_aware
     _get_primary_market_close_time = MainMarketCloseMixin._get_primary_market_close_time
@@ -1581,17 +1582,6 @@ class AlphaNextGen(QCAlgorithm):
     # =========================================================================
     # V2.9: SETTLEMENT-AWARE TRADING (Bug #6 Fix)
     # =========================================================================
-
-    def _reconcile_intraday_close_guards(self) -> None:
-        """Clear stale close-in-progress guards after positions are flat."""
-        if not self._intraday_close_in_progress_symbols:
-            return
-        stale = []
-        for symbol in self._intraday_close_in_progress_symbols:
-            if abs(self._get_option_holding_quantity(symbol)) <= 0:
-                stale.append(symbol)
-        for symbol in stale:
-            self._clear_intraday_close_guard(symbol)
 
     def _oco_engine_prefix_for_strategy(self, entry_strategy: str) -> str:
         """Map strategy tag to stable engine prefix for OCO attribution."""
