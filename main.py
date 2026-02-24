@@ -145,6 +145,7 @@ class AlphaNextGen(QCAlgorithm):
     _on_time_guard_start = MainSignalGenerationMixin._on_time_guard_start
     _on_time_guard_end = MainSignalGenerationMixin._on_time_guard_end
     _on_warm_entry_check = MainSignalGenerationMixin._on_warm_entry_check
+    _mr_force_close_fallback = MainSignalGenerationMixin._mr_force_close_fallback
     _on_mr_force_close = MainSignalGenerationMixin._on_mr_force_close
     _save_observability_csv_artifact = MainObservabilityMixin._save_observability_csv_artifact
     _on_observability_checkpoint = MainObservabilityMixin._on_observability_checkpoint
@@ -1742,40 +1743,6 @@ class AlphaNextGen(QCAlgorithm):
             self._process_immediate_signals()
         # Mark done after handling concrete submit attempts.
         self._intraday_force_exit_fallback_date = self.Time.date()
-
-    def _mr_force_close_fallback(self) -> None:
-        """
-        V6.12: Safety net - force-close MR positions after 15:50 if scheduled close missed.
-
-        This prevents 3x ETFs (TQQQ, SOXL, SPXL) from carrying overnight due to
-        scheduler issues. Overnight gaps can cause catastrophic losses with 3x leverage.
-        """
-        # Only run once per day
-        if getattr(self, "_mr_force_close_fallback_date", None) == self.Time.date():
-            return
-
-        # Only after 15:50 ET (5 min after scheduled 15:45 close)
-        if self.Time.hour < 15 or (self.Time.hour == 15 and self.Time.minute < 50):
-            return
-
-        # Check all MR symbols and force liquidate if still invested
-        mr_symbols = [(self.tqqq, "TQQQ"), (self.soxl, "SOXL"), (self.spxl, "SPXL")]
-        liquidated_any = False
-
-        for mr_symbol, mr_name in mr_symbols:
-            if self.Portfolio[mr_symbol].Invested:
-                self.Log(
-                    f"MR_FALLBACK: Force liquidating {mr_name} at {self.Time.strftime('%H:%M')} | "
-                    f"Qty={self.Portfolio[mr_symbol].Quantity}"
-                )
-                self.Liquidate(mr_symbol, tag="MR_FALLBACK_15:50")
-                liquidated_any = True
-
-        if liquidated_any:
-            self.Log("MR_FALLBACK: Completed - all MR positions closed")
-
-        # Mark as done to prevent repeated attempts
-        self._mr_force_close_fallback_date = self.Time.date()
 
     def OnEndOfAlgorithm(self) -> None:
         """Flush end-of-run observability artifacts."""
