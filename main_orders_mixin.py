@@ -150,6 +150,206 @@ class MainOrdersMixin:
             return "MICRO"
         return "OPT"
 
+    def _record_order_tag_map(self, order_id: int, symbol: str, tag: str, source: str) -> None:
+        """Emit deterministic order-id -> tag mapping for RCA even when broker CSV drops tags."""
+        try:
+            oid = int(order_id or 0)
+        except Exception:
+            oid = 0
+        clean_tag = str(tag or "").strip()
+        if oid <= 0 or not clean_tag:
+            return
+        if oid in self._order_tag_map_logged_ids:
+            return
+        self._order_tag_map_logged_ids.add(oid)
+        if len(self._order_tag_map_logged_ids) > 50000:
+            self._order_tag_map_logged_ids.clear()
+        trace_id = self._extract_trace_id_from_tag(clean_tag) or "NONE"
+        sym = self._normalize_symbol_str(symbol)
+        self.Log(
+            f"ORDER_TAG_MAP: OrderId={oid} | Symbol={sym or symbol} | Source={source} | "
+            f"Tag={self._compact_tag_for_log(clean_tag)} | Trace={trace_id}"
+        )
+
+    def _record_order_tag_resolve(
+        self,
+        order_id: int,
+        symbol: str,
+        resolved_tag: str,
+        source: str,
+    ) -> None:
+        """Log how lifecycle events resolve tags (event/order/oco/cache/symbol-cache)."""
+        try:
+            oid = int(order_id or 0)
+        except Exception:
+            oid = 0
+        clean_tag = str(resolved_tag or "").strip()
+        if oid <= 0 or not clean_tag:
+            return
+        if oid in self._order_tag_resolve_logged_ids:
+            return
+        self._order_tag_resolve_logged_ids.add(oid)
+        if len(self._order_tag_resolve_logged_ids) > 50000:
+            self._order_tag_resolve_logged_ids.clear()
+        trace_id = self._extract_trace_id_from_tag(clean_tag) or "NONE"
+        sym = self._normalize_symbol_str(symbol)
+        self.Log(
+            f"ORDER_TAG_RESOLVE: OrderId={oid} | Symbol={sym or symbol} | Source={source} | "
+            f"Tag={self._compact_tag_for_log(clean_tag)} | Trace={trace_id}"
+        )
+
+    def _record_order_lifecycle_event(
+        self,
+        status: str,
+        order_id: int,
+        symbol: str,
+        quantity: int = 0,
+        fill_price: float = 0.0,
+        order_type: str = "",
+        order_tag: str = "",
+        trace_id: str = "",
+        message: str = "",
+        source: str = "",
+    ) -> None:
+        """Persist order lifecycle records independent of console log budget."""
+        if not bool(getattr(config, "ORDER_LIFECYCLE_OBSERVABILITY_ENABLED", True)):
+            return
+        max_rows = int(getattr(config, "ORDER_LIFECYCLE_OBSERVABILITY_MAX_ROWS", 50000))
+        self._append_observability_record(
+            records=self._order_lifecycle_records,
+            overflow_attr="_order_lifecycle_overflow_logged",
+            max_rows=max_rows,
+            overflow_log_prefix="ORDER_LIFECYCLE_OBSERVABILITY",
+            row={
+                "time": self.Time.strftime("%Y-%m-%d %H:%M:%S"),
+                "status": str(status or "").upper(),
+                "order_id": str(int(order_id or 0)),
+                "symbol": str(symbol or ""),
+                "quantity": str(int(quantity or 0)),
+                "fill_price": f"{float(fill_price or 0.0):.6f}",
+                "order_type": str(order_type or ""),
+                "order_tag": str(order_tag or ""),
+                "trace_id": str(trace_id or ""),
+                "message": str(message or ""),
+                "source": str(source or ""),
+            },
+        )
+
+    def _get_order_tag(self, order_event: OrderEvent) -> str:
+        """Best-effort extraction of original order tag for fill classification."""
+        order_id = int(getattr(order_event, "OrderId", 0) or 0)
+        symbol = str(getattr(order_event, "Symbol", "") or "")
+
+        event_tag = str(getattr(order_event, "Tag", "") or "").strip()
+        if event_tag:
+            self._cache_order_tag_hint(order_id, event_tag)
+            self._record_order_tag_resolve(order_id, symbol, event_tag, "event")
+            return event_tag
+
+        try:
+            order = self.Transactions.GetOrderById(order_event.OrderId)
+            if order and getattr(order, "Tag", None):
+                order_tag = str(order.Tag).strip()
+                if order_tag:
+                    self._cache_order_tag_hint(order_id, order_tag)
+                    self._record_order_tag_resolve(order_id, symbol, order_tag, "order")
+                    return order_tag
+        except Exception:
+            pass
+
+        try:
+            if self.oco_manager is not None:
+                hinted = self.oco_manager.get_order_tag_hint(order_id)
+                if hinted:
+                    self._cache_order_tag_hint(order_id, hinted)
+                    self._record_order_tag_resolve(order_id, symbol, hinted, "oco")
+                    return hinted
+        except Exception:
+            pass
+
+        cached = self._order_tag_hint_cache.get(order_id, "")
+        if cached:
+            self._record_order_tag_resolve(order_id, symbol, cached, "cache")
+            return cached
+
+        # Last-resort fallback for broker events that drop order tags on cancel/fill.
+        symbol_hint = self._get_recent_symbol_fill_tag(symbol, max_age_minutes=480)
+        if symbol_hint:
+            self._record_order_tag_resolve(order_id, symbol, symbol_hint, "symbol_cache")
+            return symbol_hint
+        return ""
+
+    def _cache_order_tag_hint(self, order_id: int, tag: str) -> None:
+        """Cache order tag hints for lifecycle attribution when broker tags are blank."""
+        if order_id <= 0:
+            return
+        clean = str(tag or "").strip()
+        if not clean:
+            return
+        self._order_tag_hint_cache[order_id] = clean
+        if len(self._order_tag_hint_cache) > 25000:
+            self._order_tag_hint_cache.clear()
+
+    def _cache_symbol_fill_tag(self, symbol: str, tag: str) -> None:
+        """Cache last non-empty fill tag per option symbol for telemetry fallback/reconcile guards."""
+        sym = self._normalize_symbol_str(symbol)
+        clean = str(tag or "").strip()
+        if not sym or not clean:
+            return
+        self._last_option_fill_tag_by_symbol[sym] = clean
+        self._last_option_fill_time_by_symbol[sym] = self.Time
+        if len(self._last_option_fill_tag_by_symbol) > 5000:
+            self._last_option_fill_tag_by_symbol.clear()
+            self._last_option_fill_time_by_symbol.clear()
+
+    def _get_recent_symbol_fill_tag(self, symbol: str, max_age_minutes: int = 240) -> str:
+        """Return last cached fill tag for symbol when fresh enough."""
+        sym = self._normalize_symbol_str(symbol)
+        if not sym:
+            return ""
+        tag = str(self._last_option_fill_tag_by_symbol.get(sym, "") or "").strip()
+        ts = self._last_option_fill_time_by_symbol.get(sym)
+        if not tag or ts is None:
+            return ""
+        try:
+            age = (self.Time - ts).total_seconds() / 60.0
+            if age > float(max_age_minutes):
+                return ""
+        except Exception:
+            return ""
+        return tag
+
+    def _extract_trace_id_from_tag(self, order_tag: str) -> str:
+        """Extract trace id from order tag (best-effort) for RCA joins."""
+        if not order_tag:
+            return ""
+        tag = str(order_tag)
+        markers = ("trace=", "trace_id=", "trace:")
+        lowered = tag.lower()
+        for marker in markers:
+            idx = lowered.find(marker)
+            if idx < 0:
+                continue
+            value = tag[idx + len(marker) :].strip()
+            if not value:
+                return ""
+            for sep in ("|", ";", ",", " "):
+                cut = value.find(sep)
+                if cut >= 0:
+                    value = value[:cut]
+                    break
+            return value.strip()
+        return ""
+
+    def _compact_tag_for_log(self, order_tag: str, max_chars: int = 64) -> str:
+        """Trim noisy broker tags to keep logs under budget while preserving correlation."""
+        tag = str(order_tag or "").strip()
+        if not tag:
+            return "NO_TAG"
+        if len(tag) <= max_chars:
+            return tag
+        return f"{tag[:max_chars]}..."
+
     def _sync_intraday_oco(
         self,
         symbol: str,
