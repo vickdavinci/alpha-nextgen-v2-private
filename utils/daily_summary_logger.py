@@ -53,6 +53,43 @@ def log_daily_summary(algo) -> None:
             f"SampleEveryN={int(getattr(config, 'LOG_HIGHFREQ_SAMPLE_EVERY_N', 0))}"
         )
 
+    def _fmt_drop_rca_daily() -> str:
+        agg = getattr(algo, "_daily_drop_reason_agg", {}) or {}
+        if not agg:
+            return "NONE"
+        max_reasons = max(1, int(getattr(config, "LOG_DROP_AGG_MAX_REASONS_PER_CATEGORY", 8)))
+        preferred_order = ["INTRADAY_BLOCKED", "INTRADAY_DROPPED", "VASS_FALLBACK"]
+        ordered_categories = [c for c in preferred_order if c in agg]
+        ordered_categories.extend(c for c in sorted(agg.keys()) if c not in preferred_order)
+        category_tokens = []
+        for category in ordered_categories:
+            bucket = agg.get(category, {}) or {}
+            if not bucket:
+                continue
+            ranked = sorted(
+                bucket.items(),
+                key=lambda kv: int((kv[1] or {}).get("count", 0)),
+                reverse=True,
+            )[:max_reasons]
+            reason_tokens = []
+            for reason, payload in ranked:
+                payload = payload or {}
+                count = int(payload.get("count", 0))
+                first = str(payload.get("first", "") or "")
+                last = str(payload.get("last", "") or "")
+                if first and last:
+                    window = first if first == last else f"{first}-{last}"
+                    reason_tokens.append(f"{reason}:{count}@{window}")
+                else:
+                    reason_tokens.append(f"{reason}:{count}")
+            if reason_tokens:
+                category_tokens.append(f"{category}[{';'.join(reason_tokens)}]")
+        return " ".join(category_tokens) if category_tokens else "NONE"
+
+    drop_rca_daily = _fmt_drop_rca_daily()
+    if drop_rca_daily != "NONE":
+        algo.Log(f"DROP_RCA_DAILY: {drop_rca_daily}")
+
     dte_order = ["2", "3", "4", "5", "OTHER"]
     fmt = lambda d: ",".join(f"{k}:{int(d.get(k, 0))}" for k in dte_order)
     top_drop_pairs = sorted(

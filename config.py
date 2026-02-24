@@ -2602,6 +2602,12 @@ LOG_REGIME_ENGINE_DETAIL_BACKTEST_ENABLED = (
 LOG_HIGHFREQ_SAMPLE_FIRST_N_PER_KEY = 1  # Backtest console: keep first occurrence per key/day
 LOG_HIGHFREQ_SAMPLE_EVERY_N = 100  # Then log every Nth repeat for continuity
 LOG_HIGHFREQ_SAMPLE_EVERY_N_LIVE = 10  # Live-mode sampled cadence for high-frequency diagnostics
+LOG_DROP_AGGREGATE_BACKTEST_ENABLED = True
+LOG_DROP_AGG_FIRST_N_PER_KEY = 1
+LOG_DROP_AGG_SAMPLE_EVERY_N = (
+    0  # 0 = no periodic repeats; rely on DROP_RCA_DAILY aggregate for totals
+)
+LOG_DROP_AGG_MAX_REASONS_PER_CATEGORY = 8
 SPREAD_GHOST_INTRADAY_CLEAR_CONSECUTIVE = (
     2  # Intraday guarded clear requires N consecutive flat checks
 )

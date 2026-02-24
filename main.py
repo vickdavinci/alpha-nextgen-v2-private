@@ -306,6 +306,7 @@ class AlphaNextGen(QCAlgorithm):
         ] = {}  # Keyed throttle for high-frequency intraday candidate/drop diagnostics
         self._high_freq_log_seen_counts: Dict[str, int] = {}
         self._high_freq_log_suppressed_counts: Dict[str, int] = {}
+        self._daily_drop_reason_agg: Dict[str, Dict[str, Dict[str, Any]]] = {}
         # Signal-id event ledgers keep funnel telemetry deterministic.
         self._diag_intraday_candidate_ids_logged = set()
         self._diag_intraday_approved_ids_logged = set()
@@ -1729,17 +1730,48 @@ class AlphaNextGen(QCAlgorithm):
         seen = int(self._high_freq_log_seen_counts.get(sample_key, 0)) + 1
         self._high_freq_log_seen_counts[sample_key] = seen
 
-        first_n = max(0, int(getattr(config, "LOG_HIGHFREQ_SAMPLE_FIRST_N_PER_KEY", 1)))
-        every_n_key = (
-            "LOG_HIGHFREQ_SAMPLE_EVERY_N_LIVE" if is_live else "LOG_HIGHFREQ_SAMPLE_EVERY_N"
-        )
-        every_n = max(0, int(getattr(config, every_n_key, 0)))
+        if (
+            not is_live
+            and bool(getattr(config, "LOG_DROP_AGGREGATE_BACKTEST_ENABLED", True))
+            and category_token in {"INTRADAY_BLOCKED", "INTRADAY_DROPPED", "VASS_FALLBACK"}
+        ):
+            first_n = max(0, int(getattr(config, "LOG_DROP_AGG_FIRST_N_PER_KEY", 1)))
+            every_n = max(0, int(getattr(config, "LOG_DROP_AGG_SAMPLE_EVERY_N", 0)))
+        else:
+            first_n = max(0, int(getattr(config, "LOG_HIGHFREQ_SAMPLE_FIRST_N_PER_KEY", 1)))
+            every_n_key = (
+                "LOG_HIGHFREQ_SAMPLE_EVERY_N_LIVE" if is_live else "LOG_HIGHFREQ_SAMPLE_EVERY_N"
+            )
+            every_n = max(0, int(getattr(config, every_n_key, 0)))
         should_log = seen <= first_n or (every_n > 0 and seen % every_n == 0)
         if not should_log:
             self._high_freq_log_suppressed_counts[category_token] = (
                 int(self._high_freq_log_suppressed_counts.get(category_token, 0)) + 1
             )
         return should_log
+
+    def _record_drop_reason_aggregate(self, category: str, reason_key: str) -> None:
+        """Aggregate high-frequency drop/fallback reasons for end-of-day RCA summary."""
+        if bool(hasattr(self, "LiveMode") and self.LiveMode):
+            return
+        if not bool(getattr(config, "LOG_DROP_AGGREGATE_BACKTEST_ENABLED", True)):
+            return
+        category_token = str(category or "GENERAL").strip().upper() or "GENERAL"
+        if category_token not in {"INTRADAY_BLOCKED", "INTRADAY_DROPPED", "VASS_FALLBACK"}:
+            return
+        reason_token = str(reason_key or "GENERIC").strip().upper()[:120] or "GENERIC"
+        hhmm = (
+            self.Time.strftime("%H:%M")
+            if hasattr(self, "Time") and self.Time is not None
+            else "00:00"
+        )
+        category_bucket = self._daily_drop_reason_agg.setdefault(category_token, {})
+        row = category_bucket.get(reason_token)
+        if row is None:
+            category_bucket[reason_token] = {"count": 1, "first": hhmm, "last": hhmm}
+            return
+        row["count"] = int(row.get("count", 0)) + 1
+        row["last"] = hhmm
 
     def _log_high_frequency_event(
         self,
@@ -1751,6 +1783,7 @@ class AlphaNextGen(QCAlgorithm):
         default_backtest_enabled: bool = False,
     ) -> bool:
         """Emit high-frequency diagnostic logs with backtest sampling controls."""
+        self._record_drop_reason_aggregate(category=category, reason_key=reason_key)
         if not self._should_log_high_frequency_backtest(
             config_flag=config_flag,
             category=category,
@@ -3578,6 +3611,7 @@ class AlphaNextGen(QCAlgorithm):
         self._last_intraday_diag_log_by_key.clear()
         self._high_freq_log_seen_counts.clear()
         self._high_freq_log_suppressed_counts.clear()
+        self._daily_drop_reason_agg.clear()
         self._transition_execution_context = None
         self._transition_execution_context_minute_key = None
         self._transition_execution_context_sample_seq = -1
