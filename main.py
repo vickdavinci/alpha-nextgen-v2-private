@@ -5838,57 +5838,17 @@ class AlphaNextGen(QCAlgorithm):
             # Debug log - skip in backtest to avoid log limits
             return
 
-        context = self._resolve_vass_direction_context(
+        self.options_engine.run_vass_entry_cycle(
+            chain=chain,
             regime_score=regime_score,
+            qqq_price=qqq_price,
+            adx_value=adx_value,
+            ma200_value=ma200_value,
+            ma50_value=ma50_value,
+            iv_rank=iv_rank,
             size_multiplier=size_multiplier,
-            bull_profile_log_prefix="VASS_BULL_PROFILE_BLOCK",
-            clamp_log_prefix="VASS_CLAMP_BLOCK",
-            shock_log_prefix="VASS_SHOCK_OVERRIDE_EOD",
-            transition_ctx=transition_ctx,
+            is_eod_scan=is_eod_scan,
         )
-        if context is None:
-            return
-        (
-            direction,
-            direction_str,
-            _overlay_state,
-            size_multiplier,
-            vass_has_conviction,
-            vass_reason,
-            macro_direction,
-            resolve_reason,
-            resolved_direction,
-        ) = context
-
-        # V5.3: Use resolved direction (may be VASS override or Macro alignment)
-        if direction == OptionDirection.CALL and self._is_premarket_ladder_call_block_active():
-            self.Log(
-                f"OPTIONS_EOD: CALL blocked by pre-market ladder | {self._premarket_vix_ladder_reason}"
-            )
-            return
-        directions_to_scan = [(direction, direction_str)]
-
-        if vass_has_conviction:
-            self.Log(
-                f"OPTIONS_VASS_CONVICTION: {vass_reason} | Macro={macro_direction} | "
-                f"Resolved={resolved_direction} | {resolve_reason}"
-            )
-
-        # Scan each direction
-        for direction, direction_str in directions_to_scan:
-            self._scan_spread_for_direction(
-                chain,
-                direction,
-                direction_str,
-                regime_score,
-                qqq_price,
-                adx_value,
-                ma200_value,
-                ma50_value,
-                iv_rank,
-                size_multiplier,
-                is_eod_scan,
-            )
 
     def _should_log_vass_rejection(self, reason_key: str) -> bool:
         """Per-reason throttle for VASS skip/rejection logs to preserve RCA fidelity."""
