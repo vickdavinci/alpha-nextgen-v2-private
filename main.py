@@ -149,6 +149,7 @@ class AlphaNextGen(QCAlgorithm):
     )
     _is_premarket_shock_memory_active = MainPremarketMixin._is_premarket_shock_memory_active
     _get_premarket_shock_memory_pct = MainPremarketMixin._get_premarket_shock_memory_pct
+    _queue_itm_weekend_gap_exit_signals = MainPremarketMixin._queue_itm_weekend_gap_exit_signals
 
     @staticmethod
     def _safe_objectstore_key_component(raw: Any, default: str = "default") -> str:
@@ -1502,83 +1503,6 @@ class AlphaNextGen(QCAlgorithm):
                 f"Qty={live_qty} | VIX={current_vix:.1f}"
             )
         return signals
-
-    def _queue_itm_weekend_gap_exit_signals(self) -> None:
-        """Queue post-weekend/holiday ITM exits on adverse gap or vol shock."""
-        if not bool(getattr(config, "ITM_WEEKEND_GAP_EXIT_ENABLED", True)):
-            return
-        if self._last_market_close_check is None:
-            return
-        days_gap = (self.Time.date() - self._last_market_close_check).days
-        if days_gap < 3:
-            return
-
-        qqq_prior_close = float(self.Securities[self.qqq].Close or 0.0)
-        qqq_now = float(self.Securities[self.qqq].Price or 0.0)
-        if qqq_prior_close <= 0 or qqq_now <= 0:
-            return
-
-        adverse_gap_threshold = float(getattr(config, "ITM_WEEKEND_GAP_ADVERSE_PCT", 0.01))
-        vix_shock_threshold = float(getattr(config, "ITM_WEEKEND_GAP_VIX_SHOCK_PCT", 0.15))
-        qqq_gap_pct = (qqq_now - qqq_prior_close) / qqq_prior_close
-        vix_shock_pct = max(0.0, float(self._get_premarket_vix_gap_proxy_pct()) / 100.0)
-
-        queued = 0
-        for intraday_pos in self.options_engine.get_intraday_positions():
-            if intraday_pos is None or intraday_pos.contract is None:
-                continue
-            strategy = str(getattr(intraday_pos, "entry_strategy", "") or "").upper()
-            if strategy != "ITM_MOMENTUM":
-                continue
-            if not self.options_engine.should_hold_intraday_overnight(intraday_pos):
-                continue
-
-            symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
-            is_call = "C" in symbol
-            is_put = "P" in symbol
-            adverse_gap = (is_call and qqq_gap_pct <= -adverse_gap_threshold) or (
-                is_put and qqq_gap_pct >= adverse_gap_threshold
-            )
-            vix_shock = vix_shock_pct >= vix_shock_threshold
-            if not adverse_gap and not vix_shock:
-                continue
-
-            live_qty = abs(self._get_option_holding_quantity(symbol))
-            if live_qty <= 0:
-                continue
-
-            reasons = []
-            if adverse_gap:
-                reasons.append(f"ADVERSE_GAP {qqq_gap_pct:+.2%}")
-            if vix_shock:
-                reasons.append(f"VIX_SHOCK {vix_shock_pct:+.1%}")
-            reason_text = " + ".join(reasons) if reasons else "POST_GAP_RISK"
-
-            self.portfolio_router.receive_signal(
-                TargetWeight(
-                    symbol=symbol,
-                    target_weight=0.0,
-                    source="OPT_INTRADAY",
-                    urgency=Urgency.IMMEDIATE,
-                    reason=f"ITM_WEEKEND_GAP_EXIT: {reason_text}",
-                    requested_quantity=live_qty,
-                    metadata={
-                        "intraday_strategy": "ITM_MOMENTUM",
-                        "weekend_guard": "POST_GAP",
-                    },
-                )
-            )
-            queued += 1
-            self.Log(
-                f"ITM_WEEKEND_GAP_EXIT_QUEUED: {symbol} | Reason={reason_text} | "
-                f"Qty={live_qty} | GapDays={days_gap}"
-            )
-
-        if queued > 0:
-            self.Log(
-                f"ITM_WEEKEND_GAP_EXIT: Queued={queued} | QQQ_Gap={qqq_gap_pct:+.2%} | "
-                f"VIX_Shock={vix_shock_pct:+.1%} | GapDays={days_gap}"
-            )
 
     def _get_option_mark_price(self, symbol: str, fallback: float = 0.0) -> float:
         """Best-effort option mark for EOD hold checks."""
