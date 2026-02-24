@@ -891,6 +891,79 @@ class MainSignalGenerationMixin:
             return
         # Time guard tracking is handled by scheduler, no logging needed
 
+    def _on_warm_entry_check(self) -> None:
+        """
+        Warm entry check at 10:00 ET.
+
+        During cold start (days 1-5), checks if conditions are favorable
+        for a 50% sized entry into QLD.
+        """
+        # Skip during warmup
+        if self.IsWarmingUp:
+            return
+
+        # V6.0: Warm entry is TREND — requires REDUCED+ phase
+        if not self.startup_gate.allows_trend_mr():
+            return
+
+        if not self.cold_start_engine.is_cold_start_active():
+            return
+
+        # V6.14: Respect pre-market VIX ladder for warm-entry risk.
+        if self._premarket_vix_ladder_level >= 2:
+            self.Log(
+                f"WARM_ENTRY_BLOCKED: Pre-market VIX ladder {self._premarket_vix_ladder_level} | "
+                f"{self._premarket_vix_ladder_reason}"
+            )
+            return
+
+        # Get regime state (use previous smoothed score)
+        regime_score = self.regime_engine.get_previous_score()
+
+        # Check if we have any leveraged positions
+        has_leveraged = self._has_leveraged_position()
+
+        # Get capital state
+        capital_state = self.capital_engine.calculate(self.Portfolio.TotalPortfolioValue)
+
+        # V2.3 DEBUG: Log cold start check state (only in live mode)
+        scheduler_kill_flag = self.scheduler.is_kill_switch_triggered()
+        if scheduler_kill_flag and self.LiveMode:
+            self.Log(f"COLD_START_CHECK: scheduler.is_kill_switch_triggered()=True at {self.Time}")
+
+        # Check warm entry conditions
+        signal = self.cold_start_engine.check_warm_entry(
+            regime_score=regime_score,
+            has_leveraged_position=has_leveraged,
+            kill_switch_triggered=scheduler_kill_flag,
+            gap_filter_triggered=self.risk_engine.is_gap_filter_active(),
+            vol_shock_active=self.risk_engine.is_vol_shock_active(self.Time),
+            tradeable_equity=capital_state.tradeable_eq,
+            current_hour=self.Time.hour,
+            current_minute=self.Time.minute,
+        )
+
+        if signal:
+            # V2.19 FIX: Warm entry must respect position limit
+            # Cold start SSO entry was bypassing the trend position limit,
+            # pushing invested count above MAX_CONCURRENT_TREND_POSITIONS
+            trend_symbols = config.TREND_PRIORITY_ORDER  # V6.11: ["QLD", "UGL", "UCO", "SSO"]
+            current_trend_count = sum(
+                1 for sym in trend_symbols if self.Portfolio[getattr(self, sym.lower())].Invested
+            )
+            pending_moo_count = self.trend_engine.get_pending_moo_count()
+            total_committed = current_trend_count + pending_moo_count
+
+            if total_committed >= config.MAX_CONCURRENT_TREND_POSITIONS:
+                self.Log(
+                    f"COLD_START: Warm entry blocked by position limit | "
+                    f"Invested={current_trend_count} | Pending={pending_moo_count} | "
+                    f"Max={config.MAX_CONCURRENT_TREND_POSITIONS}"
+                )
+            else:
+                self.portfolio_router.receive_signal(signal)
+                self._process_immediate_signals()
+
     def _on_mr_force_close(self) -> None:
         """
         MR force close at 15:45 ET.
