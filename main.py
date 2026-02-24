@@ -162,6 +162,20 @@ class AlphaNextGen(QCAlgorithm):
     _mr_force_close_fallback = MainSignalGenerationMixin._mr_force_close_fallback
     _on_mr_force_close = MainSignalGenerationMixin._on_mr_force_close
     OnEndOfAlgorithm = MainObservabilityMixin.OnEndOfAlgorithm
+    _build_regime_observability_key = MainObservabilityMixin._build_regime_observability_key
+    _build_observability_key = MainObservabilityMixin._build_observability_key
+    _build_regime_timeline_observability_key = (
+        MainObservabilityMixin._build_regime_timeline_observability_key
+    )
+    _build_signal_lifecycle_observability_key = (
+        MainObservabilityMixin._build_signal_lifecycle_observability_key
+    )
+    _build_router_rejection_observability_key = (
+        MainObservabilityMixin._build_router_rejection_observability_key
+    )
+    _build_order_lifecycle_observability_key = (
+        MainObservabilityMixin._build_order_lifecycle_observability_key
+    )
     _save_observability_csv_artifact = MainObservabilityMixin._save_observability_csv_artifact
     _on_observability_checkpoint = MainObservabilityMixin._on_observability_checkpoint
     _should_log_backtest_category = MainObservabilityMixin._should_log_backtest_category
@@ -198,47 +212,6 @@ class AlphaNextGen(QCAlgorithm):
         safe = re.sub(r"[^A-Za-z0-9_-]+", "_", text)
         safe = re.sub(r"_+", "_", safe).strip("_")
         return safe or default
-
-    def _build_regime_observability_key(self) -> str:
-        return self._build_observability_key(
-            prefix_config_name="REGIME_OBSERVABILITY_OBJECTSTORE_KEY_PREFIX",
-            default_prefix="regime_observability",
-        )
-
-    def _build_observability_key(self, prefix_config_name: str, default_prefix: str) -> str:
-        prefix = self._safe_objectstore_key_component(
-            getattr(config, prefix_config_name, default_prefix),
-            default=default_prefix,
-        )
-        run_suffix_raw = self._run_label or f"year_{self._backtest_year}"
-        run_suffix = self._safe_objectstore_key_component(run_suffix_raw, default="run")
-        year = self._safe_objectstore_key_component(self._backtest_year, default="year")
-        # LocalObjectStore does not support path-style keys ("/"), so keep this flat.
-        return f"{prefix}__{run_suffix}_{year}.csv"
-
-    def _build_regime_timeline_observability_key(self) -> str:
-        return self._build_observability_key(
-            prefix_config_name="REGIME_TIMELINE_OBJECTSTORE_KEY_PREFIX",
-            default_prefix="regime_timeline_observability",
-        )
-
-    def _build_signal_lifecycle_observability_key(self) -> str:
-        return self._build_observability_key(
-            prefix_config_name="SIGNAL_LIFECYCLE_OBJECTSTORE_KEY_PREFIX",
-            default_prefix="signal_lifecycle_observability",
-        )
-
-    def _build_router_rejection_observability_key(self) -> str:
-        return self._build_observability_key(
-            prefix_config_name="ROUTER_REJECTION_OBJECTSTORE_KEY_PREFIX",
-            default_prefix="router_rejection_observability",
-        )
-
-    def _build_order_lifecycle_observability_key(self) -> str:
-        return self._build_observability_key(
-            prefix_config_name="ORDER_LIFECYCLE_OBJECTSTORE_KEY_PREFIX",
-            default_prefix="order_lifecycle_observability",
-        )
 
     def Log(self, message: Any) -> None:  # noqa: N802 (QC API method name)
         """Budget-aware log wrapper to avoid QC backtest log-cap truncation."""
