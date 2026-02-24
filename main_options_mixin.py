@@ -1003,6 +1003,78 @@ class MainOptionsMixin:
         )
         return signal
 
+    def _build_option_contract_from_fill(
+        self,
+        symbol: Any,
+        fill_price: float,
+        direction_hint: Optional[OptionDirection] = None,
+    ) -> Optional[OptionContract]:
+        """Best-effort OptionContract reconstruction for fill recovery paths."""
+        try:
+            sec = self.Securities[symbol] if symbol in self.Securities else None
+        except Exception:
+            sec = None
+
+        try:
+            symbol_obj = symbol
+            symbol_str = str(symbol_obj)
+            strike = float(getattr(getattr(symbol_obj, "ID", None), "StrikePrice", 0.0) or 0.0)
+            expiry_obj = getattr(getattr(symbol_obj, "ID", None), "Date", None)
+            expiry = str(expiry_obj.date()) if expiry_obj is not None else ""
+            right_obj = getattr(getattr(symbol_obj, "ID", None), "OptionRight", None)
+            right_str = str(right_obj).upper() if right_obj is not None else ""
+        except Exception:
+            return None
+
+        if direction_hint is not None:
+            direction = direction_hint
+        elif "PUT" in right_str or right_str.endswith("P"):
+            direction = OptionDirection.PUT
+        else:
+            direction = OptionDirection.CALL
+
+        bid = float(getattr(sec, "BidPrice", 0.0) or 0.0) if sec is not None else 0.0
+        ask = float(getattr(sec, "AskPrice", 0.0) or 0.0) if sec is not None else 0.0
+        mid = (bid + ask) / 2.0 if bid > 0 and ask > 0 else float(fill_price)
+
+        delta = 0.0
+        gamma = 0.0
+        vega = 0.0
+        theta = 0.0
+        if sec is not None and hasattr(sec, "Greeks") and sec.Greeks is not None:
+            try:
+                delta = float(abs(sec.Greeks.Delta))
+                gamma = float(sec.Greeks.Gamma)
+                vega = float(sec.Greeks.Vega)
+                theta = float(sec.Greeks.Theta)
+            except Exception:
+                pass
+
+        open_interest = int(getattr(sec, "OpenInterest", 0) or 0) if sec is not None else 0
+        days_to_expiry = 0
+        try:
+            if expiry_obj is not None:
+                days_to_expiry = int((expiry_obj.date() - self.Time.date()).days)
+        except Exception:
+            pass
+
+        return OptionContract(
+            symbol=symbol_str,
+            underlying="QQQ",
+            direction=direction,
+            strike=strike,
+            expiry=expiry,
+            delta=delta,
+            gamma=gamma,
+            vega=vega,
+            theta=theta,
+            bid=bid,
+            ask=ask,
+            mid_price=mid,
+            open_interest=open_interest,
+            days_to_expiry=days_to_expiry,
+        )
+
     def _scan_options_signals(self, data: Slice) -> None:
         """
         V2.1.1: Scan for Options entry signals during intraday session.
