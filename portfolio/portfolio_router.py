@@ -1661,6 +1661,39 @@ class PortfolioRouter:
                         f"ExitLongBid={long_bid:.4f} ExitShortAsk={short_ask:.4f} "
                         f"Long={order.symbol} Short={order.combo_short_symbol}",
                     )
+                if bool(getattr(config, "SPREAD_EXIT_BOUNDED_LOSS_GUARD_ENABLED", True)):
+                    md = dict(order.metadata or {})
+                    exit_net_value = long_bid - short_ask
+                    net_floor = float(getattr(config, "SPREAD_EXIT_NET_VALUE_FLOOR", 0.0))
+                    net_tol = float(getattr(config, "SPREAD_EXIT_NET_VALUE_TOLERANCE", -0.05))
+                    if exit_net_value < (net_floor + net_tol):
+                        return (
+                            False,
+                            "EXIT_NET_VALUE_NEGATIVE "
+                            f"Net={exit_net_value:.4f} < Floor={net_floor + net_tol:.4f} | "
+                            f"LongBid={long_bid:.4f} ShortAsk={short_ask:.4f}",
+                        )
+                    is_credit = bool(md.get("is_credit_spread", False)) or (
+                        "CREDIT" in str(md.get("spread_type", "")).upper()
+                    )
+                    if not is_credit:
+                        try:
+                            entry_debit = float(md.get("spread_entry_debit", 0.0) or 0.0)
+                        except (TypeError, ValueError):
+                            entry_debit = 0.0
+                        close_debit = max(0.0, short_ask - long_bid)
+                        if entry_debit > 0:
+                            debit_buffer = float(
+                                getattr(config, "SPREAD_EXIT_MAX_CLOSE_DEBIT_BUFFER_PCT", 0.10)
+                            )
+                            max_close_debit = entry_debit * (1.0 + max(0.0, debit_buffer))
+                            if close_debit > max_close_debit:
+                                return (
+                                    False,
+                                    "EXIT_CLOSE_DEBIT_EXCEEDS_ENTRY "
+                                    f"CloseDebit={close_debit:.4f} > Max={max_close_debit:.4f} "
+                                    f"(EntryDebit={entry_debit:.4f})",
+                                )
                 return True, "EXIT_OK"
 
             long_ask = float(getattr(long_sec, "AskPrice", 0.0) or 0.0)

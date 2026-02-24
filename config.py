@@ -1680,6 +1680,13 @@ SPREAD_MAX_COMMISSION_TO_MAX_PROFIT_RATIO = (
 COMBO_ORDER_MAX_RETRIES = 3  # Try atomic ComboMarketOrder up to 3 times
 COMBO_ORDER_FALLBACK_TO_SEQUENTIAL = True  # If all retries fail, use sequential close
 SPREAD_CLOSE_SAFE_LOCK_RETRY_MIN = 10  # Retry emergency close after safe-lock alert
+# V12.3 F1: bounded-loss guard for spread exits (pre-submit quote sanity).
+SPREAD_EXIT_BOUNDED_LOSS_GUARD_ENABLED = True
+SPREAD_EXIT_NET_VALUE_FLOOR = 0.0  # Debit spread close value should not be materially negative.
+SPREAD_EXIT_NET_VALUE_TOLERANCE = -0.05  # Allow small quote noise (e.g., -$0.05) before blocking.
+SPREAD_EXIT_MAX_CLOSE_DEBIT_BUFFER_PCT = (
+    0.10  # Allow up to +10% above entry debit before treating close quote as pathological.
+)
 
 # Sequential fallback: close SHORT leg first (buy back), then LONG leg (sell)
 # This prevents naked short exposure - worst case is holding a long temporarily

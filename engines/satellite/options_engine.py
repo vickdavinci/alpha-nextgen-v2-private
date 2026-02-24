@@ -7890,6 +7890,8 @@ class OptionsEngine:
                                             "spread_short_leg_quantity": spread.num_spreads,
                                             "spread_key": self._build_spread_key(spread),
                                             "spread_width": spread.width,
+                                            "spread_entry_debit": entry_debit,
+                                            "spread_exit_estimated_net_value": current_spread_value,
                                             "spread_exit_code": "SPREAD_HARD_STOP_DURING_HOLD",
                                             "is_credit_spread": False,
                                             "spread_credit_received": 0.0,
@@ -7942,6 +7944,8 @@ class OptionsEngine:
                                                 "spread_short_leg_quantity": spread.num_spreads,
                                                 "spread_key": self._build_spread_key(spread),
                                                 "spread_width": spread.width,
+                                                "spread_entry_debit": entry_debit,
+                                                "spread_exit_estimated_net_value": current_spread_value,
                                                 "spread_exit_code": "EOD_HOLD_RISK_GATE",
                                                 "is_credit_spread": False,
                                                 "spread_credit_received": 0.0,
@@ -8596,6 +8600,10 @@ class OptionsEngine:
                     "spread_short_leg_quantity": spread.num_spreads,
                     "spread_key": self._build_spread_key(spread),
                     "spread_width": spread.width,
+                    "spread_entry_debit": (
+                        max(float(spread.net_debit), 0.0) if not is_credit_spread else 0.0
+                    ),
+                    "spread_exit_estimated_net_value": float(current_spread_value),
                     "spread_exit_code": exit_code,
                     "is_credit_spread": is_credit_spread,
                     "spread_credit_received": abs(spread.net_debit) if is_credit_spread else 0.0,
