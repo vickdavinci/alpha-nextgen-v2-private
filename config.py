@@ -1210,7 +1210,10 @@ SHORT_LEG_ITM_EXIT_THRESHOLD = (
 )
 SPREAD_ASSIGNMENT_GRACE_MINUTES = 45  # V6.15 FIX: Allow spread to stabilize before ITM checks
 SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 30  # Minutes between log messages
-SPREAD_MIN_HOLD_MINUTES = 5760  # V10.5: 4-day minimum hold window for VASS spread lifecycle
+SPREAD_MIN_HOLD_MINUTES = 1440  # V12.3 C2: 1-day soft hold window for VASS spread lifecycle
+SPREAD_HOLD_GUARD_SOFT_ENABLED = True
+SPREAD_HOLD_GUARD_ALLOW_TRANSITION_BYPASS = True
+SPREAD_HOLD_GUARD_SEVERE_STOP_MULTIPLIER = 1.10
 SPREAD_EXIT_RETRY_MINUTES = (
     15  # V9.4 P0: Cooldown between exit signal retries (prevents per-minute spam)
 )

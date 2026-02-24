@@ -7872,6 +7872,78 @@ class OptionsEngine:
                             # Profitable debit spreads can bypass hold guard and use normal exit cascade.
                             if pnl_pct > 0:
                                 hold_guard_bypass = True
+                            if not hold_guard_bypass and bool(
+                                getattr(config, "SPREAD_HOLD_GUARD_SOFT_ENABLED", True)
+                            ):
+                                if bool(
+                                    getattr(
+                                        config,
+                                        "SPREAD_HOLD_GUARD_ALLOW_TRANSITION_BYPASS",
+                                        True,
+                                    )
+                                ):
+                                    transition_ctx = self._get_regime_transition_context(
+                                        regime_score=regime_score
+                                    )
+                                    transition_overlay = str(
+                                        transition_ctx.get("transition_overlay", "") or ""
+                                    ).upper()
+                                    if (
+                                        transition_overlay in {"DETERIORATION", "RECOVERY"}
+                                        or bool(transition_ctx.get("strong_deterioration", False))
+                                        or bool(transition_ctx.get("strong_recovery", False))
+                                    ):
+                                        hold_guard_bypass = True
+                                        self.log(
+                                            f"SPREAD_EXIT_GUARD_BYPASS: Transition={transition_overlay or 'NA'} | "
+                                            f"Key={self._build_spread_key(spread)} | PnL={pnl_pct:.1%}",
+                                            trades_only=True,
+                                        )
+
+                                if not hold_guard_bypass and pnl_pct < 0:
+                                    base_stop_pct = float(
+                                        vass_exit_profile.get(
+                                            "stop_pct",
+                                            getattr(config, "SPREAD_STOP_LOSS_PCT", 0.35),
+                                        )
+                                    )
+                                    stop_multipliers = getattr(
+                                        config,
+                                        "SPREAD_STOP_REGIME_MULTIPLIERS",
+                                        {75: 1.0, 50: 1.0, 40: 1.0, 0: 1.0},
+                                    )
+                                    stop_multiplier = 1.0
+                                    for threshold in sorted(stop_multipliers.keys(), reverse=True):
+                                        if regime_score >= threshold:
+                                            stop_multiplier = float(stop_multipliers[threshold])
+                                            break
+                                    adaptive_stop_pct = base_stop_pct * stop_multiplier
+                                    hard_cap_pct = float(
+                                        vass_exit_profile.get("hard_stop_pct", 0.0)
+                                    )
+                                    if hard_cap_pct > 0:
+                                        adaptive_stop_pct = min(adaptive_stop_pct, hard_cap_pct)
+
+                                    severe_mult = max(
+                                        1.0,
+                                        float(
+                                            getattr(
+                                                config,
+                                                "SPREAD_HOLD_GUARD_SEVERE_STOP_MULTIPLIER",
+                                                1.10,
+                                            )
+                                        ),
+                                    )
+                                    severe_stop_pct = adaptive_stop_pct * severe_mult
+                                    if hard_cap_pct > 0:
+                                        severe_stop_pct = min(severe_stop_pct, hard_cap_pct)
+                                    if severe_stop_pct > 0 and pnl_pct <= -severe_stop_pct:
+                                        hold_guard_bypass = True
+                                        self.log(
+                                            f"SPREAD_EXIT_GUARD_BYPASS: SevereLoss {pnl_pct:.1%} <= -{severe_stop_pct:.0%} | "
+                                            f"Key={self._build_spread_key(spread)}",
+                                            trades_only=True,
+                                        )
 
                     if not hold_guard_bypass:
                         spread_key = self._build_spread_key(spread)
