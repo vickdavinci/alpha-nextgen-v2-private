@@ -456,6 +456,230 @@ class VASSEntryEngine:
             is_eod_scan=is_eod_scan,
         )
 
+    def resolve_direction_context(
+        self,
+        *,
+        host: Any,
+        regime_score: float,
+        size_multiplier: float,
+        bull_profile_log_prefix: str,
+        clamp_log_prefix: str,
+        shock_log_prefix: str,
+        transition_ctx: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Tuple[OptionDirection, str, Any, float, bool, str, str, str, str]]:
+        """
+        Resolve VASS direction + sizing context with shared guard rails.
+
+        Returns:
+            Tuple of (direction, direction_str, overlay_state, size_multiplier,
+            has_conviction, conviction_reason, macro_direction, resolve_reason,
+            resolved_direction_str) or None when blocked/no-trade.
+        """
+        algorithm = getattr(host, "algorithm", None)
+        if algorithm is None:
+            return None
+
+        current_date_str = algorithm.Time.strftime("%Y-%m-%d")
+        if isinstance(transition_ctx, dict):
+            ctx = dict(transition_ctx)
+        elif hasattr(algorithm, "_get_transition_execution_context"):
+            try:
+                ctx = dict(algorithm._get_transition_execution_context() or {})
+            except Exception:
+                ctx = host._get_regime_transition_context(regime_score)
+        else:
+            ctx = host._get_regime_transition_context(regime_score)
+
+        regime_for_vass = float(ctx.get("transition_score", regime_score) or regime_score)
+        block_gate, block_reason = host.evaluate_transition_policy_block(
+            engine="VASS",
+            direction=None,
+            transition_ctx=ctx,
+        )
+        if block_gate:
+            host._record_regime_decision(
+                engine="VASS",
+                decision="BLOCK",
+                strategy_attempted="VASS_DIRECTION",
+                gate_name=block_gate,
+                threshold_snapshot={"overlay": ctx.get("transition_overlay", "")},
+                context=ctx,
+            )
+            algorithm.Log(
+                f"VASS_TRANSITION_BLOCK: {block_reason} | "
+                f"Eff={float(ctx.get('effective_score', regime_score)):.1f} | "
+                f"Delta={float(ctx.get('delta', 0.0)):+.1f} | "
+                f"MOM={float(ctx.get('momentum_roc', 0.0)):+.2%}"
+            )
+            return None
+
+        try:
+            vix_level_for_vass = float(algorithm._get_vix_level())
+        except Exception:
+            vix_level_for_vass = 20.0
+        host.update_iv_sensor(vix_level_for_vass, current_date_str)
+        has_conviction, conviction_direction, conviction_reason = host.get_iv_conviction()
+        macro_direction = host.get_macro_direction(regime_for_vass)
+        allow_macro_veto = True
+        if has_conviction and conviction_direction == "BEARISH":
+            allow_macro_veto, veto_reason = host.get_iv_bearish_veto_status()
+            if not allow_macro_veto:
+                has_conviction = False
+                conviction_direction = None
+                conviction_reason = f"{conviction_reason} | HARD_VETO_BLOCK={veto_reason}"
+        overlay_state = host.get_regime_overlay_state(
+            vix_current=vix_level_for_vass, regime_score=regime_for_vass
+        )
+        should_trade, resolved_direction, resolve_reason = host.resolve_trade_signal(
+            engine="VASS",
+            engine_direction=conviction_direction,
+            engine_conviction=has_conviction,
+            macro_direction=macro_direction,
+            conviction_strength=None,
+            overlay_state=overlay_state,
+            allow_macro_veto=allow_macro_veto,
+        )
+        if not should_trade:
+            host._record_regime_decision(
+                engine="VASS",
+                decision="BLOCK",
+                strategy_attempted="VASS_DIRECTION",
+                gate_name="VASS_RESOLVER_NO_TRADE",
+                threshold_snapshot={"resolve_reason": resolve_reason},
+                context=ctx,
+            )
+            if "E_OVERLAY_STRESS_BULL_BLOCK" in str(resolve_reason):
+                if hasattr(algorithm, "_diag_overlay_block_count"):
+                    algorithm._diag_overlay_block_count = (
+                        int(getattr(algorithm, "_diag_overlay_block_count", 0)) + 1
+                    )
+            return None
+
+        current_vix = float(getattr(algorithm, "_current_vix", vix_level_for_vass) or 0.0)
+        if (
+            bool(getattr(config, "VASS_BULL_PROFILE_BEARISH_BLOCK_ENABLED", True))
+            and resolved_direction == "BEARISH"
+            and float(regime_for_vass)
+            >= float(getattr(config, "VASS_BULL_PROFILE_REGIME_MIN", 70.0))
+            and str(overlay_state).upper() in {"NORMAL", "RECOVERY"}
+        ):
+            host._record_regime_decision(
+                engine="VASS",
+                decision="BLOCK",
+                strategy_attempted="VASS_BEARISH",
+                gate_name="VASS_BULL_PROFILE_BEARISH_BLOCK",
+                threshold_snapshot={
+                    "regime_min": float(getattr(config, "VASS_BULL_PROFILE_REGIME_MIN", 70.0))
+                },
+                context=ctx,
+            )
+            algorithm.Log(
+                f"{bull_profile_log_prefix}: Bearish VASS blocked in strong bull profile | "
+                f"Regime={float(regime_for_vass):.1f} | Overlay={overlay_state}"
+            )
+            return None
+
+        if (
+            resolved_direction == "BULLISH"
+            and str(macro_direction).upper() == "NEUTRAL"
+            and current_vix >= float(getattr(config, "VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX", 20.0))
+        ):
+            host._record_regime_decision(
+                engine="VASS",
+                decision="BLOCK",
+                strategy_attempted="VASS_BULLISH",
+                gate_name="VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX",
+                threshold_snapshot={
+                    "vix_limit": float(getattr(config, "VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX", 20.0))
+                },
+                context=ctx,
+            )
+            algorithm.Log(
+                f"{clamp_log_prefix}: Neutral macro + elevated VIX blocks bullish override | "
+                f"VIX={current_vix:.1f} >= "
+                f"{float(getattr(config, 'VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX', 20.0)):.1f} | "
+                f"Resolve={resolve_reason}"
+            )
+            return None
+
+        resolved_option_dir = (
+            OptionDirection.CALL if resolved_direction == "BULLISH" else OptionDirection.PUT
+        )
+        block_gate, block_reason = host.evaluate_transition_policy_block(
+            engine="VASS",
+            direction=resolved_option_dir,
+            transition_ctx=ctx,
+        )
+        if block_gate:
+            host._record_regime_decision(
+                engine="VASS",
+                decision="BLOCK",
+                strategy_attempted=f"VASS_{resolved_direction}",
+                gate_name=block_gate,
+                context=ctx,
+            )
+            algorithm.Log(
+                f"VASS_TRANSITION_BLOCK: {block_reason} | "
+                f"Eff={float(ctx.get('effective_score', regime_for_vass)):.1f} | "
+                f"Delta={float(ctx.get('delta', 0.0)):+.1f} | "
+                f"MOM={float(ctx.get('momentum_roc', 0.0)):+.2%}"
+            )
+            return None
+
+        if "NEUTRAL_ALIGNED_HALF" in str(resolve_reason):
+            size_multiplier *= config.NEUTRAL_ALIGNED_SIZE_MULT
+
+        if (
+            getattr(config, "SHOCK_MEMORY_FORCE_BEARISH_VASS", True)
+            and hasattr(algorithm, "_is_premarket_shock_memory_active")
+            and algorithm._is_premarket_shock_memory_active()
+            and resolved_direction == "BULLISH"
+        ):
+            resolved_direction = "BEARISH"
+            resolve_reason = f"{resolve_reason} | SHOCK_MEMORY_FORCE_BEARISH"
+            shock_pct = 0.0
+            if hasattr(algorithm, "_get_premarket_shock_memory_pct"):
+                try:
+                    shock_pct = float(algorithm._get_premarket_shock_memory_pct())
+                except Exception:
+                    shock_pct = 0.0
+            algorithm.Log(
+                f"{shock_log_prefix}: Forcing BEARISH | "
+                f"Shock={shock_pct:+.1%} | "
+                f"Reason={resolve_reason}"
+            )
+
+        if resolved_direction == "BULLISH":
+            direction = OptionDirection.CALL
+            direction_str = "BULLISH"
+        else:
+            direction = OptionDirection.PUT
+            direction_str = "BEARISH"
+
+        host._record_regime_decision(
+            engine="VASS",
+            decision="ALLOW",
+            strategy_attempted=f"VASS_{direction_str}",
+            gate_name="VASS_DIRECTION_RESOLVED",
+            threshold_snapshot={
+                "macro_direction": str(macro_direction),
+                "overlay_state": str(overlay_state),
+            },
+            context=ctx,
+        )
+
+        return (
+            direction,
+            direction_str,
+            overlay_state,
+            size_multiplier,
+            has_conviction,
+            conviction_reason,
+            str(macro_direction),
+            resolve_reason,
+            resolved_direction,
+        )
+
     def run_intraday_entry_cycle(
         self,
         *,
