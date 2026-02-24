@@ -1888,6 +1888,7 @@ class OptionsEngine:
         self._pending_intraday_exit_engine: Optional[str] = None  # MICRO/ITM lane
         self._pending_intraday_exit_lanes: set = set()
         self._pending_intraday_exit_symbols: set = set()
+        self._transition_context_snapshot: Optional[Dict[str, Any]] = None
 
         # V2.6 Bug #16: Post-trade margin cooldown tracking
         # After closing a spread, wait before new entry (T+1 settlement)
@@ -3135,13 +3136,19 @@ class OptionsEngine:
     ) -> Dict[str, Any]:
         """Fetch transition context from algorithm if available."""
         ctx: Dict[str, Any] = {}
-        if self.algorithm is not None and hasattr(self.algorithm, "_get_regime_transition_context"):
+        if isinstance(self._transition_context_snapshot, dict):
             try:
-                raw = self.algorithm._get_regime_transition_context()
-                if isinstance(raw, dict):
-                    ctx = dict(raw)
+                ctx = dict(self._transition_context_snapshot)
             except Exception:
                 ctx = {}
+        if self.algorithm is not None and hasattr(self.algorithm, "_get_regime_transition_context"):
+            if not ctx:
+                try:
+                    raw = self.algorithm._get_regime_transition_context()
+                    if isinstance(raw, dict):
+                        ctx = dict(raw)
+                except Exception:
+                    ctx = {}
         if "effective_score" not in ctx and regime_score is not None:
             try:
                 ctx["effective_score"] = float(regime_score)
@@ -3153,6 +3160,17 @@ class OptionsEngine:
             except Exception:
                 pass
         return ctx
+
+    def set_transition_context_snapshot(self, transition_ctx: Optional[Dict[str, Any]]) -> None:
+        """Cache per-cycle transition context so all engine decisions consume one snapshot."""
+        if isinstance(transition_ctx, dict):
+            self._transition_context_snapshot = dict(transition_ctx)
+        else:
+            self._transition_context_snapshot = None
+
+    def clear_transition_context_snapshot(self) -> None:
+        """Clear cached transition context snapshot."""
+        self._transition_context_snapshot = None
 
     def evaluate_transition_policy_block(
         self,
@@ -3210,17 +3228,23 @@ class OptionsEngine:
         if bool(getattr(config, ambiguous_key, True)) and bool(ctx.get("ambiguous", False)):
             return ambiguous_gate, "ambiguous transition state"
 
+        overlay = str(ctx.get("transition_overlay", "") or "").upper()
+        in_deterioration = (
+            bool(ctx.get("strong_deterioration", False)) or overlay == "DETERIORATION"
+        )
+        in_recovery = bool(ctx.get("strong_recovery", False)) or overlay == "RECOVERY"
+
         if (
             direction == OptionDirection.CALL
             and bool(getattr(config, call_det_key, True))
-            and bool(ctx.get("strong_deterioration", False))
+            and in_deterioration
         ):
             return call_det_gate, "bullish blocked during deterioration"
 
         if (
             direction == OptionDirection.PUT
             and bool(getattr(config, put_rec_key, True))
-            and bool(ctx.get("strong_recovery", False))
+            and in_recovery
         ):
             return put_rec_gate, "bearish blocked during recovery"
 
@@ -9392,6 +9416,7 @@ class OptionsEngine:
     def get_itm_direction_proposal(
         self,
         qqq_current: float,
+        transition_ctx: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Optional[OptionDirection], str]:
         """Return ITM_ENGINE sovereign direction proposal from daily trend context."""
         if not self._itm_horizon_engine.enabled():
@@ -9428,7 +9453,11 @@ class OptionsEngine:
 
         upper = sma20 * (1.0 + band)
         lower = sma20 * (1.0 - band)
-        transition_ctx = self._get_regime_transition_context()
+        transition_ctx = (
+            dict(transition_ctx)
+            if isinstance(transition_ctx, dict)
+            else self._get_regime_transition_context()
+        )
         regime = float(
             transition_ctx.get(
                 "transition_score",
@@ -9700,6 +9729,7 @@ class OptionsEngine:
         micro_state: Optional[
             "MicroRegimeState"
         ] = None,  # Reuse approved state; avoid re-eval drift
+        transition_ctx: Optional[Dict[str, Any]] = None,
     ) -> Optional[TargetWeight]:
         """
         Check for intraday mode entry signal using Micro Regime Engine.
@@ -10028,7 +10058,11 @@ class OptionsEngine:
             OptionDirection.CALL,
             OptionDirection.PUT,
         ):
-            transition_ctx = self._get_regime_transition_context(macro_regime_score)
+            transition_ctx = (
+                dict(transition_ctx)
+                if isinstance(transition_ctx, dict)
+                else self._get_regime_transition_context(macro_regime_score)
+            )
             block_gate, block_reason = self.evaluate_transition_policy_block(
                 engine=transition_engine,
                 direction=direction,
@@ -13189,6 +13223,7 @@ class OptionsEngine:
         self._pending_intraday_exit_engine = None
         self._pending_intraday_exit_lanes = set()
         self._pending_intraday_exit_symbols = set()
+        self._transition_context_snapshot = None
         self._rejection_margin_cap = None
         self._spread_failure_cooldown_until = None
         self._spread_failure_cooldown_until_by_dir = {}
@@ -13250,6 +13285,7 @@ class OptionsEngine:
             self._pending_intraday_exit_engine = None
             self._pending_intraday_exit_lanes = set()
             self._pending_intraday_exit_symbols = set()
+            self._transition_context_snapshot = None
             if not self.has_intraday_position():
                 self._intraday_position_engine = None
             self._intraday_force_exit_hold_skip_log_date = {}

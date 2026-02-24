@@ -732,7 +732,11 @@ class MainOptionsMixin:
         micro_state = None
         vix_intraday = 0.0
         vix_level_cboe = None
-        regime_score = self._get_decision_regime_score_for_options()
+        transition_ctx = self._get_transition_execution_context()
+        regime_score = float(
+            transition_ctx.get("transition_score", self._get_decision_regime_score_for_options())
+            or self._get_decision_regime_score_for_options()
+        )
         intraday_scan_context_ready = False
         if self._should_scan_intraday() and self._qqq_at_open > 0 and not intraday_cooldown_active:
             # V5.3: Check position limits before scanning
@@ -755,7 +759,9 @@ class MainOptionsMixin:
                 vix_level_cboe = self._get_vix_level()
 
                 # Get macro regime score for direction conflict check
-                regime_score = self._get_decision_regime_score_for_options()
+                regime_score = float(
+                    transition_ctx.get("transition_score", regime_score) or regime_score
+                )
 
                 # V6.3: Calculate UVXY intraday change for conviction check
                 uvxy_pct = 0.0
@@ -802,7 +808,8 @@ class MainOptionsMixin:
                 forced_intraday_strategy = None
                 if bool(getattr(config, "ITM_ENGINE_ENABLED", False)):
                     itm_dir, itm_reason = self.options_engine.get_itm_direction_proposal(
-                        qqq_current=qqq_price
+                        qqq_current=qqq_price,
+                        transition_ctx=transition_ctx,
                     )
 
                 if micro_intraday_cooldown_active:
@@ -1051,6 +1058,7 @@ class MainOptionsMixin:
                         vix_level_override=vix_level_cboe,  # V6.2: CBOE VIX for level
                         underlying_atr=qqq_atr_value,  # V6.5: For delta-scaled ATR stops
                         micro_state=micro_state,  # Reuse approved state; avoid second-update drift
+                        transition_ctx=transition_ctx,
                     )
                     if intraday_signal:
                         intraday_signal = self._attach_option_trace_metadata(
@@ -1380,6 +1388,7 @@ class MainOptionsMixin:
                         underlying_atr=qqq_atr_value,
                         # Keep ITM sovereign from MICRO state/update flow.
                         micro_state=None,
+                        transition_ctx=transition_ctx,
                     )
                     if itm_signal is not None:
                         itm_signal = self._attach_option_trace_metadata(itm_signal, source="ITM")
@@ -1511,13 +1520,17 @@ class MainOptionsMixin:
                 return
         self._last_swing_scan_time = self.Time
 
-        regime_score = self._get_decision_regime_score_for_options()
+        regime_score = float(
+            transition_ctx.get("transition_score", self._get_decision_regime_score_for_options())
+            or self._get_decision_regime_score_for_options()
+        )
         context = self._resolve_vass_direction_context(
             regime_score=regime_score,
             size_multiplier=size_multiplier,
             bull_profile_log_prefix="VASS_BULL_PROFILE_BLOCK_INTRADAY",
             clamp_log_prefix="VASS_CLAMP_BLOCK_INTRADAY",
             shock_log_prefix="VASS_SHOCK_OVERRIDE",
+            transition_ctx=transition_ctx,
         )
         if context is None:
             # No trade - either NEUTRAL macro with no conviction, or guarded block.

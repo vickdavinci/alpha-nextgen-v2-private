@@ -449,6 +449,19 @@ class AlphaNextGen(QCAlgorithm):
             "OTHER": {},
         }
         self._diag_intraday_results_by_engine = {"MICRO": 0, "ITM": 0, "OTHER": 0}
+        self._diag_transition_derisk_counts = {
+            "de_risk_on_deterioration": 0,
+            "de_risk_on_recovery": 0,
+        }
+        self._diag_transition_derisk_counts_by_engine = {
+            "VASS": {"de_risk_on_deterioration": 0, "de_risk_on_recovery": 0},
+            "ITM": {"de_risk_on_deterioration": 0, "de_risk_on_recovery": 0},
+            "MICRO": {"de_risk_on_deterioration": 0, "de_risk_on_recovery": 0},
+            "OTHER": {"de_risk_on_deterioration": 0, "de_risk_on_recovery": 0},
+        }
+        self._transition_execution_context: Optional[Dict[str, Any]] = None
+        self._transition_execution_context_minute_key: Optional[str] = None
+        self._transition_execution_context_sample_seq: int = -1
         self._last_micro_update_log_signature = None
         self._last_micro_update_log_time = None
         self._last_spread_construct_fail_log_at = None
@@ -1869,6 +1882,7 @@ class AlphaNextGen(QCAlgorithm):
         bull_profile_log_prefix: str,
         clamp_log_prefix: str,
         shock_log_prefix: str,
+        transition_ctx: Optional[Dict[str, Any]] = None,
     ) -> Optional[Tuple[OptionDirection, str, Any, float, bool, str, str, str, str,]]:
         """
         Resolve VASS direction + sizing context with shared guard rails.
@@ -1879,7 +1893,11 @@ class AlphaNextGen(QCAlgorithm):
             resolved_direction_str) or None when blocked/no-trade.
         """
         current_date_str = self.Time.strftime("%Y-%m-%d")
-        transition_ctx = self._get_regime_transition_context()
+        transition_ctx = (
+            dict(transition_ctx)
+            if isinstance(transition_ctx, dict)
+            else self._get_transition_execution_context()
+        )
         regime_for_vass = float(
             transition_ctx.get("transition_score", regime_score) or regime_score
         )
@@ -3539,6 +3557,11 @@ class AlphaNextGen(QCAlgorithm):
         for _store in self._diag_intraday_drop_reason_counts_by_engine.values():
             _store.clear()
         self._diag_transition_path_counts.clear()
+        for _k in self._diag_transition_derisk_counts.keys():
+            self._diag_transition_derisk_counts[_k] = 0
+        for _store in self._diag_transition_derisk_counts_by_engine.values():
+            for _k in list(_store.keys()):
+                _store[_k] = 0
         for _k in self._diag_intraday_results_by_engine.keys():
             self._diag_intraday_results_by_engine[_k] = 0
         self._diag_intraday_candidate_ids_logged.clear()
@@ -3549,6 +3572,14 @@ class AlphaNextGen(QCAlgorithm):
         self._last_intraday_diag_log_by_key.clear()
         self._high_freq_log_seen_counts.clear()
         self._high_freq_log_suppressed_counts.clear()
+        self._transition_execution_context = None
+        self._transition_execution_context_minute_key = None
+        self._transition_execution_context_sample_seq = -1
+        if hasattr(self, "options_engine") and self.options_engine is not None:
+            try:
+                self.options_engine.clear_transition_context_snapshot()
+            except Exception:
+                pass
         # V3.0 P1-B: Exit retry trackers are intraday plumbing only; clear daily.
         if self._pending_exit_orders:
             cleared = len(self._pending_exit_orders)
@@ -6096,7 +6127,11 @@ class AlphaNextGen(QCAlgorithm):
 
         # Get current values
         qqq_price, adx_value, ma200_value, ma50_value = self._get_options_market_snapshot()
-        regime_score = self._get_decision_regime_score_for_options()
+        transition_ctx = self._get_transition_execution_context()
+        regime_score = float(
+            transition_ctx.get("transition_score", self._get_decision_regime_score_for_options())
+            or self._get_decision_regime_score_for_options()
+        )
 
         # V2.1: Calculate IV rank from options chain
         iv_rank = self._calculate_iv_rank(chain)
@@ -6113,6 +6148,7 @@ class AlphaNextGen(QCAlgorithm):
             bull_profile_log_prefix="VASS_BULL_PROFILE_BLOCK",
             clamp_log_prefix="VASS_CLAMP_BLOCK",
             shock_log_prefix="VASS_SHOCK_OVERRIDE_EOD",
+            transition_ctx=transition_ctx,
         )
         if context is None:
             return
@@ -7823,6 +7859,10 @@ class AlphaNextGen(QCAlgorithm):
         if not self.options_engine.has_position():
             return
 
+        # Transition handoff: de-risk wrong-way open positions immediately after overlay flips.
+        if self._apply_transition_handoff_open_position_derisk(data):
+            return
+
         # V2.3: Check spread exit conditions if we have a spread position
         if self.options_engine.has_spread_position():
             self._check_spread_exit(data)
@@ -8657,6 +8697,195 @@ class AlphaNextGen(QCAlgorithm):
             "base_candidate": str(raw.get("base_candidate", "NEUTRAL")).upper(),
             "sample_seq": sample_seq,
         }
+
+    def _record_transition_derisk_action(self, action: str, engine: str) -> None:
+        """Track transition-time open-position de-risk actions for RCA summaries."""
+        action_key = str(action or "").strip().lower()
+        if action_key not in {"de_risk_on_deterioration", "de_risk_on_recovery"}:
+            return
+        self._diag_transition_derisk_counts[action_key] = (
+            int(self._diag_transition_derisk_counts.get(action_key, 0)) + 1
+        )
+        engine_bucket = str(engine or "OTHER").upper()
+        if engine_bucket not in self._diag_transition_derisk_counts_by_engine:
+            engine_bucket = "OTHER"
+        store = self._diag_transition_derisk_counts_by_engine.setdefault(
+            engine_bucket,
+            {"de_risk_on_deterioration": 0, "de_risk_on_recovery": 0},
+        )
+        store[action_key] = int(store.get(action_key, 0)) + 1
+
+    def _get_transition_execution_context(self) -> Dict[str, Any]:
+        """Return one transition snapshot per minute/sample for all options execution paths."""
+        minute_key = self.Time.strftime("%Y-%m-%d %H:%M")
+        sample_seq = int(getattr(self, "_regime_detector_sample_seq", 0))
+        cached = (
+            dict(self._transition_execution_context)
+            if isinstance(self._transition_execution_context, dict)
+            else None
+        )
+        if (
+            cached is not None
+            and self._transition_execution_context_minute_key == minute_key
+            and self._transition_execution_context_sample_seq == sample_seq
+        ):
+            if hasattr(self, "options_engine") and self.options_engine is not None:
+                try:
+                    self.options_engine.set_transition_context_snapshot(cached)
+                except Exception:
+                    pass
+            return cached
+
+        ctx = self._get_regime_transition_context()
+        if not isinstance(ctx, dict):
+            ctx = {}
+        self._transition_execution_context = dict(ctx)
+        self._transition_execution_context_minute_key = minute_key
+        self._transition_execution_context_sample_seq = int(
+            ctx.get("sample_seq", sample_seq) or sample_seq
+        )
+        if hasattr(self, "options_engine") and self.options_engine is not None:
+            try:
+                self.options_engine.set_transition_context_snapshot(ctx)
+            except Exception:
+                pass
+        return dict(ctx)
+
+    def _apply_transition_handoff_open_position_derisk(self, data: Slice) -> bool:
+        """
+        Transition handoff: de-risk existing wrong-way positions early after overlay flips.
+
+        Returns:
+            True when de-risk exits were queued this cycle.
+        """
+        if not bool(getattr(config, "TRANSITION_HANDOFF_OPEN_DERISK_ENABLED", True)):
+            return False
+        if not self._is_primary_market_open():
+            return False
+        if not hasattr(self, "options_engine") or self.options_engine is None:
+            return False
+
+        ctx = self._get_transition_execution_context()
+        overlay = str(ctx.get("transition_overlay", "") or "").upper()
+        if overlay not in {"DETERIORATION", "RECOVERY"}:
+            return False
+
+        bars_since_flip = int(ctx.get("overlay_bars_since_flip", 999) or 999)
+        derisk_bars = max(1, int(getattr(config, "TRANSITION_HANDOFF_OPEN_DERISK_BARS", 4)))
+        if bars_since_flip >= derisk_bars:
+            return False
+
+        action_key = (
+            "de_risk_on_deterioration" if overlay == "DETERIORATION" else "de_risk_on_recovery"
+        )
+        queued_any = False
+
+        # De-risk open VASS spreads first.
+        for spread in list(self.options_engine.get_spread_positions() or []):
+            spread_type = str(getattr(spread, "spread_type", "") or "").upper()
+            is_bullish_spread = spread_type in {"BULL_CALL", "BULL_CALL_DEBIT", "BULL_PUT_CREDIT"}
+            is_bearish_spread = spread_type in {"BEAR_PUT", "BEAR_PUT_DEBIT", "BEAR_CALL_CREDIT"}
+            wrong_way = (overlay == "DETERIORATION" and is_bullish_spread) or (
+                overlay == "RECOVERY" and is_bearish_spread
+            )
+            if not wrong_way:
+                continue
+
+            long_symbol = self._normalize_symbol_str(spread.long_leg.symbol)
+            short_symbol = self._normalize_symbol_str(spread.short_leg.symbol)
+            if self._has_open_order_for_symbol(long_symbol) or self._has_open_order_for_symbol(
+                short_symbol
+            ):
+                continue
+
+            reason = f"SPREAD_EXIT: TRANSITION_DERISK_{overlay}"
+            signal = TargetWeight(
+                symbol=long_symbol,
+                target_weight=0.0,
+                source="OPT",
+                urgency=Urgency.IMMEDIATE,
+                reason=reason,
+                requested_quantity=spread.num_spreads,
+                metadata={
+                    "spread_close_short": True,
+                    "spread_short_leg_symbol": short_symbol,
+                    "spread_short_leg_quantity": spread.num_spreads,
+                    "spread_key": self._build_spread_runtime_key(spread),
+                    "exit_type": f"TRANSITION_DERISK_{overlay}",
+                },
+            )
+            self._normalize_spread_close_quantities(signal)
+            self.portfolio_router.receive_signal(signal)
+            self._record_spread_exit_reason(self._build_spread_runtime_key(spread), reason)
+            self._diag_spread_exit_signal_count += 1
+            self._diag_spread_exit_submit_count += 1
+            self._record_transition_derisk_action(action_key, "VASS")
+            self.Log(
+                f"TRANSITION_OPEN_DERISK: VASS queued | Overlay={overlay} | "
+                f"Type={spread_type} | BarsSinceFlip={bars_since_flip}/{derisk_bars}"
+            )
+            queued_any = True
+
+        # De-risk open ITM/MICRO wrong-way single-leg options.
+        for intraday_pos in list(self.options_engine.get_intraday_positions() or []):
+            if intraday_pos is None or getattr(intraday_pos, "contract", None) is None:
+                continue
+            symbol_key = self._normalize_symbol_str(intraday_pos.contract.symbol)
+            if not symbol_key:
+                continue
+            if self._has_open_non_oco_order_for_symbol(symbol_key):
+                continue
+            if self.options_engine.has_pending_intraday_exit(symbol=symbol_key):
+                continue
+
+            strategy_name = str(getattr(intraday_pos, "entry_strategy", "") or "").upper()
+            if strategy_name == IntradayStrategy.PROTECTIVE_PUTS.value:
+                continue
+
+            direction = getattr(intraday_pos.contract, "direction", None)
+            is_call = direction == OptionDirection.CALL or (
+                direction is None and "C" in symbol_key and "P" not in symbol_key
+            )
+            is_put = direction == OptionDirection.PUT or (
+                direction is None and "P" in symbol_key and "C" not in symbol_key
+            )
+            wrong_way = (overlay == "DETERIORATION" and is_call) or (
+                overlay == "RECOVERY" and is_put
+            )
+            if not wrong_way:
+                continue
+            if not self.options_engine.mark_pending_intraday_exit(symbol_key):
+                continue
+
+            live_qty = abs(self._get_option_holding_quantity(symbol_key))
+            if live_qty <= 0:
+                live_qty = abs(int(getattr(intraday_pos, "num_contracts", 0) or 0))
+            if live_qty <= 0:
+                continue
+
+            lane = self.options_engine._find_intraday_lane_by_symbol(symbol_key)
+            engine_bucket = "ITM" if str(lane or "").upper() == "ITM" else "MICRO"
+            self.portfolio_router.receive_signal(
+                TargetWeight(
+                    symbol=symbol_key,
+                    target_weight=0.0,
+                    source="OPT_INTRADAY",
+                    urgency=Urgency.IMMEDIATE,
+                    reason=f"TRANSITION_DERISK_{overlay}",
+                    requested_quantity=live_qty,
+                    metadata={"intraday_strategy": str(strategy_name or "UNKNOWN")},
+                )
+            )
+            self._record_transition_derisk_action(action_key, engine_bucket)
+            self.Log(
+                f"TRANSITION_OPEN_DERISK: {engine_bucket} queued | Overlay={overlay} | "
+                f"Symbol={symbol_key[-20:]} | BarsSinceFlip={bars_since_flip}/{derisk_bars}"
+            )
+            queued_any = True
+
+        if queued_any:
+            self._process_immediate_signals()
+        return queued_any
 
     def _record_regime_decision_event(
         self,

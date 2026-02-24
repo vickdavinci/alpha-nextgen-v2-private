@@ -121,6 +121,22 @@ def log_daily_summary(algo) -> None:
             out.append(f"{engine}[{_top_counts(stores.get(engine, {}), top_n=3)}]")
         return " ".join(out)
 
+    def _fmt_transition_derisk_totals() -> str:
+        store = getattr(algo, "_diag_transition_derisk_counts", {}) or {}
+        det = int(store.get("de_risk_on_deterioration", 0))
+        rec = int(store.get("de_risk_on_recovery", 0))
+        return f"DET:{det};REC:{rec}"
+
+    def _fmt_transition_derisk_by_engine() -> str:
+        store = getattr(algo, "_diag_transition_derisk_counts_by_engine", {}) or {}
+        out = []
+        for engine in ("VASS", "ITM", "MICRO"):
+            row = store.get(engine, {}) or {}
+            det = int(row.get("de_risk_on_deterioration", 0))
+            rec = int(row.get("de_risk_on_recovery", 0))
+            out.append(f"{engine}[DET:{det};REC:{rec}]")
+        return " ".join(out)
+
     vass_reject_top = _top_counts(getattr(algo, "_diag_vass_reject_reason_counts", {}), top_n=5)
     intraday_drop_top = _top_counts(
         getattr(algo, "_diag_intraday_drop_reason_counts", {}),
@@ -193,6 +209,8 @@ def log_daily_summary(algo) -> None:
         f"TopRouterRejectsByEngine={_fmt_engine_top_rejects()} | "
         f"VASSRejectTop={vass_reject_top} | "
         f"VASSMFE(Peak/T1/T2/Lock/Tail)={vass_mfe_peak:.1%}/{vass_mfe_t1}/{vass_mfe_t2}/{vass_mfe_lock_exits}/{vass_tail_cap_exits} | "
+        f"TransitionDeRisk={_fmt_transition_derisk_totals()} | "
+        f"TransitionDeRiskByEngine={_fmt_transition_derisk_by_engine()} | "
         f"ExitPathCounts={exit_counts_str} | "
         f"ExitPathPnL={exit_pnl_str} | "
         f"ExitByEngine={_fmt_engine_exit_diag()} | "
