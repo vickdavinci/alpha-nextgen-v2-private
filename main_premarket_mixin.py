@@ -204,6 +204,19 @@ class MainPremarketMixin:
         # Reconcile positions with broker
         self._reconcile_positions(mode="sod")
 
+    def _on_weekly_reset(self) -> None:
+        """
+        Weekly reset at Monday 09:30 ET.
+
+        Resets weekly breaker baseline for new week.
+        """
+        # Skip during warmup
+        if self.IsWarmingUp:
+            return
+
+        equity = self.Portfolio.TotalPortfolioValue
+        self.risk_engine.set_week_start_equity(equity)
+
     def _schedule_dynamic_eod_events(self) -> None:
         """
         V3.0: Schedule EOD events dynamically based on actual market close time.

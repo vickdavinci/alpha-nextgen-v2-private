@@ -150,6 +150,7 @@ class AlphaNextGen(QCAlgorithm):
     )
     _on_pre_market_setup = MainPremarketMixin._on_pre_market_setup
     _on_sod_baseline = MainPremarketMixin._on_sod_baseline
+    _on_weekly_reset = MainPremarketMixin._on_weekly_reset
     _schedule_dynamic_eod_events = MainPremarketMixin._schedule_dynamic_eod_events
     _check_premarket_itm_shorts = MainPremarketMixin._check_premarket_itm_shorts
     _get_premarket_vix_gap_proxy_pct = MainPremarketMixin._get_premarket_vix_gap_proxy_pct
@@ -1875,19 +1876,6 @@ class AlphaNextGen(QCAlgorithm):
         self._flush_signal_lifecycle_artifact()
         self._flush_router_rejection_artifact()
         self._flush_order_lifecycle_artifact()
-
-    def _on_weekly_reset(self) -> None:
-        """
-        Weekly reset at Monday 09:30 ET.
-
-        Resets weekly breaker baseline for new week.
-        """
-        # Skip during warmup
-        if self.IsWarmingUp:
-            return
-
-        equity = self.Portfolio.TotalPortfolioValue
-        self.risk_engine.set_week_start_equity(equity)
 
     # =========================================================================
     # V2.9: SETTLEMENT-AWARE TRADING (Bug #6 Fix)
