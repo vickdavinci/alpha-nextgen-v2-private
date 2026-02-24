@@ -5,6 +5,13 @@ from models.enums import RegimeLevel
 
 
 def log_daily_summary(algo) -> None:
+    def _log(message: str, priority: int = 2) -> None:
+        budget_log = getattr(algo, "_budget_log", None)
+        if callable(budget_log):
+            budget_log(message, priority=priority)
+            return
+        algo.Log(message)
+
     ending_equity = algo.Portfolio.TotalPortfolioValue
     regime_score = float(
         algo._last_regime_score
@@ -33,24 +40,38 @@ def log_daily_summary(algo) -> None:
         days_running=algo.cold_start_engine.get_days_running(),
     )
 
-    algo.Log(summary)
+    _log(summary, priority=1)
     spread_exit_fill_strict = algo._diag_spread_exit_fill_count
     if algo._order_lifecycle_suppressed_count > 0:
-        algo.Log(
+        _log(
             f"ORDER_LIFECYCLE_CAP_HIT: Logged={algo._order_lifecycle_log_count} | "
             f"Suppressed={algo._order_lifecycle_suppressed_count} | "
-            f"Cap={int(getattr(config, 'LOG_ORDER_LIFECYCLE_MAX_PER_DAY', 200))}"
+            f"Cap={int(getattr(config, 'LOG_ORDER_LIFECYCLE_MAX_PER_DAY', 200))}",
+            priority=2,
         )
     sampled_suppressed = getattr(algo, "_high_freq_log_suppressed_counts", {}) or {}
-    if sampled_suppressed:
+    budget_bytes = int(getattr(algo, "_log_budget_bytes_used", 0) or 0)
+    budget_supp_total = int(getattr(algo, "_log_budget_suppressed_total", 0) or 0)
+    budget_supp_by_priority = getattr(algo, "_log_budget_suppressed_by_priority", {}) or {}
+    if sampled_suppressed or budget_supp_total > 0:
         top_sampled = sorted(sampled_suppressed.items(), key=lambda kv: kv[1], reverse=True)[:5]
-        top_sampled_str = ";".join(f"{k}:{int(v)}" for k, v in top_sampled)
-        algo.Log(
+        top_sampled_str = (
+            ";".join(f"{k}:{int(v)}" for k, v in top_sampled) if top_sampled else "NONE"
+        )
+        budget_supp_str = (
+            f"P1:{int(budget_supp_by_priority.get('P1', 0))};"
+            f"P2:{int(budget_supp_by_priority.get('P2', 0))};"
+            f"P3:{int(budget_supp_by_priority.get('P3', 0))}"
+        )
+        _log(
             "LOG_BUDGET_SUMMARY: "
-            f"Suppressed={int(sum(sampled_suppressed.values()))} | "
+            f"SampleSuppressed={int(sum(sampled_suppressed.values()))} | "
             f"Top={top_sampled_str} | "
+            f"BytesUsed={budget_bytes} | "
+            f"BudgetSuppressed={budget_supp_total}({budget_supp_str}) | "
             f"SampleFirstN={int(getattr(config, 'LOG_HIGHFREQ_SAMPLE_FIRST_N_PER_KEY', 1))} | "
-            f"SampleEveryN={int(getattr(config, 'LOG_HIGHFREQ_SAMPLE_EVERY_N', 0))}"
+            f"SampleEveryN={int(getattr(config, 'LOG_HIGHFREQ_SAMPLE_EVERY_N', 0))}",
+            priority=1,
         )
 
     def _fmt_drop_rca_daily() -> str:
@@ -88,7 +109,7 @@ def log_daily_summary(algo) -> None:
 
     drop_rca_daily = _fmt_drop_rca_daily()
     if drop_rca_daily != "NONE":
-        algo.Log(f"DROP_RCA_DAILY: {drop_rca_daily}")
+        _log(f"DROP_RCA_DAILY: {drop_rca_daily}", priority=1)
 
     dte_order = ["2", "3", "4", "5", "OTHER"]
     fmt = lambda d: ",".join(f"{k}:{int(d.get(k, 0))}" for k in dte_order)
@@ -96,14 +117,15 @@ def log_daily_summary(algo) -> None:
         algo._diag_micro_drop_reason_by_dte.items(), key=lambda kv: kv[1], reverse=True
     )[:5]
     top_drop = ";".join(f"{k}={v}" for k, v in top_drop_pairs) if top_drop_pairs else "NONE"
-    algo.Log(
+    _log(
         "MICRO_DTE_DIAG_SUMMARY: "
         f"Cand[{fmt(algo._diag_micro_dte_candidates)}] | "
         f"Approved[{fmt(algo._diag_micro_dte_approved)}] | "
         f"Dropped[{fmt(algo._diag_micro_dte_dropped)}] | "
         f"Win[{fmt(algo._diag_micro_dte_win)}] | "
         f"Loss[{fmt(algo._diag_micro_dte_loss)}] | "
-        f"TopDrop[{top_drop}]"
+        f"TopDrop[{top_drop}]",
+        priority=1,
     )
 
     top_router_rejects = sorted(
@@ -295,4 +317,4 @@ def log_daily_summary(algo) -> None:
         compact_parts.append("KSSA=1")
     if ks_skip_until:
         compact_parts.append(f"KSU={ks_skip_until}")
-    algo.Log("OPTIONS_DIAG_SUMMARY: " + " | ".join(compact_parts))
+    _log("OPTIONS_DIAG_SUMMARY: " + " | ".join(compact_parts), priority=1)
