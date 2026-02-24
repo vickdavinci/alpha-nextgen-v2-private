@@ -3277,33 +3277,69 @@ class OptionsEngine:
 
     def check_intraday_entry_signal(
         self,
-        regime_score: float,
         vix_current: float,
-        adx_value: float,
-        current_price: float,
-        ma200_value: float,
-        iv_rank: float,
-        current_hour: int,
-        current_minute: int,
-        current_date: str,
-        portfolio_value: float,
+        vix_open: float = 0.0,
+        qqq_current: float = 0.0,
+        qqq_open: float = 0.0,
+        current_hour: int = 0,
+        current_minute: int = 0,
+        current_time: str = "",
+        portfolio_value: float = 0.0,
+        raw_portfolio_value: Optional[float] = None,
+        best_contract: Optional[OptionContract] = None,
+        size_multiplier: float = 1.0,
+        macro_regime_score: float = 50.0,
+        governor_scale: float = 1.0,
+        direction: Optional[OptionDirection] = None,
+        forced_entry_strategy: Optional[IntradayStrategy] = None,
+        vix_level_override: Optional[float] = None,
+        underlying_atr: float = 0.0,
+        micro_state: Optional[MicroRegimeState] = None,
+        transition_ctx: Optional[Dict[str, Any]] = None,
+        # Compatibility aliases retained at wrapper boundary.
+        regime_score: Optional[float] = None,
+        adx_value: float = 0.0,
+        current_price: float = 0.0,
+        ma200_value: float = 0.0,
+        iv_rank: float = 0.0,
+        current_date: str = "",
         strategy_override: Optional[IntradayStrategy] = None,
         current_dte: Optional[int] = None,
     ) -> Optional[TargetWeight]:
+        _ = (adx_value, ma200_value, iv_rank, current_dte)
+        if qqq_current <= 0:
+            qqq_current = float(current_price or 0.0)
+        if qqq_open <= 0:
+            qqq_open = float(current_price or qqq_current or 0.0)
+        if not current_time:
+            current_time = current_date
+        if raw_portfolio_value is None:
+            raw_portfolio_value = portfolio_value
+        if forced_entry_strategy is None and strategy_override is not None:
+            forced_entry_strategy = strategy_override
+        if regime_score is not None:
+            macro_regime_score = float(regime_score)
         return check_intraday_entry_signal_impl(
             self,
-            regime_score=regime_score,
             vix_current=vix_current,
-            adx_value=adx_value,
-            current_price=current_price,
-            ma200_value=ma200_value,
-            iv_rank=iv_rank,
+            vix_open=vix_open,
+            qqq_current=qqq_current,
+            qqq_open=qqq_open,
             current_hour=current_hour,
             current_minute=current_minute,
-            current_date=current_date,
+            current_time=current_time,
             portfolio_value=portfolio_value,
-            strategy_override=strategy_override,
-            current_dte=current_dte,
+            raw_portfolio_value=raw_portfolio_value,
+            best_contract=best_contract,
+            size_multiplier=size_multiplier,
+            macro_regime_score=macro_regime_score,
+            governor_scale=governor_scale,
+            direction=direction,
+            forced_entry_strategy=forced_entry_strategy,
+            vix_level_override=vix_level_override,
+            underlying_atr=underlying_atr,
+            micro_state=micro_state,
+            transition_ctx=transition_ctx,
         )
 
     def check_intraday_force_exit(
