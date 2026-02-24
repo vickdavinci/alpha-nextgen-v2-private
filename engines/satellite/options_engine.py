@@ -7893,6 +7893,10 @@ class OptionsEngine:
                                             "spread_entry_debit": entry_debit,
                                             "spread_exit_estimated_net_value": current_spread_value,
                                             "spread_exit_code": "SPREAD_HARD_STOP_DURING_HOLD",
+                                            "spread_exit_reason": (
+                                                f"SPREAD_HARD_STOP_DURING_HOLD {pnl_pct:.1%} "
+                                                f"(lost > {hard_stop_pct:.0%} hard cap)"
+                                            ),
                                             "is_credit_spread": False,
                                             "spread_credit_received": 0.0,
                                         },
@@ -7947,6 +7951,10 @@ class OptionsEngine:
                                                 "spread_entry_debit": entry_debit,
                                                 "spread_exit_estimated_net_value": current_spread_value,
                                                 "spread_exit_code": "EOD_HOLD_RISK_GATE",
+                                                "spread_exit_reason": (
+                                                    f"EOD_HOLD_RISK_GATE {pnl_pct:.1%} "
+                                                    f"(<= {eod_gate_pct:.0%} at EOD during hold)"
+                                                ),
                                                 "is_credit_spread": False,
                                                 "spread_credit_received": 0.0,
                                             },
@@ -8605,6 +8613,8 @@ class OptionsEngine:
                     ),
                     "spread_exit_estimated_net_value": float(current_spread_value),
                     "spread_exit_code": exit_code,
+                    "spread_exit_reason": str(exit_reason),
+                    "spread_exit_profile": vass_profile_tag,
                     "is_credit_spread": is_credit_spread,
                     "spread_credit_received": abs(spread.net_debit) if is_credit_spread else 0.0,
                 },

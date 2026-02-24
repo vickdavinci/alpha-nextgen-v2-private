@@ -1786,6 +1786,51 @@ class PortfolioRouter:
         except Exception as e:
             return None, f"LIMIT_CALC_ERROR: {e}"
 
+    def _append_spread_exit_rca_tag(self, base_tag: str, metadata: Optional[Dict[str, Any]]) -> str:
+        """
+        Persist compact spread-exit RCA context in order tags.
+
+        This survives QC log truncation because orders.csv always carries tags.
+        """
+        tag = str(base_tag or "").strip()
+        md = dict(metadata or {})
+        if not tag or not bool(md.get("spread_close_short", False)):
+            return tag
+
+        additions: List[str] = []
+        exit_code = str(md.get("spread_exit_code", "") or "").strip().upper()
+        if exit_code:
+            additions.append(f"xcode={exit_code[:32]}")
+        spread_type = str(md.get("spread_type", "") or "").strip().upper()
+        if spread_type:
+            additions.append(f"xst={spread_type[:20]}")
+        try:
+            entry_debit = float(md.get("spread_entry_debit", 0.0) or 0.0)
+            if entry_debit > 0:
+                additions.append(f"ed={entry_debit:.2f}")
+        except Exception:
+            pass
+        try:
+            est_net = float(md.get("spread_exit_estimated_net_value", 0.0) or 0.0)
+            additions.append(f"em={est_net:.2f}")
+        except Exception:
+            pass
+
+        if not additions:
+            return tag
+
+        max_tag_len = 220
+        out = tag
+        for part in additions:
+            marker = part.split("=", 1)[0].lower()
+            if marker and f"{marker}=" in out.lower():
+                continue
+            candidate = f"{out}|{part}"
+            if len(candidate) > max_tag_len:
+                break
+            out = candidate
+        return out
+
     # =========================================================================
     # Step 1: COLLECT
     # =========================================================================
@@ -3066,6 +3111,7 @@ class PortfolioRouter:
                     if isinstance(order.tag, str) and order.tag.strip()
                     else f"ROUTER_{order.order_type.value}_{order.side.value}"
                 )
+                effective_tag = self._append_spread_exit_rca_tag(effective_tag, order.metadata)
 
                 # V2.3.9: Handle combo orders for spreads
                 if order.is_combo and order.combo_short_symbol and order.combo_short_quantity:

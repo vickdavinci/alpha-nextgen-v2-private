@@ -2029,6 +2029,8 @@ class MainOptionsMixin:
                             "spread_short_leg_symbol": short_symbol,
                             "spread_short_leg_quantity": spread.num_spreads,
                             "spread_key": self._build_spread_runtime_key(spread),
+                            "spread_exit_code": "SPREAD_CLOSE_RETRY",
+                            "spread_exit_reason": f"SPREAD_CLOSE_RETRY:{retry_reason}",
                         },
                     )
                 )
@@ -2077,6 +2079,8 @@ class MainOptionsMixin:
                             ),
                             "spread_short_leg_quantity": spread.num_spreads,
                             "spread_key": self._build_spread_runtime_key(spread),
+                            "spread_exit_code": "0DTE_TIME_DECAY",
+                            "spread_exit_reason": "0DTE_TIME_DECAY",
                         },
                     )
                 )
@@ -2174,6 +2178,8 @@ class MainOptionsMixin:
                                     "spread_short_leg_quantity": spread.num_spreads,
                                     "spread_key": self._build_spread_runtime_key(spread),
                                     "exit_type": "TIME_BASED_NO_QUOTE",
+                                    "spread_exit_code": "TIME_BASED_NO_QUOTE",
+                                    "spread_exit_reason": str(time_exit_reason),
                                 },
                             )
                         )
@@ -2277,6 +2283,8 @@ class MainOptionsMixin:
                                 "spread_short_leg_quantity": spread.num_spreads,
                                 "spread_key": self._build_spread_runtime_key(spread),
                                 "exit_type": "OVERLAY_STRESS_EXIT",
+                                "spread_exit_code": "OVERLAY_STRESS_EXIT",
+                                "spread_exit_reason": "OVERLAY_STRESS_EXIT",
                             },
                         )
                     )
