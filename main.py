@@ -120,6 +120,7 @@ class AlphaNextGen(QCAlgorithm):
     )
     _on_intraday_reconcile = MainReconcileMixin._on_intraday_reconcile
     _is_primary_market_open = MainReconcileMixin._is_primary_market_open
+    _reconcile_spread_state = MainReconcileMixin._reconcile_spread_state
     _reconcile_positions = MainReconcileMixin._reconcile_positions
     _check_expiration_hammer_v2 = MainIntradayCloseMixin._check_expiration_hammer_v2
     _close_options_atomic = MainIntradayCloseMixin._close_options_atomic
@@ -1848,14 +1849,6 @@ class AlphaNextGen(QCAlgorithm):
 
         # V9.2: Guarded Friday sweep (single pass/day).
         self._reconcile_spread_state()
-
-    def _reconcile_spread_state(self) -> None:
-        """V9.2: Run a single guarded Friday spread reconcile sweep."""
-        today = str(self.Time.date())
-        if self._friday_spread_reconcile_date == today:
-            return
-        self._friday_spread_reconcile_date = today
-        self._reconcile_positions(mode="friday")
 
     def _on_vix_spike_check(self) -> None:
         """

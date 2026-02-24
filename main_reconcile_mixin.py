@@ -32,6 +32,14 @@ class MainReconcileMixin:
                 return
         self._reconcile_positions(mode="intraday")
 
+    def _reconcile_spread_state(self) -> None:
+        """V9.2: Run a single guarded Friday spread reconcile sweep."""
+        today = str(self.Time.date())
+        if self._friday_spread_reconcile_date == today:
+            return
+        self._friday_spread_reconcile_date = today
+        self._reconcile_positions(mode="friday")
+
     def _reconcile_positions(self, mode: str = "sod") -> None:
         """
         Reconcile internal position tracking with broker state.
