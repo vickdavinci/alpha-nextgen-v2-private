@@ -113,6 +113,7 @@ class AlphaNextGen(QCAlgorithm):
     _record_intraday_drop_reason = MainOptionsMixin._record_intraday_drop_reason
     _record_vass_reject_reason = MainOptionsMixin._record_vass_reject_reason
     _inc_transition_path_counter = MainOptionsMixin._inc_transition_path_counter
+    _normalize_spread_close_quantities = MainOptionsMixin._normalize_spread_close_quantities
     _is_terminal_exit_retry_tag = MainOrdersMixin._is_terminal_exit_retry_tag
     _on_moo_fallback = MainOrdersMixin._on_moo_fallback
     _cleanup_stale_orders = MainOrdersMixin._cleanup_stale_orders
@@ -1505,29 +1506,6 @@ class AlphaNextGen(QCAlgorithm):
     # =========================================================================
     # ORDER EVENT HANDLER
     # =========================================================================
-
-    def _normalize_spread_close_quantities(self, signal: TargetWeight) -> None:
-        """Normalize spread close quantities from live holdings to avoid stale qty closes."""
-        try:
-            md = signal.metadata or {}
-            if not bool(md.get("spread_close_short", False)):
-                return
-            long_symbol = self._normalize_symbol_str(signal.symbol)
-            short_symbol = self._normalize_symbol_str(md.get("spread_short_leg_symbol", ""))
-            if not long_symbol or not short_symbol:
-                return
-            live_long = abs(self._get_option_holding_quantity(long_symbol))
-            live_short = abs(self._get_option_holding_quantity(short_symbol))
-            if live_long <= 0 or live_short <= 0:
-                return
-            close_qty = min(live_long, live_short)
-            if close_qty <= 0:
-                return
-            signal.requested_quantity = int(close_qty)
-            md["spread_short_leg_quantity"] = int(close_qty)
-            signal.metadata = md
-        except Exception:
-            return
 
     # =========================================================================
     # STATE MANAGEMENT HELPERS

@@ -388,6 +388,29 @@ class MainOptionsMixin:
             int(self._diag_transition_path_counts.get(label, 0)) + 1
         )
 
+    def _normalize_spread_close_quantities(self, signal: TargetWeight) -> None:
+        """Normalize spread close quantities from live holdings to avoid stale qty closes."""
+        try:
+            md = signal.metadata or {}
+            if not bool(md.get("spread_close_short", False)):
+                return
+            long_symbol = self._normalize_symbol_str(signal.symbol)
+            short_symbol = self._normalize_symbol_str(md.get("spread_short_leg_symbol", ""))
+            if not long_symbol or not short_symbol:
+                return
+            live_long = abs(self._get_option_holding_quantity(long_symbol))
+            live_short = abs(self._get_option_holding_quantity(short_symbol))
+            if live_long <= 0 or live_short <= 0:
+                return
+            close_qty = min(live_long, live_short)
+            if close_qty <= 0:
+                return
+            signal.requested_quantity = int(close_qty)
+            md["spread_short_leg_quantity"] = int(close_qty)
+            signal.metadata = md
+        except Exception:
+            return
+
     def _select_intraday_option_contract(
         self,
         chain,
