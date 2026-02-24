@@ -275,6 +275,85 @@ class VASSEntryEngine:
 
         return True, "R_OK", "PASS"
 
+    def run_eod_entry_cycle(
+        self,
+        *,
+        host: Any,
+        chain: Any,
+        regime_score: float,
+        qqq_price: float,
+        adx_value: float,
+        ma200_value: float,
+        ma50_value: float,
+        iv_rank: float,
+        size_multiplier: float,
+        is_eod_scan: bool,
+    ) -> None:
+        """Resolve VASS direction context and dispatch directional spread scans."""
+        algorithm = getattr(host, "algorithm", None)
+        if algorithm is None:
+            return
+
+        transition_ctx = (
+            algorithm._get_transition_execution_context()
+            if hasattr(algorithm, "_get_transition_execution_context")
+            else host._get_regime_transition_context(regime_score)
+        )
+        regime_score = float(
+            transition_ctx.get(
+                "transition_score", algorithm._get_decision_regime_score_for_options()
+            )
+            or algorithm._get_decision_regime_score_for_options()
+        )
+        context = host.resolve_vass_direction_context(
+            regime_score=regime_score,
+            size_multiplier=size_multiplier,
+            bull_profile_log_prefix="VASS_BULL_PROFILE_BLOCK",
+            clamp_log_prefix="VASS_CLAMP_BLOCK",
+            shock_log_prefix="VASS_SHOCK_OVERRIDE_EOD",
+            transition_ctx=transition_ctx,
+        )
+        if context is None:
+            return
+        (
+            direction,
+            direction_str,
+            _overlay_state,
+            size_multiplier,
+            vass_has_conviction,
+            vass_reason,
+            macro_direction,
+            resolve_reason,
+            resolved_direction,
+        ) = context
+
+        if direction == OptionDirection.CALL and algorithm._is_premarket_ladder_call_block_active():
+            algorithm.Log(
+                "OPTIONS_EOD: CALL blocked by pre-market ladder | "
+                f"{algorithm._premarket_vix_ladder_reason}"
+            )
+            return
+
+        if vass_has_conviction:
+            algorithm.Log(
+                f"OPTIONS_VASS_CONVICTION: {vass_reason} | Macro={macro_direction} | "
+                f"Resolved={resolved_direction} | {resolve_reason}"
+            )
+
+        host.scan_spread_for_direction(
+            chain=chain,
+            direction=direction,
+            direction_str=direction_str,
+            regime_score=regime_score,
+            qqq_price=qqq_price,
+            adx_value=adx_value,
+            ma200_value=ma200_value,
+            ma50_value=ma50_value,
+            iv_rank=iv_rank,
+            size_multiplier=size_multiplier,
+            is_eod_scan=is_eod_scan,
+        )
+
     def run_intraday_entry_cycle(
         self,
         *,

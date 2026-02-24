@@ -4238,68 +4238,18 @@ class OptionsEngine:
         is_eod_scan: bool,
     ) -> None:
         """Resolve VASS direction context and dispatch directional spread scans."""
-        if self.algorithm is None:
-            return
-        alg = self.algorithm
-
-        transition_ctx = (
-            alg._get_transition_execution_context()
-            if hasattr(alg, "_get_transition_execution_context")
-            else self._get_regime_transition_context(regime_score)
-        )
-        regime_score = float(
-            transition_ctx.get("transition_score", alg._get_decision_regime_score_for_options())
-            or alg._get_decision_regime_score_for_options()
-        )
-        context = self.resolve_vass_direction_context(
+        self._vass_entry_engine.run_eod_entry_cycle(
+            host=self,
+            chain=chain,
             regime_score=regime_score,
+            qqq_price=qqq_price,
+            adx_value=adx_value,
+            ma200_value=ma200_value,
+            ma50_value=ma50_value,
+            iv_rank=iv_rank,
             size_multiplier=size_multiplier,
-            bull_profile_log_prefix="VASS_BULL_PROFILE_BLOCK",
-            clamp_log_prefix="VASS_CLAMP_BLOCK",
-            shock_log_prefix="VASS_SHOCK_OVERRIDE_EOD",
-            transition_ctx=transition_ctx,
+            is_eod_scan=is_eod_scan,
         )
-        if context is None:
-            return
-        (
-            direction,
-            direction_str,
-            _overlay_state,
-            size_multiplier,
-            vass_has_conviction,
-            vass_reason,
-            macro_direction,
-            resolve_reason,
-            resolved_direction,
-        ) = context
-
-        if direction == OptionDirection.CALL and alg._is_premarket_ladder_call_block_active():
-            alg.Log(
-                f"OPTIONS_EOD: CALL blocked by pre-market ladder | {alg._premarket_vix_ladder_reason}"
-            )
-            return
-        directions_to_scan = [(direction, direction_str)]
-
-        if vass_has_conviction:
-            alg.Log(
-                f"OPTIONS_VASS_CONVICTION: {vass_reason} | Macro={macro_direction} | "
-                f"Resolved={resolved_direction} | {resolve_reason}"
-            )
-
-        for direction, direction_str in directions_to_scan:
-            self.scan_spread_for_direction(
-                chain=chain,
-                direction=direction,
-                direction_str=direction_str,
-                regime_score=regime_score,
-                qqq_price=qqq_price,
-                adx_value=adx_value,
-                ma200_value=ma200_value,
-                ma50_value=ma50_value,
-                iv_rank=iv_rank,
-                size_multiplier=size_multiplier,
-                is_eod_scan=is_eod_scan,
-            )
 
     def run_vass_intraday_entry_cycle(
         self,
