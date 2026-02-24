@@ -60,7 +60,10 @@ from engines.satellite.options_pending_guard import (
     clear_stale_pending_intraday_entry_if_orphaned_impl,
     clear_stale_pending_spread_entry_if_orphaned_impl,
 )
-from engines.satellite.options_position_manager import register_entry_impl
+from engines.satellite.options_position_manager import (
+    register_entry_impl,
+    register_spread_entry_impl,
+)
 from engines.satellite.options_primitives import (
     EntryScore,
     ExitOrderTracker,
@@ -3939,118 +3942,14 @@ class OptionsEngine:
         Returns:
             Created SpreadPosition, or None if no pending spread exists.
         """
-        if self._pending_spread_long_leg is None or self._pending_spread_short_leg is None:
-            self.log("SPREAD: register_spread_entry called but no pending spread - skipping")
-            return None
-
-        # Calculate actual net debit from fills
-        net_debit = long_leg_fill_price - short_leg_fill_price
-        width = self._pending_spread_width or abs(
-            self._pending_spread_short_leg.strike - self._pending_spread_long_leg.strike
-        )
-        # Debit spread: max profit = width - debit paid
-        # Credit spread (stored as negative net_debit): max profit = credit received
-        max_profit = width - net_debit if net_debit > 0 else abs(net_debit)
-
-        num_spreads = self._pending_num_contracts or 1
-        entry_score = self._pending_entry_score or 3.0
-
-        spread = SpreadPosition(
-            long_leg=self._pending_spread_long_leg,
-            short_leg=self._pending_spread_short_leg,
-            spread_type=self._pending_spread_type or "UNKNOWN",
-            net_debit=net_debit,
-            max_profit=max_profit,
-            width=width,
+        return register_spread_entry_impl(
+            self,
+            long_leg_fill_price=long_leg_fill_price,
+            short_leg_fill_price=short_leg_fill_price,
             entry_time=entry_time,
-            entry_score=entry_score,
-            num_spreads=num_spreads,
-            regime_at_entry=regime_score,
-            entry_vix=self._pending_spread_entry_vix,
+            current_date=current_date,
+            regime_score=regime_score,
         )
-
-        self._spread_neutrality_warn_by_key.pop(self._build_spread_key(spread), None)
-        self._spread_positions.append(spread)
-        self._spread_position = self._spread_positions[0] if self._spread_positions else None
-        spread_dir = (
-            OptionDirection.CALL
-            if self._spread_direction_label(spread.spread_type) == "BULLISH"
-            else OptionDirection.PUT
-            if self._spread_direction_label(spread.spread_type) == "BEARISH"
-            else None
-        )
-        signature = (
-            self._build_vass_signature(
-                spread_type=spread.spread_type,
-                direction=spread_dir,
-                long_leg_contract=spread.long_leg,
-            )
-            if spread.long_leg is not None
-            else ""
-        )
-        try:
-            entry_dt = datetime.strptime(entry_time[:19], "%Y-%m-%d %H:%M:%S")
-        except Exception:
-            entry_dt = self.algorithm.Time if self.algorithm is not None else None
-        self._record_vass_signature_entry(signature, entry_dt)
-        self._record_vass_direction_day_entry(spread_dir, entry_dt)
-
-        # V2.9: Update trade counter (Bug #4 fix) - Spreads are always swing mode
-        self._increment_trade_counter(OptionsMode.SWING)
-
-        spread_type_upper = str(spread.spread_type or "").upper()
-        if spread_type_upper in {
-            "BULL_PUT_CREDIT",
-            "BEAR_CALL_CREDIT",
-            SpreadStrategy.BULL_PUT_CREDIT.value,
-            SpreadStrategy.BEAR_CALL_CREDIT.value,
-        }:
-            # Credit spread telemetry: target is close-cost threshold to realize configured profit.
-            credit_target_pct = float(getattr(config, "CREDIT_SPREAD_PROFIT_TARGET", 0.50))
-            target_close_value = abs(net_debit) - (max_profit * credit_target_pct)
-            target_telemetry = f"TargetClose<=${target_close_value:.2f} ({credit_target_pct:.0%})"
-        else:
-            # Debit spread telemetry: mirror configured/adaptive target math from exit logic.
-            base_profit_pct = float(getattr(config, "SPREAD_PROFIT_TARGET_PCT", 0.50))
-            profit_multipliers = getattr(
-                config, "SPREAD_PROFIT_REGIME_MULTIPLIERS", {75: 1.0, 50: 1.0, 40: 1.0, 0: 1.0}
-            )
-            profit_multiplier = 1.0
-            for threshold in sorted(profit_multipliers.keys(), reverse=True):
-                if regime_score >= threshold:
-                    profit_multiplier = profit_multipliers[threshold]
-                    break
-            adaptive_profit_pct = base_profit_pct * profit_multiplier
-            commission_cost = num_spreads * config.SPREAD_COMMISSION_PER_CONTRACT
-            commission_per_share = commission_cost / (num_spreads * 100) if num_spreads > 0 else 0
-            target_spread_value = (
-                net_debit + (max_profit * adaptive_profit_pct) + commission_per_share
-            )
-            target_telemetry = f"Target=${target_spread_value:.2f} ({adaptive_profit_pct:.0%}, Comm ${commission_cost:.2f})"
-
-        self.log(
-            f"SPREAD: POSITION_REGISTERED | {spread.spread_type} | "
-            f"Long={spread.long_leg.strike} @ ${long_leg_fill_price:.2f} | "
-            f"Short={spread.short_leg.strike} @ ${short_leg_fill_price:.2f} | "
-            f"Net Debit=${net_debit:.2f} | Max Profit=${max_profit:.2f} | "
-            f"x{num_spreads} | {target_telemetry}",
-            trades_only=True,
-        )
-
-        # Clear pending state
-        self._pending_spread_long_leg = None
-        self._pending_spread_short_leg = None
-        self._pending_spread_type = None
-        self._pending_net_debit = None
-        self._pending_max_profit = None
-        self._pending_spread_width = None
-        self._pending_spread_entry_vix = None
-        self._pending_spread_entry_since = None
-        self._pending_num_contracts = None
-        self._pending_entry_score = None
-        self._rejection_margin_cap = None  # V2.21: Clear on successful fill
-
-        return spread
 
     # =========================================================================
     # V2.20: REJECTION RECOVERY METHODS
