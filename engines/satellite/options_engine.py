@@ -7600,6 +7600,8 @@ class OptionsEngine:
             "trail_activate_pct": float(getattr(config, "SPREAD_TRAIL_ACTIVATE_PCT", 0.22)),
             "trail_offset_pct": float(getattr(config, "SPREAD_TRAIL_OFFSET_PCT", 0.15)),
             "mfe_t2_floor_pct": float(getattr(config, "VASS_MFE_T2_FLOOR_PCT", 0.15)),
+            "hard_stop_pct": float(getattr(config, "SPREAD_HARD_STOP_LOSS_PCT", 0.40)),
+            "eod_gate_pct": float(getattr(config, "SPREAD_EOD_HOLD_RISK_GATE_PCT", -0.25)),
         }
         if not bool(getattr(config, "VASS_EXIT_TIERED_ENABLED", False)):
             return base_profile
@@ -7634,6 +7636,8 @@ class OptionsEngine:
                     ),
                     "trail_offset_pct": float(getattr(config, "VASS_TRAIL_OFFSET_LOW_VIX", 0.12)),
                     "mfe_t2_floor_pct": float(getattr(config, "VASS_MFE_T2_FLOOR_LOW_VIX", 0.12)),
+                    "hard_stop_pct": float(getattr(config, "VASS_HARD_STOP_LOW_VIX", 0.35)),
+                    "eod_gate_pct": float(getattr(config, "VASS_EOD_GATE_LOW_VIX", -0.20)),
                 }
             )
             return profile
@@ -7649,6 +7653,8 @@ class OptionsEngine:
                     ),
                     "trail_offset_pct": float(getattr(config, "VASS_TRAIL_OFFSET_HIGH_VIX", 0.20)),
                     "mfe_t2_floor_pct": float(getattr(config, "VASS_MFE_T2_FLOOR_HIGH_VIX", 0.25)),
+                    "hard_stop_pct": float(getattr(config, "VASS_HARD_STOP_HIGH_VIX", 0.45)),
+                    "eod_gate_pct": float(getattr(config, "VASS_EOD_GATE_HIGH_VIX", -0.35)),
                 }
             )
             return profile
@@ -7661,6 +7667,8 @@ class OptionsEngine:
                 "trail_activate_pct": float(getattr(config, "VASS_TRAIL_ACTIVATE_MED_VIX", 0.22)),
                 "trail_offset_pct": float(getattr(config, "VASS_TRAIL_OFFSET_MED_VIX", 0.15)),
                 "mfe_t2_floor_pct": float(getattr(config, "VASS_MFE_T2_FLOOR_MED_VIX", 0.18)),
+                "hard_stop_pct": float(getattr(config, "VASS_HARD_STOP_MED_VIX", 0.40)),
+                "eod_gate_pct": float(getattr(config, "VASS_EOD_GATE_MED_VIX", -0.25)),
             }
         )
         return profile
@@ -7770,7 +7778,7 @@ class OptionsEngine:
                             pnl = current_spread_value - entry_debit
                             pnl_pct = pnl / entry_debit
 
-                            hard_stop_pct = float(getattr(config, "SPREAD_HARD_STOP_LOSS_PCT", 0.0))
+                            hard_stop_pct = float(vass_exit_profile.get("hard_stop_pct", 0.0))
                             if hard_stop_pct > 0 and pnl_pct <= -hard_stop_pct:
                                 self.log(
                                     f"SPREAD_HARD_STOP_DURING_HOLD: {pnl_pct:.1%} <= -{hard_stop_pct:.0%} | "
@@ -7813,9 +7821,7 @@ class OptionsEngine:
                             eod_gate_enabled = bool(
                                 getattr(config, "SPREAD_EOD_HOLD_RISK_GATE_ENABLED", False)
                             )
-                            eod_gate_pct = float(
-                                getattr(config, "SPREAD_EOD_HOLD_RISK_GATE_PCT", -0.25)
-                            )
+                            eod_gate_pct = float(vass_exit_profile.get("eod_gate_pct", -0.25))
                             if (
                                 eod_gate_enabled
                                 and pnl_pct <= eod_gate_pct
