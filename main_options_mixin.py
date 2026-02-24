@@ -1973,3 +1973,45 @@ class MainOptionsMixin:
             # If UVXY is up 3%, VIX is approximately up 2% (UVXY is ~1.5x)
             return self._vix_at_open * (1 + uvxy_change_pct / 150)
         return self._current_vix
+
+    def _get_vix_level(self) -> float:
+        """
+        V2.11 (Pitfall #7): Get VIX LEVEL from CBOE VIX (daily).
+
+        Uses the actual CBOE VIX for level classification (Low/Medium/High).
+        Do NOT derive synthetic VIX level from UVXY - UVXY can gap up while
+        VIX is stable due to contango, causing false level spikes.
+
+        V10.8: when CBOE VIX feed appears stale for multiple sessions,
+        blend in intraday proxy to avoid frozen-level behavior.
+
+        Returns:
+            VIX level used for regime classification.
+        """
+        stale_threshold = int(getattr(config, "VIX_STALE_MAX_SESSIONS", 3))
+        stale_fallback_enabled = bool(getattr(config, "VIX_STALE_LEVEL_FALLBACK_ENABLED", True))
+        last_update = getattr(self, "_last_vix_update_date", None)
+
+        if (
+            stale_fallback_enabled
+            and stale_threshold > 0
+            and last_update is not None
+            and self.Time.date() is not None
+        ):
+            days_stale = (self.Time.date() - last_update).days
+            if days_stale >= stale_threshold:
+                blend = float(getattr(config, "VIX_STALE_LEVEL_FALLBACK_BLEND", 0.35))
+                blend = max(0.0, min(1.0, blend))
+                proxy = float(self._get_vix_intraday_proxy())
+                fallback_level = float(self._current_vix) * (1.0 - blend) + proxy * blend
+
+                if getattr(self, "_last_vix_stale_log_date", None) != self.Time.date():
+                    self.Log(
+                        "VIX_STALE_LEVEL_FALLBACK: "
+                        f"Current={self._current_vix:.2f} | Proxy={proxy:.2f} | "
+                        f"Blend={blend:.0%} | DaysStale={days_stale}"
+                    )
+                    self._last_vix_stale_log_date = self.Time.date()
+                return fallback_level
+
+        return self._current_vix  # Use daily CBOE VIX, NOT UVXY-derived proxy
