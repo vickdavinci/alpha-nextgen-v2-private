@@ -145,6 +145,17 @@ class VASSEntryEngine:
         is_credit = bool(is_credit_strategy_func(strategy))
         return strategy, dte_min, dte_max, is_credit
 
+    def strategy_option_right(self, strategy: Optional[Any]) -> Optional[str]:
+        """Return required option right key (CALL/PUT) for a VASS spread strategy."""
+        if strategy is None:
+            return None
+        strategy_value = str(getattr(strategy, "value", strategy))
+        if strategy_value in {"BULL_CALL_DEBIT", "BEAR_CALL_CREDIT"}:
+            return "CALL"
+        if strategy_value in {"BEAR_PUT_DEBIT", "BULL_PUT_CREDIT"}:
+            return "PUT"
+        return None
+
     def build_dte_fallbacks(self, dte_min: int, dte_max: int) -> list[Tuple[int, int]]:
         """Build ordered DTE fallback windows for VASS entry selection."""
         ranges = [(dte_min, dte_max)]

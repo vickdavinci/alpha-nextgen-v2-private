@@ -10378,19 +10378,7 @@ class OptionsEngine:
 
     def strategy_option_right(self, strategy: Optional[SpreadStrategy]) -> Optional[str]:
         """Return required option right key (CALL/PUT) for a VASS spread strategy."""
-        if strategy is None:
-            return None
-        if strategy in (
-            SpreadStrategy.BULL_CALL_DEBIT,
-            SpreadStrategy.BEAR_CALL_CREDIT,
-        ):
-            return "CALL"
-        if strategy in (
-            SpreadStrategy.BEAR_PUT_DEBIT,
-            SpreadStrategy.BULL_PUT_CREDIT,
-        ):
-            return "PUT"
-        return None
+        return self._vass_entry_engine.strategy_option_right(strategy)
 
     def build_vass_dte_fallbacks(self, dte_min: int, dte_max: int) -> List[Tuple[int, int]]:
         """Build ordered DTE ranges for VASS spread selection."""
