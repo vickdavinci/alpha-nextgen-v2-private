@@ -94,6 +94,7 @@ class AlphaNextGen(QCAlgorithm):
     _initialize_runtime_state = MainOptionsMixin._initialize_runtime_state
     _select_intraday_option_contract = MainOptionsMixin._select_intraday_option_contract
     _select_swing_option_contract = MainOptionsMixin._select_swing_option_contract
+    _apply_spread_margin_guard = MainOptionsMixin._apply_spread_margin_guard
     _scan_options_signals = MainOptionsMixin._scan_options_signals
     _check_spread_exit = MainOptionsMixin._check_spread_exit
     _is_terminal_exit_retry_tag = MainOrdersMixin._is_terminal_exit_retry_tag
@@ -3902,99 +3903,6 @@ class AlphaNextGen(QCAlgorithm):
         if raw.startswith("BEAR_PUT_ASSIGNMENT_GATE_"):
             return f"R_{raw}"
         return f"E_{raw}"
-
-    def _apply_spread_margin_guard(
-        self,
-        signal: Optional[TargetWeight],
-        source_tag: str,
-    ) -> Optional[TargetWeight]:
-        """
-        Final spread margin guard before router submission.
-        Applies identical logic for EOD and intraday VASS spread flows.
-        """
-        if signal is None or not signal.metadata:
-            return signal
-        if not signal.metadata.get("spread_short_leg_quantity"):
-            return signal
-
-        spread_width = signal.metadata.get("spread_width", config.SPREAD_WIDTH_TARGET)
-        spread_type = signal.metadata.get("spread_type", "DEBIT")
-        credit_received = signal.metadata.get("spread_credit_received")
-        short_qty_raw = int(signal.metadata.get("spread_short_leg_quantity", 0))
-        contracts_requested = abs(short_qty_raw)
-        if contracts_requested <= 0:
-            return None
-
-        base_margin_per_contract = self.options_engine.estimate_spread_margin_per_contract(
-            spread_width=spread_width,
-            spread_type=spread_type,
-            credit_received=credit_received,
-        )
-        safety = max(getattr(config, "SPREAD_MARGIN_SAFETY_FACTOR", 0.80), 0.01)
-        required_per_contract = base_margin_per_contract / safety
-
-        free_margin = float(self.Portfolio.MarginRemaining)
-        total_equity = float(self.Portfolio.TotalPortfolioValue)
-        cushion_pct = getattr(config, "MARGIN_MIN_FREE_EQUITY_PCT", 0.10)
-        min_free_margin = total_equity * cushion_pct
-        effective_free_margin = max(0.0, free_margin - min_free_margin)
-
-        required_margin = contracts_requested * required_per_contract
-        if required_margin <= effective_free_margin:
-            # Align with router options budget gate to avoid margin-pass/router-reject churn.
-            if self.portfolio_router is not None and bool(
-                getattr(config, "OPTIONS_BUDGET_GATE_ENABLED", True)
-            ):
-                budget_required = required_margin
-                try:
-                    # Use router's own combo estimator for consistency with execute() gate.
-                    per_contract, _ = self.portfolio_router._estimate_combo_margin_per_contract(  # type: ignore[attr-defined]
-                        signal.metadata
-                    )
-                    if per_contract > 0:
-                        budget_required = contracts_requested * per_contract
-                except Exception:
-                    pass
-
-                budget_cap = float(self.portfolio_router.get_options_budget_cap())
-                budget_used = float(self.portfolio_router.get_options_budget_used())
-                projected = budget_used + budget_required
-                if budget_cap > 0 and budget_required > 0 and projected > budget_cap:
-                    self._diag_vass_block_count += 1
-                    self.Log(
-                        f"{source_tag}: BLOCKED - options budget precheck | "
-                        f"Used=${budget_used:,.0f} + Req=${budget_required:,.0f} > "
-                        f"Cap=${budget_cap:,.0f} ({(projected / budget_cap):.1%})"
-                    )
-                    return None
-
-            self.Log(
-                f"{source_tag}: Margin check passed | Required=${required_margin:,.0f} | "
-                f"Effective Free=${effective_free_margin:,.0f} | Equity=${total_equity:,.0f}"
-            )
-            return signal
-
-        max_contracts = int(effective_free_margin / required_per_contract)
-        if max_contracts < 1:
-            self.Log(
-                f"{source_tag}: BLOCKED - Insufficient margin for 1 spread | "
-                f"Required=${required_per_contract:,.0f}/contract | "
-                f"Effective Free=${effective_free_margin:,.0f}"
-            )
-            return None
-
-        short_sign = -1 if short_qty_raw < 0 else 1
-        signal.metadata["spread_short_leg_quantity"] = short_sign * max_contracts
-        signal.metadata["spread_long_leg_quantity"] = max_contracts
-        signal.metadata["contracts"] = max_contracts
-        signal.requested_quantity = max_contracts
-
-        self.Log(
-            f"{source_tag}: MARGIN-SIZED DOWN | "
-            f"Requested={contracts_requested} -> Actual={max_contracts} contracts | "
-            f"Per=${required_per_contract:,.0f} | Effective Free=${effective_free_margin:,.0f}"
-        )
-        return signal
 
     def _get_contract_prices(self, contract) -> Tuple[float, float]:
         return self.options_engine.get_contract_prices(contract)
