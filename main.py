@@ -126,6 +126,7 @@ class AlphaNextGen(QCAlgorithm):
     _on_intraday_options_force_close = MainIntradayCloseMixin._on_intraday_options_force_close
     _ensure_oco_for_open_options = MainIntradayCloseMixin._ensure_oco_for_open_options
     _liquidate_all_spread_aware = MainIntradayCloseMixin._liquidate_all_spread_aware
+    _get_primary_market_close_time = MainMarketCloseMixin._get_primary_market_close_time
     _on_market_close = MainMarketCloseMixin._on_market_close
     _monitor_risk_greeks = MainRiskMonitorMixin._monitor_risk_greeks
     _get_fresh_position_greeks = MainRiskMonitorMixin._get_fresh_position_greeks
@@ -759,23 +760,6 @@ class AlphaNextGen(QCAlgorithm):
             self.soxl_volumes.Add(float(data.Bars[self.soxl].Volume))
         if data.Bars.ContainsKey(self.spxl):
             self.spxl_volumes.Add(float(data.Bars[self.spxl].Volume))
-
-    def _get_primary_market_close_time(self) -> Optional[datetime]:
-        """Resolve today's primary-session close time for SPY exchange hours."""
-        try:
-            exchange_hours = self.Securities[self.spy].Exchange.Hours
-            next_close = exchange_hours.GetNextMarketClose(self.Time, False)
-            if next_close.date() == self.Time.date():
-                return next_close
-            # Compatibility path: some QC engine builds can return next-session close.
-            # Re-anchor to today's midnight and ask for the next close from there.
-            today_anchor = datetime(self.Time.year, self.Time.month, self.Time.day)
-            anchor_close = exchange_hours.GetNextMarketClose(today_anchor, False)
-            if anchor_close.date() == self.Time.date():
-                return anchor_close
-        except Exception:
-            return None
-        return None
 
     # =========================================================================
     # SCHEDULED EVENT HANDLERS

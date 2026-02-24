@@ -1,7 +1,27 @@
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Optional
+
 
 class MainMarketCloseMixin:
+    def _get_primary_market_close_time(self) -> Optional[datetime]:
+        """Resolve today's primary-session close time for SPY exchange hours."""
+        try:
+            exchange_hours = self.Securities[self.spy].Exchange.Hours
+            next_close = exchange_hours.GetNextMarketClose(self.Time, False)
+            if next_close.date() == self.Time.date():
+                return next_close
+            # Compatibility path: some QC engine builds can return next-session close.
+            # Re-anchor to today's midnight and ask for the next close from there.
+            today_anchor = datetime(self.Time.year, self.Time.month, self.Time.day)
+            anchor_close = exchange_hours.GetNextMarketClose(today_anchor, False)
+            if anchor_close.date() == self.Time.date():
+                return anchor_close
+        except Exception:
+            return None
+        return None
+
     def _on_market_close(self) -> None:
         """
         Market close at 16:00 ET.
