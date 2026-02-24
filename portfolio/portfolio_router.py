@@ -1185,6 +1185,15 @@ class PortfolioRouter:
                 return False
 
             close_qty = live_long_qty
+            use_protected_exit = bool(getattr(config, "SPREAD_EXIT_PROTECTED_COMBO_ENABLED", True))
+            protected_limit, protected_detail = self._compute_protected_exit_combo_limit(
+                long_symbol, short_symbol
+            )
+            if use_protected_exit and protected_limit is None:
+                self.log(
+                    f"ROUTER: COMBO_CLOSE_PROTECTED_FALLBACK | {reason} | "
+                    f"QuoteDetail={protected_detail}"
+                )
 
             # Retry loop
             for attempt in range(1, config.COMBO_ORDER_MAX_RETRIES + 1):
@@ -1194,14 +1203,42 @@ class PortfolioRouter:
                         Leg.Create(short_qc_symbol, 1),  # Buy short (ratio +1)
                     ]
 
-                    try:
-                        self.algorithm.ComboMarketOrder(legs, close_qty, tag=tag)  # type: ignore[attr-defined]
-                    except TypeError:
-                        self.algorithm.ComboMarketOrder(legs, close_qty, tag)  # type: ignore[attr-defined]
+                    submitted_as = "MARKET"
+                    if use_protected_exit and protected_limit is not None:
+                        submitted_as = "LIMIT"
+                        try:
+                            self.algorithm.ComboLimitOrder(  # type: ignore[attr-defined]
+                                legs, close_qty, float(protected_limit), tag=tag
+                            )
+                        except TypeError:
+                            try:
+                                self.algorithm.ComboLimitOrder(  # type: ignore[attr-defined]
+                                    legs, close_qty, float(protected_limit), tag
+                                )
+                            except Exception:
+                                # API/runtime fallback keeps close path resilient.
+                                submitted_as = "MARKET_FALLBACK"
+                                try:
+                                    self.algorithm.ComboMarketOrder(  # type: ignore[attr-defined]
+                                        legs, close_qty, tag=tag
+                                    )
+                                except TypeError:
+                                    self.algorithm.ComboMarketOrder(  # type: ignore[attr-defined]
+                                        legs, close_qty, tag
+                                    )
+                    else:
+                        try:
+                            self.algorithm.ComboMarketOrder(  # type: ignore[attr-defined]
+                                legs, close_qty, tag=tag
+                            )
+                        except TypeError:
+                            self.algorithm.ComboMarketOrder(  # type: ignore[attr-defined]
+                                legs, close_qty, tag
+                            )
                     self.log(
                         f"ROUTER: COMBO_CLOSE_SUCCESS | {reason} | "
                         f"Attempt {attempt}/{config.COMBO_ORDER_MAX_RETRIES} | "
-                        f"Spreads={close_qty}"
+                        f"Mode={submitted_as} | Spreads={close_qty} | {protected_detail}"
                     )
                     return True
 
@@ -1707,6 +1744,47 @@ class PortfolioRouter:
             return True, "OK"
         except Exception as e:
             return False, f"QUOTE_LOOKUP_ERROR: {e}"
+
+    def _compute_protected_exit_combo_limit(
+        self, long_symbol: str, short_symbol: str
+    ) -> Tuple[Optional[float], str]:
+        """
+        Compute a marketable limit credit for combo exits.
+
+        For spread close (SELL long / BUY short), executable net credit is:
+            long_bid - short_ask
+        We concede a small buffer so the order stays marketable while still
+        protecting against clearly broken fills.
+        """
+        if self.algorithm is None:
+            return None, "NO_ALGO"
+        try:
+            long_sec = self.algorithm.Securities[long_symbol]  # type: ignore[attr-defined]
+            short_sec = self.algorithm.Securities[short_symbol]  # type: ignore[attr-defined]
+            long_bid = float(getattr(long_sec, "BidPrice", 0.0) or 0.0)
+            long_ask = float(getattr(long_sec, "AskPrice", 0.0) or 0.0)
+            short_bid = float(getattr(short_sec, "BidPrice", 0.0) or 0.0)
+            short_ask = float(getattr(short_sec, "AskPrice", 0.0) or 0.0)
+            if long_bid <= 0 or long_ask <= 0 or short_bid <= 0 or short_ask <= 0:
+                return None, (
+                    f"BAD_QUOTE long({long_bid:.4f}/{long_ask:.4f}) "
+                    f"short({short_bid:.4f}/{short_ask:.4f})"
+                )
+            executable_credit = long_bid - short_ask
+            total_leg_spread = max(0.0, long_ask - long_bid) + max(0.0, short_ask - short_bid)
+            slip_pct = float(getattr(config, "SPREAD_EXIT_COMBO_LIMIT_SLIPPAGE_PCT", 0.20))
+            min_step = float(getattr(config, "SPREAD_EXIT_COMBO_LIMIT_MIN_STEP", 0.01))
+            credit_concession = max(min_step, total_leg_spread * max(0.0, slip_pct))
+            limit_credit = executable_credit - credit_concession
+            return (
+                float(limit_credit),
+                (
+                    f"Exec={executable_credit:.4f} Limit={limit_credit:.4f} "
+                    f"Concession={credit_concession:.4f} Spread={total_leg_spread:.4f}"
+                ),
+            )
+        except Exception as e:
+            return None, f"LIMIT_CALC_ERROR: {e}"
 
     # =========================================================================
     # Step 1: COLLECT
@@ -3082,17 +3160,50 @@ class PortfolioRouter:
 
                     # Submit combo order - broker calculates NET margin (spread margin)
                     combo_tickets = None
-                    try:
-                        combo_tickets = self.algorithm.ComboMarketOrder(  # type: ignore[attr-defined]
-                            legs, num_spreads, tag=effective_tag
+                    submit_mode = "MARKET"
+                    if is_exit_combo and bool(
+                        getattr(config, "SPREAD_EXIT_PROTECTED_COMBO_ENABLED", True)
+                    ):
+                        limit_credit, limit_detail = self._compute_protected_exit_combo_limit(
+                            order.symbol, order.combo_short_symbol
                         )
-                    except TypeError:
-                        combo_tickets = self.algorithm.ComboMarketOrder(  # type: ignore[attr-defined]
-                            legs, num_spreads
-                        )
+                        if limit_credit is not None:
+                            submit_mode = "LIMIT"
+                            try:
+                                combo_tickets = self.algorithm.ComboLimitOrder(  # type: ignore[attr-defined]
+                                    legs, num_spreads, float(limit_credit), tag=effective_tag
+                                )
+                            except TypeError:
+                                try:
+                                    combo_tickets = self.algorithm.ComboLimitOrder(  # type: ignore[attr-defined]
+                                        legs, num_spreads, float(limit_credit), effective_tag
+                                    )
+                                except Exception:
+                                    combo_tickets = None
+                            if combo_tickets is None:
+                                self.log(
+                                    f"ROUTER: COMBO_LIMIT_FALLBACK_MARKET | {order.symbol} | "
+                                    f"{limit_detail}"
+                                )
+                        else:
+                            self.log(
+                                f"ROUTER: COMBO_LIMIT_SKIPPED | {order.symbol} | {limit_detail}"
+                            )
+
+                    if combo_tickets is None:
+                        try:
+                            combo_tickets = self.algorithm.ComboMarketOrder(  # type: ignore[attr-defined]
+                                legs, num_spreads, tag=effective_tag
+                            )
+                        except TypeError:
+                            combo_tickets = self.algorithm.ComboMarketOrder(  # type: ignore[attr-defined]
+                                legs, num_spreads
+                            )
+                        if submit_mode == "LIMIT":
+                            submit_mode = "MARKET_FALLBACK"
                     self._cache_submitted_order_tags(combo_tickets, effective_tag)
                     self.log(
-                        f"ROUTER: COMBO_MARKET_ORDER | "
+                        f"ROUTER: COMBO_ORDER_SUBMIT | Mode={submit_mode} | "
                         f"Long={order.symbol} x{num_spreads} (ratio={long_ratio}) + "
                         f"Short={order.combo_short_symbol} x{num_spreads} (ratio={short_ratio})"
                         + f" | Tag={effective_tag}"

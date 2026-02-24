@@ -1687,6 +1687,11 @@ SPREAD_EXIT_NET_VALUE_TOLERANCE = -0.05  # Allow small quote noise (e.g., -$0.05
 SPREAD_EXIT_MAX_CLOSE_DEBIT_BUFFER_PCT = (
     0.10  # Allow up to +10% above entry debit before treating close quote as pathological.
 )
+SPREAD_EXIT_PROTECTED_COMBO_ENABLED = True  # Use combo limit exits for better close-price control.
+SPREAD_EXIT_COMBO_LIMIT_SLIPPAGE_PCT = (
+    0.20  # Allow 20% of aggregate leg spread as marketability buffer.
+)
+SPREAD_EXIT_COMBO_LIMIT_MIN_STEP = 0.01  # Minimum credit concession ($/share) for protected exits.
 
 # Sequential fallback: close SHORT leg first (buy back), then LONG leg (sell)
 # This prevents naked short exposure - worst case is holding a long temporarily
