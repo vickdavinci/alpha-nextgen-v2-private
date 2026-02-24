@@ -9941,6 +9941,43 @@ class OptionsEngine:
         """Public wrapper for VASS direction+IV strategy routing."""
         return self._select_strategy(direction, iv_environment, is_intraday=is_intraday)
 
+    def resolve_vass_strategy(
+        self,
+        direction: str,
+        overlay_state: Optional[str] = None,
+    ) -> Tuple[Optional[SpreadStrategy], int, int, bool]:
+        """Resolve VASS route including EARLY_STRESS strategy remap."""
+        if getattr(config, "VASS_ENABLED", True) and self.is_iv_sensor_ready():
+            iv_environment = self.get_iv_environment()
+            return self._vass_entry_engine.resolve_strategy_with_overlay(
+                direction=direction,
+                overlay_state=overlay_state,
+                iv_environment=iv_environment,
+                spread_strategy_enum=SpreadStrategy,
+                is_credit_strategy_func=self.is_credit_strategy,
+            )
+        return (None, config.SPREAD_DTE_MIN, config.SPREAD_DTE_MAX, False)
+
+    def strategy_option_right(self, strategy: Optional[SpreadStrategy]) -> Optional[str]:
+        """Return required option right key (CALL/PUT) for a VASS spread strategy."""
+        if strategy is None:
+            return None
+        if strategy in (
+            SpreadStrategy.BULL_CALL_DEBIT,
+            SpreadStrategy.BEAR_CALL_CREDIT,
+        ):
+            return "CALL"
+        if strategy in (
+            SpreadStrategy.BEAR_PUT_DEBIT,
+            SpreadStrategy.BULL_PUT_CREDIT,
+        ):
+            return "PUT"
+        return None
+
+    def build_vass_dte_fallbacks(self, dte_min: int, dte_max: int) -> List[Tuple[int, int]]:
+        """Build ordered DTE ranges for VASS spread selection."""
+        return self._vass_entry_engine.build_dte_fallbacks(dte_min, dte_max)
+
     def check_vass_bull_debit_trend_confirmation(
         self,
         *,

@@ -99,6 +99,61 @@ class VASSEntryEngine:
             config.VASS_MEDIUM_IV_DTE_MAX,
         )
 
+    def resolve_strategy_with_overlay(
+        self,
+        *,
+        direction: str,
+        overlay_state: Optional[str],
+        iv_environment: str,
+        spread_strategy_enum: Any,
+        is_credit_strategy_func: Callable[[Any], bool],
+    ) -> Tuple[Any, int, int, bool]:
+        """Resolve VASS strategy/DTE with EARLY_STRESS strategy remap."""
+        strategy, dte_min, dte_max = self.select_strategy(
+            direction=direction,
+            iv_environment=iv_environment,
+            is_intraday=False,
+            spread_strategy_enum=spread_strategy_enum,
+        )
+        overlay = str(overlay_state or "").upper()
+        if overlay == "EARLY_STRESS":
+            if (
+                direction == "BULLISH"
+                and strategy == spread_strategy_enum.BULL_CALL_DEBIT
+                and bool(getattr(config, "VASS_EARLY_STRESS_BULL_STRATEGY_TO_CREDIT", True))
+            ):
+                self._log(
+                    "VASS_EARLY_STRESS_REMIX: BULL_CALL_DEBIT->BULL_PUT_CREDIT | "
+                    f"IV={iv_environment}"
+                )
+                strategy = spread_strategy_enum.BULL_PUT_CREDIT
+                dte_min = int(getattr(config, "VASS_HIGH_IV_DTE_MIN", dte_min))
+                dte_max = int(getattr(config, "VASS_HIGH_IV_DTE_MAX", dte_max))
+            if (
+                direction == "BEARISH"
+                and strategy == spread_strategy_enum.BEAR_PUT_DEBIT
+                and iv_environment in {"MEDIUM", "HIGH"}
+                and bool(getattr(config, "VASS_EARLY_STRESS_BEAR_PREFER_CREDIT", True))
+            ):
+                self._log(
+                    "VASS_EARLY_STRESS_REMIX: BEAR_PUT_DEBIT->BEAR_CALL_CREDIT | "
+                    f"IV={iv_environment}"
+                )
+                strategy = spread_strategy_enum.BEAR_CALL_CREDIT
+                dte_min = int(getattr(config, "VASS_HIGH_IV_DTE_MIN", dte_min))
+                dte_max = int(getattr(config, "VASS_HIGH_IV_DTE_MAX", dte_max))
+        is_credit = bool(is_credit_strategy_func(strategy))
+        return strategy, dte_min, dte_max, is_credit
+
+    def build_dte_fallbacks(self, dte_min: int, dte_max: int) -> list[Tuple[int, int]]:
+        """Build ordered DTE fallback windows for VASS entry selection."""
+        ranges = [(dte_min, dte_max)]
+        fallback_min = max(5, dte_min - 2)
+        fallback_max = min(45, dte_max + 14)
+        if (fallback_min, fallback_max) != (dte_min, dte_max):
+            ranges.append((fallback_min, fallback_max))
+        return ranges
+
     def _parse_hhmm_to_minutes(self, hhmm: str, default_minutes: int) -> int:
         """Parse HH:MM into minutes-from-midnight; fallback to default on parse failure."""
         try:

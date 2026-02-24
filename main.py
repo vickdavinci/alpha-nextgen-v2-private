@@ -6760,61 +6760,19 @@ class AlphaNextGen(QCAlgorithm):
         Returns:
             Tuple of (strategy: Optional[SpreadStrategy], dte_min: int, dte_max: int, is_credit: bool)
         """
-        if getattr(config, "VASS_ENABLED", True) and self.options_engine.is_iv_sensor_ready():
-            iv_environment = self.options_engine.get_iv_environment()
-            strategy, dte_min, dte_max = self.options_engine.select_vass_strategy(
-                direction_str, iv_environment
-            )
-            overlay = str(overlay_state or "").upper()
-            if overlay == "EARLY_STRESS":
-                if (
-                    direction_str == "BULLISH"
-                    and strategy == SpreadStrategy.BULL_CALL_DEBIT
-                    and bool(getattr(config, "VASS_EARLY_STRESS_BULL_STRATEGY_TO_CREDIT", True))
-                ):
-                    self.Log(
-                        "VASS_EARLY_STRESS_REMIX: BULL_CALL_DEBIT->BULL_PUT_CREDIT | "
-                        f"IV={iv_environment}"
-                    )
-                    strategy = SpreadStrategy.BULL_PUT_CREDIT
-                    # D8 fix: re-anchor DTE window after strategy remap so credit spreads
-                    # do not inherit debit-oriented DTE bounds.
-                    dte_min = int(getattr(config, "VASS_HIGH_IV_DTE_MIN", dte_min))
-                    dte_max = int(getattr(config, "VASS_HIGH_IV_DTE_MAX", dte_max))
-                if (
-                    direction_str == "BEARISH"
-                    and strategy == SpreadStrategy.BEAR_PUT_DEBIT
-                    and iv_environment in {"MEDIUM", "HIGH"}
-                    and bool(getattr(config, "VASS_EARLY_STRESS_BEAR_PREFER_CREDIT", True))
-                ):
-                    self.Log(
-                        "VASS_EARLY_STRESS_REMIX: BEAR_PUT_DEBIT->BEAR_CALL_CREDIT | "
-                        f"IV={iv_environment}"
-                    )
-                    strategy = SpreadStrategy.BEAR_CALL_CREDIT
-                    # D8 fix: re-anchor DTE window after strategy remap so credit spreads
-                    # do not inherit debit-oriented DTE bounds.
-                    dte_min = int(getattr(config, "VASS_HIGH_IV_DTE_MIN", dte_min))
-                    dte_max = int(getattr(config, "VASS_HIGH_IV_DTE_MAX", dte_max))
-            is_credit = self.options_engine.is_credit_strategy(strategy)
-            return (strategy, dte_min, dte_max, is_credit)
-        return (None, config.SPREAD_DTE_MIN, config.SPREAD_DTE_MAX, False)
+        return self.options_engine.resolve_vass_strategy(
+            direction=direction_str,
+            overlay_state=overlay_state,
+        )
 
     def _strategy_option_right(self, strategy: Optional[SpreadStrategy]) -> Optional[OptionRight]:
         """
         Determine which option right (CALL/PUT) is required for a VASS strategy.
         """
-        if strategy is None:
-            return None
-        if strategy in (
-            SpreadStrategy.BULL_CALL_DEBIT,
-            SpreadStrategy.BEAR_CALL_CREDIT,
-        ):
+        right_key = self.options_engine.strategy_option_right(strategy)
+        if right_key == "CALL":
             return OptionRight.Call
-        if strategy in (
-            SpreadStrategy.BEAR_PUT_DEBIT,
-            SpreadStrategy.BULL_PUT_CREDIT,
-        ):
+        if right_key == "PUT":
             return OptionRight.Put
         return None
 
@@ -6825,12 +6783,7 @@ class AlphaNextGen(QCAlgorithm):
         Primary range is the configured VASS window. Fallback widens the window
         to avoid "cooldown traps" when primary DTE has no viable contracts.
         """
-        ranges = [(dte_min, dte_max)]
-        fallback_min = max(5, dte_min - 2)
-        fallback_max = min(45, dte_max + 14)
-        if (fallback_min, fallback_max) != (dte_min, dte_max):
-            ranges.append((fallback_min, fallback_max))
-        return ranges
+        return self.options_engine.build_vass_dte_fallbacks(dte_min, dte_max)
 
     def _canonical_options_reason_code(self, code: Optional[str]) -> str:
         """
