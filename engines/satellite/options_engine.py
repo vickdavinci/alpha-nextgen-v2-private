@@ -4266,26 +4266,48 @@ class OptionsEngine:
 
     def update_position_greeks(
         self,
-        current_price: float,
-        current_delta: Optional[float],
-        current_gamma: Optional[float],
-        current_vega: Optional[float],
-        current_theta: Optional[float],
+        delta: Optional[float] = None,
+        gamma: Optional[float] = None,
+        vega: Optional[float] = None,
+        theta: Optional[float] = None,
+        # Compatibility aliases retained at wrapper boundary.
+        current_price: Optional[float] = None,
+        current_delta: Optional[float] = None,
+        current_gamma: Optional[float] = None,
+        current_vega: Optional[float] = None,
+        current_theta: Optional[float] = None,
     ) -> None:
+        _ = current_price
+        resolved_delta = delta if delta is not None else current_delta
+        resolved_gamma = gamma if gamma is not None else current_gamma
+        resolved_vega = vega if vega is not None else current_vega
+        resolved_theta = theta if theta is not None else current_theta
+        if resolved_delta is None or resolved_gamma is None or resolved_vega is None:
+            return None
+        if resolved_theta is None:
+            resolved_theta = 0.0
         return update_position_greeks_impl(
             self,
-            current_price=current_price,
-            current_delta=current_delta,
-            current_gamma=current_gamma,
-            current_vega=current_vega,
-            current_theta=current_theta,
+            delta=float(resolved_delta),
+            gamma=float(resolved_gamma),
+            vega=float(resolved_vega),
+            theta=float(resolved_theta),
         )
 
     def check_greeks_breach(
         self,
-        current_price: float,
-    ) -> Optional[TargetWeight]:
-        return check_greeks_breach_impl(self, current_price=current_price)
+        risk_engine: Optional["RiskEngine"] = None,
+        current_price: Optional[float] = None,
+    ) -> Tuple[bool, List[str]]:
+        _ = current_price
+        resolved_risk_engine = risk_engine
+        if resolved_risk_engine is None:
+            resolved_risk_engine = getattr(self.algorithm, "risk_engine", None)
+        elif not hasattr(resolved_risk_engine, "check_cb_greeks_breach"):
+            resolved_risk_engine = getattr(self.algorithm, "risk_engine", None)
+        if resolved_risk_engine is None:
+            return False, []
+        return check_greeks_breach_impl(self, risk_engine=resolved_risk_engine)
 
     def get_state_for_persistence(self) -> Dict[str, Any]:
         return get_state_for_persistence_impl(self)
