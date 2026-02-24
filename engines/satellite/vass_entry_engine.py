@@ -1373,6 +1373,250 @@ class VASSEntryEngine:
                 contract_symbol="",
             )
 
+    def select_spread_legs(
+        self,
+        *,
+        host: Any,
+        contracts: list[Any],
+        direction: OptionDirection,
+        target_width: Optional[float] = None,
+        current_time: Optional[str] = None,
+        dte_min: Optional[int] = None,
+        dte_max: Optional[int] = None,
+        set_cooldown: bool = True,
+        log_filters: bool = True,
+        debug_stats: Optional[Dict[str, Any]] = None,
+    ) -> Optional[tuple[Any, Any]]:
+        """Select long and short legs for debit spread construction."""
+        # V2.4.3: Check FAILURE cooldown first (penalty after failed construction)
+        if current_time:
+            try:
+                # V6.12: Direction-scoped cooldown if available
+                if hasattr(host, "_spread_failure_cooldown_until_by_dir") and direction:
+                    dir_key = direction.value if hasattr(direction, "value") else str(direction)
+                    until = host._spread_failure_cooldown_until_by_dir.get(dir_key)
+                    if until and current_time < until:
+                        return None
+                    elif until:
+                        host._spread_failure_cooldown_until_by_dir.pop(dir_key, None)
+                elif host._spread_failure_cooldown_until:
+                    if current_time < host._spread_failure_cooldown_until:
+                        return None
+                    else:
+                        host._spread_failure_cooldown_until = None
+            except (ValueError, TypeError):
+                pass
+
+        # V2.3.21: Throttle spread scanning to reduce log noise
+        if current_time and host._last_spread_scan_time:
+            try:
+                current_min_str = current_time[11:16]
+                last_min_str = host._last_spread_scan_time[11:16]
+                curr_h, curr_m = int(current_min_str[:2]), int(current_min_str[3:5])
+                last_h, last_m = int(last_min_str[:2]), int(last_min_str[3:5])
+                curr_total = curr_h * 60 + curr_m
+                last_total = last_h * 60 + last_m
+                if current_time[:10] == host._last_spread_scan_time[:10]:
+                    elapsed = curr_total - last_total
+                    if elapsed < config.SPREAD_SCAN_THROTTLE_MINUTES:
+                        return None
+            except (ValueError, IndexError):
+                pass
+
+        if current_time:
+            host._last_spread_scan_time = current_time
+
+        if not contracts:
+            host.log("SPREAD: No contracts available for spread selection")
+            return None
+
+        if target_width is None:
+            target_width = config.SPREAD_WIDTH_TARGET
+
+        effective_width_min = host._get_effective_spread_width_min()
+        filtered = [c for c in contracts if c.direction == direction]
+        if len(filtered) < 2:
+            host.log(f"SPREAD: Not enough {direction.value} contracts for spread")
+            if set_cooldown:
+                host._set_spread_failure_cooldown(current_time, direction=direction)
+            return None
+
+        is_call = direction == OptionDirection.CALL
+        if is_call:
+            long_delta_min_base = config.SPREAD_LONG_LEG_DELTA_MIN
+            long_delta_max_base = config.SPREAD_LONG_LEG_DELTA_MAX
+            short_delta_min = config.SPREAD_SHORT_LEG_DELTA_MIN
+            short_delta_max = config.SPREAD_SHORT_LEG_DELTA_MAX
+            oi_min_long = config.OPTIONS_MIN_OPEN_INTEREST
+            spread_max_long = config.OPTIONS_SPREAD_MAX_PCT
+            spread_warn_short = config.OPTIONS_SPREAD_WARNING_PCT
+        else:
+            long_delta_min_base = config.SPREAD_LONG_LEG_DELTA_MIN_PUT
+            long_delta_max_base = config.SPREAD_LONG_LEG_DELTA_MAX_PUT
+            short_delta_min = config.SPREAD_SHORT_LEG_DELTA_MIN_PUT
+            short_delta_max = config.SPREAD_SHORT_LEG_DELTA_MAX_PUT
+            oi_min_long = config.OPTIONS_MIN_OPEN_INTEREST_PUT
+            spread_max_long = config.OPTIONS_SPREAD_MAX_PCT_PUT
+            spread_warn_short = config.OPTIONS_SPREAD_WARNING_PCT_PUT
+
+        long_candidates = []
+        elastic_widen_used = 0.0
+        effective_dte_min = dte_min if dte_min is not None else config.SPREAD_DTE_MIN
+        effective_dte_max = dte_max if dte_max is not None else config.SPREAD_DTE_MAX
+        dte_filtered = [
+            c for c in filtered if effective_dte_min <= c.days_to_expiry <= effective_dte_max
+        ]
+        dte_pass = len(dte_filtered)
+
+        for widen in config.ELASTIC_DELTA_STEPS:
+            delta_min = max(config.ELASTIC_DELTA_FLOOR, long_delta_min_base - widen)
+            delta_max = min(config.ELASTIC_DELTA_CEILING, long_delta_max_base + widen)
+
+            delta_pass = 0
+            oi_pass = 0
+            spread_pass = 0
+            long_candidates = []
+
+            for contract in dte_filtered:
+                delta_abs = abs(contract.delta)
+                if delta_min <= delta_abs <= delta_max:
+                    delta_pass += 1
+                    if contract.open_interest >= oi_min_long:
+                        oi_pass += 1
+                        if contract.spread_pct <= spread_max_long:
+                            spread_pass += 1
+                            long_candidates.append(contract)
+
+            if long_candidates:
+                elastic_widen_used = widen
+                break
+
+        if log_filters:
+            host.log(
+                f"SPREAD_FILTER: LongLeg | Total={len(filtered)} | "
+                f"DTE_pass={dte_pass} | Delta_pass={delta_pass} | "
+                f"OI_pass={oi_pass} | Spread_pass={spread_pass}"
+                + (f" | Elastic_widen=±{elastic_widen_used:.2f}" if elastic_widen_used > 0 else "")
+            )
+        if debug_stats is not None:
+            debug_stats.update(
+                {
+                    "dte_pass": dte_pass,
+                    "delta_pass": delta_pass,
+                    "oi_pass": oi_pass,
+                    "spread_pass": spread_pass,
+                    "elastic_widen": elastic_widen_used,
+                    "dte_range": f"{effective_dte_min}-{effective_dte_max}",
+                }
+            )
+
+        if not long_candidates:
+            host.log(
+                f"SPREAD: No valid long leg | DTE={effective_dte_min}-{effective_dte_max} | "
+                f"Delta={long_delta_min_base}-{long_delta_max_base} | "
+                f"Elastic steps tried={len(config.ELASTIC_DELTA_STEPS)}"
+            )
+            if set_cooldown:
+                host._set_spread_failure_cooldown(current_time, direction=direction)
+            return None
+
+        delta_target = (
+            getattr(config, "SPREAD_LONG_LEG_DELTA_TARGET_CALL", 0.50)
+            if is_call
+            else getattr(config, "SPREAD_LONG_LEG_DELTA_TARGET_PUT", 0.70)
+        )
+        long_candidates.sort(key=lambda contract: abs(abs(contract.delta) - delta_target))
+        long_leg = long_candidates[0]
+
+        short_candidates = []
+        for contract in filtered:
+            if contract.strike == long_leg.strike:
+                continue
+            if contract.days_to_expiry != long_leg.days_to_expiry:
+                continue
+            if is_call:
+                if contract.strike <= long_leg.strike:
+                    continue
+            else:
+                if contract.strike >= long_leg.strike:
+                    continue
+
+            width = abs(contract.strike - long_leg.strike)
+            if config.SPREAD_SHORT_LEG_BY_WIDTH:
+                if width < effective_width_min or width > config.SPREAD_WIDTH_MAX:
+                    continue
+                delta_abs = abs(contract.delta) if contract.delta else 0.30
+            else:
+                delta_abs = abs(contract.delta)
+                if not (short_delta_min <= delta_abs <= short_delta_max):
+                    continue
+
+            if contract.open_interest >= oi_min_long // 2:
+                if contract.spread_pct <= spread_warn_short:
+                    short_candidates.append((contract, width, delta_abs))
+
+        if not short_candidates:
+            host.log(
+                f"SPREAD: No valid short leg | LongStrike={long_leg.strike} | "
+                f"WidthRange=${effective_width_min:.0f}-${config.SPREAD_WIDTH_MAX:.0f}"
+            )
+            if set_cooldown:
+                host._set_spread_failure_cooldown(current_time, direction=direction)
+            return None
+
+        effective_max = getattr(config, "SPREAD_WIDTH_EFFECTIVE_MAX", 7.0)
+        preferred = [item for item in short_candidates if item[1] <= effective_max]
+        if not preferred:
+            preferred = short_candidates
+
+        vix_for_pref = None
+        try:
+            vix_for_pref = float(host._iv_sensor.get_smoothed_vix())
+        except Exception:
+            vix_for_pref = None
+
+        if vix_for_pref is None:
+            pref_min, pref_max, pref_target = (0.18, 0.45, 0.30)
+        elif vix_for_pref >= 35.0:
+            pref_min, pref_max, pref_target = (0.12, 0.32, 0.22)
+        elif vix_for_pref >= 25.0:
+            pref_min, pref_max, pref_target = (0.14, 0.36, 0.25)
+        elif vix_for_pref >= 18.0:
+            pref_min, pref_max, pref_target = (0.16, 0.42, 0.28)
+        else:
+            pref_min, pref_max, pref_target = (0.20, 0.50, 0.35)
+
+        def rr_sort_key(item: tuple[Any, float, float]) -> tuple[float, float, float, float, float]:
+            candidate, width, delta_abs = item
+            estimated_debit = long_leg.mid_price - candidate.mid_price
+            debit_to_width = estimated_debit / width if width > 0 else 1.0
+            debit_bucket = round(max(0.0, debit_to_width), 2)
+            if pref_min <= delta_abs <= pref_max:
+                delta_band_penalty = 0.0
+            else:
+                delta_band_penalty = min(abs(delta_abs - pref_min), abs(delta_abs - pref_max))
+            return (
+                debit_bucket,
+                delta_band_penalty,
+                abs(delta_abs - pref_target),
+                debit_to_width,
+                -width,
+            )
+
+        preferred.sort(key=rr_sort_key)
+        short_leg = preferred[0][0]
+        actual_width = abs(short_leg.strike - long_leg.strike)
+        chosen_debit = long_leg.mid_price - short_leg.mid_price
+        chosen_dw = chosen_debit / actual_width if actual_width > 0 else 1.0
+
+        host.log(
+            f"SPREAD: Selected legs | Long={long_leg.strike} (delta={long_leg.delta:.2f}) | "
+            f"Short={short_leg.strike} (delta={short_leg.delta:.2f}) | Width=${actual_width:.0f} | "
+            f"DW~{chosen_dw:.1%} | DeltaPref={pref_min:.2f}-{pref_max:.2f} (target {pref_target:.2f})"
+        )
+
+        return (long_leg, short_leg)
+
     def select_spread_legs_with_fallback(
         self,
         *,
