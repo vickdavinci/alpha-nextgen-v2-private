@@ -56,6 +56,10 @@ from engines.satellite.options_exit_evaluator import check_exit_signals_impl
 from engines.satellite.options_expiration_exit import check_expiring_options_force_exit_impl
 from engines.satellite.options_intraday_entry import check_intraday_entry_signal_impl
 from engines.satellite.options_micro_signal import generate_micro_intraday_signal_impl
+from engines.satellite.options_pending_guard import (
+    clear_stale_pending_intraday_entry_if_orphaned_impl,
+    clear_stale_pending_spread_entry_if_orphaned_impl,
+)
 from engines.satellite.options_primitives import (
     EntryScore,
     ExitOrderTracker,
@@ -4271,53 +4275,7 @@ class OptionsEngine:
 
     def _clear_stale_pending_spread_entry_if_orphaned(self) -> None:
         """Clear stale pending spread lock when no matching open leg orders exist."""
-        if self._pending_spread_long_leg is None or self._pending_spread_short_leg is None:
-            return
-        if self.algorithm is None or not hasattr(self.algorithm, "Time"):
-            return
-
-        if self._pending_spread_entry_since is None:
-            self._pending_spread_entry_since = self.algorithm.Time
-            return
-
-        stale_minutes = int(getattr(config, "SPREAD_PENDING_ENTRY_STALE_MINUTES", 7))
-        if stale_minutes <= 0:
-            return
-
-        age_minutes = (
-            self.algorithm.Time - self._pending_spread_entry_since
-        ).total_seconds() / 60.0
-        if age_minutes < stale_minutes:
-            return
-
-        pending_symbols = {
-            self._symbol_str(self._pending_spread_long_leg.symbol),
-            self._symbol_str(self._pending_spread_short_leg.symbol),
-        }
-        pending_symbols = {s for s in pending_symbols if s}
-
-        has_open_orders = False
-        try:
-            for open_order in self.algorithm.Transactions.GetOpenOrders():
-                if getattr(open_order.Symbol, "SecurityType", None) != SecurityType.Option:
-                    continue
-                open_sym = self._symbol_str(open_order.Symbol)
-                if open_sym in pending_symbols:
-                    has_open_orders = True
-                    break
-        except Exception:
-            # Do not clear state when broker/order query fails.
-            return
-
-        if has_open_orders:
-            return
-
-        self.cancel_pending_spread_entry()
-        self.log(
-            f"OPT_MACRO_RECOVERY: Cleared stale pending spread entry | "
-            f"AgeMin={age_minutes:.1f} | Pending={','.join(sorted(pending_symbols)) or 'NONE'}",
-            trades_only=True,
-        )
+        clear_stale_pending_spread_entry_if_orphaned_impl(self)
 
     def has_pending_spread_entry(self) -> bool:
         """True when both pending spread legs are populated."""
@@ -4368,201 +4326,7 @@ class OptionsEngine:
         Prevents long-lived E_INTRADAY_PENDING_ENTRY lock after missed/implicit
         broker cancel events while preserving normal in-flight order behavior.
         """
-        if not self._pending_intraday_entries and not self._pending_intraday_entry:
-            return
-        if self.algorithm is None or not hasattr(self.algorithm, "Time"):
-            return
-        now = self.algorithm.Time
-
-        if self._pending_intraday_entry_since is None:
-            self._pending_intraday_entry_since = now
-            return
-
-        stale_minutes = int(getattr(config, "INTRADAY_PENDING_ENTRY_STALE_MINUTES", 5))
-        if stale_minutes <= 0:
-            return
-
-        fast_clear_seconds = int(getattr(config, "INTRADAY_PENDING_ENTRY_FAST_CLEAR_SECONDS", 90))
-        cancel_after_minutes = int(getattr(config, "INTRADAY_PENDING_ENTRY_CANCEL_MINUTES", 20))
-        cancel_after_seconds = max(0, cancel_after_minutes * 60)
-        hard_clear_minutes = int(getattr(config, "INTRADAY_PENDING_ENTRY_HARD_CLEAR_MINUTES", 60))
-
-        # Normalize legacy single-pending fields into lane-keyed payloads.
-        if not self._pending_intraday_entries and self._pending_intraday_entry:
-            legacy_symbol = (
-                self._symbol_key(self._pending_contract.symbol)
-                if self._pending_contract is not None
-                else ""
-            )
-            legacy_lane = str(self._pending_intraday_entry_engine or "MICRO").upper()
-            if legacy_symbol:
-                legacy_key = self._pending_intraday_entry_key(
-                    symbol=legacy_symbol, lane=legacy_lane
-                )
-                self._pending_intraday_entries[legacy_key] = {
-                    "symbol": legacy_symbol,
-                    "lane": legacy_lane,
-                    "entry_score": self._pending_entry_score,
-                    "num_contracts": self._pending_num_contracts,
-                    "entry_strategy": self._pending_entry_strategy,
-                    "stop_pct": self._pending_stop_pct,
-                    "created_at": self._pending_intraday_entry_since.strftime("%Y-%m-%d %H:%M:%S"),
-                }
-
-        open_entry_order_ids_by_symbol = {}
-        scan_errors = 0
-        open_orders = []
-        try:
-            open_orders = list(self.algorithm.Transactions.GetOpenOrders())
-        except Exception:
-            open_orders = []
-
-        for open_order in open_orders:
-            try:
-                open_symbol = getattr(open_order, "Symbol", None)
-                if open_symbol is None:
-                    continue
-                if getattr(open_symbol, "SecurityType", None) != SecurityType.Option:
-                    continue
-                # Ignore obvious close-path tags so they don't hold entry locks open.
-                order_tag = str(getattr(open_order, "Tag", "") or "").upper()
-                if (
-                    "OCO_" in order_tag
-                    or "FORCE_CLOSE" in order_tag
-                    or "INTRADAY_TIME_EXIT" in order_tag
-                    or "SPREAD_CLOSE" in order_tag
-                    or "RECON_ORPHAN" in order_tag
-                ):
-                    continue
-                order_qty = float(getattr(open_order, "Quantity", 0) or 0)
-                if order_qty <= 0:
-                    # Entry-pending logic should ignore OCO stop/profit exits (negative qty).
-                    continue
-                symbol_key = self._symbol_key(open_symbol)
-                if not symbol_key:
-                    continue
-                oid = getattr(open_order, "Id", None)
-                if oid is None:
-                    oid = getattr(open_order, "OrderId", None)
-                if oid is None:
-                    continue
-                open_entry_order_ids_by_symbol.setdefault(symbol_key, []).append(int(oid))
-            except Exception:
-                scan_errors += 1
-                continue
-
-        def _parse_created_at(payload: Optional[Dict[str, Any]]) -> datetime:
-            if isinstance(payload, dict):
-                created_raw = payload.get("created_at")
-                if isinstance(created_raw, datetime):
-                    return created_raw
-                if isinstance(created_raw, str) and created_raw.strip():
-                    text = created_raw.strip()
-                    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
-                        try:
-                            return datetime.strptime(text[:19], fmt)
-                        except Exception:
-                            continue
-            return self._pending_intraday_entry_since or now
-
-        cleared_keys = []
-        cancel_requests = 0
-        max_age_minutes = 0.0
-        for key, payload in list(self._pending_intraday_entries.items()):
-            symbol_norm = (
-                self._symbol_key(payload.get("symbol", "")) if isinstance(payload, dict) else ""
-            )
-            if not symbol_norm:
-                symbol_norm = self._pending_intraday_symbol_from_key(key)
-            if not symbol_norm:
-                continue
-
-            lane = str((payload or {}).get("lane", "")).upper() if isinstance(payload, dict) else ""
-            if lane not in ("MICRO", "ITM") and "|" in str(key):
-                lane = str(key).split("|", 1)[0].upper()
-            lane_has_position = bool(self._intraday_positions.get(lane) or [])
-            created_at = _parse_created_at(payload if isinstance(payload, dict) else None)
-            age_seconds = max(0.0, (now - created_at).total_seconds())
-            age_minutes = age_seconds / 60.0
-            max_age_minutes = max(max_age_minutes, age_minutes)
-
-            open_entry_order_ids = open_entry_order_ids_by_symbol.get(symbol_norm, [])
-            if open_entry_order_ids:
-                # Active entry order still live. Optionally cancel if it overstays.
-                if (
-                    (not lane_has_position)
-                    and cancel_after_seconds > 0
-                    and age_seconds >= cancel_after_seconds
-                ):
-                    for oid in open_entry_order_ids:
-                        try:
-                            self.algorithm.Transactions.CancelOrder(
-                                oid,
-                                f"INTRADAY_PENDING_TIMEOUT {age_minutes:.1f}m",
-                            )
-                            self.log(
-                                f"INTRADAY_PENDING_TIMEOUT_CANCEL: Lane={lane or 'UNKNOWN'} | "
-                                f"Symbol={symbol_norm} | OrderId={oid} | AgeMin={age_minutes:.1f}",
-                                trades_only=True,
-                            )
-                            cancel_requests += 1
-                        except Exception:
-                            continue
-                # Safety release: never allow a lane lock to persist for hours.
-                if hard_clear_minutes > 0 and age_minutes >= hard_clear_minutes:
-                    self._pending_intraday_entries.pop(key, None)
-                    cleared_keys.append(key)
-                    self.log(
-                        f"INTRADAY_PENDING_HARD_CLEAR: Lane={lane or 'UNKNOWN'} | "
-                        f"Symbol={symbol_norm} | AgeMin={age_minutes:.1f} | "
-                        f"OpenOrders={len(open_entry_order_ids)}",
-                        trades_only=True,
-                    )
-                continue
-
-            # If lane already has a live position, pending-entry lock is stale.
-            if lane_has_position:
-                self._pending_intraday_entries.pop(key, None)
-                cleared_keys.append(key)
-                continue
-
-            # Orphan pending (no open entry order + no position): clear on fast/stale thresholds.
-            should_clear = age_minutes >= stale_minutes
-            if not should_clear and fast_clear_seconds > 0:
-                should_clear = age_seconds >= fast_clear_seconds
-            if not should_clear:
-                continue
-            self._pending_intraday_entries.pop(key, None)
-            cleared_keys.append(key)
-
-        if not cleared_keys and cancel_requests <= 0:
-            if scan_errors > 0:
-                self.log(
-                    f"OPT_MICRO_RECOVERY: Pending scan errors | Count={scan_errors}",
-                    trades_only=True,
-                )
-            return
-
-        self._pending_intraday_entry = bool(self._pending_intraday_entries)
-        self._pending_intraday_entry_since = (
-            None if not self._pending_intraday_entries else self._pending_intraday_entry_since
-        )
-        self._pending_intraday_entry_engine = (
-            None if not self._pending_intraday_entries else self._pending_intraday_entry_engine
-        )
-        if not self._pending_intraday_entries:
-            self._pending_contract = None
-            self._pending_entry_score = None
-            self._pending_num_contracts = None
-            self._pending_stop_pct = None
-            self._pending_stop_price = None
-            self._pending_target_price = None
-            self._pending_entry_strategy = None
-        self.log(
-            f"OPT_MICRO_RECOVERY: Pending entry maintenance | Cleared={len(cleared_keys)} | "
-            f"CancelReq={cancel_requests} | MaxAgeMin={max_age_minutes:.1f} | ScanErr={scan_errors}",
-            trades_only=True,
-        )
+        clear_stale_pending_intraday_entry_if_orphaned_impl(self)
 
     def cancel_pending_intraday_entry(
         self, engine: Optional[str] = None, symbol: Optional[str] = None
