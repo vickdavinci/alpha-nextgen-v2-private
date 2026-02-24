@@ -2292,6 +2292,7 @@ class MainOptionsMixin:
                 current_dte=current_dte,
                 vix_current=self._current_vix,
                 spread_override=spread,
+                underlying_price=underlying_price,
             )
             if exit_signals:
                 for signal in exit_signals:

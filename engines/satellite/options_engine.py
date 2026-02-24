@@ -7673,6 +7673,21 @@ class OptionsEngine:
         )
         return profile
 
+    def _resolve_qqq_atr_pct(self, underlying_price: Optional[float]) -> Optional[float]:
+        """Return QQQ ATR% (ATR/price) when indicator context is available."""
+        if self.algorithm is None or underlying_price is None or float(underlying_price) <= 0:
+            return None
+        qqq_atr = getattr(self.algorithm, "qqq_atr", None)
+        if qqq_atr is None or not bool(getattr(qqq_atr, "IsReady", False)):
+            return None
+        try:
+            atr_value = float(qqq_atr.Current.Value)
+            if atr_value <= 0:
+                return None
+            return atr_value / float(underlying_price)
+        except Exception:
+            return None
+
     # =========================================================================
     # V2.3 SPREAD EXIT SIGNALS
     # =========================================================================
@@ -7685,6 +7700,7 @@ class OptionsEngine:
         current_dte: int,
         vix_current: Optional[float] = None,
         spread_override: Optional[SpreadPosition] = None,
+        underlying_price: Optional[float] = None,
     ) -> Optional[List[TargetWeight]]:
         """
         V2.3: Check for spread exit signals.
@@ -7729,6 +7745,27 @@ class OptionsEngine:
             if vass_ref_vix is None
             else f"Tier={vass_tier} RefVIX={float(vass_ref_vix):.1f}"
         )
+        if bool(getattr(config, "VASS_ATR_ADAPTIVE_EXITS_ENABLED", True)):
+            atr_pct = self._resolve_qqq_atr_pct(underlying_price=underlying_price)
+            if atr_pct is not None and atr_pct > 0:
+                atr_ref = max(1e-6, float(getattr(config, "VASS_ATR_PCT_REF", 0.015)))
+                raw_mult = float(atr_pct / atr_ref)
+                mult_min = float(getattr(config, "VASS_ATR_EXIT_MULT_MIN", 0.85))
+                mult_max = float(getattr(config, "VASS_ATR_EXIT_MULT_MAX", 1.25))
+                if mult_max < mult_min:
+                    mult_min, mult_max = mult_max, mult_min
+                atr_mult = max(mult_min, min(raw_mult, mult_max))
+                for profile_key in (
+                    "target_pct",
+                    "stop_pct",
+                    "trail_activate_pct",
+                    "trail_offset_pct",
+                ):
+                    if profile_key in vass_exit_profile:
+                        vass_exit_profile[profile_key] = (
+                            float(vass_exit_profile[profile_key]) * atr_mult
+                        )
+                vass_profile_tag = f"{vass_profile_tag} ATRx={atr_mult:.2f} ATR%={atr_pct:.2%}"
 
         # V9.4 P0: Exit signal cooldown — if a previous exit signal was sent but the
         # close order failed (margin, liquidity, etc.), don't re-fire every minute.
