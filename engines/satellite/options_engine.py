@@ -4506,6 +4506,374 @@ class OptionsEngine:
                 is_eod_scan=is_eod_scan,
             )
 
+    def run_vass_intraday_entry_cycle(
+        self,
+        *,
+        chain: Any,
+        qqq_price: float,
+        adx_value: float,
+        ma200_value: float,
+        ma50_value: float,
+        size_multiplier: float,
+        effective_portfolio_value: float,
+        margin_remaining: float,
+        transition_ctx: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Run intraday VASS spread lane end-to-end."""
+        if self.algorithm is None:
+            return
+        alg = self.algorithm
+        transition_ctx = transition_ctx or {}
+
+        swing_cooldown_active = (
+            alg._options_swing_cooldown_until is not None
+            and alg.Time < alg._options_swing_cooldown_until
+        )
+        spread_cooldown_active = (
+            alg._options_spread_cooldown_until is not None
+            and alg.Time < alg._options_spread_cooldown_until
+        )
+        if swing_cooldown_active and spread_cooldown_active:
+            return
+
+        if hasattr(alg, "_last_swing_scan_time") and alg._last_swing_scan_time is not None:
+            minutes_since = (alg.Time - alg._last_swing_scan_time).total_seconds() / 60
+            if minutes_since < 15:
+                return
+        alg._last_swing_scan_time = alg.Time
+
+        regime_score = float(
+            transition_ctx.get("transition_score", alg._get_decision_regime_score_for_options())
+            or alg._get_decision_regime_score_for_options()
+        )
+        context = self.resolve_vass_direction_context(
+            regime_score=regime_score,
+            size_multiplier=size_multiplier,
+            bull_profile_log_prefix="VASS_BULL_PROFILE_BLOCK_INTRADAY",
+            clamp_log_prefix="VASS_CLAMP_BLOCK_INTRADAY",
+            shock_log_prefix="VASS_SHOCK_OVERRIDE",
+            transition_ctx=transition_ctx,
+        )
+        if context is None:
+            return
+        (
+            direction,
+            direction_str,
+            overlay_state,
+            size_multiplier,
+            vass_has_conviction,
+            vass_reason,
+            macro_direction,
+            resolve_reason,
+            resolved_direction,
+        ) = context
+
+        if direction == OptionDirection.CALL and alg._is_premarket_ladder_call_block_active():
+            if alg.Time.minute % 15 == 0:
+                until_h, until_m = alg._premarket_vix_call_block_until
+                alg.Log(
+                    f"VASS_BLOCKED: CALL blocked until {until_h:02d}:{until_m:02d} | "
+                    f"{alg._premarket_vix_ladder_reason}"
+                )
+            return
+
+        if vass_has_conviction:
+            alg.Log(
+                f"OPTIONS_VASS_CONVICTION_INTRADAY: {vass_reason} | Macro={macro_direction} | "
+                f"Resolved={resolved_direction} | {resolve_reason}"
+            )
+
+        spy_open = float(getattr(self, "_spy_at_open", 0.0) or 0.0)
+        spy_gap_pct = float(getattr(self, "_spy_gap_pct", 0.0) or 0.0)
+        try:
+            spy_current = float(alg.Securities[alg.spy].Price)
+        except Exception:
+            spy_current = spy_open
+        spy_intraday_change_pct = (
+            ((spy_current - spy_open) / spy_open) * 100.0 if spy_open > 0 else 0.0
+        )
+        vix_at_open = float(getattr(alg, "_vix_at_open", 0.0) or 0.0)
+        vix_intraday_change_pct = (
+            ((float(alg._current_vix) - vix_at_open) / vix_at_open) * 100.0
+            if vix_at_open > 0
+            else 0.0
+        )
+        swing_filters_ok, swing_filter_reason = self.check_swing_filters(
+            direction=direction,
+            spy_gap_pct=spy_gap_pct,
+            spy_intraday_change_pct=spy_intraday_change_pct,
+            vix_intraday_change_pct=vix_intraday_change_pct,
+            current_hour=alg.Time.hour,
+            current_minute=alg.Time.minute,
+        )
+        if not swing_filters_ok:
+            alg._diag_vass_block_count += 1
+            if alg.Time.minute % 15 == 0:
+                alg.Log(
+                    f"VASS_SKIPPED: Direction={direction.value} | "
+                    f"VIX={alg._current_vix:.1f} | Regime={regime_score:.0f} | "
+                    f"ReasonCode=SWING_FILTER | ValidationFail={swing_filter_reason}"
+                )
+            return
+
+        strategy, vass_dte_min, vass_dte_max, is_credit = self.resolve_vass_strategy(
+            direction=direction_str,
+            overlay_state=overlay_state,
+        )
+        dte_ranges = self.build_vass_dte_fallbacks(vass_dte_min, vass_dte_max)
+        dte_min_all = min(r[0] for r in dte_ranges)
+        dte_max_all = max(r[1] for r in dte_ranges)
+        required_right = self.strategy_option_right(strategy)
+
+        candidate_contracts = self.build_vass_candidate_contracts(
+            chain=chain,
+            direction=direction,
+            dte_min=dte_min_all,
+            dte_max=dte_max_all,
+            option_right=required_right,
+        )
+        alg._diag_vass_signal_seq = int(getattr(alg, "_diag_vass_signal_seq", 0)) + 1
+        vass_signal_id = f"VASS-{alg.Time.strftime('%Y%m%d-%H%M')}-{alg._diag_vass_signal_seq}"
+        if len(candidate_contracts) < 2:
+            alg._record_signal_lifecycle_event(
+                engine="VASS",
+                event="DROPPED",
+                signal_id=vass_signal_id,
+                direction=direction.value if direction else "",
+                strategy=strategy.value if strategy else "",
+                code="INSUFFICIENT_CANDIDATES",
+                gate_name="VASS_CANDIDATE_CONTRACTS",
+                reason="No contracts met spread criteria",
+                contract_symbol="",
+            )
+            return
+        alg._record_signal_lifecycle_event(
+            engine="VASS",
+            event="CANDIDATE",
+            signal_id=vass_signal_id,
+            direction=direction.value if direction else "",
+            strategy=strategy.value if strategy else "",
+            code="R_OK",
+            gate_name="VASS_SIGNAL_CANDIDATE",
+            reason=f"Contracts={len(candidate_contracts)}",
+            contract_symbol="",
+        )
+
+        iv_rank = alg._calculate_iv_rank(chain)
+        signal = None
+        rejection_code = "UNKNOWN"
+
+        if spread_cooldown_active:
+            rejection_code = "SPREAD_COOLDOWN_ACTIVE"
+        elif self.has_pending_spread_entry():
+            rejection_code = "PENDING_SPREAD_ENTRY"
+        else:
+            self.pop_last_entry_validation_failure()
+            self.pop_last_credit_failure_stats()
+            self.pop_last_spread_failure_stats()
+            signal, rejection_code = self.build_vass_spread_signal(
+                chain=chain,
+                candidate_contracts=candidate_contracts,
+                direction=direction,
+                regime_score=regime_score,
+                qqq_price=qqq_price,
+                adx_value=adx_value,
+                ma200_value=ma200_value,
+                ma50_value=ma50_value,
+                iv_rank=iv_rank,
+                size_multiplier=size_multiplier,
+                portfolio_value=effective_portfolio_value,
+                margin_remaining=margin_remaining,
+                strategy=strategy,
+                vass_dte_min=vass_dte_min,
+                vass_dte_max=vass_dte_max,
+                dte_ranges=dte_ranges,
+                is_credit=is_credit,
+                is_eod_scan=False,
+                fallback_log_prefix="VASS_FALLBACK_INTRADAY",
+            )
+
+        if signal:
+            alg._diag_spread_entry_signal_count += 1
+            alg.Log(
+                f"VASS_ENTRY: {signal.metadata.get('vass_strategy', 'UNKNOWN') if signal.metadata else 'UNKNOWN'} | "
+                f"{signal.symbol} | {signal.reason}"
+            )
+            signal = alg._attach_option_trace_metadata(signal, source="VASS")
+            vass_trace_id = signal.metadata.get("trace_id", "") if signal.metadata else ""
+            alg._record_signal_lifecycle_event(
+                engine="VASS",
+                event="APPROVED",
+                signal_id=vass_signal_id,
+                trace_id=vass_trace_id,
+                direction=direction.value if direction else "",
+                strategy=strategy.value if strategy else "",
+                code="R_OK",
+                gate_name="VASS_ENTRY",
+                reason=str(signal.reason or ""),
+                contract_symbol=str(signal.symbol),
+            )
+            signal = alg._apply_spread_margin_guard(signal, source_tag="VASS_INTRADAY_SPREAD")
+            if signal is None:
+                alg._record_signal_lifecycle_event(
+                    engine="VASS",
+                    event="DROPPED",
+                    signal_id=vass_signal_id,
+                    trace_id=vass_trace_id,
+                    direction=direction.value if direction else "",
+                    strategy=strategy.value if strategy else "",
+                    code="R_MARGIN_PRECHECK",
+                    gate_name="VASS_MARGIN_GUARD",
+                    reason="Signal dropped by spread margin guard",
+                    contract_symbol="",
+                )
+                return
+            short_symbol = (
+                signal.metadata.get("spread_short_leg_symbol", "") if signal.metadata else ""
+            )
+            long_symbol = str(signal.symbol) if signal.symbol else ""
+            if short_symbol and long_symbol:
+                alg._pending_spread_orders[short_symbol] = long_symbol
+                alg._pending_spread_orders_reverse[long_symbol] = short_symbol
+            alg._diag_spread_entry_submit_count += 1
+            alg.portfolio_router.receive_signal(signal)
+            alg._process_immediate_signals()
+            if vass_trace_id:
+                for rej in alg._get_recent_router_rejections():
+                    if rej.trace_id == vass_trace_id and rej.source_tag.startswith("VASS"):
+                        alg.Log(
+                            f"VASS_ROUTER_REJECTED: Trace={rej.trace_id} | "
+                            f"Code={rej.code} | Stage={rej.stage} | {rej.detail}"
+                        )
+                        alg._record_signal_lifecycle_event(
+                            engine="VASS",
+                            event="ROUTER_REJECTED",
+                            signal_id=vass_signal_id,
+                            trace_id=vass_trace_id,
+                            direction=direction.value if direction else "",
+                            strategy=strategy.value if strategy else "",
+                            code=str(rej.code or "E_ROUTER_REJECT"),
+                            gate_name=str(rej.stage or "ROUTER"),
+                            reason=str(rej.detail or ""),
+                            contract_symbol=str(signal.symbol),
+                        )
+                        break
+            return
+
+        if signal is None and not spread_cooldown_active:
+            alg._diag_vass_block_count += 1
+            fail_stats = (
+                self.pop_last_credit_failure_stats()
+                if is_credit
+                else self.pop_last_spread_failure_stats()
+            )
+            validation_reason = self.pop_last_entry_validation_failure()
+            iv_env = self.get_iv_environment() if self.is_iv_sensor_ready() else "UNKNOWN"
+            skip_reasons = {
+                "R_SLOT_SWING_MAX",
+                "R_SLOT_TOTAL_MAX",
+                "R_SLOT_DIRECTION_MAX",
+                "R_COOLDOWN_DIRECTIONAL",
+            }
+            log_prefix = "VASS_SKIPPED" if (validation_reason in skip_reasons) else "VASS_REJECTION"
+            reason_code = alg._canonical_options_reason_code(validation_reason or rejection_code)
+            alg._record_vass_reject_reason(reason_code)
+            throttle_key = (
+                f"{reason_code}|{direction.value}|"
+                f"{'CREDIT' if is_credit else 'DEBIT'}|"
+                f"{validation_reason or ''}"
+            )
+            should_log = self.should_log_vass_rejection(throttle_key)
+            reason_text = "No contracts met spread criteria (DTE/delta/credit)"
+            if validation_reason in {
+                "R_SLOT_SWING_MAX",
+                "R_SLOT_DIRECTION_MAX",
+            }:
+                reason_text = "Skipped - existing spread position"
+            elif validation_reason == "R_SLOT_TOTAL_MAX":
+                reason_text = "Skipped - total options slot limit reached"
+            elif validation_reason == "R_COOLDOWN_DIRECTIONAL":
+                reason_text = "Skipped - entry attempt limit reached"
+            elif validation_reason == "R_MARGIN_PRECHECK":
+                reason_text = "Skipped - margin precheck failed"
+            elif validation_reason and validation_reason.startswith("R_CONTRACT_QUALITY:"):
+                reason_text = "Rejected - contract quality: " + validation_reason.split(":", 1)[1]
+            elif validation_reason == "WIN_RATE_GATE_BLOCK":
+                reason_text = "Skipped - win-rate gate shutoff active"
+            elif validation_reason == "TRADE_LIMIT_BLOCK":
+                reason_text = "Skipped - daily trade limit reached"
+
+            if should_log:
+                alg.Log(
+                    f"{log_prefix}: Direction={direction.value} | "
+                    f"IV_Env={iv_env} | VIX={alg._current_vix:.1f} | "
+                    f"Regime={regime_score:.0f} | "
+                    f"Contracts_checked={len(candidate_contracts)} | "
+                    f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
+                    f"DTE_Ranges={dte_ranges} | "
+                    f"ReasonCode={reason_code} | "
+                    f"Reason={reason_text}"
+                    + (f" | FailStats={fail_stats}" if fail_stats else "")
+                    + (
+                        f" | ValidationFail={validation_reason}"
+                        if (not fail_stats and validation_reason)
+                        else ""
+                    )
+                )
+            alg._record_signal_lifecycle_event(
+                engine="VASS",
+                event="DROPPED",
+                signal_id=vass_signal_id,
+                direction=direction.value if direction else "",
+                strategy=strategy.value if strategy else "",
+                code=reason_code,
+                gate_name=str(validation_reason or rejection_code),
+                reason=reason_text,
+                contract_symbol="",
+            )
+
+        can_swing, _ = self.can_enter_swing()
+        if config.SWING_FALLBACK_ENABLED and can_swing and not swing_cooldown_active:
+            best_contract = alg._select_swing_option_contract(chain, direction)
+            if best_contract is not None and best_contract.bid > 0 and best_contract.ask > 0:
+                signal = self.check_entry_signal(
+                    adx_value=adx_value,
+                    current_price=qqq_price,
+                    ma200_value=ma200_value,
+                    iv_rank=iv_rank,
+                    best_contract=best_contract,
+                    current_hour=alg.Time.hour,
+                    current_minute=alg.Time.minute,
+                    current_date=str(alg.Time.date()),
+                    portfolio_value=alg.Portfolio.TotalPortfolioValue,
+                    regime_score=regime_score,
+                    gap_filter_triggered=alg.risk_engine.is_gap_filter_active(),
+                    vol_shock_active=alg.risk_engine.is_vol_shock_active(alg.Time),
+                    size_multiplier=size_multiplier,
+                    direction=direction,
+                )
+
+                if signal:
+                    alg.Log(f"SWING_FALLBACK: Single-leg {direction.value} after spread failure")
+                    alg.portfolio_router.receive_signal(signal)
+                    alg._process_immediate_signals()
+        elif not config.SWING_FALLBACK_ENABLED and can_swing:
+            throttle_min = int(getattr(config, "SPREAD_CONSTRUCTION_FAIL_LOG_INTERVAL_MINUTES", 60))
+            is_live = bool(hasattr(alg, "LiveMode") and alg.LiveMode)
+            backtest_logs_enabled = bool(
+                getattr(config, "SPREAD_CONSTRUCTION_FAIL_LOG_BACKTEST_ENABLED", False)
+            )
+            if (not is_live) and (not backtest_logs_enabled):
+                return
+            should_log = (
+                alg._last_spread_construct_fail_log_at is None
+                or (alg.Time - alg._last_spread_construct_fail_log_at).total_seconds() / 60.0
+                >= throttle_min
+            )
+            if should_log:
+                alg.Log("SWING: Spread construction failed - staying cash (fallback disabled)")
+                alg._last_spread_construct_fail_log_at = alg.Time
+
     def _can_attempt_spread_entry(self, attempt_key: str) -> bool:
         """
         Limit spread entry attempts per day by strategy/direction key.
