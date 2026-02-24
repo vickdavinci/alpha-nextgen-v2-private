@@ -15,6 +15,23 @@ class MainReconcileMixin:
             # Conservative fallback if exchange metadata is unavailable.
             return self.Time.weekday() < 5
 
+    def _on_intraday_reconcile(self) -> None:
+        """
+        #8 fix: periodic intraday broker-vs-engine reconciliation.
+
+        Reduces zombie/orphan persistence from full-day to sub-day windows.
+        """
+        if self.IsWarmingUp:
+            return
+        if not self._is_primary_market_open():
+            return
+        now_dt = self.Time
+        if self._last_reconcile_positions_run is not None:
+            elapsed_min = (now_dt - self._last_reconcile_positions_run).total_seconds() / 60.0
+            if elapsed_min < 20:
+                return
+        self._reconcile_positions(mode="intraday")
+
     def _reconcile_positions(self, mode: str = "sod") -> None:
         """
         Reconcile internal position tracking with broker state.

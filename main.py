@@ -118,6 +118,7 @@ class AlphaNextGen(QCAlgorithm):
     _apply_transition_handoff_open_position_derisk = (
         MainRegimeMixin._apply_transition_handoff_open_position_derisk
     )
+    _on_intraday_reconcile = MainReconcileMixin._on_intraday_reconcile
     _is_primary_market_open = MainReconcileMixin._is_primary_market_open
     _reconcile_positions = MainReconcileMixin._reconcile_positions
     _check_expiration_hammer_v2 = MainIntradayCloseMixin._check_expiration_hammer_v2
@@ -1898,23 +1899,6 @@ class AlphaNextGen(QCAlgorithm):
 
         # Reconcile positions with broker
         self._reconcile_positions(mode="sod")
-
-    def _on_intraday_reconcile(self) -> None:
-        """
-        #8 fix: periodic intraday broker-vs-engine reconciliation.
-
-        Reduces zombie/orphan persistence from full-day to sub-day windows.
-        """
-        if self.IsWarmingUp:
-            return
-        if not self._is_primary_market_open():
-            return
-        now_dt = self.Time
-        if self._last_reconcile_positions_run is not None:
-            elapsed_min = (now_dt - self._last_reconcile_positions_run).total_seconds() / 60.0
-            if elapsed_min < 20:
-                return
-        self._reconcile_positions(mode="intraday")
 
     def _on_warm_entry_check(self) -> None:
         """
