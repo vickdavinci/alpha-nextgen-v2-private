@@ -1749,32 +1749,6 @@ class AlphaNextGen(QCAlgorithm):
         )
         return True
 
-    def _resolve_vass_direction_context(
-        self,
-        regime_score: float,
-        size_multiplier: float,
-        bull_profile_log_prefix: str,
-        clamp_log_prefix: str,
-        shock_log_prefix: str,
-        transition_ctx: Optional[Dict[str, Any]] = None,
-    ) -> Optional[Tuple[OptionDirection, str, Any, float, bool, str, str, str, str,]]:
-        """
-        Resolve VASS direction + sizing context with shared guard rails.
-
-        Returns:
-            Tuple of (direction, direction_str, overlay_state, size_multiplier,
-            has_conviction, conviction_reason, macro_direction, resolve_reason,
-            resolved_direction_str) or None when blocked/no-trade.
-        """
-        return self.options_engine.resolve_vass_direction_context(
-            regime_score=regime_score,
-            size_multiplier=size_multiplier,
-            bull_profile_log_prefix=bull_profile_log_prefix,
-            clamp_log_prefix=clamp_log_prefix,
-            shock_log_prefix=shock_log_prefix,
-            transition_ctx=transition_ctx,
-        )
-
     def _attach_option_trace_metadata(
         self,
         signal: TargetWeight,
@@ -5850,166 +5824,6 @@ class AlphaNextGen(QCAlgorithm):
             is_eod_scan=is_eod_scan,
         )
 
-    def _should_log_vass_rejection(self, reason_key: str) -> bool:
-        """Per-reason throttle for VASS skip/rejection logs to preserve RCA fidelity."""
-        interval_min = int(getattr(config, "VASS_LOG_REJECTION_INTERVAL_MINUTES", 15))
-        now = self.Time
-        last = self._last_vass_rejection_log_by_key.get(reason_key)
-        if last is not None:
-            elapsed = (now - last).total_seconds() / 60.0
-            if elapsed < interval_min:
-                return False
-        self._last_vass_rejection_log_by_key[reason_key] = now
-        return True
-
-    def _build_vass_spread_signal(
-        self,
-        *,
-        chain,
-        candidate_contracts: List[OptionContract],
-        direction: OptionDirection,
-        regime_score: float,
-        qqq_price: float,
-        adx_value: float,
-        ma200_value: float,
-        ma50_value: float,
-        iv_rank: float,
-        size_multiplier: float,
-        portfolio_value: float,
-        margin_remaining: float,
-        strategy: SpreadStrategy,
-        vass_dte_min: int,
-        vass_dte_max: int,
-        dte_ranges: List[Tuple[int, int]],
-        is_credit: bool,
-        is_eod_scan: bool,
-        fallback_log_prefix: str,
-    ) -> Tuple[Optional[TargetWeight], str]:
-        """Build VASS spread entry signal from pre-filtered candidates."""
-        return self.options_engine.build_vass_spread_signal(
-            chain=chain,
-            candidate_contracts=candidate_contracts,
-            direction=direction,
-            regime_score=regime_score,
-            qqq_price=qqq_price,
-            adx_value=adx_value,
-            ma200_value=ma200_value,
-            ma50_value=ma50_value,
-            iv_rank=iv_rank,
-            size_multiplier=size_multiplier,
-            portfolio_value=portfolio_value,
-            margin_remaining=margin_remaining,
-            strategy=strategy,
-            vass_dte_min=vass_dte_min,
-            vass_dte_max=vass_dte_max,
-            dte_ranges=dte_ranges,
-            is_credit=is_credit,
-            is_eod_scan=is_eod_scan,
-            fallback_log_prefix=fallback_log_prefix,
-        )
-
-    def _scan_spread_for_direction(
-        self,
-        chain,
-        direction: OptionDirection,
-        direction_str: str,
-        regime_score: float,
-        qqq_price: float,
-        adx_value: float,
-        ma200_value: float,
-        ma50_value: float,
-        iv_rank: float,
-        size_multiplier: float,
-        is_eod_scan: bool,
-    ) -> None:
-        """Scan for spread entry in a specific direction."""
-        self.options_engine.scan_spread_for_direction(
-            chain=chain,
-            direction=direction,
-            direction_str=direction_str,
-            regime_score=regime_score,
-            qqq_price=qqq_price,
-            adx_value=adx_value,
-            ma200_value=ma200_value,
-            ma50_value=ma50_value,
-            iv_rank=iv_rank,
-            size_multiplier=size_multiplier,
-            is_eod_scan=is_eod_scan,
-        )
-
-    def _build_spread_candidate_contracts(
-        self,
-        chain,
-        direction: OptionDirection,
-        dte_min: int = None,
-        dte_max: int = None,
-        option_right: Optional[OptionRight] = None,
-    ) -> List[OptionContract]:
-        """
-        V2.3: Build list of candidate OptionContract objects for spread selection.
-
-        Filters chain for appropriate DTE range and direction, converting QC
-        contracts to our OptionContract dataclass.
-
-        Args:
-            chain: QuantConnect options chain.
-            direction: CALL or PUT direction.
-            dte_min: Minimum DTE override (defaults to config.SPREAD_DTE_MIN).
-            dte_max: Maximum DTE override (defaults to config.SPREAD_DTE_MAX).
-
-        Returns:
-            List of OptionContract objects for spread leg selection.
-        """
-        return self.options_engine.build_vass_candidate_contracts(
-            chain=chain,
-            direction=direction,
-            dte_min=dte_min,
-            dte_max=dte_max,
-            option_right=option_right,
-        )
-
-    def _route_vass_strategy(
-        self,
-        direction_str: str,
-        overlay_state: Optional[str] = None,
-    ) -> tuple:
-        """
-        V2.23: Route to credit or debit strategy based on IV environment.
-
-        Uses IVSensor classification to select strategy from VASS matrix.
-        Falls back to debit spread with default DTE if IVSensor not ready or VASS disabled.
-
-        Args:
-            direction_str: "BULLISH" or "BEARISH"
-
-        Returns:
-            Tuple of (strategy: Optional[SpreadStrategy], dte_min: int, dte_max: int, is_credit: bool)
-        """
-        return self.options_engine.resolve_vass_strategy(
-            direction=direction_str,
-            overlay_state=overlay_state,
-        )
-
-    def _strategy_option_right(self, strategy: Optional[SpreadStrategy]) -> Optional[OptionRight]:
-        """
-        Determine which option right (CALL/PUT) is required for a VASS strategy.
-        """
-        right_key = self.options_engine.strategy_option_right(strategy)
-        if right_key == "CALL":
-            return OptionRight.Call
-        if right_key == "PUT":
-            return OptionRight.Put
-        return None
-
-    def _build_vass_dte_fallbacks(self, dte_min: int, dte_max: int) -> List[Tuple[int, int]]:
-        """
-        V6.12: Build ordered DTE ranges for VASS spread selection.
-
-        Primary range is the configured VASS window. Fallback widens the window
-        to avoid "cooldown traps" when primary DTE has no viable contracts.
-        """
-        return self.options_engine.build_vass_dte_fallbacks(dte_min, dte_max)
-
     def _canonical_options_reason_code(self, code: Optional[str]) -> str:
         """
         Normalize legacy/mixed reason codes to explicit E_*/R_* taxonomy.
@@ -8502,7 +8316,7 @@ class AlphaNextGen(QCAlgorithm):
                         "SPREAD_REJECT_UNMATCHED|"
                         f"{symbol_norm}|{','.join(sorted(pending_symbols)) or 'NONE'}"
                     )
-                    if self._should_log_vass_rejection(throttle_key):
+                    if self.options_engine.should_log_vass_rejection(throttle_key):
                         self.Log(
                             f"OPT_MACRO_RECOVERY: Ignored unmatched spread rejection | "
                             f"Canceled={symbol_norm} | Pending={','.join(sorted(pending_symbols)) or 'NONE'}"
