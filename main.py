@@ -107,6 +107,7 @@ class AlphaNextGen(QCAlgorithm):
     _should_scan_intraday = MainOptionsMixin._should_scan_intraday
     _is_terminal_exit_retry_tag = MainOrdersMixin._is_terminal_exit_retry_tag
     _on_moo_fallback = MainOrdersMixin._on_moo_fallback
+    _cleanup_stale_orders = MainOrdersMixin._cleanup_stale_orders
     _sync_intraday_oco = MainOrdersMixin._sync_intraday_oco
     OnOrderEvent = MainOrdersMixin.OnOrderEvent
     _on_fill = MainOrdersMixin._on_fill
@@ -662,58 +663,6 @@ class AlphaNextGen(QCAlgorithm):
                     self._splits_logged_today.add(symbol_str)
 
         return False
-
-    def _cleanup_stale_orders(self) -> None:
-        """
-        V3.0 P2: Clean up stale orders at start of logic cycle.
-
-        Cancels orders that have been pending for more than 5 minutes to prevent
-        orphaned orders from previous failed cycles from interfering with new logic.
-        Runs every 5 minutes to avoid excessive API calls.
-        """
-        # Rate limit: only run every 5 minutes
-        if not hasattr(self, "_last_stale_order_check"):
-            self._last_stale_order_check = None
-
-        if self._last_stale_order_check is not None:
-            minutes_since_check = (self.Time - self._last_stale_order_check).total_seconds() / 60
-            if minutes_since_check < 5:
-                return  # Too soon, skip
-
-        self._last_stale_order_check = self.Time
-
-        # Get all open orders and cancel those older than 5 minutes
-        try:
-            open_orders = list(self.Transactions.GetOpenOrders())
-            if not open_orders:
-                return
-
-            stale_count = 0
-            for order in open_orders:
-                # V3.0 FIX: Handle timezone-aware vs naive datetime comparison
-                try:
-                    order_age_minutes = (self.Time - order.Time).total_seconds() / 60
-                except TypeError:
-                    # If timezone mismatch, use naive comparison
-                    order_age_minutes = (
-                        self.Time.replace(tzinfo=None) - order.Time.replace(tzinfo=None)
-                    ).total_seconds() / 60
-                if order_age_minutes > 5:
-                    order_tag = str(getattr(order, "Tag", "") or "")
-                    # Keep protective OCO orders alive; they are long-lived by design.
-                    if "OCO_STOP:" in order_tag or "OCO_PROFIT:" in order_tag:
-                        continue
-                    try:
-                        self.Transactions.CancelOrder(order.Id)
-                        stale_count += 1
-                    except Exception as e:
-                        self.Log(f"STALE_CLEANUP: Failed to cancel order {order.Id} | {e}")
-
-            if stale_count > 0:
-                self.Log(f"STALE_CLEANUP: Cancelled {stale_count} orders older than 5 minutes")
-
-        except Exception as e:
-            self.Log(f"STALE_CLEANUP: Error checking orders | {e}")
 
     def _update_rolling_windows(self, data: Slice) -> None:
         """
