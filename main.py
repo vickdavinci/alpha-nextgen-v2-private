@@ -119,6 +119,8 @@ class AlphaNextGen(QCAlgorithm):
     _extract_trace_id_from_tag = MainOrdersMixin._extract_trace_id_from_tag
     _compact_tag_for_log = MainOrdersMixin._compact_tag_for_log
     _sync_intraday_oco = MainOrdersMixin._sync_intraday_oco
+    _log_order_lifecycle_issue = MainOrdersMixin._log_order_lifecycle_issue
+    _forward_execution_event = MainOrdersMixin._forward_execution_event
     OnOrderEvent = MainOrdersMixin.OnOrderEvent
     _on_fill = MainOrdersMixin._on_fill
     _cancel_residual_option_orders = MainOrdersMixin._cancel_residual_option_orders
@@ -1863,71 +1865,6 @@ class AlphaNextGen(QCAlgorithm):
         self._spread_exit_mark_cache.pop(spread_key, None)
         self._spread_ghost_flat_streak_by_key.pop(spread_key, None)
         self._spread_ghost_last_log_by_key.pop(spread_key, None)
-
-    def _log_order_lifecycle_issue(self, order_event: OrderEvent, status: str) -> None:
-        """Compact attribution log for canceled/invalid orders."""
-        if not self._should_log_backtest_category("LOG_ORDER_LIFECYCLE_BACKTEST_ENABLED", True):
-            return
-        max_per_day = int(getattr(config, "LOG_ORDER_LIFECYCLE_MAX_PER_DAY", 200))
-        if self._order_lifecycle_log_count >= max_per_day:
-            self._order_lifecycle_suppressed_count += 1
-            return
-        order = self.Transactions.GetOrderById(order_event.OrderId)
-        order_type = str(getattr(order, "Type", "UNKNOWN")) if order is not None else "UNKNOWN"
-        raw_tag = self._get_order_tag(order_event)
-        tag = raw_tag if raw_tag else f"NO_TAG:{order_type}"
-        msg = str(getattr(order_event, "Message", "") or "")
-        self.Log(
-            f"ORDER_LIFECYCLE: Status={status} | OrderId={order_event.OrderId} | "
-            f"Symbol={order_event.Symbol} | Type={order_type} | Tag={tag} | Msg={msg}"
-        )
-        self._order_lifecycle_log_count += 1
-
-    def _forward_execution_event(
-        self,
-        order_event: OrderEvent,
-        status: str,
-        fill_price: float = 0.0,
-        fill_quantity: int = 0,
-        rejection_reason: str = "",
-    ) -> None:
-        """
-        V6.22: Forward broker events to ExecutionEngine only for mapped orders.
-
-        OCO/manual/spread-atomic orders are external to ExecutionEngine and should
-        not be logged as EXEC: UNKNOWN_ORDER repeatedly.
-        """
-        broker_id = int(order_event.OrderId)
-        if self.execution_engine.get_order_by_broker_id(broker_id) is None:
-            if broker_id not in self._external_exec_event_logged:
-                order = self.Transactions.GetOrderById(broker_id)
-                order_type = (
-                    str(getattr(order, "Type", "UNKNOWN")) if order is not None else "UNKNOWN"
-                )
-                tag = self._get_order_tag(order_event)
-                if not tag:
-                    tag = f"NO_TAG:{order_type}"
-                self.Log(
-                    f"EXEC_EXTERNAL: BrokerID={broker_id} | Status={status} | "
-                    f"Symbol={order_event.Symbol} | Tag={tag}"
-                )
-                self._external_exec_event_logged.add(broker_id)
-                max_external_cache = 20000
-                if len(self._external_exec_event_logged) > max_external_cache:
-                    self._external_exec_event_logged.clear()
-                    self.Log(
-                        f"EXEC_EXTERNAL_CACHE_RESET: Cleared external event cache at "
-                        f"{max_external_cache}+ entries"
-                    )
-            return
-
-        self.execution_engine.on_order_event(
-            broker_order_id=broker_id,
-            status=status,
-            fill_price=fill_price,
-            fill_quantity=fill_quantity,
-            rejection_reason=str(rejection_reason or ""),
-        )
 
     # =========================================================================
     # STATE MANAGEMENT HELPERS
