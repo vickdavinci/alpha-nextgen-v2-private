@@ -21,7 +21,6 @@ REQUIRED_FILES = [
 
 REQUIRED_SUBSTRINGS = {
     "main.py": [
-        "_should_log_vass_rejection",
         "VASS_REJECTION",
         "VASS_SKIPPED",
         "INTRADAY_DTE_ROUTING",
@@ -37,6 +36,7 @@ REQUIRED_SUBSTRINGS = {
         "OCO_CANCEL",
     ],
     "engines/satellite/options_engine.py": [
+        "should_log_vass_rejection",
         "_last_micro_no_trade_log_by_key",
         "MICRO_NO_TRADE",
         "SPREAD_EXIT_GUARD_HOLD",
