@@ -85,6 +85,37 @@ class MicroEntryEngine:
             )
         return True, None, None, pending_lane
 
+    def validate_contract_friction(
+        self,
+        *,
+        strategy_value: str,
+        contract_spread_pct: float,
+    ) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Validate strategy-aware bid/ask friction cap before entry."""
+        strategy_for_friction = str(strategy_value or "").upper()
+        if strategy_for_friction in (
+            IntradayStrategy.ITM_MOMENTUM.value,
+            IntradayStrategy.PROTECTIVE_PUTS.value,
+        ):
+            max_friction_pct = float(getattr(config, "INTRADAY_ITM_MAX_BID_ASK_SPREAD_PCT", 0.12))
+        elif strategy_for_friction in (
+            IntradayStrategy.MICRO_DEBIT_FADE.value,
+            IntradayStrategy.MICRO_OTM_MOMENTUM.value,
+            IntradayStrategy.DEBIT_FADE.value,
+            IntradayStrategy.CREDIT_SPREAD.value,
+        ):
+            max_friction_pct = float(getattr(config, "INTRADAY_MICRO_MAX_BID_ASK_SPREAD_PCT", 0.10))
+        else:
+            max_friction_pct = float(getattr(config, "OPTIONS_SPREAD_MAX_PCT", 0.14))
+
+        if contract_spread_pct > max_friction_pct:
+            return (
+                False,
+                "E_INTRADAY_FRICTION_CAP",
+                f"{contract_spread_pct:.1%}>{max_friction_pct:.0%}|{strategy_for_friction}",
+            )
+        return True, None, None
+
     def apply_pre_contract_gates(
         self,
         *,

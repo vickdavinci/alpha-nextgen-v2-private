@@ -10598,37 +10598,25 @@ class OptionsEngine:
             )
             return fail("E_INTRADAY_DIRECTION_MISMATCH")
 
-        # Production friction cap: block entries where bid/ask friction is too high
-        # for the owning lane.
         strategy_for_friction = self._canonical_intraday_strategy_name(
             entry_strategy.value if entry_strategy is not None else ""
         )
-        if strategy_for_friction in (
-            IntradayStrategy.ITM_MOMENTUM.value,
-            IntradayStrategy.PROTECTIVE_PUTS.value,
-        ):
-            max_friction_pct = float(getattr(config, "INTRADAY_ITM_MAX_BID_ASK_SPREAD_PCT", 0.12))
-        elif strategy_for_friction in (
-            IntradayStrategy.MICRO_DEBIT_FADE.value,
-            IntradayStrategy.MICRO_OTM_MOMENTUM.value,
-            IntradayStrategy.DEBIT_FADE.value,
-            IntradayStrategy.CREDIT_SPREAD.value,
-        ):
-            max_friction_pct = float(getattr(config, "INTRADAY_MICRO_MAX_BID_ASK_SPREAD_PCT", 0.10))
-        else:
-            max_friction_pct = float(getattr(config, "OPTIONS_SPREAD_MAX_PCT", 0.14))
-
         contract_spread_pct = float(getattr(best_contract, "spread_pct", 1.0) or 1.0)
-        if contract_spread_pct > max_friction_pct:
+        (
+            friction_ok,
+            friction_code,
+            friction_detail,
+        ) = self._micro_entry_engine.validate_contract_friction(
+            strategy_value=strategy_for_friction,
+            contract_spread_pct=contract_spread_pct,
+        )
+        if not friction_ok:
             self.log(
-                f"INTRADAY: Entry blocked - friction {contract_spread_pct:.1%} > "
-                f"{max_friction_pct:.0%} | Strategy={strategy_for_friction}",
+                f"INTRADAY: Entry blocked - friction {contract_spread_pct:.1%} | "
+                f"Strategy={strategy_for_friction}",
                 trades_only=True,
             )
-            return fail(
-                "E_INTRADAY_FRICTION_CAP",
-                f"{contract_spread_pct:.1%}>{max_friction_pct:.0%}|{strategy_for_friction}",
-            )
+            return fail(friction_code or "E_INTRADAY_FRICTION_CAP", friction_detail)
 
         # V2.18: Use sizing cap (Fix for MarginBuyingPower sizing bug)
         # V3.0 SCALABILITY FIX: Use percentage-based cap instead of hardcoded dollars
