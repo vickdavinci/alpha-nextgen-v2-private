@@ -9978,6 +9978,93 @@ class OptionsEngine:
         """Build ordered DTE ranges for VASS spread selection."""
         return self._vass_entry_engine.build_dte_fallbacks(dte_min, dte_max)
 
+    def get_contract_prices(self, contract: Any) -> Tuple[float, float]:
+        """Get contract bid/ask with last-price fallback when quotes are stale."""
+        bid = getattr(contract, "BidPrice", 0) or 0
+        ask = getattr(contract, "AskPrice", 0) or 0
+        if bid > 0 and ask > 0:
+            return (bid, ask)
+        last = getattr(contract, "LastPrice", 0) or 0
+        if last <= 0:
+            return (0, 0)
+        spread_pct = 0.10 if last < 1.0 else (0.05 if last < 5.0 else 0.02)
+        half_spread = spread_pct / 2
+        return (last * (1 - half_spread), last * (1 + half_spread))
+
+    def build_vass_candidate_contracts(
+        self,
+        chain: Any,
+        direction: OptionDirection,
+        dte_min: Optional[int] = None,
+        dte_max: Optional[int] = None,
+        option_right: Optional[Any] = None,
+    ) -> List[OptionContract]:
+        """
+        Build VASS candidate OptionContract list for spread leg selection.
+
+        Filters chain by right and DTE, then maps QC contracts to internal
+        OptionContract rows consumed by spread selectors.
+        """
+        candidates: List[OptionContract] = []
+
+        for contract in chain:
+            # Check option right (strategy-aware). Falls back to direction-based filter.
+            if option_right is not None:
+                if contract.Right != option_right:
+                    continue
+                opt_direction = (
+                    OptionDirection.CALL
+                    if str(option_right).upper().endswith("CALL")
+                    else OptionDirection.PUT
+                )
+            else:
+                right_name = str(getattr(contract, "Right", "")).upper()
+                if direction == OptionDirection.CALL:
+                    if "CALL" not in right_name:
+                        continue
+                else:
+                    if "PUT" not in right_name:
+                        continue
+                opt_direction = direction
+
+            dte = (contract.Expiry - self.Time).days
+            effective_dte_min = dte_min if dte_min is not None else config.SPREAD_DTE_MIN
+            effective_dte_max = dte_max if dte_max is not None else config.SPREAD_DTE_MAX
+            if dte < effective_dte_min or dte > effective_dte_max:
+                continue
+
+            bid, ask = self.get_contract_prices(contract)
+            if ask <= 0:
+                continue
+            mid_price = (bid + ask) / 2 if bid > 0 else ask
+
+            greeks = getattr(contract, "Greeks", None)
+            delta_val = greeks.Delta if greeks else 0.0
+            gamma_val = greeks.Gamma if greeks else 0.0
+            theta_val = greeks.Theta if greeks else 0.0
+            vega_val = greeks.Vega if greeks else 0.0
+
+            candidates.append(
+                OptionContract(
+                    symbol=str(contract.Symbol),
+                    underlying="QQQ",
+                    direction=opt_direction,
+                    strike=float(contract.Strike),
+                    expiry=str(contract.Expiry.date()),
+                    delta=delta_val,
+                    gamma=gamma_val,
+                    theta=theta_val,
+                    vega=vega_val,
+                    bid=bid,
+                    ask=ask,
+                    mid_price=mid_price,
+                    open_interest=int(contract.OpenInterest),
+                    days_to_expiry=dte,
+                )
+            )
+
+        return candidates
+
     def check_vass_bull_debit_trend_confirmation(
         self,
         *,

@@ -6677,71 +6677,13 @@ class AlphaNextGen(QCAlgorithm):
         Returns:
             List of OptionContract objects for spread leg selection.
         """
-        candidates = []
-        qqq_price = self.Securities[self.qqq].Price
-
-        for contract in chain:
-            # Check option right (strategy-aware). Falls back to direction-based filter.
-            if option_right is not None:
-                if contract.Right != option_right:
-                    continue
-                opt_direction = (
-                    OptionDirection.CALL
-                    if option_right == OptionRight.Call
-                    else OptionDirection.PUT
-                )
-            else:
-                if direction == OptionDirection.CALL:
-                    if contract.Right != OptionRight.Call:
-                        continue
-                else:
-                    if contract.Right != OptionRight.Put:
-                        continue
-                opt_direction = direction
-
-            # Check DTE range for spreads (V2.23: VASS-aware DTE override)
-            dte = (contract.Expiry - self.Time).days
-            effective_dte_min = dte_min if dte_min is not None else config.SPREAD_DTE_MIN
-            effective_dte_max = dte_max if dte_max is not None else config.SPREAD_DTE_MAX
-            if dte < effective_dte_min or dte > effective_dte_max:
-                continue
-
-            # Get bid/ask safely
-            bid, ask = self._get_contract_prices(contract)
-            # T-20: Keep zero-bid contracts if ask is valid. Long-leg candidates can be buyable
-            # with bid=0 in thin chains.
-            if ask <= 0:
-                continue
-
-            mid_price = (bid + ask) / 2 if bid > 0 else ask
-
-            # Get Greeks if available
-            delta = getattr(contract, "Greeks", None)
-            delta_val = delta.Delta if delta else 0.0
-            gamma_val = delta.Gamma if delta else 0.0
-            theta_val = delta.Theta if delta else 0.0
-            vega_val = delta.Vega if delta else 0.0
-
-            # Build OptionContract
-            opt_contract = OptionContract(
-                symbol=str(contract.Symbol),
-                underlying="QQQ",
-                direction=opt_direction,
-                strike=float(contract.Strike),
-                expiry=str(contract.Expiry.date()),
-                delta=delta_val,
-                gamma=gamma_val,
-                theta=theta_val,
-                vega=vega_val,
-                bid=bid,
-                ask=ask,
-                mid_price=mid_price,
-                open_interest=int(contract.OpenInterest),
-                days_to_expiry=dte,
-            )
-            candidates.append(opt_contract)
-
-        return candidates
+        return self.options_engine.build_vass_candidate_contracts(
+            chain=chain,
+            direction=direction,
+            dte_min=dte_min,
+            dte_max=dte_max,
+            option_right=option_right,
+        )
 
     def _route_vass_strategy(
         self,
@@ -7011,16 +6953,7 @@ class AlphaNextGen(QCAlgorithm):
         return candidates[0][1]
 
     def _get_contract_prices(self, contract) -> Tuple[float, float]:
-        bid = getattr(contract, "BidPrice", 0) or 0
-        ask = getattr(contract, "AskPrice", 0) or 0
-        if bid > 0 and ask > 0:
-            return (bid, ask)
-        last = getattr(contract, "LastPrice", 0) or 0
-        if last <= 0:
-            return (0, 0)
-        spread_pct = 0.10 if last < 1.0 else (0.05 if last < 5.0 else 0.02)
-        half_spread = spread_pct / 2
-        return (last * (1 - half_spread), last * (1 + half_spread))
+        return self.options_engine.get_contract_prices(contract)
 
     def _build_option_contract_from_fill(
         self,
