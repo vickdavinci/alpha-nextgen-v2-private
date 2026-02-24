@@ -6,7 +6,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from AlgorithmImports import *
 
 import config
-from engines.satellite.options_engine import OptionContract, SpreadStrategy
+from engines.satellite.options_engine import (
+    OptionContract,
+    SpreadStrategy,
+    is_expiration_firewall_day,
+)
 from models.enums import IntradayStrategy, OptionDirection, Urgency
 from models.target_weight import TargetWeight
 
@@ -1896,3 +1900,57 @@ class MainOptionsMixin:
                 self.Log(micro_msg)
                 self._last_micro_update_log_signature = signature
                 self._last_micro_update_log_time = self.Time
+
+    def _on_friday_firewall(self) -> None:
+        """
+        V2.4.1: Friday Firewall - close swing options before weekend.
+
+        V2.9: Holiday-aware (Bug #3 fix). Runs on:
+        - Friday (normal weeks)
+        - Thursday (when Friday is a holiday like Good Friday)
+
+        Rules:
+        1. VIX > 25: Close ALL swing options (high volatility weekend risk)
+        2. Fresh trade (opened today) AND VIX >= 15: Close it (gambling protection)
+        3. Fresh trade AND VIX < 15: Keep it (calm market exception)
+        4. Older trades: Keep them (already survived initial risk)
+        """
+        # Skip during warmup
+        if self.IsWarmingUp:
+            return
+
+        # V2.9: Holiday-aware check - only run on expiration firewall days
+        if not is_expiration_firewall_day(self):
+            return
+
+        # Get current VIX
+        vix_current = self._current_vix
+
+        # Check if we have any swing positions
+        swing_signals = []
+        for spread in self.options_engine.get_spread_positions():
+            signals = self.options_engine.check_friday_firewall_exit(
+                current_vix=vix_current,
+                current_date=str(self.Time.date()),
+                vix_close_all_threshold=config.FRIDAY_FIREWALL_VIX_CLOSE_ALL,
+                vix_keep_fresh_threshold=config.FRIDAY_FIREWALL_VIX_KEEP_FRESH,
+                spread_override=spread,
+            )
+            if signals:
+                swing_signals.extend(signals)
+
+        itm_signals = self._collect_itm_weekend_firewall_signals(current_vix=vix_current)
+        firewall_signals = swing_signals + itm_signals
+
+        if firewall_signals:
+            for signal in firewall_signals:
+                self.Log(f"FRIDAY_FIREWALL: {signal.reason} | VIX={vix_current:.1f}")
+                self.portfolio_router.receive_signal(signal)
+
+            # Process immediately
+            self._process_immediate_signals()
+        else:
+            self.Log(f"FRIDAY_FIREWALL: No action needed | VIX={vix_current:.1f}")
+
+        # V9.2: Guarded Friday sweep (single pass/day).
+        self._reconcile_spread_state()
