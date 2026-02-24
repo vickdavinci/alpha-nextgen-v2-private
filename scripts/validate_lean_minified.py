@@ -14,7 +14,17 @@ from pathlib import Path
 
 REQUIRED_FILES = [
     "main.py",
+    "main_options_mixin.py",
+    "main_reconcile_mixin.py",
+    "main_intraday_close_mixin.py",
+    "main_risk_monitor_mixin.py",
     "engines/satellite/options_engine.py",
+    "engines/satellite/options_micro_signal.py",
+    "engines/satellite/options_position_manager.py",
+    "engines/satellite/options_primitives.py",
+    "engines/satellite/vass_signal_validator.py",
+    "engines/satellite/vass_exit_evaluator.py",
+    "engines/satellite/vass_entry_engine.py",
     "portfolio/portfolio_router.py",
     "config.py",
 ]
@@ -22,31 +32,52 @@ REQUIRED_FILES = [
 REQUIRED_SUBSTRINGS = {
     "main.py": [
         "VASS_REJECTION",
-        "VASS_SKIPPED",
         "INTRADAY_DTE_ROUTING",
-        "MICRO_UPDATE:",
         "ORDER_LIFECYCLE_CAP_HIT",
         "INTRADAY_SIGNAL_DROPPED",
         "INTRADAY_ROUTER_REJECTED",
         "MICRO_DTE_DIAG_SUMMARY",
+    ],
+    "main_options_mixin.py": [
+        "MICRO_UPDATE:",
         "_record_micro_drop_reason_dte",
+    ],
+    "main_reconcile_mixin.py": [
         "RECON_ORPHAN_CLOSE_SUBMITTED",
         "RECON_ORPHAN_GUARD_HOLD",
+    ],
+    "main_intraday_close_mixin.py": [
         "INTRADAY_FORCE_EXIT",
+    ],
+    "main_risk_monitor_mixin.py": [
         "OCO_CANCEL",
+    ],
+    "engines/satellite/vass_entry_engine.py": [
+        "VASS_SKIPPED",
+        "VASS_REJECTION",
     ],
     "engines/satellite/options_engine.py": [
         "should_log_vass_rejection",
         "_last_micro_no_trade_log_by_key",
+        "WIN_RATE_GATE:",
+    ],
+    "engines/satellite/options_micro_signal.py": [
         "MICRO_NO_TRADE",
-        "SPREAD_EXIT_GUARD_HOLD",
-        "MIN_MOVE_",
-        "SPREAD: ENTRY_SIGNAL",
-        "SPREAD: EXIT_SIGNAL",
+    ],
+    "engines/satellite/options_position_manager.py": [
         "SPREAD: POSITION_REGISTERED",
         "SPREAD: POSITION_REMOVED",
-        "WIN_RATE_GATE:",
+    ],
+    "engines/satellite/options_primitives.py": [
+        "MIN_MOVE_",
+    ],
+    "engines/satellite/vass_signal_validator.py": [
+        "SPREAD: ENTRY_SIGNAL",
         "CREDIT_SPREAD: ENTRY_SIGNAL",
+    ],
+    "engines/satellite/vass_exit_evaluator.py": [
+        "SPREAD_EXIT_GUARD_HOLD",
+        "SPREAD: EXIT_SIGNAL",
     ],
     "portfolio/portfolio_router.py": [
         "R_CLOSE_NO_QTY",
