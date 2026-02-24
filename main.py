@@ -100,6 +100,7 @@ class AlphaNextGen(QCAlgorithm):
     _scan_options_signals = MainOptionsMixin._scan_options_signals
     _check_spread_exit = MainOptionsMixin._check_spread_exit
     _is_terminal_exit_retry_tag = MainOrdersMixin._is_terminal_exit_retry_tag
+    _on_moo_fallback = MainOrdersMixin._on_moo_fallback
     _sync_intraday_oco = MainOrdersMixin._sync_intraday_oco
     OnOrderEvent = MainOrdersMixin.OnOrderEvent
     _on_fill = MainOrdersMixin._on_fill
@@ -1810,26 +1811,6 @@ class AlphaNextGen(QCAlgorithm):
 
         # Mark as done to prevent repeated attempts
         self._mr_force_close_fallback_date = self.Time.date()
-
-    def _on_moo_fallback(self) -> None:
-        """
-        MOO fallback check at 09:31 ET.
-
-        Checks if MOO orders failed to execute and converts them to market orders.
-        """
-        # Skip during warmup
-        if self.IsWarmingUp:
-            return
-
-        results = self.execution_engine.check_moo_fallbacks()
-        for result in results:
-            if result.get("success"):
-                self.Log(f"MOO_FALLBACK: Order {result.get('order_id')} fallback submitted")
-            else:
-                self.Log(
-                    f"MOO_FALLBACK: Order {result.get('order_id')} fallback failed - "
-                    f"{result.get('error')}"
-                )
 
     def _on_sod_baseline(self) -> None:
         """

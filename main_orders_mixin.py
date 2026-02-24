@@ -63,6 +63,26 @@ class MainOrdersMixin:
             self.Log(f"RESIDUAL_ORDER_CANCEL_ERROR: {symbol} | {e}")
             return 0
 
+    def _on_moo_fallback(self) -> None:
+        """
+        MOO fallback check at 09:31 ET.
+
+        Checks if MOO orders failed to execute and converts them to market orders.
+        """
+        # Skip during warmup
+        if self.IsWarmingUp:
+            return
+
+        results = self.execution_engine.check_moo_fallbacks()
+        for result in results:
+            if result.get("success"):
+                self.Log(f"MOO_FALLBACK: Order {result.get('order_id')} fallback submitted")
+            else:
+                self.Log(
+                    f"MOO_FALLBACK: Order {result.get('order_id')} fallback failed - "
+                    f"{result.get('error')}"
+                )
+
     def _sync_intraday_oco(
         self,
         symbol: str,
