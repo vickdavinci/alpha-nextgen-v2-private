@@ -17,12 +17,24 @@ class VASSEntryEngine:
         self._last_entry_at_by_signature: Dict[str, datetime] = {}
         self._cooldown_until_by_signature: Dict[str, datetime] = {}
         self._last_entry_date_by_direction: Dict[str, str] = {}
+        self._last_rejection_log_by_key: Dict[str, datetime] = {}
         self._consecutive_losses: int = 0
         self._loss_breaker_pause_until: Optional[str] = None  # YYYY-MM-DD
 
     def _log(self, message: str, trades_only: bool = False) -> None:
         if self._log_func:
             self._log_func(message, trades_only)
+
+    def should_log_rejection(self, *, now: datetime, reason_key: str) -> bool:
+        """Per-reason throttle for VASS skip/rejection logs."""
+        interval_min = int(getattr(config, "VASS_LOG_REJECTION_INTERVAL_MINUTES", 15))
+        last = self._last_rejection_log_by_key.get(reason_key)
+        if last is not None:
+            elapsed = (now - last).total_seconds() / 60.0
+            if elapsed < interval_min:
+                return False
+        self._last_rejection_log_by_key[reason_key] = now
+        return True
 
     def select_strategy(
         self,

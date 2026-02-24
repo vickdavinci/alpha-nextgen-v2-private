@@ -1877,7 +1877,6 @@ class OptionsEngine:
         self._last_trade_limit_failure: Optional[str] = None
         self._last_trade_limit_detail: Optional[str] = None
         self._last_micro_no_trade_log_by_key: Dict[str, str] = {}
-        self._last_vass_rejection_log_by_key: Dict[str, datetime] = {}
         # MICRO anti-churn: brief cooldown for same strategy after close.
         self._last_intraday_close_time: Optional[datetime] = None
         self._last_intraday_close_strategy: Optional[str] = None
@@ -3633,15 +3632,8 @@ class OptionsEngine:
 
     def should_log_vass_rejection(self, reason_key: str) -> bool:
         """Per-reason throttle for VASS skip/rejection logs."""
-        interval_min = int(getattr(config, "VASS_LOG_REJECTION_INTERVAL_MINUTES", 15))
         now = self.algorithm.Time if self.algorithm is not None else datetime.utcnow()
-        last = self._last_vass_rejection_log_by_key.get(reason_key)
-        if last is not None:
-            elapsed = (now - last).total_seconds() / 60.0
-            if elapsed < interval_min:
-                return False
-        self._last_vass_rejection_log_by_key[reason_key] = now
-        return True
+        return self._vass_entry_engine.should_log_rejection(now=now, reason_key=reason_key)
 
     def resolve_vass_direction_context(
         self,
