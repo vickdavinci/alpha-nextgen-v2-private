@@ -168,6 +168,7 @@ class AlphaNextGen(QCAlgorithm):
     _on_sod_baseline = MainPremarketMixin._on_sod_baseline
     _on_weekly_reset = MainPremarketMixin._on_weekly_reset
     _is_first_bar_after_market_gap = MainPremarketMixin._is_first_bar_after_market_gap
+    _get_unsettled_cash = MainPremarketMixin._get_unsettled_cash
     _schedule_dynamic_eod_events = MainPremarketMixin._schedule_dynamic_eod_events
     _check_premarket_itm_shorts = MainPremarketMixin._check_premarket_itm_shorts
     _get_premarket_vix_gap_proxy_pct = MainPremarketMixin._get_premarket_vix_gap_proxy_pct
@@ -1578,18 +1579,6 @@ class AlphaNextGen(QCAlgorithm):
     # =========================================================================
     # V2.9: SETTLEMENT-AWARE TRADING (Bug #6 Fix)
     # =========================================================================
-
-    def _get_unsettled_cash(self) -> float:
-        """
-        V2.9: Get Portfolio.UnsettledCash - QC's built-in T+1 tracking.
-
-        Returns:
-            Unsettled cash amount from previous session trades.
-        """
-        try:
-            return self.Portfolio.UnsettledCash
-        except Exception:
-            return 0.0
 
     def _check_settlement_cooldown(self) -> None:
         """

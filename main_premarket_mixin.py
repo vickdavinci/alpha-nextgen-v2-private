@@ -246,6 +246,19 @@ class MainPremarketMixin:
             self.Log(f"SETTLEMENT: Error checking market gap - {e}")
             return False
 
+    def _get_unsettled_cash(self) -> float:
+        """
+        V2.9: Get Portfolio.UnsettledCash - QC's built-in T+1 tracking.
+
+        Returns:
+            Current unsettled cash amount (0 if not available).
+        """
+        try:
+            return float(self.Portfolio.UnsettledCash)
+        except Exception:
+            # Fallback for older QC versions that may not have UnsettledCash
+            return 0.0
+
     def _schedule_dynamic_eod_events(self) -> None:
         """
         V3.0: Schedule EOD events dynamically based on actual market close time.
