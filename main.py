@@ -145,6 +145,7 @@ class AlphaNextGen(QCAlgorithm):
     _setup_schedules = MainBootstrapMixin._setup_schedules
     _process_eod_signals = MainSignalGenerationMixin._process_eod_signals
     _process_immediate_signals = MainSignalGenerationMixin._process_immediate_signals
+    _is_market_close_blackout = MainSignalGenerationMixin._is_market_close_blackout
     _generate_trend_signals_eod = MainSignalGenerationMixin._generate_trend_signals_eod
     _generate_options_signals = MainSignalGenerationMixin._generate_options_signals
     _on_eod_processing = MainSignalGenerationMixin._on_eod_processing
@@ -1801,20 +1802,6 @@ class AlphaNextGen(QCAlgorithm):
         ):
             return "MICRO"
         return "OPT"
-
-    def _is_market_close_blackout(self) -> bool:
-        """
-        V2.18: Check if in market close blackout window (RPT-5 fix).
-
-        Orders submitted 15:58-16:00 may not fill properly due to
-        end-of-day auction mechanics. Block orders during this window.
-
-        Returns:
-            True if in blackout window, False otherwise.
-        """
-        if self.Time.hour == 15 and self.Time.minute >= 58:
-            return True
-        return False
 
     # =========================================================================
     # ORDER EVENT HANDLER
