@@ -10417,90 +10417,16 @@ class OptionsEngine:
         dte_max: Optional[int] = None,
         option_right: Optional[Any] = None,
     ) -> List[OptionContract]:
-        """
-        Build VASS candidate OptionContract list for spread leg selection.
-
-        Filters chain by right and DTE, then maps QC contracts to internal
-        OptionContract rows consumed by spread selectors.
-        """
-        candidates: List[OptionContract] = []
-
-        right_key = None
-        if option_right is not None:
-            option_right_text = str(option_right).upper()
-            if "CALL" in option_right_text:
-                right_key = "CALL"
-            elif "PUT" in option_right_text:
-                right_key = "PUT"
-
-        if self.algorithm is not None:
-            engine_now = self.algorithm.Time
-        else:
-            engine_now = datetime.utcnow()
-
-        for contract in chain:
-            # Check option right (strategy-aware). Falls back to direction-based filter.
-            if option_right is not None:
-                contract_right_text = str(getattr(contract, "Right", "")).upper()
-                if right_key == "CALL" and "CALL" not in contract_right_text:
-                    continue
-                if right_key == "PUT" and "PUT" not in contract_right_text:
-                    continue
-                if right_key is None and str(getattr(contract, "Right", "")) != str(option_right):
-                    continue
-                if right_key == "CALL":
-                    opt_direction = OptionDirection.CALL
-                elif right_key == "PUT":
-                    opt_direction = OptionDirection.PUT
-                else:
-                    opt_direction = direction
-            else:
-                right_name = str(getattr(contract, "Right", "")).upper()
-                if direction == OptionDirection.CALL:
-                    if "CALL" not in right_name:
-                        continue
-                else:
-                    if "PUT" not in right_name:
-                        continue
-                opt_direction = direction
-
-            dte = (contract.Expiry - engine_now).days
-            effective_dte_min = dte_min if dte_min is not None else config.SPREAD_DTE_MIN
-            effective_dte_max = dte_max if dte_max is not None else config.SPREAD_DTE_MAX
-            if dte < effective_dte_min or dte > effective_dte_max:
-                continue
-
-            bid, ask = self.get_contract_prices(contract)
-            if ask <= 0:
-                continue
-            mid_price = (bid + ask) / 2 if bid > 0 else ask
-
-            greeks = getattr(contract, "Greeks", None)
-            delta_val = greeks.Delta if greeks else 0.0
-            gamma_val = greeks.Gamma if greeks else 0.0
-            theta_val = greeks.Theta if greeks else 0.0
-            vega_val = greeks.Vega if greeks else 0.0
-
-            candidates.append(
-                OptionContract(
-                    symbol=str(contract.Symbol),
-                    underlying="QQQ",
-                    direction=opt_direction,
-                    strike=float(contract.Strike),
-                    expiry=str(contract.Expiry.date()),
-                    delta=delta_val,
-                    gamma=gamma_val,
-                    theta=theta_val,
-                    vega=vega_val,
-                    bid=bid,
-                    ask=ask,
-                    mid_price=mid_price,
-                    open_interest=int(contract.OpenInterest),
-                    days_to_expiry=dte,
-                )
-            )
-
-        return candidates
+        """Build VASS candidate contracts via VASS entry engine."""
+        return self._vass_entry_engine.build_candidate_contracts(
+            host=self,
+            chain=chain,
+            direction=direction,
+            dte_min=dte_min,
+            dte_max=dte_max,
+            option_right=option_right,
+            contract_model_cls=OptionContract,
+        )
 
     def check_vass_bull_debit_trend_confirmation(
         self,

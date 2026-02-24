@@ -154,6 +154,97 @@ class VASSEntryEngine:
             ranges.append((fallback_min, fallback_max))
         return ranges
 
+    def build_candidate_contracts(
+        self,
+        *,
+        host: Any,
+        chain: Any,
+        direction: OptionDirection,
+        dte_min: Optional[int] = None,
+        dte_max: Optional[int] = None,
+        option_right: Optional[Any] = None,
+        contract_model_cls: Optional[Any] = None,
+    ) -> list[Any]:
+        """Build VASS candidate contracts from option chain filters."""
+        if contract_model_cls is None:
+            return []
+
+        candidates: list[Any] = []
+        right_key = None
+        if option_right is not None:
+            option_right_text = str(option_right).upper()
+            if "CALL" in option_right_text:
+                right_key = "CALL"
+            elif "PUT" in option_right_text:
+                right_key = "PUT"
+
+        algorithm = getattr(host, "algorithm", None)
+        engine_now = algorithm.Time if algorithm is not None else datetime.utcnow()
+        effective_dte_min = dte_min if dte_min is not None else int(config.SPREAD_DTE_MIN)
+        effective_dte_max = dte_max if dte_max is not None else int(config.SPREAD_DTE_MAX)
+
+        for contract in chain:
+            # Check option right (strategy-aware). Falls back to direction-based filter.
+            if option_right is not None:
+                contract_right_text = str(getattr(contract, "Right", "")).upper()
+                if right_key == "CALL" and "CALL" not in contract_right_text:
+                    continue
+                if right_key == "PUT" and "PUT" not in contract_right_text:
+                    continue
+                if right_key is None and str(getattr(contract, "Right", "")) != str(option_right):
+                    continue
+                if right_key == "CALL":
+                    opt_direction = OptionDirection.CALL
+                elif right_key == "PUT":
+                    opt_direction = OptionDirection.PUT
+                else:
+                    opt_direction = direction
+            else:
+                right_name = str(getattr(contract, "Right", "")).upper()
+                if direction == OptionDirection.CALL:
+                    if "CALL" not in right_name:
+                        continue
+                else:
+                    if "PUT" not in right_name:
+                        continue
+                opt_direction = direction
+
+            dte = (contract.Expiry - engine_now).days
+            if dte < effective_dte_min or dte > effective_dte_max:
+                continue
+
+            bid, ask = host.get_contract_prices(contract)
+            if ask <= 0:
+                continue
+            mid_price = (bid + ask) / 2 if bid > 0 else ask
+
+            greeks = getattr(contract, "Greeks", None)
+            delta_val = greeks.Delta if greeks else 0.0
+            gamma_val = greeks.Gamma if greeks else 0.0
+            theta_val = greeks.Theta if greeks else 0.0
+            vega_val = greeks.Vega if greeks else 0.0
+
+            candidates.append(
+                contract_model_cls(
+                    symbol=str(contract.Symbol),
+                    underlying="QQQ",
+                    direction=opt_direction,
+                    strike=float(contract.Strike),
+                    expiry=str(contract.Expiry.date()),
+                    delta=delta_val,
+                    gamma=gamma_val,
+                    theta=theta_val,
+                    vega=vega_val,
+                    bid=bid,
+                    ask=ask,
+                    mid_price=mid_price,
+                    open_interest=int(contract.OpenInterest),
+                    days_to_expiry=dte,
+                )
+            )
+
+        return candidates
+
     def _parse_hhmm_to_minutes(self, hhmm: str, default_minutes: int) -> int:
         """Parse HH:MM into minutes-from-midnight; fallback to default on parse failure."""
         try:
