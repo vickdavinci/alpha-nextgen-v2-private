@@ -148,6 +148,7 @@ class AlphaNextGen(QCAlgorithm):
     _on_warm_entry_check = MainSignalGenerationMixin._on_warm_entry_check
     _mr_force_close_fallback = MainSignalGenerationMixin._mr_force_close_fallback
     _on_mr_force_close = MainSignalGenerationMixin._on_mr_force_close
+    OnEndOfAlgorithm = MainObservabilityMixin.OnEndOfAlgorithm
     _save_observability_csv_artifact = MainObservabilityMixin._save_observability_csv_artifact
     _on_observability_checkpoint = MainObservabilityMixin._on_observability_checkpoint
     _ensure_daily_proxy_windows_snapshot = (
@@ -1652,14 +1653,6 @@ class AlphaNextGen(QCAlgorithm):
             return False
         except Exception:
             return False
-
-    def OnEndOfAlgorithm(self) -> None:
-        """Flush end-of-run observability artifacts."""
-        self._flush_regime_decision_artifact()
-        self._flush_regime_timeline_artifact()
-        self._flush_signal_lifecycle_artifact()
-        self._flush_router_rejection_artifact()
-        self._flush_order_lifecycle_artifact()
 
     # =========================================================================
     # V2.9: SETTLEMENT-AWARE TRADING (Bug #6 Fix)

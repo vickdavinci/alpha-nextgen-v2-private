@@ -11,6 +11,14 @@ import config
 
 
 class MainObservabilityMixin:
+    def OnEndOfAlgorithm(self) -> None:
+        """Flush end-of-run observability artifacts."""
+        self._flush_regime_decision_artifact()
+        self._flush_regime_timeline_artifact()
+        self._flush_signal_lifecycle_artifact()
+        self._flush_router_rejection_artifact()
+        self._flush_order_lifecycle_artifact()
+
     def _save_observability_csv_artifact(
         self,
         key: str,
