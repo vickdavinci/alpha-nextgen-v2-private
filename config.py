@@ -1550,6 +1550,7 @@ VASS_ATR_ADAPTIVE_EXITS_ENABLED = True
 VASS_ATR_PCT_REF = 0.015
 VASS_ATR_EXIT_MULT_MIN = 0.85
 VASS_ATR_EXIT_MULT_MAX = 1.25
+VASS_ATR_ADAPT_HARD_AND_EOD = True
 SPREAD_STOP_REGIME_MULTIPLIERS = {
     75: 1.10,  # Bull: slightly wider stop to reduce pullback churn
     50: 1.00,  # Neutral: base
@@ -1570,7 +1571,7 @@ VASS_MFE_T2_FLOOR_LOW_VIX = 0.12
 VASS_MFE_T2_FLOOR_MED_VIX = 0.18
 VASS_MFE_T2_FLOOR_HIGH_VIX = 0.25
 VASS_TAIL_RISK_CAP_ENABLED = True  # Emergency per-trade account-risk kill switch
-VASS_TAIL_RISK_CAP_PCT_EQUITY = 0.015  # Cap spread loss at 1.5% of portfolio equity
+VASS_TAIL_RISK_CAP_PCT_EQUITY = 0.010  # V12.4: tighten cap to 1.0% of portfolio equity
 # Entry friction sanity: reject spreads where expected entry friction consumes too much
 # of expected target profit (production-quality cost control).
 SPREAD_ENTRY_FRICTION_GATE_ENABLED = True
@@ -1648,6 +1649,11 @@ VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION = True
 VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY = True
 VASS_TRANSITION_HANDOFF_THROTTLE_ENABLED = True
 VASS_TRANSITION_HANDOFF_BARS = 4
+# V12.4: pre-close transition de-risk for bullish debit VASS to avoid overnight gap carry.
+VASS_OVERNIGHT_DERISK_ENABLED = True
+VASS_OVERNIGHT_DERISK_TIME = "15:40"
+VASS_OVERNIGHT_DERISK_ON_DETERIORATION = True
+VASS_OVERNIGHT_DERISK_ON_AMBIGUOUS = True
 # V6.1: Removed SPREAD_REGIME_EXIT_BULL/BEAR - legacy logic conflicted with conviction-based entry
 # Spreads now exit via: STOP_LOSS, PROFIT_TARGET, DTE_EXIT, NEUTRALITY_EXIT
 
@@ -1824,9 +1830,9 @@ OPTIONS_MAX_MARGIN_PCT = 0.50  # V10.9: Align with OPTIONS_BUDGET_CAP_PCT so per
 # At $75K: 15% = $11,250, 8% = $6,000
 # At $200K: 15% = $30,000, 8% = $16,000
 SWING_SPREAD_MAX_PCT = 0.15  # 15% legacy cap (kept for backward compatibility)
-VASS_RISK_PER_TRADE_PCT = 0.35  # V10.10: target 35% ($35k on $100k) VASS budget cap
+VASS_RISK_PER_TRADE_PCT = 0.20  # V12.4: reduce VASS allocation concentration to 20%
 INTRADAY_SPREAD_MAX_PCT = 0.08  # Legacy fallback for intraday sizing
-VASS_MAX_RISK_DOLLARS = 35000  # Absolute cap for VASS sizing budget
+VASS_MAX_RISK_DOLLARS = 20000  # V12.4: hard cap VASS sizing budget
 INTRADAY_ITM_MAX_PCT = 0.15  # ITM budget slice (15% / $15k on $100k)
 INTRADAY_ITM_MAX_DOLLARS = 15000  # Absolute ITM budget cap
 INTRADAY_OTM_MAX_PCT = 0.10  # OTM budget slice (10% / $10k on $100k)

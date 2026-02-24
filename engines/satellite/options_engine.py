@@ -7939,6 +7939,16 @@ class OptionsEngine:
                         vass_exit_profile[profile_key] = (
                             float(vass_exit_profile[profile_key]) * atr_mult
                         )
+                if bool(getattr(config, "VASS_ATR_ADAPT_HARD_AND_EOD", True)):
+                    if "hard_stop_pct" in vass_exit_profile:
+                        vass_exit_profile["hard_stop_pct"] = (
+                            float(vass_exit_profile["hard_stop_pct"]) * atr_mult
+                        )
+                    if "eod_gate_pct" in vass_exit_profile:
+                        # eod_gate_pct is negative; scaling by ATRx widens/tightens consistently by regime vol.
+                        vass_exit_profile["eod_gate_pct"] = (
+                            float(vass_exit_profile["eod_gate_pct"]) * atr_mult
+                        )
                 vass_profile_tag = f"{vass_profile_tag} ATRx={atr_mult:.2f} ATR%={atr_pct:.2%}"
 
         # V9.4 P0: Exit signal cooldown — if a previous exit signal was sent but the
@@ -8277,6 +8287,10 @@ class OptionsEngine:
             SpreadStrategy.BULL_CALL_DEBIT.value,
             SpreadStrategy.BULL_PUT_CREDIT.value,
         )
+        is_bullish_debit_spread = spread.spread_type in (
+            "BULL_CALL",
+            SpreadStrategy.BULL_CALL_DEBIT.value,
+        )
         is_bearish_spread = spread.spread_type in (
             "BEAR_PUT",
             "BEAR_CALL_CREDIT",
@@ -8312,6 +8326,44 @@ class OptionsEngine:
                 exit_reason = (
                     f"VIX_SPIKE_EXIT: 5D change {vix_5d_change:+.0%} >= {vix_spike_5d:.0%}"
                 )
+
+        # V12.4: Pre-close transition de-risk for bullish debit VASS positions.
+        # Avoid carrying wrong-way swing debit exposure overnight when macro overlay is weakening.
+        if (
+            exit_reason is None
+            and is_bullish_debit_spread
+            and bool(getattr(config, "VASS_OVERNIGHT_DERISK_ENABLED", False))
+            and self.algorithm is not None
+            and current_dte > 0
+        ):
+            try:
+                cutoff = str(getattr(config, "VASS_OVERNIGHT_DERISK_TIME", "15:40"))
+                cutoff_hour, cutoff_minute = [int(x) for x in cutoff.split(":", 1)]
+                is_preclose_window = self.algorithm.Time.hour > cutoff_hour or (
+                    self.algorithm.Time.hour == cutoff_hour
+                    and self.algorithm.Time.minute >= cutoff_minute
+                )
+                if is_preclose_window:
+                    transition_ctx = self._get_regime_transition_context() or {}
+                    transition_overlay = str(
+                        transition_ctx.get("transition_overlay", "STABLE")
+                    ).upper()
+                    derisk_deterioration = bool(
+                        getattr(config, "VASS_OVERNIGHT_DERISK_ON_DETERIORATION", True)
+                    )
+                    derisk_ambiguous = bool(
+                        getattr(config, "VASS_OVERNIGHT_DERISK_ON_AMBIGUOUS", True)
+                    )
+                    should_derisk = (
+                        transition_overlay == "DETERIORATION" and derisk_deterioration
+                    ) or (transition_overlay == "AMBIGUOUS" and derisk_ambiguous)
+                    if should_derisk:
+                        exit_reason = (
+                            f"OVERNIGHT_DERISK_{transition_overlay}: Pre-close de-risk | "
+                            f"DTE={current_dte} | {vass_profile_tag}"
+                        )
+            except Exception:
+                pass
 
         # V10.5: Regime deterioration exits are evaluated after P&L is known.
         if is_credit_spread:
