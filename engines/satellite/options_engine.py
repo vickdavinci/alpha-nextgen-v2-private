@@ -8182,12 +8182,27 @@ class OptionsEngine:
             # Correct formula: stop fires when spread value exceeds entry_credit + (max_loss * multiplier),
             # meaning the trade must actually LOSE multiplier% of max_loss before stopping.
             max_loss = spread.width - entry_credit
-            stop_threshold = entry_credit + max_loss * config.CREDIT_SPREAD_STOP_MULTIPLIER
+            credit_stop_mult = float(getattr(config, "CREDIT_SPREAD_STOP_MULTIPLIER", 0.35))
+            if bool(getattr(config, "CREDIT_SPREAD_TIERED_STOP_ENABLED", True)):
+                if vass_tier == "LOW":
+                    credit_stop_mult = float(
+                        getattr(config, "CREDIT_SPREAD_STOP_MULT_LOW_VIX", credit_stop_mult)
+                    )
+                elif vass_tier == "HIGH":
+                    credit_stop_mult = float(
+                        getattr(config, "CREDIT_SPREAD_STOP_MULT_HIGH_VIX", credit_stop_mult)
+                    )
+                else:
+                    credit_stop_mult = float(
+                        getattr(config, "CREDIT_SPREAD_STOP_MULT_MED_VIX", credit_stop_mult)
+                    )
+            stop_threshold = entry_credit + max_loss * credit_stop_mult
             if exit_reason is None and pnl < 0 and current_spread_value >= stop_threshold:
                 loss_pct = (current_spread_value - entry_credit) / max_loss if max_loss > 0 else 0
                 exit_reason = (
                     f"CREDIT_STOP_LOSS {loss_pct:.1%} "
-                    f"(spread value ${current_spread_value:.2f} >= ${stop_threshold:.2f})"
+                    f"(spread value ${current_spread_value:.2f} >= ${stop_threshold:.2f}, "
+                    f"Mult={credit_stop_mult:.2f}, {vass_profile_tag})"
                 )
 
             # Exit 2B: Regime deterioration de-risk (only once spread is already losing).

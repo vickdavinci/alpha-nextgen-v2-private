@@ -1004,6 +1004,10 @@ CREDIT_SPREAD_DTE_MAX = 30  # Default credit spread DTE ceiling
 CREDIT_SPREAD_FALLBACK_TO_DEBIT = True  # V6.10 P3: Fall back to debit when credit fails
 CREDIT_SPREAD_PROFIT_TARGET = 0.50  # Exit at 50% of max profit
 CREDIT_SPREAD_STOP_MULTIPLIER = 0.35  # V10.17: trim left-tail bleed on failed credit spreads
+CREDIT_SPREAD_TIERED_STOP_ENABLED = True
+CREDIT_SPREAD_STOP_MULT_LOW_VIX = 0.30
+CREDIT_SPREAD_STOP_MULT_MED_VIX = CREDIT_SPREAD_STOP_MULTIPLIER
+CREDIT_SPREAD_STOP_MULT_HIGH_VIX = 0.45
 CREDIT_SPREAD_MAX_LOSS_PCT_EQUITY = (
     0.0125  # V10.17: cap theoretical max-loss sizing to 1.25% equity
 )
