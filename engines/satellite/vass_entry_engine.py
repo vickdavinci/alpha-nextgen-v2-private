@@ -978,6 +978,351 @@ class VASSEntryEngine:
                 contract_symbol="",
             )
 
+    def build_spread_signal(
+        self,
+        *,
+        host: Any,
+        chain: Any,
+        candidate_contracts: list[Any],
+        direction: OptionDirection,
+        regime_score: float,
+        qqq_price: float,
+        adx_value: float,
+        ma200_value: float,
+        ma50_value: float,
+        iv_rank: float,
+        size_multiplier: float,
+        portfolio_value: float,
+        margin_remaining: float,
+        strategy: Any,
+        vass_dte_min: int,
+        vass_dte_max: int,
+        dte_ranges: list[Tuple[int, int]],
+        is_credit: bool,
+        is_eod_scan: bool,
+        fallback_log_prefix: str,
+    ) -> Tuple[Optional[Any], str]:
+        """Build VASS spread entry signal from pre-filtered candidates."""
+        algorithm = getattr(host, "algorithm", None)
+        if algorithm is None:
+            return None, "NO_ALGO"
+
+        rejection_code = "UNKNOWN"
+        signal: Optional[Any] = None
+        dte_min_all = min(r[0] for r in dte_ranges)
+        dte_max_all = max(r[1] for r in dte_ranges)
+        now_str = str(algorithm.Time)
+        max_attempts = max(1, int(getattr(config, "VASS_ROUTE_MAX_CANDIDATE_ATTEMPTS", 3)))
+        allow_opposite_fallback = bool(
+            getattr(config, "VASS_OPPOSITE_ROUTE_FALLBACK_ENABLED", True)
+        )
+
+        def _is_quality_failure(reason: Optional[str]) -> bool:
+            return bool(reason and str(reason).startswith("R_CONTRACT_QUALITY:"))
+
+        def _strategy_value(strategy_obj: Any) -> str:
+            return str(getattr(strategy_obj, "value", strategy_obj))
+
+        def _opposite_strategy(primary: Any) -> Optional[Any]:
+            mapping = {
+                "BULL_CALL_DEBIT": "BULL_PUT_CREDIT",
+                "BEAR_PUT_DEBIT": "BEAR_CALL_CREDIT",
+                "BULL_PUT_CREDIT": "BULL_CALL_DEBIT",
+                "BEAR_CALL_CREDIT": "BEAR_PUT_DEBIT",
+            }
+            target = mapping.get(_strategy_value(primary))
+            if target is None:
+                return None
+            enum_cls = type(primary)
+            try:
+                return enum_cls(target)
+            except Exception:
+                try:
+                    return enum_cls[target]
+                except Exception:
+                    return None
+
+        def _attempt_debit_route(
+            route_contracts: list[Any],
+            route_strategy: Any,
+        ) -> Tuple[Optional[Any], str, Optional[str]]:
+            pool = list(route_contracts)
+            last_validation_reason: Optional[str] = None
+            route_rejection = "DEBIT_LEG_SELECTION_FAILED"
+
+            if _strategy_value(route_strategy) == "BULL_CALL_DEBIT":
+                qqq_open = float(getattr(algorithm, "_qqq_at_open", 0.0) or 0.0)
+                if qqq_open <= 0:
+                    try:
+                        qqq_open = float(algorithm.Securities[algorithm.qqq].Open)
+                    except Exception:
+                        qqq_open = 0.0
+
+                qqq_sma20 = getattr(algorithm, "qqq_sma20", None)
+                qqq_sma20_ready = bool(
+                    qqq_sma20 is not None and getattr(qqq_sma20, "IsReady", False)
+                )
+                qqq_sma20_value = (
+                    float(qqq_sma20.Current.Value)
+                    if qqq_sma20_ready and getattr(qqq_sma20, "Current", None) is not None
+                    else None
+                )
+
+                trend_ok, trend_code, trend_detail = host.check_vass_bull_debit_trend_confirmation(
+                    vix_current=float(getattr(algorithm, "_current_vix", 0.0) or 0.0),
+                    current_price=qqq_price,
+                    qqq_open=qqq_open if qqq_open > 0 else None,
+                    qqq_sma20=qqq_sma20_value,
+                    qqq_sma20_ready=qqq_sma20_ready,
+                )
+                if not trend_ok:
+                    host.set_last_entry_validation_failure(trend_code)
+                    algorithm._log_high_frequency_event(
+                        config_flag="LOG_VASS_FALLBACK_BACKTEST_ENABLED",
+                        category="VASS_FALLBACK",
+                        reason_key=f"TREND_CONFIRM_BLOCK|{trend_code}",
+                        message=(
+                            f"{fallback_log_prefix}: BULL_CALL trend confirmation blocked | "
+                            f"{trend_code} | {trend_detail}"
+                        ),
+                    )
+                    return None, "DEBIT_TREND_CONFIRM_BLOCK", trend_code
+
+            for attempt in range(max_attempts):
+                if len(pool) < 2:
+                    break
+                spread_legs = host.select_spread_legs_with_fallback(
+                    contracts=pool,
+                    direction=direction,
+                    current_time=now_str,
+                    dte_ranges=dte_ranges,
+                    set_cooldown=(attempt == max_attempts - 1),
+                )
+                if spread_legs is None:
+                    break
+
+                long_leg, short_leg = spread_legs
+                route_rejection = "DEBIT_ENTRY_VALIDATION_FAILED"
+
+                if not (long_leg.ask > 0 and short_leg.bid > 0 and short_leg.ask > 0):
+                    route_rejection = "DEBIT_ENTRY_QUOTES_INVALID"
+                    drop_syms = {str(long_leg.symbol), str(short_leg.symbol)}
+                    pool = [c for c in pool if str(c.symbol) not in drop_syms]
+                    continue
+
+                route_signal = host.check_spread_entry_signal(
+                    regime_score=regime_score,
+                    vix_current=float(getattr(algorithm, "_current_vix", 0.0) or 0.0),
+                    adx_value=adx_value,
+                    current_price=qqq_price,
+                    ma200_value=ma200_value,
+                    ma50_value=ma50_value,
+                    iv_rank=iv_rank,
+                    current_hour=algorithm.Time.hour,
+                    current_minute=algorithm.Time.minute,
+                    current_date=str(algorithm.Time.date()),
+                    portfolio_value=portfolio_value,
+                    long_leg_contract=long_leg,
+                    short_leg_contract=short_leg,
+                    gap_filter_triggered=algorithm.risk_engine.is_gap_filter_active(),
+                    vol_shock_active=algorithm.risk_engine.is_vol_shock_active(algorithm.Time),
+                    size_multiplier=size_multiplier,
+                    margin_remaining=margin_remaining,
+                    dte_min=vass_dte_min,
+                    dte_max=vass_dte_max,
+                    is_eod_scan=is_eod_scan,
+                    direction=direction,
+                    candidate_contracts=pool,
+                )
+                if route_signal is not None:
+                    return route_signal, route_rejection, None
+
+                last_validation_reason = host.pop_last_entry_validation_failure()
+                retryable_quality = (
+                    _is_quality_failure(last_validation_reason) and attempt < max_attempts - 1
+                )
+                if retryable_quality:
+                    algorithm._log_high_frequency_event(
+                        config_flag="LOG_VASS_FALLBACK_BACKTEST_ENABLED",
+                        category="VASS_FALLBACK",
+                        reason_key="DEBIT_QUALITY_RETRY",
+                        message=(
+                            f"{fallback_log_prefix}: DEBIT quality reject ({last_validation_reason}) | "
+                            f"Trying alternate candidate {attempt + 2}/{max_attempts}"
+                        ),
+                    )
+                    pool = [c for c in pool if str(c.symbol) != str(short_leg.symbol)]
+                    continue
+                break
+
+            return None, route_rejection, last_validation_reason
+
+        def _attempt_credit_route(
+            route_contracts: list[Any],
+            route_strategy: Any,
+        ) -> Tuple[Optional[Any], str, Optional[str]]:
+            pool = list(route_contracts)
+            last_validation_reason: Optional[str] = None
+            route_rejection = "CREDIT_LEG_SELECTION_FAILED"
+
+            for attempt in range(max_attempts):
+                if len(pool) < 2:
+                    break
+                spread_legs = host.select_credit_spread_legs_with_fallback(
+                    contracts=pool,
+                    strategy=route_strategy,
+                    dte_ranges=dte_ranges,
+                    current_time=now_str,
+                    set_cooldown=(attempt == max_attempts - 1),
+                )
+                if spread_legs is None:
+                    break
+
+                short_leg, long_leg = spread_legs
+                route_rejection = "CREDIT_ENTRY_VALIDATION_FAILED"
+
+                if not (short_leg.bid > 0 and short_leg.ask > 0 and long_leg.ask > 0):
+                    route_rejection = "CREDIT_ENTRY_QUOTES_INVALID"
+                    drop_syms = {str(short_leg.symbol), str(long_leg.symbol)}
+                    pool = [c for c in pool if str(c.symbol) not in drop_syms]
+                    continue
+
+                route_signal = host.check_credit_spread_entry_signal(
+                    regime_score=regime_score,
+                    vix_current=float(getattr(algorithm, "_current_vix", 0.0) or 0.0),
+                    adx_value=adx_value,
+                    current_price=qqq_price,
+                    ma200_value=ma200_value,
+                    iv_rank=iv_rank,
+                    current_hour=algorithm.Time.hour,
+                    current_minute=algorithm.Time.minute,
+                    current_date=str(algorithm.Time.date()),
+                    portfolio_value=portfolio_value,
+                    short_leg_contract=short_leg,
+                    long_leg_contract=long_leg,
+                    strategy=route_strategy,
+                    gap_filter_triggered=algorithm.risk_engine.is_gap_filter_active(),
+                    vol_shock_active=algorithm.risk_engine.is_vol_shock_active(algorithm.Time),
+                    size_multiplier=size_multiplier,
+                    margin_remaining=margin_remaining,
+                    is_eod_scan=is_eod_scan,
+                    direction=direction,
+                )
+                if route_signal is not None:
+                    return route_signal, route_rejection, None
+
+                last_validation_reason = host.pop_last_entry_validation_failure()
+                retryable_quality = (
+                    _is_quality_failure(last_validation_reason) and attempt < max_attempts - 1
+                )
+                if retryable_quality:
+                    algorithm._log_high_frequency_event(
+                        config_flag="LOG_VASS_FALLBACK_BACKTEST_ENABLED",
+                        category="VASS_FALLBACK",
+                        reason_key="CREDIT_QUALITY_RETRY",
+                        message=(
+                            f"{fallback_log_prefix}: CREDIT quality reject ({last_validation_reason}) | "
+                            f"Trying alternate candidate {attempt + 2}/{max_attempts}"
+                        ),
+                    )
+                    pool = [c for c in pool if str(c.symbol) != str(short_leg.symbol)]
+                    continue
+                break
+
+            return None, route_rejection, last_validation_reason
+
+        last_validation_reason: Optional[str] = None
+        if is_credit:
+            signal, rejection_code, last_validation_reason = _attempt_credit_route(
+                candidate_contracts, strategy
+            )
+        else:
+            signal, rejection_code, last_validation_reason = _attempt_debit_route(
+                candidate_contracts, strategy
+            )
+
+        if signal is not None:
+            return signal, rejection_code
+
+        if allow_opposite_fallback:
+            fallback_strategy = _opposite_strategy(strategy)
+            if fallback_strategy is not None:
+                if (
+                    _strategy_value(strategy) == "BEAR_PUT_DEBIT"
+                    and _strategy_value(fallback_strategy) == "BEAR_CALL_CREDIT"
+                ):
+                    if not bool(
+                        getattr(config, "VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT", False)
+                    ):
+                        rejection_code = "R_BEAR_FALLBACK_DISABLED"
+                        algorithm._log_high_frequency_event(
+                            config_flag="LOG_VASS_FALLBACK_BACKTEST_ENABLED",
+                            category="VASS_FALLBACK",
+                            reason_key="BEAR_FALLBACK_DISABLED",
+                            message=(
+                                f"{fallback_log_prefix}: Skip opposite {fallback_strategy.value} | "
+                                "Policy disabled"
+                            ),
+                        )
+                        fallback_strategy = None
+                    else:
+                        max_regime = float(getattr(config, "VASS_BEAR_FALLBACK_MAX_REGIME", 40.0))
+                        min_vix = float(getattr(config, "VASS_BEAR_FALLBACK_MIN_VIX", 0.0))
+                        vix_now = float(getattr(algorithm, "_current_vix", 0.0) or 0.0)
+                        if regime_score > max_regime or (min_vix > 0 and vix_now < min_vix):
+                            rejection_code = "R_BEAR_FALLBACK_POLICY"
+                            algorithm._log_high_frequency_event(
+                                config_flag="LOG_VASS_FALLBACK_BACKTEST_ENABLED",
+                                category="VASS_FALLBACK",
+                                reason_key="BEAR_FALLBACK_POLICY",
+                                message=(
+                                    f"{fallback_log_prefix}: Skip opposite {fallback_strategy.value} | "
+                                    f"Regime={regime_score:.1f}>{max_regime:.1f} or "
+                                    f"VIX={vix_now:.1f}<{min_vix:.1f}"
+                                ),
+                            )
+                            fallback_strategy = None
+
+            if fallback_strategy is not None:
+                fallback_is_credit = host.is_credit_strategy(fallback_strategy)
+                fallback_right = host.strategy_option_right(fallback_strategy)
+                fallback_contracts = host.build_vass_candidate_contracts(
+                    chain=chain,
+                    direction=direction,
+                    dte_min=dte_min_all,
+                    dte_max=dte_max_all,
+                    option_right=fallback_right,
+                )
+                if len(fallback_contracts) >= 2:
+                    algorithm._log_high_frequency_event(
+                        config_flag="LOG_VASS_FALLBACK_BACKTEST_ENABLED",
+                        category="VASS_FALLBACK",
+                        reason_key=(
+                            f"TRY_OPPOSITE|{strategy.value}|"
+                            f"{getattr(fallback_strategy, 'value', fallback_strategy)}"
+                        ),
+                        message=(
+                            f"{fallback_log_prefix}: Primary {strategy.value} failed | "
+                            f"Trying opposite {getattr(fallback_strategy, 'value', fallback_strategy)}"
+                        ),
+                    )
+                    if fallback_is_credit:
+                        signal, rejection_code, last_validation_reason = _attempt_credit_route(
+                            fallback_contracts, fallback_strategy
+                        )
+                    else:
+                        signal, rejection_code, last_validation_reason = _attempt_debit_route(
+                            fallback_contracts, fallback_strategy
+                        )
+                    if signal is not None:
+                        return signal, rejection_code
+                else:
+                    rejection_code = "OPPOSITE_ROUTE_INSUFFICIENT_CANDIDATES"
+
+        if last_validation_reason is not None:
+            host.set_last_entry_validation_failure(last_validation_reason)
+        return None, rejection_code
+
     def _add_trading_days(self, start: datetime, days: int) -> datetime:
         """Add trading days (skip weekends) to a datetime."""
         result = start
