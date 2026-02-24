@@ -100,6 +100,7 @@ class AlphaNextGen(QCAlgorithm):
     _scan_options_signals = MainOptionsMixin._scan_options_signals
     _check_spread_exit = MainOptionsMixin._check_spread_exit
     _is_terminal_exit_retry_tag = MainOrdersMixin._is_terminal_exit_retry_tag
+    _sync_intraday_oco = MainOrdersMixin._sync_intraday_oco
     OnOrderEvent = MainOrdersMixin.OnOrderEvent
     _on_fill = MainOrdersMixin._on_fill
     _cancel_residual_option_orders = MainOrdersMixin._cancel_residual_option_orders
@@ -3129,100 +3130,6 @@ class AlphaNextGen(QCAlgorithm):
         if pending_short is not None:
             pending_symbols.add(self._normalize_symbol_str(pending_short.symbol))
         return symbol_norm in pending_symbols
-
-    def _sync_intraday_oco(
-        self,
-        symbol: str,
-        position: Any,
-        quantity: int,
-        reason: str,
-    ) -> None:
-        """
-        Ensure exactly one active OCO pair is live for an intraday MICRO symbol.
-
-        Called on entry and partial-close so remaining contracts stay protected.
-        """
-        try:
-            symbol_norm = self._normalize_symbol_str(symbol)
-            qty = int(max(0, quantity))
-            if not symbol_norm:
-                self.Log(f"OCO_SYNC_SKIP: Invalid symbol | Raw={symbol} | Reason={reason}")
-                return
-            if qty <= 0:
-                self.Log(
-                    f"OCO_SYNC_SKIP: Non-positive quantity | Symbol={symbol_norm} | Qty={qty} | Reason={reason}"
-                )
-                return
-            if position is None:
-                self.Log(
-                    f"OCO_SYNC_SKIP: Missing position seed | Symbol={symbol_norm} | Reason={reason}"
-                )
-                return
-            entry_price = float(getattr(position, "entry_price", 0.0) or 0.0)
-            stop_price = float(getattr(position, "stop_price", 0.0) or 0.0)
-            target_price = float(getattr(position, "target_price", 0.0) or 0.0)
-            entry_strategy = str(getattr(position, "entry_strategy", "UNKNOWN") or "UNKNOWN")
-            if isinstance(position, dict):
-                entry_price = float(position.get("entry_price", entry_price) or 0.0)
-                stop_price = float(position.get("stop_price", stop_price) or 0.0)
-                target_price = float(position.get("target_price", target_price) or 0.0)
-                entry_strategy = str(position.get("entry_strategy", entry_strategy) or "UNKNOWN")
-            if entry_price <= 0 or stop_price <= 0 or target_price <= 0:
-                self.Log(
-                    f"OCO_SYNC_SKIP: Invalid OCO prices | Symbol={symbol_norm} | "
-                    f"Entry={entry_price:.2f} Stop={stop_price:.2f} Target={target_price:.2f} | "
-                    f"Reason={reason}"
-                )
-                return
-
-            active_pair = self.oco_manager.get_active_pair(symbol_norm)
-            if active_pair is not None:
-                active_qty = abs(int(getattr(active_pair.stop_leg, "quantity", 0) or 0))
-                active_stop = float(getattr(active_pair.stop_leg, "trigger_price", 0.0) or 0.0)
-                active_target = float(getattr(active_pair.profit_leg, "trigger_price", 0.0) or 0.0)
-                price_eps = float(getattr(config, "OCO_RESYNC_PRICE_EPS", 0.01))
-                qty_same = active_qty == qty
-                stop_same = abs(active_stop - stop_price) <= price_eps
-                target_same = abs(active_target - target_price) <= price_eps
-                if qty_same and stop_same and target_same:
-                    return
-                self.oco_manager.cancel_by_symbol(symbol_norm, reason=f"OCO_RESYNC_{reason}")
-                self.Log(
-                    f"OCO_RESYNC: Cancelled stale OCO | {symbol_norm} | "
-                    f"OldQty={active_qty} NewQty={qty} | "
-                    f"OldStop=${active_stop:.2f} NewStop=${stop_price:.2f} | "
-                    f"OldTarget=${active_target:.2f} NewTarget=${target_price:.2f} | "
-                    f"Reason={reason}"
-                )
-
-            entry_tag_hint = ""
-            if isinstance(position, dict):
-                entry_tag_hint = str(position.get("entry_tag", "") or "")
-            if not entry_tag_hint:
-                entry_tag_hint = self._get_recent_symbol_fill_tag(symbol_norm, max_age_minutes=240)
-            trace_id = self._extract_trace_id_from_tag(entry_tag_hint)
-            engine_prefix = self._oco_engine_prefix_for_strategy(entry_strategy)
-            tag_context = f"{engine_prefix}:{entry_strategy}"
-            if trace_id:
-                tag_context = f"{tag_context}|trace={trace_id}"
-
-            oco_pair = self.oco_manager.create_oco_pair(
-                symbol=symbol_norm,
-                entry_price=entry_price,
-                stop_price=stop_price,
-                target_price=target_price,
-                quantity=qty,
-                current_date=str(self.Time.date()),
-                tag_context=tag_context,
-            )
-            if oco_pair and self.oco_manager.submit_oco_pair(oco_pair, current_time=str(self.Time)):
-                self.Log(
-                    f"OCO_SYNC: {reason} | {symbol_norm} | Qty={qty} | "
-                    f"Stop=${stop_price:.2f} | "
-                    f"Target=${target_price:.2f}"
-                )
-        except Exception as e:
-            self.Log(f"OCO_SYNC_ERROR: {symbol} | Reason={reason} | {e}")
 
     def _build_spread_runtime_key(self, spread: Any) -> str:
         """Build canonical spread key for runtime trackers."""
