@@ -313,6 +313,7 @@ class MainSignalGenerationMixin:
                 )
                 if signal:
                     self.portfolio_router.receive_signal(signal)
+
             else:
                 # Collect entry candidates (will filter by position limit later)
                 signal = self.trend_engine.check_entry_signal(
@@ -380,6 +381,90 @@ class MainSignalGenerationMixin:
                     f"TREND: ENTRY_BLOCKED {signal.symbol} | ADX={adx:.1f} | "
                     f"Reason: Position limit ({max_positions}) reached"
                 )
+
+    def _on_eod_processing(self) -> None:
+        """
+        End of day processing at 15:45 ET.
+
+        Runs all EOD batch processing:
+            1. Calculate Regime score
+            2. Update Capital Engine
+            3. Generate Trend signals
+            4. Generate Hedge signals
+            5. Generate Yield signals
+            6. Queue signals (MOO orders submitted at 16:00)
+            7. Update Cold Start
+        """
+        # Skip during warmup - no orders allowed
+        if self.IsWarmingUp:
+            return
+        if self._eod_processing_ran_date == self.Time.date():
+            return
+        self._eod_processing_ran_date = self.Time.date()
+
+        total_equity = self.Portfolio.TotalPortfolioValue
+
+        # 1. Calculate Regime
+        regime_state = self._calculate_regime()
+        # Store for intraday MR scanning
+        self._last_regime_score = regime_state.smoothed_score
+        self._last_regime_momentum_roc = float(getattr(regime_state, "momentum_roc", 0.0) or 0.0)
+        self._last_regime_vix_5d_change = float(getattr(regime_state, "vix_5d_change", 0.0) or 0.0)
+        self._regime_detector_sample_seq = int(getattr(self, "_regime_detector_sample_seq", 0)) + 1
+
+        # V6.0: Update Startup Gate (time-based, no regime dependency)
+        if not self.startup_gate.is_fully_armed():
+            self.startup_gate.end_of_day_update()
+            self.Log(
+                f"STARTUP_GATE: {self.startup_gate.get_phase()} | "
+                f"Hedges={'YES' if self.startup_gate.allows_hedges() else 'NO'} | "
+                f"TREND/MR={'YES' if self.startup_gate.allows_trend_mr() else 'NO'} | "
+                f"Options={'YES' if self.startup_gate.allows_options() else 'NO'}"
+            )
+
+        # 2. Update Capital Engine (always — hedges need tradeable equity)
+        capital_state = self.capital_engine.end_of_day_update(total_equity)
+
+        # 3. Generate Trend signals (if gate allows TREND/MR)
+        if self.startup_gate.allows_trend_mr():
+            self._generate_trend_signals_eod(regime_state)
+
+        # 4. V2.30: Generate Options signals (direction-aware gating)
+        self._generate_options_signals_gated(regime_state, capital_state)
+
+        # V6.13 P0: Overnight gap protection for swing spreads
+        if self.options_engine.has_spread_position():
+            overnight_exit = self.options_engine.check_overnight_gap_protection_exit(
+                current_vix=self._current_vix,
+                current_date=str(self.Time.date()),
+            )
+            if overnight_exit:
+                for signal in overnight_exit:
+                    self.portfolio_router.receive_signal(signal)
+
+        # 5. Generate Hedge signals (V3.0: regime-gated per thesis)
+        # Thesis: Hedges should be 0% in Bull (70+) and Neutral (50-69)
+        # Only activate hedges when regime < HEDGE_REGIME_GATE (50)
+        regime_score = regime_state.smoothed_score
+        if regime_score < config.HEDGE_REGIME_GATE:
+            self._generate_hedge_signals(regime_state)
+        else:
+            # V3.0: Exit hedges when regime improves above threshold
+            self._generate_hedge_exit_signals()
+
+        # 6. Store capital state for MOO submission at 16:00
+        # (MOO orders can't be submitted while market is open)
+        self._eod_capital_state = capital_state
+
+        # 7. Update Cold Start
+        # V10: Fix dual-reset bug — only reset cold start when config allows for the tier.
+        # Previously, end_of_day_update received the raw kill switch flag (True for Tier 2+),
+        # which unconditionally reset cold start, ignoring KS_COLD_START_RESET_ON_TIER_2=False.
+        ks_tier = self._last_risk_result.ks_tier if self._last_risk_result else KSTier.NONE
+        should_reset_cold_start = (
+            ks_tier == KSTier.FULL_EXIT and config.KS_COLD_START_RESET_ON_TIER_3
+        ) or (ks_tier == KSTier.TREND_EXIT and config.KS_COLD_START_RESET_ON_TIER_2)
+        self.cold_start_engine.end_of_day_update(kill_switch_triggered=should_reset_cold_start)
 
     def _generate_options_signals(
         self,
