@@ -2628,29 +2628,49 @@ class OptionsEngine:
 
     def check_spread_exit_signals(
         self,
-        current_price: float,
-        spread: Optional[SpreadPosition] = None,
+        long_leg_price: Optional[float] = None,
+        short_leg_price: Optional[float] = None,
+        regime_score: Optional[float] = None,
         current_dte: Optional[int] = None,
+        vix_current: Optional[float] = None,
+        spread_override: Optional[SpreadPosition] = None,
+        underlying_price: Optional[float] = None,
+        # Compatibility aliases retained at wrapper boundary.
+        current_price: Optional[float] = None,
+        spread: Optional[SpreadPosition] = None,
         current_vix: Optional[float] = None,
         vix_5d_change: Optional[float] = None,
         current_time: Optional[datetime] = None,
         ma200_value: float = 0.0,
         current_date: Optional[str] = None,
         is_eod_scan: bool = False,
-        regime_score: Optional[float] = None,
     ) -> Optional[List[TargetWeight]]:
+        _ = (vix_5d_change, current_time, ma200_value, current_date, is_eod_scan)
+        active_spread = spread_override if spread_override is not None else spread
+        if long_leg_price is None:
+            long_leg_price = float(current_price or 0.0)
+        if short_leg_price is None:
+            short_leg_price = 0.0
+            try:
+                if active_spread is not None and active_spread.short_leg is not None:
+                    short_leg_price = float(active_spread.short_leg.mid_price)
+            except Exception:
+                short_leg_price = 0.0
+        if regime_score is None:
+            regime_score = 50.0
+        if current_dte is None:
+            current_dte = 0
+        if vix_current is None:
+            vix_current = current_vix
         return check_spread_exit_signals_impl(
             self,
-            current_price=current_price,
-            spread=spread,
+            long_leg_price=float(long_leg_price),
+            short_leg_price=float(short_leg_price),
+            regime_score=float(regime_score),
             current_dte=current_dte,
-            current_vix=current_vix,
-            vix_5d_change=vix_5d_change,
-            current_time=current_time,
-            ma200_value=ma200_value,
-            current_date=current_date,
-            is_eod_scan=is_eod_scan,
-            regime_score=regime_score,
+            vix_current=vix_current,
+            spread_override=active_spread,
+            underlying_price=underlying_price,
         )
 
     # =========================================================================
