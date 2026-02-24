@@ -76,6 +76,7 @@ from engines.satellite.options_pending_guard import (
 )
 from engines.satellite.options_position_manager import (
     clear_all_positions_impl,
+    record_intraday_result_impl,
     register_entry_impl,
     register_spread_entry_impl,
     remove_intraday_position_impl,
@@ -620,178 +621,13 @@ class OptionsEngine:
         strategy: Optional[str] = None,
     ) -> None:
         """Track MICRO directional loss streaks/cooldowns (ITM is sovereign)."""
-        try:
-            strategy_name = self._canonical_intraday_strategy_name(strategy)
-            if strategy_name not in (
-                IntradayStrategy.MICRO_DEBIT_FADE.value,
-                IntradayStrategy.MICRO_OTM_MOMENTUM.value,
-                IntradayStrategy.PROTECTIVE_PUTS.value,
-            ):
-                return
-
-            symbol_text = str(symbol)
-            import re
-
-            is_call = re.search(r"\d{6}C\d{8}", symbol_text) is not None
-            is_put = re.search(r"\d{6}P\d{8}", symbol_text) is not None
-
-            if current_time:
-                try:
-                    trade_date = datetime.strptime(current_time[:10], "%Y-%m-%d").date()
-                except Exception:
-                    trade_date = None
-            else:
-                trade_date = None
-
-            # expose directional cooldown info to MicroEntryEngine via state payload
-            try:
-                state = getattr(self._micro_regime_engine, "_state", None)
-                if state is not None:
-                    state.put_cooldown_until_date = self._put_cooldown_until_date
-                    state.put_consecutive_losses = self._put_consecutive_losses
-            except Exception:
-                pass
-
-            if is_call:
-                if is_win:
-                    self._call_consecutive_losses = 0
-                else:
-                    self._call_consecutive_losses += 1
-                    if getattr(config, "CALL_GATE_CONSECUTIVE_LOSS_ENABLED", True):
-                        threshold = int(getattr(config, "CALL_GATE_CONSECUTIVE_LOSSES", 3))
-                        if self._call_consecutive_losses >= threshold:
-                            vix_for_cooldown = None
-                            try:
-                                state = getattr(self._micro_regime_engine, "_state", None)
-                                if state is not None:
-                                    vix_for_cooldown = float(
-                                        getattr(state, "vix_current", 0.0) or 0.0
-                                    )
-                            except Exception:
-                                vix_for_cooldown = None
-
-                            if vix_for_cooldown is None or vix_for_cooldown <= 0:
-                                cooldown_days = int(
-                                    getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 1)
-                                )
-                            else:
-                                low_vix_max = float(getattr(config, "VIX_LEVEL_LOW_MAX", 18.0))
-                                med_vix_max = float(getattr(config, "VIX_LEVEL_MEDIUM_MAX", 25.0))
-                                if vix_for_cooldown < low_vix_max:
-                                    cooldown_days = int(
-                                        getattr(
-                                            config,
-                                            "CALL_GATE_LOSS_COOLDOWN_DAYS_LOW_VIX",
-                                            getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 1),
-                                        )
-                                    )
-                                elif vix_for_cooldown < med_vix_max:
-                                    cooldown_days = int(
-                                        getattr(
-                                            config,
-                                            "CALL_GATE_LOSS_COOLDOWN_DAYS_MED_VIX",
-                                            getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 1),
-                                        )
-                                    )
-                                else:
-                                    cooldown_days = int(
-                                        getattr(
-                                            config,
-                                            "CALL_GATE_LOSS_COOLDOWN_DAYS_HIGH_VIX",
-                                            getattr(config, "CALL_GATE_LOSS_COOLDOWN_DAYS", 1),
-                                        )
-                                    )
-
-                            if trade_date is not None:
-                                self._call_cooldown_until_date = self._add_trading_days_to_date(
-                                    trade_date, cooldown_days
-                                )
-                                self.log(
-                                    f"INTRADAY: CALL cooldown armed | LossStreak={self._call_consecutive_losses} | "
-                                    f"Until={self._call_cooldown_until_date.isoformat()}",
-                                    trades_only=True,
-                                )
-
-            if is_put:
-                if is_win:
-                    self._put_consecutive_losses = 0
-                else:
-                    self._put_consecutive_losses += 1
-                    if getattr(config, "PUT_GATE_CONSECUTIVE_LOSS_ENABLED", True):
-                        threshold = int(getattr(config, "PUT_GATE_CONSECUTIVE_LOSSES", 3))
-                        if self._put_consecutive_losses >= threshold and trade_date is not None:
-                            vix_for_cooldown = None
-                            try:
-                                state = getattr(self._micro_regime_engine, "_state", None)
-                                if state is not None:
-                                    vix_for_cooldown = float(
-                                        getattr(state, "vix_current", 0.0) or 0.0
-                                    )
-                            except Exception:
-                                vix_for_cooldown = None
-
-                            if vix_for_cooldown is None or vix_for_cooldown <= 0:
-                                cooldown_days = int(
-                                    getattr(config, "PUT_GATE_LOSS_COOLDOWN_DAYS", 1)
-                                )
-                            else:
-                                low_vix_max = float(getattr(config, "VIX_LEVEL_LOW_MAX", 18.0))
-                                med_vix_max = float(getattr(config, "VIX_LEVEL_MEDIUM_MAX", 25.0))
-                                if vix_for_cooldown < low_vix_max:
-                                    cooldown_days = int(
-                                        getattr(
-                                            config,
-                                            "PUT_GATE_LOSS_COOLDOWN_DAYS_LOW_VIX",
-                                            getattr(config, "PUT_GATE_LOSS_COOLDOWN_DAYS", 1),
-                                        )
-                                    )
-                                elif vix_for_cooldown < med_vix_max:
-                                    cooldown_days = int(
-                                        getattr(
-                                            config,
-                                            "PUT_GATE_LOSS_COOLDOWN_DAYS_MED_VIX",
-                                            getattr(config, "PUT_GATE_LOSS_COOLDOWN_DAYS", 1),
-                                        )
-                                    )
-                                else:
-                                    cooldown_days = int(
-                                        getattr(
-                                            config,
-                                            "PUT_GATE_LOSS_COOLDOWN_DAYS_HIGH_VIX",
-                                            getattr(config, "PUT_GATE_LOSS_COOLDOWN_DAYS", 1),
-                                        )
-                                    )
-
-                            self._put_cooldown_until_date = self._add_trading_days_to_date(
-                                trade_date, cooldown_days
-                            )
-                            self.log(
-                                f"INTRADAY: PUT cooldown armed | LossStreak={self._put_consecutive_losses} | "
-                                f"Until={self._put_cooldown_until_date.isoformat()}",
-                                trades_only=True,
-                            )
-
-            try:
-                state = getattr(self._micro_regime_engine, "_state", None)
-                if state is not None:
-                    state.put_cooldown_until_date = self._put_cooldown_until_date
-                    state.put_consecutive_losses = self._put_consecutive_losses
-            except Exception:
-                pass
-
-        except Exception as e:
-            self.log(f"INTRADAY: Failed to record directional result streak: {e}", trades_only=True)
-
-        try:
-            self._itm_horizon_engine.on_trade_closed(
-                symbol=symbol,
-                is_win=is_win,
-                current_time=current_time,
-                strategy=strategy,
-                algorithm=self.algorithm,
-            )
-        except Exception as e:
-            self.log(f"ITM_ENGINE: result tracking failed: {e}", trades_only=True)
+        record_intraday_result_impl(
+            self,
+            symbol=symbol,
+            is_win=is_win,
+            current_time=current_time,
+            strategy=strategy,
+        )
 
     # =========================================================================
     # V6.10 P5: CHOPPY MARKET DETECTION
