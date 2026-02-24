@@ -1877,6 +1877,7 @@ class OptionsEngine:
         self._last_trade_limit_failure: Optional[str] = None
         self._last_trade_limit_detail: Optional[str] = None
         self._last_micro_no_trade_log_by_key: Dict[str, str] = {}
+        self._last_vass_rejection_log_by_key: Dict[str, datetime] = {}
         # MICRO anti-churn: brief cooldown for same strategy after close.
         self._last_intraday_close_time: Optional[datetime] = None
         self._last_intraday_close_strategy: Optional[str] = None
@@ -3630,6 +3631,18 @@ class OptionsEngine:
         else:
             return "NEUTRAL"
 
+    def should_log_vass_rejection(self, reason_key: str) -> bool:
+        """Per-reason throttle for VASS skip/rejection logs."""
+        interval_min = int(getattr(config, "VASS_LOG_REJECTION_INTERVAL_MINUTES", 15))
+        now = self.algorithm.Time if self.algorithm is not None else datetime.utcnow()
+        last = self._last_vass_rejection_log_by_key.get(reason_key)
+        if last is not None:
+            elapsed = (now - last).total_seconds() / 60.0
+            if elapsed < interval_min:
+                return False
+        self._last_vass_rejection_log_by_key[reason_key] = now
+        return True
+
     def resolve_vass_direction_context(
         self,
         *,
@@ -3892,7 +3905,7 @@ class OptionsEngine:
                 f"SWING_SLOT_BLOCK|{direction.value}|"
                 f"{'CREDIT' if is_credit else 'DEBIT'}|{swing_reason_vass}"
             )
-            if alg._should_log_vass_rejection(throttle_key):
+            if self.should_log_vass_rejection(throttle_key):
                 alg.Log(
                     f"VASS_SKIPPED: Direction={direction.value} | IV_Env=NA | "
                     f"VIX={current_vix:.1f} | Regime={regime_score:.0f} | "
@@ -3931,7 +3944,7 @@ class OptionsEngine:
                 f"SWING_FILTER|{direction.value}|"
                 f"{'CREDIT' if is_credit else 'DEBIT'}|{swing_filter_reason}"
             )
-            if alg._should_log_vass_rejection(throttle_key):
+            if self.should_log_vass_rejection(throttle_key):
                 alg.Log(
                     f"VASS_SKIPPED: Direction={direction.value} | "
                     f"VIX={current_vix:.1f} | Regime={regime_score:.0f} | "
@@ -3940,7 +3953,7 @@ class OptionsEngine:
                 )
             return
 
-        required_right = alg._strategy_option_right(strategy)
+        required_right = self.strategy_option_right(strategy)
         candidate_contracts = self.build_vass_candidate_contracts(
             chain=chain,
             direction=direction,
@@ -3956,7 +3969,7 @@ class OptionsEngine:
                 f"INSUFFICIENT_CANDIDATES|{direction.value}|"
                 f"{'CREDIT' if is_credit else 'DEBIT'}|{dte_min_all}-{dte_max_all}"
             )
-            if alg._should_log_vass_rejection(throttle_key):
+            if self.should_log_vass_rejection(throttle_key):
                 alg.Log(
                     f"VASS_REJECTION: Direction={direction.value} | "
                     f"IV_Env={self.get_iv_environment()} | "
@@ -4380,7 +4393,7 @@ class OptionsEngine:
 
             if fallback_strategy is not None:
                 fallback_is_credit = self.is_credit_strategy(fallback_strategy)
-                fallback_right = alg._strategy_option_right(fallback_strategy)
+                fallback_right = self.strategy_option_right(fallback_strategy)
                 fallback_contracts = self.build_vass_candidate_contracts(
                     chain=chain,
                     direction=direction,
@@ -10860,16 +10873,35 @@ class OptionsEngine:
         """
         candidates: List[OptionContract] = []
 
+        right_key = None
+        if option_right is not None:
+            option_right_text = str(option_right).upper()
+            if "CALL" in option_right_text:
+                right_key = "CALL"
+            elif "PUT" in option_right_text:
+                right_key = "PUT"
+
+        if self.algorithm is not None:
+            engine_now = self.algorithm.Time
+        else:
+            engine_now = datetime.utcnow()
+
         for contract in chain:
             # Check option right (strategy-aware). Falls back to direction-based filter.
             if option_right is not None:
-                if contract.Right != option_right:
+                contract_right_text = str(getattr(contract, "Right", "")).upper()
+                if right_key == "CALL" and "CALL" not in contract_right_text:
                     continue
-                opt_direction = (
-                    OptionDirection.CALL
-                    if str(option_right).upper().endswith("CALL")
-                    else OptionDirection.PUT
-                )
+                if right_key == "PUT" and "PUT" not in contract_right_text:
+                    continue
+                if right_key is None and str(getattr(contract, "Right", "")) != str(option_right):
+                    continue
+                if right_key == "CALL":
+                    opt_direction = OptionDirection.CALL
+                elif right_key == "PUT":
+                    opt_direction = OptionDirection.PUT
+                else:
+                    opt_direction = direction
             else:
                 right_name = str(getattr(contract, "Right", "")).upper()
                 if direction == OptionDirection.CALL:
@@ -10880,7 +10912,7 @@ class OptionsEngine:
                         continue
                 opt_direction = direction
 
-            dte = (contract.Expiry - self.Time).days
+            dte = (contract.Expiry - engine_now).days
             effective_dte_min = dte_min if dte_min is not None else config.SPREAD_DTE_MIN
             effective_dte_max = dte_max if dte_max is not None else config.SPREAD_DTE_MAX
             if dte < effective_dte_min or dte > effective_dte_max:
