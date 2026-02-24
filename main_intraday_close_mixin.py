@@ -290,3 +290,120 @@ class MainIntradayCloseMixin:
                     )
                 except Exception as e:
                     self.Log(f"INTRADAY_FORCE_EXIT_SWEEP_ERROR: {e}")
+
+    def _ensure_oco_for_open_options(self) -> None:
+        """
+        V6.6.2: Ensure every open single-leg options position has an active OCO.
+
+        If a position exists without an OCO (e.g., OCO submission failed after-hours),
+        create and submit one at the next market session to prevent expiry losses.
+        """
+        if (
+            self.IsWarmingUp
+            or not hasattr(self, "options_engine")
+            or not hasattr(self, "oco_manager")
+        ):
+            return
+
+        # Skip if we currently hold a spread (OCO only for single-leg options)
+        if self.options_engine.has_spread_position():
+            return
+
+        positions_for_oco = self.options_engine.get_intraday_positions()
+        if not positions_for_oco:
+            swing_pos = self.options_engine.get_position()
+            if swing_pos is not None:
+                positions_for_oco = [swing_pos]
+        if not positions_for_oco:
+            return
+        # Process one symbol per call to limit churn.
+        position = positions_for_oco[0]
+        if position is None or position.contract is None:
+            return
+
+        symbol = self._normalize_symbol_str(position.contract.symbol)
+
+        # Don't recover OCO while close is in progress for this symbol.
+        if symbol in self._intraday_close_in_progress_symbols:
+            return
+
+        # Never re-arm OCO while a non-OCO order is in flight for this symbol.
+        # This avoids submit/cancel races between software exits/retries and OCO recovery.
+        if self._has_open_non_oco_order_for_symbol(symbol):
+            return
+
+        # Skip OCO recovery in force-close window to avoid close-race amplification.
+        try:
+            exit_hour, exit_min = map(
+                int, getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15").split(":")
+            )
+            cutoff = int(getattr(config, "OCO_RECOVERY_CUTOFF_MINUTES_BEFORE_FORCE_EXIT", 20))
+            now_minutes = self.Time.hour * 60 + self.Time.minute
+            force_minutes = exit_hour * 60 + exit_min
+            if now_minutes >= force_minutes - cutoff:
+                return
+        except Exception:
+            pass
+
+        # If OCO already active, nothing to do
+        if self.oco_manager.has_active_pair(symbol):
+            return
+
+        # Throttle OCO recovery retries per symbol (minutes, not once/day).
+        today = str(self.Time.date())
+        last_attempt = self._last_oco_recovery_attempt.get(symbol)
+        retry_interval_min = max(1, int(getattr(config, "OCO_RECOVERY_RETRY_MINUTES", 5)))
+        if isinstance(last_attempt, str):
+            # Backward compatibility if old date-string format remains in memory.
+            if last_attempt == today:
+                return
+        elif last_attempt is not None:
+            try:
+                elapsed_min = (self.Time - last_attempt).total_seconds() / 60.0
+                if elapsed_min < retry_interval_min:
+                    return
+            except Exception:
+                pass
+
+        # Ensure we still hold the position
+        try:
+            qc_symbol = self.Symbol(symbol)
+            holding = self.Portfolio[qc_symbol]
+            if not holding.Invested:
+                self._clear_intraday_close_guard(symbol)
+                return
+            qty = abs(int(holding.Quantity))
+            if qty <= 0:
+                self._clear_intraday_close_guard(symbol)
+                return
+        except Exception:
+            # Fallback to tracked quantity if symbol lookup fails
+            qty = int(position.num_contracts) if position.num_contracts else 0
+            if qty <= 0:
+                return
+
+        # Create and submit OCO
+        oco_pair = self.oco_manager.create_oco_pair(
+            symbol=symbol,
+            entry_price=position.entry_price,
+            stop_price=position.stop_price,
+            target_price=position.target_price,
+            quantity=qty,
+            current_date=today,
+            tag_context=f"{self._oco_engine_prefix_for_strategy(getattr(position, 'entry_strategy', 'UNKNOWN'))}:{getattr(position, 'entry_strategy', 'UNKNOWN')}",
+        )
+        submitted = False
+        if oco_pair:
+            submitted = self.oco_manager.submit_oco_pair(oco_pair, current_time=str(self.Time))
+
+        self._last_oco_recovery_attempt[symbol] = self.Time
+        if submitted:
+            self.Log(
+                f"OCO_RECOVER: Created missing OCO | {symbol} | "
+                f"Stop=${position.stop_price:.2f} Target=${position.target_price:.2f} Qty={qty}"
+            )
+        else:
+            self.Log(
+                f"OCO_RECOVER: Failed to submit (market closed or error) | {symbol} | "
+                f"RetryIn={retry_interval_min}m"
+            )
