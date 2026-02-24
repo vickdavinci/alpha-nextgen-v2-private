@@ -1809,3 +1809,90 @@ class MainOptionsMixin:
 
         # Update 5-min ago value for next check (using proxy)
         self._vix_5min_ago = vix_intraday_proxy
+
+    def _on_micro_regime_update(self) -> None:
+        """
+        V2.1.1: Layer 2 & 4 - Direction + Regime update (every 15 minutes).
+
+        Updates the Micro Regime Engine with current market data.
+        V2.3.4: Uses UVXY as intraday VIX proxy since CBOE VIX only supports Daily.
+        """
+        # Skip during warmup
+        if self.IsWarmingUp:
+            return
+
+        # V2.3.4: Use UVXY % change as intraday VIX direction proxy
+        # UVXY tracks ~1.5x daily VIX moves, so direction is reliable
+        uvxy_current = self.Securities[self.uvxy].Price
+        if self._uvxy_at_open > 0:
+            uvxy_change_pct = (uvxy_current - self._uvxy_at_open) / self._uvxy_at_open * 100
+            # Derive synthetic "intraday VIX" from UVXY change applied to VIX open
+            # If UVXY is up 3%, VIX is approximately up 2% (UVXY is ~1.5x)
+            vix_intraday_proxy = self._vix_at_open * (1 + uvxy_change_pct / 150)
+        else:
+            uvxy_change_pct = 0.0
+            vix_intraday_proxy = self._current_vix
+
+        # Get current QQQ price
+        qqq_current = self.Securities[self.qqq].Price
+
+        # V2.11 (Pitfall #7): Separate VIX Level from VIX Direction
+        # - Level: Use CBOE VIX (daily) - prevents false level spikes from UVXY contango
+        # - Direction: Use UVXY proxy (vix_intraday_proxy) - UVXY tracks direction reliably
+        vix_level_cboe = self._get_vix_level()  # CBOE VIX for level classification
+
+        # Update micro regime engine with intraday VIX proxy
+        # V2.5: Pass macro_regime_score for Grind-Up Override
+        vix_open_for_micro = self._vix_at_open
+        shock_memory_pct = self._get_premarket_shock_memory_pct()
+        if shock_memory_pct > 0:
+            anchor = min(max(getattr(config, "MICRO_SHOCK_MEMORY_ANCHOR", 0.60), 0.0), 1.0)
+            memory_scale = 1.0 + shock_memory_pct * anchor
+            if memory_scale > 1.0:
+                vix_open_for_micro = self._vix_at_open / memory_scale
+
+        state = self.options_engine.update_micro_regime_state(
+            vix_current=vix_intraday_proxy,  # Use UVXY-derived for direction
+            vix_open=vix_open_for_micro,
+            qqq_current=qqq_current,
+            qqq_open=self._qqq_at_open,
+            current_time=str(self.Time),
+            macro_regime_score=self._last_regime_score,
+            vix_level_override=vix_level_cboe,  # V2.11: Use CBOE VIX for level
+        )
+
+        # V8: Backtest log-budget guard for high-frequency MICRO_UPDATE diagnostics.
+        micro_dir = state.recommended_direction.value if state.recommended_direction else "NONE"
+        # V10: Add VIX tier for telemetry
+        vix_tier = "LOW" if vix_level_cboe < 18 else "MED" if vix_level_cboe < 25 else "HIGH"
+        micro_msg = (
+            f"MICRO_UPDATE: VIX_level={vix_level_cboe:.1f}(CBOE) VIX_tier={vix_tier} VIX_dir_proxy={vix_intraday_proxy:.2f} (UVXY {uvxy_change_pct:+.1f}%) | "
+            f"Regime={state.micro_regime.value} | Dir={micro_dir} | "
+            f"ShockMem={shock_memory_pct:+.1%}"
+        )
+        is_live = bool(hasattr(self, "LiveMode") and self.LiveMode)
+        if is_live:
+            self.Log(micro_msg)
+        elif bool(getattr(config, "MICRO_UPDATE_LOG_BACKTEST_ENABLED", True)):
+            signature = (
+                state.micro_regime.value,
+                micro_dir,
+                round(float(vix_level_cboe), 1),
+                round(float(vix_intraday_proxy), 2),
+                round(float(shock_memory_pct), 3),
+            )
+            on_change_only = bool(getattr(config, "MICRO_UPDATE_LOG_ON_CHANGE_ONLY", True))
+            min_minutes = int(getattr(config, "MICRO_UPDATE_LOG_MINUTES", 60))
+            should_log = True
+            if on_change_only:
+                changed = signature != self._last_micro_update_log_signature
+                due = (
+                    self._last_micro_update_log_time is None
+                    or (self.Time - self._last_micro_update_log_time).total_seconds() / 60.0
+                    >= min_minutes
+                )
+                should_log = changed or due
+            if should_log:
+                self.Log(micro_msg)
+                self._last_micro_update_log_signature = signature
+                self._last_micro_update_log_time = self.Time
