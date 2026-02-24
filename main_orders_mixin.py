@@ -1257,3 +1257,140 @@ class MainOrdersMixin:
                         self._greeks_breach_logged = False  # Reset for next position
             except Exception as e:
                 self.Log(f"OPT_TRACK_ERROR: {symbol}: {e}")
+
+    def _handle_order_rejection(self, symbol: str, order_event) -> None:
+        """
+        V2.20: Event-driven state recovery on order rejection/cancellation.
+
+        Mirrors _on_fill() pattern — routes rejection events to the correct
+        engine using symbol-based matching to clear pending locks ("zombie states").
+
+        Called from OnOrderEvent for both OrderStatus.Invalid and OrderStatus.Canceled,
+        AFTER existing specific handlers (margin CB, orphan legs, exit retry).
+
+        Args:
+            symbol: String symbol of the rejected/canceled order.
+            order_event: Original OrderEvent from broker.
+        """
+        # Route 1: Trend symbols - V6.11: Updated to include UGL, UCO
+        if symbol in config.TREND_SYMBOLS:
+            # Trend MOO recovery — clear stuck pending slot
+            if self.trend_engine.is_pending_moo(symbol):
+                self.trend_engine.cancel_pending_moo(symbol)
+                # Cooldown: skip until next EOD cycle (trend signals only fire at 15:45)
+                self._trend_rejection_cooldown_until = self.Time + timedelta(hours=18)
+                self.Log(
+                    f"TREND_RECOVERY: {symbol} rejected | Pending MOO cleared | "
+                    f"Cooldown until next EOD"
+                )
+            # Cold start warm entry recovery (both checks run, not elif)
+            if (
+                self.cold_start_engine.is_cold_start_active()
+                and self.cold_start_engine.has_warm_entry_executed()
+                and self.cold_start_engine.get_warm_entry_symbol() == symbol
+            ):
+                self.cold_start_engine.cancel_warm_entry()
+
+        # Route 2: MR symbols - V6.11: Updated to include SPXL
+        elif symbol in config.MR_SYMBOLS:
+            self.mr_engine.cancel_pending_entry()
+            # Cooldown: 15 minutes before MR can retry
+            self._mr_rejection_cooldown_until = self.Time + timedelta(minutes=15)
+            self.Log(
+                f"MR_RECOVERY: {symbol} rejected | Pending state reset | "
+                f"Cooldown 15min until {self._mr_rejection_cooldown_until}"
+            )
+
+        # Route 3: QQQ options
+        elif "QQQ" in symbol and ("C" in symbol or "P" in symbol):
+            symbol_norm = self._normalize_symbol_str(symbol)
+            if self.options_engine.cancel_pending_intraday_exit(symbol_norm):
+                self._clear_intraday_close_guard(symbol_norm)
+                self.Log(
+                    f"OPT_MICRO_EXIT_RECOVERY: Close rejected/canceled | "
+                    f"Symbol={symbol_norm} | Exit lock cleared"
+                )
+            elif symbol_norm in self._intraday_close_in_progress_symbols:
+                # Clear stale in-progress close guard even when options-engine lock is absent.
+                # Prevents sticky EOD sweep state that blocks OCO recovery/retries.
+                self._clear_intraday_close_guard(symbol_norm)
+                self.Log(
+                    f"OPT_MICRO_EXIT_RECOVERY: Cleared stale close guard | Symbol={symbol_norm}"
+                )
+
+            # Check pending state to determine sub-mode (most specific first)
+            spread_rejection_handled = False
+            if self.options_engine.has_pending_spread_entry():
+                pending_long, pending_short = self.options_engine.get_pending_spread_legs()
+                pending_symbols = set()
+                if pending_long is not None:
+                    pending_symbols.add(self._normalize_symbol_str(pending_long.symbol))
+                if pending_short is not None:
+                    pending_symbols.add(self._normalize_symbol_str(pending_short.symbol))
+                if symbol_norm in pending_symbols:
+                    # V2.21: Parse broker margin for adaptive retry sizing
+                    self._parse_and_store_rejection_margin(order_event)
+                    self.options_engine.cancel_pending_spread_entry()
+                    if self.portfolio_router:
+                        self.portfolio_router.unregister_spread_margin_by_legs(
+                            str(pending_long.symbol) if pending_long is not None else "",
+                            str(pending_short.symbol) if pending_short is not None else None,
+                        )
+                    # Cooldown: 30 minutes before spread can retry
+                    self._options_spread_cooldown_until = self.Time + timedelta(minutes=30)
+                    # V3.0 P0-B: Clear main.py spread tracking state on rejection
+                    if self._spread_fill_tracker is not None:
+                        self.Log("REJECTION_CLEANUP: Clearing spread fill tracker")
+                        self._spread_fill_tracker = None
+                    if self._pending_spread_orders:
+                        self.Log(
+                            f"REJECTION_CLEANUP: Clearing "
+                            f"{len(self._pending_spread_orders)} pending spread orders"
+                        )
+                        self._pending_spread_orders.clear()
+                        self._pending_spread_orders_reverse.clear()
+                    self.Log(
+                        f"OPT_MACRO_RECOVERY: Spread rejected | Pending + margin cleared | "
+                        f"Cooldown 30min until {self._options_spread_cooldown_until}"
+                    )
+                    spread_rejection_handled = True
+                else:
+                    throttle_key = (
+                        "SPREAD_REJECT_UNMATCHED|"
+                        f"{symbol_norm}|{','.join(sorted(pending_symbols)) or 'NONE'}"
+                    )
+                    if self.options_engine.should_log_vass_rejection(throttle_key):
+                        self.Log(
+                            f"OPT_MACRO_RECOVERY: Ignored unmatched spread rejection | "
+                            f"Canceled={symbol_norm} | Pending={','.join(sorted(pending_symbols)) or 'NONE'}"
+                        )
+            if (not spread_rejection_handled) and self.options_engine.has_pending_intraday_entry():
+                pending_symbol = self.options_engine.get_pending_entry_contract_symbol()
+                pending_lane = self.options_engine.get_pending_intraday_entry_lane(symbol_norm)
+                if pending_lane is None:
+                    self._diag_micro_pending_cancel_ignored_count += 1
+                    self.Log(
+                        f"OPT_INTRADAY_RECOVERY: Ignored unmatched cancel | "
+                        f"Canceled={symbol_norm} Pending={pending_symbol or 'UNKNOWN'}"
+                    )
+                else:
+                    cleared_lane = self.options_engine.cancel_pending_intraday_entry(
+                        engine=pending_lane,
+                        symbol=symbol_norm,
+                    )
+                    lane = str(cleared_lane or pending_lane or "MICRO").upper()
+                    # Cooldown: 15 minutes before the rejected lane can retry.
+                    lane_cooldown_until = self.Time + timedelta(minutes=15)
+                    self._set_intraday_lane_cooldown(lane, lane_cooldown_until)
+                    self.Log(
+                        f"OPT_INTRADAY_RECOVERY: Intraday rejected | Lane={lane} | "
+                        f"Pending + counter cleared | Cooldown 15min until {lane_cooldown_until}"
+                    )
+            elif (not spread_rejection_handled) and self.options_engine.has_pending_swing_entry():
+                self.options_engine.cancel_pending_swing_entry()
+                # Cooldown: 30 minutes before swing can retry
+                self._options_swing_cooldown_until = self.Time + timedelta(minutes=30)
+                self.Log(
+                    f"OPT_SWING_RECOVERY: Swing rejected | Pending cleared | "
+                    f"Cooldown 30min until {self._options_swing_cooldown_until}"
+                )
