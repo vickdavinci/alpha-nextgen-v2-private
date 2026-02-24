@@ -2036,3 +2036,31 @@ class MainOptionsMixin:
             return True
 
         return False
+
+    def _can_trade_options_settlement_aware(self) -> bool:
+        """
+        V2.9: Check if options trading is allowed based on settlement status.
+
+        Returns:
+            False during the first hour after any post-gap market open
+            if there is unsettled cash. True otherwise.
+        """
+        if not config.SETTLEMENT_AWARE_TRADING:
+            return True
+
+        # Check if we're in settlement cooldown
+        if self._settlement_cooldown_until is not None:
+            if self.Time < self._settlement_cooldown_until:
+                unsettled = self._get_unsettled_cash()
+                if unsettled > 0:
+                    # Only log once per minute to avoid spam
+                    if self.Time.minute != getattr(self, "_last_settlement_log_minute", -1):
+                        self.Log(f"SETTLEMENT: Cooldown active | UnsettledCash=${unsettled:,.0f}")
+                        self._last_settlement_log_minute = self.Time.minute
+                    return False
+            else:
+                # V2.13 Fix #9: Log AAP keyword when settlement gate opens
+                self.Log("SETTLEMENT_GATE_OPEN: Trading resumed after settlement cooldown")
+                self._settlement_cooldown_until = None
+
+        return True
