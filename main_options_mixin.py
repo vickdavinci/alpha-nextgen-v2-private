@@ -322,6 +322,72 @@ class MainOptionsMixin:
         self._clear_intraday_retry(lane)
         return direction, reason_code
 
+    def _micro_dte_bucket(self, dte: Optional[int]) -> str:
+        """Normalize intraday DTE to compact telemetry buckets."""
+        try:
+            d = int(dte) if dte is not None else -1
+        except Exception:
+            d = -1
+        if d in (2, 3, 4, 5):
+            return str(d)
+        return "OTHER"
+
+    def _inc_micro_dte_counter(self, store: Dict[str, int], dte: Optional[int]) -> str:
+        """Increment a MICRO DTE diagnostics counter and return resolved bucket."""
+        bucket = self._micro_dte_bucket(dte)
+        store[bucket] = int(store.get(bucket, 0)) + 1
+        return bucket
+
+    def _record_micro_drop_reason_dte(self, code: str, dte: Optional[int]) -> None:
+        """Track drop reason x DTE bucket for funnel RCA."""
+        bucket = self._micro_dte_bucket(dte)
+        reason = str(code or "E_UNKNOWN")
+        key = f"{reason}|{bucket}"
+        self._diag_micro_drop_reason_by_dte[key] = (
+            int(self._diag_micro_drop_reason_by_dte.get(key, 0)) + 1
+        )
+
+    def _intraday_engine_bucket_from_strategy(self, strategy: Optional[Any]) -> str:
+        """Normalize intraday strategy into daily summary engine buckets."""
+        name = str(getattr(strategy, "value", strategy) or "").upper()
+        if "ITM_MOMENTUM" in name:
+            return "ITM"
+        if "MICRO_" in name:
+            return "MICRO"
+        return "OTHER"
+
+    def _inc_intraday_engine_counter(self, store: Dict[str, int], strategy: Optional[Any]) -> str:
+        """Increment per-engine intraday diagnostics counter and return bucket."""
+        bucket = self._intraday_engine_bucket_from_strategy(strategy)
+        store[bucket] = int(store.get(bucket, 0)) + 1
+        return bucket
+
+    def _record_intraday_drop_reason(self, code: str, strategy: Optional[Any]) -> None:
+        """Persist drop-reason metrics independent of log throttling."""
+        reason = self._canonical_options_reason_code(code or "E_UNKNOWN")
+        self._diag_intraday_drop_reason_counts[reason] = (
+            int(self._diag_intraday_drop_reason_counts.get(reason, 0)) + 1
+        )
+        bucket = self._intraday_engine_bucket_from_strategy(strategy)
+        store = self._diag_intraday_drop_reason_counts_by_engine.setdefault(bucket, {})
+        store[reason] = int(store.get(reason, 0)) + 1
+
+    def _record_vass_reject_reason(self, reason_code: str) -> None:
+        """Track VASS reject reason counts for daily funnel RCA."""
+        code = str(reason_code or "UNKNOWN")
+        self._diag_vass_reject_reason_counts[code] = (
+            int(self._diag_vass_reject_reason_counts.get(code, 0)) + 1
+        )
+
+    def _inc_transition_path_counter(self, key: str) -> None:
+        """Track detector/eod transition trigger path usage for daily RCA."""
+        label = str(key or "").strip().upper()
+        if not label:
+            return
+        self._diag_transition_path_counts[label] = (
+            int(self._diag_transition_path_counts.get(label, 0)) + 1
+        )
+
     def _select_intraday_option_contract(
         self,
         chain,
