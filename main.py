@@ -4,7 +4,6 @@ import csv
 import gzip
 import io
 import json
-import re
 from base64 import b64encode
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -203,15 +202,9 @@ class AlphaNextGen(QCAlgorithm):
     _get_premarket_shock_memory_pct = MainPremarketMixin._get_premarket_shock_memory_pct
     _queue_itm_weekend_gap_exit_signals = MainPremarketMixin._queue_itm_weekend_gap_exit_signals
 
-    @staticmethod
-    def _safe_objectstore_key_component(raw: Any, default: str = "default") -> str:
-        text = str(raw or "").strip()
-        if not text:
-            return default
-        # LocalObjectStore rejects some punctuation in key segments (notably dots inside run labels).
-        safe = re.sub(r"[^A-Za-z0-9_-]+", "_", text)
-        safe = re.sub(r"_+", "_", safe).strip("_")
-        return safe or default
+    _safe_objectstore_key_component = staticmethod(
+        MainObservabilityMixin._safe_objectstore_key_component
+    )
 
     def Log(self, message: Any) -> None:  # noqa: N802 (QC API method name)
         """Budget-aware log wrapper to avoid QC backtest log-cap truncation."""
