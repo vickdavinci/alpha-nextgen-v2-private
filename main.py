@@ -121,6 +121,7 @@ class AlphaNextGen(QCAlgorithm):
     _check_expiration_hammer_v2 = MainIntradayCloseMixin._check_expiration_hammer_v2
     _on_intraday_options_force_close = MainIntradayCloseMixin._on_intraday_options_force_close
     _ensure_oco_for_open_options = MainIntradayCloseMixin._ensure_oco_for_open_options
+    _liquidate_all_spread_aware = MainIntradayCloseMixin._liquidate_all_spread_aware
     _on_market_close = MainMarketCloseMixin._on_market_close
     _monitor_risk_greeks = MainRiskMonitorMixin._monitor_risk_greeks
     _get_fresh_position_greeks = MainRiskMonitorMixin._get_fresh_position_greeks
@@ -1808,100 +1809,6 @@ class AlphaNextGen(QCAlgorithm):
 
         # Mark as done to prevent repeated attempts
         self._mr_force_close_fallback_date = self.Time.date()
-
-    def _liquidate_all_spread_aware(
-        self, reason: str = "GOVERNOR_SHUTDOWN", exempt_symbols: set = None
-    ) -> None:
-        # Portfolio-scan liquidation: close option shorts, then longs, then equities.
-        if exempt_symbols is None:
-            exempt_symbols = set()
-
-        # V2.33: Scan Portfolio for ALL options positions (not just tracked spread)
-        short_options = []  # (symbol, quantity) - negative qty, need to buy back
-        long_options = []  # (symbol, quantity) - positive qty, need to sell
-        equity_positions = []  # Non-options positions
-
-        for kvp in self.Portfolio:
-            holding = kvp.Value
-            if not holding.Invested:
-                continue
-
-            symbol = holding.Symbol
-            qty = holding.Quantity
-
-            # V3.1: Skip exempt symbols (hedges)
-            if symbol in exempt_symbols:
-                self.Log(f"{reason}: Exempting hedge {symbol}")
-                continue
-
-            # Check if this is an options position (SecurityType.Option)
-            if symbol.SecurityType == SecurityType.Option:
-                if qty < 0:
-                    short_options.append((symbol, qty))
-                else:
-                    long_options.append((symbol, qty))
-            else:
-                equity_positions.append((symbol, qty))
-
-        # Step 1: Buy back ALL short options first (eliminates naked exposure)
-        # This MUST happen before selling any long options
-        for symbol, qty in short_options:
-            try:
-                # qty is negative, so we buy abs(qty) to close
-                close_qty = abs(qty)
-                self._submit_option_close_market_order(
-                    symbol=symbol,
-                    quantity=close_qty,
-                    reason=reason,
-                )
-                self.Log(f"{reason}: Closed short option {str(symbol)[-21:]} x{close_qty}")
-            except Exception as e:
-                self.Log(f"{reason}: Failed to close short {str(symbol)[-21:]} | {e}")
-
-        # Step 2: Sell ALL long options (safe now - all shorts closed)
-        for symbol, qty in long_options:
-            try:
-                self._submit_option_close_market_order(
-                    symbol=symbol,
-                    quantity=-qty,
-                    reason=reason,
-                )
-                self.Log(f"{reason}: Closed long option {str(symbol)[-21:]} x{qty}")
-            except Exception as e:
-                self.Log(f"{reason}: Failed to close long {str(symbol)[-21:]} | {e}")
-
-        # Step 3: Clear all options engine tracking state
-        if self.options_engine:
-            self.options_engine.clear_spread_position()
-            self.options_engine.cancel_pending_spread_entry()
-            self.options_engine.cancel_pending_intraday_entry()
-        if self.portfolio_router:
-            self.portfolio_router.clear_all_spread_margins()
-
-        # V2.33: Clear main.py spread tracking dicts
-        if self._spread_fill_tracker is not None:
-            self.Log(f"{reason}: Clearing spread fill tracker")
-            self._spread_fill_tracker = None
-        if self._pending_spread_orders:
-            self.Log(f"{reason}: Clearing {len(self._pending_spread_orders)} pending spread orders")
-            self._pending_spread_orders.clear()
-            self._pending_spread_orders_reverse.clear()
-
-        # Step 4: Liquidate equity positions (trend, MR, hedges)
-        for symbol, qty in equity_positions:
-            try:
-                self.MarketOrder(symbol, -qty, tag=reason)
-                self.Log(f"{reason}: Closed equity {symbol} x{qty}")
-            except Exception as e:
-                self.Log(f"{reason}: Failed to close equity {symbol} | {e}")
-
-        # Log summary
-        total_closed = len(short_options) + len(long_options) + len(equity_positions)
-        self.Log(
-            f"{reason}: Liquidation complete | "
-            f"Short opts={len(short_options)} | Long opts={len(long_options)} | "
-            f"Equity={len(equity_positions)} | Total={total_closed}"
-        )
 
     def _close_options_atomic(
         self,
