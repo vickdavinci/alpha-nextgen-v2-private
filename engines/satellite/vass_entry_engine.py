@@ -1617,6 +1617,406 @@ class VASSEntryEngine:
 
         return (long_leg, short_leg)
 
+    def select_credit_spread_legs(
+        self,
+        *,
+        host: Any,
+        contracts: list[Any],
+        strategy: Any,
+        dte_min: int,
+        dte_max: int,
+        current_time: Optional[str] = None,
+        set_cooldown: bool = True,
+        log_filters: bool = True,
+        debug_stats: Optional[Dict[str, Any]] = None,
+    ) -> Optional[tuple[Any, Any]]:
+        """Select short and long legs for credit spread construction."""
+        strategy_value = str(getattr(strategy, "value", strategy))
+        cooldown_key = strategy_value
+        legacy_credit_key = "CREDIT"
+        direction_alias_key = "CALL" if strategy_value == "BULL_PUT_CREDIT" else "PUT"
+
+        if current_time:
+            try:
+                if hasattr(host, "_spread_failure_cooldown_until_by_dir"):
+                    until = host._spread_failure_cooldown_until_by_dir.get(cooldown_key)
+                    if until is None:
+                        until = host._spread_failure_cooldown_until_by_dir.get(legacy_credit_key)
+                    if until is None:
+                        until = host._spread_failure_cooldown_until_by_dir.get(direction_alias_key)
+                    if until and current_time < until:
+                        return None
+                    elif until:
+                        host._spread_failure_cooldown_until_by_dir.pop(cooldown_key, None)
+                        host._spread_failure_cooldown_until_by_dir.pop(legacy_credit_key, None)
+                        host._spread_failure_cooldown_until_by_dir.pop(direction_alias_key, None)
+                elif host._spread_failure_cooldown_until:
+                    if current_time < host._spread_failure_cooldown_until:
+                        return None
+                    else:
+                        host._spread_failure_cooldown_until = None
+            except (ValueError, TypeError):
+                pass
+
+        if not contracts:
+            host.log("VASS: No contracts provided for credit spread selection")
+            return None
+
+        effective_width_min = host._get_effective_spread_width_min()
+        dte_filtered = [
+            contract for contract in contracts if dte_min <= contract.days_to_expiry <= dte_max
+        ]
+
+        if log_filters:
+            host.log(
+                f"SPREAD_FILTER: CreditSpread | Total={len(contracts)} | "
+                f"DTE_pass={len(dte_filtered)} (range={dte_min}-{dte_max}) | "
+                f"Strategy={strategy_value}"
+            )
+        if debug_stats is not None:
+            debug_stats.update(
+                {
+                    "dte_pass": len(dte_filtered),
+                    "dte_range": f"{dte_min}-{dte_max}",
+                }
+            )
+
+        if not dte_filtered:
+            host.log(
+                f"VASS: No contracts in DTE range {dte_min}-{dte_max} "
+                f"(available: {[c.days_to_expiry for c in contracts[:5]]}...)"
+            )
+            if set_cooldown:
+                host._set_spread_failure_cooldown(current_time, direction=cooldown_key)
+            return None
+
+        if strategy_value == "BULL_PUT_CREDIT":
+            puts = [
+                contract for contract in dte_filtered if contract.direction == OptionDirection.PUT
+            ]
+
+            if not puts:
+                host.log("VASS: No PUT contracts available for Bull Put Credit")
+                if set_cooldown:
+                    host._set_spread_failure_cooldown(current_time, direction=cooldown_key)
+                return None
+
+            short_candidates = []
+            delta_pass_count = 0
+            credit_pass_count = 0
+            oi_pass_count = 0
+            spread_pass_count = 0
+            elastic_widen_used = 0.0
+
+            for widen in config.ELASTIC_DELTA_STEPS:
+                smoothed_vix = host._iv_sensor.get_smoothed_vix()
+                high_vix_thr = float(
+                    getattr(config, "CREDIT_SPREAD_SHORT_LEG_HIGH_VIX_THRESHOLD", 25.0)
+                )
+                base_delta_max = float(getattr(config, "CREDIT_SPREAD_SHORT_LEG_DELTA_MAX", 0.45))
+                if smoothed_vix > high_vix_thr:
+                    base_delta_max = float(
+                        getattr(
+                            config, "CREDIT_SPREAD_SHORT_LEG_DELTA_MAX_HIGH_VIX", base_delta_max
+                        )
+                    )
+                delta_min = max(
+                    config.ELASTIC_DELTA_FLOOR,
+                    config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN - widen,
+                )
+                delta_max = min(
+                    config.ELASTIC_DELTA_CEILING,
+                    base_delta_max + widen,
+                )
+
+                delta_pass_count = sum(
+                    1 for put in puts if delta_min <= abs(put.delta) <= delta_max
+                )
+                effective_min_credit = config.CREDIT_SPREAD_MIN_CREDIT
+                if smoothed_vix > config.CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD:
+                    effective_min_credit = config.CREDIT_SPREAD_MIN_CREDIT_HIGH_IV
+
+                short_candidates = []
+                credit_pass_count = 0
+                oi_pass_count = 0
+                spread_pass_count = 0
+                for put in puts:
+                    if not (delta_min <= abs(put.delta) <= delta_max):
+                        continue
+                    if put.bid < effective_min_credit:
+                        continue
+                    credit_pass_count += 1
+                    if put.open_interest < config.CREDIT_SPREAD_MIN_OPEN_INTEREST:
+                        continue
+                    oi_pass_count += 1
+                    if put.spread_pct > config.CREDIT_SPREAD_MAX_SPREAD_PCT:
+                        continue
+                    spread_pass_count += 1
+                    short_candidates.append(put)
+
+                if short_candidates:
+                    elastic_widen_used = widen
+                    break
+
+            host.log(
+                f"SPREAD_FILTER: BullPut ShortLeg | Puts={len(puts)} | "
+                f"Delta_pass={delta_pass_count} | Credit_pass={credit_pass_count} | "
+                f"OI_pass={oi_pass_count} | Spread_pass={spread_pass_count} | "
+                f"Delta_range={config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN}-"
+                f"{config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX}"
+                + (f" | Elastic_widen=±{elastic_widen_used:.2f}" if elastic_widen_used > 0 else "")
+                + f" | Min_credit=${effective_min_credit}"
+                + (
+                    f" (IV-adaptive, VIX={smoothed_vix:.1f})"
+                    if effective_min_credit != config.CREDIT_SPREAD_MIN_CREDIT
+                    else ""
+                )
+            )
+            if debug_stats is not None:
+                debug_stats.update(
+                    {
+                        "delta_pass": delta_pass_count,
+                        "credit_pass": credit_pass_count,
+                        "oi_pass": oi_pass_count,
+                        "spread_pass": spread_pass_count,
+                        "elastic_widen": elastic_widen_used,
+                        "min_credit": effective_min_credit,
+                    }
+                )
+
+            if not short_candidates:
+                host.log(
+                    f"VASS: No short put candidates | "
+                    f"Delta range: {config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN}-"
+                    f"{config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX} | "
+                    f"Elastic steps tried={len(config.ELASTIC_DELTA_STEPS)} | "
+                    f"Min credit: ${config.CREDIT_SPREAD_MIN_CREDIT} | "
+                    f"Min OI: {config.CREDIT_SPREAD_MIN_OPEN_INTEREST} | "
+                    f"Max spread%: {config.CREDIT_SPREAD_MAX_SPREAD_PCT:.2f}"
+                )
+                if set_cooldown:
+                    host._set_spread_failure_cooldown(current_time, direction=cooldown_key)
+                return None
+
+            short_candidates.sort(key=lambda contract: contract.bid, reverse=True)
+            short_leg = short_candidates[0]
+
+            target_long_strike = short_leg.strike - config.CREDIT_SPREAD_WIDTH_TARGET
+            long_candidates = [
+                put
+                for put in puts
+                if put.strike == target_long_strike
+                and put.expiry == short_leg.expiry
+                and put.ask > 0
+                and put.open_interest >= max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)
+                and put.spread_pct <= config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT
+            ]
+
+            if not long_candidates:
+                long_candidates = [
+                    put
+                    for put in puts
+                    if put.strike < short_leg.strike
+                    and put.expiry == short_leg.expiry
+                    and effective_width_min
+                    <= (short_leg.strike - put.strike)
+                    <= config.SPREAD_WIDTH_MAX
+                    and put.ask > 0
+                    and put.open_interest >= max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)
+                    and put.spread_pct <= config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT
+                ]
+                if long_candidates:
+                    long_candidates.sort(key=lambda contract: contract.strike, reverse=True)
+
+            if not long_candidates:
+                host.log(
+                    f"VASS: No long put candidates for protection | "
+                    f"Short strike={short_leg.strike} | Target=${target_long_strike} | "
+                    f"Min OI={max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)} | "
+                    f"Max spread%={config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT:.2f}"
+                )
+                if set_cooldown:
+                    host._set_spread_failure_cooldown(current_time, direction=cooldown_key)
+                return None
+
+            long_leg = long_candidates[0]
+            width = short_leg.strike - long_leg.strike
+            credit = short_leg.bid - long_leg.ask
+
+            host.log(
+                f"VASS: BULL_PUT_CREDIT selected | "
+                f"Sell {short_leg.strike}P @ ${short_leg.bid:.2f} | "
+                f"Buy {long_leg.strike}P @ ${long_leg.ask:.2f} | "
+                f"Width=${width:.0f} | Credit=${credit:.2f}"
+            )
+
+            return (short_leg, long_leg)
+
+        if strategy_value == "BEAR_CALL_CREDIT":
+            calls = [
+                contract for contract in dte_filtered if contract.direction == OptionDirection.CALL
+            ]
+
+            if not calls:
+                host.log("VASS: No CALL contracts available for Bear Call Credit")
+                if set_cooldown:
+                    host._set_spread_failure_cooldown(current_time, direction=cooldown_key)
+                return None
+
+            short_candidates = []
+            delta_pass_count = 0
+            credit_pass_count = 0
+            oi_pass_count = 0
+            spread_pass_count = 0
+            elastic_widen_used = 0.0
+
+            for widen in config.ELASTIC_DELTA_STEPS:
+                smoothed_vix = host._iv_sensor.get_smoothed_vix()
+                high_vix_thr = float(
+                    getattr(config, "CREDIT_SPREAD_SHORT_LEG_HIGH_VIX_THRESHOLD", 25.0)
+                )
+                base_delta_max = float(getattr(config, "CREDIT_SPREAD_SHORT_LEG_DELTA_MAX", 0.45))
+                if smoothed_vix > high_vix_thr:
+                    base_delta_max = float(
+                        getattr(
+                            config, "CREDIT_SPREAD_SHORT_LEG_DELTA_MAX_HIGH_VIX", base_delta_max
+                        )
+                    )
+                delta_min = max(
+                    config.ELASTIC_DELTA_FLOOR,
+                    config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN - widen,
+                )
+                delta_max = min(
+                    config.ELASTIC_DELTA_CEILING,
+                    base_delta_max + widen,
+                )
+
+                delta_pass_count = sum(
+                    1 for call in calls if delta_min <= abs(call.delta) <= delta_max
+                )
+                effective_min_credit = config.CREDIT_SPREAD_MIN_CREDIT
+                if smoothed_vix > config.CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD:
+                    effective_min_credit = config.CREDIT_SPREAD_MIN_CREDIT_HIGH_IV
+
+                short_candidates = []
+                credit_pass_count = 0
+                oi_pass_count = 0
+                spread_pass_count = 0
+                for call in calls:
+                    if not (delta_min <= abs(call.delta) <= delta_max):
+                        continue
+                    if call.bid < effective_min_credit:
+                        continue
+                    credit_pass_count += 1
+                    if call.open_interest < config.CREDIT_SPREAD_MIN_OPEN_INTEREST:
+                        continue
+                    oi_pass_count += 1
+                    if call.spread_pct > config.CREDIT_SPREAD_MAX_SPREAD_PCT:
+                        continue
+                    spread_pass_count += 1
+                    short_candidates.append(call)
+
+                if short_candidates:
+                    elastic_widen_used = widen
+                    break
+
+            host.log(
+                f"SPREAD_FILTER: BearCall ShortLeg | Calls={len(calls)} | "
+                f"Delta_pass={delta_pass_count} | Credit_pass={credit_pass_count} | "
+                f"OI_pass={oi_pass_count} | Spread_pass={spread_pass_count} | "
+                f"Delta_range={config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN}-"
+                f"{config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX}"
+                + (f" | Elastic_widen=±{elastic_widen_used:.2f}" if elastic_widen_used > 0 else "")
+                + f" | Min_credit=${effective_min_credit}"
+                + (
+                    f" (IV-adaptive, VIX={smoothed_vix:.1f})"
+                    if effective_min_credit != config.CREDIT_SPREAD_MIN_CREDIT
+                    else ""
+                )
+            )
+            if debug_stats is not None:
+                debug_stats.update(
+                    {
+                        "delta_pass": delta_pass_count,
+                        "credit_pass": credit_pass_count,
+                        "oi_pass": oi_pass_count,
+                        "spread_pass": spread_pass_count,
+                        "elastic_widen": elastic_widen_used,
+                        "min_credit": effective_min_credit,
+                    }
+                )
+
+            if not short_candidates:
+                host.log(
+                    f"VASS: No short call candidates | "
+                    f"Delta range: {config.CREDIT_SPREAD_SHORT_LEG_DELTA_MIN}-"
+                    f"{config.CREDIT_SPREAD_SHORT_LEG_DELTA_MAX} | "
+                    f"Elastic steps tried={len(config.ELASTIC_DELTA_STEPS)} | "
+                    f"Min credit: ${config.CREDIT_SPREAD_MIN_CREDIT} | "
+                    f"Min OI: {config.CREDIT_SPREAD_MIN_OPEN_INTEREST} | "
+                    f"Max spread%: {config.CREDIT_SPREAD_MAX_SPREAD_PCT:.2f}"
+                )
+                if set_cooldown:
+                    host._set_spread_failure_cooldown(current_time, direction=cooldown_key)
+                return None
+
+            short_candidates.sort(key=lambda contract: contract.bid, reverse=True)
+            short_leg = short_candidates[0]
+
+            target_long_strike = short_leg.strike + config.CREDIT_SPREAD_WIDTH_TARGET
+            long_candidates = [
+                call
+                for call in calls
+                if call.strike == target_long_strike
+                and call.expiry == short_leg.expiry
+                and call.ask > 0
+                and call.open_interest >= max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)
+                and call.spread_pct <= config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT
+            ]
+
+            if not long_candidates:
+                long_candidates = [
+                    call
+                    for call in calls
+                    if call.strike > short_leg.strike
+                    and call.expiry == short_leg.expiry
+                    and effective_width_min
+                    <= (call.strike - short_leg.strike)
+                    <= config.SPREAD_WIDTH_MAX
+                    and call.ask > 0
+                    and call.open_interest >= max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)
+                    and call.spread_pct <= config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT
+                ]
+                if long_candidates:
+                    long_candidates.sort(key=lambda contract: contract.strike)
+
+            if not long_candidates:
+                host.log(
+                    f"VASS: No long call candidates for protection | "
+                    f"Short strike={short_leg.strike} | Target=${target_long_strike} | "
+                    f"Min OI={max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)} | "
+                    f"Max spread%={config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT:.2f}"
+                )
+                if set_cooldown:
+                    host._set_spread_failure_cooldown(current_time, direction=cooldown_key)
+                return None
+
+            long_leg = long_candidates[0]
+            width = long_leg.strike - short_leg.strike
+            credit = short_leg.bid - long_leg.ask
+
+            host.log(
+                f"VASS: BEAR_CALL_CREDIT selected | "
+                f"Sell {short_leg.strike}C @ ${short_leg.bid:.2f} | "
+                f"Buy {long_leg.strike}C @ ${long_leg.ask:.2f} | "
+                f"Width=${width:.0f} | Credit=${credit:.2f}"
+            )
+
+            return (short_leg, long_leg)
+
+        host.log(f"VASS: Strategy {strategy} is not a credit spread")
+        return None
+
     def select_spread_legs_with_fallback(
         self,
         *,
