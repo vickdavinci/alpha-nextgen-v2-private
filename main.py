@@ -142,6 +142,7 @@ class AlphaNextGen(QCAlgorithm):
     _scan_mr_signals = MainSignalGenerationMixin._scan_mr_signals
     _save_observability_csv_artifact = MainObservabilityMixin._save_observability_csv_artifact
     _on_pre_market_setup = MainPremarketMixin._on_pre_market_setup
+    _on_sod_baseline = MainPremarketMixin._on_sod_baseline
     _schedule_dynamic_eod_events = MainPremarketMixin._schedule_dynamic_eod_events
     _check_premarket_itm_shorts = MainPremarketMixin._check_premarket_itm_shorts
     _get_premarket_vix_gap_proxy_pct = MainPremarketMixin._get_premarket_vix_gap_proxy_pct
@@ -1813,92 +1814,6 @@ class AlphaNextGen(QCAlgorithm):
 
         # Mark as done to prevent repeated attempts
         self._mr_force_close_fallback_date = self.Time.date()
-
-    def _on_sod_baseline(self) -> None:
-        """
-        Start of day baseline at 09:33 ET.
-
-        Sets equity_sod for daily tracking.
-        Sets SPY open for panic mode calculation.
-        Checks gap filter.
-        Reconciles positions with broker.
-        """
-        # Skip during warmup
-        if self.IsWarmingUp:
-            return
-
-        # Defensive day-open reset in case pre-market callback was skipped.
-        self._regime_detector_last_update_key = None
-        self._regime_detector_last_raw = {}
-        self._regime_overlay_ambiguous_bars = 0
-
-        self.equity_sod = self.Portfolio.TotalPortfolioValue
-        self.risk_engine.set_equity_sod(self.equity_sod)
-
-        # Set SPY open for panic mode
-        self.spy_open = self.Securities[self.spy].Open
-        self.risk_engine.set_spy_open(self.spy_open)
-
-        # Check gap filter (SPY gap down > 1.5%)
-        if self.spy_prior_close > 0:
-            gap_activated = self.risk_engine.check_gap_filter(self.spy_open)
-            if gap_activated:
-                self.today_safeguards.append("GAP_FILTER")
-
-        # V2.1.1: Update market open data for Options Engine Micro Regime
-        self._vix_at_open = self._current_vix
-        self._qqq_at_open = self.Securities[self.qqq].Open
-        # V2.3.4: Track UVXY at open for intraday VIX direction proxy
-        self._uvxy_at_open = self.Securities[self.uvxy].Open
-        self.options_engine.update_market_open_data(
-            vix_open=self._vix_at_open,
-            spy_open=self.spy_open,
-            spy_prior_close=self.spy_prior_close,
-        )
-
-        # V2.9: Check settlement cooldown (Bug #6 fix)
-        # Sets cooldown if this is first bar after market gap with unsettled cash
-        self._check_settlement_cooldown()
-
-        # V2.19 FIX: Clear stale pending MOO symbols
-        # If a symbol was marked pending at 15:45 yesterday but is NOT invested
-        # by 09:33 today, the MOO order didn't fill. Clear the stale pending
-        # to prevent permanently blocking position limit slots.
-        pending_symbols = self.trend_engine.get_pending_moo_symbols()
-        if pending_symbols:
-            # V2.24: Log pending state for diagnostics
-            pending_info = ", ".join(
-                f"{sym}(since={self.trend_engine.get_pending_moo_date(sym) or '?'})"
-                for sym in pending_symbols
-            )
-            self.Log(
-                f"TREND: PENDING_MOO_CHECK | Count={len(pending_symbols)} | "
-                f"Symbols=[{pending_info}]"
-            )
-
-            stale_symbols = set()
-            for sym in pending_symbols:
-                # Check if this pending symbol is actually invested
-                # V6.11: Use config for trend symbols
-                lean_sym = getattr(self, sym.lower(), None) if sym in config.TREND_SYMBOLS else None
-                if lean_sym and not self.Portfolio[lean_sym].Invested:
-                    stale_symbols.add(sym)
-                elif lean_sym and self.Portfolio[lean_sym].Invested:
-                    # V2.24: Symbol filled but pending wasn't cleared — fix it
-                    stale_symbols.add(sym)
-                    self.Log(
-                        f"TREND: PENDING_MOO_INVESTED {sym} | "
-                        f"Already invested but still in pending set — clearing"
-                    )
-            for sym in stale_symbols:
-                self.trend_engine.cancel_pending_moo(sym)
-                self.Log(
-                    f"TREND: STALE_MOO_CLEARED {sym} | "
-                    f"Pending but not invested at 09:33 - clearing slot"
-                )
-
-        # Reconcile positions with broker
-        self._reconcile_positions(mode="sod")
 
     def _on_warm_entry_check(self) -> None:
         """
