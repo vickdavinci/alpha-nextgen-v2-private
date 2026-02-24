@@ -3547,60 +3547,12 @@ class OptionsEngine:
         direction: Optional[OptionDirection] = None,
         overlay_state: Optional[str] = None,
     ) -> Tuple[bool, str]:
-        """
-        V5.3: Check if swing entry is allowed.
-
-        Returns:
-            Tuple of (allowed, reason)
-        """
-        _, swing_count, total_count = self.count_options_positions()
-
-        if total_count >= config.OPTIONS_MAX_TOTAL_POSITIONS:
-            return (
-                False,
-                f"R_SLOT_TOTAL_MAX: {total_count} >= {config.OPTIONS_MAX_TOTAL_POSITIONS}",
-            )
-
-        if swing_count >= config.OPTIONS_MAX_SWING_POSITIONS:
-            return (
-                False,
-                f"R_SLOT_SWING_MAX: {swing_count} >= {config.OPTIONS_MAX_SWING_POSITIONS}",
-            )
-
-        # Directional slot cap (stage-1 guardrail + stress-overlay shaping).
-        if direction is not None:
-            wanted_dir = "BULLISH" if direction == OptionDirection.CALL else "BEARISH"
-            dir_count = self.get_open_spread_count_by_direction(wanted_dir)
-            default_cap = int(getattr(config, "OPTIONS_MAX_SWING_PER_DIRECTION", 2))
-            bullish_cap = max(
-                int(getattr(config, "OPTIONS_MAX_SWING_BULLISH_POSITIONS", default_cap)),
-                0,
-            )
-            bearish_cap = max(
-                int(getattr(config, "OPTIONS_MAX_SWING_BEARISH_POSITIONS", default_cap)),
-                0,
-            )
-            dir_cap = bullish_cap if wanted_dir == "BULLISH" else bearish_cap
-            overlay = str(overlay_state or "").upper()
-            if overlay == "STRESS":
-                if wanted_dir == "BULLISH":
-                    dir_cap = int(getattr(config, "MAX_BULLISH_SPREADS_STRESS", 0))
-                else:
-                    dir_cap = int(getattr(config, "MAX_BEARISH_SPREADS_STRESS", dir_cap))
-            elif overlay == "EARLY_STRESS" and wanted_dir == "BULLISH":
-                dir_cap = min(dir_cap, int(getattr(config, "MAX_BULLISH_SPREADS_EARLY_STRESS", 1)))
-            if dir_count >= dir_cap:
-                if overlay in {"STRESS", "EARLY_STRESS"}:
-                    return (
-                        False,
-                        f"R_SLOT_DIRECTION_OVERLAY: {overlay} {wanted_dir} {dir_count} >= {dir_cap}",
-                    )
-                return (
-                    False,
-                    f"R_SLOT_DIRECTION_MAX: {wanted_dir} {dir_count} >= {dir_cap}",
-                )
-
-        return True, "R_OK"
+        """Check if swing entry is allowed."""
+        return self._vass_entry_engine.can_enter_swing(
+            host=self,
+            direction=direction,
+            overlay_state=overlay_state,
+        )
 
     def get_macro_direction(self, macro_regime_score: float) -> str:
         """
