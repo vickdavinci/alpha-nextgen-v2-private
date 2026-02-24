@@ -163,6 +163,10 @@ def check_intraday_entry_signal_impl(
         intraday_itm_trades_today=self._intraday_itm_trades_today,
         intraday_micro_trades_today=self._intraday_micro_trades_today,
         lane_resolver=self._intraday_engine_lane_from_strategy,
+        state=state,
+        direction=direction,
+        vix_current=vix_level_override if vix_level_override is not None else vix_current,
+        transition_ctx=transition_ctx,
     )
     if not lane_ok:
         return fail(lane_code or "E_INTRADAY_LANE_CAP", lane_detail)
@@ -310,6 +314,7 @@ def check_intraday_entry_signal_impl(
                 iv_sensor=self._iv_sensor,
                 call_cooldown_until_date=self._call_cooldown_until_date,
                 call_consecutive_losses=self._call_consecutive_losses,
+                transition_ctx=transition_ctx,
             )
             if micro_fail_code is not None:
                 return fail(micro_fail_code, micro_fail_detail)
@@ -476,6 +481,28 @@ def check_intraday_entry_signal_impl(
             )
         return fail(contract_code or "E_INTRADAY_CONTRACT", contract_detail)
 
+    if (
+        entry_strategy == IntradayStrategy.MICRO_OTM_MOMENTUM
+        and best_contract is not None
+        and bool(getattr(config, "MICRO_OTM_0DTE_LATE_ENTRY_BLOCK_ENABLED", True))
+    ):
+        dte_now = int(getattr(best_contract, "days_to_expiry", -1))
+        if dte_now <= 0:
+            late_block_start = str(
+                getattr(config, "MICRO_OTM_0DTE_LATE_ENTRY_BLOCK_START", "13:45")
+            )
+            try:
+                hh, mm = late_block_start.split(":")
+                late_block_minutes = (int(hh) * 60) + int(mm)
+            except Exception:
+                late_block_minutes = (13 * 60) + 45
+            now_minutes = (int(current_hour) * 60) + int(current_minute)
+            if now_minutes >= late_block_minutes:
+                return fail(
+                    "E_MICRO_OTM_0DTE_LATE_BLOCK",
+                    f"{current_hour:02d}:{current_minute:02d}>={late_block_start} | DTE={dte_now}",
+                )
+
     strategy_for_friction = self._canonical_intraday_strategy_name(
         entry_strategy.value if entry_strategy is not None else ""
     )
@@ -487,6 +514,14 @@ def check_intraday_entry_signal_impl(
     ) = self._micro_entry_engine.validate_contract_friction(
         strategy_value=strategy_for_friction,
         contract_spread_pct=contract_spread_pct,
+        entry_strategy=entry_strategy,
+        direction=direction,
+        vix_current=vix_level_override if vix_level_override is not None else vix_current,
+        current_time=current_time,
+        days_to_expiry=getattr(best_contract, "days_to_expiry", None)
+        if best_contract is not None
+        else None,
+        transition_ctx=transition_ctx,
     )
     if not friction_ok:
         self.log(

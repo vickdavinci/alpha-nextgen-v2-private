@@ -28,6 +28,78 @@ class MicroEntryEngine:
     def _is_micro_otm_strategy(self, entry_strategy: IntradayStrategy) -> bool:
         return entry_strategy == IntradayStrategy.MICRO_OTM_MOMENTUM
 
+    def _parse_time_minutes(self, current_time: Optional[str]) -> Optional[int]:
+        if not current_time:
+            return None
+        try:
+            hh = int(current_time[11:13])
+            mm = int(current_time[14:16])
+            return (hh * 60) + mm
+        except Exception:
+            return None
+
+    def _resolve_transition_overlay(
+        self, transition_ctx: Optional[Dict[str, Any]]
+    ) -> Tuple[str, int]:
+        if not isinstance(transition_ctx, dict):
+            return ("STABLE", 999)
+        overlay = str(transition_ctx.get("transition_overlay", "STABLE") or "STABLE").upper()
+        try:
+            bars_since_flip = int(transition_ctx.get("overlay_bars_since_flip", 999) or 999)
+        except Exception:
+            bars_since_flip = 999
+        return (overlay, bars_since_flip)
+
+    def _resolve_micro_otm_concurrent_cap(
+        self,
+        *,
+        fallback_cap: int,
+        state: Optional[Any],
+        direction: Optional[OptionDirection],
+        vix_current: Optional[float],
+        transition_ctx: Optional[Dict[str, Any]],
+    ) -> int:
+        base_cap = max(
+            1,
+            int(getattr(config, "MICRO_OTM_MAX_CONCURRENT_POSITIONS_BASE", fallback_cap) or 1),
+        )
+        if not bool(getattr(config, "MICRO_OTM_ADAPTIVE_CONCURRENT_CAP_ENABLED", False)):
+            return base_cap
+
+        if direction != OptionDirection.CALL:
+            return base_cap
+
+        try:
+            vix_val = float(vix_current) if vix_current is not None else 99.0
+        except Exception:
+            vix_val = 99.0
+
+        low_vix_max = float(getattr(config, "MICRO_OTM_CONCURRENT_CAP_LOW_VIX_MAX", 16.0))
+        if vix_val > low_vix_max:
+            return base_cap
+
+        micro_regime = getattr(state, "micro_regime", None)
+        bullish_ok = micro_regime in {
+            MicroRegime.PERFECT_MR,
+            MicroRegime.GOOD_MR,
+            MicroRegime.RECOVERING,
+            MicroRegime.IMPROVING,
+        }
+        if not bullish_ok:
+            return base_cap
+
+        overlay, bars_since_flip = self._resolve_transition_overlay(transition_ctx)
+        recovery_min_bars = int(getattr(config, "MICRO_OTM_CONCURRENT_CAP_RECOVERY_MIN_BARS", 6))
+        if overlay == "DETERIORATION":
+            return base_cap
+        if overlay == "RECOVERY" and bars_since_flip < recovery_min_bars:
+            return base_cap
+
+        boosted_cap = int(
+            getattr(config, "MICRO_OTM_MAX_CONCURRENT_POSITIONS_LOW_VIX_CALL", base_cap) or base_cap
+        )
+        return max(base_cap, boosted_cap)
+
     def validate_lane_caps(
         self,
         *,
@@ -37,6 +109,10 @@ class MicroEntryEngine:
         intraday_itm_trades_today: int,
         intraday_micro_trades_today: int,
         lane_resolver: Callable[[str], str],
+        state: Optional[Any] = None,
+        direction: Optional[OptionDirection] = None,
+        vix_current: Optional[float] = None,
+        transition_ctx: Optional[Dict[str, Any]] = None,
     ) -> Tuple[bool, Optional[str], Optional[str], str]:
         """Validate per-lane daily caps, pending entry lock, and concurrent caps."""
         pending_lane = lane_resolver(entry_strategy.value)
@@ -74,6 +150,14 @@ class MicroEntryEngine:
             )
             or 0
         )
+        if pending_lane != "ITM" and self._is_micro_otm_strategy(entry_strategy):
+            lane_cap = self._resolve_micro_otm_concurrent_cap(
+                fallback_cap=max(1, lane_cap),
+                state=state,
+                direction=direction,
+                vix_current=vix_current,
+                transition_ctx=transition_ctx,
+            )
         current_lane_positions = len(intraday_positions.get(pending_lane) or [])
         if lane_cap > 0 and current_lane_positions >= lane_cap:
             cap_code = "R_ITM_CONCURRENT_CAP" if pending_lane == "ITM" else "R_MICRO_CONCURRENT_CAP"
@@ -90,6 +174,12 @@ class MicroEntryEngine:
         *,
         strategy_value: str,
         contract_spread_pct: float,
+        entry_strategy: Optional[IntradayStrategy] = None,
+        direction: Optional[OptionDirection] = None,
+        vix_current: Optional[float] = None,
+        current_time: Optional[str] = None,
+        days_to_expiry: Optional[int] = None,
+        transition_ctx: Optional[Dict[str, Any]] = None,
     ) -> Tuple[bool, Optional[str], Optional[str]]:
         """Validate strategy-aware bid/ask friction cap before entry."""
         strategy_for_friction = str(strategy_value or "").upper()
@@ -100,19 +190,93 @@ class MicroEntryEngine:
             max_friction_pct = float(getattr(config, "INTRADAY_ITM_MAX_BID_ASK_SPREAD_PCT", 0.12))
         elif strategy_for_friction in (
             IntradayStrategy.MICRO_DEBIT_FADE.value,
-            IntradayStrategy.MICRO_OTM_MOMENTUM.value,
             IntradayStrategy.DEBIT_FADE.value,
             IntradayStrategy.CREDIT_SPREAD.value,
         ):
             max_friction_pct = float(getattr(config, "INTRADAY_MICRO_MAX_BID_ASK_SPREAD_PCT", 0.10))
+        elif strategy_for_friction == IntradayStrategy.MICRO_OTM_MOMENTUM.value:
+            max_friction_pct = float(
+                getattr(
+                    config,
+                    "INTRADAY_MICRO_OTM_MAX_BID_ASK_SPREAD_PCT",
+                    getattr(config, "INTRADAY_MICRO_MAX_BID_ASK_SPREAD_PCT", 0.10),
+                )
+            )
+            dte = int(days_to_expiry) if days_to_expiry is not None else -1
+            if dte == 0:
+                max_friction_pct = min(
+                    max_friction_pct,
+                    float(
+                        getattr(
+                            config,
+                            "INTRADAY_MICRO_OTM_MAX_BID_ASK_SPREAD_PCT_0DTE",
+                            max_friction_pct,
+                        )
+                    ),
+                )
+
+            minutes = self._parse_time_minutes(current_time)
+            late_cfg = str(getattr(config, "INTRADAY_MICRO_OTM_FRICTION_LATE_START", "13:30"))
+            try:
+                lh, lm = late_cfg.split(":")
+                late_minutes = (int(lh) * 60) + int(lm)
+            except Exception:
+                late_minutes = (13 * 60) + 30
+            if minutes is not None and minutes >= late_minutes:
+                max_friction_pct = min(
+                    max_friction_pct,
+                    float(
+                        getattr(
+                            config,
+                            "INTRADAY_MICRO_OTM_MAX_BID_ASK_SPREAD_PCT_LATE_DAY",
+                            max_friction_pct,
+                        )
+                    ),
+                )
+
+            try:
+                vix_val = float(vix_current) if vix_current is not None else None
+            except Exception:
+                vix_val = None
+            stress_vix = float(getattr(config, "INTRADAY_MICRO_OTM_FRICTION_STRESS_VIX", 20.0))
+            if vix_val is not None and vix_val >= stress_vix:
+                max_friction_pct = min(
+                    max_friction_pct,
+                    float(
+                        getattr(
+                            config,
+                            "INTRADAY_MICRO_OTM_MAX_BID_ASK_SPREAD_PCT_STRESS",
+                            max_friction_pct,
+                        )
+                    ),
+                )
+
+            overlay, bars_since_flip = self._resolve_transition_overlay(transition_ctx)
+            if overlay in {"DETERIORATION", "RECOVERY"} and bars_since_flip < int(
+                getattr(config, "MICRO_OTM_TRANSITION_BLOCK_BARS", 4)
+            ):
+                max_friction_pct = min(
+                    max_friction_pct,
+                    float(
+                        getattr(
+                            config,
+                            "INTRADAY_MICRO_OTM_MAX_BID_ASK_SPREAD_PCT_EARLY_TRANSITION",
+                            max_friction_pct,
+                        )
+                    ),
+                )
         else:
             max_friction_pct = float(getattr(config, "OPTIONS_SPREAD_MAX_PCT", 0.14))
 
         if contract_spread_pct > max_friction_pct:
+            detail = (
+                f"{contract_spread_pct:.1%}>{max_friction_pct:.1%}|{strategy_for_friction}|"
+                f"DTE={days_to_expiry if days_to_expiry is not None else 'NA'}"
+            )
             return (
                 False,
                 "E_INTRADAY_FRICTION_CAP",
-                f"{contract_spread_pct:.1%}>{max_friction_pct:.0%}|{strategy_for_friction}",
+                detail,
             )
         return True, None, None
 
@@ -159,6 +323,7 @@ class MicroEntryEngine:
         iv_sensor: Any,
         call_cooldown_until_date: Optional[Any],
         call_consecutive_losses: int,
+        transition_ctx: Optional[Dict[str, Any]] = None,
     ) -> Tuple[float, Optional[str], Optional[str]]:
         """Return (new_size_multiplier, fail_code, fail_detail)."""
         if itm_engine_mode:
@@ -211,11 +376,52 @@ class MicroEntryEngine:
             vix_for_call = vix_level_override if vix_level_override is not None else vix_current
             call_block_vix = getattr(config, "INTRADAY_CALL_BLOCK_VIX_MIN", 25.0)
             if vix_for_call >= call_block_vix:
-                self._log(
-                    f"INTRADAY: CALL blocked in stress | "
-                    f"VIX={vix_for_call:.1f} >= {call_block_vix:.1f}"
-                )
-                return size_multiplier, "E_CALL_GATE_STRESS", None
+                soft_gate_applied = False
+                if self._is_micro_otm_strategy(entry_strategy) and bool(
+                    getattr(config, "MICRO_OTM_STRESS_SOFT_GATE_ENABLED", False)
+                ):
+                    soft_max_vix = float(
+                        getattr(config, "MICRO_OTM_STRESS_SOFT_MAX_VIX", call_block_vix)
+                    )
+                    soft_size_mult = float(getattr(config, "MICRO_OTM_STRESS_SOFT_SIZE_MULT", 0.60))
+                    overlay, bars_since_flip = self._resolve_transition_overlay(transition_ctx)
+                    allow_overlays_cfg = getattr(
+                        config,
+                        "MICRO_OTM_STRESS_SOFT_ALLOW_OVERLAYS",
+                        ("STABLE", "RECOVERY"),
+                    )
+                    allow_overlays = {
+                        str(item).upper()
+                        for item in (
+                            allow_overlays_cfg
+                            if isinstance(allow_overlays_cfg, (list, tuple, set))
+                            else []
+                        )
+                    }
+                    recovery_min_bars = int(
+                        getattr(config, "MICRO_OTM_CONCURRENT_CAP_RECOVERY_MIN_BARS", 6)
+                    )
+                    can_soft_gate = (
+                        vix_for_call < soft_max_vix
+                        and overlay in allow_overlays
+                        and (overlay != "RECOVERY" or bars_since_flip >= recovery_min_bars)
+                    )
+                    if can_soft_gate:
+                        size_multiplier *= max(0.0, soft_size_mult)
+                        self._log(
+                            f"INTRADAY: CALL stress soft-gate | "
+                            f"VIX={vix_for_call:.1f} [{call_block_vix:.1f}-{soft_max_vix:.1f}) | "
+                            f"Overlay={overlay} Bars={bars_since_flip} | "
+                            f"SizeMult={size_multiplier:.2f}",
+                            trades_only=True,
+                        )
+                        soft_gate_applied = True
+                if not soft_gate_applied:
+                    self._log(
+                        f"INTRADAY: CALL blocked in stress | "
+                        f"VIX={vix_for_call:.1f} >= {call_block_vix:.1f}"
+                    )
+                    return size_multiplier, "E_CALL_GATE_STRESS", None
 
             # Gate 2: trend filter (block CALLs below QQQ SMA20)
             if getattr(config, "CALL_GATE_MA20_ENABLED", True) and algorithm is not None:

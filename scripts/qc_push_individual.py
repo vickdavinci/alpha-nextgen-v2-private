@@ -70,15 +70,31 @@ def push_file(
 ) -> Tuple[bool, str]:
     rel = path.relative_to(workspace).as_posix()
     content = path.read_text(encoding="utf-8")
+    update_payload = {"projectId": project_id, "name": rel, "content": content}
     result = qc_post(
         "files/update",
-        {"projectId": project_id, "name": rel, "content": content},
+        update_payload,
         user_id=user_id,
         api_token=api_token,
     )
     if result.get("success", False):
         return True, f"OK ({len(content)/1024:.1f} KB)"
-    return False, f"FAIL ({result.get('errors', 'unknown error')})"
+
+    errors = result.get("errors", [])
+    errors_text = json.dumps(errors) if isinstance(errors, (list, dict)) else str(errors)
+    if "File not found" in errors_text:
+        create_result = qc_post(
+            "files/create",
+            update_payload,
+            user_id=user_id,
+            api_token=api_token,
+        )
+        if create_result.get("success", False):
+            return True, f"OK-CREATE ({len(content)/1024:.1f} KB)"
+        create_errors = create_result.get("errors", "unknown error")
+        return False, f"FAIL-CREATE ({create_errors})"
+
+    return False, f"FAIL ({errors if errors else 'unknown error'})"
 
 
 def main(argv: Iterable[str]) -> int:

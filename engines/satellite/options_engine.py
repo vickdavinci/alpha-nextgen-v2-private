@@ -124,6 +124,10 @@ from engines.satellite.vass_exit_profile import (
     record_vass_mfe_diag_impl,
     resolve_qqq_atr_pct_impl,
 )
+from engines.satellite.vass_risk_firewall import (
+    check_friday_firewall_exit_impl,
+    check_overnight_gap_protection_exit_impl,
+)
 from engines.satellite.vass_signal_validator import (
     check_credit_spread_entry_signal_impl,
     check_spread_entry_signal_impl,

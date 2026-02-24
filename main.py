@@ -90,6 +90,7 @@ class AlphaNextGen(QCAlgorithm):
     _clear_intraday_retry = MainOptionsMixin._clear_intraday_retry
     _queue_intraday_retry = MainOptionsMixin._queue_intraday_retry
     _consume_intraday_retry = MainOptionsMixin._consume_intraday_retry
+    _reset_regime_detector_runtime_state = MainOptionsMixin._reset_regime_detector_runtime_state
     _initialize_runtime_state = MainOptionsMixin._initialize_runtime_state
     _select_intraday_option_contract = MainOptionsMixin._select_intraday_option_contract
     _select_swing_option_contract = MainOptionsMixin._select_swing_option_contract

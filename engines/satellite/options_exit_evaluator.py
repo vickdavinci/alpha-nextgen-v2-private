@@ -171,6 +171,18 @@ def check_exit_signals_impl(
         and held_minutes is not None
     ):
         max_hold_minutes = float(getattr(config, "MICRO_OTM_MAX_HOLD_MINUTES", 0))
+        if current_dte is not None:
+            try:
+                if int(current_dte) <= 0:
+                    max_hold_minutes = float(
+                        getattr(config, "MICRO_OTM_MAX_HOLD_MINUTES_0DTE", max_hold_minutes)
+                    )
+                elif int(current_dte) == 1:
+                    max_hold_minutes = float(
+                        getattr(config, "MICRO_OTM_MAX_HOLD_MINUTES_1DTE", max_hold_minutes)
+                    )
+            except Exception:
+                pass
         profit_exempt = float(getattr(config, "MICRO_OTM_MAX_HOLD_PROFIT_EXEMPT_PCT", 0.35))
         if max_hold_minutes > 0 and held_minutes >= max_hold_minutes and pnl_pct < profit_exempt:
             if not self.mark_pending_intraday_exit(symbol_str):
