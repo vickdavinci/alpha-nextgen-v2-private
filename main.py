@@ -192,6 +192,10 @@ class AlphaNextGen(QCAlgorithm):
     _ensure_daily_proxy_windows_snapshot = (
         MainObservabilityMixin._ensure_daily_proxy_windows_snapshot
     )
+    _router_engine_bucket = MainObservabilityMixin._router_engine_bucket
+    _capture_router_rejections = MainObservabilityMixin._capture_router_rejections
+    _get_recent_router_rejections = MainObservabilityMixin._get_recent_router_rejections
+    _record_router_rejection_event = MainObservabilityMixin._record_router_rejection_event
     _on_pre_market_setup = MainPremarketMixin._on_pre_market_setup
     _on_sod_baseline = MainPremarketMixin._on_sod_baseline
     _on_weekly_reset = MainPremarketMixin._on_weekly_reset
@@ -1535,17 +1539,6 @@ class AlphaNextGen(QCAlgorithm):
         store = self._diag_intraday_drop_reason_counts_by_engine.setdefault(bucket, {})
         store[reason] = int(store.get(reason, 0)) + 1
 
-    def _router_engine_bucket(self, source_tag: str, detail: str = "") -> str:
-        """Map router source tags to engine buckets (VASS / ITM / MICRO / OTHER)."""
-        text = f"{source_tag or ''} {detail or ''}".upper()
-        if "VASS" in text:
-            return "VASS"
-        if "ITM" in text:
-            return "ITM"
-        if "MICRO" in text:
-            return "MICRO"
-        return "OTHER"
-
     def _record_vass_reject_reason(self, reason_code: str) -> None:
         """Track VASS reject reason counts for daily funnel RCA."""
         code = str(reason_code or "UNKNOWN")
@@ -1623,78 +1616,6 @@ class AlphaNextGen(QCAlgorithm):
         if not reason_str:
             return
         self._spread_last_exit_reason[spread_key] = reason_str[:180]
-
-    def _capture_router_rejections(self, stage: str) -> None:
-        """Aggregate router rejection telemetry for daily summary RCA."""
-        try:
-            rejects = self.portfolio_router.get_last_rejections()
-        except Exception:
-            self._recent_router_rejections = []
-            return
-        self._recent_router_rejections = list(rejects)
-        if not rejects:
-            return
-        for rej in rejects:
-            code = str(getattr(rej, "code", "UNKNOWN") or "UNKNOWN")
-            source_tag = str(getattr(rej, "source_tag", "") or "")
-            detail = str(getattr(rej, "detail", "") or "")
-            engine_bucket = self._router_engine_bucket(source_tag=source_tag, detail=detail)
-            self._diag_intraday_router_reject_count += 1
-            self._diag_router_reject_reason_counts[code] = (
-                int(self._diag_router_reject_reason_counts.get(code, 0)) + 1
-            )
-            engine_store = self._diag_router_reject_reason_counts_by_engine.setdefault(
-                engine_bucket, {}
-            )
-            engine_store[code] = int(engine_store.get(code, 0)) + 1
-            self._record_router_rejection_event(
-                stage=stage,
-                code=code,
-                symbol=str(getattr(rej, "symbol", "") or ""),
-                source_tag=source_tag,
-                trace_id=str(getattr(rej, "trace_id", "") or ""),
-                detail=detail,
-                engine_bucket=engine_bucket,
-            )
-        try:
-            self.portfolio_router.clear_last_rejections()
-        except Exception:
-            pass
-
-    def _get_recent_router_rejections(self) -> List[Any]:
-        """Last captured router rejection snapshot for trace-level attribution."""
-        return list(getattr(self, "_recent_router_rejections", []) or [])
-
-    def _record_router_rejection_event(
-        self,
-        stage: str,
-        code: str,
-        symbol: str,
-        source_tag: str,
-        trace_id: str,
-        detail: str,
-        engine_bucket: str,
-    ) -> None:
-        """Persist router rejection details for RCA without relying on console logs."""
-        if not bool(getattr(config, "ROUTER_REJECTION_OBSERVABILITY_ENABLED", True)):
-            return
-        max_rows = int(getattr(config, "ROUTER_REJECTION_OBSERVABILITY_MAX_ROWS", 25000))
-        self._append_observability_record(
-            records=self._router_rejection_records,
-            overflow_attr="_router_rejection_overflow_logged",
-            max_rows=max_rows,
-            overflow_log_prefix="ROUTER_REJECTION_OBSERVABILITY",
-            row={
-                "time": self.Time.strftime("%Y-%m-%d %H:%M:%S"),
-                "stage": str(stage or ""),
-                "code": str(code or "UNKNOWN"),
-                "symbol": str(symbol or ""),
-                "source_tag": str(source_tag or ""),
-                "trace_id": str(trace_id or ""),
-                "detail": str(detail or ""),
-                "engine": str(engine_bucket or "OTHER").upper(),
-            },
-        )
 
     def _classify_exit_path(self, reason: str, order_tag: str = "") -> str:
         """Classify exit path for daily P&L attribution."""
