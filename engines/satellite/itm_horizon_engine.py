@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import config
-from models.enums import OptionDirection
+from models.enums import IntradayStrategy, OptionDirection
 
 
 class ITMHorizonEngine:
@@ -346,6 +346,268 @@ class ITMHorizonEngine:
             context=transition_ctx,
         )
         return None, f"TREND_NEUTRAL {lower:.2f}<=QQQ<={upper:.2f}"
+
+    def run_intraday_explicit_cycle(
+        self,
+        *,
+        host: Any,
+        chain: Any,
+        qqq_price: float,
+        regime_score: float,
+        size_multiplier: float,
+        effective_portfolio_value: float,
+        vix_intraday: float,
+        vix_level_cboe: Optional[float],
+        transition_ctx: Optional[Dict[str, Any]],
+        itm_dir: Optional[OptionDirection],
+        itm_reason: str,
+        intraday_scan_context_ready: bool,
+        itm_intraday_cooldown_active: bool,
+    ) -> None:
+        """Run explicit ITM intraday lane via OptionsEngine host."""
+        algorithm = getattr(host, "algorithm", None)
+        if algorithm is None:
+            return
+
+        itm_weekend_cutoff_active = bool(
+            getattr(algorithm, "_is_itm_weekend_entry_cutoff_active", lambda: False)()
+        )
+        if (
+            bool(getattr(config, "ITM_ENGINE_ENABLED", False))
+            and intraday_scan_context_ready
+            and itm_dir is not None
+            and not itm_intraday_cooldown_active
+            and not itm_weekend_cutoff_active
+        ):
+            itm_signal_id = (
+                f"ITM-{algorithm.Time.strftime('%Y%m%d-%H%M')}-"
+                f"{algorithm._diag_intraday_candidate_count + 1}"
+            )
+            itm_reason = itm_reason or "EXPLICIT_ITM_SCAN"
+            (
+                itm_preflight_ok,
+                itm_preflight_code,
+                itm_preflight_detail,
+            ) = host.preflight_intraday_entry(
+                strategy=IntradayStrategy.ITM_MOMENTUM,
+                direction=itm_dir,
+            )
+            if not itm_preflight_ok:
+                detail = str(itm_preflight_detail or "").strip()
+                block_reason = (
+                    f"{itm_preflight_code}: {detail}" if detail else str(itm_preflight_code)
+                )
+                algorithm._log_high_frequency_event(
+                    config_flag="LOG_INTRADAY_BLOCKED_BACKTEST_ENABLED",
+                    category="INTRADAY_BLOCKED",
+                    reason_key=algorithm._canonical_options_reason_code(itm_preflight_code),
+                    message=f"INTRADAY: Blocked - {block_reason}",
+                )
+                drop_code = algorithm._canonical_options_reason_code(
+                    str(itm_preflight_code or "E_PREFLIGHT_BLOCK")
+                )
+                drop_logged = algorithm._log_intraday_signal_dropped(
+                    signal_id=itm_signal_id,
+                    code=drop_code,
+                    reason=f"ITM_ENGINE_EXPLICIT: {block_reason}",
+                    retry_hint="None",
+                    direction=itm_dir,
+                    strategy=IntradayStrategy.ITM_MOMENTUM,
+                    contract_symbol="NONE",
+                    validation_detail=detail,
+                )
+                if drop_logged:
+                    algorithm._diag_intraday_dropped_count += 1
+                    algorithm._inc_intraday_engine_counter(
+                        algorithm._diag_intraday_dropped_by_engine,
+                        IntradayStrategy.ITM_MOMENTUM,
+                    )
+            else:
+                if algorithm._mark_intraday_signal_event("CANDIDATE", itm_signal_id):
+                    algorithm._diag_intraday_candidate_count += 1
+                    algorithm._inc_intraday_engine_counter(
+                        algorithm._diag_intraday_candidates_by_engine,
+                        IntradayStrategy.ITM_MOMENTUM,
+                    )
+                    algorithm._log_high_frequency_event(
+                        config_flag="LOG_INTRADAY_CANDIDATE_BACKTEST_ENABLED",
+                        category="INTRADAY_CANDIDATE",
+                        reason_key=f"ITM_MOMENTUM|{itm_dir.value if itm_dir else 'NONE'}",
+                        message=(
+                            f"INTRADAY_SIGNAL_CANDIDATE: SignalId={itm_signal_id} | "
+                            f"ITM_ENGINE_EXPLICIT: {itm_reason} | Direction={itm_dir.value}"
+                        ),
+                    )
+                    algorithm._record_signal_lifecycle_event(
+                        engine="ITM",
+                        event="CANDIDATE",
+                        signal_id=itm_signal_id,
+                        direction=itm_dir.value if itm_dir else "",
+                        strategy=IntradayStrategy.ITM_MOMENTUM.value,
+                        code="R_OK",
+                        gate_name="INTRADAY_SIGNAL_CANDIDATE",
+                        reason=f"ITM_ENGINE_EXPLICIT: {itm_reason}",
+                        contract_symbol="",
+                    )
+
+                itm_contract = algorithm._select_intraday_option_contract(
+                    chain,
+                    itm_dir,
+                    strategy=IntradayStrategy.ITM_MOMENTUM,
+                    vix_current=vix_intraday,
+                )
+                if itm_contract is None:
+                    drop_logged = algorithm._log_intraday_signal_dropped(
+                        signal_id=itm_signal_id,
+                        code="E_NO_CONTRACT_SELECTED",
+                        reason=f"ITM_ENGINE_EXPLICIT: {itm_reason}",
+                        retry_hint="None",
+                        direction=itm_dir,
+                        strategy=IntradayStrategy.ITM_MOMENTUM,
+                        contract_symbol="NONE",
+                    )
+                    if drop_logged:
+                        algorithm._diag_intraday_dropped_count += 1
+                        algorithm._inc_intraday_engine_counter(
+                            algorithm._diag_intraday_dropped_by_engine,
+                            IntradayStrategy.ITM_MOMENTUM,
+                        )
+                else:
+                    qqq_atr_value = (
+                        algorithm.qqq_atr.Current.Value if algorithm.qqq_atr.IsReady else 0.0
+                    )
+                    itm_entry_size_multiplier = float(size_multiplier)
+                    if bool(
+                        getattr(config, "ITM_WEEKEND_CARRY_SIZE_HAIRCUT_ENABLED", True)
+                    ) and bool(getattr(algorithm, "_is_itm_weekend_firewall_day", lambda: False)()):
+                        carry_mult = float(getattr(config, "ITM_WEEKEND_CARRY_SIZE_MULT", 0.70))
+                        carry_mult = max(0.10, min(1.0, carry_mult))
+                        itm_entry_size_multiplier *= carry_mult
+                    itm_signal = host.check_intraday_entry_signal(
+                        vix_current=vix_intraday,
+                        vix_open=algorithm._vix_at_open,
+                        qqq_current=qqq_price,
+                        qqq_open=algorithm._qqq_at_open,
+                        current_hour=algorithm.Time.hour,
+                        current_minute=algorithm.Time.minute,
+                        current_time=str(algorithm.Time),
+                        portfolio_value=effective_portfolio_value,
+                        raw_portfolio_value=float(algorithm.Portfolio.TotalPortfolioValue),
+                        best_contract=itm_contract,
+                        size_multiplier=itm_entry_size_multiplier,
+                        macro_regime_score=regime_score,
+                        governor_scale=algorithm._governor_scale,
+                        direction=itm_dir,
+                        forced_entry_strategy=IntradayStrategy.ITM_MOMENTUM,
+                        vix_level_override=vix_level_cboe,
+                        underlying_atr=qqq_atr_value,
+                        micro_state=None,
+                        transition_ctx=transition_ctx,
+                    )
+                    if itm_signal is not None:
+                        itm_signal = algorithm._attach_option_trace_metadata(
+                            itm_signal, source="ITM"
+                        )
+                        if algorithm._mark_intraday_signal_event("APPROVED", itm_signal_id):
+                            algorithm.Log(
+                                f"INTRADAY_SIGNAL_APPROVED: SignalId={itm_signal_id} | "
+                                f"ITM_ENGINE_EXPLICIT: {itm_reason} | Direction={itm_dir.value} | "
+                                f"Strategy=ITM_MOMENTUM | Contract={itm_contract.symbol}"
+                            )
+                            algorithm._diag_intraday_approved_count += 1
+                            algorithm._inc_intraday_engine_counter(
+                                algorithm._diag_intraday_approved_by_engine,
+                                IntradayStrategy.ITM_MOMENTUM,
+                            )
+                            algorithm._record_signal_lifecycle_event(
+                                engine="ITM",
+                                event="APPROVED",
+                                signal_id=itm_signal_id,
+                                trace_id=itm_signal.metadata.get("trace_id", "")
+                                if itm_signal.metadata
+                                else "",
+                                direction=itm_dir.value if itm_dir else "",
+                                strategy=IntradayStrategy.ITM_MOMENTUM.value,
+                                code="R_OK",
+                                gate_name="INTRADAY_SIGNAL_APPROVED",
+                                reason=f"ITM_ENGINE_EXPLICIT: {itm_reason}",
+                                contract_symbol=str(itm_contract.symbol),
+                            )
+                        itm_trace_id = (
+                            itm_signal.metadata.get("trace_id", "") if itm_signal.metadata else ""
+                        )
+                        algorithm.portfolio_router.receive_signal(itm_signal)
+                        algorithm._process_immediate_signals()
+                        if itm_trace_id:
+                            for rej in algorithm._get_recent_router_rejections():
+                                if rej.trace_id == itm_trace_id and rej.source_tag.startswith(
+                                    "ITM"
+                                ):
+                                    algorithm._diag_intraday_router_reject_count += 1
+                                    algorithm.Log(
+                                        f"INTRADAY_ROUTER_REJECTED: SignalId={itm_signal_id} | "
+                                        f"Trace={rej.trace_id} | Code={rej.code} | Stage={rej.stage} | {rej.detail}"
+                                    )
+                                    host.cancel_pending_intraday_entry(
+                                        engine="ITM",
+                                        symbol=str(itm_contract.symbol),
+                                    )
+                                    reject_code = algorithm._canonical_options_reason_code(
+                                        str(rej.code or "E_INTRADAY_ROUTER_REJECT")
+                                    )
+                                    drop_logged = algorithm._log_intraday_signal_dropped(
+                                        signal_id=itm_signal_id,
+                                        code=reject_code,
+                                        reason=f"ROUTER_REJECT: {rej.stage} | {rej.detail}",
+                                        retry_hint="None",
+                                        direction=itm_dir,
+                                        strategy=IntradayStrategy.ITM_MOMENTUM,
+                                        contract_symbol=str(itm_contract.symbol),
+                                    )
+                                    if drop_logged:
+                                        algorithm._diag_intraday_dropped_count += 1
+                                        algorithm._inc_intraday_engine_counter(
+                                            algorithm._diag_intraday_dropped_by_engine,
+                                            IntradayStrategy.ITM_MOMENTUM,
+                                        )
+                                    break
+                    else:
+                        (
+                            itm_validation_reason,
+                            itm_validation_detail,
+                        ) = host.pop_last_intraday_validation_failure(lane="ITM")
+                        drop_code = algorithm._canonical_options_reason_code(
+                            itm_validation_reason or "E_INTRADAY_NO_SIGNAL_UNCLASSIFIED"
+                        )
+                        drop_logged = algorithm._log_intraday_signal_dropped(
+                            signal_id=itm_signal_id,
+                            code=drop_code,
+                            reason=f"ITM_ENGINE_EXPLICIT: {itm_reason}",
+                            retry_hint="None",
+                            direction=itm_dir,
+                            strategy=IntradayStrategy.ITM_MOMENTUM,
+                            contract_symbol=str(itm_contract.symbol),
+                            validation_detail=itm_validation_detail,
+                        )
+                        if drop_logged:
+                            algorithm._diag_intraday_dropped_count += 1
+                            algorithm._inc_intraday_engine_counter(
+                                algorithm._diag_intraday_dropped_by_engine,
+                                IntradayStrategy.ITM_MOMENTUM,
+                            )
+        elif (
+            bool(getattr(config, "ITM_ENGINE_ENABLED", False))
+            and intraday_scan_context_ready
+            and itm_dir is not None
+            and itm_weekend_cutoff_active
+        ):
+            algorithm.Log(
+                "ITM_WEEKEND_ENTRY_BLOCK: "
+                f"Cutoff active at {algorithm.Time.strftime('%H:%M')} | "
+                f"Dir={itm_dir.value} | Cutoff="
+                f"{int(getattr(config, 'ITM_WEEKEND_ENTRY_CUTOFF_HOUR', 13)):02d}:"
+                f"{int(getattr(config, 'ITM_WEEKEND_ENTRY_CUTOFF_MINUTE', 30)):02d}"
+            )
 
     def evaluate_entry(
         self,
