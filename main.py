@@ -137,6 +137,9 @@ class AlphaNextGen(QCAlgorithm):
     _schedule_exit_retry = MainOrdersMixin._schedule_exit_retry
     _retry_exit_order = MainOrdersMixin._retry_exit_order
     _force_market_close = MainOrdersMixin._force_market_close
+    _has_open_order_for_symbol = MainOrdersMixin._has_open_order_for_symbol
+    _has_open_non_oco_order_for_symbol = MainOrdersMixin._has_open_non_oco_order_for_symbol
+    _parse_and_store_rejection_margin = MainOrdersMixin._parse_and_store_rejection_margin
     _log_order_lifecycle_issue = MainOrdersMixin._log_order_lifecycle_issue
     _forward_execution_event = MainOrdersMixin._forward_execution_event
     OnOrderEvent = MainOrdersMixin.OnOrderEvent
@@ -1657,36 +1660,6 @@ class AlphaNextGen(QCAlgorithm):
         self._intraday_entry_snapshot.pop(sym_norm, None)
         self._clear_intraday_close_guard(sym_norm)
 
-    def _has_open_order_for_symbol(self, symbol: str, tag_contains: str = "") -> bool:
-        """Return True when an open order exists for symbol, optionally filtered by tag."""
-        symbol_norm = self._normalize_symbol_str(symbol)
-        if not symbol_norm:
-            return False
-        tag_filter = str(tag_contains or "").upper().strip()
-        for open_order in self.Transactions.GetOpenOrders():
-            if self._normalize_symbol_str(open_order.Symbol) != symbol_norm:
-                continue
-            if not tag_filter:
-                return True
-            open_tag = str(getattr(open_order, "Tag", "") or "").upper()
-            if tag_filter in open_tag:
-                return True
-        return False
-
-    def _has_open_non_oco_order_for_symbol(self, symbol: str) -> bool:
-        """Return True when symbol has an open non-OCO order (entry/exit in flight)."""
-        symbol_norm = self._normalize_symbol_str(symbol)
-        if not symbol_norm:
-            return False
-        for open_order in self.Transactions.GetOpenOrders():
-            if self._normalize_symbol_str(open_order.Symbol) != symbol_norm:
-                continue
-            open_tag = str(getattr(open_order, "Tag", "") or "").upper()
-            if "OCO_STOP:" in open_tag or "OCO_PROFIT:" in open_tag:
-                continue
-            return True
-        return False
-
     # =========================================================================
     # SIGNAL PROCESSING HELPERS
     # =========================================================================
@@ -2538,51 +2511,6 @@ class AlphaNextGen(QCAlgorithm):
         )
         self.Log(f"REGIME_TRANSITION_PATH_SUMMARY: {transition_summary}")
         log_daily_summary(self)
-
-    def _parse_and_store_rejection_margin(self, order_event) -> None:
-        """
-        V2.21: Parse broker Free Margin from rejection message for adaptive retry.
-
-        Broker message format:
-        "Insufficient buying power... Free Margin: 48927, Maintenance Margin Delta: 56172"
-
-        Stores safety_factor * Free Margin as options-engine rejection margin cap.
-        """
-        import re
-
-        try:
-            msg = str(order_event.Message) if hasattr(order_event, "Message") else ""
-            patterns = [
-                r"Free Margin:\s*\$?([0-9][0-9,]*\.?[0-9]*)",
-                r"Available(?:\s+Margin)?[:=]\s*\$?([0-9][0-9,]*\.?[0-9]*)",
-                r"Margin Remaining[:=]\s*\$?([0-9][0-9,]*\.?[0-9]*)",
-            ]
-            free_margin = None
-            for pattern in patterns:
-                match = re.search(pattern, msg, flags=re.IGNORECASE)
-                if not match:
-                    continue
-                raw = match.group(1).replace(",", "").rstrip(".")
-                try:
-                    free_margin = float(raw)
-                    break
-                except ValueError:
-                    continue
-
-            if free_margin is not None:
-                safety = getattr(config, "SPREAD_REJECTION_MARGIN_SAFETY", 0.80)
-                cap = free_margin * safety
-                self.options_engine.set_rejection_margin_cap(cap)
-                self.Log(
-                    f"REJECTION_MARGIN: Free=${free_margin:,.0f} | "
-                    f"Cap=${cap:,.0f} (x{safety:.0%})"
-                )
-            elif "insufficient buying power" in msg.lower() or "margin" in msg.lower():
-                self.Log(
-                    "REJECTION_MARGIN_PARSE_FAIL: Could not parse free margin from rejection message"
-                )
-        except Exception as e:
-            self.Log(f"REJECTION_MARGIN: Parse error: {e}")
 
     def _get_average_volume(self, volume_window: RollingWindow) -> float:
         """
