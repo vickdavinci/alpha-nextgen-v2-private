@@ -63,6 +63,108 @@ def check_spread_exit_signals_impl(
         if vass_ref_vix is None
         else f"Tier={vass_tier} RefVIX={float(vass_ref_vix):.1f}"
     )
+
+    def _resolve_vass_tail_cap_pct(resolved_dte: int) -> float:
+        base_pct = float(getattr(config, "VASS_TAIL_RISK_CAP_PCT_EQUITY", 0.015))
+        if not bool(getattr(config, "VASS_TAIL_RISK_CAP_USE_DTE_OVERLAY", False)):
+            return max(0.0, base_pct)
+
+        short_max = int(getattr(config, "VASS_TAIL_RISK_CAP_DTE_SHORT_MAX", 9))
+        med_max = int(getattr(config, "VASS_TAIL_RISK_CAP_DTE_MED_MAX", 21))
+        short_mult = float(getattr(config, "VASS_TAIL_RISK_CAP_DTE_SHORT_MULT", 0.75))
+        med_mult = float(getattr(config, "VASS_TAIL_RISK_CAP_DTE_MED_MULT", 1.00))
+        long_mult = float(getattr(config, "VASS_TAIL_RISK_CAP_DTE_LONG_MULT", 1.25))
+
+        dte_mult = long_mult
+        if resolved_dte <= short_max:
+            dte_mult = short_mult
+        elif resolved_dte <= med_max:
+            dte_mult = med_mult
+
+        overlay_mult = 1.0
+        try:
+            transition_ctx = self._get_regime_transition_context(regime_score=regime_score) or {}
+            overlay = str(transition_ctx.get("transition_overlay", "STABLE") or "STABLE").upper()
+            overlay_mults = getattr(config, "VASS_TAIL_RISK_CAP_OVERLAY_MULTIPLIERS", {})
+            if isinstance(overlay_mults, dict):
+                overlay_mult = float(
+                    overlay_mults.get(
+                        overlay,
+                        overlay_mults.get("STABLE", 1.0),
+                    )
+                )
+        except Exception:
+            overlay_mult = 1.0
+
+        resolved = base_pct * dte_mult * overlay_mult
+        min_pct = float(getattr(config, "VASS_TAIL_RISK_CAP_MIN_PCT_EQUITY", 0.0))
+        max_pct = float(getattr(config, "VASS_TAIL_RISK_CAP_MAX_PCT_EQUITY", 1.0))
+        if max_pct < min_pct:
+            min_pct, max_pct = max_pct, min_pct
+        return max(min_pct, min(max_pct, resolved))
+
+    def _apply_catastrophic_reentry_lock(exit_code_text: str, exit_reason_text: str) -> int:
+        if not bool(getattr(config, "VASS_CATASTROPHIC_EXIT_NO_REENTRY_REST_OF_SESSION", False)):
+            return 0
+        if self.algorithm is None:
+            return 0
+        code_u = str(exit_code_text or "").upper()
+        reason_u = str(exit_reason_text or "").upper()
+        catastrophic_codes = {
+            "VASS_TAIL_RISK_CAP",
+            "SPREAD_HARD_STOP_DURING_HOLD",
+            "SPREAD_HARD_STOP_TRIGGERED_PCT",
+            "SPREAD_HARD_STOP_TRIGGERED_WIDTH",
+        }
+        is_catastrophic = (
+            code_u in catastrophic_codes
+            or "VASS_TAIL_RISK_CAP" in reason_u
+            or "SPREAD_HARD_STOP_DURING_HOLD" in reason_u
+        )
+        if not is_catastrophic:
+            return 0
+
+        spread_dir_label = self._spread_direction_label(spread.spread_type)
+        spread_dir = None
+        if spread_dir_label == "BULLISH":
+            spread_dir = OptionDirection.CALL
+        elif spread_dir_label == "BEARISH":
+            spread_dir = OptionDirection.PUT
+        if spread_dir is None:
+            return 0
+
+        self._record_vass_direction_day_entry(spread_dir, self.algorithm.Time)
+        configured_lock = int(getattr(config, "VASS_CATASTROPHIC_EXIT_LOCK_MINUTES", 0))
+        if configured_lock > 0:
+            lock_minutes = configured_lock
+        else:
+            minute_of_day = int(self.algorithm.Time.hour * 60 + self.algorithm.Time.minute)
+            close_minutes = int(getattr(config, "VASS_SESSION_CLOSE_MINUTES", 16 * 60))
+            lock_minutes = close_minutes - minute_of_day
+        if lock_minutes <= 0:
+            lock_minutes = int(getattr(config, "VASS_CATASTROPHIC_EXIT_FALLBACK_LOCK_MINUTES", 120))
+        if lock_minutes <= 0:
+            return 0
+
+        self._set_directional_spread_cooldown(
+            cooldown_key=spread_dir.value,
+            minutes=lock_minutes,
+            reason=f"CATASTROPHIC_EXIT:{code_u or 'UNKNOWN'}",
+        )
+        if spread_dir == OptionDirection.CALL:
+            self._set_directional_spread_cooldown(
+                cooldown_key=SpreadStrategy.BULL_PUT_CREDIT.value,
+                minutes=lock_minutes,
+                reason=f"CATASTROPHIC_EXIT:{code_u or 'UNKNOWN'}",
+            )
+        else:
+            self._set_directional_spread_cooldown(
+                cooldown_key=SpreadStrategy.BEAR_CALL_CREDIT.value,
+                minutes=lock_minutes,
+                reason=f"CATASTROPHIC_EXIT:{code_u or 'UNKNOWN'}",
+            )
+        return int(lock_minutes)
+
     if bool(getattr(config, "VASS_ATR_ADAPTIVE_EXITS_ENABLED", True)):
         atr_pct = self._resolve_qqq_atr_pct(underlying_price=underlying_price)
         if atr_pct is not None and atr_pct > 0:
@@ -151,6 +253,10 @@ def check_spread_exit_signals_impl(
                                 trades_only=True,
                             )
                             spread.is_closing = True
+                            catastrophic_lock_minutes = _apply_catastrophic_reentry_lock(
+                                "SPREAD_HARD_STOP_DURING_HOLD",
+                                f"SPREAD_HARD_STOP_DURING_HOLD {pnl_pct:.1%}",
+                            )
                             if self.algorithm is not None:
                                 self._spread_exit_signal_cooldown[
                                     self._build_spread_key(spread)
@@ -182,6 +288,8 @@ def check_spread_exit_signals_impl(
                                             f"SPREAD_HARD_STOP_DURING_HOLD {pnl_pct:.1%} "
                                             f"(lost > {hard_stop_pct:.0%} hard cap)"
                                         ),
+                                        "spread_exit_emergency": True,
+                                        "vass_no_reentry_lock_minutes": catastrophic_lock_minutes,
                                         "is_credit_spread": False,
                                         "spread_credit_received": 0.0,
                                     },
@@ -553,7 +661,7 @@ def check_spread_exit_signals_impl(
             and self.algorithm is not None
         ):
             equity = float(getattr(self.algorithm.Portfolio, "TotalPortfolioValue", 0.0) or 0.0)
-            cap_pct = float(getattr(config, "VASS_TAIL_RISK_CAP_PCT_EQUITY", 0.015))
+            cap_pct = _resolve_vass_tail_cap_pct(current_dte)
             loss_dollars = abs(float(pnl)) * 100.0 * max(1, int(spread.num_spreads))
             cap_dollars = max(0.0, equity * cap_pct)
             if cap_dollars > 0 and loss_dollars >= cap_dollars:
@@ -700,7 +808,7 @@ def check_spread_exit_signals_impl(
             and self.algorithm is not None
         ):
             equity = float(getattr(self.algorithm.Portfolio, "TotalPortfolioValue", 0.0) or 0.0)
-            cap_pct = float(getattr(config, "VASS_TAIL_RISK_CAP_PCT_EQUITY", 0.015))
+            cap_pct = _resolve_vass_tail_cap_pct(current_dte)
             loss_dollars = abs(float(pnl)) * 100.0 * max(1, int(spread.num_spreads))
             cap_dollars = max(0.0, equity * cap_pct)
             if cap_dollars > 0 and loss_dollars >= cap_dollars:
@@ -932,6 +1040,7 @@ def check_spread_exit_signals_impl(
         exit_code = str(exit_reason).split(" ", 1)[0].split(":", 1)[0]
     except Exception:
         pass
+    catastrophic_lock_minutes = _apply_catastrophic_reentry_lock(exit_code, str(exit_reason))
 
     # V2.12 Fix #2: Lock the position to prevent duplicate exit signals
     spread.is_closing = True
@@ -966,6 +1075,8 @@ def check_spread_exit_signals_impl(
                 "spread_exit_code": exit_code,
                 "spread_exit_reason": str(exit_reason),
                 "spread_exit_profile": vass_profile_tag,
+                "spread_exit_emergency": catastrophic_lock_minutes > 0,
+                "vass_no_reentry_lock_minutes": catastrophic_lock_minutes,
                 "is_credit_spread": is_credit_spread,
                 "spread_credit_received": abs(spread.net_debit) if is_credit_spread else 0.0,
             },

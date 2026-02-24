@@ -1066,8 +1066,17 @@ class PortfolioRouter:
             f"Long={long_symbol} Short={short_symbol}"
         )
 
+        effective_emergency = bool(is_emergency) or self._is_emergency_spread_exit(
+            {
+                "spread_close_short": True,
+                "spread_exit_code": reason,
+                "spread_exit_reason": reason,
+            },
+            reason,
+        )
+
         # Try atomic ComboMarketOrder first (unless emergency)
-        if not is_emergency:
+        if not effective_emergency:
             combo_success = self._try_combo_close(
                 long_symbol, short_symbol, num_spreads, reason, tag=f"SPREAD_CLOSE_COMBO|{reason}"
             )
@@ -1098,6 +1107,55 @@ class PortfolioRouter:
             )
 
         return False
+
+    def _is_emergency_spread_exit(
+        self,
+        metadata: Optional[Dict[str, Any]],
+        reason_text: Optional[str] = None,
+    ) -> bool:
+        """Return True when spread-exit should bypass bounded-loss quote guards."""
+        md = dict(metadata or {})
+        if bool(md.get("spread_exit_emergency", False)):
+            return True
+        if not bool(md.get("spread_close_short", False)) and not reason_text:
+            return False
+        fields = [
+            str(md.get("spread_exit_code", "") or ""),
+            str(md.get("exit_type", "") or ""),
+            str(md.get("spread_exit_reason", "") or ""),
+            str(reason_text or ""),
+        ]
+        merged = " | ".join(fields).upper()
+        tokens = (
+            "VASS_TAIL_RISK_CAP",
+            "SPREAD_HARD_STOP_DURING_HOLD",
+            "SPREAD_HARD_STOP_TRIGGERED_PCT",
+            "SPREAD_HARD_STOP_TRIGGERED_WIDTH",
+            "TRANSITION_DERISK",
+            "TAIL_RISK_CAP",
+            "HARD_STOP",
+        )
+        return any(token in merged for token in tokens)
+
+    def _execute_emergency_sequential_close_from_order(
+        self,
+        order: "OrderIntent",
+        quote_detail: str,
+    ) -> bool:
+        """Immediate sequential close fallback for emergency spread-exit orders."""
+        if not (order.is_combo and order.combo_short_symbol):
+            return False
+        close_qty = max(1, abs(int(order.quantity or 0)))
+        self.log(
+            f"ROUTER_EMERGENCY_SEQ_TRIGGER: {order.symbol} | Qty={close_qty} | Quote={quote_detail}"
+        )
+        return self._execute_sequential_close(
+            order.symbol,
+            order.combo_short_symbol,
+            close_qty,
+            reason=f"EMERGENCY_QUOTE_INVALID:{quote_detail}",
+            tag_prefix="SPREAD_CLOSE_SEQ|EMERGENCY",
+        )
 
     def _get_live_spread_leg_state(
         self,
@@ -1684,6 +1742,9 @@ class PortfolioRouter:
         if not (order.is_combo and order.combo_short_symbol):
             return True, "NOT_COMBO"
         is_exit_combo = bool(order.metadata and order.metadata.get("spread_close_short", False))
+        is_emergency_exit = self._is_emergency_spread_exit(
+            order.metadata, getattr(order, "reason", "")
+        )
 
         try:
             long_sec = self.algorithm.Securities[order.symbol]  # type: ignore[attr-defined]
@@ -1698,7 +1759,10 @@ class PortfolioRouter:
                         f"ExitLongBid={long_bid:.4f} ExitShortAsk={short_ask:.4f} "
                         f"Long={order.symbol} Short={order.combo_short_symbol}",
                     )
-                if bool(getattr(config, "SPREAD_EXIT_BOUNDED_LOSS_GUARD_ENABLED", True)):
+                if (
+                    bool(getattr(config, "SPREAD_EXIT_BOUNDED_LOSS_GUARD_ENABLED", True))
+                    and not is_emergency_exit
+                ):
                     md = dict(order.metadata or {})
                     exit_net_value = long_bid - short_ask
                     net_floor = float(getattr(config, "SPREAD_EXIT_NET_VALUE_FLOOR", 0.0))
@@ -1734,6 +1798,11 @@ class PortfolioRouter:
                                     f"CloseDebit={close_debit:.4f} > Max={max_close_debit:.4f} "
                                     f"(EntryDebit={entry_debit:.4f})",
                                 )
+                elif is_emergency_exit:
+                    self.log(
+                        f"ROUTER_EXIT_EMERGENCY_GUARD_BYPASS: {order.symbol} | "
+                        f"Reason={getattr(order, 'reason', '')[:80]}"
+                    )
                 return True, "EXIT_OK"
 
             long_ask = float(getattr(long_sec, "AskPrice", 0.0) or 0.0)
@@ -2968,6 +3037,17 @@ class PortfolioRouter:
                     if order.is_combo and is_option:
                         quotes_ok, quote_detail = self._validate_combo_entry_quotes(order)
                         if not quotes_ok:
+                            emergency_seq_ok = False
+                            if self._is_emergency_spread_exit(order.metadata, order.reason):
+                                emergency_seq_ok = (
+                                    self._execute_emergency_sequential_close_from_order(
+                                        order, quote_detail
+                                    )
+                                )
+                            if emergency_seq_ok:
+                                self._executed_this_minute.add(order_key)
+                                executed.append(order)
+                                continue
                             self.log(
                                 f"ROUTER: R_CONTRACT_QUOTE_INVALID | {order.symbol} | {quote_detail}"
                             )
@@ -3123,6 +3203,15 @@ class PortfolioRouter:
                     )
                     quotes_ok, quote_detail = self._validate_combo_entry_quotes(order)
                     if not quotes_ok:
+                        emergency_seq_ok = False
+                        if self._is_emergency_spread_exit(order.metadata, order.reason):
+                            emergency_seq_ok = self._execute_emergency_sequential_close_from_order(
+                                order, quote_detail
+                            )
+                        if emergency_seq_ok:
+                            self._executed_this_minute.add(order_key)
+                            executed.append(order)
+                            continue
                         self.log(
                             f"ROUTER: R_CONTRACT_QUOTE_INVALID | {order.symbol} | {quote_detail}"
                         )

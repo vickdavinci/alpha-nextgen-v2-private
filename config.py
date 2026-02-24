@@ -338,6 +338,11 @@ REGIME_TRANSITION_DETERIORATION_FAST_EOD_DELTA_MAX = -1.8
 REGIME_TRANSITION_DETERIORATION_FAST_MOMENTUM_MAX = -0.012
 REGIME_TRANSITION_DETERIORATION_FAST_VIX_5D_MIN = 0.03
 REGIME_TRANSITION_DETERIORATION_FAST_DETECTOR_DELTA_MAX = -0.02
+REGIME_TRANSITION_DETERIORATION_PRICE_LED_ENABLED = True
+REGIME_TRANSITION_DETERIORATION_PRICE_LED_EOD_DELTA_MAX = -1.2
+REGIME_TRANSITION_DETERIORATION_PRICE_LED_MOMENTUM_MAX = -0.010
+REGIME_TRANSITION_DETERIORATION_PRICE_LED_DETECTOR_DELTA_MAX = -0.04
+REGIME_TRANSITION_DETERIORATION_PRICE_LED_SCORE_MAX = 57.0
 REGIME_TRANSITION_RECOVERY_SCORE_LIFT_MAX = 8.0
 # Append regime proxy windows once per day near close (exchange-aware; early close safe).
 REGIME_PROXY_CLOSE_BUFFER_MINUTES = 0
@@ -969,7 +974,7 @@ VASS_EARLY_STRESS_BEAR_PREFER_CREDIT = (
     False  # V10.10: disable broad BEAR_CALL_CREDIT remix; keep explicit fallback path only
 )
 VASS_MEDIUM_IV_PREFER_CREDIT = (
-    True  # V10.17: medium-IV tapes route to credit-first, then opposite-route fallback
+    False  # V12.6: medium-IV defaults to debit structures to reduce bad credit exposure
 )
 VASS_OPPOSITE_ROUTE_FALLBACK_ENABLED = (
     True  # V10.17: after primary route fails quality, try one opposite-route attempt
@@ -980,7 +985,9 @@ VASS_SIMILAR_ENTRY_COOLDOWN_DAYS = (
     2  # Shorter cooldown to avoid over-throttling quality follow-through
 )
 VASS_SIMILAR_ENTRY_USE_EXPIRY_BUCKET = True  # Use expiry date bucket (fallback to DTE bucket)
-VASS_DIRECTION_DAY_GAP_ENABLED = True  # Hard spacing: max 1 VASS entry per day per direction
+VASS_DIRECTION_MIN_GAP_ENABLED = True  # V12.6: prefer time-gap lock over strict day lock
+VASS_DIRECTION_MIN_GAP_MINUTES = 180  # Min spacing between same-direction VASS entries
+VASS_DIRECTION_DAY_GAP_ENABLED = False  # Legacy date-level lock kept disabled by default
 VASS_ENTRY_ENGINE_ENABLED = True  # V10.10: route VASS strategy/filter/guards via dedicated engine
 VASS_USE_CONVICTION_ONLY_DIRECTION = (
     False  # V10.7: VASS direction must follow conviction, not macro
@@ -1214,12 +1221,12 @@ SHORT_LEG_ITM_EXIT_THRESHOLD = (
 )
 SPREAD_ASSIGNMENT_GRACE_MINUTES = 45  # V6.15 FIX: Allow spread to stabilize before ITM checks
 SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 30  # Minutes between log messages
-SPREAD_MIN_HOLD_MINUTES = 1440  # V12.3 C2: 1-day soft hold window for VASS spread lifecycle
+SPREAD_MIN_HOLD_MINUTES = 240  # V12.6: partial-day hold window to reduce forced late exits
 SPREAD_HOLD_GUARD_SOFT_ENABLED = True
 SPREAD_HOLD_GUARD_ALLOW_TRANSITION_BYPASS = True
 SPREAD_HOLD_GUARD_SEVERE_STOP_MULTIPLIER = 1.10
 SPREAD_HOLD_GUARD_LOSS_BYPASS_STOP_FRACTION = (
-    0.75  # Bypass hold guard once loss reaches 75% of adaptive stop threshold
+    0.50  # V12.6: allow severe losers to bypass hold guard earlier
 )
 SPREAD_EOD_GATE_MIN_HOLD_MINUTES = (
     240  # Don't fire EOD hold-risk gate until spread has had at least 4h to work
@@ -1572,6 +1579,23 @@ VASS_MFE_T2_FLOOR_MED_VIX = 0.18
 VASS_MFE_T2_FLOOR_HIGH_VIX = 0.25
 VASS_TAIL_RISK_CAP_ENABLED = True  # Emergency per-trade account-risk kill switch
 VASS_TAIL_RISK_CAP_PCT_EQUITY = 0.010  # V12.4: tighten cap to 1.0% of portfolio equity
+VASS_TAIL_RISK_CAP_USE_DTE_OVERLAY = True  # V12.6: make cap regime/DTE adaptive
+VASS_TAIL_RISK_CAP_DTE_SHORT_MAX = 9
+VASS_TAIL_RISK_CAP_DTE_MED_MAX = 21
+VASS_TAIL_RISK_CAP_DTE_SHORT_MULT = 0.75
+VASS_TAIL_RISK_CAP_DTE_MED_MULT = 1.00
+VASS_TAIL_RISK_CAP_DTE_LONG_MULT = 1.25
+VASS_TAIL_RISK_CAP_OVERLAY_MULTIPLIERS = {
+    "DETERIORATION": 0.80,
+    "RECOVERY": 0.95,
+    "STABLE": 1.00,
+    "AMBIGUOUS": 0.85,
+}
+VASS_TAIL_RISK_CAP_MIN_PCT_EQUITY = 0.006
+VASS_TAIL_RISK_CAP_MAX_PCT_EQUITY = 0.015
+VASS_CATASTROPHIC_EXIT_NO_REENTRY_REST_OF_SESSION = True
+VASS_CATASTROPHIC_EXIT_LOCK_MINUTES = 0  # 0 => lock until session close
+VASS_CATASTROPHIC_EXIT_FALLBACK_LOCK_MINUTES = 120
 # Entry friction sanity: reject spreads where expected entry friction consumes too much
 # of expected target profit (production-quality cost control).
 SPREAD_ENTRY_FRICTION_GATE_ENABLED = True
@@ -1693,7 +1717,7 @@ SPREAD_MAX_COMMISSION_TO_MAX_PROFIT_RATIO = (
 # All spread closes now go through Router with retry + sequential fallback
 
 # Combo order retry settings
-COMBO_ORDER_MAX_RETRIES = 3  # Try atomic ComboMarketOrder up to 3 times
+COMBO_ORDER_MAX_RETRIES = 2  # V12.6: reduce retry depth and escalate faster to sequential close
 COMBO_ORDER_FALLBACK_TO_SEQUENTIAL = True  # If all retries fail, use sequential close
 SPREAD_CLOSE_SAFE_LOCK_RETRY_MIN = 10  # Retry emergency close after safe-lock alert
 # V12.3 F1: bounded-loss guard for spread exits (pre-submit quote sanity).
@@ -1791,9 +1815,9 @@ FRIDAY_HOLIDAY_CHECK_ENABLED = True  # Enable Thursday expiration detection
 # Exit order retry settings for gamma decay (0DTE)
 EXIT_ORDER_RETRY_COUNT = 3  # Bug #14: Retry failed exits
 EXIT_ORDER_RETRY_DELAY_SECONDS = 5  # Delay between retries
-SPREAD_CLOSE_CANCEL_ESCALATION_COUNT = 2  # Escalate to immediate sequential close after N cancels
+SPREAD_CLOSE_CANCEL_ESCALATION_COUNT = 1  # V12.6: escalate to sequential close faster
 SPREAD_CLOSE_RETRY_INTERVAL_MIN = 5  # Retry cadence for forced spread close queue
-SPREAD_CLOSE_MAX_RETRY_CYCLES = 12  # Hard cap to avoid infinite forced-close retry loops
+SPREAD_CLOSE_MAX_RETRY_CYCLES = 6  # V12.6: avoid prolonged retry loops before hard fallback
 
 # 0DTE forced exit time (3:30 PM ET = 30 min before close)
 ZERO_DTE_FORCE_EXIT_HOUR = 15
@@ -2118,6 +2142,13 @@ MICRO_OTM_MOMENTUM_START = "10:10"  # V10.32: avoid early-open noise burst
 MICRO_OTM_MOMENTUM_END = "14:30"  # Canonical OTM momentum window end
 MICRO_OTM_MOMENTUM_DTE_MIN = 0  # OTM momentum is same-day/next-day only
 MICRO_OTM_MOMENTUM_DTE_MAX = 1
+MICRO_OTM_MAX_ENTRIES_PER_SESSION = 3
+MICRO_OTM_DTE0_MAX_CONTRACTS = 4
+MICRO_OTM_DTE1_MAX_CONTRACTS = 6
+MICRO_OTM_DTE2_MAX_CONTRACTS = 8
+MICRO_OTM_TRANSITION_BLOCK_ENABLED = True
+MICRO_OTM_TRANSITION_BLOCK_OVERLAYS = ("DETERIORATION", "RECOVERY")
+MICRO_OTM_TRANSITION_BLOCK_BARS = 4
 INTRADAY_DEBIT_SPREAD_WIDTH = 2.00  # $2.00 spread width
 INTRADAY_DEBIT_FULL_SIZE = 4  # Full size: 4 spreads
 INTRADAY_DEBIT_HALF_SIZE = 2  # Half size: 2 spreads

@@ -342,6 +342,45 @@ def check_intraday_entry_signal_impl(
         if block_gate:
             return fail(block_gate, block_reason)
 
+    if entry_strategy == IntradayStrategy.MICRO_OTM_MOMENTUM:
+        transition_ctx = (
+            dict(transition_ctx)
+            if isinstance(transition_ctx, dict)
+            else self._get_regime_transition_context(macro_regime_score)
+        )
+        if bool(getattr(config, "MICRO_OTM_TRANSITION_BLOCK_ENABLED", True)):
+            overlay = str(transition_ctx.get("transition_overlay", "STABLE") or "STABLE").upper()
+            bars_since_flip = int(transition_ctx.get("overlay_bars_since_flip", 999) or 999)
+            blocked_overlays_cfg = getattr(
+                config,
+                "MICRO_OTM_TRANSITION_BLOCK_OVERLAYS",
+                ("DETERIORATION", "RECOVERY"),
+            )
+            blocked_overlays = {
+                str(item).upper()
+                for item in (
+                    blocked_overlays_cfg
+                    if isinstance(blocked_overlays_cfg, (list, tuple, set))
+                    else []
+                )
+            }
+            block_bars = max(1, int(getattr(config, "MICRO_OTM_TRANSITION_BLOCK_BARS", 4)))
+            if overlay in blocked_overlays and bars_since_flip < block_bars:
+                return fail(
+                    "E_MICRO_OTM_TRANSITION_BLOCK",
+                    f"Overlay={overlay} Bars={bars_since_flip}/{block_bars}",
+                )
+
+        max_otm_entries = int(getattr(config, "MICRO_OTM_MAX_ENTRIES_PER_SESSION", 0))
+        if (
+            max_otm_entries > 0
+            and int(getattr(self, "_intraday_micro_trades_today", 0)) >= max_otm_entries
+        ):
+            return fail(
+                "E_MICRO_OTM_SESSION_CAP",
+                f"MICRO={int(getattr(self, '_intraday_micro_trades_today', 0))}/{max_otm_entries}",
+            )
+
     # V3.2: Governor Gate for intraday (closes gap)
     if getattr(config, "INTRADAY_GOVERNOR_GATE_ENABLED", True) and not is_protective_put:
         if governor_scale <= 0:
@@ -589,6 +628,26 @@ def check_intraday_entry_signal_impl(
                 itm_engine_cap
                 if intraday_max_contracts <= 0
                 else min(intraday_max_contracts, itm_engine_cap)
+            )
+    elif entry_strategy == IntradayStrategy.MICRO_OTM_MOMENTUM and best_contract is not None:
+        dte = int(getattr(best_contract, "days_to_expiry", -1))
+        if dte <= 0:
+            otm_dte_cap = int(getattr(config, "MICRO_OTM_DTE0_MAX_CONTRACTS", 0))
+        elif dte == 1:
+            otm_dte_cap = int(getattr(config, "MICRO_OTM_DTE1_MAX_CONTRACTS", 0))
+        elif dte == 2:
+            otm_dte_cap = int(getattr(config, "MICRO_OTM_DTE2_MAX_CONTRACTS", 0))
+        else:
+            otm_dte_cap = int(getattr(config, "INTRADAY_MAX_CONTRACTS", 0))
+        if otm_dte_cap > 0:
+            intraday_max_contracts = (
+                otm_dte_cap
+                if intraday_max_contracts <= 0
+                else min(intraday_max_contracts, otm_dte_cap)
+            )
+            self.log(
+                f"INTRADAY_OTM_DTE_CAP: DTE={dte} | Cap={intraday_max_contracts}",
+                trades_only=True,
             )
 
     if intraday_max_contracts > 0 and num_contracts > intraday_max_contracts:

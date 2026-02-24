@@ -17,6 +17,7 @@ class VASSEntryEngine:
         self._last_entry_at_by_signature: Dict[str, datetime] = {}
         self._cooldown_until_by_signature: Dict[str, datetime] = {}
         self._last_entry_date_by_direction: Dict[str, str] = {}
+        self._last_entry_dt_by_direction: Dict[str, datetime] = {}
         self._last_rejection_log_by_key: Dict[str, datetime] = {}
         self._consecutive_losses: int = 0
         self._loss_breaker_pause_until: Optional[str] = None  # YYYY-MM-DD
@@ -2638,12 +2639,32 @@ class VASSEntryEngine:
         current_date: str,
         algorithm: Any,
     ) -> Optional[str]:
-        if not bool(getattr(config, "VASS_DIRECTION_DAY_GAP_ENABLED", True)):
-            return None
         if direction is None:
             return None
 
         dir_label = "BULLISH" if direction == OptionDirection.CALL else "BEARISH"
+        now_dt = None
+        if algorithm is not None:
+            try:
+                now_dt = algorithm.Time
+            except Exception:
+                now_dt = None
+
+        if bool(getattr(config, "VASS_DIRECTION_MIN_GAP_ENABLED", True)):
+            min_gap_min = int(getattr(config, "VASS_DIRECTION_MIN_GAP_MINUTES", 0))
+            if min_gap_min > 0 and now_dt is not None:
+                last_dt = self._last_entry_dt_by_direction.get(dir_label)
+                if last_dt is not None:
+                    elapsed_min = (now_dt - last_dt).total_seconds() / 60.0
+                    if 0 <= elapsed_min < min_gap_min:
+                        return (
+                            f"R_DIRECTION_MIN_GAP: {dir_label} elapsed {elapsed_min:.1f}m "
+                            f"< {min_gap_min}m"
+                        )
+
+        if not bool(getattr(config, "VASS_DIRECTION_DAY_GAP_ENABLED", True)):
+            return None
+
         today = str(current_date or "")[:10]
         if not today:
             try:
@@ -2668,6 +2689,7 @@ class VASSEntryEngine:
             return
         dir_label = "BULLISH" if direction == OptionDirection.CALL else "BEARISH"
         self._last_entry_date_by_direction[dir_label] = str(entry_dt.date())
+        self._last_entry_dt_by_direction[dir_label] = entry_dt
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -2680,6 +2702,10 @@ class VASSEntryEngine:
                 for k, v in self._cooldown_until_by_signature.items()
             },
             "last_entry_date_by_direction": dict(self._last_entry_date_by_direction),
+            "last_entry_dt_by_direction": {
+                k: v.strftime("%Y-%m-%d %H:%M:%S")
+                for k, v in self._last_entry_dt_by_direction.items()
+            },
             "consecutive_losses": self._consecutive_losses,
             "loss_breaker_pause_until": self._loss_breaker_pause_until,
         }
@@ -2692,6 +2718,17 @@ class VASSEntryEngine:
             for k, v in (state.get("last_entry_date_by_direction", {}) or {}).items()
             if str(k).upper() in {"BULLISH", "BEARISH"} and str(v)
         }
+        self._last_entry_dt_by_direction = {}
+        for k, v in (state.get("last_entry_dt_by_direction", {}) or {}).items():
+            key = str(k).upper()
+            if key not in {"BULLISH", "BEARISH"}:
+                continue
+            try:
+                self._last_entry_dt_by_direction[key] = datetime.strptime(
+                    str(v)[:19], "%Y-%m-%d %H:%M:%S"
+                )
+            except Exception:
+                continue
         self._consecutive_losses = int(state.get("consecutive_losses", 0) or 0)
         raw_pause = state.get("loss_breaker_pause_until")
         self._loss_breaker_pause_until = str(raw_pause)[:10] if raw_pause else None
@@ -2718,5 +2755,6 @@ class VASSEntryEngine:
         self._last_entry_at_by_signature = {}
         self._cooldown_until_by_signature = {}
         self._last_entry_date_by_direction = {}
+        self._last_entry_dt_by_direction = {}
         self._consecutive_losses = 0
         self._loss_breaker_pause_until = None

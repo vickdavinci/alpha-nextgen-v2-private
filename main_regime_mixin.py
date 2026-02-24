@@ -103,6 +103,25 @@ class MainRegimeMixin:
         deterioration_fast_detector_delta_max = float(
             getattr(config, "REGIME_TRANSITION_DETERIORATION_FAST_DETECTOR_DELTA_MAX", -0.05)
         )
+        deterioration_price_led_enabled = bool(
+            getattr(config, "REGIME_TRANSITION_DETERIORATION_PRICE_LED_ENABLED", True)
+        )
+        deterioration_price_led_eod_delta_max = float(
+            getattr(config, "REGIME_TRANSITION_DETERIORATION_PRICE_LED_EOD_DELTA_MAX", -1.2)
+        )
+        deterioration_price_led_mom_max = float(
+            getattr(config, "REGIME_TRANSITION_DETERIORATION_PRICE_LED_MOMENTUM_MAX", -0.010)
+        )
+        deterioration_price_led_detector_delta_max = float(
+            getattr(
+                config,
+                "REGIME_TRANSITION_DETERIORATION_PRICE_LED_DETECTOR_DELTA_MAX",
+                -0.04,
+            )
+        )
+        deterioration_price_led_score_max = float(
+            getattr(config, "REGIME_TRANSITION_DETERIORATION_PRICE_LED_SCORE_MAX", 57.0)
+        )
         ambiguous_low = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_LOW", 47.0))
         ambiguous_high = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_HIGH", 55.0))
         ambiguous_delta_max = float(getattr(config, "REGIME_TRANSITION_AMBIGUOUS_DELTA_MAX", 1.5))
@@ -143,11 +162,22 @@ class MainRegimeMixin:
             and vix_5d_change >= deterioration_fast_vix_5d_min
             and detector_delta <= deterioration_fast_detector_delta_max
         )
+        deterioration_by_price_led = (
+            deterioration_price_led_enabled
+            and eod_delta <= deterioration_price_led_eod_delta_max
+            and momentum_roc <= deterioration_price_led_mom_max
+            and detector_delta <= deterioration_price_led_detector_delta_max
+            and detector_score <= deterioration_price_led_score_max
+        )
         raw_deterioration = (
-            (deterioration_by_detector or deterioration_by_eod)
-            and momentum_roc <= deterioration_mom_max
-            and vix_5d_change >= deterioration_vix_5d_min
-        ) or deterioration_by_fast
+            (
+                (deterioration_by_detector or deterioration_by_eod)
+                and momentum_roc <= deterioration_mom_max
+                and vix_5d_change >= deterioration_vix_5d_min
+            )
+            or deterioration_by_fast
+            or deterioration_by_price_led
+        )
         ambiguous_by_detector = abs(detector_delta) <= ambiguous_detector_delta_max
         ambiguous_by_eod = abs(eod_delta) <= ambiguous_delta_max
         raw_ambiguous = (
@@ -171,6 +201,10 @@ class MainRegimeMixin:
                     deterioration_by_detector or deterioration_by_eod
                 ):
                     self._inc_transition_path_counter("DETERIORATION_FAST")
+                elif deterioration_by_price_led and not (
+                    deterioration_by_detector or deterioration_by_eod or deterioration_by_fast
+                ):
+                    self._inc_transition_path_counter("DETERIORATION_PRICE_LED")
                 elif deterioration_by_detector and deterioration_by_eod:
                     self._inc_transition_path_counter("DETERIORATION_BOTH")
                 elif deterioration_by_detector:
@@ -282,6 +316,7 @@ class MainRegimeMixin:
             "deterioration_by_detector": bool(deterioration_by_detector),
             "deterioration_by_eod": bool(deterioration_by_eod),
             "deterioration_by_fast": bool(deterioration_by_fast),
+            "deterioration_by_price_led": bool(deterioration_by_price_led),
             "recovery_eod_agreement_min": float(recovery_eod_agreement_min),
             "deterioration_eod_agreement_max": float(deterioration_eod_agreement_max),
             "ambiguous_by_detector": bool(ambiguous_by_detector),
@@ -360,6 +395,7 @@ class MainRegimeMixin:
             "deterioration_by_detector": bool(raw.get("deterioration_by_detector", False)),
             "deterioration_by_eod": bool(raw.get("deterioration_by_eod", False)),
             "deterioration_by_fast": bool(raw.get("deterioration_by_fast", False)),
+            "deterioration_by_price_led": bool(raw.get("deterioration_by_price_led", False)),
             "overlay_candidate": str(raw.get("overlay_candidate", "STABLE")).upper(),
             "base_candidate": str(raw.get("base_candidate", "NEUTRAL")).upper(),
             "sample_seq": sample_seq,
