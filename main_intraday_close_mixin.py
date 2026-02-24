@@ -593,3 +593,95 @@ class MainIntradayCloseMixin:
                 f"Shorts={len(short_options)} Longs={len(long_options)}"
             )
         return total_closed
+
+    def _intraday_force_exit_fallback(self) -> None:
+        """
+        V6.12: Safety net - force-close intraday position after configured close +5min if scheduled close missed.
+
+        This prevents intraday options from carrying overnight due to scheduler issues.
+        """
+        # Only run once per day
+        if getattr(self, "_intraday_force_exit_fallback_date", None) == self.Time.date():
+            return
+
+        # Only after configured force-close + 5 minutes.
+        exit_time = getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15")
+        exit_hour, exit_minute = map(int, exit_time.split(":"))
+        fallback_hour = exit_hour
+        fallback_minute = exit_minute + 5
+        if fallback_minute >= 60:
+            fallback_hour += fallback_minute // 60
+            fallback_minute = fallback_minute % 60
+        if self.Time.hour < fallback_hour or (
+            self.Time.hour == fallback_hour and self.Time.minute < fallback_minute
+        ):
+            return
+
+        # Check if we have intraday positions
+        if not hasattr(self, "options_engine") or not self.options_engine.has_intraday_position():
+            self._intraday_force_exit_fallback_date = self.Time.date()
+            return
+
+        submitted_any = False
+        for intraday_pos in self.options_engine.get_intraday_positions():
+            if intraday_pos is None or intraday_pos.contract is None:
+                continue
+            symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
+            mark_price = self._get_option_mark_price(symbol, fallback=0.0)
+            entry_price = float(getattr(intraday_pos, "entry_price", 0.0) or 0.0)
+            hold_allowed = self._should_hold_intraday_symbol_overnight(symbol)
+            eod_loss_breach = hold_allowed and self._is_micro_eod_loss_breach(
+                symbol=symbol,
+                entry_price=entry_price,
+                current_price=mark_price,
+            )
+            itm_eod_harvest = hold_allowed and self._should_itm_eod_harvest(
+                symbol=symbol,
+                intraday_pos=intraday_pos,
+                entry_price=entry_price,
+                current_price=mark_price,
+            )
+            if hold_allowed and not eod_loss_breach and not itm_eod_harvest:
+                self.Log(f"INTRADAY_FORCE_EXIT_FALLBACK: HOLD_SKIP {symbol}")
+                continue
+            if symbol in self._intraday_close_in_progress_symbols:
+                continue
+            if self._has_open_non_oco_order_for_symbol(symbol):
+                continue
+            price = self.Securities[symbol].Price if self.Securities.ContainsKey(symbol) else 0
+            if price <= 0:
+                try:
+                    sec = self.Securities[symbol]
+                    bid = sec.BidPrice or 0
+                    ask = sec.AskPrice or 0
+                    if bid > 0 and ask > 0:
+                        price = (bid + ask) / 2
+                except Exception:
+                    price = 0
+
+            if price <= 0:
+                self.Log(f"INTRADAY_FORCE_EXIT_FALLBACK: No valid price for {symbol} - skip")
+                continue
+
+            signal = self.options_engine.check_intraday_force_exit(
+                current_hour=self.Time.hour,
+                current_minute=self.Time.minute,
+                current_price=price,
+                ignore_hold_policy=(eod_loss_breach or itm_eod_harvest),
+                engine=self.options_engine._find_intraday_lane_by_symbol(symbol),
+                symbol=symbol,
+            )
+            if signal:
+                live_qty = abs(self._get_option_holding_quantity(signal.symbol))
+                if live_qty > 0:
+                    signal.requested_quantity = live_qty
+                self._intraday_close_in_progress_symbols.add(signal.symbol)
+                self._intraday_force_exit_submitted_symbols[signal.symbol] = str(self.Time.date())
+                self.Log(f"INTRADAY_FORCE_EXIT_FALLBACK: Triggered for {symbol}")
+                self.portfolio_router.receive_signal(signal)
+                submitted_any = True
+
+        if submitted_any:
+            self._process_immediate_signals()
+        # Mark done after handling concrete submit attempts.
+        self._intraday_force_exit_fallback_date = self.Time.date()
