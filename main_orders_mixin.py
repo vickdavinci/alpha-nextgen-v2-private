@@ -135,6 +135,21 @@ class MainOrdersMixin:
         except Exception as e:
             self.Log(f"STALE_CLEANUP: Error checking orders | {e}")
 
+    def _oco_engine_prefix_for_strategy(self, entry_strategy: str) -> str:
+        """Map strategy tag to stable engine prefix for OCO attribution."""
+        strategy = str(entry_strategy or "UNKNOWN").upper()
+        if strategy == "ITM_MOMENTUM":
+            return "ITM"
+        if strategy == "PROTECTIVE_PUTS":
+            return "HEDGE"
+        if strategy.startswith("MICRO_") or strategy in (
+            "DEBIT_FADE",
+            "OTM_MOMENTUM",
+            "INTRADAY_DEBIT_FADE",
+        ):
+            return "MICRO"
+        return "OPT"
+
     def _sync_intraday_oco(
         self,
         symbol: str,

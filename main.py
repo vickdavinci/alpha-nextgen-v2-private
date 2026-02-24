@@ -109,6 +109,7 @@ class AlphaNextGen(QCAlgorithm):
     _is_terminal_exit_retry_tag = MainOrdersMixin._is_terminal_exit_retry_tag
     _on_moo_fallback = MainOrdersMixin._on_moo_fallback
     _cleanup_stale_orders = MainOrdersMixin._cleanup_stale_orders
+    _oco_engine_prefix_for_strategy = MainOrdersMixin._oco_engine_prefix_for_strategy
     _sync_intraday_oco = MainOrdersMixin._sync_intraday_oco
     OnOrderEvent = MainOrdersMixin.OnOrderEvent
     _on_fill = MainOrdersMixin._on_fill
@@ -1582,21 +1583,6 @@ class AlphaNextGen(QCAlgorithm):
     # =========================================================================
     # V2.9: SETTLEMENT-AWARE TRADING (Bug #6 Fix)
     # =========================================================================
-
-    def _oco_engine_prefix_for_strategy(self, entry_strategy: str) -> str:
-        """Map strategy tag to stable engine prefix for OCO attribution."""
-        strategy = str(entry_strategy or "UNKNOWN").upper()
-        if strategy == "ITM_MOMENTUM":
-            return "ITM"
-        if strategy == "PROTECTIVE_PUTS":
-            return "HEDGE"
-        if strategy.startswith("MICRO_") or strategy in (
-            "DEBIT_FADE",
-            "OTM_MOMENTUM",
-            "INTRADAY_DEBIT_FADE",
-        ):
-            return "MICRO"
-        return "OPT"
 
     # =========================================================================
     # ORDER EVENT HANDLER
