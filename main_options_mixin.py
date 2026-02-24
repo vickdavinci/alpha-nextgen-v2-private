@@ -1954,3 +1954,22 @@ class MainOptionsMixin:
 
         # V9.2: Guarded Friday sweep (single pass/day).
         self._reconcile_spread_state()
+
+    def _get_vix_intraday_proxy(self) -> float:
+        """
+        V2.4.1: Get UVXY-derived VIX proxy for intraday direction.
+
+        Calculates synthetic intraday VIX from UVXY % change applied to VIX open.
+        This is needed because CBOE VIX only supports Daily resolution in QC.
+        UVXY tracks ~1.5x daily VIX moves, so we derive VIX from UVXY change.
+
+        Returns:
+            Estimated intraday VIX value derived from UVXY price change.
+        """
+        uvxy_current = self.Securities[self.uvxy].Price
+        if self._uvxy_at_open > 0:
+            uvxy_change_pct = (uvxy_current - self._uvxy_at_open) / self._uvxy_at_open * 100
+            # Derive synthetic "intraday VIX" from UVXY change applied to VIX open
+            # If UVXY is up 3%, VIX is approximately up 2% (UVXY is ~1.5x)
+            return self._vix_at_open * (1 + uvxy_change_pct / 150)
+        return self._current_vix
