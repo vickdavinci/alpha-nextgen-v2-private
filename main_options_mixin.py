@@ -14,6 +14,222 @@ from models.target_weight import TargetWeight
 class MainOptionsMixin:
     """Large options-scan methods extracted from main.py (move-only)."""
 
+    def _initialize_runtime_state(self) -> None:
+        # Daily/account tracking.
+        self.equity_prior_close = 0.0
+        self.equity_sod = 0.0
+        self.spy_prior_close = 0.0
+        self.spy_open = 0.0
+        self._governor_scale = 1.0
+        self._last_risk_result = None
+        self.today_trades = []
+        self.today_safeguards = []
+        self.symbols_to_skip = set()
+        self._splits_logged_today = set()
+        self._greeks_breach_logged = False
+        self._kill_switch_handled_today = False
+        self._margin_cb_in_progress = False
+
+        # Log throttles/aggregates.
+        self._last_vass_rejection_log_by_key: Dict[str, datetime] = {}
+        self._last_intraday_diag_log_by_key: Dict[str, datetime] = {}
+        self._high_freq_log_seen_counts: Dict[str, int] = {}
+        self._high_freq_log_suppressed_counts: Dict[str, int] = {}
+        self._daily_drop_reason_agg: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self._diag_intraday_candidate_ids_logged = set()
+        self._diag_intraday_approved_ids_logged = set()
+        self._diag_intraday_dropped_ids_logged = set()
+        self._last_swing_scan_time = None
+        self._intraday_force_exit_fallback_date = None
+        self._mr_force_close_fallback_date = None
+        self._intraday_force_close_ran_date = None
+        self._mr_force_close_ran_date = None
+        self._eod_processing_ran_date = None
+        self._market_close_ran_date = None
+
+        # Detector and reconciliation state.
+        self._regime_detector_prev_score = None
+        self._regime_detector_last_update_key = None
+        self._regime_detector_last_raw = {}
+        self._regime_overlay_ambiguous_bars = 0
+        self._last_reconcile_positions_run = None
+
+        # Scoped rejection cooldowns.
+        self._trend_rejection_cooldown_until = None
+        self._options_swing_cooldown_until = None
+        self._options_intraday_cooldown_until = None
+        self._options_intraday_cooldown_until_by_lane = {"MICRO": None, "ITM": None}
+        self._options_spread_cooldown_until = None
+        self._mr_rejection_cooldown_until = None
+        self._intraday_retry_state_by_lane = {
+            "MICRO": {"pending": False, "expires": None, "direction": None, "reason_code": None},
+            "ITM": {"pending": False, "expires": None, "direction": None, "reason_code": None},
+        }
+        self._intraday_entry_snapshot = {}
+        self._micro_open_symbols = set()
+        self._intraday_close_in_progress_symbols = set()
+        self._intraday_force_exit_submitted_symbols = {}
+        self._intraday_hold_loss_block_log_date = {}
+
+        # Pre-market VIX ladder.
+        self._premarket_vix_ladder_level = 0
+        self._premarket_vix_ladder_reason = "L0"
+        self._premarket_vix_size_mult = 1.0
+        self._premarket_vix_entry_block_until = None
+        self._premarket_vix_call_block_until = None
+        self._premarket_vix_shock_pct = 0.0
+        self._premarket_vix_shock_memory_until = None
+        self._vix_prior_close = 15.0
+        self._uvxy_prior_close = 0.0
+
+        # Spread lifecycle/state.
+        self._pending_spread_orders = {}
+        self._pending_spread_orders_reverse = {}
+        self._spread_fill_tracker = None
+        self._spread_close_trackers = {}
+        self._external_exec_event_logged = set()
+
+        # Diagnostics.
+        self._diag_margin_reject_count = 0
+        self._diag_intraday_candidate_count = 0
+        self._diag_intraday_approved_count = 0
+        self._diag_intraday_dropped_count = 0
+        self._diag_intraday_router_reject_count = 0
+        self._diag_intraday_result_count = 0
+        self._diag_vass_block_count = 0
+        self._diag_overlay_block_count = 0
+        self._diag_overlay_slot_block_count = 0
+        self._diag_spread_close_escalation_count = 0
+        self._diag_spread_entry_signal_count = 0
+        self._diag_spread_entry_submit_count = 0
+        self._diag_spread_entry_fill_count = 0
+        self._diag_spread_exit_signal_count = 0
+        self._diag_spread_exit_submit_count = 0
+        self._diag_spread_exit_fill_count = 0
+        self._diag_spread_exit_canceled_count = 0
+        self._diag_spread_position_removed_count = 0
+        self._diag_spread_removed_fill_path_count = 0
+        self._diag_spread_ghost_removed_count = 0
+        self._diag_spread_loss_beyond_stop_count = 0
+        self._diag_micro_tag_recovery_count = 0
+        self._diag_micro_eod_sweep_close_count = 0
+        self._diag_micro_pending_cancel_ignored_count = 0
+        self._order_lifecycle_log_count = 0
+        self._order_lifecycle_suppressed_count = 0
+        self._diag_micro_dte_candidates = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
+        self._diag_micro_dte_approved = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
+        self._diag_micro_dte_dropped = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
+        self._diag_micro_dte_win = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
+        self._diag_micro_dte_loss = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
+        self._diag_micro_drop_reason_by_dte = {}
+        self._diag_router_reject_reason_counts = {}
+        self._diag_router_reject_reason_counts_by_engine = {
+            "VASS": {},
+            "MICRO": {},
+            "ITM": {},
+            "OTHER": {},
+        }
+        self._recent_router_rejections: List[Any] = []
+        self._diag_vass_reject_reason_counts = {}
+        self._diag_transition_path_counts: Dict[str, int] = {}
+        self._diag_vass_mfe_peak_max_profit_pct = 0.0
+        self._diag_vass_mfe_t1_hits = 0
+        self._diag_vass_mfe_t2_hits = 0
+        self._diag_vass_mfe_lock_exits = 0
+        self._diag_vass_tail_cap_exits = 0
+        self._diag_exit_path_counts = {}
+        self._diag_exit_path_pnl = {}
+        self._diag_exit_path_counts_by_engine = {"VASS": {}, "MICRO": {}, "ITM": {}, "OTHER": {}}
+        self._diag_exit_path_pnl_by_engine = {"VASS": {}, "MICRO": {}, "ITM": {}, "OTHER": {}}
+        self._diag_intraday_candidates_by_engine = {"MICRO": 0, "ITM": 0, "OTHER": 0}
+        self._diag_intraday_approved_by_engine = {"MICRO": 0, "ITM": 0, "OTHER": 0}
+        self._diag_intraday_dropped_by_engine = {"MICRO": 0, "ITM": 0, "OTHER": 0}
+        self._diag_intraday_drop_reason_counts = {}
+        self._diag_intraday_drop_reason_counts_by_engine = {"MICRO": {}, "ITM": {}, "OTHER": {}}
+        self._diag_intraday_results_by_engine = {"MICRO": 0, "ITM": 0, "OTHER": 0}
+        self._diag_transition_derisk_counts = {
+            "de_risk_on_deterioration": 0,
+            "de_risk_on_recovery": 0,
+        }
+        self._diag_transition_derisk_counts_by_engine = {
+            "VASS": {"de_risk_on_deterioration": 0, "de_risk_on_recovery": 0},
+            "ITM": {"de_risk_on_deterioration": 0, "de_risk_on_recovery": 0},
+            "MICRO": {"de_risk_on_deterioration": 0, "de_risk_on_recovery": 0},
+            "OTHER": {"de_risk_on_deterioration": 0, "de_risk_on_recovery": 0},
+        }
+        self._transition_execution_context: Optional[Dict[str, Any]] = None
+        self._transition_execution_context_minute_key: Optional[str] = None
+        self._transition_execution_context_sample_seq: int = -1
+        self._last_micro_update_log_signature = None
+        self._last_micro_update_log_time = None
+        self._last_spread_construct_fail_log_at = None
+        self._intraday_regime_score = None
+        self._intraday_regime_updated_at = None
+        self._intraday_regime_momentum_roc = None
+        self._intraday_regime_vix_5d_change = None
+        self._regime_base_state = "NEUTRAL"
+        self._regime_base_candidate_state = "NEUTRAL"
+        self._regime_base_candidate_streak = 0
+        self._regime_base_state_enter_seq = 0
+        self._regime_overlay_state = "STABLE"
+        self._regime_overlay_candidate_state = "STABLE"
+        self._regime_overlay_candidate_streak = 0
+        self._regime_overlay_state_enter_seq = 0
+        self._regime_overlay_ambiguous_bars = 0
+        self._regime_detector_sample_seq = 0
+        self._regime_detector_prev_score: Optional[float] = None
+        self._regime_detector_last_update_key = None
+        self._regime_detector_last_raw = {}
+        self._regime_decision_records: List[Dict[str, Any]] = []
+        self._regime_decision_overflow_logged = False
+        self._regime_observability_key = self._build_regime_observability_key()
+        self._regime_timeline_records: List[Dict[str, Any]] = []
+        self._regime_timeline_overflow_logged = False
+        self._regime_timeline_observability_key = self._build_regime_timeline_observability_key()
+        self._signal_lifecycle_records: List[Dict[str, Any]] = []
+        self._signal_lifecycle_overflow_logged = False
+        self._signal_lifecycle_observability_key = self._build_signal_lifecycle_observability_key()
+        self._router_rejection_records: List[Dict[str, Any]] = []
+        self._router_rejection_overflow_logged = False
+        self._router_rejection_observability_key = self._build_router_rejection_observability_key()
+        self._order_lifecycle_records: List[Dict[str, Any]] = []
+        self._order_lifecycle_overflow_logged = False
+        self._order_lifecycle_observability_key = self._build_order_lifecycle_observability_key()
+        self._observability_log_fallback_signature_by_key: Dict[str, str] = {}
+        self._diag_vass_signal_seq = 0
+        self._last_regime_effective_log_at = None
+        self._last_intraday_dte_routing_log_by_key = {}
+        self._order_tag_hint_cache = {}
+        self._last_option_fill_tag_by_symbol = {}
+        self._last_option_fill_time_by_symbol = {}
+        self._order_tag_map_logged_ids = set()
+        self._order_tag_resolve_logged_ids = set()
+        self._last_state_persist_at = None
+        self._daily_proxy_window_last_update: Dict[str, Any] = {}
+
+        # Exit retries/forced-close lifecycle.
+        self._pending_exit_orders = {}
+        self._exit_retry_scheduled_at = {}
+        self._spread_forced_close_retry = {}
+        self._spread_forced_close_reason = {}
+        self._spread_forced_close_cancel_counts = {}
+        self._spread_forced_close_retry_cycles = {}
+        self._spread_last_close_submit_at = {}
+        self._spread_exit_mark_cache = {}
+        self._spread_last_exit_reason = {}
+        self._single_leg_last_exit_reason = {}
+        self._spread_ghost_flat_streak_by_key = {}
+        self._spread_ghost_last_log_by_key = {}
+        self._friday_spread_reconcile_date = None
+        self._recon_orphan_close_submitted = {}
+        self._recon_orphan_seen_streak = {}
+        self._recon_orphan_first_seen_at = {}
+        self._recon_orphan_last_log_at = {}
+
+        # Margin call circuit breaker.
+        self._margin_call_consecutive_count = 0
+        self._margin_call_cooldown_until = None
+
     def _normalize_intraday_lane(self, lane: Optional[str]) -> str:
         lane_key = str(lane or "").upper()
         return lane_key if lane_key in ("MICRO", "ITM") else "MICRO"
