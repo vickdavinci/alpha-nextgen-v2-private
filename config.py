@@ -1218,6 +1218,9 @@ SPREAD_MIN_HOLD_MINUTES = 1440  # V12.3 C2: 1-day soft hold window for VASS spre
 SPREAD_HOLD_GUARD_SOFT_ENABLED = True
 SPREAD_HOLD_GUARD_ALLOW_TRANSITION_BYPASS = True
 SPREAD_HOLD_GUARD_SEVERE_STOP_MULTIPLIER = 1.10
+SPREAD_HOLD_GUARD_LOSS_BYPASS_STOP_FRACTION = (
+    0.75  # Bypass hold guard once loss reaches 75% of adaptive stop threshold
+)
 SPREAD_EXIT_RETRY_MINUTES = (
     15  # V9.4 P0: Cooldown between exit signal retries (prevents per-minute spam)
 )

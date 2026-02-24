@@ -8004,6 +8004,28 @@ class OptionsEngine:
                                     if hard_cap_pct > 0:
                                         adaptive_stop_pct = min(adaptive_stop_pct, hard_cap_pct)
 
+                                    loss_bypass_fraction = float(
+                                        getattr(
+                                            config,
+                                            "SPREAD_HOLD_GUARD_LOSS_BYPASS_STOP_FRACTION",
+                                            0.75,
+                                        )
+                                    )
+                                    if (
+                                        not hold_guard_bypass
+                                        and 0 < loss_bypass_fraction < 1
+                                        and adaptive_stop_pct > 0
+                                    ):
+                                        bypass_stop_pct = adaptive_stop_pct * loss_bypass_fraction
+                                        if pnl_pct <= -bypass_stop_pct:
+                                            hold_guard_bypass = True
+                                            self.log(
+                                                f"SPREAD_EXIT_GUARD_BYPASS: LossBypass {pnl_pct:.1%} <= -{bypass_stop_pct:.0%} "
+                                                f"(Frac={loss_bypass_fraction:.2f}) | "
+                                                f"Key={self._build_spread_key(spread)}",
+                                                trades_only=True,
+                                            )
+
                                     severe_mult = max(
                                         1.0,
                                         float(
