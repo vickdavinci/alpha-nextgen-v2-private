@@ -1250,6 +1250,51 @@ class MainOrdersMixin:
             rejection_reason=str(rejection_reason or ""),
         )
 
+    def _is_micro_entry_fill(self, symbol: str, fill_qty: float, order_tag: str) -> bool:
+        """Classify fill as MICRO entry for recovery and EOD safety sweeps."""
+        if fill_qty <= 0:
+            return False
+        symbol_norm = self._normalize_symbol_str(symbol)
+        if "QQQ" not in symbol_norm or ("C" not in symbol_norm and "P" not in symbol_norm):
+            return False
+        tag_upper = str(order_tag or "").upper()
+        if tag_upper.startswith("MICRO:") or tag_upper == "MICRO":
+            return True
+        if tag_upper.startswith("HEDGE:") or tag_upper == "HEDGE":
+            return True
+        # Some broker fills resolve tag from trace fallback. Treat MICRO traces as intraday.
+        if "|TRACE=MICRO_" in tag_upper and "VASS" not in tag_upper and "ITM:" not in tag_upper:
+            return True
+        return False
+
+    def _is_spread_fill_symbol(self, symbol: str) -> bool:
+        """
+        Return True only when symbol matches currently tracked spread-entry legs.
+
+        Prevents MICRO single-leg fills from being misclassified as spread fills when
+        stale spread pending state is present.
+        """
+        symbol_norm = self._normalize_symbol_str(symbol)
+        if not symbol_norm:
+            return False
+
+        tracker = self._spread_fill_tracker
+        if tracker is not None:
+            tracker_symbols = {
+                self._normalize_symbol_str(tracker.long_leg_symbol),
+                self._normalize_symbol_str(tracker.short_leg_symbol),
+            }
+            if symbol_norm in tracker_symbols:
+                return True
+
+        pending_long, pending_short = self.options_engine.get_pending_spread_legs()
+        pending_symbols = set()
+        if pending_long is not None:
+            pending_symbols.add(self._normalize_symbol_str(pending_long.symbol))
+        if pending_short is not None:
+            pending_symbols.add(self._normalize_symbol_str(pending_short.symbol))
+        return symbol_norm in pending_symbols
+
     def _on_fill(
         self,
         symbol: str,
