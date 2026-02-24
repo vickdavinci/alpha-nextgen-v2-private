@@ -143,6 +143,7 @@ class AlphaNextGen(QCAlgorithm):
     _scan_mr_signals = MainSignalGenerationMixin._scan_mr_signals
     _on_mr_force_close = MainSignalGenerationMixin._on_mr_force_close
     _save_observability_csv_artifact = MainObservabilityMixin._save_observability_csv_artifact
+    _on_observability_checkpoint = MainObservabilityMixin._on_observability_checkpoint
     _on_pre_market_setup = MainPremarketMixin._on_pre_market_setup
     _on_sod_baseline = MainPremarketMixin._on_sod_baseline
     _schedule_dynamic_eod_events = MainPremarketMixin._schedule_dynamic_eod_events
@@ -772,17 +773,6 @@ class AlphaNextGen(QCAlgorithm):
         except Exception:
             return None
         return None
-
-    def _on_observability_checkpoint(self) -> None:
-        """Periodic telemetry checkpoint to persist RCA artifacts mid-session."""
-        if self.IsWarmingUp:
-            return
-        self._record_regime_timeline_event(source="PERIODIC_CHECKPOINT")
-        self._flush_regime_decision_artifact()
-        self._flush_regime_timeline_artifact()
-        self._flush_signal_lifecycle_artifact()
-        self._flush_router_rejection_artifact()
-        self._flush_order_lifecycle_artifact()
 
     def _ensure_daily_proxy_windows_snapshot(self) -> None:
         """Backfill daily proxy windows from latest closes when intraday feed missed close bar."""

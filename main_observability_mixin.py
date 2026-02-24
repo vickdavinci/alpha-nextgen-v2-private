@@ -139,3 +139,14 @@ class MainObservabilityMixin:
             if fallback_csv is None:
                 fallback_csv = _render_csv(rows)
             _emit_log_fallback(fallback_csv)
+
+    def _on_observability_checkpoint(self) -> None:
+        """Periodic telemetry checkpoint to persist RCA artifacts mid-session."""
+        if self.IsWarmingUp:
+            return
+        self._record_regime_timeline_event(source="PERIODIC_CHECKPOINT")
+        self._flush_regime_decision_artifact()
+        self._flush_regime_timeline_artifact()
+        self._flush_signal_lifecycle_artifact()
+        self._flush_router_rejection_artifact()
+        self._flush_order_lifecycle_artifact()
