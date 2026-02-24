@@ -196,6 +196,8 @@ class AlphaNextGen(QCAlgorithm):
     _capture_router_rejections = MainObservabilityMixin._capture_router_rejections
     _get_recent_router_rejections = MainObservabilityMixin._get_recent_router_rejections
     _record_router_rejection_event = MainObservabilityMixin._record_router_rejection_event
+    _classify_exit_path = MainObservabilityMixin._classify_exit_path
+    _record_exit_path_pnl = MainObservabilityMixin._record_exit_path_pnl
     _on_pre_market_setup = MainPremarketMixin._on_pre_market_setup
     _on_sod_baseline = MainPremarketMixin._on_sod_baseline
     _on_weekly_reset = MainPremarketMixin._on_weekly_reset
@@ -1616,48 +1618,6 @@ class AlphaNextGen(QCAlgorithm):
         if not reason_str:
             return
         self._spread_last_exit_reason[spread_key] = reason_str[:180]
-
-    def _classify_exit_path(self, reason: str, order_tag: str = "") -> str:
-        """Classify exit path for daily P&L attribution."""
-        text = f"{reason or ''} {order_tag or ''}".upper()
-        if "ORPHAN" in text:
-            return "ORPHAN"
-        if "RETRY" in text:
-            return "RETRY"
-        if "RECON" in text:
-            return "RECONCILE"
-        if "TRAIL" in text:
-            return "TRAIL"
-        if "TARGET" in text or "PROFIT" in text:
-            return "TARGET"
-        if "STOP" in text or "HARD_STOP" in text:
-            return "STOP"
-        if "DTE" in text or "FORCE_EXIT_DTE" in text:
-            return "DTE"
-        if "EOD" in text or "SWEEP" in text or "FRIDAY" in text:
-            return "EOD"
-        return "OTHER"
-
-    def _record_exit_path_pnl(
-        self,
-        reason: str,
-        pnl_dollars: float,
-        order_tag: str = "",
-        engine_tag: str = "OTHER",
-    ) -> None:
-        """Track exit-path counts and realized P&L for daily diagnostics."""
-        path = self._classify_exit_path(reason=reason, order_tag=order_tag)
-        self._diag_exit_path_counts[path] = int(self._diag_exit_path_counts.get(path, 0)) + 1
-        self._diag_exit_path_pnl[path] = float(self._diag_exit_path_pnl.get(path, 0.0)) + float(
-            pnl_dollars
-        )
-        engine_bucket = str(engine_tag or "OTHER").upper()
-        if engine_bucket not in self._diag_exit_path_counts_by_engine:
-            engine_bucket = "OTHER"
-        cnt_store = self._diag_exit_path_counts_by_engine.setdefault(engine_bucket, {})
-        pnl_store = self._diag_exit_path_pnl_by_engine.setdefault(engine_bucket, {})
-        cnt_store[path] = int(cnt_store.get(path, 0)) + 1
-        pnl_store[path] = float(pnl_store.get(path, 0.0)) + float(pnl_dollars)
 
     def _normalize_spread_close_quantities(self, signal: TargetWeight) -> None:
         """Normalize spread close quantities from live holdings to avoid stale qty closes."""
