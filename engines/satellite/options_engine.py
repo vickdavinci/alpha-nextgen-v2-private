@@ -3654,30 +3654,20 @@ class OptionsEngine:
         long_leg_contract: OptionContract,
     ) -> str:
         """Build same-trade signature key for VASS anti-cluster guard."""
-        strategy = str(spread_type or "UNKNOWN").upper()
-        direction_key = direction.value if direction is not None else "NONE"
-        use_expiry = bool(getattr(config, "VASS_SIMILAR_ENTRY_USE_EXPIRY_BUCKET", True))
-        expiry_bucket = ""
-        if use_expiry and getattr(long_leg_contract, "expiry", None):
-            expiry_bucket = str(long_leg_contract.expiry)
-        else:
-            expiry_bucket = f"DTE:{int(getattr(long_leg_contract, 'days_to_expiry', -1))}"
-        return f"{strategy}|{direction_key}|{expiry_bucket}"
+        return self._vass_entry_engine.build_signature(
+            spread_type=spread_type,
+            direction=direction,
+            long_leg_contract=long_leg_contract,
+        )
 
     def _parse_dt(self, date_text: str, hour: int, minute: int) -> Optional[datetime]:
         """Parse current scan timestamp from inputs; fallback to algorithm time."""
-        try:
-            return datetime.strptime(
-                f"{date_text} {int(hour):02d}:{int(minute):02d}:00", "%Y-%m-%d %H:%M:%S"
-            )
-        except Exception:
-            pass
-        if self.algorithm is not None:
-            try:
-                return self.algorithm.Time
-            except Exception:
-                return None
-        return None
+        return self._vass_entry_engine.parse_scan_dt(
+            date_text=date_text,
+            hour=hour,
+            minute=minute,
+            algorithm=self.algorithm,
+        )
 
     def _check_vass_similar_entry_guard(
         self,

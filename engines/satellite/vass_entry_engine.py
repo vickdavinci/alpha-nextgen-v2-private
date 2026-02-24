@@ -360,6 +360,45 @@ class VASSEntryEngine:
                 self._cooldown_until_by_signature.pop(key, None)
         return None
 
+    def build_signature(
+        self,
+        *,
+        spread_type: str,
+        direction: Optional[OptionDirection],
+        long_leg_contract: Any,
+    ) -> str:
+        """Build same-trade signature key for VASS anti-cluster guard."""
+        strategy = str(spread_type or "UNKNOWN").upper()
+        direction_key = direction.value if direction is not None else "NONE"
+        use_expiry = bool(getattr(config, "VASS_SIMILAR_ENTRY_USE_EXPIRY_BUCKET", True))
+        if use_expiry and getattr(long_leg_contract, "expiry", None):
+            expiry_bucket = str(long_leg_contract.expiry)
+        else:
+            expiry_bucket = f"DTE:{int(getattr(long_leg_contract, 'days_to_expiry', -1))}"
+        return f"{strategy}|{direction_key}|{expiry_bucket}"
+
+    def parse_scan_dt(
+        self,
+        *,
+        date_text: str,
+        hour: int,
+        minute: int,
+        algorithm: Any = None,
+    ) -> Optional[datetime]:
+        """Parse scan timestamp; fallback to algorithm clock when parse fails."""
+        try:
+            return datetime.strptime(
+                f"{date_text} {int(hour):02d}:{int(minute):02d}:00", "%Y-%m-%d %H:%M:%S"
+            )
+        except Exception:
+            pass
+        if algorithm is not None:
+            try:
+                return algorithm.Time
+            except Exception:
+                return None
+        return None
+
     def record_signature_entry(self, *, signature: str, entry_dt: Optional[datetime]) -> None:
         if not signature or entry_dt is None:
             return
