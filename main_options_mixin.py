@@ -420,6 +420,41 @@ class MainOptionsMixin:
         self._intraday_entry_snapshot.pop(sym_norm, None)
         self._clear_intraday_close_guard(sym_norm)
 
+    def _find_option_contract(self, symbol: str, data: Slice):
+        if self._qqq_option_symbol is None or self._qqq_option_symbol not in data.OptionChains:
+            return None
+        try:
+            for contract in data.OptionChains[self._qqq_option_symbol]:
+                if str(contract.Symbol) == symbol:
+                    return contract
+        except Exception:
+            return None
+        return None
+
+    def _get_option_current_price(self, symbol: str, data: Slice) -> Optional[float]:
+        """Get current mid/last price for an option from the chain."""
+        contract = self._find_option_contract(symbol, data)
+        if contract is None:
+            return None
+        bid = contract.BidPrice
+        ask = contract.AskPrice
+        if bid > 0 and ask > 0:
+            return (bid + ask) / 2
+        return contract.LastPrice if contract.LastPrice > 0 else None
+
+    def _get_option_current_dte(self, symbol: str, data: Slice) -> Optional[int]:
+        """Get current days-to-expiry for an option symbol."""
+        contract = self._find_option_contract(symbol, data)
+        if contract is None:
+            return None
+        dte = (contract.Expiry.date() - self.Time.date()).days
+        return max(0, dte)
+
+    def _get_option_expiry_date(self, symbol: str, data: Slice) -> Optional[str]:
+        """Get expiry date string (YYYY-MM-DD) for an option symbol."""
+        contract = self._find_option_contract(symbol, data)
+        return str(contract.Expiry.date()) if contract is not None else None
+
     def _select_intraday_option_contract(
         self,
         chain,

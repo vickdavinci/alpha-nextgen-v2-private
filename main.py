@@ -115,6 +115,10 @@ class AlphaNextGen(QCAlgorithm):
     _inc_transition_path_counter = MainOptionsMixin._inc_transition_path_counter
     _normalize_spread_close_quantities = MainOptionsMixin._normalize_spread_close_quantities
     _clear_micro_symbol_tracking = MainOptionsMixin._clear_micro_symbol_tracking
+    _find_option_contract = MainOptionsMixin._find_option_contract
+    _get_option_current_price = MainOptionsMixin._get_option_current_price
+    _get_option_current_dte = MainOptionsMixin._get_option_current_dte
+    _get_option_expiry_date = MainOptionsMixin._get_option_expiry_date
     _is_terminal_exit_retry_tag = MainOrdersMixin._is_terminal_exit_retry_tag
     _on_moo_fallback = MainOrdersMixin._on_moo_fallback
     _cleanup_stale_orders = MainOrdersMixin._cleanup_stale_orders
@@ -1974,41 +1978,6 @@ class AlphaNextGen(QCAlgorithm):
             return
 
         self._scan_options_signals(data)
-
-    def _find_option_contract(self, symbol: str, data: Slice):
-        if self._qqq_option_symbol is None or self._qqq_option_symbol not in data.OptionChains:
-            return None
-        try:
-            for contract in data.OptionChains[self._qqq_option_symbol]:
-                if str(contract.Symbol) == symbol:
-                    return contract
-        except Exception:
-            return None
-        return None
-
-    def _get_option_current_price(self, symbol: str, data: Slice) -> Optional[float]:
-        """Get current mid/last price for an option from the chain."""
-        contract = self._find_option_contract(symbol, data)
-        if contract is None:
-            return None
-        bid = contract.BidPrice
-        ask = contract.AskPrice
-        if bid > 0 and ask > 0:
-            return (bid + ask) / 2
-        return contract.LastPrice if contract.LastPrice > 0 else None
-
-    def _get_option_current_dte(self, symbol: str, data: Slice) -> Optional[int]:
-        """Get current days-to-expiry for an option symbol."""
-        contract = self._find_option_contract(symbol, data)
-        if contract is None:
-            return None
-        dte = (contract.Expiry.date() - self.Time.date()).days
-        return max(0, dte)
-
-    def _get_option_expiry_date(self, symbol: str, data: Slice) -> Optional[str]:
-        """Get expiry date string (YYYY-MM-DD) for an option symbol."""
-        contract = self._find_option_contract(symbol, data)
-        return str(contract.Expiry.date()) if contract is not None else None
 
     def _get_actual_option_count(self) -> int:
         """
