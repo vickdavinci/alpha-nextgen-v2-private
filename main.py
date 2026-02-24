@@ -167,6 +167,7 @@ class AlphaNextGen(QCAlgorithm):
     _on_pre_market_setup = MainPremarketMixin._on_pre_market_setup
     _on_sod_baseline = MainPremarketMixin._on_sod_baseline
     _on_weekly_reset = MainPremarketMixin._on_weekly_reset
+    _is_first_bar_after_market_gap = MainPremarketMixin._is_first_bar_after_market_gap
     _schedule_dynamic_eod_events = MainPremarketMixin._schedule_dynamic_eod_events
     _check_premarket_itm_shorts = MainPremarketMixin._check_premarket_itm_shorts
     _get_premarket_vix_gap_proxy_pct = MainPremarketMixin._get_premarket_vix_gap_proxy_pct
@@ -1577,35 +1578,6 @@ class AlphaNextGen(QCAlgorithm):
     # =========================================================================
     # V2.9: SETTLEMENT-AWARE TRADING (Bug #6 Fix)
     # =========================================================================
-
-    def _is_first_bar_after_market_gap(self) -> bool:
-        """
-        V2.9: Detect if this is the first bar after a multi-day market closure.
-
-        V2.12 Fix #8: Use simpler weekday check instead of GetPreviousMarketClose
-        which doesn't exist in all QC SDK versions.
-
-        Handles:
-        - Regular weekends (Sat-Sun) → Monday = gap
-        - Does NOT detect holiday gaps (acceptable limitation)
-
-        Returns:
-            True if today is Monday (gap after weekend).
-        """
-        if not config.SETTLEMENT_AWARE_TRADING:
-            return False
-
-        try:
-            # V2.12: Simple weekday check - Monday (0) after weekend gap
-            # This is sufficient for most settlement timing issues
-            # Holiday gaps are rare and not worth the API complexity
-            is_monday = self.Time.weekday() == 0
-            if is_monday:
-                self.Log("SETTLEMENT: Monday detected (post-weekend gap)")
-            return is_monday
-        except Exception as e:
-            self.Log(f"SETTLEMENT: Error checking market gap - {e}")
-            return False
 
     def _get_unsettled_cash(self) -> float:
         """
