@@ -658,6 +658,247 @@ class VASSEntryEngine:
                 )
                 algorithm._last_spread_construct_fail_log_at = algorithm.Time
 
+    def scan_spread_for_direction(
+        self,
+        *,
+        host: Any,
+        chain: Any,
+        direction: OptionDirection,
+        direction_str: str,
+        regime_score: float,
+        qqq_price: float,
+        adx_value: float,
+        ma200_value: float,
+        ma50_value: float,
+        iv_rank: float,
+        size_multiplier: float,
+        is_eod_scan: bool,
+    ) -> None:
+        """Scan for VASS spread entry in a specific direction via OptionsEngine host."""
+        algorithm = getattr(host, "algorithm", None)
+        if algorithm is None:
+            return
+        current_vix = float(getattr(algorithm, "_current_vix", 20.0) or 20.0)
+        overlay_state = host.get_regime_overlay_state(
+            vix_current=current_vix, regime_score=regime_score
+        )
+        strategy, vass_dte_min, vass_dte_max, is_credit = host.resolve_vass_strategy(
+            direction=direction_str,
+            overlay_state=overlay_state,
+        )
+        dte_ranges = host.build_vass_dte_fallbacks(vass_dte_min, vass_dte_max)
+        dte_min_all = min(r[0] for r in dte_ranges)
+        dte_max_all = max(r[1] for r in dte_ranges)
+        can_swing_vass, swing_reason_vass = host.can_enter_swing(
+            direction=direction, overlay_state=overlay_state
+        )
+        if not can_swing_vass:
+            if "R_SLOT_DIRECTION_OVERLAY" in swing_reason_vass:
+                algorithm._diag_overlay_slot_block_count += 1
+            algorithm._record_vass_reject_reason("SWING_SLOT_BLOCK")
+            throttle_key = (
+                f"SWING_SLOT_BLOCK|{direction.value}|"
+                f"{'CREDIT' if is_credit else 'DEBIT'}|{swing_reason_vass}"
+            )
+            if host.should_log_vass_rejection(throttle_key):
+                algorithm.Log(
+                    f"VASS_SKIPPED: Direction={direction.value} | IV_Env=NA | "
+                    f"VIX={current_vix:.1f} | Regime={regime_score:.0f} | "
+                    f"Contracts_checked=0 | Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
+                    f"DTE_Ranges={dte_ranges} | ReasonCode=SWING_SLOT_BLOCK | "
+                    f"Reason=Swing entry not allowed | ValidationFail={swing_reason_vass}"
+                )
+            return
+
+        spy_open = float(getattr(host, "_spy_at_open", 0.0) or 0.0)
+        spy_gap_pct = float(getattr(host, "_spy_gap_pct", 0.0) or 0.0)
+        try:
+            spy_current = float(algorithm.Securities[algorithm.spy].Price)
+        except Exception:
+            spy_current = spy_open
+        spy_intraday_change_pct = (
+            ((spy_current - spy_open) / spy_open) * 100.0 if spy_open > 0 else 0.0
+        )
+        vix_at_open = float(getattr(algorithm, "_vix_at_open", 0.0) or 0.0)
+        vix_intraday_change_pct = (
+            ((current_vix - vix_at_open) / vix_at_open) * 100.0 if vix_at_open > 0 else 0.0
+        )
+        swing_filters_ok, swing_filter_reason = host.check_swing_filters(
+            direction=direction,
+            spy_gap_pct=spy_gap_pct,
+            spy_intraday_change_pct=spy_intraday_change_pct,
+            vix_intraday_change_pct=vix_intraday_change_pct,
+            current_hour=algorithm.Time.hour,
+            current_minute=algorithm.Time.minute,
+            is_eod_scan=is_eod_scan,
+        )
+        if not swing_filters_ok:
+            algorithm._diag_vass_block_count += 1
+            algorithm._record_vass_reject_reason("SWING_FILTER")
+            throttle_key = (
+                f"SWING_FILTER|{direction.value}|"
+                f"{'CREDIT' if is_credit else 'DEBIT'}|{swing_filter_reason}"
+            )
+            if host.should_log_vass_rejection(throttle_key):
+                algorithm.Log(
+                    f"VASS_SKIPPED: Direction={direction.value} | "
+                    f"VIX={current_vix:.1f} | Regime={regime_score:.0f} | "
+                    f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
+                    f"ReasonCode=SWING_FILTER | ValidationFail={swing_filter_reason}"
+                )
+            return
+
+        required_right = host.strategy_option_right(strategy)
+        candidate_contracts = host.build_vass_candidate_contracts(
+            chain=chain,
+            direction=direction,
+            dte_min=dte_min_all,
+            dte_max=dte_max_all,
+            option_right=required_right,
+        )
+        algorithm._diag_vass_signal_seq = int(getattr(algorithm, "_diag_vass_signal_seq", 0)) + 1
+        vass_signal_id = (
+            f"VASS-{algorithm.Time.strftime('%Y%m%d-%H%M')}-{algorithm._diag_vass_signal_seq}"
+        )
+        if len(candidate_contracts) < 2:
+            algorithm._record_vass_reject_reason("INSUFFICIENT_CANDIDATES")
+            throttle_key = (
+                f"INSUFFICIENT_CANDIDATES|{direction.value}|"
+                f"{'CREDIT' if is_credit else 'DEBIT'}|{dte_min_all}-{dte_max_all}"
+            )
+            if host.should_log_vass_rejection(throttle_key):
+                algorithm.Log(
+                    f"VASS_REJECTION: Direction={direction.value} | "
+                    f"IV_Env={host.get_iv_environment()} | "
+                    f"VIX={current_vix:.1f} | Regime={regime_score:.0f} | "
+                    f"Contracts_checked={len(candidate_contracts)} | "
+                    f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
+                    f"DTE_Ranges={dte_ranges} | ReasonCode=INSUFFICIENT_CANDIDATES"
+                )
+            algorithm._record_signal_lifecycle_event(
+                engine="VASS",
+                event="DROPPED",
+                signal_id=vass_signal_id,
+                direction=direction.value if direction else "",
+                strategy=strategy.value if strategy else "",
+                code="INSUFFICIENT_CANDIDATES",
+                gate_name="VASS_CANDIDATE_CONTRACTS",
+                reason="No contracts met spread criteria",
+                contract_symbol="",
+            )
+            return
+        algorithm._record_signal_lifecycle_event(
+            engine="VASS",
+            event="CANDIDATE",
+            signal_id=vass_signal_id,
+            direction=direction.value if direction else "",
+            strategy=strategy.value if strategy else "",
+            code="R_OK",
+            gate_name="VASS_SIGNAL_CANDIDATE",
+            reason=f"Contracts={len(candidate_contracts)}",
+            contract_symbol="",
+        )
+
+        tradeable_eq = algorithm.capital_engine.calculate(
+            algorithm.Portfolio.TotalPortfolioValue
+        ).tradeable_eq
+        margin_remaining = algorithm.portfolio_router.get_effective_margin_remaining()
+        if host.has_pending_spread_entry():
+            algorithm.Log("VASS: Pending spread entry exists - skipping new spread signal")
+            algorithm._record_signal_lifecycle_event(
+                engine="VASS",
+                event="DROPPED",
+                signal_id=vass_signal_id,
+                direction=direction.value if direction else "",
+                strategy=strategy.value if strategy else "",
+                code="R_PENDING_SPREAD_ENTRY",
+                gate_name="PENDING_SPREAD_ENTRY",
+                reason="Pending spread entry exists",
+                contract_symbol="",
+            )
+            return
+        signal, rejection_code = host.build_vass_spread_signal(
+            chain=chain,
+            candidate_contracts=candidate_contracts,
+            direction=direction,
+            regime_score=regime_score,
+            qqq_price=qqq_price,
+            adx_value=adx_value,
+            ma200_value=ma200_value,
+            ma50_value=ma50_value,
+            iv_rank=iv_rank,
+            size_multiplier=size_multiplier,
+            portfolio_value=tradeable_eq,
+            margin_remaining=margin_remaining,
+            strategy=strategy,
+            vass_dte_min=vass_dte_min,
+            vass_dte_max=vass_dte_max,
+            dte_ranges=dte_ranges,
+            is_credit=is_credit,
+            is_eod_scan=is_eod_scan,
+            fallback_log_prefix="VASS_FALLBACK",
+        )
+
+        if signal:
+            algorithm.Log(
+                f"VASS_ENTRY: {signal.metadata.get('vass_strategy', 'UNKNOWN') if signal.metadata else 'UNKNOWN'} | "
+                f"{signal.symbol} | {signal.reason}"
+            )
+            signal = algorithm._attach_option_trace_metadata(signal, source="VASS")
+            vass_trace_id = signal.metadata.get("trace_id", "") if signal.metadata else ""
+            algorithm._record_signal_lifecycle_event(
+                engine="VASS",
+                event="APPROVED",
+                signal_id=vass_signal_id,
+                trace_id=vass_trace_id,
+                direction=direction.value if direction else "",
+                strategy=strategy.value if strategy else "",
+                code="R_OK",
+                gate_name="VASS_ENTRY",
+                reason=str(signal.reason or ""),
+                contract_symbol=str(signal.symbol),
+            )
+            signal = algorithm._apply_spread_margin_guard(signal, source_tag="VASS_SPREAD")
+            if signal is None:
+                algorithm._record_signal_lifecycle_event(
+                    engine="VASS",
+                    event="DROPPED",
+                    signal_id=vass_signal_id,
+                    trace_id=vass_trace_id,
+                    direction=direction.value if direction else "",
+                    strategy=strategy.value if strategy else "",
+                    code="R_MARGIN_PRECHECK",
+                    gate_name="VASS_MARGIN_GUARD",
+                    reason="Signal dropped by spread margin guard",
+                    contract_symbol="",
+                )
+                return
+
+            short_symbol = (
+                signal.metadata.get("spread_short_leg_symbol", "") if signal.metadata else ""
+            )
+            long_symbol = str(signal.symbol) if signal.symbol else ""
+            if short_symbol and long_symbol:
+                algorithm._pending_spread_orders[short_symbol] = long_symbol
+                algorithm._pending_spread_orders_reverse[long_symbol] = short_symbol
+                algorithm.Log(
+                    f"SPREAD: Tracking order pair | Short={short_symbol[-15:]} <-> Long={long_symbol[-15:]}"
+                )
+
+            algorithm.portfolio_router.receive_signal(signal)
+        else:
+            algorithm._record_signal_lifecycle_event(
+                engine="VASS",
+                event="DROPPED",
+                signal_id=vass_signal_id,
+                direction=direction.value if direction else "",
+                strategy=strategy.value if strategy else "",
+                code=algorithm._canonical_options_reason_code(rejection_code or "UNKNOWN"),
+                gate_name=str(rejection_code or "UNKNOWN"),
+                reason="No spread signal produced",
+                contract_symbol="",
+            )
+
     def _add_trading_days(self, start: datetime, days: int) -> datetime:
         """Add trading days (skip weekends) to a datetime."""
         result = start
