@@ -18,6 +18,12 @@ from models.target_weight import TargetWeight
 class MainOptionsMixin:
     """Large options-scan methods extracted from main.py (move-only)."""
 
+    def _reset_regime_detector_runtime_state(self) -> None:
+        """Single owner for detector refresh-state reset fields."""
+        self._regime_detector_last_update_key = None
+        self._regime_detector_last_raw = {}
+        self._regime_overlay_ambiguous_bars = 0
+
     def _initialize_runtime_state(self) -> None:
         # Daily/account tracking.
         self.equity_prior_close = 0.0
@@ -53,9 +59,6 @@ class MainOptionsMixin:
 
         # Detector and reconciliation state.
         self._regime_detector_prev_score = None
-        self._regime_detector_last_update_key = None
-        self._regime_detector_last_raw = {}
-        self._regime_overlay_ambiguous_bars = 0
         self._last_reconcile_positions_run = None
 
         # Scoped rejection cooldowns.
@@ -179,11 +182,9 @@ class MainOptionsMixin:
         self._regime_overlay_candidate_state = "STABLE"
         self._regime_overlay_candidate_streak = 0
         self._regime_overlay_state_enter_seq = 0
-        self._regime_overlay_ambiguous_bars = 0
         self._regime_detector_sample_seq = 0
         self._regime_detector_prev_score: Optional[float] = None
-        self._regime_detector_last_update_key = None
-        self._regime_detector_last_raw = {}
+        self._reset_regime_detector_runtime_state()
         self._regime_decision_records: List[Dict[str, Any]] = []
         self._regime_decision_overflow_logged = False
         self._regime_observability_key = self._build_regime_observability_key()

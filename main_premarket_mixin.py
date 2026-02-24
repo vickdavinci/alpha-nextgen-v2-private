@@ -30,9 +30,7 @@ class MainPremarketMixin:
         self._eod_processing_ran_date = None
         self._market_close_ran_date = None
         # Reset sample key continuity only; keep prior score for overnight transition detection.
-        self._regime_detector_last_update_key = None
-        self._regime_detector_last_raw = {}
-        self._regime_overlay_ambiguous_bars = 0
+        self._reset_regime_detector_runtime_state()
 
         # V2.3 FIX: Reset options engine daily state (entry flags, trade counters)
         current_date_str = str(self.Time.date())
@@ -132,9 +130,7 @@ class MainPremarketMixin:
             return
 
         # Defensive day-open reset in case pre-market callback was skipped.
-        self._regime_detector_last_update_key = None
-        self._regime_detector_last_raw = {}
-        self._regime_overlay_ambiguous_bars = 0
+        self._reset_regime_detector_runtime_state()
 
         self.equity_sod = self.Portfolio.TotalPortfolioValue
         self.risk_engine.set_equity_sod(self.equity_sod)
