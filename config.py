@@ -2600,7 +2600,8 @@ LOG_REGIME_ENGINE_DETAIL_BACKTEST_ENABLED = (
     False  # Suppress minute-level regime factor dumps in backtests
 )
 LOG_HIGHFREQ_SAMPLE_FIRST_N_PER_KEY = 1  # Backtest console: keep first occurrence per key/day
-LOG_HIGHFREQ_SAMPLE_EVERY_N = 25  # Then log every Nth repeat for continuity
+LOG_HIGHFREQ_SAMPLE_EVERY_N = 100  # Then log every Nth repeat for continuity
+LOG_HIGHFREQ_SAMPLE_EVERY_N_LIVE = 10  # Live-mode sampled cadence for high-frequency diagnostics
 SPREAD_GHOST_INTRADAY_CLEAR_CONSECUTIVE = (
     2  # Intraday guarded clear requires N consecutive flat checks
 )

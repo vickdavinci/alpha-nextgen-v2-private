@@ -1712,7 +1712,10 @@ class AlphaNextGen(QCAlgorithm):
         default_backtest_enabled: bool = False,
     ) -> bool:
         """Backtest-aware sampled logging gate for high-volume diagnostic categories."""
-        if self._should_log_backtest_category(config_flag, default_backtest_enabled):
+        is_live = bool(hasattr(self, "LiveMode") and self.LiveMode)
+        if not is_live and self._should_log_backtest_category(
+            config_flag, default_backtest_enabled
+        ):
             return True
 
         day_token = (
@@ -1727,7 +1730,10 @@ class AlphaNextGen(QCAlgorithm):
         self._high_freq_log_seen_counts[sample_key] = seen
 
         first_n = max(0, int(getattr(config, "LOG_HIGHFREQ_SAMPLE_FIRST_N_PER_KEY", 1)))
-        every_n = max(0, int(getattr(config, "LOG_HIGHFREQ_SAMPLE_EVERY_N", 0)))
+        every_n_key = (
+            "LOG_HIGHFREQ_SAMPLE_EVERY_N_LIVE" if is_live else "LOG_HIGHFREQ_SAMPLE_EVERY_N"
+        )
+        every_n = max(0, int(getattr(config, every_n_key, 0)))
         should_log = seen <= first_n or (every_n > 0 and seen % every_n == 0)
         if not should_log:
             self._high_freq_log_suppressed_counts[category_token] = (
