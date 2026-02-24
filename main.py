@@ -130,6 +130,10 @@ class AlphaNextGen(QCAlgorithm):
     _is_micro_entry_fill = MainOrdersMixin._is_micro_entry_fill
     _is_spread_fill_symbol = MainOrdersMixin._is_spread_fill_symbol
     _sync_intraday_oco = MainOrdersMixin._sync_intraday_oco
+    _cancel_spread_linked_oco = MainOrdersMixin._cancel_spread_linked_oco
+    _schedule_spread_safe_lock_retry = MainOrdersMixin._schedule_spread_safe_lock_retry
+    _cleanup_stale_spread_state = MainOrdersMixin._cleanup_stale_spread_state
+    _emergency_close_spread_legs = MainOrdersMixin._emergency_close_spread_legs
     _log_order_lifecycle_issue = MainOrdersMixin._log_order_lifecycle_issue
     _forward_execution_event = MainOrdersMixin._forward_execution_event
     OnOrderEvent = MainOrdersMixin.OnOrderEvent
@@ -2038,41 +2042,6 @@ class AlphaNextGen(QCAlgorithm):
         contract = self._find_option_contract(symbol, data)
         return str(contract.Expiry.date()) if contract is not None else None
 
-    def _cancel_spread_linked_oco(self, long_symbol: str, short_symbol: str, reason: str) -> None:
-        """Cancel any OCO siblings tied to spread legs before forced-close retries."""
-        if not hasattr(self, "oco_manager"):
-            return
-        for leg_symbol in (long_symbol, short_symbol):
-            try:
-                self.oco_manager.cancel_by_symbol(leg_symbol, reason=reason)
-            except Exception:
-                pass
-
-    def _schedule_spread_safe_lock_retry(
-        self,
-        spread_key: str,
-        long_symbol: str,
-        short_symbol: str,
-        retry_reason: str,
-        detail: str,
-    ) -> None:
-        """Schedule non-fatal safe-lock retry when spread close submission fails."""
-        safe_retry_min = int(getattr(config, "SPREAD_CLOSE_SAFE_LOCK_RETRY_MIN", 10))
-        max_retry_cycles = int(getattr(config, "SPREAD_CLOSE_MAX_RETRY_CYCLES", 12))
-        self.Log(
-            f"SPREAD_CLOSE_FALSE_NONFATAL: Long={long_symbol} Short={short_symbol} | "
-            f"Reason={retry_reason} | Detail={detail}"
-        )
-        self.Log(
-            f"SPREAD_SAFE_LOCK_RETRY_SCHEDULED: Long={long_symbol} Short={short_symbol} | "
-            f"RetryIn={safe_retry_min}m | Reason={retry_reason}"
-        )
-        self._spread_forced_close_reason[spread_key] = f"SAFE_LOCK_RETRY:{retry_reason}"
-        self._spread_forced_close_retry[spread_key] = self.Time + timedelta(minutes=safe_retry_min)
-        # Keep retrying at emergency cadence after initial escalation.
-        self._spread_forced_close_retry_cycles[spread_key] = max(max_retry_cycles - 1, 0)
-        self._spread_last_close_submit_at[spread_key] = self.Time
-
     def _get_actual_option_count(self) -> int:
         """
         V2.5 PART 19 FIX: Count actual option positions in portfolio (stateless).
@@ -2611,82 +2580,6 @@ class AlphaNextGen(QCAlgorithm):
                 )
         except Exception as e:
             self.Log(f"REJECTION_MARGIN: Parse error: {e}")
-
-    def _cleanup_stale_spread_state(self) -> None:
-        """
-        V2.6: Clean up stale spread tracking state (Bug #7 fix).
-
-        Called when fill tracker times out or needs reset.
-        """
-        self.Log("SPREAD: Cleaning up stale tracking state")
-
-        # Clear fill tracker
-        self._spread_fill_tracker = None
-
-        # Clear pending orders mappings
-        self._pending_spread_orders.clear()
-        self._pending_spread_orders_reverse.clear()
-        self._spread_close_trackers.clear()
-        self._spread_forced_close_retry.clear()
-        self._spread_forced_close_reason.clear()
-        self._spread_forced_close_cancel_counts.clear()
-        self._spread_forced_close_retry_cycles.clear()
-        self._spread_last_close_submit_at.clear()
-
-        # Clear options engine pending spread state
-        self.options_engine.clear_pending_spread_state_hard()
-
-    def _emergency_close_spread_legs(self) -> None:
-        """
-        V2.6: Emergency close spread legs when quantity mismatch detected.
-
-        Liquidates whatever is in the portfolio to prevent orphaned positions.
-        """
-        self.Log("SPREAD: EMERGENCY - Closing mismatched legs")
-
-        if self._spread_fill_tracker is None:
-            return
-
-        tracker = self._spread_fill_tracker
-
-        # Try to close any filled legs
-        try:
-            # Check long leg
-            if tracker.long_leg_symbol:
-                long_holding, long_symbol = self._find_portfolio_holding(
-                    tracker.long_leg_symbol, security_type=SecurityType.Option
-                )
-                if long_holding and long_holding.Invested:
-                    qty = long_holding.Quantity
-                    self._submit_option_close_market_order(
-                        symbol=long_symbol,
-                        quantity=-qty,
-                        reason="EMERG_QTY_MISMATCH",
-                        engine_hint="VASS",
-                    )
-                    self.Log(
-                        f"SPREAD: Emergency closed long leg | {self._normalize_symbol_str(long_symbol)} x{qty}"
-                    )
-
-            # Check short leg
-            if tracker.short_leg_symbol:
-                short_holding, short_symbol = self._find_portfolio_holding(
-                    tracker.short_leg_symbol, security_type=SecurityType.Option
-                )
-                if short_holding and short_holding.Invested:
-                    qty = short_holding.Quantity
-                    self._submit_option_close_market_order(
-                        symbol=short_symbol,
-                        quantity=-qty,
-                        reason="EMERG_QTY_MISMATCH",
-                        engine_hint="VASS",
-                    )
-                    self.Log(
-                        f"SPREAD: Emergency closed short leg | {self._normalize_symbol_str(short_symbol)} x{qty}"
-                    )
-
-        except Exception as e:
-            self.Log(f"SPREAD_ERROR: Emergency close failed | {e}")
 
     def _schedule_exit_retry(self, symbol: str) -> None:
         """
