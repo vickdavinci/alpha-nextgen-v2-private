@@ -8771,8 +8771,14 @@ class AlphaNextGen(QCAlgorithm):
             return False
 
         bars_since_flip = int(ctx.get("overlay_bars_since_flip", 999) or 999)
-        derisk_bars = max(1, int(getattr(config, "TRANSITION_HANDOFF_OPEN_DERISK_BARS", 4)))
-        if bars_since_flip >= derisk_bars:
+        intraday_derisk_bars = max(
+            1, int(getattr(config, "TRANSITION_HANDOFF_OPEN_DERISK_BARS", 4))
+        )
+        vass_derisk_bars = max(
+            1,
+            int(getattr(config, "VASS_TRANSITION_OPEN_DERISK_BARS", intraday_derisk_bars)),
+        )
+        if bars_since_flip >= max(intraday_derisk_bars, vass_derisk_bars):
             return False
 
         action_key = (
@@ -8789,6 +8795,8 @@ class AlphaNextGen(QCAlgorithm):
                 overlay == "RECOVERY" and is_bearish_spread
             )
             if not wrong_way:
+                continue
+            if bars_since_flip >= vass_derisk_bars:
                 continue
 
             long_symbol = self._normalize_symbol_str(spread.long_leg.symbol)
@@ -8822,7 +8830,7 @@ class AlphaNextGen(QCAlgorithm):
             self._record_transition_derisk_action(action_key, "VASS")
             self.Log(
                 f"TRANSITION_OPEN_DERISK: VASS queued | Overlay={overlay} | "
-                f"Type={spread_type} | BarsSinceFlip={bars_since_flip}/{derisk_bars}"
+                f"Type={spread_type} | BarsSinceFlip={bars_since_flip}/{vass_derisk_bars}"
             )
             queued_any = True
 
@@ -8854,6 +8862,8 @@ class AlphaNextGen(QCAlgorithm):
             )
             if not wrong_way:
                 continue
+            if bars_since_flip >= intraday_derisk_bars:
+                continue
             if not self.options_engine.mark_pending_intraday_exit(symbol_key):
                 continue
 
@@ -8879,7 +8889,7 @@ class AlphaNextGen(QCAlgorithm):
             self._record_transition_derisk_action(action_key, engine_bucket)
             self.Log(
                 f"TRANSITION_OPEN_DERISK: {engine_bucket} queued | Overlay={overlay} | "
-                f"Symbol={symbol_key[-20:]} | BarsSinceFlip={bars_since_flip}/{derisk_bars}"
+                f"Symbol={symbol_key[-20:]} | BarsSinceFlip={bars_since_flip}/{intraday_derisk_bars}"
             )
             queued_any = True
 

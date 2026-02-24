@@ -3274,7 +3274,18 @@ class OptionsEngine:
             if handoff_enabled and direction in (OptionDirection.CALL, OptionDirection.PUT):
                 overlay = str(ctx.get("transition_overlay", "")).upper()
                 bars_since_flip = int(ctx.get("overlay_bars_since_flip", 999) or 999)
-                handoff_bars = max(1, int(getattr(config, "TRANSITION_HANDOFF_BARS", 2)))
+                handoff_bars = max(
+                    1,
+                    int(
+                        getattr(
+                            config,
+                            "VASS_TRANSITION_HANDOFF_BARS"
+                            if engine_key == "VASS"
+                            else "TRANSITION_HANDOFF_BARS",
+                            getattr(config, "TRANSITION_HANDOFF_BARS", 2),
+                        )
+                    ),
+                )
                 delta = float(ctx.get("delta", 0.0) or 0.0)
                 momentum = float(ctx.get("momentum_roc", 0.0) or 0.0)
                 hard_downside = delta <= float(
