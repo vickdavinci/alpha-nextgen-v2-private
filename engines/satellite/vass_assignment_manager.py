@@ -354,6 +354,9 @@ def check_premarket_itm_shorts_impl(
                 "is_credit_spread": is_credit_spread,
                 "spread_credit_received": credit_received,
                 "exit_type": "PREMARKET_ITM",
+                "spread_exit_code": "PREMARKET_ITM_CLOSE",
+                "spread_exit_reason": exit_reason,
+                "spread_exit_emergency": True,
             },
         )
     ]
@@ -469,6 +472,7 @@ def check_assignment_risk_exit_impl(
         f"ASSIGNMENT_RISK_EXIT: {exit_reason}",
         trades_only=True,
     )
+    exit_code = str(exit_reason).split(":", 1)[0].split(" ", 1)[0]
 
     # Mark as closing to prevent duplicate signals
     spread.is_closing = True
@@ -501,6 +505,9 @@ def check_assignment_risk_exit_impl(
                 "is_credit_spread": is_credit_spread,
                 "spread_credit_received": credit_received,
                 "exit_type": "ASSIGNMENT_RISK",
+                "spread_exit_code": exit_code,
+                "spread_exit_reason": str(exit_reason),
+                "spread_exit_emergency": True,
             },
         )
     ]

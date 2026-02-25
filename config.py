@@ -999,6 +999,22 @@ VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT = (
     False  # V10.10 tuning: disable bearish credit fallback while BEAR_PUT gating is rebalanced
 )
 
+# V12.7: Universal adaptive VASS policy (fully reversible via VASS_EXIT_POLICY_MODE).
+# LEGACY      -> preserve historical behavior.
+# THESIS_FIRST -> regime-confirmed no-stop mode with regime-break exits as stop replacement.
+VASS_EXIT_POLICY_MODE = "THESIS_FIRST"
+VASS_REGIME_CONFIRMED_NO_STOP = True
+VASS_REGIME_CONFIRMED_BULL_MIN = 57.0  # Disable mark stops when bullish spread and regime >= this
+VASS_REGIME_CONFIRMED_BEAR_MAX = 43.0  # Disable mark stops when bearish spread and regime <= this
+VASS_REGIME_BREAK_EXIT_ENABLED = True
+VASS_REGIME_BREAK_BULL_FLOOR = 50.0  # Close bullish spreads when regime falls below this
+VASS_REGIME_BREAK_BEAR_CEILING = 50.0  # Close bearish spreads when regime rises above this
+VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT = 0.60  # Keep profit-taking while confirmed
+VASS_ENABLE_MARK_STOP_EXITS = True  # Master allow for stop/hard-stop exits in legacy mode
+VASS_ENABLE_TAIL_CAP_EXITS = True  # Master allow for tail-cap exits in legacy mode
+VASS_ENABLE_TRAIL_PROFIT_EXITS = True  # Master allow for trailing-profit exits in legacy mode
+VASS_ENABLE_PROFIT_TARGET_EXITS = True  # Master allow for profit-target exits
+
 # Level Crossing Thresholds (regime shift signals)
 VASS_VIX_FEAR_CROSS_LEVEL = 23  # VIX crosses above this → BEARISH
 VASS_VIX_COMPLACENT_CROSS_LEVEL = 14  # VIX crosses below this → BULLISH
@@ -1322,7 +1338,9 @@ BEAR_PUT_ENTRY_RELAXED_REGIME_MIN = (
 # V6.22: During confirmed stress, allow tighter BEAR_PUT shorts to keep bearish access alive.
 # V9.4: Lowered from 0.8% to 0.3%. Bear markets need PUT access most — max loss already capped by debit.
 BEAR_PUT_ENTRY_MIN_OTM_PCT_STRESS = 0.005
-BEAR_PUT_ASSIGNMENT_HARD_BLOCK_VIX = 28.0  # V10.10: only enforce assignment gate in high-stress IV
+BEAR_PUT_ASSIGNMENT_HARD_BLOCK_VIX = (
+    35.0  # V12.7: relax hard block to preserve bearish access in moderate fear
+)
 BEAR_PUT_ASSIGNMENT_HARD_BLOCK_REGIME_MAX = (
     40.0  # V10.10: only enforce assignment gate in deep risk-off regime
 )
@@ -1855,6 +1873,8 @@ OPTIONS_MAX_MARGIN_PCT = 0.50  # V10.9: Align with OPTIONS_BUDGET_CAP_PCT so per
 # At $200K: 15% = $30,000, 8% = $16,000
 SWING_SPREAD_MAX_PCT = 0.15  # 15% legacy cap (kept for backward compatibility)
 VASS_RISK_PER_TRADE_PCT = 0.20  # V12.4: reduce VASS allocation concentration to 20%
+VASS_MAX_SPREAD_RISK_PCT = 0.03  # V12.7: size each VASS spread to 3% max defined risk
+VASS_MAX_CONCURRENT_SPREADS = 2  # V12.7: cap concurrent VASS spreads (portfolio-level containment)
 INTRADAY_SPREAD_MAX_PCT = 0.08  # Legacy fallback for intraday sizing
 VASS_MAX_RISK_DOLLARS = 20000  # V12.4: hard cap VASS sizing budget
 INTRADAY_ITM_MAX_PCT = 0.15  # ITM budget slice (15% / $15k on $100k)

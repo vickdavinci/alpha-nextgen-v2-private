@@ -191,6 +191,16 @@ class VASSEntryEngine:
                 f"R_SLOT_SWING_MAX: {swing_count} >= {config.OPTIONS_MAX_SWING_POSITIONS}",
             )
 
+        # V12.7: Explicit VASS concurrent spread cap (separate from global swing slots).
+        vass_concurrent_cap = int(getattr(config, "VASS_MAX_CONCURRENT_SPREADS", 0))
+        if vass_concurrent_cap > 0:
+            vass_open = len(host.get_spread_positions() or [])
+            if vass_open >= vass_concurrent_cap:
+                return (
+                    False,
+                    f"R_SLOT_VASS_CONCURRENT_MAX: {vass_open} >= {vass_concurrent_cap}",
+                )
+
         # Directional slot cap (stage-1 guardrail + stress-overlay shaping).
         if direction is not None:
             wanted_dir = "BULLISH" if direction == OptionDirection.CALL else "BEARISH"

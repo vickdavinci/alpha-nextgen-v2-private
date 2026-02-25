@@ -1134,6 +1134,12 @@ class PortfolioRouter:
             "TRANSITION_DERISK",
             "TAIL_RISK_CAP",
             "HARD_STOP",
+            "ASSIGNMENT_RISK",
+            "SHORT_LEG_ITM_EXIT",
+            "DEEP_ITM_SHORT",
+            "OVERNIGHT_ITM_BLOCK",
+            "PREMARKET_ITM",
+            "MANDATORY_DTE_CLOSE",
         )
         return any(token in merged for token in tokens)
 

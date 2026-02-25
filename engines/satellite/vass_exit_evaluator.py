@@ -55,6 +55,25 @@ def check_spread_exit_signals_impl(
     if spread.is_closing:
         return None
 
+    spread_type_upper = str(getattr(spread, "spread_type", "") or "").upper()
+    is_credit_spread = spread_type_upper in {
+        "BULL_PUT_CREDIT",
+        "BEAR_CALL_CREDIT",
+        str(SpreadStrategy.BULL_PUT_CREDIT.value),
+        str(SpreadStrategy.BEAR_CALL_CREDIT.value),
+    }
+    is_bullish_spread = spread_type_upper in {
+        "BULL_CALL",
+        "BULL_CALL_DEBIT",
+        "BULL_PUT_CREDIT",
+    }
+    is_bullish_debit_spread = spread_type_upper in {"BULL_CALL", "BULL_CALL_DEBIT"}
+    is_bearish_spread = spread_type_upper in {
+        "BEAR_PUT",
+        "BEAR_PUT_DEBIT",
+        "BEAR_CALL_CREDIT",
+    }
+
     vass_exit_profile = self._get_vass_exit_profile(spread=spread, vix_current=vix_current)
     vass_tier = str(vass_exit_profile.get("tier", "MED"))
     vass_ref_vix = vass_exit_profile.get("ref_vix")
@@ -63,6 +82,43 @@ def check_spread_exit_signals_impl(
         if vass_ref_vix is None
         else f"Tier={vass_tier} RefVIX={float(vass_ref_vix):.1f}"
     )
+    vass_exit_policy_mode = str(getattr(config, "VASS_EXIT_POLICY_MODE", "LEGACY")).upper()
+    thesis_first_mode = vass_exit_policy_mode == "THESIS_FIRST"
+    regime_confirmed_no_stop_mode = thesis_first_mode and bool(
+        getattr(config, "VASS_REGIME_CONFIRMED_NO_STOP", False)
+    )
+    regime_confirmed = False
+    if regime_confirmed_no_stop_mode:
+        bull_confirm_min = float(getattr(config, "VASS_REGIME_CONFIRMED_BULL_MIN", 57.0))
+        bear_confirm_max = float(getattr(config, "VASS_REGIME_CONFIRMED_BEAR_MAX", 43.0))
+        regime_confirmed = (is_bullish_spread and regime_score >= bull_confirm_min) or (
+            is_bearish_spread and regime_score <= bear_confirm_max
+        )
+
+    profit_target_enabled = bool(getattr(config, "VASS_ENABLE_PROFIT_TARGET_EXITS", True))
+    trail_exit_enabled = bool(getattr(config, "VASS_ENABLE_TRAIL_PROFIT_EXITS", True))
+    mark_stop_enabled = bool(getattr(config, "VASS_ENABLE_MARK_STOP_EXITS", True))
+    tail_cap_enabled = bool(getattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", True))
+
+    if regime_confirmed:
+        trail_exit_enabled = False
+        mark_stop_enabled = False
+        tail_cap_enabled = False
+
+    regime_break_enabled = thesis_first_mode and bool(
+        getattr(config, "VASS_REGIME_BREAK_EXIT_ENABLED", False)
+    )
+    regime_break_bull_floor = float(getattr(config, "VASS_REGIME_BREAK_BULL_FLOOR", 50.0))
+    regime_break_bear_ceiling = float(getattr(config, "VASS_REGIME_BREAK_BEAR_CEILING", 50.0))
+
+    regime_break_reason = None
+    if regime_break_enabled:
+        if is_bullish_spread and regime_score < regime_break_bull_floor:
+            regime_break_reason = (
+                f"VASS_REGIME_BREAK_BULL: Regime {regime_score:.0f} < {regime_break_bull_floor:.0f}"
+            )
+        elif is_bearish_spread and regime_score > regime_break_bear_ceiling:
+            regime_break_reason = f"VASS_REGIME_BREAK_BEAR: Regime {regime_score:.0f} > {regime_break_bear_ceiling:.0f}"
 
     def _resolve_vass_tail_cap_pct(resolved_dte: int) -> float:
         base_pct = float(getattr(config, "VASS_TAIL_RISK_CAP_PCT_EQUITY", 0.015))
@@ -246,7 +302,7 @@ def check_spread_exit_signals_impl(
                         pnl_pct = pnl / entry_debit
 
                         hard_stop_pct = float(vass_exit_profile.get("hard_stop_pct", 0.0))
-                        if hard_stop_pct > 0 and pnl_pct <= -hard_stop_pct:
+                        if mark_stop_enabled and hard_stop_pct > 0 and pnl_pct <= -hard_stop_pct:
                             self.log(
                                 f"SPREAD_HARD_STOP_DURING_HOLD: {pnl_pct:.1%} <= -{hard_stop_pct:.0%} | "
                                 f"Key={self._build_spread_key(spread)} | Held={live_minutes:.0f}m",
@@ -433,6 +489,18 @@ def check_spread_exit_signals_impl(
                                         trades_only=True,
                                     )
 
+                            if (
+                                not hold_guard_bypass
+                                and regime_break_reason is not None
+                                and regime_break_enabled
+                            ):
+                                hold_guard_bypass = True
+                                self.log(
+                                    f"SPREAD_EXIT_GUARD_BYPASS: RegimeBreak {regime_break_reason} | "
+                                    f"Key={self._build_spread_key(spread)}",
+                                    trades_only=True,
+                                )
+
                             if not hold_guard_bypass and pnl_pct < 0:
                                 base_stop_pct = float(
                                     vass_exit_profile.get(
@@ -512,14 +580,6 @@ def check_spread_exit_signals_impl(
         except Exception:
             pass
 
-    # V2.8: Determine if credit or debit spread
-    is_credit_spread = spread.spread_type in (
-        "BULL_PUT_CREDIT",
-        "BEAR_CALL_CREDIT",
-        SpreadStrategy.BULL_PUT_CREDIT.value,
-        SpreadStrategy.BEAR_CALL_CREDIT.value,
-    )
-
     exit_reason = None
 
     # ---------------------------------------------------------------------
@@ -530,23 +590,6 @@ def check_spread_exit_signals_impl(
     vix_spike_level = getattr(config, "SWING_VIX_SPIKE_EXIT_LEVEL", 25.0)
     vix_spike_5d = getattr(config, "SWING_VIX_SPIKE_EXIT_5D_PCT", 0.20)
     vix_5d_change = self._iv_sensor.get_vix_5d_change() if self._iv_sensor.is_ready() else None
-
-    is_bullish_spread = spread.spread_type in (
-        "BULL_CALL",
-        "BULL_PUT_CREDIT",
-        SpreadStrategy.BULL_CALL_DEBIT.value,
-        SpreadStrategy.BULL_PUT_CREDIT.value,
-    )
-    is_bullish_debit_spread = spread.spread_type in (
-        "BULL_CALL",
-        SpreadStrategy.BULL_CALL_DEBIT.value,
-    )
-    is_bearish_spread = spread.spread_type in (
-        "BEAR_PUT",
-        "BEAR_CALL_CREDIT",
-        SpreadStrategy.BEAR_PUT_DEBIT.value,
-        SpreadStrategy.BEAR_CALL_CREDIT.value,
-    )
 
     # V6.22: Transition exit priority - force close wrong-way bullish spreads in STRESS.
     if (
@@ -604,6 +647,9 @@ def check_spread_exit_signals_impl(
         except Exception:
             pass
 
+    if exit_reason is None and regime_break_reason is not None:
+        exit_reason = regime_break_reason
+
     # V10.5: Regime deterioration exits are evaluated after P&L is known.
     if is_credit_spread:
         # CREDIT SPREAD P&L: Profit when spread value DECREASES
@@ -657,6 +703,7 @@ def check_spread_exit_signals_impl(
         if (
             exit_reason is None
             and bool(getattr(config, "VASS_TAIL_RISK_CAP_ENABLED", True))
+            and tail_cap_enabled
             and pnl < 0
             and self.algorithm is not None
         ):
@@ -671,9 +718,14 @@ def check_spread_exit_signals_impl(
                     )
                 exit_reason = f"VASS_TAIL_RISK_CAP: Loss=${loss_dollars:.0f} >= Cap=${cap_dollars:.0f} ({cap_pct:.1%} eq)"
 
-        # Exit 1: Credit Profit Target (50% of max profit)
-        profit_target = spread.max_profit * config.CREDIT_SPREAD_PROFIT_TARGET
-        if pnl >= profit_target:
+        # Exit 1: Credit profit target.
+        credit_profit_target_pct = float(getattr(config, "CREDIT_SPREAD_PROFIT_TARGET", 0.50))
+        if regime_confirmed:
+            credit_profit_target_pct = float(
+                getattr(config, "VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT", credit_profit_target_pct)
+            )
+        profit_target = spread.max_profit * credit_profit_target_pct
+        if profit_target_enabled and pnl >= profit_target:
             exit_reason = (
                 f"CREDIT_PROFIT_TARGET +{pnl_pct:.1%} " f"(P&L ${pnl:.2f} >= ${profit_target:.2f})"
             )
@@ -700,7 +752,12 @@ def check_spread_exit_signals_impl(
                     getattr(config, "CREDIT_SPREAD_STOP_MULT_MED_VIX", credit_stop_mult)
                 )
         stop_threshold = entry_credit + max_loss * credit_stop_mult
-        if exit_reason is None and pnl < 0 and current_spread_value >= stop_threshold:
+        if (
+            exit_reason is None
+            and mark_stop_enabled
+            and pnl < 0
+            and current_spread_value >= stop_threshold
+        ):
             loss_pct = (current_spread_value - entry_credit) / max_loss if max_loss > 0 else 0
             exit_reason = (
                 f"CREDIT_STOP_LOSS {loss_pct:.1%} "
@@ -804,6 +861,7 @@ def check_spread_exit_signals_impl(
         if (
             exit_reason is None
             and bool(getattr(config, "VASS_TAIL_RISK_CAP_ENABLED", True))
+            and tail_cap_enabled
             and pnl < 0
             and self.algorithm is not None
         ):
@@ -856,23 +914,31 @@ def check_spread_exit_signals_impl(
             except Exception:
                 pass
 
-        # Exit 1: Profit target (base 50% of max profit)
-        # V3.0: Regime-adaptive profit targets - greedy in bull, defensive in bear
-        base_profit_pct = float(
-            vass_exit_profile.get("target_pct", config.SPREAD_PROFIT_TARGET_PCT)
-        )
-        profit_multipliers = getattr(
-            config, "SPREAD_PROFIT_REGIME_MULTIPLIERS", {75: 1.0, 50: 1.0, 40: 1.0, 0: 1.0}
-        )
+        # Exit 1: Profit target.
+        if regime_confirmed:
+            adaptive_profit_pct = float(
+                getattr(
+                    config,
+                    "VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT",
+                    vass_exit_profile.get("target_pct", config.SPREAD_PROFIT_TARGET_PCT),
+                )
+            )
+        else:
+            base_profit_pct = float(
+                vass_exit_profile.get("target_pct", config.SPREAD_PROFIT_TARGET_PCT)
+            )
+            profit_multipliers = getattr(
+                config, "SPREAD_PROFIT_REGIME_MULTIPLIERS", {75: 1.0, 50: 1.0, 40: 1.0, 0: 1.0}
+            )
 
-        # Find applicable multiplier based on regime score
-        profit_multiplier = 1.0
-        for threshold in sorted(profit_multipliers.keys(), reverse=True):
-            if regime_score >= threshold:
-                profit_multiplier = profit_multipliers[threshold]
-                break
+            # Find applicable multiplier based on regime score
+            profit_multiplier = 1.0
+            for threshold in sorted(profit_multipliers.keys(), reverse=True):
+                if regime_score >= threshold:
+                    profit_multiplier = profit_multipliers[threshold]
+                    break
 
-        adaptive_profit_pct = base_profit_pct * profit_multiplier
+            adaptive_profit_pct = base_profit_pct * profit_multiplier
 
         # V2.16-BT: Commission-aware profit target
         # Require NET profit (after commission) to meet the target, not just gross
@@ -886,7 +952,7 @@ def check_spread_exit_signals_impl(
         )
         profit_target = raw_profit_target + commission_per_share
         net_pnl = pnl - commission_per_share
-        if pnl >= profit_target:
+        if profit_target_enabled and pnl >= profit_target:
             exit_reason = (
                 f"PROFIT_TARGET +{pnl_pct:.1%} (Net ${net_pnl:.2f} >= ${raw_profit_target:.2f}) | "
                 f"Target {adaptive_profit_pct:.0%} (regime {regime_score:.0f}) | "
@@ -897,7 +963,7 @@ def check_spread_exit_signals_impl(
         # V9.4: Once spread reaches +X% unrealized, trail stop from high-water mark
         trail_activate_pct = float(vass_exit_profile.get("trail_activate_pct", 0.20))
         trail_offset_pct = float(vass_exit_profile.get("trail_offset_pct", 0.15))
-        if exit_reason is None and pnl_pct > 0:
+        if exit_reason is None and trail_exit_enabled and pnl_pct > 0:
             # Update high-water mark
             if pnl_pct > spread.highest_pnl_pct:
                 spread.highest_pnl_pct = pnl_pct
@@ -912,7 +978,7 @@ def check_spread_exit_signals_impl(
 
         # Exit 2: STOP LOSS
         # Add a hard cap across regimes, then apply adaptive stop logic.
-        if exit_reason is None and pnl_pct < 0:
+        if exit_reason is None and mark_stop_enabled and pnl_pct < 0:
             width_stop_pct = float(getattr(config, "SPREAD_HARD_STOP_WIDTH_PCT", 0.0))
             if width_stop_pct > 0 and float(getattr(spread, "width", 0.0)) > 0:
                 width_loss_cap = float(spread.width) * width_stop_pct
@@ -921,7 +987,7 @@ def check_spread_exit_signals_impl(
                         f"SPREAD_HARD_STOP_TRIGGERED_WIDTH {pnl:.2f} (loss <= -${width_loss_cap:.2f}, "
                         f"{width_stop_pct:.0%} of width ${float(spread.width):.2f})"
                     )
-        if exit_reason is None and pnl_pct < 0:
+        if exit_reason is None and mark_stop_enabled and pnl_pct < 0:
             hard_stop_pct = float(
                 vass_exit_profile.get(
                     "hard_stop_pct",
@@ -933,7 +999,7 @@ def check_spread_exit_signals_impl(
                     f"SPREAD_HARD_STOP_TRIGGERED_PCT {pnl_pct:.1%} "
                     f"(lost > {hard_stop_pct:.0%} hard cap, {vass_profile_tag})"
                 )
-        if exit_reason is None and pnl_pct < 0:
+        if exit_reason is None and mark_stop_enabled and pnl_pct < 0:
             base_stop_pct = float(vass_exit_profile.get("stop_pct", config.SPREAD_STOP_LOSS_PCT))
             stop_multipliers = getattr(
                 config, "SPREAD_STOP_REGIME_MULTIPLIERS", {75: 1.0, 50: 1.0, 40: 1.0, 0: 1.0}

@@ -782,8 +782,14 @@ def check_spread_entry_signal_impl(
         if portfolio_value and portfolio_value > 0
         else (self.algorithm.Portfolio.TotalPortfolioValue if self.algorithm else 50000)
     )
-    swing_max_pct = getattr(
-        config, "VASS_RISK_PER_TRADE_PCT", getattr(config, "SWING_SPREAD_MAX_PCT", 0.15)
+    swing_max_pct = float(
+        getattr(
+            config,
+            "VASS_MAX_SPREAD_RISK_PCT",
+            getattr(
+                config, "VASS_RISK_PER_TRADE_PCT", getattr(config, "SWING_SPREAD_MAX_PCT", 0.15)
+            ),
+        )
     )
     swing_max_dollars = portfolio_value * swing_max_pct
     vass_abs_cap = float(getattr(config, "VASS_MAX_RISK_DOLLARS", 0.0) or 0.0)
@@ -1383,8 +1389,14 @@ def check_credit_spread_entry_signal_impl(
         if portfolio_value and portfolio_value > 0
         else (self.algorithm.Portfolio.TotalPortfolioValue if self.algorithm else 50000)
     )
-    swing_max_pct = getattr(
-        config, "VASS_RISK_PER_TRADE_PCT", getattr(config, "SWING_SPREAD_MAX_PCT", 0.15)
+    swing_max_pct = float(
+        getattr(
+            config,
+            "VASS_MAX_SPREAD_RISK_PCT",
+            getattr(
+                config, "VASS_RISK_PER_TRADE_PCT", getattr(config, "SWING_SPREAD_MAX_PCT", 0.15)
+            ),
+        )
     )
     swing_max_dollars = portfolio_value * swing_max_pct
     vass_abs_cap = float(getattr(config, "VASS_MAX_RISK_DOLLARS", 0.0) or 0.0)

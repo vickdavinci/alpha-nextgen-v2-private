@@ -1,0 +1,53 @@
+======================================================================
+BACKTEST OVERVIEW: V12.7-FullYear2024-R1
+======================================================================
+
+## Basic Info
+  Backtest ID:    14783be00e6d3c1226b1c9eed0445f41
+  Project ID:     27678023
+  Status:         Completed.
+  Created:        2026-02-25 01:11:24
+  Backtest Start: 2024-01-01 00:00:00
+  Backtest End:   2024-12-31 23:59:59
+  Node:           B8-16 node 7d34fcc0
+
+## Statistics
+  Net Profit                    : -24.074%
+  Compounding Annual Return     : -24.017%
+  Sharpe Ratio                  : -1.336
+  Sortino Ratio                 : -1.405
+  Drawdown                      : 24.100%
+  Win Rate                      : 47%
+  Loss Rate                     : 53%
+  Total Orders                  : 1024
+  Total Fees                    : $2271.30
+  Start Equity                  : 100000
+  End Equity                    : 75925.7
+
+  --- All Statistics ---
+  Alpha                         : 0
+  Annual Standard Deviation     : 0.163
+  Annual Variance               : 0.026
+  Average Loss                  : -1.20%
+  Average Win                   : 1.23%
+  Beta                          : 0
+  Drawdown Recovery             : 0
+  Estimated Strategy Capacity   : $1000.00
+  Expectancy                    : -0.057
+  Information Ratio             : -0.998
+  Lowest Capacity Asset         : QQQ YPFCAZLEF0DI|QQQ RIWIV7K5Z9LX
+  Portfolio Turnover            : 8.67%
+  Probabilistic Sharpe Ratio    : 0.861%
+  Profit-Loss Ratio             : 1.03
+  Tracking Error                : 0.163
+  Treynor Ratio                 : 0
+
+## Runtime Statistics
+  Equity                        : $75,925.70
+  Fees                          : -$2,271.30
+  Holdings                      : $0.00
+  Net Profit                    : $-24,074.30
+  Probabilistic Sharpe Ratio    : 0.861%
+  Return                        : -24.07 %
+  Unrealized                    : $0.00
+  Volume                        : $2,816,265.00
