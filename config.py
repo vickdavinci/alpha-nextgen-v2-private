@@ -939,8 +939,10 @@ VASS_IV_SMOOTHING_MINUTES = 30  # SMA window to prevent strategy flickering
 # DTE Ranges by IV Environment (Swing Mode)
 VASS_LOW_IV_DTE_MIN = 30  # Low IV: Monthly expiration
 VASS_LOW_IV_DTE_MAX = 45
-VASS_MEDIUM_IV_DTE_MIN = 14  # Medium IV debit spreads: avoid 7-13 DTE gamma zone
-VASS_MEDIUM_IV_DTE_MAX = 30  # V6.12: Widen for better contract availability
+VASS_MEDIUM_IV_DTE_MIN = (
+    21  # V12.9 P1: shift medium-IV debit spreads out of theta-accelerating window.
+)
+VASS_MEDIUM_IV_DTE_MAX = 45  # V12.9 P1: allow more time for thesis realization in medium IV.
 # V6.6: Widened HIGH IV DTE range - 36 spread failures in 2022H1 due to narrow 7-14 window
 VASS_HIGH_IV_DTE_MIN = 7  # V10.10: avoid immediate churn against SPREAD_DTE_EXIT=5
 VASS_HIGH_IV_DTE_MAX = 21  # High-IV credit spreads: keep in theta-efficient window
@@ -1016,6 +1018,14 @@ VASS_REGIME_BREAK_BULL_FLOOR = 50.0  # Close bullish spreads when regime falls b
 VASS_REGIME_BREAK_BEAR_CEILING = 50.0  # Close bearish spreads when regime rises above this
 VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT = 0.80  # Confirmed conviction mode: let winners run
 VASS_REGIME_CONFIRMED_DTE_EXIT = 2  # Confirmed conviction mode: hold until 2 DTE
+VASS_REGIME_CONFIRMED_DTE_EXIT_DEBIT = 2  # Debit spreads can hold longer in confirmed mode.
+VASS_REGIME_CONFIRMED_DTE_EXIT_CREDIT = (
+    5  # Credit spreads stay assignment-defensive in confirmed mode.
+)
+VASS_REGIME_CONFIRMED_DISABLE_DEBIT_MARK_STOP = True
+VASS_REGIME_CONFIRMED_DISABLE_DEBIT_TRAIL = True
+VASS_REGIME_CONFIRMED_DISABLE_CREDIT_MARK_STOP = False
+VASS_REGIME_CONFIRMED_DISABLE_CREDIT_TRAIL = False
 VASS_ENABLE_MARK_STOP_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
 VASS_ENABLE_TAIL_CAP_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
 VASS_ENABLE_TRAIL_PROFIT_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
@@ -1130,6 +1140,11 @@ OPTIONS_MOMENTUM_MA_PERIOD = 200
 OPTIONS_IV_RANK_LOW = 20  # IV rank < 20 → 0.25
 OPTIONS_IV_RANK_HIGH = 80  # IV rank > 80 → 0.25
 # IV rank 20-80 → full score
+OPTIONS_IV_RANK_USE_CHAIN_PERCENTILE = (
+    True  # V12.9 P1: use chain-implied-vol percentile before falling back to VIX proxy.
+)
+OPTIONS_IV_RANK_HISTORY_DAYS = 126  # ~6 months trading days for rolling IV-rank window.
+OPTIONS_IV_RANK_MIN_SAMPLES = 20
 
 # Liquidity Factor
 OPTIONS_SPREAD_MAX_PCT = 0.14  # Slightly wider filter to reduce unnecessary spread rejections
@@ -1248,6 +1263,7 @@ SHORT_LEG_ITM_EXIT_THRESHOLD = (
     0.035  # Raised to reduce noise exits; trigger only on deeper ITM risk
 )
 SPREAD_ASSIGNMENT_GRACE_MINUTES = 45  # V6.15 FIX: Allow spread to stabilize before ITM checks
+SPREAD_ASSIGNMENT_GRACE_MINUTES_CREDIT = 20  # V12.9 P1: stricter credit assignment response.
 SHORT_LEG_ITM_EXIT_LOG_INTERVAL = 30  # Minutes between log messages
 SPREAD_MIN_HOLD_MINUTES = 240  # V12.6: partial-day hold window to reduce forced late exits
 SPREAD_HOLD_GUARD_SOFT_ENABLED = True
@@ -1873,6 +1889,8 @@ GAMMA_PIN_EARLY_EXIT_DTE = 2  # Activate within 2 DTE
 # Pitfall #4: VASS Rejection Logging - Throttled logging for silent rejections
 VASS_LOG_REJECTION_INTERVAL_MINUTES = 30  # Log rejections every 15 min (not every candle)
 MICRO_NO_TRADE_LOG_INTERVAL_MINUTES = 30  # Per-block throttle for MICRO_NO_TRADE logs
+VASS_SLOT_BACKOFF_ENABLED = True  # V12.9 P1: suppress repeated slot-block churn loops.
+VASS_SLOT_BACKOFF_MINUTES = 20
 
 # -----------------------------------------------------------------------------
 # V2.11: PRE-BACKTEST SAFETY FIXES (Pitfalls #6-8)

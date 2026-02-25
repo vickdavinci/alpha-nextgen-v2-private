@@ -2027,17 +2027,64 @@ class AlphaNextGen(QCAlgorithm):
         Returns:
             IV rank as percentage (0-100).
         """
-        # Use VIX as IV proxy (normalized to IV rank scale)
-        # VIX typical ranges: Low ~12, High ~35, Avg ~18
-        vix = self._current_vix
-        vix_low = 12.0
-        vix_high = 35.0
 
-        if vix_high <= vix_low:
-            return 50.0
+        def _vix_proxy_iv_rank() -> float:
+            vix = float(getattr(self, "_current_vix", 20.0) or 20.0)
+            vix_low = 12.0
+            vix_high = 35.0
+            if vix_high <= vix_low:
+                return 50.0
+            iv_rank = (vix - vix_low) / (vix_high - vix_low) * 100.0
+            return max(0.0, min(100.0, iv_rank))
 
-        iv_rank = (vix - vix_low) / (vix_high - vix_low) * 100.0
-        return max(0.0, min(100.0, iv_rank))
+        if not bool(getattr(config, "OPTIONS_IV_RANK_USE_CHAIN_PERCENTILE", True)):
+            return _vix_proxy_iv_rank()
+
+        chain_ivs = []
+        try:
+            for contract in chain:
+                iv_raw = getattr(contract, "ImpliedVolatility", None)
+                if iv_raw is None:
+                    iv_raw = getattr(contract, "implied_volatility", None)
+                if iv_raw is None:
+                    continue
+                iv = float(iv_raw)
+                if 0.01 <= iv <= 5.0:
+                    chain_ivs.append(iv)
+        except Exception:
+            chain_ivs = []
+
+        if not chain_ivs:
+            return _vix_proxy_iv_rank()
+
+        chain_ivs.sort()
+        mid = len(chain_ivs) // 2
+        if len(chain_ivs) % 2 == 1:
+            current_iv = float(chain_ivs[mid])
+        else:
+            current_iv = float((chain_ivs[mid - 1] + chain_ivs[mid]) / 2.0)
+
+        if not hasattr(self, "_iv_rank_chain_history"):
+            self._iv_rank_chain_history = []
+            self._iv_rank_chain_last_date = ""
+
+        history = getattr(self, "_iv_rank_chain_history", [])
+        today = str(self.Time.date())
+        if getattr(self, "_iv_rank_chain_last_date", "") != today:
+            history.append(current_iv)
+            max_days = max(10, int(getattr(config, "OPTIONS_IV_RANK_HISTORY_DAYS", 126)))
+            if len(history) > max_days:
+                history[:] = history[-max_days:]
+            self._iv_rank_chain_history = history
+            self._iv_rank_chain_last_date = today
+
+        min_samples = max(5, int(getattr(config, "OPTIONS_IV_RANK_MIN_SAMPLES", 20)))
+        if len(history) < min_samples:
+            return _vix_proxy_iv_rank()
+
+        le_count = sum(1 for sample in history if sample <= current_iv)
+        percentile = 100.0 * (le_count / max(1, len(history)))
+        return max(0.0, min(100.0, percentile))
 
     def _has_leveraged_position(self) -> bool:
         """

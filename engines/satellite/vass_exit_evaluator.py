@@ -104,8 +104,16 @@ def check_spread_exit_signals_impl(
     day4_eod_exit_enabled = bool(getattr(config, "VASS_ENABLE_DAY4_EOD_EXITS", True))
 
     if regime_confirmed:
-        trail_exit_enabled = False
-        mark_stop_enabled = False
+        if is_credit_spread:
+            if bool(getattr(config, "VASS_REGIME_CONFIRMED_DISABLE_CREDIT_TRAIL", False)):
+                trail_exit_enabled = False
+            if bool(getattr(config, "VASS_REGIME_CONFIRMED_DISABLE_CREDIT_MARK_STOP", False)):
+                mark_stop_enabled = False
+        else:
+            if bool(getattr(config, "VASS_REGIME_CONFIRMED_DISABLE_DEBIT_TRAIL", True)):
+                trail_exit_enabled = False
+            if bool(getattr(config, "VASS_REGIME_CONFIRMED_DISABLE_DEBIT_MARK_STOP", True)):
+                mark_stop_enabled = False
         # V12.9: tail_cap stays ALWAYS active — conviction floor prevents unbounded losses
 
     regime_break_enabled = thesis_first_mode and bool(
@@ -123,15 +131,25 @@ def check_spread_exit_signals_impl(
         elif is_bearish_spread and regime_score > regime_break_bear_ceiling:
             regime_break_reason = f"VASS_REGIME_BREAK_BEAR: Regime {regime_score:.0f} > {regime_break_bear_ceiling:.0f}"
 
-    dte_exit_threshold = int(
-        getattr(
-            config,
-            "VASS_REGIME_CONFIRMED_DTE_EXIT",
-            config.SPREAD_DTE_EXIT,
-        )
-    )
-    if not regime_confirmed:
-        dte_exit_threshold = int(getattr(config, "SPREAD_DTE_EXIT", dte_exit_threshold))
+    if regime_confirmed:
+        if is_credit_spread:
+            dte_exit_threshold = int(
+                getattr(
+                    config,
+                    "VASS_REGIME_CONFIRMED_DTE_EXIT_CREDIT",
+                    getattr(config, "SPREAD_DTE_EXIT", 5),
+                )
+            )
+        else:
+            dte_exit_threshold = int(
+                getattr(
+                    config,
+                    "VASS_REGIME_CONFIRMED_DTE_EXIT_DEBIT",
+                    getattr(config, "VASS_REGIME_CONFIRMED_DTE_EXIT", config.SPREAD_DTE_EXIT),
+                )
+            )
+    else:
+        dte_exit_threshold = int(getattr(config, "SPREAD_DTE_EXIT", 5))
 
     def _resolve_vass_tail_cap_pct(resolved_dte: int) -> float:
         base_pct = float(getattr(config, "VASS_TAIL_RISK_CAP_PCT_EQUITY", 0.015))

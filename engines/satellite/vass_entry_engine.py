@@ -19,6 +19,7 @@ class VASSEntryEngine:
         self._last_entry_date_by_direction: Dict[str, str] = {}
         self._last_entry_dt_by_direction: Dict[str, datetime] = {}
         self._last_rejection_log_by_key: Dict[str, datetime] = {}
+        self._slot_backoff_until_by_key: Dict[str, datetime] = {}
         self._consecutive_losses: int = 0
         self._loss_breaker_pause_until: Optional[str] = None  # YYYY-MM-DD
 
@@ -36,6 +37,33 @@ class VASSEntryEngine:
                 return False
         self._last_rejection_log_by_key[reason_key] = now
         return True
+
+    def _slot_backoff_key(
+        self,
+        *,
+        direction: Optional[OptionDirection],
+        overlay_state: Optional[str],
+    ) -> str:
+        direction_key = direction.value if direction is not None else "NONE"
+        overlay_key = str(overlay_state or "NA").upper()
+        return f"{direction_key}|{overlay_key}"
+
+    def _is_slot_backoff_active(self, *, now: datetime, key: str) -> bool:
+        if not bool(getattr(config, "VASS_SLOT_BACKOFF_ENABLED", False)):
+            return False
+        until = self._slot_backoff_until_by_key.get(key)
+        if until is None:
+            return False
+        if now < until:
+            return True
+        self._slot_backoff_until_by_key.pop(key, None)
+        return False
+
+    def _arm_slot_backoff(self, *, now: datetime, key: str) -> None:
+        if not bool(getattr(config, "VASS_SLOT_BACKOFF_ENABLED", False)):
+            return
+        minutes = max(1, int(getattr(config, "VASS_SLOT_BACKOFF_MINUTES", 20)))
+        self._slot_backoff_until_by_key[key] = now + timedelta(minutes=minutes)
 
     def select_strategy(
         self,
@@ -1171,6 +1199,15 @@ class VASSEntryEngine:
             direction=direction_str,
             overlay_state=overlay_state,
         )
+        slot_backoff_key = self._slot_backoff_key(
+            direction=direction,
+            overlay_state=overlay_state,
+        )
+        if self._is_slot_backoff_active(
+            now=algorithm.Time,
+            key=slot_backoff_key,
+        ):
+            return
         dte_ranges = host.build_vass_dte_fallbacks(vass_dte_min, vass_dte_max)
         dte_min_all = min(r[0] for r in dte_ranges)
         dte_max_all = max(r[1] for r in dte_ranges)
@@ -1178,6 +1215,12 @@ class VASSEntryEngine:
             direction=direction, overlay_state=overlay_state
         )
         if not can_swing_vass:
+            reason_code = str(swing_reason_vass or "").split(":", 1)[0].strip().upper()
+            if reason_code.startswith("R_SLOT_"):
+                self._arm_slot_backoff(
+                    now=algorithm.Time,
+                    key=slot_backoff_key,
+                )
             if "R_SLOT_DIRECTION_OVERLAY" in swing_reason_vass:
                 algorithm._diag_overlay_slot_block_count += 1
             algorithm._record_vass_reject_reason("SWING_SLOT_BLOCK")

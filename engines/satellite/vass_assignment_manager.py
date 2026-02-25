@@ -414,7 +414,15 @@ def check_assignment_risk_exit_impl(
 
     # Grace period to avoid immediate churn exits right after spread entry.
     # Mandatory DTE close remains active.
-    assignment_grace_minutes = getattr(config, "SPREAD_ASSIGNMENT_GRACE_MINUTES", 45)
+    assignment_grace_minutes = int(getattr(config, "SPREAD_ASSIGNMENT_GRACE_MINUTES", 45))
+    if is_credit_spread:
+        assignment_grace_minutes = int(
+            getattr(
+                config,
+                "SPREAD_ASSIGNMENT_GRACE_MINUTES_CREDIT",
+                assignment_grace_minutes,
+            )
+        )
     in_assignment_grace = False
     if assignment_grace_minutes > 0 and getattr(self, "algorithm", None) is not None:
         try:
