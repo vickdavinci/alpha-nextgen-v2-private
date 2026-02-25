@@ -778,7 +778,13 @@ def check_spread_exit_signals_impl(
         credit_profit_target_pct = float(getattr(config, "CREDIT_SPREAD_PROFIT_TARGET", 0.50))
         if regime_confirmed:
             credit_profit_target_pct = float(
-                getattr(config, "VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT", credit_profit_target_pct)
+                getattr(
+                    config,
+                    "VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT_CREDIT",
+                    getattr(
+                        config, "VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT", credit_profit_target_pct
+                    ),
+                )
             )
         profit_target = spread.max_profit * credit_profit_target_pct
         if profit_target_enabled and pnl >= profit_target:
@@ -995,8 +1001,12 @@ def check_spread_exit_signals_impl(
             adaptive_profit_pct = float(
                 getattr(
                     config,
-                    "VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT",
-                    vass_exit_profile.get("target_pct", config.SPREAD_PROFIT_TARGET_PCT),
+                    "VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT_DEBIT",
+                    getattr(
+                        config,
+                        "VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT",
+                        vass_exit_profile.get("target_pct", config.SPREAD_PROFIT_TARGET_PCT),
+                    ),
                 )
             )
         else:

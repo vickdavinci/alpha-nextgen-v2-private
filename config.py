@@ -1029,6 +1029,10 @@ VASS_REGIME_BREAK_EXIT_ENABLED = True
 VASS_REGIME_BREAK_BULL_FLOOR = 50.0  # Close bullish spreads when regime falls below this
 VASS_REGIME_BREAK_BEAR_CEILING = 50.0  # Close bearish spreads when regime rises above this
 VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT = 0.80  # Confirmed conviction mode: let winners run
+VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT_DEBIT = 0.80  # Confirmed debit spreads: let winners run.
+VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT_CREDIT = (
+    0.60  # Confirmed credit spreads: harvest earlier to reduce assignment drift.
+)
 VASS_REGIME_CONFIRMED_DTE_EXIT = 2  # Confirmed conviction mode: hold until 2 DTE
 VASS_REGIME_CONFIRMED_DTE_EXIT_DEBIT = 2  # Debit spreads can hold longer in confirmed mode.
 VASS_REGIME_CONFIRMED_DTE_EXIT_CREDIT = (
