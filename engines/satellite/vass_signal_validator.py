@@ -708,6 +708,32 @@ def check_spread_entry_signal_impl(
         self.log(f"SPREAD: Entry blocked - max profit ${max_profit:.2f} <= 0")
         return fail_quality("MAX_PROFIT_NON_POSITIVE")
 
+    if bool(getattr(config, "VASS_GREEKS_ENTRY_GATE_ENABLED", False)):
+        long_theta = float(getattr(long_leg_contract, "theta", 0.0) or 0.0)
+        short_theta = float(getattr(short_leg_contract, "theta", 0.0) or 0.0)
+        long_vega = float(getattr(long_leg_contract, "vega", 0.0) or 0.0)
+        short_vega = float(getattr(short_leg_contract, "vega", 0.0) or 0.0)
+        net_theta = long_theta - short_theta
+        net_vega = long_vega - short_vega
+        theta_burn_ratio = abs(min(0.0, net_theta)) / max(net_debit, 1e-6)
+        vega_ratio = abs(net_vega) / max(net_debit, 1e-6)
+        max_theta_ratio = float(getattr(config, "VASS_DEBIT_MAX_THETA_TO_DEBIT", 1.0))
+        max_vega_ratio = float(getattr(config, "VASS_DEBIT_MAX_VEGA_TO_DEBIT", 99.0))
+        if theta_burn_ratio > max_theta_ratio:
+            self.log(
+                f"SPREAD: Entry blocked - THETA_BURN_TO_DEBIT {theta_burn_ratio:.1%} > "
+                f"{max_theta_ratio:.0%} | NetTheta={net_theta:.4f} Debit={net_debit:.2f}",
+                trades_only=True,
+            )
+            return fail_quality("THETA_BURN_TOO_HIGH")
+        if vega_ratio > max_vega_ratio:
+            self.log(
+                f"SPREAD: Entry blocked - VEGA_TO_DEBIT {vega_ratio:.1%} > "
+                f"{max_vega_ratio:.0%} | NetVega={net_vega:.4f} Debit={net_debit:.2f}",
+                trades_only=True,
+            )
+            return fail_quality("VEGA_EXPOSURE_TOO_HIGH")
+
     # V10.16: Adaptive debit-to-width quality cap by current VIX regime.
     min_debit_pct = float(getattr(config, "SPREAD_MIN_DEBIT_TO_WIDTH_PCT", 0.28))
     max_debit_pct = self._get_spread_debit_width_cap(vix_current)
@@ -1377,6 +1403,30 @@ def check_credit_spread_entry_signal_impl(
         return fail_quality("CREDIT_BELOW_MIN")
 
     credit_to_width = (credit_received / width) if width > 0 else 0.0
+    if bool(getattr(config, "VASS_GREEKS_ENTRY_GATE_ENABLED", False)):
+        short_theta = float(getattr(short_leg_contract, "theta", 0.0) or 0.0)
+        long_theta = float(getattr(long_leg_contract, "theta", 0.0) or 0.0)
+        short_vega = float(getattr(short_leg_contract, "vega", 0.0) or 0.0)
+        long_vega = float(getattr(long_leg_contract, "vega", 0.0) or 0.0)
+        net_theta = short_theta - long_theta
+        net_vega = short_vega - long_vega
+        min_net_theta = float(getattr(config, "VASS_CREDIT_MIN_NET_THETA", -999.0))
+        max_vega_ratio = float(getattr(config, "VASS_CREDIT_MAX_VEGA_TO_CREDIT", 99.0))
+        vega_ratio = abs(net_vega) / max(credit_received, 1e-6)
+        if net_theta < min_net_theta:
+            self.log(
+                f"CREDIT_SPREAD: Entry blocked - NET_THETA {net_theta:.4f} < {min_net_theta:.4f}",
+                trades_only=True,
+            )
+            return fail_quality("NET_THETA_UNFAVORABLE")
+        if vega_ratio > max_vega_ratio:
+            self.log(
+                f"CREDIT_SPREAD: Entry blocked - VEGA_TO_CREDIT {vega_ratio:.1%} > "
+                f"{max_vega_ratio:.0%} | NetVega={net_vega:.4f} Credit={credit_received:.2f}",
+                trades_only=True,
+            )
+            return fail_quality("VEGA_EXPOSURE_TOO_HIGH")
+
     if bool(getattr(config, "VASS_POP_GATE_ENABLED", False)):
         short_delta_abs = abs(float(getattr(short_leg_contract, "delta", 0.0) or 0.0))
         # Credit spread PoP proxy: probability short leg stays OTM by expiry.
