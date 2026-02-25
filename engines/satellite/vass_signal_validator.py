@@ -717,6 +717,20 @@ def check_spread_entry_signal_impl(
         max_debit_pct = min(relaxed_cap_max, max_debit_pct + max(0.0, relaxed_cap_bump))
 
     debit_to_width = net_debit / width if width > 0 else 1.0
+    if bool(getattr(config, "VASS_POP_GATE_ENABLED", False)):
+        # PoP proxy at breakeven: interpolate between long- and short-leg ITM probabilities.
+        pop_proxy = long_delta_abs - debit_to_width * max(0.0, long_delta_abs - short_delta_abs)
+        pop_proxy = max(0.0, min(1.0, pop_proxy))
+        min_pop = float(getattr(config, "VASS_POP_MIN_DEBIT", 0.0))
+        if pop_proxy < min_pop:
+            self.log(
+                f"SPREAD: Entry blocked - PoP proxy {pop_proxy:.1%} < {min_pop:.0%} | "
+                f"LongDelta={long_delta_abs:.2f} ShortDelta={short_delta_abs:.2f} "
+                f"Debit/Width={debit_to_width:.1%}",
+                trades_only=True,
+            )
+            return fail_quality("POP_BELOW_MIN")
+
     abs_cap_vix = float(getattr(config, "SPREAD_DW_ABSOLUTE_CAP_VIX", 15.0))
     abs_cap_scaled = self._get_spread_absolute_debit_cap(vix_current, width)
     dynamic_abs_cap = bool(getattr(config, "SPREAD_DW_ABSOLUTE_CAP_DYNAMIC_ENABLED", False))
@@ -1363,6 +1377,19 @@ def check_credit_spread_entry_signal_impl(
         return fail_quality("CREDIT_BELOW_MIN")
 
     credit_to_width = (credit_received / width) if width > 0 else 0.0
+    if bool(getattr(config, "VASS_POP_GATE_ENABLED", False)):
+        short_delta_abs = abs(float(getattr(short_leg_contract, "delta", 0.0) or 0.0))
+        # Credit spread PoP proxy: probability short leg stays OTM by expiry.
+        pop_proxy = max(0.0, min(1.0, 1.0 - short_delta_abs))
+        min_pop = float(getattr(config, "VASS_POP_MIN_CREDIT", 0.0))
+        if pop_proxy < min_pop:
+            self.log(
+                f"CREDIT_SPREAD: Entry blocked - PoP proxy {pop_proxy:.1%} < {min_pop:.0%} | "
+                f"ShortDelta={short_delta_abs:.2f}",
+                trades_only=True,
+            )
+            return fail_quality("POP_BELOW_MIN")
+
     min_credit_to_width = self._get_effective_credit_to_width_min(vix_current=vix_current)
     if credit_to_width < min_credit_to_width:
         self.log(

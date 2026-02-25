@@ -1017,6 +1017,9 @@ VASS_EV_DIAGNOSTICS_TOP_N = 3
 VASS_SHORT_LEG_SORT_POP_FIRST = (
     True  # V12.10: prioritize higher PoP structures before cheapest debit.
 )
+VASS_POP_GATE_ENABLED = True  # V12.10: explicit probability-of-profit gate.
+VASS_POP_MIN_DEBIT = 0.55
+VASS_POP_MIN_CREDIT = 0.55
 
 # V12.7: Universal adaptive VASS policy (fully reversible via VASS_EXIT_POLICY_MODE).
 # LEGACY      -> preserve historical behavior.
