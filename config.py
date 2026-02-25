@@ -1006,7 +1006,7 @@ VASS_NO_CONVICTION_NO_TRADE = True  # V12.9 P0: no conviction => no VASS trade.
 VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT = (
     False  # V10.10 tuning: disable bearish credit fallback while BEAR_PUT gating is rebalanced
 )
-VASS_EV_PRE_GATE_ENABLED = True  # V12.9 P0: pre-gate weak EV contexts before spread construction.
+VASS_EV_PRE_GATE_ENABLED = False  # V12.11: disabled — D/W cap is the universal cost gate; IV rank pre-gate is redundant and miscalibrated in low-VIX.
 VASS_EV_PRE_BULL_REGIME_MIN = (
     52.0  # V12.10: allow neutral-bull tape to participate in bull debit entries.
 )
@@ -1590,9 +1590,11 @@ SPREAD_DW_LOW_VIX_MAX = 18.0
 SPREAD_DW_HIGH_VIX_MIN = 25.0
 SPREAD_DW_CAP_PANIC = 0.28  # VIX > 35
 SPREAD_DW_CAP_HIGH = 0.32  # 25 <= VIX < 35
-SPREAD_DW_CAP_ELEVATED = 0.35  # V12.9 P0: tighten debit cost in elevated-but-normalizing IV.
-SPREAD_DW_CAP_NORMAL = 0.33  # V12.9 P0: keep normal-IV debit cost near positive-EV range.
-SPREAD_DW_CAP_COMPRESSED = 0.35  # V12.9 P0: avoid 45-50% debit/width in low-VIX tapes.
+SPREAD_DW_CAP_ELEVATED = 0.38  # V12.11: coherent with delta 0.43 target (natural D/W ~0.40-0.43).
+SPREAD_DW_CAP_NORMAL = 0.40  # V12.11: primary trading band (VIX 13-18), allows delta-0.43 entries.
+SPREAD_DW_CAP_COMPRESSED = (
+    0.42  # V12.11: compressed IV (VIX < 13), slightly wider for thin premium.
+)
 SPREAD_DW_ABSOLUTE_CAP = 2.00  # Max debit dollars on $5 spread in very calm IV
 SPREAD_DW_ABSOLUTE_CAP_VIX = 15.0
 # V12.0: Elastic absolute debit cap (inversely scaled by VIX, bounded).
@@ -1711,7 +1713,7 @@ VASS_BULL_DEBIT_MIN_DAY_CHANGE_PCT = (
 VASS_BULL_SHORT_CALL_DISTANCE_GUARD_ENABLED = True
 VASS_BULL_SHORT_CALL_MIN_OTM_PCT = 0.008
 VASS_BULL_SHORT_CALL_MIN_ATR_MULT = 0.60
-VASS_RECOVERY_RELAX_ENABLED = True
+VASS_RECOVERY_RELAX_ENABLED = False  # V12.11: disabled — fires on ALL bullish entries (not just recovery), silently overrides D/W caps by +9%.
 VASS_RECOVERY_RELAX_DAY_MIN_CHANGE_PCT = -0.05
 VASS_RECOVERY_RELAX_MA20_TOLERANCE_PCT = 0.003
 VASS_RECOVERY_RELAX_DW_CAP_BUMP = 0.09
@@ -1832,9 +1834,7 @@ SPREAD_LOCK_CLEAR_ON_FAILURE = True  # Clear is_closing lock if all close attemp
 # 2022H1 analysis showed 36 spread failures due to strict delta requirements
 SPREAD_LONG_LEG_DELTA_MIN = 0.35  # V6.10 P3: Was 0.40, widen range for more candidates
 SPREAD_LONG_LEG_DELTA_MAX = 0.65  # V9.1: Was 0.90, cap ITM depth to improve R:R on CALL debits
-SPREAD_LONG_LEG_DELTA_TARGET_CALL = (
-    0.58  # V12.10: rebalance bullish debit target toward lower-theta ITM.
-)
+SPREAD_LONG_LEG_DELTA_TARGET_CALL = 0.43  # V12.11: slightly OTM — D/W ≈ delta, so 0.43 produces D/W ~0.40-0.43 (PoP 57-60%, R:R 1.3-1.5:1). ATM (0.50) was coin-flip; ITM (0.58) was worse.
 SPREAD_LONG_LEG_DELTA_TARGET_PUT = (
     0.70  # V9.1: ITM target for PUTs (unchanged, directional exposure)
 )
