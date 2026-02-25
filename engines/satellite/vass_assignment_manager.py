@@ -282,6 +282,20 @@ def check_premarket_itm_shorts_impl(
     if spread.is_closing:
         return None
 
+    is_credit_spread = spread.spread_type in (
+        "BULL_PUT_CREDIT",
+        "BEAR_CALL_CREDIT",
+        SpreadStrategy.BULL_PUT_CREDIT.value,
+        SpreadStrategy.BEAR_CALL_CREDIT.value,
+    )
+    if not is_credit_spread:
+        self.log(
+            f"PREMARKET_ITM_CHECK: Debit spread bypass | Type={spread.spread_type} | "
+            f"Underlying={underlying_price:.2f}",
+            trades_only=True,
+        )
+        return None
+
     short_leg = spread.short_leg
 
     # Check if short leg is ITM
@@ -329,12 +343,6 @@ def check_premarket_itm_shorts_impl(
 
     # Return exit signal for market open
     num_contracts = spread.num_spreads
-    is_credit_spread = spread.spread_type in (
-        "BULL_PUT_CREDIT",
-        "BEAR_CALL_CREDIT",
-        SpreadStrategy.BULL_PUT_CREDIT.value,
-        SpreadStrategy.BEAR_CALL_CREDIT.value,
-    )
     credit_received = abs(spread.net_debit) if is_credit_spread else 0.0
     return [
         TargetWeight(
@@ -396,6 +404,12 @@ def check_assignment_risk_exit_impl(
         return None
 
     short_leg = spread.short_leg
+    is_credit_spread = spread.spread_type in (
+        "BULL_PUT_CREDIT",
+        "BEAR_CALL_CREDIT",
+        SpreadStrategy.BULL_PUT_CREDIT.value,
+        SpreadStrategy.BEAR_CALL_CREDIT.value,
+    )
     exit_reason = None
 
     # Grace period to avoid immediate churn exits right after spread entry.
@@ -425,7 +439,7 @@ def check_assignment_risk_exit_impl(
 
     # V6.9 P0 Fix 5: Short leg ITM exit (any DTE) - CHECK FIRST
     # This catches assignments at any DTE, not just near expiry
-    if not in_assignment_grace:
+    if not in_assignment_grace and is_credit_spread:
         should_exit, itm_reason = self._check_short_leg_itm_exit(
             short_leg=short_leg,
             underlying_price=underlying_price,
@@ -434,7 +448,7 @@ def check_assignment_risk_exit_impl(
             exit_reason = itm_reason
 
     # P0 Fix 1: Deep ITM short leg (DTE <= 3)
-    if exit_reason is None and not in_assignment_grace:
+    if exit_reason is None and not in_assignment_grace and is_credit_spread:
         is_deep_itm, deep_itm_reason = self._is_short_leg_deep_itm(
             short_leg=short_leg,
             underlying_price=underlying_price,
@@ -444,7 +458,7 @@ def check_assignment_risk_exit_impl(
             exit_reason = deep_itm_reason
 
     # P0 Fix 2: Overnight ITM short block
-    if exit_reason is None and not in_assignment_grace:
+    if exit_reason is None and not in_assignment_grace and is_credit_spread:
         should_close, overnight_reason = self._check_overnight_itm_short_risk(
             short_leg=short_leg,
             underlying_price=underlying_price,
@@ -480,12 +494,6 @@ def check_assignment_risk_exit_impl(
     # Return exit signal (same structure as normal spread exit)
     # V6.5 FIX: Added spread_close_short and requested_quantity for proper combo close
     num_contracts = spread.num_spreads
-    is_credit_spread = spread.spread_type in (
-        "BULL_PUT_CREDIT",
-        "BEAR_CALL_CREDIT",
-        SpreadStrategy.BULL_PUT_CREDIT.value,
-        SpreadStrategy.BEAR_CALL_CREDIT.value,
-    )
     credit_received = abs(spread.net_debit) if is_credit_spread else 0.0
     return [
         TargetWeight(
