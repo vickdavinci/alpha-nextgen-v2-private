@@ -2591,7 +2591,7 @@ EXIT_PRE_CLEAR_ALLOW_IMMEDIATE_INTRADAY_CLOSE = (
     True  # V10.22: restore time-critical intraday close bypass to reduce stale close latency
 )
 PROTECTIVE_PUTS_MAX_CONTRACTS = (
-    5  # V9.2 RCA: Cap contracts to prevent 10+ lot outsized bets in crisis
+    20  # V12.8: raise protective puts hard cap for stronger crisis hedge coverage
 )
 
 # -----------------------------------------------------------------------------
