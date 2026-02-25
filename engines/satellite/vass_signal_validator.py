@@ -105,7 +105,7 @@ def check_spread_entry_signal_impl(
     # Scoped daily attempt budget (per spread key), replaces global one-attempt lock.
     attempt_key = f"DEBIT_{direction.value if direction is not None else 'NONE'}"
     if not self._can_attempt_spread_entry(attempt_key):
-        return fail("R_COOLDOWN_DIRECTIONAL")
+        return fail("R_ATTEMPT_BUDGET_EXHAUSTED")
     attempt_recorded = False
     if bool(getattr(config, "SPREAD_ATTEMPT_COUNT_ON_VALIDATION_FAILURE", False)):
         self._record_spread_entry_attempt(attempt_key)
@@ -188,7 +188,7 @@ def check_spread_entry_signal_impl(
                     f"SPREAD: Entry blocked - margin cooldown | "
                     f"Elapsed={elapsed_minutes:.1f}m < {config.OPTIONS_POST_TRADE_COOLDOWN_MINUTES}m"
                 )
-                return fail("R_COOLDOWN_DIRECTIONAL")
+                return fail("R_POST_EXIT_MARGIN_COOLDOWN")
             else:
                 # Cooldown expired, clear the tracking
                 self._last_spread_exit_time = None
@@ -1087,7 +1087,7 @@ def check_credit_spread_entry_signal_impl(
     # Scoped daily attempt budget (strategy-specific), replaces global one-attempt lock.
     attempt_key = f"CREDIT_{strategy.value if strategy is not None else 'NONE'}"
     if not self._can_attempt_spread_entry(attempt_key):
-        return fail("R_COOLDOWN_DIRECTIONAL")
+        return fail("R_ATTEMPT_BUDGET_EXHAUSTED")
     attempt_recorded = False
     if bool(getattr(config, "SPREAD_ATTEMPT_COUNT_ON_VALIDATION_FAILURE", False)):
         self._record_spread_entry_attempt(attempt_key)
@@ -1161,7 +1161,7 @@ def check_credit_spread_entry_signal_impl(
                     f"CREDIT_SPREAD: Entry blocked - margin cooldown | "
                     f"Elapsed={elapsed_minutes:.1f}m < {config.OPTIONS_POST_TRADE_COOLDOWN_MINUTES}m"
                 )
-                return fail("R_COOLDOWN_DIRECTIONAL")
+                return fail("R_POST_EXIT_MARGIN_COOLDOWN")
             else:
                 self._last_spread_exit_time = None
         except (ValueError, TypeError):

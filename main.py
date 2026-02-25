@@ -175,6 +175,7 @@ class AlphaNextGen(QCAlgorithm):
     _clear_spread_runtime_trackers_by_key = MainReconcileMixin._clear_spread_runtime_trackers_by_key
     _check_splits = MainReconcileMixin._check_splits
     _reconcile_positions = MainReconcileMixin._reconcile_positions
+    _is_symbol_in_active_spread = MainIntradayCloseMixin._is_symbol_in_active_spread
     _check_expiration_hammer_v2 = MainIntradayCloseMixin._check_expiration_hammer_v2
     _close_options_atomic = MainIntradayCloseMixin._close_options_atomic
     _on_intraday_options_force_close = MainIntradayCloseMixin._on_intraday_options_force_close

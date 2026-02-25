@@ -935,6 +935,11 @@ VASS_ENABLED = True  # Master switch for VASS
 VASS_IV_LOW_THRESHOLD = 16  # V6.6: Was 15, raised to match data distribution
 VASS_IV_HIGH_THRESHOLD = 22  # V10.16: route elevated-IV tape to credit spreads earlier
 VASS_IV_SMOOTHING_MINUTES = 30  # SMA window to prevent strategy flickering
+# V12.10: Align VASS routing with chain IV rank when available.
+# Fallback remains VIX-threshold routing when chain percentile isn't ready.
+VASS_ROUTE_USE_CHAIN_IV_RANK = True
+VASS_ROUTE_IV_RANK_LOW = 35.0
+VASS_ROUTE_IV_RANK_HIGH = 65.0
 
 # DTE Ranges by IV Environment (Swing Mode)
 VASS_LOW_IV_DTE_MIN = 30  # Low IV: Monthly expiration
@@ -1118,7 +1123,7 @@ OPTIONS_RESERVE_RELEASE_MINUTE = 30
 # Replace one-attempt-per-day spread lock with scoped attempt budgets.
 SPREAD_MAX_ATTEMPTS_PER_KEY_PER_DAY = 3
 SPREAD_ATTEMPT_COUNT_ON_VALIDATION_FAILURE = (
-    True  # V12.9 P0: failed validation attempts consume daily attempt budget.
+    False  # V12.10: count only material entry attempts; avoids validation-churn budget burn.
 )
 SPREAD_ATTEMPT_DEDUPE_PER_MINUTE = (
     True  # V12.9: prevent same-minute retry loops from over-consuming attempt budget.

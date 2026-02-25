@@ -3150,8 +3150,35 @@ class OptionsEngine:
         """True when IV sensor has enough intraday history."""
         return self._iv_sensor.is_ready()
 
-    def get_iv_environment(self) -> str:
+    def _classify_iv_environment_from_rank(self, iv_rank: Optional[float]) -> Optional[str]:
+        """Map chain IV rank percentile to LOW/MEDIUM/HIGH buckets."""
+        if iv_rank is None:
+            return None
+        try:
+            rank = float(iv_rank)
+        except Exception:
+            return None
+        if not (0.0 <= rank <= 100.0):
+            return None
+        low = float(getattr(config, "VASS_ROUTE_IV_RANK_LOW", 35.0))
+        high = float(getattr(config, "VASS_ROUTE_IV_RANK_HIGH", 65.0))
+        if high < low:
+            low, high = high, low
+        if rank < low:
+            return "LOW"
+        if rank > high:
+            return "HIGH"
+        return "MEDIUM"
+
+    def get_iv_environment(self, iv_rank: Optional[float] = None) -> str:
         """Classify current IV environment (LOW/MEDIUM/HIGH)."""
+        use_chain_rank = bool(getattr(config, "VASS_ROUTE_USE_CHAIN_IV_RANK", False)) and bool(
+            getattr(config, "OPTIONS_IV_RANK_USE_CHAIN_PERCENTILE", True)
+        )
+        if use_chain_rank:
+            routed = self._classify_iv_environment_from_rank(iv_rank)
+            if routed is not None:
+                return routed
         return self._iv_sensor.classify()
 
     def select_vass_strategy(
@@ -3167,10 +3194,11 @@ class OptionsEngine:
         self,
         direction: str,
         overlay_state: Optional[str] = None,
+        iv_rank: Optional[float] = None,
     ) -> Tuple[Optional[SpreadStrategy], int, int, bool]:
         """Resolve VASS route including EARLY_STRESS strategy remap."""
         if getattr(config, "VASS_ENABLED", True) and self.is_iv_sensor_ready():
-            iv_environment = self.get_iv_environment()
+            iv_environment = self.get_iv_environment(iv_rank=iv_rank)
             return self._vass_entry_engine.resolve_strategy_with_overlay(
                 direction=direction,
                 overlay_state=overlay_state,

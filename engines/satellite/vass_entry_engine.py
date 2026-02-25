@@ -910,9 +910,11 @@ class VASSEntryEngine:
                 )
             return
 
+        iv_rank = algorithm._calculate_iv_rank(chain)
         strategy, vass_dte_min, vass_dte_max, is_credit = host.resolve_vass_strategy(
             direction=direction_str,
             overlay_state=overlay_state,
+            iv_rank=iv_rank,
         )
         algorithm._diag_vass_signal_seq = int(getattr(algorithm, "_diag_vass_signal_seq", 0)) + 1
         vass_signal_id = (
@@ -981,7 +983,6 @@ class VASSEntryEngine:
             contract_symbol="",
         )
 
-        iv_rank = algorithm._calculate_iv_rank(chain)
         signal = None
         rejection_code = "UNKNOWN"
 
@@ -1090,11 +1091,15 @@ class VASSEntryEngine:
                 else host.pop_last_spread_failure_stats()
             )
             validation_reason = host.pop_last_entry_validation_failure()
-            iv_env = host.get_iv_environment() if host.is_iv_sensor_ready() else "UNKNOWN"
+            iv_env = (
+                host.get_iv_environment(iv_rank=iv_rank) if host.is_iv_sensor_ready() else "UNKNOWN"
+            )
             skip_reasons = {
                 "R_SLOT_SWING_MAX",
                 "R_SLOT_TOTAL_MAX",
                 "R_SLOT_DIRECTION_MAX",
+                "R_ATTEMPT_BUDGET_EXHAUSTED",
+                "R_POST_EXIT_MARGIN_COOLDOWN",
                 "R_COOLDOWN_DIRECTIONAL",
             }
             log_prefix = "VASS_SKIPPED" if (validation_reason in skip_reasons) else "VASS_REJECTION"
@@ -1116,8 +1121,12 @@ class VASSEntryEngine:
                 reason_text = "Skipped - existing spread position"
             elif validation_reason == "R_SLOT_TOTAL_MAX":
                 reason_text = "Skipped - total options slot limit reached"
-            elif validation_reason == "R_COOLDOWN_DIRECTIONAL":
+            elif validation_reason == "R_ATTEMPT_BUDGET_EXHAUSTED":
                 reason_text = "Skipped - entry attempt limit reached"
+            elif validation_reason == "R_POST_EXIT_MARGIN_COOLDOWN":
+                reason_text = "Skipped - post-exit margin cooldown active"
+            elif validation_reason == "R_COOLDOWN_DIRECTIONAL":
+                reason_text = "Skipped - cooldown active"
             elif validation_reason == "R_MARGIN_PRECHECK":
                 reason_text = "Skipped - margin precheck failed"
             elif validation_reason and validation_reason.startswith("R_CONTRACT_QUALITY:"):
@@ -1230,6 +1239,7 @@ class VASSEntryEngine:
         strategy, vass_dte_min, vass_dte_max, is_credit = host.resolve_vass_strategy(
             direction=direction_str,
             overlay_state=overlay_state,
+            iv_rank=iv_rank,
         )
         algorithm._diag_vass_signal_seq = int(getattr(algorithm, "_diag_vass_signal_seq", 0)) + 1
         vass_signal_id = (
@@ -1251,7 +1261,8 @@ class VASSEntryEngine:
             )
             if host.should_log_vass_rejection(throttle_key):
                 algorithm.Log(
-                    f"VASS_SKIPPED: Direction={direction.value} | IV_Env={host.get_iv_environment()} | "
+                    f"VASS_SKIPPED: Direction={direction.value} | "
+                    f"IV_Env={host.get_iv_environment(iv_rank=iv_rank)} | "
                     f"VIX={current_vix:.1f} | Regime={regime_score:.0f} | "
                     f"ReasonCode={reason_code} | BackoffKey={slot_backoff_key}"
                 )
@@ -1352,7 +1363,7 @@ class VASSEntryEngine:
             if host.should_log_vass_rejection(throttle_key):
                 algorithm.Log(
                     f"VASS_REJECTION: Direction={direction.value} | "
-                    f"IV_Env={host.get_iv_environment()} | "
+                    f"IV_Env={host.get_iv_environment(iv_rank=iv_rank)} | "
                     f"VIX={current_vix:.1f} | Regime={regime_score:.0f} | "
                     f"Contracts_checked={len(candidate_contracts)} | "
                     f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
