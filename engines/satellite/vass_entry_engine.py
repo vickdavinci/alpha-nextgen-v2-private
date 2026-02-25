@@ -221,6 +221,12 @@ class VASSEntryEngine:
 
         # V12.7: Explicit VASS concurrent spread cap (separate from global swing slots).
         vass_concurrent_cap = int(getattr(config, "VASS_MAX_CONCURRENT_SPREADS", 0))
+        hard_cap = int(getattr(config, "VASS_MAX_CONCURRENT_SPREADS_HARD_CAP", 0))
+        if hard_cap > 0:
+            if vass_concurrent_cap <= 0:
+                vass_concurrent_cap = hard_cap
+            else:
+                vass_concurrent_cap = min(vass_concurrent_cap, hard_cap)
         if vass_concurrent_cap > 0:
             vass_open = len(host.get_spread_positions() or [])
             if vass_open >= vass_concurrent_cap:
@@ -1658,6 +1664,21 @@ class VASSEntryEngine:
             )
 
         preferred.sort(key=rr_sort_key)
+        if bool(getattr(config, "VASS_EV_DIAGNOSTICS_ENABLED", False)):
+            top_n = max(1, int(getattr(config, "VASS_EV_DIAGNOSTICS_TOP_N", 3)))
+            diag_rows = []
+            for candidate, width, delta_abs in preferred[:top_n]:
+                est_debit = long_leg.mid_price - candidate.mid_price
+                debit_to_width = est_debit / width if width > 0 else 0.0
+                net_delta = max(0.0, abs(long_leg.delta) - abs(candidate.delta))
+                diag_rows.append(
+                    f"Short={candidate.strike:.1f}|W={width:.1f}|DW={debit_to_width:.1%}|"
+                    f"ShortD={delta_abs:.2f}|NetD={net_delta:.2f}"
+                )
+            host.log(
+                f"SPREAD_EV_DIAG: Long={long_leg.strike:.1f} D={abs(long_leg.delta):.2f} | "
+                + " || ".join(diag_rows)
+            )
         short_leg = preferred[0][0]
         actual_width = abs(short_leg.strike - long_leg.strike)
         chosen_debit = long_leg.mid_price - short_leg.mid_price

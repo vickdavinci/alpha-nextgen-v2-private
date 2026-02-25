@@ -375,7 +375,7 @@ class MainOptionsMixin:
 
     def _record_vass_reject_reason(self, reason_code: str) -> None:
         """Track VASS reject reason counts for daily funnel RCA."""
-        code = str(reason_code or "UNKNOWN")
+        code = self._canonical_options_reason_code(str(reason_code or "UNKNOWN"))
         self._diag_vass_reject_reason_counts[code] = (
             int(self._diag_vass_reject_reason_counts.get(code, 0)) + 1
         )
@@ -1232,8 +1232,12 @@ class MainOptionsMixin:
         raw = (code or "").strip()
         if not raw:
             return "E_NO_REASON_UNCLASSIFIED"
+        if raw.startswith("R_CONTRACT_QUALITY:"):
+            detail = raw.split(":", 1)[1].strip().upper() if ":" in raw else "UNKNOWN"
+            detail_norm = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in detail)
+            return f"R_CONTRACT_QUALITY_{detail_norm or 'UNKNOWN'}"
         if raw.startswith(("E_", "R_")):
-            return raw
+            return raw.split(":", 1)[0]
 
         mapping = {
             "TRADE_LIMIT_BLOCK": "R_TRADE_LIMIT",
@@ -1249,6 +1253,9 @@ class MainOptionsMixin:
             "SPREAD_COOLDOWN_ACTIVE": "R_SPREAD_COOLDOWN",
             "CREDIT_ENTRY_VALIDATION_FAILED": "R_SPREAD_SELECTION_FAIL_UNCLASSIFIED",
             "DEBIT_ENTRY_VALIDATION_FAILED": "R_SPREAD_SELECTION_FAIL_UNCLASSIFIED",
+            "SWING_SLOT_BLOCK": "R_SLOT_BLOCK",
+            "INSUFFICIENT_CANDIDATES": "R_INSUFFICIENT_CANDIDATES",
+            "OPPOSITE_ROUTE_INSUFFICIENT_CANDIDATES": "R_OPPOSITE_ROUTE_INSUFFICIENT_CANDIDATES",
             "UNKNOWN": "E_UNKNOWN_UNCLASSIFIED",
         }
         if raw in mapping:

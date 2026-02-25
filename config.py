@@ -1005,6 +1005,10 @@ VASS_EV_PRE_GATE_ENABLED = True  # V12.9 P0: pre-gate weak EV contexts before sp
 VASS_EV_PRE_BULL_REGIME_MIN = 60.0  # Block BULL debit construction below this regime floor.
 VASS_EV_PRE_BEAR_REGIME_MAX = 40.0  # Block BEAR debit construction above this regime ceiling.
 VASS_EV_PRE_DEBIT_IV_RANK_MAX = 55.0  # Block debit construction when IV rank is too expensive.
+VASS_EV_DIAGNOSTICS_ENABLED = (
+    True  # V12.9 P2: log shortlist EV diagnostics for selected candidates.
+)
+VASS_EV_DIAGNOSTICS_TOP_N = 3
 
 # V12.7: Universal adaptive VASS policy (fully reversible via VASS_EXIT_POLICY_MODE).
 # LEGACY      -> preserve historical behavior.
@@ -1909,6 +1913,7 @@ SWING_SPREAD_MAX_PCT = 0.15  # 15% legacy cap (kept for backward compatibility)
 VASS_RISK_PER_TRADE_PCT = 0.20  # V12.4: reduce VASS allocation concentration to 20%
 VASS_MAX_SPREAD_RISK_PCT = 0.03  # V12.7: size each VASS spread to 3% max defined risk
 VASS_MAX_CONCURRENT_SPREADS = 2  # V12.7: cap concurrent VASS spreads (portfolio-level containment)
+VASS_MAX_CONCURRENT_SPREADS_HARD_CAP = 2  # V12.9 P2: keep cap locked during EV stabilization.
 INTRADAY_SPREAD_MAX_PCT = 0.08  # Legacy fallback for intraday sizing
 VASS_MAX_RISK_DOLLARS = 20000  # V12.4: hard cap VASS sizing budget
 INTRADAY_ITM_MAX_PCT = 0.15  # ITM budget slice (15% / $15k on $100k)
