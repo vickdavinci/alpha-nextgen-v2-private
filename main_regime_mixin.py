@@ -523,6 +523,9 @@ class MainRegimeMixin:
                     "spread_short_leg_quantity": spread.num_spreads,
                     "spread_key": self._build_spread_runtime_key(spread),
                     "exit_type": f"TRANSITION_DERISK_{overlay}",
+                    "spread_exit_code": f"TRANSITION_DERISK_{overlay}",
+                    "spread_exit_reason": reason,
+                    "spread_exit_emergency": True,
                 },
             )
             self._normalize_spread_close_quantities(signal)

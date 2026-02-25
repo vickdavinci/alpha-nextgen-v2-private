@@ -66,6 +66,9 @@ def apply_premarket_vix_actions(algo: Any) -> None:
                         "spread_short_leg_quantity": spread.num_spreads,
                         "spread_key": algo._build_spread_runtime_key(spread),
                         "exit_type": "PREMARKET_VIX_L3",
+                        "spread_exit_code": "PREMARKET_VIX_L3",
+                        "spread_exit_reason": "PREMARKET_VIX_L3_FLATTEN",
+                        "spread_exit_emergency": True,
                     },
                 )
             )
@@ -152,6 +155,8 @@ def apply_premarket_vix_actions(algo: Any) -> None:
                         "spread_short_leg_quantity": spread.num_spreads,
                         "spread_key": algo._build_spread_runtime_key(spread),
                         "exit_type": "PREMARKET_VIX_L2",
+                        "spread_exit_code": "PREMARKET_VIX_L2",
+                        "spread_exit_reason": "PREMARKET_VIX_L2_BULLISH_SPREAD",
                     },
                 )
             )

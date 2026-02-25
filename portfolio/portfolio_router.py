@@ -1875,10 +1875,23 @@ class PortfolioRouter:
         if not tag or not bool(md.get("spread_close_short", False)):
             return tag
 
+        def _compact_exit_code(raw: Any) -> str:
+            token = str(raw or "").strip().upper()
+            if not token:
+                return ""
+            token = token.split(":", 1)[0].split(" ", 1)[0]
+            cleaned = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in token)
+            cleaned = "_".join(part for part in cleaned.split("_") if part)
+            return cleaned[:32]
+
         additions: List[str] = []
-        exit_code = str(md.get("spread_exit_code", "") or "").strip().upper()
+        exit_code = _compact_exit_code(md.get("spread_exit_code", ""))
+        if not exit_code:
+            exit_code = _compact_exit_code(md.get("exit_type", ""))
+        if not exit_code:
+            exit_code = _compact_exit_code(md.get("spread_exit_reason", ""))
         if exit_code:
-            additions.append(f"xcode={exit_code[:32]}")
+            additions.append(f"xcode={exit_code}")
         spread_type = str(md.get("spread_type", "") or "").strip().upper()
         if spread_type:
             additions.append(f"xst={spread_type[:20]}")

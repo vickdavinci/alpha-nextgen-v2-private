@@ -3570,6 +3570,10 @@ class OptionsEngine:
                         spread
                     ),  # V6.5 FIX: Required for combo close
                     "exit_type": "GAMMA_PIN",
+                    "spread_exit_code": "GAMMA_PIN",
+                    "spread_exit_reason": (
+                        f"GAMMA_PIN_BUFFER (price within {distance_pct:.2%} of strike ${short_strike})"
+                    ),
                 },
             )
         ]

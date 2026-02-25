@@ -408,6 +408,15 @@ class MainOptionsMixin:
                 return
             signal.requested_quantity = int(close_qty)
             md["spread_short_leg_quantity"] = int(close_qty)
+            if not str(md.get("spread_exit_code", "") or "").strip():
+                reason_text = str(md.get("exit_type", "") or signal.reason or "").strip().upper()
+                token = reason_text.split(":", 1)[0].split(" ", 1)[0]
+                token = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in token)
+                token = "_".join(part for part in token.split("_") if part)
+                if token:
+                    md["spread_exit_code"] = token[:32]
+            if not str(md.get("spread_exit_reason", "") or "").strip() and signal.reason:
+                md["spread_exit_reason"] = str(signal.reason)
             signal.metadata = md
         except Exception:
             return

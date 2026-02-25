@@ -315,6 +315,41 @@ def format_orders_csv(orders):
     if not orders:
         return "Time,Symbol,Price,Quantity,Type,Status,Direction,Value,Tag,ID\n"
 
+    order_type_map = {
+        0: "Market",
+        1: "Limit",
+        2: "Stop Market",
+        3: "Stop Limit",
+        4: "Market On Open",
+        5: "Market On Close",
+        6: "Option Exercise",
+        7: "Option Assignment",
+        8: "Combo Market",
+        9: "Combo Limit",
+        10: "Combo Leg Limit",
+    }
+    order_status_map = {
+        0: "New",
+        1: "Submitted",
+        2: "Partially Filled",
+        3: "Filled",
+        4: "Cancel Pending",
+        5: "Canceled",
+        6: "None",
+        7: "Invalid",
+        8: "Cancel Pending",
+        9: "Update Submitted",
+    }
+    order_direction_map = {0: "Buy", 1: "Sell", 2: "Hold"}
+
+    def _enum_label(raw_value, mapping):
+        text = str(raw_value if raw_value is not None else "").strip()
+        if not text:
+            return ""
+        if text.lstrip("-").isdigit():
+            return mapping.get(int(text), text)
+        return text
+
     lines = ["Time,Symbol,Price,Quantity,Type,Status,Direction,Value,Tag,ID"]
 
     for order in orders:
@@ -327,9 +362,9 @@ def format_orders_csv(orders):
             symbol_str = str(symbol)
         price = order.get("price", 0)
         quantity = order.get("quantity", 0)
-        order_type = order.get("type", "")
-        status = order.get("status", "")
-        direction = order.get("direction", "")
+        order_type = _enum_label(order.get("type", ""), order_type_map)
+        status = _enum_label(order.get("status", ""), order_status_map)
+        direction = _enum_label(order.get("direction", ""), order_direction_map)
         value = order.get("value", 0)
         tag = str(order.get("tag", "") or "").replace('"', '""')
         order_id = order.get("id", "")
@@ -349,6 +384,15 @@ def format_trades_csv(trades):
     lines = [
         "Entry Time,Symbols,Exit Time,Direction,Entry Price,Exit Price,Quantity,P&L,Fees,MAE,MFE,Drawdown,IsWin,Duration,Order IDs"
     ]
+    trade_direction_map = {0: "Buy", 1: "Sell", 2: "Hold"}
+
+    def _trade_direction(raw_value):
+        text = str(raw_value if raw_value is not None else "").strip()
+        if not text:
+            return ""
+        if text.lstrip("-").isdigit():
+            return trade_direction_map.get(int(text), text)
+        return text
 
     for trade in trades:
         entry_time = trade.get("entryTime", "")
@@ -369,7 +413,7 @@ def format_trades_csv(trades):
             symbol_str = str(symbols)
 
         exit_time = trade.get("exitTime", "")
-        direction = trade.get("direction", "")
+        direction = _trade_direction(trade.get("direction", ""))
         entry_price = trade.get("entryPrice", 0)
         exit_price = trade.get("exitPrice", 0)
         quantity = trade.get("quantity", 0)

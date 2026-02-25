@@ -6,6 +6,21 @@ import config
 
 
 class MainIntradayCloseMixin:
+    def _is_symbol_in_active_spread(self, symbol: str) -> bool:
+        """Return True when symbol belongs to any active spread leg."""
+        sym_norm = self._normalize_symbol_str(symbol)
+        if not sym_norm:
+            return False
+        try:
+            for spread in self.options_engine.get_spread_positions():
+                long_sym = self._normalize_symbol_str(getattr(spread.long_leg, "symbol", ""))
+                short_sym = self._normalize_symbol_str(getattr(spread.short_leg, "symbol", ""))
+                if sym_norm == long_sym or sym_norm == short_sym:
+                    return True
+        except Exception:
+            return False
+        return False
+
     def _check_expiration_hammer_v2(self) -> None:
         """
         V2.4.4 P0: Expiration Hammer V2 - Close ALL options expiring TODAY.
@@ -236,6 +251,9 @@ class MainIntradayCloseMixin:
                         continue
                     live_symbol = self._normalize_symbol_str(holding.Symbol)
                     if live_symbol not in self._micro_open_symbols:
+                        continue
+                    if self._is_symbol_in_active_spread(live_symbol):
+                        self._micro_open_symbols.discard(live_symbol)
                         continue
                     hold_allowed = self._should_hold_intraday_symbol_overnight(live_symbol)
                     if hold_allowed:

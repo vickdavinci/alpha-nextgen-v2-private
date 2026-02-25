@@ -2347,10 +2347,11 @@ class MainOrdersMixin:
                 else 0.0
             )
             exit_reason = self._spread_last_exit_reason.get(spread_key, "FILL_CLOSE_RECONCILED")
-            self.Log(
+            self._budget_log(
                 f"SPREAD: EXIT | Reason={exit_reason} | "
                 f"Type={spread.spread_type} | Entry={spread.net_debit:.2f} | "
-                f"Close={close_value:.2f} | PnL={pnl_pct:+.1%}"
+                f"Close={close_value:.2f} | PnL={pnl_pct:+.1%}",
+                priority=1,
             )
             self._record_exit_path_pnl(
                 reason=exit_reason,
@@ -2602,6 +2603,9 @@ class MainOrdersMixin:
                         "spread_short_leg_quantity": spread.num_spreads,
                         "spread_key": self._build_spread_runtime_key(spread),
                         "exit_type": "SPREAD_CLOSE_ESCALATED",
+                        "spread_exit_code": "SPREAD_CLOSE_ESCALATED",
+                        "spread_exit_reason": "SPREAD_CLOSE_ESCALATED",
+                        "spread_exit_emergency": True,
                     },
                 )
             )

@@ -92,6 +92,9 @@ def check_friday_firewall_exit_impl(
                         "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
                         "spread_short_leg_quantity": spread.num_spreads,
                         "spread_key": self._build_spread_key(spread),
+                        "exit_type": "FRIDAY_FIREWALL",
+                        "spread_exit_code": "FRIDAY_FIREWALL",
+                        "spread_exit_reason": close_reason,
                     },
                 )
             )
@@ -215,6 +218,9 @@ def check_overnight_gap_protection_exit_impl(
                     "spread_short_leg_quantity": spread.num_spreads,
                     "spread_key": self._build_spread_key(spread),
                     "exit_type": "OVERNIGHT_GAP_PROTECTION",
+                    "spread_exit_code": "OVERNIGHT_GAP_PROTECTION",
+                    "spread_exit_reason": reason,
+                    "spread_exit_emergency": True,
                 },
             )
         )
