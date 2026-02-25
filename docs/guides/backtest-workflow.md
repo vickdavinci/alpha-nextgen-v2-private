@@ -73,7 +73,7 @@ When a task says “run backtest”:
 
 1. Use `./scripts/qc_backtest.sh "<name>" --open`.
 2. Capture backtest id + status.
-3. Pull logs/orders/trades for audit via existing pull tooling.
+3. Pull artifacts via `python scripts/qc_pull_backtest.py "<name>" --all --project 27678023 --output "<stage_folder>"`.
 4. Report findings with file/line evidence.
 
 ## Related Scripts
@@ -82,3 +82,56 @@ When a task says “run backtest”:
 - `scripts/sync_to_lean.sh` (sync helper; supports `--minify --validate --push`)
 - `scripts/validate_lean_minified.py` (telemetry/syntax guard)
 - `scripts/ultra_minify.py` (size reduction)
+- `scripts/qc_pull_backtest.py` (post-run artifacts and Object Store pull attempt)
+
+## Post-Run Artifact Pull (Required)
+
+Always pull to an explicit stage folder. Do not rely on default output.
+
+```bash
+python scripts/qc_pull_backtest.py "<BACKTEST_NAME>" --all \
+  --project 27678023 \
+  --output "docs/audits/logs/<stage_folder>"
+```
+
+If name lookup is ambiguous, pull by explicit backtest id:
+
+```bash
+python scripts/qc_pull_backtest.py --id "<BACKTEST_ID>" --all \
+  --project 27678023 \
+  --output "docs/audits/logs/<stage_folder>"
+```
+
+## Object Store Retrieval Reality (QC Account-Tier Aware)
+
+`qc_pull_backtest.py` attempts to pull structured observability CSVs from Object Store.
+On this account tier, payload export via CLI can be blocked by QC licensing.
+
+Expected CLI behaviors:
+1. `lean cloud object-store list ""` can confirm keys exist.
+2. `lean cloud object-store get <key>` can fail with institutional-only export restriction.
+
+When CLI export is blocked, use QC Cloud Research notebook access:
+1. Open project in QC web IDE and launch Research.
+2. Read Object Store keys with `qb.object_store.contains_key(...)` / `qb.object_store.read(...)`.
+3. Store cross-check output in the same stage folder as backtest reports.
+
+Concrete reference implementation:
+1. Canonical guide: `docs/guides/objectstore-research-workflow.md`
+2. Canonical loader: `scripts/qc_research_objectstore_loader.py`
+3. Historical stage example: `docs/audits/logs/stage12.4/V12.4-JulSep2024-R2_OBJECTSTORE_CROSSCHECK.md`
+
+## Lean Workspace Sync Sanity Check
+
+If validator passes in repo root but fails in `lean-workspace`, deployment files are stale.
+Before running cloud backtests, confirm lean-workspace mirror is current:
+
+```bash
+python scripts/validate_lean_minified.py --root ../lean-workspace --strict
+```
+
+If it fails on missing mixin/module files, run canonical sync flow again:
+
+```bash
+./scripts/qc_backtest.sh "<BACKTEST_NAME>" --open
+```

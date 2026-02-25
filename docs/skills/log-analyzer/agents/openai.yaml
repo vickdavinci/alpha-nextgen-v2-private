@@ -1,4 +1,4 @@
 interface:
   display_name: "Log Analyzer"
-  short_description: "Analyze backtest logs with validated trade metrics"
-  default_prompt: "Analyze specified backtest log files and produce performance and signal flow reports cross-validated with trades.csv."
+  short_description: "Object-store-first RCA with trades.csv truth validation"
+  default_prompt: "Use $log-analyzer to analyze the run with observability/object-store artifacts first, then validate realized metrics from trades.csv."

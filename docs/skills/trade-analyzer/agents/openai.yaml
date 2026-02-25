@@ -1,0 +1,4 @@
+interface:
+  display_name: "Trade Analyzer"
+  short_description: "Object-store-first trade RCA with trades.csv as realized truth"
+  default_prompt: "Use $trade-analyzer to produce a trade-by-trade RCA: ingest observability/object-store artifacts first, then anchor P&L/win-loss on trades.csv."
