@@ -99,6 +99,9 @@ def check_spread_exit_signals_impl(
     trail_exit_enabled = bool(getattr(config, "VASS_ENABLE_TRAIL_PROFIT_EXITS", True))
     mark_stop_enabled = bool(getattr(config, "VASS_ENABLE_MARK_STOP_EXITS", True))
     tail_cap_enabled = bool(getattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", True))
+    mfe_lock_enabled = bool(getattr(config, "VASS_ENABLE_MFE_LOCK_EXITS", True))
+    neutrality_exit_enabled = bool(getattr(config, "VASS_ENABLE_NEUTRALITY_EXITS", True))
+    day4_eod_exit_enabled = bool(getattr(config, "VASS_ENABLE_DAY4_EOD_EXITS", True))
 
     if regime_confirmed:
         trail_exit_enabled = False
@@ -667,7 +670,11 @@ def check_spread_exit_signals_impl(
         if mfe_ratio > spread.highest_pnl_max_profit_pct:
             spread.highest_pnl_max_profit_pct = mfe_ratio
 
-        if bool(getattr(config, "VASS_MFE_LOCK_ENABLED", True)) and spread.max_profit > 0:
+        if (
+            mfe_lock_enabled
+            and bool(getattr(config, "VASS_MFE_LOCK_ENABLED", True))
+            and spread.max_profit > 0
+        ):
             prev_tier = int(getattr(spread, "mfe_lock_tier", 0) or 0)
             t1 = float(getattr(config, "VASS_MFE_T1_TRIGGER", 0.25))
             t2 = float(getattr(config, "VASS_MFE_T2_TRIGGER", 0.45))
@@ -794,7 +801,7 @@ def check_spread_exit_signals_impl(
             exit_reason = f"DTE_EXIT ({current_dte} DTE <= {config.SPREAD_DTE_EXIT})"
 
         # Exit 4: Phase C staged neutrality de-risk.
-        if exit_reason is None:
+        if exit_reason is None and neutrality_exit_enabled:
             neutrality_reason = self._check_neutrality_staged_exit(
                 spread=spread,
                 regime_score=regime_score,
@@ -825,7 +832,11 @@ def check_spread_exit_signals_impl(
         if mfe_ratio > spread.highest_pnl_max_profit_pct:
             spread.highest_pnl_max_profit_pct = mfe_ratio
 
-        if bool(getattr(config, "VASS_MFE_LOCK_ENABLED", True)) and spread.max_profit > 0:
+        if (
+            mfe_lock_enabled
+            and bool(getattr(config, "VASS_MFE_LOCK_ENABLED", True))
+            and spread.max_profit > 0
+        ):
             prev_tier = int(getattr(spread, "mfe_lock_tier", 0) or 0)
             t1 = float(getattr(config, "VASS_MFE_T1_TRIGGER", 0.25))
             t2 = float(getattr(config, "VASS_MFE_T2_TRIGGER", 0.45))
@@ -881,6 +892,7 @@ def check_spread_exit_signals_impl(
         # keep only deeper losers for additional recovery time (hard stop still active).
         if (
             exit_reason is None
+            and day4_eod_exit_enabled
             and bool(getattr(config, "VASS_DAY4_EOD_DECISION_ENABLED", False))
             and self.algorithm is not None
         ):
@@ -1074,7 +1086,7 @@ def check_spread_exit_signals_impl(
             exit_reason = f"DTE_EXIT ({current_dte} DTE <= {config.SPREAD_DTE_EXIT})"
 
         # Exit 5: Phase C staged neutrality de-risk.
-        if exit_reason is None:
+        if exit_reason is None and neutrality_exit_enabled:
             neutrality_reason = self._check_neutrality_staged_exit(
                 spread=spread,
                 regime_score=regime_score,

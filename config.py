@@ -1010,10 +1010,13 @@ VASS_REGIME_BREAK_EXIT_ENABLED = True
 VASS_REGIME_BREAK_BULL_FLOOR = 50.0  # Close bullish spreads when regime falls below this
 VASS_REGIME_BREAK_BEAR_CEILING = 50.0  # Close bearish spreads when regime rises above this
 VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT = 0.60  # Keep profit-taking while confirmed
-VASS_ENABLE_MARK_STOP_EXITS = True  # Master allow for stop/hard-stop exits in legacy mode
-VASS_ENABLE_TAIL_CAP_EXITS = True  # Master allow for tail-cap exits in legacy mode
+VASS_ENABLE_MARK_STOP_EXITS = False  # V12.8: thesis mode -> disable STOP/HARD_STOP exits
+VASS_ENABLE_TAIL_CAP_EXITS = False  # V12.8: thesis mode -> disable tail-cap exits
 VASS_ENABLE_TRAIL_PROFIT_EXITS = True  # Master allow for trailing-profit exits in legacy mode
 VASS_ENABLE_PROFIT_TARGET_EXITS = True  # Master allow for profit-target exits
+VASS_ENABLE_MFE_LOCK_EXITS = False  # V12.8: thesis mode -> disable MFE lock exits
+VASS_ENABLE_NEUTRALITY_EXITS = False  # V12.8: thesis mode -> disable neutrality-confirmed exits
+VASS_ENABLE_DAY4_EOD_EXITS = False  # V12.8: thesis mode -> disable day-4 EOD forced exits
 
 # Level Crossing Thresholds (regime shift signals)
 VASS_VIX_FEAR_CROSS_LEVEL = 23  # VIX crosses above this → BEARISH
