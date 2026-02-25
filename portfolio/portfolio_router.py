@@ -1952,6 +1952,39 @@ class PortfolioRouter:
             weight: TargetWeight signal to process.
         """
         self._ensure_signal_trace(weight)
+        try:
+            md = dict(weight.metadata or {})
+            if bool(md.get("spread_close_short", False)):
+                trace_id = str(md.get("trace_id", "") or "")
+                exit_code = str(md.get("spread_exit_code", "") or "").strip().upper()
+                if not exit_code:
+                    exit_code = str(md.get("exit_type", "") or "").strip().upper()
+                if not exit_code:
+                    reason_token = str(weight.reason or "").strip().upper()
+                    exit_code = (
+                        reason_token.split(":", 1)[0].split(" ", 1)[0] if reason_token else ""
+                    )
+                recorder = getattr(self.algorithm, "_record_order_lifecycle_event", None)
+                if callable(recorder):
+                    recorder(
+                        status="SPREAD_EXIT_SIGNAL",
+                        order_id=0,
+                        symbol=str(weight.symbol or ""),
+                        quantity=int(weight.requested_quantity or 0),
+                        fill_price=0.0,
+                        order_type="SIGNAL",
+                        order_tag=str(weight.source or "OPT"),
+                        trace_id=trace_id,
+                        message=(
+                            f"Reason={str(weight.reason or '')[:180]} | "
+                            f"Short={str(md.get('spread_short_leg_symbol', '') or '')} | "
+                            f"Key={str(md.get('spread_key', '') or '')} | "
+                            f"ExitCode={exit_code}"
+                        ),
+                        source="ROUTER_RECEIVE",
+                    )
+        except Exception:
+            pass
         self._pending_weights.append(weight)
         self.log(
             f"ROUTER: RECEIVED | {weight.symbol} | "

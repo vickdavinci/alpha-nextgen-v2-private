@@ -1326,6 +1326,21 @@ class MainOrdersMixin:
             f"SPREAD_SAFE_LOCK_RETRY_SCHEDULED: Long={long_symbol} Short={short_symbol} | "
             f"RetryIn={safe_retry_min}m | Reason={retry_reason}"
         )
+        self._record_order_lifecycle_event(
+            status="SPREAD_EXIT_RETRY_EXHAUSTED",
+            order_id=0,
+            symbol=str(long_symbol or ""),
+            quantity=0,
+            fill_price=0.0,
+            order_type="SPREAD_SAFE_LOCK",
+            order_tag="SPREAD_CLOSE",
+            trace_id="",
+            message=(
+                f"Key={spread_key} | Long={long_symbol} | Short={short_symbol} | "
+                f"Reason={retry_reason} | Detail={detail} | RetryInMin={safe_retry_min}"
+            ),
+            source="SPREAD_RETRY",
+        )
         self._spread_forced_close_reason[spread_key] = f"SAFE_LOCK_RETRY:{retry_reason}"
         self._spread_forced_close_retry[spread_key] = self.Time + timedelta(minutes=safe_retry_min)
         # Keep retrying at emergency cadence after initial escalation.
@@ -2358,6 +2373,21 @@ class MainOrdersMixin:
                 pnl_dollars=(close_value - spread.net_debit) * 100 * spread.num_spreads,
                 engine_tag="VASS",
             )
+            self._record_order_lifecycle_event(
+                status="SPREAD_EXIT_FILLED",
+                order_id=0,
+                symbol=str(long_norm or ""),
+                quantity=int(expected_qty),
+                fill_price=float(close_value),
+                order_type=str(spread.spread_type or ""),
+                order_tag="SPREAD_CLOSE",
+                trace_id="",
+                message=(
+                    f"Key={spread_key} | Short={short_norm} | Reason={exit_reason} | "
+                    f"Entry={spread.net_debit:.4f} | Close={close_value:.4f} | PnL={pnl_pct:+.4f}"
+                ),
+                source="SPREAD_RECONCILE",
+            )
 
             stop_pct = float(getattr(config, "SPREAD_STOP_LOSS_PCT", 0.0))
             if stop_pct > 0 and pnl_pct <= -stop_pct:
@@ -2581,6 +2611,21 @@ class MainOrdersMixin:
         if cancel_count >= escalation_count:
             self._diag_spread_close_escalation_count += 1
             order_tag = str(getattr(order, "Tag", "") or "")
+            self._record_order_lifecycle_event(
+                status="SPREAD_EXIT_CANCELED",
+                order_id=int(order_event.OrderId or 0),
+                symbol=str(symbol_norm or ""),
+                quantity=int(getattr(order, "Quantity", 0) or 0),
+                fill_price=0.0,
+                order_type=str(getattr(order, "Type", "UNKNOWN")),
+                order_tag=order_tag,
+                trace_id=self._extract_trace_id_from_tag(order_tag) or "",
+                message=(
+                    f"Key={spread_key} | Long={long_symbol} | Short={short_symbol} | "
+                    f"CancelCount={cancel_count} | EscalationThreshold={escalation_count}"
+                ),
+                source="SPREAD_RETRY",
+            )
             self.Log(
                 f"SPREAD_CLOSE_ESCALATED: Cancel threshold reached | "
                 f"OrderId={order_event.OrderId} | SpreadKey={spread_key} | "
@@ -2614,6 +2659,21 @@ class MainOrdersMixin:
             self._spread_last_close_submit_at[spread_key] = self.Time
         else:
             order_tag = str(getattr(order, "Tag", "") or "")
+            self._record_order_lifecycle_event(
+                status="SPREAD_EXIT_CANCELED",
+                order_id=int(order_event.OrderId or 0),
+                symbol=str(symbol_norm or ""),
+                quantity=int(getattr(order, "Quantity", 0) or 0),
+                fill_price=0.0,
+                order_type=str(getattr(order, "Type", "UNKNOWN")),
+                order_tag=order_tag,
+                trace_id=self._extract_trace_id_from_tag(order_tag) or "",
+                message=(
+                    f"Key={spread_key} | Long={long_symbol} | Short={short_symbol} | "
+                    f"CancelCount={cancel_count} | Escalated=False"
+                ),
+                source="SPREAD_RETRY",
+            )
             self.Log(
                 f"SPREAD_RETRY_QUEUED: Close leg canceled | "
                 f"OrderId={order_event.OrderId} | SpreadKey={spread_key} | "

@@ -1577,6 +1577,21 @@ class MainOptionsMixin:
                     self._diag_spread_close_escalation_count += 1
                     self._diag_spread_exit_signal_count += 1
                     self._diag_spread_exit_submit_count += 1
+                    self._record_order_lifecycle_event(
+                        status="SPREAD_EXIT_RETRY_MAX",
+                        order_id=0,
+                        symbol=str(long_symbol or ""),
+                        quantity=int(spread.num_spreads or 0),
+                        fill_price=0.0,
+                        order_type=str(spread.spread_type or ""),
+                        order_tag="SPREAD_CLOSE_RETRY",
+                        trace_id="",
+                        message=(
+                            f"Key={spread_key} | Long={long_symbol} | Short={short_symbol} | "
+                            f"Reason={retry_reason} | Cycles={retry_cycles}/{max_retry_cycles}"
+                        ),
+                        source="SPREAD_RETRY",
+                    )
                     self.Log(
                         f"SPREAD_RETRY_MAX: Escalating to emergency sequential close | "
                         f"Long={long_symbol} Short={short_symbol} | "
@@ -1589,6 +1604,21 @@ class MainOptionsMixin:
                             is_emergency=True,
                         )
                     except Exception as e:
+                        self._record_order_lifecycle_event(
+                            status="SPREAD_EXIT_RETRY_MAX_EXCEPTION",
+                            order_id=0,
+                            symbol=str(long_symbol or ""),
+                            quantity=int(spread.num_spreads or 0),
+                            fill_price=0.0,
+                            order_type=str(spread.spread_type or ""),
+                            order_tag="SPREAD_CLOSE_RETRY",
+                            trace_id="",
+                            message=(
+                                f"Key={spread_key} | Long={long_symbol} | Short={short_symbol} | "
+                                f"Reason={retry_reason} | Exception={e}"
+                            ),
+                            source="SPREAD_RETRY",
+                        )
                         self._schedule_spread_safe_lock_retry(
                             spread_key=spread_key,
                             long_symbol=long_symbol,
@@ -1598,6 +1628,21 @@ class MainOptionsMixin:
                         )
                         continue
                     if not close_ok:
+                        self._record_order_lifecycle_event(
+                            status="SPREAD_EXIT_RETRY_MAX_FAILED",
+                            order_id=0,
+                            symbol=str(long_symbol or ""),
+                            quantity=int(spread.num_spreads or 0),
+                            fill_price=0.0,
+                            order_type=str(spread.spread_type or ""),
+                            order_tag="SPREAD_CLOSE_RETRY",
+                            trace_id="",
+                            message=(
+                                f"Key={spread_key} | Long={long_symbol} | Short={short_symbol} | "
+                                f"Reason={retry_reason} | execute_spread_close=False"
+                            ),
+                            source="SPREAD_RETRY",
+                        )
                         self._schedule_spread_safe_lock_retry(
                             spread_key=spread_key,
                             long_symbol=long_symbol,
@@ -1606,6 +1651,21 @@ class MainOptionsMixin:
                             detail="execute_spread_close_returned_false",
                         )
                         continue
+                    self._record_order_lifecycle_event(
+                        status="SPREAD_EXIT_RETRY_MAX_SUBMITTED",
+                        order_id=0,
+                        symbol=str(long_symbol or ""),
+                        quantity=int(spread.num_spreads or 0),
+                        fill_price=0.0,
+                        order_type=str(spread.spread_type or ""),
+                        order_tag="SPREAD_CLOSE_RETRY",
+                        trace_id="",
+                        message=(
+                            f"Key={spread_key} | Long={long_symbol} | Short={short_symbol} | "
+                            f"Reason={retry_reason} | EmergencySequential=True"
+                        ),
+                        source="SPREAD_RETRY",
+                    )
                     self._spread_forced_close_retry.pop(spread_key, None)
                     self._spread_forced_close_reason.pop(spread_key, None)
                     self._spread_forced_close_cancel_counts.pop(spread_key, None)
