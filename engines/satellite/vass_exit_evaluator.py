@@ -123,6 +123,16 @@ def check_spread_exit_signals_impl(
         elif is_bearish_spread and regime_score > regime_break_bear_ceiling:
             regime_break_reason = f"VASS_REGIME_BREAK_BEAR: Regime {regime_score:.0f} > {regime_break_bear_ceiling:.0f}"
 
+    dte_exit_threshold = int(
+        getattr(
+            config,
+            "VASS_REGIME_CONFIRMED_DTE_EXIT",
+            config.SPREAD_DTE_EXIT,
+        )
+    )
+    if not regime_confirmed:
+        dte_exit_threshold = int(getattr(config, "SPREAD_DTE_EXIT", dte_exit_threshold))
+
     def _resolve_vass_tail_cap_pct(resolved_dte: int) -> float:
         base_pct = float(getattr(config, "VASS_TAIL_RISK_CAP_PCT_EQUITY", 0.015))
         if not bool(getattr(config, "VASS_TAIL_RISK_CAP_USE_DTE_OVERLAY", False)):
@@ -622,6 +632,7 @@ def check_spread_exit_signals_impl(
         exit_reason is None
         and is_bullish_debit_spread
         and bool(getattr(config, "VASS_OVERNIGHT_DERISK_ENABLED", False))
+        and not regime_confirmed
         and self.algorithm is not None
         and current_dte > 0
     ):
@@ -673,6 +684,7 @@ def check_spread_exit_signals_impl(
         if (
             mfe_lock_enabled
             and bool(getattr(config, "VASS_MFE_LOCK_ENABLED", True))
+            and not regime_confirmed
             and spread.max_profit > 0
         ):
             prev_tier = int(getattr(spread, "mfe_lock_tier", 0) or 0)
@@ -773,8 +785,10 @@ def check_spread_exit_signals_impl(
             )
 
         # Exit 2B: Regime deterioration de-risk (only once spread is already losing).
-        if exit_reason is None and getattr(
-            config, "SPREAD_REGIME_DETERIORATION_EXIT_ENABLED", True
+        if (
+            exit_reason is None
+            and getattr(config, "SPREAD_REGIME_DETERIORATION_EXIT_ENABLED", True)
+            and not regime_confirmed
         ):
             min_loss_pct = float(getattr(config, "SPREAD_REGIME_DETERIORATION_MIN_LOSS_PCT", -0.15))
             if pnl_pct <= min_loss_pct:
@@ -797,11 +811,11 @@ def check_spread_exit_signals_impl(
                         )
 
         # Exit 3: DTE exit (close by 5 DTE)
-        if exit_reason is None and current_dte <= config.SPREAD_DTE_EXIT:
-            exit_reason = f"DTE_EXIT ({current_dte} DTE <= {config.SPREAD_DTE_EXIT})"
+        if exit_reason is None and current_dte <= dte_exit_threshold:
+            exit_reason = f"DTE_EXIT ({current_dte} DTE <= {dte_exit_threshold})"
 
         # Exit 4: Phase C staged neutrality de-risk.
-        if exit_reason is None and neutrality_exit_enabled:
+        if exit_reason is None and neutrality_exit_enabled and not regime_confirmed:
             neutrality_reason = self._check_neutrality_staged_exit(
                 spread=spread,
                 regime_score=regime_score,
@@ -835,6 +849,7 @@ def check_spread_exit_signals_impl(
         if (
             mfe_lock_enabled
             and bool(getattr(config, "VASS_MFE_LOCK_ENABLED", True))
+            and not regime_confirmed
             and spread.max_profit > 0
         ):
             prev_tier = int(getattr(spread, "mfe_lock_tier", 0) or 0)
@@ -893,6 +908,7 @@ def check_spread_exit_signals_impl(
         if (
             exit_reason is None
             and day4_eod_exit_enabled
+            and not regime_confirmed
             and bool(getattr(config, "VASS_DAY4_EOD_DECISION_ENABLED", False))
             and self.algorithm is not None
         ):
@@ -1058,8 +1074,10 @@ def check_spread_exit_signals_impl(
                     pass
 
         # Exit 3B: Regime deterioration de-risk (only once spread is already losing).
-        if exit_reason is None and getattr(
-            config, "SPREAD_REGIME_DETERIORATION_EXIT_ENABLED", True
+        if (
+            exit_reason is None
+            and getattr(config, "SPREAD_REGIME_DETERIORATION_EXIT_ENABLED", True)
+            and not regime_confirmed
         ):
             min_loss_pct = float(getattr(config, "SPREAD_REGIME_DETERIORATION_MIN_LOSS_PCT", -0.15))
             if pnl_pct <= min_loss_pct:
@@ -1082,11 +1100,11 @@ def check_spread_exit_signals_impl(
                         )
 
         # Exit 4: DTE exit (close by 5 DTE)
-        if exit_reason is None and current_dte <= config.SPREAD_DTE_EXIT:
-            exit_reason = f"DTE_EXIT ({current_dte} DTE <= {config.SPREAD_DTE_EXIT})"
+        if exit_reason is None and current_dte <= dte_exit_threshold:
+            exit_reason = f"DTE_EXIT ({current_dte} DTE <= {dte_exit_threshold})"
 
         # Exit 5: Phase C staged neutrality de-risk.
-        if exit_reason is None and neutrality_exit_enabled:
+        if exit_reason is None and neutrality_exit_enabled and not regime_confirmed:
             neutrality_reason = self._check_neutrality_staged_exit(
                 spread=spread,
                 regime_score=regime_score,
