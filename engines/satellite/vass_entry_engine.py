@@ -914,6 +914,36 @@ class VASSEntryEngine:
             direction=direction_str,
             overlay_state=overlay_state,
         )
+        algorithm._diag_vass_signal_seq = int(getattr(algorithm, "_diag_vass_signal_seq", 0)) + 1
+        vass_signal_id = (
+            f"VASS-{algorithm.Time.strftime('%Y%m%d-%H%M')}-{algorithm._diag_vass_signal_seq}"
+        )
+        slot_backoff_key = self._slot_backoff_key(
+            direction=direction,
+            overlay_state=overlay_state,
+        )
+        if self._is_slot_backoff_active(now=algorithm.Time, key=slot_backoff_key):
+            reason_code = "R_SLOT_BACKOFF"
+            algorithm._record_vass_reject_reason(reason_code)
+            throttle_key = f"{reason_code}|{direction.value}|INTRADAY|{slot_backoff_key}"
+            if host.should_log_vass_rejection(throttle_key):
+                algorithm.Log(
+                    f"VASS_SKIPPED: Direction={direction.value} | "
+                    f"VIX={algorithm._current_vix:.1f} | Regime={regime_score:.0f} | "
+                    f"ReasonCode={reason_code} | BackoffKey={slot_backoff_key}"
+                )
+            algorithm._record_signal_lifecycle_event(
+                engine="VASS",
+                event="DROPPED",
+                signal_id=vass_signal_id,
+                direction=direction.value if direction else "",
+                strategy=strategy.value if strategy else "",
+                code=reason_code,
+                gate_name="VASS_SLOT_BACKOFF",
+                reason=f"Slot backoff active for {slot_backoff_key}",
+                contract_symbol="",
+            )
+            return
         dte_ranges = host.build_vass_dte_fallbacks(vass_dte_min, vass_dte_max)
         dte_min_all = min(r[0] for r in dte_ranges)
         dte_max_all = max(r[1] for r in dte_ranges)
@@ -925,10 +955,6 @@ class VASSEntryEngine:
             dte_min=dte_min_all,
             dte_max=dte_max_all,
             option_right=required_right,
-        )
-        algorithm._diag_vass_signal_seq = int(getattr(algorithm, "_diag_vass_signal_seq", 0)) + 1
-        vass_signal_id = (
-            f"VASS-{algorithm.Time.strftime('%Y%m%d-%H%M')}-{algorithm._diag_vass_signal_seq}"
         )
         if len(candidate_contracts) < 2:
             algorithm._record_signal_lifecycle_event(
@@ -1205,6 +1231,10 @@ class VASSEntryEngine:
             direction=direction_str,
             overlay_state=overlay_state,
         )
+        algorithm._diag_vass_signal_seq = int(getattr(algorithm, "_diag_vass_signal_seq", 0)) + 1
+        vass_signal_id = (
+            f"VASS-{algorithm.Time.strftime('%Y%m%d-%H%M')}-{algorithm._diag_vass_signal_seq}"
+        )
         slot_backoff_key = self._slot_backoff_key(
             direction=direction,
             overlay_state=overlay_state,
@@ -1213,6 +1243,29 @@ class VASSEntryEngine:
             now=algorithm.Time,
             key=slot_backoff_key,
         ):
+            reason_code = "R_SLOT_BACKOFF"
+            algorithm._record_vass_reject_reason(reason_code)
+            throttle_key = (
+                f"{reason_code}|{direction.value}|"
+                f"{'CREDIT' if is_credit else 'DEBIT'}|{slot_backoff_key}"
+            )
+            if host.should_log_vass_rejection(throttle_key):
+                algorithm.Log(
+                    f"VASS_SKIPPED: Direction={direction.value} | IV_Env={host.get_iv_environment()} | "
+                    f"VIX={current_vix:.1f} | Regime={regime_score:.0f} | "
+                    f"ReasonCode={reason_code} | BackoffKey={slot_backoff_key}"
+                )
+            algorithm._record_signal_lifecycle_event(
+                engine="VASS",
+                event="DROPPED",
+                signal_id=vass_signal_id,
+                direction=direction.value if direction else "",
+                strategy=strategy.value if strategy else "",
+                code=reason_code,
+                gate_name="VASS_SLOT_BACKOFF",
+                reason=f"Slot backoff active for {slot_backoff_key}",
+                contract_symbol="",
+            )
             return
         dte_ranges = host.build_vass_dte_fallbacks(vass_dte_min, vass_dte_max)
         dte_min_all = min(r[0] for r in dte_ranges)
@@ -1289,10 +1342,6 @@ class VASSEntryEngine:
             dte_min=dte_min_all,
             dte_max=dte_max_all,
             option_right=required_right,
-        )
-        algorithm._diag_vass_signal_seq = int(getattr(algorithm, "_diag_vass_signal_seq", 0)) + 1
-        vass_signal_id = (
-            f"VASS-{algorithm.Time.strftime('%Y%m%d-%H%M')}-{algorithm._diag_vass_signal_seq}"
         )
         if len(candidate_contracts) < 2:
             algorithm._record_vass_reject_reason("INSUFFICIENT_CANDIDATES")
@@ -2871,6 +2920,10 @@ class VASSEntryEngine:
                 k: v.strftime("%Y-%m-%d %H:%M:%S")
                 for k, v in self._last_entry_dt_by_direction.items()
             },
+            "slot_backoff_until_by_key": {
+                k: v.strftime("%Y-%m-%d %H:%M:%S")
+                for k, v in self._slot_backoff_until_by_key.items()
+            },
             "consecutive_losses": self._consecutive_losses,
             "loss_breaker_pause_until": self._loss_breaker_pause_until,
         }
@@ -2884,6 +2937,7 @@ class VASSEntryEngine:
             if str(k).upper() in {"BULLISH", "BEARISH"} and str(v)
         }
         self._last_entry_dt_by_direction = {}
+        self._slot_backoff_until_by_key = {}
         for k, v in (state.get("last_entry_dt_by_direction", {}) or {}).items():
             key = str(k).upper()
             if key not in {"BULLISH", "BEARISH"}:
@@ -2911,15 +2965,23 @@ class VASSEntryEngine:
                 )
             except Exception:
                 continue
+        for k, v in (state.get("slot_backoff_until_by_key", {}) or {}).items():
+            try:
+                self._slot_backoff_until_by_key[str(k)] = datetime.strptime(
+                    str(v)[:19], "%Y-%m-%d %H:%M:%S"
+                )
+            except Exception:
+                continue
 
     def reset_daily(self) -> None:
-        """No-op for now; guards are multi-day by design."""
-        pass
+        """Clear intraday slot-backoff state."""
+        self._slot_backoff_until_by_key = {}
 
     def reset(self) -> None:
         self._last_entry_at_by_signature = {}
         self._cooldown_until_by_signature = {}
         self._last_entry_date_by_direction = {}
         self._last_entry_dt_by_direction = {}
+        self._slot_backoff_until_by_key = {}
         self._consecutive_losses = 0
         self._loss_breaker_pause_until = None

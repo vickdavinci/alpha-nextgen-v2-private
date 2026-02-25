@@ -1120,6 +1120,9 @@ SPREAD_MAX_ATTEMPTS_PER_KEY_PER_DAY = 3
 SPREAD_ATTEMPT_COUNT_ON_VALIDATION_FAILURE = (
     True  # V12.9 P0: failed validation attempts consume daily attempt budget.
 )
+SPREAD_ATTEMPT_DEDUPE_PER_MINUTE = (
+    True  # V12.9: prevent same-minute retry loops from over-consuming attempt budget.
+)
 
 # Legacy compatibility (combined min/max)
 OPTIONS_ALLOCATION_MIN = 0.50  # V6.20: 50% minimum (isolation profile)

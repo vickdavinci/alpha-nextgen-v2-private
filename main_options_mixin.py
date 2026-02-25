@@ -1236,8 +1236,10 @@ class MainOptionsMixin:
             detail = raw.split(":", 1)[1].strip().upper() if ":" in raw else "UNKNOWN"
             detail_norm = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in detail)
             return f"R_CONTRACT_QUALITY_{detail_norm or 'UNKNOWN'}"
-        if raw.startswith(("E_", "R_")):
+        if raw.startswith("R_EV_PRE_"):
             return raw.split(":", 1)[0]
+        if raw.startswith(("E_", "R_")):
+            return raw
 
         mapping = {
             "TRADE_LIMIT_BLOCK": "R_TRADE_LIMIT",

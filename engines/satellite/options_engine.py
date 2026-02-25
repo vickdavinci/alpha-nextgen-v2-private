@@ -243,6 +243,7 @@ class OptionsEngine:
         # V2.3 FIX: Prevent order spam - track failed entry attempts
         self._entry_attempted_today: bool = False
         self._spread_attempts_today_by_key: Dict[str, int] = {}
+        self._spread_attempt_last_mark_by_key: Dict[str, str] = {}
         # V2.21: Post-rejection margin cap for adaptive retry sizing
         self._rejection_margin_cap: Optional[float] = None
         self._swing_time_warning_logged: bool = False
@@ -1796,7 +1797,15 @@ class OptionsEngine:
         return None
 
     def _record_spread_entry_attempt(self, attempt_key: str) -> None:
-        """Record spread attempt only after signal construction succeeds."""
+        """Record spread attempt with optional same-minute dedupe."""
+        if bool(getattr(config, "SPREAD_ATTEMPT_DEDUPE_PER_MINUTE", False)) and self.algorithm:
+            try:
+                minute_key = self.algorithm.Time.strftime("%Y-%m-%d %H:%M")
+                if self._spread_attempt_last_mark_by_key.get(attempt_key) == minute_key:
+                    return
+                self._spread_attempt_last_mark_by_key[attempt_key] = minute_key
+            except Exception:
+                pass
         self._spread_attempts_today_by_key[attempt_key] = (
             int(self._spread_attempts_today_by_key.get(attempt_key, 0)) + 1
         )

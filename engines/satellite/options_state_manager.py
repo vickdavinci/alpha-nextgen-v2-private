@@ -189,6 +189,7 @@ def get_state_for_persistence_impl(self) -> Dict[str, Any]:
         },
         "gamma_pin_exit_triggered": bool(self._gamma_pin_exit_triggered),
         "last_spread_exit_time": self._last_spread_exit_time,
+        "spread_attempt_last_mark_by_key": dict(self._spread_attempt_last_mark_by_key),
         # V2.27: Win Rate Gate state
         "spread_result_history": self._spread_result_history,
         "win_rate_shutoff": self._win_rate_shutoff,
@@ -548,6 +549,12 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
     self._gamma_pin_exit_triggered = bool(state.get("gamma_pin_exit_triggered", False))
     raw_last_exit = state.get("last_spread_exit_time")
     self._last_spread_exit_time = str(raw_last_exit) if raw_last_exit else None
+    raw_attempt_marks = state.get("spread_attempt_last_mark_by_key", {}) or {}
+    self._spread_attempt_last_mark_by_key = (
+        {str(k): str(v) for k, v in raw_attempt_marks.items()}
+        if isinstance(raw_attempt_marks, dict)
+        else {}
+    )
 
     # V2.27: Win Rate Gate state
     self._spread_result_history = state.get("spread_result_history", [])
@@ -634,6 +641,7 @@ def reset_options_engine_state_impl(self) -> None:
     # V2.3: Reset spam prevention flags
     self._entry_attempted_today = False
     self._spread_attempts_today_by_key = {}
+    self._spread_attempt_last_mark_by_key = {}
     self._swing_time_warning_logged = False
 
     # V2.3.2: Reset pending intraday entry flag
@@ -695,6 +703,7 @@ def reset_options_engine_daily_state_impl(self, current_date: str) -> None:
         # V2.3 FIX: Reset entry attempt flag for new day
         self._entry_attempted_today = False
         self._spread_attempts_today_by_key = {}
+        self._spread_attempt_last_mark_by_key = {}
         self._swing_time_warning_logged = False
         # V2.21: Clear rejection margin cap for new day
         self._rejection_margin_cap = None
@@ -719,6 +728,7 @@ def reset_options_engine_daily_state_impl(self, current_date: str) -> None:
 
         # Reset Micro Regime Engine for new day
         self._micro_regime_engine.reset_daily()
+        self._vass_entry_engine.reset_daily()
 
         # V2.4.3: Clear spread failure cooldown for new day
         self._spread_failure_cooldown_until = None
