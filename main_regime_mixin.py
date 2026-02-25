@@ -502,6 +502,30 @@ class MainRegimeMixin:
             if bars_since_flip >= vass_derisk_bars:
                 continue
 
+            # V12.9: Gate TRANSITION_DERISK by regime_confirmed.
+            # When regime still confirms spread direction, skip forced exit —
+            # the conviction floor in vass_exit_evaluator handles downside.
+            try:
+                _regime = float(self._get_effective_regime_score_for_options())
+                _bull_min = float(getattr(config, "VASS_REGIME_CONFIRMED_BULL_MIN", 57.0))
+                _bear_max = float(getattr(config, "VASS_REGIME_CONFIRMED_BEAR_MAX", 43.0))
+                if is_bullish_spread and _regime >= _bull_min:
+                    self.Log(
+                        f"TRANSITION_DERISK_GATED: Bull spread skipped | "
+                        f"Regime={_regime:.1f} >= {_bull_min:.0f} | Overlay={overlay}",
+                        trades_only=True,
+                    )
+                    continue
+                if is_bearish_spread and _regime <= _bear_max:
+                    self.Log(
+                        f"TRANSITION_DERISK_GATED: Bear spread skipped | "
+                        f"Regime={_regime:.1f} <= {_bear_max:.0f} | Overlay={overlay}",
+                        trades_only=True,
+                    )
+                    continue
+            except Exception:
+                pass  # If regime unavailable, let TRANSITION fire as before
+
             long_symbol = self._normalize_symbol_str(spread.long_leg.symbol)
             short_symbol = self._normalize_symbol_str(spread.short_leg.symbol)
             if self._has_open_order_for_symbol(long_symbol) or self._has_open_order_for_symbol(

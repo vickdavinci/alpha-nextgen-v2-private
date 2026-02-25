@@ -106,7 +106,7 @@ def check_spread_exit_signals_impl(
     if regime_confirmed:
         trail_exit_enabled = False
         mark_stop_enabled = False
-        tail_cap_enabled = False
+        # V12.9: tail_cap stays ALWAYS active — conviction floor prevents unbounded losses
 
     regime_break_enabled = thesis_first_mode and bool(
         getattr(config, "VASS_REGIME_BREAK_EXIT_ENABLED", False)
@@ -730,12 +730,31 @@ def check_spread_exit_signals_impl(
             cap_pct = _resolve_vass_tail_cap_pct(current_dte)
             loss_dollars = abs(float(pnl)) * 100.0 * max(1, int(spread.num_spreads))
             cap_dollars = max(0.0, equity * cap_pct)
-            if cap_dollars > 0 and loss_dollars >= cap_dollars:
+            # V12.9: Conviction floor — per-trade % loss cap for credit spreads.
+            # For credits: loss_pct = (current_spread_value - entry_credit) / max_loss
+            floor_pct = float(getattr(config, "VASS_TAIL_RISK_CAP_FLOOR_PCT", 0.35))
+            max_loss = spread.width * 100.0 * max(1, int(spread.num_spreads)) - (
+                entry_credit * 100.0 * max(1, int(spread.num_spreads))
+            )
+            credit_loss_pct = (
+                (current_spread_value - entry_credit) / (spread.width - entry_credit)
+                if (spread.width - entry_credit) > 0
+                else 0.0
+            )
+            credit_floor_hit = credit_loss_pct >= floor_pct and pnl < 0
+            equity_cap_hit = cap_dollars > 0 and loss_dollars >= cap_dollars
+            if equity_cap_hit or credit_floor_hit:
                 if hasattr(self.algorithm, "_diag_vass_tail_cap_exits"):
                     self.algorithm._diag_vass_tail_cap_exits = (
                         int(getattr(self.algorithm, "_diag_vass_tail_cap_exits", 0) or 0) + 1
                     )
-                exit_reason = f"VASS_TAIL_RISK_CAP: Loss=${loss_dollars:.0f} >= Cap=${cap_dollars:.0f} ({cap_pct:.1%} eq)"
+                if credit_floor_hit and not equity_cap_hit:
+                    exit_reason = (
+                        f"VASS_CONVICTION_FLOOR: CreditLoss={credit_loss_pct:.1%} >= "
+                        f"Floor={floor_pct:.0%} ({vass_profile_tag})"
+                    )
+                else:
+                    exit_reason = f"VASS_TAIL_RISK_CAP: Loss=${loss_dollars:.0f} >= Cap=${cap_dollars:.0f} ({cap_pct:.1%} eq)"
 
         # Exit 1: Credit profit target.
         credit_profit_target_pct = float(getattr(config, "CREDIT_SPREAD_PROFIT_TARGET", 0.50))
@@ -895,12 +914,23 @@ def check_spread_exit_signals_impl(
             cap_pct = _resolve_vass_tail_cap_pct(current_dte)
             loss_dollars = abs(float(pnl)) * 100.0 * max(1, int(spread.num_spreads))
             cap_dollars = max(0.0, equity * cap_pct)
-            if cap_dollars > 0 and loss_dollars >= cap_dollars:
+            # V12.9: Conviction floor — per-trade % loss cap for debit spreads.
+            # Debit floor: pnl_pct <= -FLOOR_PCT (pnl_pct is already pnl/entry_debit)
+            floor_pct = float(getattr(config, "VASS_TAIL_RISK_CAP_FLOOR_PCT", 0.35))
+            debit_floor_hit = pnl_pct <= -floor_pct
+            equity_cap_hit = cap_dollars > 0 and loss_dollars >= cap_dollars
+            if equity_cap_hit or debit_floor_hit:
                 if hasattr(self.algorithm, "_diag_vass_tail_cap_exits"):
                     self.algorithm._diag_vass_tail_cap_exits = (
                         int(getattr(self.algorithm, "_diag_vass_tail_cap_exits", 0) or 0) + 1
                     )
-                exit_reason = f"VASS_TAIL_RISK_CAP: Loss=${loss_dollars:.0f} >= Cap=${cap_dollars:.0f} ({cap_pct:.1%} eq)"
+                if debit_floor_hit and not equity_cap_hit:
+                    exit_reason = (
+                        f"VASS_CONVICTION_FLOOR: DebitLoss={pnl_pct:.1%} <= "
+                        f"-{floor_pct:.0%} ({vass_profile_tag})"
+                    )
+                else:
+                    exit_reason = f"VASS_TAIL_RISK_CAP: Loss=${loss_dollars:.0f} >= Cap=${cap_dollars:.0f} ({cap_pct:.1%} eq)"
 
         # V10.7: Day-4 EOD decision for debit spreads.
         # Rule: at/after day-4 EOD, close spreads when P&L is above the threshold,
