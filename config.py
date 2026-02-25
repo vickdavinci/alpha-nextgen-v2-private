@@ -1157,6 +1157,12 @@ OPTIONS_IV_RANK_USE_CHAIN_PERCENTILE = (
 )
 OPTIONS_IV_RANK_HISTORY_DAYS = 126  # ~6 months trading days for rolling IV-rank window.
 OPTIONS_IV_RANK_MIN_SAMPLES = 20
+# V12.10: strategy-specific IV scoring profiles for VASS.
+OPTIONS_IV_SCORE_PROFILE_ENABLED = True
+OPTIONS_IV_SCORE_DEBIT_LOW = 35.0
+OPTIONS_IV_SCORE_DEBIT_HIGH = 55.0
+OPTIONS_IV_SCORE_CREDIT_LOW = 45.0
+OPTIONS_IV_SCORE_CREDIT_HIGH = 65.0
 
 # Liquidity Factor
 OPTIONS_SPREAD_MAX_PCT = 0.14  # Slightly wider filter to reduce unnecessary spread rejections

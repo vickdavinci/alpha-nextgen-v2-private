@@ -664,6 +664,7 @@ def check_spread_entry_signal_impl(
         min_open_interest=min_oi,
         spread_max_pct=spread_max,
         spread_warn_pct=spread_warn,
+        iv_profile="DEBIT",
     )
 
     if not entry_score.is_valid:
@@ -1395,6 +1396,7 @@ def check_credit_spread_entry_signal_impl(
         iv_rank=iv_rank,
         bid_ask_spread_pct=short_leg_contract.spread_pct,
         open_interest=short_leg_contract.open_interest,
+        iv_profile="CREDIT",
     )
 
     if not entry_score.is_valid:

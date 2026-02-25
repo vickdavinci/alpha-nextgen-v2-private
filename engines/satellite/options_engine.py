@@ -1869,6 +1869,7 @@ class OptionsEngine:
         min_open_interest: Optional[int] = None,
         spread_max_pct: Optional[float] = None,
         spread_warn_pct: Optional[float] = None,
+        iv_profile: str = "GENERIC",
     ) -> EntryScore:
         """
         Calculate 4-factor entry score.
@@ -1893,7 +1894,7 @@ class OptionsEngine:
         score.score_momentum = self._score_momentum(current_price, ma200_value)
 
         # Factor 3: IV Rank
-        score.score_iv = self._score_iv_rank(iv_rank)
+        score.score_iv = self._score_iv_rank(iv_rank, iv_profile=iv_profile)
 
         # Factor 4: Liquidity (allow per-direction overrides)
         score.score_liquidity = self._score_liquidity(
@@ -1947,13 +1948,34 @@ class OptionsEngine:
         else:  # Below MA200
             return 0.25
 
-    def _score_iv_rank(self, iv_rank: float) -> float:
+    def _score_iv_rank(self, iv_rank: float, iv_profile: str = "GENERIC") -> float:
         """
         Score IV Rank factor (0-1).
 
         IV rank 20-80: Optimal range, full score
         IV rank < 20 or > 80: Suboptimal, reduced score
         """
+        profile = str(iv_profile or "GENERIC").upper()
+        if bool(getattr(config, "OPTIONS_IV_SCORE_PROFILE_ENABLED", False)):
+            if profile == "DEBIT":
+                low = float(getattr(config, "OPTIONS_IV_SCORE_DEBIT_LOW", 35.0))
+                high = float(getattr(config, "OPTIONS_IV_SCORE_DEBIT_HIGH", 55.0))
+                if iv_rank <= low:
+                    return 1.0
+                if iv_rank >= high:
+                    return 0.25
+                span = max(1e-6, high - low)
+                return max(0.25, 1.0 - 0.75 * ((iv_rank - low) / span))
+            if profile == "CREDIT":
+                low = float(getattr(config, "OPTIONS_IV_SCORE_CREDIT_LOW", 45.0))
+                high = float(getattr(config, "OPTIONS_IV_SCORE_CREDIT_HIGH", 65.0))
+                if iv_rank <= low:
+                    return 0.25
+                if iv_rank >= high:
+                    return 1.0
+                span = max(1e-6, high - low)
+                return min(1.0, 0.25 + 0.75 * ((iv_rank - low) / span))
+
         if config.OPTIONS_IV_RANK_LOW <= iv_rank <= config.OPTIONS_IV_RANK_HIGH:
             # Optimal range: scale from 0.75 to 1.0 based on position in range
             # Closer to middle (50) is better
