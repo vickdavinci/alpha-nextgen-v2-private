@@ -1014,6 +1014,9 @@ VASS_EV_DIAGNOSTICS_ENABLED = (
     True  # V12.9 P2: log shortlist EV diagnostics for selected candidates.
 )
 VASS_EV_DIAGNOSTICS_TOP_N = 3
+VASS_SHORT_LEG_SORT_POP_FIRST = (
+    True  # V12.10: prioritize higher PoP structures before cheapest debit.
+)
 
 # V12.7: Universal adaptive VASS policy (fully reversible via VASS_EXIT_POLICY_MODE).
 # LEGACY      -> preserve historical behavior.
@@ -1813,7 +1816,9 @@ SPREAD_LOCK_CLEAR_ON_FAILURE = True  # Clear is_closing lock if all close attemp
 # 2022H1 analysis showed 36 spread failures due to strict delta requirements
 SPREAD_LONG_LEG_DELTA_MIN = 0.35  # V6.10 P3: Was 0.40, widen range for more candidates
 SPREAD_LONG_LEG_DELTA_MAX = 0.65  # V9.1: Was 0.90, cap ITM depth to improve R:R on CALL debits
-SPREAD_LONG_LEG_DELTA_TARGET_CALL = 0.60  # V12.9 P0: shift bullish debit long leg toward ITM delta.
+SPREAD_LONG_LEG_DELTA_TARGET_CALL = (
+    0.58  # V12.10: rebalance bullish debit target toward lower-theta ITM.
+)
 SPREAD_LONG_LEG_DELTA_TARGET_PUT = (
     0.70  # V9.1: ITM target for PUTs (unchanged, directional exposure)
 )

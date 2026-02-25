@@ -1706,21 +1706,37 @@ class VASSEntryEngine:
         else:
             pref_min, pref_max, pref_target = (0.20, 0.50, 0.35)
 
-        def rr_sort_key(item: tuple[Any, float, float]) -> tuple[float, float, float, float, float]:
+        def rr_sort_key(
+            item: tuple[Any, float, float]
+        ) -> tuple[float, float, float, float, float, float]:
             candidate, width, delta_abs = item
             estimated_debit = long_leg.mid_price - candidate.mid_price
             debit_to_width = estimated_debit / width if width > 0 else 1.0
             debit_bucket = round(max(0.0, debit_to_width), 2)
+            long_delta_abs = abs(float(getattr(long_leg, "delta", 0.0) or 0.0))
+            # PoP proxy at breakeven: interpolate between long- and short-leg ITM probabilities.
+            pop_proxy = long_delta_abs - debit_to_width * max(0.0, long_delta_abs - delta_abs)
+            pop_proxy = max(0.0, min(1.0, pop_proxy))
             if pref_min <= delta_abs <= pref_max:
                 delta_band_penalty = 0.0
             else:
                 delta_band_penalty = min(abs(delta_abs - pref_min), abs(delta_abs - pref_max))
+            if bool(getattr(config, "VASS_SHORT_LEG_SORT_POP_FIRST", True)):
+                return (
+                    -pop_proxy,
+                    debit_bucket,
+                    delta_band_penalty,
+                    abs(delta_abs - pref_target),
+                    debit_to_width,
+                    -width,
+                )
             return (
                 debit_bucket,
                 delta_band_penalty,
                 abs(delta_abs - pref_target),
                 debit_to_width,
                 -width,
+                -pop_proxy,
             )
 
         preferred.sort(key=rr_sort_key)
