@@ -106,6 +106,10 @@ def check_spread_entry_signal_impl(
     attempt_key = f"DEBIT_{direction.value if direction is not None else 'NONE'}"
     if not self._can_attempt_spread_entry(attempt_key):
         return fail("R_COOLDOWN_DIRECTIONAL")
+    attempt_recorded = False
+    if bool(getattr(config, "SPREAD_ATTEMPT_COUNT_ON_VALIDATION_FAILURE", False)):
+        self._record_spread_entry_attempt(attempt_key)
+        attempt_recorded = True
 
     # V2.27/O-20: Win Rate Gate - block/scale or monitor-only mode.
     win_rate_scale = self.get_win_rate_scale()
@@ -625,6 +629,19 @@ def check_spread_entry_signal_impl(
             )
             return fail_quality("SHORT_DELTA_ABOVE_MAX")
 
+    # P0: Bull debit structure must carry minimum net directional delta.
+    if spread_type == "BULL_CALL":
+        net_delta = max(0.0, long_delta_abs - short_delta_abs)
+        min_net_delta = float(getattr(config, "VASS_BULL_DEBIT_NET_DELTA_MIN", 0.0))
+        if min_net_delta > 0 and net_delta < min_net_delta:
+            self.log(
+                f"SPREAD: Entry blocked - net delta too low | "
+                f"NetDelta={net_delta:.2f} < Min={min_net_delta:.2f} | "
+                f"LongDelta={long_delta_abs:.2f} ShortDelta={short_delta_abs:.2f}",
+                trades_only=True,
+            )
+            return fail_quality("BULL_NET_DELTA_TOO_LOW")
+
     # V2.3.8: Calculate spread width and enforce VIX-adaptive minimum width.
     width = abs(short_leg_contract.strike - long_leg_contract.strike)
     effective_width_min = self._get_effective_spread_width_min(vix_current=vix_current)
@@ -927,8 +944,9 @@ def check_spread_entry_signal_impl(
     self._pending_num_contracts = num_spreads
     self._pending_entry_score = entry_score.total
 
-    # Record attempt for this spread key (successful signal creation).
-    self._record_spread_entry_attempt(attempt_key)
+    # Backward compatibility: only count success when pre-validation counting is disabled.
+    if not attempt_recorded:
+        self._record_spread_entry_attempt(attempt_key)
 
     reason = (
         f"{spread_type}: Regime={regime_score:.0f} | VIX={vix_current:.1f} | "
@@ -1070,6 +1088,10 @@ def check_credit_spread_entry_signal_impl(
     attempt_key = f"CREDIT_{strategy.value if strategy is not None else 'NONE'}"
     if not self._can_attempt_spread_entry(attempt_key):
         return fail("R_COOLDOWN_DIRECTIONAL")
+    attempt_recorded = False
+    if bool(getattr(config, "SPREAD_ATTEMPT_COUNT_ON_VALIDATION_FAILURE", False)):
+        self._record_spread_entry_attempt(attempt_key)
+        attempt_recorded = True
 
     # V2.27/O-20: Win Rate Gate - block/scale or monitor-only mode.
     win_rate_scale = self.get_win_rate_scale()
@@ -1544,8 +1566,9 @@ def check_credit_spread_entry_signal_impl(
     self._pending_num_contracts = num_spreads
     self._pending_entry_score = entry_score.total
 
-    # Record attempt for this credit strategy key (successful signal creation).
-    self._record_spread_entry_attempt(attempt_key)
+    # Backward compatibility: only count success when pre-validation counting is disabled.
+    if not attempt_recorded:
+        self._record_spread_entry_attempt(attempt_key)
 
     reason = (
         f"{spread_type}: Regime={regime_score:.0f} | VIX={vix_current:.1f} | "

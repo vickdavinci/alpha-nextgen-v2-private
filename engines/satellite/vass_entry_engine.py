@@ -2211,6 +2211,59 @@ class VASSEntryEngine:
         def _strategy_value(strategy_obj: Any) -> str:
             return str(getattr(strategy_obj, "value", strategy_obj))
 
+        def _ev_pre_gate_failure(route_strategy: Any) -> Optional[str]:
+            """Fast EV pre-gate to avoid running leg-construction in weak contexts."""
+            if not bool(getattr(config, "VASS_EV_PRE_GATE_ENABLED", False)):
+                return None
+
+            route_value = _strategy_value(route_strategy).upper()
+            is_debit_route = "DEBIT" in route_value
+            if is_debit_route:
+                max_debit_iv_rank = float(getattr(config, "VASS_EV_PRE_DEBIT_IV_RANK_MAX", 100.0))
+                if float(iv_rank) > max_debit_iv_rank:
+                    return (
+                        f"R_EV_PRE_DEBIT_IV_RANK_HIGH:{float(iv_rank):.1f}>{max_debit_iv_rank:.1f}"
+                    )
+
+            if route_value == "BULL_CALL_DEBIT":
+                min_bull_regime = float(getattr(config, "VASS_EV_PRE_BULL_REGIME_MIN", 0.0))
+                if float(regime_score) < min_bull_regime:
+                    return (
+                        f"R_EV_PRE_BULL_REGIME_LOW:{float(regime_score):.1f}<"
+                        f"{min_bull_regime:.1f}"
+                    )
+            elif route_value == "BEAR_PUT_DEBIT":
+                max_bear_regime = float(getattr(config, "VASS_EV_PRE_BEAR_REGIME_MAX", 100.0))
+                if float(regime_score) > max_bear_regime:
+                    return (
+                        f"R_EV_PRE_BEAR_REGIME_HIGH:{float(regime_score):.1f}>"
+                        f"{max_bear_regime:.1f}"
+                    )
+            return None
+
+        def _is_structural_ev_failure(reason: Optional[str]) -> bool:
+            """Detect non-recoverable structural failures where opposite-route retry is churn."""
+            if not reason:
+                return False
+            reason_u = str(reason).upper()
+            if reason_u.startswith("R_EV_PRE_"):
+                return True
+            if not reason_u.startswith("R_CONTRACT_QUALITY:"):
+                return False
+            detail = reason_u.split(":", 1)[1] if ":" in reason_u else ""
+            structural_quality = {
+                "DEBIT_TO_WIDTH_TOO_HIGH",
+                "DEBIT_TO_WIDTH_TOO_LOW",
+                "DEBIT_ABSOLUTE_CAP_EXCEEDED",
+                "FRICTION_TO_TARGET_TOO_HIGH",
+                "COMMISSION_TO_MAX_PROFIT_TOO_HIGH",
+                "ENTRY_SCORE_BELOW_MIN",
+                "LONG_DELTA_BELOW_MIN",
+                "LONG_DELTA_ABOVE_MAX",
+                "BULL_NET_DELTA_TOO_LOW",
+            }
+            return detail in structural_quality
+
         def _opposite_strategy(primary: Any) -> Optional[Any]:
             mapping = {
                 "BULL_CALL_DEBIT": "BULL_PUT_CREDIT",
@@ -2420,6 +2473,11 @@ class VASSEntryEngine:
             return None, route_rejection, last_validation_reason
 
         last_validation_reason: Optional[str] = None
+        pre_gate_reason = _ev_pre_gate_failure(strategy)
+        if pre_gate_reason is not None:
+            host.set_last_entry_validation_failure(pre_gate_reason)
+            return None, pre_gate_reason
+
         if is_credit:
             signal, rejection_code, last_validation_reason = _attempt_credit_route(
                 candidate_contracts, strategy
@@ -2431,6 +2489,23 @@ class VASSEntryEngine:
 
         if signal is not None:
             return signal, rejection_code
+
+        if (
+            allow_opposite_fallback
+            and bool(getattr(config, "VASS_OPPOSITE_ROUTE_BLOCK_ON_STRUCTURAL_FAIL", True))
+            and _is_structural_ev_failure(last_validation_reason)
+        ):
+            allow_opposite_fallback = False
+            rejection_code = "R_OPPOSITE_ROUTE_BLOCKED_EV"
+            algorithm._log_high_frequency_event(
+                config_flag="LOG_VASS_FALLBACK_BACKTEST_ENABLED",
+                category="VASS_FALLBACK",
+                reason_key="SKIP_OPPOSITE_STRUCTURAL_EV",
+                message=(
+                    f"{fallback_log_prefix}: Skip opposite route after structural failure | "
+                    f"Reason={last_validation_reason}"
+                ),
+            )
 
         if allow_opposite_fallback:
             fallback_strategy = _opposite_strategy(strategy)
@@ -2470,6 +2545,22 @@ class VASSEntryEngine:
                                 ),
                             )
                             fallback_strategy = None
+
+            if fallback_strategy is not None:
+                fallback_pre_gate_reason = _ev_pre_gate_failure(fallback_strategy)
+                if fallback_pre_gate_reason is not None:
+                    rejection_code = fallback_pre_gate_reason
+                    algorithm._log_high_frequency_event(
+                        config_flag="LOG_VASS_FALLBACK_BACKTEST_ENABLED",
+                        category="VASS_FALLBACK",
+                        reason_key="SKIP_OPPOSITE_EV_PRE_GATE",
+                        message=(
+                            f"{fallback_log_prefix}: Opposite route pre-gated | "
+                            f"Strategy={getattr(fallback_strategy, 'value', fallback_strategy)} | "
+                            f"Reason={fallback_pre_gate_reason}"
+                        ),
+                    )
+                    fallback_strategy = None
 
             if fallback_strategy is not None:
                 fallback_is_credit = host.is_credit_strategy(fallback_strategy)

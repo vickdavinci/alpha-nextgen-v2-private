@@ -979,6 +979,9 @@ VASS_MEDIUM_IV_PREFER_CREDIT = (
 VASS_OPPOSITE_ROUTE_FALLBACK_ENABLED = (
     True  # V10.17: after primary route fails quality, try one opposite-route attempt
 )
+VASS_OPPOSITE_ROUTE_BLOCK_ON_STRUCTURAL_FAIL = (
+    True  # V12.9 P0: skip opposite-route fallback when primary failure is structural EV/quality.
+)
 VASS_ROUTE_MAX_CANDIDATE_ATTEMPTS = 3  # V10.17: evaluate top-N candidates before final rejection
 VASS_SIMILAR_ENTRY_MIN_GAP_MINUTES = 15  # Block repeated same-signature entries in burst windows
 VASS_SIMILAR_ENTRY_COOLDOWN_DAYS = (
@@ -990,14 +993,16 @@ VASS_DIRECTION_MIN_GAP_MINUTES = 180  # Min spacing between same-direction VASS 
 VASS_DIRECTION_DAY_GAP_ENABLED = False  # Legacy date-level lock kept disabled by default
 VASS_ENTRY_ENGINE_ENABLED = True  # V10.10: route VASS strategy/filter/guards via dedicated engine
 VASS_USE_CONVICTION_ONLY_DIRECTION = (
-    False  # V10.7: VASS direction must follow conviction, not macro
+    True  # V12.9 P0: conviction owns VASS direction; macro is risk context only.
 )
-VASS_NO_CONVICTION_NO_TRADE = (
-    False  # V10.10: soft mode — no-conviction can still trade through normal VASS gates
-)
+VASS_NO_CONVICTION_NO_TRADE = True  # V12.9 P0: no conviction => no VASS trade.
 VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT = (
     False  # V10.10 tuning: disable bearish credit fallback while BEAR_PUT gating is rebalanced
 )
+VASS_EV_PRE_GATE_ENABLED = True  # V12.9 P0: pre-gate weak EV contexts before spread construction.
+VASS_EV_PRE_BULL_REGIME_MIN = 60.0  # Block BULL debit construction below this regime floor.
+VASS_EV_PRE_BEAR_REGIME_MAX = 40.0  # Block BEAR debit construction above this regime ceiling.
+VASS_EV_PRE_DEBIT_IV_RANK_MAX = 55.0  # Block debit construction when IV rank is too expensive.
 
 # V12.7: Universal adaptive VASS policy (fully reversible via VASS_EXIT_POLICY_MODE).
 # LEGACY      -> preserve historical behavior.
@@ -1098,6 +1103,9 @@ OPTIONS_RESERVE_RELEASE_HOUR = 12  # Release reserved slots earlier to reduce mi
 OPTIONS_RESERVE_RELEASE_MINUTE = 30
 # Replace one-attempt-per-day spread lock with scoped attempt budgets.
 SPREAD_MAX_ATTEMPTS_PER_KEY_PER_DAY = 3
+SPREAD_ATTEMPT_COUNT_ON_VALIDATION_FAILURE = (
+    True  # V12.9 P0: failed validation attempts consume daily attempt budget.
+)
 
 # Legacy compatibility (combined min/max)
 OPTIONS_ALLOCATION_MIN = 0.50  # V6.20: 50% minimum (isolation profile)
@@ -1529,9 +1537,9 @@ SPREAD_DW_LOW_VIX_MAX = 18.0
 SPREAD_DW_HIGH_VIX_MIN = 25.0
 SPREAD_DW_CAP_PANIC = 0.28  # VIX > 35
 SPREAD_DW_CAP_HIGH = 0.32  # 25 <= VIX < 35
-SPREAD_DW_CAP_ELEVATED = 0.39  # V10.30: ease debit constructability in elevated-but-normalizing IV
-SPREAD_DW_CAP_NORMAL = 0.46  # V10.30: reduce false contract-quality starvation in calm rebounds
-SPREAD_DW_CAP_COMPRESSED = 0.48  # VIX < 13
+SPREAD_DW_CAP_ELEVATED = 0.35  # V12.9 P0: tighten debit cost in elevated-but-normalizing IV.
+SPREAD_DW_CAP_NORMAL = 0.33  # V12.9 P0: keep normal-IV debit cost near positive-EV range.
+SPREAD_DW_CAP_COMPRESSED = 0.35  # V12.9 P0: avoid 45-50% debit/width in low-VIX tapes.
 SPREAD_DW_ABSOLUTE_CAP = 2.00  # Max debit dollars on $5 spread in very calm IV
 SPREAD_DW_ABSOLUTE_CAP_VIX = 15.0
 # V12.0: Elastic absolute debit cap (inversely scaled by VIX, bounded).
@@ -1771,9 +1779,12 @@ SPREAD_LOCK_CLEAR_ON_FAILURE = True  # Clear is_closing lock if all close attemp
 # 2022H1 analysis showed 36 spread failures due to strict delta requirements
 SPREAD_LONG_LEG_DELTA_MIN = 0.35  # V6.10 P3: Was 0.40, widen range for more candidates
 SPREAD_LONG_LEG_DELTA_MAX = 0.65  # V9.1: Was 0.90, cap ITM depth to improve R:R on CALL debits
-SPREAD_LONG_LEG_DELTA_TARGET_CALL = 0.50  # V9.1: ATM target for CALLs (cheaper debit, better R:R)
+SPREAD_LONG_LEG_DELTA_TARGET_CALL = 0.60  # V12.9 P0: shift bullish debit long leg toward ITM delta.
 SPREAD_LONG_LEG_DELTA_TARGET_PUT = (
     0.70  # V9.1: ITM target for PUTs (unchanged, directional exposure)
+)
+VASS_BULL_DEBIT_NET_DELTA_MIN = (
+    0.18  # V12.9 P0: require minimum net directional delta on BULL debits.
 )
 SPREAD_SHORT_LEG_DELTA_MIN = 0.08  # V6.10 P3: Was 0.10, allow farther OTM shorts
 SPREAD_SHORT_LEG_DELTA_MAX = 0.60  # V6.10 P3: Was 0.55, allow closer-to-ATM shorts
