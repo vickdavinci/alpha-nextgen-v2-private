@@ -1025,7 +1025,9 @@ VASS_POP_MIN_CREDIT = 0.55
 VASS_GREEKS_ENTRY_GATE_ENABLED = True  # V12.10: block poor theta/vega structures at entry.
 VASS_DEBIT_MAX_THETA_TO_DEBIT = 0.08  # Max daily theta burn as fraction of net debit.
 VASS_DEBIT_MAX_VEGA_TO_DEBIT = 0.70  # Max absolute net vega as fraction of net debit.
-VASS_CREDIT_MIN_NET_THETA = 0.0  # Credit spreads should not carry negative net theta.
+VASS_CREDIT_MIN_NET_THETA = -999.0  # Disabled: replaced by ratio-based gate below.
+VASS_CREDIT_THETA_RATIO_GATE_ENABLED = True  # V12.10: ratio-based theta gate scales with credit.
+VASS_CREDIT_MIN_NET_THETA_RATIO = -0.03  # Allow up to 3% of credit as daily theta cost.
 VASS_CREDIT_MAX_VEGA_TO_CREDIT = 1.20  # Max absolute net vega as fraction of credit received.
 
 # V12.7: Universal adaptive VASS policy (fully reversible via VASS_EXIT_POLICY_MODE).

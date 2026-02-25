@@ -1419,6 +1419,16 @@ def check_credit_spread_entry_signal_impl(
                 trades_only=True,
             )
             return fail_quality("NET_THETA_UNFAVORABLE")
+        if bool(getattr(config, "VASS_CREDIT_THETA_RATIO_GATE_ENABLED", False)):
+            theta_ratio = net_theta / max(credit_received, 1e-6)
+            min_theta_ratio = float(getattr(config, "VASS_CREDIT_MIN_NET_THETA_RATIO", -0.03))
+            if theta_ratio < min_theta_ratio:
+                self.log(
+                    f"CREDIT_SPREAD: Entry blocked - THETA_RATIO {theta_ratio:.3f} < "
+                    f"{min_theta_ratio:.3f} | NetTheta={net_theta:.4f} Credit={credit_received:.2f}",
+                    trades_only=True,
+                )
+                return fail_quality("THETA_RATIO_UNFAVORABLE")
         if vega_ratio > max_vega_ratio:
             self.log(
                 f"CREDIT_SPREAD: Entry blocked - VEGA_TO_CREDIT {vega_ratio:.1%} > "
