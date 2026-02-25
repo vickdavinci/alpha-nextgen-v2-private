@@ -1009,14 +1009,15 @@ VASS_REGIME_CONFIRMED_BEAR_MAX = 43.0  # Disable mark stops when bearish spread 
 VASS_REGIME_BREAK_EXIT_ENABLED = True
 VASS_REGIME_BREAK_BULL_FLOOR = 50.0  # Close bullish spreads when regime falls below this
 VASS_REGIME_BREAK_BEAR_CEILING = 50.0  # Close bearish spreads when regime rises above this
-VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT = 0.60  # Keep profit-taking while confirmed
-VASS_ENABLE_MARK_STOP_EXITS = False  # V12.8: thesis mode -> disable STOP/HARD_STOP exits
-VASS_ENABLE_TAIL_CAP_EXITS = False  # V12.8: thesis mode -> disable tail-cap exits
-VASS_ENABLE_TRAIL_PROFIT_EXITS = True  # Master allow for trailing-profit exits in legacy mode
+VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT = 0.80  # Confirmed conviction mode: let winners run
+VASS_REGIME_CONFIRMED_DTE_EXIT = 2  # Confirmed conviction mode: hold until 2 DTE
+VASS_ENABLE_MARK_STOP_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
+VASS_ENABLE_TAIL_CAP_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
+VASS_ENABLE_TRAIL_PROFIT_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
 VASS_ENABLE_PROFIT_TARGET_EXITS = True  # Master allow for profit-target exits
-VASS_ENABLE_MFE_LOCK_EXITS = False  # V12.8: thesis mode -> disable MFE lock exits
-VASS_ENABLE_NEUTRALITY_EXITS = False  # V12.8: thesis mode -> disable neutrality-confirmed exits
-VASS_ENABLE_DAY4_EOD_EXITS = False  # V12.8: thesis mode -> disable day-4 EOD forced exits
+VASS_ENABLE_MFE_LOCK_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
+VASS_ENABLE_NEUTRALITY_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
+VASS_ENABLE_DAY4_EOD_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
 
 # Level Crossing Thresholds (regime shift signals)
 VASS_VIX_FEAR_CROSS_LEVEL = 23  # VIX crosses above this → BEARISH
@@ -1698,7 +1699,7 @@ VASS_TRANSITION_HANDOFF_BARS = 4
 VASS_OVERNIGHT_DERISK_ENABLED = True
 VASS_OVERNIGHT_DERISK_TIME = "15:40"
 VASS_OVERNIGHT_DERISK_ON_DETERIORATION = True
-VASS_OVERNIGHT_DERISK_ON_AMBIGUOUS = True
+VASS_OVERNIGHT_DERISK_ON_AMBIGUOUS = False
 # V6.1: Removed SPREAD_REGIME_EXIT_BULL/BEAR - legacy logic conflicted with conviction-based entry
 # Spreads now exit via: STOP_LOSS, PROFIT_TARGET, DTE_EXIT, NEUTRALITY_EXIT
 
