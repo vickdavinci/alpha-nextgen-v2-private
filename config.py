@@ -932,7 +932,7 @@ VASS_ENABLED = True  # Master switch for VASS
 
 # IV Environment Classification Thresholds
 # V6.6: Adjusted based on 2022H1 VIX distribution (16.6-32.0 range observed)
-VASS_IV_LOW_THRESHOLD = 16  # V6.6: Was 15, raised to match data distribution
+VASS_IV_LOW_THRESHOLD = 18  # V12.10: broaden low-IV routing window for debit-friendly tape.
 VASS_IV_HIGH_THRESHOLD = 22  # V10.16: route elevated-IV tape to credit spreads earlier
 VASS_IV_SMOOTHING_MINUTES = 30  # SMA window to prevent strategy flickering
 # V12.10: Align VASS routing with chain IV rank when available.
@@ -1007,7 +1007,9 @@ VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT = (
     False  # V10.10 tuning: disable bearish credit fallback while BEAR_PUT gating is rebalanced
 )
 VASS_EV_PRE_GATE_ENABLED = True  # V12.9 P0: pre-gate weak EV contexts before spread construction.
-VASS_EV_PRE_BULL_REGIME_MIN = 60.0  # Block BULL debit construction below this regime floor.
+VASS_EV_PRE_BULL_REGIME_MIN = (
+    52.0  # V12.10: allow neutral-bull tape to participate in bull debit entries.
+)
 VASS_EV_PRE_BEAR_REGIME_MAX = 40.0  # Block BEAR debit construction above this regime ceiling.
 VASS_EV_PRE_DEBIT_IV_RANK_MAX = 55.0  # Block debit construction when IV rank is too expensive.
 VASS_EV_DIAGNOSTICS_ENABLED = (
