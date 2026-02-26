@@ -2742,7 +2742,7 @@ class PortfolioRouter:
                     if "ITM_MOMENTUM" in intraday_strategy:
                         tag = f"ITM:{intraday_strategy}"
                     elif "PROTECTIVE_PUTS" in intraday_strategy:
-                        tag = f"HEDGE:{intraday_strategy}"
+                        tag = f"MICRO:{intraday_strategy}"
                     elif intraday_strategy:
                         tag = f"MICRO:{intraday_strategy}"
                     else:

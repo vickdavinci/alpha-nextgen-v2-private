@@ -143,7 +143,7 @@ class MainOrdersMixin:
         if strategy == "ITM_MOMENTUM":
             return "ITM"
         if strategy == "PROTECTIVE_PUTS":
-            return "HEDGE"
+            return "MICRO"
         if strategy.startswith("MICRO_") or strategy in (
             "DEBIT_FADE",
             "OTM_MOMENTUM",

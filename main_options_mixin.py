@@ -353,7 +353,7 @@ class MainOptionsMixin:
         name = str(getattr(strategy, "value", strategy) or "").upper()
         if "ITM_MOMENTUM" in name:
             return "ITM"
-        if "MICRO_" in name:
+        if "MICRO_" in name or "PROTECTIVE_PUTS" in name:
             return "MICRO"
         return "OTHER"
 
