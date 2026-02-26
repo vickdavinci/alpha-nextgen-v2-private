@@ -836,28 +836,17 @@ def check_spread_entry_signal_impl(
             )
             return fail_quality("COMMISSION_TO_MAX_PROFIT_TOO_HIGH")
 
-    # V2.18: Use sizing cap (Fix for MarginBuyingPower sizing bug)
-    # Evidence: Architect found $14K trade vs $5K expected when using allocation-based sizing
-    # V3.0 SCALABILITY FIX: Use percentage-based cap instead of hardcoded dollars
-    # At $50K: 15% = $7,500, at $200K: 15% = $30,000 (scales with portfolio)
+    # V12.14: Budget-proportional VASS sizing (universal for debit + credit)
     portfolio_value = (
         float(portfolio_value)
         if portfolio_value and portfolio_value > 0
         else (self.algorithm.Portfolio.TotalPortfolioValue if self.algorithm else 50000)
     )
-    swing_max_pct = float(
-        getattr(
-            config,
-            "VASS_MAX_SPREAD_RISK_PCT",
-            getattr(
-                config, "VASS_RISK_PER_TRADE_PCT", getattr(config, "SWING_SPREAD_MAX_PCT", 0.15)
-            ),
-        )
-    )
-    swing_max_dollars = portfolio_value * swing_max_pct
-    vass_abs_cap = float(getattr(config, "VASS_MAX_RISK_DOLLARS", 0.0) or 0.0)
-    if vass_abs_cap > 0:
-        swing_max_dollars = min(swing_max_dollars, vass_abs_cap)
+    vass_budget = portfolio_value * float(getattr(config, "OPTIONS_SWING_ALLOCATION", 0.35))
+    deploy_pct = float(getattr(config, "VASS_DEPLOY_PCT_OF_BUDGET", 0.40))
+    swing_max_dollars = vass_budget * deploy_pct
+
+    # Bucket constraint — respect total VASS capital already deployed
     remaining_vass = self._get_bucket_remaining_dollars("VASS", float(portfolio_value))
     swing_max_dollars = min(swing_max_dollars, remaining_vass)
     if swing_max_dollars <= 0:
@@ -867,9 +856,29 @@ def check_spread_entry_signal_impl(
     cost_per_spread = net_debit_for_sizing * 100  # 100 shares per contract
     num_spreads = int(swing_max_dollars / cost_per_spread)
     self.log(
-        f"SIZING: SWING | Cap=${swing_max_dollars:,.0f} ({swing_max_pct:.0%} of ${portfolio_value:,.0f}) | "
+        f"SIZING: SWING | Cap=${swing_max_dollars:,.0f} (budget=${vass_budget:,.0f} x{deploy_pct:.0%}) | "
         f"Cost/spread=${cost_per_spread:.2f} | Qty={num_spreads}"
     )
+
+    # V12.14: Unified R:R modulation — better quality = more contracts (debit: lower D/W = better)
+    if num_spreads > 0 and bool(getattr(config, "VASS_RR_SCALING_ENABLED", False)):
+        floor_scale = float(getattr(config, "VASS_RR_FLOOR_SCALE", 0.60))
+        ref = float(getattr(config, "VASS_RR_DEBIT_REFERENCE_DW", 0.35))
+        worst = float(getattr(config, "VASS_RR_DEBIT_WORST_DW", 0.48))
+        if debit_to_width <= ref:
+            rr_scale = 1.0
+        elif debit_to_width >= worst:
+            rr_scale = floor_scale
+        else:
+            rr_scale = 1.0 - (1.0 - floor_scale) * (debit_to_width - ref) / (worst - ref)
+        rr_adjusted = max(1, int(num_spreads * rr_scale))
+        if rr_adjusted != num_spreads:
+            self.log(
+                f"SIZING: RR_SCALE | D/W={debit_to_width:.1%} | Scale={rr_scale:.2f} | "
+                f"{num_spreads} -> {rr_adjusted} spreads",
+                trades_only=True,
+            )
+            num_spreads = rr_adjusted
 
     # V2.27: Apply win rate gate scaling to contract count
     if win_rate_scale < 1.0:
@@ -1498,26 +1507,17 @@ def check_credit_spread_entry_signal_impl(
         )
         return fail_quality("ENTRY_SCORE_BELOW_MIN")
 
-    # Size using margin-based calculator
-    # V3.0 SCALABILITY FIX: Use percentage-based cap
+    # V12.14: Budget-proportional VASS sizing (universal for debit + credit)
     portfolio_value = (
         float(portfolio_value)
         if portfolio_value and portfolio_value > 0
         else (self.algorithm.Portfolio.TotalPortfolioValue if self.algorithm else 50000)
     )
-    swing_max_pct = float(
-        getattr(
-            config,
-            "VASS_MAX_SPREAD_RISK_PCT",
-            getattr(
-                config, "VASS_RISK_PER_TRADE_PCT", getattr(config, "SWING_SPREAD_MAX_PCT", 0.15)
-            ),
-        )
-    )
-    swing_max_dollars = portfolio_value * swing_max_pct
-    vass_abs_cap = float(getattr(config, "VASS_MAX_RISK_DOLLARS", 0.0) or 0.0)
-    if vass_abs_cap > 0:
-        swing_max_dollars = min(swing_max_dollars, vass_abs_cap)
+    vass_budget = portfolio_value * float(getattr(config, "OPTIONS_SWING_ALLOCATION", 0.35))
+    deploy_pct = float(getattr(config, "VASS_DEPLOY_PCT_OF_BUDGET", 0.40))
+    swing_max_dollars = vass_budget * deploy_pct
+
+    # Bucket constraint — respect total VASS capital already deployed
     remaining_vass = self._get_bucket_remaining_dollars("VASS", float(portfolio_value))
     swing_max_dollars = min(swing_max_dollars, remaining_vass)
     if swing_max_dollars <= 0:
@@ -1529,6 +1529,26 @@ def check_credit_spread_entry_signal_impl(
 
     if num_spreads <= 0:
         return fail("NUM_SPREADS_NON_POSITIVE")
+
+    # V12.14: Unified R:R modulation — better quality = more contracts (credit: higher C/W = better)
+    if num_spreads > 0 and bool(getattr(config, "VASS_RR_SCALING_ENABLED", False)):
+        floor_scale = float(getattr(config, "VASS_RR_FLOOR_SCALE", 0.60))
+        ref = float(getattr(config, "VASS_RR_CREDIT_REFERENCE_CW", 0.40))
+        worst = float(getattr(config, "VASS_RR_CREDIT_WORST_CW", 0.30))
+        if credit_to_width >= ref:
+            rr_scale = 1.0
+        elif credit_to_width <= worst:
+            rr_scale = floor_scale
+        else:
+            rr_scale = 1.0 - (1.0 - floor_scale) * (ref - credit_to_width) / (ref - worst)
+        rr_adjusted = max(1, int(num_spreads * rr_scale))
+        if rr_adjusted != num_spreads:
+            self.log(
+                f"SIZING: RR_SCALE | C/W={credit_to_width:.1%} | Scale={rr_scale:.2f} | "
+                f"{num_spreads} -> {rr_adjusted} spreads",
+                trades_only=True,
+            )
+            num_spreads = rr_adjusted
 
     # V2.27: Apply win rate gate scaling
     if win_rate_scale < 1.0:

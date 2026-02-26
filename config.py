@@ -1964,7 +1964,28 @@ VASS_MAX_SPREAD_RISK_PCT = 0.03  # V12.7: size each VASS spread to 3% max define
 VASS_MAX_CONCURRENT_SPREADS = 2  # V12.7: cap concurrent VASS spreads (portfolio-level containment)
 VASS_MAX_CONCURRENT_SPREADS_HARD_CAP = 2  # V12.9 P2: keep cap locked during EV stabilization.
 INTRADAY_SPREAD_MAX_PCT = 0.08  # Legacy fallback for intraday sizing
-VASS_MAX_RISK_DOLLARS = 20000  # V12.4: hard cap VASS sizing budget
+VASS_MAX_RISK_DOLLARS = (
+    0  # V12.14: set to 0 to use percentage-based (OPTIONS_SWING_ALLOCATION of portfolio)
+)
+
+# V12.14: Budget-proportional VASS sizing
+VASS_DEPLOY_PCT_OF_BUDGET = 0.40  # Deploy up to 40% of VASS budget per trade
+# Note: VASS budget = OPTIONS_SWING_ALLOCATION (35%) × TotalPortfolioValue
+
+# V12.14: Unified R:R-aware sizing
+VASS_RR_SCALING_ENABLED = True
+
+# Debit spread R:R thresholds (D/W% — lower = better)
+VASS_RR_DEBIT_REFERENCE_DW = 0.35  # "Good" D/W — gets full allocation (scale = 1.0)
+VASS_RR_DEBIT_WORST_DW = 0.48  # Worst acceptable D/W — gets floor allocation
+
+# Credit spread R:R thresholds (C/W% — higher = better)
+VASS_RR_CREDIT_REFERENCE_CW = 0.40  # "Good" C/W — gets full allocation (scale = 1.0)
+VASS_RR_CREDIT_WORST_CW = 0.30  # Worst acceptable C/W — gets floor allocation
+
+# Shared R:R floor
+VASS_RR_FLOOR_SCALE = 0.60  # Floor multiplier at worst quality (60% of full)
+
 INTRADAY_ITM_MAX_PCT = 0.15  # ITM budget slice (15% / $15k on $100k)
 INTRADAY_ITM_MAX_DOLLARS = 15000  # Absolute ITM budget cap
 INTRADAY_OTM_MAX_PCT = 0.10  # OTM budget slice (10% / $10k on $100k)

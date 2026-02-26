@@ -3139,6 +3139,10 @@ class OptionsEngine:
         cap = 0.0
         if bucket_u == "VASS":
             cap = float(getattr(config, "VASS_MAX_RISK_DOLLARS", 0.0) or 0.0)
+            if cap <= 0:
+                cap = float(portfolio_value) * float(
+                    getattr(config, "OPTIONS_SWING_ALLOCATION", 0.35)
+                )
         elif bucket_u == "ITM":
             cap = float(getattr(config, "INTRADAY_ITM_MAX_DOLLARS", 0.0) or 0.0)
             if cap <= 0:
