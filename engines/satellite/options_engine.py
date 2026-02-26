@@ -1441,9 +1441,28 @@ class OptionsEngine:
         }
 
     def _get_effective_intraday_contract_cap(self) -> int:
-        """Return effective base intraday contract cap for current equity tier."""
+        """Return effective base intraday contract cap.
+
+        When portfolio scaling is enabled, this comes from equity tiers.
+        When disabled, preserve legacy downscale behavior for smaller portfolios
+        via INTRADAY_CONTRACT_CAP_SCALE_WITH_EQUITY.
+        """
         spec = self._get_portfolio_scaling_spec()
-        return int(spec.get("intraday_max_contracts", 50))
+        cap = int(spec.get("intraday_max_contracts", 50))
+
+        if bool(getattr(config, "OPTIONS_PORTFOLIO_SCALING_ENABLED", False)):
+            return cap
+
+        if not bool(getattr(config, "INTRADAY_CONTRACT_CAP_SCALE_WITH_EQUITY", True)):
+            return cap
+
+        base_equity = float(getattr(config, "INTRADAY_MAX_CONTRACTS_BASE_EQUITY", 100000.0) or 0.0)
+        min_contract_cap = int(getattr(config, "INTRADAY_MAX_CONTRACTS_MIN", 5) or 0)
+        equity = self._get_portfolio_value_for_scaling()
+        if base_equity > 0 and equity > 0 and cap > 0:
+            equity_scale = min(1.0, float(equity) / base_equity)
+            cap = max(min_contract_cap, int(cap * equity_scale))
+        return cap
 
     def _maybe_log_scaling_snapshot(self) -> None:
         """Log equity-tier effective caps once per session day."""

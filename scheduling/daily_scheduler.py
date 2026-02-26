@@ -535,6 +535,12 @@ class DailyScheduler:
         self._events_fired_today.clear()
         self._kill_switch_triggered = False
         self._panic_mode_triggered = False
+        # Reset intraday options cutoff to config default at day boundary.
+        # Dynamic early-close refresh may fail on a given day; this prevents
+        # stale carryover of prior session's cutoff.
+        self._intraday_opt_close = self._parse_time(
+            str(getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15"))
+        )
 
     def get_events_fired_today(self) -> List[ScheduledEvent]:
         """Get list of events fired today."""
