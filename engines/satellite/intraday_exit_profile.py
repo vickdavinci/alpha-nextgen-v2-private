@@ -49,17 +49,53 @@ def get_intraday_exit_profile_impl(self, entry_strategy: str) -> Tuple[float, Op
             med_max = float(getattr(config, "MICRO_OTM_VIX_MED_MAX", 22.0))
             if vix_val < low_max:
                 return (
-                    float(getattr(config, "MICRO_OTM_TARGET_LOW_VIX", 0.45)),
-                    float(getattr(config, "MICRO_OTM_STOP_LOW_VIX", 0.30)),
+                    float(
+                        getattr(
+                            config,
+                            "MICRO_OTM_PUT_TARGET_LOW_VIX",
+                            getattr(config, "MICRO_OTM_TARGET_LOW_VIX", 0.45),
+                        )
+                    ),
+                    float(
+                        getattr(
+                            config,
+                            "MICRO_OTM_PUT_STOP_LOW_VIX",
+                            getattr(config, "MICRO_OTM_STOP_LOW_VIX", 0.30),
+                        )
+                    ),
                 )
             if vix_val < med_max:
                 return (
-                    float(getattr(config, "MICRO_OTM_TARGET_MED_VIX", 0.60)),
-                    float(getattr(config, "MICRO_OTM_STOP_MED_VIX", 0.35)),
+                    float(
+                        getattr(
+                            config,
+                            "MICRO_OTM_PUT_TARGET_MED_VIX",
+                            getattr(config, "MICRO_OTM_TARGET_MED_VIX", 0.60),
+                        )
+                    ),
+                    float(
+                        getattr(
+                            config,
+                            "MICRO_OTM_PUT_STOP_MED_VIX",
+                            getattr(config, "MICRO_OTM_STOP_MED_VIX", 0.35),
+                        )
+                    ),
                 )
             return (
-                float(getattr(config, "MICRO_OTM_TARGET_HIGH_VIX", 0.80)),
-                float(getattr(config, "MICRO_OTM_STOP_HIGH_VIX", 0.40)),
+                float(
+                    getattr(
+                        config,
+                        "MICRO_OTM_PUT_TARGET_HIGH_VIX",
+                        getattr(config, "MICRO_OTM_TARGET_HIGH_VIX", 0.80),
+                    )
+                ),
+                float(
+                    getattr(
+                        config,
+                        "MICRO_OTM_PUT_STOP_HIGH_VIX",
+                        getattr(config, "MICRO_OTM_STOP_HIGH_VIX", 0.40),
+                    )
+                ),
             )
         return (
             float(
@@ -161,17 +197,53 @@ def get_trail_config_impl(self, entry_strategy: str) -> Optional[Tuple[float, fl
             med_max = float(getattr(config, "MICRO_OTM_VIX_MED_MAX", 22.0))
             if vix_val < low_max:
                 return (
-                    float(getattr(config, "MICRO_OTM_TRAIL_TRIGGER_LOW_VIX", 0.20)),
-                    float(getattr(config, "MICRO_OTM_TRAIL_PCT_LOW_VIX", 0.35)),
+                    float(
+                        getattr(
+                            config,
+                            "MICRO_OTM_PUT_TRAIL_TRIGGER_LOW_VIX",
+                            getattr(config, "MICRO_OTM_TRAIL_TRIGGER_LOW_VIX", 0.20),
+                        )
+                    ),
+                    float(
+                        getattr(
+                            config,
+                            "MICRO_OTM_PUT_TRAIL_PCT_LOW_VIX",
+                            getattr(config, "MICRO_OTM_TRAIL_PCT_LOW_VIX", 0.35),
+                        )
+                    ),
                 )
             if vix_val < med_max:
                 return (
-                    float(getattr(config, "MICRO_OTM_TRAIL_TRIGGER_MED_VIX", 0.28)),
-                    float(getattr(config, "MICRO_OTM_TRAIL_PCT_MED_VIX", 0.45)),
+                    float(
+                        getattr(
+                            config,
+                            "MICRO_OTM_PUT_TRAIL_TRIGGER_MED_VIX",
+                            getattr(config, "MICRO_OTM_TRAIL_TRIGGER_MED_VIX", 0.28),
+                        )
+                    ),
+                    float(
+                        getattr(
+                            config,
+                            "MICRO_OTM_PUT_TRAIL_PCT_MED_VIX",
+                            getattr(config, "MICRO_OTM_TRAIL_PCT_MED_VIX", 0.45),
+                        )
+                    ),
                 )
             return (
-                float(getattr(config, "MICRO_OTM_TRAIL_TRIGGER_HIGH_VIX", 0.25)),
-                float(getattr(config, "MICRO_OTM_TRAIL_PCT_HIGH_VIX", 0.50)),
+                float(
+                    getattr(
+                        config,
+                        "MICRO_OTM_PUT_TRAIL_TRIGGER_HIGH_VIX",
+                        getattr(config, "MICRO_OTM_TRAIL_TRIGGER_HIGH_VIX", 0.25),
+                    )
+                ),
+                float(
+                    getattr(
+                        config,
+                        "MICRO_OTM_PUT_TRAIL_PCT_HIGH_VIX",
+                        getattr(config, "MICRO_OTM_TRAIL_PCT_HIGH_VIX", 0.50),
+                    )
+                ),
             )
         return (
             float(

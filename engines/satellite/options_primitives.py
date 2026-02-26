@@ -1150,10 +1150,23 @@ class MicroRegimeEngine:
             direction: OptionDirection, reason: str
         ) -> Tuple[IntradayStrategy, Optional[OptionDirection], str]:
             use_otm = bool(getattr(config, "MICRO_OTM_MOMENTUM_ENABLED", False))
+            regime_name = str(getattr(micro_regime, "value", micro_regime)).upper()
             if use_otm:
                 max_vix = float(getattr(config, "MICRO_OTM_MOMENTUM_MAX_VIX", 22.0))
                 min_move = float(getattr(config, "MICRO_OTM_MOMENTUM_MIN_MOVE", 0.40))
                 if direction == OptionDirection.CALL:
+                    if not bool(getattr(config, "MICRO_OTM_CALL_ENABLED", False)):
+                        self._record_regime_decision(
+                            engine="MICRO",
+                            decision="BLOCK",
+                            strategy_attempted="MICRO_OTM_MOMENTUM_CALL",
+                            gate_name="MICRO_OTM_CALL_DISABLED",
+                        )
+                        return (
+                            IntradayStrategy.NO_TRADE,
+                            None,
+                            "MICRO_OTM_CALL_DISABLED: directional CALL OTM path disabled",
+                        )
                     min_move = float(getattr(config, "MICRO_OTM_MOMENTUM_MIN_MOVE_CALL", min_move))
                     score_floor = self._resolve_micro_bullish_confirm_threshold(
                         vix_current
@@ -1188,6 +1201,64 @@ class MicroRegimeEngine:
                             f"MICRO_OTM_GATE_BLOCK: macro {macro_regime_score:.0f} < {macro_score_floor:.0f} for CALL",
                         )
                 elif direction == OptionDirection.PUT:
+                    if not bool(getattr(config, "MICRO_OTM_PUT_ENABLED", True)):
+                        self._record_regime_decision(
+                            engine="MICRO",
+                            decision="BLOCK",
+                            strategy_attempted="MICRO_OTM_MOMENTUM_PUT",
+                            gate_name="MICRO_OTM_PUT_DISABLED",
+                        )
+                        return (
+                            IntradayStrategy.NO_TRADE,
+                            None,
+                            "MICRO_OTM_PUT_DISABLED: directional PUT OTM path disabled",
+                        )
+                    put_whitelist_cfg = getattr(
+                        config, "MICRO_OTM_PUT_REGIME_WHITELIST", ("WORSENING", "WORSENING_HIGH")
+                    )
+                    put_whitelist = {
+                        str(item).upper()
+                        for item in (
+                            put_whitelist_cfg
+                            if isinstance(put_whitelist_cfg, (list, tuple, set))
+                            else []
+                        )
+                    }
+                    put_regime_allowed = regime_name in put_whitelist
+                    allow_deteriorating = bool(
+                        getattr(config, "MICRO_OTM_PUT_ALLOW_DETERIORATING_IF_CONFIRMED", True)
+                    )
+                    if regime_name == "DETERIORATING" and allow_deteriorating:
+                        downside_confirmed = qqq_is_down and vix_direction in (
+                            VIXDirection.RISING_FAST,
+                            VIXDirection.SPIKING,
+                        )
+                        if not downside_confirmed:
+                            self._record_regime_decision(
+                                engine="MICRO",
+                                decision="BLOCK",
+                                strategy_attempted="MICRO_OTM_MOMENTUM_PUT",
+                                gate_name="MICRO_OTM_PUT_DETERIORATING_CONDITION_BLOCK",
+                            )
+                            return (
+                                IntradayStrategy.NO_TRADE,
+                                None,
+                                "MICRO_OTM_PUT_DETERIORATING_CONDITION_BLOCK: requires QQQ down + VIX RISING_FAST/SPIKING",
+                            )
+                        put_regime_allowed = True
+                    if not put_regime_allowed:
+                        self._record_regime_decision(
+                            engine="MICRO",
+                            decision="BLOCK",
+                            strategy_attempted="MICRO_OTM_MOMENTUM_PUT",
+                            gate_name="MICRO_OTM_PUT_REGIME_BLOCK",
+                            threshold_snapshot={"regime": regime_name},
+                        )
+                        return (
+                            IntradayStrategy.NO_TRADE,
+                            None,
+                            f"MICRO_OTM_PUT_REGIME_BLOCK: {regime_name}",
+                        )
                     min_move = float(getattr(config, "MICRO_OTM_MOMENTUM_MIN_MOVE_PUT", min_move))
                     score_ceiling = self._resolve_micro_bearish_confirm_threshold(
                         vix_current
@@ -1222,11 +1293,16 @@ class MicroRegimeEngine:
                             f"MICRO_OTM_GATE_BLOCK: macro {macro_regime_score:.0f} > {macro_score_ceiling:.0f} for PUT",
                         )
                 if vix_current <= max_vix and abs(qqq_move_pct) >= min_move:
+                    gate_name = (
+                        "MICRO_OTM_PUT_ALLOWED"
+                        if direction == OptionDirection.PUT
+                        else "MICRO_OTM_CONFIRMED"
+                    )
                     self._record_regime_decision(
                         engine="MICRO",
                         decision="ALLOW",
                         strategy_attempted=f"MICRO_OTM_MOMENTUM_{direction.value}",
-                        gate_name="MICRO_OTM_CONFIRMED",
+                        gate_name=gate_name,
                         threshold_snapshot={
                             "max_vix": max_vix,
                             "min_move": min_move,
@@ -1269,19 +1345,44 @@ class MicroRegimeEngine:
         #   - QQQ DOWN + VIX RISING = confirmed selloff, fear real → BUY PUT
         # =====================================================================
 
+        # V12.16: MICRO directional policy hard blocks.
+        directional_block_regimes = {
+            MicroRegime.NORMAL,
+            MicroRegime.CAUTION_LOW,
+            MicroRegime.CAUTIOUS,
+            MicroRegime.TRANSITION,
+            MicroRegime.UNSTABLE,
+            MicroRegime.ELEVATED,
+        }
+        if micro_regime in directional_block_regimes:
+            return (
+                IntradayStrategy.NO_TRADE,
+                None,
+                f"MICRO_DIRECTIONAL_BLOCK_LOW_CONVICTION: {micro_regime.value}",
+            )
+
+        # V12.16: ITM-owned bullish confirmation regimes.
+        itm_handoff_only_regimes = {
+            MicroRegime.GOOD_MR,
+            MicroRegime.RECOVERING,
+            MicroRegime.IMPROVING,
+        }
+        if micro_regime in itm_handoff_only_regimes:
+            return (
+                IntradayStrategy.NO_TRADE,
+                None,
+                f"MICRO_ITM_HANDOFF_ONLY: {micro_regime.value}",
+            )
+
         # V6.5: Only apply divergence/confirmation logic in tradeable regimes
         # Choppy/caution regimes should skip this and fall through to RULE 7
         tradeable_regimes = {
             MicroRegime.PERFECT_MR,
-            MicroRegime.GOOD_MR,
-            MicroRegime.NORMAL,
-            MicroRegime.RECOVERING,
-            MicroRegime.IMPROVING,
             MicroRegime.PANIC_EASING,  # Can fade after panic subsides
             MicroRegime.CALMING,  # Can trade when fear is decreasing
-            MicroRegime.CAUTIOUS,  # V6.10 P3: Added - VIX medium + stable (allow credits)
-            MicroRegime.TRANSITION,  # Allow participation during mild handoff regimes
-            MicroRegime.CAUTION_LOW,  # V9: tradeable with reduced size, universal gates handle quality
+            MicroRegime.WORSENING,
+            MicroRegime.WORSENING_HIGH,
+            MicroRegime.DETERIORATING,
         }
 
         if micro_regime not in tradeable_regimes:

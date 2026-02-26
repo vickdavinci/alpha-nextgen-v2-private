@@ -165,10 +165,12 @@ class TestClassifyVIXLevel:
         assert score == config.MICRO_SCORE_VIX_VERY_CALM
 
     def test_low_vix(self, micro_engine):
-        """V2.3.11: VIX 11.5-15 is LOW with calm score."""
+        """V2.3.11: VIX 11.5-15 is LOW with calm score (low VIX sub-band)."""
         level, score = micro_engine.classify_vix_level(13.0)  # V2.3.11: 11.5-15
         assert level == VIXLevel.LOW
-        assert score == config.MICRO_SCORE_VIX_CALM
+        # VIX 13.0 < MICRO_SCORE_LOW_VIX_MAX (18) → uses low-VIX calm score
+        expected = int(getattr(config, "MICRO_VIX_CALM_SCORE_LOW_VIX", config.MICRO_SCORE_VIX_CALM))
+        assert score == expected
 
     def test_normal_low_vix(self, micro_engine):
         """V2.3.11: VIX 15-18 is LOW with normal score."""
@@ -460,15 +462,15 @@ class TestScoreMoveVelocity:
 class TestRecommendStrategy:
     """Tests for recommend_strategy() method."""
 
-    def test_perfect_mr_regime_recommends_otm_momentum(self, micro_engine):
-        """PERFECT_MR confirmation path routes to MICRO_OTM_MOMENTUM in current architecture."""
+    def test_perfect_mr_regime_recommends_no_trade(self, micro_engine):
+        """V12.16: PERFECT_MR is ITM handoff-only in MICRO, so strategy remains NO_TRADE."""
         strategy = micro_engine.recommend_strategy(
             micro_regime=MicroRegime.PERFECT_MR,
             micro_score=70,
             vix_current=15.0,
             qqq_move_pct=1.0,
         )
-        assert strategy == IntradayStrategy.MICRO_OTM_MOMENTUM
+        assert strategy == IntradayStrategy.NO_TRADE
 
     def test_crash_regime_recommends_protective_puts(self, micro_engine):
         """V6.4: CRASH regime -> PROTECTIVE_PUTS (crisis protection, no score required)."""

@@ -561,10 +561,20 @@ def check_intraday_entry_signal_impl(
         intraday_abs_cap = float(getattr(config, "INTRADAY_OTM_MAX_DOLLARS", 0.0) or 0.0)
 
     if is_protective_put:
-        # Protective puts: fixed percentage, already scaled by Governor
+        # Protective puts are part of MICRO by design, so they must consume OTM bucket budget.
         protective_size_pct = getattr(config, "PROTECTIVE_PUTS_SIZE_PCT", 0.02)
         effective_size_pct = protective_size_pct * governor_scale
         adjusted_cap = portfolio_value_for_sizing * effective_size_pct
+        remaining_bucket = self._get_bucket_remaining_dollars(
+            "OTM", float(portfolio_value_for_sizing)
+        )
+        adjusted_cap = min(adjusted_cap, remaining_bucket)
+        if adjusted_cap <= 0:
+            self.log(
+                "INTRADAY: Protective PUT blocked - OTM bucket exhausted",
+                trades_only=True,
+            )
+            return fail("E_INTRADAY_OTM_BUCKET_EXHAUSTED")
         size_mult = 1.0  # Already factored in above
         intraday_max_pct = protective_size_pct  # For logging
     else:
@@ -853,6 +863,33 @@ def check_intraday_entry_signal_impl(
                 trades_only=True,
             )
         self._pending_stop_pct = otm_fixed_stop
+
+    # V12.16: keep ATR sovereign for OTM PUT, but cap realized stop by VIX tier.
+    if (
+        not is_protective_put
+        and entry_strategy == IntradayStrategy.MICRO_OTM_MOMENTUM
+        and direction == OptionDirection.PUT
+        and self._pending_stop_pct is not None
+    ):
+        low_max = float(getattr(config, "MICRO_OTM_VIX_LOW_MAX", 16.0))
+        med_max = float(getattr(config, "MICRO_OTM_VIX_MED_MAX", 22.0))
+        vix_val = float(vix_current) if vix_current is not None else med_max
+        if vix_val < low_max:
+            otm_stop_cap = float(getattr(config, "MICRO_OTM_STOP_CAP_LOW_VIX", 0.25))
+            vix_tier = "LOW"
+        elif vix_val < med_max:
+            otm_stop_cap = float(getattr(config, "MICRO_OTM_STOP_CAP_MED_VIX", 0.30))
+            vix_tier = "MED"
+        else:
+            otm_stop_cap = float(getattr(config, "MICRO_OTM_STOP_CAP_HIGH_VIX", 0.38))
+            vix_tier = "HIGH"
+        if float(self._pending_stop_pct) > otm_stop_cap:
+            self.log(
+                f"MICRO_OTM_STOP_CAPPED: Tier={vix_tier} | VIX={vix_val:.1f} | "
+                f"{float(self._pending_stop_pct):.0%} -> {otm_stop_cap:.0%}",
+                trades_only=True,
+            )
+            self._pending_stop_pct = float(otm_stop_cap)
 
     # V10.5: widen ITM stops in MED/HIGH VIX only; keep LOW VIX behavior unchanged.
     if (

@@ -198,16 +198,94 @@ def check_exit_signals_impl(
         and held_minutes is not None
     ):
         max_hold_minutes = float(getattr(config, "MICRO_OTM_MAX_HOLD_MINUTES", 0))
+        low_max = float(getattr(config, "MICRO_OTM_VIX_LOW_MAX", 16.0))
+        med_max = float(getattr(config, "MICRO_OTM_VIX_MED_MAX", 22.0))
+        vix_for_hold = None
+        try:
+            if self._iv_sensor is not None:
+                vix_for_hold = float(self._iv_sensor.get_smoothed_vix())
+        except Exception:
+            vix_for_hold = None
+        if vix_for_hold is None:
+            try:
+                if self.algorithm is not None:
+                    vix_for_hold = float(getattr(self.algorithm, "_current_vix", 0.0) or 0.0)
+            except Exception:
+                vix_for_hold = None
         if current_dte is not None:
             try:
                 if int(current_dte) <= 0:
-                    max_hold_minutes = float(
-                        getattr(config, "MICRO_OTM_MAX_HOLD_MINUTES_0DTE", max_hold_minutes)
-                    )
+                    if vix_for_hold is not None and vix_for_hold > 0:
+                        if vix_for_hold < low_max:
+                            max_hold_minutes = float(
+                                getattr(
+                                    config,
+                                    "MICRO_OTM_MAX_HOLD_MINUTES_0DTE_LOW_VIX",
+                                    getattr(
+                                        config, "MICRO_OTM_MAX_HOLD_MINUTES_0DTE", max_hold_minutes
+                                    ),
+                                )
+                            )
+                        elif vix_for_hold < med_max:
+                            max_hold_minutes = float(
+                                getattr(
+                                    config,
+                                    "MICRO_OTM_MAX_HOLD_MINUTES_0DTE_MED_VIX",
+                                    getattr(
+                                        config, "MICRO_OTM_MAX_HOLD_MINUTES_0DTE", max_hold_minutes
+                                    ),
+                                )
+                            )
+                        else:
+                            max_hold_minutes = float(
+                                getattr(
+                                    config,
+                                    "MICRO_OTM_MAX_HOLD_MINUTES_0DTE_HIGH_VIX",
+                                    getattr(
+                                        config, "MICRO_OTM_MAX_HOLD_MINUTES_0DTE", max_hold_minutes
+                                    ),
+                                )
+                            )
+                    else:
+                        max_hold_minutes = float(
+                            getattr(config, "MICRO_OTM_MAX_HOLD_MINUTES_0DTE", max_hold_minutes)
+                        )
                 elif int(current_dte) == 1:
-                    max_hold_minutes = float(
-                        getattr(config, "MICRO_OTM_MAX_HOLD_MINUTES_1DTE", max_hold_minutes)
-                    )
+                    if vix_for_hold is not None and vix_for_hold > 0:
+                        if vix_for_hold < low_max:
+                            max_hold_minutes = float(
+                                getattr(
+                                    config,
+                                    "MICRO_OTM_MAX_HOLD_MINUTES_1DTE_LOW_VIX",
+                                    getattr(
+                                        config, "MICRO_OTM_MAX_HOLD_MINUTES_1DTE", max_hold_minutes
+                                    ),
+                                )
+                            )
+                        elif vix_for_hold < med_max:
+                            max_hold_minutes = float(
+                                getattr(
+                                    config,
+                                    "MICRO_OTM_MAX_HOLD_MINUTES_1DTE_MED_VIX",
+                                    getattr(
+                                        config, "MICRO_OTM_MAX_HOLD_MINUTES_1DTE", max_hold_minutes
+                                    ),
+                                )
+                            )
+                        else:
+                            max_hold_minutes = float(
+                                getattr(
+                                    config,
+                                    "MICRO_OTM_MAX_HOLD_MINUTES_1DTE_HIGH_VIX",
+                                    getattr(
+                                        config, "MICRO_OTM_MAX_HOLD_MINUTES_1DTE", max_hold_minutes
+                                    ),
+                                )
+                            )
+                    else:
+                        max_hold_minutes = float(
+                            getattr(config, "MICRO_OTM_MAX_HOLD_MINUTES_1DTE", max_hold_minutes)
+                        )
             except Exception:
                 pass
         profit_exempt = float(getattr(config, "MICRO_OTM_MAX_HOLD_PROFIT_EXEMPT_PCT", 0.35))
