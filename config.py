@@ -1135,7 +1135,7 @@ MAX_SWING_TRADES_PER_DAY = 3
 # V12.17: Portfolio-growth scaling (capacity/throughput only, R:R unchanged).
 # Disabled by default; when enabled, engine slot and daily-trade ceilings scale
 # by portfolio equity tier to prevent large-account under-deployment.
-OPTIONS_PORTFOLIO_SCALING_ENABLED = False
+OPTIONS_PORTFOLIO_SCALING_ENABLED = True
 OPTIONS_PORTFOLIO_SCALING_TIERS = (
     {
         "name": "BASE_100K",
@@ -2810,7 +2810,7 @@ PROTECTIVE_PUTS_VIX_MIN_TRIGGER = 15.0  # Allow earlier crash-day hedges in risi
 PROTECTIVE_PUTS_REQUIRE_VIX_RISING = True
 PROTECTIVE_PUTS_LATE_DAY_MIN_DTE_HOUR = 13  # After this hour, avoid opening new 0DTE hedges
 INTRADAY_MAX_CONTRACTS = 50  # V10.32: reduce tail-risk concentration from intraday clustering
-INTRADAY_CONTRACT_CAP_SCALE_WITH_EQUITY = True
+INTRADAY_CONTRACT_CAP_SCALE_WITH_EQUITY = False
 INTRADAY_MAX_CONTRACTS_BASE_EQUITY = 100_000
 INTRADAY_MAX_CONTRACTS_MIN = 5
 INTRADAY_PENDING_ENTRY_STALE_MINUTES = (
