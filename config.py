@@ -1838,9 +1838,7 @@ SPREAD_LONG_LEG_DELTA_TARGET_CALL = 0.43  # V12.11: slightly OTM — D/W ≈ del
 SPREAD_LONG_LEG_DELTA_TARGET_PUT = (
     0.70  # V9.1: ITM target for PUTs (unchanged, directional exposure)
 )
-VASS_BULL_DEBIT_NET_DELTA_MIN = (
-    0.18  # V12.9 P0: require minimum net directional delta on BULL debits.
-)
+VASS_BULL_DEBIT_NET_DELTA_MIN = 0.0  # V12.12: disabled — redundant with D/W cap. Net delta ≈ D/W for verticals; gate incompatible with delta 0.43 target (net delta ~0.17 < 0.18 threshold). Was 0.18.
 SPREAD_SHORT_LEG_DELTA_MIN = 0.08  # V6.10 P3: Was 0.10, allow farther OTM shorts
 SPREAD_SHORT_LEG_DELTA_MAX = 0.60  # V6.10 P3: Was 0.55, allow closer-to-ATM shorts
 # V6.9: PUT-specific spread filters (bear put spreads need looser liquidity + delta)
