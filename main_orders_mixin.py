@@ -1948,6 +1948,16 @@ class MainOrdersMixin:
                                     reason="INTRADAY_FLAT_FILLED",
                                 )
                             if removed_position and removed_position.entry_price > 0:
+                                snapshot = self._intraday_entry_snapshot.get(symbol_norm) or {}
+                                closed_qty = abs(int(fill_qty))
+                                try:
+                                    snapshot_qty = int(
+                                        snapshot.get("quantity", closed_qty) or closed_qty
+                                    )
+                                    if live_qty_after_fill <= 0 and snapshot_qty > 0:
+                                        closed_qty = snapshot_qty
+                                except Exception:
+                                    closed_qty = abs(int(fill_qty))
                                 is_win = fill_price > removed_position.entry_price
                                 # V10.8: Do NOT feed MICRO outcomes into VASS spread win-rate / breaker state.
                                 self.options_engine.record_intraday_result(
@@ -1976,7 +1986,7 @@ class MainOrdersMixin:
                                     order_tag=order_tag,
                                     pnl_dollars=(fill_price - removed_position.entry_price)
                                     * 100
-                                    * abs(int(fill_qty)),
+                                    * closed_qty,
                                     engine_tag=engine_bucket,
                                 )
                                 self._diag_intraday_result_count += 1
@@ -2006,7 +2016,7 @@ class MainOrdersMixin:
                                         exit_date=str(self.Time.date()),
                                         entry_price=removed_position.entry_price,
                                         exit_price=fill_price,
-                                        quantity=abs(int(fill_qty)),
+                                        quantity=closed_qty,
                                     )
                                 self._intraday_entry_snapshot.pop(symbol_norm, None)
                                 self._micro_open_symbols.discard(symbol_norm)
@@ -2102,10 +2112,19 @@ class MainOrdersMixin:
                             fallback_engine_bucket = self._intraday_engine_bucket_from_strategy(
                                 str(snapshot.get("entry_strategy", ""))
                             )
+                            closed_qty = abs(int(fill_qty))
+                            try:
+                                snapshot_qty = int(
+                                    snapshot.get("quantity", closed_qty) or closed_qty
+                                )
+                                if snapshot_qty > 0:
+                                    closed_qty = snapshot_qty
+                            except Exception:
+                                closed_qty = abs(int(fill_qty))
                             self._record_exit_path_pnl(
                                 reason=cached_reason,
                                 order_tag=order_tag,
-                                pnl_dollars=(fill_price - entry_price) * 100 * abs(int(fill_qty)),
+                                pnl_dollars=(fill_price - entry_price) * 100 * closed_qty,
                                 engine_tag=fallback_engine_bucket,
                             )
                             self._diag_intraday_result_count += 1
@@ -2129,7 +2148,7 @@ class MainOrdersMixin:
                                     exit_date=str(self.Time.date()),
                                     entry_price=entry_price,
                                     exit_price=fill_price,
-                                    quantity=abs(int(fill_qty)),
+                                    quantity=closed_qty,
                                 )
                         self._greeks_breach_logged = False  # Reset for next position
             except Exception as e:

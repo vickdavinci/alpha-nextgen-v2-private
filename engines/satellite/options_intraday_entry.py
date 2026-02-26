@@ -757,18 +757,17 @@ def check_intraday_entry_signal_impl(
         f"({state.qqq_move_pct:+.2f}%) | {direction.value} x{num_contracts}"
     )
 
-    # V2.3.2 FIX #4: Mark this as intraday entry for correct position tracking
-    self._pending_intraday_entry = True
-    self._pending_intraday_entry_since = self.algorithm.Time if self.algorithm else None
-    self._pending_intraday_entry_engine = self._intraday_engine_lane_from_strategy(
-        entry_strategy.value
-    )
-
-    # V2.3.10 FIX: Set pending contract for register_entry
-    # Without this, register_entry fails with "no pending contract"
-    self._pending_contract = best_contract
-    self._pending_num_contracts = num_contracts
-    self._pending_entry_strategy = entry_strategy.value
+    pending_symbol_norm = self._symbol_str(best_contract.symbol)
+    pending_lane = self._intraday_engine_lane_from_strategy(entry_strategy.value)
+    existing_key = self._find_pending_intraday_entry_key(symbol=pending_symbol_norm)
+    if existing_key is not None:
+        existing_payload = self._pending_intraday_entries.get(existing_key) or {}
+        existing_lane = str(existing_payload.get("lane", "")).upper()
+        if existing_lane and existing_lane != pending_lane:
+            return fail(
+                "E_INTRADAY_PENDING_SYMBOL_CONFLICT",
+                f"{pending_symbol_norm} already pending in lane={existing_lane}",
+            )
 
     # V6.5: Delta-scaled ATR stop calculation
     # Formula: stop_distance = ATR_MULTIPLIER × ATR × abs(delta)
@@ -953,17 +952,17 @@ def check_intraday_entry_signal_impl(
         f"Stop={self._pending_stop_pct:.0%} | TradeCount={self._intraday_trades_today}/{config.INTRADAY_MAX_TRADES_PER_DAY}",
         trades_only=True,
     )
-    pending_symbol_norm = self._symbol_str(best_contract.symbol)
-    pending_lane = self._intraday_engine_lane_from_strategy(entry_strategy.value)
-    existing_key = self._find_pending_intraday_entry_key(symbol=pending_symbol_norm)
-    if existing_key is not None:
-        existing_payload = self._pending_intraday_entries.get(existing_key) or {}
-        existing_lane = str(existing_payload.get("lane", "")).upper()
-        if existing_lane and existing_lane != pending_lane:
-            return fail(
-                "E_INTRADAY_PENDING_SYMBOL_CONFLICT",
-                f"{pending_symbol_norm} already pending in lane={existing_lane}",
-            )
+
+    # Mark this as intraday entry for correct position tracking only after all
+    # validations (including pending-symbol conflict) pass.
+    self._pending_intraday_entry = True
+    self._pending_intraday_entry_since = self.algorithm.Time if self.algorithm else None
+    self._pending_intraday_entry_engine = pending_lane
+    # Set legacy pending fields used by register_entry fallback paths.
+    self._pending_contract = best_contract
+    self._pending_num_contracts = num_contracts
+    self._pending_entry_strategy = entry_strategy.value
+
     pending_key = self._pending_intraday_entry_key(
         symbol=pending_symbol_norm,
         lane=pending_lane,

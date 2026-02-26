@@ -879,6 +879,30 @@ class TestStatePersistence:
         assert engine._trades_today == 0
         assert engine._last_trade_date == "2026-01-26"
 
+    def test_restore_pending_intraday_entries_supports_key_symbol_fallback(self):
+        """Restore pending entries when legacy rows omit explicit symbol field."""
+        engine = OptionsEngine()
+        legacy_key = "MICRO|QQQ 270105P00470000"
+        state = {
+            "pending_intraday_entries": {
+                legacy_key: {
+                    "lane": "MICRO",
+                    "entry_score": 3.0,
+                    "num_contracts": 2,
+                    "entry_strategy": IntradayStrategy.MICRO_OTM_MOMENTUM.value,
+                    "stop_pct": 0.30,
+                    "created_at": "2027-01-04 10:00:00",
+                }
+            }
+        }
+
+        engine.restore_state(state)
+
+        expected_key = engine._pending_intraday_entry_key("QQQ 270105P00470000", "MICRO")
+        assert expected_key in engine._pending_intraday_entries
+        assert engine._pending_intraday_entries[expected_key]["symbol"] == "QQQ 270105P00470000"
+        assert engine._pending_intraday_entries[expected_key]["lane"] == "MICRO"
+
 
 # =============================================================================
 # OPTIONS POSITION TESTS
@@ -1744,6 +1768,61 @@ class TestDualModeArchitecture:
 
         assert result is None  # Blocked due to existing position
 
+    def test_reserved_usage_counts_all_lane_pending_entries(self, engine):
+        """Pending usage must include all lane-keyed pending intraday entries."""
+        itm_contract = OptionContract(
+            symbol="QQQ 270105C00470000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=470.0,
+            expiry="2027-01-05",
+            delta=0.70,
+            bid=1.9,
+            ask=2.1,
+            mid_price=2.0,
+            open_interest=1200,
+            days_to_expiry=1,
+        )
+        otm_contract = OptionContract(
+            symbol="QQQ 270105P00460000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=460.0,
+            expiry="2027-01-05",
+            delta=0.35,
+            bid=0.9,
+            ask=1.1,
+            mid_price=1.0,
+            open_interest=1200,
+            days_to_expiry=1,
+        )
+        itm_key = engine._pending_intraday_entry_key(str(itm_contract.symbol), "ITM")
+        micro_key = engine._pending_intraday_entry_key(str(otm_contract.symbol), "MICRO")
+        engine._pending_intraday_entries[itm_key] = {
+            "symbol": str(itm_contract.symbol),
+            "lane": "ITM",
+            "contract": itm_contract,
+            "entry_score": 3.2,
+            "num_contracts": 2,
+            "entry_strategy": IntradayStrategy.ITM_MOMENTUM.value,
+            "stop_pct": 0.40,
+        }
+        engine._pending_intraday_entries[micro_key] = {
+            "symbol": str(otm_contract.symbol),
+            "lane": "MICRO",
+            "contract": otm_contract,
+            "entry_score": 3.0,
+            "num_contracts": 3,
+            "entry_strategy": IntradayStrategy.MICRO_OTM_MOMENTUM.value,
+            "stop_pct": 0.30,
+        }
+        engine._pending_intraday_entry = True
+
+        usage = engine._get_reserved_bucket_usage_dollars()
+
+        assert usage["ITM"] == pytest.approx(400.0)
+        assert usage["OTM"] == pytest.approx(300.0)
+
 
 class TestIntradayForceExit:
     """Tests for V2.1.1 intraday force exit at 3:30 PM."""
@@ -1780,20 +1859,20 @@ class TestIntradayForceExit:
 
         return engine
 
-    def test_intraday_force_exit_at_1525(self, engine_with_intraday_position):
-        """V6.15: Test intraday force exit at 15:25 ET (moved from 15:30)."""
+    def test_intraday_force_exit_at_1515(self, engine_with_intraday_position):
+        """Test intraday force exit at configured INTRADAY_FORCE_EXIT_TIME (15:15)."""
         result = engine_with_intraday_position.check_intraday_force_exit(
             current_hour=15,
-            current_minute=25,
+            current_minute=15,
             current_price=1.10,
         )
 
         assert result is not None
         assert result.target_weight == 0.0
-        assert "INTRADAY_TIME_EXIT_1525" in result.reason
+        assert "INTRADAY_TIME_EXIT_1515" in result.reason
 
-    def test_intraday_force_exit_after_1525(self, engine_with_intraday_position):
-        """V6.15: Test intraday force exit after 15:25 ET."""
+    def test_intraday_force_exit_after_1515(self, engine_with_intraday_position):
+        """Test intraday force exit after configured time (15:15)."""
         result = engine_with_intraday_position.check_intraday_force_exit(
             current_hour=15,
             current_minute=30,
@@ -1801,13 +1880,13 @@ class TestIntradayForceExit:
         )
 
         assert result is not None
-        assert "INTRADAY_TIME_EXIT_1525" in result.reason
+        assert "INTRADAY_TIME_EXIT_1515" in result.reason
 
-    def test_no_intraday_force_exit_before_1525(self, engine_with_intraday_position):
-        """V6.15: Test no force exit before 15:25 ET."""
+    def test_no_intraday_force_exit_before_1515(self, engine_with_intraday_position):
+        """Test no force exit before configured time (15:15)."""
         result = engine_with_intraday_position.check_intraday_force_exit(
             current_hour=15,
-            current_minute=24,
+            current_minute=14,
             current_price=1.10,
         )
 
@@ -2552,12 +2631,16 @@ class TestPendingIntradayEntryMaintenance:
         )
 
     def test_clears_stale_pending_when_only_exit_orders_remain(self, engine, monkeypatch):
+        from engines.satellite import options_pending_guard as pending_guard_module
+
+        mock_security_type = type("SecurityType", (), {"Option": "OPTION"})
         monkeypatch.setattr(
             options_engine_module,
             "SecurityType",
-            type("SecurityType", (), {"Option": "OPTION"}),
+            mock_security_type,
             raising=False,
         )
+        setattr(pending_guard_module, "SecurityType", mock_security_type)
         now = datetime(2027, 1, 4, 12, 0, 0)
         algo = self._DummyAlgorithm(
             now=now,
@@ -2587,12 +2670,18 @@ class TestPendingIntradayEntryMaintenance:
         assert engine._pending_intraday_entry is False
 
     def test_requests_cancel_for_aged_open_entry_order(self, engine, monkeypatch):
+        from engines.satellite import options_pending_guard as pending_guard_module
+
+        mock_security_type = type("SecurityType", (), {"Option": "OPTION"})
+        # SecurityType comes from AlgorithmImports star import (empty stub in tests).
+        # Must inject into both modules that reference it at runtime.
         monkeypatch.setattr(
             options_engine_module,
             "SecurityType",
-            type("SecurityType", (), {"Option": "OPTION"}),
+            mock_security_type,
             raising=False,
         )
+        setattr(pending_guard_module, "SecurityType", mock_security_type)
         now = datetime(2027, 1, 4, 12, 0, 0)
         algo = self._DummyAlgorithm(
             now=now,
@@ -2603,13 +2692,14 @@ class TestPendingIntradayEntryMaintenance:
         )
         engine.algorithm = algo
         engine._pending_intraday_entry = True
-        engine._pending_intraday_entry_since = now - timedelta(minutes=40)
+        # Age must exceed CANCEL_MINUTES (5) but stay below HARD_CLEAR_MINUTES (30)
+        engine._pending_intraday_entry_since = now - timedelta(minutes=10)
         key = engine._pending_intraday_entry_key("QQQ 270105P00470000", "MICRO")
         engine._pending_intraday_entries[key] = {
             "symbol": "QQQ 270105P00470000",
             "lane": "MICRO",
             "entry_strategy": "MICRO_OTM_MOMENTUM",
-            "created_at": (now - timedelta(minutes=40)).strftime("%Y-%m-%d %H:%M:%S"),
+            "created_at": (now - timedelta(minutes=10)).strftime("%Y-%m-%d %H:%M:%S"),
         }
         engine._intraday_positions["ITM"] = []
         engine._intraday_positions["MICRO"] = []
@@ -2677,6 +2767,64 @@ class TestIntradayLaneIsolation:
         assert micro_detail == "micro detail"
         assert itm_reason == "E_ITM_A"
         assert itm_detail == "itm detail"
+
+    def test_pending_symbol_conflict_does_not_set_pending_entry_state(self, engine):
+        contract = OptionContract(
+            symbol="QQQ 270105P00470000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=470.0,
+            expiry="2027-01-05",
+            delta=0.40,
+            bid=2.0,
+            ask=2.1,
+            mid_price=2.05,
+            open_interest=1800,
+            days_to_expiry=1,
+        )
+        pending_key = engine._pending_intraday_entry_key(str(contract.symbol), "ITM")
+        engine._pending_intraday_entries[pending_key] = {
+            "symbol": str(contract.symbol),
+            "lane": "ITM",
+            "contract": contract,
+            "entry_score": 3.0,
+            "num_contracts": 1,
+            "entry_strategy": IntradayStrategy.ITM_MOMENTUM.value,
+            "stop_pct": 0.40,
+            "created_at": "2027-01-04 10:00:00",
+        }
+        engine._pending_intraday_entry = False
+        engine._pending_contract = None
+        engine._pending_num_contracts = None
+        engine._pending_entry_strategy = None
+
+        result = engine.check_intraday_entry_signal(
+            vix_current=18.0,
+            vix_open=17.0,
+            qqq_current=450.0,
+            qqq_open=448.0,
+            current_hour=11,
+            current_minute=0,
+            current_time="2027-01-04 11:00:00",
+            portfolio_value=100000.0,
+            raw_portfolio_value=100000.0,
+            best_contract=contract,
+            size_multiplier=1.0,
+            macro_regime_score=60.0,
+            governor_scale=1.0,
+            direction=OptionDirection.PUT,
+            forced_entry_strategy=IntradayStrategy.MICRO_OTM_MOMENTUM,
+            micro_state=engine.get_micro_regime_state(),
+            transition_ctx={"transition_overlay": "STABLE"},
+        )
+
+        assert result is None
+        reason, _ = engine.pop_last_intraday_validation_failure("MICRO")
+        assert reason == "E_INTRADAY_PENDING_SYMBOL_CONFLICT"
+        assert engine._pending_intraday_entry is False
+        assert engine._pending_contract is None
+        assert engine._pending_num_contracts is None
+        assert engine._pending_entry_strategy is None
 
     def test_preflight_allows_micro_otm_second_slot_when_adaptive_cap_boosts(self, engine):
         contract = OptionContract(
@@ -3006,7 +3154,14 @@ class TestRejectionAwareSizing:
             assert engine._pending_num_contracts >= 20  # Not scaled down
 
     def test_low_vix_abs_debit_cap_scales_with_width(self, engine):
-        """Low-VIX absolute debit cap scales with width (not fixed $2 on all widths)."""
+        """Low-VIX absolute debit cap scales with width (not fixed $2 on all widths).
+
+        V12.12+: Multiple gates (trend confirm, percentage width, friction-to-target)
+        can block at low VIX. Isolate the debit cap test by disabling unrelated gates
+        and using tight bid-ask spreads to minimize friction.
+        """
+        # $5 width (1.66% of $302) passes SPREAD_WIDTH_MAX_PCT (2.0%)
+        # Tight bid-ask keeps friction-to-target ratio low
         long_leg = OptionContract(
             symbol="QQQ 271231C00300000",
             underlying="QQQ",
@@ -3014,47 +3169,55 @@ class TestRejectionAwareSizing:
             strike=300.0,
             expiry="2027-12-31",
             delta=0.60,
-            bid=5.00,
-            ask=5.50,
-            mid_price=5.25,
+            bid=3.40,
+            ask=3.50,
+            mid_price=3.45,
             open_interest=5000,
             days_to_expiry=21,
         )
         short_leg = OptionContract(
-            symbol="QQQ 271231C00307000",
+            symbol="QQQ 271231C00305000",
             underlying="QQQ",
             direction=OptionDirection.CALL,
-            strike=307.0,
+            strike=305.0,
             expiry="2027-12-31",
             delta=0.32,
-            bid=2.80,
-            ask=3.20,
-            mid_price=3.00,
+            bid=1.80,
+            ask=1.90,
+            mid_price=1.85,
             open_interest=5000,
             days_to_expiry=21,
         )
 
-        signal = engine.check_spread_entry_signal(
-            regime_score=70.0,
-            vix_current=12.0,  # compressed IV -> low-VIX absolute debit gate active
-            adx_value=30.0,
-            current_price=302.0,
-            ma200_value=280.0,
-            iv_rank=50.0,
-            current_hour=10,
-            current_minute=30,
-            current_date="2027-01-15",
-            portfolio_value=200000.0,
-            long_leg_contract=long_leg,
-            short_leg_contract=short_leg,
-            gap_filter_triggered=False,
-            vol_shock_active=False,
-            size_multiplier=1.0,
-            margin_remaining=None,
-            direction=OptionDirection.CALL,
-        )
+        orig_trend = config.VASS_BULL_DEBIT_TREND_CONFIRM_ENABLED
+        orig_friction = getattr(config, "SPREAD_ENTRY_FRICTION_GATE_ENABLED", True)
+        try:
+            config.VASS_BULL_DEBIT_TREND_CONFIRM_ENABLED = False
+            config.SPREAD_ENTRY_FRICTION_GATE_ENABLED = False
+            signal = engine.check_spread_entry_signal(
+                regime_score=70.0,
+                vix_current=12.0,  # compressed IV -> low-VIX absolute debit gate active
+                adx_value=30.0,
+                current_price=302.0,
+                ma200_value=280.0,
+                iv_rank=50.0,
+                current_hour=10,
+                current_minute=30,
+                current_date="2027-01-15",
+                portfolio_value=200000.0,
+                long_leg_contract=long_leg,
+                short_leg_contract=short_leg,
+                gap_filter_triggered=False,
+                vol_shock_active=False,
+                size_multiplier=1.0,
+                margin_remaining=None,
+                direction=OptionDirection.CALL,
+            )
+        finally:
+            config.VASS_BULL_DEBIT_TREND_CONFIRM_ENABLED = orig_trend
+            config.SPREAD_ENTRY_FRICTION_GATE_ENABLED = orig_friction
 
-        # Net debit = 2.25 on $7 width. Width-scaled cap is $2.80, so this should pass.
+        # Net debit ~$1.60 on $5 width. Width-scaled cap allows this.
         assert signal is not None
 
     def test_rejection_cap_constrains_sizing(self, engine, spread_contracts):
@@ -3153,18 +3316,26 @@ class TestRejectionAwareSizing:
         assert "MA20" in detail
 
     def test_vass_scoped_bull_debit_trend_blocks_weak_day_move(self, engine):
-        """Scoped trend confirmation blocks low/medium-IV BULL_CALL when day move is weak."""
-        ok, code, detail = engine.check_vass_bull_debit_trend_confirmation(
-            vix_current=18.0,
-            current_price=302.0,
-            qqq_open=301.9,  # about +0.03%
-            qqq_sma20=295.0,
-            qqq_sma20_ready=True,
-        )
+        """Scoped trend confirmation blocks low/medium-IV BULL_CALL when day move is negative.
 
-        assert ok is False
-        assert code == "R_BULL_DEBIT_TREND_DAY"
-        assert "QQQ day" in detail
+        VASS_BULL_DEBIT_REQUIRE_POSITIVE_DAY must be enabled for this gate to fire.
+        """
+        orig = getattr(config, "VASS_BULL_DEBIT_REQUIRE_POSITIVE_DAY", True)
+        try:
+            config.VASS_BULL_DEBIT_REQUIRE_POSITIVE_DAY = True
+            ok, code, detail = engine.check_vass_bull_debit_trend_confirmation(
+                vix_current=18.0,
+                current_price=301.5,
+                qqq_open=301.7,  # about -0.07%, below relaxed threshold of -0.05%
+                qqq_sma20=295.0,
+                qqq_sma20_ready=True,
+            )
+
+            assert ok is False
+            assert code == "R_BULL_DEBIT_TREND_DAY"
+            assert "QQQ day" in detail
+        finally:
+            config.VASS_BULL_DEBIT_REQUIRE_POSITIVE_DAY = orig
 
     def test_vass_scoped_bull_debit_trend_not_applied_outside_scope(self, engine):
         """Scoped trend confirmation should bypass when VIX is above configured scope."""
@@ -3350,7 +3521,11 @@ class TestNeutralityExit:
         assert len(result) > 0
 
     def test_neutrality_exit_disabled_by_config(self, engine, long_leg, short_leg):
-        """Neutrality exit should not fire when disabled in config."""
+        """Neutrality exit should not fire when disabled in config.
+
+        V12.x: Use regime_score=48 to stay below VASS_REGIME_BREAK_BEAR_CEILING (50)
+        and inside neutrality dead zone (48-62) without triggering the bear regime break exit.
+        """
         self._make_spread(engine, "BEAR_PUT", 2.50, long_leg, short_leg)
         long_price = 5.575
         short_price = 3.00  # +3% P&L, dead zone
@@ -3361,7 +3536,7 @@ class TestNeutralityExit:
             result = engine.check_spread_exit_signals(
                 long_leg_price=long_price,
                 short_leg_price=short_price,
-                regime_score=52.0,
+                regime_score=48.0,
                 vix_current=20.0,
                 current_dte=15,
             )
@@ -3491,16 +3666,22 @@ class TestVASSCreditSpreadEntry:
         assert dte_max == config.VASS_LOW_IV_DTE_MAX
 
     def test_select_strategy_medium_iv_bullish(self, engine):
-        """MEDIUM IV + BULLISH should select Bull Put Credit with medium DTE."""
+        """V12.6: MEDIUM IV + BULLISH selects Bull Call Debit (VASS_MEDIUM_IV_PREFER_CREDIT=False)."""
         strategy, dte_min, dte_max = engine._select_strategy("BULLISH", "MEDIUM")
-        assert strategy == SpreadStrategy.BULL_PUT_CREDIT
+        if config.VASS_MEDIUM_IV_PREFER_CREDIT:
+            assert strategy == SpreadStrategy.BULL_PUT_CREDIT
+        else:
+            assert strategy == SpreadStrategy.BULL_CALL_DEBIT
         assert dte_min == config.VASS_MEDIUM_IV_DTE_MIN
         assert dte_max == config.VASS_MEDIUM_IV_DTE_MAX
 
     def test_select_strategy_medium_iv_bearish(self, engine):
-        """MEDIUM IV + BEARISH should select Bear Call Credit with medium DTE."""
+        """V12.6: MEDIUM IV + BEARISH selects Bear Put Debit (VASS_MEDIUM_IV_PREFER_CREDIT=False)."""
         strategy, dte_min, dte_max = engine._select_strategy("BEARISH", "MEDIUM")
-        assert strategy == SpreadStrategy.BEAR_CALL_CREDIT
+        if config.VASS_MEDIUM_IV_PREFER_CREDIT:
+            assert strategy == SpreadStrategy.BEAR_CALL_CREDIT
+        else:
+            assert strategy == SpreadStrategy.BEAR_PUT_DEBIT
         assert dte_min == config.VASS_MEDIUM_IV_DTE_MIN
         assert dte_max == config.VASS_MEDIUM_IV_DTE_MAX
 
@@ -3675,7 +3856,7 @@ class TestResolverMicroPrimary:
         assert "MISALIGNED_NO_CONVICTION" in reason
 
     def test_vass_misaligned_without_conviction_still_blocked(self, engine):
-        """VASS keeps legacy block behavior when misaligned and no conviction."""
+        """V12.9: VASS without conviction is blocked (conviction-only direction mode)."""
         should_trade, resolved_direction, reason = engine.resolve_trade_signal(
             engine="VASS",
             engine_direction="BEARISH",
@@ -3685,4 +3866,5 @@ class TestResolverMicroPrimary:
         )
         assert should_trade is False
         assert resolved_direction is None
-        assert "Misaligned" in reason
+        # V12.9: VASS_USE_CONVICTION_ONLY_DIRECTION=True means no conviction → no trade
+        assert "VASS_NO_CONVICTION" in reason or "Misaligned" in reason

@@ -397,10 +397,18 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
     self._pending_intraday_entry_engine = state.get("pending_intraday_entry_engine")
     self._pending_intraday_exit_engine = state.get("pending_intraday_exit_engine")
     self._pending_intraday_entries = {}
-    for sym, row in (state.get("pending_intraday_entries") or {}).items():
+    for row_key, row in (state.get("pending_intraday_entries") or {}).items():
         if isinstance(row, dict):
             lane = str(row.get("lane") or "").upper()
-            symbol_norm = self._symbol_key(row.get("symbol") or sym)
+            if lane not in ("MICRO", "ITM") and "|" in str(row_key):
+                lane = str(row_key).split("|", 1)[0].upper()
+            symbol_norm = self._symbol_key(row.get("symbol") or "")
+            if not symbol_norm:
+                symbol_norm = self._pending_intraday_symbol_from_key(str(row_key))
+            if not symbol_norm:
+                symbol_norm = self._symbol_key(row_key)
+            if not symbol_norm:
+                continue
             key = self._pending_intraday_entry_key(symbol=symbol_norm, lane=lane)
             self._pending_intraday_entries[key] = {
                 "symbol": symbol_norm,

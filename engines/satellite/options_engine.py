@@ -3162,8 +3162,25 @@ class OptionsEngine:
             except Exception:
                 pass
 
-        # Pending intraday entry
-        if self._pending_intraday_entry and self._pending_num_contracts is not None:
+        # Pending intraday entries (lane-keyed source of truth in V12.15+).
+        if self._pending_intraday_entries:
+            for payload in list(self._pending_intraday_entries.values()):
+                if not isinstance(payload, dict):
+                    continue
+                try:
+                    strategy = str(payload.get("entry_strategy", "") or "")
+                    bucket = self._classify_intraday_bucket(strategy)
+                    contract = payload.get("contract")
+                    premium = float(getattr(contract, "mid_price", 0.0) or 0.0)
+                    qty = int(payload.get("num_contracts", 0) or 0)
+                    if premium <= 0 or qty <= 0:
+                        continue
+                    risk = premium * max(1, qty) * 100.0
+                    usage[bucket] += max(0.0, risk)
+                except Exception:
+                    continue
+        # Legacy single pending fallback (older state / recovery paths).
+        elif self._pending_intraday_entry and self._pending_num_contracts is not None:
             try:
                 strategy = str(self._pending_entry_strategy or "")
                 bucket = self._classify_intraday_bucket(strategy)
