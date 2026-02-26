@@ -1993,9 +1993,9 @@ VASS_RR_CREDIT_WORST_CW = 0.30  # Worst acceptable C/W — gets floor allocation
 VASS_RR_FLOOR_SCALE = 0.60  # Floor multiplier at worst quality (60% of full)
 
 INTRADAY_ITM_MAX_PCT = 0.15  # ITM budget slice (15% / $15k on $100k)
-INTRADAY_ITM_MAX_DOLLARS = 15000  # Absolute ITM budget cap
+INTRADAY_ITM_MAX_DOLLARS = 0  # V12.15: disable fixed-dollar clamp; ITM uses percent budget
 INTRADAY_OTM_MAX_PCT = 0.10  # OTM budget slice (10% / $10k on $100k)
-INTRADAY_OTM_MAX_DOLLARS = 10000  # Absolute OTM budget cap
+INTRADAY_OTM_MAX_DOLLARS = 0  # V12.15: disable fixed-dollar clamp; MICRO uses percent budget
 
 # V3.0: Minimum margin percentage to allow options trading
 # Replaces hardcoded $1,000 check in main.py
@@ -2732,7 +2732,7 @@ EXIT_PRE_CLEAR_ALLOW_IMMEDIATE_INTRADAY_CLOSE = (
     True  # V10.22: restore time-critical intraday close bypass to reduce stale close latency
 )
 PROTECTIVE_PUTS_MAX_CONTRACTS = (
-    20  # V12.8: raise protective puts hard cap for stronger crisis hedge coverage
+    0  # V12.15: disable dedicated protective cap; rely on % sizing + global intraday contract cap
 )
 
 # -----------------------------------------------------------------------------
