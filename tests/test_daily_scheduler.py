@@ -57,6 +57,14 @@ class TestInitialization:
         """Test that panic mode is not triggered initially."""
         assert scheduler.is_panic_mode_triggered() is False
 
+    def test_intraday_options_close_can_be_refreshed(self, scheduler: DailyScheduler) -> None:
+        """Intraday options close cutoff should be mutable for per-session refresh."""
+        scheduler.set_intraday_options_close_hhmm(12, 15)
+        assert scheduler.get_intraday_options_close_hhmm() == (12, 15)
+
+        scheduler.set_intraday_options_close_hhmm(15, 15)
+        assert scheduler.get_intraday_options_close_hhmm() == (15, 15)
+
 
 # =============================================================================
 # Event Configuration Tests
@@ -121,9 +129,9 @@ class TestEventConfiguration:
         assert hasattr(config, "EOD_OFFSET_MINUTES")
         assert config.EOD_OFFSET_MINUTES == 15
 
-        # Intraday options close 35 minutes before market close (V6.15)
+        # Intraday options close offset aligned with INTRADAY_FORCE_EXIT_TIME
         assert hasattr(config, "INTRADAY_OPTIONS_OFFSET_MINUTES")
-        assert config.INTRADAY_OPTIONS_OFFSET_MINUTES == 35
+        assert config.INTRADAY_OPTIONS_OFFSET_MINUTES == 45
 
 
 # =============================================================================

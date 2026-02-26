@@ -329,6 +329,14 @@ class MainPremarketMixin:
 
             opt_offset = getattr(config, "INTRADAY_OPTIONS_OFFSET_MINUTES", 45)
             opt_close_time = market_close - timedelta(minutes=opt_offset)
+            # Always refresh scheduler cutoff state (even on normal-close days) to prevent
+            # stale early-close carryover into the next session's force-exit logic.
+            try:
+                self.scheduler.set_intraday_options_close_hhmm(
+                    opt_close_time.hour, opt_close_time.minute
+                )
+            except Exception:
+                pass
             static_force_exit = getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15")
             static_h, static_m = map(int, static_force_exit.split(":"))
             # Keep dynamic scheduling for early-close sessions or when dynamic time differs.

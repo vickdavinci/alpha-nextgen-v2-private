@@ -668,7 +668,7 @@ class MicroEntryEngine:
                 ) = host.preflight_intraday_entry(
                     strategy=candidate_strategy,
                     direction=intraday_direction,
-                    state=state,
+                    state=micro_state,
                     vix_current=(vix_level_cboe if vix_level_cboe is not None else vix_intraday),
                     transition_ctx=transition_ctx,
                 )
@@ -989,14 +989,8 @@ class MicroEntryEngine:
                             if intraday_contract is not None
                             else None,
                         )
-                    if drop_code in {
-                        "R_SLOT_TOTAL_MAX",
-                        "R_TRADE_DAILY_TOTAL_MAX",
-                        "R_SLOT_INTRADAY_MAX",
-                        "R_SLOT_SINGLE_LEG_MAX",  # V12.15: no longer emitted, kept for compat
-                        "R_COOLDOWN_INTRADAY",
-                        "R_MARGIN_CB_ACTIVE",
-                    }:
+                    retry_context = f"{signal_reason or ''} | {intraday_validation_detail or ''} | {retry_reason_now or ''}"
+                    if self._should_queue_intraday_retry(drop_code, retry_context):
                         retry_expires = algorithm.Time + timedelta(minutes=20)
                         algorithm._queue_intraday_retry(
                             lane="MICRO",
@@ -1057,3 +1051,26 @@ class MicroEntryEngine:
         _ = itm_engine_mode
         _ = state
         return True, None
+
+    @staticmethod
+    def _should_queue_intraday_retry(drop_code: str, context: str = "") -> bool:
+        """Return whether a dropped intraday candidate should queue one retry."""
+        code = str(drop_code or "").upper()
+        if code not in {
+            "R_SLOT_TOTAL_MAX",
+            "R_TRADE_DAILY_TOTAL_MAX",
+            "R_SLOT_INTRADAY_MAX",
+            "R_SLOT_SINGLE_LEG_MAX",  # legacy code
+            "R_COOLDOWN_INTRADAY",
+            "R_MARGIN_CB_ACTIVE",
+        }:
+            return False
+
+        # Do not retry when blocker is the global daily options trade limit.
+        # R_SLOT_TOTAL_MAX is also used for slot-cap compatibility, so inspect detail context.
+        text = str(context or "").upper()
+        if code == "R_TRADE_DAILY_TOTAL_MAX":
+            return False
+        if code == "R_SLOT_TOTAL_MAX" and "GLOBAL LIMIT REACHED" in text:
+            return False
+        return True

@@ -19,6 +19,7 @@ import pytest
 
 import config
 from engines.satellite import options_engine as options_engine_module
+from engines.satellite.micro_entry_engine import MicroEntryEngine
 from engines.satellite.options_engine import (
     EntryScore,
     IVSensor,
@@ -2710,6 +2711,46 @@ class TestPendingIntradayEntryMaintenance:
         assert len(algo.Transactions.cancel_requests) == 1
         assert algo.Transactions.cancel_requests[0][0] == 9101
 
+    def test_clears_pending_when_lane_position_exists_even_if_open_entry_order_remains(
+        self, engine, monkeypatch
+    ):
+        from engines.satellite import options_pending_guard as pending_guard_module
+
+        mock_security_type = type("SecurityType", (), {"Option": "OPTION"})
+        monkeypatch.setattr(
+            options_engine_module,
+            "SecurityType",
+            mock_security_type,
+            raising=False,
+        )
+        setattr(pending_guard_module, "SecurityType", mock_security_type)
+        now = datetime(2027, 1, 4, 12, 0, 0)
+        algo = self._DummyAlgorithm(
+            now=now,
+            open_orders=[
+                self._DummyOpenOrder(oid=9201, symbol_text="QQQ   270105P00470000", quantity=1),
+            ],
+        )
+        engine.algorithm = algo
+        engine._pending_intraday_entry = True
+        engine._pending_intraday_entry_since = now - timedelta(minutes=20)
+        key = engine._pending_intraday_entry_key("QQQ 270105P00470000", "MICRO")
+        engine._pending_intraday_entries[key] = {
+            "symbol": "QQQ 270105P00470000",
+            "lane": "MICRO",
+            "entry_strategy": "MICRO_OTM_MOMENTUM",
+            "created_at": (now - timedelta(minutes=20)).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        engine._intraday_positions["MICRO"] = [
+            self._make_intraday_position("QQQ 270105P00470000", strategy="MICRO_OTM_MOMENTUM")
+        ]
+        engine._intraday_positions["ITM"] = []
+
+        engine._clear_stale_pending_intraday_entry_if_orphaned()
+
+        assert key not in engine._pending_intraday_entries
+        assert engine._pending_intraday_entry is False
+
     def test_pending_key_match_ignores_symbol_spacing(self, engine):
         key = engine._pending_intraday_entry_key("QQQ 270105P00470000", "MICRO")
         engine._pending_intraday_entries[key] = {
@@ -2971,6 +3012,30 @@ class TestIntradayDailyReserveFairness:
         can_trade = engine._can_trade_options(OptionsMode.INTRADAY, intraday_engine="MICRO")
 
         assert can_trade is True
+
+
+class TestMicroRetryEligibility:
+    def test_skip_retry_for_global_daily_limit_context(self):
+        assert (
+            MicroEntryEngine._should_queue_intraday_retry(
+                "R_SLOT_TOTAL_MAX", "Global limit reached | 5/5"
+            )
+            is False
+        )
+
+    def test_skip_retry_for_explicit_daily_total_code(self):
+        assert (
+            MicroEntryEngine._should_queue_intraday_retry("R_TRADE_DAILY_TOTAL_MAX", "daily cap")
+            is False
+        )
+
+    def test_keep_retry_for_slot_total_cap_context(self):
+        assert (
+            MicroEntryEngine._should_queue_intraday_retry(
+                "R_SLOT_TOTAL_MAX", "R_SLOT_TOTAL_MAX: 7 >= 7"
+            )
+            is True
+        )
 
 
 class TestExpirationExitContract:

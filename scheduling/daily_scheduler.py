@@ -165,6 +165,17 @@ class DailyScheduler:
         except Exception:
             return self._parse_time(str(getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15")))
 
+    def set_intraday_options_close_hhmm(self, hour: int, minute: int) -> None:
+        """Update effective intraday options close cutoff for the current session."""
+        try:
+            hh = max(0, min(23, int(hour)))
+            mm = max(0, min(59, int(minute)))
+            self._intraday_opt_close = (hh, mm)
+        except Exception:
+            self._intraday_opt_close = self._parse_time(
+                str(getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15"))
+            )
+
     # =========================================================================
     # Event Registration
     # =========================================================================

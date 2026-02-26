@@ -184,6 +184,12 @@ def clear_stale_pending_intraday_entry_if_orphaned_impl(self) -> None:
 
         open_entry_order_ids = open_entry_order_ids_by_symbol.get(symbol_norm, [])
         if open_entry_order_ids:
+            # A live lane position means entry has already resolved; pending lock is stale.
+            # Clear immediately to avoid lane starvation from lingering broker open-order records.
+            if lane_has_position:
+                self._pending_intraday_entries.pop(key, None)
+                cleared_keys.append(key)
+                continue
             # Active entry order still live. Optionally cancel if it overstays.
             if (
                 (not lane_has_position)
