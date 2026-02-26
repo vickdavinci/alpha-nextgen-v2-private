@@ -978,11 +978,12 @@ class OptionsEngine:
         """
         if not contracts or current_price <= 0:
             return None
-        effective_width_min = self._get_effective_spread_width_min()
-        width_max = float(getattr(config, "SPREAD_WIDTH_MAX", 10.0))
+        dyn_widths = self._get_dynamic_spread_widths(current_price)
+        effective_width_min = self._get_effective_spread_width_min(current_price=current_price)
+        width_max = dyn_widths["width_max"]
         oi_min_short = max(0, int(getattr(config, "OPTIONS_MIN_OPEN_INTEREST_PUT", 25)) // 2)
         spread_warn_short = float(getattr(config, "OPTIONS_SPREAD_WARNING_PCT_PUT", 0.35))
-        target_width = float(getattr(config, "SPREAD_WIDTH_TARGET", 5.0))
+        target_width = dyn_widths["width_target"]
         long_symbol = str(long_leg_contract.symbol)
         long_strike = float(long_leg_contract.strike)
         long_dte = int(long_leg_contract.days_to_expiry)
@@ -2309,10 +2310,59 @@ class OptionsEngine:
             return float(getattr(config, "CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_MEDIUM_IV", 0.32))
         return float(getattr(config, "CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT", 0.35))
 
-    def _get_effective_spread_width_min(self, vix_current: Optional[float] = None) -> float:
+    def _snap_width_to_strike_grid(self, raw_width: float) -> float:
+        """Round width to nearest dollar (QQQ strike spacing)."""
+        return max(1.0, round(raw_width))
+
+    def _get_dynamic_spread_widths(self, current_price: Optional[float] = None) -> Dict[str, float]:
+        """Return all spread width parameters, dynamically scaled by underlying price.
+
+        V12.12: percentage-of-underlying for regime-universal width scaling.
+        Falls back to fixed-dollar config when PCT_BASED is False or price unavailable.
+        """
+        use_pct = bool(getattr(config, "SPREAD_WIDTH_PCT_BASED", False))
+        price = float(current_price) if current_price and float(current_price) > 0 else 0.0
+
+        if use_pct and price > 0:
+            return {
+                "width_min": self._snap_width_to_strike_grid(
+                    price * float(getattr(config, "SPREAD_WIDTH_MIN_PCT", 0.008))
+                ),
+                "width_min_low_vix": self._snap_width_to_strike_grid(
+                    price * float(getattr(config, "SPREAD_WIDTH_MIN_LOW_VIX_PCT", 0.006))
+                ),
+                "width_max": self._snap_width_to_strike_grid(
+                    price * float(getattr(config, "SPREAD_WIDTH_MAX_PCT", 0.020))
+                ),
+                "width_target": self._snap_width_to_strike_grid(
+                    price * float(getattr(config, "SPREAD_WIDTH_TARGET_PCT", 0.010))
+                ),
+                "width_effective_max": self._snap_width_to_strike_grid(
+                    price * float(getattr(config, "SPREAD_WIDTH_EFFECTIVE_MAX_PCT", 0.015))
+                ),
+                "credit_width_target": self._snap_width_to_strike_grid(
+                    price * float(getattr(config, "CREDIT_SPREAD_WIDTH_TARGET_PCT", 0.010))
+                ),
+            }
+
+        return {
+            "width_min": float(getattr(config, "SPREAD_WIDTH_MIN", 4.0)),
+            "width_min_low_vix": float(getattr(config, "SPREAD_WIDTH_MIN_LOW_VIX", 3.0)),
+            "width_max": float(getattr(config, "SPREAD_WIDTH_MAX", 10.0)),
+            "width_target": float(getattr(config, "SPREAD_WIDTH_TARGET", 4.0)),
+            "width_effective_max": float(getattr(config, "SPREAD_WIDTH_EFFECTIVE_MAX", 7.0)),
+            "credit_width_target": float(getattr(config, "CREDIT_SPREAD_WIDTH_TARGET", 5.0)),
+        }
+
+    def _get_effective_spread_width_min(
+        self,
+        vix_current: Optional[float] = None,
+        current_price: Optional[float] = None,
+    ) -> float:
         """Return VIX-adaptive minimum spread width for debit/credit leg construction."""
-        base_min = float(getattr(config, "SPREAD_WIDTH_MIN", 4.0))
-        low_min = float(getattr(config, "SPREAD_WIDTH_MIN_LOW_VIX", base_min))
+        widths = self._get_dynamic_spread_widths(current_price)
+        base_min = widths["width_min"]
+        low_min = widths["width_min_low_vix"]
         low_threshold = float(getattr(config, "SPREAD_WIDTH_LOW_VIX_THRESHOLD", 18.0))
 
         smoothed_vix = self._iv_sensor.get_smoothed_vix()

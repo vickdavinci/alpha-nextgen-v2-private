@@ -151,7 +151,7 @@ def check_spread_entry_signal_impl(
     # Check if we have sufficient margin for at least 1 spread before proceeding
     margin_check_enabled = getattr(config, "MARGIN_CHECK_BEFORE_SIGNAL", False)
     if margin_check_enabled and margin_remaining is not None:
-        spread_width = getattr(config, "SPREAD_WIDTH_TARGET", 5.0)
+        spread_width = self._get_dynamic_spread_widths(current_price)["width_target"]
         min_spreads = getattr(config, "MARGIN_PRE_CHECK_MIN_SPREADS", 1)
         buffer_pct = getattr(config, "MARGIN_PRE_CHECK_BUFFER", 0.15)
 
@@ -643,12 +643,17 @@ def check_spread_entry_signal_impl(
             return fail_quality("BULL_NET_DELTA_TOO_LOW")
 
     # V2.3.8: Calculate spread width and enforce VIX-adaptive minimum width.
+    # V12.12: dynamic width scaling from percentage-of-underlying.
     width = abs(short_leg_contract.strike - long_leg_contract.strike)
-    effective_width_min = self._get_effective_spread_width_min(vix_current=vix_current)
-    if width < effective_width_min or width > config.SPREAD_WIDTH_MAX:
+    dyn_widths = self._get_dynamic_spread_widths(current_price)
+    effective_width_min = self._get_effective_spread_width_min(
+        vix_current=vix_current, current_price=current_price
+    )
+    dyn_width_max = dyn_widths["width_max"]
+    if width < effective_width_min or width > dyn_width_max:
         self.log(
             f"SPREAD: Entry blocked - width ${width:.0f} outside "
-            f"${effective_width_min:.0f}-${config.SPREAD_WIDTH_MAX:.0f}",
+            f"${effective_width_min:.0f}-${dyn_width_max:.0f}",
             trades_only=True,
         )
         return fail_quality("WIDTH_OUT_OF_RANGE")
@@ -1165,8 +1170,8 @@ def check_credit_spread_entry_signal_impl(
     # Check if we have sufficient margin for at least 1 spread before proceeding
     margin_check_enabled = getattr(config, "MARGIN_CHECK_BEFORE_SIGNAL", False)
     if margin_check_enabled and margin_remaining is not None:
-        # Credit spreads use CREDIT_SPREAD_WIDTH_TARGET
-        spread_width = getattr(config, "CREDIT_SPREAD_WIDTH_TARGET", 5.0)
+        # Credit spreads use dynamic credit width target
+        spread_width = self._get_dynamic_spread_widths(current_price)["credit_width_target"]
         min_spreads = getattr(config, "MARGIN_PRE_CHECK_MIN_SPREADS", 1)
         buffer_pct = getattr(config, "MARGIN_PRE_CHECK_BUFFER", 0.15)
 

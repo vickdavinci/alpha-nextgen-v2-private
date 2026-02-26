@@ -1506,6 +1506,7 @@ class VASSEntryEngine:
         set_cooldown: bool = True,
         log_filters: bool = True,
         debug_stats: Optional[Dict[str, Any]] = None,
+        current_price: Optional[float] = None,
     ) -> Optional[tuple[Any, Any]]:
         """Select long and short legs for debit spread construction."""
         # V2.4.3: Check FAILURE cooldown first (penalty after failed construction)
@@ -1550,10 +1551,12 @@ class VASSEntryEngine:
             host.log("SPREAD: No contracts available for spread selection")
             return None
 
+        # V12.12: dynamic width scaling from percentage-of-underlying
+        dyn_widths = host._get_dynamic_spread_widths(current_price)
         if target_width is None:
-            target_width = config.SPREAD_WIDTH_TARGET
+            target_width = dyn_widths["width_target"]
 
-        effective_width_min = host._get_effective_spread_width_min()
+        effective_width_min = host._get_effective_spread_width_min(current_price=current_price)
         filtered = [c for c in contracts if c.direction == direction]
         if len(filtered) < 2:
             host.log(f"SPREAD: Not enough {direction.value} contracts for spread")
@@ -1662,8 +1665,9 @@ class VASSEntryEngine:
                     continue
 
             width = abs(contract.strike - long_leg.strike)
+            dyn_width_max = dyn_widths["width_max"]
             if config.SPREAD_SHORT_LEG_BY_WIDTH:
-                if width < effective_width_min or width > config.SPREAD_WIDTH_MAX:
+                if width < effective_width_min or width > dyn_width_max:
                     continue
                 delta_abs = abs(contract.delta) if contract.delta else 0.30
             else:
@@ -1678,13 +1682,13 @@ class VASSEntryEngine:
         if not short_candidates:
             host.log(
                 f"SPREAD: No valid short leg | LongStrike={long_leg.strike} | "
-                f"WidthRange=${effective_width_min:.0f}-${config.SPREAD_WIDTH_MAX:.0f}"
+                f"WidthRange=${effective_width_min:.0f}-${dyn_widths['width_max']:.0f}"
             )
             if set_cooldown:
                 host._set_spread_failure_cooldown(current_time, direction=direction)
             return None
 
-        effective_max = getattr(config, "SPREAD_WIDTH_EFFECTIVE_MAX", 7.0)
+        effective_max = dyn_widths["width_effective_max"]
         preferred = [item for item in short_candidates if item[1] <= effective_max]
         if not preferred:
             preferred = short_candidates
@@ -1780,12 +1784,16 @@ class VASSEntryEngine:
         set_cooldown: bool = True,
         log_filters: bool = True,
         debug_stats: Optional[Dict[str, Any]] = None,
+        current_price: Optional[float] = None,
     ) -> Optional[tuple[Any, Any]]:
         """Select short and long legs for credit spread construction."""
         strategy_value = str(getattr(strategy, "value", strategy))
         cooldown_key = strategy_value
         legacy_credit_key = "CREDIT"
         direction_alias_key = "CALL" if strategy_value == "BULL_PUT_CREDIT" else "PUT"
+        # V12.12: dynamic width scaling
+        dyn_widths = host._get_dynamic_spread_widths(current_price)
+        credit_width_target = dyn_widths["credit_width_target"]
 
         if current_time:
             try:
@@ -1813,7 +1821,7 @@ class VASSEntryEngine:
             host.log("VASS: No contracts provided for credit spread selection")
             return None
 
-        effective_width_min = host._get_effective_spread_width_min()
+        effective_width_min = host._get_effective_spread_width_min(current_price=current_price)
         dte_filtered = [
             contract for contract in contracts if dte_min <= contract.days_to_expiry <= dte_max
         ]
@@ -1952,7 +1960,7 @@ class VASSEntryEngine:
             short_candidates.sort(key=lambda contract: contract.bid, reverse=True)
             short_leg = short_candidates[0]
 
-            target_long_strike = short_leg.strike - config.CREDIT_SPREAD_WIDTH_TARGET
+            target_long_strike = short_leg.strike - credit_width_target
             long_candidates = [
                 put
                 for put in puts
@@ -1971,7 +1979,7 @@ class VASSEntryEngine:
                     and put.expiry == short_leg.expiry
                     and effective_width_min
                     <= (short_leg.strike - put.strike)
-                    <= config.SPREAD_WIDTH_MAX
+                    <= dyn_widths["width_max"]
                     and put.ask > 0
                     and put.open_interest >= max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)
                     and put.spread_pct <= config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT
@@ -2114,7 +2122,7 @@ class VASSEntryEngine:
             short_candidates.sort(key=lambda contract: contract.bid, reverse=True)
             short_leg = short_candidates[0]
 
-            target_long_strike = short_leg.strike + config.CREDIT_SPREAD_WIDTH_TARGET
+            target_long_strike = short_leg.strike + credit_width_target
             long_candidates = [
                 call
                 for call in calls
@@ -2133,7 +2141,7 @@ class VASSEntryEngine:
                     and call.expiry == short_leg.expiry
                     and effective_width_min
                     <= (call.strike - short_leg.strike)
-                    <= config.SPREAD_WIDTH_MAX
+                    <= dyn_widths["width_max"]
                     and call.ask > 0
                     and call.open_interest >= max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)
                     and call.spread_pct <= config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT
@@ -2178,6 +2186,7 @@ class VASSEntryEngine:
         target_width: Optional[float] = None,
         current_time: Optional[str] = None,
         set_cooldown: bool = True,
+        current_price: Optional[float] = None,
     ) -> Optional[tuple[Any, Any]]:
         """Try multiple DTE ranges before applying debit spread failure cooldown."""
         if not dte_ranges:
@@ -2186,6 +2195,7 @@ class VASSEntryEngine:
                 direction=direction,
                 target_width=target_width,
                 current_time=current_time,
+                current_price=current_price,
             )
 
         failure_stats = []
@@ -2201,6 +2211,7 @@ class VASSEntryEngine:
                 set_cooldown=False,
                 log_filters=False,
                 debug_stats=stats,
+                current_price=current_price,
             )
             if spread_legs is not None:
                 if dte_min is not None and dte_max is not None:
@@ -2235,6 +2246,7 @@ class VASSEntryEngine:
         dte_ranges: list[Tuple[int, int]],
         current_time: Optional[str] = None,
         set_cooldown: bool = True,
+        current_price: Optional[float] = None,
     ) -> Optional[tuple[Any, Any]]:
         """Try multiple DTE ranges before applying credit spread failure cooldown."""
         if not dte_ranges:
@@ -2244,6 +2256,7 @@ class VASSEntryEngine:
                 dte_min=config.CREDIT_SPREAD_DTE_MIN,
                 dte_max=config.CREDIT_SPREAD_DTE_MAX,
                 current_time=current_time,
+                current_price=current_price,
             )
 
         failure_stats = []
@@ -2258,6 +2271,7 @@ class VASSEntryEngine:
                 set_cooldown=False,
                 log_filters=False,
                 debug_stats=stats,
+                current_price=current_price,
             )
             if spread_legs is not None:
                 host.log(
@@ -2478,6 +2492,7 @@ class VASSEntryEngine:
                     current_time=now_str,
                     dte_ranges=dte_ranges,
                     set_cooldown=(attempt == max_attempts - 1),
+                    current_price=qqq_price,
                 )
                 if spread_legs is None:
                     break
@@ -2555,6 +2570,7 @@ class VASSEntryEngine:
                     dte_ranges=dte_ranges,
                     current_time=now_str,
                     set_cooldown=(attempt == max_attempts - 1),
+                    current_price=qqq_price,
                 )
                 if spread_legs is None:
                     break

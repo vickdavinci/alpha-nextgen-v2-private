@@ -1545,16 +1545,23 @@ REGIME_OVERLAY_EARLY_VIX_HIGH = 25.0
 # Problem: Delta values jump (0.45 → 0.25) leaving gaps where no "perfect" delta exists
 # Solution: Select short leg by STRIKE WIDTH, not delta. Delta is soft preference only.
 SPREAD_SHORT_LEG_BY_WIDTH = True  # V2.4.3: Use strike width for short leg (not delta)
-# V6.10: Spread width settings for QQQ - WIDENED FOR ASSIGNMENT PROTECTION
-# Wider spreads survive larger overnight gaps and reduce assignment risk
-SPREAD_WIDTH_MIN = 4.0  # Base min width for debit/credit spread construction
-SPREAD_WIDTH_MIN_LOW_VIX = 3.0  # Allow narrower widths in low-VIX to improve debit/width
+# V12.12: Spread width settings — percentage-of-underlying for regime universality.
+# Fixed dollar widths don't scale: $7 is 1.4% of QQQ at $500 but 2.8% at $250.
+# Percentage-based widths auto-adapt to price level across all regimes.
+SPREAD_WIDTH_PCT_BASED = True  # V12.12: use percentage-of-underlying for dynamic width scaling
+SPREAD_WIDTH_MIN_PCT = 0.008  # 0.8% of QQQ price → $4 at $500, $2.40 at $300
+SPREAD_WIDTH_MIN_LOW_VIX_PCT = 0.006  # 0.6% of QQQ price → $3 at $500, $1.80 at $300
+SPREAD_WIDTH_MAX_PCT = 0.020  # 2.0% of QQQ price → $10 at $500, $6 at $300
+SPREAD_WIDTH_TARGET_PCT = 0.010  # 1.0% of QQQ price → $5 at $500, $3 at $300
+SPREAD_WIDTH_EFFECTIVE_MAX_PCT = 0.015  # 1.5% of QQQ price → $7.50 at $500, $4.50 at $300
+CREDIT_SPREAD_WIDTH_TARGET_PCT = 0.010  # 1.0% of QQQ price → $5 at $500, $3 at $300
 SPREAD_WIDTH_LOW_VIX_THRESHOLD = 18.0  # VIX threshold for low-width allowance
-SPREAD_WIDTH_MAX = 10.0  # V2.4.3: Maximum $10 spread (caps risk)
-SPREAD_WIDTH_TARGET = 4.0  # V6.13 OPT: Improve fill/constructability in medium IV
-SPREAD_WIDTH_EFFECTIVE_MAX = (
-    7.0  # V9.1: Preferred width ceiling for R:R sort (avoids lottery-ticket wide spreads)
-)
+# Legacy fixed-dollar fallbacks (used when PCT_BASED is False or current_price unavailable)
+SPREAD_WIDTH_MIN = 4.0
+SPREAD_WIDTH_MIN_LOW_VIX = 3.0
+SPREAD_WIDTH_MAX = 10.0
+SPREAD_WIDTH_TARGET = 4.0
+SPREAD_WIDTH_EFFECTIVE_MAX = 7.0
 
 # DTE for debit spreads (per V2.3 spec)
 # V2.3.22: Raised from 10 to 14 - spreads need same gap cushion as single-leg
