@@ -3283,22 +3283,21 @@ class OptionsEngine:
         transition_ctx = self._get_regime_transition_context()
         base_regime = str(transition_ctx.get("base_regime", "") or "").upper()
         transition_overlay = str(transition_ctx.get("transition_overlay", "") or "").upper()
-        recovery_relax = bool(getattr(config, "VASS_RECOVERY_RELAX_ENABLED", True)) and (
-            base_regime == "BULLISH" or transition_overlay == "RECOVERY"
-        )
+        # V12.12: MA20 tolerance decoupled from RECOVERY_RELAX.
+        # Tolerance is a standalone pullback allowance (0.3% below MA20)
+        # that should always apply when the trend confirmation gate is active.
+        ma20_tol_enabled = bool(getattr(config, "VASS_BULL_DEBIT_MA20_TOLERANCE_ENABLED", True))
         return self._vass_entry_engine.check_bull_debit_trend_confirmation(
             vix_current=vix_current,
             current_price=current_price,
             qqq_open=qqq_open,
             qqq_sma20=qqq_sma20,
             qqq_sma20_ready=qqq_sma20_ready,
-            relax_recovery=recovery_relax,
+            relax_recovery=ma20_tol_enabled,
             relaxed_day_min_change_pct=float(
-                getattr(config, "VASS_RECOVERY_RELAX_DAY_MIN_CHANGE_PCT", -0.05)
+                getattr(config, "VASS_BULL_DEBIT_MIN_DAY_CHANGE_PCT_RELAXED", -0.05)
             ),
-            ma20_tolerance_pct=float(
-                getattr(config, "VASS_RECOVERY_RELAX_MA20_TOLERANCE_PCT", 0.003)
-            ),
+            ma20_tolerance_pct=float(getattr(config, "VASS_BULL_DEBIT_MA20_TOLERANCE_PCT", 0.003)),
         )
 
     def get_itm_direction_proposal(

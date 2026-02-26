@@ -1719,6 +1719,15 @@ VASS_RECOVERY_RELAX_MA20_TOLERANCE_PCT = 0.003
 VASS_RECOVERY_RELAX_DW_CAP_BUMP = 0.09
 VASS_RECOVERY_RELAX_MAX_DW_CAP = 0.55
 
+# V12.12: MA20 tolerance decoupled from RECOVERY_RELAX.
+# Standalone 0.3% pullback allowance below MA20 for bullish debit trend confirmation.
+# Previously bundled into RECOVERY_RELAX — disabling RECOVERY_RELAX killed this tolerance as collateral damage.
+VASS_BULL_DEBIT_MA20_TOLERANCE_ENABLED = True
+VASS_BULL_DEBIT_MA20_TOLERANCE_PCT = 0.003  # 0.3% below MA20 pullback allowance
+VASS_BULL_DEBIT_MIN_DAY_CHANGE_PCT_RELAXED = (
+    -0.05
+)  # Allow slightly negative day when tolerance active
+
 # V9.7: BEAR_PUT entry gate — block in RISK_ON (12.5% WR in 2017 full-year RCA)
 VASS_BEAR_PUT_REGIME_MAX = 60  # V10.32: require clearer macro weakness for bearish debit spreads
 
