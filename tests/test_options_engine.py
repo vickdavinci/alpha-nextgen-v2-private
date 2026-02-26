@@ -30,7 +30,7 @@ from engines.satellite.options_engine import (
     SpreadStrategy,
 )
 from main_options_mixin import MainOptionsMixin
-from models.enums import IntradayStrategy, MicroRegime, Urgency
+from models.enums import IntradayStrategy, MicroRegime, OptionsMode, Urgency
 
 # =============================================================================
 # FIXTURES
@@ -2776,6 +2776,53 @@ class TestIntradayLaneIsolation:
         assert pos is not None
         assert engine.get_position() is not None
         assert engine._find_intraday_lane_by_symbol(str(fill_contract.symbol)) is None
+
+
+class TestIntradayDailyReserveFairness:
+    def test_blocks_micro_when_itm_reserve_unmet(self, engine, monkeypatch):
+        monkeypatch.setattr(config, "INTRADAY_ENGINE_DAILY_RESERVE_ENABLED", True)
+        monkeypatch.setattr(config, "INTRADAY_MIN_ITM_TRADES_RESERVED", 1)
+        monkeypatch.setattr(config, "MAX_OPTIONS_TRADES_PER_DAY", 5)
+
+        engine._total_options_trades_today = 4
+        engine._intraday_itm_trades_today = 0
+        engine._intraday_micro_trades_today = 4
+
+        can_trade = engine._can_trade_options(OptionsMode.INTRADAY, intraday_engine="MICRO")
+
+        assert can_trade is False
+        reason, detail = engine.pop_last_trade_limit_failure()
+        assert reason == "R_TRADE_DAILY_RESERVE_ITM"
+        assert "Lane=MICRO" in str(detail)
+
+    def test_blocks_itm_when_micro_reserve_unmet(self, engine, monkeypatch):
+        monkeypatch.setattr(config, "INTRADAY_ENGINE_DAILY_RESERVE_ENABLED", True)
+        monkeypatch.setattr(config, "INTRADAY_MIN_MICRO_TRADES_RESERVED", 1)
+        monkeypatch.setattr(config, "MAX_OPTIONS_TRADES_PER_DAY", 5)
+
+        engine._total_options_trades_today = 4
+        engine._intraday_itm_trades_today = 4
+        engine._intraday_micro_trades_today = 0
+
+        can_trade = engine._can_trade_options(OptionsMode.INTRADAY, intraday_engine="ITM")
+
+        assert can_trade is False
+        reason, detail = engine.pop_last_trade_limit_failure()
+        assert reason == "R_TRADE_DAILY_RESERVE_MICRO"
+        assert "Lane=ITM" in str(detail)
+
+    def test_allows_lane_when_reserve_already_satisfied(self, engine, monkeypatch):
+        monkeypatch.setattr(config, "INTRADAY_ENGINE_DAILY_RESERVE_ENABLED", True)
+        monkeypatch.setattr(config, "INTRADAY_MIN_ITM_TRADES_RESERVED", 1)
+        monkeypatch.setattr(config, "MAX_OPTIONS_TRADES_PER_DAY", 5)
+
+        engine._total_options_trades_today = 4
+        engine._intraday_itm_trades_today = 1
+        engine._intraday_micro_trades_today = 3
+
+        can_trade = engine._can_trade_options(OptionsMode.INTRADAY, intraday_engine="MICRO")
+
+        assert can_trade is True
 
 
 class TestExpirationExitContract:

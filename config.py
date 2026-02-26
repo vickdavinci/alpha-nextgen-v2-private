@@ -1139,6 +1139,12 @@ OPTIONS_RESERVE_INTRADAY_DAILY_SLOTS_ENABLED = False
 OPTIONS_MIN_INTRADAY_SLOTS_PER_DAY = 1
 OPTIONS_RESERVE_RELEASE_HOUR = 12  # Release reserved slots earlier to reduce midday throttling
 OPTIONS_RESERVE_RELEASE_MINUTE = 30
+# V12.15: Intraday lane fairness guard.
+# Prevents scan-order starvation when one intraday lane consumes the global daily budget
+# before the other lane has taken its minimum opportunities.
+INTRADAY_ENGINE_DAILY_RESERVE_ENABLED = True
+INTRADAY_MIN_ITM_TRADES_RESERVED = 1
+INTRADAY_MIN_MICRO_TRADES_RESERVED = 1
 # Replace one-attempt-per-day spread lock with scoped attempt budgets.
 SPREAD_MAX_ATTEMPTS_PER_KEY_PER_DAY = 3
 SPREAD_ATTEMPT_COUNT_ON_VALIDATION_FAILURE = (

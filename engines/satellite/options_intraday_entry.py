@@ -87,7 +87,11 @@ def check_intraday_entry_signal_impl(
 
     # V2.9: Check trade limits (Bug #4 fix) - Uses comprehensive counter
     # Replaces V2.3.14 intraday-only check to also enforce global limit
-    if not self._can_trade_options(OptionsMode.INTRADAY, direction=direction):
+    if not self._can_trade_options(
+        OptionsMode.INTRADAY,
+        direction=direction,
+        intraday_engine=validation_lane,
+    ):
         # Preserve granular slot-limit cause for funnel diagnostics.
         tl_reason, tl_detail = self.pop_last_trade_limit_failure()
         return fail(tl_reason or "E_INTRADAY_TRADE_LIMIT", tl_detail)

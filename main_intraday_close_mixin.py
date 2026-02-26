@@ -352,9 +352,7 @@ class MainIntradayCloseMixin:
 
         # Skip OCO recovery in force-close window to avoid close-race amplification.
         try:
-            exit_hour, exit_min = map(
-                int, getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15").split(":")
-            )
+            exit_hour, exit_min = self.options_engine._get_intraday_force_exit_hhmm()
             cutoff = int(getattr(config, "OCO_RECOVERY_CUTOFF_MINUTES_BEFORE_FORCE_EXIT", 20))
             now_minutes = self.Time.hour * 60 + self.Time.minute
             force_minutes = exit_hour * 60 + exit_min

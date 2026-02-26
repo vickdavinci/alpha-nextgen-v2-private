@@ -1400,7 +1400,9 @@ class OptionsEngine:
             code = str(reason or "R_SLOT_LIMIT").split(":", 1)[0].strip() or "R_SLOT_LIMIT"
             return False, code, reason
 
-        if not self._can_trade_options(OptionsMode.INTRADAY, direction=direction):
+        if not self._can_trade_options(
+            OptionsMode.INTRADAY, direction=direction, intraday_engine=lane
+        ):
             tl_reason, tl_detail = self.pop_last_trade_limit_failure()
             return False, tl_reason or "E_INTRADAY_TRADE_LIMIT", tl_detail
 
@@ -4555,7 +4557,10 @@ class OptionsEngine:
             )
 
     def _can_trade_options(
-        self, mode: OptionsMode, direction: Optional[OptionDirection] = None
+        self,
+        mode: OptionsMode,
+        direction: Optional[OptionDirection] = None,
+        intraday_engine: Optional[str] = None,
     ) -> bool:
         """
         V2.9: Check if trading is allowed based on daily limits.
@@ -4564,6 +4569,8 @@ class OptionsEngine:
 
         Args:
             mode: The trading mode to check.
+            intraday_engine: Optional lane hint ("MICRO"/"ITM") used for
+                intraday engine-fairness reserve checks.
 
         Returns:
             True if trading is allowed, False if limits exceeded.
@@ -4598,6 +4605,7 @@ class OptionsEngine:
 
         # Check mode-specific limits
         if mode == OptionsMode.INTRADAY:
+            lane = str(intraday_engine or "").upper()
             if bool(getattr(config, "INTRADAY_ENFORCE_SHARED_DAILY_CAP", False)):
                 if self._intraday_trades_today >= config.INTRADAY_MAX_TRADES_PER_DAY:
                     detail = (
@@ -4638,6 +4646,39 @@ class OptionsEngine:
                         )
                         self.log(f"TRADE_LIMIT: {detail}")
                         return reject("R_SLOT_INTRADAY_RESERVE", detail)
+            if (
+                reserve_checks_active
+                and lane in ("MICRO", "ITM")
+                and bool(getattr(config, "INTRADAY_ENGINE_DAILY_RESERVE_ENABLED", False))
+            ):
+                reserve_itm = max(int(getattr(config, "INTRADAY_MIN_ITM_TRADES_RESERVED", 0)), 0)
+                reserve_micro = max(
+                    int(getattr(config, "INTRADAY_MIN_MICRO_TRADES_RESERVED", 0)), 0
+                )
+                global_cap = int(getattr(config, "MAX_OPTIONS_TRADES_PER_DAY", 0) or 0)
+                projected_total = self._total_options_trades_today + 1
+                if lane == "MICRO" and reserve_itm > 0 and global_cap > 0:
+                    remaining_for_day = max(0, global_cap - projected_total)
+                    unmet_itm_reserve = max(0, reserve_itm - self._intraday_itm_trades_today)
+                    if remaining_for_day < unmet_itm_reserve:
+                        detail = (
+                            f"Engine reserve guard | Lane=MICRO | Total={self._total_options_trades_today}"
+                            f"/{global_cap} -> {projected_total}/{global_cap} | "
+                            f"ITM={self._intraday_itm_trades_today} Reserved={reserve_itm}"
+                        )
+                        self.log(f"TRADE_LIMIT: {detail}")
+                        return reject("R_TRADE_DAILY_RESERVE_ITM", detail)
+                if lane == "ITM" and reserve_micro > 0 and global_cap > 0:
+                    remaining_for_day = max(0, global_cap - projected_total)
+                    unmet_micro_reserve = max(0, reserve_micro - self._intraday_micro_trades_today)
+                    if remaining_for_day < unmet_micro_reserve:
+                        detail = (
+                            f"Engine reserve guard | Lane=ITM | Total={self._total_options_trades_today}"
+                            f"/{global_cap} -> {projected_total}/{global_cap} | "
+                            f"MICRO={self._intraday_micro_trades_today} Reserved={reserve_micro}"
+                        )
+                        self.log(f"TRADE_LIMIT: {detail}")
+                        return reject("R_TRADE_DAILY_RESERVE_MICRO", detail)
         else:  # SWING
             if self._swing_trades_today >= config.MAX_SWING_TRADES_PER_DAY:
                 detail = (
