@@ -1132,6 +1132,68 @@ MICRO_SAME_STRATEGY_COOLDOWN_MINUTES = (
 # execution plumbing is still being hardened.
 MAX_OPTIONS_TRADES_PER_DAY = 5
 MAX_SWING_TRADES_PER_DAY = 3
+# V12.17: Portfolio-growth scaling (capacity/throughput only, R:R unchanged).
+# Disabled by default; when enabled, engine slot and daily-trade ceilings scale
+# by portfolio equity tier to prevent large-account under-deployment.
+OPTIONS_PORTFOLIO_SCALING_ENABLED = False
+OPTIONS_PORTFOLIO_SCALING_TIERS = (
+    {
+        "name": "BASE_100K",
+        "max_equity": 100_000,
+        "total_positions": 7,
+        "max_swing_positions": 4,
+        "vass_concurrent": 2,
+        "itm_concurrent": 1,
+        "micro_concurrent": 1,
+        "max_options_trades_per_day": 5,
+        "max_swing_trades_per_day": 3,
+        "itm_max_trades_per_day": 4,
+        "micro_max_trades_per_day": 6,
+        "intraday_max_contracts": 50,
+    },
+    {
+        "name": "GROWTH_200K",
+        "max_equity": 200_000,
+        "total_positions": 8,
+        "max_swing_positions": 5,
+        "vass_concurrent": 3,
+        "itm_concurrent": 1,
+        "micro_concurrent": 2,
+        "max_options_trades_per_day": 7,
+        "max_swing_trades_per_day": 4,
+        "itm_max_trades_per_day": 5,
+        "micro_max_trades_per_day": 7,
+        "intraday_max_contracts": 60,
+    },
+    {
+        "name": "GROWTH_350K",
+        "max_equity": 350_000,
+        "total_positions": 10,
+        "max_swing_positions": 6,
+        "vass_concurrent": 3,
+        "itm_concurrent": 2,
+        "micro_concurrent": 2,
+        "max_options_trades_per_day": 9,
+        "max_swing_trades_per_day": 5,
+        "itm_max_trades_per_day": 6,
+        "micro_max_trades_per_day": 8,
+        "intraday_max_contracts": 75,
+    },
+    {
+        "name": "SCALE_350K_PLUS",
+        "max_equity": None,
+        "total_positions": 12,
+        "max_swing_positions": 8,
+        "vass_concurrent": 4,
+        "itm_concurrent": 2,
+        "micro_concurrent": 3,
+        "max_options_trades_per_day": 12,
+        "max_swing_trades_per_day": 6,
+        "itm_max_trades_per_day": 8,
+        "micro_max_trades_per_day": 10,
+        "intraday_max_contracts": 100,
+    },
+)
 # Reserve swing capacity so intraday activity cannot fully starve VASS entries.
 OPTIONS_RESERVE_SWING_DAILY_SLOTS_ENABLED = True
 OPTIONS_MIN_SWING_SLOTS_PER_DAY = 1

@@ -207,6 +207,7 @@ class OptionsEngine:
         self._swing_trades_today: int = 0  # V2.9: Swing mode counter
         self._total_options_trades_today: int = 0  # V2.9: Global counter (Bug #4 fix)
         self._last_trade_date: Optional[str] = None
+        self._last_scaling_snapshot_day: Optional[str] = None
 
         # Current operating mode
         self._current_mode: OptionsMode = OptionsMode.SWING
@@ -1299,6 +1300,180 @@ class OptionsEngine:
         except Exception:
             pass
 
+    def _get_portfolio_value_for_scaling(self) -> float:
+        """Return current portfolio value for equity-tier capacity scaling."""
+        if self.algorithm is None:
+            return 0.0
+        try:
+            value = float(getattr(self.algorithm.Portfolio, "TotalPortfolioValue", 0.0) or 0.0)
+            if value > 0:
+                return value
+        except Exception:
+            pass
+        return 0.0
+
+    def _get_portfolio_scaling_spec(
+        self,
+        portfolio_value: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Resolve effective slot/trade/contract caps for current equity tier."""
+        defaults: Dict[str, Any] = {
+            "enabled": False,
+            "tier_name": "STATIC_BASE",
+            "equity": 0.0,
+            "total_positions": int(getattr(config, "OPTIONS_MAX_TOTAL_POSITIONS", 7)),
+            "max_swing_positions": int(getattr(config, "OPTIONS_MAX_SWING_POSITIONS", 4)),
+            "vass_concurrent": int(getattr(config, "VASS_MAX_CONCURRENT_SPREADS", 2)),
+            "itm_concurrent": int(getattr(config, "ITM_MAX_CONCURRENT_POSITIONS", 1)),
+            "micro_concurrent": int(getattr(config, "MICRO_MAX_CONCURRENT_POSITIONS", 1)),
+            "max_options_trades_per_day": int(getattr(config, "MAX_OPTIONS_TRADES_PER_DAY", 5)),
+            "max_swing_trades_per_day": int(getattr(config, "MAX_SWING_TRADES_PER_DAY", 3)),
+            "itm_max_trades_per_day": int(getattr(config, "ITM_MAX_TRADES_PER_DAY", 4)),
+            "micro_max_trades_per_day": int(getattr(config, "MICRO_MAX_TRADES_PER_DAY", 6)),
+            "intraday_max_contracts": int(getattr(config, "INTRADAY_MAX_CONTRACTS", 50)),
+        }
+        equity = float(portfolio_value or 0.0)
+        if equity <= 0:
+            equity = self._get_portfolio_value_for_scaling()
+        defaults["equity"] = equity
+
+        if not bool(getattr(config, "OPTIONS_PORTFOLIO_SCALING_ENABLED", False)):
+            return defaults
+        defaults["enabled"] = True
+
+        tiers = getattr(config, "OPTIONS_PORTFOLIO_SCALING_TIERS", ())
+        if not isinstance(tiers, (list, tuple)):
+            return defaults
+
+        selected: Optional[Dict[str, Any]] = None
+        for tier in tiers:
+            if not isinstance(tier, dict):
+                continue
+            max_equity = tier.get("max_equity")
+            if max_equity is None:
+                selected = tier
+                break
+            try:
+                if equity <= float(max_equity):
+                    selected = tier
+                    break
+            except Exception:
+                continue
+        if selected is None:
+            for tier in reversed(tuple(tiers)):
+                if isinstance(tier, dict):
+                    selected = tier
+                    break
+        if selected is None:
+            return defaults
+
+        spec = dict(defaults)
+        tier_name = str(selected.get("name", "") or "").strip()
+        if tier_name:
+            spec["tier_name"] = tier_name
+
+        for key in (
+            "total_positions",
+            "max_swing_positions",
+            "vass_concurrent",
+            "itm_concurrent",
+            "micro_concurrent",
+            "max_options_trades_per_day",
+            "max_swing_trades_per_day",
+            "itm_max_trades_per_day",
+            "micro_max_trades_per_day",
+            "intraday_max_contracts",
+        ):
+            raw_value = selected.get(key)
+            if raw_value is None:
+                continue
+            try:
+                value = int(raw_value)
+            except Exception:
+                continue
+            if value > 0:
+                spec[key] = value
+        return spec
+
+    def _get_effective_position_caps(self) -> Dict[str, int]:
+        """Return effective position-cap set for current equity tier."""
+        spec = self._get_portfolio_scaling_spec()
+        return {
+            "TOTAL": int(spec.get("total_positions", 7)),
+            "SWING": int(spec.get("max_swing_positions", 4)),
+            "VASS": int(spec.get("vass_concurrent", 2)),
+            "ITM": int(spec.get("itm_concurrent", 1)),
+            "MICRO": int(spec.get("micro_concurrent", 1)),
+        }
+
+    def _get_effective_lane_caps(self) -> Dict[str, int]:
+        """Return effective per-lane concurrent caps for intraday and VASS."""
+        caps = self._get_effective_position_caps()
+        return {
+            "ITM": int(caps.get("ITM", 1)),
+            "MICRO": int(caps.get("MICRO", 1)),
+            "VASS": int(caps.get("VASS", 2)),
+        }
+
+    def _get_effective_vass_concurrent_cap(self) -> int:
+        """Return effective VASS concurrent-spread cap with hard-cap guard."""
+        lane_cap = int(self._get_effective_lane_caps().get("VASS", 2))
+        hard_cap = int(getattr(config, "VASS_MAX_CONCURRENT_SPREADS_HARD_CAP", 0) or 0)
+        if hard_cap > 0:
+            if lane_cap <= 0:
+                lane_cap = hard_cap
+            else:
+                lane_cap = min(lane_cap, hard_cap)
+        return lane_cap
+
+    def _get_effective_swing_position_cap(self) -> int:
+        """Return effective shared swing-position cap."""
+        return int(self._get_effective_position_caps().get("SWING", 4))
+
+    def _get_effective_trade_caps(self) -> Dict[str, int]:
+        """Return effective daily trade-cap set for current equity tier."""
+        spec = self._get_portfolio_scaling_spec()
+        return {
+            "TOTAL": int(spec.get("max_options_trades_per_day", 5)),
+            "SWING": int(spec.get("max_swing_trades_per_day", 3)),
+            "ITM": int(spec.get("itm_max_trades_per_day", 4)),
+            "MICRO": int(spec.get("micro_max_trades_per_day", 6)),
+        }
+
+    def _get_effective_intraday_contract_cap(self) -> int:
+        """Return effective base intraday contract cap for current equity tier."""
+        spec = self._get_portfolio_scaling_spec()
+        return int(spec.get("intraday_max_contracts", 50))
+
+    def _maybe_log_scaling_snapshot(self) -> None:
+        """Log equity-tier effective caps once per session day."""
+        if not bool(getattr(config, "OPTIONS_PORTFOLIO_SCALING_ENABLED", False)):
+            return
+        if self.algorithm is None:
+            return
+        day_key = str(self.algorithm.Time.date())
+        if day_key == self._last_scaling_snapshot_day:
+            return
+        self._last_scaling_snapshot_day = day_key
+
+        spec = self._get_portfolio_scaling_spec()
+        self.log(
+            "OPTIONS_SCALING: "
+            f"Tier={spec.get('tier_name', 'UNKNOWN')} | "
+            f"Equity=${float(spec.get('equity', 0.0)):,.0f} | "
+            f"PosCaps(Total={int(spec.get('total_positions', 0))}, "
+            f"Swing={int(spec.get('max_swing_positions', 0))}, "
+            f"VASS={int(spec.get('vass_concurrent', 0))}, "
+            f"ITM={int(spec.get('itm_concurrent', 0))}, "
+            f"MICRO={int(spec.get('micro_concurrent', 0))}) | "
+            f"DailyCaps(Total={int(spec.get('max_options_trades_per_day', 0))}, "
+            f"Swing={int(spec.get('max_swing_trades_per_day', 0))}, "
+            f"ITM={int(spec.get('itm_max_trades_per_day', 0))}, "
+            f"MICRO={int(spec.get('micro_max_trades_per_day', 0))}) | "
+            f"IntradayContracts={int(spec.get('intraday_max_contracts', 0))}",
+            trades_only=True,
+        )
+
     def _get_effective_total_cap(self) -> int:
         """V12.15: Compute effective total position cap.
 
@@ -1307,15 +1482,23 @@ class OptionsEngine:
         regime score (REGIME_NEUTRAL, REGIME_DEFENSIVE thresholds), transition
         overlay (DETERIORATION/AMBIGUOUS), and fast stress overlay (STRESS/EARLY_STRESS).
         """
-        base = int(getattr(config, "OPTIONS_MAX_TOTAL_POSITIONS", 7))
+        base = int(self._get_effective_position_caps().get("TOTAL", 7))
         if not bool(getattr(config, "OPTIONS_REGIME_ADAPTIVE_TOTAL_CAP_ENABLED", False)):
             return base
+
+        bullish_cap = max(1, min(base, int(getattr(config, "OPTIONS_TOTAL_CAP_BULLISH", base))))
+        neutral_cap = max(1, min(base, int(getattr(config, "OPTIONS_TOTAL_CAP_NEUTRAL", 5))))
+        bearish_cap = max(1, min(base, int(getattr(config, "OPTIONS_TOTAL_CAP_BEARISH", 4))))
+        deterioration_cap = max(
+            1,
+            min(base, int(getattr(config, "OPTIONS_TOTAL_CAP_DETERIORATION", 3))),
+        )
 
         # Fast stress overlay (VIX-based: STRESS, EARLY_STRESS, RECOVERY, NORMAL)
         smoothed_vix = self._iv_sensor.get_smoothed_vix()
         fast_overlay = self.get_regime_overlay_state(vix_current=smoothed_vix)
         if fast_overlay == "STRESS":
-            return int(getattr(config, "OPTIONS_TOTAL_CAP_DETERIORATION", 3))
+            return deterioration_cap
 
         # Transition overlay (regime engine: DETERIORATION, AMBIGUOUS, STABLE, RECOVERY)
         ctx = self._get_regime_transition_context()
@@ -1323,20 +1506,20 @@ class OptionsEngine:
         overlay = str(ctx.get("transition_overlay", "") or "").upper()
 
         if overlay in ("DETERIORATION", "AMBIGUOUS"):
-            return int(getattr(config, "OPTIONS_TOTAL_CAP_DETERIORATION", 3))
+            return deterioration_cap
 
         # EARLY_STRESS: cap at neutral level (between full and deterioration)
         if fast_overlay == "EARLY_STRESS":
-            return int(getattr(config, "OPTIONS_TOTAL_CAP_NEUTRAL", 5))
+            return neutral_cap
 
         neutral = float(getattr(config, "REGIME_NEUTRAL", 50))
         defensive = float(getattr(config, "REGIME_DEFENSIVE", 35))
 
         if score >= neutral:
-            return int(getattr(config, "OPTIONS_TOTAL_CAP_BULLISH", base))
+            return bullish_cap
         if score >= defensive:
-            return int(getattr(config, "OPTIONS_TOTAL_CAP_NEUTRAL", 5))
-        return int(getattr(config, "OPTIONS_TOTAL_CAP_BEARISH", 4))
+            return neutral_cap
+        return bearish_cap
 
     def can_enter_single_leg(self) -> Tuple[bool, str]:
         """V12.15: Portfolio-level slot gate for single-leg entries.
@@ -1380,6 +1563,8 @@ class OptionsEngine:
         if self.has_pending_intraday_entry(engine=lane):
             return False, "E_INTRADAY_PENDING_ENTRY", lane
 
+        lane_caps = self._get_effective_lane_caps()
+        trade_caps = self._get_effective_trade_caps()
         lane_ok, lane_code, lane_detail, _ = self._micro_entry_engine.validate_lane_caps(
             entry_strategy=self._canonical_intraday_strategy(strategy_name),
             intraday_positions=self._intraday_positions,
@@ -1387,6 +1572,8 @@ class OptionsEngine:
             intraday_itm_trades_today=self._intraday_itm_trades_today,
             intraday_micro_trades_today=self._intraday_micro_trades_today,
             lane_resolver=self._intraday_engine_lane_from_strategy,
+            lane_caps=lane_caps,
+            daily_caps=trade_caps,
             state=state,
             direction=direction,
             vix_current=vix_current,
@@ -4546,6 +4733,13 @@ class OptionsEngine:
 
         # Backward compatibility: Also increment old counter used by state persistence
         self._trades_today += 1
+        trade_caps = self._get_effective_trade_caps()
+        total_daily_cap = int(trade_caps.get("TOTAL", getattr(config, "MAX_OPTIONS_TRADES_PER_DAY", 5)))
+        swing_daily_cap = int(trade_caps.get("SWING", getattr(config, "MAX_SWING_TRADES_PER_DAY", 3)))
+        itm_daily_cap = int(trade_caps.get("ITM", getattr(config, "ITM_MAX_TRADES_PER_DAY", 999)))
+        micro_daily_cap = int(
+            trade_caps.get("MICRO", getattr(config, "MICRO_MAX_TRADES_PER_DAY", 999))
+        )
 
         if mode == OptionsMode.INTRADAY:
             self._intraday_trades_today += 1
@@ -4560,17 +4754,17 @@ class OptionsEngine:
                 self._intraday_put_trades_today += 1
             self.log(
                 f"TRADE_COUNTER: Intraday={self._intraday_trades_today}/{config.INTRADAY_MAX_TRADES_PER_DAY} | "
-                f"ITM={self._intraday_itm_trades_today}/{getattr(config, 'ITM_MAX_TRADES_PER_DAY', 999)} | "
-                f"MICRO={self._intraday_micro_trades_today}/{getattr(config, 'MICRO_MAX_TRADES_PER_DAY', 999)} | "
+                f"ITM={self._intraday_itm_trades_today}/{itm_daily_cap} | "
+                f"MICRO={self._intraday_micro_trades_today}/{micro_daily_cap} | "
                 f"CALL={self._intraday_call_trades_today}/{getattr(config, 'INTRADAY_MAX_TRADES_PER_DIRECTION_PER_DAY', 999)} | "
                 f"PUT={self._intraday_put_trades_today}/{getattr(config, 'INTRADAY_MAX_TRADES_PER_DIRECTION_PER_DAY', 999)} | "
-                f"Total={self._total_options_trades_today}/{config.MAX_OPTIONS_TRADES_PER_DAY}"
+                f"Total={self._total_options_trades_today}/{total_daily_cap}"
             )
         else:
             self._swing_trades_today += 1
             self.log(
-                f"TRADE_COUNTER: Swing={self._swing_trades_today}/{config.MAX_SWING_TRADES_PER_DAY} | "
-                f"Total={self._total_options_trades_today}/{config.MAX_OPTIONS_TRADES_PER_DAY}"
+                f"TRADE_COUNTER: Swing={self._swing_trades_today}/{swing_daily_cap} | "
+                f"Total={self._total_options_trades_today}/{total_daily_cap}"
             )
 
     def _can_trade_options(
@@ -4599,12 +4793,20 @@ class OptionsEngine:
 
         # Reset previous limit failure context for this check.
         self.set_last_trade_limit_failure(None, None)
+        self._maybe_log_scaling_snapshot()
+        trade_caps = self._get_effective_trade_caps()
+        total_daily_cap = int(
+            trade_caps.get("TOTAL", getattr(config, "MAX_OPTIONS_TRADES_PER_DAY", 5))
+        )
+        swing_daily_cap = int(
+            trade_caps.get("SWING", getattr(config, "MAX_SWING_TRADES_PER_DAY", 3))
+        )
 
         # Check global daily options trade limit (distinct from slot caps).
-        if self._total_options_trades_today >= config.MAX_OPTIONS_TRADES_PER_DAY:
+        if self._total_options_trades_today >= total_daily_cap:
             detail = (
                 f"Global limit reached | "
-                f"{self._total_options_trades_today}/{config.MAX_OPTIONS_TRADES_PER_DAY}"
+                f"{self._total_options_trades_today}/{total_daily_cap}"
             )
             self.log(f"TRADE_LIMIT: {detail}")
             # Legacy compatibility: keep R_SLOT_TOTAL_MAX for downstream RCA parsers.
@@ -4656,7 +4858,7 @@ class OptionsEngine:
             ):
                 reserve = max(int(getattr(config, "OPTIONS_MIN_SWING_SLOTS_PER_DAY", 0)), 0)
                 if reserve > 0:
-                    intraday_cap = max(config.MAX_OPTIONS_TRADES_PER_DAY - reserve, 0)
+                    intraday_cap = max(total_daily_cap - reserve, 0)
                     if self._intraday_trades_today >= intraday_cap:
                         detail = (
                             f"Intraday reserve guard | "
@@ -4674,7 +4876,7 @@ class OptionsEngine:
                 reserve_micro = max(
                     int(getattr(config, "INTRADAY_MIN_MICRO_TRADES_RESERVED", 0)), 0
                 )
-                global_cap = int(getattr(config, "MAX_OPTIONS_TRADES_PER_DAY", 0) or 0)
+                global_cap = total_daily_cap
                 projected_total = self._total_options_trades_today + 1
                 if lane == "MICRO" and reserve_itm > 0 and global_cap > 0:
                     remaining_for_day = max(0, global_cap - projected_total)
@@ -4699,10 +4901,10 @@ class OptionsEngine:
                         self.log(f"TRADE_LIMIT: {detail}")
                         return reject("R_TRADE_DAILY_RESERVE_MICRO", detail)
         else:  # SWING
-            if self._swing_trades_today >= config.MAX_SWING_TRADES_PER_DAY:
+            if self._swing_trades_today >= swing_daily_cap:
                 detail = (
                     f"Swing limit reached | "
-                    f"{self._swing_trades_today}/{config.MAX_SWING_TRADES_PER_DAY}"
+                    f"{self._swing_trades_today}/{swing_daily_cap}"
                 )
                 self.log(f"TRADE_LIMIT: {detail}")
                 return reject("R_SLOT_SWING_MAX", detail)
@@ -4711,7 +4913,7 @@ class OptionsEngine:
             ):
                 reserve = max(int(getattr(config, "OPTIONS_MIN_INTRADAY_SLOTS_PER_DAY", 0)), 0)
                 if reserve > 0:
-                    swing_cap = max(config.MAX_OPTIONS_TRADES_PER_DAY - reserve, 0)
+                    swing_cap = max(total_daily_cap - reserve, 0)
                     if self._swing_trades_today >= swing_cap:
                         detail = (
                             f"Swing reserve guard | "

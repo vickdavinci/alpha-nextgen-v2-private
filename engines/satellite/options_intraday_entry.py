@@ -159,6 +159,8 @@ def check_intraday_entry_signal_impl(
         return fail("E_INTRADAY_NO_STRATEGY")
     validation_lane = self._intraday_engine_lane_from_strategy(entry_strategy.value)
     self.set_last_intraday_validation_failure(validation_lane, None, None)
+    lane_caps = self._get_effective_lane_caps() if hasattr(self, "_get_effective_lane_caps") else None
+    trade_caps = self._get_effective_trade_caps() if hasattr(self, "_get_effective_trade_caps") else None
 
     lane_ok, lane_code, lane_detail, pending_lane = self._micro_entry_engine.validate_lane_caps(
         entry_strategy=entry_strategy,
@@ -167,6 +169,8 @@ def check_intraday_entry_signal_impl(
         intraday_itm_trades_today=self._intraday_itm_trades_today,
         intraday_micro_trades_today=self._intraday_micro_trades_today,
         lane_resolver=self._intraday_engine_lane_from_strategy,
+        lane_caps=lane_caps,
+        daily_caps=trade_caps,
         state=state,
         direction=direction,
         vix_current=vix_level_override if vix_level_override is not None else vix_current,
@@ -252,6 +256,10 @@ def check_intraday_entry_signal_impl(
                 pass
 
             active_itm_positions = len(self._intraday_positions.get("ITM") or [])
+            max_itm_positions = int(
+                (lane_caps or {}).get("ITM", getattr(config, "ITM_MAX_CONCURRENT_POSITIONS", 1))
+                or 1
+            )
 
             trace_id = (
                 f"ITM|{(current_time or 'NA')[:19]}|{direction.value}|"
@@ -272,6 +280,7 @@ def check_intraday_entry_signal_impl(
                     raw_portfolio_value if raw_portfolio_value is not None else portfolio_value
                 ),
                 current_itm_positions=active_itm_positions,
+                max_itm_positions=max_itm_positions,
                 algorithm=self.algorithm,
             )
             self.log(
@@ -664,19 +673,9 @@ def check_intraday_entry_signal_impl(
 
     # V9.8: Hard cap all MICRO intraday entries to prevent quantity explosions on cheap options.
     intraday_max_contracts = int(getattr(config, "INTRADAY_MAX_CONTRACTS", 40))
-    if bool(getattr(config, "INTRADAY_CONTRACT_CAP_SCALE_WITH_EQUITY", True)):
-        base_equity = float(getattr(config, "INTRADAY_MAX_CONTRACTS_BASE_EQUITY", 100000.0))
-        min_contract_cap = int(getattr(config, "INTRADAY_MAX_CONTRACTS_MIN", 5))
-        if base_equity > 0 and portfolio_value > 0 and intraday_max_contracts > 0:
-            equity_scale = min(1.0, float(portfolio_value) / base_equity)
-            scaled_cap = max(min_contract_cap, int(intraday_max_contracts * equity_scale))
-            if scaled_cap < intraday_max_contracts:
-                self.log(
-                    f"INTRADAY_CAP_SCALE: BaseCap={intraday_max_contracts} -> {scaled_cap} | "
-                    f"Equity=${portfolio_value:,.0f} | Base=${base_equity:,.0f}",
-                    trades_only=True,
-                )
-                intraday_max_contracts = scaled_cap
+    if hasattr(self, "_get_effective_intraday_contract_cap"):
+        intraday_max_contracts = int(self._get_effective_intraday_contract_cap() or intraday_max_contracts)
+    base_intraday_contracts_cap = intraday_max_contracts
 
     if itm_engine_mode:
         itm_engine_cap = int(getattr(config, "ITM_MAX_CONTRACTS_HARD_CAP", 8))
@@ -695,7 +694,7 @@ def check_intraday_entry_signal_impl(
         elif dte == 2:
             otm_dte_cap = int(getattr(config, "MICRO_OTM_DTE2_MAX_CONTRACTS", 0))
         else:
-            otm_dte_cap = int(getattr(config, "INTRADAY_MAX_CONTRACTS", 0))
+            otm_dte_cap = int(base_intraday_contracts_cap)
         if otm_dte_cap > 0:
             intraday_max_contracts = (
                 otm_dte_cap

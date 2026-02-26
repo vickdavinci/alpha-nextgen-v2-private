@@ -624,6 +624,7 @@ class ITMHorizonEngine:
         vix20_change: Optional[float],
         portfolio_value: float,
         current_itm_positions: int = 0,
+        max_itm_positions: Optional[int] = None,
         algorithm: Any = None,
     ) -> Tuple[bool, str, str]:
         """Return (allowed, code, detail)."""
@@ -656,7 +657,11 @@ class ITMHorizonEngine:
                 f"{current_hour:02d}:{current_minute:02d}>{end_h:02d}:{end_m:02d}",
             )
 
-        max_positions = int(getattr(config, "ITM_MAX_CONCURRENT_POSITIONS", 1))
+        max_positions = (
+            int(max_itm_positions)
+            if max_itm_positions is not None and int(max_itm_positions) > 0
+            else int(getattr(config, "ITM_MAX_CONCURRENT_POSITIONS", 1))
+        )
         if int(current_itm_positions) >= max(1, max_positions):
             self._count("ITM_ENGINE_Blocked_Breaker")
             return self._fail(

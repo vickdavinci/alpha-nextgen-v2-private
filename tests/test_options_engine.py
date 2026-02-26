@@ -3014,6 +3014,95 @@ class TestIntradayDailyReserveFairness:
         assert can_trade is True
 
 
+class TestPortfolioScalingCaps:
+    class _AlgoStub:
+        class _PortfolioStub:
+            TotalPortfolioValue = 250000.0
+
+        Portfolio = _PortfolioStub()
+        Time = datetime(2027, 1, 4, 10, 0)
+        LiveMode = False
+
+        @staticmethod
+        def Log(_message):
+            return None
+
+    def test_effective_caps_follow_equity_tier(self, engine, monkeypatch):
+        monkeypatch.setattr(config, "OPTIONS_PORTFOLIO_SCALING_ENABLED", True)
+        monkeypatch.setattr(
+            config,
+            "OPTIONS_PORTFOLIO_SCALING_TIERS",
+            (
+                {
+                    "name": "BASE",
+                    "max_equity": 100000,
+                    "total_positions": 7,
+                    "max_swing_positions": 4,
+                    "vass_concurrent": 2,
+                    "itm_concurrent": 1,
+                    "micro_concurrent": 1,
+                    "max_options_trades_per_day": 5,
+                    "max_swing_trades_per_day": 3,
+                    "itm_max_trades_per_day": 4,
+                    "micro_max_trades_per_day": 6,
+                    "intraday_max_contracts": 50,
+                },
+                {
+                    "name": "MID",
+                    "max_equity": None,
+                    "total_positions": 10,
+                    "max_swing_positions": 6,
+                    "vass_concurrent": 3,
+                    "itm_concurrent": 2,
+                    "micro_concurrent": 2,
+                    "max_options_trades_per_day": 9,
+                    "max_swing_trades_per_day": 5,
+                    "itm_max_trades_per_day": 6,
+                    "micro_max_trades_per_day": 8,
+                    "intraday_max_contracts": 75,
+                },
+            ),
+        )
+        engine.algorithm = self._AlgoStub()
+
+        pos_caps = engine._get_effective_position_caps()
+        trade_caps = engine._get_effective_trade_caps()
+        assert pos_caps == {"TOTAL": 10, "SWING": 6, "VASS": 3, "ITM": 2, "MICRO": 2}
+        assert trade_caps == {"TOTAL": 9, "SWING": 5, "ITM": 6, "MICRO": 8}
+        assert engine._get_effective_intraday_contract_cap() == 75
+
+    def test_global_daily_limit_uses_scaled_cap(self, engine, monkeypatch):
+        monkeypatch.setattr(config, "OPTIONS_PORTFOLIO_SCALING_ENABLED", True)
+        monkeypatch.setattr(
+            config,
+            "OPTIONS_PORTFOLIO_SCALING_TIERS",
+            (
+                {
+                    "name": "TEST",
+                    "max_equity": None,
+                    "total_positions": 9,
+                    "max_swing_positions": 5,
+                    "vass_concurrent": 2,
+                    "itm_concurrent": 1,
+                    "micro_concurrent": 1,
+                    "max_options_trades_per_day": 2,
+                    "max_swing_trades_per_day": 2,
+                    "itm_max_trades_per_day": 2,
+                    "micro_max_trades_per_day": 2,
+                    "intraday_max_contracts": 40,
+                },
+            ),
+        )
+        engine.algorithm = self._AlgoStub()
+        engine._total_options_trades_today = 2
+
+        can_trade = engine._can_trade_options(OptionsMode.INTRADAY, intraday_engine="MICRO")
+        assert can_trade is False
+        reason, detail = engine.pop_last_trade_limit_failure()
+        assert reason == "R_SLOT_TOTAL_MAX"
+        assert "2/2" in str(detail)
+
+
 class TestMicroRetryEligibility:
     def test_skip_retry_for_global_daily_limit_context(self):
         assert (

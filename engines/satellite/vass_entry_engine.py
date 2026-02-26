@@ -214,20 +214,26 @@ class VASSEntryEngine:
                 f"R_SLOT_TOTAL_MAX: {total_count} >= {effective_cap}",
             )
 
-        if swing_count >= config.OPTIONS_MAX_SWING_POSITIONS:
+        swing_cap = int(getattr(config, "OPTIONS_MAX_SWING_POSITIONS", 4))
+        if hasattr(host, "_get_effective_swing_position_cap"):
+            swing_cap = int(host._get_effective_swing_position_cap() or swing_cap)
+        if swing_count >= swing_cap:
             return (
                 False,
-                f"R_SLOT_SWING_MAX: {swing_count} >= {config.OPTIONS_MAX_SWING_POSITIONS}",
+                f"R_SLOT_SWING_MAX: {swing_count} >= {swing_cap}",
             )
 
         # V12.7: Explicit VASS concurrent spread cap (separate from global swing slots).
-        vass_concurrent_cap = int(getattr(config, "VASS_MAX_CONCURRENT_SPREADS", 0))
-        hard_cap = int(getattr(config, "VASS_MAX_CONCURRENT_SPREADS_HARD_CAP", 0))
-        if hard_cap > 0:
-            if vass_concurrent_cap <= 0:
-                vass_concurrent_cap = hard_cap
-            else:
-                vass_concurrent_cap = min(vass_concurrent_cap, hard_cap)
+        if hasattr(host, "_get_effective_vass_concurrent_cap"):
+            vass_concurrent_cap = int(host._get_effective_vass_concurrent_cap() or 0)
+        else:
+            vass_concurrent_cap = int(getattr(config, "VASS_MAX_CONCURRENT_SPREADS", 0))
+            hard_cap = int(getattr(config, "VASS_MAX_CONCURRENT_SPREADS_HARD_CAP", 0))
+            if hard_cap > 0:
+                if vass_concurrent_cap <= 0:
+                    vass_concurrent_cap = hard_cap
+                else:
+                    vass_concurrent_cap = min(vass_concurrent_cap, hard_cap)
         if vass_concurrent_cap > 0:
             vass_open = len(host.get_spread_positions() or [])
             if vass_open >= vass_concurrent_cap:

@@ -109,6 +109,8 @@ class MicroEntryEngine:
         intraday_itm_trades_today: int,
         intraday_micro_trades_today: int,
         lane_resolver: Callable[[str], str],
+        lane_caps: Optional[Dict[str, int]] = None,
+        daily_caps: Optional[Dict[str, int]] = None,
         state: Optional[Any] = None,
         direction: Optional[OptionDirection] = None,
         vix_current: Optional[float] = None,
@@ -116,10 +118,12 @@ class MicroEntryEngine:
     ) -> Tuple[bool, Optional[str], Optional[str], str]:
         """Validate per-lane daily caps, pending entry lock, and concurrent caps."""
         pending_lane = lane_resolver(entry_strategy.value)
+        lane_caps = lane_caps or {}
+        daily_caps = daily_caps or {}
 
         # Engine-sovereign daily caps (avoid MICRO/ITM cross-throttling).
         if pending_lane == "ITM":
-            itm_cap = int(getattr(config, "ITM_MAX_TRADES_PER_DAY", 0) or 0)
+            itm_cap = int(daily_caps.get("ITM", getattr(config, "ITM_MAX_TRADES_PER_DAY", 0)) or 0)
             if itm_cap > 0 and intraday_itm_trades_today >= itm_cap:
                 return (
                     False,
@@ -128,7 +132,9 @@ class MicroEntryEngine:
                     pending_lane,
                 )
         else:
-            micro_cap = int(getattr(config, "MICRO_MAX_TRADES_PER_DAY", 0) or 0)
+            micro_cap = int(
+                daily_caps.get("MICRO", getattr(config, "MICRO_MAX_TRADES_PER_DAY", 0)) or 0
+            )
             if micro_cap > 0 and intraday_micro_trades_today >= micro_cap:
                 return (
                     False,
@@ -140,7 +146,7 @@ class MicroEntryEngine:
         if has_pending_intraday_entry(pending_lane):
             return False, "E_INTRADAY_PENDING_ENTRY", pending_lane, pending_lane
 
-        lane_cap = int(
+        default_lane_cap = int(
             getattr(
                 config,
                 "ITM_MAX_CONCURRENT_POSITIONS"
@@ -150,6 +156,7 @@ class MicroEntryEngine:
             )
             or 0
         )
+        lane_cap = int(lane_caps.get(pending_lane, default_lane_cap) or 0)
         if pending_lane != "ITM" and self._is_micro_otm_strategy(entry_strategy):
             lane_cap = self._resolve_micro_otm_concurrent_cap(
                 fallback_cap=max(1, lane_cap),
