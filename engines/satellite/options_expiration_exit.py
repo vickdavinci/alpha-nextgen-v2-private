@@ -47,8 +47,9 @@ def check_expiring_options_force_exit_impl(
     if current_date != contract_expiry_date:
         return None
 
-    # Position is expected from caller; legacy fallback kept for compatibility.
-    position = position or self._position or self.get_intraday_position()
+    # Position is expected from caller; keep only swing fallback for legacy paths.
+    # Avoid defaulting to the first intraday lane position in multi-position mode.
+    position = position or self._position
     if position is None:
         return None
 

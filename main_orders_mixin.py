@@ -1814,8 +1814,12 @@ class MainOrdersMixin:
                         )
 
                         if position:
+                            entry_is_intraday = (
+                                self.options_engine.find_intraday_lane_by_symbol(symbol_norm)
+                                is not None
+                            )
                             # Create/refresh OCO pair for stop and profit exits.
-                            if self.options_engine.has_intraday_position():
+                            if entry_is_intraday:
                                 live_qty = abs(self._get_option_holding_quantity(symbol))
                                 if live_qty <= 0:
                                     live_qty = int(abs(fill_qty))
@@ -1858,7 +1862,7 @@ class MainOrdersMixin:
                                         f"Target=${position.target_price:.2f} | Reason=SWING_ENTRY_FILL"
                                     )
                             # Record intraday entry snapshot for robust exit accounting.
-                            if self.options_engine.has_intraday_position():
+                            if entry_is_intraday:
                                 self._intraday_entry_snapshot[symbol_norm] = {
                                     "entry_price": position.entry_price,
                                     "entry_time": position.entry_time,
@@ -1895,32 +1899,28 @@ class MainOrdersMixin:
                         # Spread exit - track leg closes
                         self._handle_spread_leg_close(symbol, fill_price, fill_qty)
                     elif self.options_engine.has_intraday_position():
-                        # P0 fix: keep intraday state until symbol is fully flat.
-                        intraday_lane = self.options_engine.find_intraday_lane_by_symbol(
-                            symbol_norm
-                        )
-                        intraday_pos = (
-                            self.options_engine.get_intraday_position(engine=intraday_lane)
-                            if intraday_lane is not None
-                            else self.options_engine.get_intraday_position()
-                        )
-                        intraday_symbol_norm = (
-                            self._normalize_symbol_str(intraday_pos.contract.symbol)
-                            if intraday_pos is not None and intraday_pos.contract is not None
-                            else ""
-                        )
+                        # Resolve by symbol to avoid same-lane mismatches when multiple intraday positions coexist.
+                        intraday_pos = None
+                        for candidate in self.options_engine.get_intraday_positions():
+                            candidate_symbol_norm = (
+                                self._normalize_symbol_str(candidate.contract.symbol)
+                                if candidate is not None and candidate.contract is not None
+                                else ""
+                            )
+                            if candidate_symbol_norm == symbol_norm:
+                                intraday_pos = candidate
+                                break
                         live_qty_after_fill = abs(self._get_option_holding_quantity(symbol))
-                        if intraday_symbol_norm and symbol_norm == intraday_symbol_norm:
+                        if intraday_pos is not None:
                             if live_qty_after_fill > 0:
-                                if intraday_pos is not None:
-                                    intraday_pos.num_contracts = int(live_qty_after_fill)
-                                    # Re-arm OCO immediately so remaining contracts stay protected.
-                                    self._sync_intraday_oco(
-                                        symbol=symbol_norm,
-                                        position=intraday_pos,
-                                        quantity=int(live_qty_after_fill),
-                                        reason="PARTIAL_CLOSE",
-                                    )
+                                intraday_pos.num_contracts = int(live_qty_after_fill)
+                                # Re-arm OCO immediately so remaining contracts stay protected.
+                                self._sync_intraday_oco(
+                                    symbol=symbol_norm,
+                                    position=intraday_pos,
+                                    quantity=int(live_qty_after_fill),
+                                    reason="PARTIAL_CLOSE",
+                                )
                                 self.Log(
                                     f"INTRADAY_PARTIAL_CLOSE: {symbol_norm} | RemainingQty={live_qty_after_fill} | State retained"
                                 )
@@ -2012,20 +2012,32 @@ class MainOrdersMixin:
                                 self._micro_open_symbols.discard(symbol_norm)
                             self._greeks_breach_logged = False  # Reset for next position
                         else:
-                            # Not tracked as current intraday symbol; fall back to single-leg handling.
-                            removed_position = self.options_engine.remove_position(symbol)
-                            if removed_position:
-                                if abs(self._get_option_holding_quantity(symbol)) <= 0:
-                                    self._micro_open_symbols.discard(symbol_norm)
-                                try:
-                                    self.oco_manager.cancel_by_symbol(
-                                        removed_position.contract.symbol,
-                                        reason="SINGLE_LEG_POSITION_CLOSED",
-                                    )
-                                except Exception as e:
-                                    self.Log(
-                                        f"OCO_CLEANUP_ERROR: {removed_position.contract.symbol} | {e}"
-                                    )
+                            # Symbol not found in intraday lane map.
+                            # If intraday traces/snapshots still exist for this symbol, avoid touching
+                            # swing state and let snapshot fallback accounting handle it below.
+                            likely_intraday_orphan = (
+                                symbol_norm in self._intraday_entry_snapshot
+                                or symbol_norm in self._micro_open_symbols
+                            )
+                            if likely_intraday_orphan:
+                                self.Log(
+                                    f"INTRADAY_EXIT_STATE_MISS: {symbol_norm} | "
+                                    f"Skip swing fallback, awaiting snapshot reconciliation"
+                                )
+                            else:
+                                removed_position = self.options_engine.remove_position(symbol)
+                                if removed_position:
+                                    if abs(self._get_option_holding_quantity(symbol)) <= 0:
+                                        self._micro_open_symbols.discard(symbol_norm)
+                                    try:
+                                        self.oco_manager.cancel_by_symbol(
+                                            removed_position.contract.symbol,
+                                            reason="SINGLE_LEG_POSITION_CLOSED",
+                                        )
+                                    except Exception as e:
+                                        self.Log(
+                                            f"OCO_CLEANUP_ERROR: {removed_position.contract.symbol} | {e}"
+                                        )
                             self._greeks_breach_logged = False
                     else:
                         # Single-leg exit (legacy swing)

@@ -131,6 +131,10 @@ class DailyScheduler:
         self._time_guard_end = self._parse_time(config.TIME_GUARD_END)
         self._mr_entry_close = (15, 0)  # MR entries close at 15:00
         self._mr_force_close = (15, 45)  # MR positions force close at 15:45
+        # Default intraday options close (overridden by dynamic scheduling on early-close days).
+        self._intraday_opt_close = self._parse_time(
+            str(getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15"))
+        )
 
     def log(self, message: str) -> None:
         """Log via algorithm or skip for testing."""
@@ -152,6 +156,14 @@ class DailyScheduler:
             t = self.algorithm.Time  # type: ignore[attr-defined]
             return (t.hour, t.minute)
         return (0, 0)
+
+    def get_intraday_options_close_hhmm(self) -> Tuple[int, int]:
+        """Return effective intraday options close cutoff (dynamic on early-close days)."""
+        try:
+            hh, mm = self._intraday_opt_close
+            return int(hh), int(mm)
+        except Exception:
+            return self._parse_time(str(getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15")))
 
     # =========================================================================
     # Event Registration

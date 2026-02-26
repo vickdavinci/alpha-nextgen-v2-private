@@ -668,6 +668,9 @@ class MicroEntryEngine:
                 ) = host.preflight_intraday_entry(
                     strategy=candidate_strategy,
                     direction=intraday_direction,
+                    state=state,
+                    vix_current=(vix_level_cboe if vix_level_cboe is not None else vix_intraday),
+                    transition_ctx=transition_ctx,
                 )
                 if not preflight_ok:
                     blocked_direction = intraday_direction
@@ -988,6 +991,7 @@ class MicroEntryEngine:
                         )
                     if drop_code in {
                         "R_SLOT_TOTAL_MAX",
+                        "R_TRADE_DAILY_TOTAL_MAX",
                         "R_SLOT_INTRADAY_MAX",
                         "R_SLOT_SINGLE_LEG_MAX",  # V12.15: no longer emitted, kept for compat
                         "R_COOLDOWN_INTRADAY",

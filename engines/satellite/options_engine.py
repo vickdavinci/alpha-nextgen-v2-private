@@ -392,7 +392,22 @@ class OptionsEngine:
         return " ".join(text.split())
 
     def _get_intraday_force_exit_hhmm(self) -> Tuple[int, int]:
-        """Return configured intraday force-exit time as (hour, minute)."""
+        """Return effective intraday force-exit time as (hour, minute).
+
+        Uses scheduler-provided dynamic close time when available (early-close days),
+        otherwise falls back to static INTRADAY_FORCE_EXIT_TIME.
+        """
+        try:
+            scheduler = (
+                getattr(self.algorithm, "scheduler", None) if self.algorithm is not None else None
+            )
+            getter = getattr(scheduler, "get_intraday_options_close_hhmm", None)
+            if callable(getter):
+                hh, mm = getter()
+                return int(hh), int(mm)
+        except Exception:
+            pass
+
         force_exit_cfg = str(getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15"))
         try:
             hh, mm = force_exit_cfg.split(":")
@@ -1345,6 +1360,9 @@ class OptionsEngine:
         self,
         strategy: Optional["IntradayStrategy"],
         direction: Optional[OptionDirection] = None,
+        state: Optional[Any] = None,
+        vix_current: Optional[float] = None,
+        transition_ctx: Optional[Dict[str, Any]] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Fast preflight for single-leg intraday submission.
@@ -1362,20 +1380,20 @@ class OptionsEngine:
         if self.has_pending_intraday_entry(engine=lane):
             return False, "E_INTRADAY_PENDING_ENTRY", lane
 
-        lane_cap = int(
-            getattr(
-                config,
-                "ITM_MAX_CONCURRENT_POSITIONS"
-                if lane == "ITM"
-                else "MICRO_MAX_CONCURRENT_POSITIONS",
-                1,
-            )
-            or 0
+        lane_ok, lane_code, lane_detail, _ = self._micro_entry_engine.validate_lane_caps(
+            entry_strategy=self._canonical_intraday_strategy(strategy_name),
+            intraday_positions=self._intraday_positions,
+            has_pending_intraday_entry=self.has_pending_intraday_entry,
+            intraday_itm_trades_today=self._intraday_itm_trades_today,
+            intraday_micro_trades_today=self._intraday_micro_trades_today,
+            lane_resolver=self._intraday_engine_lane_from_strategy,
+            state=state,
+            direction=direction,
+            vix_current=vix_current,
+            transition_ctx=transition_ctx,
         )
-        lane_positions = len(self._intraday_positions.get(lane) or [])
-        if lane_cap > 0 and lane_positions >= lane_cap:
-            code = "R_ITM_CONCURRENT_CAP" if lane == "ITM" else "R_MICRO_CONCURRENT_CAP"
-            return False, code, f"{lane}={lane_positions}/{lane_cap}"
+        if not lane_ok:
+            return False, lane_code or "E_INTRADAY_LANE_CAP", lane_detail
 
         can_single_leg, reason = self.can_enter_single_leg()
         if not can_single_leg:
@@ -3719,15 +3737,21 @@ class OptionsEngine:
 
     def check_expiring_options_force_exit(
         self,
+        current_date: str,
+        current_hour: int,
+        current_minute: int,
         current_price: float,
-        current_dte: Optional[int],
-        current_date: Optional[str] = None,
-    ) -> Optional[List[TargetWeight]]:
+        contract_expiry_date: str,
+        position: Optional[OptionsPosition] = None,
+    ) -> Optional[TargetWeight]:
         return check_expiring_options_force_exit_impl(
             self,
-            current_price=current_price,
-            current_dte=current_dte,
             current_date=current_date,
+            current_hour=current_hour,
+            current_minute=current_minute,
+            current_price=current_price,
+            contract_expiry_date=contract_expiry_date,
+            position=position,
         )
 
     def get_micro_regime_state(self) -> MicroRegimeState:
@@ -4552,14 +4576,14 @@ class OptionsEngine:
         # Reset previous limit failure context for this check.
         self.set_last_trade_limit_failure(None, None)
 
-        # Check global limit
+        # Check global daily options trade limit (distinct from slot caps).
         if self._total_options_trades_today >= config.MAX_OPTIONS_TRADES_PER_DAY:
             detail = (
                 f"Global limit reached | "
                 f"{self._total_options_trades_today}/{config.MAX_OPTIONS_TRADES_PER_DAY}"
             )
             self.log(f"TRADE_LIMIT: {detail}")
-            return reject("R_SLOT_TOTAL_MAX", detail)
+            return reject("R_TRADE_DAILY_TOTAL_MAX", detail)
 
         reserve_checks_active = True
         if self.algorithm is not None:

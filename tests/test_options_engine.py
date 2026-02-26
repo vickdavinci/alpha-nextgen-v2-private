@@ -30,7 +30,7 @@ from engines.satellite.options_engine import (
     SpreadStrategy,
 )
 from main_options_mixin import MainOptionsMixin
-from models.enums import Urgency
+from models.enums import IntradayStrategy, MicroRegime, Urgency
 
 # =============================================================================
 # FIXTURES
@@ -2677,6 +2677,162 @@ class TestIntradayLaneIsolation:
         assert micro_detail == "micro detail"
         assert itm_reason == "E_ITM_A"
         assert itm_detail == "itm detail"
+
+    def test_preflight_allows_micro_otm_second_slot_when_adaptive_cap_boosts(self, engine):
+        contract = OptionContract(
+            symbol="QQQ 270119C00490000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=490.0,
+            expiry="2027-01-19",
+            delta=0.35,
+            bid=2.1,
+            ask=2.3,
+            mid_price=2.2,
+            open_interest=2000,
+            days_to_expiry=2,
+        )
+        engine._intraday_positions["MICRO"] = [
+            OptionsPosition(
+                contract=contract,
+                entry_price=2.2,
+                entry_time="2027-01-04 10:30:00",
+                entry_score=3.0,
+                num_contracts=1,
+                stop_price=1.5,
+                target_price=2.8,
+                stop_pct=0.30,
+                entry_strategy=IntradayStrategy.MICRO_OTM_MOMENTUM.value,
+                highest_price=2.2,
+            )
+        ]
+        engine._refresh_legacy_intraday_mirrors()
+
+        state = type("State", (), {"micro_regime": MicroRegime.GOOD_MR})()
+        ok, code, detail = engine.preflight_intraday_entry(
+            strategy=IntradayStrategy.MICRO_OTM_MOMENTUM,
+            direction=OptionDirection.CALL,
+            state=state,
+            vix_current=15.0,
+            transition_ctx={"transition_overlay": "STABLE", "overlay_bars_since_flip": 20},
+        )
+
+        assert ok is True
+        assert code == "R_OK"
+        assert detail is None
+
+    def test_register_entry_does_not_misclassify_intraday_when_other_symbol_pending(self, engine):
+        pending_contract = OptionContract(
+            symbol="QQQ 270105P00470000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=470.0,
+            expiry="2027-01-05",
+            delta=0.45,
+            bid=1.2,
+            ask=1.4,
+            mid_price=1.3,
+            open_interest=1200,
+            days_to_expiry=1,
+        )
+        fill_contract = OptionContract(
+            symbol="QQQ 270112C00480000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=480.0,
+            expiry="2027-01-12",
+            delta=0.55,
+            bid=2.0,
+            ask=2.2,
+            mid_price=2.1,
+            open_interest=1600,
+            days_to_expiry=8,
+        )
+
+        pending_key = engine._pending_intraday_entry_key(
+            symbol=str(pending_contract.symbol),
+            lane="MICRO",
+        )
+        engine._pending_intraday_entries[pending_key] = {
+            "symbol": str(pending_contract.symbol),
+            "lane": "MICRO",
+            "contract": pending_contract,
+            "entry_score": 3.0,
+            "num_contracts": 1,
+            "entry_strategy": IntradayStrategy.MICRO_OTM_MOMENTUM.value,
+            "stop_pct": 0.30,
+            "created_at": "2027-01-04 10:00:00",
+        }
+        engine._pending_intraday_entry = True
+
+        pos = engine.register_entry(
+            fill_price=2.1,
+            entry_time="2027-01-04 10:45:00",
+            current_date="2027-01-04",
+            contract=fill_contract,
+            symbol=str(fill_contract.symbol),
+        )
+
+        assert pos is not None
+        assert engine.get_position() is not None
+        assert engine._find_intraday_lane_by_symbol(str(fill_contract.symbol)) is None
+
+
+class TestExpirationExitContract:
+    def test_check_expiring_options_force_exit_contract(self, engine):
+        contract = OptionContract(
+            symbol="QQQ 270105C00470000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=470.0,
+            expiry="2027-01-05",
+            delta=0.60,
+            bid=2.0,
+            ask=2.2,
+            mid_price=2.1,
+            open_interest=1500,
+            days_to_expiry=0,
+        )
+        position = OptionsPosition(
+            contract=contract,
+            entry_price=2.0,
+            entry_time="2027-01-05 10:00:00",
+            entry_score=3.2,
+            num_contracts=2,
+            stop_price=1.5,
+            target_price=2.8,
+            stop_pct=0.25,
+            entry_strategy=IntradayStrategy.ITM_MOMENTUM.value,
+            highest_price=2.3,
+        )
+        engine._intraday_positions["ITM"] = [position]
+        engine._refresh_legacy_intraday_mirrors()
+
+        signal = engine.check_expiring_options_force_exit(
+            current_date="2027-01-05",
+            current_hour=23,
+            current_minute=59,
+            current_price=2.1,
+            contract_expiry_date="2027-01-05",
+            position=position,
+        )
+
+        assert signal is not None
+        assert signal.symbol == "QQQ 270105C00470000"
+
+
+class TestIntradayForceExitTimeSource:
+    def test_force_exit_time_uses_scheduler_dynamic_cutoff_when_available(self):
+        class _Scheduler:
+            def get_intraday_options_close_hhmm(self):
+                return (12, 15)
+
+        class _Algo:
+            scheduler = _Scheduler()
+
+        engine = OptionsEngine(algorithm=_Algo())
+        hh, mm = engine._get_intraday_force_exit_hhmm()
+        assert (hh, mm) == (12, 15)
 
 
 class TestIntradayRetryIsolation:

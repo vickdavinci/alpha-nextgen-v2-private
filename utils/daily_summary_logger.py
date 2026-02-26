@@ -143,14 +143,22 @@ def log_daily_summary(algo) -> None:
 
     def _fmt_engine_top_rejects() -> str:
         out = []
-        for engine in ("VASS", "MICRO", "ITM"):
+        engines = ["VASS", "MICRO", "ITM"]
+        if algo._diag_router_reject_reason_counts_by_engine.get("OTHER", {}):
+            engines.append("OTHER")
+        for engine in engines:
             store = algo._diag_router_reject_reason_counts_by_engine.get(engine, {})
             out.append(f"{engine}[{_top_counts(store)}]")
         return " ".join(out)
 
     def _fmt_engine_exit_diag() -> str:
         out = []
-        for engine in ("VASS", "MICRO", "ITM"):
+        engines = ["VASS", "MICRO", "ITM"]
+        if algo._diag_exit_path_counts_by_engine.get(
+            "OTHER", {}
+        ) or algo._diag_exit_path_pnl_by_engine.get("OTHER", {}):
+            engines.append("OTHER")
+        for engine in engines:
             cnt_store = algo._diag_exit_path_counts_by_engine.get(engine, {})
             pnl_store = algo._diag_exit_path_pnl_by_engine.get(engine, {})
             cnt_top = _top_counts(cnt_store)
@@ -168,10 +176,18 @@ def log_daily_summary(algo) -> None:
         app = algo._diag_intraday_approved_by_engine
         drp = algo._diag_intraday_dropped_by_engine
         res = algo._diag_intraday_results_by_engine
-        return (
-            f"ITM({int(cand.get('ITM', 0))}/{int(app.get('ITM', 0))}/{int(drp.get('ITM', 0))}/{int(res.get('ITM', 0))}) "
-            f"MICRO({int(cand.get('MICRO', 0))}/{int(app.get('MICRO', 0))}/{int(drp.get('MICRO', 0))}/{int(res.get('MICRO', 0))})"
-        )
+        engines = ["ITM", "MICRO"]
+        if any(
+            int(store.get("OTHER", 0)) > 0
+            for store in (cand or {}, app or {}, drp or {}, res or {})
+        ):
+            engines.append("OTHER")
+        parts = []
+        for engine in engines:
+            parts.append(
+                f"{engine}({int(cand.get(engine, 0))}/{int(app.get(engine, 0))}/{int(drp.get(engine, 0))}/{int(res.get(engine, 0))})"
+            )
+        return " ".join(parts)
 
     def _fmt_intraday_drop_reasons_by_engine() -> str:
         out = []

@@ -18,14 +18,15 @@ def apply_premarket_vix_actions(algo: Any) -> None:
         getattr(config, "PREMARKET_FORCE_CLOSE_INTRADAY_STALE", True)
         and algo.options_engine.has_intraday_position()
     ):
-        intraday_pos = algo.options_engine.get_intraday_position()
-        if intraday_pos is not None:
+        for intraday_pos in algo.options_engine.get_intraday_positions():
+            if intraday_pos is None or intraday_pos.contract is None:
+                continue
             intraday_symbol = algo._normalize_symbol_str(intraday_pos.contract.symbol)
             if algo._should_hold_intraday_symbol_overnight(intraday_symbol):
                 algo.Log(
                     f"PREMARKET_LADDER: HOLD_SKIP intraday carry | {intraday_pos.contract.symbol}"
                 )
-                return
+                continue
             algo.Log(
                 f"PREMARKET_LADDER: Closing stale intraday carry | {intraday_pos.contract.symbol}"
             )
@@ -74,8 +75,10 @@ def apply_premarket_vix_actions(algo: Any) -> None:
             )
             queued += 1
 
-        intraday_pos = algo.options_engine.get_intraday_position()
-        if intraday_pos is not None:
+        intraday_positions = algo.options_engine.get_intraday_positions()
+        for intraday_pos in intraday_positions:
+            if intraday_pos is None or intraday_pos.contract is None:
+                continue
             l3_symbol = algo._normalize_symbol_str(intraday_pos.contract.symbol)
             l3_qty = abs(algo._get_option_holding_quantity(l3_symbol))
             if l3_qty <= 0:
@@ -96,8 +99,9 @@ def apply_premarket_vix_actions(algo: Any) -> None:
         for spread in spreads:
             tracked_symbols.add(spread.long_leg.symbol)
             tracked_symbols.add(spread.short_leg.symbol)
-        if intraday_pos is not None:
-            tracked_symbols.add(intraday_pos.contract.symbol)
+        for intraday_pos in intraday_positions:
+            if intraday_pos is not None and intraday_pos.contract is not None:
+                tracked_symbols.add(intraday_pos.contract.symbol)
 
         for kvp in algo.Portfolio:
             holding = kvp.Value
@@ -162,9 +166,11 @@ def apply_premarket_vix_actions(algo: Any) -> None:
             )
 
         symbols_to_close = []
-        intraday_pos = algo.options_engine.get_intraday_position()
-        if intraday_pos is not None and intraday_pos.contract.direction == OptionDirection.CALL:
-            symbols_to_close.append(intraday_pos.contract.symbol)
+        for intraday_pos in algo.options_engine.get_intraday_positions():
+            if intraday_pos is None or intraday_pos.contract is None:
+                continue
+            if intraday_pos.contract.direction == OptionDirection.CALL:
+                symbols_to_close.append(intraday_pos.contract.symbol)
 
         for kvp in algo.Portfolio:
             holding = kvp.Value

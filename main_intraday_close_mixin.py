@@ -622,9 +622,12 @@ class MainIntradayCloseMixin:
         if getattr(self, "_intraday_force_exit_fallback_date", None) == self.Time.date():
             return
 
-        # Only after configured force-close + 5 minutes.
-        exit_time = getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15")
-        exit_hour, exit_minute = map(int, exit_time.split(":"))
+        # Only after effective force-close + 5 minutes (dynamic on early-close days).
+        try:
+            exit_hour, exit_minute = self.options_engine._get_intraday_force_exit_hhmm()
+        except Exception:
+            exit_time = getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15")
+            exit_hour, exit_minute = map(int, exit_time.split(":"))
         fallback_hour = exit_hour
         fallback_minute = exit_minute + 5
         if fallback_minute >= 60:

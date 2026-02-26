@@ -85,6 +85,7 @@ class MainRiskMonitorMixin:
             expiring_candidates.append(position)
         expiring_candidates.extend(intraday_positions)
 
+        expiring_exit_emitted = False
         for any_position in expiring_candidates:
             # Get contract expiry date
             any_symbol = self._normalize_symbol_str(any_position.contract.symbol)
@@ -107,7 +108,9 @@ class MainRiskMonitorMixin:
                 )
                 if signal is not None:
                     self.portfolio_router.receive_signal(signal)
-                    return  # Force exit takes priority, skip other exit checks
+                    expiring_exit_emitted = True
+        if expiring_exit_emitted:
+            return  # Force exits take priority, skip other exit checks
 
         # V2.3.10: Check single-leg exit signals (profit target, stop, DTE exit)
         # This prevents options from being held to expiration/exercise

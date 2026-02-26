@@ -92,7 +92,15 @@ def register_entry_impl(
     # Recalculate stop and target based on actual fill price
     stop_price = fill_price * (1 - stop_pct)
 
-    is_intraday_fill = force_intraday or pending_payload is not None or self._pending_intraday_entry
+    symbol_pending_intraday = pending_payload is not None
+    # Lane-aware classification: a fill should only be treated as intraday when
+    # this symbol is pending intraday (or explicit recovery is requested).
+    # Avoids misclassifying unrelated fills when another lane has a pending entry.
+    is_intraday_fill = (
+        force_intraday
+        or symbol_pending_intraday
+        or (not symbol_norm and self._pending_intraday_entry)
+    )
     if is_intraday_fill:
         target_pct, strategy_floor = self._get_intraday_exit_profile(entry_strategy)
         current_dte = int(getattr(contract, "days_to_expiry", 0))
