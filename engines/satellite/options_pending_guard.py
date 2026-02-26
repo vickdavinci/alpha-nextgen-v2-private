@@ -204,16 +204,8 @@ def clear_stale_pending_intraday_entry_if_orphaned_impl(self) -> None:
                         cancel_requests += 1
                     except Exception:
                         continue
-            # Safety release: never allow a lane lock to persist for hours.
-            if hard_clear_minutes > 0 and age_minutes >= hard_clear_minutes:
-                self._pending_intraday_entries.pop(key, None)
-                cleared_keys.append(key)
-                self.log(
-                    f"INTRADAY_PENDING_HARD_CLEAR: Lane={lane or 'UNKNOWN'} | "
-                    f"Symbol={symbol_norm} | AgeMin={age_minutes:.1f} | "
-                    f"OpenOrders={len(open_entry_order_ids)}",
-                    trades_only=True,
-                )
+            # Do not hard-clear while broker still reports open entry orders.
+            # Clearing here can permit duplicate entries and mis-accounting on late fills.
             continue
 
         # If lane already has a live position, pending-entry lock is stale.
@@ -226,6 +218,8 @@ def clear_stale_pending_intraday_entry_if_orphaned_impl(self) -> None:
         should_clear = age_minutes >= stale_minutes
         if not should_clear and fast_clear_seconds > 0:
             should_clear = age_seconds >= fast_clear_seconds
+        if not should_clear and hard_clear_minutes > 0:
+            should_clear = age_minutes >= hard_clear_minutes
         if not should_clear:
             continue
         self._pending_intraday_entries.pop(key, None)

@@ -4590,7 +4590,9 @@ class OptionsEngine:
                 f"{self._total_options_trades_today}/{config.MAX_OPTIONS_TRADES_PER_DAY}"
             )
             self.log(f"TRADE_LIMIT: {detail}")
-            return reject("R_TRADE_DAILY_TOTAL_MAX", detail)
+            # Legacy compatibility: keep R_SLOT_TOTAL_MAX for downstream RCA parsers.
+            # The detail string still distinguishes this as a daily trade-limit event.
+            return reject("R_SLOT_TOTAL_MAX", detail)
 
         reserve_checks_active = True
         if self.algorithm is not None:
