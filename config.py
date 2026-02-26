@@ -1958,7 +1958,9 @@ VASS_SLOT_BACKOFF_MINUTES = 20
 # Options sizing must cap by actual available margin, not just portfolio %
 # V2.12 Fix #4: Raised from $5K to $10K - 8-lot spread requires ~$8K margin
 # V3.0 SCALABILITY FIX: Converted to percentage-based for portfolio scaling
-OPTIONS_MAX_MARGIN_CAP = 50_000  # V6.20: Align hard cap with $100K capital and 50% options profile
+# V12.15: DEPRECATED — fixed dollar cap replaced by percentage-based OPTIONS_MAX_MARGIN_PCT.
+# Kept for backward compatibility; no longer read by any active code path.
+OPTIONS_MAX_MARGIN_CAP = 50_000
 OPTIONS_MAX_MARGIN_PCT = 0.50  # V10.9: Align with OPTIONS_BUDGET_CAP_PCT so per-scan sizing isn't squeezed when Trend is active
 
 # V2.18: Percentage-based Sizing Caps (scales with portfolio)
@@ -2560,9 +2562,9 @@ ITM_MAX_CONCURRENT_POSITIONS = 1
 ITM_DTE_DIAG_LOG_INTERVAL_MIN = 30
 MICRO_MAX_CONCURRENT_POSITIONS = 1
 ITM_MAX_CONTRACTS_HARD_CAP = 30  # V12.13: liquidity ceiling, not risk control (was 6)
-ITM_TARGET_PCT = 0.30  # V12.13: legacy fallback aligned to multi-day (was 0.40)
+ITM_TARGET_PCT = 0.45  # V12.15: restored R:R — aligned to med VIX (was 0.30)
 ITM_STOP_PCT = 0.45  # V12.13: legacy fallback aligned to multi-day (was 0.25)
-ITM_TRAIL_TRIGGER = 0.22
+ITM_TRAIL_TRIGGER = 0.32  # V12.15: raised for R:R rebalance (was 0.22)
 ITM_TRAIL_PCT = 0.32
 ITM_MAX_HOLD_DAYS = 4
 ITM_FORCE_EXIT_DTE = 10  # V12.13: 2 extra days from gamma cliff (was 8)
@@ -2597,15 +2599,15 @@ ITM_OVERNIGHT_MAX_LOSS_PCT_HIGH_VIX = ITM_OVERNIGHT_EOD_EXIT_LOSS_PCT_HIGH_VIX
 ITM_TIERED_EXIT_ENABLED = True
 ITM_MED_VIX_THRESHOLD = 18.0
 ITM_HIGH_VIX_THRESHOLD = 25.0
-ITM_TARGET_PCT_LOW_VIX = 0.25
-ITM_TARGET_PCT_MED_VIX = 0.30  # V12.13: reachable in 3-4d hold (was 0.40)
-ITM_TARGET_PCT_HIGH_VIX = 0.35  # V12.13: reachable in 3-4d hold (was 0.45)
+ITM_TARGET_PCT_LOW_VIX = 0.40  # V12.15: restored R:R (was 0.25)
+ITM_TARGET_PCT_MED_VIX = 0.45  # V12.15: restored R:R (was 0.30)
+ITM_TARGET_PCT_HIGH_VIX = 0.50  # V12.15: restored R:R (was 0.35)
 ITM_STOP_PCT_LOW_VIX = 0.45  # V12.13: wider for multi-day hold (was 0.22)
 ITM_STOP_PCT_MED_VIX = 0.50  # V12.13: wider for multi-day hold (was 0.25)
 ITM_STOP_PCT_HIGH_VIX = 0.55  # V12.13: wider for multi-day hold (was 0.28)
-ITM_TRAIL_TRIGGER_LOW_VIX = 0.20
-ITM_TRAIL_TRIGGER_MED_VIX = 0.22
-ITM_TRAIL_TRIGGER_HIGH_VIX = 0.25
+ITM_TRAIL_TRIGGER_LOW_VIX = 0.30  # V12.15: raised for R:R rebalance (was 0.20)
+ITM_TRAIL_TRIGGER_MED_VIX = 0.32  # V12.15: raised for R:R rebalance (was 0.22)
+ITM_TRAIL_TRIGGER_HIGH_VIX = 0.35  # V12.15: raised for R:R rebalance (was 0.25)
 ITM_TRAIL_PCT_LOW_VIX = 0.30
 ITM_TRAIL_PCT_MED_VIX = 0.32
 ITM_TRAIL_PCT_HIGH_VIX = 0.35
