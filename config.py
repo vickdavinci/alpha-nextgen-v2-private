@@ -2303,7 +2303,7 @@ INTRADAY_MICRO_OTM_FRICTION_STRESS_VIX = 20.0
 # V6.4: DEBIT_MOMENTUM time window (same as ITM_MOMENTUM - both are momentum strategies)
 INTRADAY_DEBIT_MOMENTUM_START = "10:00"  # Entry window start
 INTRADAY_DEBIT_MOMENTUM_END = "14:30"  # Entry window end
-INTRADAY_ITM_STOP = 0.40  # V10.8: multi-day ITM stop to survive normal 1-2 day noise
+INTRADAY_ITM_STOP = 0.50  # V12.13: legacy fallback aligned to multi-day (was 0.40)
 INTRADAY_ITM_STOP_FLOOR_MED_VIX = 0.45  # V10.8: wider ITM stop floor in medium VIX
 INTRADAY_ITM_STOP_FLOOR_HIGH_VIX = 0.50  # V10.8: wider ITM stop floor in high VIX
 INTRADAY_HIGH_VIX_STOP_MAX_PCT = (
@@ -2440,11 +2440,9 @@ INTRADAY_DEBIT_MOMENTUM_BLOCK_REGIMES = [
 # ITM_MOMENTUM: Stock replacement needs ITM options (delta 0.60-0.85)
 INTRADAY_ITM_DELTA_MIN = 0.70  # Legacy fallback aligned to ITM_ENGINE stock-replacement profile
 INTRADAY_ITM_DELTA_MAX = 0.80  # V10: tightened from 0.85 to avoid deep ITM illiquidity
-INTRADAY_ITM_HOLD_OVERNIGHT_ENABLED = (
-    False  # V10.22: disable overnight ITM carry to cut tail losses
-)
+INTRADAY_ITM_HOLD_OVERNIGHT_ENABLED = True  # V12.13: enable multi-day ITM carry (was False V10.22)
 INTRADAY_ITM_HOLD_MIN_ENTRY_DTE = 3  # Only hold if entry was opened with >=3 DTE
-INTRADAY_ITM_FORCE_EXIT_DTE = 8  # Legacy fallback: exit before gamma-acceleration zone
+INTRADAY_ITM_FORCE_EXIT_DTE = 10  # V12.13: aligned to ITM_FORCE_EXIT_DTE (was 8)
 INTRADAY_ITM_DTE_EXIT = 2  # Software DTE exit for ITM single-legs (strategy-specific)
 INTRADAY_ALLOW_ONE_LOT_WHEN_CAP_TIGHT = (
     True  # V10.9: reduce avoidable CAP_TOO_SMALL drops for valid MICRO CALLs
@@ -2476,8 +2474,8 @@ ITM_SMA_BAND_PCT = 0.015  # Legacy fallback (deprecated by VIX-tier bands)
 ITM_SMA_BAND_PCT_LOW_VIX = 0.012
 ITM_SMA_BAND_PCT_MED_VIX = 0.015
 ITM_SMA_BAND_PCT_HIGH_VIX = 0.025
-ITM_PUT_MAX_REGIME = 70
-ITM_CALL_MIN_REGIME = 50
+ITM_PUT_MAX_REGIME = 45  # V12.13: only bearish regimes for PUTs (was 70)
+ITM_CALL_MIN_REGIME = 62  # V12.13: block CAUTIOUS/CAUTION_LOW/WORSENING (was 50)
 ITM_ADX_MIN = 20.0
 ITM_CALL_ADX_MIN = 24.0  # V10.32: require stronger trend persistence for ITM CALL entries
 ITM_CALL_MAX_VIX = 20.0  # V10.32: avoid ITM CALLs in elevated fear tape
@@ -2485,8 +2483,8 @@ ITM_CALL_LOW_VIX_PREFERRED = 14.0
 ITM_REQUIRE_VIX20D_FALLING_FOR_CALL_WHEN_VIX_ABOVE_LOW = True
 ITM_PUT_MIN_VIX = 12.0
 ITM_PUT_MAX_VIX = 35.0
-ITM_CALL_TRANSITION_MIN_REGIME = 48.0
-ITM_PUT_TRANSITION_MAX_REGIME = 62.0
+ITM_CALL_TRANSITION_MIN_REGIME = 58.0  # V12.13: tighter recovery override (was 48.0)
+ITM_PUT_TRANSITION_MAX_REGIME = 50.0  # V12.13: tighter deterioration override (was 62.0)
 ITM_TRANSITION_BLOCK_AMBIGUOUS = True
 ITM_TRANSITION_BLOCK_BULL_ON_DETERIORATION = True
 ITM_TRANSITION_BLOCK_BEAR_ON_RECOVERY = True
@@ -2518,14 +2516,14 @@ ITM_TARGET_DTE = 17
 ITM_MAX_CONCURRENT_POSITIONS = 1
 ITM_DTE_DIAG_LOG_INTERVAL_MIN = 30
 MICRO_MAX_CONCURRENT_POSITIONS = 1
-ITM_MAX_CONTRACTS_HARD_CAP = 6
-ITM_TARGET_PCT = 0.40
-ITM_STOP_PCT = 0.25
+ITM_MAX_CONTRACTS_HARD_CAP = 30  # V12.13: liquidity ceiling, not risk control (was 6)
+ITM_TARGET_PCT = 0.30  # V12.13: legacy fallback aligned to multi-day (was 0.40)
+ITM_STOP_PCT = 0.45  # V12.13: legacy fallback aligned to multi-day (was 0.25)
 ITM_TRAIL_TRIGGER = 0.22
 ITM_TRAIL_PCT = 0.32
 ITM_MAX_HOLD_DAYS = 4
-ITM_FORCE_EXIT_DTE = 8
-ITM_HOLD_OVERNIGHT_ENABLED = False  # V10.22: intraday-close ITM path for smoke stability
+ITM_FORCE_EXIT_DTE = 10  # V12.13: 2 extra days from gamma cliff (was 8)
+ITM_HOLD_OVERNIGHT_ENABLED = True  # V12.13: enable multi-day ITM carry (was False V10.22)
 # ITM weekend/holiday carry guard (targeted protection, avoids blanket quarantine).
 ITM_WEEKEND_GUARD_ENABLED = True
 ITM_WEEKEND_MIN_LIVE_DTE_TO_HOLD = 10
@@ -2543,11 +2541,11 @@ ITM_WEEKEND_GAP_VIX_SHOCK_PCT = 0.15
 ITM_OVERNIGHT_WARN_LOSS_PCT = 0.10  # Stage A: warning only, keep trade open
 ITM_OVERNIGHT_MED_VIX_THRESHOLD = 18.0
 ITM_OVERNIGHT_HIGH_VIX_THRESHOLD = 25.0
-ITM_OVERNIGHT_EOD_EXIT_LOSS_PCT_LOW_VIX = 0.15
-ITM_OVERNIGHT_EOD_EXIT_LOSS_PCT_MED_VIX = 0.18
-ITM_OVERNIGHT_EOD_EXIT_LOSS_PCT_HIGH_VIX = 0.22
+ITM_OVERNIGHT_EOD_EXIT_LOSS_PCT_LOW_VIX = 0.35  # V12.13: early warning below stop (was 0.15)
+ITM_OVERNIGHT_EOD_EXIT_LOSS_PCT_MED_VIX = 0.40  # V12.13: early warning below stop (was 0.18)
+ITM_OVERNIGHT_EOD_EXIT_LOSS_PCT_HIGH_VIX = 0.45  # V12.13: early warning below stop (was 0.22)
 ITM_OVERNIGHT_EOD_EXIT_REQUIRE_THESIS_BREAK = True
-ITM_OVERNIGHT_EMERGENCY_LOSS_PCT = 0.28  # Always cut catastrophic overnight loss
+ITM_OVERNIGHT_EMERGENCY_LOSS_PCT = 0.50  # V12.13: aligned to med-VIX stop (was 0.28)
 # Legacy aliases (kept for compatibility)
 ITM_OVERNIGHT_MAX_LOSS_PCT = ITM_OVERNIGHT_EOD_EXIT_LOSS_PCT_MED_VIX
 ITM_OVERNIGHT_MAX_LOSS_PCT_HIGH_VIX = ITM_OVERNIGHT_EOD_EXIT_LOSS_PCT_HIGH_VIX
@@ -2557,11 +2555,11 @@ ITM_TIERED_EXIT_ENABLED = True
 ITM_MED_VIX_THRESHOLD = 18.0
 ITM_HIGH_VIX_THRESHOLD = 25.0
 ITM_TARGET_PCT_LOW_VIX = 0.25
-ITM_TARGET_PCT_MED_VIX = 0.40
-ITM_TARGET_PCT_HIGH_VIX = 0.45
-ITM_STOP_PCT_LOW_VIX = 0.22
-ITM_STOP_PCT_MED_VIX = 0.25
-ITM_STOP_PCT_HIGH_VIX = 0.28
+ITM_TARGET_PCT_MED_VIX = 0.30  # V12.13: reachable in 3-4d hold (was 0.40)
+ITM_TARGET_PCT_HIGH_VIX = 0.35  # V12.13: reachable in 3-4d hold (was 0.45)
+ITM_STOP_PCT_LOW_VIX = 0.45  # V12.13: wider for multi-day hold (was 0.22)
+ITM_STOP_PCT_MED_VIX = 0.50  # V12.13: wider for multi-day hold (was 0.25)
+ITM_STOP_PCT_HIGH_VIX = 0.55  # V12.13: wider for multi-day hold (was 0.28)
 ITM_TRAIL_TRIGGER_LOW_VIX = 0.20
 ITM_TRAIL_TRIGGER_MED_VIX = 0.22
 ITM_TRAIL_TRIGGER_HIGH_VIX = 0.25
@@ -2571,9 +2569,24 @@ ITM_TRAIL_PCT_HIGH_VIX = 0.35
 
 # ITM_ENGINE ATR guardrail: keep ATR widening in high-vol while preserving tier floors.
 ITM_ATR_GUARDRAIL_ENABLED = True
-ITM_ATR_GUARDRAIL_MAX_STOP_LOW_VIX = 0.30
-ITM_ATR_GUARDRAIL_MAX_STOP_MED_VIX = 0.35
-ITM_ATR_GUARDRAIL_MAX_STOP_HIGH_VIX = 0.40
+ITM_ATR_GUARDRAIL_MAX_STOP_LOW_VIX = 0.50  # V12.13: must be >= stop (was 0.30)
+ITM_ATR_GUARDRAIL_MAX_STOP_MED_VIX = 0.55  # V12.13: must be >= stop (was 0.35)
+ITM_ATR_GUARDRAIL_MAX_STOP_HIGH_VIX = 0.60  # V12.13: must be >= stop (was 0.40)
+
+# V12.13: ITM budget-proportional sizing — deploy fraction of budget, not all.
+ITM_DEPLOY_PCT_OF_BUDGET = 0.60  # Deploy up to 60% of ITM budget per position
+
+# V12.13: ADX-adaptive max hold — stronger trends get longer leash.
+ITM_ADX_ADAPTIVE_HOLD_ENABLED = True
+ITM_MAX_HOLD_DAYS_STRONG_ADX = 4  # ADX >= 28
+ITM_MAX_HOLD_DAYS_MODERATE_ADX = 3  # ADX 24-28
+ITM_MAX_HOLD_DAYS_WEAK_ADX = 2  # ADX 20-24
+ITM_ADX_STRONG_THRESHOLD = 28.0
+ITM_ADX_MODERATE_THRESHOLD = 24.0
+
+# V12.13: VIX spike exit for ITM — close before event volatility crushes position.
+ITM_VIX_SPIKE_EXIT_ENABLED = True
+ITM_VIX_SPIKE_INTRADAY_PCT = 0.15  # Exit if VIX jumps 15%+ intraday
 
 # ITM_ENGINE anti-roundtrip profit-lock floors
 ITM_PROFIT_LOCK_BREAKEVEN_TRIGGER = 0.20

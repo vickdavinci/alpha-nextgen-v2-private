@@ -893,8 +893,19 @@ class ITMHorizonEngine:
             int(getattr(config, "ITM_FORCE_EXIT_DTE", 8)),
         )
 
-    def get_max_hold_days(self) -> int:
-        return int(getattr(config, "ITM_MAX_HOLD_DAYS", 4))
+    def get_max_hold_days(self, adx_value: float = None) -> int:
+        """Return max hold days, optionally adaptive to ADX strength (V12.13)."""
+        if not bool(getattr(config, "ITM_ADX_ADAPTIVE_HOLD_ENABLED", False)):
+            return int(getattr(config, "ITM_MAX_HOLD_DAYS", 4))
+        if adx_value is None:
+            return int(getattr(config, "ITM_MAX_HOLD_DAYS", 4))
+        strong = float(getattr(config, "ITM_ADX_STRONG_THRESHOLD", 28.0))
+        moderate = float(getattr(config, "ITM_ADX_MODERATE_THRESHOLD", 24.0))
+        if adx_value >= strong:
+            return int(getattr(config, "ITM_MAX_HOLD_DAYS_STRONG_ADX", 4))
+        if adx_value >= moderate:
+            return int(getattr(config, "ITM_MAX_HOLD_DAYS_MODERATE_ADX", 3))
+        return int(getattr(config, "ITM_MAX_HOLD_DAYS_WEAK_ADX", 2))
 
     def emit_daily_summary(self, current_date: str) -> None:
         if self._diag_counts:

@@ -631,6 +631,14 @@ def check_intraday_entry_signal_impl(
             return fail("E_INTRADAY_COMBINED_SIZE_MIN")
 
         adjusted_cap = intraday_max_dollars * combined_mult
+
+        # V12.13: ITM budget-proportional sizing — deploy fraction of budget, not all.
+        if itm_engine_mode and entry_strategy == IntradayStrategy.ITM_MOMENTUM:
+            deploy_pct = float(getattr(config, "ITM_DEPLOY_PCT_OF_BUDGET", 0.60))
+            budget_deploy_cap = intraday_max_dollars * deploy_pct
+            if adjusted_cap > budget_deploy_cap:
+                adjusted_cap = budget_deploy_cap
+
         size_mult = strategy_mult  # For logging compatibility
     premium = best_contract.mid_price
     if premium <= 0:

@@ -120,6 +120,33 @@ def check_exit_signals_impl(
             if floor_price > pos.stop_price:
                 pos.stop_price = floor_price
 
+    # V12.13: VIX spike exit for ITM — close before event volatility crushes position.
+    if self._is_itm_momentum_strategy_name(getattr(pos, "entry_strategy", "")):
+        if bool(getattr(config, "ITM_VIX_SPIKE_EXIT_ENABLED", False)):
+            spike_pct = float(getattr(config, "ITM_VIX_SPIKE_INTRADAY_PCT", 0.15))
+            try:
+                vix_at_open = float(getattr(self.algorithm, "_vix_at_open", 0.0) or 0.0)
+                current_vix = float(getattr(self.algorithm, "_current_vix", 0.0) or 0.0)
+                vix_chg = (current_vix - vix_at_open) / vix_at_open if vix_at_open > 0 else 0.0
+            except Exception:
+                vix_chg = 0.0
+            if vix_chg >= spike_pct:
+                if is_intraday_pos and not self.mark_pending_intraday_exit(symbol_str):
+                    return None
+                reason = (
+                    f"ITM_VIX_SPIKE_EXIT VIX_chg={vix_chg:+.1%} >= {spike_pct:.0%} "
+                    f"P&L={pnl_pct:+.1%}"
+                )
+                self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
+                return TargetWeight(
+                    symbol=symbol_str,
+                    target_weight=0.0,
+                    source="OPT",
+                    urgency=Urgency.IMMEDIATE,
+                    reason=reason,
+                    requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
+                )
+
     # Exit 1.5: Strategy-aware trailing stop for intraday strategies
     if pos.entry_strategy and pos.entry_strategy.upper() != "PROTECTIVE_PUTS":
         if current_price > pos.highest_price:
@@ -228,11 +255,19 @@ def check_exit_signals_impl(
                 requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
             )
 
-    # ITM_ENGINE max-hold guard (calendar-based safety cap).
+    # ITM_ENGINE max-hold guard (calendar-based safety cap, V12.13: ADX-adaptive).
     if self._itm_horizon_engine.enabled() and self._is_itm_momentum_strategy_name(
         getattr(pos, "entry_strategy", "")
     ):
-        max_hold_days = self._itm_horizon_engine.get_max_hold_days()
+        adx_val = None
+        try:
+            if self.algorithm is not None and hasattr(self.algorithm, "_adx_qqq"):
+                adx_ind = self.algorithm._adx_qqq
+                if adx_ind is not None and adx_ind.IsReady:
+                    adx_val = float(adx_ind.Current.Value)
+        except Exception:
+            adx_val = None
+        max_hold_days = self._itm_horizon_engine.get_max_hold_days(adx_value=adx_val)
         if max_hold_days > 0:
             try:
                 entry_date = datetime.strptime(
