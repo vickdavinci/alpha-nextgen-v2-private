@@ -2386,6 +2386,7 @@ class OptionsEngine:
         set_cooldown: bool = True,
         log_filters: bool = True,
         debug_stats: Optional[Dict[str, Any]] = None,
+        current_price: Optional[float] = None,
     ) -> Optional[tuple]:
         """Select long and short leg contracts for a debit spread."""
         return self._vass_entry_engine.select_spread_legs(
@@ -2399,6 +2400,7 @@ class OptionsEngine:
             set_cooldown=set_cooldown,
             log_filters=log_filters,
             debug_stats=debug_stats,
+            current_price=current_price,
         )
 
     def select_spread_legs_with_fallback(
@@ -2409,6 +2411,7 @@ class OptionsEngine:
         target_width: float = None,
         current_time: str = None,
         set_cooldown: bool = True,
+        current_price: Optional[float] = None,
     ) -> Optional[tuple]:
         """Try multiple DTE ranges before applying spread failure cooldown."""
         return self._vass_entry_engine.select_spread_legs_with_fallback(
@@ -2419,6 +2422,7 @@ class OptionsEngine:
             target_width=target_width,
             current_time=current_time,
             set_cooldown=set_cooldown,
+            current_price=current_price,
         )
 
     # =========================================================================
@@ -2435,6 +2439,7 @@ class OptionsEngine:
         set_cooldown: bool = True,
         log_filters: bool = True,
         debug_stats: Optional[Dict[str, Any]] = None,
+        current_price: Optional[float] = None,
     ) -> Optional[Tuple[OptionContract, OptionContract]]:
         """Select short and long legs for credit spread construction."""
         return self._vass_entry_engine.select_credit_spread_legs(
@@ -2447,6 +2452,7 @@ class OptionsEngine:
             set_cooldown=set_cooldown,
             log_filters=log_filters,
             debug_stats=debug_stats,
+            current_price=current_price,
         )
 
     def select_credit_spread_legs_with_fallback(
@@ -2456,6 +2462,7 @@ class OptionsEngine:
         dte_ranges: List[Tuple[int, int]],
         current_time: Optional[str] = None,
         set_cooldown: bool = True,
+        current_price: Optional[float] = None,
     ) -> Optional[Tuple[OptionContract, OptionContract]]:
         """Try multiple DTE ranges for credit spreads before cooldown."""
         return self._vass_entry_engine.select_credit_spread_legs_with_fallback(
@@ -2465,6 +2472,7 @@ class OptionsEngine:
             dte_ranges=dte_ranges,
             current_time=current_time,
             set_cooldown=set_cooldown,
+            current_price=current_price,
         )
 
     def pop_last_spread_failure_stats(self) -> Optional[str]:
