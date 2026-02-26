@@ -1019,7 +1019,7 @@ VASS_EV_DIAGNOSTICS_TOP_N = 3
 VASS_SHORT_LEG_SORT_POP_FIRST = (
     True  # V12.10: prioritize higher PoP structures before cheapest debit.
 )
-VASS_POP_GATE_ENABLED = True  # V12.10: explicit probability-of-profit gate.
+VASS_POP_GATE_ENABLED = False  # V12.12: disabled — PoP ≈ 1 - D/W for debit verticals, so D/W cap IS the PoP gate. Threshold 0.55 is mathematically impossible at long delta < 0.55 (blocks all OTM entries). Was True.
 VASS_POP_MIN_DEBIT = 0.55
 VASS_POP_MIN_CREDIT = 0.55
 VASS_GREEKS_ENTRY_GATE_ENABLED = True  # V12.10: block poor theta/vega structures at entry.
