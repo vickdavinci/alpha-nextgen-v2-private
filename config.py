@@ -933,7 +933,7 @@ VASS_ENABLED = True  # Master switch for VASS
 # IV Environment Classification Thresholds
 # V6.6: Adjusted based on 2022H1 VIX distribution (16.6-32.0 range observed)
 VASS_IV_LOW_THRESHOLD = 18  # V12.10: broaden low-IV routing window for debit-friendly tape.
-VASS_IV_HIGH_THRESHOLD = 22  # V10.16: route elevated-IV tape to credit spreads earlier
+VASS_IV_HIGH_THRESHOLD = 25  # V12.16: require true high-IV before routing VASS into credit spreads
 VASS_IV_SMOOTHING_MINUTES = 30  # SMA window to prevent strategy flickering
 # V12.10: Align VASS routing with chain IV rank when available.
 # Fallback remains VIX-threshold routing when chain percentile isn't ready.
@@ -975,7 +975,7 @@ VASS_EARLY_STRESS_BULL_REQUIRE_CONVICTION = (
     True  # D8: In EARLY_STRESS, block bullish VASS unless conviction is present
 )
 VASS_EARLY_STRESS_BULL_STRATEGY_TO_CREDIT = (
-    True  # D8: In EARLY_STRESS, remap bullish debit spreads to bullish credit spreads
+    False  # V12.16: avoid forced bullish credit remap in unstable early-stress tape
 )
 VASS_EARLY_STRESS_BEAR_PREFER_CREDIT = (
     False  # V10.10: disable broad BEAR_CALL_CREDIT remix; keep explicit fallback path only
@@ -1072,12 +1072,12 @@ CREDIT_SPREAD_WIDTH_TARGET = 5.0  # $5 width for credit spreads
 CREDIT_SPREAD_DTE_MIN = 7  # Default credit spread DTE floor (used when no fallback ranges supplied)
 CREDIT_SPREAD_DTE_MAX = 30  # Default credit spread DTE ceiling
 CREDIT_SPREAD_FALLBACK_TO_DEBIT = True  # V6.10 P3: Fall back to debit when credit fails
-CREDIT_SPREAD_PROFIT_TARGET = 0.50  # Exit at 50% of max profit
+CREDIT_SPREAD_PROFIT_TARGET = 0.55  # V12.16: improve credit expectancy before theta/gap drift
 CREDIT_SPREAD_STOP_MULTIPLIER = 0.35  # V10.17: trim left-tail bleed on failed credit spreads
 CREDIT_SPREAD_TIERED_STOP_ENABLED = True
 CREDIT_SPREAD_STOP_MULT_LOW_VIX = 0.30
-CREDIT_SPREAD_STOP_MULT_MED_VIX = CREDIT_SPREAD_STOP_MULTIPLIER
-CREDIT_SPREAD_STOP_MULT_HIGH_VIX = 0.45
+CREDIT_SPREAD_STOP_MULT_MED_VIX = 0.32  # V12.16: tighter realized-loss cap in medium-IV credit tape
+CREDIT_SPREAD_STOP_MULT_HIGH_VIX = 0.35  # V12.16: tighten high-IV left-tail containment
 CREDIT_SPREAD_MAX_LOSS_PCT_EQUITY = (
     0.0125  # V10.17: cap theoretical max-loss sizing to 1.25% equity
 )
@@ -1106,11 +1106,11 @@ CREDIT_SPREAD_MIN_CREDIT_HIGH_IV = 0.10  # V6.13.1 OPT: More credit spread fills
 CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD = 30.0  # VIX level above which reduced floor applies
 # V9.2: Structural credit quality floor (prevents low-credit, high-max-loss structures)
 # Three-tier system: strict in calm markets, relaxed as VIX rises and credit widens
-CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT = 0.38  # V10.32: improve base credit quality in calm tape
+CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT = 0.40  # V12.16: raise calm-tape credit quality floor
 CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_MEDIUM_IV = (
-    0.35  # V10.32: tighten medium-IV credit quality floor
+    0.38  # V12.16: raise medium-IV credit quality floor
 )
-CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV = 0.32  # V10.32: keep quality floor in high-IV stress
+CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV = 0.35  # V12.16: raise high-IV floor to stabilize credit R:R
 CREDIT_SPREAD_MEDIUM_IV_VIX_THRESHOLD = 20.0  # VIX level for medium-IV tier
 
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)
