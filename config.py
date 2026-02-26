@@ -2032,9 +2032,25 @@ SPREAD_MAX_CONTRACTS_HARD_CAP = 15  # V12.4: enforce max 15 spread contracts per
 
 # V5.3: Options Position Limits (Margin Error Prevention)
 # Max concurrent positions: 2 intraday + 5 swings = 7 total
-OPTIONS_MAX_INTRADAY_POSITIONS = 2  # One slot each for MICRO + ITM isolated lanes
+# V12.15: DEPRECATED for slot gating — shared single-leg cap removed from can_enter_single_leg().
+# Lane caps remain: ITM_MAX_CONCURRENT_POSITIONS, MICRO_MAX_CONCURRENT_POSITIONS.
+# Kept for backward compatibility (not read by slot gate path).
+OPTIONS_MAX_INTRADAY_POSITIONS = 2
 OPTIONS_MAX_SWING_POSITIONS = 4  # V10.9: reduce concentration risk
 OPTIONS_MAX_TOTAL_POSITIONS = 7  # 2 intraday + up to 5 swings
+
+# V12.15: Regime-adaptive total position cap (optional — OFF by default)
+# When disabled: total cap is always OPTIONS_MAX_TOTAL_POSITIONS.
+# When enabled: adapts using regime score (REGIME_NEUTRAL, REGIME_DEFENSIVE),
+# transition overlay (DETERIORATION/AMBIGUOUS), and fast stress overlay (STRESS/EARLY_STRESS).
+OPTIONS_REGIME_ADAPTIVE_TOTAL_CAP_ENABLED = False
+OPTIONS_TOTAL_CAP_BULLISH = 7  # score >= REGIME_NEUTRAL (50) → full deployment
+OPTIONS_TOTAL_CAP_NEUTRAL = 5  # score >= REGIME_DEFENSIVE (35) OR EARLY_STRESS → moderate
+OPTIONS_TOTAL_CAP_BEARISH = 4  # score < REGIME_DEFENSIVE (35) → conservative
+OPTIONS_TOTAL_CAP_DETERIORATION = (
+    3  # DETERIORATION/AMBIGUOUS overlay OR STRESS → capital protection
+)
+
 OPTIONS_MAX_SWING_PER_DIRECTION = 3  # Legacy fallback cap if directional pools are unset
 # V8: Separate directional swing pools (prevents one side from monopolizing all swing slots).
 OPTIONS_MAX_SWING_BULLISH_POSITIONS = 2

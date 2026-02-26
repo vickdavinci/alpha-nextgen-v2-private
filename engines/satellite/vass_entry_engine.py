@@ -207,10 +207,11 @@ class VASSEntryEngine:
         """Check whether a new VASS swing entry is allowed under slot caps."""
         _, swing_count, total_count = host.count_options_positions()
 
-        if total_count >= config.OPTIONS_MAX_TOTAL_POSITIONS:
+        effective_cap = host._get_effective_total_cap()
+        if total_count >= effective_cap:
             return (
                 False,
-                f"R_SLOT_TOTAL_MAX: {total_count} >= {config.OPTIONS_MAX_TOTAL_POSITIONS}",
+                f"R_SLOT_TOTAL_MAX: {total_count} >= {effective_cap}",
             )
 
         if swing_count >= config.OPTIONS_MAX_SWING_POSITIONS:

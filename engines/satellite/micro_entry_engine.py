@@ -989,7 +989,7 @@ class MicroEntryEngine:
                     if drop_code in {
                         "R_SLOT_TOTAL_MAX",
                         "R_SLOT_INTRADAY_MAX",
-                        "R_SLOT_SINGLE_LEG_MAX",
+                        "R_SLOT_SINGLE_LEG_MAX",  # V12.15: no longer emitted, kept for compat
                         "R_COOLDOWN_INTRADAY",
                         "R_MARGIN_CB_ACTIVE",
                     }:

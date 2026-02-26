@@ -1284,32 +1284,59 @@ class OptionsEngine:
         except Exception:
             pass
 
+    def _get_effective_total_cap(self) -> int:
+        """V12.15: Compute effective total position cap.
+
+        Default: returns OPTIONS_MAX_TOTAL_POSITIONS (7).
+        When OPTIONS_REGIME_ADAPTIVE_TOTAL_CAP_ENABLED is True, adapts using
+        regime score (REGIME_NEUTRAL, REGIME_DEFENSIVE thresholds), transition
+        overlay (DETERIORATION/AMBIGUOUS), and fast stress overlay (STRESS/EARLY_STRESS).
+        """
+        base = int(getattr(config, "OPTIONS_MAX_TOTAL_POSITIONS", 7))
+        if not bool(getattr(config, "OPTIONS_REGIME_ADAPTIVE_TOTAL_CAP_ENABLED", False)):
+            return base
+
+        # Fast stress overlay (VIX-based: STRESS, EARLY_STRESS, RECOVERY, NORMAL)
+        smoothed_vix = self._iv_sensor.get_smoothed_vix()
+        fast_overlay = self.get_regime_overlay_state(vix_current=smoothed_vix)
+        if fast_overlay == "STRESS":
+            return int(getattr(config, "OPTIONS_TOTAL_CAP_DETERIORATION", 3))
+
+        # Transition overlay (regime engine: DETERIORATION, AMBIGUOUS, STABLE, RECOVERY)
+        ctx = self._get_regime_transition_context()
+        score = float(ctx.get("effective_score", ctx.get("transition_score", 50)) or 50)
+        overlay = str(ctx.get("transition_overlay", "") or "").upper()
+
+        if overlay in ("DETERIORATION", "AMBIGUOUS"):
+            return int(getattr(config, "OPTIONS_TOTAL_CAP_DETERIORATION", 3))
+
+        # EARLY_STRESS: cap at neutral level (between full and deterioration)
+        if fast_overlay == "EARLY_STRESS":
+            return int(getattr(config, "OPTIONS_TOTAL_CAP_NEUTRAL", 5))
+
+        neutral = float(getattr(config, "REGIME_NEUTRAL", 50))
+        defensive = float(getattr(config, "REGIME_DEFENSIVE", 35))
+
+        if score >= neutral:
+            return int(getattr(config, "OPTIONS_TOTAL_CAP_BULLISH", base))
+        if score >= defensive:
+            return int(getattr(config, "OPTIONS_TOTAL_CAP_NEUTRAL", 5))
+        return int(getattr(config, "OPTIONS_TOTAL_CAP_BEARISH", 4))
+
     def can_enter_single_leg(self) -> Tuple[bool, str]:
+        """V12.15: Portfolio-level slot gate for single-leg entries.
+
+        Lane-level caps (ITM_MAX_CONCURRENT_POSITIONS, MICRO_MAX_CONCURRENT_POSITIONS)
+        are enforced in preflight_intraday_entry() / validate_lane_caps().
+        This method checks the portfolio total cap (regime-adaptive when enabled).
         """
-        Check if a new single-leg options entry is allowed.
+        _, _, total_count = self.count_options_positions()
+        effective_cap = self._get_effective_total_cap()
 
-        Note:
-            This is the canonical slot gate for MICRO/ITM single-leg lanes.
-            `can_enter_intraday()` remains as a backward-compatible alias.
-
-        Returns:
-            Tuple of (allowed, reason)
-        """
-        intraday_count, _, total_count = self.count_options_positions()
-
-        if total_count >= config.OPTIONS_MAX_TOTAL_POSITIONS:
+        if total_count >= effective_cap:
             return (
                 False,
-                f"R_SLOT_TOTAL_MAX: {total_count} >= {config.OPTIONS_MAX_TOTAL_POSITIONS}",
-            )
-
-        single_leg_cap = int(
-            getattr(config, "SINGLE_LEG_MAX_POSITIONS", config.OPTIONS_MAX_INTRADAY_POSITIONS)
-        )
-        if intraday_count >= single_leg_cap:
-            return (
-                False,
-                f"R_SLOT_SINGLE_LEG_MAX: {intraday_count} >= {single_leg_cap}",
+                f"R_SLOT_TOTAL_MAX: {total_count} >= {effective_cap}",
             )
 
         return True, "R_OK"
