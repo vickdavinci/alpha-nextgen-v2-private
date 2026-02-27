@@ -38,7 +38,8 @@ def check_exit_signals_impl(
     symbol = pos.contract.symbol
     symbol_str = self._symbol_str(symbol)
     entry_price = pos.entry_price
-    is_intraday_pos = self._find_engine_lane_by_symbol(symbol_str) is not None
+    engine_lane = self._find_engine_lane_by_symbol(symbol_str)
+    is_intraday_pos = engine_lane is not None
 
     if is_intraday_pos and self.has_pending_engine_exit(symbol=symbol_str):
         return None
@@ -46,6 +47,7 @@ def check_exit_signals_impl(
     # Calculate P&L percentage
     pnl_pct = (current_price - entry_price) / entry_price
     strategy_name = self._canonical_engine_strategy_name(getattr(pos, "entry_strategy", ""))
+    requested_quantity = max(1, int(getattr(pos, "num_contracts", 1)))
     held_minutes: Optional[float] = None
     if is_intraday_pos and self.algorithm is not None and hasattr(self.algorithm, "Time"):
         try:
@@ -55,6 +57,32 @@ def check_exit_signals_impl(
             held_minutes = (self.algorithm.Time - entry_dt).total_seconds() / 60.0
         except Exception:
             held_minutes = None
+
+    def _build_exit_signal(reason: str) -> TargetWeight:
+        source = "OPT"
+        metadata = {}
+        if is_intraday_pos:
+            lane = str(engine_lane or "").strip().upper()
+            if lane not in {"ITM", "MICRO"}:
+                lane = "ITM" if self._is_itm_momentum_strategy_name(strategy_name) else "MICRO"
+            strategy = str(strategy_name or IntradayStrategy.NO_TRADE.value).strip().upper()
+            if not strategy:
+                strategy = IntradayStrategy.NO_TRADE.value
+            source = "OPT_INTRADAY"
+            metadata = {
+                "options_lane": lane,
+                "options_strategy": strategy,
+            }
+
+        return TargetWeight(
+            symbol=symbol_str,
+            target_weight=0.0,
+            source=source,
+            urgency=Urgency.IMMEDIATE,
+            reason=reason,
+            requested_quantity=requested_quantity,
+            metadata=metadata,
+        )
 
     # Exit 0: Stagnation timer for MICRO intraday strategies.
     # If the trade stays near-flat for too long, exit before theta/chop bleeds it out.
@@ -78,14 +106,7 @@ def check_exit_signals_impl(
                 f"(Held={held_minutes:.0f}m, FlatBand=+/-{flat_band:.0%})"
             )
             self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
-            return TargetWeight(
-                symbol=symbol_str,
-                target_weight=0.0,
-                source="OPT",
-                urgency=Urgency.IMMEDIATE,
-                reason=reason,
-                requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
-            )
+            return _build_exit_signal(reason)
 
     # Exit 1: Profit target hit (+50%)
     if current_price >= pos.target_price:
@@ -93,14 +114,7 @@ def check_exit_signals_impl(
             return None
         reason = f"TARGET_HIT +{pnl_pct:.1%} (Price: ${current_price:.2f})"
         self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
-        return TargetWeight(
-            symbol=symbol_str,
-            target_weight=0.0,
-            source="OPT",
-            urgency=Urgency.IMMEDIATE,
-            reason=reason,
-            requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
-        )
+        return _build_exit_signal(reason)
 
     # ITM_ENGINE anti-roundtrip floor: once meaningful MFE is reached, ratchet stop floor.
     if self._is_itm_momentum_strategy_name(getattr(pos, "entry_strategy", "")):
@@ -138,14 +152,7 @@ def check_exit_signals_impl(
                     f"P&L={pnl_pct:+.1%}"
                 )
                 self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
-                return TargetWeight(
-                    symbol=symbol_str,
-                    target_weight=0.0,
-                    source="OPT",
-                    urgency=Urgency.IMMEDIATE,
-                    reason=reason,
-                    requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
-                )
+                return _build_exit_signal(reason)
 
     # Exit 1.5: Strategy-aware trailing stop for intraday strategies
     if pos.entry_strategy and pos.entry_strategy.upper() != "PROTECTIVE_PUTS":
@@ -171,14 +178,7 @@ def check_exit_signals_impl(
                         f"Trail=${pos.stop_price:.2f})"
                     )
                     self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
-                    return TargetWeight(
-                        symbol=symbol_str,
-                        target_weight=0.0,
-                        source="OPT",
-                        urgency=Urgency.IMMEDIATE,
-                        reason=reason,
-                        requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
-                    )
+                    return _build_exit_signal(reason)
 
     # Exit 2: Stop hit
     if current_price <= pos.stop_price:
@@ -186,14 +186,7 @@ def check_exit_signals_impl(
             return None
         reason = f"STOP_HIT {pnl_pct:.1%} (Price: ${current_price:.2f})"
         self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
-        return TargetWeight(
-            symbol=symbol_str,
-            target_weight=0.0,
-            source="OPT",
-            urgency=Urgency.IMMEDIATE,
-            reason=reason,
-            requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
-        )
+        return _build_exit_signal(reason)
 
     # OTM momentum theta guard: exit stale 0-1DTE trades that fail to reach a healthy cushion.
     if (
@@ -302,14 +295,7 @@ def check_exit_signals_impl(
                 f"Exempt>={profit_exempt:.0%})"
             )
             self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
-            return TargetWeight(
-                symbol=symbol_str,
-                target_weight=0.0,
-                source="OPT",
-                urgency=Urgency.IMMEDIATE,
-                reason=reason,
-                requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
-            )
+            return _build_exit_signal(reason)
 
     # DEBIT_FADE theta guard: mean-reversion trades should resolve quickly.
     if (
@@ -328,14 +314,7 @@ def check_exit_signals_impl(
                 f"Exempt>={profit_exempt:.0%})"
             )
             self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
-            return TargetWeight(
-                symbol=symbol_str,
-                target_weight=0.0,
-                source="OPT",
-                urgency=Urgency.IMMEDIATE,
-                reason=reason,
-                requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
-            )
+            return _build_exit_signal(reason)
 
     # ITM_ENGINE max-hold guard (calendar-based safety cap, V12.13: ADX-adaptive).
     if self._itm_horizon_engine.enabled() and self._is_itm_momentum_strategy_name(
@@ -373,14 +352,7 @@ def check_exit_signals_impl(
                     return None
                 reason = f"ITM_ENGINE_MAX_HOLD ({held_days}d >= {max_hold_days}d) P&L={pnl_pct:.1%}"
                 self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
-                return TargetWeight(
-                    symbol=symbol_str,
-                    target_weight=0.0,
-                    source="OPT",
-                    urgency=Urgency.IMMEDIATE,
-                    reason=reason,
-                    requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
-                )
+                return _build_exit_signal(reason)
 
     # V2.3.10: Exit 3 - DTE exit (prevent expiration/exercise)
     # Close single-leg options before expiration to avoid:
@@ -409,13 +381,6 @@ def check_exit_signals_impl(
             return None
         reason = f"DTE_EXIT ({current_dte} DTE <= {dte_exit_threshold}) P&L={pnl_pct:.1%}"
         self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
-        return TargetWeight(
-            symbol=symbol_str,
-            target_weight=0.0,
-            source="OPT",
-            urgency=Urgency.IMMEDIATE,
-            reason=reason,
-            requested_quantity=max(1, int(getattr(pos, "num_contracts", 1))),
-        )
+        return _build_exit_signal(reason)
 
     return None

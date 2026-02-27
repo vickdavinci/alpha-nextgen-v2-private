@@ -427,6 +427,76 @@ class TestCalculateOrderIntents:
 
         assert len(orders) == 0
 
+    def test_option_close_opt_source_infers_intraday_lane_tag(self):
+        """Single-leg close with OPT source and missing metadata should infer ITM/MICRO lane."""
+        option_symbol = "QQQ 260130C00500000"
+        holding = MagicMock()
+        holding.Symbol = option_symbol
+        holding.Quantity = 4
+        kvp = MagicMock()
+        kvp.Value = holding
+
+        mock_algo = MagicMock()
+        mock_algo.Portfolio = [kvp]
+        mock_algo.options_engine = MagicMock()
+        mock_algo.options_engine.find_engine_lane_by_symbol.return_value = "ITM"
+
+        router = PortfolioRouter(algorithm=mock_algo)
+        aggregated = {
+            option_symbol: AggregatedWeight(
+                option_symbol,
+                0.0,
+                ["OPT"],
+                Urgency.IMMEDIATE,
+                ["INTRADAY_FORCE_EXIT"],
+            )
+        }
+        orders = router.calculate_order_intents(
+            aggregated=aggregated,
+            tradeable_equity=100000.0,
+            current_positions={option_symbol: 1000.0},
+            current_prices={option_symbol: 2.5},
+        )
+
+        assert len(orders) == 1
+        assert orders[0].tag == "ITM:UNCLASSIFIED"
+        assert not orders[0].tag.startswith("VASS:")
+
+    def test_option_close_with_vass_metadata_keeps_vass_tag(self):
+        """VASS closes with explicit spread metadata should not be relabeled to intraday lanes."""
+        option_symbol = "QQQ 260130C00510000"
+        holding = MagicMock()
+        holding.Symbol = option_symbol
+        holding.Quantity = 2
+        kvp = MagicMock()
+        kvp.Value = holding
+
+        mock_algo = MagicMock()
+        mock_algo.Portfolio = [kvp]
+        mock_algo.options_engine = MagicMock()
+        mock_algo.options_engine.find_engine_lane_by_symbol.return_value = "MICRO"
+
+        router = PortfolioRouter(algorithm=mock_algo)
+        aggregated = {
+            option_symbol: AggregatedWeight(
+                option_symbol,
+                0.0,
+                ["OPT"],
+                Urgency.IMMEDIATE,
+                ["spread close"],
+                metadata={"vass_strategy": "BULL_CALL_DEBIT"},
+            )
+        }
+        orders = router.calculate_order_intents(
+            aggregated=aggregated,
+            tradeable_equity=100000.0,
+            current_positions={option_symbol: 500.0},
+            current_prices={option_symbol: 2.5},
+        )
+
+        assert len(orders) == 1
+        assert orders[0].tag == "VASS:BULL_CALL_DEBIT"
+
 
 class TestPrioritize:
     """Tests for Step 5: Prioritize."""

@@ -2061,6 +2061,7 @@ class PortfolioRouter:
         self,
         metadata: Optional[Dict[str, Any]],
         sources: Optional[List[str]] = None,
+        symbol: Optional[str] = None,
     ) -> Tuple[str, str]:
         """Derive source tag and trace id for diagnostics."""
         source_tag = ""
@@ -2082,8 +2083,42 @@ class PortfolioRouter:
             if "OPT_INTRADAY" in sources:
                 source_tag = "OPT_INTRADAY"
             elif "OPT" in sources:
-                source_tag = "VASS"
+                inferred_lane = self._infer_options_lane_from_symbol(symbol)
+                source_tag = inferred_lane if inferred_lane else "VASS"
         return source_tag, trace_id
+
+    def _infer_options_lane_from_symbol(self, symbol: Optional[str]) -> str:
+        """
+        Infer intraday options lane from live engine position tracking.
+
+        Returns:
+            "ITM" or "MICRO" when the symbol is currently tracked in that lane,
+            otherwise empty string.
+        """
+        symbol_key = self._normalize_symbol_key(symbol)
+        if not symbol_key or self.algorithm is None:
+            return ""
+        options_engine = getattr(self.algorithm, "options_engine", None)
+        if options_engine is None:
+            return ""
+
+        lane: str = ""
+        lookup = getattr(options_engine, "find_engine_lane_by_symbol", None)
+        if callable(lookup):
+            try:
+                lane = str(lookup(symbol_key) or "").strip().upper()
+            except Exception:
+                lane = ""
+
+        if not lane:
+            legacy_lookup = getattr(options_engine, "_find_engine_lane_by_symbol", None)
+            if callable(legacy_lookup):
+                try:
+                    lane = str(legacy_lookup(symbol_key) or "").strip().upper()
+                except Exception:
+                    lane = ""
+
+        return lane if lane in {"ITM", "MICRO"} else ""
 
     def _extract_options_lane_and_strategy(
         self,
@@ -2508,7 +2543,7 @@ class PortfolioRouter:
 
         for agg_key, agg in aggregated.items():
             symbol = agg.symbol
-            source_tag, trace_id = self._extract_trace_context(agg.metadata, agg.sources)
+            source_tag, trace_id = self._extract_trace_context(agg.metadata, agg.sources, symbol)
             # Skip if no price available
             if symbol not in current_prices or current_prices[symbol] <= 0:
                 # V2.24: Failsafe — use metadata price for options entries
@@ -2780,15 +2815,36 @@ class PortfolioRouter:
                     else:
                         tag = "MICRO:UNCLASSIFIED"
                 elif any(s == "OPT" for s in agg.sources):
+                    inferred_intraday_lane = ""
+                    inferred_intraday_strategy = ""
+                    if agg.metadata:
+                        (
+                            inferred_intraday_lane,
+                            inferred_intraday_strategy,
+                        ) = self._extract_options_lane_and_strategy(agg.metadata)
+
                     vass_strategy = None
                     spread_type = None
                     if agg.metadata:
                         vass_strategy = agg.metadata.get("vass_strategy")
                         spread_type = agg.metadata.get("spread_type")
-                    vass_tag_value = str(
-                        vass_strategy or spread_type or source_tag or "VASS_UNCLASSIFIED"
+                    has_vass_metadata = bool(
+                        vass_strategy
+                        or spread_type
+                        or (agg.metadata and agg.metadata.get("spread_close_short"))
                     )
-                    tag = f"VASS:{vass_tag_value}"
+                    if not has_vass_metadata and is_closing:
+                        if not inferred_intraday_lane:
+                            inferred_intraday_lane = self._infer_options_lane_from_symbol(symbol)
+                        if inferred_intraday_lane in {"ITM", "MICRO"}:
+                            strategy_tag = inferred_intraday_strategy or "UNCLASSIFIED"
+                            tag = f"{inferred_intraday_lane}:{strategy_tag}"
+
+                    if not tag:
+                        vass_tag_value = str(
+                            vass_strategy or spread_type or source_tag or "VASS_UNCLASSIFIED"
+                        )
+                        tag = f"VASS:{vass_tag_value}"
 
             # Fallback for non-option paths or missing metadata.
             if not tag:
@@ -2962,7 +3018,7 @@ class PortfolioRouter:
             self.log("ROUTER: NO_ALGORITHM | Cannot execute orders")
             for order in orders:
                 source_tag, trace_id = self._extract_trace_context(
-                    order.metadata, [order.tag] if order.tag else None
+                    order.metadata, [order.tag] if order.tag else None, order.symbol
                 )
                 self._record_rejection(
                     code="R_NO_ALGORITHM",
@@ -2979,7 +3035,7 @@ class PortfolioRouter:
             self.log("ROUTER: BLOCKED | Risk engine NO-GO status")
             for order in orders:
                 source_tag, trace_id = self._extract_trace_context(
-                    order.metadata, [order.tag] if order.tag else None
+                    order.metadata, [order.tag] if order.tag else None, order.symbol
                 )
                 self._record_rejection(
                     code="R_RISK_ENGINE_NOGO",
@@ -3007,7 +3063,7 @@ class PortfolioRouter:
                             )
                             for order in orders:
                                 source_tag, trace_id = self._extract_trace_context(
-                                    order.metadata, [order.tag] if order.tag else None
+                                    order.metadata, [order.tag] if order.tag else None, order.symbol
                                 )
                                 self._record_rejection(
                                     code="R_MARGIN_COOLDOWN",
@@ -3036,7 +3092,7 @@ class PortfolioRouter:
 
         for order in orders:
             source_tag, trace_id = self._extract_trace_context(
-                order.metadata, [order.tag] if order.tag else None
+                order.metadata, [order.tag] if order.tag else None, order.symbol
             )
             if not source_tag and order.tag:
                 source_tag = order.tag

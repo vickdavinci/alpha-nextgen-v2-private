@@ -704,6 +704,29 @@ class TestExitSignals:
         assert "STOP_HIT" in result.reason
         assert result.target_weight == 0.0
 
+    def test_intraday_exit_uses_opt_intraday_and_lane_metadata(self, sample_contract):
+        """Intraday lane exits must carry OPT_INTRADAY source and lane metadata."""
+        engine = OptionsEngine(algorithm=None)
+        engine._pending_contract = sample_contract
+        engine._pending_entry_score = 3.5
+        engine._pending_num_contracts = 2
+        engine._pending_stop_pct = 0.25
+        engine._pending_strategy = IntradayStrategy.ITM_MOMENTUM.value
+        engine.register_entry(
+            fill_price=1.45,
+            entry_time="10:30:00",
+            current_date="2026-01-26",
+        )
+        assert engine._position is not None
+        engine._position.entry_strategy = IntradayStrategy.ITM_MOMENTUM.value
+        engine._intraday_positions["ITM"] = [engine._position]
+
+        result = engine.check_exit_signals(current_price=2.40)
+        assert result is not None
+        assert result.source == "OPT_INTRADAY"
+        assert result.metadata.get("options_lane") == "ITM"
+        assert result.metadata.get("options_strategy") == IntradayStrategy.ITM_MOMENTUM.value
+
     def test_no_exit_price_in_range(self, engine_with_position):
         """Test no exit when price between stop and target."""
         result = engine_with_position.check_exit_signals(current_price=1.50)
