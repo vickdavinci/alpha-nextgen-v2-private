@@ -7,7 +7,7 @@ from models.enums import IntradayStrategy, MicroRegime, OptionDirection, Options
 from models.target_weight import TargetWeight
 
 
-def check_intraday_entry_signal_impl(
+def check_engine_entry_signal_impl(
     self,
     vix_current: float,
     vix_open: float,

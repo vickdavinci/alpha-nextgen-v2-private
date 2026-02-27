@@ -385,7 +385,7 @@ def remove_position_impl(self, symbol: Optional[str] = None) -> Optional[Options
     return position
 
 
-def remove_intraday_position_impl(
+def remove_engine_position_impl(
     self, symbol: Optional[str] = None, engine: Optional[str] = None
 ) -> Optional[OptionsPosition]:
     """
@@ -581,7 +581,7 @@ def clear_all_positions_impl(self) -> None:
         )
 
 
-def record_intraday_result_impl(
+def record_engine_result_impl(
     self,
     symbol: str,
     is_win: bool,

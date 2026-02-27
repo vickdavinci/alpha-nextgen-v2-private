@@ -6,7 +6,7 @@ import config
 from models.enums import IntradayStrategy
 
 
-def get_intraday_exit_profile_impl(
+def get_engine_exit_profile_impl(
     self, entry_strategy: str, direction: Optional[str] = None
 ) -> Tuple[float, Optional[float]]:
     """Return (target_pct, stop_pct_override) for strategy-aware intraday exits."""
@@ -151,7 +151,7 @@ def get_intraday_exit_profile_impl(
     return (float(getattr(config, "OPTIONS_PROFIT_TARGET_PCT", 0.60)), None)
 
 
-def apply_intraday_target_overrides_impl(
+def apply_engine_target_overrides_impl(
     self,
     *,
     entry_strategy: str,
@@ -166,7 +166,7 @@ def apply_intraday_target_overrides_impl(
     return float(target_pct)
 
 
-def apply_intraday_stop_overrides_impl(
+def apply_engine_stop_overrides_impl(
     self,
     *,
     entry_strategy: str,

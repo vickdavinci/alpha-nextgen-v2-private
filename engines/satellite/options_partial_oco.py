@@ -43,13 +43,6 @@ def get_engine_partial_fill_oco_seed_impl(
     return self.get_pending_engine_partial_oco_seed(symbol=symbol_norm, fill_price=fill_price)
 
 
-def get_intraday_partial_fill_oco_seed_impl(
-    self, symbol: str, fill_price: float
-) -> Optional[Dict[str, Any]]:
-    """Backward-compatible alias for engine partial-fill OCO seed."""
-    return get_engine_partial_fill_oco_seed_impl(self, symbol=symbol, fill_price=fill_price)
-
-
 def get_partial_fill_oco_seed_impl(
     self, symbol: str, fill_price: float, order_tag: Optional[str] = None
 ) -> Optional[Dict[str, Any]]:
@@ -180,10 +173,3 @@ def get_pending_engine_partial_oco_seed_impl(
         "target_price": entry_px * (1 + float(target_pct)),
         "entry_strategy": entry_strategy,
     }
-
-
-def get_pending_intraday_partial_oco_seed_impl(
-    self, symbol: str, fill_price: float
-) -> Optional[Dict[str, Any]]:
-    """Backward-compatible alias for pending engine partial OCO seed."""
-    return get_pending_engine_partial_oco_seed_impl(self, symbol=symbol, fill_price=fill_price)

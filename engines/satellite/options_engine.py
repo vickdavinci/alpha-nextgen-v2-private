@@ -43,9 +43,9 @@ if TYPE_CHECKING:
 import config
 from engines.core.risk_engine import GreeksSnapshot
 from engines.satellite.intraday_exit_profile import (
-    apply_intraday_stop_overrides_impl,
-    apply_intraday_target_overrides_impl,
-    get_intraday_exit_profile_impl,
+    apply_engine_stop_overrides_impl,
+    apply_engine_target_overrides_impl,
+    get_engine_exit_profile_impl,
     get_trail_config_impl,
 )
 from engines.satellite.itm_horizon_engine import ITMHorizonEngine
@@ -54,7 +54,7 @@ from engines.satellite.micro_entry_engine import MicroEntryEngine
 from engines.satellite.options_entry_evaluator import check_entry_signal_impl
 from engines.satellite.options_exit_evaluator import check_exit_signals_impl
 from engines.satellite.options_expiration_exit import check_expiring_options_force_exit_impl
-from engines.satellite.options_intraday_entry import check_intraday_entry_signal_impl
+from engines.satellite.options_intraday_entry import check_engine_entry_signal_impl
 from engines.satellite.options_micro_signal import generate_micro_engine_signal_impl
 from engines.satellite.options_partial_oco import (
     get_engine_partial_fill_oco_seed_impl,
@@ -76,10 +76,10 @@ from engines.satellite.options_pending_guard import (
 )
 from engines.satellite.options_position_manager import (
     clear_all_positions_impl,
-    record_intraday_result_impl,
+    record_engine_result_impl,
     register_entry_impl,
     register_spread_entry_impl,
-    remove_intraday_position_impl,
+    remove_engine_position_impl,
     remove_position_impl,
     remove_spread_position_impl,
 )
@@ -660,7 +660,7 @@ class OptionsEngine:
         strategy: Optional[str] = None,
     ) -> None:
         """Track MICRO directional loss streaks/cooldowns (ITM is sovereign)."""
-        record_intraday_result_impl(
+        record_engine_result_impl(
             self,
             symbol=symbol,
             is_win=is_win,
@@ -3068,7 +3068,7 @@ class OptionsEngine:
     def _get_engine_exit_profile(
         self, entry_strategy: str, direction: Optional[str] = None
     ) -> Tuple[float, Optional[float]]:
-        return get_intraday_exit_profile_impl(
+        return get_engine_exit_profile_impl(
             self,
             entry_strategy=entry_strategy,
             direction=direction,
@@ -3081,7 +3081,7 @@ class OptionsEngine:
         target_pct: float,
         current_dte: Optional[int],
     ) -> float:
-        return apply_intraday_target_overrides_impl(
+        return apply_engine_target_overrides_impl(
             self,
             entry_strategy=entry_strategy,
             target_pct=target_pct,
@@ -3095,7 +3095,7 @@ class OptionsEngine:
         stop_pct: float,
         current_dte: Optional[int],
     ) -> float:
-        return apply_intraday_stop_overrides_impl(
+        return apply_engine_stop_overrides_impl(
             self,
             entry_strategy=entry_strategy,
             stop_pct=stop_pct,
@@ -3759,7 +3759,7 @@ class OptionsEngine:
             forced_entry_strategy = strategy_override
         if regime_score is not None:
             macro_regime_score = float(regime_score)
-        return check_intraday_entry_signal_impl(
+        return check_engine_entry_signal_impl(
             self,
             vix_current=vix_current,
             vix_open=vix_open,
@@ -4208,7 +4208,7 @@ class OptionsEngine:
         Returns:
             Removed intraday position, or None if no position existed.
         """
-        return remove_intraday_position_impl(self, symbol=symbol, engine=engine)
+        return remove_engine_position_impl(self, symbol=symbol, engine=engine)
 
     # =========================================================================
     # V2.3 SPREAD POSITION MANAGEMENT
