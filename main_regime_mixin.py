@@ -613,7 +613,11 @@ class MainRegimeMixin:
                     urgency=Urgency.IMMEDIATE,
                     reason=f"TRANSITION_DERISK_{overlay}",
                     requested_quantity=live_qty,
-                    metadata={"intraday_strategy": str(strategy_name or "UNKNOWN")},
+                    metadata={
+                        "intraday_strategy": str(strategy_name or "UNKNOWN"),
+                        "intraday_lane": str(engine_bucket or "MICRO"),
+                        "transition_overlay": str(overlay or ""),
+                    },
                 )
             )
             self._record_transition_derisk_action(action_key, engine_bucket)

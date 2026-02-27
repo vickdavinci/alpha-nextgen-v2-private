@@ -594,6 +594,7 @@ class MainPremarketMixin:
                     requested_quantity=live_qty,
                     metadata={
                         "intraday_strategy": "ITM_MOMENTUM",
+                        "intraday_lane": "ITM",
                         "weekend_guard": "POST_GAP",
                     },
                 )

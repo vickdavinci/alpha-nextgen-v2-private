@@ -3886,6 +3886,13 @@ class OptionsEngine:
         if not self.mark_pending_intraday_exit(symbol_str):
             return None
 
+        strategy_name = self._canonical_intraday_strategy_name(
+            getattr(position, "entry_strategy", "")
+        )
+        lane_name = str(lane or self._intraday_engine_lane_from_strategy(strategy_name)).upper()
+        if lane_name not in {"ITM", "MICRO"}:
+            lane_name = "MICRO"
+
         return TargetWeight(
             symbol=self._symbol_str(symbol),
             target_weight=0.0,
@@ -3893,6 +3900,11 @@ class OptionsEngine:
             urgency=Urgency.IMMEDIATE,
             reason=reason,
             requested_quantity=num_contracts,
+            metadata={
+                "intraday_strategy": strategy_name or IntradayStrategy.NO_TRADE.value,
+                "intraday_lane": lane_name,
+                "intraday_exit_code": f"INTRADAY_TIME_EXIT_{force_hh:02d}{force_mm:02d}",
+            },
         )
 
     def check_gamma_pin_exit(
