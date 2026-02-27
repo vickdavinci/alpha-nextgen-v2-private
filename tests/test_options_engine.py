@@ -1756,7 +1756,7 @@ class TestDualModeArchitecture:
         engine._refresh_legacy_intraday_mirrors()
 
         # Try to enter again
-        result = engine.check_intraday_entry_signal(
+        result = engine.check_engine_entry_signal(
             vix_current=18.0,
             vix_open=17.0,
             qqq_current=450.0,
@@ -1862,7 +1862,7 @@ class TestIntradayForceExit:
 
     def test_intraday_force_exit_at_1515(self, engine_with_intraday_position):
         """Test intraday force exit at configured INTRADAY_FORCE_EXIT_TIME (15:15)."""
-        result = engine_with_intraday_position.check_intraday_force_exit(
+        result = engine_with_intraday_position.check_engine_force_exit(
             current_hour=15,
             current_minute=15,
             current_price=1.10,
@@ -1874,7 +1874,7 @@ class TestIntradayForceExit:
 
     def test_intraday_force_exit_after_1515(self, engine_with_intraday_position):
         """Test intraday force exit after configured time (15:15)."""
-        result = engine_with_intraday_position.check_intraday_force_exit(
+        result = engine_with_intraday_position.check_engine_force_exit(
             current_hour=15,
             current_minute=30,
             current_price=1.10,
@@ -1885,7 +1885,7 @@ class TestIntradayForceExit:
 
     def test_no_intraday_force_exit_before_1515(self, engine_with_intraday_position):
         """Test no force exit before configured time (15:15)."""
-        result = engine_with_intraday_position.check_intraday_force_exit(
+        result = engine_with_intraday_position.check_engine_force_exit(
             current_hour=15,
             current_minute=14,
             current_price=1.10,
@@ -1896,7 +1896,7 @@ class TestIntradayForceExit:
     def test_no_intraday_force_exit_no_position(self):
         """Test no force exit when no intraday position."""
         engine = OptionsEngine()
-        result = engine.check_intraday_force_exit(
+        result = engine.check_engine_force_exit(
             current_hour=15,
             current_minute=30,
             current_price=1.10,
@@ -2839,7 +2839,7 @@ class TestIntradayLaneIsolation:
         engine._pending_num_contracts = None
         engine._pending_entry_strategy = None
 
-        result = engine.check_intraday_entry_signal(
+        result = engine.check_engine_entry_signal(
             vix_current=18.0,
             vix_open=17.0,
             qqq_current=450.0,
@@ -2897,7 +2897,7 @@ class TestIntradayLaneIsolation:
         ]
         engine._refresh_legacy_intraday_mirrors()
 
-        result = engine.check_intraday_entry_signal(
+        result = engine.check_engine_entry_signal(
             vix_current=18.0,
             vix_open=17.0,
             qqq_current=450.0,
@@ -2953,7 +2953,7 @@ class TestIntradayLaneIsolation:
         engine._refresh_legacy_intraday_mirrors()
 
         state = type("State", (), {"micro_regime": MicroRegime.GOOD_MR})()
-        ok, code, detail = engine.preflight_intraday_entry(
+        ok, code, detail = engine.preflight_engine_entry(
             strategy=IntradayStrategy.MICRO_OTM_MOMENTUM,
             direction=OptionDirection.CALL,
             state=state,
@@ -3248,7 +3248,7 @@ class TestIntradayForceExitTimeSource:
             scheduler = _Scheduler()
 
         engine = OptionsEngine(algorithm=_Algo())
-        hh, mm = engine._get_intraday_force_exit_hhmm()
+        hh, mm = engine._get_engine_force_exit_hhmm()
         assert (hh, mm) == (12, 15)
 
 
