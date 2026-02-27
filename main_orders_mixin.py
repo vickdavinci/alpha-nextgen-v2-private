@@ -1039,10 +1039,15 @@ class MainOrdersMixin:
                 except Exception:
                     is_close_side = False
                 if is_close_side:
+                    _eb = self._infer_option_engine_bucket_for_symbol(
+                        symbol=failed_symbol,
+                        tag_hint=(invalid_tag or ""),
+                    )
                     self._pending_exit_orders[failed_symbol] = ExitOrderTracker(
                         symbol=failed_symbol,
                         order_id=int(orderEvent.OrderId),
                         reason=(invalid_tag or "INVALID_CLOSE"),
+                        engine_bucket=_eb,
                     )
 
             if failed_symbol in self._pending_exit_orders:
@@ -1152,10 +1157,15 @@ class MainOrdersMixin:
                 if is_close_side and not canceled_terminal_retry:
                     tracker = self._pending_exit_orders.get(canceled_symbol)
                     if tracker is None:
+                        _eb = self._infer_option_engine_bucket_for_symbol(
+                            symbol=canceled_symbol,
+                            tag_hint=(canceled_tag or ""),
+                        )
                         tracker = ExitOrderTracker(
                             symbol=canceled_symbol,
                             order_id=int(orderEvent.OrderId),
                             reason=(canceled_tag or "CANCELED_CLOSE"),
+                            engine_bucket=_eb,
                         )
                         self._pending_exit_orders[canceled_symbol] = tracker
                     if tracker.should_retry(config.EXIT_ORDER_RETRY_COUNT):
@@ -1522,6 +1532,7 @@ class MainOrdersMixin:
                     symbol=broker_symbol,
                     quantity=-qty,
                     reason=f"RETRY_{tracker.reason}",
+                    engine_hint=str(getattr(tracker, "engine_bucket", "") or ""),
                     tag_hint=str(getattr(tracker, "reason", "") or ""),
                 )
                 try:

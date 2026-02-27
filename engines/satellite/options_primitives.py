@@ -449,6 +449,7 @@ class ExitOrderTracker:
     last_attempt_time: Optional[str] = None
     reason: str = ""
     spread_id: Optional[str] = None  # Link to spread position
+    engine_bucket: str = ""  # V12.19: Preserve engine attribution for retry tagging
 
     def should_retry(self, max_retries: int = 3) -> bool:
         """Check if another retry is allowed."""
