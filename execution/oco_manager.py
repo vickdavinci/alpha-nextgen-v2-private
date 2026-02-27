@@ -490,6 +490,12 @@ class OCOManager:
 
         if pair is None:
             return None
+        if pair.state != OCOState.ACTIVE:
+            self.log(
+                f"OCO: STALE_FILL_IGNORED {oco_id} | State={pair.state.value} | "
+                f"OrderId={broker_order_id}"
+            )
+            return None
 
         # Determine which leg filled
         if pair.stop_leg.broker_order_id == broker_order_id:

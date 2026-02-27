@@ -480,3 +480,21 @@ class TestOCOEdgeCases:
         # Try to cancel - should fail since already closed
         result = manager.cancel_oco_pair(active_pair.oco_id, "MANUAL")
         assert result is False
+
+    def test_stale_fill_ignored_when_pair_not_active(self, manager, active_pair):
+        """Duplicate/stale fills should be ignored for non-active OCO states."""
+        # Simulate stale broker callback after pair has already transitioned.
+        stale_order_id = active_pair.stop_leg.broker_order_id
+        active_pair.state = OCOState.CLOSED
+        manager._active_pairs[active_pair.oco_id] = active_pair
+        manager._order_to_oco[stale_order_id] = active_pair.oco_id
+
+        result = manager.on_order_fill(
+            broker_order_id=stale_order_id,
+            fill_price=1.00,
+            fill_quantity=-27,
+            fill_time="11:01:00",
+        )
+
+        assert result is None
+        assert active_pair.state == OCOState.CLOSED
