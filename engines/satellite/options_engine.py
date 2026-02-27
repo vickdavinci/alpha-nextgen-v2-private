@@ -249,13 +249,7 @@ class OptionsEngine:
         self._rejection_margin_cap: Optional[float] = None
         self._swing_time_warning_logged: bool = False
 
-        # V2.3.21: Spread scan throttle - only attempt every 15 minutes to reduce log noise
-        self._last_spread_scan_time: Optional[str] = None
-
-        # V2.4.3: Spread FAILURE cooldown - don't retry for 4 hours after construction fails
-        # Prevents 340+ retries when no valid contracts exist
-        self._spread_failure_cooldown_until: Optional[str] = None
-        self._spread_failure_cooldown_until_by_dir: dict = {}
+        # V12.20: VASS spread scan/cooldown mutable state moved to VASSEntryEngine.
         self._last_spread_failure_stats: Optional[str] = None
         self._last_credit_failure_stats: Optional[str] = None
         self._last_entry_validation_failure: Optional[str] = None
@@ -1051,9 +1045,10 @@ class OptionsEngine:
             return
         until_dt = self.algorithm.Time + timedelta(minutes=max(0, int(minutes)))
         until_text = until_dt.strftime("%Y-%m-%d %H:%M:%S")
-        if not hasattr(self, "_spread_failure_cooldown_until_by_dir"):
-            self._spread_failure_cooldown_until_by_dir = {}
-        self._spread_failure_cooldown_until_by_dir[key] = until_text
+        self._vass_entry_engine.set_directional_spread_cooldown(
+            cooldown_key=key,
+            until_text=until_text,
+        )
         self.log(
             f"SPREAD_COOLDOWN_SET: {reason} | Key={key} | Minutes={int(minutes)} | Until={until_text}",
             trades_only=True,
@@ -1514,7 +1509,7 @@ class OptionsEngine:
         )
 
         # Fast stress overlay (VIX-based: STRESS, EARLY_STRESS, RECOVERY, NORMAL)
-        smoothed_vix = self._iv_sensor.get_smoothed_vix()
+        smoothed_vix = self.get_smoothed_vix()
         fast_overlay = self.get_regime_overlay_state(vix_current=smoothed_vix)
         if fast_overlay == "STRESS":
             return deterioration_cap
@@ -2073,36 +2068,10 @@ class OptionsEngine:
             current_time: Current timestamp in "YYYY-MM-DD HH:MM:SS" format.
             direction: Optional direction label to scope cooldown (CALL/PUT).
         """
-        if not current_time:
-            return
-
-        try:
-            from datetime import datetime, timedelta
-
-            now_dt = datetime.strptime(current_time[:19], "%Y-%m-%d %H:%M:%S")
-            cooldown_minutes = int(
-                getattr(
-                    config,
-                    "SPREAD_FAILURE_COOLDOWN_MINUTES",
-                    int(getattr(config, "SPREAD_FAILURE_COOLDOWN_HOURS", 1) * 60),
-                )
-            )
-            cooldown_until_dt = now_dt + timedelta(minutes=max(cooldown_minutes, 0))
-            cooldown_until = cooldown_until_dt.strftime("%Y-%m-%d %H:%M:%S")
-
-            # V6.12: Direction-scoped cooldown (CALL failure doesn't block PUT)
-            if direction:
-                if not hasattr(self, "_spread_failure_cooldown_until_by_dir"):
-                    self._spread_failure_cooldown_until_by_dir = {}
-                dir_key = direction.value if hasattr(direction, "value") else str(direction)
-                self._spread_failure_cooldown_until_by_dir[str(dir_key).upper()] = cooldown_until
-            else:
-                self._spread_failure_cooldown_until = cooldown_until
-            self.log(
-                f"SPREAD: Construction failed - entering {cooldown_minutes}m cooldown until {cooldown_until}"
-            )
-        except (ValueError, IndexError) as e:
-            self.log(f"SPREAD: Failed to set cooldown: {e}")
+        self._vass_entry_engine.set_spread_failure_cooldown(
+            current_time=current_time,
+            direction=direction,
+        )
 
     # =========================================================================
     # ENTRY SCORE CALCULATION
@@ -2532,11 +2501,18 @@ class OptionsEngine:
         self._last_trade_limit_detail = None
         return reason, detail
 
+    def get_smoothed_vix(self) -> float:
+        """Expose smoothed VIX to sub-engines without leaking sensor internals."""
+        try:
+            return float(self._iv_sensor.get_smoothed_vix())
+        except Exception:
+            return 0.0
+
     def _get_effective_credit_min(self, vix_current: Optional[float] = None) -> float:
         """
         Return IV-adaptive credit floor used consistently by selection and entry validation.
         """
-        smoothed_vix = self._iv_sensor.get_smoothed_vix()
+        smoothed_vix = self.get_smoothed_vix()
         if vix_current is not None:
             try:
                 smoothed_vix = max(smoothed_vix, float(vix_current))
@@ -2554,7 +2530,7 @@ class OptionsEngine:
         - VIX 20-30: 32% (moderate IV, slight relaxation)
         - VIX < 20: 35% (low IV, strict quality gate)
         """
-        smoothed_vix = self._iv_sensor.get_smoothed_vix()
+        smoothed_vix = self.get_smoothed_vix()
         if vix_current is not None:
             try:
                 smoothed_vix = max(smoothed_vix, float(vix_current))
@@ -2622,7 +2598,7 @@ class OptionsEngine:
         low_min = widths["width_min_low_vix"]
         low_threshold = float(getattr(config, "SPREAD_WIDTH_LOW_VIX_THRESHOLD", 18.0))
 
-        smoothed_vix = self._iv_sensor.get_smoothed_vix()
+        smoothed_vix = self.get_smoothed_vix()
         if vix_current is not None:
             try:
                 smoothed_vix = max(smoothed_vix, float(vix_current))

@@ -179,11 +179,6 @@ def get_state_for_persistence_impl(self) -> Dict[str, Any]:
         "spy_gap_pct": self._spy_gap_pct,
         # Runtime guard/cooldown state (restart-safe)
         "rejection_margin_cap": self._rejection_margin_cap,
-        "spread_failure_cooldown_until": self._spread_failure_cooldown_until,
-        "spread_failure_cooldown_until_by_dir": {
-            str(k.value if hasattr(k, "value") else k).upper(): str(v)
-            for k, v in self._spread_failure_cooldown_until_by_dir.items()
-        },
         "spread_exit_signal_cooldown": {
             k: v.strftime("%Y-%m-%d %H:%M:%S") for k, v in self._spread_exit_signal_cooldown.items()
         },
@@ -534,17 +529,6 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
     except Exception:
         self._rejection_margin_cap = None
 
-    raw_cooldown = state.get("spread_failure_cooldown_until")
-    self._spread_failure_cooldown_until = str(raw_cooldown) if raw_cooldown else None
-
-    raw_by_dir = state.get("spread_failure_cooldown_until_by_dir", {}) or {}
-    self._spread_failure_cooldown_until_by_dir = {}
-    if isinstance(raw_by_dir, dict):
-        for k, v in raw_by_dir.items():
-            key = str(k).upper()
-            if key in {"BULLISH", "BEARISH", "CALL", "PUT"} and v:
-                self._spread_failure_cooldown_until_by_dir[key] = str(v)
-
     self._spread_exit_signal_cooldown = {}
     for k, v in (state.get("spread_exit_signal_cooldown", {}) or {}).items():
         try:
@@ -580,6 +564,12 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
             or {},
             "consecutive_losses": state.get("vass_consecutive_losses", 0) or 0,
             "loss_breaker_pause_until": state.get("vass_loss_breaker_pause_until"),
+            "spread_failure_cooldown_until": state.get("spread_failure_cooldown_until"),
+            "spread_failure_cooldown_until_by_dir": state.get(
+                "spread_failure_cooldown_until_by_dir", {}
+            )
+            or {},
+            "last_spread_scan_time": state.get("last_spread_scan_time"),
         }
     else:
         # Preserve old top-level fields if present and embedded state lacks them.
@@ -587,6 +577,14 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
             vass_state["consecutive_losses"] = state.get("vass_consecutive_losses", 0) or 0
         if "loss_breaker_pause_until" not in vass_state:
             vass_state["loss_breaker_pause_until"] = state.get("vass_loss_breaker_pause_until")
+        if "spread_failure_cooldown_until" not in vass_state:
+            vass_state["spread_failure_cooldown_until"] = state.get("spread_failure_cooldown_until")
+        if "spread_failure_cooldown_until_by_dir" not in vass_state:
+            vass_state["spread_failure_cooldown_until_by_dir"] = (
+                state.get("spread_failure_cooldown_until_by_dir", {}) or {}
+            )
+        if "last_spread_scan_time" not in vass_state:
+            vass_state["last_spread_scan_time"] = state.get("last_spread_scan_time")
     try:
         self._vass_entry_engine.from_dict(vass_state)
     except Exception:
@@ -665,9 +663,6 @@ def reset_options_engine_state_impl(self) -> None:
     self._pending_intraday_exit_symbols = set()
     self._transition_context_snapshot = None
     self._rejection_margin_cap = None
-    self._spread_failure_cooldown_until = None
-    self._spread_failure_cooldown_until_by_dir = {}
-    self._last_spread_scan_time = None
     self._last_spread_failure_stats = None
     self._last_credit_failure_stats = None
     self._last_entry_validation_failure = None
@@ -737,11 +732,6 @@ def reset_options_engine_daily_state_impl(self, current_date: str) -> None:
         # Reset Micro Regime Engine for new day
         self._micro_regime_engine.reset_daily()
         self._vass_entry_engine.reset_daily()
-
-        # V2.4.3: Clear spread failure cooldown for new day
-        self._spread_failure_cooldown_until = None
-        self._spread_failure_cooldown_until_by_dir = {}
-        self._last_spread_scan_time = None
 
         # Keep intraday state whenever a live broker holding still exists.
         # This avoids reset->orphan churn when an expected force-close fails.

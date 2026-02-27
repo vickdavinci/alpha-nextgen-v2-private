@@ -22,6 +22,10 @@ class VASSEntryEngine:
         self._slot_backoff_until_by_key: Dict[str, datetime] = {}
         self._consecutive_losses: int = 0
         self._loss_breaker_pause_until: Optional[str] = None  # YYYY-MM-DD
+        # V12.20: VASS-owned spread scan/cooldown runtime state.
+        self._spread_failure_cooldown_until: Optional[str] = None
+        self._spread_failure_cooldown_until_by_dir: Dict[str, str] = {}
+        self._last_spread_scan_time: Optional[str] = None
 
     def _log(self, message: str, trades_only: bool = False) -> None:
         if self._log_func:
@@ -64,6 +68,122 @@ class VASSEntryEngine:
             return
         minutes = max(1, int(getattr(config, "VASS_SLOT_BACKOFF_MINUTES", 20)))
         self._slot_backoff_until_by_key[key] = now + timedelta(minutes=minutes)
+
+    def _normalize_cooldown_key(self, key: Optional[Any]) -> Optional[str]:
+        raw = key.value if hasattr(key, "value") else key
+        key_text = str(raw or "").upper().strip()
+        return key_text or None
+
+    def set_spread_failure_cooldown(
+        self,
+        *,
+        current_time: Optional[str],
+        direction: Optional[Any] = None,
+        cooldown_minutes: Optional[int] = None,
+    ) -> None:
+        """Set spread construction cooldown in VASS-owned runtime state."""
+        if not current_time:
+            return
+
+        try:
+            now_dt = datetime.strptime(current_time[:19], "%Y-%m-%d %H:%M:%S")
+            minutes = (
+                int(cooldown_minutes)
+                if cooldown_minutes is not None
+                else int(
+                    getattr(
+                        config,
+                        "SPREAD_FAILURE_COOLDOWN_MINUTES",
+                        int(getattr(config, "SPREAD_FAILURE_COOLDOWN_HOURS", 1) * 60),
+                    )
+                )
+            )
+            until_text = (now_dt + timedelta(minutes=max(minutes, 0))).strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return
+
+        cooldown_key = self._normalize_cooldown_key(direction)
+        if cooldown_key:
+            self._spread_failure_cooldown_until_by_dir[cooldown_key] = until_text
+        else:
+            self._spread_failure_cooldown_until = until_text
+        self._log(
+            f"SPREAD: Construction failed - entering {max(minutes, 0)}m cooldown until {until_text}"
+        )
+
+    def set_directional_spread_cooldown(
+        self,
+        *,
+        cooldown_key: str,
+        until_text: str,
+    ) -> None:
+        key = self._normalize_cooldown_key(cooldown_key)
+        if key and until_text:
+            self._spread_failure_cooldown_until_by_dir[key] = str(until_text)[:19]
+
+    def is_spread_cooldown_active(
+        self,
+        *,
+        current_time: Optional[str],
+        candidate_keys: Optional[list[str]] = None,
+    ) -> bool:
+        """Return True when spread-entry cooldown is active for any candidate key."""
+        if not current_time:
+            return False
+
+        if candidate_keys:
+            for key in candidate_keys:
+                norm_key = self._normalize_cooldown_key(key)
+                if not norm_key:
+                    continue
+                until = self._spread_failure_cooldown_until_by_dir.get(norm_key)
+                if not until:
+                    continue
+                if current_time < until:
+                    return True
+                self._spread_failure_cooldown_until_by_dir.pop(norm_key, None)
+            return False
+
+        until = self._spread_failure_cooldown_until
+        if not until:
+            return False
+        if current_time < until:
+            return True
+        self._spread_failure_cooldown_until = None
+        return False
+
+    def should_throttle_spread_scan(
+        self, *, current_time: Optional[str], throttle_minutes: int
+    ) -> bool:
+        """Return True when scan should be throttled based on last scan timestamp."""
+        if not current_time:
+            return False
+        if self._last_spread_scan_time:
+            try:
+                curr_h = int(current_time[11:13])
+                curr_m = int(current_time[14:16])
+                last_h = int(self._last_spread_scan_time[11:13])
+                last_m = int(self._last_spread_scan_time[14:16])
+                curr_total = curr_h * 60 + curr_m
+                last_total = last_h * 60 + last_m
+                if current_time[:10] == self._last_spread_scan_time[:10]:
+                    if (curr_total - last_total) < int(throttle_minutes):
+                        return True
+            except Exception:
+                pass
+        self._last_spread_scan_time = current_time
+        return False
+
+    def _host_smoothed_vix(self, host: Any) -> float:
+        try:
+            if hasattr(host, "get_smoothed_vix"):
+                return float(host.get_smoothed_vix())
+        except Exception:
+            pass
+        try:
+            return float(host._iv_sensor.get_smoothed_vix())
+        except Exception:
+            return 0.0
 
     def select_strategy(
         self,
@@ -1520,43 +1640,17 @@ class VASSEntryEngine:
         current_price: Optional[float] = None,
     ) -> Optional[tuple[Any, Any]]:
         """Select long and short legs for debit spread construction."""
-        # V2.4.3: Check FAILURE cooldown first (penalty after failed construction)
-        if current_time:
-            try:
-                # V6.12: Direction-scoped cooldown if available
-                if hasattr(host, "_spread_failure_cooldown_until_by_dir") and direction:
-                    dir_key = direction.value if hasattr(direction, "value") else str(direction)
-                    until = host._spread_failure_cooldown_until_by_dir.get(dir_key)
-                    if until and current_time < until:
-                        return None
-                    elif until:
-                        host._spread_failure_cooldown_until_by_dir.pop(dir_key, None)
-                elif host._spread_failure_cooldown_until:
-                    if current_time < host._spread_failure_cooldown_until:
-                        return None
-                    else:
-                        host._spread_failure_cooldown_until = None
-            except (ValueError, TypeError):
-                pass
-
-        # V2.3.21: Throttle spread scanning to reduce log noise
-        if current_time and host._last_spread_scan_time:
-            try:
-                current_min_str = current_time[11:16]
-                last_min_str = host._last_spread_scan_time[11:16]
-                curr_h, curr_m = int(current_min_str[:2]), int(current_min_str[3:5])
-                last_h, last_m = int(last_min_str[:2]), int(last_min_str[3:5])
-                curr_total = curr_h * 60 + curr_m
-                last_total = last_h * 60 + last_m
-                if current_time[:10] == host._last_spread_scan_time[:10]:
-                    elapsed = curr_total - last_total
-                    if elapsed < config.SPREAD_SCAN_THROTTLE_MINUTES:
-                        return None
-            except (ValueError, IndexError):
-                pass
-
-        if current_time:
-            host._last_spread_scan_time = current_time
+        # V12.20: VASS-owned spread failure cooldown + scan throttle state.
+        if self.is_spread_cooldown_active(
+            current_time=current_time,
+            candidate_keys=[direction.value if direction is not None else ""],
+        ):
+            return None
+        if self.should_throttle_spread_scan(
+            current_time=current_time,
+            throttle_minutes=int(getattr(config, "SPREAD_SCAN_THROTTLE_MINUTES", 15)),
+        ):
+            return None
 
         if not contracts:
             host.log("SPREAD: No contracts available for spread selection")
@@ -1572,7 +1666,7 @@ class VASSEntryEngine:
         if len(filtered) < 2:
             host.log(f"SPREAD: Not enough {direction.value} contracts for spread")
             if set_cooldown:
-                host._set_spread_failure_cooldown(current_time, direction=direction)
+                self.set_spread_failure_cooldown(current_time=current_time, direction=direction)
             return None
 
         is_call = direction == OptionDirection.CALL
@@ -1651,7 +1745,7 @@ class VASSEntryEngine:
                 f"Elastic steps tried={len(config.ELASTIC_DELTA_STEPS)}"
             )
             if set_cooldown:
-                host._set_spread_failure_cooldown(current_time, direction=direction)
+                self.set_spread_failure_cooldown(current_time=current_time, direction=direction)
             return None
 
         delta_target = (
@@ -1696,7 +1790,7 @@ class VASSEntryEngine:
                 f"WidthRange=${effective_width_min:.0f}-${dyn_widths['width_max']:.0f}"
             )
             if set_cooldown:
-                host._set_spread_failure_cooldown(current_time, direction=direction)
+                self.set_spread_failure_cooldown(current_time=current_time, direction=direction)
             return None
 
         effective_max = dyn_widths["width_effective_max"]
@@ -1706,7 +1800,7 @@ class VASSEntryEngine:
 
         vix_for_pref = None
         try:
-            vix_for_pref = float(host._iv_sensor.get_smoothed_vix())
+            vix_for_pref = self._host_smoothed_vix(host)
         except Exception:
             vix_for_pref = None
 
@@ -1806,27 +1900,11 @@ class VASSEntryEngine:
         dyn_widths = host._get_dynamic_spread_widths(current_price)
         credit_width_target = dyn_widths["credit_width_target"]
 
-        if current_time:
-            try:
-                if hasattr(host, "_spread_failure_cooldown_until_by_dir"):
-                    until = host._spread_failure_cooldown_until_by_dir.get(cooldown_key)
-                    if until is None:
-                        until = host._spread_failure_cooldown_until_by_dir.get(legacy_credit_key)
-                    if until is None:
-                        until = host._spread_failure_cooldown_until_by_dir.get(direction_alias_key)
-                    if until and current_time < until:
-                        return None
-                    elif until:
-                        host._spread_failure_cooldown_until_by_dir.pop(cooldown_key, None)
-                        host._spread_failure_cooldown_until_by_dir.pop(legacy_credit_key, None)
-                        host._spread_failure_cooldown_until_by_dir.pop(direction_alias_key, None)
-                elif host._spread_failure_cooldown_until:
-                    if current_time < host._spread_failure_cooldown_until:
-                        return None
-                    else:
-                        host._spread_failure_cooldown_until = None
-            except (ValueError, TypeError):
-                pass
+        if self.is_spread_cooldown_active(
+            current_time=current_time,
+            candidate_keys=[cooldown_key, legacy_credit_key, direction_alias_key],
+        ):
+            return None
 
         if not contracts:
             host.log("VASS: No contracts provided for credit spread selection")
@@ -1857,7 +1935,7 @@ class VASSEntryEngine:
                 f"(available: {[c.days_to_expiry for c in contracts[:5]]}...)"
             )
             if set_cooldown:
-                host._set_spread_failure_cooldown(current_time, direction=cooldown_key)
+                self.set_spread_failure_cooldown(current_time=current_time, direction=cooldown_key)
             return None
 
         if strategy_value == "BULL_PUT_CREDIT":
@@ -1868,7 +1946,10 @@ class VASSEntryEngine:
             if not puts:
                 host.log("VASS: No PUT contracts available for Bull Put Credit")
                 if set_cooldown:
-                    host._set_spread_failure_cooldown(current_time, direction=cooldown_key)
+                    self.set_spread_failure_cooldown(
+                        current_time=current_time,
+                        direction=cooldown_key,
+                    )
                 return None
 
             short_candidates = []
@@ -1879,7 +1960,7 @@ class VASSEntryEngine:
             elastic_widen_used = 0.0
 
             for widen in config.ELASTIC_DELTA_STEPS:
-                smoothed_vix = host._iv_sensor.get_smoothed_vix()
+                smoothed_vix = self._host_smoothed_vix(host)
                 high_vix_thr = float(
                     getattr(config, "CREDIT_SPREAD_SHORT_LEG_HIGH_VIX_THRESHOLD", 25.0)
                 )
@@ -1965,7 +2046,10 @@ class VASSEntryEngine:
                     f"Max spread%: {config.CREDIT_SPREAD_MAX_SPREAD_PCT:.2f}"
                 )
                 if set_cooldown:
-                    host._set_spread_failure_cooldown(current_time, direction=cooldown_key)
+                    self.set_spread_failure_cooldown(
+                        current_time=current_time,
+                        direction=cooldown_key,
+                    )
                 return None
 
             short_candidates.sort(key=lambda contract: contract.bid, reverse=True)
@@ -2006,7 +2090,10 @@ class VASSEntryEngine:
                     f"Max spread%={config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT:.2f}"
                 )
                 if set_cooldown:
-                    host._set_spread_failure_cooldown(current_time, direction=cooldown_key)
+                    self.set_spread_failure_cooldown(
+                        current_time=current_time,
+                        direction=cooldown_key,
+                    )
                 return None
 
             long_leg = long_candidates[0]
@@ -2030,7 +2117,10 @@ class VASSEntryEngine:
             if not calls:
                 host.log("VASS: No CALL contracts available for Bear Call Credit")
                 if set_cooldown:
-                    host._set_spread_failure_cooldown(current_time, direction=cooldown_key)
+                    self.set_spread_failure_cooldown(
+                        current_time=current_time,
+                        direction=cooldown_key,
+                    )
                 return None
 
             short_candidates = []
@@ -2041,7 +2131,7 @@ class VASSEntryEngine:
             elastic_widen_used = 0.0
 
             for widen in config.ELASTIC_DELTA_STEPS:
-                smoothed_vix = host._iv_sensor.get_smoothed_vix()
+                smoothed_vix = self._host_smoothed_vix(host)
                 high_vix_thr = float(
                     getattr(config, "CREDIT_SPREAD_SHORT_LEG_HIGH_VIX_THRESHOLD", 25.0)
                 )
@@ -2127,7 +2217,10 @@ class VASSEntryEngine:
                     f"Max spread%: {config.CREDIT_SPREAD_MAX_SPREAD_PCT:.2f}"
                 )
                 if set_cooldown:
-                    host._set_spread_failure_cooldown(current_time, direction=cooldown_key)
+                    self.set_spread_failure_cooldown(
+                        current_time=current_time,
+                        direction=cooldown_key,
+                    )
                 return None
 
             short_candidates.sort(key=lambda contract: contract.bid, reverse=True)
@@ -2168,7 +2261,10 @@ class VASSEntryEngine:
                     f"Max spread%={config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT:.2f}"
                 )
                 if set_cooldown:
-                    host._set_spread_failure_cooldown(current_time, direction=cooldown_key)
+                    self.set_spread_failure_cooldown(
+                        current_time=current_time,
+                        direction=cooldown_key,
+                    )
                 return None
 
             long_leg = long_candidates[0]
@@ -2235,7 +2331,7 @@ class VASSEntryEngine:
                 failure_stats.append(stats)
 
         if set_cooldown:
-            host._set_spread_failure_cooldown(current_time, direction=direction)
+            self.set_spread_failure_cooldown(current_time=current_time, direction=direction)
         if failure_stats:
             summary = "; ".join(
                 [
@@ -2295,7 +2391,7 @@ class VASSEntryEngine:
 
         cooldown_key = strategy.value if hasattr(strategy, "value") else str(strategy)
         if set_cooldown:
-            host._set_spread_failure_cooldown(current_time, direction=cooldown_key)
+            self.set_spread_failure_cooldown(current_time=current_time, direction=cooldown_key)
         if failure_stats:
             summary = "; ".join(
                 [
@@ -2980,6 +3076,11 @@ class VASSEntryEngine:
             },
             "consecutive_losses": self._consecutive_losses,
             "loss_breaker_pause_until": self._loss_breaker_pause_until,
+            "spread_failure_cooldown_until": self._spread_failure_cooldown_until,
+            "spread_failure_cooldown_until_by_dir": dict(
+                self._spread_failure_cooldown_until_by_dir
+            ),
+            "last_spread_scan_time": self._last_spread_scan_time,
         }
 
     def from_dict(self, state: Dict[str, Any]) -> None:
@@ -3026,10 +3127,22 @@ class VASSEntryEngine:
                 )
             except Exception:
                 continue
+        raw_cooldown = state.get("spread_failure_cooldown_until")
+        self._spread_failure_cooldown_until = str(raw_cooldown)[:19] if raw_cooldown else None
+        self._spread_failure_cooldown_until_by_dir = {}
+        for k, v in (state.get("spread_failure_cooldown_until_by_dir", {}) or {}).items():
+            key = self._normalize_cooldown_key(k)
+            if key and v:
+                self._spread_failure_cooldown_until_by_dir[key] = str(v)[:19]
+        raw_scan = state.get("last_spread_scan_time")
+        self._last_spread_scan_time = str(raw_scan)[:19] if raw_scan else None
 
     def reset_daily(self) -> None:
         """Clear intraday slot-backoff state."""
         self._slot_backoff_until_by_key = {}
+        self._spread_failure_cooldown_until = None
+        self._spread_failure_cooldown_until_by_dir = {}
+        self._last_spread_scan_time = None
 
     def reset(self) -> None:
         self._last_entry_at_by_signature = {}
@@ -3039,3 +3152,6 @@ class VASSEntryEngine:
         self._slot_backoff_until_by_key = {}
         self._consecutive_losses = 0
         self._loss_breaker_pause_until = None
+        self._spread_failure_cooldown_until = None
+        self._spread_failure_cooldown_until_by_dir = {}
+        self._last_spread_scan_time = None
