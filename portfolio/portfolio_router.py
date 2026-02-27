@@ -706,10 +706,13 @@ class PortfolioRouter:
         # For time-critical intraday forced exits, avoid 15-minute close latency caused by
         # waiting for cancel acknowledgment in a bar-based execution loop.
         reason_upper = str(getattr(order, "reason", "") or "").upper()
+        metadata = order.metadata if isinstance(order.metadata, dict) else {}
+        intraday_exit_code_upper = str(metadata.get("intraday_exit_code", "") or "").upper()
         intraday_time_critical = (
             "INTRADAY_FORCE_EXIT" in reason_upper
-            or "INTRADAY_TIME_EXIT_1515" in reason_upper
+            or "INTRADAY_TIME_EXIT_" in reason_upper
             or "INTRADAY_FORCE_CLOSE" in reason_upper
+            or "INTRADAY_TIME_EXIT_" in intraday_exit_code_upper
         )
         if (
             bool(getattr(config, "EXIT_PRE_CLEAR_ALLOW_IMMEDIATE_INTRADAY_CLOSE", True))

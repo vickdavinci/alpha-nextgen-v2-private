@@ -857,3 +857,50 @@ class TestOrderEnums:
         """Test OrderType enum values."""
         assert OrderType.MARKET.value == "MARKET"
         assert OrderType.MOO.value == "MOO"
+
+
+class TestExitPreclearBypass:
+    """Tests for router exit preclear time-critical bypass logic."""
+
+    def test_dynamic_intraday_time_exit_reason_triggers_bypass(self):
+        router = PortfolioRouter()
+        order = OrderIntent(
+            symbol="QQQ 260130C00500000",
+            quantity=1,
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            urgency=Urgency.IMMEDIATE,
+            reason="INTRADAY_TIME_EXIT_1300 lane close",
+            target_weight=0.0,
+            current_weight=0.0,
+        )
+        router._is_option_close_order = MagicMock(return_value=True)
+        router._get_open_orders_for_symbols = MagicMock(side_effect=[[object()], [object()]])
+        router._cancel_open_orders_for_symbols = MagicMock(return_value=(1, 0))
+
+        ok, detail = router._run_option_exit_preclear(order)
+
+        assert ok is True
+        assert "EXIT_PRE_CLEAR_BYPASS" in detail
+
+    def test_dynamic_intraday_time_exit_metadata_triggers_bypass(self):
+        router = PortfolioRouter()
+        order = OrderIntent(
+            symbol="QQQ 260130C00500000",
+            quantity=1,
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            urgency=Urgency.IMMEDIATE,
+            reason="RETRY_CANCELLED_CLOSE",
+            target_weight=0.0,
+            current_weight=0.0,
+            metadata={"intraday_exit_code": "INTRADAY_TIME_EXIT_1300"},
+        )
+        router._is_option_close_order = MagicMock(return_value=True)
+        router._get_open_orders_for_symbols = MagicMock(side_effect=[[object()], [object()]])
+        router._cancel_open_orders_for_symbols = MagicMock(return_value=(1, 0))
+
+        ok, detail = router._run_option_exit_preclear(order)
+
+        assert ok is True
+        assert "EXIT_PRE_CLEAR_BYPASS" in detail
