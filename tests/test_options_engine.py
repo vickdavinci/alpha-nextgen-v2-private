@@ -899,7 +899,7 @@ class TestStatePersistence:
 
         engine.restore_state(state)
 
-        expected_key = engine._pending_intraday_entry_key("QQQ 270105P00470000", "MICRO")
+        expected_key = engine._pending_engine_entry_key("QQQ 270105P00470000", "MICRO")
         assert expected_key in engine._pending_intraday_entries
         assert engine._pending_intraday_entries[expected_key]["symbol"] == "QQQ 270105P00470000"
         assert engine._pending_intraday_entries[expected_key]["lane"] == "MICRO"
@@ -1797,8 +1797,8 @@ class TestDualModeArchitecture:
             open_interest=1200,
             days_to_expiry=1,
         )
-        itm_key = engine._pending_intraday_entry_key(str(itm_contract.symbol), "ITM")
-        micro_key = engine._pending_intraday_entry_key(str(otm_contract.symbol), "MICRO")
+        itm_key = engine._pending_engine_entry_key(str(itm_contract.symbol), "ITM")
+        micro_key = engine._pending_engine_entry_key(str(otm_contract.symbol), "MICRO")
         engine._pending_intraday_entries[itm_key] = {
             "symbol": str(itm_contract.symbol),
             "lane": "ITM",
@@ -2653,7 +2653,7 @@ class TestPendingIntradayEntryMaintenance:
         engine.algorithm = algo
         engine._pending_intraday_entry = True
         engine._pending_intraday_entry_since = now - timedelta(minutes=20)
-        key = engine._pending_intraday_entry_key("QQQ 270119P00480000", "ITM")
+        key = engine._pending_engine_entry_key("QQQ 270119P00480000", "ITM")
         engine._pending_intraday_entries[key] = {
             "symbol": "QQQ 270119P00480000",
             "lane": "ITM",
@@ -2695,7 +2695,7 @@ class TestPendingIntradayEntryMaintenance:
         engine._pending_intraday_entry = True
         # Age must exceed CANCEL_MINUTES (5) but stay below HARD_CLEAR_MINUTES (30)
         engine._pending_intraday_entry_since = now - timedelta(minutes=10)
-        key = engine._pending_intraday_entry_key("QQQ 270105P00470000", "MICRO")
+        key = engine._pending_engine_entry_key("QQQ 270105P00470000", "MICRO")
         engine._pending_intraday_entries[key] = {
             "symbol": "QQQ 270105P00470000",
             "lane": "MICRO",
@@ -2734,7 +2734,7 @@ class TestPendingIntradayEntryMaintenance:
         engine.algorithm = algo
         engine._pending_intraday_entry = True
         engine._pending_intraday_entry_since = now - timedelta(minutes=20)
-        key = engine._pending_intraday_entry_key("QQQ 270105P00470000", "MICRO")
+        key = engine._pending_engine_entry_key("QQQ 270105P00470000", "MICRO")
         engine._pending_intraday_entries[key] = {
             "symbol": "QQQ 270105P00470000",
             "lane": "MICRO",
@@ -2752,13 +2752,13 @@ class TestPendingIntradayEntryMaintenance:
         assert engine._pending_intraday_entry is False
 
     def test_pending_key_match_ignores_symbol_spacing(self, engine):
-        key = engine._pending_intraday_entry_key("QQQ 270105P00470000", "MICRO")
+        key = engine._pending_engine_entry_key("QQQ 270105P00470000", "MICRO")
         engine._pending_intraday_entries[key] = {
             "symbol": "QQQ 270105P00470000",
             "lane": "MICRO",
         }
 
-        found = engine._find_pending_intraday_entry_key("QQQ   270105P00470000", lane="MICRO")
+        found = engine._find_pending_engine_entry_key("QQQ   270105P00470000", lane="MICRO")
 
         assert found == key
 
@@ -2794,8 +2794,8 @@ class TestIntradayLaneIsolation:
         )
 
         assert engine.has_intraday_position() is False
-        assert engine.get_intraday_positions() == []
-        assert engine._find_intraday_lane_by_symbol("QQQ 270119P00480000") is None
+        assert engine.get_engine_positions() == []
+        assert engine._find_engine_lane_by_symbol("QQQ 270119P00480000") is None
 
     def test_intraday_validation_failure_is_lane_scoped(self, engine):
         engine.set_last_engine_validation_failure("MICRO", "E_MICRO_A", "micro detail")
@@ -2823,7 +2823,7 @@ class TestIntradayLaneIsolation:
             open_interest=1800,
             days_to_expiry=1,
         )
-        pending_key = engine._pending_intraday_entry_key(str(contract.symbol), "ITM")
+        pending_key = engine._pending_engine_entry_key(str(contract.symbol), "ITM")
         engine._pending_intraday_entries[pending_key] = {
             "symbol": str(contract.symbol),
             "lane": "ITM",
@@ -2993,7 +2993,7 @@ class TestIntradayLaneIsolation:
             days_to_expiry=8,
         )
 
-        pending_key = engine._pending_intraday_entry_key(
+        pending_key = engine._pending_engine_entry_key(
             symbol=str(pending_contract.symbol),
             lane="MICRO",
         )
@@ -3019,7 +3019,7 @@ class TestIntradayLaneIsolation:
 
         assert pos is not None
         assert engine.get_position() is not None
-        assert engine._find_intraday_lane_by_symbol(str(fill_contract.symbol)) is None
+        assert engine._find_engine_lane_by_symbol(str(fill_contract.symbol)) is None
 
 
 class TestIntradayDailyReserveFairness:

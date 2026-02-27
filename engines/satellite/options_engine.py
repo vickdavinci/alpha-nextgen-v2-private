@@ -444,10 +444,6 @@ class OptionsEngine:
         """Map strategy to engine lane key used by pending-entry/exit locks."""
         return "ITM" if self._is_itm_momentum_strategy_name(strategy_name) else "MICRO"
 
-    def _intraday_engine_lane_from_strategy(self, strategy_name: Optional[str]) -> str:
-        """Backward-compatible alias for engine-lane resolution."""
-        return self._engine_lane_from_strategy(strategy_name)
-
     def _pending_engine_entry_key(self, symbol: str, lane: Optional[str]) -> str:
         """Build stable pending-entry key with lane isolation."""
         symbol_norm = self._symbol_key(symbol)
@@ -456,19 +452,11 @@ class OptionsEngine:
             return symbol_norm
         return f"{lane_norm}|{symbol_norm}"
 
-    def _pending_intraday_entry_key(self, symbol: str, lane: Optional[str]) -> str:
-        """Backward-compatible alias for pending engine-entry key builder."""
-        return self._pending_engine_entry_key(symbol=symbol, lane=lane)
-
     def _pending_engine_symbol_from_key(self, key: str) -> str:
         key_text = str(key or "")
         if "|" in key_text:
             return self._symbol_key(key_text.split("|", 1)[1])
         return self._symbol_key(key_text)
-
-    def _pending_intraday_symbol_from_key(self, key: str) -> str:
-        """Backward-compatible alias for pending symbol resolver."""
-        return self._pending_engine_symbol_from_key(key=key)
 
     def get_vix_5d_change(self) -> Optional[float]:
         """Public accessor for current VIX 5D change."""
@@ -484,10 +472,6 @@ class OptionsEngine:
     def find_engine_lane_by_symbol(self, symbol: Optional[str]) -> Optional[str]:
         """Public wrapper for single-leg engine lane lookup."""
         return self._find_engine_lane_by_symbol(symbol)
-
-    def find_intraday_lane_by_symbol(self, symbol: Optional[str]) -> Optional[str]:
-        """Backward-compatible alias for lane lookup."""
-        return self.find_engine_lane_by_symbol(symbol)
 
     def _find_pending_engine_entry_key(
         self, symbol: str, lane: Optional[str] = None
@@ -523,12 +507,6 @@ class OptionsEngine:
             return key
         return None
 
-    def _find_pending_intraday_entry_key(
-        self, symbol: str, lane: Optional[str] = None
-    ) -> Optional[str]:
-        """Backward-compatible alias for pending key lookup."""
-        return self._find_pending_engine_entry_key(symbol=symbol, lane=lane)
-
     def _get_pending_engine_entry_payload(
         self, symbol: str, lane: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
@@ -538,12 +516,6 @@ class OptionsEngine:
         payload = self._pending_intraday_entries.get(key)
         return payload if isinstance(payload, dict) else None
 
-    def _get_pending_intraday_entry_payload(
-        self, symbol: str, lane: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
-        """Backward-compatible alias for pending entry payload lookup."""
-        return self._get_pending_engine_entry_payload(symbol=symbol, lane=lane)
-
     def _pop_pending_engine_entry_payload(
         self, symbol: str, lane: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
@@ -552,12 +524,6 @@ class OptionsEngine:
             return None
         payload = self._pending_intraday_entries.pop(key, None)
         return payload if isinstance(payload, dict) else None
-
-    def _pop_pending_intraday_entry_payload(
-        self, symbol: str, lane: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
-        """Backward-compatible alias for pending entry payload pop."""
-        return self._pop_pending_engine_entry_payload(symbol=symbol, lane=lane)
 
     def _refresh_legacy_intraday_mirrors(self) -> None:
         """Keep legacy single-position mirrors in sync with lane containers."""
@@ -579,10 +545,6 @@ class OptionsEngine:
             return lane_positions[0]
         return None
 
-    def _get_intraday_lane_position(self, lane: str) -> Optional[OptionsPosition]:
-        """Backward-compatible alias for engine lane position lookup."""
-        return self._get_engine_lane_position(lane=lane)
-
     def _set_engine_lane_position(self, lane: str, position: Optional[OptionsPosition]) -> None:
         lane_key = str(lane or "").upper()
         if lane_key not in self._intraday_positions:
@@ -594,10 +556,6 @@ class OptionsEngine:
         self._intraday_positions[lane_key].append(position)
         self._intraday_position = position
         self._intraday_position_engine = lane_key
-
-    def _set_intraday_lane_position(self, lane: str, position: Optional[OptionsPosition]) -> None:
-        """Backward-compatible alias for engine lane position setter."""
-        self._set_engine_lane_position(lane=lane, position=position)
 
     def _find_engine_lane_by_symbol(self, symbol: str) -> Optional[str]:
         symbol_norm = self._symbol_key(symbol)
@@ -613,10 +571,6 @@ class OptionsEngine:
                     return lane
         return None
 
-    def _find_intraday_lane_by_symbol(self, symbol: str) -> Optional[str]:
-        """Backward-compatible alias for lane lookup."""
-        return self._find_engine_lane_by_symbol(symbol)
-
     def get_engine_positions(self) -> List[OptionsPosition]:
         positions: List[OptionsPosition] = []
         for lane in ("ITM", "MICRO"):
@@ -625,10 +579,6 @@ class OptionsEngine:
                 if pos is not None:
                     positions.append(pos)
         return positions
-
-    def get_intraday_positions(self) -> List[OptionsPosition]:
-        """Backward-compatible alias for single-leg engine positions."""
-        return self.get_engine_positions()
 
     def _infer_intraday_strategy_from_order_tag(self, order_tag: Optional[str]) -> str:
         """Best-effort strategy inference from order tag for partial-fill OCO recovery."""
