@@ -1640,6 +1640,10 @@ class OptionsEngine:
         """
         return self.can_enter_single_leg()
 
+    def can_enter_engine_single_leg(self) -> Tuple[bool, str]:
+        """Engine-named alias for single-leg entry capacity check."""
+        return self.can_enter_single_leg()
+
     def can_enter_swing(
         self,
         direction: Optional[OptionDirection] = None,
@@ -1811,7 +1815,7 @@ class OptionsEngine:
             is_eod_scan=is_eod_scan,
         )
 
-    def run_vass_intraday_entry_cycle(
+    def run_vass_engine_entry_cycle(
         self,
         *,
         chain: Any,
@@ -1838,7 +1842,33 @@ class OptionsEngine:
             transition_ctx=transition_ctx,
         )
 
-    def run_itm_intraday_explicit_cycle(
+    def run_vass_intraday_entry_cycle(
+        self,
+        *,
+        chain: Any,
+        qqq_price: float,
+        adx_value: float,
+        ma200_value: float,
+        ma50_value: float,
+        size_multiplier: float,
+        effective_portfolio_value: float,
+        margin_remaining: float,
+        transition_ctx: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Backward-compatible alias for VASS engine entry cycle."""
+        self.run_vass_engine_entry_cycle(
+            chain=chain,
+            qqq_price=qqq_price,
+            adx_value=adx_value,
+            ma200_value=ma200_value,
+            ma50_value=ma50_value,
+            size_multiplier=size_multiplier,
+            effective_portfolio_value=effective_portfolio_value,
+            margin_remaining=margin_remaining,
+            transition_ctx=transition_ctx,
+        )
+
+    def run_itm_engine_explicit_cycle(
         self,
         *,
         chain: Any,
@@ -1871,7 +1901,39 @@ class OptionsEngine:
             itm_intraday_cooldown_active=itm_intraday_cooldown_active,
         )
 
-    def run_micro_intraday_cycle(
+    def run_itm_intraday_explicit_cycle(
+        self,
+        *,
+        chain: Any,
+        qqq_price: float,
+        regime_score: float,
+        size_multiplier: float,
+        effective_portfolio_value: float,
+        vix_intraday: float,
+        vix_level_cboe: Optional[float],
+        transition_ctx: Optional[Dict[str, Any]],
+        itm_dir: Optional[OptionDirection],
+        itm_reason: str,
+        intraday_scan_context_ready: bool,
+        itm_intraday_cooldown_active: bool,
+    ) -> None:
+        """Backward-compatible alias for ITM engine explicit cycle."""
+        self.run_itm_engine_explicit_cycle(
+            chain=chain,
+            qqq_price=qqq_price,
+            regime_score=regime_score,
+            size_multiplier=size_multiplier,
+            effective_portfolio_value=effective_portfolio_value,
+            vix_intraday=vix_intraday,
+            vix_level_cboe=vix_level_cboe,
+            transition_ctx=transition_ctx,
+            itm_dir=itm_dir,
+            itm_reason=itm_reason,
+            intraday_scan_context_ready=intraday_scan_context_ready,
+            itm_intraday_cooldown_active=itm_intraday_cooldown_active,
+        )
+
+    def run_micro_engine_cycle(
         self,
         *,
         chain: Any,
@@ -1888,6 +1950,34 @@ class OptionsEngine:
         """Run MICRO intraday lane via micro entry engine."""
         return self._micro_entry_engine.run_intraday_cycle(
             host=self,
+            chain=chain,
+            qqq_price=qqq_price,
+            regime_score=regime_score,
+            size_multiplier=size_multiplier,
+            effective_portfolio_value=effective_portfolio_value,
+            vix_intraday=vix_intraday,
+            vix_level_cboe=vix_level_cboe,
+            transition_ctx=transition_ctx,
+            uvxy_pct=uvxy_pct,
+            micro_intraday_cooldown_active=micro_intraday_cooldown_active,
+        )
+
+    def run_micro_intraday_cycle(
+        self,
+        *,
+        chain: Any,
+        qqq_price: float,
+        regime_score: float,
+        size_multiplier: float,
+        effective_portfolio_value: float,
+        vix_intraday: float,
+        vix_level_cboe: Optional[float],
+        transition_ctx: Optional[Dict[str, Any]],
+        uvxy_pct: float,
+        micro_intraday_cooldown_active: bool,
+    ) -> Tuple[Optional[OptionDirection], str]:
+        """Backward-compatible alias for MICRO engine cycle."""
+        return self.run_micro_engine_cycle(
             chain=chain,
             qqq_price=qqq_price,
             regime_score=regime_score,
@@ -3755,7 +3845,7 @@ class OptionsEngine:
             enforce_time_window=not bool(is_eod_scan),
         )
 
-    def check_intraday_entry_signal(
+    def check_engine_entry_signal(
         self,
         vix_current: float,
         vix_open: float = 0.0,
@@ -3820,6 +3910,67 @@ class OptionsEngine:
             underlying_atr=underlying_atr,
             micro_state=micro_state,
             transition_ctx=transition_ctx,
+        )
+
+    def check_intraday_entry_signal(
+        self,
+        vix_current: float,
+        vix_open: float = 0.0,
+        qqq_current: float = 0.0,
+        qqq_open: float = 0.0,
+        current_hour: int = 0,
+        current_minute: int = 0,
+        current_time: str = "",
+        portfolio_value: float = 0.0,
+        raw_portfolio_value: Optional[float] = None,
+        best_contract: Optional[OptionContract] = None,
+        size_multiplier: float = 1.0,
+        macro_regime_score: float = 50.0,
+        governor_scale: float = 1.0,
+        direction: Optional[OptionDirection] = None,
+        forced_entry_strategy: Optional[IntradayStrategy] = None,
+        vix_level_override: Optional[float] = None,
+        underlying_atr: float = 0.0,
+        micro_state: Optional[MicroRegimeState] = None,
+        transition_ctx: Optional[Dict[str, Any]] = None,
+        regime_score: Optional[float] = None,
+        adx_value: float = 0.0,
+        current_price: float = 0.0,
+        ma200_value: float = 0.0,
+        iv_rank: float = 0.0,
+        current_date: str = "",
+        strategy_override: Optional[IntradayStrategy] = None,
+        current_dte: Optional[int] = None,
+    ) -> Optional[TargetWeight]:
+        """Backward-compatible alias for single-leg engine entry evaluation."""
+        return self.check_engine_entry_signal(
+            vix_current=vix_current,
+            vix_open=vix_open,
+            qqq_current=qqq_current,
+            qqq_open=qqq_open,
+            current_hour=current_hour,
+            current_minute=current_minute,
+            current_time=current_time,
+            portfolio_value=portfolio_value,
+            raw_portfolio_value=raw_portfolio_value,
+            best_contract=best_contract,
+            size_multiplier=size_multiplier,
+            macro_regime_score=macro_regime_score,
+            governor_scale=governor_scale,
+            direction=direction,
+            forced_entry_strategy=forced_entry_strategy,
+            vix_level_override=vix_level_override,
+            underlying_atr=underlying_atr,
+            micro_state=micro_state,
+            transition_ctx=transition_ctx,
+            regime_score=regime_score,
+            adx_value=adx_value,
+            current_price=current_price,
+            ma200_value=ma200_value,
+            iv_rank=iv_rank,
+            current_date=current_date,
+            strategy_override=strategy_override,
+            current_dte=current_dte,
         )
 
     def check_engine_force_exit(

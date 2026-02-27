@@ -819,7 +819,7 @@ class MicroEntryEngine:
                 getattr(intraday_contract, "days_to_expiry", None),
             )
             qqq_atr_value = algorithm.qqq_atr.Current.Value if algorithm.qqq_atr.IsReady else 0.0
-            intraday_signal = host.check_intraday_entry_signal(
+            intraday_signal = host.check_engine_entry_signal(
                 vix_current=vix_intraday,
                 vix_open=algorithm._vix_at_open,
                 qqq_current=qqq_price,

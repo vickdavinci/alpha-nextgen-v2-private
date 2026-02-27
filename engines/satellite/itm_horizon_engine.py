@@ -483,7 +483,7 @@ class ITMHorizonEngine:
                         carry_mult = float(getattr(config, "ITM_WEEKEND_CARRY_SIZE_MULT", 0.70))
                         carry_mult = max(0.10, min(1.0, carry_mult))
                         itm_entry_size_multiplier *= carry_mult
-                    itm_signal = host.check_intraday_entry_signal(
+                    itm_signal = host.check_engine_entry_signal(
                         vix_current=vix_intraday,
                         vix_open=algorithm._vix_at_open,
                         qqq_current=qqq_price,

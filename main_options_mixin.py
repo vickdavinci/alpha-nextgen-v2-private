@@ -1545,7 +1545,7 @@ class MainOptionsMixin:
                         transition_ctx=transition_ctx,
                     )
 
-                self.options_engine.run_micro_intraday_cycle(
+                self.options_engine.run_micro_engine_cycle(
                     chain=chain,
                     qqq_price=qqq_price,
                     regime_score=regime_score,
@@ -1558,7 +1558,7 @@ class MainOptionsMixin:
                     micro_intraday_cooldown_active=micro_intraday_cooldown_active,
                 )
 
-        self.options_engine.run_itm_intraday_explicit_cycle(
+        self.options_engine.run_itm_engine_explicit_cycle(
             chain=chain,
             qqq_price=qqq_price,
             regime_score=regime_score,
@@ -1573,7 +1573,7 @@ class MainOptionsMixin:
             itm_intraday_cooldown_active=itm_intraday_cooldown_active,
         )
 
-        self.options_engine.run_vass_intraday_entry_cycle(
+        self.options_engine.run_vass_engine_entry_cycle(
             chain=chain,
             qqq_price=qqq_price,
             adx_value=adx_value,
