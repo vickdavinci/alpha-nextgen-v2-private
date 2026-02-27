@@ -74,6 +74,7 @@ class MainOptionsMixin:
         }
         self._intraday_entry_snapshot = {}
         self._micro_open_symbols = set()
+        self._itm_open_symbols = set()
         self._intraday_close_in_progress_symbols = set()
         self._intraday_force_exit_submitted_symbols = {}
         self._intraday_hold_loss_block_log_date = {}
@@ -422,11 +423,12 @@ class MainOptionsMixin:
             return
 
     def _clear_micro_symbol_tracking(self, symbol: str) -> None:
-        """Clear MICRO tracking artifacts for a symbol after flat/orphan handling."""
+        """Clear intraday tracking artifacts for a symbol after flat/orphan handling."""
         sym_norm = self._normalize_symbol_str(symbol)
         if not sym_norm:
             return
         self._micro_open_symbols.discard(sym_norm)
+        self._itm_open_symbols.discard(sym_norm)
         self._intraday_entry_snapshot.pop(sym_norm, None)
         self._clear_intraday_close_guard(sym_norm)
 

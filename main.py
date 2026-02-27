@@ -981,6 +981,9 @@ class AlphaNextGen(QCAlgorithm):
         if not symbol_norm:
             return "OTHER"
 
+        if symbol_norm in getattr(self, "_itm_open_symbols", set()):
+            return "ITM"
+
         if symbol_norm in getattr(self, "_micro_open_symbols", set()):
             return "MICRO"
 

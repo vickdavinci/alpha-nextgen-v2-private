@@ -247,9 +247,9 @@ class MainReconcileMixin:
             if single is not None:
                 tracked_symbols.add(str(single.contract.symbol))
 
-            # Keep MICRO tracker symbols in reconcile scope when holdings still exist.
+            # Keep intraday tracker symbols in reconcile scope when holdings still exist.
             # This avoids false orphan liquidations during transient state desync.
-            for sym in list(self._micro_open_symbols):
+            for sym in list(self._micro_open_symbols) + list(self._itm_open_symbols):
                 if sym in option_holdings:
                     tracked_symbols.add(sym)
 
@@ -313,7 +313,9 @@ class MainReconcileMixin:
                         if self.options_engine.has_pending_swing_entry():
                             self.options_engine.cancel_pending_swing_entry()
                         self.options_engine.cancel_pending_intraday_exit()
-                        for stale_sym in list(self._micro_open_symbols):
+                        for stale_sym in list(self._micro_open_symbols) + list(
+                            self._itm_open_symbols
+                        ):
                             self._clear_micro_symbol_tracking(stale_sym)
                         tracked_symbols = set()
                         if self._should_log_backtest_category(

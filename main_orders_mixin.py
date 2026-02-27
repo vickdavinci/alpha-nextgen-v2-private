@@ -1888,7 +1888,13 @@ class MainOrdersMixin:
                                     if position and position.contract
                                     else -1,
                                 }
-                                self._micro_open_symbols.add(symbol_norm)
+                                entry_bucket = self._intraday_engine_bucket_from_strategy(
+                                    getattr(position, "entry_strategy", "")
+                                )
+                                if entry_bucket == "ITM":
+                                    self._itm_open_symbols.add(symbol_norm)
+                                else:
+                                    self._micro_open_symbols.add(symbol_norm)
                 elif fill_qty < 0:
                     # Exit routing must be symbol-aware because spread + intraday can coexist.
                     is_spread_leg = False
@@ -2029,8 +2035,7 @@ class MainOrdersMixin:
                                         exit_price=fill_price,
                                         quantity=closed_qty,
                                     )
-                                self._intraday_entry_snapshot.pop(symbol_norm, None)
-                                self._micro_open_symbols.discard(symbol_norm)
+                                self._clear_micro_symbol_tracking(symbol_norm)
                             self._greeks_breach_logged = False  # Reset for next position
                         else:
                             # Symbol not found in intraday lane map.
@@ -2039,6 +2044,7 @@ class MainOrdersMixin:
                             likely_intraday_orphan = (
                                 symbol_norm in self._intraday_entry_snapshot
                                 or symbol_norm in self._micro_open_symbols
+                                or symbol_norm in self._itm_open_symbols
                             )
                             if likely_intraday_orphan:
                                 self.Log(
@@ -2049,7 +2055,7 @@ class MainOrdersMixin:
                                 removed_position = self.options_engine.remove_position(symbol)
                                 if removed_position:
                                     if abs(self._get_option_holding_quantity(symbol)) <= 0:
-                                        self._micro_open_symbols.discard(symbol_norm)
+                                        self._clear_micro_symbol_tracking(symbol_norm)
                                     try:
                                         self.oco_manager.cancel_by_symbol(
                                             removed_position.contract.symbol,
