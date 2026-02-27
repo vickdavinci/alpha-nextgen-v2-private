@@ -3174,7 +3174,7 @@ class TestPortfolioScalingCaps:
 class TestMicroRetryEligibility:
     def test_skip_retry_for_global_daily_limit_context(self):
         assert (
-            MicroEntryEngine._should_queue_intraday_retry(
+            MicroEntryEngine._should_queue_engine_retry(
                 "R_SLOT_TOTAL_MAX", "Global limit reached | 5/5"
             )
             is False
@@ -3182,13 +3182,13 @@ class TestMicroRetryEligibility:
 
     def test_skip_retry_for_explicit_daily_total_code(self):
         assert (
-            MicroEntryEngine._should_queue_intraday_retry("R_TRADE_DAILY_TOTAL_MAX", "daily cap")
+            MicroEntryEngine._should_queue_engine_retry("R_TRADE_DAILY_TOTAL_MAX", "daily cap")
             is False
         )
 
     def test_keep_retry_for_slot_total_cap_context(self):
         assert (
-            MicroEntryEngine._should_queue_intraday_retry(
+            MicroEntryEngine._should_queue_engine_retry(
                 "R_SLOT_TOTAL_MAX", "R_SLOT_TOTAL_MAX: 7 >= 7"
             )
             is True
@@ -3267,23 +3267,23 @@ class TestIntradayRetryIsolation:
         }
 
         expires_at = harness.Time + timedelta(minutes=20)
-        harness._queue_intraday_retry(
+        harness._queue_engine_retry(
             lane="MICRO",
             direction=OptionDirection.CALL,
             reason_code="R_SLOT_TOTAL_MAX",
             expires_at=expires_at,
         )
 
-        assert harness._get_intraday_retry_state("MICRO")["pending"] is True
-        assert harness._get_intraday_retry_state("ITM")["pending"] is False
-        assert harness._consume_intraday_retry("ITM") is None
+        assert harness._get_engine_retry_state("MICRO")["pending"] is True
+        assert harness._get_engine_retry_state("ITM")["pending"] is False
+        assert harness._consume_engine_retry("ITM") is None
 
-        consumed = harness._consume_intraday_retry("MICRO")
+        consumed = harness._consume_engine_retry("MICRO")
         assert consumed is not None
         direction, reason_code = consumed
         assert direction == OptionDirection.CALL
         assert reason_code == "R_SLOT_TOTAL_MAX"
-        assert harness._get_intraday_retry_state("MICRO")["pending"] is False
+        assert harness._get_engine_retry_state("MICRO")["pending"] is False
 
 
 class TestRejectionAwareSizing:

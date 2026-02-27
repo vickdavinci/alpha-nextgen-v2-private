@@ -1076,8 +1076,3 @@ class MicroEntryEngine:
         if code == "R_SLOT_TOTAL_MAX" and "GLOBAL LIMIT REACHED" in text:
             return False
         return True
-
-    @staticmethod
-    def _should_queue_intraday_retry(drop_code: str, context: str = "") -> bool:
-        """Backward-compatible alias for retry-queue decision helper."""
-        return MicroEntryEngine._should_queue_engine_retry(drop_code=drop_code, context=context)
