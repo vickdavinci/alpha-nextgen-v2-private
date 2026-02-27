@@ -562,7 +562,7 @@ class MicroEntryEngine:
 
         return size_multiplier, None, None
 
-    def run_intraday_cycle(
+    def run_engine_cycle(
         self,
         *,
         host: Any,

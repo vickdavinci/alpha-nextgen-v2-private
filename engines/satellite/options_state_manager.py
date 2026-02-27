@@ -331,7 +331,7 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
         self._intraday_position = None
         self._intraday_position_engine = None
 
-    def _should_restore_intraday_position(
+    def _should_restore_engine_position(
         position: Optional[OptionsPosition], lane_hint: str
     ) -> bool:
         if position is None or position.contract is None:
@@ -364,7 +364,7 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
                         continue
                     try:
                         pos = OptionsPosition.from_dict(item)
-                        if _should_restore_intraday_position(pos, lane):
+                        if _should_restore_engine_position(pos, lane):
                             restored.append(pos)
                     except Exception:
                         continue
@@ -373,7 +373,7 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
                 # Backward compatibility: single-position payload.
                 try:
                     pos = OptionsPosition.from_dict(row)
-                    if _should_restore_intraday_position(pos, lane):
+                    if _should_restore_engine_position(pos, lane):
                         self._intraday_positions[lane] = [pos]
                     else:
                         self._intraday_positions[lane] = []

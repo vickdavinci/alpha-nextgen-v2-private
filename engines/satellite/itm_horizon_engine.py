@@ -347,7 +347,7 @@ class ITMHorizonEngine:
         )
         return None, f"TREND_NEUTRAL {lower:.2f}<=QQQ<={upper:.2f}"
 
-    def run_intraday_explicit_cycle(
+    def run_engine_explicit_cycle(
         self,
         *,
         host: Any,

@@ -583,7 +583,7 @@ class MicroRegimeState:
             micro_score=data.get("micro_score", 50.0),
             whipsaw_state=WhipsawState(data.get("whipsaw_state", "TRENDING")),
             recommended_strategy=IntradayStrategy(
-                _normalize_intraday_strategy_value(data.get("recommended_strategy", "NO_TRADE"))
+                _normalize_engine_strategy_value(data.get("recommended_strategy", "NO_TRADE"))
             ),
             qqq_move_pct=data.get("qqq_move_pct", 0.0),
             vix_current=data.get("vix_current", 15.0),
@@ -602,7 +602,7 @@ class MicroRegimeState:
         return state
 
 
-def _normalize_intraday_strategy_value(strategy_value: Any) -> str:
+def _normalize_engine_strategy_value(strategy_value: Any) -> str:
     """Map legacy/new intraday strategy labels to canonical runtime values."""
     value = str(strategy_value or "NO_TRADE").strip().upper()
     aliases = {

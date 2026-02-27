@@ -93,7 +93,7 @@ from engines.satellite.options_primitives import (
     SpreadFillTracker,
     SpreadPosition,
     SpreadStrategy,
-    _normalize_intraday_strategy_value,
+    _normalize_engine_strategy_value,
     get_expiration_firewall_day,
     is_expiration_firewall_day,
 )
@@ -424,12 +424,12 @@ class OptionsEngine:
         """Map legacy strategy aliases to canonical runtime strategy."""
         if strategy is None:
             return None
-        value = _normalize_intraday_strategy_value(getattr(strategy, "value", strategy))
+        value = _normalize_engine_strategy_value(getattr(strategy, "value", strategy))
         return IntradayStrategy(value)
 
     def _canonical_engine_strategy_name(self, strategy_name: Optional[str]) -> str:
         """Canonical string form used by hold/exit logic."""
-        return _normalize_intraday_strategy_value(strategy_name)
+        return _normalize_engine_strategy_value(strategy_name)
 
     def _is_itm_momentum_strategy_name(self, strategy_name: Optional[str]) -> bool:
         """True when strategy name maps to ITM momentum."""
@@ -1805,7 +1805,7 @@ class OptionsEngine:
         transition_ctx: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Run intraday VASS spread lane via VASS entry engine."""
-        self._vass_entry_engine.run_intraday_entry_cycle(
+        self._vass_entry_engine.run_engine_entry_cycle(
             host=self,
             chain=chain,
             qqq_price=qqq_price,
@@ -1835,7 +1835,7 @@ class OptionsEngine:
         itm_intraday_cooldown_active: bool,
     ) -> None:
         """Run explicit ITM intraday lane via ITM horizon engine."""
-        self._itm_horizon_engine.run_intraday_explicit_cycle(
+        self._itm_horizon_engine.run_engine_explicit_cycle(
             host=self,
             chain=chain,
             qqq_price=qqq_price,
@@ -1866,7 +1866,7 @@ class OptionsEngine:
         micro_intraday_cooldown_active: bool,
     ) -> Tuple[Optional[OptionDirection], str]:
         """Run MICRO intraday lane via micro entry engine."""
-        return self._micro_entry_engine.run_intraday_cycle(
+        return self._micro_entry_engine.run_engine_cycle(
             host=self,
             chain=chain,
             qqq_price=qqq_price,

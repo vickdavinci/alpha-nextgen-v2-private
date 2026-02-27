@@ -801,7 +801,7 @@ class VASSEntryEngine:
             resolved_direction,
         )
 
-    def run_intraday_entry_cycle(
+    def run_engine_entry_cycle(
         self,
         *,
         host: Any,
