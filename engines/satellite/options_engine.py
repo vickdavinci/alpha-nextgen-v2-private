@@ -3901,8 +3901,10 @@ class OptionsEngine:
             reason=reason,
             requested_quantity=num_contracts,
             metadata={
+                # Keep intraday_strategy for router compatibility; options_* are lane-sovereign keys.
                 "intraday_strategy": strategy_name or IntradayStrategy.NO_TRADE.value,
-                "intraday_lane": lane_name,
+                "options_strategy": strategy_name or IntradayStrategy.NO_TRADE.value,
+                "options_lane": lane_name,
                 "intraday_exit_code": f"INTRADAY_TIME_EXIT_{force_hh:02d}{force_mm:02d}",
             },
         )

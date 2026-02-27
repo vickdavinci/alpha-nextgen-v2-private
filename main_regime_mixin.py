@@ -615,7 +615,8 @@ class MainRegimeMixin:
                     requested_quantity=live_qty,
                     metadata={
                         "intraday_strategy": str(strategy_name or "UNKNOWN"),
-                        "intraday_lane": str(engine_bucket or "MICRO"),
+                        "options_strategy": str(strategy_name or "UNKNOWN"),
+                        "options_lane": str(engine_bucket or "MICRO"),
                         "transition_overlay": str(overlay or ""),
                     },
                 )
