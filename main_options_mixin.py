@@ -1478,7 +1478,10 @@ class MainOptionsMixin:
         # V10.16: lane-scoped rejection cooldowns (MICRO/ITM independent).
         micro_intraday_cooldown_active = self._is_engine_lane_cooldown_active("MICRO")
         itm_intraday_cooldown_active = self._is_engine_lane_cooldown_active("ITM")
-        intraday_cooldown_active = micro_intraday_cooldown_active and itm_intraday_cooldown_active
+        # Both-lanes cooldown gate: only suppress scan when both MICRO and ITM lanes are cooling down.
+        all_intraday_lanes_cooldown_active = (
+            micro_intraday_cooldown_active and itm_intraday_cooldown_active
+        )
         # Defaults for explicit ITM pass (only used when intraday scan context is ready).
         itm_dir = None
         itm_reason = ""
@@ -1494,7 +1497,7 @@ class MainOptionsMixin:
         if (
             self._should_scan_engine_cycle()
             and self._qqq_at_open > 0
-            and not intraday_cooldown_active
+            and not all_intraday_lanes_cooldown_active
         ):
             # V5.3: Check position limits before scanning
             can_intraday, intraday_limit_reason = self.options_engine.can_enter_single_leg()
