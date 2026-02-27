@@ -22,36 +22,75 @@ def calculate_position_greeks_impl(self) -> Optional[GreeksSnapshot]:
     Returns:
         GreeksSnapshot for risk engine, or None if no position.
     """
-    if self._position is None:
+    positions = []
+    seen_symbols = set()
+
+    def _symbol_key(value) -> str:
+        if value is None:
+            return ""
+        try:
+            if hasattr(self, "_symbol_key"):
+                return str(self._symbol_key(value) or "")
+        except Exception:
+            pass
+        text = str(value).strip().upper()
+        return " ".join(text.split()) if text else ""
+
+    def _append_position(position) -> None:
+        if position is None or getattr(position, "contract", None) is None:
+            return
+        key = _symbol_key(getattr(position.contract, "symbol", ""))
+        if key and key in seen_symbols:
+            return
+        if key:
+            seen_symbols.add(key)
+        positions.append(position)
+
+    _append_position(getattr(self, "_position", None))
+    for pos in list(getattr(self, "get_engine_positions", lambda: [])() or []):
+        _append_position(pos)
+    _append_position(getattr(self, "_intraday_position", None))
+
+    if not positions:
         return None
 
-    contract = self._position.contract
+    deltas = []
+    gammas = []
+    vegas = []
+    thetas = []
 
-    # Calculate position value for theta normalization
-    # Position value = num_contracts × mid_price × 100 (shares per contract)
-    position_value = self._position.num_contracts * contract.mid_price * 100
-    if position_value <= 0:
-        # Fallback to entry price if mid_price not available
-        position_value = self._position.num_contracts * self._position.entry_price * 100
+    for position in positions:
+        contract = position.contract
+        deltas.append(float(getattr(contract, "delta", 0.0) or 0.0))
+        gammas.append(float(getattr(contract, "gamma", 0.0) or 0.0))
+        vegas.append(float(getattr(contract, "vega", 0.0) or 0.0))
 
-    # Normalize theta to percentage of position value
-    # Raw theta is in dollars/day, threshold CB_THETA_WARNING=-0.02 means -2%/day max
-    # Total theta = per-contract theta × num_contracts
-    total_theta_dollars = contract.theta * self._position.num_contracts
-    theta_pct = total_theta_dollars / position_value if position_value > 0 else 0.0
+        # Position value = num_contracts × mid_price × 100 (shares per contract)
+        position_value = float(position.num_contracts) * float(contract.mid_price) * 100.0
+        if position_value <= 0:
+            # Fallback to entry price if mid_price not available
+            position_value = float(position.num_contracts) * float(position.entry_price) * 100.0
 
-    # V2.3 FIX: Skip theta check for swing mode (5-45 DTE)
-    # Swing mode options naturally have higher theta decay but more time to recover.
-    # Only enforce theta limits for intraday mode (0-2 DTE) where decay matters critically.
-    if not config.CB_THETA_SWING_CHECK_ENABLED and contract.days_to_expiry > 2:
-        theta_pct = 0.0  # Set to 0 to pass theta check
+        # Raw theta is dollars/day per contract; normalize to % position value.
+        total_theta_dollars = float(getattr(contract, "theta", 0.0) or 0.0) * float(
+            position.num_contracts
+        )
+        theta_pct = total_theta_dollars / position_value if position_value > 0 else 0.0
 
-    # Return per-contract Greeks for delta/gamma/vega, normalized theta for percentage check
+        # Skip theta check for swing mode when disabled (legacy behavior).
+        if (
+            not bool(getattr(config, "CB_THETA_SWING_CHECK_ENABLED", False))
+            and int(getattr(contract, "days_to_expiry", 0) or 0) > 2
+        ):
+            theta_pct = 0.0
+        thetas.append(theta_pct)
+
+    # Use conservative worst-case snapshot across active single-leg positions.
     return GreeksSnapshot(
-        delta=contract.delta,
-        gamma=contract.gamma,
-        vega=contract.vega,
-        theta=theta_pct,  # Now expressed as percentage (e.g., -0.01 = -1%/day)
+        delta=max(deltas, key=abs) if deltas else 0.0,
+        gamma=max(gammas, key=abs) if gammas else 0.0,
+        vega=max(vegas, key=abs) if vegas else 0.0,
+        theta=min(thetas) if thetas else 0.0,
     )
 
 
@@ -61,6 +100,7 @@ def update_position_greeks_impl(
     gamma: float,
     vega: float,
     theta: float,
+    symbol: Optional[str] = None,
 ) -> None:
     """
     Update Greeks on current position's contract.
@@ -73,16 +113,54 @@ def update_position_greeks_impl(
         vega: Current vega.
         theta: Current theta (daily decay, typically negative).
     """
-    if self._position is None:
+    candidates = []
+    seen_symbols = set()
+
+    def _symbol_key(value) -> str:
+        if value is None:
+            return ""
+        try:
+            if hasattr(self, "_symbol_key"):
+                return str(self._symbol_key(value) or "")
+        except Exception:
+            pass
+        text = str(value).strip().upper()
+        return " ".join(text.split()) if text else ""
+
+    target_key = _symbol_key(symbol)
+
+    def _append_position(position) -> None:
+        if position is None or getattr(position, "contract", None) is None:
+            return
+        contract_symbol = getattr(position.contract, "symbol", "")
+        contract_key = _symbol_key(contract_symbol)
+        if target_key and contract_key != target_key:
+            return
+        unique_key = contract_key or str(id(position))
+        if unique_key in seen_symbols:
+            return
+        seen_symbols.add(unique_key)
+        candidates.append(position)
+
+    _append_position(getattr(self, "_position", None))
+    for pos in list(getattr(self, "get_engine_positions", lambda: [])() or []):
+        _append_position(pos)
+    _append_position(getattr(self, "_intraday_position", None))
+
+    if not candidates:
         return
 
-    # Update the contract's Greeks
-    self._position.contract.delta = delta
-    self._position.contract.gamma = gamma
-    self._position.contract.vega = vega
-    self._position.contract.theta = theta
+    for position in candidates:
+        position.contract.delta = delta
+        position.contract.gamma = gamma
+        position.contract.vega = vega
+        position.contract.theta = theta
 
-    self.log(f"OPT: Greeks updated | " f"D={delta:.3f} G={gamma:.4f} V={vega:.3f} T={theta:.4f}")
+    self.log(
+        "OPT: Greeks updated | "
+        f"D={delta:.3f} G={gamma:.4f} V={vega:.3f} T={theta:.4f} | "
+        f"Symbol={target_key or 'ALL'} | Positions={len(candidates)}"
+    )
 
 
 def check_greeks_breach_impl(

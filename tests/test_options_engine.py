@@ -1064,6 +1064,69 @@ class TestGreeksMonitoring:
         # = (-0.02 × 10) / (10 × 1.50 × 100) = -0.2 / 1500 ≈ -0.000133
         assert abs(greeks.theta - (-0.000133333)) < 0.0001
 
+    def test_calculate_position_greeks_with_intraday_positions(self):
+        """Greeks fallback must include intraday positions when swing is empty."""
+        from engines.satellite.options_engine import OptionContract, OptionsEngine, OptionsPosition
+
+        engine = OptionsEngine()
+        engine._position = None
+
+        micro_contract = OptionContract(
+            symbol="QQQ 260126C00450000",
+            delta=0.40,
+            gamma=0.02,
+            vega=0.12,
+            theta=-0.03,
+            strike=450.0,
+            expiry="2026-01-26",
+            mid_price=2.00,
+            open_interest=1000,
+            days_to_expiry=1,
+        )
+        itm_contract = OptionContract(
+            symbol="QQQ 260126P00440000",
+            delta=-0.72,
+            gamma=0.05,
+            vega=0.20,
+            theta=-0.01,
+            strike=440.0,
+            expiry="2026-01-26",
+            mid_price=1.00,
+            open_interest=1000,
+            days_to_expiry=1,
+        )
+        engine._intraday_positions["MICRO"] = [
+            OptionsPosition(
+                contract=micro_contract,
+                entry_price=2.0,
+                entry_time="10:30:00",
+                entry_score=3.0,
+                num_contracts=2,
+                stop_price=1.5,
+                target_price=2.5,
+                stop_pct=0.25,
+            )
+        ]
+        engine._intraday_positions["ITM"] = [
+            OptionsPosition(
+                contract=itm_contract,
+                entry_price=1.0,
+                entry_time="10:40:00",
+                entry_score=3.0,
+                num_contracts=1,
+                stop_price=0.7,
+                target_price=1.4,
+                stop_pct=0.30,
+            )
+        ]
+
+        greeks = engine.calculate_position_greeks()
+        assert greeks is not None
+        assert greeks.delta == -0.72  # largest absolute delta
+        assert greeks.gamma == 0.05  # largest absolute gamma
+        assert greeks.vega == 0.20  # largest absolute vega
+        assert greeks.theta == pytest.approx(-0.00015, rel=1e-6)  # most negative theta%
+
     def test_update_position_greeks(self):
         """Test updating position Greeks."""
         from engines.satellite.options_engine import OptionContract, OptionsEngine
@@ -1106,6 +1169,79 @@ class TestGreeksMonitoring:
         # Should not raise
         engine.update_position_greeks(0.50, 0.03, 0.15, -0.02)
         assert not engine.has_position()
+
+    def test_update_position_greeks_updates_target_symbol_only(self):
+        """Targeted Greeks refresh should update only the matching contract."""
+        from engines.satellite.options_engine import OptionContract, OptionsEngine, OptionsPosition
+
+        engine = OptionsEngine()
+        micro_contract = OptionContract(
+            symbol="QQQ 260126C00450000",
+            delta=0.30,
+            gamma=0.01,
+            vega=0.08,
+            theta=-0.02,
+            strike=450.0,
+            expiry="2026-01-26",
+            mid_price=1.50,
+            open_interest=1000,
+            days_to_expiry=1,
+        )
+        itm_contract = OptionContract(
+            symbol="QQQ 260126P00440000",
+            delta=-0.60,
+            gamma=0.04,
+            vega=0.18,
+            theta=-0.01,
+            strike=440.0,
+            expiry="2026-01-26",
+            mid_price=1.40,
+            open_interest=1000,
+            days_to_expiry=1,
+        )
+        engine._intraday_positions["MICRO"] = [
+            OptionsPosition(
+                contract=micro_contract,
+                entry_price=1.5,
+                entry_time="10:30:00",
+                entry_score=3.0,
+                num_contracts=1,
+                stop_price=1.2,
+                target_price=2.0,
+                stop_pct=0.20,
+            )
+        ]
+        engine._intraday_positions["ITM"] = [
+            OptionsPosition(
+                contract=itm_contract,
+                entry_price=1.4,
+                entry_time="10:35:00",
+                entry_score=3.0,
+                num_contracts=1,
+                stop_price=1.0,
+                target_price=2.1,
+                stop_pct=0.25,
+            )
+        ]
+
+        engine.update_position_greeks(
+            delta=0.55,
+            gamma=0.03,
+            vega=0.11,
+            theta=-0.05,
+            symbol="QQQ 260126C00450000",
+        )
+
+        assert micro_contract.delta == 0.55
+        assert micro_contract.gamma == 0.03
+        assert micro_contract.vega == 0.11
+        assert micro_contract.theta == -0.05
+
+        # Non-target contract remains unchanged.
+        assert itm_contract.delta == -0.60
+        assert itm_contract.gamma == 0.04
+        assert itm_contract.vega == 0.18
+        assert itm_contract.theta == -0.01
 
     def test_check_greeks_breach_no_position(self, engine):
         """Test Greeks breach check with no position."""

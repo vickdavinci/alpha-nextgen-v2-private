@@ -204,12 +204,25 @@ class MainRiskMonitorMixin:
         Returns:
             Fresh GreeksSnapshot or None if chain/contract not available.
         """
-        # Get current position symbol
-        position = self.options_engine.get_position()
-        if position is None:
-            return None
+        # Build list of active single-leg option positions (swing + intraday).
+        positions = []
+        seen_symbols = set()
 
-        position_symbol = position.contract.symbol
+        def _append_position(position) -> None:
+            if position is None or getattr(position, "contract", None) is None:
+                return
+            symbol_key = self._normalize_symbol_str(position.contract.symbol)
+            if not symbol_key or symbol_key in seen_symbols:
+                return
+            seen_symbols.add(symbol_key)
+            positions.append(position)
+
+        _append_position(self.options_engine.get_position())
+        for intraday_position in self.options_engine.get_engine_positions():
+            _append_position(intraday_position)
+
+        if not positions:
+            return None
 
         # Get options chain from CurrentSlice (this function has no Slice param)
         if self.CurrentSlice is None:
@@ -224,26 +237,61 @@ class MainRiskMonitorMixin:
 
         # CRITICAL: Wrap chain iteration in try-catch to handle malformed data
         try:
-            # Find our contract in the chain and get fresh Greeks
+            # Build a symbol->greeks map from current chain snapshot.
+            greeks_by_symbol = {}
             for contract in chain:
-                if str(contract.Symbol) == position_symbol:
-                    # Found our contract - extract fresh Greeks
-                    delta = contract.Greeks.Delta if hasattr(contract, "Greeks") else None
-                    gamma = contract.Greeks.Gamma if hasattr(contract, "Greeks") else None
-                    vega = contract.Greeks.Vega if hasattr(contract, "Greeks") else None
-                    theta = contract.Greeks.Theta if hasattr(contract, "Greeks") else None
+                symbol_key = self._normalize_symbol_str(getattr(contract, "Symbol", ""))
+                if not symbol_key:
+                    continue
+                delta = contract.Greeks.Delta if hasattr(contract, "Greeks") else None
+                if delta is None:
+                    continue
+                gamma = contract.Greeks.Gamma if hasattr(contract, "Greeks") else None
+                vega = contract.Greeks.Vega if hasattr(contract, "Greeks") else None
+                theta = contract.Greeks.Theta if hasattr(contract, "Greeks") else None
+                greeks_by_symbol[symbol_key] = (
+                    float(delta),
+                    float(gamma or 0.0),
+                    float(vega or 0.0),
+                    float(theta or 0.0),
+                )
 
-                    if delta is not None:
-                        # Update position with fresh Greeks
-                        self.options_engine.update_position_greeks(delta, gamma, vega, theta)
+            if not greeks_by_symbol:
+                return None
 
-                        return GreeksSnapshot(
-                            delta=delta,
-                            gamma=gamma or 0.0,
-                            vega=vega or 0.0,
-                            theta=theta or 0.0,
-                        )
-                    break
+            deltas = []
+            gammas = []
+            vegas = []
+            thetas = []
+            for position in positions:
+                position_symbol = self._normalize_symbol_str(position.contract.symbol)
+                greeks = greeks_by_symbol.get(position_symbol)
+                if greeks is None:
+                    continue
+                delta, gamma, vega, theta = greeks
+                # Keep engine cache in sync for the specific contract.
+                self.options_engine.update_position_greeks(
+                    delta=delta,
+                    gamma=gamma,
+                    vega=vega,
+                    theta=theta,
+                    symbol=position.contract.symbol,
+                )
+                deltas.append(delta)
+                gammas.append(gamma)
+                vegas.append(vega)
+                thetas.append(theta)
+
+            if not deltas:
+                return None
+
+            # Conservative aggregate for circuit-breaker checks.
+            return GreeksSnapshot(
+                delta=max(deltas, key=abs),
+                gamma=max(gammas, key=abs),
+                vega=max(vegas, key=abs),
+                theta=min(thetas),
+            )
         except Exception as e:
             # Chain iteration failed - log and continue with cached Greeks
             self.Log(f"GREEKS_REFRESH_ERROR: {e}")

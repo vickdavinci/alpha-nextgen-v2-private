@@ -4719,6 +4719,7 @@ class OptionsEngine:
         gamma: Optional[float] = None,
         vega: Optional[float] = None,
         theta: Optional[float] = None,
+        symbol: Optional[str] = None,
         # Compatibility aliases retained at wrapper boundary.
         current_price: Optional[float] = None,
         current_delta: Optional[float] = None,
@@ -4741,6 +4742,7 @@ class OptionsEngine:
             gamma=float(resolved_gamma),
             vega=float(resolved_vega),
             theta=float(resolved_theta),
+            symbol=symbol,
         )
 
     def check_greeks_breach(
