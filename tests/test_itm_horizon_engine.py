@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from datetime import datetime
 
 import config
 from engines.satellite.itm_horizon_engine import ITMHorizonEngine
@@ -142,3 +143,35 @@ def test_reset_daily_clears_only_diagnostics(monkeypatch):
     assert engine._diag_block_codes == {}
     assert engine._consecutive_losses == 3
     assert engine._pause_until == "2024-01-12"
+
+
+def test_run_engine_explicit_cycle_skips_when_chain_none(monkeypatch):
+    monkeypatch.setattr(config, "ITM_ENGINE_ENABLED", True)
+
+    engine = ITMHorizonEngine()
+    algo = SimpleNamespace(
+        Time=datetime(2024, 1, 10, 10, 30, 0),
+        _diag_intraday_candidate_count=0,
+    )
+    host = SimpleNamespace(
+        algorithm=algo,
+        preflight_engine_entry=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError("preflight should not be called when chain is None")
+        ),
+    )
+
+    engine.run_engine_explicit_cycle(
+        host=host,
+        chain=None,
+        qqq_price=500.0,
+        regime_score=60.0,
+        size_multiplier=1.0,
+        effective_portfolio_value=100000.0,
+        vix_intraday=18.0,
+        vix_level_cboe=18.0,
+        transition_ctx={"transition_score": 60.0},
+        itm_dir=OptionDirection.CALL,
+        itm_reason="TEST",
+        intraday_scan_context_ready=True,
+        itm_intraday_cooldown_active=False,
+    )

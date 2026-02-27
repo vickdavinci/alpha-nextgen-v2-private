@@ -371,6 +371,9 @@ class ITMHorizonEngine:
         algorithm = getattr(host, "algorithm", None)
         if algorithm is None:
             return
+        if chain is None:
+            self._log("ITM_ENGINE_SKIP: Empty option chain (None)")
+            return
 
         itm_weekend_cutoff_active = bool(
             getattr(algorithm, "_is_itm_weekend_entry_cutoff_active", lambda: False)()
