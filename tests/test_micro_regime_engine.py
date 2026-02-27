@@ -463,14 +463,17 @@ class TestRecommendStrategy:
     """Tests for recommend_strategy() method."""
 
     def test_perfect_mr_regime_recommends_no_trade(self, micro_engine):
-        """V12.16: PERFECT_MR is ITM handoff-only in MICRO, so strategy remains NO_TRADE."""
+        """PERFECT_MR recommendation depends on OTM CALL policy toggle."""
         strategy = micro_engine.recommend_strategy(
             micro_regime=MicroRegime.PERFECT_MR,
             micro_score=70,
             vix_current=15.0,
             qqq_move_pct=1.0,
         )
-        assert strategy == IntradayStrategy.NO_TRADE
+        if bool(getattr(config, "MICRO_OTM_CALL_ENABLED", False)):
+            assert strategy == IntradayStrategy.MICRO_OTM_MOMENTUM
+        else:
+            assert strategy == IntradayStrategy.NO_TRADE
 
     def test_crash_regime_recommends_protective_puts(self, micro_engine):
         """V6.4: CRASH regime -> PROTECTIVE_PUTS (crisis protection, no score required)."""

@@ -2553,8 +2553,8 @@ MICRO_ENTRY_ENGINE_ENABLED = True  # V10.10: route MICRO gates through dedicated
 INTRADAY_DEBIT_FADE_ENABLED = True  # Legacy alias
 MICRO_DEBIT_FADE_ENABLED = False  # V10.35: disable persistent-loss fade path pending redesign
 MICRO_OTM_MOMENTUM_ENABLED = True  # Canonical OTM momentum switch
-# V12.16: side-specific OTM control.
-MICRO_OTM_CALL_ENABLED = False
+# V12.18: side-specific OTM control.
+MICRO_OTM_CALL_ENABLED = True
 MICRO_OTM_PUT_ENABLED = True
 MICRO_OTM_PUT_REGIME_WHITELIST = ["WORSENING", "WORSENING_HIGH"]
 MICRO_OTM_PUT_ALLOW_DETERIORATING_IF_CONFIRMED = True
