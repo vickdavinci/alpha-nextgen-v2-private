@@ -98,7 +98,7 @@ repos:
         entry: bash scripts/gate.sh changed --no-tests --staged-only
         language: system
         files: ^(engines/satellite/|portfolio/|execution/|persistence/|scheduling/|utils/|models/|main\.py$|main_.*_mixin\.py$|config\.py$|scripts/.*\.py$|scripts/.*\.sh$)
-        pass_filenames: true
+        pass_filenames: false
         stages: [commit]
 
       # Check for print() statements in source files

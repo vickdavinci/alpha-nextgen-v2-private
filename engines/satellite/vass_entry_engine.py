@@ -1631,6 +1631,50 @@ class VASSEntryEngine:
                 contract_symbol="",
             )
 
+    def _build_short_candidates_for_long(
+        self,
+        long_leg: Any,
+        filtered: list[Any],
+        is_call: bool,
+        effective_width_min: float,
+        dyn_widths: Dict[str, float],
+        oi_min_long: int,
+        spread_warn_short: float,
+        short_delta_min: float = 0.0,
+        short_delta_max: float = 1.0,
+    ) -> list[tuple[Any, float, float]]:
+        """Build short leg candidates for a given long leg.
+
+        Returns:
+            List of (contract, width, delta_abs) tuples passing width/delta/OI/spread filters.
+        """
+        short_candidates = []
+        for contract in filtered:
+            if contract.strike == long_leg.strike:
+                continue
+            if contract.days_to_expiry != long_leg.days_to_expiry:
+                continue
+            if is_call:
+                if contract.strike <= long_leg.strike:
+                    continue
+            else:
+                if contract.strike >= long_leg.strike:
+                    continue
+            width = abs(contract.strike - long_leg.strike)
+            dyn_width_max = dyn_widths["width_max"]
+            if config.SPREAD_SHORT_LEG_BY_WIDTH:
+                if width < effective_width_min or width > dyn_width_max:
+                    continue
+                delta_abs = abs(contract.delta) if contract.delta else 0.30
+            else:
+                delta_abs = abs(contract.delta)
+                if not (short_delta_min <= delta_abs <= short_delta_max):
+                    continue
+            if contract.open_interest >= oi_min_long // 2:
+                if contract.spread_pct <= spread_warn_short:
+                    short_candidates.append((contract, width, delta_abs))
+        return short_candidates
+
     def select_spread_legs(
         self,
         *,
@@ -1642,9 +1686,11 @@ class VASSEntryEngine:
         dte_min: Optional[int] = None,
         dte_max: Optional[int] = None,
         set_cooldown: bool = True,
+        enforce_scan_throttle: bool = True,
         log_filters: bool = True,
         debug_stats: Optional[Dict[str, Any]] = None,
         current_price: Optional[float] = None,
+        iv_rank: Optional[float] = None,
     ) -> Optional[tuple[Any, Any]]:
         """Select long and short legs for debit spread construction."""
         # V12.20: VASS-owned spread failure cooldown + scan throttle state.
@@ -1653,11 +1699,13 @@ class VASSEntryEngine:
             candidate_keys=[direction.value if direction is not None else ""],
         ):
             return None
-        if self.should_throttle_spread_scan(
-            current_time=current_time,
-            throttle_minutes=int(getattr(config, "SPREAD_SCAN_THROTTLE_MINUTES", 15)),
-        ):
-            return None
+        if enforce_scan_throttle:
+            if self.should_throttle_spread_scan(
+                current_time=current_time,
+                throttle_minutes=int(getattr(config, "SPREAD_SCAN_THROTTLE_MINUTES", 15)),
+            ):
+                host.set_last_entry_validation_failure("R_SPREAD_SCAN_THROTTLE")
+                return None
 
         if not contracts:
             host.log("SPREAD: No contracts available for spread selection")
@@ -1761,56 +1809,30 @@ class VASSEntryEngine:
             else getattr(config, "SPREAD_LONG_LEG_DELTA_TARGET_PUT", 0.70)
         )
         long_candidates.sort(key=lambda contract: abs(abs(contract.delta) - delta_target))
-        long_leg = long_candidates[0]
 
-        short_candidates = []
-        for contract in filtered:
-            if contract.strike == long_leg.strike:
-                continue
-            if contract.days_to_expiry != long_leg.days_to_expiry:
-                continue
-            if is_call:
-                if contract.strike <= long_leg.strike:
-                    continue
-            else:
-                if contract.strike >= long_leg.strike:
-                    continue
+        # V12.21: D/W-aware pair search — iterate long candidates INSIDE selection,
+        # before returning to caller. This avoids wasting retry attempts / triggering
+        # cooldowns on D/W failures that can be resolved by trying the next candidate.
+        max_long_tries = min(
+            len(long_candidates),
+            int(getattr(config, "VASS_MAX_LONG_LEG_CANDIDATES", 5)),
+        )
 
-            width = abs(contract.strike - long_leg.strike)
-            dyn_width_max = dyn_widths["width_max"]
-            if config.SPREAD_SHORT_LEG_BY_WIDTH:
-                if width < effective_width_min or width > dyn_width_max:
-                    continue
-                delta_abs = abs(contract.delta) if contract.delta else 0.30
-            else:
-                delta_abs = abs(contract.delta)
-                if not (short_delta_min <= delta_abs <= short_delta_max):
-                    continue
+        # Pre-compute D/W bounds (same iv-rank context validator uses).
+        vix_for_dw = self._host_smoothed_vix(host)
+        dw_cap = host._get_spread_debit_width_cap(vix_for_dw, iv_rank=iv_rank)
+        dw_floor = float(getattr(config, "SPREAD_MIN_DEBIT_TO_WIDTH_PCT", 0.28))
 
-            if contract.open_interest >= oi_min_long // 2:
-                if contract.spread_pct <= spread_warn_short:
-                    short_candidates.append((contract, width, delta_abs))
+        # Also compute absolute debit cap for pre-screening
+        abs_cap_vix = float(getattr(config, "SPREAD_DW_ABSOLUTE_CAP_VIX", 15.0))
+        should_check_abs = (
+            bool(getattr(config, "SPREAD_DW_ABSOLUTE_CAP_DYNAMIC_ENABLED", False))
+            and vix_for_dw is not None
+            and float(vix_for_dw) < abs_cap_vix
+        )
 
-        if not short_candidates:
-            host.log(
-                f"SPREAD: No valid short leg | LongStrike={long_leg.strike} | "
-                f"WidthRange=${effective_width_min:.0f}-${dyn_widths['width_max']:.0f}"
-            )
-            if set_cooldown:
-                self.set_spread_failure_cooldown(current_time=current_time, direction=direction)
-            return None
-
-        effective_max = dyn_widths["width_effective_max"]
-        preferred = [item for item in short_candidates if item[1] <= effective_max]
-        if not preferred:
-            preferred = short_candidates
-
-        vix_for_pref = None
-        try:
-            vix_for_pref = self._host_smoothed_vix(host)
-        except Exception:
-            vix_for_pref = None
-
+        # VIX-adaptive short-leg delta preference bands (constant across candidates)
+        vix_for_pref = vix_for_dw
         if vix_for_pref is None:
             pref_min, pref_max, pref_target = (0.18, 0.45, 0.30)
         elif vix_for_pref >= 35.0:
@@ -1822,46 +1844,124 @@ class VASSEntryEngine:
         else:
             pref_min, pref_max, pref_target = (0.20, 0.50, 0.35)
 
-        def rr_sort_key(
-            item: tuple[Any, float, float]
-        ) -> tuple[float, float, float, float, float, float]:
-            candidate, width, delta_abs = item
-            estimated_debit = long_leg.mid_price - candidate.mid_price
-            debit_to_width = estimated_debit / width if width > 0 else 1.0
-            debit_bucket = round(max(0.0, debit_to_width), 2)
-            long_delta_abs = abs(float(getattr(long_leg, "delta", 0.0) or 0.0))
-            # PoP proxy at breakeven: interpolate between long- and short-leg ITM probabilities.
-            pop_proxy = long_delta_abs - debit_to_width * max(0.0, long_delta_abs - delta_abs)
-            pop_proxy = max(0.0, min(1.0, pop_proxy))
-            if pref_min <= delta_abs <= pref_max:
-                delta_band_penalty = 0.0
-            else:
-                delta_band_penalty = min(abs(delta_abs - pref_min), abs(delta_abs - pref_max))
-            if bool(getattr(config, "VASS_SHORT_LEG_SORT_POP_FIRST", True)):
+        effective_max = dyn_widths["width_effective_max"]
+
+        best_pair = None
+        fallback_pair = None
+        winning_preferred: Optional[list] = None
+
+        for long_idx in range(max_long_tries):
+            candidate_long = long_candidates[long_idx]
+
+            # Build short candidates for this long leg
+            candidate_shorts = self._build_short_candidates_for_long(
+                candidate_long,
+                filtered,
+                is_call,
+                effective_width_min,
+                dyn_widths,
+                oi_min_long,
+                spread_warn_short,
+                short_delta_min,
+                short_delta_max,
+            )
+            if not candidate_shorts:
+                continue
+
+            # Apply width preference + R:R sort
+            preferred = [item for item in candidate_shorts if item[1] <= effective_max]
+            if not preferred:
+                preferred = candidate_shorts
+
+            # R:R sort key — captures candidate_long for this iteration via default arg
+            def rr_sort_key(
+                item: tuple[Any, float, float],
+                _long: Any = candidate_long,
+            ) -> tuple[float, float, float, float, float, float]:
+                candidate, width, delta_abs = item
+                estimated_debit = _long.mid_price - candidate.mid_price
+                debit_to_width = estimated_debit / width if width > 0 else 1.0
+                debit_bucket = round(max(0.0, debit_to_width), 2)
+                long_delta_abs = abs(float(getattr(_long, "delta", 0.0) or 0.0))
+                pop_proxy = long_delta_abs - debit_to_width * max(0.0, long_delta_abs - delta_abs)
+                pop_proxy = max(0.0, min(1.0, pop_proxy))
+                if pref_min <= delta_abs <= pref_max:
+                    delta_band_penalty = 0.0
+                else:
+                    delta_band_penalty = min(abs(delta_abs - pref_min), abs(delta_abs - pref_max))
+                if bool(getattr(config, "VASS_SHORT_LEG_SORT_POP_FIRST", True)):
+                    return (
+                        -pop_proxy,
+                        debit_bucket,
+                        delta_band_penalty,
+                        abs(delta_abs - pref_target),
+                        debit_to_width,
+                        -width,
+                    )
                 return (
-                    -pop_proxy,
                     debit_bucket,
                     delta_band_penalty,
                     abs(delta_abs - pref_target),
                     debit_to_width,
                     -width,
+                    -pop_proxy,
                 )
-            return (
-                debit_bucket,
-                delta_band_penalty,
-                abs(delta_abs - pref_target),
-                debit_to_width,
-                -width,
-                -pop_proxy,
-            )
 
-        preferred.sort(key=rr_sort_key)
-        if bool(getattr(config, "VASS_EV_DIAGNOSTICS_ENABLED", False)):
+            preferred.sort(key=rr_sort_key)
+
+            candidate_short = preferred[0][0]
+            est_width = abs(candidate_short.strike - candidate_long.strike)
+            est_debit = candidate_long.mid_price - candidate_short.mid_price
+            est_dw = est_debit / est_width if est_width > 0 else 1.0
+
+            # Save first viable pair as fallback (preserves original behavior if no pair passes)
+            if fallback_pair is None:
+                fallback_pair = (candidate_long, candidate_short)
+                winning_preferred = preferred
+
+            # Pre-screen: D/W within bounds?
+            if est_dw < dw_floor or est_dw > dw_cap:
+                continue
+            # Pre-screen: absolute debit cap?
+            if should_check_abs:
+                abs_cap_scaled = host._get_spread_absolute_debit_cap(vix_for_dw, est_width)
+                if est_debit > abs_cap_scaled:
+                    continue
+
+            best_pair = (candidate_long, candidate_short)
+            winning_preferred = preferred
+            if long_idx > 0:
+                host.log(
+                    f"SPREAD: D/W-aware search found pair at candidate #{long_idx + 1} | "
+                    f"Delta={abs(candidate_long.delta):.2f} | D/W~{est_dw:.1%} | "
+                    f"Cap={dw_cap:.0%} | Floor={dw_floor:.0%}"
+                )
+            break
+
+        if best_pair is None and fallback_pair is None:
+            host.log(
+                f"SPREAD: No valid short leg for any of {max_long_tries} long candidates | "
+                f"WidthRange=${effective_width_min:.0f}-${dyn_widths['width_max']:.0f}"
+            )
+            if set_cooldown:
+                self.set_spread_failure_cooldown(current_time=current_time, direction=direction)
+            return None
+
+        if best_pair is not None:
+            long_leg, short_leg = best_pair
+        else:
+            long_leg, short_leg = fallback_pair
+
+        actual_width = abs(short_leg.strike - long_leg.strike)
+        chosen_debit = long_leg.mid_price - short_leg.mid_price
+        chosen_dw = chosen_debit / actual_width if actual_width > 0 else 1.0
+
+        if bool(getattr(config, "VASS_EV_DIAGNOSTICS_ENABLED", False)) and winning_preferred:
             top_n = max(1, int(getattr(config, "VASS_EV_DIAGNOSTICS_TOP_N", 3)))
             diag_rows = []
-            for candidate, width, delta_abs in preferred[:top_n]:
-                est_debit = long_leg.mid_price - candidate.mid_price
-                debit_to_width = est_debit / width if width > 0 else 0.0
+            for candidate, width, delta_abs in winning_preferred[:top_n]:
+                est_diag_debit = long_leg.mid_price - candidate.mid_price
+                debit_to_width = est_diag_debit / width if width > 0 else 0.0
                 net_delta = max(0.0, abs(long_leg.delta) - abs(candidate.delta))
                 diag_rows.append(
                     f"Short={candidate.strike:.1f}|W={width:.1f}|DW={debit_to_width:.1%}|"
@@ -1871,10 +1971,6 @@ class VASSEntryEngine:
                 f"SPREAD_EV_DIAG: Long={long_leg.strike:.1f} D={abs(long_leg.delta):.2f} | "
                 + " || ".join(diag_rows)
             )
-        short_leg = preferred[0][0]
-        actual_width = abs(short_leg.strike - long_leg.strike)
-        chosen_debit = long_leg.mid_price - short_leg.mid_price
-        chosen_dw = chosen_debit / actual_width if actual_width > 0 else 1.0
 
         host.log(
             f"SPREAD: Selected legs | Long={long_leg.strike} (delta={long_leg.delta:.2f}) | "
@@ -2060,39 +2156,74 @@ class VASSEntryEngine:
                 return None
 
             short_candidates.sort(key=lambda contract: contract.bid, reverse=True)
-            short_leg = short_candidates[0]
 
-            target_long_strike = short_leg.strike - credit_width_target
-            long_candidates = [
-                put
-                for put in puts
-                if put.strike == target_long_strike
-                and put.expiry == short_leg.expiry
-                and put.ask > 0
-                and put.open_interest >= max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)
-                and put.spread_pct <= config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT
-            ]
+            # V12.21: C/W-aware pair search inside selection function
+            max_short_tries = min(
+                len(short_candidates),
+                int(getattr(config, "VASS_MAX_SHORT_LEG_CANDIDATES", 5)),
+            )
+            cw_floor = host._get_effective_credit_to_width_min(vix_current=smoothed_vix)
 
-            if not long_candidates:
-                long_candidates = [
+            best_credit_pair = None
+            fallback_credit_pair = None
+
+            for short_idx in range(max_short_tries):
+                candidate_short = short_candidates[short_idx]
+
+                # Build long candidates for this short leg
+                target_long_strike = candidate_short.strike - credit_width_target
+                candidate_longs = [
                     put
                     for put in puts
-                    if put.strike < short_leg.strike
-                    and put.expiry == short_leg.expiry
-                    and effective_width_min
-                    <= (short_leg.strike - put.strike)
-                    <= dyn_widths["width_max"]
+                    if put.strike == target_long_strike
+                    and put.expiry == candidate_short.expiry
                     and put.ask > 0
                     and put.open_interest >= max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)
                     and put.spread_pct <= config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT
                 ]
-                if long_candidates:
-                    long_candidates.sort(key=lambda contract: contract.strike, reverse=True)
 
-            if not long_candidates:
+                if not candidate_longs:
+                    # Fallback to width-range search
+                    candidate_longs = [
+                        put
+                        for put in puts
+                        if put.strike < candidate_short.strike
+                        and put.expiry == candidate_short.expiry
+                        and effective_width_min
+                        <= (candidate_short.strike - put.strike)
+                        <= dyn_widths["width_max"]
+                        and put.ask > 0
+                        and put.open_interest >= max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)
+                        and put.spread_pct <= config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT
+                    ]
+                    if candidate_longs:
+                        candidate_longs.sort(key=lambda c: c.strike, reverse=True)
+                if not candidate_longs:
+                    continue
+
+                candidate_long = candidate_longs[0]
+
+                if fallback_credit_pair is None:
+                    fallback_credit_pair = (candidate_short, candidate_long)
+
+                # Pre-estimate C/W
+                est_width = candidate_short.strike - candidate_long.strike
+                est_credit = candidate_short.bid - candidate_long.ask
+                est_cw = est_credit / est_width if est_width > 0 else 0.0
+
+                if est_cw >= cw_floor:
+                    best_credit_pair = (candidate_short, candidate_long)
+                    if short_idx > 0:
+                        host.log(
+                            f"SPREAD: C/W-aware search found pair at candidate #{short_idx + 1} | "
+                            f"ShortDelta={abs(candidate_short.delta):.2f} | C/W~{est_cw:.1%} | "
+                            f"Floor={cw_floor:.0%}"
+                        )
+                    break
+
+            if best_credit_pair is None and fallback_credit_pair is None:
                 host.log(
-                    f"VASS: No long put candidates for protection | "
-                    f"Short strike={short_leg.strike} | Target=${target_long_strike} | "
+                    f"VASS: No long put candidates for any of {max_short_tries} short candidates | "
                     f"Min OI={max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)} | "
                     f"Max spread%={config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT:.2f}"
                 )
@@ -2103,7 +2234,11 @@ class VASSEntryEngine:
                     )
                 return None
 
-            long_leg = long_candidates[0]
+            if best_credit_pair is not None:
+                short_leg, long_leg = best_credit_pair
+            else:
+                short_leg, long_leg = fallback_credit_pair
+
             width = short_leg.strike - long_leg.strike
             credit = short_leg.bid - long_leg.ask
 
@@ -2231,39 +2366,75 @@ class VASSEntryEngine:
                 return None
 
             short_candidates.sort(key=lambda contract: contract.bid, reverse=True)
-            short_leg = short_candidates[0]
 
-            target_long_strike = short_leg.strike + credit_width_target
-            long_candidates = [
-                call
-                for call in calls
-                if call.strike == target_long_strike
-                and call.expiry == short_leg.expiry
-                and call.ask > 0
-                and call.open_interest >= max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)
-                and call.spread_pct <= config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT
-            ]
+            # V12.21: C/W-aware pair search inside selection function
+            max_short_tries = min(
+                len(short_candidates),
+                int(getattr(config, "VASS_MAX_SHORT_LEG_CANDIDATES", 5)),
+            )
+            cw_floor = host._get_effective_credit_to_width_min(vix_current=smoothed_vix)
 
-            if not long_candidates:
-                long_candidates = [
+            best_credit_pair = None
+            fallback_credit_pair = None
+
+            for short_idx in range(max_short_tries):
+                candidate_short = short_candidates[short_idx]
+
+                # Build long candidates for this short leg
+                target_long_strike = candidate_short.strike + credit_width_target
+                candidate_longs = [
                     call
                     for call in calls
-                    if call.strike > short_leg.strike
-                    and call.expiry == short_leg.expiry
-                    and effective_width_min
-                    <= (call.strike - short_leg.strike)
-                    <= dyn_widths["width_max"]
+                    if call.strike == target_long_strike
+                    and call.expiry == candidate_short.expiry
                     and call.ask > 0
                     and call.open_interest >= max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)
                     and call.spread_pct <= config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT
                 ]
-                if long_candidates:
-                    long_candidates.sort(key=lambda contract: contract.strike)
 
-            if not long_candidates:
+                if not candidate_longs:
+                    # Fallback to width-range search
+                    candidate_longs = [
+                        call
+                        for call in calls
+                        if call.strike > candidate_short.strike
+                        and call.expiry == candidate_short.expiry
+                        and effective_width_min
+                        <= (call.strike - candidate_short.strike)
+                        <= dyn_widths["width_max"]
+                        and call.ask > 0
+                        and call.open_interest
+                        >= max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)
+                        and call.spread_pct <= config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT
+                    ]
+                    if candidate_longs:
+                        candidate_longs.sort(key=lambda c: c.strike)
+                if not candidate_longs:
+                    continue
+
+                candidate_long = candidate_longs[0]
+
+                if fallback_credit_pair is None:
+                    fallback_credit_pair = (candidate_short, candidate_long)
+
+                # Pre-estimate C/W
+                est_width = candidate_long.strike - candidate_short.strike
+                est_credit = candidate_short.bid - candidate_long.ask
+                est_cw = est_credit / est_width if est_width > 0 else 0.0
+
+                if est_cw >= cw_floor:
+                    best_credit_pair = (candidate_short, candidate_long)
+                    if short_idx > 0:
+                        host.log(
+                            f"SPREAD: C/W-aware search found pair at candidate #{short_idx + 1} | "
+                            f"ShortDelta={abs(candidate_short.delta):.2f} | C/W~{est_cw:.1%} | "
+                            f"Floor={cw_floor:.0%}"
+                        )
+                    break
+
+            if best_credit_pair is None and fallback_credit_pair is None:
                 host.log(
-                    f"VASS: No long call candidates for protection | "
-                    f"Short strike={short_leg.strike} | Target=${target_long_strike} | "
+                    f"VASS: No long call candidates for any of {max_short_tries} short candidates | "
                     f"Min OI={max(1, config.CREDIT_SPREAD_MIN_OPEN_INTEREST // 2)} | "
                     f"Max spread%={config.CREDIT_SPREAD_LONG_LEG_MAX_SPREAD_PCT:.2f}"
                 )
@@ -2274,7 +2445,11 @@ class VASSEntryEngine:
                     )
                 return None
 
-            long_leg = long_candidates[0]
+            if best_credit_pair is not None:
+                short_leg, long_leg = best_credit_pair
+            else:
+                short_leg, long_leg = fallback_credit_pair
+
             width = long_leg.strike - short_leg.strike
             credit = short_leg.bid - long_leg.ask
 
@@ -2301,6 +2476,8 @@ class VASSEntryEngine:
         current_time: Optional[str] = None,
         set_cooldown: bool = True,
         current_price: Optional[float] = None,
+        iv_rank: Optional[float] = None,
+        enforce_scan_throttle: bool = True,
     ) -> Optional[tuple[Any, Any]]:
         """Try multiple DTE ranges before applying debit spread failure cooldown."""
         if not dte_ranges:
@@ -2310,7 +2487,17 @@ class VASSEntryEngine:
                 target_width=target_width,
                 current_time=current_time,
                 current_price=current_price,
+                iv_rank=iv_rank,
+                enforce_scan_throttle=enforce_scan_throttle,
             )
+
+        # Throttle once per scan invocation, not per DTE fallback / retry candidate.
+        if enforce_scan_throttle and self.should_throttle_spread_scan(
+            current_time=current_time,
+            throttle_minutes=int(getattr(config, "SPREAD_SCAN_THROTTLE_MINUTES", 15)),
+        ):
+            host.set_last_entry_validation_failure("R_SPREAD_SCAN_THROTTLE")
+            return None
 
         failure_stats = []
         for dte_min, dte_max in dte_ranges:
@@ -2323,9 +2510,11 @@ class VASSEntryEngine:
                 dte_min=dte_min,
                 dte_max=dte_max,
                 set_cooldown=False,
+                enforce_scan_throttle=False,
                 log_filters=False,
                 debug_stats=stats,
                 current_price=current_price,
+                iv_rank=iv_rank,
             )
             if spread_legs is not None:
                 if dte_min is not None and dte_max is not None:
@@ -2607,8 +2796,11 @@ class VASSEntryEngine:
                     dte_ranges=dte_ranges,
                     set_cooldown=(attempt == max_attempts - 1),
                     current_price=qqq_price,
+                    iv_rank=iv_rank,
+                    enforce_scan_throttle=(attempt == 0),
                 )
                 if spread_legs is None:
+                    last_validation_reason = host.pop_last_entry_validation_failure()
                     break
 
                 long_leg, short_leg = spread_legs

@@ -1028,6 +1028,11 @@ VASS_CREDIT_THETA_RATIO_GATE_ENABLED = True  # V12.10: ratio-based theta gate sc
 VASS_CREDIT_MIN_NET_THETA_RATIO = -0.03  # Allow up to 3% of credit as daily theta cost.
 VASS_CREDIT_MAX_VEGA_TO_CREDIT = 1.20  # Max absolute net vega as fraction of credit received.
 
+# V12.21: D/W-aware pair search — try N candidates inside selection before returning.
+# Avoids wasting retry attempts and triggering cooldowns on D/W-resolvable failures.
+VASS_MAX_LONG_LEG_CANDIDATES = 5  # Debit: iterate up to 5 long legs by delta proximity
+VASS_MAX_SHORT_LEG_CANDIDATES = 5  # Credit: iterate up to 5 short legs by bid descending
+
 # V12.7: Universal adaptive VASS policy (fully reversible via VASS_EXIT_POLICY_MODE).
 # LEGACY      -> preserve historical behavior.
 # THESIS_FIRST -> regime-confirmed no-stop mode with regime-break exits as stop replacement.
