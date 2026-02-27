@@ -352,7 +352,7 @@ class MainIntradayCloseMixin:
 
         # Skip OCO recovery in force-close window to avoid close-race amplification.
         try:
-            exit_hour, exit_min = self.options_engine._get_intraday_force_exit_hhmm()
+            exit_hour, exit_min = self.options_engine._get_engine_force_exit_hhmm()
             cutoff = int(getattr(config, "OCO_RECOVERY_CUTOFF_MINUTES_BEFORE_FORCE_EXIT", 20))
             now_minutes = self.Time.hour * 60 + self.Time.minute
             force_minutes = exit_hour * 60 + exit_min
@@ -626,7 +626,7 @@ class MainIntradayCloseMixin:
 
         # Only after effective force-close + 5 minutes (dynamic on early-close days).
         try:
-            exit_hour, exit_minute = self.options_engine._get_intraday_force_exit_hhmm()
+            exit_hour, exit_minute = self.options_engine._get_engine_force_exit_hhmm()
         except Exception:
             exit_time = getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15")
             exit_hour, exit_minute = map(int, exit_time.split(":"))
@@ -641,7 +641,7 @@ class MainIntradayCloseMixin:
             return
 
         # Check if we have intraday positions
-        if not hasattr(self, "options_engine") or not self.options_engine.has_intraday_position():
+        if not hasattr(self, "options_engine") or not self.options_engine.has_engine_position():
             self._intraday_force_exit_fallback_date = self.Time.date()
             return
 

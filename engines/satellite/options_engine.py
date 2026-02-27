@@ -392,7 +392,7 @@ class OptionsEngine:
             return ""
         return " ".join(text.split())
 
-    def _get_intraday_force_exit_hhmm(self) -> Tuple[int, int]:
+    def _get_engine_force_exit_hhmm(self) -> Tuple[int, int]:
         """Return effective intraday force-exit time as (hour, minute).
 
         Uses scheduler-provided dynamic close time when available (early-close days),
@@ -417,6 +417,10 @@ class OptionsEngine:
             return int(hh), int(mm)
         except Exception:
             return 15, 15
+
+    def _get_intraday_force_exit_hhmm(self) -> Tuple[int, int]:
+        """Backward-compatible alias for engine force-exit cutoff lookup."""
+        return self._get_engine_force_exit_hhmm()
 
     def _canonical_intraday_strategy(
         self, strategy: Optional["IntradayStrategy"]
@@ -702,7 +706,7 @@ class OptionsEngine:
         force_exit_dte = int(getattr(config, "INTRADAY_ITM_FORCE_EXIT_DTE", 1))
         return live_dte > force_exit_dte
 
-    def record_intraday_result(
+    def record_engine_result(
         self,
         symbol: str,
         is_win: bool,
@@ -712,6 +716,21 @@ class OptionsEngine:
         """Track MICRO directional loss streaks/cooldowns (ITM is sovereign)."""
         record_intraday_result_impl(
             self,
+            symbol=symbol,
+            is_win=is_win,
+            current_time=current_time,
+            strategy=strategy,
+        )
+
+    def record_intraday_result(
+        self,
+        symbol: str,
+        is_win: bool,
+        current_time: Optional[str] = None,
+        strategy: Optional[str] = None,
+    ) -> None:
+        """Backward-compatible alias for engine result tracking."""
+        self.record_engine_result(
             symbol=symbol,
             is_win=is_win,
             current_time=current_time,
@@ -1610,7 +1629,7 @@ class OptionsEngine:
 
         return True, "R_OK"
 
-    def preflight_intraday_entry(
+    def preflight_engine_entry(
         self,
         strategy: Optional["IntradayStrategy"],
         direction: Optional[OptionDirection] = None,
@@ -1665,6 +1684,23 @@ class OptionsEngine:
             return False, tl_reason or "E_INTRADAY_TRADE_LIMIT", tl_detail
 
         return True, "R_OK", None
+
+    def preflight_intraday_entry(
+        self,
+        strategy: Optional["IntradayStrategy"],
+        direction: Optional[OptionDirection] = None,
+        state: Optional[Any] = None,
+        vix_current: Optional[float] = None,
+        transition_ctx: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[bool, str, Optional[str]]:
+        """Backward-compatible alias for single-leg engine preflight."""
+        return self.preflight_engine_entry(
+            strategy=strategy,
+            direction=direction,
+            state=state,
+            vix_current=vix_current,
+            transition_ctx=transition_ctx,
+        )
 
     def can_enter_intraday(self) -> Tuple[bool, str]:
         """
@@ -4046,7 +4082,7 @@ class OptionsEngine:
                     position = pos
                     break
         else:
-            position = self.get_intraday_position(engine=engine)
+            position = self.get_engine_position(engine=engine)
             lane = (
                 engine or self._engine_lane_from_strategy(getattr(position, "entry_strategy", ""))
                 if position is not None
@@ -4060,7 +4096,7 @@ class OptionsEngine:
         if self.has_pending_engine_exit(symbol=self._symbol_str(position.contract.symbol)):
             return None
 
-        force_hh, force_mm = self._get_intraday_force_exit_hhmm()
+        force_hh, force_mm = self._get_engine_force_exit_hhmm()
         force_exit_time = current_hour > force_hh or (
             current_hour == force_hh and current_minute >= force_mm
         )
@@ -4376,7 +4412,7 @@ class OptionsEngine:
             vix_level_override=vix_level_override,
         )
 
-    def get_last_intraday_strategy(self) -> IntradayStrategy:
+    def get_last_engine_strategy(self) -> IntradayStrategy:
         """
         V2.3.16: Get the last recommended intraday strategy.
 
@@ -4384,6 +4420,10 @@ class OptionsEngine:
             IntradayStrategy enum (MICRO_DEBIT_FADE, MICRO_OTM_MOMENTUM, ITM_MOMENTUM, NO_TRADE, etc.)
         """
         return self._micro_regime_engine.get_state().recommended_strategy
+
+    def get_last_intraday_strategy(self) -> IntradayStrategy:
+        """Backward-compatible alias for last engine strategy."""
+        return self.get_last_engine_strategy()
 
     def update_market_open_data(
         self, vix_open: float, spy_open: float, spy_prior_close: float
@@ -4974,19 +5014,27 @@ class OptionsEngine:
                 trades_only=True,
             )
 
-    def has_intraday_position(self, engine: Optional[str] = None) -> bool:
-        """V2.3.2: Check if an intraday position exists (optionally by engine lane)."""
+    def has_engine_position(self, engine: Optional[str] = None) -> bool:
+        """Check if a single-leg engine position exists (optionally by lane)."""
         if engine is None:
             return any(len(v or []) > 0 for v in self._intraday_positions.values())
         eng = str(engine).upper()
         return len(self._intraday_positions.get(eng) or []) > 0
 
-    def get_intraday_position(self, engine: Optional[str] = None) -> Optional[OptionsPosition]:
-        """V2.3.2: Get current intraday position (optionally by engine lane)."""
+    def has_intraday_position(self, engine: Optional[str] = None) -> bool:
+        """Backward-compatible alias for single-leg engine position check."""
+        return self.has_engine_position(engine=engine)
+
+    def get_engine_position(self, engine: Optional[str] = None) -> Optional[OptionsPosition]:
+        """Get current single-leg engine position (optionally by lane)."""
         if engine is not None:
             return self._get_engine_lane_position(str(engine).upper())
         # Deterministic default for legacy callers.
         return self._get_engine_lane_position("ITM") or self._get_engine_lane_position("MICRO")
+
+    def get_intraday_position(self, engine: Optional[str] = None) -> Optional[OptionsPosition]:
+        """Backward-compatible alias for single-leg engine position lookup."""
+        return self.get_engine_position(engine=engine)
 
     def get_intraday_position_engine(self) -> Optional[str]:
         """Return default ownership lane for legacy callers."""
@@ -4999,7 +5047,7 @@ class OptionsEngine:
     def has_position(self) -> bool:
         """Check if any position exists (single-leg, spread, or intraday)."""
         return (
-            self._position is not None or self.has_spread_position() or self.has_intraday_position()
+            self._position is not None or self.has_spread_position() or self.has_engine_position()
         )
 
     def get_position(self) -> Optional[OptionsPosition]:

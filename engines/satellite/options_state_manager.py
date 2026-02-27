@@ -320,7 +320,7 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
                 f"Strategy={position.entry_strategy} | DTE={live_dte}"
             )
         else:
-            force_hh, force_mm = self._get_intraday_force_exit_hhmm()
+            force_hh, force_mm = self._get_engine_force_exit_hhmm()
             self.log(
                 "OPT: STATE_RESTORE - Clearing intraday position (non-hold strategy/policy) | "
                 f"Cutoff={force_hh:02d}:{force_mm:02d}"
@@ -345,7 +345,7 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
             return False
         if self.should_hold_intraday_overnight(position):
             return True
-        force_hh, force_mm = self._get_intraday_force_exit_hhmm()
+        force_hh, force_mm = self._get_engine_force_exit_hhmm()
         self.log(
             "OPT: STATE_RESTORE - Clearing intraday lane position (non-hold strategy/policy) | "
             f"Lane={lane_hint} | Cutoff={force_hh:02d}:{force_mm:02d}"
@@ -728,7 +728,7 @@ def reset_options_engine_daily_state_impl(self, current_date: str) -> None:
         self._pending_intraday_exit_lanes = set()
         self._pending_intraday_exit_symbols = set()
         self._transition_context_snapshot = None
-        if not self.has_intraday_position():
+        if not self.has_engine_position():
             self._intraday_position_engine = None
         self._intraday_force_exit_hold_skip_log_date = {}
         self._last_intraday_close_time = None

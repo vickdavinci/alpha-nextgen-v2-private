@@ -640,7 +640,7 @@ class MicroEntryEngine:
                     f"RETRY_ONCE: {retry_reason_code} | "
                     f"Reusing prior direction={intraday_direction.value}"
                 )
-                retry_strategy = host.get_last_intraday_strategy()
+                retry_strategy = host.get_last_engine_strategy()
                 if retry_strategy == IntradayStrategy.NO_TRADE:
                     retry_strategy = IntradayStrategy.MICRO_OTM_MOMENTUM
                 forced_intraday_strategy = retry_strategy
@@ -661,13 +661,13 @@ class MicroEntryEngine:
                     message=f"INTRADAY: Blocked - {signal_reason}",
                 )
             else:
-                candidate_strategy = forced_intraday_strategy or host.get_last_intraday_strategy()
+                candidate_strategy = forced_intraday_strategy or host.get_last_engine_strategy()
                 intraday_strategy = candidate_strategy
                 (
                     preflight_ok,
                     preflight_code,
                     preflight_detail,
-                ) = host.preflight_intraday_entry(
+                ) = host.preflight_engine_entry(
                     strategy=candidate_strategy,
                     direction=intraday_direction,
                     state=micro_state,
@@ -746,7 +746,7 @@ class MicroEntryEngine:
                 f"INTRADAY: Proceeding with ladder size mult {algorithm._premarket_vix_size_mult:.2f}"
             )
             intraday_strategy = (
-                intraday_strategy or forced_intraday_strategy or host.get_last_intraday_strategy()
+                intraday_strategy or forced_intraday_strategy or host.get_last_engine_strategy()
             )
             intraday_contract = algorithm._select_intraday_option_contract(
                 chain,
@@ -951,7 +951,7 @@ class MicroEntryEngine:
                         drop_code = "R_COOLDOWN_INTRADAY"
                     elif algorithm._margin_cb_in_progress or algorithm._margin_call_cooldown_until:
                         drop_code = "R_MARGIN_CB_ACTIVE"
-                    elif intraday_strategy is not None and host.has_intraday_position(
+                    elif intraday_strategy is not None and host.has_engine_position(
                         engine=host._engine_lane_from_strategy(intraday_strategy.value)
                     ):
                         drop_code = "R_DUPLICATE_INTRADAY_POSITION"

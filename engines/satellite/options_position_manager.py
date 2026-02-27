@@ -207,7 +207,7 @@ def register_entry_impl(
             )
         self.log(
             f"OPT: INTRADAY position registered (trade #{self._intraday_trades_today}, "
-            f"force-close at {self._get_intraday_force_exit_hhmm()[0]:02d}:{self._get_intraday_force_exit_hhmm()[1]:02d})",
+            f"force-close at {self._get_engine_force_exit_hhmm()[0]:02d}:{self._get_engine_force_exit_hhmm()[1]:02d})",
             trades_only=True,
         )
     else:

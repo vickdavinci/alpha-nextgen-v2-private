@@ -16,7 +16,7 @@ def apply_premarket_vix_actions(algo: Any) -> None:
     # Always flush stale intraday option carry first.
     if (
         getattr(config, "PREMARKET_FORCE_CLOSE_INTRADAY_STALE", True)
-        and algo.options_engine.has_intraday_position()
+        and algo.options_engine.has_engine_position()
     ):
         for intraday_pos in algo.options_engine.get_engine_positions():
             if intraday_pos is None or intraday_pos.contract is None:

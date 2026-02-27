@@ -1915,7 +1915,7 @@ class MainOrdersMixin:
                     if is_spread_leg:
                         # Spread exit - track leg closes
                         self._handle_spread_leg_close(symbol, fill_price, fill_qty)
-                    elif self.options_engine.has_intraday_position():
+                    elif self.options_engine.has_engine_position():
                         # Resolve by symbol to avoid same-lane mismatches when multiple intraday positions coexist.
                         intraday_pos = None
                         for candidate in self.options_engine.get_engine_positions():
@@ -1977,7 +1977,7 @@ class MainOrdersMixin:
                                     closed_qty = abs(int(fill_qty))
                                 is_win = fill_price > removed_position.entry_price
                                 # V10.8: Do NOT feed MICRO outcomes into VASS spread win-rate / breaker state.
-                                self.options_engine.record_intraday_result(
+                                self.options_engine.record_engine_result(
                                     symbol=symbol,
                                     is_win=is_win,
                                     current_time=str(self.Time),
@@ -2107,7 +2107,7 @@ class MainOrdersMixin:
                             self._intraday_entry_snapshot.pop(symbol_norm, None)
                             entry_price = float(snapshot["entry_price"])
                             is_win = fill_price > entry_price
-                            self.options_engine.record_intraday_result(
+                            self.options_engine.record_engine_result(
                                 symbol=symbol,
                                 is_win=is_win,
                                 current_time=str(self.Time),

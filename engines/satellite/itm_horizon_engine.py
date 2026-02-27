@@ -388,7 +388,7 @@ class ITMHorizonEngine:
                 itm_preflight_ok,
                 itm_preflight_code,
                 itm_preflight_detail,
-            ) = host.preflight_intraday_entry(
+            ) = host.preflight_engine_entry(
                 strategy=IntradayStrategy.ITM_MOMENTUM,
                 direction=itm_dir,
             )
