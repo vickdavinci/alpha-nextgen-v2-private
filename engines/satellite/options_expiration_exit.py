@@ -55,9 +55,7 @@ def check_expiring_options_force_exit_impl(
 
     # MICRO intraday strategies are explicitly managed by intraday force-exit rules.
     # Keep noon expiration hammer active for PROTECTIVE_PUTS and non-MICRO positions.
-    strategy_name = self._canonical_intraday_strategy_name(
-        getattr(position, "entry_strategy", None)
-    )
+    strategy_name = self._canonical_engine_strategy_name(getattr(position, "entry_strategy", None))
     if strategy_name in (
         IntradayStrategy.MICRO_DEBIT_FADE.value,
         IntradayStrategy.MICRO_OTM_MOMENTUM.value,

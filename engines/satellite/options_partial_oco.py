@@ -70,7 +70,7 @@ def get_partial_fill_oco_seed_impl(
         or self._pending_intraday_entry
         or self._symbol_str(self._pending_contract.symbol) != symbol_norm
     ):
-        inferred_strategy = self._infer_intraday_strategy_from_order_tag(order_tag)
+        inferred_strategy = self._infer_engine_strategy_from_order_tag(order_tag)
         if inferred_strategy == IntradayStrategy.NO_TRADE.value:
             return None
         entry_px = float(fill_price or 0.0)

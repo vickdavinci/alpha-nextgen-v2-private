@@ -10,7 +10,7 @@ def get_intraday_exit_profile_impl(
     self, entry_strategy: str, direction: Optional[str] = None
 ) -> Tuple[float, Optional[float]]:
     """Return (target_pct, stop_pct_override) for strategy-aware intraday exits."""
-    strategy = self._canonical_intraday_strategy_name(entry_strategy)
+    strategy = self._canonical_engine_strategy_name(entry_strategy)
     if strategy == IntradayStrategy.ITM_MOMENTUM.value:
         if self._itm_horizon_engine.enabled():
             vix_for_itm = None
@@ -159,7 +159,7 @@ def apply_intraday_target_overrides_impl(
     current_dte: Optional[int],
 ) -> float:
     """Apply strategy-specific target overrides (e.g., 0DTE fade profile)."""
-    strategy = self._canonical_intraday_strategy_name(entry_strategy)
+    strategy = self._canonical_engine_strategy_name(entry_strategy)
     if strategy == IntradayStrategy.MICRO_DEBIT_FADE.value and current_dte is not None:
         if int(current_dte) <= 0:
             return float(getattr(config, "MICRO_DEBIT_FADE_TARGET_0DTE", target_pct))
@@ -174,7 +174,7 @@ def apply_intraday_stop_overrides_impl(
     current_dte: Optional[int],
 ) -> float:
     """Apply strategy-specific stop overrides (e.g., 0DTE fade profile)."""
-    strategy = self._canonical_intraday_strategy_name(entry_strategy)
+    strategy = self._canonical_engine_strategy_name(entry_strategy)
     if strategy == IntradayStrategy.MICRO_DEBIT_FADE.value and current_dte is not None:
         if int(current_dte) <= 0:
             return float(getattr(config, "MICRO_DEBIT_FADE_STOP_0DTE", stop_pct))
@@ -185,7 +185,7 @@ def get_trail_config_impl(
     self, entry_strategy: str, direction: Optional[str] = None
 ) -> Optional[Tuple[float, float]]:
     """Return (trigger_pct, trail_pct) for intraday strategy trailing stops."""
-    strategy = self._canonical_intraday_strategy_name(entry_strategy)
+    strategy = self._canonical_engine_strategy_name(entry_strategy)
     if strategy == IntradayStrategy.ITM_MOMENTUM.value:
         if self._itm_horizon_engine.enabled():
             vix_for_itm = None

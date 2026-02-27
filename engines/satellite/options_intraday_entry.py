@@ -66,7 +66,7 @@ def check_intraday_entry_signal_impl(
     """
 
     validation_lane = self._engine_lane_from_strategy(
-        self._canonical_intraday_strategy_name(
+        self._canonical_engine_strategy_name(
             (
                 getattr(forced_entry_strategy, "value", forced_entry_strategy)
                 if forced_entry_strategy is not None
@@ -101,8 +101,7 @@ def check_intraday_entry_signal_impl(
     state = micro_state
     itm_forced_path = (
         forced_entry_strategy is not None
-        and self._canonical_intraday_strategy(forced_entry_strategy)
-        == IntradayStrategy.ITM_MOMENTUM
+        and self._canonical_engine_strategy(forced_entry_strategy) == IntradayStrategy.ITM_MOMENTUM
     )
     if state is None:
         if itm_forced_path:
@@ -134,7 +133,7 @@ def check_intraday_entry_signal_impl(
 
     # V10.10: allow explicit strategy overrides for retry/ITM sovereign paths.
     if forced_entry_strategy is not None:
-        entry_strategy = self._canonical_intraday_strategy(forced_entry_strategy)
+        entry_strategy = self._canonical_engine_strategy(forced_entry_strategy)
     else:
         # V6.8: NO_TRADE is now blocked earlier in generate_micro_intraday_signal()
         # Safety net remains for non-ITM override paths.
@@ -154,7 +153,7 @@ def check_intraday_entry_signal_impl(
                 )
                 return fail("E_INTRADAY_NO_TRADE_STRATEGY", state.micro_regime.value)
         else:
-            entry_strategy = self._canonical_intraday_strategy(state.recommended_strategy)
+            entry_strategy = self._canonical_engine_strategy(state.recommended_strategy)
     if entry_strategy is None:
         return fail("E_INTRADAY_NO_STRATEGY")
     validation_lane = self._engine_lane_from_strategy(entry_strategy.value)
@@ -522,7 +521,7 @@ def check_intraday_entry_signal_impl(
                     f"{current_hour:02d}:{current_minute:02d}>={late_block_start} | DTE={dte_now}",
                 )
 
-    strategy_for_friction = self._canonical_intraday_strategy_name(
+    strategy_for_friction = self._canonical_engine_strategy_name(
         entry_strategy.value if entry_strategy is not None else ""
     )
     contract_spread_pct = float(getattr(best_contract, "spread_pct", 1.0) or 1.0)

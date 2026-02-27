@@ -418,7 +418,7 @@ class OptionsEngine:
         except Exception:
             return 15, 15
 
-    def _canonical_intraday_strategy(
+    def _canonical_engine_strategy(
         self, strategy: Optional["IntradayStrategy"]
     ) -> Optional["IntradayStrategy"]:
         """Map legacy strategy aliases to canonical runtime strategy."""
@@ -427,13 +427,13 @@ class OptionsEngine:
         value = _normalize_intraday_strategy_value(getattr(strategy, "value", strategy))
         return IntradayStrategy(value)
 
-    def _canonical_intraday_strategy_name(self, strategy_name: Optional[str]) -> str:
+    def _canonical_engine_strategy_name(self, strategy_name: Optional[str]) -> str:
         """Canonical string form used by hold/exit logic."""
         return _normalize_intraday_strategy_value(strategy_name)
 
     def _is_itm_momentum_strategy_name(self, strategy_name: Optional[str]) -> bool:
         """True when strategy name maps to ITM momentum."""
-        value = self._canonical_intraday_strategy_name(strategy_name)
+        value = self._canonical_engine_strategy_name(strategy_name)
         return value == IntradayStrategy.ITM_MOMENTUM.value
 
     def _engine_lane_from_strategy(self, strategy_name: Optional[str]) -> str:
@@ -576,7 +576,7 @@ class OptionsEngine:
                     positions.append(pos)
         return positions
 
-    def _infer_intraday_strategy_from_order_tag(self, order_tag: Optional[str]) -> str:
+    def _infer_engine_strategy_from_order_tag(self, order_tag: Optional[str]) -> str:
         """Best-effort strategy inference from order tag for partial-fill OCO recovery."""
         text = str(order_tag or "").upper()
         if not text:
@@ -1575,7 +1575,7 @@ class OptionsEngine:
         generating candidates that are guaranteed to be dropped.
         """
         strategy_name = (
-            self._canonical_intraday_strategy(strategy).value if strategy is not None else ""
+            self._canonical_engine_strategy(strategy).value if strategy is not None else ""
         )
         lane = self._engine_lane_from_strategy(strategy_name)
 
@@ -1587,7 +1587,7 @@ class OptionsEngine:
         lane_caps = self._get_effective_lane_caps()
         trade_caps = self._get_effective_trade_caps()
         lane_ok, lane_code, lane_detail, _ = self._micro_entry_engine.validate_lane_caps(
-            entry_strategy=self._canonical_intraday_strategy(strategy_name),
+            entry_strategy=self._canonical_engine_strategy(strategy_name),
             engine_positions=self._intraday_positions,
             has_pending_engine_entry=self.has_pending_engine_entry,
             itm_trades_today=self._intraday_itm_trades_today,
@@ -3883,7 +3883,7 @@ class OptionsEngine:
         if not self.mark_pending_engine_exit(symbol_str):
             return None
 
-        strategy_name = self._canonical_intraday_strategy_name(
+        strategy_name = self._canonical_engine_strategy_name(
             getattr(position, "entry_strategy", "")
         )
         lane_name = str(lane or self._engine_lane_from_strategy(strategy_name)).upper()
@@ -4800,7 +4800,7 @@ class OptionsEngine:
 
         if mode == OptionsMode.INTRADAY:
             self._intraday_trades_today += 1
-            strat = self._canonical_intraday_strategy_name(strategy)
+            strat = self._canonical_engine_strategy_name(strategy)
             if self._is_itm_momentum_strategy_name(strat):
                 self._intraday_itm_trades_today += 1
             else:

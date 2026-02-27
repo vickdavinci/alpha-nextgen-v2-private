@@ -45,7 +45,7 @@ def check_exit_signals_impl(
 
     # Calculate P&L percentage
     pnl_pct = (current_price - entry_price) / entry_price
-    strategy_name = self._canonical_intraday_strategy_name(getattr(pos, "entry_strategy", ""))
+    strategy_name = self._canonical_engine_strategy_name(getattr(pos, "entry_strategy", ""))
     held_minutes: Optional[float] = None
     if is_intraday_pos and self.algorithm is not None and hasattr(self.algorithm, "Time"):
         try:

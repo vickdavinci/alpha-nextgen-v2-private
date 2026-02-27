@@ -90,7 +90,7 @@ def register_entry_impl(
 
     recovered_strategy = None
     if force_intraday and pending_payload is None:
-        inferred = self._infer_intraday_strategy_from_order_tag(order_tag)
+        inferred = self._infer_engine_strategy_from_order_tag(order_tag)
         if inferred and inferred != IntradayStrategy.NO_TRADE.value:
             recovered_strategy = inferred
 
@@ -590,7 +590,7 @@ def record_intraday_result_impl(
 ) -> None:
     """Track MICRO directional loss streaks/cooldowns (ITM is sovereign)."""
     try:
-        strategy_name = self._canonical_intraday_strategy_name(strategy)
+        strategy_name = self._canonical_engine_strategy_name(strategy)
         if strategy_name not in (
             IntradayStrategy.MICRO_DEBIT_FADE.value,
             IntradayStrategy.MICRO_OTM_MOMENTUM.value,

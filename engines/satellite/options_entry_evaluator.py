@@ -136,7 +136,7 @@ def check_entry_signal_impl(
         # Use defensive coding in case _state is not initialized (tests)
         state = getattr(self, "_state", None)
         current_strategy = getattr(state, "recommended_strategy", None) if state else None
-        current_strategy = self._canonical_intraday_strategy(current_strategy)
+        current_strategy = self._canonical_engine_strategy(current_strategy)
 
         if current_strategy == IntradayStrategy.ITM_MOMENTUM:
             # ITM_ENGINE canonical delta source: use ITM_* when enabled.
