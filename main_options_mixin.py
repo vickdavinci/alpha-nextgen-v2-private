@@ -476,7 +476,7 @@ class MainOptionsMixin:
         self._micro_open_symbols.discard(sym_norm)
         self._itm_open_symbols.discard(sym_norm)
         self._intraday_entry_snapshot.pop(sym_norm, None)
-        self._clear_intraday_close_guard(sym_norm)
+        self._clear_engine_close_guard(sym_norm)
 
     def _find_option_contract(self, symbol: str, data: Slice):
         if self._qqq_option_symbol is None or self._qqq_option_symbol not in data.OptionChains:

@@ -2216,7 +2216,7 @@ class MainOrdersMixin:
         elif "QQQ" in symbol and ("C" in symbol or "P" in symbol):
             symbol_norm = self._normalize_symbol_str(symbol)
             if self.options_engine.cancel_pending_engine_exit(symbol_norm):
-                self._clear_intraday_close_guard(symbol_norm)
+                self._clear_engine_close_guard(symbol_norm)
                 self.Log(
                     f"OPT_MICRO_EXIT_RECOVERY: Close rejected/canceled | "
                     f"Symbol={symbol_norm} | Exit lock cleared"
@@ -2224,7 +2224,7 @@ class MainOrdersMixin:
             elif symbol_norm in self._intraday_close_in_progress_symbols:
                 # Clear stale in-progress close guard even when options-engine lock is absent.
                 # Prevents sticky EOD sweep state that blocks OCO recovery/retries.
-                self._clear_intraday_close_guard(symbol_norm)
+                self._clear_engine_close_guard(symbol_norm)
                 self.Log(
                     f"OPT_MICRO_EXIT_RECOVERY: Cleared stale close guard | Symbol={symbol_norm}"
                 )

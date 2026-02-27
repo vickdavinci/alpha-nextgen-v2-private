@@ -188,8 +188,11 @@ class AlphaNextGen(QCAlgorithm):
     _is_symbol_in_active_spread = MainIntradayCloseMixin._is_symbol_in_active_spread
     _check_expiration_hammer_v2 = MainIntradayCloseMixin._check_expiration_hammer_v2
     _close_options_atomic = MainIntradayCloseMixin._close_options_atomic
+    _on_engine_options_force_close = MainIntradayCloseMixin._on_engine_options_force_close
     _on_intraday_options_force_close = MainIntradayCloseMixin._on_intraday_options_force_close
+    _engine_force_exit_fallback = MainIntradayCloseMixin._engine_force_exit_fallback
     _intraday_force_exit_fallback = MainIntradayCloseMixin._intraday_force_exit_fallback
+    _reconcile_engine_close_guards = MainIntradayCloseMixin._reconcile_engine_close_guards
     _reconcile_intraday_close_guards = MainIntradayCloseMixin._reconcile_intraday_close_guards
     _ensure_oco_for_open_options = MainIntradayCloseMixin._ensure_oco_for_open_options
     _liquidate_all_spread_aware = MainIntradayCloseMixin._liquidate_all_spread_aware
@@ -483,7 +486,7 @@ class AlphaNextGen(QCAlgorithm):
         # STEP 3C: V6.6.2 OCO RECOVERY (ensure exits exist for open options)
         # =====================================================================
         self._ensure_oco_for_open_options()
-        self._reconcile_intraday_close_guards()
+        self._reconcile_engine_close_guards()
 
         # =====================================================================
         # STEP 4: HANDLE KILL SWITCH (V2.27: Graduated tiers)
@@ -564,7 +567,7 @@ class AlphaNextGen(QCAlgorithm):
         # STEP 9B: V6.12 FALLBACK INTRADAY FORCE-CLOSE (safety net)
         # =====================================================================
         # If the scheduled force-close misses, enforce once after +5 minutes.
-        self._intraday_force_exit_fallback()
+        self._engine_force_exit_fallback()
 
         # =====================================================================
         # STEP 9C: V6.12 FALLBACK MR FORCE-CLOSE (safety net)
@@ -656,13 +659,17 @@ class AlphaNextGen(QCAlgorithm):
         except Exception:
             return ""
 
-    def _clear_intraday_close_guard(self, symbol: str) -> None:
+    def _clear_engine_close_guard(self, symbol: str) -> None:
         """Clear intraday close-in-progress guard + per-day submit marker for a symbol."""
         symbol_norm = self._normalize_symbol_str(symbol)
         if not symbol_norm:
             return
         self._intraday_close_in_progress_symbols.discard(symbol_norm)
         self._intraday_force_exit_submitted_symbols.pop(symbol_norm, None)
+
+    def _clear_intraday_close_guard(self, symbol: str) -> None:
+        """Backward-compatible alias for engine close-guard cleanup."""
+        self._clear_engine_close_guard(symbol)
 
     def _get_valid_options_chain(self, option_chains: Any, mode_label: str):
         """Return QQQ option chain when present and non-empty, else None with diagnostics."""

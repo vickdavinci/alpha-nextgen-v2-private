@@ -328,7 +328,7 @@ class MainBootstrapMixin:
         self.Schedule.On(
             self.DateRules.EveryDay(),
             self.TimeRules.At(intraday_force_hour, intraday_force_minute),
-            self._on_intraday_options_force_close,
+            self._on_engine_options_force_close,
         )
         self.Schedule.On(
             self.DateRules.EveryDay(),

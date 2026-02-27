@@ -348,7 +348,7 @@ class MainPremarketMixin:
                 self.Schedule.On(
                     self.DateRules.On(self.Time.year, self.Time.month, self.Time.day),
                     self.TimeRules.At(opt_close_time.hour, opt_close_time.minute),
-                    self._on_intraday_options_force_close,
+                    self._on_engine_options_force_close,
                 )
 
         except Exception as e:

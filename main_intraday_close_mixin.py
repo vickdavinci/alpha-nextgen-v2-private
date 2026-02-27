@@ -141,7 +141,7 @@ class MainIntradayCloseMixin:
         except Exception as e:
             self.Log(f"ASSIGNMENT_SAFETY_NET: Error checking QQQ - {e}")
 
-    def _on_intraday_options_force_close(self) -> None:
+    def _on_engine_options_force_close(self) -> None:
         """
         V2.1.1: Intraday options force close at configured force-exit time.
 
@@ -192,7 +192,7 @@ class MainIntradayCloseMixin:
                         f"Clearing stale _intraday_position"
                     )
                     self.options_engine.remove_intraday_position(symbol=symbol)
-                    self._clear_intraday_close_guard(symbol)
+                    self._clear_engine_close_guard(symbol)
                     continue
             except Exception:
                 pass  # If symbol lookup fails, proceed with force close
@@ -280,7 +280,7 @@ class MainIntradayCloseMixin:
                     if submitted_date == str(self.Time.date()):
                         # Retry same-day only if still live and no non-OCO order is active.
                         if abs(self._get_option_holding_quantity(live_symbol)) <= 0:
-                            self._clear_intraday_close_guard(live_symbol)
+                            self._clear_engine_close_guard(live_symbol)
                             continue
                         if self._has_open_non_oco_order_for_symbol(live_symbol):
                             continue
@@ -386,11 +386,11 @@ class MainIntradayCloseMixin:
             qc_symbol = self.Symbol(symbol)
             holding = self.Portfolio[qc_symbol]
             if not holding.Invested:
-                self._clear_intraday_close_guard(symbol)
+                self._clear_engine_close_guard(symbol)
                 return
             qty = abs(int(holding.Quantity))
             if qty <= 0:
-                self._clear_intraday_close_guard(symbol)
+                self._clear_engine_close_guard(symbol)
                 return
         except Exception:
             # Fallback to tracked quantity if symbol lookup fails
@@ -610,7 +610,11 @@ class MainIntradayCloseMixin:
             )
         return total_closed
 
-    def _intraday_force_exit_fallback(self) -> None:
+    def _on_intraday_options_force_close(self) -> None:
+        """Backward-compatible alias for engine options force-close callback."""
+        self._on_engine_options_force_close()
+
+    def _engine_force_exit_fallback(self) -> None:
         """
         V6.12: Safety net - force-close intraday position after configured close +5min if scheduled close missed.
 
@@ -705,7 +709,11 @@ class MainIntradayCloseMixin:
         # Mark done after handling concrete submit attempts.
         self._intraday_force_exit_fallback_date = self.Time.date()
 
-    def _reconcile_intraday_close_guards(self) -> None:
+    def _intraday_force_exit_fallback(self) -> None:
+        """Backward-compatible alias for engine force-exit fallback."""
+        self._engine_force_exit_fallback()
+
+    def _reconcile_engine_close_guards(self) -> None:
         """Clear stale close-in-progress guards after positions are flat."""
         if not self._intraday_close_in_progress_symbols:
             return
@@ -714,4 +722,8 @@ class MainIntradayCloseMixin:
             if abs(self._get_option_holding_quantity(symbol)) <= 0:
                 stale.append(symbol)
         for symbol in stale:
-            self._clear_intraday_close_guard(symbol)
+            self._clear_engine_close_guard(symbol)
+
+    def _reconcile_intraday_close_guards(self) -> None:
+        """Backward-compatible alias for engine close-guard reconciliation."""
+        self._reconcile_engine_close_guards()
