@@ -521,7 +521,7 @@ class OptionsEngine:
         payload = self._pending_intraday_entries.pop(key, None)
         return payload if isinstance(payload, dict) else None
 
-    def _refresh_legacy_intraday_mirrors(self) -> None:
+    def _refresh_legacy_engine_mirrors(self) -> None:
         """Keep legacy single-position mirrors in sync with lane containers."""
         if self._intraday_positions.get("ITM"):
             self._intraday_position = self._intraday_positions["ITM"][0]
@@ -547,7 +547,7 @@ class OptionsEngine:
             self._intraday_positions[lane_key] = []
         if position is None:
             self._intraday_positions[lane_key] = []
-            self._refresh_legacy_intraday_mirrors()
+            self._refresh_legacy_engine_mirrors()
             return
         self._intraday_positions[lane_key].append(position)
         self._intraday_position = position
@@ -4669,7 +4669,7 @@ class OptionsEngine:
         # Deterministic default for legacy callers.
         return self._get_engine_lane_position("ITM") or self._get_engine_lane_position("MICRO")
 
-    def get_intraday_position_engine(self) -> Optional[str]:
+    def get_engine_position_lane(self) -> Optional[str]:
         """Return default ownership lane for legacy callers."""
         if len(self._intraday_positions.get("ITM") or []) > 0:
             return "ITM"

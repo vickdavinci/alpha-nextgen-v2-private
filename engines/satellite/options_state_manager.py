@@ -379,7 +379,7 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
                         self._intraday_positions[lane] = []
                 except Exception:
                     self._intraday_positions[lane] = []
-        self._refresh_legacy_intraday_mirrors()
+        self._refresh_legacy_engine_mirrors()
     else:
         self._intraday_positions = {"MICRO": [], "ITM": []}
         if self._intraday_position is not None:
@@ -392,7 +392,7 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
         state.get("intraday_position_engine") or self._intraday_position_engine
     )
     if self._intraday_position is None:
-        self._refresh_legacy_intraday_mirrors()
+        self._refresh_legacy_engine_mirrors()
 
     self._pending_intraday_entry_engine = state.get("pending_intraday_entry_engine")
     self._pending_intraday_exit_engine = state.get("pending_intraday_exit_engine")
@@ -775,7 +775,7 @@ def reset_options_engine_daily_state_impl(self, current_date: str) -> None:
                         f"OPT: WARNING - Intraday position found at daily reset, clearing | Lane={lane}"
                     )
             self._intraday_positions[str(lane).upper()] = kept_positions
-        self._refresh_legacy_intraday_mirrors()
+        self._refresh_legacy_engine_mirrors()
 
         if self._spread_neutrality_warn_by_key:
             active_keys = {self._build_spread_key(s) for s in self._spread_positions}

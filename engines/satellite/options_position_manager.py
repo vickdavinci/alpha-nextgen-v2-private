@@ -399,7 +399,7 @@ def remove_intraday_position_impl(
     elif engine is not None:
         lane = str(engine).upper()
     else:
-        lane = self.get_intraday_position_engine()
+        lane = self.get_engine_position_lane()
 
     if not lane:
         return None
@@ -426,7 +426,7 @@ def remove_intraday_position_impl(
         position = lane_positions.pop(0)
 
     self._intraday_positions[lane_key] = lane_positions
-    self._refresh_legacy_intraday_mirrors()
+    self._refresh_legacy_engine_mirrors()
     try:
         removed_symbol_key = self._symbol_str(position.contract.symbol)
     except Exception:

@@ -463,7 +463,7 @@ def mark_pending_engine_exit_impl(self, symbol: Optional[str] = None) -> bool:
     if self._pending_intraday_exit_engine:
         target_lane = str(self._pending_intraday_exit_engine).upper()
     else:
-        target_lane = self.get_intraday_position_engine()
+        target_lane = self.get_engine_position_lane()
         if target_lane is None:
             return False
 

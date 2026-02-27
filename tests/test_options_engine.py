@@ -1753,7 +1753,7 @@ class TestDualModeArchitecture:
             stop_pct=0.20,
         )
         engine._intraday_positions["MICRO"] = [position]
-        engine._refresh_legacy_intraday_mirrors()
+        engine._refresh_legacy_engine_mirrors()
 
         # Try to enter again
         result = engine.check_engine_entry_signal(
@@ -1856,7 +1856,7 @@ class TestIntradayForceExit:
             stop_pct=0.20,
         )
         engine._intraday_positions["MICRO"] = [position]
-        engine._refresh_legacy_intraday_mirrors()
+        engine._refresh_legacy_engine_mirrors()
 
         return engine
 
@@ -2351,7 +2351,7 @@ class TestDailyResetV211:
             stop_pct=0.20,
         )
         engine._intraday_positions["MICRO"] = [position]
-        engine._refresh_legacy_intraday_mirrors()
+        engine._refresh_legacy_engine_mirrors()
 
         engine._intraday_trades_today = 2
         engine._last_trade_date = "2026-01-26"
@@ -2895,7 +2895,7 @@ class TestIntradayLaneIsolation:
                 highest_price=2.05,
             )
         ]
-        engine._refresh_legacy_intraday_mirrors()
+        engine._refresh_legacy_engine_mirrors()
 
         result = engine.check_engine_entry_signal(
             vix_current=18.0,
@@ -2950,7 +2950,7 @@ class TestIntradayLaneIsolation:
                 highest_price=2.2,
             )
         ]
-        engine._refresh_legacy_intraday_mirrors()
+        engine._refresh_legacy_engine_mirrors()
 
         state = type("State", (), {"micro_regime": MicroRegime.GOOD_MR})()
         ok, code, detail = engine.preflight_engine_entry(
@@ -3223,7 +3223,7 @@ class TestExpirationExitContract:
             highest_price=2.3,
         )
         engine._intraday_positions["ITM"] = [position]
-        engine._refresh_legacy_intraday_mirrors()
+        engine._refresh_legacy_engine_mirrors()
 
         signal = engine.check_expiring_options_force_exit(
             current_date="2027-01-05",
