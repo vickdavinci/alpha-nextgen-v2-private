@@ -6,6 +6,22 @@ import config
 
 
 class MainIntradayCloseMixin:
+    def _count_invested_option_holdings(self) -> int:
+        """Return count of currently invested option holdings."""
+        count = 0
+        try:
+            for kvp in self.Portfolio:
+                holding = kvp.Value
+                if (
+                    holding.Invested
+                    and holding.Symbol.SecurityType == SecurityType.Option
+                    and int(holding.Quantity) != 0
+                ):
+                    count += 1
+        except Exception:
+            return 0
+        return count
+
     def _is_symbol_in_active_spread(self, symbol: str) -> bool:
         """Return True when symbol belongs to any active spread leg."""
         sym_norm = self._normalize_symbol_str(symbol)
@@ -588,19 +604,27 @@ class MainIntradayCloseMixin:
             except Exception as e:
                 self.Log(f"{reason}: FAILED long close {str(symbol)[-21:]} | {e}")
 
-        # Clear tracking state if requested
+        # Clear tracking state if requested.
+        # Only clear when broker portfolio is flat on options to avoid orphan-state drift
+        # during partial/sequential close workflows.
         if clear_tracking:
-            if self.options_engine:
-                self.options_engine.clear_spread_position()
-                self.options_engine.cancel_pending_spread_entry()
-                self.options_engine.cancel_pending_engine_entry()
-            if self.portfolio_router:
-                self.portfolio_router.clear_all_spread_margins()
-            if self._spread_fill_tracker is not None:
-                self._spread_fill_tracker = None
-            if self._pending_spread_orders:
-                self._pending_spread_orders.clear()
-                self._pending_spread_orders_reverse.clear()
+            invested_after = self._count_invested_option_holdings()
+            if invested_after > 0:
+                self.Log(
+                    f"{reason}: Tracking clear deferred | InvestedOptions={invested_after}"
+                )
+            else:
+                if self.options_engine:
+                    self.options_engine.clear_spread_position()
+                    self.options_engine.cancel_pending_spread_entry()
+                    self.options_engine.cancel_pending_engine_entry()
+                if self.portfolio_router:
+                    self.portfolio_router.clear_all_spread_margins()
+                if self._spread_fill_tracker is not None:
+                    self._spread_fill_tracker = None
+                if self._pending_spread_orders:
+                    self._pending_spread_orders.clear()
+                    self._pending_spread_orders_reverse.clear()
 
         total_closed = len(short_options) + len(long_options)
         if total_closed > 0:
