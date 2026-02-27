@@ -29,7 +29,10 @@ class ITMHorizonEngine:
 
     def _log(self, message: str, trades_only: bool = False) -> None:
         if self._log_func:
-            self._log_func(message, trades_only)
+            text = str(message or "")
+            if text and not text.startswith("ITM:"):
+                text = f"ITM: {text}"
+            self._log_func(text, trades_only)
 
     def enabled(self) -> bool:
         return bool(getattr(config, "ITM_ENGINE_ENABLED", False))

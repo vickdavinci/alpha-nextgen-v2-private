@@ -17,7 +17,19 @@ class MicroEntryEngine:
 
     def _log(self, message: str, trades_only: bool = False) -> None:
         if self._log_func:
-            self._log_func(message, trades_only)
+            text = str(message or "")
+            if text and not text.startswith("MICRO:"):
+                text = f"MICRO: {text}"
+            self._log_func(text, trades_only)
+
+    @staticmethod
+    def _algo_log(algorithm: Any, message: str) -> None:
+        if algorithm is None or not hasattr(algorithm, "Log"):
+            return
+        text = str(message or "")
+        if text and not text.startswith("MICRO:"):
+            text = f"MICRO: {text}"
+        algorithm.Log(text)
 
     def _is_micro_fade_strategy(self, entry_strategy: IntradayStrategy) -> bool:
         return entry_strategy in (
@@ -644,7 +656,9 @@ class MicroEntryEngine:
                 if retry_strategy == IntradayStrategy.NO_TRADE:
                     retry_strategy = IntradayStrategy.MICRO_OTM_MOMENTUM
                 forced_intraday_strategy = retry_strategy
-                algorithm.Log(f"INTRADAY_RETRY: {signal_reason} | Strategy={retry_strategy.value}")
+                self._algo_log(
+                    algorithm, f"INTRADAY_RETRY: {signal_reason} | Strategy={retry_strategy.value}"
+                )
         else:
             if (
                 intraday_direction == OptionDirection.CALL
@@ -742,8 +756,9 @@ class MicroEntryEngine:
         if intraday_direction is None:
             intraday_contract = None
         else:
-            algorithm.Log(
-                f"INTRADAY: Proceeding with ladder size mult {algorithm._premarket_vix_size_mult:.2f}"
+            self._algo_log(
+                algorithm,
+                f"INTRADAY: Proceeding with ladder size mult {algorithm._premarket_vix_size_mult:.2f}",
             )
             intraday_strategy = (
                 intraday_strategy or forced_intraday_strategy or host.get_last_engine_strategy()
@@ -755,10 +770,11 @@ class MicroEntryEngine:
                 vix_current=vix_intraday,
             )
             if intraday_contract is None:
-                algorithm.Log(
+                self._algo_log(
+                    algorithm,
                     f"INTRADAY: No contract selected | "
                     f"Dir={intraday_direction.value} | "
-                    f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'}"
+                    f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'}",
                 )
                 drop_logged = algorithm._log_engine_signal_dropped(
                     signal_id=intraday_signal_id,
@@ -784,9 +800,10 @@ class MicroEntryEngine:
         if intraday_contract is not None and (
             intraday_contract.bid <= 0 or intraday_contract.ask <= 0
         ):
-            algorithm.Log(
+            self._algo_log(
+                algorithm,
                 f"INTRADAY_PRICE_REJECT: {intraday_contract.symbol} | "
-                f"Bid={intraday_contract.bid} Ask={intraday_contract.ask}"
+                f"Bid={intraday_contract.bid} Ask={intraday_contract.ask}",
             )
             drop_logged = algorithm._log_engine_signal_dropped(
                 signal_id=intraday_signal_id,
@@ -845,11 +862,12 @@ class MicroEntryEngine:
                     intraday_signal, source="MICRO"
                 )
                 if algorithm._mark_engine_signal_event("APPROVED", intraday_signal_id):
-                    algorithm.Log(
+                    self._algo_log(
+                        algorithm,
                         f"INTRADAY_SIGNAL_APPROVED: SignalId={intraday_signal_id} | {signal_reason} | "
                         f"Direction={intraday_direction.value if intraday_direction else 'NONE'} | "
                         f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'} | "
-                        f"Contract={intraday_contract.symbol if intraday_contract else 'NONE'}"
+                        f"Contract={intraday_contract.symbol if intraday_contract else 'NONE'}",
                     )
                     algorithm._diag_intraday_approved_count += 1
                     algorithm._inc_engine_counter(
@@ -886,9 +904,10 @@ class MicroEntryEngine:
                     for rej in algorithm._get_recent_router_rejections():
                         if rej.trace_id == intraday_trace_id and rej.source_tag.startswith("MICRO"):
                             algorithm._diag_intraday_router_reject_count += 1
-                            algorithm.Log(
+                            self._algo_log(
+                                algorithm,
                                 f"INTRADAY_ROUTER_REJECTED: SignalId={intraday_signal_id} | "
-                                f"Trace={rej.trace_id} | Code={rej.code} | Stage={rej.stage} | {rej.detail}"
+                                f"Trace={rej.trace_id} | Code={rej.code} | Stage={rej.stage} | {rej.detail}",
                             )
                             host.cancel_pending_engine_entry(
                                 engine=host._engine_lane_from_strategy(
@@ -1000,9 +1019,10 @@ class MicroEntryEngine:
                             reason_code=drop_code,
                             expires_at=retry_expires,
                         )
-                        algorithm.Log(
+                        self._algo_log(
+                            algorithm,
                             f"INTRADAY_RETRY_QUEUED: Code={drop_code} | "
-                            f"Expires={retry_expires.strftime('%H:%M')}"
+                            f"Expires={retry_expires.strftime('%H:%M')}",
                         )
 
         return itm_dir, itm_reason
