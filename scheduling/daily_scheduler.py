@@ -165,10 +165,6 @@ class DailyScheduler:
         except Exception:
             return self._parse_time(str(getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15")))
 
-    def get_intraday_options_close_hhmm(self) -> Tuple[int, int]:
-        """Backward-compatible alias for engine options close cutoff."""
-        return self.get_engine_options_close_hhmm()
-
     def set_engine_options_close_hhmm(self, hour: int, minute: int) -> None:
         """Update effective single-leg engine options close cutoff for the current session."""
         try:
@@ -179,10 +175,6 @@ class DailyScheduler:
             self._engine_opt_close = self._parse_time(
                 str(getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15"))
             )
-
-    def set_intraday_options_close_hhmm(self, hour: int, minute: int) -> None:
-        """Backward-compatible alias for engine options close cutoff setter."""
-        self.set_engine_options_close_hhmm(hour, minute)
 
     # =========================================================================
     # Event Registration

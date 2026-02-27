@@ -3241,7 +3241,7 @@ class TestExpirationExitContract:
 class TestIntradayForceExitTimeSource:
     def test_force_exit_time_uses_scheduler_dynamic_cutoff_when_available(self):
         class _Scheduler:
-            def get_intraday_options_close_hhmm(self):
+            def get_engine_options_close_hhmm(self):
                 return (12, 15)
 
         class _Algo:

@@ -59,11 +59,11 @@ class TestInitialization:
 
     def test_intraday_options_close_can_be_refreshed(self, scheduler: DailyScheduler) -> None:
         """Intraday options close cutoff should be mutable for per-session refresh."""
-        scheduler.set_intraday_options_close_hhmm(12, 15)
-        assert scheduler.get_intraday_options_close_hhmm() == (12, 15)
+        scheduler.set_engine_options_close_hhmm(12, 15)
+        assert scheduler.get_engine_options_close_hhmm() == (12, 15)
 
-        scheduler.set_intraday_options_close_hhmm(15, 15)
-        assert scheduler.get_intraday_options_close_hhmm() == (15, 15)
+        scheduler.set_engine_options_close_hhmm(15, 15)
+        assert scheduler.get_engine_options_close_hhmm() == (15, 15)
 
 
 # =============================================================================
