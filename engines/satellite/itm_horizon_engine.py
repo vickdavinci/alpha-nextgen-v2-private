@@ -548,7 +548,7 @@ class ITMHorizonEngine:
                                         f"INTRADAY_ROUTER_REJECTED: SignalId={itm_signal_id} | "
                                         f"Trace={rej.trace_id} | Code={rej.code} | Stage={rej.stage} | {rej.detail}"
                                     )
-                                    host.cancel_pending_intraday_entry(
+                                    host.cancel_pending_engine_entry(
                                         engine="ITM",
                                         symbol=str(itm_contract.symbol),
                                     )

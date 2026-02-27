@@ -83,7 +83,7 @@ def check_intraday_entry_signal_impl(
     self.set_last_intraday_validation_failure(validation_lane, None, None)
 
     if self._pending_intraday_entry or self._pending_intraday_entries:
-        self._clear_stale_pending_intraday_entry_if_orphaned()
+        self._clear_stale_pending_engine_entry_if_orphaned()
 
     # V2.9: Check trade limits (Bug #4 fix) - Uses comprehensive counter
     # Replaces V2.3.14 intraday-only check to also enforce global limit

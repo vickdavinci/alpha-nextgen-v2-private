@@ -426,7 +426,7 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
         self._symbol_str(x) for x in (state.get("pending_intraday_exit_symbols") or []) if x
     )
     self._pending_intraday_exit_symbols.discard("")
-    self._sync_pending_intraday_exit_flags()
+    self._sync_pending_engine_exit_flags()
     self._intraday_trades_today = state.get("intraday_trades_today", 0)
     self._intraday_call_trades_today = state.get("intraday_call_trades_today", 0)
     self._intraday_put_trades_today = state.get("intraday_put_trades_today", 0)

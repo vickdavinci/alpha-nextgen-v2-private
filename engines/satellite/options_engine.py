@@ -832,7 +832,7 @@ class OptionsEngine:
         Returns:
             Tuple of (intraday_count, swing_count, total_count)
         """
-        intraday_count = len([p for p in self.get_intraday_positions() if p is not None])
+        intraday_count = len([p for p in self.get_engine_positions() if p is not None])
         swing_count = 0
 
         # Count spread positions
@@ -1591,7 +1591,7 @@ class OptionsEngine:
 
         if self._pending_intraday_entry or self._pending_intraday_entries:
             self._clear_stale_pending_engine_entry_if_orphaned()
-        if self.has_pending_intraday_entry(engine=lane):
+        if self.has_pending_engine_entry(engine=lane):
             return False, "E_INTRADAY_PENDING_ENTRY", lane
 
         lane_caps = self._get_effective_lane_caps()
@@ -3386,7 +3386,7 @@ class OptionsEngine:
                 pass
 
         # Active intraday positions
-        for intraday_pos in self.get_intraday_positions():
+        for intraday_pos in self.get_engine_positions():
             try:
                 bucket = self._classify_intraday_bucket(
                     str(getattr(intraday_pos, "entry_strategy", "") or "")

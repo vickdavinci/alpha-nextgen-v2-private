@@ -890,7 +890,7 @@ class MicroEntryEngine:
                                 f"INTRADAY_ROUTER_REJECTED: SignalId={intraday_signal_id} | "
                                 f"Trace={rej.trace_id} | Code={rej.code} | Stage={rej.stage} | {rej.detail}"
                             )
-                            host.cancel_pending_intraday_entry(
+                            host.cancel_pending_engine_entry(
                                 engine=host._intraday_engine_lane_from_strategy(
                                     intraday_strategy.value if intraday_strategy else ""
                                 ),

@@ -434,7 +434,7 @@ def remove_intraday_position_impl(
     self._pending_intraday_exit_lanes.discard(lane_key)
     if removed_symbol_key:
         self._pending_intraday_exit_symbols.discard(removed_symbol_key)
-    self._sync_pending_intraday_exit_flags()
+    self._sync_pending_engine_exit_flags()
     try:
         strategy = str(getattr(position, "entry_strategy", "") or "UNKNOWN")
     except Exception:
