@@ -1795,6 +1795,7 @@ class OptionsEngine:
         size_multiplier: float,
         effective_portfolio_value: float,
         margin_remaining: float,
+        vix_level_cboe: Optional[float] = None,
         transition_ctx: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Run intraday VASS spread lane via VASS entry engine."""
@@ -1808,6 +1809,7 @@ class OptionsEngine:
             size_multiplier=size_multiplier,
             effective_portfolio_value=effective_portfolio_value,
             margin_remaining=margin_remaining,
+            vix_level_cboe=vix_level_cboe,
             transition_ctx=transition_ctx,
         )
 

@@ -933,6 +933,7 @@ class VASSEntryEngine:
         size_multiplier: float,
         effective_portfolio_value: float,
         margin_remaining: float,
+        vix_level_cboe: Optional[float] = None,
         transition_ctx: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Run intraday VASS spread lane end-to-end via OptionsEngine host."""
@@ -1013,11 +1014,17 @@ class VASSEntryEngine:
         spy_intraday_change_pct = (
             ((spy_current - spy_open) / spy_open) * 100.0 if spy_open > 0 else 0.0
         )
+        current_vix = float(
+            (
+                vix_level_cboe
+                if vix_level_cboe is not None
+                else getattr(algorithm, "_current_vix", 0.0)
+            )
+            or 0.0
+        )
         vix_at_open = float(getattr(algorithm, "_vix_at_open", 0.0) or 0.0)
         vix_intraday_change_pct = (
-            ((float(algorithm._current_vix) - vix_at_open) / vix_at_open) * 100.0
-            if vix_at_open > 0
-            else 0.0
+            ((current_vix - vix_at_open) / vix_at_open) * 100.0 if vix_at_open > 0 else 0.0
         )
         swing_filters_ok, swing_filter_reason = host.check_swing_filters(
             direction=direction,
@@ -1032,7 +1039,7 @@ class VASSEntryEngine:
             if algorithm.Time.minute % 15 == 0:
                 algorithm.Log(
                     f"VASS_SKIPPED: Direction={direction.value} | "
-                    f"VIX={algorithm._current_vix:.1f} | Regime={regime_score:.0f} | "
+                    f"VIX={current_vix:.1f} | Regime={regime_score:.0f} | "
                     f"ReasonCode=SWING_FILTER | ValidationFail={swing_filter_reason}"
                 )
             return
@@ -1058,7 +1065,7 @@ class VASSEntryEngine:
             if host.should_log_vass_rejection(throttle_key):
                 algorithm.Log(
                     f"VASS_SKIPPED: Direction={direction.value} | "
-                    f"VIX={algorithm._current_vix:.1f} | Regime={regime_score:.0f} | "
+                    f"VIX={current_vix:.1f} | Regime={regime_score:.0f} | "
                     f"ReasonCode={reason_code} | BackoffKey={slot_backoff_key}"
                 )
             algorithm._record_signal_lifecycle_event(
@@ -1266,7 +1273,7 @@ class VASSEntryEngine:
             if should_log:
                 algorithm.Log(
                     f"{log_prefix}: Direction={direction.value} | "
-                    f"IV_Env={iv_env} | VIX={algorithm._current_vix:.1f} | "
+                    f"IV_Env={iv_env} | VIX={current_vix:.1f} | "
                     f"Regime={regime_score:.0f} | "
                     f"Contracts_checked={len(candidate_contracts)} | "
                     f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
