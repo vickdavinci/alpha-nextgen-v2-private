@@ -146,6 +146,7 @@ class AlphaNextGen(QCAlgorithm):
     _compact_tag_for_log = MainOrdersMixin._compact_tag_for_log
     _is_micro_entry_fill = MainOrdersMixin._is_micro_entry_fill
     _is_spread_fill_symbol = MainOrdersMixin._is_spread_fill_symbol
+    _sync_engine_oco = MainOrdersMixin._sync_engine_oco
     _sync_intraday_oco = MainOrdersMixin._sync_intraday_oco
     _cancel_spread_linked_oco = MainOrdersMixin._cancel_spread_linked_oco
     _schedule_spread_safe_lock_retry = MainOrdersMixin._schedule_spread_safe_lock_retry

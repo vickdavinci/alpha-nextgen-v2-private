@@ -186,7 +186,7 @@ class MainRiskMonitorMixin:
                         if live_qty <= 0:
                             live_qty = abs(int(getattr(intraday_position, "num_contracts", 0) or 0))
                         if live_qty > 0:
-                            self._sync_intraday_oco(
+                            self._sync_engine_oco(
                                 symbol=intra_symbol,
                                 position=intraday_position,
                                 quantity=live_qty,

@@ -352,7 +352,7 @@ class MainOrdersMixin:
             return tag
         return f"{tag[:max_chars]}..."
 
-    def _sync_intraday_oco(
+    def _sync_engine_oco(
         self,
         symbol: str,
         position: Any,
@@ -446,6 +446,21 @@ class MainOrdersMixin:
         except Exception as e:
             self.Log(f"OCO_SYNC_ERROR: {symbol} | Reason={reason} | {e}")
 
+    def _sync_intraday_oco(
+        self,
+        symbol: str,
+        position: Any,
+        quantity: int,
+        reason: str,
+    ) -> None:
+        """Backward-compatible alias for engine OCO sync helper."""
+        self._sync_engine_oco(
+            symbol=symbol,
+            position=position,
+            quantity=quantity,
+            reason=reason,
+        )
+
     def OnOrderEvent(self, orderEvent: OrderEvent) -> None:
         """
         Handle order status changes.
@@ -524,7 +539,7 @@ class MainOrdersMixin:
                             order_tag=order_tag,
                         )
                         if oco_seed is not None:
-                            self._sync_intraday_oco(
+                            self._sync_engine_oco(
                                 symbol=symbol_norm,
                                 position=oco_seed,
                                 quantity=sync_qty,
@@ -1834,7 +1849,7 @@ class MainOrdersMixin:
                                 live_qty = abs(self._get_option_holding_quantity(symbol))
                                 if live_qty <= 0:
                                     live_qty = int(abs(fill_qty))
-                                self._sync_intraday_oco(
+                                self._sync_engine_oco(
                                     symbol=symbol_norm,
                                     position=position,
                                     quantity=live_qty,
@@ -1932,7 +1947,7 @@ class MainOrdersMixin:
                             if live_qty_after_fill > 0:
                                 intraday_pos.num_contracts = int(live_qty_after_fill)
                                 # Re-arm OCO immediately so remaining contracts stay protected.
-                                self._sync_intraday_oco(
+                                self._sync_engine_oco(
                                     symbol=symbol_norm,
                                     position=intraday_pos,
                                     quantity=int(live_qty_after_fill),
