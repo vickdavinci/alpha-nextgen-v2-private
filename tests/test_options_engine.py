@@ -2734,7 +2734,7 @@ class TestPendingIntradayEntryMaintenance:
         assert len(algo.Transactions.cancel_requests) == 1
         assert algo.Transactions.cancel_requests[0][0] == 9101
 
-    def test_clears_pending_when_lane_position_exists_even_if_open_entry_order_remains(
+    def test_keeps_pending_when_open_entry_order_remains_even_with_lane_position(
         self, engine, monkeypatch
     ):
         from engines.satellite import options_pending_guard as pending_guard_module
@@ -2771,8 +2771,10 @@ class TestPendingIntradayEntryMaintenance:
 
         engine._clear_stale_pending_engine_entry_if_orphaned()
 
-        assert key not in engine._pending_intraday_entries
-        assert engine._pending_intraday_entry is False
+        assert key in engine._pending_intraday_entries
+        assert engine._pending_intraday_entry is True
+        assert len(algo.Transactions.cancel_requests) == 1
+        assert algo.Transactions.cancel_requests[0][0] == 9201
 
     def test_pending_key_match_ignores_symbol_spacing(self, engine):
         key = engine._pending_engine_entry_key("QQQ 270105P00470000", "MICRO")

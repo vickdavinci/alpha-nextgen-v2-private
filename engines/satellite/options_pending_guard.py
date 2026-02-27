@@ -184,18 +184,8 @@ def clear_stale_pending_engine_entry_if_orphaned_impl(self) -> None:
 
         open_entry_order_ids = open_entry_order_ids_by_symbol.get(symbol_norm, [])
         if open_entry_order_ids:
-            # A live lane position means entry has already resolved; pending lock is stale.
-            # Clear immediately to avoid lane starvation from lingering broker open-order records.
-            if lane_has_position:
-                self._pending_intraday_entries.pop(key, None)
-                cleared_keys.append(key)
-                continue
             # Active entry order still live. Optionally cancel if it overstays.
-            if (
-                (not lane_has_position)
-                and cancel_after_seconds > 0
-                and age_seconds >= cancel_after_seconds
-            ):
+            if cancel_after_seconds > 0 and age_seconds >= cancel_after_seconds:
                 for oid in open_entry_order_ids:
                     try:
                         self.algorithm.Transactions.CancelOrder(
@@ -211,7 +201,9 @@ def clear_stale_pending_engine_entry_if_orphaned_impl(self) -> None:
                     except Exception:
                         continue
             # Do not hard-clear while broker still reports open entry orders.
-            # Clearing here can permit duplicate entries and mis-accounting on late fills.
+            # This also applies when a partial fill has already opened a lane
+            # position. Clearing the lock too early can permit duplicate entries
+            # while the original entry order remainder is still live.
             continue
 
         # If lane already has a live position, pending-entry lock is stale.
