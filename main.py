@@ -1328,7 +1328,6 @@ class AlphaNextGen(QCAlgorithm):
                     reason=f"FRIDAY_FIREWALL_ITM: {weekend_reason}",
                     requested_quantity=live_qty,
                     metadata={
-                        "intraday_strategy": "ITM_MOMENTUM",
                         "options_strategy": "ITM_MOMENTUM",
                         "options_lane": "ITM",
                         "weekend_guard": "FRIDAY",

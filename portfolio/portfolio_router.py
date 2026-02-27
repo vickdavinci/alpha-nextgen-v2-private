@@ -2069,18 +2069,51 @@ class PortfolioRouter:
             trace_id = str(metadata.get("trace_id", "") or "")
             source_tag = str(metadata.get("trace_source", "") or "")
             if not source_tag:
-                if metadata.get("intraday_strategy"):
-                    source_tag = f"MICRO:{metadata.get('intraday_strategy')}"
+                lane, strategy = self._extract_options_lane_and_strategy(metadata)
+                if lane and strategy:
+                    source_tag = f"{lane}:{strategy}"
+                elif lane:
+                    source_tag = lane
                 elif metadata.get("vass_strategy"):
                     source_tag = f"VASS:{metadata.get('vass_strategy')}"
                 elif metadata.get("spread_type"):
                     source_tag = f"VASS:{metadata.get('spread_type')}"
         if not source_tag and sources:
             if "OPT_INTRADAY" in sources:
-                source_tag = "MICRO"
+                source_tag = "OPT_INTRADAY"
             elif "OPT" in sources:
                 source_tag = "VASS"
         return source_tag, trace_id
+
+    def _extract_options_lane_and_strategy(
+        self,
+        metadata: Optional[Dict[str, Any]],
+    ) -> Tuple[str, str]:
+        """Resolve options lane/strategy using lane-neutral keys with legacy fallback."""
+        if not isinstance(metadata, dict):
+            return "", ""
+
+        lane = str(metadata.get("options_lane", "") or "").strip().upper()
+        strategy = (
+            str(metadata.get("options_strategy", "") or metadata.get("intraday_strategy", "") or "")
+            .strip()
+            .upper()
+        )
+
+        if not lane:
+            trace_source = str(metadata.get("trace_source", "") or "").strip().upper()
+            if trace_source.startswith("ITM"):
+                lane = "ITM"
+            elif trace_source.startswith("MICRO"):
+                lane = "MICRO"
+            elif "ITM" in strategy:
+                lane = "ITM"
+            elif strategy:
+                lane = "MICRO"
+
+        if lane not in {"ITM", "MICRO"}:
+            lane = ""
+        return lane, strategy
 
     # =========================================================================
     # Step 2: AGGREGATE
@@ -2126,17 +2159,7 @@ class PortfolioRouter:
             elif source == "OPT_INTRADAY":
                 lane_tag = ""
                 if isinstance(weight.metadata, dict):
-                    trace_source = str(weight.metadata.get("trace_source", "") or "").upper()
-                    if trace_source.startswith("ITM"):
-                        lane_tag = "ITM"
-                    elif trace_source.startswith("MICRO"):
-                        lane_tag = "MICRO"
-                    if not lane_tag:
-                        strategy = str(weight.metadata.get("intraday_strategy", "") or "").upper()
-                        if "ITM" in strategy:
-                            lane_tag = "ITM"
-                        elif strategy:
-                            lane_tag = "MICRO"
+                    lane_tag, _ = self._extract_options_lane_and_strategy(weight.metadata)
                 if lane_tag:
                     agg_key = f"{symbol}::INTRADAY::{lane_tag}"
             pair_key = (agg_key, source)
@@ -2654,7 +2677,7 @@ class PortfolioRouter:
             # V10.7: Exempt close/protective option intents from min-trade floor.
             is_protective_intent = False
             if is_option and agg.metadata:
-                intraday_strategy = str(agg.metadata.get("intraday_strategy", "") or "").upper()
+                _, intraday_strategy = self._extract_options_lane_and_strategy(agg.metadata)
                 vass_strategy = str(agg.metadata.get("vass_strategy", "") or "").upper()
                 reason_blob = " ".join(str(r) for r in agg.reasons).upper() if agg.reasons else ""
                 is_protective_intent = (
@@ -2706,10 +2729,12 @@ class PortfolioRouter:
             tag = None
             if is_option:
                 if any(s == "OPT_INTRADAY" for s in agg.sources):
-                    intraday_strategy = None
+                    lane_tag = ""
+                    intraday_strategy = ""
                     if agg.metadata:
-                        intraday_strategy = agg.metadata.get("intraday_strategy")
-                    intraday_strategy = str(intraday_strategy or "").strip().upper()
+                        lane_tag, intraday_strategy = self._extract_options_lane_and_strategy(
+                            agg.metadata
+                        )
                     if not intraday_strategy:
                         reason_blob_upper = ("; ".join(agg.reasons)).upper() if agg.reasons else ""
                         source_blob_upper = str(source_tag or "").upper()
@@ -2739,12 +2764,19 @@ class PortfolioRouter:
                             or "INTRADAY_FORCE_EXIT" in reason_blob_upper
                         ):
                             intraday_strategy = "MICRO_OTM_MOMENTUM"
-                    if "ITM_MOMENTUM" in intraday_strategy:
+                    if not lane_tag:
+                        if "ITM_MOMENTUM" in intraday_strategy:
+                            lane_tag = "ITM"
+                        elif intraday_strategy:
+                            lane_tag = "MICRO"
+                    if lane_tag == "ITM":
                         tag = f"ITM:{intraday_strategy}"
                     elif "PROTECTIVE_PUTS" in intraday_strategy:
                         tag = f"MICRO:{intraday_strategy}"
                     elif intraday_strategy:
-                        tag = f"MICRO:{intraday_strategy}"
+                        tag = f"{lane_tag or 'MICRO'}:{intraday_strategy}"
+                    elif lane_tag:
+                        tag = f"{lane_tag}:UNCLASSIFIED"
                     else:
                         tag = "MICRO:UNCLASSIFIED"
                 elif any(s == "OPT" for s in agg.sources):
@@ -3211,12 +3243,15 @@ class PortfolioRouter:
                             continue
 
                     # V2.14 Fix #14: MARGIN_ERROR_TREND - Check trend orders don't exceed
-                    # margin after reserving OPTIONS_MAX_MARGIN_CAP for options engine
+                    # margin after reserving options margin for options engine
                     # V6.11: Trend redesign replaced TNA/FAS with UGL/UCO.
+                    # V12.15: Use percentage-based reserve (scales with portfolio)
                     trend_symbols = ["QLD", "SSO", "UGL", "UCO"]
                     symbol_str = str(order.symbol)
                     if symbol_str in trend_symbols:
-                        options_reserve = getattr(config, "OPTIONS_MAX_MARGIN_CAP", 10000)
+                        options_margin_pct = float(getattr(config, "OPTIONS_MAX_MARGIN_PCT", 0.50))
+                        portfolio_value = self.algorithm.Portfolio.TotalPortfolioValue
+                        options_reserve = portfolio_value * options_margin_pct
                         margin_after_reserve = margin_remaining - options_reserve
                         if order_value > margin_after_reserve and margin_after_reserve > 0:
                             self.log(

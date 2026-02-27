@@ -605,6 +605,13 @@ class MainRegimeMixin:
 
             lane = self.options_engine.find_intraday_lane_by_symbol(symbol_key)
             engine_bucket = "ITM" if str(lane or "").upper() == "ITM" else "MICRO"
+            close_metadata = {
+                "options_strategy": str(strategy_name or "UNKNOWN"),
+                "options_lane": str(engine_bucket or "MICRO"),
+                "transition_overlay": str(overlay or ""),
+            }
+            if engine_bucket != "ITM":
+                close_metadata["intraday_strategy"] = str(strategy_name or "UNKNOWN")
             self.portfolio_router.receive_signal(
                 TargetWeight(
                     symbol=symbol_key,
@@ -613,12 +620,7 @@ class MainRegimeMixin:
                     urgency=Urgency.IMMEDIATE,
                     reason=f"TRANSITION_DERISK_{overlay}",
                     requested_quantity=live_qty,
-                    metadata={
-                        "intraday_strategy": str(strategy_name or "UNKNOWN"),
-                        "options_strategy": str(strategy_name or "UNKNOWN"),
-                        "options_lane": str(engine_bucket or "MICRO"),
-                        "transition_overlay": str(overlay or ""),
-                    },
+                    metadata=close_metadata,
                 )
             )
             self._record_transition_derisk_action(action_key, engine_bucket)

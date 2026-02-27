@@ -1072,6 +1072,15 @@ def check_intraday_entry_signal_impl(
         base_weight = float(config.OPTIONS_INTRADAY_ALLOCATION)
     actual_target_weight = base_weight * size_mult
 
+    metadata = {
+        "options_strategy": entry_strategy.value,
+        "options_lane": pending_lane,
+        "contract_price": best_contract.mid_price,
+    }
+    # Preserve legacy key for MICRO-compatible paths only.
+    if pending_lane != "ITM":
+        metadata["intraday_strategy"] = entry_strategy.value
+
     return TargetWeight(
         symbol=self._symbol_str(best_contract.symbol),
         target_weight=actual_target_weight,  # V2.4.1: Actual allocation, not 1.0
@@ -1079,8 +1088,5 @@ def check_intraday_entry_signal_impl(
         urgency=Urgency.IMMEDIATE,
         reason=reason,
         requested_quantity=num_contracts,  # V2.3.2: Pass calculated contracts
-        metadata={
-            "intraday_strategy": entry_strategy.value,
-            "contract_price": best_contract.mid_price,
-        },
+        metadata=metadata,
     )

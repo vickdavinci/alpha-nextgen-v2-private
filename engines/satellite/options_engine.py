@@ -3893,6 +3893,15 @@ class OptionsEngine:
         if lane_name not in {"ITM", "MICRO"}:
             lane_name = "MICRO"
 
+        metadata = {
+            "options_strategy": strategy_name or IntradayStrategy.NO_TRADE.value,
+            "options_lane": lane_name,
+            "intraday_exit_code": f"INTRADAY_TIME_EXIT_{force_hh:02d}{force_mm:02d}",
+        }
+        # Keep legacy intraday_strategy only for MICRO paths; ITM is multi-day lane.
+        if lane_name != "ITM":
+            metadata["intraday_strategy"] = strategy_name or IntradayStrategy.NO_TRADE.value
+
         return TargetWeight(
             symbol=self._symbol_str(symbol),
             target_weight=0.0,
@@ -3900,13 +3909,7 @@ class OptionsEngine:
             urgency=Urgency.IMMEDIATE,
             reason=reason,
             requested_quantity=num_contracts,
-            metadata={
-                # Keep intraday_strategy for router compatibility; options_* are lane-sovereign keys.
-                "intraday_strategy": strategy_name or IntradayStrategy.NO_TRADE.value,
-                "options_strategy": strategy_name or IntradayStrategy.NO_TRADE.value,
-                "options_lane": lane_name,
-                "intraday_exit_code": f"INTRADAY_TIME_EXIT_{force_hh:02d}{force_mm:02d}",
-            },
+            metadata=metadata,
         )
 
     def check_gamma_pin_exit(

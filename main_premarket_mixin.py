@@ -593,7 +593,6 @@ class MainPremarketMixin:
                     reason=f"ITM_WEEKEND_GAP_EXIT: {reason_text}",
                     requested_quantity=live_qty,
                     metadata={
-                        "intraday_strategy": "ITM_MOMENTUM",
                         "options_strategy": "ITM_MOMENTUM",
                         "options_lane": "ITM",
                         "weekend_guard": "POST_GAP",
