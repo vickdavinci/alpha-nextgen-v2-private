@@ -332,7 +332,7 @@ class MainPremarketMixin:
             # Always refresh scheduler cutoff state (even on normal-close days) to prevent
             # stale early-close carryover into the next session's force-exit logic.
             try:
-                self.scheduler.set_intraday_options_close_hhmm(
+                self.scheduler.set_engine_options_close_hhmm(
                     opt_close_time.hour, opt_close_time.minute
                 )
             except Exception:

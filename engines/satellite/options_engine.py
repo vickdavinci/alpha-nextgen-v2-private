@@ -402,7 +402,9 @@ class OptionsEngine:
             scheduler = (
                 getattr(self.algorithm, "scheduler", None) if self.algorithm is not None else None
             )
-            getter = getattr(scheduler, "get_intraday_options_close_hhmm", None)
+            getter = getattr(scheduler, "get_engine_options_close_hhmm", None)
+            if not callable(getter):
+                getter = getattr(scheduler, "get_intraday_options_close_hhmm", None)
             if callable(getter):
                 hh, mm = getter()
                 return int(hh), int(mm)

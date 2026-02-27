@@ -131,8 +131,8 @@ class DailyScheduler:
         self._time_guard_end = self._parse_time(config.TIME_GUARD_END)
         self._mr_entry_close = (15, 0)  # MR entries close at 15:00
         self._mr_force_close = (15, 45)  # MR positions force close at 15:45
-        # Default intraday options close (overridden by dynamic scheduling on early-close days).
-        self._intraday_opt_close = self._parse_time(
+        # Default single-leg engine options close (overridden by dynamic scheduling on early-close days).
+        self._engine_opt_close = self._parse_time(
             str(getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15"))
         )
 
@@ -157,24 +157,32 @@ class DailyScheduler:
             return (t.hour, t.minute)
         return (0, 0)
 
-    def get_intraday_options_close_hhmm(self) -> Tuple[int, int]:
-        """Return effective intraday options close cutoff (dynamic on early-close days)."""
+    def get_engine_options_close_hhmm(self) -> Tuple[int, int]:
+        """Return effective single-leg engine options close cutoff."""
         try:
-            hh, mm = self._intraday_opt_close
+            hh, mm = self._engine_opt_close
             return int(hh), int(mm)
         except Exception:
             return self._parse_time(str(getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15")))
 
-    def set_intraday_options_close_hhmm(self, hour: int, minute: int) -> None:
-        """Update effective intraday options close cutoff for the current session."""
+    def get_intraday_options_close_hhmm(self) -> Tuple[int, int]:
+        """Backward-compatible alias for engine options close cutoff."""
+        return self.get_engine_options_close_hhmm()
+
+    def set_engine_options_close_hhmm(self, hour: int, minute: int) -> None:
+        """Update effective single-leg engine options close cutoff for the current session."""
         try:
             hh = max(0, min(23, int(hour)))
             mm = max(0, min(59, int(minute)))
-            self._intraday_opt_close = (hh, mm)
+            self._engine_opt_close = (hh, mm)
         except Exception:
-            self._intraday_opt_close = self._parse_time(
+            self._engine_opt_close = self._parse_time(
                 str(getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15"))
             )
+
+    def set_intraday_options_close_hhmm(self, hour: int, minute: int) -> None:
+        """Backward-compatible alias for engine options close cutoff setter."""
+        self.set_engine_options_close_hhmm(hour, minute)
 
     # =========================================================================
     # Event Registration
@@ -298,9 +306,9 @@ class DailyScheduler:
             market_close_callback,
         )
 
-        # Also schedule intraday options force close dynamically
-        # This is handled separately in main.py but we store the time for reference
-        self._intraday_opt_close = (opt_close_time.hour, opt_close_time.minute)
+        # Also schedule options force close dynamically.
+        # This is handled separately in main.py but we store the time for reference.
+        self._engine_opt_close = (opt_close_time.hour, opt_close_time.minute)
 
     def _on_event(self, event: ScheduledEvent) -> None:
         """Internal handler called when a scheduled event fires."""
@@ -535,10 +543,10 @@ class DailyScheduler:
         self._events_fired_today.clear()
         self._kill_switch_triggered = False
         self._panic_mode_triggered = False
-        # Reset intraday options cutoff to config default at day boundary.
+        # Reset engine options cutoff to config default at day boundary.
         # Dynamic early-close refresh may fail on a given day; this prevents
         # stale carryover of prior session's cutoff.
-        self._intraday_opt_close = self._parse_time(
+        self._engine_opt_close = self._parse_time(
             str(getattr(config, "INTRADAY_FORCE_EXIT_TIME", "15:15"))
         )
 
