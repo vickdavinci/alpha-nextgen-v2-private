@@ -798,26 +798,64 @@ class ExecutionEngine:
         if not order:
             return
 
+        target_abs_qty = abs(int(order.quantity or 0))
+        current_abs_filled = abs(int(order.fill_quantity or 0))
+        incoming_abs_fill = abs(int(fill_quantity or 0))
+        side_sign = 1 if int(order.quantity or 0) >= 0 else -1
+
+        def _apply_vwap(next_abs_filled: int, incremental_abs_fill: int) -> None:
+            """Blend incremental fill price into stored VWAP."""
+            if fill_price <= 0 or incremental_abs_fill <= 0 or next_abs_filled <= 0:
+                return
+            if current_abs_filled <= 0 or order.fill_price <= 0:
+                order.fill_price = fill_price
+                return
+            prev_notional = float(order.fill_price) * float(current_abs_filled)
+            inc_notional = float(fill_price) * float(incremental_abs_fill)
+            order.fill_price = (prev_notional + inc_notional) / float(next_abs_filled)
+
         # Update order state based on status
         if status == "Filled":
             order.state = OrderState.FILLED
             order.filled_at = self._get_time()
-            order.fill_price = fill_price
-            order.fill_quantity = fill_quantity
+            if current_abs_filled > 0 and incoming_abs_fill > 0 and target_abs_qty > 0:
+                # Support both incremental and cumulative broker semantics.
+                if current_abs_filled + incoming_abs_fill <= target_abs_qty:
+                    next_abs_filled = current_abs_filled + incoming_abs_fill
+                elif incoming_abs_fill >= current_abs_filled and incoming_abs_fill <= target_abs_qty:
+                    next_abs_filled = incoming_abs_fill
+                else:
+                    next_abs_filled = min(target_abs_qty, current_abs_filled + incoming_abs_fill)
+            else:
+                if incoming_abs_fill > 0:
+                    next_abs_filled = incoming_abs_fill
+                else:
+                    next_abs_filled = target_abs_qty if target_abs_qty > 0 else current_abs_filled
+                if target_abs_qty > 0:
+                    next_abs_filled = min(target_abs_qty, next_abs_filled)
+
+            incremental_abs_fill = max(0, next_abs_filled - current_abs_filled)
+            _apply_vwap(next_abs_filled, incremental_abs_fill)
+            order.fill_quantity = int(side_sign * next_abs_filled)
 
             self.log(
                 f"EXEC: FILLED | {order_id} | {order.symbol} | "
-                f"Price={fill_price:.2f} | Qty={fill_quantity}"
+                f"Price={order.fill_price:.2f} | Qty={order.fill_quantity}"
             )
 
         elif status == "PartiallyFilled":
             order.state = OrderState.PARTIALLY_FILLED
-            order.fill_price = fill_price  # Average price
-            order.fill_quantity += fill_quantity  # Cumulative
+            next_abs_filled = current_abs_filled + incoming_abs_fill
+            if target_abs_qty > 0:
+                next_abs_filled = min(target_abs_qty, next_abs_filled)
+
+            incremental_abs_fill = max(0, next_abs_filled - current_abs_filled)
+            _apply_vwap(next_abs_filled, incremental_abs_fill)
+            order.fill_quantity = int(side_sign * next_abs_filled)
 
             self.log(
                 f"EXEC: PARTIAL_FILL | {order_id} | {order.symbol} | "
-                f"Filled={order.fill_quantity}/{abs(order.quantity)}"
+                f"Filled={abs(order.fill_quantity)}/{target_abs_qty or abs(order.quantity)}"
             )
 
         elif status == "Rejected" or status == "Invalid":

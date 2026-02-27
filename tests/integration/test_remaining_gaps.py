@@ -276,6 +276,8 @@ class TestPartialFillsIntegration:
 
             order = exec_engine.get_order(result.order_id)
             assert order.state == OrderState.FILLED
+            assert order.fill_quantity == 1000
+            assert order.fill_price == pytest.approx(75.09, rel=1e-6)
 
     def test_partial_fill_position_sizing_awareness(self, mock_algorithm):
         """

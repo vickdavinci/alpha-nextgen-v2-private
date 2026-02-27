@@ -361,6 +361,24 @@ class TestFillProcessing:
         # Second partial fill
         engine.on_order_event(12345, "PartiallyFilled", 45.60, 40)
         assert order.fill_quantity == 100  # Cumulative
+        assert order.fill_price == pytest.approx(45.54, rel=1e-6)
+
+    def test_on_order_event_filled_after_partials_keeps_cumulative_quantity(self, engine):
+        """Filled event after partials should preserve cumulative quantity semantics."""
+        result = engine.submit_market_order("QLD", 1000, "TREND")
+        order = engine.get_order(result.order_id)
+        assert order is not None
+
+        order.broker_order_id = 12346
+        engine._broker_order_map[12346] = order.order_id
+
+        engine.on_order_event(12346, "PartiallyFilled", 75.00, 400)
+        assert order.fill_quantity == 400
+
+        engine.on_order_event(12346, "Filled", 75.10, 600)
+        assert order.state == OrderState.FILLED
+        assert order.fill_quantity == 1000
+        assert order.fill_price == pytest.approx(75.06, rel=1e-6)
 
     def test_on_order_event_rejection(self, engine: ExecutionEngine) -> None:
         """Test processing a rejection event."""

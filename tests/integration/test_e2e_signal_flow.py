@@ -578,9 +578,8 @@ class TestPartialFillHandling:
 
             order = exec_engine.get_order(result.order_id)
             assert order.state == OrderState.FILLED
-            # The execution engine behavior: fill_quantity is set (not added)
-            # on Filled status, so we get 600 not 1000
-            assert order.fill_quantity == 600
+            assert order.fill_quantity == 1000
+            assert order.fill_price == pytest.approx(100.06, rel=1e-6)
 
 
 class TestPositionRegistration:
