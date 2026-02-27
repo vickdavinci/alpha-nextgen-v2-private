@@ -2798,11 +2798,11 @@ class TestIntradayLaneIsolation:
         assert engine._find_intraday_lane_by_symbol("QQQ 270119P00480000") is None
 
     def test_intraday_validation_failure_is_lane_scoped(self, engine):
-        engine.set_last_intraday_validation_failure("MICRO", "E_MICRO_A", "micro detail")
-        engine.set_last_intraday_validation_failure("ITM", "E_ITM_A", "itm detail")
+        engine.set_last_engine_validation_failure("MICRO", "E_MICRO_A", "micro detail")
+        engine.set_last_engine_validation_failure("ITM", "E_ITM_A", "itm detail")
 
-        micro_reason, micro_detail = engine.pop_last_intraday_validation_failure("MICRO")
-        itm_reason, itm_detail = engine.pop_last_intraday_validation_failure("ITM")
+        micro_reason, micro_detail = engine.pop_last_engine_validation_failure("MICRO")
+        itm_reason, itm_detail = engine.pop_last_engine_validation_failure("ITM")
 
         assert micro_reason == "E_MICRO_A"
         assert micro_detail == "micro detail"
@@ -2860,7 +2860,7 @@ class TestIntradayLaneIsolation:
         )
 
         assert result is None
-        reason, _ = engine.pop_last_intraday_validation_failure("MICRO")
+        reason, _ = engine.pop_last_engine_validation_failure("MICRO")
         assert reason == "E_INTRADAY_PENDING_SYMBOL_CONFLICT"
         assert engine._pending_intraday_entry is False
         assert engine._pending_contract is None
@@ -2918,7 +2918,7 @@ class TestIntradayLaneIsolation:
         )
 
         assert result is None
-        reason, detail = engine.pop_last_intraday_validation_failure("MICRO")
+        reason, detail = engine.pop_last_engine_validation_failure("MICRO")
         assert reason == "E_INTRADAY_ACTIVE_SYMBOL_CONFLICT"
         assert "already open in lane=ITM" in str(detail)
 
