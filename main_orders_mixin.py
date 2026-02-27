@@ -1799,7 +1799,7 @@ class MainOrdersMixin:
                                 fill_qty=fill_qty,
                                 order_tag=order_tag,
                             )
-                            and not self.options_engine.has_pending_intraday_entry()
+                            and not self.options_engine.has_pending_engine_entry()
                         )
                         if force_intraday_recovery:
                             self._diag_micro_tag_recovery_count += 1
@@ -1826,7 +1826,7 @@ class MainOrdersMixin:
 
                         if position:
                             entry_is_intraday = (
-                                self.options_engine.find_intraday_lane_by_symbol(symbol_norm)
+                                self.options_engine.find_engine_lane_by_symbol(symbol_norm)
                                 is not None
                             )
                             # Create/refresh OCO pair for stop and profit exits.
@@ -1918,7 +1918,7 @@ class MainOrdersMixin:
                     elif self.options_engine.has_intraday_position():
                         # Resolve by symbol to avoid same-lane mismatches when multiple intraday positions coexist.
                         intraday_pos = None
-                        for candidate in self.options_engine.get_intraday_positions():
+                        for candidate in self.options_engine.get_engine_positions():
                             candidate_symbol_norm = (
                                 self._normalize_symbol_str(candidate.contract.symbol)
                                 if candidate is not None and candidate.contract is not None
@@ -2217,7 +2217,7 @@ class MainOrdersMixin:
         # Route 3: QQQ options
         elif "QQQ" in symbol and ("C" in symbol or "P" in symbol):
             symbol_norm = self._normalize_symbol_str(symbol)
-            if self.options_engine.cancel_pending_intraday_exit(symbol_norm):
+            if self.options_engine.cancel_pending_engine_exit(symbol_norm):
                 self._clear_intraday_close_guard(symbol_norm)
                 self.Log(
                     f"OPT_MICRO_EXIT_RECOVERY: Close rejected/canceled | "
@@ -2277,9 +2277,9 @@ class MainOrdersMixin:
                             f"OPT_MACRO_RECOVERY: Ignored unmatched spread rejection | "
                             f"Canceled={symbol_norm} | Pending={','.join(sorted(pending_symbols)) or 'NONE'}"
                         )
-            if (not spread_rejection_handled) and self.options_engine.has_pending_intraday_entry():
+            if (not spread_rejection_handled) and self.options_engine.has_pending_engine_entry():
                 pending_symbol = self.options_engine.get_pending_entry_contract_symbol()
-                pending_lane = self.options_engine.get_pending_intraday_entry_lane(symbol_norm)
+                pending_lane = self.options_engine.get_pending_engine_entry_lane(symbol_norm)
                 if pending_lane is None:
                     self._diag_micro_pending_cancel_ignored_count += 1
                     self.Log(
@@ -2287,7 +2287,7 @@ class MainOrdersMixin:
                         f"Canceled={symbol_norm} Pending={pending_symbol or 'UNKNOWN'}"
                     )
                 else:
-                    cleared_lane = self.options_engine.cancel_pending_intraday_entry(
+                    cleared_lane = self.options_engine.cancel_pending_engine_entry(
                         engine=pending_lane,
                         symbol=symbol_norm,
                     )

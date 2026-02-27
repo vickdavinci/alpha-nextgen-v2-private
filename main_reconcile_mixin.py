@@ -239,7 +239,7 @@ class MainReconcileMixin:
                 tracked_symbols.add(str(spread.long_leg.symbol))
                 tracked_symbols.add(str(spread.short_leg.symbol))
 
-            for intraday in self.options_engine.get_intraday_positions():
+            for intraday in self.options_engine.get_engine_positions():
                 if intraday is not None and intraday.contract is not None:
                     tracked_symbols.add(str(intraday.contract.symbol))
 
@@ -296,7 +296,7 @@ class MainReconcileMixin:
                         for order in self.Transactions.GetOpenOrders()
                     )
                     if not has_open_option_orders:
-                        for intraday_pos in self.options_engine.get_intraday_positions():
+                        for intraday_pos in self.options_engine.get_engine_positions():
                             if intraday_pos is not None and intraday_pos.contract is not None:
                                 intraday_sym = self._normalize_symbol_str(
                                     intraday_pos.contract.symbol
@@ -308,11 +308,11 @@ class MainReconcileMixin:
                             swing_sym = self._normalize_symbol_str(swing_pos.contract.symbol)
                             self.options_engine.remove_position(swing_sym)
                             self._clear_micro_symbol_tracking(swing_sym)
-                        if self.options_engine.has_pending_intraday_entry():
-                            self.options_engine.cancel_pending_intraday_entry()
+                        if self.options_engine.has_pending_engine_entry():
+                            self.options_engine.cancel_pending_engine_entry()
                         if self.options_engine.has_pending_swing_entry():
                             self.options_engine.cancel_pending_swing_entry()
-                        self.options_engine.cancel_pending_intraday_exit()
+                        self.options_engine.cancel_pending_engine_exit()
                         for stale_sym in list(self._micro_open_symbols) + list(
                             self._itm_open_symbols
                         ):

@@ -393,7 +393,7 @@ def remove_intraday_position_impl(
     """
     lane = None
     if symbol:
-        lane = self._find_intraday_lane_by_symbol(symbol)
+        lane = self._find_engine_lane_by_symbol(symbol)
         if lane is None:
             return None
     elif engine is not None:

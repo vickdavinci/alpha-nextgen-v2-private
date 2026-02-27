@@ -98,7 +98,7 @@ def check_expiring_options_force_exit_impl(
     entry_price = position.entry_price
     source = (
         "OPT_INTRADAY"
-        if self._find_intraday_lane_by_symbol(self._symbol_str(symbol)) is not None
+        if self._find_engine_lane_by_symbol(self._symbol_str(symbol)) is not None
         else "OPT_SWING"
     )
 
@@ -117,8 +117,8 @@ def check_expiring_options_force_exit_impl(
     )
 
     # Keep intraday software exit lock aligned for expiring-day close signals.
-    if self._find_intraday_lane_by_symbol(self._symbol_str(symbol)) is not None:
-        if not self.mark_pending_intraday_exit(self._symbol_str(symbol)):
+    if self._find_engine_lane_by_symbol(self._symbol_str(symbol)) is not None:
+        if not self.mark_pending_engine_exit(self._symbol_str(symbol)):
             return None
 
     return TargetWeight(

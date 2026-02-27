@@ -18,7 +18,7 @@ def apply_premarket_vix_actions(algo: Any) -> None:
         getattr(config, "PREMARKET_FORCE_CLOSE_INTRADAY_STALE", True)
         and algo.options_engine.has_intraday_position()
     ):
-        for intraday_pos in algo.options_engine.get_intraday_positions():
+        for intraday_pos in algo.options_engine.get_engine_positions():
             if intraday_pos is None or intraday_pos.contract is None:
                 continue
             intraday_symbol = algo._normalize_symbol_str(intraday_pos.contract.symbol)
@@ -75,7 +75,7 @@ def apply_premarket_vix_actions(algo: Any) -> None:
             )
             queued += 1
 
-        intraday_positions = algo.options_engine.get_intraday_positions()
+        intraday_positions = algo.options_engine.get_engine_positions()
         for intraday_pos in intraday_positions:
             if intraday_pos is None or intraday_pos.contract is None:
                 continue
@@ -166,7 +166,7 @@ def apply_premarket_vix_actions(algo: Any) -> None:
             )
 
         symbols_to_close = []
-        for intraday_pos in algo.options_engine.get_intraday_positions():
+        for intraday_pos in algo.options_engine.get_engine_positions():
             if intraday_pos is None or intraday_pos.contract is None:
                 continue
             if intraday_pos.contract.direction == OptionDirection.CALL:

@@ -79,7 +79,7 @@ class MainRiskMonitorMixin:
         # V2.3.11: Check expiring options force exit (15:45 for 0 DTE)
         # CRITICAL: Prevents auto-exercise of ITM options held into close
         position = self.options_engine.get_position()
-        intraday_positions = self.options_engine.get_intraday_positions()
+        intraday_positions = self.options_engine.get_engine_positions()
         expiring_candidates = []
         if position is not None:
             expiring_candidates.append(position)

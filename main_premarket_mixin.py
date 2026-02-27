@@ -554,7 +554,7 @@ class MainPremarketMixin:
         vix_shock_pct = max(0.0, float(self._get_premarket_vix_gap_proxy_pct()) / 100.0)
 
         queued = 0
-        for intraday_pos in self.options_engine.get_intraday_positions():
+        for intraday_pos in self.options_engine.get_engine_positions():
             if intraday_pos is None or intraday_pos.contract is None:
                 continue
             strategy = str(getattr(intraday_pos, "entry_strategy", "") or "").upper()

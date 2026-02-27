@@ -38,9 +38,9 @@ def check_exit_signals_impl(
     symbol = pos.contract.symbol
     symbol_str = self._symbol_str(symbol)
     entry_price = pos.entry_price
-    is_intraday_pos = self._find_intraday_lane_by_symbol(symbol_str) is not None
+    is_intraday_pos = self._find_engine_lane_by_symbol(symbol_str) is not None
 
-    if is_intraday_pos and self.has_pending_intraday_exit(symbol=symbol_str):
+    if is_intraday_pos and self.has_pending_engine_exit(symbol=symbol_str):
         return None
 
     # Calculate P&L percentage
@@ -71,7 +71,7 @@ def check_exit_signals_impl(
         min_hold_minutes = float(getattr(config, "MICRO_STAGNATION_MIN_HOLD_MINUTES", 60))
         flat_band = float(getattr(config, "MICRO_STAGNATION_FLAT_BAND_PCT", 0.10))
         if held_minutes >= min_hold_minutes and abs(pnl_pct) <= flat_band:
-            if not self.mark_pending_intraday_exit(symbol_str):
+            if not self.mark_pending_engine_exit(symbol_str):
                 return None
             reason = (
                 f"MICRO_STAGNATION_EXIT {pnl_pct:+.1%} "
@@ -89,7 +89,7 @@ def check_exit_signals_impl(
 
     # Exit 1: Profit target hit (+50%)
     if current_price >= pos.target_price:
-        if is_intraday_pos and not self.mark_pending_intraday_exit(symbol_str):
+        if is_intraday_pos and not self.mark_pending_engine_exit(symbol_str):
             return None
         reason = f"TARGET_HIT +{pnl_pct:.1%} (Price: ${current_price:.2f})"
         self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
@@ -131,7 +131,7 @@ def check_exit_signals_impl(
             except Exception:
                 vix_chg = 0.0
             if vix_chg >= spike_pct:
-                if is_intraday_pos and not self.mark_pending_intraday_exit(symbol_str):
+                if is_intraday_pos and not self.mark_pending_engine_exit(symbol_str):
                     return None
                 reason = (
                     f"ITM_VIX_SPIKE_EXIT VIX_chg={vix_chg:+.1%} >= {spike_pct:.0%} "
@@ -164,7 +164,7 @@ def check_exit_signals_impl(
                 if trail_stop > pos.stop_price:
                     pos.stop_price = trail_stop
                 if current_price <= pos.stop_price:
-                    if is_intraday_pos and not self.mark_pending_intraday_exit(symbol_str):
+                    if is_intraday_pos and not self.mark_pending_engine_exit(symbol_str):
                         return None
                     reason = (
                         f"TRAIL_STOP {pnl_pct:.1%} (High=${pos.highest_price:.2f}, "
@@ -182,7 +182,7 @@ def check_exit_signals_impl(
 
     # Exit 2: Stop hit
     if current_price <= pos.stop_price:
-        if is_intraday_pos and not self.mark_pending_intraday_exit(symbol_str):
+        if is_intraday_pos and not self.mark_pending_engine_exit(symbol_str):
             return None
         reason = f"STOP_HIT {pnl_pct:.1%} (Price: ${current_price:.2f})"
         self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
@@ -294,7 +294,7 @@ def check_exit_signals_impl(
                 pass
         profit_exempt = float(getattr(config, "MICRO_OTM_MAX_HOLD_PROFIT_EXEMPT_PCT", 0.35))
         if max_hold_minutes > 0 and held_minutes >= max_hold_minutes and pnl_pct < profit_exempt:
-            if not self.mark_pending_intraday_exit(symbol_str):
+            if not self.mark_pending_engine_exit(symbol_str):
                 return None
             reason = (
                 f"MICRO_OTM_MAX_HOLD {pnl_pct:+.1%} "
@@ -320,7 +320,7 @@ def check_exit_signals_impl(
         max_hold_minutes = float(getattr(config, "MICRO_DEBIT_FADE_MAX_HOLD_MINUTES", 0))
         profit_exempt = float(getattr(config, "MICRO_DEBIT_FADE_MAX_HOLD_PROFIT_EXEMPT_PCT", 0.20))
         if max_hold_minutes > 0 and held_minutes >= max_hold_minutes and pnl_pct < profit_exempt:
-            if not self.mark_pending_intraday_exit(symbol_str):
+            if not self.mark_pending_engine_exit(symbol_str):
                 return None
             reason = (
                 f"MICRO_FADE_MAX_HOLD {pnl_pct:+.1%} "
@@ -369,7 +369,7 @@ def check_exit_signals_impl(
             except Exception:
                 held_days = 0
             if held_days >= max_hold_days:
-                if is_intraday_pos and not self.mark_pending_intraday_exit(symbol_str):
+                if is_intraday_pos and not self.mark_pending_engine_exit(symbol_str):
                     return None
                 reason = f"ITM_ENGINE_MAX_HOLD ({held_days}d >= {max_hold_days}d) P&L={pnl_pct:.1%}"
                 self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)
@@ -405,7 +405,7 @@ def check_exit_signals_impl(
         dte_exit_threshold = int(getattr(config, "PROTECTIVE_PUTS_DTE_EXIT", dte_exit_threshold))
 
     if current_dte is not None and current_dte <= dte_exit_threshold:
-        if is_intraday_pos and not self.mark_pending_intraday_exit(symbol_str):
+        if is_intraday_pos and not self.mark_pending_engine_exit(symbol_str):
             return None
         reason = f"DTE_EXIT ({current_dte} DTE <= {dte_exit_threshold}) P&L={pnl_pct:.1%}"
         self.log(f"OPT: EXIT_SIGNAL {symbol} | {reason}", trades_only=True)

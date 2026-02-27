@@ -757,7 +757,7 @@ def check_intraday_entry_signal_impl(
 
     pending_symbol_norm = self._symbol_str(best_contract.symbol)
     pending_lane = self._intraday_engine_lane_from_strategy(entry_strategy.value)
-    active_lane = self._find_intraday_lane_by_symbol(pending_symbol_norm)
+    active_lane = self._find_engine_lane_by_symbol(pending_symbol_norm)
     if active_lane is not None and str(active_lane).upper() != pending_lane:
         return fail(
             "E_INTRADAY_ACTIVE_SYMBOL_CONFLICT",

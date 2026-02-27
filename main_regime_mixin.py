@@ -565,7 +565,7 @@ class MainRegimeMixin:
             queued_any = True
 
         # De-risk open ITM/MICRO wrong-way single-leg options.
-        for intraday_pos in list(self.options_engine.get_intraday_positions() or []):
+        for intraday_pos in list(self.options_engine.get_engine_positions() or []):
             if intraday_pos is None or getattr(intraday_pos, "contract", None) is None:
                 continue
             symbol_key = self._normalize_symbol_str(intraday_pos.contract.symbol)
@@ -573,7 +573,7 @@ class MainRegimeMixin:
                 continue
             if self._has_open_non_oco_order_for_symbol(symbol_key):
                 continue
-            if self.options_engine.has_pending_intraday_exit(symbol=symbol_key):
+            if self.options_engine.has_pending_engine_exit(symbol=symbol_key):
                 continue
 
             strategy_name = str(getattr(intraday_pos, "entry_strategy", "") or "").upper()
@@ -594,7 +594,7 @@ class MainRegimeMixin:
                 continue
             if bars_since_flip >= intraday_derisk_bars:
                 continue
-            if not self.options_engine.mark_pending_intraday_exit(symbol_key):
+            if not self.options_engine.mark_pending_engine_exit(symbol_key):
                 continue
 
             live_qty = abs(self._get_option_holding_quantity(symbol_key))
@@ -603,7 +603,7 @@ class MainRegimeMixin:
             if live_qty <= 0:
                 continue
 
-            lane = self.options_engine.find_intraday_lane_by_symbol(symbol_key)
+            lane = self.options_engine.find_engine_lane_by_symbol(symbol_key)
             engine_bucket = "ITM" if str(lane or "").upper() == "ITM" else "MICRO"
             close_metadata = {
                 "options_strategy": str(strategy_name or "UNKNOWN"),

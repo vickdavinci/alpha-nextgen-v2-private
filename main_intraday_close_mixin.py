@@ -159,7 +159,7 @@ class MainIntradayCloseMixin:
         self._check_expiration_hammer_v2()
 
         # Check for intraday positions to close
-        for intraday_pos in self.options_engine.get_intraday_positions():
+        for intraday_pos in self.options_engine.get_engine_positions():
             if intraday_pos is None:
                 continue
             # Get current option price
@@ -208,12 +208,12 @@ class MainIntradayCloseMixin:
             except Exception as e:
                 self.Log(f"INTRADAY_FORCE_EXIT: OCO cancel failed for {symbol} | {e}")
 
-            signal = self.options_engine.check_intraday_force_exit(
+            signal = self.options_engine.check_engine_force_exit(
                 current_hour=self.Time.hour,
                 current_minute=self.Time.minute,
                 current_price=current_price,
                 ignore_hold_policy=(eod_loss_breach or itm_eod_harvest),
-                engine=self.options_engine.find_intraday_lane_by_symbol(symbol),
+                engine=self.options_engine.find_engine_lane_by_symbol(symbol),
                 symbol=symbol,
             )
 
@@ -327,7 +327,7 @@ class MainIntradayCloseMixin:
         if self.options_engine.has_spread_position():
             return
 
-        positions_for_oco = self.options_engine.get_intraday_positions()
+        positions_for_oco = self.options_engine.get_engine_positions()
         if not positions_for_oco:
             swing_pos = self.options_engine.get_position()
             if swing_pos is not None:
@@ -489,7 +489,7 @@ class MainIntradayCloseMixin:
         if self.options_engine:
             self.options_engine.clear_spread_position()
             self.options_engine.cancel_pending_spread_entry()
-            self.options_engine.cancel_pending_intraday_entry()
+            self.options_engine.cancel_pending_engine_entry()
         if self.portfolio_router:
             self.portfolio_router.clear_all_spread_margins()
 
@@ -593,7 +593,7 @@ class MainIntradayCloseMixin:
             if self.options_engine:
                 self.options_engine.clear_spread_position()
                 self.options_engine.cancel_pending_spread_entry()
-                self.options_engine.cancel_pending_intraday_entry()
+                self.options_engine.cancel_pending_engine_entry()
             if self.portfolio_router:
                 self.portfolio_router.clear_all_spread_margins()
             if self._spread_fill_tracker is not None:
@@ -642,7 +642,7 @@ class MainIntradayCloseMixin:
             return
 
         submitted_any = False
-        for intraday_pos in self.options_engine.get_intraday_positions():
+        for intraday_pos in self.options_engine.get_engine_positions():
             if intraday_pos is None or intraday_pos.contract is None:
                 continue
             symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
@@ -682,12 +682,12 @@ class MainIntradayCloseMixin:
                 self.Log(f"INTRADAY_FORCE_EXIT_FALLBACK: No valid price for {symbol} - skip")
                 continue
 
-            signal = self.options_engine.check_intraday_force_exit(
+            signal = self.options_engine.check_engine_force_exit(
                 current_hour=self.Time.hour,
                 current_minute=self.Time.minute,
                 current_price=price,
                 ignore_hold_policy=(eod_loss_breach or itm_eod_harvest),
-                engine=self.options_engine.find_intraday_lane_by_symbol(symbol),
+                engine=self.options_engine.find_engine_lane_by_symbol(symbol),
                 symbol=symbol,
             )
             if signal:

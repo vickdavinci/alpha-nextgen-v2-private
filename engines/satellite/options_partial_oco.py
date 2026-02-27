@@ -25,7 +25,7 @@ def get_intraday_partial_fill_oco_seed_impl(
     if not symbol_norm:
         return None
 
-    lane = self._find_intraday_lane_by_symbol(symbol_norm)
+    lane = self._find_engine_lane_by_symbol(symbol_norm)
     pos = self._get_intraday_lane_position(lane) if lane else None
     if (
         pos is not None
@@ -40,7 +40,7 @@ def get_intraday_partial_fill_oco_seed_impl(
             "entry_strategy": str(getattr(pos, "entry_strategy", "UNKNOWN") or "UNKNOWN"),
         }
 
-    return self.get_pending_intraday_partial_oco_seed(symbol=symbol_norm, fill_price=fill_price)
+    return self.get_pending_engine_partial_oco_seed(symbol=symbol_norm, fill_price=fill_price)
 
 
 def get_partial_fill_oco_seed_impl(
@@ -51,7 +51,7 @@ def get_partial_fill_oco_seed_impl(
     if not symbol_norm:
         return None
 
-    intraday_seed = self.get_intraday_partial_fill_oco_seed(
+    intraday_seed = self.get_engine_partial_fill_oco_seed(
         symbol=symbol_norm,
         fill_price=fill_price,
     )

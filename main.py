@@ -988,7 +988,7 @@ class AlphaNextGen(QCAlgorithm):
             return "MICRO"
 
         try:
-            for intraday_pos in self.options_engine.get_intraday_positions():
+            for intraday_pos in self.options_engine.get_engine_positions():
                 if intraday_pos is None or intraday_pos.contract is None:
                     continue
                 pos_symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
@@ -1178,7 +1178,7 @@ class AlphaNextGen(QCAlgorithm):
         if not symbol_str:
             return False
         intraday_pos = None
-        for p in self.options_engine.get_intraday_positions():
+        for p in self.options_engine.get_engine_positions():
             if p is None or p.contract is None:
                 continue
             pos_symbol = self._normalize_symbol_str(p.contract.symbol)
@@ -1291,7 +1291,7 @@ class AlphaNextGen(QCAlgorithm):
         signals: List[TargetWeight] = []
         vix_5d_change = self._get_itm_weekend_vix_5d_change()
 
-        for intraday_pos in self.options_engine.get_intraday_positions():
+        for intraday_pos in self.options_engine.get_engine_positions():
             if intraday_pos is None or intraday_pos.contract is None:
                 continue
             strategy = str(getattr(intraday_pos, "entry_strategy", "") or "").upper()

@@ -417,7 +417,7 @@ def mark_pending_intraday_exit_impl(self, symbol: Optional[str] = None) -> bool:
     """
     symbol_key = self._normalize_symbol_key(symbol)
     if symbol_key is not None:
-        if self._find_intraday_lane_by_symbol(symbol_key) is None:
+        if self._find_engine_lane_by_symbol(symbol_key) is None:
             return False
         if symbol_key in self._pending_intraday_exit_symbols:
             return False
