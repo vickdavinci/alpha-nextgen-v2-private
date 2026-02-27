@@ -24,6 +24,33 @@ class MainOptionsMixin:
         self._regime_detector_last_raw = {}
         self._regime_overlay_ambiguous_bars = 0
 
+    def _scrub_stale_spread_margin_reservations(self) -> None:
+        """
+        Clear phantom spread margin reservations when no spread is active/pending.
+
+        Safety net for submit/reject/cancel edge paths where spread margin remains
+        reserved even though engine state is flat.
+        """
+        if not hasattr(self, "portfolio_router") or self.portfolio_router is None:
+            return
+        reserved = float(self.portfolio_router.get_reserved_spread_margin() or 0.0)
+        if reserved <= 0:
+            return
+
+        has_active_spread = bool(self.options_engine.get_spread_positions())
+        has_pending_spread = bool(self.options_engine.has_pending_spread_entry())
+        has_pending_leg_map = bool(getattr(self, "_pending_spread_orders", {})) or bool(
+            getattr(self, "_pending_spread_orders_reverse", {})
+        )
+        has_fill_tracker = getattr(self, "_spread_fill_tracker", None) is not None
+        if has_active_spread or has_pending_spread or has_pending_leg_map or has_fill_tracker:
+            return
+
+        self.portfolio_router.clear_all_spread_margins()
+        self.Log(
+            f"SPREAD_MARGIN_SCRUB: Cleared stale reservation ${reserved:,.2f} with no active/pending spread state"
+        )
+
     def _initialize_runtime_state(self) -> None:
         # Daily/account tracking.
         self.equity_prior_close = 0.0
@@ -1379,6 +1406,9 @@ class MainOptionsMixin:
         # V2.9: Skip if in settlement cooldown (Bug #6 fix)
         if not self._can_trade_options_settlement_aware():
             return
+
+        # Plumbing safety: clear stale spread margin reservations before new entries.
+        self._scrub_stale_spread_margin_reservations()
 
         # V2.11 (Pitfall #6): Margin-aware sizing guard
         # Check available margin BEFORE calculating any allocation
