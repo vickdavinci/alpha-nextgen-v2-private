@@ -2867,6 +2867,61 @@ class TestIntradayLaneIsolation:
         assert engine._pending_num_contracts is None
         assert engine._pending_entry_strategy is None
 
+    def test_active_symbol_conflict_blocks_cross_lane_entry(self, engine):
+        contract = OptionContract(
+            symbol="QQQ 270105P00470000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=470.0,
+            expiry="2027-01-05",
+            delta=0.40,
+            bid=2.0,
+            ask=2.1,
+            mid_price=2.05,
+            open_interest=1800,
+            days_to_expiry=1,
+        )
+        engine._intraday_positions["ITM"] = [
+            OptionsPosition(
+                contract=contract,
+                entry_price=2.05,
+                entry_time="2027-01-04 10:00:00",
+                entry_score=3.0,
+                num_contracts=1,
+                stop_price=1.2,
+                target_price=2.8,
+                stop_pct=0.40,
+                entry_strategy=IntradayStrategy.ITM_MOMENTUM.value,
+                highest_price=2.05,
+            )
+        ]
+        engine._refresh_legacy_intraday_mirrors()
+
+        result = engine.check_intraday_entry_signal(
+            vix_current=18.0,
+            vix_open=17.0,
+            qqq_current=450.0,
+            qqq_open=448.0,
+            current_hour=11,
+            current_minute=0,
+            current_time="2027-01-04 11:00:00",
+            portfolio_value=100000.0,
+            raw_portfolio_value=100000.0,
+            best_contract=contract,
+            size_multiplier=1.0,
+            macro_regime_score=60.0,
+            governor_scale=1.0,
+            direction=OptionDirection.PUT,
+            forced_entry_strategy=IntradayStrategy.MICRO_OTM_MOMENTUM,
+            micro_state=engine.get_micro_regime_state(),
+            transition_ctx={"transition_overlay": "STABLE"},
+        )
+
+        assert result is None
+        reason, detail = engine.pop_last_intraday_validation_failure("MICRO")
+        assert reason == "E_INTRADAY_ACTIVE_SYMBOL_CONFLICT"
+        assert "already open in lane=ITM" in str(detail)
+
     def test_preflight_allows_micro_otm_second_slot_when_adaptive_cap_boosts(self, engine):
         contract = OptionContract(
             symbol="QQQ 270119C00490000",
