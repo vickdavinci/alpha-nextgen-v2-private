@@ -277,3 +277,31 @@ class TestTargetWeightValidation:
 
         with pytest.raises(ValueError, match="Incompatible schema version"):
             TargetWeight.from_dict(bad_payload)
+
+    def test_opt_intraday_metadata_promotes_legacy_strategy(self):
+        """OPT_INTRADAY should normalize legacy intraday_strategy metadata."""
+        tw = TargetWeight(
+            symbol="QQQ 260130C00500000",
+            target_weight=0.10,
+            source="OPT_INTRADAY",
+            urgency=Urgency.IMMEDIATE,
+            reason="ENTRY",
+            requested_quantity=2,
+            metadata={"intraday_strategy": "micro_debit_fade"},
+        )
+        assert tw.metadata.get("options_strategy") == "MICRO_DEBIT_FADE"
+        assert tw.metadata.get("options_lane") == "MICRO"
+
+    def test_opt_intraday_metadata_infers_itm_lane(self):
+        """ITM strategy metadata should infer ITM lane automatically."""
+        tw = TargetWeight(
+            symbol="QQQ 260130C00500000",
+            target_weight=0.10,
+            source="OPT_INTRADAY",
+            urgency=Urgency.IMMEDIATE,
+            reason="ENTRY",
+            requested_quantity=1,
+            metadata={"options_strategy": "ITM_MOMENTUM"},
+        )
+        assert tw.metadata.get("options_strategy") == "ITM_MOMENTUM"
+        assert tw.metadata.get("options_lane") == "ITM"

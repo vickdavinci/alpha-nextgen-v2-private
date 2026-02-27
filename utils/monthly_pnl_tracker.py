@@ -22,14 +22,28 @@ ENGINE_SOURCES = {
     "TREND": "TREND",
     "MR": "MR",
     "OPT": "OPT",
-    "OPT_INTRADAY": "OPT",  # Roll up intraday options into OPT
-    "OPT_SPREAD": "OPT",  # Roll up spread options into OPT
+    # Preserve lane/engine attribution for options paths.
+    "OPT_INTRADAY": "OPT_INTRADAY",
+    "OPT_SPREAD": "OPT_SPREAD",
+    "ITM": "ITM",
+    "MICRO": "MICRO",
+    "VASS": "VASS",
     "HEDGE": "HEDGE",
     "YIELD": "YIELD",
     "COLD_START": "TREND",  # Cold start is part of trend
     "RISK": "RISK",  # Kill switch liquidations
     "ROUTER": "OTHER",  # Router-initiated trades
 }
+
+# Roll-up views used for summary diagnostics.
+OPTIONS_ENGINE_KEYS = (
+    "OPT",
+    "OPT_INTRADAY",
+    "OPT_SPREAD",
+    "ITM",
+    "MICRO",
+    "VASS",
+)
 
 # ObjectStore key
 PNL_TRACKER_KEY = "ALPHA_NEXTGEN_MONTHLY_PNL"
@@ -419,6 +433,19 @@ class MonthlyPnLTracker:
             "pnl": self._session_pnl,
         }
 
+    def _rollup_options_stats(self, stats: MonthlyStats) -> Dict[str, float]:
+        """Aggregate options-engine stats across lane + legacy categories."""
+        trades = sum(int(stats.engine_trades.get(k, 0) or 0) for k in OPTIONS_ENGINE_KEYS)
+        wins = sum(int(stats.engine_wins.get(k, 0) or 0) for k in OPTIONS_ENGINE_KEYS)
+        gross = sum(float(stats.engine_pnl.get(k, 0.0) or 0.0) for k in OPTIONS_ENGINE_KEYS)
+        win_rate = (wins / trades * 100.0) if trades > 0 else 0.0
+        return {
+            "trades": float(trades),
+            "wins": float(wins),
+            "gross": float(gross),
+            "win_rate": float(win_rate),
+        }
+
     def log_optimization_summary(self, current_date: str) -> None:
         """
         Log one compact line for optimization decisions.
@@ -428,11 +455,10 @@ class MonthlyPnLTracker:
         """
         month = current_date[:7]
         stats = self.get_month_stats(month)
-
-        opt_trades = stats.engine_trades.get("OPT", 0)
-        opt_wins = stats.engine_wins.get("OPT", 0)
-        opt_win_rate = (opt_wins / opt_trades * 100.0) if opt_trades > 0 else 0.0
-        opt_gross = stats.engine_pnl.get("OPT", 0.0)
+        opt_rollup = self._rollup_options_stats(stats)
+        opt_trades = int(opt_rollup["trades"])
+        opt_win_rate = float(opt_rollup["win_rate"])
+        opt_gross = float(opt_rollup["gross"])
         opt_fee_share = (
             (stats.fees / abs(stats.realized_pnl) * 100.0) if stats.realized_pnl else 0.0
         )

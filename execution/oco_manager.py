@@ -189,7 +189,12 @@ class OCOManager:
         """Normalize symbol-like values to stable uppercase string keys."""
         if symbol is None:
             return ""
-        return str(symbol).strip().upper()
+        text = str(symbol).strip().upper()
+        if not text:
+            return ""
+        # Collapse repeated whitespace so broker/runtime formatting differences
+        # still map to the same option contract key.
+        return " ".join(text.split())
 
     def create_oco_pair(
         self,

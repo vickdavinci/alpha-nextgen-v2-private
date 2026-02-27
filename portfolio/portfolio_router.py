@@ -2800,6 +2800,13 @@ class PortfolioRouter:
                         ):
                             intraday_strategy = "MICRO_OTM_MOMENTUM"
                     if not lane_tag:
+                        if is_closing:
+                            lane_tag = self._infer_options_lane_from_symbol(symbol)
+                    elif is_closing and intraday_strategy in {"", "UNCLASSIFIED"}:
+                        inferred_lane = self._infer_options_lane_from_symbol(symbol)
+                        if inferred_lane in {"ITM", "MICRO"}:
+                            lane_tag = inferred_lane
+                    if not lane_tag:
                         if "ITM_MOMENTUM" in intraday_strategy:
                             lane_tag = "ITM"
                         elif intraday_strategy:

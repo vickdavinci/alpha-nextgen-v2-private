@@ -2080,7 +2080,7 @@ class MainOrdersMixin:
                                 if hasattr(self, "pnl_tracker"):
                                     self.pnl_tracker.record_trade(
                                         symbol=symbol,
-                                        engine="OPT_INTRADAY",
+                                        engine=engine_bucket,
                                         entry_date=removed_position.entry_time[:10]
                                         if removed_position.entry_time
                                         else str(self.Time.date()),
@@ -2214,7 +2214,7 @@ class MainOrdersMixin:
                             if hasattr(self, "pnl_tracker"):
                                 self.pnl_tracker.record_trade(
                                     symbol=symbol,
-                                    engine="OPT_INTRADAY",
+                                    engine=fallback_engine_bucket,
                                     entry_date=str(snapshot.get("entry_time", str(self.Time)))[:10],
                                     exit_date=str(self.Time.date()),
                                     entry_price=entry_price,
@@ -2507,7 +2507,7 @@ class MainOrdersMixin:
                 # Record as single trade with net P&L
                 self.pnl_tracker.record_trade(
                     symbol=f"SPREAD:{spread.spread_type}",
-                    engine="OPT_SPREAD",
+                    engine="VASS",
                     entry_date=spread.entry_time[:10]
                     if spread.entry_time
                     else str(self.Time.date()),

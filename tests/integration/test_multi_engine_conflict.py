@@ -20,6 +20,7 @@ from models.enums import Urgency
 
 # Import components under test
 from models.target_weight import TargetWeight
+from portfolio.portfolio_router import PortfolioRouter
 
 
 @pytest.fixture
@@ -491,6 +492,71 @@ class TestConcurrentSignals:
         # For safety, exit should take precedence
         final_weight = 0.0  # Exit wins in conflict
         assert final_weight == 0.0
+
+
+class TestRouterRuntimeSeparation:
+    """Runtime-level multi-engine conflict checks through PortfolioRouter."""
+
+    def test_intraday_same_symbol_keeps_itm_micro_separate_runtime(self):
+        router = PortfolioRouter()
+        symbol = "QQQ 260130C00500000"
+        weights = [
+            TargetWeight(
+                symbol=symbol,
+                target_weight=0.10,
+                source="OPT_INTRADAY",
+                urgency=Urgency.IMMEDIATE,
+                reason="MICRO entry",
+                requested_quantity=2,
+                metadata={"options_strategy": "MICRO_DEBIT_FADE", "options_lane": "MICRO"},
+            ),
+            TargetWeight(
+                symbol=symbol,
+                target_weight=0.15,
+                source="OPT_INTRADAY",
+                urgency=Urgency.IMMEDIATE,
+                reason="ITM entry",
+                requested_quantity=1,
+                metadata={"options_strategy": "ITM_MOMENTUM", "options_lane": "ITM"},
+            ),
+        ]
+
+        aggregated = router.aggregate_weights(weights)
+        assert len(aggregated) == 2
+
+    def test_option_close_with_opt_source_infers_itm_tag_runtime(self):
+        symbol = "QQQ 260130C00500000"
+        holding = MagicMock()
+        holding.Symbol = symbol
+        holding.Quantity = 4
+        kvp = MagicMock()
+        kvp.Value = holding
+
+        algo = MagicMock()
+        algo.Portfolio = [kvp]
+        algo.options_engine = MagicMock()
+        algo.options_engine.find_engine_lane_by_symbol.return_value = "ITM"
+
+        router = PortfolioRouter(algorithm=algo)
+        aggregated = router.aggregate_weights(
+            [
+                TargetWeight(
+                    symbol=symbol,
+                    target_weight=0.0,
+                    source="OPT",
+                    urgency=Urgency.IMMEDIATE,
+                    reason="force close",
+                )
+            ]
+        )
+        orders = router.calculate_order_intents(
+            aggregated=aggregated,
+            tradeable_equity=100000.0,
+            current_positions={symbol: 1000.0},
+            current_prices={symbol: 2.5},
+        )
+        assert len(orders) == 1
+        assert orders[0].tag.startswith("ITM:")
 
 
 # =============================================================================

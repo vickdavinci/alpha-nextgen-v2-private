@@ -320,6 +320,13 @@ class TestOCOCancellation:
         assert result is True
         assert active_pair.state == OCOState.CANCELLED
 
+    def test_cancel_by_symbol_normalizes_whitespace(self, manager, active_pair):
+        """Symbol normalization should tolerate spacing differences."""
+        noisy_symbol = f"  {active_pair.symbol.replace(' ', '   ')}  "
+        result = manager.cancel_by_symbol(noisy_symbol, "POSITION_CLOSED")
+        assert result is True
+        assert active_pair.state == OCOState.CANCELLED
+
     def test_cancel_removes_from_tracking(self, manager, active_pair):
         """Test cancel removes from tracking."""
         manager.cancel_oco_pair(active_pair.oco_id, "MANUAL")
@@ -348,6 +355,13 @@ class TestOCOQueries:
     def test_get_active_pair(self, manager, active_pair):
         """Test get active pair by symbol."""
         pair = manager.get_active_pair(active_pair.symbol)
+        assert pair is not None
+        assert pair.oco_id == active_pair.oco_id
+
+    def test_get_active_pair_normalizes_whitespace(self, manager, active_pair):
+        """Active-pair lookup should match normalized option symbols."""
+        noisy_symbol = f" {active_pair.symbol.replace(' ', '  ')} "
+        pair = manager.get_active_pair(noisy_symbol)
         assert pair is not None
         assert pair.oco_id == active_pair.oco_id
 

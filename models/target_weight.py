@@ -65,6 +65,34 @@ class TargetWeight:
     # This allows options engine to pass risk-calculated contract count
     requested_quantity: Optional[int] = None
 
+    def _normalize_options_intraday_metadata(self) -> None:
+        """Harden OPT_INTRADAY metadata so router tagging stays deterministic."""
+        if self.source != "OPT_INTRADAY":
+            return
+        if self.metadata is None:
+            self.metadata = {}
+        if not isinstance(self.metadata, dict):
+            raise ValueError("metadata must be a dictionary for OPT_INTRADAY signals")
+
+        strategy_raw = self.metadata.get("options_strategy") or self.metadata.get(
+            "intraday_strategy"
+        )
+        strategy = str(strategy_raw or "").strip().upper()
+        if not strategy:
+            strategy = "UNCLASSIFIED"
+        self.metadata["options_strategy"] = strategy
+
+        # Keep legacy key for MICRO-compatible paths.
+        if "intraday_strategy" in self.metadata:
+            self.metadata["intraday_strategy"] = (
+                str(self.metadata.get("intraday_strategy", "") or strategy).strip().upper()
+            )
+
+        lane = str(self.metadata.get("options_lane", "") or "").strip().upper()
+        if lane not in {"ITM", "MICRO"}:
+            lane = "ITM" if "ITM_MOMENTUM" in strategy or strategy.startswith("ITM_") else "MICRO"
+        self.metadata["options_lane"] = lane
+
     def __post_init__(self) -> None:
         """Validate fields after initialization."""
         # Validate symbol
@@ -95,6 +123,8 @@ class TargetWeight:
         # Validate urgency type
         if not isinstance(self.urgency, Urgency):
             raise ValueError(f"urgency must be Urgency enum, got: {type(self.urgency)}")
+
+        self._normalize_options_intraday_metadata()
 
     def to_dict(self) -> Dict[str, Any]:
         """
