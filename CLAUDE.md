@@ -1,5 +1,57 @@
 # CLAUDE.md - Claude Code Instructions
 
+## Analysis Rigor Rules (MANDATORY)
+
+- NEVER state a config value from memory — always grep/read the actual line first
+- NEVER claim a root cause without tracing the exact code path with line numbers
+- NEVER propose a fix without first verifying the current behavior with data
+- When analyzing trades, cross-reference orders.csv + logs — never rely on one source alone
+- If an earlier statement contradicts new evidence, flag it immediately as a correction
+- Distinguish clearly between: CONFIRMED (verified in code/data) vs HYPOTHESIS (needs verification)
+
+## Shared Process (Mandatory)
+
+- Follow `PROCESS.md` for workflow, gates, commit contract, and backtest artifact process.
+- If any instruction here conflicts with `PROCESS.md` process enforcement, run `PROCESS.md` checks first.
+
+## Recent Work Log (V12.20)
+
+### Commits
+
+- `ca303c0`: Hardened intraday exit source tags and close-lane routing.
+- `300eb48`: Hardened option close retry tags and intraday quantity accounting.
+
+### What was fixed
+
+- Intraday software exits now emit `OPT_INTRADAY` with lane metadata:
+  - `options_lane`
+  - `options_strategy`
+- Router close intent fallback no longer defaults single-leg `OPT` closes to VASS; it infers ITM/MICRO lane from live symbol tracking.
+- Cancel/invalid order paths now use full order-tag resolution (`_get_order_tag`) to recover OCO hints reliably.
+- OCO cancel detection is hardened to reduce false retry/escalation churn when broker drops tags.
+- Intraday snapshot accounting now supports stacked fills:
+  - quantity is aggregated across fills,
+  - entry price is blended,
+  - duplicate residual lane state rows are cleaned on close.
+- Exit P&L attribution now uses snapshot-corrected entry price/quantity when available.
+
+### V12.19 issue mapping
+
+- ITM closes mislabeled as `MICRO:RETRY_CANCELED_CLOSE`: mitigated via lane-aware bucket inference and tag path hardening.
+- Missing/weak tags on cancels: improved via `_get_order_tag` use in cancel/invalid handlers.
+- Buy-4/Sell-8 mismatch confusion: execution close quantity remains live-holdings based; accounting now handles stacked fills correctly.
+- Excess `MICRO:EMERG_OPTION_RETRY_EXHAUSTED`: reduced by improved OCO cancel classification and retry gating.
+
+### Validation run
+
+```bash
+source venv/bin/activate && \
+pytest -q tests/test_options_engine.py \
+          tests/test_portfolio_router.py \
+          tests/test_plumbing_regressions.py \
+          tests/integration/test_ondata_flow.py
+```
+
 ## 🚨 WAKE-UP PROTOCOL (READ FIRST AFTER COMPACTION)
 
 **Context Amnesia Warning:** If this session just started or was compacted, you have lost:
@@ -181,9 +233,10 @@ See `docs/guides/ENGINE_ISOLATION_MODE.md` for full configuration options.
   - TQQQ (4%) - 3× Nasdaq
   - SPXL (3%) - 3× S&P 500
   - SOXL (3%) - 3× Semiconductor
-- **Satellite (50%)**: Options Engine - VASS + Dual-Mode Architecture (V6.20)
-  - **Swing Mode (37.5%)**: VASS debit/credit spreads (14-45 DTE, VASS routes by IV)
+- **Satellite (50%)**: Options Engine - VASS + Dual-Mode Architecture (V12.5: decomposed into sub-engines)
+  - **Swing Mode (37.5%)**: VASS debit/credit spreads (14-45 DTE, routes by IV, VIX-tiered exits)
   - **Intraday Mode (12.5%)**: Micro Regime Engine - VIX Level × VIX Direction (1-5 DTE)
+  - **ITM Momentum**: Single-leg ITM options (delta 0.70-0.80, 14-21 DTE)
 
 Forked from V1 v1.0.0 on 2026-01-26. See `docs/specs/v2.1/` for V2.1 specifications (archived).
 See `docs/specs/v2.1/v2-1-options-engine-design.txt` for Options Engine V2.1.1 design reference.
@@ -239,7 +292,10 @@ alpha-nextgen/
 │       ├── mean_reversion_engine.py # Intraday bounce (0-10%)
 │       ├── hedge_engine.py     # SH inverse overlay (V6.11: TMF/PSQ retired)
 │       ├── yield_sleeve.py     # SHV cash management (spec only)
-│       └── options_engine.py   # QQQ options (50%) - VASS + Dual-Mode + Micro Regime (V6.20)
+│       ├── options_engine.py   # QQQ options (50%) - VASS exits, spread lifecycle, Micro Regime
+│       ├── vass_entry_engine.py # V12.5: VASS swing entry routing, direction, candidate selection
+│       ├── micro_entry_engine.py # V12.5: Micro intraday entry gates, lane caps, friction filters
+│       └── itm_horizon_engine.py # V12.5: ITM momentum single-leg entry/direction proposals
 ├── portfolio/                  # Router, exposure groups, positions
 ├── execution/                  # Order management
 ├── data/                       # Symbols, indicators, validation
@@ -282,7 +338,10 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 | **Mean Reversion Engine** | `engines/satellite/mean_reversion_engine.py` | `docs/system/08-mean-reversion-engine.md` | Intraday oversold bounce signals for TQQQ/SPXL/SOXL (10%) |
 | **Hedge Engine** | `engines/satellite/hedge_engine.py` | `docs/system/09-hedge-engine.md` | Regime-based SH allocation signals (V6.11: TMF/PSQ retired) |
 | **Yield Sleeve** | `engines/satellite/yield_sleeve.py` | `docs/system/10-yield-sleeve.md` | SHV cash management signals (spec only) |
-| **Options Engine** | `engines/satellite/options_engine.py` | `docs/system/18-options-engine.md` | QQQ options Dual-Mode (50%): Swing 37.5% + Intraday 12.5% (Micro Regime) (V6.20) |
+| **Options Engine** | `engines/satellite/options_engine.py` | `docs/system/18-options-engine.md` | QQQ options: spread exit cascade, lifecycle mgmt, Micro Regime (V12.4) |
+| **VASS Entry Engine** | `engines/satellite/vass_entry_engine.py` | `docs/system/18-options-engine.md` | V12.5: VASS swing entry routing matrix, direction context, candidate selection, leg building |
+| **Micro Entry Engine** | `engines/satellite/micro_entry_engine.py` | `docs/system/18-options-engine.md` | V12.5: Micro intraday entry gates, lane caps, friction filters, contract validation |
+| **ITM Horizon Engine** | `engines/satellite/itm_horizon_engine.py` | `docs/system/18-options-engine.md` | V12.5: ITM momentum single-leg direction proposals and entry orchestration |
 
 ### Infrastructure
 
@@ -306,29 +365,64 @@ See [PROJECT-STRUCTURE.md](PROJECT-STRUCTURE.md) for detailed file listing with 
 
 ---
 
-## Options Architecture Decision (V10.16)
+## Options Architecture Decision (V12.5)
 
-This is the current boundary for VASS path ownership. Follow this unless an explicit refactor changes it.
+V12.5 is an ongoing refactor decomposing the monolithic options engine into specialized sub-engines. The current boundary for ownership:
 
-- `VASSEntryEngine` owns:
-  - VASS strategy routing matrix (direction x IV regime)
+- `VASSEntryEngine` (`engines/satellite/vass_entry_engine.py`) owns:
+  - VASS strategy routing matrix (direction × IV regime)
   - VASS-specific anti-cluster/day-gap/swing filter guards
   - VASS lifecycle throttles that are not contract-economics checks
-- `OptionsEngine` currently owns the final spread validation choke-points:
-  - `check_spread_entry_signal()` for debit spreads
-  - `check_credit_spread_entry_signal()` for credit spreads
-  - shared spread economics and contract-quality validation (D/W caps, absolute debit caps, sizing, margin checks)
-- `main.py` orchestrates flow and calls `OptionsEngine` validators after VASS route selection.
+  - V12.5: VASS directional scan, candidate contract building, spread signal construction, leg selection
+- `MicroEntryEngine` (`engines/satellite/micro_entry_engine.py`) owns:
+  - Micro intraday lane caps, friction gates, contract-selection validation
+  - V12.5: Intraday entry execution and gating
+- `ITMHorizonEngine` (`engines/satellite/itm_horizon_engine.py`) owns:
+  - ITM momentum direction proposals and entry orchestration
+- `OptionsEngine` (`engines/satellite/options_engine.py`) owns:
+  - **All spread exit logic**: the full exit cascade (VIX spike, overlay stress, tail risk cap, adaptive stop, trail, MFE lock, etc.)
+  - Spread lifecycle management (hold guard, assignment risk, DTE close)
+  - Shared spread economics and contract-quality validation (D/W caps, debit caps, sizing, margin checks)
+  - `check_spread_entry_signal()` / `check_credit_spread_entry_signal()` final validation
+- `main.py` orchestrates flow: calls sub-engines for entry, `OptionsEngine` for exit/validation.
 
 ### Practical Rule For New Changes
 
-- If the logic is VASS policy/routing intent, prefer `VASSEntryEngine`.
-- If the logic is spread economics/quality or shared debit/credit validation, keep it in `OptionsEngine`.
-- If a VASS-only guard must be added quickly before refactor, it may be placed in `OptionsEngine` validation path, but must be clearly labeled as VASS-scoped and added to this section.
+- If the logic is VASS entry policy/routing intent, put it in `VASSEntryEngine`.
+- If the logic is micro intraday entry gating, put it in `MicroEntryEngine`.
+- If the logic is ITM momentum entry, put it in `ITMHorizonEngine`.
+- If the logic is spread exit/lifecycle or shared validation, keep it in `OptionsEngine`.
 
-### Current Exception (Documented)
+### VASS Spread Exit Cascade (V12.4)
 
-- No active exception. Scoped bullish debit trend confirmation (`R_BULL_DEBIT_TREND_MA20`, `R_BULL_DEBIT_TREND_DAY`) is owned by `VASSEntryEngine` and invoked from the VASS route in `main.py` before debit spread validation.
+The debit spread exit cascade runs in this priority order. **Higher priority exits prevent lower ones from firing.**
+
+```
+HOLD GUARD (if position < 1440 min old):
+  1. HARD_STOP_DURING_HOLD     — pnl <= -(VIX-tiered hard stop)  → immediate exit
+  2. EOD_HOLD_RISK_GATE        — pnl <= -(VIX-tiered EOD gate) at 15:45+, held >= 240m → exit
+  3. Bypass checks: Profitable | Transition | LossBypass (75% of stop) | SevereLoss (110%)
+  4. If no bypass → BLOCK all exits below
+
+MAIN CASCADE (after hold expired or bypassed):
+  P0. VIX Spike Exit           — VIX >= 25 or 5D change >= 20%
+  P1. Overlay Stress Exit      — regime stress state
+  P2. Overnight De-risk        — pre-close transition deterioration (V12.4)
+  P3. MFE Lock Floor           — gave back gains past lock threshold
+  P4. TAIL_RISK_CAP            — dollar loss >= 1.0% of portfolio equity (~$1,000)
+  P5. Day-4 EOD Decision       — close after 4 days if losing
+  P6. Profit Target            — regime-adaptive, commission-aware
+  P7. Trail Stop               — trail from high-water mark
+  P8. Width Hard Stop           — % of spread width
+  P9. PCT Hard Stop            — VIX-tiered hard stop %
+  P10. Adaptive Stop (STOP_LOSS) — VIX-tiered + regime-multiplied + ATR-scaled
+  P11. Time Stop               — max hold days (low VIX: shorter)
+  P12. Regime Deterioration    — regime dropped 10+ pts while losing
+  P13. DTE Exit                — close by 5 DTE
+  P14. Neutrality Exit         — regime in dead zone (45-60) with flat P&L
+```
+
+**Known issue (V12.4):** TAIL_RISK_CAP (P4) fires at ~19% of debit ($1,000 / $5,250 typical position), which is BEFORE the adaptive stop (P10) at 25%. The adaptive stop is effectively unreachable for current position sizing (15 contracts × ~$3.50 debit).
 
 ---
 
@@ -767,14 +861,29 @@ See `ERRORS.md` for detailed error solutions. Key issues:
 | Short Leg ITM Exit | 3.5% ITM | Exit spread when short leg ITM (raised to reduce noise) |
 | Spread Width Min (V6.13) | $4 | Minimum spread width (optimized for fills) |
 | Spread Width Effective Max (V9.1) | $7 | Preferred width ceiling for R:R sort |
-| Spread Stop/Target | 40%/50% | Stop 40%, Target 50% base (regime-adjusted) |
 | Spread Max Debit/Width (V9.1) | 55% | Block spreads where debit > 55% of width (R:R gate) |
+| VASS Max Contracts (V12.4) | 15 | Hard cap on spread contracts per VASS entry |
+| VASS Tail Risk Cap (V12.4) | 1.0% equity | Per-spread $ loss cap (~$1,000 on $100K). Fires BEFORE adaptive stop. |
+| VASS Stop Low VIX (V12.2) | 25% | Adaptive stop when entry VIX < 18 |
+| VASS Stop Med VIX (V12.2) | 35% | Adaptive stop when entry VIX 18-25 |
+| VASS Stop High VIX (V12.2) | 40% | Adaptive stop when entry VIX > 25 |
+| VASS Hard Stop Low VIX (V12.3) | 35% | Absolute hard cap during hold, VIX < 18 |
+| VASS Hard Stop Med VIX (V12.3) | 40% | Absolute hard cap during hold, VIX 18-25 |
+| VASS Hard Stop High VIX (V12.3) | 45% | Absolute hard cap during hold, VIX > 25 |
+| VASS EOD Gate Low VIX (V12.3) | -20% | Close at EOD during hold if loss > 20%, VIX < 18 |
+| VASS EOD Gate Med VIX (V12.3) | -25% | Close at EOD during hold if loss > 25%, VIX 18-25 |
+| VASS EOD Gate High VIX (V12.3) | -35% | Close at EOD during hold if loss > 35%, VIX > 25 |
+| VASS Hold Guard (V12.3) | 1440 min (1 day) | Soft hold window; bypasses: LossBypass 75%, SevereLoss 110%, Transition |
+| VASS EOD Gate Min Hold (V12.3) | 240 min (4h) | EOD gate can't fire until spread held 4 hours |
+| VASS ATR Exit Scaling (V12.3) | 0.85x-1.25x | Multiply stops/targets by ATR ratio vs 1.5% ref |
+| VASS Loss Breaker | 3 consecutive | Pause VASS entries for 1 day after 3 consecutive losses |
+| VASS Overnight De-risk (V12.4) | 15:40 | Close bullish debit spreads pre-close on regime DETERIORATION/AMBIGUOUS |
 | Choppy Market Filter (V6.10) | 3 reversals/2hr | 65% size reduction in choppy markets (V6.19) |
 | VIX Stable Band Low (V6.22) | +/-0.3% | STABLE band when VIX < 15 |
 | VIX Stable Band High (V8.2) | +/-0.8% | STABLE band when VIX > 25 |
 | Margin Utilization Max (V6.20) | 90% | Cap total margin usage (emergency brake) |
 | Options Max Margin PCT (V6.20) | 40% | Max margin for options |
-| Options Budget Cap (V8.2) | 50% | Options budget gate = CAPITAL_PARTITION_OPTIONS |
+| Options Budget Cap (V8.2) | 50% | Options budget gate = CAPITAL_PARTITION_OPTIONS (uses TotalPortfolioValue, NOT tradeable equity) |
 | Micro Score Bullish (V6.22) | 42 | Bullish confirmation threshold (lowered from 48) |
 | Micro Score Bearish (D7) | 50 | Bearish confirmation threshold |
 
