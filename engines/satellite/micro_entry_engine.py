@@ -588,7 +588,7 @@ class MicroEntryEngine:
             intraday_direction,
             micro_state,
             signal_reason,
-        ) = host.generate_micro_intraday_signal(
+        ) = host.generate_micro_engine_signal(
             vix_current=vix_intraday,
             vix_open=algorithm._vix_at_open,
             qqq_current=qqq_price,

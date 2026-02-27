@@ -8,7 +8,7 @@ import config
 from models.enums import IntradayStrategy, MicroRegime, OptionDirection
 
 
-def generate_micro_intraday_signal_impl(
+def generate_micro_engine_signal_impl(
     self,
     vix_current: float,
     vix_open: float,

@@ -123,17 +123,17 @@ def register_entry_impl(
         direction_hint = (
             "CALL" if contract_right == "CALL" else "PUT" if contract_right == "PUT" else None
         )
-        target_pct, strategy_floor = self._get_intraday_exit_profile(
+        target_pct, strategy_floor = self._get_engine_exit_profile(
             entry_strategy,
             direction=direction_hint,
         )
         current_dte = int(getattr(contract, "days_to_expiry", 0))
-        target_pct = self._apply_intraday_target_overrides(
+        target_pct = self._apply_engine_target_overrides(
             entry_strategy=entry_strategy,
             target_pct=float(target_pct),
             current_dte=current_dte,
         )
-        stop_pct = self._apply_intraday_stop_overrides(
+        stop_pct = self._apply_engine_stop_overrides(
             entry_strategy=entry_strategy,
             stop_pct=float(stop_pct),
             current_dte=current_dte,

@@ -309,7 +309,7 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
             )
             self._intraday_position = None
             self._intraday_position_engine = None
-        elif self.should_hold_intraday_overnight(position):
+        elif self.should_hold_engine_overnight(position):
             self._intraday_position = position
             self._intraday_position_engine = self._engine_lane_from_strategy(
                 position.entry_strategy
@@ -343,7 +343,7 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
                 f"Clearing stale position | Lane={lane_hint}"
             )
             return False
-        if self.should_hold_intraday_overnight(position):
+        if self.should_hold_engine_overnight(position):
             return True
         force_hh, force_mm = self._get_engine_force_exit_hhmm()
         self.log(
@@ -750,7 +750,7 @@ def reset_options_engine_daily_state_impl(self, current_date: str) -> None:
                 continue
             kept_positions = []
             for intraday_pos in list(lane_positions):
-                keep_position = self.should_hold_intraday_overnight(intraday_pos)
+                keep_position = self.should_hold_engine_overnight(intraday_pos)
                 if not keep_position and self.algorithm is not None:
                     try:
                         sym = intraday_pos.contract.symbol

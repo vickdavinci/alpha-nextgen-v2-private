@@ -55,7 +55,7 @@ from engines.satellite.options_entry_evaluator import check_entry_signal_impl
 from engines.satellite.options_exit_evaluator import check_exit_signals_impl
 from engines.satellite.options_expiration_exit import check_expiring_options_force_exit_impl
 from engines.satellite.options_intraday_entry import check_intraday_entry_signal_impl
-from engines.satellite.options_micro_signal import generate_micro_intraday_signal_impl
+from engines.satellite.options_micro_signal import generate_micro_engine_signal_impl
 from engines.satellite.options_partial_oco import (
     get_engine_partial_fill_oco_seed_impl,
     get_partial_fill_oco_seed_impl,
@@ -613,7 +613,7 @@ class OptionsEngine:
             except Exception:
                 return None
 
-    def should_hold_intraday_overnight(
+    def should_hold_engine_overnight(
         self,
         position: Optional[OptionsPosition] = None,
     ) -> bool:
@@ -758,7 +758,7 @@ class OptionsEngine:
             allow_macro_veto=allow_macro_veto,
         )
 
-    def generate_micro_intraday_signal(
+    def generate_micro_engine_signal(
         self,
         vix_current: float,
         vix_open: float,
@@ -802,7 +802,7 @@ class OptionsEngine:
             - state: MicroRegimeState for logging/debugging
             - reason: Human-readable explanation of decision
         """
-        return generate_micro_intraday_signal_impl(
+        return generate_micro_engine_signal_impl(
             self,
             vix_current=vix_current,
             vix_open=vix_open,
@@ -1442,7 +1442,7 @@ class OptionsEngine:
             "MICRO": int(spec.get("micro_max_trades_per_day", 6)),
         }
 
-    def _get_effective_intraday_contract_cap(self) -> int:
+    def _get_effective_engine_contract_cap(self) -> int:
         """Return effective base intraday contract cap.
 
         When portfolio scaling is enabled, this comes from equity tiers.
@@ -3065,7 +3065,7 @@ class OptionsEngine:
             current_date=current_date,
         )
 
-    def _get_intraday_exit_profile(
+    def _get_engine_exit_profile(
         self, entry_strategy: str, direction: Optional[str] = None
     ) -> Tuple[float, Optional[float]]:
         return get_intraday_exit_profile_impl(
@@ -3074,7 +3074,7 @@ class OptionsEngine:
             direction=direction,
         )
 
-    def _apply_intraday_target_overrides(
+    def _apply_engine_target_overrides(
         self,
         *,
         entry_strategy: str,
@@ -3088,7 +3088,7 @@ class OptionsEngine:
             current_dte=current_dte,
         )
 
-    def _apply_intraday_stop_overrides(
+    def _apply_engine_stop_overrides(
         self,
         *,
         entry_strategy: str,
@@ -3328,7 +3328,7 @@ class OptionsEngine:
 
         return (max_contracts, credit_received, margin_per_spread, total_margin)
 
-    def _classify_intraday_bucket(self, strategy_name: str) -> str:
+    def _classify_engine_bucket(self, strategy_name: str) -> str:
         """Map intraday strategy names to reservation buckets."""
         name = str(strategy_name or "").upper()
         if "ITM_MOMENTUM" in name:
@@ -3374,7 +3374,7 @@ class OptionsEngine:
         # Active intraday positions
         for intraday_pos in self.get_engine_positions():
             try:
-                bucket = self._classify_intraday_bucket(
+                bucket = self._classify_engine_bucket(
                     str(getattr(intraday_pos, "entry_strategy", "") or "")
                 )
                 risk = (
@@ -3393,7 +3393,7 @@ class OptionsEngine:
                     continue
                 try:
                     strategy = str(payload.get("entry_strategy", "") or "")
-                    bucket = self._classify_intraday_bucket(strategy)
+                    bucket = self._classify_engine_bucket(strategy)
                     contract = payload.get("contract")
                     premium = float(getattr(contract, "mid_price", 0.0) or 0.0)
                     qty = int(payload.get("num_contracts", 0) or 0)
@@ -3407,7 +3407,7 @@ class OptionsEngine:
         elif self._pending_intraday_entry and self._pending_num_contracts is not None:
             try:
                 strategy = str(self._pending_entry_strategy or "")
-                bucket = self._classify_intraday_bucket(strategy)
+                bucket = self._classify_engine_bucket(strategy)
                 premium = float(
                     getattr(self._pending_contract, "mid_price", 0.0)
                     if self._pending_contract
@@ -3845,7 +3845,7 @@ class OptionsEngine:
 
         symbol = position.contract.symbol
         symbol_str = self._symbol_str(symbol)
-        if self.should_hold_intraday_overnight(position):
+        if self.should_hold_engine_overnight(position):
             if ignore_hold_policy:
                 self.log(
                     f"INTRADAY_FORCE_EXIT_OVERRIDE_HOLD {symbol_str} | "

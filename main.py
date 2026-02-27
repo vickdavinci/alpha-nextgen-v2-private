@@ -1196,7 +1196,7 @@ class AlphaNextGen(QCAlgorithm):
         if intraday_pos is None:
             return False
         try:
-            return bool(self.options_engine.should_hold_intraday_overnight(intraday_pos))
+            return bool(self.options_engine.should_hold_engine_overnight(intraday_pos))
         except Exception:
             return False
 
@@ -1305,7 +1305,7 @@ class AlphaNextGen(QCAlgorithm):
             strategy = str(getattr(intraday_pos, "entry_strategy", "") or "").upper()
             if strategy != "ITM_MOMENTUM":
                 continue
-            if not self.options_engine.should_hold_intraday_overnight(intraday_pos):
+            if not self.options_engine.should_hold_engine_overnight(intraday_pos):
                 continue
 
             symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)

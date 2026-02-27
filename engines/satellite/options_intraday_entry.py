@@ -96,7 +96,7 @@ def check_intraday_entry_signal_impl(
         tl_reason, tl_detail = self.pop_last_trade_limit_failure()
         return fail(tl_reason or "E_INTRADAY_TRADE_LIMIT", tl_detail)
 
-    # Reuse state from generate_micro_intraday_signal when provided.
+    # Reuse state from generate_micro_engine_signal when provided.
     # This prevents approved->dropped drift caused by a second update() call.
     state = micro_state
     itm_forced_path = (
@@ -135,7 +135,7 @@ def check_intraday_entry_signal_impl(
     if forced_entry_strategy is not None:
         entry_strategy = self._canonical_engine_strategy(forced_entry_strategy)
     else:
-        # V6.8: NO_TRADE is now blocked earlier in generate_micro_intraday_signal()
+        # V6.8: NO_TRADE is now blocked earlier in generate_micro_engine_signal()
         # Safety net remains for non-ITM override paths.
         if state.recommended_strategy == IntradayStrategy.NO_TRADE:
             itm_sovereign_bypass = False
@@ -678,9 +678,9 @@ def check_intraday_entry_signal_impl(
 
     # V9.8: Hard cap all MICRO intraday entries to prevent quantity explosions on cheap options.
     intraday_max_contracts = int(getattr(config, "INTRADAY_MAX_CONTRACTS", 40))
-    if hasattr(self, "_get_effective_intraday_contract_cap"):
+    if hasattr(self, "_get_effective_engine_contract_cap"):
         intraday_max_contracts = int(
-            self._get_effective_intraday_contract_cap() or intraday_max_contracts
+            self._get_effective_engine_contract_cap() or intraday_max_contracts
         )
     base_intraday_contracts_cap = intraday_max_contracts
 

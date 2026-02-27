@@ -3124,7 +3124,7 @@ class TestPortfolioScalingCaps:
         trade_caps = engine._get_effective_trade_caps()
         assert pos_caps == {"TOTAL": 10, "SWING": 6, "VASS": 3, "ITM": 2, "MICRO": 2}
         assert trade_caps == {"TOTAL": 9, "SWING": 5, "ITM": 6, "MICRO": 8}
-        assert engine._get_effective_intraday_contract_cap() == 75
+        assert engine._get_effective_engine_contract_cap() == 75
 
     def test_global_daily_limit_uses_scaled_cap(self, engine, monkeypatch):
         monkeypatch.setattr(config, "OPTIONS_PORTFOLIO_SCALING_ENABLED", True)

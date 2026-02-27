@@ -77,7 +77,7 @@ def get_partial_fill_oco_seed_impl(
         if entry_px <= 0:
             return None
         direction_hint = _infer_direction_hint(symbol_norm)
-        target_pct, stop_pct = self._get_intraday_exit_profile(
+        target_pct, stop_pct = self._get_engine_exit_profile(
             inferred_strategy,
             direction=direction_hint,
         )
@@ -152,7 +152,7 @@ def get_pending_engine_partial_oco_seed_impl(
         if direction_hint is None:
             direction_hint = _infer_direction_hint(symbol_norm)
 
-    target_pct, strategy_floor = self._get_intraday_exit_profile(
+    target_pct, strategy_floor = self._get_engine_exit_profile(
         entry_strategy,
         direction=direction_hint,
     )
@@ -160,12 +160,12 @@ def get_pending_engine_partial_oco_seed_impl(
         current_dte = 0
     else:
         current_dte = int(getattr(self._pending_contract, "days_to_expiry", 0))
-    target_pct = self._apply_intraday_target_overrides(
+    target_pct = self._apply_engine_target_overrides(
         entry_strategy=entry_strategy,
         target_pct=float(target_pct),
         current_dte=current_dte,
     )
-    stop_pct = self._apply_intraday_stop_overrides(
+    stop_pct = self._apply_engine_stop_overrides(
         entry_strategy=entry_strategy,
         stop_pct=float(stop_pct),
         current_dte=current_dte,
