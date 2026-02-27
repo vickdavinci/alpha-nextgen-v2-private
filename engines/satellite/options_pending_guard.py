@@ -59,9 +59,9 @@ def clear_stale_pending_spread_entry_if_orphaned_impl(self) -> None:
     )
 
 
-def clear_stale_pending_intraday_entry_if_orphaned_impl(self) -> None:
+def clear_stale_pending_engine_entry_if_orphaned_impl(self) -> None:
     """
-    Clear stale pending intraday entry locks.
+    Clear stale pending single-leg engine entry locks.
 
     Prevents long-lived E_INTRADAY_PENDING_ENTRY lock after missed/implicit
     broker cancel events while preserving normal in-flight order behavior.
@@ -261,11 +261,16 @@ def clear_stale_pending_intraday_entry_if_orphaned_impl(self) -> None:
     )
 
 
-def cancel_pending_intraday_entry_impl(
+def clear_stale_pending_intraday_entry_if_orphaned_impl(self) -> None:
+    """Backward-compatible alias for pending engine-entry stale guard."""
+    clear_stale_pending_engine_entry_if_orphaned_impl(self)
+
+
+def cancel_pending_engine_entry_impl(
     self, engine: Optional[str] = None, symbol: Optional[str] = None
 ) -> Optional[str]:
     """
-    Clear pending intraday entry state after broker rejection.
+    Clear pending single-leg engine entry state after broker rejection.
     """
     cleared_lane: Optional[str] = None
     if symbol is not None:
@@ -318,10 +323,17 @@ def cancel_pending_intraday_entry_impl(
     return cleared_lane
 
 
-def has_pending_intraday_entry_impl(self, engine: Optional[str] = None) -> bool:
-    """True when an intraday entry is currently pending."""
+def cancel_pending_intraday_entry_impl(
+    self, engine: Optional[str] = None, symbol: Optional[str] = None
+) -> Optional[str]:
+    """Backward-compatible alias for pending engine-entry cancel."""
+    return cancel_pending_engine_entry_impl(self, engine=engine, symbol=symbol)
+
+
+def has_pending_engine_entry_impl(self, engine: Optional[str] = None) -> bool:
+    """True when a single-leg engine entry is currently pending."""
     if self._pending_intraday_entry or self._pending_intraday_entries:
-        self._clear_stale_pending_intraday_entry_if_orphaned()
+        self._clear_stale_pending_engine_entry_if_orphaned()
     if engine is None:
         return bool(self._pending_intraday_entries) or self._pending_intraday_entry
     eng = str(engine).upper()
@@ -333,8 +345,13 @@ def has_pending_intraday_entry_impl(self, engine: Optional[str] = None) -> bool:
     )
 
 
-def get_pending_intraday_entry_lane_impl(self, symbol: Optional[str] = None) -> Optional[str]:
-    """Best-effort lane lookup for a pending intraday entry."""
+def has_pending_intraday_entry_impl(self, engine: Optional[str] = None) -> bool:
+    """Backward-compatible alias for pending engine-entry state."""
+    return has_pending_engine_entry_impl(self, engine=engine)
+
+
+def get_pending_engine_entry_lane_impl(self, symbol: Optional[str] = None) -> Optional[str]:
+    """Best-effort lane lookup for a pending single-leg engine entry."""
     if symbol is not None:
         key = self._find_pending_intraday_entry_key(symbol=symbol)
         if key is None:
@@ -356,6 +373,11 @@ def get_pending_intraday_entry_lane_impl(self, symbol: Optional[str] = None) -> 
         lane = str(self._pending_intraday_entry_engine).upper()
         return lane or None
     return None
+
+
+def get_pending_intraday_entry_lane_impl(self, symbol: Optional[str] = None) -> Optional[str]:
+    """Backward-compatible alias for pending engine-entry lane lookup."""
+    return get_pending_engine_entry_lane_impl(self, symbol=symbol)
 
 
 def get_pending_entry_contract_symbol_impl(self) -> str:
@@ -384,17 +406,22 @@ def normalize_symbol_key_impl(self, symbol: Optional[str]) -> Optional[str]:
     return sym or None
 
 
-def sync_pending_intraday_exit_flags_impl(self) -> None:
+def sync_pending_engine_exit_flags_impl(self) -> None:
     active = bool(self._pending_intraday_exit_lanes) or bool(self._pending_intraday_exit_symbols)
     self._pending_intraday_exit = active
     if not active:
         self._pending_intraday_exit_engine = None
 
 
-def has_pending_intraday_exit_impl(
+def sync_pending_intraday_exit_flags_impl(self) -> None:
+    """Backward-compatible alias for pending engine-exit flag sync."""
+    sync_pending_engine_exit_flags_impl(self)
+
+
+def has_pending_engine_exit_impl(
     self, engine: Optional[str] = None, symbol: Optional[str] = None
 ) -> bool:
-    """True when an intraday close signal has already been emitted and is in-flight."""
+    """True when a single-leg engine close signal has already been emitted and is in-flight."""
     symbol_key = self._normalize_symbol_key(symbol)
     if symbol_key is not None:
         return symbol_key in self._pending_intraday_exit_symbols
@@ -411,7 +438,14 @@ def has_pending_intraday_exit_impl(
     )
 
 
-def mark_pending_intraday_exit_impl(self, symbol: Optional[str] = None) -> bool:
+def has_pending_intraday_exit_impl(
+    self, engine: Optional[str] = None, symbol: Optional[str] = None
+) -> bool:
+    """Backward-compatible alias for pending engine-exit state."""
+    return has_pending_engine_exit_impl(self, engine=engine, symbol=symbol)
+
+
+def mark_pending_engine_exit_impl(self, symbol: Optional[str] = None) -> bool:
     """
     Mark intraday close as pending to block duplicate software/force exits.
     """
@@ -422,7 +456,7 @@ def mark_pending_intraday_exit_impl(self, symbol: Optional[str] = None) -> bool:
         if symbol_key in self._pending_intraday_exit_symbols:
             return False
         self._pending_intraday_exit_symbols.add(symbol_key)
-        self._sync_pending_intraday_exit_flags()
+        self._sync_pending_engine_exit_flags()
         return True
 
     target_lane = None
@@ -438,11 +472,16 @@ def mark_pending_intraday_exit_impl(self, symbol: Optional[str] = None) -> bool:
         return False
     self._pending_intraday_exit_engine = target_lane
     self._pending_intraday_exit_lanes.add(lane_key)
-    self._sync_pending_intraday_exit_flags()
+    self._sync_pending_engine_exit_flags()
     return True
 
 
-def cancel_pending_intraday_exit_impl(self, symbol: Optional[str] = None) -> bool:
+def mark_pending_intraday_exit_impl(self, symbol: Optional[str] = None) -> bool:
+    """Backward-compatible alias for pending engine-exit mark."""
+    return mark_pending_engine_exit_impl(self, symbol=symbol)
+
+
+def cancel_pending_engine_exit_impl(self, symbol: Optional[str] = None) -> bool:
     """
     Clear pending intraday exit lock after a rejected/canceled close order.
     """
@@ -451,7 +490,7 @@ def cancel_pending_intraday_exit_impl(self, symbol: Optional[str] = None) -> boo
         if symbol_key not in self._pending_intraday_exit_symbols:
             return False
         self._pending_intraday_exit_symbols.discard(symbol_key)
-        self._sync_pending_intraday_exit_flags()
+        self._sync_pending_engine_exit_flags()
         self.log(
             f"OPT_MICRO_RECOVERY: Pending intraday exit lock cleared | Symbol={symbol_key}",
             trades_only=True,
@@ -467,6 +506,11 @@ def cancel_pending_intraday_exit_impl(self, symbol: Optional[str] = None) -> boo
 
     self._pending_intraday_exit_lanes.clear()
     self._pending_intraday_exit_symbols.clear()
-    self._sync_pending_intraday_exit_flags()
+    self._sync_pending_engine_exit_flags()
     self.log("OPT_MICRO_RECOVERY: Pending intraday exit lock cleared", trades_only=True)
     return True
+
+
+def cancel_pending_intraday_exit_impl(self, symbol: Optional[str] = None) -> bool:
+    """Backward-compatible alias for pending engine-exit cancel."""
+    return cancel_pending_engine_exit_impl(self, symbol=symbol)

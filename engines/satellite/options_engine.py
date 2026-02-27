@@ -57,22 +57,22 @@ from engines.satellite.options_expiration_exit import check_expiring_options_for
 from engines.satellite.options_intraday_entry import check_intraday_entry_signal_impl
 from engines.satellite.options_micro_signal import generate_micro_intraday_signal_impl
 from engines.satellite.options_partial_oco import (
-    get_intraday_partial_fill_oco_seed_impl,
+    get_engine_partial_fill_oco_seed_impl,
     get_partial_fill_oco_seed_impl,
-    get_pending_intraday_partial_oco_seed_impl,
+    get_pending_engine_partial_oco_seed_impl,
 )
 from engines.satellite.options_pending_guard import (
-    cancel_pending_intraday_entry_impl,
-    cancel_pending_intraday_exit_impl,
-    clear_stale_pending_intraday_entry_if_orphaned_impl,
+    cancel_pending_engine_entry_impl,
+    cancel_pending_engine_exit_impl,
+    clear_stale_pending_engine_entry_if_orphaned_impl,
     clear_stale_pending_spread_entry_if_orphaned_impl,
+    get_pending_engine_entry_lane_impl,
     get_pending_entry_contract_symbol_impl,
-    get_pending_intraday_entry_lane_impl,
-    has_pending_intraday_entry_impl,
-    has_pending_intraday_exit_impl,
-    mark_pending_intraday_exit_impl,
+    has_pending_engine_entry_impl,
+    has_pending_engine_exit_impl,
+    mark_pending_engine_exit_impl,
     normalize_symbol_key_impl,
-    sync_pending_intraday_exit_flags_impl,
+    sync_pending_engine_exit_flags_impl,
 )
 from engines.satellite.options_position_manager import (
     clear_all_positions_impl,
@@ -1590,7 +1590,7 @@ class OptionsEngine:
         lane = self._intraday_engine_lane_from_strategy(strategy_name)
 
         if self._pending_intraday_entry or self._pending_intraday_entries:
-            self._clear_stale_pending_intraday_entry_if_orphaned()
+            self._clear_stale_pending_engine_entry_if_orphaned()
         if self.has_pending_intraday_entry(engine=lane):
             return False, "E_INTRADAY_PENDING_ENTRY", lane
 
@@ -4376,14 +4376,18 @@ class OptionsEngine:
         self._pending_stop_price = None
         self._pending_target_price = None
 
-    def _clear_stale_pending_intraday_entry_if_orphaned(self) -> None:
+    def _clear_stale_pending_engine_entry_if_orphaned(self) -> None:
         """
-        Clear stale pending intraday entry locks.
+        Clear stale pending single-leg engine entry locks.
 
         Prevents long-lived E_INTRADAY_PENDING_ENTRY lock after missed/implicit
         broker cancel events while preserving normal in-flight order behavior.
         """
-        clear_stale_pending_intraday_entry_if_orphaned_impl(self)
+        clear_stale_pending_engine_entry_if_orphaned_impl(self)
+
+    def _clear_stale_pending_intraday_entry_if_orphaned(self) -> None:
+        """Backward-compatible alias for pending engine-entry stale guard."""
+        self._clear_stale_pending_engine_entry_if_orphaned()
 
     def cancel_pending_engine_entry(
         self, engine: Optional[str] = None, symbol: Optional[str] = None
@@ -4397,7 +4401,7 @@ class OptionsEngine:
         Returns:
             Cleared lane name when identifiable, else None.
         """
-        return cancel_pending_intraday_entry_impl(self, engine=engine, symbol=symbol)
+        return cancel_pending_engine_entry_impl(self, engine=engine, symbol=symbol)
 
     def cancel_pending_intraday_entry(
         self, engine: Optional[str] = None, symbol: Optional[str] = None
@@ -4407,7 +4411,7 @@ class OptionsEngine:
 
     def has_pending_engine_entry(self, engine: Optional[str] = None) -> bool:
         """True when a single-leg engine entry is currently pending."""
-        return has_pending_intraday_entry_impl(self, engine=engine)
+        return has_pending_engine_entry_impl(self, engine=engine)
 
     def has_pending_intraday_entry(self, engine: Optional[str] = None) -> bool:
         """Backward-compatible alias for pending single-leg entry state."""
@@ -4415,7 +4419,7 @@ class OptionsEngine:
 
     def get_pending_engine_entry_lane(self, symbol: Optional[str] = None) -> Optional[str]:
         """Best-effort lane lookup for a pending single-leg entry."""
-        return get_pending_intraday_entry_lane_impl(self, symbol=symbol)
+        return get_pending_engine_entry_lane_impl(self, symbol=symbol)
 
     def get_pending_intraday_entry_lane(self, symbol: Optional[str] = None) -> Optional[str]:
         """Backward-compatible alias for pending entry lane lookup."""
@@ -4429,7 +4433,7 @@ class OptionsEngine:
         self, symbol: str, fill_price: float
     ) -> Optional[Dict[str, Any]]:
         """Return OCO seed for pending/engine partial entry fill, if applicable."""
-        return get_intraday_partial_fill_oco_seed_impl(self, symbol=symbol, fill_price=fill_price)
+        return get_engine_partial_fill_oco_seed_impl(self, symbol=symbol, fill_price=fill_price)
 
     def get_intraday_partial_fill_oco_seed(
         self, symbol: str, fill_price: float
@@ -4456,7 +4460,7 @@ class OptionsEngine:
 
         Used when an entry order partially fills before full fill registration.
         """
-        return get_pending_intraday_partial_oco_seed_impl(
+        return get_pending_engine_partial_oco_seed_impl(
             self,
             symbol=symbol,
             fill_price=fill_price,
@@ -4471,8 +4475,12 @@ class OptionsEngine:
     def _normalize_symbol_key(self, symbol: Optional[str]) -> Optional[str]:
         return normalize_symbol_key_impl(self, symbol=symbol)
 
+    def _sync_pending_engine_exit_flags(self) -> None:
+        sync_pending_engine_exit_flags_impl(self)
+
     def _sync_pending_intraday_exit_flags(self) -> None:
-        sync_pending_intraday_exit_flags_impl(self)
+        """Backward-compatible alias for pending engine-exit flag sync."""
+        self._sync_pending_engine_exit_flags()
 
     def has_pending_swing_entry(self) -> bool:
         """True when a single-leg swing entry is pending (not intraday)."""
@@ -4482,7 +4490,7 @@ class OptionsEngine:
         self, engine: Optional[str] = None, symbol: Optional[str] = None
     ) -> bool:
         """True when a single-leg close signal has already been emitted and is in-flight."""
-        return has_pending_intraday_exit_impl(self, engine=engine, symbol=symbol)
+        return has_pending_engine_exit_impl(self, engine=engine, symbol=symbol)
 
     def has_pending_intraday_exit(
         self, engine: Optional[str] = None, symbol: Optional[str] = None
@@ -4501,7 +4509,7 @@ class OptionsEngine:
         Returns:
             True when lock was set, else False.
         """
-        return mark_pending_intraday_exit_impl(self, symbol=symbol)
+        return mark_pending_engine_exit_impl(self, symbol=symbol)
 
     def mark_pending_intraday_exit(self, symbol: Optional[str] = None) -> bool:
         """Backward-compatible alias for pending engine exit mark."""
@@ -4517,7 +4525,7 @@ class OptionsEngine:
         Returns:
             True when lock was cleared, else False.
         """
-        return cancel_pending_intraday_exit_impl(self, symbol=symbol)
+        return cancel_pending_engine_exit_impl(self, symbol=symbol)
 
     def cancel_pending_intraday_exit(self, symbol: Optional[str] = None) -> bool:
         """Backward-compatible alias for pending engine exit clear."""
