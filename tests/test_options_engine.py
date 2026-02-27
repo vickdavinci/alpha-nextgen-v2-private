@@ -3128,6 +3128,7 @@ class TestPortfolioScalingCaps:
 
     def test_global_daily_limit_uses_scaled_cap(self, engine, monkeypatch):
         monkeypatch.setattr(config, "OPTIONS_PORTFOLIO_SCALING_ENABLED", True)
+        monkeypatch.setattr(config, "OPTIONS_ENFORCE_GLOBAL_DAILY_CAP", True)
         monkeypatch.setattr(
             config,
             "OPTIONS_PORTFOLIO_SCALING_TIERS",
@@ -3156,6 +3157,18 @@ class TestPortfolioScalingCaps:
         reason, detail = engine.pop_last_trade_limit_failure()
         assert reason == "R_SLOT_TOTAL_MAX"
         assert "2/2" in str(detail)
+
+    def test_global_daily_limit_disabled_does_not_block(self, engine, monkeypatch):
+        monkeypatch.setattr(config, "OPTIONS_ENFORCE_GLOBAL_DAILY_CAP", False)
+        monkeypatch.setattr(config, "MAX_OPTIONS_TRADES_PER_DAY", 2)
+        monkeypatch.setattr(config, "INTRADAY_ENGINE_DAILY_RESERVE_ENABLED", False)
+        monkeypatch.setattr(config, "OPTIONS_RESERVE_SWING_DAILY_SLOTS_ENABLED", False)
+        monkeypatch.setattr(config, "OPTIONS_RESERVE_INTRADAY_DAILY_SLOTS_ENABLED", False)
+        engine._total_options_trades_today = 2
+
+        can_trade = engine._can_trade_options(OptionsMode.INTRADAY, intraday_engine="MICRO")
+
+        assert can_trade is True
 
 
 class TestMicroRetryEligibility:

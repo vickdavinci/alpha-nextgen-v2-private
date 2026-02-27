@@ -4862,15 +4862,17 @@ class OptionsEngine:
             trade_caps.get("SWING", getattr(config, "MAX_SWING_TRADES_PER_DAY", 3))
         )
 
-        # Check global daily options trade limit (distinct from slot caps).
-        if self._total_options_trades_today >= total_daily_cap:
-            detail = (
-                f"Global limit reached | " f"{self._total_options_trades_today}/{total_daily_cap}"
-            )
-            self.log(f"TRADE_LIMIT: {detail}")
-            # Legacy compatibility: keep R_SLOT_TOTAL_MAX for downstream RCA parsers.
-            # The detail string still distinguishes this as a daily trade-limit event.
-            return reject("R_SLOT_TOTAL_MAX", detail)
+        # Optional global daily options trade limit (distinct from slot caps).
+        if bool(getattr(config, "OPTIONS_ENFORCE_GLOBAL_DAILY_CAP", False)):
+            if self._total_options_trades_today >= total_daily_cap:
+                detail = (
+                    f"Global limit reached | "
+                    f"{self._total_options_trades_today}/{total_daily_cap}"
+                )
+                self.log(f"TRADE_LIMIT: {detail}")
+                # Legacy compatibility: keep R_SLOT_TOTAL_MAX for downstream RCA parsers.
+                # The detail string still distinguishes this as a daily trade-limit event.
+                return reject("R_SLOT_TOTAL_MAX", detail)
 
         reserve_checks_active = True
         if self.algorithm is not None:

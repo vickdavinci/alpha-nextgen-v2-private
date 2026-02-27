@@ -1132,6 +1132,9 @@ MICRO_SAME_STRATEGY_COOLDOWN_MINUTES = (
 # execution plumbing is still being hardened.
 MAX_OPTIONS_TRADES_PER_DAY = 5
 MAX_SWING_TRADES_PER_DAY = 3
+# V12.20: Engine-sovereign daily caps are primary. Keep global daily cap optional.
+# When disabled, ITM/MICRO/VASS lane caps and per-engine daily caps govern throughput.
+OPTIONS_ENFORCE_GLOBAL_DAILY_CAP = False
 # V12.17: Portfolio-growth scaling (capacity/throughput only, R:R unchanged).
 # Disabled by default; when enabled, engine slot and daily-trade ceilings scale
 # by portfolio equity tier to prevent large-account under-deployment.
