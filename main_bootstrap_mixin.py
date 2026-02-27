@@ -390,7 +390,7 @@ class MainBootstrapMixin:
             self.Schedule.On(
                 self.DateRules.EveryDay(),
                 self.TimeRules.At(hour, minute),
-                self._refresh_intraday_regime_score,
+                self._refresh_engine_regime_score,
             )
         # Periodic observability checkpoint flush so runtime errors don't wipe full-day telemetry.
         for hour, minute in [(11, 0), (13, 0), (15, 0)]:
@@ -406,7 +406,7 @@ class MainBootstrapMixin:
             self.Schedule.On(
                 self.DateRules.EveryDay(),
                 self.TimeRules.At(hour, minute),
-                self._on_intraday_reconcile,
+                self._on_engine_reconcile,
             )
 
         # V2.4.1: Friday Firewall - close swing options before weekend

@@ -446,21 +446,6 @@ class MainOrdersMixin:
         except Exception as e:
             self.Log(f"OCO_SYNC_ERROR: {symbol} | Reason={reason} | {e}")
 
-    def _sync_intraday_oco(
-        self,
-        symbol: str,
-        position: Any,
-        quantity: int,
-        reason: str,
-    ) -> None:
-        """Backward-compatible alias for engine OCO sync helper."""
-        self._sync_engine_oco(
-            symbol=symbol,
-            position=position,
-            quantity=quantity,
-            reason=reason,
-        )
-
     def OnOrderEvent(self, orderEvent: OrderEvent) -> None:
         """
         Handle order status changes.

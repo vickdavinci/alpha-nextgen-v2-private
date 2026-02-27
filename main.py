@@ -92,7 +92,7 @@ class AlphaNextGen(QCAlgorithm):
     _consume_engine_retry = MainOptionsMixin._consume_engine_retry
     _reset_regime_detector_runtime_state = MainOptionsMixin._reset_regime_detector_runtime_state
     _initialize_runtime_state = MainOptionsMixin._initialize_runtime_state
-    _select_intraday_option_contract = MainOptionsMixin._select_intraday_option_contract
+    _select_engine_option_contract = MainOptionsMixin._select_engine_option_contract
     _select_swing_option_contract = MainOptionsMixin._select_swing_option_contract
     _apply_spread_margin_guard = MainOptionsMixin._apply_spread_margin_guard
     _build_option_contract_from_fill = MainOptionsMixin._build_option_contract_from_fill
@@ -102,9 +102,9 @@ class AlphaNextGen(QCAlgorithm):
     _on_vix_spike_check = MainOptionsMixin._on_vix_spike_check
     _on_micro_regime_update = MainOptionsMixin._on_micro_regime_update
     _on_friday_firewall = MainOptionsMixin._on_friday_firewall
-    _get_vix_intraday_proxy = MainOptionsMixin._get_vix_intraday_proxy
+    _get_vix_engine_proxy = MainOptionsMixin._get_vix_engine_proxy
     _get_vix_level = MainOptionsMixin._get_vix_level
-    _should_scan_intraday = MainOptionsMixin._should_scan_intraday
+    _should_scan_engine_cycle = MainOptionsMixin._should_scan_engine_cycle
     _can_trade_options_settlement_aware = MainOptionsMixin._can_trade_options_settlement_aware
     _micro_dte_bucket = MainOptionsMixin._micro_dte_bucket
     _inc_micro_dte_counter = MainOptionsMixin._inc_micro_dte_counter
@@ -137,7 +137,7 @@ class AlphaNextGen(QCAlgorithm):
     _is_micro_entry_fill = MainOrdersMixin._is_micro_entry_fill
     _is_spread_fill_symbol = MainOrdersMixin._is_spread_fill_symbol
     _sync_engine_oco = MainOrdersMixin._sync_engine_oco
-    _sync_intraday_oco = MainOrdersMixin._sync_intraday_oco
+    _sync_engine_oco = MainOrdersMixin._sync_engine_oco
     _cancel_spread_linked_oco = MainOrdersMixin._cancel_spread_linked_oco
     _schedule_spread_safe_lock_retry = MainOrdersMixin._schedule_spread_safe_lock_retry
     _cleanup_stale_spread_state = MainOrdersMixin._cleanup_stale_spread_state
@@ -166,7 +166,7 @@ class AlphaNextGen(QCAlgorithm):
     _apply_transition_handoff_open_position_derisk = (
         MainRegimeMixin._apply_transition_handoff_open_position_derisk
     )
-    _on_intraday_reconcile = MainReconcileMixin._on_intraday_reconcile
+    _on_engine_reconcile = MainReconcileMixin._on_engine_reconcile
     _is_primary_market_open = MainReconcileMixin._is_primary_market_open
     _reconcile_spread_state = MainReconcileMixin._reconcile_spread_state
     _build_spread_runtime_key = MainReconcileMixin._build_spread_runtime_key
@@ -180,11 +180,11 @@ class AlphaNextGen(QCAlgorithm):
     _check_expiration_hammer_v2 = MainIntradayCloseMixin._check_expiration_hammer_v2
     _close_options_atomic = MainIntradayCloseMixin._close_options_atomic
     _on_engine_options_force_close = MainIntradayCloseMixin._on_engine_options_force_close
-    _on_intraday_options_force_close = MainIntradayCloseMixin._on_intraday_options_force_close
+    _on_engine_options_force_close = MainIntradayCloseMixin._on_engine_options_force_close
     _engine_force_exit_fallback = MainIntradayCloseMixin._engine_force_exit_fallback
-    _intraday_force_exit_fallback = MainIntradayCloseMixin._intraday_force_exit_fallback
+    _engine_force_exit_fallback = MainIntradayCloseMixin._engine_force_exit_fallback
     _reconcile_engine_close_guards = MainIntradayCloseMixin._reconcile_engine_close_guards
-    _reconcile_intraday_close_guards = MainIntradayCloseMixin._reconcile_intraday_close_guards
+    _reconcile_engine_close_guards = MainIntradayCloseMixin._reconcile_engine_close_guards
     _ensure_oco_for_open_options = MainIntradayCloseMixin._ensure_oco_for_open_options
     _liquidate_all_spread_aware = MainIntradayCloseMixin._liquidate_all_spread_aware
     _get_primary_market_close_time = MainMarketCloseMixin._get_primary_market_close_time
@@ -657,10 +657,6 @@ class AlphaNextGen(QCAlgorithm):
             return
         self._intraday_close_in_progress_symbols.discard(symbol_norm)
         self._intraday_force_exit_submitted_symbols.pop(symbol_norm, None)
-
-    def _clear_intraday_close_guard(self, symbol: str) -> None:
-        """Backward-compatible alias for engine close-guard cleanup."""
-        self._clear_engine_close_guard(symbol)
 
     def _get_valid_options_chain(self, option_chains: Any, mode_label: str):
         """Return QQQ option chain when present and non-empty, else None with diagnostics."""
@@ -1178,7 +1174,7 @@ class AlphaNextGen(QCAlgorithm):
                 return key
         return None
 
-    def _should_hold_intraday_symbol_overnight(self, symbol: str) -> bool:
+    def _should_hold_engine_symbol_overnight(self, symbol: str) -> bool:
         """Return True when symbol matches an active hold-enabled intraday ITM position."""
         if not hasattr(self, "options_engine") or self.options_engine is None:
             return False
@@ -1233,7 +1229,7 @@ class AlphaNextGen(QCAlgorithm):
         except Exception:
             return None
 
-    def _get_intraday_position_entry_price(self, symbol: str, intraday_pos: Any) -> float:
+    def _get_engine_position_entry_price(self, symbol: str, intraday_pos: Any) -> float:
         """Resolve best entry-price source for intraday weekend guards."""
         snapshot = self._intraday_entry_snapshot.get(symbol, {})
         if snapshot and snapshot.get("entry_price", 0) > 0:
@@ -1265,7 +1261,7 @@ class AlphaNextGen(QCAlgorithm):
         - require profit cushion into weekend.
         """
         symbol_norm = self._normalize_symbol_str(symbol)
-        entry_price = self._get_intraday_position_entry_price(symbol_norm, intraday_pos)
+        entry_price = self._get_engine_position_entry_price(symbol_norm, intraday_pos)
         if entry_price <= 0 or current_price <= 0:
             return "INVALID_PRICE_CONTEXT"
 
@@ -2192,7 +2188,7 @@ class AlphaNextGen(QCAlgorithm):
             spy_52w_high=spy_52w_high_val,
         )
 
-    def _refresh_intraday_regime_score(self) -> None:
+    def _refresh_engine_regime_score(self) -> None:
         """Phase A: refresh intraday macro regime snapshot for options gating."""
         if self.IsWarmingUp:
             return

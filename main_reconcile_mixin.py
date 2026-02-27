@@ -17,7 +17,7 @@ class MainReconcileMixin:
             # Conservative fallback if exchange metadata is unavailable.
             return self.Time.weekday() < 5
 
-    def _on_intraday_reconcile(self) -> None:
+    def _on_engine_reconcile(self) -> None:
         """
         #8 fix: periodic intraday broker-vs-engine reconciliation.
 

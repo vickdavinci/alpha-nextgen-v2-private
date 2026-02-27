@@ -165,7 +165,7 @@ class MainIntradayCloseMixin:
             # Get current option price
             symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
             current_price = self._get_option_mark_price(symbol, fallback=intraday_pos.entry_price)
-            hold_allowed = self._should_hold_intraday_symbol_overnight(symbol)
+            hold_allowed = self._should_hold_engine_symbol_overnight(symbol)
             entry_price = float(getattr(intraday_pos, "entry_price", 0.0) or 0.0)
             eod_loss_breach = hold_allowed and self._is_micro_eod_loss_breach(
                 symbol=symbol,
@@ -255,7 +255,7 @@ class MainIntradayCloseMixin:
                     if self._is_symbol_in_active_spread(live_symbol):
                         self._micro_open_symbols.discard(live_symbol)
                         continue
-                    hold_allowed = self._should_hold_intraday_symbol_overnight(live_symbol)
+                    hold_allowed = self._should_hold_engine_symbol_overnight(live_symbol)
                     if hold_allowed:
                         entry_price = 0.0
                         snapshot = self._intraday_entry_snapshot.get(live_symbol, {})
@@ -610,10 +610,6 @@ class MainIntradayCloseMixin:
             )
         return total_closed
 
-    def _on_intraday_options_force_close(self) -> None:
-        """Backward-compatible alias for engine options force-close callback."""
-        self._on_engine_options_force_close()
-
     def _engine_force_exit_fallback(self) -> None:
         """
         V6.12: Safety net - force-close intraday position after configured close +5min if scheduled close missed.
@@ -621,7 +617,7 @@ class MainIntradayCloseMixin:
         This prevents intraday options from carrying overnight due to scheduler issues.
         """
         # Only run once per day
-        if getattr(self, "_intraday_force_exit_fallback_date", None) == self.Time.date():
+        if getattr(self, "_engine_force_exit_fallback_date", None) == self.Time.date():
             return
 
         # Only after effective force-close + 5 minutes (dynamic on early-close days).
@@ -642,7 +638,7 @@ class MainIntradayCloseMixin:
 
         # Check if we have intraday positions
         if not hasattr(self, "options_engine") or not self.options_engine.has_engine_position():
-            self._intraday_force_exit_fallback_date = self.Time.date()
+            self._engine_force_exit_fallback_date = self.Time.date()
             return
 
         submitted_any = False
@@ -652,7 +648,7 @@ class MainIntradayCloseMixin:
             symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
             mark_price = self._get_option_mark_price(symbol, fallback=0.0)
             entry_price = float(getattr(intraday_pos, "entry_price", 0.0) or 0.0)
-            hold_allowed = self._should_hold_intraday_symbol_overnight(symbol)
+            hold_allowed = self._should_hold_engine_symbol_overnight(symbol)
             eod_loss_breach = hold_allowed and self._is_micro_eod_loss_breach(
                 symbol=symbol,
                 entry_price=entry_price,
@@ -707,11 +703,7 @@ class MainIntradayCloseMixin:
         if submitted_any:
             self._process_immediate_signals()
         # Mark done after handling concrete submit attempts.
-        self._intraday_force_exit_fallback_date = self.Time.date()
-
-    def _intraday_force_exit_fallback(self) -> None:
-        """Backward-compatible alias for engine force-exit fallback."""
-        self._engine_force_exit_fallback()
+        self._engine_force_exit_fallback_date = self.Time.date()
 
     def _reconcile_engine_close_guards(self) -> None:
         """Clear stale close-in-progress guards after positions are flat."""
@@ -723,7 +715,3 @@ class MainIntradayCloseMixin:
                 stale.append(symbol)
         for symbol in stale:
             self._clear_engine_close_guard(symbol)
-
-    def _reconcile_intraday_close_guards(self) -> None:
-        """Backward-compatible alias for engine close-guard reconciliation."""
-        self._reconcile_engine_close_guards()

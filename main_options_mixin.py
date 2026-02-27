@@ -50,7 +50,7 @@ class MainOptionsMixin:
         self._diag_intraday_approved_ids_logged = set()
         self._diag_intraday_dropped_ids_logged = set()
         self._last_swing_scan_time = None
-        self._intraday_force_exit_fallback_date = None
+        self._engine_force_exit_fallback_date = None
         self._mr_force_close_fallback_date = None
         self._intraday_force_close_ran_date = None
         self._mr_force_close_ran_date = None
@@ -470,7 +470,7 @@ class MainOptionsMixin:
     def _get_contract_prices(self, contract) -> Tuple[float, float]:
         return self.options_engine.get_contract_prices(contract)
 
-    def _select_intraday_option_contract(
+    def _select_engine_option_contract(
         self,
         chain,
         direction: OptionDirection,
@@ -1459,7 +1459,11 @@ class MainOptionsMixin:
             or self._get_decision_regime_score_for_options()
         )
         intraday_scan_context_ready = False
-        if self._should_scan_intraday() and self._qqq_at_open > 0 and not intraday_cooldown_active:
+        if (
+            self._should_scan_engine_cycle()
+            and self._qqq_at_open > 0
+            and not intraday_cooldown_active
+        ):
             # V5.3: Check position limits before scanning
             can_intraday, intraday_limit_reason = self.options_engine.can_enter_single_leg()
             if not can_intraday:
@@ -1473,7 +1477,7 @@ class MainOptionsMixin:
             else:
                 # V2.4.1 FIX: Use UVXY-derived VIX proxy instead of stale daily VIX
                 # self._current_vix is daily close and doesn't change intraday
-                vix_intraday = self._get_vix_intraday_proxy()
+                vix_intraday = self._get_vix_engine_proxy()
 
                 # V6.2: Get CBOE VIX level for consistent Micro Regime classification
                 # This ensures all _micro_regime_engine.update() calls use same VIX level
@@ -2225,7 +2229,7 @@ class MainOptionsMixin:
         # V9.2: Guarded Friday sweep (single pass/day).
         self._reconcile_spread_state()
 
-    def _get_vix_intraday_proxy(self) -> float:
+    def _get_vix_engine_proxy(self) -> float:
         """
         V2.4.1: Get UVXY-derived VIX proxy for intraday direction.
 
@@ -2272,7 +2276,7 @@ class MainOptionsMixin:
             if days_stale >= stale_threshold:
                 blend = float(getattr(config, "VIX_STALE_LEVEL_FALLBACK_BLEND", 0.35))
                 blend = max(0.0, min(1.0, blend))
-                proxy = float(self._get_vix_intraday_proxy())
+                proxy = float(self._get_vix_engine_proxy())
                 fallback_level = float(self._current_vix) * (1.0 - blend) + proxy * blend
 
                 if getattr(self, "_last_vix_stale_log_date", None) != self.Time.date():
@@ -2286,7 +2290,7 @@ class MainOptionsMixin:
 
         return self._current_vix  # Use daily CBOE VIX, NOT UVXY-derived proxy
 
-    def _should_scan_intraday(self) -> bool:
+    def _should_scan_engine_cycle(self) -> bool:
         """
         V2.4.1: Check if enough time passed since last intraday scan.
 
