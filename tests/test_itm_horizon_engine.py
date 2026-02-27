@@ -125,3 +125,20 @@ def test_state_roundtrip(monkeypatch):
 
     assert restored.to_dict()["put_consecutive_losses"] == state["put_consecutive_losses"]
     assert restored.to_dict()["last_exit_date_by_direction"] == state["last_exit_date_by_direction"]
+
+
+def test_reset_daily_clears_only_diagnostics(monkeypatch):
+    monkeypatch.setattr(config, "ITM_ENGINE_ENABLED", True)
+
+    engine = ITMHorizonEngine()
+    engine._diag_counts = {"ITM_ENGINE_Pass": 4}
+    engine._diag_block_codes = {"E_ITM_ENGINE_ADX_WEAK": 2}
+    engine._consecutive_losses = 3
+    engine._pause_until = "2024-01-12"
+
+    engine.reset_daily()
+
+    assert engine._diag_counts == {}
+    assert engine._diag_block_codes == {}
+    assert engine._consecutive_losses == 3
+    assert engine._pause_until == "2024-01-12"

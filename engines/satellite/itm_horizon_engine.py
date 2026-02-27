@@ -924,6 +924,9 @@ class ITMHorizonEngine:
                 f"ITM_ENGINE_DAILY_BLOCK_CODES|{current_date}|" + "|".join(parts),
                 trades_only=True,
             )
+
+    def reset_daily(self) -> None:
+        """Clear daily-only ITM diagnostic counters while preserving breaker state."""
         self._diag_counts = {}
         self._diag_block_codes = {}
 

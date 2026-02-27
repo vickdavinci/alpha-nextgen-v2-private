@@ -732,6 +732,8 @@ def reset_options_engine_daily_state_impl(self, current_date: str) -> None:
         # Reset Micro Regime Engine for new day
         self._micro_regime_engine.reset_daily()
         self._vass_entry_engine.reset_daily()
+        self._itm_horizon_engine.emit_daily_summary(current_date)
+        self._itm_horizon_engine.reset_daily()
 
         # Keep intraday state whenever a live broker holding still exists.
         # This avoids reset->orphan churn when an expected force-close fails.
@@ -773,7 +775,6 @@ def reset_options_engine_daily_state_impl(self, current_date: str) -> None:
                 k: v for k, v in self._spread_neutrality_warn_by_key.items() if k in active_keys
             }
 
-        self._itm_horizon_engine.emit_daily_summary(current_date)
         self.log(f"OPT: Daily reset for {current_date}")
 
 
