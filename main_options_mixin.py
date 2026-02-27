@@ -1493,7 +1493,13 @@ class MainOptionsMixin:
 
                 intraday_scan_context_ready = True
 
-                itm_dir, itm_reason = self.options_engine.run_micro_intraday_cycle(
+                if bool(getattr(config, "ITM_ENGINE_ENABLED", False)):
+                    itm_dir, itm_reason = self.options_engine.get_itm_direction_proposal(
+                        qqq_current=qqq_price,
+                        transition_ctx=transition_ctx,
+                    )
+
+                self.options_engine.run_micro_intraday_cycle(
                     chain=chain,
                     qqq_price=qqq_price,
                     regime_score=regime_score,

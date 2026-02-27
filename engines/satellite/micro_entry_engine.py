@@ -577,7 +577,7 @@ class MicroEntryEngine:
         uvxy_pct: float,
         micro_intraday_cooldown_active: bool,
     ) -> Tuple[Optional[OptionDirection], str]:
-        """Run MICRO intraday lane and return ITM direction proposal context."""
+        """Run MICRO intraday lane. Return value is kept for backward compatibility."""
         algorithm = getattr(host, "algorithm", None)
         if algorithm is None:
             return None, ""
@@ -615,11 +615,6 @@ class MicroEntryEngine:
         itm_dir = None
         itm_reason = ""
         forced_intraday_strategy = None
-        if bool(getattr(config, "ITM_ENGINE_ENABLED", False)):
-            itm_dir, itm_reason = host.get_itm_direction_proposal(
-                qqq_current=qqq_price,
-                transition_ctx=transition_ctx,
-            )
 
         if micro_intraday_cooldown_active:
             should_trade = False
