@@ -64,7 +64,7 @@ class TestOptionsIntradayRejectionScenario:
     def test_intraday_rejection_counter_recovery(self):
         """
         1. Set up options engine with pending intraday entry + counter=1.
-        2. Simulate rejection via cancel_pending_intraday_entry.
+        2. Simulate rejection via cancel_pending_engine_entry.
         3. Verify pending cleared and counter decremented.
         4. Verify next signal can fire (pending_intraday_entry is False).
         """
@@ -80,7 +80,7 @@ class TestOptionsIntradayRejectionScenario:
         engine._trades_today = 1
 
         # Step 2: Simulate rejection
-        engine.cancel_pending_intraday_entry()
+        engine.cancel_pending_engine_entry()
 
         # Step 3: Verify state cleared
         assert engine._pending_intraday_entry is False
@@ -105,7 +105,7 @@ class TestOptionsIntradayRejectionScenario:
         engine._trades_today = 1
 
         # Recovery
-        engine.cancel_pending_intraday_entry()
+        engine.cancel_pending_engine_entry()
 
         # Verify trade limit not consumed
         assert engine._intraday_trades_today < config.INTRADAY_MAX_TRADES_PER_DAY

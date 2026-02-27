@@ -4592,10 +4592,6 @@ class OptionsEngine:
         """
         clear_stale_pending_engine_entry_if_orphaned_impl(self)
 
-    def _clear_stale_pending_intraday_entry_if_orphaned(self) -> None:
-        """Backward-compatible alias for pending engine-entry stale guard."""
-        self._clear_stale_pending_engine_entry_if_orphaned()
-
     def cancel_pending_engine_entry(
         self, engine: Optional[str] = None, symbol: Optional[str] = None
     ) -> Optional[str]:
@@ -4610,27 +4606,13 @@ class OptionsEngine:
         """
         return cancel_pending_engine_entry_impl(self, engine=engine, symbol=symbol)
 
-    def cancel_pending_intraday_entry(
-        self, engine: Optional[str] = None, symbol: Optional[str] = None
-    ) -> Optional[str]:
-        """Backward-compatible alias for pending single-leg entry cancel."""
-        return self.cancel_pending_engine_entry(engine=engine, symbol=symbol)
-
     def has_pending_engine_entry(self, engine: Optional[str] = None) -> bool:
         """True when a single-leg engine entry is currently pending."""
         return has_pending_engine_entry_impl(self, engine=engine)
 
-    def has_pending_intraday_entry(self, engine: Optional[str] = None) -> bool:
-        """Backward-compatible alias for pending single-leg entry state."""
-        return self.has_pending_engine_entry(engine=engine)
-
     def get_pending_engine_entry_lane(self, symbol: Optional[str] = None) -> Optional[str]:
         """Best-effort lane lookup for a pending single-leg entry."""
         return get_pending_engine_entry_lane_impl(self, symbol=symbol)
-
-    def get_pending_intraday_entry_lane(self, symbol: Optional[str] = None) -> Optional[str]:
-        """Backward-compatible alias for pending entry lane lookup."""
-        return self.get_pending_engine_entry_lane(symbol=symbol)
 
     def get_pending_entry_contract_symbol(self) -> str:
         """Best-effort symbol for current pending single-leg entry contract."""
@@ -4641,12 +4623,6 @@ class OptionsEngine:
     ) -> Optional[Dict[str, Any]]:
         """Return OCO seed for pending/engine partial entry fill, if applicable."""
         return get_engine_partial_fill_oco_seed_impl(self, symbol=symbol, fill_price=fill_price)
-
-    def get_intraday_partial_fill_oco_seed(
-        self, symbol: str, fill_price: float
-    ) -> Optional[Dict[str, Any]]:
-        """Backward-compatible alias for engine partial-fill OCO seed."""
-        return self.get_engine_partial_fill_oco_seed(symbol=symbol, fill_price=fill_price)
 
     def get_partial_fill_oco_seed(
         self, symbol: str, fill_price: float, order_tag: Optional[str] = None
@@ -4673,21 +4649,11 @@ class OptionsEngine:
             fill_price=fill_price,
         )
 
-    def get_pending_intraday_partial_oco_seed(
-        self, symbol: str, fill_price: float
-    ) -> Optional[Dict[str, Any]]:
-        """Backward-compatible alias for pending engine partial OCO seed."""
-        return self.get_pending_engine_partial_oco_seed(symbol=symbol, fill_price=fill_price)
-
     def _normalize_symbol_key(self, symbol: Optional[str]) -> Optional[str]:
         return normalize_symbol_key_impl(self, symbol=symbol)
 
     def _sync_pending_engine_exit_flags(self) -> None:
         sync_pending_engine_exit_flags_impl(self)
-
-    def _sync_pending_intraday_exit_flags(self) -> None:
-        """Backward-compatible alias for pending engine-exit flag sync."""
-        self._sync_pending_engine_exit_flags()
 
     def has_pending_swing_entry(self) -> bool:
         """True when a single-leg swing entry is pending (not intraday)."""
@@ -4698,12 +4664,6 @@ class OptionsEngine:
     ) -> bool:
         """True when a single-leg close signal has already been emitted and is in-flight."""
         return has_pending_engine_exit_impl(self, engine=engine, symbol=symbol)
-
-    def has_pending_intraday_exit(
-        self, engine: Optional[str] = None, symbol: Optional[str] = None
-    ) -> bool:
-        """Backward-compatible alias for pending engine exit state."""
-        return self.has_pending_engine_exit(engine=engine, symbol=symbol)
 
     def mark_pending_engine_exit(self, symbol: Optional[str] = None) -> bool:
         """
@@ -4718,10 +4678,6 @@ class OptionsEngine:
         """
         return mark_pending_engine_exit_impl(self, symbol=symbol)
 
-    def mark_pending_intraday_exit(self, symbol: Optional[str] = None) -> bool:
-        """Backward-compatible alias for pending engine exit mark."""
-        return self.mark_pending_engine_exit(symbol=symbol)
-
     def cancel_pending_engine_exit(self, symbol: Optional[str] = None) -> bool:
         """
         Clear pending single-leg exit lock after a rejected/canceled close order.
@@ -4733,10 +4689,6 @@ class OptionsEngine:
             True when lock was cleared, else False.
         """
         return cancel_pending_engine_exit_impl(self, symbol=symbol)
-
-    def cancel_pending_intraday_exit(self, symbol: Optional[str] = None) -> bool:
-        """Backward-compatible alias for pending engine exit clear."""
-        return self.cancel_pending_engine_exit(symbol=symbol)
 
     def remove_spread_position(self, symbol: Optional[str] = None) -> Optional[SpreadPosition]:
         """
@@ -4951,20 +4903,12 @@ class OptionsEngine:
         eng = str(engine).upper()
         return len(self._intraday_positions.get(eng) or []) > 0
 
-    def has_intraday_position(self, engine: Optional[str] = None) -> bool:
-        """Backward-compatible alias for single-leg engine position check."""
-        return self.has_engine_position(engine=engine)
-
     def get_engine_position(self, engine: Optional[str] = None) -> Optional[OptionsPosition]:
         """Get current single-leg engine position (optionally by lane)."""
         if engine is not None:
             return self._get_engine_lane_position(str(engine).upper())
         # Deterministic default for legacy callers.
         return self._get_engine_lane_position("ITM") or self._get_engine_lane_position("MICRO")
-
-    def get_intraday_position(self, engine: Optional[str] = None) -> Optional[OptionsPosition]:
-        """Backward-compatible alias for single-leg engine position lookup."""
-        return self.get_engine_position(engine=engine)
 
     def get_intraday_position_engine(self) -> Optional[str]:
         """Return default ownership lane for legacy callers."""

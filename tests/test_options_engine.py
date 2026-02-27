@@ -2409,11 +2409,11 @@ class TestClearAllPositions:
         # Simulate lane-backed intraday state.
         engine._intraday_positions["MICRO"] = ["ZOMBIE_INTRADAY"]  # Any non-empty payload
 
-        assert engine.has_intraday_position() is True
+        assert engine.has_engine_position() is True
 
         engine.clear_all_positions()
 
-        assert engine.has_intraday_position() is False
+        assert engine.has_engine_position() is False
         assert engine._intraday_position is None
 
     def test_clear_all_positions_clears_single_leg(self, engine):
@@ -2518,7 +2518,7 @@ class TestRejectionRecovery:
         engine.cancel_pending_spread_entry()  # Should not raise
         assert engine._pending_spread_long_leg is None
 
-    def test_cancel_pending_intraday_entry_clears_and_preserves_counters(self, engine):
+    def test_cancel_pending_engine_entry_clears_and_preserves_counters(self, engine):
         """V9.0: Intraday rejection clears state but does NOT decrement counters (fill-based)."""
         engine._pending_intraday_entry = True
         engine._pending_contract = "PENDING"
@@ -2528,7 +2528,7 @@ class TestRejectionRecovery:
         engine._total_options_trades_today = 1
         engine._trades_today = 1
 
-        engine.cancel_pending_intraday_entry()
+        engine.cancel_pending_engine_entry()
 
         assert engine._pending_intraday_entry is False
         assert engine._pending_contract is None
@@ -2546,7 +2546,7 @@ class TestRejectionRecovery:
         engine._total_options_trades_today = 0
         engine._trades_today = 0
 
-        engine.cancel_pending_intraday_entry()
+        engine.cancel_pending_engine_entry()
 
         assert engine._intraday_trades_today == 0
         assert engine._total_options_trades_today == 0
@@ -2559,7 +2559,7 @@ class TestRejectionRecovery:
         engine._total_options_trades_today = 3
         engine._trades_today = 3
 
-        engine.cancel_pending_intraday_entry()
+        engine.cancel_pending_engine_entry()
 
         # Counters should NOT change because _pending_intraday_entry was False
         assert engine._intraday_trades_today == 2
@@ -2665,7 +2665,7 @@ class TestPendingIntradayEntryMaintenance:
         ]
         engine._intraday_positions["MICRO"] = []
 
-        engine._clear_stale_pending_intraday_entry_if_orphaned()
+        engine._clear_stale_pending_engine_entry_if_orphaned()
 
         assert engine._pending_intraday_entries == {}
         assert engine._pending_intraday_entry is False
@@ -2705,7 +2705,7 @@ class TestPendingIntradayEntryMaintenance:
         engine._intraday_positions["ITM"] = []
         engine._intraday_positions["MICRO"] = []
 
-        engine._clear_stale_pending_intraday_entry_if_orphaned()
+        engine._clear_stale_pending_engine_entry_if_orphaned()
 
         assert key in engine._pending_intraday_entries
         assert len(algo.Transactions.cancel_requests) == 1
@@ -2746,7 +2746,7 @@ class TestPendingIntradayEntryMaintenance:
         ]
         engine._intraday_positions["ITM"] = []
 
-        engine._clear_stale_pending_intraday_entry_if_orphaned()
+        engine._clear_stale_pending_engine_entry_if_orphaned()
 
         assert key not in engine._pending_intraday_entries
         assert engine._pending_intraday_entry is False
@@ -2793,7 +2793,7 @@ class TestIntradayLaneIsolation:
             highest_price=10.25,
         )
 
-        assert engine.has_intraday_position() is False
+        assert engine.has_engine_position() is False
         assert engine.get_engine_positions() == []
         assert engine._find_engine_lane_by_symbol("QQQ 270119P00480000") is None
 
