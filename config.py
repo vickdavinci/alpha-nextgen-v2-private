@@ -983,9 +983,7 @@ VASS_EARLY_STRESS_BEAR_PREFER_CREDIT = (
 VASS_MEDIUM_IV_PREFER_CREDIT = (
     False  # V12.6: medium-IV defaults to debit structures to reduce bad credit exposure
 )
-VASS_OPPOSITE_ROUTE_FALLBACK_ENABLED = (
-    True  # V10.17: after primary route fails quality, try one opposite-route attempt
-)
+VASS_OPPOSITE_ROUTE_FALLBACK_ENABLED = False  # V12.18: disable opposite-route retry to avoid cross-route gate collisions and preserve signal intent.
 VASS_OPPOSITE_ROUTE_BLOCK_ON_STRUCTURAL_FAIL = (
     True  # V12.9 P0: skip opposite-route fallback when primary failure is structural EV/quality.
 )
@@ -1022,7 +1020,7 @@ VASS_SHORT_LEG_SORT_POP_FIRST = (
 VASS_POP_GATE_ENABLED = False  # V12.12: disabled — PoP ≈ 1 - D/W for debit verticals, so D/W cap IS the PoP gate. Threshold 0.55 is mathematically impossible at long delta < 0.55 (blocks all OTM entries). Was True.
 VASS_POP_MIN_DEBIT = 0.55
 VASS_POP_MIN_CREDIT = 0.55
-VASS_GREEKS_ENTRY_GATE_ENABLED = True  # V12.10: block poor theta/vega structures at entry.
+VASS_GREEKS_ENTRY_GATE_ENABLED = False  # V12.18: monitor via telemetry while D/W and C/W remain the hard economic quality filters.
 VASS_DEBIT_MAX_THETA_TO_DEBIT = 0.08  # Max daily theta burn as fraction of net debit.
 VASS_DEBIT_MAX_VEGA_TO_DEBIT = 0.70  # Max absolute net vega as fraction of net debit.
 VASS_CREDIT_MIN_NET_THETA = -999.0  # Disabled: replaced by ratio-based gate below.

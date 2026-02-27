@@ -1150,6 +1150,8 @@ class VASSEntryEngine:
                     f"Regime={regime_score:.0f} | "
                     f"Contracts_checked={len(candidate_contracts)} | "
                     f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
+                    f"AttemptedStrategy={strategy.value if strategy else 'NONE'} | "
+                    f"RouteType={'CREDIT' if is_credit else 'DEBIT'} | "
                     f"DTE_Ranges={dte_ranges} | "
                     f"ReasonCode={reason_code} | "
                     f"Reason={reason_text}"
@@ -1374,6 +1376,8 @@ class VASSEntryEngine:
                     f"VIX={current_vix:.1f} | Regime={regime_score:.0f} | "
                     f"Contracts_checked={len(candidate_contracts)} | "
                     f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
+                    f"AttemptedStrategy={strategy.value if strategy else 'NONE'} | "
+                    f"RouteType={'CREDIT' if is_credit else 'DEBIT'} | "
                     f"DTE_Ranges={dte_ranges} | ReasonCode=INSUFFICIENT_CANDIDATES"
                 )
             algorithm._record_signal_lifecycle_event(
