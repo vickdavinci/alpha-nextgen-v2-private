@@ -792,9 +792,7 @@ class MainOrdersMixin:
             failed_symbol = str(orderEvent.Symbol)
             failed_symbol_norm = self._normalize_symbol_str(failed_symbol)
             invalid_order = self.Transactions.GetOrderById(orderEvent.OrderId)
-            invalid_tag = (
-                str(getattr(invalid_order, "Tag", "") or "") if invalid_order is not None else ""
-            )
+            invalid_tag = self._get_order_tag(orderEvent)
             if not invalid_tag:
                 invalid_tag = self._get_recent_symbol_fill_tag(failed_symbol) or ""
             invalid_trace_id = self._extract_trace_id_from_tag(invalid_tag) or "NONE"
@@ -827,6 +825,11 @@ class MainOrdersMixin:
                 rejection_reason=orderEvent.Message,
             )
             is_oco_invalid = self.oco_manager.has_order(orderEvent.OrderId)
+            if not is_oco_invalid and (
+                invalid_tag_upper.startswith("OCO_STOP:")
+                or invalid_tag_upper.startswith("OCO_PROFIT:")
+            ):
+                is_oco_invalid = True
             if is_oco_invalid:
                 self.oco_manager.on_order_inactive(
                     broker_order_id=orderEvent.OrderId,
@@ -1088,9 +1091,7 @@ class MainOrdersMixin:
             canceled_symbol = str(orderEvent.Symbol)
             canceled_symbol_norm = self._normalize_symbol_str(canceled_symbol)
             canceled_order = self.Transactions.GetOrderById(orderEvent.OrderId)
-            canceled_tag = (
-                str(getattr(canceled_order, "Tag", "") or "") if canceled_order is not None else ""
-            )
+            canceled_tag = self._get_order_tag(orderEvent)
             canceled_tag_upper = canceled_tag.upper()
             canceled_terminal_retry = self._is_terminal_exit_retry_tag(canceled_tag_upper)
             if not canceled_tag:
@@ -1126,6 +1127,19 @@ class MainOrdersMixin:
                 tag_upper = canceled_tag.upper()
                 if tag_upper.startswith("OCO_STOP:") or tag_upper.startswith("OCO_PROFIT:"):
                     is_oco_cancel = True
+            if not is_oco_cancel and canceled_order is not None:
+                # Broker may drop OCO tags on cancel callbacks after local cleanup.
+                # Treat stop-market option close cancels as OCO rails to avoid
+                # false retry->emergency recursion.
+                try:
+                    canceled_type_upper = str(getattr(canceled_order, "Type", "") or "").upper()
+                    if (
+                        canceled_type_upper == "STOPMARKET"
+                        and canceled_order.Symbol.SecurityType == SecurityType.Option
+                    ):
+                        is_oco_cancel = True
+                except Exception:
+                    pass
             if is_oco_cancel:
                 self.oco_manager.on_order_inactive(
                     broker_order_id=orderEvent.OrderId,
@@ -1874,10 +1888,35 @@ class MainOrdersMixin:
                                     )
                             # Record intraday entry snapshot for robust exit accounting.
                             if entry_is_intraday:
+                                existing_snapshot = (
+                                    self._intraday_entry_snapshot.get(symbol_norm) or {}
+                                )
+                                prev_qty = int(existing_snapshot.get("quantity", 0) or 0)
+                                fill_abs_qty = abs(int(fill_qty))
+                                live_qty_now = abs(self._get_option_holding_quantity(symbol))
+                                snapshot_qty = (
+                                    live_qty_now if live_qty_now > 0 else prev_qty + fill_abs_qty
+                                )
+                                if snapshot_qty <= 0:
+                                    snapshot_qty = fill_abs_qty
+                                prev_entry_price = float(
+                                    existing_snapshot.get("entry_price", 0.0) or 0.0
+                                )
+                                if prev_qty > 0 and prev_entry_price > 0:
+                                    blended_entry_price = (
+                                        (prev_entry_price * prev_qty)
+                                        + (position.entry_price * fill_abs_qty)
+                                    ) / max(1, prev_qty + fill_abs_qty)
+                                else:
+                                    blended_entry_price = position.entry_price
+                                snapshot_entry_time = (
+                                    str(existing_snapshot.get("entry_time", "") or "").strip()
+                                    or position.entry_time
+                                )
                                 self._intraday_entry_snapshot[symbol_norm] = {
-                                    "entry_price": position.entry_price,
-                                    "entry_time": position.entry_time,
-                                    "quantity": abs(int(fill_qty)),
+                                    "entry_price": blended_entry_price,
+                                    "entry_time": snapshot_entry_time,
+                                    "quantity": snapshot_qty,
                                     "entry_strategy": getattr(
                                         position, "entry_strategy", "UNKNOWN"
                                     ),
@@ -1947,6 +1986,17 @@ class MainOrdersMixin:
                             removed_position = self.options_engine.remove_engine_position(
                                 symbol=symbol_norm
                             )
+                            extra_removed = 0
+                            while (
+                                self.options_engine.remove_engine_position(symbol=symbol_norm)
+                                is not None
+                            ):
+                                extra_removed += 1
+                            if extra_removed > 0:
+                                self.Log(
+                                    f"INTRADAY_CLOSE_DEDUP: Cleared {extra_removed} extra state row(s) | "
+                                    f"{symbol_norm}"
+                                )
                             if removed_position:
                                 # Cancel any lingering OCO pair after explicit close fill.
                                 try:
@@ -1966,6 +2016,12 @@ class MainOrdersMixin:
                                 )
                             if removed_position and removed_position.entry_price > 0:
                                 snapshot = self._intraday_entry_snapshot.get(symbol_norm) or {}
+                                entry_price_for_result = float(
+                                    snapshot.get("entry_price", removed_position.entry_price)
+                                    or removed_position.entry_price
+                                )
+                                if entry_price_for_result <= 0:
+                                    entry_price_for_result = float(removed_position.entry_price)
                                 closed_qty = abs(int(fill_qty))
                                 try:
                                     snapshot_qty = int(
@@ -1975,7 +2031,7 @@ class MainOrdersMixin:
                                         closed_qty = snapshot_qty
                                 except Exception:
                                     closed_qty = abs(int(fill_qty))
-                                is_win = fill_price > removed_position.entry_price
+                                is_win = fill_price > entry_price_for_result
                                 # V10.8: Do NOT feed MICRO outcomes into VASS spread win-rate / breaker state.
                                 self.options_engine.record_engine_result(
                                     symbol=symbol,
@@ -1986,8 +2042,8 @@ class MainOrdersMixin:
                                 result_str = "WIN" if is_win else "LOSS"
                                 self.Log(
                                     f"INTRADAY_RESULT: {result_str} | "
-                                    f"Entry=${removed_position.entry_price:.2f} | Exit=${fill_price:.2f} | "
-                                    f"P&L={((fill_price - removed_position.entry_price) / removed_position.entry_price):.1%}"
+                                    f"Entry=${entry_price_for_result:.2f} | Exit=${fill_price:.2f} | "
+                                    f"P&L={((fill_price - entry_price_for_result) / entry_price_for_result):.1%}"
                                 )
                                 cached_reason = self._single_leg_last_exit_reason.pop(
                                     symbol_norm, ""
@@ -1999,7 +2055,7 @@ class MainOrdersMixin:
                                 self._record_exit_path_pnl(
                                     reason=cached_reason,
                                     order_tag=order_tag,
-                                    pnl_dollars=(fill_price - removed_position.entry_price)
+                                    pnl_dollars=(fill_price - entry_price_for_result)
                                     * 100
                                     * closed_qty,
                                     engine_tag=engine_bucket,
@@ -2029,7 +2085,7 @@ class MainOrdersMixin:
                                         if removed_position.entry_time
                                         else str(self.Time.date()),
                                         exit_date=str(self.Time.date()),
-                                        entry_price=removed_position.entry_price,
+                                        entry_price=entry_price_for_result,
                                         exit_price=fill_price,
                                         quantity=closed_qty,
                                     )

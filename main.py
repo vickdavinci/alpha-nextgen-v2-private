@@ -985,6 +985,14 @@ class AlphaNextGen(QCAlgorithm):
         if not symbol_norm:
             return "OTHER"
 
+        # Prefer live lane mapping over stale local mirrors.
+        try:
+            lane = self.options_engine.find_engine_lane_by_symbol(symbol_norm)
+            if lane in {"ITM", "MICRO"}:
+                return str(lane)
+        except Exception:
+            pass
+
         if symbol_norm in getattr(self, "_itm_open_symbols", set()):
             return "ITM"
 
