@@ -881,7 +881,7 @@ def check_intraday_entry_signal_impl(
             )
         self._pending_stop_pct = otm_fixed_stop
 
-    # V12.18: keep ATR sovereign for OTM momentum, but cap realized stop by
+    # V12.19: keep ATR sovereign for OTM momentum, but cap realized stop by
     # side-specific VIX tiers so trade risk stays mathematically bounded.
     if (
         not is_protective_put
@@ -915,7 +915,7 @@ def check_intraday_entry_signal_impl(
             )
             self._pending_stop_pct = float(otm_stop_cap)
 
-    # V12.18: Risk-aware contract cap for MICRO_OTM.
+    # V12.19: Risk-aware contract cap for MICRO_OTM.
     # Cap contracts by max loss at stop so risk stays aligned to portfolio budget.
     if (
         not is_protective_put

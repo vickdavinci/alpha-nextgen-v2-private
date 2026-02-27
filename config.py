@@ -2462,7 +2462,7 @@ MICRO_OTM_TRAIL_TRIGGER_HIGH_VIX = 0.65
 MICRO_OTM_TRAIL_PCT_LOW_VIX = 0.25
 MICRO_OTM_TRAIL_PCT_MED_VIX = 0.30
 MICRO_OTM_TRAIL_PCT_HIGH_VIX = 0.35
-# V12.18: Directional OTM CALL profile (if enabled) should buy more delta and
+# V12.19: Directional OTM CALL profile should buy more delta and
 # use tighter risk controls than PUT convexity profiles.
 MICRO_OTM_CALL_TARGET_LOW_VIX = 0.40
 MICRO_OTM_CALL_TARGET_MED_VIX = 0.55
@@ -2537,8 +2537,8 @@ MICRO_DEBIT_FADE_DELTA_MIN = 0.42
 MICRO_DEBIT_FADE_DELTA_MAX = 0.52
 MICRO_OTM_MOMENTUM_DELTA_MIN = 0.35
 MICRO_OTM_MOMENTUM_DELTA_MAX = 0.50
-# V12.18: side-aware directional OTM deltas.
-# CALL path (if enabled) should be near ATM/ITM to buy delta on bullish tapes.
+# V12.19: side-aware directional OTM deltas.
+# CALL path should be near ATM/ITM to buy delta on bullish tapes.
 MICRO_OTM_CALL_DELTA_MIN = 0.58
 MICRO_OTM_CALL_DELTA_MAX = 0.72
 MICRO_OTM_PUT_DELTA_MIN = MICRO_OTM_MOMENTUM_DELTA_MIN
@@ -2553,7 +2553,7 @@ MICRO_ENTRY_ENGINE_ENABLED = True  # V10.10: route MICRO gates through dedicated
 INTRADAY_DEBIT_FADE_ENABLED = True  # Legacy alias
 MICRO_DEBIT_FADE_ENABLED = False  # V10.35: disable persistent-loss fade path pending redesign
 MICRO_OTM_MOMENTUM_ENABLED = True  # Canonical OTM momentum switch
-# V12.18: side-specific OTM control.
+# V12.19: side-specific OTM control.
 MICRO_OTM_CALL_ENABLED = True
 MICRO_OTM_PUT_ENABLED = True
 MICRO_OTM_PUT_REGIME_WHITELIST = ["WORSENING", "WORSENING_HIGH"]
