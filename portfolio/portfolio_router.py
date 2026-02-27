@@ -587,7 +587,11 @@ class PortfolioRouter:
         """Normalize symbol-like values to stable uppercase keys."""
         if symbol is None:
             return ""
-        return str(symbol).strip().upper()
+        text = str(symbol).strip().upper()
+        if not text:
+            return ""
+        # Keep router symbol matching consistent with options engine and OCO manager.
+        return " ".join(text.split())
 
     def _get_live_option_qty(self, symbol: str) -> int:
         """Return live portfolio quantity for symbol (0 when flat/not found)."""

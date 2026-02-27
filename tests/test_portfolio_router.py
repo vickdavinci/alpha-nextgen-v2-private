@@ -883,6 +883,25 @@ class TestExitPreclearBypass:
         assert ok is True
         assert "EXIT_PRE_CLEAR_BYPASS" in detail
 
+
+class TestRouterSymbolNormalization:
+    """Tests for router symbol key normalization consistency."""
+
+    def test_normalize_symbol_key_collapses_whitespace(self):
+        router = PortfolioRouter()
+        assert router._normalize_symbol_key("QQQ   260130C00500000") == "QQQ 260130C00500000"
+
+    def test_get_open_orders_matches_symbols_with_inconsistent_spacing(self):
+        mock_algo = MagicMock()
+        open_order = MagicMock()
+        open_order.Symbol = "QQQ   260130C00500000"
+        mock_algo.Transactions.GetOpenOrders.return_value = [open_order]
+        router = PortfolioRouter(algorithm=mock_algo)
+
+        matches = router._get_open_orders_for_symbols(["QQQ 260130C00500000"])
+
+        assert len(matches) == 1
+
     def test_dynamic_intraday_time_exit_metadata_triggers_bypass(self):
         router = PortfolioRouter()
         order = OrderIntent(
