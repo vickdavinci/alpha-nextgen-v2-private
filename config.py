@@ -2734,6 +2734,12 @@ ITM_TRAIL_PCT_LOW_VIX = 0.30
 ITM_TRAIL_PCT_MED_VIX = 0.32
 ITM_TRAIL_PCT_HIGH_VIX = 0.35
 
+# V12.20: Day-adaptive trail trigger — lower trigger for positions held overnight.
+# Day 0 keeps 30/32/35% trigger (R:R symmetry preserved for same-day OCO).
+# Day 1+ uses 12% trigger because multi-day OCO never resolves and 30% is unreachable.
+ITM_DAY_ADAPTIVE_TRAIL_ENABLED = True
+ITM_OVERNIGHT_TRAIL_TRIGGER = 0.12  # 12% MFE → trail activates for overnight holds
+
 # ITM_ENGINE ATR guardrail: keep ATR widening in high-vol while preserving tier floors.
 ITM_ATR_GUARDRAIL_ENABLED = True
 ITM_ATR_GUARDRAIL_MAX_STOP_LOW_VIX = 0.50  # V12.13: must be >= stop (was 0.30)

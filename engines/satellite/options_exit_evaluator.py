@@ -165,6 +165,19 @@ def check_exit_signals_impl(
         trail_cfg = self._get_trail_config(pos.entry_strategy, direction=direction_hint)
         if trail_cfg is not None:
             trail_trigger, trail_pct = trail_cfg
+            # V12.20: Day-adaptive trail trigger for overnight ITM holds.
+            # Day 0 keeps original trigger (30%+) for R:R symmetry.
+            # Day 1+ lowers to 12% because multi-day OCO never resolves.
+            if (
+                strategy_name == IntradayStrategy.ITM_MOMENTUM.value
+                and held_minutes is not None
+                and held_minutes >= 390
+                and bool(getattr(config, "ITM_DAY_ADAPTIVE_TRAIL_ENABLED", False))
+            ):
+                overnight_trigger = float(
+                    getattr(config, "ITM_OVERNIGHT_TRAIL_TRIGGER", trail_trigger)
+                )
+                trail_trigger = min(trail_trigger, overnight_trigger)
             gain_pct = (pos.highest_price - entry_price) / entry_price if entry_price > 0 else 0.0
             if gain_pct >= trail_trigger:
                 trail_stop = pos.highest_price - ((pos.highest_price - entry_price) * trail_pct)
