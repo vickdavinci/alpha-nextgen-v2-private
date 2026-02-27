@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Optional
 
 from models.enums import IntradayStrategy
+
+
+def _infer_direction_hint(symbol_text: Optional[str]) -> Optional[str]:
+    text = str(symbol_text or "")
+    if re.search(r"\d{6}C\d{8}", text):
+        return "CALL"
+    if re.search(r"\d{6}P\d{8}", text):
+        return "PUT"
+    return None
 
 
 def get_intraday_partial_fill_oco_seed_impl(
@@ -59,7 +69,11 @@ def get_partial_fill_oco_seed_impl(
         entry_px = float(fill_price or 0.0)
         if entry_px <= 0:
             return None
-        target_pct, stop_pct = self._get_intraday_exit_profile(inferred_strategy)
+        direction_hint = _infer_direction_hint(symbol_norm)
+        target_pct, stop_pct = self._get_intraday_exit_profile(
+            inferred_strategy,
+            direction=direction_hint,
+        )
         if stop_pct is None or float(stop_pct) <= 0 or float(target_pct) <= 0:
             return None
         self.log(
@@ -122,7 +136,19 @@ def get_pending_intraday_partial_oco_seed_impl(
         entry_strategy = self._pending_entry_strategy or "SWING_SINGLE"
         stop_pct = self._pending_stop_pct if self._pending_stop_pct is not None else 0.20
         # current_dte set from pending payload fallback above.
-    target_pct, strategy_floor = self._get_intraday_exit_profile(entry_strategy)
+    direction_hint = None
+    if payload is not None:
+        direction_hint = _infer_direction_hint(symbol_norm)
+    elif self._pending_contract is not None:
+        right = str(getattr(self._pending_contract, "right", "") or "").upper()
+        direction_hint = "CALL" if right == "CALL" else "PUT" if right == "PUT" else None
+        if direction_hint is None:
+            direction_hint = _infer_direction_hint(symbol_norm)
+
+    target_pct, strategy_floor = self._get_intraday_exit_profile(
+        entry_strategy,
+        direction=direction_hint,
+    )
     if payload is not None:
         current_dte = 0
     else:

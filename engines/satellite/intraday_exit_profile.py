@@ -6,7 +6,9 @@ import config
 from models.enums import IntradayStrategy
 
 
-def get_intraday_exit_profile_impl(self, entry_strategy: str) -> Tuple[float, Optional[float]]:
+def get_intraday_exit_profile_impl(
+    self, entry_strategy: str, direction: Optional[str] = None
+) -> Tuple[float, Optional[float]]:
     """Return (target_pct, stop_pct_override) for strategy-aware intraday exits."""
     strategy = self._canonical_intraday_strategy_name(entry_strategy)
     if strategy == IntradayStrategy.ITM_MOMENTUM.value:
@@ -41,6 +43,9 @@ def get_intraday_exit_profile_impl(self, entry_strategy: str) -> Tuple[float, Op
         )
     if strategy == IntradayStrategy.MICRO_OTM_MOMENTUM.value:
         if bool(getattr(config, "MICRO_OTM_TIERED_RISK_ENABLED", False)):
+            direction_u = str(direction or "").upper()
+            is_call = direction_u == "CALL"
+            is_put = direction_u == "PUT"
             try:
                 vix_val = float(self._iv_sensor.get_smoothed_vix())
             except Exception:
@@ -52,14 +57,22 @@ def get_intraday_exit_profile_impl(self, entry_strategy: str) -> Tuple[float, Op
                     float(
                         getattr(
                             config,
-                            "MICRO_OTM_PUT_TARGET_LOW_VIX",
+                            "MICRO_OTM_CALL_TARGET_LOW_VIX"
+                            if is_call
+                            else "MICRO_OTM_PUT_TARGET_LOW_VIX"
+                            if is_put
+                            else "MICRO_OTM_TARGET_LOW_VIX",
                             getattr(config, "MICRO_OTM_TARGET_LOW_VIX", 0.45),
                         )
                     ),
                     float(
                         getattr(
                             config,
-                            "MICRO_OTM_PUT_STOP_LOW_VIX",
+                            "MICRO_OTM_CALL_STOP_LOW_VIX"
+                            if is_call
+                            else "MICRO_OTM_PUT_STOP_LOW_VIX"
+                            if is_put
+                            else "MICRO_OTM_STOP_LOW_VIX",
                             getattr(config, "MICRO_OTM_STOP_LOW_VIX", 0.30),
                         )
                     ),
@@ -69,14 +82,22 @@ def get_intraday_exit_profile_impl(self, entry_strategy: str) -> Tuple[float, Op
                     float(
                         getattr(
                             config,
-                            "MICRO_OTM_PUT_TARGET_MED_VIX",
+                            "MICRO_OTM_CALL_TARGET_MED_VIX"
+                            if is_call
+                            else "MICRO_OTM_PUT_TARGET_MED_VIX"
+                            if is_put
+                            else "MICRO_OTM_TARGET_MED_VIX",
                             getattr(config, "MICRO_OTM_TARGET_MED_VIX", 0.60),
                         )
                     ),
                     float(
                         getattr(
                             config,
-                            "MICRO_OTM_PUT_STOP_MED_VIX",
+                            "MICRO_OTM_CALL_STOP_MED_VIX"
+                            if is_call
+                            else "MICRO_OTM_PUT_STOP_MED_VIX"
+                            if is_put
+                            else "MICRO_OTM_STOP_MED_VIX",
                             getattr(config, "MICRO_OTM_STOP_MED_VIX", 0.35),
                         )
                     ),
@@ -85,14 +106,22 @@ def get_intraday_exit_profile_impl(self, entry_strategy: str) -> Tuple[float, Op
                 float(
                     getattr(
                         config,
-                        "MICRO_OTM_PUT_TARGET_HIGH_VIX",
+                        "MICRO_OTM_CALL_TARGET_HIGH_VIX"
+                        if is_call
+                        else "MICRO_OTM_PUT_TARGET_HIGH_VIX"
+                        if is_put
+                        else "MICRO_OTM_TARGET_HIGH_VIX",
                         getattr(config, "MICRO_OTM_TARGET_HIGH_VIX", 0.80),
                     )
                 ),
                 float(
                     getattr(
                         config,
-                        "MICRO_OTM_PUT_STOP_HIGH_VIX",
+                        "MICRO_OTM_CALL_STOP_HIGH_VIX"
+                        if is_call
+                        else "MICRO_OTM_PUT_STOP_HIGH_VIX"
+                        if is_put
+                        else "MICRO_OTM_STOP_HIGH_VIX",
                         getattr(config, "MICRO_OTM_STOP_HIGH_VIX", 0.40),
                     )
                 ),
@@ -152,7 +181,9 @@ def apply_intraday_stop_overrides_impl(
     return float(stop_pct)
 
 
-def get_trail_config_impl(self, entry_strategy: str) -> Optional[Tuple[float, float]]:
+def get_trail_config_impl(
+    self, entry_strategy: str, direction: Optional[str] = None
+) -> Optional[Tuple[float, float]]:
     """Return (trigger_pct, trail_pct) for intraday strategy trailing stops."""
     strategy = self._canonical_intraday_strategy_name(entry_strategy)
     if strategy == IntradayStrategy.ITM_MOMENTUM.value:
@@ -189,6 +220,9 @@ def get_trail_config_impl(self, entry_strategy: str) -> Optional[Tuple[float, fl
         )
     if strategy == IntradayStrategy.MICRO_OTM_MOMENTUM.value:
         if bool(getattr(config, "MICRO_OTM_TIERED_RISK_ENABLED", False)):
+            direction_u = str(direction or "").upper()
+            is_call = direction_u == "CALL"
+            is_put = direction_u == "PUT"
             try:
                 vix_val = float(self._iv_sensor.get_smoothed_vix())
             except Exception:
@@ -200,14 +234,22 @@ def get_trail_config_impl(self, entry_strategy: str) -> Optional[Tuple[float, fl
                     float(
                         getattr(
                             config,
-                            "MICRO_OTM_PUT_TRAIL_TRIGGER_LOW_VIX",
+                            "MICRO_OTM_CALL_TRAIL_TRIGGER_LOW_VIX"
+                            if is_call
+                            else "MICRO_OTM_PUT_TRAIL_TRIGGER_LOW_VIX"
+                            if is_put
+                            else "MICRO_OTM_TRAIL_TRIGGER_LOW_VIX",
                             getattr(config, "MICRO_OTM_TRAIL_TRIGGER_LOW_VIX", 0.20),
                         )
                     ),
                     float(
                         getattr(
                             config,
-                            "MICRO_OTM_PUT_TRAIL_PCT_LOW_VIX",
+                            "MICRO_OTM_CALL_TRAIL_PCT_LOW_VIX"
+                            if is_call
+                            else "MICRO_OTM_PUT_TRAIL_PCT_LOW_VIX"
+                            if is_put
+                            else "MICRO_OTM_TRAIL_PCT_LOW_VIX",
                             getattr(config, "MICRO_OTM_TRAIL_PCT_LOW_VIX", 0.35),
                         )
                     ),
@@ -217,14 +259,22 @@ def get_trail_config_impl(self, entry_strategy: str) -> Optional[Tuple[float, fl
                     float(
                         getattr(
                             config,
-                            "MICRO_OTM_PUT_TRAIL_TRIGGER_MED_VIX",
+                            "MICRO_OTM_CALL_TRAIL_TRIGGER_MED_VIX"
+                            if is_call
+                            else "MICRO_OTM_PUT_TRAIL_TRIGGER_MED_VIX"
+                            if is_put
+                            else "MICRO_OTM_TRAIL_TRIGGER_MED_VIX",
                             getattr(config, "MICRO_OTM_TRAIL_TRIGGER_MED_VIX", 0.28),
                         )
                     ),
                     float(
                         getattr(
                             config,
-                            "MICRO_OTM_PUT_TRAIL_PCT_MED_VIX",
+                            "MICRO_OTM_CALL_TRAIL_PCT_MED_VIX"
+                            if is_call
+                            else "MICRO_OTM_PUT_TRAIL_PCT_MED_VIX"
+                            if is_put
+                            else "MICRO_OTM_TRAIL_PCT_MED_VIX",
                             getattr(config, "MICRO_OTM_TRAIL_PCT_MED_VIX", 0.45),
                         )
                     ),
@@ -233,14 +283,22 @@ def get_trail_config_impl(self, entry_strategy: str) -> Optional[Tuple[float, fl
                 float(
                     getattr(
                         config,
-                        "MICRO_OTM_PUT_TRAIL_TRIGGER_HIGH_VIX",
+                        "MICRO_OTM_CALL_TRAIL_TRIGGER_HIGH_VIX"
+                        if is_call
+                        else "MICRO_OTM_PUT_TRAIL_TRIGGER_HIGH_VIX"
+                        if is_put
+                        else "MICRO_OTM_TRAIL_TRIGGER_HIGH_VIX",
                         getattr(config, "MICRO_OTM_TRAIL_TRIGGER_HIGH_VIX", 0.25),
                     )
                 ),
                 float(
                     getattr(
                         config,
-                        "MICRO_OTM_PUT_TRAIL_PCT_HIGH_VIX",
+                        "MICRO_OTM_CALL_TRAIL_PCT_HIGH_VIX"
+                        if is_call
+                        else "MICRO_OTM_PUT_TRAIL_PCT_HIGH_VIX"
+                        if is_put
+                        else "MICRO_OTM_TRAIL_PCT_HIGH_VIX",
                         getattr(config, "MICRO_OTM_TRAIL_PCT_HIGH_VIX", 0.50),
                     )
                 ),

@@ -151,7 +151,11 @@ def check_exit_signals_impl(
     if pos.entry_strategy and pos.entry_strategy.upper() != "PROTECTIVE_PUTS":
         if current_price > pos.highest_price:
             pos.highest_price = current_price
-        trail_cfg = self._get_trail_config(pos.entry_strategy)
+        contract_right = str(getattr(getattr(pos, "contract", None), "right", "") or "").upper()
+        direction_hint = (
+            "CALL" if contract_right == "CALL" else "PUT" if contract_right == "PUT" else None
+        )
+        trail_cfg = self._get_trail_config(pos.entry_strategy, direction=direction_hint)
         if trail_cfg is not None:
             trail_trigger, trail_pct = trail_cfg
             gain_pct = (pos.highest_price - entry_price) / entry_price if entry_price > 0 else 0.0

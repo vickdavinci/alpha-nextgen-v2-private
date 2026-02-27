@@ -3067,8 +3067,14 @@ class OptionsEngine:
             current_date=current_date,
         )
 
-    def _get_intraday_exit_profile(self, entry_strategy: str) -> Tuple[float, Optional[float]]:
-        return get_intraday_exit_profile_impl(self, entry_strategy=entry_strategy)
+    def _get_intraday_exit_profile(
+        self, entry_strategy: str, direction: Optional[str] = None
+    ) -> Tuple[float, Optional[float]]:
+        return get_intraday_exit_profile_impl(
+            self,
+            entry_strategy=entry_strategy,
+            direction=direction,
+        )
 
     def _apply_intraday_target_overrides(
         self,
@@ -3098,8 +3104,14 @@ class OptionsEngine:
             current_dte=current_dte,
         )
 
-    def _get_trail_config(self, entry_strategy: str) -> Optional[Tuple[float, float]]:
-        return get_trail_config_impl(self, entry_strategy=entry_strategy)
+    def _get_trail_config(
+        self, entry_strategy: str, direction: Optional[str] = None
+    ) -> Optional[Tuple[float, float]]:
+        return get_trail_config_impl(
+            self,
+            entry_strategy=entry_strategy,
+            direction=direction,
+        )
 
     def check_exit_signals(
         self,
@@ -4761,8 +4773,12 @@ class OptionsEngine:
         # Backward compatibility: Also increment old counter used by state persistence
         self._trades_today += 1
         trade_caps = self._get_effective_trade_caps()
-        total_daily_cap = int(trade_caps.get("TOTAL", getattr(config, "MAX_OPTIONS_TRADES_PER_DAY", 5)))
-        swing_daily_cap = int(trade_caps.get("SWING", getattr(config, "MAX_SWING_TRADES_PER_DAY", 3)))
+        total_daily_cap = int(
+            trade_caps.get("TOTAL", getattr(config, "MAX_OPTIONS_TRADES_PER_DAY", 5))
+        )
+        swing_daily_cap = int(
+            trade_caps.get("SWING", getattr(config, "MAX_SWING_TRADES_PER_DAY", 3))
+        )
         itm_daily_cap = int(trade_caps.get("ITM", getattr(config, "ITM_MAX_TRADES_PER_DAY", 999)))
         micro_daily_cap = int(
             trade_caps.get("MICRO", getattr(config, "MICRO_MAX_TRADES_PER_DAY", 999))
@@ -4832,8 +4848,7 @@ class OptionsEngine:
         # Check global daily options trade limit (distinct from slot caps).
         if self._total_options_trades_today >= total_daily_cap:
             detail = (
-                f"Global limit reached | "
-                f"{self._total_options_trades_today}/{total_daily_cap}"
+                f"Global limit reached | " f"{self._total_options_trades_today}/{total_daily_cap}"
             )
             self.log(f"TRADE_LIMIT: {detail}")
             # Legacy compatibility: keep R_SLOT_TOTAL_MAX for downstream RCA parsers.
@@ -4929,10 +4944,7 @@ class OptionsEngine:
                         return reject("R_TRADE_DAILY_RESERVE_MICRO", detail)
         else:  # SWING
             if self._swing_trades_today >= swing_daily_cap:
-                detail = (
-                    f"Swing limit reached | "
-                    f"{self._swing_trades_today}/{swing_daily_cap}"
-                )
+                detail = f"Swing limit reached | " f"{self._swing_trades_today}/{swing_daily_cap}"
                 self.log(f"TRADE_LIMIT: {detail}")
                 return reject("R_SLOT_SWING_MAX", detail)
             if reserve_checks_active and getattr(

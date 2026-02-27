@@ -102,7 +102,14 @@ def register_entry_impl(
         or (not symbol_norm and self._pending_intraday_entry)
     )
     if is_intraday_fill:
-        target_pct, strategy_floor = self._get_intraday_exit_profile(entry_strategy)
+        contract_right = str(getattr(contract, "right", "") or "").upper()
+        direction_hint = (
+            "CALL" if contract_right == "CALL" else "PUT" if contract_right == "PUT" else None
+        )
+        target_pct, strategy_floor = self._get_intraday_exit_profile(
+            entry_strategy,
+            direction=direction_hint,
+        )
         current_dte = int(getattr(contract, "days_to_expiry", 0))
         target_pct = self._apply_intraday_target_overrides(
             entry_strategy=entry_strategy,

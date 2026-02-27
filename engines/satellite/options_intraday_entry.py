@@ -159,8 +159,12 @@ def check_intraday_entry_signal_impl(
         return fail("E_INTRADAY_NO_STRATEGY")
     validation_lane = self._intraday_engine_lane_from_strategy(entry_strategy.value)
     self.set_last_intraday_validation_failure(validation_lane, None, None)
-    lane_caps = self._get_effective_lane_caps() if hasattr(self, "_get_effective_lane_caps") else None
-    trade_caps = self._get_effective_trade_caps() if hasattr(self, "_get_effective_trade_caps") else None
+    lane_caps = (
+        self._get_effective_lane_caps() if hasattr(self, "_get_effective_lane_caps") else None
+    )
+    trade_caps = (
+        self._get_effective_trade_caps() if hasattr(self, "_get_effective_trade_caps") else None
+    )
 
     lane_ok, lane_code, lane_detail, pending_lane = self._micro_entry_engine.validate_lane_caps(
         entry_strategy=entry_strategy,
@@ -339,6 +343,8 @@ def check_intraday_entry_signal_impl(
             return fail("E_MICRO_ENGINE_DISABLED")
 
     transition_engine = None
+    strategy_mult = 1.0
+    combined_mult = 1.0
     if is_protective_put:
         transition_engine = "HEDGE"
     elif itm_engine_mode:
@@ -674,7 +680,9 @@ def check_intraday_entry_signal_impl(
     # V9.8: Hard cap all MICRO intraday entries to prevent quantity explosions on cheap options.
     intraday_max_contracts = int(getattr(config, "INTRADAY_MAX_CONTRACTS", 40))
     if hasattr(self, "_get_effective_intraday_contract_cap"):
-        intraday_max_contracts = int(self._get_effective_intraday_contract_cap() or intraday_max_contracts)
+        intraday_max_contracts = int(
+            self._get_effective_intraday_contract_cap() or intraday_max_contracts
+        )
     base_intraday_contracts_cap = intraday_max_contracts
 
     if itm_engine_mode:
@@ -746,15 +754,6 @@ def check_intraday_entry_signal_impl(
                 f"too small for premium ${premium:.2f}"
             )
             return fail("E_INTRADAY_CAP_TOO_SMALL")
-
-    # V2.3.4: Use QQQ direction from state
-    qqq_dir_str = state.qqq_direction.value if state.qqq_direction else "UNKNOWN"
-    reason = (
-        f"INTRADAY_{strategy_name}: Regime={state.micro_regime.value} | "
-        f"Score={state.micro_score:.0f} | VIX={vix_current:.1f} "
-        f"({state.vix_direction.value}) | QQQ={qqq_dir_str} "
-        f"({state.qqq_move_pct:+.2f}%) | {direction.value} x{num_contracts}"
-    )
 
     pending_symbol_norm = self._symbol_str(best_contract.symbol)
     pending_lane = self._intraday_engine_lane_from_strategy(entry_strategy.value)
@@ -847,12 +846,32 @@ def check_intraday_entry_signal_impl(
             low_max = float(getattr(config, "MICRO_OTM_VIX_LOW_MAX", 16.0))
             med_max = float(getattr(config, "MICRO_OTM_VIX_MED_MAX", 22.0))
             vix_val = float(vix_current) if vix_current is not None else med_max
+            direction_u = str(getattr(direction, "value", direction) or "").upper()
+            is_call = direction_u == "CALL"
             if vix_val < low_max:
-                otm_fixed_stop = float(getattr(config, "MICRO_OTM_STOP_LOW_VIX", 0.30))
+                otm_fixed_stop = float(
+                    getattr(
+                        config,
+                        "MICRO_OTM_CALL_STOP_LOW_VIX" if is_call else "MICRO_OTM_STOP_LOW_VIX",
+                        0.30,
+                    )
+                )
             elif vix_val < med_max:
-                otm_fixed_stop = float(getattr(config, "MICRO_OTM_STOP_MED_VIX", 0.35))
+                otm_fixed_stop = float(
+                    getattr(
+                        config,
+                        "MICRO_OTM_CALL_STOP_MED_VIX" if is_call else "MICRO_OTM_STOP_MED_VIX",
+                        0.35,
+                    )
+                )
             else:
-                otm_fixed_stop = float(getattr(config, "MICRO_OTM_STOP_HIGH_VIX", 0.40))
+                otm_fixed_stop = float(
+                    getattr(
+                        config,
+                        "MICRO_OTM_CALL_STOP_HIGH_VIX" if is_call else "MICRO_OTM_STOP_HIGH_VIX",
+                        0.40,
+                    )
+                )
         else:
             otm_fixed_stop = float(getattr(config, "MICRO_OTM_MOMENTUM_STOP", 0.35))
         if abs(float(self._pending_stop_pct) - otm_fixed_stop) > 1e-6:
@@ -862,32 +881,75 @@ def check_intraday_entry_signal_impl(
             )
         self._pending_stop_pct = otm_fixed_stop
 
-    # V12.16: keep ATR sovereign for OTM PUT, but cap realized stop by VIX tier.
+    # V12.18: keep ATR sovereign for OTM momentum, but cap realized stop by
+    # side-specific VIX tiers so trade risk stays mathematically bounded.
     if (
         not is_protective_put
         and entry_strategy == IntradayStrategy.MICRO_OTM_MOMENTUM
-        and direction == OptionDirection.PUT
         and self._pending_stop_pct is not None
     ):
         low_max = float(getattr(config, "MICRO_OTM_VIX_LOW_MAX", 16.0))
         med_max = float(getattr(config, "MICRO_OTM_VIX_MED_MAX", 22.0))
         vix_val = float(vix_current) if vix_current is not None else med_max
+        direction_u = str(getattr(direction, "value", direction) or "").upper()
+        is_call = direction_u == "CALL"
+        cap_low_key = "MICRO_OTM_CALL_STOP_CAP_LOW_VIX" if is_call else "MICRO_OTM_STOP_CAP_LOW_VIX"
+        cap_med_key = "MICRO_OTM_CALL_STOP_CAP_MED_VIX" if is_call else "MICRO_OTM_STOP_CAP_MED_VIX"
+        cap_high_key = (
+            "MICRO_OTM_CALL_STOP_CAP_HIGH_VIX" if is_call else "MICRO_OTM_STOP_CAP_HIGH_VIX"
+        )
         if vix_val < low_max:
-            otm_stop_cap = float(getattr(config, "MICRO_OTM_STOP_CAP_LOW_VIX", 0.25))
+            otm_stop_cap = float(getattr(config, cap_low_key, 0.25))
             vix_tier = "LOW"
         elif vix_val < med_max:
-            otm_stop_cap = float(getattr(config, "MICRO_OTM_STOP_CAP_MED_VIX", 0.30))
+            otm_stop_cap = float(getattr(config, cap_med_key, 0.30))
             vix_tier = "MED"
         else:
-            otm_stop_cap = float(getattr(config, "MICRO_OTM_STOP_CAP_HIGH_VIX", 0.38))
+            otm_stop_cap = float(getattr(config, cap_high_key, 0.38))
             vix_tier = "HIGH"
         if float(self._pending_stop_pct) > otm_stop_cap:
             self.log(
-                f"MICRO_OTM_STOP_CAPPED: Tier={vix_tier} | VIX={vix_val:.1f} | "
+                f"MICRO_OTM_{direction_u or 'UNK'}_STOP_CAPPED: Tier={vix_tier} | VIX={vix_val:.1f} | "
                 f"{float(self._pending_stop_pct):.0%} -> {otm_stop_cap:.0%}",
                 trades_only=True,
             )
             self._pending_stop_pct = float(otm_stop_cap)
+
+    # V12.18: Risk-aware contract cap for MICRO_OTM.
+    # Cap contracts by max loss at stop so risk stays aligned to portfolio budget.
+    if (
+        not is_protective_put
+        and entry_strategy == IntradayStrategy.MICRO_OTM_MOMENTUM
+        and self._pending_stop_pct is not None
+        and premium > 0
+    ):
+        direction_u = str(getattr(direction, "value", direction) or "").upper()
+        risk_pct = float(getattr(config, "MICRO_OTM_MAX_RISK_PCT_OF_PORTFOLIO", 0.01))
+        if direction_u == "CALL":
+            risk_pct = float(getattr(config, "MICRO_OTM_CALL_MAX_RISK_PCT_OF_PORTFOLIO", risk_pct))
+        elif direction_u == "PUT":
+            risk_pct = float(getattr(config, "MICRO_OTM_PUT_MAX_RISK_PCT_OF_PORTFOLIO", risk_pct))
+
+        risk_budget = (
+            float(portfolio_value_for_sizing) * max(0.0, risk_pct) * max(0.0, float(combined_mult))
+        )
+        stop_pct_eff = max(0.01, float(self._pending_stop_pct))
+        risk_per_contract = float(premium) * 100.0 * stop_pct_eff
+        if risk_per_contract > 0 and risk_budget > 0:
+            risk_contract_cap = int(risk_budget / risk_per_contract)
+            if risk_contract_cap <= 0:
+                return fail(
+                    "E_INTRADAY_RISK_CAP_TOO_SMALL",
+                    f"RiskBudget=${risk_budget:.0f} < PerContractRisk=${risk_per_contract:.2f}",
+                )
+            if num_contracts > risk_contract_cap:
+                self.log(
+                    f"INTRADAY_RISK_CAP: {num_contracts} -> {risk_contract_cap} contracts "
+                    f"(RiskBudget=${risk_budget:.0f}, PerContractRisk=${risk_per_contract:.2f}, "
+                    f"Stop={stop_pct_eff:.0%})",
+                    trades_only=True,
+                )
+                num_contracts = risk_contract_cap
 
     # V10.5: widen ITM stops in MED/HIGH VIX only; keep LOW VIX behavior unchanged.
     if (
@@ -945,6 +1007,15 @@ def check_intraday_entry_signal_impl(
                     trades_only=True,
                 )
             self._pending_stop_pct = float(final_itm_stop)
+
+    # Build final reason after all quantity/risk caps are applied.
+    qqq_dir_str = state.qqq_direction.value if state.qqq_direction else "UNKNOWN"
+    reason = (
+        f"INTRADAY_{strategy_name}: Regime={state.micro_regime.value} | "
+        f"Score={state.micro_score:.0f} | VIX={vix_current:.1f} "
+        f"({state.vix_direction.value}) | QQQ={qqq_dir_str} "
+        f"({state.qqq_move_pct:+.2f}%) | {direction.value} x{num_contracts}"
+    )
 
     self.log(
         f"INTRADAY_SIGNAL: {reason} | Δ={best_contract.delta:.2f} K={best_contract.strike} DTE={best_contract.days_to_expiry} | "

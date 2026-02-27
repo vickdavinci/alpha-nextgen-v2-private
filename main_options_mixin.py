@@ -516,20 +516,67 @@ class MainOptionsMixin:
                 )
             )
         elif strategy == IntradayStrategy.MICRO_OTM_MOMENTUM:
-            delta_min = float(
-                getattr(
-                    config,
-                    "MICRO_OTM_MOMENTUM_DELTA_MIN",
-                    getattr(config, "INTRADAY_DEBIT_FADE_DELTA_MIN", 0.20),
+            if direction == OptionDirection.CALL:
+                delta_min = float(
+                    getattr(
+                        config,
+                        "MICRO_OTM_CALL_DELTA_MIN",
+                        getattr(
+                            config,
+                            "MICRO_OTM_MOMENTUM_DELTA_MIN",
+                            getattr(config, "INTRADAY_DEBIT_FADE_DELTA_MIN", 0.20),
+                        ),
+                    )
                 )
-            )
-            delta_max = float(
-                getattr(
-                    config,
-                    "MICRO_OTM_MOMENTUM_DELTA_MAX",
-                    getattr(config, "INTRADAY_DEBIT_FADE_DELTA_MAX", 0.50),
+                delta_max = float(
+                    getattr(
+                        config,
+                        "MICRO_OTM_CALL_DELTA_MAX",
+                        getattr(
+                            config,
+                            "MICRO_OTM_MOMENTUM_DELTA_MAX",
+                            getattr(config, "INTRADAY_DEBIT_FADE_DELTA_MAX", 0.50),
+                        ),
+                    )
                 )
-            )
+            elif direction == OptionDirection.PUT:
+                delta_min = float(
+                    getattr(
+                        config,
+                        "MICRO_OTM_PUT_DELTA_MIN",
+                        getattr(
+                            config,
+                            "MICRO_OTM_MOMENTUM_DELTA_MIN",
+                            getattr(config, "INTRADAY_DEBIT_FADE_DELTA_MIN", 0.20),
+                        ),
+                    )
+                )
+                delta_max = float(
+                    getattr(
+                        config,
+                        "MICRO_OTM_PUT_DELTA_MAX",
+                        getattr(
+                            config,
+                            "MICRO_OTM_MOMENTUM_DELTA_MAX",
+                            getattr(config, "INTRADAY_DEBIT_FADE_DELTA_MAX", 0.50),
+                        ),
+                    )
+                )
+            else:
+                delta_min = float(
+                    getattr(
+                        config,
+                        "MICRO_OTM_MOMENTUM_DELTA_MIN",
+                        getattr(config, "INTRADAY_DEBIT_FADE_DELTA_MIN", 0.20),
+                    )
+                )
+                delta_max = float(
+                    getattr(
+                        config,
+                        "MICRO_OTM_MOMENTUM_DELTA_MAX",
+                        getattr(config, "INTRADAY_DEBIT_FADE_DELTA_MAX", 0.50),
+                    )
+                )
             target_delta = (delta_min + delta_max) / 2.0
         elif strategy == IntradayStrategy.PROTECTIVE_PUTS:
             target_delta = float(getattr(config, "PROTECTIVE_PUTS_DELTA_TARGET", 0.45))
