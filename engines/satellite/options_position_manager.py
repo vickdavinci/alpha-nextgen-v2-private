@@ -41,6 +41,23 @@ def register_entry_impl(
             else self._pending_contract
         )
 
+    # V12.18 FIX: Validate fallback contract matches fill symbol.
+    # When concurrent fills (e.g. MICRO + ITM on same bar) race through pending-entry
+    # maintenance, one lane's pending payload can be cleared before register_entry
+    # runs.  The fallback then picks up self._pending_contract from a DIFFERENT lane,
+    # contaminating the position with the wrong contract/strategy/stops.
+    if contract is not None and pending_payload is None and symbol_norm:
+        fallback_sym = self._symbol_key(getattr(contract, "symbol", None))
+        fill_sym = self._symbol_key(symbol_norm)
+        if fallback_sym and fill_sym and fallback_sym != fill_sym:
+            self.log(
+                f"OPT: register_entry CROSS_LANE_GUARD | "
+                f"Fill={fill_sym} != PendingContract={fallback_sym} | "
+                f"Rejecting stale global pending to prevent phantom exit",
+                trades_only=True,
+            )
+            contract = None
+
     # Guard: If no pending contract exists, we can't register entry
     # This can happen if fill occurs for an order placed outside our signal flow
     if contract is None:
