@@ -927,6 +927,42 @@ class TestStatePersistence:
         assert engine._pending_intraday_entries[expected_key]["symbol"] == "QQQ 270105P00470000"
         assert engine._pending_intraday_entries[expected_key]["lane"] == "MICRO"
 
+    def test_restore_pending_intraday_entries_skips_stale_rows(self):
+        """Restore should skip pending entries older than configured stale threshold."""
+        from types import SimpleNamespace
+
+        engine = OptionsEngine()
+        engine.algorithm = SimpleNamespace(Time=datetime(2027, 1, 4, 13, 0, 0))
+        stale_key = "MICRO|QQQ 270105P00470000"
+        fresh_key = "ITM|QQQ 270105C00480000"
+        state = {
+            "pending_intraday_entries": {
+                stale_key: {
+                    "lane": "MICRO",
+                    "entry_score": 3.0,
+                    "num_contracts": 2,
+                    "entry_strategy": IntradayStrategy.MICRO_OTM_MOMENTUM.value,
+                    "stop_pct": 0.30,
+                    "created_at": "2027-01-04 10:00:00",
+                },
+                fresh_key: {
+                    "lane": "ITM",
+                    "entry_score": 3.2,
+                    "num_contracts": 1,
+                    "entry_strategy": IntradayStrategy.ITM_MOMENTUM.value,
+                    "stop_pct": 0.25,
+                    "created_at": "2027-01-04 12:50:00",
+                },
+            }
+        }
+
+        engine.restore_state(state)
+
+        stale_expected = engine._pending_engine_entry_key("QQQ 270105P00470000", "MICRO")
+        fresh_expected = engine._pending_engine_entry_key("QQQ 270105C00480000", "ITM")
+        assert stale_expected not in engine._pending_intraday_entries
+        assert fresh_expected in engine._pending_intraday_entries
+
 
 # =============================================================================
 # OPTIONS POSITION TESTS

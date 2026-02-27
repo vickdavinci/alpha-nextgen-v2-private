@@ -470,6 +470,8 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
     self._pending_intraday_entry_engine = state.get("pending_intraday_entry_engine")
     self._pending_intraday_exit_engine = state.get("pending_intraday_exit_engine")
     self._pending_intraday_entries = {}
+    now_time = getattr(self.algorithm, "Time", None) if self.algorithm is not None else None
+    max_pending_age_min = int(getattr(config, "PENDING_ENTRY_RESTORE_MAX_AGE_MINUTES", 120))
     for row_key, row in (state.get("pending_intraday_entries") or {}).items():
         if isinstance(row, dict):
             lane = str(row.get("lane") or "").upper()
@@ -482,6 +484,23 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
                 symbol_norm = self._symbol_key(row_key)
             if not symbol_norm:
                 continue
+            created_at_raw = row.get("created_at")
+            if created_at_raw and now_time is not None:
+                try:
+                    created_at = datetime.strptime(str(created_at_raw)[:19], "%Y-%m-%d %H:%M:%S")
+                    age_min = float((now_time - created_at).total_seconds()) / 60.0
+                    if age_min > float(max_pending_age_min):
+                        self.log(
+                            "OPT: STALE_PENDING_CLEAR | "
+                            f"Symbol={symbol_norm} | AgeMin={age_min:.1f} > {max_pending_age_min}"
+                        )
+                        continue
+                except Exception:
+                    # Unparseable created_at cannot be trusted for recovery.
+                    self.log(
+                        f"OPT: STALE_PENDING_CLEAR | Symbol={symbol_norm} | created_at_unparseable"
+                    )
+                    continue
             key = self._pending_engine_entry_key(symbol=symbol_norm, lane=lane)
             self._pending_intraday_entries[key] = {
                 "symbol": symbol_norm,
