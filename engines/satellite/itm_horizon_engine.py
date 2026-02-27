@@ -406,7 +406,7 @@ class ITMHorizonEngine:
                 drop_code = algorithm._canonical_options_reason_code(
                     str(itm_preflight_code or "E_PREFLIGHT_BLOCK")
                 )
-                drop_logged = algorithm._log_intraday_signal_dropped(
+                drop_logged = algorithm._log_engine_signal_dropped(
                     signal_id=itm_signal_id,
                     code=drop_code,
                     reason=f"ITM_ENGINE_EXPLICIT: {block_reason}",
@@ -423,7 +423,7 @@ class ITMHorizonEngine:
                         IntradayStrategy.ITM_MOMENTUM,
                     )
             else:
-                if algorithm._mark_intraday_signal_event("CANDIDATE", itm_signal_id):
+                if algorithm._mark_engine_signal_event("CANDIDATE", itm_signal_id):
                     algorithm._diag_intraday_candidate_count += 1
                     algorithm._inc_engine_counter(
                         algorithm._diag_intraday_candidates_by_engine,
@@ -457,7 +457,7 @@ class ITMHorizonEngine:
                     vix_current=vix_intraday,
                 )
                 if itm_contract is None:
-                    drop_logged = algorithm._log_intraday_signal_dropped(
+                    drop_logged = algorithm._log_engine_signal_dropped(
                         signal_id=itm_signal_id,
                         code="E_NO_CONTRACT_SELECTED",
                         reason=f"ITM_ENGINE_EXPLICIT: {itm_reason}",
@@ -508,7 +508,7 @@ class ITMHorizonEngine:
                         itm_signal = algorithm._attach_option_trace_metadata(
                             itm_signal, source="ITM"
                         )
-                        if algorithm._mark_intraday_signal_event("APPROVED", itm_signal_id):
+                        if algorithm._mark_engine_signal_event("APPROVED", itm_signal_id):
                             algorithm.Log(
                                 f"INTRADAY_SIGNAL_APPROVED: SignalId={itm_signal_id} | "
                                 f"ITM_ENGINE_EXPLICIT: {itm_reason} | Direction={itm_dir.value} | "
@@ -555,7 +555,7 @@ class ITMHorizonEngine:
                                     reject_code = algorithm._canonical_options_reason_code(
                                         str(rej.code or "E_INTRADAY_ROUTER_REJECT")
                                     )
-                                    drop_logged = algorithm._log_intraday_signal_dropped(
+                                    drop_logged = algorithm._log_engine_signal_dropped(
                                         signal_id=itm_signal_id,
                                         code=reject_code,
                                         reason=f"ROUTER_REJECT: {rej.stage} | {rej.detail}",
@@ -579,7 +579,7 @@ class ITMHorizonEngine:
                         drop_code = algorithm._canonical_options_reason_code(
                             itm_validation_reason or "E_INTRADAY_NO_SIGNAL_UNCLASSIFIED"
                         )
-                        drop_logged = algorithm._log_intraday_signal_dropped(
+                        drop_logged = algorithm._log_engine_signal_dropped(
                             signal_id=itm_signal_id,
                             code=drop_code,
                             reason=f"ITM_ENGINE_EXPLICIT: {itm_reason}",

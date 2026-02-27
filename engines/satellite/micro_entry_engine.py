@@ -688,7 +688,7 @@ class MicroEntryEngine:
                     drop_code = algorithm._canonical_options_reason_code(
                         str(preflight_code or "E_PREFLIGHT_BLOCK")
                     )
-                    drop_logged = algorithm._log_intraday_signal_dropped(
+                    drop_logged = algorithm._log_engine_signal_dropped(
                         signal_id=intraday_signal_id,
                         code=drop_code,
                         reason=signal_reason,
@@ -709,7 +709,7 @@ class MicroEntryEngine:
                             None,
                         )
                         algorithm._record_micro_drop_reason_dte(drop_code, None)
-                elif algorithm._mark_intraday_signal_event("CANDIDATE", intraday_signal_id):
+                elif algorithm._mark_engine_signal_event("CANDIDATE", intraday_signal_id):
                     algorithm._diag_intraday_candidate_count += 1
                     algorithm._inc_engine_counter(
                         algorithm._diag_intraday_candidates_by_engine,
@@ -760,7 +760,7 @@ class MicroEntryEngine:
                     f"Dir={intraday_direction.value} | "
                     f"Strategy={intraday_strategy.value if intraday_strategy else 'NONE'}"
                 )
-                drop_logged = algorithm._log_intraday_signal_dropped(
+                drop_logged = algorithm._log_engine_signal_dropped(
                     signal_id=intraday_signal_id,
                     code="E_NO_CONTRACT_SELECTED",
                     reason=signal_reason,
@@ -788,7 +788,7 @@ class MicroEntryEngine:
                 f"INTRADAY_PRICE_REJECT: {intraday_contract.symbol} | "
                 f"Bid={intraday_contract.bid} Ask={intraday_contract.ask}"
             )
-            drop_logged = algorithm._log_intraday_signal_dropped(
+            drop_logged = algorithm._log_engine_signal_dropped(
                 signal_id=intraday_signal_id,
                 code="E_BID_ASK_INVALID",
                 reason=signal_reason,
@@ -844,7 +844,7 @@ class MicroEntryEngine:
                 intraday_signal = algorithm._attach_option_trace_metadata(
                     intraday_signal, source="MICRO"
                 )
-                if algorithm._mark_intraday_signal_event("APPROVED", intraday_signal_id):
+                if algorithm._mark_engine_signal_event("APPROVED", intraday_signal_id):
                     algorithm.Log(
                         f"INTRADAY_SIGNAL_APPROVED: SignalId={intraday_signal_id} | {signal_reason} | "
                         f"Direction={intraday_direction.value if intraday_direction else 'NONE'} | "
@@ -901,7 +901,7 @@ class MicroEntryEngine:
                             reject_code = algorithm._canonical_options_reason_code(
                                 str(rej.code or "E_INTRADAY_ROUTER_REJECT")
                             )
-                            drop_logged = algorithm._log_intraday_signal_dropped(
+                            drop_logged = algorithm._log_engine_signal_dropped(
                                 signal_id=intraday_signal_id,
                                 code=reject_code,
                                 reason=f"ROUTER_REJECT: {rej.stage} | {rej.detail}",
@@ -961,7 +961,7 @@ class MicroEntryEngine:
                         drop_code = "E_INTRADAY_NO_DIRECTION"
 
                     drop_code = algorithm._canonical_options_reason_code(drop_code)
-                    drop_logged = algorithm._log_intraday_signal_dropped(
+                    drop_logged = algorithm._log_engine_signal_dropped(
                         signal_id=intraday_signal_id,
                         code=drop_code,
                         reason=signal_reason,

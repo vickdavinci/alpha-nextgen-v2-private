@@ -121,6 +121,7 @@ class AlphaNextGen(QCAlgorithm):
     _intraday_engine_bucket_from_strategy = MainOptionsMixin._intraday_engine_bucket_from_strategy
     _inc_engine_counter = MainOptionsMixin._inc_engine_counter
     _inc_intraday_engine_counter = MainOptionsMixin._inc_intraday_engine_counter
+    _record_engine_drop_reason = MainOptionsMixin._record_engine_drop_reason
     _record_intraday_drop_reason = MainOptionsMixin._record_intraday_drop_reason
     _record_vass_reject_reason = MainOptionsMixin._record_vass_reject_reason
     _inc_transition_path_counter = MainOptionsMixin._inc_transition_path_counter
@@ -705,7 +706,7 @@ class AlphaNextGen(QCAlgorithm):
         )
         return qqq_price, adx_value, ma200_value, ma50_value
 
-    def _should_log_intraday_diag(self, reason_key: str) -> bool:
+    def _should_log_engine_diag(self, reason_key: str) -> bool:
         """Throttle high-frequency intraday candidate/drop telemetry in backtests."""
         interval_min = int(getattr(config, "REJECTION_EVENT_LOG_THROTTLE_MINUTES", 5))
         now = self.Time
@@ -716,6 +717,10 @@ class AlphaNextGen(QCAlgorithm):
                 return False
         self._last_intraday_diag_log_by_key[reason_key] = now
         return True
+
+    def _should_log_intraday_diag(self, reason_key: str) -> bool:
+        """Backward-compatible alias for high-frequency diagnostics throttle."""
+        return self._should_log_engine_diag(reason_key=reason_key)
 
     def _should_log_high_frequency_backtest(
         self,
@@ -806,7 +811,7 @@ class AlphaNextGen(QCAlgorithm):
             return False
         return bool(self._budget_log(message, priority=3))
 
-    def _mark_intraday_signal_event(self, event_type: str, signal_id: Optional[str]) -> bool:
+    def _mark_engine_signal_event(self, event_type: str, signal_id: Optional[str]) -> bool:
         """Return True only on first observation of a signal-id event type."""
         sid = str(signal_id or "").strip()
         if not sid:
@@ -822,6 +827,10 @@ class AlphaNextGen(QCAlgorithm):
             return False
         store.add(sid)
         return True
+
+    def _mark_intraday_signal_event(self, event_type: str, signal_id: Optional[str]) -> bool:
+        """Backward-compatible alias for signal-event dedupe marker."""
+        return self._mark_engine_signal_event(event_type=event_type, signal_id=signal_id)
 
     def _append_observability_record(
         self,
@@ -878,7 +887,7 @@ class AlphaNextGen(QCAlgorithm):
             },
         )
 
-    def _log_intraday_signal_dropped(
+    def _log_engine_signal_dropped(
         self,
         signal_id: str,
         code: str,
@@ -890,12 +899,12 @@ class AlphaNextGen(QCAlgorithm):
         validation_detail: Optional[str] = None,
     ) -> bool:
         """Emit standardized MICRO dropped-signal telemetry line."""
-        if not self._mark_intraday_signal_event("DROPPED", signal_id):
+        if not self._mark_engine_signal_event("DROPPED", signal_id):
             return False
         validation_detail_fragment = (
             f"ValidationDetail={validation_detail} | " if validation_detail else ""
         )
-        self._record_intraday_drop_reason(code, strategy)
+        self._record_engine_drop_reason(code, strategy)
         strategy_name = strategy.value if strategy is not None else ""
         direction_name = direction.value if direction is not None else "NONE"
         drop_message = (
@@ -925,6 +934,29 @@ class AlphaNextGen(QCAlgorithm):
             contract_symbol=contract_symbol,
         )
         return True
+
+    def _log_intraday_signal_dropped(
+        self,
+        signal_id: str,
+        code: str,
+        reason: str,
+        retry_hint: Optional[str],
+        direction: Optional[OptionDirection],
+        strategy: Optional[IntradayStrategy],
+        contract_symbol: str,
+        validation_detail: Optional[str] = None,
+    ) -> bool:
+        """Backward-compatible alias for dropped-signal telemetry logging."""
+        return self._log_engine_signal_dropped(
+            signal_id=signal_id,
+            code=code,
+            reason=reason,
+            retry_hint=retry_hint,
+            direction=direction,
+            strategy=strategy,
+            contract_symbol=contract_symbol,
+            validation_detail=validation_detail,
+        )
 
     def _attach_option_trace_metadata(
         self,
