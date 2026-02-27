@@ -1602,10 +1602,10 @@ class OptionsEngine:
         trade_caps = self._get_effective_trade_caps()
         lane_ok, lane_code, lane_detail, _ = self._micro_entry_engine.validate_lane_caps(
             entry_strategy=self._canonical_intraday_strategy(strategy_name),
-            intraday_positions=self._intraday_positions,
-            has_pending_intraday_entry=self.has_pending_engine_entry,
-            intraday_itm_trades_today=self._intraday_itm_trades_today,
-            intraday_micro_trades_today=self._intraday_micro_trades_today,
+            engine_positions=self._intraday_positions,
+            has_pending_engine_entry=self.has_pending_engine_entry,
+            itm_trades_today=self._intraday_itm_trades_today,
+            micro_trades_today=self._intraday_micro_trades_today,
             lane_resolver=self._engine_lane_from_strategy,
             lane_caps=lane_caps,
             daily_caps=trade_caps,
