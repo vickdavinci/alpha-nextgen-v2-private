@@ -2581,6 +2581,18 @@ class TestDailyResetV211:
         assert state.vix_level == VIXLevel.LOW
         assert state.micro_score == 50.0
 
+    def test_daily_reset_clears_spread_exit_signal_cooldown(self, engine_with_intraday_position):
+        """Daily reset must clear spread exit retry cooldown map."""
+        engine_with_intraday_position._spread_exit_signal_cooldown = {
+            "BULL_CALL|QQQ 260127C00455000|QQQ 260127C00460000": datetime(
+                2026, 1, 26, 15, 59, 0
+            )
+        }
+
+        engine_with_intraday_position.reset_daily("2026-01-27")
+
+        assert engine_with_intraday_position._spread_exit_signal_cooldown == {}
+
 
 class TestClearAllPositions:
     """V2.5 PART 19 FIX: Test clear_all_positions for zombie state prevention."""

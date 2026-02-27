@@ -825,6 +825,7 @@ def reset_options_engine_daily_state_impl(self, current_date: str) -> None:
         self._intraday_force_exit_hold_skip_log_date = {}
         self._last_intraday_close_time = None
         self._last_intraday_close_strategy = None
+        self._spread_exit_signal_cooldown = {}
 
         # Reset Micro Regime Engine for new day
         self._micro_regime_engine.reset_daily()
