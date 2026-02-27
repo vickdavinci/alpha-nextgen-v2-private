@@ -741,7 +741,7 @@ def check_spread_entry_signal_impl(
 
     # V10.16: Adaptive debit-to-width quality cap by current VIX regime.
     min_debit_pct = float(getattr(config, "SPREAD_MIN_DEBIT_TO_WIDTH_PCT", 0.28))
-    max_debit_pct = self._get_spread_debit_width_cap(vix_current)
+    max_debit_pct = self._get_spread_debit_width_cap(vix_current, iv_rank=iv_rank)
     if recovery_relax_active:
         relaxed_cap_max = float(getattr(config, "VASS_RECOVERY_RELAX_MAX_DW_CAP", 0.55))
         relaxed_cap_bump = float(getattr(config, "VASS_RECOVERY_RELAX_DW_CAP_BUMP", 0.09))
@@ -1403,7 +1403,7 @@ def check_credit_spread_entry_signal_impl(
 
     # Calculate credit received (conservative: bid for sell, ask for buy)
     credit_received = short_leg_contract.bid - long_leg_contract.ask
-    min_credit_required = self._get_effective_credit_min(vix_current=vix_current)
+    min_credit_required = self._get_effective_credit_min(vix_current=vix_current, iv_rank=iv_rank)
     if credit_received < min_credit_required:
         self.log(
             f"CREDIT_SPREAD: Entry blocked - credit ${credit_received:.2f} < "
@@ -1459,7 +1459,9 @@ def check_credit_spread_entry_signal_impl(
             )
             return fail_quality("POP_BELOW_MIN")
 
-    min_credit_to_width = self._get_effective_credit_to_width_min(vix_current=vix_current)
+    min_credit_to_width = self._get_effective_credit_to_width_min(
+        vix_current=vix_current, iv_rank=iv_rank
+    )
     if credit_to_width < min_credit_to_width:
         self.log(
             f"CREDIT_SPREAD: Entry blocked - CREDIT_TO_WIDTH {credit_to_width:.1%} < {min_credit_to_width:.0%} | "

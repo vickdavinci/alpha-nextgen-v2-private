@@ -2508,38 +2508,55 @@ class OptionsEngine:
         except Exception:
             return 0.0
 
-    def _get_effective_credit_min(self, vix_current: Optional[float] = None) -> float:
+    def _resolve_vass_quality_iv_environment(
+        self,
+        vix_current: Optional[float] = None,
+        iv_rank: Optional[float] = None,
+    ) -> str:
+        """
+        Resolve the IV environment used by VASS quality gates.
+
+        Keep gate context aligned with routing context:
+        - Prefer chain IV-rank buckets when VASS routing uses chain percentile.
+        - Fallback to IV sensor classification.
+        """
+        use_chain_rank = bool(getattr(config, "VASS_ROUTE_USE_CHAIN_IV_RANK", False)) and bool(
+            getattr(config, "OPTIONS_IV_RANK_USE_CHAIN_PERCENTILE", True)
+        )
+        if use_chain_rank:
+            routed = self._classify_iv_environment_from_rank(iv_rank)
+            if routed is not None:
+                return routed
+        _ = vix_current  # Explicitly unused when falling back to IV sensor classify.
+        return self._iv_sensor.classify()
+
+    def _get_effective_credit_min(
+        self,
+        vix_current: Optional[float] = None,
+        iv_rank: Optional[float] = None,
+    ) -> float:
         """
         Return IV-adaptive credit floor used consistently by selection and entry validation.
         """
-        smoothed_vix = self.get_smoothed_vix()
-        if vix_current is not None:
-            try:
-                smoothed_vix = max(smoothed_vix, float(vix_current))
-            except (TypeError, ValueError):
-                pass
-        if smoothed_vix > config.CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD:
+        iv_env = self._resolve_vass_quality_iv_environment(vix_current=vix_current, iv_rank=iv_rank)
+        if iv_env == "HIGH":
             return config.CREDIT_SPREAD_MIN_CREDIT_HIGH_IV
         return config.CREDIT_SPREAD_MIN_CREDIT
 
-    def _get_effective_credit_to_width_min(self, vix_current: Optional[float] = None) -> float:
-        """Return IV-adaptive minimum credit/width ratio for credit spread quality gating.
-
-        Three-tier system to avoid over-filtering in moderate VIX (Pitfall 6):
-        - VIX > 30: 30% (high IV, wide credits available)
-        - VIX 20-30: 32% (moderate IV, slight relaxation)
-        - VIX < 20: 35% (low IV, strict quality gate)
+    def _get_effective_credit_to_width_min(
+        self,
+        vix_current: Optional[float] = None,
+        iv_rank: Optional[float] = None,
+    ) -> float:
         """
-        smoothed_vix = self.get_smoothed_vix()
-        if vix_current is not None:
-            try:
-                smoothed_vix = max(smoothed_vix, float(vix_current))
-            except (TypeError, ValueError):
-                pass
-        if smoothed_vix > config.CREDIT_SPREAD_HIGH_IV_VIX_THRESHOLD:
+        Return IV-adaptive minimum credit/width ratio for credit spread quality gating.
+
+        Uses the same IV environment source as VASS routing to avoid route/gate mismatches.
+        """
+        iv_env = self._resolve_vass_quality_iv_environment(vix_current=vix_current, iv_rank=iv_rank)
+        if iv_env == "HIGH":
             return float(getattr(config, "CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV", 0.30))
-        medium_threshold = float(getattr(config, "CREDIT_SPREAD_MEDIUM_IV_VIX_THRESHOLD", 20.0))
-        if smoothed_vix > medium_threshold:
+        if iv_env == "MEDIUM":
             return float(getattr(config, "CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_MEDIUM_IV", 0.32))
         return float(getattr(config, "CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT", 0.35))
 
@@ -2702,9 +2719,20 @@ class OptionsEngine:
             direction=direction,
         )
 
-    def _get_spread_debit_width_cap(self, vix_level: Optional[float]) -> float:
+    def _get_spread_debit_width_cap(
+        self,
+        vix_level: Optional[float],
+        iv_rank: Optional[float] = None,
+    ) -> float:
         """Resolve adaptive debit/width cap by current VIX band."""
         if vix_level is None:
+            iv_env = self._resolve_vass_quality_iv_environment(
+                vix_current=vix_level, iv_rank=iv_rank
+            )
+            if iv_env == "LOW":
+                return float(getattr(config, "SPREAD_DW_CAP_COMPRESSED", 0.48))
+            if iv_env == "HIGH":
+                return float(getattr(config, "SPREAD_DW_CAP_ELEVATED", 0.36))
             return float(getattr(config, "SPREAD_DW_CAP_NORMAL", 0.42))
         try:
             vix = float(vix_level)
@@ -2714,11 +2742,12 @@ class OptionsEngine:
             return float(getattr(config, "SPREAD_DW_CAP_PANIC", 0.28))
         if vix >= 25:
             return float(getattr(config, "SPREAD_DW_CAP_HIGH", 0.32))
-        if vix >= 18:
+        iv_env = self._resolve_vass_quality_iv_environment(vix_current=vix, iv_rank=iv_rank)
+        if iv_env == "LOW":
+            return float(getattr(config, "SPREAD_DW_CAP_COMPRESSED", 0.48))
+        if iv_env == "HIGH":
             return float(getattr(config, "SPREAD_DW_CAP_ELEVATED", 0.36))
-        if vix >= 13:
-            return float(getattr(config, "SPREAD_DW_CAP_NORMAL", 0.42))
-        return float(getattr(config, "SPREAD_DW_CAP_COMPRESSED", 0.48))
+        return float(getattr(config, "SPREAD_DW_CAP_NORMAL", 0.42))
 
     def _get_spread_absolute_debit_cap(self, vix_level: Optional[float], width: float) -> float:
         """Resolve width-scaled absolute debit cap for debit spreads."""
