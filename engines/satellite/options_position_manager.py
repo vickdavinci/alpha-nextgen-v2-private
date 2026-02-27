@@ -31,7 +31,7 @@ def register_entry_impl(
     pending_payload = None
     symbol_norm = self._symbol_str(symbol) if symbol else ""
     if symbol_norm:
-        pending_payload = self._get_pending_intraday_entry_payload(symbol=symbol_norm)
+        pending_payload = self._get_pending_engine_entry_payload(symbol=symbol_norm)
 
     # Use pending values from check_entry_signal
     if contract is None:
@@ -178,9 +178,9 @@ def register_entry_impl(
     # V2.3.2 FIX #4: Track position in correct variable based on mode
     if is_intraday_fill:
         lane = self._engine_lane_from_strategy(entry_strategy)
-        self._set_intraday_lane_position(lane, position)
+        self._set_engine_lane_position(lane, position)
         if symbol_norm:
-            self._pop_pending_intraday_entry_payload(symbol=symbol_norm, lane=lane)
+            self._pop_pending_engine_entry_payload(symbol=symbol_norm, lane=lane)
         self._pending_intraday_entry = bool(self._pending_intraday_entries)
         self._pending_intraday_entry_since = (
             None if not self._pending_intraday_entries else self._pending_intraday_entry_since

@@ -26,7 +26,7 @@ def get_engine_partial_fill_oco_seed_impl(
         return None
 
     lane = self._find_engine_lane_by_symbol(symbol_norm)
-    pos = self._get_intraday_lane_position(lane) if lane else None
+    pos = self._get_engine_lane_position(lane) if lane else None
     if (
         pos is not None
         and pos.contract is not None
@@ -129,7 +129,7 @@ def get_pending_engine_partial_oco_seed_impl(
     if not symbol_norm:
         return None
 
-    payload = self._get_pending_intraday_entry_payload(symbol=symbol_norm)
+    payload = self._get_pending_engine_entry_payload(symbol=symbol_norm)
     if payload is not None:
         entry_strategy = str(payload.get("entry_strategy") or "SWING_SINGLE")
         stop_pct = float(payload.get("stop_pct") if payload.get("stop_pct") is not None else 0.20)

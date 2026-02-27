@@ -404,12 +404,12 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
                 lane = str(row_key).split("|", 1)[0].upper()
             symbol_norm = self._symbol_key(row.get("symbol") or "")
             if not symbol_norm:
-                symbol_norm = self._pending_intraday_symbol_from_key(str(row_key))
+                symbol_norm = self._pending_engine_symbol_from_key(str(row_key))
             if not symbol_norm:
                 symbol_norm = self._symbol_key(row_key)
             if not symbol_norm:
                 continue
-            key = self._pending_intraday_entry_key(symbol=symbol_norm, lane=lane)
+            key = self._pending_engine_entry_key(symbol=symbol_norm, lane=lane)
             self._pending_intraday_entries[key] = {
                 "symbol": symbol_norm,
                 "lane": lane,

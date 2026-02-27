@@ -1944,7 +1944,7 @@ class MainOrdersMixin:
                                 self._greeks_breach_logged = False
                                 return
 
-                            removed_position = self.options_engine.remove_intraday_position(
+                            removed_position = self.options_engine.remove_engine_position(
                                 symbol=symbol_norm
                             )
                             if removed_position:

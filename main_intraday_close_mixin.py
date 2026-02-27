@@ -191,7 +191,7 @@ class MainIntradayCloseMixin:
                         f"INTRADAY_FORCE_EXIT: SKIP | {symbol} already closed | "
                         f"Clearing stale _intraday_position"
                     )
-                    self.options_engine.remove_intraday_position(symbol=symbol)
+                    self.options_engine.remove_engine_position(symbol=symbol)
                     self._clear_engine_close_guard(symbol)
                     continue
             except Exception:

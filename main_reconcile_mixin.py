@@ -301,7 +301,7 @@ class MainReconcileMixin:
                                 intraday_sym = self._normalize_symbol_str(
                                     intraday_pos.contract.symbol
                                 )
-                                self.options_engine.remove_intraday_position(symbol=intraday_sym)
+                                self.options_engine.remove_engine_position(symbol=intraday_sym)
                                 self._clear_micro_symbol_tracking(intraday_sym)
                         swing_pos = self.options_engine.get_position()
                         if swing_pos is not None:

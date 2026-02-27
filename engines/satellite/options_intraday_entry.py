@@ -763,7 +763,7 @@ def check_intraday_entry_signal_impl(
             "E_INTRADAY_ACTIVE_SYMBOL_CONFLICT",
             f"{pending_symbol_norm} already open in lane={active_lane}",
         )
-    existing_key = self._find_pending_intraday_entry_key(symbol=pending_symbol_norm)
+    existing_key = self._find_pending_engine_entry_key(symbol=pending_symbol_norm)
     if existing_key is not None:
         existing_payload = self._pending_intraday_entries.get(existing_key) or {}
         existing_lane = str(existing_payload.get("lane", "")).upper()
@@ -1039,7 +1039,7 @@ def check_intraday_entry_signal_impl(
     self._pending_num_contracts = num_contracts
     self._pending_entry_strategy = entry_strategy.value
 
-    pending_key = self._pending_intraday_entry_key(
+    pending_key = self._pending_engine_entry_key(
         symbol=pending_symbol_norm,
         lane=pending_lane,
     )

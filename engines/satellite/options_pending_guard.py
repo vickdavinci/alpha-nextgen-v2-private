@@ -94,7 +94,7 @@ def clear_stale_pending_engine_entry_if_orphaned_impl(self) -> None:
         )
         legacy_lane = str(self._pending_intraday_entry_engine or "MICRO").upper()
         if legacy_symbol:
-            legacy_key = self._pending_intraday_entry_key(symbol=legacy_symbol, lane=legacy_lane)
+            legacy_key = self._pending_engine_entry_key(symbol=legacy_symbol, lane=legacy_lane)
             self._pending_intraday_entries[legacy_key] = {
                 "symbol": legacy_symbol,
                 "lane": legacy_lane,
@@ -169,7 +169,7 @@ def clear_stale_pending_engine_entry_if_orphaned_impl(self) -> None:
             self._symbol_key(payload.get("symbol", "")) if isinstance(payload, dict) else ""
         )
         if not symbol_norm:
-            symbol_norm = self._pending_intraday_symbol_from_key(key)
+            symbol_norm = self._pending_engine_symbol_from_key(key)
         if not symbol_norm:
             continue
 
@@ -274,7 +274,7 @@ def cancel_pending_engine_entry_impl(
     """
     cleared_lane: Optional[str] = None
     if symbol is not None:
-        key = self._find_pending_intraday_entry_key(symbol=symbol, lane=engine)
+        key = self._find_pending_engine_entry_key(symbol=symbol, lane=engine)
         if key is not None:
             payload = self._pending_intraday_entries.pop(key, None)
             if isinstance(payload, dict):
@@ -353,7 +353,7 @@ def has_pending_intraday_entry_impl(self, engine: Optional[str] = None) -> bool:
 def get_pending_engine_entry_lane_impl(self, symbol: Optional[str] = None) -> Optional[str]:
     """Best-effort lane lookup for a pending single-leg engine entry."""
     if symbol is not None:
-        key = self._find_pending_intraday_entry_key(symbol=symbol)
+        key = self._find_pending_engine_entry_key(symbol=symbol)
         if key is None:
             return None
         payload = self._pending_intraday_entries.get(key) or {}
@@ -390,7 +390,7 @@ def get_pending_entry_contract_symbol_impl(self) -> str:
                 if sym:
                     return sym
             key = next(iter(self._pending_intraday_entries.keys()))
-            return self._pending_intraday_symbol_from_key(key)
+            return self._pending_engine_symbol_from_key(key)
         except Exception:
             return ""
     if self._pending_contract is None:
