@@ -2351,9 +2351,11 @@ class OptionsEngine:
         dte_min: int = None,
         dte_max: int = None,
         set_cooldown: bool = True,
+        enforce_scan_throttle: bool = True,
         log_filters: bool = True,
         debug_stats: Optional[Dict[str, Any]] = None,
         current_price: Optional[float] = None,
+        iv_rank: Optional[float] = None,
     ) -> Optional[tuple]:
         """Select long and short leg contracts for a debit spread."""
         return self._vass_entry_engine.select_spread_legs(
@@ -2365,9 +2367,11 @@ class OptionsEngine:
             dte_min=dte_min,
             dte_max=dte_max,
             set_cooldown=set_cooldown,
+            enforce_scan_throttle=enforce_scan_throttle,
             log_filters=log_filters,
             debug_stats=debug_stats,
             current_price=current_price,
+            iv_rank=iv_rank,
         )
 
     def select_spread_legs_with_fallback(
@@ -2379,6 +2383,8 @@ class OptionsEngine:
         current_time: str = None,
         set_cooldown: bool = True,
         current_price: Optional[float] = None,
+        iv_rank: Optional[float] = None,
+        enforce_scan_throttle: bool = True,
     ) -> Optional[tuple]:
         """Try multiple DTE ranges before applying spread failure cooldown."""
         return self._vass_entry_engine.select_spread_legs_with_fallback(
@@ -2390,6 +2396,8 @@ class OptionsEngine:
             current_time=current_time,
             set_cooldown=set_cooldown,
             current_price=current_price,
+            iv_rank=iv_rank,
+            enforce_scan_throttle=enforce_scan_throttle,
         )
 
     # =========================================================================
