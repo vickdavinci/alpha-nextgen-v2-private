@@ -2292,7 +2292,7 @@ class MainOrdersMixin:
                     lane = str(cleared_lane or pending_lane or "MICRO").upper()
                     # Cooldown: 15 minutes before the rejected lane can retry.
                     lane_cooldown_until = self.Time + timedelta(minutes=15)
-                    self._set_intraday_lane_cooldown(lane, lane_cooldown_until)
+                    self._set_engine_lane_cooldown(lane, lane_cooldown_until)
                     self.Log(
                         f"OPT_INTRADAY_RECOVERY: Intraday rejected | Lane={lane} | "
                         f"Pending + counter cleared | Cooldown 15min until {lane_cooldown_until}"

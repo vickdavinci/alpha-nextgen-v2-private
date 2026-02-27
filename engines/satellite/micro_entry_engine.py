@@ -631,7 +631,7 @@ class MicroEntryEngine:
             intraday_direction = None
             retry_payload = None
             if not micro_intraday_cooldown_active and signal_reason != "R_COOLDOWN_INTRADAY_MICRO":
-                retry_payload = algorithm._consume_intraday_retry("MICRO")
+                retry_payload = algorithm._consume_engine_retry("MICRO")
             if retry_payload is not None:
                 retry_direction, retry_reason_code = retry_payload
                 should_trade = True
@@ -881,7 +881,7 @@ class MicroEntryEngine:
                 )
                 algorithm.portfolio_router.receive_signal(intraday_signal)
                 algorithm._process_immediate_signals()
-                algorithm._clear_intraday_retry("MICRO")
+                algorithm._clear_engine_retry("MICRO")
                 if intraday_trace_id:
                     for rej in algorithm._get_recent_router_rejections():
                         if rej.trace_id == intraday_trace_id and rej.source_tag.startswith("MICRO"):
@@ -937,7 +937,7 @@ class MicroEntryEngine:
                     (
                         intraday_validation_reason,
                         intraday_validation_detail,
-                    ) = host.pop_last_intraday_validation_failure(lane="MICRO")
+                    ) = host.pop_last_engine_validation_failure(lane="MICRO")
                     (
                         can_retry_now,
                         retry_reason_now,
@@ -992,9 +992,9 @@ class MicroEntryEngine:
                             else None,
                         )
                     retry_context = f"{signal_reason or ''} | {intraday_validation_detail or ''} | {retry_reason_now or ''}"
-                    if self._should_queue_intraday_retry(drop_code, retry_context):
+                    if self._should_queue_engine_retry(drop_code, retry_context):
                         retry_expires = algorithm.Time + timedelta(minutes=20)
-                        algorithm._queue_intraday_retry(
+                        algorithm._queue_engine_retry(
                             lane="MICRO",
                             direction=intraday_direction,
                             reason_code=drop_code,
@@ -1055,8 +1055,8 @@ class MicroEntryEngine:
         return True, None
 
     @staticmethod
-    def _should_queue_intraday_retry(drop_code: str, context: str = "") -> bool:
-        """Return whether a dropped intraday candidate should queue one retry."""
+    def _should_queue_engine_retry(drop_code: str, context: str = "") -> bool:
+        """Return whether a dropped candidate should queue one retry."""
         code = str(drop_code or "").upper()
         if code not in {
             "R_SLOT_TOTAL_MAX",
@@ -1076,3 +1076,8 @@ class MicroEntryEngine:
         if code == "R_SLOT_TOTAL_MAX" and "GLOBAL LIMIT REACHED" in text:
             return False
         return True
+
+    @staticmethod
+    def _should_queue_intraday_retry(drop_code: str, context: str = "") -> bool:
+        """Backward-compatible alias for retry-queue decision helper."""
+        return MicroEntryEngine._should_queue_engine_retry(drop_code=drop_code, context=context)

@@ -575,7 +575,7 @@ class ITMHorizonEngine:
                         (
                             itm_validation_reason,
                             itm_validation_detail,
-                        ) = host.pop_last_intraday_validation_failure(lane="ITM")
+                        ) = host.pop_last_engine_validation_failure(lane="ITM")
                         drop_code = algorithm._canonical_options_reason_code(
                             itm_validation_reason or "E_INTRADAY_NO_SIGNAL_UNCLASSIFIED"
                         )

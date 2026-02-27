@@ -2505,11 +2505,15 @@ class OptionsEngine:
     def pop_last_entry_validation_failure(self) -> Optional[str]:
         return self._vass_entry_engine.pop_last_entry_validation_failure(host=self)
 
-    def _normalize_intraday_lane(self, lane: Optional[str]) -> str:
+    def _normalize_engine_lane(self, lane: Optional[str]) -> str:
         lane_key = str(lane or "").upper()
         return lane_key if lane_key in ("MICRO", "ITM") else "MICRO"
 
-    def _ensure_intraday_validation_failure_buffers(self) -> None:
+    def _normalize_intraday_lane(self, lane: Optional[str]) -> str:
+        """Backward-compatible alias for engine lane normalization."""
+        return self._normalize_engine_lane(lane)
+
+    def _ensure_engine_validation_failure_buffers(self) -> None:
         failures = getattr(self, "_last_intraday_validation_failure_by_lane", None)
         details = getattr(self, "_last_intraday_validation_detail_by_lane", None)
         if not isinstance(failures, dict):
@@ -2522,24 +2526,40 @@ class OptionsEngine:
         self._last_intraday_validation_failure_by_lane = failures
         self._last_intraday_validation_detail_by_lane = details
 
-    def set_last_intraday_validation_failure(
+    def _ensure_intraday_validation_failure_buffers(self) -> None:
+        """Backward-compatible alias for validation-failure buffer ensure."""
+        self._ensure_engine_validation_failure_buffers()
+
+    def set_last_engine_validation_failure(
         self, lane: Optional[str], reason: Optional[str], detail: Optional[str] = None
     ) -> None:
-        self._ensure_intraday_validation_failure_buffers()
-        lane_key = self._normalize_intraday_lane(lane)
+        self._ensure_engine_validation_failure_buffers()
+        lane_key = self._normalize_engine_lane(lane)
         self._last_intraday_validation_failure_by_lane[lane_key] = reason
         self._last_intraday_validation_detail_by_lane[lane_key] = detail
 
-    def pop_last_intraday_validation_failure(
+    def set_last_intraday_validation_failure(
+        self, lane: Optional[str], reason: Optional[str], detail: Optional[str] = None
+    ) -> None:
+        """Backward-compatible alias for validation-failure setter."""
+        self.set_last_engine_validation_failure(lane=lane, reason=reason, detail=detail)
+
+    def pop_last_engine_validation_failure(
         self, lane: Optional[str]
     ) -> Tuple[Optional[str], Optional[str]]:
-        self._ensure_intraday_validation_failure_buffers()
-        lane_key = self._normalize_intraday_lane(lane)
+        self._ensure_engine_validation_failure_buffers()
+        lane_key = self._normalize_engine_lane(lane)
         reason = self._last_intraday_validation_failure_by_lane.get(lane_key)
         detail = self._last_intraday_validation_detail_by_lane.get(lane_key)
         self._last_intraday_validation_failure_by_lane[lane_key] = None
         self._last_intraday_validation_detail_by_lane[lane_key] = None
         return reason, detail
+
+    def pop_last_intraday_validation_failure(
+        self, lane: Optional[str]
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Backward-compatible alias for validation-failure pop."""
+        return self.pop_last_engine_validation_failure(lane=lane)
 
     def set_last_trade_limit_failure(
         self, reason: Optional[str], detail: Optional[str] = None

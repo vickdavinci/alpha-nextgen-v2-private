@@ -76,11 +76,11 @@ def check_intraday_entry_signal_impl(
     )
 
     def fail(reason: str, detail: Optional[str] = None) -> Optional[TargetWeight]:
-        self.set_last_intraday_validation_failure(validation_lane, reason, detail)
+        self.set_last_engine_validation_failure(validation_lane, reason, detail)
         return None
 
     # Reset previous validation reason for this attempt
-    self.set_last_intraday_validation_failure(validation_lane, None, None)
+    self.set_last_engine_validation_failure(validation_lane, None, None)
 
     if self._pending_intraday_entry or self._pending_intraday_entries:
         self._clear_stale_pending_engine_entry_if_orphaned()
@@ -158,7 +158,7 @@ def check_intraday_entry_signal_impl(
     if entry_strategy is None:
         return fail("E_INTRADAY_NO_STRATEGY")
     validation_lane = self._engine_lane_from_strategy(entry_strategy.value)
-    self.set_last_intraday_validation_failure(validation_lane, None, None)
+    self.set_last_engine_validation_failure(validation_lane, None, None)
     lane_caps = (
         self._get_effective_lane_caps() if hasattr(self, "_get_effective_lane_caps") else None
     )

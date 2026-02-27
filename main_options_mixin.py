@@ -236,12 +236,16 @@ class MainOptionsMixin:
         self._margin_call_consecutive_count = 0
         self._margin_call_cooldown_until = None
 
-    def _normalize_intraday_lane(self, lane: Optional[str]) -> str:
+    def _normalize_engine_lane(self, lane: Optional[str]) -> str:
         lane_key = str(lane or "").upper()
         return lane_key if lane_key in ("MICRO", "ITM") else "MICRO"
 
-    def _set_intraday_lane_cooldown(self, lane: Optional[str], until: Optional[datetime]) -> None:
-        lane_key = self._normalize_intraday_lane(lane)
+    def _normalize_intraday_lane(self, lane: Optional[str]) -> str:
+        """Backward-compatible alias for engine lane normalization."""
+        return self._normalize_engine_lane(lane)
+
+    def _set_engine_lane_cooldown(self, lane: Optional[str], until: Optional[datetime]) -> None:
+        lane_key = self._normalize_engine_lane(lane)
         bucket = getattr(self, "_options_intraday_cooldown_until_by_lane", None)
         if not isinstance(bucket, dict):
             bucket = {"MICRO": None, "ITM": None}
@@ -251,28 +255,40 @@ class MainOptionsMixin:
         active_until = [dt for dt in bucket.values() if dt is not None]
         self._options_intraday_cooldown_until = max(active_until) if active_until else None
 
-    def _get_intraday_lane_cooldown_until(self, lane: Optional[str]) -> Optional[datetime]:
-        lane_key = self._normalize_intraday_lane(lane)
+    def _set_intraday_lane_cooldown(self, lane: Optional[str], until: Optional[datetime]) -> None:
+        """Backward-compatible alias for per-lane cooldown setter."""
+        self._set_engine_lane_cooldown(lane, until)
+
+    def _get_engine_lane_cooldown_until(self, lane: Optional[str]) -> Optional[datetime]:
+        lane_key = self._normalize_engine_lane(lane)
         bucket = getattr(self, "_options_intraday_cooldown_until_by_lane", None)
         if isinstance(bucket, dict):
             return bucket.get(lane_key)
         return getattr(self, "_options_intraday_cooldown_until", None)
 
-    def _is_intraday_lane_cooldown_active(self, lane: Optional[str]) -> bool:
-        lane_key = self._normalize_intraday_lane(lane)
-        until = self._get_intraday_lane_cooldown_until(lane_key)
+    def _get_intraday_lane_cooldown_until(self, lane: Optional[str]) -> Optional[datetime]:
+        """Backward-compatible alias for per-lane cooldown lookup."""
+        return self._get_engine_lane_cooldown_until(lane)
+
+    def _is_engine_lane_cooldown_active(self, lane: Optional[str]) -> bool:
+        lane_key = self._normalize_engine_lane(lane)
+        until = self._get_engine_lane_cooldown_until(lane_key)
         if until is None:
             return False
         now = getattr(self, "Time", None)
         if now is None:
             return True
         if now >= until:
-            self._set_intraday_lane_cooldown(lane_key, None)
+            self._set_engine_lane_cooldown(lane_key, None)
             return False
         return True
 
-    def _get_intraday_retry_state(self, lane: Optional[str]) -> Dict[str, Any]:
-        lane_key = self._normalize_intraday_lane(lane)
+    def _is_intraday_lane_cooldown_active(self, lane: Optional[str]) -> bool:
+        """Backward-compatible alias for per-lane cooldown active check."""
+        return self._is_engine_lane_cooldown_active(lane)
+
+    def _get_engine_retry_state(self, lane: Optional[str]) -> Dict[str, Any]:
+        lane_key = self._normalize_engine_lane(lane)
         bucket = getattr(self, "_intraday_retry_state_by_lane", None)
         if not isinstance(bucket, dict):
             bucket = {}
@@ -287,12 +303,36 @@ class MainOptionsMixin:
         self._intraday_retry_state_by_lane = bucket
         return lane_state
 
-    def _clear_intraday_retry(self, lane: Optional[str]) -> None:
-        state = self._get_intraday_retry_state(lane)
+    def _get_intraday_retry_state(self, lane: Optional[str]) -> Dict[str, Any]:
+        """Backward-compatible alias for engine retry state bucket."""
+        return self._get_engine_retry_state(lane)
+
+    def _clear_engine_retry(self, lane: Optional[str]) -> None:
+        state = self._get_engine_retry_state(lane)
         state["pending"] = False
         state["expires"] = None
         state["direction"] = None
         state["reason_code"] = None
+
+    def _clear_intraday_retry(self, lane: Optional[str]) -> None:
+        """Backward-compatible alias for engine retry clear."""
+        self._clear_engine_retry(lane)
+
+    def _queue_engine_retry(
+        self,
+        lane: Optional[str],
+        direction: Optional[OptionDirection],
+        reason_code: str,
+        expires_at: Optional[datetime],
+    ) -> None:
+        if direction is None or expires_at is None:
+            self._clear_engine_retry(lane)
+            return
+        state = self._get_engine_retry_state(lane)
+        state["pending"] = True
+        state["expires"] = expires_at
+        state["direction"] = direction
+        state["reason_code"] = str(reason_code or "")
 
     def _queue_intraday_retry(
         self,
@@ -301,17 +341,11 @@ class MainOptionsMixin:
         reason_code: str,
         expires_at: Optional[datetime],
     ) -> None:
-        if direction is None or expires_at is None:
-            self._clear_intraday_retry(lane)
-            return
-        state = self._get_intraday_retry_state(lane)
-        state["pending"] = True
-        state["expires"] = expires_at
-        state["direction"] = direction
-        state["reason_code"] = str(reason_code or "")
+        """Backward-compatible alias for engine retry queue."""
+        self._queue_engine_retry(lane, direction, reason_code, expires_at)
 
-    def _consume_intraday_retry(self, lane: Optional[str]) -> Optional[Tuple[OptionDirection, str]]:
-        state = self._get_intraday_retry_state(lane)
+    def _consume_engine_retry(self, lane: Optional[str]) -> Optional[Tuple[OptionDirection, str]]:
+        state = self._get_engine_retry_state(lane)
         if not bool(state.get("pending", False)):
             return None
         expires = state.get("expires")
@@ -319,10 +353,14 @@ class MainOptionsMixin:
         reason_code = str(state.get("reason_code") or "")
         now = getattr(self, "Time", None)
         if now is None or expires is None or now > expires or direction is None:
-            self._clear_intraday_retry(lane)
+            self._clear_engine_retry(lane)
             return None
-        self._clear_intraday_retry(lane)
+        self._clear_engine_retry(lane)
         return direction, reason_code
+
+    def _consume_intraday_retry(self, lane: Optional[str]) -> Optional[Tuple[OptionDirection, str]]:
+        """Backward-compatible alias for engine retry consume."""
+        return self._consume_engine_retry(lane)
 
     def _micro_dte_bucket(self, dte: Optional[int]) -> str:
         """Normalize intraday DTE to compact telemetry buckets."""
@@ -1452,8 +1490,8 @@ class MainOptionsMixin:
         # V2.4.1: Throttle intraday scanning to every 15 minutes (was every minute)
         # This reduces 95 scans/hour to 4 scans/hour
         # V10.16: lane-scoped rejection cooldowns (MICRO/ITM independent).
-        micro_intraday_cooldown_active = self._is_intraday_lane_cooldown_active("MICRO")
-        itm_intraday_cooldown_active = self._is_intraday_lane_cooldown_active("ITM")
+        micro_intraday_cooldown_active = self._is_engine_lane_cooldown_active("MICRO")
+        itm_intraday_cooldown_active = self._is_engine_lane_cooldown_active("ITM")
         intraday_cooldown_active = micro_intraday_cooldown_active and itm_intraday_cooldown_active
         # Defaults for explicit ITM pass (only used when intraday scan context is ready).
         itm_dir = None

@@ -82,13 +82,21 @@ class AlphaNextGen(QCAlgorithm):
 
     # Bind extracted helpers at class definition time to avoid QC managed-class
     # multiple-inheritance/runtime setattr limitations.
+    _normalize_engine_lane = MainOptionsMixin._normalize_engine_lane
     _normalize_intraday_lane = MainOptionsMixin._normalize_intraday_lane
+    _set_engine_lane_cooldown = MainOptionsMixin._set_engine_lane_cooldown
     _set_intraday_lane_cooldown = MainOptionsMixin._set_intraday_lane_cooldown
+    _get_engine_lane_cooldown_until = MainOptionsMixin._get_engine_lane_cooldown_until
     _get_intraday_lane_cooldown_until = MainOptionsMixin._get_intraday_lane_cooldown_until
+    _is_engine_lane_cooldown_active = MainOptionsMixin._is_engine_lane_cooldown_active
     _is_intraday_lane_cooldown_active = MainOptionsMixin._is_intraday_lane_cooldown_active
+    _get_engine_retry_state = MainOptionsMixin._get_engine_retry_state
     _get_intraday_retry_state = MainOptionsMixin._get_intraday_retry_state
+    _clear_engine_retry = MainOptionsMixin._clear_engine_retry
     _clear_intraday_retry = MainOptionsMixin._clear_intraday_retry
+    _queue_engine_retry = MainOptionsMixin._queue_engine_retry
     _queue_intraday_retry = MainOptionsMixin._queue_intraday_retry
+    _consume_engine_retry = MainOptionsMixin._consume_engine_retry
     _consume_intraday_retry = MainOptionsMixin._consume_intraday_retry
     _reset_regime_detector_runtime_state = MainOptionsMixin._reset_regime_detector_runtime_state
     _initialize_runtime_state = MainOptionsMixin._initialize_runtime_state
