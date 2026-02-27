@@ -396,19 +396,11 @@ class MainOptionsMixin:
             return "MICRO"
         return "OTHER"
 
-    def _intraday_engine_bucket_from_strategy(self, strategy: Optional[Any]) -> str:
-        """Backward-compatible alias for engine bucket normalization."""
-        return self._engine_bucket_from_strategy(strategy)
-
     def _inc_engine_counter(self, store: Dict[str, int], strategy: Optional[Any]) -> str:
         """Increment per-engine intraday diagnostics counter and return bucket."""
         bucket = self._engine_bucket_from_strategy(strategy)
         store[bucket] = int(store.get(bucket, 0)) + 1
         return bucket
-
-    def _inc_intraday_engine_counter(self, store: Dict[str, int], strategy: Optional[Any]) -> str:
-        """Backward-compatible alias for per-engine diagnostics counter."""
-        return self._inc_engine_counter(store, strategy)
 
     def _record_engine_drop_reason(self, code: str, strategy: Optional[Any]) -> None:
         """Persist drop-reason metrics independent of log throttling."""
@@ -419,10 +411,6 @@ class MainOptionsMixin:
         bucket = self._engine_bucket_from_strategy(strategy)
         store = self._diag_intraday_drop_reason_counts_by_engine.setdefault(bucket, {})
         store[reason] = int(store.get(reason, 0)) + 1
-
-    def _record_intraday_drop_reason(self, code: str, strategy: Optional[Any]) -> None:
-        """Backward-compatible alias for engine drop-reason aggregation."""
-        self._record_engine_drop_reason(code=code, strategy=strategy)
 
     def _record_vass_reject_reason(self, reason_code: str) -> None:
         """Track VASS reject reason counts for daily funnel RCA."""

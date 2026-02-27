@@ -118,11 +118,8 @@ class AlphaNextGen(QCAlgorithm):
     _inc_micro_dte_counter = MainOptionsMixin._inc_micro_dte_counter
     _record_micro_drop_reason_dte = MainOptionsMixin._record_micro_drop_reason_dte
     _engine_bucket_from_strategy = MainOptionsMixin._engine_bucket_from_strategy
-    _intraday_engine_bucket_from_strategy = MainOptionsMixin._intraday_engine_bucket_from_strategy
     _inc_engine_counter = MainOptionsMixin._inc_engine_counter
-    _inc_intraday_engine_counter = MainOptionsMixin._inc_intraday_engine_counter
     _record_engine_drop_reason = MainOptionsMixin._record_engine_drop_reason
-    _record_intraday_drop_reason = MainOptionsMixin._record_intraday_drop_reason
     _record_vass_reject_reason = MainOptionsMixin._record_vass_reject_reason
     _inc_transition_path_counter = MainOptionsMixin._inc_transition_path_counter
     _normalize_spread_close_quantities = MainOptionsMixin._normalize_spread_close_quantities
@@ -718,10 +715,6 @@ class AlphaNextGen(QCAlgorithm):
         self._last_intraday_diag_log_by_key[reason_key] = now
         return True
 
-    def _should_log_intraday_diag(self, reason_key: str) -> bool:
-        """Backward-compatible alias for high-frequency diagnostics throttle."""
-        return self._should_log_engine_diag(reason_key=reason_key)
-
     def _should_log_high_frequency_backtest(
         self,
         *,
@@ -828,10 +821,6 @@ class AlphaNextGen(QCAlgorithm):
         store.add(sid)
         return True
 
-    def _mark_intraday_signal_event(self, event_type: str, signal_id: Optional[str]) -> bool:
-        """Backward-compatible alias for signal-event dedupe marker."""
-        return self._mark_engine_signal_event(event_type=event_type, signal_id=signal_id)
-
     def _append_observability_record(
         self,
         records: List[Dict[str, Any]],
@@ -934,29 +923,6 @@ class AlphaNextGen(QCAlgorithm):
             contract_symbol=contract_symbol,
         )
         return True
-
-    def _log_intraday_signal_dropped(
-        self,
-        signal_id: str,
-        code: str,
-        reason: str,
-        retry_hint: Optional[str],
-        direction: Optional[OptionDirection],
-        strategy: Optional[IntradayStrategy],
-        contract_symbol: str,
-        validation_detail: Optional[str] = None,
-    ) -> bool:
-        """Backward-compatible alias for dropped-signal telemetry logging."""
-        return self._log_engine_signal_dropped(
-            signal_id=signal_id,
-            code=code,
-            reason=reason,
-            retry_hint=retry_hint,
-            direction=direction,
-            strategy=strategy,
-            contract_symbol=contract_symbol,
-            validation_detail=validation_detail,
-        )
 
     def _attach_option_trace_metadata(
         self,
