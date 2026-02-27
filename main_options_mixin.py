@@ -349,7 +349,7 @@ class MainOptionsMixin:
             int(self._diag_micro_drop_reason_by_dte.get(key, 0)) + 1
         )
 
-    def _intraday_engine_bucket_from_strategy(self, strategy: Optional[Any]) -> str:
+    def _engine_bucket_from_strategy(self, strategy: Optional[Any]) -> str:
         """Normalize intraday strategy into daily summary engine buckets."""
         name = str(getattr(strategy, "value", strategy) or "").upper()
         if "ITM_MOMENTUM" in name:
@@ -358,11 +358,19 @@ class MainOptionsMixin:
             return "MICRO"
         return "OTHER"
 
-    def _inc_intraday_engine_counter(self, store: Dict[str, int], strategy: Optional[Any]) -> str:
+    def _intraday_engine_bucket_from_strategy(self, strategy: Optional[Any]) -> str:
+        """Backward-compatible alias for engine bucket normalization."""
+        return self._engine_bucket_from_strategy(strategy)
+
+    def _inc_engine_counter(self, store: Dict[str, int], strategy: Optional[Any]) -> str:
         """Increment per-engine intraday diagnostics counter and return bucket."""
-        bucket = self._intraday_engine_bucket_from_strategy(strategy)
+        bucket = self._engine_bucket_from_strategy(strategy)
         store[bucket] = int(store.get(bucket, 0)) + 1
         return bucket
+
+    def _inc_intraday_engine_counter(self, store: Dict[str, int], strategy: Optional[Any]) -> str:
+        """Backward-compatible alias for per-engine diagnostics counter."""
+        return self._inc_engine_counter(store, strategy)
 
     def _record_intraday_drop_reason(self, code: str, strategy: Optional[Any]) -> None:
         """Persist drop-reason metrics independent of log throttling."""
@@ -370,7 +378,7 @@ class MainOptionsMixin:
         self._diag_intraday_drop_reason_counts[reason] = (
             int(self._diag_intraday_drop_reason_counts.get(reason, 0)) + 1
         )
-        bucket = self._intraday_engine_bucket_from_strategy(strategy)
+        bucket = self._engine_bucket_from_strategy(strategy)
         store = self._diag_intraday_drop_reason_counts_by_engine.setdefault(bucket, {})
         store[reason] = int(store.get(reason, 0)) + 1
 

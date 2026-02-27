@@ -177,7 +177,7 @@ def register_entry_impl(
 
     # V2.3.2 FIX #4: Track position in correct variable based on mode
     if is_intraday_fill:
-        lane = self._intraday_engine_lane_from_strategy(entry_strategy)
+        lane = self._engine_lane_from_strategy(entry_strategy)
         self._set_intraday_lane_position(lane, position)
         if symbol_norm:
             self._pop_pending_intraday_entry_payload(symbol=symbol_norm, lane=lane)

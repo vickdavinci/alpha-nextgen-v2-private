@@ -700,7 +700,7 @@ class MicroEntryEngine:
                     )
                     if drop_logged:
                         algorithm._diag_intraday_dropped_count += 1
-                        algorithm._inc_intraday_engine_counter(
+                        algorithm._inc_engine_counter(
                             algorithm._diag_intraday_dropped_by_engine,
                             candidate_strategy,
                         )
@@ -711,7 +711,7 @@ class MicroEntryEngine:
                         algorithm._record_micro_drop_reason_dte(drop_code, None)
                 elif algorithm._mark_intraday_signal_event("CANDIDATE", intraday_signal_id):
                     algorithm._diag_intraday_candidate_count += 1
-                    algorithm._inc_intraday_engine_counter(
+                    algorithm._inc_engine_counter(
                         algorithm._diag_intraday_candidates_by_engine,
                         candidate_strategy,
                     )
@@ -728,7 +728,7 @@ class MicroEntryEngine:
                         ),
                     )
                     algorithm._record_signal_lifecycle_event(
-                        engine=algorithm._intraday_engine_bucket_from_strategy(candidate_strategy),
+                        engine=algorithm._engine_bucket_from_strategy(candidate_strategy),
                         event="CANDIDATE",
                         signal_id=intraday_signal_id,
                         direction=intraday_direction.value if intraday_direction else "",
@@ -771,7 +771,7 @@ class MicroEntryEngine:
                 )
                 if drop_logged:
                     algorithm._diag_intraday_dropped_count += 1
-                    algorithm._inc_intraday_engine_counter(
+                    algorithm._inc_engine_counter(
                         algorithm._diag_intraday_dropped_by_engine,
                         intraday_strategy,
                     )
@@ -799,7 +799,7 @@ class MicroEntryEngine:
             )
             if drop_logged:
                 algorithm._diag_intraday_dropped_count += 1
-                algorithm._inc_intraday_engine_counter(
+                algorithm._inc_engine_counter(
                     algorithm._diag_intraday_dropped_by_engine,
                     intraday_strategy,
                 )
@@ -852,12 +852,12 @@ class MicroEntryEngine:
                         f"Contract={intraday_contract.symbol if intraday_contract else 'NONE'}"
                     )
                     algorithm._diag_intraday_approved_count += 1
-                    algorithm._inc_intraday_engine_counter(
+                    algorithm._inc_engine_counter(
                         algorithm._diag_intraday_approved_by_engine,
                         intraday_strategy,
                     )
                     algorithm._record_signal_lifecycle_event(
-                        engine=algorithm._intraday_engine_bucket_from_strategy(intraday_strategy),
+                        engine=algorithm._engine_bucket_from_strategy(intraday_strategy),
                         event="APPROVED",
                         signal_id=intraday_signal_id,
                         trace_id=intraday_signal.metadata.get("trace_id", "")
@@ -891,7 +891,7 @@ class MicroEntryEngine:
                                 f"Trace={rej.trace_id} | Code={rej.code} | Stage={rej.stage} | {rej.detail}"
                             )
                             host.cancel_pending_engine_entry(
-                                engine=host._intraday_engine_lane_from_strategy(
+                                engine=host._engine_lane_from_strategy(
                                     intraday_strategy.value if intraday_strategy else ""
                                 ),
                                 symbol=str(intraday_contract.symbol)
@@ -914,7 +914,7 @@ class MicroEntryEngine:
                             )
                             if drop_logged:
                                 algorithm._diag_intraday_dropped_count += 1
-                                algorithm._inc_intraday_engine_counter(
+                                algorithm._inc_engine_counter(
                                     algorithm._diag_intraday_dropped_by_engine,
                                     intraday_strategy,
                                 )
@@ -952,7 +952,7 @@ class MicroEntryEngine:
                     elif algorithm._margin_cb_in_progress or algorithm._margin_call_cooldown_until:
                         drop_code = "R_MARGIN_CB_ACTIVE"
                     elif intraday_strategy is not None and host.has_intraday_position(
-                        engine=host._intraday_engine_lane_from_strategy(intraday_strategy.value)
+                        engine=host._engine_lane_from_strategy(intraday_strategy.value)
                     ):
                         drop_code = "R_DUPLICATE_INTRADAY_POSITION"
                     elif intraday_contract is None:
@@ -975,7 +975,7 @@ class MicroEntryEngine:
                     )
                     if drop_logged:
                         algorithm._diag_intraday_dropped_count += 1
-                        algorithm._inc_intraday_engine_counter(
+                        algorithm._inc_engine_counter(
                             algorithm._diag_intraday_dropped_by_engine,
                             intraday_strategy,
                         )

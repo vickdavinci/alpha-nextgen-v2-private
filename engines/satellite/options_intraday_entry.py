@@ -65,7 +65,7 @@ def check_intraday_entry_signal_impl(
         TargetWeight for intraday entry, or None.
     """
 
-    validation_lane = self._intraday_engine_lane_from_strategy(
+    validation_lane = self._engine_lane_from_strategy(
         self._canonical_intraday_strategy_name(
             (
                 getattr(forced_entry_strategy, "value", forced_entry_strategy)
@@ -157,7 +157,7 @@ def check_intraday_entry_signal_impl(
             entry_strategy = self._canonical_intraday_strategy(state.recommended_strategy)
     if entry_strategy is None:
         return fail("E_INTRADAY_NO_STRATEGY")
-    validation_lane = self._intraday_engine_lane_from_strategy(entry_strategy.value)
+    validation_lane = self._engine_lane_from_strategy(entry_strategy.value)
     self.set_last_intraday_validation_failure(validation_lane, None, None)
     lane_caps = (
         self._get_effective_lane_caps() if hasattr(self, "_get_effective_lane_caps") else None
@@ -169,10 +169,10 @@ def check_intraday_entry_signal_impl(
     lane_ok, lane_code, lane_detail, pending_lane = self._micro_entry_engine.validate_lane_caps(
         entry_strategy=entry_strategy,
         intraday_positions=self._intraday_positions,
-        has_pending_intraday_entry=self.has_pending_intraday_entry,
+        has_pending_intraday_entry=self.has_pending_engine_entry,
         intraday_itm_trades_today=self._intraday_itm_trades_today,
         intraday_micro_trades_today=self._intraday_micro_trades_today,
-        lane_resolver=self._intraday_engine_lane_from_strategy,
+        lane_resolver=self._engine_lane_from_strategy,
         lane_caps=lane_caps,
         daily_caps=trade_caps,
         state=state,
@@ -756,7 +756,7 @@ def check_intraday_entry_signal_impl(
             return fail("E_INTRADAY_CAP_TOO_SMALL")
 
     pending_symbol_norm = self._symbol_str(best_contract.symbol)
-    pending_lane = self._intraday_engine_lane_from_strategy(entry_strategy.value)
+    pending_lane = self._engine_lane_from_strategy(entry_strategy.value)
     active_lane = self._find_engine_lane_by_symbol(pending_symbol_norm)
     if active_lane is not None and str(active_lane).upper() != pending_lane:
         return fail(

@@ -311,7 +311,7 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
             self._intraday_position_engine = None
         elif self.should_hold_intraday_overnight(position):
             self._intraday_position = position
-            self._intraday_position_engine = self._intraday_engine_lane_from_strategy(
+            self._intraday_position_engine = self._engine_lane_from_strategy(
                 position.entry_strategy
             )
             live_dte = self._get_position_live_dte(position)
@@ -383,7 +383,7 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
     else:
         self._intraday_positions = {"MICRO": [], "ITM": []}
         if self._intraday_position is not None:
-            lane = self._intraday_engine_lane_from_strategy(
+            lane = self._engine_lane_from_strategy(
                 getattr(self._intraday_position, "entry_strategy", "")
             )
             self._intraday_positions[lane] = [self._intraday_position]

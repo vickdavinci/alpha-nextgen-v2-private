@@ -109,7 +109,9 @@ class AlphaNextGen(QCAlgorithm):
     _micro_dte_bucket = MainOptionsMixin._micro_dte_bucket
     _inc_micro_dte_counter = MainOptionsMixin._inc_micro_dte_counter
     _record_micro_drop_reason_dte = MainOptionsMixin._record_micro_drop_reason_dte
+    _engine_bucket_from_strategy = MainOptionsMixin._engine_bucket_from_strategy
     _intraday_engine_bucket_from_strategy = MainOptionsMixin._intraday_engine_bucket_from_strategy
+    _inc_engine_counter = MainOptionsMixin._inc_engine_counter
     _inc_intraday_engine_counter = MainOptionsMixin._inc_intraday_engine_counter
     _record_intraday_drop_reason = MainOptionsMixin._record_intraday_drop_reason
     _record_vass_reject_reason = MainOptionsMixin._record_vass_reject_reason
@@ -896,7 +898,7 @@ class AlphaNextGen(QCAlgorithm):
             message=drop_message,
         )
         self._record_signal_lifecycle_event(
-            engine=self._intraday_engine_bucket_from_strategy(strategy),
+            engine=self._engine_bucket_from_strategy(strategy),
             event="DROPPED",
             signal_id=signal_id,
             direction=direction_name if direction is not None else "",
@@ -973,7 +975,7 @@ class AlphaNextGen(QCAlgorithm):
         if "MICRO" in hint_text:
             return "MICRO"
 
-        strategy_bucket = self._intraday_engine_bucket_from_strategy(strategy_hint)
+        strategy_bucket = self._engine_bucket_from_strategy(strategy_hint)
         if strategy_bucket in {"MICRO", "ITM"}:
             return strategy_bucket
 
@@ -994,7 +996,7 @@ class AlphaNextGen(QCAlgorithm):
                 pos_symbol = self._normalize_symbol_str(intraday_pos.contract.symbol)
                 if pos_symbol != symbol_norm:
                     continue
-                bucket = self._intraday_engine_bucket_from_strategy(
+                bucket = self._engine_bucket_from_strategy(
                     getattr(intraday_pos, "entry_strategy", "")
                 )
                 if bucket in {"MICRO", "ITM"}:

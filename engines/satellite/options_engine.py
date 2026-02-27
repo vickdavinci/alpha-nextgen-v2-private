@@ -434,9 +434,13 @@ class OptionsEngine:
         value = self._canonical_intraday_strategy_name(strategy_name)
         return value == IntradayStrategy.ITM_MOMENTUM.value
 
-    def _intraday_engine_lane_from_strategy(self, strategy_name: Optional[str]) -> str:
+    def _engine_lane_from_strategy(self, strategy_name: Optional[str]) -> str:
         """Map strategy to engine lane key used by pending-entry/exit locks."""
         return "ITM" if self._is_itm_momentum_strategy_name(strategy_name) else "MICRO"
+
+    def _intraday_engine_lane_from_strategy(self, strategy_name: Optional[str]) -> str:
+        """Backward-compatible alias for engine-lane resolution."""
+        return self._engine_lane_from_strategy(strategy_name)
 
     def _pending_intraday_entry_key(self, symbol: str, lane: Optional[str]) -> str:
         """Build stable pending-entry key with lane isolation."""
@@ -1587,7 +1591,7 @@ class OptionsEngine:
         strategy_name = (
             self._canonical_intraday_strategy(strategy).value if strategy is not None else ""
         )
-        lane = self._intraday_engine_lane_from_strategy(strategy_name)
+        lane = self._engine_lane_from_strategy(strategy_name)
 
         if self._pending_intraday_entry or self._pending_intraday_entries:
             self._clear_stale_pending_engine_entry_if_orphaned()
@@ -1599,10 +1603,10 @@ class OptionsEngine:
         lane_ok, lane_code, lane_detail, _ = self._micro_entry_engine.validate_lane_caps(
             entry_strategy=self._canonical_intraday_strategy(strategy_name),
             intraday_positions=self._intraday_positions,
-            has_pending_intraday_entry=self.has_pending_intraday_entry,
+            has_pending_intraday_entry=self.has_pending_engine_entry,
             intraday_itm_trades_today=self._intraday_itm_trades_today,
             intraday_micro_trades_today=self._intraday_micro_trades_today,
-            lane_resolver=self._intraday_engine_lane_from_strategy,
+            lane_resolver=self._engine_lane_from_strategy,
             lane_caps=lane_caps,
             daily_caps=trade_caps,
             state=state,
@@ -3837,8 +3841,7 @@ class OptionsEngine:
         else:
             position = self.get_intraday_position(engine=engine)
             lane = (
-                engine
-                or self._intraday_engine_lane_from_strategy(getattr(position, "entry_strategy", ""))
+                engine or self._engine_lane_from_strategy(getattr(position, "entry_strategy", ""))
                 if position is not None
                 else None
             )
@@ -3901,7 +3904,7 @@ class OptionsEngine:
         strategy_name = self._canonical_intraday_strategy_name(
             getattr(position, "entry_strategy", "")
         )
-        lane_name = str(lane or self._intraday_engine_lane_from_strategy(strategy_name)).upper()
+        lane_name = str(lane or self._engine_lane_from_strategy(strategy_name)).upper()
         if lane_name not in {"ITM", "MICRO"}:
             lane_name = "MICRO"
 

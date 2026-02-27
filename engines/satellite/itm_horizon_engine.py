@@ -418,14 +418,14 @@ class ITMHorizonEngine:
                 )
                 if drop_logged:
                     algorithm._diag_intraday_dropped_count += 1
-                    algorithm._inc_intraday_engine_counter(
+                    algorithm._inc_engine_counter(
                         algorithm._diag_intraday_dropped_by_engine,
                         IntradayStrategy.ITM_MOMENTUM,
                     )
             else:
                 if algorithm._mark_intraday_signal_event("CANDIDATE", itm_signal_id):
                     algorithm._diag_intraday_candidate_count += 1
-                    algorithm._inc_intraday_engine_counter(
+                    algorithm._inc_engine_counter(
                         algorithm._diag_intraday_candidates_by_engine,
                         IntradayStrategy.ITM_MOMENTUM,
                     )
@@ -468,7 +468,7 @@ class ITMHorizonEngine:
                     )
                     if drop_logged:
                         algorithm._diag_intraday_dropped_count += 1
-                        algorithm._inc_intraday_engine_counter(
+                        algorithm._inc_engine_counter(
                             algorithm._diag_intraday_dropped_by_engine,
                             IntradayStrategy.ITM_MOMENTUM,
                         )
@@ -515,7 +515,7 @@ class ITMHorizonEngine:
                                 f"Strategy=ITM_MOMENTUM | Contract={itm_contract.symbol}"
                             )
                             algorithm._diag_intraday_approved_count += 1
-                            algorithm._inc_intraday_engine_counter(
+                            algorithm._inc_engine_counter(
                                 algorithm._diag_intraday_approved_by_engine,
                                 IntradayStrategy.ITM_MOMENTUM,
                             )
@@ -566,7 +566,7 @@ class ITMHorizonEngine:
                                     )
                                     if drop_logged:
                                         algorithm._diag_intraday_dropped_count += 1
-                                        algorithm._inc_intraday_engine_counter(
+                                        algorithm._inc_engine_counter(
                                             algorithm._diag_intraday_dropped_by_engine,
                                             IntradayStrategy.ITM_MOMENTUM,
                                         )
@@ -591,7 +591,7 @@ class ITMHorizonEngine:
                         )
                         if drop_logged:
                             algorithm._diag_intraday_dropped_count += 1
-                            algorithm._inc_intraday_engine_counter(
+                            algorithm._inc_engine_counter(
                                 algorithm._diag_intraday_dropped_by_engine,
                                 IntradayStrategy.ITM_MOMENTUM,
                             )

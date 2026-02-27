@@ -1888,7 +1888,7 @@ class MainOrdersMixin:
                                     if position and position.contract
                                     else -1,
                                 }
-                                entry_bucket = self._intraday_engine_bucket_from_strategy(
+                                entry_bucket = self._engine_bucket_from_strategy(
                                     getattr(position, "entry_strategy", "")
                                 )
                                 if entry_bucket == "ITM":
@@ -1995,9 +1995,7 @@ class MainOrdersMixin:
                                 if not cached_reason:
                                     cached_reason = f"UNATTRIBUTED_EXIT:{self._compact_tag_for_log(order_tag, max_chars=48)}"
                                 entry_strategy = getattr(removed_position, "entry_strategy", "")
-                                engine_bucket = self._intraday_engine_bucket_from_strategy(
-                                    entry_strategy
-                                )
+                                engine_bucket = self._engine_bucket_from_strategy(entry_strategy)
                                 self._record_exit_path_pnl(
                                     reason=cached_reason,
                                     order_tag=order_tag,
@@ -2094,7 +2092,7 @@ class MainOrdersMixin:
                                     pnl_dollars=(fill_price - removed_position.entry_price)
                                     * 100
                                     * abs(int(fill_qty)),
-                                    engine_tag=self._intraday_engine_bucket_from_strategy(
+                                    engine_tag=self._engine_bucket_from_strategy(
                                         getattr(removed_position, "entry_strategy", "")
                                     ),
                                 )
@@ -2126,7 +2124,7 @@ class MainOrdersMixin:
                             cached_reason = self._single_leg_last_exit_reason.pop(symbol_norm, "")
                             if not cached_reason:
                                 cached_reason = f"UNATTRIBUTED_EXIT:{self._compact_tag_for_log(order_tag, max_chars=48)}"
-                            fallback_engine_bucket = self._intraday_engine_bucket_from_strategy(
+                            fallback_engine_bucket = self._engine_bucket_from_strategy(
                                 str(snapshot.get("entry_strategy", ""))
                             )
                             closed_qty = abs(int(fill_qty))
