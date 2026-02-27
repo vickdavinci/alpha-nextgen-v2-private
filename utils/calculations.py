@@ -140,7 +140,7 @@ def week_to_date_loss_pct(week_start_equity: float, current_equity: float) -> fl
     return safe_divide(week_start_equity - current_equity, week_start_equity)
 
 
-def intraday_drop_pct(open_price: float, current_price: float) -> float:
+def engine_drop_pct(open_price: float, current_price: float) -> float:
     """Calculate intraday drop percentage from open.
 
     Used for gap filter and panic mode detection.
@@ -154,7 +154,7 @@ def intraday_drop_pct(open_price: float, current_price: float) -> float:
         Returns 0 if price is above open.
 
     Example:
-        >>> intraday_drop_pct(100.0, 96.0)
+        >>> engine_drop_pct(100.0, 96.0)
         0.04
     """
     if current_price >= open_price:

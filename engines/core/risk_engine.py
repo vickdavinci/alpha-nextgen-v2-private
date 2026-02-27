@@ -1791,7 +1791,7 @@ class RiskEngine:
             return False
         return True
 
-    def can_enter_intraday(self, current_time: datetime) -> bool:
+    def can_enter_engine_cycle(self, current_time: datetime) -> bool:
         """
         Quick check if intraday (MR) entries are allowed.
 

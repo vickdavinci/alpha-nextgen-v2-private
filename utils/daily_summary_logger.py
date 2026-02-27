@@ -171,7 +171,7 @@ def log_daily_summary(algo) -> None:
             out.append(f"{engine}[C={cnt_top}|P={pnl_top}]")
         return " ".join(out)
 
-    def _fmt_intraday_funnel_by_engine() -> str:
+    def _fmt_engine_funnel_by_engine() -> str:
         cand = algo._diag_intraday_candidates_by_engine
         app = algo._diag_intraday_approved_by_engine
         drp = algo._diag_intraday_dropped_by_engine
@@ -189,7 +189,7 @@ def log_daily_summary(algo) -> None:
             )
         return " ".join(parts)
 
-    def _fmt_intraday_drop_reasons_by_engine() -> str:
+    def _fmt_engine_drop_reasons_by_engine() -> str:
         out = []
         stores = getattr(algo, "_diag_intraday_drop_reason_counts_by_engine", {})
         for engine in ("MICRO", "ITM", "OTHER"):
@@ -259,7 +259,7 @@ def log_daily_summary(algo) -> None:
         f"VB={algo._diag_vass_block_count}",
         f"SE={algo._diag_spread_entry_signal_count}/{algo._diag_spread_entry_submit_count}/{algo._diag_spread_entry_fill_count}",
         f"SX={algo._diag_spread_exit_signal_count}/{algo._diag_spread_exit_submit_count}/{spread_exit_fill_strict}",
-        f"IE={_fmt_intraday_funnel_by_engine()}",
+        f"IE={_fmt_engine_funnel_by_engine()}",
     ]
     sparse_counts = [
         ("OB", algo._diag_overlay_block_count),
@@ -278,7 +278,7 @@ def log_daily_summary(algo) -> None:
     compact_parts.extend(f"{k}={int(v)}" for k, v in sparse_counts if int(v) != 0)
     if intraday_drop_top != "NONE":
         compact_parts.append(f"Drop={intraday_drop_top}")
-    intraday_drop_by_engine = _fmt_intraday_drop_reasons_by_engine()
+    intraday_drop_by_engine = _fmt_engine_drop_reasons_by_engine()
     if intraday_drop_by_engine != "MICRO[NONE] ITM[NONE] OTHER[NONE]":
         compact_parts.append(f"DropEng={intraday_drop_by_engine}")
     if top_router_rejects_str != "NONE":

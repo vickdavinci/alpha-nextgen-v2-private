@@ -22,7 +22,7 @@ from utils.calculations import (  # Helper utilities; Loss / percentage calculat
     credit_factor_score,
     credit_spread,
     daily_loss_pct,
-    intraday_drop_pct,
+    engine_drop_pct,
     is_extended,
     is_oversold,
     is_vol_shock,
@@ -124,14 +124,14 @@ class TestLossPercentageCalculations:
         result = week_to_date_loss_pct(100000, 95000)
         assert abs(result - 0.05) < 0.0001
 
-    def test_intraday_drop_pct(self):
+    def test_engine_drop_pct(self):
         """4% intraday drop calculated correctly."""
-        result = intraday_drop_pct(100.0, 96.0)
+        result = engine_drop_pct(100.0, 96.0)
         assert abs(result - 0.04) < 0.0001
 
     def test_intraday_drop_pct_price_up(self):
         """No drop when price is up."""
-        assert intraday_drop_pct(100.0, 105.0) == 0.0
+        assert engine_drop_pct(100.0, 105.0) == 0.0
 
     def test_profit_pct_positive(self):
         """15% profit calculated correctly."""

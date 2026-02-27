@@ -43,6 +43,16 @@ from engines.core.risk_engine import (
 # =============================================================================
 
 
+@pytest.fixture(autouse=True)
+def _ks_test_thresholds(monkeypatch):
+    """Override graduated KS thresholds so unit tests use standard 2%/4%/6%."""
+    monkeypatch.setattr(config, "KS_GRADUATED_ENABLED", True)
+    monkeypatch.setattr(config, "KS_TIER_1_PCT", 0.02)
+    monkeypatch.setattr(config, "KS_TIER_2_PCT", 0.04)
+    monkeypatch.setattr(config, "KS_TIER_3_PCT", 0.06)
+    monkeypatch.setattr(config, "KILL_SWITCH_PCT", 0.06)
+
+
 @pytest.fixture
 def risk_engine():
     """Create a RiskEngine instance for testing."""
@@ -345,7 +355,7 @@ class TestGapFilter:
         risk_engine.check_gap_filter(443.0)  # Trigger
 
         current_time = datetime(2024, 1, 15, 10, 30)
-        assert risk_engine.can_enter_intraday(current_time) is False
+        assert risk_engine.can_enter_engine_cycle(current_time) is False
         # But swing entries (already submitted MOO) are allowed - can_enter_new_positions
         # is not blocked by gap filter alone
 
@@ -614,7 +624,7 @@ class TestQuickCheckMethods:
 
         current_time = datetime(2024, 1, 15, 10, 30)
         assert risk_engine.can_enter_new_positions(current_time) is True  # Swing OK
-        assert risk_engine.can_enter_intraday(current_time) is False  # MR blocked
+        assert risk_engine.can_enter_engine_cycle(current_time) is False  # MR blocked
 
 
 # =============================================================================
@@ -639,7 +649,7 @@ class TestDailyReset:
         # All flags should be cleared
         current_time = datetime(2024, 1, 15, 10, 30)
         assert configured_engine.can_enter_new_positions(current_time) is True
-        assert configured_engine.can_enter_intraday(current_time) is True
+        assert configured_engine.can_enter_engine_cycle(current_time) is True
         assert configured_engine.is_symbol_frozen("QLD") is False
 
     def test_reset_preserves_weekly_breaker(self, configured_engine):
