@@ -1,6 +1,7 @@
 # Backtest Workflow Guide
 
-> Mandatory for all coding agents (Codex/Claude/other): use this exact flow.
+> Mandatory for all coding agents (Claude Code, Codex, or other): use this exact flow.
+> Completion rule: keep looping (diagnose -> fix -> rerun) until the backtest completes successfully and required artifacts are pulled.
 
 ## Canonical Command
 
@@ -8,13 +9,39 @@
 ./scripts/qc_backtest.sh "<BACKTEST_NAME>" --open
 ```
 
+- Always use `--open` to wait for completion and stream results.
+- Without `--open`, the backtest runs async and you cannot see results.
+
 Examples:
 
 ```bash
-./scripts/qc_backtest.sh "V10.2-FullYear2023" --open
-./scripts/qc_backtest.sh "V10.2-Smoke-JulSep2017"
-./scripts/qc_backtest.sh --open
+./scripts/qc_backtest.sh "V12.16-FullYear2024" --open
+./scripts/qc_backtest.sh "V12.16-Smoke-JulSep2017" --open
+./scripts/qc_backtest.sh --open   # auto-generates name from git branch
 ```
+
+## Mandatory Completion Contract (Self-Healing Loop)
+
+A backtest task is complete only when all of the following are true:
+
+1. `./scripts/qc_backtest.sh "<BACKTEST_NAME>" --open` exits successfully.
+2. QC backtest status is terminal-success (completed, not failed/cancelled/runtime-error).
+3. Artifacts are pulled with:
+   `python scripts/qc_pull_backtest.py "<BACKTEST_NAME>" --all --project 27678023 --output "docs/audits/logs/<stage_folder>"`
+4. Required files exist in the stage folder:
+   - `*_logs.txt`
+   - `*_trades.csv`
+   - `*_orders.csv`
+   - `*_overview.txt`
+
+If any step fails, the agent must:
+
+1. Capture the exact failure message.
+2. Fix root cause in code/runtime workflow.
+3. Re-run the canonical workflow end-to-end.
+4. Repeat until all completion conditions pass.
+
+Do not stop at first failure. Do not ask the user to run intermediate recovery commands.
 
 ## What The Script Now Does
 
@@ -67,14 +94,82 @@ pytest -q
 - Fix code.
 - Re-run script end-to-end (no manual partial workflow).
 
+### 4) Runtime loop policy (mandatory)
+
+Use this loop for all failures (validation, size guard, push, compile, runtime exceptions):
+
+1. Run canonical command with `--open`.
+2. If failure:
+   - classify (`validation`, `size`, `push`, `compile`, `runtime`, `artifact-pull`)
+   - apply minimal targeted fix
+   - rerun canonical command
+3. On backtest success, pull artifacts and verify required files.
+4. If artifact pull fails, fix pull path/name/id and retry pull until successful.
+
+This is an autonomous workflow. The agent owns recovery until completion.
+
 ## Agent Playbook
 
 When a task says “run backtest”:
 
-1. Use `./scripts/qc_backtest.sh "<name>" --open`.
-2. Capture backtest id + status.
-3. Pull artifacts via `python scripts/qc_pull_backtest.py "<name>" --all --project 27678023 --output "<stage_folder>"`.
-4. Report findings with file/line evidence.
+1. Activate venv: `source venv/bin/activate && python --version` (must be 3.11).
+2. Run `./scripts/qc_backtest.sh "<name>" --open --start-date YYYY-MM-DD --end-date YYYY-MM-DD` (or `--backtest-year YYYY` when applicable).
+3. If run fails, fix root cause and rerun step 2 until success.
+4. Capture backtest id + status from script output.
+5. Pull artifacts: `python scripts/qc_pull_backtest.py "<name>" --all --project 27678023 --output "docs/audits/logs/<stage_folder>"`.
+6. Verify required artifacts exist in stage folder; if missing, retry pull (name then explicit id).
+7. Analyze logs + trades.csv with the `log-analyzer` and/or `trade-analyzer` agents.
+8. Report findings with file/line evidence.
+
+### Required execution pattern (no early exit)
+
+- Keep the same run context and continue recovery attempts until completion contract passes.
+- For runtime exceptions during cloud execution, patch code and rerun `qc_backtest.sh --open` immediately.
+- For pull ambiguity, retry by explicit backtest id using `qc_pull_backtest.py --id`.
+
+### Claude Code
+
+Claude Code has a dedicated **`backtest-workflow`** agent (defined in `.claude/agents/backtest-workflow.md`).
+Use it via the Task tool:
+
+```
+Use the backtest-workflow agent to run a backtest for July to September 2024
+```
+
+The agent handles the full loop automatically (sync, push, run, runtime-fix retries, artifact pull verification).
+After the agent completes, launch `log-analyzer` or `trade-analyzer` on the pulled artifacts for full reporting.
+
+`backtest-runner` is legacy and should not be used for new runs.
+
+Claude Code also has direct access to the terminal. If you prefer manual control, run the canonical command directly via the Bash tool. Always use `--open` so the backtest blocks until complete and streams results back.
+
+### Codex
+
+Codex should run the same workflow using Claude agents via MCP.
+
+One-time MCP setup (global):
+
+```bash
+codex mcp add claude-agents --env CLAUDE_CODE_ENTRYPOINT=1 -- claude mcp serve
+```
+
+Then for backtests, Codex should:
+
+1. Run steps 1-5 directly via terminal workflow in this guide (`qc_backtest.sh --open` + `qc_pull_backtest.py --all`).
+2. Use Claude `log-analyzer` and `trade-analyzer` agents via MCP for report generation only.
+3. Keep outputs in the stage folder (`*_REPORT.md`, `*_SIGNAL_FLOW_REPORT.md`, `*_TRADE_DETAIL_REPORT.md`).
+
+Do **not** use `backtest-runner` in the Codex path.
+
+If MCP is unavailable, fallback to direct terminal workflow in this guide (`qc_backtest.sh --open` + `qc_pull_backtest.py --all`) and clearly note the fallback in the run summary.
+
+### General (Any Agent)
+
+- Never run `lean cloud push` directly — always go through `qc_backtest.sh`.
+- Never manually `cp` files to lean-workspace — the sync script handles this.
+- If the script fails, fix the root cause and re-run the full script (no partial workflows).
+- Always pull artifacts to an explicit stage folder after completion.
+- Log file naming: `V12_16_FullYear2024_logs.txt`, `V12_16_JulSep2017_logs.txt`.
 
 ## Related Scripts
 
@@ -102,6 +197,32 @@ python scripts/qc_pull_backtest.py --id "<BACKTEST_ID>" --all \
   --output "docs/audits/logs/<stage_folder>"
 ```
 
+### Expected Artifacts
+
+After a successful pull, the stage folder should contain:
+
+| File | Contents |
+|------|----------|
+| `*_logs.txt` | Full backtest log (up to 5 MB) |
+| `*_trades.csv` | All fills with timestamps, P&L, fees |
+| `*_orders.csv` | Order events (submitted, filled, canceled) |
+| `*_overview.txt` | QC summary (return, Sharpe, drawdown, trade count) |
+
+### Post-Pull Analysis Pipeline
+
+After pulling artifacts, generate reports using the specialized agents:
+
+1. **Performance Report** (`log-analyzer`): Hedge-fund-style stats, regime analysis, signal flow.
+2. **Trade Detail Report** (`trade-analyzer`): Per-trade P&L with regime, VIX, entry/exit context.
+
+Claude Code example:
+```
+Use the log-analyzer agent to analyze docs/audits/logs/stage12.16/
+Use the trade-analyzer agent to analyze the V12.16 2024 trades in stage12.16/
+```
+
+Both agents read logs + trades.csv and produce markdown reports saved to the same stage folder.
+
 ## Object Store Retrieval Reality (QC Account-Tier Aware)
 
 `qc_pull_backtest.py` attempts to pull structured observability CSVs from Object Store.
@@ -121,6 +242,17 @@ Concrete reference implementation:
 2. Canonical loader: `scripts/qc_research_objectstore_loader.py`
 3. Historical stage example: `docs/audits/logs/stage12.4/V12.4-JulSep2024-R2_OBJECTSTORE_CROSSCHECK.md`
 
+## Environment Setup (All Agents)
+
+Before any backtest workflow, ensure the environment is correct:
+
+```bash
+source venv/bin/activate
+python --version   # Must be 3.11.x (NOT 3.14)
+```
+
+System Python is 3.14, but the project requires 3.11 via the venv. Lean CLI is installed globally on system Python (`pip3 install lean==1.0.221`). Do **not** upgrade lean — newer versions break on pydantic v2.
+
 ## Lean Workspace Sync Sanity Check
 
 If validator passes in repo root but fails in `lean-workspace`, deployment files are stale.
@@ -135,3 +267,16 @@ If it fails on missing mixin/module files, run canonical sync flow again:
 ```bash
 ./scripts/qc_backtest.sh "<BACKTEST_NAME>" --open
 ```
+
+## Quick Reference
+
+| Item | Value |
+|------|-------|
+| QC Cloud Project | `AlphaNextGen` (ID: 27678023) |
+| Lean Workspace | `~/Documents/Trading Github/lean-workspace/AlphaNextGen` |
+| Logs Directory | `docs/audits/logs/` |
+| Max File Size | 256 KB per `.py` file |
+| Max Backtest Log | 5 MB |
+| Backtest Nodes | 2x B4-12 (4 cores, 12 GB RAM) |
+| Python Version | 3.11 (venv) |
+| Lean CLI Version | 1.0.221 (pinned) |
