@@ -146,6 +146,8 @@ class MainOptionsMixin:
         self._diag_spread_removed_fill_path_count = 0
         self._diag_spread_ghost_removed_count = 0
         self._diag_spread_loss_beyond_stop_count = 0
+        self._diag_micro_signal_seq = 0
+        self._diag_itm_signal_seq = 0
         self._diag_micro_tag_recovery_count = 0
         self._diag_micro_eod_sweep_close_count = 0
         self._diag_micro_pending_cancel_ignored_count = 0

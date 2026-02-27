@@ -618,10 +618,9 @@ class MicroEntryEngine:
         if "MISALIGNED_HALF" in signal_reason:
             intraday_size_multiplier *= getattr(config, "MICRO_MISALIGNED_SIZE_MULT", 0.50)
 
-        intraday_signal_id = (
-            f"MICRO-{algorithm.Time.strftime('%Y%m%d-%H%M')}-"
-            f"{algorithm._diag_intraday_candidate_count + 1}"
-        )
+        micro_signal_seq = int(getattr(algorithm, "_diag_micro_signal_seq", 0)) + 1
+        algorithm._diag_micro_signal_seq = micro_signal_seq
+        intraday_signal_id = f"MICRO-{algorithm.Time.strftime('%Y%m%d-%H%M')}-{micro_signal_seq}"
         intraday_strategy = None
 
         itm_dir = None

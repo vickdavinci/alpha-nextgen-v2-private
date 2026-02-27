@@ -385,10 +385,9 @@ class ITMHorizonEngine:
             and not itm_intraday_cooldown_active
             and not itm_weekend_cutoff_active
         ):
-            itm_signal_id = (
-                f"ITM-{algorithm.Time.strftime('%Y%m%d-%H%M')}-"
-                f"{algorithm._diag_intraday_candidate_count + 1}"
-            )
+            itm_signal_seq = int(getattr(algorithm, "_diag_itm_signal_seq", 0)) + 1
+            algorithm._diag_itm_signal_seq = itm_signal_seq
+            itm_signal_id = f"ITM-{algorithm.Time.strftime('%Y%m%d-%H%M')}-{itm_signal_seq}"
             itm_reason = itm_reason or "EXPLICIT_ITM_SCAN"
             (
                 itm_preflight_ok,
