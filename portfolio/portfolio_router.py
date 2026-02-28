@@ -3530,8 +3530,13 @@ class PortfolioRouter:
                                     trace_id=trace_id,
                                 )
                                 continue
+                        combo_margin_buffer_pct = float(
+                            getattr(config, "COMBO_MARGIN_SAFETY_BUFFER_PCT", 0.05)
+                        )
+                        combo_margin_buffer_pct = min(max(combo_margin_buffer_pct, 0.0), 0.25)
+                        margin_remaining_safe = margin_remaining * (1.0 - combo_margin_buffer_pct)
                         required_margin = per_contract_margin * order.quantity
-                        if per_contract_margin > 0 and required_margin > margin_remaining:
+                        if per_contract_margin > 0 and required_margin > margin_remaining_safe:
                             # V9.4 P0: Exit combos bypass margin check — closing a spread
                             # releases margin, it should never be blocked by margin requirements.
                             # This fixes the deadlock where exit signals fire every minute but
@@ -3540,10 +3545,11 @@ class PortfolioRouter:
                                 self.log(
                                     f"ROUTER_EXIT_BYPASS_MARGIN: {order.symbol} | "
                                     f"Required=${required_margin:,.0f} > Available=${margin_remaining:,.0f} | "
+                                    f"SafeAvailable=${margin_remaining_safe:,.0f} | "
                                     f"Allowing exit combo (risk-reducing)"
                                 )
                             else:
-                                max_contracts = int(margin_remaining / per_contract_margin)
+                                max_contracts = int(margin_remaining_safe / per_contract_margin)
                                 min_contracts = getattr(config, "MIN_SPREAD_CONTRACTS", 2)
                                 if max_contracts >= min_contracts:
                                     scale_ratio = max_contracts / order.quantity
@@ -3560,12 +3566,14 @@ class PortfolioRouter:
                                     self.log(
                                         f"ROUTER_MARGIN_SCALE_COMBO: {order.symbol} | "
                                         f"Required=${required_margin:,.0f} > Available=${margin_remaining:,.0f} | "
+                                        f"SafeAvailable=${margin_remaining_safe:,.0f} | "
                                         f"Scaled to {max_contracts} spreads"
                                     )
                                 else:
                                     self.log(
                                         f"ROUTER_MARGIN_BLOCK_COMBO: {order.symbol} | "
                                         f"Required=${required_margin:,.0f} > Available=${margin_remaining:,.0f} | "
+                                        f"SafeAvailable=${margin_remaining_safe:,.0f} | "
                                         f"Max {max_contracts} < min {min_contracts}"
                                     )
                                     self._record_rejection(
@@ -3573,6 +3581,7 @@ class PortfolioRouter:
                                         symbol=order.symbol,
                                         detail=(
                                             f"Required=${required_margin:,.0f} > Available=${margin_remaining:,.0f} | "
+                                            f"SafeAvailable=${margin_remaining_safe:,.0f} | "
                                             f"Max={max_contracts} < Min={min_contracts}"
                                         ),
                                         stage="EXECUTE",
@@ -3701,24 +3710,32 @@ class PortfolioRouter:
                             continue
                     total_combo_margin = combo_margin_per_contract * abs(order.quantity)
                     margin_remaining = self.get_effective_margin_remaining()
-                    if combo_margin_per_contract > 0 and total_combo_margin > margin_remaining:
+                    combo_margin_buffer_pct = float(
+                        getattr(config, "COMBO_MARGIN_SAFETY_BUFFER_PCT", 0.05)
+                    )
+                    combo_margin_buffer_pct = min(max(combo_margin_buffer_pct, 0.0), 0.25)
+                    margin_remaining_safe = margin_remaining * (1.0 - combo_margin_buffer_pct)
+                    if combo_margin_per_contract > 0 and total_combo_margin > margin_remaining_safe:
                         # V9.4 P0: Exit combos bypass — closing reduces risk, should never be blocked
                         if is_exit_combo:
                             self.log(
                                 f"ROUTER_EXIT_BYPASS_MARGIN: {order.symbol} | "
                                 f"Required=${total_combo_margin:,.0f} > Available=${margin_remaining:,.0f} | "
+                                f"SafeAvailable=${margin_remaining_safe:,.0f} | "
                                 f"Allowing exit combo (risk-reducing)"
                             )
                         else:
                             self.log(
                                 f"ROUTER_MARGIN_BLOCK_COMBO: {order.symbol} | "
-                                f"Required=${total_combo_margin:,.0f} > Available=${margin_remaining:,.0f}"
+                                f"Required=${total_combo_margin:,.0f} > Available=${margin_remaining:,.0f} | "
+                                f"SafeAvailable=${margin_remaining_safe:,.0f}"
                             )
                             self._record_rejection(
                                 code="R_COMBO_MARGIN_BLOCK",
                                 symbol=order.symbol,
                                 detail=(
-                                    f"Required=${total_combo_margin:,.0f} > Available=${margin_remaining:,.0f}"
+                                    f"Required=${total_combo_margin:,.0f} > Available=${margin_remaining:,.0f} | "
+                                    f"SafeAvailable=${margin_remaining_safe:,.0f}"
                                 ),
                                 stage="EXECUTE",
                                 source_tag=source_tag,

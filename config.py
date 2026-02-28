@@ -80,6 +80,7 @@ SYMBOL_LEVERAGE = {
 # V2.3.24: Minimum contracts for scaled spreads
 # If margin check would reduce spread below this, skip the trade entirely
 MIN_SPREAD_CONTRACTS = 2
+COMBO_MARGIN_SAFETY_BUFFER_PCT = 0.05  # Keep 5% buying-power headroom for combo submits
 
 # =============================================================================
 # REGIME ENGINE
