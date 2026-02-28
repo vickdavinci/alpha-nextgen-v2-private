@@ -86,16 +86,21 @@ grep -r "HYG" docs/         # Removed proxy symbol
 grep -r "IEF" docs/         # Removed proxy symbol
 
 # OLD Allocation Percentages:
-grep -r "55%.*Trend" docs/  # Should be 40%
-grep -r "50%.*Options" docs/ # Should be 25%
-grep -r "Swing 20%" docs/   # Should be 18.75%
-grep -r "Swing 37" docs/    # Should be 18.75%
-grep -r "Intraday 5%" docs/ # Should be 6.25%
-grep -r "Intraday 12" docs/ # Should be 6.25%
+grep -r "55%.*Trend" docs/    # Should be 40% (partition 50%)
+grep -r "25%.*Options" docs/  # Should be 50% (CAPITAL_PARTITION_OPTIONS)
+grep -r "Swing 20%" docs/     # Should be 35% (OPTIONS_SWING_ALLOCATION)
+grep -r "Swing 18" docs/      # Should be 35%
+grep -r "Intraday 5%" docs/   # Should be 25% (OPTIONS_INTRADAY_ALLOCATION)
+grep -r "Intraday 6.25" docs/ # Should be 25%
 
 # OLD Kill Switch:
-grep -r "Kill.*3%" docs/    # Should be 5%
-grep -r "-3%.*kill" docs/   # Should be -5%
+grep -r "Kill.*3%" docs/    # Should be tiered: 2%/4%/6%
+grep -r "-3%.*kill" docs/   # Should be tiered KS
+grep -r "Kill.*5%" docs/    # Should be tiered: Tier 1=2%, Tier 2=4%, Tier 3=6%
+
+# OLD Options Architecture (pre-V12.5):
+grep -r "monolithic.*options" docs/  # Should reference decomposed sub-engines
+grep -r "single.*options.*engine" docs/  # VASS/Micro/ITM are now separate engines
 ```
 
 ### Step 3: Generate Audit Report
@@ -123,13 +128,16 @@ When updating, use these V6.x canonical values:
 | Yield | SHV | (Removed - spec only) |
 | Proxy | SPY, RSP, HYG, IEF, VIX | SPY, RSP, VIX |
 
-#### Allocations (V6.11)
-| Engine | OLD | NEW |
-|--------|-----|-----|
-| Trend (Core) | 55% | 40% |
-| Options (Satellite) | 50% | 25% |
-| - Swing | 37.5% or 20% | 18.75% |
-| - Intraday | 12.5% or 5% | 6.25% |
+#### Allocations (V12.20)
+| Engine | OLD | CURRENT |
+|--------|-----|---------|
+| Trend (Core) | 55% | 40% (CAPITAL_PARTITION_TREND=50%) |
+| Options (Satellite) | 25% | 50% (CAPITAL_PARTITION_OPTIONS=50%) |
+| - OPTIONS_TOTAL_ALLOCATION | 50% | 60% (VASS 35% + Intraday 25%) |
+| - VASS Swing | 37.5% | 35% (OPTIONS_SWING_ALLOCATION) |
+| - Intraday (ITM + Micro) | 12.5% | 25% (OPTIONS_INTRADAY_ALLOCATION) |
+|   - ITM Momentum | N/A | 15% (INTRADAY_ITM_MAX_PCT) |
+|   - Micro OTM | N/A | 10% (INTRADAY_OTM_MAX_PCT) |
 | Mean Reversion | 10% | 10% |
 | Trend Symbol Weights | QLD 20%, SSO 15%, TNA 12%, FAS 8% | QLD 15%, SSO 7%, UGL 10%, UCO 8% |
 | MR Symbol Weights | TQQQ 5%, SOXL 5% | TQQQ 4%, SPXL 3%, SOXL 3% |
@@ -146,13 +154,16 @@ When updating, use these V6.x canonical values:
 | Drawdown | N/A | 15% |
 | Guards | N/A | VIX Clamp, Spike Cap, Breadth Decay |
 
-#### Key Thresholds (V6.x)
-| Threshold | OLD | NEW |
-|-----------|-----|-----|
-| Kill Switch | 3% | 5% |
-| VIX High Clamp | N/A | 47 (when VIX ≥ 25) |
-| Spike Cap | N/A | 38 (when VIX 5-day ≥ +28%) |
-| RATES exposure | 40% | 99% |
+#### Key Thresholds (V12.20)
+| Threshold | OLD | CURRENT |
+|-----------|-----|---------|
+| Kill Switch (Tier 1) | 3% flat | 2% (reduce trend 50%, block new options) |
+| Kill Switch (Tier 2) | — | 4% (trend exit, keep spreads) |
+| Kill Switch (Tier 3) | — | 6% (full liquidation) |
+| VIX High Clamp | N/A | 47 (when VIX >= 25) |
+| Spike Cap | N/A | 38 (when VIX 5-day >= +28%) |
+| Options Budget Cap | 25% | 50% (= CAPITAL_PARTITION_OPTIONS) |
+| Options Max Margin | 40% | 50% (aligned with budget cap) |
 
 ### Step 5: Update Systematically
 
@@ -189,13 +200,18 @@ Read `docs/DOCUMENTATION-MAP.md` (if it exists) or use the Component Map in `CLA
 
 | If Code Changed In... | Update These Docs |
 |----------------------|-------------------|
-| `engines/core/` | Corresponding `docs/XX-engine.md`, Component Map in CLAUDE.md |
-| `engines/satellite/` | Corresponding `docs/XX-engine.md`, Component Map in CLAUDE.md |
-| `config.py` | `docs/16-appendix-parameters.md`, Key Thresholds in CLAUDE.md |
-| `portfolio/` | `docs/11-portfolio-router.md`, architecture diagrams |
-| `execution/` | `docs/13-execution-engine.md`, Data Flow diagram |
+| `engines/core/` | Corresponding `docs/system/XX-engine.md`, Component Map in CLAUDE.md |
+| `engines/satellite/options_engine.py` | `docs/system/18-options-engine.md`, CLAUDE.md exit cascade, Component Map |
+| `engines/satellite/vass_entry_engine.py` | `docs/system/18-options-engine.md`, CLAUDE.md VASS section |
+| `engines/satellite/micro_entry_engine.py` | `docs/system/18-options-engine.md`, CLAUDE.md Micro section |
+| `engines/satellite/itm_horizon_engine.py` | `docs/system/18-options-engine.md`, CLAUDE.md ITM section |
+| `engines/satellite/` (other) | Corresponding `docs/system/XX-engine.md`, Component Map in CLAUDE.md |
+| `main_*_mixin.py` | `docs/system/18-options-engine.md`, `docs/system/14-daily-operations.md`, Data Flow |
+| `config.py` | `docs/system/16-appendix-parameters.md`, Key Thresholds in CLAUDE.md |
+| `portfolio/` | `docs/system/11-portfolio-router.md`, architecture diagrams |
+| `execution/` | `docs/system/13-execution-engine.md`, `docs/system/19-oco-manager.md`, Data Flow |
 | New files | Repository Structure in CLAUDE.md, PROJECT-STRUCTURE.md |
-| Models/enums | `docs/17-appendix-glossary.md`, Component Map |
+| Models/enums | `docs/system/17-appendix-glossary.md`, Component Map |
 
 ### Step 5: Update ALL Affected Documentation
 For each affected document:
@@ -220,6 +236,8 @@ Before committing, verify:
 - [ ] No orphaned documentation (docs for removed features)
 - [ ] Consistent terminology throughout
 - [ ] No references to deprecated symbols (TNA, FAS, TMF, PSQ, SHV)
+- [ ] Options engine references reflect V12.5 decomposition (VASS/Micro/ITM sub-engines)
+- [ ] Kill switch references use tiered model (Tier 1/2/3), not flat percentage
 
 ### Commit and Push
 Commit with a descriptive message following project conventions:
@@ -231,7 +249,7 @@ docs: update documentation for [feature/component]
 - Updated parameter tables
 - Refreshed architecture diagrams
 
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>
 ```
 
 Push to remote on the documentation branch.
@@ -342,6 +360,7 @@ After completing documentation updates, provide a summary:
 - `16-appendix-parameters.md`
 - `17-appendix-glossary.md`
 - `18-options-engine.md`
+- `19-oco-manager.md`
 - `ENGINE_LOGIC_REFERENCE.md`
 
 ### Priority 2: Root-Level Docs

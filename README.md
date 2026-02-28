@@ -9,6 +9,17 @@
 
 ---
 
+## Shared Agent Workflow
+
+- Process contract for both Codex and Claude: `PROCESS.md`
+- Fast safety gate: `./scripts/gate.sh changed`
+- Backtest workflow wrappers:
+  - `./scripts/run_backtest.sh ...`
+  - `./scripts/pull_logs.sh ...`
+  - `./scripts/analyze.sh ...`
+
+---
+
 ## Overview
 
 Alpha NextGen V2 is a systematic trading system that combines **regime detection**, **multiple trading strategies**, and **comprehensive risk management** to trade leveraged ETFs and QQQ options on the QuantConnect (LEAN) platform with Interactive Brokers.

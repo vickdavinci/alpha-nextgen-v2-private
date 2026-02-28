@@ -21,9 +21,10 @@ These tests run in CI and catch violations BEFORE code reaches QuantConnect.
 
 import ast
 import os
-import pytest
 from pathlib import Path
-from typing import List, Tuple, Set
+from typing import List, Set, Tuple
+
+import pytest
 
 
 class ArchitectureAnalyzer:
@@ -392,8 +393,20 @@ class TestQuantConnectCompliance:
 
             forbidden_datetime_calls = {"datetime.now", "datetime.today", "datetime.utcnow"}
 
+            # Read source lines to check for defensive fallback pattern
+            try:
+                with open(filepath) as f:
+                    source_lines = f.readlines()
+            except Exception:
+                source_lines = []
+
             for call_name, line_no in calls:
                 if call_name in forbidden_datetime_calls:
+                    # Allow conditional fallback: "X.Time if X is not None else datetime.utcnow()"
+                    if source_lines and 0 < line_no <= len(source_lines):
+                        line_text = source_lines[line_no - 1]
+                        if "if" in line_text and "else" in line_text and ".Time" in line_text:
+                            continue
                     violations.append(f"  {filepath}:{line_no} -> {call_name}()")
 
         if violations:

@@ -495,8 +495,15 @@ class TestSignalFlow:
         # The calculate method exists
         assert hasattr(engine, "calculate")
 
-    def test_risk_engine_kill_switch_check(self):
+    def test_risk_engine_kill_switch_check(self, monkeypatch):
         """Test risk engine kill switch detection (V2.3.17: 5% threshold)."""
+        # Override graduated KS thresholds for test (production uses 95-99% for backtest)
+        monkeypatch.setattr(config, "KS_GRADUATED_ENABLED", True)
+        monkeypatch.setattr(config, "KS_TIER_1_PCT", 0.02)
+        monkeypatch.setattr(config, "KS_TIER_2_PCT", 0.04)
+        monkeypatch.setattr(config, "KS_TIER_3_PCT", 0.06)
+        monkeypatch.setattr(config, "KILL_SWITCH_PCT", 0.06)
+
         engine = RiskEngine()
         engine.set_equity_prior_close(100000)
 

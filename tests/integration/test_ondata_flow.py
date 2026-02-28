@@ -61,34 +61,37 @@ class TestRiskEngineRunsFirst:
         """
         Test: Kill switch triggered -> All other processing blocked.
 
-        When kill switch triggers (5% daily loss, V2.3.17), OnData must:
-        1. Run risk check
-        2. Detect kill switch
-        3. Return early without running any strategy logic
+        V2.27: Uses graduated kill switch. Config has high thresholds for backtest mode,
+        so we temporarily lower them to test the mechanism.
         """
         algo = mock_algorithm_with_time
-        risk_engine = RiskEngine(algo)
-        trend_engine = TrendEngine(algo)
-        mr_engine = MeanReversionEngine(algo)
-        router = PortfolioRouter(algo)
 
-        # Set up baselines (simulating pre-market setup)
-        equity_sod = 100000.0
-        risk_engine.set_equity_sod(equity_sod)
-        risk_engine.set_equity_prior_close(equity_sod)
+        # Override graduated KS thresholds for this test
+        orig_t3 = config.KS_TIER_3_PCT
+        orig_t2 = config.KS_TIER_2_PCT
+        orig_t1 = config.KS_TIER_1_PCT
+        try:
+            config.KS_TIER_3_PCT = 0.06
+            config.KS_TIER_2_PCT = 0.04
+            config.KS_TIER_1_PCT = 0.02
+            risk_engine = RiskEngine(algo)
 
-        # Simulate kill switch condition: 5.5% daily loss (V2.3.17: raised from 3%)
-        current_equity = 94500.0  # -5.5%
+            # Set up baselines (simulating pre-market setup)
+            equity_sod = 100000.0
+            risk_engine.set_equity_sod(equity_sod)
+            risk_engine.set_equity_prior_close(equity_sod)
 
-        # Kill switch check
-        is_kill_switch = risk_engine.check_kill_switch(current_equity)
+            # Simulate kill switch condition: 5.5% daily loss
+            current_equity = 94500.0  # -5.5%
 
-        assert is_kill_switch is True
+            # Kill switch check
+            is_kill_switch = risk_engine.check_kill_switch(current_equity)
 
-        # When kill switch triggers, strategy engines should NOT be called
-        # This is the expected behavior in main.py OnData:
-        # if self.risk_engine.check_kill_switch():
-        #     return  # ALL other processing skipped
+            assert is_kill_switch is True
+        finally:
+            config.KS_TIER_3_PCT = orig_t3
+            config.KS_TIER_2_PCT = orig_t2
+            config.KS_TIER_1_PCT = orig_t1
 
     def test_panic_mode_liquidates_longs_only(self, mock_algorithm_with_time):
         """

@@ -168,7 +168,7 @@ class TestRegimeEngine:
             assert state.new_longs_allowed is False
 
     def test_regime_smoothing(self):
-        """Test EMA smoothing with alpha=0.3."""
+        """Test EMA smoothing with config alpha."""
         engine = RegimeEngine()
         engine._previous_smoothed_score = 50.0
 
@@ -190,8 +190,8 @@ class TestRegimeEngine:
         )
 
         # Smoothed score should be between previous (50) and raw
-        # With alpha=0.3: smoothed = 0.3*raw + 0.7*50
-        expected_smoothed = 0.3 * state.raw_score + 0.7 * 50.0
+        alpha = config.REGIME_SMOOTHING_ALPHA
+        expected_smoothed = alpha * state.raw_score + (1 - alpha) * 50.0
         assert abs(state.smoothed_score - expected_smoothed) < 0.01
 
     def test_regime_uses_proxy_symbols_only(self):

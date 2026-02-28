@@ -21,6 +21,16 @@ from engines.core.cold_start_engine import ColdStartEngine
 from engines.core.risk_engine import KSTier, RiskEngine, SafeguardType
 
 
+@pytest.fixture(autouse=True)
+def _ks_test_thresholds(monkeypatch):
+    """Override graduated KS thresholds so scenario tests use standard 2%/4%/6%."""
+    monkeypatch.setattr(config, "KS_GRADUATED_ENABLED", True)
+    monkeypatch.setattr(config, "KS_TIER_1_PCT", 0.02)
+    monkeypatch.setattr(config, "KS_TIER_2_PCT", 0.04)
+    monkeypatch.setattr(config, "KS_TIER_3_PCT", 0.06)
+    monkeypatch.setattr(config, "KILL_SWITCH_PCT", 0.06)
+
+
 @pytest.fixture
 def mock_algorithm():
     """Create mock algorithm for kill switch tests."""

@@ -7,6 +7,8 @@
 #   ./scripts/qc_backtest.sh "My-Backtest-Name"      # Custom name (async)
 #   ./scripts/qc_backtest.sh --open                  # Wait for completion
 #   ./scripts/qc_backtest.sh "My-Name" --open        # Custom name + wait
+#   ./scripts/qc_backtest.sh "My-Name" --open --start-date 2024-07-01 --end-date 2024-10-31
+#   ./scripts/qc_backtest.sh "My-Name" --open --backtest-year 2024
 #
 # What it does:
 #   1. Syncs project files to lean-workspace/AlphaNextGen
@@ -43,13 +45,54 @@ NC='\033[0m'
 # Parse arguments
 BACKTEST_NAME=""
 OPEN_FLAG=""
+START_DATE=""
+END_DATE=""
+BACKTEST_YEAR=""
 
-for arg in "$@"; do
-    if [ "$arg" == "--open" ]; then
-        OPEN_FLAG="--open"
-    elif [ -z "$BACKTEST_NAME" ]; then
-        BACKTEST_NAME="$arg"
-    fi
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --open)
+            OPEN_FLAG="--open"
+            shift
+            ;;
+        --start-date)
+            if [ $# -lt 2 ]; then
+                echo -e "${RED}Error:${NC} --start-date requires YYYY-MM-DD"
+                exit 1
+            fi
+            START_DATE="$2"
+            shift 2
+            ;;
+        --end-date)
+            if [ $# -lt 2 ]; then
+                echo -e "${RED}Error:${NC} --end-date requires YYYY-MM-DD"
+                exit 1
+            fi
+            END_DATE="$2"
+            shift 2
+            ;;
+        --backtest-year)
+            if [ $# -lt 2 ]; then
+                echo -e "${RED}Error:${NC} --backtest-year requires YYYY"
+                exit 1
+            fi
+            BACKTEST_YEAR="$2"
+            shift 2
+            ;;
+        --help|-h)
+            echo "Usage: $0 [BACKTEST_NAME] [--open] [--start-date YYYY-MM-DD] [--end-date YYYY-MM-DD] [--backtest-year YYYY]"
+            exit 0
+            ;;
+        *)
+            if [ -z "$BACKTEST_NAME" ]; then
+                BACKTEST_NAME="$1"
+                shift
+            else
+                echo -e "${RED}Error:${NC} Unknown argument: $1"
+                exit 1
+            fi
+            ;;
+    esac
 done
 
 # Generate backtest name if not provided
@@ -69,6 +112,9 @@ if [ -n "$OPEN_FLAG" ]; then
     echo -e "${YELLOW}Mode:${NC} Wait for completion (--open)"
 else
     echo -e "${YELLOW}Mode:${NC} Fire-and-forget (async)"
+fi
+if [ -n "$START_DATE" ] || [ -n "$END_DATE" ] || [ -n "$BACKTEST_YEAR" ]; then
+    echo -e "${YELLOW}Parameters:${NC} run_label=$BACKTEST_NAME ${BACKTEST_YEAR:+backtest_year=$BACKTEST_YEAR }${START_DATE:+start_date=$START_DATE }${END_DATE:+end_date=$END_DATE}"
 fi
 echo ""
 
@@ -135,15 +181,26 @@ if [ "$PUSH_EXIT" -ne 0 ] || echo "$PUSH_OUTPUT" | grep -qi "413\|exceed.*size\|
         exit 1
     fi
 else
-    echo -e "${GREEN}   ✓ Push complete${NC}"
+echo -e "${GREEN}   ✓ Push complete${NC}"
 fi
 
 echo -e "${BLUE}Starting backtest...${NC}"
+BACKTEST_CMD=(lean cloud backtest "$PROJECT_NAME" --name "$BACKTEST_NAME" --parameter run_label "$BACKTEST_NAME")
+if [ -n "$BACKTEST_YEAR" ]; then
+    BACKTEST_CMD+=(--parameter backtest_year "$BACKTEST_YEAR")
+fi
+if [ -n "$START_DATE" ]; then
+    BACKTEST_CMD+=(--parameter start_date "$START_DATE")
+fi
+if [ -n "$END_DATE" ]; then
+    BACKTEST_CMD+=(--parameter end_date "$END_DATE")
+fi
 if [ -n "$OPEN_FLAG" ]; then
-    lean cloud backtest "$PROJECT_NAME" --name "$BACKTEST_NAME" --open 2>&1
+    BACKTEST_CMD+=(--open)
+    "${BACKTEST_CMD[@]}" 2>&1
     echo -e "${GREEN}Backtest completed.${NC}"
 else
-    OUTPUT=$(lean cloud backtest "$PROJECT_NAME" --name "$BACKTEST_NAME" 2>&1)
+    OUTPUT=$("${BACKTEST_CMD[@]}" 2>&1)
     BACKTEST_URL=$(echo "$OUTPUT" | grep -o 'https://www.quantconnect.com/project/[^ ]*' | head -1)
     echo -e "${GREEN}   ✓ Backtest started${NC}"
     echo -e "${YELLOW}URL:${NC} $BACKTEST_URL"
