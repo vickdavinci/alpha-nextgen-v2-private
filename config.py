@@ -894,6 +894,9 @@ CB_DELTA_MAX = 0.80  # Max delta exposure per position
 CB_GAMMA_WARNING = 0.05  # Gamma warning threshold near expiry
 CB_VEGA_MAX = 0.50  # Max vega exposure
 CB_THETA_WARNING = -0.02  # Daily theta decay warning (-2%)
+# V12.22: Keep crash hedge (PROTECTIVE_PUTS) under sovereign MICRO exits.
+# 0-2 DTE hedge theta/gamma is expected and should not trigger global CB exits.
+CB_GREEKS_INCLUDE_PROTECTIVE_PUTS = False
 # V2.3: Disable theta check for swing mode (5-45 DTE) - theta decay is expected
 # and acceptable for longer-dated options where we have time to recover
 CB_THETA_SWING_CHECK_ENABLED = False  # Set to True to enforce -2% theta limit on swing

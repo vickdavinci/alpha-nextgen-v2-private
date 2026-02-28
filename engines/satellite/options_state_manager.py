@@ -39,6 +39,13 @@ def calculate_position_greeks_impl(self) -> Optional[GreeksSnapshot]:
     def _append_position(position) -> None:
         if position is None or getattr(position, "contract", None) is None:
             return
+        strategy_name = str(getattr(position, "entry_strategy", "") or "").upper()
+        if "PROTECTIVE_PUTS" in strategy_name and not bool(
+            getattr(config, "CB_GREEKS_INCLUDE_PROTECTIVE_PUTS", False)
+        ):
+            # V12.22: protective puts are managed by MICRO exit rails and should
+            # not drive global Greeks breach aggregation unless explicitly enabled.
+            return
         key = _symbol_key(getattr(position.contract, "symbol", ""))
         if key and key in seen_symbols:
             return

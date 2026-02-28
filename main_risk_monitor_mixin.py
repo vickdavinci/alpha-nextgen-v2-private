@@ -4,6 +4,7 @@ from typing import Optional
 
 from AlgorithmImports import SecurityType, Slice
 
+import config
 from engines.core.risk_engine import GreeksSnapshot
 from models.enums import Urgency
 from models.target_weight import TargetWeight
@@ -210,6 +211,13 @@ class MainRiskMonitorMixin:
 
         def _append_position(position) -> None:
             if position is None or getattr(position, "contract", None) is None:
+                return
+            strategy_name = str(getattr(position, "entry_strategy", "") or "").upper()
+            if "PROTECTIVE_PUTS" in strategy_name and not bool(
+                getattr(config, "CB_GREEKS_INCLUDE_PROTECTIVE_PUTS", False)
+            ):
+                # V12.22: keep crash-hedge protective puts on sovereign MICRO exits
+                # (OCO/time guards) and out of global Greeks CB aggregation.
                 return
             symbol_key = self._normalize_symbol_str(position.contract.symbol)
             if not symbol_key or symbol_key in seen_symbols:

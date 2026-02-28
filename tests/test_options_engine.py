@@ -1687,6 +1687,150 @@ class TestGreeksBreachThresholds:
         assert is_breach is True
         assert "ALL_OPTIONS" in symbols
 
+    def test_check_greeks_breach_excludes_protective_puts_by_default(self, monkeypatch):
+        """V12.22: protective puts should not trigger global Greeks CB by default."""
+        from engines.core.risk_engine import RiskEngine
+
+        monkeypatch.setattr(config, "CB_GREEKS_INCLUDE_PROTECTIVE_PUTS", False, raising=False)
+        engine = OptionsEngine()
+        risk_engine = RiskEngine()
+
+        protective_contract = OptionContract(
+            symbol="QQQ 260126P00450000",
+            direction=OptionDirection.PUT,
+            delta=-0.45,
+            gamma=0.04,
+            vega=0.10,
+            theta=-5.00,  # Would breach theta if included
+            strike=450.0,
+            expiry="2026-01-26",
+            mid_price=2.00,
+            open_interest=1000,
+            days_to_expiry=0,
+        )
+        engine._intraday_positions["MICRO"] = [
+            OptionsPosition(
+                contract=protective_contract,
+                entry_price=2.00,
+                entry_time="10:30:00",
+                entry_score=3.5,
+                num_contracts=10,
+                stop_price=1.40,
+                target_price=3.20,
+                stop_pct=0.30,
+                entry_strategy=IntradayStrategy.PROTECTIVE_PUTS.value,
+            )
+        ]
+
+        is_breach, symbols = engine.check_greeks_breach(risk_engine)
+        assert is_breach is False
+        assert len(symbols) == 0
+
+    def test_check_greeks_breach_can_include_protective_puts_when_enabled(self, monkeypatch):
+        """Protective puts can be re-included in CB Greeks via config override."""
+        from engines.core.risk_engine import RiskEngine
+
+        monkeypatch.setattr(config, "CB_GREEKS_INCLUDE_PROTECTIVE_PUTS", True, raising=False)
+        engine = OptionsEngine()
+        risk_engine = RiskEngine()
+
+        protective_contract = OptionContract(
+            symbol="QQQ 260126P00450000",
+            direction=OptionDirection.PUT,
+            delta=-0.45,
+            gamma=0.04,
+            vega=0.10,
+            theta=-5.00,
+            strike=450.0,
+            expiry="2026-01-26",
+            mid_price=2.00,
+            open_interest=1000,
+            days_to_expiry=0,
+        )
+        engine._intraday_positions["MICRO"] = [
+            OptionsPosition(
+                contract=protective_contract,
+                entry_price=2.00,
+                entry_time="10:30:00",
+                entry_score=3.5,
+                num_contracts=10,
+                stop_price=1.40,
+                target_price=3.20,
+                stop_pct=0.30,
+                entry_strategy=IntradayStrategy.PROTECTIVE_PUTS.value,
+            )
+        ]
+
+        is_breach, symbols = engine.check_greeks_breach(risk_engine)
+        assert is_breach is True
+        assert "ALL_OPTIONS" in symbols
+
+    def test_check_greeks_breach_still_monitors_itm_with_protective_put(self, monkeypatch):
+        """V12.22: excluding protective puts must not disable ITM Greeks protection."""
+        from engines.core.risk_engine import RiskEngine
+
+        monkeypatch.setattr(config, "CB_GREEKS_INCLUDE_PROTECTIVE_PUTS", False, raising=False)
+        engine = OptionsEngine()
+        risk_engine = RiskEngine()
+
+        protective_contract = OptionContract(
+            symbol="QQQ 260126P00450000",
+            direction=OptionDirection.PUT,
+            delta=-0.45,
+            gamma=0.04,
+            vega=0.10,
+            theta=-5.00,
+            strike=450.0,
+            expiry="2026-01-26",
+            mid_price=2.00,
+            open_interest=1000,
+            days_to_expiry=0,
+        )
+        itm_contract = OptionContract(
+            symbol="QQQ 260205C00430000",
+            direction=OptionDirection.CALL,
+            delta=0.85,  # Delta breach should still trigger
+            gamma=0.01,
+            vega=0.10,
+            theta=-0.01,
+            strike=430.0,
+            expiry="2026-02-05",
+            mid_price=15.0,
+            open_interest=1000,
+            days_to_expiry=10,
+        )
+
+        engine._intraday_positions["MICRO"] = [
+            OptionsPosition(
+                contract=protective_contract,
+                entry_price=2.00,
+                entry_time="10:30:00",
+                entry_score=3.5,
+                num_contracts=10,
+                stop_price=1.40,
+                target_price=3.20,
+                stop_pct=0.30,
+                entry_strategy=IntradayStrategy.PROTECTIVE_PUTS.value,
+            )
+        ]
+        engine._intraday_positions["ITM"] = [
+            OptionsPosition(
+                contract=itm_contract,
+                entry_price=15.0,
+                entry_time="10:31:00",
+                entry_score=3.5,
+                num_contracts=3,
+                stop_price=11.0,
+                target_price=22.0,
+                stop_pct=0.25,
+                entry_strategy=IntradayStrategy.ITM_MOMENTUM.value,
+            )
+        ]
+
+        is_breach, symbols = engine.check_greeks_breach(risk_engine)
+        assert is_breach is True
+        assert "ALL_OPTIONS" in symbols
+
     def test_check_greeks_all_within_limits(self):
         """Test no breach when all Greeks are within limits."""
         from engines.core.risk_engine import RiskEngine
