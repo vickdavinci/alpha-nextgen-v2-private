@@ -142,11 +142,12 @@ def classify_trades(trades, logs):
 
 
 def pair_vass_spreads(trades):
-    """Pair VASS spread legs. Returns list of spread dicts and list of unpaired."""
+    """Pair VASS spread legs. Returns paired spreads + unpaired + MICRO + ITM trades."""
     # VASS trades have two consecutive rows with same entry date and same exit date
     # One Direction=0 (long), one Direction=1 (short)
     vass_trades = [t for t in trades if t["_tag"] == "VASS"]
-    micro_trades = [t for t in trades if t["_tag"] in ("MICRO", "ITM")]
+    micro_trades = [t for t in trades if t["_tag"] == "MICRO"]
+    itm_trades = [t for t in trades if t["_tag"] == "ITM"]
     unknown_trades = [t for t in trades if t["_tag"] == "UNKNOWN"]
 
     # Try to pair unknown trades with VASS by looking for Direction=1 near Direction=0
@@ -170,7 +171,7 @@ def pair_vass_spreads(trades):
                         vass_trades.append(t)
                         break
             if t["_tag"] == "UNKNOWN":
-                # Could be a single-leg MICRO
+                # Could be a single-leg intraday trade.
                 t["_tag"] = "MICRO"
                 micro_trades.append(t)
 
@@ -209,7 +210,7 @@ def pair_vass_spreads(trades):
     # Unpaired VASS trades treated as single legs
     unpaired_vass = [t for t in vass_trades if id(t) not in used]
 
-    return paired, unpaired_vass, micro_trades
+    return paired, unpaired_vass, micro_trades, itm_trades
 
 
 def find_intraday_signal(logs, entry_date, strike=None, opt_type=None):
@@ -728,7 +729,9 @@ def main():
     vass_trades = [
         t for t in trades if t["_tag"] == "VASS" and not t.get("_is_vass_overlap", False)
     ]
-    micro_trades = [t for t in trades if t["_tag"] in ("MICRO", "ITM")]
+    micro_trades = [t for t in trades if t["_tag"] == "MICRO"]
+    itm_trades = [t for t in trades if t["_tag"] == "ITM"]
+    intraday_trades = micro_trades + itm_trades
 
     vass_trades.sort(key=lambda x: (x["_entry_dt"], x["row_num"]))
 
@@ -810,14 +813,18 @@ def main():
         micro_trades.append(t)
 
     micro_trades.sort(key=lambda x: x["_entry_dt"])
+    itm_trades.sort(key=lambda x: x["_entry_dt"])
+    intraday_trades = sorted(intraday_trades, key=lambda x: x["_entry_dt"])
 
     print(
-        f"  VASS spreads: {len(spreads)}, Unpaired VASS: {len(unpaired_vass)}, MICRO: {len(micro_trades)}"
+        "  VASS spreads: "
+        f"{len(spreads)}, Unpaired VASS: {len(unpaired_vass)}, "
+        f"MICRO: {len(micro_trades)}, ITM: {len(itm_trades)}"
     )
 
     # === ENRICHMENT ===
-    print("Enriching MICRO trades with log context...")
-    for t in micro_trades:
+    print("Enriching intraday trades with log context...")
+    for t in intraday_trades:
         # Check if this is a VASS overlap artifact
         if t.get("_is_vass_overlap", False):
             t["_signal"] = {
@@ -882,13 +889,15 @@ def main():
     # Validation checklist
     total_trade_rows = len(trades)
     total_micro = len(micro_trades)
+    total_itm = len(itm_trades)
     total_spread_legs = len(spreads) * 2 + len([t for t in unpaired_vass if t["Direction"] == 1])
-    total_covered = total_micro + total_spread_legs
+    total_covered = total_micro + total_itm + total_spread_legs
 
     r("# V10.3 R5 FullYear2023 - Trade Detail Report\n")
     r("## Validation Checklist\n")
     r(f"- Total trade rows in CSV: **{total_trade_rows}**")
     r(f"- MICRO trades: **{total_micro}**")
+    r(f"- ITM trades: **{total_itm}**")
     r(f"- VASS spread pairs: **{len(spreads)}** ({len(spreads)*2} legs)")
     r(f"- Unpaired VASS legs: **{len([t for t in unpaired_vass if t['Direction'] == 1])}**")
     r(f"- Total accounted: **{total_covered}** / {total_trade_rows}")
@@ -1231,9 +1240,49 @@ def main():
             f"| {i} | {t['_entry_dt'].strftime('%Y-%m-%d')} | {sig.get('strategy', 'ITM_MOM')} | {sig.get('direction', 'N/A')} | {sig.get('micro_regime', 'N/A')} | {sig.get('vix', 'N/A')} | {t['_exit_trigger']} | ${t['P&L']:+,.0f} | {t['_pnl_pct']:+.1f}% |"
         )
 
-    # ==================== PART 3: Combined Root Cause ====================
+    # ==================== PART 3: ITM ====================
     r("\n---\n")
-    r("# Part 3: Combined Root Cause Analysis\n")
+    r("# Part 3: ITM Intraday Trade-by-Trade\n")
+    if not itm_trades:
+        r("\n_No ITM trades found._\n")
+    else:
+        r("| # | Date | Entry | Exit | Strategy | Dir | Exit Trigger | Hold | P&L $ | P&L% | W/L |")
+        r("|---|------|-------|------|----------|-----|-------------|------|-------|------|-----|")
+        for i, t in enumerate(itm_trades, 1):
+            sig = t.get("_signal", {})
+            entry_time = t["_entry_dt"].strftime("%H:%M")
+            exit_time = t["_exit_dt"].strftime("%H:%M")
+            entry_date = t["_entry_dt"].strftime("%Y-%m-%d")
+            strategy = sig.get("strategy", "ITM_MOMENTUM")
+            direction = sig.get("direction", t["_opt_type"] or "N/A")
+            exit_trigger = t["_exit_trigger"]
+            hold_d = t["_hold"]
+            pnl = t["P&L"]
+            pnl_pct = t["_pnl_pct"]
+            wl = "W" if t["IsWin"] else "L"
+            r(
+                f"| {i} | {entry_date} | {entry_time} | {exit_time} | {strategy} | "
+                f"{direction} | {exit_trigger} | {hold_d} | ${pnl:+,.0f} | {pnl_pct:+.1f}% | {wl} |"
+            )
+
+        r("\n### 3a. ITM Summary\n")
+        itm_total_pnl = sum(t["P&L"] for t in itm_trades)
+        itm_wins = sum(1 for t in itm_trades if t["IsWin"])
+        itm_losses = len(itm_trades) - itm_wins
+        itm_total_fees = sum(t["Fees"] for t in itm_trades)
+        itm_avg_win = sum(t["P&L"] for t in itm_trades if t["IsWin"]) / max(itm_wins, 1)
+        itm_avg_loss = sum(t["P&L"] for t in itm_trades if not t["IsWin"]) / max(itm_losses, 1)
+        r(f"- Total ITM Trades: **{len(itm_trades)}**")
+        r(f"- Wins: **{itm_wins}** ({itm_wins/max(len(itm_trades), 1)*100:.1f}%)")
+        r(f"- Losses: **{itm_losses}** ({itm_losses/max(len(itm_trades), 1)*100:.1f}%)")
+        r(f"- Net P&L: **${itm_total_pnl:+,.0f}**")
+        r(f"- Total Fees: **${itm_total_fees:,.0f}**")
+        r(f"- Avg Win: **${itm_avg_win:+,.0f}**")
+        r(f"- Avg Loss: **${itm_avg_loss:+,.0f}**")
+
+    # ==================== PART 4: Combined Root Cause ====================
+    r("\n---\n")
+    r("# Part 4: Combined Root Cause Analysis\n")
 
     # 3a Loss Concentration
     r("\n### 3a. Loss Concentration\n")
@@ -1247,17 +1296,17 @@ def main():
         for s in spreads
         if s["net_pnl"] < 0
     ]
-    all_losses_micro = [
+    all_losses_intraday = [
         (
             t["P&L"],
-            "MICRO" if not t.get("_is_vass_overlap") else "VASS_OVERLAP",
+            t.get("_tag", "UNKNOWN") if not t.get("_is_vass_overlap") else "VASS_OVERLAP",
             t["_entry_dt"].strftime("%Y-%m-%d"),
             t.get("_signal", {}).get("strategy", "N/A"),
         )
-        for t in micro_trades
+        for t in intraday_trades
         if t["P&L"] < 0
     ]
-    all_losses = sorted(all_losses_vass + all_losses_micro, key=lambda x: x[0])
+    all_losses = sorted(all_losses_vass + all_losses_intraday, key=lambda x: x[0])
 
     total_loss = sum(x[0] for x in all_losses)
     r(f"- Total losses: **${total_loss:+,.0f}** across **{len(all_losses)}** losing trades")
@@ -1287,16 +1336,20 @@ def main():
             failure_modes[f"VASS_{trigger}"]["count"] += 1
             failure_modes[f"VASS_{trigger}"]["pnl"] += s["net_pnl"]
 
-    for t in micro_trades:
+    for t in intraday_trades:
         if t["P&L"] < 0:
             if t.get("_is_vass_overlap", False):
                 failure_modes["VASS_OVERLAP_ARTIFACT"]["count"] += 1
                 failure_modes["VASS_OVERLAP_ARTIFACT"]["pnl"] += t["P&L"]
             else:
                 trigger = t["_exit_trigger"]
-                regime = t.get("_signal", {}).get("micro_regime", "UNKNOWN")
-                failure_modes[f"MICRO_{trigger}_{regime}"]["count"] += 1
-                failure_modes[f"MICRO_{trigger}_{regime}"]["pnl"] += t["P&L"]
+                if t.get("_tag") == "ITM":
+                    failure_modes[f"ITM_{trigger}"]["count"] += 1
+                    failure_modes[f"ITM_{trigger}"]["pnl"] += t["P&L"]
+                else:
+                    regime = t.get("_signal", {}).get("micro_regime", "UNKNOWN")
+                    failure_modes[f"MICRO_{trigger}_{regime}"]["count"] += 1
+                    failure_modes[f"MICRO_{trigger}_{regime}"]["pnl"] += t["P&L"]
 
     r("| Failure Mode | Count | Total P&L | Avg P&L |")
     r("|-------------|-------|-----------|---------|")
@@ -1396,22 +1449,36 @@ def main():
     r(
         f"*Note: {len(vass_overlaps)} VASS overlap artifact(s) excluded from MICRO stats (P&L=${sum(t['P&L'] for t in vass_overlaps):+,.0f}). These are spread leg transitions recorded by QC as separate trades.*\n"
     )
-    grand_pnl = total_vass_pnl + real_micro_pnl
+    real_itm_pnl = sum(t["P&L"] for t in itm_trades)
+    itm_fees = sum(t["Fees"] for t in itm_trades)
+    itm_wins = sum(1 for t in itm_trades if t["IsWin"])
+    grand_pnl = total_vass_pnl + real_micro_pnl + real_itm_pnl
     real_micro_fees = sum(t["Fees"] for t in real_micro)
-    grand_fees = total_vass_fees + real_micro_fees
-    grand_trades = len(spreads) + len(real_micro)
-    grand_wins = vass_wins + real_micro_wins
+    grand_fees = total_vass_fees + real_micro_fees + itm_fees
+    grand_trades = len(spreads) + len(real_micro) + len(itm_trades)
+    grand_wins = vass_wins + real_micro_wins + itm_wins
 
-    r(f"| Metric | VASS | MICRO | Total |")
-    r(f"|--------|------|-------|-------|")
-    r(f"| Trades | {len(spreads)} | {len(real_micro)} | {grand_trades} |")
-    r(
-        f"| Wins | {vass_wins} ({vass_wins/len(spreads)*100:.1f}%) | {real_micro_wins} ({real_micro_wins/len(real_micro)*100:.1f}%) | {grand_wins} ({grand_wins/grand_trades*100:.1f}%) |"
+    itm_avg_win_total = sum(t["P&L"] for t in itm_trades if t["IsWin"]) / max(itm_wins, 1)
+    itm_avg_loss_total = sum(t["P&L"] for t in itm_trades if not t["IsWin"]) / max(
+        len(itm_trades) - itm_wins, 1
     )
-    r(f"| Net P&L | ${total_vass_pnl:+,.0f} | ${real_micro_pnl:+,.0f} | ${grand_pnl:+,.0f} |")
-    r(f"| Fees | ${total_vass_fees:,.0f} | ${real_micro_fees:,.0f} | ${grand_fees:,.0f} |")
-    r(f"| Avg Win | ${avg_win:+,.0f} | ${avg_micro_win:+,.0f} | - |")
-    r(f"| Avg Loss | ${avg_loss:+,.0f} | ${avg_micro_loss:+,.0f} | - |")
+
+    r(f"| Metric | VASS | MICRO | ITM | Total |")
+    r(f"|--------|------|-------|-----|-------|")
+    r(f"| Trades | {len(spreads)} | {len(real_micro)} | {len(itm_trades)} | {grand_trades} |")
+    r(
+        f"| Wins | {vass_wins} ({vass_wins/len(spreads)*100:.1f}%) | {real_micro_wins} ({real_micro_wins/max(len(real_micro),1)*100:.1f}%) | {itm_wins} ({itm_wins/max(len(itm_trades),1)*100:.1f}%) | {grand_wins} ({grand_wins/max(grand_trades,1)*100:.1f}%) |"
+    )
+    r(
+        f"| Net P&L | ${total_vass_pnl:+,.0f} | ${real_micro_pnl:+,.0f} | ${real_itm_pnl:+,.0f} | ${grand_pnl:+,.0f} |"
+    )
+    r(
+        f"| Fees | ${total_vass_fees:,.0f} | ${real_micro_fees:,.0f} | ${itm_fees:,.0f} | ${grand_fees:,.0f} |"
+    )
+    r(f"| Avg Win | ${avg_win:+,.0f} | ${avg_micro_win:+,.0f} | ${itm_avg_win_total:+,.0f} | - |")
+    r(
+        f"| Avg Loss | ${avg_loss:+,.0f} | ${avg_micro_loss:+,.0f} | ${itm_avg_loss_total:+,.0f} | - |"
+    )
 
     # Write report
     print(f"Writing report to {OUTPUT_FILE}...")
