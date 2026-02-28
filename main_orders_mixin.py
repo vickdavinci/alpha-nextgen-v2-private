@@ -2827,6 +2827,13 @@ class MainOrdersMixin:
         self._spread_forced_close_cancel_counts[spread_key] = cancel_count
         self._diag_spread_exit_canceled_count += 1
         escalation_count = int(getattr(config, "SPREAD_CLOSE_CANCEL_ESCALATION_COUNT", 2))
+        order_tag = str(self._get_order_tag(order_event) or "")
+        if not order_tag:
+            order_tag = str(getattr(order, "Tag", "") or "")
+        if not order_tag:
+            order_tag = str(self._get_recent_symbol_fill_tag(symbol_norm) or "")
+        if order_tag:
+            self._cache_order_tag_hint(int(order_event.OrderId or 0), order_tag)
 
         self._spread_forced_close_retry[spread_key] = self.Time
         self._spread_forced_close_reason[
@@ -2836,7 +2843,6 @@ class MainOrdersMixin:
 
         if cancel_count >= escalation_count:
             self._diag_spread_close_escalation_count += 1
-            order_tag = str(getattr(order, "Tag", "") or "")
             self._record_order_lifecycle_event(
                 status="SPREAD_EXIT_CANCELED",
                 order_id=int(order_event.OrderId or 0),
@@ -2884,7 +2890,6 @@ class MainOrdersMixin:
             self._diag_spread_exit_submit_count += 1
             self._spread_last_close_submit_at[spread_key] = self.Time
         else:
-            order_tag = str(getattr(order, "Tag", "") or "")
             self._record_order_lifecycle_event(
                 status="SPREAD_EXIT_CANCELED",
                 order_id=int(order_event.OrderId or 0),

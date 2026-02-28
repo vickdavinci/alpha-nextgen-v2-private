@@ -261,6 +261,13 @@ class PortfolioRouter:
                 except Exception:
                     pass
                 try:
+                    sym_cache_fn = getattr(self.algorithm, "_cache_symbol_fill_tag", None)
+                    ticket_symbol = str(getattr(ticket, "Symbol", "") or "")
+                    if callable(sym_cache_fn) and ticket_symbol:
+                        sym_cache_fn(ticket_symbol, clean_tag)
+                except Exception:
+                    pass
+                try:
                     map_fn = getattr(self.algorithm, "_record_order_tag_map", None)
                     if callable(map_fn):
                         map_fn(

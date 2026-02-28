@@ -1996,7 +1996,9 @@ EXIT_ORDER_RETRY_COUNT = 3  # Bug #14: Retry failed exits
 EXIT_ORDER_RETRY_DELAY_SECONDS = 5  # Delay between retries
 SPREAD_CLOSE_CANCEL_ESCALATION_COUNT = 1  # V12.6: escalate to sequential close faster
 SPREAD_CLOSE_RETRY_INTERVAL_MIN = 5  # Retry cadence for forced spread close queue
-SPREAD_CLOSE_MAX_RETRY_CYCLES = 6  # V12.6: avoid prolonged retry loops before hard fallback
+SPREAD_CLOSE_MAX_RETRY_CYCLES = (
+    3  # V12.21: shorter retry budget before emergency sequential fallback
+)
 
 # 0DTE forced exit time (3:30 PM ET = 30 min before close)
 ZERO_DTE_FORCE_EXIT_HOUR = 15
