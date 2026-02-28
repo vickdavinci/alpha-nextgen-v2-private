@@ -836,7 +836,8 @@ def check_spread_entry_signal_impl(
             )
             return fail_quality("COMMISSION_TO_MAX_PROFIT_TOO_HIGH")
 
-    # V12.14: Budget-proportional VASS sizing (universal for debit + credit)
+    # V12.22: Risk-first VASS sizing (universal for debit + credit).
+    # Debit risk per spread is the conservative net debit (max loss proxy).
     portfolio_value = (
         float(portfolio_value)
         if portfolio_value and portfolio_value > 0
@@ -852,12 +853,20 @@ def check_spread_entry_signal_impl(
     if swing_max_dollars <= 0:
         self.log("SPREAD: Entry blocked - VASS bucket exhausted", trades_only=True)
         return fail("R_BUCKET_VASS_EXHAUSTED")
-    # V2.14: Use conservative net debit for sizing (prevents tier cap violations)
-    cost_per_spread = net_debit_for_sizing * 100  # 100 shares per contract
-    num_spreads = int(swing_max_dollars / cost_per_spread)
+
+    max_spread_risk_pct = float(getattr(config, "VASS_MAX_SPREAD_RISK_PCT", 0.0) or 0.0)
+    pct_risk_budget = (
+        float(portfolio_value) * max_spread_risk_pct
+        if max_spread_risk_pct > 0
+        else swing_max_dollars
+    )
+    risk_budget_dollars = min(swing_max_dollars, pct_risk_budget)
+    risk_per_spread = net_debit_for_sizing * 100.0  # 100 shares per spread
+    num_spreads = int(risk_budget_dollars / risk_per_spread) if risk_per_spread > 0 else 0
     self.log(
-        f"SIZING: SWING | Cap=${swing_max_dollars:,.0f} (budget=${vass_budget:,.0f} x{deploy_pct:.0%}) | "
-        f"Cost/spread=${cost_per_spread:.2f} | Qty={num_spreads}"
+        f"SIZING: SWING_RISK_FIRST | Budget=${risk_budget_dollars:,.0f} "
+        f"(Bucket=${swing_max_dollars:,.0f}, PctRisk=${pct_risk_budget:,.0f}) | "
+        f"Risk/spread=${risk_per_spread:.2f} | Qty={num_spreads}"
     )
 
     # V12.14: Unified R:R modulation — better quality = more contracts (debit: lower D/W = better)
@@ -957,8 +966,8 @@ def check_spread_entry_signal_impl(
 
     if num_spreads <= 0:
         self.log(
-            f"SPREAD: Entry blocked - cap ${swing_max_dollars} too small "
-            f"for debit ${net_debit:.2f}"
+            f"SPREAD: Entry blocked - risk budget ${risk_budget_dollars:.0f} too small "
+            f"for debit risk ${risk_per_spread:.2f}/spread"
         )
         return fail("NUM_SPREADS_NON_POSITIVE")
 
@@ -1504,7 +1513,8 @@ def check_credit_spread_entry_signal_impl(
         )
         return fail_quality("ENTRY_SCORE_BELOW_MIN")
 
-    # V12.14: Budget-proportional VASS sizing (universal for debit + credit)
+    # V12.22: Risk-first VASS sizing (universal for debit + credit).
+    # Credit risk per spread is max loss = (width - credit) * 100.
     portfolio_value = (
         float(portfolio_value)
         if portfolio_value and portfolio_value > 0
@@ -1520,8 +1530,16 @@ def check_credit_spread_entry_signal_impl(
     if swing_max_dollars <= 0:
         self.log("CREDIT_SPREAD: Entry blocked - VASS bucket exhausted", trades_only=True)
         return fail("R_BUCKET_VASS_EXHAUSTED")
+
+    max_spread_risk_pct = float(getattr(config, "VASS_MAX_SPREAD_RISK_PCT", 0.0) or 0.0)
+    pct_risk_budget = (
+        float(portfolio_value) * max_spread_risk_pct
+        if max_spread_risk_pct > 0
+        else swing_max_dollars
+    )
+    risk_budget_dollars = min(swing_max_dollars, pct_risk_budget)
     num_spreads, _credit_per, _max_loss_per, _total_margin = self._calculate_credit_spread_size(
-        short_leg_contract, long_leg_contract, swing_max_dollars
+        short_leg_contract, long_leg_contract, risk_budget_dollars
     )
 
     if num_spreads <= 0:
