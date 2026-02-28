@@ -3787,6 +3787,36 @@ class PortfolioRouter:
                             )
                         if submit_mode == "LIMIT":
                             submit_mode = "MARKET_FALLBACK"
+                    ticket_count = 0
+                    if combo_tickets is None:
+                        ticket_count = 0
+                    elif isinstance(combo_tickets, list):
+                        ticket_count = len([t for t in combo_tickets if t is not None])
+                    else:
+                        ticket_count = 1
+                    if ticket_count <= 0:
+                        if is_exit_combo:
+                            emergency_seq_ok = self._execute_emergency_sequential_close_from_order(
+                                order,
+                                "COMBO_SUBMIT_EMPTY",
+                            )
+                            if emergency_seq_ok:
+                                self._executed_this_minute.add(order_key)
+                                executed.append(order)
+                                continue
+                        self.log(
+                            f"ROUTER: R_COMBO_SUBMIT_EMPTY | {order.symbol} | "
+                            f"Mode={submit_mode}"
+                        )
+                        self._record_rejection(
+                            code="R_COMBO_SUBMIT_EMPTY",
+                            symbol=order.symbol,
+                            detail=f"Combo submit returned no tickets | Mode={submit_mode}",
+                            stage="EXECUTE",
+                            source_tag=source_tag,
+                            trace_id=trace_id,
+                        )
+                        continue
                     self._cache_submitted_order_tags(combo_tickets, effective_tag)
                     self.log(
                         f"ROUTER: COMBO_ORDER_SUBMIT | Mode={submit_mode} | "
@@ -3907,6 +3937,19 @@ class PortfolioRouter:
                 executed.append(order)
 
             except Exception as e:
+                if (
+                    order.is_combo
+                    and order.metadata
+                    and order.metadata.get("spread_close_short", False)
+                ):
+                    emergency_seq_ok = self._execute_emergency_sequential_close_from_order(
+                        order,
+                        f"COMBO_SUBMIT_EXCEPTION:{e}",
+                    )
+                    if emergency_seq_ok:
+                        self._executed_this_minute.add(order_key)
+                        executed.append(order)
+                        continue
                 self.log(f"ROUTER: ORDER_ERROR | {order.symbol} | {e}")
                 self._record_rejection(
                     code="R_ORDER_EXCEPTION",
