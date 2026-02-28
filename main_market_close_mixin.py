@@ -159,6 +159,16 @@ class MainMarketCloseMixin:
                 _store[_k] = 0
         for _k in self._diag_intraday_results_by_engine.keys():
             self._diag_intraday_results_by_engine[_k] = 0
+        for _store in (
+            self._diag_micro_dte_candidates,
+            self._diag_micro_dte_approved,
+            self._diag_micro_dte_dropped,
+            self._diag_micro_dte_win,
+            self._diag_micro_dte_loss,
+        ):
+            for _k in list(_store.keys()):
+                _store[_k] = 0
+        self._diag_micro_drop_reason_by_dte.clear()
         self._diag_intraday_candidate_ids_logged.clear()
         self._diag_intraday_approved_ids_logged.clear()
         self._diag_intraday_dropped_ids_logged.clear()
