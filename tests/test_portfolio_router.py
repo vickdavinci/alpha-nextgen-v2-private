@@ -533,6 +533,57 @@ class TestCalculateOrderIntents:
         assert len(orders) == 1
         assert orders[0].tag == "ITM:UNCLASSIFIED"
 
+    def test_option_close_risk_source_infers_lane_tag(self):
+        """RISK-sourced option closes should retain lane-aware tags, not generic RISK."""
+        option_symbol = "QQQ 260130C00500000"
+        holding = MagicMock()
+        holding.Symbol = option_symbol
+        holding.Quantity = 2
+        kvp = MagicMock()
+        kvp.Value = holding
+
+        mock_algo = MagicMock()
+        mock_algo.Portfolio = [kvp]
+        mock_algo.options_engine = MagicMock()
+        mock_algo.options_engine.find_engine_lane_by_symbol.return_value = "ITM"
+
+        router = PortfolioRouter(algorithm=mock_algo)
+        aggregated = {
+            option_symbol: AggregatedWeight(
+                option_symbol,
+                0.0,
+                ["RISK"],
+                Urgency.IMMEDIATE,
+                ["GREEKS_BREACH"],
+            )
+        }
+        orders = router.calculate_order_intents(
+            aggregated=aggregated,
+            tradeable_equity=100000.0,
+            current_positions={option_symbol: 500.0},
+            current_prices={option_symbol: 2.5},
+        )
+
+        assert len(orders) == 1
+        assert orders[0].tag == "ITM:RISK_EXIT"
+
+    def test_extract_trace_context_normalizes_risk_source_for_options(self):
+        """Trace context should map option RISK source into canonical lane-aware source tags."""
+        option_symbol = "QQQ 260130C00500000"
+        mock_algo = MagicMock()
+        mock_algo.options_engine = MagicMock()
+        mock_algo.options_engine.find_engine_lane_by_symbol.return_value = "MICRO"
+        router = PortfolioRouter(algorithm=mock_algo)
+
+        source_tag, trace_id = router._extract_trace_context(
+            metadata=None,
+            sources=["RISK"],
+            symbol=option_symbol,
+        )
+
+        assert trace_id == ""
+        assert source_tag == "OPT_MICRO"
+
 
 class TestPrioritize:
     """Tests for Step 5: Prioritize."""

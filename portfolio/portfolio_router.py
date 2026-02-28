@@ -2221,6 +2221,22 @@ class PortfolioRouter:
                 source_tag = (
                     f"OPT_{inferred_lane}" if inferred_lane in {"ITM", "MICRO"} else "OPT_VASS"
                 )
+            elif "RISK" in sources and self._is_option_symbol(symbol or ""):
+                inferred_lane = ""
+                if metadata:
+                    inferred_lane, _ = self._extract_options_lane_and_strategy(metadata)
+                if not inferred_lane:
+                    inferred_lane = self._infer_options_lane_from_symbol(symbol)
+                if inferred_lane in {"ITM", "MICRO"}:
+                    source_tag = f"OPT_{inferred_lane}"
+                elif metadata and (
+                    bool(metadata.get("spread_close_short", False))
+                    or metadata.get("vass_strategy")
+                    or metadata.get("spread_type")
+                ):
+                    source_tag = "OPT_VASS"
+                else:
+                    source_tag = "OPT_VASS"
         source_tag = self._normalize_options_source_tag(source_tag, metadata, symbol)
         return source_tag, trace_id
 
@@ -2244,6 +2260,16 @@ class PortfolioRouter:
 
         if upper in {"OPT_ITM", "OPT_MICRO", "OPT_VASS"}:
             return upper
+        if upper == "RISK" and self._is_option_symbol(str(symbol or "")):
+            if inferred_lane in {"ITM", "MICRO"}:
+                return f"OPT_{inferred_lane}"
+            if (
+                bool(md.get("spread_close_short", False))
+                or md.get("vass_strategy")
+                or md.get("spread_type")
+            ):
+                return "OPT_VASS"
+            return "OPT_VASS"
         if upper.startswith("ITM") or " ITM" in f" {upper} ":
             return "OPT_ITM"
         if upper.startswith("MICRO") or " MICRO" in f" {upper} ":
@@ -3038,6 +3064,31 @@ class PortfolioRouter:
                             vass_strategy or spread_type or source_tag or "VASS_UNCLASSIFIED"
                         )
                         tag = f"VASS:{vass_tag_value}"
+                elif any(s == "RISK" for s in agg.sources):
+                    lane_tag = ""
+                    intraday_strategy = ""
+                    if agg.metadata:
+                        lane_tag, intraday_strategy = self._extract_options_lane_and_strategy(
+                            agg.metadata
+                        )
+                    if not lane_tag:
+                        lane_tag = self._infer_options_lane_from_symbol(symbol)
+                    if lane_tag in {"ITM", "MICRO"}:
+                        strategy_tag = intraday_strategy or "RISK_EXIT"
+                        tag = f"{lane_tag}:{strategy_tag}"
+                    elif agg.metadata and (
+                        bool(agg.metadata.get("spread_close_short", False))
+                        or agg.metadata.get("vass_strategy")
+                        or agg.metadata.get("spread_type")
+                    ):
+                        vass_tag_value = str(
+                            agg.metadata.get("vass_strategy")
+                            or agg.metadata.get("spread_type")
+                            or "RISK_EXIT"
+                        )
+                        tag = f"VASS:{vass_tag_value}"
+                    else:
+                        tag = "VASS:RISK_EXIT"
 
             # Fallback for non-option paths or missing metadata.
             if not tag:
