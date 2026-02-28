@@ -17,6 +17,7 @@ V2.1 Modification #3: OCO Order Pairs
 Spec: docs/v2-specs/V2-1-FINAL-SYNTHESIS.md (Modification #3)
 """
 
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -202,13 +203,10 @@ class OCOManager:
 
     def _now(self) -> datetime:
         """Return current algo time when available, otherwise UTC now."""
-        try:
-            if self.algorithm is not None and getattr(self.algorithm, "Time", None) is not None:
-                return self.algorithm.Time
-        except Exception:
-            pass
-        # Deterministic fallback for tests without a live algorithm context.
-        return datetime(1970, 1, 1)
+        if self.algorithm is not None and getattr(self.algorithm, "Time", None) is not None:
+            return self.algorithm.Time
+        # Fallback for tests/mocks without algorithm context.
+        return datetime.fromtimestamp(time.time())
 
     def _iter_security_symbols(self) -> List[Any]:
         """Enumerate security keys safely across QC runtime and tests."""
