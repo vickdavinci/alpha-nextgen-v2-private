@@ -207,7 +207,8 @@ class OCOManager:
                 return self.algorithm.Time
         except Exception:
             pass
-        return datetime.utcnow()
+        # Deterministic fallback for tests without a live algorithm context.
+        return datetime(1970, 1, 1)
 
     def _iter_security_symbols(self) -> List[Any]:
         """Enumerate security keys safely across QC runtime and tests."""
