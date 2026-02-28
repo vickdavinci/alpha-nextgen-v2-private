@@ -22,7 +22,7 @@ def apply_premarket_vix_actions(algo: Any) -> None:
             if intraday_pos is None or intraday_pos.contract is None:
                 continue
             intraday_symbol = algo._normalize_symbol_str(intraday_pos.contract.symbol)
-            if algo._should_hold_intraday_symbol_overnight(intraday_symbol):
+            if algo._should_hold_engine_symbol_overnight(intraday_symbol):
                 algo.Log(
                     f"PREMARKET_LADDER: HOLD_SKIP intraday carry | {intraday_pos.contract.symbol}"
                 )

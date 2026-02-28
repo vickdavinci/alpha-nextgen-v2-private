@@ -160,6 +160,9 @@ class AlphaNextGen(QCAlgorithm):
     _handle_spread_leg_close = MainOrdersMixin._handle_spread_leg_close
     _handle_spread_leg_fill = MainOrdersMixin._handle_spread_leg_fill
     _queue_spread_close_retry_on_cancel = MainOrdersMixin._queue_spread_close_retry_on_cancel
+    _extract_spread_key_from_tag = MainOrdersMixin._extract_spread_key_from_tag
+    _remember_spread_close_order_key = MainOrdersMixin._remember_spread_close_order_key
+    _resolve_spread_close_candidate = MainOrdersMixin._resolve_spread_close_candidate
     _evaluate_base_regime_candidate = MainRegimeMixin._evaluate_base_regime_candidate
     _advance_detector_state = MainRegimeMixin._advance_detector_state
     _update_regime_detector_state = MainRegimeMixin._update_regime_detector_state
@@ -179,6 +182,7 @@ class AlphaNextGen(QCAlgorithm):
     _clear_spread_runtime_trackers_by_key = MainReconcileMixin._clear_spread_runtime_trackers_by_key
     _check_splits = MainReconcileMixin._check_splits
     _reconcile_positions = MainReconcileMixin._reconcile_positions
+    _count_invested_option_holdings = MainIntradayCloseMixin._count_invested_option_holdings
     _is_symbol_in_active_spread = MainIntradayCloseMixin._is_symbol_in_active_spread
     _check_expiration_hammer_v2 = MainIntradayCloseMixin._check_expiration_hammer_v2
     _close_options_atomic = MainIntradayCloseMixin._close_options_atomic

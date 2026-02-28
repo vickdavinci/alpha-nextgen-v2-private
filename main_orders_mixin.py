@@ -1910,7 +1910,7 @@ class MainOrdersMixin:
                             symbol=symbol,
                             fill_price=fill_price,
                             fill_qty=fill_qty,
-                            order_id=int(getattr(orderEvent, "OrderId", 0) or 0),
+                            order_id=int(getattr(order_event, "OrderId", 0) or 0),
                             order_tag=order_tag,
                         )
                     else:
@@ -2065,7 +2065,7 @@ class MainOrdersMixin:
                             symbol=symbol,
                             fill_price=fill_price,
                             fill_qty=fill_qty,
-                            order_id=int(getattr(orderEvent, "OrderId", 0) or 0),
+                            order_id=int(getattr(order_event, "OrderId", 0) or 0),
                             order_tag=order_tag,
                         )
                     elif self.options_engine.has_engine_position():
