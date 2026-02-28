@@ -18,6 +18,7 @@ class VASSEntryEngine:
         self._cooldown_until_by_signature: Dict[str, datetime] = {}
         self._last_entry_date_by_direction: Dict[str, str] = {}
         self._last_entry_dt_by_direction: Dict[str, datetime] = {}
+        self._direction_loss_cooldown_until: Dict[str, datetime] = {}
         self._last_rejection_log_by_key: Dict[str, datetime] = {}
         self._slot_backoff_until_by_key: Dict[str, datetime] = {}
         self._consecutive_losses: int = 0
@@ -3213,6 +3214,16 @@ class VASSEntryEngine:
             except Exception:
                 now_dt = None
 
+        blocked_until = self._direction_loss_cooldown_until.get(dir_label)
+        if blocked_until is not None:
+            if now_dt is not None and now_dt < blocked_until:
+                return (
+                    f"R_DIRECTION_POST_LOSS_COOLDOWN: {dir_label} blocked until "
+                    f"{blocked_until.strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+            if now_dt is not None and now_dt >= blocked_until:
+                self._direction_loss_cooldown_until.pop(dir_label, None)
+
         if bool(getattr(config, "VASS_DIRECTION_MIN_GAP_ENABLED", True)):
             min_gap_min = int(getattr(config, "VASS_DIRECTION_MIN_GAP_MINUTES", 0))
             if min_gap_min > 0 and now_dt is not None:
@@ -3254,6 +3265,26 @@ class VASSEntryEngine:
         self._last_entry_date_by_direction[dir_label] = str(entry_dt.date())
         self._last_entry_dt_by_direction[dir_label] = entry_dt
 
+    def set_direction_loss_cooldown(
+        self,
+        *,
+        direction: Optional[OptionDirection],
+        start_dt: Optional[datetime],
+        cooldown_days: int,
+    ) -> None:
+        if direction is None or start_dt is None:
+            return
+        days = max(0, int(cooldown_days or 0))
+        if days <= 0:
+            return
+        dir_label = "BULLISH" if direction == OptionDirection.CALL else "BEARISH"
+        until_dt = self._add_trading_days(start_dt, days)
+        self._direction_loss_cooldown_until[dir_label] = until_dt
+        self._log(
+            f"VASS_DIRECTION_COOLDOWN_SET: {dir_label} blocked until "
+            f"{until_dt.strftime('%Y-%m-%d %H:%M:%S')} ({days} trading day(s))"
+        )
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "last_entry_at_by_signature": {
@@ -3268,6 +3299,10 @@ class VASSEntryEngine:
             "last_entry_dt_by_direction": {
                 k: v.strftime("%Y-%m-%d %H:%M:%S")
                 for k, v in self._last_entry_dt_by_direction.items()
+            },
+            "direction_loss_cooldown_until": {
+                k: v.strftime("%Y-%m-%d %H:%M:%S")
+                for k, v in self._direction_loss_cooldown_until.items()
             },
             "slot_backoff_until_by_key": {
                 k: v.strftime("%Y-%m-%d %H:%M:%S")
@@ -3291,6 +3326,7 @@ class VASSEntryEngine:
             if str(k).upper() in {"BULLISH", "BEARISH"} and str(v)
         }
         self._last_entry_dt_by_direction = {}
+        self._direction_loss_cooldown_until = {}
         self._slot_backoff_until_by_key = {}
         for k, v in (state.get("last_entry_dt_by_direction", {}) or {}).items():
             key = str(k).upper()
@@ -3298,6 +3334,16 @@ class VASSEntryEngine:
                 continue
             try:
                 self._last_entry_dt_by_direction[key] = datetime.strptime(
+                    str(v)[:19], "%Y-%m-%d %H:%M:%S"
+                )
+            except Exception:
+                continue
+        for k, v in (state.get("direction_loss_cooldown_until", {}) or {}).items():
+            key = str(k).upper()
+            if key not in {"BULLISH", "BEARISH"}:
+                continue
+            try:
+                self._direction_loss_cooldown_until[key] = datetime.strptime(
                     str(v)[:19], "%Y-%m-%d %H:%M:%S"
                 )
             except Exception:
@@ -3348,6 +3394,7 @@ class VASSEntryEngine:
         self._cooldown_until_by_signature = {}
         self._last_entry_date_by_direction = {}
         self._last_entry_dt_by_direction = {}
+        self._direction_loss_cooldown_until = {}
         self._slot_backoff_until_by_key = {}
         self._consecutive_losses = 0
         self._loss_breaker_pause_until = None

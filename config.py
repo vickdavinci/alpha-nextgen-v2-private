@@ -1775,6 +1775,9 @@ VASS_TAIL_RISK_CAP_FLOOR_PCT = 0.45  # V12.22: keep tail-cap path above normal s
 VASS_TAIL_RISK_CAP_DEBIT_MIN_LOSS_PCT = 0.45
 VASS_TAIL_RISK_CAP_CREDIT_MIN_LOSS_PCT = 0.45
 VASS_CATASTROPHIC_EXIT_NO_REENTRY_REST_OF_SESSION = True
+# V12.22: After catastrophic/large-stop exits, block same-direction VASS entries
+# for N trading days to avoid immediate loss clustering.
+VASS_CATASTROPHIC_DIRECTION_COOLDOWN_DAYS = 1
 VASS_CATASTROPHIC_EXIT_LOCK_MINUTES = 0  # 0 => lock until session close
 VASS_CATASTROPHIC_EXIT_FALLBACK_LOCK_MINUTES = 120
 # Entry friction sanity: reject spreads where expected entry friction consumes too much

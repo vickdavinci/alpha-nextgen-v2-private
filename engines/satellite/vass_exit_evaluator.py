@@ -221,6 +221,16 @@ def check_spread_exit_signals_impl(
             return 0
 
         self._record_vass_direction_day_entry(spread_dir, self.algorithm.Time)
+        cooldown_days = int(getattr(config, "VASS_CATASTROPHIC_DIRECTION_COOLDOWN_DAYS", 0) or 0)
+        if cooldown_days > 0 and getattr(self, "_vass_entry_engine_enabled", False):
+            try:
+                self._vass_entry_engine.set_direction_loss_cooldown(
+                    direction=spread_dir,
+                    start_dt=self.algorithm.Time,
+                    cooldown_days=cooldown_days,
+                )
+            except Exception:
+                pass
         configured_lock = int(getattr(config, "VASS_CATASTROPHIC_EXIT_LOCK_MINUTES", 0))
         if configured_lock > 0:
             lock_minutes = configured_lock
