@@ -3530,6 +3530,18 @@ class TestIntradayRetryIsolation:
         assert harness._is_engine_lane_cooldown_active("UNKNOWN") is True
 
 
+class TestIntradayEngineBucketMapping:
+    class _Harness(MainOptionsMixin):
+        pass
+
+    def test_debit_fade_maps_to_micro_bucket(self):
+        harness = self._Harness()
+        assert harness._engine_bucket_from_strategy("DEBIT_FADE") == "MICRO"
+        assert harness._engine_bucket_from_strategy("INTRADAY_DEBIT_FADE") == "MICRO"
+        assert harness._engine_bucket_from_strategy("MICRO_DEBIT_FADE") == "MICRO"
+        assert harness._engine_bucket_from_strategy("ITM_MOMENTUM") == "ITM"
+
+
 class TestRejectionAwareSizing:
     """V2.21: Tests for rejection-aware spread sizing (margin estimation + cap)."""
 
