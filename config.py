@@ -1608,16 +1608,16 @@ SPREAD_OVERLAY_STRESS_EXIT_ENABLED = True  # V10.3: Re-enabled defensive tail-ri
 SPREAD_VIX_MAX_BULL = 30  # Max VIX for Bull Call Spread entry
 SPREAD_VIX_MAX_BEAR = 35  # Max VIX for Bear Put Spread entry (allow higher)
 # V6.19: Conditional stress override for BULL_CALL_DEBIT (reduces call bias in corrections).
-# Hard block when stress is confirmed; early-stress zone keeps participation at reduced size.
-BULL_CALL_STRESS_BLOCK_VIX = 26.0
-BULL_CALL_STRESS_ACCEL_VIX = 22.0
+# V12.22: tighten bullish debit participation in unstable tapes.
+BULL_CALL_STRESS_BLOCK_VIX = 24.0
+BULL_CALL_STRESS_ACCEL_VIX = 20.0
 BULL_CALL_STRESS_ACCEL_5D = 0.20  # +20% VIX over 5 sessions
-BULL_CALL_EARLY_STRESS_VIX_LOW = 20.0
-BULL_CALL_EARLY_STRESS_VIX_HIGH = 25.0
-BULL_CALL_EARLY_STRESS_SIZE = 0.50
+BULL_CALL_EARLY_STRESS_VIX_LOW = 18.0
+BULL_CALL_EARLY_STRESS_VIX_HIGH = 23.0
+BULL_CALL_EARLY_STRESS_SIZE = 0.35
 # Bear hardening: block bullish debit spreads when short-term trend is down.
 VASS_BULL_CALL_MA50_BLOCK_ENABLED = True
-VASS_BULL_CALL_MA50_BLOCK_REGIME_MAX = 60.0
+VASS_BULL_CALL_MA50_BLOCK_REGIME_MAX = 65.0
 # V6.22: Fast regime overlay thresholds (shared by resolver, slot caps, and exits).
 REGIME_OVERLAY_STRESS_VIX = 25.0
 REGIME_OVERLAY_STRESS_VIX_5D = 0.12
@@ -1795,7 +1795,7 @@ SPREAD_PROFIT_REGIME_MULTIPLIERS = {
 }
 
 # V9.4: BULL spread entry gates (regime-specific, no impact in bull markets)
-VASS_BULL_SPREAD_REGIME_MIN = 55  # Block BULL_CALL when regime < 55
+VASS_BULL_SPREAD_REGIME_MIN = 60  # V12.22: require stronger regime for BULL_CALL entries
 VASS_BULL_MA20_GATE_ENABLED = False  # V9.5 tune: disable for VASS swing pullback participation
 # V10.16.1: Scoped bullish trend confirmation for debit BULL_CALL in low/medium IV.
 # Avoids local-top entries without globally reintroducing MA20 starvation.
@@ -1809,7 +1809,7 @@ VASS_BULL_DEBIT_MIN_DAY_CHANGE_PCT = (
     0.08  # V10.30: permit gradual uptrend participation in low-vol tape
 )
 VASS_BULL_SHORT_CALL_DISTANCE_GUARD_ENABLED = True
-VASS_BULL_SHORT_CALL_MIN_OTM_PCT = 0.008
+VASS_BULL_SHORT_CALL_MIN_OTM_PCT = 0.010
 VASS_BULL_SHORT_CALL_MIN_ATR_MULT = 0.60
 VASS_RECOVERY_RELAX_ENABLED = False  # V12.11: disabled — fires on ALL bullish entries (not just recovery), silently overrides D/W caps by +9%.
 VASS_RECOVERY_RELAX_DAY_MIN_CHANGE_PCT = -0.05
