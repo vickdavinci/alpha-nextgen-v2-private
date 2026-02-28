@@ -2584,9 +2584,7 @@ class TestDailyResetV211:
     def test_daily_reset_clears_spread_exit_signal_cooldown(self, engine_with_intraday_position):
         """Daily reset must clear spread exit retry cooldown map."""
         engine_with_intraday_position._spread_exit_signal_cooldown = {
-            "BULL_CALL|QQQ 260127C00455000|QQQ 260127C00460000": datetime(
-                2026, 1, 26, 15, 59, 0
-            )
+            "BULL_CALL|QQQ 260127C00455000|QQQ 260127C00460000": datetime(2026, 1, 26, 15, 59, 0)
         }
 
         engine_with_intraday_position.reset_daily("2026-01-27")
@@ -3493,6 +3491,43 @@ class TestIntradayRetryIsolation:
         assert direction == OptionDirection.CALL
         assert reason_code == "R_SLOT_TOTAL_MAX"
         assert harness._get_engine_retry_state("MICRO")["pending"] is False
+
+    def test_unknown_lane_does_not_collapse_into_micro(self):
+        harness = self._Harness()
+        harness.Time = datetime(2027, 1, 4, 12, 0, 0)
+        harness._intraday_retry_state_by_lane = {
+            "MICRO": {"pending": False, "expires": None, "direction": None, "reason_code": None},
+            "ITM": {"pending": False, "expires": None, "direction": None, "reason_code": None},
+        }
+
+        expires_at = harness.Time + timedelta(minutes=10)
+        harness._queue_engine_retry(
+            lane="UNKNOWN_LANE",
+            direction=OptionDirection.PUT,
+            reason_code="R_TEST_UNKNOWN",
+            expires_at=expires_at,
+        )
+
+        assert harness._get_engine_retry_state("MICRO")["pending"] is False
+        assert harness._get_engine_retry_state("UNKNOWN")["pending"] is True
+        assert harness._consume_engine_retry("MICRO") is None
+        consumed = harness._consume_engine_retry("UNKNOWN")
+        assert consumed is not None
+        assert consumed[0] == OptionDirection.PUT
+        assert consumed[1] == "R_TEST_UNKNOWN"
+
+    def test_unknown_lane_cooldown_tracked_separately(self):
+        harness = self._Harness()
+        harness.Time = datetime(2027, 1, 4, 12, 0, 0)
+        harness._options_intraday_cooldown_until_by_lane = {"MICRO": None, "ITM": None}
+
+        unknown_until = harness.Time + timedelta(minutes=7)
+        harness._set_engine_lane_cooldown("NOISE", unknown_until)
+
+        assert harness._get_engine_lane_cooldown_until("MICRO") is None
+        assert harness._get_engine_lane_cooldown_until("UNKNOWN") == unknown_until
+        assert harness._is_engine_lane_cooldown_active("MICRO") is False
+        assert harness._is_engine_lane_cooldown_active("UNKNOWN") is True
 
 
 class TestRejectionAwareSizing:

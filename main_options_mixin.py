@@ -267,7 +267,7 @@ class MainOptionsMixin:
 
     def _normalize_engine_lane(self, lane: Optional[str]) -> str:
         lane_key = str(lane or "").upper()
-        return lane_key if lane_key in ("MICRO", "ITM") else "MICRO"
+        return lane_key if lane_key in ("MICRO", "ITM") else "UNKNOWN"
 
     def _set_engine_lane_cooldown(self, lane: Optional[str], until: Optional[datetime]) -> None:
         lane_key = self._normalize_engine_lane(lane)
@@ -275,6 +275,8 @@ class MainOptionsMixin:
         if not isinstance(bucket, dict):
             bucket = {"MICRO": None, "ITM": None}
             self._options_intraday_cooldown_until_by_lane = bucket
+        if lane_key not in bucket:
+            bucket[lane_key] = None
         bucket[lane_key] = until
         # Keep legacy aggregate field updated for existing telemetry/reporting.
         active_until = [dt for dt in bucket.values() if dt is not None]
