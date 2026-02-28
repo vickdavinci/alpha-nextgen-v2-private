@@ -90,7 +90,12 @@ class TargetWeight:
 
         lane = str(self.metadata.get("options_lane", "") or "").strip().upper()
         if lane not in {"ITM", "MICRO"}:
-            lane = "ITM" if "ITM_MOMENTUM" in strategy or strategy.startswith("ITM_") else "MICRO"
+            if "ITM_MOMENTUM" in strategy or strategy.startswith("ITM_"):
+                lane = "ITM"
+            elif strategy in {"", "UNCLASSIFIED", "NO_TRADE", "UNKNOWN"}:
+                lane = ""
+            else:
+                lane = "MICRO"
         self.metadata["options_lane"] = lane
 
     def __post_init__(self) -> None:

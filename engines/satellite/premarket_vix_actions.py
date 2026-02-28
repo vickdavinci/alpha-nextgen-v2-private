@@ -187,17 +187,32 @@ def apply_premarket_vix_actions(algo: Any) -> None:
                 close_qty = abs(algo._get_option_holding_quantity(close_symbol))
                 if close_qty <= 0:
                     continue
+                close_source = "OPT"
+                close_metadata = None
+                try:
+                    inferred_lane = str(
+                        algo.options_engine._find_engine_lane_by_symbol(close_symbol) or ""
+                    ).upper()
+                except Exception:
+                    inferred_lane = ""
+                if inferred_lane in {"ITM", "MICRO"}:
+                    close_source = "OPT_INTRADAY"
+                    close_metadata = {
+                        "options_lane": inferred_lane,
+                        "options_strategy": "UNCLASSIFIED",
+                    }
                 algo.portfolio_router.receive_signal(
                     TargetWeight(
                         symbol=close_symbol,
                         target_weight=0.0,
-                        source="OPT",
+                        source=close_source,
                         urgency=Urgency.IMMEDIATE,
                         reason=(
                             "PREMARKET_VIX_L2_CALL_DELEVER | "
                             f"{algo._premarket_vix_ladder_reason}"
                         ),
                         requested_quantity=close_qty,
+                        metadata=close_metadata,
                     )
                 )
                 queued += 1

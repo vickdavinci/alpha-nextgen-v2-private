@@ -533,6 +533,42 @@ class TestCalculateOrderIntents:
         assert len(orders) == 1
         assert orders[0].tag == "ITM:UNCLASSIFIED"
 
+    def test_opt_intraday_close_without_lane_metadata_uses_unknown_tag_when_lane_missing(self):
+        """OPT_INTRADAY close with unresolved lane must stay lane-neutral."""
+        option_symbol = "QQQ 260130C00520000"
+        holding = MagicMock()
+        holding.Symbol = option_symbol
+        holding.Quantity = 2
+        kvp = MagicMock()
+        kvp.Value = holding
+
+        mock_algo = MagicMock()
+        mock_algo.Portfolio = [kvp]
+        mock_algo.options_engine = MagicMock()
+        mock_algo.options_engine.find_engine_lane_by_symbol.return_value = None
+
+        router = PortfolioRouter(algorithm=mock_algo)
+        weights = [
+            TargetWeight(
+                option_symbol,
+                0.0,
+                "OPT_INTRADAY",
+                Urgency.IMMEDIATE,
+                "forced close",
+                metadata={"options_strategy": "UNCLASSIFIED"},
+            )
+        ]
+        aggregated = router.aggregate_weights(weights)
+        orders = router.calculate_order_intents(
+            aggregated=aggregated,
+            tradeable_equity=100000.0,
+            current_positions={option_symbol: 500.0},
+            current_prices={option_symbol: 2.5},
+        )
+
+        assert len(orders) == 1
+        assert orders[0].tag == "OPT_UNKNOWN:UNCLASSIFIED"
+
     def test_option_close_risk_source_infers_lane_tag(self):
         """RISK-sourced option closes should retain lane-aware tags, not generic RISK."""
         option_symbol = "QQQ 260130C00500000"
@@ -629,6 +665,23 @@ class TestCalculateOrderIntents:
         source_tag, trace_id = router._extract_trace_context(
             metadata=None,
             sources=["RISK"],
+            symbol=option_symbol,
+        )
+
+        assert trace_id == ""
+        assert source_tag == "OPT_UNKNOWN"
+
+    def test_extract_trace_context_opt_intraday_uses_opt_unknown_when_lane_unknown(self):
+        """Unknown-lane OPT_INTRADAY source should normalize to OPT_UNKNOWN."""
+        option_symbol = "QQQ 260130C00510000"
+        mock_algo = MagicMock()
+        mock_algo.options_engine = MagicMock()
+        mock_algo.options_engine.find_engine_lane_by_symbol.return_value = None
+        router = PortfolioRouter(algorithm=mock_algo)
+
+        source_tag, trace_id = router._extract_trace_context(
+            metadata=None,
+            sources=["OPT_INTRADAY"],
             symbol=option_symbol,
         )
 

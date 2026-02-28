@@ -2214,7 +2214,7 @@ class PortfolioRouter:
                 if not inferred_lane:
                     inferred_lane = self._infer_options_lane_from_symbol(symbol)
                 source_tag = (
-                    f"OPT_{inferred_lane}" if inferred_lane in {"ITM", "MICRO"} else "OPT_MICRO"
+                    f"OPT_{inferred_lane}" if inferred_lane in {"ITM", "MICRO"} else "OPT_UNKNOWN"
                 )
             elif "OPT" in sources:
                 inferred_lane = self._infer_options_lane_from_symbol(symbol)
@@ -2279,7 +2279,7 @@ class PortfolioRouter:
         if upper.startswith("OPT_INTRADAY"):
             if inferred_lane in {"ITM", "MICRO"}:
                 return f"OPT_{inferred_lane}"
-            return "OPT_MICRO"
+            return "OPT_UNKNOWN"
         if upper.startswith("OPT"):
             if inferred_lane in {"ITM", "MICRO"}:
                 return f"OPT_{inferred_lane}"
@@ -2349,7 +2349,7 @@ class PortfolioRouter:
                 lane = "MICRO"
             elif "ITM" in strategy:
                 lane = "ITM"
-            elif strategy:
+            elif strategy and strategy not in {"UNCLASSIFIED", "NO_TRADE", "UNKNOWN"}:
                 lane = "MICRO"
 
         if lane not in {"ITM", "MICRO"}:
@@ -3021,18 +3021,21 @@ class PortfolioRouter:
                     if not lane_tag:
                         if "ITM_MOMENTUM" in intraday_strategy:
                             lane_tag = "ITM"
-                        elif intraday_strategy:
+                        elif intraday_strategy and intraday_strategy not in {"UNCLASSIFIED"}:
                             lane_tag = "MICRO"
                     if lane_tag == "ITM":
                         tag = f"ITM:{intraday_strategy}"
                     elif "PROTECTIVE_PUTS" in intraday_strategy:
                         tag = f"MICRO:{intraday_strategy}"
                     elif intraday_strategy:
-                        tag = f"{lane_tag or 'MICRO'}:{intraday_strategy}"
+                        if lane_tag:
+                            tag = f"{lane_tag}:{intraday_strategy}"
+                        else:
+                            tag = f"OPT_UNKNOWN:{intraday_strategy}"
                     elif lane_tag:
                         tag = f"{lane_tag}:UNCLASSIFIED"
                     else:
-                        tag = "MICRO:UNCLASSIFIED"
+                        tag = "OPT_UNKNOWN:UNCLASSIFIED"
                 elif any(s == "OPT" for s in agg.sources):
                     inferred_intraday_lane = ""
                     inferred_intraday_strategy = ""
