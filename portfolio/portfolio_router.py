@@ -3779,10 +3779,19 @@ class PortfolioRouter:
                             except TypeError:
                                 try:
                                     combo_tickets = self.algorithm.ComboLimitOrder(  # type: ignore[attr-defined]
-                                        legs, num_spreads, float(limit_credit), effective_tag
+                                        legs,
+                                        num_spreads,
+                                        float(limit_credit),
+                                        False,
+                                        effective_tag,
                                     )
-                                except Exception:
-                                    combo_tickets = None
+                                except TypeError:
+                                    try:
+                                        combo_tickets = self.algorithm.ComboLimitOrder(  # type: ignore[attr-defined]
+                                            legs, num_spreads, float(limit_credit), effective_tag
+                                        )
+                                    except Exception:
+                                        combo_tickets = None
                             if combo_tickets is None:
                                 self.log(
                                     f"ROUTER: COMBO_LIMIT_FALLBACK_MARKET | {order.symbol} | "
@@ -3799,9 +3808,14 @@ class PortfolioRouter:
                                 legs, num_spreads, tag=effective_tag
                             )
                         except TypeError:
-                            combo_tickets = self.algorithm.ComboMarketOrder(  # type: ignore[attr-defined]
-                                legs, num_spreads
-                            )
+                            try:
+                                combo_tickets = self.algorithm.ComboMarketOrder(  # type: ignore[attr-defined]
+                                    legs, num_spreads, False, effective_tag
+                                )
+                            except TypeError:
+                                combo_tickets = self.algorithm.ComboMarketOrder(  # type: ignore[attr-defined]
+                                    legs, num_spreads
+                                )
                         if submit_mode == "LIMIT":
                             submit_mode = "MARKET_FALLBACK"
                     ticket_count = 0
