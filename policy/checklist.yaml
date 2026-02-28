@@ -1,0 +1,37 @@
+version: 1
+name: shared_agent_process
+
+required_steps:
+  - id: gate_changed
+    command: "./scripts/gate.sh changed"
+    blocking: true
+    reason: "Compile/lint/targeted-test safety gate"
+
+  - id: commit_contract
+    template: "templates/commit_message.md"
+    blocking: true
+    reason: "Consistent validation + risk traceability"
+
+  - id: backtest_run
+    command: "./scripts/run_backtest.sh ..."
+    blocking: false
+    reason: "Only for backtest iterations"
+
+  - id: pull_artifacts
+    command: "./scripts/pull_logs.sh ..."
+    blocking: false
+    reason: "Ensure logs/orders/trades/overview are pulled locally"
+
+  - id: report_generation
+    command: "./scripts/analyze.sh ..."
+    blocking: false
+    reason: "Generate synchronized run reports for RCA"
+
+required_outputs:
+  - "<RUN>_logs.txt"
+  - "<RUN>_orders.csv"
+  - "<RUN>_trades.csv"
+  - "<RUN>_overview.txt"
+  - "<RUN>_REPORT.md"
+  - "<RUN>_SIGNAL_FLOW_REPORT.md"
+  - "<RUN>_TRADE_DETAIL_REPORT.md"
