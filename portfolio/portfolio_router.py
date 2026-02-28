@@ -2236,7 +2236,7 @@ class PortfolioRouter:
                 ):
                     source_tag = "OPT_VASS"
                 else:
-                    source_tag = "OPT_VASS"
+                    source_tag = "OPT_MICRO"
         source_tag = self._normalize_options_source_tag(source_tag, metadata, symbol)
         return source_tag, trace_id
 
@@ -2269,7 +2269,7 @@ class PortfolioRouter:
                 or md.get("spread_type")
             ):
                 return "OPT_VASS"
-            return "OPT_VASS"
+            return "OPT_MICRO"
         if upper.startswith("ITM") or " ITM" in f" {upper} ":
             return "OPT_ITM"
         if upper.startswith("MICRO") or " MICRO" in f" {upper} ":
@@ -3088,7 +3088,7 @@ class PortfolioRouter:
                         )
                         tag = f"VASS:{vass_tag_value}"
                     else:
-                        tag = "VASS:RISK_EXIT"
+                        tag = "MICRO:RISK_EXIT"
 
             # Fallback for non-option paths or missing metadata.
             if not tag:

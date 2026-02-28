@@ -584,6 +584,40 @@ class TestCalculateOrderIntents:
         assert trace_id == ""
         assert source_tag == "OPT_MICRO"
 
+    def test_option_close_risk_source_defaults_to_micro_when_lane_unknown(self):
+        """Unknown-lane option risk exits should default to MICRO, not VASS."""
+        option_symbol = "QQQ 260130C00510000"
+        holding = MagicMock()
+        holding.Symbol = option_symbol
+        holding.Quantity = 1
+        kvp = MagicMock()
+        kvp.Value = holding
+
+        mock_algo = MagicMock()
+        mock_algo.Portfolio = [kvp]
+        mock_algo.options_engine = MagicMock()
+        mock_algo.options_engine.find_engine_lane_by_symbol.return_value = None
+
+        router = PortfolioRouter(algorithm=mock_algo)
+        aggregated = {
+            option_symbol: AggregatedWeight(
+                option_symbol,
+                0.0,
+                ["RISK"],
+                Urgency.IMMEDIATE,
+                ["GREEKS_BREACH"],
+            )
+        }
+        orders = router.calculate_order_intents(
+            aggregated=aggregated,
+            tradeable_equity=100000.0,
+            current_positions={option_symbol: 250.0},
+            current_prices={option_symbol: 2.5},
+        )
+
+        assert len(orders) == 1
+        assert orders[0].tag == "MICRO:RISK_EXIT"
+
 
 class TestPrioritize:
     """Tests for Step 5: Prioritize."""
