@@ -407,9 +407,20 @@ class AlphaNextGen(QCAlgorithm):
                 self._build_router_rejection_observability_key(),
                 self._build_order_lifecycle_observability_key(),
             ]
+            max_shards = max(1, int(getattr(config, "OBSERVABILITY_OBJECTSTORE_MAX_SHARDS", 32)))
             for observability_key in observability_keys:
-                if self.ObjectStore.ContainsKey(observability_key):
-                    self.ObjectStore.Delete(observability_key)
+                key_root = (
+                    observability_key[:-4]
+                    if str(observability_key).endswith(".csv")
+                    else observability_key
+                )
+                cleanup_keys = [observability_key, f"{key_root}__manifest.json"]
+                cleanup_keys.extend(
+                    f"{key_root}__part{idx:03d}.csv" for idx in range(1, max_shards + 1)
+                )
+                for cleanup_key in cleanup_keys:
+                    if self.ObjectStore.ContainsKey(cleanup_key):
+                        self.ObjectStore.Delete(cleanup_key)
 
         # =====================================================================
         # STEP 8: Load Persisted State
