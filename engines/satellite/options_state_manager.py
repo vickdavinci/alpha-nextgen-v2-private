@@ -36,8 +36,12 @@ def calculate_position_greeks_impl(self) -> Optional[GreeksSnapshot]:
         text = str(value).strip().upper()
         return " ".join(text.split()) if text else ""
 
-    def _append_position(position) -> None:
+    include_intraday = bool(getattr(config, "CB_GREEKS_INCLUDE_INTRADAY", False))
+
+    def _append_position(position, *, is_intraday: bool = False) -> None:
         if position is None or getattr(position, "contract", None) is None:
+            return
+        if is_intraday and not include_intraday:
             return
         strategy_name = str(getattr(position, "entry_strategy", "") or "").upper()
         if "PROTECTIVE_PUTS" in strategy_name and not bool(
@@ -53,10 +57,10 @@ def calculate_position_greeks_impl(self) -> Optional[GreeksSnapshot]:
             seen_symbols.add(key)
         positions.append(position)
 
-    _append_position(getattr(self, "_position", None))
+    _append_position(getattr(self, "_position", None), is_intraday=False)
     for pos in list(getattr(self, "get_engine_positions", lambda: [])() or []):
-        _append_position(pos)
-    _append_position(getattr(self, "_intraday_position", None))
+        _append_position(pos, is_intraday=True)
+    _append_position(getattr(self, "_intraday_position", None), is_intraday=True)
 
     if not positions:
         return None

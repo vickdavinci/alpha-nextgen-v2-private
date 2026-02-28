@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Optional
 
 from AlgorithmImports import SecurityType, Slice
@@ -47,6 +48,7 @@ class MainRiskMonitorMixin:
                 self._greeks_breach_logged = True
             # Emit exit signals for real option holdings (never synthetic symbols).
             signals_emitted = 0
+            itm_risk_exit_emitted = False
             seen_symbols = set()
             for kvp in self.Portfolio:
                 holding = kvp.Value
@@ -62,6 +64,16 @@ class MainRiskMonitorMixin:
                 seen_symbols.add(symbol_str)
                 if self._has_open_non_oco_order_for_symbol(symbol_str):
                     continue
+                lane = ""
+                try:
+                    lane = str(
+                        getattr(self.options_engine, "find_engine_lane_by_symbol", lambda _: "")(
+                            symbol_str
+                        )
+                        or ""
+                    ).upper()
+                except Exception:
+                    lane = ""
                 self.portfolio_router.receive_signal(
                     TargetWeight(
                         symbol=symbol_str,
@@ -72,7 +84,17 @@ class MainRiskMonitorMixin:
                         requested_quantity=abs(int(holding.Quantity)),
                     )
                 )
+                if lane == "ITM":
+                    itm_risk_exit_emitted = True
                 signals_emitted += 1
+            if itm_risk_exit_emitted:
+                cooldown_min = int(getattr(config, "ITM_RISK_EXIT_COOLDOWN_MINUTES", 0) or 0)
+                if cooldown_min > 0 and hasattr(self, "_set_engine_lane_cooldown"):
+                    until = self.Time + timedelta(minutes=max(0, cooldown_min))
+                    self._set_engine_lane_cooldown("ITM", until)
+                    self.Log(
+                        f"ITM: RISK_EXIT_COOLDOWN_SET | Until={until} | Minutes={cooldown_min}"
+                    )
             if signals_emitted == 0:
                 self.Log("GREEKS_BREACH_EXIT_SKIP: No live option holdings found")
             return  # Exit already triggered, don't check other exits
@@ -209,8 +231,12 @@ class MainRiskMonitorMixin:
         positions = []
         seen_symbols = set()
 
-        def _append_position(position) -> None:
+        include_intraday = bool(getattr(config, "CB_GREEKS_INCLUDE_INTRADAY", False))
+
+        def _append_position(position, *, is_intraday: bool = False) -> None:
             if position is None or getattr(position, "contract", None) is None:
+                return
+            if is_intraday and not include_intraday:
                 return
             strategy_name = str(getattr(position, "entry_strategy", "") or "").upper()
             if "PROTECTIVE_PUTS" in strategy_name and not bool(
@@ -225,9 +251,9 @@ class MainRiskMonitorMixin:
             seen_symbols.add(symbol_key)
             positions.append(position)
 
-        _append_position(self.options_engine.get_position())
+        _append_position(self.options_engine.get_position(), is_intraday=False)
         for intraday_position in self.options_engine.get_engine_positions():
-            _append_position(intraday_position)
+            _append_position(intraday_position, is_intraday=True)
 
         if not positions:
             return None

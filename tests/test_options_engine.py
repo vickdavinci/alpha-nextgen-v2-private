@@ -1100,10 +1100,11 @@ class TestGreeksMonitoring:
         # = (-0.02 × 10) / (10 × 1.50 × 100) = -0.2 / 1500 ≈ -0.000133
         assert abs(greeks.theta - (-0.000133333)) < 0.0001
 
-    def test_calculate_position_greeks_with_intraday_positions(self):
+    def test_calculate_position_greeks_with_intraday_positions(self, monkeypatch):
         """Greeks fallback must include intraday positions when swing is empty."""
         from engines.satellite.options_engine import OptionContract, OptionsEngine, OptionsPosition
 
+        monkeypatch.setattr(config, "CB_GREEKS_INCLUDE_INTRADAY", True, raising=False)
         engine = OptionsEngine()
         engine._position = None
 
@@ -1730,6 +1731,7 @@ class TestGreeksBreachThresholds:
         """Protective puts can be re-included in CB Greeks via config override."""
         from engines.core.risk_engine import RiskEngine
 
+        monkeypatch.setattr(config, "CB_GREEKS_INCLUDE_INTRADAY", True, raising=False)
         monkeypatch.setattr(config, "CB_GREEKS_INCLUDE_PROTECTIVE_PUTS", True, raising=False)
         engine = OptionsEngine()
         risk_engine = RiskEngine()
@@ -1769,6 +1771,7 @@ class TestGreeksBreachThresholds:
         """V12.22: excluding protective puts must not disable ITM Greeks protection."""
         from engines.core.risk_engine import RiskEngine
 
+        monkeypatch.setattr(config, "CB_GREEKS_INCLUDE_INTRADAY", True, raising=False)
         monkeypatch.setattr(config, "CB_GREEKS_INCLUDE_PROTECTIVE_PUTS", False, raising=False)
         engine = OptionsEngine()
         risk_engine = RiskEngine()
