@@ -754,6 +754,18 @@ class PortfolioRouter:
         if not self._is_option_close_order(order):
             return True, ""
 
+        timeout_sec = max(1, int(getattr(config, "EXIT_PRE_CLEAR_TIMEOUT_SECONDS", 30)))
+        metadata = order.metadata if isinstance(order.metadata, dict) else {}
+        lane = str(metadata.get("options_lane", "") or "").upper()
+        if order.is_combo:
+            timeout_sec = max(
+                1, int(getattr(config, "EXIT_PRE_CLEAR_TIMEOUT_SECONDS_COMBO", timeout_sec))
+            )
+        elif lane in {"MICRO", "ITM"}:
+            timeout_sec = max(
+                1, int(getattr(config, "EXIT_PRE_CLEAR_TIMEOUT_SECONDS_INTRADAY", timeout_sec))
+            )
+
         symbols = [order.symbol]
         if order.is_combo and order.combo_short_symbol:
             symbols.append(order.combo_short_symbol)
@@ -785,6 +797,43 @@ class PortfolioRouter:
             self._exit_preclear_pending_since.pop(key, None)
             return True, ""
 
+        # If a same-symbol close order is already in-flight, defer duplicate close
+        # submits until timeout before force-canceling. This reduces OCO teardown churn.
+        if not order.is_combo:
+            desired_side = str(getattr(order.side, "value", order.side) or "").upper()
+            matching_inflight = []
+            for open_order in open_before:
+                open_symbol = self._normalize_symbol_key(getattr(open_order, "Symbol", None))
+                if open_symbol != normalized[0]:
+                    continue
+                open_qty = int(getattr(open_order, "Quantity", 0) or 0)
+                if open_qty == 0:
+                    continue
+                open_side = "BUY" if open_qty > 0 else "SELL"
+                if open_side == desired_side:
+                    matching_inflight.append(open_order)
+
+            if matching_inflight:
+                now = getattr(self.algorithm, "Time", None) if self.algorithm else None
+                first_seen = self._exit_preclear_pending_since.get(key)
+                if first_seen is None:
+                    self._exit_preclear_pending_since[key] = now
+                    first_seen = now
+                elapsed_sec = 0.0
+                try:
+                    if first_seen is not None and now is not None:
+                        elapsed_sec = max(0.0, float((now - first_seen).total_seconds()))
+                except Exception:
+                    elapsed_sec = 0.0
+                if elapsed_sec < timeout_sec:
+                    inflight_ids = _order_ids(matching_inflight)
+                    return (
+                        False,
+                        "EXIT_PRE_CLEAR_INFLIGHT_CLOSE: "
+                        f"Symbols={','.join(normalized)} | OrderIds={inflight_ids} | "
+                        f"Elapsed={elapsed_sec:.0f}s/{timeout_sec}s",
+                    )
+
         canceled, cancel_errors = self._cancel_open_orders_for_symbols(normalized)
         open_after = self._get_open_orders_for_symbols(normalized)
         remaining = len(open_after)
@@ -794,18 +843,6 @@ class PortfolioRouter:
             return (
                 True,
                 f"EXIT_PRE_CLEAR_OK: Symbols={','.join(normalized)} | Canceled={canceled}",
-            )
-
-        timeout_sec = max(1, int(getattr(config, "EXIT_PRE_CLEAR_TIMEOUT_SECONDS", 30)))
-        metadata = order.metadata if isinstance(order.metadata, dict) else {}
-        lane = str(metadata.get("options_lane", "") or "").upper()
-        if order.is_combo:
-            timeout_sec = max(
-                1, int(getattr(config, "EXIT_PRE_CLEAR_TIMEOUT_SECONDS_COMBO", timeout_sec))
-            )
-        elif lane in {"MICRO", "ITM"}:
-            timeout_sec = max(
-                1, int(getattr(config, "EXIT_PRE_CLEAR_TIMEOUT_SECONDS_INTRADAY", timeout_sec))
             )
 
         now = getattr(self.algorithm, "Time", None) if self.algorithm else None
@@ -3386,6 +3423,8 @@ class PortfolioRouter:
             preclear_ok, preclear_detail = self._run_option_exit_preclear(order)
             if not preclear_ok:
                 self.log(f"ROUTER: {preclear_detail}")
+                if preclear_detail.startswith("EXIT_PRE_CLEAR_INFLIGHT_CLOSE"):
+                    continue
                 self._record_rejection(
                     code="R_EXIT_PRECLEAR_PENDING",
                     symbol=order.symbol,
