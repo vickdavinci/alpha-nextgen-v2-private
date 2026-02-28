@@ -636,6 +636,44 @@ class PortfolioRouter:
             return 0
         return 0
 
+    def _evict_stale_option_close_intent(self, symbol: str) -> List[str]:
+        """
+        Best-effort cleanup for stale single-leg close intents with no live holdings.
+
+        This prevents repeated router close attempts when engine/pending-close state
+        lags behind broker holdings.
+        """
+        cleaned: List[str] = []
+        if not self.algorithm:
+            return cleaned
+        symbol_key = self._normalize_symbol_key(symbol)
+        if not symbol_key:
+            return cleaned
+
+        options_engine = getattr(self.algorithm, "options_engine", None)  # type: ignore[attr-defined]
+        if options_engine is not None:
+            try:
+                if options_engine.cancel_pending_engine_exit(symbol_key):
+                    cleaned.append("pending_exit")
+            except Exception:
+                pass
+            try:
+                removed = options_engine.remove_engine_position(symbol=symbol_key)
+                if removed is not None:
+                    cleaned.append("engine_position")
+            except Exception:
+                pass
+
+        try:
+            clear_guard = getattr(self.algorithm, "_clear_engine_close_guard", None)
+            if callable(clear_guard):
+                clear_guard(symbol_key)
+                cleaned.append("close_guard")
+        except Exception:
+            pass
+
+        return cleaned
+
     def _is_option_close_order(self, order: "OrderIntent") -> bool:
         """
         True when an option order reduces/close existing exposure.
@@ -2698,21 +2736,27 @@ class PortfolioRouter:
             # This prevents stale weight snapshots from flipping close side (e.g., BUY on long close)
             # and blocks accidental position amplification during force-close fallback.
             if is_option and is_closing:
+                is_spread_close = bool(
+                    agg.metadata and agg.metadata.get("spread_close_short", False)
+                )
                 live_qty = self._get_live_option_qty(symbol)
                 if live_qty == 0:
+                    stale_cleanup = []
+                    if not is_spread_close:
+                        stale_cleanup = self._evict_stale_option_close_intent(symbol)
+                    detail = "Close intent but no live holdings"
+                    if stale_cleanup:
+                        detail = f"{detail} | Cleared={','.join(stale_cleanup)}"
                     self._record_rejection(
                         code="R_CLOSE_NO_LIVE_HOLDING",
                         symbol=symbol,
-                        detail="Close intent but no live holdings",
+                        detail=detail,
                         stage="INTENT_BUILD",
                         source_tag=source_tag,
                         trace_id=trace_id,
                     )
                     continue
 
-                is_spread_close = bool(
-                    agg.metadata and agg.metadata.get("spread_close_short", False)
-                )
                 side = OrderSide.SELL if live_qty > 0 else OrderSide.BUY
                 if is_spread_close:
                     requested_qty = int(agg.requested_quantity or 0)
@@ -3158,11 +3202,25 @@ class PortfolioRouter:
             )
             if not source_tag and order.tag:
                 source_tag = order.tag
+            lane_hint = ""
+            strategy_hint = ""
+            close_hint = ""
+            if isinstance(order.metadata, dict):
+                lane_hint = str(order.metadata.get("options_lane", "") or "").upper()
+                strategy_hint = str(order.metadata.get("options_strategy", "") or "").upper()
+                close_hint = str(
+                    order.metadata.get("intraday_exit_code", "")
+                    or order.metadata.get("spread_exit_code", "")
+                    or ""
+                ).upper()
+            if not close_hint and self._is_option_close_order(order):
+                close_hint = "CLOSE"
             # Create unique order key with routing context to avoid false duplicate suppression.
             order_key = (
                 f"{order.symbol}:{order.side.value}:{order.quantity}:"
                 f"{order.order_type.value}:{int(order.is_combo)}:"
-                f"{order.combo_short_symbol or ''}:{source_tag or ''}:{trace_id or ''}"
+                f"{order.combo_short_symbol or ''}:{source_tag or ''}:{trace_id or ''}:"
+                f"{lane_hint}:{strategy_hint}:{close_hint}"
             )
 
             # Skip if already executed this minute (idempotency guard)
