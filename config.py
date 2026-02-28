@@ -2063,6 +2063,13 @@ VASS_DEPLOY_PCT_OF_BUDGET = 0.40  # Deploy up to 40% of VASS budget per trade
 # V12.14: Unified R:R-aware sizing
 VASS_RR_SCALING_ENABLED = True
 
+# V12.22: Universal payoff-quality gate across debit/credit spread entries.
+# Uses the same reference/worst R:R thresholds as sizing:
+# - Debit: lower D/W is better.
+# - Credit: higher C/W is better.
+VASS_UNIVERSAL_QUALITY_GATE_ENABLED = True
+VASS_UNIVERSAL_QUALITY_SCORE_MIN = 0.25  # 0=allow worst boundary, 1=only reference quality
+
 # Debit spread R:R thresholds (D/W% — lower = better)
 VASS_RR_DEBIT_REFERENCE_DW = 0.35  # "Good" D/W — gets full allocation (scale = 1.0)
 VASS_RR_DEBIT_WORST_DW = 0.48  # Worst acceptable D/W — gets floor allocation

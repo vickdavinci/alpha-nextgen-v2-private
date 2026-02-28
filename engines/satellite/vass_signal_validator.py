@@ -793,6 +793,25 @@ def check_spread_entry_signal_impl(
         )
         return fail_quality("DEBIT_TO_WIDTH_TOO_LOW")
 
+    # V12.22: Universal payoff-quality gate (shared debit/credit rubric).
+    # Debit quality score maps D/W into [0,1] using RR reference/worst thresholds.
+    if bool(getattr(config, "VASS_UNIVERSAL_QUALITY_GATE_ENABLED", False)):
+        ref_dw = float(getattr(config, "VASS_RR_DEBIT_REFERENCE_DW", 0.35))
+        worst_dw = float(getattr(config, "VASS_RR_DEBIT_WORST_DW", max_debit_pct))
+        if worst_dw > ref_dw:
+            debit_quality = (worst_dw - debit_to_width) / (worst_dw - ref_dw)
+        else:
+            debit_quality = 1.0 if debit_to_width <= ref_dw else 0.0
+        debit_quality = max(0.0, min(1.0, float(debit_quality)))
+        min_quality = float(getattr(config, "VASS_UNIVERSAL_QUALITY_SCORE_MIN", 0.0))
+        if debit_quality < min_quality:
+            self.log(
+                f"SPREAD: Entry blocked - QUALITY_SCORE {debit_quality:.2f} < {min_quality:.2f} | "
+                f"D/W={debit_to_width:.1%} (ref={ref_dw:.1%}, worst={worst_dw:.1%})",
+                trades_only=True,
+            )
+            return fail_quality("UNIVERSAL_QUALITY_TOO_LOW")
+
     # Production friction gate: entry friction should not consume too much of
     # expected target profit.
     if bool(getattr(config, "SPREAD_ENTRY_FRICTION_GATE_ENABLED", True)):
@@ -1478,6 +1497,26 @@ def check_credit_spread_entry_signal_impl(
             trades_only=True,
         )
         return fail_quality("CREDIT_TO_WIDTH_TOO_LOW")
+
+    # V12.22: Universal payoff-quality gate (shared debit/credit rubric).
+    # Credit quality score maps C/W into [0,1] using RR reference/worst thresholds.
+    if bool(getattr(config, "VASS_UNIVERSAL_QUALITY_GATE_ENABLED", False)):
+        ref_cw = float(getattr(config, "VASS_RR_CREDIT_REFERENCE_CW", 0.40))
+        worst_cw = float(getattr(config, "VASS_RR_CREDIT_WORST_CW", min_credit_to_width))
+        if ref_cw > worst_cw:
+            credit_quality = (credit_to_width - worst_cw) / (ref_cw - worst_cw)
+        else:
+            credit_quality = 1.0 if credit_to_width >= ref_cw else 0.0
+        credit_quality = max(0.0, min(1.0, float(credit_quality)))
+        min_quality = float(getattr(config, "VASS_UNIVERSAL_QUALITY_SCORE_MIN", 0.0))
+        if credit_quality < min_quality:
+            self.log(
+                f"CREDIT_SPREAD: Entry blocked - QUALITY_SCORE {credit_quality:.2f} < "
+                f"{min_quality:.2f} | C/W={credit_to_width:.1%} "
+                f"(ref={ref_cw:.1%}, worst={worst_cw:.1%})",
+                trades_only=True,
+            )
+            return fail_quality("UNIVERSAL_QUALITY_TOO_LOW")
 
     if bool(getattr(config, "SPREAD_ENTRY_COMMISSION_GATE_ENABLED", False)):
         max_profit_dollars = credit_received * 100.0
