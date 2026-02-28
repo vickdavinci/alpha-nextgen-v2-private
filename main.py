@@ -91,6 +91,9 @@ class AlphaNextGen(QCAlgorithm):
     _queue_engine_retry = MainOptionsMixin._queue_engine_retry
     _consume_engine_retry = MainOptionsMixin._consume_engine_retry
     _reset_regime_detector_runtime_state = MainOptionsMixin._reset_regime_detector_runtime_state
+    _scrub_stale_spread_margin_reservations = (
+        MainOptionsMixin._scrub_stale_spread_margin_reservations
+    )
     _initialize_runtime_state = MainOptionsMixin._initialize_runtime_state
     _select_engine_option_contract = MainOptionsMixin._select_engine_option_contract
     _select_swing_option_contract = MainOptionsMixin._select_swing_option_contract

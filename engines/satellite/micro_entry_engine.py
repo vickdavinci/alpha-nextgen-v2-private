@@ -762,7 +762,7 @@ class MicroEntryEngine:
             intraday_strategy = (
                 intraday_strategy or forced_intraday_strategy or host.get_last_engine_strategy()
             )
-            intraday_contract = algorithm._select_intraday_option_contract(
+            intraday_contract = algorithm._select_engine_option_contract(
                 chain,
                 intraday_direction,
                 strategy=intraday_strategy,

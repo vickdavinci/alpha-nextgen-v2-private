@@ -455,7 +455,7 @@ class ITMHorizonEngine:
                         contract_symbol="",
                     )
 
-                itm_contract = algorithm._select_intraday_option_contract(
+                itm_contract = algorithm._select_engine_option_contract(
                     chain,
                     itm_dir,
                     strategy=IntradayStrategy.ITM_MOMENTUM,
