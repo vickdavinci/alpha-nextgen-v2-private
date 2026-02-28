@@ -2164,10 +2164,11 @@ class PortfolioRouter:
         trace_id: str = "",
     ) -> None:
         """Track and log router rejection with source/trace context."""
+        source_norm = self._normalize_options_source_tag(source_tag, metadata=None, symbol=symbol)
         item = RouterRejection(
             code=code,
             symbol=symbol,
-            source_tag=source_tag,
+            source_tag=source_norm,
             trace_id=trace_id,
             detail=detail,
             stage=stage,
@@ -2179,7 +2180,7 @@ class PortfolioRouter:
         suppressed_suffix = f" | Suppressed={suppressed}" if suppressed > 0 else ""
         self.log(
             f"ROUTER_REJECT: Code={code} | Stage={stage} | Symbol={symbol} | "
-            f"Source={source_tag or 'UNKNOWN'} | Trace={trace_id or 'NONE'} | "
+            f"Source={source_norm or 'UNKNOWN'} | Trace={trace_id or 'NONE'} | "
             f"{detail}{suppressed_suffix}"
         )
 
@@ -2207,11 +2208,64 @@ class PortfolioRouter:
                     source_tag = f"VASS:{metadata.get('spread_type')}"
         if not source_tag and sources:
             if "OPT_INTRADAY" in sources:
-                source_tag = "OPT_INTRADAY"
+                inferred_lane = ""
+                if metadata:
+                    inferred_lane, _ = self._extract_options_lane_and_strategy(metadata)
+                if not inferred_lane:
+                    inferred_lane = self._infer_options_lane_from_symbol(symbol)
+                source_tag = (
+                    f"OPT_{inferred_lane}" if inferred_lane in {"ITM", "MICRO"} else "OPT_MICRO"
+                )
             elif "OPT" in sources:
                 inferred_lane = self._infer_options_lane_from_symbol(symbol)
-                source_tag = inferred_lane if inferred_lane else "VASS"
+                source_tag = (
+                    f"OPT_{inferred_lane}" if inferred_lane in {"ITM", "MICRO"} else "OPT_VASS"
+                )
+        source_tag = self._normalize_options_source_tag(source_tag, metadata, symbol)
         return source_tag, trace_id
+
+    def _normalize_options_source_tag(
+        self,
+        source_tag: str,
+        metadata: Optional[Dict[str, Any]],
+        symbol: Optional[str],
+    ) -> str:
+        """Normalize option-related source tags to lane-aware canonical names."""
+        normalized = str(source_tag or "").strip()
+        if not normalized:
+            return ""
+        upper = normalized.upper()
+        md = metadata or {}
+        lane, _ = self._extract_options_lane_and_strategy(md) if md else ("", "")
+        lane = str(lane or "").upper()
+        inferred_lane = (
+            lane if lane in {"ITM", "MICRO"} else self._infer_options_lane_from_symbol(symbol)
+        )
+
+        if upper in {"OPT_ITM", "OPT_MICRO", "OPT_VASS"}:
+            return upper
+        if upper.startswith("ITM") or " ITM" in f" {upper} ":
+            return "OPT_ITM"
+        if upper.startswith("MICRO") or " MICRO" in f" {upper} ":
+            return "OPT_MICRO"
+        if "VASS" in upper or upper.startswith("SPREAD"):
+            return "OPT_VASS"
+        if upper.startswith("OPT_INTRADAY"):
+            if inferred_lane in {"ITM", "MICRO"}:
+                return f"OPT_{inferred_lane}"
+            return "OPT_MICRO"
+        if upper.startswith("OPT"):
+            if inferred_lane in {"ITM", "MICRO"}:
+                return f"OPT_{inferred_lane}"
+            if (
+                bool(md.get("spread_close_short", False))
+                or md.get("vass_strategy")
+                or md.get("spread_type")
+            ):
+                return "OPT_VASS"
+            if self._is_option_symbol(str(symbol or "")):
+                return "OPT_VASS"
+        return normalized
 
     def _infer_options_lane_from_symbol(self, symbol: Optional[str]) -> str:
         """
