@@ -751,6 +751,9 @@ def check_spread_exit_signals_impl(
             # V12.9: Conviction floor — per-trade % loss cap for credit spreads.
             # For credits: loss_pct = (current_spread_value - entry_credit) / max_loss
             floor_pct = float(getattr(config, "VASS_TAIL_RISK_CAP_FLOOR_PCT", 0.35))
+            min_loss_pct = float(
+                getattr(config, "VASS_TAIL_RISK_CAP_CREDIT_MIN_LOSS_PCT", floor_pct)
+            )
             max_loss = spread.width * 100.0 * max(1, int(spread.num_spreads)) - (
                 entry_credit * 100.0 * max(1, int(spread.num_spreads))
             )
@@ -760,7 +763,8 @@ def check_spread_exit_signals_impl(
                 else 0.0
             )
             credit_floor_hit = credit_loss_pct >= floor_pct and pnl < 0
-            equity_cap_hit = cap_dollars > 0 and loss_dollars >= cap_dollars
+            loss_gate_hit = credit_loss_pct >= max(0.0, min_loss_pct)
+            equity_cap_hit = cap_dollars > 0 and loss_dollars >= cap_dollars and loss_gate_hit
             if equity_cap_hit or credit_floor_hit:
                 if hasattr(self.algorithm, "_diag_vass_tail_cap_exits"):
                     self.algorithm._diag_vass_tail_cap_exits = (
@@ -941,8 +945,12 @@ def check_spread_exit_signals_impl(
             # V12.9: Conviction floor — per-trade % loss cap for debit spreads.
             # Debit floor: pnl_pct <= -FLOOR_PCT (pnl_pct is already pnl/entry_debit)
             floor_pct = float(getattr(config, "VASS_TAIL_RISK_CAP_FLOOR_PCT", 0.35))
+            min_loss_pct = float(
+                getattr(config, "VASS_TAIL_RISK_CAP_DEBIT_MIN_LOSS_PCT", floor_pct)
+            )
             debit_floor_hit = pnl_pct <= -floor_pct
-            equity_cap_hit = cap_dollars > 0 and loss_dollars >= cap_dollars
+            loss_gate_hit = pnl_pct <= -max(0.0, min_loss_pct)
+            equity_cap_hit = cap_dollars > 0 and loss_dollars >= cap_dollars and loss_gate_hit
             if equity_cap_hit or debit_floor_hit:
                 if hasattr(self.algorithm, "_diag_vass_tail_cap_exits"):
                     self.algorithm._diag_vass_tail_cap_exits = (

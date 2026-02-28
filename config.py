@@ -1769,7 +1769,11 @@ VASS_TAIL_RISK_CAP_OVERLAY_MULTIPLIERS = {
 }
 VASS_TAIL_RISK_CAP_MIN_PCT_EQUITY = 0.006
 VASS_TAIL_RISK_CAP_MAX_PCT_EQUITY = 0.015
-VASS_TAIL_RISK_CAP_FLOOR_PCT = 0.35  # V12.9: Per-trade conviction floor (35% of debit/max-risk)
+VASS_TAIL_RISK_CAP_FLOOR_PCT = 0.45  # V12.22: keep tail-cap path above normal stop band
+# V12.22: Tail cap is a last-resort override; equity cap only activates after
+# these minimum loss fractions are reached (prevents premature tail-cap exits).
+VASS_TAIL_RISK_CAP_DEBIT_MIN_LOSS_PCT = 0.45
+VASS_TAIL_RISK_CAP_CREDIT_MIN_LOSS_PCT = 0.45
 VASS_CATASTROPHIC_EXIT_NO_REENTRY_REST_OF_SESSION = True
 VASS_CATASTROPHIC_EXIT_LOCK_MINUTES = 0  # 0 => lock until session close
 VASS_CATASTROPHIC_EXIT_FALLBACK_LOCK_MINUTES = 120
