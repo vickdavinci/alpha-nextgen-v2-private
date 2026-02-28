@@ -757,6 +757,21 @@ class PortfolioRouter:
         if not normalized:
             return True, ""
 
+        def _order_ids(open_orders: List[Any], limit: int = 6) -> str:
+            ids: List[str] = []
+            for open_order in open_orders:
+                try:
+                    oid = int(getattr(open_order, "Id", 0) or 0)
+                    if oid <= 0:
+                        oid = int(getattr(open_order, "OrderId", 0) or 0)
+                    if oid > 0:
+                        ids.append(str(oid))
+                except Exception:
+                    continue
+            if not ids:
+                return "NONE"
+            return ",".join(ids[:limit])
+
         key = "|".join(normalized)
         open_before = self._get_open_orders_for_symbols(normalized)
         if not open_before:
@@ -764,7 +779,9 @@ class PortfolioRouter:
             return True, ""
 
         canceled, cancel_errors = self._cancel_open_orders_for_symbols(normalized)
-        remaining = len(self._get_open_orders_for_symbols(normalized))
+        open_after = self._get_open_orders_for_symbols(normalized)
+        remaining = len(open_after)
+        remaining_ids = _order_ids(open_after)
         if remaining <= 0:
             self._exit_preclear_pending_since.pop(key, None)
             return (
@@ -772,32 +789,18 @@ class PortfolioRouter:
                 f"EXIT_PRE_CLEAR_OK: Symbols={','.join(normalized)} | Canceled={canceled}",
             )
 
-        # For time-critical intraday forced exits, avoid 15-minute close latency caused by
-        # waiting for cancel acknowledgment in a bar-based execution loop.
-        reason_upper = str(getattr(order, "reason", "") or "").upper()
+        timeout_sec = max(1, int(getattr(config, "EXIT_PRE_CLEAR_TIMEOUT_SECONDS", 30)))
         metadata = order.metadata if isinstance(order.metadata, dict) else {}
-        intraday_exit_code_upper = str(metadata.get("intraday_exit_code", "") or "").upper()
-        intraday_time_critical = (
-            "INTRADAY_FORCE_EXIT" in reason_upper
-            or "INTRADAY_TIME_EXIT_" in reason_upper
-            or "INTRADAY_FORCE_CLOSE" in reason_upper
-            or "INTRADAY_TIME_EXIT_" in intraday_exit_code_upper
-        )
-        if (
-            bool(getattr(config, "EXIT_PRE_CLEAR_ALLOW_IMMEDIATE_INTRADAY_CLOSE", True))
-            and intraday_time_critical
-            and canceled > 0
-            and not order.is_combo
-        ):
-            self._exit_preclear_pending_since.pop(key, None)
-            return (
-                True,
-                "EXIT_PRE_CLEAR_BYPASS: "
-                f"Symbols={','.join(normalized)} | Canceled={canceled} | Remaining={remaining} | "
-                "Reason=INTRADAY_TIME_CRITICAL",
+        lane = str(metadata.get("options_lane", "") or "").upper()
+        if order.is_combo:
+            timeout_sec = max(
+                1, int(getattr(config, "EXIT_PRE_CLEAR_TIMEOUT_SECONDS_COMBO", timeout_sec))
+            )
+        elif lane in {"MICRO", "ITM"}:
+            timeout_sec = max(
+                1, int(getattr(config, "EXIT_PRE_CLEAR_TIMEOUT_SECONDS_INTRADAY", timeout_sec))
             )
 
-        timeout_sec = max(1, int(getattr(config, "EXIT_PRE_CLEAR_TIMEOUT_SECONDS", 30)))
         now = getattr(self.algorithm, "Time", None) if self.algorithm else None
         first_seen = self._exit_preclear_pending_since.get(key)
         if first_seen is None:
@@ -811,20 +814,48 @@ class PortfolioRouter:
         except Exception:
             elapsed_sec = 0.0
 
+        # For time-critical intraday forced exits, avoid close latency caused by
+        # waiting for cancel acknowledgment in a bar-based execution loop.
+        reason_upper = str(getattr(order, "reason", "") or "").upper()
+        intraday_exit_code_upper = str(metadata.get("intraday_exit_code", "") or "").upper()
+        intraday_time_critical = (
+            "INTRADAY_FORCE_EXIT" in reason_upper
+            or "INTRADAY_TIME_EXIT_" in reason_upper
+            or "INTRADAY_FORCE_CLOSE" in reason_upper
+            or "INTRADAY_TIME_EXIT_" in intraday_exit_code_upper
+        )
+        intraday_bypass_after = max(
+            0, int(getattr(config, "EXIT_PRE_CLEAR_INTRADAY_BYPASS_AFTER_SECONDS", 5))
+        )
+        if (
+            bool(getattr(config, "EXIT_PRE_CLEAR_ALLOW_IMMEDIATE_INTRADAY_CLOSE", True))
+            and intraday_time_critical
+            and not order.is_combo
+            and (canceled > 0 or elapsed_sec >= intraday_bypass_after)
+        ):
+            self._exit_preclear_pending_since.pop(key, None)
+            return (
+                True,
+                "EXIT_PRE_CLEAR_BYPASS: "
+                f"Symbols={','.join(normalized)} | Canceled={canceled} | Remaining={remaining} | "
+                f"RemainingIds={remaining_ids} | Reason=INTRADAY_TIME_CRITICAL",
+            )
+
         if elapsed_sec >= timeout_sec:
             self._exit_preclear_pending_since.pop(key, None)
             return (
                 True,
                 "EXIT_PRE_CLEAR_TIMEOUT: "
                 f"Symbols={','.join(normalized)} | Remaining={remaining} | "
-                f"Elapsed={elapsed_sec:.0f}s >= {timeout_sec}s | Continuing",
+                f"RemainingIds={remaining_ids} | Elapsed={elapsed_sec:.0f}s >= {timeout_sec}s | Continuing",
             )
 
         return (
             False,
             "EXIT_PRE_CLEAR_PENDING: "
             f"Symbols={','.join(normalized)} | Canceled={canceled} | Remaining={remaining} | "
-            f"CancelErrors={cancel_errors} | Elapsed={elapsed_sec:.0f}s/{timeout_sec}s",
+            f"RemainingIds={remaining_ids} | CancelErrors={cancel_errors} | "
+            f"Elapsed={elapsed_sec:.0f}s/{timeout_sec}s",
         )
 
     def _estimate_option_order_margin_requirement(self, order: "OrderIntent") -> float:

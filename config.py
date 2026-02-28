@@ -2870,6 +2870,14 @@ INTRADAY_PENDING_ENTRY_HARD_CLEAR_MINUTES = (
 EXIT_PRE_CLEAR_ALLOW_IMMEDIATE_INTRADAY_CLOSE = (
     True  # V10.22: restore time-critical intraday close bypass to reduce stale close latency
 )
+EXIT_PRE_CLEAR_TIMEOUT_SECONDS = (
+    30  # Base wait window for open-order preclear before forced continuation
+)
+EXIT_PRE_CLEAR_TIMEOUT_SECONDS_INTRADAY = 8  # Faster preclear timeout for ITM/MICRO close intents
+EXIT_PRE_CLEAR_TIMEOUT_SECONDS_COMBO = 30  # Keep stricter timeout for spread combo closes
+EXIT_PRE_CLEAR_INTRADAY_BYPASS_AFTER_SECONDS = (
+    5  # Time-critical intraday closes can bypass after this elapsed preclear wait
+)
 PROTECTIVE_PUTS_MAX_CONTRACTS = (
     0  # V12.15: disable dedicated protective cap; rely on % sizing + global intraday contract cap
 )
