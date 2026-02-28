@@ -593,6 +593,33 @@ class PortfolioRouter:
         # Keep router symbol matching consistent with options engine and OCO manager.
         return " ".join(text.split())
 
+    def _resolve_spread_runtime_key(self, spread: Any) -> str:
+        """Resolve canonical spread runtime key for close-order tag correlation."""
+        if spread is None:
+            return ""
+        if self.algorithm is not None:
+            try:
+                key_fn = getattr(self.algorithm, "_build_spread_runtime_key", None)
+                if callable(key_fn):
+                    resolved = str(key_fn(spread) or "").strip()
+                    if resolved:
+                        return resolved
+            except Exception:
+                pass
+        try:
+            long_symbol = self._normalize_symbol_key(getattr(spread.long_leg, "symbol", None))
+            short_symbol = self._normalize_symbol_key(getattr(spread.short_leg, "symbol", None))
+            entry_time = str(getattr(spread, "entry_time", "") or "")
+            if long_symbol and short_symbol:
+                return f"{long_symbol}|{short_symbol}|{entry_time}"
+        except Exception:
+            return ""
+        return ""
+
+    def _encode_spread_key_for_tag(self, spread_key: str) -> str:
+        """Encode spread key for safe transport in order tags."""
+        return str(spread_key or "").strip().replace("|", "~")
+
     def _get_live_option_qty(self, symbol: str) -> int:
         """Return live portfolio quantity for symbol (0 when flat/not found)."""
         if not self.algorithm:
@@ -1056,6 +1083,9 @@ class PortfolioRouter:
         long_symbol = spread.long_leg.symbol
         short_symbol = spread.short_leg.symbol
         num_spreads = spread.num_spreads
+        spread_key = self._resolve_spread_runtime_key(spread)
+        spread_key_token = self._encode_spread_key_for_tag(spread_key)
+        spread_key_suffix = f"|spread_key={spread_key_token}" if spread_key_token else ""
 
         _, _, live_long_qty, live_short_qty = self._get_live_spread_leg_state(
             long_symbol, short_symbol
@@ -1085,7 +1115,11 @@ class PortfolioRouter:
         # Try atomic ComboMarketOrder first (unless emergency)
         if not effective_emergency:
             combo_success = self._try_combo_close(
-                long_symbol, short_symbol, num_spreads, reason, tag=f"SPREAD_CLOSE_COMBO|{reason}"
+                long_symbol,
+                short_symbol,
+                num_spreads,
+                reason,
+                tag=f"SPREAD_CLOSE_COMBO|{reason}{spread_key_suffix}",
             )
             if combo_success:
                 self._unregister_spread_margin_if_tracked(long_symbol, short_symbol)
@@ -1098,7 +1132,11 @@ class PortfolioRouter:
         )
 
         sequential_success = self._execute_sequential_close(
-            long_symbol, short_symbol, num_spreads, reason, tag_prefix=f"SPREAD_CLOSE_SEQ|{reason}"
+            long_symbol,
+            short_symbol,
+            num_spreads,
+            reason,
+            tag_prefix=f"SPREAD_CLOSE_SEQ|{reason}{spread_key_suffix}",
         )
 
         if sequential_success:
@@ -1162,12 +1200,17 @@ class PortfolioRouter:
         self.log(
             f"ROUTER_EMERGENCY_SEQ_TRIGGER: {order.symbol} | Qty={close_qty} | Quote={quote_detail}"
         )
+        spread_key = ""
+        if order.metadata is not None:
+            spread_key = str(order.metadata.get("spread_key", "") or "").strip()
+        spread_key_token = self._encode_spread_key_for_tag(spread_key)
+        spread_key_suffix = f"|spread_key={spread_key_token}" if spread_key_token else ""
         return self._execute_sequential_close(
             order.symbol,
             order.combo_short_symbol,
             close_qty,
             reason=f"EMERGENCY_QUOTE_INVALID:{quote_detail}",
-            tag_prefix="SPREAD_CLOSE_SEQ|EMERGENCY",
+            tag_prefix=f"SPREAD_CLOSE_SEQ|EMERGENCY{spread_key_suffix}",
         )
 
     def _get_live_spread_leg_state(
@@ -2872,6 +2915,11 @@ class PortfolioRouter:
             # Preserve signal->order->fill trace linkage in order tags for RCA.
             if trace_id and "trace=" not in tag.lower():
                 tag = f"{tag}|trace={trace_id}"
+            if agg.metadata and bool(agg.metadata.get("spread_close_short", False)):
+                spread_key = str(agg.metadata.get("spread_key", "") or "").strip()
+                spread_key_token = self._encode_spread_key_for_tag(spread_key)
+                if spread_key_token and "spread_key=" not in tag.lower():
+                    tag = f"{tag}|spread_key={spread_key_token}"
 
             orders.append(
                 OrderIntent(

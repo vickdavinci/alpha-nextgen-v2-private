@@ -343,6 +343,108 @@ class MainOrdersMixin:
             return value.strip()
         return ""
 
+    def _extract_spread_key_from_tag(self, order_tag: str) -> str:
+        """Extract spread runtime key from close-order tag (best-effort)."""
+        if not order_tag:
+            return ""
+        tag = str(order_tag)
+        lowered = tag.lower()
+        markers = ("spread_key=", "skey=")
+        for marker in markers:
+            idx = lowered.find(marker)
+            if idx < 0:
+                continue
+            value = tag[idx + len(marker) :].strip()
+            if not value:
+                return ""
+            for sep in ("|", ";", ","):
+                cut = value.find(sep)
+                if cut >= 0:
+                    value = value[:cut]
+                    break
+            return value.strip().replace("~", "|")
+        return ""
+
+    def _remember_spread_close_order_key(self, order_id: int, spread_key: str) -> None:
+        """Cache order-id -> spread-key to survive blank-tag lifecycle callbacks."""
+        if order_id <= 0:
+            return
+        clean_key = str(spread_key or "").strip()
+        if not clean_key:
+            return
+        if not hasattr(self, "_spread_close_order_key_by_order_id"):
+            self._spread_close_order_key_by_order_id = {}
+        cache = self._spread_close_order_key_by_order_id
+        cache[int(order_id)] = clean_key
+        if len(cache) > 25000:
+            cache.clear()
+
+    def _resolve_spread_close_candidate(
+        self,
+        symbol: str,
+        order_id: int = 0,
+        order_tag: str = "",
+    ) -> tuple[Any, str]:
+        """
+        Resolve spread close target by key first, then quantity-aware fallback.
+
+        Prevents symbol-first cross-binding when multiple spreads share the same legs.
+        """
+        norm_symbol = self._normalize_symbol_str(symbol)
+        if not norm_symbol:
+            return None, ""
+
+        if not hasattr(self, "_spread_close_order_key_by_order_id"):
+            self._spread_close_order_key_by_order_id = {}
+        order_key_cache = self._spread_close_order_key_by_order_id
+
+        hinted_key = ""
+        if order_id > 0:
+            hinted_key = str(order_key_cache.get(int(order_id), "") or "").strip()
+        parsed_key = self._extract_spread_key_from_tag(order_tag)
+        if parsed_key:
+            hinted_key = parsed_key
+            self._remember_spread_close_order_key(order_id, parsed_key)
+
+        candidates = []
+        for candidate in self.options_engine.get_spread_positions():
+            long_norm = self._normalize_symbol_str(candidate.long_leg.symbol)
+            short_norm = self._normalize_symbol_str(candidate.short_leg.symbol)
+            if norm_symbol not in {long_norm, short_norm}:
+                continue
+            spread_key = self._build_spread_runtime_key(candidate)
+            candidates.append((candidate, spread_key, long_norm, short_norm))
+
+        if not candidates:
+            return None, ""
+
+        if hinted_key:
+            for candidate, spread_key, _, _ in candidates:
+                if spread_key == hinted_key:
+                    return candidate, spread_key
+
+        if len(candidates) == 1:
+            candidate, spread_key, _, _ = candidates[0]
+            return candidate, spread_key
+
+        # Fallback: choose candidate with lowest already-closed leg qty for this symbol.
+        scored: list[tuple[tuple[int, int, str], Any, str]] = []
+        for candidate, spread_key, long_norm, short_norm in candidates:
+            tracker = self._spread_close_trackers.get(spread_key) or {}
+            expected_qty = int(
+                tracker.get("expected_qty", int(getattr(candidate, "num_spreads", 0) or 0)) or 0
+            )
+            expected_qty = max(1, expected_qty)
+            leg_field = "long_qty" if norm_symbol == long_norm else "short_qty"
+            leg_qty = int(tracker.get(leg_field, 0) or 0)
+            total_qty = int(tracker.get("long_qty", 0) or 0) + int(tracker.get("short_qty", 0) or 0)
+            entry_time = str(getattr(candidate, "entry_time", "") or "")
+            scored.append(((leg_qty, total_qty, entry_time), candidate, spread_key))
+
+        scored.sort(key=lambda row: row[0])
+        _, best_candidate, best_key = scored[0]
+        return best_candidate, best_key
+
     def _compact_tag_for_log(self, order_tag: str, max_chars: int = 64) -> str:
         """Trim noisy broker tags to keep logs under budget while preserving correlation."""
         tag = str(order_tag or "").strip()
@@ -1804,7 +1906,13 @@ class MainOrdersMixin:
                             break
                     if is_spread_short_close:
                         # This is a short leg close (BUY to close)
-                        self._handle_spread_leg_close(symbol, fill_price, fill_qty)
+                        self._handle_spread_leg_close(
+                            symbol=symbol,
+                            fill_price=fill_price,
+                            fill_qty=fill_qty,
+                            order_id=int(getattr(orderEvent, "OrderId", 0) or 0),
+                            order_tag=order_tag,
+                        )
                     else:
                         # Single-leg entry (legacy or intraday)
                         force_intraday_recovery = (
@@ -1953,7 +2061,13 @@ class MainOrdersMixin:
                             break
                     if is_spread_leg:
                         # Spread exit - track leg closes
-                        self._handle_spread_leg_close(symbol, fill_price, fill_qty)
+                        self._handle_spread_leg_close(
+                            symbol=symbol,
+                            fill_price=fill_price,
+                            fill_qty=fill_qty,
+                            order_id=int(getattr(orderEvent, "OrderId", 0) or 0),
+                            order_tag=order_tag,
+                        )
                     elif self.options_engine.has_engine_position():
                         # Resolve by symbol to avoid same-lane mismatches when multiple intraday positions coexist.
                         intraday_pos = None
@@ -2362,7 +2476,14 @@ class MainOrdersMixin:
                     f"Cooldown 30min until {self._options_swing_cooldown_until}"
                 )
 
-    def _handle_spread_leg_close(self, symbol: str, fill_price: float, fill_qty: float) -> None:
+    def _handle_spread_leg_close(
+        self,
+        symbol: str,
+        fill_price: float,
+        fill_qty: float,
+        order_id: int = 0,
+        order_tag: str = "",
+    ) -> None:
         """
         V2.6: Handle a spread leg close with quantity validation.
 
@@ -2374,18 +2495,13 @@ class MainOrdersMixin:
             fill_qty: Fill quantity (negative for sells).
         """
         norm_symbol = self._normalize_symbol_str(symbol)
-        spread = None
-        for candidate in self.options_engine.get_spread_positions():
-            long_norm = self._normalize_symbol_str(candidate.long_leg.symbol)
-            short_norm = self._normalize_symbol_str(candidate.short_leg.symbol)
-            if norm_symbol == long_norm or norm_symbol == short_norm:
-                spread = candidate
-                break
+        spread, spread_key = self._resolve_spread_close_candidate(
+            symbol=symbol, order_id=order_id, order_tag=order_tag
+        )
         if spread is None:
             return
 
         fill_qty_abs = int(abs(fill_qty))
-        spread_key = self._build_spread_runtime_key(spread)
         tracker = self._spread_close_trackers.get(spread_key)
         if tracker is None:
             tracker = {
@@ -2544,6 +2660,14 @@ class MainOrdersMixin:
             self._spread_last_close_submit_at.pop(spread_key, None)
             self._spread_last_exit_reason.pop(spread_key, None)
             self._spread_close_trackers.pop(spread_key, None)
+            if hasattr(self, "_spread_close_order_key_by_order_id"):
+                stale_ids = [
+                    oid
+                    for oid, key in self._spread_close_order_key_by_order_id.items()
+                    if key == spread_key
+                ]
+                for oid in stale_ids:
+                    self._spread_close_order_key_by_order_id.pop(oid, None)
 
             self.Log("SPREAD: Position removed - both legs closed")
 
