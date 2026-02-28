@@ -43,6 +43,8 @@ class MainObservabilityMixin:
             self._log_budget_suppressed_total = 0
         if not hasattr(self, "_log_budget_suppressed_by_priority"):
             self._log_budget_suppressed_by_priority = {"P1": 0, "P2": 0, "P3": 0}
+        if not hasattr(self, "_log_budget_last_suppressed_preview"):
+            self._log_budget_last_suppressed_preview = {"P2": "", "P3": ""}
 
     def _is_log_budget_enforced(self) -> bool:
         if not bool(getattr(config, "LOG_BUDGET_GUARD_ENABLED", True)):
@@ -113,6 +115,54 @@ class MainObservabilityMixin:
             )
             suppressed_by_priority[bucket] = int(suppressed_by_priority.get(bucket, 0)) + 1
             self._log_budget_suppressed_by_priority = suppressed_by_priority
+            if p >= 2:
+                preview_len = max(
+                    0,
+                    int(
+                        getattr(
+                            config,
+                            "LOG_BUDGET_SUPPRESSION_CHECKPOINT_PREVIEW_CHARS",
+                            120,
+                        )
+                    ),
+                )
+                msg = str(message or "").replace("\n", " ").strip()
+                if preview_len > 0:
+                    msg = msg[:preview_len]
+                last_preview = dict(getattr(self, "_log_budget_last_suppressed_preview", {}) or {})
+                last_preview[bucket] = msg
+                self._log_budget_last_suppressed_preview = last_preview
+
+            checkpoint_enabled = bool(
+                getattr(config, "LOG_BUDGET_SUPPRESSION_CHECKPOINT_ENABLED", True)
+            )
+            checkpoint_every = max(
+                0,
+                int(getattr(config, "LOG_BUDGET_SUPPRESSION_CHECKPOINT_EVERY_N", 500)),
+            )
+            if checkpoint_enabled and checkpoint_every > 0:
+                supp_total = int(getattr(self, "_log_budget_suppressed_total", 0))
+                if supp_total > 0 and supp_total % checkpoint_every == 0:
+                    mode = (
+                        "EXTREME"
+                        if bool(getattr(self, "_log_budget_extreme_mode", False))
+                        else "SURVIVAL"
+                    )
+                    last_preview = dict(
+                        getattr(self, "_log_budget_last_suppressed_preview", {}) or {}
+                    )
+                    p2_preview = str(last_preview.get("P2", "") or "NA")
+                    p3_preview = str(last_preview.get("P3", "") or "NA")
+                    self._emit_log_raw(
+                        "LOG_BUDGET_CHECKPOINT: "
+                        f"Mode={mode} | "
+                        f"Suppressed={supp_total} | "
+                        f"P1={int(suppressed_by_priority.get('P1', 0))} | "
+                        f"P2={int(suppressed_by_priority.get('P2', 0))} | "
+                        f"P3={int(suppressed_by_priority.get('P3', 0))} | "
+                        f"LastP2={p2_preview} | "
+                        f"LastP3={p3_preview}"
+                    )
             return False
 
         self._emit_log_raw(message)
