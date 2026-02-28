@@ -18,7 +18,7 @@ Spec: docs/v2-specs/V2-1-FINAL-SYNTHESIS.md (Modification #3)
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -177,6 +177,10 @@ class OCOManager:
         self._order_to_oco: Dict[int, str] = {}  # broker_order_id -> oco_id
         # Persist tag hints for lifecycle attribution even if broker/order API returns blank tags.
         self._order_tag_hints: Dict[int, str] = {}
+        # Cache normalized symbol text -> live QC Symbol object for broker calls.
+        self._resolved_symbol_cache: Dict[str, Any] = {}
+        # Symbol-level bounded failure guard to avoid OCO submit storms.
+        self._submit_failures: Dict[str, Dict[str, Any]] = {}
         self._next_oco_number: int = 1
         self._next_mock_order_id: int = 1  # For testing without algorithm
 
@@ -195,6 +199,137 @@ class OCOManager:
         # Collapse repeated whitespace so broker/runtime formatting differences
         # still map to the same option contract key.
         return " ".join(text.split())
+
+    def _now(self) -> datetime:
+        """Return current algo time when available, otherwise UTC now."""
+        try:
+            if self.algorithm is not None and getattr(self.algorithm, "Time", None) is not None:
+                return self.algorithm.Time
+        except Exception:
+            pass
+        return datetime.utcnow()
+
+    def _iter_security_symbols(self) -> List[Any]:
+        """Enumerate security keys safely across QC runtime and tests."""
+        if self.algorithm is None:
+            return []
+        securities = getattr(self.algorithm, "Securities", None)
+        if securities is None:
+            return []
+        try:
+            keys = getattr(securities, "Keys", None)
+            if keys is not None:
+                return list(keys)
+        except Exception:
+            pass
+        try:
+            return list(securities.keys())
+        except Exception:
+            pass
+        out: List[Any] = []
+        try:
+            for item in securities:
+                key = getattr(item, "Key", None)
+                out.append(item if key is None else key)
+        except Exception:
+            return []
+        return out
+
+    def _resolve_broker_symbol(self, symbol: Any) -> Any:
+        """
+        Resolve stable string symbol keys back to QC Symbol objects for order submission.
+
+        Falls back to the incoming symbol for tests/mocks where live Security keys
+        are unavailable.
+        """
+        if self.algorithm is None:
+            return symbol
+        if symbol is None or not isinstance(symbol, str):
+            return symbol
+
+        symbol_norm = self._normalize_symbol(symbol)
+        if not symbol_norm:
+            return symbol
+
+        cached = self._resolved_symbol_cache.get(symbol_norm)
+        if cached is not None:
+            return cached
+
+        for candidate in self._iter_security_symbols():
+            if self._normalize_symbol(candidate) == symbol_norm:
+                self._resolved_symbol_cache[symbol_norm] = candidate
+                if len(self._resolved_symbol_cache) > 10000:
+                    self._resolved_symbol_cache.clear()
+                return candidate
+
+        return symbol
+
+    def _get_submit_failure_state(self, symbol: str) -> Dict[str, Any]:
+        """Get/reset symbol-level OCO submit failure state for the current day."""
+        symbol_norm = self._normalize_symbol(symbol)
+        now = self._now()
+        day_key = str(now.date())
+        state = self._submit_failures.get(symbol_norm)
+        if state is None or state.get("day") != day_key:
+            state = {
+                "day": day_key,
+                "count": 0,
+                "cooldown_until": None,
+                "last_error": "",
+            }
+            self._submit_failures[symbol_norm] = state
+        return state
+
+    def _allow_submit_attempt(self, symbol: str) -> bool:
+        """
+        Enforce bounded OCO submit retries per symbol/day with cooldown.
+        """
+        max_failures = int(getattr(config, "OCO_SUBMIT_MAX_FAILURES_PER_SYMBOL_PER_DAY", 6))
+        cooldown_minutes = int(getattr(config, "OCO_SUBMIT_FAILURE_COOLDOWN_MINUTES", 15))
+        if max_failures <= 0:
+            return True
+
+        state = self._get_submit_failure_state(symbol)
+        now = self._now()
+        cooldown_until = state.get("cooldown_until")
+        if isinstance(cooldown_until, datetime) and now < cooldown_until:
+            remaining = max(0, int((cooldown_until - now).total_seconds() // 60))
+            self.log(
+                f"OCO: SUBMIT_SUPPRESSED {self._normalize_symbol(symbol)} | "
+                f"Reason=COOLDOWN | Remaining={remaining}m | Failures={state.get('count', 0)}"
+            )
+            return False
+
+        if int(state.get("count", 0) or 0) >= max_failures:
+            state["cooldown_until"] = now + timedelta(minutes=max(1, cooldown_minutes))
+            self.log(
+                f"OCO: SUBMIT_SUPPRESSED {self._normalize_symbol(symbol)} | "
+                f"Reason=FAILURE_BUDGET | Failures={state.get('count', 0)} | "
+                f"Cooldown={max(1, cooldown_minutes)}m"
+            )
+            return False
+
+        return True
+
+    def _record_submit_failure(self, symbol: str, reason: str) -> None:
+        """Track OCO submit failures so repeated terminal errors don't loop every minute."""
+        state = self._get_submit_failure_state(symbol)
+        state["count"] = int(state.get("count", 0) or 0) + 1
+        state["last_error"] = str(reason or "")
+        max_failures = int(getattr(config, "OCO_SUBMIT_MAX_FAILURES_PER_SYMBOL_PER_DAY", 6))
+        cooldown_minutes = int(getattr(config, "OCO_SUBMIT_FAILURE_COOLDOWN_MINUTES", 15))
+        if max_failures > 0 and int(state["count"]) >= max_failures:
+            state["cooldown_until"] = self._now() + timedelta(minutes=max(1, cooldown_minutes))
+        self.log(
+            f"OCO: SUBMIT_FAILURE {self._normalize_symbol(symbol)} | "
+            f"Count={state['count']} | Reason={reason}"
+        )
+
+    def _clear_submit_failures(self, symbol: str) -> None:
+        """Clear OCO submit failure state after successful activation."""
+        symbol_norm = self._normalize_symbol(symbol)
+        if symbol_norm in self._submit_failures:
+            self._submit_failures.pop(symbol_norm, None)
 
     def create_oco_pair(
         self,
@@ -308,6 +443,8 @@ class OCOManager:
         if pair.state != OCOState.PENDING:
             self.log(f"OCO: Cannot submit {pair.oco_id} - state is {pair.state.value}")
             return False
+        if not self._allow_submit_attempt(pair.symbol):
+            return False
 
         # V6.8: Market hours guard - block OCO submission outside regular trading hours
         if self.algorithm is not None:
@@ -317,6 +454,7 @@ class OCOManager:
                 equity_symbol = self.algorithm.Symbol(underlying)
                 if not self.algorithm.Securities[equity_symbol].Exchange.ExchangeOpen:
                     self.log(f"OCO: BLOCKED {pair.oco_id} - market closed for {underlying}")
+                    self._record_submit_failure(pair.symbol, "MARKET_CLOSED")
                     return False
             except Exception as e:
                 # If we can't check market hours, log warning but allow submission
@@ -328,6 +466,7 @@ class OCOManager:
         )
         if stop_order_id is None:
             self.log(f"OCO: Failed to submit stop leg for {pair.oco_id}")
+            self._record_submit_failure(pair.symbol, "STOP_SUBMIT_FAILED")
             return False
         pair.stop_leg.broker_order_id = stop_order_id
         pair.stop_leg.submitted = True
@@ -341,6 +480,7 @@ class OCOManager:
             self._cancel_order(stop_order_id)
             pair.stop_leg.cancelled = True
             self.log(f"OCO: Failed to submit profit leg for {pair.oco_id}, cancelled stop")
+            self._record_submit_failure(pair.symbol, "PROFIT_SUBMIT_FAILED")
             return False
         pair.profit_leg.broker_order_id = profit_order_id
         pair.profit_leg.submitted = True
@@ -352,6 +492,7 @@ class OCOManager:
         self._symbol_to_oco[pair.symbol] = pair.oco_id
         self._order_to_oco[stop_order_id] = pair.oco_id
         self._order_to_oco[profit_order_id] = pair.oco_id
+        self._clear_submit_failures(pair.symbol)
 
         self.log(
             f"OCO: ACTIVATED {pair.oco_id} | {pair.symbol} | "
@@ -378,9 +519,10 @@ class OCOManager:
             # Use StopMarketOrder for options
             context = str(tag_context or "").strip()
             tag = f"OCO_STOP:{oco_id}" if not context else f"OCO_STOP:{oco_id}|{context}"
+            broker_symbol = self._resolve_broker_symbol(symbol)
             try:
                 ticket = self.algorithm.StopMarketOrder(
-                    symbol,
+                    broker_symbol,
                     leg.quantity,
                     leg.trigger_price,
                     tag=tag,
@@ -388,7 +530,7 @@ class OCOManager:
             except TypeError:
                 # Some LEAN builds reject keyword args; retry with positional tag.
                 ticket = self.algorithm.StopMarketOrder(
-                    symbol,
+                    broker_symbol,
                     leg.quantity,
                     leg.trigger_price,
                     tag,
@@ -423,9 +565,10 @@ class OCOManager:
             # Use LimitOrder for profit target
             context = str(tag_context or "").strip()
             tag = f"OCO_PROFIT:{oco_id}" if not context else f"OCO_PROFIT:{oco_id}|{context}"
+            broker_symbol = self._resolve_broker_symbol(symbol)
             try:
                 ticket = self.algorithm.LimitOrder(
-                    symbol,
+                    broker_symbol,
                     leg.quantity,
                     leg.trigger_price,
                     tag=tag,
@@ -433,7 +576,7 @@ class OCOManager:
             except TypeError:
                 # Some LEAN builds reject keyword args; retry with positional tag.
                 ticket = self.algorithm.LimitOrder(
-                    symbol,
+                    broker_symbol,
                     leg.quantity,
                     leg.trigger_price,
                     tag,
@@ -755,6 +898,8 @@ class OCOManager:
         self._symbol_to_oco.clear()
         self._order_to_oco.clear()
         self._order_tag_hints.clear()
+        self._resolved_symbol_cache.clear()
+        self._submit_failures.clear()
 
         pairs_data = state.get("active_pairs", {})
         restored_pairs = 0
@@ -787,6 +932,8 @@ class OCOManager:
         self._symbol_to_oco.clear()
         self._order_to_oco.clear()
         self._order_tag_hints.clear()
+        self._resolved_symbol_cache.clear()
+        self._submit_failures.clear()
         self._next_oco_number = 1
         self._next_mock_order_id = 1
         self.log("OCO: Manager reset")

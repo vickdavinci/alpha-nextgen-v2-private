@@ -2800,6 +2800,10 @@ INTRADAY_FORCE_EXIT_TIME = "15:15"  # Close before end-of-day liquidity decay wi
 OCO_RECOVERY_CUTOFF_MINUTES_BEFORE_FORCE_EXIT = 20  # Disable OCO recovery near force-close window
 OCO_RECOVERY_RETRY_MINUTES = 5  # Retry missing OCO creation intraday (bounded cadence)
 OCO_RESYNC_PRICE_EPS = 0.01  # Min stop/target delta to trigger OCO reprice sync
+OCO_SUBMIT_MAX_FAILURES_PER_SYMBOL_PER_DAY = (
+    6  # Suppress repeated terminal submit failures per contract/day
+)
+OCO_SUBMIT_FAILURE_COOLDOWN_MINUTES = 15  # Cooldown after per-symbol failure budget is exhausted
 
 # V2.3.16: Direction Conflict Resolution
 # Skip intraday FADE when main regime strongly disagrees

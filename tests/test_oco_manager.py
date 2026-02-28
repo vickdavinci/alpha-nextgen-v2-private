@@ -12,8 +12,11 @@ Tests cover:
 Spec: docs/v2-specs/V2-1-FINAL-SYNTHESIS.md (Modification #3)
 """
 
+from unittest.mock import MagicMock
+
 import pytest
 
+import config
 from execution.oco_manager import OCOLeg, OCOManager, OCOOrderType, OCOPair, OCOState
 
 # =============================================================================
@@ -229,6 +232,84 @@ class TestOCOSubmission:
         assert not manager.has_active_pair(sample_pair.symbol)
         manager.submit_oco_pair(sample_pair, "10:30:00")
         assert manager.has_active_pair(sample_pair.symbol)
+
+    def test_submit_resolves_qc_symbol_before_order_call(self):
+        """OCO submit should resolve string keys to live Symbol objects for broker calls."""
+
+        class _FakeSymbol:
+            def __init__(self, text):
+                self._text = text
+
+            def __str__(self):
+                return self._text
+
+        class _FakeSec:
+            def __init__(self, is_open=True):
+                self.Exchange = MagicMock()
+                self.Exchange.ExchangeOpen = is_open
+
+        class _FakeSecurities:
+            def __init__(self, mapping):
+                self._mapping = mapping
+                self.Keys = list(mapping.keys())
+
+            def __getitem__(self, key):
+                return self._mapping[key]
+
+        option_sym = _FakeSymbol("QQQ 260126C00450000")
+        equity_sym = "QQQ"
+        algo = MagicMock()
+        algo.Log = MagicMock()
+        algo.Time = MagicMock()
+        algo.Symbol = MagicMock(return_value=equity_sym)
+        algo.Securities = _FakeSecurities(
+            {
+                equity_sym: _FakeSec(True),
+                option_sym: _FakeSec(True),
+            }
+        )
+        algo.StopMarketOrder = MagicMock(return_value=MagicMock(OrderId=111))
+        algo.LimitOrder = MagicMock(return_value=MagicMock(OrderId=222))
+        algo.Transactions = MagicMock()
+        algo.Transactions.CancelOrder = MagicMock(return_value=True)
+
+        manager = OCOManager(algo)
+        pair = manager.create_oco_pair("QQQ 260126C00450000", 1.45, 1.09, 2.175, 10, "2026-01-26")
+        assert pair is not None
+
+        ok = manager.submit_oco_pair(pair, "10:30:00")
+        assert ok is True
+        submitted_symbol = algo.StopMarketOrder.call_args[0][0]
+        assert submitted_symbol is option_sym
+
+    def test_submit_failure_budget_suppresses_retry_storm(self, monkeypatch):
+        """Repeated OCO submit failures should be bounded by per-symbol budget + cooldown."""
+        monkeypatch.setattr(config, "OCO_SUBMIT_MAX_FAILURES_PER_SYMBOL_PER_DAY", 2)
+        monkeypatch.setattr(config, "OCO_SUBMIT_FAILURE_COOLDOWN_MINUTES", 15)
+
+        class _FakeSec:
+            def __init__(self, is_open=True):
+                self.Exchange = MagicMock()
+                self.Exchange.ExchangeOpen = is_open
+
+        algo = MagicMock()
+        algo.Log = MagicMock()
+        algo.Time = MagicMock()
+        algo.Symbol = MagicMock(return_value="QQQ")
+        algo.Securities = {"QQQ": _FakeSec(True)}
+        algo.StopMarketOrder = MagicMock(side_effect=Exception("submit failed"))
+        algo.LimitOrder = MagicMock(return_value=MagicMock(OrderId=222))
+        algo.Transactions = MagicMock()
+        algo.Transactions.CancelOrder = MagicMock(return_value=True)
+
+        manager = OCOManager(algo)
+        pair = manager.create_oco_pair("QQQ 260126C00450000", 1.45, 1.09, 2.175, 10, "2026-01-26")
+        assert pair is not None
+
+        assert manager.submit_oco_pair(pair, "10:30:00") is False
+        assert manager.submit_oco_pair(pair, "10:31:00") is False
+        assert manager.submit_oco_pair(pair, "10:32:00") is False
+        assert algo.StopMarketOrder.call_count == 2
 
 
 # =============================================================================
