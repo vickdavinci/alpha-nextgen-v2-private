@@ -43,6 +43,9 @@ A backtest task is complete only when all of the following are true:
    - `*_trades.csv`
    - `*_orders.csv`
    - `*_overview.txt`
+   - `objectstore_loader.py` (pre-configured with RUN_NAME and BACKTEST_YEAR)
+   - `*_OBJECTSTORE_CROSSCHECK.md` (empty, with paste marker)
+   - `*_OBJECTSTORE_RESEARCH_RUNBOOK.md` (run-specific instructions)
 
 If any step fails, the agent must:
 
@@ -128,8 +131,12 @@ When a task says “run backtest”:
 4. Capture backtest id + status from script output.
 5. Pull artifacts: `python scripts/qc_pull_backtest.py "<name>" --all --project 27678023 --output "docs/audits/logs/<stage_folder>"`.
 6. Verify required artifacts exist in stage folder; if missing, retry pull (name then explicit id).
-7. Analyze logs + trades.csv with the `log-analyzer` and/or `trade-analyzer` agents.
-8. Report findings with file/line evidence.
+7. Create ObjectStore scaffolding in the stage folder (see "ObjectStore Scaffolding" section above):
+   - `objectstore_loader.py` — copy from canonical script, set `RUN_NAME` and `BACKTEST_YEAR`
+   - `<RUN_NAME>_OBJECTSTORE_CROSSCHECK.md` — empty crosscheck with backtest ID, expected keys, paste marker
+   - `<RUN_NAME>_OBJECTSTORE_RESEARCH_RUNBOOK.md` — run-specific instructions with backtest ID and RCA script
+8. Analyze logs + trades.csv with the `log-analyzer` and/or `trade-analyzer` agents.
+9. Report findings with file/line evidence.
 
 ### Required execution pattern (no early exit)
 
@@ -218,9 +225,41 @@ After a successful pull, the stage folder should contain:
 | `*_orders.csv` | Order events (submitted, filled, canceled) |
 | `*_overview.txt` | QC summary (return, Sharpe, drawdown, trade count) |
 
+### ObjectStore Scaffolding (Mandatory After Artifact Pull)
+
+After pulling the 4 core artifacts, the agent **must** create 3 ObjectStore scaffolding files in the stage folder. These enable the user to load observability data from QC Research notebooks and paste it back for enriched analysis.
+
+| File | Purpose | How to Create |
+|------|---------|---------------|
+| `objectstore_loader.py` | Pre-configured QC Research notebook script | Copy from `scripts/qc_research_objectstore_loader.py` (or a prior stage) and set `RUN_NAME` and `BACKTEST_YEAR` to match this run |
+| `<RUN_NAME>_OBJECTSTORE_CROSSCHECK.md` | Empty file where user pastes notebook output | Create with header block containing backtest ID, run name, expected ObjectStore keys, and a `PASTE NOTEBOOK OUTPUT BELOW THIS LINE:` marker |
+| `<RUN_NAME>_OBJECTSTORE_RESEARCH_RUNBOOK.md` | Step-by-step instructions for this specific run | Create with confirmed run metadata (backtest ID, project ID, expected key names), QC Research setup steps, and the post-load RCA script |
+
+**Template for `objectstore_loader.py` knobs:**
+```python
+RUN_NAME = "<backtest_name>"       # e.g. "V12.21-FullYear2024"
+BACKTEST_YEAR = <year>             # e.g. 2024
+```
+
+**Expected ObjectStore key pattern** (for the crosscheck and runbook files):
+```
+regime_observability__<sanitized_run_name>_<year>.csv
+regime_timeline_observability__<sanitized_run_name>_<year>.csv
+signal_lifecycle_observability__<sanitized_run_name>_<year>.csv
+router_rejection_observability__<sanitized_run_name>_<year>.csv
+order_lifecycle_observability__<sanitized_run_name>_<year>.csv
+```
+
+Where `<sanitized_run_name>` replaces non-alphanumeric chars (except `-_`) with `_`.
+
+**Reference examples:**
+- `docs/audits/logs/stage12.20/objectstore_loader.py`
+- `docs/audits/logs/stage12.20/V12.20-FullYear2024_OBJECTSTORE_CROSSCHECK.md`
+- `docs/audits/logs/stage12.20/V12.20-FullYear2024_OBJECTSTORE_RESEARCH_RUNBOOK.md`
+
 ### Post-Pull Analysis Pipeline
 
-After pulling artifacts, generate reports using the specialized agents:
+After pulling artifacts and creating ObjectStore scaffolding, generate reports using the specialized agents:
 
 1. **Performance Report** (`log-analyzer`): Hedge-fund-style stats, regime analysis, signal flow.
 2. **Trade Detail Report** (`trade-analyzer`): Per-trade P&L with regime, VIX, entry/exit context.
