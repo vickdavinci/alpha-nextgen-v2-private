@@ -12,6 +12,7 @@ Tests cover:
 Spec: docs/v2-specs/V2-1-FINAL-SYNTHESIS.md (Modification #3)
 """
 
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
@@ -310,6 +311,24 @@ class TestOCOSubmission:
         assert manager.submit_oco_pair(pair, "10:31:00") is False
         assert manager.submit_oco_pair(pair, "10:32:00") is False
         assert algo.StopMarketOrder.call_count == 2
+
+    def test_submit_failure_budget_resets_after_cooldown(self, monkeypatch):
+        """Cooldown expiry should reopen submit attempts instead of same-day lockout."""
+        monkeypatch.setattr(config, "OCO_SUBMIT_MAX_FAILURES_PER_SYMBOL_PER_DAY", 2)
+        monkeypatch.setattr(config, "OCO_SUBMIT_FAILURE_COOLDOWN_MINUTES", 15)
+
+        algo = MagicMock()
+        algo.Log = MagicMock()
+        algo.Time = datetime(2026, 1, 26, 10, 30)
+        manager = OCOManager(algo)
+        symbol = "QQQ 260126C00450000"
+
+        manager._record_submit_failure(symbol, "STOP_SUBMIT_FAILED")
+        manager._record_submit_failure(symbol, "STOP_SUBMIT_FAILED")
+        assert manager._allow_submit_attempt(symbol) is False
+
+        algo.Time = algo.Time + timedelta(minutes=16)
+        assert manager._allow_submit_attempt(symbol) is True
 
 
 # =============================================================================

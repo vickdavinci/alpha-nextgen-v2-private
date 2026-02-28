@@ -293,13 +293,17 @@ class OCOManager:
         state = self._get_submit_failure_state(symbol)
         now = self._now()
         cooldown_until = state.get("cooldown_until")
-        if isinstance(cooldown_until, datetime) and now < cooldown_until:
-            remaining = max(0, int((cooldown_until - now).total_seconds() // 60))
-            self.log(
-                f"OCO: SUBMIT_SUPPRESSED {self._normalize_symbol(symbol)} | "
-                f"Reason=COOLDOWN | Remaining={remaining}m | Failures={state.get('count', 0)}"
-            )
-            return False
+        if isinstance(cooldown_until, datetime):
+            if now < cooldown_until:
+                remaining = max(0, int((cooldown_until - now).total_seconds() // 60))
+                self.log(
+                    f"OCO: SUBMIT_SUPPRESSED {self._normalize_symbol(symbol)} | "
+                    f"Reason=COOLDOWN | Remaining={remaining}m | Failures={state.get('count', 0)}"
+                )
+                return False
+            # Cooldown elapsed - allow a fresh retry budget for the same trading day.
+            state["cooldown_until"] = None
+            state["count"] = 0
 
         if int(state.get("count", 0) or 0) >= max_failures:
             state["cooldown_until"] = now + timedelta(minutes=max(1, cooldown_minutes))
