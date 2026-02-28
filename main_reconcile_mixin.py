@@ -129,7 +129,10 @@ class MainReconcileMixin:
                 continue
 
             self._clear_spread_runtime_trackers_by_key(spread_key)
-            removed = self.options_engine.remove_spread_position(str(spread.long_leg.symbol))
+            removed = self.options_engine.remove_spread_position(
+                symbol=str(spread.long_leg.symbol),
+                spread_key=spread_key,
+            )
             if removed is None:
                 continue
 

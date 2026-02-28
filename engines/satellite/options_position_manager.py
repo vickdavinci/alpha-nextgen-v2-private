@@ -448,19 +448,47 @@ def remove_engine_position_impl(
     return position
 
 
-def remove_spread_position_impl(self, symbol: Optional[str] = None) -> Optional[SpreadPosition]:
+def remove_spread_position_impl(
+    self,
+    symbol: Optional[str] = None,
+    spread_key: Optional[str] = None,
+) -> Optional[SpreadPosition]:
     """
     Remove the current spread position after exit and record post-trade cooldown state.
     """
     spreads = self.get_spread_positions()
     if spreads:
         spread = None
-        if symbol:
-            sym = str(symbol)
+        key_norm = str(spread_key or "").strip()
+        if key_norm:
             for s in spreads:
-                if str(s.long_leg.symbol) == sym or str(s.short_leg.symbol) == sym:
+                if self._build_spread_key(s) == key_norm:
                     spread = s
                     break
+            if spread is None and symbol is None:
+                self.log(
+                    f"SPREAD: WARN remove no key match for {key_norm}, "
+                    f"skip removal across {len(spreads)} active spreads",
+                    trades_only=True,
+                )
+                return None
+
+        if spread is None and symbol:
+            sym = str(symbol)
+            symbol_matches = [
+                s
+                for s in spreads
+                if str(s.long_leg.symbol) == sym or str(s.short_leg.symbol) == sym
+            ]
+            if len(symbol_matches) == 1:
+                spread = symbol_matches[0]
+            elif len(symbol_matches) > 1:
+                self.log(
+                    f"SPREAD: WARN remove ambiguous for {symbol} | "
+                    f"Matches={len(symbol_matches)} | require spread_key",
+                    trades_only=True,
+                )
+                return None
         if spread is None:
             if symbol:
                 self.log(

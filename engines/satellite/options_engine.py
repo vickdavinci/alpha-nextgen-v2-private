@@ -4462,7 +4462,11 @@ class OptionsEngine:
         """
         return cancel_pending_engine_exit_impl(self, symbol=symbol)
 
-    def remove_spread_position(self, symbol: Optional[str] = None) -> Optional[SpreadPosition]:
+    def remove_spread_position(
+        self,
+        symbol: Optional[str] = None,
+        spread_key: Optional[str] = None,
+    ) -> Optional[SpreadPosition]:
         """
         V2.3: Remove the current spread position after exit.
         V2.6 Bug #16: Records exit time for post-trade margin cooldown.
@@ -4470,7 +4474,7 @@ class OptionsEngine:
         Returns:
             Removed spread position, or None if no spread existed.
         """
-        return remove_spread_position_impl(self, symbol=symbol)
+        return remove_spread_position_impl(self, symbol=symbol, spread_key=spread_key)
 
     def has_spread_position(self) -> bool:
         """V2.3: Check if a spread position exists."""

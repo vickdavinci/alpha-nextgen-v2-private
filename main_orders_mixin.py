@@ -2635,7 +2635,10 @@ class MainOrdersMixin:
                 )
 
             # Both legs closed - remove spread position
-            removed = self.options_engine.remove_spread_position(symbol)
+            removed = self.options_engine.remove_spread_position(
+                symbol=symbol,
+                spread_key=spread_key,
+            )
             if removed is not None:
                 self._record_spread_removal(
                     reason="fill_path",
