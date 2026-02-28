@@ -153,27 +153,20 @@ def pair_vass_spreads(trades):
     # Try to pair unknown trades with VASS by looking for Direction=1 near Direction=0
     # First pass: classify remaining unknowns
     for t in unknown_trades:
-        # If Direction=1, likely a VASS short leg
-        if t["Direction"] == 1:
-            t["_tag"] = "VASS"
-            vass_trades.append(t)
-        else:
-            # Check if there's a Direction=1 trade with same entry/exit dates
-            entry_date = t["_entry_dt"].strftime("%Y-%m-%d")
-            exit_date = t["_exit_dt"].strftime("%Y-%m-%d")
-            for t2 in trades:
-                if t2 is not t and t2["Direction"] == 1:
-                    if (
-                        t2["_entry_dt"].strftime("%Y-%m-%d") == entry_date
-                        and t2["_exit_dt"].strftime("%Y-%m-%d") == exit_date
-                    ):
-                        t["_tag"] = "VASS"
-                        vass_trades.append(t)
-                        break
-            if t["_tag"] == "UNKNOWN":
-                # Could be a single-leg intraday trade.
-                t["_tag"] = "MICRO"
-                micro_trades.append(t)
+        # Reclassify only on matching evidence (opposite side, same entry+exit date).
+        entry_date = t["_entry_dt"].strftime("%Y-%m-%d")
+        exit_date = t["_exit_dt"].strftime("%Y-%m-%d")
+        expected_opp_direction = 1 if t["Direction"] == 0 else 0
+        for t2 in trades:
+            if t2 is t or t2["Direction"] != expected_opp_direction:
+                continue
+            if (
+                t2["_entry_dt"].strftime("%Y-%m-%d") == entry_date
+                and t2["_exit_dt"].strftime("%Y-%m-%d") == exit_date
+            ):
+                t["_tag"] = "VASS"
+                vass_trades.append(t)
+                break
 
     # Sort VASS trades by entry time
     vass_trades.sort(key=lambda x: (x["_entry_dt"], x["row_num"]))
@@ -709,18 +702,17 @@ def main():
                     t2["_tag"] = "VASS"
                     break
 
-    # Any remaining unknowns with Direction=0 and single leg = MICRO
+    # Any remaining unknowns stay UNKNOWN for audit truthfulness.
+    # Only evidence-based pairing above can reclassify to VASS.
     for t in trades:
         if t["_tag"] == "UNKNOWN":
-            if t["Direction"] == 0:
-                t["_tag"] = "MICRO"
-            else:
-                t["_tag"] = "VASS"
+            continue
 
     itm_count = sum(1 for t in trades if t["_tag"] == "ITM")
     micro_count = sum(1 for t in trades if t["_tag"] == "MICRO")
     vass_count = sum(1 for t in trades if t["_tag"] == "VASS")
-    print(f"  ITM: {itm_count}, MICRO: {micro_count}, VASS: {vass_count}")
+    unknown_count = sum(1 for t in trades if t["_tag"] == "UNKNOWN")
+    print(f"  ITM: {itm_count}, MICRO: {micro_count}, VASS: {vass_count}, UNKNOWN: {unknown_count}")
 
     # Pair VASS spreads (exclude overlap artifacts from pairing)
     vass_overlap_trades = [
@@ -731,6 +723,7 @@ def main():
     ]
     micro_trades = [t for t in trades if t["_tag"] == "MICRO"]
     itm_trades = [t for t in trades if t["_tag"] == "ITM"]
+    unknown_trades = [t for t in trades if t["_tag"] == "UNKNOWN"]
     intraday_trades = micro_trades + itm_trades
 
     vass_trades.sort(key=lambda x: (x["_entry_dt"], x["row_num"]))
@@ -890,6 +883,7 @@ def main():
     total_trade_rows = len(trades)
     total_micro = len(micro_trades)
     total_itm = len(itm_trades)
+    total_unknown = len(unknown_trades)
     total_spread_legs = len(spreads) * 2 + len([t for t in unpaired_vass if t["Direction"] == 1])
     total_covered = total_micro + total_itm + total_spread_legs
 
@@ -898,6 +892,7 @@ def main():
     r(f"- Total trade rows in CSV: **{total_trade_rows}**")
     r(f"- MICRO trades: **{total_micro}**")
     r(f"- ITM trades: **{total_itm}**")
+    r(f"- UNKNOWN unattributed rows: **{total_unknown}**")
     r(f"- VASS spread pairs: **{len(spreads)}** ({len(spreads)*2} legs)")
     r(f"- Unpaired VASS legs: **{len([t for t in unpaired_vass if t['Direction'] == 1])}**")
     r(f"- Total accounted: **{total_covered}** / {total_trade_rows}")
