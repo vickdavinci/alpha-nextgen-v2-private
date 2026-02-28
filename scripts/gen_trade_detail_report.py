@@ -75,7 +75,7 @@ def hold_duration(entry_dt, exit_dt):
 
 
 def classify_trades(trades, logs):
-    """Classify each trade as MICRO or VASS and pair VASS spreads."""
+    """Classify each trade as ITM/MICRO/VASS and pair VASS spreads."""
     # Build FILL log index by symbol for order tag lookup
     fill_tags = {}  # symbol -> list of (timestamp, tag)
     for ln, ts, text in logs:
@@ -106,7 +106,10 @@ def classify_trades(trades, logs):
         if sym in fill_tags:
             for fts, ftag, foid in fill_tags[sym]:
                 if foid in order_ids:
-                    if "MICRO:" in ftag:
+                    if "ITM:" in ftag:
+                        t["_tag"] = "ITM"
+                        t["_full_tag"] = ftag
+                    elif "MICRO:" in ftag:
                         t["_tag"] = "MICRO"
                         t["_full_tag"] = ftag
                     elif "VASS:" in ftag or "SPREAD" in ftag:
@@ -120,7 +123,7 @@ def classify_trades(trades, logs):
             for ln, ts, text in logs:
                 if ts.strftime("%Y-%m-%d") == entry_date:
                     if "INTRADAY_SIGNAL:" in text and f"K={t['_strike']}" in text:
-                        t["_tag"] = "MICRO"
+                        t["_tag"] = "ITM" if "ITM" in text else "MICRO"
                         t["_full_tag"] = text
                         break
                     if "SPREAD: ENTRY_SIGNAL" in text or "CREDIT_SPREAD: ENTRY_SIGNAL" in text:
@@ -143,7 +146,7 @@ def pair_vass_spreads(trades):
     # VASS trades have two consecutive rows with same entry date and same exit date
     # One Direction=0 (long), one Direction=1 (short)
     vass_trades = [t for t in trades if t["_tag"] == "VASS"]
-    micro_trades = [t for t in trades if t["_tag"] == "MICRO"]
+    micro_trades = [t for t in trades if t["_tag"] in ("MICRO", "ITM")]
     unknown_trades = [t for t in trades if t["_tag"] == "UNKNOWN"]
 
     # Try to pair unknown trades with VASS by looking for Direction=1 near Direction=0
@@ -659,7 +662,13 @@ def main():
             oid = oid.strip()
             if oid in fill_index:
                 _, tag, _ = fill_index[oid]
-                if "MICRO:" in tag:
+                if "ITM:" in tag:
+                    t["_tag"] = "ITM"
+                    t["_full_tag"] = tag
+                    has_vass_entry_tag = False
+                    has_bare_vass_tag = False
+                    break
+                elif "MICRO:" in tag:
                     t["_tag"] = "MICRO"
                     t["_full_tag"] = tag
                     has_vass_entry_tag = False
@@ -674,7 +683,11 @@ def main():
                     has_bare_vass_tag = True
         # Bare VASS tags (without colon) indicate exit/close fills
         # These are VASS overlap artifacts -- mark as VASS but flag
-        if has_bare_vass_tag and not has_vass_entry_tag and t["_tag"] not in ("MICRO", "VASS"):
+        if (
+            has_bare_vass_tag
+            and not has_vass_entry_tag
+            and t["_tag"] not in ("MICRO", "ITM", "VASS")
+        ):
             t["_tag"] = "VASS"
             t["_full_tag"] = "VASS"
             t["_is_vass_overlap"] = True  # Flag as overlap artifact
@@ -703,9 +716,10 @@ def main():
             else:
                 t["_tag"] = "VASS"
 
+    itm_count = sum(1 for t in trades if t["_tag"] == "ITM")
     micro_count = sum(1 for t in trades if t["_tag"] == "MICRO")
     vass_count = sum(1 for t in trades if t["_tag"] == "VASS")
-    print(f"  MICRO: {micro_count}, VASS: {vass_count}")
+    print(f"  ITM: {itm_count}, MICRO: {micro_count}, VASS: {vass_count}")
 
     # Pair VASS spreads (exclude overlap artifacts from pairing)
     vass_overlap_trades = [
@@ -714,7 +728,7 @@ def main():
     vass_trades = [
         t for t in trades if t["_tag"] == "VASS" and not t.get("_is_vass_overlap", False)
     ]
-    micro_trades = [t for t in trades if t["_tag"] == "MICRO"]
+    micro_trades = [t for t in trades if t["_tag"] in ("MICRO", "ITM")]
 
     vass_trades.sort(key=lambda x: (x["_entry_dt"], x["row_num"]))
 

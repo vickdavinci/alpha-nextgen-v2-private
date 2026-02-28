@@ -109,10 +109,12 @@ def classify_engine_strategy(tag: str) -> Tuple[str, str]:
     if prefix.startswith("MICRO:"):
         return "MICRO", prefix.split(":", 1)[1] or "MICRO_UNKNOWN"
     if prefix.startswith("ITM:"):
-        return "MICRO", prefix.split(":", 1)[1] or "ITM"
+        return "ITM", prefix.split(":", 1)[1] or "ITM_MOMENTUM"
     if "VASS" in prefix:
         return "VASS", prefix
-    if "MICRO" in prefix or "ITM" in prefix:
+    if "ITM" in prefix:
+        return "ITM", prefix
+    if "MICRO" in prefix:
         return "MICRO", prefix
     return "UNKNOWN", prefix
 
@@ -125,7 +127,7 @@ def derive_direction(engine: str, strategy: str, symbol: str) -> str:
         if "BEAR_PUT" in s or "BEAR_CALL" in s:
             return "BEARISH"
     opt_type = parse_option_type(symbol)
-    if engine == "MICRO":
+    if engine in {"MICRO", "ITM"}:
         if opt_type in {"CALL", "PUT"}:
             return opt_type
         return "UNKNOWN"
@@ -353,8 +355,10 @@ def parse_logs(lines: List[str]) -> Dict[str, object]:
     regime_scores: List[float] = []
     vass_generated = Counter()
     micro_generated = Counter()
+    itm_generated = Counter()
     vass_reasons = Counter()
     micro_reasons = Counter()
+    itm_reasons = Counter()
     anomalies: List[str] = []
 
     for line in lines:
@@ -377,12 +381,15 @@ def parse_logs(lines: List[str]) -> Dict[str, object]:
 
         # MICRO signal generation.
         if "INTRADAY_SIGNAL" in line:
+            target_counter = micro_generated
+            if "ITM" in line:
+                target_counter = itm_generated
             if " CALL " in f" {line} ":
-                micro_generated["CALL"] += 1
+                target_counter["CALL"] += 1
             elif " PUT " in f" {line} ":
-                micro_generated["PUT"] += 1
+                target_counter["PUT"] += 1
             else:
-                micro_generated["UNKNOWN"] += 1
+                target_counter["UNKNOWN"] += 1
 
         # Rejection reasons.
         codes = {code for code in REASON_CODE_RE.findall(line) if is_rejection_code(code)}
@@ -393,7 +400,10 @@ def parse_logs(lines: List[str]) -> Dict[str, object]:
             ):
                 for code in codes:
                     vass_reasons[code] += 1
-            if any(k in line for k in ("MICRO", "INTRADAY", "ITM_")):
+            if any(k in line for k in ("ITM", "ITM_")):
+                for code in codes:
+                    itm_reasons[code] += 1
+            if any(k in line for k in ("MICRO", "INTRADAY")) and "ITM" not in line:
                 for code in codes:
                     micro_reasons[code] += 1
 
@@ -421,8 +431,10 @@ def parse_logs(lines: List[str]) -> Dict[str, object]:
         "regime_counts": regime_counts,
         "vass_generated": vass_generated,
         "micro_generated": micro_generated,
+        "itm_generated": itm_generated,
         "vass_reasons": vass_reasons,
         "micro_reasons": micro_reasons,
+        "itm_reasons": itm_reasons,
         "anomalies": anomalies,
     }
 
@@ -670,7 +682,7 @@ def write_performance_report(
     lines.append("")
 
     lines.append("## Direction Breakdown")
-    for engine in ("VASS", "MICRO"):
+    for engine in ("VASS", "MICRO", "ITM"):
         items = by_engine.get(engine, [])
         if not items:
             continue
@@ -748,17 +760,23 @@ def write_signal_flow_report(
     by_engine = trade_summary["by_engine"]
     vass_exec = by_engine.get("VASS", [])
     micro_exec = by_engine.get("MICRO", [])
+    itm_exec = by_engine.get("ITM", [])
     vass_exec_dir = direction_summary(vass_exec)
     micro_exec_dir = direction_summary(micro_exec)
+    itm_exec_dir = direction_summary(itm_exec)
     vass_generated: Counter = log_summary["vass_generated"]
     micro_generated: Counter = log_summary["micro_generated"]
+    itm_generated: Counter = log_summary.get("itm_generated", Counter())
     vass_reasons: Counter = log_summary["vass_reasons"]
     micro_reasons: Counter = log_summary["micro_reasons"]
+    itm_reasons: Counter = log_summary.get("itm_reasons", Counter())
 
     vass_generated_total = sum(vass_generated.values())
     micro_generated_total = sum(micro_generated.values())
+    itm_generated_total = sum(itm_generated.values())
     vass_rejected = sum(vass_reasons.values())
     micro_rejected = sum(micro_reasons.values())
+    itm_rejected = sum(itm_reasons.values())
     if vass_generated_total <= 0 or len(vass_exec) > vass_generated_total:
         vass_exec_rate = "N/A"
     else:
@@ -767,6 +785,10 @@ def write_signal_flow_report(
         micro_exec_rate = "N/A"
     else:
         micro_exec_rate = fmt_pct(100.0 * len(micro_exec) / micro_generated_total)
+    if itm_generated_total <= 0 or len(itm_exec) > itm_generated_total:
+        itm_exec_rate = "N/A"
+    else:
+        itm_exec_rate = fmt_pct(100.0 * len(itm_exec) / itm_generated_total)
 
     lines: List[str] = []
     lines.append(f"# {run_name} SIGNAL FLOW REPORT")
@@ -789,6 +811,13 @@ def write_signal_flow_report(
                     str(micro_rejected),
                     str(len(micro_exec)),
                     micro_exec_rate,
+                ],
+                [
+                    "ITM",
+                    str(itm_generated_total),
+                    str(itm_rejected),
+                    str(len(itm_exec)),
+                    itm_exec_rate,
                 ],
             ],
         )
@@ -867,6 +896,42 @@ def write_signal_flow_report(
     lines.append("```")
     lines.append("")
 
+    lines.append("## ITM Signal Flow")
+    itm_gen_rows = [[k, str(v)] for k, v in sorted(itm_generated.items())]
+    lines.append("### Generation by Direction")
+    lines.append(md_table(["Direction", "Generated"], itm_gen_rows or [["N/A", "0"]]))
+    lines.append("")
+    lines.append("### Rejection/Block Reasons")
+    itm_reason_rows = [[k, str(v)] for k, v in itm_reasons.most_common(20)]
+    lines.append(md_table(["Reason", "Count"], itm_reason_rows or [["N/A", "0"]]))
+    lines.append("")
+    lines.append("### Executed Trades by Direction")
+    itm_exec_rows = [
+        [
+            d,
+            str(v["trades"]),
+            str(v["wins"]),
+            str(v["losses"]),
+            fmt_pct(v["win_rate"]),
+            fmt_money(v["pnl"]),
+        ]
+        for d, v in sorted(itm_exec_dir.items())
+    ]
+    lines.append(
+        md_table(
+            ["Direction", "Trades", "Wins", "Losses", "Win Rate", "P&L"],
+            itm_exec_rows or [["N/A", "0", "0", "0", "0.00%", "$0.00"]],
+        )
+    )
+    lines.append("")
+    lines.append("### Visual Funnel")
+    lines.append("```")
+    lines.append(
+        f"ITM Generated {itm_generated_total} -> Rejected {itm_rejected} -> Executed {len(itm_exec)}"
+    )
+    lines.append("```")
+    lines.append("")
+
     lines.append("## Key Findings and Recommendations")
     if len(trades) == 0:
         lines.append("- P0: no executed trades; treat as plumbing/runtime failure.")
@@ -875,6 +940,8 @@ def write_signal_flow_report(
             lines.append("- P0: VASS execution rate is low; relax the highest-impact gate reason.")
         if micro_generated_total and (100.0 * len(micro_exec) / micro_generated_total) < 25.0:
             lines.append("- P0: MICRO execution rate is low; inspect top rejection reasons.")
+        if itm_generated_total and (100.0 * len(itm_exec) / itm_generated_total) < 25.0:
+            lines.append("- P0: ITM execution rate is low; inspect top rejection reasons.")
         lines.append(
             "- P1: prioritize rejection reasons with both high count and high opportunity cost."
         )
