@@ -585,7 +585,7 @@ class TestCalculateOrderIntents:
         assert source_tag == "OPT_MICRO"
 
     def test_option_close_risk_source_defaults_to_micro_when_lane_unknown(self):
-        """Unknown-lane option risk exits should default to MICRO, not VASS."""
+        """Unknown-lane option risk exits should remain lane-neutral for RCA fidelity."""
         option_symbol = "QQQ 260130C00510000"
         holding = MagicMock()
         holding.Symbol = option_symbol
@@ -616,7 +616,24 @@ class TestCalculateOrderIntents:
         )
 
         assert len(orders) == 1
-        assert orders[0].tag == "MICRO:RISK_EXIT"
+        assert orders[0].tag == "OPT:RISK_EXIT"
+
+    def test_extract_trace_context_risk_source_uses_opt_unknown_when_lane_unknown(self):
+        """Unknown-lane option risk source should normalize to OPT_UNKNOWN."""
+        option_symbol = "QQQ 260130C00510000"
+        mock_algo = MagicMock()
+        mock_algo.options_engine = MagicMock()
+        mock_algo.options_engine.find_engine_lane_by_symbol.return_value = None
+        router = PortfolioRouter(algorithm=mock_algo)
+
+        source_tag, trace_id = router._extract_trace_context(
+            metadata=None,
+            sources=["RISK"],
+            symbol=option_symbol,
+        )
+
+        assert trace_id == ""
+        assert source_tag == "OPT_UNKNOWN"
 
 
 class TestPrioritize:

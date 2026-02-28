@@ -2236,7 +2236,7 @@ class PortfolioRouter:
                 ):
                     source_tag = "OPT_VASS"
                 else:
-                    source_tag = "OPT_MICRO"
+                    source_tag = "OPT_UNKNOWN"
         source_tag = self._normalize_options_source_tag(source_tag, metadata, symbol)
         return source_tag, trace_id
 
@@ -2258,7 +2258,7 @@ class PortfolioRouter:
             lane if lane in {"ITM", "MICRO"} else self._infer_options_lane_from_symbol(symbol)
         )
 
-        if upper in {"OPT_ITM", "OPT_MICRO", "OPT_VASS"}:
+        if upper in {"OPT_ITM", "OPT_MICRO", "OPT_VASS", "OPT_UNKNOWN"}:
             return upper
         if upper == "RISK" and self._is_option_symbol(str(symbol or "")):
             if inferred_lane in {"ITM", "MICRO"}:
@@ -2269,7 +2269,7 @@ class PortfolioRouter:
                 or md.get("spread_type")
             ):
                 return "OPT_VASS"
-            return "OPT_MICRO"
+            return "OPT_UNKNOWN"
         if upper.startswith("ITM") or " ITM" in f" {upper} ":
             return "OPT_ITM"
         if upper.startswith("MICRO") or " MICRO" in f" {upper} ":
@@ -3088,7 +3088,7 @@ class PortfolioRouter:
                         )
                         tag = f"VASS:{vass_tag_value}"
                     else:
-                        tag = "MICRO:RISK_EXIT"
+                        tag = "OPT:RISK_EXIT"
 
             # Fallback for non-option paths or missing metadata.
             if not tag:
