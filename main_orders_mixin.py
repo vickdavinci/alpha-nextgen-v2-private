@@ -85,6 +85,72 @@ class MainOrdersMixin:
                     f"{result.get('error')}"
                 )
 
+    def _get_active_spread_symbol_set(self) -> set[str]:
+        """Return normalized option symbols currently used by active spread positions."""
+        symbols: set[str] = set()
+        try:
+            spreads = list(self.options_engine.get_spread_positions())
+        except Exception:
+            spreads = []
+        for spread in spreads:
+            try:
+                long_norm = self._normalize_symbol_str(spread.long_leg.symbol)
+                short_norm = self._normalize_symbol_str(spread.short_leg.symbol)
+                if long_norm:
+                    symbols.add(long_norm)
+                if short_norm:
+                    symbols.add(short_norm)
+            except Exception:
+                continue
+        return symbols
+
+    def _is_close_side_order_for_live_holding(self, order: Any) -> bool:
+        """
+        True when order side reduces an existing option holding.
+
+        This is used to distinguish active spread-close intents from stale orphaned
+        or entry intents during global stale-order cleanup.
+        """
+        try:
+            order_qty = int(getattr(order, "Quantity", 0) or 0)
+        except Exception:
+            return False
+        if order_qty == 0:
+            return False
+        try:
+            holding, _ = self._find_portfolio_holding(
+                order.Symbol, security_type=SecurityType.Option
+            )
+        except Exception:
+            holding = None
+        holdings_qty = int(getattr(holding, "Quantity", 0) or 0) if holding is not None else 0
+        return (order_qty < 0 < holdings_qty) or (order_qty > 0 > holdings_qty)
+
+    def _should_preserve_active_spread_close_order(
+        self,
+        order: Any,
+        order_age_minutes: float,
+        active_spread_symbols: set[str],
+    ) -> bool:
+        """
+        Keep active spread-close combo legs alive for a grace window.
+
+        Spread closes often need more than 5 minutes; canceling them too early
+        creates avoidable retry/escalation churn.
+        """
+        try:
+            symbol_norm = self._normalize_symbol_str(getattr(order, "Symbol", ""))
+        except Exception:
+            symbol_norm = ""
+        if not symbol_norm or symbol_norm not in active_spread_symbols:
+            return False
+        if not self._is_close_side_order_for_live_holding(order):
+            return False
+        grace_minutes = float(
+            getattr(config, "STALE_CLEANUP_ACTIVE_SPREAD_CLOSE_GRACE_MINUTES", 20)
+        )
+        return order_age_minutes <= max(0.0, grace_minutes)
+
     def _cleanup_stale_orders(self) -> None:
         """
         V3.0 P2: Clean up stale orders at start of logic cycle.
@@ -110,7 +176,10 @@ class MainOrdersMixin:
             if not open_orders:
                 return
 
+            max_age_minutes = float(getattr(config, "STALE_CLEANUP_MAX_AGE_MINUTES", 5))
+            active_spread_symbols = self._get_active_spread_symbol_set()
             stale_count = 0
+            protected_spread_close_count = 0
             for order in open_orders:
                 # V3.0 FIX: Handle timezone-aware vs naive datetime comparison
                 try:
@@ -120,10 +189,17 @@ class MainOrdersMixin:
                     order_age_minutes = (
                         self.Time.replace(tzinfo=None) - order.Time.replace(tzinfo=None)
                     ).total_seconds() / 60
-                if order_age_minutes > 5:
+                if order_age_minutes > max_age_minutes:
                     order_tag = str(getattr(order, "Tag", "") or "")
                     # Keep protective OCO orders alive; they are long-lived by design.
                     if "OCO_STOP:" in order_tag or "OCO_PROFIT:" in order_tag:
+                        continue
+                    if self._should_preserve_active_spread_close_order(
+                        order,
+                        order_age_minutes=order_age_minutes,
+                        active_spread_symbols=active_spread_symbols,
+                    ):
+                        protected_spread_close_count += 1
                         continue
                     try:
                         self.Transactions.CancelOrder(order.Id)
@@ -132,7 +208,11 @@ class MainOrdersMixin:
                         self.Log(f"STALE_CLEANUP: Failed to cancel order {order.Id} | {e}")
 
             if stale_count > 0:
-                self.Log(f"STALE_CLEANUP: Cancelled {stale_count} orders older than 5 minutes")
+                self.Log(
+                    "STALE_CLEANUP: "
+                    f"Cancelled {stale_count} orders older than {max_age_minutes:g} minutes | "
+                    f"ProtectedActiveSpreadClose={protected_spread_close_count}"
+                )
 
         except Exception as e:
             self.Log(f"STALE_CLEANUP: Error checking orders | {e}")
