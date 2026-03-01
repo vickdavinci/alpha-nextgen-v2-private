@@ -16,6 +16,7 @@ Spec: docs/11-portfolio-router.md
 """
 
 from dataclasses import dataclass, field
+from datetime import timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple
 
@@ -212,6 +213,8 @@ class PortfolioRouter:
         self._signal_seq: int = 0
         # Exit pre-clear barrier state: key -> first observed timestamp while waiting for cancels.
         self._exit_preclear_pending_since: Dict[str, Any] = {}
+        # Per-symbol cooldown for stale close intents (no live holdings).
+        self._stale_close_reject_cooldown_until: Dict[str, Any] = {}
 
         # V2.9: Track open spread margin (Bug #1 fix)
         # Stores {spread_id: margin_reserved} for each open spread
@@ -680,6 +683,39 @@ class PortfolioRouter:
             pass
 
         return cleaned
+
+    def _is_stale_close_reject_cooldown_active(self, symbol: str) -> bool:
+        """Return True when stale close reject cooldown is active for a symbol."""
+        symbol_key = self._normalize_symbol_key(symbol)
+        if not symbol_key or self.algorithm is None:
+            return False
+        until = self._stale_close_reject_cooldown_until.get(symbol_key)
+        now = getattr(self.algorithm, "Time", None)
+        if until is None or now is None:
+            return False
+        try:
+            if now < until:
+                return True
+        except Exception:
+            pass
+        self._stale_close_reject_cooldown_until.pop(symbol_key, None)
+        return False
+
+    def _arm_stale_close_reject_cooldown(self, symbol: str) -> None:
+        """Arm short cooldown after rejecting a stale close intent with no live holdings."""
+        symbol_key = self._normalize_symbol_key(symbol)
+        if not symbol_key or self.algorithm is None:
+            return
+        cooldown_sec = max(
+            0, int(getattr(config, "ROUTER_STALE_CLOSE_REJECT_COOLDOWN_SECONDS", 60))
+        )
+        if cooldown_sec <= 0:
+            self._stale_close_reject_cooldown_until.pop(symbol_key, None)
+            return
+        now = getattr(self.algorithm, "Time", None)
+        if now is None:
+            return
+        self._stale_close_reject_cooldown_until[symbol_key] = now + timedelta(seconds=cooldown_sec)
 
     def _is_option_close_order(self, order: "OrderIntent") -> bool:
         """
@@ -2924,7 +2960,13 @@ class PortfolioRouter:
                     agg.metadata and agg.metadata.get("spread_close_short", False)
                 )
                 live_qty = self._get_live_option_qty(symbol)
+                if live_qty != 0:
+                    self._stale_close_reject_cooldown_until.pop(
+                        self._normalize_symbol_key(symbol), None
+                    )
                 if live_qty == 0:
+                    if not is_spread_close and self._is_stale_close_reject_cooldown_active(symbol):
+                        continue
                     stale_cleanup = []
                     if not is_spread_close:
                         stale_cleanup = self._evict_stale_option_close_intent(symbol)
@@ -2939,6 +2981,8 @@ class PortfolioRouter:
                         source_tag=source_tag,
                         trace_id=trace_id,
                     )
+                    if not is_spread_close:
+                        self._arm_stale_close_reject_cooldown(symbol)
                     continue
 
                 side = OrderSide.SELL if live_qty > 0 else OrderSide.BUY
@@ -4341,6 +4385,7 @@ class PortfolioRouter:
         self._executed_this_minute.clear()
         self._last_eod_date = None
         self._exit_preclear_pending_since.clear()
+        self._stale_close_reject_cooldown_until.clear()
 
         self._open_spread_margin = {}
         raw_margins = state.get("open_spread_margin", {}) or {}
@@ -4365,6 +4410,7 @@ class PortfolioRouter:
         self._executed_this_minute.clear()
         self._last_eod_date = None
         self._exit_preclear_pending_since.clear()
+        self._stale_close_reject_cooldown_until.clear()
         # V2.3.24: Reset rejection log throttle
         self._last_rejection_log_time = None
         self._rejection_log_count = 0

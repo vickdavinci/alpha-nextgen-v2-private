@@ -2907,6 +2907,9 @@ EXIT_PRE_CLEAR_TIMEOUT_SECONDS_COMBO = 30  # Keep stricter timeout for spread co
 EXIT_PRE_CLEAR_INTRADAY_BYPASS_AFTER_SECONDS = (
     5  # Time-critical intraday closes can bypass after this elapsed preclear wait
 )
+ROUTER_STALE_CLOSE_REJECT_COOLDOWN_SECONDS = (
+    60  # Suppress repeated no-live close intents per symbol to reduce reject churn
+)
 PROTECTIVE_PUTS_MAX_CONTRACTS = (
     0  # V12.15: disable dedicated protective cap; rely on % sizing + global intraday contract cap
 )
