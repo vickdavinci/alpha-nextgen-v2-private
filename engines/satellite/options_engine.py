@@ -1929,6 +1929,58 @@ class OptionsEngine:
             micro_intraday_cooldown_active=micro_intraday_cooldown_active,
         )
 
+    def _clear_stale_pending_ic_entry_if_orphaned(self) -> None:
+        """Clear stale pending IC lock when no matching open leg orders exist."""
+        ic_engine = self._iron_condor_engine
+        if not ic_engine._pending_entry or ic_engine._pending_condor is None:
+            return
+        if self.algorithm is None or not hasattr(self.algorithm, "Time"):
+            return
+
+        if ic_engine._pending_entry_since is None:
+            ic_engine._pending_entry_since = self.algorithm.Time
+            return
+
+        stale_minutes = int(getattr(config, "IC_PENDING_ENTRY_STALE_MINUTES", 7))
+        if stale_minutes <= 0:
+            return
+
+        age_minutes = (self.algorithm.Time - ic_engine._pending_entry_since).total_seconds() / 60.0
+        if age_minutes < stale_minutes:
+            return
+
+        # Collect all pending IC leg symbols
+        ic_seeds = ic_engine.get_pending_spread_seeds()
+        if not ic_seeds:
+            return
+        pending_symbols: set = set()
+        for seed in ic_seeds.values():
+            pending_symbols.add(self._symbol_str(seed.get("long_leg_symbol", "")))
+            pending_symbols.add(self._symbol_str(seed.get("short_leg_symbol", "")))
+        pending_symbols.discard("")
+
+        has_open_orders = False
+        try:
+            for open_order in self.algorithm.Transactions.GetOpenOrders():
+                if getattr(open_order.Symbol, "SecurityType", None) != SecurityType.Option:
+                    continue
+                open_sym = self._symbol_str(open_order.Symbol)
+                if open_sym in pending_symbols:
+                    has_open_orders = True
+                    break
+        except Exception:
+            return
+
+        if has_open_orders:
+            return
+
+        ic_engine.cancel_pending_entry()
+        self.log(
+            f"IC_STALE_PENDING_CLEARED | AgeMin={age_minutes:.1f} "
+            f"| Pending={','.join(sorted(pending_symbols)) or 'NONE'}",
+            trades_only=True,
+        )
+
     def run_iron_condor_engine_cycle(
         self,
         *,
@@ -1943,6 +1995,7 @@ class OptionsEngine:
         margin_remaining: float,
     ) -> Optional[List["TargetWeight"]]:
         """Run IC engine entry cycle via iron condor sub-engine."""
+        self._clear_stale_pending_ic_entry_if_orphaned()
         ic_open_risk = self._iron_condor_engine.get_open_risk()
         daily_pnl = self._iron_condor_engine._daily_pnl
         return self._iron_condor_engine.run_entry_cycle(
@@ -1986,6 +2039,18 @@ class OptionsEngine:
     def get_iron_condor_diagnostics(self) -> Dict[str, Any]:
         """Return IC engine diagnostics for daily summary."""
         return self._iron_condor_engine.get_diagnostics()
+
+    def get_ic_pending_spread_seeds(self) -> Optional[Dict[str, Dict[str, Any]]]:
+        """Return pending IC spread seeds for fill tracking."""
+        return self._iron_condor_engine.get_pending_spread_seeds()
+
+    def register_ic_side_fill(self, spread_side: str) -> Optional[Any]:
+        """Register one side of IC combo fill. Returns IronCondorPosition if both done."""
+        return self._iron_condor_engine.register_side_fill(spread_side)
+
+    def cancel_pending_ic_entry(self) -> None:
+        """Cancel pending IC entry on rejection/timeout."""
+        self._iron_condor_engine.cancel_pending_entry()
 
     def _can_attempt_spread_entry(self, attempt_key: str) -> bool:
         """
@@ -4504,16 +4569,53 @@ class OptionsEngine:
         except Exception:
             return 0
 
-    def get_pending_spread_tracker_seed(self) -> Optional[dict]:
-        """Return spread tracker seed payload derived from pending spread state."""
-        if not self.has_pending_spread_entry():
-            return None
-        return {
-            "long_leg_symbol": self._symbol_str(self._pending_spread_long_leg.symbol),
-            "short_leg_symbol": self._symbol_str(self._pending_spread_short_leg.symbol),
-            "expected_quantity": int(self._pending_num_contracts or 1),
-            "spread_type": self._pending_spread_type,
-        }
+    def get_all_pending_option_symbols(self) -> set:
+        """Return all symbols from pending VASS + IC spreads for fill routing."""
+        symbols = set()
+        # VASS
+        if self._pending_spread_long_leg is not None:
+            symbols.add(self._symbol_str(self._pending_spread_long_leg.symbol))
+        if self._pending_spread_short_leg is not None:
+            symbols.add(self._symbol_str(self._pending_spread_short_leg.symbol))
+        # IC
+        ic_seeds = self.get_ic_pending_spread_seeds()
+        if ic_seeds:
+            for seed in ic_seeds.values():
+                symbols.add(self._symbol_str(seed.get("long_leg_symbol", "")))
+                symbols.add(self._symbol_str(seed.get("short_leg_symbol", "")))
+        symbols.discard("")
+        return symbols
+
+    def get_pending_spread_tracker_seed(self, *, fill_symbol: str = "") -> Optional[dict]:
+        """Return spread tracker seed payload derived from pending spread state.
+
+        Checks VASS pending state first, then IC pending state if VASS has none.
+        The fill_symbol hint disambiguates which IC side to return.
+        """
+        if self.has_pending_spread_entry():
+            return {
+                "long_leg_symbol": self._symbol_str(self._pending_spread_long_leg.symbol),
+                "short_leg_symbol": self._symbol_str(self._pending_spread_short_leg.symbol),
+                "expected_quantity": int(self._pending_num_contracts or 1),
+                "spread_type": self._pending_spread_type,
+            }
+
+        # Fallback: check IC pending seeds
+        ic_seeds = self.get_ic_pending_spread_seeds()
+        if ic_seeds and fill_symbol:
+            fill_norm = self._symbol_str(fill_symbol) if fill_symbol else ""
+            for side_key, seed in ic_seeds.items():
+                long_norm = self._symbol_str(seed.get("long_leg_symbol", ""))
+                short_norm = self._symbol_str(seed.get("short_leg_symbol", ""))
+                if fill_norm in (long_norm, short_norm):
+                    seed["ic_side"] = side_key
+                    return seed
+            # No symbol match — return first unfilled side
+            for side_key, seed in ic_seeds.items():
+                seed["ic_side"] = side_key
+                return seed
+
+        return None
 
     def clear_pending_spread_state_hard(self) -> None:
         """

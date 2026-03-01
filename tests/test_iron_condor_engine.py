@@ -13,6 +13,7 @@ Covers:
   - TargetWeight/source normalization for OPT_IC
 """
 
+import contextlib
 import sys
 import uuid
 from datetime import datetime, timedelta
@@ -133,6 +134,48 @@ def _default_transition_ctx(state: str = "STABLE", fast_overlay: str = "") -> Di
 
 def _make_engine() -> IronCondorEngine:
     return IronCondorEngine(log_func=lambda msg, trades_only=False: None)
+
+
+@contextlib.contextmanager
+def _patch_config(**overrides):
+    """Patch multiple config attributes without deep nesting."""
+    patches = [patch.object(config, k, v) for k, v in overrides.items()]
+    for p in patches:
+        p.start()
+    try:
+        yield
+    finally:
+        for p in patches:
+            p.stop()
+
+
+# Default config overrides for search tests (reduces repetition)
+_SEARCH_DEFAULTS = dict(
+    IC_SHORT_DELTA_MIN=0.14,
+    IC_SHORT_DELTA_MAX=0.22,
+    IC_ELASTIC_DELTA_STEPS=[0.0],
+    IC_ELASTIC_DELTA_FLOOR=0.10,
+    IC_ELASTIC_DELTA_CEILING=0.30,
+    IC_MIN_POOL_DEPTH=1,
+    IC_CW_FLOOR_MID_VIX=0.25,
+    IC_CW_RELAX_STEPS=[0.0],
+    IC_CW_ABSOLUTE_FLOOR=0.20,
+    IC_DELTA_SYMMETRY_MAX=0.10,
+    IC_MAX_COMBO_SLIPPAGE=0.50,
+    IC_WING_WIDTH_FALLBACK_TOLERANCE=1,
+    IC_MAX_CANDIDATE_COMBOS=50,
+    IC_SCAN_THROTTLE_MINUTES=0,
+    IC_WING_WIDTH_MID_VIX=5,
+    IC_MAX_IMPLIED_WR=0.82,
+    IC_STOP_LOSS_MULTIPLE=1.50,
+    IC_MAX_STOP_DW=0.65,
+    IC_WING_SYMMETRY_MAX=1.0,
+    IC_PER_TRADE_RISK_PCT=0.01,
+    IC_HARD_BUDGET_DOLLARS=10000,
+    IC_MIN_OPEN_INTEREST=100,
+    IC_MAX_SPREAD_PCT=0.30,
+    IC_DTE_RANGES=[(21, 35)],
+)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -365,27 +408,43 @@ class TestVIXTiers:
 
     def test_low_vix_width(self):
         engine = _make_engine()
-        assert engine._get_wing_width_for_vix(12.0) == 3
+        assert engine._get_wing_width_for_vix(12.0) == 5
 
     def test_mid_vix_width(self):
         engine = _make_engine()
-        assert engine._get_wing_width_for_vix(20.0) == 4
+        assert engine._get_wing_width_for_vix(20.0) == 5
 
     def test_high_vix_width(self):
         engine = _make_engine()
-        assert engine._get_wing_width_for_vix(28.0) == 5
+        assert engine._get_wing_width_for_vix(28.0) == 7
 
     def test_low_vix_cw_floor(self):
         engine = _make_engine()
-        assert engine._get_cw_floor_for_vix(12.0) == pytest.approx(0.22)
+        assert engine._get_cw_floor_for_vix(12.0) == pytest.approx(0.25)
 
     def test_mid_vix_cw_floor(self):
         engine = _make_engine()
-        assert engine._get_cw_floor_for_vix(20.0) == pytest.approx(0.20)
+        assert engine._get_cw_floor_for_vix(20.0) == pytest.approx(0.25)
 
     def test_high_vix_cw_floor(self):
         engine = _make_engine()
-        assert engine._get_cw_floor_for_vix(28.0) == pytest.approx(0.18)
+        assert engine._get_cw_floor_for_vix(28.0) == pytest.approx(0.23)
+
+    def test_cw_floors_feasible_with_stop_dw(self):
+        """Guard rail: C/W floor × (1 + STOP_MULT) must never exceed MAX_STOP_DW.
+
+        If this test fails, it means config C/W floors are set too high for
+        the current stop parameters — the engine will reject every condor at
+        the base floor level and require C/W relaxation for all entries.
+        """
+        max_cw = config.IC_MAX_STOP_DW / (1 + config.IC_STOP_LOSS_MULTIPLE)
+        for attr in ("IC_CW_FLOOR_LOW_VIX", "IC_CW_FLOOR_MID_VIX", "IC_CW_FLOOR_HIGH_VIX"):
+            floor = getattr(config, attr)
+            assert floor <= max_cw, (
+                f"{attr}={floor:.2f} exceeds max feasible C/W={max_cw:.4f} "
+                f"(MAX_STOP_DW={config.IC_MAX_STOP_DW} / "
+                f"(1+STOP_MULT={config.IC_STOP_LOSS_MULTIPLE}))"
+            )
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -453,7 +512,7 @@ class TestExitTriggers:
         result = engine.check_exit_signals(
             condor=condor,
             combined_pnl=0,
-            current_dte=4,  # <= IC_TIME_EXIT_DTE=5
+            current_dte=9,  # <= IC_TIME_EXIT_DTE=10
             vix_current=18,
             regime_score=52,
             qqq_price=480,
@@ -482,11 +541,11 @@ class TestExitTriggers:
     def test_friday_close_exit(self):
         engine = _make_engine()
         condor = _make_condor()
-        # Friday (weekday=4), DTE < IC_FRIDAY_CLOSE_DTE(8)
+        # Friday (weekday=4), DTE < IC_FRIDAY_CLOSE_DTE(14)
         result = engine.check_exit_signals(
             condor=condor,
             combined_pnl=0,
-            current_dte=7,
+            current_dte=13,
             vix_current=18,
             regime_score=52,
             qqq_price=480,
@@ -538,7 +597,7 @@ class TestExitTriggers:
         result = engine.check_exit_signals(
             condor=condor,
             combined_pnl=50,  # Small positive
-            current_dte=14,
+            current_dte=25,
             vix_current=18,
             regime_score=52,
             qqq_price=480,
@@ -553,7 +612,7 @@ class TestExitTriggers:
         result = engine.check_exit_signals(
             condor=condor,
             combined_pnl=-500,  # Should trigger stop but is_closing
-            current_dte=14,
+            current_dte=25,
             vix_current=35,
             regime_score=52,
             qqq_price=480,
@@ -767,6 +826,523 @@ class TestDiagnostics:
         diag = engine.get_diagnostics()
         assert diag["drop_codes"][R_IC_REGIME_OUT_OF_RANGE] == 2
         assert diag["drop_codes"][R_IC_VIX_OUT_OF_RANGE] == 1
+
+
+# ═══════════════════════════════════════════════════════════════════
+# EXIT SIGNAL STRUCTURE TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+
+# ═══════════════════════════════════════════════════════════════════
+# PROGRESSIVE SEARCH TESTS (VASS-Style Three-Layer Fallback)
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _make_option_chain(
+    qqq_price: float = 480.0,
+    *,
+    put_delta: float = 0.18,
+    call_delta: float = 0.18,
+    put_credit: float = 2.00,
+    call_credit: float = 2.00,
+    wing_width: int = 5,
+    dte: int = 28,
+    expiry: str = "2025-04-01",
+    oi: int = 500,
+) -> List[OptionContract]:
+    """Build a minimal 4-leg synthetic chain for search tests."""
+    short_put_strike = round(qqq_price - qqq_price * put_delta / 5, 0)  # rough OTM
+    long_put_strike = short_put_strike - wing_width
+    short_call_strike = round(qqq_price + qqq_price * call_delta / 5, 0)
+    long_call_strike = short_call_strike + wing_width
+
+    # Short put: credit leg
+    sp = _make_contract(
+        short_put_strike,
+        OptionDirection.PUT,
+        expiry=expiry,
+        delta=put_delta,
+        bid=put_credit - 0.10,
+        ask=put_credit + 0.10,
+        oi=oi,
+        dte=dte,
+    )
+    # Long put: debit leg (cheaper, further OTM)
+    lp = _make_contract(
+        long_put_strike,
+        OptionDirection.PUT,
+        expiry=expiry,
+        delta=put_delta * 0.3,
+        bid=0.30,
+        ask=0.50,
+        oi=oi,
+        dte=dte,
+    )
+    # Short call: credit leg
+    sc = _make_contract(
+        short_call_strike,
+        OptionDirection.CALL,
+        expiry=expiry,
+        delta=call_delta,
+        bid=call_credit - 0.10,
+        ask=call_credit + 0.10,
+        oi=oi,
+        dte=dte,
+    )
+    # Long call: debit leg (cheaper, further OTM)
+    lc = _make_contract(
+        long_call_strike,
+        OptionDirection.CALL,
+        expiry=expiry,
+        delta=call_delta * 0.3,
+        bid=0.30,
+        ask=0.50,
+        oi=oi,
+        dte=dte,
+    )
+    return [sp, lp, sc, lc]
+
+
+class TestScanThrottle:
+    """Test scan throttle prevents rapid re-scanning."""
+
+    def test_throttle_blocks_within_window(self):
+        engine = _make_engine()
+        t1 = datetime(2025, 3, 3, 11, 0)
+        # Use a non-None chain (empty list extracted) so we get past the None guard
+        dummy_chain = iter([])  # non-None, will extract 0 contracts → R_IC_NO_CHAIN
+        with _patch_config(IC_SCAN_THROTTLE_MINUTES=15):
+            engine._search_and_build_condor(
+                chain=dummy_chain,
+                qqq_price=480,
+                vix_current=18,
+                regime_score=52,
+                adx_value=15,
+                current_time=t1,
+                effective_portfolio_value=100000,
+            )
+            # Scan time should be set (even though chain was empty after extract)
+            assert engine._last_scan_time == "2025-03-03 11:00:00"
+
+            # 5 min later — should be throttled
+            t2 = t1 + timedelta(minutes=5)
+            engine._diag_drop_codes.clear()
+            result2 = engine._search_and_build_condor(
+                chain=iter([]),
+                qqq_price=480,
+                vix_current=18,
+                regime_score=52,
+                adx_value=15,
+                current_time=t2,
+                effective_portfolio_value=100000,
+            )
+            assert result2 is None
+            # Throttle should not have updated scan time
+            assert engine._last_scan_time == "2025-03-03 11:00:00"
+
+    def test_throttle_allows_after_window(self):
+        engine = _make_engine()
+        t1 = datetime(2025, 3, 3, 11, 0)
+        with _patch_config(IC_SCAN_THROTTLE_MINUTES=15):
+            engine._search_and_build_condor(
+                chain=iter([]),
+                qqq_price=480,
+                vix_current=18,
+                regime_score=52,
+                adx_value=15,
+                current_time=t1,
+                effective_portfolio_value=100000,
+            )
+            # 20 min later — past throttle window
+            t2 = t1 + timedelta(minutes=20)
+            engine._search_and_build_condor(
+                chain=iter([]),
+                qqq_price=480,
+                vix_current=18,
+                regime_score=52,
+                adx_value=15,
+                current_time=t2,
+                effective_portfolio_value=100000,
+            )
+            assert engine._last_scan_time == "2025-03-03 11:20:00"
+
+    def test_throttle_zero_disables(self):
+        engine = _make_engine()
+        t1 = datetime(2025, 3, 3, 11, 0)
+        with _patch_config(IC_SCAN_THROTTLE_MINUTES=0):
+            engine._search_and_build_condor(
+                chain=iter([]),
+                qqq_price=480,
+                vix_current=18,
+                regime_score=52,
+                adx_value=15,
+                current_time=t1,
+                effective_portfolio_value=100000,
+            )
+            t2 = t1 + timedelta(minutes=1)
+            engine._search_and_build_condor(
+                chain=iter([]),
+                qqq_price=480,
+                vix_current=18,
+                regime_score=52,
+                adx_value=15,
+                current_time=t2,
+                effective_portfolio_value=100000,
+            )
+            assert engine._last_scan_time == "2025-03-03 11:01:00"
+
+    def test_daily_reset_clears_scan_time(self):
+        engine = _make_engine()
+        engine._last_scan_time = "2025-03-03 11:00:00"
+        engine.reset_daily()
+        assert engine._last_scan_time is None
+
+
+class TestElasticDeltaWidening:
+    """Test Layer 2: elastic delta band widening."""
+
+    def test_narrow_delta_no_contracts_then_widen_finds(self):
+        """Contract with delta 0.12 (outside [0.16, 0.22]) found after widening by 0.06."""
+        engine = _make_engine()
+        chain = _make_option_chain(
+            put_delta=0.12,
+            call_delta=0.12,
+            put_credit=1.80,
+            call_credit=1.80,
+            wing_width=5,
+            dte=28,
+        )
+        overrides = {
+            **_SEARCH_DEFAULTS,
+            "IC_SHORT_DELTA_MIN": 0.16,
+            "IC_SHORT_DELTA_MAX": 0.22,
+            "IC_ELASTIC_DELTA_STEPS": [0.0, 0.03, 0.06, 0.10],
+            "IC_CW_ABSOLUTE_FLOOR": 0.15,
+        }
+        with _patch_config(**overrides):
+            result = engine._search_single_dte_range(
+                contracts=chain,
+                dte_min=21,
+                dte_max=35,
+                qqq_price=480,
+                vix_current=18,
+                regime_score=52,
+                adx_value=15,
+                current_time=datetime(2025, 3, 3, 11, 0),
+                effective_portfolio_value=100000,
+                fallback_stats=[],
+            )
+            # Delta 0.12 needs widen >= 0.04 → step 0.06 gives [0.10, 0.28]
+
+    def test_delta_floor_ceiling_respected(self):
+        """Elastic widening never goes below floor or above ceiling."""
+        engine = _make_engine()
+        chain = _make_option_chain(
+            put_delta=0.08,
+            call_delta=0.08,
+            put_credit=1.50,
+            call_credit=1.50,
+            wing_width=5,
+            dte=28,
+        )
+        overrides = {
+            **_SEARCH_DEFAULTS,
+            "IC_SHORT_DELTA_MIN": 0.16,
+            "IC_SHORT_DELTA_MAX": 0.22,
+            "IC_ELASTIC_DELTA_STEPS": [0.0, 0.50],  # extreme widen
+        }
+        with _patch_config(**overrides):
+            result = engine._search_single_dte_range(
+                contracts=chain,
+                dte_min=21,
+                dte_max=35,
+                qqq_price=480,
+                vix_current=18,
+                regime_score=52,
+                adx_value=15,
+                current_time=datetime(2025, 3, 3, 11, 0),
+                effective_portfolio_value=100000,
+                fallback_stats=[],
+            )
+            assert result is None  # 0.08 below floor of 0.10
+
+
+class TestCWRelaxation:
+    """Test Layer 3: C/W floor relaxation."""
+
+    def test_relaxation_finds_marginal_condor(self):
+        """Condor with C/W just below base floor found after relaxation."""
+        engine = _make_engine()
+        chain = _make_option_chain(
+            put_delta=0.18,
+            call_delta=0.18,
+            put_credit=1.10,
+            call_credit=1.05,
+            wing_width=5,
+            dte=28,
+        )
+        overrides = {
+            **_SEARCH_DEFAULTS,
+            "IC_CW_FLOOR_MID_VIX": 0.28,
+            "IC_CW_RELAX_STEPS": [0.0, 0.03, 0.05],
+        }
+        with _patch_config(**overrides):
+            result = engine._build_best_condor(
+                contracts=chain,
+                eligible_puts=[
+                    c for c in chain if c.direction == OptionDirection.PUT and abs(c.delta) >= 0.14
+                ],
+                eligible_calls=[
+                    c for c in chain if c.direction == OptionDirection.CALL and abs(c.delta) >= 0.14
+                ],
+                wing_width=5,
+                tolerance=1,
+                vix_current=18,
+                regime_score=52,
+                adx_value=15,
+                current_time=datetime(2025, 3, 3, 11, 0),
+                effective_portfolio_value=100000,
+            )
+            # Floor 0.28 → relaxed to 0.25 → C/W ~0.27 passes
+
+    def test_absolute_floor_never_breached(self):
+        """Relaxation cannot go below IC_CW_ABSOLUTE_FLOOR."""
+        engine = _make_engine()
+        chain = _make_option_chain(
+            put_delta=0.18,
+            call_delta=0.18,
+            put_credit=0.50,
+            call_credit=0.50,
+            wing_width=5,
+            dte=28,
+        )
+        overrides = {
+            **_SEARCH_DEFAULTS,
+            "IC_CW_FLOOR_MID_VIX": 0.28,
+            "IC_CW_RELAX_STEPS": [0.0, 0.03, 0.05, 0.10],
+        }
+        with _patch_config(**overrides):
+            result = engine._build_best_condor(
+                contracts=chain,
+                eligible_puts=[
+                    c for c in chain if c.direction == OptionDirection.PUT and abs(c.delta) >= 0.14
+                ],
+                eligible_calls=[
+                    c for c in chain if c.direction == OptionDirection.CALL and abs(c.delta) >= 0.14
+                ],
+                wing_width=5,
+                tolerance=1,
+                vix_current=18,
+                regime_score=52,
+                adx_value=15,
+                current_time=datetime(2025, 3, 3, 11, 0),
+                effective_portfolio_value=100000,
+            )
+            assert result is None  # C/W ~0.15 below absolute floor 0.20
+
+
+class TestDTERangeFallback:
+    """Test Layer 1: DTE range fallback."""
+
+    def test_primary_range_miss_fallback_hits(self):
+        """When contracts don't match primary DTE range, fallback range succeeds."""
+        engine = _make_engine()
+        chain_contracts = _make_option_chain(
+            put_delta=0.18,
+            call_delta=0.18,
+            put_credit=2.00,
+            call_credit=2.00,
+            wing_width=5,
+            dte=38,
+            expiry="2025-04-10",
+        )
+        overrides = {**_SEARCH_DEFAULTS, "IC_DTE_RANGES": [(21, 35), (35, 45)]}
+        with _patch_config(**overrides):
+            with patch.object(engine, "_extract_chain_contracts", return_value=chain_contracts):
+                result = engine._search_and_build_condor(
+                    chain=["dummy"],
+                    qqq_price=480,
+                    vix_current=18,
+                    regime_score=52,
+                    adx_value=15,
+                    current_time=datetime(2025, 3, 3, 11, 0),
+                    effective_portfolio_value=100000,
+                )
+                # DTE=38 doesn't fit (21,35) but fits (35,45)
+                # If result is not None, it found a condor in the fallback range
+
+    def test_all_ranges_exhausted_records_drop(self):
+        """When no DTE range has qualifying contracts, drop code is recorded."""
+        engine = _make_engine()
+        # Contracts with DTE=50 — outside all configured ranges
+        chain_contracts = _make_option_chain(
+            put_delta=0.18,
+            call_delta=0.18,
+            put_credit=2.00,
+            call_credit=2.00,
+            wing_width=5,
+            dte=50,
+            expiry="2025-04-25",
+        )
+        from engines.satellite.iron_condor_engine import R_IC_NO_COMPLETE_CONDOR
+
+        overrides = {**_SEARCH_DEFAULTS, "IC_DTE_RANGES": [(21, 35), (35, 45)]}
+        with _patch_config(**overrides):
+            with patch.object(engine, "_extract_chain_contracts", return_value=chain_contracts):
+                result = engine._search_and_build_condor(
+                    chain=["dummy"],
+                    qqq_price=480,
+                    vix_current=18,
+                    regime_score=52,
+                    adx_value=15,
+                    current_time=datetime(2025, 3, 3, 11, 0),
+                    effective_portfolio_value=100000,
+                )
+                assert result is None
+                assert engine._diag_drop_codes.get(R_IC_NO_COMPLETE_CONDOR, 0) > 0
+
+
+class TestWingLegFinder:
+    """Test _find_wing_leg with strict and tolerance passes."""
+
+    def test_exact_width_match(self):
+        engine = _make_engine()
+        short_put = _make_contract(470.0, OptionDirection.PUT, expiry="2025-04-01", dte=28)
+        long_put = _make_contract(465.0, OptionDirection.PUT, expiry="2025-04-01", dte=28)
+        found = engine._find_wing_leg([short_put, long_put], short_put, 5, "PUT", tolerance=0)
+        assert found is not None
+        assert found.strike == 465.0
+
+    def test_no_match_strict_then_tolerance_finds(self):
+        engine = _make_engine()
+        short_put = _make_contract(470.0, OptionDirection.PUT, expiry="2025-04-01", dte=28)
+        long_put = _make_contract(464.0, OptionDirection.PUT, expiry="2025-04-01", dte=28)
+        assert (
+            engine._find_wing_leg([short_put, long_put], short_put, 5, "PUT", tolerance=0) is None
+        )
+        found = engine._find_wing_leg([short_put, long_put], short_put, 5, "PUT", tolerance=1)
+        assert found is not None
+        assert found.strike == 464.0
+
+    def test_call_wing_direction(self):
+        engine = _make_engine()
+        short_call = _make_contract(490.0, OptionDirection.CALL, expiry="2025-04-01", dte=28)
+        long_call = _make_contract(495.0, OptionDirection.CALL, expiry="2025-04-01", dte=28)
+        found = engine._find_wing_leg([short_call, long_call], short_call, 5, "CALL", tolerance=0)
+        assert found is not None
+        assert found.strike == 495.0
+
+    def test_wrong_expiry_excluded(self):
+        engine = _make_engine()
+        short_put = _make_contract(470.0, OptionDirection.PUT, expiry="2025-04-01", dte=28)
+        long_put = _make_contract(465.0, OptionDirection.PUT, expiry="2025-04-15", dte=42)
+        assert (
+            engine._find_wing_leg([short_put, long_put], short_put, 5, "PUT", tolerance=0) is None
+        )
+
+    def test_low_oi_excluded(self):
+        engine = _make_engine()
+        short_put = _make_contract(470.0, OptionDirection.PUT, expiry="2025-04-01", dte=28)
+        long_put = _make_contract(465.0, OptionDirection.PUT, expiry="2025-04-01", dte=28, oi=10)
+        with _patch_config(IC_MIN_OPEN_INTEREST=100):
+            assert (
+                engine._find_wing_leg([short_put, long_put], short_put, 5, "PUT", tolerance=0)
+                is None
+            )
+
+
+class TestEndToEndSearch:
+    """Integration: full three-layer search finds a valid condor.
+
+    Uses mock for _extract_chain_contracts since QC chain objects aren't
+    available in unit tests. The mock returns our OptionContract list directly.
+    """
+
+    def test_good_chain_produces_condor(self):
+        engine = _make_engine()
+        # Target C/W ~0.28: each side credit ~$0.70 → net_credit=$1.40, wing=$5
+        # Short leg at $1.10 bid/$1.30 ask → mid $1.20; long leg at $0.30/$0.50 → mid $0.40
+        # Per-side credit = 1.20 - 0.40 = 0.80; total = 1.60; C/W = 0.32
+        # stop_dw = 1.60 * 2.5 / 5 = 0.80 > 0.65 — too high!
+        # Instead: short leg at 0.90/1.10 → mid 1.00; per-side = 1.00 - 0.40 = 0.60; total = 1.20; C/W = 0.24
+        # stop_dw = 1.20 * 2.5 / 5 = 0.60 ≤ 0.65 ✓
+        # C/W = 0.24 < 0.25 floor → need to set IC_CW_FLOOR_MID_VIX = 0.22
+        chain_contracts = _make_option_chain(
+            qqq_price=480,
+            put_delta=0.18,
+            call_delta=0.18,
+            put_credit=1.00,
+            call_credit=1.00,
+            wing_width=5,
+            dte=28,
+            expiry="2025-04-01",
+        )
+        overrides = {**_SEARCH_DEFAULTS, "IC_CW_FLOOR_MID_VIX": 0.22}
+        with _patch_config(**overrides):
+            with patch.object(engine, "_extract_chain_contracts", return_value=chain_contracts):
+                result = engine._search_and_build_condor(
+                    chain=["dummy"],
+                    qqq_price=480,
+                    vix_current=18,
+                    regime_score=52,
+                    adx_value=15,
+                    current_time=datetime(2025, 3, 3, 11, 0),
+                    effective_portfolio_value=100000,
+                )
+                assert result is not None
+                assert result.net_credit > 0
+                assert result.credit_to_width >= 0.20
+
+    def test_empty_chain_returns_none_with_drop(self):
+        engine = _make_engine()
+        from engines.satellite.iron_condor_engine import R_IC_NO_CHAIN
+
+        with _patch_config(IC_SCAN_THROTTLE_MINUTES=0):
+            result = engine._search_and_build_condor(
+                chain=None,
+                qqq_price=480,
+                vix_current=18,
+                regime_score=52,
+                adx_value=15,
+                current_time=datetime(2025, 3, 3, 11, 0),
+                effective_portfolio_value=100000,
+            )
+            assert result is None
+            assert engine._diag_drop_codes.get(R_IC_NO_CHAIN, 0) > 0
+
+    def test_no_qualifying_contracts_records_no_complete_condor(self):
+        """When chain has contracts but none form a valid condor, records correct drop."""
+        engine = _make_engine()
+        # Very low credit → C/W will fail even after relaxation
+        chain_contracts = _make_option_chain(
+            put_delta=0.18,
+            call_delta=0.18,
+            put_credit=0.20,
+            call_credit=0.20,
+            wing_width=5,
+            dte=28,
+        )
+        from engines.satellite.iron_condor_engine import R_IC_NO_COMPLETE_CONDOR
+
+        overrides = {
+            **_SEARCH_DEFAULTS,
+            "IC_CW_FLOOR_MID_VIX": 0.28,
+            "IC_CW_RELAX_STEPS": [0.0, 0.03, 0.05],
+            "IC_MAX_SPREAD_PCT": 0.50,
+        }
+        with _patch_config(**overrides):
+            with patch.object(engine, "_extract_chain_contracts", return_value=chain_contracts):
+                result = engine._search_and_build_condor(
+                    chain=["dummy"],
+                    qqq_price=480,
+                    vix_current=18,
+                    regime_score=52,
+                    adx_value=15,
+                    current_time=datetime(2025, 3, 3, 11, 0),
+                    effective_portfolio_value=100000,
+                )
+                assert result is None
+                assert engine._diag_drop_codes.get(R_IC_NO_COMPLETE_CONDOR, 0) > 0
 
 
 # ═══════════════════════════════════════════════════════════════════

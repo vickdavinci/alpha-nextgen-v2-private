@@ -175,6 +175,7 @@ class MainOptionsMixin:
             "VASS": {},
             "MICRO": {},
             "ITM": {},
+            "IC": {},
             "OTHER": {},
         }
         self._recent_router_rejections: List[Any] = []

@@ -941,7 +941,7 @@ OPTIONS_DOLLAR_CAP_TIER_2 = 10_000  # Max $10K per spread when equity $60K-$100K
 # V2.8: VASS (Volatility-Adaptive Strategy Selection)
 # Dynamically selects spread strategy based on IV environment
 # -----------------------------------------------------------------------------
-VASS_ENABLED = True  # Master switch for VASS
+VASS_ENABLED = False  # IC isolation: VASS off
 
 # IV Environment Classification Thresholds
 # V6.6: Adjusted based on 2022H1 VIX distribution (16.6-32.0 range observed)
@@ -1020,7 +1020,7 @@ VASS_DIRECTION_MIN_GAP_MINUTES_BULLISH = (
 )
 VASS_DIRECTION_MIN_GAP_MINUTES_BEARISH = 180  # Keep bearish spacing conservative
 VASS_DIRECTION_DAY_GAP_ENABLED = False  # Legacy date-level lock kept disabled by default
-VASS_ENTRY_ENGINE_ENABLED = True  # V10.10: route VASS strategy/filter/guards via dedicated engine
+VASS_ENTRY_ENGINE_ENABLED = False  # IC isolation: VASS entry engine off
 VASS_SCAN_INTERVAL_MINUTES = 5  # V12.31: intraday VASS scan throttle; consumed only when scan reaches candidate-contract evaluation.
 VASS_USE_CONVICTION_ONLY_DIRECTION = (
     False  # V12.26: macro-only VASS direction mode; conviction remains telemetry only.
@@ -2276,7 +2276,7 @@ INTRADAY_OTM_MAX_DOLLARS = 0  # V12.15: disable fixed-dollar clamp; MICRO uses p
 # =============================================================================
 
 # ── Feature flag ──
-IRON_CONDOR_ENGINE_ENABLED = False  # Off by default until backtest-validated
+IRON_CONDOR_ENGINE_ENABLED = True  # IC-only isolation backtest
 
 # ── Regime / environment gates ──
 IC_REGIME_MIN = 45  # Neutral zone lower bound
@@ -2294,28 +2294,30 @@ IC_ENTRY_END_HOUR = 14  # Latest entry hour (ET)
 IC_ENTRY_END_MINUTE = 30  # Latest entry minute
 
 # ── DTE window ──
-IC_DTE_MIN = 10  # Minimum DTE
-IC_DTE_MAX = 21  # Maximum DTE
+IC_DTE_MIN = 21  # Minimum DTE (was 10 — gamma too high below 21)
+IC_DTE_MAX = 45  # Maximum DTE (was 21 — 30-45 DTE is optimal theta/gamma)
 
 # ── Strike selection: short-leg delta range ──
-IC_SHORT_DELTA_MIN = 0.12  # Minimum abs delta for short strikes
-IC_SHORT_DELTA_MAX = 0.16  # Maximum abs delta for short strikes
+IC_SHORT_DELTA_MIN = 0.16  # Minimum abs delta (was 0.12 — too far OTM, thin premium)
+IC_SHORT_DELTA_MAX = 0.22  # Maximum abs delta (was 0.16 — wider band for candidates)
 IC_DELTA_SYMMETRY_MAX = 0.03  # Max abs(|call_delta| - |put_delta|) for symmetry
 IC_WING_SYMMETRY_MAX = 1.0  # Max abs(call_width - put_width) in dollars
 
 # ── Wing width by VIX tier ──
-IC_WING_WIDTH_LOW_VIX = 3  # VIX < 16: $3 wings
-IC_WING_WIDTH_MID_VIX = 4  # 16 <= VIX <= 25: $4 wings
-IC_WING_WIDTH_HIGH_VIX = 5  # 25 < VIX <= 32: $5 wings
+IC_WING_WIDTH_LOW_VIX = 5  # VIX < 16: $5 wings (was $3 — commission-viable)
+IC_WING_WIDTH_MID_VIX = 5  # 16 <= VIX <= 25: $5 wings (was $4)
+IC_WING_WIDTH_HIGH_VIX = 7  # 25 < VIX <= 32: $7 wings (was $5)
 IC_WING_WIDTH_FALLBACK_TOLERANCE = 1  # Accept ±$1 if exact width unavailable
 
 # ── Credit quality / C/W gates (VIX-tiered) ──
-IC_MIN_CREDIT_TO_WIDTH = 0.20  # Default C/W floor
-IC_CW_FLOOR_LOW_VIX = 0.22  # C/W floor when VIX < 16
-IC_CW_FLOOR_MID_VIX = 0.20  # C/W floor when 16 <= VIX <= 25
-IC_CW_FLOOR_HIGH_VIX = 0.18  # C/W floor when 25 < VIX <= 32
-IC_MAX_IMPLIED_WR = 0.82  # Reject if implied expiry WR > 82% (too thin premium)
-IC_MAX_STOP_DW = 0.65  # Max stop D/W ceiling (2.5*C / W must be <= this)
+# Constraint: C/W_floor ≤ IC_MAX_STOP_DW / (1 + IC_STOP_LOSS_MULTIPLE)
+# With MAX_STOP_DW=0.65, STOP_MULT=1.50 → max feasible C/W = 0.26
+IC_MIN_CREDIT_TO_WIDTH = 0.25  # Default C/W floor
+IC_CW_FLOOR_LOW_VIX = 0.25  # C/W floor when VIX < 16 (premiums thin → accept 25%)
+IC_CW_FLOOR_MID_VIX = 0.25  # C/W floor when 16 <= VIX <= 25
+IC_CW_FLOOR_HIGH_VIX = 0.23  # C/W floor when 25 < VIX <= 32 (more selective in high vol)
+IC_MAX_IMPLIED_WR = 0.78  # Reject if implied expiry WR > 78%
+IC_MAX_STOP_DW = 0.65  # Max stop D/W ceiling (C/W × (1+STOP_MULT) must be ≤ this)
 
 # ── Liquidity / mark quality ──
 IC_MIN_OPEN_INTEREST = 100  # Minimum OI per leg
@@ -2323,17 +2325,29 @@ IC_MIN_VOLUME = 10  # Minimum volume per leg
 IC_MAX_SPREAD_PCT = 0.30  # Max bid-ask spread % per leg
 IC_MAX_COMBO_SLIPPAGE = 0.15  # Max expected combo slippage as fraction of credit
 
-# ── Contract search ──
-IC_MIN_POOL_DEPTH = 3  # Min candidates per side before construction
-IC_MAX_SEARCH_PASSES = 2  # Max search passes (strict then relaxed)
+# ── Contract search (VASS-style progressive relaxation) ──
+IC_MIN_POOL_DEPTH = 2  # Min candidates per side before construction (was 3)
 IC_MAX_CANDIDATE_COMBOS = 50  # Cap on candidate combinations to prevent scan blowup
+IC_SCAN_THROTTLE_MINUTES = 15  # Don't re-scan same chain within N minutes
+
+# Elastic delta widening: progressively relax delta band if no candidates found
+IC_ELASTIC_DELTA_STEPS = [0.0, 0.03, 0.06, 0.10]  # Widen ± each step
+IC_ELASTIC_DELTA_FLOOR = 0.10  # Never accept delta below this
+IC_ELASTIC_DELTA_CEILING = 0.30  # Never accept delta above this
+
+# Multi-DTE range fallback: try primary range first, then fallback ranges
+IC_DTE_RANGES = [(21, 35), (35, 45), (14, 21)]  # Ordered by preference
+
+# C/W progressive relaxation: lower floor stepwise if no condors qualify
+IC_CW_RELAX_STEPS = [0.0, 0.03, 0.05]  # Subtract from C/W floor per step
+IC_CW_ABSOLUTE_FLOOR = 0.20  # Never accept C/W below this (hard floor)
 
 # ── Exit parameters ──
 IC_TARGET_CAPTURE_PCT = 0.60  # Close at 60% of credit captured
 IC_STOP_LOSS_MULTIPLE = 1.50  # Stop at 150% of credit lost
-IC_TIME_EXIT_DTE = 5  # Close by 5 DTE (gamma risk)
+IC_TIME_EXIT_DTE = 10  # Close by 10 DTE (was 5 — exit before gamma acceleration)
 IC_VIX_SPIKE_EXIT = 30.0  # Emergency exit on VIX spike above this
-IC_FRIDAY_CLOSE_DTE = 8  # Close before weekend if DTE < 8
+IC_FRIDAY_CLOSE_DTE = 14  # Close before weekend if DTE < 14 (was 8)
 IC_REGIME_EXIT_BUFFER = 5  # Exit if regime goes IC_REGIME_MIN - buffer or IC_REGIME_MAX + buffer
 
 # ── Capital / risk model ──
@@ -2345,6 +2359,7 @@ IC_DAILY_LOSS_PCT = 0.015  # Daily IC loss stop (1.5% of portfolio)
 # ── Position limits ──
 IC_MAX_CONCURRENT = 2  # Max simultaneous iron condors
 IC_MAX_TRADES_PER_DAY = 2  # Daily entry cap
+IC_PENDING_ENTRY_STALE_MINUTES = 7  # Auto-clear orphan pending IC entry lock
 
 # ── Loss breaker ──
 IC_LOSS_BREAKER_CONSECUTIVE = 3  # Pause after N consecutive losses
@@ -2848,10 +2863,10 @@ MICRO_OTM_PUT_DELTA_MAX = MICRO_OTM_MOMENTUM_DELTA_MAX
 INTRADAY_DEBIT_MOMENTUM_ENABLED = (
     False  # V10: deprecated — ITM_MOMENTUM replaces all confirmation paths
 )
-MICRO_ENTRY_ENGINE_ENABLED = False  # VASS-only backtest mode: disable MICRO entry engine
+MICRO_ENTRY_ENGINE_ENABLED = False  # IC isolation: MICRO off
 INTRADAY_DEBIT_FADE_ENABLED = True  # Legacy alias
 MICRO_DEBIT_FADE_ENABLED = False  # V10.35: disable persistent-loss fade path pending redesign
-MICRO_OTM_MOMENTUM_ENABLED = True  # Canonical OTM momentum switch
+MICRO_OTM_MOMENTUM_ENABLED = False  # IC isolation: OTM momentum off
 # V12.19: side-specific OTM control.
 MICRO_OTM_CALL_ENABLED = True
 MICRO_OTM_PUT_ENABLED = True
@@ -2921,7 +2936,7 @@ INTRADAY_ITM_SCORE_SPREAD_WEIGHT = 0.20
 INTRADAY_ITM_SCORE_OI_WEIGHT = 0.05
 
 # ITM_ENGINE (isolated horizon engine; feature-flagged)
-ITM_ENGINE_ENABLED = False  # VASS-only backtest mode: disable ITM engine
+ITM_ENGINE_ENABLED = False  # IC isolation: ITM off
 ITM_SHADOW_MODE = False
 ITM_ALLOW_SOVEREIGN_PROMOTION_FROM_MICRO = False  # Keep MICRO/ITM entry paths separated
 ITM_SIZE_MULT = 1.0  # ITM_ENGINE sizing is sovereign; do not couple to MICRO score ladder
@@ -3140,7 +3155,7 @@ INTRADAY_GOVERNOR_GATE_ENABLED = True
 # -----------------------------------------------------------------------------
 # When Micro Regime detects crisis (score < 0), buy protective PUTs
 # This supplements TMF/PSQ hedging with direct options protection
-PROTECTIVE_PUTS_ENABLED = False  # VASS-only backtest mode: disable protective puts
+PROTECTIVE_PUTS_ENABLED = False  # IC isolation: protective puts off
 PROTECTIVE_PUTS_SIZE_PCT = 0.03  # Reduce insurance drag while preserving crash hedge
 PROTECTIVE_PUTS_DTE_MIN = 0  # Crash-day hedge: allow same-day/near-term convexity
 PROTECTIVE_PUTS_DTE_MAX = 2  # Keep gamma high for same-day crash response

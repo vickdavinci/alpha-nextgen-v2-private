@@ -143,7 +143,7 @@ def log_daily_summary(algo) -> None:
 
     def _fmt_engine_top_rejects() -> str:
         out = []
-        engines = ["VASS", "MICRO", "ITM"]
+        engines = ["VASS", "MICRO", "ITM", "IC"]
         if algo._diag_router_reject_reason_counts_by_engine.get("OTHER", {}):
             engines.append("OTHER")
         for engine in engines:
@@ -153,7 +153,7 @@ def log_daily_summary(algo) -> None:
 
     def _fmt_engine_exit_diag() -> str:
         out = []
-        engines = ["VASS", "MICRO", "ITM"]
+        engines = ["VASS", "MICRO", "ITM", "IC"]
         if algo._diag_exit_path_counts_by_engine.get(
             "OTHER", {}
         ) or algo._diag_exit_path_pnl_by_engine.get("OTHER", {}):
@@ -176,7 +176,7 @@ def log_daily_summary(algo) -> None:
         app = algo._diag_intraday_approved_by_engine
         drp = algo._diag_intraday_dropped_by_engine
         res = algo._diag_intraday_results_by_engine
-        engines = ["ITM", "MICRO"]
+        engines = ["ITM", "MICRO", "IC"]
         if any(
             int(store.get("OTHER", 0)) > 0
             for store in (cand or {}, app or {}, drp or {}, res or {})
@@ -192,7 +192,7 @@ def log_daily_summary(algo) -> None:
     def _fmt_engine_drop_reasons_by_engine() -> str:
         out = []
         stores = getattr(algo, "_diag_intraday_drop_reason_counts_by_engine", {})
-        for engine in ("MICRO", "ITM", "OTHER"):
+        for engine in ("MICRO", "ITM", "IC", "OTHER"):
             out.append(f"{engine}[{_top_counts(stores.get(engine, {}), top_n=3)}]")
         return " ".join(out)
 
@@ -205,7 +205,7 @@ def log_daily_summary(algo) -> None:
     def _fmt_transition_derisk_by_engine() -> str:
         store = getattr(algo, "_diag_transition_derisk_counts_by_engine", {}) or {}
         out = []
-        for engine in ("VASS", "ITM", "MICRO"):
+        for engine in ("VASS", "ITM", "MICRO", "IC"):
             row = store.get(engine, {}) or {}
             det = int(row.get("de_risk_on_deterioration", 0))
             rec = int(row.get("de_risk_on_recovery", 0))
@@ -303,12 +303,12 @@ def log_daily_summary(algo) -> None:
     if intraday_drop_top != "NONE":
         compact_parts.append(f"Drop={intraday_drop_top}")
     intraday_drop_by_engine = _fmt_engine_drop_reasons_by_engine()
-    if intraday_drop_by_engine != "MICRO[NONE] ITM[NONE] OTHER[NONE]":
+    if intraday_drop_by_engine != "MICRO[NONE] ITM[NONE] IC[NONE] OTHER[NONE]":
         compact_parts.append(f"DropEng={intraday_drop_by_engine}")
     if top_router_rejects_str != "NONE":
         compact_parts.append(f"Rj={top_router_rejects_str}")
     router_by_engine = _fmt_engine_top_rejects()
-    if router_by_engine != "VASS[NONE] MICRO[NONE] ITM[NONE]":
+    if router_by_engine != "VASS[NONE] MICRO[NONE] ITM[NONE] IC[NONE]":
         compact_parts.append(f"RjEng={router_by_engine}")
     if vass_reject_top != "NONE":
         compact_parts.append(f"Vj={vass_reject_top}")
@@ -348,14 +348,20 @@ def log_daily_summary(algo) -> None:
     if transition_total != "DET:0;REC:0":
         compact_parts.append(f"TD={transition_total}")
     transition_by_engine = _fmt_transition_derisk_by_engine()
-    if transition_by_engine != "VASS[DET:0;REC:0] ITM[DET:0;REC:0] MICRO[DET:0;REC:0]":
+    if (
+        transition_by_engine
+        != "VASS[DET:0;REC:0] ITM[DET:0;REC:0] MICRO[DET:0;REC:0] IC[DET:0;REC:0]"
+    ):
         compact_parts.append(f"TDE={transition_by_engine}")
     if exit_counts_str != "NONE":
         compact_parts.append(f"ExitC={exit_counts_str}")
     if exit_pnl_str != "NONE":
         compact_parts.append(f"ExitP={exit_pnl_str}")
     exit_by_engine = _fmt_engine_exit_diag()
-    if exit_by_engine != "VASS[C=NONE|P=NONE] MICRO[C=NONE|P=NONE] ITM[C=NONE|P=NONE]":
+    if (
+        exit_by_engine
+        != "VASS[C=NONE|P=NONE] MICRO[C=NONE|P=NONE] ITM[C=NONE|P=NONE] IC[C=NONE|P=NONE]"
+    ):
         compact_parts.append(f"ExitE={exit_by_engine}")
     compact_parts.append(f"Kill={int(kill_active)}")
     compact_parts.append(f"Gov={governor_scale:.0%}")

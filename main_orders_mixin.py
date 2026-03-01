@@ -1887,6 +1887,7 @@ class MainOrdersMixin:
         """
         Return True only when symbol matches currently tracked spread-entry legs.
 
+        Checks active tracker, then VASS pending legs, then IC pending legs.
         Prevents MICRO single-leg fills from being misclassified as spread fills when
         stale spread pending state is present.
         """
@@ -1903,13 +1904,12 @@ class MainOrdersMixin:
             if symbol_norm in tracker_symbols:
                 return True
 
-        pending_long, pending_short = self.options_engine.get_pending_spread_legs()
-        pending_symbols = set()
-        if pending_long is not None:
-            pending_symbols.add(self._normalize_symbol_str(pending_long.symbol))
-        if pending_short is not None:
-            pending_symbols.add(self._normalize_symbol_str(pending_short.symbol))
-        return symbol_norm in pending_symbols
+        # Check VASS + IC pending symbols
+        all_pending = self.options_engine.get_all_pending_option_symbols()
+        if symbol_norm in all_pending:
+            return True
+
+        return False
 
     def _cancel_spread_linked_oco(self, long_symbol: str, short_symbol: str, reason: str) -> None:
         """Cancel any OCO siblings tied to spread legs before forced-close retries."""
@@ -3118,6 +3118,28 @@ class MainOrdersMixin:
                             f"OPT_MACRO_RECOVERY: Ignored unmatched spread rejection | "
                             f"Canceled={symbol_norm} | Pending={','.join(sorted(pending_symbols)) or 'NONE'}"
                         )
+            # Route 3b: IC rejection — clear pending IC entry
+            if (not spread_rejection_handled) and bool(
+                getattr(config, "IRON_CONDOR_ENGINE_ENABLED", False)
+            ):
+                ic_seeds = self.options_engine.get_ic_pending_spread_seeds()
+                if ic_seeds:
+                    ic_symbols = set()
+                    for seed in ic_seeds.values():
+                        ic_symbols.add(self._normalize_symbol_str(seed.get("long_leg_symbol", "")))
+                        ic_symbols.add(self._normalize_symbol_str(seed.get("short_leg_symbol", "")))
+                    ic_symbols.discard("")
+                    if symbol_norm in ic_symbols:
+                        self.options_engine.cancel_pending_ic_entry()
+                        if self._spread_fill_tracker is not None:
+                            self.Log("IC_REJECTION_CLEANUP: Clearing spread fill tracker")
+                            self._spread_fill_tracker = None
+                        self.Log(
+                            f"IC_RECOVERY: IC combo rejected | Symbol={symbol_norm} | "
+                            f"Pending IC entry cleared"
+                        )
+                        spread_rejection_handled = True
+
             if (not spread_rejection_handled) and self.options_engine.has_pending_engine_entry():
                 pending_symbol = self.options_engine.get_pending_entry_contract_symbol()
                 pending_lane = self.options_engine.get_pending_engine_entry_lane(symbol_norm)
@@ -3371,7 +3393,9 @@ class MainOrdersMixin:
 
         # Initialize tracker on FIRST leg fill (capture symbols now, before they can be cleared)
         if self._spread_fill_tracker is None:
-            seed = self.options_engine.get_pending_spread_tracker_seed()
+            seed = self.options_engine.get_pending_spread_tracker_seed(
+                fill_symbol=self._normalize_symbol_str(symbol)
+            )
             if seed is None:
                 self.Log(f"SPREAD_ERROR: Fill received but no pending spread | {symbol}")
                 return
@@ -3384,10 +3408,15 @@ class MainOrdersMixin:
                 created_at=str(self.Time),
                 spread_type=seed.get("spread_type"),
             )
+            # Tag tracker with IC side if this is an IC combo
+            if seed.get("ic_side"):
+                self._spread_fill_tracker._ic_side = seed["ic_side"]
+                self._spread_fill_tracker._condor_id = seed.get("condor_id", "")
             self.Log(
                 f"SPREAD: Fill tracker created | "
                 f"Long={seed['long_leg_symbol'][-15:]} Short={seed['short_leg_symbol'][-15:]} "
                 f"Expected={int(seed['expected_quantity'])}"
+                f"{' | IC_SIDE=' + seed['ic_side'] if seed.get('ic_side') else ''}"
             )
 
         tracker = self._spread_fill_tracker
@@ -3440,7 +3469,21 @@ class MainOrdersMixin:
                     self._spread_fill_tracker = None
                     return
 
-            # Both legs filled - register spread position
+            # Check if this is an IC side fill
+            ic_side = getattr(tracker, "_ic_side", None)
+            if ic_side:
+                # IC fill — register side with IC engine
+                condor = self.options_engine.register_ic_side_fill(ic_side)
+                if condor:
+                    self.Log(
+                        f"IC: Both sides filled | condor_id={condor.condor_id} "
+                        f"| credit=${condor.net_credit:.2f}"
+                    )
+                # Clear tracker for this side, next side will create a new one
+                self._spread_fill_tracker = None
+                return
+
+            # Both legs filled - register spread position (VASS path)
             spread = self.options_engine.register_spread_entry(
                 long_leg_fill_price=tracker.long_fill_price,
                 short_leg_fill_price=tracker.short_fill_price,

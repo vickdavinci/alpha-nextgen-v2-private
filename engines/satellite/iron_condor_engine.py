@@ -89,7 +89,11 @@ class IronCondorEngine:
         self._loss_breaker_pause_until: Optional[str] = None  # date string
         self._pending_entry: bool = False
         self._pending_condor_id: Optional[str] = None
+        self._pending_condor: Optional[IronCondorPosition] = None
+        self._pending_fills: Dict[str, bool] = {}  # condor side → filled
+        self._pending_entry_since: Optional[datetime] = None
         self._regime_neutral_bars: int = 0  # Consecutive neutral-regime bars
+        self._last_scan_time: Optional[str] = None  # Scan throttle timestamp
 
         # ── Diagnostics ──
         self._diag_candidates: int = 0
@@ -174,6 +178,9 @@ class IronCondorEngine:
         self._diag_approved += 1
         self._pending_entry = True
         self._pending_condor_id = condor.condor_id
+        self._pending_condor = condor
+        self._pending_fills = {"PUT_CREDIT": False, "CALL_CREDIT": False}
+        self._pending_entry_since = current_time
         signals = self._build_entry_signals(condor, current_time)
 
         self._log(
@@ -310,145 +317,240 @@ class IronCondorEngine:
         current_time: datetime,
         effective_portfolio_value: float,
     ) -> Optional[IronCondorPosition]:
-        """Two-phase contract search: build pools → construct condors → rank best.
+        """VASS-style progressive contract search with elastic relaxation.
 
-        Phase A: Build independent candidate pools (no state mutation).
-        Phase B: Combine into complete condors, validate, rank, select best.
-        Returns None if no valid condor found.
+        Three-layer fallback:
+          Layer 1 — DTE range fallback: try [(21,35), (35,45), (14,21)]
+          Layer 2 — Elastic delta widening: [0, ±0.03, ±0.06, ±0.10]
+          Layer 3 — C/W floor relaxation: [0, -0.03, -0.05] (down to absolute floor)
+
+        Only records a drop code if ALL layers exhausted.
         """
         if chain is None:
             self._record_drop(R_IC_NO_CHAIN)
             return None
 
-        dte_min = int(getattr(config, "IC_DTE_MIN", 10))
-        dte_max = int(getattr(config, "IC_DTE_MAX", 21))
-        delta_min = float(getattr(config, "IC_SHORT_DELTA_MIN", 0.12))
-        delta_max = float(getattr(config, "IC_SHORT_DELTA_MAX", 0.16))
-        min_oi = int(getattr(config, "IC_MIN_OPEN_INTEREST", 100))
-        min_vol = int(getattr(config, "IC_MIN_VOLUME", 10))
-        max_spread_pct = float(getattr(config, "IC_MAX_SPREAD_PCT", 0.30))
-        min_pool_depth = int(getattr(config, "IC_MIN_POOL_DEPTH", 3))
-        wing_width = self._get_wing_width_for_vix(vix_current)
+        # Scan throttle: don't re-scan within N minutes
+        throttle_min = int(getattr(config, "IC_SCAN_THROTTLE_MINUTES", 15))
+        if self._last_scan_time and throttle_min > 0:
+            try:
+                last_scan = datetime.strptime(self._last_scan_time, "%Y-%m-%d %H:%M:%S")
+                if (current_time - last_scan).total_seconds() < throttle_min * 60:
+                    return None
+            except (ValueError, TypeError):
+                pass
+        self._last_scan_time = current_time.strftime("%Y-%m-%d %H:%M:%S")
 
-        # ── Phase A: Filter chain to eligible contracts ──
-        eligible_puts: List[OptionContract] = []
-        eligible_calls: List[OptionContract] = []
-
+        # Extract all contracts from chain once (shared across all fallback passes)
         contracts = self._extract_chain_contracts(chain, qqq_price, current_time)
-        for c in contracts:
-            # DTE filter
-            if not (dte_min <= c.days_to_expiry <= dte_max):
-                continue
-            # Liquidity filters
-            if c.open_interest < min_oi:
-                continue
-            if c.bid <= 0 or c.ask <= c.bid:
-                continue
-            if c.spread_pct > max_spread_pct:
-                continue
-            # Delta filter for short legs
-            abs_delta = abs(c.delta)
-            if delta_min <= abs_delta <= delta_max:
-                if c.direction == OptionDirection.PUT:
-                    eligible_puts.append(c)
-                elif c.direction == OptionDirection.CALL:
-                    eligible_calls.append(c)
-
-        if len(eligible_puts) < min_pool_depth:
-            self._record_drop(R_IC_NO_PUT_POOL)
-            self._log(
-                f"SEARCH_FAIL | code={R_IC_NO_PUT_POOL} | puts={len(eligible_puts)} "
-                f"| need={min_pool_depth} | chain_size={len(contracts)}",
-                trades_only=False,
-            )
+        if not contracts:
+            self._record_drop(R_IC_NO_CHAIN)
             return None
 
-        if len(eligible_calls) < min_pool_depth:
-            self._record_drop(R_IC_NO_CALL_POOL)
-            self._log(
-                f"SEARCH_FAIL | code={R_IC_NO_CALL_POOL} | calls={len(eligible_calls)} "
-                f"| need={min_pool_depth} | chain_size={len(contracts)}",
-                trades_only=False,
+        # ── Layer 1: DTE range fallback ──
+        dte_ranges = getattr(config, "IC_DTE_RANGES", None)
+        if not dte_ranges:
+            dte_min = int(getattr(config, "IC_DTE_MIN", 21))
+            dte_max = int(getattr(config, "IC_DTE_MAX", 45))
+            dte_ranges = [(dte_min, dte_max)]
+
+        fallback_stats: List[str] = []
+
+        for dte_min, dte_max in dte_ranges:
+            result = self._search_single_dte_range(
+                contracts=contracts,
+                dte_min=dte_min,
+                dte_max=dte_max,
+                qqq_price=qqq_price,
+                vix_current=vix_current,
+                regime_score=regime_score,
+                adx_value=adx_value,
+                current_time=current_time,
+                effective_portfolio_value=effective_portfolio_value,
+                fallback_stats=fallback_stats,
             )
-            return None
+            if result is not None:
+                return result
 
-        # ── Phase B: Construct complete condor candidates ──
-        max_combos = int(getattr(config, "IC_MAX_CANDIDATE_COMBOS", 50))
-        max_passes = int(getattr(config, "IC_MAX_SEARCH_PASSES", 2))
-        tolerance = int(getattr(config, "IC_WING_WIDTH_FALLBACK_TOLERANCE", 1))
-
-        candidates: List[Tuple[float, IronCondorPosition]] = []
-        combo_count = 0
-
-        for search_pass in range(max_passes):
-            # Pass 0: strict width; Pass 1: ± tolerance
-            width_tolerance = 0 if search_pass == 0 else tolerance
-
-            for short_put in eligible_puts:
-                if combo_count >= max_combos:
-                    break
-                # Find long put wing
-                long_put = self._find_wing_leg(
-                    contracts, short_put, wing_width, "PUT", width_tolerance
-                )
-                if long_put is None:
-                    continue
-
-                for short_call in eligible_calls:
-                    if combo_count >= max_combos:
-                        break
-                    # Must be same expiry
-                    if short_call.expiry != short_put.expiry:
-                        continue
-
-                    # Find long call wing
-                    long_call = self._find_wing_leg(
-                        contracts, short_call, wing_width, "CALL", width_tolerance
-                    )
-                    if long_call is None:
-                        continue
-
-                    combo_count += 1
-
-                    # Validate and score
-                    result = self._validate_and_score_condor(
-                        short_put=short_put,
-                        long_put=long_put,
-                        short_call=short_call,
-                        long_call=long_call,
-                        vix_current=vix_current,
-                        regime_score=regime_score,
-                        adx_value=adx_value,
-                        current_time=current_time,
-                        effective_portfolio_value=effective_portfolio_value,
-                    )
-                    if result is not None:
-                        score, condor = result
-                        candidates.append((score, condor))
-
-            if candidates:
-                break  # Found at least one in this pass
-
-        if not candidates:
-            self._record_drop(R_IC_NO_COMPLETE_CONDOR)
-            self._log(
-                f"SEARCH_FAIL | code={R_IC_NO_COMPLETE_CONDOR} "
-                f"| puts_pool={len(eligible_puts)} | calls_pool={len(eligible_calls)} "
-                f"| combos_checked={combo_count}",
-                trades_only=False,
-            )
-            return None
-
-        # Select best candidate by score (highest first)
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        best_score, best_condor = candidates[0]
-
+        # All DTE ranges exhausted
+        self._record_drop(R_IC_NO_COMPLETE_CONDOR)
+        stats_str = "; ".join(fallback_stats) if fallback_stats else "no_stats"
         self._log(
-            f"SEARCH_OK | candidates={len(candidates)} | best_score={best_score:.3f} "
-            f"| C/W={best_condor.credit_to_width:.3f} | combos_checked={combo_count}",
+            f"SEARCH_FAIL | code={R_IC_NO_COMPLETE_CONDOR} "
+            f"| chain_size={len(contracts)} | ranges_tried={len(dte_ranges)} "
+            f"| detail=[{stats_str}]",
             trades_only=False,
         )
-        return best_condor
+        return None
+
+    def _search_single_dte_range(
+        self,
+        *,
+        contracts: List[OptionContract],
+        dte_min: int,
+        dte_max: int,
+        qqq_price: float,
+        vix_current: float,
+        regime_score: float,
+        adx_value: float,
+        current_time: datetime,
+        effective_portfolio_value: float,
+        fallback_stats: List[str],
+    ) -> Optional[IronCondorPosition]:
+        """Search within a single DTE range using elastic delta widening + C/W relaxation."""
+        base_delta_min = float(getattr(config, "IC_SHORT_DELTA_MIN", 0.16))
+        base_delta_max = float(getattr(config, "IC_SHORT_DELTA_MAX", 0.22))
+        elastic_steps = getattr(config, "IC_ELASTIC_DELTA_STEPS", [0.0, 0.03, 0.06, 0.10])
+        elastic_floor = float(getattr(config, "IC_ELASTIC_DELTA_FLOOR", 0.10))
+        elastic_ceiling = float(getattr(config, "IC_ELASTIC_DELTA_CEILING", 0.30))
+        min_oi = int(getattr(config, "IC_MIN_OPEN_INTEREST", 100))
+        max_spread_pct = float(getattr(config, "IC_MAX_SPREAD_PCT", 0.30))
+        min_pool_depth = int(getattr(config, "IC_MIN_POOL_DEPTH", 2))
+        wing_width = self._get_wing_width_for_vix(vix_current)
+        tolerance = int(getattr(config, "IC_WING_WIDTH_FALLBACK_TOLERANCE", 1))
+
+        # ── Layer 2: Elastic delta widening ──
+        for widen_step in elastic_steps:
+            delta_min = max(elastic_floor, base_delta_min - widen_step)
+            delta_max = min(elastic_ceiling, base_delta_max + widen_step)
+
+            # Filter contracts for this DTE + delta band
+            eligible_puts: List[OptionContract] = []
+            eligible_calls: List[OptionContract] = []
+
+            for c in contracts:
+                if not (dte_min <= c.days_to_expiry <= dte_max):
+                    continue
+                if c.open_interest < min_oi:
+                    continue
+                if c.bid <= 0 or c.ask <= c.bid:
+                    continue
+                if c.spread_pct > max_spread_pct:
+                    continue
+                abs_delta = abs(c.delta)
+                if delta_min <= abs_delta <= delta_max:
+                    if c.direction == OptionDirection.PUT:
+                        eligible_puts.append(c)
+                    elif c.direction == OptionDirection.CALL:
+                        eligible_calls.append(c)
+
+            if len(eligible_puts) < min_pool_depth or len(eligible_calls) < min_pool_depth:
+                continue  # Try next widen step
+
+            # ── Layer 3: C/W relaxation + condor construction ──
+            result = self._build_best_condor(
+                contracts=contracts,
+                eligible_puts=eligible_puts,
+                eligible_calls=eligible_calls,
+                wing_width=wing_width,
+                tolerance=tolerance,
+                vix_current=vix_current,
+                regime_score=regime_score,
+                adx_value=adx_value,
+                current_time=current_time,
+                effective_portfolio_value=effective_portfolio_value,
+            )
+            if result is not None:
+                self._log(
+                    f"SEARCH_OK | DTE={dte_min}-{dte_max} | widen={widen_step:.2f} "
+                    f"| delta=[{delta_min:.2f},{delta_max:.2f}] "
+                    f"| puts={len(eligible_puts)} calls={len(eligible_calls)} "
+                    f"| C/W={result.credit_to_width:.3f}",
+                    trades_only=False,
+                )
+                return result
+
+        # This DTE range exhausted
+        fallback_stats.append(
+            f"DTE={dte_min}-{dte_max}|puts={len(eligible_puts)}|calls={len(eligible_calls)}"
+        )
+        return None
+
+    def _build_best_condor(
+        self,
+        *,
+        contracts: List[OptionContract],
+        eligible_puts: List[OptionContract],
+        eligible_calls: List[OptionContract],
+        wing_width: int,
+        tolerance: int,
+        vix_current: float,
+        regime_score: float,
+        adx_value: float,
+        current_time: datetime,
+        effective_portfolio_value: float,
+    ) -> Optional[IronCondorPosition]:
+        """Construct best condor from eligible pools with C/W relaxation.
+
+        Tries C/W floor at [base, base-0.03, base-0.05] down to absolute floor.
+        Uses two-pass wing search: strict width → ±tolerance.
+        """
+        max_combos = int(getattr(config, "IC_MAX_CANDIDATE_COMBOS", 50))
+        cw_relax_steps = getattr(config, "IC_CW_RELAX_STEPS", [0.0, 0.03, 0.05])
+        cw_absolute_floor = float(getattr(config, "IC_CW_ABSOLUTE_FLOOR", 0.20))
+        base_cw_floor = self._get_cw_floor_for_vix(vix_current)
+
+        # Sort short legs by closeness to ideal delta (midpoint of band)
+        delta_target = (
+            float(getattr(config, "IC_SHORT_DELTA_MIN", 0.16))
+            + float(getattr(config, "IC_SHORT_DELTA_MAX", 0.22))
+        ) / 2
+        eligible_puts.sort(key=lambda c: abs(abs(c.delta) - delta_target))
+        eligible_calls.sort(key=lambda c: abs(abs(c.delta) - delta_target))
+
+        for cw_relax in cw_relax_steps:
+            effective_cw_floor = max(cw_absolute_floor, base_cw_floor - cw_relax)
+
+            candidates: List[Tuple[float, IronCondorPosition]] = []
+            combo_count = 0
+
+            # Two-pass wing search: strict width → ±tolerance
+            for width_tol in (0, tolerance):
+                if candidates:
+                    break  # Found candidates in strict pass
+
+                for short_put in eligible_puts:
+                    if combo_count >= max_combos:
+                        break
+                    long_put = self._find_wing_leg(
+                        contracts, short_put, wing_width, "PUT", width_tol
+                    )
+                    if long_put is None:
+                        continue
+
+                    for short_call in eligible_calls:
+                        if combo_count >= max_combos:
+                            break
+                        if short_call.expiry != short_put.expiry:
+                            continue
+                        long_call = self._find_wing_leg(
+                            contracts, short_call, wing_width, "CALL", width_tol
+                        )
+                        if long_call is None:
+                            continue
+
+                        combo_count += 1
+                        result = self._validate_and_score_condor(
+                            short_put=short_put,
+                            long_put=long_put,
+                            short_call=short_call,
+                            long_call=long_call,
+                            vix_current=vix_current,
+                            regime_score=regime_score,
+                            adx_value=adx_value,
+                            current_time=current_time,
+                            effective_portfolio_value=effective_portfolio_value,
+                            cw_floor_override=effective_cw_floor,
+                        )
+                        if result is not None:
+                            score, condor = result
+                            candidates.append((score, condor))
+
+            if candidates:
+                candidates.sort(key=lambda x: x[0], reverse=True)
+                return candidates[0][1]
+
+        return None
 
     def _extract_chain_contracts(
         self, chain, qqq_price: float, current_time: datetime
@@ -588,6 +690,7 @@ class IronCondorEngine:
         adx_value: float,
         current_time: datetime,
         effective_portfolio_value: float,
+        cw_floor_override: Optional[float] = None,
     ) -> Optional[Tuple[float, IronCondorPosition]]:
         """Validate a complete 4-leg condor and return (score, position) or None."""
 
@@ -610,11 +713,14 @@ class IronCondorEngine:
         credit_to_width = net_credit / max_wing
         max_loss = max_wing - net_credit
 
-        # ── C/W floor gate (VIX-tiered) ──
-        cw_floor = self._get_cw_floor_for_vix(vix_current)
+        # ── C/W floor gate (VIX-tiered, with optional relaxed override) ──
+        cw_floor = (
+            cw_floor_override
+            if cw_floor_override is not None
+            else self._get_cw_floor_for_vix(vix_current)
+        )
         if credit_to_width < cw_floor:
-            self._record_drop(R_IC_CW_BELOW_MIN)
-            return None
+            return None  # Don't record drop — caller handles relaxation retries
 
         # ── Implied expiry WR check ──
         implied_wr = 1.0 - credit_to_width
@@ -739,13 +845,18 @@ class IronCondorEngine:
         }
 
         # Put credit spread signal (bull put): sell short_put, buy long_put
+        # Router contract: symbol = long leg, spread_short_leg_symbol = short leg
         put_meta = dict(base_meta)
         put_meta["spread_side"] = "PUT_CREDIT"
-        put_meta["short_symbol"] = condor.short_put.symbol
-        put_meta["long_symbol"] = condor.long_put.symbol
+        put_meta["spread_type"] = "CREDIT_PUT"
+        put_meta["spread_short_leg_symbol"] = condor.short_put.symbol
+        put_meta["spread_short_leg_quantity"] = condor.num_spreads
         put_meta["short_strike"] = condor.short_put.strike
         put_meta["long_strike"] = condor.long_put.strike
-        put_meta["wing_width"] = condor.put_wing_width
+        put_meta["spread_width"] = condor.put_wing_width
+        put_meta["spread_cost_or_credit"] = -(
+            condor.short_put.mid_price - condor.long_put.mid_price
+        )
 
         put_signal = TargetWeight(
             symbol=condor.long_put.symbol,
@@ -762,13 +873,18 @@ class IronCondorEngine:
         )
 
         # Call credit spread signal (bear call): sell short_call, buy long_call
+        # Router contract: symbol = long leg, spread_short_leg_symbol = short leg
         call_meta = dict(base_meta)
         call_meta["spread_side"] = "CALL_CREDIT"
-        call_meta["short_symbol"] = condor.short_call.symbol
-        call_meta["long_symbol"] = condor.long_call.symbol
+        call_meta["spread_type"] = "CREDIT_CALL"
+        call_meta["spread_short_leg_symbol"] = condor.short_call.symbol
+        call_meta["spread_short_leg_quantity"] = condor.num_spreads
         call_meta["short_strike"] = condor.short_call.strike
         call_meta["long_strike"] = condor.long_call.strike
-        call_meta["wing_width"] = condor.call_wing_width
+        call_meta["spread_width"] = condor.call_wing_width
+        call_meta["spread_cost_or_credit"] = -(
+            condor.short_call.mid_price - condor.long_call.mid_price
+        )
 
         call_signal = TargetWeight(
             symbol=condor.long_call.symbol,
@@ -946,13 +1062,17 @@ class IronCondorEngine:
         }
 
         signals = []
-        # Close put credit spread: buy back short put, sell long put
+        # Close put credit spread: sell long put, buy back short put
+        # Router contract: symbol = long leg, spread_short_leg_symbol = short leg
         put_meta = dict(base_meta)
         put_meta["spread_side"] = "PUT_CREDIT_CLOSE"
         put_meta["spread_close_short"] = True
+        put_meta["spread_short_leg_symbol"] = condor.short_put.symbol
+        put_meta["spread_short_leg_quantity"] = condor.num_spreads
+        put_meta["spread_width"] = condor.put_wing_width
         signals.append(
             TargetWeight(
-                symbol=condor.short_put.symbol,
+                symbol=condor.long_put.symbol,
                 target_weight=0.0,
                 source="OPT_IC",
                 urgency=Urgency.IMMEDIATE,
@@ -963,13 +1083,17 @@ class IronCondorEngine:
             )
         )
 
-        # Close call credit spread: buy back short call, sell long call
+        # Close call credit spread: sell long call, buy back short call
+        # Router contract: symbol = long leg, spread_short_leg_symbol = short leg
         call_meta = dict(base_meta)
         call_meta["spread_side"] = "CALL_CREDIT_CLOSE"
         call_meta["spread_close_short"] = True
+        call_meta["spread_short_leg_symbol"] = condor.short_call.symbol
+        call_meta["spread_short_leg_quantity"] = condor.num_spreads
+        call_meta["spread_width"] = condor.call_wing_width
         signals.append(
             TargetWeight(
-                symbol=condor.short_call.symbol,
+                symbol=condor.long_call.symbol,
                 target_weight=0.0,
                 source="OPT_IC",
                 urgency=Urgency.IMMEDIATE,
@@ -992,6 +1116,86 @@ class IronCondorEngine:
         self._trades_today += 1
         self._pending_entry = False
         self._pending_condor_id = None
+        self._pending_condor = None
+        self._pending_fills.clear()
+        self._pending_entry_since = None
+
+    def register_side_fill(self, spread_side: str) -> Optional[IronCondorPosition]:
+        """Register one side of a pending IC combo fill.
+
+        Args:
+            spread_side: "PUT_CREDIT" or "CALL_CREDIT"
+
+        Returns:
+            The IronCondorPosition if both sides are now filled, else None.
+        """
+        if not self._pending_entry or self._pending_condor is None:
+            self._log(
+                f"IC_FILL_WARN: Side fill '{spread_side}' but no pending condor",
+                trades_only=True,
+            )
+            return None
+
+        self._pending_fills[spread_side] = True
+
+        # Check if both sides filled
+        if self._pending_fills.get("PUT_CREDIT") and self._pending_fills.get("CALL_CREDIT"):
+            condor = self._pending_condor
+            self.register_fill(condor)
+            self._log(
+                f"IC_FILLED | condor_id={condor.condor_id} "
+                f"| put_short={condor.put_short_strike} call_short={condor.call_short_strike} "
+                f"| credit=${condor.net_credit:.2f} | spreads={condor.num_spreads}",
+                trades_only=True,
+            )
+            return condor
+
+        self._log(
+            f"IC_SIDE_FILL | side={spread_side} | condor_id={self._pending_condor_id} "
+            f"| waiting for other side",
+            trades_only=True,
+        )
+        return None
+
+    def get_pending_spread_seeds(self) -> Optional[Dict[str, Dict[str, Any]]]:
+        """Return tracker seeds for both sides of the pending IC entry.
+
+        Returns dict with keys 'PUT_CREDIT' and 'CALL_CREDIT', each containing
+        {long_leg_symbol, short_leg_symbol, expected_quantity, spread_type, condor_id}.
+        Returns None if no pending IC entry.
+        """
+        if not self._pending_entry or self._pending_condor is None:
+            return None
+        c = self._pending_condor
+        return {
+            "PUT_CREDIT": {
+                "long_leg_symbol": c.long_put.symbol,
+                "short_leg_symbol": c.short_put.symbol,
+                "expected_quantity": c.num_spreads,
+                "spread_type": "CREDIT_PUT",
+                "condor_id": c.condor_id,
+            },
+            "CALL_CREDIT": {
+                "long_leg_symbol": c.long_call.symbol,
+                "short_leg_symbol": c.short_call.symbol,
+                "expected_quantity": c.num_spreads,
+                "spread_type": "CREDIT_CALL",
+                "condor_id": c.condor_id,
+            },
+        }
+
+    def cancel_pending_entry(self) -> None:
+        """Cancel pending IC entry (e.g., on rejection or timeout)."""
+        if self._pending_condor_id:
+            self._log(
+                f"IC_PENDING_CANCELLED | condor_id={self._pending_condor_id}",
+                trades_only=True,
+            )
+        self._pending_entry = False
+        self._pending_condor_id = None
+        self._pending_condor = None
+        self._pending_fills.clear()
+        self._pending_entry_since = None
 
     def remove_position(self, condor_id: str) -> Optional[IronCondorPosition]:
         """Remove a closed condor by ID. Returns removed position or None."""
@@ -1057,6 +1261,9 @@ class IronCondorEngine:
         """Clear pending entry state (e.g., on fill failure)."""
         self._pending_entry = False
         self._pending_condor_id = None
+        self._pending_condor = None
+        self._pending_fills.clear()
+        self._pending_entry_since = None
 
     # ══════════════════════════════════════════════════════════════════════
     # DIAGNOSTICS
@@ -1093,6 +1300,11 @@ class IronCondorEngine:
             "loss_breaker_pause_until": self._loss_breaker_pause_until,
             "pending_entry": self._pending_entry,
             "pending_condor_id": self._pending_condor_id,
+            "pending_condor": self._pending_condor.to_dict() if self._pending_condor else None,
+            "pending_fills": dict(self._pending_fills),
+            "pending_entry_since": str(self._pending_entry_since)
+            if self._pending_entry_since
+            else None,
             "regime_neutral_bars": self._regime_neutral_bars,
             "diag_candidates": self._diag_candidates,
             "diag_approved": self._diag_approved,
@@ -1121,6 +1333,23 @@ class IronCondorEngine:
         self._loss_breaker_pause_until = state.get("loss_breaker_pause_until")
         self._pending_entry = bool(state.get("pending_entry", False))
         self._pending_condor_id = state.get("pending_condor_id")
+        pending_condor_data = state.get("pending_condor")
+        if pending_condor_data:
+            try:
+                self._pending_condor = IronCondorPosition.from_dict(pending_condor_data)
+            except Exception:
+                self._pending_condor = None
+        else:
+            self._pending_condor = None
+        self._pending_fills = dict(state.get("pending_fills", {}) or {})
+        _since_str = state.get("pending_entry_since")
+        if _since_str:
+            try:
+                self._pending_entry_since = datetime.fromisoformat(str(_since_str))
+            except Exception:
+                self._pending_entry_since = None
+        else:
+            self._pending_entry_since = None
         self._regime_neutral_bars = int(state.get("regime_neutral_bars", 0) or 0)
         # Diagnostics
         self._diag_candidates = int(state.get("diag_candidates", 0) or 0)
@@ -1138,7 +1367,11 @@ class IronCondorEngine:
         self._daily_pnl = 0.0
         self._pending_entry = False
         self._pending_condor_id = None
+        self._pending_condor = None
+        self._pending_fills.clear()
+        self._pending_entry_since = None
         self._regime_neutral_bars = 0
+        self._last_scan_time = None
         # Reset daily diagnostics
         self._diag_candidates = 0
         self._diag_approved = 0
@@ -1154,6 +1387,9 @@ class IronCondorEngine:
         self._loss_breaker_pause_until = None
         self._pending_entry = False
         self._pending_condor_id = None
+        self._pending_condor = None
+        self._pending_fills = {}
+        self._pending_entry_since = None
         self._regime_neutral_bars = 0
         self._diag_candidates = 0
         self._diag_approved = 0
