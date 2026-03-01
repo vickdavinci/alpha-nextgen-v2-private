@@ -271,7 +271,10 @@ class IronCondorEngine:
             return R_IC_REGIME_NOT_PERSISTENT
 
         # Gate: Transition overlay — block DETERIORATION/AMBIGUOUS
-        transition_state = str(transition_ctx.get("transition_state", "") or "").upper()
+        # Canonical key is transition_overlay; transition_state is legacy fallback.
+        transition_state = str(
+            transition_ctx.get("transition_overlay") or transition_ctx.get("transition_state") or ""
+        ).upper()
         if transition_state in {"DETERIORATION", "AMBIGUOUS"}:
             return R_IC_TRANSITION_BLOCK
 
@@ -302,8 +305,12 @@ class IronCondorEngine:
 
         # Gate: Event day block
         if bool(getattr(config, "IC_EVENT_DAY_BLOCK_ENABLED", True)):
-            # Check event-day list from transition context
-            if transition_ctx.get("is_event_day", False):
+            # Support both canonical and legacy context keys.
+            if bool(
+                transition_ctx.get("is_event_day", False)
+                or transition_ctx.get("is_macro_event_day", False)
+                or transition_ctx.get("has_macro_event", False)
+            ):
                 return R_IC_EVENT_DAY_BLOCK
 
         return None  # All gates passed
@@ -1109,6 +1116,7 @@ class IronCondorEngine:
             if result is not None:
                 reason, signals = result
                 condor.is_closing = True
+                condor.exit_pnl_estimate = float(combined_pnl or 0.0)
                 all_signals.extend(signals)
                 self._diag_exit_reasons[reason] = self._diag_exit_reasons.get(reason, 0) + 1
 

@@ -613,6 +613,12 @@ def clear_all_positions_impl(self) -> None:
         self._intraday_positions = {"IC": [], "MICRO": [], "ITM": []}
         cleared.append("intraday")
 
+    if getattr(self, "_iron_condor_engine", None) is not None:
+        ic_engine = self._iron_condor_engine
+        if ic_engine.has_open_positions or bool(getattr(ic_engine, "_pending_entry", False)):
+            ic_engine.reset()
+            cleared.append("iron_condor")
+
     # V2.16-BT: Also clear swing position (V2.1.1 dual-mode)
     if self._swing_position is not None:
         self._swing_position = None

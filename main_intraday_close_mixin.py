@@ -513,6 +513,8 @@ class MainIntradayCloseMixin:
         if self._spread_fill_tracker is not None:
             self.Log(f"{reason}: Clearing spread fill tracker")
             self._spread_fill_tracker = None
+        if getattr(self, "_ic_side_fill_trackers", None):
+            self._ic_side_fill_trackers = {}
         if self._pending_spread_orders:
             self.Log(f"{reason}: Clearing {len(self._pending_spread_orders)} pending spread orders")
             self._pending_spread_orders.clear()
@@ -610,9 +612,7 @@ class MainIntradayCloseMixin:
         if clear_tracking:
             invested_after = self._count_invested_option_holdings()
             if invested_after > 0:
-                self.Log(
-                    f"{reason}: Tracking clear deferred | InvestedOptions={invested_after}"
-                )
+                self.Log(f"{reason}: Tracking clear deferred | InvestedOptions={invested_after}")
             else:
                 if self.options_engine:
                     self.options_engine.clear_spread_position()
@@ -622,6 +622,8 @@ class MainIntradayCloseMixin:
                     self.portfolio_router.clear_all_spread_margins()
                 if self._spread_fill_tracker is not None:
                     self._spread_fill_tracker = None
+                if getattr(self, "_ic_side_fill_trackers", None):
+                    self._ic_side_fill_trackers = {}
                 if self._pending_spread_orders:
                     self._pending_spread_orders.clear()
                     self._pending_spread_orders_reverse.clear()

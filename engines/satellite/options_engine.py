@@ -574,6 +574,14 @@ class OptionsEngine:
                     and self._symbol_key(pos.contract.symbol) == symbol_norm
                 ):
                     return lane
+        # IC positions are tracked in the dedicated sub-engine, not intraday mirrors.
+        for condor in self._iron_condor_engine.positions:
+            if bool(getattr(condor, "is_closing", False)):
+                continue
+            for leg_attr in ("short_put", "long_put", "short_call", "long_call"):
+                leg = getattr(condor, leg_attr, None)
+                if leg is not None and self._symbol_key(getattr(leg, "symbol", "")) == symbol_norm:
+                    return "IC"
         return None
 
     def get_engine_positions(self) -> List[OptionsPosition]:
@@ -844,7 +852,8 @@ class OptionsEngine:
         if self._position is not None:
             swing_count += 1
 
-        total_count = intraday_count + swing_count
+        ic_count = len([p for p in self._iron_condor_engine.positions if not p.is_closing])
+        total_count = intraday_count + swing_count + ic_count
         return intraday_count, swing_count, total_count
 
     def get_spread_positions(self) -> List[SpreadPosition]:
@@ -1929,6 +1938,136 @@ class OptionsEngine:
             micro_intraday_cooldown_active=micro_intraday_cooldown_active,
         )
 
+    def recover_pending_ic_unpaired_exposure(self, reason: str = "IC_PENDING_RECOVERY") -> int:
+        """
+        Emit immediate close signals for any live legs from a pending/unpaired IC entry.
+
+        This protects against one-side fill scenarios (or mixed partial fills) where
+        pending state is about to be cleared but broker holdings still exist.
+        """
+        ic_engine = self._iron_condor_engine
+        condor = ic_engine._pending_condor
+        if not ic_engine._pending_entry or condor is None:
+            return 0
+        if self.algorithm is None:
+            return 0
+        router = getattr(self.algorithm, "portfolio_router", None)
+        if router is None:
+            return 0
+
+        def _live_qty(symbol_text: str) -> int:
+            symbol_key = self._symbol_str(symbol_text)
+            if not symbol_key:
+                return 0
+            try:
+                for kvp in self.algorithm.Portfolio:
+                    holding = kvp.Value
+                    sec_type_text = str(getattr(holding.Symbol, "SecurityType", "") or "").upper()
+                    if not holding.Invested or "OPTION" not in sec_type_text:
+                        continue
+                    if self._symbol_str(holding.Symbol) != symbol_key:
+                        continue
+                    return abs(int(getattr(holding, "Quantity", 0) or 0))
+            except Exception:
+                return 0
+            return 0
+
+        timestamp = (
+            str(self.algorithm.Time)
+            if hasattr(self.algorithm, "Time")
+            else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        )
+
+        emitted = 0
+        side_rows = (
+            ("PUT_CREDIT", condor.long_put.symbol, condor.short_put.symbol, condor.put_wing_width),
+            (
+                "CALL_CREDIT",
+                condor.long_call.symbol,
+                condor.short_call.symbol,
+                condor.call_wing_width,
+            ),
+        )
+        for side_name, long_symbol, short_symbol, spread_width in side_rows:
+            long_qty = _live_qty(str(long_symbol or ""))
+            short_qty = _live_qty(str(short_symbol or ""))
+            if long_qty <= 0 and short_qty <= 0:
+                continue
+
+            pair_qty = min(long_qty, short_qty)
+            base_meta = {
+                "options_lane": "IC",
+                "options_strategy": "IRON_CONDOR",
+                "trace_source": f"IC:{reason}",
+                "trace_id": condor.condor_id,
+                "condor_id": condor.condor_id,
+                "exit_reason": reason,
+                "spread_width": spread_width,
+            }
+            if pair_qty > 0:
+                combo_meta = dict(base_meta)
+                combo_meta["spread_side"] = f"{side_name}_CLOSE"
+                combo_meta["spread_close_short"] = True
+                combo_meta["spread_short_leg_symbol"] = str(short_symbol or "")
+                combo_meta["spread_short_leg_quantity"] = int(pair_qty)
+                router.receive_signal(
+                    TargetWeight(
+                        symbol=str(long_symbol or ""),
+                        target_weight=0.0,
+                        source="OPT_IC",
+                        urgency=Urgency.IMMEDIATE,
+                        reason=f"IC_UNPAIRED_RECOVERY | {reason} | {side_name}",
+                        timestamp=timestamp,
+                        metadata=combo_meta,
+                        requested_quantity=int(pair_qty),
+                    )
+                )
+                emitted += 1
+
+            long_residual = max(0, long_qty - pair_qty)
+            if long_residual > 0:
+                long_meta = dict(base_meta)
+                long_meta["spread_side"] = f"{side_name}_LONG_ONLY_CLOSE"
+                router.receive_signal(
+                    TargetWeight(
+                        symbol=str(long_symbol or ""),
+                        target_weight=0.0,
+                        source="OPT_IC",
+                        urgency=Urgency.IMMEDIATE,
+                        reason=f"IC_UNPAIRED_RECOVERY_LONG | {reason} | {side_name}",
+                        timestamp=timestamp,
+                        metadata=long_meta,
+                        requested_quantity=int(long_residual),
+                    )
+                )
+                emitted += 1
+
+            short_residual = max(0, short_qty - pair_qty)
+            if short_residual > 0:
+                short_meta = dict(base_meta)
+                short_meta["spread_side"] = f"{side_name}_SHORT_ONLY_CLOSE"
+                router.receive_signal(
+                    TargetWeight(
+                        symbol=str(short_symbol or ""),
+                        target_weight=0.0,
+                        source="OPT_IC",
+                        urgency=Urgency.IMMEDIATE,
+                        reason=f"IC_UNPAIRED_RECOVERY_SHORT | {reason} | {side_name}",
+                        timestamp=timestamp,
+                        metadata=short_meta,
+                        requested_quantity=int(short_residual),
+                    )
+                )
+                emitted += 1
+
+        if emitted > 0:
+            self.log(
+                f"IC_UNPAIRED_RECOVERY_EMITTED | Condor={condor.condor_id} | "
+                f"Reason={reason} | Signals={emitted}",
+                trades_only=True,
+            )
+        return emitted
+
     def _clear_stale_pending_ic_entry_if_orphaned(self) -> None:
         """Clear stale pending IC lock when no matching open leg orders exist."""
         ic_engine = self._iron_condor_engine
@@ -1962,7 +2101,8 @@ class OptionsEngine:
         has_open_orders = False
         try:
             for open_order in self.algorithm.Transactions.GetOpenOrders():
-                if getattr(open_order.Symbol, "SecurityType", None) != SecurityType.Option:
+                sec_type_text = str(getattr(open_order.Symbol, "SecurityType", "") or "").upper()
+                if "OPTION" not in sec_type_text:
                     continue
                 open_sym = self._symbol_str(open_order.Symbol)
                 if open_sym in pending_symbols:
@@ -1974,10 +2114,12 @@ class OptionsEngine:
         if has_open_orders:
             return
 
+        recovered = self.recover_pending_ic_unpaired_exposure(reason="IC_PENDING_TIMEOUT")
         ic_engine.cancel_pending_entry()
         self.log(
             f"IC_STALE_PENDING_CLEARED | AgeMin={age_minutes:.1f} "
-            f"| Pending={','.join(sorted(pending_symbols)) or 'NONE'}",
+            f"| Pending={','.join(sorted(pending_symbols)) or 'NONE'} "
+            f"| RecoverySignals={int(recovered)}",
             trades_only=True,
         )
 

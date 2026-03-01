@@ -205,6 +205,10 @@ class MainMarketCloseMixin:
             self._pending_exit_orders.clear()
             self._exit_retry_scheduled_at.clear()
             self.Log(f"EOD_CLEANUP: Cleared {cleared} pending exit order trackers")
+        if getattr(self, "_spread_fill_tracker", None) is not None:
+            self._spread_fill_tracker = None
+        if getattr(self, "_ic_side_fill_trackers", None):
+            self._ic_side_fill_trackers = {}
 
         # NOTE: _kill_switch_handled_today is NOT reset here - it resets at 09:25 pre-market
         # Resetting here causes double-trigger since OnData runs at 16:00 after EOD handler

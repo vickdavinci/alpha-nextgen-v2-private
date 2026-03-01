@@ -130,6 +130,7 @@ def _make_condor(
 
 def _default_transition_ctx(state: str = "STABLE", fast_overlay: str = "") -> Dict[str, Any]:
     return {
+        "transition_overlay": state,
         "transition_state": state,
         "fast_overlay": fast_overlay,
         "transition_score": 52,

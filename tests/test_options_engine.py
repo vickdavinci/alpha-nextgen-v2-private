@@ -3166,6 +3166,24 @@ class TestIntradayLaneIsolation:
         assert engine.get_engine_positions() == []
         assert engine._find_engine_lane_by_symbol("QQQ 270119P00480000") is None
 
+    def test_find_engine_lane_by_symbol_detects_ic_legs(self, engine):
+        condor = SimpleNamespace(
+            is_closing=False,
+            short_put=SimpleNamespace(symbol="QQQ 270119P00470000"),
+            long_put=SimpleNamespace(symbol="QQQ 270119P00465000"),
+            short_call=SimpleNamespace(symbol="QQQ 270119C00510000"),
+            long_call=SimpleNamespace(symbol="QQQ 270119C00515000"),
+        )
+        engine._iron_condor_engine._positions = [condor]
+        assert engine._find_engine_lane_by_symbol("QQQ 270119P00465000") == "IC"
+
+    def test_count_options_positions_includes_ic_positions(self, engine):
+        engine._iron_condor_engine._positions = [SimpleNamespace(is_closing=False)]
+        intraday_count, swing_count, total_count = engine.count_options_positions()
+        assert intraday_count == 0
+        assert swing_count == 0
+        assert total_count == 1
+
     def test_intraday_validation_failure_is_lane_scoped(self, engine):
         engine.set_last_engine_validation_failure("MICRO", "E_MICRO_A", "micro detail")
         engine.set_last_engine_validation_failure("ITM", "E_ITM_A", "itm detail")
@@ -3208,25 +3226,27 @@ class TestIntradayLaneIsolation:
         engine._pending_num_contracts = None
         engine._pending_entry_strategy = None
 
-        result = engine.check_engine_entry_signal(
-            vix_current=18.0,
-            vix_open=17.0,
-            qqq_current=450.0,
-            qqq_open=448.0,
-            current_hour=11,
-            current_minute=0,
-            current_time="2027-01-04 11:00:00",
-            portfolio_value=100000.0,
-            raw_portfolio_value=100000.0,
-            best_contract=contract,
-            size_multiplier=1.0,
-            macro_regime_score=60.0,
-            governor_scale=1.0,
-            direction=OptionDirection.PUT,
-            forced_entry_strategy=IntradayStrategy.MICRO_OTM_MOMENTUM,
-            micro_state=engine.get_micro_regime_state(),
-            transition_ctx={"transition_overlay": "STABLE"},
-        )
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(config, "MICRO_ENTRY_ENGINE_ENABLED", True)
+            result = engine.check_engine_entry_signal(
+                vix_current=18.0,
+                vix_open=17.0,
+                qqq_current=450.0,
+                qqq_open=448.0,
+                current_hour=11,
+                current_minute=0,
+                current_time="2027-01-04 11:00:00",
+                portfolio_value=100000.0,
+                raw_portfolio_value=100000.0,
+                best_contract=contract,
+                size_multiplier=1.0,
+                macro_regime_score=60.0,
+                governor_scale=1.0,
+                direction=OptionDirection.PUT,
+                forced_entry_strategy=IntradayStrategy.MICRO_OTM_MOMENTUM,
+                micro_state=engine.get_micro_regime_state(),
+                transition_ctx={"transition_overlay": "STABLE"},
+            )
 
         assert result is None
         reason, _ = engine.pop_last_engine_validation_failure("MICRO")
@@ -3266,25 +3286,27 @@ class TestIntradayLaneIsolation:
         ]
         engine._refresh_legacy_engine_mirrors()
 
-        result = engine.check_engine_entry_signal(
-            vix_current=18.0,
-            vix_open=17.0,
-            qqq_current=450.0,
-            qqq_open=448.0,
-            current_hour=11,
-            current_minute=0,
-            current_time="2027-01-04 11:00:00",
-            portfolio_value=100000.0,
-            raw_portfolio_value=100000.0,
-            best_contract=contract,
-            size_multiplier=1.0,
-            macro_regime_score=60.0,
-            governor_scale=1.0,
-            direction=OptionDirection.PUT,
-            forced_entry_strategy=IntradayStrategy.MICRO_OTM_MOMENTUM,
-            micro_state=engine.get_micro_regime_state(),
-            transition_ctx={"transition_overlay": "STABLE"},
-        )
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(config, "MICRO_ENTRY_ENGINE_ENABLED", True)
+            result = engine.check_engine_entry_signal(
+                vix_current=18.0,
+                vix_open=17.0,
+                qqq_current=450.0,
+                qqq_open=448.0,
+                current_hour=11,
+                current_minute=0,
+                current_time="2027-01-04 11:00:00",
+                portfolio_value=100000.0,
+                raw_portfolio_value=100000.0,
+                best_contract=contract,
+                size_multiplier=1.0,
+                macro_regime_score=60.0,
+                governor_scale=1.0,
+                direction=OptionDirection.PUT,
+                forced_entry_strategy=IntradayStrategy.MICRO_OTM_MOMENTUM,
+                micro_state=engine.get_micro_regime_state(),
+                transition_ctx={"transition_overlay": "STABLE"},
+            )
 
         assert result is None
         reason, detail = engine.pop_last_engine_validation_failure("MICRO")
@@ -3831,9 +3853,13 @@ class TestRejectionAwareSizing:
 
         orig_trend = config.VASS_BULL_DEBIT_TREND_CONFIRM_ENABLED
         orig_friction = getattr(config, "SPREAD_ENTRY_FRICTION_GATE_ENABLED", True)
+        orig_short_call_distance = getattr(
+            config, "VASS_BULL_SHORT_CALL_DISTANCE_GUARD_ENABLED", True
+        )
         try:
             config.VASS_BULL_DEBIT_TREND_CONFIRM_ENABLED = False
             config.SPREAD_ENTRY_FRICTION_GATE_ENABLED = False
+            config.VASS_BULL_SHORT_CALL_DISTANCE_GUARD_ENABLED = False
             signal = engine.check_spread_entry_signal(
                 regime_score=70.0,
                 vix_current=12.0,  # compressed IV -> low-VIX absolute debit gate active
@@ -3856,6 +3882,7 @@ class TestRejectionAwareSizing:
         finally:
             config.VASS_BULL_DEBIT_TREND_CONFIRM_ENABLED = orig_trend
             config.SPREAD_ENTRY_FRICTION_GATE_ENABLED = orig_friction
+            config.VASS_BULL_SHORT_CALL_DISTANCE_GUARD_ENABLED = orig_short_call_distance
 
         # Net debit ~$1.60 on $5 width. Width-scaled cap allows this.
         assert signal is not None

@@ -55,6 +55,7 @@ class IronCondorPosition:
     entry_cw_tier: str = ""  # LOW_VIX / MID_VIX / HIGH_VIX
     stop_dw: float = 0.0  # Projected stop D/W at entry
     implied_wr_be: float = 0.0  # Implied expiry breakeven WR (1 - C/W)
+    exit_pnl_estimate: float = 0.0  # Snapshot PnL at software-exit trigger (for accounting)
 
     # ── Derived helpers ──
 
@@ -100,6 +101,7 @@ class IronCondorPosition:
             "entry_cw_tier": self.entry_cw_tier,
             "stop_dw": self.stop_dw,
             "implied_wr_be": self.implied_wr_be,
+            "exit_pnl_estimate": self.exit_pnl_estimate,
         }
 
     @classmethod
@@ -126,4 +128,5 @@ class IronCondorPosition:
             entry_cw_tier=data.get("entry_cw_tier", ""),
             stop_dw=data.get("stop_dw", 0.0),
             implied_wr_be=data.get("implied_wr_be", 0.0),
+            exit_pnl_estimate=float(data.get("exit_pnl_estimate", 0.0) or 0.0),
         )

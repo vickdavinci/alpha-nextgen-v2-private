@@ -43,12 +43,14 @@ class MainOptionsMixin:
             getattr(self, "_pending_spread_orders_reverse", {})
         )
         has_fill_tracker = getattr(self, "_spread_fill_tracker", None) is not None
+        has_ic_fill_trackers = bool(getattr(self, "_ic_side_fill_trackers", {}))
         has_active_ic = bool(self.options_engine.get_iron_condor_positions())
         if (
             has_active_spread
             or has_pending_spread
             or has_pending_leg_map
             or has_fill_tracker
+            or has_ic_fill_trackers
             or has_active_ic
         ):
             return
@@ -128,6 +130,7 @@ class MainOptionsMixin:
         self._pending_spread_orders = {}
         self._pending_spread_orders_reverse = {}
         self._spread_fill_tracker = None
+        self._ic_side_fill_trackers = {}
         self._spread_close_trackers = {}
         self._external_exec_event_logged = set()
 
@@ -1787,6 +1790,13 @@ class MainOptionsMixin:
                 # All legs flat — remove stale condor
                 removed = self.options_engine._iron_condor_engine.remove_position(condor.condor_id)
                 if removed:
+                    try:
+                        self.options_engine._iron_condor_engine.record_trade_result(
+                            pnl=float(getattr(removed, "exit_pnl_estimate", 0.0) or 0.0),
+                            current_date_str=str(self.Time.date()),
+                        )
+                    except Exception:
+                        pass
                     self.Log(
                         f"IC: STALE_CONDOR_REMOVED | condor_id={condor.condor_id} "
                         f"| No live holdings found"
