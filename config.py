@@ -1685,7 +1685,7 @@ SPREAD_DW_CAP_HIGH = 0.32  # 25 <= VIX < 35
 SPREAD_DW_CAP_ELEVATED = 0.38  # V12.11: coherent with delta 0.43 target (natural D/W ~0.40-0.43).
 SPREAD_DW_CAP_NORMAL = 0.40  # V12.11: primary trading band (VIX 13-18), allows delta-0.43 entries.
 SPREAD_DW_CAP_COMPRESSED = (
-    0.42  # V12.11: compressed IV (VIX < 13), slightly wider for thin premium.
+    0.40  # V12.23 C6: align compressed-IV (VIX < 13) debit cap with normal D/W band.
 )
 SPREAD_DW_ABSOLUTE_CAP = 2.00  # Max debit dollars on $5 spread in very calm IV
 SPREAD_DW_ABSOLUTE_CAP_VIX = 15.0
