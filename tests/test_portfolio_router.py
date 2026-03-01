@@ -1078,3 +1078,58 @@ class TestRouterSymbolNormalization:
 
         assert ok is True
         assert "EXIT_PRE_CLEAR_BYPASS" in detail
+
+    def test_intraday_stale_close_skips_inflight_dedupe_and_cancels(self):
+        router = PortfolioRouter()
+        order = OrderIntent(
+            symbol="QQQ 260130P00500000",
+            quantity=1,
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            urgency=Urgency.IMMEDIATE,
+            reason="PREMARKET_STALE_INTRADAY_CLOSE",
+            target_weight=0.0,
+            current_weight=0.0,
+            metadata={"options_lane": "MICRO", "options_strategy": "PROTECTIVE_PUTS"},
+            tag="MICRO:UNCLASSIFIED|trace=SIG-TEST",
+        )
+        inflight = MagicMock()
+        inflight.Symbol = "QQQ 260130P00500000"
+        inflight.Quantity = -1
+        router._is_option_close_order = MagicMock(return_value=True)
+        router._get_open_orders_for_symbols = MagicMock(side_effect=[[inflight], []])
+        router._cancel_open_orders_for_symbols = MagicMock(return_value=(1, 0))
+
+        ok, detail = router._run_option_exit_preclear(order)
+
+        assert ok is True
+        assert "EXIT_PRE_CLEAR_INFLIGHT_CLOSE" not in detail
+        assert "EXIT_PRE_CLEAR_OK" in detail
+        router._cancel_open_orders_for_symbols.assert_called_once()
+
+    def test_vass_single_leg_close_keeps_inflight_dedupe(self):
+        router = PortfolioRouter()
+        order = OrderIntent(
+            symbol="QQQ 260130C00500000",
+            quantity=1,
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            urgency=Urgency.IMMEDIATE,
+            reason="TRANSITION_OPEN_DERISK",
+            target_weight=0.0,
+            current_weight=0.0,
+            metadata={"options_lane": "VASS", "options_strategy": "BULL_CALL_DEBIT"},
+            tag="VASS:UNCLASSIFIED|trace=SIG-TEST",
+        )
+        inflight = MagicMock()
+        inflight.Symbol = "QQQ 260130C00500000"
+        inflight.Quantity = -1
+        router._is_option_close_order = MagicMock(return_value=True)
+        router._get_open_orders_for_symbols = MagicMock(return_value=[inflight])
+        router._cancel_open_orders_for_symbols = MagicMock(return_value=(0, 0))
+
+        ok, detail = router._run_option_exit_preclear(order)
+
+        assert ok is False
+        assert "EXIT_PRE_CLEAR_INFLIGHT_CLOSE" in detail
+        router._cancel_open_orders_for_symbols.assert_not_called()

@@ -797,9 +797,37 @@ class PortfolioRouter:
             self._exit_preclear_pending_since.pop(key, None)
             return True, ""
 
+        tag_upper = str(getattr(order, "tag", "") or "").upper()
+        reason_upper = str(getattr(order, "reason", "") or "").upper()
+        strategy_upper = str(metadata.get("options_strategy", "") or "").upper()
+        exit_code_upper = str(
+            metadata.get("intraday_exit_code", "") or metadata.get("spread_exit_code", "") or ""
+        ).upper()
+        is_intraday_hint = (
+            lane in {"MICRO", "ITM"}
+            or "MICRO:" in tag_upper
+            or "ITM:" in tag_upper
+            or "OPT_INTRADAY" in tag_upper
+            or "INTRADAY" in reason_upper
+            or "PREMARKET_STALE_INTRADAY_CLOSE" in reason_upper
+            or "INTRADAY" in exit_code_upper
+        )
+        is_vass_hint = (
+            lane == "VASS"
+            or bool(metadata.get("spread_close_short", False))
+            or "VASS" in strategy_upper
+            or "VASS:" in tag_upper
+            or "OPT_VASS" in tag_upper
+        )
+
+        # V12.22 scope correction: dedupe in-flight close submits only for VASS-style
+        # close intents. Intraday lanes (MICRO/ITM) must not be deferred by this gate,
+        # otherwise force-close can leak overnight into stale premarket exits.
+        apply_inflight_close_dedupe = (not order.is_combo) and is_vass_hint and not is_intraday_hint
+
         # If a same-symbol close order is already in-flight, defer duplicate close
         # submits until timeout before force-canceling. This reduces OCO teardown churn.
-        if not order.is_combo:
+        if apply_inflight_close_dedupe:
             desired_side = str(getattr(order.side, "value", order.side) or "").upper()
             matching_inflight = []
             for open_order in open_before:
@@ -860,7 +888,6 @@ class PortfolioRouter:
 
         # For time-critical intraday forced exits, avoid close latency caused by
         # waiting for cancel acknowledgment in a bar-based execution loop.
-        reason_upper = str(getattr(order, "reason", "") or "").upper()
         intraday_exit_code_upper = str(metadata.get("intraday_exit_code", "") or "").upper()
         intraday_time_critical = (
             "INTRADAY_FORCE_EXIT" in reason_upper
