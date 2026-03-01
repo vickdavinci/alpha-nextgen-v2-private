@@ -3013,12 +3013,35 @@ class PortfolioRouter:
                 is_spread_close = bool(
                     agg.metadata and agg.metadata.get("spread_close_short", False)
                 )
+                source_tag_upper = str(source_tag or "").upper()
+                lane_tag = (
+                    str((agg.metadata or {}).get("options_lane", "") or "").strip().upper()
+                    if isinstance(agg.metadata, dict)
+                    else ""
+                )
+                is_vass_spread_close = bool(
+                    is_spread_close
+                    and (
+                        source_tag_upper.startswith("OPT_VASS")
+                        or source_tag_upper.startswith("VASS:")
+                        or lane_tag == "VASS"
+                    )
+                )
                 live_qty = self._get_live_option_qty(symbol)
                 if live_qty != 0:
                     self._stale_close_reject_cooldown_until.pop(
                         self._normalize_symbol_key(symbol), None
                     )
                 if live_qty == 0:
+                    if is_vass_spread_close:
+                        self.log(
+                            "ROUTER: CLOSE_INTENT_ALREADY_FLAT | "
+                            f"{symbol} | Source={source_tag or 'OPT_VASS'}"
+                        )
+                        self._stale_close_reject_cooldown_until.pop(
+                            self._normalize_symbol_key(symbol), None
+                        )
+                        continue
                     if not is_spread_close and self._is_stale_close_reject_cooldown_active(symbol):
                         continue
                     stale_cleanup = []
