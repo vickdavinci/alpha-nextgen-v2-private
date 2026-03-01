@@ -137,3 +137,46 @@ def test_reset_daily_only_clears_slot_backoff(monkeypatch):
 
     assert engine._slot_backoff_until_by_key == {}
     assert engine._last_entry_date_by_direction
+
+
+def test_build_spread_signal_blocks_bear_call_credit_in_risk_on(monkeypatch):
+    monkeypatch.setattr(config, "VASS_EV_PRE_GATE_ENABLED", False)
+    monkeypatch.setattr(config, "REGIME_RISK_ON", 70)
+
+    engine = VASSEntryEngine()
+
+    class _Host:
+        def __init__(self):
+            self.algorithm = SimpleNamespace(Time=datetime(2024, 6, 3, 10, 0, 0))
+            self.last_failure = None
+
+        def set_last_entry_validation_failure(self, reason):
+            self.last_failure = reason
+
+    host = _Host()
+    signal, reason = engine.build_spread_signal(
+        host=host,
+        chain=None,
+        candidate_contracts=[],
+        direction=OptionDirection.PUT,
+        regime_score=75.0,
+        qqq_price=450.0,
+        adx_value=20.0,
+        ma200_value=440.0,
+        ma50_value=445.0,
+        iv_rank=50.0,
+        size_multiplier=1.0,
+        portfolio_value=100000.0,
+        margin_remaining=50000.0,
+        strategy=SpreadStrategy.BEAR_CALL_CREDIT,
+        vass_dte_min=5,
+        vass_dte_max=21,
+        dte_ranges=[(5, 21)],
+        is_credit=True,
+        is_eod_scan=False,
+        fallback_log_prefix="TEST",
+    )
+
+    assert signal is None
+    assert str(reason).startswith("R_BEAR_CALL_RISK_ON_BLOCK")
+    assert host.last_failure == reason

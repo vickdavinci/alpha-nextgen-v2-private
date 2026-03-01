@@ -2671,10 +2671,18 @@ class VASSEntryEngine:
 
         def _ev_pre_gate_failure(route_strategy: Any) -> Optional[str]:
             """Fast EV pre-gate to avoid running leg-construction in weak contexts."""
+            route_value = _strategy_value(route_strategy).upper()
+            if route_value == "BEAR_CALL_CREDIT":
+                risk_on_floor = float(getattr(config, "REGIME_RISK_ON", 70.0))
+                if float(regime_score) >= risk_on_floor:
+                    return (
+                        f"R_BEAR_CALL_RISK_ON_BLOCK:{float(regime_score):.1f}>="
+                        f"{risk_on_floor:.1f}"
+                    )
+
             if not bool(getattr(config, "VASS_EV_PRE_GATE_ENABLED", False)):
                 return None
 
-            route_value = _strategy_value(route_strategy).upper()
             is_debit_route = "DEBIT" in route_value
             if is_debit_route:
                 max_debit_iv_rank = float(getattr(config, "VASS_EV_PRE_DEBIT_IV_RANK_MAX", 100.0))
