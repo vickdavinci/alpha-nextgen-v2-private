@@ -1544,33 +1544,35 @@ class MainOptionsMixin:
                         transition_ctx=transition_ctx,
                     )
 
-                self.options_engine.run_micro_engine_cycle(
-                    chain=chain,
-                    qqq_price=qqq_price,
-                    regime_score=regime_score,
-                    size_multiplier=size_multiplier,
-                    effective_portfolio_value=effective_portfolio_value,
-                    vix_intraday=vix_intraday,
-                    vix_level_cboe=vix_level_cboe,
-                    transition_ctx=transition_ctx,
-                    uvxy_pct=uvxy_pct,
-                    micro_intraday_cooldown_active=micro_intraday_cooldown_active,
-                )
+                if bool(getattr(config, "MICRO_ENTRY_ENGINE_ENABLED", True)):
+                    self.options_engine.run_micro_engine_cycle(
+                        chain=chain,
+                        qqq_price=qqq_price,
+                        regime_score=regime_score,
+                        size_multiplier=size_multiplier,
+                        effective_portfolio_value=effective_portfolio_value,
+                        vix_intraday=vix_intraday,
+                        vix_level_cboe=vix_level_cboe,
+                        transition_ctx=transition_ctx,
+                        uvxy_pct=uvxy_pct,
+                        micro_intraday_cooldown_active=micro_intraday_cooldown_active,
+                    )
 
-        self.options_engine.run_itm_engine_explicit_cycle(
-            chain=chain,
-            qqq_price=qqq_price,
-            regime_score=regime_score,
-            size_multiplier=size_multiplier,
-            effective_portfolio_value=effective_portfolio_value,
-            vix_intraday=vix_intraday,
-            vix_level_cboe=vix_level_cboe,
-            transition_ctx=transition_ctx,
-            itm_dir=itm_dir,
-            itm_reason=itm_reason,
-            intraday_scan_context_ready=intraday_scan_context_ready,
-            itm_intraday_cooldown_active=itm_intraday_cooldown_active,
-        )
+        if bool(getattr(config, "ITM_ENGINE_ENABLED", False)):
+            self.options_engine.run_itm_engine_explicit_cycle(
+                chain=chain,
+                qqq_price=qqq_price,
+                regime_score=regime_score,
+                size_multiplier=size_multiplier,
+                effective_portfolio_value=effective_portfolio_value,
+                vix_intraday=vix_intraday,
+                vix_level_cboe=vix_level_cboe,
+                transition_ctx=transition_ctx,
+                itm_dir=itm_dir,
+                itm_reason=itm_reason,
+                intraday_scan_context_ready=intraday_scan_context_ready,
+                itm_intraday_cooldown_active=itm_intraday_cooldown_active,
+            )
 
         self.options_engine.run_vass_engine_entry_cycle(
             chain=chain,

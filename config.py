@@ -2586,7 +2586,7 @@ MICRO_OTM_PUT_DELTA_MAX = MICRO_OTM_MOMENTUM_DELTA_MAX
 INTRADAY_DEBIT_MOMENTUM_ENABLED = (
     False  # V10: deprecated — ITM_MOMENTUM replaces all confirmation paths
 )
-MICRO_ENTRY_ENGINE_ENABLED = True  # V10.10: route MICRO gates through dedicated engine
+MICRO_ENTRY_ENGINE_ENABLED = False  # VASS-only backtest mode: disable MICRO entry engine
 INTRADAY_DEBIT_FADE_ENABLED = True  # Legacy alias
 MICRO_DEBIT_FADE_ENABLED = False  # V10.35: disable persistent-loss fade path pending redesign
 MICRO_OTM_MOMENTUM_ENABLED = True  # Canonical OTM momentum switch
@@ -2659,7 +2659,7 @@ INTRADAY_ITM_SCORE_SPREAD_WEIGHT = 0.20
 INTRADAY_ITM_SCORE_OI_WEIGHT = 0.05
 
 # ITM_ENGINE (isolated horizon engine; feature-flagged)
-ITM_ENGINE_ENABLED = True
+ITM_ENGINE_ENABLED = False  # VASS-only backtest mode: disable ITM engine
 ITM_SHADOW_MODE = False
 ITM_ALLOW_SOVEREIGN_PROMOTION_FROM_MICRO = False  # Keep MICRO/ITM entry paths separated
 ITM_SIZE_MULT = 1.0  # ITM_ENGINE sizing is sovereign; do not couple to MICRO score ladder
@@ -2870,7 +2870,7 @@ INTRADAY_GOVERNOR_GATE_ENABLED = True
 # -----------------------------------------------------------------------------
 # When Micro Regime detects crisis (score < 0), buy protective PUTs
 # This supplements TMF/PSQ hedging with direct options protection
-PROTECTIVE_PUTS_ENABLED = True
+PROTECTIVE_PUTS_ENABLED = False  # VASS-only backtest mode: disable protective puts
 PROTECTIVE_PUTS_SIZE_PCT = 0.03  # Reduce insurance drag while preserving crash hedge
 PROTECTIVE_PUTS_DTE_MIN = 0  # Crash-day hedge: allow same-day/near-term convexity
 PROTECTIVE_PUTS_DTE_MAX = 2  # Keep gamma high for same-day crash response
@@ -3003,7 +3003,7 @@ MICRO_UPDATE_LOG_BACKTEST_ENABLED = False  # Keep micro logs in backtest, but th
 MICRO_UPDATE_LOG_ON_CHANGE_ONLY = True  # Backtest: log only on state change (+heartbeat)
 MICRO_UPDATE_LOG_MINUTES = 60  # Heartbeat interval when micro state remains unchanged
 SPREAD_CONSTRUCTION_FAIL_LOG_INTERVAL_MINUTES = 60  # Throttle repeated spread-build failure logs
-SPREAD_CONSTRUCTION_FAIL_LOG_BACKTEST_ENABLED = False  # Backtest: keep for RCA (still throttled)
+SPREAD_CONSTRUCTION_FAIL_LOG_BACKTEST_ENABLED = True  # Backtest: keep for RCA (still throttled)
 LOG_SPREAD_RECONCILE_BACKTEST_ENABLED = (
     False  # Suppress repetitive reconcile-clear logs in backtests
 )
@@ -3016,9 +3016,7 @@ LOG_INTRADAY_CANDIDATE_BACKTEST_ENABLED = (
     False  # Candidate details captured in signal lifecycle CSV
 )
 LOG_INTRADAY_DROPPED_BACKTEST_ENABLED = False  # Drop RCA preserved in signal lifecycle CSV
-LOG_VASS_FALLBACK_BACKTEST_ENABLED = (
-    False  # Fallback retry detail captured via lifecycle + counters
-)
+LOG_VASS_FALLBACK_BACKTEST_ENABLED = True  # Fallback retry detail captured via lifecycle + counters
 LOG_WIN_RATE_GATE_BACKTEST_ENABLED = False  # Keep win-rate gate details sampled in full-year runs
 LOG_REGIME_ENGINE_DETAIL_BACKTEST_ENABLED = (
     False  # Suppress minute-level regime factor dumps in backtests
