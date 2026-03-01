@@ -100,6 +100,7 @@ def check_spread_exit_signals_impl(
     mark_stop_enabled = bool(getattr(config, "VASS_ENABLE_MARK_STOP_EXITS", True))
     tail_cap_enabled = bool(getattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", True))
     mfe_lock_enabled = bool(getattr(config, "VASS_ENABLE_MFE_LOCK_EXITS", True))
+    mfe_lock_in_regime_confirmed = bool(getattr(config, "VASS_MFE_LOCK_IN_REGIME_CONFIRMED", True))
     neutrality_exit_enabled = bool(getattr(config, "VASS_ENABLE_NEUTRALITY_EXITS", True))
     day4_eod_exit_enabled = bool(getattr(config, "VASS_ENABLE_DAY4_EOD_EXITS", True))
 
@@ -712,7 +713,7 @@ def check_spread_exit_signals_impl(
         if (
             mfe_lock_enabled
             and bool(getattr(config, "VASS_MFE_LOCK_ENABLED", True))
-            and not regime_confirmed
+            and (mfe_lock_in_regime_confirmed or not regime_confirmed)
             and spread.max_profit > 0
         ):
             prev_tier = int(getattr(spread, "mfe_lock_tier", 0) or 0)
@@ -906,7 +907,7 @@ def check_spread_exit_signals_impl(
         if (
             mfe_lock_enabled
             and bool(getattr(config, "VASS_MFE_LOCK_ENABLED", True))
-            and not regime_confirmed
+            and (mfe_lock_in_regime_confirmed or not regime_confirmed)
             and spread.max_profit > 0
         ):
             prev_tier = int(getattr(spread, "mfe_lock_tier", 0) or 0)

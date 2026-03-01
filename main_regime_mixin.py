@@ -492,6 +492,13 @@ class MainRegimeMixin:
         # De-risk open VASS spreads first.
         for spread in list(self.options_engine.get_spread_positions() or []):
             spread_type = str(getattr(spread, "spread_type", "") or "").upper()
+            is_debit_spread = spread_type in {
+                "BULL_CALL",
+                "BULL_CALL_DEBIT",
+                "BEAR_PUT",
+                "BEAR_PUT_DEBIT",
+            }
+            is_credit_spread = spread_type in {"BULL_PUT_CREDIT", "BEAR_CALL_CREDIT"}
             is_bullish_spread = spread_type in {"BULL_CALL", "BULL_CALL_DEBIT", "BULL_PUT_CREDIT"}
             is_bearish_spread = spread_type in {"BEAR_PUT", "BEAR_PUT_DEBIT", "BEAR_CALL_CREDIT"}
             wrong_way = (overlay == "DETERIORATION" and is_bullish_spread) or (
@@ -500,6 +507,26 @@ class MainRegimeMixin:
             if not wrong_way:
                 continue
             if bars_since_flip >= vass_derisk_bars:
+                continue
+            if is_debit_spread and not bool(
+                getattr(config, "VASS_TRANSITION_DERISK_DEBIT_ENABLED", False)
+            ):
+                self.Log(
+                    f"TRANSITION_DERISK_SKIPPED_DEBIT_POLICY: "
+                    f"Overlay={overlay} | Type={spread_type} | "
+                    f"BarsSinceFlip={bars_since_flip}/{vass_derisk_bars}",
+                    trades_only=True,
+                )
+                continue
+            if is_credit_spread and not bool(
+                getattr(config, "VASS_TRANSITION_DERISK_CREDIT_ENABLED", True)
+            ):
+                self.Log(
+                    f"TRANSITION_DERISK_SKIPPED_CREDIT_POLICY: "
+                    f"Overlay={overlay} | Type={spread_type} | "
+                    f"BarsSinceFlip={bars_since_flip}/{vass_derisk_bars}",
+                    trades_only=True,
+                )
                 continue
 
             # V12.9: Gate TRANSITION_DERISK by regime_confirmed.

@@ -1075,6 +1075,9 @@ VASS_ENABLE_TAIL_CAP_EXITS = True  # Runtime-gated by regime confirmation in exi
 VASS_ENABLE_TRAIL_PROFIT_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
 VASS_ENABLE_PROFIT_TARGET_EXITS = True  # Master allow for profit-target exits
 VASS_ENABLE_MFE_LOCK_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
+VASS_MFE_LOCK_IN_REGIME_CONFIRMED = (
+    True  # Keep MFE lock active in confirmed mode to prevent large winner giveback.
+)
 VASS_ENABLE_NEUTRALITY_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
 VASS_ENABLE_DAY4_EOD_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
 
@@ -2705,6 +2708,10 @@ TRANSITION_HANDOFF_HARD_UPSIDE_MOM_MIN = 0.02
 TRANSITION_HANDOFF_OPEN_DERISK_ENABLED = True
 TRANSITION_HANDOFF_OPEN_DERISK_BARS = 4
 VASS_TRANSITION_OPEN_DERISK_BARS = 8
+VASS_TRANSITION_DERISK_DEBIT_ENABLED = (
+    False  # Thesis mode: do not force-close VASS debit spreads on overlay flips.
+)
+VASS_TRANSITION_DERISK_CREDIT_ENABLED = True  # Keep faster de-risk for VASS credit spreads.
 ITM_BLOCK_SAME_DAY_SAME_DIRECTION_REENTRY = True
 ITM_BREAKER_3_LOSSES_PAUSE_DAYS = 1
 ITM_BREAKER_5_LOSSES_PAUSE_DAYS = 2
