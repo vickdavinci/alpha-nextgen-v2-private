@@ -28,7 +28,9 @@ sys.path.insert(0, ".")
 import config
 from engines.satellite.condor_models import IronCondorPosition
 from engines.satellite.iron_condor_engine import (
+    EXIT_IC_EOD_HOLD_GATE,
     EXIT_IC_FRIDAY_CLOSE,
+    EXIT_IC_HARD_STOP_HOLD,
     EXIT_IC_PROFIT_TARGET,
     EXIT_IC_REGIME_BREAK,
     EXIT_IC_STOP_LOSS,
@@ -95,6 +97,8 @@ def _make_condor(
     num_spreads: int = 2,
     regime: float = 52.0,
     vix: float = 18.0,
+    entry_dte: int = 30,
+    entry_time: str = "2025-03-01 11:00:00",
 ) -> IronCondorPosition:
     short_put_strike = qqq_price - 10
     long_put_strike = short_put_strike - wing_width
@@ -112,10 +116,11 @@ def _make_condor(
         max_loss=wing_width - net_credit,
         credit_to_width=net_credit / wing_width,
         num_spreads=num_spreads,
-        entry_time="2025-03-01 11:00:00",
+        entry_time=entry_time,
         regime_at_entry=regime,
         entry_vix=vix,
         entry_adx=15.0,
+        entry_dte=entry_dte,
         condor_id="test123",
         entry_cw_tier="MID_VIX",
         stop_dw=2.5 * net_credit / wing_width,
@@ -493,6 +498,7 @@ class TestExitTriggers:
         engine = _make_engine()
         condor = _make_condor(net_credit=1.20, num_spreads=2)
         # credit_100 = 240; stop = 150% = 360
+        # Use date past hold guard (10 days for 30 DTE entry)
         result = engine.check_exit_signals(
             condor=condor,
             combined_pnl=-370,  # > 360 loss
@@ -500,7 +506,7 @@ class TestExitTriggers:
             vix_current=18,
             regime_score=52,
             qqq_price=480,
-            current_time=datetime(2025, 3, 5, 11, 0),
+            current_time=datetime(2025, 3, 12, 11, 0),  # 11 days after entry
         )
         assert result is not None
         reason, _ = result
@@ -516,7 +522,7 @@ class TestExitTriggers:
             vix_current=18,
             regime_score=52,
             qqq_price=480,
-            current_time=datetime(2025, 3, 5, 11, 0),
+            current_time=datetime(2025, 3, 12, 11, 0),  # Past hold guard
         )
         assert result is not None
         reason, _ = result
@@ -532,7 +538,7 @@ class TestExitTriggers:
             vix_current=18,
             regime_score=35,  # Below IC_REGIME_MIN(45) - buffer(5) = 40
             qqq_price=480,
-            current_time=datetime(2025, 3, 5, 11, 0),
+            current_time=datetime(2025, 3, 12, 11, 0),  # Past hold guard
         )
         assert result is not None
         reason, _ = result
@@ -549,7 +555,7 @@ class TestExitTriggers:
             vix_current=18,
             regime_score=52,
             qqq_price=480,
-            current_time=datetime(2025, 3, 7, 11, 0),  # Friday
+            current_time=datetime(2025, 3, 14, 11, 0),  # Friday, past hold guard
         )
         assert result is not None
         reason, _ = result
@@ -567,7 +573,7 @@ class TestExitTriggers:
             vix_current=18,
             regime_score=52,
             qqq_price=460,  # Below short put strike
-            current_time=datetime(2025, 3, 5, 11, 0),
+            current_time=datetime(2025, 3, 12, 11, 0),  # Past hold guard
         )
         assert result is not None
         reason, _ = result
@@ -585,7 +591,7 @@ class TestExitTriggers:
             vix_current=18,
             regime_score=52,
             qqq_price=502,  # Above short call strike
-            current_time=datetime(2025, 3, 5, 11, 0),
+            current_time=datetime(2025, 3, 12, 11, 0),  # Past hold guard
         )
         assert result is not None
         reason, _ = result
@@ -601,7 +607,7 @@ class TestExitTriggers:
             vix_current=18,
             regime_score=52,
             qqq_price=480,
-            current_time=datetime(2025, 3, 5, 11, 0),  # Wednesday
+            current_time=datetime(2025, 3, 12, 11, 0),  # Past hold guard, Wednesday
         )
         assert result is None
 
@@ -1375,3 +1381,290 @@ class TestExitSignalStructure:
         sides = {sig.metadata.get("spread_side") for sig in signals}
         assert "PUT_CREDIT_CLOSE" in sides
         assert "CALL_CREDIT_CLOSE" in sides
+
+
+# ═══════════════════════════════════════════════════════════════════
+# HOLD GUARD TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestHoldGuard:
+    """Test DTE-adaptive hold guard that blocks premature exits."""
+
+    # Entry: 2025-03-01 11:00:00, entry_dte=30
+    # hold_days = ceil(30 * 0.33) = 10 → hold_minutes = 14400
+    # Hold expires: 2025-03-11 11:00:00
+
+    def test_hold_guard_blocks_stop_loss_during_hold(self):
+        """P3 stop loss blocked within hold window."""
+        engine = _make_engine()
+        condor = _make_condor(net_credit=1.20, num_spreads=2)
+        # credit_100 = 240; 150% stop = 360 loss
+        # Within hold: 3 days after entry
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=-370,  # Would trigger P3 stop but held in guard
+            current_dte=20,
+            vix_current=18,
+            regime_score=52,
+            qqq_price=480,
+            current_time=datetime(2025, 3, 4, 11, 0),  # 3 days in
+        )
+        assert result is None
+
+    def test_hold_guard_blocks_wing_breach_during_hold(self):
+        """P4 wing breach blocked within hold window."""
+        engine = _make_engine()
+        condor = _make_condor(qqq_price=480)
+        # short_put_strike = 470; QQQ at 460 → 2.17% ITM > 2% threshold
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=-100,
+            current_dte=20,
+            vix_current=18,
+            regime_score=52,
+            qqq_price=460,
+            current_time=datetime(2025, 3, 4, 11, 0),  # Within hold
+        )
+        assert result is None
+
+    def test_hold_guard_blocks_regime_break_during_hold(self):
+        """P6 regime break blocked within hold window."""
+        engine = _make_engine()
+        condor = _make_condor()
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=-50,
+            current_dte=20,
+            vix_current=18,
+            regime_score=35,  # Below regime_min(45) - buffer(5) = 40
+            qqq_price=480,
+            current_time=datetime(2025, 3, 4, 11, 0),
+        )
+        assert result is None
+
+    def test_hold_guard_blocks_friday_close_during_hold(self):
+        """P7 Friday close blocked within hold window."""
+        engine = _make_engine()
+        condor = _make_condor()
+        # 2025-03-07 is a Friday, only 6 days after entry (within 10-day hold)
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=-20,
+            current_dte=13,  # < IC_FRIDAY_CLOSE_DTE=14
+            vix_current=18,
+            regime_score=52,
+            qqq_price=480,
+            current_time=datetime(2025, 3, 7, 11, 0),  # Friday, within hold
+        )
+        assert result is None
+
+    def test_hold_guard_allows_vix_spike_during_hold(self):
+        """P0 VIX spike always fires (pre-guard)."""
+        engine = _make_engine()
+        condor = _make_condor()
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=-50,
+            current_dte=20,
+            vix_current=35,  # >= IC_VIX_SPIKE_EXIT=30
+            regime_score=52,
+            qqq_price=480,
+            current_time=datetime(2025, 3, 2, 11, 0),  # 1 day after entry
+        )
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_VIX_SPIKE
+
+    def test_hold_guard_allows_assignment_risk_during_hold(self):
+        """P8 assignment risk always fires (pre-guard)."""
+        engine = _make_engine()
+        condor = _make_condor(qqq_price=480)
+        # short_put_strike = 470; QQQ at 469 → put_itm = (470-469)/469 > 0
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=-50,
+            current_dte=2,  # <= IC_DIVIDEND_GUARD_DTE=3
+            vix_current=18,
+            regime_score=52,
+            qqq_price=469,  # Put short strike ITM
+            current_time=datetime(2025, 3, 2, 11, 0),  # Within hold
+        )
+        assert result is not None
+        reason, _ = result
+        assert reason == "IC_ASSIGNMENT_RISK"
+
+    def test_hold_guard_hard_stop_fires_during_hold(self):
+        """Loss > 2.5× credit triggers hard stop during hold."""
+        engine = _make_engine()
+        condor = _make_condor(net_credit=1.20, num_spreads=2)
+        # credit_100 = 240; hard stop = 2.5 × 240 = 600
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=-610,  # loss_pct = 610/240 = 2.54× > 2.5×
+            current_dte=20,
+            vix_current=18,
+            regime_score=52,
+            qqq_price=480,
+            current_time=datetime(2025, 3, 4, 11, 0),  # Within hold
+        )
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_HARD_STOP_HOLD
+
+    def test_hold_guard_eod_gate_fires_during_hold(self):
+        """Loss > 1.5× credit at 15:45+ triggers EOD gate during hold."""
+        engine = _make_engine()
+        condor = _make_condor(net_credit=1.20, num_spreads=2)
+        # credit_100 = 240; EOD gate = 1.5 × 240 = 360
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=-370,  # loss_pct = 370/240 = 1.54× > 1.5×
+            current_dte=20,
+            vix_current=18,
+            regime_score=52,
+            qqq_price=480,
+            current_time=datetime(2025, 3, 4, 15, 50),  # 15:50 = EOD, held > 4h
+        )
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_EOD_HOLD_GATE
+
+    def test_hold_guard_eod_gate_requires_min_hold(self):
+        """EOD gate blocked if held < IC_HOLD_EOD_GATE_MIN_MINUTES (240 min)."""
+        engine = _make_engine()
+        # Entry at 12:00, check at 15:50 = only 230 min < 240 min threshold
+        condor = _make_condor(
+            net_credit=1.20,
+            num_spreads=2,
+            entry_time="2025-03-01 12:00:00",
+        )
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=-370,  # Would trigger EOD gate if min hold met
+            current_dte=20,
+            vix_current=18,
+            regime_score=52,
+            qqq_price=480,
+            current_time=datetime(2025, 3, 1, 15, 50),  # Same day, 230 min
+        )
+        # EOD gate can't fire (held < 240 min), but also within hold guard
+        # so cascade is blocked → None
+        assert result is None
+
+    def test_hold_guard_profitable_bypass(self):
+        """Profitable condor during hold → profit target can fire."""
+        engine = _make_engine()
+        condor = _make_condor(net_credit=1.20, num_spreads=2)
+        # credit_100 = 240; target = 60% = 144
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=150,  # > 144 → profit target fires
+            current_dte=20,
+            vix_current=18,
+            regime_score=52,
+            qqq_price=480,
+            current_time=datetime(2025, 3, 4, 11, 0),  # Within hold, but profitable
+        )
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_PROFIT_TARGET
+
+    def test_hold_guard_expires_after_window(self):
+        """After hold window, full cascade runs normally."""
+        engine = _make_engine()
+        condor = _make_condor(net_credit=1.20, num_spreads=2)
+        # credit_100 = 240; stop = 150% = 360
+        # Hold window: 10 days. Check at day 11.
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=-370,  # > 360 loss → P3 fires
+            current_dte=15,
+            vix_current=18,
+            regime_score=52,
+            qqq_price=480,
+            current_time=datetime(2025, 3, 12, 11, 0),  # Day 11, past hold
+        )
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_STOP_LOSS
+
+    def test_hold_guard_dte_adaptive_21dte(self):
+        """21 DTE entry → hold = ceil(21 × 0.33) = 7 days."""
+        engine = _make_engine()
+        condor = _make_condor(entry_dte=21)
+        # Hold = 7 days = 10080 min. Entry: Mar 1 11:00
+        # Day 6 (Mar 7): still within hold → blocked
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=-370,  # Would trigger stop
+            current_dte=15,
+            vix_current=18,
+            regime_score=52,
+            qqq_price=480,
+            current_time=datetime(2025, 3, 7, 11, 0),  # 6 days in
+        )
+        assert result is None
+
+        # Day 8 (Mar 9): past hold → cascade fires
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=-370,
+            current_dte=15,
+            vix_current=18,
+            regime_score=52,
+            qqq_price=480,
+            current_time=datetime(2025, 3, 9, 11, 0),  # 8 days in, past 7-day hold
+        )
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_STOP_LOSS
+
+    def test_hold_guard_dte_adaptive_45dte(self):
+        """45 DTE entry → hold = min(ceil(45 × 0.33), 15) = 15 days (capped)."""
+        engine = _make_engine()
+        condor = _make_condor(entry_dte=45)
+        # Hold = 15 days (cap). Entry: Mar 1 11:00
+        # Day 14 (Mar 15): still within hold → blocked
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=-370,
+            current_dte=25,
+            vix_current=18,
+            regime_score=52,
+            qqq_price=480,
+            current_time=datetime(2025, 3, 15, 11, 0),  # 14 days in
+        )
+        assert result is None
+
+        # Day 16 (Mar 17): past hold → cascade fires
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=-370,
+            current_dte=25,
+            vix_current=18,
+            regime_score=52,
+            qqq_price=480,
+            current_time=datetime(2025, 3, 17, 11, 0),  # 16 days in, past 15-day hold
+        )
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_STOP_LOSS
+
+    def test_hold_guard_disabled_config(self):
+        """IC_HOLD_GUARD_ENABLED=False disables hold guard entirely."""
+        engine = _make_engine()
+        condor = _make_condor(net_credit=1.20, num_spreads=2)
+        with _patch_config(IC_HOLD_GUARD_ENABLED=False):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-370,  # Would trigger P3 stop
+                current_dte=20,
+                vix_current=18,
+                regime_score=52,
+                qqq_price=480,
+                current_time=datetime(2025, 3, 4, 11, 0),  # Within hold window
+            )
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_STOP_LOSS

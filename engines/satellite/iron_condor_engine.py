@@ -20,6 +20,7 @@ Managed-exit WR math:
 
 from __future__ import annotations
 
+import math
 import uuid
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -73,6 +74,8 @@ EXIT_IC_REGIME_BREAK = "IC_REGIME_BREAK"
 EXIT_IC_FRIDAY_CLOSE = "IC_FRIDAY_CLOSE"
 EXIT_IC_DAILY_LOSS_STOP = "IC_DAILY_LOSS_STOP"
 EXIT_IC_ASSIGNMENT_RISK = "IC_ASSIGNMENT_RISK"
+EXIT_IC_HARD_STOP_HOLD = "IC_HARD_STOP_DURING_HOLD"
+EXIT_IC_EOD_HOLD_GATE = "IC_EOD_HOLD_RISK_GATE"
 
 
 class IronCondorEngine:
@@ -94,6 +97,7 @@ class IronCondorEngine:
         self._pending_entry_since: Optional[datetime] = None
         self._regime_neutral_bars: int = 0  # Consecutive neutral-regime bars
         self._last_scan_time: Optional[str] = None  # Scan throttle timestamp
+        self._hold_guard_logged: set = set()  # Suppress repeat hold guard logs
 
         # ── Diagnostics ──
         self._diag_candidates: int = 0
@@ -806,6 +810,7 @@ class IronCondorEngine:
             regime_at_entry=regime_score,
             entry_vix=vix_current,
             entry_adx=adx_value,
+            entry_dte=min(short_put.days_to_expiry, short_call.days_to_expiry),
             entry_cw_tier=cw_tier,
             stop_dw=stop_dw,
             implied_wr_be=implied_wr,
@@ -919,33 +924,112 @@ class IronCondorEngine:
     ) -> Optional[Tuple[str, List[TargetWeight]]]:
         """Check exit conditions for a single condor. Returns (reason, signals) or None.
 
-        Exit cascade (priority order):
-          P0: VIX Spike → emergency close
-          P1: Daily loss stop → close all IC
-          P2: Profit target → 60% of credit captured
-          P3: Stop loss → 150% of credit lost
-          P4: Wing breach → short strike ITM
-          P5: Time exit → DTE <= 5
-          P6: Regime break → regime outside neutral zone + buffer
-          P7: Friday close → DTE < 8 heading into weekend
-          P8: Assignment risk → short leg deep ITM
+        Exit cascade with DTE-adaptive hold guard:
+
+          PRE-GUARD (always fire):
+            P0: VIX Spike → emergency close
+            P8: Assignment risk → short leg ITM near expiry
+
+          HOLD GUARD (position age < DTE-adaptive hold window):
+            Emergency: Hard stop during hold (2.5× credit)
+            EOD gate: De-risk at 15:45+ if held >= 4h (1.5× credit)
+            Bypass: Profitable → fall through to main cascade
+            Default: Block P2-P7
+
+          POST-GUARD (full cascade after hold expires):
+            P2: Profit target → 60% of credit captured
+            P3: Stop loss → 150% of credit lost
+            P4: Wing breach → short strike 2% ITM
+            P5: Time exit → DTE <= 10
+            P6: Regime break → regime outside neutral zone + buffer
+            P7: Friday close → DTE < 14 heading into weekend
 
         No adjustments in v1: close only, never morph into single spread.
         """
         if condor.is_closing:
             return None
 
-        # ── P0: VIX Spike ──
+        credit_100 = condor.net_credit * 100 * condor.num_spreads
+        loss_pct_of_credit = (
+            (-combined_pnl / credit_100) if (credit_100 > 0 and combined_pnl < 0) else 0.0
+        )
+
+        # ── PRE-GUARD: P0 — VIX Spike (always fires) ──
         vix_spike_threshold = float(getattr(config, "IC_VIX_SPIKE_EXIT", 30.0))
         if vix_current >= vix_spike_threshold:
             return self._build_exit(condor, EXIT_IC_VIX_SPIKE, current_time)
 
+        # ── PRE-GUARD: P8 — Assignment risk (always fires) ──
+        div_guard_dte = int(getattr(config, "IC_DIVIDEND_GUARD_DTE", 3))
+        if current_dte <= div_guard_dte:
+            put_itm = (condor.put_short_strike - qqq_price) / qqq_price if qqq_price > 0 else 0
+            call_itm = (qqq_price - condor.call_short_strike) / qqq_price if qqq_price > 0 else 0
+            if put_itm > 0 or call_itm > 0:
+                return self._build_exit(condor, EXIT_IC_ASSIGNMENT_RISK, current_time)
+
         # ── P1: Daily loss stop ──
         # Checked at engine level in run_exit_cycle, not per-position
 
+        # ── HOLD GUARD (DTE-adaptive) ──
+        if bool(getattr(config, "IC_HOLD_GUARD_ENABLED", True)):
+            entry_dt = datetime.strptime(condor.entry_time[:19], "%Y-%m-%d %H:%M:%S")
+            live_minutes = (current_time - entry_dt).total_seconds() / 60.0
+
+            # Compute DTE-adaptive hold window
+            fraction = float(getattr(config, "IC_HOLD_GUARD_DTE_FRACTION", 0.33))
+            min_days = int(getattr(config, "IC_HOLD_GUARD_MIN_DAYS", 5))
+            max_days = int(getattr(config, "IC_HOLD_GUARD_MAX_DAYS", 15))
+            hold_days = max(min_days, min(max_days, math.ceil(condor.entry_dte * fraction)))
+            hold_minutes = hold_days * 1440
+
+            if live_minutes < hold_minutes:
+                # Layer 1: Hard stop during hold — catastrophic loss only
+                hard_stop_mult = float(getattr(config, "IC_HOLD_HARD_STOP_CREDIT_MULT", 2.50))
+                if loss_pct_of_credit >= hard_stop_mult:
+                    self._log(
+                        f"IC_HARD_STOP_DURING_HOLD: loss={loss_pct_of_credit:.2f}x >= "
+                        f"{hard_stop_mult:.2f}x | id={condor.condor_id} "
+                        f"| held={live_minutes:.0f}m/{hold_minutes}m",
+                        trades_only=True,
+                    )
+                    return self._build_exit(condor, EXIT_IC_HARD_STOP_HOLD, current_time)
+
+                # Layer 2: EOD risk gate during hold — overnight de-risk
+                eod_enabled = bool(getattr(config, "IC_HOLD_EOD_GATE_ENABLED", True))
+                eod_min_min = int(getattr(config, "IC_HOLD_EOD_GATE_MIN_MINUTES", 240))
+                if eod_enabled and live_minutes >= eod_min_min:
+                    is_eod = current_time.hour > 15 or (
+                        current_time.hour == 15 and current_time.minute >= 45
+                    )
+                    eod_mult = float(getattr(config, "IC_HOLD_EOD_GATE_CREDIT_MULT", 1.50))
+                    if is_eod and loss_pct_of_credit >= eod_mult:
+                        self._log(
+                            f"IC_EOD_HOLD_RISK_GATE: loss={loss_pct_of_credit:.2f}x >= "
+                            f"{eod_mult:.2f}x at EOD | id={condor.condor_id}",
+                            trades_only=True,
+                        )
+                        return self._build_exit(condor, EXIT_IC_EOD_HOLD_GATE, current_time)
+
+                # Layer 3: Profitable bypass — let profit target run
+                if combined_pnl > 0:
+                    pass  # fall through to main cascade
+                else:
+                    # BLOCK: suppress P2-P7 during hold
+                    if condor.condor_id not in self._hold_guard_logged:
+                        self._hold_guard_logged.add(condor.condor_id)
+                        self._log(
+                            f"IC_HOLD_GUARD: blocking cascade | id={condor.condor_id} "
+                            f"| entry_dte={condor.entry_dte} | hold={hold_days}d "
+                            f"| held={live_minutes:.0f}m/{hold_minutes}m "
+                            f"| loss={loss_pct_of_credit:.2f}x",
+                            trades_only=True,
+                        )
+                    return None
+
+        # ── POST-GUARD: Main cascade ──
+
         # ── P2: Profit target ──
         target_pct = float(getattr(config, "IC_TARGET_CAPTURE_PCT", 0.60))
-        credit_100 = condor.net_credit * 100 * condor.num_spreads
         if credit_100 > 0:
             pnl_pct_of_credit = combined_pnl / credit_100
             if pnl_pct_of_credit >= target_pct:
@@ -953,10 +1037,8 @@ class IronCondorEngine:
 
         # ── P3: Stop loss ──
         stop_mult = float(getattr(config, "IC_STOP_LOSS_MULTIPLE", 1.50))
-        if credit_100 > 0:
-            loss_pct_of_credit = -combined_pnl / credit_100 if combined_pnl < 0 else 0
-            if loss_pct_of_credit >= stop_mult:
-                return self._build_exit(condor, EXIT_IC_STOP_LOSS, current_time)
+        if loss_pct_of_credit >= stop_mult:
+            return self._build_exit(condor, EXIT_IC_STOP_LOSS, current_time)
 
         # ── P4: Wing breach (short strike ITM) ──
         itm_exit_pct = float(getattr(config, "IC_SHORT_ITM_EXIT_PCT", 0.02))
@@ -985,14 +1067,6 @@ class IronCondorEngine:
         friday_close_dte = int(getattr(config, "IC_FRIDAY_CLOSE_DTE", 8))
         if current_time.weekday() == 4 and current_dte < friday_close_dte:
             return self._build_exit(condor, EXIT_IC_FRIDAY_CLOSE, current_time)
-
-        # ── P8: Assignment risk ──
-        # Deep ITM check beyond wing breach (e.g., near ex-div)
-        div_guard_dte = int(getattr(config, "IC_DIVIDEND_GUARD_DTE", 3))
-        if current_dte <= div_guard_dte:
-            # Check if any short leg is meaningfully ITM
-            if put_itm_depth > 0 or call_itm_depth > 0:
-                return self._build_exit(condor, EXIT_IC_ASSIGNMENT_RISK, current_time)
 
         return None
 
@@ -1306,6 +1380,7 @@ class IronCondorEngine:
             if self._pending_entry_since
             else None,
             "regime_neutral_bars": self._regime_neutral_bars,
+            "hold_guard_logged": list(self._hold_guard_logged),
             "diag_candidates": self._diag_candidates,
             "diag_approved": self._diag_approved,
             "diag_dropped": self._diag_dropped,
@@ -1351,6 +1426,7 @@ class IronCondorEngine:
         else:
             self._pending_entry_since = None
         self._regime_neutral_bars = int(state.get("regime_neutral_bars", 0) or 0)
+        self._hold_guard_logged = set(state.get("hold_guard_logged", []) or [])
         # Diagnostics
         self._diag_candidates = int(state.get("diag_candidates", 0) or 0)
         self._diag_approved = int(state.get("diag_approved", 0) or 0)
@@ -1372,6 +1448,7 @@ class IronCondorEngine:
         self._pending_entry_since = None
         self._regime_neutral_bars = 0
         self._last_scan_time = None
+        self._hold_guard_logged = set()
         # Reset daily diagnostics
         self._diag_candidates = 0
         self._diag_approved = 0
@@ -1391,6 +1468,7 @@ class IronCondorEngine:
         self._pending_fills = {}
         self._pending_entry_since = None
         self._regime_neutral_bars = 0
+        self._hold_guard_logged = set()
         self._diag_candidates = 0
         self._diag_approved = 0
         self._diag_dropped = 0

@@ -2369,6 +2369,18 @@ IC_LOSS_BREAKER_PAUSE_DAYS = 1  # Pause duration in calendar days
 IC_SHORT_ITM_EXIT_PCT = 0.02  # Exit wing when short strike is 2% ITM
 IC_DIVIDEND_GUARD_DTE = 3  # Close before ex-div if DTE <= this
 
+# ── IC Hold Guard (DTE-adaptive) ──
+# Holds suppress P2-P7 exits until theta has accumulated ~18.4% of total decay.
+# Formula: hold_days = clamp(ceil(entry_dte × fraction), min, max)
+IC_HOLD_GUARD_ENABLED = True
+IC_HOLD_GUARD_DTE_FRACTION = 0.33  # Hold for 1/3 of entry DTE (→ 18.4% theta cushion)
+IC_HOLD_GUARD_MIN_DAYS = 5  # Minimum 5 calendar days hold
+IC_HOLD_GUARD_MAX_DAYS = 15  # Maximum 15 calendar days hold
+IC_HOLD_HARD_STOP_CREDIT_MULT = 2.50  # During hold: exit only if loss > 2.5× credit
+IC_HOLD_EOD_GATE_ENABLED = True  # EOD de-risk during hold
+IC_HOLD_EOD_GATE_CREDIT_MULT = 1.50  # At EOD during hold: exit if loss > 1.5× credit
+IC_HOLD_EOD_GATE_MIN_MINUTES = 240  # Min hold before EOD gate can fire (4h)
+
 # V3.0: Minimum margin percentage to allow options trading
 # Replaces hardcoded $1,000 check in main.py
 OPTIONS_MIN_MARGIN_PCT = 0.02  # 2% of portfolio minimum margin to trade options

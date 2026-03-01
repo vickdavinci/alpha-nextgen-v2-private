@@ -44,6 +44,7 @@ class IronCondorPosition:
     regime_at_entry: float
     entry_vix: float
     entry_adx: float
+    entry_dte: int = 30  # DTE at entry, drives hold guard duration
     condor_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
     # ── Lifecycle ──
@@ -92,6 +93,7 @@ class IronCondorPosition:
             "regime_at_entry": self.regime_at_entry,
             "entry_vix": self.entry_vix,
             "entry_adx": self.entry_adx,
+            "entry_dte": self.entry_dte,
             "condor_id": self.condor_id,
             "is_closing": self.is_closing,
             "highest_pnl_pct": self.highest_pnl_pct,
@@ -117,6 +119,7 @@ class IronCondorPosition:
             regime_at_entry=data["regime_at_entry"],
             entry_vix=data["entry_vix"],
             entry_adx=data.get("entry_adx", 0.0),
+            entry_dte=int(data.get("entry_dte", 30)),
             condor_id=data.get("condor_id", uuid.uuid4().hex[:12]),
             is_closing=data.get("is_closing", False),
             highest_pnl_pct=data.get("highest_pnl_pct", 0.0),
