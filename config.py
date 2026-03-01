@@ -2262,6 +2262,98 @@ INTRADAY_ITM_MAX_DOLLARS = 0  # V12.15: disable fixed-dollar clamp; ITM uses per
 INTRADAY_OTM_MAX_PCT = 0.10  # OTM budget slice (10% / $10k on $100k)
 INTRADAY_OTM_MAX_DOLLARS = 0  # V12.15: disable fixed-dollar clamp; MICRO uses percent budget
 
+# =============================================================================
+# IRON CONDOR ENGINE (IC) — VIX-Adaptive Non-Directional
+# =============================================================================
+# Sells OTM put + call credit spreads simultaneously (iron condor).
+# Profits from QQQ staying in a range. Neutral-regime-only strategy.
+#
+# Managed-exit WR math:
+#   win  = IC_TARGET_CAPTURE_PCT * credit  (60% of credit)
+#   loss = IC_STOP_LOSS_MULTIPLE  * credit (150% of credit)
+#   WR_be = 1.50 / (1.50 + 0.60) = 71.4%
+#   Target realized WR >= 74-75% after friction.
+# =============================================================================
+
+# ── Feature flag ──
+IRON_CONDOR_ENGINE_ENABLED = False  # Off by default until backtest-validated
+
+# ── Regime / environment gates ──
+IC_REGIME_MIN = 45  # Neutral zone lower bound
+IC_REGIME_MAX = 60  # Neutral zone upper bound (tighter than directional)
+IC_REGIME_PERSISTENCE_BARS = 3  # Require N consecutive neutral bars before entry
+IC_VIX_MIN = 14.0  # Minimum VIX — need enough premium
+IC_VIX_MAX = 32.0  # Max VIX — too volatile for range thesis
+IC_ADX_MAX = 20.0  # Block when strong trend (ADX > threshold)
+IC_EVENT_DAY_BLOCK_ENABLED = True  # Block entries on CPI/FOMC/major macro days
+
+# ── Entry timing ──
+IC_ENTRY_START_HOUR = 10  # Earliest entry hour (ET)
+IC_ENTRY_START_MINUTE = 15  # Earliest entry minute
+IC_ENTRY_END_HOUR = 14  # Latest entry hour (ET)
+IC_ENTRY_END_MINUTE = 30  # Latest entry minute
+
+# ── DTE window ──
+IC_DTE_MIN = 10  # Minimum DTE
+IC_DTE_MAX = 21  # Maximum DTE
+
+# ── Strike selection: short-leg delta range ──
+IC_SHORT_DELTA_MIN = 0.12  # Minimum abs delta for short strikes
+IC_SHORT_DELTA_MAX = 0.16  # Maximum abs delta for short strikes
+IC_DELTA_SYMMETRY_MAX = 0.03  # Max abs(|call_delta| - |put_delta|) for symmetry
+IC_WING_SYMMETRY_MAX = 1.0  # Max abs(call_width - put_width) in dollars
+
+# ── Wing width by VIX tier ──
+IC_WING_WIDTH_LOW_VIX = 3  # VIX < 16: $3 wings
+IC_WING_WIDTH_MID_VIX = 4  # 16 <= VIX <= 25: $4 wings
+IC_WING_WIDTH_HIGH_VIX = 5  # 25 < VIX <= 32: $5 wings
+IC_WING_WIDTH_FALLBACK_TOLERANCE = 1  # Accept ±$1 if exact width unavailable
+
+# ── Credit quality / C/W gates (VIX-tiered) ──
+IC_MIN_CREDIT_TO_WIDTH = 0.20  # Default C/W floor
+IC_CW_FLOOR_LOW_VIX = 0.22  # C/W floor when VIX < 16
+IC_CW_FLOOR_MID_VIX = 0.20  # C/W floor when 16 <= VIX <= 25
+IC_CW_FLOOR_HIGH_VIX = 0.18  # C/W floor when 25 < VIX <= 32
+IC_MAX_IMPLIED_WR = 0.82  # Reject if implied expiry WR > 82% (too thin premium)
+IC_MAX_STOP_DW = 0.65  # Max stop D/W ceiling (2.5*C / W must be <= this)
+
+# ── Liquidity / mark quality ──
+IC_MIN_OPEN_INTEREST = 100  # Minimum OI per leg
+IC_MIN_VOLUME = 10  # Minimum volume per leg
+IC_MAX_SPREAD_PCT = 0.30  # Max bid-ask spread % per leg
+IC_MAX_COMBO_SLIPPAGE = 0.15  # Max expected combo slippage as fraction of credit
+
+# ── Contract search ──
+IC_MIN_POOL_DEPTH = 3  # Min candidates per side before construction
+IC_MAX_SEARCH_PASSES = 2  # Max search passes (strict then relaxed)
+IC_MAX_CANDIDATE_COMBOS = 50  # Cap on candidate combinations to prevent scan blowup
+
+# ── Exit parameters ──
+IC_TARGET_CAPTURE_PCT = 0.60  # Close at 60% of credit captured
+IC_STOP_LOSS_MULTIPLE = 1.50  # Stop at 150% of credit lost
+IC_TIME_EXIT_DTE = 5  # Close by 5 DTE (gamma risk)
+IC_VIX_SPIKE_EXIT = 30.0  # Emergency exit on VIX spike above this
+IC_FRIDAY_CLOSE_DTE = 8  # Close before weekend if DTE < 8
+IC_REGIME_EXIT_BUFFER = 5  # Exit if regime goes IC_REGIME_MIN - buffer or IC_REGIME_MAX + buffer
+
+# ── Capital / risk model ──
+IC_HARD_BUDGET_DOLLARS = 10000  # Hard cap on IC capital
+IC_OPEN_RISK_PCT = 0.03  # Max open IC risk as % of portfolio (3%)
+IC_PER_TRADE_RISK_PCT = 0.01  # Per-trade max risk as % of portfolio (1%)
+IC_DAILY_LOSS_PCT = 0.015  # Daily IC loss stop (1.5% of portfolio)
+
+# ── Position limits ──
+IC_MAX_CONCURRENT = 2  # Max simultaneous iron condors
+IC_MAX_TRADES_PER_DAY = 2  # Daily entry cap
+
+# ── Loss breaker ──
+IC_LOSS_BREAKER_CONSECUTIVE = 3  # Pause after N consecutive losses
+IC_LOSS_BREAKER_PAUSE_DAYS = 1  # Pause duration in calendar days
+
+# ── Assignment safety ──
+IC_SHORT_ITM_EXIT_PCT = 0.02  # Exit wing when short strike is 2% ITM
+IC_DIVIDEND_GUARD_DTE = 3  # Close before ex-div if DTE <= this
+
 # V3.0: Minimum margin percentage to allow options trading
 # Replaces hardcoded $1,000 check in main.py
 OPTIONS_MIN_MARGIN_PCT = 0.02  # 2% of portfolio minimum margin to trade options

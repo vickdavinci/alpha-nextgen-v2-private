@@ -610,7 +610,7 @@ def clear_all_positions_impl(self) -> None:
     ):
         self._intraday_position = None
         self._intraday_position_engine = None
-        self._intraday_positions = {"MICRO": [], "ITM": []}
+        self._intraday_positions = {"IC": [], "MICRO": [], "ITM": []}
         cleared.append("intraday")
 
     # V2.16-BT: Also clear swing position (V2.1.1 dual-mode)

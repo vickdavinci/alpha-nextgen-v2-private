@@ -177,9 +177,9 @@ class TestMicroRegimeEnum:
 class TestIntradayStrategyEnum:
     """Tests for IntradayStrategy enum."""
 
-    def test_intraday_strategy_has_eight_values(self):
-        """IntradayStrategy should include legacy + canonical micro strategy aliases."""
-        assert len(IntradayStrategy) == 8
+    def test_intraday_strategy_has_nine_values(self):
+        """IntradayStrategy should include legacy + canonical micro strategy aliases + IC."""
+        assert len(IntradayStrategy) == 9
 
     def test_intraday_strategy_expected_values(self):
         """IntradayStrategy should have specific expected values."""
@@ -192,6 +192,7 @@ class TestIntradayStrategyEnum:
             "CREDIT_SPREAD",
             "ITM_MOMENTUM",
             "PROTECTIVE_PUTS",
+            "IRON_CONDOR",
         }
         actual = {s.name for s in IntradayStrategy}
         assert actual == expected

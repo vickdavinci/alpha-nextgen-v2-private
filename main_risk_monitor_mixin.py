@@ -25,6 +25,12 @@ class MainRiskMonitorMixin:
         # V2.3: Check spread exit conditions if we have a spread position
         if self.options_engine.has_spread_position():
             self._check_spread_exit(data)
+
+        # IC exit cycle: check all open iron condor positions
+        if bool(getattr(config, "IRON_CONDOR_ENGINE_ENABLED", False)):
+            self._check_iron_condor_exits()
+
+        if self.options_engine.has_spread_position():
             return  # Spread exit handling is separate from single-leg Greeks
 
         # CRITICAL: Fetch FRESH Greeks from OptionChain (not cached values)

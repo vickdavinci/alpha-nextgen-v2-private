@@ -179,6 +179,7 @@ class PortfolioRouter:
         "TREND": config.TREND_TOTAL_ALLOCATION,  # 55% max (was 70%)
         "OPT": config.OPTIONS_SWING_ALLOCATION,  # Swing options share of total portfolio
         "OPT_INTRADAY": config.OPTIONS_INTRADAY_ALLOCATION,  # Intraday options share
+        "OPT_IC": float(getattr(config, "IC_OPEN_RISK_PCT", 0.03)),  # Iron condor risk allocation
         "MR": config.MR_TOTAL_ALLOCATION,  # 10% max
         "HEDGE": 0.30,  # Hedge: 30% max (TMF 20% + PSQ 10%)
         "COLD_START": 0.35,  # Cold Start: 35% max (subset of TREND)
@@ -2748,7 +2749,9 @@ class PortfolioRouter:
                 elif metadata.get("spread_type"):
                     source_tag = f"VASS:{metadata.get('spread_type')}"
         if not source_tag and sources:
-            if "OPT_INTRADAY" in sources:
+            if "OPT_IC" in sources:
+                source_tag = "OPT_IC"
+            elif "OPT_INTRADAY" in sources:
                 inferred_lane = ""
                 if metadata:
                     inferred_lane, _ = self._extract_options_lane_and_strategy(metadata)
@@ -2803,10 +2806,10 @@ class PortfolioRouter:
         lane, _ = self._extract_options_lane_and_strategy(md) if md else ("", "")
         lane = str(lane or "").upper()
         inferred_lane = (
-            lane if lane in {"ITM", "MICRO"} else self._infer_options_lane_from_symbol(symbol)
+            lane if lane in {"IC", "ITM", "MICRO"} else self._infer_options_lane_from_symbol(symbol)
         )
 
-        if upper in {"OPT_ITM", "OPT_MICRO", "OPT_VASS", "OPT_UNKNOWN"}:
+        if upper in {"OPT_IC", "OPT_ITM", "OPT_MICRO", "OPT_VASS", "OPT_UNKNOWN"}:
             return upper
         if upper == "RISK" and self._is_option_symbol(str(symbol or "")):
             if inferred_lane in {"ITM", "MICRO"}:
@@ -2891,10 +2894,14 @@ class PortfolioRouter:
 
         if not lane:
             trace_source = str(metadata.get("trace_source", "") or "").strip().upper()
-            if trace_source.startswith("ITM"):
+            if trace_source.startswith("IC:") or trace_source.startswith("IC_"):
+                lane = "IC"
+            elif trace_source.startswith("ITM"):
                 lane = "ITM"
             elif trace_source.startswith("MICRO"):
                 lane = "MICRO"
+            elif "IRON_CONDOR" in strategy:
+                lane = "IC"
             elif "ITM" in strategy:
                 lane = "ITM"
             elif strategy and strategy not in {"UNCLASSIFIED", "NO_TRADE", "UNKNOWN"}:
@@ -2945,6 +2952,11 @@ class PortfolioRouter:
             agg_key = symbol
             if is_spread_close and short_symbol:
                 agg_key = f"{symbol}::SPREAD::{short_symbol}"
+            elif source == "OPT_IC":
+                condor_id = ""
+                if isinstance(weight.metadata, dict):
+                    condor_id = str(weight.metadata.get("condor_id", ""))
+                agg_key = f"{symbol}::IC::{condor_id}" if condor_id else f"{symbol}::IC"
             elif source == "OPT_INTRADAY":
                 lane_tag = ""
                 if isinstance(weight.metadata, dict):

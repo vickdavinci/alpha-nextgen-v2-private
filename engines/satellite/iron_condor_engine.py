@@ -1,0 +1,1150 @@
+"""Iron Condor Engine — VIX-Adaptive Non-Directional Options Strategy.
+
+Sells symmetric OTM credit spreads on both sides of QQQ (put credit + call credit)
+to collect premium in neutral/range-bound regimes. Profits from time decay when
+QQQ stays between the short strikes.
+
+Architecture:
+  - Signal-only engine: emits TargetWeight objects, never places orders.
+  - Fully lane-isolated: lane=IC, strategy=IRON_CONDOR, source=OPT_IC.
+  - Two-stage entry funnel: IC_ENV_OK → IC_STRUCTURE_OK.
+  - Two-phase contract search: build pools → construct complete condors → rank.
+  - No partial/single-spread fallback — full condor or no trade.
+
+Managed-exit WR math:
+  win  = 0.60 * C  (IC_TARGET_CAPTURE_PCT)
+  loss = 1.50 * C  (IC_STOP_LOSS_MULTIPLE)
+  WR_be = 1.50 / (1.50 + 0.60) = 71.4%
+  Target realized WR >= 74-75% to cover friction.
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import config
+from engines.satellite.condor_models import IronCondorPosition
+from engines.satellite.options_primitives import OptionContract
+from models.enums import OptionDirection, Urgency
+from models.target_weight import TargetWeight
+
+# ── Reject reason codes ──
+R_IC_DISABLED = "R_IC_DISABLED"
+R_IC_REGIME_OUT_OF_RANGE = "R_IC_REGIME_OUT_OF_RANGE"
+R_IC_REGIME_NOT_PERSISTENT = "R_IC_REGIME_NOT_PERSISTENT"
+R_IC_TRANSITION_BLOCK = "R_IC_TRANSITION_BLOCK"
+R_IC_FAST_OVERLAY_STRESS = "R_IC_FAST_OVERLAY_STRESS"
+R_IC_VIX_OUT_OF_RANGE = "R_IC_VIX_OUT_OF_RANGE"
+R_IC_ADX_TOO_HIGH = "R_IC_ADX_TOO_HIGH"
+R_IC_EVENT_DAY_BLOCK = "R_IC_EVENT_DAY_BLOCK"
+R_IC_OUTSIDE_ENTRY_WINDOW = "R_IC_OUTSIDE_ENTRY_WINDOW"
+R_IC_POSITION_LIMIT = "R_IC_POSITION_LIMIT"
+R_IC_DAILY_TRADE_LIMIT = "R_IC_DAILY_TRADE_LIMIT"
+R_IC_BUDGET_EXCEEDED = "R_IC_BUDGET_EXCEEDED"
+R_IC_DAILY_LOSS_STOP = "R_IC_DAILY_LOSS_STOP"
+R_IC_LOSS_BREAKER_ACTIVE = "R_IC_LOSS_BREAKER_ACTIVE"
+R_IC_MARGIN_INSUFFICIENT = "R_IC_MARGIN_INSUFFICIENT"
+R_IC_NO_CHAIN = "R_IC_NO_CHAIN"
+R_IC_NO_PUT_POOL = "R_IC_NO_PUT_POOL"
+R_IC_NO_CALL_POOL = "R_IC_NO_CALL_POOL"
+R_IC_WING_NOT_FOUND_PUT = "R_IC_WING_NOT_FOUND_PUT"
+R_IC_WING_NOT_FOUND_CALL = "R_IC_WING_NOT_FOUND_CALL"
+R_IC_NO_COMPLETE_CONDOR = "R_IC_NO_COMPLETE_CONDOR"
+R_IC_CHAIN_QUALITY_FAIL = "R_IC_CHAIN_QUALITY_FAIL"
+R_IC_CW_BELOW_MIN = "R_IC_CW_BELOW_MIN"
+R_IC_STOP_DW_UNFEASIBLE = "R_IC_STOP_DW_UNFEASIBLE"
+R_IC_DELTA_ASYMMETRY = "R_IC_DELTA_ASYMMETRY"
+R_IC_WING_ASYMMETRY = "R_IC_WING_ASYMMETRY"
+R_IC_LIQUIDITY_FAIL = "R_IC_LIQUIDITY_FAIL"
+R_IC_SLIPPAGE_FAIL = "R_IC_SLIPPAGE_FAIL"
+R_IC_PER_TRADE_RISK_EXCEEDED = "R_IC_PER_TRADE_RISK_EXCEEDED"
+R_IC_PENDING_ENTRY = "R_IC_PENDING_ENTRY"
+
+# ── Exit reason codes ──
+EXIT_IC_VIX_SPIKE = "IC_VIX_SPIKE_EXIT"
+EXIT_IC_PROFIT_TARGET = "IC_PROFIT_TARGET"
+EXIT_IC_STOP_LOSS = "IC_STOP_LOSS"
+EXIT_IC_WING_BREACH_PUT = "IC_WING_BREACH_PUT"
+EXIT_IC_WING_BREACH_CALL = "IC_WING_BREACH_CALL"
+EXIT_IC_TIME_EXIT = "IC_TIME_EXIT"
+EXIT_IC_REGIME_BREAK = "IC_REGIME_BREAK"
+EXIT_IC_FRIDAY_CLOSE = "IC_FRIDAY_CLOSE"
+EXIT_IC_DAILY_LOSS_STOP = "IC_DAILY_LOSS_STOP"
+EXIT_IC_ASSIGNMENT_RISK = "IC_ASSIGNMENT_RISK"
+
+
+class IronCondorEngine:
+    """VIX-Adaptive Iron Condor engine for neutral-regime premium collection."""
+
+    def __init__(self, log_func: Optional[Callable[[str, bool], None]] = None):
+        self._log_func = log_func
+
+        # ── State ──
+        self._positions: List[IronCondorPosition] = []
+        self._trades_today: int = 0
+        self._daily_pnl: float = 0.0
+        self._consecutive_losses: int = 0
+        self._loss_breaker_pause_until: Optional[str] = None  # date string
+        self._pending_entry: bool = False
+        self._pending_condor_id: Optional[str] = None
+        self._regime_neutral_bars: int = 0  # Consecutive neutral-regime bars
+
+        # ── Diagnostics ──
+        self._diag_candidates: int = 0
+        self._diag_approved: int = 0
+        self._diag_dropped: int = 0
+        self._diag_drop_codes: Dict[str, int] = {}
+        self._diag_exit_reasons: Dict[str, int] = {}
+        self._diag_wins: int = 0
+        self._diag_losses: int = 0
+        self._diag_total_pnl: float = 0.0
+
+    # ── Logging ──
+
+    def _log(self, message: str, trades_only: bool = False) -> None:
+        if self._log_func:
+            text = str(message or "")
+            if text and not text.startswith("IC:"):
+                text = f"IC: {text}"
+            self._log_func(text, trades_only)
+
+    def _record_drop(self, code: str) -> None:
+        self._diag_dropped += 1
+        self._diag_drop_codes[code] = self._diag_drop_codes.get(code, 0) + 1
+
+    # ══════════════════════════════════════════════════════════════════════
+    # ENTRY LOGIC
+    # ══════════════════════════════════════════════════════════════════════
+
+    def run_entry_cycle(
+        self,
+        *,
+        chain,
+        qqq_price: float,
+        regime_score: float,
+        adx_value: float,
+        vix_current: float,
+        effective_portfolio_value: float,
+        transition_ctx: Dict[str, Any],
+        current_time: datetime,
+        margin_remaining: float,
+        ic_open_risk: float,
+        daily_pnl: float,
+    ) -> Optional[List[TargetWeight]]:
+        """Run IC entry cycle. Returns list of TargetWeight signals or None.
+
+        Two-stage funnel:
+          Stage 1 — IC_ENV_OK: regime, VIX, ADX, transition, event-day, timing
+          Stage 2 — IC_STRUCTURE_OK: contract search, C/W, D/W, delta/wing symmetry
+        """
+        self._diag_candidates += 1
+        self._daily_pnl = daily_pnl
+
+        # ── Stage 1: IC_ENV_OK ──
+        env_reject = self._check_env_gates(
+            regime_score=regime_score,
+            adx_value=adx_value,
+            vix_current=vix_current,
+            transition_ctx=transition_ctx,
+            current_time=current_time,
+            effective_portfolio_value=effective_portfolio_value,
+            margin_remaining=margin_remaining,
+            ic_open_risk=ic_open_risk,
+        )
+        if env_reject:
+            self._record_drop(env_reject)
+            return None
+
+        # ── Stage 2: IC_STRUCTURE_OK ──
+        condor = self._search_and_build_condor(
+            chain=chain,
+            qqq_price=qqq_price,
+            vix_current=vix_current,
+            regime_score=regime_score,
+            adx_value=adx_value,
+            current_time=current_time,
+            effective_portfolio_value=effective_portfolio_value,
+        )
+        if condor is None:
+            return None
+
+        # ── Build signals ──
+        self._diag_approved += 1
+        self._pending_entry = True
+        self._pending_condor_id = condor.condor_id
+        signals = self._build_entry_signals(condor, current_time)
+
+        self._log(
+            f"ENTRY_SIGNAL | condor_id={condor.condor_id} "
+            f"| put_short={condor.put_short_strike} call_short={condor.call_short_strike} "
+            f"| C/W={condor.credit_to_width:.3f} | credit=${condor.net_credit:.2f} "
+            f"| max_loss=${condor.max_loss:.2f} | spreads={condor.num_spreads} "
+            f"| VIX={vix_current:.1f} | regime={regime_score:.1f} | ADX={adx_value:.1f}",
+            trades_only=True,
+        )
+        return signals
+
+    def _check_env_gates(
+        self,
+        *,
+        regime_score: float,
+        adx_value: float,
+        vix_current: float,
+        transition_ctx: Dict[str, Any],
+        current_time: datetime,
+        effective_portfolio_value: float,
+        margin_remaining: float,
+        ic_open_risk: float,
+    ) -> Optional[str]:
+        """Check environmental gates. Returns reject code or None if all pass."""
+        # Gate: Engine enabled
+        if not bool(getattr(config, "IRON_CONDOR_ENGINE_ENABLED", False)):
+            return R_IC_DISABLED
+
+        # Gate: Pending entry lock
+        if self._pending_entry:
+            return R_IC_PENDING_ENTRY
+
+        # Gate: Loss breaker
+        pause_until = self._loss_breaker_pause_until
+        if pause_until:
+            current_date_str = current_time.strftime("%Y-%m-%d")
+            if current_date_str <= pause_until:
+                return R_IC_LOSS_BREAKER_ACTIVE
+
+        # Gate: Daily trade limit
+        max_trades = int(getattr(config, "IC_MAX_TRADES_PER_DAY", 2))
+        if self._trades_today >= max_trades:
+            return R_IC_DAILY_TRADE_LIMIT
+
+        # Gate: Position limit
+        max_concurrent = int(getattr(config, "IC_MAX_CONCURRENT", 2))
+        active_count = len([p for p in self._positions if not p.is_closing])
+        if active_count >= max_concurrent:
+            return R_IC_POSITION_LIMIT
+
+        # Gate: Daily loss stop
+        daily_loss_pct = float(getattr(config, "IC_DAILY_LOSS_PCT", 0.015))
+        if effective_portfolio_value > 0 and self._daily_pnl < 0:
+            loss_ratio = abs(self._daily_pnl) / effective_portfolio_value
+            if loss_ratio >= daily_loss_pct:
+                return R_IC_DAILY_LOSS_STOP
+
+        # Gate: Budget / open risk cap
+        ic_open_risk_pct = float(getattr(config, "IC_OPEN_RISK_PCT", 0.03))
+        ic_hard_budget = float(getattr(config, "IC_HARD_BUDGET_DOLLARS", 10000))
+        max_open_risk = min(ic_hard_budget, ic_open_risk_pct * effective_portfolio_value)
+        if ic_open_risk >= max_open_risk:
+            return R_IC_BUDGET_EXCEEDED
+
+        # Gate: Margin
+        min_margin = effective_portfolio_value * float(
+            getattr(config, "OPTIONS_MIN_MARGIN_PCT", 0.02)
+        )
+        if margin_remaining < min_margin:
+            return R_IC_MARGIN_INSUFFICIENT
+
+        # Gate: Regime in neutral band
+        regime_min = float(getattr(config, "IC_REGIME_MIN", 45))
+        regime_max = float(getattr(config, "IC_REGIME_MAX", 60))
+        if not (regime_min <= regime_score <= regime_max):
+            self._regime_neutral_bars = 0
+            return R_IC_REGIME_OUT_OF_RANGE
+
+        # Gate: Regime persistence
+        self._regime_neutral_bars += 1
+        persistence_req = int(getattr(config, "IC_REGIME_PERSISTENCE_BARS", 3))
+        if self._regime_neutral_bars < persistence_req:
+            return R_IC_REGIME_NOT_PERSISTENT
+
+        # Gate: Transition overlay — block DETERIORATION/AMBIGUOUS
+        transition_state = str(transition_ctx.get("transition_state", "") or "").upper()
+        if transition_state in {"DETERIORATION", "AMBIGUOUS"}:
+            return R_IC_TRANSITION_BLOCK
+
+        # Gate: Fast overlay — block STRESS/EARLY_STRESS
+        fast_overlay = str(transition_ctx.get("fast_overlay", "") or "").upper()
+        if fast_overlay in {"STRESS", "EARLY_STRESS"}:
+            return R_IC_FAST_OVERLAY_STRESS
+
+        # Gate: VIX range
+        vix_min = float(getattr(config, "IC_VIX_MIN", 14.0))
+        vix_max = float(getattr(config, "IC_VIX_MAX", 32.0))
+        if not (vix_min <= vix_current <= vix_max):
+            return R_IC_VIX_OUT_OF_RANGE
+
+        # Gate: ADX (low trend)
+        adx_max = float(getattr(config, "IC_ADX_MAX", 20.0))
+        if adx_value > adx_max:
+            return R_IC_ADX_TOO_HIGH
+
+        # Gate: Entry time window
+        start_h = int(getattr(config, "IC_ENTRY_START_HOUR", 10))
+        start_m = int(getattr(config, "IC_ENTRY_START_MINUTE", 15))
+        end_h = int(getattr(config, "IC_ENTRY_END_HOUR", 14))
+        end_m = int(getattr(config, "IC_ENTRY_END_MINUTE", 30))
+        t_minutes = current_time.hour * 60 + current_time.minute
+        if not (start_h * 60 + start_m <= t_minutes <= end_h * 60 + end_m):
+            return R_IC_OUTSIDE_ENTRY_WINDOW
+
+        # Gate: Event day block
+        if bool(getattr(config, "IC_EVENT_DAY_BLOCK_ENABLED", True)):
+            # Check event-day list from transition context
+            if transition_ctx.get("is_event_day", False):
+                return R_IC_EVENT_DAY_BLOCK
+
+        return None  # All gates passed
+
+    # ── Contract search ──
+
+    def _search_and_build_condor(
+        self,
+        *,
+        chain,
+        qqq_price: float,
+        vix_current: float,
+        regime_score: float,
+        adx_value: float,
+        current_time: datetime,
+        effective_portfolio_value: float,
+    ) -> Optional[IronCondorPosition]:
+        """Two-phase contract search: build pools → construct condors → rank best.
+
+        Phase A: Build independent candidate pools (no state mutation).
+        Phase B: Combine into complete condors, validate, rank, select best.
+        Returns None if no valid condor found.
+        """
+        if chain is None:
+            self._record_drop(R_IC_NO_CHAIN)
+            return None
+
+        dte_min = int(getattr(config, "IC_DTE_MIN", 10))
+        dte_max = int(getattr(config, "IC_DTE_MAX", 21))
+        delta_min = float(getattr(config, "IC_SHORT_DELTA_MIN", 0.12))
+        delta_max = float(getattr(config, "IC_SHORT_DELTA_MAX", 0.16))
+        min_oi = int(getattr(config, "IC_MIN_OPEN_INTEREST", 100))
+        min_vol = int(getattr(config, "IC_MIN_VOLUME", 10))
+        max_spread_pct = float(getattr(config, "IC_MAX_SPREAD_PCT", 0.30))
+        min_pool_depth = int(getattr(config, "IC_MIN_POOL_DEPTH", 3))
+        wing_width = self._get_wing_width_for_vix(vix_current)
+
+        # ── Phase A: Filter chain to eligible contracts ──
+        eligible_puts: List[OptionContract] = []
+        eligible_calls: List[OptionContract] = []
+
+        contracts = self._extract_chain_contracts(chain, qqq_price, current_time)
+        for c in contracts:
+            # DTE filter
+            if not (dte_min <= c.days_to_expiry <= dte_max):
+                continue
+            # Liquidity filters
+            if c.open_interest < min_oi:
+                continue
+            if c.bid <= 0 or c.ask <= c.bid:
+                continue
+            if c.spread_pct > max_spread_pct:
+                continue
+            # Delta filter for short legs
+            abs_delta = abs(c.delta)
+            if delta_min <= abs_delta <= delta_max:
+                if c.direction == OptionDirection.PUT:
+                    eligible_puts.append(c)
+                elif c.direction == OptionDirection.CALL:
+                    eligible_calls.append(c)
+
+        if len(eligible_puts) < min_pool_depth:
+            self._record_drop(R_IC_NO_PUT_POOL)
+            self._log(
+                f"SEARCH_FAIL | code={R_IC_NO_PUT_POOL} | puts={len(eligible_puts)} "
+                f"| need={min_pool_depth} | chain_size={len(contracts)}",
+                trades_only=False,
+            )
+            return None
+
+        if len(eligible_calls) < min_pool_depth:
+            self._record_drop(R_IC_NO_CALL_POOL)
+            self._log(
+                f"SEARCH_FAIL | code={R_IC_NO_CALL_POOL} | calls={len(eligible_calls)} "
+                f"| need={min_pool_depth} | chain_size={len(contracts)}",
+                trades_only=False,
+            )
+            return None
+
+        # ── Phase B: Construct complete condor candidates ──
+        max_combos = int(getattr(config, "IC_MAX_CANDIDATE_COMBOS", 50))
+        max_passes = int(getattr(config, "IC_MAX_SEARCH_PASSES", 2))
+        tolerance = int(getattr(config, "IC_WING_WIDTH_FALLBACK_TOLERANCE", 1))
+
+        candidates: List[Tuple[float, IronCondorPosition]] = []
+        combo_count = 0
+
+        for search_pass in range(max_passes):
+            # Pass 0: strict width; Pass 1: ± tolerance
+            width_tolerance = 0 if search_pass == 0 else tolerance
+
+            for short_put in eligible_puts:
+                if combo_count >= max_combos:
+                    break
+                # Find long put wing
+                long_put = self._find_wing_leg(
+                    contracts, short_put, wing_width, "PUT", width_tolerance
+                )
+                if long_put is None:
+                    continue
+
+                for short_call in eligible_calls:
+                    if combo_count >= max_combos:
+                        break
+                    # Must be same expiry
+                    if short_call.expiry != short_put.expiry:
+                        continue
+
+                    # Find long call wing
+                    long_call = self._find_wing_leg(
+                        contracts, short_call, wing_width, "CALL", width_tolerance
+                    )
+                    if long_call is None:
+                        continue
+
+                    combo_count += 1
+
+                    # Validate and score
+                    result = self._validate_and_score_condor(
+                        short_put=short_put,
+                        long_put=long_put,
+                        short_call=short_call,
+                        long_call=long_call,
+                        vix_current=vix_current,
+                        regime_score=regime_score,
+                        adx_value=adx_value,
+                        current_time=current_time,
+                        effective_portfolio_value=effective_portfolio_value,
+                    )
+                    if result is not None:
+                        score, condor = result
+                        candidates.append((score, condor))
+
+            if candidates:
+                break  # Found at least one in this pass
+
+        if not candidates:
+            self._record_drop(R_IC_NO_COMPLETE_CONDOR)
+            self._log(
+                f"SEARCH_FAIL | code={R_IC_NO_COMPLETE_CONDOR} "
+                f"| puts_pool={len(eligible_puts)} | calls_pool={len(eligible_calls)} "
+                f"| combos_checked={combo_count}",
+                trades_only=False,
+            )
+            return None
+
+        # Select best candidate by score (highest first)
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        best_score, best_condor = candidates[0]
+
+        self._log(
+            f"SEARCH_OK | candidates={len(candidates)} | best_score={best_score:.3f} "
+            f"| C/W={best_condor.credit_to_width:.3f} | combos_checked={combo_count}",
+            trades_only=False,
+        )
+        return best_condor
+
+    def _extract_chain_contracts(
+        self, chain, qqq_price: float, current_time: datetime
+    ) -> List[OptionContract]:
+        """Extract OptionContract objects from QC chain."""
+        results: List[OptionContract] = []
+        try:
+            for c in chain:
+                try:
+                    symbol_str = str(c.Symbol) if hasattr(c, "Symbol") else str(c)
+                    right = getattr(c, "Right", None)
+                    if right is None:
+                        continue
+                    is_call = str(right).upper() in {"CALL", "1", "C"}
+                    direction = OptionDirection.CALL if is_call else OptionDirection.PUT
+
+                    strike = float(getattr(c, "Strike", 0))
+                    if strike <= 0:
+                        continue
+
+                    expiry_raw = getattr(c, "Expiry", None)
+                    if expiry_raw is None:
+                        continue
+                    if hasattr(expiry_raw, "strftime"):
+                        expiry_str = expiry_raw.strftime("%Y-%m-%d")
+                        dte = (expiry_raw.date() - current_time.date()).days
+                    else:
+                        expiry_str = str(expiry_raw)[:10]
+                        dte = 0
+
+                    bid = float(getattr(c, "BidPrice", 0) or 0)
+                    ask = float(getattr(c, "AskPrice", 0) or 0)
+                    mid = (bid + ask) / 2 if (bid > 0 and ask > bid) else 0.0
+
+                    greeks = getattr(c, "Greeks", None)
+                    delta = float(getattr(greeks, "Delta", 0) or 0) if greeks else 0.0
+                    gamma = float(getattr(greeks, "Gamma", 0) or 0) if greeks else 0.0
+                    vega = float(getattr(greeks, "Vega", 0) or 0) if greeks else 0.0
+                    theta = float(getattr(greeks, "Theta", 0) or 0) if greeks else 0.0
+
+                    oi = int(getattr(c, "OpenInterest", 0) or 0)
+                    volume = int(getattr(c, "Volume", 0) or 0)
+
+                    results.append(
+                        OptionContract(
+                            symbol=symbol_str,
+                            underlying="QQQ",
+                            direction=direction,
+                            strike=strike,
+                            expiry=expiry_str,
+                            delta=delta,
+                            gamma=gamma,
+                            vega=vega,
+                            theta=theta,
+                            bid=bid,
+                            ask=ask,
+                            mid_price=mid,
+                            open_interest=oi,
+                            days_to_expiry=dte,
+                        )
+                    )
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return results
+
+    def _get_wing_width_for_vix(self, vix: float) -> int:
+        """Return wing width (dollars) based on VIX tier."""
+        if vix < 16:
+            return int(getattr(config, "IC_WING_WIDTH_LOW_VIX", 3))
+        elif vix <= 25:
+            return int(getattr(config, "IC_WING_WIDTH_MID_VIX", 4))
+        else:
+            return int(getattr(config, "IC_WING_WIDTH_HIGH_VIX", 5))
+
+    def _get_cw_floor_for_vix(self, vix: float) -> float:
+        """Return C/W floor based on VIX tier."""
+        if vix < 16:
+            return float(getattr(config, "IC_CW_FLOOR_LOW_VIX", 0.22))
+        elif vix <= 25:
+            return float(getattr(config, "IC_CW_FLOOR_MID_VIX", 0.20))
+        else:
+            return float(getattr(config, "IC_CW_FLOOR_HIGH_VIX", 0.18))
+
+    def _find_wing_leg(
+        self,
+        contracts: List[OptionContract],
+        short_leg: OptionContract,
+        target_width: int,
+        side: str,
+        tolerance: int = 0,
+    ) -> Optional[OptionContract]:
+        """Find the long (protective) wing leg for a short leg.
+
+        For PUT side: long_put.strike = short_put.strike - width (lower strike)
+        For CALL side: long_call.strike = short_call.strike + width (higher strike)
+        """
+        min_oi = int(getattr(config, "IC_MIN_OPEN_INTEREST", 100))
+
+        if side == "PUT":
+            target_strike = short_leg.strike - target_width
+            direction = OptionDirection.PUT
+        else:
+            target_strike = short_leg.strike + target_width
+            direction = OptionDirection.CALL
+
+        best: Optional[OptionContract] = None
+        best_distance = float("inf")
+
+        for c in contracts:
+            if c.direction != direction:
+                continue
+            if c.expiry != short_leg.expiry:
+                continue
+            if c.open_interest < min_oi:
+                continue
+            if c.bid <= 0 or c.ask <= c.bid:
+                continue
+
+            distance = abs(c.strike - target_strike)
+            if distance <= tolerance and distance < best_distance:
+                best = c
+                best_distance = distance
+
+        return best
+
+    def _validate_and_score_condor(
+        self,
+        *,
+        short_put: OptionContract,
+        long_put: OptionContract,
+        short_call: OptionContract,
+        long_call: OptionContract,
+        vix_current: float,
+        regime_score: float,
+        adx_value: float,
+        current_time: datetime,
+        effective_portfolio_value: float,
+    ) -> Optional[Tuple[float, IronCondorPosition]]:
+        """Validate a complete 4-leg condor and return (score, position) or None."""
+
+        put_wing_width = short_put.strike - long_put.strike
+        call_wing_width = long_call.strike - short_call.strike
+
+        if put_wing_width <= 0 or call_wing_width <= 0:
+            return None
+
+        # ── Credit calculation ──
+        # Credit = sell short legs (collect premium) - buy long legs (pay premium)
+        put_credit = short_put.mid_price - long_put.mid_price
+        call_credit = short_call.mid_price - long_call.mid_price
+        net_credit = put_credit + call_credit
+
+        if net_credit <= 0:
+            return None
+
+        max_wing = max(put_wing_width, call_wing_width)
+        credit_to_width = net_credit / max_wing
+        max_loss = max_wing - net_credit
+
+        # ── C/W floor gate (VIX-tiered) ──
+        cw_floor = self._get_cw_floor_for_vix(vix_current)
+        if credit_to_width < cw_floor:
+            self._record_drop(R_IC_CW_BELOW_MIN)
+            return None
+
+        # ── Implied expiry WR check ──
+        implied_wr = 1.0 - credit_to_width
+        max_implied_wr = float(getattr(config, "IC_MAX_IMPLIED_WR", 0.82))
+        if implied_wr > max_implied_wr:
+            self._record_drop(R_IC_CW_BELOW_MIN)
+            return None
+
+        # ── Stop D/W feasibility ──
+        # Stop close debit = credit + stop_mult * credit = credit * (1 + stop_mult)
+        stop_mult = float(getattr(config, "IC_STOP_LOSS_MULTIPLE", 1.50))
+        stop_debit = net_credit * (1.0 + stop_mult)
+        stop_dw = stop_debit / max_wing
+        max_stop_dw = float(getattr(config, "IC_MAX_STOP_DW", 0.65))
+        if stop_dw > max_stop_dw:
+            self._record_drop(R_IC_STOP_DW_UNFEASIBLE)
+            return None
+
+        # ── Delta symmetry ──
+        delta_sym_max = float(getattr(config, "IC_DELTA_SYMMETRY_MAX", 0.03))
+        delta_diff = abs(abs(short_call.delta) - abs(short_put.delta))
+        if delta_diff > delta_sym_max:
+            self._record_drop(R_IC_DELTA_ASYMMETRY)
+            return None
+
+        # ── Wing symmetry ──
+        wing_sym_max = float(getattr(config, "IC_WING_SYMMETRY_MAX", 1.0))
+        wing_diff = abs(call_wing_width - put_wing_width)
+        if wing_diff > wing_sym_max:
+            self._record_drop(R_IC_WING_ASYMMETRY)
+            return None
+
+        # ── Slippage guard ──
+        max_slippage = float(getattr(config, "IC_MAX_COMBO_SLIPPAGE", 0.15))
+        avg_spread_pct = (
+            short_put.spread_pct
+            + long_put.spread_pct
+            + short_call.spread_pct
+            + long_call.spread_pct
+        ) / 4.0
+        if avg_spread_pct > max_slippage:
+            self._record_drop(R_IC_SLIPPAGE_FAIL)
+            return None
+
+        # ── Per-trade risk cap ──
+        per_trade_risk_pct = float(getattr(config, "IC_PER_TRADE_RISK_PCT", 0.01))
+        per_trade_max_risk = per_trade_risk_pct * effective_portfolio_value
+        # Size by max loss: how many spreads can we afford?
+        if max_loss <= 0:
+            return None
+        max_spreads_by_risk = int(per_trade_max_risk / (max_loss * 100))
+        if max_spreads_by_risk < 1:
+            self._record_drop(R_IC_PER_TRADE_RISK_EXCEEDED)
+            return None
+
+        # Also cap by hard budget
+        ic_hard_budget = float(getattr(config, "IC_HARD_BUDGET_DOLLARS", 10000))
+        max_spreads_by_budget = int(ic_hard_budget / (max_loss * 100))
+        num_spreads = min(max_spreads_by_risk, max_spreads_by_budget, 10)
+        num_spreads = max(num_spreads, 1)
+
+        # ── Determine VIX tier label ──
+        if vix_current < 16:
+            cw_tier = "LOW_VIX"
+        elif vix_current <= 25:
+            cw_tier = "MID_VIX"
+        else:
+            cw_tier = "HIGH_VIX"
+
+        # ── Build position ──
+        condor = IronCondorPosition(
+            short_put=short_put,
+            long_put=long_put,
+            short_call=short_call,
+            long_call=long_call,
+            net_credit=net_credit,
+            put_wing_width=put_wing_width,
+            call_wing_width=call_wing_width,
+            max_loss=max_loss,
+            credit_to_width=credit_to_width,
+            num_spreads=num_spreads,
+            entry_time=current_time.strftime("%Y-%m-%d %H:%M:%S"),
+            regime_at_entry=regime_score,
+            entry_vix=vix_current,
+            entry_adx=adx_value,
+            entry_cw_tier=cw_tier,
+            stop_dw=stop_dw,
+            implied_wr_be=implied_wr,
+        )
+
+        # ── Score: higher is better ──
+        # Weight: C/W (40%), delta symmetry (20%), slippage (20%), credit quality (20%)
+        score = (
+            0.40 * credit_to_width
+            + 0.20 * (1.0 - delta_diff / delta_sym_max)
+            + 0.20 * (1.0 - avg_spread_pct / max_slippage)
+            + 0.20 * min(net_credit / max_wing, 0.40)
+        )
+
+        return (score, condor)
+
+    def _build_entry_signals(
+        self, condor: IronCondorPosition, current_time: datetime
+    ) -> List[TargetWeight]:
+        """Build TargetWeight signals for router.
+
+        Emits two signals: one for put credit spread, one for call credit spread.
+        Both tagged with shared condor_id for pairing.
+        """
+        timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S")
+        base_meta = {
+            "options_lane": "IC",
+            "options_strategy": "IRON_CONDOR",
+            "trace_source": "IC:IRON_CONDOR",
+            "trace_id": condor.condor_id,
+            "condor_id": condor.condor_id,
+            "net_credit": condor.net_credit,
+            "credit_to_width": condor.credit_to_width,
+            "max_loss": condor.max_loss,
+            "entry_vix": condor.entry_vix,
+            "regime_at_entry": condor.regime_at_entry,
+        }
+
+        # Put credit spread signal (bull put): sell short_put, buy long_put
+        put_meta = dict(base_meta)
+        put_meta["spread_side"] = "PUT_CREDIT"
+        put_meta["short_symbol"] = condor.short_put.symbol
+        put_meta["long_symbol"] = condor.long_put.symbol
+        put_meta["short_strike"] = condor.short_put.strike
+        put_meta["long_strike"] = condor.long_put.strike
+        put_meta["wing_width"] = condor.put_wing_width
+
+        put_signal = TargetWeight(
+            symbol=condor.long_put.symbol,
+            target_weight=1.0,
+            source="OPT_IC",
+            urgency=Urgency.IMMEDIATE,
+            reason=(
+                f"IC_PUT_CREDIT | K_short={condor.short_put.strike} "
+                f"K_long={condor.long_put.strike} | C/W={condor.credit_to_width:.3f}"
+            ),
+            timestamp=timestamp,
+            metadata=put_meta,
+            requested_quantity=condor.num_spreads,
+        )
+
+        # Call credit spread signal (bear call): sell short_call, buy long_call
+        call_meta = dict(base_meta)
+        call_meta["spread_side"] = "CALL_CREDIT"
+        call_meta["short_symbol"] = condor.short_call.symbol
+        call_meta["long_symbol"] = condor.long_call.symbol
+        call_meta["short_strike"] = condor.short_call.strike
+        call_meta["long_strike"] = condor.long_call.strike
+        call_meta["wing_width"] = condor.call_wing_width
+
+        call_signal = TargetWeight(
+            symbol=condor.long_call.symbol,
+            target_weight=1.0,
+            source="OPT_IC",
+            urgency=Urgency.IMMEDIATE,
+            reason=(
+                f"IC_CALL_CREDIT | K_short={condor.short_call.strike} "
+                f"K_long={condor.long_call.strike} | C/W={condor.credit_to_width:.3f}"
+            ),
+            timestamp=timestamp,
+            metadata=call_meta,
+            requested_quantity=condor.num_spreads,
+        )
+
+        return [put_signal, call_signal]
+
+    # ══════════════════════════════════════════════════════════════════════
+    # EXIT LOGIC
+    # ══════════════════════════════════════════════════════════════════════
+
+    def check_exit_signals(
+        self,
+        *,
+        condor: IronCondorPosition,
+        combined_pnl: float,
+        current_dte: int,
+        vix_current: float,
+        regime_score: float,
+        qqq_price: float,
+        current_time: datetime,
+    ) -> Optional[Tuple[str, List[TargetWeight]]]:
+        """Check exit conditions for a single condor. Returns (reason, signals) or None.
+
+        Exit cascade (priority order):
+          P0: VIX Spike → emergency close
+          P1: Daily loss stop → close all IC
+          P2: Profit target → 60% of credit captured
+          P3: Stop loss → 150% of credit lost
+          P4: Wing breach → short strike ITM
+          P5: Time exit → DTE <= 5
+          P6: Regime break → regime outside neutral zone + buffer
+          P7: Friday close → DTE < 8 heading into weekend
+          P8: Assignment risk → short leg deep ITM
+
+        No adjustments in v1: close only, never morph into single spread.
+        """
+        if condor.is_closing:
+            return None
+
+        # ── P0: VIX Spike ──
+        vix_spike_threshold = float(getattr(config, "IC_VIX_SPIKE_EXIT", 30.0))
+        if vix_current >= vix_spike_threshold:
+            return self._build_exit(condor, EXIT_IC_VIX_SPIKE, current_time)
+
+        # ── P1: Daily loss stop ──
+        # Checked at engine level in run_exit_cycle, not per-position
+
+        # ── P2: Profit target ──
+        target_pct = float(getattr(config, "IC_TARGET_CAPTURE_PCT", 0.60))
+        credit_100 = condor.net_credit * 100 * condor.num_spreads
+        if credit_100 > 0:
+            pnl_pct_of_credit = combined_pnl / credit_100
+            if pnl_pct_of_credit >= target_pct:
+                return self._build_exit(condor, EXIT_IC_PROFIT_TARGET, current_time)
+
+        # ── P3: Stop loss ──
+        stop_mult = float(getattr(config, "IC_STOP_LOSS_MULTIPLE", 1.50))
+        if credit_100 > 0:
+            loss_pct_of_credit = -combined_pnl / credit_100 if combined_pnl < 0 else 0
+            if loss_pct_of_credit >= stop_mult:
+                return self._build_exit(condor, EXIT_IC_STOP_LOSS, current_time)
+
+        # ── P4: Wing breach (short strike ITM) ──
+        itm_exit_pct = float(getattr(config, "IC_SHORT_ITM_EXIT_PCT", 0.02))
+        put_itm_depth = (condor.put_short_strike - qqq_price) / qqq_price if qqq_price > 0 else 0
+        if put_itm_depth >= itm_exit_pct:
+            return self._build_exit(condor, EXIT_IC_WING_BREACH_PUT, current_time)
+        call_itm_depth = (qqq_price - condor.call_short_strike) / qqq_price if qqq_price > 0 else 0
+        if call_itm_depth >= itm_exit_pct:
+            return self._build_exit(condor, EXIT_IC_WING_BREACH_CALL, current_time)
+
+        # ── P5: Time exit ──
+        time_exit_dte = int(getattr(config, "IC_TIME_EXIT_DTE", 5))
+        if current_dte <= time_exit_dte:
+            return self._build_exit(condor, EXIT_IC_TIME_EXIT, current_time)
+
+        # ── P6: Regime break ──
+        regime_min = float(getattr(config, "IC_REGIME_MIN", 45))
+        regime_max = float(getattr(config, "IC_REGIME_MAX", 60))
+        regime_buffer = float(getattr(config, "IC_REGIME_EXIT_BUFFER", 5))
+        if regime_score < (regime_min - regime_buffer) or regime_score > (
+            regime_max + regime_buffer
+        ):
+            return self._build_exit(condor, EXIT_IC_REGIME_BREAK, current_time)
+
+        # ── P7: Friday close ──
+        friday_close_dte = int(getattr(config, "IC_FRIDAY_CLOSE_DTE", 8))
+        if current_time.weekday() == 4 and current_dte < friday_close_dte:
+            return self._build_exit(condor, EXIT_IC_FRIDAY_CLOSE, current_time)
+
+        # ── P8: Assignment risk ──
+        # Deep ITM check beyond wing breach (e.g., near ex-div)
+        div_guard_dte = int(getattr(config, "IC_DIVIDEND_GUARD_DTE", 3))
+        if current_dte <= div_guard_dte:
+            # Check if any short leg is meaningfully ITM
+            if put_itm_depth > 0 or call_itm_depth > 0:
+                return self._build_exit(condor, EXIT_IC_ASSIGNMENT_RISK, current_time)
+
+        return None
+
+    def run_exit_cycle(
+        self,
+        *,
+        qqq_price: float,
+        vix_current: float,
+        regime_score: float,
+        current_time: datetime,
+        get_dte_func: Callable[[str], int],
+        get_pnl_func: Callable[[IronCondorPosition], float],
+    ) -> List[TargetWeight]:
+        """Run exit checks on all open IC positions. Returns list of close signals."""
+        all_signals: List[TargetWeight] = []
+
+        for condor in list(self._positions):
+            if condor.is_closing:
+                continue
+
+            # Get current DTE from shortest leg
+            min_dte = min(
+                get_dte_func(condor.short_put.expiry),
+                get_dte_func(condor.short_call.expiry),
+            )
+
+            # Get combined P&L
+            combined_pnl = get_pnl_func(condor)
+
+            result = self.check_exit_signals(
+                condor=condor,
+                combined_pnl=combined_pnl,
+                current_dte=min_dte,
+                vix_current=vix_current,
+                regime_score=regime_score,
+                qqq_price=qqq_price,
+                current_time=current_time,
+            )
+
+            if result is not None:
+                reason, signals = result
+                condor.is_closing = True
+                all_signals.extend(signals)
+                self._diag_exit_reasons[reason] = self._diag_exit_reasons.get(reason, 0) + 1
+
+                self._log(
+                    f"EXIT_SIGNAL | condor_id={condor.condor_id} "
+                    f"| reason={reason} | PnL=${combined_pnl:.2f} "
+                    f"| DTE={min_dte} | VIX={vix_current:.1f} | regime={regime_score:.1f}",
+                    trades_only=True,
+                )
+
+        return all_signals
+
+    def _build_exit(
+        self, condor: IronCondorPosition, reason: str, current_time: datetime
+    ) -> Tuple[str, List[TargetWeight]]:
+        """Build close signals for both sides of the condor."""
+        timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S")
+        base_meta = {
+            "options_lane": "IC",
+            "options_strategy": "IRON_CONDOR",
+            "trace_source": f"IC:{reason}",
+            "trace_id": condor.condor_id,
+            "condor_id": condor.condor_id,
+            "exit_reason": reason,
+        }
+
+        signals = []
+        # Close put credit spread: buy back short put, sell long put
+        put_meta = dict(base_meta)
+        put_meta["spread_side"] = "PUT_CREDIT_CLOSE"
+        put_meta["spread_close_short"] = True
+        signals.append(
+            TargetWeight(
+                symbol=condor.short_put.symbol,
+                target_weight=0.0,
+                source="OPT_IC",
+                urgency=Urgency.IMMEDIATE,
+                reason=f"IC_CLOSE_PUT | {reason} | condor_id={condor.condor_id}",
+                timestamp=timestamp,
+                metadata=put_meta,
+                requested_quantity=condor.num_spreads,
+            )
+        )
+
+        # Close call credit spread: buy back short call, sell long call
+        call_meta = dict(base_meta)
+        call_meta["spread_side"] = "CALL_CREDIT_CLOSE"
+        call_meta["spread_close_short"] = True
+        signals.append(
+            TargetWeight(
+                symbol=condor.short_call.symbol,
+                target_weight=0.0,
+                source="OPT_IC",
+                urgency=Urgency.IMMEDIATE,
+                reason=f"IC_CLOSE_CALL | {reason} | condor_id={condor.condor_id}",
+                timestamp=timestamp,
+                metadata=call_meta,
+                requested_quantity=condor.num_spreads,
+            )
+        )
+
+        return (reason, signals)
+
+    # ══════════════════════════════════════════════════════════════════════
+    # POSITION MANAGEMENT
+    # ══════════════════════════════════════════════════════════════════════
+
+    def register_fill(self, condor: IronCondorPosition) -> None:
+        """Register a filled iron condor position."""
+        self._positions.append(condor)
+        self._trades_today += 1
+        self._pending_entry = False
+        self._pending_condor_id = None
+
+    def remove_position(self, condor_id: str) -> Optional[IronCondorPosition]:
+        """Remove a closed condor by ID. Returns removed position or None."""
+        for i, p in enumerate(self._positions):
+            if p.condor_id == condor_id:
+                return self._positions.pop(i)
+        return None
+
+    def record_trade_result(self, pnl: float) -> None:
+        """Record trade result for loss breaker and diagnostics."""
+        self._daily_pnl += pnl
+        self._diag_total_pnl += pnl
+
+        if pnl >= 0:
+            self._diag_wins += 1
+            self._consecutive_losses = 0
+        else:
+            self._diag_losses += 1
+            self._consecutive_losses += 1
+
+            # Loss breaker check
+            max_consecutive = int(getattr(config, "IC_LOSS_BREAKER_CONSECUTIVE", 3))
+            if self._consecutive_losses >= max_consecutive:
+                pause_days = int(getattr(config, "IC_LOSS_BREAKER_PAUSE_DAYS", 1))
+                from datetime import date
+
+                pause_date = date.today() + timedelta(days=pause_days)
+                self._loss_breaker_pause_until = pause_date.strftime("%Y-%m-%d")
+                self._log(
+                    f"LOSS_BREAKER_ACTIVE | consecutive={self._consecutive_losses} "
+                    f"| pause_until={self._loss_breaker_pause_until}",
+                    trades_only=True,
+                )
+
+    def get_open_risk(self) -> float:
+        """Get total open IC risk in dollars (sum of max_loss * num_spreads * 100)."""
+        return sum(p.max_loss * p.num_spreads * 100 for p in self._positions if not p.is_closing)
+
+    @property
+    def positions(self) -> List[IronCondorPosition]:
+        return list(self._positions)
+
+    @property
+    def has_open_positions(self) -> bool:
+        return any(not p.is_closing for p in self._positions)
+
+    def clear_pending(self) -> None:
+        """Clear pending entry state (e.g., on fill failure)."""
+        self._pending_entry = False
+        self._pending_condor_id = None
+
+    # ══════════════════════════════════════════════════════════════════════
+    # DIAGNOSTICS
+    # ══════════════════════════════════════════════════════════════════════
+
+    def get_diagnostics(self) -> Dict[str, Any]:
+        """Return IC engine diagnostics for daily summary."""
+        return {
+            "candidates": self._diag_candidates,
+            "approved": self._diag_approved,
+            "dropped": self._diag_dropped,
+            "drop_codes": dict(self._diag_drop_codes),
+            "exit_reasons": dict(self._diag_exit_reasons),
+            "wins": self._diag_wins,
+            "losses": self._diag_losses,
+            "total_pnl": round(self._diag_total_pnl, 2),
+            "open_positions": len([p for p in self._positions if not p.is_closing]),
+            "open_risk": round(self.get_open_risk(), 2),
+            "trades_today": self._trades_today,
+            "consecutive_losses": self._consecutive_losses,
+            "loss_breaker_active": self._loss_breaker_pause_until is not None,
+        }
+
+    # ══════════════════════════════════════════════════════════════════════
+    # STATE PERSISTENCE
+    # ══════════════════════════════════════════════════════════════════════
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "positions": [p.to_dict() for p in self._positions],
+            "trades_today": self._trades_today,
+            "daily_pnl": self._daily_pnl,
+            "consecutive_losses": self._consecutive_losses,
+            "loss_breaker_pause_until": self._loss_breaker_pause_until,
+            "pending_entry": self._pending_entry,
+            "pending_condor_id": self._pending_condor_id,
+            "regime_neutral_bars": self._regime_neutral_bars,
+            "diag_candidates": self._diag_candidates,
+            "diag_approved": self._diag_approved,
+            "diag_dropped": self._diag_dropped,
+            "diag_drop_codes": dict(self._diag_drop_codes),
+            "diag_exit_reasons": dict(self._diag_exit_reasons),
+            "diag_wins": self._diag_wins,
+            "diag_losses": self._diag_losses,
+            "diag_total_pnl": self._diag_total_pnl,
+        }
+
+    def from_dict(self, state: Dict[str, Any]) -> None:
+        if not state:
+            return
+        # Positions
+        self._positions = []
+        for row in state.get("positions", []) or []:
+            try:
+                self._positions.append(IronCondorPosition.from_dict(row))
+            except Exception:
+                continue
+        # Counters
+        self._trades_today = int(state.get("trades_today", 0) or 0)
+        self._daily_pnl = float(state.get("daily_pnl", 0.0) or 0)
+        self._consecutive_losses = int(state.get("consecutive_losses", 0) or 0)
+        self._loss_breaker_pause_until = state.get("loss_breaker_pause_until")
+        self._pending_entry = bool(state.get("pending_entry", False))
+        self._pending_condor_id = state.get("pending_condor_id")
+        self._regime_neutral_bars = int(state.get("regime_neutral_bars", 0) or 0)
+        # Diagnostics
+        self._diag_candidates = int(state.get("diag_candidates", 0) or 0)
+        self._diag_approved = int(state.get("diag_approved", 0) or 0)
+        self._diag_dropped = int(state.get("diag_dropped", 0) or 0)
+        self._diag_drop_codes = dict(state.get("diag_drop_codes", {}) or {})
+        self._diag_exit_reasons = dict(state.get("diag_exit_reasons", {}) or {})
+        self._diag_wins = int(state.get("diag_wins", 0) or 0)
+        self._diag_losses = int(state.get("diag_losses", 0) or 0)
+        self._diag_total_pnl = float(state.get("diag_total_pnl", 0.0) or 0)
+
+    def reset_daily(self) -> None:
+        """Reset intraday state at start of new trading day."""
+        self._trades_today = 0
+        self._daily_pnl = 0.0
+        self._pending_entry = False
+        self._pending_condor_id = None
+        self._regime_neutral_bars = 0
+        # Reset daily diagnostics
+        self._diag_candidates = 0
+        self._diag_approved = 0
+        self._diag_dropped = 0
+        self._diag_drop_codes = {}
+
+    def reset(self) -> None:
+        """Full state reset."""
+        self._positions = []
+        self._trades_today = 0
+        self._daily_pnl = 0.0
+        self._consecutive_losses = 0
+        self._loss_breaker_pause_until = None
+        self._pending_entry = False
+        self._pending_condor_id = None
+        self._regime_neutral_bars = 0
+        self._diag_candidates = 0
+        self._diag_approved = 0
+        self._diag_dropped = 0
+        self._diag_drop_codes = {}
+        self._diag_exit_reasons = {}
+        self._diag_wins = 0
+        self._diag_losses = 0
+        self._diag_total_pnl = 0.0

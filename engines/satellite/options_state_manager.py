@@ -321,6 +321,7 @@ def get_state_for_persistence_impl(self) -> Dict[str, Any]:
             else None
         ),
         "itm_horizon_state": self._itm_horizon_engine.to_dict(),
+        "iron_condor_state": self._iron_condor_engine.to_dict(),
     }
 
 
@@ -746,6 +747,10 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
         self._itm_horizon_engine.from_dict(state.get("itm_horizon_state", {}) or {})
     except Exception:
         self._itm_horizon_engine.reset()
+    try:
+        self._iron_condor_engine.from_dict(state.get("iron_condor_state", {}) or {})
+    except Exception:
+        self._iron_condor_engine.reset()
 
 
 def reset_options_engine_state_impl(self) -> None:
@@ -817,6 +822,7 @@ def reset_options_engine_state_impl(self) -> None:
     self._last_intraday_close_time = None
     self._last_intraday_close_strategy = None
     self._itm_horizon_engine.reset()
+    self._iron_condor_engine.reset()
 
     self.log("OPT: Engine reset - all positions cleared")
 
@@ -867,6 +873,7 @@ def reset_options_engine_daily_state_impl(self, current_date: str) -> None:
         self._vass_entry_engine.reset_daily()
         self._itm_horizon_engine.emit_daily_summary(current_date)
         self._itm_horizon_engine.reset_daily()
+        self._iron_condor_engine.reset_daily()
 
         # Keep intraday state whenever a live broker holding still exists.
         # This avoids reset->orphan churn when an expected force-close fails.

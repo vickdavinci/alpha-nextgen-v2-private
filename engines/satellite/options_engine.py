@@ -48,6 +48,7 @@ from engines.satellite.intraday_exit_profile import (
     get_engine_exit_profile_impl,
     get_trail_config_impl,
 )
+from engines.satellite.iron_condor_engine import IronCondorEngine
 from engines.satellite.itm_horizon_engine import ITMHorizonEngine
 from engines.satellite.iv_sensor import IVSensor, VIXSnapshot
 from engines.satellite.micro_entry_engine import MicroEntryEngine
@@ -186,6 +187,7 @@ class OptionsEngine:
         self._intraday_position_engine: Optional[str] = None  # MICRO/ITM ownership
         # Engine-isolated intraday position containers.
         self._intraday_positions: Dict[str, List[OptionsPosition]] = {
+            "IC": [],
             "MICRO": [],
             "ITM": [],
         }
@@ -256,10 +258,12 @@ class OptionsEngine:
         self._last_credit_failure_stats: Optional[str] = None
         self._last_entry_validation_failure: Optional[str] = None
         self._last_intraday_validation_failure_by_lane: Dict[str, Optional[str]] = {
+            "IC": None,
             "MICRO": None,
             "ITM": None,
         }
         self._last_intraday_validation_detail_by_lane: Dict[str, Optional[str]] = {
+            "IC": None,
             "MICRO": None,
             "ITM": None,
         }
@@ -294,6 +298,7 @@ class OptionsEngine:
             log_func=self.log,
         )
         self._itm_horizon_engine = ITMHorizonEngine(log_func=self.log)
+        self._iron_condor_engine = IronCondorEngine(log_func=self.log)
         self._micro_entry_engine = MicroEntryEngine(log_func=self.log)
         self._vass_entry_engine = VASSEntryEngine(log_func=self.log)
         self._vass_entry_engine_enabled = bool(getattr(config, "VASS_ENTRY_ENGINE_ENABLED", True))
@@ -433,8 +438,15 @@ class OptionsEngine:
         value = self._canonical_engine_strategy_name(strategy_name)
         return value == IntradayStrategy.ITM_MOMENTUM.value
 
+    def _is_iron_condor_strategy_name(self, strategy_name: Optional[str]) -> bool:
+        """True when strategy name maps to Iron Condor."""
+        value = self._canonical_engine_strategy_name(strategy_name)
+        return value == IntradayStrategy.IRON_CONDOR.value or value.startswith("IRON_CONDOR")
+
     def _engine_lane_from_strategy(self, strategy_name: Optional[str]) -> str:
         """Map strategy to engine lane key used by pending-entry/exit locks."""
+        if self._is_iron_condor_strategy_name(strategy_name):
+            return "IC"
         return "ITM" if self._is_itm_momentum_strategy_name(strategy_name) else "MICRO"
 
     def _pending_engine_entry_key(self, symbol: str, lane: Optional[str]) -> str:
@@ -554,7 +566,7 @@ class OptionsEngine:
         symbol_norm = self._symbol_key(symbol)
         if not symbol_norm:
             return None
-        for lane in ("ITM", "MICRO"):
+        for lane in ("IC", "ITM", "MICRO"):
             for pos in self._intraday_positions.get(lane) or []:
                 if (
                     pos is not None
@@ -1916,6 +1928,64 @@ class OptionsEngine:
             uvxy_pct=uvxy_pct,
             micro_intraday_cooldown_active=micro_intraday_cooldown_active,
         )
+
+    def run_iron_condor_engine_cycle(
+        self,
+        *,
+        chain: Any,
+        qqq_price: float,
+        regime_score: float,
+        adx_value: float,
+        vix_current: float,
+        effective_portfolio_value: float,
+        transition_ctx: Dict[str, Any],
+        current_time: Any,
+        margin_remaining: float,
+    ) -> Optional[List["TargetWeight"]]:
+        """Run IC engine entry cycle via iron condor sub-engine."""
+        ic_open_risk = self._iron_condor_engine.get_open_risk()
+        daily_pnl = self._iron_condor_engine._daily_pnl
+        return self._iron_condor_engine.run_entry_cycle(
+            chain=chain,
+            qqq_price=qqq_price,
+            regime_score=regime_score,
+            adx_value=adx_value,
+            vix_current=vix_current,
+            effective_portfolio_value=effective_portfolio_value,
+            transition_ctx=transition_ctx,
+            current_time=current_time,
+            margin_remaining=margin_remaining,
+            ic_open_risk=ic_open_risk,
+            daily_pnl=daily_pnl,
+        )
+
+    def run_iron_condor_exit_cycle(
+        self,
+        *,
+        qqq_price: float,
+        vix_current: float,
+        regime_score: float,
+        current_time: Any,
+        get_dte_func: Any,
+        get_pnl_func: Any,
+    ) -> List["TargetWeight"]:
+        """Run IC engine exit cycle on all open IC positions."""
+        return self._iron_condor_engine.run_exit_cycle(
+            qqq_price=qqq_price,
+            vix_current=vix_current,
+            regime_score=regime_score,
+            current_time=current_time,
+            get_dte_func=get_dte_func,
+            get_pnl_func=get_pnl_func,
+        )
+
+    def get_iron_condor_positions(self) -> List:
+        """Return open IC positions."""
+        return self._iron_condor_engine.positions
+
+    def get_iron_condor_diagnostics(self) -> Dict[str, Any]:
+        """Return IC engine diagnostics for daily summary."""
+        return self._iron_condor_engine.get_diagnostics()
 
     def _can_attempt_spread_entry(self, attempt_key: str) -> bool:
         """

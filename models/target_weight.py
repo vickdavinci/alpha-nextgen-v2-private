@@ -66,13 +66,13 @@ class TargetWeight:
     requested_quantity: Optional[int] = None
 
     def _normalize_options_intraday_metadata(self) -> None:
-        """Harden OPT_INTRADAY metadata so router tagging stays deterministic."""
-        if self.source != "OPT_INTRADAY":
+        """Harden OPT_INTRADAY / OPT_IC metadata so router tagging stays deterministic."""
+        if self.source not in {"OPT_INTRADAY", "OPT_IC"}:
             return
         if self.metadata is None:
             self.metadata = {}
         if not isinstance(self.metadata, dict):
-            raise ValueError("metadata must be a dictionary for OPT_INTRADAY signals")
+            raise ValueError(f"metadata must be a dictionary for {self.source} signals")
 
         strategy_raw = self.metadata.get("options_strategy") or self.metadata.get(
             "intraday_strategy"
@@ -89,7 +89,9 @@ class TargetWeight:
             )
 
         lane = str(self.metadata.get("options_lane", "") or "").strip().upper()
-        if lane not in {"ITM", "MICRO"}:
+        if self.source == "OPT_IC" or "IRON_CONDOR" in strategy:
+            lane = "IC"
+        elif lane not in {"ITM", "MICRO"}:
             if "ITM_MOMENTUM" in strategy or strategy.startswith("ITM_"):
                 lane = "ITM"
             elif strategy in {"", "UNCLASSIFIED", "NO_TRADE", "UNKNOWN"}:
@@ -121,6 +123,7 @@ class TargetWeight:
             "ROUTER",
             "OPT",
             "OPT_INTRADAY",
+            "OPT_IC",
         }
         if self.source not in valid_sources:
             raise ValueError(f"source must be one of {valid_sources}, got: {self.source}")

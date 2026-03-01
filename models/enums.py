@@ -162,6 +162,7 @@ class IntradayStrategy(Enum):
     CREDIT_SPREAD = "CREDIT_SPREAD"  # Premium collection
     ITM_MOMENTUM = "ITM_MOMENTUM"  # Ride the move with ITM options (high VIX)
     PROTECTIVE_PUTS = "PROTECTIVE_PUTS"  # Hedge during uncertainty
+    IRON_CONDOR = "IRON_CONDOR"  # V12.X: Non-directional iron condor (neutral regime)
     NO_TRADE = "NO_TRADE"  # Too risky, sit out
 
 

@@ -1711,6 +1711,70 @@ class MainOptionsMixin:
             transition_ctx=transition_ctx,
         )
 
+        # ── Iron Condor entry cycle (neutral-regime only) ──
+        if bool(getattr(config, "IRON_CONDOR_ENGINE_ENABLED", False)):
+            ic_signals = self.options_engine.run_iron_condor_engine_cycle(
+                chain=chain,
+                qqq_price=qqq_price,
+                regime_score=regime_score,
+                adx_value=adx_value,
+                vix_current=vix_level_cboe or 0.0,
+                effective_portfolio_value=effective_portfolio_value,
+                transition_ctx=transition_ctx,
+                current_time=self.Time,
+                margin_remaining=margin_remaining,
+            )
+            if ic_signals:
+                for sig in ic_signals:
+                    self.portfolio_router.receive_signal(sig)
+
+    def _check_iron_condor_exits(self) -> None:
+        """Check exit conditions on all open IC positions."""
+        if not bool(getattr(config, "IRON_CONDOR_ENGINE_ENABLED", False)):
+            return
+        ic_positions = self.options_engine.get_iron_condor_positions()
+        if not ic_positions:
+            return
+
+        qqq_price = float(self.Securities["QQQ"].Price or 0)
+        vix_current = float(self._get_vix_level() or 0)
+        regime_score = float(self._get_decision_regime_score_for_options() or 50)
+
+        def _get_dte(expiry_str: str) -> int:
+            try:
+                from datetime import datetime
+
+                exp_date = datetime.strptime(expiry_str[:10], "%Y-%m-%d").date()
+                return (exp_date - self.Time.date()).days
+            except Exception:
+                return 999
+
+        def _get_pnl(condor) -> float:
+            """Estimate combined P&L for both sides of the condor."""
+            total = 0.0
+            for leg_attr in ("short_put", "long_put", "short_call", "long_call"):
+                leg = getattr(condor, leg_attr, None)
+                if leg is None:
+                    continue
+                try:
+                    sym = self.Symbol(leg.symbol) if isinstance(leg.symbol, str) else leg.symbol
+                    if self.Portfolio[sym].Invested:
+                        total += self.Portfolio[sym].UnrealizedProfit
+                except Exception:
+                    pass
+            return total
+
+        exit_signals = self.options_engine.run_iron_condor_exit_cycle(
+            qqq_price=qqq_price,
+            vix_current=vix_current,
+            regime_score=regime_score,
+            current_time=self.Time,
+            get_dte_func=_get_dte,
+            get_pnl_func=_get_pnl,
+        )
+        for sig in exit_signals:
+            self.portfolio_router.receive_signal(sig)
+
     def _check_spread_exit(self, data: Slice) -> None:
         """
         V2.3: Check for spread exit conditions.
