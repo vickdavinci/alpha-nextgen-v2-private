@@ -2675,10 +2675,16 @@ class VASSEntryEngine:
             if route_value == "BEAR_CALL_CREDIT":
                 risk_on_floor = float(getattr(config, "REGIME_RISK_ON", 70.0))
                 if float(regime_score) >= risk_on_floor:
-                    return (
-                        f"R_BEAR_CALL_RISK_ON_BLOCK:{float(regime_score):.1f}>="
-                        f"{risk_on_floor:.1f}"
+                    algorithm._log_high_frequency_event(
+                        config_flag="LOG_VASS_FALLBACK_BACKTEST_ENABLED",
+                        category="VASS_FALLBACK",
+                        reason_key="R_BEAR_CALL_RISK_ON_BLOCK",
+                        message=(
+                            f"{fallback_log_prefix}: EV pre-gate blocked | Code=R_BEAR_CALL_RISK_ON_BLOCK | "
+                            f"Route={route_value} | Regime={float(regime_score):.1f} >= {risk_on_floor:.1f}"
+                        ),
                     )
+                    return "R_BEAR_CALL_RISK_ON_BLOCK"
 
             if not bool(getattr(config, "VASS_EV_PRE_GATE_ENABLED", False)):
                 return None
@@ -2687,24 +2693,43 @@ class VASSEntryEngine:
             if is_debit_route:
                 max_debit_iv_rank = float(getattr(config, "VASS_EV_PRE_DEBIT_IV_RANK_MAX", 100.0))
                 if float(iv_rank) > max_debit_iv_rank:
-                    return (
-                        f"R_EV_PRE_DEBIT_IV_RANK_HIGH:{float(iv_rank):.1f}>{max_debit_iv_rank:.1f}"
+                    algorithm._log_high_frequency_event(
+                        config_flag="LOG_VASS_FALLBACK_BACKTEST_ENABLED",
+                        category="VASS_FALLBACK",
+                        reason_key="R_EV_PRE_DEBIT_IV_RANK_HIGH",
+                        message=(
+                            f"{fallback_log_prefix}: EV pre-gate blocked | Code=R_EV_PRE_DEBIT_IV_RANK_HIGH | "
+                            f"Route={route_value} | IVRank={float(iv_rank):.1f} > {max_debit_iv_rank:.1f}"
+                        ),
                     )
+                    return "R_EV_PRE_DEBIT_IV_RANK_HIGH"
 
             if route_value == "BULL_CALL_DEBIT":
                 min_bull_regime = float(getattr(config, "VASS_EV_PRE_BULL_REGIME_MIN", 0.0))
                 if float(regime_score) < min_bull_regime:
-                    return (
-                        f"R_EV_PRE_BULL_REGIME_LOW:{float(regime_score):.1f}<"
-                        f"{min_bull_regime:.1f}"
+                    algorithm._log_high_frequency_event(
+                        config_flag="LOG_VASS_FALLBACK_BACKTEST_ENABLED",
+                        category="VASS_FALLBACK",
+                        reason_key="R_EV_PRE_BULL_REGIME_LOW",
+                        message=(
+                            f"{fallback_log_prefix}: EV pre-gate blocked | Code=R_EV_PRE_BULL_REGIME_LOW | "
+                            f"Route={route_value} | Regime={float(regime_score):.1f} < {min_bull_regime:.1f}"
+                        ),
                     )
+                    return "R_EV_PRE_BULL_REGIME_LOW"
             elif route_value == "BEAR_PUT_DEBIT":
                 max_bear_regime = float(getattr(config, "VASS_EV_PRE_BEAR_REGIME_MAX", 100.0))
                 if float(regime_score) > max_bear_regime:
-                    return (
-                        f"R_EV_PRE_BEAR_REGIME_HIGH:{float(regime_score):.1f}>"
-                        f"{max_bear_regime:.1f}"
+                    algorithm._log_high_frequency_event(
+                        config_flag="LOG_VASS_FALLBACK_BACKTEST_ENABLED",
+                        category="VASS_FALLBACK",
+                        reason_key="R_EV_PRE_BEAR_REGIME_HIGH",
+                        message=(
+                            f"{fallback_log_prefix}: EV pre-gate blocked | Code=R_EV_PRE_BEAR_REGIME_HIGH | "
+                            f"Route={route_value} | Regime={float(regime_score):.1f} > {max_bear_regime:.1f}"
+                        ),
                     )
+                    return "R_EV_PRE_BEAR_REGIME_HIGH"
             return None
 
         def _is_structural_ev_failure(reason: Optional[str]) -> bool:
