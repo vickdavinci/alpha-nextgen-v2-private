@@ -1052,8 +1052,12 @@ VASS_REGIME_CONFIRMED_BEAR_MAX = 43.0  # Disable mark stops when bearish spread 
 VASS_REGIME_BREAK_EXIT_ENABLED = True
 VASS_REGIME_BREAK_BULL_FLOOR = 50.0  # Close bullish spreads when regime falls below this
 VASS_REGIME_BREAK_BEAR_CEILING = 50.0  # Close bearish spreads when regime rises above this
-VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT = 0.80  # Confirmed conviction mode: let winners run
-VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT_DEBIT = 0.80  # Confirmed debit spreads: let winners run.
+VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT = (
+    0.55  # V12.23 C1: lower THESIS_FIRST confirmed target to improve realization.
+)
+VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT_DEBIT = (
+    0.55  # V12.23 C1: confirmed debit spreads harvest at 55% of max profit.
+)
 VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT_CREDIT = (
     0.60  # Confirmed credit spreads: harvest earlier to reduce assignment drift.
 )
