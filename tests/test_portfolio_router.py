@@ -1079,6 +1079,29 @@ class TestRouterSymbolNormalization:
         assert ok is True
         assert "EXIT_PRE_CLEAR_BYPASS" in detail
 
+    def test_micro_eod_sweep_reason_triggers_bypass(self):
+        router = PortfolioRouter()
+        order = OrderIntent(
+            symbol="QQQ 260130P00500000",
+            quantity=1,
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            urgency=Urgency.IMMEDIATE,
+            reason="MICRO_EOD_SWEEP",
+            target_weight=0.0,
+            current_weight=0.0,
+            metadata={"options_lane": "MICRO", "options_strategy": "PROTECTIVE_PUTS"},
+            tag="MICRO:MICRO_EOD_SWEEP|trace=SIG-TEST",
+        )
+        router._is_option_close_order = MagicMock(return_value=True)
+        router._get_open_orders_for_symbols = MagicMock(side_effect=[[object()], [object()]])
+        router._cancel_open_orders_for_symbols = MagicMock(return_value=(1, 0))
+
+        ok, detail = router._run_option_exit_preclear(order)
+
+        assert ok is True
+        assert "EXIT_PRE_CLEAR_BYPASS" in detail
+
     def test_intraday_stale_close_skips_inflight_dedupe_and_cancels(self):
         router = PortfolioRouter()
         order = OrderIntent(

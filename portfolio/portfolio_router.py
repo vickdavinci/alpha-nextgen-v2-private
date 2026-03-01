@@ -893,7 +893,9 @@ class PortfolioRouter:
             "INTRADAY_FORCE_EXIT" in reason_upper
             or "INTRADAY_TIME_EXIT_" in reason_upper
             or "INTRADAY_FORCE_CLOSE" in reason_upper
+            or "MICRO_EOD_SWEEP" in reason_upper
             or "INTRADAY_TIME_EXIT_" in intraday_exit_code_upper
+            or "MICRO_EOD_SWEEP" in intraday_exit_code_upper
         )
         intraday_bypass_after = max(
             0, int(getattr(config, "EXIT_PRE_CLEAR_INTRADAY_BYPASS_AFTER_SECONDS", 5))
