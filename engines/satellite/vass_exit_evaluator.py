@@ -945,6 +945,7 @@ def check_spread_exit_signals_impl(
             exit_reason is None
             and bool(getattr(config, "VASS_TAIL_RISK_CAP_ENABLED", True))
             and tail_cap_enabled
+            and not thesis_first_mode
             and pnl < 0
             and self.algorithm is not None
         ):
