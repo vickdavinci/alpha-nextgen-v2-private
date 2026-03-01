@@ -52,6 +52,21 @@ class MainRiskMonitorMixin:
             if not self._greeks_breach_logged:
                 self.Log(f"GREEKS_BREACH: {', '.join(reasons)}")
                 self._greeks_breach_logged = True
+
+            # Build set of IC leg symbols to avoid per-leg kills on condors.
+            # Greeks CB must not destroy condor structure by closing legs individually.
+            ic_leg_symbols: set = set()
+            ic_condors_to_close = []
+            if bool(getattr(config, "IRON_CONDOR_ENGINE_ENABLED", False)):
+                for ic_pos in self.options_engine.get_iron_condor_positions():
+                    if ic_pos.is_closing:
+                        continue
+                    for leg_attr in ("short_put", "long_put", "short_call", "long_call"):
+                        leg = getattr(ic_pos, leg_attr, None)
+                        if leg is not None:
+                            ic_leg_symbols.add(self._normalize_symbol_str(leg.symbol))
+                    ic_condors_to_close.append(ic_pos)
+
             # Emit exit signals for real option holdings (never synthetic symbols).
             signals_emitted = 0
             itm_risk_exit_emitted = False
@@ -69,6 +84,9 @@ class MainRiskMonitorMixin:
                     continue
                 seen_symbols.add(symbol_str)
                 if self._has_open_non_oco_order_for_symbol(symbol_str):
+                    continue
+                # Skip IC legs — they will be closed via coordinated condor exit below.
+                if symbol_str in ic_leg_symbols:
                     continue
                 lane = ""
                 try:
@@ -93,6 +111,18 @@ class MainRiskMonitorMixin:
                 if lane == "ITM":
                     itm_risk_exit_emitted = True
                 signals_emitted += 1
+
+            # Close IC condors as coordinated units (both sides together).
+            for ic_pos in ic_condors_to_close:
+                from engines.satellite.iron_condor_engine import EXIT_IC_VIX_SPIKE
+
+                _, ic_signals = self.options_engine._iron_condor_engine._build_exit(
+                    ic_pos, EXIT_IC_VIX_SPIKE, self.Time
+                )
+                ic_pos.is_closing = True
+                for sig in ic_signals:
+                    self.portfolio_router.receive_signal(sig)
+                    signals_emitted += 1
             if itm_risk_exit_emitted:
                 cooldown_min = int(getattr(config, "ITM_RISK_EXIT_COOLDOWN_MINUTES", 0) or 0)
                 if cooldown_min > 0 and hasattr(self, "_set_engine_lane_cooldown"):

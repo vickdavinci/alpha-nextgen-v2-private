@@ -1000,8 +1000,14 @@ class IronCondorEngine:
                 return self._positions.pop(i)
         return None
 
-    def record_trade_result(self, pnl: float) -> None:
-        """Record trade result for loss breaker and diagnostics."""
+    def record_trade_result(self, pnl: float, current_date_str: Optional[str] = None) -> None:
+        """Record trade result for loss breaker and diagnostics.
+
+        Args:
+            pnl: P&L of the closed trade.
+            current_date_str: Algo date as YYYY-MM-DD (use self.Time.date() from caller).
+                              Falls back to date.today() only as last resort.
+        """
         self._daily_pnl += pnl
         self._diag_total_pnl += pnl
 
@@ -1016,9 +1022,18 @@ class IronCondorEngine:
             max_consecutive = int(getattr(config, "IC_LOSS_BREAKER_CONSECUTIVE", 3))
             if self._consecutive_losses >= max_consecutive:
                 pause_days = int(getattr(config, "IC_LOSS_BREAKER_PAUSE_DAYS", 1))
-                from datetime import date
+                if current_date_str:
+                    from datetime import date as _date_cls
 
-                pause_date = date.today() + timedelta(days=pause_days)
+                    try:
+                        base = _date_cls.fromisoformat(current_date_str)
+                    except Exception:
+                        base = _date_cls.today()
+                else:
+                    from datetime import date as _date_cls
+
+                    base = _date_cls.today()
+                pause_date = base + timedelta(days=pause_days)
                 self._loss_breaker_pause_until = pause_date.strftime("%Y-%m-%d")
                 self._log(
                     f"LOSS_BREAKER_ACTIVE | consecutive={self._consecutive_losses} "

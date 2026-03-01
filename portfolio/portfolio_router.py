@@ -2758,7 +2758,9 @@ class PortfolioRouter:
                 if not inferred_lane:
                     inferred_lane = self._infer_options_lane_from_symbol(symbol)
                 source_tag = (
-                    f"OPT_{inferred_lane}" if inferred_lane in {"ITM", "MICRO"} else "OPT_UNKNOWN"
+                    f"OPT_{inferred_lane}"
+                    if inferred_lane in {"IC", "ITM", "MICRO"}
+                    else "OPT_UNKNOWN"
                 )
             elif "OPT" in sources:
                 inferred_lane = self._infer_options_lane_from_symbol(symbol)
@@ -2778,7 +2780,9 @@ class PortfolioRouter:
                     inferred_lane, _ = self._extract_options_lane_and_strategy(metadata)
                 if not inferred_lane:
                     inferred_lane = self._infer_options_lane_from_symbol(symbol)
-                if inferred_lane in {"ITM", "MICRO"}:
+                if inferred_lane == "IC":
+                    source_tag = "OPT_IC"
+                elif inferred_lane in {"ITM", "MICRO"}:
                     source_tag = f"OPT_{inferred_lane}"
                 elif metadata and (
                     bool(metadata.get("spread_close_short", False))
@@ -2812,6 +2816,8 @@ class PortfolioRouter:
         if upper in {"OPT_IC", "OPT_ITM", "OPT_MICRO", "OPT_VASS", "OPT_UNKNOWN"}:
             return upper
         if upper == "RISK" and self._is_option_symbol(str(symbol or "")):
+            if inferred_lane == "IC":
+                return "OPT_IC"
             if inferred_lane in {"ITM", "MICRO"}:
                 return f"OPT_{inferred_lane}"
             if (
@@ -2828,11 +2834,11 @@ class PortfolioRouter:
         if "VASS" in upper or upper.startswith("SPREAD"):
             return "OPT_VASS"
         if upper.startswith("OPT_INTRADAY"):
-            if inferred_lane in {"ITM", "MICRO"}:
+            if inferred_lane in {"IC", "ITM", "MICRO"}:
                 return f"OPT_{inferred_lane}"
             return "OPT_UNKNOWN"
         if upper.startswith("OPT"):
-            if inferred_lane in {"ITM", "MICRO"}:
+            if inferred_lane in {"IC", "ITM", "MICRO"}:
                 return f"OPT_{inferred_lane}"
             if (
                 bool(md.get("spread_close_short", False))
@@ -2875,7 +2881,7 @@ class PortfolioRouter:
                 except Exception:
                     lane = ""
 
-        return lane if lane in {"ITM", "MICRO"} else ""
+        return lane if lane in {"IC", "ITM", "MICRO"} else ""
 
     def _extract_options_lane_and_strategy(
         self,
@@ -2907,7 +2913,7 @@ class PortfolioRouter:
             elif strategy and strategy not in {"UNCLASSIFIED", "NO_TRADE", "UNKNOWN"}:
                 lane = "MICRO"
 
-        if lane not in {"ITM", "MICRO"}:
+        if lane not in {"IC", "ITM", "MICRO"}:
             lane = ""
         return lane, strategy
 
@@ -3627,6 +3633,14 @@ class PortfolioRouter:
                         tag = f"{lane_tag}:UNCLASSIFIED"
                     else:
                         tag = "OPT_UNKNOWN:UNCLASSIFIED"
+                elif any(s == "OPT_IC" for s in agg.sources):
+                    ic_strategy = ""
+                    ic_exit_reason = ""
+                    if agg.metadata:
+                        ic_strategy = str(agg.metadata.get("options_strategy", "") or "").upper()
+                        ic_exit_reason = str(agg.metadata.get("exit_reason", "") or "").upper()
+                    tag_value = ic_exit_reason or ic_strategy or "IRON_CONDOR"
+                    tag = f"IC:{tag_value}"
                 elif any(s == "OPT" for s in agg.sources):
                     inferred_intraday_lane = ""
                     inferred_intraday_strategy = ""
@@ -3646,7 +3660,10 @@ class PortfolioRouter:
                         or spread_type
                         or (agg.metadata and agg.metadata.get("spread_close_short"))
                     )
-                    if not has_vass_metadata and is_closing:
+                    if inferred_intraday_lane == "IC":
+                        ic_exit = str((agg.metadata or {}).get("exit_reason", "")).upper()
+                        tag = f"IC:{ic_exit or 'IRON_CONDOR'}"
+                    elif not has_vass_metadata and is_closing:
                         if not inferred_intraday_lane:
                             inferred_intraday_lane = self._infer_options_lane_from_symbol(symbol)
                         if inferred_intraday_lane in {"ITM", "MICRO"}:
@@ -3667,7 +3684,12 @@ class PortfolioRouter:
                         )
                     if not lane_tag:
                         lane_tag = self._infer_options_lane_from_symbol(symbol)
-                    if lane_tag in {"ITM", "MICRO"}:
+                    if lane_tag == "IC":
+                        ic_exit_reason = ""
+                        if agg.metadata:
+                            ic_exit_reason = str(agg.metadata.get("exit_reason", "") or "").upper()
+                        tag = f"IC:{ic_exit_reason or 'RISK_EXIT'}"
+                    elif lane_tag in {"ITM", "MICRO"}:
                         strategy_tag = intraday_strategy or "RISK_EXIT"
                         tag = f"{lane_tag}:{strategy_tag}"
                     elif agg.metadata and (

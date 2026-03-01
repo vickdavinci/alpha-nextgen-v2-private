@@ -4875,9 +4875,12 @@ class OptionsEngine:
         return None
 
     def has_position(self) -> bool:
-        """Check if any position exists (single-leg, spread, or intraday)."""
+        """Check if any position exists (single-leg, spread, intraday, or IC)."""
         return (
-            self._position is not None or self.has_spread_position() or self.has_engine_position()
+            self._position is not None
+            or self.has_spread_position()
+            or self.has_engine_position()
+            or self._iron_condor_engine.has_open_positions
         )
 
     def get_position(self) -> Optional[OptionsPosition]:

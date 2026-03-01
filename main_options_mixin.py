@@ -43,7 +43,14 @@ class MainOptionsMixin:
             getattr(self, "_pending_spread_orders_reverse", {})
         )
         has_fill_tracker = getattr(self, "_spread_fill_tracker", None) is not None
-        if has_active_spread or has_pending_spread or has_pending_leg_map or has_fill_tracker:
+        has_active_ic = bool(self.options_engine.get_iron_condor_positions())
+        if (
+            has_active_spread
+            or has_pending_spread
+            or has_pending_leg_map
+            or has_fill_tracker
+            or has_active_ic
+        ):
             return
 
         self.portfolio_router.clear_all_spread_margins()
@@ -192,20 +199,38 @@ class MainOptionsMixin:
         self._diag_vass_thesis_soft_stop_exits = 0
         self._diag_exit_path_counts = {}
         self._diag_exit_path_pnl = {}
-        self._diag_exit_path_counts_by_engine = {"VASS": {}, "MICRO": {}, "ITM": {}, "OTHER": {}}
-        self._diag_exit_path_pnl_by_engine = {"VASS": {}, "MICRO": {}, "ITM": {}, "OTHER": {}}
-        self._diag_intraday_candidates_by_engine = {"MICRO": 0, "ITM": 0, "OTHER": 0}
-        self._diag_intraday_approved_by_engine = {"MICRO": 0, "ITM": 0, "OTHER": 0}
-        self._diag_intraday_dropped_by_engine = {"MICRO": 0, "ITM": 0, "OTHER": 0}
+        self._diag_exit_path_counts_by_engine = {
+            "VASS": {},
+            "IC": {},
+            "MICRO": {},
+            "ITM": {},
+            "OTHER": {},
+        }
+        self._diag_exit_path_pnl_by_engine = {
+            "VASS": {},
+            "IC": {},
+            "MICRO": {},
+            "ITM": {},
+            "OTHER": {},
+        }
+        self._diag_intraday_candidates_by_engine = {"IC": 0, "MICRO": 0, "ITM": 0, "OTHER": 0}
+        self._diag_intraday_approved_by_engine = {"IC": 0, "MICRO": 0, "ITM": 0, "OTHER": 0}
+        self._diag_intraday_dropped_by_engine = {"IC": 0, "MICRO": 0, "ITM": 0, "OTHER": 0}
         self._diag_intraday_drop_reason_counts = {}
-        self._diag_intraday_drop_reason_counts_by_engine = {"MICRO": {}, "ITM": {}, "OTHER": {}}
-        self._diag_intraday_results_by_engine = {"MICRO": 0, "ITM": 0, "OTHER": 0}
+        self._diag_intraday_drop_reason_counts_by_engine = {
+            "IC": {},
+            "MICRO": {},
+            "ITM": {},
+            "OTHER": {},
+        }
+        self._diag_intraday_results_by_engine = {"IC": 0, "MICRO": 0, "ITM": 0, "OTHER": 0}
         self._diag_transition_derisk_counts = {
             "de_risk_on_deterioration": 0,
             "de_risk_on_recovery": 0,
         }
         self._diag_transition_derisk_counts_by_engine = {
             "VASS": {"de_risk_on_deterioration": 0, "de_risk_on_recovery": 0},
+            "IC": {"de_risk_on_deterioration": 0, "de_risk_on_recovery": 0},
             "ITM": {"de_risk_on_deterioration": 0, "de_risk_on_recovery": 0},
             "MICRO": {"de_risk_on_deterioration": 0, "de_risk_on_recovery": 0},
             "OTHER": {"de_risk_on_deterioration": 0, "de_risk_on_recovery": 0},
@@ -317,7 +342,7 @@ class MainOptionsMixin:
 
     def _normalize_engine_lane(self, lane: Optional[str]) -> str:
         lane_key = str(lane or "").upper()
-        return lane_key if lane_key in ("MICRO", "ITM") else "UNKNOWN"
+        return lane_key if lane_key in ("IC", "MICRO", "ITM") else "UNKNOWN"
 
     def _set_engine_lane_cooldown(self, lane: Optional[str], until: Optional[datetime]) -> None:
         lane_key = self._normalize_engine_lane(lane)
@@ -1729,9 +1754,82 @@ class MainOptionsMixin:
                     self.portfolio_router.receive_signal(sig)
 
     def _check_iron_condor_exits(self) -> None:
-        """Check exit conditions on all open IC positions."""
+        """Check exit conditions on all open IC positions.
+
+        Also reconciles stale condors: removes is_closing=True condors
+        that have no live broker holdings (B2/C2 audit fix).
+        """
         if not bool(getattr(config, "IRON_CONDOR_ENGINE_ENABLED", False)):
             return
+        ic_positions = self.options_engine.get_iron_condor_positions()
+        if not ic_positions:
+            return
+
+        # ── Reconcile stale closing condors (B2/C2) ──
+        for condor in list(ic_positions):
+            if not condor.is_closing:
+                continue
+            # Check if ANY leg still has live broker holdings
+            any_leg_live = False
+            for leg_attr in ("short_put", "long_put", "short_call", "long_call"):
+                leg = getattr(condor, leg_attr, None)
+                if leg is None:
+                    continue
+                try:
+                    sym = self.Symbol(leg.symbol) if isinstance(leg.symbol, str) else leg.symbol
+                    if self.Portfolio[sym].Invested and abs(int(self.Portfolio[sym].Quantity)) > 0:
+                        any_leg_live = True
+                        break
+                except Exception:
+                    pass
+            if not any_leg_live:
+                # All legs flat — remove stale condor
+                removed = self.options_engine._iron_condor_engine.remove_position(condor.condor_id)
+                if removed:
+                    self.Log(
+                        f"IC: STALE_CONDOR_REMOVED | condor_id={condor.condor_id} "
+                        f"| No live holdings found"
+                    )
+                continue
+
+            # Check for half-closed condors: some legs flat, others still open.
+            # If is_closing but legs remain, re-emit close signals for remaining legs.
+            for leg_attr in ("short_put", "short_call"):
+                leg = getattr(condor, leg_attr, None)
+                if leg is None:
+                    continue
+                leg_sym = self._normalize_symbol_str(leg.symbol)
+                try:
+                    sym = self.Symbol(leg.symbol) if isinstance(leg.symbol, str) else leg.symbol
+                    if not self.Portfolio[sym].Invested:
+                        continue  # This leg is already flat
+                except Exception:
+                    continue
+                if self._has_open_non_oco_order_for_symbol(leg_sym):
+                    continue  # Order already pending
+                # Re-emit close signal for this orphaned leg
+                side = "PUT_CREDIT_CLOSE" if "put" in leg_attr else "CALL_CREDIT_CLOSE"
+                self.portfolio_router.receive_signal(
+                    TargetWeight(
+                        symbol=leg.symbol,
+                        target_weight=0.0,
+                        source="OPT_IC",
+                        urgency=Urgency.IMMEDIATE,
+                        reason=f"IC_ORPHAN_LEG_CLOSE | condor_id={condor.condor_id} | {side}",
+                        metadata={
+                            "options_lane": "IC",
+                            "options_strategy": "IRON_CONDOR",
+                            "trace_source": "IC:ORPHAN_LEG_CLOSE",
+                            "trace_id": condor.condor_id,
+                            "condor_id": condor.condor_id,
+                            "spread_side": side,
+                            "spread_close_short": True,
+                        },
+                        requested_quantity=condor.num_spreads,
+                    )
+                )
+
+        # Refresh list after reconciliation
         ic_positions = self.options_engine.get_iron_condor_positions()
         if not ic_positions:
             return
