@@ -1986,6 +1986,10 @@ FRIDAY_FIREWALL_VIX_CLOSE_ALL = 25  # VIX > 25: Close ALL swing options
 # Fresh Trade Protection: Trades opened same Friday must close (unless VIX < threshold)
 # Holding a brand new trade over the weekend is gambling
 FRIDAY_FIREWALL_VIX_KEEP_FRESH = 15  # VIX < 15: Calm enough to keep fresh Friday trades
+FRIDAY_FIREWALL_APPLY_TO_VASS_DEBIT = (
+    False  # Thesis-first: keep long-DTE VASS debit spreads through Friday firewall.
+)
+FRIDAY_FIREWALL_APPLY_TO_VASS_CREDIT = True  # Keep weekend risk control for VASS credit spreads.
 
 # -----------------------------------------------------------------------------
 # V2.6 SPREAD FILL TRACKING & SAFETY (Bug Fixes #1-16)

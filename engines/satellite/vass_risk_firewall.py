@@ -42,62 +42,84 @@ def check_friday_firewall_exit_impl(
             spread.entry_time.split()[0] if " " in spread.entry_time else spread.entry_time[:10]
         )
         is_fresh_trade = entry_date == current_date
+        spread_type = str(getattr(spread, "spread_type", "") or "").upper()
+        is_credit_spread = spread_type in {"BULL_PUT_CREDIT", "BEAR_CALL_CREDIT"}
+        is_debit_spread = spread_type in {
+            "BULL_CALL",
+            "BULL_CALL_DEBIT",
+            "BEAR_PUT",
+            "BEAR_PUT_DEBIT",
+        }
+        allow_debit = bool(getattr(config, "FRIDAY_FIREWALL_APPLY_TO_VASS_DEBIT", False))
+        allow_credit = bool(getattr(config, "FRIDAY_FIREWALL_APPLY_TO_VASS_CREDIT", True))
 
-        should_close = False
-        close_reason = ""
-
-        # Rule 1: VIX > threshold - close ALL
-        if current_vix > vix_close_all_threshold:
-            should_close = True
-            close_reason = f"VIX_HIGH ({current_vix:.1f} > {vix_close_all_threshold})"
-
-        # Rule 2: Fresh trade + VIX >= 15 - close (gambling protection)
-        elif is_fresh_trade and current_vix >= vix_keep_fresh_threshold:
-            should_close = True
-            close_reason = (
-                f"FRESH_TRADE_PROTECTION (VIX={current_vix:.1f} >= {vix_keep_fresh_threshold})"
-            )
-
-        # Rule 3: Fresh trade + VIX < 15 - keep (calm market)
-        elif is_fresh_trade and current_vix < vix_keep_fresh_threshold:
+        skip_by_policy = (is_debit_spread and not allow_debit) or (
+            is_credit_spread and not allow_credit
+        )
+        if skip_by_policy:
             self.log(
-                f"FRIDAY_FIREWALL: Keeping fresh spread (calm market) | "
-                f"VIX={current_vix:.1f} < {vix_keep_fresh_threshold}"
-            )
-
-        # Rule 4: Older trade + VIX <= 25 - keep
-        else:
-            self.log(
-                f"FRIDAY_FIREWALL: Keeping spread (established trade) | "
-                f"Entry={entry_date} | VIX={current_vix:.1f}"
-            )
-
-        if should_close:
-            self.log(
-                f"FRIDAY_FIREWALL: Closing spread | {close_reason} | "
-                f"Entry={entry_date} Fresh={is_fresh_trade}",
+                f"FRIDAY_FIREWALL: Skipping spread by policy | Type={spread_type} | "
+                f"Entry={entry_date} Fresh={is_fresh_trade} | VIX={current_vix:.1f}",
                 trades_only=True,
             )
-            # V2.5 FIX: Close both legs via COMBO order (atomic execution)
-            exit_signals.append(
-                TargetWeight(
-                    symbol=self._symbol_str(spread.long_leg.symbol),
-                    target_weight=0.0,
-                    source="OPT",
-                    urgency=Urgency.IMMEDIATE,
-                    reason=f"FRIDAY_FIREWALL: {close_reason}",
-                    requested_quantity=spread.num_spreads,
-                    metadata={
-                        "spread_close_short": True,
-                        "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
-                        "spread_short_leg_quantity": spread.num_spreads,
-                        "spread_key": self._build_spread_key(spread),
-                        "exit_type": "FRIDAY_FIREWALL",
-                        "spread_exit_code": "FRIDAY_FIREWALL",
-                        "spread_exit_reason": close_reason,
-                    },
+            spread = None
+
+        if spread is not None:
+            should_close = False
+            close_reason = ""
+
+            # Rule 1: VIX > threshold - close ALL
+            if current_vix > vix_close_all_threshold:
+                should_close = True
+                close_reason = f"VIX_HIGH ({current_vix:.1f} > {vix_close_all_threshold})"
+
+            # Rule 2: Fresh trade + VIX >= 15 - close (gambling protection)
+            elif is_fresh_trade and current_vix >= vix_keep_fresh_threshold:
+                should_close = True
+                close_reason = (
+                    f"FRESH_TRADE_PROTECTION (VIX={current_vix:.1f} >= {vix_keep_fresh_threshold})"
                 )
-            )
+
+            # Rule 3: Fresh trade + VIX < 15 - keep (calm market)
+            elif is_fresh_trade and current_vix < vix_keep_fresh_threshold:
+                self.log(
+                    f"FRIDAY_FIREWALL: Keeping fresh spread (calm market) | "
+                    f"VIX={current_vix:.1f} < {vix_keep_fresh_threshold}"
+                )
+
+            # Rule 4: Older trade + VIX <= 25 - keep
+            else:
+                self.log(
+                    f"FRIDAY_FIREWALL: Keeping spread (established trade) | "
+                    f"Entry={entry_date} | VIX={current_vix:.1f}"
+                )
+
+            if should_close:
+                self.log(
+                    f"FRIDAY_FIREWALL: Closing spread | {close_reason} | "
+                    f"Entry={entry_date} Fresh={is_fresh_trade}",
+                    trades_only=True,
+                )
+                # V2.5 FIX: Close both legs via COMBO order (atomic execution)
+                exit_signals.append(
+                    TargetWeight(
+                        symbol=self._symbol_str(spread.long_leg.symbol),
+                        target_weight=0.0,
+                        source="OPT",
+                        urgency=Urgency.IMMEDIATE,
+                        reason=f"FRIDAY_FIREWALL: {close_reason}",
+                        requested_quantity=spread.num_spreads,
+                        metadata={
+                            "spread_close_short": True,
+                            "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
+                            "spread_short_leg_quantity": spread.num_spreads,
+                            "spread_key": self._build_spread_key(spread),
+                            "exit_type": "FRIDAY_FIREWALL",
+                            "spread_exit_code": "FRIDAY_FIREWALL",
+                            "spread_exit_reason": close_reason,
+                        },
+                    )
+                )
 
     # Check single-leg position
     if self._position is not None:
