@@ -630,6 +630,26 @@ class PortfolioRouter:
         """Encode spread key for safe transport in order tags."""
         return str(spread_key or "").strip().replace("|", "~")
 
+    def _extract_spread_key_from_tag(self, tag: str) -> str:
+        """Best-effort extraction of spread runtime key encoded in router tags."""
+        text = str(tag or "").strip()
+        if not text:
+            return ""
+        lowered = text.lower()
+        marker = "spread_key="
+        idx = lowered.find(marker)
+        if idx < 0:
+            return ""
+        value = text[idx + len(marker) :].strip()
+        if not value:
+            return ""
+        for sep in ("|", ";", ","):
+            cut = value.find(sep)
+            if cut >= 0:
+                value = value[:cut]
+                break
+        return value.strip().replace("~", "|")
+
     def _get_live_option_qty(self, symbol: str) -> int:
         """Return live portfolio quantity for symbol (0 when flat/not found)."""
         if not self.algorithm:
@@ -855,6 +875,40 @@ class PortfolioRouter:
             or "VASS:" in tag_upper
             or "OPT_VASS" in tag_upper
         )
+        is_vass_combo_close = bool(
+            order.is_combo and is_vass_hint and bool(metadata.get("spread_close_short", False))
+        )
+
+        # V12.23: For VASS spread closes, if an in-flight close for the same spread
+        # key already exists, do not cancel/requeue and do not enter preclear-pending
+        # wait loop. Let the existing close workflow continue.
+        if is_vass_combo_close:
+            intended_spread_key = str(metadata.get("spread_key", "") or "").strip()
+            if not intended_spread_key:
+                intended_spread_key = self._extract_spread_key_from_tag(
+                    str(getattr(order, "tag", "") or "")
+                )
+            if intended_spread_key:
+                matching_inflight: List[Any] = []
+                for open_order in open_before:
+                    open_tag = str(getattr(open_order, "Tag", "") or "")
+                    open_spread_key = self._extract_spread_key_from_tag(open_tag)
+                    if open_spread_key != intended_spread_key:
+                        continue
+                    open_symbol = self._normalize_symbol_key(getattr(open_order, "Symbol", None))
+                    open_qty = int(getattr(open_order, "Quantity", 0) or 0)
+                    live_qty = self._get_live_option_qty(open_symbol)
+                    is_close_side = (open_qty < 0 < live_qty) or (open_qty > 0 > live_qty)
+                    if is_close_side:
+                        matching_inflight.append(open_order)
+                if matching_inflight:
+                    inflight_ids = _order_ids(matching_inflight)
+                    return (
+                        False,
+                        "EXIT_PRE_CLEAR_INFLIGHT_CLOSE: "
+                        f"Symbols={','.join(normalized)} | "
+                        f"OrderIds={inflight_ids} | Mode=VASS_COMBO_SAME_SPREAD",
+                    )
 
         # V12.22 scope correction: dedupe in-flight close submits only for VASS-style
         # close intents. Intraday lanes (MICRO/ITM) must not be deferred by this gate,
