@@ -216,6 +216,27 @@ class MainOrdersMixin:
         """Persist order lifecycle records independent of console log budget."""
         if not bool(getattr(config, "ORDER_LIFECYCLE_OBSERVABILITY_ENABLED", True)):
             return
+        try:
+            oid = int(order_id or 0)
+        except Exception:
+            oid = 0
+        resolved_tag = str(order_tag or "").strip()
+        tag_map = getattr(self, "_order_lifecycle_tag_by_order_id", None)
+        if not isinstance(tag_map, dict):
+            tag_map = {}
+            self._order_lifecycle_tag_by_order_id = tag_map
+        if not resolved_tag and oid > 0:
+            resolved_tag = str(tag_map.get(oid, "") or "").strip()
+        if resolved_tag and oid > 0:
+            tag_map[oid] = resolved_tag
+            if len(tag_map) > 75000:
+                trim = max(1, 75000 // 5)
+                for stale_key in list(tag_map.keys())[:trim]:
+                    tag_map.pop(stale_key, None)
+        resolved_trace_id = str(trace_id or "").strip()
+        if not resolved_trace_id and resolved_tag:
+            resolved_trace_id = self._extract_trace_id_from_tag(resolved_tag)
+
         max_rows = int(getattr(config, "ORDER_LIFECYCLE_OBSERVABILITY_MAX_ROWS", 50000))
         self._append_observability_record(
             records=self._order_lifecycle_records,
@@ -225,13 +246,13 @@ class MainOrdersMixin:
             row={
                 "time": self.Time.strftime("%Y-%m-%d %H:%M:%S"),
                 "status": str(status or "").upper(),
-                "order_id": str(int(order_id or 0)),
+                "order_id": str(oid),
                 "symbol": str(symbol or ""),
                 "quantity": str(int(quantity or 0)),
                 "fill_price": f"{float(fill_price or 0.0):.6f}",
                 "order_type": str(order_type or ""),
-                "order_tag": str(order_tag or ""),
-                "trace_id": str(trace_id or ""),
+                "order_tag": resolved_tag,
+                "trace_id": resolved_trace_id,
                 "message": str(message or ""),
                 "source": str(source or ""),
             },
@@ -274,6 +295,13 @@ class MainOrdersMixin:
             self._record_order_tag_resolve(order_id, symbol, cached, "cache")
             return cached
 
+        lifecycle_cached = str(
+            getattr(self, "_order_lifecycle_tag_by_order_id", {}).get(order_id, "") or ""
+        ).strip()
+        if lifecycle_cached:
+            self._record_order_tag_resolve(order_id, symbol, lifecycle_cached, "lifecycle_cache")
+            return lifecycle_cached
+
         # Last-resort fallback for broker events that drop order tags on cancel/fill.
         symbol_hint = self._get_recent_symbol_fill_tag(symbol, max_age_minutes=480)
         if symbol_hint:
@@ -290,7 +318,9 @@ class MainOrdersMixin:
             return
         self._order_tag_hint_cache[order_id] = clean
         if len(self._order_tag_hint_cache) > 25000:
-            self._order_tag_hint_cache.clear()
+            trim = max(1, 25000 // 5)
+            for stale_key in list(self._order_tag_hint_cache.keys())[:trim]:
+                self._order_tag_hint_cache.pop(stale_key, None)
 
     def _cache_symbol_fill_tag(self, symbol: str, tag: str) -> None:
         """Cache last non-empty fill tag per option symbol for telemetry fallback/reconcile guards."""
@@ -301,8 +331,14 @@ class MainOrdersMixin:
         self._last_option_fill_tag_by_symbol[sym] = clean
         self._last_option_fill_time_by_symbol[sym] = self.Time
         if len(self._last_option_fill_tag_by_symbol) > 5000:
-            self._last_option_fill_tag_by_symbol.clear()
-            self._last_option_fill_time_by_symbol.clear()
+            trim = max(1, 5000 // 5)
+            sortable = []
+            for key, ts in self._last_option_fill_time_by_symbol.items():
+                sortable.append((ts, key))
+            sortable.sort(key=lambda item: item[0] if item[0] is not None else self.Time)
+            for _, stale_key in sortable[:trim]:
+                self._last_option_fill_time_by_symbol.pop(stale_key, None)
+                self._last_option_fill_tag_by_symbol.pop(stale_key, None)
 
     def _get_recent_symbol_fill_tag(self, symbol: str, max_age_minutes: int = 240) -> str:
         """Return last cached fill tag for symbol when fresh enough."""

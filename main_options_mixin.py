@@ -235,6 +235,7 @@ class MainOptionsMixin:
         self._last_regime_effective_log_at = None
         self._last_intraday_dte_routing_log_by_key = {}
         self._order_tag_hint_cache = {}
+        self._order_lifecycle_tag_by_order_id = {}
         self._last_option_fill_tag_by_symbol = {}
         self._last_option_fill_time_by_symbol = {}
         self._order_tag_map_logged_ids = set()
