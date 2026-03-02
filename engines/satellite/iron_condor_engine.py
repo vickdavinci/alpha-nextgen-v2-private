@@ -97,7 +97,8 @@ class IronCondorEngine:
         self._pending_condor: Optional[IronCondorPosition] = None
         self._pending_fills: Dict[str, bool] = {}  # condor side → filled
         self._pending_entry_since: Optional[datetime] = None
-        self._regime_neutral_bars: int = 0  # Consecutive neutral-regime bars
+        self._regime_neutral_days: int = 0  # Consecutive neutral-regime trading days
+        self._regime_neutral_last_date: Optional[str] = None  # Last date counted
         self._last_scan_time: Optional[str] = None  # Scan throttle timestamp
         self._hold_guard_logged: set = set()  # Suppress repeat hold guard logs
 
@@ -245,10 +246,9 @@ class IronCondorEngine:
             if loss_ratio >= daily_loss_pct:
                 return R_IC_DAILY_LOSS_STOP
 
-        # Gate: Budget / open risk cap
+        # Gate: Budget / open risk cap (purely %-based, scales with portfolio)
         ic_open_risk_pct = float(getattr(config, "IC_OPEN_RISK_PCT", 0.03))
-        ic_hard_budget = float(getattr(config, "IC_HARD_BUDGET_DOLLARS", 10000))
-        max_open_risk = min(ic_hard_budget, ic_open_risk_pct * effective_portfolio_value)
+        max_open_risk = ic_open_risk_pct * effective_portfolio_value
         if ic_open_risk >= max_open_risk:
             return R_IC_BUDGET_EXCEEDED
 
@@ -259,17 +259,22 @@ class IronCondorEngine:
         if margin_remaining < min_margin:
             return R_IC_MARGIN_INSUFFICIENT
 
-        # Gate: Regime in neutral band
+        # Gate: Regime in neutral band (uses EOD score — stable across the day)
         regime_min = float(getattr(config, "IC_REGIME_MIN", 45))
         regime_max = float(getattr(config, "IC_REGIME_MAX", 60))
         if not (regime_min <= regime_score <= regime_max):
-            self._regime_neutral_bars = 0
+            self._regime_neutral_days = 0
+            self._regime_neutral_last_date = None
             return R_IC_REGIME_OUT_OF_RANGE
 
-        # Gate: Regime persistence
-        self._regime_neutral_bars += 1
-        persistence_req = int(getattr(config, "IC_REGIME_PERSISTENCE_BARS", 3))
-        if self._regime_neutral_bars < persistence_req:
+        # Gate: Regime persistence — count consecutive DAYS, not intraday bars.
+        # EOD score is constant within a day, so deduplicate by calendar date.
+        today_str = current_time.strftime("%Y-%m-%d")
+        if self._regime_neutral_last_date != today_str:
+            self._regime_neutral_days += 1
+            self._regime_neutral_last_date = today_str
+        persistence_req = int(getattr(config, "IC_REGIME_PERSISTENCE_DAYS", 2))
+        if self._regime_neutral_days < persistence_req:
             return R_IC_REGIME_NOT_PERSISTENT
 
         # Gate: Transition overlay — block DETERIORATION/AMBIGUOUS
@@ -838,11 +843,15 @@ class IronCondorEngine:
             self._record_drop(R_IC_PER_TRADE_RISK_EXCEEDED)
             return None
 
-        # Also cap by hard budget
-        ic_hard_budget = float(getattr(config, "IC_HARD_BUDGET_DOLLARS", 10000))
-        max_spreads_by_budget = int(ic_hard_budget / (max_loss * 100))
+        # Cap by open risk budget (%-based, scales with portfolio)
+        ic_open_risk_pct = float(getattr(config, "IC_OPEN_RISK_PCT", 0.03))
+        max_open_risk = ic_open_risk_pct * effective_portfolio_value
+        remaining_budget = max(0, max_open_risk - self.get_open_risk())
+        max_spreads_by_budget = int(remaining_budget / (max_loss * 100)) if max_loss > 0 else 0
+        if max_spreads_by_budget < 1:
+            self._record_drop(R_IC_BUDGET_EXCEEDED)
+            return None
         num_spreads = min(max_spreads_by_risk, max_spreads_by_budget, 10)
-        num_spreads = max(num_spreads, 1)
 
         # ── Determine VIX tier label ──
         if vix_current < 16:
@@ -1023,7 +1032,18 @@ class IronCondorEngine:
         if vix_current >= vix_spike_threshold:
             return self._build_exit(condor, EXIT_IC_VIX_SPIKE, current_time)
 
-        # ── PRE-GUARD: P8 — Assignment risk (always fires) ──
+        # ── PRE-GUARD: P1 — Regime break (always fires, bypasses hold guard) ──
+        # A neutral strategy has no edge once regime leaves the neutral band.
+        # Unlike VASS (directional), both bull AND bear breaks are dangerous for IC.
+        regime_min = float(getattr(config, "IC_REGIME_MIN", 45))
+        regime_max = float(getattr(config, "IC_REGIME_MAX", 60))
+        regime_buffer = float(getattr(config, "IC_REGIME_EXIT_BUFFER", 5))
+        if regime_score < (regime_min - regime_buffer) or regime_score > (
+            regime_max + regime_buffer
+        ):
+            return self._build_exit(condor, EXIT_IC_REGIME_BREAK, current_time)
+
+        # ── PRE-GUARD: P2 — Assignment risk (always fires) ──
         div_guard_dte = int(getattr(config, "IC_DIVIDEND_GUARD_DTE", 3))
         if current_dte <= div_guard_dte:
             put_itm = (condor.put_short_strike - qqq_price) / qqq_price if qqq_price > 0 else 0
@@ -1031,7 +1051,7 @@ class IronCondorEngine:
             if put_itm > 0 or call_itm > 0:
                 return self._build_exit(condor, EXIT_IC_ASSIGNMENT_RISK, current_time)
 
-        # ── P1: Daily loss stop ──
+        # ── Daily loss stop ──
         # Checked at engine level in run_exit_cycle, not per-position
 
         # ── HOLD GUARD (DTE-adaptive) ──
@@ -1145,16 +1165,7 @@ class IronCondorEngine:
         if current_dte <= time_exit_dte:
             return self._build_exit(condor, EXIT_IC_TIME_EXIT, current_time)
 
-        # ── P6: Regime break ──
-        regime_min = float(getattr(config, "IC_REGIME_MIN", 45))
-        regime_max = float(getattr(config, "IC_REGIME_MAX", 60))
-        regime_buffer = float(getattr(config, "IC_REGIME_EXIT_BUFFER", 5))
-        if regime_score < (regime_min - regime_buffer) or regime_score > (
-            regime_max + regime_buffer
-        ):
-            return self._build_exit(condor, EXIT_IC_REGIME_BREAK, current_time)
-
-        # ── P7: Friday close ──
+        # ── P6: Friday close ──
         friday_close_dte = int(getattr(config, "IC_FRIDAY_CLOSE_DTE", 8))
         if current_time.weekday() == 4 and current_dte < friday_close_dte:
             return self._build_exit(condor, EXIT_IC_FRIDAY_CLOSE, current_time)
@@ -1586,7 +1597,8 @@ class IronCondorEngine:
             "pending_entry_since": str(self._pending_entry_since)
             if self._pending_entry_since
             else None,
-            "regime_neutral_bars": self._regime_neutral_bars,
+            "regime_neutral_days": self._regime_neutral_days,
+            "regime_neutral_last_date": self._regime_neutral_last_date,
             "hold_guard_logged": list(self._hold_guard_logged),
             "diag_candidates": self._diag_candidates,
             "diag_approved": self._diag_approved,
@@ -1632,7 +1644,8 @@ class IronCondorEngine:
                 self._pending_entry_since = None
         else:
             self._pending_entry_since = None
-        self._regime_neutral_bars = int(state.get("regime_neutral_bars", 0) or 0)
+        self._regime_neutral_days = int(state.get("regime_neutral_days", 0) or 0)
+        self._regime_neutral_last_date = state.get("regime_neutral_last_date")
         self._hold_guard_logged = set(state.get("hold_guard_logged", []) or [])
         # Diagnostics
         self._diag_candidates = int(state.get("diag_candidates", 0) or 0)
@@ -1653,7 +1666,8 @@ class IronCondorEngine:
         self._pending_condor = None
         self._pending_fills.clear()
         self._pending_entry_since = None
-        self._regime_neutral_bars = 0
+        self._regime_neutral_days = 0
+        self._regime_neutral_last_date = None
         self._last_scan_time = None
         self._hold_guard_logged = set()
         # Reset daily diagnostics
@@ -1674,7 +1688,8 @@ class IronCondorEngine:
         self._pending_condor = None
         self._pending_fills = {}
         self._pending_entry_since = None
-        self._regime_neutral_bars = 0
+        self._regime_neutral_days = 0
+        self._regime_neutral_last_date = None
         self._hold_guard_logged = set()
         self._diag_candidates = 0
         self._diag_approved = 0

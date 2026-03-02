@@ -179,7 +179,6 @@ _SEARCH_DEFAULTS = dict(
     IC_MAX_STOP_DW=0.65,
     IC_WING_SYMMETRY_MAX=1.0,
     IC_PER_TRADE_RISK_PCT=0.01,
-    IC_HARD_BUDGET_DOLLARS=10000,
     IC_MIN_OPEN_INTEREST=100,
     IC_MAX_SPREAD_PCT=0.30,
     IC_DTE_RANGES=[(21, 35)],
@@ -240,10 +239,11 @@ class TestEnvGates:
             assert result == R_IC_REGIME_OUT_OF_RANGE
 
     def test_regime_persistence_required(self):
+        """Day 1 of neutral regime is not enough — need IC_REGIME_PERSISTENCE_DAYS."""
         engine = _make_engine()
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
-            with patch.object(config, "IC_REGIME_PERSISTENCE_BARS", 3):
-                # First call: bar 1
+            with patch.object(config, "IC_REGIME_PERSISTENCE_DAYS", 2):
+                # Day 1: first neutral day counted
                 result = engine._check_env_gates(
                     regime_score=52,
                     adx_value=15,
@@ -255,10 +255,34 @@ class TestEnvGates:
                     ic_open_risk=0,
                 )
                 assert result == R_IC_REGIME_NOT_PERSISTENT
+                # Same day, second call — still day 1
+                result2 = engine._check_env_gates(
+                    regime_score=52,
+                    adx_value=15,
+                    vix_current=18,
+                    transition_ctx=_default_transition_ctx(),
+                    current_time=datetime(2025, 3, 3, 11, 15),
+                    effective_portfolio_value=100000,
+                    margin_remaining=50000,
+                    ic_open_risk=0,
+                )
+                assert result2 == R_IC_REGIME_NOT_PERSISTENT
+                # Day 2: passes persistence
+                result3 = engine._check_env_gates(
+                    regime_score=52,
+                    adx_value=15,
+                    vix_current=18,
+                    transition_ctx=_default_transition_ctx(),
+                    current_time=datetime(2025, 3, 4, 11, 0),
+                    effective_portfolio_value=100000,
+                    margin_remaining=50000,
+                    ic_open_risk=0,
+                )
+                assert result3 is None  # All gates pass
 
     def test_vix_below_min_rejects(self):
         engine = _make_engine()
-        engine._regime_neutral_bars = 5
+        engine._regime_neutral_days = 5
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             result = engine._check_env_gates(
                 regime_score=52,
@@ -274,7 +298,7 @@ class TestEnvGates:
 
     def test_vix_above_max_rejects(self):
         engine = _make_engine()
-        engine._regime_neutral_bars = 5
+        engine._regime_neutral_days = 5
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             result = engine._check_env_gates(
                 regime_score=52,
@@ -290,7 +314,7 @@ class TestEnvGates:
 
     def test_adx_too_high_rejects(self):
         engine = _make_engine()
-        engine._regime_neutral_bars = 5
+        engine._regime_neutral_days = 5
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             result = engine._check_env_gates(
                 regime_score=52,
@@ -306,7 +330,7 @@ class TestEnvGates:
 
     def test_transition_deterioration_blocks(self):
         engine = _make_engine()
-        engine._regime_neutral_bars = 5
+        engine._regime_neutral_days = 5
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             result = engine._check_env_gates(
                 regime_score=52,
@@ -322,7 +346,7 @@ class TestEnvGates:
 
     def test_outside_entry_window_rejects(self):
         engine = _make_engine()
-        engine._regime_neutral_bars = 5
+        engine._regime_neutral_days = 5
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             result = engine._check_env_gates(
                 regime_score=52,
@@ -338,7 +362,7 @@ class TestEnvGates:
 
     def test_position_limit_rejects(self):
         engine = _make_engine()
-        engine._regime_neutral_bars = 5
+        engine._regime_neutral_days = 5
         engine._positions = [_make_condor(), _make_condor()]
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             with patch.object(config, "IC_MAX_CONCURRENT", 2):
@@ -356,7 +380,7 @@ class TestEnvGates:
 
     def test_daily_trade_limit_rejects(self):
         engine = _make_engine()
-        engine._regime_neutral_bars = 5
+        engine._regime_neutral_days = 5
         engine._trades_today = 2
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             with patch.object(config, "IC_MAX_TRADES_PER_DAY", 2):
@@ -374,7 +398,7 @@ class TestEnvGates:
 
     def test_all_gates_pass(self):
         engine = _make_engine()
-        engine._regime_neutral_bars = 5
+        engine._regime_neutral_days = 5
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             result = engine._check_env_gates(
                 regime_score=52,
@@ -390,7 +414,7 @@ class TestEnvGates:
 
     def test_loss_breaker_blocks(self):
         engine = _make_engine()
-        engine._regime_neutral_bars = 5
+        engine._regime_neutral_days = 5
         engine._loss_breaker_pause_until = "2025-03-04"
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             result = engine._check_env_gates(
@@ -1431,8 +1455,8 @@ class TestHoldGuard:
         )
         assert result is None
 
-    def test_hold_guard_blocks_regime_break_during_hold(self):
-        """P6 regime break blocked within hold window."""
+    def test_regime_break_fires_through_hold_guard(self):
+        """Regime break is a pre-guard — fires even during hold window."""
         engine = _make_engine()
         condor = _make_condor()
         result = engine.check_exit_signals(
@@ -1444,7 +1468,9 @@ class TestHoldGuard:
             qqq_price=480,
             current_time=datetime(2025, 3, 4, 11, 0),
         )
-        assert result is None
+        assert result is not None
+        reason, signals = result
+        assert reason == "IC_REGIME_BREAK"
 
     def test_hold_guard_blocks_friday_close_during_hold(self):
         """P7 Friday close blocked within hold window."""

@@ -2281,7 +2281,7 @@ IRON_CONDOR_ENGINE_ENABLED = True  # IC-only isolation backtest
 # ── Regime / environment gates ──
 IC_REGIME_MIN = 45  # Neutral zone lower bound
 IC_REGIME_MAX = 60  # Neutral zone upper bound (tighter than directional)
-IC_REGIME_PERSISTENCE_BARS = 3  # Require N consecutive neutral bars before entry
+IC_REGIME_PERSISTENCE_DAYS = 2  # Require N consecutive EOD-neutral DAYS before entry
 IC_VIX_MIN = 14.0  # Minimum VIX — need enough premium
 IC_VIX_MAX = 32.0  # Max VIX — too volatile for range thesis
 IC_ADX_MAX = 20.0  # Block when strong trend (ADX > threshold)
@@ -2351,9 +2351,8 @@ IC_FRIDAY_CLOSE_DTE = 14  # Close before weekend if DTE < 14 (was 8)
 IC_REGIME_EXIT_BUFFER = 5  # Exit if regime goes IC_REGIME_MIN - buffer or IC_REGIME_MAX + buffer
 
 # ── Capital / risk model ──
-IC_HARD_BUDGET_DOLLARS = 10000  # Hard cap on IC capital
-IC_OPEN_RISK_PCT = 0.03  # Max open IC risk as % of portfolio (3%)
-IC_PER_TRADE_RISK_PCT = 0.01  # Per-trade max risk as % of portfolio (1%)
+IC_OPEN_RISK_PCT = 0.05  # Max open IC risk as % of portfolio (5%) — scales with equity
+IC_PER_TRADE_RISK_PCT = 0.03  # Per-trade max risk as % of portfolio (3%) — scales with equity
 IC_DAILY_LOSS_PCT = 0.015  # Daily IC loss stop (1.5% of portfolio)
 
 # ── Position limits ──

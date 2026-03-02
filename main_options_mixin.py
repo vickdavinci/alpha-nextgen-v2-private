@@ -1742,11 +1742,19 @@ class MainOptionsMixin:
             )
 
         # ── Iron Condor entry cycle (neutral-regime only) ──
+        # IC uses EOD regime score for entry — prevents false neutral signals
+        # from intraday dips in a trending market.  Exits still use the fast
+        # intraday score (see _check_iron_condor_exits).
         if bool(getattr(config, "IRON_CONDOR_ENGINE_ENABLED", False)):
+            ic_regime_score = float(
+                self.regime_engine.get_previous_score()
+                if hasattr(self, "regime_engine")
+                else regime_score
+            )
             ic_signals = self.options_engine.run_iron_condor_engine_cycle(
                 chain=chain,
                 qqq_price=qqq_price,
-                regime_score=regime_score,
+                regime_score=ic_regime_score,
                 adx_value=adx_value,
                 vix_current=vix_level_cboe or 0.0,
                 effective_portfolio_value=effective_portfolio_value,
@@ -1839,7 +1847,14 @@ class MainOptionsMixin:
 
         qqq_price = float(self.Securities["QQQ"].Price or 0)
         vix_current = float(self._get_vix_level() or 0)
-        regime_score = float(self._get_decision_regime_score_for_options() or 50)
+        # IC exits use raw intraday score — NOT min(eod, intraday).
+        # A neutral strategy needs to see BOTH bullish and bearish breaks.
+        # The VASS-style min() suppresses bullish regime breaks, leaving the
+        # call wing exposed when the market rallies out of neutral.
+        ic_exit_regime = float(
+            getattr(self, "_intraday_regime_score", None) or getattr(self, "_last_regime_score", 50)
+        )
+        regime_score = ic_exit_regime
 
         def _get_dte(expiry_str: str) -> int:
             try:
