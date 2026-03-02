@@ -1643,12 +1643,15 @@ class MainOptionsMixin:
             # V6.21: If a spread close was canceled, keep retrying close until flat.
             retry_at = self._spread_forced_close_retry.get(spread_key)
             if retry_at is not None and self.Time >= retry_at:
+                vass_fast_close = bool(
+                    getattr(config, "VASS_CLOSE_DISABLE_MULTISESSION_RETRY", False)
+                )
                 # Prevent same-bar re-escalation while broker events settle.
                 submit_guard_sec = int(getattr(config, "SPREAD_CLOSE_SUBMIT_GUARD_SECONDS", 60))
                 last_submit_at = self._spread_last_close_submit_at.get(spread_key)
                 if last_submit_at is not None:
                     elapsed_sec = (self.Time - last_submit_at).total_seconds()
-                    if elapsed_sec < submit_guard_sec:
+                    if (not vass_fast_close) and elapsed_sec < submit_guard_sec:
                         if self._should_log_backtest_category(
                             "LOG_SPREAD_RECONCILE_BACKTEST_ENABLED", False
                         ):
@@ -1663,8 +1666,9 @@ class MainOptionsMixin:
                 )
                 # Open-order lifecycle guard: don't stack close submits while either
                 # leg already has a live broker order.
-                if self._has_open_order_for_symbol(long_symbol) or self._has_open_order_for_symbol(
-                    short_symbol
+                if (not vass_fast_close) and (
+                    self._has_open_order_for_symbol(long_symbol)
+                    or self._has_open_order_for_symbol(short_symbol)
                 ):
                     retry_minutes = int(getattr(config, "SPREAD_CLOSE_RETRY_INTERVAL_MIN", 5))
                     self._spread_forced_close_retry[spread_key] = self.Time + timedelta(
@@ -1685,7 +1689,10 @@ class MainOptionsMixin:
                 )
                 retry_cycles = self._spread_forced_close_retry_cycles.get(spread_key, 0) + 1
                 self._spread_forced_close_retry_cycles[spread_key] = retry_cycles
-                max_retry_cycles = int(getattr(config, "SPREAD_CLOSE_MAX_RETRY_CYCLES", 12))
+                if vass_fast_close:
+                    max_retry_cycles = 1
+                else:
+                    max_retry_cycles = int(getattr(config, "SPREAD_CLOSE_MAX_RETRY_CYCLES", 12))
                 if retry_cycles >= max_retry_cycles:
                     self._diag_spread_close_escalation_count += 1
                     self._diag_spread_exit_signal_count += 1

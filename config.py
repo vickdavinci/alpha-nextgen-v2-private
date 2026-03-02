@@ -1930,6 +1930,14 @@ SPREAD_MAX_COMMISSION_TO_MAX_PROFIT_RATIO = (
 COMBO_ORDER_MAX_RETRIES = 2  # V12.6: reduce retry depth and escalate faster to sequential close
 COMBO_ORDER_FALLBACK_TO_SEQUENTIAL = True  # If all retries fail, use sequential close
 SPREAD_CLOSE_SAFE_LOCK_RETRY_MIN = 10  # Retry emergency close after safe-lock alert
+# V12.23.2: VASS close ladder control (limit -> market -> sequential) with no multi-session churn.
+VASS_CLOSE_MAX_COMBO_LIMIT_ATTEMPTS = 1
+VASS_CLOSE_LIMIT_TIMEOUT_SECONDS = 30
+VASS_CLOSE_USE_COMBO_MARKET_AFTER_LIMIT_FAIL = True
+VASS_CLOSE_ALLOW_SEQUENTIAL_SAME_CYCLE = True
+VASS_CLOSE_DISABLE_MULTISESSION_RETRY = True
+VASS_CLOSE_CANCEL_ESCALATION_COUNT = 1  # First cancel -> force market close retry
+VASS_CLOSE_SEQUENTIAL_ESCALATION_COUNT = 2  # Second cancel -> emergency sequential close
 # V12.3 F1: bounded-loss guard for spread exits (pre-submit quote sanity).
 SPREAD_EXIT_BOUNDED_LOSS_GUARD_ENABLED = True
 SPREAD_EXIT_NET_VALUE_FLOOR = 0.0  # Debit spread close value should not be materially negative.

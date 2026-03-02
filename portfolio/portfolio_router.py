@@ -3808,6 +3808,11 @@ class PortfolioRouter:
                     is_exit_combo = bool(
                         order.metadata and order.metadata.get("spread_close_short", False)
                     )
+                    force_combo_market_exit = bool(
+                        is_exit_combo
+                        and isinstance(order.metadata, dict)
+                        and order.metadata.get("spread_close_force_combo_market", False)
+                    )
                     quotes_ok, quote_detail = self._validate_combo_entry_quotes(order)
                     if not quotes_ok:
                         emergency_seq_ok = False
@@ -3914,7 +3919,9 @@ class PortfolioRouter:
                     # Submit combo order - broker calculates NET margin (spread margin)
                     combo_tickets = None
                     submit_mode = "MARKET"
-                    if is_exit_combo and bool(
+                    if force_combo_market_exit:
+                        submit_mode = "FORCED_MARKET"
+                    elif is_exit_combo and bool(
                         getattr(config, "SPREAD_EXIT_PROTECTED_COMBO_ENABLED", True)
                     ):
                         limit_credit, limit_detail = self._compute_protected_exit_combo_limit(
@@ -3968,6 +3975,11 @@ class PortfolioRouter:
                                 )
                         if submit_mode == "LIMIT":
                             submit_mode = "MARKET_FALLBACK"
+                    if force_combo_market_exit:
+                        self.log(
+                            f"ROUTER: VASS_FORCE_COMBO_MARKET_EXIT | {order.symbol} | "
+                            f"Reason={order.reason}"
+                        )
                     ticket_count = 0
                     if combo_tickets is None:
                         ticket_count = 0

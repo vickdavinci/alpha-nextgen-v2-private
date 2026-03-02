@@ -2945,7 +2945,25 @@ class MainOrdersMixin:
         cancel_count = self._spread_forced_close_cancel_counts.get(spread_key, 0) + 1
         self._spread_forced_close_cancel_counts[spread_key] = cancel_count
         self._diag_spread_exit_canceled_count += 1
-        escalation_count = int(getattr(config, "SPREAD_CLOSE_CANCEL_ESCALATION_COUNT", 2))
+        is_vass_close_ladder = bool(getattr(config, "VASS_CLOSE_DISABLE_MULTISESSION_RETRY", True))
+        market_escalation_count = int(
+            getattr(
+                config,
+                "VASS_CLOSE_CANCEL_ESCALATION_COUNT"
+                if is_vass_close_ladder
+                else "SPREAD_CLOSE_CANCEL_ESCALATION_COUNT",
+                1 if is_vass_close_ladder else 2,
+            )
+        )
+        sequential_escalation_count = int(
+            getattr(
+                config,
+                "VASS_CLOSE_SEQUENTIAL_ESCALATION_COUNT",
+                max(market_escalation_count + 1, 2),
+            )
+        )
+        if sequential_escalation_count < market_escalation_count:
+            sequential_escalation_count = market_escalation_count
         order_tag = str(self._get_order_tag(order_event) or "")
         if not order_tag:
             order_tag = str(getattr(order, "Tag", "") or "")
@@ -2954,13 +2972,13 @@ class MainOrdersMixin:
         if order_tag:
             self._cache_order_tag_hint(int(order_event.OrderId or 0), order_tag)
 
-        self._spread_forced_close_retry[spread_key] = self.Time
-        self._spread_forced_close_reason[
-            spread_key
-        ] = f"ORDER_CANCELED:{getattr(order, 'Type', 'UNKNOWN')}"
+        cancel_reason = f"ORDER_CANCELED:{getattr(order, 'Type', 'UNKNOWN')}"
+        self._spread_forced_close_reason[spread_key] = cancel_reason
         self._spread_last_close_submit_at[spread_key] = self.Time
 
-        if cancel_count >= escalation_count:
+        if cancel_count >= sequential_escalation_count and bool(
+            getattr(config, "VASS_CLOSE_ALLOW_SEQUENTIAL_SAME_CYCLE", True)
+        ):
             self._diag_spread_close_escalation_count += 1
             self._record_order_lifecycle_event(
                 status="SPREAD_EXIT_CANCELED",
@@ -2973,7 +2991,7 @@ class MainOrdersMixin:
                 trace_id=self._extract_trace_id_from_tag(order_tag) or "",
                 message=(
                     f"Key={spread_key} | Long={long_symbol} | Short={short_symbol} | "
-                    f"CancelCount={cancel_count} | EscalationThreshold={escalation_count}"
+                    f"CancelCount={cancel_count} | EscalationThreshold={sequential_escalation_count}"
                 ),
                 source="SPREAD_RETRY",
             )
@@ -2982,7 +3000,7 @@ class MainOrdersMixin:
                 f"OrderId={order_event.OrderId} | SpreadKey={spread_key} | "
                 f"Tag={self._compact_tag_for_log(order_tag)} | "
                 f"Long={long_symbol} | Short={short_symbol} | "
-                f"CancelCount={cancel_count} >= {escalation_count} | "
+                f"CancelCount={cancel_count} >= {sequential_escalation_count} | "
                 f"Submitting immediate sequential close"
             )
             self.portfolio_router.receive_signal(
@@ -3002,13 +3020,78 @@ class MainOrdersMixin:
                         "spread_exit_code": "SPREAD_CLOSE_ESCALATED",
                         "spread_exit_reason": "SPREAD_CLOSE_ESCALATED",
                         "spread_exit_emergency": True,
+                        "spread_close_path": "SEQUENTIAL",
+                        "spread_close_escalation_reason": "LIMIT_CANCEL",
+                        "spread_close_attempt_count": cancel_count,
                     },
                 )
             )
             self._diag_spread_exit_signal_count += 1
             self._diag_spread_exit_submit_count += 1
             self._spread_last_close_submit_at[spread_key] = self.Time
+            if is_vass_close_ladder:
+                self._spread_forced_close_retry.pop(spread_key, None)
+                self._spread_forced_close_retry_cycles.pop(spread_key, None)
+                self._spread_forced_close_reason.pop(spread_key, None)
+            return
+        elif cancel_count >= market_escalation_count and bool(
+            getattr(config, "VASS_CLOSE_USE_COMBO_MARKET_AFTER_LIMIT_FAIL", True)
+        ):
+            self._record_order_lifecycle_event(
+                status="SPREAD_EXIT_CANCELED",
+                order_id=int(order_event.OrderId or 0),
+                symbol=str(symbol_norm or ""),
+                quantity=int(getattr(order, "Quantity", 0) or 0),
+                fill_price=0.0,
+                order_type=str(getattr(order, "Type", "UNKNOWN")),
+                order_tag=order_tag,
+                trace_id=self._extract_trace_id_from_tag(order_tag) or "",
+                message=(
+                    f"Key={spread_key} | Long={long_symbol} | Short={short_symbol} | "
+                    f"CancelCount={cancel_count} | ForceComboMarket=True"
+                ),
+                source="SPREAD_RETRY",
+            )
+            self.Log(
+                f"SPREAD_CLOSE_MARKET_RETRY: Combo cancel threshold reached | "
+                f"OrderId={order_event.OrderId} | SpreadKey={spread_key} | "
+                f"Tag={self._compact_tag_for_log(order_tag)} | "
+                f"Long={long_symbol} | Short={short_symbol} | "
+                f"CancelCount={cancel_count} >= {market_escalation_count} | "
+                f"Submitting immediate combo market close"
+            )
+            self._diag_spread_exit_signal_count += 1
+            self._diag_spread_exit_submit_count += 1
+            self.portfolio_router.receive_signal(
+                TargetWeight(
+                    symbol=long_symbol,
+                    target_weight=0.0,
+                    source="OPT",
+                    urgency=Urgency.IMMEDIATE,
+                    reason=f"SPREAD_CLOSE_RETRY_MARKET:{cancel_reason}",
+                    requested_quantity=spread.num_spreads,
+                    metadata={
+                        "spread_close_short": True,
+                        "spread_short_leg_symbol": short_symbol,
+                        "spread_short_leg_quantity": spread.num_spreads,
+                        "spread_key": self._build_spread_runtime_key(spread),
+                        "exit_type": "SPREAD_CLOSE_RETRY_MARKET",
+                        "spread_exit_code": "SPREAD_CLOSE_RETRY_MARKET",
+                        "spread_exit_reason": f"SPREAD_CLOSE_RETRY_MARKET:{cancel_reason}",
+                        "spread_close_force_combo_market": True,
+                        "spread_close_path": "COMBO_MARKET",
+                        "spread_close_escalation_reason": "LIMIT_CANCEL",
+                        "spread_close_attempt_count": cancel_count,
+                    },
+                )
+            )
+            self._spread_last_close_submit_at[spread_key] = self.Time
+            if is_vass_close_ladder:
+                self._spread_forced_close_retry.pop(spread_key, None)
+                self._spread_forced_close_retry_cycles.pop(spread_key, None)
+            return
         else:
+            self._spread_forced_close_retry[spread_key] = self.Time
             self._record_order_lifecycle_event(
                 status="SPREAD_EXIT_CANCELED",
                 order_id=int(order_event.OrderId or 0),
