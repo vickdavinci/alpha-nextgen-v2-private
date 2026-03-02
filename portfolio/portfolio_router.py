@@ -1466,6 +1466,79 @@ class PortfolioRouter:
             tag_prefix=f"SPREAD_CLOSE_SEQ|EMERGENCY{spread_key_suffix}",
         )
 
+    def _is_vass_combo_exit_order(self, order: "OrderIntent") -> bool:
+        """True when order is a VASS spread close intent."""
+        if not (order.is_combo and order.combo_short_symbol):
+            return False
+        md = order.metadata if isinstance(order.metadata, dict) else {}
+        if not bool(md.get("spread_close_short", False)):
+            return False
+        lane = str(md.get("options_lane", "") or "").upper()
+        strategy = str(md.get("options_strategy", "") or "").upper()
+        tag = str(order.tag or "").upper()
+        return bool(
+            lane == "VASS"
+            or "VASS" in strategy
+            or "OPT_VASS" in tag
+            or "VASS:" in tag
+            or bool(md.get("vass_strategy"))
+            or bool(md.get("spread_type"))
+        )
+
+    def _try_vass_quote_invalid_close_fallback(
+        self,
+        order: "OrderIntent",
+        quote_detail: str,
+        tag: str,
+    ) -> bool:
+        """
+        V12.23.2: recover VASS close intents on quote-invalid by submitting
+        combo-market close, then sequential fallback if requested.
+        """
+        if not self._is_vass_combo_exit_order(order):
+            return False
+        if not bool(getattr(config, "VASS_CLOSE_QUOTE_INVALID_COMBO_MARKET_RETRY", True)):
+            return False
+        if self.algorithm is None:
+            return False
+
+        try:
+            from AlgorithmImports import Leg
+
+            (
+                long_qc_symbol,
+                short_qc_symbol,
+                live_long_qty,
+                live_short_qty,
+            ) = self._get_live_spread_leg_state(order.symbol, order.combo_short_symbol)
+            close_qty = min(max(0, int(live_long_qty or 0)), max(0, int(live_short_qty or 0)))
+            if close_qty <= 0 or long_qc_symbol is None or short_qc_symbol is None:
+                if bool(getattr(config, "VASS_CLOSE_QUOTE_INVALID_SEQ_FALLBACK", True)):
+                    return self._execute_emergency_sequential_close_from_order(
+                        order, f"QUOTE_INVALID:{quote_detail}"
+                    )
+                return False
+
+            legs = [Leg.Create(long_qc_symbol, -1), Leg.Create(short_qc_symbol, 1)]
+            try:
+                self.algorithm.ComboMarketOrder(  # type: ignore[attr-defined]
+                    legs, close_qty, tag=tag
+                )
+            except TypeError:
+                self.algorithm.ComboMarketOrder(legs, close_qty, tag)  # type: ignore[attr-defined]
+            self.log(
+                f"ROUTER_VASS_QUOTE_INVALID_COMBO_MARKET_RETRY: {order.symbol} | "
+                f"Short={order.combo_short_symbol} | Qty={close_qty} | {quote_detail}"
+            )
+            return True
+        except Exception as e:
+            self.log(f"ROUTER_VASS_QUOTE_INVALID_COMBO_MARKET_FAIL: {order.symbol} | {e}")
+            if bool(getattr(config, "VASS_CLOSE_QUOTE_INVALID_SEQ_FALLBACK", True)):
+                return self._execute_emergency_sequential_close_from_order(
+                    order, f"QUOTE_INVALID:{quote_detail}"
+                )
+            return False
+
     def _get_live_spread_leg_state(
         self,
         long_symbol: str,
@@ -3653,8 +3726,21 @@ class PortfolioRouter:
                     if order.is_combo and is_option:
                         quotes_ok, quote_detail = self._validate_combo_entry_quotes(order)
                         if not quotes_ok:
-                            emergency_seq_ok = False
-                            if self._is_emergency_spread_exit(order.metadata, order.reason):
+                            fallback_tag = self._append_spread_exit_rca_tag(
+                                (
+                                    str(order.tag or "").strip()
+                                    or "VASS:QUOTE_INVALID_COMBO_MARKET_RETRY"
+                                ),
+                                order.metadata,
+                            )
+                            emergency_seq_ok = self._try_vass_quote_invalid_close_fallback(
+                                order=order,
+                                quote_detail=quote_detail,
+                                tag=fallback_tag,
+                            )
+                            if not emergency_seq_ok and self._is_emergency_spread_exit(
+                                order.metadata, order.reason
+                            ):
                                 emergency_seq_ok = (
                                     self._execute_emergency_sequential_close_from_order(
                                         order, quote_detail
@@ -3836,8 +3922,14 @@ class PortfolioRouter:
                     )
                     quotes_ok, quote_detail = self._validate_combo_entry_quotes(order)
                     if not quotes_ok:
-                        emergency_seq_ok = False
-                        if self._is_emergency_spread_exit(order.metadata, order.reason):
+                        emergency_seq_ok = self._try_vass_quote_invalid_close_fallback(
+                            order=order,
+                            quote_detail=quote_detail,
+                            tag=effective_tag,
+                        )
+                        if not emergency_seq_ok and self._is_emergency_spread_exit(
+                            order.metadata, order.reason
+                        ):
                             emergency_seq_ok = self._execute_emergency_sequential_close_from_order(
                                 order, quote_detail
                             )

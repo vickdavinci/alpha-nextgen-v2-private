@@ -1938,6 +1938,8 @@ VASS_CLOSE_ALLOW_SEQUENTIAL_SAME_CYCLE = True
 VASS_CLOSE_DISABLE_MULTISESSION_RETRY = True
 VASS_CLOSE_CANCEL_ESCALATION_COUNT = 1  # First cancel -> force market close retry
 VASS_CLOSE_SEQUENTIAL_ESCALATION_COUNT = 2  # Second cancel -> emergency sequential close
+VASS_CLOSE_QUOTE_INVALID_COMBO_MARKET_RETRY = True
+VASS_CLOSE_QUOTE_INVALID_SEQ_FALLBACK = True
 # V12.3 F1: bounded-loss guard for spread exits (pre-submit quote sanity).
 SPREAD_EXIT_BOUNDED_LOSS_GUARD_ENABLED = True
 SPREAD_EXIT_NET_VALUE_FLOOR = 0.0  # Debit spread close value should not be materially negative.
