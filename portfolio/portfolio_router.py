@@ -3950,6 +3950,15 @@ class PortfolioRouter:
                     is_exit_combo = bool(
                         order.metadata and order.metadata.get("spread_close_short", False)
                     )
+                    spread_md = dict(order.metadata or {})
+                    spread_type_upper = str(spread_md.get("spread_type", "") or "").upper()
+                    is_credit_exit_combo = bool(
+                        is_exit_combo
+                        and (
+                            spread_md.get("is_credit_spread", False)
+                            or "CREDIT" in spread_type_upper
+                        )
+                    )
                     force_combo_market_exit = bool(
                         is_exit_combo
                         and isinstance(order.metadata, dict)
@@ -4069,6 +4078,10 @@ class PortfolioRouter:
                     submit_mode = "MARKET"
                     if force_combo_market_exit:
                         submit_mode = "FORCED_MARKET"
+                    elif is_credit_exit_combo:
+                        # Credit spread exits are often net-debit closes; protected combo-limit
+                        # pricing tuned for debit exits causes chronic limit-cancel churn.
+                        submit_mode = "CREDIT_MARKET"
                     elif is_exit_combo and bool(
                         getattr(config, "SPREAD_EXIT_PROTECTED_COMBO_ENABLED", True)
                     ):
