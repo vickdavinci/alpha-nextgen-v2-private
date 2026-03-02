@@ -218,7 +218,7 @@ def load_objectstore_artifacts(
                 )
                 found = True
                 break
-            except BaseException as err:
+            except Exception as err:
                 last_error = str(err)
         if not found:
             metadata[label] = {
