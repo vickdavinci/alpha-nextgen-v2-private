@@ -62,6 +62,7 @@ R_IC_LIQUIDITY_FAIL = "R_IC_LIQUIDITY_FAIL"
 R_IC_SLIPPAGE_FAIL = "R_IC_SLIPPAGE_FAIL"
 R_IC_PER_TRADE_RISK_EXCEEDED = "R_IC_PER_TRADE_RISK_EXCEEDED"
 R_IC_PENDING_ENTRY = "R_IC_PENDING_ENTRY"
+R_IC_STRIKE_REUSE = "R_IC_STRIKE_REUSE"
 
 # ── Exit reason codes ──
 EXIT_IC_VIX_SPIKE = "IC_VIX_SPIKE_EXIT"
@@ -711,6 +712,55 @@ class IronCondorEngine:
 
         if put_wing_width <= 0 or call_wing_width <= 0:
             return None
+
+        # ── Strike reuse guard (IC-vs-IC and IC-vs-pending) ──
+        if bool(getattr(config, "IC_STRIKE_REUSE_GUARD_ENABLED", True)):
+            new_strikes = {short_put.strike, long_put.strike, short_call.strike, long_call.strike}
+            new_expiry = short_put.expiry  # All 4 legs share the same expiry
+
+            # Check against active IC positions
+            for existing in self._positions:
+                if existing.is_closing:
+                    continue
+                ex_expiry = existing.short_put.expiry
+                if ex_expiry != new_expiry:
+                    continue
+                ex_strikes = {
+                    existing.short_put.strike,
+                    existing.long_put.strike,
+                    existing.short_call.strike,
+                    existing.long_call.strike,
+                }
+                overlap = new_strikes & ex_strikes
+                if overlap:
+                    self._log(
+                        f"IC_STRIKE_REUSE_BLOCKED: active overlap {overlap} "
+                        f"| expiry={new_expiry} | existing={existing.condor_id}",
+                        trades_only=True,
+                    )
+                    self._record_drop(R_IC_STRIKE_REUSE)
+                    return None
+
+            # Check against pending (unfilled) IC entry
+            if self._pending_entry and self._pending_condor is not None:
+                pc = self._pending_condor
+                pc_expiry = pc.short_put.expiry
+                if pc_expiry == new_expiry:
+                    pc_strikes = {
+                        pc.short_put.strike,
+                        pc.long_put.strike,
+                        pc.short_call.strike,
+                        pc.long_call.strike,
+                    }
+                    overlap = new_strikes & pc_strikes
+                    if overlap:
+                        self._log(
+                            f"IC_STRIKE_REUSE_BLOCKED: pending overlap {overlap} "
+                            f"| expiry={new_expiry} | pending={pc.condor_id}",
+                            trades_only=True,
+                        )
+                        self._record_drop(R_IC_STRIKE_REUSE)
+                        return None
 
         # ── Credit calculation ──
         # Credit = sell short legs (collect premium) - buy long legs (pay premium)

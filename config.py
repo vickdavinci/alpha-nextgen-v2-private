@@ -2369,6 +2369,11 @@ IC_LOSS_BREAKER_PAUSE_DAYS = 1  # Pause duration in calendar days
 IC_SHORT_ITM_EXIT_PCT = 0.02  # Exit wing when short strike is 2% ITM
 IC_DIVIDEND_GUARD_DTE = 3  # Close before ex-div if DTE <= this
 
+# ── IC Strike Reuse Guard ──
+# Block new IC entry when any candidate leg strike matches an active/pending
+# IC position's leg at the same expiry (prevents broker-side netting → orphan legs).
+IC_STRIKE_REUSE_GUARD_ENABLED = True
+
 # ── IC Hold Guard (DTE-adaptive) ──
 # Holds suppress P2-P7 exits until theta has accumulated ~18.4% of total decay.
 # Formula: hold_days = clamp(ceil(entry_dte × fraction), min, max)

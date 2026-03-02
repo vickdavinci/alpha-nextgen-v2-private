@@ -49,6 +49,7 @@ from engines.satellite.iron_condor_engine import (
     R_IC_REGIME_NOT_PERSISTENT,
     R_IC_REGIME_OUT_OF_RANGE,
     R_IC_STOP_DW_UNFEASIBLE,
+    R_IC_STRIKE_REUSE,
     R_IC_TRANSITION_BLOCK,
     R_IC_VIX_OUT_OF_RANGE,
     IronCondorEngine,
@@ -1821,3 +1822,170 @@ class TestMFELock:
         # 60/240 = 0.25 → above 0.15 floor
         assert result is None
         assert condor.mfe_lock_tier == 2
+
+
+# ═══════════════════════════════════════════════════════════════════
+# STRIKE REUSE GUARD TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestStrikeReuseGuard:
+    """Test strike-reuse guard blocks new IC when strikes overlap active/pending IC."""
+
+    def _validate_kwargs(self, engine, **overrides):
+        """Default kwargs for _validate_and_score_condor."""
+        defaults = dict(
+            vix_current=18.0,
+            regime_score=52.0,
+            adx_value=15.0,
+            current_time=datetime(2025, 3, 5, 11, 0),
+            effective_portfolio_value=100000,
+        )
+        defaults.update(overrides)
+        return defaults
+
+    def test_active_overlap_blocks(self):
+        """New IC sharing a strike with active IC at same expiry is blocked."""
+        engine = _make_engine()
+        # Register an active condor
+        existing = _make_condor(qqq_price=480.0, entry_dte=30)
+        engine.register_fill(existing)
+        # Existing strikes: short_put=470, long_put=466, short_call=490, long_call=494
+
+        # Build a new condor whose short_call (490) overlaps existing short_call
+        # Use realistic prices: short legs more expensive than long legs for positive credit
+        new_short_put = _make_contract(472.0, OptionDirection.PUT, bid=2.00, ask=2.20)
+        new_long_put = _make_contract(468.0, OptionDirection.PUT, bid=0.80, ask=1.00)
+        new_short_call = _make_contract(490.0, OptionDirection.CALL, bid=2.00, ask=2.20)
+        new_long_call = _make_contract(494.0, OptionDirection.CALL, bid=0.80, ask=1.00)
+
+        with _patch_config(IC_STRIKE_REUSE_GUARD_ENABLED=True, **_SEARCH_DEFAULTS):
+            result = engine._validate_and_score_condor(
+                short_put=new_short_put,
+                long_put=new_long_put,
+                short_call=new_short_call,
+                long_call=new_long_call,
+                **self._validate_kwargs(engine),
+            )
+        assert result is None
+        assert engine._diag_drop_codes.get(R_IC_STRIKE_REUSE, 0) >= 1
+
+    def test_pending_overlap_blocks(self):
+        """New IC sharing a strike with pending IC at same expiry is blocked."""
+        engine = _make_engine()
+        # Set up a pending condor
+        pending = _make_condor(qqq_price=480.0, entry_dte=30)
+        engine._pending_entry = True
+        engine._pending_condor = pending
+        # Pending strikes: short_put=470, long_put=466, short_call=490, long_call=494
+
+        # New condor with short_put at 470 (same as pending short_put)
+        new_short_put = _make_contract(470.0, OptionDirection.PUT, bid=2.00, ask=2.20)
+        new_long_put = _make_contract(466.0, OptionDirection.PUT, bid=0.80, ask=1.00)
+        new_short_call = _make_contract(492.0, OptionDirection.CALL, bid=2.00, ask=2.20)
+        new_long_call = _make_contract(496.0, OptionDirection.CALL, bid=0.80, ask=1.00)
+
+        with _patch_config(IC_STRIKE_REUSE_GUARD_ENABLED=True, **_SEARCH_DEFAULTS):
+            result = engine._validate_and_score_condor(
+                short_put=new_short_put,
+                long_put=new_long_put,
+                short_call=new_short_call,
+                long_call=new_long_call,
+                **self._validate_kwargs(engine),
+            )
+        assert result is None
+        assert engine._diag_drop_codes.get(R_IC_STRIKE_REUSE, 0) >= 1
+
+    def test_different_expiry_allows(self):
+        """Overlapping strikes at different expiry are allowed."""
+        engine = _make_engine()
+        existing = _make_condor(qqq_price=480.0, entry_dte=30)
+        engine.register_fill(existing)
+        # Existing expiry: "2025-03-15" (from _make_contract default)
+
+        # New condor with SAME strikes but different expiry
+        diff_expiry = "2025-04-15"
+        new_short_put = _make_contract(470.0, OptionDirection.PUT, expiry=diff_expiry)
+        new_long_put = _make_contract(466.0, OptionDirection.PUT, expiry=diff_expiry)
+        new_short_call = _make_contract(490.0, OptionDirection.CALL, expiry=diff_expiry)
+        new_long_call = _make_contract(494.0, OptionDirection.CALL, expiry=diff_expiry)
+
+        with _patch_config(IC_STRIKE_REUSE_GUARD_ENABLED=True, **_SEARCH_DEFAULTS):
+            result = engine._validate_and_score_condor(
+                short_put=new_short_put,
+                long_put=new_long_put,
+                short_call=new_short_call,
+                long_call=new_long_call,
+                **self._validate_kwargs(engine),
+            )
+        # Should NOT be blocked by strike reuse (may pass or fail other gates)
+        assert engine._diag_drop_codes.get(R_IC_STRIKE_REUSE, 0) == 0
+
+    def test_no_overlap_allows(self):
+        """Non-overlapping strikes at same expiry are allowed."""
+        engine = _make_engine()
+        existing = _make_condor(qqq_price=480.0, entry_dte=30)
+        engine.register_fill(existing)
+        # Existing: short_put=470, long_put=466, short_call=490, long_call=494
+
+        # Completely different strikes
+        new_short_put = _make_contract(460.0, OptionDirection.PUT)
+        new_long_put = _make_contract(456.0, OptionDirection.PUT)
+        new_short_call = _make_contract(500.0, OptionDirection.CALL)
+        new_long_call = _make_contract(504.0, OptionDirection.CALL)
+
+        with _patch_config(IC_STRIKE_REUSE_GUARD_ENABLED=True, **_SEARCH_DEFAULTS):
+            result = engine._validate_and_score_condor(
+                short_put=new_short_put,
+                long_put=new_long_put,
+                short_call=new_short_call,
+                long_call=new_long_call,
+                **self._validate_kwargs(engine),
+            )
+        assert engine._diag_drop_codes.get(R_IC_STRIKE_REUSE, 0) == 0
+
+    def test_disabled_config_allows(self):
+        """IC_STRIKE_REUSE_GUARD_ENABLED=False bypasses the guard."""
+        engine = _make_engine()
+        existing = _make_condor(qqq_price=480.0, entry_dte=30)
+        engine.register_fill(existing)
+
+        # Same strikes as existing — would normally be blocked
+        new_short_put = _make_contract(470.0, OptionDirection.PUT)
+        new_long_put = _make_contract(466.0, OptionDirection.PUT)
+        new_short_call = _make_contract(490.0, OptionDirection.CALL)
+        new_long_call = _make_contract(494.0, OptionDirection.CALL)
+
+        with _patch_config(IC_STRIKE_REUSE_GUARD_ENABLED=False, **_SEARCH_DEFAULTS):
+            result = engine._validate_and_score_condor(
+                short_put=new_short_put,
+                long_put=new_long_put,
+                short_call=new_short_call,
+                long_call=new_long_call,
+                **self._validate_kwargs(engine),
+            )
+        # Guard disabled — should NOT record strike reuse drop
+        assert engine._diag_drop_codes.get(R_IC_STRIKE_REUSE, 0) == 0
+
+    def test_closing_position_ignored(self):
+        """Active IC that is already closing should not block new entries."""
+        engine = _make_engine()
+        existing = _make_condor(qqq_price=480.0, entry_dte=30)
+        existing.is_closing = True
+        engine.register_fill(existing)
+
+        # Same strikes — should be allowed since existing is closing
+        new_short_put = _make_contract(470.0, OptionDirection.PUT)
+        new_long_put = _make_contract(466.0, OptionDirection.PUT)
+        new_short_call = _make_contract(490.0, OptionDirection.CALL)
+        new_long_call = _make_contract(494.0, OptionDirection.CALL)
+
+        with _patch_config(IC_STRIKE_REUSE_GUARD_ENABLED=True, **_SEARCH_DEFAULTS):
+            result = engine._validate_and_score_condor(
+                short_put=new_short_put,
+                long_put=new_long_put,
+                short_call=new_short_call,
+                long_call=new_long_call,
+                **self._validate_kwargs(engine),
+            )
+        assert engine._diag_drop_codes.get(R_IC_STRIKE_REUSE, 0) == 0
