@@ -186,6 +186,48 @@ class VASSEntryEngine:
         except Exception:
             return 0.0
 
+    def _should_block_bear_credit_entry(
+        self,
+        *,
+        strategy: Any,
+        regime_score: float,
+        algorithm: Any,
+        host: Any,
+    ) -> bool:
+        """Block BEAR_CALL_CREDIT entry when regime > REGIME_BREAK_BEAR_CEILING.
+
+        REGIME_BREAK_BEAR exit fires on any bearish spread when regime exceeds
+        the ceiling (default 50), producing guaranteed same-session losses.
+        This gate prevents entering BEAR_CALL_CREDIT in that zone while still
+        allowing BEAR_PUT_DEBIT (which has its own separate gating).
+        """
+        strategy_value = str(getattr(strategy, "value", strategy) or "")
+        if strategy_value != "BEAR_CALL_CREDIT":
+            return False
+        if not bool(getattr(config, "VASS_REGIME_BREAK_EXIT_ENABLED", False)):
+            return False
+        ceiling = float(getattr(config, "VASS_REGIME_BREAK_BEAR_CEILING", 50.0))
+        if regime_score <= ceiling:
+            return False
+        if algorithm is not None:
+            algorithm.Log(
+                f"VASS_BEAR_CREDIT_REGIME_BLOCK: Regime {regime_score:.0f} > "
+                f"{ceiling:.0f} | BEAR_CALL_CREDIT blocked — "
+                f"REGIME_BREAK_BEAR would exit immediately"
+            )
+        if host is not None and hasattr(host, "_record_regime_decision"):
+            host._record_regime_decision(
+                engine="VASS",
+                decision="BLOCK",
+                strategy_attempted="VASS_BEAR_CALL_CREDIT",
+                gate_name="VASS_BEAR_CREDIT_REGIME_BLOCK",
+                threshold_snapshot={
+                    "regime": regime_score,
+                    "ceiling": ceiling,
+                },
+            )
+        return True
+
     def select_strategy(
         self,
         *,
@@ -1051,6 +1093,14 @@ class VASSEntryEngine:
             overlay_state=overlay_state,
             iv_rank=iv_rank,
         )
+        # V12.23.3: Block BEAR_CALL_CREDIT when regime > REGIME_BREAK_BEAR_CEILING.
+        if self._should_block_bear_credit_entry(
+            strategy=strategy,
+            regime_score=regime_score,
+            algorithm=algorithm,
+            host=host,
+        ):
+            return
         algorithm._diag_vass_signal_seq = int(getattr(algorithm, "_diag_vass_signal_seq", 0)) + 1
         vass_signal_id = (
             f"VASS-{algorithm.Time.strftime('%Y%m%d-%H%M')}-{algorithm._diag_vass_signal_seq}"
@@ -1378,6 +1428,15 @@ class VASSEntryEngine:
             overlay_state=overlay_state,
             iv_rank=iv_rank,
         )
+        # V12.23.3: Block BEAR_CALL_CREDIT when regime > REGIME_BREAK_BEAR_CEILING.
+        # REGIME_BREAK_BEAR exit would fire within hours, producing guaranteed losses.
+        if self._should_block_bear_credit_entry(
+            strategy=strategy,
+            regime_score=regime_score,
+            algorithm=algorithm,
+            host=host,
+        ):
+            return
         algorithm._diag_vass_signal_seq = int(getattr(algorithm, "_diag_vass_signal_seq", 0)) + 1
         vass_signal_id = (
             f"VASS-{algorithm.Time.strftime('%Y%m%d-%H%M')}-{algorithm._diag_vass_signal_seq}"
