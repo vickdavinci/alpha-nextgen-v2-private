@@ -446,6 +446,62 @@ class MainOptionsMixin:
                 return
             signal.requested_quantity = int(close_qty)
             md["spread_short_leg_quantity"] = int(close_qty)
+
+            # Backfill spread close metadata so router/telemetry paths remain consistent
+            # across all close emitters (retry, gamma/assignment, firewall, time exits).
+            spread_key = str(md.get("spread_key", "") or "").strip()
+            spread_obj = None
+            try:
+                for candidate in self.options_engine.get_spread_positions():
+                    candidate_key = self._build_spread_runtime_key(candidate)
+                    if spread_key and candidate_key == spread_key:
+                        spread_obj = candidate
+                        break
+                if spread_obj is None:
+                    for candidate in self.options_engine.get_spread_positions():
+                        c_long = self._normalize_symbol_str(candidate.long_leg.symbol)
+                        c_short = self._normalize_symbol_str(candidate.short_leg.symbol)
+                        if long_symbol == c_long and short_symbol == c_short:
+                            spread_obj = candidate
+                            spread_key = self._build_spread_runtime_key(candidate)
+                            break
+            except Exception:
+                spread_obj = None
+            if spread_key and not str(md.get("spread_key", "") or "").strip():
+                md["spread_key"] = spread_key
+            if spread_obj is not None:
+                spread_type = str(getattr(spread_obj, "spread_type", "") or "")
+                try:
+                    entry_net = float(getattr(spread_obj, "net_debit", 0.0) or 0.0)
+                except Exception:
+                    entry_net = 0.0
+                if spread_type and not str(md.get("spread_type", "") or "").strip():
+                    md["spread_type"] = spread_type
+                if "is_credit_spread" not in md:
+                    md["is_credit_spread"] = bool(
+                        entry_net < 0 or "CREDIT" in str(spread_type).upper()
+                    )
+                if "spread_entry_debit" not in md:
+                    md["spread_entry_debit"] = float(max(0.0, entry_net))
+                if "spread_entry_credit" not in md:
+                    md["spread_entry_credit"] = float(max(0.0, -entry_net))
+            else:
+                spread_type = str(md.get("spread_type", "") or "")
+                if "is_credit_spread" not in md and spread_type:
+                    md["is_credit_spread"] = bool("CREDIT" in spread_type.upper())
+                if "spread_entry_debit" not in md:
+                    try:
+                        debit_val = float(md.get("spread_entry_debit", 0.0) or 0.0)
+                    except Exception:
+                        debit_val = 0.0
+                    md["spread_entry_debit"] = float(max(0.0, debit_val))
+                if "spread_entry_credit" not in md:
+                    try:
+                        credit_val = float(md.get("spread_entry_credit", 0.0) or 0.0)
+                    except Exception:
+                        credit_val = 0.0
+                    md["spread_entry_credit"] = float(max(0.0, credit_val))
+
             if not str(md.get("spread_exit_code", "") or "").strip():
                 reason_text = str(md.get("exit_type", "") or signal.reason or "").strip().upper()
                 token = reason_text.split(":", 1)[0].split(" ", 1)[0]
@@ -1641,6 +1697,12 @@ class MainOptionsMixin:
             long_symbol = self._normalize_symbol_str(spread.long_leg.symbol)
             short_symbol = self._normalize_symbol_str(spread.short_leg.symbol)
             spread_key = self._build_spread_runtime_key(spread)
+            spread_type = str(getattr(spread, "spread_type", "") or "")
+            spread_is_credit = bool(
+                getattr(spread, "net_debit", 0.0) < 0 or "CREDIT" in spread_type.upper()
+            )
+            spread_entry_debit = float(max(0.0, getattr(spread, "net_debit", 0.0)))
+            spread_entry_credit = float(max(0.0, -getattr(spread, "net_debit", 0.0)))
             vass_fast_close = bool(getattr(config, "VASS_CLOSE_DISABLE_MULTISESSION_RETRY", False))
             vass_close_timeout_sec = max(
                 5, int(getattr(config, "VASS_CLOSE_LIMIT_TIMEOUT_SECONDS", 30))
@@ -1718,9 +1780,27 @@ class MainOptionsMixin:
                     self._has_open_order_for_symbol(long_symbol)
                     or self._has_open_order_for_symbol(short_symbol)
                 ):
+                    timeout_reached = False
+                    if last_submit_at is not None:
+                        elapsed_sec = max(0.0, (self.Time - last_submit_at).total_seconds())
+                        timeout_reached = elapsed_sec >= float(vass_close_timeout_sec)
+                    if timeout_reached:
+                        canceled = self._cancel_open_spread_close_orders(
+                            long_symbol=long_symbol,
+                            short_symbol=short_symbol,
+                            spread_key=spread_key,
+                            reason=f"VASS_CLOSE_LIMIT_TIMEOUT_{vass_close_timeout_sec}s",
+                        )
+                        if canceled > 0:
+                            self._spread_forced_close_reason[
+                                spread_key
+                            ] = f"LIMIT_TIMEOUT_{vass_close_timeout_sec}s"
                     if last_submit_at is not None:
                         timeout_at = last_submit_at + timedelta(seconds=vass_close_timeout_sec)
-                        self._spread_forced_close_retry[spread_key] = timeout_at
+                        self._spread_forced_close_retry[spread_key] = max(
+                            self.Time + timedelta(seconds=5),
+                            timeout_at if not timeout_reached else self.Time + timedelta(seconds=5),
+                        )
                     else:
                         self._spread_forced_close_retry[spread_key] = self.Time + timedelta(
                             seconds=vass_close_timeout_sec
@@ -1922,11 +2002,16 @@ class MainOptionsMixin:
                             ),
                             "spread_short_leg_quantity": spread.num_spreads,
                             "spread_key": self._build_spread_runtime_key(spread),
+                            "spread_type": spread_type,
+                            "is_credit_spread": spread_is_credit,
+                            "spread_entry_debit": spread_entry_debit,
+                            "spread_entry_credit": spread_entry_credit,
                             "spread_exit_code": "0DTE_TIME_DECAY",
                             "spread_exit_reason": "0DTE_TIME_DECAY",
                         },
                     )
                 )
+                self._spread_last_close_submit_at[spread_key] = self.Time
                 self._record_spread_exit_reason(spread_key, "SPREAD_EXIT: 0DTE_TIME_DECAY")
                 self._diag_spread_exit_signal_count += 1
                 self._diag_spread_exit_submit_count += 1
@@ -2020,12 +2105,17 @@ class MainOptionsMixin:
                                     "spread_short_leg_symbol": short_symbol,
                                     "spread_short_leg_quantity": spread.num_spreads,
                                     "spread_key": self._build_spread_runtime_key(spread),
+                                    "spread_type": spread_type,
+                                    "is_credit_spread": spread_is_credit,
+                                    "spread_entry_debit": spread_entry_debit,
+                                    "spread_entry_credit": spread_entry_credit,
                                     "exit_type": "TIME_BASED_NO_QUOTE",
                                     "spread_exit_code": "TIME_BASED_NO_QUOTE",
                                     "spread_exit_reason": str(time_exit_reason),
                                 },
                             )
                         )
+                        self._spread_last_close_submit_at[spread_key] = self.Time
                         self._record_spread_exit_reason(
                             spread_key, f"SPREAD_EXIT: {time_exit_reason}"
                         )
@@ -2072,6 +2162,7 @@ class MainOptionsMixin:
                     self._normalize_spread_close_quantities(signal)
                     self._record_spread_exit_reason(spread_key, signal.reason)
                     self.portfolio_router.receive_signal(signal)
+                    self._spread_last_close_submit_at[spread_key] = self.Time
                 self._diag_spread_exit_signal_count += len(gamma_pin_signals)
                 self._diag_spread_exit_submit_count += len(gamma_pin_signals)
                 continue
@@ -2089,6 +2180,7 @@ class MainOptionsMixin:
                     self._normalize_spread_close_quantities(signal)
                     self._record_spread_exit_reason(spread_key, signal.reason)
                     self.portfolio_router.receive_signal(signal)
+                    self._spread_last_close_submit_at[spread_key] = self.Time
                 self._diag_spread_exit_signal_count += len(assignment_risk_signals)
                 self._diag_spread_exit_submit_count += len(assignment_risk_signals)
                 continue
@@ -2125,12 +2217,17 @@ class MainOptionsMixin:
                                 "spread_short_leg_symbol": short_symbol,
                                 "spread_short_leg_quantity": spread.num_spreads,
                                 "spread_key": self._build_spread_runtime_key(spread),
+                                "spread_type": spread_type,
+                                "is_credit_spread": spread_is_credit,
+                                "spread_entry_debit": spread_entry_debit,
+                                "spread_entry_credit": spread_entry_credit,
                                 "exit_type": "OVERLAY_STRESS_EXIT",
                                 "spread_exit_code": "OVERLAY_STRESS_EXIT",
                                 "spread_exit_reason": "OVERLAY_STRESS_EXIT",
                             },
                         )
                     )
+                    self._spread_last_close_submit_at[spread_key] = self.Time
                     self._record_spread_exit_reason(spread_key, "SPREAD_EXIT: OVERLAY_STRESS_EXIT")
                     self._diag_spread_exit_signal_count += 1
                     self._diag_spread_exit_submit_count += 1
@@ -2150,6 +2247,7 @@ class MainOptionsMixin:
                     self._normalize_spread_close_quantities(signal)
                     self._record_spread_exit_reason(spread_key, signal.reason)
                     self.portfolio_router.receive_signal(signal)
+                    self._spread_last_close_submit_at[spread_key] = self.Time
                 self._diag_spread_exit_signal_count += len(exit_signals)
                 self._diag_spread_exit_submit_count += len(exit_signals)
 
@@ -2331,7 +2429,15 @@ class MainOptionsMixin:
         if firewall_signals:
             for signal in firewall_signals:
                 self.Log(f"FRIDAY_FIREWALL: {signal.reason} | VIX={vix_current:.1f}")
+                self._normalize_spread_close_quantities(signal)
                 self.portfolio_router.receive_signal(signal)
+                try:
+                    md = signal.metadata or {}
+                    spread_key = str(md.get("spread_key", "") or "").strip()
+                    if spread_key:
+                        self._spread_last_close_submit_at[spread_key] = self.Time
+                except Exception:
+                    pass
 
             # Process immediately
             self._process_immediate_signals()

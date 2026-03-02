@@ -1576,6 +1576,60 @@ class MainOrdersMixin:
             except Exception:
                 pass
 
+    def _cancel_open_spread_close_orders(
+        self,
+        long_symbol: str,
+        short_symbol: str,
+        spread_key: str = "",
+        reason: str = "",
+    ) -> int:
+        """
+        Cancel open spread-close orders for the target spread legs.
+
+        Used by timeout-driven close retry flows to break out of stuck open combo/leg
+        close intents before re-submitting.
+        """
+        long_norm = self._normalize_symbol_str(long_symbol)
+        short_norm = self._normalize_symbol_str(short_symbol)
+        if not long_norm and not short_norm:
+            return 0
+        target_symbols = {sym for sym in (long_norm, short_norm) if sym}
+        target_key = str(spread_key or "").strip()
+        canceled = 0
+        try:
+            for order in list(self.Transactions.GetOpenOrders()):
+                try:
+                    order_symbol = self._normalize_symbol_str(getattr(order, "Symbol", ""))
+                except Exception:
+                    order_symbol = ""
+                if order_symbol not in target_symbols:
+                    continue
+                order_tag = str(getattr(order, "Tag", "") or "")
+                order_tag_u = order_tag.upper()
+                if order_tag_u.startswith("OCO_STOP:") or order_tag_u.startswith("OCO_PROFIT:"):
+                    continue
+                parsed_key = self._extract_spread_key_from_tag(order_tag)
+                is_spread_close_tag = ("SPREAD_CLOSE" in order_tag_u) or (
+                    "SPREAD_CLOSE_RETRY" in order_tag_u
+                )
+                if not is_spread_close_tag and not (target_key and parsed_key == target_key):
+                    continue
+                self.Transactions.CancelOrder(order.Id)
+                canceled += 1
+            if canceled > 0:
+                self.Log(
+                    "SPREAD_CLOSE_OPEN_ORDER_CANCEL: "
+                    f"Long={long_norm} Short={short_norm} | Key={target_key or 'NA'} | "
+                    f"Canceled={canceled} | Reason={reason or 'NA'}"
+                )
+        except Exception as e:
+            self.Log(
+                "SPREAD_CLOSE_OPEN_ORDER_CANCEL_ERROR: "
+                f"Long={long_norm} Short={short_norm} | Key={target_key or 'NA'} | "
+                f"Reason={reason or 'NA'} | {e}"
+            )
+        return canceled
+
     def _schedule_spread_safe_lock_retry(
         self,
         spread_key: str,
