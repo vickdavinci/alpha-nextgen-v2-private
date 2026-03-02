@@ -1989,3 +1989,137 @@ class TestStrikeReuseGuard:
                 **self._validate_kwargs(engine),
             )
         assert engine._diag_drop_codes.get(R_IC_STRIKE_REUSE, 0) == 0
+
+
+# ═══════════════════════════════════════════════════════════════════
+# CLOSE RETRY / ESCALATION TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestCloseRetry:
+    """Tests for IC close-retry lifecycle with cooldown and escalation."""
+
+    def _closing_condor(self, **kwargs) -> IronCondorPosition:
+        condor = _make_condor(**kwargs)
+        condor.is_closing = True
+        return condor
+
+    def test_close_retry_cooldown(self):
+        """No signals emitted within cooldown window."""
+        engine = _make_engine()
+        condor = self._closing_condor()
+        engine.register_fill(condor)
+        condor.is_closing = True
+
+        t0 = datetime(2025, 3, 5, 10, 0, 0)
+        with _patch_config(
+            IC_CLOSE_RETRY_COOLDOWN_MIN=5, IC_CLOSE_ESCALATION_THRESHOLD=2, IC_CLOSE_MAX_RETRIES=10
+        ):
+            # First call — should emit (no prior timestamp)
+            sigs = engine.build_retry_close_signals(condor, ["short_put", "short_call"], t0)
+            assert len(sigs) > 0
+            assert condor.close_attempt_count == 1
+
+            # 2 minutes later — within cooldown, no signals
+            t1 = t0 + timedelta(minutes=2)
+            sigs2 = engine.build_retry_close_signals(condor, ["short_put", "short_call"], t1)
+            assert len(sigs2) == 0
+            assert condor.close_attempt_count == 1  # Not incremented
+
+            # 6 minutes later — past cooldown, should emit
+            t2 = t0 + timedelta(minutes=6)
+            sigs3 = engine.build_retry_close_signals(condor, ["short_put", "short_call"], t2)
+            assert len(sigs3) > 0
+            assert condor.close_attempt_count == 2
+
+    def test_close_retry_combo_mode(self):
+        """First N attempts emit combo close signals (no emergency flag)."""
+        engine = _make_engine()
+        condor = self._closing_condor()
+        engine.register_fill(condor)
+        condor.is_closing = True
+
+        t0 = datetime(2025, 3, 5, 10, 0, 0)
+        with _patch_config(
+            IC_CLOSE_RETRY_COOLDOWN_MIN=0, IC_CLOSE_ESCALATION_THRESHOLD=2, IC_CLOSE_MAX_RETRIES=10
+        ):
+            sigs = engine.build_retry_close_signals(condor, ["short_put", "short_call"], t0)
+            assert len(sigs) == 2  # One per live short leg
+            assert condor.close_attempt_count == 1
+            for s in sigs:
+                assert s.metadata.get("spread_exit_emergency") is None
+                assert s.metadata.get("spread_close_short") is True
+                assert "COMBO" in s.reason
+
+    def test_close_retry_escalation(self):
+        """After threshold, signals include spread_exit_emergency=True."""
+        engine = _make_engine()
+        condor = self._closing_condor()
+        engine.register_fill(condor)
+        condor.is_closing = True
+
+        t0 = datetime(2025, 3, 5, 10, 0, 0)
+        with _patch_config(
+            IC_CLOSE_RETRY_COOLDOWN_MIN=0, IC_CLOSE_ESCALATION_THRESHOLD=2, IC_CLOSE_MAX_RETRIES=10
+        ):
+            # Attempt 1 — combo
+            engine.build_retry_close_signals(condor, ["short_put"], t0)
+            assert condor.close_attempt_count == 1
+
+            # Attempt 2 — still combo (threshold = 2)
+            sigs2 = engine.build_retry_close_signals(condor, ["short_put"], t0)
+            assert condor.close_attempt_count == 2
+            assert sigs2[0].metadata.get("spread_exit_emergency") is None
+
+            # Attempt 3 — escalated to sequential
+            sigs3 = engine.build_retry_close_signals(condor, ["short_put"], t0)
+            assert condor.close_attempt_count == 3
+            assert sigs3[0].metadata.get("spread_exit_emergency") is True
+            assert "SEQUENTIAL" in sigs3[0].reason
+
+    def test_close_retry_max_abandon(self):
+        """After max retries, is_closing cleared, no signals returned."""
+        engine = _make_engine()
+        condor = self._closing_condor()
+        engine.register_fill(condor)
+        condor.is_closing = True
+
+        t0 = datetime(2025, 3, 5, 10, 0, 0)
+        with _patch_config(
+            IC_CLOSE_RETRY_COOLDOWN_MIN=0, IC_CLOSE_ESCALATION_THRESHOLD=2, IC_CLOSE_MAX_RETRIES=3
+        ):
+            # Burn through 3 attempts
+            for _ in range(3):
+                engine.build_retry_close_signals(condor, ["short_put"], t0)
+            assert condor.close_attempt_count == 3
+            assert condor.is_closing is True
+
+            # 4th attempt exceeds max — abandoned
+            sigs = engine.build_retry_close_signals(condor, ["short_put"], t0)
+            assert len(sigs) == 0
+            assert condor.is_closing is False
+            assert condor.close_attempt_count == 0
+            assert condor.last_close_signal_time is None
+
+    def test_close_retry_resets_on_new_exit(self):
+        """Fresh exit trigger resets attempt count to 0."""
+        engine = _make_engine()
+        condor = _make_condor(entry_dte=30)
+        engine.register_fill(condor)
+
+        # Simulate a prior close cycle that was abandoned
+        condor.close_attempt_count = 5
+        condor.last_close_signal_time = "2025-03-04 14:00:00"
+
+        # Now a new exit triggers — is_closing set fresh with reset tracking
+        condor.is_closing = True
+        condor.close_attempt_count = 0
+        condor.last_close_signal_time = None
+
+        # First retry should start at attempt 1, not 6
+        t0 = datetime(2025, 3, 5, 10, 0, 0)
+        with _patch_config(
+            IC_CLOSE_RETRY_COOLDOWN_MIN=0, IC_CLOSE_ESCALATION_THRESHOLD=2, IC_CLOSE_MAX_RETRIES=10
+        ):
+            sigs = engine.build_retry_close_signals(condor, ["short_put"], t0)
+            assert condor.close_attempt_count == 1

@@ -2374,6 +2374,13 @@ IC_DIVIDEND_GUARD_DTE = 3  # Close before ex-div if DTE <= this
 # IC position's leg at the same expiry (prevents broker-side netting → orphan legs).
 IC_STRIKE_REUSE_GUARD_ENABLED = True
 
+# ── IC Close Retry / Escalation ──
+# When IC close is canceled by broker, orphan recovery re-emits close signals.
+# These params control cooldown, escalation to sequential, and max retries.
+IC_CLOSE_RETRY_COOLDOWN_MIN = 5  # Minutes between retry emissions
+IC_CLOSE_ESCALATION_THRESHOLD = 2  # Combo attempts before escalating to sequential
+IC_CLOSE_MAX_RETRIES = 10  # Abandon after this many retries (clear is_closing)
+
 # ── IC Hold Guard (DTE-adaptive) ──
 # Holds suppress P2-P7 exits until theta has accumulated ~18.4% of total decay.
 # Formula: hold_days = clamp(ceil(entry_dte × fraction), min, max)

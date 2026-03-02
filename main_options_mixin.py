@@ -1805,41 +1805,32 @@ class MainOptionsMixin:
                 continue
 
             # Check for half-closed condors: some legs flat, others still open.
-            # If is_closing but legs remain, re-emit close signals for remaining legs.
+            # If is_closing but legs remain, delegate retry to IC engine
+            # (handles cooldown, attempt counting, combo→sequential escalation).
+            live_short_legs = []
             for leg_attr in ("short_put", "short_call"):
                 leg = getattr(condor, leg_attr, None)
                 if leg is None:
                     continue
-                leg_sym = self._normalize_symbol_str(leg.symbol)
                 try:
                     sym = self.Symbol(leg.symbol) if isinstance(leg.symbol, str) else leg.symbol
                     if not self.Portfolio[sym].Invested:
                         continue  # This leg is already flat
                 except Exception:
                     continue
+                leg_sym = self._normalize_symbol_str(leg.symbol)
                 if self._has_open_non_oco_order_for_symbol(leg_sym):
-                    continue  # Order already pending
-                # Re-emit close signal for this orphaned leg
-                side = "PUT_CREDIT_CLOSE" if "put" in leg_attr else "CALL_CREDIT_CLOSE"
-                self.portfolio_router.receive_signal(
-                    TargetWeight(
-                        symbol=leg.symbol,
-                        target_weight=0.0,
-                        source="OPT_IC",
-                        urgency=Urgency.IMMEDIATE,
-                        reason=f"IC_ORPHAN_LEG_CLOSE | condor_id={condor.condor_id} | {side}",
-                        metadata={
-                            "options_lane": "IC",
-                            "options_strategy": "IRON_CONDOR",
-                            "trace_source": "IC:ORPHAN_LEG_CLOSE",
-                            "trace_id": condor.condor_id,
-                            "condor_id": condor.condor_id,
-                            "spread_side": side,
-                            "spread_close_short": True,
-                        },
-                        requested_quantity=condor.num_spreads,
-                    )
+                    continue  # Order already pending — wait for fill/cancel
+                live_short_legs.append(leg_attr)
+
+            if live_short_legs:
+                retry_signals = self.options_engine._iron_condor_engine.build_retry_close_signals(
+                    condor,
+                    live_short_legs,
+                    self.Time,
                 )
+                for sig in retry_signals:
+                    self.portfolio_router.receive_signal(sig)
 
         # Refresh list after reconciliation
         ic_positions = self.options_engine.get_iron_condor_positions()

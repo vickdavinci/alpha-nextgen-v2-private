@@ -52,6 +52,10 @@ class IronCondorPosition:
     highest_pnl_pct: float = 0.0  # MFE: highest P&L as % of credit
     mfe_lock_tier: int = 0  # MFE ratchet: 0=none, 1=breakeven, 2=harvest floor
 
+    # ── Close lifecycle tracking ──
+    close_attempt_count: int = 0  # Times orphan recovery re-emitted close signals
+    last_close_signal_time: Optional[str] = None  # ISO timestamp of last close emission
+
     # ── Diagnostics ──
     entry_cw_tier: str = ""  # LOW_VIX / MID_VIX / HIGH_VIX
     stop_dw: float = 0.0  # Projected stop D/W at entry
@@ -100,6 +104,8 @@ class IronCondorPosition:
             "is_closing": self.is_closing,
             "highest_pnl_pct": self.highest_pnl_pct,
             "mfe_lock_tier": self.mfe_lock_tier,
+            "close_attempt_count": self.close_attempt_count,
+            "last_close_signal_time": self.last_close_signal_time,
             "entry_cw_tier": self.entry_cw_tier,
             "stop_dw": self.stop_dw,
             "implied_wr_be": self.implied_wr_be,
@@ -128,6 +134,8 @@ class IronCondorPosition:
             is_closing=data.get("is_closing", False),
             highest_pnl_pct=data.get("highest_pnl_pct", 0.0),
             mfe_lock_tier=int(data.get("mfe_lock_tier", 0)),
+            close_attempt_count=int(data.get("close_attempt_count", 0) or 0),
+            last_close_signal_time=data.get("last_close_signal_time"),
             entry_cw_tier=data.get("entry_cw_tier", ""),
             stop_dw=data.get("stop_dw", 0.0),
             implied_wr_be=data.get("implied_wr_be", 0.0),

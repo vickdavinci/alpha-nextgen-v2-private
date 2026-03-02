@@ -1200,6 +1200,8 @@ class IronCondorEngine:
             if result is not None:
                 reason, signals = result
                 condor.is_closing = True
+                condor.close_attempt_count = 0
+                condor.last_close_signal_time = None
                 condor.exit_pnl_estimate = float(combined_pnl or 0.0)
                 all_signals.extend(signals)
                 self._diag_exit_reasons[reason] = self._diag_exit_reasons.get(reason, 0) + 1
@@ -1271,6 +1273,119 @@ class IronCondorEngine:
         )
 
         return (reason, signals)
+
+    def build_retry_close_signals(
+        self,
+        condor: IronCondorPosition,
+        live_short_legs: List[str],
+        current_time: datetime,
+    ) -> List[TargetWeight]:
+        """Build retry close signals for a stuck-closing condor.
+
+        Called by the mixin when is_closing=True but legs remain live.
+        Manages cooldown, attempt counting, and combo->sequential escalation.
+
+        Args:
+            condor: The IC position with is_closing=True.
+            live_short_legs: List of leg attr names ("short_put", "short_call")
+                that still have broker holdings and no pending orders.
+            current_time: Current algorithm time.
+
+        Returns:
+            List of TargetWeight close signals (may be empty if cooldown active).
+        """
+        # 1. Cooldown check
+        cooldown_min = float(getattr(config, "IC_CLOSE_RETRY_COOLDOWN_MIN", 5))
+        if condor.last_close_signal_time:
+            try:
+                last_time = datetime.strptime(condor.last_close_signal_time, "%Y-%m-%d %H:%M:%S")
+                elapsed_min = (current_time - last_time).total_seconds() / 60
+                if elapsed_min < cooldown_min:
+                    return []  # Too soon, wait
+            except Exception:
+                pass  # Unparseable timestamp — proceed with retry
+
+        # 2. Increment attempt count
+        condor.close_attempt_count += 1
+        condor.last_close_signal_time = current_time.strftime("%Y-%m-%d %H:%M:%S")
+
+        max_retries = int(getattr(config, "IC_CLOSE_MAX_RETRIES", 10))
+        escalation = int(getattr(config, "IC_CLOSE_ESCALATION_THRESHOLD", 2))
+
+        # 3. Max retries — abandon
+        if condor.close_attempt_count > max_retries:
+            self._log(
+                f"IC_CLOSE_ABANDONED: attempt={condor.close_attempt_count} > max={max_retries} | "
+                f"condor_id={condor.condor_id} | Clearing is_closing for manual intervention",
+                trades_only=True,
+            )
+            condor.is_closing = False
+            condor.close_attempt_count = 0
+            condor.last_close_signal_time = None
+            return []
+
+        # 4. Determine escalation
+        is_emergency = condor.close_attempt_count > escalation
+        escalation_tag = "SEQUENTIAL" if is_emergency else "COMBO"
+
+        self._log(
+            f"IC_CLOSE_RETRY: attempt={condor.close_attempt_count} | mode={escalation_tag} | "
+            f"condor_id={condor.condor_id} | live_legs={live_short_legs}",
+            trades_only=True,
+        )
+
+        # 5. Build signals for live legs
+        timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S")
+        signals: List[TargetWeight] = []
+
+        for leg_attr in live_short_legs:
+            leg = getattr(condor, leg_attr, None)
+            if leg is None:
+                continue
+
+            # Determine the paired long leg for combo close
+            if leg_attr == "short_put":
+                long_leg = condor.long_put
+                side = "PUT_CREDIT_CLOSE"
+                wing = condor.put_wing_width
+            else:
+                long_leg = condor.long_call
+                side = "CALL_CREDIT_CLOSE"
+                wing = condor.call_wing_width
+
+            meta = {
+                "options_lane": "IC",
+                "options_strategy": "IRON_CONDOR",
+                "trace_source": f"IC:ORPHAN_RETRY_{escalation_tag}",
+                "trace_id": condor.condor_id,
+                "condor_id": condor.condor_id,
+                "spread_side": side,
+                "spread_close_short": True,
+                "spread_short_leg_symbol": leg.symbol,
+                "spread_short_leg_quantity": condor.num_spreads,
+                "spread_width": wing,
+                "close_attempt": condor.close_attempt_count,
+            }
+            if is_emergency:
+                meta["spread_exit_emergency"] = True
+
+            signals.append(
+                TargetWeight(
+                    symbol=long_leg.symbol,
+                    target_weight=0.0,
+                    source="OPT_IC",
+                    urgency=Urgency.IMMEDIATE,
+                    reason=(
+                        f"IC_CLOSE_RETRY_{escalation_tag} | attempt={condor.close_attempt_count} "
+                        f"| {side} | condor_id={condor.condor_id}"
+                    ),
+                    timestamp=timestamp,
+                    metadata=meta,
+                    requested_quantity=condor.num_spreads,
+                )
+            )
+
+        return signals
 
     # ══════════════════════════════════════════════════════════════════════
     # POSITION MANAGEMENT
