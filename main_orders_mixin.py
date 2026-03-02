@@ -1609,6 +1609,7 @@ class MainOrdersMixin:
         self._spread_forced_close_cancel_counts.clear()
         self._spread_forced_close_retry_cycles.clear()
         self._spread_last_close_submit_at.clear()
+        self._spread_close_first_cancel_at.clear()
 
         # Clear options engine pending spread state
         self.options_engine.clear_pending_spread_state_hard()
@@ -2777,6 +2778,7 @@ class MainOrdersMixin:
             self._spread_forced_close_cancel_counts.pop(spread_key, None)
             self._spread_forced_close_retry_cycles.pop(spread_key, None)
             self._spread_last_close_submit_at.pop(spread_key, None)
+            self._spread_close_first_cancel_at.pop(spread_key, None)
             self._spread_last_exit_reason.pop(spread_key, None)
             self._spread_close_trackers.pop(spread_key, None)
             if hasattr(self, "_spread_close_order_key_by_order_id"):
@@ -2939,6 +2941,14 @@ class MainOrdersMixin:
         long_symbol = self._normalize_symbol_str(spread.long_leg.symbol)
         short_symbol = self._normalize_symbol_str(spread.short_leg.symbol)
         spread_key = self._build_spread_runtime_key(spread)
+        first_cancel_at = self._spread_close_first_cancel_at.get(spread_key)
+        if first_cancel_at is None:
+            self._spread_close_first_cancel_at[spread_key] = self.Time
+            first_cancel_at = self.Time
+        try:
+            close_latency_sec = max(0, int((self.Time - first_cancel_at).total_seconds()))
+        except Exception:
+            close_latency_sec = 0
         self._cancel_spread_linked_oco(
             long_symbol, short_symbol, reason="SPREAD_CLOSE_CANCELED_RETRY"
         )
@@ -3023,6 +3033,7 @@ class MainOrdersMixin:
                         "spread_close_path": "SEQUENTIAL",
                         "spread_close_escalation_reason": "LIMIT_CANCEL",
                         "spread_close_attempt_count": cancel_count,
+                        "spread_close_latency_sec": close_latency_sec,
                     },
                 )
             )
@@ -3082,6 +3093,7 @@ class MainOrdersMixin:
                         "spread_close_path": "COMBO_MARKET",
                         "spread_close_escalation_reason": "LIMIT_CANCEL",
                         "spread_close_attempt_count": cancel_count,
+                        "spread_close_latency_sec": close_latency_sec,
                     },
                 )
             )

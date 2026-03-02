@@ -2282,6 +2282,24 @@ class PortfolioRouter:
             additions.append(f"em={est_net:.2f}")
         except Exception:
             pass
+        close_path = str(md.get("spread_close_path", "") or "").strip().upper()
+        if close_path:
+            additions.append(f"xcp={close_path[:20]}")
+        escalation_reason = str(md.get("spread_close_escalation_reason", "") or "").strip().upper()
+        if escalation_reason:
+            additions.append(f"xer={escalation_reason[:20]}")
+        try:
+            close_attempt_count = int(md.get("spread_close_attempt_count", 0) or 0)
+            if close_attempt_count > 0:
+                additions.append(f"xatt={close_attempt_count}")
+        except Exception:
+            pass
+        try:
+            close_latency_sec = int(md.get("spread_close_latency_sec", 0) or 0)
+            if close_latency_sec >= 0:
+                additions.append(f"xlat={close_latency_sec}")
+        except Exception:
+            pass
 
         if not additions:
             return tag
@@ -4088,6 +4106,18 @@ class PortfolioRouter:
                                 )
                         if submit_mode == "LIMIT":
                             submit_mode = "MARKET_FALLBACK"
+                    if is_exit_combo and isinstance(order.metadata, dict):
+                        close_path = str(order.metadata.get("spread_close_path", "") or "").strip()
+                        if not close_path:
+                            if submit_mode == "LIMIT":
+                                close_path = "COMBO_LIMIT"
+                            elif "MARKET" in submit_mode:
+                                close_path = "COMBO_MARKET"
+                        if close_path:
+                            order.metadata["spread_close_path"] = close_path
+                            effective_tag = self._append_spread_exit_rca_tag(
+                                effective_tag, order.metadata
+                            )
                     if force_combo_market_exit:
                         self.log(
                             f"ROUTER: VASS_FORCE_COMBO_MARKET_EXIT | {order.symbol} | "

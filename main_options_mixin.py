@@ -251,6 +251,7 @@ class MainOptionsMixin:
         self._spread_forced_close_cancel_counts = {}
         self._spread_forced_close_retry_cycles = {}
         self._spread_last_close_submit_at = {}
+        self._spread_close_first_cancel_at = {}
         self._spread_exit_mark_cache = {}
         self._spread_last_exit_reason = {}
         self._single_leg_last_exit_reason = {}
@@ -1622,6 +1623,7 @@ class MainOptionsMixin:
                 self._spread_forced_close_cancel_counts.pop(key, None)
                 self._spread_forced_close_retry_cycles.pop(key, None)
                 self._spread_last_close_submit_at.pop(key, None)
+                self._spread_close_first_cancel_at.pop(key, None)
         for key in list(self._spread_close_trackers.keys()):
             if key not in active_spread_keys:
                 self._spread_close_trackers.pop(key, None)
@@ -1791,6 +1793,7 @@ class MainOptionsMixin:
                     self._spread_forced_close_cancel_counts.pop(spread_key, None)
                     self._spread_forced_close_retry_cycles.pop(spread_key, None)
                     self._spread_last_close_submit_at.pop(spread_key, None)
+                    self._spread_close_first_cancel_at.pop(spread_key, None)
                     continue
                 self.Log(
                     f"SPREAD_RETRY: Re-submitting forced close | Long={long_symbol} "
