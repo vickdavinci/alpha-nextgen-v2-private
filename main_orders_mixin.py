@@ -3026,6 +3026,13 @@ class MainOrdersMixin:
                         "spread_short_leg_symbol": short_symbol,
                         "spread_short_leg_quantity": spread.num_spreads,
                         "spread_key": self._build_spread_runtime_key(spread),
+                        "spread_type": str(getattr(spread, "spread_type", "") or ""),
+                        "is_credit_spread": bool(
+                            getattr(spread, "net_debit", 0.0) < 0
+                            or "CREDIT" in str(getattr(spread, "spread_type", "") or "").upper()
+                        ),
+                        "spread_entry_debit": float(max(0.0, getattr(spread, "net_debit", 0.0))),
+                        "spread_entry_credit": float(max(0.0, -getattr(spread, "net_debit", 0.0))),
                         "exit_type": "SPREAD_CLOSE_ESCALATED",
                         "spread_exit_code": "SPREAD_CLOSE_ESCALATED",
                         "spread_exit_reason": "SPREAD_CLOSE_ESCALATED",
@@ -3086,6 +3093,13 @@ class MainOrdersMixin:
                         "spread_short_leg_symbol": short_symbol,
                         "spread_short_leg_quantity": spread.num_spreads,
                         "spread_key": self._build_spread_runtime_key(spread),
+                        "spread_type": str(getattr(spread, "spread_type", "") or ""),
+                        "is_credit_spread": bool(
+                            getattr(spread, "net_debit", 0.0) < 0
+                            or "CREDIT" in str(getattr(spread, "spread_type", "") or "").upper()
+                        ),
+                        "spread_entry_debit": float(max(0.0, getattr(spread, "net_debit", 0.0))),
+                        "spread_entry_credit": float(max(0.0, -getattr(spread, "net_debit", 0.0))),
                         "exit_type": "SPREAD_CLOSE_RETRY_MARKET",
                         "spread_exit_code": "SPREAD_CLOSE_RETRY_MARKET",
                         "spread_exit_reason": f"SPREAD_CLOSE_RETRY_MARKET:{cancel_reason}",
