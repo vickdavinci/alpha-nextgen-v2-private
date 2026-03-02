@@ -3,6 +3,10 @@ Alpha NextGen Configuration
 All tunable parameters in one place.
 """
 
+# Canonical version label for run naming and audit references.
+# Patch line V12.23.1 starts from commit bb0e8e1.
+ACTIVE_STRATEGY_VERSION = "V12.23.1"
+
 # =============================================================================
 # CAPITAL ENGINE
 # =============================================================================

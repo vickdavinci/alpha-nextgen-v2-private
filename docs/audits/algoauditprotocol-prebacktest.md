@@ -1,7 +1,7 @@
-# Algorithm Audit Protocol - Pre-Backtest (V12.21)
+# Algorithm Audit Protocol - Pre-Backtest (V12.23.1)
 
-- Version: `V12.21`
-- Last updated: `2026-02-28`
+- Version: `V12.23.1`
+- Last updated: `2026-03-01`
 - Applies to: options-first stack (`MICRO`, `ITM`, `VASS`) and shared router/execution/plumbing paths
 
 ## Purpose

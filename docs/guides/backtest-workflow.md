@@ -15,8 +15,8 @@
 Examples:
 
 ```bash
-./scripts/qc_backtest.sh "V12.16-FullYear2024" --open
-./scripts/qc_backtest.sh "V12.16-Smoke-JulSep2017" --open
+./scripts/qc_backtest.sh "V12.23.1-FullYear2024" --open
+./scripts/qc_backtest.sh "V12.23.1-Smoke-JulSep2017" --open
 ./scripts/qc_backtest.sh --open   # auto-generates name from git branch
 ```
 
