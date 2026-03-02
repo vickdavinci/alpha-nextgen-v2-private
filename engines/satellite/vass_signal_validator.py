@@ -511,6 +511,29 @@ def check_spread_entry_signal_impl(
                     trades_only=True,
                 )
                 return fail("R_STRIKE_REUSE_LONG_ON_ACTIVE_SHORT")
+        # Also block against pending (unfilled) spread legs to avoid overlap during
+        # broker in-flight entry windows.
+        if self.has_pending_spread_entry():
+            _pending_long, _pending_short = self.get_pending_spread_legs()
+            if _pending_long is not None and _pending_short is not None:
+                _pending_long_strike = float(getattr(_pending_long, "strike", 0))
+                _pending_short_strike = float(getattr(_pending_short, "strike", 0))
+                _pending_expiry = str(getattr(_pending_long, "expiry", ""))
+                _new_long_strike = float(getattr(long_leg_contract, "strike", 0))
+                _new_short_strike = float(getattr(short_leg_contract, "strike", 0))
+                _new_expiry = str(getattr(long_leg_contract, "expiry", ""))
+                if (not _pending_expiry) or (not _new_expiry) or _pending_expiry == _new_expiry:
+                    if (_new_short_strike and _new_short_strike == _pending_long_strike) or (
+                        _new_long_strike and _new_long_strike == _pending_short_strike
+                    ):
+                        self.log(
+                            "STRIKE_REUSE_BLOCKED: Pending spread overlap | "
+                            f"New(L/S)=({_new_long_strike}/{_new_short_strike}) vs "
+                            f"Pending(L/S)=({_pending_long_strike}/{_pending_short_strike}) | "
+                            f"Expiry={_pending_expiry or _new_expiry}",
+                            trades_only=True,
+                        )
+                        return fail("R_STRIKE_REUSE_PENDING_SPREAD")
 
     now_dt = self._parse_dt(current_date, current_hour, current_minute)
     signature = self._build_vass_signature(
@@ -1370,6 +1393,27 @@ def check_credit_spread_entry_signal_impl(
                     trades_only=True,
                 )
                 return fail("R_STRIKE_REUSE_LONG_ON_ACTIVE_SHORT")
+        if self.has_pending_spread_entry():
+            _pending_long, _pending_short = self.get_pending_spread_legs()
+            if _pending_long is not None and _pending_short is not None:
+                _pending_long_strike = float(getattr(_pending_long, "strike", 0))
+                _pending_short_strike = float(getattr(_pending_short, "strike", 0))
+                _pending_expiry = str(getattr(_pending_long, "expiry", ""))
+                _new_long_strike = float(getattr(long_leg_contract, "strike", 0))
+                _new_short_strike = float(getattr(short_leg_contract, "strike", 0))
+                _new_expiry = str(getattr(long_leg_contract, "expiry", ""))
+                if (not _pending_expiry) or (not _new_expiry) or _pending_expiry == _new_expiry:
+                    if (_new_short_strike and _new_short_strike == _pending_long_strike) or (
+                        _new_long_strike and _new_long_strike == _pending_short_strike
+                    ):
+                        self.log(
+                            "STRIKE_REUSE_BLOCKED: Pending spread overlap (credit) | "
+                            f"New(L/S)=({_new_long_strike}/{_new_short_strike}) vs "
+                            f"Pending(L/S)=({_pending_long_strike}/{_pending_short_strike}) | "
+                            f"Expiry={_pending_expiry or _new_expiry}",
+                            trades_only=True,
+                        )
+                        return fail("R_STRIKE_REUSE_PENDING_SPREAD")
 
     # Validate strategy
     if strategy is None or not self.is_credit_strategy(strategy):
