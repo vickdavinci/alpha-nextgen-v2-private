@@ -49,7 +49,8 @@ class IronCondorPosition:
 
     # ── Lifecycle ──
     is_closing: bool = False
-    highest_pnl_pct: float = 0.0  # HWM for trailing (future use)
+    highest_pnl_pct: float = 0.0  # MFE: highest P&L as % of credit
+    mfe_lock_tier: int = 0  # MFE ratchet: 0=none, 1=breakeven, 2=harvest floor
 
     # ── Diagnostics ──
     entry_cw_tier: str = ""  # LOW_VIX / MID_VIX / HIGH_VIX
@@ -98,6 +99,7 @@ class IronCondorPosition:
             "condor_id": self.condor_id,
             "is_closing": self.is_closing,
             "highest_pnl_pct": self.highest_pnl_pct,
+            "mfe_lock_tier": self.mfe_lock_tier,
             "entry_cw_tier": self.entry_cw_tier,
             "stop_dw": self.stop_dw,
             "implied_wr_be": self.implied_wr_be,
@@ -125,6 +127,7 @@ class IronCondorPosition:
             condor_id=data.get("condor_id", uuid.uuid4().hex[:12]),
             is_closing=data.get("is_closing", False),
             highest_pnl_pct=data.get("highest_pnl_pct", 0.0),
+            mfe_lock_tier=int(data.get("mfe_lock_tier", 0)),
             entry_cw_tier=data.get("entry_cw_tier", ""),
             stop_dw=data.get("stop_dw", 0.0),
             implied_wr_be=data.get("implied_wr_be", 0.0),

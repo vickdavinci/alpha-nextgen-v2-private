@@ -2381,6 +2381,15 @@ IC_HOLD_EOD_GATE_ENABLED = True  # EOD de-risk during hold
 IC_HOLD_EOD_GATE_CREDIT_MULT = 1.50  # At EOD during hold: exit if loss > 1.5× credit
 IC_HOLD_EOD_GATE_MIN_MINUTES = 240  # Min hold before EOD gate can fire (4h)
 
+# ── IC MFE Lock (Maximum Favorable Excursion ratchet) ──
+# Two-tier floor system: once P&L reaches a tier threshold, a floor locks in.
+# Tiers are permanent ratchets — they never decrease.
+IC_MFE_LOCK_ENABLED = True
+IC_MFE_T1_TRIGGER = 0.25  # T1: arm at 25% of credit captured
+IC_MFE_T2_TRIGGER = 0.45  # T2: arm at 45% of credit captured
+IC_MFE_T1_FLOOR_PCT = 0.0  # T1 floor: breakeven (0% of credit) + commissions
+IC_MFE_T2_FLOOR_PCT = 0.15  # T2 floor: lock 15% of credit captured
+
 # V3.0: Minimum margin percentage to allow options trading
 # Replaces hardcoded $1,000 check in main.py
 OPTIONS_MIN_MARGIN_PCT = 0.02  # 2% of portfolio minimum margin to trade options

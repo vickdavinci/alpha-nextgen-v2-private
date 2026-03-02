@@ -31,6 +31,7 @@ from engines.satellite.iron_condor_engine import (
     EXIT_IC_EOD_HOLD_GATE,
     EXIT_IC_FRIDAY_CLOSE,
     EXIT_IC_HARD_STOP_HOLD,
+    EXIT_IC_MFE_LOCK,
     EXIT_IC_PROFIT_TARGET,
     EXIT_IC_REGIME_BREAK,
     EXIT_IC_STOP_LOSS,
@@ -1669,3 +1670,154 @@ class TestHoldGuard:
         assert result is not None
         reason, _ = result
         assert reason == EXIT_IC_STOP_LOSS
+
+
+# ═══════════════════════════════════════════════════════════════════
+# MFE LOCK TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestMFELock:
+    """Test MFE (Maximum Favorable Excursion) lock floor ratchet system."""
+
+    # Use time past hold guard so MFE lock can fire in the main cascade
+    POST_HOLD = datetime(2025, 3, 12, 11, 0)  # 11 days after default entry
+
+    def _exit_kwargs(self, condor, combined_pnl, **overrides):
+        defaults = dict(
+            condor=condor,
+            combined_pnl=combined_pnl,
+            current_dte=14,
+            vix_current=18,
+            regime_score=52,
+            qqq_price=480,
+            current_time=self.POST_HOLD,
+        )
+        defaults.update(overrides)
+        return defaults
+
+    def test_mfe_hwm_tracking(self):
+        """HWM updates on positive P&L and never decreases."""
+        engine = _make_engine()
+        condor = _make_condor(net_credit=1.20, num_spreads=2)
+        # credit_100 = 240
+        assert condor.highest_pnl_pct == 0.0
+
+        # Call with positive P&L → HWM should update
+        with _patch_config(IC_MFE_LOCK_ENABLED=False):
+            engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=60))
+        # 60 / 240 = 0.25
+        assert abs(condor.highest_pnl_pct - 0.25) < 0.01
+
+        # Call with lower P&L → HWM stays
+        with _patch_config(IC_MFE_LOCK_ENABLED=False):
+            engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=30))
+        assert abs(condor.highest_pnl_pct - 0.25) < 0.01
+
+        # Call with higher P&L → HWM updates
+        with _patch_config(IC_MFE_LOCK_ENABLED=False):
+            engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=120))
+        # 120 / 240 = 0.50
+        assert abs(condor.highest_pnl_pct - 0.50) < 0.01
+
+        # Negative P&L → HWM stays at 0.50
+        with _patch_config(IC_MFE_LOCK_ENABLED=False):
+            engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=-50))
+        assert abs(condor.highest_pnl_pct - 0.50) < 0.01
+
+    def test_mfe_t1_arms_and_exits(self):
+        """T1 arms at 25% of credit captured, exits when P&L falls to 0%."""
+        engine = _make_engine()
+        condor = _make_condor(net_credit=1.20, num_spreads=2)
+        # credit_100 = 240
+
+        # First call: P&L at 30% of credit → arms T1, no exit yet
+        condor.highest_pnl_pct = 0.30  # Simulate prior HWM
+        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=24))
+        # 24/240 = 0.10 → above T1 floor (0%), no exit
+        assert result is None
+        assert condor.mfe_lock_tier == 1
+
+        # P&L drops to 0 → at T1 floor (0%), should exit
+        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=0))
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_MFE_LOCK
+
+    def test_mfe_t2_arms_and_exits(self):
+        """T2 arms at 45% of credit captured, exits when P&L falls to 15%."""
+        engine = _make_engine()
+        condor = _make_condor(net_credit=1.20, num_spreads=2)
+        # credit_100 = 240
+
+        # Simulate HWM that reached 50% of credit
+        condor.highest_pnl_pct = 0.50
+
+        # P&L at 20% → above T2 floor (15%), no exit
+        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=48))
+        # 48/240 = 0.20, floor = 0.15 → no exit
+        assert result is None
+        assert condor.mfe_lock_tier == 2
+
+        # P&L at 14% → below T2 floor (15%), exit
+        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=33.6))
+        # 33.6/240 = 0.14, floor = 0.15 → exit
+        assert result is not None
+        reason, _ = result
+        assert reason == EXIT_IC_MFE_LOCK
+
+    def test_mfe_tier_ratchet_never_decreases(self):
+        """T2 stays armed even when P&L drops — tier never decreases."""
+        engine = _make_engine()
+        condor = _make_condor(net_credit=1.20, num_spreads=2)
+        # credit_100 = 240
+
+        # Arm T2
+        condor.highest_pnl_pct = 0.50
+        condor.mfe_lock_tier = 2
+
+        # P&L drops to 20% → T2 stays (still above floor)
+        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=48))
+        assert condor.mfe_lock_tier == 2
+        assert result is None
+
+        # HWM drops below T2 trigger on this call (can't happen in practice,
+        # but test ratchet safety): tier should not decrease
+        condor.highest_pnl_pct = 0.10  # Artificially set below T1
+        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=48))
+        # 48/240 = 0.20, but tier was already 2 → stays 2
+        assert condor.mfe_lock_tier == 2
+
+    def test_mfe_disabled_config(self):
+        """IC_MFE_LOCK_ENABLED=False disables MFE exit (HWM still tracks)."""
+        engine = _make_engine()
+        condor = _make_condor(net_credit=1.20, num_spreads=2)
+        # credit_100 = 240
+
+        # Set HWM past T2, then drop P&L below floor
+        condor.highest_pnl_pct = 0.50
+
+        with _patch_config(IC_MFE_LOCK_ENABLED=False):
+            result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=0))
+        # MFE disabled → should NOT fire MFE exit
+        assert result is None or result[0] != EXIT_IC_MFE_LOCK
+
+    def test_mfe_no_exit_above_floor(self):
+        """P&L above floor → no MFE exit fires."""
+        engine = _make_engine()
+        condor = _make_condor(net_credit=1.20, num_spreads=2)
+        # credit_100 = 240
+
+        # Arm T1 (HWM = 30%), P&L at 15% → above T1 floor (0%)
+        condor.highest_pnl_pct = 0.30
+        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=36))
+        # 36/240 = 0.15 → above 0.0 floor
+        assert result is None
+
+        # Arm T2 (HWM = 50%), P&L at 25% → above T2 floor (15%)
+        condor.highest_pnl_pct = 0.50
+        condor.mfe_lock_tier = 0  # Reset to verify ratchet re-arms
+        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=60))
+        # 60/240 = 0.25 → above 0.15 floor
+        assert result is None
+        assert condor.mfe_lock_tier == 2

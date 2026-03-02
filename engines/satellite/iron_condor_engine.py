@@ -76,6 +76,7 @@ EXIT_IC_DAILY_LOSS_STOP = "IC_DAILY_LOSS_STOP"
 EXIT_IC_ASSIGNMENT_RISK = "IC_ASSIGNMENT_RISK"
 EXIT_IC_HARD_STOP_HOLD = "IC_HARD_STOP_DURING_HOLD"
 EXIT_IC_EOD_HOLD_GATE = "IC_EOD_HOLD_RISK_GATE"
+EXIT_IC_MFE_LOCK = "IC_MFE_LOCK"
 
 
 class IronCondorEngine:
@@ -945,6 +946,7 @@ class IronCondorEngine:
 
           POST-GUARD (full cascade after hold expires):
             P2: Profit target → 60% of credit captured
+            P2B: MFE Lock Floor → was profitable, gave back gains (2-tier ratchet)
             P3: Stop loss → 150% of credit lost
             P4: Wing breach → short strike 2% ITM
             P5: Time exit → DTE <= 10
@@ -960,6 +962,11 @@ class IronCondorEngine:
         loss_pct_of_credit = (
             (-combined_pnl / credit_100) if (credit_100 > 0 and combined_pnl < 0) else 0.0
         )
+
+        # ── MFE HWM update (always, even during hold guard) ──
+        pnl_pct_of_credit = combined_pnl / credit_100 if credit_100 > 0 else 0.0
+        if pnl_pct_of_credit > condor.highest_pnl_pct:
+            condor.highest_pnl_pct = pnl_pct_of_credit
 
         # ── PRE-GUARD: P0 — VIX Spike (always fires) ──
         vix_spike_threshold = float(getattr(config, "IC_VIX_SPIKE_EXIT", 30.0))
@@ -1037,10 +1044,37 @@ class IronCondorEngine:
 
         # ── P2: Profit target ──
         target_pct = float(getattr(config, "IC_TARGET_CAPTURE_PCT", 0.60))
-        if credit_100 > 0:
-            pnl_pct_of_credit = combined_pnl / credit_100
-            if pnl_pct_of_credit >= target_pct:
-                return self._build_exit(condor, EXIT_IC_PROFIT_TARGET, current_time)
+        if credit_100 > 0 and pnl_pct_of_credit >= target_pct:
+            return self._build_exit(condor, EXIT_IC_PROFIT_TARGET, current_time)
+
+        # ── P2B: MFE Lock Floor ──
+        if bool(getattr(config, "IC_MFE_LOCK_ENABLED", True)) and credit_100 > 0:
+            t1 = float(getattr(config, "IC_MFE_T1_TRIGGER", 0.25))
+            t2 = float(getattr(config, "IC_MFE_T2_TRIGGER", 0.45))
+            floor_t1 = float(getattr(config, "IC_MFE_T1_FLOOR_PCT", 0.0))
+            floor_t2 = float(getattr(config, "IC_MFE_T2_FLOOR_PCT", 0.15))
+
+            # Ratchet tier up (never down)
+            if condor.highest_pnl_pct >= t2:
+                condor.mfe_lock_tier = max(condor.mfe_lock_tier, 2)
+            elif condor.highest_pnl_pct >= t1:
+                condor.mfe_lock_tier = max(condor.mfe_lock_tier, 1)
+
+            # Compute floor and check
+            floor_pnl_pct = None
+            if condor.mfe_lock_tier >= 2:
+                floor_pnl_pct = floor_t2
+            elif condor.mfe_lock_tier >= 1:
+                floor_pnl_pct = floor_t1
+
+            if floor_pnl_pct is not None and pnl_pct_of_credit <= floor_pnl_pct:
+                self._log(
+                    f"IC_MFE_LOCK: T{condor.mfe_lock_tier} | pnl={pnl_pct_of_credit:.1%} <= "
+                    f"floor={floor_pnl_pct:.1%} | MFE={condor.highest_pnl_pct:.1%} | "
+                    f"id={condor.condor_id}",
+                    trades_only=True,
+                )
+                return self._build_exit(condor, EXIT_IC_MFE_LOCK, current_time)
 
         # ── P3: Stop loss ──
         stop_mult = float(getattr(config, "IC_STOP_LOSS_MULTIPLE", 1.50))
