@@ -168,6 +168,7 @@ class AlphaNextGen(QCAlgorithm):
     _extract_spread_key_from_tag = MainOrdersMixin._extract_spread_key_from_tag
     _remember_spread_close_order_key = MainOrdersMixin._remember_spread_close_order_key
     _resolve_spread_close_candidate = MainOrdersMixin._resolve_spread_close_candidate
+    _cancel_open_spread_close_orders = MainOrdersMixin._cancel_open_spread_close_orders
     _evaluate_base_regime_candidate = MainRegimeMixin._evaluate_base_regime_candidate
     _advance_detector_state = MainRegimeMixin._advance_detector_state
     _update_regime_detector_state = MainRegimeMixin._update_regime_detector_state
