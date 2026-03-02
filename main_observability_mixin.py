@@ -331,19 +331,24 @@ class MainObservabilityMixin:
             return
         for rej in rejects:
             code = str(getattr(rej, "code", "UNKNOWN") or "UNKNOWN")
+            rej_stage = str(getattr(rej, "stage", stage) or stage)
             source_tag = str(getattr(rej, "source_tag", "") or "")
             detail = str(getattr(rej, "detail", "") or "")
             engine_bucket = self._router_engine_bucket(source_tag=source_tag, detail=detail)
-            self._diag_intraday_router_reject_count += 1
-            self._diag_router_reject_reason_counts[code] = (
-                int(self._diag_router_reject_reason_counts.get(code, 0)) + 1
+            is_recovered = code == "R_CONTRACT_QUOTE_INVALID_RECOVERED" or (
+                rej_stage == "EXECUTE_RECOVERED"
             )
-            engine_store = self._diag_router_reject_reason_counts_by_engine.setdefault(
-                engine_bucket, {}
-            )
-            engine_store[code] = int(engine_store.get(code, 0)) + 1
+            if not is_recovered:
+                self._diag_intraday_router_reject_count += 1
+                self._diag_router_reject_reason_counts[code] = (
+                    int(self._diag_router_reject_reason_counts.get(code, 0)) + 1
+                )
+                engine_store = self._diag_router_reject_reason_counts_by_engine.setdefault(
+                    engine_bucket, {}
+                )
+                engine_store[code] = int(engine_store.get(code, 0)) + 1
             self._record_router_rejection_event(
-                stage=stage,
+                stage=rej_stage,
                 code=code,
                 symbol=str(getattr(rej, "symbol", "") or ""),
                 source_tag=source_tag,
