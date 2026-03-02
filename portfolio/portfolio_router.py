@@ -251,6 +251,25 @@ class PortfolioRouter:
         if not callable(cache_fn):
             return
 
+        def _extract_spread_key(raw_tag: str) -> str:
+            if not raw_tag:
+                return ""
+            lowered = raw_tag.lower()
+            for marker in ("spread_key=", "skey="):
+                idx = lowered.find(marker)
+                if idx < 0:
+                    continue
+                value = raw_tag[idx + len(marker) :].strip()
+                if not value:
+                    return ""
+                for sep in ("|", ";", ","):
+                    cut = value.find(sep)
+                    if cut >= 0:
+                        value = value[:cut]
+                        break
+                return value.strip().replace("~", "|")
+            return ""
+
         def _cache_ticket(ticket: Any) -> None:
             if ticket is None:
                 return
@@ -276,6 +295,15 @@ class PortfolioRouter:
                         map_fn(
                             order_id, str(getattr(ticket, "Symbol", "")), clean_tag, "router_submit"
                         )
+                except Exception:
+                    pass
+                try:
+                    remember_key_fn = getattr(
+                        self.algorithm, "_remember_spread_close_order_key", None
+                    )
+                    spread_key = _extract_spread_key(clean_tag)
+                    if callable(remember_key_fn) and spread_key:
+                        remember_key_fn(order_id, spread_key)
                 except Exception:
                     pass
                 try:
