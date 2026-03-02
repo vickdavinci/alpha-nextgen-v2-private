@@ -1641,13 +1641,42 @@ class MainOptionsMixin:
             long_symbol = self._normalize_symbol_str(spread.long_leg.symbol)
             short_symbol = self._normalize_symbol_str(spread.short_leg.symbol)
             spread_key = self._build_spread_runtime_key(spread)
+            vass_fast_close = bool(getattr(config, "VASS_CLOSE_DISABLE_MULTISESSION_RETRY", False))
+            vass_close_timeout_sec = max(
+                5, int(getattr(config, "VASS_CLOSE_LIMIT_TIMEOUT_SECONDS", 30))
+            )
+            vass_limit_attempts = max(
+                1, int(getattr(config, "VASS_CLOSE_MAX_COMBO_LIMIT_ATTEMPTS", 1))
+            )
+
+            # V12.24: timeout-driven retry trigger for active close intents.
+            # Do not wait for cancel callbacks/stale cleanup to schedule retries.
+            retry_at = self._spread_forced_close_retry.get(spread_key)
+            if retry_at is None and vass_fast_close:
+                last_submit_at = self._spread_last_close_submit_at.get(spread_key)
+                if last_submit_at is not None and (
+                    self._has_open_order_for_symbol(long_symbol)
+                    or self._has_open_order_for_symbol(short_symbol)
+                ):
+                    elapsed_sec = max(0.0, (self.Time - last_submit_at).total_seconds())
+                    timeout_at = last_submit_at + timedelta(seconds=vass_close_timeout_sec)
+                    if elapsed_sec >= float(vass_close_timeout_sec):
+                        self._spread_forced_close_reason[
+                            spread_key
+                        ] = f"LIMIT_TIMEOUT_{vass_close_timeout_sec}s"
+                        self._spread_forced_close_retry[spread_key] = self.Time
+                        retry_at = self.Time
+                        self.Log(
+                            "SPREAD_RETRY_TIMEOUT_TRIGGER: "
+                            f"Long={long_symbol} Short={short_symbol} | "
+                            f"Elapsed={elapsed_sec:.0f}s >= Timeout={vass_close_timeout_sec}s"
+                        )
+                    else:
+                        self._spread_forced_close_retry[spread_key] = timeout_at
+                        continue
 
             # V6.21: If a spread close was canceled, keep retrying close until flat.
-            retry_at = self._spread_forced_close_retry.get(spread_key)
             if retry_at is not None and self.Time >= retry_at:
-                vass_fast_close = bool(
-                    getattr(config, "VASS_CLOSE_DISABLE_MULTISESSION_RETRY", False)
-                )
                 # Prevent same-bar re-escalation while broker events settle.
                 submit_guard_sec = int(getattr(config, "SPREAD_CLOSE_SUBMIT_GUARD_SECONDS", 60))
                 last_submit_at = self._spread_last_close_submit_at.get(spread_key)
@@ -1685,6 +1714,18 @@ class MainOptionsMixin:
                             f"Reason={retry_reason}"
                         )
                     continue
+                if vass_fast_close and (
+                    self._has_open_order_for_symbol(long_symbol)
+                    or self._has_open_order_for_symbol(short_symbol)
+                ):
+                    if last_submit_at is not None:
+                        timeout_at = last_submit_at + timedelta(seconds=vass_close_timeout_sec)
+                        self._spread_forced_close_retry[spread_key] = timeout_at
+                    else:
+                        self._spread_forced_close_retry[spread_key] = self.Time + timedelta(
+                            seconds=vass_close_timeout_sec
+                        )
+                    continue
                 # D1 fix: cancel any linked OCO orders before each retry/escalation cycle.
                 self._cancel_spread_linked_oco(
                     long_symbol, short_symbol, reason="SPREAD_CLOSE_RETRY"
@@ -1692,7 +1733,7 @@ class MainOptionsMixin:
                 retry_cycles = self._spread_forced_close_retry_cycles.get(spread_key, 0) + 1
                 self._spread_forced_close_retry_cycles[spread_key] = retry_cycles
                 if vass_fast_close:
-                    max_retry_cycles = 1
+                    max_retry_cycles = vass_limit_attempts
                 else:
                     max_retry_cycles = int(getattr(config, "SPREAD_CLOSE_MAX_RETRY_CYCLES", 12))
                 if retry_cycles >= max_retry_cycles:
@@ -1822,10 +1863,15 @@ class MainOptionsMixin:
                 )
                 self._record_spread_exit_reason(spread_key, f"SPREAD_CLOSE_RETRY:{retry_reason}")
                 # Backoff retries to reduce order spam while preserving persistence.
-                retry_minutes = int(getattr(config, "SPREAD_CLOSE_RETRY_INTERVAL_MIN", 5))
-                self._spread_forced_close_retry[spread_key] = self.Time + timedelta(
-                    minutes=retry_minutes
-                )
+                if vass_fast_close:
+                    self._spread_forced_close_retry[spread_key] = self.Time + timedelta(
+                        seconds=vass_close_timeout_sec
+                    )
+                else:
+                    retry_minutes = int(getattr(config, "SPREAD_CLOSE_RETRY_INTERVAL_MIN", 5))
+                    self._spread_forced_close_retry[spread_key] = self.Time + timedelta(
+                        minutes=retry_minutes
+                    )
                 self._spread_last_close_submit_at[spread_key] = self.Time
                 continue
 
