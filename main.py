@@ -406,6 +406,7 @@ class AlphaNextGen(QCAlgorithm):
                 "oco_manager_state",
                 "regime_engine_state",
                 "spread_close_ladder_state",
+                "spread_close_order_hint_state",
             ]
             for key in state_keys:
                 if self.ObjectStore.ContainsKey(key):
@@ -1660,6 +1661,27 @@ class AlphaNextGen(QCAlgorithm):
             except Exception as e:
                 self.Log(f"STATE_WARN: Failed to load spread close ladder state - {e}")
 
+            # V12.24: Restore order-id -> spread-key hint cache for blank-tag cancel attribution.
+            try:
+                if self.ObjectStore.ContainsKey("spread_close_order_hint_state"):
+                    raw = self.ObjectStore.Read("spread_close_order_hint_state")
+                    hint_state = json.loads(raw)
+                    restored_hint_map = {}
+                    for k, v in (
+                        hint_state.get("spread_close_order_key_by_order_id", {}) or {}
+                    ).items():
+                        try:
+                            oid = int(k)
+                        except Exception:
+                            continue
+                        key = str(v or "").strip()
+                        if oid > 0 and key:
+                            restored_hint_map[oid] = key
+                    self._spread_close_order_key_by_order_id = restored_hint_map
+                    self.Log("STATE_RESTORE: Spread close order hint state loaded")
+            except Exception as e:
+                self.Log(f"STATE_WARN: Failed to load spread close order hint state - {e}")
+
             # V3.0: Load OCO manager state
             if hasattr(self, "oco_manager"):
                 try:
@@ -1748,6 +1770,20 @@ class AlphaNextGen(QCAlgorithm):
                 ),
             }
             self.ObjectStore.Save("spread_close_ladder_state", json.dumps(close_ladder_state))
+
+            # V12.24: Persist order-id -> spread-key hint cache (blank-tag fallback path).
+            hint_map = {}
+            for k, v in (getattr(self, "_spread_close_order_key_by_order_id", {}) or {}).items():
+                try:
+                    oid = int(k)
+                except Exception:
+                    continue
+                key = str(v or "").strip()
+                if oid <= 0 or not key:
+                    continue
+                hint_map[str(oid)] = key
+            hint_state = {"spread_close_order_key_by_order_id": hint_map}
+            self.ObjectStore.Save("spread_close_order_hint_state", json.dumps(hint_state))
 
             # V6.12: Save monthly P&L tracker state
             if hasattr(self, "pnl_tracker"):
