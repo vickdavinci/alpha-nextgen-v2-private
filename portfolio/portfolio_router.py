@@ -1492,14 +1492,31 @@ class PortfolioRouter:
         tag: str,
     ) -> bool:
         """
-        V12.23.2: recover VASS close intents on quote-invalid by submitting
-        combo-market close, then sequential fallback if requested.
+        Recover VASS close intents on quote-invalid.
+
+        Policy:
+        - Emergency exits: allow combo-market fallback.
+        - Non-emergency debit spread exits: defer (skip submit this bar).
+        - Credit spread exits: preserve existing combo-market fallback behavior.
         """
         if not self._is_vass_combo_exit_order(order):
             return False
         if not bool(getattr(config, "VASS_CLOSE_QUOTE_INVALID_COMBO_MARKET_RETRY", True)):
             return False
         if self.algorithm is None:
+            return False
+
+        md = order.metadata if isinstance(order.metadata, dict) else {}
+        spread_type = str(md.get("spread_type", "") or "").upper()
+        is_credit_spread = bool(md.get("is_credit_spread", False)) or ("CREDIT" in spread_type)
+        is_emergency_exit = self._is_emergency_spread_exit(
+            order.metadata, getattr(order, "reason", "")
+        )
+        if (not is_emergency_exit) and (not is_credit_spread):
+            self.log(
+                "ROUTER_VASS_QUOTE_INVALID_DEFER: "
+                f"{order.symbol} | Short={order.combo_short_symbol} | {quote_detail}"
+            )
             return False
 
         try:
