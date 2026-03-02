@@ -1509,6 +1509,18 @@ class PortfolioRouter:
         md = order.metadata if isinstance(order.metadata, dict) else {}
         spread_type = str(md.get("spread_type", "") or "").upper()
         is_credit_spread = bool(md.get("is_credit_spread", False)) or ("CREDIT" in spread_type)
+        source_tag, trace_id = self._extract_trace_context(order.metadata, symbol=order.symbol)
+
+        def _record_quote_recovery(recovery_path: str) -> None:
+            self._record_rejection(
+                code="R_CONTRACT_QUOTE_INVALID_RECOVERED",
+                symbol=str(order.symbol),
+                detail=f"{quote_detail} | Recovery={recovery_path}",
+                stage="EXECUTE_RECOVERED",
+                source_tag=source_tag,
+                trace_id=trace_id,
+            )
+
         is_emergency_exit = self._is_emergency_spread_exit(
             order.metadata, getattr(order, "reason", "")
         )
@@ -1531,9 +1543,12 @@ class PortfolioRouter:
             close_qty = min(max(0, int(live_long_qty or 0)), max(0, int(live_short_qty or 0)))
             if close_qty <= 0 or long_qc_symbol is None or short_qc_symbol is None:
                 if bool(getattr(config, "VASS_CLOSE_QUOTE_INVALID_SEQ_FALLBACK", True)):
-                    return self._execute_emergency_sequential_close_from_order(
+                    seq_ok = self._execute_emergency_sequential_close_from_order(
                         order, f"QUOTE_INVALID:{quote_detail}"
                     )
+                    if seq_ok:
+                        _record_quote_recovery("SEQUENTIAL_NO_LIVE_QTY")
+                    return seq_ok
                 return False
 
             legs = [Leg.Create(long_qc_symbol, -1), Leg.Create(short_qc_symbol, 1)]
@@ -1547,13 +1562,17 @@ class PortfolioRouter:
                 f"ROUTER_VASS_QUOTE_INVALID_COMBO_MARKET_RETRY: {order.symbol} | "
                 f"Short={order.combo_short_symbol} | Qty={close_qty} | {quote_detail}"
             )
+            _record_quote_recovery("COMBO_MARKET_RETRY")
             return True
         except Exception as e:
             self.log(f"ROUTER_VASS_QUOTE_INVALID_COMBO_MARKET_FAIL: {order.symbol} | {e}")
             if bool(getattr(config, "VASS_CLOSE_QUOTE_INVALID_SEQ_FALLBACK", True)):
-                return self._execute_emergency_sequential_close_from_order(
+                seq_ok = self._execute_emergency_sequential_close_from_order(
                     order, f"QUOTE_INVALID:{quote_detail}"
                 )
+                if seq_ok:
+                    _record_quote_recovery("SEQUENTIAL_AFTER_COMBO_FAIL")
+                return seq_ok
             return False
 
     def _get_live_spread_leg_state(
