@@ -1008,6 +1008,10 @@ VASS_SIMILAR_ENTRY_COOLDOWN_DAYS = (
 VASS_SIMILAR_ENTRY_USE_EXPIRY_BUCKET = True  # Use expiry date bucket (fallback to DTE bucket)
 VASS_DIRECTION_MIN_GAP_ENABLED = True  # V12.6: prefer time-gap lock over strict day lock
 VASS_DIRECTION_MIN_GAP_MINUTES = 180  # Min spacing between same-direction VASS entries
+VASS_DIRECTION_MIN_GAP_MINUTES_BULLISH = (
+    120  # V12.24: increase bull throughput while preserving bearish pacing
+)
+VASS_DIRECTION_MIN_GAP_MINUTES_BEARISH = 180  # Keep bearish spacing conservative
 VASS_DIRECTION_DAY_GAP_ENABLED = False  # Legacy date-level lock kept disabled by default
 VASS_ENTRY_ENGINE_ENABLED = True  # V10.10: route VASS strategy/filter/guards via dedicated engine
 VASS_USE_CONVICTION_ONLY_DIRECTION = (

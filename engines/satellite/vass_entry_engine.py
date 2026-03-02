@@ -3318,6 +3318,14 @@ class VASSEntryEngine:
 
         if bool(getattr(config, "VASS_DIRECTION_MIN_GAP_ENABLED", True)):
             min_gap_min = int(getattr(config, "VASS_DIRECTION_MIN_GAP_MINUTES", 0))
+            if dir_label == "BULLISH":
+                min_gap_min = int(
+                    getattr(config, "VASS_DIRECTION_MIN_GAP_MINUTES_BULLISH", min_gap_min)
+                )
+            else:
+                min_gap_min = int(
+                    getattr(config, "VASS_DIRECTION_MIN_GAP_MINUTES_BEARISH", min_gap_min)
+                )
             if min_gap_min > 0 and now_dt is not None:
                 last_dt = self._last_entry_dt_by_direction.get(dir_label)
                 if last_dt is not None:
