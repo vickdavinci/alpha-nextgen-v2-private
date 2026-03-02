@@ -113,7 +113,10 @@ def _merge_csv_parts(part_payloads: List[str]) -> str:
     return "\n".join(lines_out) + ("\n" if lines_out else "")
 
 
-def _read_csv_artifact(qb: QuantBook, base_key: str) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+def _read_csv_artifact(
+    qb: QuantBook, base_key: str
+) -> Tuple[Optional[pd.DataFrame], Dict[str, Any]]:
+    """Return (DataFrame, info) on success, or (None, {"error": msg}) on miss."""
     direct_key, direct_payload = _read_text_from_store(qb, base_key)
     if direct_payload:
         return pd.read_csv(io.StringIO(direct_payload)), {"mode": "single", "key": direct_key}
@@ -141,17 +144,17 @@ def _read_csv_artifact(qb: QuantBook, base_key: str) -> Tuple[pd.DataFrame, Dict
         _, payload = _read_text_from_store(qb, _part_key(base_key, idx))
         if not payload:
             if part_count > 0:
-                raise FileNotFoundError(f"Missing shard {idx} for {base_key}")
+                return None, {"error": f"Missing shard {idx} for {base_key}"}
             # Legacy/sparse shard mode: keep scanning; some runs can have non-contiguous parts.
             continue
         part_payloads.append(payload)
 
     if not part_payloads:
-        raise FileNotFoundError(f"Object Store artifact not found: {base_key}")
+        return None, {"error": f"Object Store artifact not found: {base_key}"}
 
     merged = _merge_csv_parts(part_payloads)
     if not merged.strip():
-        raise ValueError(f"Merged shard payload is empty: {base_key}")
+        return None, {"error": f"Merged shard payload is empty: {base_key}"}
 
     return pd.read_csv(io.StringIO(merged)), {
         "mode": "sharded",
@@ -195,10 +198,14 @@ def load_objectstore_artifacts(
     for label, prefix in ARTIFACT_PREFIXES.items():
         attempted_keys: List[str] = []
         last_error: Optional[str] = None
+        found = False
         for key in _base_key_candidates(prefix, run_name, backtest_year):
             attempted_keys.append(key)
             try:
                 df, info = _read_csv_artifact(qb, key)
+                if df is None:
+                    last_error = info.get("error", "unknown")
+                    continue
                 loaded[label] = _parse_time_column(df)
                 metadata[label] = {
                     "base_key": key,
@@ -209,10 +216,11 @@ def load_objectstore_artifacts(
                 print(
                     f"[OK] {label}: rows={len(df)} | key={info['key']} | mode={info['mode']} | base={key}"
                 )
+                found = True
                 break
-            except Exception as err:  # noqa: BLE001
+            except BaseException as err:
                 last_error = str(err)
-        else:
+        if not found:
             metadata[label] = {
                 "base_key": attempted_keys[0]
                 if attempted_keys
