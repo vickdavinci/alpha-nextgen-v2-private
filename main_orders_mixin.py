@@ -104,6 +104,22 @@ class MainOrdersMixin:
                 continue
         return symbols
 
+    def _get_active_spread_key_set(self) -> set[str]:
+        """Return runtime spread keys for currently active spreads."""
+        keys: set[str] = set()
+        try:
+            spreads = list(self.options_engine.get_spread_positions())
+        except Exception:
+            spreads = []
+        for spread in spreads:
+            try:
+                spread_key = self._build_spread_runtime_key(spread)
+            except Exception:
+                spread_key = ""
+            if spread_key:
+                keys.add(str(spread_key))
+        return keys
+
     def _is_close_side_order_for_live_holding(self, order: Any) -> bool:
         """
         True when order side reduces an existing option holding.
@@ -131,13 +147,22 @@ class MainOrdersMixin:
         order: Any,
         order_age_minutes: float,
         active_spread_symbols: set[str],
+        active_spread_keys: set[str],
     ) -> bool:
         """
-        Keep active spread-close combo legs alive for a grace window.
+        Keep active VASS spread-close combo legs alive (stale cleanup bypass).
 
-        Spread closes often need more than 5 minutes; canceling them too early
-        creates avoidable retry/escalation churn.
+        Stale cleanup should not be the primary retry/cancel mechanism for active
+        spread closes. Preserve active close intents and let dedicated close-ladder
+        logic decide when to cancel/escalate.
         """
+        order_tag = str(getattr(order, "Tag", "") or "")
+        spread_key = self._extract_spread_key_from_tag(order_tag)
+        if spread_key and spread_key in active_spread_keys:
+            if not self._is_close_side_order_for_live_holding(order):
+                return False
+            return True
+
         try:
             symbol_norm = self._normalize_symbol_str(getattr(order, "Symbol", ""))
         except Exception:
@@ -178,6 +203,7 @@ class MainOrdersMixin:
 
             max_age_minutes = float(getattr(config, "STALE_CLEANUP_MAX_AGE_MINUTES", 5))
             active_spread_symbols = self._get_active_spread_symbol_set()
+            active_spread_keys = self._get_active_spread_key_set()
             stale_count = 0
             protected_spread_close_count = 0
             for order in open_orders:
@@ -198,6 +224,7 @@ class MainOrdersMixin:
                         order,
                         order_age_minutes=order_age_minutes,
                         active_spread_symbols=active_spread_symbols,
+                        active_spread_keys=active_spread_keys,
                     ):
                         protected_spread_close_count += 1
                         continue
