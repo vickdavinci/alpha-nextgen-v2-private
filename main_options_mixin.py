@@ -1727,18 +1727,19 @@ class MainOptionsMixin:
                 itm_intraday_cooldown_active=itm_intraday_cooldown_active,
             )
 
-        self.options_engine.run_vass_engine_entry_cycle(
-            chain=chain,
-            qqq_price=qqq_price,
-            adx_value=adx_value,
-            ma200_value=ma200_value,
-            ma50_value=ma50_value,
-            size_multiplier=size_multiplier,
-            effective_portfolio_value=effective_portfolio_value,
-            margin_remaining=margin_remaining,
-            vix_level_cboe=vix_level_cboe,
-            transition_ctx=transition_ctx,
-        )
+        if bool(getattr(config, "VASS_ENABLED", True)):
+            self.options_engine.run_vass_engine_entry_cycle(
+                chain=chain,
+                qqq_price=qqq_price,
+                adx_value=adx_value,
+                ma200_value=ma200_value,
+                ma50_value=ma50_value,
+                size_multiplier=size_multiplier,
+                effective_portfolio_value=effective_portfolio_value,
+                margin_remaining=margin_remaining,
+                vix_level_cboe=vix_level_cboe,
+                transition_ctx=transition_ctx,
+            )
 
         # ── Iron Condor entry cycle (neutral-regime only) ──
         if bool(getattr(config, "IRON_CONDOR_ENGINE_ENABLED", False)):

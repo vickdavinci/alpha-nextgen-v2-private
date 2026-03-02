@@ -102,6 +102,7 @@ class AlphaNextGen(QCAlgorithm):
     _canonical_options_reason_code = MainOptionsMixin._canonical_options_reason_code
     _scan_options_signals = MainOptionsMixin._scan_options_signals
     _check_spread_exit = MainOptionsMixin._check_spread_exit
+    _check_iron_condor_exits = MainOptionsMixin._check_iron_condor_exits
     _on_vix_spike_check = MainOptionsMixin._on_vix_spike_check
     _on_micro_regime_update = MainOptionsMixin._on_micro_regime_update
     _on_friday_firewall = MainOptionsMixin._on_friday_firewall
