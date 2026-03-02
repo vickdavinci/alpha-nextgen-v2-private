@@ -879,9 +879,8 @@ class PortfolioRouter:
             order.is_combo and is_vass_hint and bool(metadata.get("spread_close_short", False))
         )
 
-        # V12.23: For VASS spread closes, if an in-flight close for the same spread
-        # key already exists, do not cancel/requeue and do not enter preclear-pending
-        # wait loop. Let the existing close workflow continue.
+        # V12.23.2: For VASS spread closes, replace same-spread in-flight close
+        # orders immediately so a fresh close intent can submit in the same cycle.
         if is_vass_combo_close:
             intended_spread_key = str(metadata.get("spread_key", "") or "").strip()
             if not intended_spread_key:
@@ -903,6 +902,28 @@ class PortfolioRouter:
                         matching_inflight.append(open_order)
                 if matching_inflight:
                     inflight_ids = _order_ids(matching_inflight)
+                    if bool(getattr(config, "VASS_EXIT_PRECLEAR_REPLACE_INFLIGHT_CLOSE", True)):
+                        canceled = 0
+                        cancel_errors = 0
+                        for inflight_order in matching_inflight:
+                            try:
+                                oid = int(getattr(inflight_order, "Id", 0) or 0)
+                                if oid <= 0:
+                                    oid = int(getattr(inflight_order, "OrderId", 0) or 0)
+                                if oid <= 0:
+                                    continue
+                                self.algorithm.Transactions.CancelOrder(oid)  # type: ignore[attr-defined]
+                                canceled += 1
+                            except Exception:
+                                cancel_errors += 1
+                        self._exit_preclear_pending_since.pop(key, None)
+                        return (
+                            True,
+                            "EXIT_PRE_CLEAR_REPLACED_INFLIGHT_CLOSE: "
+                            f"Symbols={','.join(normalized)} | "
+                            f"OrderIds={inflight_ids} | Canceled={canceled} | "
+                            f"CancelErrors={cancel_errors} | Mode=VASS_COMBO_SAME_SPREAD",
+                        )
                     return (
                         False,
                         "EXIT_PRE_CLEAR_INFLIGHT_CLOSE: "

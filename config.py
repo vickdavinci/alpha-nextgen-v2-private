@@ -2940,6 +2940,9 @@ EXIT_PRE_CLEAR_TIMEOUT_SECONDS_COMBO = 30  # Keep stricter timeout for spread co
 EXIT_PRE_CLEAR_INTRADAY_BYPASS_AFTER_SECONDS = (
     5  # Time-critical intraday closes can bypass after this elapsed preclear wait
 )
+VASS_EXIT_PRECLEAR_REPLACE_INFLIGHT_CLOSE = (
+    True  # V12.23.2: cancel same-spread inflight close orders and submit replacement immediately
+)
 ROUTER_STALE_CLOSE_REJECT_COOLDOWN_SECONDS = (
     60  # Suppress repeated no-live close intents per symbol to reduce reject churn
 )
