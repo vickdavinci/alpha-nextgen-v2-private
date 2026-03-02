@@ -1170,7 +1170,7 @@ OPTIONS_PORTFOLIO_SCALING_TIERS = (
         "max_equity": 100_000,
         "total_positions": 7,
         "max_swing_positions": 4,
-        "vass_concurrent": 2,
+        "vass_concurrent": 3,
         "itm_concurrent": 1,
         "micro_concurrent": 1,
         "max_options_trades_per_day": 5,
@@ -2077,8 +2077,8 @@ OPTIONS_MAX_MARGIN_PCT = 0.50  # V10.9: Align with OPTIONS_BUDGET_CAP_PCT so per
 SWING_SPREAD_MAX_PCT = 0.15  # 15% legacy cap (kept for backward compatibility)
 VASS_RISK_PER_TRADE_PCT = 0.20  # V12.4: reduce VASS allocation concentration to 20%
 VASS_MAX_SPREAD_RISK_PCT = 0.03  # V12.7: size each VASS spread to 3% max defined risk
-VASS_MAX_CONCURRENT_SPREADS = 2  # V12.7: cap concurrent VASS spreads (portfolio-level containment)
-VASS_MAX_CONCURRENT_SPREADS_HARD_CAP = 2  # V12.9 P2: keep cap locked during EV stabilization.
+VASS_MAX_CONCURRENT_SPREADS = 3  # V12.7: cap concurrent VASS spreads (portfolio-level containment)
+VASS_MAX_CONCURRENT_SPREADS_HARD_CAP = 3  # V12.9 P2: keep cap locked during EV stabilization.
 INTRADAY_SPREAD_MAX_PCT = 0.08  # Legacy fallback for intraday sizing
 VASS_MAX_RISK_DOLLARS = (
     0  # V12.14: set to 0 to use percentage-based (OPTIONS_SWING_ALLOCATION of portfolio)
@@ -2176,8 +2176,8 @@ OPTIONS_TOTAL_CAP_DETERIORATION = (
 
 OPTIONS_MAX_SWING_PER_DIRECTION = 3  # Legacy fallback cap if directional pools are unset
 # V8: Separate directional swing pools (prevents one side from monopolizing all swing slots).
-OPTIONS_MAX_SWING_BULLISH_POSITIONS = 2
-OPTIONS_MAX_SWING_BEARISH_POSITIONS = 2
+OPTIONS_MAX_SWING_BULLISH_POSITIONS = 3
+OPTIONS_MAX_SWING_BEARISH_POSITIONS = 3
 MAX_BULLISH_SPREADS_STRESS = 0  # No new bullish spreads in confirmed stress
 MAX_BULLISH_SPREADS_EARLY_STRESS = 2  # V10.5: keep restrictive but not crippling in early stress
 MAX_BEARISH_SPREADS_STRESS = 3  # Preserve bearish spread capacity in stress
