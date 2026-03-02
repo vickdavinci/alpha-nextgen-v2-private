@@ -103,6 +103,7 @@ def check_spread_exit_signals_impl(
     mfe_lock_in_regime_confirmed = bool(getattr(config, "VASS_MFE_LOCK_IN_REGIME_CONFIRMED", True))
     neutrality_exit_enabled = bool(getattr(config, "VASS_ENABLE_NEUTRALITY_EXITS", True))
     day4_eod_exit_enabled = bool(getattr(config, "VASS_ENABLE_DAY4_EOD_EXITS", True))
+    mfe_t1_in_confirmed_disabled = False
 
     if regime_confirmed:
         if is_credit_spread:
@@ -115,6 +116,10 @@ def check_spread_exit_signals_impl(
                 trail_exit_enabled = False
             if bool(getattr(config, "VASS_REGIME_CONFIRMED_DISABLE_DEBIT_MARK_STOP", True)):
                 mark_stop_enabled = False
+            # V12.23.2: T1 breakeven floor contradicts confirmed thesis — disable T1,
+            # keep T2 (meaningful profit lock) active.
+            if bool(getattr(config, "VASS_REGIME_CONFIRMED_DISABLE_DEBIT_MFE_T1", True)):
+                mfe_t1_in_confirmed_disabled = True
         # V12.9: tail_cap stays ALWAYS active — conviction floor prevents unbounded losses
 
     regime_break_enabled = thesis_first_mode and bool(
@@ -927,7 +932,7 @@ def check_spread_exit_signals_impl(
             floor_pnl = None
             if spread.mfe_lock_tier >= 2:
                 floor_pnl = spread.max_profit * floor_t2_pct + commission_per_share
-            elif spread.mfe_lock_tier >= 1:
+            elif spread.mfe_lock_tier >= 1 and not mfe_t1_in_confirmed_disabled:
                 floor_pnl = commission_per_share
 
             if floor_pnl is not None and pnl <= floor_pnl:

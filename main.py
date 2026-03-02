@@ -127,6 +127,11 @@ class AlphaNextGen(QCAlgorithm):
     _is_terminal_exit_retry_tag = MainOrdersMixin._is_terminal_exit_retry_tag
     _on_moo_fallback = MainOrdersMixin._on_moo_fallback
     _cleanup_stale_orders = MainOrdersMixin._cleanup_stale_orders
+    _get_active_spread_symbol_set = MainOrdersMixin._get_active_spread_symbol_set
+    _is_close_side_order_for_live_holding = MainOrdersMixin._is_close_side_order_for_live_holding
+    _should_preserve_active_spread_close_order = (
+        MainOrdersMixin._should_preserve_active_spread_close_order
+    )
     _oco_engine_prefix_for_strategy = MainOrdersMixin._oco_engine_prefix_for_strategy
     _record_order_tag_map = MainOrdersMixin._record_order_tag_map
     _record_order_tag_resolve = MainOrdersMixin._record_order_tag_resolve
