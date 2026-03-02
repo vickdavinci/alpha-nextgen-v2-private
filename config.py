@@ -1238,6 +1238,8 @@ OPTIONS_RESERVE_RELEASE_MINUTE = 30
 INTRADAY_ENGINE_DAILY_RESERVE_ENABLED = True
 INTRADAY_MIN_ITM_TRADES_RESERVED = 1
 INTRADAY_MIN_MICRO_TRADES_RESERVED = 1
+# V12.23.2: Block entry when candidate leg strike overlaps an active spread's opposite leg.
+VASS_STRIKE_REUSE_GUARD_ENABLED = True
 # Replace one-attempt-per-day spread lock with scoped attempt budgets.
 SPREAD_MAX_ATTEMPTS_PER_KEY_PER_DAY = 3
 SPREAD_ATTEMPT_COUNT_ON_VALIDATION_FAILURE = (

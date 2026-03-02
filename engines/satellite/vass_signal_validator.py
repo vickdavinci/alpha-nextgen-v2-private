@@ -483,6 +483,35 @@ def check_spread_entry_signal_impl(
         self.log("SPREAD: Entry blocked - missing contract legs")
         return fail_quality("MISSING_SPREAD_LEGS")
 
+    # V12.23.2: Strike-reuse guard — block entry if either leg's strike
+    # overlaps with an active spread's opposite leg (prevents orphan positions
+    # from broker-side netting).
+    if bool(getattr(config, "VASS_STRIKE_REUSE_GUARD_ENABLED", True)):
+        _active_spreads = self.get_spread_positions()
+        for _sp in _active_spreads:
+            _sp_long_strike = float(getattr(_sp.long_leg, "strike", 0))
+            _sp_short_strike = float(getattr(_sp.short_leg, "strike", 0))
+            _sp_expiry = str(getattr(_sp.long_leg, "expiry", ""))
+            _new_long_strike = float(getattr(long_leg_contract, "strike", 0))
+            _new_short_strike = float(getattr(short_leg_contract, "strike", 0))
+            _new_expiry = str(getattr(long_leg_contract, "expiry", ""))
+            if _sp_expiry and _new_expiry and _sp_expiry != _new_expiry:
+                continue
+            if _new_short_strike and _new_short_strike == _sp_long_strike:
+                self.log(
+                    f"STRIKE_REUSE_BLOCKED: New short {_new_short_strike} == "
+                    f"active long {_sp_long_strike} (expiry {_sp_expiry})",
+                    trades_only=True,
+                )
+                return fail("R_STRIKE_REUSE_SHORT_ON_ACTIVE_LONG")
+            if _new_long_strike and _new_long_strike == _sp_short_strike:
+                self.log(
+                    f"STRIKE_REUSE_BLOCKED: New long {_new_long_strike} == "
+                    f"active short {_sp_short_strike} (expiry {_sp_expiry})",
+                    trades_only=True,
+                )
+                return fail("R_STRIKE_REUSE_LONG_ON_ACTIVE_SHORT")
+
     now_dt = self._parse_dt(current_date, current_hour, current_minute)
     signature = self._build_vass_signature(
         spread_type=spread_type,
@@ -1314,6 +1343,33 @@ def check_credit_spread_entry_signal_impl(
     if short_leg_contract is None or long_leg_contract is None:
         self.log("CREDIT_SPREAD: Entry blocked - missing contract legs")
         return fail_quality("MISSING_SPREAD_LEGS")
+
+    # V12.23.2: Strike-reuse guard (credit path) — same logic as debit path.
+    if bool(getattr(config, "VASS_STRIKE_REUSE_GUARD_ENABLED", True)):
+        _active_spreads = self.get_spread_positions()
+        for _sp in _active_spreads:
+            _sp_long_strike = float(getattr(_sp.long_leg, "strike", 0))
+            _sp_short_strike = float(getattr(_sp.short_leg, "strike", 0))
+            _sp_expiry = str(getattr(_sp.long_leg, "expiry", ""))
+            _new_long_strike = float(getattr(long_leg_contract, "strike", 0))
+            _new_short_strike = float(getattr(short_leg_contract, "strike", 0))
+            _new_expiry = str(getattr(long_leg_contract, "expiry", ""))
+            if _sp_expiry and _new_expiry and _sp_expiry != _new_expiry:
+                continue
+            if _new_short_strike and _new_short_strike == _sp_long_strike:
+                self.log(
+                    f"STRIKE_REUSE_BLOCKED: Credit short {_new_short_strike} == "
+                    f"active long {_sp_long_strike} (expiry {_sp_expiry})",
+                    trades_only=True,
+                )
+                return fail("R_STRIKE_REUSE_SHORT_ON_ACTIVE_LONG")
+            if _new_long_strike and _new_long_strike == _sp_short_strike:
+                self.log(
+                    f"STRIKE_REUSE_BLOCKED: Credit long {_new_long_strike} == "
+                    f"active short {_sp_short_strike} (expiry {_sp_expiry})",
+                    trades_only=True,
+                )
+                return fail("R_STRIKE_REUSE_LONG_ON_ACTIVE_SHORT")
 
     # Validate strategy
     if strategy is None or not self.is_credit_strategy(strategy):
