@@ -109,6 +109,15 @@ def check_spread_exit_signals_impl(
                     )
                     mark_value = intrinsic_value
 
+        width_cap = float(getattr(spread, "width", 0.0) or 0.0)
+        if width_cap > 0 and mark_value > width_cap:
+            self.log(
+                f"SPREAD_MARK_CAP_APPLIED: {context_label} | Key={self._build_spread_key(spread)} | "
+                f"RawValue=${mark_value:.2f} -> WidthCap=${width_cap:.2f}",
+                trades_only=True,
+            )
+            mark_value = width_cap
+
         if mark_value < 0:
             self.log(
                 f"SPREAD_PNL_CLAMP_APPLIED: {context_label} | Key={self._build_spread_key(spread)} | "
