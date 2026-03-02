@@ -514,8 +514,7 @@ class MainRegimeMixin:
                 self.Log(
                     f"TRANSITION_DERISK_SKIPPED_DEBIT_POLICY: "
                     f"Overlay={overlay} | Type={spread_type} | "
-                    f"BarsSinceFlip={bars_since_flip}/{vass_derisk_bars}",
-                    trades_only=True,
+                    f"BarsSinceFlip={bars_since_flip}/{vass_derisk_bars}"
                 )
                 continue
             if is_credit_spread and not bool(
@@ -524,8 +523,7 @@ class MainRegimeMixin:
                 self.Log(
                     f"TRANSITION_DERISK_SKIPPED_CREDIT_POLICY: "
                     f"Overlay={overlay} | Type={spread_type} | "
-                    f"BarsSinceFlip={bars_since_flip}/{vass_derisk_bars}",
-                    trades_only=True,
+                    f"BarsSinceFlip={bars_since_flip}/{vass_derisk_bars}"
                 )
                 continue
 
@@ -539,15 +537,13 @@ class MainRegimeMixin:
                 if is_bullish_spread and _regime >= _bull_min:
                     self.Log(
                         f"TRANSITION_DERISK_GATED: Bull spread skipped | "
-                        f"Regime={_regime:.1f} >= {_bull_min:.0f} | Overlay={overlay}",
-                        trades_only=True,
+                        f"Regime={_regime:.1f} >= {_bull_min:.0f} | Overlay={overlay}"
                     )
                     continue
                 if is_bearish_spread and _regime <= _bear_max:
                     self.Log(
                         f"TRANSITION_DERISK_GATED: Bear spread skipped | "
-                        f"Regime={_regime:.1f} <= {_bear_max:.0f} | Overlay={overlay}",
-                        trades_only=True,
+                        f"Regime={_regime:.1f} <= {_bear_max:.0f} | Overlay={overlay}"
                     )
                     continue
             except Exception:
