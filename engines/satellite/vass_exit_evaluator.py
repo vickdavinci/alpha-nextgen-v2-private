@@ -68,11 +68,56 @@ def check_spread_exit_signals_impl(
         "BULL_PUT_CREDIT",
     }
     is_bullish_debit_spread = spread_type_upper in {"BULL_CALL", "BULL_CALL_DEBIT"}
+    is_bearish_debit_spread = spread_type_upper in {"BEAR_PUT", "BEAR_PUT_DEBIT"}
     is_bearish_spread = spread_type_upper in {
         "BEAR_PUT",
         "BEAR_PUT_DEBIT",
         "BEAR_CALL_CREDIT",
     }
+
+    def _resolve_debit_spread_mark_value(context_label: str) -> float:
+        """
+        Resolve debit spread mark value using:
+        1) quoted leg mid difference
+        2) intrinsic-value floor (when underlying price is available)
+        3) hard floor at 0 as final safety clamp
+        """
+        raw_value = float(long_leg_price) - float(short_leg_price)
+        mark_value = raw_value
+
+        ul = float(underlying_price or 0.0)
+        if ul > 0:
+            long_strike = float(getattr(spread.long_leg, "strike", 0.0) or 0.0)
+            short_strike = float(getattr(spread.short_leg, "strike", 0.0) or 0.0)
+            intrinsic_value = None
+            if is_bullish_debit_spread:
+                intrinsic_value = max(0.0, ul - long_strike) - max(0.0, ul - short_strike)
+            elif is_bearish_debit_spread:
+                intrinsic_value = max(0.0, long_strike - ul) - max(0.0, short_strike - ul)
+
+            if intrinsic_value is not None:
+                width_cap = float(getattr(spread, "width", 0.0) or 0.0)
+                intrinsic_value = max(0.0, intrinsic_value)
+                if width_cap > 0:
+                    intrinsic_value = min(intrinsic_value, width_cap)
+                if intrinsic_value > mark_value:
+                    self.log(
+                        f"SPREAD_INTRINSIC_OVERRIDE: {context_label} | Key={self._build_spread_key(spread)} | "
+                        f"RawValue=${mark_value:.2f} -> Intrinsic=${intrinsic_value:.2f} | "
+                        f"UL=${ul:.2f} LongK={long_strike:.2f} ShortK={short_strike:.2f}",
+                        trades_only=True,
+                    )
+                    mark_value = intrinsic_value
+
+        if mark_value < 0:
+            self.log(
+                f"SPREAD_PNL_CLAMP_APPLIED: {context_label} | Key={self._build_spread_key(spread)} | "
+                f"RawValue=${mark_value:.2f} -> $0.00",
+                trades_only=True,
+            )
+            mark_value = 0.0
+
+        return mark_value
 
     vass_exit_profile = self._get_vass_exit_profile(spread=spread, vix_current=vix_current)
     vass_tier = str(vass_exit_profile.get("tier", "MED"))
@@ -337,14 +382,7 @@ def check_spread_exit_signals_impl(
                 ):
                     entry_debit = float(getattr(spread, "net_debit", 0.0) or 0.0)
                     if entry_debit > 0:
-                        current_spread_value = float(long_leg_price) - float(short_leg_price)
-                        if current_spread_value < 0:
-                            self.log(
-                                f"SPREAD_PNL_CLAMP_APPLIED: HoldGuard | Key={self._build_spread_key(spread)} | "
-                                f"RawValue=${current_spread_value:.2f} -> $0.00",
-                                trades_only=True,
-                            )
-                            current_spread_value = 0.0
+                        current_spread_value = _resolve_debit_spread_mark_value("HoldGuard")
                         pnl = current_spread_value - entry_debit
                         pnl_pct = pnl / entry_debit
 
@@ -892,15 +930,8 @@ def check_spread_exit_signals_impl(
 
     else:
         # DEBIT SPREAD P&L: Original logic
-        current_spread_value = long_leg_price - short_leg_price
+        current_spread_value = _resolve_debit_spread_mark_value("ExitCheck")
         entry_debit = spread.net_debit
-        if entry_debit > 0 and current_spread_value < 0:
-            self.log(
-                f"SPREAD_PNL_CLAMP_APPLIED: ExitCheck | Key={self._build_spread_key(spread)} | "
-                f"RawValue=${current_spread_value:.2f} -> $0.00",
-                trades_only=True,
-            )
-            current_spread_value = 0.0
         pnl = current_spread_value - entry_debit
         pnl_pct = pnl / entry_debit if entry_debit > 0 else 0
 
