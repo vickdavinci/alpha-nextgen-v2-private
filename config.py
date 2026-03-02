@@ -2970,7 +2970,7 @@ SWING_EXTREME_SPY_DROP = -2.0  # Pause if SPY drops > 2% intraday
 SWING_EXTREME_VIX_SPIKE = 15.0  # Pause if VIX spikes > 15% intraday
 
 # V6.13 P0: Swing spread risk exits (VIX spike + overnight gap protection)
-SWING_VIX_SPIKE_EXIT_ENABLED = True  # V10.3: Re-enabled defensive tail-risk exit
+SWING_VIX_SPIKE_EXIT_ENABLED = False  # V12.23.3: Disabled — too sensitive in low-VIX (20% 5D threshold fires at VIX 15). ITM uses separate ITM_VIX_SPIKE_EXIT_ENABLED.
 SWING_VIX_SPIKE_EXIT_LEVEL = 25.0  # Exit bullish spreads if VIX >= 25
 SWING_VIX_SPIKE_EXIT_5D_PCT = 0.20  # Or if VIX 5D change >= +20%
 
