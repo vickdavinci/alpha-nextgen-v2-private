@@ -246,12 +246,33 @@ class MainOptionsMixin:
         # Exit retries/forced-close lifecycle.
         self._pending_exit_orders = {}
         self._exit_retry_scheduled_at = {}
-        self._spread_forced_close_retry = {}
-        self._spread_forced_close_reason = {}
-        self._spread_forced_close_cancel_counts = {}
-        self._spread_forced_close_retry_cycles = {}
-        self._spread_last_close_submit_at = {}
-        self._spread_close_first_cancel_at = {}
+        # Preserve restored close-ladder state on startup/restart (live only).
+        if bool(getattr(self, "LiveMode", False)):
+            self._spread_forced_close_retry = dict(
+                getattr(self, "_spread_forced_close_retry", {}) or {}
+            )
+            self._spread_forced_close_reason = dict(
+                getattr(self, "_spread_forced_close_reason", {}) or {}
+            )
+            self._spread_forced_close_cancel_counts = dict(
+                getattr(self, "_spread_forced_close_cancel_counts", {}) or {}
+            )
+            self._spread_forced_close_retry_cycles = dict(
+                getattr(self, "_spread_forced_close_retry_cycles", {}) or {}
+            )
+            self._spread_last_close_submit_at = dict(
+                getattr(self, "_spread_last_close_submit_at", {}) or {}
+            )
+            self._spread_close_first_cancel_at = dict(
+                getattr(self, "_spread_close_first_cancel_at", {}) or {}
+            )
+        else:
+            self._spread_forced_close_retry = {}
+            self._spread_forced_close_reason = {}
+            self._spread_forced_close_cancel_counts = {}
+            self._spread_forced_close_retry_cycles = {}
+            self._spread_last_close_submit_at = {}
+            self._spread_close_first_cancel_at = {}
         self._spread_exit_mark_cache = {}
         self._spread_last_exit_reason = {}
         self._single_leg_last_exit_reason = {}

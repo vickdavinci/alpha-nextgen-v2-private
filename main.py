@@ -405,6 +405,7 @@ class AlphaNextGen(QCAlgorithm):
                 "options_engine_state",
                 "oco_manager_state",
                 "regime_engine_state",
+                "spread_close_ladder_state",
             ]
             for key in state_keys:
                 if self.ObjectStore.ContainsKey(key):
@@ -1609,6 +1610,56 @@ class AlphaNextGen(QCAlgorithm):
                 except Exception as e:
                     self.Log(f"STATE_WARN: Failed to load options state - {e}")
 
+            # V12.24: Restore VASS close-ladder runtime state used by timeout/cancel retries.
+            try:
+                if self.ObjectStore.ContainsKey("spread_close_ladder_state"):
+                    raw = self.ObjectStore.Read("spread_close_ladder_state")
+                    ladder_state = json.loads(raw)
+
+                    def _parse_time_map(payload_key: str) -> Dict[str, datetime]:
+                        restored: Dict[str, datetime] = {}
+                        for k, v in (ladder_state.get(payload_key, {}) or {}).items():
+                            try:
+                                restored[str(k)] = datetime.strptime(
+                                    str(v)[:19], "%Y-%m-%d %H:%M:%S"
+                                )
+                            except Exception:
+                                continue
+                        return restored
+
+                    def _parse_int_map(payload_key: str) -> Dict[str, int]:
+                        restored: Dict[str, int] = {}
+                        for k, v in (ladder_state.get(payload_key, {}) or {}).items():
+                            try:
+                                restored[str(k)] = int(v)
+                            except Exception:
+                                continue
+                        return restored
+
+                    self._spread_forced_close_retry = _parse_time_map("spread_forced_close_retry")
+                    self._spread_last_close_submit_at = _parse_time_map(
+                        "spread_last_close_submit_at"
+                    )
+                    self._spread_close_first_cancel_at = _parse_time_map(
+                        "spread_close_first_cancel_at"
+                    )
+                    self._spread_forced_close_reason = {
+                        str(k): str(v)
+                        for k, v in (
+                            ladder_state.get("spread_forced_close_reason", {}) or {}
+                        ).items()
+                        if str(k).strip()
+                    }
+                    self._spread_forced_close_cancel_counts = _parse_int_map(
+                        "spread_forced_close_cancel_counts"
+                    )
+                    self._spread_forced_close_retry_cycles = _parse_int_map(
+                        "spread_forced_close_retry_cycles"
+                    )
+                    self.Log("STATE_RESTORE: Spread close ladder state loaded")
+            except Exception as e:
+                self.Log(f"STATE_WARN: Failed to load spread close ladder state - {e}")
+
             # V3.0: Load OCO manager state
             if hasattr(self, "oco_manager"):
                 try:
@@ -1668,6 +1719,35 @@ class AlphaNextGen(QCAlgorithm):
             if hasattr(self, "regime_engine"):
                 regime_state = self.regime_engine.get_state_for_persistence()
                 self.ObjectStore.Save("regime_engine_state", json.dumps(regime_state))
+
+            # V12.24: Persist VASS close-ladder runtime state for restart-safe retries.
+            close_ladder_state = {
+                "spread_forced_close_retry": {
+                    str(k): v.strftime("%Y-%m-%d %H:%M:%S")
+                    for k, v in (getattr(self, "_spread_forced_close_retry", {}) or {}).items()
+                    if v is not None
+                },
+                "spread_last_close_submit_at": {
+                    str(k): v.strftime("%Y-%m-%d %H:%M:%S")
+                    for k, v in (getattr(self, "_spread_last_close_submit_at", {}) or {}).items()
+                    if v is not None
+                },
+                "spread_close_first_cancel_at": {
+                    str(k): v.strftime("%Y-%m-%d %H:%M:%S")
+                    for k, v in (getattr(self, "_spread_close_first_cancel_at", {}) or {}).items()
+                    if v is not None
+                },
+                "spread_forced_close_reason": dict(
+                    getattr(self, "_spread_forced_close_reason", {}) or {}
+                ),
+                "spread_forced_close_cancel_counts": dict(
+                    getattr(self, "_spread_forced_close_cancel_counts", {}) or {}
+                ),
+                "spread_forced_close_retry_cycles": dict(
+                    getattr(self, "_spread_forced_close_retry_cycles", {}) or {}
+                ),
+            }
+            self.ObjectStore.Save("spread_close_ladder_state", json.dumps(close_ladder_state))
 
             # V6.12: Save monthly P&L tracker state
             if hasattr(self, "pnl_tracker"):
