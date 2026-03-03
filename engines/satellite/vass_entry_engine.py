@@ -32,6 +32,41 @@ class VASSEntryEngine:
         if self._log_func:
             self._log_func(message, trades_only)
 
+    def _next_vass_signal_id(self, algorithm: Any, prefix: str = "VASS") -> str:
+        """Allocate deterministic VASS signal id for lifecycle telemetry."""
+        algorithm._diag_vass_signal_seq = int(getattr(algorithm, "_diag_vass_signal_seq", 0)) + 1
+        return (
+            f"{prefix}-{algorithm.Time.strftime('%Y%m%d-%H%M')}-{algorithm._diag_vass_signal_seq}"
+        )
+
+    def _record_vass_drop_event(
+        self,
+        *,
+        algorithm: Any,
+        reason_code: str,
+        gate_name: str,
+        reason: str,
+        strategy: str = "VASS_DIRECTION",
+        direction: str = "",
+        signal_prefix: str = "VASS-RESOLVE",
+    ) -> None:
+        """Emit VASS dropped-signal telemetry for pre-candidate resolver blocks."""
+        if hasattr(algorithm, "_record_vass_reject_reason"):
+            algorithm._record_vass_reject_reason(reason_code)
+        if hasattr(algorithm, "_record_signal_lifecycle_event"):
+            signal_id = self._next_vass_signal_id(algorithm, prefix=signal_prefix)
+            algorithm._record_signal_lifecycle_event(
+                engine="VASS",
+                event="DROPPED",
+                signal_id=signal_id,
+                direction=direction,
+                strategy=str(strategy or ""),
+                code=str(reason_code or ""),
+                gate_name=str(gate_name or ""),
+                reason=str(reason or ""),
+                contract_symbol="",
+            )
+
     def should_log_rejection(self, *, now: datetime, reason_key: str) -> bool:
         """Per-reason throttle for VASS skip/rejection logs."""
         interval_min = int(getattr(config, "VASS_LOG_REJECTION_INTERVAL_MINUTES", 15))
@@ -810,6 +845,7 @@ class VASSEntryEngine:
             transition_ctx=ctx,
         )
         if block_gate:
+            reason_code = str(block_gate or "R_VASS_TRANSITION_BLOCK")
             host._record_regime_decision(
                 engine="VASS",
                 decision="BLOCK",
@@ -823,6 +859,14 @@ class VASSEntryEngine:
                 f"Eff={float(ctx.get('effective_score', regime_score)):.1f} | "
                 f"Delta={float(ctx.get('delta', 0.0)):+.1f} | "
                 f"MOM={float(ctx.get('momentum_roc', 0.0)):+.2%}"
+            )
+            self._record_vass_drop_event(
+                algorithm=algorithm,
+                reason_code=reason_code,
+                gate_name=str(block_gate or "VASS_TRANSITION_BLOCK"),
+                reason=str(block_reason or "Transition policy blocked VASS direction"),
+                strategy="VASS_DIRECTION",
+                direction="",
             )
             return None
 
@@ -917,6 +961,17 @@ class VASSEntryEngine:
                 f"{bull_profile_log_prefix}: Bearish VASS blocked in strong bull profile | "
                 f"Regime={float(regime_for_vass):.1f} | Overlay={overlay_state}"
             )
+            self._record_vass_drop_event(
+                algorithm=algorithm,
+                reason_code="R_VASS_BULL_PROFILE_BEARISH_BLOCK",
+                gate_name="VASS_BULL_PROFILE_BEARISH_BLOCK",
+                reason=(
+                    "Bearish VASS blocked in strong bull profile | "
+                    f"Regime={float(regime_for_vass):.1f} | Overlay={overlay_state}"
+                ),
+                strategy="VASS_BEARISH",
+                direction="PUT",
+            )
             return None
 
         if (
@@ -940,6 +995,17 @@ class VASSEntryEngine:
                 f"{float(getattr(config, 'VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX', 20.0)):.1f} | "
                 f"Resolve={resolve_reason}"
             )
+            self._record_vass_drop_event(
+                algorithm=algorithm,
+                reason_code="R_VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX",
+                gate_name="VASS_NEUTRAL_BULL_OVERRIDE_MAX_VIX",
+                reason=(
+                    "Neutral macro + elevated VIX blocked bullish override | "
+                    f"VIX={current_vix:.1f}"
+                ),
+                strategy="VASS_BULLISH",
+                direction="CALL",
+            )
             return None
 
         resolved_option_dir = (
@@ -951,6 +1017,7 @@ class VASSEntryEngine:
             transition_ctx=ctx,
         )
         if block_gate:
+            reason_code = str(block_gate or "R_VASS_TRANSITION_BLOCK")
             host._record_regime_decision(
                 engine="VASS",
                 decision="BLOCK",
@@ -963,6 +1030,14 @@ class VASSEntryEngine:
                 f"Eff={float(ctx.get('effective_score', regime_for_vass)):.1f} | "
                 f"Delta={float(ctx.get('delta', 0.0)):+.1f} | "
                 f"MOM={float(ctx.get('momentum_roc', 0.0)):+.2%}"
+            )
+            self._record_vass_drop_event(
+                algorithm=algorithm,
+                reason_code=reason_code,
+                gate_name=str(block_gate or "VASS_TRANSITION_BLOCK"),
+                reason=str(block_reason or "Transition policy blocked VASS direction"),
+                strategy=f"VASS_{resolved_direction}",
+                direction="CALL" if resolved_direction == "BULLISH" else "PUT",
             )
             return None
 
