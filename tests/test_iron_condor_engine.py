@@ -123,6 +123,7 @@ def _make_condor(
         entry_vix=vix,
         entry_adx=15.0,
         entry_dte=entry_dte,
+        entry_underlying_price=qqq_price,
         condor_id="test123",
         entry_cw_tier="MID_VIX",
         stop_dw=2.5 * net_credit / wing_width,
@@ -593,15 +594,17 @@ class TestExitTriggers:
         condor = _make_condor(qqq_price=480)
         # short_put_strike = 470; QQQ at 460 means put is ITM
         # ITM depth = (470 - 460) / 460 = 0.0217 > IC_SHORT_ITM_EXIT_PCT(0.02)
-        result = engine.check_exit_signals(
-            condor=condor,
-            combined_pnl=-100,
-            current_dte=14,
-            vix_current=18,
-            regime_score=52,
-            qqq_price=460,  # Below short put strike
-            current_time=datetime(2025, 3, 12, 11, 0),  # Past hold guard
-        )
+        # Disable invalidation so wing breach fires (460 is >3% from 480)
+        with _patch_config(IC_UNDERLYING_INVALIDATION_ENABLED=False):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-100,
+                current_dte=14,
+                vix_current=18,
+                regime_score=52,
+                qqq_price=460,  # Below short put strike
+                current_time=datetime(2025, 3, 12, 11, 0),  # Past hold guard
+            )
         assert result is not None
         reason, _ = result
         assert reason == EXIT_IC_WING_BREACH_PUT
@@ -611,15 +614,17 @@ class TestExitTriggers:
         condor = _make_condor(qqq_price=480)
         # short_call_strike = 490; QQQ at 502 means call is ITM
         # ITM depth = (502 - 490) / 502 = 0.0239 > IC_SHORT_ITM_EXIT_PCT(0.02)
-        result = engine.check_exit_signals(
-            condor=condor,
-            combined_pnl=-100,
-            current_dte=14,
-            vix_current=18,
-            regime_score=52,
-            qqq_price=502,  # Above short call strike
-            current_time=datetime(2025, 3, 12, 11, 0),  # Past hold guard
-        )
+        # Disable invalidation so wing breach fires (502 is >3% from 480)
+        with _patch_config(IC_UNDERLYING_INVALIDATION_ENABLED=False):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-100,
+                current_dte=14,
+                vix_current=18,
+                regime_score=52,
+                qqq_price=502,  # Above short call strike
+                current_time=datetime(2025, 3, 12, 11, 0),  # Past hold guard
+            )
         assert result is not None
         reason, _ = result
         assert reason == EXIT_IC_WING_BREACH_CALL
@@ -650,6 +655,121 @@ class TestExitTriggers:
             regime_score=52,
             qqq_price=480,
             current_time=datetime(2025, 3, 5, 11, 0),
+        )
+        assert result is None
+
+
+# ═══════════════════════════════════════════════════════════════════
+# UNDERLYING INVALIDATION TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestUnderlyingInvalidation:
+    """Test thesis-first underlying invalidation exit (V12.25)."""
+
+    def test_upside_invalidation_fires(self):
+        """Underlying rallies 3%+ from entry → thesis broken, exit fires."""
+        engine = _make_engine()
+        condor = _make_condor(qqq_price=480.0)
+        # Price rallied 3.5% from entry
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=-50,
+            current_dte=25,
+            vix_current=18,
+            regime_score=58,  # Still in neutral band — regime break hasn't fired
+            qqq_price=496.8,  # +3.5%
+            current_time=datetime(2025, 3, 12, 11, 0),
+        )
+        assert result is not None
+        reason, signals = result
+        assert reason == "IC_UNDERLYING_INVALIDATION"
+
+    def test_downside_invalidation_fires(self):
+        """Underlying drops 3%+ from entry → thesis broken, exit fires."""
+        engine = _make_engine()
+        condor = _make_condor(qqq_price=480.0)
+        # Price dropped 3.2% from entry
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=-80,
+            current_dte=25,
+            vix_current=18,
+            regime_score=44,  # Still above regime break threshold (40)
+            qqq_price=464.6,  # -3.2%
+            current_time=datetime(2025, 3, 12, 11, 0),
+        )
+        assert result is not None
+        reason, signals = result
+        assert reason == "IC_UNDERLYING_INVALIDATION"
+
+    def test_small_move_no_invalidation(self):
+        """Underlying move < 3% → no invalidation, position stays."""
+        engine = _make_engine()
+        condor = _make_condor(qqq_price=480.0)
+        # Price only moved 2% — below threshold
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=30,
+            current_dte=25,
+            vix_current=18,
+            regime_score=52,
+            qqq_price=489.6,  # +2.0%
+            current_time=datetime(2025, 3, 12, 11, 0),
+        )
+        assert result is None
+
+    def test_invalidation_disabled_config(self):
+        """When disabled, move beyond threshold doesn't trigger invalidation."""
+        engine = _make_engine()
+        with _patch_config(IC_UNDERLYING_INVALIDATION_ENABLED=False):
+            condor = _make_condor(qqq_price=480.0)
+            # 495 = +3.1% from entry (above 3% threshold) but only 1% ITM on
+            # short call at 490 (below 2% wing breach) → no other exit fires.
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-50,
+                current_dte=25,
+                vix_current=18,
+                regime_score=52,
+                qqq_price=495.0,
+                current_time=datetime(2025, 3, 12, 11, 0),
+            )
+            assert result is None
+
+    def test_invalidation_fires_through_hold_guard(self):
+        """Underlying invalidation is a pre-guard — fires during hold window."""
+        engine = _make_engine()
+        condor = _make_condor(qqq_price=480.0)
+        # Still within hold guard window (entry was same day)
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=-30,
+            current_dte=28,
+            vix_current=18,
+            regime_score=52,
+            qqq_price=496.0,  # +3.3%
+            current_time=datetime(2025, 3, 1, 14, 0),  # Same day as entry
+        )
+        assert result is not None
+        reason, signals = result
+        assert reason == "IC_UNDERLYING_INVALIDATION"
+
+    def test_legacy_condor_no_entry_price_skips(self):
+        """Condors from before V12.25 have entry_underlying_price=0 — skip gracefully."""
+        engine = _make_engine()
+        condor = _make_condor(qqq_price=480.0)
+        condor.entry_underlying_price = 0.0  # Simulate legacy state
+        # 495 = +3.1% from 480 entry, would fire invalidation if entry_price was set.
+        # With entry_price=0, invalidation skips; no other exit fires at this price.
+        result = engine.check_exit_signals(
+            condor=condor,
+            combined_pnl=30,
+            current_dte=25,
+            vix_current=18,
+            regime_score=52,
+            qqq_price=495.0,
+            current_time=datetime(2025, 3, 12, 11, 0),
         )
         assert result is None
 
@@ -1130,6 +1250,7 @@ class TestCWRelaxation:
                 ],
                 wing_width=5,
                 tolerance=1,
+                qqq_price=480.0,
                 vix_current=18,
                 regime_score=52,
                 adx_value=15,
@@ -1165,6 +1286,7 @@ class TestCWRelaxation:
                 ],
                 wing_width=5,
                 tolerance=1,
+                qqq_price=480.0,
                 vix_current=18,
                 regime_score=52,
                 adx_value=15,
@@ -1444,15 +1566,17 @@ class TestHoldGuard:
         engine = _make_engine()
         condor = _make_condor(qqq_price=480)
         # short_put_strike = 470; QQQ at 460 → 2.17% ITM > 2% threshold
-        result = engine.check_exit_signals(
-            condor=condor,
-            combined_pnl=-100,
-            current_dte=20,
-            vix_current=18,
-            regime_score=52,
-            qqq_price=460,
-            current_time=datetime(2025, 3, 4, 11, 0),  # Within hold
-        )
+        # Disable invalidation so we isolate the hold guard vs wing breach interaction
+        with _patch_config(IC_UNDERLYING_INVALIDATION_ENABLED=False):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-100,
+                current_dte=20,
+                vix_current=18,
+                regime_score=52,
+                qqq_price=460,
+                current_time=datetime(2025, 3, 4, 11, 0),  # Within hold
+            )
         assert result is None
 
     def test_regime_break_fires_through_hold_guard(self):
@@ -1861,6 +1985,7 @@ class TestStrikeReuseGuard:
     def _validate_kwargs(self, engine, **overrides):
         """Default kwargs for _validate_and_score_condor."""
         defaults = dict(
+            qqq_price=480.0,
             vix_current=18.0,
             regime_score=52.0,
             adx_value=15.0,

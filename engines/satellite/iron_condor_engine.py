@@ -78,6 +78,7 @@ EXIT_IC_ASSIGNMENT_RISK = "IC_ASSIGNMENT_RISK"
 EXIT_IC_HARD_STOP_HOLD = "IC_HARD_STOP_DURING_HOLD"
 EXIT_IC_EOD_HOLD_GATE = "IC_EOD_HOLD_RISK_GATE"
 EXIT_IC_MFE_LOCK = "IC_MFE_LOCK"
+EXIT_IC_UNDERLYING_INVALIDATION = "IC_UNDERLYING_INVALIDATION"
 
 
 class IronCondorEngine:
@@ -462,6 +463,7 @@ class IronCondorEngine:
                 eligible_calls=eligible_calls,
                 wing_width=wing_width,
                 tolerance=tolerance,
+                qqq_price=qqq_price,
                 vix_current=vix_current,
                 regime_score=regime_score,
                 adx_value=adx_value,
@@ -492,6 +494,7 @@ class IronCondorEngine:
         eligible_calls: List[OptionContract],
         wing_width: int,
         tolerance: int,
+        qqq_price: float,
         vix_current: float,
         regime_score: float,
         adx_value: float,
@@ -553,6 +556,7 @@ class IronCondorEngine:
                             long_put=long_put,
                             short_call=short_call,
                             long_call=long_call,
+                            qqq_price=qqq_price,
                             vix_current=vix_current,
                             regime_score=regime_score,
                             adx_value=adx_value,
@@ -703,6 +707,7 @@ class IronCondorEngine:
         long_put: OptionContract,
         short_call: OptionContract,
         long_call: OptionContract,
+        qqq_price: float,
         vix_current: float,
         regime_score: float,
         adx_value: float,
@@ -878,6 +883,7 @@ class IronCondorEngine:
             entry_vix=vix_current,
             entry_adx=adx_value,
             entry_dte=min(short_put.days_to_expiry, short_call.days_to_expiry),
+            entry_underlying_price=qqq_price,
             entry_cw_tier=cw_tier,
             stop_dw=stop_dw,
             implied_wr_be=implied_wr,
@@ -1042,6 +1048,24 @@ class IronCondorEngine:
             regime_max + regime_buffer
         ):
             return self._build_exit(condor, EXIT_IC_REGIME_BREAK, current_time)
+
+        # ── PRE-GUARD: P1B — Underlying invalidation (always fires) ──
+        # If the underlying moved too far from entry, the range thesis is dead.
+        # Catches large moves that haven't yet triggered a regime break (regime lag).
+        if bool(getattr(config, "IC_UNDERLYING_INVALIDATION_ENABLED", True)):
+            entry_px = float(condor.entry_underlying_price or 0.0)
+            if entry_px > 0 and qqq_price > 0:
+                move_pct = abs(qqq_price - entry_px) / entry_px
+                threshold = float(getattr(config, "IC_UNDERLYING_INVALIDATION_PCT", 0.03))
+                if move_pct >= threshold:
+                    self._log(
+                        f"IC_UNDERLYING_INVALIDATION: "
+                        f"entry={entry_px:.2f} now={qqq_price:.2f} "
+                        f"move={move_pct:.1%} >= {threshold:.1%} | "
+                        f"id={condor.condor_id}",
+                        trades_only=True,
+                    )
+                    return self._build_exit(condor, EXIT_IC_UNDERLYING_INVALIDATION, current_time)
 
         # ── PRE-GUARD: P2 — Assignment risk (always fires) ──
         div_guard_dte = int(getattr(config, "IC_DIVIDEND_GUARD_DTE", 3))

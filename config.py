@@ -2368,6 +2368,12 @@ IC_LOSS_BREAKER_PAUSE_DAYS = 1  # Pause duration in calendar days
 IC_SHORT_ITM_EXIT_PCT = 0.02  # Exit wing when short strike is 2% ITM
 IC_DIVIDEND_GUARD_DTE = 3  # Close before ex-div if DTE <= this
 
+# ── Underlying invalidation (thesis-first exit) ──
+# IC profits from underlying staying in range.  If the underlying moves too far
+# from entry price, the range thesis is dead — exit regardless of regime score.
+IC_UNDERLYING_INVALIDATION_ENABLED = True
+IC_UNDERLYING_INVALIDATION_PCT = 0.03  # 3% move from entry → thesis broken (pre-guard)
+
 # ── IC Strike Reuse Guard ──
 # Block new IC entry when any candidate leg strike matches an active/pending
 # IC position's leg at the same expiry (prevents broker-side netting → orphan legs).

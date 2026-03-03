@@ -45,6 +45,7 @@ class IronCondorPosition:
     entry_vix: float
     entry_adx: float
     entry_dte: int = 30  # DTE at entry, drives hold guard duration
+    entry_underlying_price: float = 0.0  # V12.25: underlying anchor for thesis invalidation
     condor_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
 
     # ── Lifecycle ──
@@ -100,6 +101,7 @@ class IronCondorPosition:
             "entry_vix": self.entry_vix,
             "entry_adx": self.entry_adx,
             "entry_dte": self.entry_dte,
+            "entry_underlying_price": self.entry_underlying_price,
             "condor_id": self.condor_id,
             "is_closing": self.is_closing,
             "highest_pnl_pct": self.highest_pnl_pct,
@@ -130,6 +132,7 @@ class IronCondorPosition:
             entry_vix=data["entry_vix"],
             entry_adx=data.get("entry_adx", 0.0),
             entry_dte=int(data.get("entry_dte", 30)),
+            entry_underlying_price=float(data.get("entry_underlying_price", 0.0) or 0.0),
             condor_id=data.get("condor_id", uuid.uuid4().hex[:12]),
             is_closing=data.get("is_closing", False),
             highest_pnl_pct=data.get("highest_pnl_pct", 0.0),
