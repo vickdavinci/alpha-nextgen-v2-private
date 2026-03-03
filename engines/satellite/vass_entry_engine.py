@@ -1617,7 +1617,18 @@ class VASSEntryEngine:
             algorithm=algorithm,
             host=host,
         ):
-            algorithm._record_vass_reject_reason("R_ROUTE_SANITY_HIGH_IV_BULL_DEBIT")
+            self._record_vass_drop_event(
+                algorithm=algorithm,
+                reason_code="R_ROUTE_SANITY_HIGH_IV_BULL_DEBIT",
+                gate_name="VASS_ROUTE_SANITY_HIGH_IV_BULL_DEBIT",
+                reason=(
+                    "BULL_CALL_DEBIT blocked in HIGH IV route sanity gate | "
+                    f"IV_Env={iv_environment}"
+                ),
+                strategy=strategy.value if strategy else "VASS_ENTRY",
+                direction=direction.value if direction else "",
+                signal_prefix="VASS-SCAN",
+            )
             return
         # V12.23.3: Block BEAR_CALL_CREDIT when regime > REGIME_BREAK_BEAR_CEILING.
         # REGIME_BREAK_BEAR exit would fire within hours, producing guaranteed losses.
@@ -1627,6 +1638,18 @@ class VASSEntryEngine:
             algorithm=algorithm,
             host=host,
         ):
+            self._record_vass_drop_event(
+                algorithm=algorithm,
+                reason_code="R_VASS_BEAR_CREDIT_REGIME_BLOCK",
+                gate_name="VASS_BEAR_CREDIT_REGIME_BLOCK",
+                reason=(
+                    f"BEAR_CALL_CREDIT blocked because regime {regime_score:.1f} exceeds "
+                    f"ceiling {float(getattr(config, 'VASS_REGIME_BREAK_BEAR_CEILING', 50.0)):.1f}"
+                ),
+                strategy=strategy.value if strategy else "VASS_ENTRY",
+                direction=direction.value if direction else "",
+                signal_prefix="VASS-SCAN",
+            )
             return
         algorithm._diag_vass_signal_seq = int(getattr(algorithm, "_diag_vass_signal_seq", 0)) + 1
         vass_signal_id = (
@@ -1693,6 +1716,15 @@ class VASSEntryEngine:
                     f"DTE_Ranges={dte_ranges} | ReasonCode=SWING_SLOT_BLOCK | "
                     f"Reason=Swing entry not allowed | ValidationFail={swing_reason_vass}"
                 )
+            self._record_vass_drop_event(
+                algorithm=algorithm,
+                reason_code=reason_code or "R_SWING_SLOT_BLOCK",
+                gate_name="SWING_SLOT_BLOCK",
+                reason=str(swing_reason_vass or "Swing entry not allowed"),
+                strategy=strategy.value if strategy else "VASS_ENTRY",
+                direction=direction.value if direction else "",
+                signal_prefix="VASS-SCAN",
+            )
             return
 
         spy_open = float(getattr(host, "_spy_at_open", 0.0) or 0.0)
@@ -1731,6 +1763,15 @@ class VASSEntryEngine:
                     f"Strategy={'CREDIT' if is_credit else 'DEBIT'} | "
                     f"ReasonCode=SWING_FILTER | ValidationFail={swing_filter_reason}"
                 )
+            self._record_vass_drop_event(
+                algorithm=algorithm,
+                reason_code="E_SWING_FILTER",
+                gate_name="SWING_FILTER",
+                reason=str(swing_filter_reason or "Swing filter blocked VASS entry"),
+                strategy=strategy.value if strategy else "VASS_ENTRY",
+                direction=direction.value if direction else "",
+                signal_prefix="VASS-SCAN",
+            )
             return
 
         required_right = host.strategy_option_right(strategy)
