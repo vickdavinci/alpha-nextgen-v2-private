@@ -1840,7 +1840,7 @@ VASS_BULL_SHORT_CALL_MIN_ATR_MULT = 0.60
 # V12.25: Underlying-based thesis invalidation for BULL_CALL_DEBIT exits.
 # Primary stop uses QQQ invalidation (cleaner thesis signal than option mark noise).
 VASS_BULL_DEBIT_QQQ_INVALIDATION_ENABLED = True
-VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_PCT = 0.035
+VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_PCT = 0.040
 VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT = 0.040
 VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_TIME = "15:45"
 VASS_RECOVERY_RELAX_ENABLED = False  # V12.11: disabled — fires on ALL bullish entries (not just recovery), silently overrides D/W caps by +9%.
