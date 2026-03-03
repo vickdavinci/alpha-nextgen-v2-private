@@ -1171,6 +1171,15 @@ class VASSEntryEngine:
                     f"VASS_BLOCKED: CALL blocked until {until_h:02d}:{until_m:02d} | "
                     f"{algorithm._premarket_vix_ladder_reason}"
                 )
+            self._record_vass_drop_event(
+                algorithm=algorithm,
+                reason_code="R_PREMARKET_LADDER_CALL_BLOCK",
+                gate_name="PREMARKET_LADDER_CALL_BLOCK",
+                reason=str(getattr(algorithm, "_premarket_vix_ladder_reason", "") or ""),
+                strategy="VASS_BULLISH",
+                direction="CALL",
+                signal_prefix="VASS-PRE",
+            )
             return
 
         if vass_has_conviction:
@@ -1210,12 +1219,22 @@ class VASSEntryEngine:
         )
         if not swing_filters_ok:
             algorithm._diag_vass_block_count += 1
+            algorithm._record_vass_reject_reason("E_SWING_FILTER")
             if algorithm.Time.minute % 15 == 0:
                 algorithm.Log(
                     f"VASS_SKIPPED: Direction={direction.value} | "
                     f"VIX={current_vix:.1f} | Regime={regime_score:.0f} | "
                     f"ReasonCode=SWING_FILTER | ValidationFail={swing_filter_reason}"
                 )
+            self._record_vass_drop_event(
+                algorithm=algorithm,
+                reason_code="E_SWING_FILTER",
+                gate_name="SWING_FILTER",
+                reason=str(swing_filter_reason or "Swing filter blocked VASS entry"),
+                strategy="VASS_ENTRY_CYCLE",
+                direction=direction.value if direction else "",
+                signal_prefix="VASS-INTRADAY",
+            )
             return
 
         iv_rank = algorithm._calculate_iv_rank(chain)
@@ -1231,7 +1250,18 @@ class VASSEntryEngine:
             algorithm=algorithm,
             host=host,
         ):
-            algorithm._record_vass_reject_reason("R_ROUTE_SANITY_HIGH_IV_BULL_DEBIT")
+            self._record_vass_drop_event(
+                algorithm=algorithm,
+                reason_code="R_ROUTE_SANITY_HIGH_IV_BULL_DEBIT",
+                gate_name="VASS_ROUTE_SANITY_HIGH_IV_BULL_DEBIT",
+                reason=(
+                    "BULL_CALL_DEBIT blocked in HIGH IV route sanity gate | "
+                    f"IV_Env={iv_environment}"
+                ),
+                strategy=strategy.value if strategy else "VASS_ENTRY",
+                direction=direction.value if direction else "",
+                signal_prefix="VASS-INTRADAY",
+            )
             return
         # V12.23.3: Block BEAR_CALL_CREDIT when regime > REGIME_BREAK_BEAR_CEILING.
         if self._should_block_bear_credit_entry(
@@ -1240,6 +1270,18 @@ class VASSEntryEngine:
             algorithm=algorithm,
             host=host,
         ):
+            self._record_vass_drop_event(
+                algorithm=algorithm,
+                reason_code="R_VASS_BEAR_CREDIT_REGIME_BLOCK",
+                gate_name="VASS_BEAR_CREDIT_REGIME_BLOCK",
+                reason=(
+                    f"BEAR_CALL_CREDIT blocked because regime {regime_score:.1f} exceeds "
+                    f"ceiling {float(getattr(config, 'VASS_REGIME_BREAK_BEAR_CEILING', 50.0)):.1f}"
+                ),
+                strategy=strategy.value if strategy else "VASS_ENTRY",
+                direction=direction.value if direction else "",
+                signal_prefix="VASS-INTRADAY",
+            )
             return
         algorithm._diag_vass_signal_seq = int(getattr(algorithm, "_diag_vass_signal_seq", 0)) + 1
         vass_signal_id = (
