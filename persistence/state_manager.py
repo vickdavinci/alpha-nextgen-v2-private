@@ -299,14 +299,29 @@ class StateManager:
     def save_startup_gate_state(self, startup_gate: Any) -> bool:
         """Save startup gate state."""
         data = startup_gate.get_state_for_persistence()
-        success = self._save_state(StateKeys.STARTUP_GATE, data)
-        if success:
-            raw_phase = data.get("phase")
-            enabled = bool(getattr(config, "STARTUP_GATE_ENABLED", True))
+        raw_phase = data.get("phase")
+        enabled = bool(getattr(config, "STARTUP_GATE_ENABLED", True))
+        isolation_bypass = bool(
+            getattr(config, "ISOLATION_TEST_MODE", False)
+            and not getattr(config, "ISOLATION_STARTUP_GATE_ENABLED", True)
+        )
+        if isolation_bypass:
+            effective_phase = "FULLY_ARMED(ISOLATION_BYPASS)"
+        else:
             effective_phase = raw_phase if enabled else "FULLY_ARMED(DISABLED)"
+
+        # Persist effective state metadata so ObjectStore snapshots are not misleading
+        # when startup gate is intentionally bypassed in isolation runs.
+        save_data = dict(data)
+        save_data["effective_phase"] = effective_phase
+        save_data["isolation_bypass"] = isolation_bypass
+
+        success = self._save_state(StateKeys.STARTUP_GATE, save_data)
+        if success:
             self.log(
                 f"STATE: SAVED | StartupGate | "
-                f"Phase={raw_phase} | Effective={effective_phase} | Enabled={enabled}"
+                f"Phase={raw_phase} | Effective={effective_phase} | Enabled={enabled} | "
+                f"IsolationBypass={isolation_bypass}"
             )
         return success
 
@@ -315,6 +330,20 @@ class StateManager:
         data = self._load_state(StateKeys.STARTUP_GATE)
         if data:
             startup_gate.restore_state(data)
+            raw_phase = data.get("phase")
+            enabled = bool(getattr(config, "STARTUP_GATE_ENABLED", True))
+            isolation_bypass = bool(data.get("isolation_bypass", False))
+            effective_phase = data.get("effective_phase")
+            if not effective_phase:
+                if isolation_bypass:
+                    effective_phase = "FULLY_ARMED(ISOLATION_BYPASS)"
+                else:
+                    effective_phase = raw_phase if enabled else "FULLY_ARMED(DISABLED)"
+            self.log(
+                f"STATE: LOADED | StartupGate | "
+                f"Phase={raw_phase} | Effective={effective_phase} | Enabled={enabled} | "
+                f"IsolationBypass={isolation_bypass}"
+            )
             return True
         return False
 
