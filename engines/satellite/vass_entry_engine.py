@@ -853,6 +853,12 @@ class VASSEntryEngine:
             allow_macro_veto=allow_macro_veto,
         )
         if not should_trade:
+            reason_text = str(resolve_reason or "")
+            reason_code = (
+                "R_VASS_NO_CONVICTION"
+                if "VASS_NO_CONVICTION" in reason_text
+                else "R_VASS_RESOLVER_NO_TRADE"
+            )
             host._record_regime_decision(
                 engine="VASS",
                 decision="BLOCK",
@@ -861,6 +867,27 @@ class VASSEntryEngine:
                 threshold_snapshot={"resolve_reason": resolve_reason},
                 context=ctx,
             )
+            if hasattr(algorithm, "_record_vass_reject_reason"):
+                algorithm._record_vass_reject_reason(reason_code)
+            if hasattr(algorithm, "_record_signal_lifecycle_event"):
+                algorithm._diag_vass_signal_seq = (
+                    int(getattr(algorithm, "_diag_vass_signal_seq", 0)) + 1
+                )
+                vass_signal_id = (
+                    f"VASS-RESOLVE-{algorithm.Time.strftime('%Y%m%d-%H%M')}-"
+                    f"{algorithm._diag_vass_signal_seq}"
+                )
+                algorithm._record_signal_lifecycle_event(
+                    engine="VASS",
+                    event="DROPPED",
+                    signal_id=vass_signal_id,
+                    direction="",
+                    strategy="VASS_DIRECTION",
+                    code=reason_code,
+                    gate_name="VASS_RESOLVER_NO_TRADE",
+                    reason=reason_text,
+                    contract_symbol="",
+                )
             if "E_OVERLAY_STRESS_BULL_BLOCK" in str(resolve_reason):
                 if hasattr(algorithm, "_diag_overlay_block_count"):
                     algorithm._diag_overlay_block_count = (
