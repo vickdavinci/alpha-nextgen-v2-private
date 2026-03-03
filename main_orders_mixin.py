@@ -307,6 +307,36 @@ class MainOrdersMixin:
             f"Tag={self._compact_tag_for_log(clean_tag)} | Trace={trace_id}"
         )
 
+    def _record_spread_key_resolve(
+        self,
+        order_id: int,
+        symbol: str,
+        spread_key: str,
+        source: str,
+    ) -> None:
+        """Log one-time spread-key resolution source for blank-tag close attribution RCA."""
+        try:
+            oid = int(order_id or 0)
+        except Exception:
+            oid = 0
+        clean_key = str(spread_key or "").strip()
+        if oid <= 0 or not clean_key:
+            return
+        seen = getattr(self, "_spread_key_resolve_logged_ids", None)
+        if not isinstance(seen, set):
+            seen = set()
+            self._spread_key_resolve_logged_ids = seen
+        if oid in seen:
+            return
+        seen.add(oid)
+        if len(seen) > 50000:
+            seen.clear()
+        sym = self._normalize_symbol_str(symbol)
+        self.Log(
+            f"SPREAD_KEY_RESOLVE: OrderId={oid} | Symbol={sym or symbol} | "
+            f"Source={source} | Key={clean_key}"
+        )
+
     def _record_order_lifecycle_event(
         self,
         status: str,
@@ -544,10 +574,13 @@ class MainOrdersMixin:
         hinted_key = ""
         if order_id > 0:
             hinted_key = str(order_key_cache.get(int(order_id), "") or "").strip()
+            if hinted_key:
+                self._record_spread_key_resolve(order_id, symbol, hinted_key, "order_id_cache")
         parsed_key = self._extract_spread_key_from_tag(order_tag)
         if parsed_key:
             hinted_key = parsed_key
             self._remember_spread_close_order_key(order_id, parsed_key)
+            self._record_spread_key_resolve(order_id, symbol, parsed_key, "tag")
 
         candidates = []
         for candidate in self.options_engine.get_spread_positions():
@@ -564,6 +597,7 @@ class MainOrdersMixin:
         if hinted_key:
             for candidate, spread_key, _, _ in candidates:
                 if spread_key == hinted_key:
+                    self._record_spread_key_resolve(order_id, symbol, spread_key, "matched")
                     return candidate, spread_key
 
         if len(candidates) == 1:
