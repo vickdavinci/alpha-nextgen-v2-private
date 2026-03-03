@@ -1125,6 +1125,19 @@ class VASSEntryEngine:
             and algorithm.Time < algorithm._options_spread_cooldown_until
         )
         if swing_cooldown_active and spread_cooldown_active:
+            if self.should_log_rejection(
+                now=algorithm.Time,
+                reason_key="R_VASS_SWING_AND_SPREAD_COOLDOWN",
+            ):
+                self._record_vass_drop_event(
+                    algorithm=algorithm,
+                    reason_code="R_VASS_SWING_AND_SPREAD_COOLDOWN",
+                    gate_name="VASS_COOLDOWN_GUARD",
+                    reason="Swing and spread cooldowns active",
+                    strategy="VASS_ENTRY_CYCLE",
+                    direction="",
+                    signal_prefix="VASS-INTRADAY",
+                )
             return
 
         if (
@@ -1133,6 +1146,19 @@ class VASSEntryEngine:
         ):
             minutes_since = (algorithm.Time - algorithm._last_swing_scan_time).total_seconds() / 60
             if minutes_since < 15:
+                if self.should_log_rejection(
+                    now=algorithm.Time,
+                    reason_key="R_VASS_SCAN_INTERVAL_GUARD",
+                ):
+                    self._record_vass_drop_event(
+                        algorithm=algorithm,
+                        reason_code="R_VASS_SCAN_INTERVAL_GUARD",
+                        gate_name="VASS_SCAN_INTERVAL_GUARD",
+                        reason=f"Scan throttled: elapsed {minutes_since:.1f}m < 15m",
+                        strategy="VASS_ENTRY_CYCLE",
+                        direction="",
+                        signal_prefix="VASS-INTRADAY",
+                    )
                 return
         algorithm._last_swing_scan_time = algorithm.Time
 
