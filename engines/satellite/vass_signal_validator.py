@@ -291,6 +291,15 @@ def check_spread_entry_signal_impl(
             )
             return fail("R_BULL_REGIME_FLOOR")
 
+    # V12.25: avoid local-top BULL_CALL_DEBIT entries in extreme RISK_ON.
+    bull_regime_max = float(getattr(config, "VASS_BULL_DEBIT_REGIME_MAX", 0.0))
+    if bull_regime_max > 0 and spread_type == "BULL_CALL" and regime_score > bull_regime_max:
+        self.log(
+            f"SPREAD: BULL_CALL blocked by regime ceiling | "
+            f"Regime={regime_score:.1f} > {bull_regime_max:.0f}"
+        )
+        return fail("R_BULL_REGIME_CEILING")
+
     # V9.4 F5: Block BULL spreads when QQQ is below 20MA (trend confirmation)
     if (
         getattr(config, "VASS_BULL_MA20_GATE_ENABLED", False)
