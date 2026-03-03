@@ -944,6 +944,49 @@ def check_spread_exit_signals_impl(
         pnl = current_spread_value - entry_debit
         pnl_pct = pnl / entry_debit if entry_debit > 0 else 0
 
+        # V12.25: Thesis-first invalidation for BULL_CALL_DEBIT based on underlying QQQ.
+        # Primary invalidation is underlying breach, not option mark noise.
+        if (
+            exit_reason is None
+            and is_bullish_debit_spread
+            and bool(getattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_ENABLED", False))
+        ):
+            entry_underlying = float(getattr(spread, "entry_underlying_price", 0.0) or 0.0)
+            current_underlying = float(underlying_price or 0.0)
+            if entry_underlying > 0 and current_underlying > 0:
+                intraday_pct = float(
+                    getattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT", 0.040)
+                )
+                close_pct = float(
+                    getattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_PCT", 0.035)
+                )
+                intraday_floor = entry_underlying * (1.0 - max(0.0, intraday_pct))
+                close_floor = entry_underlying * (1.0 - max(0.0, close_pct))
+                if current_underlying <= intraday_floor:
+                    exit_reason = (
+                        f"QQQ_INVALIDATION_INTRADAY: QQQ {current_underlying:.2f} <= "
+                        f"{intraday_floor:.2f} ({intraday_pct:.1%} below entry {entry_underlying:.2f})"
+                    )
+                elif self.algorithm is not None:
+                    close_time = str(
+                        getattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_TIME", "15:45")
+                    )
+                    close_hour = 15
+                    close_minute = 45
+                    try:
+                        close_hour, close_minute = [int(x) for x in close_time.split(":", 1)]
+                    except Exception:
+                        pass
+                    now = self.algorithm.Time
+                    in_close_window = (now.hour > close_hour) or (
+                        now.hour == close_hour and now.minute >= close_minute
+                    )
+                    if in_close_window and current_underlying <= close_floor:
+                        exit_reason = (
+                            f"QQQ_INVALIDATION_CLOSE: QQQ {current_underlying:.2f} <= "
+                            f"{close_floor:.2f} ({close_pct:.1%} below entry {entry_underlying:.2f})"
+                        )
+
         # V10.15: Track MFE relative to max profit for harvesting locks.
         mfe_ratio = pnl / spread.max_profit if spread.max_profit > 0 else 0.0
         if mfe_ratio > spread.highest_pnl_max_profit_pct:
