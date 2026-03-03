@@ -454,7 +454,15 @@ class MainSignalGenerationMixin:
             )
             if overnight_exit:
                 for signal in overnight_exit:
+                    self._normalize_spread_close_quantities(signal)
                     self.portfolio_router.receive_signal(signal)
+                    try:
+                        md = signal.metadata or {}
+                        spread_key = str(md.get("spread_key", "") or "").strip()
+                        if spread_key:
+                            self._spread_last_close_submit_at[spread_key] = self.Time
+                    except Exception:
+                        pass
 
         # 5. Generate Hedge signals (V3.0: regime-gated per thesis)
         # Thesis: Hedges should be 0% in Bull (70+) and Neutral (50-69)

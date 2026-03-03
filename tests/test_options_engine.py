@@ -4493,3 +4493,67 @@ class TestResolverMicroPrimary:
         assert resolved_direction is None
         # V12.9: VASS_USE_CONVICTION_ONLY_DIRECTION=True means no conviction → no trade
         assert "VASS_NO_CONVICTION" in reason or "Misaligned" in reason
+
+
+class TestOvernightGapProtectionExit:
+    """Overnight gap-protection exit metadata for VASS spread closes."""
+
+    def _make_credit_spread(self) -> SpreadPosition:
+        long_leg = OptionContract(
+            symbol="QQQ 240816C00457000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=457.0,
+            expiry="2024-08-16",
+            delta=0.20,
+            bid=1.20,
+            ask=1.30,
+            mid_price=1.25,
+            open_interest=5000,
+            days_to_expiry=9,
+        )
+        short_leg = OptionContract(
+            symbol="QQQ 240816C00453000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=453.0,
+            expiry="2024-08-16",
+            delta=0.35,
+            bid=2.40,
+            ask=2.60,
+            mid_price=2.50,
+            open_interest=5000,
+            days_to_expiry=9,
+        )
+        return SpreadPosition(
+            long_leg=long_leg,
+            short_leg=short_leg,
+            spread_type="BEAR_CALL_CREDIT",
+            net_debit=-1.40,
+            max_profit=1.40,
+            width=4.0,
+            entry_time="2024-08-07 12:15:00",
+            entry_score=4.0,
+            num_spreads=2,
+            regime_at_entry=62.0,
+        )
+
+    def test_overnight_gap_exit_includes_credit_metadata(self, engine):
+        """Credit spread OGP exits should include metadata needed for credit-market close path."""
+        engine._spread_position = self._make_credit_spread()
+        signals = engine.check_overnight_gap_protection_exit(
+            current_vix=22.7,
+            current_date="2024-08-07",
+        )
+
+        assert signals is not None
+        assert len(signals) == 1
+        signal = signals[0]
+        md = signal.metadata or {}
+        assert md.get("spread_close_short") is True
+        assert md.get("spread_type") == "BEAR_CALL_CREDIT"
+        assert md.get("is_credit_spread") is True
+        assert md.get("options_lane") == "VASS"
+        assert md.get("options_strategy") == "BEAR_CALL_CREDIT"
+        assert float(md.get("spread_entry_debit", -1.0)) == 0.0
+        assert float(md.get("spread_entry_credit", 0.0)) == 1.40

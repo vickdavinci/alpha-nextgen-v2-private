@@ -211,6 +211,12 @@ def check_overnight_gap_protection_exit_impl(
             spread.entry_time.split()[0] if " " in spread.entry_time else spread.entry_time[:10]
         )
         is_fresh_trade = entry_date == current_date
+        spread_type = str(getattr(spread, "spread_type", "") or "")
+        try:
+            entry_net = float(getattr(spread, "net_debit", 0.0) or 0.0)
+        except Exception:
+            entry_net = 0.0
+        is_credit_spread = bool(entry_net < 0 or "CREDIT" in spread_type.upper())
 
         reason = None
         if current_vix >= close_all_threshold:
@@ -239,6 +245,12 @@ def check_overnight_gap_protection_exit_impl(
                     "spread_short_leg_symbol": self._symbol_str(spread.short_leg.symbol),
                     "spread_short_leg_quantity": spread.num_spreads,
                     "spread_key": self._build_spread_key(spread),
+                    "spread_type": spread_type,
+                    "is_credit_spread": is_credit_spread,
+                    "spread_entry_debit": float(max(0.0, entry_net)),
+                    "spread_entry_credit": float(max(0.0, -entry_net)),
+                    "options_lane": "VASS",
+                    "options_strategy": spread_type or "VASS_UNCLASSIFIED",
                     "exit_type": "OVERNIGHT_GAP_PROTECTION",
                     "spread_exit_code": "OVERNIGHT_GAP_PROTECTION",
                     "spread_exit_reason": reason,
