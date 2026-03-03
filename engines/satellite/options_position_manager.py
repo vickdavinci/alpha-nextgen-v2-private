@@ -266,6 +266,18 @@ def register_spread_entry_impl(
 
     num_spreads = self._pending_num_contracts or 1
     entry_score = self._pending_entry_score or 3.0
+    entry_underlying_price = None
+    try:
+        if self.algorithm is not None:
+            qqq_symbol = getattr(self.algorithm, "qqq", None)
+            if qqq_symbol is not None and qqq_symbol in self.algorithm.Securities:
+                qqq_price = float(
+                    getattr(self.algorithm.Securities[qqq_symbol], "Price", 0.0) or 0.0
+                )
+                if qqq_price > 0:
+                    entry_underlying_price = qqq_price
+    except Exception:
+        entry_underlying_price = None
 
     spread = SpreadPosition(
         long_leg=self._pending_spread_long_leg,
@@ -279,6 +291,7 @@ def register_spread_entry_impl(
         num_spreads=num_spreads,
         regime_at_entry=regime_score,
         entry_vix=self._pending_spread_entry_vix,
+        entry_underlying_price=entry_underlying_price,
     )
 
     self._spread_neutrality_warn_by_key.pop(self._build_spread_key(spread), None)
