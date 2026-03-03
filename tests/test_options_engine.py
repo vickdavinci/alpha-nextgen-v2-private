@@ -4191,6 +4191,77 @@ class TestNeutralityExit:
         assert result is not None
         assert len(result) > 0
 
+    def test_bull_debit_qqq_invalidation_intraday_exit(
+        self, engine, long_leg, short_leg, monkeypatch
+    ):
+        """V12.25: BULL_CALL_DEBIT exits on intraday QQQ thesis invalidation."""
+        self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
+        engine._spread_position.entry_underlying_price = 100.0
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT", 0.040)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_PCT", 0.035)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=5.40,
+            short_leg_price=3.00,  # spread value=2.40 -> ~-4% pnl (no stop-loss trigger)
+            regime_score=70.0,
+            vix_current=14.0,
+            current_dte=20,
+            underlying_price=95.9,  # <= 100*(1-0.04)
+        )
+
+        assert result is not None
+        assert "QQQ_INVALIDATION_INTRADAY" in str(result[0].reason)
+
+    def test_bull_debit_qqq_invalidation_close_exit(self, engine, long_leg, short_leg, monkeypatch):
+        """V12.25: Close-window invalidation fires when intraday threshold not breached."""
+        from types import SimpleNamespace
+
+        self._make_spread(engine, "BULL_CALL", 2.50, long_leg, short_leg)
+        engine._spread_position.entry_underlying_price = 100.0
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 1, 4, 15, 45, 0),
+            Portfolio=SimpleNamespace(TotalPortfolioValue=100000.0),
+            Log=lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT", 0.040)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_PCT", 0.035)
+        monkeypatch.setattr(config, "VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_TIME", "15:45")
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=5.38,
+            short_leg_price=3.00,  # spread value=2.38 -> ~-4.8% pnl
+            regime_score=70.0,
+            vix_current=14.0,
+            current_dte=20,
+            underlying_price=96.2,  # below close floor 96.5, above intraday floor 96.0
+        )
+
+        assert result is not None
+        assert "QQQ_INVALIDATION_CLOSE" in str(result[0].reason)
+
+
+def test_spread_position_roundtrip_preserves_entry_underlying_price(sample_contract):
+    """V12.25: SpreadPosition persistence retains entry underlying anchor."""
+    spread = SpreadPosition(
+        long_leg=sample_contract,
+        short_leg=sample_contract,
+        spread_type="BULL_CALL",
+        net_debit=1.25,
+        max_profit=1.75,
+        width=3.0,
+        entry_time="2027-01-04 10:00:00",
+        entry_score=3.5,
+        num_spreads=2,
+        regime_at_entry=65.0,
+        entry_vix=14.2,
+        entry_underlying_price=447.5,
+    )
+    restored = SpreadPosition.from_dict(spread.to_dict())
+    assert restored.entry_underlying_price == 447.5
+
 
 # =============================================================================
 # V2.23: VASS CREDIT SPREAD ENTRY TESTS

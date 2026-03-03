@@ -180,3 +180,25 @@ def test_build_spread_signal_blocks_bear_call_credit_in_risk_on(monkeypatch):
     assert signal is None
     assert str(reason).startswith("R_BEAR_CALL_RISK_ON_BLOCK")
     assert host.last_failure == reason
+
+
+def test_high_iv_sanity_guard_blocks_bull_call_debit_route():
+    engine = VASSEntryEngine()
+    logs = []
+    decisions = []
+
+    class _Host:
+        def _record_regime_decision(self, **kwargs):
+            decisions.append(kwargs)
+
+    algorithm = SimpleNamespace(Log=lambda msg: logs.append(msg))
+    blocked = engine._should_block_high_iv_bull_debit_route(
+        strategy=SpreadStrategy.BULL_CALL_DEBIT,
+        iv_environment="HIGH",
+        algorithm=algorithm,
+        host=_Host(),
+    )
+
+    assert blocked is True
+    assert any("R_ROUTE_SANITY_HIGH_IV_BULL_DEBIT" in msg for msg in logs)
+    assert any(d.get("gate_name") == "VASS_ROUTE_SANITY_HIGH_IV_BULL_DEBIT" for d in decisions)
