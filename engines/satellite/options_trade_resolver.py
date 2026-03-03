@@ -52,8 +52,9 @@ def resolve_trade_signal_impl(
             "NO_TRADE: E_OVERLAY_EARLY_BULL_NO_CONVICTION",
         )
 
-    # V10.7: VASS direction sovereignty.
-    # Conviction decides direction; macro direction remains a risk-state input only.
+    # V10.7+: VASS direction precedence.
+    # Conviction direction has priority when present; when absent, behavior is
+    # governed by VASS_NO_CONVICTION_NO_TRADE (block vs. fall through to macro).
     if engine == "VASS" and bool(getattr(config, "VASS_USE_CONVICTION_ONLY_DIRECTION", False)):
         if engine_conviction and engine_direction in ("BULLISH", "BEARISH"):
             return (
