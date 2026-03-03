@@ -228,6 +228,35 @@ class VASSEntryEngine:
             )
         return True
 
+    def _should_block_high_iv_bull_debit_route(
+        self,
+        *,
+        strategy: Any,
+        iv_environment: str,
+        algorithm: Any,
+        host: Any,
+    ) -> bool:
+        """Defensive sanity gate: block BULL_CALL_DEBIT when route environment is HIGH IV."""
+        strategy_value = str(getattr(strategy, "value", strategy) or "")
+        if str(iv_environment or "").upper() != "HIGH":
+            return False
+        if strategy_value != "BULL_CALL_DEBIT":
+            return False
+        if algorithm is not None:
+            algorithm.Log(
+                "VASS_ROUTE_SANITY_BLOCK: BULL_CALL_DEBIT blocked in HIGH IV | "
+                "Code=R_ROUTE_SANITY_HIGH_IV_BULL_DEBIT"
+            )
+        if host is not None and hasattr(host, "_record_regime_decision"):
+            host._record_regime_decision(
+                engine="VASS",
+                decision="BLOCK",
+                strategy_attempted="BULL_CALL_DEBIT",
+                gate_name="VASS_ROUTE_SANITY_HIGH_IV_BULL_DEBIT",
+                threshold_snapshot={"iv_environment": "HIGH"},
+            )
+        return True
+
     def select_strategy(
         self,
         *,
@@ -1088,11 +1117,20 @@ class VASSEntryEngine:
             return
 
         iv_rank = algorithm._calculate_iv_rank(chain)
+        iv_environment = host.get_iv_environment(iv_rank=iv_rank)
         strategy, vass_dte_min, vass_dte_max, is_credit = host.resolve_vass_strategy(
             direction=direction_str,
             overlay_state=overlay_state,
             iv_rank=iv_rank,
         )
+        if self._should_block_high_iv_bull_debit_route(
+            strategy=strategy,
+            iv_environment=iv_environment,
+            algorithm=algorithm,
+            host=host,
+        ):
+            algorithm._record_vass_reject_reason("R_ROUTE_SANITY_HIGH_IV_BULL_DEBIT")
+            return
         # V12.23.3: Block BEAR_CALL_CREDIT when regime > REGIME_BREAK_BEAR_CEILING.
         if self._should_block_bear_credit_entry(
             strategy=strategy,
@@ -1423,11 +1461,20 @@ class VASSEntryEngine:
         overlay_state = host.get_regime_overlay_state(
             vix_current=current_vix, regime_score=regime_score
         )
+        iv_environment = host.get_iv_environment(iv_rank=iv_rank)
         strategy, vass_dte_min, vass_dte_max, is_credit = host.resolve_vass_strategy(
             direction=direction_str,
             overlay_state=overlay_state,
             iv_rank=iv_rank,
         )
+        if self._should_block_high_iv_bull_debit_route(
+            strategy=strategy,
+            iv_environment=iv_environment,
+            algorithm=algorithm,
+            host=host,
+        ):
+            algorithm._record_vass_reject_reason("R_ROUTE_SANITY_HIGH_IV_BULL_DEBIT")
+            return
         # V12.23.3: Block BEAR_CALL_CREDIT when regime > REGIME_BREAK_BEAR_CEILING.
         # REGIME_BREAK_BEAR exit would fire within hours, producing guaranteed losses.
         if self._should_block_bear_credit_entry(
