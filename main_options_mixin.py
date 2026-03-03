@@ -1401,6 +1401,12 @@ class MainOptionsMixin:
             return f"R_CONTRACT_QUALITY_{detail_norm or 'UNKNOWN'}"
         if raw.startswith("R_EV_PRE_"):
             return raw.split(":", 1)[0]
+        if raw.startswith("R_") and ":" in raw:
+            # Keep rejection code stable and move runtime numbers/details to reason text.
+            # Example: "R_DIRECTION_MIN_GAP: BULLISH elapsed 30m < 120m" -> "R_DIRECTION_MIN_GAP"
+            base = raw.split(":", 1)[0].strip().upper()
+            normalized = "".join(ch if (ch.isalnum() or ch == "_") else "_" for ch in base)
+            return normalized or "R_UNKNOWN"
         if raw.startswith(("E_", "R_")):
             return raw
 
