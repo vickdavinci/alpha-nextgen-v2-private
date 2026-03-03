@@ -1017,7 +1017,7 @@ VASS_ENTRY_ENGINE_ENABLED = True  # V10.10: route VASS strategy/filter/guards vi
 VASS_USE_CONVICTION_ONLY_DIRECTION = (
     True  # V12.9 P0: conviction owns VASS direction; macro is risk context only.
 )
-VASS_NO_CONVICTION_NO_TRADE = True  # V12.9 P0: no conviction => no VASS trade.
+VASS_NO_CONVICTION_NO_TRADE = False  # V12.26: allow macro-following VASS entries when conviction absent; downstream gates still apply.
 VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT = (
     False  # V10.10 tuning: disable bearish credit fallback while BEAR_PUT gating is rebalanced
 )

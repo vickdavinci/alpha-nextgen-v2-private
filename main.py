@@ -167,6 +167,7 @@ class AlphaNextGen(QCAlgorithm):
     _queue_spread_close_retry_on_cancel = MainOrdersMixin._queue_spread_close_retry_on_cancel
     _extract_spread_key_from_tag = MainOrdersMixin._extract_spread_key_from_tag
     _remember_spread_close_order_key = MainOrdersMixin._remember_spread_close_order_key
+    _record_spread_key_resolve = MainOrdersMixin._record_spread_key_resolve
     _resolve_spread_close_candidate = MainOrdersMixin._resolve_spread_close_candidate
     _cancel_open_spread_close_orders = MainOrdersMixin._cancel_open_spread_close_orders
     _get_active_spread_key_set = MainOrdersMixin._get_active_spread_key_set
