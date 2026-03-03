@@ -1089,7 +1089,7 @@ VASS_ENABLE_MFE_LOCK_EXITS = True  # Runtime-gated by regime confirmation in exi
 VASS_MFE_LOCK_IN_REGIME_CONFIRMED = (
     True  # Keep MFE lock active in confirmed mode to prevent large winner giveback.
 )
-VASS_ENABLE_NEUTRALITY_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
+VASS_ENABLE_NEUTRALITY_EXITS = False  # V12.25: disable neutrality exits for thesis-first VASS flow
 VASS_ENABLE_DAY4_EOD_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
 
 # Level Crossing Thresholds (regime shift signals)
@@ -1904,7 +1904,7 @@ VASS_OVERNIGHT_DERISK_TIME = "15:40"
 VASS_OVERNIGHT_DERISK_ON_DETERIORATION = True
 VASS_OVERNIGHT_DERISK_ON_AMBIGUOUS = False
 # V6.1: Removed SPREAD_REGIME_EXIT_BULL/BEAR - legacy logic conflicted with conviction-based entry
-# Spreads now exit via: STOP_LOSS, PROFIT_TARGET, DTE_EXIT, NEUTRALITY_EXIT
+# Spreads now exit via stop/target/dte paths (neutrality exit is optional and currently disabled).
 
 # V6.10 P5: Choppy Market Filter
 # Detects whipsawing markets and reduces position size to limit losses
@@ -1918,7 +1918,7 @@ CHOPPY_MIN_MOVE_PCT = 0.003  # Minimum 0.3% move to count as reversal (filters n
 # V2.22: Neutrality Exit (Hysteresis Shield)
 # Close flat spreads when regime enters dead zone — no directional edge
 # V3.4: Separate neutrality zone from exit thresholds (allows tight exits + wide neutrality)
-SPREAD_NEUTRALITY_EXIT_ENABLED = True  # V6.13 OPT: Re-enable for choppy capital recycling
+SPREAD_NEUTRALITY_EXIT_ENABLED = False  # V12.25: disable staged neutrality exits
 SPREAD_NEUTRALITY_EXIT_PNL_BAND = 0.06  # V6.13 OPT: Tight "flat" band
 SPREAD_NEUTRALITY_ZONE_LOW = 48  # V6.13 OPT: Narrower neutrality zone
 SPREAD_NEUTRALITY_ZONE_HIGH = 62  # V6.13 OPT: Narrower neutrality zone
