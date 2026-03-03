@@ -1003,13 +1003,13 @@ VASS_OPPOSITE_ROUTE_BLOCK_ON_STRUCTURAL_FAIL = (
 VASS_ROUTE_MAX_CANDIDATE_ATTEMPTS = 3  # V10.17: evaluate top-N candidates before final rejection
 VASS_SIMILAR_ENTRY_MIN_GAP_MINUTES = 15  # Block repeated same-signature entries in burst windows
 VASS_SIMILAR_ENTRY_COOLDOWN_DAYS = (
-    2  # Shorter cooldown to avoid over-throttling quality follow-through
+    1  # V12.25: loosen non-quality throttle to increase valid bullish throughput
 )
 VASS_SIMILAR_ENTRY_USE_EXPIRY_BUCKET = True  # Use expiry date bucket (fallback to DTE bucket)
 VASS_DIRECTION_MIN_GAP_ENABLED = True  # V12.6: prefer time-gap lock over strict day lock
 VASS_DIRECTION_MIN_GAP_MINUTES = 180  # Min spacing between same-direction VASS entries
 VASS_DIRECTION_MIN_GAP_MINUTES_BULLISH = (
-    120  # V12.24: increase bull throughput while preserving bearish pacing
+    60  # V12.25: increase bull throughput while preserving bearish pacing
 )
 VASS_DIRECTION_MIN_GAP_MINUTES_BEARISH = 180  # Keep bearish spacing conservative
 VASS_DIRECTION_DAY_GAP_ENABLED = False  # Legacy date-level lock kept disabled by default
@@ -1824,6 +1824,9 @@ VASS_BULL_MA20_GATE_ENABLED = False  # V9.5 tune: disable for VASS swing pullbac
 # Avoids local-top entries without globally reintroducing MA20 starvation.
 VASS_BULL_DEBIT_TREND_CONFIRM_ENABLED = True
 VASS_BULL_DEBIT_TREND_CONFIRM_MAX_VIX = 22.0  # Apply only in LOW/MEDIUM IV tape
+VASS_BULL_DEBIT_REGIME_MAX = (
+    72.0  # V12.25: avoid local-peak BULL_CALL_DEBIT entries in extreme RISK_ON
+)
 VASS_BULL_DEBIT_REQUIRE_MA20 = True
 VASS_BULL_DEBIT_REQUIRE_POSITIVE_DAY = (
     False  # V12.2: remove redundant day-change block; keep MA20 confirmation
@@ -1834,6 +1837,12 @@ VASS_BULL_DEBIT_MIN_DAY_CHANGE_PCT = (
 VASS_BULL_SHORT_CALL_DISTANCE_GUARD_ENABLED = True
 VASS_BULL_SHORT_CALL_MIN_OTM_PCT = 0.010
 VASS_BULL_SHORT_CALL_MIN_ATR_MULT = 0.60
+# V12.25: Underlying-based thesis invalidation for BULL_CALL_DEBIT exits.
+# Primary stop uses QQQ invalidation (cleaner thesis signal than option mark noise).
+VASS_BULL_DEBIT_QQQ_INVALIDATION_ENABLED = True
+VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_PCT = 0.035
+VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT = 0.040
+VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_TIME = "15:45"
 VASS_RECOVERY_RELAX_ENABLED = False  # V12.11: disabled — fires on ALL bullish entries (not just recovery), silently overrides D/W caps by +9%.
 VASS_RECOVERY_RELAX_DAY_MIN_CHANGE_PCT = -0.05
 VASS_RECOVERY_RELAX_MA20_TOLERANCE_PCT = 0.003
