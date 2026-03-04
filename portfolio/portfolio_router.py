@@ -1660,6 +1660,7 @@ class PortfolioRouter:
             "PREMARKET_ITM",
             "MANDATORY_DTE_CLOSE",
             "DTE_EXIT_NO_QUOTE",
+            "DTE_EXIT",
             "SPREAD_TIME_STOP_NO_QUOTE",
             "OVERLAY_STRESS_EXIT",
             "KILL_SWITCH",
