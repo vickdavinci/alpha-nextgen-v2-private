@@ -158,6 +158,30 @@ def check_spread_exit_signals_impl(
     neutrality_exit_enabled = bool(getattr(config, "VASS_ENABLE_NEUTRALITY_EXITS", True))
     day4_eod_exit_enabled = bool(getattr(config, "VASS_ENABLE_DAY4_EOD_EXITS", True))
     mfe_t1_in_confirmed_disabled = False
+    thesis_soft_stop_enabled = bool(
+        getattr(config, "VASS_BULL_DEBIT_THESIS_SOFT_STOP_ENABLED", False)
+    )
+    thesis_soft_stop_thesis_only = bool(
+        getattr(config, "VASS_BULL_DEBIT_THESIS_SOFT_STOP_THESIS_ONLY", True)
+    )
+    thesis_soft_stop_mode = (
+        thesis_soft_stop_enabled
+        and is_bullish_debit_spread
+        and (thesis_first_mode or not thesis_soft_stop_thesis_only)
+    )
+    disable_tactical_exits_for_thesis = thesis_soft_stop_mode and bool(
+        getattr(config, "VASS_BULL_DEBIT_THESIS_ONLY_DISABLE_TACTICAL_EXITS", True)
+    )
+    disable_vix_spike_for_thesis = thesis_soft_stop_mode and bool(
+        getattr(config, "VASS_BULL_DEBIT_THESIS_ONLY_DISABLE_VIX_SPIKE_EXITS", True)
+    )
+    if disable_tactical_exits_for_thesis:
+        # V12.27: thesis mode should avoid tactical exits that clip long-DTE winners.
+        profit_target_enabled = False
+        trail_exit_enabled = False
+        mfe_lock_enabled = False
+        neutrality_exit_enabled = False
+        day4_eod_exit_enabled = False
 
     if regime_confirmed:
         if is_credit_spread:
@@ -447,8 +471,9 @@ def check_spread_exit_signals_impl(
                             ]
 
                         # EOD risk gate during hold to reduce overnight tail losses.
-                        eod_gate_enabled = bool(
-                            getattr(config, "SPREAD_EOD_HOLD_RISK_GATE_ENABLED", False)
+                        eod_gate_enabled = (
+                            bool(getattr(config, "SPREAD_EOD_HOLD_RISK_GATE_ENABLED", False))
+                            and not disable_tactical_exits_for_thesis
                         )
                         eod_gate_pct = float(vass_exit_profile.get("eod_gate_pct", -0.25))
                         eod_gate_min_hold_minutes = int(
@@ -680,7 +705,9 @@ def check_spread_exit_signals_impl(
     # P0: VIX Spike Auto-Exit (bullish spreads only)
     # Close CALL spreads if VIX spikes to panic levels or 5d change surges
     # ---------------------------------------------------------------------
-    vix_spike_enabled = getattr(config, "SWING_VIX_SPIKE_EXIT_ENABLED", True)
+    vix_spike_enabled = bool(getattr(config, "SWING_VIX_SPIKE_EXIT_ENABLED", True)) and (
+        not disable_vix_spike_for_thesis
+    )
     vix_spike_level = getattr(config, "SWING_VIX_SPIKE_EXIT_LEVEL", 25.0)
     vix_spike_5d = getattr(config, "SWING_VIX_SPIKE_EXIT_5D_PCT", 0.20)
     vix_5d_change = self._iv_sensor.get_vix_5d_change() if self._iv_sensor.is_ready() else None
@@ -689,6 +716,7 @@ def check_spread_exit_signals_impl(
     if (
         exit_reason is None
         and bool(getattr(config, "SPREAD_OVERLAY_STRESS_EXIT_ENABLED", False))
+        and not disable_tactical_exits_for_thesis
         and is_bullish_spread
         and vix_current is not None
     ):
@@ -713,6 +741,7 @@ def check_spread_exit_signals_impl(
         exit_reason is None
         and is_bullish_debit_spread
         and bool(getattr(config, "VASS_OVERNIGHT_DERISK_ENABLED", False))
+        and not disable_tactical_exits_for_thesis
         and not regime_confirmed
         and self.algorithm is not None
         and current_dte > 0
@@ -987,6 +1016,120 @@ def check_spread_exit_signals_impl(
                             f"{close_floor:.2f} ({close_pct:.1%} below entry {entry_underlying:.2f})"
                         )
 
+        if (
+            exit_reason is None
+            and thesis_soft_stop_mode
+            and self.algorithm is not None
+            and entry_debit > 0
+        ):
+            # V12.27: Thesis-only degradation stop for BULL_CALL_DEBIT.
+            # Trigger only after enough thesis time is consumed and probability of
+            # breakeven degrades meaningfully versus remaining expected move.
+            algo = self.algorithm
+            if hasattr(algo, "_diag_vass_thesis_soft_stop_checks"):
+                algo._diag_vass_thesis_soft_stop_checks = (
+                    int(getattr(algo, "_diag_vass_thesis_soft_stop_checks", 0) or 0) + 1
+                )
+
+            now = algo.Time
+            held_days = 0.0
+            try:
+                entry_dt = datetime.strptime(spread.entry_time[:19], "%Y-%m-%d %H:%M:%S")
+                held_days = max(
+                    0.0,
+                    (now - entry_dt).total_seconds() / 86400.0,
+                )
+            except Exception:
+                held_days = 0.0
+
+            entry_dte = int(getattr(spread.long_leg, "days_to_expiry", 0) or 0)
+            if entry_dte <= 0:
+                entry_dte = max(int(current_dte or 0), 1)
+            time_used = held_days / max(1.0, float(entry_dte))
+
+            current_underlying = float(underlying_price or 0.0)
+            entry_underlying = float(getattr(spread, "entry_underlying_price", 0.0) or 0.0)
+            atr_pct = self._resolve_qqq_atr_pct(underlying_price=current_underlying)
+            atr_dollars = (
+                float(current_underlying) * float(atr_pct)
+                if atr_pct is not None and current_underlying > 0
+                else 0.0
+            )
+            atr_move_from_entry = 0.0
+            if atr_dollars > 0 and entry_underlying > 0:
+                atr_move_from_entry = (current_underlying - entry_underlying) / atr_dollars
+
+            breakeven = float(getattr(spread.long_leg, "strike", 0.0) or 0.0) + float(entry_debit)
+            distance_to_breakeven = (
+                max(0.0, breakeven - current_underlying) if current_underlying > 0 else float("inf")
+            )
+            remaining_dte = max(1, int(current_dte))
+            min_expected_move_atr = float(
+                getattr(config, "VASS_BULL_DEBIT_THESIS_SOFT_STOP_MIN_EXPECTED_MOVE_ATR", 0.75)
+            )
+            expected_move = (
+                atr_dollars * max(min_expected_move_atr, float(remaining_dte) ** 0.5)
+                if atr_dollars > 0
+                else 0.0
+            )
+            if distance_to_breakeven <= 0:
+                p_be = 1.0
+            elif expected_move <= 0:
+                p_be = 0.0
+            else:
+                p_be = pow(2.718281828, -(distance_to_breakeven / expected_move))
+
+            pbe_base = float(getattr(config, "VASS_BULL_DEBIT_THESIS_SOFT_STOP_PBE_BASE", 0.12))
+            pbe_slope = float(getattr(config, "VASS_BULL_DEBIT_THESIS_SOFT_STOP_PBE_SLOPE", 0.30))
+            pbe_min = float(getattr(config, "VASS_BULL_DEBIT_THESIS_SOFT_STOP_PBE_MIN", 0.12))
+            pbe_max = float(getattr(config, "VASS_BULL_DEBIT_THESIS_SOFT_STOP_PBE_MAX", 0.45))
+            pbe_threshold = pbe_base + pbe_slope * max(0.0, time_used)
+            if pbe_max < pbe_min:
+                pbe_min, pbe_max = pbe_max, pbe_min
+            pbe_threshold = max(pbe_min, min(pbe_max, pbe_threshold))
+
+            min_time_used = float(
+                getattr(config, "VASS_BULL_DEBIT_THESIS_SOFT_STOP_MIN_TIME_USED", 0.35)
+            )
+            max_pnl_pct = float(
+                getattr(config, "VASS_BULL_DEBIT_THESIS_SOFT_STOP_MAX_PNL_PCT", -0.22)
+            )
+            max_atr_move = float(
+                getattr(config, "VASS_BULL_DEBIT_THESIS_SOFT_STOP_MAX_ATR_MOVE", -0.75)
+            )
+            breach = (
+                time_used >= min_time_used
+                and pnl_pct <= max_pnl_pct
+                and atr_move_from_entry <= max_atr_move
+                and p_be <= pbe_threshold
+            )
+            if breach:
+                if hasattr(algo, "_diag_vass_thesis_soft_stop_armed"):
+                    algo._diag_vass_thesis_soft_stop_armed = (
+                        int(getattr(algo, "_diag_vass_thesis_soft_stop_armed", 0) or 0) + 1
+                    )
+                spread.thesis_soft_stop_streak = (
+                    int(getattr(spread, "thesis_soft_stop_streak", 0) or 0) + 1
+                )
+            else:
+                spread.thesis_soft_stop_streak = 0
+
+            required_bars = max(
+                1,
+                int(getattr(config, "VASS_BULL_DEBIT_THESIS_SOFT_STOP_CONSECUTIVE_BARS", 2) or 1),
+            )
+            if breach and int(spread.thesis_soft_stop_streak) >= required_bars:
+                if hasattr(algo, "_diag_vass_thesis_soft_stop_exits"):
+                    algo._diag_vass_thesis_soft_stop_exits = (
+                        int(getattr(algo, "_diag_vass_thesis_soft_stop_exits", 0) or 0) + 1
+                    )
+                exit_reason = (
+                    f"THESIS_SOFT_STOP tUsed={time_used:.2f} "
+                    f"P&L={pnl_pct:.1%} ATRmv={atr_move_from_entry:.2f} "
+                    f"Pbe={p_be:.2f}<={pbe_threshold:.2f} "
+                    f"Streak={int(spread.thesis_soft_stop_streak)}/{required_bars}"
+                )
+
         # V10.15: Track MFE relative to max profit for harvesting locks.
         mfe_ratio = pnl / spread.max_profit if spread.max_profit > 0 else 0.0
         if mfe_ratio > spread.highest_pnl_max_profit_pct:
@@ -1193,7 +1336,12 @@ def check_spread_exit_signals_impl(
                     f"SPREAD_HARD_STOP_TRIGGERED_PCT {pnl_pct:.1%} "
                     f"(lost > {hard_stop_pct:.0%} hard cap, {vass_profile_tag})"
                 )
-        if exit_reason is None and mark_stop_enabled and pnl_pct < 0:
+        if (
+            exit_reason is None
+            and mark_stop_enabled
+            and pnl_pct < 0
+            and not disable_tactical_exits_for_thesis
+        ):
             base_stop_pct = float(vass_exit_profile.get("stop_pct", config.SPREAD_STOP_LOSS_PCT))
             stop_multipliers = getattr(
                 config, "SPREAD_STOP_REGIME_MULTIPLIERS", {75: 1.0, 50: 1.0, 40: 1.0, 0: 1.0}
@@ -1216,7 +1364,11 @@ def check_spread_exit_signals_impl(
                 exit_reason = f"STOP_LOSS {pnl_pct:.1%} (lost > {adaptive_stop_pct:.0%} of entry, {vass_profile_tag})"
 
         # Exit 3: Time stop for debit spreads (hold window cap).
-        if exit_reason is None and self.algorithm is not None:
+        if (
+            exit_reason is None
+            and self.algorithm is not None
+            and not disable_tactical_exits_for_thesis
+        ):
             max_hold_days = int(getattr(config, "VASS_DEBIT_MAX_HOLD_DAYS", 0))
             low_vix_days = int(getattr(config, "VASS_DEBIT_MAX_HOLD_DAYS_LOW_VIX", max_hold_days))
             low_vix_threshold = float(getattr(config, "VASS_DEBIT_LOW_VIX_THRESHOLD", 16.0))
@@ -1243,6 +1395,7 @@ def check_spread_exit_signals_impl(
         if (
             exit_reason is None
             and getattr(config, "SPREAD_REGIME_DETERIORATION_EXIT_ENABLED", True)
+            and not disable_tactical_exits_for_thesis
             and not regime_confirmed
         ):
             min_loss_pct = float(getattr(config, "SPREAD_REGIME_DETERIORATION_MIN_LOSS_PCT", -0.15))

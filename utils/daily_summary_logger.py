@@ -249,6 +249,9 @@ def log_daily_summary(algo) -> None:
     vass_mfe_t2 = int(getattr(algo, "_diag_vass_mfe_t2_hits", 0) or 0)
     vass_mfe_lock_exits = int(getattr(algo, "_diag_vass_mfe_lock_exits", 0) or 0)
     vass_tail_cap_exits = int(getattr(algo, "_diag_vass_tail_cap_exits", 0) or 0)
+    vass_thesis_checks = int(getattr(algo, "_diag_vass_thesis_soft_stop_checks", 0) or 0)
+    vass_thesis_armed = int(getattr(algo, "_diag_vass_thesis_soft_stop_armed", 0) or 0)
+    vass_thesis_exits = int(getattr(algo, "_diag_vass_thesis_soft_stop_exits", 0) or 0)
 
     compact_parts = [
         f"C={algo._diag_intraday_candidate_count}",
@@ -298,6 +301,8 @@ def log_daily_summary(algo) -> None:
         compact_parts.append(
             f"VMFE={vass_mfe_peak:.1%}/{vass_mfe_t1}/{vass_mfe_t2}/{vass_mfe_lock_exits}/{vass_tail_cap_exits}"
         )
+    if vass_thesis_checks > 0 or vass_thesis_armed > 0 or vass_thesis_exits > 0:
+        compact_parts.append(f"VTS={vass_thesis_checks}/{vass_thesis_armed}/{vass_thesis_exits}")
     transition_total = _fmt_transition_derisk_totals()
     if transition_total != "DET:0;REC:0":
         compact_parts.append(f"TD={transition_total}")

@@ -224,6 +224,7 @@ class SpreadPosition:
     highest_pnl_pct: float = 0.0  # V9.4: Track high-water mark for trailing stop
     highest_pnl_max_profit_pct: float = 0.0  # V10.15: MFE as % of max profit
     mfe_lock_tier: int = 0  # V10.15: 0=none, 1=breakeven+fees, 2=harvest floor
+    thesis_soft_stop_streak: int = 0  # V12.27: consecutive thesis soft-stop breach bars
 
     @property
     def profit_target(self) -> float:
@@ -258,6 +259,7 @@ class SpreadPosition:
             "highest_pnl_pct": self.highest_pnl_pct,
             "highest_pnl_max_profit_pct": self.highest_pnl_max_profit_pct,
             "mfe_lock_tier": self.mfe_lock_tier,
+            "thesis_soft_stop_streak": self.thesis_soft_stop_streak,
         }
 
     @classmethod
@@ -280,6 +282,7 @@ class SpreadPosition:
             highest_pnl_pct=data.get("highest_pnl_pct", 0.0),  # V9.4: Trailing stop HWM
             highest_pnl_max_profit_pct=data.get("highest_pnl_max_profit_pct", 0.0),
             mfe_lock_tier=int(data.get("mfe_lock_tier", 0) or 0),
+            thesis_soft_stop_streak=int(data.get("thesis_soft_stop_streak", 0) or 0),
         )
 
 
