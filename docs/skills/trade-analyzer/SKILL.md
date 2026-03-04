@@ -237,7 +237,7 @@ Fallback: logs near exit date for:
 | `SPREAD: EXIT.*TRAIL_STOP` | **TRAIL_STOP** | Trailing stop hit |
 | `SPREAD: EXIT.*DTE_EXIT` | **DTE_EXIT** | DTE <= threshold force close |
 | `SPREAD: EXIT.*FRIDAY_FIREWALL` | **FRIDAY_FIREWALL** | Friday close |
-| `SPREAD: EXIT.*Reason=FILL_CLOSE_RECONCILED` | **RECONCILED** | Normal close (check PnL% for win/loss) |
+| `SPREAD: EXIT.*Reason=(FILL_CLOSE_RECONCILED|RECONCILED_CLOSE.*)` | **RECONCILED** | Normal close/reconciled fill path (check PnL% for win/loss) |
 | `SPREAD_EXIT_GUARD_HOLD:` on exit date | *(note)* | Min-hold was active — flag if P&L% < -30% |
 
 **STRESS_EXIT additional context:** These lines contain VIX and Regime:
