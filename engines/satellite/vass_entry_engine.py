@@ -1005,21 +1005,29 @@ class VASSEntryEngine:
             vix_level_for_vass = 20.0
         host.update_iv_sensor(vix_level_for_vass, current_date_str)
         has_conviction, conviction_direction, conviction_reason = host.get_iv_conviction()
+        use_conviction_direction = bool(
+            getattr(config, "VASS_USE_CONVICTION_ONLY_DIRECTION", False)
+        )
+        resolver_has_conviction = bool(has_conviction and use_conviction_direction)
+        resolver_direction = conviction_direction if use_conviction_direction else None
+        resolver_reason = (
+            conviction_reason if use_conviction_direction else "VASS_MACRO_ONLY_DIRECTION_MODE"
+        )
         macro_direction = host.get_macro_direction(regime_for_vass)
         allow_macro_veto = True
-        if has_conviction and conviction_direction == "BEARISH":
+        if resolver_has_conviction and resolver_direction == "BEARISH":
             allow_macro_veto, veto_reason = host.get_iv_bearish_veto_status()
             if not allow_macro_veto:
-                has_conviction = False
-                conviction_direction = None
-                conviction_reason = f"{conviction_reason} | HARD_VETO_BLOCK={veto_reason}"
+                resolver_has_conviction = False
+                resolver_direction = None
+                resolver_reason = f"{resolver_reason} | HARD_VETO_BLOCK={veto_reason}"
         overlay_state = host.get_regime_overlay_state(
             vix_current=vix_level_for_vass, regime_score=regime_for_vass
         )
         should_trade, resolved_direction, resolve_reason = host.resolve_trade_signal(
             engine="VASS",
-            engine_direction=conviction_direction,
-            engine_conviction=has_conviction,
+            engine_direction=resolver_direction,
+            engine_conviction=resolver_has_conviction,
             macro_direction=macro_direction,
             conviction_strength=None,
             overlay_state=overlay_state,
@@ -1217,8 +1225,8 @@ class VASSEntryEngine:
             direction_str,
             overlay_state,
             size_multiplier,
-            has_conviction,
-            conviction_reason,
+            resolver_has_conviction,
+            resolver_reason,
             str(macro_direction),
             resolve_reason,
             resolved_direction,

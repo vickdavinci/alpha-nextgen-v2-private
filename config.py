@@ -1018,7 +1018,7 @@ VASS_DIRECTION_MIN_GAP_MINUTES_BEARISH = 180  # Keep bearish spacing conservativ
 VASS_DIRECTION_DAY_GAP_ENABLED = False  # Legacy date-level lock kept disabled by default
 VASS_ENTRY_ENGINE_ENABLED = True  # V10.10: route VASS strategy/filter/guards via dedicated engine
 VASS_USE_CONVICTION_ONLY_DIRECTION = (
-    True  # V12.9 P0: conviction owns VASS direction; macro is risk context only.
+    False  # V12.26: macro-only VASS direction mode; conviction remains telemetry only.
 )
 VASS_NO_CONVICTION_NO_TRADE = False  # V12.26: allow macro-following VASS entries when conviction absent; downstream gates still apply.
 VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT = (
