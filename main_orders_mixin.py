@@ -2641,6 +2641,23 @@ class MainOrdersMixin:
                 if pending_short is not None:
                     pending_symbols.add(self._normalize_symbol_str(pending_short.symbol))
                 if symbol_norm in pending_symbols:
+                    # Prevent immediate re-selection of contracts that the broker just
+                    # rejected as invalid for spread entry.
+                    try:
+                        is_invalid = getattr(order_event, "Status", None) == OrderStatus.Invalid
+                    except Exception:
+                        is_invalid = False
+                    if is_invalid:
+                        cooldown_symbols = []
+                        if pending_long is not None:
+                            cooldown_symbols.append(str(pending_long.symbol))
+                        if pending_short is not None:
+                            cooldown_symbols.append(str(pending_short.symbol))
+                        if cooldown_symbols:
+                            self.options_engine.record_vass_invalid_entry_symbols(
+                                symbols=cooldown_symbols,
+                                reason=str(getattr(order_event, "Message", "") or ""),
+                            )
                     # V2.21: Parse broker margin for adaptive retry sizing
                     self._parse_and_store_rejection_margin(order_event)
                     self.options_engine.cancel_pending_spread_entry()

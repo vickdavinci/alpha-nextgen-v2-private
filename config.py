@@ -3115,6 +3115,11 @@ SPREAD_SCAN_THROTTLE_MINUTES = 10
 SPREAD_FAILURE_COOLDOWN_HOURS = 1  # Legacy fallback if minute override is absent
 SPREAD_FAILURE_COOLDOWN_MINUTES = 30
 
+# V12.27 P3: Broker-invalid VASS entry symbols can cluster across scan cycles.
+# Apply a short, contract-level quarantine to force alternate leg selection.
+VASS_INVALID_ENTRY_SYMBOL_COOLDOWN_ENABLED = True
+VASS_INVALID_ENTRY_SYMBOL_COOLDOWN_MINUTES = 60
+
 # V2.5: Max concurrent spreads - limit exposure from spread positions
 # Problem: Mar 25-26 had two spreads open simultaneously ($19K exposure)
 # Solution: Only allow 1 active spread at a time

@@ -1658,6 +1658,22 @@ class OptionsEngine:
         now = self.algorithm.Time if self.algorithm is not None else datetime.utcnow()
         return self._vass_entry_engine.should_log_rejection(now=now, reason_key=reason_key)
 
+    def record_vass_invalid_entry_symbols(
+        self,
+        *,
+        symbols: List[str],
+        reason: str = "",
+    ) -> None:
+        """Quarantine invalid VASS spread-entry symbols to prevent retry clustering."""
+        if not symbols:
+            return
+        now = self.algorithm.Time if self.algorithm is not None else datetime.utcnow()
+        self._vass_entry_engine.record_invalid_entry_symbols(
+            symbols=symbols,
+            now_dt=now,
+            reason=reason,
+        )
+
     def resolve_vass_direction_context(
         self,
         *,

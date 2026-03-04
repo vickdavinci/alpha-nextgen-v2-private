@@ -139,6 +139,60 @@ def test_reset_daily_only_clears_slot_backoff(monkeypatch):
     assert engine._last_entry_date_by_direction
 
 
+def test_invalid_entry_symbol_cooldown_filters_and_expires(monkeypatch):
+    monkeypatch.setattr(config, "VASS_INVALID_ENTRY_SYMBOL_COOLDOWN_ENABLED", True)
+    monkeypatch.setattr(config, "VASS_INVALID_ENTRY_SYMBOL_COOLDOWN_MINUTES", 60)
+
+    engine = VASSEntryEngine()
+    now = datetime(2024, 3, 22, 10, 0, 0)
+    logs = []
+    host = SimpleNamespace(
+        algorithm=SimpleNamespace(Time=now),
+        log=lambda message: logs.append(message),
+        should_log_vass_rejection=lambda _key: True,
+    )
+    blocked_symbol = "QQQ240322C00450000"
+    contracts = [
+        SimpleNamespace(symbol=blocked_symbol),
+        SimpleNamespace(symbol="QQQ240322C00455000"),
+    ]
+
+    engine.record_invalid_entry_symbols(
+        symbols=[blocked_symbol], now_dt=now, reason="broker invalid"
+    )
+
+    filtered, blocked_count = engine.filter_invalid_entry_contracts(
+        host=host,
+        contracts=contracts,
+        current_time=now.strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    assert blocked_count == 1
+    assert len(filtered) == 1
+    assert str(filtered[0].symbol) == "QQQ240322C00455000"
+    assert any("Skipping recently-invalid contracts" in entry for entry in logs)
+
+    filtered_later, blocked_later = engine.filter_invalid_entry_contracts(
+        host=host,
+        contracts=contracts,
+        current_time=(now + timedelta(minutes=61)).strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    assert blocked_later == 0
+    assert len(filtered_later) == 2
+
+
+def test_invalid_entry_symbol_cooldown_state_roundtrip():
+    engine = VASSEntryEngine()
+    now = datetime(2024, 3, 22, 10, 0, 0)
+    symbol = "QQQ240322C00450000"
+    engine.record_invalid_entry_symbols(symbols=[symbol], now_dt=now, reason="test")
+    state = engine.to_dict()
+
+    restored = VASSEntryEngine()
+    restored.from_dict(state)
+    key = restored._normalize_contract_symbol(symbol)
+    assert key in restored._invalid_entry_symbol_cooldown_until
+
+
 def test_build_spread_signal_blocks_bear_call_credit_in_risk_on(monkeypatch):
     monkeypatch.setattr(config, "VASS_EV_PRE_GATE_ENABLED", False)
     monkeypatch.setattr(config, "REGIME_RISK_ON", 70)
@@ -147,7 +201,10 @@ def test_build_spread_signal_blocks_bear_call_credit_in_risk_on(monkeypatch):
 
     class _Host:
         def __init__(self):
-            self.algorithm = SimpleNamespace(Time=datetime(2024, 6, 3, 10, 0, 0))
+            self.algorithm = SimpleNamespace(
+                Time=datetime(2024, 6, 3, 10, 0, 0),
+                _log_high_frequency_event=lambda **_kwargs: None,
+            )
             self.last_failure = None
 
         def set_last_entry_validation_failure(self, reason):

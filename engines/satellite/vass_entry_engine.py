@@ -27,6 +27,9 @@ class VASSEntryEngine:
         self._spread_failure_cooldown_until: Optional[str] = None
         self._spread_failure_cooldown_until_by_dir: Dict[str, str] = {}
         self._last_spread_scan_time: Optional[str] = None
+        # Block recently-invalid entry contracts for a short window to prevent
+        # repeated retries on dead quotes/contracts across scan cycles.
+        self._invalid_entry_symbol_cooldown_until: Dict[str, datetime] = {}
 
     def _log(self, message: str, trades_only: bool = False) -> None:
         if self._log_func:
@@ -109,6 +112,127 @@ class VASSEntryEngine:
         raw = key.value if hasattr(key, "value") else key
         key_text = str(raw or "").upper().strip()
         return key_text or None
+
+    def _normalize_contract_symbol(self, symbol: Optional[Any]) -> str:
+        return "".join(str(symbol or "").upper().split())
+
+    def _parse_now(
+        self,
+        *,
+        current_time: Optional[str],
+        host: Optional[Any] = None,
+        now_dt: Optional[datetime] = None,
+    ) -> datetime:
+        if now_dt is not None:
+            return now_dt
+        if current_time:
+            try:
+                return datetime.strptime(str(current_time)[:19], "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+        try:
+            if host is not None and getattr(host, "algorithm", None) is not None:
+                algo_now = getattr(host.algorithm, "Time", None)
+                if algo_now is not None:
+                    return algo_now
+        except Exception:
+            pass
+        return datetime.utcnow()
+
+    def _prune_invalid_entry_cooldowns(self, now: datetime) -> None:
+        expired = [
+            key
+            for key, until_dt in self._invalid_entry_symbol_cooldown_until.items()
+            if now >= until_dt
+        ]
+        for key in expired:
+            self._invalid_entry_symbol_cooldown_until.pop(key, None)
+
+    def record_invalid_entry_symbols(
+        self,
+        *,
+        symbols: list[str],
+        now_dt: Optional[datetime] = None,
+        reason: str = "",
+    ) -> None:
+        """Quarantine invalid spread-entry symbols for a short cooldown window."""
+        if not bool(getattr(config, "VASS_INVALID_ENTRY_SYMBOL_COOLDOWN_ENABLED", True)):
+            return
+        if not symbols:
+            return
+        now = self._parse_now(current_time=None, now_dt=now_dt)
+        self._prune_invalid_entry_cooldowns(now)
+        cooldown_minutes = max(
+            1, int(getattr(config, "VASS_INVALID_ENTRY_SYMBOL_COOLDOWN_MINUTES", 60))
+        )
+        until_dt = now + timedelta(minutes=cooldown_minutes)
+        normalized = []
+        for symbol in symbols:
+            key = self._normalize_contract_symbol(symbol)
+            if not key:
+                continue
+            self._invalid_entry_symbol_cooldown_until[key] = until_dt
+            normalized.append(key)
+        if normalized:
+            sample = ",".join(sorted(set(normalized))[:3])
+            reason_text = str(reason or "").strip()
+            suffix = f" | Reason={reason_text[:80]}" if reason_text else ""
+            self._log(
+                "VASS_INVALID_ENTRY_COOLDOWN: "
+                f"Blocked {len(set(normalized))} symbol(s) for {cooldown_minutes}m "
+                f"until {until_dt.strftime('%Y-%m-%d %H:%M:%S')} | Sample={sample}{suffix}"
+            )
+
+    def filter_invalid_entry_contracts(
+        self,
+        *,
+        host: Any,
+        contracts: list[Any],
+        current_time: Optional[str],
+    ) -> tuple[list[Any], int]:
+        """Filter contracts blocked by recent invalid-entry cooldown state."""
+        if not contracts:
+            return contracts, 0
+        if not bool(getattr(config, "VASS_INVALID_ENTRY_SYMBOL_COOLDOWN_ENABLED", True)):
+            return contracts, 0
+        now = self._parse_now(current_time=current_time, host=host)
+        self._prune_invalid_entry_cooldowns(now)
+        if not self._invalid_entry_symbol_cooldown_until:
+            return contracts, 0
+
+        filtered = []
+        blocked = []
+        for contract in contracts:
+            symbol_key = self._normalize_contract_symbol(getattr(contract, "symbol", contract))
+            until_dt = self._invalid_entry_symbol_cooldown_until.get(symbol_key)
+            if until_dt is None:
+                filtered.append(contract)
+                continue
+            if now >= until_dt:
+                self._invalid_entry_symbol_cooldown_until.pop(symbol_key, None)
+                filtered.append(contract)
+                continue
+            blocked.append((symbol_key, until_dt))
+
+        blocked_count = len(blocked)
+        if blocked_count > 0:
+            should_log = True
+            try:
+                should_log = bool(
+                    host.should_log_vass_rejection(f"INVALID_ENTRY_SYMBOL_COOLDOWN|{blocked_count}")
+                )
+            except Exception:
+                should_log = True
+            if should_log:
+                sample = ",".join(sorted({key for key, _ in blocked})[:3])
+                latest_until = max(until_dt for _, until_dt in blocked).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                host.log(
+                    "SPREAD: Skipping recently-invalid contracts | "
+                    f"Blocked={blocked_count} | Sample={sample} | Until={latest_until}"
+                )
+        return filtered, blocked_count
 
     def set_spread_failure_cooldown(
         self,
@@ -2028,6 +2152,15 @@ class VASSEntryEngine:
         if not contracts:
             host.log("SPREAD: No contracts available for spread selection")
             return None
+        contracts, blocked_count = self.filter_invalid_entry_contracts(
+            host=host,
+            contracts=contracts,
+            current_time=current_time,
+        )
+        if not contracts:
+            if blocked_count > 0:
+                host.set_last_entry_validation_failure("R_INVALID_ENTRY_SYMBOL_COOLDOWN")
+            return None
 
         # V12.12: dynamic width scaling from percentage-of-underlying
         dyn_widths = host._get_dynamic_spread_widths(current_price)
@@ -2329,6 +2462,15 @@ class VASSEntryEngine:
 
         if not contracts:
             host.log("VASS: No contracts provided for credit spread selection")
+            return None
+        contracts, blocked_count = self.filter_invalid_entry_contracts(
+            host=host,
+            contracts=contracts,
+            current_time=current_time,
+        )
+        if not contracts:
+            if blocked_count > 0:
+                host.set_last_entry_validation_failure("R_INVALID_ENTRY_SYMBOL_COOLDOWN")
             return None
 
         effective_width_min = host._get_effective_spread_width_min(current_price=current_price)
@@ -3673,6 +3815,10 @@ class VASSEntryEngine:
                 self._spread_failure_cooldown_until_by_dir
             ),
             "last_spread_scan_time": self._last_spread_scan_time,
+            "invalid_entry_symbol_cooldown_until": {
+                k: v.strftime("%Y-%m-%d %H:%M:%S")
+                for k, v in self._invalid_entry_symbol_cooldown_until.items()
+            },
         }
 
     def from_dict(self, state: Dict[str, Any]) -> None:
@@ -3739,6 +3885,17 @@ class VASSEntryEngine:
                 self._spread_failure_cooldown_until_by_dir[key] = str(v)[:19]
         raw_scan = state.get("last_spread_scan_time")
         self._last_spread_scan_time = str(raw_scan)[:19] if raw_scan else None
+        self._invalid_entry_symbol_cooldown_until = {}
+        for k, v in (state.get("invalid_entry_symbol_cooldown_until", {}) or {}).items():
+            key = self._normalize_contract_symbol(k)
+            if not key:
+                continue
+            try:
+                self._invalid_entry_symbol_cooldown_until[key] = datetime.strptime(
+                    str(v)[:19], "%Y-%m-%d %H:%M:%S"
+                )
+            except Exception:
+                continue
 
     def reset_daily(self) -> None:
         """Clear intraday slot-backoff state."""
@@ -3746,6 +3903,8 @@ class VASSEntryEngine:
         self._spread_failure_cooldown_until = None
         self._spread_failure_cooldown_until_by_dir = {}
         self._last_spread_scan_time = None
+        # Keep invalid-entry cooldown map across daily reset; entries are
+        # time-bounded and self-prune on next scan.
 
     def reset(self) -> None:
         self._last_entry_at_by_signature = {}
@@ -3759,3 +3918,4 @@ class VASSEntryEngine:
         self._spread_failure_cooldown_until = None
         self._spread_failure_cooldown_until_by_dir = {}
         self._last_spread_scan_time = None
+        self._invalid_entry_symbol_cooldown_until = {}
