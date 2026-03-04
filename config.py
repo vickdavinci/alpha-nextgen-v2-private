@@ -964,6 +964,9 @@ VASS_MEDIUM_IV_DTE_MAX = 45  # V12.9 P1: allow more time for thesis realization 
 # V6.6: Widened HIGH IV DTE range - 36 spread failures in 2022H1 due to narrow 7-14 window
 VASS_HIGH_IV_DTE_MIN = 21  # V12.27: shift high-IV credit entries out of gamma-heavy short-DTE zone
 VASS_HIGH_IV_DTE_MAX = 45  # Standard theta-friendly credit runway for VASS high-IV routes
+VASS_DTE_FALLBACK_MAX = (
+    60  # V12.27: config-driven fallback cap (avoids hardcoded 45 clipping when ranges evolve).
+)
 
 # V5.3: VASS Conviction Engine (VIX Direction Tracking)
 # VASS tracks weekly (5d) and monthly (20d) VIX to determine conviction

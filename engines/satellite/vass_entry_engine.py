@@ -632,7 +632,11 @@ class VASSEntryEngine:
         """Build ordered DTE fallback windows for VASS entry selection."""
         ranges = [(dte_min, dte_max)]
         fallback_min = max(5, dte_min - 2)
-        fallback_max = min(45, dte_max + 14)
+        fallback_cap = int(getattr(config, "VASS_DTE_FALLBACK_MAX", max(45, dte_max)) or 0)
+        if fallback_cap <= 0:
+            fallback_cap = max(45, dte_max)
+        fallback_cap = max(fallback_cap, dte_max)
+        fallback_max = min(fallback_cap, dte_max + 14)
         if (fallback_min, fallback_max) != (dte_min, dte_max):
             ranges.append((fallback_min, fallback_max))
         return ranges
