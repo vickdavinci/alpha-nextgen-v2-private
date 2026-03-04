@@ -2268,12 +2268,13 @@ INTRADAY_OTM_MAX_DOLLARS = 0  # V12.15: disable fixed-dollar clamp; MICRO uses p
 # Sells OTM put + call credit spreads simultaneously (iron condor).
 # Profits from QQQ staying in a range. Neutral-regime-only strategy.
 #
-# Managed-exit WR math (V12.27 DTE optimization):
-#   win  = IC_TARGET_CAPTURE_PCT * credit  (50% of credit)
-#   loss = IC_STOP_LOSS_MULTIPLE  * credit (50% of credit)
-#   WR_be = 0.50 / (0.50 + 0.50) = 50.0%
-#   Target realized WR >= 85%+ (sim: 87.2% over 2022-2025).
-#   Short DTE (7-14) + wide OTM (7%) = high P(stay in range) = high WR.
+# Hedge-fund style managed-exit R:R math (V12.28):
+#   win  = IC_TARGET_CAPTURE_PCT * credit  (60% of credit)
+#   loss = IC_STOP_LOSS_MULTIPLE  * credit (200% of credit)
+#   WR_be = 2.00 / (2.00 + 0.60) = 76.9%
+#   Sim WR (BSM+friction, 2022-2025): 86.6% at delta 0.20.
+#   Closer strikes (delta 0.20) collect 3× more premium than delta 0.10,
+#   overcoming 4-leg friction. Wider stop lets theta work through noise.
 # =============================================================================
 
 # ── Feature flag ──
@@ -2301,26 +2302,31 @@ IC_DTE_MIN = 7  # Minimum DTE (V12.27: was 21 — shorter DTE = less time for QQ
 IC_DTE_MAX = 14  # Maximum DTE (V12.27: was 45 — 7-14 DTE captures steepest theta decay)
 
 # ── Strike selection: short-leg delta range ──
-IC_SHORT_DELTA_MIN = 0.08  # Minimum abs delta (V12.27: was 0.16 — wider OTM for higher WR)
-IC_SHORT_DELTA_MAX = 0.12  # Maximum abs delta (V12.27: was 0.22 — ~7% OTM on QQQ)
+IC_SHORT_DELTA_MIN = (
+    0.16  # Minimum abs delta (V12.28: was 0.08 — HF-style closer strikes for viable premium)
+)
+IC_SHORT_DELTA_MAX = (
+    0.25  # Maximum abs delta (V12.28: was 0.12 — delta 0.20 center collects 3× more credit)
+)
 IC_DELTA_SYMMETRY_MAX = 0.03  # Max abs(|call_delta| - |put_delta|) for symmetry
 IC_WING_SYMMETRY_MAX = 1.0  # Max abs(call_width - put_width) in dollars
 
 # ── Wing width by VIX tier ──
-IC_WING_WIDTH_LOW_VIX = 5  # VIX < 16: $5 wings (was $3 — commission-viable)
-IC_WING_WIDTH_MID_VIX = 5  # 16 <= VIX <= 25: $5 wings (was $4)
-IC_WING_WIDTH_HIGH_VIX = 7  # 25 < VIX <= 32: $7 wings (was $5)
+IC_WING_WIDTH_LOW_VIX = 6  # VIX < 16: $6 wings (V12.28: was $5 — wider = more credit per spread)
+IC_WING_WIDTH_MID_VIX = 6  # 16 <= VIX <= 25: $6 wings (V12.28: was $5)
+IC_WING_WIDTH_HIGH_VIX = 8  # 25 < VIX <= 32: $8 wings (V12.28: was $7 — absorb VIX expansion)
 IC_WING_WIDTH_FALLBACK_TOLERANCE = 1  # Accept ±$1 if exact width unavailable
 
 # ── Credit quality / C/W gates (VIX-tiered) ──
 # Constraint: C/W_floor ≤ IC_MAX_STOP_DW / (1 + IC_STOP_LOSS_MULTIPLE)
-# With MAX_STOP_DW=0.65, STOP_MULT=0.50 → max feasible C/W = 0.433
+# With MAX_STOP_DW=0.95, STOP_MULT=2.00 → max feasible C/W = 0.317
+# Delta 0.20 on $6 wings typically yields C/W ~0.29, well within bounds.
 IC_MIN_CREDIT_TO_WIDTH = 0.28  # Default C/W floor (V12.26: was 0.25)
 IC_CW_FLOOR_LOW_VIX = 0.30  # C/W floor when VIX < 16 (V12.26: was 0.25, better quality entries)
 IC_CW_FLOOR_MID_VIX = 0.28  # C/W floor when 16 <= VIX <= 25 (V12.26: was 0.25)
 IC_CW_FLOOR_HIGH_VIX = 0.25  # C/W floor when 25 < VIX <= 32 (V12.26: was 0.23)
 IC_MAX_IMPLIED_WR = 0.78  # Reject if implied expiry WR > 78%
-IC_MAX_STOP_DW = 0.65  # Max stop D/W ceiling (C/W × (1+STOP_MULT) must be ≤ this)
+IC_MAX_STOP_DW = 0.95  # Max stop D/W ceiling (V12.28: was 0.65 — raised for 2.0× stop; ensures stop debit < wing)
 
 # ── Liquidity / mark quality ──
 IC_MIN_OPEN_INTEREST = 100  # Minimum OI per leg
@@ -2335,8 +2341,12 @@ IC_SCAN_THROTTLE_MINUTES = 15  # Don't re-scan same chain within N minutes
 
 # Elastic delta widening: progressively relax delta band if no candidates found
 IC_ELASTIC_DELTA_STEPS = [0.0, 0.03, 0.06, 0.10]  # Widen ± each step
-IC_ELASTIC_DELTA_FLOOR = 0.05  # Never accept delta below this (V12.27: was 0.10)
-IC_ELASTIC_DELTA_CEILING = 0.18  # Never accept delta above this (V12.27: was 0.30)
+IC_ELASTIC_DELTA_FLOOR = (
+    0.12  # Never accept delta below this (V12.28: was 0.05 — below 0.12 = too little premium)
+)
+IC_ELASTIC_DELTA_CEILING = (
+    0.30  # Never accept delta above this (V12.28: was 0.18 — allow up to 0.30 in relaxation)
+)
 
 # Multi-DTE range fallback: try primary range first, then fallback ranges
 IC_DTE_RANGES = [(7, 10), (10, 14)]  # Ordered by preference (V12.27: short DTE sweet spot)
@@ -2349,10 +2359,10 @@ IC_CW_ABSOLUTE_FLOOR = (
 
 # ── Exit parameters ──
 IC_TARGET_CAPTURE_PCT = (
-    0.50  # Close at 50% of credit captured (V12.27: was 0.75 — take profits fast)
+    0.60  # Close at 60% of credit captured (V12.28: was 0.50 — let theta work longer)
 )
 IC_STOP_LOSS_MULTIPLE = (
-    0.50  # Stop at 50% of credit lost (V12.27: was 1.00 — cut losses immediately)
+    2.00  # Stop at 2× credit lost (V12.28: was 0.50 — wider stop lets theta recover through noise)
 )
 IC_TIME_EXIT_DTE = 3  # Close by 3 DTE (V12.27: was 14 — short DTE trades exit near expiry)
 IC_VIX_SPIKE_EXIT = 33.0  # Emergency exit on VIX spike (V12.26: was 30, VIX 30-32 survivable)
@@ -2381,7 +2391,9 @@ IC_DIVIDEND_GUARD_DTE = 3  # Close before ex-div if DTE <= this
 # IC profits from underlying staying in range.  If the underlying moves too far
 # from entry price, the range thesis is dead — exit regardless of regime score.
 IC_UNDERLYING_INVALIDATION_ENABLED = True
-IC_UNDERLYING_INVALIDATION_PCT = 0.045  # 4.5% move from entry → thesis broken (V12.26: was 0.03, QQQ 3-day swing hits 3% routinely)
+IC_UNDERLYING_INVALIDATION_PCT = (
+    0.04  # 4% move from entry → thesis broken (V12.28: was 0.045, tighter for closer strikes)
+)
 
 # ── IC Strike Reuse Guard ──
 # Block new IC entry when any candidate leg strike matches an active/pending

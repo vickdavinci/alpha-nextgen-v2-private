@@ -441,15 +441,15 @@ class TestVIXTiers:
 
     def test_low_vix_width(self):
         engine = _make_engine()
-        assert engine._get_wing_width_for_vix(12.0) == 5
+        assert engine._get_wing_width_for_vix(12.0) == 6
 
     def test_mid_vix_width(self):
         engine = _make_engine()
-        assert engine._get_wing_width_for_vix(20.0) == 5
+        assert engine._get_wing_width_for_vix(20.0) == 6
 
     def test_high_vix_width(self):
         engine = _make_engine()
-        assert engine._get_wing_width_for_vix(28.0) == 7
+        assert engine._get_wing_width_for_vix(28.0) == 8
 
     def test_low_vix_cw_floor(self):
         engine = _make_engine()
@@ -529,8 +529,8 @@ class TestExitTriggers:
         # Use date past hold guard (10 days for 30 DTE entry)
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-250,  # > 240 loss
-            current_dte=20,
+            combined_pnl=-490,  # credit_100=240, stop=2.0×=480; 490 > 480
+            current_dte=8,
             vix_current=18,
             regime_score=52,
             qqq_price=480,
@@ -1740,12 +1740,12 @@ class TestHoldGuard:
         """After hold window, full cascade runs normally."""
         engine = _make_engine()
         condor = _make_condor(net_credit=1.20, num_spreads=2)
-        # credit_100 = 240; stop = 100% = 240
+        # credit_100 = 240; stop = 2.0× = 480
         # Hold window: check at day 11 (past hold).
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-250,  # > 240 loss → stop fires
-            current_dte=20,
+            combined_pnl=-490,  # > 480 loss → stop fires
+            current_dte=8,
             vix_current=18,
             regime_score=52,
             qqq_price=480,
@@ -1760,11 +1760,11 @@ class TestHoldGuard:
         engine = _make_engine()
         condor = _make_condor(entry_dte=7)
         # Hold = 2 days = 2880 min. Entry: Mar 1 11:00
-        # credit_100 = 240; stop = 0.50 × 240 = 120; use pnl=-150 (triggers stop but not hard stop)
+        # credit_100 = 240; stop = 2.0× = 480; use pnl=-490 (triggers stop but not hard stop 2.5×=600)
         # Day 1 (Mar 2): still within hold → blocked
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-150,  # Would trigger stop (> 120) but not hard stop (< 600)
+            combined_pnl=-490,  # Would trigger stop (> 480) but not hard stop (< 600)
             current_dte=6,
             vix_current=18,
             regime_score=52,
@@ -1776,7 +1776,7 @@ class TestHoldGuard:
         # Day 3 (Mar 4): past hold → cascade fires
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-150,
+            combined_pnl=-490,
             current_dte=4,
             vix_current=18,
             regime_score=52,
@@ -1792,11 +1792,11 @@ class TestHoldGuard:
         engine = _make_engine()
         condor = _make_condor(entry_dte=14)
         # Hold = 3 days (capped at max). Entry: Mar 1 11:00
-        # credit_100 = 240; stop = 0.50 × 240 = 120; use pnl=-150
+        # credit_100 = 240; stop = 2.0× = 480; use pnl=-490
         # Day 2 (Mar 3): still within 3-day hold → blocked
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-150,
+            combined_pnl=-490,
             current_dte=12,
             vix_current=18,
             regime_score=52,
@@ -1808,7 +1808,7 @@ class TestHoldGuard:
         # Day 4 (Mar 5): past 3-day hold → cascade fires
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-150,
+            combined_pnl=-490,
             current_dte=10,
             vix_current=18,
             regime_score=52,
@@ -1824,10 +1824,11 @@ class TestHoldGuard:
         engine = _make_engine()
         condor = _make_condor(net_credit=1.20, num_spreads=2)
         with _patch_config(IC_HOLD_GUARD_ENABLED=False):
+            # credit_100=240; stop=2.0×=480; pnl=-490 triggers stop
             result = engine.check_exit_signals(
                 condor=condor,
-                combined_pnl=-370,  # Would trigger P3 stop
-                current_dte=20,
+                combined_pnl=-490,
+                current_dte=8,
                 vix_current=18,
                 regime_score=52,
                 qqq_price=480,
