@@ -1683,6 +1683,16 @@ class IronCondorEngine:
 
     def reset_daily(self) -> None:
         """Reset intraday state at start of new trading day."""
+        # Log daily IC diagnostic summary before reset
+        if self._diag_candidates > 0 or self._diag_approved > 0:
+            top_drops = sorted(self._diag_drop_codes.items(), key=lambda x: -x[1])[:3]
+            drop_str = ", ".join(f"{k}={v}" for k, v in top_drops) if top_drops else "none"
+            self._log(
+                f"DAILY_DIAG | scans={self._diag_candidates} "
+                f"approved={self._diag_approved} dropped={self._diag_dropped} "
+                f"| top_drops=[{drop_str}]",
+                trades_only=True,
+            )
         self._trades_today = 0
         self._daily_pnl = 0.0
         self._pending_entry = False
