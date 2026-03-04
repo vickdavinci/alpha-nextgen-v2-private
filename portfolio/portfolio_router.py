@@ -3812,7 +3812,11 @@ class PortfolioRouter:
             preclear_ok, preclear_detail = self._run_option_exit_preclear(order)
             if not preclear_ok:
                 self.log(f"ROUTER: {preclear_detail}")
-                if preclear_detail.startswith("EXIT_PRE_CLEAR_INFLIGHT_CLOSE"):
+                # Preclear pending/inflight-close is a transient defer state, not an
+                # execution rejection. Preserve close intent and retry on next cycle.
+                if preclear_detail.startswith(
+                    ("EXIT_PRE_CLEAR_INFLIGHT_CLOSE", "EXIT_PRE_CLEAR_PENDING")
+                ):
                     continue
                 self._record_rejection(
                     code="R_EXIT_PRECLEAR_PENDING",

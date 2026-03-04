@@ -823,6 +823,37 @@ class TestExecute:
 
         assert len(executed) == 0
 
+    def test_execute_preclear_pending_is_deferred_not_rejected(self):
+        """Transient preclear pending should defer close submit without router rejection."""
+        mock_algo = MagicMock()
+        router = PortfolioRouter(algorithm=mock_algo)
+        router._run_option_exit_preclear = MagicMock(
+            return_value=(
+                False,
+                "EXIT_PRE_CLEAR_PENDING: Symbols=QQQ 260130C00500000 | Elapsed=0s/30s",
+            )
+        )
+
+        orders = [
+            OrderIntent(
+                "QQQ 260130C00500000",
+                1,
+                OrderSide.SELL,
+                OrderType.MARKET,
+                Urgency.IMMEDIATE,
+                "TEST_CLOSE",
+                0.0,
+                0.0,
+                metadata={"options_lane": "VASS"},
+            ),
+        ]
+
+        executed = router.execute_orders(orders)
+
+        assert executed == []
+        assert router.get_last_rejections() == []
+        mock_algo.MarketOrder.assert_not_called()
+
 
 class TestProcessImmediate:
     """Tests for process_immediate method."""
