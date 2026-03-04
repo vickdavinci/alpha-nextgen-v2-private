@@ -174,6 +174,7 @@ class MainOptionsMixin:
         self._diag_vass_mfe_t2_hits = 0
         self._diag_vass_mfe_lock_exits = 0
         self._diag_vass_tail_cap_exits = 0
+        self._diag_vass_credit_theta_first_active_checks = 0
         self._diag_vass_thesis_soft_stop_checks = 0
         self._diag_vass_thesis_soft_stop_armed = 0
         self._diag_vass_thesis_soft_stop_exits = 0
