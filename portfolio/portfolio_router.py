@@ -804,14 +804,22 @@ class PortfolioRouter:
             return []
         return matches
 
-    def _cancel_open_orders_for_symbols(self, symbols: List[str]) -> Tuple[int, int]:
-        """Cancel all open broker orders for symbols; returns (canceled, cancel_errors)."""
+    def _cancel_open_orders_for_symbols(
+        self,
+        symbols: List[str],
+        open_orders: Optional[List[Any]] = None,
+    ) -> Tuple[int, int]:
+        """Cancel open broker orders for symbols; returns (canceled, cancel_errors)."""
         if not self.algorithm:
             return 0, 0
-        open_orders = self._get_open_orders_for_symbols(symbols)
+        open_orders_to_cancel = (
+            list(open_orders)
+            if open_orders is not None
+            else self._get_open_orders_for_symbols(symbols)
+        )
         canceled = 0
         cancel_errors = 0
-        for open_order in open_orders:
+        for open_order in open_orders_to_cancel:
             try:
                 order_id = int(getattr(open_order, "Id", 0) or 0)
                 if order_id <= 0:
@@ -907,6 +915,24 @@ class PortfolioRouter:
             order.is_combo and is_vass_hint and bool(metadata.get("spread_close_short", False))
         )
 
+        def _is_close_side_open_order(open_order: Any) -> bool:
+            open_symbol = self._normalize_symbol_key(getattr(open_order, "Symbol", None))
+            open_qty = int(getattr(open_order, "Quantity", 0) or 0)
+            if not open_symbol or open_qty == 0:
+                return False
+            live_qty = self._get_live_option_qty(open_symbol)
+            return (open_qty < 0 < live_qty) or (open_qty > 0 > live_qty)
+
+        def _partition_open_orders(open_orders: List[Any]) -> Tuple[List[Any], List[Any]]:
+            close_side: List[Any] = []
+            blocking: List[Any] = []
+            for open_order in open_orders:
+                if _is_close_side_open_order(open_order):
+                    close_side.append(open_order)
+                else:
+                    blocking.append(open_order)
+            return close_side, blocking
+
         # V12.23.2: For VASS spread closes, replace same-spread in-flight close
         # orders immediately so a fresh close intent can submit in the same cycle.
         if is_vass_combo_close:
@@ -1001,15 +1027,58 @@ class PortfolioRouter:
                         f"Elapsed={elapsed_sec:.0f}s/{timeout_sec}s",
                     )
 
-        canceled, cancel_errors = self._cancel_open_orders_for_symbols(normalized)
+        close_before, blocking_before = _partition_open_orders(open_before)
+        if close_before and not blocking_before:
+            now = getattr(self.algorithm, "Time", None) if self.algorithm else None
+            first_seen = self._exit_preclear_pending_since.get(key)
+            if first_seen is None:
+                self._exit_preclear_pending_since[key] = now
+                first_seen = now
+            elapsed_sec = 0.0
+            try:
+                if first_seen is not None and now is not None:
+                    elapsed_sec = max(0.0, float((now - first_seen).total_seconds()))
+            except Exception:
+                elapsed_sec = 0.0
+            inflight_ids = _order_ids(close_before)
+            return (
+                False,
+                "EXIT_PRE_CLEAR_INFLIGHT_CLOSE: "
+                f"Symbols={','.join(normalized)} | OrderIds={inflight_ids} | "
+                f"Elapsed={elapsed_sec:.0f}s/{timeout_sec}s | Mode=GENERIC_CLOSE_INFLIGHT",
+            )
+
+        canceled, cancel_errors = self._cancel_open_orders_for_symbols(
+            normalized,
+            open_orders=blocking_before,
+        )
         open_after = self._get_open_orders_for_symbols(normalized)
-        remaining = len(open_after)
-        remaining_ids = _order_ids(open_after)
-        if remaining <= 0:
+        if not open_after:
             self._exit_preclear_pending_since.pop(key, None)
             return (
                 True,
                 f"EXIT_PRE_CLEAR_OK: Symbols={','.join(normalized)} | Canceled={canceled}",
+            )
+        close_after, blocking_after = _partition_open_orders(open_after)
+        remaining = len(open_after)
+        remaining_ids = _order_ids(open_after)
+        if close_after and not blocking_after:
+            now = getattr(self.algorithm, "Time", None) if self.algorithm else None
+            first_seen = self._exit_preclear_pending_since.get(key)
+            if first_seen is None:
+                self._exit_preclear_pending_since[key] = now
+                first_seen = now
+            elapsed_sec = 0.0
+            try:
+                if first_seen is not None and now is not None:
+                    elapsed_sec = max(0.0, float((now - first_seen).total_seconds()))
+            except Exception:
+                elapsed_sec = 0.0
+            return (
+                False,
+                "EXIT_PRE_CLEAR_INFLIGHT_CLOSE: "
+                f"Symbols={','.join(normalized)} | OrderIds={_order_ids(close_after)} | "
+                f"Elapsed={elapsed_sec:.0f}s/{timeout_sec}s | Mode=POST_CANCEL_CLOSE_INFLIGHT",
             )
 
         now = getattr(self.algorithm, "Time", None) if self.algorithm else None

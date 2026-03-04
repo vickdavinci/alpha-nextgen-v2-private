@@ -1069,6 +1069,76 @@ class TestExitPreclearBypass:
         assert ok is True
         assert "EXIT_PRE_CLEAR_BYPASS" in detail
 
+    def test_preclear_defers_when_close_order_already_inflight(self):
+        """If only close-side open orders exist, preclear should defer without cancel churn."""
+        router = PortfolioRouter()
+        order = OrderIntent(
+            symbol="QQQ 260130C00500000",
+            quantity=1,
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            urgency=Urgency.IMMEDIATE,
+            reason="TEST_CLOSE",
+            target_weight=0.0,
+            current_weight=0.0,
+        )
+        close_order = MagicMock()
+        close_order.Symbol = "QQQ 260130C00500000"
+        close_order.Quantity = -1
+        close_order.Id = 101
+
+        router._is_option_close_order = MagicMock(return_value=True)
+        router._get_live_option_qty = MagicMock(return_value=1)
+        router._get_open_orders_for_symbols = MagicMock(return_value=[close_order])
+        router._cancel_open_orders_for_symbols = MagicMock(return_value=(0, 0))
+
+        ok, detail = router._run_option_exit_preclear(order)
+
+        assert ok is False
+        assert "EXIT_PRE_CLEAR_INFLIGHT_CLOSE" in detail
+        assert "GENERIC_CLOSE_INFLIGHT" in detail
+        router._cancel_open_orders_for_symbols.assert_not_called()
+
+    def test_preclear_cancels_only_blocking_orders_then_defers(self):
+        """Mixed open orders should cancel blockers and preserve existing close intent."""
+        router = PortfolioRouter()
+        order = OrderIntent(
+            symbol="QQQ 260130C00500000",
+            quantity=1,
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            urgency=Urgency.IMMEDIATE,
+            reason="TEST_CLOSE",
+            target_weight=0.0,
+            current_weight=0.0,
+        )
+        close_order = MagicMock()
+        close_order.Symbol = "QQQ 260130C00500000"
+        close_order.Quantity = -1
+        close_order.Id = 201
+        blocker_order = MagicMock()
+        blocker_order.Symbol = "QQQ 260130C00500000"
+        blocker_order.Quantity = 1
+        blocker_order.Id = 202
+
+        router._is_option_close_order = MagicMock(return_value=True)
+        router._get_live_option_qty = MagicMock(return_value=1)
+        router._get_open_orders_for_symbols = MagicMock(
+            side_effect=[[close_order, blocker_order], [close_order]]
+        )
+        router._cancel_open_orders_for_symbols = MagicMock(return_value=(1, 0))
+
+        ok, detail = router._run_option_exit_preclear(order)
+
+        assert ok is False
+        assert "EXIT_PRE_CLEAR_INFLIGHT_CLOSE" in detail
+        assert "POST_CANCEL_CLOSE_INFLIGHT" in detail
+        router._cancel_open_orders_for_symbols.assert_called_once()
+        _, kwargs = router._cancel_open_orders_for_symbols.call_args
+        assert "open_orders" in kwargs
+        assert len(kwargs["open_orders"]) == 1
+        assert int(kwargs["open_orders"][0].Id) == 202
+
 
 class TestRouterSymbolNormalization:
     """Tests for router symbol key normalization consistency."""
