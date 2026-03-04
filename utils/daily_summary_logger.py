@@ -252,6 +252,12 @@ def log_daily_summary(algo) -> None:
     vass_credit_theta_first_active = int(
         getattr(algo, "_diag_vass_credit_theta_first_active_checks", 0) or 0
     )
+    vass_premarket_guarded_skip = int(
+        getattr(algo, "_diag_vass_premarket_itm_guarded_skip_count", 0) or 0
+    )
+    vass_friday_skipped_dte = int(
+        getattr(algo, "_diag_vass_friday_firewall_skipped_dte_count", 0) or 0
+    )
     vass_thesis_checks = int(getattr(algo, "_diag_vass_thesis_soft_stop_checks", 0) or 0)
     vass_thesis_armed = int(getattr(algo, "_diag_vass_thesis_soft_stop_armed", 0) or 0)
     vass_thesis_exits = int(getattr(algo, "_diag_vass_thesis_soft_stop_exits", 0) or 0)
@@ -311,7 +317,11 @@ def log_daily_summary(algo) -> None:
             f"VMFE={vass_mfe_peak:.1%}/{vass_mfe_t1}/{vass_mfe_t2}/{vass_mfe_lock_exits}/{vass_tail_cap_exits}"
         )
     if vass_credit_theta_first_active > 0:
-        compact_parts.append(f"VCT={vass_credit_theta_first_active}")
+        compact_parts.append(f"CREDIT_THETA_FIRST_ACTIVE={vass_credit_theta_first_active}")
+    if vass_premarket_guarded_skip > 0:
+        compact_parts.append(f"PREMARKET_ITM_GUARDED_SKIP={vass_premarket_guarded_skip}")
+    if vass_friday_skipped_dte > 0:
+        compact_parts.append(f"FRIDAY_FIREWALL_SKIPPED_DTE={vass_friday_skipped_dte}")
     if vass_thesis_checks > 0 or vass_thesis_armed > 0 or vass_thesis_exits > 0:
         compact_parts.append(f"VTS={vass_thesis_checks}/{vass_thesis_armed}/{vass_thesis_exits}")
     transition_total = _fmt_transition_derisk_totals()

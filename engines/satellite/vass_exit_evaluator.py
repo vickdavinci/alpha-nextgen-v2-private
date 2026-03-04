@@ -755,7 +755,7 @@ def check_spread_exit_signals_impl(
                     if spread_key not in self._spread_hold_guard_logged:
                         self._spread_hold_guard_logged.add(spread_key)
                         self.log(
-                            f"CREDIT_THETA_HOLD_GUARD: Key={spread_key} | Sig={spread.spread_type} | "
+                            f"CREDIT_THETA_FIRST_ACTIVE: HOLD_GUARD | Key={spread_key} | Sig={spread.spread_type} | "
                             f"Held={credit_theta_hold_minutes:.0f}m < {credit_hold_min}m | DTE={current_dte}",
                             trades_only=True,
                         )
@@ -1575,6 +1575,10 @@ def check_spread_exit_signals_impl(
                 "vass_no_reentry_lock_minutes": catastrophic_lock_minutes,
                 "is_credit_spread": is_credit_spread,
                 "spread_credit_received": abs(spread.net_debit) if is_credit_spread else 0.0,
+                "credit_theta_first_active": bool(credit_theta_first_mode),
+                "spread_exit_policy": (
+                    "CREDIT_THETA_FIRST_ACTIVE" if credit_theta_first_mode else "LEGACY"
+                ),
             },
         ),
     ]

@@ -118,8 +118,22 @@ def check_friday_firewall_exit_impl(
             )
             current_dte = _resolve_spread_live_dte(spread)
             if theta_mode_active and suppress_dte_gt > 0 and current_dte > suppress_dte_gt:
+                if self.algorithm is not None and hasattr(
+                    self.algorithm, "_diag_vass_friday_firewall_skipped_dte_count"
+                ):
+                    self.algorithm._diag_vass_friday_firewall_skipped_dte_count = (
+                        int(
+                            getattr(
+                                self.algorithm,
+                                "_diag_vass_friday_firewall_skipped_dte_count",
+                                0,
+                            )
+                            or 0
+                        )
+                        + 1
+                    )
                 self.log(
-                    "FRIDAY_FIREWALL: Skipping credit spread in THETA_FIRST mode | "
+                    "FRIDAY_FIREWALL_SKIPPED_DTE: "
                     f"Type={spread_type} | DTE={current_dte} > {suppress_dte_gt} | "
                     f"Entry={entry_date} Fresh={is_fresh_trade} | VIX={current_vix:.1f}",
                     trades_only=True,

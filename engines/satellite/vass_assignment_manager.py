@@ -349,8 +349,22 @@ def check_premarket_itm_shorts_impl(
 
         if not (dte_gate or extrinsic_gate):
             extrinsic_text = "NA" if extrinsic is None else f"{extrinsic:.2f}"
+            if self.algorithm is not None and hasattr(
+                self.algorithm, "_diag_vass_premarket_itm_guarded_skip_count"
+            ):
+                self.algorithm._diag_vass_premarket_itm_guarded_skip_count = (
+                    int(
+                        getattr(
+                            self.algorithm,
+                            "_diag_vass_premarket_itm_guarded_skip_count",
+                            0,
+                        )
+                        or 0
+                    )
+                    + 1
+                )
             self.log(
-                "PREMARKET_ITM_CHECK: Guarded skip | "
+                "PREMARKET_ITM_GUARDED_SKIP: "
                 f"Type={spread.spread_type} | DTE={current_dte} > {dte_max} | "
                 f"Extrinsic={extrinsic_text} > {extrinsic_max:.2f} | "
                 f"Underlying={underlying_price:.2f}",
