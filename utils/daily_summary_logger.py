@@ -252,6 +252,12 @@ def log_daily_summary(algo) -> None:
     vass_thesis_checks = int(getattr(algo, "_diag_vass_thesis_soft_stop_checks", 0) or 0)
     vass_thesis_armed = int(getattr(algo, "_diag_vass_thesis_soft_stop_armed", 0) or 0)
     vass_thesis_exits = int(getattr(algo, "_diag_vass_thesis_soft_stop_exits", 0) or 0)
+    preclear_diag_counts = {}
+    try:
+        preclear_diag_counts = algo.portfolio_router.get_preclear_diag_counts()
+    except Exception:
+        preclear_diag_counts = {}
+    preclear_diag_top = _top_counts(preclear_diag_counts, top_n=6)
 
     compact_parts = [
         f"C={algo._diag_intraday_candidate_count}",
@@ -338,4 +344,6 @@ def log_daily_summary(algo) -> None:
         compact_parts.append("KSSA=1")
     if ks_skip_until:
         compact_parts.append(f"KSU={ks_skip_until}")
+    if preclear_diag_top != "NONE":
+        compact_parts.append(f"Preclear={preclear_diag_top}")
     _log("OPTIONS_DIAG_SUMMARY: " + " | ".join(compact_parts), priority=1)

@@ -130,6 +130,11 @@ class MainMarketCloseMixin:
         self._diag_router_reject_reason_counts.clear()
         for _store in self._diag_router_reject_reason_counts_by_engine.values():
             _store.clear()
+        if hasattr(self, "portfolio_router") and self.portfolio_router is not None:
+            try:
+                self.portfolio_router.clear_preclear_diag_counts()
+            except Exception:
+                pass
         self._diag_vass_reject_reason_counts.clear()
         self._diag_vass_mfe_peak_max_profit_pct = 0.0
         self._diag_vass_mfe_t1_hits = 0

@@ -213,6 +213,8 @@ class PortfolioRouter:
         self._signal_seq: int = 0
         # Exit pre-clear barrier state: key -> first observed timestamp while waiting for cancels.
         self._exit_preclear_pending_since: Dict[str, Any] = {}
+        # Preclear telemetry counters for daily diagnostics.
+        self._preclear_diag_counts: Dict[str, int] = {}
         # Per-symbol cooldown for stale close intents (no live holdings).
         self._stale_close_reject_cooldown_until: Dict[str, Any] = {}
 
@@ -846,6 +848,12 @@ class PortfolioRouter:
         if not self._is_option_close_order(order):
             return True, ""
 
+        def _record_preclear_event(event: str) -> None:
+            key = str(event or "").strip().upper()
+            if not key:
+                return
+            self._preclear_diag_counts[key] = int(self._preclear_diag_counts.get(key, 0) or 0) + 1
+
         timeout_sec = max(1, int(getattr(config, "EXIT_PRE_CLEAR_TIMEOUT_SECONDS", 30)))
         metadata = order.metadata if isinstance(order.metadata, dict) else {}
         lane = str(metadata.get("options_lane", "") or "").upper()
@@ -887,6 +895,7 @@ class PortfolioRouter:
         open_before = self._get_open_orders_for_symbols(normalized)
         if not open_before:
             self._exit_preclear_pending_since.pop(key, None)
+            _record_preclear_event("FAST_OK_NO_OPEN")
             return True, ""
 
         tag_upper = str(getattr(order, "tag", "") or "").upper()
@@ -971,6 +980,7 @@ class PortfolioRouter:
                             except Exception:
                                 cancel_errors += 1
                         self._exit_preclear_pending_since.pop(key, None)
+                        _record_preclear_event("VASS_COMBO_INFLIGHT_REPLACED")
                         return (
                             True,
                             "EXIT_PRE_CLEAR_REPLACED_INFLIGHT_CLOSE: "
@@ -978,6 +988,7 @@ class PortfolioRouter:
                             f"OrderIds={inflight_ids} | Canceled={canceled} | "
                             f"CancelErrors={cancel_errors} | Mode=VASS_COMBO_SAME_SPREAD",
                         )
+                    _record_preclear_event("INFLIGHT_DEFER")
                     return (
                         False,
                         "EXIT_PRE_CLEAR_INFLIGHT_CLOSE: "
@@ -1019,6 +1030,7 @@ class PortfolioRouter:
                 except Exception:
                     elapsed_sec = 0.0
                 if elapsed_sec < timeout_sec:
+                    _record_preclear_event("INFLIGHT_DEFER")
                     inflight_ids = _order_ids(matching_inflight)
                     return (
                         False,
@@ -1042,6 +1054,7 @@ class PortfolioRouter:
                 elapsed_sec = 0.0
             inflight_ids = _order_ids(close_before)
             if elapsed_sec < timeout_sec:
+                _record_preclear_event("INFLIGHT_DEFER")
                 return (
                     False,
                     "EXIT_PRE_CLEAR_INFLIGHT_CLOSE: "
@@ -1055,6 +1068,7 @@ class PortfolioRouter:
             after_inflight_cancel = self._get_open_orders_for_symbols(normalized)
             if not after_inflight_cancel:
                 self._exit_preclear_pending_since.pop(key, None)
+                _record_preclear_event("INFLIGHT_TIMEOUT_REPLACED")
                 return (
                     True,
                     "EXIT_PRE_CLEAR_TIMEOUT_REPLACED_INFLIGHT_CLOSE: "
@@ -1062,6 +1076,7 @@ class PortfolioRouter:
                     f"Canceled={canceled_inflight} | CancelErrors={cancel_errors_inflight} | "
                     f"Elapsed={elapsed_sec:.0f}s >= {timeout_sec}s",
                 )
+            _record_preclear_event("INFLIGHT_TIMEOUT_STILL_PENDING")
             return (
                 False,
                 "EXIT_PRE_CLEAR_PENDING: "
@@ -1079,6 +1094,7 @@ class PortfolioRouter:
         open_after = self._get_open_orders_for_symbols(normalized)
         if not open_after:
             self._exit_preclear_pending_since.pop(key, None)
+            _record_preclear_event("BLOCKERS_CLEARED_OK")
             return (
                 True,
                 f"EXIT_PRE_CLEAR_OK: Symbols={','.join(normalized)} | Canceled={canceled}",
@@ -1100,6 +1116,7 @@ class PortfolioRouter:
                 elapsed_sec = 0.0
             close_after_ids = _order_ids(close_after)
             if elapsed_sec < timeout_sec:
+                _record_preclear_event("INFLIGHT_DEFER")
                 return (
                     False,
                     "EXIT_PRE_CLEAR_INFLIGHT_CLOSE: "
@@ -1113,6 +1130,7 @@ class PortfolioRouter:
             final_open = self._get_open_orders_for_symbols(normalized)
             if not final_open:
                 self._exit_preclear_pending_since.pop(key, None)
+                _record_preclear_event("INFLIGHT_TIMEOUT_REPLACED")
                 return (
                     True,
                     "EXIT_PRE_CLEAR_TIMEOUT_REPLACED_INFLIGHT_CLOSE: "
@@ -1120,6 +1138,7 @@ class PortfolioRouter:
                     f"Canceled={canceled_inflight} | CancelErrors={cancel_errors_inflight} | "
                     f"Elapsed={elapsed_sec:.0f}s >= {timeout_sec}s | Mode=POST_CANCEL",
                 )
+            _record_preclear_event("INFLIGHT_TIMEOUT_STILL_PENDING")
             return (
                 False,
                 "EXIT_PRE_CLEAR_PENDING: "
@@ -1163,6 +1182,7 @@ class PortfolioRouter:
             and (canceled > 0 or elapsed_sec >= intraday_bypass_after)
         ):
             self._exit_preclear_pending_since.pop(key, None)
+            _record_preclear_event("INTRADAY_BYPASS")
             return (
                 True,
                 "EXIT_PRE_CLEAR_BYPASS: "
@@ -1172,6 +1192,7 @@ class PortfolioRouter:
 
         if elapsed_sec >= timeout_sec:
             self._exit_preclear_pending_since.pop(key, None)
+            _record_preclear_event("BLOCKING_TIMEOUT_RELEASE")
             return (
                 True,
                 "EXIT_PRE_CLEAR_TIMEOUT: "
@@ -1179,6 +1200,7 @@ class PortfolioRouter:
                 f"RemainingIds={remaining_ids} | Elapsed={elapsed_sec:.0f}s >= {timeout_sec}s | Continuing",
             )
 
+        _record_preclear_event("BLOCKING_PENDING")
         return (
             False,
             "EXIT_PRE_CLEAR_PENDING: "
@@ -4920,6 +4942,7 @@ class PortfolioRouter:
         self._executed_this_minute.clear()
         self._last_eod_date = None
         self._exit_preclear_pending_since.clear()
+        self._preclear_diag_counts.clear()
         self._stale_close_reject_cooldown_until.clear()
 
         self._open_spread_margin = {}
@@ -4945,6 +4968,7 @@ class PortfolioRouter:
         self._executed_this_minute.clear()
         self._last_eod_date = None
         self._exit_preclear_pending_since.clear()
+        self._preclear_diag_counts.clear()
         self._stale_close_reject_cooldown_until.clear()
         # V2.3.24: Reset rejection log throttle
         self._last_rejection_log_time = None
@@ -4953,3 +4977,11 @@ class PortfolioRouter:
         self._suppressed_rejection_event_count_by_key.clear()
         self._open_spread_margin.clear()
         self.log("ROUTER: RESET")
+
+    def get_preclear_diag_counts(self) -> Dict[str, int]:
+        """Return preclear telemetry counters for diagnostic summaries."""
+        return {str(k): int(v) for k, v in (self._preclear_diag_counts or {}).items() if int(v) > 0}
+
+    def clear_preclear_diag_counts(self) -> None:
+        """Clear preclear telemetry counters."""
+        self._preclear_diag_counts.clear()
