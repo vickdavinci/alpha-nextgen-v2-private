@@ -607,17 +607,18 @@ class MainSignalGenerationMixin:
             # Debug log - skip in backtest to avoid log limits
             return
 
-        self.options_engine.run_vass_entry_cycle(
-            chain=chain,
-            regime_score=regime_score,
-            qqq_price=qqq_price,
-            adx_value=adx_value,
-            ma200_value=ma200_value,
-            ma50_value=ma50_value,
-            iv_rank=iv_rank,
-            size_multiplier=size_multiplier,
-            is_eod_scan=is_eod_scan,
-        )
+        if bool(getattr(config, "VASS_ENABLED", True)):
+            self.options_engine.run_vass_entry_cycle(
+                chain=chain,
+                regime_score=regime_score,
+                qqq_price=qqq_price,
+                adx_value=adx_value,
+                ma200_value=ma200_value,
+                ma50_value=ma50_value,
+                iv_rank=iv_rank,
+                size_multiplier=size_multiplier,
+                is_eod_scan=is_eod_scan,
+            )
 
     def _handle_kill_switch(self, risk_result: RiskCheckResult) -> None:
         """
