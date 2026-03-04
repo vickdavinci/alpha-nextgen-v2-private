@@ -9,11 +9,21 @@
 
 set -e
 
-SRC="/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private"
+REPO_ROOT="/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private"
 DST="/Users/vigneshwaranarumugam/Documents/Trading Github/lean-workspace/AlphaNextGen"
 MINIFY=0
 VALIDATE=0
 PUSH=0
+
+# Detect worktree: if CWD is inside a worktree, use it as source
+SRC="$REPO_ROOT"
+if git rev-parse --show-toplevel >/dev/null 2>&1; then
+    GIT_TOP="$(git rev-parse --show-toplevel)"
+    if [ "$GIT_TOP" != "$REPO_ROOT" ]; then
+        SRC="$GIT_TOP"
+        echo "NOTE: Syncing from worktree: $SRC"
+    fi
+fi
 
 for arg in "$@"; do
     case "$arg" in
