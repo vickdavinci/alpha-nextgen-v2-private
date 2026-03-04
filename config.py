@@ -1067,7 +1067,7 @@ VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT_DEBIT = (
     0.55  # V12.23 C1: confirmed debit spreads harvest at 55% of max profit.
 )
 VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT_CREDIT = (
-    0.60  # Confirmed credit spreads: harvest earlier to reduce assignment drift.
+    0.50  # V12.27: harvest confirmed credits at 50% to reduce late-cycle gamma drift.
 )
 VASS_REGIME_CONFIRMED_DTE_EXIT = 2  # Confirmed conviction mode: hold until 2 DTE
 VASS_REGIME_CONFIRMED_DTE_EXIT_DEBIT = 2  # Debit spreads can hold longer in confirmed mode.
@@ -1114,14 +1114,14 @@ CREDIT_SPREAD_WIDTH_TARGET = 5.0  # $5 width for credit spreads
 CREDIT_SPREAD_DTE_MIN = 21  # V12.27: avoid short-DTE gamma zone for credit entries
 CREDIT_SPREAD_DTE_MAX = 45  # V12.27: align with theta-first credit hold horizon
 CREDIT_SPREAD_FALLBACK_TO_DEBIT = True  # V6.10 P3: Fall back to debit when credit fails
-CREDIT_SPREAD_PROFIT_TARGET = 0.55  # V12.16: improve credit expectancy before theta/gap drift
+CREDIT_SPREAD_PROFIT_TARGET = 0.50  # V12.27: standard 50% credit harvest target
 CREDIT_SPREAD_STOP_MULTIPLIER = 0.35  # V10.17: trim left-tail bleed on failed credit spreads
 CREDIT_SPREAD_TIERED_STOP_ENABLED = True
 CREDIT_SPREAD_STOP_MULT_LOW_VIX = 0.30
 CREDIT_SPREAD_STOP_MULT_MED_VIX = 0.32  # V12.16: tighter realized-loss cap in medium-IV credit tape
 CREDIT_SPREAD_STOP_MULT_HIGH_VIX = 0.35  # V12.16: tighten high-IV left-tail containment
 # V12.27: Credit stop mode toggle (legacy percent-of-max-loss vs 2x-credit model).
-CREDIT_SPREAD_STOP_MODE = "LEGACY"  # LEGACY | TWO_X_CREDIT
+CREDIT_SPREAD_STOP_MODE = "TWO_X_CREDIT"  # LEGACY | TWO_X_CREDIT
 CREDIT_SPREAD_STOP_2X_MULTIPLIER = 2.0
 CREDIT_SPREAD_MAX_LOSS_PCT_EQUITY = (
     0.0125  # V10.17: cap theoretical max-loss sizing to 1.25% equity
