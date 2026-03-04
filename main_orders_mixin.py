@@ -3097,6 +3097,44 @@ class MainOrdersMixin:
         if order_tag:
             self._cache_order_tag_hint(int(order_event.OrderId or 0), order_tag)
 
+        # V12.27: patient close policy — only HARD exits may escalate to combo-market
+        # on cancel-driven retries. SOFT exits remain on limit/retry rails.
+        raw_tag = str(order_tag or "")
+        tag_urgency = ""
+        for part in raw_tag.split("|"):
+            token = str(part or "").strip()
+            if token.lower().startswith("xurg="):
+                tag_urgency = token.split("=", 1)[1].strip().upper()
+                break
+        prior_reason = str(self._spread_forced_close_reason.get(spread_key, "") or "")
+        urgency_probe = " | ".join(
+            [prior_reason, raw_tag, str(getattr(order, "Tag", "") or "")]
+        ).upper()
+        hard_tokens = (
+            "VASS_TAIL_RISK_CAP",
+            "SPREAD_HARD_STOP_DURING_HOLD",
+            "SPREAD_HARD_STOP_TRIGGERED_PCT",
+            "SPREAD_HARD_STOP_TRIGGERED_WIDTH",
+            "TRANSITION_DERISK",
+            "TAIL_RISK_CAP",
+            "HARD_STOP",
+            "ASSIGNMENT_RISK",
+            "SHORT_LEG_ITM_EXIT",
+            "DEEP_ITM_SHORT",
+            "OVERNIGHT_ITM_BLOCK",
+            "PREMARKET_ITM",
+            "MANDATORY_DTE_CLOSE",
+            "DTE_EXIT_NO_QUOTE",
+            "SPREAD_TIME_STOP_NO_QUOTE",
+            "OVERLAY_STRESS_EXIT",
+            "KILL_SWITCH",
+            "EMERGENCY",
+            "FORCE_CLOSE",
+        )
+        allow_market_escalation = bool(
+            tag_urgency == "HARD" or any(token in urgency_probe for token in hard_tokens)
+        )
+
         cancel_reason = f"ORDER_CANCELED:{getattr(order, 'Type', 'UNKNOWN')}"
         self._spread_forced_close_reason[spread_key] = cancel_reason
         self._spread_last_close_submit_at[spread_key] = self.Time
@@ -3167,8 +3205,10 @@ class MainOrdersMixin:
                 self._spread_forced_close_retry_cycles.pop(spread_key, None)
                 self._spread_forced_close_reason.pop(spread_key, None)
             return
-        elif cancel_count >= market_escalation_count and bool(
-            getattr(config, "VASS_CLOSE_USE_COMBO_MARKET_AFTER_LIMIT_FAIL", True)
+        elif (
+            cancel_count >= market_escalation_count
+            and bool(getattr(config, "VASS_CLOSE_USE_COMBO_MARKET_AFTER_LIMIT_FAIL", True))
+            and allow_market_escalation
         ):
             self._record_order_lifecycle_event(
                 status="SPREAD_EXIT_CANCELED",
@@ -3232,6 +3272,16 @@ class MainOrdersMixin:
                 self._spread_forced_close_retry_cycles.pop(spread_key, None)
             return
         else:
+            if (
+                cancel_count >= market_escalation_count
+                and bool(getattr(config, "VASS_CLOSE_USE_COMBO_MARKET_AFTER_LIMIT_FAIL", True))
+                and (not allow_market_escalation)
+            ):
+                self.Log(
+                    f"SPREAD_CLOSE_MARKET_SUPPRESSED_SOFT: CancelCount={cancel_count} | "
+                    f"SpreadKey={spread_key} | Long={long_symbol} | Short={short_symbol} | "
+                    f"TagUrgency={tag_urgency or 'UNKNOWN'}"
+                )
             self._spread_forced_close_retry[spread_key] = self.Time
             self._record_order_lifecycle_event(
                 status="SPREAD_EXIT_CANCELED",
