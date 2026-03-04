@@ -226,6 +226,7 @@ class MainOptionsMixin:
         self._signal_lifecycle_observability_key = self._build_signal_lifecycle_observability_key()
         self._router_rejection_records: List[Dict[str, Any]] = []
         self._router_rejection_overflow_logged = False
+        self._router_rejection_artifact_bootstrapped = False
         self._router_rejection_observability_key = self._build_router_rejection_observability_key()
         self._order_lifecycle_records: List[Dict[str, Any]] = []
         self._order_lifecycle_overflow_logged = False

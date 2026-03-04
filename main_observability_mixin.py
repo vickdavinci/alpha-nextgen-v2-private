@@ -174,9 +174,12 @@ class MainObservabilityMixin:
         fields: List[str],
         rows: List[Dict[str, Any]],
         error_prefix: str,
+        emit_if_empty: bool = False,
     ) -> None:
         """Common CSV artifact serializer for observability channels."""
-        if not key or not rows:
+        if not key:
+            return
+        if not rows and not emit_if_empty:
             return
         retries = max(1, int(getattr(config, "OBSERVABILITY_OBJECTSTORE_SAVE_RETRIES", 2)))
 

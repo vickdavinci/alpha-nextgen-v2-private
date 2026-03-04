@@ -2523,7 +2523,10 @@ class AlphaNextGen(QCAlgorithm):
             return
         if not bool(getattr(config, "ROUTER_REJECTION_OBJECTSTORE_ENABLED", True)):
             return
-        if not self._router_rejection_records:
+        # Guarantee router artifact presence for every run, even when reject count is zero.
+        # Emit a header-only CSV once so downstream loaders/crosschecks don't treat it as missing.
+        rows = list(self._router_rejection_records)
+        if not rows and bool(getattr(self, "_router_rejection_artifact_bootstrapped", False)):
             return
         self._save_observability_csv_artifact(
             key=self._router_rejection_observability_key,
@@ -2537,9 +2540,11 @@ class AlphaNextGen(QCAlgorithm):
                 "detail",
                 "engine",
             ],
-            rows=self._router_rejection_records,
+            rows=rows,
             error_prefix="ROUTER_REJECTION_SAVE_ERROR",
+            emit_if_empty=True,
         )
+        self._router_rejection_artifact_bootstrapped = True
 
     def _flush_order_lifecycle_artifact(self) -> None:
         if not bool(getattr(config, "ORDER_LIFECYCLE_OBSERVABILITY_ENABLED", True)):
