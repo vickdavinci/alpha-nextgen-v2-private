@@ -529,7 +529,7 @@ def find_spread_exit_trigger(logs, exit_date, long_strike=None, short_strike=Non
                 return "DTE_EXIT"
             if "FRIDAY_FIREWALL" in text:
                 return "FRIDAY_FIREWALL"
-            if "FILL_CLOSE_RECONCILED" in text:
+            if "FILL_CLOSE_RECONCILED" in text or "RECONCILED_CLOSE" in text:
                 return "RECONCILED"
             if "SPREAD_CLOSE_RETRY" in text:
                 return "CLOSE_RETRY"
@@ -557,7 +557,7 @@ def find_spread_exit_trigger(logs, exit_date, long_strike=None, short_strike=Non
                         return "PROFIT_TARGET"
                     if "TRAIL_STOP" in text:
                         return "TRAIL_STOP"
-                    if "FILL_CLOSE_RECONCILED" in text:
+                    if "FILL_CLOSE_RECONCILED" in text or "RECONCILED_CLOSE" in text:
                         return "RECONCILED"
                     if "SPREAD_CLOSE_RETRY" in text:
                         return "CLOSE_RETRY"
@@ -602,7 +602,7 @@ def find_spread_exit_trigger_precise(logs, spread, entry_date_str):
                 return "DTE_EXIT"
             if "FRIDAY_FIREWALL" in text:
                 return "FRIDAY_FIREWALL"
-            if "FILL_CLOSE_RECONCILED" in text:
+            if "FILL_CLOSE_RECONCILED" in text or "RECONCILED_CLOSE" in text:
                 return "RECONCILED"
             if "SPREAD_CLOSE_RETRY" in text:
                 return "CLOSE_RETRY"

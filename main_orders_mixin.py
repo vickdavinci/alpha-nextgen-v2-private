@@ -538,6 +538,52 @@ class MainOrdersMixin:
             return value.strip().replace("~", "|")
         return ""
 
+    def _infer_spread_exit_reason_from_tag(self, order_tag: str) -> str:
+        """Infer a stable spread-exit reason from order tag tokens."""
+        tag = str(order_tag or "").strip()
+        if not tag:
+            return ""
+        tag_upper = tag.upper()
+        for token in (
+            "SPREAD_CLOSE_RETRY_MARKET",
+            "SPREAD_CLOSE_ESCALATED",
+            "SPREAD_CLOSE_RETRY",
+            "TAIL_RISK_CAP",
+            "SPREAD_HARD_STOP",
+            "DTE_EXIT",
+            "PROFIT_TARGET",
+            "TRAIL_STOP",
+            "VIX_SPIKE_EXIT",
+            "OVERLAY_STRESS_EXIT",
+            "REGIME_BREAK",
+            "NEUTRALITY_EXIT",
+        ):
+            if token in tag_upper:
+                return token
+        prefix = tag.split("|", 1)[0].strip()
+        if ":" in prefix:
+            lane, strategy = prefix.split(":", 1)
+            lane_upper = str(lane or "").upper().strip()
+            strategy_upper = str(strategy or "").upper().strip()
+            if lane_upper == "VASS" and strategy_upper and strategy_upper != "UNCLASSIFIED":
+                return f"RECONCILED_CLOSE:{strategy_upper}"
+        return ""
+
+    def _resolve_spread_exit_reason_for_fill(self, spread_key: str, order_tag: str = "") -> str:
+        """Resolve deterministic spread-exit reason for fill reconciliation."""
+        reason = str(self._spread_last_exit_reason.get(spread_key, "") or "").strip()
+        if reason:
+            return reason
+        forced_retry_reason = str(
+            self._spread_forced_close_reason.get(spread_key, "") or ""
+        ).strip()
+        if forced_retry_reason:
+            return f"SPREAD_CLOSE_RETRY:{forced_retry_reason}"
+        inferred = self._infer_spread_exit_reason_from_tag(order_tag)
+        if inferred:
+            return inferred
+        return "RECONCILED_CLOSE_NO_CONTEXT"
+
     def _remember_spread_close_order_key(self, order_id: int, spread_key: str) -> None:
         """Cache order-id -> spread-key to survive blank-tag lifecycle callbacks."""
         if order_id <= 0:
@@ -2828,7 +2874,10 @@ class MainOrdersMixin:
                 if spread.net_debit
                 else 0.0
             )
-            exit_reason = self._spread_last_exit_reason.get(spread_key, "FILL_CLOSE_RECONCILED")
+            exit_reason = self._resolve_spread_exit_reason_for_fill(
+                spread_key=spread_key,
+                order_tag=order_tag,
+            )
             self._budget_log(
                 f"SPREAD: EXIT | Reason={exit_reason} | "
                 f"Type={spread.spread_type} | Entry={spread.net_debit:.2f} | "
