@@ -183,6 +183,36 @@ def check_spread_exit_signals_impl(
         neutrality_exit_enabled = False
         day4_eod_exit_enabled = False
 
+    credit_theta_first_mode = bool(
+        is_credit_spread and getattr(config, "VASS_CREDIT_THETA_FIRST_ENABLED", False)
+    )
+    if credit_theta_first_mode and bool(
+        getattr(config, "VASS_CREDIT_THETA_FIRST_REQUIRE_REGIME_CONFIRMED", True)
+    ):
+        credit_theta_first_mode = bool(regime_confirmed)
+
+    credit_mark_stop_suppressed = credit_theta_first_mode and bool(
+        getattr(config, "VASS_CREDIT_THETA_FIRST_SUPPRESS_MARK_STOP", True)
+    )
+    credit_conviction_floor_suppressed = credit_theta_first_mode and bool(
+        getattr(config, "VASS_CREDIT_THETA_FIRST_SUPPRESS_CONVICTION_FLOOR", True)
+    )
+    credit_mfe_t1_suppressed = credit_theta_first_mode and bool(
+        getattr(config, "VASS_CREDIT_THETA_FIRST_SUPPRESS_MFE_T1", True)
+    )
+
+    if credit_mark_stop_suppressed:
+        mark_stop_enabled = False
+
+    if (
+        credit_theta_first_mode
+        and self.algorithm is not None
+        and hasattr(self.algorithm, "_diag_vass_credit_theta_first_active_checks")
+    ):
+        self.algorithm._diag_vass_credit_theta_first_active_checks = (
+            int(getattr(self.algorithm, "_diag_vass_credit_theta_first_active_checks", 0) or 0) + 1
+        )
+
     if regime_confirmed:
         if is_credit_spread:
             if bool(getattr(config, "VASS_REGIME_CONFIRMED_DISABLE_CREDIT_TRAIL", False)):
@@ -814,7 +844,7 @@ def check_spread_exit_signals_impl(
             floor_pnl = None
             if spread.mfe_lock_tier >= 2:
                 floor_pnl = spread.max_profit * floor_t2_pct + commission_per_share
-            elif spread.mfe_lock_tier >= 1:
+            elif spread.mfe_lock_tier >= 1 and not credit_mfe_t1_suppressed:
                 floor_pnl = commission_per_share
 
             if floor_pnl is not None and pnl <= floor_pnl:
@@ -855,6 +885,8 @@ def check_spread_exit_signals_impl(
                 else 0.0
             )
             credit_floor_hit = credit_loss_pct >= floor_pct and pnl < 0
+            if credit_conviction_floor_suppressed:
+                credit_floor_hit = False
             loss_gate_hit = credit_loss_pct >= max(0.0, min_loss_pct)
             equity_cap_hit = cap_dollars > 0 and loss_dollars >= cap_dollars and loss_gate_hit
             if equity_cap_hit or credit_floor_hit:
