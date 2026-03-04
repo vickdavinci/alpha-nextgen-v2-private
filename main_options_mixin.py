@@ -231,6 +231,12 @@ class MainOptionsMixin:
         self._router_rejection_overflow_logged = False
         self._router_rejection_artifact_bootstrapped = False
         self._router_rejection_observability_key = self._build_router_rejection_observability_key()
+        # Bootstrap router rejection artifact header at initialize-time so runs
+        # that terminate early still expose the channel in ObjectStore.
+        try:
+            self._flush_router_rejection_artifact()
+        except Exception:
+            pass
         self._order_lifecycle_records: List[Dict[str, Any]] = []
         self._order_lifecycle_overflow_logged = False
         self._order_lifecycle_observability_key = self._build_order_lifecycle_observability_key()
