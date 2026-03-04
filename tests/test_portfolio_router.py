@@ -12,6 +12,7 @@ Tests central coordination and order execution:
 Spec: docs/11-portfolio-router.md
 """
 
+from datetime import datetime, timedelta
 from unittest.mock import ANY, MagicMock, call
 
 import pytest
@@ -1138,6 +1139,79 @@ class TestExitPreclearBypass:
         assert "open_orders" in kwargs
         assert len(kwargs["open_orders"]) == 1
         assert int(kwargs["open_orders"][0].Id) == 202
+
+    def test_preclear_timeout_replaces_stale_inflight_close(self):
+        """After timeout, stale close-only inflight orders should be replaced."""
+        algo = MagicMock()
+        now = datetime(2026, 1, 5, 10, 0, 40)
+        algo.Time = now
+        router = PortfolioRouter(algorithm=algo)
+        symbol = "QQQ 260130C00500000"
+        key = router._normalize_symbol_key(symbol)
+        router._exit_preclear_pending_since[key] = now - timedelta(seconds=40)
+
+        order = OrderIntent(
+            symbol=symbol,
+            quantity=1,
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            urgency=Urgency.IMMEDIATE,
+            reason="TEST_CLOSE",
+            target_weight=0.0,
+            current_weight=0.0,
+        )
+        close_order = MagicMock()
+        close_order.Symbol = symbol
+        close_order.Quantity = -1
+        close_order.Id = 301
+
+        router._is_option_close_order = MagicMock(return_value=True)
+        router._get_live_option_qty = MagicMock(return_value=1)
+        router._get_open_orders_for_symbols = MagicMock(side_effect=[[close_order], []])
+        router._cancel_open_orders_for_symbols = MagicMock(return_value=(1, 0))
+
+        ok, detail = router._run_option_exit_preclear(order)
+
+        assert ok is True
+        assert "EXIT_PRE_CLEAR_TIMEOUT_REPLACED_INFLIGHT_CLOSE" in detail
+        router._cancel_open_orders_for_symbols.assert_called_once()
+
+    def test_preclear_timeout_cancel_still_pending_when_inflight_remains(self):
+        """If stale inflight close remains after cancel, stay deferred and avoid duplicate submit."""
+        algo = MagicMock()
+        now = datetime(2026, 1, 5, 10, 0, 40)
+        algo.Time = now
+        router = PortfolioRouter(algorithm=algo)
+        symbol = "QQQ 260130C00500000"
+        key = router._normalize_symbol_key(symbol)
+        router._exit_preclear_pending_since[key] = now - timedelta(seconds=40)
+
+        order = OrderIntent(
+            symbol=symbol,
+            quantity=1,
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            urgency=Urgency.IMMEDIATE,
+            reason="TEST_CLOSE",
+            target_weight=0.0,
+            current_weight=0.0,
+        )
+        close_order = MagicMock()
+        close_order.Symbol = symbol
+        close_order.Quantity = -1
+        close_order.Id = 302
+
+        router._is_option_close_order = MagicMock(return_value=True)
+        router._get_live_option_qty = MagicMock(return_value=1)
+        router._get_open_orders_for_symbols = MagicMock(side_effect=[[close_order], [close_order]])
+        router._cancel_open_orders_for_symbols = MagicMock(return_value=(0, 0))
+
+        ok, detail = router._run_option_exit_preclear(order)
+
+        assert ok is False
+        assert "EXIT_PRE_CLEAR_PENDING" in detail
+        assert "INFLIGHT_TIMEOUT_CANCEL" in detail
+        router._cancel_open_orders_for_symbols.assert_called_once()
 
 
 class TestRouterSymbolNormalization:

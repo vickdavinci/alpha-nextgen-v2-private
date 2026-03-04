@@ -294,7 +294,7 @@ def match_spread_exit(spread, all_spread_exits, tolerance=0.15):
                 best_reason = "DAY4_EOD_CLOSE"
             elif "FRIDAY_FIREWALL" in reason_full:
                 best_reason = "FRIDAY_FIREWALL"
-            elif "FILL_CLOSE_RECONCILED" in reason_full:
+            elif "FILL_CLOSE_RECONCILED" in reason_full or "RECONCILED_CLOSE" in reason_full:
                 # FILL_CLOSE_RECONCILED at 15:45 = FRIDAY_FIREWALL exit
                 if log["time"] == "15:45:00" or log["time"][:5] == "15:45":
                     best_reason = "FRIDAY_FIREWALL"

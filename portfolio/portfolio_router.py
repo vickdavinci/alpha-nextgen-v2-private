@@ -1041,11 +1041,35 @@ class PortfolioRouter:
             except Exception:
                 elapsed_sec = 0.0
             inflight_ids = _order_ids(close_before)
+            if elapsed_sec < timeout_sec:
+                return (
+                    False,
+                    "EXIT_PRE_CLEAR_INFLIGHT_CLOSE: "
+                    f"Symbols={','.join(normalized)} | OrderIds={inflight_ids} | "
+                    f"Elapsed={elapsed_sec:.0f}s/{timeout_sec}s | Mode=GENERIC_CLOSE_INFLIGHT",
+                )
+            canceled_inflight, cancel_errors_inflight = self._cancel_open_orders_for_symbols(
+                normalized,
+                open_orders=close_before,
+            )
+            after_inflight_cancel = self._get_open_orders_for_symbols(normalized)
+            if not after_inflight_cancel:
+                self._exit_preclear_pending_since.pop(key, None)
+                return (
+                    True,
+                    "EXIT_PRE_CLEAR_TIMEOUT_REPLACED_INFLIGHT_CLOSE: "
+                    f"Symbols={','.join(normalized)} | OrderIds={inflight_ids} | "
+                    f"Canceled={canceled_inflight} | CancelErrors={cancel_errors_inflight} | "
+                    f"Elapsed={elapsed_sec:.0f}s >= {timeout_sec}s",
+                )
             return (
                 False,
-                "EXIT_PRE_CLEAR_INFLIGHT_CLOSE: "
-                f"Symbols={','.join(normalized)} | OrderIds={inflight_ids} | "
-                f"Elapsed={elapsed_sec:.0f}s/{timeout_sec}s | Mode=GENERIC_CLOSE_INFLIGHT",
+                "EXIT_PRE_CLEAR_PENDING: "
+                f"Symbols={','.join(normalized)} | Canceled={canceled_inflight} | "
+                f"Remaining={len(after_inflight_cancel)} | "
+                f"RemainingIds={_order_ids(after_inflight_cancel)} | "
+                f"CancelErrors={cancel_errors_inflight} | Elapsed={elapsed_sec:.0f}s/{timeout_sec}s | "
+                "Mode=GENERIC_INFLIGHT_TIMEOUT_CANCEL",
             )
 
         canceled, cancel_errors = self._cancel_open_orders_for_symbols(
@@ -1074,11 +1098,35 @@ class PortfolioRouter:
                     elapsed_sec = max(0.0, float((now - first_seen).total_seconds()))
             except Exception:
                 elapsed_sec = 0.0
+            close_after_ids = _order_ids(close_after)
+            if elapsed_sec < timeout_sec:
+                return (
+                    False,
+                    "EXIT_PRE_CLEAR_INFLIGHT_CLOSE: "
+                    f"Symbols={','.join(normalized)} | OrderIds={close_after_ids} | "
+                    f"Elapsed={elapsed_sec:.0f}s/{timeout_sec}s | Mode=POST_CANCEL_CLOSE_INFLIGHT",
+                )
+            canceled_inflight, cancel_errors_inflight = self._cancel_open_orders_for_symbols(
+                normalized,
+                open_orders=close_after,
+            )
+            final_open = self._get_open_orders_for_symbols(normalized)
+            if not final_open:
+                self._exit_preclear_pending_since.pop(key, None)
+                return (
+                    True,
+                    "EXIT_PRE_CLEAR_TIMEOUT_REPLACED_INFLIGHT_CLOSE: "
+                    f"Symbols={','.join(normalized)} | OrderIds={close_after_ids} | "
+                    f"Canceled={canceled_inflight} | CancelErrors={cancel_errors_inflight} | "
+                    f"Elapsed={elapsed_sec:.0f}s >= {timeout_sec}s | Mode=POST_CANCEL",
+                )
             return (
                 False,
-                "EXIT_PRE_CLEAR_INFLIGHT_CLOSE: "
-                f"Symbols={','.join(normalized)} | OrderIds={_order_ids(close_after)} | "
-                f"Elapsed={elapsed_sec:.0f}s/{timeout_sec}s | Mode=POST_CANCEL_CLOSE_INFLIGHT",
+                "EXIT_PRE_CLEAR_PENDING: "
+                f"Symbols={','.join(normalized)} | Canceled={canceled_inflight} | "
+                f"Remaining={len(final_open)} | RemainingIds={_order_ids(final_open)} | "
+                f"CancelErrors={cancel_errors_inflight} | Elapsed={elapsed_sec:.0f}s/{timeout_sec}s | "
+                "Mode=POST_CANCEL_INFLIGHT_TIMEOUT_CANCEL",
             )
 
         now = getattr(self.algorithm, "Time", None) if self.algorithm else None

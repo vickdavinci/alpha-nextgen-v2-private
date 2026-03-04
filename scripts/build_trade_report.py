@@ -300,7 +300,7 @@ def find_vass_exit_trigger(log_index, exit_time, entry_time):
                 return "DTE_EXIT"
             if "FRIDAY_FIREWALL" in line:
                 return "FRIDAY_FIREWALL"
-            if "FILL_CLOSE_RECONCILED" in line:
+            if "FILL_CLOSE_RECONCILED" in line or "RECONCILED_CLOSE" in line:
                 return "RECONCILED"
 
     for line in lines:
