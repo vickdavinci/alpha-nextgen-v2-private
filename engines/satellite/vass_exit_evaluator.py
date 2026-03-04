@@ -961,11 +961,13 @@ def check_spread_exit_signals_impl(
         # meaning the trade must actually LOSE multiplier% of max_loss before stopping.
         max_loss = spread.width - entry_credit
         stop_mode = str(getattr(config, "CREDIT_SPREAD_STOP_MODE", "LEGACY") or "LEGACY").upper()
+        stop_exit_code = "CREDIT_STOP_LOSS"
         stop_threshold = 0.0
         stop_details = ""
         if stop_mode == "TWO_X_CREDIT":
             stop_mult_2x = float(getattr(config, "CREDIT_SPREAD_STOP_2X_MULTIPLIER", 2.0))
             stop_threshold = max(entry_credit, entry_credit * stop_mult_2x)
+            stop_exit_code = "CREDIT_STOP_2X"
             stop_details = f"Mode=TWO_X_CREDIT Mult={stop_mult_2x:.2f}"
         else:
             credit_stop_mult = float(getattr(config, "CREDIT_SPREAD_STOP_MULTIPLIER", 0.35))
@@ -993,7 +995,7 @@ def check_spread_exit_signals_impl(
         ):
             loss_pct = (current_spread_value - entry_credit) / max_loss if max_loss > 0 else 0
             exit_reason = (
-                f"CREDIT_STOP_LOSS {loss_pct:.1%} "
+                f"{stop_exit_code} {loss_pct:.1%} "
                 f"(spread value ${current_spread_value:.2f} >= ${stop_threshold:.2f}, "
                 f"{stop_details}, {vass_profile_tag})"
             )
