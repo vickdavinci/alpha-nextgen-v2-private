@@ -89,7 +89,9 @@ def resolve_trade_signal_impl(
             return (
                 True,
                 macro_direction,
-                f"FOLLOW_MACRO: {engine} has no direction, following Macro {macro_direction}",
+                "FOLLOW_MACRO: "
+                f"{engine} has no direction, following Macro {macro_direction} | "
+                "MACRO|NO_CONVICTION|FOLLOW",
             )
         else:
             return (
