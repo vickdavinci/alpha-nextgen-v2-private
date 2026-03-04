@@ -962,8 +962,8 @@ VASS_MEDIUM_IV_DTE_MIN = (
 )
 VASS_MEDIUM_IV_DTE_MAX = 45  # V12.9 P1: allow more time for thesis realization in medium IV.
 # V6.6: Widened HIGH IV DTE range - 36 spread failures in 2022H1 due to narrow 7-14 window
-VASS_HIGH_IV_DTE_MIN = 7  # V10.10: avoid immediate churn against SPREAD_DTE_EXIT=5
-VASS_HIGH_IV_DTE_MAX = 21  # High-IV credit spreads: keep in theta-efficient window
+VASS_HIGH_IV_DTE_MIN = 21  # V12.27: shift high-IV credit entries out of gamma-heavy short-DTE zone
+VASS_HIGH_IV_DTE_MAX = 45  # Standard theta-friendly credit runway for VASS high-IV routes
 
 # V5.3: VASS Conviction Engine (VIX Direction Tracking)
 # VASS tracks weekly (5d) and monthly (20d) VIX to determine conviction
@@ -1111,8 +1111,8 @@ VASS_VIX_COMPLACENT_CROSS_LEVEL = 14  # VIX crosses below this → BULLISH
 # Credit Spread Constraints
 CREDIT_SPREAD_MIN_CREDIT = 0.20  # V6.10 P3: Was 0.30, lowered to allow more fills
 CREDIT_SPREAD_WIDTH_TARGET = 5.0  # $5 width for credit spreads
-CREDIT_SPREAD_DTE_MIN = 7  # Default credit spread DTE floor (used when no fallback ranges supplied)
-CREDIT_SPREAD_DTE_MAX = 30  # Default credit spread DTE ceiling
+CREDIT_SPREAD_DTE_MIN = 21  # V12.27: avoid short-DTE gamma zone for credit entries
+CREDIT_SPREAD_DTE_MAX = 45  # V12.27: align with theta-first credit hold horizon
 CREDIT_SPREAD_FALLBACK_TO_DEBIT = True  # V6.10 P3: Fall back to debit when credit fails
 CREDIT_SPREAD_PROFIT_TARGET = 0.55  # V12.16: improve credit expectancy before theta/gap drift
 CREDIT_SPREAD_STOP_MULTIPLIER = 0.35  # V10.17: trim left-tail bleed on failed credit spreads
