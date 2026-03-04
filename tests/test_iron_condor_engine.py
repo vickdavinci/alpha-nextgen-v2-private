@@ -546,7 +546,7 @@ class TestExitTriggers:
         result = engine.check_exit_signals(
             condor=condor,
             combined_pnl=0,
-            current_dte=13,  # <= IC_TIME_EXIT_DTE=14
+            current_dte=2,  # <= IC_TIME_EXIT_DTE=3
             vix_current=18,
             regime_score=52,
             qqq_price=480,
@@ -575,13 +575,13 @@ class TestExitTriggers:
     def test_friday_close_exit(self):
         engine = _make_engine()
         condor = _make_condor()
-        # Friday (weekday=4), DTE < IC_FRIDAY_CLOSE_DTE(14)
-        # Override TIME_EXIT_DTE to 5 so FRIDAY_CLOSE fires first at DTE=13
-        with _patch_config(IC_TIME_EXIT_DTE=5):
+        # Friday (weekday=4), DTE < IC_FRIDAY_CLOSE_DTE(3)
+        # Override TIME_EXIT_DTE to 1 so FRIDAY_CLOSE fires first at DTE=2
+        with _patch_config(IC_TIME_EXIT_DTE=1):
             result = engine.check_exit_signals(
                 condor=condor,
                 combined_pnl=0,
-                current_dte=13,
+                current_dte=2,
                 vix_current=18,
                 regime_score=52,
                 qqq_price=480,
@@ -1550,16 +1550,21 @@ class TestHoldGuard:
         """P3 stop loss blocked within hold window."""
         engine = _make_engine()
         condor = _make_condor(net_credit=1.20, num_spreads=2)
-        # credit_100 = 240; 150% stop = 360 loss
-        # Within hold: 3 days after entry
+        # credit_100 = 240; 50% stop = 120 loss
+        # Use loss that triggers stop (> 0.50x) but not hard stop (< 2.5x)
+        # loss_pct = 80/240 = 0.33x — below 0.50x stop, so stop doesn't fire
+        # But we want to test the hold guard blocking the stop, so use a loss
+        # that would fire if cascade ran: loss_pct = 130/240 = 0.54x > 0.50x
+        # However, stop fires INSIDE cascade (P3), hold guard blocks cascade.
+        # The stop check is in the post-guard cascade, so hold guard blocks it.
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-370,  # Would trigger P3 stop but held in guard
-            current_dte=20,
+            combined_pnl=-130,  # 0.54x credit — would trigger P3 stop but held in guard
+            current_dte=8,
             vix_current=18,
             regime_score=52,
             qqq_price=480,
-            current_time=datetime(2025, 3, 4, 11, 0),  # 3 days in
+            current_time=datetime(2025, 3, 2, 11, 0),  # 1 day in (within hold)
         )
         assert result is None
 
@@ -1569,15 +1574,16 @@ class TestHoldGuard:
         condor = _make_condor(qqq_price=480)
         # short_put_strike = 470; QQQ at 460 → 2.17% ITM > 2% threshold
         # Disable invalidation so we isolate the hold guard vs wing breach interaction
+        # Use small loss that doesn't trigger the 0.50x stop
         with _patch_config(IC_UNDERLYING_INVALIDATION_ENABLED=False):
             result = engine.check_exit_signals(
                 condor=condor,
-                combined_pnl=-100,
-                current_dte=20,
+                combined_pnl=-50,  # 0.21x credit — below 0.50x stop
+                current_dte=8,
                 vix_current=18,
                 regime_score=52,
                 qqq_price=460,
-                current_time=datetime(2025, 3, 4, 11, 0),  # Within hold
+                current_time=datetime(2025, 3, 2, 11, 0),  # 1 day in (within hold)
             )
         assert result is None
 
@@ -1660,11 +1666,11 @@ class TestHoldGuard:
         result = engine.check_exit_signals(
             condor=condor,
             combined_pnl=-610,  # loss_pct = 610/240 = 2.54× > 2.5×
-            current_dte=20,
+            current_dte=8,
             vix_current=18,
             regime_score=52,
             qqq_price=480,
-            current_time=datetime(2025, 3, 4, 11, 0),  # Within hold
+            current_time=datetime(2025, 3, 2, 11, 0),  # 1 day in (within hold)
         )
         assert result is not None
         reason, _ = result
@@ -1675,14 +1681,16 @@ class TestHoldGuard:
         engine = _make_engine()
         condor = _make_condor(net_credit=1.20, num_spreads=2)
         # credit_100 = 240; EOD gate = 1.5 × 240 = 360
+        # Hold = max(1, min(3, ceil(30 × 0.25))) = 3 days = 4320 min
+        # Check at Mar 2 15:50 = 1 day 4:50 in = 1730 min < 4320 → within hold
         result = engine.check_exit_signals(
             condor=condor,
             combined_pnl=-370,  # loss_pct = 370/240 = 1.54× > 1.5×
-            current_dte=20,
+            current_dte=8,
             vix_current=18,
             regime_score=52,
             qqq_price=480,
-            current_time=datetime(2025, 3, 4, 15, 50),  # 15:50 = EOD, held > 4h
+            current_time=datetime(2025, 3, 2, 15, 50),  # 15:50 = EOD, held > 4h, within hold
         )
         assert result is not None
         reason, _ = result
@@ -1747,63 +1755,65 @@ class TestHoldGuard:
         reason, _ = result
         assert reason == EXIT_IC_STOP_LOSS
 
-    def test_hold_guard_dte_adaptive_21dte(self):
-        """21 DTE entry → hold = ceil(21 × 0.33) = 7 days."""
+    def test_hold_guard_dte_adaptive_7dte(self):
+        """7 DTE entry → hold = max(1, min(3, ceil(7 × 0.25))) = 2 days."""
         engine = _make_engine()
-        condor = _make_condor(entry_dte=21)
-        # Hold = 7 days = 10080 min. Entry: Mar 1 11:00
-        # Day 6 (Mar 7): still within hold → blocked
+        condor = _make_condor(entry_dte=7)
+        # Hold = 2 days = 2880 min. Entry: Mar 1 11:00
+        # credit_100 = 240; stop = 0.50 × 240 = 120; use pnl=-150 (triggers stop but not hard stop)
+        # Day 1 (Mar 2): still within hold → blocked
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-370,  # Would trigger stop
-            current_dte=15,
+            combined_pnl=-150,  # Would trigger stop (> 120) but not hard stop (< 600)
+            current_dte=6,
             vix_current=18,
             regime_score=52,
             qqq_price=480,
-            current_time=datetime(2025, 3, 7, 11, 0),  # 6 days in
+            current_time=datetime(2025, 3, 2, 11, 0),  # 1 day in
         )
         assert result is None
 
-        # Day 8 (Mar 9): past hold → cascade fires
+        # Day 3 (Mar 4): past hold → cascade fires
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-370,
-            current_dte=15,
+            combined_pnl=-150,
+            current_dte=4,
             vix_current=18,
             regime_score=52,
             qqq_price=480,
-            current_time=datetime(2025, 3, 9, 11, 0),  # 8 days in, past 7-day hold
+            current_time=datetime(2025, 3, 4, 11, 0),  # 3 days in, past 2-day hold
         )
         assert result is not None
         reason, _ = result
         assert reason == EXIT_IC_STOP_LOSS
 
-    def test_hold_guard_dte_adaptive_45dte(self):
-        """45 DTE entry → hold = min(ceil(45 × 0.33), 15) = 15 days (capped)."""
+    def test_hold_guard_dte_adaptive_14dte(self):
+        """14 DTE entry → hold = max(1, min(3, ceil(14 × 0.25))) = 3 days (capped)."""
         engine = _make_engine()
-        condor = _make_condor(entry_dte=45)
-        # Hold = 15 days (cap). Entry: Mar 1 11:00
-        # Day 14 (Mar 15): still within hold → blocked
+        condor = _make_condor(entry_dte=14)
+        # Hold = 3 days (capped at max). Entry: Mar 1 11:00
+        # credit_100 = 240; stop = 0.50 × 240 = 120; use pnl=-150
+        # Day 2 (Mar 3): still within 3-day hold → blocked
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-370,
-            current_dte=25,
+            combined_pnl=-150,
+            current_dte=12,
             vix_current=18,
             regime_score=52,
             qqq_price=480,
-            current_time=datetime(2025, 3, 15, 11, 0),  # 14 days in
+            current_time=datetime(2025, 3, 3, 11, 0),  # 2 days in
         )
         assert result is None
 
-        # Day 16 (Mar 17): past hold → cascade fires
+        # Day 4 (Mar 5): past 3-day hold → cascade fires
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-370,
-            current_dte=25,
+            combined_pnl=-150,
+            current_dte=10,
             vix_current=18,
             regime_score=52,
             qqq_price=480,
-            current_time=datetime(2025, 3, 17, 11, 0),  # 16 days in, past 15-day hold
+            current_time=datetime(2025, 3, 5, 11, 0),  # 4 days in, past 3-day hold
         )
         assert result is not None
         reason, _ = result

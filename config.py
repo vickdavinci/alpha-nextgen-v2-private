@@ -2268,11 +2268,12 @@ INTRADAY_OTM_MAX_DOLLARS = 0  # V12.15: disable fixed-dollar clamp; MICRO uses p
 # Sells OTM put + call credit spreads simultaneously (iron condor).
 # Profits from QQQ staying in a range. Neutral-regime-only strategy.
 #
-# Managed-exit WR math:
-#   win  = IC_TARGET_CAPTURE_PCT * credit  (60% of credit)
-#   loss = IC_STOP_LOSS_MULTIPLE  * credit (150% of credit)
-#   WR_be = 1.50 / (1.50 + 0.60) = 71.4%
-#   Target realized WR >= 74-75% after friction.
+# Managed-exit WR math (V12.27 DTE optimization):
+#   win  = IC_TARGET_CAPTURE_PCT * credit  (50% of credit)
+#   loss = IC_STOP_LOSS_MULTIPLE  * credit (50% of credit)
+#   WR_be = 0.50 / (0.50 + 0.50) = 50.0%
+#   Target realized WR >= 85%+ (sim: 87.2% over 2022-2025).
+#   Short DTE (7-14) + wide OTM (7%) = high P(stay in range) = high WR.
 # =============================================================================
 
 # ── Feature flag ──
@@ -2296,12 +2297,12 @@ IC_ENTRY_END_HOUR = 14  # Latest entry hour (ET)
 IC_ENTRY_END_MINUTE = 30  # Latest entry minute
 
 # ── DTE window ──
-IC_DTE_MIN = 21  # Minimum DTE (was 10 — gamma too high below 21)
-IC_DTE_MAX = 45  # Maximum DTE (was 21 — 30-45 DTE is optimal theta/gamma)
+IC_DTE_MIN = 7  # Minimum DTE (V12.27: was 21 — shorter DTE = less time for QQQ to breach)
+IC_DTE_MAX = 14  # Maximum DTE (V12.27: was 45 — 7-14 DTE captures steepest theta decay)
 
 # ── Strike selection: short-leg delta range ──
-IC_SHORT_DELTA_MIN = 0.16  # Minimum abs delta (was 0.12 — too far OTM, thin premium)
-IC_SHORT_DELTA_MAX = 0.22  # Maximum abs delta (was 0.16 — wider band for candidates)
+IC_SHORT_DELTA_MIN = 0.08  # Minimum abs delta (V12.27: was 0.16 — wider OTM for higher WR)
+IC_SHORT_DELTA_MAX = 0.12  # Maximum abs delta (V12.27: was 0.22 — ~7% OTM on QQQ)
 IC_DELTA_SYMMETRY_MAX = 0.03  # Max abs(|call_delta| - |put_delta|) for symmetry
 IC_WING_SYMMETRY_MAX = 1.0  # Max abs(call_width - put_width) in dollars
 
@@ -2313,7 +2314,7 @@ IC_WING_WIDTH_FALLBACK_TOLERANCE = 1  # Accept ±$1 if exact width unavailable
 
 # ── Credit quality / C/W gates (VIX-tiered) ──
 # Constraint: C/W_floor ≤ IC_MAX_STOP_DW / (1 + IC_STOP_LOSS_MULTIPLE)
-# With MAX_STOP_DW=0.65, STOP_MULT=1.00 → max feasible C/W = 0.325
+# With MAX_STOP_DW=0.65, STOP_MULT=0.50 → max feasible C/W = 0.433
 IC_MIN_CREDIT_TO_WIDTH = 0.28  # Default C/W floor (V12.26: was 0.25)
 IC_CW_FLOOR_LOW_VIX = 0.30  # C/W floor when VIX < 16 (V12.26: was 0.25, better quality entries)
 IC_CW_FLOOR_MID_VIX = 0.28  # C/W floor when 16 <= VIX <= 25 (V12.26: was 0.25)
@@ -2334,11 +2335,11 @@ IC_SCAN_THROTTLE_MINUTES = 15  # Don't re-scan same chain within N minutes
 
 # Elastic delta widening: progressively relax delta band if no candidates found
 IC_ELASTIC_DELTA_STEPS = [0.0, 0.03, 0.06, 0.10]  # Widen ± each step
-IC_ELASTIC_DELTA_FLOOR = 0.10  # Never accept delta below this
-IC_ELASTIC_DELTA_CEILING = 0.30  # Never accept delta above this
+IC_ELASTIC_DELTA_FLOOR = 0.05  # Never accept delta below this (V12.27: was 0.10)
+IC_ELASTIC_DELTA_CEILING = 0.18  # Never accept delta above this (V12.27: was 0.30)
 
 # Multi-DTE range fallback: try primary range first, then fallback ranges
-IC_DTE_RANGES = [(21, 35), (35, 45), (14, 21)]  # Ordered by preference
+IC_DTE_RANGES = [(7, 10), (10, 14)]  # Ordered by preference (V12.27: short DTE sweet spot)
 
 # C/W progressive relaxation: lower floor stepwise if no condors qualify
 IC_CW_RELAX_STEPS = [0.0, 0.03, 0.05]  # Subtract from C/W floor per step
@@ -2347,11 +2348,15 @@ IC_CW_ABSOLUTE_FLOOR = (
 )
 
 # ── Exit parameters ──
-IC_TARGET_CAPTURE_PCT = 0.75  # Close at 75% of credit captured (V12.26: was 0.60, improves R:R)
-IC_STOP_LOSS_MULTIPLE = 1.00  # Stop at 100% of credit lost (V12.26: was 1.50, required WR 71%→57%)
-IC_TIME_EXIT_DTE = 14  # Close by 14 DTE (V12.26: was 10, avoid gamma acceleration zone)
+IC_TARGET_CAPTURE_PCT = (
+    0.50  # Close at 50% of credit captured (V12.27: was 0.75 — take profits fast)
+)
+IC_STOP_LOSS_MULTIPLE = (
+    0.50  # Stop at 50% of credit lost (V12.27: was 1.00 — cut losses immediately)
+)
+IC_TIME_EXIT_DTE = 3  # Close by 3 DTE (V12.27: was 14 — short DTE trades exit near expiry)
 IC_VIX_SPIKE_EXIT = 33.0  # Emergency exit on VIX spike (V12.26: was 30, VIX 30-32 survivable)
-IC_FRIDAY_CLOSE_DTE = 14  # Close before weekend if DTE < 14 (was 8)
+IC_FRIDAY_CLOSE_DTE = 3  # Close before weekend if DTE < 3 (V12.27: was 14 — align with TIME_EXIT)
 IC_REGIME_EXIT_BUFFER = 8  # Exit buffer (V12.26: was 5, fewer forced exits at regime edges)
 
 # ── Capital / risk model ──
@@ -2394,9 +2399,9 @@ IC_CLOSE_MAX_RETRIES = 10  # Abandon after this many retries (clear is_closing)
 # Holds suppress P2-P7 exits until theta has accumulated ~18.4% of total decay.
 # Formula: hold_days = clamp(ceil(entry_dte × fraction), min, max)
 IC_HOLD_GUARD_ENABLED = True
-IC_HOLD_GUARD_DTE_FRACTION = 0.33  # Hold for 1/3 of entry DTE (→ 18.4% theta cushion)
-IC_HOLD_GUARD_MIN_DAYS = 3  # Minimum 3 calendar days hold (V12.26: was 5, capture fast theta decay)
-IC_HOLD_GUARD_MAX_DAYS = 15  # Maximum 15 calendar days hold
+IC_HOLD_GUARD_DTE_FRACTION = 0.25  # Hold for 1/4 of entry DTE (V12.27: was 0.33 — shorter trades)
+IC_HOLD_GUARD_MIN_DAYS = 1  # Minimum 1 calendar day hold (V12.27: was 3 — fast 5-7d trades)
+IC_HOLD_GUARD_MAX_DAYS = 3  # Maximum 3 calendar days hold (V12.27: was 15 — cap for short DTE)
 IC_HOLD_HARD_STOP_CREDIT_MULT = 2.50  # During hold: exit only if loss > 2.5× credit
 IC_HOLD_EOD_GATE_ENABLED = True  # EOD de-risk during hold
 IC_HOLD_EOD_GATE_CREDIT_MULT = 1.50  # At EOD during hold: exit if loss > 1.5× credit
