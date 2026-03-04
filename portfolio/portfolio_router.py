@@ -1441,6 +1441,11 @@ class PortfolioRouter:
     ) -> bool:
         """Return True when spread-exit should bypass bounded-loss quote guards."""
         md = dict(metadata or {})
+        urgency = self._resolve_vass_exit_urgency(md, reason_text)
+        if urgency == "HARD":
+            return True
+        if urgency == "SOFT":
+            return False
         if bool(md.get("spread_exit_emergency", False)):
             return True
         if not bool(md.get("spread_close_short", False)) and not reason_text:
@@ -1471,6 +1476,60 @@ class PortfolioRouter:
             "SPREAD_TIME_STOP_NO_QUOTE",
         )
         return any(token in merged for token in tokens)
+
+    def _resolve_vass_exit_urgency(
+        self,
+        metadata: Optional[Dict[str, Any]],
+        reason_text: Optional[str] = None,
+    ) -> str:
+        """
+        Resolve VASS spread exit urgency.
+
+        Returns:
+            "HARD" for urgent capital-protection exits, "SOFT" for thesis-driven
+            exits where patient close handling is allowed, or empty string when
+            no spread-exit context is present.
+        """
+        md = dict(metadata or {})
+        configured = str(md.get("spread_exit_urgency", "") or "").strip().upper()
+        if configured in {"SOFT", "HARD"}:
+            return configured
+        if bool(md.get("spread_exit_emergency", False)):
+            return "HARD"
+        if not bool(md.get("spread_close_short", False)):
+            return ""
+
+        fields = [
+            str(md.get("spread_exit_code", "") or ""),
+            str(md.get("exit_type", "") or ""),
+            str(md.get("spread_exit_reason", "") or ""),
+            str(reason_text or ""),
+        ]
+        merged = " | ".join(fields).upper()
+        hard_tokens = (
+            "VASS_TAIL_RISK_CAP",
+            "SPREAD_HARD_STOP_DURING_HOLD",
+            "SPREAD_HARD_STOP_TRIGGERED_PCT",
+            "SPREAD_HARD_STOP_TRIGGERED_WIDTH",
+            "TRANSITION_DERISK",
+            "TAIL_RISK_CAP",
+            "HARD_STOP",
+            "ASSIGNMENT_RISK",
+            "SHORT_LEG_ITM_EXIT",
+            "DEEP_ITM_SHORT",
+            "OVERNIGHT_ITM_BLOCK",
+            "PREMARKET_ITM",
+            "MANDATORY_DTE_CLOSE",
+            "DTE_EXIT_NO_QUOTE",
+            "SPREAD_TIME_STOP_NO_QUOTE",
+            "OVERLAY_STRESS_EXIT",
+            "KILL_SWITCH",
+            "EMERGENCY",
+            "FORCE_CLOSE",
+        )
+        if any(token in merged for token in hard_tokens):
+            return "HARD"
+        return "SOFT"
 
     def _execute_emergency_sequential_close_from_order(
         self,
@@ -2352,6 +2411,9 @@ class PortfolioRouter:
         close_path = str(md.get("spread_close_path", "") or "").strip().upper()
         if close_path:
             additions.append(f"xcp={close_path[:20]}")
+        exit_urgency = str(md.get("spread_exit_urgency", "") or "").strip().upper()
+        if exit_urgency in {"SOFT", "HARD"}:
+            additions.append(f"xurg={exit_urgency}")
         escalation_reason = str(md.get("spread_close_escalation_reason", "") or "").strip().upper()
         if escalation_reason:
             additions.append(f"xer={escalation_reason[:20]}")
@@ -4001,6 +4063,18 @@ class PortfolioRouter:
                         order.metadata and order.metadata.get("spread_close_short", False)
                     )
                     spread_md = dict(order.metadata or {})
+                    is_vass_combo_exit = bool(
+                        is_exit_combo and self._is_vass_combo_exit_order(order)
+                    )
+                    if is_vass_combo_exit:
+                        exit_urgency = self._resolve_vass_exit_urgency(spread_md, order.reason)
+                        if exit_urgency:
+                            spread_md["spread_exit_urgency"] = exit_urgency
+                            if isinstance(order.metadata, dict):
+                                order.metadata["spread_exit_urgency"] = exit_urgency
+                            effective_tag = self._append_spread_exit_rca_tag(
+                                effective_tag, order.metadata
+                            )
                     spread_type_upper = str(spread_md.get("spread_type", "") or "").upper()
                     is_credit_exit_combo = bool(
                         is_exit_combo
