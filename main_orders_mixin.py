@@ -3097,8 +3097,8 @@ class MainOrdersMixin:
         if order_tag:
             self._cache_order_tag_hint(int(order_event.OrderId or 0), order_tag)
 
-        # V12.27: patient close policy — only HARD exits may escalate to combo-market
-        # on cancel-driven retries. SOFT exits remain on limit/retry rails.
+        # V12.27: patient close policy — only HARD exits may escalate immediately.
+        # SOFT exits remain on limit/retry rails until bounded defer deadline elapses.
         raw_tag = str(order_tag or "")
         tag_urgency = ""
         for part in raw_tag.split("|"):
@@ -3107,8 +3107,9 @@ class MainOrdersMixin:
                 tag_urgency = token.split("=", 1)[1].strip().upper()
                 break
         prior_reason = str(self._spread_forced_close_reason.get(spread_key, "") or "")
+        origin_reason = str(self._spread_last_exit_reason.get(spread_key, "") or "")
         urgency_probe = " | ".join(
-            [prior_reason, raw_tag, str(getattr(order, "Tag", "") or "")]
+            [origin_reason, prior_reason, raw_tag, str(getattr(order, "Tag", "") or "")]
         ).upper()
         hard_tokens = (
             "VASS_TAIL_RISK_CAP",
@@ -3134,13 +3135,19 @@ class MainOrdersMixin:
         allow_market_escalation = bool(
             tag_urgency == "HARD" or any(token in urgency_probe for token in hard_tokens)
         )
+        soft_defer_minutes = max(
+            1, int(getattr(config, "VASS_CLOSE_SOFT_EXIT_MAX_DEFER_MINUTES", 120))
+        )
+        soft_deadline_reached = close_latency_sec >= int(soft_defer_minutes * 60)
 
         cancel_reason = f"ORDER_CANCELED:{getattr(order, 'Type', 'UNKNOWN')}"
         self._spread_forced_close_reason[spread_key] = cancel_reason
         self._spread_last_close_submit_at[spread_key] = self.Time
 
-        if cancel_count >= sequential_escalation_count and bool(
-            getattr(config, "VASS_CLOSE_ALLOW_SEQUENTIAL_SAME_CYCLE", True)
+        if (
+            cancel_count >= sequential_escalation_count
+            and (allow_market_escalation or soft_deadline_reached)
+            and bool(getattr(config, "VASS_CLOSE_ALLOW_SEQUENTIAL_SAME_CYCLE", True))
         ):
             self._diag_spread_close_escalation_count += 1
             self._record_order_lifecycle_event(
@@ -3154,7 +3161,8 @@ class MainOrdersMixin:
                 trace_id=self._extract_trace_id_from_tag(order_tag) or "",
                 message=(
                     f"Key={spread_key} | Long={long_symbol} | Short={short_symbol} | "
-                    f"CancelCount={cancel_count} | EscalationThreshold={sequential_escalation_count}"
+                    f"CancelCount={cancel_count} | EscalationThreshold={sequential_escalation_count} | "
+                    f"SoftDeadlineReached={soft_deadline_reached}"
                 ),
                 source="SPREAD_RETRY",
             )
@@ -3164,7 +3172,8 @@ class MainOrdersMixin:
                 f"Tag={self._compact_tag_for_log(order_tag)} | "
                 f"Long={long_symbol} | Short={short_symbol} | "
                 f"CancelCount={cancel_count} >= {sequential_escalation_count} | "
-                f"Submitting immediate sequential close"
+                f"Submitting immediate sequential close | "
+                f"SoftDeadlineReached={soft_deadline_reached}"
             )
             self.portfolio_router.receive_signal(
                 TargetWeight(

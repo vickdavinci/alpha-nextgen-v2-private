@@ -1784,6 +1784,30 @@ class MainOptionsMixin:
                 retry_reason = self._spread_forced_close_reason.get(
                     spread_key, "CANCELED_CLOSE_RETRY"
                 )
+                origin_reason = str(self._spread_last_exit_reason.get(spread_key, "") or "")
+                urgency_probe = " | ".join([origin_reason, retry_reason]).upper()
+                hard_tokens = (
+                    "VASS_TAIL_RISK_CAP",
+                    "SPREAD_HARD_STOP_DURING_HOLD",
+                    "SPREAD_HARD_STOP_TRIGGERED_PCT",
+                    "SPREAD_HARD_STOP_TRIGGERED_WIDTH",
+                    "TRANSITION_DERISK",
+                    "TAIL_RISK_CAP",
+                    "HARD_STOP",
+                    "ASSIGNMENT_RISK",
+                    "SHORT_LEG_ITM_EXIT",
+                    "DEEP_ITM_SHORT",
+                    "OVERNIGHT_ITM_BLOCK",
+                    "PREMARKET_ITM",
+                    "MANDATORY_DTE_CLOSE",
+                    "DTE_EXIT_NO_QUOTE",
+                    "SPREAD_TIME_STOP_NO_QUOTE",
+                    "OVERLAY_STRESS_EXIT",
+                    "KILL_SWITCH",
+                    "EMERGENCY",
+                    "FORCE_CLOSE",
+                )
+                is_hard_retry = any(token in urgency_probe for token in hard_tokens)
                 # Open-order lifecycle guard: don't stack close submits while either
                 # leg already has a live broker order.
                 if (not vass_fast_close) and (
@@ -1840,7 +1864,22 @@ class MainOptionsMixin:
                 retry_cycles = self._spread_forced_close_retry_cycles.get(spread_key, 0) + 1
                 self._spread_forced_close_retry_cycles[spread_key] = retry_cycles
                 if vass_fast_close:
-                    max_retry_cycles = vass_limit_attempts
+                    if is_hard_retry:
+                        max_retry_cycles = vass_limit_attempts
+                    else:
+                        soft_defer_minutes = max(
+                            1,
+                            int(getattr(config, "VASS_CLOSE_SOFT_EXIT_MAX_DEFER_MINUTES", 120)),
+                        )
+                        max_retry_cycles = max(
+                            vass_limit_attempts,
+                            int(
+                                max(
+                                    1,
+                                    (soft_defer_minutes * 60) / max(1, int(vass_close_timeout_sec)),
+                                )
+                            ),
+                        )
                 else:
                     max_retry_cycles = int(getattr(config, "SPREAD_CLOSE_MAX_RETRY_CYCLES", 12))
                 if retry_cycles >= max_retry_cycles:
@@ -1979,7 +2018,11 @@ class MainOptionsMixin:
                         },
                     )
                 )
-                self._record_spread_exit_reason(spread_key, f"SPREAD_CLOSE_RETRY:{retry_reason}")
+                # Preserve original exit reason for fill attribution/urgency semantics.
+                if not str(self._spread_last_exit_reason.get(spread_key, "") or "").strip():
+                    self._record_spread_exit_reason(
+                        spread_key, f"SPREAD_CLOSE_RETRY:{retry_reason}"
+                    )
                 # Backoff retries to reduce order spam while preserving persistence.
                 if vass_fast_close:
                     self._spread_forced_close_retry[spread_key] = self.Time + timedelta(

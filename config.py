@@ -1948,6 +1948,9 @@ SPREAD_CLOSE_SAFE_LOCK_RETRY_MIN = 10  # Retry emergency close after safe-lock a
 # V12.23.2: VASS close ladder control (limit -> market -> sequential) with no multi-session churn.
 VASS_CLOSE_MAX_COMBO_LIMIT_ATTEMPTS = 1
 VASS_CLOSE_LIMIT_TIMEOUT_SECONDS = 30
+# V12.27: soft exits (thesis/regime-driven) remain limit-only for a bounded defer window.
+# Hard exits (tail risk, hard stop, assignment risk, etc.) still escalate immediately.
+VASS_CLOSE_SOFT_EXIT_MAX_DEFER_MINUTES = 120
 VASS_CLOSE_USE_COMBO_MARKET_AFTER_LIMIT_FAIL = True
 VASS_CLOSE_ALLOW_SEQUENTIAL_SAME_CYCLE = True
 VASS_CLOSE_DISABLE_MULTISESSION_RETRY = True
