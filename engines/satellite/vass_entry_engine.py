@@ -137,7 +137,8 @@ class VASSEntryEngine:
                     return algo_now
         except Exception:
             pass
-        return datetime.utcnow()
+        # Deterministic fallback for non-runtime contexts (tests/tools).
+        return datetime(2000, 1, 1)
 
     def _prune_invalid_entry_cooldowns(self, now: datetime) -> None:
         expired = [
