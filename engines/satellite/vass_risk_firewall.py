@@ -7,6 +7,61 @@ from models.enums import Urgency
 from models.target_weight import TargetWeight
 
 
+def _is_credit_theta_first_active_for_spread(self, spread: Optional["SpreadPosition"]) -> bool:
+    """Return True when credit THETA_FIRST mode is active for the given spread."""
+    if spread is None:
+        return False
+    if not bool(getattr(config, "VASS_CREDIT_THETA_FIRST_ENABLED", False)):
+        return False
+    spread_type = str(getattr(spread, "spread_type", "") or "").upper()
+    is_credit = spread_type in {"BULL_PUT_CREDIT", "BEAR_CALL_CREDIT"}
+    if not is_credit:
+        return False
+    if not bool(getattr(config, "VASS_CREDIT_THETA_FIRST_REQUIRE_REGIME_CONFIRMED", True)):
+        return True
+
+    regime_score = None
+    try:
+        transition_ctx = self._get_regime_transition_context() or {}
+        raw_score = transition_ctx.get(
+            "effective_score",
+            transition_ctx.get("intraday_score", transition_ctx.get("eod_score")),
+        )
+        if raw_score is not None:
+            regime_score = float(raw_score)
+    except Exception:
+        regime_score = None
+    if regime_score is None:
+        return False
+
+    bull_confirm_min = float(getattr(config, "VASS_REGIME_CONFIRMED_BULL_MIN", 57.0))
+    bear_confirm_max = float(getattr(config, "VASS_REGIME_CONFIRMED_BEAR_MAX", 43.0))
+    if spread_type == "BULL_PUT_CREDIT":
+        return regime_score >= bull_confirm_min
+    if spread_type == "BEAR_CALL_CREDIT":
+        return regime_score <= bear_confirm_max
+    return False
+
+
+def _resolve_spread_live_dte(spread: Optional["SpreadPosition"]) -> int:
+    """Best-effort spread DTE from leg metadata."""
+    if spread is None:
+        return 0
+    try:
+        dte = int(getattr(spread.long_leg, "days_to_expiry", 0) or 0)
+        if dte > 0:
+            return dte
+    except Exception:
+        pass
+    try:
+        dte = int(getattr(spread.short_leg, "days_to_expiry", 0) or 0)
+        if dte > 0:
+            return dte
+    except Exception:
+        pass
+    return 0
+
+
 def check_friday_firewall_exit_impl(
     self,
     current_vix: float,
@@ -56,6 +111,20 @@ def check_friday_firewall_exit_impl(
         skip_by_policy = (is_debit_spread and not allow_debit) or (
             is_credit_spread and not allow_credit
         )
+        if not skip_by_policy and is_credit_spread:
+            theta_mode_active = _is_credit_theta_first_active_for_spread(self, spread)
+            suppress_dte_gt = int(
+                getattr(config, "VASS_CREDIT_THETA_FIRST_SUPPRESS_FRIDAY_FIREWALL_DTE_GT", 21) or 0
+            )
+            current_dte = _resolve_spread_live_dte(spread)
+            if theta_mode_active and suppress_dte_gt > 0 and current_dte > suppress_dte_gt:
+                self.log(
+                    "FRIDAY_FIREWALL: Skipping credit spread in THETA_FIRST mode | "
+                    f"Type={spread_type} | DTE={current_dte} > {suppress_dte_gt} | "
+                    f"Entry={entry_date} Fresh={is_fresh_trade} | VIX={current_vix:.1f}",
+                    trades_only=True,
+                )
+                skip_by_policy = True
         if skip_by_policy:
             self.log(
                 f"FRIDAY_FIREWALL: Skipping spread by policy | Type={spread_type} | "
@@ -225,6 +294,17 @@ def check_overnight_gap_protection_exit_impl(
             reason = f"OVERNIGHT_GAP_PROTECTION: Fresh trade + VIX {current_vix:.1f} >= {close_fresh_threshold}"
 
         if reason is None:
+            continue
+
+        theta_mode_active = _is_credit_theta_first_active_for_spread(self, spread)
+        ogp_vix_min = float(getattr(config, "VASS_CREDIT_THETA_FIRST_OGP_VIX_CLOSE_ALL_MIN", 40.0))
+        if is_credit_spread and theta_mode_active and current_vix < ogp_vix_min:
+            self.log(
+                "OVERNIGHT_GAP_PROTECTION: Skipping credit spread in THETA_FIRST mode | "
+                f"VIX={current_vix:.1f} < {ogp_vix_min:.1f} | "
+                f"Type={spread_type} | Entry={entry_date} Fresh={is_fresh_trade}",
+                trades_only=True,
+            )
             continue
 
         self.log(
