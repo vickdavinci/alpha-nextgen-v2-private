@@ -1092,6 +1092,18 @@ VASS_MFE_LOCK_IN_REGIME_CONFIRMED = (
 VASS_ENABLE_NEUTRALITY_EXITS = False  # V12.25: disable neutrality exits for thesis-first VASS flow
 VASS_ENABLE_DAY4_EOD_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
 
+# V12.27: Credit THETA_FIRST scaffolding (behavior wired in exit/risk modules).
+# Mirrors debit THESIS_FIRST philosophy for credit spreads: reduce tactical churn,
+# keep emergency rails, and allow theta to work.
+VASS_CREDIT_THETA_FIRST_ENABLED = True
+VASS_CREDIT_THETA_FIRST_REQUIRE_REGIME_CONFIRMED = True
+VASS_CREDIT_THETA_FIRST_SUPPRESS_MARK_STOP = True
+VASS_CREDIT_THETA_FIRST_SUPPRESS_CONVICTION_FLOOR = True
+VASS_CREDIT_THETA_FIRST_SUPPRESS_MFE_T1 = True
+VASS_CREDIT_THETA_FIRST_MIN_HOLD_MINUTES = 390  # ~1 trading session
+VASS_CREDIT_THETA_FIRST_SUPPRESS_FRIDAY_FIREWALL_DTE_GT = 21
+VASS_CREDIT_THETA_FIRST_OGP_VIX_CLOSE_ALL_MIN = 40.0
+
 # Level Crossing Thresholds (regime shift signals)
 VASS_VIX_FEAR_CROSS_LEVEL = 23  # VIX crosses above this → BEARISH
 VASS_VIX_COMPLACENT_CROSS_LEVEL = 14  # VIX crosses below this → BULLISH
@@ -1108,6 +1120,9 @@ CREDIT_SPREAD_TIERED_STOP_ENABLED = True
 CREDIT_SPREAD_STOP_MULT_LOW_VIX = 0.30
 CREDIT_SPREAD_STOP_MULT_MED_VIX = 0.32  # V12.16: tighter realized-loss cap in medium-IV credit tape
 CREDIT_SPREAD_STOP_MULT_HIGH_VIX = 0.35  # V12.16: tighten high-IV left-tail containment
+# V12.27: Credit stop mode toggle (legacy percent-of-max-loss vs 2x-credit model).
+CREDIT_SPREAD_STOP_MODE = "LEGACY"  # LEGACY | TWO_X_CREDIT
+CREDIT_SPREAD_STOP_2X_MULTIPLIER = 2.0
 CREDIT_SPREAD_MAX_LOSS_PCT_EQUITY = (
     0.0125  # V10.17: cap theoretical max-loss sizing to 1.25% equity
 )
@@ -1435,6 +1450,9 @@ SPREAD_FORCE_CLOSE_ENABLED = True  # Master switch for mandatory close
 # Check all short legs before market open to catch overnight gaps
 # If short leg went ITM overnight, queue for immediate close at 09:30
 PREMARKET_ITM_CHECK_ENABLED = True  # Enable 09:25 pre-market check
+PREMARKET_ITM_CREDIT_GUARD_ENABLED = False  # V12.27: guarded rollout when enabled
+PREMARKET_ITM_CREDIT_DTE_MAX = 14  # Only force credit exits in assignment-prone zone
+PREMARKET_ITM_CREDIT_EXTRINSIC_MAX = 0.15  # Force close when short-leg time value is minimal
 PREMARKET_ITM_CHECK_HOUR = 9  # Check at 09:25 ET
 PREMARKET_ITM_CHECK_MINUTE = 25
 
