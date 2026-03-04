@@ -288,7 +288,7 @@ def match_spread_exit(spread, all_spread_exits, tolerance=0.15):
                 best_reason = "HARD_STOP_WIDTH"
             elif "HARD_STOP" in reason_full:
                 best_reason = "HARD_STOP"
-            elif "CREDIT_STOP_LOSS" in reason_full:
+            elif "CREDIT_STOP_2X" in reason_full or "CREDIT_STOP_LOSS" in reason_full:
                 best_reason = "CREDIT_STOP_LOSS"
             elif "STOP_LOSS" in reason_full:
                 best_reason = "STOP_LOSS"

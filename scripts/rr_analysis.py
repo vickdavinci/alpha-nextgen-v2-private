@@ -97,7 +97,7 @@ def classify_micro_exit(pnl_pct, strategy):
 
 def classify_vass_exit(reason_text):
     """Classify VASS exit type from reason text."""
-    if "CREDIT_STOP_LOSS" in reason_text:
+    if "CREDIT_STOP_2X" in reason_text or "CREDIT_STOP_LOSS" in reason_text:
         return "CREDIT_STOP_LOSS"
     elif "SPREAD_TIME_STOP" in reason_text:
         return "TIME_STOP"
@@ -449,7 +449,9 @@ def compute_regime_matrix(trades):
 
 def analyze_credit_stop_timing(vass_trades):
     """Analyze hold times for credit stop losses."""
-    credit_stops = [t for t in vass_trades if t.get("exit_reason") == "CREDIT_STOP_LOSS"]
+    credit_stops = [
+        t for t in vass_trades if t.get("exit_reason") in {"CREDIT_STOP_LOSS", "CREDIT_STOP_2X"}
+    ]
     if not credit_stops:
         return {}
 
