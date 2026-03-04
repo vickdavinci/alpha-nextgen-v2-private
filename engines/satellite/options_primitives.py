@@ -220,6 +220,9 @@ class SpreadPosition:
     entry_underlying_price: Optional[
         float
     ] = None  # V12.25: QQQ anchor for thesis invalidation exits
+    entry_policy_mode: Optional[
+        str
+    ] = None  # V12.27: freeze exit-policy mode at entry to avoid mid-run config drift
     is_closing: bool = False  # V2.12 Fix #2: Prevent duplicate exit signals
     highest_pnl_pct: float = 0.0  # V9.4: Track high-water mark for trailing stop
     highest_pnl_max_profit_pct: float = 0.0  # V10.15: MFE as % of max profit
@@ -255,6 +258,7 @@ class SpreadPosition:
             "regime_at_entry": self.regime_at_entry,
             "entry_vix": self.entry_vix,
             "entry_underlying_price": self.entry_underlying_price,
+            "entry_policy_mode": self.entry_policy_mode,
             "is_closing": self.is_closing,
             "highest_pnl_pct": self.highest_pnl_pct,
             "highest_pnl_max_profit_pct": self.highest_pnl_max_profit_pct,
@@ -278,6 +282,7 @@ class SpreadPosition:
             regime_at_entry=data["regime_at_entry"],
             entry_vix=data.get("entry_vix"),
             entry_underlying_price=data.get("entry_underlying_price"),
+            entry_policy_mode=data.get("entry_policy_mode"),
             is_closing=data.get("is_closing", False),  # V2.12: Default False for backwards compat
             highest_pnl_pct=data.get("highest_pnl_pct", 0.0),  # V9.4: Trailing stop HWM
             highest_pnl_max_profit_pct=data.get("highest_pnl_max_profit_pct", 0.0),

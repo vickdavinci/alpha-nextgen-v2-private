@@ -292,7 +292,33 @@ def register_spread_entry_impl(
         regime_at_entry=regime_score,
         entry_vix=self._pending_spread_entry_vix,
         entry_underlying_price=entry_underlying_price,
+        entry_policy_mode="LEGACY",
     )
+
+    # V12.27: Freeze policy mode at entry so runtime config flips do not
+    # silently alter exit behavior for existing spreads.
+    exit_policy_mode = str(getattr(config, "VASS_EXIT_POLICY_MODE", "LEGACY") or "LEGACY").upper()
+    spread.entry_policy_mode = "THESIS_FIRST" if exit_policy_mode == "THESIS_FIRST" else "LEGACY"
+    spread_type_upper = str(spread.spread_type or "").upper()
+    is_credit_spread = spread_type_upper in {
+        "BULL_PUT_CREDIT",
+        "BEAR_CALL_CREDIT",
+        SpreadStrategy.BULL_PUT_CREDIT.value,
+        SpreadStrategy.BEAR_CALL_CREDIT.value,
+    }
+    if is_credit_spread and bool(getattr(config, "VASS_CREDIT_THETA_FIRST_ENABLED", False)):
+        theta_first_active = True
+        if bool(getattr(config, "VASS_CREDIT_THETA_FIRST_REQUIRE_REGIME_CONFIRMED", True)):
+            bull_confirm_min = float(getattr(config, "VASS_REGIME_CONFIRMED_BULL_MIN", 57.0))
+            bear_confirm_max = float(getattr(config, "VASS_REGIME_CONFIRMED_BEAR_MAX", 43.0))
+            if spread_type_upper in {"BULL_PUT_CREDIT", SpreadStrategy.BULL_PUT_CREDIT.value}:
+                theta_first_active = float(regime_score) >= bull_confirm_min
+            elif spread_type_upper in {"BEAR_CALL_CREDIT", SpreadStrategy.BEAR_CALL_CREDIT.value}:
+                theta_first_active = float(regime_score) <= bear_confirm_max
+            else:
+                theta_first_active = False
+        if theta_first_active:
+            spread.entry_policy_mode = "CREDIT_THETA_FIRST_ACTIVE"
 
     self._spread_neutrality_warn_by_key.pop(self._build_spread_key(spread), None)
     self._spread_positions.append(spread)

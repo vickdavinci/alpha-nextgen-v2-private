@@ -137,7 +137,13 @@ def check_spread_exit_signals_impl(
         else f"Tier={vass_tier} RefVIX={float(vass_ref_vix):.1f}"
     )
     vass_exit_policy_mode = str(getattr(config, "VASS_EXIT_POLICY_MODE", "LEGACY")).upper()
-    thesis_first_mode = vass_exit_policy_mode == "THESIS_FIRST"
+    stored_policy_mode = str(getattr(spread, "entry_policy_mode", "") or "").upper()
+    if stored_policy_mode in {"LEGACY"}:
+        thesis_first_mode = False
+    elif stored_policy_mode in {"THESIS_FIRST", "CREDIT_THETA_FIRST_ACTIVE"}:
+        thesis_first_mode = True
+    else:
+        thesis_first_mode = vass_exit_policy_mode == "THESIS_FIRST"
     regime_confirmed_no_stop_mode = thesis_first_mode and bool(
         getattr(config, "VASS_REGIME_CONFIRMED_NO_STOP", False)
     )
@@ -183,13 +189,18 @@ def check_spread_exit_signals_impl(
         neutrality_exit_enabled = False
         day4_eod_exit_enabled = False
 
-    credit_theta_first_mode = bool(
-        is_credit_spread and getattr(config, "VASS_CREDIT_THETA_FIRST_ENABLED", False)
-    )
-    if credit_theta_first_mode and bool(
-        getattr(config, "VASS_CREDIT_THETA_FIRST_REQUIRE_REGIME_CONFIRMED", True)
-    ):
-        credit_theta_first_mode = bool(regime_confirmed)
+    if stored_policy_mode in {"LEGACY", "THESIS_FIRST"}:
+        credit_theta_first_mode = False
+    elif stored_policy_mode == "CREDIT_THETA_FIRST_ACTIVE":
+        credit_theta_first_mode = bool(is_credit_spread)
+    else:
+        credit_theta_first_mode = bool(
+            is_credit_spread and getattr(config, "VASS_CREDIT_THETA_FIRST_ENABLED", False)
+        )
+        if credit_theta_first_mode and bool(
+            getattr(config, "VASS_CREDIT_THETA_FIRST_REQUIRE_REGIME_CONFIRMED", True)
+        ):
+            credit_theta_first_mode = bool(regime_confirmed)
 
     credit_mark_stop_suppressed = credit_theta_first_mode and bool(
         getattr(config, "VASS_CREDIT_THETA_FIRST_SUPPRESS_MARK_STOP", True)
