@@ -2279,12 +2279,14 @@ INTRADAY_OTM_MAX_DOLLARS = 0  # V12.15: disable fixed-dollar clamp; MICRO uses p
 IRON_CONDOR_ENGINE_ENABLED = True  # IC-only isolation backtest
 
 # ── Regime / environment gates ──
-IC_REGIME_MIN = 45  # Neutral zone lower bound
-IC_REGIME_MAX = 60  # Neutral zone upper bound (tighter than directional)
-IC_REGIME_PERSISTENCE_DAYS = 2  # Require N consecutive EOD-neutral DAYS before entry
+IC_REGIME_MIN = 42  # Neutral zone lower bound (V12.26: was 45, capture late-DEFENSIVE rising)
+IC_REGIME_MAX = 65  # Neutral zone upper bound (V12.26: was 60, capture NEUTRAL consolidation)
+IC_REGIME_PERSISTENCE_DAYS = (
+    1  # Require N consecutive EOD-neutral DAYS before entry (V12.26: was 2, too rare)
+)
 IC_VIX_MIN = 14.0  # Minimum VIX — need enough premium
 IC_VIX_MAX = 32.0  # Max VIX — too volatile for range thesis
-IC_ADX_MAX = 20.0  # Block when strong trend (ADX > threshold)
+IC_ADX_MAX = 25.0  # Block when strong trend (V12.26: was 20, allows consolidation phases)
 IC_EVENT_DAY_BLOCK_ENABLED = True  # Block entries on CPI/FOMC/major macro days
 
 # ── Entry timing ──
@@ -2311,11 +2313,11 @@ IC_WING_WIDTH_FALLBACK_TOLERANCE = 1  # Accept ±$1 if exact width unavailable
 
 # ── Credit quality / C/W gates (VIX-tiered) ──
 # Constraint: C/W_floor ≤ IC_MAX_STOP_DW / (1 + IC_STOP_LOSS_MULTIPLE)
-# With MAX_STOP_DW=0.65, STOP_MULT=1.50 → max feasible C/W = 0.26
-IC_MIN_CREDIT_TO_WIDTH = 0.25  # Default C/W floor
-IC_CW_FLOOR_LOW_VIX = 0.25  # C/W floor when VIX < 16 (premiums thin → accept 25%)
-IC_CW_FLOOR_MID_VIX = 0.25  # C/W floor when 16 <= VIX <= 25
-IC_CW_FLOOR_HIGH_VIX = 0.23  # C/W floor when 25 < VIX <= 32 (more selective in high vol)
+# With MAX_STOP_DW=0.65, STOP_MULT=1.00 → max feasible C/W = 0.325
+IC_MIN_CREDIT_TO_WIDTH = 0.28  # Default C/W floor (V12.26: was 0.25)
+IC_CW_FLOOR_LOW_VIX = 0.30  # C/W floor when VIX < 16 (V12.26: was 0.25, better quality entries)
+IC_CW_FLOOR_MID_VIX = 0.28  # C/W floor when 16 <= VIX <= 25 (V12.26: was 0.25)
+IC_CW_FLOOR_HIGH_VIX = 0.25  # C/W floor when 25 < VIX <= 32 (V12.26: was 0.23)
 IC_MAX_IMPLIED_WR = 0.78  # Reject if implied expiry WR > 78%
 IC_MAX_STOP_DW = 0.65  # Max stop D/W ceiling (C/W × (1+STOP_MULT) must be ≤ this)
 
@@ -2340,15 +2342,17 @@ IC_DTE_RANGES = [(21, 35), (35, 45), (14, 21)]  # Ordered by preference
 
 # C/W progressive relaxation: lower floor stepwise if no condors qualify
 IC_CW_RELAX_STEPS = [0.0, 0.03, 0.05]  # Subtract from C/W floor per step
-IC_CW_ABSOLUTE_FLOOR = 0.20  # Never accept C/W below this (hard floor)
+IC_CW_ABSOLUTE_FLOOR = (
+    0.25  # Never accept C/W below this (V12.26: was 0.20, prevent bad elastic fills)
+)
 
 # ── Exit parameters ──
-IC_TARGET_CAPTURE_PCT = 0.60  # Close at 60% of credit captured
-IC_STOP_LOSS_MULTIPLE = 1.50  # Stop at 150% of credit lost
-IC_TIME_EXIT_DTE = 10  # Close by 10 DTE (was 5 — exit before gamma acceleration)
-IC_VIX_SPIKE_EXIT = 30.0  # Emergency exit on VIX spike above this
+IC_TARGET_CAPTURE_PCT = 0.75  # Close at 75% of credit captured (V12.26: was 0.60, improves R:R)
+IC_STOP_LOSS_MULTIPLE = 1.00  # Stop at 100% of credit lost (V12.26: was 1.50, required WR 71%→57%)
+IC_TIME_EXIT_DTE = 14  # Close by 14 DTE (V12.26: was 10, avoid gamma acceleration zone)
+IC_VIX_SPIKE_EXIT = 33.0  # Emergency exit on VIX spike (V12.26: was 30, VIX 30-32 survivable)
 IC_FRIDAY_CLOSE_DTE = 14  # Close before weekend if DTE < 14 (was 8)
-IC_REGIME_EXIT_BUFFER = 5  # Exit if regime goes IC_REGIME_MIN - buffer or IC_REGIME_MAX + buffer
+IC_REGIME_EXIT_BUFFER = 8  # Exit buffer (V12.26: was 5, fewer forced exits at regime edges)
 
 # ── Capital / risk model ──
 IC_OPEN_RISK_PCT = 0.05  # Max open IC risk as % of portfolio (5%) — scales with equity
@@ -2372,7 +2376,7 @@ IC_DIVIDEND_GUARD_DTE = 3  # Close before ex-div if DTE <= this
 # IC profits from underlying staying in range.  If the underlying moves too far
 # from entry price, the range thesis is dead — exit regardless of regime score.
 IC_UNDERLYING_INVALIDATION_ENABLED = True
-IC_UNDERLYING_INVALIDATION_PCT = 0.03  # 3% move from entry → thesis broken (pre-guard)
+IC_UNDERLYING_INVALIDATION_PCT = 0.045  # 4.5% move from entry → thesis broken (V12.26: was 0.03, QQQ 3-day swing hits 3% routinely)
 
 # ── IC Strike Reuse Guard ──
 # Block new IC entry when any candidate leg strike matches an active/pending
@@ -2391,7 +2395,7 @@ IC_CLOSE_MAX_RETRIES = 10  # Abandon after this many retries (clear is_closing)
 # Formula: hold_days = clamp(ceil(entry_dte × fraction), min, max)
 IC_HOLD_GUARD_ENABLED = True
 IC_HOLD_GUARD_DTE_FRACTION = 0.33  # Hold for 1/3 of entry DTE (→ 18.4% theta cushion)
-IC_HOLD_GUARD_MIN_DAYS = 5  # Minimum 5 calendar days hold
+IC_HOLD_GUARD_MIN_DAYS = 3  # Minimum 3 calendar days hold (V12.26: was 5, capture fast theta decay)
 IC_HOLD_GUARD_MAX_DAYS = 15  # Maximum 15 calendar days hold
 IC_HOLD_HARD_STOP_CREDIT_MULT = 2.50  # During hold: exit only if loss > 2.5× credit
 IC_HOLD_EOD_GATE_ENABLED = True  # EOD de-risk during hold
@@ -2402,10 +2406,16 @@ IC_HOLD_EOD_GATE_MIN_MINUTES = 240  # Min hold before EOD gate can fire (4h)
 # Two-tier floor system: once P&L reaches a tier threshold, a floor locks in.
 # Tiers are permanent ratchets — they never decrease.
 IC_MFE_LOCK_ENABLED = True
-IC_MFE_T1_TRIGGER = 0.25  # T1: arm at 25% of credit captured
-IC_MFE_T2_TRIGGER = 0.45  # T2: arm at 45% of credit captured
+IC_MFE_T1_TRIGGER = (
+    0.20  # T1: arm at 20% of credit captured (V12.26: was 0.25, arm breakeven earlier)
+)
+IC_MFE_T2_TRIGGER = (
+    0.35  # T2: arm at 35% of credit captured (V12.26: was 0.45, lock profit earlier)
+)
 IC_MFE_T1_FLOOR_PCT = 0.0  # T1 floor: breakeven (0% of credit) + commissions
-IC_MFE_T2_FLOOR_PCT = 0.15  # T2 floor: lock 15% of credit captured
+IC_MFE_T2_FLOOR_PCT = (
+    0.25  # T2 floor: lock 25% of credit captured (V12.26: was 0.15, better protection)
+)
 
 # V3.0: Minimum margin percentage to allow options trading
 # Replaces hardcoded $1,000 check in main.py

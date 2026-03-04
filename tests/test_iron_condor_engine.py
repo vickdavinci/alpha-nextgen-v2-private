@@ -228,7 +228,7 @@ class TestEnvGates:
         engine = _make_engine()
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             result = engine._check_env_gates(
-                regime_score=65,
+                regime_score=70,
                 adx_value=15,
                 vix_current=18,
                 transition_ctx=_default_transition_ctx(),
@@ -319,7 +319,7 @@ class TestEnvGates:
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             result = engine._check_env_gates(
                 regime_score=52,
-                adx_value=25,
+                adx_value=28,
                 vix_current=18,
                 transition_ctx=_default_transition_ctx(),
                 current_time=datetime(2025, 3, 3, 11, 0),
@@ -453,15 +453,15 @@ class TestVIXTiers:
 
     def test_low_vix_cw_floor(self):
         engine = _make_engine()
-        assert engine._get_cw_floor_for_vix(12.0) == pytest.approx(0.25)
+        assert engine._get_cw_floor_for_vix(12.0) == pytest.approx(0.30)
 
     def test_mid_vix_cw_floor(self):
         engine = _make_engine()
-        assert engine._get_cw_floor_for_vix(20.0) == pytest.approx(0.25)
+        assert engine._get_cw_floor_for_vix(20.0) == pytest.approx(0.28)
 
     def test_high_vix_cw_floor(self):
         engine = _make_engine()
-        assert engine._get_cw_floor_for_vix(28.0) == pytest.approx(0.23)
+        assert engine._get_cw_floor_for_vix(28.0) == pytest.approx(0.25)
 
     def test_cw_floors_feasible_with_stop_dw(self):
         """Guard rail: C/W floor × (1 + STOP_MULT) must never exceed MAX_STOP_DW.
@@ -508,11 +508,11 @@ class TestExitTriggers:
         engine = _make_engine()
         condor = _make_condor(net_credit=1.20, num_spreads=2)
         # credit_100 = 1.20 * 100 * 2 = 240
-        # target = 60% of 240 = 144
+        # target = 75% of 240 = 180
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=150,  # > 144
-            current_dte=10,
+            combined_pnl=185,  # > 180
+            current_dte=20,
             vix_current=18,
             regime_score=52,
             qqq_price=480,
@@ -525,12 +525,12 @@ class TestExitTriggers:
     def test_stop_loss_exit(self):
         engine = _make_engine()
         condor = _make_condor(net_credit=1.20, num_spreads=2)
-        # credit_100 = 240; stop = 150% = 360
+        # credit_100 = 240; stop = 100% = 240
         # Use date past hold guard (10 days for 30 DTE entry)
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-370,  # > 360 loss
-            current_dte=10,
+            combined_pnl=-250,  # > 240 loss
+            current_dte=20,
             vix_current=18,
             regime_score=52,
             qqq_price=480,
@@ -546,7 +546,7 @@ class TestExitTriggers:
         result = engine.check_exit_signals(
             condor=condor,
             combined_pnl=0,
-            current_dte=9,  # <= IC_TIME_EXIT_DTE=10
+            current_dte=13,  # <= IC_TIME_EXIT_DTE=14
             vix_current=18,
             regime_score=52,
             qqq_price=480,
@@ -562,9 +562,9 @@ class TestExitTriggers:
         result = engine.check_exit_signals(
             condor=condor,
             combined_pnl=0,
-            current_dte=14,
+            current_dte=20,
             vix_current=18,
-            regime_score=35,  # Below IC_REGIME_MIN(45) - buffer(5) = 40
+            regime_score=33,  # Below IC_REGIME_MIN(42) - buffer(8) = 34
             qqq_price=480,
             current_time=datetime(2025, 3, 12, 11, 0),  # Past hold guard
         )
@@ -576,15 +576,17 @@ class TestExitTriggers:
         engine = _make_engine()
         condor = _make_condor()
         # Friday (weekday=4), DTE < IC_FRIDAY_CLOSE_DTE(14)
-        result = engine.check_exit_signals(
-            condor=condor,
-            combined_pnl=0,
-            current_dte=13,
-            vix_current=18,
-            regime_score=52,
-            qqq_price=480,
-            current_time=datetime(2025, 3, 14, 11, 0),  # Friday, past hold guard
-        )
+        # Override TIME_EXIT_DTE to 5 so FRIDAY_CLOSE fires first at DTE=13
+        with _patch_config(IC_TIME_EXIT_DTE=5):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=0,
+                current_dte=13,
+                vix_current=18,
+                regime_score=52,
+                qqq_price=480,
+                current_time=datetime(2025, 3, 14, 11, 0),  # Friday, past hold guard
+            )
         assert result is not None
         reason, _ = result
         assert reason == EXIT_IC_FRIDAY_CLOSE
@@ -668,17 +670,17 @@ class TestUnderlyingInvalidation:
     """Test thesis-first underlying invalidation exit (V12.25)."""
 
     def test_upside_invalidation_fires(self):
-        """Underlying rallies 3%+ from entry → thesis broken, exit fires."""
+        """Underlying rallies 4.5%+ from entry → thesis broken, exit fires."""
         engine = _make_engine()
         condor = _make_condor(qqq_price=480.0)
-        # Price rallied 3.5% from entry
+        # Price rallied 5.0% from entry
         result = engine.check_exit_signals(
             condor=condor,
             combined_pnl=-50,
             current_dte=25,
             vix_current=18,
             regime_score=58,  # Still in neutral band — regime break hasn't fired
-            qqq_price=496.8,  # +3.5%
+            qqq_price=504.0,  # +5.0%
             current_time=datetime(2025, 3, 12, 11, 0),
         )
         assert result is not None
@@ -686,17 +688,17 @@ class TestUnderlyingInvalidation:
         assert reason == "IC_UNDERLYING_INVALIDATION"
 
     def test_downside_invalidation_fires(self):
-        """Underlying drops 3%+ from entry → thesis broken, exit fires."""
+        """Underlying drops 4.5%+ from entry → thesis broken, exit fires."""
         engine = _make_engine()
         condor = _make_condor(qqq_price=480.0)
-        # Price dropped 3.2% from entry
+        # Price dropped 5.0% from entry
         result = engine.check_exit_signals(
             condor=condor,
             combined_pnl=-80,
             current_dte=25,
             vix_current=18,
-            regime_score=44,  # Still above regime break threshold (40)
-            qqq_price=464.6,  # -3.2%
+            regime_score=44,  # Still above regime break threshold (34)
+            qqq_price=456.0,  # -5.0%
             current_time=datetime(2025, 3, 12, 11, 0),
         )
         assert result is not None
@@ -748,7 +750,7 @@ class TestUnderlyingInvalidation:
             current_dte=28,
             vix_current=18,
             regime_score=52,
-            qqq_price=496.0,  # +3.3%
+            qqq_price=504.0,  # +5.0% (above 4.5% threshold)
             current_time=datetime(2025, 3, 1, 14, 0),  # Same day as entry
         )
         assert result is not None
@@ -1588,7 +1590,7 @@ class TestHoldGuard:
             combined_pnl=-50,
             current_dte=20,
             vix_current=18,
-            regime_score=35,  # Below regime_min(45) - buffer(5) = 40
+            regime_score=33,  # Below regime_min(42) - buffer(8) = 34
             qqq_price=480,
             current_time=datetime(2025, 3, 4, 11, 0),
         )
@@ -1597,19 +1599,22 @@ class TestHoldGuard:
         assert reason == "IC_REGIME_BREAK"
 
     def test_hold_guard_blocks_friday_close_during_hold(self):
-        """P7 Friday close blocked within hold window."""
+        """P7 Friday close blocked within hold window (override TIME_EXIT to isolate)."""
         engine = _make_engine()
         condor = _make_condor()
-        # 2025-03-07 is a Friday, only 6 days after entry (within 10-day hold)
-        result = engine.check_exit_signals(
-            condor=condor,
-            combined_pnl=-20,
-            current_dte=13,  # < IC_FRIDAY_CLOSE_DTE=14
-            vix_current=18,
-            regime_score=52,
-            qqq_price=480,
-            current_time=datetime(2025, 3, 7, 11, 0),  # Friday, within hold
-        )
+        # 2025-03-07 is a Friday, only 6 days after entry (within hold)
+        # Override TIME_EXIT_DTE=5 so DTE=13 doesn't trigger it; Friday close
+        # would fire but hold guard blocks it.
+        with _patch_config(IC_TIME_EXIT_DTE=5):
+            result = engine.check_exit_signals(
+                condor=condor,
+                combined_pnl=-20,
+                current_dte=13,  # < IC_FRIDAY_CLOSE_DTE=14
+                vix_current=18,
+                regime_score=52,
+                qqq_price=480,
+                current_time=datetime(2025, 3, 7, 11, 0),  # Friday, within hold
+            )
         assert result is None
 
     def test_hold_guard_allows_vix_spike_during_hold(self):
@@ -1709,10 +1714,10 @@ class TestHoldGuard:
         """Profitable condor during hold → profit target can fire."""
         engine = _make_engine()
         condor = _make_condor(net_credit=1.20, num_spreads=2)
-        # credit_100 = 240; target = 60% = 144
+        # credit_100 = 240; target = 75% = 180
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=150,  # > 144 → profit target fires
+            combined_pnl=185,  # > 180 → profit target fires
             current_dte=20,
             vix_current=18,
             regime_score=52,
@@ -1727,12 +1732,12 @@ class TestHoldGuard:
         """After hold window, full cascade runs normally."""
         engine = _make_engine()
         condor = _make_condor(net_credit=1.20, num_spreads=2)
-        # credit_100 = 240; stop = 150% = 360
-        # Hold window: 10 days. Check at day 11.
+        # credit_100 = 240; stop = 100% = 240
+        # Hold window: check at day 11 (past hold).
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-370,  # > 360 loss → P3 fires
-            current_dte=15,
+            combined_pnl=-250,  # > 240 loss → stop fires
+            current_dte=20,
             vix_current=18,
             regime_score=52,
             qqq_price=480,
@@ -1838,7 +1843,7 @@ class TestMFELock:
         defaults = dict(
             condor=condor,
             combined_pnl=combined_pnl,
-            current_dte=14,
+            current_dte=20,
             vix_current=18,
             regime_score=52,
             qqq_price=480,
@@ -1877,13 +1882,13 @@ class TestMFELock:
         assert abs(condor.highest_pnl_pct - 0.50) < 0.01
 
     def test_mfe_t1_arms_and_exits(self):
-        """T1 arms at 25% of credit captured, exits when P&L falls to 0%."""
+        """T1 arms at 20% of credit captured, exits when P&L falls to 0%."""
         engine = _make_engine()
         condor = _make_condor(net_credit=1.20, num_spreads=2)
         # credit_100 = 240
 
-        # First call: P&L at 30% of credit → arms T1, no exit yet
-        condor.highest_pnl_pct = 0.30  # Simulate prior HWM
+        # First call: P&L at 25% of credit → arms T1, no exit yet
+        condor.highest_pnl_pct = 0.25  # Simulate prior HWM (above T1 trigger=0.20)
         result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=24))
         # 24/240 = 0.10 → above T1 floor (0%), no exit
         assert result is None
@@ -1896,23 +1901,23 @@ class TestMFELock:
         assert reason == EXIT_IC_MFE_LOCK
 
     def test_mfe_t2_arms_and_exits(self):
-        """T2 arms at 45% of credit captured, exits when P&L falls to 15%."""
+        """T2 arms at 35% of credit captured, exits when P&L falls to 25%."""
         engine = _make_engine()
         condor = _make_condor(net_credit=1.20, num_spreads=2)
         # credit_100 = 240
 
-        # Simulate HWM that reached 50% of credit
-        condor.highest_pnl_pct = 0.50
+        # Simulate HWM that reached 40% of credit (above T2 trigger=0.35)
+        condor.highest_pnl_pct = 0.40
 
-        # P&L at 20% → above T2 floor (15%), no exit
-        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=48))
-        # 48/240 = 0.20, floor = 0.15 → no exit
+        # P&L at 30% → above T2 floor (25%), no exit
+        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=72))
+        # 72/240 = 0.30, floor = 0.25 → no exit
         assert result is None
         assert condor.mfe_lock_tier == 2
 
-        # P&L at 14% → below T2 floor (15%), exit
-        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=33.6))
-        # 33.6/240 = 0.14, floor = 0.15 → exit
+        # P&L at 24% → below T2 floor (25%), exit
+        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=57.6))
+        # 57.6/240 = 0.24, floor = 0.25 → exit
         assert result is not None
         reason, _ = result
         assert reason == EXIT_IC_MFE_LOCK
@@ -1924,19 +1929,19 @@ class TestMFELock:
         # credit_100 = 240
 
         # Arm T2
-        condor.highest_pnl_pct = 0.50
+        condor.highest_pnl_pct = 0.40
         condor.mfe_lock_tier = 2
 
-        # P&L drops to 20% → T2 stays (still above floor)
-        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=48))
+        # P&L at 30% → T2 stays (still above floor=25%)
+        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=72))
         assert condor.mfe_lock_tier == 2
         assert result is None
 
         # HWM drops below T2 trigger on this call (can't happen in practice,
         # but test ratchet safety): tier should not decrease
         condor.highest_pnl_pct = 0.10  # Artificially set below T1
-        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=48))
-        # 48/240 = 0.20, but tier was already 2 → stays 2
+        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=72))
+        # 72/240 = 0.30, but tier was already 2 → stays 2
         assert condor.mfe_lock_tier == 2
 
     def test_mfe_disabled_config(self):
@@ -1959,17 +1964,17 @@ class TestMFELock:
         condor = _make_condor(net_credit=1.20, num_spreads=2)
         # credit_100 = 240
 
-        # Arm T1 (HWM = 30%), P&L at 15% → above T1 floor (0%)
-        condor.highest_pnl_pct = 0.30
+        # Arm T1 (HWM = 25%), P&L at 15% → above T1 floor (0%)
+        condor.highest_pnl_pct = 0.25
         result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=36))
         # 36/240 = 0.15 → above 0.0 floor
         assert result is None
 
-        # Arm T2 (HWM = 50%), P&L at 25% → above T2 floor (15%)
-        condor.highest_pnl_pct = 0.50
+        # Arm T2 (HWM = 40%), P&L at 30% → above T2 floor (25%)
+        condor.highest_pnl_pct = 0.40
         condor.mfe_lock_tier = 0  # Reset to verify ratchet re-arms
-        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=60))
-        # 60/240 = 0.25 → above 0.15 floor
+        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=72))
+        # 72/240 = 0.30 → above 0.25 floor
         assert result is None
         assert condor.mfe_lock_tier == 2
 
