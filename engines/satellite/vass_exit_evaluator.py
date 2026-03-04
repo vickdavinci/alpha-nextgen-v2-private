@@ -730,6 +730,38 @@ def check_spread_exit_signals_impl(
             pass
 
     exit_reason = None
+    credit_theta_hold_guard_active = False
+    credit_theta_hold_minutes = 0.0
+    if (
+        credit_theta_first_mode
+        and is_credit_spread
+        and self.algorithm is not None
+        and current_dte > int(getattr(config, "SPREAD_FORCE_CLOSE_DTE", 1))
+    ):
+        try:
+            credit_hold_min = max(
+                0,
+                int(getattr(config, "VASS_CREDIT_THETA_FIRST_MIN_HOLD_MINUTES", 0) or 0),
+            )
+            if credit_hold_min > 0:
+                entry_dt = datetime.strptime(spread.entry_time[:19], "%Y-%m-%d %H:%M:%S")
+                credit_theta_hold_minutes = max(
+                    0.0,
+                    (self.algorithm.Time - entry_dt).total_seconds() / 60.0,
+                )
+                credit_theta_hold_guard_active = 0 <= credit_theta_hold_minutes < credit_hold_min
+                if credit_theta_hold_guard_active:
+                    spread_key = self._build_spread_key(spread)
+                    if spread_key not in self._spread_hold_guard_logged:
+                        self._spread_hold_guard_logged.add(spread_key)
+                        self.log(
+                            f"CREDIT_THETA_HOLD_GUARD: Key={spread_key} | Sig={spread.spread_type} | "
+                            f"Held={credit_theta_hold_minutes:.0f}m < {credit_hold_min}m | DTE={current_dte}",
+                            trades_only=True,
+                        )
+        except Exception:
+            credit_theta_hold_guard_active = False
+            credit_theta_hold_minutes = 0.0
 
     # ---------------------------------------------------------------------
     # P0: VIX Spike Auto-Exit (bullish spreads only)
@@ -826,6 +858,7 @@ def check_spread_exit_signals_impl(
             and bool(getattr(config, "VASS_MFE_LOCK_ENABLED", True))
             and (mfe_lock_in_regime_confirmed or not regime_confirmed)
             and spread.max_profit > 0
+            and not credit_theta_hold_guard_active
         ):
             prev_tier = int(getattr(spread, "mfe_lock_tier", 0) or 0)
             t1 = float(getattr(config, "VASS_MFE_T1_TRIGGER", 0.25))
@@ -915,7 +948,7 @@ def check_spread_exit_signals_impl(
                 )
             )
         profit_target = spread.max_profit * credit_profit_target_pct
-        if profit_target_enabled and pnl >= profit_target:
+        if profit_target_enabled and pnl >= profit_target and not credit_theta_hold_guard_active:
             exit_reason = (
                 f"CREDIT_PROFIT_TARGET +{pnl_pct:.1%} " f"(P&L ${pnl:.2f} >= ${profit_target:.2f})"
             )
@@ -927,32 +960,42 @@ def check_spread_exit_signals_impl(
         # Correct formula: stop fires when spread value exceeds entry_credit + (max_loss * multiplier),
         # meaning the trade must actually LOSE multiplier% of max_loss before stopping.
         max_loss = spread.width - entry_credit
-        credit_stop_mult = float(getattr(config, "CREDIT_SPREAD_STOP_MULTIPLIER", 0.35))
-        if bool(getattr(config, "CREDIT_SPREAD_TIERED_STOP_ENABLED", True)):
-            if vass_tier == "LOW":
-                credit_stop_mult = float(
-                    getattr(config, "CREDIT_SPREAD_STOP_MULT_LOW_VIX", credit_stop_mult)
-                )
-            elif vass_tier == "HIGH":
-                credit_stop_mult = float(
-                    getattr(config, "CREDIT_SPREAD_STOP_MULT_HIGH_VIX", credit_stop_mult)
-                )
-            else:
-                credit_stop_mult = float(
-                    getattr(config, "CREDIT_SPREAD_STOP_MULT_MED_VIX", credit_stop_mult)
-                )
-        stop_threshold = entry_credit + max_loss * credit_stop_mult
+        stop_mode = str(getattr(config, "CREDIT_SPREAD_STOP_MODE", "LEGACY") or "LEGACY").upper()
+        stop_threshold = 0.0
+        stop_details = ""
+        if stop_mode == "TWO_X_CREDIT":
+            stop_mult_2x = float(getattr(config, "CREDIT_SPREAD_STOP_2X_MULTIPLIER", 2.0))
+            stop_threshold = max(entry_credit, entry_credit * stop_mult_2x)
+            stop_details = f"Mode=TWO_X_CREDIT Mult={stop_mult_2x:.2f}"
+        else:
+            credit_stop_mult = float(getattr(config, "CREDIT_SPREAD_STOP_MULTIPLIER", 0.35))
+            if bool(getattr(config, "CREDIT_SPREAD_TIERED_STOP_ENABLED", True)):
+                if vass_tier == "LOW":
+                    credit_stop_mult = float(
+                        getattr(config, "CREDIT_SPREAD_STOP_MULT_LOW_VIX", credit_stop_mult)
+                    )
+                elif vass_tier == "HIGH":
+                    credit_stop_mult = float(
+                        getattr(config, "CREDIT_SPREAD_STOP_MULT_HIGH_VIX", credit_stop_mult)
+                    )
+                else:
+                    credit_stop_mult = float(
+                        getattr(config, "CREDIT_SPREAD_STOP_MULT_MED_VIX", credit_stop_mult)
+                    )
+            stop_threshold = entry_credit + max_loss * credit_stop_mult
+            stop_details = f"Mode=LEGACY Mult={credit_stop_mult:.2f}"
         if (
             exit_reason is None
             and mark_stop_enabled
             and pnl < 0
             and current_spread_value >= stop_threshold
+            and not credit_theta_hold_guard_active
         ):
             loss_pct = (current_spread_value - entry_credit) / max_loss if max_loss > 0 else 0
             exit_reason = (
                 f"CREDIT_STOP_LOSS {loss_pct:.1%} "
                 f"(spread value ${current_spread_value:.2f} >= ${stop_threshold:.2f}, "
-                f"Mult={credit_stop_mult:.2f}, {vass_profile_tag})"
+                f"{stop_details}, {vass_profile_tag})"
             )
 
         # Exit 2B: Regime deterioration de-risk (only once spread is already losing).
@@ -960,6 +1003,7 @@ def check_spread_exit_signals_impl(
             exit_reason is None
             and getattr(config, "SPREAD_REGIME_DETERIORATION_EXIT_ENABLED", True)
             and not regime_confirmed
+            and not credit_theta_hold_guard_active
         ):
             min_loss_pct = float(getattr(config, "SPREAD_REGIME_DETERIORATION_MIN_LOSS_PCT", -0.15))
             if pnl_pct <= min_loss_pct:
@@ -986,7 +1030,12 @@ def check_spread_exit_signals_impl(
             exit_reason = f"DTE_EXIT ({current_dte} DTE <= {dte_exit_threshold})"
 
         # Exit 4: Phase C staged neutrality de-risk.
-        if exit_reason is None and neutrality_exit_enabled and not regime_confirmed:
+        if (
+            exit_reason is None
+            and neutrality_exit_enabled
+            and not regime_confirmed
+            and not credit_theta_hold_guard_active
+        ):
             neutrality_reason = self._check_neutrality_staged_exit(
                 spread=spread,
                 regime_score=regime_score,
