@@ -25,6 +25,16 @@ LOGS_FILE = os.path.join(BASE, "V10_8_FullYear2024_logs.txt")
 OUTPUT_FILE = os.path.join(BASE, "V10_8_FullYear2024_TRADE_DETAIL_REPORT.md")
 
 
+def _is_reconciled_close_marker(text: str) -> bool:
+    """Match reconciled-close reason variants with optional suffix payloads."""
+    upper = str(text or "").upper()
+    if not upper:
+        return False
+    return bool(
+        re.search(r"\b(FILL_CLOSE_RECONCILED|RECONCILED_CLOSE(?:[:_|A-Z0-9-].*)?)\b", upper)
+    )
+
+
 def parse_trades():
     """Parse trades.csv - source of truth for P&L."""
     trades = []
@@ -294,7 +304,7 @@ def match_spread_exit(spread, all_spread_exits, tolerance=0.15):
                 best_reason = "DAY4_EOD_CLOSE"
             elif "FRIDAY_FIREWALL" in reason_full:
                 best_reason = "FRIDAY_FIREWALL"
-            elif "FILL_CLOSE_RECONCILED" in reason_full or "RECONCILED_CLOSE" in reason_full:
+            elif _is_reconciled_close_marker(reason_full):
                 # FILL_CLOSE_RECONCILED at 15:45 = FRIDAY_FIREWALL exit
                 if log["time"] == "15:45:00" or log["time"][:5] == "15:45":
                     best_reason = "FRIDAY_FIREWALL"

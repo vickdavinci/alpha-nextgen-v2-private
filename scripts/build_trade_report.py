@@ -17,6 +17,16 @@ LOGS_FILE = BASE / "V10_4_FullYear2023_logs.txt"
 OUTPUT_FILE = BASE / "V10_4_FullYear2023_TRADE_DETAIL_REPORT.md"
 
 
+def _is_reconciled_close_marker(text: str) -> bool:
+    """Match reconciled-close reason variants with optional suffix payloads."""
+    upper = str(text or "").upper()
+    if not upper:
+        return False
+    return bool(
+        re.search(r"\b(FILL_CLOSE_RECONCILED|RECONCILED_CLOSE(?:[:_|A-Z0-9-].*)?)\b", upper)
+    )
+
+
 def parse_dt(s):
     s = s.strip().rstrip("Z")
     try:
@@ -300,7 +310,7 @@ def find_vass_exit_trigger(log_index, exit_time, entry_time):
                 return "DTE_EXIT"
             if "FRIDAY_FIREWALL" in line:
                 return "FRIDAY_FIREWALL"
-            if "FILL_CLOSE_RECONCILED" in line or "RECONCILED_CLOSE" in line:
+            if _is_reconciled_close_marker(line):
                 return "RECONCILED"
 
     for line in lines:
