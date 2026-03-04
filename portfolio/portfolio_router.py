@@ -1585,9 +1585,8 @@ class PortfolioRouter:
         Recover VASS close intents on quote-invalid.
 
         Policy:
-        - Emergency exits: allow combo-market fallback.
-        - Non-emergency debit spread exits: defer (skip submit this bar).
-        - Credit spread exits: preserve existing combo-market fallback behavior.
+        - HARD urgency exits: allow combo-market fallback.
+        - SOFT urgency exits: defer (no combo-market fallback).
         """
         if not self._is_vass_combo_exit_order(order):
             return False
@@ -1597,8 +1596,6 @@ class PortfolioRouter:
             return False
 
         md = order.metadata if isinstance(order.metadata, dict) else {}
-        spread_type = str(md.get("spread_type", "") or "").upper()
-        is_credit_spread = bool(md.get("is_credit_spread", False)) or ("CREDIT" in spread_type)
         source_tag, trace_id = self._extract_trace_context(order.metadata, symbol=order.symbol)
 
         def _record_quote_recovery(recovery_path: str) -> None:
@@ -1614,10 +1611,11 @@ class PortfolioRouter:
         is_emergency_exit = self._is_emergency_spread_exit(
             order.metadata, getattr(order, "reason", "")
         )
-        if (not is_emergency_exit) and (not is_credit_spread):
+        if not is_emergency_exit:
             self.log(
                 "ROUTER_VASS_QUOTE_INVALID_DEFER: "
-                f"{order.symbol} | Short={order.combo_short_symbol} | {quote_detail}"
+                f"{order.symbol} | Short={order.combo_short_symbol} | "
+                f"{quote_detail} | Urgency=SOFT"
             )
             return False
 
@@ -4066,6 +4064,7 @@ class PortfolioRouter:
                     is_vass_combo_exit = bool(
                         is_exit_combo and self._is_vass_combo_exit_order(order)
                     )
+                    is_vass_soft_exit = False
                     if is_vass_combo_exit:
                         exit_urgency = self._resolve_vass_exit_urgency(spread_md, order.reason)
                         if exit_urgency:
@@ -4075,6 +4074,9 @@ class PortfolioRouter:
                             effective_tag = self._append_spread_exit_rca_tag(
                                 effective_tag, order.metadata
                             )
+                        is_vass_soft_exit = (
+                            str(spread_md.get("spread_exit_urgency", "") or "").upper() == "SOFT"
+                        )
                     spread_type_upper = str(spread_md.get("spread_type", "") or "").upper()
                     is_credit_exit_combo = bool(
                         is_exit_combo
@@ -4088,6 +4090,14 @@ class PortfolioRouter:
                         and isinstance(order.metadata, dict)
                         and order.metadata.get("spread_close_force_combo_market", False)
                     )
+                    if force_combo_market_exit and is_vass_soft_exit:
+                        force_combo_market_exit = False
+                        if isinstance(order.metadata, dict):
+                            order.metadata["spread_close_force_combo_market"] = False
+                        self.log(
+                            "ROUTER_VASS_SOFT_SUPPRESS_FORCED_MARKET: "
+                            f"{order.symbol} | Reason={order.reason}"
+                        )
                     quotes_ok, quote_detail = self._validate_combo_entry_quotes(order)
                     if not quotes_ok:
                         emergency_seq_ok = self._try_vass_quote_invalid_close_fallback(
@@ -4245,6 +4255,24 @@ class PortfolioRouter:
                             )
 
                     if combo_tickets is None:
+                        if is_vass_soft_exit:
+                            self.log(
+                                "ROUTER_VASS_SOFT_EXIT_DEFER_LIMIT_ONLY: "
+                                f"{order.symbol} | Short={order.combo_short_symbol} | "
+                                f"Mode={submit_mode}"
+                            )
+                            self._record_rejection(
+                                code="R_VASS_SOFT_EXIT_DEFER",
+                                symbol=order.symbol,
+                                detail=(
+                                    "Soft VASS exit deferred (no combo market fallback) | "
+                                    f"Mode={submit_mode}"
+                                ),
+                                stage="EXECUTE_DEFERRED",
+                                source_tag=source_tag,
+                                trace_id=trace_id,
+                            )
+                            continue
                         try:
                             combo_tickets = self.algorithm.ComboMarketOrder(  # type: ignore[attr-defined]
                                 legs, num_spreads, tag=effective_tag
