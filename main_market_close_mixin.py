@@ -136,6 +136,8 @@ class MainMarketCloseMixin:
             except Exception:
                 pass
         self._diag_vass_reject_reason_counts.clear()
+        for _k in list(self._diag_vass_slot_concurrent_reject_by_direction.keys()):
+            self._diag_vass_slot_concurrent_reject_by_direction[_k] = 0
         self._diag_vass_mfe_peak_max_profit_pct = 0.0
         self._diag_vass_mfe_t1_hits = 0
         self._diag_vass_mfe_t2_hits = 0

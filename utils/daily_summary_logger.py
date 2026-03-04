@@ -213,6 +213,9 @@ def log_daily_summary(algo) -> None:
         return " ".join(out)
 
     vass_reject_top = _top_counts(getattr(algo, "_diag_vass_reject_reason_counts", {}), top_n=5)
+    vass_slot_reject_by_dir = (
+        getattr(algo, "_diag_vass_slot_concurrent_reject_by_direction", {}) or {}
+    )
     intraday_drop_top = _top_counts(
         getattr(algo, "_diag_intraday_drop_reason_counts", {}),
         top_n=8,
@@ -306,6 +309,18 @@ def log_daily_summary(algo) -> None:
         compact_parts.append(f"RjEng={router_by_engine}")
     if vass_reject_top != "NONE":
         compact_parts.append(f"Vj={vass_reject_top}")
+    vass_slot_reject_total = (
+        int(vass_slot_reject_by_dir.get("BULLISH", 0))
+        + int(vass_slot_reject_by_dir.get("BEARISH", 0))
+        + int(vass_slot_reject_by_dir.get("UNKNOWN", 0))
+    )
+    if vass_slot_reject_total > 0:
+        compact_parts.append(
+            "VSC="
+            f"{int(vass_slot_reject_by_dir.get('BULLISH', 0))}/"
+            f"{int(vass_slot_reject_by_dir.get('BEARISH', 0))}/"
+            f"{int(vass_slot_reject_by_dir.get('UNKNOWN', 0))}"
+        )
     if (
         vass_mfe_peak > 0
         or vass_mfe_t1 > 0

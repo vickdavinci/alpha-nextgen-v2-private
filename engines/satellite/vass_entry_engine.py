@@ -55,7 +55,7 @@ class VASSEntryEngine:
     ) -> None:
         """Emit VASS dropped-signal telemetry for pre-candidate resolver blocks."""
         if hasattr(algorithm, "_record_vass_reject_reason"):
-            algorithm._record_vass_reject_reason(reason_code)
+            algorithm._record_vass_reject_reason(reason_code, direction=direction)
         if hasattr(algorithm, "_record_signal_lifecycle_event"):
             signal_id = self._next_vass_signal_id(algorithm, prefix=signal_prefix)
             algorithm._record_signal_lifecycle_event(

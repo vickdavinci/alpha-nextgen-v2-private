@@ -168,6 +168,11 @@ class MainOptionsMixin:
         }
         self._recent_router_rejections: List[Any] = []
         self._diag_vass_reject_reason_counts = {}
+        self._diag_vass_slot_concurrent_reject_by_direction = {
+            "BULLISH": 0,
+            "BEARISH": 0,
+            "UNKNOWN": 0,
+        }
         self._diag_transition_path_counts: Dict[str, int] = {}
         self._diag_vass_mfe_peak_max_profit_pct = 0.0
         self._diag_vass_mfe_t1_hits = 0
@@ -445,11 +450,23 @@ class MainOptionsMixin:
         store = self._diag_intraday_drop_reason_counts_by_engine.setdefault(bucket, {})
         store[reason] = int(store.get(reason, 0)) + 1
 
-    def _record_vass_reject_reason(self, reason_code: str) -> None:
+    def _record_vass_reject_reason(self, reason_code: str, direction: Optional[str] = None) -> None:
         """Track VASS reject reason counts for daily funnel RCA."""
         code = self._canonical_options_reason_code(str(reason_code or "UNKNOWN"))
         self._diag_vass_reject_reason_counts[code] = (
             int(self._diag_vass_reject_reason_counts.get(code, 0)) + 1
+        )
+        if code != "R_SLOT_VASS_CONCURRENT_MAX":
+            return
+        direction_key = str(direction or "").strip().upper()
+        if direction_key in {"CALL", "BULLISH"}:
+            bucket = "BULLISH"
+        elif direction_key in {"PUT", "BEARISH"}:
+            bucket = "BEARISH"
+        else:
+            bucket = "UNKNOWN"
+        self._diag_vass_slot_concurrent_reject_by_direction[bucket] = (
+            int(self._diag_vass_slot_concurrent_reject_by_direction.get(bucket, 0)) + 1
         )
 
     def _inc_transition_path_counter(self, key: str) -> None:
