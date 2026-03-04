@@ -325,6 +325,39 @@ def check_premarket_itm_shorts_impl(
         )
         return None
 
+    # V12.27: Optional guardrail to avoid premature premarket credit exits when
+    # assignment risk is still low (time value remains and DTE is not in danger zone).
+    if bool(getattr(config, "PREMARKET_ITM_CREDIT_GUARD_ENABLED", False)):
+        current_dte = int(
+            getattr(short_leg, "days_to_expiry", 0)
+            or getattr(spread.long_leg, "days_to_expiry", 0)
+            or 0
+        )
+        dte_max = int(getattr(config, "PREMARKET_ITM_CREDIT_DTE_MAX", 14))
+        intrinsic = max(0.0, (strike - underlying_price) if is_put else (underlying_price - strike))
+        bid = float(getattr(short_leg, "bid_price", 0.0) or 0.0)
+        ask = float(getattr(short_leg, "ask_price", 0.0) or 0.0)
+        mid = float(getattr(short_leg, "mid_price", 0.0) or 0.0)
+        if mid <= 0 and bid > 0 and ask > 0:
+            mid = (bid + ask) / 2.0
+        if mid <= 0:
+            mid = float(getattr(short_leg, "last_price", 0.0) or 0.0)
+        extrinsic = max(0.0, mid - intrinsic) if mid > 0 else None
+        extrinsic_max = float(getattr(config, "PREMARKET_ITM_CREDIT_EXTRINSIC_MAX", 0.15))
+        dte_gate = current_dte > 0 and current_dte <= dte_max
+        extrinsic_gate = extrinsic is not None and extrinsic <= extrinsic_max
+
+        if not (dte_gate or extrinsic_gate):
+            extrinsic_text = "NA" if extrinsic is None else f"{extrinsic:.2f}"
+            self.log(
+                "PREMARKET_ITM_CHECK: Guarded skip | "
+                f"Type={spread.spread_type} | DTE={current_dte} > {dte_max} | "
+                f"Extrinsic={extrinsic_text} > {extrinsic_max:.2f} | "
+                f"Underlying={underlying_price:.2f}",
+                trades_only=True,
+            )
+            return None
+
     # Short leg is ITM - queue for immediate close
     exit_reason = (
         f"PREMARKET_ITM_CLOSE: Short {'PUT' if is_put else 'CALL'} "
