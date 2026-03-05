@@ -3405,49 +3405,11 @@ class MainOrdersMixin:
                 f"Tag={self._compact_tag_for_log(order_tag)} | "
                 f"Long={long_symbol} | Short={short_symbol} | "
                 f"CancelCount={cancel_count} >= {sequential_escalation_count} | "
-                f"Submitting immediate sequential close | "
+                f"Scheduling sequential phase via retry scheduler | "
                 f"SoftDeadlineReached={soft_deadline_reached}"
             )
-            self.portfolio_router.receive_signal(
-                TargetWeight(
-                    symbol=long_symbol,
-                    target_weight=0.0,
-                    source="OPT",
-                    urgency=Urgency.IMMEDIATE,
-                    reason="SPREAD_CLOSE_ESCALATED",
-                    requested_quantity=spread.num_spreads,
-                    metadata={
-                        "spread_close_short": True,
-                        "spread_short_leg_symbol": short_symbol,
-                        "spread_short_leg_quantity": spread.num_spreads,
-                        "spread_key": self._build_spread_runtime_key(spread),
-                        "spread_type": str(getattr(spread, "spread_type", "") or ""),
-                        "is_credit_spread": bool(
-                            getattr(spread, "net_debit", 0.0) < 0
-                            or "CREDIT" in str(getattr(spread, "spread_type", "") or "").upper()
-                        ),
-                        "spread_entry_debit": float(max(0.0, getattr(spread, "net_debit", 0.0))),
-                        "spread_entry_credit": float(max(0.0, -getattr(spread, "net_debit", 0.0))),
-                        "exit_type": "SPREAD_CLOSE_ESCALATED",
-                        "spread_exit_code": "SPREAD_CLOSE_ESCALATED",
-                        "spread_exit_reason": "SPREAD_CLOSE_ESCALATED",
-                        "spread_exit_emergency": True,
-                        "spread_close_path": "SEQUENTIAL",
-                        "spread_close_escalation_reason": "LIMIT_CANCEL",
-                        "spread_close_attempt_count": cancel_count,
-                        "spread_close_latency_sec": close_latency_sec,
-                        "spread_exit_urgency": intent_urgency,
-                        "spread_close_phase": intent_phase,
-                    },
-                )
-            )
-            self._diag_spread_exit_signal_count += 1
-            self._diag_spread_exit_submit_count += 1
             self._spread_last_close_submit_at[spread_key] = self.Time
-            if is_vass_close_ladder:
-                self._spread_forced_close_retry.pop(spread_key, None)
-                self._spread_forced_close_retry_cycles.pop(spread_key, None)
-                self._spread_forced_close_reason.pop(spread_key, None)
+            self._spread_forced_close_retry[spread_key] = self.Time
             return
         elif (
             cancel_count >= market_escalation_count
@@ -3476,47 +3438,10 @@ class MainOrdersMixin:
                 f"Tag={self._compact_tag_for_log(order_tag)} | "
                 f"Long={long_symbol} | Short={short_symbol} | "
                 f"CancelCount={cancel_count} >= {market_escalation_count} | "
-                f"Submitting immediate combo market close"
-            )
-            self._diag_spread_exit_signal_count += 1
-            self._diag_spread_exit_submit_count += 1
-            self.portfolio_router.receive_signal(
-                TargetWeight(
-                    symbol=long_symbol,
-                    target_weight=0.0,
-                    source="OPT",
-                    urgency=Urgency.IMMEDIATE,
-                    reason=f"SPREAD_CLOSE_RETRY_MARKET:{cancel_reason}",
-                    requested_quantity=spread.num_spreads,
-                    metadata={
-                        "spread_close_short": True,
-                        "spread_short_leg_symbol": short_symbol,
-                        "spread_short_leg_quantity": spread.num_spreads,
-                        "spread_key": self._build_spread_runtime_key(spread),
-                        "spread_type": str(getattr(spread, "spread_type", "") or ""),
-                        "is_credit_spread": bool(
-                            getattr(spread, "net_debit", 0.0) < 0
-                            or "CREDIT" in str(getattr(spread, "spread_type", "") or "").upper()
-                        ),
-                        "spread_entry_debit": float(max(0.0, getattr(spread, "net_debit", 0.0))),
-                        "spread_entry_credit": float(max(0.0, -getattr(spread, "net_debit", 0.0))),
-                        "exit_type": "SPREAD_CLOSE_RETRY_MARKET",
-                        "spread_exit_code": "SPREAD_CLOSE_RETRY_MARKET",
-                        "spread_exit_reason": f"SPREAD_CLOSE_RETRY_MARKET:{cancel_reason}",
-                        "spread_close_force_combo_market": True,
-                        "spread_close_path": "COMBO_MARKET",
-                        "spread_close_escalation_reason": "LIMIT_CANCEL",
-                        "spread_close_attempt_count": cancel_count,
-                        "spread_close_latency_sec": close_latency_sec,
-                        "spread_exit_urgency": intent_urgency,
-                        "spread_close_phase": intent_phase,
-                    },
-                )
+                f"Scheduling combo-market phase via retry scheduler"
             )
             self._spread_last_close_submit_at[spread_key] = self.Time
-            if is_vass_close_ladder:
-                self._spread_forced_close_retry.pop(spread_key, None)
-                self._spread_forced_close_retry_cycles.pop(spread_key, None)
+            self._spread_forced_close_retry[spread_key] = self.Time
             return
         else:
             if (
