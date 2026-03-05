@@ -526,6 +526,33 @@ class MainRegimeMixin:
                     f"BarsSinceFlip={bars_since_flip}/{vass_derisk_bars}"
                 )
                 continue
+            if is_credit_spread and overlay == "RECOVERY":
+                if not bool(
+                    getattr(config, "VASS_TRANSITION_DERISK_CREDIT_RECOVERY_ENABLED", True)
+                ):
+                    self.Log(
+                        f"TRANSITION_DERISK_SKIPPED_CREDIT_RECOVERY_POLICY: "
+                        f"Overlay={overlay} | Type={spread_type} | "
+                        f"BarsSinceFlip={bars_since_flip}/{vass_derisk_bars}"
+                    )
+                    continue
+                recovery_min_bars = max(
+                    1,
+                    int(
+                        getattr(
+                            config,
+                            "VASS_TRANSITION_DERISK_CREDIT_RECOVERY_MIN_BARS",
+                            3,
+                        )
+                    ),
+                )
+                if bars_since_flip < recovery_min_bars:
+                    self.Log(
+                        f"TRANSITION_DERISK_SKIPPED_CREDIT_RECOVERY_STABILITY: "
+                        f"Overlay={overlay} | Type={spread_type} | "
+                        f"BarsSinceFlip={bars_since_flip} < {recovery_min_bars}"
+                    )
+                    continue
 
             # V12.9: Gate TRANSITION_DERISK by regime_confirmed.
             # When regime still confirms spread direction, skip forced exit —

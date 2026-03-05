@@ -2835,6 +2835,12 @@ VASS_TRANSITION_DERISK_DEBIT_ENABLED = (
     False  # Thesis mode: do not force-close VASS debit spreads on overlay flips.
 )
 VASS_TRANSITION_DERISK_CREDIT_ENABLED = True  # Keep faster de-risk for VASS credit spreads.
+VASS_TRANSITION_DERISK_CREDIT_RECOVERY_ENABLED = (
+    True  # V12.30: keep credit recovery de-risk available, but with persistence guard.
+)
+VASS_TRANSITION_DERISK_CREDIT_RECOVERY_MIN_BARS = (
+    3  # Require recovery overlay persistence before de-risking bearish credits.
+)
 ITM_BLOCK_SAME_DAY_SAME_DIRECTION_REENTRY = True
 ITM_BREAKER_3_LOSSES_PAUSE_DAYS = 1
 ITM_BREAKER_5_LOSSES_PAUSE_DAYS = 2
