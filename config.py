@@ -1030,6 +1030,17 @@ VASS_NEUTRAL_FALLBACK_DELTA_MIN = 1.0  # Minimum transition-score delta (points)
 VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT = (
     False  # V10.10 tuning: disable bearish credit fallback while BEAR_PUT gating is rebalanced
 )
+VASS_BEAR_CREDIT_STABILITY_GATE_ENABLED = (
+    True  # V12.30: require stable bearish transition context before BEAR_CALL_CREDIT entries.
+)
+VASS_BEAR_CREDIT_ALLOWED_OVERLAYS = (
+    "DETERIORATION",
+    "EARLY_STRESS",
+    "STRESS",
+)  # Reject BEAR_CALL_CREDIT in RECOVERY/NORMAL/AMBIGUOUS overlays.
+VASS_BEAR_CREDIT_MIN_DETERIORATION_BARS = (
+    2  # Require at least N bars in DETERIORATION before BEAR_CALL_CREDIT entry.
+)
 VASS_EV_PRE_GATE_ENABLED = False  # V12.11: disabled — D/W cap is the universal cost gate; IV rank pre-gate is redundant and miscalibrated in low-VIX.
 VASS_EV_PRE_BULL_REGIME_MIN = (
     52.0  # V12.10: allow neutral-bull tape to participate in bull debit entries.

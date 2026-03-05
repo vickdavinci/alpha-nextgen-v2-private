@@ -346,15 +346,15 @@ class VASSEntryEngine:
         except Exception:
             return 0.0
 
-    def _should_block_bear_credit_entry(
+    def _bear_credit_block_details(
         self,
         *,
         strategy: Any,
         regime_score: float,
+        overlay_state: Optional[str],
         algorithm: Any,
-        host: Any,
-    ) -> bool:
-        """Block BEAR_CALL_CREDIT entry when regime > REGIME_BREAK_BEAR_CEILING.
+    ) -> Optional[Tuple[str, str]]:
+        """Return bear-credit block details as (reason_code, reason_text), else None.
 
         REGIME_BREAK_BEAR exit fires on any bearish spread when regime exceeds
         the ceiling (default 50), producing guaranteed same-session losses.
@@ -363,30 +363,55 @@ class VASSEntryEngine:
         """
         strategy_value = str(getattr(strategy, "value", strategy) or "")
         if strategy_value != "BEAR_CALL_CREDIT":
-            return False
+            return None
         if not bool(getattr(config, "VASS_REGIME_BREAK_EXIT_ENABLED", False)):
-            return False
+            return None
         ceiling = float(getattr(config, "VASS_REGIME_BREAK_BEAR_CEILING", 50.0))
-        if regime_score <= ceiling:
-            return False
-        if algorithm is not None:
-            algorithm.Log(
-                f"VASS_BEAR_CREDIT_REGIME_BLOCK: Regime {regime_score:.0f} > "
-                f"{ceiling:.0f} | BEAR_CALL_CREDIT blocked — "
-                f"REGIME_BREAK_BEAR would exit immediately"
+        if regime_score > ceiling:
+            return (
+                "R_VASS_BEAR_CREDIT_REGIME_BLOCK",
+                (
+                    f"BEAR_CALL_CREDIT blocked because regime {regime_score:.1f} exceeds "
+                    f"ceiling {ceiling:.1f}"
+                ),
             )
-        if host is not None and hasattr(host, "_record_regime_decision"):
-            host._record_regime_decision(
-                engine="VASS",
-                decision="BLOCK",
-                strategy_attempted="VASS_BEAR_CALL_CREDIT",
-                gate_name="VASS_BEAR_CREDIT_REGIME_BLOCK",
-                threshold_snapshot={
-                    "regime": regime_score,
-                    "ceiling": ceiling,
-                },
+
+        if bool(getattr(config, "VASS_BEAR_CREDIT_STABILITY_GATE_ENABLED", True)):
+            overlay = str(overlay_state or "").upper()
+            configured_overlays = getattr(
+                config,
+                "VASS_BEAR_CREDIT_ALLOWED_OVERLAYS",
+                ("DETERIORATION", "EARLY_STRESS", "STRESS"),
             )
-        return True
+            allowed_overlays = {str(v).upper() for v in configured_overlays}
+            if overlay not in allowed_overlays:
+                return (
+                    "R_VASS_BEAR_CREDIT_OVERLAY_BLOCK",
+                    (
+                        "BEAR_CALL_CREDIT blocked by overlay stability gate | "
+                        f"Overlay={overlay or 'NA'} | Allowed={sorted(allowed_overlays)}"
+                    ),
+                )
+            if overlay == "DETERIORATION" and algorithm is not None:
+                min_bars = max(
+                    1,
+                    int(getattr(config, "VASS_BEAR_CREDIT_MIN_DETERIORATION_BARS", 2) or 1),
+                )
+                bars_since_flip = 999
+                try:
+                    transition_ctx = algorithm._get_transition_execution_context() or {}
+                    bars_since_flip = int(transition_ctx.get("overlay_bars_since_flip", 999) or 999)
+                except Exception:
+                    bars_since_flip = 999
+                if bars_since_flip < min_bars:
+                    return (
+                        "R_VASS_BEAR_CREDIT_STABILITY_BLOCK",
+                        (
+                            "BEAR_CALL_CREDIT blocked by deterioration persistence gate | "
+                            f"BarsSinceFlip={bars_since_flip} < {min_bars}"
+                        ),
+                    )
+        return None
 
     def _should_block_high_iv_bull_debit_route(
         self,
@@ -1467,21 +1492,35 @@ class VASSEntryEngine:
                 signal_prefix="VASS-INTRADAY",
             )
             return
-        # V12.23.3: Block BEAR_CALL_CREDIT when regime > REGIME_BREAK_BEAR_CEILING.
-        if self._should_block_bear_credit_entry(
+        bear_credit_block = self._bear_credit_block_details(
             strategy=strategy,
             regime_score=regime_score,
+            overlay_state=overlay_state,
             algorithm=algorithm,
-            host=host,
-        ):
+        )
+        if bear_credit_block is not None:
+            reason_code, reason_text = bear_credit_block
+            if algorithm is not None:
+                algorithm.Log(
+                    f"VASS_BEAR_CREDIT_BLOCK: Code={reason_code} | "
+                    f"{reason_text} | Overlay={overlay_state}"
+                )
+            if host is not None and hasattr(host, "_record_regime_decision"):
+                host._record_regime_decision(
+                    engine="VASS",
+                    decision="BLOCK",
+                    strategy_attempted="VASS_BEAR_CALL_CREDIT",
+                    gate_name=str(reason_code),
+                    threshold_snapshot={
+                        "regime": regime_score,
+                        "overlay": str(overlay_state or ""),
+                    },
+                )
             self._record_vass_drop_event(
                 algorithm=algorithm,
-                reason_code="R_VASS_BEAR_CREDIT_REGIME_BLOCK",
-                gate_name="VASS_BEAR_CREDIT_REGIME_BLOCK",
-                reason=(
-                    f"BEAR_CALL_CREDIT blocked because regime {regime_score:.1f} exceeds "
-                    f"ceiling {float(getattr(config, 'VASS_REGIME_BREAK_BEAR_CEILING', 50.0)):.1f}"
-                ),
+                reason_code=str(reason_code),
+                gate_name=str(reason_code),
+                reason=str(reason_text),
                 strategy=strategy.value if strategy else "VASS_ENTRY",
                 direction=direction.value if direction else "",
                 signal_prefix="VASS-INTRADAY",
@@ -1835,22 +1874,35 @@ class VASSEntryEngine:
                 signal_prefix="VASS-SCAN",
             )
             return
-        # V12.23.3: Block BEAR_CALL_CREDIT when regime > REGIME_BREAK_BEAR_CEILING.
-        # REGIME_BREAK_BEAR exit would fire within hours, producing guaranteed losses.
-        if self._should_block_bear_credit_entry(
+        bear_credit_block = self._bear_credit_block_details(
             strategy=strategy,
             regime_score=regime_score,
+            overlay_state=overlay_state,
             algorithm=algorithm,
-            host=host,
-        ):
+        )
+        if bear_credit_block is not None:
+            reason_code, reason_text = bear_credit_block
+            if algorithm is not None:
+                algorithm.Log(
+                    f"VASS_BEAR_CREDIT_BLOCK: Code={reason_code} | "
+                    f"{reason_text} | Overlay={overlay_state}"
+                )
+            if host is not None and hasattr(host, "_record_regime_decision"):
+                host._record_regime_decision(
+                    engine="VASS",
+                    decision="BLOCK",
+                    strategy_attempted="VASS_BEAR_CALL_CREDIT",
+                    gate_name=str(reason_code),
+                    threshold_snapshot={
+                        "regime": regime_score,
+                        "overlay": str(overlay_state or ""),
+                    },
+                )
             self._record_vass_drop_event(
                 algorithm=algorithm,
-                reason_code="R_VASS_BEAR_CREDIT_REGIME_BLOCK",
-                gate_name="VASS_BEAR_CREDIT_REGIME_BLOCK",
-                reason=(
-                    f"BEAR_CALL_CREDIT blocked because regime {regime_score:.1f} exceeds "
-                    f"ceiling {float(getattr(config, 'VASS_REGIME_BREAK_BEAR_CEILING', 50.0)):.1f}"
-                ),
+                reason_code=str(reason_code),
+                gate_name=str(reason_code),
+                reason=str(reason_text),
                 strategy=strategy.value if strategy else "VASS_ENTRY",
                 direction=direction.value if direction else "",
                 signal_prefix="VASS-SCAN",
