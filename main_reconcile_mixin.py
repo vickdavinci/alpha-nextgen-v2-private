@@ -58,6 +58,15 @@ class MainReconcileMixin:
         if not reason_str:
             return
         self._spread_last_exit_reason[spread_key] = reason_str[:180]
+        try:
+            if hasattr(self, "_get_or_init_spread_close_intent"):
+                self._get_or_init_spread_close_intent(
+                    spread_key,
+                    seed_text=reason_str,
+                    seed_exit_code=reason_str,
+                )
+        except Exception:
+            pass
 
     def _record_spread_removal(self, reason: str, count: int = 1, context: str = "") -> None:
         """Centralized spread-removal diagnostics accounting."""
@@ -164,6 +173,8 @@ class MainReconcileMixin:
         self._spread_last_close_submit_at.pop(spread_key, None)
         self._spread_close_first_cancel_at.pop(spread_key, None)
         self._spread_last_exit_reason.pop(spread_key, None)
+        if hasattr(self, "_spread_close_intent_by_key"):
+            self._spread_close_intent_by_key.pop(spread_key, None)
         self._spread_exit_mark_cache.pop(spread_key, None)
         self._spread_ghost_flat_streak_by_key.pop(spread_key, None)
         self._spread_ghost_last_log_by_key.pop(spread_key, None)
@@ -268,6 +279,8 @@ class MainReconcileMixin:
                     self._spread_forced_close_retry_cycles.clear()
                     self._spread_last_close_submit_at.clear()
                     self._spread_close_first_cancel_at.clear()
+                    if hasattr(self, "_spread_close_intent_by_key"):
+                        self._spread_close_intent_by_key.clear()
                     self._spread_exit_mark_cache.clear()
                     self._spread_ghost_flat_streak_by_key.clear()
                     self._spread_ghost_last_log_by_key.clear()

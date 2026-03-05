@@ -584,6 +584,94 @@ class MainOrdersMixin:
             return inferred
         return "RECONCILED_CLOSE_NO_CONTEXT"
 
+    def _spread_close_hard_tokens(self) -> tuple[str, ...]:
+        """Canonical hard-exit markers used for spread close urgency classification."""
+        return (
+            "VASS_TAIL_RISK_CAP",
+            "SPREAD_HARD_STOP_DURING_HOLD",
+            "SPREAD_HARD_STOP_TRIGGERED_PCT",
+            "SPREAD_HARD_STOP_TRIGGERED_WIDTH",
+            "TRANSITION_DERISK",
+            "TAIL_RISK_CAP",
+            "HARD_STOP",
+            "ASSIGNMENT_RISK",
+            "SHORT_LEG_ITM_EXIT",
+            "DEEP_ITM_SHORT",
+            "OVERNIGHT_ITM_BLOCK",
+            "PREMARKET_ITM",
+            "MANDATORY_DTE_CLOSE",
+            "DTE_EXIT_NO_QUOTE",
+            "DTE_EXIT",
+            "SPREAD_TIME_STOP_NO_QUOTE",
+            "OVERLAY_STRESS_EXIT",
+            "KILL_SWITCH",
+            "EMERGENCY",
+            "FORCE_CLOSE",
+        )
+
+    def _classify_spread_exit_urgency(self, text_blob: str) -> str:
+        """
+        Classify spread close urgency from normalized text.
+
+        Returns HARD when any hard marker is present, else SOFT.
+        """
+        probe = str(text_blob or "").upper()
+        return (
+            "HARD" if any(token in probe for token in self._spread_close_hard_tokens()) else "SOFT"
+        )
+
+    def _get_or_init_spread_close_intent(
+        self,
+        spread_key: str,
+        *,
+        seed_text: str = "",
+        seed_exit_code: str = "",
+    ) -> dict:
+        """
+        Get immutable close intent for a spread key, creating one if absent.
+
+        Intent fields:
+        - urgency: HARD/SOFT (frozen once set)
+        - phase: LIMIT -> COMBO_MARKET -> SEQ_MARKET (monotonic)
+        - started_at: first timestamp seen
+        - attempt_count: aggregate close retry attempts
+        - origin_exit_code: initial exit code/reason snapshot
+        """
+        if not hasattr(self, "_spread_close_intent_by_key"):
+            self._spread_close_intent_by_key = {}
+        intent = self._spread_close_intent_by_key.get(spread_key)
+        if not isinstance(intent, dict):
+            urgency = self._classify_spread_exit_urgency(seed_text)
+            origin_exit_code = str(seed_exit_code or "").strip()
+            if not origin_exit_code:
+                origin_exit_code = str(seed_text or "").strip()[:64]
+            intent = {
+                "urgency": urgency,
+                "phase": "LIMIT",
+                "started_at": self.Time,
+                "attempt_count": 0,
+                "origin_exit_code": origin_exit_code,
+            }
+            self._spread_close_intent_by_key[spread_key] = intent
+        return intent
+
+    def _advance_spread_close_intent_phase(self, spread_key: str, new_phase: str) -> str:
+        """
+        Advance close-intent phase monotonically.
+        """
+        phase_rank = {"LIMIT": 0, "COMBO_MARKET": 1, "SEQ_MARKET": 2}
+        target = str(new_phase or "").strip().upper()
+        if target not in phase_rank:
+            target = "LIMIT"
+        intent = self._get_or_init_spread_close_intent(spread_key)
+        current = str(intent.get("phase", "LIMIT") or "LIMIT").upper()
+        if current not in phase_rank:
+            current = "LIMIT"
+        if phase_rank[target] > phase_rank[current]:
+            intent["phase"] = target
+            current = target
+        return current
+
     def _remember_spread_close_order_key(self, order_id: int, spread_key: str) -> None:
         """Cache order-id -> spread-key to survive blank-tag lifecycle callbacks."""
         if order_id <= 0:
@@ -1850,6 +1938,8 @@ class MainOrdersMixin:
         self._spread_forced_close_retry_cycles.clear()
         self._spread_last_close_submit_at.clear()
         self._spread_close_first_cancel_at.clear()
+        if hasattr(self, "_spread_close_intent_by_key"):
+            self._spread_close_intent_by_key.clear()
 
         # Clear options engine pending spread state
         self.options_engine.clear_pending_spread_state_hard()
@@ -3041,6 +3131,8 @@ class MainOrdersMixin:
             self._spread_close_first_cancel_at.pop(spread_key, None)
             self._spread_last_exit_reason.pop(spread_key, None)
             self._spread_close_trackers.pop(spread_key, None)
+            if hasattr(self, "_spread_close_intent_by_key"):
+                self._spread_close_intent_by_key.pop(spread_key, None)
             if hasattr(self, "_spread_close_order_key_by_order_id"):
                 stale_ids = [
                     oid
@@ -3242,8 +3334,8 @@ class MainOrdersMixin:
         if order_tag:
             self._cache_order_tag_hint(int(order_event.OrderId or 0), order_tag)
 
-        # V12.27: patient close policy — only HARD exits may escalate immediately.
-        # SOFT exits remain on limit/retry rails until bounded defer deadline elapses.
+        # V12.28: immutable close intent (urgency/phase) keyed by spread.
+        # Once initialized, urgency must not degrade and phase must not move backward.
         raw_tag = str(order_tag or "")
         tag_urgency = ""
         for part in raw_tag.split("|"):
@@ -3256,35 +3348,29 @@ class MainOrdersMixin:
         urgency_probe = " | ".join(
             [origin_reason, prior_reason, raw_tag, str(getattr(order, "Tag", "") or "")]
         ).upper()
-        hard_tokens = (
-            "VASS_TAIL_RISK_CAP",
-            "SPREAD_HARD_STOP_DURING_HOLD",
-            "SPREAD_HARD_STOP_TRIGGERED_PCT",
-            "SPREAD_HARD_STOP_TRIGGERED_WIDTH",
-            "TRANSITION_DERISK",
-            "TAIL_RISK_CAP",
-            "HARD_STOP",
-            "ASSIGNMENT_RISK",
-            "SHORT_LEG_ITM_EXIT",
-            "DEEP_ITM_SHORT",
-            "OVERNIGHT_ITM_BLOCK",
-            "PREMARKET_ITM",
-            "MANDATORY_DTE_CLOSE",
-            "DTE_EXIT_NO_QUOTE",
-            "DTE_EXIT",
-            "SPREAD_TIME_STOP_NO_QUOTE",
-            "OVERLAY_STRESS_EXIT",
-            "KILL_SWITCH",
-            "EMERGENCY",
-            "FORCE_CLOSE",
+        close_intent = self._get_or_init_spread_close_intent(
+            spread_key,
+            seed_text=urgency_probe if not tag_urgency else f"{urgency_probe} | {tag_urgency}",
+            seed_exit_code=origin_reason or prior_reason,
         )
-        allow_market_escalation = bool(
-            tag_urgency == "HARD" or any(token in urgency_probe for token in hard_tokens)
+        if tag_urgency == "HARD":
+            close_intent["urgency"] = "HARD"
+        close_intent["attempt_count"] = max(
+            int(close_intent.get("attempt_count", 0) or 0), cancel_count
         )
+        intent_urgency = str(close_intent.get("urgency", "SOFT") or "SOFT").upper()
+        intent_phase = str(close_intent.get("phase", "LIMIT") or "LIMIT").upper()
+        allow_market_escalation = intent_urgency == "HARD"
         soft_defer_minutes = max(
             1, int(getattr(config, "VASS_CLOSE_SOFT_EXIT_MAX_DEFER_MINUTES", 120))
         )
         soft_deadline_reached = close_latency_sec >= int(soft_defer_minutes * 60)
+        if intent_phase == "COMBO_MARKET":
+            allow_market_escalation = True
+        elif intent_phase == "SEQ_MARKET":
+            allow_market_escalation = True
+            soft_deadline_reached = True
+            sequential_escalation_count = 1
 
         cancel_reason = f"ORDER_CANCELED:{getattr(order, 'Type', 'UNKNOWN')}"
         self._spread_forced_close_reason[spread_key] = cancel_reason
@@ -3295,6 +3381,7 @@ class MainOrdersMixin:
             and (allow_market_escalation or soft_deadline_reached)
             and bool(getattr(config, "VASS_CLOSE_ALLOW_SEQUENTIAL_SAME_CYCLE", True))
         ):
+            intent_phase = self._advance_spread_close_intent_phase(spread_key, "SEQ_MARKET")
             self._diag_spread_close_escalation_count += 1
             self._record_order_lifecycle_event(
                 status="SPREAD_EXIT_CANCELED",
@@ -3349,6 +3436,8 @@ class MainOrdersMixin:
                         "spread_close_escalation_reason": "LIMIT_CANCEL",
                         "spread_close_attempt_count": cancel_count,
                         "spread_close_latency_sec": close_latency_sec,
+                        "spread_exit_urgency": intent_urgency,
+                        "spread_close_phase": intent_phase,
                     },
                 )
             )
@@ -3365,6 +3454,7 @@ class MainOrdersMixin:
             and bool(getattr(config, "VASS_CLOSE_USE_COMBO_MARKET_AFTER_LIMIT_FAIL", True))
             and allow_market_escalation
         ):
+            intent_phase = self._advance_spread_close_intent_phase(spread_key, "COMBO_MARKET")
             self._record_order_lifecycle_event(
                 status="SPREAD_EXIT_CANCELED",
                 order_id=int(order_event.OrderId or 0),
@@ -3418,6 +3508,8 @@ class MainOrdersMixin:
                         "spread_close_escalation_reason": "LIMIT_CANCEL",
                         "spread_close_attempt_count": cancel_count,
                         "spread_close_latency_sec": close_latency_sec,
+                        "spread_exit_urgency": intent_urgency,
+                        "spread_close_phase": intent_phase,
                     },
                 )
             )
@@ -3435,7 +3527,7 @@ class MainOrdersMixin:
                 self.Log(
                     f"SPREAD_CLOSE_MARKET_SUPPRESSED_SOFT: CancelCount={cancel_count} | "
                     f"SpreadKey={spread_key} | Long={long_symbol} | Short={short_symbol} | "
-                    f"TagUrgency={tag_urgency or 'UNKNOWN'}"
+                    f"IntentUrgency={intent_urgency or 'UNKNOWN'}"
                 )
             self._spread_forced_close_retry[spread_key] = self.Time
             self._record_order_lifecycle_event(

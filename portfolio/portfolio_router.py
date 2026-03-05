@@ -1633,6 +1633,9 @@ class PortfolioRouter:
         configured = str(md.get("spread_exit_urgency", "") or "").strip().upper()
         if configured in {"SOFT", "HARD"}:
             return configured
+        phase = str(md.get("spread_close_phase", "") or "").strip().upper()
+        if phase in {"COMBO_MARKET", "SEQ_MARKET"}:
+            return "HARD"
         if bool(md.get("spread_exit_emergency", False)):
             return "HARD"
         if not bool(md.get("spread_close_short", False)):
@@ -4221,6 +4224,13 @@ class PortfolioRouter:
                         is_vass_soft_exit = (
                             str(spread_md.get("spread_exit_urgency", "") or "").upper() == "SOFT"
                         )
+                        phase = str(spread_md.get("spread_close_phase", "") or "").upper()
+                        phase_is_escalated = phase in {"COMBO_MARKET", "SEQ_MARKET"}
+                        if phase_is_escalated:
+                            is_vass_soft_exit = False
+                            spread_md["spread_close_force_combo_market"] = True
+                            if isinstance(order.metadata, dict):
+                                order.metadata["spread_close_force_combo_market"] = True
                     spread_type_upper = str(spread_md.get("spread_type", "") or "").upper()
                     is_credit_exit_combo = bool(
                         is_exit_combo

@@ -284,6 +284,9 @@ class MainOptionsMixin:
             self._spread_close_first_cancel_at = dict(
                 getattr(self, "_spread_close_first_cancel_at", {}) or {}
             )
+            self._spread_close_intent_by_key = dict(
+                getattr(self, "_spread_close_intent_by_key", {}) or {}
+            )
         else:
             self._spread_forced_close_retry = {}
             self._spread_forced_close_reason = {}
@@ -291,6 +294,7 @@ class MainOptionsMixin:
             self._spread_forced_close_retry_cycles = {}
             self._spread_last_close_submit_at = {}
             self._spread_close_first_cancel_at = {}
+            self._spread_close_intent_by_key = {}
         self._spread_exit_mark_cache = {}
         self._spread_last_exit_reason = {}
         self._single_leg_last_exit_reason = {}
@@ -1737,6 +1741,7 @@ class MainOptionsMixin:
                 self._spread_forced_close_retry_cycles.pop(key, None)
                 self._spread_last_close_submit_at.pop(key, None)
                 self._spread_close_first_cancel_at.pop(key, None)
+                self._spread_close_intent_by_key.pop(key, None)
         for key in list(self._spread_close_trackers.keys()):
             if key not in active_spread_keys:
                 self._spread_close_trackers.pop(key, None)
@@ -1815,29 +1820,15 @@ class MainOptionsMixin:
                     spread_key, "CANCELED_CLOSE_RETRY"
                 )
                 origin_reason = str(self._spread_last_exit_reason.get(spread_key, "") or "")
-                urgency_probe = " | ".join([origin_reason, retry_reason]).upper()
-                hard_tokens = (
-                    "VASS_TAIL_RISK_CAP",
-                    "SPREAD_HARD_STOP_DURING_HOLD",
-                    "SPREAD_HARD_STOP_TRIGGERED_PCT",
-                    "SPREAD_HARD_STOP_TRIGGERED_WIDTH",
-                    "TRANSITION_DERISK",
-                    "TAIL_RISK_CAP",
-                    "HARD_STOP",
-                    "ASSIGNMENT_RISK",
-                    "SHORT_LEG_ITM_EXIT",
-                    "DEEP_ITM_SHORT",
-                    "OVERNIGHT_ITM_BLOCK",
-                    "PREMARKET_ITM",
-                    "MANDATORY_DTE_CLOSE",
-                    "DTE_EXIT_NO_QUOTE",
-                    "SPREAD_TIME_STOP_NO_QUOTE",
-                    "OVERLAY_STRESS_EXIT",
-                    "KILL_SWITCH",
-                    "EMERGENCY",
-                    "FORCE_CLOSE",
+                intent_seed = " | ".join([origin_reason, retry_reason]).upper()
+                close_intent = self._get_or_init_spread_close_intent(
+                    spread_key,
+                    seed_text=intent_seed,
+                    seed_exit_code=origin_reason or retry_reason,
                 )
-                is_hard_retry = any(token in urgency_probe for token in hard_tokens)
+                intent_urgency = str(close_intent.get("urgency", "SOFT") or "SOFT").upper()
+                current_phase = str(close_intent.get("phase", "LIMIT") or "LIMIT").upper()
+                is_hard_retry = intent_urgency == "HARD"
                 # Open-order lifecycle guard: don't stack close submits while either
                 # leg already has a live broker order.
                 if (not vass_fast_close) and (
@@ -1893,6 +1884,9 @@ class MainOptionsMixin:
                 )
                 retry_cycles = self._spread_forced_close_retry_cycles.get(spread_key, 0) + 1
                 self._spread_forced_close_retry_cycles[spread_key] = retry_cycles
+                close_intent["attempt_count"] = max(
+                    int(close_intent.get("attempt_count", 0) or 0), retry_cycles
+                )
                 if vass_fast_close:
                     if is_hard_retry:
                         max_retry_cycles = vass_limit_attempts
@@ -1913,6 +1907,7 @@ class MainOptionsMixin:
                 else:
                     max_retry_cycles = int(getattr(config, "SPREAD_CLOSE_MAX_RETRY_CYCLES", 12))
                 if retry_cycles >= max_retry_cycles:
+                    self._advance_spread_close_intent_phase(spread_key, "SEQ_MARKET")
                     self._diag_spread_close_escalation_count += 1
                     self._diag_spread_exit_signal_count += 1
                     self._diag_spread_exit_submit_count += 1
@@ -2011,6 +2006,7 @@ class MainOptionsMixin:
                     self._spread_forced_close_retry_cycles.pop(spread_key, None)
                     self._spread_last_close_submit_at.pop(spread_key, None)
                     self._spread_close_first_cancel_at.pop(spread_key, None)
+                    self._spread_close_intent_by_key.pop(spread_key, None)
                     continue
                 self.Log(
                     f"SPREAD_RETRY: Re-submitting forced close | Long={long_symbol} "
@@ -2019,6 +2015,8 @@ class MainOptionsMixin:
                 )
                 self._diag_spread_exit_signal_count += 1
                 self._diag_spread_exit_submit_count += 1
+                if current_phase in {"COMBO_MARKET", "SEQ_MARKET"}:
+                    self._advance_spread_close_intent_phase(spread_key, current_phase)
                 self.portfolio_router.receive_signal(
                     TargetWeight(
                         symbol=long_symbol,
@@ -2045,6 +2043,11 @@ class MainOptionsMixin:
                             ),
                             "spread_exit_code": "SPREAD_CLOSE_RETRY",
                             "spread_exit_reason": f"SPREAD_CLOSE_RETRY:{retry_reason}",
+                            "spread_exit_urgency": intent_urgency,
+                            "spread_close_phase": current_phase,
+                            "spread_close_force_combo_market": bool(
+                                current_phase in {"COMBO_MARKET", "SEQ_MARKET"}
+                            ),
                         },
                     )
                 )
