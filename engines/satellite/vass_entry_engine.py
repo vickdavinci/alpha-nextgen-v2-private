@@ -497,6 +497,7 @@ class VASSEntryEngine:
         *,
         direction: str,
         overlay_state: Optional[str],
+        regime_score: Optional[float],
         iv_environment: str,
         spread_strategy_enum: Any,
         is_credit_strategy_func: Callable[[Any], bool],
@@ -535,6 +536,24 @@ class VASSEntryEngine:
                 strategy = spread_strategy_enum.BEAR_CALL_CREDIT
                 dte_min = int(getattr(config, "VASS_HIGH_IV_DTE_MIN", dte_min))
                 dte_max = int(getattr(config, "VASS_HIGH_IV_DTE_MAX", dte_max))
+        if (
+            direction == "BEARISH"
+            and iv_environment == "HIGH"
+            and strategy == spread_strategy_enum.BEAR_CALL_CREDIT
+            and bool(getattr(config, "VASS_BEAR_HIGH_IV_PREFER_DEBIT_ENABLED", True))
+            and regime_score is not None
+            and float(regime_score)
+            <= float(getattr(config, "VASS_BEAR_HIGH_IV_PREFER_DEBIT_REGIME_MAX", 45.0))
+        ):
+            self._log(
+                "VASS_BEAR_HIGH_IV_DEBIT_PIVOT: BEAR_CALL_CREDIT->BEAR_PUT_DEBIT | "
+                f"Regime={float(regime_score):.1f} <= "
+                f"{float(getattr(config, 'VASS_BEAR_HIGH_IV_PREFER_DEBIT_REGIME_MAX', 45.0)):.1f} | "
+                f"Overlay={overlay}"
+            )
+            strategy = spread_strategy_enum.BEAR_PUT_DEBIT
+            dte_min = int(getattr(config, "VASS_HIGH_IV_DTE_MIN", dte_min))
+            dte_max = int(getattr(config, "VASS_HIGH_IV_DTE_MAX", dte_max))
         is_credit = bool(is_credit_strategy_func(strategy))
         return strategy, dte_min, dte_max, is_credit
 
@@ -1427,6 +1446,7 @@ class VASSEntryEngine:
             direction=direction_str,
             overlay_state=overlay_state,
             iv_rank=iv_rank,
+            regime_score=regime_score,
         )
         if self._should_block_high_iv_bull_debit_route(
             strategy=strategy,
@@ -1794,6 +1814,7 @@ class VASSEntryEngine:
             direction=direction_str,
             overlay_state=overlay_state,
             iv_rank=iv_rank,
+            regime_score=regime_score,
         )
         if self._should_block_high_iv_bull_debit_route(
             strategy=strategy,

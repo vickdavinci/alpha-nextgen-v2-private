@@ -3613,6 +3613,7 @@ class OptionsEngine:
         direction: str,
         overlay_state: Optional[str] = None,
         iv_rank: Optional[float] = None,
+        regime_score: Optional[float] = None,
     ) -> Tuple[Optional[SpreadStrategy], int, int, bool]:
         """Resolve VASS route including EARLY_STRESS strategy remap."""
         if getattr(config, "VASS_ENABLED", True) and self.is_iv_sensor_ready():
@@ -3620,6 +3621,7 @@ class OptionsEngine:
             return self._vass_entry_engine.resolve_strategy_with_overlay(
                 direction=direction,
                 overlay_state=overlay_state,
+                regime_score=regime_score,
                 iv_environment=iv_environment,
                 spread_strategy_enum=SpreadStrategy,
                 is_credit_strategy_func=self.is_credit_strategy,

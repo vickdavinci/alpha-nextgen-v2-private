@@ -999,6 +999,10 @@ VASS_EARLY_STRESS_BEAR_PREFER_CREDIT = (
 VASS_MEDIUM_IV_PREFER_CREDIT = (
     False  # V12.6: medium-IV defaults to debit structures to reduce bad credit exposure
 )
+VASS_BEAR_HIGH_IV_PREFER_DEBIT_ENABLED = True  # V12.30: in strong bear tape, prefer BEAR_PUT_DEBIT over BEAR_CALL_CREDIT even in HIGH IV.
+VASS_BEAR_HIGH_IV_PREFER_DEBIT_REGIME_MAX = (
+    45.0  # Apply high-IV bearish debit pivot only when macro regime is clearly bearish.
+)
 VASS_OPPOSITE_ROUTE_FALLBACK_ENABLED = False  # V12.18: disable opposite-route retry to avoid cross-route gate collisions and preserve signal intent.
 VASS_OPPOSITE_ROUTE_BLOCK_ON_STRUCTURAL_FAIL = (
     True  # V12.9 P0: skip opposite-route fallback when primary failure is structural EV/quality.
