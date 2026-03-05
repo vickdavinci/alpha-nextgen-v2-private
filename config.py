@@ -1133,6 +1133,10 @@ CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg delta range (OTM)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.45  # V6.13 OPT: Improve credit spread constructability
 CREDIT_SPREAD_SHORT_LEG_DELTA_MAX_HIGH_VIX = 0.35  # V10.10: tighten short leg delta in high-IV tape
 CREDIT_SPREAD_SHORT_LEG_HIGH_VIX_THRESHOLD = 25.0
+# V12.29: credit-risk exit guard for short-strike pressure near expiry.
+CREDIT_SPREAD_DELTA_EXIT_ENABLED = True
+CREDIT_SPREAD_DELTA_EXIT_THRESHOLD = 0.30
+CREDIT_SPREAD_DELTA_EXIT_DTE_MAX = 14
 # T-21: Credit-path liquidity quality gates (parity with debit selector).
 CREDIT_SPREAD_MIN_OPEN_INTEREST = 20  # V6.15 TUNE: Improve credit spread constructability
 CREDIT_SPREAD_MAX_SPREAD_PCT = 0.50  # V6.15 TUNE: Loosen spread-quality gate moderately

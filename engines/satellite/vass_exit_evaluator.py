@@ -1027,6 +1027,23 @@ def check_spread_exit_signals_impl(
                 f"{stop_details}, {vass_profile_tag})"
             )
 
+        # Exit 2A: Short-leg delta breach (credit spreads only).
+        # Gamma/assignment risk rises quickly once short strike starts getting tested.
+        if (
+            exit_reason is None
+            and bool(getattr(config, "CREDIT_SPREAD_DELTA_EXIT_ENABLED", True))
+            and not credit_theta_hold_guard_active
+        ):
+            delta_dte_max = int(getattr(config, "CREDIT_SPREAD_DELTA_EXIT_DTE_MAX", 14))
+            if current_dte > 0 and current_dte <= delta_dte_max:
+                short_delta = abs(float(getattr(spread.short_leg, "delta", 0.0) or 0.0))
+                delta_threshold = float(getattr(config, "CREDIT_SPREAD_DELTA_EXIT_THRESHOLD", 0.30))
+                if short_delta >= delta_threshold:
+                    exit_reason = (
+                        f"CREDIT_DELTA_BREACH |Δ|={short_delta:.2f} >= {delta_threshold:.2f} "
+                        f"(DTE={current_dte} <= {delta_dte_max}, {vass_profile_tag})"
+                    )
+
         # Exit 2B: Regime deterioration de-risk (only once spread is already losing).
         if (
             exit_reason is None
