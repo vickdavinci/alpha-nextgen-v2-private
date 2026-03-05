@@ -1066,9 +1066,7 @@ VASS_REGIME_BREAK_BEAR_CEILING = 50.0  # Close bearish spreads when regime rises
 VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT = (
     0.55  # V12.23 C1: lower THESIS_FIRST confirmed target to improve realization.
 )
-VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT_DEBIT = (
-    0.55  # V12.23 C1: confirmed debit spreads harvest at 55% of max profit.
-)
+VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT_DEBIT = 0.35  # V12.30: restore V12.24-style BULL_CALL_DEBIT harvest geometry to recover high-WR profile.
 VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT_CREDIT = (
     0.50  # V12.27: harvest confirmed credits at 50% to reduce late-cycle gamma drift.
 )
@@ -1889,7 +1887,9 @@ VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT = 0.040
 VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_TIME = "15:45"
 # V12.27: Thesis-soft-stop for BULL_CALL_DEBIT.
 # Keep hard invalidation/regime-break behavior, but avoid tactical churn exits.
-VASS_BULL_DEBIT_THESIS_SOFT_STOP_ENABLED = True
+VASS_BULL_DEBIT_THESIS_SOFT_STOP_ENABLED = (
+    False  # V12.30: disable thesis soft stop to restore legacy BCD win profile.
+)
 VASS_BULL_DEBIT_THESIS_SOFT_STOP_THESIS_ONLY = True
 VASS_BULL_DEBIT_THESIS_SOFT_STOP_MIN_TIME_USED = 0.35  # fraction of entry DTE consumed
 VASS_BULL_DEBIT_THESIS_SOFT_STOP_MAX_PNL_PCT = -0.22  # mark drawdown guard
@@ -1900,7 +1900,9 @@ VASS_BULL_DEBIT_THESIS_SOFT_STOP_PBE_MIN = 0.12
 VASS_BULL_DEBIT_THESIS_SOFT_STOP_PBE_MAX = 0.45
 VASS_BULL_DEBIT_THESIS_SOFT_STOP_MIN_EXPECTED_MOVE_ATR = 0.75
 VASS_BULL_DEBIT_THESIS_SOFT_STOP_CONSECUTIVE_BARS = 2
-VASS_BULL_DEBIT_THESIS_ONLY_DISABLE_TACTICAL_EXITS = True
+VASS_BULL_DEBIT_THESIS_ONLY_DISABLE_TACTICAL_EXITS = (
+    False  # V12.30: keep tactical rails active for BCD when soft-stop is disabled.
+)
 VASS_BULL_DEBIT_THESIS_ONLY_DISABLE_VIX_SPIKE_EXITS = True
 VASS_RECOVERY_RELAX_ENABLED = False  # V12.11: disabled — fires on ALL bullish entries (not just recovery), silently overrides D/W caps by +9%.
 VASS_RECOVERY_RELAX_DAY_MIN_CHANGE_PCT = -0.05
