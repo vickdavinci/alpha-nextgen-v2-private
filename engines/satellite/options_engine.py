@@ -950,8 +950,8 @@ class OptionsEngine:
         overlay_state: str,
         vix_current: float,
         regime_score: float,
-    ) -> Tuple[bool, float, str]:
-        """Return (enforce_gate, min_otm_pct, profile) for short-PUT assignment guard."""
+    ) -> Tuple[bool, float, str, str]:
+        """Return (enforce_gate, min_otm_pct, profile, reason) for short-PUT assignment guard."""
         hard_block_vix = float(getattr(config, "BEAR_PUT_ASSIGNMENT_HARD_BLOCK_VIX", 28.0))
         bull_block_regime_min = float(
             getattr(
@@ -960,11 +960,17 @@ class OptionsEngine:
                 getattr(config, "MACRO_DIRECTION_BULLISH_MIN", 55.0),
             )
         )
-        enforce_assignment_gate = (
-            overlay_state in {"STRESS", "EARLY_STRESS"}
-            or vix_current >= hard_block_vix
-            or regime_score >= bull_block_regime_min
-        )
+        enforce_by_stress = overlay_state in {"STRESS", "EARLY_STRESS"}
+        enforce_by_vix = vix_current >= hard_block_vix
+        enforce_by_bull_regime = regime_score >= bull_block_regime_min
+        enforce_assignment_gate = enforce_by_stress or enforce_by_vix or enforce_by_bull_regime
+        gate_reason = "ASSIGN_GATE_NONE"
+        if enforce_by_stress:
+            gate_reason = "ASSIGN_GATE_STRESS"
+        elif enforce_by_vix:
+            gate_reason = "ASSIGN_GATE_HIGH_VIX"
+        elif enforce_by_bull_regime:
+            gate_reason = "ASSIGN_GATE_BULL_REGIME"
         min_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT", 0.03))
         stress_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT_STRESS", min_otm_pct))
         low_vix_threshold = float(getattr(config, "BEAR_PUT_ENTRY_LOW_VIX_THRESHOLD", 18.0))
@@ -981,7 +987,7 @@ class OptionsEngine:
         ):
             min_otm_pct = min(min_otm_pct, relaxed_otm_pct)
             gate_profile = "LOW_VIX_RELAXED"
-        return enforce_assignment_gate, float(min_otm_pct), gate_profile
+        return enforce_assignment_gate, float(min_otm_pct), gate_profile, gate_reason
 
     def _find_safer_bear_put_short_leg(
         self,

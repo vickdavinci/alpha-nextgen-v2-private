@@ -392,6 +392,7 @@ def check_spread_entry_signal_impl(
             enforce_assignment_gate,
             min_otm_pct,
             gate_profile,
+            gate_reason,
         ) = self._resolve_put_assignment_gate_profile(
             overlay_state=overlay_state,
             vix_current=vix_current,
@@ -421,7 +422,8 @@ def check_spread_entry_signal_impl(
                         f"SPREAD: BEAR_PUT assignment reselect | "
                         f"Old={old_short.strike:.0f} ({otm_pct:.1%}) -> "
                         f"New={short_leg_contract.strike:.0f} ({new_otm_pct:.1%}) | "
-                        f"Min={min_otm_pct:.1%} | Profile={gate_profile}",
+                        f"Min={min_otm_pct:.1%} | Profile={gate_profile} | "
+                        f"GateReason={gate_reason}",
                         trades_only=True,
                     )
                 else:
@@ -429,7 +431,8 @@ def check_spread_entry_signal_impl(
                         f"SPREAD: Entry blocked - BEAR_PUT assignment risk | "
                         f"Short strike {short_strike:.0f} is {otm_pct:.1%} OTM "
                         f"(min {min_otm_pct:.1%}) | "
-                        f"QQQ={current_price:.2f}"
+                        f"QQQ={current_price:.2f} | "
+                        f"Profile={gate_profile} | GateReason={gate_reason}"
                     )
                     return fail(f"BEAR_PUT_ASSIGNMENT_GATE_{gate_profile}")
 
@@ -441,7 +444,8 @@ def check_spread_entry_signal_impl(
                     f"SPREAD: Entry blocked - BEAR_PUT assignment risk | "
                     f"Short strike {short_strike:.0f} is {otm_pct:.1%} OTM "
                     f"(min {min_otm_pct:.1%}) | "
-                    f"QQQ={current_price:.2f}"
+                    f"QQQ={current_price:.2f} | "
+                    f"Profile={gate_profile} | GateReason={gate_reason}"
                 )
                 return fail(f"BEAR_PUT_ASSIGNMENT_GATE_{gate_profile}")
 
@@ -1514,6 +1518,7 @@ def check_credit_spread_entry_signal_impl(
             enforce_assignment_gate,
             min_otm_pct,
             gate_profile,
+            gate_reason,
         ) = self._resolve_put_assignment_gate_profile(
             overlay_state=overlay_state,
             vix_current=vix_current,
@@ -1528,7 +1533,8 @@ def check_credit_spread_entry_signal_impl(
                     f"CREDIT_SPREAD: Entry blocked - BULL_PUT assignment risk | "
                     f"Short strike {short_strike:.0f} is {otm_pct:.1%} OTM "
                     f"(min {min_otm_pct:.1%}) | "
-                    f"QQQ={current_price:.2f}"
+                    f"QQQ={current_price:.2f} | "
+                    f"Profile={gate_profile} | GateReason={gate_reason}"
                 )
                 return fail(f"BEAR_PUT_ASSIGNMENT_GATE_{gate_profile}")
 
