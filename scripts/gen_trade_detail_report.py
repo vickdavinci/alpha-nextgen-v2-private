@@ -6,6 +6,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from io import StringIO
 
+from exit_reason_mapper import classify_exit_reason
+
 BASE = "/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private/docs/audits/logs/stage10.3"
 TRADES_FILE = f"{BASE}/V10.3-FullYear2023-R5_trades.csv"
 LOGS_FILE = f"{BASE}/V10.3-FullYear2023-R5_logs.txt"
@@ -517,32 +519,9 @@ def find_spread_exit_trigger(logs, exit_date, long_strike=None, short_strike=Non
         if d != exit_date:
             continue
         if "SPREAD: EXIT" in text:
-            if "STOP_LOSS" in text:
-                return "STOP_LOSS"
-            if "SPREAD_HARD_STOP" in text:
-                return "HARD_STOP"
-            if "CREDIT_THETA_STOP" in text:
-                return "CREDIT_THETA_STOP"
-            if "PROFIT_TARGET" in text:
-                return "PROFIT_TARGET"
-            if "TRAIL_STOP" in text:
-                return "TRAIL_STOP"
-            if "DTE_EXIT" in text:
-                return "DTE_EXIT"
-            if "PREMARKET_ITM_GUARDED_SKIP" in text:
-                return "PREMARKET_ITM_GUARDED_SKIP"
-            if "FRIDAY_FIREWALL_SKIPPED_DTE" in text:
-                return "FRIDAY_FIREWALL_SKIPPED_DTE"
-            if "FRIDAY_FIREWALL" in text:
-                return "FRIDAY_FIREWALL"
-            if "FILL_CLOSE_RECONCILED" in text or "RECONCILED_CLOSE" in text:
-                return "RECONCILED"
-            if "SPREAD_CLOSE_RETRY" in text:
-                return "CLOSE_RETRY"
-            if "CREDIT_STOP_2X" in text or "CREDIT_STOP_LOSS" in text:
-                return "CREDIT_STOP_LOSS"
-        if "SPREAD_OVERLAY_EXIT" in text and "STRESS" in text:
-            return "STRESS_EXIT"
+            normalized = classify_exit_reason(text)
+            if normalized:
+                return normalized
         if "SPREAD_HARD_STOP_TRIGGERED" in text:
             return "HARD_STOP"
 
@@ -555,26 +534,9 @@ def find_spread_exit_trigger(logs, exit_date, long_strike=None, short_strike=Non
                 continue
             if "SPREAD: EXIT" in text:
                 if entry_date and entry_date in text:
-                    if "STOP_LOSS" in text:
-                        return "STOP_LOSS"
-                    if "SPREAD_HARD_STOP" in text:
-                        return "HARD_STOP"
-                    if "CREDIT_THETA_STOP" in text:
-                        return "CREDIT_THETA_STOP"
-                    if "PROFIT_TARGET" in text:
-                        return "PROFIT_TARGET"
-                    if "TRAIL_STOP" in text:
-                        return "TRAIL_STOP"
-                    if "PREMARKET_ITM_GUARDED_SKIP" in text:
-                        return "PREMARKET_ITM_GUARDED_SKIP"
-                    if "FRIDAY_FIREWALL_SKIPPED_DTE" in text:
-                        return "FRIDAY_FIREWALL_SKIPPED_DTE"
-                    if "FILL_CLOSE_RECONCILED" in text or "RECONCILED_CLOSE" in text:
-                        return "RECONCILED"
-                    if "SPREAD_CLOSE_RETRY" in text:
-                        return "CLOSE_RETRY"
-                    if "CREDIT_STOP_2X" in text or "CREDIT_STOP_LOSS" in text:
-                        return "CREDIT_STOP_LOSS"
+                    normalized = classify_exit_reason(text)
+                    if normalized:
+                        return normalized
 
     return "UNKNOWN"
 
@@ -602,30 +564,9 @@ def find_spread_exit_trigger_precise(logs, spread, entry_date_str):
 
         # Check if this exit references our spread's symbols
         if long_sym in text or short_sym in text or entry_date_str in text:
-            if "HARD_STOP" in text or "SPREAD_HARD_STOP" in text:
-                return "HARD_STOP"
-            if "STOP_LOSS" in text:
-                return "STOP_LOSS"
-            if "CREDIT_THETA_STOP" in text:
-                return "CREDIT_THETA_STOP"
-            if "PROFIT_TARGET" in text:
-                return "PROFIT_TARGET"
-            if "TRAIL_STOP" in text:
-                return "TRAIL_STOP"
-            if "DTE_EXIT" in text:
-                return "DTE_EXIT"
-            if "PREMARKET_ITM_GUARDED_SKIP" in text:
-                return "PREMARKET_ITM_GUARDED_SKIP"
-            if "FRIDAY_FIREWALL_SKIPPED_DTE" in text:
-                return "FRIDAY_FIREWALL_SKIPPED_DTE"
-            if "FRIDAY_FIREWALL" in text:
-                return "FRIDAY_FIREWALL"
-            if "FILL_CLOSE_RECONCILED" in text or "RECONCILED_CLOSE" in text:
-                return "RECONCILED"
-            if "SPREAD_CLOSE_RETRY" in text:
-                return "CLOSE_RETRY"
-            if "CREDIT_STOP_2X" in text or "CREDIT_STOP_LOSS" in text:
-                return "CREDIT_STOP_LOSS"
+            normalized = classify_exit_reason(text)
+            if normalized:
+                return normalized
 
     # Check for RECON_ORPHAN exits on exit date
     for ln, ts, text in logs:

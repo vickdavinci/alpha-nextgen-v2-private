@@ -8,6 +8,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from exit_reason_mapper import classify_exit_reason, is_reconciled_close_marker
+
 BASE = Path(
     "/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private/docs/audits/logs/stage10.4"
 )
@@ -15,16 +17,6 @@ TRADES_FILE = BASE / "V10_4_FullYear2023_trades.csv"
 ORDERS_FILE = BASE / "V10_4_FullYear2023_orders.csv"
 LOGS_FILE = BASE / "V10_4_FullYear2023_logs.txt"
 OUTPUT_FILE = BASE / "V10_4_FullYear2023_TRADE_DETAIL_REPORT.md"
-
-
-def _is_reconciled_close_marker(text: str) -> bool:
-    """Match reconciled-close reason variants with optional suffix payloads."""
-    upper = str(text or "").upper()
-    if not upper:
-        return False
-    return bool(
-        re.search(r"\b(FILL_CLOSE_RECONCILED|RECONCILED_CLOSE(?:[:_|A-Z0-9-].*)?)\b", upper)
-    )
 
 
 def parse_dt(s):
@@ -298,26 +290,9 @@ def find_vass_exit_trigger(log_index, exit_time, entry_time):
 
     for line in lines:
         if "SPREAD: EXIT" in line or "SPREAD_EXIT" in line or "SPREAD:EXIT" in line:
-            if "STOP_LOSS" in line:
-                return "STOP_LOSS"
-            if "HARD_STOP" in line:
-                return "HARD_STOP"
-            if "CREDIT_THETA_STOP" in line:
-                return "CREDIT_THETA_STOP"
-            if "PROFIT_TARGET" in line:
-                return "PROFIT_TARGET"
-            if "TRAIL_STOP" in line:
-                return "TRAIL_STOP"
-            if "DTE_EXIT" in line:
-                return "DTE_EXIT"
-            if "PREMARKET_ITM_GUARDED_SKIP" in line:
-                return "PREMARKET_ITM_GUARDED_SKIP"
-            if "FRIDAY_FIREWALL_SKIPPED_DTE" in line:
-                return "FRIDAY_FIREWALL_SKIPPED_DTE"
-            if "FRIDAY_FIREWALL" in line:
-                return "FRIDAY_FIREWALL"
-            if _is_reconciled_close_marker(line):
-                return "RECONCILED"
+            normalized = classify_exit_reason(line)
+            if normalized:
+                return normalized
 
     for line in lines:
         if "SPREAD_HARD_STOP" in line:

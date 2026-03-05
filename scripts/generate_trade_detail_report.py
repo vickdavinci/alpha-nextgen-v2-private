@@ -18,21 +18,13 @@ import re
 from collections import defaultdict
 from datetime import datetime, timedelta
 
+from exit_reason_mapper import classify_exit_reason
+
 BASE = "/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private/docs/audits/logs/stage10.8"
 TRADES_FILE = os.path.join(BASE, "V10_8_FullYear2024_trades.csv")
 ORDERS_FILE = os.path.join(BASE, "V10_8_FullYear2024_orders.csv")
 LOGS_FILE = os.path.join(BASE, "V10_8_FullYear2024_logs.txt")
 OUTPUT_FILE = os.path.join(BASE, "V10_8_FullYear2024_TRADE_DETAIL_REPORT.md")
-
-
-def _is_reconciled_close_marker(text: str) -> bool:
-    """Match reconciled-close reason variants with optional suffix payloads."""
-    upper = str(text or "").upper()
-    if not upper:
-        return False
-    return bool(
-        re.search(r"\b(FILL_CLOSE_RECONCILED|RECONCILED_CLOSE(?:[:_|A-Z0-9-].*)?)\b", upper)
-    )
 
 
 def parse_trades():
@@ -284,42 +276,15 @@ def match_spread_exit(spread, all_spread_exits, tolerance=0.15):
         m_reason = re.search(r"Reason=([^|]+)", content)
         if m_reason:
             reason_full = m_reason.group(1).strip()
-            if "HARD_STOP_TRIGGERED_WIDTH" in reason_full:
-                best_reason = "HARD_STOP_WIDTH"
-            elif "HARD_STOP" in reason_full:
-                best_reason = "HARD_STOP"
-            elif "CREDIT_THETA_STOP" in reason_full:
-                best_reason = "CREDIT_THETA_STOP"
-            elif "CREDIT_STOP_2X" in reason_full or "CREDIT_STOP_LOSS" in reason_full:
-                best_reason = "CREDIT_STOP_LOSS"
-            elif "STOP_LOSS" in reason_full:
-                best_reason = "STOP_LOSS"
-            elif "CREDIT_PROFIT_TARGET" in reason_full:
-                best_reason = "PROFIT_TARGET"
-            elif "PROFIT_TARGET" in reason_full:
-                best_reason = "PROFIT_TARGET"
-            elif "TRAIL_STOP" in reason_full:
-                best_reason = "TRAIL_STOP"
-            elif "DTE_EXIT" in reason_full:
-                best_reason = "DTE_EXIT"
-            elif "DAY4_EOD_CLOSE" in reason_full:
-                best_reason = "DAY4_EOD_CLOSE"
-            elif "PREMARKET_ITM_GUARDED_SKIP" in reason_full:
-                best_reason = "PREMARKET_ITM_GUARDED_SKIP"
-            elif "FRIDAY_FIREWALL_SKIPPED_DTE" in reason_full:
-                best_reason = "FRIDAY_FIREWALL_SKIPPED_DTE"
-            elif "FRIDAY_FIREWALL" in reason_full:
-                best_reason = "FRIDAY_FIREWALL"
-            elif _is_reconciled_close_marker(reason_full):
+            normalized_reason = classify_exit_reason(reason_full)
+            if normalized_reason == "RECONCILED":
                 # FILL_CLOSE_RECONCILED at 15:45 = FRIDAY_FIREWALL exit
                 if log["time"] == "15:45:00" or log["time"][:5] == "15:45":
                     best_reason = "FRIDAY_FIREWALL"
                 else:
                     best_reason = "RECONCILED"
-            elif "ASSIGNMENT_RISK" in reason_full:
-                best_reason = "ASSIGNMENT_RISK"
-            elif "SPREAD_CLOSE_RETRY" in reason_full:
-                best_reason = "CLOSE_RETRY"
+            elif normalized_reason:
+                best_reason = normalized_reason
             else:
                 best_reason = reason_full[:30]
             break
