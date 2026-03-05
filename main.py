@@ -166,6 +166,8 @@ class AlphaNextGen(QCAlgorithm):
     _handle_spread_leg_fill = MainOrdersMixin._handle_spread_leg_fill
     _queue_spread_close_retry_on_cancel = MainOrdersMixin._queue_spread_close_retry_on_cancel
     _extract_spread_key_from_tag = MainOrdersMixin._extract_spread_key_from_tag
+    _infer_spread_exit_reason_from_tag = MainOrdersMixin._infer_spread_exit_reason_from_tag
+    _resolve_spread_exit_reason_for_fill = MainOrdersMixin._resolve_spread_exit_reason_for_fill
     _remember_spread_close_order_key = MainOrdersMixin._remember_spread_close_order_key
     _record_spread_key_resolve = MainOrdersMixin._record_spread_key_resolve
     _resolve_spread_close_candidate = MainOrdersMixin._resolve_spread_close_candidate
@@ -1660,6 +1662,44 @@ class AlphaNextGen(QCAlgorithm):
                     self._spread_forced_close_retry_cycles = _parse_int_map(
                         "spread_forced_close_retry_cycles"
                     )
+                    raw_close_intents = ladder_state.get("spread_close_intent_by_key", {}) or {}
+                    restored_close_intents = {}
+                    if isinstance(raw_close_intents, dict):
+                        for k, v in raw_close_intents.items():
+                            key = str(k or "").strip()
+                            if not key or not isinstance(v, dict):
+                                continue
+                            intent_payload = dict(v or {})
+                            urgency = str(intent_payload.get("urgency", "SOFT") or "SOFT").upper()
+                            if urgency not in {"SOFT", "HARD"}:
+                                urgency = "SOFT"
+                            phase = str(intent_payload.get("phase", "LIMIT") or "LIMIT").upper()
+                            if phase not in {"LIMIT", "COMBO_MARKET", "SEQ_MARKET"}:
+                                phase = "LIMIT"
+                            try:
+                                attempt_count = int(intent_payload.get("attempt_count", 0) or 0)
+                            except Exception:
+                                attempt_count = 0
+                            origin_exit_code = str(
+                                intent_payload.get("origin_exit_code", "") or ""
+                            )[:96]
+                            started_raw = intent_payload.get("started_at")
+                            started_at = self.Time
+                            if started_raw:
+                                try:
+                                    started_at = datetime.strptime(
+                                        str(started_raw)[:19], "%Y-%m-%d %H:%M:%S"
+                                    )
+                                except Exception:
+                                    started_at = self.Time
+                            restored_close_intents[key] = {
+                                "urgency": urgency,
+                                "phase": phase,
+                                "started_at": started_at,
+                                "attempt_count": max(0, attempt_count),
+                                "origin_exit_code": origin_exit_code,
+                            }
+                    self._spread_close_intent_by_key = restored_close_intents
                     self.Log("STATE_RESTORE: Spread close ladder state loaded")
             except Exception as e:
                 self.Log(f"STATE_WARN: Failed to load spread close ladder state - {e}")
@@ -1771,6 +1811,21 @@ class AlphaNextGen(QCAlgorithm):
                 "spread_forced_close_retry_cycles": dict(
                     getattr(self, "_spread_forced_close_retry_cycles", {}) or {}
                 ),
+                "spread_close_intent_by_key": {
+                    str(k): {
+                        "urgency": str(v.get("urgency", "SOFT") or "SOFT"),
+                        "phase": str(v.get("phase", "LIMIT") or "LIMIT"),
+                        "started_at": (
+                            v.get("started_at").strftime("%Y-%m-%d %H:%M:%S")
+                            if isinstance(v.get("started_at"), datetime)
+                            else None
+                        ),
+                        "attempt_count": int(v.get("attempt_count", 0) or 0),
+                        "origin_exit_code": str(v.get("origin_exit_code", "") or "")[:96],
+                    }
+                    for k, v in (getattr(self, "_spread_close_intent_by_key", {}) or {}).items()
+                    if str(k).strip() and isinstance(v, dict)
+                },
             }
             self.ObjectStore.Save("spread_close_ladder_state", json.dumps(close_ladder_state))
 
