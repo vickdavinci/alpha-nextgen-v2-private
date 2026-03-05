@@ -173,6 +173,10 @@ class AlphaNextGen(QCAlgorithm):
     _resolve_spread_close_candidate = MainOrdersMixin._resolve_spread_close_candidate
     _cancel_open_spread_close_orders = MainOrdersMixin._cancel_open_spread_close_orders
     _get_active_spread_key_set = MainOrdersMixin._get_active_spread_key_set
+    _spread_close_hard_tokens = MainOrdersMixin._spread_close_hard_tokens
+    _classify_spread_exit_urgency = MainOrdersMixin._classify_spread_exit_urgency
+    _get_or_init_spread_close_intent = MainOrdersMixin._get_or_init_spread_close_intent
+    _advance_spread_close_intent_phase = MainOrdersMixin._advance_spread_close_intent_phase
     _evaluate_base_regime_candidate = MainRegimeMixin._evaluate_base_regime_candidate
     _advance_detector_state = MainRegimeMixin._advance_detector_state
     _update_regime_detector_state = MainRegimeMixin._update_regime_detector_state
