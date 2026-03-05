@@ -1024,6 +1024,27 @@ class VASSEntryEngine:
         overlay_state = host.get_regime_overlay_state(
             vix_current=vix_level_for_vass, regime_score=regime_for_vass
         )
+        if (
+            resolver_direction is None
+            and str(macro_direction).upper() == "NEUTRAL"
+            and bool(getattr(config, "VASS_NEUTRAL_FALLBACK_DIRECTION_ENABLED", True))
+            and str(overlay_state).upper() != "AMBIGUOUS"
+        ):
+            delta_min = float(getattr(config, "VASS_NEUTRAL_FALLBACK_DELTA_MIN", 1.0))
+            try:
+                transition_delta = float(ctx.get("delta", 0.0) or 0.0)
+            except Exception:
+                transition_delta = 0.0
+            if transition_delta >= delta_min:
+                resolver_direction = "BULLISH"
+                resolver_reason = (
+                    f"{resolver_reason} | VASS_NEUTRAL_FALLBACK_DELTA={transition_delta:+.1f}"
+                )
+            elif transition_delta <= -delta_min:
+                resolver_direction = "BEARISH"
+                resolver_reason = (
+                    f"{resolver_reason} | VASS_NEUTRAL_FALLBACK_DELTA={transition_delta:+.1f}"
+                )
         should_trade, resolved_direction, resolve_reason = host.resolve_trade_signal(
             engine="VASS",
             engine_direction=resolver_direction,
