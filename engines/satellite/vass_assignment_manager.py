@@ -543,6 +543,38 @@ def check_assignment_risk_exit_impl(
             f"Closing ALL spreads to prevent assignment risk"
         )
 
+    # V12.29: Narrow BULL_CALL_DEBIT assignment emergency guard.
+    # Fires only near expiry when short call is ITM and extrinsic is near-zero.
+    spread_type = str(getattr(spread, "spread_type", "") or "").upper()
+    is_bull_call_debit = spread_type in {
+        "BULL_CALL",
+        "BULL_CALL_DEBIT",
+        SpreadStrategy.BULL_CALL_DEBIT.value,
+    }
+    if (
+        exit_reason is None
+        and not is_credit_spread
+        and is_bull_call_debit
+        and not in_assignment_grace
+        and bool(getattr(config, "VASS_BCD_ASSIGNMENT_EMERGENCY_ENABLED", True))
+    ):
+        emergency_dte_max = int(getattr(config, "VASS_BCD_ASSIGNMENT_EMERGENCY_DTE_MAX", 1))
+        if current_dte > 0 and current_dte <= emergency_dte_max:
+            strike = float(getattr(short_leg, "strike", 0.0) or 0.0)
+            is_call = "C" in str(getattr(short_leg, "symbol", "")).upper()
+            if is_call and strike > 0 and underlying_price > strike:
+                extrinsic = _resolve_leg_extrinsic(short_leg, underlying_price)
+                extrinsic_max = float(
+                    getattr(config, "VASS_BCD_ASSIGNMENT_EMERGENCY_EXTRINSIC_MAX", 0.03)
+                )
+                if extrinsic is not None and extrinsic <= extrinsic_max:
+                    itm_pct = (underlying_price - strike) / strike
+                    exit_reason = (
+                        f"BCD_ASSIGNMENT_EMERGENCY: ShortCALL ITM={itm_pct:.1%} | "
+                        f"DTE={current_dte} <= {emergency_dte_max} | "
+                        f"Extrinsic={extrinsic:.2f} <= {extrinsic_max:.2f}"
+                    )
+
     debit_assignment_window = (not is_credit_spread) and _is_debit_assignment_window(
         short_leg=short_leg,
         underlying_price=underlying_price,

@@ -1476,6 +1476,12 @@ PREMARKET_ITM_DEBIT_EXTRINSIC_MAX = 0.05
 PREMARKET_ITM_CHECK_HOUR = 9  # Check at 09:25 ET
 PREMARKET_ITM_CHECK_MINUTE = 25
 
+# V12.29: Narrow assignment-emergency backstop for BULL_CALL_DEBIT only.
+# Preserve BCD edge while still preventing expiry-imminent short-call assignment blowups.
+VASS_BCD_ASSIGNMENT_EMERGENCY_ENABLED = True
+VASS_BCD_ASSIGNMENT_EMERGENCY_DTE_MAX = 1
+VASS_BCD_ASSIGNMENT_EMERGENCY_EXTRINSIC_MAX = 0.03
+
 # V6.14: Pre-market VIX shock ladder (shared guard across options modes)
 # Uses CBOE VIX level + UVXY overnight gap proxy to de-risk before market open.
 PREMARKET_VIX_LADDER_ENABLED = True
