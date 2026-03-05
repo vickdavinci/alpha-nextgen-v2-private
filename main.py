@@ -1662,6 +1662,64 @@ class AlphaNextGen(QCAlgorithm):
                     self._spread_forced_close_retry_cycles = _parse_int_map(
                         "spread_forced_close_retry_cycles"
                     )
+                    raw_close_trackers = ladder_state.get("spread_close_trackers", {}) or {}
+                    restored_close_trackers = {}
+                    if isinstance(raw_close_trackers, dict):
+                        for k, v in raw_close_trackers.items():
+                            key = str(k or "").strip()
+                            if not key or not isinstance(v, dict):
+                                continue
+                            payload = dict(v or {})
+                            try:
+                                expected_qty = max(0, int(payload.get("expected_qty", 0) or 0))
+                            except Exception:
+                                expected_qty = 0
+                            try:
+                                long_qty = max(0, int(payload.get("long_qty", 0) or 0))
+                            except Exception:
+                                long_qty = 0
+                            try:
+                                short_qty = max(0, int(payload.get("short_qty", 0) or 0))
+                            except Exception:
+                                short_qty = 0
+                            try:
+                                long_notional = float(payload.get("long_notional", 0.0) or 0.0)
+                            except Exception:
+                                long_notional = 0.0
+                            try:
+                                short_notional = float(payload.get("short_notional", 0.0) or 0.0)
+                            except Exception:
+                                short_notional = 0.0
+                            restored_close_trackers[key] = {
+                                "expected_qty": expected_qty,
+                                "long_closed": bool(payload.get("long_closed", False)),
+                                "short_closed": bool(payload.get("short_closed", False)),
+                                "long_qty": long_qty,
+                                "short_qty": short_qty,
+                                "long_notional": long_notional,
+                                "short_notional": short_notional,
+                            }
+                    self._spread_close_trackers = restored_close_trackers
+                    raw_exit_mark_cache = ladder_state.get("spread_exit_mark_cache", {}) or {}
+                    restored_exit_mark_cache = {}
+                    if isinstance(raw_exit_mark_cache, dict):
+                        for k, v in raw_exit_mark_cache.items():
+                            key = str(k or "").strip()
+                            if not key or not isinstance(v, dict):
+                                continue
+                            payload = dict(v or {})
+                            try:
+                                long_leg_price = float(payload.get("long_leg_price", 0.0) or 0.0)
+                                short_leg_price = float(payload.get("short_leg_price", 0.0) or 0.0)
+                            except Exception:
+                                continue
+                            updated_at = str(payload.get("updated_at", "") or "")[:19]
+                            restored_exit_mark_cache[key] = {
+                                "long_leg_price": long_leg_price,
+                                "short_leg_price": short_leg_price,
+                                "updated_at": updated_at,
+                            }
+                    self._spread_exit_mark_cache = restored_exit_mark_cache
                     raw_close_intents = ladder_state.get("spread_close_intent_by_key", {}) or {}
                     restored_close_intents = {}
                     if isinstance(raw_close_intents, dict):
@@ -1811,6 +1869,28 @@ class AlphaNextGen(QCAlgorithm):
                 "spread_forced_close_retry_cycles": dict(
                     getattr(self, "_spread_forced_close_retry_cycles", {}) or {}
                 ),
+                "spread_close_trackers": {
+                    str(k): {
+                        "expected_qty": int(v.get("expected_qty", 0) or 0),
+                        "long_closed": bool(v.get("long_closed", False)),
+                        "short_closed": bool(v.get("short_closed", False)),
+                        "long_qty": int(v.get("long_qty", 0) or 0),
+                        "short_qty": int(v.get("short_qty", 0) or 0),
+                        "long_notional": float(v.get("long_notional", 0.0) or 0.0),
+                        "short_notional": float(v.get("short_notional", 0.0) or 0.0),
+                    }
+                    for k, v in (getattr(self, "_spread_close_trackers", {}) or {}).items()
+                    if str(k).strip() and isinstance(v, dict)
+                },
+                "spread_exit_mark_cache": {
+                    str(k): {
+                        "long_leg_price": float(v.get("long_leg_price", 0.0) or 0.0),
+                        "short_leg_price": float(v.get("short_leg_price", 0.0) or 0.0),
+                        "updated_at": str(v.get("updated_at", "") or "")[:19],
+                    }
+                    for k, v in (getattr(self, "_spread_exit_mark_cache", {}) or {}).items()
+                    if str(k).strip() and isinstance(v, dict)
+                },
                 "spread_close_intent_by_key": {
                     str(k): {
                         "urgency": str(v.get("urgency", "SOFT") or "SOFT"),
