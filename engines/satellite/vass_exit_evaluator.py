@@ -212,8 +212,10 @@ def check_spread_exit_signals_impl(
         getattr(config, "VASS_CREDIT_THETA_FIRST_SUPPRESS_MFE_T1", True)
     )
 
+    credit_mark_stop_disabled_by_theta = False
     if credit_mark_stop_suppressed:
         mark_stop_enabled = False
+        credit_mark_stop_disabled_by_theta = True
 
     if (
         credit_theta_first_mode
@@ -773,6 +775,20 @@ def check_spread_exit_signals_impl(
         except Exception:
             credit_theta_hold_guard_active = False
             credit_theta_hold_minutes = 0.0
+
+    # V12.29: In THETA_FIRST mode, suppress credit mark-stop only during the initial hold window.
+    # After hold guard expires, re-enable CREDIT_STOP_2X to cap left-tail losses.
+    if (
+        is_credit_spread
+        and credit_theta_first_mode
+        and credit_mark_stop_disabled_by_theta
+        and not credit_theta_hold_guard_active
+        and not (
+            regime_confirmed
+            and bool(getattr(config, "VASS_REGIME_CONFIRMED_DISABLE_CREDIT_MARK_STOP", False))
+        )
+    ):
+        mark_stop_enabled = True
 
     # ---------------------------------------------------------------------
     # P0: VIX Spike Auto-Exit (bullish spreads only)
