@@ -258,13 +258,16 @@ def check_spread_exit_signals_impl(
         elif is_bearish_spread and regime_score > regime_break_bear_ceiling:
             regime_break_reason = f"VASS_REGIME_BREAK_BEAR: Regime {regime_score:.0f} > {regime_break_bear_ceiling:.0f}"
 
+    credit_dte_exit_default = int(
+        getattr(config, "CREDIT_SPREAD_DTE_EXIT", getattr(config, "SPREAD_DTE_EXIT", 5))
+    )
     if regime_confirmed:
         if is_credit_spread:
             dte_exit_threshold = int(
                 getattr(
                     config,
                     "VASS_REGIME_CONFIRMED_DTE_EXIT_CREDIT",
-                    getattr(config, "SPREAD_DTE_EXIT", 5),
+                    credit_dte_exit_default,
                 )
             )
         else:
@@ -276,7 +279,10 @@ def check_spread_exit_signals_impl(
                 )
             )
     else:
-        dte_exit_threshold = int(getattr(config, "SPREAD_DTE_EXIT", 5))
+        if is_credit_spread:
+            dte_exit_threshold = credit_dte_exit_default
+        else:
+            dte_exit_threshold = int(getattr(config, "SPREAD_DTE_EXIT", 5))
 
     def _resolve_vass_tail_cap_pct(resolved_dte: int) -> float:
         base_pct = float(getattr(config, "VASS_TAIL_RISK_CAP_PCT_EQUITY", 0.015))

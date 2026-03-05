@@ -1075,7 +1075,7 @@ VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT_CREDIT = (
 VASS_REGIME_CONFIRMED_DTE_EXIT = 2  # Confirmed conviction mode: hold until 2 DTE
 VASS_REGIME_CONFIRMED_DTE_EXIT_DEBIT = 2  # Debit spreads can hold longer in confirmed mode.
 VASS_REGIME_CONFIRMED_DTE_EXIT_CREDIT = (
-    5  # Credit spreads stay assignment-defensive in confirmed mode.
+    7  # Credit spreads: reduce early gamma churn while still exiting before expiry zone.
 )
 VASS_REGIME_CONFIRMED_DISABLE_DEBIT_MARK_STOP = True
 VASS_REGIME_CONFIRMED_DISABLE_DEBIT_TRAIL = True
@@ -1116,6 +1116,7 @@ CREDIT_SPREAD_MIN_CREDIT = 0.20  # V6.10 P3: Was 0.30, lowered to allow more fil
 CREDIT_SPREAD_WIDTH_TARGET = 5.0  # $5 width for credit spreads
 CREDIT_SPREAD_DTE_MIN = 21  # V12.27: avoid short-DTE gamma zone for credit entries
 CREDIT_SPREAD_DTE_MAX = 45  # V12.27: align with theta-first credit hold horizon
+CREDIT_SPREAD_DTE_EXIT = 7  # Credit-only DTE close threshold (debit keeps SPREAD_DTE_EXIT).
 CREDIT_SPREAD_FALLBACK_TO_DEBIT = True  # V6.10 P3: Fall back to debit when credit fails
 CREDIT_SPREAD_PROFIT_TARGET = 0.50  # V12.27: standard 50% credit harvest target
 CREDIT_SPREAD_STOP_MULTIPLIER = 0.35  # V10.17: trim left-tail bleed on failed credit spreads
