@@ -288,6 +288,8 @@ def match_spread_exit(spread, all_spread_exits, tolerance=0.15):
                 best_reason = "HARD_STOP_WIDTH"
             elif "HARD_STOP" in reason_full:
                 best_reason = "HARD_STOP"
+            elif "CREDIT_THETA_STOP" in reason_full:
+                best_reason = "CREDIT_THETA_STOP"
             elif "CREDIT_STOP_2X" in reason_full or "CREDIT_STOP_LOSS" in reason_full:
                 best_reason = "CREDIT_STOP_LOSS"
             elif "STOP_LOSS" in reason_full:
@@ -302,6 +304,10 @@ def match_spread_exit(spread, all_spread_exits, tolerance=0.15):
                 best_reason = "DTE_EXIT"
             elif "DAY4_EOD_CLOSE" in reason_full:
                 best_reason = "DAY4_EOD_CLOSE"
+            elif "PREMARKET_ITM_GUARDED_SKIP" in reason_full:
+                best_reason = "PREMARKET_ITM_GUARDED_SKIP"
+            elif "FRIDAY_FIREWALL_SKIPPED_DTE" in reason_full:
+                best_reason = "FRIDAY_FIREWALL_SKIPPED_DTE"
             elif "FRIDAY_FIREWALL" in reason_full:
                 best_reason = "FRIDAY_FIREWALL"
             elif _is_reconciled_close_marker(reason_full):

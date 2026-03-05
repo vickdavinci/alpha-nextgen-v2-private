@@ -521,12 +521,18 @@ def find_spread_exit_trigger(logs, exit_date, long_strike=None, short_strike=Non
                 return "STOP_LOSS"
             if "SPREAD_HARD_STOP" in text:
                 return "HARD_STOP"
+            if "CREDIT_THETA_STOP" in text:
+                return "CREDIT_THETA_STOP"
             if "PROFIT_TARGET" in text:
                 return "PROFIT_TARGET"
             if "TRAIL_STOP" in text:
                 return "TRAIL_STOP"
             if "DTE_EXIT" in text:
                 return "DTE_EXIT"
+            if "PREMARKET_ITM_GUARDED_SKIP" in text:
+                return "PREMARKET_ITM_GUARDED_SKIP"
+            if "FRIDAY_FIREWALL_SKIPPED_DTE" in text:
+                return "FRIDAY_FIREWALL_SKIPPED_DTE"
             if "FRIDAY_FIREWALL" in text:
                 return "FRIDAY_FIREWALL"
             if "FILL_CLOSE_RECONCILED" in text or "RECONCILED_CLOSE" in text:
@@ -553,10 +559,16 @@ def find_spread_exit_trigger(logs, exit_date, long_strike=None, short_strike=Non
                         return "STOP_LOSS"
                     if "SPREAD_HARD_STOP" in text:
                         return "HARD_STOP"
+                    if "CREDIT_THETA_STOP" in text:
+                        return "CREDIT_THETA_STOP"
                     if "PROFIT_TARGET" in text:
                         return "PROFIT_TARGET"
                     if "TRAIL_STOP" in text:
                         return "TRAIL_STOP"
+                    if "PREMARKET_ITM_GUARDED_SKIP" in text:
+                        return "PREMARKET_ITM_GUARDED_SKIP"
+                    if "FRIDAY_FIREWALL_SKIPPED_DTE" in text:
+                        return "FRIDAY_FIREWALL_SKIPPED_DTE"
                     if "FILL_CLOSE_RECONCILED" in text or "RECONCILED_CLOSE" in text:
                         return "RECONCILED"
                     if "SPREAD_CLOSE_RETRY" in text:
@@ -594,12 +606,18 @@ def find_spread_exit_trigger_precise(logs, spread, entry_date_str):
                 return "HARD_STOP"
             if "STOP_LOSS" in text:
                 return "STOP_LOSS"
+            if "CREDIT_THETA_STOP" in text:
+                return "CREDIT_THETA_STOP"
             if "PROFIT_TARGET" in text:
                 return "PROFIT_TARGET"
             if "TRAIL_STOP" in text:
                 return "TRAIL_STOP"
             if "DTE_EXIT" in text:
                 return "DTE_EXIT"
+            if "PREMARKET_ITM_GUARDED_SKIP" in text:
+                return "PREMARKET_ITM_GUARDED_SKIP"
+            if "FRIDAY_FIREWALL_SKIPPED_DTE" in text:
+                return "FRIDAY_FIREWALL_SKIPPED_DTE"
             if "FRIDAY_FIREWALL" in text:
                 return "FRIDAY_FIREWALL"
             if "FILL_CLOSE_RECONCILED" in text or "RECONCILED_CLOSE" in text:

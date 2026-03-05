@@ -302,12 +302,18 @@ def find_vass_exit_trigger(log_index, exit_time, entry_time):
                 return "STOP_LOSS"
             if "HARD_STOP" in line:
                 return "HARD_STOP"
+            if "CREDIT_THETA_STOP" in line:
+                return "CREDIT_THETA_STOP"
             if "PROFIT_TARGET" in line:
                 return "PROFIT_TARGET"
             if "TRAIL_STOP" in line:
                 return "TRAIL_STOP"
             if "DTE_EXIT" in line:
                 return "DTE_EXIT"
+            if "PREMARKET_ITM_GUARDED_SKIP" in line:
+                return "PREMARKET_ITM_GUARDED_SKIP"
+            if "FRIDAY_FIREWALL_SKIPPED_DTE" in line:
+                return "FRIDAY_FIREWALL_SKIPPED_DTE"
             if "FRIDAY_FIREWALL" in line:
                 return "FRIDAY_FIREWALL"
             if _is_reconciled_close_marker(line):
