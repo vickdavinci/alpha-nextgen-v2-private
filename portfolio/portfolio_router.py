@@ -3970,6 +3970,15 @@ class PortfolioRouter:
                 if preclear_detail.startswith(
                     ("EXIT_PRE_CLEAR_INFLIGHT_CLOSE", "EXIT_PRE_CLEAR_PENDING")
                 ):
+                    self._record_rejection(
+                        code="R_EXIT_PRECLEAR_DEFER",
+                        symbol=order.symbol,
+                        detail=preclear_detail,
+                        stage="EXECUTE_DEFER",
+                        source_tag=source_tag,
+                        trace_id=trace_id,
+                        metadata=order.metadata,
+                    )
                     continue
                 self._record_rejection(
                     code="R_EXIT_PRECLEAR_PENDING",
@@ -3978,6 +3987,7 @@ class PortfolioRouter:
                     stage="EXECUTE",
                     source_tag=source_tag,
                     trace_id=trace_id,
+                    metadata=order.metadata,
                 )
                 continue
             if preclear_detail:
