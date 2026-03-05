@@ -955,7 +955,41 @@ def check_spread_exit_signals_impl(
                 credit_floor_hit = False
             loss_gate_hit = credit_loss_pct >= max(0.0, min_loss_pct)
             equity_cap_hit = cap_dollars > 0 and loss_dollars >= cap_dollars and loss_gate_hit
-            if equity_cap_hit or credit_floor_hit:
+            credit_tail_cap_allowed = True
+            if (
+                is_credit_spread
+                and credit_theta_first_mode
+                and bool(getattr(config, "VASS_CREDIT_THETA_FIRST_TAIL_CAP_ONLY_EMERGENCY", True))
+            ):
+                emergency_dte_max = int(
+                    getattr(config, "VASS_CREDIT_THETA_FIRST_TAIL_CAP_EMERGENCY_DTE_MAX", 14)
+                )
+                emergency_loss_pct = float(
+                    getattr(config, "VASS_CREDIT_THETA_FIRST_TAIL_CAP_EMERGENCY_LOSS_PCT", 0.70)
+                )
+                emergency_by_hold = bool(credit_theta_hold_guard_active)
+                emergency_by_dte = current_dte > 0 and current_dte <= emergency_dte_max
+                emergency_by_loss = credit_loss_pct >= max(0.0, emergency_loss_pct)
+                credit_tail_cap_allowed = emergency_by_hold or emergency_by_dte or emergency_by_loss
+                if not credit_tail_cap_allowed:
+                    if self.algorithm is not None:
+                        self.algorithm._diag_vass_credit_tail_cap_suppressed = (
+                            int(
+                                getattr(self.algorithm, "_diag_vass_credit_tail_cap_suppressed", 0)
+                                or 0
+                            )
+                            + 1
+                        )
+                    if not bool(getattr(spread, "_credit_tail_cap_suppressed_logged", False)):
+                        spread._credit_tail_cap_suppressed_logged = True
+                        self.log(
+                            "TAIL_CAP_SUPPRESSED_CREDIT_THETA: "
+                            f"Key={self._build_spread_key(spread)} | "
+                            f"LossPct={credit_loss_pct:.1%} | DTE={current_dte} | "
+                            f"HoldGuard={bool(credit_theta_hold_guard_active)}",
+                            trades_only=True,
+                        )
+            if credit_tail_cap_allowed and (equity_cap_hit or credit_floor_hit):
                 if hasattr(self.algorithm, "_diag_vass_tail_cap_exits"):
                     self.algorithm._diag_vass_tail_cap_exits = (
                         int(getattr(self.algorithm, "_diag_vass_tail_cap_exits", 0) or 0) + 1
