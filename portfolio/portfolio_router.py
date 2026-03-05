@@ -2700,9 +2700,12 @@ class PortfolioRouter:
         stage: str,
         source_tag: str = "",
         trace_id: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Track and log router rejection with source/trace context."""
-        source_norm = self._normalize_options_source_tag(source_tag, metadata=None, symbol=symbol)
+        source_norm = self._normalize_options_source_tag(
+            source_tag, metadata=metadata, symbol=symbol
+        )
         item = RouterRejection(
             code=code,
             symbol=symbol,
@@ -2756,9 +2759,16 @@ class PortfolioRouter:
                 )
             elif "OPT" in sources:
                 inferred_lane = self._infer_options_lane_from_symbol(symbol)
-                source_tag = (
-                    f"OPT_{inferred_lane}" if inferred_lane in {"ITM", "MICRO"} else "OPT_VASS"
-                )
+                if inferred_lane in {"ITM", "MICRO"}:
+                    source_tag = f"OPT_{inferred_lane}"
+                elif metadata and (
+                    bool(metadata.get("spread_close_short", False))
+                    or metadata.get("vass_strategy")
+                    or metadata.get("spread_type")
+                ):
+                    source_tag = "OPT_VASS"
+                else:
+                    source_tag = "OPT_UNKNOWN"
             elif "RISK" in sources and self._is_option_symbol(symbol or ""):
                 inferred_lane = ""
                 if metadata:
@@ -2828,7 +2838,7 @@ class PortfolioRouter:
             ):
                 return "OPT_VASS"
             if self._is_option_symbol(str(symbol or "")):
-                return "OPT_VASS"
+                return "OPT_UNKNOWN"
         return normalized
 
     def _infer_options_lane_from_symbol(self, symbol: Optional[str]) -> str:
