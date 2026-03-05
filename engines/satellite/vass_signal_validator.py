@@ -398,6 +398,21 @@ def check_spread_entry_signal_impl(
             vix_current=vix_current,
             regime_score=regime_score,
         )
+        if (
+            enforce_assignment_gate
+            and gate_reason == "ASSIGN_GATE_STRESS"
+            and bool(getattr(config, "VASS_BEAR_PUT_STRESS_RELAX_ENABLED", True))
+        ):
+            relax_regime_max = float(getattr(config, "VASS_BEAR_PUT_STRESS_RELAX_REGIME_MAX", 45.0))
+            relax_vix_max = float(getattr(config, "VASS_BEAR_PUT_STRESS_RELAX_VIX_MAX", 30.0))
+            if regime_score <= relax_regime_max and vix_current <= relax_vix_max:
+                enforce_assignment_gate = False
+                self.log(
+                    "SPREAD: BEAR_PUT assignment stress relax active | "
+                    f"Regime={regime_score:.1f} <= {relax_regime_max:.1f} | "
+                    f"VIX={vix_current:.1f} <= {relax_vix_max:.1f}",
+                    trades_only=True,
+                )
         if enforce_assignment_gate:
             short_strike = short_leg_contract.strike
             # For PUTs: OTM when strike < price, ITM when strike > price

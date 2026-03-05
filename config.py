@@ -1573,6 +1573,13 @@ BEAR_PUT_ASSIGNMENT_BULL_BLOCK_REGIME_MIN = (
 BEAR_PUT_ASSIGNMENT_RESELECT_ENABLED = (
     True  # On assignment-gate fail, retry with a farther OTM short PUT from current candidate pool
 )
+VASS_BEAR_PUT_STRESS_RELAX_ENABLED = True  # V12.30: keep BEAR_PUT access in true bear tape by softening STRESS-only assignment enforcement.
+VASS_BEAR_PUT_STRESS_RELAX_REGIME_MAX = (
+    45.0  # Apply STRESS relax only when macro regime is clearly bearish/defensive.
+)
+VASS_BEAR_PUT_STRESS_RELAX_VIX_MAX = (
+    30.0  # Do not relax in extreme volatility; hard-VIX guard still dominates.
+)
 VASS_BEAR_FALLBACK_MAX_REGIME = 40.0  # V10.9: fallback only in clearly weak macro regimes
 VASS_BEAR_FALLBACK_MIN_VIX = 20.0  # V10.17: require elevated fear before bearish credit fallback
 
