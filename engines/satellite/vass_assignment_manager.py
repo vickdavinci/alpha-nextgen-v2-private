@@ -2,10 +2,71 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
+
 import config
 from engines.satellite.options_primitives import SpreadStrategy
 from models.enums import Urgency
 from models.target_weight import TargetWeight
+
+
+def _is_credit_spread_type(spread_type: str) -> bool:
+    spread_text = str(spread_type or "").upper()
+    return spread_text in {
+        "BULL_PUT_CREDIT",
+        "BEAR_CALL_CREDIT",
+        SpreadStrategy.BULL_PUT_CREDIT.value,
+        SpreadStrategy.BEAR_CALL_CREDIT.value,
+    }
+
+
+def _resolve_leg_mid_price(leg: "OptionContract") -> float:
+    bid = float(getattr(leg, "bid_price", 0.0) or 0.0)
+    ask = float(getattr(leg, "ask_price", 0.0) or 0.0)
+    mid = float(getattr(leg, "mid_price", 0.0) or 0.0)
+    if mid <= 0 and bid > 0 and ask > 0:
+        mid = (bid + ask) / 2.0
+    if mid <= 0:
+        mid = float(getattr(leg, "last_price", 0.0) or 0.0)
+    return float(mid)
+
+
+def _resolve_leg_extrinsic(short_leg: "OptionContract", underlying_price: float) -> Optional[float]:
+    strike = float(getattr(short_leg, "strike", 0.0) or 0.0)
+    if strike <= 0 or underlying_price <= 0:
+        return None
+    is_put = "P" in str(getattr(short_leg, "symbol", "")).upper()
+    intrinsic = max(0.0, (strike - underlying_price) if is_put else (underlying_price - strike))
+    mid = _resolve_leg_mid_price(short_leg)
+    if mid <= 0:
+        return None
+    return max(0.0, mid - intrinsic)
+
+
+def _is_debit_assignment_window(
+    short_leg: "OptionContract",
+    underlying_price: float,
+    current_dte: int,
+) -> bool:
+    if not bool(getattr(config, "SHORT_LEG_ITM_EXIT_DEBIT_ENABLED", True)):
+        return False
+    dte_max = int(getattr(config, "SHORT_LEG_ITM_EXIT_DEBIT_DTE_MAX", 2))
+    if current_dte > 0 and current_dte <= dte_max:
+        return True
+    extrinsic = _resolve_leg_extrinsic(short_leg, underlying_price)
+    if extrinsic is None:
+        return False
+    extrinsic_max = float(getattr(config, "SHORT_LEG_ITM_EXIT_DEBIT_EXTRINSIC_MAX", 0.05))
+    return extrinsic <= extrinsic_max
+
+
+def _ensure_assignment_incidents(self) -> Dict[str, Dict[str, Any]]:
+    incidents = getattr(self, "_assignment_incidents", None)
+    if not isinstance(incidents, dict):
+        incidents = {}
+        setattr(self, "_assignment_incidents", incidents)
+    return incidents
 
 
 def is_short_leg_deep_itm_impl(
@@ -282,17 +343,13 @@ def check_premarket_itm_shorts_impl(
     if spread.is_closing:
         return None
 
-    is_credit_spread = spread.spread_type in (
-        "BULL_PUT_CREDIT",
-        "BEAR_CALL_CREDIT",
-        SpreadStrategy.BULL_PUT_CREDIT.value,
-        SpreadStrategy.BEAR_CALL_CREDIT.value,
-    )
-    if not is_credit_spread:
+    is_credit_spread = _is_credit_spread_type(spread.spread_type)
+    is_debit_guard_enabled = bool(getattr(config, "PREMARKET_ITM_DEBIT_GUARD_ENABLED", True))
+    if (not is_credit_spread) and (not is_debit_guard_enabled):
         self.log(
             f"PREMARKET_ITM_CHECK: Debit spread bypass | Type={spread.spread_type} | "
             f"Underlying={underlying_price:.2f}",
-            trades_only=True,
+            trades_only=False,
         )
         return None
 
@@ -325,46 +382,45 @@ def check_premarket_itm_shorts_impl(
         )
         return None
 
-    # V12.27: Optional guardrail to avoid premature premarket credit exits when
-    # assignment risk is still low (time value remains and DTE is not in danger zone).
-    if bool(getattr(config, "PREMARKET_ITM_CREDIT_GUARD_ENABLED", False)):
-        current_dte = int(
-            getattr(short_leg, "days_to_expiry", 0)
-            or getattr(spread.long_leg, "days_to_expiry", 0)
-            or 0
-        )
+    current_dte = int(
+        getattr(short_leg, "days_to_expiry", 0)
+        or getattr(spread.long_leg, "days_to_expiry", 0)
+        or 0
+    )
+    extrinsic = _resolve_leg_extrinsic(short_leg, underlying_price)
+    extrinsic_text = "NA" if extrinsic is None else f"{extrinsic:.2f}"
+    if is_credit_spread and bool(getattr(config, "PREMARKET_ITM_CREDIT_GUARD_ENABLED", False)):
         dte_max = int(getattr(config, "PREMARKET_ITM_CREDIT_DTE_MAX", 14))
-        intrinsic = max(0.0, (strike - underlying_price) if is_put else (underlying_price - strike))
-        bid = float(getattr(short_leg, "bid_price", 0.0) or 0.0)
-        ask = float(getattr(short_leg, "ask_price", 0.0) or 0.0)
-        mid = float(getattr(short_leg, "mid_price", 0.0) or 0.0)
-        if mid <= 0 and bid > 0 and ask > 0:
-            mid = (bid + ask) / 2.0
-        if mid <= 0:
-            mid = float(getattr(short_leg, "last_price", 0.0) or 0.0)
-        extrinsic = max(0.0, mid - intrinsic) if mid > 0 else None
         extrinsic_max = float(getattr(config, "PREMARKET_ITM_CREDIT_EXTRINSIC_MAX", 0.15))
         dte_gate = current_dte > 0 and current_dte <= dte_max
         extrinsic_gate = extrinsic is not None and extrinsic <= extrinsic_max
-
         if not (dte_gate or extrinsic_gate):
-            extrinsic_text = "NA" if extrinsic is None else f"{extrinsic:.2f}"
             if self.algorithm is not None and hasattr(
                 self.algorithm, "_diag_vass_premarket_itm_guarded_skip_count"
             ):
                 self.algorithm._diag_vass_premarket_itm_guarded_skip_count = (
                     int(
-                        getattr(
-                            self.algorithm,
-                            "_diag_vass_premarket_itm_guarded_skip_count",
-                            0,
-                        )
+                        getattr(self.algorithm, "_diag_vass_premarket_itm_guarded_skip_count", 0)
                         or 0
                     )
                     + 1
                 )
             self.log(
                 "PREMARKET_ITM_GUARDED_SKIP: "
+                f"Type={spread.spread_type} | DTE={current_dte} > {dte_max} | "
+                f"Extrinsic={extrinsic_text} > {extrinsic_max:.2f} | "
+                f"Underlying={underlying_price:.2f}",
+                trades_only=True,
+            )
+            return None
+    elif not is_credit_spread:
+        dte_max = int(getattr(config, "PREMARKET_ITM_DEBIT_DTE_MAX", 1))
+        extrinsic_max = float(getattr(config, "PREMARKET_ITM_DEBIT_EXTRINSIC_MAX", 0.05))
+        dte_gate = current_dte > 0 and current_dte <= dte_max
+        extrinsic_gate = extrinsic is not None and extrinsic <= extrinsic_max
+        if not (dte_gate or extrinsic_gate):
+            self.log(
+                "PREMARKET_ITM_DEBIT_GUARDED_SKIP: "
                 f"Type={spread.spread_type} | DTE={current_dte} > {dte_max} | "
                 f"Extrinsic={extrinsic_text} > {extrinsic_max:.2f} | "
                 f"Underlying={underlying_price:.2f}",
@@ -451,12 +507,7 @@ def check_assignment_risk_exit_impl(
         return None
 
     short_leg = spread.short_leg
-    is_credit_spread = spread.spread_type in (
-        "BULL_PUT_CREDIT",
-        "BEAR_CALL_CREDIT",
-        SpreadStrategy.BULL_PUT_CREDIT.value,
-        SpreadStrategy.BEAR_CALL_CREDIT.value,
-    )
+    is_credit_spread = _is_credit_spread_type(spread.spread_type)
     exit_reason = None
 
     # Grace period to avoid immediate churn exits right after spread entry.
@@ -492,9 +543,14 @@ def check_assignment_risk_exit_impl(
             f"Closing ALL spreads to prevent assignment risk"
         )
 
-    # V6.9 P0 Fix 5: Short leg ITM exit (any DTE) - CHECK FIRST
-    # This catches assignments at any DTE, not just near expiry
-    if not in_assignment_grace and is_credit_spread:
+    debit_assignment_window = (not is_credit_spread) and _is_debit_assignment_window(
+        short_leg=short_leg,
+        underlying_price=underlying_price,
+        current_dte=current_dte,
+    )
+
+    # V6.9 P0 Fix 5: Short leg ITM exit (any DTE for credits, guarded for debits)
+    if not in_assignment_grace and (is_credit_spread or debit_assignment_window):
         should_exit, itm_reason = self._check_short_leg_itm_exit(
             short_leg=short_leg,
             underlying_price=underlying_price,
@@ -503,7 +559,11 @@ def check_assignment_risk_exit_impl(
             exit_reason = itm_reason
 
     # P0 Fix 1: Deep ITM short leg (DTE <= 3)
-    if exit_reason is None and not in_assignment_grace and is_credit_spread:
+    if (
+        exit_reason is None
+        and not in_assignment_grace
+        and (is_credit_spread or debit_assignment_window)
+    ):
         is_deep_itm, deep_itm_reason = self._is_short_leg_deep_itm(
             short_leg=short_leg,
             underlying_price=underlying_price,
@@ -513,7 +573,11 @@ def check_assignment_risk_exit_impl(
             exit_reason = deep_itm_reason
 
     # P0 Fix 2: Overnight ITM short block
-    if exit_reason is None and not in_assignment_grace and is_credit_spread:
+    if (
+        exit_reason is None
+        and not in_assignment_grace
+        and (is_credit_spread or debit_assignment_window)
+    ):
         should_close, overnight_reason = self._check_overnight_itm_short_risk(
             short_leg=short_leg,
             underlying_price=underlying_price,
@@ -669,6 +733,32 @@ def handle_partial_assignment_impl(
     if not (is_short_assigned or is_long_assigned):
         return None
 
+    spread_key = self._build_spread_key(spread)
+    incidents = _ensure_assignment_incidents(self)
+    incident = incidents.get(spread_key) or {}
+    if bool(incident.get("active", False)):
+        self.log(
+            f"PARTIAL_ASSIGNMENT_SUPPRESSED_DUPLICATE: SpreadKey={spread_key} | "
+            f"Assigned={assigned_symbol}",
+            trades_only=True,
+        )
+        return None
+
+    incident_id = (
+        f"{spread_key}|{self._symbol_str(assigned_symbol)}|"
+        f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
+    )
+    incidents[spread_key] = {
+        "active": True,
+        "incident_id": incident_id,
+        "assigned_symbol": self._symbol_str(assigned_symbol),
+        "remaining_symbol": self._symbol_str(
+            spread.long_leg.symbol if is_short_assigned else spread.short_leg.symbol
+        ),
+    }
+    spread.assignment_incident_active = True
+    spread.assignment_incident_id = incident_id
+
     self.log(
         f"PARTIAL_ASSIGNMENT_DETECTED: {assigned_symbol} x{assigned_quantity} | "
         f"Spread: {spread.spread_type} | "
@@ -700,6 +790,60 @@ def handle_partial_assignment_impl(
             metadata={
                 "exit_type": "PARTIAL_ASSIGNMENT",
                 "assigned_leg": assigned_symbol,
+                "spread_key": spread_key,
+                "assignment_incident_id": incident_id,
+                "assignment_recovery_mode": "EMERGENCY_MARKET",
+                "spread_exit_code": "PARTIAL_ASSIGNMENT_RECOVERY",
+                "spread_exit_reason": "PARTIAL_ASSIGNMENT_RECOVERY",
+                "spread_exit_emergency": True,
             },
         )
     ]
+
+
+def resolve_assignment_incident_impl(
+    self,
+    symbol: Optional[str] = None,
+    spread_key: Optional[str] = None,
+) -> bool:
+    """
+    Mark assignment-recovery incident resolved for a spread or orphan symbol.
+    """
+    incidents = _ensure_assignment_incidents(self)
+    if not incidents:
+        return False
+
+    target_key = str(spread_key or "").strip()
+    symbol_norm = self._symbol_str(symbol) if symbol else ""
+    resolved = False
+    to_clear: List[str] = []
+    for key, state in list(incidents.items()):
+        state_dict = state if isinstance(state, dict) else {}
+        remaining_symbol = self._symbol_str(state_dict.get("remaining_symbol", ""))
+        if target_key and key != target_key:
+            continue
+        if symbol_norm and remaining_symbol and remaining_symbol != symbol_norm:
+            continue
+        to_clear.append(key)
+
+    if not to_clear:
+        return False
+
+    for key in to_clear:
+        incident_id = str((incidents.get(key) or {}).get("incident_id", "") or "")
+        incidents.pop(key, None)
+        for spread in list(self.get_spread_positions() or []):
+            try:
+                if self._build_spread_key(spread) != key:
+                    continue
+                spread.assignment_incident_active = False
+                spread.assignment_incident_id = None
+            except Exception:
+                continue
+        self.log(
+            f"PARTIAL_ASSIGNMENT_RESOLVED: SpreadKey={key} | Incident={incident_id or 'NA'}",
+            trades_only=True,
+        )
+        resolved = True
+
+    return resolved

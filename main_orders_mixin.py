@@ -1005,6 +1005,7 @@ class MainOrdersMixin:
                 )
                 if partial_signals:
                     sanitized_signals = []
+                    direct_recovery_submits = 0
                     for signal in partial_signals:
                         try:
                             signal_symbol = self._normalize_symbol_str(signal.symbol)
@@ -1018,6 +1019,36 @@ class MainOrdersMixin:
                             )
                             continue
                         signal.requested_quantity = live_qty
+                        signal_md = dict(getattr(signal, "metadata", {}) or {})
+                        if (
+                            str(signal_md.get("assignment_recovery_mode", "")).upper()
+                            == "EMERGENCY_MARKET"
+                        ):
+                            try:
+                                live_signed_qty = int(
+                                    self._get_option_holding_quantity(signal_symbol)
+                                )
+                            except Exception:
+                                live_signed_qty = 0
+                            close_qty = -live_signed_qty
+                            if close_qty == 0:
+                                self.Log(
+                                    f"PARTIAL_ASSIGNMENT_SKIP_NO_SIGNED_QTY: {signal.symbol} | "
+                                    "Reason=No live signed quantity to close"
+                                )
+                                continue
+                            incident_id = str(signal_md.get("assignment_incident_id", "") or "")
+                            close_ticket = self._submit_option_close_market_order(
+                                symbol=signal.symbol,
+                                quantity=close_qty,
+                                reason="PARTIAL_ASSIGNMENT_EMERGENCY_CLOSE",
+                                engine_hint="VASS",
+                                tag_hint=incident_id,
+                                strategy_hint="VASS_ASSIGNMENT_RECOVERY",
+                            )
+                            if close_ticket is not None:
+                                direct_recovery_submits += 1
+                                continue
                         sanitized_signals.append(signal)
                     if sanitized_signals:
                         self.portfolio_router.receive_signals(sanitized_signals)
@@ -1025,7 +1056,12 @@ class MainOrdersMixin:
                             f"PARTIAL_ASSIGNMENT_SUBMITTED: {symbol} | "
                             f"Signals={len(sanitized_signals)}"
                         )
-                    else:
+                    if direct_recovery_submits > 0:
+                        self.Log(
+                            f"PARTIAL_ASSIGNMENT_DIRECT_CLOSE_SUBMITTED: {symbol} | "
+                            f"Orders={direct_recovery_submits}"
+                        )
+                    if not sanitized_signals and direct_recovery_submits <= 0:
                         self.Log(
                             f"PARTIAL_ASSIGNMENT_SKIP: {symbol} | "
                             "Reason=No tradable orphan leg after live-qty check"
@@ -1038,49 +1074,87 @@ class MainOrdersMixin:
                 )
                 qqq_holding = self.Portfolio[self.qqq]
                 if qqq_holding.Invested:
-                    # V6.4 Fix: Check for protective long PUT before liquidating
-                    # If we have a spread with a long PUT that's ITM, exercise it instead
-                    # of blindly liquidating QQQ at market price
-                    spread = self.options_engine.get_spread_position()
-                    exercised_long_put = False
+                    # Prefer exercising protective long leg before liquidating underlying.
+                    spread = None
+                    try:
+                        for candidate in list(self.options_engine.get_spread_positions() or []):
+                            if candidate is None:
+                                continue
+                            if self._normalize_symbol_str(
+                                candidate.long_leg.symbol
+                            ) == self._normalize_symbol_str(symbol) or self._normalize_symbol_str(
+                                candidate.short_leg.symbol
+                            ) == self._normalize_symbol_str(
+                                symbol
+                            ):
+                                spread = candidate
+                                break
+                    except Exception:
+                        spread = None
+                    if spread is None:
+                        spread = self.options_engine.get_spread_position()
+                    exercised_protective_leg = False
 
-                    if spread is not None and "PUT" in spread.spread_type.upper():
-                        # We have a PUT spread - check if long PUT can offset
+                    if spread is not None:
                         long_leg = spread.long_leg
                         qqq_price = self.Securities[self.qqq].Price
                         long_strike = long_leg.strike
-
-                        # Long PUT is ITM if QQQ price < strike
-                        if qqq_price < long_strike:
-                            # Exercise the long PUT to sell QQQ at strike price
-                            # This is better than liquidating at market when long PUT is ITM
-                            try:
-                                long_symbol = self.Symbol(long_leg.symbol)
-                                long_holding = self.Portfolio.get(long_symbol)
+                        spread_type_u = str(getattr(spread, "spread_type", "") or "").upper()
+                        try:
+                            long_symbol = self.Symbol(long_leg.symbol)
+                            long_holding = self.Portfolio.get(long_symbol)
+                        except Exception:
+                            long_symbol = None
+                            long_holding = None
+                        if (
+                            long_symbol is not None
+                            and long_holding
+                            and long_holding.Invested
+                            and long_holding.Quantity > 0
+                        ):
+                            exercise_qty = min(
+                                int(long_holding.Quantity),
+                                max(0, abs(int(qqq_holding.Quantity / 100))),
+                            )
+                            if exercise_qty > 0:
                                 if (
-                                    long_holding
-                                    and long_holding.Invested
-                                    and long_holding.Quantity > 0
+                                    "PUT" in spread_type_u
+                                    and qqq_holding.Quantity > 0
+                                    and qqq_price < long_strike
                                 ):
-                                    exercise_qty = min(
-                                        int(long_holding.Quantity),
-                                        abs(int(qqq_holding.Quantity / 100)),
-                                    )
-                                    if exercise_qty > 0:
+                                    try:
                                         self.Log(
-                                            f"EXERCISE_LONG_PUT: Exercising protective PUT instead of market liquidation | "
+                                            "EXERCISE_LONG_PUT: Exercising protective PUT instead of market liquidation | "
                                             f"Strike=${long_strike:.2f} vs Market=${qqq_price:.2f} | "
                                             f"Benefit=${(long_strike - qqq_price) * exercise_qty * 100:,.2f} | "
                                             f"Qty={exercise_qty}"
                                         )
                                         self.ExerciseOption(long_symbol, exercise_qty)
-                                        exercised_long_put = True
-                            except Exception as e:
-                                self.Log(
-                                    f"EXERCISE_LONG_PUT_ERROR: Failed to exercise long PUT: {e}"
-                                )
+                                        exercised_protective_leg = True
+                                    except Exception as e:
+                                        self.Log(
+                                            f"EXERCISE_LONG_PUT_ERROR: Failed to exercise long PUT: {e}"
+                                        )
+                                elif (
+                                    "CALL" in spread_type_u
+                                    and qqq_holding.Quantity < 0
+                                    and qqq_price > long_strike
+                                ):
+                                    try:
+                                        self.Log(
+                                            "EXERCISE_LONG_CALL: Exercising protective CALL instead of market liquidation | "
+                                            f"Strike=${long_strike:.2f} vs Market=${qqq_price:.2f} | "
+                                            f"Benefit=${(qqq_price - long_strike) * exercise_qty * 100:,.2f} | "
+                                            f"Qty={exercise_qty}"
+                                        )
+                                        self.ExerciseOption(long_symbol, exercise_qty)
+                                        exercised_protective_leg = True
+                                    except Exception as e:
+                                        self.Log(
+                                            f"EXERCISE_LONG_CALL_ERROR: Failed to exercise long CALL: {e}"
+                                        )
 
-                    if not exercised_long_put:
+                    if not exercised_protective_leg:
                         # No protective long PUT or exercise failed - liquidate at market
                         self.Log(
                             f"EXERCISE_LIQUIDATE: QQQ position from exercise | "
@@ -1108,6 +1182,11 @@ class MainOrdersMixin:
                         f"EXIT_RETRY_CLEANUP: Cleared {len(stale_retry_keys)} tracker(s) after flat fill | "
                         f"{symbol[-20:]}"
                     )
+                try:
+                    if hasattr(self, "options_engine") and self.options_engine is not None:
+                        self.options_engine.resolve_assignment_incident(symbol=symbol_norm)
+                except Exception:
+                    pass
 
             self._save_state_throttled("ORDER_FILLED", min_minutes=3)
 

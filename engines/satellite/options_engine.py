@@ -116,6 +116,7 @@ from engines.satellite.vass_assignment_manager import (
     get_assignment_aware_size_multiplier_impl,
     handle_partial_assignment_impl,
     is_short_leg_deep_itm_impl,
+    resolve_assignment_incident_impl,
 )
 from engines.satellite.vass_entry_engine import VASSEntryEngine
 from engines.satellite.vass_exit_evaluator import check_spread_exit_signals_impl
@@ -312,6 +313,9 @@ class OptionsEngine:
         self._gamma_pin_exit_triggered: bool = False
         # Throttle repeated ITM short-leg risk logs.
         self._last_short_leg_itm_exit_log: Dict[str, datetime] = {}
+        # Assignment incident map (spread_key -> incident state), used to keep
+        # partial-assignment recovery idempotent across retries/restarts.
+        self._assignment_incidents: Dict[str, Dict[str, Any]] = {}
         # CALL-gate tracking: pause new CALLs after repeated losses.
         self._call_consecutive_losses: int = 0
         self._call_cooldown_until_date: Optional[datetime.date] = None
@@ -3002,6 +3006,17 @@ class OptionsEngine:
             self,
             assigned_symbol=assigned_symbol,
             assigned_quantity=assigned_quantity,
+        )
+
+    def resolve_assignment_incident(
+        self,
+        symbol: Optional[str] = None,
+        spread_key: Optional[str] = None,
+    ) -> bool:
+        return resolve_assignment_incident_impl(
+            self,
+            symbol=symbol,
+            spread_key=spread_key,
         )
 
     def _record_vass_mfe_diag(self, spread: SpreadPosition, prev_tier: int) -> None:

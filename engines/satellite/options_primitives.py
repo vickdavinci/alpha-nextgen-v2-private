@@ -228,6 +228,8 @@ class SpreadPosition:
     highest_pnl_max_profit_pct: float = 0.0  # V10.15: MFE as % of max profit
     mfe_lock_tier: int = 0  # V10.15: 0=none, 1=breakeven+fees, 2=harvest floor
     thesis_soft_stop_streak: int = 0  # V12.27: consecutive thesis soft-stop breach bars
+    assignment_incident_active: bool = False  # V12.28: idempotent partial-assignment lifecycle
+    assignment_incident_id: Optional[str] = None  # V12.28: stable incident key for recovery
 
     @property
     def profit_target(self) -> float:
@@ -264,6 +266,8 @@ class SpreadPosition:
             "highest_pnl_max_profit_pct": self.highest_pnl_max_profit_pct,
             "mfe_lock_tier": self.mfe_lock_tier,
             "thesis_soft_stop_streak": self.thesis_soft_stop_streak,
+            "assignment_incident_active": self.assignment_incident_active,
+            "assignment_incident_id": self.assignment_incident_id,
         }
 
     @classmethod
@@ -288,6 +292,8 @@ class SpreadPosition:
             highest_pnl_max_profit_pct=data.get("highest_pnl_max_profit_pct", 0.0),
             mfe_lock_tier=int(data.get("mfe_lock_tier", 0) or 0),
             thesis_soft_stop_streak=int(data.get("thesis_soft_stop_streak", 0) or 0),
+            assignment_incident_active=bool(data.get("assignment_incident_active", False)),
+            assignment_incident_id=data.get("assignment_incident_id"),
         )
 
 

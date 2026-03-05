@@ -274,6 +274,7 @@ def get_state_for_persistence_impl(self) -> Dict[str, Any]:
         "gamma_pin_exit_triggered": bool(self._gamma_pin_exit_triggered),
         "last_spread_exit_time": self._last_spread_exit_time,
         "spread_attempt_last_mark_by_key": dict(self._spread_attempt_last_mark_by_key),
+        "assignment_incidents": dict(getattr(self, "_assignment_incidents", {}) or {}),
         # V2.27: Win Rate Gate state
         "spread_result_history": self._spread_result_history,
         "win_rate_shutoff": self._win_rate_shutoff,
@@ -655,6 +656,12 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
         if isinstance(raw_attempt_marks, dict)
         else {}
     )
+    raw_assignment_incidents = state.get("assignment_incidents", {}) or {}
+    self._assignment_incidents = (
+        {str(k): dict(v or {}) for k, v in raw_assignment_incidents.items()}
+        if isinstance(raw_assignment_incidents, dict)
+        else {}
+    )
 
     # V2.27: Win Rate Gate state
     self._spread_result_history = state.get("spread_result_history", [])
@@ -705,8 +712,14 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
             )
         except Exception:
             continue
+    active_keys = {self._build_spread_key(s) for s in self._spread_positions}
+    if self._assignment_incidents:
+        self._assignment_incidents = {
+            str(k): dict(v or {})
+            for k, v in self._assignment_incidents.items()
+            if str(k) in active_keys
+        }
     if self._spread_neutrality_warn_by_key:
-        active_keys = {self._build_spread_key(s) for s in self._spread_positions}
         self._spread_neutrality_warn_by_key = {
             k: v for k, v in self._spread_neutrality_warn_by_key.items() if k in active_keys
         }
@@ -779,6 +792,7 @@ def reset_options_engine_state_impl(self) -> None:
     self._last_trade_limit_failure = None
     self._last_trade_limit_detail = None
     self._spread_exit_signal_cooldown = {}
+    self._assignment_incidents = {}
     self._call_consecutive_losses = 0
     self._call_cooldown_until_date = None
     self._put_consecutive_losses = 0

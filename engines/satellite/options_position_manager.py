@@ -551,6 +551,11 @@ def remove_spread_position_impl(
         elif self._spread_position is spread:
             self._spread_position = None
         spread_key = self._build_spread_key(spread)
+        try:
+            if hasattr(self, "resolve_assignment_incident"):
+                self.resolve_assignment_incident(spread_key=spread_key)
+        except Exception:
+            pass
         self._spread_neutrality_warn_by_key.pop(spread_key, None)
         self._spread_exit_signal_cooldown.pop(spread_key, None)  # V9.4 P0: Clear cooldown
         self._spread_hold_guard_logged.discard(spread_key)
@@ -595,6 +600,8 @@ def clear_all_positions_impl(self) -> None:
         self._spread_position = None
         self._spread_neutrality_warn_by_key = {}
         self._spread_hold_guard_logged.clear()
+        if hasattr(self, "_assignment_incidents"):
+            self._assignment_incidents = {}
         cleared.append("spread")
 
     if self._intraday_position is not None or any(
