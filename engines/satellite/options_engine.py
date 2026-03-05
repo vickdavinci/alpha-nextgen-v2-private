@@ -953,13 +953,17 @@ class OptionsEngine:
     ) -> Tuple[bool, float, str]:
         """Return (enforce_gate, min_otm_pct, profile) for short-PUT assignment guard."""
         hard_block_vix = float(getattr(config, "BEAR_PUT_ASSIGNMENT_HARD_BLOCK_VIX", 28.0))
-        hard_block_regime_max = float(
-            getattr(config, "BEAR_PUT_ASSIGNMENT_HARD_BLOCK_REGIME_MAX", 40.0)
+        bull_block_regime_min = float(
+            getattr(
+                config,
+                "BEAR_PUT_ASSIGNMENT_BULL_BLOCK_REGIME_MIN",
+                getattr(config, "MACRO_DIRECTION_BULLISH_MIN", 55.0),
+            )
         )
         enforce_assignment_gate = (
             overlay_state in {"STRESS", "EARLY_STRESS"}
             or vix_current >= hard_block_vix
-            or regime_score <= hard_block_regime_max
+            or regime_score >= bull_block_regime_min
         )
         min_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT", 0.03))
         stress_otm_pct = float(getattr(config, "BEAR_PUT_ENTRY_MIN_OTM_PCT_STRESS", min_otm_pct))

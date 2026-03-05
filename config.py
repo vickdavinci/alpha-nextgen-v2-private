@@ -1554,7 +1554,10 @@ BEAR_PUT_ASSIGNMENT_HARD_BLOCK_VIX = (
     35.0  # V12.7: relax hard block to preserve bearish access in moderate fear
 )
 BEAR_PUT_ASSIGNMENT_HARD_BLOCK_REGIME_MAX = (
-    40.0  # V10.10: only enforce assignment gate in deep risk-off regime
+    40.0  # Legacy (unused in V12.30+ assignment gate polarity)
+)
+BEAR_PUT_ASSIGNMENT_BULL_BLOCK_REGIME_MIN = (
+    55.0  # Enforce short-PUT assignment gate in bullish/neutral-high regimes
 )
 BEAR_PUT_ASSIGNMENT_RESELECT_ENABLED = (
     True  # On assignment-gate fail, retry with a farther OTM short PUT from current candidate pool
