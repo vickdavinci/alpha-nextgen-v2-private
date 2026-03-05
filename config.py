@@ -1429,7 +1429,9 @@ SHORT_LEG_ITM_EXIT_THRESHOLD = (
 )
 # V12.28: debit spreads carry short-leg assignment risk near expiry.
 # Enable debit checks only in danger zone (near expiry / near-zero extrinsic).
-SHORT_LEG_ITM_EXIT_DEBIT_ENABLED = True
+SHORT_LEG_ITM_EXIT_DEBIT_ENABLED = (
+    False  # V12.29: disable broad debit assignment exits (BCD edge protection).
+)
 SHORT_LEG_ITM_EXIT_DEBIT_DTE_MAX = 2
 SHORT_LEG_ITM_EXIT_DEBIT_EXTRINSIC_MAX = 0.05
 SPREAD_ASSIGNMENT_GRACE_MINUTES = 45  # V6.15 FIX: Allow spread to stabilize before ITM checks
@@ -1466,7 +1468,9 @@ PREMARKET_ITM_CHECK_ENABLED = True  # Enable 09:25 pre-market check
 PREMARKET_ITM_CREDIT_GUARD_ENABLED = True  # V12.27: guard closes unless DTE danger or low extrinsic
 PREMARKET_ITM_CREDIT_DTE_MAX = 14  # Only force credit exits in assignment-prone zone
 PREMARKET_ITM_CREDIT_EXTRINSIC_MAX = 0.15  # Force close when short-leg time value is minimal
-PREMARKET_ITM_DEBIT_GUARD_ENABLED = True  # V12.28: debit checks only in assignment danger zone
+PREMARKET_ITM_DEBIT_GUARD_ENABLED = (
+    False  # V12.29: disable broad debit premarket ITM guard (credit-only path remains).
+)
 PREMARKET_ITM_DEBIT_DTE_MAX = 1
 PREMARKET_ITM_DEBIT_EXTRINSIC_MAX = 0.05
 PREMARKET_ITM_CHECK_HOUR = 9  # Check at 09:25 ET
