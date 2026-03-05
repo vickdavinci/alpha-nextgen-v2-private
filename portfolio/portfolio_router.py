@@ -3970,6 +3970,11 @@ class PortfolioRouter:
                 if preclear_detail.startswith(
                     ("EXIT_PRE_CLEAR_INFLIGHT_CLOSE", "EXIT_PRE_CLEAR_PENDING")
                 ):
+                    # For lane-owned option exits, treat preclear defer as transient
+                    # plumbing state (retry next cycle, no router rejection record).
+                    if lane_hint == "VASS":
+                        continue
+                    # For generic/non-lane close intents, keep defer artifact for RCA.
                     self._record_rejection(
                         code="R_EXIT_PRECLEAR_DEFER",
                         symbol=order.symbol,

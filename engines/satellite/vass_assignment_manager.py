@@ -776,10 +776,9 @@ def handle_partial_assignment_impl(
         )
         return None
 
-    incident_id = (
-        f"{spread_key}|{self._symbol_str(assigned_symbol)}|"
-        f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}"
-    )
+    algo_time = getattr(self.algorithm, "Time", None)
+    timestamp = algo_time.strftime("%Y%m%d%H%M%S") if algo_time else "UNKNOWN_TIME"
+    incident_id = f"{spread_key}|{self._symbol_str(assigned_symbol)}|{timestamp}"
     incidents[spread_key] = {
         "active": True,
         "incident_id": incident_id,
