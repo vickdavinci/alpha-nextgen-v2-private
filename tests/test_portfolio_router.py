@@ -1331,3 +1331,52 @@ class TestRouterSymbolNormalization:
         assert ok is False
         assert "EXIT_PRE_CLEAR_INFLIGHT_CLOSE" in detail
         router._cancel_open_orders_for_symbols.assert_not_called()
+
+
+class TestRouterRejectionAttribution:
+    """Regression tests for option-lane rejection source attribution."""
+
+    def test_extract_trace_context_opt_unknown_without_vass_metadata(self):
+        router = PortfolioRouter()
+        source_tag, trace_id = router._extract_trace_context(
+            metadata=None,
+            sources=["OPT"],
+            symbol="QQQ 260130C00500000",
+        )
+        assert source_tag == "OPT_UNKNOWN"
+        assert trace_id == ""
+
+    def test_extract_trace_context_opt_vass_with_spread_metadata(self):
+        router = PortfolioRouter()
+        source_tag, _ = router._extract_trace_context(
+            metadata={"spread_close_short": True, "spread_type": "BULL_CALL_DEBIT"},
+            sources=["OPT"],
+            symbol="QQQ 260130C00500000",
+        )
+        assert source_tag == "OPT_VASS"
+
+    def test_execute_orders_records_preclear_defer_artifact(self):
+        algo = MagicMock()
+        algo.Time = datetime(2026, 3, 5, 10, 0, 0)
+        router = PortfolioRouter(algorithm=algo)
+        order = OrderIntent(
+            symbol="QQQ 260130C00500000",
+            quantity=1,
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            urgency=Urgency.IMMEDIATE,
+            reason="TEST_CLOSE",
+            target_weight=0.0,
+            current_weight=0.0,
+            tag="OPT:TEST",
+        )
+        router._run_option_exit_preclear = MagicMock(
+            return_value=(False, "EXIT_PRE_CLEAR_INFLIGHT_CLOSE: Close intent still pending")
+        )
+        executed = router.execute_orders([order], current_minute="2026-03-05 10:00")
+        rejects = router.get_last_rejections()
+
+        assert executed == []
+        assert len(rejects) == 1
+        assert rejects[0].code == "R_EXIT_PRECLEAR_DEFER"
+        assert rejects[0].stage == "EXECUTE_DEFER"
