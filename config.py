@@ -1027,6 +1027,7 @@ VASS_USE_CONVICTION_ONLY_DIRECTION = (
 VASS_NO_CONVICTION_NO_TRADE = False  # V12.26: allow macro-following VASS entries when conviction absent; downstream gates still apply.
 VASS_NEUTRAL_FALLBACK_DIRECTION_ENABLED = True  # V12.30: in macro NEUTRAL, infer VASS direction from transition-score delta to reduce resolver starvation.
 VASS_NEUTRAL_FALLBACK_DELTA_MIN = 1.0  # Minimum transition-score delta (points) required to infer BULLISH/BEARISH direction in neutral macro.
+VASS_NEUTRAL_FALLBACK_DEEP_BEAR_MAX = 45.0  # V12.30: when regime <= this, block BULLISH inference from neutral fallback to preserve BEAR_PUT pivot access.
 VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT = (
     False  # V10.10 tuning: disable bearish credit fallback while BEAR_PUT gating is rebalanced
 )
