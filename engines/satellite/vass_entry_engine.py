@@ -1368,7 +1368,8 @@ class VASSEntryEngine:
             and algorithm._last_swing_scan_time is not None
         ):
             minutes_since = (algorithm.Time - algorithm._last_swing_scan_time).total_seconds() / 60
-            if minutes_since < 15:
+            scan_interval_min = max(1, int(getattr(config, "VASS_SCAN_INTERVAL_MINUTES", 15) or 15))
+            if 0 <= minutes_since < scan_interval_min:
                 if self.should_log_rejection(
                     now=algorithm.Time,
                     reason_key="R_VASS_SCAN_INTERVAL_GUARD",
@@ -1377,13 +1378,15 @@ class VASSEntryEngine:
                         algorithm=algorithm,
                         reason_code="R_VASS_SCAN_INTERVAL_GUARD",
                         gate_name="VASS_SCAN_INTERVAL_GUARD",
-                        reason=f"Scan throttled: elapsed {minutes_since:.1f}m < 15m",
+                        reason=(
+                            f"Scan throttled: elapsed {minutes_since:.1f}m "
+                            f"< {scan_interval_min}m"
+                        ),
                         strategy="VASS_ENTRY_CYCLE",
                         direction="",
                         signal_prefix="VASS-INTRADAY",
                     )
                 return
-        algorithm._last_swing_scan_time = algorithm.Time
 
         regime_score = float(
             transition_ctx.get(
@@ -1605,6 +1608,12 @@ class VASSEntryEngine:
         dte_min_all = min(r[0] for r in dte_ranges)
         dte_max_all = max(r[1] for r in dte_ranges)
         required_right = host.strategy_option_right(strategy)
+
+        # Consume intraday scan budget only when we reach actual candidate scan work.
+        algorithm._last_swing_scan_time = algorithm.Time
+        algorithm._diag_vass_scan_attempt_consumed = (
+            int(getattr(algorithm, "_diag_vass_scan_attempt_consumed", 0) or 0) + 1
+        )
 
         candidate_contracts = host.build_vass_candidate_contracts(
             chain=chain,

@@ -1021,6 +1021,7 @@ VASS_DIRECTION_MIN_GAP_MINUTES_BULLISH = (
 VASS_DIRECTION_MIN_GAP_MINUTES_BEARISH = 180  # Keep bearish spacing conservative
 VASS_DIRECTION_DAY_GAP_ENABLED = False  # Legacy date-level lock kept disabled by default
 VASS_ENTRY_ENGINE_ENABLED = True  # V10.10: route VASS strategy/filter/guards via dedicated engine
+VASS_SCAN_INTERVAL_MINUTES = 5  # V12.31: intraday VASS scan throttle; consumed only when scan reaches candidate-contract evaluation.
 VASS_USE_CONVICTION_ONLY_DIRECTION = (
     False  # V12.26: macro-only VASS direction mode; conviction remains telemetry only.
 )
