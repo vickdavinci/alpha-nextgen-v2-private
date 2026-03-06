@@ -1083,7 +1083,9 @@ class VASSEntryEngine:
                 transition_delta = float(ctx.get("delta", 0.0) or 0.0)
             except Exception:
                 transition_delta = 0.0
-            if transition_delta >= delta_min:
+            # V12.30: In deep bear regime, never infer BULLISH from neutral fallback.
+            deep_bear_max = float(getattr(config, "VASS_NEUTRAL_FALLBACK_DEEP_BEAR_MAX", 45.0))
+            if transition_delta >= delta_min and regime_for_vass > deep_bear_max:
                 resolver_direction = "BULLISH"
                 resolver_reason = (
                     f"{resolver_reason} | VASS_NEUTRAL_FALLBACK_DELTA={transition_delta:+.1f}"
