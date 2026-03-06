@@ -1093,6 +1093,21 @@ class VASSEntryEngine:
                 resolver_reason = (
                     f"{resolver_reason} | VASS_NEUTRAL_FALLBACK_DELTA={transition_delta:+.1f}"
                 )
+            # V12.30: Emit telemetry when neutral fallback infers direction.
+            if resolver_direction is not None:
+                host._record_regime_decision(
+                    engine="VASS",
+                    decision="INFER",
+                    strategy_attempted="VASS_DIRECTION",
+                    gate_name="VASS_NEUTRAL_FALLBACK",
+                    threshold_snapshot={
+                        "delta": transition_delta,
+                        "delta_min": delta_min,
+                        "inferred_direction": resolver_direction,
+                        "overlay": str(overlay_state or ""),
+                    },
+                    context=ctx,
+                )
         should_trade, resolved_direction, resolve_reason = host.resolve_trade_signal(
             engine="VASS",
             engine_direction=resolver_direction,
