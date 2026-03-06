@@ -358,22 +358,31 @@ class MainOrdersMixin:
         except Exception:
             oid = 0
         resolved_tag = str(order_tag or "").strip()
+        if resolved_tag:
+            tag_origin = "native"
+        else:
+            tag_origin = "none"
         tag_map = getattr(self, "_order_lifecycle_tag_by_order_id", None)
         if not isinstance(tag_map, dict):
             tag_map = {}
             self._order_lifecycle_tag_by_order_id = tag_map
         if not resolved_tag and oid > 0:
             resolved_tag = str(tag_map.get(oid, "") or "").strip()
+            if resolved_tag:
+                tag_origin = "lifecycle_cache"
         if not resolved_tag and oid > 0:
             hint_cache = getattr(self, "_order_tag_hint_cache", None)
             if isinstance(hint_cache, dict):
                 resolved_tag = str(hint_cache.get(oid, "") or "").strip()
+                if resolved_tag:
+                    tag_origin = "hint_cache"
         if not resolved_tag and oid > 0:
             spread_key_cache = getattr(self, "_spread_close_order_key_by_order_id", None)
             if isinstance(spread_key_cache, dict):
                 hinted_key = str(spread_key_cache.get(oid, "") or "").strip()
                 if hinted_key:
                     resolved_tag = f"SPREAD_CLOSE_RECON|spread_key={hinted_key.replace('|', '~')}"
+                    tag_origin = "synthesized_spread_key"
         if resolved_tag and oid > 0:
             tag_map[oid] = resolved_tag
             if len(tag_map) > 75000:
@@ -475,6 +484,7 @@ class MainOrdersMixin:
                 "fill_price": f"{float(fill_price or 0.0):.6f}",
                 "order_type": str(order_type or ""),
                 "order_tag": resolved_tag,
+                "tag_origin": str(tag_origin or "none"),
                 "spread_key": str(spread_key or ""),
                 "trace_id": resolved_trace_id,
                 "incident_id": str(incident_id or ""),

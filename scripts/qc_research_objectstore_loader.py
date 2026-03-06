@@ -72,6 +72,7 @@ EXPECTED_ARTIFACT_COLUMNS: Dict[str, List[str]] = {
         "order_id",
         "symbol",
         "order_tag",
+        "tag_origin",
         "trace_id",
         "incident_id",
     ],

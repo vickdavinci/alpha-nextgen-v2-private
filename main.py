@@ -2741,6 +2741,7 @@ class AlphaNextGen(QCAlgorithm):
                 "fill_price",
                 "order_type",
                 "order_tag",
+                "tag_origin",
                 "spread_key",
                 "trace_id",
                 "incident_id",
