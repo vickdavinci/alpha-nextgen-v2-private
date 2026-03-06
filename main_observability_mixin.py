@@ -382,6 +382,10 @@ class MainObservabilityMixin:
         if not bool(getattr(config, "ROUTER_REJECTION_OBSERVABILITY_ENABLED", True)):
             return
         max_rows = int(getattr(config, "ROUTER_REJECTION_OBSERVABILITY_MAX_ROWS", 25000))
+        stage_u = str(stage or "").strip().upper() or "UNKNOWN"
+        code_u = str(code or "").strip().upper() or "UNKNOWN"
+        probe = str(trace_id or source_tag or symbol or "NA").strip()
+        incident_id = f"RJ|{stage_u}|{code_u}|{probe}".replace(" ", "_")[:180]
         self._append_observability_record(
             records=self._router_rejection_records,
             overflow_attr="_router_rejection_overflow_logged",
@@ -389,11 +393,12 @@ class MainObservabilityMixin:
             overflow_log_prefix="ROUTER_REJECTION_OBSERVABILITY",
             row={
                 "time": self.Time.strftime("%Y-%m-%d %H:%M:%S"),
-                "stage": str(stage or ""),
-                "code": str(code or "UNKNOWN"),
+                "stage": stage_u,
+                "code": code_u,
                 "symbol": str(symbol or ""),
                 "source_tag": str(source_tag or ""),
                 "trace_id": str(trace_id or ""),
+                "incident_id": incident_id,
                 "detail": str(detail or ""),
                 "engine": str(engine_bucket or "OTHER").upper(),
             },

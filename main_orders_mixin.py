@@ -400,6 +400,35 @@ class MainOrdersMixin:
                 resolved_trace_id = str(tail or "").strip()
                 if resolved_trace_id:
                     break
+        spread_key = self._extract_spread_key_from_tag(resolved_tag)
+        if not spread_key:
+            msg_u = str(message or "")
+            for marker in ("Key=", "key=", "spread_key=", "skey="):
+                idx = msg_u.find(marker)
+                if idx < 0:
+                    continue
+                tail = msg_u[idx + len(marker) :].strip()
+                if not tail:
+                    continue
+                for sep in ("|", ";", ",", " "):
+                    cut = tail.find(sep)
+                    if cut >= 0:
+                        tail = tail[:cut]
+                        break
+                spread_key = str(tail or "").strip().replace("~", "|")
+                if spread_key:
+                    break
+        status_token = str(status or "").strip().upper() or "UNKNOWN"
+        if spread_key:
+            incident_id = f"SPREAD|{spread_key}|{status_token}"
+        elif resolved_trace_id:
+            incident_id = f"TRACE|{resolved_trace_id}|{status_token}"
+        elif oid > 0:
+            incident_id = f"ORDER|{oid}|{status_token}"
+        else:
+            incident_id = (
+                f"SYMBOL|{self._normalize_symbol_str(symbol) or str(symbol or '')}|{status_token}"
+            )
 
         max_rows = int(getattr(config, "ORDER_LIFECYCLE_OBSERVABILITY_MAX_ROWS", 50000))
         self._append_observability_record(
@@ -416,7 +445,9 @@ class MainOrdersMixin:
                 "fill_price": f"{float(fill_price or 0.0):.6f}",
                 "order_type": str(order_type or ""),
                 "order_tag": resolved_tag,
+                "spread_key": str(spread_key or ""),
                 "trace_id": resolved_trace_id,
+                "incident_id": str(incident_id or ""),
                 "message": str(message or ""),
                 "source": str(source or ""),
             },

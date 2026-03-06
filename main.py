@@ -2700,6 +2700,7 @@ class AlphaNextGen(QCAlgorithm):
             "symbol",
             "source_tag",
             "trace_id",
+            "incident_id",
             "detail",
             "engine",
         ]
@@ -2740,7 +2741,9 @@ class AlphaNextGen(QCAlgorithm):
                 "fill_price",
                 "order_type",
                 "order_tag",
+                "spread_key",
                 "trace_id",
+                "incident_id",
                 "message",
                 "source",
             ],
