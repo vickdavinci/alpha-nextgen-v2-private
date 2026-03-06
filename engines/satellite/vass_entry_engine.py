@@ -30,6 +30,8 @@ class VASSEntryEngine:
         # Block recently-invalid entry contracts for a short window to prevent
         # repeated retries on dead quotes/contracts across scan cycles.
         self._invalid_entry_symbol_cooldown_until: Dict[str, datetime] = {}
+        # V12.30: Track when high-IV pivot overrode strategy for fallback retry.
+        self._last_pivot_from: Optional[str] = None
 
     def _log(self, message: str, trades_only: bool = False) -> None:
         if self._log_func:
@@ -528,6 +530,7 @@ class VASSEntryEngine:
         is_credit_strategy_func: Callable[[Any], bool],
     ) -> Tuple[Any, int, int, bool]:
         """Resolve VASS strategy/DTE with EARLY_STRESS strategy remap."""
+        self._last_pivot_from = None  # Reset pivot tracking each call
         strategy, dte_min, dte_max = self.select_strategy(
             direction=direction,
             iv_environment=iv_environment,
@@ -576,6 +579,7 @@ class VASSEntryEngine:
                 f"{float(getattr(config, 'VASS_BEAR_HIGH_IV_PREFER_DEBIT_REGIME_MAX', 45.0)):.1f} | "
                 f"Overlay={overlay}"
             )
+            self._last_pivot_from = "BEAR_CALL_CREDIT"
             strategy = spread_strategy_enum.BEAR_PUT_DEBIT
             dte_min = int(getattr(config, "VASS_HIGH_IV_DTE_MIN", dte_min))
             dte_max = int(getattr(config, "VASS_HIGH_IV_DTE_MAX", dte_max))
@@ -1568,6 +1572,33 @@ class VASSEntryEngine:
             dte_max=dte_max_all,
             option_right=required_right,
         )
+        # V12.30: If pivot produced empty candidates, revert to original strategy.
+        if (
+            len(candidate_contracts) < 2
+            and self._last_pivot_from == "BEAR_CALL_CREDIT"
+            and str(getattr(strategy, "value", strategy)) == "BEAR_PUT_DEBIT"
+        ):
+            from engines.satellite.options_primitives import SpreadStrategy
+
+            self._log(
+                "VASS_BEAR_PUT_PIVOT_FALLBACK: No PUT candidates, reverting to " "BEAR_CALL_CREDIT"
+            )
+            strategy = SpreadStrategy.BEAR_CALL_CREDIT
+            is_credit = True
+            required_right = host.strategy_option_right(strategy)
+            fallback_dte_min = int(getattr(config, "VASS_HIGH_IV_DTE_MIN", vass_dte_min))
+            fallback_dte_max = int(getattr(config, "VASS_HIGH_IV_DTE_MAX", vass_dte_max))
+            fb_dte_ranges = host.build_vass_dte_fallbacks(fallback_dte_min, fallback_dte_max)
+            dte_min_all = min(r[0] for r in fb_dte_ranges)
+            dte_max_all = max(r[1] for r in fb_dte_ranges)
+            candidate_contracts = host.build_vass_candidate_contracts(
+                chain=chain,
+                direction=direction,
+                dte_min=dte_min_all,
+                dte_max=dte_max_all,
+                option_right=required_right,
+            )
+            self._last_pivot_from = None
         if len(candidate_contracts) < 2:
             algorithm._record_signal_lifecycle_event(
                 engine="VASS",
@@ -2039,6 +2070,33 @@ class VASSEntryEngine:
             dte_max=dte_max_all,
             option_right=required_right,
         )
+        # V12.30: If pivot produced empty candidates, revert to original strategy.
+        if (
+            len(candidate_contracts) < 2
+            and self._last_pivot_from == "BEAR_CALL_CREDIT"
+            and str(getattr(strategy, "value", strategy)) == "BEAR_PUT_DEBIT"
+        ):
+            from engines.satellite.options_primitives import SpreadStrategy
+
+            self._log(
+                "VASS_BEAR_PUT_PIVOT_FALLBACK: No PUT candidates, reverting to " "BEAR_CALL_CREDIT"
+            )
+            strategy = SpreadStrategy.BEAR_CALL_CREDIT
+            is_credit = True
+            required_right = host.strategy_option_right(strategy)
+            fallback_dte_min = int(getattr(config, "VASS_HIGH_IV_DTE_MIN", vass_dte_min))
+            fallback_dte_max = int(getattr(config, "VASS_HIGH_IV_DTE_MAX", vass_dte_max))
+            fb_dte_ranges = host.build_vass_dte_fallbacks(fallback_dte_min, fallback_dte_max)
+            dte_min_all = min(r[0] for r in fb_dte_ranges)
+            dte_max_all = max(r[1] for r in fb_dte_ranges)
+            candidate_contracts = host.build_vass_candidate_contracts(
+                chain=chain,
+                direction=direction,
+                dte_min=dte_min_all,
+                dte_max=dte_max_all,
+                option_right=required_right,
+            )
+            self._last_pivot_from = None
         if len(candidate_contracts) < 2:
             algorithm._record_vass_reject_reason("INSUFFICIENT_CANDIDATES")
             throttle_key = (
