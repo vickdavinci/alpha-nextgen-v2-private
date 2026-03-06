@@ -1477,6 +1477,30 @@ class VASSEntryEngine:
             iv_rank=iv_rank,
             regime_score=regime_score,
         )
+        # V12.30: Emit telemetry when high-IV pivot fires.
+        if self._last_pivot_from and hasattr(algorithm, "_record_signal_lifecycle_event"):
+            algorithm._diag_vass_signal_seq = (
+                int(getattr(algorithm, "_diag_vass_signal_seq", 0)) + 1
+            )
+            pivot_signal_id = (
+                f"VASS-PIVOT-{algorithm.Time.strftime('%Y%m%d-%H%M')}-"
+                f"{algorithm._diag_vass_signal_seq}"
+            )
+            algorithm._record_signal_lifecycle_event(
+                engine="VASS",
+                event="ROUTE_MODIFIED",
+                signal_id=pivot_signal_id,
+                direction=direction.value if direction else "",
+                strategy=strategy.value if strategy else "",
+                code="E_VASS_BEAR_HIGH_IV_DEBIT_PIVOT",
+                gate_name="VASS_BEAR_HIGH_IV_PIVOT",
+                reason=(
+                    f"Pivoted from {self._last_pivot_from} to "
+                    f"{strategy.value if strategy else 'UNKNOWN'} | "
+                    f"Regime={regime_score}"
+                ),
+                contract_symbol="",
+            )
         if self._should_block_high_iv_bull_debit_route(
             strategy=strategy,
             iv_environment=iv_environment,
@@ -1886,6 +1910,30 @@ class VASSEntryEngine:
             iv_rank=iv_rank,
             regime_score=regime_score,
         )
+        # V12.30: Emit telemetry when high-IV pivot fires.
+        if self._last_pivot_from and hasattr(algorithm, "_record_signal_lifecycle_event"):
+            algorithm._diag_vass_signal_seq = (
+                int(getattr(algorithm, "_diag_vass_signal_seq", 0)) + 1
+            )
+            pivot_signal_id = (
+                f"VASS-PIVOT-{algorithm.Time.strftime('%Y%m%d-%H%M')}-"
+                f"{algorithm._diag_vass_signal_seq}"
+            )
+            algorithm._record_signal_lifecycle_event(
+                engine="VASS",
+                event="ROUTE_MODIFIED",
+                signal_id=pivot_signal_id,
+                direction=direction.value if direction else "",
+                strategy=strategy.value if strategy else "",
+                code="E_VASS_BEAR_HIGH_IV_DEBIT_PIVOT",
+                gate_name="VASS_BEAR_HIGH_IV_PIVOT",
+                reason=(
+                    f"Pivoted from {self._last_pivot_from} to "
+                    f"{strategy.value if strategy else 'UNKNOWN'} | "
+                    f"Regime={regime_score}"
+                ),
+                contract_symbol="",
+            )
         if self._should_block_high_iv_bull_debit_route(
             strategy=strategy,
             iv_environment=iv_environment,
