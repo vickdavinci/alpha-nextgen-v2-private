@@ -156,6 +156,9 @@ def check_spread_exit_signals_impl(
         )
 
     profit_target_enabled = bool(getattr(config, "VASS_ENABLE_PROFIT_TARGET_EXITS", True))
+    profit_target_open_delay_minutes = int(
+        getattr(config, "VASS_PROFIT_TARGET_OPEN_DELAY_MINUTES", 0) or 0
+    )
     trail_exit_enabled = bool(getattr(config, "VASS_ENABLE_TRAIL_PROFIT_EXITS", True))
     mark_stop_enabled = bool(getattr(config, "VASS_ENABLE_MARK_STOP_EXITS", True))
     tail_cap_enabled = bool(getattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", True))
@@ -257,6 +260,48 @@ def check_spread_exit_signals_impl(
             )
         elif is_bearish_spread and regime_score > regime_break_bear_ceiling:
             regime_break_reason = f"VASS_REGIME_BREAK_BEAR: Regime {regime_score:.0f} > {regime_break_bear_ceiling:.0f}"
+
+    def _profit_target_open_delay_active() -> bool:
+        """Gate profit-target exits in the opening minutes to avoid wide opening-book fills."""
+        if profit_target_open_delay_minutes <= 0 or self.algorithm is None:
+            return False
+        try:
+            now = self.algorithm.Time
+            minute_of_day = int(now.hour * 60 + now.minute)
+            market_open_minute = 9 * 60 + 30
+            return (
+                market_open_minute
+                <= minute_of_day
+                < (market_open_minute + profit_target_open_delay_minutes)
+            )
+        except Exception:
+            return False
+
+    def _record_profit_target_open_delay_skip() -> None:
+        if self.algorithm is not None and hasattr(
+            self.algorithm, "_diag_vass_profit_target_open_delay_skip_count"
+        ):
+            self.algorithm._diag_vass_profit_target_open_delay_skip_count = (
+                int(
+                    getattr(self.algorithm, "_diag_vass_profit_target_open_delay_skip_count", 0)
+                    or 0
+                )
+                + 1
+            )
+
+        # Throttle to one log per spread per day.
+        log_day_key = ""
+        if self.algorithm is not None:
+            log_day_key = str(self.algorithm.Time.date())
+        if getattr(spread, "_profit_target_open_delay_logged_day", "") != log_day_key:
+            spread._profit_target_open_delay_logged_day = log_day_key
+            self.log(
+                "PROFIT_TARGET_OPEN_DELAY_SKIP: "
+                f"Key={self._build_spread_key(spread)} | "
+                f"Delay={profit_target_open_delay_minutes}m | "
+                f"Time={self.algorithm.Time.strftime('%H:%M') if self.algorithm is not None else 'NA'}",
+                trades_only=True,
+            )
 
     credit_dte_exit_default = int(
         getattr(config, "CREDIT_SPREAD_DTE_EXIT", getattr(config, "SPREAD_DTE_EXIT", 5))
@@ -1016,9 +1061,13 @@ def check_spread_exit_signals_impl(
             )
         profit_target = spread.max_profit * credit_profit_target_pct
         if profit_target_enabled and pnl >= profit_target and not credit_theta_hold_guard_active:
-            exit_reason = (
-                f"CREDIT_PROFIT_TARGET +{pnl_pct:.1%} " f"(P&L ${pnl:.2f} >= ${profit_target:.2f})"
-            )
+            if _profit_target_open_delay_active():
+                _record_profit_target_open_delay_skip()
+            else:
+                exit_reason = (
+                    f"CREDIT_PROFIT_TARGET +{pnl_pct:.1%} "
+                    f"(P&L ${pnl:.2f} >= ${profit_target:.2f})"
+                )
 
         # Exit 2: Credit Stop Loss (actual loss exceeds % of max loss)
         # Max loss = width - credit received
@@ -1457,11 +1506,14 @@ def check_spread_exit_signals_impl(
         profit_target = raw_profit_target + commission_per_share
         net_pnl = pnl - commission_per_share
         if profit_target_enabled and pnl >= profit_target:
-            exit_reason = (
-                f"PROFIT_TARGET +{pnl_pct:.1%} (Net ${net_pnl:.2f} >= ${raw_profit_target:.2f}) | "
-                f"Target {adaptive_profit_pct:.0%} (regime {regime_score:.0f}) | "
-                f"Gross ${pnl:.2f} - Commission ${commission_cost:.2f} | {vass_profile_tag}"
-            )
+            if _profit_target_open_delay_active():
+                _record_profit_target_open_delay_skip()
+            else:
+                exit_reason = (
+                    f"PROFIT_TARGET +{pnl_pct:.1%} (Net ${net_pnl:.2f} >= ${raw_profit_target:.2f}) | "
+                    f"Target {adaptive_profit_pct:.0%} (regime {regime_score:.0f}) | "
+                    f"Gross ${pnl:.2f} - Commission ${commission_cost:.2f} | {vass_profile_tag}"
+                )
 
         # Exit 1B: TRAILING STOP — lock in gains after reaching activation threshold
         # V9.4: Once spread reaches +X% unrealized, trail stop from high-water mark

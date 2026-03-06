@@ -186,6 +186,7 @@ class MainOptionsMixin:
         self._diag_vass_credit_theta_first_active_checks = 0
         self._diag_vass_premarket_itm_guarded_skip_count = 0
         self._diag_vass_friday_firewall_skipped_dte_count = 0
+        self._diag_vass_profit_target_open_delay_skip_count = 0
         self._diag_vass_thesis_soft_stop_checks = 0
         self._diag_vass_thesis_soft_stop_armed = 0
         self._diag_vass_thesis_soft_stop_exits = 0

@@ -261,6 +261,9 @@ def log_daily_summary(algo) -> None:
     vass_friday_skipped_dte = int(
         getattr(algo, "_diag_vass_friday_firewall_skipped_dte_count", 0) or 0
     )
+    vass_profit_target_open_delay_skips = int(
+        getattr(algo, "_diag_vass_profit_target_open_delay_skip_count", 0) or 0
+    )
     vass_thesis_checks = int(getattr(algo, "_diag_vass_thesis_soft_stop_checks", 0) or 0)
     vass_thesis_armed = int(getattr(algo, "_diag_vass_thesis_soft_stop_armed", 0) or 0)
     vass_thesis_exits = int(getattr(algo, "_diag_vass_thesis_soft_stop_exits", 0) or 0)
@@ -337,6 +340,8 @@ def log_daily_summary(algo) -> None:
         compact_parts.append(f"PREMARKET_ITM_GUARDED_SKIP={vass_premarket_guarded_skip}")
     if vass_friday_skipped_dte > 0:
         compact_parts.append(f"FRIDAY_FIREWALL_SKIPPED_DTE={vass_friday_skipped_dte}")
+    if vass_profit_target_open_delay_skips > 0:
+        compact_parts.append(f"PTOD={vass_profit_target_open_delay_skips}")
     if vass_thesis_checks > 0 or vass_thesis_armed > 0 or vass_thesis_exits > 0:
         compact_parts.append(f"VTS={vass_thesis_checks}/{vass_thesis_armed}/{vass_thesis_exits}")
     transition_total = _fmt_transition_derisk_totals()

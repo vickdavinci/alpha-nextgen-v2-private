@@ -1115,6 +1115,9 @@ VASS_ENABLE_MARK_STOP_EXITS = True  # Runtime-gated by regime confirmation in ex
 VASS_ENABLE_TAIL_CAP_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
 VASS_ENABLE_TRAIL_PROFIT_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
 VASS_ENABLE_PROFIT_TARGET_EXITS = True  # Master allow for profit-target exits
+VASS_PROFIT_TARGET_OPEN_DELAY_MINUTES = (
+    5  # BR-08: suppress VASS spread profit-target exits during opening quote-discovery window.
+)
 VASS_ENABLE_MFE_LOCK_EXITS = True  # Runtime-gated by regime confirmation in exit evaluator
 VASS_MFE_LOCK_IN_REGIME_CONFIRMED = (
     True  # Keep MFE lock active in confirmed mode to prevent large winner giveback.
