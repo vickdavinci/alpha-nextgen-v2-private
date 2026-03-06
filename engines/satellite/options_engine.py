@@ -2190,6 +2190,35 @@ class OptionsEngine:
         """Cancel pending IC entry on rejection/timeout."""
         self._iron_condor_engine.cancel_pending_entry()
 
+    def handle_ic_leg_fill(
+        self,
+        symbol_norm: str,
+        fill_price: float,
+        fill_qty: int,
+        current_time: str,
+        seed: Dict[str, Any],
+    ) -> Tuple[str, Optional[Any]]:
+        """Delegate IC leg fill to IC engine."""
+        return self._iron_condor_engine.handle_leg_fill(
+            symbol_norm, fill_price, fill_qty, current_time, seed
+        )
+
+    def handle_ic_rejection(self, symbol_norm: str) -> bool:
+        """Delegate IC rejection check to IC engine."""
+        return self._iron_condor_engine.handle_rejection(symbol_norm)
+
+    def is_ic_fill_tracking_symbol(self, symbol_norm: str) -> bool:
+        """Return True if symbol is tracked by an IC side fill tracker."""
+        return self._iron_condor_engine.is_fill_tracking_symbol(symbol_norm)
+
+    def clear_ic_fill_trackers(self) -> None:
+        """Clear IC side fill trackers."""
+        self._iron_condor_engine.clear_fill_trackers()
+
+    def has_active_ic_fill_trackers(self) -> bool:
+        """Return True if IC engine has active fill trackers."""
+        return self._iron_condor_engine.has_active_fill_trackers()
+
     def _can_attempt_spread_entry(self, attempt_key: str) -> bool:
         """
         Limit spread entry attempts per day by strategy/direction key.

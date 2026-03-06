@@ -27,7 +27,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import config
 from engines.satellite.condor_models import IronCondorPosition
-from engines.satellite.options_primitives import OptionContract
+from engines.satellite.options_primitives import OptionContract, SpreadFillTracker
 from models.enums import OptionDirection, Urgency
 from models.target_weight import TargetWeight
 
@@ -102,6 +102,9 @@ class IronCondorEngine:
         self._regime_neutral_last_date: Optional[str] = None  # Last date counted
         self._last_scan_time: Optional[str] = None  # Scan throttle timestamp
         self._hold_guard_logged: set = set()  # Suppress repeat hold guard logs
+
+        # ── Fill tracking (owns 4-leg tracker state) ──
+        self._side_fill_trackers: Dict[str, SpreadFillTracker] = {}
 
         # ── Diagnostics ──
         self._diag_candidates: int = 0
@@ -1513,6 +1516,156 @@ class IronCondorEngine:
         self._pending_fills.clear()
         self._pending_entry_since = None
 
+    # ══════════════════════════════════════════════════════════════════════
+    # FILL TRACKING (V12.31 — extracted from main_orders_mixin)
+    # ══════════════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def _norm(symbol) -> str:
+        """Normalize symbol to uppercase string."""
+        if symbol is None:
+            return ""
+        return str(symbol).strip().upper()
+
+    def handle_leg_fill(
+        self,
+        symbol_norm: str,
+        fill_price: float,
+        fill_qty: int,
+        current_time: str,
+        seed: Dict[str, Any],
+    ) -> Tuple[str, Optional[IronCondorPosition]]:
+        """Handle an IC leg fill. Manages per-side trackers for interleaved fills.
+
+        Returns:
+            ("TRACKED", None)        — fill recorded, side not yet complete
+            ("SIDE_COMPLETE", condor) — both sides filled, condor registered (or None if only one side done)
+            ("TIMEOUT", None)        — tracker expired
+            ("QTY_MISMATCH", None)   — fill quantities don't match expected
+            ("UNKNOWN_SYMBOL", None)  — symbol doesn't match tracker legs
+        """
+        ic_side = str(seed.get("ic_side", "") or "").upper()
+        tracker = self._side_fill_trackers.get(ic_side)
+
+        if tracker is None:
+            tracker = SpreadFillTracker(
+                long_leg_symbol=seed["long_leg_symbol"],
+                short_leg_symbol=seed["short_leg_symbol"],
+                expected_quantity=int(seed["expected_quantity"]),
+                timeout_minutes=int(getattr(config, "SPREAD_FILL_TIMEOUT_MINUTES", 5)),
+                created_at=current_time,
+                spread_type=seed.get("spread_type"),
+            )
+            tracker._ic_side = ic_side
+            tracker._condor_id = seed.get("condor_id", "")
+            self._side_fill_trackers[ic_side] = tracker
+            self._log(
+                f"IC: Side fill tracker created | Side={ic_side} | "
+                f"Long={seed['long_leg_symbol'][-15:]} Short={seed['short_leg_symbol'][-15:]} "
+                f"Expected={int(seed['expected_quantity'])}",
+                trades_only=True,
+            )
+
+        # Check expiry
+        if tracker.is_expired(current_time):
+            self._log(
+                f"IC_FILL_ERROR: Side tracker expired | Side={ic_side} | "
+                f"Created={tracker.created_at} Current={current_time}",
+                trades_only=True,
+            )
+            self._side_fill_trackers.pop(ic_side, None)
+            self.cancel_pending_entry()
+            return ("TIMEOUT", None)
+
+        # Record fill
+        long_norm = self._norm(tracker.long_leg_symbol)
+        short_norm = self._norm(tracker.short_leg_symbol)
+        if symbol_norm and symbol_norm == long_norm:
+            tracker.record_long_fill(fill_price, fill_qty, current_time)
+            self._log(
+                f"IC: Long leg filled | Side={ic_side} | {symbol_norm[-20:]} @ ${fill_price:.2f} "
+                f"x{fill_qty} | Total={tracker.long_fill_qty}",
+                trades_only=True,
+            )
+        elif symbol_norm and symbol_norm == short_norm:
+            tracker.record_short_fill(fill_price, fill_qty, current_time)
+            self._log(
+                f"IC: Short leg filled | Side={ic_side} | {symbol_norm[-20:]} @ ${fill_price:.2f} "
+                f"x{fill_qty} | Total={tracker.short_fill_qty}",
+                trades_only=True,
+            )
+        else:
+            self._log(
+                f"IC_FILL_WARNING: Unknown fill symbol for side tracker | Side={ic_side} | "
+                f"Symbol={symbol_norm} | ExpectedLong={tracker.long_leg_symbol[-15:]} "
+                f"ExpectedShort={tracker.short_leg_symbol[-15:]}",
+                trades_only=True,
+            )
+            return ("UNKNOWN_SYMBOL", None)
+
+        # Check completion
+        if tracker.is_complete():
+            if not tracker.quantities_match():
+                self._log(
+                    f"IC_FILL_ERROR: Quantity mismatch | Side={ic_side} | "
+                    f"Long={tracker.long_fill_qty} Short={tracker.short_fill_qty} "
+                    f"Expected={tracker.expected_quantity}",
+                    trades_only=True,
+                )
+                self._side_fill_trackers.pop(ic_side, None)
+                self.cancel_pending_entry()
+                return ("QTY_MISMATCH", None)
+
+            condor = self.register_side_fill(ic_side)
+            self._side_fill_trackers.pop(ic_side, None)
+            if condor:
+                return ("SIDE_COMPLETE", condor)
+            return ("TRACKED", None)
+
+        return ("TRACKED", None)
+
+    def handle_rejection(self, symbol_norm: str) -> bool:
+        """Check if rejected symbol belongs to pending IC entry and clean up.
+
+        Returns True if IC handled the rejection, False otherwise.
+        Does NOT call recover_pending_ic_unpaired_exposure — caller handles that.
+        """
+        seeds = self.get_pending_spread_seeds()
+        if not seeds:
+            return False
+
+        ic_symbols = set()
+        for seed in seeds.values():
+            ic_symbols.add(self._norm(seed.get("long_leg_symbol", "")))
+            ic_symbols.add(self._norm(seed.get("short_leg_symbol", "")))
+        ic_symbols.discard("")
+
+        if symbol_norm not in ic_symbols:
+            return False
+
+        self._side_fill_trackers.clear()
+        self.cancel_pending_entry()
+        return True
+
+    def is_fill_tracking_symbol(self, symbol_norm: str) -> bool:
+        """Return True if symbol is being tracked by an IC side fill tracker."""
+        for tracker in self._side_fill_trackers.values():
+            tracker_symbols = {
+                self._norm(getattr(tracker, "long_leg_symbol", "")),
+                self._norm(getattr(tracker, "short_leg_symbol", "")),
+            }
+            if symbol_norm in tracker_symbols:
+                return True
+        return False
+
+    def clear_fill_trackers(self) -> None:
+        """Clear all side fill trackers (cleanup path)."""
+        self._side_fill_trackers.clear()
+
+    def has_active_fill_trackers(self) -> bool:
+        """Return True if any side fill trackers are active."""
+        return bool(self._side_fill_trackers)
+
     def remove_position(self, condor_id: str) -> Optional[IronCondorPosition]:
         """Remove a closed condor by ID. Returns removed position or None."""
         for i, p in enumerate(self._positions):
@@ -1704,6 +1857,7 @@ class IronCondorEngine:
         self._regime_neutral_last_date = None
         self._last_scan_time = None
         self._hold_guard_logged = set()
+        self._side_fill_trackers = {}
         # Reset daily diagnostics
         self._diag_candidates = 0
         self._diag_approved = 0
@@ -1725,6 +1879,7 @@ class IronCondorEngine:
         self._regime_neutral_days = 0
         self._regime_neutral_last_date = None
         self._hold_guard_logged = set()
+        self._side_fill_trackers = {}
         self._diag_candidates = 0
         self._diag_approved = 0
         self._diag_dropped = 0

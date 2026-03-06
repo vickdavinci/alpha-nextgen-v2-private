@@ -1903,13 +1903,8 @@ class MainOrdersMixin:
             }
             if symbol_norm in tracker_symbols:
                 return True
-        for ic_tracker in (getattr(self, "_ic_side_fill_trackers", {}) or {}).values():
-            tracker_symbols = {
-                self._normalize_symbol_str(getattr(ic_tracker, "long_leg_symbol", "")),
-                self._normalize_symbol_str(getattr(ic_tracker, "short_leg_symbol", "")),
-            }
-            if symbol_norm in tracker_symbols:
-                return True
+        if self.options_engine.is_ic_fill_tracking_symbol(symbol_norm):
+            return True
 
         # Check VASS + IC pending symbols
         all_pending = self.options_engine.get_all_pending_option_symbols()
@@ -2032,7 +2027,7 @@ class MainOrdersMixin:
 
         # Clear fill tracker
         self._spread_fill_tracker = None
-        self._ic_side_fill_trackers = {}
+        self.options_engine.clear_ic_fill_trackers()
 
         # Clear pending orders mappings
         self._pending_spread_orders.clear()
@@ -3126,32 +3121,21 @@ class MainOrdersMixin:
                             f"OPT_MACRO_RECOVERY: Ignored unmatched spread rejection | "
                             f"Canceled={symbol_norm} | Pending={','.join(sorted(pending_symbols)) or 'NONE'}"
                         )
-            # Route 3b: IC rejection — clear pending IC entry
+            # Route 3b: IC rejection — delegate to IC engine
             if (not spread_rejection_handled) and bool(
                 getattr(config, "IRON_CONDOR_ENGINE_ENABLED", False)
             ):
-                ic_seeds = self.options_engine.get_ic_pending_spread_seeds()
-                if ic_seeds:
-                    ic_symbols = set()
-                    for seed in ic_seeds.values():
-                        ic_symbols.add(self._normalize_symbol_str(seed.get("long_leg_symbol", "")))
-                        ic_symbols.add(self._normalize_symbol_str(seed.get("short_leg_symbol", "")))
-                    ic_symbols.discard("")
-                    if symbol_norm in ic_symbols:
-                        recovered = self.options_engine.recover_pending_ic_unpaired_exposure(
-                            reason="IC_REJECTED_PENDING"
-                        )
-                        self.options_engine.cancel_pending_ic_entry()
-                        if getattr(self, "_ic_side_fill_trackers", None):
-                            self._ic_side_fill_trackers = {}
-                        if self._spread_fill_tracker is not None:
-                            self.Log("IC_REJECTION_CLEANUP: Clearing spread fill tracker")
-                            self._spread_fill_tracker = None
-                        self.Log(
-                            f"IC_RECOVERY: IC combo rejected | Symbol={symbol_norm} | "
-                            f"Pending IC entry cleared | RecoverySignals={int(recovered)}"
-                        )
-                        spread_rejection_handled = True
+                if self.options_engine.handle_ic_rejection(symbol_norm):
+                    recovered = self.options_engine.recover_pending_ic_unpaired_exposure(
+                        reason="IC_REJECTED_PENDING"
+                    )
+                    if self._spread_fill_tracker is not None:
+                        self._spread_fill_tracker = None
+                    self.Log(
+                        f"IC_RECOVERY: IC combo rejected | Symbol={symbol_norm} | "
+                        f"RecoverySignals={int(recovered)}"
+                    )
+                    spread_rejection_handled = True
 
             if (not spread_rejection_handled) and self.options_engine.has_pending_engine_entry():
                 pending_symbol = self.options_engine.get_pending_entry_contract_symbol()
@@ -3405,95 +3389,30 @@ class MainOrdersMixin:
         fill_qty = int(abs(fill_qty))  # Ensure positive integer
         symbol_norm = self._normalize_symbol_str(symbol)
 
-        # ── IC path: keep one tracker per side so interleaved PUT/CALL fills are safe. ──
+        # ── IC path: delegate to IC engine (V12.31) ──
         seed = self.options_engine.get_pending_spread_tracker_seed(fill_symbol=symbol_norm)
         ic_side = str(seed.get("ic_side", "") or "").upper() if isinstance(seed, dict) else ""
         if ic_side in {"PUT_CREDIT", "CALL_CREDIT"}:
-            trackers = getattr(self, "_ic_side_fill_trackers", None)
-            if not isinstance(trackers, dict):
-                trackers = {}
-                self._ic_side_fill_trackers = trackers
-
-            tracker = trackers.get(ic_side)
-            if tracker is None:
-                tracker = SpreadFillTracker(
-                    long_leg_symbol=seed["long_leg_symbol"],
-                    short_leg_symbol=seed["short_leg_symbol"],
-                    expected_quantity=int(seed["expected_quantity"]),
-                    timeout_minutes=config.SPREAD_FILL_TIMEOUT_MINUTES,
-                    created_at=str(self.Time),
-                    spread_type=seed.get("spread_type"),
-                )
-                tracker._ic_side = ic_side
-                tracker._condor_id = seed.get("condor_id", "")
-                trackers[ic_side] = tracker
+            result, condor = self.options_engine.handle_ic_leg_fill(
+                symbol_norm, fill_price, fill_qty, str(self.Time), seed
+            )
+            if result == "SIDE_COMPLETE" and condor:
                 self.Log(
-                    f"IC: Side fill tracker created | Side={ic_side} | "
-                    f"Long={seed['long_leg_symbol'][-15:]} Short={seed['short_leg_symbol'][-15:]} "
-                    f"Expected={int(seed['expected_quantity'])}"
+                    f"IC: Both sides filled | condor_id={condor.condor_id} "
+                    f"| credit=${condor.net_credit:.2f}"
                 )
-
-            if tracker.is_expired(str(self.Time)):
-                self.Log(
-                    f"IC_FILL_ERROR: Side tracker expired | Side={ic_side} | "
-                    f"Created={tracker.created_at} Current={self.Time}"
-                )
-                trackers.pop(ic_side, None)
+            elif result == "TIMEOUT":
                 recovered = self.options_engine.recover_pending_ic_unpaired_exposure(
                     reason="IC_FILL_TRACKER_TIMEOUT"
                 )
-                self.options_engine.cancel_pending_ic_entry()
-                self.Log(
-                    f"IC_FILL_RECOVERY: Timeout cleanup | Side={ic_side} | "
-                    f"RecoverySignals={int(recovered)}"
+                self.Log(f"IC_FILL_RECOVERY: Timeout cleanup | RecoverySignals={int(recovered)}")
+            elif result == "QTY_MISMATCH":
+                recovered = self.options_engine.recover_pending_ic_unpaired_exposure(
+                    reason="IC_FILL_QTY_MISMATCH"
                 )
-                return
-
-            long_norm = self._normalize_symbol_str(tracker.long_leg_symbol)
-            short_norm = self._normalize_symbol_str(tracker.short_leg_symbol)
-            if symbol_norm and symbol_norm == long_norm:
-                tracker.record_long_fill(fill_price, fill_qty, str(self.Time))
                 self.Log(
-                    f"IC: Long leg filled | Side={ic_side} | {symbol[-20:]} @ ${fill_price:.2f} "
-                    f"x{fill_qty} | Total={tracker.long_fill_qty}"
+                    f"IC_FILL_RECOVERY: Qty mismatch cleanup | RecoverySignals={int(recovered)}"
                 )
-            elif symbol_norm and symbol_norm == short_norm:
-                tracker.record_short_fill(fill_price, fill_qty, str(self.Time))
-                self.Log(
-                    f"IC: Short leg filled | Side={ic_side} | {symbol[-20:]} @ ${fill_price:.2f} "
-                    f"x{fill_qty} | Total={tracker.short_fill_qty}"
-                )
-            else:
-                self.Log(
-                    f"IC_FILL_WARNING: Unknown fill symbol for side tracker | Side={ic_side} | "
-                    f"Symbol={symbol} | ExpectedLong={tracker.long_leg_symbol[-15:]} "
-                    f"ExpectedShort={tracker.short_leg_symbol[-15:]}"
-                )
-                return
-
-            if tracker.is_complete():
-                if not tracker.quantities_match():
-                    self.Log(
-                        f"IC_FILL_ERROR: Quantity mismatch | Side={ic_side} | "
-                        f"Long={tracker.long_fill_qty} Short={tracker.short_fill_qty} "
-                        f"Expected={tracker.expected_quantity}"
-                    )
-                    recovered = self.options_engine.recover_pending_ic_unpaired_exposure(
-                        reason="IC_FILL_QTY_MISMATCH"
-                    )
-                    self.options_engine.cancel_pending_ic_entry()
-                    self.Log(
-                        f"IC_FILL_RECOVERY: Qty mismatch cleanup | Side={ic_side} | "
-                        f"RecoverySignals={int(recovered)}"
-                    )
-                else:
-                    condor = self.options_engine.register_ic_side_fill(ic_side)
-                    if condor:
-                        self.Log(
-                            f"IC: Both sides filled | condor_id={condor.condor_id} "
-                            f"| credit=${condor.net_credit:.2f}"
-                        )
-                trackers.pop(ic_side, None)
             return
 
         # ── Legacy VASS spread path ──

@@ -43,7 +43,7 @@ class MainOptionsMixin:
             getattr(self, "_pending_spread_orders_reverse", {})
         )
         has_fill_tracker = getattr(self, "_spread_fill_tracker", None) is not None
-        has_ic_fill_trackers = bool(getattr(self, "_ic_side_fill_trackers", {}))
+        has_ic_fill_trackers = self.options_engine.has_active_ic_fill_trackers()
         has_active_ic = bool(self.options_engine.get_iron_condor_positions())
         if (
             has_active_spread
@@ -130,7 +130,6 @@ class MainOptionsMixin:
         self._pending_spread_orders = {}
         self._pending_spread_orders_reverse = {}
         self._spread_fill_tracker = None
-        self._ic_side_fill_trackers = {}
         self._spread_close_trackers = {}
         self._external_exec_event_logged = set()
 

@@ -707,7 +707,7 @@ class MainSignalGenerationMixin:
                 self.hedge_engine.reset()
             # Clear main.py spread tracking dicts (may already be cleared by atomic close)
             self._spread_fill_tracker = None
-            self._ic_side_fill_trackers = {}
+            self.options_engine.clear_ic_fill_trackers()
             self._pending_spread_orders.clear()
             self._pending_spread_orders_reverse.clear()
             self._pending_exit_orders.clear()

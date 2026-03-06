@@ -513,8 +513,7 @@ class MainIntradayCloseMixin:
         if self._spread_fill_tracker is not None:
             self.Log(f"{reason}: Clearing spread fill tracker")
             self._spread_fill_tracker = None
-        if getattr(self, "_ic_side_fill_trackers", None):
-            self._ic_side_fill_trackers = {}
+        self.options_engine.clear_ic_fill_trackers()
         if self._pending_spread_orders:
             self.Log(f"{reason}: Clearing {len(self._pending_spread_orders)} pending spread orders")
             self._pending_spread_orders.clear()
@@ -622,8 +621,7 @@ class MainIntradayCloseMixin:
                     self.portfolio_router.clear_all_spread_margins()
                 if self._spread_fill_tracker is not None:
                     self._spread_fill_tracker = None
-                if getattr(self, "_ic_side_fill_trackers", None):
-                    self._ic_side_fill_trackers = {}
+                self.options_engine.clear_ic_fill_trackers()
                 if self._pending_spread_orders:
                     self._pending_spread_orders.clear()
                     self._pending_spread_orders_reverse.clear()
