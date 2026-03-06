@@ -34,6 +34,49 @@ ARTIFACT_PREFIXES = {
     "order_lifecycle": "order_lifecycle_observability",
 }
 
+EXPECTED_ARTIFACT_COLUMNS: Dict[str, List[str]] = {
+    "regime_decisions": [
+        "time",
+        "engine",
+        "engine_decision",
+        "strategy_attempted",
+        "gate_name",
+    ],
+    "regime_timeline": [
+        "time",
+        "source",
+        "transition_overlay",
+        "base_regime",
+        "effective_score",
+    ],
+    "signal_lifecycle": [
+        "time",
+        "engine",
+        "event",
+        "signal_id",
+        "trace_id",
+        "code",
+    ],
+    "router_rejections": [
+        "time",
+        "stage",
+        "code",
+        "symbol",
+        "source_tag",
+        "trace_id",
+        "incident_id",
+    ],
+    "order_lifecycle": [
+        "time",
+        "status",
+        "order_id",
+        "symbol",
+        "order_tag",
+        "trace_id",
+        "incident_id",
+    ],
+}
+
 
 def _safe_key_component(value: Any, default: str = "run") -> str:
     text = str(value or "").strip()
@@ -114,12 +157,20 @@ def _merge_csv_parts(part_payloads: List[str]) -> str:
 
 
 def _read_csv_artifact(
-    qb: QuantBook, base_key: str
+    qb: QuantBook, base_key: str, expected_columns: Optional[List[str]] = None
 ) -> Tuple[Optional[pd.DataFrame], Dict[str, Any]]:
     """Return (DataFrame, info) on success, or (None, {"error": msg}) on miss."""
     direct_key, direct_payload = _read_text_from_store(qb, base_key)
-    if direct_payload:
-        return pd.read_csv(io.StringIO(direct_payload)), {"mode": "single", "key": direct_key}
+    if direct_payload is not None:
+        payload_text = str(direct_payload or "")
+        if not payload_text.strip():
+            empty_df = pd.DataFrame(columns=list(expected_columns or []))
+            return empty_df, {"mode": "single", "key": direct_key, "empty_artifact": True}
+        try:
+            return pd.read_csv(io.StringIO(payload_text)), {"mode": "single", "key": direct_key}
+        except pd.errors.EmptyDataError:
+            empty_df = pd.DataFrame(columns=list(expected_columns or []))
+            return empty_df, {"mode": "single", "key": direct_key, "empty_artifact": True}
 
     manifest_store_key = None
     manifest_payload = None
@@ -154,7 +205,13 @@ def _read_csv_artifact(
 
     merged = _merge_csv_parts(part_payloads)
     if not merged.strip():
-        return None, {"error": f"Merged shard payload is empty: {base_key}"}
+        empty_df = pd.DataFrame(columns=list(expected_columns or []))
+        return empty_df, {
+            "mode": "sharded",
+            "key": manifest_store_key or base_key,
+            "parts": len(part_payloads),
+            "empty_artifact": True,
+        }
 
     return pd.read_csv(io.StringIO(merged)), {
         "mode": "sharded",
@@ -199,22 +256,32 @@ def load_objectstore_artifacts(
         attempted_keys: List[str] = []
         last_error: Optional[str] = None
         found = False
+        expected_columns = EXPECTED_ARTIFACT_COLUMNS.get(label, [])
         for key in _base_key_candidates(prefix, run_name, backtest_year):
             attempted_keys.append(key)
             try:
-                df, info = _read_csv_artifact(qb, key)
+                df, info = _read_csv_artifact(qb, key, expected_columns=expected_columns)
                 if df is None:
                     last_error = info.get("error", "unknown")
                     continue
+                missing_cols: List[str] = []
+                for col in expected_columns:
+                    if col not in df.columns:
+                        df[col] = ""
+                        missing_cols.append(col)
                 loaded[label] = _parse_time_column(df)
                 metadata[label] = {
                     "base_key": key,
                     "attempted_keys": attempted_keys,
                     **info,
                     "rows": int(len(df)),
+                    "schema_missing_columns": missing_cols,
                 }
+                missing_hint = f" | schema_backfill={missing_cols}" if missing_cols else ""
+                empty_hint = " | empty_artifact=True" if bool(info.get("empty_artifact")) else ""
                 print(
                     f"[OK] {label}: rows={len(df)} | key={info['key']} | mode={info['mode']} | base={key}"
+                    f"{empty_hint}{missing_hint}"
                 )
                 found = True
                 break
