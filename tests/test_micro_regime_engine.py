@@ -470,7 +470,9 @@ class TestRecommendStrategy:
             vix_current=15.0,
             qqq_move_pct=1.0,
         )
-        if bool(getattr(config, "MICRO_OTM_CALL_ENABLED", False)):
+        otm_enabled = bool(getattr(config, "MICRO_OTM_MOMENTUM_ENABLED", False))
+        call_enabled = bool(getattr(config, "MICRO_OTM_CALL_ENABLED", False))
+        if otm_enabled and call_enabled:
             assert strategy == IntradayStrategy.MICRO_OTM_MOMENTUM
         else:
             assert strategy == IntradayStrategy.NO_TRADE

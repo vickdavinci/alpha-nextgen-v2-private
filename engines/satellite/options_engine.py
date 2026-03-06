@@ -1972,11 +1972,7 @@ class OptionsEngine:
                 return 0
             return 0
 
-        timestamp = (
-            str(self.algorithm.Time)
-            if hasattr(self.algorithm, "Time")
-            else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-        )
+        timestamp = str(self.algorithm.Time)
 
         emitted = 0
         side_rows = (
