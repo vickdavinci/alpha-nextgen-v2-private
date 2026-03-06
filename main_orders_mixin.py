@@ -364,6 +364,16 @@ class MainOrdersMixin:
             self._order_lifecycle_tag_by_order_id = tag_map
         if not resolved_tag and oid > 0:
             resolved_tag = str(tag_map.get(oid, "") or "").strip()
+        if not resolved_tag and oid > 0:
+            hint_cache = getattr(self, "_order_tag_hint_cache", None)
+            if isinstance(hint_cache, dict):
+                resolved_tag = str(hint_cache.get(oid, "") or "").strip()
+        if not resolved_tag and oid > 0:
+            spread_key_cache = getattr(self, "_spread_close_order_key_by_order_id", None)
+            if isinstance(spread_key_cache, dict):
+                hinted_key = str(spread_key_cache.get(oid, "") or "").strip()
+                if hinted_key:
+                    resolved_tag = f"SPREAD_CLOSE_RECON|spread_key={hinted_key.replace('|', '~')}"
         if resolved_tag and oid > 0:
             tag_map[oid] = resolved_tag
             if len(tag_map) > 75000:
@@ -373,6 +383,23 @@ class MainOrdersMixin:
         resolved_trace_id = str(trace_id or "").strip()
         if not resolved_trace_id and resolved_tag:
             resolved_trace_id = self._extract_trace_id_from_tag(resolved_tag)
+        if not resolved_trace_id:
+            msg_u = str(message or "")
+            for marker in ("Trace=", "trace=", "trace_id=", "trace:"):
+                idx = msg_u.find(marker)
+                if idx < 0:
+                    continue
+                tail = msg_u[idx + len(marker) :].strip()
+                if not tail:
+                    continue
+                for sep in ("|", ";", ",", " "):
+                    cut = tail.find(sep)
+                    if cut >= 0:
+                        tail = tail[:cut]
+                        break
+                resolved_trace_id = str(tail or "").strip()
+                if resolved_trace_id:
+                    break
 
         max_rows = int(getattr(config, "ORDER_LIFECYCLE_OBSERVABILITY_MAX_ROWS", 50000))
         self._append_observability_record(
