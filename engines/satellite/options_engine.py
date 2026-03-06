@@ -248,6 +248,7 @@ class OptionsEngine:
         self._spread_attempt_last_mark_by_key: Dict[str, str] = {}
         # V2.21: Post-rejection margin cap for adaptive retry sizing
         self._rejection_margin_cap: Optional[float] = None
+        self._rejection_contract_cap: Optional[int] = None
         self._swing_time_warning_logged: bool = False
 
         # V12.20: VASS spread scan/cooldown mutable state moved to VASSEntryEngine.
@@ -3746,6 +3747,16 @@ class OptionsEngine:
             return
         self._rejection_margin_cap = max(0.0, float(cap))
 
+    def set_rejection_contract_cap(self, cap: Optional[int]) -> None:
+        """Set/reset adaptive rejection contract cap used by spread sizing."""
+        if cap is None:
+            self._rejection_contract_cap = None
+            return
+        try:
+            self._rejection_contract_cap = max(1, int(cap))
+        except Exception:
+            self._rejection_contract_cap = None
+
     # =========================================================================
     # V2.1.1 SIMPLE INTRADAY FILTERS (FOR SWING MODE)
     # =========================================================================
@@ -4366,6 +4377,13 @@ class OptionsEngine:
     def get_pending_spread_legs(self) -> Tuple[Optional[OptionContract], Optional[OptionContract]]:
         """Expose pending spread legs without direct private-field access."""
         return self._pending_spread_long_leg, self._pending_spread_short_leg
+
+    def get_pending_spread_contract_count(self) -> int:
+        """Return pending spread contract count when available."""
+        try:
+            return max(0, int(self._pending_num_contracts or 0))
+        except Exception:
+            return 0
 
     def get_pending_spread_tracker_seed(self) -> Optional[dict]:
         """Return spread tracker seed payload derived from pending spread state."""

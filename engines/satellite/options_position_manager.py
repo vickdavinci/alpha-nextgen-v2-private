@@ -398,6 +398,7 @@ def register_spread_entry_impl(
     self._pending_num_contracts = None
     self._pending_entry_score = None
     self._rejection_margin_cap = None  # V2.21: Clear on successful fill
+    self._rejection_contract_cap = None  # V12.31: Clear adaptive contract cap on successful fill
 
     return spread
 
@@ -643,6 +644,8 @@ def clear_all_positions_impl(self) -> None:
     self._pending_stop_price = None
     self._pending_target_price = None
     self._pending_entry_strategy = None
+    self._rejection_margin_cap = None
+    self._rejection_contract_cap = None
     self._entry_attempted_today = False
     self._intraday_force_exit_hold_skip_log_date = {}
     self._last_intraday_close_time = None

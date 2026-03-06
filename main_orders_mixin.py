@@ -2294,7 +2294,7 @@ class MainOrdersMixin:
             return True
         return False
 
-    def _parse_and_store_rejection_margin(self, order_event) -> None:
+    def _parse_and_store_rejection_margin(self, order_event) -> dict:
         """
         V2.21: Parse broker Free Margin from rejection message for adaptive retry.
 
@@ -2302,11 +2302,24 @@ class MainOrdersMixin:
         "Insufficient buying power... Free Margin: 48927, Maintenance Margin Delta: 56172"
 
         Stores safety_factor * Free Margin as options-engine rejection margin cap.
+        Also derives a per-entry contract cap from broker maintenance delta when possible.
         """
         import re
 
+        result = {
+            "insufficient_bp": False,
+            "free_margin": None,
+            "maintenance_margin_delta": None,
+            "retry_contract_cap": None,
+        }
         try:
             msg = str(order_event.Message) if hasattr(order_event, "Message") else ""
+            msg_lower = msg.lower()
+            result["insufficient_bp"] = (
+                "insufficient buying power" in msg_lower
+                or "maintenance margin delta" in msg_lower
+                or "insufficient margin" in msg_lower
+            )
             patterns = [
                 r"Free Margin:\s*\$?([0-9][0-9,]*\.?[0-9]*)",
                 r"Available(?:\s+Margin)?[:=]\s*\$?([0-9][0-9,]*\.?[0-9]*)",
@@ -2324,6 +2337,26 @@ class MainOrdersMixin:
                 except ValueError:
                     continue
 
+            maintenance_delta = None
+            delta_patterns = [
+                r"Maintenance Margin Delta:\s*\$?([0-9][0-9,]*\.?[0-9]*)",
+                r"Margin Delta[:=]\s*\$?([0-9][0-9,]*\.?[0-9]*)",
+            ]
+            for pattern in delta_patterns:
+                match = re.search(pattern, msg, flags=re.IGNORECASE)
+                if not match:
+                    continue
+                raw = match.group(1).replace(",", "").rstrip(".")
+                try:
+                    maintenance_delta = float(raw)
+                    break
+                except ValueError:
+                    continue
+
+            result["free_margin"] = free_margin
+            result["maintenance_margin_delta"] = maintenance_delta
+            if hasattr(self, "options_engine"):
+                self.options_engine.set_rejection_contract_cap(None)
             if free_margin is not None:
                 safety = getattr(config, "SPREAD_REJECTION_MARGIN_SAFETY", 0.80)
                 cap = free_margin * safety
@@ -2332,12 +2365,41 @@ class MainOrdersMixin:
                     f"REJECTION_MARGIN: Free=${free_margin:,.0f} | "
                     f"Cap=${cap:,.0f} (x{safety:.0%})"
                 )
+                pending_contracts = 0
+                try:
+                    pending_contracts = int(
+                        self.options_engine.get_pending_spread_contract_count() or 0
+                    )
+                except Exception:
+                    pending_contracts = 0
+                if (
+                    pending_contracts > 0
+                    and maintenance_delta is not None
+                    and maintenance_delta > 0
+                ):
+                    retry_util = float(
+                        getattr(config, "SPREAD_REJECTION_RETRY_MARGIN_UTILIZATION", 0.70)
+                    )
+                    retry_util = min(max(retry_util, 0.10), 0.95)
+                    implied_per_contract = maintenance_delta / float(max(1, pending_contracts))
+                    max_retry_contracts = int((free_margin * retry_util) / implied_per_contract)
+                    max_retry_contracts = min(pending_contracts, max(0, max_retry_contracts))
+                    if 0 < max_retry_contracts < pending_contracts:
+                        self.options_engine.set_rejection_contract_cap(max_retry_contracts)
+                        result["retry_contract_cap"] = max_retry_contracts
+                        self.Log(
+                            "REJECTION_MARGIN_RETRY_CAP: "
+                            f"Pending={pending_contracts} -> RetryCap={max_retry_contracts} | "
+                            f"MaintDelta=${maintenance_delta:,.0f} | Free=${free_margin:,.0f} | "
+                            f"Util={retry_util:.0%}"
+                        )
             elif "insufficient buying power" in msg.lower() or "margin" in msg.lower():
                 self.Log(
                     "REJECTION_MARGIN_PARSE_FAIL: Could not parse free margin from rejection message"
                 )
         except Exception as e:
             self.Log(f"REJECTION_MARGIN: Parse error: {e}")
+        return result
 
     def _on_fill(
         self,
@@ -2972,15 +3034,56 @@ class MainOrdersMixin:
                                 reason=str(getattr(order_event, "Message", "") or ""),
                             )
                     # V2.21: Parse broker margin for adaptive retry sizing
-                    self._parse_and_store_rejection_margin(order_event)
+                    rejection_parse = self._parse_and_store_rejection_margin(order_event)
+                    insufficient_bp = bool(rejection_parse.get("insufficient_bp", False))
+                    retry_contract_cap = rejection_parse.get("retry_contract_cap")
+                    pending_key = (
+                        "|".join(sorted(pending_symbols))
+                        if pending_symbols
+                        else self._normalize_symbol_str(symbol_norm)
+                    )
                     self.options_engine.cancel_pending_spread_entry()
                     if self.portfolio_router:
                         self.portfolio_router.unregister_spread_margin_by_legs(
                             str(pending_long.symbol) if pending_long is not None else "",
                             str(pending_short.symbol) if pending_short is not None else None,
                         )
-                    # Cooldown: 30 minutes before spread can retry
-                    self._options_spread_cooldown_until = self.Time + timedelta(minutes=30)
+                    # V12.31: insufficient-BP rejects should retry quickly with reduced size.
+                    # First reject in streak: immediate retry window (no spread cooldown).
+                    # Repeat rejects in short window: brief cooldown.
+                    cooldown_minutes = 30
+                    if insufficient_bp:
+                        state = getattr(self, "_spread_bp_reject_state", None)
+                        if not isinstance(state, dict):
+                            state = {}
+                        window_min = max(
+                            1, int(getattr(config, "SPREAD_REJECTION_STREAK_WINDOW_MINUTES", 20))
+                        )
+                        immediate_attempts = max(
+                            0, int(getattr(config, "SPREAD_REJECTION_IMMEDIATE_ATTEMPTS", 1))
+                        )
+                        short_cooldown = max(
+                            1, int(getattr(config, "SPREAD_REJECTION_SHORT_COOLDOWN_MINUTES", 5))
+                        )
+                        prev = state.get(pending_key, {})
+                        attempts = 1
+                        last_at = prev.get("last_at")
+                        if isinstance(last_at, datetime):
+                            if (self.Time - last_at) <= timedelta(minutes=window_min):
+                                attempts = int(prev.get("attempts", 0) or 0) + 1
+                        state[pending_key] = {"attempts": attempts, "last_at": self.Time}
+                        self._spread_bp_reject_state = state
+                        cooldown_minutes = 0 if attempts <= immediate_attempts else short_cooldown
+                    else:
+                        state = getattr(self, "_spread_bp_reject_state", None)
+                        if isinstance(state, dict) and pending_key in state:
+                            state.pop(pending_key, None)
+                    if cooldown_minutes > 0:
+                        self._options_spread_cooldown_until = self.Time + timedelta(
+                            minutes=cooldown_minutes
+                        )
+                    else:
+                        self._options_spread_cooldown_until = None
                     # V3.0 P0-B: Clear main.py spread tracking state on rejection
                     if self._spread_fill_tracker is not None:
                         self.Log("REJECTION_CLEANUP: Clearing spread fill tracker")
@@ -2992,10 +3095,18 @@ class MainOrdersMixin:
                         )
                         self._pending_spread_orders.clear()
                         self._pending_spread_orders_reverse.clear()
-                    self.Log(
-                        f"OPT_MACRO_RECOVERY: Spread rejected | Pending + margin cleared | "
-                        f"Cooldown 30min until {self._options_spread_cooldown_until}"
-                    )
+                    if insufficient_bp:
+                        self.Log(
+                            "OPT_MACRO_RECOVERY: Spread rejected (INSUFFICIENT_BP) | "
+                            f"Pending + margin cleared | RetryCap={retry_contract_cap or 'NA'} | "
+                            f"Cooldown={cooldown_minutes}min | "
+                            f"Until={self._options_spread_cooldown_until}"
+                        )
+                    else:
+                        self.Log(
+                            f"OPT_MACRO_RECOVERY: Spread rejected | Pending + margin cleared | "
+                            f"Cooldown {cooldown_minutes}min until {self._options_spread_cooldown_until}"
+                        )
                     spread_rejection_handled = True
                 else:
                     throttle_key = (

@@ -1053,6 +1053,19 @@ def check_spread_entry_signal_impl(
                 )
                 num_spreads = max_by_margin
 
+    rejection_contract_cap = getattr(self, "_rejection_contract_cap", None)
+    if rejection_contract_cap is not None:
+        try:
+            rejection_contract_cap = max(1, int(rejection_contract_cap))
+        except Exception:
+            rejection_contract_cap = None
+    if rejection_contract_cap is not None and num_spreads > rejection_contract_cap:
+        self.log(
+            f"SIZING: REJECTION_CONTRACT_CAP | {num_spreads} -> {rejection_contract_cap} spreads",
+            trades_only=True,
+        )
+        num_spreads = rejection_contract_cap
+
     # V2.21: Floor at MIN_SPREAD_CONTRACTS — skip without consuming daily attempt
     min_contracts = getattr(config, "MIN_SPREAD_CONTRACTS", 2)
     if 0 < num_spreads < min_contracts:
@@ -1815,6 +1828,20 @@ def check_credit_spread_entry_signal_impl(
                     trades_only=True,
                 )
                 num_spreads = max_by_margin
+
+    rejection_contract_cap = getattr(self, "_rejection_contract_cap", None)
+    if rejection_contract_cap is not None:
+        try:
+            rejection_contract_cap = max(1, int(rejection_contract_cap))
+        except Exception:
+            rejection_contract_cap = None
+    if rejection_contract_cap is not None and num_spreads > rejection_contract_cap:
+        self.log(
+            f"CREDIT_SIZING: REJECTION_CONTRACT_CAP | "
+            f"{num_spreads} -> {rejection_contract_cap} spreads",
+            trades_only=True,
+        )
+        num_spreads = rejection_contract_cap
 
     # V10.17: Cap credit spread sizing by theoretical max loss budget.
     max_loss_cap_pct = float(getattr(config, "CREDIT_SPREAD_MAX_LOSS_PCT_EQUITY", 0.0))

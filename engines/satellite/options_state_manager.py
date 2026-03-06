@@ -268,6 +268,7 @@ def get_state_for_persistence_impl(self) -> Dict[str, Any]:
         "spy_gap_pct": self._spy_gap_pct,
         # Runtime guard/cooldown state (restart-safe)
         "rejection_margin_cap": self._rejection_margin_cap,
+        "rejection_contract_cap": self._rejection_contract_cap,
         "spread_exit_signal_cooldown": {
             k: v.strftime("%Y-%m-%d %H:%M:%S") for k, v in self._spread_exit_signal_cooldown.items()
         },
@@ -637,6 +638,13 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
         self._rejection_margin_cap = float(cap) if cap is not None else None
     except Exception:
         self._rejection_margin_cap = None
+    contract_cap = state.get("rejection_contract_cap")
+    try:
+        self._rejection_contract_cap = (
+            max(1, int(contract_cap)) if contract_cap is not None else None
+        )
+    except Exception:
+        self._rejection_contract_cap = None
 
     self._spread_exit_signal_cooldown = {}
     for k, v in (state.get("spread_exit_signal_cooldown", {}) or {}).items():
@@ -784,6 +792,7 @@ def reset_options_engine_state_impl(self) -> None:
     self._pending_intraday_exit_symbols = set()
     self._transition_context_snapshot = None
     self._rejection_margin_cap = None
+    self._rejection_contract_cap = None
     self._last_spread_failure_stats = None
     self._last_credit_failure_stats = None
     self._last_entry_validation_failure = None
@@ -832,6 +841,7 @@ def reset_options_engine_daily_state_impl(self, current_date: str) -> None:
         self._swing_time_warning_logged = False
         # V2.21: Clear rejection margin cap for new day
         self._rejection_margin_cap = None
+        self._rejection_contract_cap = None
 
         # V2.3.2: Reset pending intraday entry flag
         self._pending_intraday_entry = False

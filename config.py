@@ -2263,6 +2263,12 @@ NEUTRAL_ALIGNED_SIZE_MULT = 0.50  # V6.12: Reduce size when Macro NEUTRAL and no
 SPREAD_MARGIN_SAFETY_FACTOR = 0.80
 # Post-rejection: apply to broker-reported Free Margin for adaptive retry cap
 SPREAD_REJECTION_MARGIN_SAFETY = 0.80
+# V12.31: Broker insufficient-BP recovery controls for spread entries.
+# Use broker maintenance delta to size one immediate retry, then short cooldown.
+SPREAD_REJECTION_RETRY_MARGIN_UTILIZATION = 0.70
+SPREAD_REJECTION_IMMEDIATE_ATTEMPTS = 1
+SPREAD_REJECTION_SHORT_COOLDOWN_MINUTES = 5
+SPREAD_REJECTION_STREAK_WINDOW_MINUTES = 20
 
 # V8.2 cleanup: options budget gate is now the primary normal-entry limiter.
 # Keep margin-utilization gate as emergency brake only.
