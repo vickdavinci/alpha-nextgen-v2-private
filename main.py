@@ -1809,6 +1809,29 @@ class AlphaNextGen(QCAlgorithm):
                 except Exception as e:
                     self.Log(f"STATE_WARN: Failed to load regime state - {e}")
 
+            # V12.30: Load regime overlay state for stability gate continuity.
+            try:
+                if self.ObjectStore.ContainsKey("regime_overlay_state"):
+                    raw = self.ObjectStore.Read("regime_overlay_state")
+                    overlay_data = json.loads(raw)
+                    self._regime_overlay_state = str(
+                        overlay_data.get("overlay_state", "STABLE") or "STABLE"
+                    ).upper()
+                    self._regime_overlay_state_enter_seq = int(
+                        overlay_data.get("overlay_state_enter_seq", 0) or 0
+                    )
+                    self._regime_detector_sample_seq = max(
+                        int(getattr(self, "_regime_detector_sample_seq", 0)),
+                        int(overlay_data.get("sample_seq", 0) or 0),
+                    )
+                    self.Log(
+                        f"STATE_RESTORE: Overlay state={self._regime_overlay_state} | "
+                        f"EnterSeq={self._regime_overlay_state_enter_seq} | "
+                        f"SampleSeq={self._regime_detector_sample_seq}"
+                    )
+            except Exception as e:
+                self.Log(f"STATE_WARN: Failed to load overlay state - {e}")
+
             # V6.12: Load monthly P&L tracker state
             if hasattr(self, "pnl_tracker"):
                 self.pnl_tracker.load()
@@ -1846,6 +1869,14 @@ class AlphaNextGen(QCAlgorithm):
             if hasattr(self, "regime_engine"):
                 regime_state = self.regime_engine.get_state_for_persistence()
                 self.ObjectStore.Save("regime_engine_state", json.dumps(regime_state))
+
+            # V12.30: Persist regime overlay state for stability gate continuity.
+            overlay_save = {
+                "overlay_state": str(getattr(self, "_regime_overlay_state", "STABLE")),
+                "overlay_state_enter_seq": int(getattr(self, "_regime_overlay_state_enter_seq", 0)),
+                "sample_seq": int(getattr(self, "_regime_detector_sample_seq", 0)),
+            }
+            self.ObjectStore.Save("regime_overlay_state", json.dumps(overlay_save))
 
             # V12.24: Persist VASS close-ladder runtime state for restart-safe retries.
             close_ladder_state = {
