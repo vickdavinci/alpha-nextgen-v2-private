@@ -22,6 +22,30 @@ def classify_exit_reason(text: str) -> Optional[str]:
     upper = str(text or "").upper()
     if not upper:
         return None
+    if "QQQ_INVALIDATION_INTRADAY" in upper:
+        return "QQQ_INVALIDATION_INTRADAY"
+    if "OVERNIGHT_GAP_PROTECTION" in upper:
+        return "OVERNIGHT_GAP_PROTECTION"
+    if "OVERLAY_STRESS_EXIT" in upper:
+        return "OVERLAY_STRESS_EXIT"
+    if "REGIME_DETERIORATION" in upper:
+        return "REGIME_DETERIORATION"
+    if "TRANSITION_DERISK_" in upper:
+        return "TRANSITION_DERISK"
+    if "MFE_LOCK_T2" in upper:
+        return "MFE_LOCK_T2"
+    if "MFE_LOCK_T1" in upper:
+        return "MFE_LOCK_T1"
+    if "MFE_LOCK" in upper:
+        return "MFE_LOCK"
+    if "CONVICTION_FLOOR" in upper:
+        return "CONVICTION_FLOOR"
+    if "PREMARKET_ITM_CLOSE" in upper:
+        return "PREMARKET_ITM_CLOSE"
+    if "PARTIAL_ASSIGNMENT_RECOVERY" in upper:
+        return "PARTIAL_ASSIGNMENT_RECOVERY"
+    if "MARGIN_BUFFER_INSUFFICIENT" in upper:
+        return "MARGIN_BUFFER_INSUFFICIENT"
     if "HARD_STOP_TRIGGERED_WIDTH" in upper:
         return "HARD_STOP_WIDTH"
     if "SPREAD_HARD_STOP" in upper or "HARD_STOP" in upper:
