@@ -443,7 +443,11 @@ class MainOrdersMixin:
             self._diag_order_lifecycle_retry_events = (
                 int(getattr(self, "_diag_order_lifecycle_retry_events", 0) or 0) + 1
             )
-        if "INVALID" in probe_u:
+        invalid_markers = ("ENTRY_INVALID", "ORDER_INVALID", "BROKER_INVALID", "INVALID_ORDER")
+        is_invalid_event = status_token in {"INVALID", "ENTRY_INVALID", "ORDER_INVALID"} or any(
+            marker in probe_u for marker in invalid_markers
+        )
+        if is_invalid_event:
             self._diag_order_lifecycle_invalid_events = (
                 int(getattr(self, "_diag_order_lifecycle_invalid_events", 0) or 0) + 1
             )
