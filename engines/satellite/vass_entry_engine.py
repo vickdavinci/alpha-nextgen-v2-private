@@ -1079,24 +1079,69 @@ class VASSEntryEngine:
             and str(overlay_state).upper() != "AMBIGUOUS"
         ):
             delta_min = float(getattr(config, "VASS_NEUTRAL_FALLBACK_DELTA_MIN", 1.0))
+            delta_soft_min = float(
+                getattr(config, "VASS_NEUTRAL_FALLBACK_DELTA_SOFT_MIN", delta_min)
+            )
+            delta_soft_min = max(0.0, min(delta_min, delta_soft_min))
             try:
                 transition_delta = float(ctx.get("delta", 0.0) or 0.0)
             except Exception:
                 transition_delta = 0.0
+            overlay_key = str(overlay_state or "").upper()
+            configured_overlays = getattr(
+                config,
+                "VASS_NEUTRAL_FALLBACK_ALLOWED_OVERLAYS",
+                ("STABLE", "DETERIORATION", "RECOVERY"),
+            )
+            allowed_overlays = {str(v).upper() for v in configured_overlays}
+            infer_mode = None
             # V12.30: In deep bear regime, never infer BULLISH from neutral fallback.
             deep_bear_max = float(getattr(config, "VASS_NEUTRAL_FALLBACK_DEEP_BEAR_MAX", 45.0))
-            if transition_delta >= delta_min and regime_for_vass > deep_bear_max:
-                resolver_direction = "BULLISH"
-                resolver_reason = (
-                    f"{resolver_reason} | VASS_NEUTRAL_FALLBACK_DELTA={transition_delta:+.1f}"
+            if overlay_key in allowed_overlays:
+                if transition_delta >= delta_min and regime_for_vass > deep_bear_max:
+                    resolver_direction = "BULLISH"
+                    infer_mode = "DELTA_HARD"
+                elif transition_delta <= -delta_min:
+                    resolver_direction = "BEARISH"
+                    infer_mode = "DELTA_HARD"
+                elif transition_delta >= delta_soft_min and regime_for_vass > deep_bear_max:
+                    resolver_direction = "BULLISH"
+                    infer_mode = "DELTA_SOFT"
+                elif transition_delta <= -delta_soft_min:
+                    resolver_direction = "BEARISH"
+                    infer_mode = "DELTA_SOFT"
+
+            if (
+                resolver_direction is None
+                and overlay_key in allowed_overlays
+                and bool(getattr(config, "VASS_NEUTRAL_DIRECTION_MEMORY_ENABLED", True))
+            ):
+                memory_max_min = max(
+                    0, int(getattr(config, "VASS_NEUTRAL_DIRECTION_MEMORY_MAX_MINUTES", 120))
                 )
-            elif transition_delta <= -delta_min:
-                resolver_direction = "BEARISH"
-                resolver_reason = (
-                    f"{resolver_reason} | VASS_NEUTRAL_FALLBACK_DELTA={transition_delta:+.1f}"
-                )
+                latest_dir = None
+                latest_dt = None
+                for dir_key in ("BULLISH", "BEARISH"):
+                    dt = self._last_entry_dt_by_direction.get(dir_key)
+                    if dt is None:
+                        continue
+                    if latest_dt is None or dt > latest_dt:
+                        latest_dt = dt
+                        latest_dir = dir_key
+                if latest_dir is not None and latest_dt is not None and memory_max_min > 0:
+                    elapsed_min = (algorithm.Time - latest_dt).total_seconds() / 60.0
+                    if 0 <= elapsed_min <= memory_max_min:
+                        if not (latest_dir == "BULLISH" and regime_for_vass <= deep_bear_max):
+                            resolver_direction = latest_dir
+                            infer_mode = f"DIRECTION_MEMORY:{elapsed_min:.0f}m"
             # V12.30: Emit telemetry when neutral fallback infers direction.
             if resolver_direction is not None:
+                if infer_mode is not None and infer_mode.startswith("DIRECTION_MEMORY:"):
+                    resolver_reason = f"{resolver_reason} | VASS_NEUTRAL_FALLBACK_{infer_mode}"
+                else:
+                    resolver_reason = (
+                        f"{resolver_reason} | VASS_NEUTRAL_FALLBACK_DELTA={transition_delta:+.1f}"
+                    )
                 host._record_regime_decision(
                     engine="VASS",
                     decision="INFER",
@@ -1105,8 +1150,10 @@ class VASSEntryEngine:
                     threshold_snapshot={
                         "delta": transition_delta,
                         "delta_min": delta_min,
+                        "delta_soft_min": delta_soft_min,
                         "inferred_direction": resolver_direction,
-                        "overlay": str(overlay_state or ""),
+                        "overlay": overlay_key,
+                        "infer_mode": infer_mode or "DELTA_HARD",
                     },
                     context=ctx,
                 )
