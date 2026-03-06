@@ -429,6 +429,32 @@ class MainOrdersMixin:
             incident_id = (
                 f"SYMBOL|{self._normalize_symbol_str(symbol) or str(symbol or '')}|{status_token}"
             )
+        # SAFE-04: lifecycle diagnostics counters (telemetry only; no execution impact).
+        probe_u = " | ".join(
+            [
+                status_token,
+                str(order_type or ""),
+                str(source or ""),
+                str(resolved_tag or ""),
+                str(message or ""),
+            ]
+        ).upper()
+        if "RETRY" in probe_u:
+            self._diag_order_lifecycle_retry_events = (
+                int(getattr(self, "_diag_order_lifecycle_retry_events", 0) or 0) + 1
+            )
+        if "INVALID" in probe_u:
+            self._diag_order_lifecycle_invalid_events = (
+                int(getattr(self, "_diag_order_lifecycle_invalid_events", 0) or 0) + 1
+            )
+        if "PRECLEAR" in probe_u or "INFLIGHT_DEFER" in probe_u:
+            self._diag_order_lifecycle_preclear_defer_events = (
+                int(getattr(self, "_diag_order_lifecycle_preclear_defer_events", 0) or 0) + 1
+            )
+        if "RECONCILE" in probe_u or "RECONCILED" in probe_u:
+            self._diag_order_lifecycle_reconcile_events = (
+                int(getattr(self, "_diag_order_lifecycle_reconcile_events", 0) or 0) + 1
+            )
 
         max_rows = int(getattr(config, "ORDER_LIFECYCLE_OBSERVABILITY_MAX_ROWS", 50000))
         self._append_observability_record(

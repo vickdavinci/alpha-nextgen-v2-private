@@ -153,6 +153,10 @@ class MainOptionsMixin:
         self._diag_micro_pending_cancel_ignored_count = 0
         self._order_lifecycle_log_count = 0
         self._order_lifecycle_suppressed_count = 0
+        self._diag_order_lifecycle_retry_events = 0
+        self._diag_order_lifecycle_invalid_events = 0
+        self._diag_order_lifecycle_preclear_defer_events = 0
+        self._diag_order_lifecycle_reconcile_events = 0
         self._diag_micro_dte_candidates = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
         self._diag_micro_dte_approved = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}
         self._diag_micro_dte_dropped = {"2": 0, "3": 0, "4": 0, "5": 0, "OTHER": 0}

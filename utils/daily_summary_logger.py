@@ -376,4 +376,10 @@ def log_daily_summary(algo) -> None:
         compact_parts.append(f"KSU={ks_skip_until}")
     if preclear_diag_top != "NONE":
         compact_parts.append(f"Preclear={preclear_diag_top}")
+    ol_retry = int(getattr(algo, "_diag_order_lifecycle_retry_events", 0) or 0)
+    ol_invalid = int(getattr(algo, "_diag_order_lifecycle_invalid_events", 0) or 0)
+    ol_preclear = int(getattr(algo, "_diag_order_lifecycle_preclear_defer_events", 0) or 0)
+    ol_reconcile = int(getattr(algo, "_diag_order_lifecycle_reconcile_events", 0) or 0)
+    if ol_retry > 0 or ol_invalid > 0 or ol_preclear > 0 or ol_reconcile > 0:
+        compact_parts.append(f"OLC=R:{ol_retry};I:{ol_invalid};P:{ol_preclear};C:{ol_reconcile}")
     _log("OPTIONS_DIAG_SUMMARY: " + " | ".join(compact_parts), priority=1)
