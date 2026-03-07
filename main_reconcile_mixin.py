@@ -268,6 +268,16 @@ class MainReconcileMixin:
                 if sym in option_holdings:
                     tracked_symbols.add(sym)
 
+            # IC leg symbols — prevent reconciler from orphan-closing active condor legs.
+            # Without this, all 4 IC legs land in orphan_symbols and get closed by
+            # RECON_ORPHAN_OPTION before the IC exit cascade can act.
+            if bool(getattr(config, "IRON_CONDOR_ENGINE_ENABLED", False)):
+                for ic_pos in self.options_engine.get_iron_condor_positions():
+                    for leg_attr in ("short_put", "long_put", "short_call", "long_call"):
+                        leg = getattr(ic_pos, leg_attr, None)
+                        if leg is not None:
+                            tracked_symbols.add(str(leg.symbol))
+
             if tracked_symbols and not option_holdings:
                 if mode_norm != "intraday":
                     spread_count_before = len(self.options_engine.get_spread_positions())

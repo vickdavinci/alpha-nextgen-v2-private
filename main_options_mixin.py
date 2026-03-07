@@ -1773,6 +1773,10 @@ class MainOptionsMixin:
         """
         if not bool(getattr(config, "IRON_CONDOR_ENGINE_ENABLED", False)):
             return
+        # Guard: skip when market is closed (midnight settlement bars have no
+        # actionable prices, causing R_NO_PRICE / R_CLOSE_NO_LIVE_HOLDING).
+        if not self._is_primary_market_open():
+            return
         ic_positions = self.options_engine.get_iron_condor_positions()
         if not ic_positions:
             return
