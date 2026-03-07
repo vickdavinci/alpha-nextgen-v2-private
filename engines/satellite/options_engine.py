@@ -298,7 +298,12 @@ class OptionsEngine:
             log_func=self.log,
         )
         self._itm_horizon_engine = ITMHorizonEngine(log_func=self.log)
-        self._iron_condor_engine = IronCondorEngine(log_func=self.log)
+        _ic_lifecycle_cb = None
+        if self.algorithm and hasattr(self.algorithm, "_record_signal_lifecycle_event"):
+            _ic_lifecycle_cb = self.algorithm._record_signal_lifecycle_event
+        self._iron_condor_engine = IronCondorEngine(
+            log_func=self.log, signal_lifecycle_cb=_ic_lifecycle_cb
+        )
         self._micro_entry_engine = MicroEntryEngine(log_func=self.log)
         self._vass_entry_engine = VASSEntryEngine(log_func=self.log)
         self._vass_entry_engine_enabled = bool(getattr(config, "VASS_ENTRY_ENGINE_ENABLED", True))

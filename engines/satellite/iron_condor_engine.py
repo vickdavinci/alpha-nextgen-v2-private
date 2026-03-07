@@ -85,8 +85,13 @@ EXIT_IC_UNDERLYING_INVALIDATION = "IC_UNDERLYING_INVALIDATION"
 class IronCondorEngine:
     """VIX-Adaptive Iron Condor engine for neutral-regime premium collection."""
 
-    def __init__(self, log_func: Optional[Callable[[str, bool], None]] = None):
+    def __init__(
+        self,
+        log_func: Optional[Callable[[str, bool], None]] = None,
+        signal_lifecycle_cb: Optional[Callable[..., None]] = None,
+    ):
         self._log_func = log_func
+        self._signal_lifecycle_cb = signal_lifecycle_cb
 
         # ── State ──
         self._positions: List[IronCondorPosition] = []
@@ -130,6 +135,35 @@ class IronCondorEngine:
     def _record_drop(self, code: str) -> None:
         self._diag_dropped += 1
         self._diag_drop_codes[code] = self._diag_drop_codes.get(code, 0) + 1
+        self._emit_lifecycle("DROPPED", code=code, gate_name=code)
+
+    def _emit_lifecycle(
+        self,
+        event: str,
+        *,
+        signal_id: str = "",
+        trace_id: str = "",
+        code: str = "",
+        gate_name: str = "",
+        reason: str = "",
+    ) -> None:
+        """Emit signal_lifecycle artifact row via callback (log-budget-immune)."""
+        if self._signal_lifecycle_cb is None:
+            return
+        try:
+            self._signal_lifecycle_cb(
+                engine="IC",
+                event=event,
+                signal_id=signal_id,
+                trace_id=trace_id,
+                direction="NEUTRAL",
+                strategy="IRON_CONDOR",
+                code=code,
+                gate_name=gate_name,
+                reason=reason,
+            )
+        except Exception:
+            pass
 
     # ══════════════════════════════════════════════════════════════════════
     # ENTRY LOGIC
@@ -196,6 +230,12 @@ class IronCondorEngine:
         self._pending_entry_since = current_time
         signals = self._build_entry_signals(condor, current_time)
 
+        self._emit_lifecycle(
+            "APPROVED",
+            signal_id=condor.condor_id,
+            trace_id=condor.condor_id,
+            reason=f"C/W={condor.credit_to_width:.3f} spreads={condor.num_spreads}",
+        )
         self._log(
             f"ENTRY_SIGNAL | condor_id={condor.condor_id} "
             f"| put_short={condor.put_short_strike} call_short={condor.call_short_strike} "
@@ -1261,6 +1301,13 @@ class IronCondorEngine:
                 all_signals.extend(signals)
                 self._diag_exit_reasons[reason] = self._diag_exit_reasons.get(reason, 0) + 1
 
+                self._emit_lifecycle(
+                    "EXIT",
+                    signal_id=condor.condor_id,
+                    trace_id=condor.condor_id,
+                    code=reason,
+                    reason=f"PnL=${combined_pnl:.2f} DTE={min_dte}",
+                )
                 self._log(
                     f"EXIT_SIGNAL | condor_id={condor.condor_id} "
                     f"| reason={reason} | PnL=${combined_pnl:.2f} "
