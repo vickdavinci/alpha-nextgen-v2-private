@@ -63,6 +63,7 @@ R_IC_SLIPPAGE_FAIL = "R_IC_SLIPPAGE_FAIL"
 R_IC_PER_TRADE_RISK_EXCEEDED = "R_IC_PER_TRADE_RISK_EXCEEDED"
 R_IC_PENDING_ENTRY = "R_IC_PENDING_ENTRY"
 R_IC_STRIKE_REUSE = "R_IC_STRIKE_REUSE"
+R_IC_REGIME_VELOCITY_BLOCK = "R_IC_REGIME_VELOCITY_BLOCK"
 
 # ── Exit reason codes ──
 EXIT_IC_VIX_SPIKE = "IC_VIX_SPIKE_EXIT"
@@ -100,6 +101,7 @@ class IronCondorEngine:
         self._pending_entry_since: Optional[datetime] = None
         self._regime_neutral_days: int = 0  # Consecutive neutral-regime trading days
         self._regime_neutral_last_date: Optional[str] = None  # Last date counted
+        self._regime_score_history: List[Tuple[str, float]] = []  # (date_str, score) for velocity
         self._last_scan_time: Optional[str] = None  # Scan throttle timestamp
         self._hold_guard_logged: set = set()  # Suppress repeat hold guard logs
 
@@ -280,6 +282,21 @@ class IronCondorEngine:
         persistence_req = int(getattr(config, "IC_REGIME_PERSISTENCE_DAYS", 2))
         if self._regime_neutral_days < persistence_req:
             return R_IC_REGIME_NOT_PERSISTENT
+
+        # Gate: Regime velocity — block if score trending directionally over N days
+        velocity_window = int(getattr(config, "IC_REGIME_VELOCITY_WINDOW", 5))
+        velocity_max = float(getattr(config, "IC_REGIME_VELOCITY_MAX", 8.0))
+        if self._regime_score_history and self._regime_score_history[-1][0] == today_str:
+            self._regime_score_history[-1] = (today_str, regime_score)
+        else:
+            self._regime_score_history.append((today_str, regime_score))
+        if len(self._regime_score_history) > velocity_window:
+            self._regime_score_history = self._regime_score_history[-velocity_window:]
+        if len(self._regime_score_history) >= velocity_window:
+            oldest_score = self._regime_score_history[0][1]
+            delta = regime_score - oldest_score
+            if abs(delta) > velocity_max:
+                return R_IC_REGIME_VELOCITY_BLOCK
 
         # Gate: Transition overlay — block DETERIORATION/AMBIGUOUS
         # Canonical key is transition_overlay; transition_state is legacy fallback.
@@ -1878,6 +1895,7 @@ class IronCondorEngine:
         self._pending_entry_since = None
         self._regime_neutral_days = 0
         self._regime_neutral_last_date = None
+        self._regime_score_history = []
         self._hold_guard_logged = set()
         self._side_fill_trackers = {}
         self._diag_candidates = 0

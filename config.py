@@ -2281,14 +2281,16 @@ INTRADAY_OTM_MAX_DOLLARS = 0  # V12.15: disable fixed-dollar clamp; MICRO uses p
 IRON_CONDOR_ENGINE_ENABLED = True  # IC-only isolation backtest
 
 # ── Regime / environment gates ──
-IC_REGIME_MIN = 42  # Neutral zone lower bound (V12.26: was 45, capture late-DEFENSIVE rising)
-IC_REGIME_MAX = 65  # Neutral zone upper bound (V12.26: was 60, capture NEUTRAL consolidation)
-IC_REGIME_PERSISTENCE_DAYS = (
-    1  # Require N consecutive EOD-neutral DAYS before entry (V12.26: was 2, too rare)
+IC_REGIME_MIN = (
+    45  # Neutral zone lower bound (V12.32: revert from 42 — CAUTIOUS 42-44 is directional)
 )
+IC_REGIME_MAX = 65  # Neutral zone upper bound (V12.26: was 60, capture NEUTRAL consolidation)
+IC_REGIME_PERSISTENCE_DAYS = 3  # Require 3 consecutive neutral DAYS (V12.32: was 1, prevents transient regime bounce entries)
 IC_VIX_MIN = 14.0  # Minimum VIX — need enough premium
 IC_VIX_MAX = 32.0  # Max VIX — too volatile for range thesis
 IC_ADX_MAX = 25.0  # Block when strong trend (V12.26: was 20, allows consolidation phases)
+IC_REGIME_VELOCITY_WINDOW = 5  # Look-back window in trading days for regime velocity
+IC_REGIME_VELOCITY_MAX = 8.0  # Max abs score change over window — block if exceeded (V12.32)
 IC_EVENT_DAY_BLOCK_ENABLED = True  # Block entries on CPI/FOMC/major macro days
 
 # ── Entry timing ──
@@ -2367,7 +2369,7 @@ IC_STOP_LOSS_MULTIPLE = (
 IC_TIME_EXIT_DTE = 3  # Close by 3 DTE (V12.27: was 14 — short DTE trades exit near expiry)
 IC_VIX_SPIKE_EXIT = 33.0  # Emergency exit on VIX spike (V12.26: was 30, VIX 30-32 survivable)
 IC_FRIDAY_CLOSE_DTE = 3  # Close before weekend if DTE < 3 (V12.27: was 14 — align with TIME_EXIT)
-IC_REGIME_EXIT_BUFFER = 8  # Exit buffer (V12.26: was 5, fewer forced exits at regime edges)
+IC_REGIME_EXIT_BUFFER = 5  # Exit buffer (V12.32: was 8, faster regime break exit)
 
 # ── Capital / risk model ──
 IC_OPEN_RISK_PCT = 0.05  # Max open IC risk as % of portfolio (5%) — scales with equity
