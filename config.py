@@ -1930,7 +1930,7 @@ VASS_BULL_SHORT_CALL_MIN_ATR_MULT = 0.60
 # Primary stop uses QQQ invalidation (cleaner thesis signal than option mark noise).
 VASS_BULL_DEBIT_QQQ_INVALIDATION_ENABLED = True
 VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_PCT = 0.040
-VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT = 0.040
+VASS_BULL_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT = 0.039  # V12.31: tuned from 4.0% to 3.9% (earlier thesis-break detection without winner clipping in RCA sample).
 VASS_BULL_DEBIT_QQQ_INVALIDATION_CLOSE_TIME = "15:45"
 # V12.27: Thesis-soft-stop for BULL_CALL_DEBIT.
 # Keep hard invalidation/regime-break behavior, but avoid tactical churn exits.
