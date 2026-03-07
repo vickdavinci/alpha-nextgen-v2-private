@@ -4612,6 +4612,7 @@ class TestOvernightGapProtectionExit:
     def test_overnight_gap_exit_includes_credit_metadata(self, engine):
         """Credit spread OGP exits should include metadata needed for credit-market close path."""
         engine._spread_position = self._make_credit_spread()
+        engine._get_regime_transition_context = lambda: {"effective_score": 55.0}
         signals = engine.check_overnight_gap_protection_exit(
             current_vix=22.7,
             current_date="2024-08-07",
@@ -4628,3 +4629,31 @@ class TestOvernightGapProtectionExit:
         assert md.get("options_strategy") == "BEAR_CALL_CREDIT"
         assert float(md.get("spread_entry_debit", -1.0)) == 0.0
         assert float(md.get("spread_entry_credit", 0.0)) == 1.40
+
+    def test_overnight_gap_exit_skips_fresh_bear_credit_in_bear_regime(self, engine):
+        """Fresh bearish spreads should not hit OGP solely due to elevated VIX in bear regimes."""
+        engine._spread_position = self._make_credit_spread()
+        engine._get_regime_transition_context = lambda: {"effective_score": 40.0}
+
+        signals = engine.check_overnight_gap_protection_exit(
+            current_vix=22.7,
+            current_date="2024-08-07",
+        )
+
+        assert signals is None
+
+    def test_overnight_gap_exit_keeps_close_all_in_bear_regime(self, engine):
+        """The global OGP disaster rail should still close spreads at the close-all threshold."""
+        spread = self._make_credit_spread()
+        spread.spread_type = "BEAR_PUT_DEBIT"
+        spread.net_debit = 1.40
+        engine._spread_position = spread
+        engine._get_regime_transition_context = lambda: {"effective_score": 40.0}
+
+        signals = engine.check_overnight_gap_protection_exit(
+            current_vix=30.0,
+            current_date="2024-08-07",
+        )
+
+        assert signals is not None
+        assert len(signals) == 1

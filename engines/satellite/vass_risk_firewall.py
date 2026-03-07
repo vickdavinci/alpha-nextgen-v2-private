@@ -43,6 +43,35 @@ def _is_credit_theta_first_active_for_spread(self, spread: Optional["SpreadPosit
     return False
 
 
+def _is_bearish_spread_fresh_ogp_exempt(self, spread: Optional["SpreadPosition"]) -> bool:
+    """Return True when a bearish spread is in a bearish regime for fresh-trade OGP."""
+    if spread is None:
+        return False
+
+    spread_type = str(getattr(spread, "spread_type", "") or "").upper()
+    if spread_type not in {"BEAR_CALL_CREDIT", "BEAR_PUT_DEBIT"}:
+        return False
+
+    regime_score = None
+    try:
+        transition_ctx = self._get_regime_transition_context() or {}
+        raw_score = transition_ctx.get(
+            "effective_score",
+            transition_ctx.get("intraday_score", transition_ctx.get("eod_score")),
+        )
+        if raw_score is not None:
+            regime_score = float(raw_score)
+    except Exception:
+        regime_score = None
+    if regime_score is None:
+        return False
+
+    bear_regime_max = float(
+        getattr(config, "SPREAD_REGIME_BEARISH", getattr(config, "REGIME_NEUTRAL", 50.0))
+    )
+    return regime_score < bear_regime_max
+
+
 def _resolve_spread_live_dte(spread: Optional["SpreadPosition"]) -> int:
     """Best-effort spread DTE from leg metadata."""
     if spread is None:
@@ -302,12 +331,22 @@ def check_overnight_gap_protection_exit_impl(
         is_credit_spread = bool(entry_net < 0 or "CREDIT" in spread_type.upper())
 
         reason = None
+        fresh_trade_ogp = False
         if current_vix >= close_all_threshold:
             reason = f"OVERNIGHT_GAP_PROTECTION: VIX {current_vix:.1f} >= {close_all_threshold}"
         elif is_fresh_trade and current_vix >= close_fresh_threshold:
+            fresh_trade_ogp = True
             reason = f"OVERNIGHT_GAP_PROTECTION: Fresh trade + VIX {current_vix:.1f} >= {close_fresh_threshold}"
 
         if reason is None:
+            continue
+
+        if fresh_trade_ogp and _is_bearish_spread_fresh_ogp_exempt(self, spread):
+            self.log(
+                "OVERNIGHT_GAP_PROTECTION: Skipping fresh-trade exit for bearish spread in bear regime | "
+                f"VIX={current_vix:.1f} | Type={spread_type} | Entry={entry_date} Fresh={is_fresh_trade}",
+                trades_only=True,
+            )
             continue
 
         theta_mode_active = _is_credit_theta_first_active_for_spread(self, spread)
