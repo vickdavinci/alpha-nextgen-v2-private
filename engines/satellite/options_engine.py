@@ -299,10 +299,13 @@ class OptionsEngine:
         )
         self._itm_horizon_engine = ITMHorizonEngine(log_func=self.log)
         _ic_lifecycle_cb = None
+        _ic_regime_cb = None
         if self.algorithm and hasattr(self.algorithm, "_record_signal_lifecycle_event"):
             _ic_lifecycle_cb = self.algorithm._record_signal_lifecycle_event
         self._iron_condor_engine = IronCondorEngine(
-            log_func=self.log, signal_lifecycle_cb=_ic_lifecycle_cb
+            log_func=self.log,
+            signal_lifecycle_cb=_ic_lifecycle_cb,
+            regime_decision_cb=self._record_regime_decision,
         )
         self._micro_entry_engine = MicroEntryEngine(log_func=self.log)
         self._vass_entry_engine = VASSEntryEngine(log_func=self.log)

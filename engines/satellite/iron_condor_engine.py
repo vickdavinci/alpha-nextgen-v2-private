@@ -89,9 +89,11 @@ class IronCondorEngine:
         self,
         log_func: Optional[Callable[[str, bool], None]] = None,
         signal_lifecycle_cb: Optional[Callable[..., None]] = None,
+        regime_decision_cb: Optional[Callable[..., None]] = None,
     ):
         self._log_func = log_func
         self._signal_lifecycle_cb = signal_lifecycle_cb
+        self._regime_decision_cb = regime_decision_cb
 
         # ── State ──
         self._positions: List[IronCondorPosition] = []
@@ -161,6 +163,26 @@ class IronCondorEngine:
                 code=code,
                 gate_name=gate_name,
                 reason=reason,
+            )
+        except Exception:
+            pass
+
+    def _emit_regime_decision(
+        self,
+        decision: str,
+        gate_name: str,
+        threshold_snapshot: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Emit regime_decision artifact row via callback (log-budget-immune)."""
+        if self._regime_decision_cb is None:
+            return
+        try:
+            self._regime_decision_cb(
+                engine="IC",
+                decision=decision,
+                strategy_attempted="IRON_CONDOR",
+                gate_name=gate_name,
+                threshold_snapshot=threshold_snapshot,
             )
         except Exception:
             pass
@@ -316,6 +338,11 @@ class IronCondorEngine:
         if not (regime_min <= regime_score <= regime_max):
             self._regime_neutral_days = 0
             self._regime_neutral_last_date = None
+            self._emit_regime_decision(
+                "BLOCK",
+                R_IC_REGIME_OUT_OF_RANGE,
+                {"regime_score": regime_score, "min": regime_min, "max": regime_max},
+            )
             return R_IC_REGIME_OUT_OF_RANGE
 
         # Gate: Regime persistence — count consecutive DAYS, not intraday bars.
@@ -326,6 +353,11 @@ class IronCondorEngine:
             self._regime_neutral_last_date = today_str
         persistence_req = int(getattr(config, "IC_REGIME_PERSISTENCE_DAYS", 2))
         if self._regime_neutral_days < persistence_req:
+            self._emit_regime_decision(
+                "BLOCK",
+                R_IC_REGIME_NOT_PERSISTENT,
+                {"neutral_days": self._regime_neutral_days, "required": persistence_req},
+            )
             return R_IC_REGIME_NOT_PERSISTENT
 
         # Gate: Regime velocity — block if score trending directionally over N days
@@ -341,6 +373,11 @@ class IronCondorEngine:
             oldest_score = self._regime_score_history[0][1]
             delta = regime_score - oldest_score
             if abs(delta) > velocity_max:
+                self._emit_regime_decision(
+                    "BLOCK",
+                    R_IC_REGIME_VELOCITY_BLOCK,
+                    {"delta": delta, "max": velocity_max, "window": velocity_window},
+                )
                 return R_IC_REGIME_VELOCITY_BLOCK
 
         # Gate: Transition overlay — block DETERIORATION/AMBIGUOUS
@@ -349,22 +386,42 @@ class IronCondorEngine:
             transition_ctx.get("transition_overlay") or transition_ctx.get("transition_state") or ""
         ).upper()
         if transition_state in {"DETERIORATION", "AMBIGUOUS"}:
+            self._emit_regime_decision(
+                "BLOCK",
+                R_IC_TRANSITION_BLOCK,
+                {"transition_state": transition_state},
+            )
             return R_IC_TRANSITION_BLOCK
 
         # Gate: Fast overlay — block STRESS/EARLY_STRESS
         fast_overlay = str(transition_ctx.get("fast_overlay", "") or "").upper()
         if fast_overlay in {"STRESS", "EARLY_STRESS"}:
+            self._emit_regime_decision(
+                "BLOCK",
+                R_IC_FAST_OVERLAY_STRESS,
+                {"fast_overlay": fast_overlay},
+            )
             return R_IC_FAST_OVERLAY_STRESS
 
         # Gate: VIX range
         vix_min = float(getattr(config, "IC_VIX_MIN", 14.0))
         vix_max = float(getattr(config, "IC_VIX_MAX", 32.0))
         if not (vix_min <= vix_current <= vix_max):
+            self._emit_regime_decision(
+                "BLOCK",
+                R_IC_VIX_OUT_OF_RANGE,
+                {"vix": vix_current, "min": vix_min, "max": vix_max},
+            )
             return R_IC_VIX_OUT_OF_RANGE
 
         # Gate: ADX (low trend)
         adx_max = float(getattr(config, "IC_ADX_MAX", 20.0))
         if adx_value > adx_max:
+            self._emit_regime_decision(
+                "BLOCK",
+                R_IC_ADX_TOO_HIGH,
+                {"adx": adx_value, "max": adx_max},
+            )
             return R_IC_ADX_TOO_HIGH
 
         # Gate: Entry time window
@@ -384,9 +441,16 @@ class IronCondorEngine:
                 or transition_ctx.get("is_macro_event_day", False)
                 or transition_ctx.get("has_macro_event", False)
             ):
+                self._emit_regime_decision(
+                    "BLOCK",
+                    R_IC_EVENT_DAY_BLOCK,
+                    {"is_event_day": True},
+                )
                 return R_IC_EVENT_DAY_BLOCK
 
-        return None  # All gates passed
+        # All regime/market gates passed
+        self._emit_regime_decision("PASS", "IC_ENV_OK")
+        return None
 
     # ── Contract search ──
 
