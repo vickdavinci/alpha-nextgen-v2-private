@@ -1988,8 +1988,10 @@ class IronCondorEngine:
         self._pending_condor = None
         self._pending_fills.clear()
         self._pending_entry_since = None
-        self._regime_neutral_days = 0
-        self._regime_neutral_last_date = None
+        # NOTE: _regime_neutral_days and _regime_neutral_last_date are intentionally
+        # NOT reset here — they are cross-day counters that must accumulate across
+        # consecutive neutral-regime days to satisfy IC_REGIME_PERSISTENCE_DAYS.
+        # Resetting them here would prevent persistence from ever being satisfied.
         self._last_scan_time = None
         self._hold_guard_logged = set()
         self._side_fill_trackers = {}
