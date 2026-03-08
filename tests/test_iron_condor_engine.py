@@ -1524,6 +1524,8 @@ class TestExitSignalStructure:
             assert sig.metadata["options_strategy"] == "IRON_CONDOR"
             assert sig.metadata["condor_id"] == condor.condor_id
             assert sig.metadata["exit_reason"] == EXIT_IC_PROFIT_TARGET
+            assert sig.metadata["is_credit_spread"] is True
+            assert sig.metadata["spread_type"] in {"CREDIT_PUT", "CREDIT_CALL"}
 
     def test_exit_signals_cover_both_sides(self):
         engine = _make_engine()
@@ -2216,6 +2218,8 @@ class TestCloseRetry:
             for s in sigs:
                 assert s.metadata.get("spread_exit_emergency") is None
                 assert s.metadata.get("spread_close_short") is True
+                assert s.metadata.get("is_credit_spread") is True
+                assert s.metadata.get("spread_type") in {"CREDIT_PUT", "CREDIT_CALL"}
                 assert "COMBO" in s.reason
 
     def test_close_retry_escalation(self):

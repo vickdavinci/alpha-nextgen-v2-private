@@ -1407,6 +1407,8 @@ class IronCondorEngine:
         # Router contract: symbol = long leg, spread_short_leg_symbol = short leg
         put_meta = dict(base_meta)
         put_meta["spread_side"] = "PUT_CREDIT_CLOSE"
+        put_meta["spread_type"] = "CREDIT_PUT"
+        put_meta["is_credit_spread"] = True
         put_meta["spread_close_short"] = True
         put_meta["spread_short_leg_symbol"] = condor.short_put.symbol
         put_meta["spread_short_leg_quantity"] = condor.num_spreads
@@ -1428,6 +1430,8 @@ class IronCondorEngine:
         # Router contract: symbol = long leg, spread_short_leg_symbol = short leg
         call_meta = dict(base_meta)
         call_meta["spread_side"] = "CALL_CREDIT_CLOSE"
+        call_meta["spread_type"] = "CREDIT_CALL"
+        call_meta["is_credit_spread"] = True
         call_meta["spread_close_short"] = True
         call_meta["spread_short_leg_symbol"] = condor.short_call.symbol
         call_meta["spread_short_leg_quantity"] = condor.num_spreads
@@ -1520,10 +1524,12 @@ class IronCondorEngine:
             if leg_attr == "short_put":
                 long_leg = condor.long_put
                 side = "PUT_CREDIT_CLOSE"
+                spread_type = "CREDIT_PUT"
                 wing = condor.put_wing_width
             else:
                 long_leg = condor.long_call
                 side = "CALL_CREDIT_CLOSE"
+                spread_type = "CREDIT_CALL"
                 wing = condor.call_wing_width
 
             meta = {
@@ -1533,6 +1539,8 @@ class IronCondorEngine:
                 "trace_id": condor.condor_id,
                 "condor_id": condor.condor_id,
                 "spread_side": side,
+                "spread_type": spread_type,
+                "is_credit_spread": True,
                 "spread_close_short": True,
                 "spread_short_leg_symbol": leg.symbol,
                 "spread_short_leg_quantity": condor.num_spreads,
