@@ -1756,6 +1756,8 @@ SPREAD_WIDTH_MIN_LOW_VIX = 3.0
 SPREAD_WIDTH_MAX = 10.0
 SPREAD_WIDTH_TARGET = 4.0
 SPREAD_WIDTH_EFFECTIVE_MAX = 7.0
+BEAR_PUT_SPREAD_WIDTH_MIN_BUMP = 1.0  # V12.31: avoid ultra-narrow bearish put spreads under skew
+BEAR_PUT_SPREAD_WIDTH_TARGET_BUMP = 1.0  # V12.31: bias bearish put selection one strike wider
 
 # DTE for debit spreads (per V2.3 spec)
 # V2.3.22: Raised from 10 to 14 - spreads need same gap cushion as single-leg
@@ -1798,6 +1800,8 @@ SPREAD_DW_CAP_NORMAL = (
 SPREAD_DW_CAP_COMPRESSED = (
     0.42  # V12.23.1: keep compressed-IV aligned with normal cap after slight D/W loosen.
 )
+BEAR_PUT_SPREAD_DW_CAP_BUMP = 0.04  # V12.31: modest D/W relax for bearish put spreads
+BEAR_PUT_SPREAD_DW_CAP_MAX = 0.46  # V12.31: hard ceiling for bearish put D/W relax
 SPREAD_DW_ABSOLUTE_CAP = 2.00  # Max debit dollars on $5 spread in very calm IV
 SPREAD_DW_ABSOLUTE_CAP_VIX = 15.0
 # V12.0: Elastic absolute debit cap (inversely scaled by VIX, bounded).

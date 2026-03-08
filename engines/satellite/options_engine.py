@@ -1003,8 +1003,11 @@ class OptionsEngine:
         """
         if not contracts or current_price <= 0:
             return None
-        dyn_widths = self._get_dynamic_spread_widths(current_price)
-        effective_width_min = self._get_effective_spread_width_min(current_price=current_price)
+        dyn_widths = self._get_dynamic_spread_widths(current_price, spread_type="BEAR_PUT")
+        effective_width_min = self._get_effective_spread_width_min(
+            current_price=current_price,
+            spread_type="BEAR_PUT",
+        )
         width_max = dyn_widths["width_max"]
         oi_min_short = max(0, int(getattr(config, "OPTIONS_MIN_OPEN_INTEREST_PUT", 25)) // 2)
         spread_warn_short = float(getattr(config, "OPTIONS_SPREAD_WARNING_PCT_PUT", 0.35))
@@ -2605,17 +2608,23 @@ class OptionsEngine:
         """Round width to nearest dollar (QQQ strike spacing)."""
         return max(1.0, round(raw_width))
 
-    def _get_dynamic_spread_widths(self, current_price: Optional[float] = None) -> Dict[str, float]:
+    def _get_dynamic_spread_widths(
+        self,
+        current_price: Optional[float] = None,
+        spread_type: Optional[str] = None,
+    ) -> Dict[str, float]:
         """Return all spread width parameters, dynamically scaled by underlying price.
 
         V12.12: percentage-of-underlying for regime-universal width scaling.
         Falls back to fixed-dollar config when PCT_BASED is False or price unavailable.
         """
+        spread_type_upper = str(spread_type or "").upper()
+        is_bear_put = spread_type_upper in {"BEAR_PUT", "BEAR_PUT_DEBIT"}
         use_pct = bool(getattr(config, "SPREAD_WIDTH_PCT_BASED", False))
         price = float(current_price) if current_price and float(current_price) > 0 else 0.0
 
         if use_pct and price > 0:
-            return {
+            widths = {
                 "width_min": self._snap_width_to_strike_grid(
                     price * float(getattr(config, "SPREAD_WIDTH_MIN_PCT", 0.008))
                 ),
@@ -2635,26 +2644,39 @@ class OptionsEngine:
                     price * float(getattr(config, "CREDIT_SPREAD_WIDTH_TARGET_PCT", 0.010))
                 ),
             }
+        else:
+            widths = {
+                "width_min": float(getattr(config, "SPREAD_WIDTH_MIN", 4.0)),
+                "width_min_low_vix": float(getattr(config, "SPREAD_WIDTH_MIN_LOW_VIX", 3.0)),
+                "width_max": float(getattr(config, "SPREAD_WIDTH_MAX", 10.0)),
+                "width_target": float(getattr(config, "SPREAD_WIDTH_TARGET", 4.0)),
+                "width_effective_max": float(getattr(config, "SPREAD_WIDTH_EFFECTIVE_MAX", 7.0)),
+                "credit_width_target": float(getattr(config, "CREDIT_SPREAD_WIDTH_TARGET", 5.0)),
+            }
 
-        return {
-            "width_min": float(getattr(config, "SPREAD_WIDTH_MIN", 4.0)),
-            "width_min_low_vix": float(getattr(config, "SPREAD_WIDTH_MIN_LOW_VIX", 3.0)),
-            "width_max": float(getattr(config, "SPREAD_WIDTH_MAX", 10.0)),
-            "width_target": float(getattr(config, "SPREAD_WIDTH_TARGET", 4.0)),
-            "width_effective_max": float(getattr(config, "SPREAD_WIDTH_EFFECTIVE_MAX", 7.0)),
-            "credit_width_target": float(getattr(config, "CREDIT_SPREAD_WIDTH_TARGET", 5.0)),
-        }
+        if is_bear_put:
+            target_bump = float(getattr(config, "BEAR_PUT_SPREAD_WIDTH_TARGET_BUMP", 0.0) or 0.0)
+            if target_bump > 0:
+                bear_put_target = widths["width_target"] + target_bump
+                widths["width_target"] = min(widths["width_max"], max(1.0, bear_put_target))
+                widths["width_target"] = self._snap_width_to_strike_grid(widths["width_target"])
+
+        return widths
 
     def _get_effective_spread_width_min(
         self,
         vix_current: Optional[float] = None,
         current_price: Optional[float] = None,
+        spread_type: Optional[str] = None,
     ) -> float:
         """Return VIX-adaptive minimum spread width for debit/credit leg construction."""
-        widths = self._get_dynamic_spread_widths(current_price)
+        widths = self._get_dynamic_spread_widths(current_price, spread_type=spread_type)
         base_min = widths["width_min"]
         low_min = widths["width_min_low_vix"]
         low_threshold = float(getattr(config, "SPREAD_WIDTH_LOW_VIX_THRESHOLD", 18.0))
+        spread_type_upper = str(spread_type or "").upper()
+        is_bear_put = spread_type_upper in {"BEAR_PUT", "BEAR_PUT_DEBIT"}
+        min_bump = float(getattr(config, "BEAR_PUT_SPREAD_WIDTH_MIN_BUMP", 0.0) or 0.0)
 
         smoothed_vix = self.get_smoothed_vix()
         if vix_current is not None:
@@ -2663,9 +2685,10 @@ class OptionsEngine:
             except (TypeError, ValueError):
                 pass
 
-        if smoothed_vix < low_threshold:
-            return max(1.0, low_min)
-        return max(1.0, base_min)
+        effective_min = low_min if smoothed_vix < low_threshold else base_min
+        if is_bear_put and min_bump > 0:
+            effective_min = self._snap_width_to_strike_grid(effective_min + min_bump)
+        return max(1.0, effective_min)
 
     def estimate_spread_margin_per_contract(
         self,
@@ -2764,31 +2787,49 @@ class OptionsEngine:
         self,
         vix_level: Optional[float],
         iv_rank: Optional[float] = None,
+        spread_type: Optional[str] = None,
     ) -> float:
         """Resolve adaptive debit/width cap by current VIX band."""
+        spread_type_upper = str(spread_type or "").upper()
+        is_bear_put = spread_type_upper in {"BEAR_PUT", "BEAR_PUT_DEBIT"}
         if vix_level is None:
             iv_env = self._resolve_vass_quality_iv_environment(
                 vix_current=vix_level, iv_rank=iv_rank
             )
             if iv_env == "LOW":
-                return float(getattr(config, "SPREAD_DW_CAP_COMPRESSED", 0.48))
-            if iv_env == "HIGH":
-                return float(getattr(config, "SPREAD_DW_CAP_ELEVATED", 0.36))
-            return float(getattr(config, "SPREAD_DW_CAP_NORMAL", 0.42))
+                cap = float(getattr(config, "SPREAD_DW_CAP_COMPRESSED", 0.48))
+            elif iv_env == "HIGH":
+                cap = float(getattr(config, "SPREAD_DW_CAP_ELEVATED", 0.36))
+            else:
+                cap = float(getattr(config, "SPREAD_DW_CAP_NORMAL", 0.42))
+            if is_bear_put and iv_env != "LOW":
+                cap = min(
+                    float(getattr(config, "BEAR_PUT_SPREAD_DW_CAP_MAX", cap)),
+                    cap + float(getattr(config, "BEAR_PUT_SPREAD_DW_CAP_BUMP", 0.0) or 0.0),
+                )
+            return cap
         try:
             vix = float(vix_level)
         except Exception:
             return float(getattr(config, "SPREAD_DW_CAP_NORMAL", 0.42))
         if vix > 35:
-            return float(getattr(config, "SPREAD_DW_CAP_PANIC", 0.28))
-        if vix >= 25:
-            return float(getattr(config, "SPREAD_DW_CAP_HIGH", 0.32))
-        iv_env = self._resolve_vass_quality_iv_environment(vix_current=vix, iv_rank=iv_rank)
-        if iv_env == "LOW":
-            return float(getattr(config, "SPREAD_DW_CAP_COMPRESSED", 0.48))
-        if iv_env == "HIGH":
-            return float(getattr(config, "SPREAD_DW_CAP_ELEVATED", 0.36))
-        return float(getattr(config, "SPREAD_DW_CAP_NORMAL", 0.42))
+            cap = float(getattr(config, "SPREAD_DW_CAP_PANIC", 0.28))
+        elif vix >= 25:
+            cap = float(getattr(config, "SPREAD_DW_CAP_HIGH", 0.32))
+        else:
+            iv_env = self._resolve_vass_quality_iv_environment(vix_current=vix, iv_rank=iv_rank)
+            if iv_env == "LOW":
+                cap = float(getattr(config, "SPREAD_DW_CAP_COMPRESSED", 0.48))
+            elif iv_env == "HIGH":
+                cap = float(getattr(config, "SPREAD_DW_CAP_ELEVATED", 0.36))
+            else:
+                cap = float(getattr(config, "SPREAD_DW_CAP_NORMAL", 0.42))
+        if is_bear_put:
+            cap = min(
+                float(getattr(config, "BEAR_PUT_SPREAD_DW_CAP_MAX", cap)),
+                cap + float(getattr(config, "BEAR_PUT_SPREAD_DW_CAP_BUMP", 0.0) or 0.0),
+            )
+        return cap
 
     def _get_spread_absolute_debit_cap(self, vix_level: Optional[float], width: float) -> float:
         """Resolve width-scaled absolute debit cap for debit spreads."""

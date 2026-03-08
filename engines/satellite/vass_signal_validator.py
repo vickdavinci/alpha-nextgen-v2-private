@@ -150,8 +150,11 @@ def check_spread_entry_signal_impl(
     # V6.10 P4: Margin Pre-Check BEFORE Signal Approval
     # Check if we have sufficient margin for at least 1 spread before proceeding
     margin_check_enabled = getattr(config, "MARGIN_CHECK_BEFORE_SIGNAL", False)
+    spread_type_for_margin = "BEAR_PUT" if direction == OptionDirection.PUT else "BULL_CALL"
     if margin_check_enabled and margin_remaining is not None:
-        spread_width = self._get_dynamic_spread_widths(current_price)["width_target"]
+        spread_width = self._get_dynamic_spread_widths(
+            current_price, spread_type=spread_type_for_margin
+        )["width_target"]
         min_spreads = getattr(config, "MARGIN_PRE_CHECK_MIN_SPREADS", 1)
         buffer_pct = getattr(config, "MARGIN_PRE_CHECK_BUFFER", 0.15)
 
@@ -725,9 +728,9 @@ def check_spread_entry_signal_impl(
     # V2.3.8: Calculate spread width and enforce VIX-adaptive minimum width.
     # V12.12: dynamic width scaling from percentage-of-underlying.
     width = abs(short_leg_contract.strike - long_leg_contract.strike)
-    dyn_widths = self._get_dynamic_spread_widths(current_price)
+    dyn_widths = self._get_dynamic_spread_widths(current_price, spread_type=spread_type)
     effective_width_min = self._get_effective_spread_width_min(
-        vix_current=vix_current, current_price=current_price
+        vix_current=vix_current, current_price=current_price, spread_type=spread_type
     )
     dyn_width_max = dyn_widths["width_max"]
     if width < effective_width_min or width > dyn_width_max:
@@ -821,7 +824,11 @@ def check_spread_entry_signal_impl(
 
     # V10.16: Adaptive debit-to-width quality cap by current VIX regime.
     min_debit_pct = float(getattr(config, "SPREAD_MIN_DEBIT_TO_WIDTH_PCT", 0.28))
-    max_debit_pct = self._get_spread_debit_width_cap(vix_current, iv_rank=iv_rank)
+    max_debit_pct = self._get_spread_debit_width_cap(
+        vix_current,
+        iv_rank=iv_rank,
+        spread_type=spread_type,
+    )
     if recovery_relax_active:
         relaxed_cap_max = float(getattr(config, "VASS_RECOVERY_RELAX_MAX_DW_CAP", 0.55))
         relaxed_cap_bump = float(getattr(config, "VASS_RECOVERY_RELAX_DW_CAP_BUMP", 0.09))

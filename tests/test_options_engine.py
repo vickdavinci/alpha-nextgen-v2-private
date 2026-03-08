@@ -4818,3 +4818,62 @@ class TestBearPutProfitTargetScoping:
 
         assert signals is not None
         assert len(signals) == 1
+
+
+class TestBearPutWidthScoping:
+    """Tests for the V12.31 BEAR_PUT width and D/W selection bias."""
+
+    @pytest.fixture
+    def engine(self):
+        """Create an OptionsEngine instance for testing."""
+        return OptionsEngine(algorithm=None)
+
+    def test_bear_put_width_helpers_bias_wider_than_bull_call(self, engine, monkeypatch):
+        """BEAR_PUT width target and minimum should be bumped without affecting BULL_CALL."""
+        monkeypatch.setattr(config, "SPREAD_WIDTH_PCT_BASED", False)
+        monkeypatch.setattr(config, "SPREAD_WIDTH_MIN", 4.0)
+        monkeypatch.setattr(config, "SPREAD_WIDTH_MIN_LOW_VIX", 3.0)
+        monkeypatch.setattr(config, "SPREAD_WIDTH_TARGET", 4.0)
+        monkeypatch.setattr(config, "SPREAD_WIDTH_MAX", 10.0)
+        monkeypatch.setattr(config, "BEAR_PUT_SPREAD_WIDTH_MIN_BUMP", 1.0)
+        monkeypatch.setattr(config, "BEAR_PUT_SPREAD_WIDTH_TARGET_BUMP", 1.0)
+
+        bull_widths = engine._get_dynamic_spread_widths(300.0, spread_type="BULL_CALL")
+        bear_widths = engine._get_dynamic_spread_widths(300.0, spread_type="BEAR_PUT")
+
+        assert bull_widths["width_target"] == 4.0
+        assert bear_widths["width_target"] == 5.0
+
+        bull_min = engine._get_effective_spread_width_min(
+            vix_current=25.0,
+            current_price=300.0,
+            spread_type="BULL_CALL",
+        )
+        bear_min = engine._get_effective_spread_width_min(
+            vix_current=25.0,
+            current_price=300.0,
+            spread_type="BEAR_PUT",
+        )
+
+        assert bull_min == 4.0
+        assert bear_min == 5.0
+
+    def test_bear_put_debit_width_cap_relax_is_scoped(self, engine, monkeypatch):
+        """BEAR_PUT should get only a modest D/W cap relax relative to other debit spreads."""
+        monkeypatch.setattr(config, "SPREAD_DW_CAP_HIGH", 0.32)
+        monkeypatch.setattr(config, "BEAR_PUT_SPREAD_DW_CAP_BUMP", 0.04)
+        monkeypatch.setattr(config, "BEAR_PUT_SPREAD_DW_CAP_MAX", 0.46)
+
+        bull_cap = engine._get_spread_debit_width_cap(
+            27.0,
+            iv_rank=60.0,
+            spread_type="BULL_CALL",
+        )
+        bear_cap = engine._get_spread_debit_width_cap(
+            27.0,
+            iv_rank=60.0,
+            spread_type="BEAR_PUT",
+        )
+
+        assert bull_cap == 0.32
+        assert bear_cap == 0.36

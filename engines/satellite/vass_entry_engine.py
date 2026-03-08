@@ -2449,11 +2449,16 @@ class VASSEntryEngine:
             return None
 
         # V12.12: dynamic width scaling from percentage-of-underlying
-        dyn_widths = host._get_dynamic_spread_widths(current_price)
+        is_call = direction == OptionDirection.CALL
+        spread_type = "BULL_CALL" if is_call else "BEAR_PUT"
+        dyn_widths = host._get_dynamic_spread_widths(current_price, spread_type=spread_type)
         if target_width is None:
             target_width = dyn_widths["width_target"]
 
-        effective_width_min = host._get_effective_spread_width_min(current_price=current_price)
+        effective_width_min = host._get_effective_spread_width_min(
+            current_price=current_price,
+            spread_type=spread_type,
+        )
         filtered = [c for c in contracts if c.direction == direction]
         if len(filtered) < 2:
             host.log(f"SPREAD: Not enough {direction.value} contracts for spread")
@@ -2461,7 +2466,6 @@ class VASSEntryEngine:
                 self.set_spread_failure_cooldown(current_time=current_time, direction=direction)
             return None
 
-        is_call = direction == OptionDirection.CALL
         if is_call:
             long_delta_min_base = config.SPREAD_LONG_LEG_DELTA_MIN
             long_delta_max_base = config.SPREAD_LONG_LEG_DELTA_MAX
@@ -2557,7 +2561,11 @@ class VASSEntryEngine:
 
         # Pre-compute D/W bounds (same iv-rank context validator uses).
         vix_for_dw = self._host_smoothed_vix(host)
-        dw_cap = host._get_spread_debit_width_cap(vix_for_dw, iv_rank=iv_rank)
+        dw_cap = host._get_spread_debit_width_cap(
+            vix_for_dw,
+            iv_rank=iv_rank,
+            spread_type=spread_type,
+        )
         dw_floor = float(getattr(config, "SPREAD_MIN_DEBIT_TO_WIDTH_PCT", 0.28))
 
         # Also compute absolute debit cap for pre-screening
