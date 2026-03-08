@@ -228,7 +228,7 @@ class TestEnvGates:
         engine = _make_engine()
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             result = engine._check_env_gates(
-                regime_score=70,
+                regime_score=72,  # V12.33: IC_REGIME_MAX raised to 70; use 72 to test above-max rejection
                 adx_value=15,
                 vix_current=18,
                 transition_ctx=_default_transition_ctx(),

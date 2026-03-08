@@ -2284,8 +2284,8 @@ IRON_CONDOR_ENGINE_ENABLED = True  # IC-only isolation backtest
 IC_REGIME_MIN = (
     45  # Neutral zone lower bound (V12.32: revert from 42 — CAUTIOUS 42-44 is directional)
 )
-IC_REGIME_MAX = 65  # Neutral zone upper bound (V12.26: was 60, capture NEUTRAL consolidation)
-IC_REGIME_PERSISTENCE_DAYS = 3  # Require 3 consecutive neutral DAYS (V12.32: was 1, prevents transient regime bounce entries)
+IC_REGIME_MAX = 70  # Neutral zone upper bound (V12.33: was 65, include lower RISK_ON band — 2024 bull mkt scored 65-72 most of year)
+IC_REGIME_PERSISTENCE_DAYS = 2  # Require 2 consecutive neutral DAYS (V12.33: was 3 — too strict for bull mkts where neutral is brief)
 IC_VIX_MIN = 14.0  # Minimum VIX — need enough premium
 IC_VIX_MAX = 32.0  # Max VIX — too volatile for range thesis
 IC_ADX_MAX = 25.0  # Block when strong trend (V12.26: was 20, allows consolidation phases)
