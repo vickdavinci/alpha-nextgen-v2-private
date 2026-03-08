@@ -2139,9 +2139,16 @@ class OptionsEngine:
     ) -> Optional[List["TargetWeight"]]:
         """Run IC engine entry cycle via iron condor sub-engine."""
         self._clear_stale_pending_ic_entry_if_orphaned()
-        ic_open_risk = self._iron_condor_engine.get_open_risk()
-        daily_pnl = self._iron_condor_engine._daily_pnl
-        return self._iron_condor_engine.run_entry_cycle(
+        ic = self._iron_condor_engine
+        ic_open_risk = ic.get_open_risk()
+        daily_pnl = ic._daily_pnl
+
+        # Snapshot IC diags before call for delta bridging (#7+12)
+        pre_cand = ic._diag_candidates
+        pre_appr = ic._diag_approved
+        pre_drop = ic._diag_dropped
+
+        signals = ic.run_entry_cycle(
             chain=chain,
             qqq_price=qqq_price,
             regime_score=regime_score,
@@ -2155,6 +2162,45 @@ class OptionsEngine:
             daily_pnl=daily_pnl,
         )
 
+        # Bridge IC private diags → shared OPTIONS_DIAG_SUMMARY counters
+        algo = self.algorithm
+        if algo:
+            d_cand = ic._diag_candidates - pre_cand
+            d_appr = ic._diag_approved - pre_appr
+            d_drop = ic._diag_dropped - pre_drop
+            if d_cand > 0:
+                algo._diag_intraday_candidate_count = (
+                    int(getattr(algo, "_diag_intraday_candidate_count", 0)) + d_cand
+                )
+                s = getattr(algo, "_diag_intraday_candidates_by_engine", {})
+                s["IC"] = int(s.get("IC", 0)) + d_cand
+            if d_appr > 0:
+                s = getattr(algo, "_diag_intraday_approved_by_engine", {})
+                s["IC"] = int(s.get("IC", 0)) + d_appr
+            if d_drop > 0:
+                s = getattr(algo, "_diag_intraday_dropped_by_engine", {})
+                s["IC"] = int(s.get("IC", 0)) + d_drop
+
+        # Pre-register IC margin on signal approval (#9)
+        if signals and algo and hasattr(algo, "portfolio_router"):
+            condor = ic._pending_condor
+            if condor:
+                router = algo.portfolio_router
+                put_margin = condor.put_wing_width * 100 * condor.num_spreads
+                call_margin = condor.call_wing_width * 100 * condor.num_spreads
+                router.register_spread_margin(
+                    str(condor.long_put.symbol),
+                    put_margin,
+                    short_symbol=str(condor.short_put.symbol),
+                )
+                router.register_spread_margin(
+                    str(condor.long_call.symbol),
+                    call_margin,
+                    short_symbol=str(condor.short_call.symbol),
+                )
+
+        return signals
+
     def run_iron_condor_exit_cycle(
         self,
         *,
@@ -2166,7 +2212,10 @@ class OptionsEngine:
         get_pnl_func: Any,
     ) -> List["TargetWeight"]:
         """Run IC engine exit cycle on all open IC positions."""
-        return self._iron_condor_engine.run_exit_cycle(
+        ic = self._iron_condor_engine
+        pre_exits = sum(ic._diag_exit_reasons.values())
+
+        signals = ic.run_exit_cycle(
             qqq_price=qqq_price,
             vix_current=vix_current,
             regime_score=regime_score,
@@ -2174,6 +2223,14 @@ class OptionsEngine:
             get_dte_func=get_dte_func,
             get_pnl_func=get_pnl_func,
         )
+
+        # Bridge IC exit results → shared OPTIONS_DIAG_SUMMARY counters
+        delta_exits = sum(ic._diag_exit_reasons.values()) - pre_exits
+        if delta_exits > 0 and self.algorithm:
+            s = getattr(self.algorithm, "_diag_intraday_results_by_engine", {})
+            s["IC"] = int(s.get("IC", 0)) + delta_exits
+
+        return signals
 
     def get_iron_condor_positions(self) -> List:
         """Return open IC positions."""

@@ -221,6 +221,11 @@ class IronCondorEngine:
         if condor is None:
             return None
 
+        # ── Capture transition overlay for order_lifecycle attribution ──
+        condor.entry_transition_overlay = str(
+            transition_ctx.get("transition_overlay") or transition_ctx.get("transition_state") or ""
+        ).upper()
+
         # ── Build signals ──
         self._diag_approved += 1
         self._pending_entry = True
@@ -980,6 +985,7 @@ class IronCondorEngine:
             "max_loss": condor.max_loss,
             "entry_vix": condor.entry_vix,
             "regime_at_entry": condor.regime_at_entry,
+            "transition_overlay": condor.entry_transition_overlay,
         }
 
         # Put credit spread signal (bull put): sell short_put, buy long_put
@@ -1329,6 +1335,7 @@ class IronCondorEngine:
             "trace_id": condor.condor_id,
             "condor_id": condor.condor_id,
             "exit_reason": reason,
+            "transition_overlay": condor.entry_transition_overlay,
         }
 
         signals = []
