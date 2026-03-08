@@ -14,7 +14,9 @@ Spec: docs/v2-specs/V2_1_COMPLETE_ARCHITECTURE.txt (Part 2, Engine 3)
 """
 
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
+import AlgorithmImports as ai
 import pytest
 
 import config
@@ -30,7 +32,20 @@ from engines.satellite.options_engine import (
     SpreadPosition,
     SpreadStrategy,
 )
+
+if not hasattr(ai, "Symbol"):
+    ai.Symbol = str
+if not hasattr(ai, "OrderEvent"):
+    ai.OrderEvent = object
+if not hasattr(ai, "SecurityType"):
+    ai.SecurityType = type("SecurityType", (), {"Option": "Option"})
+if not hasattr(ai, "OrderStatus"):
+    ai.OrderStatus = type("OrderStatus", (), {})
+if not hasattr(ai, "OrderType"):
+    ai.OrderType = type("OrderType", (), {})
+
 from main_options_mixin import MainOptionsMixin
+from main_orders_mixin import MainOrdersMixin
 from models.enums import IntradayStrategy, MicroRegime, OptionsMode, Urgency
 
 # =============================================================================
@@ -5212,3 +5227,156 @@ class TestBearPutWidthScoping:
 
         assert bull_cap == 0.32
         assert bear_cap == 0.36
+
+
+class TestSpreadCloseCancelLadderScoping:
+    """Tests for the V12.31 combo-close cancel ladder scoping fix."""
+
+    def _make_spread(self) -> SpreadPosition:
+        long_leg = OptionContract(
+            symbol="QQQ   220318C00370000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=370.0,
+            expiry="2022-03-18",
+            delta=0.45,
+            bid=7.80,
+            ask=8.00,
+            mid_price=7.90,
+            open_interest=5000,
+            days_to_expiry=43,
+        )
+        short_leg = OptionContract(
+            symbol="QQQ   220318C00375000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=375.0,
+            expiry="2022-03-18",
+            delta=0.28,
+            bid=5.25,
+            ask=5.45,
+            mid_price=5.35,
+            open_interest=5000,
+            days_to_expiry=43,
+        )
+        return SpreadPosition(
+            long_leg=long_leg,
+            short_leg=short_leg,
+            spread_type="BULL_CALL_DEBIT",
+            net_debit=2.55,
+            max_profit=2.45,
+            width=5.0,
+            entry_time="2022-02-03 10:00:00",
+            entry_score=4.0,
+            num_spreads=3,
+            regime_at_entry=70.0,
+        )
+
+    def _make_host(self, spread: SpreadPosition) -> SimpleNamespace:
+        lifecycle = []
+        logs = []
+        long_symbol = spread.long_leg.symbol
+        spread_key = f"{spread.long_leg.symbol}|{spread.short_leg.symbol}|{spread.entry_time}"
+        order = SimpleNamespace(
+            Quantity=-spread.num_spreads,
+            Type="ComboLimit",
+            Tag="VASS:BULL_CALL|xurg=HARD|trace_id=abc123",
+        )
+        holding = SimpleNamespace(Quantity=spread.num_spreads)
+        host = SimpleNamespace(
+            Time=datetime(2022, 2, 3, 15, 46, 0),
+            options_engine=SimpleNamespace(get_spread_positions=lambda: [spread]),
+            Transactions=SimpleNamespace(GetOrderById=lambda order_id: order),
+            _normalize_symbol_str=lambda value: str(value or "").strip(),
+            _find_portfolio_holding=lambda symbol, security_type=None: (holding, long_symbol),
+            _build_spread_runtime_key=lambda candidate: spread_key,
+            _cancel_spread_linked_oco=lambda *args, **kwargs: None,
+            _extract_trace_id_from_tag=lambda tag: "abc123",
+            _get_order_tag=lambda order_event: "",
+            _get_recent_symbol_fill_tag=lambda symbol, max_age_minutes=240: "",
+            _cache_order_tag_hint=lambda order_id, tag: None,
+            _compact_tag_for_log=lambda tag: tag,
+            _record_order_lifecycle_event=lambda **kwargs: lifecycle.append(kwargs),
+            Log=lambda message: logs.append(message),
+            _spread_close_first_cancel_at={},
+            _spread_forced_close_cancel_counts={},
+            _spread_forced_close_reason={},
+            _spread_last_exit_reason={spread_key: "FORCE_CLOSE:HARD_STOP"},
+            _spread_last_close_submit_at={},
+            _spread_forced_close_retry={},
+            _spread_close_intent_by_key={},
+            _diag_spread_exit_canceled_count=0,
+            _diag_spread_close_escalation_count=0,
+        )
+        host._spread_close_hard_tokens = MainOrdersMixin._spread_close_hard_tokens.__get__(
+            host, SimpleNamespace
+        )
+        host._classify_spread_exit_urgency = MainOrdersMixin._classify_spread_exit_urgency.__get__(
+            host, SimpleNamespace
+        )
+        host._get_or_init_spread_close_intent = (
+            MainOrdersMixin._get_or_init_spread_close_intent.__get__(host, SimpleNamespace)
+        )
+        host._advance_spread_close_intent_phase = (
+            MainOrdersMixin._advance_spread_close_intent_phase.__get__(host, SimpleNamespace)
+        )
+        host._queue_spread_close_retry_on_cancel = (
+            MainOrdersMixin._queue_spread_close_retry_on_cancel.__get__(host, SimpleNamespace)
+        )
+        host._test_lifecycle = lifecycle
+        host._test_logs = logs
+        host._test_spread_key = spread_key
+        return host
+
+    def test_limit_cancel_resets_counter_on_combo_market_promotion(self):
+        """First limit-phase cancel should promote to combo-market and reset the counter."""
+        spread = self._make_spread()
+        host = self._make_host(spread)
+        order_event = SimpleNamespace(OrderId=101, Symbol=spread.long_leg.symbol)
+
+        host._queue_spread_close_retry_on_cancel(spread.long_leg.symbol, order_event)
+
+        assert host._spread_close_intent_by_key[host._test_spread_key]["phase"] == "COMBO_MARKET"
+        assert host._spread_forced_close_cancel_counts[host._test_spread_key] == 0
+        assert host._diag_spread_close_escalation_count == 0
+
+    def test_first_combo_market_cancel_does_not_jump_to_sequential(self):
+        """First combo-market cancel should keep the spread on the combo-market rung."""
+        spread = self._make_spread()
+        host = self._make_host(spread)
+        host._spread_close_intent_by_key[host._test_spread_key] = {
+            "urgency": "HARD",
+            "phase": "COMBO_MARKET",
+            "started_at": host.Time,
+            "attempt_count": 1,
+            "origin_exit_code": "FORCE_CLOSE:HARD_STOP",
+        }
+        order_event = SimpleNamespace(OrderId=102, Symbol=spread.long_leg.symbol)
+
+        host._queue_spread_close_retry_on_cancel(spread.long_leg.symbol, order_event)
+
+        assert host._spread_close_intent_by_key[host._test_spread_key]["phase"] == "COMBO_MARKET"
+        assert host._spread_forced_close_cancel_counts[host._test_spread_key] == 1
+        assert host._diag_spread_close_escalation_count == 0
+        assert host._spread_forced_close_retry[host._test_spread_key] == host.Time
+
+    def test_repeated_combo_market_cancel_escalates_to_sequential(self):
+        """Second combo-market cancel should still escalate to sequential fallback."""
+        spread = self._make_spread()
+        host = self._make_host(spread)
+        host._spread_close_intent_by_key[host._test_spread_key] = {
+            "urgency": "HARD",
+            "phase": "COMBO_MARKET",
+            "started_at": host.Time,
+            "attempt_count": 1,
+            "origin_exit_code": "FORCE_CLOSE:HARD_STOP",
+        }
+        host._spread_forced_close_cancel_counts[host._test_spread_key] = 1
+        order_event = SimpleNamespace(OrderId=103, Symbol=spread.long_leg.symbol)
+
+        host._queue_spread_close_retry_on_cancel(spread.long_leg.symbol, order_event)
+
+        assert host._spread_close_intent_by_key[host._test_spread_key]["phase"] == "SEQ_MARKET"
+        assert host._spread_forced_close_cancel_counts[host._test_spread_key] == 2
+        assert host._diag_spread_close_escalation_count == 1
+        assert host._spread_forced_close_retry[host._test_spread_key] == host.Time

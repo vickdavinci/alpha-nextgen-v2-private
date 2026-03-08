@@ -3624,8 +3624,13 @@ class MainOrdersMixin:
             cancel_count >= market_escalation_count
             and bool(getattr(config, "VASS_CLOSE_USE_COMBO_MARKET_AFTER_LIMIT_FAIL", True))
             and allow_market_escalation
+            and intent_phase == "LIMIT"
         ):
             intent_phase = self._advance_spread_close_intent_phase(spread_key, "COMBO_MARKET")
+            # Give combo-market its own cancel budget. Without this reset, the
+            # first combo-market cancel inherits the prior limit cancel count
+            # and can jump straight to sequential fallback.
+            self._spread_forced_close_cancel_counts[spread_key] = 0
             self._record_order_lifecycle_event(
                 status="SPREAD_EXIT_CANCELED",
                 order_id=int(order_event.OrderId or 0),
