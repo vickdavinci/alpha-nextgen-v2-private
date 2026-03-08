@@ -1194,6 +1194,11 @@ def check_spread_exit_signals_impl(
         entry_debit = spread.net_debit
         pnl = current_spread_value - entry_debit
         pnl_pct = pnl / entry_debit if entry_debit > 0 else 0
+        tradeable_pnl = raw_tradeable_spread_value - entry_debit
+        tradeable_pnl_pct = tradeable_pnl / entry_debit if entry_debit > 0 else 0
+        trail_eval_pnl_pct = tradeable_pnl_pct if is_bearish_debit_spread else pnl_pct
+        mfe_eval_pnl = tradeable_pnl if is_bearish_debit_spread else pnl
+        mfe_eval_pnl_pct = tradeable_pnl_pct if is_bearish_debit_spread else pnl_pct
 
         # V12.25: Thesis-first invalidation for BULL_CALL_DEBIT based on underlying QQQ.
         # Primary invalidation is underlying breach, not option mark noise.
@@ -1353,7 +1358,7 @@ def check_spread_exit_signals_impl(
                 )
 
         # V10.15: Track MFE relative to max profit for harvesting locks.
-        mfe_ratio = pnl / spread.max_profit if spread.max_profit > 0 else 0.0
+        mfe_ratio = mfe_eval_pnl / spread.max_profit if spread.max_profit > 0 else 0.0
         if mfe_ratio > spread.highest_pnl_max_profit_pct:
             spread.highest_pnl_max_profit_pct = mfe_ratio
 
@@ -1383,7 +1388,7 @@ def check_spread_exit_signals_impl(
             elif spread.mfe_lock_tier >= 1 and not mfe_t1_in_confirmed_disabled:
                 floor_pnl = commission_per_share
 
-            if floor_pnl is not None and pnl <= floor_pnl:
+            if floor_pnl is not None and mfe_eval_pnl <= floor_pnl:
                 if self.algorithm is not None and hasattr(
                     self.algorithm, "_diag_vass_mfe_lock_exits"
                 ):
@@ -1391,7 +1396,7 @@ def check_spread_exit_signals_impl(
                         int(getattr(self.algorithm, "_diag_vass_mfe_lock_exits", 0) or 0) + 1
                     )
                 exit_reason = (
-                    f"MFE_LOCK_T{spread.mfe_lock_tier} {pnl_pct:.1%} "
+                    f"MFE_LOCK_T{spread.mfe_lock_tier} {mfe_eval_pnl_pct:.1%} "
                     f"(MFE={spread.highest_pnl_max_profit_pct:.1%}, Floor=${floor_pnl:.2f}, {vass_profile_tag})"
                 )
 
@@ -1532,16 +1537,16 @@ def check_spread_exit_signals_impl(
         # V9.4: Once spread reaches +X% unrealized, trail stop from high-water mark
         trail_activate_pct = float(vass_exit_profile.get("trail_activate_pct", 0.20))
         trail_offset_pct = float(vass_exit_profile.get("trail_offset_pct", 0.15))
-        if exit_reason is None and trail_exit_enabled and pnl_pct > 0:
+        if exit_reason is None and trail_exit_enabled and trail_eval_pnl_pct > 0:
             # Update high-water mark
-            if pnl_pct > spread.highest_pnl_pct:
-                spread.highest_pnl_pct = pnl_pct
+            if trail_eval_pnl_pct > spread.highest_pnl_pct:
+                spread.highest_pnl_pct = trail_eval_pnl_pct
             # Trail stop activates after reaching activation threshold
             if spread.highest_pnl_pct >= trail_activate_pct:
                 trail_stop_level = spread.highest_pnl_pct - trail_offset_pct
-                if pnl_pct <= trail_stop_level:
+                if trail_eval_pnl_pct <= trail_stop_level:
                     exit_reason = (
-                        f"TRAIL_STOP {pnl_pct:.1%} "
+                        f"TRAIL_STOP {trail_eval_pnl_pct:.1%} "
                         f"(High={spread.highest_pnl_pct:.1%}, Trail={trail_stop_level:.1%}, {vass_profile_tag})"
                     )
 
