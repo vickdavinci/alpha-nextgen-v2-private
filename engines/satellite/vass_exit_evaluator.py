@@ -1185,6 +1185,12 @@ def check_spread_exit_signals_impl(
     else:
         # DEBIT SPREAD P&L: Original logic
         current_spread_value = _resolve_debit_spread_mark_value("ExitCheck")
+        raw_tradeable_spread_value = float(long_leg_price) - float(short_leg_price)
+        if raw_tradeable_spread_value < 0:
+            raw_tradeable_spread_value = 0.0
+        width_cap = float(getattr(spread, "width", 0.0) or 0.0)
+        if width_cap > 0 and raw_tradeable_spread_value > width_cap:
+            raw_tradeable_spread_value = width_cap
         entry_debit = spread.net_debit
         pnl = current_spread_value - entry_debit
         pnl_pct = pnl / entry_debit if entry_debit > 0 else 0
@@ -1505,14 +1511,21 @@ def check_spread_exit_signals_impl(
         )
         profit_target = raw_profit_target + commission_per_share
         net_pnl = pnl - commission_per_share
-        if profit_target_enabled and pnl >= profit_target:
+        profit_target_pnl = pnl
+        profit_target_net_pnl = net_pnl
+        profit_target_pnl_pct = pnl_pct
+        if is_bearish_debit_spread:
+            profit_target_pnl = raw_tradeable_spread_value - entry_debit
+            profit_target_net_pnl = profit_target_pnl - commission_per_share
+            profit_target_pnl_pct = profit_target_pnl / entry_debit if entry_debit > 0 else 0
+        if profit_target_enabled and profit_target_pnl >= profit_target:
             if _profit_target_open_delay_active():
                 _record_profit_target_open_delay_skip()
             else:
                 exit_reason = (
-                    f"PROFIT_TARGET +{pnl_pct:.1%} (Net ${net_pnl:.2f} >= ${raw_profit_target:.2f}) | "
+                    f"PROFIT_TARGET +{profit_target_pnl_pct:.1%} (Net ${profit_target_net_pnl:.2f} >= ${raw_profit_target:.2f}) | "
                     f"Target {adaptive_profit_pct:.0%} (regime {regime_score:.0f}) | "
-                    f"Gross ${pnl:.2f} - Commission ${commission_cost:.2f} | {vass_profile_tag}"
+                    f"Gross ${profit_target_pnl:.2f} - Commission ${commission_cost:.2f} | {vass_profile_tag}"
                 )
 
         # Exit 1B: TRAILING STOP — lock in gains after reaching activation threshold
