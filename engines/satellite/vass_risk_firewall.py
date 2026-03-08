@@ -72,6 +72,27 @@ def _is_bearish_spread_fresh_ogp_exempt(self, spread: Optional["SpreadPosition"]
     return regime_score < bear_regime_max
 
 
+def _get_ogp_close_all_threshold(self, spread: Optional["SpreadPosition"]) -> float:
+    """Return the close-all OGP threshold for the given spread."""
+    base_threshold = float(getattr(config, "SWING_OVERNIGHT_VIX_CLOSE_ALL", 30.0))
+    if spread is None:
+        return base_threshold
+
+    spread_type = str(getattr(spread, "spread_type", "") or "").upper()
+    if spread_type not in {"BEAR_PUT", "BEAR_PUT_DEBIT"}:
+        return base_threshold
+    if not _is_bearish_spread_fresh_ogp_exempt(self, spread):
+        return base_threshold
+
+    return float(
+        getattr(
+            config,
+            "BEAR_PUT_OVERNIGHT_VIX_CLOSE_ALL_BEAR_REGIME",
+            base_threshold,
+        )
+    )
+
+
 def _resolve_spread_live_dte(spread: Optional["SpreadPosition"]) -> int:
     """Best-effort spread DTE from leg metadata."""
     if spread is None:
@@ -332,8 +353,12 @@ def check_overnight_gap_protection_exit_impl(
 
         reason = None
         fresh_trade_ogp = False
-        if current_vix >= close_all_threshold:
-            reason = f"OVERNIGHT_GAP_PROTECTION: VIX {current_vix:.1f} >= {close_all_threshold}"
+        spread_close_all_threshold = _get_ogp_close_all_threshold(self, spread)
+        if current_vix >= spread_close_all_threshold:
+            reason = (
+                f"OVERNIGHT_GAP_PROTECTION: VIX {current_vix:.1f} >= "
+                f"{spread_close_all_threshold}"
+            )
         elif is_fresh_trade and current_vix >= close_fresh_threshold:
             fresh_trade_ogp = True
             reason = f"OVERNIGHT_GAP_PROTECTION: Fresh trade + VIX {current_vix:.1f} >= {close_fresh_threshold}"

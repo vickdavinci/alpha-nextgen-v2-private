@@ -3119,6 +3119,9 @@ SPREAD_EXIT_USE_EXECUTABLE_MARKS = (
 SWING_OVERNIGHT_GAP_PROTECTION_ENABLED = True
 SWING_OVERNIGHT_VIX_CLOSE_ALL = 30.0  # Close all spreads if VIX >= 30 at EOD
 SWING_OVERNIGHT_VIX_CLOSE_FRESH = 22.0  # Close fresh spreads if VIX >= 22 at EOD
+BEAR_PUT_OVERNIGHT_VIX_CLOSE_ALL_BEAR_REGIME = (
+    40.0  # V12.31: let BEAR_PUT_DEBIT survive elevated bear-regime VIX unless stress is extreme
+)
 
 # -----------------------------------------------------------------------------
 # V2.1.1 QQQ MOVE TRIGGER THRESHOLDS BY REGIME

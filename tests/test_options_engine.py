@@ -4803,16 +4803,45 @@ class TestBearPutProfitTargetScoping:
 
         assert signals is None
 
-    def test_overnight_gap_exit_keeps_close_all_in_bear_regime(self, engine):
-        """The global OGP disaster rail should still close spreads at the close-all threshold."""
+    def test_overnight_gap_exit_raises_bear_put_close_all_threshold_only(self, engine, monkeypatch):
+        """BEAR_PUT close-all OGP should be relaxed in bear regimes without changing other spreads."""
         spread = self._make_credit_spread()
         spread.spread_type = "BEAR_PUT_DEBIT"
         spread.net_debit = 1.40
         engine._spread_position = spread
         engine._get_regime_transition_context = lambda: {"effective_score": 40.0}
+        monkeypatch.setattr(config, "BEAR_PUT_OVERNIGHT_VIX_CLOSE_ALL_BEAR_REGIME", 40.0)
 
         signals = engine.check_overnight_gap_protection_exit(
             current_vix=30.0,
+            current_date="2024-08-07",
+        )
+
+        assert signals is None
+
+        engine._spread_position = self._make_credit_spread()
+        engine._get_regime_transition_context = lambda: {"effective_score": 40.0}
+        monkeypatch.setattr(config, "VASS_CREDIT_THETA_FIRST_ENABLED", False)
+
+        other_signals = engine.check_overnight_gap_protection_exit(
+            current_vix=30.0,
+            current_date="2024-08-07",
+        )
+
+        assert other_signals is not None
+        assert len(other_signals) == 1
+
+    def test_overnight_gap_exit_keeps_bear_put_disaster_rail_at_override(self, engine, monkeypatch):
+        """BEAR_PUT bear-regime carveout should still close when the higher disaster rail is reached."""
+        spread = self._make_credit_spread()
+        spread.spread_type = "BEAR_PUT_DEBIT"
+        spread.net_debit = 1.40
+        engine._spread_position = spread
+        engine._get_regime_transition_context = lambda: {"effective_score": 40.0}
+        monkeypatch.setattr(config, "BEAR_PUT_OVERNIGHT_VIX_CLOSE_ALL_BEAR_REGIME", 40.0)
+
+        signals = engine.check_overnight_gap_protection_exit(
+            current_vix=40.0,
             current_date="2024-08-07",
         )
 
