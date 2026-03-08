@@ -4908,6 +4908,195 @@ class TestBearPutProfitTargetScoping:
         assert spread.highest_pnl_max_profit_pct >= 0.45
         assert spread.mfe_lock_tier == 2
 
+
+class TestAssignmentMarginBufferScoping:
+    """Tests for the V12.31 assignment-margin scoping fix."""
+
+    @pytest.fixture
+    def engine(self):
+        """Create an OptionsEngine instance for testing."""
+        return OptionsEngine(algorithm=None)
+
+    def _make_credit_spread(self) -> SpreadPosition:
+        long_leg = OptionContract(
+            symbol="QQQ 240816C00457000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=457.0,
+            expiry="2024-08-16",
+            delta=0.20,
+            bid=1.20,
+            ask=1.30,
+            mid_price=1.25,
+            open_interest=5000,
+            days_to_expiry=9,
+        )
+        short_leg = OptionContract(
+            symbol="QQQ 240816C00453000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=453.0,
+            expiry="2024-08-16",
+            delta=0.35,
+            bid=2.40,
+            ask=2.60,
+            mid_price=2.50,
+            open_interest=5000,
+            days_to_expiry=9,
+        )
+        return SpreadPosition(
+            long_leg=long_leg,
+            short_leg=short_leg,
+            spread_type="BEAR_CALL_CREDIT",
+            net_debit=-1.40,
+            max_profit=1.40,
+            width=4.0,
+            entry_time="2024-08-07 12:15:00",
+            entry_score=4.0,
+            num_spreads=2,
+            regime_at_entry=62.0,
+        )
+
+    def _make_bull_call_debit(self) -> SpreadPosition:
+        long_leg = OptionContract(
+            symbol="QQQ 240405C00452000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=452.0,
+            expiry="2024-04-05",
+            delta=0.45,
+            bid=2.00,
+            ask=2.10,
+            mid_price=2.05,
+            open_interest=5000,
+            days_to_expiry=31,
+        )
+        short_leg = OptionContract(
+            symbol="QQQ 240405C00455000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=455.0,
+            expiry="2024-04-05",
+            delta=0.28,
+            bid=0.80,
+            ask=0.90,
+            mid_price=0.85,
+            open_interest=5000,
+            days_to_expiry=31,
+        )
+        return SpreadPosition(
+            long_leg=long_leg,
+            short_leg=short_leg,
+            spread_type="BULL_CALL_DEBIT",
+            net_debit=1.22,
+            max_profit=1.78,
+            width=3.0,
+            entry_time="2024-03-01 13:45:00",
+            entry_score=4.0,
+            num_spreads=15,
+            regime_at_entry=66.0,
+        )
+
+    def _make_bear_call_credit(self, *, dte: int, underlying_price: float) -> SpreadPosition:
+        long_leg = OptionContract(
+            symbol="QQQ 240308C00457000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=457.0,
+            expiry="2024-03-08",
+            delta=0.20,
+            bid=1.15,
+            ask=1.25,
+            mid_price=1.20,
+            open_interest=5000,
+            days_to_expiry=dte,
+        )
+        short_leg = OptionContract(
+            symbol="QQQ 240308C00453000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=453.0,
+            expiry="2024-03-08",
+            delta=0.35,
+            bid=2.35,
+            ask=2.55,
+            mid_price=2.45,
+            open_interest=5000,
+            days_to_expiry=dte,
+        )
+        spread = SpreadPosition(
+            long_leg=long_leg,
+            short_leg=short_leg,
+            spread_type="BEAR_CALL_CREDIT",
+            net_debit=-1.25,
+            max_profit=1.25,
+            width=4.0,
+            entry_time="2024-03-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=4,
+            regime_at_entry=45.0,
+        )
+        assert underlying_price > short_leg.strike
+        return spread
+
+    def test_margin_buffer_does_not_force_exit_debit_spread(self, engine, monkeypatch):
+        """Debit spreads should not hard-exit solely because free margin is low."""
+        spread = self._make_bull_call_debit()
+        monkeypatch.setattr(config, "SPREAD_FORCE_CLOSE_ENABLED", False)
+        monkeypatch.setattr(config, "SHORT_LEG_ITM_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "DEEP_ITM_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "OVERNIGHT_ITM_SHORT_BLOCK_ENABLED", False)
+
+        result = engine.check_assignment_risk_exit(
+            underlying_price=454.0,
+            current_dte=31,
+            current_hour=10,
+            current_minute=0,
+            available_margin=10.0,
+            spread_override=spread,
+        )
+
+        assert result is None
+
+    def test_margin_buffer_skips_high_dte_credit_spread(self, engine, monkeypatch):
+        """Credit spreads should not hard-exit on margin buffer outside the assignment window."""
+        spread = self._make_bear_call_credit(dte=12, underlying_price=454.0)
+        monkeypatch.setattr(config, "SPREAD_FORCE_CLOSE_ENABLED", False)
+        monkeypatch.setattr(config, "SHORT_LEG_ITM_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "DEEP_ITM_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "OVERNIGHT_ITM_SHORT_BLOCK_ENABLED", False)
+
+        result = engine.check_assignment_risk_exit(
+            underlying_price=454.0,
+            current_dte=12,
+            current_hour=10,
+            current_minute=0,
+            available_margin=10.0,
+            spread_override=spread,
+        )
+
+        assert result is None
+
+    def test_margin_buffer_still_protects_near_expiry_itm_credit(self, engine, monkeypatch):
+        """Near-expiry ITM credit spreads should still respect the margin buffer guard."""
+        spread = self._make_bear_call_credit(dte=2, underlying_price=454.0)
+        monkeypatch.setattr(config, "SPREAD_FORCE_CLOSE_ENABLED", False)
+        monkeypatch.setattr(config, "SHORT_LEG_ITM_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "DEEP_ITM_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "OVERNIGHT_ITM_SHORT_BLOCK_ENABLED", False)
+
+        result = engine.check_assignment_risk_exit(
+            underlying_price=454.0,
+            current_dte=2,
+            current_hour=10,
+            current_minute=0,
+            available_margin=10.0,
+            spread_override=spread,
+        )
+
+        assert result is not None
+        assert "MARGIN_BUFFER_INSUFFICIENT" in str(result[0].reason)
+
     def test_overnight_gap_exit_skips_fresh_bear_credit_in_bear_regime(self, engine):
         """Fresh bearish spreads should not hit OGP solely due to elevated VIX in bear regimes."""
         engine._spread_position = self._make_credit_spread()

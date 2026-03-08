@@ -61,6 +61,15 @@ def _is_debit_assignment_window(
     return extrinsic <= extrinsic_max
 
 
+def _is_short_leg_itm_now(short_leg: "OptionContract", underlying_price: float) -> bool:
+    """Return whether the short leg is currently in the money."""
+    strike = float(getattr(short_leg, "strike", 0.0) or 0.0)
+    if strike <= 0 or underlying_price <= 0:
+        return False
+    is_put = "P" in str(getattr(short_leg, "symbol", "")).upper()
+    return strike > underlying_price if is_put else strike < underlying_price
+
+
 def _ensure_assignment_incidents(self) -> Dict[str, Dict[str, Any]]:
     incidents = getattr(self, "_assignment_incidents", None)
     if not isinstance(incidents, dict):
@@ -621,7 +630,18 @@ def check_assignment_risk_exit_impl(
             exit_reason = overnight_reason
 
     # P0 Fix 3: Margin buffer insufficient
-    if exit_reason is None and available_margin > 0 and not in_assignment_grace:
+    # V12.31: limit this to near-expiry credit spreads with a live ITM short leg.
+    credit_margin_buffer_window = (
+        is_credit_spread
+        and _is_short_leg_itm_now(short_leg, underlying_price)
+        and current_dte <= int(getattr(config, "OVERNIGHT_ITM_SHORT_DTE_THRESHOLD", 2))
+    )
+    if (
+        exit_reason is None
+        and available_margin > 0
+        and not in_assignment_grace
+        and credit_margin_buffer_window
+    ):
         should_close, margin_reason = self._check_assignment_margin_buffer(
             spread=spread,
             underlying_price=underlying_price,
