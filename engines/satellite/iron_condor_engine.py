@@ -65,6 +65,7 @@ R_IC_PENDING_ENTRY = "R_IC_PENDING_ENTRY"
 R_IC_STRIKE_REUSE = "R_IC_STRIKE_REUSE"
 R_IC_REGIME_VELOCITY_BLOCK = "R_IC_REGIME_VELOCITY_BLOCK"
 R_IC_INSIDE_EXPECTED_MOVE = "R_IC_INSIDE_EXPECTED_MOVE"
+R_IC_REJECTION_COOLDOWN = "R_IC_REJECTION_COOLDOWN"
 
 # ── Exit reason codes ──
 EXIT_IC_VIX_SPIKE = "IC_VIX_SPIKE_EXIT"
@@ -112,6 +113,11 @@ class IronCondorEngine:
         self._regime_score_history: List[Tuple[str, float]] = []  # (date_str, score) for velocity
         self._last_scan_time: Optional[str] = None  # Scan throttle timestamp
         self._hold_guard_logged: set = set()  # Suppress repeat hold guard logs
+
+        # ── Rejection recovery (V12.33) ──
+        self._rejection_cooldown_until: Optional[datetime] = None
+        self._rejection_streak_count: int = 0
+        self._rejection_streak_first_at: Optional[datetime] = None
 
         # ── Fill tracking (owns 4-leg tracker state) ──
         self._side_fill_trackers: Dict[str, SpreadFillTracker] = {}
@@ -303,6 +309,13 @@ class IronCondorEngine:
         # Gate: Pending entry lock
         if self._pending_entry:
             return R_IC_PENDING_ENTRY
+
+        # Gate: Rejection cooldown (V12.33)
+        if (
+            self._rejection_cooldown_until is not None
+            and current_time < self._rejection_cooldown_until
+        ):
+            return R_IC_REJECTION_COOLDOWN
 
         # Gate: Loss breaker
         pause_until = self._loss_breaker_pause_until
@@ -1878,6 +1891,71 @@ class IronCondorEngine:
         self.cancel_pending_entry()
         return True
 
+    def record_entry_rejection(self, current_time: datetime, is_insufficient_bp: bool) -> int:
+        """Record an IC entry rejection and set appropriate cooldown.
+
+        Args:
+            current_time: Algorithm time at rejection.
+            is_insufficient_bp: True if broker cited insufficient buying power.
+
+        Returns:
+            Cooldown duration in minutes (0 if no cooldown set).
+        """
+        if not is_insufficient_bp:
+            # Non-BP rejections: clear streak, no special cooldown
+            self._rejection_streak_count = 0
+            self._rejection_streak_first_at = None
+            return 0
+
+        # Track streak within window
+        window_min = max(1, int(getattr(config, "IC_REJECTION_STREAK_WINDOW_MINUTES", 30)))
+        if (
+            self._rejection_streak_first_at is not None
+            and (current_time - self._rejection_streak_first_at).total_seconds() <= window_min * 60
+        ):
+            self._rejection_streak_count += 1
+        else:
+            # New streak
+            self._rejection_streak_count = 1
+            self._rejection_streak_first_at = current_time
+
+        streak_max = max(1, int(getattr(config, "IC_REJECTION_STREAK_MAX", 3)))
+
+        if self._rejection_streak_count >= streak_max:
+            # Block for rest of day: set cooldown to midnight
+            eod = current_time.replace(hour=23, minute=59, second=59)
+            self._rejection_cooldown_until = eod
+            self._log(
+                f"IC_REJECTION_DAY_BLOCK: streak={self._rejection_streak_count} "
+                f">= max={streak_max} | Blocking IC entries until EOD",
+                trades_only=True,
+            )
+            return int((eod - current_time).total_seconds() / 60)
+        elif self._rejection_streak_count > 1:
+            cooldown = max(
+                1,
+                int(getattr(config, "IC_REJECTION_STREAK_COOLDOWN_MINUTES", 15)),
+            )
+            self._rejection_cooldown_until = current_time + timedelta(minutes=cooldown)
+            self._log(
+                f"IC_REJECTION_COOLDOWN: streak={self._rejection_streak_count} "
+                f"| Cooldown={cooldown}min until {self._rejection_cooldown_until}",
+                trades_only=True,
+            )
+            return cooldown
+        else:
+            cooldown = max(
+                1,
+                int(getattr(config, "IC_REJECTION_COOLDOWN_MINUTES", 5)),
+            )
+            self._rejection_cooldown_until = current_time + timedelta(minutes=cooldown)
+            self._log(
+                f"IC_REJECTION_COOLDOWN: first_reject | Cooldown={cooldown}min "
+                f"until {self._rejection_cooldown_until}",
+                trades_only=True,
+            )
+            return cooldown
+
     def is_fill_tracking_symbol(self, symbol_norm: str) -> bool:
         """Return True if symbol is being tracked by an IC side fill tracker."""
         for tracker in self._side_fill_trackers.values():
@@ -2016,6 +2094,13 @@ class IronCondorEngine:
             "diag_wins": self._diag_wins,
             "diag_losses": self._diag_losses,
             "diag_total_pnl": self._diag_total_pnl,
+            "rejection_cooldown_until": str(self._rejection_cooldown_until)
+            if self._rejection_cooldown_until
+            else None,
+            "rejection_streak_count": self._rejection_streak_count,
+            "rejection_streak_first_at": str(self._rejection_streak_first_at)
+            if self._rejection_streak_first_at
+            else None,
         }
 
     def from_dict(self, state: Dict[str, Any]) -> None:
@@ -2064,6 +2149,18 @@ class IronCondorEngine:
         self._diag_wins = int(state.get("diag_wins", 0) or 0)
         self._diag_losses = int(state.get("diag_losses", 0) or 0)
         self._diag_total_pnl = float(state.get("diag_total_pnl", 0.0) or 0)
+        # Rejection recovery state
+        _rcu = state.get("rejection_cooldown_until")
+        try:
+            self._rejection_cooldown_until = datetime.fromisoformat(str(_rcu)) if _rcu else None
+        except Exception:
+            self._rejection_cooldown_until = None
+        self._rejection_streak_count = int(state.get("rejection_streak_count", 0) or 0)
+        _rsfa = state.get("rejection_streak_first_at")
+        try:
+            self._rejection_streak_first_at = datetime.fromisoformat(str(_rsfa)) if _rsfa else None
+        except Exception:
+            self._rejection_streak_first_at = None
 
     def reset_daily(self) -> None:
         """Reset intraday state at start of new trading day."""
@@ -2091,6 +2188,10 @@ class IronCondorEngine:
         self._last_scan_time = None
         self._hold_guard_logged = set()
         self._side_fill_trackers = {}
+        # Reset rejection recovery state (fresh day, fresh margin)
+        self._rejection_cooldown_until = None
+        self._rejection_streak_count = 0
+        self._rejection_streak_first_at = None
         # Reset daily diagnostics
         self._diag_candidates = 0
         self._diag_approved = 0
@@ -2114,6 +2215,9 @@ class IronCondorEngine:
         self._regime_score_history = []
         self._hold_guard_logged = set()
         self._side_fill_trackers = {}
+        self._rejection_cooldown_until = None
+        self._rejection_streak_count = 0
+        self._rejection_streak_first_at = None
         self._diag_candidates = 0
         self._diag_approved = 0
         self._diag_dropped = 0

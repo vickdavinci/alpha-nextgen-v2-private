@@ -48,6 +48,7 @@ from engines.satellite.iron_condor_engine import (
     R_IC_POSITION_LIMIT,
     R_IC_REGIME_NOT_PERSISTENT,
     R_IC_REGIME_OUT_OF_RANGE,
+    R_IC_REJECTION_COOLDOWN,
     R_IC_STOP_DW_UNFEASIBLE,
     R_IC_STRIKE_REUSE,
     R_IC_TRANSITION_BLOCK,
@@ -2462,3 +2463,169 @@ class TestCloseRetry:
         ):
             sigs = engine.build_retry_close_signals(condor, ["short_put"], t0)
             assert condor.close_attempt_count == 1
+
+
+class TestRejectionCooldown:
+    """Tests for V12.33 IC entry rejection cooldown and streak logic."""
+
+    def test_first_bp_rejection_sets_short_cooldown(self):
+        """First insufficient-BP rejection should set IC_REJECTION_COOLDOWN_MINUTES cooldown."""
+        engine = IronCondorEngine()
+        t0 = datetime(2025, 3, 5, 10, 30, 0)
+        with _patch_config(IC_REJECTION_COOLDOWN_MINUTES=5):
+            mins = engine.record_entry_rejection(t0, is_insufficient_bp=True)
+        assert mins == 5
+        assert engine._rejection_cooldown_until == t0 + timedelta(minutes=5)
+        assert engine._rejection_streak_count == 1
+
+    def test_second_bp_rejection_in_window_sets_longer_cooldown(self):
+        """Second rejection within streak window should use streak cooldown."""
+        engine = IronCondorEngine()
+        t0 = datetime(2025, 3, 5, 10, 30, 0)
+        t1 = t0 + timedelta(minutes=10)
+        with _patch_config(
+            IC_REJECTION_COOLDOWN_MINUTES=5,
+            IC_REJECTION_STREAK_WINDOW_MINUTES=30,
+            IC_REJECTION_STREAK_COOLDOWN_MINUTES=15,
+            IC_REJECTION_STREAK_MAX=3,
+        ):
+            engine.record_entry_rejection(t0, is_insufficient_bp=True)
+            mins = engine.record_entry_rejection(t1, is_insufficient_bp=True)
+        assert mins == 15
+        assert engine._rejection_streak_count == 2
+        assert engine._rejection_cooldown_until == t1 + timedelta(minutes=15)
+
+    def test_third_bp_rejection_blocks_for_day(self):
+        """Third rejection in streak should block IC entries for rest of day."""
+        engine = IronCondorEngine()
+        t0 = datetime(2025, 3, 5, 10, 30, 0)
+        with _patch_config(
+            IC_REJECTION_COOLDOWN_MINUTES=5,
+            IC_REJECTION_STREAK_WINDOW_MINUTES=30,
+            IC_REJECTION_STREAK_COOLDOWN_MINUTES=15,
+            IC_REJECTION_STREAK_MAX=3,
+        ):
+            engine.record_entry_rejection(t0, is_insufficient_bp=True)
+            engine.record_entry_rejection(t0 + timedelta(minutes=6), is_insufficient_bp=True)
+            mins = engine.record_entry_rejection(
+                t0 + timedelta(minutes=12), is_insufficient_bp=True
+            )
+        assert engine._rejection_streak_count == 3
+        # Cooldown should be until EOD (23:59:59)
+        assert engine._rejection_cooldown_until.hour == 23
+        assert mins > 60  # More than an hour remaining in the day
+
+    def test_non_bp_rejection_clears_streak(self):
+        """Non-insufficient-BP rejection should clear streak and set no cooldown."""
+        engine = IronCondorEngine()
+        t0 = datetime(2025, 3, 5, 10, 30, 0)
+        with _patch_config(IC_REJECTION_COOLDOWN_MINUTES=5):
+            engine.record_entry_rejection(t0, is_insufficient_bp=True)
+            assert engine._rejection_streak_count == 1
+            mins = engine.record_entry_rejection(
+                t0 + timedelta(minutes=1), is_insufficient_bp=False
+            )
+        assert mins == 0
+        assert engine._rejection_streak_count == 0
+        assert engine._rejection_streak_first_at is None
+
+    def test_rejection_outside_window_starts_new_streak(self):
+        """Rejection after streak window expires should start fresh at count=1."""
+        engine = IronCondorEngine()
+        t0 = datetime(2025, 3, 5, 10, 0, 0)
+        t1 = t0 + timedelta(minutes=60)  # Well outside 30-min window
+        with _patch_config(
+            IC_REJECTION_COOLDOWN_MINUTES=5,
+            IC_REJECTION_STREAK_WINDOW_MINUTES=30,
+            IC_REJECTION_STREAK_COOLDOWN_MINUTES=15,
+            IC_REJECTION_STREAK_MAX=3,
+        ):
+            engine.record_entry_rejection(t0, is_insufficient_bp=True)
+            engine.record_entry_rejection(t0 + timedelta(minutes=6), is_insufficient_bp=True)
+            assert engine._rejection_streak_count == 2
+            # Now 60 min later — outside window
+            mins = engine.record_entry_rejection(t1, is_insufficient_bp=True)
+        assert engine._rejection_streak_count == 1
+        assert mins == 5  # Back to first-rejection cooldown
+
+    def test_cooldown_gate_blocks_entry(self):
+        """Env gate should return R_IC_REJECTION_COOLDOWN when cooldown is active."""
+        engine = IronCondorEngine()
+        t_now = datetime(2025, 3, 5, 10, 30, 0)
+        engine._rejection_cooldown_until = t_now + timedelta(minutes=5)
+        with _patch_config(
+            IRON_CONDOR_ENGINE_ENABLED=True,
+            IC_MAX_TRADES_PER_DAY=2,
+            IC_MAX_CONCURRENT=2,
+            IC_DAILY_LOSS_PCT=0.015,
+            IC_OPEN_RISK_PCT=0.03,
+            OPTIONS_MIN_MARGIN_PCT=0.02,
+            IC_REGIME_MIN=45,
+            IC_REGIME_MAX=75,
+        ):
+            result = engine._check_env_gates(
+                regime_score=55.0,
+                adx_value=20.0,
+                vix_current=18.0,
+                transition_ctx={},
+                current_time=t_now,
+                effective_portfolio_value=100000,
+                margin_remaining=50000,
+                ic_open_risk=0,
+            )
+        assert result == R_IC_REJECTION_COOLDOWN
+
+    def test_cooldown_gate_passes_after_expiry(self):
+        """Env gate should not return R_IC_REJECTION_COOLDOWN when cooldown expired."""
+        engine = IronCondorEngine()
+        t_now = datetime(2025, 3, 5, 10, 35, 0)
+        engine._rejection_cooldown_until = t_now - timedelta(minutes=1)  # Expired
+        with _patch_config(
+            IRON_CONDOR_ENGINE_ENABLED=True,
+            IC_MAX_TRADES_PER_DAY=2,
+            IC_MAX_CONCURRENT=2,
+            IC_DAILY_LOSS_PCT=0.015,
+            IC_OPEN_RISK_PCT=0.03,
+            OPTIONS_MIN_MARGIN_PCT=0.02,
+            IC_REGIME_MIN=45,
+            IC_REGIME_MAX=75,
+        ):
+            result = engine._check_env_gates(
+                regime_score=55.0,
+                adx_value=20.0,
+                vix_current=18.0,
+                transition_ctx={"transition_overlay": "STABLE"},
+                current_time=t_now,
+                effective_portfolio_value=100000,
+                margin_remaining=50000,
+                ic_open_risk=0,
+            )
+        # Result may fail on a later gate (e.g. persistence, ADX, etc.)
+        # but it must NOT be R_IC_REJECTION_COOLDOWN
+        assert result != R_IC_REJECTION_COOLDOWN
+
+    def test_daily_reset_clears_rejection_state(self):
+        """reset_daily should clear rejection cooldown and streak."""
+        engine = IronCondorEngine()
+        t0 = datetime(2025, 3, 5, 10, 30, 0)
+        with _patch_config(IC_REJECTION_COOLDOWN_MINUTES=5):
+            engine.record_entry_rejection(t0, is_insufficient_bp=True)
+        assert engine._rejection_cooldown_until is not None
+        assert engine._rejection_streak_count == 1
+        engine.reset_daily()
+        assert engine._rejection_cooldown_until is None
+        assert engine._rejection_streak_count == 0
+        assert engine._rejection_streak_first_at is None
+
+    def test_rejection_state_persists_round_trip(self):
+        """Rejection state should survive to_dict/from_dict round trip."""
+        engine = IronCondorEngine()
+        t0 = datetime(2025, 3, 5, 10, 30, 0)
+        with _patch_config(IC_REJECTION_COOLDOWN_MINUTES=5):
+            engine.record_entry_rejection(t0, is_insufficient_bp=True)
+        state = engine.to_dict()
+        engine2 = IronCondorEngine()
+        engine2.from_dict(state)
+        assert engine2._rejection_streak_count == 1
+        assert engine2._rejection_cooldown_until is not None
+        assert engine2._rejection_streak_first_at is not None

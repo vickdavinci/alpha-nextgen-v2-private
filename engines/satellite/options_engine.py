@@ -2272,6 +2272,10 @@ class OptionsEngine:
         """Delegate IC rejection check to IC engine."""
         return self._iron_condor_engine.handle_rejection(symbol_norm)
 
+    def record_ic_entry_rejection(self, current_time, is_insufficient_bp: bool) -> int:
+        """Delegate IC entry rejection cooldown to IC engine."""
+        return self._iron_condor_engine.record_entry_rejection(current_time, is_insufficient_bp)
+
     def is_ic_fill_tracking_symbol(self, symbol_norm: str) -> bool:
         """Return True if symbol is tracked by an IC side fill tracker."""
         return self._iron_condor_engine.is_fill_tracking_symbol(symbol_norm)

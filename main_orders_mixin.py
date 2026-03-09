@@ -3131,9 +3131,21 @@ class MainOrdersMixin:
                     )
                     if self._spread_fill_tracker is not None:
                         self._spread_fill_tracker = None
+                    # V12.33: Classify rejection and apply cooldown
+                    _ic_msg = str(getattr(order_event, "Message", "") or "").lower()
+                    _ic_insufficient_bp = (
+                        "insufficient buying power" in _ic_msg
+                        or "maintenance margin" in _ic_msg
+                        or "insufficient margin" in _ic_msg
+                    )
+                    _ic_cooldown = self.options_engine.record_ic_entry_rejection(
+                        self.Time, _ic_insufficient_bp
+                    )
                     self.Log(
                         f"IC_RECOVERY: IC combo rejected | Symbol={symbol_norm} | "
-                        f"RecoverySignals={int(recovered)}"
+                        f"RecoverySignals={int(recovered)} | "
+                        f"InsufficientBP={_ic_insufficient_bp} | "
+                        f"Cooldown={_ic_cooldown}min"
                     )
                     spread_rejection_handled = True
 

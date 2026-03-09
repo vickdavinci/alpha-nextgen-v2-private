@@ -2415,6 +2415,16 @@ IC_EM_BUFFER_MULT = 1.0  # 1.0× expected move — institutional standard for IC
 # IC position's leg at the same expiry (prevents broker-side netting → orphan legs).
 IC_STRIKE_REUSE_GUARD_ENABLED = True
 
+# ── IC Entry Rejection Recovery (V12.33) ──
+# When broker rejects an IC combo for insufficient buying power, apply a short
+# cooldown before retrying.  First rejection: IC_REJECTION_COOLDOWN_MINUTES.
+# If another rejection hits within the streak window: longer cooldown.
+# Third+ rejection in the same window: block IC entries for the rest of the day.
+IC_REJECTION_COOLDOWN_MINUTES = 5  # Initial cooldown after first insufficient-BP rejection
+IC_REJECTION_STREAK_WINDOW_MINUTES = 30  # Window for counting consecutive rejections
+IC_REJECTION_STREAK_COOLDOWN_MINUTES = 15  # Cooldown after 2nd rejection in streak
+IC_REJECTION_STREAK_MAX = 3  # After this many rejections in window, block for the day
+
 # ── IC Close Retry / Escalation ──
 # When IC close is canceled by broker, orphan recovery re-emits close signals.
 # These params control cooldown, escalation to sequential, and max retries.
