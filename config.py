@@ -2328,7 +2328,9 @@ IC_MIN_CREDIT_TO_WIDTH = 0.18  # Default C/W floor (V12.33: was 0.28 — allow w
 IC_CW_FLOOR_LOW_VIX = 0.18  # C/W floor when VIX < 16 (V12.33: was 0.30 — wider strikes OK)
 IC_CW_FLOOR_MID_VIX = 0.18  # C/W floor when 16 <= VIX <= 25 (V12.33: was 0.28)
 IC_CW_FLOOR_HIGH_VIX = 0.18  # C/W floor when 25 < VIX <= 32 (V12.33: was 0.25)
-IC_MAX_IMPLIED_WR = 0.78  # Reject if implied expiry WR > 78%
+IC_MAX_IMPLIED_WR = (
+    0.85  # Reject if implied expiry WR > 85% (V12.33: was 0.78 — align with CW_ABSOLUTE_FLOOR 0.15)
+)
 IC_MAX_STOP_DW = (
     0.95  # Max stop D/W ceiling (V12.28: was 0.65 — ensures stop debit < wing at 1.5× stop)
 )
