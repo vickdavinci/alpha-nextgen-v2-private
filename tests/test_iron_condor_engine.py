@@ -1512,6 +1512,165 @@ class TestEndToEndSearch:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# V12.33 EXPECTED MOVE + MFE INTERACTION TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestExpectedMoveGate:
+    """Verify EM buffer gate rejects close strikes and admits wide strikes."""
+
+    def test_em_gate_rejects_close_strikes(self):
+        """Condor with strikes inside 1σ expected move is rejected."""
+        engine = _make_engine()
+        from engines.satellite.iron_condor_engine import R_IC_INSIDE_EXPECTED_MOVE
+
+        # VIX=20, DTE=18: EM = 0.20 × √(18/365) = 4.44%
+        # min_em_distance = 480 × 0.0444 = 21.3
+        # Chain with default delta=0.18 gives strikes at ~463/497 (17pt from 480)
+        # 17 < 21.3 → REJECTED by EM gate
+        # C/W = 1.20/5 = 0.24 — pass floor by lowering it to 0.18
+        chain = _make_option_chain(
+            qqq_price=480,
+            put_delta=0.18,
+            call_delta=0.18,
+            put_credit=1.00,
+            call_credit=1.00,
+            wing_width=5,
+            dte=18,
+            expiry="2025-03-21",
+        )
+        overrides = {
+            **_SEARCH_DEFAULTS,
+            "IC_CW_FLOOR_MID_VIX": 0.18,
+            "IC_CW_ABSOLUTE_FLOOR": 0.15,
+        }
+        with _patch_config(**overrides):
+            with patch.object(engine, "_extract_chain_contracts", return_value=chain):
+                result = engine._search_and_build_condor(
+                    chain=["dummy"],
+                    qqq_price=480,
+                    vix_current=20,
+                    regime_score=52,
+                    adx_value=15,
+                    current_time=datetime(2025, 3, 3, 11, 0),
+                    effective_portfolio_value=100000,
+                )
+                assert result is None
+                assert engine._diag_drop_codes.get(R_IC_INSIDE_EXPECTED_MOVE, 0) > 0
+
+    def test_em_gate_admits_wide_strikes(self):
+        """Condor with strikes outside 1σ expected move passes."""
+        engine = _make_engine()
+        from engines.satellite.iron_condor_engine import R_IC_INSIDE_EXPECTED_MOVE
+
+        # VIX=12, DTE=15: EM = 0.12 × √(15/365) = 2.43%
+        # min_em_distance = 480 × 0.0243 = 11.7
+        # Chain strikes at ~463/497 (17pt from 480): 17 > 11.7 → PASSES
+        chain = _make_option_chain(
+            qqq_price=480,
+            put_delta=0.18,
+            call_delta=0.18,
+            put_credit=1.00,
+            call_credit=1.00,
+            wing_width=5,
+            dte=15,
+            expiry="2025-03-18",
+        )
+        overrides = {**_SEARCH_DEFAULTS}
+        with _patch_config(**overrides):
+            with patch.object(engine, "_extract_chain_contracts", return_value=chain):
+                result = engine._search_and_build_condor(
+                    chain=["dummy"],
+                    qqq_price=480,
+                    vix_current=12,
+                    regime_score=52,
+                    adx_value=15,
+                    current_time=datetime(2025, 3, 3, 11, 0),
+                    effective_portfolio_value=100000,
+                )
+                assert result is not None
+                assert engine._diag_drop_codes.get(R_IC_INSIDE_EXPECTED_MOVE, 0) == 0
+
+
+class TestMFEOn14To21DTE:
+    """Verify MFE thresholds interact correctly with 14-21 DTE entry profile.
+
+    V12.33 changed T1=0.30, T2=0.45, T1_floor=0.05 to match the theta
+    accumulation curve at 14-21 DTE. These tests verify the new boundaries.
+    """
+
+    def _exit_kwargs(self, condor, combined_pnl):
+        return dict(
+            condor=condor,
+            combined_pnl=combined_pnl,
+            current_dte=condor.entry_dte - 3,  # 3 days into hold
+            vix_current=condor.entry_vix,
+            regime_score=52,
+            qqq_price=condor.entry_underlying_price,
+            current_time=datetime(2025, 3, 8, 11, 0),  # Well past hold guard
+        )
+
+    def test_14dte_t1_does_not_arm_at_old_threshold(self):
+        """HWM at 25% (old T1=0.20) does NOT arm T1 under new T1=0.30."""
+        engine = _make_engine()
+        condor = _make_condor(entry_dte=14, vix=15)
+        condor.highest_pnl_pct = 0.25  # Above old T1=0.20, below new T1=0.30
+        # credit_100 = 1.20 * 2 * 100 = 240
+        # PnL = 0 → 0/240 = 0%, T1 NOT armed → no MFE exit
+        result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=0))
+        assert condor.mfe_lock_tier == 0  # Not armed
+        # No MFE exit (may exit via other cascades, so check tier only)
+
+    def test_21dte_t1_arms_and_floor_at_5pct(self):
+        """T1 arms at 30%, floor protects at 5% above breakeven."""
+        engine = _make_engine()
+        condor = _make_condor(entry_dte=21, vix=18)
+        condor.highest_pnl_pct = 0.35  # Above T1=0.30
+        # credit_100 = 240
+        # PnL at 6% of credit → above T1 floor (5%), no MFE exit
+        result = engine.check_exit_signals(
+            **self._exit_kwargs(condor, combined_pnl=14.4)  # 14.4/240 = 0.06
+        )
+        assert condor.mfe_lock_tier == 1
+        # 6% > 5% floor → no MFE exit
+        assert result is None or result[0] != "IC_MFE_LOCK"
+
+    def test_21dte_t1_floor_fires_below_5pct(self):
+        """T1 floor at 5% triggers exit when PnL drops below."""
+        engine = _make_engine()
+        condor = _make_condor(entry_dte=21, vix=18)
+        condor.highest_pnl_pct = 0.35  # Arms T1
+        # PnL at 4% of credit → below T1 floor (5%), MFE exit fires
+        result = engine.check_exit_signals(
+            **self._exit_kwargs(condor, combined_pnl=9.6)  # 9.6/240 = 0.04
+        )
+        assert condor.mfe_lock_tier == 1
+        assert result is not None
+        reason, _ = result
+        assert reason == "IC_MFE_LOCK"
+
+    def test_14dte_t2_arms_at_new_threshold(self):
+        """T2 arms at 45% (not old 35%), and floor locks at 25%."""
+        engine = _make_engine()
+        condor = _make_condor(entry_dte=14, vix=15)
+        condor.highest_pnl_pct = 0.50  # Above T2=0.45
+        # PnL at 26% → above T2 floor (25%), no exit
+        result = engine.check_exit_signals(
+            **self._exit_kwargs(condor, combined_pnl=62.4)  # 62.4/240 = 0.26
+        )
+        assert condor.mfe_lock_tier == 2
+        assert result is None or result[0] != "IC_MFE_LOCK"
+
+        # PnL drops to 24% → below T2 floor (25%), exit
+        result = engine.check_exit_signals(
+            **self._exit_kwargs(condor, combined_pnl=57.6)  # 57.6/240 = 0.24
+        )
+        assert result is not None
+        reason, _ = result
+        assert reason == "IC_MFE_LOCK"
+
+
+# ═══════════════════════════════════════════════════════════════════
 # EXIT SIGNAL STRUCTURE TESTS
 # ═══════════════════════════════════════════════════════════════════
 
