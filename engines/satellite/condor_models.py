@@ -66,6 +66,9 @@ class IronCondorPosition:
     implied_wr_be: float = 0.0  # Implied expiry breakeven WR (1 - C/W)
     exit_pnl_estimate: float = 0.0  # Snapshot PnL at software-exit trigger (for accounting)
 
+    # ── Entry-frozen exit params (V12.33: survive config changes across deploys) ──
+    entry_stop_mult: float = 0.0  # IC_STOP_LOSS_MULTIPLE at entry time (0 = use config)
+
     # ── Derived helpers ──
 
     @property
@@ -116,6 +119,7 @@ class IronCondorPosition:
             "stop_dw": self.stop_dw,
             "implied_wr_be": self.implied_wr_be,
             "exit_pnl_estimate": self.exit_pnl_estimate,
+            "entry_stop_mult": self.entry_stop_mult,
         }
 
     @classmethod
@@ -148,4 +152,5 @@ class IronCondorPosition:
             stop_dw=data.get("stop_dw", 0.0),
             implied_wr_be=data.get("implied_wr_be", 0.0),
             exit_pnl_estimate=float(data.get("exit_pnl_estimate", 0.0) or 0.0),
+            entry_stop_mult=float(data.get("entry_stop_mult", 0.0) or 0.0),
         )

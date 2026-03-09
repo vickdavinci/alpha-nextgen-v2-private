@@ -1060,6 +1060,7 @@ class IronCondorEngine:
             entry_cw_tier=cw_tier,
             stop_dw=stop_dw,
             implied_wr_be=implied_wr,
+            entry_stop_mult=stop_mult,
         )
 
         # ── Score: higher is better (V12.33: reweighted to prefer distance over richness) ──
@@ -1351,8 +1352,12 @@ class IronCondorEngine:
                 )
                 return self._build_exit(condor, EXIT_IC_MFE_LOCK, current_time)
 
-        # ── P3: Stop loss ──
-        stop_mult = float(getattr(config, "IC_STOP_LOSS_MULTIPLE", 1.50))
+        # ── P3: Stop loss (use entry-frozen multiplier if available) ──
+        stop_mult = (
+            condor.entry_stop_mult
+            if condor.entry_stop_mult > 0
+            else float(getattr(config, "IC_STOP_LOSS_MULTIPLE", 1.50))
+        )
         if loss_pct_of_credit >= stop_mult:
             return self._build_exit(condor, EXIT_IC_STOP_LOSS, current_time)
 
