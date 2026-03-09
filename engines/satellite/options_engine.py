@@ -1218,7 +1218,15 @@ class OptionsEngine:
             and bool(getattr(config, put_rec_key, True))
             and in_recovery
         ):
-            return put_rec_gate, "bearish blocked during recovery"
+            if engine_key != "VASS":
+                return put_rec_gate, "bearish blocked during recovery"
+            bars_since_flip = int(ctx.get("overlay_bars_since_flip", 999) or 999)
+            hard_block_bars = max(
+                0,
+                int(getattr(config, "VASS_BEAR_RECOVERY_HARD_BLOCK_BARS", 0) or 0),
+            )
+            if bars_since_flip < hard_block_bars:
+                return put_rec_gate, "bearish blocked during recovery"
 
         if bool(getattr(config, "TRANSITION_HANDOFF_THROTTLE_ENABLED", True)):
             if engine_key == "ITM":

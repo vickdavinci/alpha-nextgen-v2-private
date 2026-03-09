@@ -5229,6 +5229,70 @@ class TestBearPutWidthScoping:
         assert bear_cap == 0.36
 
 
+class TestVASSTransitionRecoveryScoping:
+    """Tests for the V12.32 VASS bear-on-recovery hard-block relaxation."""
+
+    @pytest.fixture
+    def engine(self):
+        """Create an OptionsEngine instance for transition policy checks."""
+        return OptionsEngine(algorithm=None)
+
+    def test_vass_put_recovery_hard_block_only_applies_early(self, engine, monkeypatch):
+        """VASS bear recovery hard block should only apply during the first bars after flip."""
+        monkeypatch.setattr(config, "VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY", True)
+        monkeypatch.setattr(config, "VASS_BEAR_RECOVERY_HARD_BLOCK_BARS", 2)
+        monkeypatch.setattr(config, "VASS_TRANSITION_HANDOFF_THROTTLE_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_TRANSITION_HANDOFF_BARS", 4)
+
+        early_gate, early_reason = engine.evaluate_transition_policy_block(
+            engine="VASS",
+            direction=OptionDirection.PUT,
+            transition_ctx={
+                "transition_overlay": "RECOVERY",
+                "overlay_bars_since_flip": 1,
+                "strong_recovery": True,
+                "delta": 1.0,
+                "momentum_roc": 0.01,
+            },
+        )
+        later_gate, later_reason = engine.evaluate_transition_policy_block(
+            engine="VASS",
+            direction=OptionDirection.PUT,
+            transition_ctx={
+                "transition_overlay": "RECOVERY",
+                "overlay_bars_since_flip": 2,
+                "strong_recovery": True,
+                "delta": 1.0,
+                "momentum_roc": 0.01,
+            },
+        )
+
+        assert early_gate == "VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY"
+        assert "recovery" in early_reason
+        assert later_gate == "TRANSITION_HANDOFF_PUT_THROTTLE"
+        assert "PUT throttled" in later_reason
+
+    def test_non_vass_put_recovery_block_remains_hard(self, engine, monkeypatch):
+        """Other engines should keep the original hard recovery block behavior."""
+        monkeypatch.setattr(config, "ITM_TRANSITION_BLOCK_BEAR_ON_RECOVERY", True)
+        monkeypatch.setattr(config, "VASS_BEAR_RECOVERY_HARD_BLOCK_BARS", 2)
+
+        gate, reason = engine.evaluate_transition_policy_block(
+            engine="ITM",
+            direction=OptionDirection.PUT,
+            transition_ctx={
+                "transition_overlay": "RECOVERY",
+                "overlay_bars_since_flip": 3,
+                "strong_recovery": True,
+                "delta": 1.0,
+                "momentum_roc": 0.01,
+            },
+        )
+
+        assert gate == "REGIME_RECOVERY_NO_PUT"
+        assert "recovery" in reason
+
+
 class TestSpreadCloseCancelLadderScoping:
     """Tests for the V12.31 combo-close cancel ladder scoping fix."""
 

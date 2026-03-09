@@ -2008,6 +2008,9 @@ VASS_BULL_TRANSITION_MIN_REGIME = 50.0  # Allow only strong recovery overrides b
 VASS_TRANSITION_BLOCK_AMBIGUOUS = True
 VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION = True
 VASS_TRANSITION_BLOCK_BEAR_ON_RECOVERY = True
+VASS_BEAR_RECOVERY_HARD_BLOCK_BARS = (
+    2  # Block only the first two RECOVERY bars for bearish VASS, then use handoff throttle.
+)
 VASS_TRANSITION_HANDOFF_THROTTLE_ENABLED = True
 VASS_TRANSITION_HANDOFF_BARS = 4
 # V12.4: pre-close transition de-risk for bullish debit VASS to avoid overnight gap carry.
