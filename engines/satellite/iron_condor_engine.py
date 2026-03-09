@@ -982,6 +982,19 @@ class IronCondorEngine:
 
             if put_distance < min_em_distance or call_distance < min_em_distance:
                 self._record_drop(R_IC_INSIDE_EXPECTED_MOVE)
+                self._emit_regime_decision(
+                    "BLOCKED",
+                    "IC_EM_BUFFER",
+                    threshold_snapshot={
+                        "put_dist": round(put_distance, 2),
+                        "call_dist": round(call_distance, 2),
+                        "em_threshold": round(min_em_distance, 2),
+                        "em_pct": round(em_pct, 4),
+                        "vix": round(vix_current, 1),
+                        "dte": min_dte,
+                        "buffer_mult": em_buffer,
+                    },
+                )
                 return None
 
         # ── Per-trade risk cap ──
