@@ -258,17 +258,26 @@ class IronCondorEngine:
         self._pending_entry_since = current_time
         signals = self._build_entry_signals(condor, current_time)
 
+        _up = condor.entry_underlying_price
+        _put_d = (_up - condor.put_short_strike) / _up if _up > 0 else 0
+        _call_d = (condor.call_short_strike - _up) / _up if _up > 0 else 0
+        _min_d = min(_put_d, _call_d)
+
         self._emit_lifecycle(
             "APPROVED",
             signal_id=condor.condor_id,
             trace_id=condor.condor_id,
-            reason=f"C/W={condor.credit_to_width:.3f} spreads={condor.num_spreads}",
+            reason=(
+                f"C/W={condor.credit_to_width:.3f} spreads={condor.num_spreads} "
+                f"dist={_min_d:.3f}"
+            ),
         )
         self._log(
             f"ENTRY_SIGNAL | condor_id={condor.condor_id} "
             f"| put_short={condor.put_short_strike} call_short={condor.call_short_strike} "
             f"| C/W={condor.credit_to_width:.3f} | credit=${condor.net_credit:.2f} "
             f"| max_loss=${condor.max_loss:.2f} | spreads={condor.num_spreads} "
+            f"| dist={_min_d:.3f} | put_d={_put_d:.3f} | call_d={_call_d:.3f} "
             f"| VIX={vix_current:.1f} | regime={regime_score:.1f} | ADX={adx_value:.1f}",
             trades_only=True,
         )
@@ -601,11 +610,15 @@ class IronCondorEngine:
                 effective_portfolio_value=effective_portfolio_value,
             )
             if result is not None:
+                _p = result.entry_underlying_price
+                _pd = (_p - result.put_short_strike) / _p if _p > 0 else 0
+                _cd = (result.call_short_strike - _p) / _p if _p > 0 else 0
                 self._log(
                     f"SEARCH_OK | DTE={dte_min}-{dte_max} | widen={widen_step:.2f} "
                     f"| delta=[{delta_min:.2f},{delta_max:.2f}] "
                     f"| puts={len(eligible_puts)} calls={len(eligible_calls)} "
-                    f"| C/W={result.credit_to_width:.3f}",
+                    f"| C/W={result.credit_to_width:.3f} "
+                    f"| put_dist={_pd:.3f} call_dist={_cd:.3f}",
                     trades_only=False,
                 )
                 return result
