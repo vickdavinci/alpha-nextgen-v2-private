@@ -64,6 +64,7 @@ R_IC_PER_TRADE_RISK_EXCEEDED = "R_IC_PER_TRADE_RISK_EXCEEDED"
 R_IC_PENDING_ENTRY = "R_IC_PENDING_ENTRY"
 R_IC_STRIKE_REUSE = "R_IC_STRIKE_REUSE"
 R_IC_REGIME_VELOCITY_BLOCK = "R_IC_REGIME_VELOCITY_BLOCK"
+R_IC_INSIDE_EXPECTED_MOVE = "R_IC_INSIDE_EXPECTED_MOVE"
 
 # ── Exit reason codes ──
 EXIT_IC_VIX_SPIKE = "IC_VIX_SPIKE_EXIT"
@@ -966,6 +967,23 @@ class IronCondorEngine:
             self._record_drop(R_IC_SLIPPAGE_FAIL)
             return None
 
+        # ── Expected move buffer gate (V12.33) ──
+        # Reject condors where short strikes are inside the VIX-implied expected move.
+        # EM = QQQ × (VIX/100) × √(DTE/365) × buffer_mult
+        # This auto-adapts to VIX level and DTE: low vol → tighter OK, high vol → wider.
+        em_buffer = float(getattr(config, "IC_EM_BUFFER_MULT", 1.0))
+        if qqq_price > 0 and vix_current > 0 and em_buffer > 0:
+            min_dte = min(short_put.days_to_expiry, short_call.days_to_expiry)
+            em_pct = (vix_current / 100.0) * math.sqrt(max(1, min_dte) / 365.0) * em_buffer
+            min_em_distance = qqq_price * em_pct
+
+            put_distance = qqq_price - short_put.strike
+            call_distance = short_call.strike - qqq_price
+
+            if put_distance < min_em_distance or call_distance < min_em_distance:
+                self._record_drop(R_IC_INSIDE_EXPECTED_MOVE)
+                return None
+
         # ── Per-trade risk cap ──
         per_trade_risk_pct = float(getattr(config, "IC_PER_TRADE_RISK_PCT", 0.01))
         per_trade_max_risk = per_trade_risk_pct * effective_portfolio_value
@@ -1018,13 +1036,20 @@ class IronCondorEngine:
             implied_wr_be=implied_wr,
         )
 
-        # ── Score: higher is better ──
-        # Weight: C/W (40%), delta symmetry (20%), slippage (20%), credit quality (20%)
+        # ── Score: higher is better (V12.33: reweighted to prefer distance over richness) ──
+        # Weight: distance (30%), C/W (20%), delta symmetry (20%), slippage (15%), credit (15%)
+        put_dist_pct = (qqq_price - short_put.strike) / qqq_price if qqq_price > 0 else 0
+        call_dist_pct = (short_call.strike - qqq_price) / qqq_price if qqq_price > 0 else 0
+        min_dist_pct = min(put_dist_pct, call_dist_pct)
+        # Normalize distance: 5% OTM = 1.0, 0% = 0.0
+        distance_score = min(min_dist_pct / 0.05, 1.0)
+
         score = (
-            0.40 * credit_to_width
+            0.30 * distance_score
+            + 0.20 * credit_to_width
             + 0.20 * (1.0 - delta_diff / delta_sym_max)
-            + 0.20 * (1.0 - avg_spread_pct / max_slippage)
-            + 0.20 * min(net_credit / max_wing, 0.40)
+            + 0.15 * (1.0 - avg_spread_pct / max_slippage)
+            + 0.15 * min(net_credit / max_wing, 0.40)
         )
 
         return (score, condor)

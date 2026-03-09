@@ -2300,8 +2300,8 @@ IC_ENTRY_END_HOUR = 14  # Latest entry hour (ET)
 IC_ENTRY_END_MINUTE = 30  # Latest entry minute
 
 # ── DTE window ──
-IC_DTE_MIN = 7  # Minimum DTE (V12.27: was 21 — shorter DTE = less time for QQQ to breach)
-IC_DTE_MAX = 14  # Maximum DTE (V12.27: was 45 — 7-14 DTE captures steepest theta decay)
+IC_DTE_MIN = 14  # Minimum DTE (V12.33: was 7 — wider strikes need more theta accumulation time)
+IC_DTE_MAX = 21  # Maximum DTE (V12.33: was 14 — match theta acceleration curve peak)
 
 # ── Strike selection: short-leg delta range ──
 IC_SHORT_DELTA_MIN = (
@@ -2320,15 +2320,18 @@ IC_WING_WIDTH_HIGH_VIX = 8  # 25 < VIX <= 32: $8 wings (V12.28: was $7 — absor
 IC_WING_WIDTH_FALLBACK_TOLERANCE = 1  # Accept ±$1 if exact width unavailable
 
 # ── Credit quality / C/W gates (VIX-tiered) ──
+# V12.33: C/W floors lowered to allow wider strikes at 14-21 DTE.
+# With wider OTM strikes, C/W is naturally lower (0.18-0.30 depending on VIX).
 # Constraint: C/W_floor ≤ IC_MAX_STOP_DW / (1 + IC_STOP_LOSS_MULTIPLE)
-# With MAX_STOP_DW=0.95, STOP_MULT=2.00 → max feasible C/W = 0.317
-# Delta 0.20 on $6 wings typically yields C/W ~0.29, well within bounds.
-IC_MIN_CREDIT_TO_WIDTH = 0.28  # Default C/W floor (V12.26: was 0.25)
-IC_CW_FLOOR_LOW_VIX = 0.30  # C/W floor when VIX < 16 (V12.26: was 0.25, better quality entries)
-IC_CW_FLOOR_MID_VIX = 0.28  # C/W floor when 16 <= VIX <= 25 (V12.26: was 0.25)
-IC_CW_FLOOR_HIGH_VIX = 0.25  # C/W floor when 25 < VIX <= 32 (V12.26: was 0.23)
+# With MAX_STOP_DW=0.95, STOP_MULT=1.50 → max feasible C/W = 0.380
+IC_MIN_CREDIT_TO_WIDTH = 0.18  # Default C/W floor (V12.33: was 0.28 — allow wider strikes)
+IC_CW_FLOOR_LOW_VIX = 0.18  # C/W floor when VIX < 16 (V12.33: was 0.30 — wider strikes OK)
+IC_CW_FLOOR_MID_VIX = 0.18  # C/W floor when 16 <= VIX <= 25 (V12.33: was 0.28)
+IC_CW_FLOOR_HIGH_VIX = 0.18  # C/W floor when 25 < VIX <= 32 (V12.33: was 0.25)
 IC_MAX_IMPLIED_WR = 0.78  # Reject if implied expiry WR > 78%
-IC_MAX_STOP_DW = 0.95  # Max stop D/W ceiling (V12.28: was 0.65 — raised for 2.0× stop; ensures stop debit < wing)
+IC_MAX_STOP_DW = (
+    0.95  # Max stop D/W ceiling (V12.28: was 0.65 — ensures stop debit < wing at 1.5× stop)
+)
 
 # ── Liquidity / mark quality ──
 IC_MIN_OPEN_INTEREST = 100  # Minimum OI per leg
@@ -2351,12 +2354,12 @@ IC_ELASTIC_DELTA_CEILING = (
 )
 
 # Multi-DTE range fallback: try primary range first, then fallback ranges
-IC_DTE_RANGES = [(7, 10), (10, 14)]  # Ordered by preference (V12.27: short DTE sweet spot)
+IC_DTE_RANGES = [(14, 17), (17, 21)]  # V12.33: was (7,10)(10,14) — align with 14-21 DTE window
 
 # C/W progressive relaxation: lower floor stepwise if no condors qualify
 IC_CW_RELAX_STEPS = [0.0, 0.03, 0.05]  # Subtract from C/W floor per step
 IC_CW_ABSOLUTE_FLOOR = (
-    0.25  # Never accept C/W below this (V12.26: was 0.20, prevent bad elastic fills)
+    0.15  # Never accept C/W below this (V12.33: was 0.25 — allow wider strikes at longer DTE)
 )
 
 # ── Exit parameters ──
@@ -2364,11 +2367,11 @@ IC_TARGET_CAPTURE_PCT = (
     0.60  # Close at 60% of credit captured (V12.28: was 0.50 — let theta work longer)
 )
 IC_STOP_LOSS_MULTIPLE = (
-    2.00  # Stop at 2× credit lost (V12.28: was 0.50 — wider stop lets theta recover through noise)
+    1.50  # Stop at 1.5× credit lost (V12.33: was 2.00 — tighter stop, fewer hits at wider strikes)
 )
-IC_TIME_EXIT_DTE = 3  # Close by 3 DTE (V12.27: was 14 — short DTE trades exit near expiry)
+IC_TIME_EXIT_DTE = 5  # Close by 5 DTE (V12.33: was 3 — exit before gamma explosion at DTE<5)
 IC_VIX_SPIKE_EXIT = 33.0  # Emergency exit on VIX spike (V12.26: was 30, VIX 30-32 survivable)
-IC_FRIDAY_CLOSE_DTE = 3  # Close before weekend if DTE < 3 (V12.27: was 14 — align with TIME_EXIT)
+IC_FRIDAY_CLOSE_DTE = 5  # Close before weekend if DTE < 5 (V12.33: was 3 — align with TIME_EXIT)
 IC_REGIME_EXIT_BUFFER = 5  # Exit buffer (V12.32: was 8, faster regime break exit)
 
 # ── Capital / risk model ──
@@ -2378,7 +2381,9 @@ IC_DAILY_LOSS_PCT = 0.015  # Daily IC loss stop (1.5% of portfolio)
 
 # ── Position limits ──
 IC_MAX_CONCURRENT = 2  # Max simultaneous iron condors
-IC_MAX_TRADES_PER_DAY = 2  # Daily entry cap
+IC_MAX_TRADES_PER_DAY = (
+    1  # Daily entry cap (V12.33: was 2 — anti-cluster, prevent stacking into same event)
+)
 IC_PENDING_ENTRY_STALE_MINUTES = 7  # Auto-clear orphan pending IC entry lock
 
 # ── Loss breaker ──
@@ -2397,6 +2402,12 @@ IC_UNDERLYING_INVALIDATION_PCT = (
     0.04  # 4% move from entry → thesis broken (V12.28: was 0.045, tighter for closer strikes)
 )
 
+# ── Expected Move buffer gate (V12.33) ──
+# Reject condors where short strikes are inside the VIX-implied expected move.
+# Formula: min_distance = QQQ × (VIX/100) × √(DTE/365) × buffer_mult
+# buffer=1.0 → strikes at 1σ (~84% POP); auto-adapts to VIX and DTE.
+IC_EM_BUFFER_MULT = 1.0  # 1.0× expected move — institutional standard for IC placement
+
 # ── IC Strike Reuse Guard ──
 # Block new IC entry when any candidate leg strike matches an active/pending
 # IC position's leg at the same expiry (prevents broker-side netting → orphan legs).
@@ -2414,8 +2425,10 @@ IC_CLOSE_MAX_RETRIES = 10  # Abandon after this many retries (clear is_closing)
 # Formula: hold_days = clamp(ceil(entry_dte × fraction), min, max)
 IC_HOLD_GUARD_ENABLED = True
 IC_HOLD_GUARD_DTE_FRACTION = 0.25  # Hold for 1/4 of entry DTE (V12.27: was 0.33 — shorter trades)
-IC_HOLD_GUARD_MIN_DAYS = 1  # Minimum 1 calendar day hold (V12.27: was 3 — fast 5-7d trades)
-IC_HOLD_GUARD_MAX_DAYS = 3  # Maximum 3 calendar days hold (V12.27: was 15 — cap for short DTE)
+IC_HOLD_GUARD_MIN_DAYS = 2  # Minimum 2 calendar day hold (V12.33: was 1 — let gamma noise settle)
+IC_HOLD_GUARD_MAX_DAYS = (
+    6  # Maximum 6 calendar days hold (V12.33: was 3 — 14-21 DTE needs longer theta)
+)
 IC_HOLD_HARD_STOP_CREDIT_MULT = 2.50  # During hold: exit only if loss > 2.5× credit
 IC_HOLD_EOD_GATE_ENABLED = True  # EOD de-risk during hold
 IC_HOLD_EOD_GATE_CREDIT_MULT = 1.50  # At EOD during hold: exit if loss > 1.5× credit
@@ -2426,15 +2439,13 @@ IC_HOLD_EOD_GATE_MIN_MINUTES = 240  # Min hold before EOD gate can fire (4h)
 # Tiers are permanent ratchets — they never decrease.
 IC_MFE_LOCK_ENABLED = True
 IC_MFE_T1_TRIGGER = (
-    0.20  # T1: arm at 20% of credit captured (V12.26: was 0.25, arm breakeven earlier)
+    0.30  # T1: arm at 30% capture (V12.33: was 0.20 — matches theta curve midpoint at 14-21 DTE)
 )
-IC_MFE_T2_TRIGGER = (
-    0.35  # T2: arm at 35% of credit captured (V12.26: was 0.45, lock profit earlier)
+IC_MFE_T2_TRIGGER = 0.45  # T2: arm at 45% capture (V12.33: was 0.35 — approaching target, protect accumulated theta)
+IC_MFE_T1_FLOOR_PCT = (
+    0.05  # T1 floor: 5% of credit (V12.33: was 0.0 — buffer above BE for gamma noise)
 )
-IC_MFE_T1_FLOOR_PCT = 0.0  # T1 floor: breakeven (0% of credit) + commissions
-IC_MFE_T2_FLOOR_PCT = (
-    0.25  # T2 floor: lock 25% of credit captured (V12.26: was 0.15, better protection)
-)
+IC_MFE_T2_FLOOR_PCT = 0.25  # T2 floor: lock 25% of credit captured (unchanged)
 
 # V3.0: Minimum margin percentage to allow options trading
 # Replaces hardcoded $1,000 check in main.py

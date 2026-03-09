@@ -182,7 +182,7 @@ _SEARCH_DEFAULTS = dict(
     IC_PER_TRADE_RISK_PCT=0.01,
     IC_MIN_OPEN_INTEREST=100,
     IC_MAX_SPREAD_PCT=0.30,
-    IC_DTE_RANGES=[(21, 35)],
+    IC_DTE_RANGES=[(14, 17), (17, 21)],
 )
 
 
@@ -453,15 +453,15 @@ class TestVIXTiers:
 
     def test_low_vix_cw_floor(self):
         engine = _make_engine()
-        assert engine._get_cw_floor_for_vix(12.0) == pytest.approx(0.30)
+        assert engine._get_cw_floor_for_vix(12.0) == pytest.approx(0.18)
 
     def test_mid_vix_cw_floor(self):
         engine = _make_engine()
-        assert engine._get_cw_floor_for_vix(20.0) == pytest.approx(0.28)
+        assert engine._get_cw_floor_for_vix(20.0) == pytest.approx(0.18)
 
     def test_high_vix_cw_floor(self):
         engine = _make_engine()
-        assert engine._get_cw_floor_for_vix(28.0) == pytest.approx(0.25)
+        assert engine._get_cw_floor_for_vix(28.0) == pytest.approx(0.18)
 
     def test_cw_floors_feasible_with_stop_dw(self):
         """Guard rail: C/W floor × (1 + STOP_MULT) must never exceed MAX_STOP_DW.
@@ -1417,13 +1417,11 @@ class TestEndToEndSearch:
 
     def test_good_chain_produces_condor(self):
         engine = _make_engine()
-        # Target C/W ~0.28: each side credit ~$0.70 → net_credit=$1.40, wing=$5
-        # Short leg at $1.10 bid/$1.30 ask → mid $1.20; long leg at $0.30/$0.50 → mid $0.40
-        # Per-side credit = 1.20 - 0.40 = 0.80; total = 1.60; C/W = 0.32
-        # stop_dw = 1.60 * 2.5 / 5 = 0.80 > 0.65 — too high!
-        # Instead: short leg at 0.90/1.10 → mid 1.00; per-side = 1.00 - 0.40 = 0.60; total = 1.20; C/W = 0.24
-        # stop_dw = 1.20 * 2.5 / 5 = 0.60 ≤ 0.65 ✓
-        # C/W = 0.24 < 0.25 floor → need to set IC_CW_FLOOR_MID_VIX = 0.22
+        # V12.33: DTE 14-21 window, EM gate requires strikes outside expected move
+        # VIX=15, DTE=18: EM distance = 480 × 0.15 × √(18/365) ≈ 16.0
+        # Short strikes at ~463/497 (17pt away) → passes EM gate
+        # Per-side credit = 1.00 - 0.40 = 0.60; total = 1.20; C/W = 0.24 ≥ 0.18 floor
+        # stop_dw = 1.20 * 1.50 / 5 = 0.36 ≤ 0.65 ✓
         chain_contracts = _make_option_chain(
             qqq_price=480,
             put_delta=0.18,
@@ -1431,16 +1429,16 @@ class TestEndToEndSearch:
             put_credit=1.00,
             call_credit=1.00,
             wing_width=5,
-            dte=28,
-            expiry="2025-04-01",
+            dte=18,
+            expiry="2025-03-21",
         )
-        overrides = {**_SEARCH_DEFAULTS, "IC_CW_FLOOR_MID_VIX": 0.22}
+        overrides = {**_SEARCH_DEFAULTS}
         with _patch_config(**overrides):
             with patch.object(engine, "_extract_chain_contracts", return_value=chain_contracts):
                 result = engine._search_and_build_condor(
                     chain=["dummy"],
                     qqq_price=480,
-                    vix_current=18,
+                    vix_current=15,
                     regime_score=52,
                     adx_value=15,
                     current_time=datetime(2025, 3, 3, 11, 0),
@@ -1895,32 +1893,32 @@ class TestMFELock:
         assert abs(condor.highest_pnl_pct - 0.50) < 0.01
 
     def test_mfe_t1_arms_and_exits(self):
-        """T1 arms at 20% of credit captured, exits when P&L falls to 0%."""
+        """T1 arms at 30% of credit captured, exits when P&L falls to 5%."""
         engine = _make_engine()
         condor = _make_condor(net_credit=1.20, num_spreads=2)
         # credit_100 = 240
 
-        # First call: P&L at 25% of credit → arms T1, no exit yet
-        condor.highest_pnl_pct = 0.25  # Simulate prior HWM (above T1 trigger=0.20)
+        # First call: P&L at 10% of credit → arms T1 via prior HWM, no exit yet
+        condor.highest_pnl_pct = 0.35  # Simulate prior HWM (above T1 trigger=0.30)
         result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=24))
-        # 24/240 = 0.10 → above T1 floor (0%), no exit
+        # 24/240 = 0.10 → above T1 floor (5%), no exit
         assert result is None
         assert condor.mfe_lock_tier == 1
 
-        # P&L drops to 0 → at T1 floor (0%), should exit
+        # P&L drops to 0 → below T1 floor (5%), should exit
         result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=0))
         assert result is not None
         reason, _ = result
         assert reason == EXIT_IC_MFE_LOCK
 
     def test_mfe_t2_arms_and_exits(self):
-        """T2 arms at 35% of credit captured, exits when P&L falls to 25%."""
+        """T2 arms at 45% of credit captured, exits when P&L falls to 25%."""
         engine = _make_engine()
         condor = _make_condor(net_credit=1.20, num_spreads=2)
         # credit_100 = 240
 
-        # Simulate HWM that reached 40% of credit (above T2 trigger=0.35)
-        condor.highest_pnl_pct = 0.40
+        # Simulate HWM that reached 50% of credit (above T2 trigger=0.45)
+        condor.highest_pnl_pct = 0.50
 
         # P&L at 30% → above T2 floor (25%), no exit
         result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=72))
@@ -1942,7 +1940,7 @@ class TestMFELock:
         # credit_100 = 240
 
         # Arm T2
-        condor.highest_pnl_pct = 0.40
+        condor.highest_pnl_pct = 0.50
         condor.mfe_lock_tier = 2
 
         # P&L at 30% → T2 stays (still above floor=25%)
@@ -1977,14 +1975,14 @@ class TestMFELock:
         condor = _make_condor(net_credit=1.20, num_spreads=2)
         # credit_100 = 240
 
-        # Arm T1 (HWM = 25%), P&L at 15% → above T1 floor (0%)
-        condor.highest_pnl_pct = 0.25
+        # Arm T1 (HWM = 35%), P&L at 15% → above T1 floor (5%)
+        condor.highest_pnl_pct = 0.35
         result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=36))
-        # 36/240 = 0.15 → above 0.0 floor
+        # 36/240 = 0.15 → above 0.05 floor
         assert result is None
 
-        # Arm T2 (HWM = 40%), P&L at 30% → above T2 floor (25%)
-        condor.highest_pnl_pct = 0.40
+        # Arm T2 (HWM = 50%), P&L at 30% → above T2 floor (25%)
+        condor.highest_pnl_pct = 0.50
         condor.mfe_lock_tier = 0  # Reset to verify ratchet re-arms
         result = engine.check_exit_signals(**self._exit_kwargs(condor, combined_pnl=72))
         # 72/240 = 0.30 → above 0.25 floor
