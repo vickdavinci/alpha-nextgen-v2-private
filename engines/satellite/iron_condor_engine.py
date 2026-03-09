@@ -1061,6 +1061,10 @@ class IronCondorEngine:
             stop_dw=stop_dw,
             implied_wr_be=implied_wr,
             entry_stop_mult=stop_mult,
+            entry_mfe_t1_trigger=float(getattr(config, "IC_MFE_T1_TRIGGER", 0.30)),
+            entry_mfe_t2_trigger=float(getattr(config, "IC_MFE_T2_TRIGGER", 0.45)),
+            entry_mfe_t1_floor=float(getattr(config, "IC_MFE_T1_FLOOR_PCT", 0.05)),
+            entry_mfe_t2_floor=float(getattr(config, "IC_MFE_T2_FLOOR_PCT", 0.25)),
         )
 
         # ── Score: higher is better (V12.33: reweighted to prefer distance over richness) ──
@@ -1323,12 +1327,28 @@ class IronCondorEngine:
         if credit_100 > 0 and pnl_pct_of_credit >= target_pct:
             return self._build_exit(condor, EXIT_IC_PROFIT_TARGET, current_time)
 
-        # ── P2B: MFE Lock Floor ──
+        # ── P2B: MFE Lock Floor (use entry-frozen thresholds if available) ──
         if bool(getattr(config, "IC_MFE_LOCK_ENABLED", True)) and credit_100 > 0:
-            t1 = float(getattr(config, "IC_MFE_T1_TRIGGER", 0.25))
-            t2 = float(getattr(config, "IC_MFE_T2_TRIGGER", 0.45))
-            floor_t1 = float(getattr(config, "IC_MFE_T1_FLOOR_PCT", 0.0))
-            floor_t2 = float(getattr(config, "IC_MFE_T2_FLOOR_PCT", 0.15))
+            t1 = (
+                condor.entry_mfe_t1_trigger
+                if condor.entry_mfe_t1_trigger > 0
+                else float(getattr(config, "IC_MFE_T1_TRIGGER", 0.30))
+            )
+            t2 = (
+                condor.entry_mfe_t2_trigger
+                if condor.entry_mfe_t2_trigger > 0
+                else float(getattr(config, "IC_MFE_T2_TRIGGER", 0.45))
+            )
+            floor_t1 = (
+                condor.entry_mfe_t1_floor
+                if condor.entry_mfe_t1_floor >= 0
+                else float(getattr(config, "IC_MFE_T1_FLOOR_PCT", 0.05))
+            )
+            floor_t2 = (
+                condor.entry_mfe_t2_floor
+                if condor.entry_mfe_t2_floor >= 0
+                else float(getattr(config, "IC_MFE_T2_FLOOR_PCT", 0.25))
+            )
 
             # Ratchet tier up (never down)
             if condor.highest_pnl_pct >= t2:

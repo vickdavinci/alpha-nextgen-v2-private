@@ -68,6 +68,10 @@ class IronCondorPosition:
 
     # ── Entry-frozen exit params (V12.33: survive config changes across deploys) ──
     entry_stop_mult: float = 0.0  # IC_STOP_LOSS_MULTIPLE at entry time (0 = use config)
+    entry_mfe_t1_trigger: float = 0.0  # IC_MFE_T1_TRIGGER at entry (0 = use config)
+    entry_mfe_t2_trigger: float = 0.0  # IC_MFE_T2_TRIGGER at entry (0 = use config)
+    entry_mfe_t1_floor: float = -1.0  # IC_MFE_T1_FLOOR_PCT at entry (-1 = use config)
+    entry_mfe_t2_floor: float = -1.0  # IC_MFE_T2_FLOOR_PCT at entry (-1 = use config)
 
     # ── Derived helpers ──
 
@@ -120,6 +124,10 @@ class IronCondorPosition:
             "implied_wr_be": self.implied_wr_be,
             "exit_pnl_estimate": self.exit_pnl_estimate,
             "entry_stop_mult": self.entry_stop_mult,
+            "entry_mfe_t1_trigger": self.entry_mfe_t1_trigger,
+            "entry_mfe_t2_trigger": self.entry_mfe_t2_trigger,
+            "entry_mfe_t1_floor": self.entry_mfe_t1_floor,
+            "entry_mfe_t2_floor": self.entry_mfe_t2_floor,
         }
 
     @classmethod
@@ -153,4 +161,16 @@ class IronCondorPosition:
             implied_wr_be=data.get("implied_wr_be", 0.0),
             exit_pnl_estimate=float(data.get("exit_pnl_estimate", 0.0) or 0.0),
             entry_stop_mult=float(data.get("entry_stop_mult", 0.0) or 0.0),
+            entry_mfe_t1_trigger=float(data.get("entry_mfe_t1_trigger", 0.0) or 0.0),
+            entry_mfe_t2_trigger=float(data.get("entry_mfe_t2_trigger", 0.0) or 0.0),
+            entry_mfe_t1_floor=float(
+                data.get("entry_mfe_t1_floor", -1.0)
+                if data.get("entry_mfe_t1_floor") is not None
+                else -1.0
+            ),
+            entry_mfe_t2_floor=float(
+                data.get("entry_mfe_t2_floor", -1.0)
+                if data.get("entry_mfe_t2_floor") is not None
+                else -1.0
+            ),
         )
