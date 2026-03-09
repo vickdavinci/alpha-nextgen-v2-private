@@ -670,17 +670,21 @@ class TestUnderlyingInvalidation:
     """Test thesis-first underlying invalidation exit (V12.25)."""
 
     def test_upside_invalidation_fires(self):
-        """Underlying rallies 4.5%+ from entry → thesis broken, exit fires."""
+        """Underlying rallies past entry EM → thesis broken, exit fires.
+
+        V12.33: threshold = max(config 4%, entry EM). Default condor has
+        entry_vix=18, entry_dte=30 → EM=5.16%. Use 6% move to exceed.
+        """
         engine = _make_engine()
         condor = _make_condor(qqq_price=480.0)
-        # Price rallied 5.0% from entry
+        # Price rallied 6.25% from entry (exceeds EM 5.16%)
         result = engine.check_exit_signals(
             condor=condor,
             combined_pnl=-50,
             current_dte=25,
             vix_current=18,
             regime_score=58,  # Still in neutral band — regime break hasn't fired
-            qqq_price=504.0,  # +5.0%
+            qqq_price=510.0,  # +6.25%
             current_time=datetime(2025, 3, 12, 11, 0),
         )
         assert result is not None
@@ -688,17 +692,21 @@ class TestUnderlyingInvalidation:
         assert reason == "IC_UNDERLYING_INVALIDATION"
 
     def test_downside_invalidation_fires(self):
-        """Underlying drops 4.5%+ from entry → thesis broken, exit fires."""
+        """Underlying drops past entry EM → thesis broken, exit fires.
+
+        V12.33: threshold = max(config 4%, entry EM). Default condor has
+        entry_vix=18, entry_dte=30 → EM=5.16%. Use 6% move to exceed.
+        """
         engine = _make_engine()
         condor = _make_condor(qqq_price=480.0)
-        # Price dropped 5.0% from entry
+        # Price dropped 6.25% from entry (exceeds EM 5.16%)
         result = engine.check_exit_signals(
             condor=condor,
             combined_pnl=-80,
             current_dte=25,
             vix_current=18,
             regime_score=44,  # Still above regime break threshold (34)
-            qqq_price=456.0,  # -5.0%
+            qqq_price=450.0,  # -6.25%
             current_time=datetime(2025, 3, 12, 11, 0),
         )
         assert result is not None
@@ -740,7 +748,10 @@ class TestUnderlyingInvalidation:
             assert result is None
 
     def test_invalidation_fires_through_hold_guard(self):
-        """Underlying invalidation is a pre-guard — fires during hold window."""
+        """Underlying invalidation is a pre-guard — fires during hold window.
+
+        V12.33: threshold = max(config 4%, entry EM 5.16%). Move must exceed EM.
+        """
         engine = _make_engine()
         condor = _make_condor(qqq_price=480.0)
         # Still within hold guard window (entry was same day)
@@ -750,7 +761,7 @@ class TestUnderlyingInvalidation:
             current_dte=28,
             vix_current=18,
             regime_score=52,
-            qqq_price=504.0,  # +5.0% (above 4.5% threshold)
+            qqq_price=510.0,  # +6.25% (above EM 5.16%)
             current_time=datetime(2025, 3, 1, 14, 0),  # Same day as entry
         )
         assert result is not None

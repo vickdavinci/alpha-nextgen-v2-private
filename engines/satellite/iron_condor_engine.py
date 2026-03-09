@@ -1238,16 +1238,28 @@ class IronCondorEngine:
         # ── PRE-GUARD: P1B — Underlying invalidation (always fires) ──
         # If the underlying moved too far from entry, the range thesis is dead.
         # Catches large moves that haven't yet triggered a regime break (regime lag).
+        # V12.33: threshold = max(config_pct, entry_EM) so it can't fire inside
+        # the expected move that the EM gate placed shorts outside of.
         if bool(getattr(config, "IC_UNDERLYING_INVALIDATION_ENABLED", True)):
             entry_px = float(condor.entry_underlying_price or 0.0)
             if entry_px > 0 and qqq_price > 0:
                 move_pct = abs(qqq_price - entry_px) / entry_px
-                threshold = float(getattr(config, "IC_UNDERLYING_INVALIDATION_PCT", 0.03))
+                cfg_threshold = float(getattr(config, "IC_UNDERLYING_INVALIDATION_PCT", 0.03))
+                # Compute entry-time EM so invalidation can't fire inside 1σ range
+                _evix = float(condor.entry_vix or 0.0)
+                _edte = int(condor.entry_dte or 0)
+                _embuf = float(getattr(config, "IC_EM_BUFFER_MULT", 1.0))
+                if _evix > 0 and _edte > 0:
+                    entry_em_pct = (_evix / 100.0) * math.sqrt(max(1, _edte) / 365.0) * _embuf
+                else:
+                    entry_em_pct = 0.0
+                threshold = max(cfg_threshold, entry_em_pct)
                 if move_pct >= threshold:
                     self._log(
                         f"IC_UNDERLYING_INVALIDATION: "
                         f"entry={entry_px:.2f} now={qqq_price:.2f} "
-                        f"move={move_pct:.1%} >= {threshold:.1%} | "
+                        f"move={move_pct:.1%} >= {threshold:.1%} "
+                        f"(cfg={cfg_threshold:.1%} em={entry_em_pct:.1%}) | "
                         f"id={condor.condor_id}",
                         trades_only=True,
                     )
