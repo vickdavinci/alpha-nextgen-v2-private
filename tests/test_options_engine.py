@@ -5083,8 +5083,8 @@ class TestVASSStressBearishRescue:
         monkeypatch.setattr(config, "VASS_NEUTRAL_FALLBACK_DIRECTION_ENABLED", True)
         monkeypatch.setattr(config, "VASS_NEUTRAL_DIRECTION_MEMORY_ENABLED", False)
         monkeypatch.setattr(config, "VASS_STRESS_BEAR_RESCUE_ENABLED", True)
-        monkeypatch.setattr(config, "VASS_STRESS_BEAR_RESCUE_DELTA_MIN", 1.0)
-        monkeypatch.setattr(config, "VASS_STRESS_BEAR_RESCUE_SCORE_MAX", 62.0)
+        monkeypatch.setattr(config, "VASS_STRESS_BEAR_RESCUE_DELTA_MIN", 0.5)
+        monkeypatch.setattr(config, "VASS_STRESS_BEAR_RESCUE_SCORE_MAX", 65.0)
 
         engine._record_regime_decision = lambda **kwargs: decisions.append(kwargs)
         engine.evaluate_transition_policy_block = lambda **kwargs: (None, "")
@@ -5139,7 +5139,7 @@ class TestVASSStressBearishRescue:
             bull_profile_log_prefix="VASS_BULL_PROFILE",
             clamp_log_prefix="VASS_CLAMP",
             shock_log_prefix="VASS_SHOCK",
-            transition_ctx=self._make_transition_ctx(delta=-0.4, transition_score=60.0),
+            transition_ctx=self._make_transition_ctx(delta=-0.3, transition_score=60.0),
         )
 
         assert result is None
@@ -5149,12 +5149,12 @@ class TestVASSStressBearishRescue:
 
         result = engine._vass_entry_engine.resolve_direction_context(
             host=engine,
-            regime_score=68.0,
+            regime_score=66.0,
             size_multiplier=1.0,
             bull_profile_log_prefix="VASS_BULL_PROFILE",
             clamp_log_prefix="VASS_CLAMP",
             shock_log_prefix="VASS_SHOCK",
-            transition_ctx=self._make_transition_ctx(delta=-1.4, transition_score=68.0),
+            transition_ctx=self._make_transition_ctx(delta=-1.4, transition_score=66.0),
         )
 
         assert result is None
