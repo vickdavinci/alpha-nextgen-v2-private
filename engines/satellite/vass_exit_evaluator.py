@@ -857,7 +857,7 @@ def check_spread_exit_signals_impl(
         exit_reason is None
         and bool(getattr(config, "SPREAD_OVERLAY_STRESS_EXIT_ENABLED", False))
         and not disable_tactical_exits_for_thesis
-        and is_bullish_spread
+        and is_bullish_debit_spread
         and vix_current is not None
     ):
         overlay_state = self.get_regime_overlay_state(

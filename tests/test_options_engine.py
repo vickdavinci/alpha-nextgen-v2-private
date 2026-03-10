@@ -5274,6 +5274,47 @@ class TestBearPutProfitTargetScoping:
             regime_at_entry=62.0,
         )
 
+    def _make_bull_put_credit_spread(self) -> SpreadPosition:
+        """Build a bullish put credit spread for exit-scoping regressions."""
+        long_put = OptionContract(
+            symbol="QQQ 271231P00295000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=295.0,
+            expiry="2027-12-31",
+            delta=-0.18,
+            bid=1.10,
+            ask=1.25,
+            mid_price=1.18,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_put = OptionContract(
+            symbol="QQQ 271231P00300000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=-0.32,
+            bid=2.60,
+            ask=2.80,
+            mid_price=2.70,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        return SpreadPosition(
+            long_leg=long_put,
+            short_leg=short_put,
+            spread_type="BULL_PUT_CREDIT",
+            net_debit=-1.50,
+            max_profit=1.50,
+            width=5.0,
+            entry_time="2027-12-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=3,
+            regime_at_entry=65.0,
+        )
+
     def test_bear_put_profit_target_ignores_intrinsic_override(self, engine, monkeypatch):
         """BEAR_PUT profit target must use tradeable mark, not intrinsic override."""
         long_put = OptionContract(
@@ -5325,6 +5366,26 @@ class TestBearPutProfitTargetScoping:
             vix_current=20.0,
             current_dte=34,
             underlying_price=289.25,
+        )
+
+        assert result is None
+
+    def test_overlay_stress_exit_does_not_force_bull_put_credit(self, engine, monkeypatch):
+        """V12.33: OVERLAY_STRESS should remain debit-only and not hard-exit bullish put credits."""
+        engine._spread_position = self._make_bull_put_credit_spread()
+        monkeypatch.setattr(config, "SPREAD_OVERLAY_STRESS_EXIT_ENABLED", True)
+        monkeypatch.setattr(config, "SWING_VIX_SPIKE_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MARK_STOP_EXITS", False)
+        engine.get_regime_overlay_state = lambda vix_current, regime_score: "STRESS"
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=1.23,
+            short_leg_price=2.70,
+            regime_score=55.0,
+            vix_current=28.0,
+            current_dte=21,
         )
 
         assert result is None
