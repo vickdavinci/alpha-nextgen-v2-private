@@ -3007,7 +3007,10 @@ class VASSEntryEngine:
                 len(short_candidates),
                 int(getattr(config, "VASS_MAX_SHORT_LEG_CANDIDATES", 5)),
             )
-            cw_floor = host._get_effective_credit_to_width_min(vix_current=smoothed_vix)
+            cw_floor = host._get_effective_credit_to_width_min(
+                vix_current=smoothed_vix,
+                strategy=strategy,
+            )
 
             best_credit_pair = None
             fallback_credit_pair = None
@@ -3217,7 +3220,10 @@ class VASSEntryEngine:
                 len(short_candidates),
                 int(getattr(config, "VASS_MAX_SHORT_LEG_CANDIDATES", 5)),
             )
-            cw_floor = host._get_effective_credit_to_width_min(vix_current=smoothed_vix)
+            cw_floor = host._get_effective_credit_to_width_min(
+                vix_current=smoothed_vix,
+                strategy=strategy,
+            )
 
             best_credit_pair = None
             fallback_credit_pair = None

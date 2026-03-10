@@ -1209,6 +1209,15 @@ CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_MEDIUM_IV = (
 CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV = (
     0.35  # V12.16: raise high-IV floor to stabilize credit R:R
 )
+BEAR_CALL_CREDIT_MIN_CREDIT_TO_WIDTH_PCT = (
+    0.35  # V12.33: flatter call skew supports slightly lower calm-tape C/W for bear-call credits.
+)
+BEAR_CALL_CREDIT_MIN_CREDIT_TO_WIDTH_PCT_MEDIUM_IV = (
+    0.33  # V12.33: medium-IV bear-call credits can remain attractive below put-credit floors.
+)
+BEAR_CALL_CREDIT_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV = (
+    0.30  # V12.33: high-IV bear-call credits need lower C/W floor than bullish put credits.
+)
 CREDIT_SPREAD_MEDIUM_IV_VIX_THRESHOLD = 20.0  # VIX level for medium-IV tier
 
 # V2.3.14: Intraday trade limits (was 1, blocking all re-entries after first trade)

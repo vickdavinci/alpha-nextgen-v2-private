@@ -1667,7 +1667,9 @@ def check_credit_spread_entry_signal_impl(
             return fail_quality("POP_BELOW_MIN")
 
     min_credit_to_width = self._get_effective_credit_to_width_min(
-        vix_current=vix_current, iv_rank=iv_rank
+        vix_current=vix_current,
+        iv_rank=iv_rank,
+        strategy=strategy,
     )
     if credit_to_width < min_credit_to_width:
         self.log(

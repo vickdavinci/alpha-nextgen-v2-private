@@ -4605,6 +4605,38 @@ class TestVASSCreditSpreadEntry:
         assert dte_max == config.VASS_HIGH_IV_DTE_MAX
         assert is_credit is True
 
+    def test_bear_call_credit_uses_lower_credit_to_width_floor(self, engine):
+        """V12.33: bear-call credits should use their own lower C/W floor in the same IV environment."""
+        engine._iv_sensor.classify = lambda: "HIGH"
+        bull_floor = engine._get_effective_credit_to_width_min(
+            vix_current=32.0,
+            strategy=SpreadStrategy.BULL_PUT_CREDIT,
+        )
+        bear_floor = engine._get_effective_credit_to_width_min(
+            vix_current=32.0,
+            strategy=SpreadStrategy.BEAR_CALL_CREDIT,
+        )
+
+        assert bull_floor == config.CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV
+        assert bear_floor == config.BEAR_CALL_CREDIT_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV
+        assert bear_floor < bull_floor
+
+    def test_bear_call_credit_medium_iv_floor_is_strategy_specific(self, engine):
+        """V12.33: medium-IV bear-call floor should stay below bullish put-credit floor."""
+        engine._iv_sensor.classify = lambda: "MEDIUM"
+        bull_floor = engine._get_effective_credit_to_width_min(
+            vix_current=22.0,
+            strategy=SpreadStrategy.BULL_PUT_CREDIT,
+        )
+        bear_floor = engine._get_effective_credit_to_width_min(
+            vix_current=22.0,
+            strategy=SpreadStrategy.BEAR_CALL_CREDIT,
+        )
+
+        assert bull_floor == config.CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_MEDIUM_IV
+        assert bear_floor == config.BEAR_CALL_CREDIT_MIN_CREDIT_TO_WIDTH_PCT_MEDIUM_IV
+        assert bear_floor < bull_floor
+
     def test_select_strategy_low_iv_bearish(self, engine):
         """LOW IV + BEARISH should select Bear Put Debit with monthly DTE."""
         strategy, dte_min, dte_max = engine._select_strategy("BEARISH", "LOW")

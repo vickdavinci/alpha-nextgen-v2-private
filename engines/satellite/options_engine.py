@@ -2604,12 +2604,30 @@ class OptionsEngine:
         self,
         vix_current: Optional[float] = None,
         iv_rank: Optional[float] = None,
+        strategy: Optional[Any] = None,
     ) -> float:
         """
         Return IV-adaptive minimum credit/width ratio for credit spread quality gating.
 
         Uses the same IV environment source as VASS routing to avoid route/gate mismatches.
         """
+        strategy_value = str(getattr(strategy, "value", strategy) or "").upper()
+        if strategy_value == "BEAR_CALL_CREDIT":
+            if (
+                self._resolve_vass_quality_iv_environment(vix_current=vix_current, iv_rank=iv_rank)
+                == "HIGH"
+            ):
+                return float(
+                    getattr(config, "BEAR_CALL_CREDIT_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV", 0.30)
+                )
+            if (
+                self._resolve_vass_quality_iv_environment(vix_current=vix_current, iv_rank=iv_rank)
+                == "MEDIUM"
+            ):
+                return float(
+                    getattr(config, "BEAR_CALL_CREDIT_MIN_CREDIT_TO_WIDTH_PCT_MEDIUM_IV", 0.33)
+                )
+            return float(getattr(config, "BEAR_CALL_CREDIT_MIN_CREDIT_TO_WIDTH_PCT", 0.35))
         iv_env = self._resolve_vass_quality_iv_environment(vix_current=vix_current, iv_rank=iv_rank)
         if iv_env == "HIGH":
             return float(getattr(config, "CREDIT_SPREAD_MIN_CREDIT_TO_WIDTH_PCT_HIGH_IV", 0.30))
