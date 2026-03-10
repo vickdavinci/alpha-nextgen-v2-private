@@ -1039,6 +1039,11 @@ VASS_NEUTRAL_DIRECTION_MEMORY_ENABLED = True  # V12.31: when macro remains neutr
 VASS_NEUTRAL_DIRECTION_MEMORY_MAX_MINUTES = (
     120  # Memory fallback validity window from most recent VASS direction entry stamp.
 )
+VASS_STRESS_BEAR_RESCUE_ENABLED = True  # V12.33: in STRESS, let strongly negative transition delta rescue bearish VASS routing from lagging bullish macro.
+VASS_STRESS_BEAR_RESCUE_DELTA_MIN = 1.0  # Minimum negative transition delta required to bias VASS bearish inside bullish+STRESS dead zones.
+VASS_STRESS_BEAR_RESCUE_SCORE_MAX = (
+    62.0  # Only rescue bearish VASS when the transition score is still only mildly bullish.
+)
 VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT = (
     False  # V10.10 tuning: disable bearish credit fallback while BEAR_PUT gating is rebalanced
 )

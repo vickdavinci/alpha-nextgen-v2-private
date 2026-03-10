@@ -1072,9 +1072,14 @@ class VASSEntryEngine:
         overlay_state = host.get_regime_overlay_state(
             vix_current=vix_level_for_vass, regime_score=regime_for_vass
         )
+        try:
+            transition_delta = float(ctx.get("delta", 0.0) or 0.0)
+        except Exception:
+            transition_delta = 0.0
+        resolver_macro_direction = str(macro_direction).upper()
         if (
             resolver_direction is None
-            and str(macro_direction).upper() == "NEUTRAL"
+            and resolver_macro_direction == "NEUTRAL"
             and bool(getattr(config, "VASS_NEUTRAL_FALLBACK_DIRECTION_ENABLED", True))
             and str(overlay_state).upper() != "AMBIGUOUS"
         ):
@@ -1083,10 +1088,6 @@ class VASSEntryEngine:
                 getattr(config, "VASS_NEUTRAL_FALLBACK_DELTA_SOFT_MIN", delta_min)
             )
             delta_soft_min = max(0.0, min(delta_min, delta_soft_min))
-            try:
-                transition_delta = float(ctx.get("delta", 0.0) or 0.0)
-            except Exception:
-                transition_delta = 0.0
             overlay_key = str(overlay_state or "").upper()
             configured_overlays = getattr(
                 config,
@@ -1162,11 +1163,39 @@ class VASSEntryEngine:
                     },
                     context=ctx,
                 )
+        if (
+            resolver_direction is None
+            and resolver_macro_direction == "BULLISH"
+            and str(overlay_state).upper() == "STRESS"
+            and bool(getattr(config, "VASS_STRESS_BEAR_RESCUE_ENABLED", True))
+        ):
+            rescue_delta_min = float(getattr(config, "VASS_STRESS_BEAR_RESCUE_DELTA_MIN", 1.0))
+            rescue_score_max = float(getattr(config, "VASS_STRESS_BEAR_RESCUE_SCORE_MAX", 62.0))
+            if transition_delta <= -rescue_delta_min and regime_for_vass <= rescue_score_max:
+                resolver_direction = "BEARISH"
+                resolver_macro_direction = "NEUTRAL"
+                resolver_reason = (
+                    f"{resolver_reason} | " f"VASS_STRESS_BEAR_RESCUE_DELTA={transition_delta:+.1f}"
+                )
+                host._record_regime_decision(
+                    engine="VASS",
+                    decision="INFER",
+                    strategy_attempted="VASS_DIRECTION",
+                    gate_name="VASS_STRESS_BEAR_RESCUE",
+                    threshold_snapshot={
+                        "delta": transition_delta,
+                        "delta_min": rescue_delta_min,
+                        "score_max": rescue_score_max,
+                        "inferred_direction": resolver_direction,
+                        "overlay": str(overlay_state or "").upper(),
+                    },
+                    context=ctx,
+                )
         should_trade, resolved_direction, resolve_reason = host.resolve_trade_signal(
             engine="VASS",
             engine_direction=resolver_direction,
             engine_conviction=resolver_has_conviction,
-            macro_direction=macro_direction,
+            macro_direction=resolver_macro_direction,
             conviction_strength=None,
             overlay_state=overlay_state,
             allow_macro_veto=allow_macro_veto,

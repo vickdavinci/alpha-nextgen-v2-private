@@ -4879,6 +4879,126 @@ class TestVASSNeutralDeteriorationBias:
         assert result[8] == "BULLISH"
 
 
+class TestVASSStressBearishRescue:
+    """V12.33 stress+bullish dead zone should only rescue bearish VASS with negative delta confirmation."""
+
+    def _make_algorithm(self, current_vix: float = 28.0) -> SimpleNamespace:
+        return SimpleNamespace(
+            Time=datetime(2022, 6, 13, 10, 30, 0),
+            Log=lambda *_args, **_kwargs: None,
+            _current_vix=current_vix,
+        )
+
+    def _make_transition_ctx(
+        self,
+        *,
+        overlay: str = "STRESS",
+        delta: float = -1.2,
+        transition_score: float = 60.0,
+        momentum_roc: float = -0.02,
+    ) -> dict:
+        return {
+            "transition_overlay": overlay,
+            "delta": delta,
+            "transition_score": transition_score,
+            "effective_score": transition_score,
+            "momentum_roc": momentum_roc,
+        }
+
+    def _wire_vass_host(
+        self,
+        engine: OptionsEngine,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        overlay: str = "STRESS",
+        macro_direction: str = "BULLISH",
+        current_vix: float = 28.0,
+    ) -> tuple[list[dict], dict]:
+        decisions: list[dict] = []
+        captured: dict = {}
+        engine.algorithm = self._make_algorithm(current_vix=current_vix)
+
+        monkeypatch.setattr(config, "VASS_USE_CONVICTION_ONLY_DIRECTION", False)
+        monkeypatch.setattr(config, "VASS_NEUTRAL_FALLBACK_DIRECTION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_NEUTRAL_DIRECTION_MEMORY_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_STRESS_BEAR_RESCUE_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_STRESS_BEAR_RESCUE_DELTA_MIN", 1.0)
+        monkeypatch.setattr(config, "VASS_STRESS_BEAR_RESCUE_SCORE_MAX", 62.0)
+
+        engine._record_regime_decision = lambda **kwargs: decisions.append(kwargs)
+        engine.evaluate_transition_policy_block = lambda **kwargs: (None, "")
+        engine.update_iv_sensor = lambda *_args, **_kwargs: None
+        engine.get_iv_conviction = lambda: (False, None, "")
+        engine.get_macro_direction = lambda _regime_score: macro_direction
+        engine.get_regime_overlay_state = lambda vix_current, regime_score: overlay
+        real_resolver = OptionsEngine.resolve_trade_signal.__get__(engine, OptionsEngine)
+
+        def wrapped_resolver(**kwargs):
+            captured.update(kwargs)
+            return real_resolver(**kwargs)
+
+        engine.resolve_trade_signal = wrapped_resolver
+        return decisions, captured
+
+    def test_stress_bullish_macro_with_negative_delta_rescues_bearish_vass(
+        self, engine, monkeypatch
+    ):
+        decisions, captured = self._wire_vass_host(engine, monkeypatch)
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=60.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(delta=-1.2, transition_score=60.0),
+        )
+
+        assert result is not None
+        assert result[0] == OptionDirection.PUT
+        assert result[1] == "BEARISH"
+        assert result[8] == "BEARISH"
+        assert captured["engine_direction"] == "BEARISH"
+        assert captured["macro_direction"] == "NEUTRAL"
+        rescue_decision = next(
+            decision for decision in decisions if decision["gate_name"] == "VASS_STRESS_BEAR_RESCUE"
+        )
+        assert rescue_decision["threshold_snapshot"]["delta"] == -1.2
+
+    def test_stress_bullish_macro_without_enough_negative_delta_still_blocks(
+        self, engine, monkeypatch
+    ):
+        self._wire_vass_host(engine, monkeypatch)
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=60.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(delta=-0.4, transition_score=60.0),
+        )
+
+        assert result is None
+
+    def test_stress_bullish_macro_high_score_does_not_force_bearish(self, engine, monkeypatch):
+        self._wire_vass_host(engine, monkeypatch)
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=68.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(delta=-1.4, transition_score=68.0),
+        )
+
+        assert result is None
+
+
 class TestOvernightGapProtectionExit:
     """Overnight gap-protection exit metadata for VASS spread closes."""
 
