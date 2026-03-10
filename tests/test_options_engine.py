@@ -5351,11 +5351,11 @@ class TestBearPutWidthScoping:
         assert bull_min == 4.0
         assert bear_min == 5.0
 
-    def test_bear_put_debit_width_cap_relax_is_scoped(self, engine, monkeypatch):
-        """BEAR_PUT should get only a modest D/W cap relax relative to other debit spreads."""
+    def test_bear_put_debit_uses_dedicated_dw_cap_table(self, engine, monkeypatch):
+        """V12.33: BEAR_PUT uses its own D/W cap table reflecting put-skew economics."""
         monkeypatch.setattr(config, "SPREAD_DW_CAP_HIGH", 0.32)
-        monkeypatch.setattr(config, "BEAR_PUT_SPREAD_DW_CAP_BUMP", 0.04)
-        monkeypatch.setattr(config, "BEAR_PUT_SPREAD_DW_CAP_MAX", 0.46)
+        monkeypatch.setattr(config, "BEAR_PUT_DW_CAP_HIGH", 0.52)
+        monkeypatch.setattr(config, "BEAR_PUT_DW_CAP_PANIC", 0.50)
 
         bull_cap = engine._get_spread_debit_width_cap(
             27.0,
@@ -5369,7 +5369,18 @@ class TestBearPutWidthScoping:
         )
 
         assert bull_cap == 0.32
-        assert bear_cap == 0.36
+        assert bear_cap == 0.52
+
+    def test_bear_put_dw_cap_panic_vix(self, engine, monkeypatch):
+        """BEAR_PUT D/W cap at VIX > 35 uses BEAR_PUT_DW_CAP_PANIC."""
+        monkeypatch.setattr(config, "SPREAD_DW_CAP_PANIC", 0.28)
+        monkeypatch.setattr(config, "BEAR_PUT_DW_CAP_PANIC", 0.50)
+
+        bull_cap = engine._get_spread_debit_width_cap(38.0, spread_type="BULL_CALL")
+        bear_cap = engine._get_spread_debit_width_cap(38.0, spread_type="BEAR_PUT")
+
+        assert bull_cap == 0.28
+        assert bear_cap == 0.50
 
 
 class TestVASSTransitionRecoveryScoping:

@@ -1800,8 +1800,14 @@ SPREAD_DW_CAP_NORMAL = (
 SPREAD_DW_CAP_COMPRESSED = (
     0.42  # V12.23.1: keep compressed-IV aligned with normal cap after slight D/W loosen.
 )
-BEAR_PUT_SPREAD_DW_CAP_BUMP = 0.04  # V12.31: modest D/W relax for bearish put spreads
-BEAR_PUT_SPREAD_DW_CAP_MAX = 0.46  # V12.31: hard ceiling for bearish put D/W relax
+# V12.33: Per-strategy D/W cap table for BEAR_PUT debit spreads.
+# Put skew inverts the VIX→D/W relationship vs calls: higher VIX → steeper skew → higher
+# natural D/W.  The call-oriented caps (0.28-0.42) choke ~80-95% of viable bear puts in
+# elevated IV.  These caps reflect put-skew economics directly.
+BEAR_PUT_DW_CAP_PANIC = 0.50  # VIX > 35 (call equiv: 0.28)
+BEAR_PUT_DW_CAP_HIGH = 0.52  # 25 <= VIX < 35 (call equiv: 0.32)
+BEAR_PUT_DW_CAP_ELEVATED = 0.48  # VIX < 25, HIGH iv_env (call equiv: 0.38)
+BEAR_PUT_DW_CAP_NORMAL = 0.46  # VIX < 25, normal/compressed (call equiv: 0.42)
 SPREAD_DW_ABSOLUTE_CAP = 2.00  # Max debit dollars on $5 spread in very calm IV
 SPREAD_DW_ABSOLUTE_CAP_VIX = 15.0
 # V12.0: Elastic absolute debit cap (inversely scaled by VIX, bounded).

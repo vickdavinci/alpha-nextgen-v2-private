@@ -2797,29 +2797,43 @@ class OptionsEngine:
         iv_rank: Optional[float] = None,
         spread_type: Optional[str] = None,
     ) -> float:
-        """Resolve adaptive debit/width cap by current VIX band."""
+        """Resolve adaptive debit/width cap by current VIX band.
+
+        V12.33: BEAR_PUT uses a dedicated cap table that reflects put-skew
+        economics (higher VIX → steeper skew → higher natural D/W).
+        """
         spread_type_upper = str(spread_type or "").upper()
         is_bear_put = spread_type_upper in {"BEAR_PUT", "BEAR_PUT_DEBIT"}
         if vix_level is None:
             iv_env = self._resolve_vass_quality_iv_environment(
                 vix_current=vix_level, iv_rank=iv_rank
             )
+            if is_bear_put:
+                if iv_env == "HIGH":
+                    return float(getattr(config, "BEAR_PUT_DW_CAP_ELEVATED", 0.48))
+                return float(getattr(config, "BEAR_PUT_DW_CAP_NORMAL", 0.46))
             if iv_env == "LOW":
                 cap = float(getattr(config, "SPREAD_DW_CAP_COMPRESSED", 0.48))
             elif iv_env == "HIGH":
                 cap = float(getattr(config, "SPREAD_DW_CAP_ELEVATED", 0.36))
             else:
                 cap = float(getattr(config, "SPREAD_DW_CAP_NORMAL", 0.42))
-            if is_bear_put and iv_env != "LOW":
-                cap = min(
-                    float(getattr(config, "BEAR_PUT_SPREAD_DW_CAP_MAX", cap)),
-                    cap + float(getattr(config, "BEAR_PUT_SPREAD_DW_CAP_BUMP", 0.0) or 0.0),
-                )
             return cap
         try:
             vix = float(vix_level)
         except Exception:
+            if is_bear_put:
+                return float(getattr(config, "BEAR_PUT_DW_CAP_NORMAL", 0.46))
             return float(getattr(config, "SPREAD_DW_CAP_NORMAL", 0.42))
+        if is_bear_put:
+            if vix > 35:
+                return float(getattr(config, "BEAR_PUT_DW_CAP_PANIC", 0.50))
+            if vix >= 25:
+                return float(getattr(config, "BEAR_PUT_DW_CAP_HIGH", 0.52))
+            iv_env = self._resolve_vass_quality_iv_environment(vix_current=vix, iv_rank=iv_rank)
+            if iv_env == "HIGH":
+                return float(getattr(config, "BEAR_PUT_DW_CAP_ELEVATED", 0.48))
+            return float(getattr(config, "BEAR_PUT_DW_CAP_NORMAL", 0.46))
         if vix > 35:
             cap = float(getattr(config, "SPREAD_DW_CAP_PANIC", 0.28))
         elif vix >= 25:
@@ -2832,11 +2846,6 @@ class OptionsEngine:
                 cap = float(getattr(config, "SPREAD_DW_CAP_ELEVATED", 0.36))
             else:
                 cap = float(getattr(config, "SPREAD_DW_CAP_NORMAL", 0.42))
-        if is_bear_put:
-            cap = min(
-                float(getattr(config, "BEAR_PUT_SPREAD_DW_CAP_MAX", cap)),
-                cap + float(getattr(config, "BEAR_PUT_SPREAD_DW_CAP_BUMP", 0.0) or 0.0),
-            )
         return cap
 
     def _get_spread_absolute_debit_cap(self, vix_level: Optional[float], width: float) -> float:
