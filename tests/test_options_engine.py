@@ -2676,6 +2676,51 @@ class TestSwingFilters:
         assert can_enter is False
         assert "vix spike" in reason.lower()
 
+    def test_swing_filter_blocks_put_gap_down_without_deterioration_confirmation(self, engine):
+        """Gap-down put entries should still block without confirmed deterioration context."""
+        can_enter, reason = engine.check_swing_filters(
+            direction=OptionDirection.PUT,
+            spy_gap_pct=-1.5,
+            spy_intraday_change_pct=0.0,
+            vix_intraday_change_pct=0.0,
+            current_hour=11,
+            current_minute=30,
+            transition_ctx={"transition_overlay": "STABLE", "delta": -1.5},
+        )
+
+        assert can_enter is False
+        assert "bounce risk for puts" in reason.lower()
+
+    def test_swing_filter_allows_put_gap_down_in_confirmed_deterioration(self, engine):
+        """Gap-down put entries should bypass bounce-risk block in confirmed deterioration."""
+        can_enter, reason = engine.check_swing_filters(
+            direction=OptionDirection.PUT,
+            spy_gap_pct=-1.5,
+            spy_intraday_change_pct=0.0,
+            vix_intraday_change_pct=0.0,
+            current_hour=11,
+            current_minute=30,
+            transition_ctx={"transition_overlay": "DETERIORATION", "delta": -1.2},
+        )
+
+        assert can_enter is True
+        assert reason == ""
+
+    def test_swing_filter_keeps_call_gap_up_block_in_deterioration(self, engine):
+        """Call reversal-risk block should remain active even if deterioration context is present."""
+        can_enter, reason = engine.check_swing_filters(
+            direction=OptionDirection.CALL,
+            spy_gap_pct=1.5,
+            spy_intraday_change_pct=0.0,
+            vix_intraday_change_pct=0.0,
+            current_hour=11,
+            current_minute=30,
+            transition_ctx={"transition_overlay": "DETERIORATION", "delta": -1.2},
+        )
+
+        assert can_enter is False
+        assert "reversal risk for calls" in reason.lower()
+
 
 class TestDailyResetV211:
     """Tests for V2.1.1 daily reset functionality."""

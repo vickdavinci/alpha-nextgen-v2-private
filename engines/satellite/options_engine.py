@@ -3832,6 +3832,7 @@ class OptionsEngine:
         vix_intraday_change_pct: float,
         current_hour: int,
         current_minute: int,
+        transition_ctx: Optional[Dict[str, Any]] = None,
         is_eod_scan: bool = False,
     ) -> Tuple[bool, str]:
         """Swing-mode entry filters delegated to VASSEntryEngine."""
@@ -3842,6 +3843,7 @@ class OptionsEngine:
             vix_intraday_change_pct=vix_intraday_change_pct,
             current_hour=current_hour,
             current_minute=current_minute,
+            transition_ctx=transition_ctx,
             enforce_time_window=not bool(is_eod_scan),
         )
 

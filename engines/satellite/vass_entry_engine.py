@@ -804,6 +804,7 @@ class VASSEntryEngine:
         vix_intraday_change_pct: float,
         current_hour: int,
         current_minute: int,
+        transition_ctx: Optional[Dict[str, Any]] = None,
         enforce_time_window: bool = True,
     ) -> Tuple[bool, str]:
         """Simple intraday filters for swing-mode entries."""
@@ -817,10 +818,28 @@ class VASSEntryEngine:
         if enforce_time_window and not (start_minutes <= time_minutes <= end_minutes):
             return False, "TIME_WINDOW"
 
+        transition_overlay = str((transition_ctx or {}).get("transition_overlay", "") or "").upper()
+        try:
+            transition_delta = float((transition_ctx or {}).get("delta", 0.0) or 0.0)
+        except Exception:
+            transition_delta = 0.0
+
         if abs(spy_gap_pct) > config.SWING_GAP_THRESHOLD:
             if direction == OptionDirection.CALL and spy_gap_pct > 0:
                 return False, f"Gap up {spy_gap_pct:.1f}% - reversal risk for calls"
             if direction == OptionDirection.PUT and spy_gap_pct < 0:
+                allow_deterioration_bypass = bool(
+                    getattr(config, "SWING_PUT_BOUNCE_FILTER_DETERIORATION_BYPASS_ENABLED", True)
+                )
+                deterioration_delta_min = float(
+                    getattr(config, "SWING_PUT_BOUNCE_FILTER_DETERIORATION_DELTA_MIN", 1.0)
+                )
+                if (
+                    allow_deterioration_bypass
+                    and transition_overlay == "DETERIORATION"
+                    and transition_delta <= -deterioration_delta_min
+                ):
+                    return True, ""
                 return False, f"Gap down {spy_gap_pct:.1f}% - bounce risk for puts"
 
         if spy_intraday_change_pct < config.SWING_EXTREME_SPY_DROP:
@@ -1549,6 +1568,7 @@ class VASSEntryEngine:
             vix_intraday_change_pct=vix_intraday_change_pct,
             current_hour=algorithm.Time.hour,
             current_minute=algorithm.Time.minute,
+            transition_ctx=transition_ctx,
         )
         if not swing_filters_ok:
             algorithm._diag_vass_block_count += 1
@@ -2196,6 +2216,7 @@ class VASSEntryEngine:
             vix_intraday_change_pct=vix_intraday_change_pct,
             current_hour=algorithm.Time.hour,
             current_minute=algorithm.Time.minute,
+            transition_ctx=transition_ctx,
             is_eod_scan=is_eod_scan,
         )
         if not swing_filters_ok:
