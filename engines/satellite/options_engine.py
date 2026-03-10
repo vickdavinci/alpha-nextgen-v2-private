@@ -241,6 +241,11 @@ class OptionsEngine:
         self._pending_spread_width: Optional[float] = None
         self._pending_spread_entry_vix: Optional[float] = None
         self._pending_spread_entry_since: Optional[datetime] = None
+        self._pending_spread_signal_id: str = ""
+        self._pending_spread_trace_id: str = ""
+        self._pending_spread_direction: str = ""
+        self._pending_spread_strategy: str = ""
+        self._pending_spread_signal_reason: str = ""
 
         # V2.3 FIX: Prevent order spam - track failed entry attempts
         self._entry_attempted_today: bool = False
@@ -4416,6 +4421,11 @@ class OptionsEngine:
         self._pending_spread_entry_since = None
         self._pending_num_contracts = None
         self._pending_entry_score = None
+        self._pending_spread_signal_id = ""
+        self._pending_spread_trace_id = ""
+        self._pending_spread_direction = ""
+        self._pending_spread_strategy = ""
+        self._pending_spread_signal_reason = ""
         self.log(
             "OPT_MACRO_RECOVERY: Pending spread entry cancelled | Retry allowed",
             trades_only=True,
@@ -4470,6 +4480,11 @@ class OptionsEngine:
         self._pending_spread_entry_since = None
         self._pending_num_contracts = None
         self._pending_entry_score = None
+        self._pending_spread_signal_id = ""
+        self._pending_spread_trace_id = ""
+        self._pending_spread_direction = ""
+        self._pending_spread_strategy = ""
+        self._pending_spread_signal_reason = ""
         self._pending_stop_pct = None
         self._pending_stop_price = None
         self._pending_target_price = None

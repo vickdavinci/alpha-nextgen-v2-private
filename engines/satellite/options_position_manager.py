@@ -346,6 +346,33 @@ def register_spread_entry_impl(
     self._record_vass_signature_entry(signature, entry_dt)
     self._record_vass_direction_day_entry(spread_dir, entry_dt)
 
+    algorithm = getattr(self, "algorithm", None)
+    pending_signal_id = str(getattr(self, "_pending_spread_signal_id", "") or "").strip()
+    pending_trace_id = str(getattr(self, "_pending_spread_trace_id", "") or "").strip()
+    pending_direction = str(getattr(self, "_pending_spread_direction", "") or "").strip()
+    pending_strategy = str(getattr(self, "_pending_spread_strategy", "") or "").strip()
+    pending_reason = str(getattr(self, "_pending_spread_signal_reason", "") or "").strip()
+    if (
+        algorithm is not None
+        and pending_signal_id
+        and hasattr(algorithm, "_mark_engine_signal_event")
+        and hasattr(algorithm, "_record_signal_lifecycle_event")
+    ):
+        # Backfill APPROVED only when the original approval lifecycle row never landed.
+        if algorithm._mark_engine_signal_event("APPROVED", pending_signal_id):
+            algorithm._record_signal_lifecycle_event(
+                engine="VASS",
+                event="APPROVED",
+                signal_id=pending_signal_id,
+                trace_id=pending_trace_id,
+                direction=pending_direction,
+                strategy=pending_strategy or str(spread.spread_type or ""),
+                code="R_OK",
+                gate_name="SPREAD_ENTRY_FILL_BACKFILL",
+                reason=pending_reason or "Backfilled on spread fill registration",
+                contract_symbol=self._symbol_str(spread.long_leg.symbol),
+            )
+
     # V2.9: Update trade counter (Bug #4 fix) - Spreads are always swing mode
     self._increment_trade_counter(OptionsMode.SWING)
 
@@ -397,6 +424,11 @@ def register_spread_entry_impl(
     self._pending_spread_entry_since = None
     self._pending_num_contracts = None
     self._pending_entry_score = None
+    self._pending_spread_signal_id = ""
+    self._pending_spread_trace_id = ""
+    self._pending_spread_direction = ""
+    self._pending_spread_strategy = ""
+    self._pending_spread_signal_reason = ""
     self._rejection_margin_cap = None  # V2.21: Clear on successful fill
     self._rejection_contract_cap = None  # V12.31: Clear adaptive contract cap on successful fill
 

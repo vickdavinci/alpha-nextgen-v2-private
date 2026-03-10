@@ -1767,18 +1767,19 @@ class VASSEntryEngine:
             )
             signal = algorithm._attach_option_trace_metadata(signal, source="VASS")
             vass_trace_id = signal.metadata.get("trace_id", "") if signal.metadata else ""
-            algorithm._record_signal_lifecycle_event(
-                engine="VASS",
-                event="APPROVED",
-                signal_id=vass_signal_id,
-                trace_id=vass_trace_id,
-                direction=direction.value if direction else "",
-                strategy=strategy.value if strategy else "",
-                code="R_OK",
-                gate_name="VASS_ENTRY",
-                reason=str(signal.reason or ""),
-                contract_symbol=str(signal.symbol),
-            )
+            if algorithm._mark_engine_signal_event("APPROVED", vass_signal_id):
+                algorithm._record_signal_lifecycle_event(
+                    engine="VASS",
+                    event="APPROVED",
+                    signal_id=vass_signal_id,
+                    trace_id=vass_trace_id,
+                    direction=direction.value if direction else "",
+                    strategy=strategy.value if strategy else "",
+                    code="R_OK",
+                    gate_name="VASS_ENTRY",
+                    reason=str(signal.reason or ""),
+                    contract_symbol=str(signal.symbol),
+                )
             signal = algorithm._apply_spread_margin_guard(signal, source_tag="VASS_INTRADAY_SPREAD")
             if signal is None:
                 algorithm._record_signal_lifecycle_event(
@@ -1798,6 +1799,11 @@ class VASSEntryEngine:
                 signal.metadata.get("spread_short_leg_symbol", "") if signal.metadata else ""
             )
             long_symbol = str(signal.symbol) if signal.symbol else ""
+            host._pending_spread_signal_id = str(vass_signal_id or "")
+            host._pending_spread_trace_id = str(vass_trace_id or "")
+            host._pending_spread_direction = direction.value if direction else ""
+            host._pending_spread_strategy = strategy.value if strategy else ""
+            host._pending_spread_signal_reason = str(signal.reason or "")
             if short_symbol and long_symbol:
                 algorithm._pending_spread_orders[short_symbol] = long_symbol
                 algorithm._pending_spread_orders_reverse[long_symbol] = short_symbol
@@ -2311,18 +2317,19 @@ class VASSEntryEngine:
             )
             signal = algorithm._attach_option_trace_metadata(signal, source="VASS")
             vass_trace_id = signal.metadata.get("trace_id", "") if signal.metadata else ""
-            algorithm._record_signal_lifecycle_event(
-                engine="VASS",
-                event="APPROVED",
-                signal_id=vass_signal_id,
-                trace_id=vass_trace_id,
-                direction=direction.value if direction else "",
-                strategy=strategy.value if strategy else "",
-                code="R_OK",
-                gate_name="VASS_ENTRY",
-                reason=str(signal.reason or ""),
-                contract_symbol=str(signal.symbol),
-            )
+            if algorithm._mark_engine_signal_event("APPROVED", vass_signal_id):
+                algorithm._record_signal_lifecycle_event(
+                    engine="VASS",
+                    event="APPROVED",
+                    signal_id=vass_signal_id,
+                    trace_id=vass_trace_id,
+                    direction=direction.value if direction else "",
+                    strategy=strategy.value if strategy else "",
+                    code="R_OK",
+                    gate_name="VASS_ENTRY",
+                    reason=str(signal.reason or ""),
+                    contract_symbol=str(signal.symbol),
+                )
             signal = algorithm._apply_spread_margin_guard(signal, source_tag="VASS_SPREAD")
             if signal is None:
                 algorithm._record_signal_lifecycle_event(
@@ -2343,6 +2350,11 @@ class VASSEntryEngine:
                 signal.metadata.get("spread_short_leg_symbol", "") if signal.metadata else ""
             )
             long_symbol = str(signal.symbol) if signal.symbol else ""
+            host._pending_spread_signal_id = str(vass_signal_id or "")
+            host._pending_spread_trace_id = str(vass_trace_id or "")
+            host._pending_spread_direction = direction.value if direction else ""
+            host._pending_spread_strategy = strategy.value if strategy else ""
+            host._pending_spread_signal_reason = str(signal.reason or "")
             if short_symbol and long_symbol:
                 algorithm._pending_spread_orders[short_symbol] = long_symbol
                 algorithm._pending_spread_orders_reverse[long_symbol] = short_symbol
