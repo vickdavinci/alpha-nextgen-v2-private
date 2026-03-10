@@ -869,7 +869,12 @@ def check_spread_exit_signals_impl(
                 f"Regime={regime_score:.0f} | VIX={vix_current:.1f}"
             )
 
-    if vix_spike_enabled and exit_reason is None and is_bullish_spread and vix_current is not None:
+    if (
+        vix_spike_enabled
+        and exit_reason is None
+        and is_bullish_debit_spread
+        and vix_current is not None
+    ):
         if vix_current >= vix_spike_level:
             exit_reason = f"VIX_SPIKE_EXIT: VIX {vix_current:.1f} >= {vix_spike_level}"
         elif vix_5d_change is not None and vix_5d_change >= vix_spike_5d:

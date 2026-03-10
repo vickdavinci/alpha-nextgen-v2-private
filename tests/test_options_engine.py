@@ -5390,6 +5390,27 @@ class TestBearPutProfitTargetScoping:
 
         assert result is None
 
+    def test_vix_spike_exit_does_not_force_bull_put_credit(self, engine, monkeypatch):
+        """V12.33: VIX spike exit should remain debit-only and not auto-close bullish put credits."""
+        engine._spread_position = self._make_bull_put_credit_spread()
+        monkeypatch.setattr(config, "SPREAD_OVERLAY_STRESS_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "SWING_VIX_SPIKE_EXIT_ENABLED", True)
+        monkeypatch.setattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MARK_STOP_EXITS", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_MFE_LOCK_EXITS", False)
+        monkeypatch.setattr(config, "SWING_VIX_SPIKE_EXIT_LEVEL", 25.0)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=1.23,
+            short_leg_price=2.70,
+            regime_score=65.0,
+            vix_current=28.0,
+            current_dte=21,
+        )
+
+        assert result is None
+
     def test_bull_call_profit_target_still_uses_existing_debit_path(self, engine, monkeypatch):
         """BULL_CALL profit target behavior remains unchanged by the BEAR_PUT-only fix."""
         long_call = OptionContract(
