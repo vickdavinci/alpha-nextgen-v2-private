@@ -420,6 +420,7 @@ class VASSEntryEngine:
         *,
         strategy: Any,
         iv_environment: str,
+        current_vix: Optional[float] = None,
         algorithm: Any,
         host: Any,
     ) -> bool:
@@ -428,6 +429,9 @@ class VASSEntryEngine:
         if str(iv_environment or "").upper() != "HIGH":
             return False
         if strategy_value != "BULL_CALL_DEBIT":
+            return False
+        min_credit_vix = float(getattr(config, "BULL_PUT_CREDIT_MIN_VIX_FOR_ENTRY", 0.0) or 0.0)
+        if current_vix is not None and min_credit_vix > 0.0 and float(current_vix) < min_credit_vix:
             return False
         if algorithm is not None:
             algorithm.Log(
@@ -526,6 +530,7 @@ class VASSEntryEngine:
         overlay_state: Optional[str],
         regime_score: Optional[float],
         iv_environment: str,
+        current_vix: Optional[float],
         spread_strategy_enum: Any,
         is_credit_strategy_func: Callable[[Any], bool],
     ) -> Tuple[Any, int, int, bool]:
@@ -537,6 +542,21 @@ class VASSEntryEngine:
             is_intraday=False,
             spread_strategy_enum=spread_strategy_enum,
         )
+        min_credit_vix = float(getattr(config, "BULL_PUT_CREDIT_MIN_VIX_FOR_ENTRY", 0.0) or 0.0)
+        if (
+            direction == "BULLISH"
+            and strategy == spread_strategy_enum.BULL_PUT_CREDIT
+            and current_vix is not None
+            and min_credit_vix > 0.0
+            and float(current_vix) < min_credit_vix
+        ):
+            self._log(
+                "VASS_LOW_VIX_CREDIT_REROUTE: BULL_PUT_CREDIT->BULL_CALL_DEBIT | "
+                f"VIX={float(current_vix):.1f} < {min_credit_vix:.1f}"
+            )
+            strategy = spread_strategy_enum.BULL_CALL_DEBIT
+            dte_min = int(getattr(config, "VASS_MEDIUM_IV_DTE_MIN", dte_min))
+            dte_max = int(getattr(config, "VASS_MEDIUM_IV_DTE_MAX", dte_max))
         overlay = str(overlay_state or "").upper()
         if overlay == "EARLY_STRESS":
             if (
@@ -1597,6 +1617,7 @@ class VASSEntryEngine:
             overlay_state=overlay_state,
             iv_rank=iv_rank,
             regime_score=regime_score,
+            current_vix=current_vix,
         )
         # V12.30: Emit telemetry when high-IV pivot fires.
         if self._last_pivot_from and hasattr(algorithm, "_record_signal_lifecycle_event"):
@@ -1625,6 +1646,7 @@ class VASSEntryEngine:
         if self._should_block_high_iv_bull_debit_route(
             strategy=strategy,
             iv_environment=iv_environment,
+            current_vix=current_vix,
             algorithm=algorithm,
             host=host,
         ):
@@ -2042,6 +2064,7 @@ class VASSEntryEngine:
             overlay_state=overlay_state,
             iv_rank=iv_rank,
             regime_score=regime_score,
+            current_vix=current_vix,
         )
         # V12.30: Emit telemetry when high-IV pivot fires.
         if self._last_pivot_from and hasattr(algorithm, "_record_signal_lifecycle_event"):
@@ -2070,6 +2093,7 @@ class VASSEntryEngine:
         if self._should_block_high_iv_bull_debit_route(
             strategy=strategy,
             iv_environment=iv_environment,
+            current_vix=current_vix,
             algorithm=algorithm,
             host=host,
         ):

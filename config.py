@@ -1174,6 +1174,7 @@ CREDIT_SPREAD_SHORT_LEG_DELTA_MIN = 0.25  # Short leg delta range (OTM)
 CREDIT_SPREAD_SHORT_LEG_DELTA_MAX = 0.45  # V6.13 OPT: Improve credit spread constructability
 CREDIT_SPREAD_SHORT_LEG_DELTA_MAX_HIGH_VIX = 0.35  # V10.10: tighten short leg delta in high-IV tape
 CREDIT_SPREAD_SHORT_LEG_HIGH_VIX_THRESHOLD = 25.0
+BULL_PUT_CREDIT_MIN_VIX_FOR_ENTRY = 18.0  # V12.33: below this, route bullish spreads to debits instead of probing low-vol put credits.
 # V12.29: credit-risk exit guard for short-strike pressure near expiry.
 CREDIT_SPREAD_DELTA_EXIT_ENABLED = True
 CREDIT_SPREAD_DELTA_EXIT_THRESHOLD = 0.30

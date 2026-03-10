@@ -4569,6 +4569,42 @@ class TestVASSCreditSpreadEntry:
         assert dte_min == config.VASS_HIGH_IV_DTE_MIN
         assert dte_max == config.VASS_HIGH_IV_DTE_MAX
 
+    def test_resolve_vass_strategy_low_vix_high_iv_bullish_reroutes_to_debit(self, engine):
+        """V12.33: low realized VIX should route bullish HIGH-IV scans away from put credits."""
+        engine.is_iv_sensor_ready = lambda: True
+        engine.get_iv_environment = lambda iv_rank=None: "HIGH"
+
+        strategy, dte_min, dte_max, is_credit = engine.resolve_vass_strategy(
+            direction="BULLISH",
+            overlay_state="STABLE",
+            iv_rank=75.0,
+            regime_score=60.0,
+            current_vix=17.0,
+        )
+
+        assert strategy == SpreadStrategy.BULL_CALL_DEBIT
+        assert dte_min == config.VASS_MEDIUM_IV_DTE_MIN
+        assert dte_max == config.VASS_MEDIUM_IV_DTE_MAX
+        assert is_credit is False
+
+    def test_resolve_vass_strategy_high_vix_high_iv_bullish_keeps_credit(self, engine):
+        """V12.33: bullish HIGH-IV routing should still use put credits once the real VIX floor is met."""
+        engine.is_iv_sensor_ready = lambda: True
+        engine.get_iv_environment = lambda iv_rank=None: "HIGH"
+
+        strategy, dte_min, dte_max, is_credit = engine.resolve_vass_strategy(
+            direction="BULLISH",
+            overlay_state="STABLE",
+            iv_rank=75.0,
+            regime_score=60.0,
+            current_vix=22.0,
+        )
+
+        assert strategy == SpreadStrategy.BULL_PUT_CREDIT
+        assert dte_min == config.VASS_HIGH_IV_DTE_MIN
+        assert dte_max == config.VASS_HIGH_IV_DTE_MAX
+        assert is_credit is True
+
     def test_select_strategy_low_iv_bearish(self, engine):
         """LOW IV + BEARISH should select Bear Put Debit with monthly DTE."""
         strategy, dte_min, dte_max = engine._select_strategy("BEARISH", "LOW")
