@@ -1559,6 +1559,19 @@ def check_credit_spread_entry_signal_impl(
             vix_current=vix_current,
             regime_score=regime_score,
         )
+        if (
+            enforce_assignment_gate
+            and gate_reason == "ASSIGN_GATE_BULL_REGIME"
+            and not bool(
+                getattr(config, "BULL_PUT_CREDIT_ASSIGNMENT_BULL_REGIME_BLOCK_ENABLED", False)
+            )
+        ):
+            enforce_assignment_gate = False
+            self.log(
+                "CREDIT_SPREAD: BULL_PUT bull-regime assignment gate bypassed | "
+                f"Regime={regime_score:.1f} | VIX={vix_current:.1f} | Profile={gate_profile}",
+                trades_only=True,
+            )
         # V12.30: Apply STRESS relax to BULL_PUT_CREDIT (same as BEAR_PUT debit path).
         if (
             enforce_assignment_gate

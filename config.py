@@ -1601,6 +1601,7 @@ BEAR_PUT_ASSIGNMENT_HARD_BLOCK_REGIME_MAX = (
 BEAR_PUT_ASSIGNMENT_BULL_BLOCK_REGIME_MIN = (
     55.0  # Enforce short-PUT assignment gate in bullish/neutral-high regimes
 )
+BULL_PUT_CREDIT_ASSIGNMENT_BULL_REGIME_BLOCK_ENABLED = False  # V12.33: do not suppress bullish put-credit entries solely because macro regime is bullish
 BEAR_PUT_ASSIGNMENT_RESELECT_ENABLED = (
     True  # On assignment-gate fail, retry with a farther OTM short PUT from current candidate pool
 )

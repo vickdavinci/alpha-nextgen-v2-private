@@ -4675,6 +4675,54 @@ class TestVASSCreditSpreadEntry:
         assert max_loss_per > 0  # Defined max loss
         assert total_margin <= 7500  # Never exceeds allocation
 
+    def test_bull_put_credit_ignores_bull_regime_assignment_gate(self, engine):
+        """V12.33: bull regime alone should not suppress calm BULL_PUT_CREDIT entries."""
+        close_short = OptionContract(
+            symbol="QQQ 270315P00500000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=500.0,
+            expiry="2027-03-15",
+            delta=-0.30,
+            bid=3.50,
+            ask=3.80,
+            mid_price=3.65,
+            open_interest=5000,
+            days_to_expiry=10,
+        )
+        protective_long = OptionContract(
+            symbol="QQQ 270315P00495000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=495.0,
+            expiry="2027-03-15",
+            delta=-0.20,
+            bid=1.00,
+            ask=1.20,
+            mid_price=1.10,
+            open_interest=4000,
+            days_to_expiry=10,
+        )
+
+        signal = engine.check_credit_spread_entry_signal(
+            regime_score=60.0,
+            vix_current=16.0,
+            adx_value=30.0,
+            current_price=502.0,
+            ma200_value=480.0,
+            iv_rank=35.0,
+            current_hour=11,
+            current_minute=0,
+            current_date="2027-03-05",
+            portfolio_value=100_000,
+            short_leg_contract=close_short,
+            long_leg_contract=protective_long,
+            strategy=SpreadStrategy.BULL_PUT_CREDIT,
+            direction=OptionDirection.PUT,
+        )
+
+        assert signal is not None
+
     def test_credit_put_blocked_lower_neutral_stress_overlay(
         self, engine, credit_short_leg, credit_long_leg
     ):
