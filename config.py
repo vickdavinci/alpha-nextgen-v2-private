@@ -2286,7 +2286,7 @@ IC_REGIME_MIN = (
 )
 IC_REGIME_MAX = 75  # Neutral zone upper bound (V12.32: was 70 — extend into RISK_ON band for 2024 bull mkt testing)
 IC_REGIME_PERSISTENCE_DAYS = 2  # Require 2 consecutive neutral DAYS (V12.33: was 3 — too strict for bull mkts where neutral is brief)
-IC_VIX_MIN = 14.0  # Minimum VIX — need enough premium
+IC_VIX_MIN = 12.0  # Minimum VIX — need enough premium (V12.33: was 14.0 — 2024 avg VIX ~13, lower to allow low-vol entries)
 IC_VIX_MAX = 32.0  # Max VIX — too volatile for range thesis
 IC_ADX_MAX = 25.0  # Block when strong trend (V12.26: was 20, allows consolidation phases)
 IC_REGIME_VELOCITY_WINDOW = 5  # Look-back window in trading days for regime velocity
@@ -2305,12 +2305,12 @@ IC_DTE_MAX = 21  # Maximum DTE (V12.33: was 14 — match theta acceleration curv
 
 # ── Strike selection: short-leg delta range ──
 IC_SHORT_DELTA_MIN = (
-    0.16  # Minimum abs delta (V12.28: was 0.08 — HF-style closer strikes for viable premium)
+    0.12  # Minimum abs delta (V12.34: was 0.16 — reopen safer farther-OTM shorts in neutral tape)
 )
 IC_SHORT_DELTA_MAX = (
     0.25  # Maximum abs delta (V12.28: was 0.12 — delta 0.20 center collects 3× more credit)
 )
-IC_DELTA_SYMMETRY_MAX = 0.03  # Max abs(|call_delta| - |put_delta|) for symmetry
+IC_DELTA_SYMMETRY_MAX = 0.05  # Max abs(|call_delta| - |put_delta|) for symmetry (V12.34: was 0.03)
 IC_WING_SYMMETRY_MAX = 1.0  # Max abs(call_width - put_width) in dollars
 
 # ── Wing width by VIX tier ──
@@ -2349,7 +2349,7 @@ IC_SCAN_THROTTLE_MINUTES = 15  # Don't re-scan same chain within N minutes
 # Elastic delta widening: progressively relax delta band if no candidates found
 IC_ELASTIC_DELTA_STEPS = [0.0, 0.03, 0.06, 0.10]  # Widen ± each step
 IC_ELASTIC_DELTA_FLOOR = (
-    0.12  # Never accept delta below this (V12.28: was 0.05 — below 0.12 = too little premium)
+    0.10  # Never accept delta below this (V12.34: was 0.12 — allow safer fallback strikes)
 )
 IC_ELASTIC_DELTA_CEILING = (
     0.30  # Never accept delta above this (V12.28: was 0.18 — allow up to 0.30 in relaxation)
@@ -2408,7 +2408,9 @@ IC_UNDERLYING_INVALIDATION_PCT = (
 # Reject condors where short strikes are inside the VIX-implied expected move.
 # Formula: min_distance = QQQ × (VIX/100) × √(DTE/365) × buffer_mult
 # buffer=1.0 → strikes at 1σ (~84% POP); auto-adapts to VIX and DTE.
-IC_EM_BUFFER_MULT = 1.0  # 1.0× expected move — institutional standard for IC placement
+IC_EM_BUFFER_MULT = (
+    0.85  # 0.85× expected move (V12.34: was 1.0 — preserve EM anchor without starving neutral tape)
+)
 
 # ── IC Strike Reuse Guard ──
 # Block new IC entry when any candidate leg strike matches an active/pending
@@ -2436,14 +2438,20 @@ IC_CLOSE_MAX_RETRIES = 10  # Abandon after this many retries (clear is_closing)
 # Holds suppress P2-P7 exits until theta has accumulated ~18.4% of total decay.
 # Formula: hold_days = clamp(ceil(entry_dte × fraction), min, max)
 IC_HOLD_GUARD_ENABLED = True
-IC_HOLD_GUARD_DTE_FRACTION = 0.25  # Hold for 1/4 of entry DTE (V12.27: was 0.33 — shorter trades)
+IC_HOLD_GUARD_DTE_FRACTION = (
+    0.20  # Hold for 1/5 of entry DTE (V12.34: was 0.25 — let exits react sooner)
+)
 IC_HOLD_GUARD_MIN_DAYS = 2  # Minimum 2 calendar day hold (V12.33: was 1 — let gamma noise settle)
 IC_HOLD_GUARD_MAX_DAYS = (
-    6  # Maximum 6 calendar days hold (V12.33: was 3 — 14-21 DTE needs longer theta)
+    4  # Maximum 4 calendar days hold (V12.34: was 6 — cap overnight exposure on damaged trades)
 )
-IC_HOLD_HARD_STOP_CREDIT_MULT = 2.50  # During hold: exit only if loss > 2.5× credit
+IC_HOLD_HARD_STOP_CREDIT_MULT = (
+    2.00  # During hold: exit only if loss > 2.0× credit (V12.34: was 2.5×)
+)
 IC_HOLD_EOD_GATE_ENABLED = True  # EOD de-risk during hold
-IC_HOLD_EOD_GATE_CREDIT_MULT = 1.50  # At EOD during hold: exit if loss > 1.5× credit
+IC_HOLD_EOD_GATE_CREDIT_MULT = (
+    1.25  # At EOD during hold: exit if loss > 1.25× credit (V12.34: was 1.5×)
+)
 IC_HOLD_EOD_GATE_MIN_MINUTES = 240  # Min hold before EOD gate can fire (4h)
 
 # ── IC MFE Lock (Maximum Favorable Excursion ratchet) ──

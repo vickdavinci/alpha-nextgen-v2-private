@@ -1927,15 +1927,15 @@ class TestHoldGuard:
         assert reason == EXIT_IC_STOP_LOSS
 
     def test_hold_guard_dte_adaptive_7dte(self):
-        """7 DTE entry → hold = max(1, min(3, ceil(7 × 0.25))) = 2 days."""
+        """7 DTE entry → hold = max(2, min(4, ceil(7 × 0.20))) = 2 days."""
         engine = _make_engine()
         condor = _make_condor(entry_dte=7)
         # Hold = 2 days = 2880 min. Entry: Mar 1 11:00
-        # credit_100 = 240; stop = 2.0× = 480; use pnl=-490 (triggers stop but not hard stop 2.5×=600)
+        # credit_100 = 240; stop = 1.5× = 360; use pnl=-400 (triggers stop but not hold hard stop 2.0×=480)
         # Day 1 (Mar 2): still within hold → blocked
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-490,  # Would trigger stop (> 480) but not hard stop (< 600)
+            combined_pnl=-400,  # Would trigger stop (> 360) but not hold hard stop (< 480)
             current_dte=6,
             vix_current=18,
             regime_score=52,
@@ -1947,7 +1947,7 @@ class TestHoldGuard:
         # Day 3 (Mar 4): past hold → cascade fires
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-490,
+            combined_pnl=-400,
             current_dte=4,
             vix_current=18,
             regime_score=52,
@@ -1959,15 +1959,15 @@ class TestHoldGuard:
         assert reason == EXIT_IC_STOP_LOSS
 
     def test_hold_guard_dte_adaptive_14dte(self):
-        """14 DTE entry → hold = max(1, min(3, ceil(14 × 0.25))) = 3 days (capped)."""
+        """14 DTE entry → hold = max(2, min(4, ceil(14 × 0.20))) = 3 days."""
         engine = _make_engine()
         condor = _make_condor(entry_dte=14)
         # Hold = 3 days (capped at max). Entry: Mar 1 11:00
-        # credit_100 = 240; stop = 2.0× = 480; use pnl=-490
+        # credit_100 = 240; stop = 1.5× = 360; use pnl=-400 (below hold hard stop 2.0×=480)
         # Day 2 (Mar 3): still within 3-day hold → blocked
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-490,
+            combined_pnl=-400,
             current_dte=12,
             vix_current=18,
             regime_score=52,
@@ -1979,7 +1979,7 @@ class TestHoldGuard:
         # Day 4 (Mar 5): past 3-day hold → cascade fires
         result = engine.check_exit_signals(
             condor=condor,
-            combined_pnl=-490,
+            combined_pnl=-400,
             current_dte=10,
             vix_current=18,
             regime_score=52,
