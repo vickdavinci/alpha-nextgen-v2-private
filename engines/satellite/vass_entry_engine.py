@@ -1134,9 +1134,14 @@ class VASSEntryEngine:
                         if not (latest_dir == "BULLISH" and regime_for_vass <= deep_bear_max):
                             resolver_direction = latest_dir
                             infer_mode = f"DIRECTION_MEMORY:{elapsed_min:.0f}m"
+            if resolver_direction is None and overlay_key == "DETERIORATION":
+                resolver_direction = "BEARISH"
+                infer_mode = "OVERLAY_DETERIORATION_BEAR"
             # V12.30: Emit telemetry when neutral fallback infers direction.
             if resolver_direction is not None:
                 if infer_mode is not None and infer_mode.startswith("DIRECTION_MEMORY:"):
+                    resolver_reason = f"{resolver_reason} | VASS_NEUTRAL_FALLBACK_{infer_mode}"
+                elif infer_mode == "OVERLAY_DETERIORATION_BEAR":
                     resolver_reason = f"{resolver_reason} | VASS_NEUTRAL_FALLBACK_{infer_mode}"
                 else:
                     resolver_reason = (

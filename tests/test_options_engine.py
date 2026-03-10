@@ -4581,6 +4581,149 @@ class TestResolverMicroPrimary:
         assert "VASS_NO_CONVICTION" in reason or "Misaligned" in reason
 
 
+class TestVASSNeutralDeteriorationBias:
+    """V12.33 neutral+deterioration should bias VASS bearish without widening other cases."""
+
+    def _make_algorithm(self, current_vix: float = 18.0) -> SimpleNamespace:
+        """Create a minimal algorithm stub for VASS direction resolution tests."""
+        return SimpleNamespace(
+            Time=datetime(2022, 7, 15, 10, 30, 0),
+            Log=lambda *_args, **_kwargs: None,
+            _current_vix=current_vix,
+        )
+
+    def _make_transition_ctx(
+        self,
+        *,
+        overlay: str,
+        delta: float = 0.0,
+        transition_score: float = 56.0,
+        momentum_roc: float = -0.01,
+    ) -> dict:
+        """Create a minimal transition context for resolver tests."""
+        return {
+            "transition_overlay": overlay,
+            "delta": delta,
+            "transition_score": transition_score,
+            "effective_score": transition_score,
+            "momentum_roc": momentum_roc,
+        }
+
+    def _wire_vass_host(
+        self,
+        engine: OptionsEngine,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        overlay: str,
+        conviction: tuple = (False, None, ""),
+        current_vix: float = 18.0,
+    ) -> list[dict]:
+        """Wire a minimal host surface for resolve_direction_context()."""
+        decisions: list[dict] = []
+        algorithm = self._make_algorithm(current_vix=current_vix)
+        engine.algorithm = algorithm
+
+        monkeypatch.setattr(config, "VASS_USE_CONVICTION_ONLY_DIRECTION", False)
+        monkeypatch.setattr(config, "VASS_NEUTRAL_FALLBACK_DIRECTION_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_NEUTRAL_DIRECTION_MEMORY_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_NEUTRAL_FALLBACK_DELTA_MIN", 1.0)
+        monkeypatch.setattr(config, "VASS_NEUTRAL_FALLBACK_DELTA_SOFT_MIN", 0.5)
+
+        engine._record_regime_decision = lambda **kwargs: decisions.append(kwargs)
+        engine.evaluate_transition_policy_block = lambda **kwargs: (None, "")
+        engine.update_iv_sensor = lambda *_args, **_kwargs: None
+        engine.get_iv_conviction = lambda: conviction
+        engine.get_macro_direction = lambda _regime_score: "NEUTRAL"
+        engine.get_regime_overlay_state = lambda vix_current, regime_score: overlay
+        engine.resolve_trade_signal = lambda **kwargs: (
+            kwargs.get("engine_direction") is not None,
+            kwargs.get("engine_direction"),
+            (
+                f"RESOLVED:{kwargs.get('engine_direction')}"
+                if kwargs.get("engine_direction") is not None
+                else "NO_TRADE: VASS has no direction, Macro is NEUTRAL"
+            ),
+        )
+        return decisions
+
+    def test_neutral_deterioration_biases_vass_bearish(self, engine, monkeypatch):
+        """Neutral+deterioration should force a bearish VASS direction when resolver is otherwise empty."""
+        decisions = self._wire_vass_host(
+            engine,
+            monkeypatch,
+            overlay="DETERIORATION",
+        )
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=56.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(overlay="DETERIORATION"),
+        )
+
+        assert result is not None
+        assert result[0] == OptionDirection.PUT
+        assert result[1] == "BEARISH"
+        assert result[8] == "BEARISH"
+        infer_decision = next(
+            decision for decision in decisions if decision["gate_name"] == "VASS_NEUTRAL_FALLBACK"
+        )
+        assert infer_decision["threshold_snapshot"]["infer_mode"] == "OVERLAY_DETERIORATION_BEAR"
+
+    def test_neutral_stable_still_blocks_without_direction(self, engine, monkeypatch):
+        """Neutral+stable should remain blocked when fallback delta and memory do not resolve direction."""
+        self._wire_vass_host(
+            engine,
+            monkeypatch,
+            overlay="STABLE",
+        )
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=56.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(overlay="STABLE"),
+        )
+
+        assert result is None
+
+    def test_existing_bullish_resolution_is_not_overridden(self, engine, monkeypatch):
+        """A pre-resolved bullish direction should not be replaced by the deterioration bear bias."""
+        self._wire_vass_host(
+            engine,
+            monkeypatch,
+            overlay="DETERIORATION",
+            conviction=(True, "BULLISH", "CONVICTION:BULLISH"),
+            current_vix=15.0,
+        )
+        monkeypatch.setattr(config, "VASS_USE_CONVICTION_ONLY_DIRECTION", True)
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=56.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(
+                overlay="DETERIORATION",
+                delta=0.0,
+                momentum_roc=-0.01,
+            ),
+        )
+
+        assert result is not None
+        assert result[0] == OptionDirection.CALL
+        assert result[1] == "BULLISH"
+        assert result[8] == "BULLISH"
+
+
 class TestOvernightGapProtectionExit:
     """Overnight gap-protection exit metadata for VASS spread closes."""
 
