@@ -3130,7 +3130,7 @@ SWING_TIME_WINDOW_END = "14:30"  # Entry window end
 # Gap Filter for Swing Mode
 SWING_GAP_THRESHOLD = 1.0  # Skip if SPY gaps > 1.0%
 SWING_PUT_BOUNCE_FILTER_DETERIORATION_BYPASS_ENABLED = True  # V12.33: allow bearish swing puts after a gap-down when transition overlay already confirms deterioration.
-SWING_PUT_BOUNCE_FILTER_DETERIORATION_DELTA_MIN = 1.0  # Minimum negative transition delta required to bypass the gap-down bounce-risk block for puts.
+SWING_PUT_BOUNCE_FILTER_DETERIORATION_DELTA_MIN = 0.5  # Minimum negative transition delta required to bypass the gap-down bounce-risk block for puts.
 
 # Extreme Move Filter
 SWING_EXTREME_SPY_DROP = -2.0  # Pause if SPY drops > 2% intraday

@@ -2706,6 +2706,21 @@ class TestSwingFilters:
         assert can_enter is True
         assert reason == ""
 
+    def test_swing_filter_requires_meaningful_deterioration_for_put_gap_down_bypass(self, engine):
+        """Gap-down put bypass should still reject weak deterioration signals."""
+        can_enter, reason = engine.check_swing_filters(
+            direction=OptionDirection.PUT,
+            spy_gap_pct=-1.5,
+            spy_intraday_change_pct=0.0,
+            vix_intraday_change_pct=0.0,
+            current_hour=11,
+            current_minute=30,
+            transition_ctx={"transition_overlay": "DETERIORATION", "delta": -0.4},
+        )
+
+        assert can_enter is False
+        assert "bounce risk for puts" in reason.lower()
+
     def test_swing_filter_keeps_call_gap_up_block_in_deterioration(self, engine):
         """Call reversal-risk block should remain active even if deterioration context is present."""
         can_enter, reason = engine.check_swing_filters(
