@@ -1377,6 +1377,15 @@ def check_spread_exit_signals_impl(
             t1 = float(getattr(config, "VASS_MFE_T1_TRIGGER", 0.25))
             t2 = float(getattr(config, "VASS_MFE_T2_TRIGGER", 0.45))
             floor_t2_pct = float(vass_exit_profile.get("mfe_t2_floor_pct", 0.15))
+            # V12.35: BEAR_PUT D/W-aware MFE floor override — rich put premiums
+            # need higher floor to protect equivalent % of entry debit.
+            if is_bearish_debit_spread:
+                bear_put_floor_key = {
+                    "LOW": "VASS_MFE_T2_FLOOR_BEAR_PUT_LOW_VIX",
+                    "MED": "VASS_MFE_T2_FLOOR_BEAR_PUT_MED_VIX",
+                    "HIGH": "VASS_MFE_T2_FLOOR_BEAR_PUT_HIGH_VIX",
+                }.get(vass_tier, "VASS_MFE_T2_FLOOR_BEAR_PUT_MED_VIX")
+                floor_t2_pct = float(getattr(config, bear_put_floor_key, floor_t2_pct))
             commission_cost = spread.num_spreads * config.SPREAD_COMMISSION_PER_CONTRACT
             commission_per_share = (
                 commission_cost / (spread.num_spreads * 100) if spread.num_spreads > 0 else 0.0
