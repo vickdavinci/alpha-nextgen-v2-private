@@ -1702,6 +1702,7 @@ def check_spread_exit_signals_impl(
                     entry_dt = datetime.strptime(spread.entry_time[:19], "%Y-%m-%d %H:%M:%S")
                     held_days = (self.algorithm.Time.date() - entry_dt.date()).days
                     if held_days >= max_hold_days:
+                        skip_time_stop = False
                         if is_bearish_debit_spread:
                             require_non_positive_pnl = bool(
                                 getattr(
@@ -1731,10 +1732,11 @@ def check_spread_exit_signals_impl(
                                     >= min_mfe_max_profit_pct
                                 )
                                 if current_tradeable_pnl > 0 and had_meaningful_mfe:
-                                    return None
-                        exit_reason = (
-                            f"SPREAD_TIME_STOP ({held_days}d >= {max_hold_days}d max hold)"
-                        )
+                                    skip_time_stop = True
+                        if not skip_time_stop:
+                            exit_reason = (
+                                f"SPREAD_TIME_STOP ({held_days}d >= {max_hold_days}d max hold)"
+                            )
                 except Exception:
                     pass
 
