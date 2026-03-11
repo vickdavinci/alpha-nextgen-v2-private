@@ -2328,6 +2328,15 @@ IC_MIN_CREDIT_TO_WIDTH = 0.18  # Default C/W floor (V12.33: was 0.28 — allow w
 IC_CW_FLOOR_LOW_VIX = 0.18  # C/W floor when VIX < 16 (V12.33: was 0.30 — wider strikes OK)
 IC_CW_FLOOR_MID_VIX = 0.18  # C/W floor when 16 <= VIX <= 25 (V12.33: was 0.28)
 IC_CW_FLOOR_HIGH_VIX = 0.18  # C/W floor when 25 < VIX <= 32 (V12.33: was 0.25)
+IC_CW_SCORE_PENALTY_THRESHOLD = (
+    0.35  # Start penalizing rich C/W above this level (V12.35: avoid toxic upper-tail condors)
+)
+IC_CW_SCORE_PENALTY_RANGE = (
+    0.10  # Full penalty reached by threshold + range (0.45 at default settings)
+)
+IC_CW_SCORE_PENALTY_MAX = (
+    0.12  # Max score deduction for very rich condors; ranking only, not a hard block
+)
 IC_MAX_IMPLIED_WR = (
     0.85  # Reject if implied expiry WR > 85% (V12.33: was 0.78 — align with CW_ABSOLUTE_FLOOR 0.15)
 )

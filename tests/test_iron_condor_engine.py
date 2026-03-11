@@ -1671,6 +1671,80 @@ class TestMFEOn14To21DTE:
         assert reason == "IC_MFE_LOCK"
 
 
+class TestCWScorePenalty:
+    """Prefer mid-C/W condors over rich upper-tail condors via ranking, not gates."""
+
+    def _validate_kwargs(self):
+        return dict(
+            qqq_price=480.0,
+            vix_current=18.0,
+            regime_score=52.0,
+            adx_value=15.0,
+            current_time=datetime(2025, 3, 5, 11, 0),
+            effective_portfolio_value=100000,
+        )
+
+    def test_mid_cw_scores_above_rich_cw_condor(self):
+        engine = _make_engine()
+
+        # Same geometry and deltas. Only net credit differs.
+        moderate_short_put = _make_contract(
+            465.0, OptionDirection.PUT, delta=0.16, bid=1.05, ask=1.15
+        )
+        moderate_long_put = _make_contract(
+            460.0, OptionDirection.PUT, delta=0.06, bid=0.35, ask=0.45
+        )
+        moderate_short_call = _make_contract(
+            495.0, OptionDirection.CALL, delta=0.16, bid=1.05, ask=1.15
+        )
+        moderate_long_call = _make_contract(
+            500.0, OptionDirection.CALL, delta=0.06, bid=0.35, ask=0.45
+        )
+
+        rich_short_put = _make_contract(465.0, OptionDirection.PUT, delta=0.16, bid=1.30, ask=1.40)
+        rich_long_put = _make_contract(460.0, OptionDirection.PUT, delta=0.06, bid=0.35, ask=0.45)
+        rich_short_call = _make_contract(
+            495.0, OptionDirection.CALL, delta=0.16, bid=1.30, ask=1.40
+        )
+        rich_long_call = _make_contract(500.0, OptionDirection.CALL, delta=0.06, bid=0.35, ask=0.45)
+
+        overrides = {
+            **_SEARCH_DEFAULTS,
+            "IC_CW_FLOOR_MID_VIX": 0.18,
+            "IC_CW_ABSOLUTE_FLOOR": 0.15,
+            "IC_MAX_IMPLIED_WR": 0.85,
+            "IC_MAX_STOP_DW": 0.95,
+            "IC_EM_BUFFER_MULT": 0.85,
+            "IC_CW_SCORE_PENALTY_THRESHOLD": 0.35,
+            "IC_CW_SCORE_PENALTY_RANGE": 0.05,
+            "IC_CW_SCORE_PENALTY_MAX": 0.12,
+        }
+        with _patch_config(**overrides):
+            moderate = engine._validate_and_score_condor(
+                short_put=moderate_short_put,
+                long_put=moderate_long_put,
+                short_call=moderate_short_call,
+                long_call=moderate_long_call,
+                **self._validate_kwargs(),
+            )
+            rich = engine._validate_and_score_condor(
+                short_put=rich_short_put,
+                long_put=rich_long_put,
+                short_call=rich_short_call,
+                long_call=rich_long_call,
+                **self._validate_kwargs(),
+            )
+
+        assert moderate is not None
+        assert rich is not None
+        moderate_score, moderate_condor = moderate
+        rich_score, rich_condor = rich
+        assert moderate_condor.credit_to_width < rich_condor.credit_to_width
+        assert moderate_condor.credit_to_width == pytest.approx(0.28)
+        assert rich_condor.credit_to_width == pytest.approx(0.38)
+        assert moderate_score > rich_score
+
+
 # ═══════════════════════════════════════════════════════════════════
 # EXIT SIGNAL STRUCTURE TESTS
 # ═══════════════════════════════════════════════════════════════════

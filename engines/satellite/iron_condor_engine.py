@@ -1095,6 +1095,22 @@ class IronCondorEngine:
             + 0.15 * (1.0 - avg_spread_pct / max_slippage)
             + 0.15 * min(net_credit / max_wing, 0.40)
         )
+        cw_penalty_threshold = float(getattr(config, "IC_CW_SCORE_PENALTY_THRESHOLD", 0.35))
+        cw_penalty_range = max(
+            float(getattr(config, "IC_CW_SCORE_PENALTY_RANGE", 0.10)),
+            0.0,
+        )
+        cw_penalty_max = max(
+            float(getattr(config, "IC_CW_SCORE_PENALTY_MAX", 0.12)),
+            0.0,
+        )
+        if credit_to_width > cw_penalty_threshold and cw_penalty_max > 0:
+            if cw_penalty_range <= 0:
+                cw_penalty = cw_penalty_max
+            else:
+                overflow = (credit_to_width - cw_penalty_threshold) / cw_penalty_range
+                cw_penalty = min(max(overflow, 0.0), 1.0) * cw_penalty_max
+            score -= cw_penalty
 
         return (score, condor)
 
