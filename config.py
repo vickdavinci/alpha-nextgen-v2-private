@@ -2375,7 +2375,7 @@ IC_CW_ABSOLUTE_FLOOR = (
 
 # ── Exit parameters ──
 IC_TARGET_CAPTURE_PCT = (
-    0.60  # Close at 60% of credit captured (V12.28: was 0.50 — let theta work longer)
+    0.40  # Close at 40% of credit captured (V12.37: align target with short-DTE theta harvest)
 )
 IC_STOP_LOSS_MULTIPLE = (
     1.50  # Stop at 1.5× credit lost (V12.33: was 2.00 — tighter stop, fewer hits at wider strikes)
