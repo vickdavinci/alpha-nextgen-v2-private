@@ -1710,6 +1710,11 @@ class PortfolioRouter:
         lane = str(md.get("options_lane", "") or "").upper()
         strategy = str(md.get("options_strategy", "") or "").upper()
         tag = str(order.tag or "").upper()
+        # IC and other explicitly tagged lanes must never inherit VASS-only router policy.
+        if lane and lane != "VASS":
+            return False
+        if "IRON_CONDOR" in strategy or "OPT_IC" in tag or "IC:" in tag:
+            return False
         return bool(
             lane == "VASS"
             or "VASS" in strategy

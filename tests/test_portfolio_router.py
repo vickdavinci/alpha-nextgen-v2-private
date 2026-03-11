@@ -1355,6 +1355,52 @@ class TestRouterRejectionAttribution:
         )
         assert source_tag == "OPT_VASS"
 
+    def test_is_vass_combo_exit_order_false_for_ic_credit_spread(self):
+        router = PortfolioRouter()
+        order = OrderIntent(
+            symbol="QQQ 260130P00500000",
+            quantity=1,
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            urgency=Urgency.IMMEDIATE,
+            reason="IC_UNDERLYING_INVALIDATION",
+            target_weight=0.0,
+            current_weight=0.0,
+            is_combo=True,
+            combo_short_symbol="QQQ 260130P00505000",
+            combo_short_quantity=1,
+            metadata={
+                "spread_close_short": True,
+                "spread_type": "CREDIT_PUT",
+                "is_credit_spread": True,
+                "options_lane": "IC",
+                "options_strategy": "IRON_CONDOR",
+            },
+            tag="IC:IC_UNDERLYING_INVALIDATION|trace=abc123|xst=CREDIT_PUT",
+        )
+
+        assert router._is_vass_combo_exit_order(order) is False
+
+    def test_is_vass_combo_exit_order_true_for_legacy_vass_spread_type(self):
+        router = PortfolioRouter()
+        order = OrderIntent(
+            symbol="QQQ 260130C00500000",
+            quantity=1,
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            urgency=Urgency.IMMEDIATE,
+            reason="TRANSITION_OPEN_DERISK",
+            target_weight=0.0,
+            current_weight=0.0,
+            is_combo=True,
+            combo_short_symbol="QQQ 260130C00495000",
+            combo_short_quantity=1,
+            metadata={"spread_close_short": True, "spread_type": "BULL_CALL_DEBIT"},
+            tag="OPT:SPREAD_EXIT|trace=vass123",
+        )
+
+        assert router._is_vass_combo_exit_order(order) is True
+
     def test_execute_orders_records_preclear_defer_artifact(self):
         algo = MagicMock()
         algo.Time = datetime(2026, 3, 5, 10, 0, 0)
