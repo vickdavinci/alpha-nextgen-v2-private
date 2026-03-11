@@ -1097,6 +1097,9 @@ VASS_REGIME_CONFIRMED_BEAR_MAX = 43.0  # Disable mark stops when bearish spread 
 VASS_REGIME_BREAK_EXIT_ENABLED = True
 VASS_REGIME_BREAK_BULL_FLOOR = 50.0  # Close bullish spreads when regime falls below this
 VASS_REGIME_BREAK_BEAR_CEILING = 50.0  # Close bearish spreads when regime rises above this
+VASS_REGIME_BREAK_BEAR_CEILING_CREDIT_BUFFER = (
+    1.0  # V12.36: avoid flicker exits on bearish credits just above the 50 ceiling.
+)
 VASS_REGIME_CONFIRMED_PROFIT_TARGET_PCT = (
     0.55  # V12.23 C1: lower THESIS_FIRST confirmed target to improve realization.
 )

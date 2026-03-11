@@ -5874,6 +5874,119 @@ class TestBearPutProfitTargetScoping:
         assert spread.highest_pnl_max_profit_pct >= 0.45
         assert spread.mfe_lock_tier == 2
 
+    def test_bear_call_credit_regime_break_uses_credit_buffer(self, engine, monkeypatch):
+        """BEAR_CALL_CREDIT should not flicker-exit just above the base bear ceiling."""
+        long_call = OptionContract(
+            symbol="QQQ 271231C00310000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=310.0,
+            expiry="2027-12-31",
+            delta=0.15,
+            bid=1.00,
+            ask=1.10,
+            mid_price=1.05,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_call = OptionContract(
+            symbol="QQQ 271231C00305000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=305.0,
+            expiry="2027-12-31",
+            delta=0.30,
+            bid=2.00,
+            ask=2.10,
+            mid_price=2.05,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        spread = SpreadPosition(
+            long_leg=long_call,
+            short_leg=short_call,
+            spread_type="BEAR_CALL_CREDIT",
+            net_debit=-1.50,
+            max_profit=1.50,
+            width=5.0,
+            entry_time="2027-12-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=3,
+            regime_at_entry=40.0,
+        )
+        engine._spread_position = spread
+        monkeypatch.setattr(config, "VASS_ENABLE_PROFIT_TARGET_EXITS", False)
+        monkeypatch.setattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=1.05,
+            short_leg_price=2.05,
+            regime_score=50.5,
+            vix_current=18.0,
+            current_dte=21,
+            underlying_price=300.0,
+        )
+
+        assert result is None
+
+    def test_bear_call_credit_regime_break_still_exits_above_buffer(self, engine, monkeypatch):
+        """BEAR_CALL_CREDIT should still exit once regime rises beyond the credit buffer."""
+        long_call = OptionContract(
+            symbol="QQQ 271231C00310000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=310.0,
+            expiry="2027-12-31",
+            delta=0.15,
+            bid=1.00,
+            ask=1.10,
+            mid_price=1.05,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_call = OptionContract(
+            symbol="QQQ 271231C00305000",
+            underlying="QQQ",
+            direction=OptionDirection.CALL,
+            strike=305.0,
+            expiry="2027-12-31",
+            delta=0.30,
+            bid=2.00,
+            ask=2.10,
+            mid_price=2.05,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        spread = SpreadPosition(
+            long_leg=long_call,
+            short_leg=short_call,
+            spread_type="BEAR_CALL_CREDIT",
+            net_debit=-1.50,
+            max_profit=1.50,
+            width=5.0,
+            entry_time="2027-12-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=3,
+            regime_at_entry=40.0,
+        )
+        engine._spread_position = spread
+        monkeypatch.setattr(config, "VASS_ENABLE_PROFIT_TARGET_EXITS", False)
+        monkeypatch.setattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=1.05,
+            short_leg_price=2.05,
+            regime_score=51.1,
+            vix_current=18.0,
+            current_dte=21,
+            underlying_price=300.0,
+        )
+
+        assert result is not None
+        assert "VASS_REGIME_BREAK_BEAR" in str(result[0].reason)
+
 
 class TestAssignmentMarginBufferScoping:
     """Tests for the V12.31 assignment-margin scoping fix."""

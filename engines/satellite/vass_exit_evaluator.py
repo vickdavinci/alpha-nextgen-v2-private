@@ -251,6 +251,12 @@ def check_spread_exit_signals_impl(
     )
     regime_break_bull_floor = float(getattr(config, "VASS_REGIME_BREAK_BULL_FLOOR", 50.0))
     regime_break_bear_ceiling = float(getattr(config, "VASS_REGIME_BREAK_BEAR_CEILING", 50.0))
+    regime_break_bear_credit_buffer = float(
+        getattr(config, "VASS_REGIME_BREAK_BEAR_CEILING_CREDIT_BUFFER", 0.0)
+    )
+    effective_regime_break_bear_ceiling = regime_break_bear_ceiling
+    if is_bearish_spread and is_credit_spread:
+        effective_regime_break_bear_ceiling += max(0.0, regime_break_bear_credit_buffer)
 
     regime_break_reason = None
     if regime_break_enabled:
@@ -258,8 +264,11 @@ def check_spread_exit_signals_impl(
             regime_break_reason = (
                 f"VASS_REGIME_BREAK_BULL: Regime {regime_score:.0f} < {regime_break_bull_floor:.0f}"
             )
-        elif is_bearish_spread and regime_score > regime_break_bear_ceiling:
-            regime_break_reason = f"VASS_REGIME_BREAK_BEAR: Regime {regime_score:.0f} > {regime_break_bear_ceiling:.0f}"
+        elif is_bearish_spread and regime_score > effective_regime_break_bear_ceiling:
+            regime_break_reason = (
+                f"VASS_REGIME_BREAK_BEAR: Regime {regime_score:.0f} > "
+                f"{effective_regime_break_bear_ceiling:.0f}"
+            )
 
     def _profit_target_open_delay_active() -> bool:
         """Gate profit-target exits in the opening minutes to avoid wide opening-book fills."""
