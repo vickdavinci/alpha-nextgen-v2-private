@@ -5174,6 +5174,72 @@ class TestVASSStressBearishRescue:
 
         assert result is None
 
+    def test_stress_neutral_macro_with_negative_delta_rescues_bearish_vass(
+        self, engine, monkeypatch
+    ):
+        decisions, captured = self._wire_vass_host(
+            engine,
+            monkeypatch,
+            overlay="STRESS",
+            macro_direction="NEUTRAL",
+        )
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=60.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(delta=-0.6, transition_score=60.0),
+        )
+
+        assert result is not None
+        assert result[0] == OptionDirection.PUT
+        assert result[1] == "BEARISH"
+        assert result[8] == "BEARISH"
+        assert captured["engine_direction"] == "BEARISH"
+        assert captured["macro_direction"] == "NEUTRAL"
+        rescue_decision = next(
+            decision
+            for decision in decisions
+            if decision["gate_name"] == "VASS_NEUTRAL_STRESS_BEAR_RESCUE"
+        )
+        assert rescue_decision["threshold_snapshot"]["delta"] == -0.6
+
+    def test_early_stress_neutral_macro_with_negative_delta_rescues_bearish_vass(
+        self, engine, monkeypatch
+    ):
+        decisions, captured = self._wire_vass_host(
+            engine,
+            monkeypatch,
+            overlay="EARLY_STRESS",
+            macro_direction="NEUTRAL",
+        )
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=59.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(
+                overlay="EARLY_STRESS",
+                delta=-0.7,
+                transition_score=59.0,
+            ),
+        )
+
+        assert result is not None
+        assert result[0] == OptionDirection.PUT
+        assert result[1] == "BEARISH"
+        assert captured["engine_direction"] == "BEARISH"
+        assert captured["macro_direction"] == "NEUTRAL"
+        assert any(
+            decision["gate_name"] == "VASS_NEUTRAL_STRESS_BEAR_RESCUE" for decision in decisions
+        )
+
 
 class TestOvernightGapProtectionExit:
     """Overnight gap-protection exit metadata for VASS spread closes."""

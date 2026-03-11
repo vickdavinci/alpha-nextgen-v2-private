@@ -1202,14 +1202,42 @@ class VASSEntryEngine:
                     },
                     context=ctx,
                 )
+        rescue_overlay = str(overlay_state).upper()
+        rescue_enabled = bool(getattr(config, "VASS_STRESS_BEAR_RESCUE_ENABLED", True))
+        rescue_delta_min = float(getattr(config, "VASS_STRESS_BEAR_RESCUE_DELTA_MIN", 1.0))
+        rescue_score_max = float(getattr(config, "VASS_STRESS_BEAR_RESCUE_SCORE_MAX", 62.0))
+        if (
+            resolver_direction is None
+            and resolver_macro_direction == "NEUTRAL"
+            and rescue_overlay in {"STRESS", "EARLY_STRESS"}
+            and rescue_enabled
+        ):
+            if transition_delta <= -rescue_delta_min and regime_for_vass <= rescue_score_max:
+                resolver_direction = "BEARISH"
+                resolver_reason = (
+                    f"{resolver_reason} | "
+                    f"VASS_NEUTRAL_STRESS_BEAR_RESCUE_DELTA={transition_delta:+.1f}"
+                )
+                host._record_regime_decision(
+                    engine="VASS",
+                    decision="INFER",
+                    strategy_attempted="VASS_DIRECTION",
+                    gate_name="VASS_NEUTRAL_STRESS_BEAR_RESCUE",
+                    threshold_snapshot={
+                        "delta": transition_delta,
+                        "delta_min": rescue_delta_min,
+                        "score_max": rescue_score_max,
+                        "inferred_direction": resolver_direction,
+                        "overlay": rescue_overlay,
+                    },
+                    context=ctx,
+                )
         if (
             resolver_direction is None
             and resolver_macro_direction == "BULLISH"
-            and str(overlay_state).upper() == "STRESS"
-            and bool(getattr(config, "VASS_STRESS_BEAR_RESCUE_ENABLED", True))
+            and rescue_overlay == "STRESS"
+            and rescue_enabled
         ):
-            rescue_delta_min = float(getattr(config, "VASS_STRESS_BEAR_RESCUE_DELTA_MIN", 1.0))
-            rescue_score_max = float(getattr(config, "VASS_STRESS_BEAR_RESCUE_SCORE_MAX", 62.0))
             if transition_delta <= -rescue_delta_min and regime_for_vass <= rescue_score_max:
                 resolver_direction = "BEARISH"
                 resolver_macro_direction = "NEUTRAL"
@@ -2054,6 +2082,11 @@ class VASSEntryEngine:
         algorithm = getattr(host, "algorithm", None)
         if algorithm is None:
             return
+        transition_ctx = (
+            algorithm._get_transition_execution_context()
+            if hasattr(algorithm, "_get_transition_execution_context")
+            else host._get_regime_transition_context(regime_score)
+        )
         current_vix = float(getattr(algorithm, "_current_vix", 20.0) or 20.0)
         overlay_state = host.get_regime_overlay_state(
             vix_current=current_vix, regime_score=regime_score
