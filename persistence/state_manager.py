@@ -42,6 +42,7 @@ class StateKeys:
     EXECUTION = "ALPHA_NEXTGEN_EXECUTION"
     ROUTER = "ALPHA_NEXTGEN_ROUTER"
     STARTUP_GATE = "ALPHA_NEXTGEN_STARTUP_GATE"
+    IRON_CONDOR = "ALPHA_NEXTGEN_IRON_CONDOR"
 
     ALL_KEYS = [
         CAPITAL,
@@ -53,6 +54,7 @@ class StateKeys:
         EXECUTION,
         ROUTER,
         STARTUP_GATE,
+        IRON_CONDOR,
     ]
 
 

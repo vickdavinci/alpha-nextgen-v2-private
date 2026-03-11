@@ -1626,6 +1626,21 @@ class AlphaNextGen(QCAlgorithm):
                 except Exception as e:
                     self.Log(f"STATE_WARN: Failed to load options state - {e}")
 
+            # V12.36: Load Iron Condor engine state
+            if hasattr(self, "options_engine") and hasattr(
+                self.options_engine, "_iron_condor_engine"
+            ):
+                try:
+                    from persistence.state_manager import StateKeys
+
+                    if self.ObjectStore.ContainsKey(StateKeys.IRON_CONDOR):
+                        raw = self.ObjectStore.Read(StateKeys.IRON_CONDOR)
+                        ic_state = json.loads(raw)
+                        self.options_engine._iron_condor_engine.from_dict(ic_state)
+                        self.Log("STATE_RESTORE: Iron Condor engine state loaded")
+                except Exception as e:
+                    self.Log(f"STATE_WARN: Failed to load IC state - {e}")
+
             # V12.24: Restore VASS close-ladder runtime state used by timeout/cancel retries.
             try:
                 if self.ObjectStore.ContainsKey("spread_close_ladder_state"):
@@ -1870,6 +1885,15 @@ class AlphaNextGen(QCAlgorithm):
             if hasattr(self, "oco_manager"):
                 oco_state = self.oco_manager.get_state_for_persistence()
                 self.ObjectStore.Save("oco_manager_state", json.dumps(oco_state))
+
+            # V12.36: Save Iron Condor engine state
+            if hasattr(self, "options_engine") and hasattr(
+                self.options_engine, "_iron_condor_engine"
+            ):
+                from persistence.state_manager import StateKeys
+
+                ic_state = self.options_engine._iron_condor_engine.to_dict()
+                self.ObjectStore.Save(StateKeys.IRON_CONDOR, json.dumps(ic_state))
 
             # V3.3 P0-1: Save regime engine state (includes V3.3 simplified model state)
             if hasattr(self, "regime_engine"):
