@@ -461,12 +461,19 @@ class SpreadFillTracker:
             "long_leg_symbol": self.long_leg_symbol,
             "short_leg_symbol": self.short_leg_symbol,
             "expected_quantity": self.expected_quantity,
+            "timeout_minutes": self.timeout_minutes,
             "spread_type": self.spread_type or "",
             "signal_id": self.signal_id,
             "trace_id": self.trace_id,
             "direction": self.direction,
             "strategy": self.strategy,
             "signal_reason": self.signal_reason,
+            "long_fill_price": self.long_fill_price,
+            "long_fill_qty": self.long_fill_qty,
+            "long_fill_time": self.long_fill_time,
+            "short_fill_price": self.short_fill_price,
+            "short_fill_qty": self.short_fill_qty,
+            "short_fill_time": self.short_fill_time,
             "long_fill": f"${self.long_fill_price:.2f} x{self.long_fill_qty}"
             if self.is_long_filled()
             else "PENDING",
@@ -477,6 +484,41 @@ class SpreadFillTracker:
             "quantities_match": self.quantities_match() if self.is_complete() else False,
             "created_at": self.created_at,
         }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "SpreadFillTracker":
+        """Deserialize persisted spread fill tracker state."""
+        return cls(
+            long_leg_symbol=str(data.get("long_leg_symbol", "") or ""),
+            short_leg_symbol=str(data.get("short_leg_symbol", "") or ""),
+            expected_quantity=int(data.get("expected_quantity", 0) or 0),
+            timeout_minutes=int(data.get("timeout_minutes", 5) or 5),
+            long_fill_price=(
+                float(data.get("long_fill_price"))
+                if data.get("long_fill_price") is not None
+                else None
+            ),
+            long_fill_qty=(
+                int(data.get("long_fill_qty")) if data.get("long_fill_qty") is not None else None
+            ),
+            long_fill_time=data.get("long_fill_time"),
+            short_fill_price=(
+                float(data.get("short_fill_price"))
+                if data.get("short_fill_price") is not None
+                else None
+            ),
+            short_fill_qty=(
+                int(data.get("short_fill_qty")) if data.get("short_fill_qty") is not None else None
+            ),
+            short_fill_time=data.get("short_fill_time"),
+            created_at=data.get("created_at"),
+            spread_type=data.get("spread_type"),
+            signal_id=str(data.get("signal_id", "") or ""),
+            trace_id=str(data.get("trace_id", "") or ""),
+            direction=str(data.get("direction", "") or ""),
+            strategy=str(data.get("strategy", "") or ""),
+            signal_reason=str(data.get("signal_reason", "") or ""),
+        )
 
 
 @dataclass

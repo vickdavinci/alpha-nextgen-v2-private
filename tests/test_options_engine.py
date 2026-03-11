@@ -2586,6 +2586,45 @@ class TestV211StatePersistence:
         assert new_engine._intraday_position is None
         assert new_engine._vix_at_open == 20.0
 
+    def test_spread_fill_tracker_persists_round_trip(self):
+        """Spread fill tracker should survive persistence restore for restart safety."""
+        engine = OptionsEngine()
+        engine._spread_fill_tracker = options_engine_module.SpreadFillTracker(
+            long_leg_symbol="QQQ 271231P00293000",
+            short_leg_symbol="QQQ 271231P00291000",
+            expected_quantity=3,
+            timeout_minutes=7,
+            long_fill_price=10.25,
+            long_fill_qty=1,
+            long_fill_time="2027-01-15 10:30:01",
+            created_at="2027-01-15 10:30:00",
+            spread_type="BEAR_PUT",
+            signal_id="sig-restart-1",
+            trace_id="trace-restart-1",
+            direction="BEARISH",
+            strategy="BEAR_PUT_DEBIT",
+            signal_reason="restart hardening test",
+        )
+
+        state = engine.get_state_for_persistence()
+
+        new_engine = OptionsEngine()
+        new_engine.restore_state(state)
+
+        tracker = new_engine._spread_fill_tracker
+        assert tracker is not None
+        assert tracker.long_leg_symbol == "QQQ 271231P00293000"
+        assert tracker.short_leg_symbol == "QQQ 271231P00291000"
+        assert tracker.expected_quantity == 3
+        assert tracker.timeout_minutes == 7
+        assert tracker.long_fill_price == 10.25
+        assert tracker.long_fill_qty == 1
+        assert tracker.signal_id == "sig-restart-1"
+        assert tracker.trace_id == "trace-restart-1"
+        assert tracker.direction == "BEARISH"
+        assert tracker.strategy == "BEAR_PUT_DEBIT"
+        assert tracker.signal_reason == "restart hardening test"
+
     def test_backwards_compatible_state_restore(self):
         """Test restoring old state (pre-V2.1.1) doesn't break engine."""
         # Simulate old state without V2.1.1 fields

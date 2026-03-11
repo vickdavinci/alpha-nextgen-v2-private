@@ -7,7 +7,12 @@ from datetime import datetime, timedelta
 import config
 from engines.core.risk_engine import GreeksSnapshot
 from engines.satellite.iv_sensor import VIXSnapshot
-from engines.satellite.options_primitives import MicroRegimeState, OptionsPosition, SpreadPosition
+from engines.satellite.options_primitives import (
+    MicroRegimeState,
+    OptionsPosition,
+    SpreadFillTracker,
+    SpreadPosition,
+)
 from models.enums import OptionsMode
 
 
@@ -273,6 +278,11 @@ def get_state_for_persistence_impl(self) -> Dict[str, Any]:
             k: v.strftime("%Y-%m-%d %H:%M:%S") for k, v in self._spread_exit_signal_cooldown.items()
         },
         "gamma_pin_exit_triggered": bool(self._gamma_pin_exit_triggered),
+        "spread_fill_tracker": (
+            self._spread_fill_tracker.to_dict()
+            if getattr(self, "_spread_fill_tracker", None) is not None
+            else None
+        ),
         "last_spread_exit_time": self._last_spread_exit_time,
         "spread_attempt_last_mark_by_key": dict(self._spread_attempt_last_mark_by_key),
         "assignment_incidents": dict(getattr(self, "_assignment_incidents", {}) or {}),
@@ -656,6 +666,14 @@ def restore_state_impl(self, state: Dict[str, Any]) -> None:
             continue
 
     self._gamma_pin_exit_triggered = bool(state.get("gamma_pin_exit_triggered", False))
+    raw_spread_fill_tracker = state.get("spread_fill_tracker")
+    if isinstance(raw_spread_fill_tracker, dict):
+        try:
+            self._spread_fill_tracker = SpreadFillTracker.from_dict(raw_spread_fill_tracker)
+        except Exception:
+            self._spread_fill_tracker = None
+    else:
+        self._spread_fill_tracker = None
     raw_last_exit = state.get("last_spread_exit_time")
     self._last_spread_exit_time = str(raw_last_exit) if raw_last_exit else None
     raw_attempt_marks = state.get("spread_attempt_last_mark_by_key", {}) or {}
