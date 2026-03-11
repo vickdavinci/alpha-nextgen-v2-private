@@ -326,6 +326,11 @@ class AlphaNextGen(QCAlgorithm):
             except ValueError:
                 self.Log(f"INIT_WARN: Invalid end_date '{end_date_param}', expected YYYY-MM-DD")
         run_label = str(self.GetParameter("run_label") or "").strip()
+        if not run_label:
+            raise ValueError(
+                "run_label QC parameter is required for this branch; "
+                "refusing to write year-level ObjectStore observability keys"
+            )
         if custom_start is not None and custom_end is None:
             custom_end = datetime(custom_start.year, 12, 31)
         if custom_end is not None and custom_start is None:

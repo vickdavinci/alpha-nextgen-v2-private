@@ -21,8 +21,11 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 # Configuration
-SRC="/Users/vigneshwaranarumugam/Documents/Trading Github/alpha-nextgen-v2-private"
+SRC="$SOURCE_ROOT"
 LEAN_WORKSPACE="/Users/vigneshwaranarumugam/Documents/Trading Github/lean-workspace"
 DEST="$LEAN_WORKSPACE/AlphaNextGen"
 PROJECT_NAME="AlphaNextGen"
@@ -107,6 +110,7 @@ echo -e "${BLUE}╔════════════════════�
 echo -e "${BLUE}║           QC BACKTEST - AlphaNextGen V2                       ║${NC}"
 echo -e "${BLUE}╚═══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
+echo -e "${YELLOW}Source Root:${NC} $SRC"
 echo -e "${YELLOW}Backtest Name:${NC} $BACKTEST_NAME"
 if [ -n "$OPEN_FLAG" ]; then
     echo -e "${YELLOW}Mode:${NC} Wait for completion (--open)"
