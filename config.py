@@ -2377,9 +2377,7 @@ IC_CW_ABSOLUTE_FLOOR = (
 IC_TARGET_CAPTURE_PCT = (
     0.40  # Close at 40% of credit captured (V12.37: align target with short-DTE theta harvest)
 )
-IC_STOP_LOSS_MULTIPLE = (
-    1.50  # Stop at 1.5× credit lost (V12.33: was 2.00 — tighter stop, fewer hits at wider strikes)
-)
+IC_STOP_LOSS_MULTIPLE = 1.00  # Stop at 1.0× credit lost (V12.37: align realized loss budget to short-DTE weekly condors)
 IC_TIME_EXIT_DTE = 5  # Close by 5 DTE (V12.33: was 3 — exit before gamma explosion at DTE<5)
 IC_VIX_SPIKE_EXIT = 33.0  # Emergency exit on VIX spike (V12.26: was 30, VIX 30-32 survivable)
 IC_FRIDAY_CLOSE_DTE = 5  # Close before weekend if DTE < 5 (V12.33: was 3 — align with TIME_EXIT)
