@@ -2448,12 +2448,12 @@ IC_CLOSE_MAX_RETRIES = 10  # Abandon after this many retries (clear is_closing)
 # Formula: hold_days = clamp(ceil(entry_dte × fraction), min, max)
 IC_HOLD_GUARD_ENABLED = True
 IC_HOLD_GUARD_DTE_FRACTION = (
-    0.20  # Hold for 1/5 of entry DTE (V12.34: was 0.25 — let exits react sooner)
+    0.15  # Hold for 15% of entry DTE (V12.37: shorten protection window for weekly condors)
 )
-IC_HOLD_GUARD_MIN_DAYS = 2  # Minimum 2 calendar day hold (V12.33: was 1 — let gamma noise settle)
-IC_HOLD_GUARD_MAX_DAYS = (
-    4  # Maximum 4 calendar days hold (V12.34: was 6 — cap overnight exposure on damaged trades)
+IC_HOLD_GUARD_MIN_DAYS = (
+    1  # Minimum 1 calendar day hold (V12.37: weekly IC needs faster stop enforcement)
 )
+IC_HOLD_GUARD_MAX_DAYS = 2  # Maximum 2 calendar days hold (V12.37: prevent long protection windows on short-DTE positions)
 IC_HOLD_HARD_STOP_CREDIT_MULT = (
     2.00  # During hold: exit only if loss > 2.0× credit (V12.34: was 2.5×)
 )
