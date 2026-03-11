@@ -2356,11 +2356,9 @@ IC_SCAN_THROTTLE_MINUTES = 15  # Don't re-scan same chain within N minutes
 # Elastic delta widening: progressively relax delta band if no candidates found
 IC_ELASTIC_DELTA_STEPS = [0.0, 0.03, 0.06, 0.10]  # Widen ± each step
 IC_ELASTIC_DELTA_FLOOR = (
-    0.10  # Never accept delta below this (V12.34: was 0.12 — allow safer fallback strikes)
+    0.08  # Never accept delta below this (V12.37: allow farther-OTM weekly fallback strikes)
 )
-IC_ELASTIC_DELTA_CEILING = (
-    0.30  # Never accept delta above this (V12.28: was 0.18 — allow up to 0.30 in relaxation)
-)
+IC_ELASTIC_DELTA_CEILING = 0.20  # Never accept delta above this (V12.37: stop fallback from rebuilding close weekly shorts)
 
 # Multi-DTE range fallback: try primary range first, then fallback ranges
 IC_DTE_RANGES = [(7, 10), (10, 14)]  # V12.37: restore short-DTE fallback search ranges
