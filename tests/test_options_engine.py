@@ -5380,7 +5380,7 @@ class TestOvernightGapProtectionExit:
         engine._spread_position = self._make_credit_spread()
         engine._get_regime_transition_context = lambda: {"effective_score": 55.0}
         signals = engine.check_overnight_gap_protection_exit(
-            current_vix=22.7,
+            current_vix=30.5,
             current_date="2024-08-07",
         )
 
@@ -5945,10 +5945,10 @@ class TestAssignmentMarginBufferScoping:
         assert result is not None
         assert "MARGIN_BUFFER_INSUFFICIENT" in str(result[0].reason)
 
-    def test_overnight_gap_exit_skips_fresh_bear_credit_in_bear_regime(self, engine):
-        """Fresh bearish spreads should not hit OGP solely due to elevated VIX in bear regimes."""
+    def test_overnight_gap_exit_skips_fresh_bear_credit_regardless_of_regime(self, engine):
+        """Fresh bearish spreads should bypass the 22 VIX OGP rail and keep only the disaster rail."""
         engine._spread_position = self._make_credit_spread()
-        engine._get_regime_transition_context = lambda: {"effective_score": 40.0}
+        engine._get_regime_transition_context = lambda: {"effective_score": 58.0}
 
         signals = engine.check_overnight_gap_protection_exit(
             current_vix=22.7,
@@ -5956,6 +5956,23 @@ class TestAssignmentMarginBufferScoping:
         )
 
         assert signals is None
+
+    def test_overnight_gap_exit_still_closes_fresh_bull_credit_at_22_vix(self, engine):
+        """Fresh bullish spreads should still use the standard fresh-trade OGP rail."""
+        spread = self._make_credit_spread()
+        spread.spread_type = "BULL_PUT_CREDIT"
+        spread.net_debit = -1.25
+        engine._spread_position = spread
+        engine._get_regime_transition_context = lambda: {"effective_score": 40.0}
+
+        signals = engine.check_overnight_gap_protection_exit(
+            current_vix=22.7,
+            current_date="2024-08-07",
+        )
+
+        assert signals is not None
+        assert len(signals) == 1
+        assert signals[0].metadata["spread_exit_code"] == "OVERNIGHT_GAP_PROTECTION"
 
     def test_overnight_gap_exit_raises_bear_put_close_all_threshold_only(self, engine, monkeypatch):
         """BEAR_PUT close-all OGP should be relaxed in bear regimes without changing other spreads."""

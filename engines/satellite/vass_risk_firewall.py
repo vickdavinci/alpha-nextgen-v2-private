@@ -366,9 +366,13 @@ def check_overnight_gap_protection_exit_impl(
         if reason is None:
             continue
 
-        if fresh_trade_ogp and _is_bearish_spread_fresh_ogp_exempt(self, spread):
+        if fresh_trade_ogp and spread_type.upper() in {
+            "BEAR_CALL_CREDIT",
+            "BEAR_PUT",
+            "BEAR_PUT_DEBIT",
+        }:
             self.log(
-                "OVERNIGHT_GAP_PROTECTION: Skipping fresh-trade exit for bearish spread in bear regime | "
+                "OVERNIGHT_GAP_PROTECTION: Skipping fresh-trade exit for bearish spread | "
                 f"VIX={current_vix:.1f} | Type={spread_type} | Entry={entry_date} Fresh={is_fresh_trade}",
                 trades_only=True,
             )
