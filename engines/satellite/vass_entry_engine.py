@@ -1408,29 +1408,76 @@ class VASSEntryEngine:
             transition_ctx=ctx,
         )
         if block_gate:
+            handoff_enabled = bool(getattr(config, "VASS_DETERIORATION_BEAR_HANDOFF_ENABLED", True))
+            handoff_delta_min = float(
+                getattr(config, "VASS_DETERIORATION_BEAR_HANDOFF_DELTA_MIN", 0.5)
+            )
+            handoff_score_max = float(
+                getattr(config, "VASS_DETERIORATION_BEAR_HANDOFF_SCORE_MAX", 62.0)
+            )
+            handoff_momentum_max = float(
+                getattr(config, "VASS_DETERIORATION_BEAR_HANDOFF_MOMENTUM_MAX", -0.008)
+            )
+            current_effective_score = float(
+                ctx.get("effective_score", regime_for_vass) or regime_for_vass
+            )
+            current_momentum_roc = float(ctx.get("momentum_roc", 0.0) or 0.0)
+            if (
+                str(block_gate) == "VASS_TRANSITION_BLOCK_BULL_ON_DETERIORATION"
+                and resolved_direction == "BULLISH"
+                and not resolver_has_conviction
+                and handoff_enabled
+                and transition_delta <= -handoff_delta_min
+                and current_effective_score <= handoff_score_max
+                and current_momentum_roc <= handoff_momentum_max
+            ):
+                resolved_direction = "BEARISH"
+                resolved_option_dir = OptionDirection.PUT
+                resolve_reason = f"{resolve_reason} | VASS_DETERIORATION_BEAR_HANDOFF"
+                host._record_regime_decision(
+                    engine="VASS",
+                    decision="INFER",
+                    strategy_attempted="VASS_BEARISH",
+                    gate_name="VASS_DETERIORATION_BEAR_HANDOFF",
+                    threshold_snapshot={
+                        "delta": transition_delta,
+                        "delta_min": handoff_delta_min,
+                        "score_max": handoff_score_max,
+                        "momentum_max": handoff_momentum_max,
+                        "effective_score": current_effective_score,
+                        "momentum_roc": current_momentum_roc,
+                    },
+                    context=ctx,
+                )
+                block_gate, block_reason = host.evaluate_transition_policy_block(
+                    engine="VASS",
+                    direction=resolved_option_dir,
+                    transition_ctx=ctx,
+                )
             reason_code = str(block_gate or "R_VASS_TRANSITION_BLOCK")
-            host._record_regime_decision(
-                engine="VASS",
-                decision="BLOCK",
-                strategy_attempted=f"VASS_{resolved_direction}",
-                gate_name=block_gate,
-                context=ctx,
-            )
-            algorithm.Log(
-                f"VASS_TRANSITION_BLOCK: {block_reason} | "
-                f"Eff={float(ctx.get('effective_score', regime_for_vass)):.1f} | "
-                f"Delta={float(ctx.get('delta', 0.0)):+.1f} | "
-                f"MOM={float(ctx.get('momentum_roc', 0.0)):+.2%}"
-            )
-            self._record_vass_drop_event(
-                algorithm=algorithm,
-                reason_code=reason_code,
-                gate_name=str(block_gate or "VASS_TRANSITION_BLOCK"),
-                reason=str(block_reason or "Transition policy blocked VASS direction"),
-                strategy=f"VASS_{resolved_direction}",
-                direction="CALL" if resolved_direction == "BULLISH" else "PUT",
-            )
-            return None
+            if block_gate:
+                host._record_regime_decision(
+                    engine="VASS",
+                    decision="BLOCK",
+                    strategy_attempted=f"VASS_{resolved_direction}",
+                    gate_name=block_gate,
+                    context=ctx,
+                )
+                algorithm.Log(
+                    f"VASS_TRANSITION_BLOCK: {block_reason} | "
+                    f"Eff={float(ctx.get('effective_score', regime_for_vass)):.1f} | "
+                    f"Delta={float(ctx.get('delta', 0.0)):+.1f} | "
+                    f"MOM={float(ctx.get('momentum_roc', 0.0)):+.2%}"
+                )
+                self._record_vass_drop_event(
+                    algorithm=algorithm,
+                    reason_code=reason_code,
+                    gate_name=str(block_gate or "VASS_TRANSITION_BLOCK"),
+                    reason=str(block_reason or "Transition policy blocked VASS direction"),
+                    strategy=f"VASS_{resolved_direction}",
+                    direction="CALL" if resolved_direction == "BULLISH" else "PUT",
+                )
+                return None
 
         if "NEUTRAL_ALIGNED_HALF" in str(resolve_reason):
             size_multiplier *= config.NEUTRAL_ALIGNED_SIZE_MULT

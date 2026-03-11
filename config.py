@@ -1049,6 +1049,14 @@ VASS_STRESS_BEAR_RESCUE_DELTA_MIN = 0.5  # Minimum negative transition delta req
 VASS_STRESS_BEAR_RESCUE_SCORE_MAX = (
     65.0  # Only rescue bearish VASS when the transition score is still only mildly bullish.
 )
+VASS_DETERIORATION_BEAR_HANDOFF_ENABLED = True  # V12.37: when bullish VASS is blocked by deterioration, allow a bearish handoff with extra confirmation.
+VASS_DETERIORATION_BEAR_HANDOFF_DELTA_MIN = 0.5  # Minimum negative transition delta required to hand off blocked bullish VASS into bearish routing.
+VASS_DETERIORATION_BEAR_HANDOFF_SCORE_MAX = (
+    62.0  # Only hand off while the effective score is still only mildly bullish.
+)
+VASS_DETERIORATION_BEAR_HANDOFF_MOMENTUM_MAX = (
+    -0.008  # Require still-negative momentum before converting a deterioration-blocked bullish VASS setup into bearish.
+)
 VASS_BEARISH_FALLBACK_TO_BEAR_CALL_CREDIT = (
     False  # V10.10 tuning: disable bearish credit fallback while BEAR_PUT gating is rebalanced
 )

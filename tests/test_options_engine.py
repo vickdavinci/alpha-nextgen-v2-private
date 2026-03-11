@@ -5543,6 +5543,136 @@ class TestVASSStressBearishRescue:
         )
 
 
+class TestVASSDeteriorationBearHandoff:
+    """V12.37: hand off deterioration-blocked bullish VASS routes into bearish with confirmation."""
+
+    def _make_algorithm(self, current_vix: float = 20.0) -> SimpleNamespace:
+        return SimpleNamespace(
+            Time=datetime(2022, 6, 13, 10, 30, 0),
+            Log=lambda *_args, **_kwargs: None,
+            _current_vix=current_vix,
+        )
+
+    def _make_transition_ctx(
+        self,
+        *,
+        overlay: str = "DETERIORATION",
+        delta: float = -0.6,
+        transition_score: float = 60.0,
+        momentum_roc: float = -0.01,
+    ) -> dict:
+        return {
+            "transition_overlay": overlay,
+            "delta": delta,
+            "transition_score": transition_score,
+            "effective_score": transition_score,
+            "momentum_roc": momentum_roc,
+        }
+
+    def _wire_vass_host(
+        self,
+        engine: OptionsEngine,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        macro_direction: str = "BULLISH",
+        conviction: tuple = (False, None, ""),
+    ) -> list[dict]:
+        decisions: list[dict] = []
+        engine.algorithm = self._make_algorithm()
+
+        monkeypatch.setattr(config, "VASS_USE_CONVICTION_ONLY_DIRECTION", False)
+        monkeypatch.setattr(config, "VASS_DETERIORATION_BEAR_HANDOFF_ENABLED", True)
+        monkeypatch.setattr(config, "VASS_DETERIORATION_BEAR_HANDOFF_DELTA_MIN", 0.5)
+        monkeypatch.setattr(config, "VASS_DETERIORATION_BEAR_HANDOFF_SCORE_MAX", 62.0)
+        monkeypatch.setattr(config, "VASS_DETERIORATION_BEAR_HANDOFF_MOMENTUM_MAX", -0.008)
+
+        engine._record_regime_decision = lambda **kwargs: decisions.append(kwargs)
+        engine.update_iv_sensor = lambda *_args, **_kwargs: None
+        engine.get_iv_conviction = lambda: conviction
+        engine.get_macro_direction = lambda _regime_score: macro_direction
+        engine.get_regime_overlay_state = lambda vix_current, regime_score: "NORMAL"
+        return decisions
+
+    def test_deterioration_block_hands_off_bullish_vass_to_bearish(self, engine, monkeypatch):
+        decisions = self._wire_vass_host(engine, monkeypatch)
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=60.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(
+                overlay="DETERIORATION",
+                delta=-0.6,
+                transition_score=60.0,
+                momentum_roc=-0.01,
+            ),
+        )
+
+        assert result is not None
+        assert result[0] == OptionDirection.PUT
+        assert result[1] == "BEARISH"
+        assert result[8] == "BEARISH"
+        handoff_decision = next(
+            decision
+            for decision in decisions
+            if decision["gate_name"] == "VASS_DETERIORATION_BEAR_HANDOFF"
+        )
+        assert handoff_decision["threshold_snapshot"]["delta"] == -0.6
+
+    def test_deterioration_block_without_enough_confirmation_still_blocks(
+        self, engine, monkeypatch
+    ):
+        self._wire_vass_host(engine, monkeypatch)
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=60.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(
+                overlay="DETERIORATION",
+                delta=-0.3,
+                transition_score=60.0,
+                momentum_roc=-0.01,
+            ),
+        )
+
+        assert result is None
+
+    def test_deterioration_block_does_not_override_bullish_conviction(self, engine, monkeypatch):
+        decisions = self._wire_vass_host(
+            engine,
+            monkeypatch,
+            conviction=(True, "BULLISH", "CONVICTION:BULLISH"),
+        )
+        monkeypatch.setattr(config, "VASS_USE_CONVICTION_ONLY_DIRECTION", True)
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=60.0,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(
+                overlay="DETERIORATION",
+                delta=-0.8,
+                transition_score=60.0,
+                momentum_roc=-0.01,
+            ),
+        )
+
+        assert result is None
+        assert not any(
+            decision["gate_name"] == "VASS_DETERIORATION_BEAR_HANDOFF" for decision in decisions
+        )
+
+
 class TestOvernightGapProtectionExit:
     """Overnight gap-protection exit metadata for VASS spread closes."""
 
