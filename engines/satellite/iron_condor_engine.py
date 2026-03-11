@@ -222,6 +222,7 @@ class IronCondorEngine:
         """
         self._diag_candidates += 1
         self._daily_pnl = daily_pnl
+        self._emit_lifecycle("CANDIDATE", gate_name="IC_ENTRY_CYCLE")
 
         # ── Stage 1: IC_ENV_OK ──
         env_reject = self._check_env_gates(
@@ -264,6 +265,16 @@ class IronCondorEngine:
         self._pending_fills = {"PUT_CREDIT": False, "CALL_CREDIT": False}
         self._pending_entry_since = current_time
         signals = self._build_entry_signals(condor, current_time)
+        self._emit_regime_decision(
+            "PASS",
+            "IC_STRUCTURE_OK",
+            {
+                "credit_to_width": round(condor.credit_to_width, 4),
+                "num_spreads": int(condor.num_spreads),
+                "entry_dte": int(condor.entry_dte),
+                "entry_vix": round(float(condor.entry_vix or 0.0), 2),
+            },
+        )
 
         _up = condor.entry_underlying_price
         _put_d = (_up - condor.put_short_strike) / _up if _up > 0 else 0
@@ -274,6 +285,8 @@ class IronCondorEngine:
             "APPROVED",
             signal_id=condor.condor_id,
             trace_id=condor.condor_id,
+            code="R_OK",
+            gate_name="IC_STRUCTURE_OK",
             reason=(
                 f"C/W={condor.credit_to_width:.3f} spreads={condor.num_spreads} "
                 f"dist={_min_d:.3f}"

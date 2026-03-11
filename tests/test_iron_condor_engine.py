@@ -1512,6 +1512,94 @@ class TestEndToEndSearch:
                 assert engine._diag_drop_codes.get(R_IC_NO_COMPLETE_CONDOR, 0) > 0
 
 
+class TestTelemetryCallbacks:
+    """Verify IC lifecycle and regime callbacks emit successful-path telemetry."""
+
+    def test_run_entry_cycle_emits_candidate_approved_and_pass_decisions(self):
+        lifecycle_events = []
+        regime_events = []
+        engine = IronCondorEngine(
+            log_func=lambda msg, trades_only=False: None,
+            signal_lifecycle_cb=lambda **kwargs: lifecycle_events.append(kwargs),
+            regime_decision_cb=lambda **kwargs: regime_events.append(kwargs),
+        )
+        chain_contracts = _make_option_chain(
+            qqq_price=480,
+            put_delta=0.18,
+            call_delta=0.18,
+            put_credit=1.00,
+            call_credit=1.00,
+            wing_width=5,
+            dte=18,
+            expiry="2025-03-21",
+        )
+        overrides = {
+            **_SEARCH_DEFAULTS,
+            "IRON_CONDOR_ENGINE_ENABLED": True,
+            "IC_REGIME_PERSISTENCE_DAYS": 1,
+            "IC_REGIME_MIN": 63,
+            "IC_REGIME_MAX": 75,
+            "IC_VIX_MIN": 12.0,
+            "IC_VIX_MAX": 32.0,
+            "IC_ADX_MAX": 25.0,
+            "IC_ENTRY_START_HOUR": 10,
+            "IC_ENTRY_START_MINUTE": 15,
+            "IC_ENTRY_END_HOUR": 14,
+            "IC_ENTRY_END_MINUTE": 30,
+        }
+        with _patch_config(**overrides):
+            with patch.object(engine, "_extract_chain_contracts", return_value=chain_contracts):
+                signals = engine.run_entry_cycle(
+                    chain=["dummy"],
+                    qqq_price=480,
+                    regime_score=68,
+                    adx_value=15,
+                    vix_current=15,
+                    effective_portfolio_value=100000,
+                    transition_ctx=_default_transition_ctx(),
+                    current_time=datetime(2025, 3, 3, 11, 0),
+                    margin_remaining=50000,
+                    ic_open_risk=0,
+                    daily_pnl=0,
+                )
+
+        assert signals is not None
+        lifecycle_names = [e["event"] for e in lifecycle_events]
+        assert "CANDIDATE" in lifecycle_names
+        assert "APPROVED" in lifecycle_names
+        approved = next(e for e in lifecycle_events if e["event"] == "APPROVED")
+        assert approved["engine"] == "IC"
+        assert approved["gate_name"] == "IC_STRUCTURE_OK"
+        assert approved["code"] == "R_OK"
+        assert approved["signal_id"]
+        regime_pairs = {(e["decision"], e["gate_name"]) for e in regime_events}
+        assert ("PASS", "IC_ENV_OK") in regime_pairs
+        assert ("PASS", "IC_STRUCTURE_OK") in regime_pairs
+
+    def test_record_drop_still_emits_dropped_lifecycle(self):
+        lifecycle_events = []
+        engine = IronCondorEngine(
+            log_func=lambda msg, trades_only=False: None,
+            signal_lifecycle_cb=lambda **kwargs: lifecycle_events.append(kwargs),
+        )
+
+        engine._record_drop(R_IC_VIX_OUT_OF_RANGE)
+
+        assert lifecycle_events == [
+            {
+                "engine": "IC",
+                "event": "DROPPED",
+                "signal_id": "",
+                "trace_id": "",
+                "direction": "NEUTRAL",
+                "strategy": "IRON_CONDOR",
+                "code": R_IC_VIX_OUT_OF_RANGE,
+                "gate_name": R_IC_VIX_OUT_OF_RANGE,
+                "reason": "",
+            }
+        ]
+
+
 # ═══════════════════════════════════════════════════════════════════
 # V12.33 EXPECTED MOVE + MFE INTERACTION TESTS
 # ═══════════════════════════════════════════════════════════════════
