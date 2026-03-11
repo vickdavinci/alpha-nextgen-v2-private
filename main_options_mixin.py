@@ -1764,6 +1764,18 @@ class MainOptionsMixin:
             if ic_signals:
                 for sig in ic_signals:
                     self.portfolio_router.receive_signal(sig)
+                    # V12.36: IC signal lifecycle telemetry
+                    _ic_meta = sig.metadata or {}
+                    self._record_signal_lifecycle_event(
+                        engine="IC",
+                        event="GENERATED",
+                        signal_id=str(_ic_meta.get("condor_id", "")),
+                        trace_id=str(_ic_meta.get("trace_id", "")),
+                        direction=str(_ic_meta.get("spread_side", "")),
+                        strategy="IRON_CONDOR",
+                        reason=str(sig.reason or ""),
+                        contract_symbol=str(sig.symbol or ""),
+                    )
 
     def _check_iron_condor_exits(self) -> None:
         """Check exit conditions on all open IC positions.
@@ -1893,6 +1905,19 @@ class MainOptionsMixin:
         )
         for sig in exit_signals:
             self.portfolio_router.receive_signal(sig)
+            # V12.36: IC exit signal lifecycle telemetry
+            _ic_meta = sig.metadata or {}
+            self._record_signal_lifecycle_event(
+                engine="IC",
+                event="EXIT_GENERATED",
+                signal_id=str(_ic_meta.get("condor_id", "")),
+                trace_id=str(_ic_meta.get("trace_id", "")),
+                direction=str(_ic_meta.get("spread_side", "")),
+                strategy="IRON_CONDOR",
+                code=str(_ic_meta.get("exit_reason", "")),
+                reason=str(sig.reason or ""),
+                contract_symbol=str(sig.symbol or ""),
+            )
 
     def _check_spread_exit(self, data: Slice) -> None:
         """
