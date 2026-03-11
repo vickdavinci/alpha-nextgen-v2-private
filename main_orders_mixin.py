@@ -3008,6 +3008,14 @@ class MainOrdersMixin:
                 self.Log(
                     f"IC_REJECTION_RECOVERY: {symbol_norm} | " f"BP={is_bp} | Pending entry cleared"
                 )
+                self._record_order_lifecycle_event(
+                    status="IC_ENTRY_REJECTED",
+                    order_id=int(getattr(order_event, "OrderId", 0) or 0),
+                    symbol=symbol_norm,
+                    order_tag=_rej_tag,
+                    message=f"BP={is_bp} | {str(getattr(order_event, 'Message', '') or '')}",
+                    source="IC_REJECTION",
+                )
             elif self.options_engine.cancel_pending_engine_exit(symbol_norm):
                 self._clear_engine_close_guard(symbol_norm)
                 self.Log(
@@ -3426,17 +3434,49 @@ class MainOrdersMixin:
                     f"IC: Both sides filled | condor_id={condor.condor_id} "
                     f"| credit=${condor.net_credit:.2f}"
                 )
+                # V12.36: IC order lifecycle telemetry — entry complete
+                self._record_order_lifecycle_event(
+                    status="IC_ENTRY_COMPLETE",
+                    order_id=0,
+                    symbol=symbol_norm,
+                    quantity=fill_qty,
+                    fill_price=fill_price,
+                    order_tag=f"IC:IRON_CONDOR|condor_id={condor.condor_id}",
+                    trace_id=condor.condor_id,
+                    message=f"credit=${condor.net_credit:.2f} | side={ic_side}",
+                    source="IC_FILL",
+                )
             elif result == "TIMEOUT":
                 recovered = self.options_engine.recover_pending_ic_unpaired_exposure(
                     reason="IC_FILL_TRACKER_TIMEOUT"
                 )
                 self.Log(f"IC_FILL_RECOVERY: Timeout cleanup | RecoverySignals={int(recovered)}")
+                self._record_order_lifecycle_event(
+                    status="IC_FILL_TIMEOUT",
+                    order_id=0,
+                    symbol=symbol_norm,
+                    quantity=fill_qty,
+                    fill_price=fill_price,
+                    order_tag=f"IC:FILL_TIMEOUT|side={ic_side}",
+                    message=f"RecoverySignals={int(recovered)}",
+                    source="IC_FILL",
+                )
             elif result == "QTY_MISMATCH":
                 recovered = self.options_engine.recover_pending_ic_unpaired_exposure(
                     reason="IC_FILL_QTY_MISMATCH"
                 )
                 self.Log(
                     f"IC_FILL_RECOVERY: Qty mismatch cleanup | RecoverySignals={int(recovered)}"
+                )
+                self._record_order_lifecycle_event(
+                    status="IC_FILL_QTY_MISMATCH",
+                    order_id=0,
+                    symbol=symbol_norm,
+                    quantity=fill_qty,
+                    fill_price=fill_price,
+                    order_tag=f"IC:QTY_MISMATCH|side={ic_side}",
+                    message=f"RecoverySignals={int(recovered)}",
+                    source="IC_FILL",
                 )
             return
 
