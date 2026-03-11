@@ -2281,8 +2281,8 @@ INTRADAY_OTM_MAX_DOLLARS = 0  # V12.15: disable fixed-dollar clamp; MICRO uses p
 IRON_CONDOR_ENGINE_ENABLED = True  # IC-only isolation backtest
 
 # ── Regime / environment gates ──
-IC_REGIME_MIN = 63  # Neutral zone lower bound (V12.36: raised from 45 — IC-11 regime=62.1 and IC-12 regime=61.0 both lost; all 4 winners had regime≥66.2)
-IC_REGIME_MAX = 75  # Neutral zone upper bound (V12.32: was 70 — extend into RISK_ON band for 2024 bull mkt testing)
+IC_REGIME_MIN = 55  # Neutral zone lower bound (V12.37: recenter IC toward true neutral instead of upper-neutral drift)
+IC_REGIME_MAX = 68  # Neutral zone upper bound (V12.37: keep IC out of bullish-drift tape that dominated call-side losses)
 IC_REGIME_PERSISTENCE_DAYS = 2  # Require 2 consecutive neutral DAYS (V12.33: was 3 — too strict for bull mkts where neutral is brief)
 IC_VIX_MIN = 12.0  # Minimum VIX — need enough premium (V12.33: was 14.0 — 2024 avg VIX ~13, lower to allow low-vol entries)
 IC_VIX_MAX = 32.0  # Max VIX — too volatile for range thesis
