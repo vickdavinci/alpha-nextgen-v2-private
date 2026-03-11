@@ -1175,6 +1175,25 @@ class VASSEntryEngine:
                         if not (latest_dir == "BULLISH" and regime_for_vass <= deep_bear_max):
                             resolver_direction = latest_dir
                             infer_mode = f"DIRECTION_MEMORY:{elapsed_min:.0f}m"
+            stable_bear_rescue_enabled = bool(
+                getattr(config, "VASS_NEUTRAL_STABLE_BEAR_RESCUE_ENABLED", True)
+            )
+            stable_bear_score_max = float(
+                getattr(config, "VASS_NEUTRAL_STABLE_BEAR_SCORE_MAX", 49.0)
+            )
+            stable_bear_momentum_max = float(
+                getattr(config, "VASS_NEUTRAL_STABLE_BEAR_MOMENTUM_MAX", -0.008)
+            )
+            current_momentum_roc = float(ctx.get("momentum_roc", 0.0) or 0.0)
+            if (
+                resolver_direction is None
+                and overlay_key == "STABLE"
+                and stable_bear_rescue_enabled
+                and regime_for_vass <= stable_bear_score_max
+                and current_momentum_roc <= stable_bear_momentum_max
+            ):
+                resolver_direction = "BEARISH"
+                infer_mode = "STABLE_LEVEL_BEAR"
             if resolver_direction is None and overlay_key == "DETERIORATION":
                 resolver_direction = "BEARISH"
                 infer_mode = "OVERLAY_DETERIORATION_BEAR"

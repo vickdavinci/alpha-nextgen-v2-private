@@ -5289,10 +5289,42 @@ class TestVASSNeutralDeteriorationBias:
             bull_profile_log_prefix="VASS_BULL_PROFILE",
             clamp_log_prefix="VASS_CLAMP",
             shock_log_prefix="VASS_SHOCK",
-            transition_ctx=self._make_transition_ctx(overlay="STABLE"),
+            transition_ctx=self._make_transition_ctx(
+                overlay="STABLE", transition_score=56.0, momentum_roc=-0.01
+            ),
         )
 
         assert result is None
+
+    def test_neutral_stable_low_score_negative_momentum_rescues_bearish(self, engine, monkeypatch):
+        """Stable neutral tape should rescue bearish VASS when the score is already weak and momentum remains negative."""
+        decisions = self._wire_vass_host(
+            engine,
+            monkeypatch,
+            overlay="STABLE",
+        )
+
+        result = engine._vass_entry_engine.resolve_direction_context(
+            host=engine,
+            regime_score=48.5,
+            size_multiplier=1.0,
+            bull_profile_log_prefix="VASS_BULL_PROFILE",
+            clamp_log_prefix="VASS_CLAMP",
+            shock_log_prefix="VASS_SHOCK",
+            transition_ctx=self._make_transition_ctx(
+                overlay="STABLE",
+                transition_score=48.5,
+                momentum_roc=-0.01,
+            ),
+        )
+
+        assert result is not None
+        assert result[0] == OptionDirection.PUT
+        assert result[1] == "BEARISH"
+        infer_decision = next(
+            decision for decision in decisions if decision["gate_name"] == "VASS_NEUTRAL_FALLBACK"
+        )
+        assert infer_decision["threshold_snapshot"]["infer_mode"] == "STABLE_LEVEL_BEAR"
 
     def test_existing_bullish_resolution_is_not_overridden(self, engine, monkeypatch):
         """A pre-resolved bullish direction should not be replaced by the deterioration bear bias."""

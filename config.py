@@ -1039,6 +1039,11 @@ VASS_NEUTRAL_DIRECTION_MEMORY_ENABLED = True  # V12.31: when macro remains neutr
 VASS_NEUTRAL_DIRECTION_MEMORY_MAX_MINUTES = (
     120  # Memory fallback validity window from most recent VASS direction entry stamp.
 )
+VASS_NEUTRAL_STABLE_BEAR_RESCUE_ENABLED = True  # V12.37: in stable neutral tape, allow level-aware bearish rescue for slow-grind bear markets.
+VASS_NEUTRAL_STABLE_BEAR_SCORE_MAX = 49.0  # Only rescue bearish VASS when stable neutral score is already on the bearish side of neutral.
+VASS_NEUTRAL_STABLE_BEAR_MOMENTUM_MAX = (
+    -0.008  # Require still-negative momentum before rescuing bearish VASS in stable neutral tape.
+)
 VASS_STRESS_BEAR_RESCUE_ENABLED = True  # V12.33: in STRESS, let strongly negative transition delta rescue bearish VASS routing from lagging bullish macro.
 VASS_STRESS_BEAR_RESCUE_DELTA_MIN = 0.5  # Minimum negative transition delta required to bias VASS bearish inside bullish+STRESS dead zones.
 VASS_STRESS_BEAR_RESCUE_SCORE_MAX = (
