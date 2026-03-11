@@ -2331,9 +2331,7 @@ IC_CW_FLOOR_HIGH_VIX = 0.18  # C/W floor when 25 < VIX <= 32 (V12.33: was 0.25)
 IC_CW_SCORE_PENALTY_THRESHOLD = (
     0.35  # Start penalizing rich C/W above this level (V12.35: avoid toxic upper-tail condors)
 )
-IC_CW_SCORE_PENALTY_RANGE = (
-    0.10  # Full penalty reached by threshold + range (0.45 at default settings)
-)
+IC_CW_SCORE_PENALTY_RANGE = 0.05  # Full penalty reached by threshold + range (0.40 at default settings, inside live feasible band)
 IC_CW_SCORE_PENALTY_MAX = (
     0.12  # Max score deduction for very rich condors; ranking only, not a hard block
 )

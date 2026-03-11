@@ -1716,7 +1716,6 @@ class TestCWScorePenalty:
             "IC_MAX_STOP_DW": 0.95,
             "IC_EM_BUFFER_MULT": 0.85,
             "IC_CW_SCORE_PENALTY_THRESHOLD": 0.35,
-            "IC_CW_SCORE_PENALTY_RANGE": 0.05,
             "IC_CW_SCORE_PENALTY_MAX": 0.12,
         }
         with _patch_config(**overrides):
