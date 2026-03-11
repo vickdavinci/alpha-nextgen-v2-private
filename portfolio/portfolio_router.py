@@ -1725,6 +1725,18 @@ class PortfolioRouter:
             or bool(md.get("spread_type"))
         )
 
+    def _is_ic_combo_exit_order(self, order: "OrderIntent") -> bool:
+        """True when order is an IC spread close intent."""
+        if not (order.is_combo and order.combo_short_symbol):
+            return False
+        md = order.metadata if isinstance(order.metadata, dict) else {}
+        if not bool(md.get("spread_close_short", False)):
+            return False
+        tag = str(order.tag or "").upper()
+        lane = str(md.get("options_lane", "") or "").upper()
+        strategy = str(md.get("options_strategy", "") or "").upper()
+        return "OPT_IC" in tag or "IC:" in tag or "IRON_CONDOR" in strategy or lane == "IC"
+
     def _try_vass_quote_invalid_close_fallback(
         self,
         order: "OrderIntent",
@@ -1732,13 +1744,14 @@ class PortfolioRouter:
         tag: str,
     ) -> bool:
         """
-        Recover VASS close intents on quote-invalid.
+        Recover VASS/IC close intents on quote-invalid.
 
         Policy:
         - HARD urgency exits: allow combo-market fallback.
         - SOFT urgency exits: defer (no combo-market fallback).
         """
-        if not self._is_vass_combo_exit_order(order):
+        # V12.36: Also recover IC combo close orders (same combo-market retry logic)
+        if not self._is_vass_combo_exit_order(order) and not self._is_ic_combo_exit_order(order):
             return False
         if not bool(getattr(config, "VASS_CLOSE_QUOTE_INVALID_COMBO_MARKET_RETRY", True)):
             return False
