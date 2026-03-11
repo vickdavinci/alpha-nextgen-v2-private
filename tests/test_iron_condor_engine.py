@@ -98,7 +98,7 @@ def _make_condor(
     net_credit: float = 1.20,
     wing_width: float = 4.0,
     num_spreads: int = 2,
-    regime: float = 52.0,
+    regime: float = 68.0,
     vix: float = 18.0,
     entry_dte: int = 30,
     entry_time: str = "2025-03-01 11:00:00",
@@ -137,7 +137,7 @@ def _default_transition_ctx(state: str = "STABLE", fast_overlay: str = "") -> Di
         "transition_overlay": state,
         "transition_state": state,
         "fast_overlay": fast_overlay,
-        "transition_score": 52,
+        "transition_score": 68,
         "is_event_day": False,
     }
 
@@ -199,7 +199,7 @@ class TestEnvGates:
         engine = _make_engine()
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", False):
             result = engine._check_env_gates(
-                regime_score=52,
+                regime_score=68,
                 adx_value=15,
                 vix_current=18,
                 transition_ctx=_default_transition_ctx(),
@@ -247,7 +247,7 @@ class TestEnvGates:
             with patch.object(config, "IC_REGIME_PERSISTENCE_DAYS", 2):
                 # Day 1: first neutral day counted
                 result = engine._check_env_gates(
-                    regime_score=52,
+                    regime_score=68,
                     adx_value=15,
                     vix_current=18,
                     transition_ctx=_default_transition_ctx(),
@@ -259,7 +259,7 @@ class TestEnvGates:
                 assert result == R_IC_REGIME_NOT_PERSISTENT
                 # Same day, second call — still day 1
                 result2 = engine._check_env_gates(
-                    regime_score=52,
+                    regime_score=68,
                     adx_value=15,
                     vix_current=18,
                     transition_ctx=_default_transition_ctx(),
@@ -271,7 +271,7 @@ class TestEnvGates:
                 assert result2 == R_IC_REGIME_NOT_PERSISTENT
                 # Day 2: passes persistence
                 result3 = engine._check_env_gates(
-                    regime_score=52,
+                    regime_score=68,
                     adx_value=15,
                     vix_current=18,
                     transition_ctx=_default_transition_ctx(),
@@ -287,7 +287,7 @@ class TestEnvGates:
         engine._regime_neutral_days = 5
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             result = engine._check_env_gates(
-                regime_score=52,
+                regime_score=68,
                 adx_value=15,
                 vix_current=10,
                 transition_ctx=_default_transition_ctx(),
@@ -303,7 +303,7 @@ class TestEnvGates:
         engine._regime_neutral_days = 5
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             result = engine._check_env_gates(
-                regime_score=52,
+                regime_score=68,
                 adx_value=15,
                 vix_current=35,
                 transition_ctx=_default_transition_ctx(),
@@ -319,7 +319,7 @@ class TestEnvGates:
         engine._regime_neutral_days = 5
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             result = engine._check_env_gates(
-                regime_score=52,
+                regime_score=68,
                 adx_value=28,
                 vix_current=18,
                 transition_ctx=_default_transition_ctx(),
@@ -335,7 +335,7 @@ class TestEnvGates:
         engine._regime_neutral_days = 5
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             result = engine._check_env_gates(
-                regime_score=52,
+                regime_score=68,
                 adx_value=15,
                 vix_current=18,
                 transition_ctx=_default_transition_ctx(state="DETERIORATION"),
@@ -351,7 +351,7 @@ class TestEnvGates:
         engine._regime_neutral_days = 5
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             result = engine._check_env_gates(
-                regime_score=52,
+                regime_score=68,
                 adx_value=15,
                 vix_current=18,
                 transition_ctx=_default_transition_ctx(),
@@ -369,7 +369,7 @@ class TestEnvGates:
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             with patch.object(config, "IC_MAX_CONCURRENT", 2):
                 result = engine._check_env_gates(
-                    regime_score=52,
+                    regime_score=68,
                     adx_value=15,
                     vix_current=18,
                     transition_ctx=_default_transition_ctx(),
@@ -387,7 +387,7 @@ class TestEnvGates:
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             with patch.object(config, "IC_MAX_TRADES_PER_DAY", 2):
                 result = engine._check_env_gates(
-                    regime_score=52,
+                    regime_score=68,
                     adx_value=15,
                     vix_current=18,
                     transition_ctx=_default_transition_ctx(),
@@ -403,7 +403,7 @@ class TestEnvGates:
         engine._regime_neutral_days = 5
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             result = engine._check_env_gates(
-                regime_score=52,
+                regime_score=68,
                 adx_value=15,
                 vix_current=18,
                 transition_ctx=_default_transition_ctx(),
@@ -420,7 +420,7 @@ class TestEnvGates:
         engine._loss_breaker_pause_until = "2025-03-04"
         with patch.object(config, "IRON_CONDOR_ENGINE_ENABLED", True):
             result = engine._check_env_gates(
-                regime_score=52,
+                regime_score=68,
                 adx_value=15,
                 vix_current=18,
                 transition_ctx=_default_transition_ctx(),
@@ -497,7 +497,7 @@ class TestExitTriggers:
             combined_pnl=0,
             current_dte=14,
             vix_current=35,  # Above IC_VIX_SPIKE_EXIT=30
-            regime_score=52,
+            regime_score=68,
             qqq_price=480,
             current_time=datetime(2025, 3, 5, 11, 0),
         )
@@ -515,7 +515,7 @@ class TestExitTriggers:
             combined_pnl=185,  # > 180
             current_dte=20,
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=480,
             current_time=datetime(2025, 3, 5, 11, 0),
         )
@@ -533,7 +533,7 @@ class TestExitTriggers:
             combined_pnl=-490,  # credit_100=240, stop=2.0×=480; 490 > 480
             current_dte=8,
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=480,
             current_time=datetime(2025, 3, 12, 11, 0),  # 11 days after entry
         )
@@ -549,7 +549,7 @@ class TestExitTriggers:
             combined_pnl=0,
             current_dte=2,  # <= IC_TIME_EXIT_DTE=3
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=480,
             current_time=datetime(2025, 3, 12, 11, 0),  # Past hold guard
         )
@@ -584,7 +584,7 @@ class TestExitTriggers:
                 combined_pnl=0,
                 current_dte=2,
                 vix_current=18,
-                regime_score=52,
+                regime_score=68,
                 qqq_price=480,
                 current_time=datetime(2025, 3, 14, 11, 0),  # Friday, past hold guard
             )
@@ -604,7 +604,7 @@ class TestExitTriggers:
                 combined_pnl=-100,
                 current_dte=14,
                 vix_current=18,
-                regime_score=52,
+                regime_score=68,
                 qqq_price=460,  # Below short put strike
                 current_time=datetime(2025, 3, 12, 11, 0),  # Past hold guard
             )
@@ -624,7 +624,7 @@ class TestExitTriggers:
                 combined_pnl=-100,
                 current_dte=14,
                 vix_current=18,
-                regime_score=52,
+                regime_score=68,
                 qqq_price=502,  # Above short call strike
                 current_time=datetime(2025, 3, 12, 11, 0),  # Past hold guard
             )
@@ -640,7 +640,7 @@ class TestExitTriggers:
             combined_pnl=50,  # Small positive
             current_dte=25,
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=480,
             current_time=datetime(2025, 3, 12, 11, 0),  # Past hold guard, Wednesday
         )
@@ -655,7 +655,7 @@ class TestExitTriggers:
             combined_pnl=-500,  # Should trigger stop but is_closing
             current_dte=25,
             vix_current=35,
-            regime_score=52,
+            regime_score=68,
             qqq_price=480,
             current_time=datetime(2025, 3, 5, 11, 0),
         )
@@ -706,7 +706,7 @@ class TestUnderlyingInvalidation:
             combined_pnl=-80,
             current_dte=25,
             vix_current=18,
-            regime_score=44,  # Still above regime break threshold (34)
+            regime_score=68,  # Still above regime break threshold (V12.36: 63-5=58)
             qqq_price=450.0,  # -6.25%
             current_time=datetime(2025, 3, 12, 11, 0),
         )
@@ -724,7 +724,7 @@ class TestUnderlyingInvalidation:
             combined_pnl=30,
             current_dte=25,
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=489.6,  # +2.0%
             current_time=datetime(2025, 3, 12, 11, 0),
         )
@@ -742,7 +742,7 @@ class TestUnderlyingInvalidation:
                 combined_pnl=-50,
                 current_dte=25,
                 vix_current=18,
-                regime_score=52,
+                regime_score=68,
                 qqq_price=495.0,
                 current_time=datetime(2025, 3, 12, 11, 0),
             )
@@ -761,7 +761,7 @@ class TestUnderlyingInvalidation:
             combined_pnl=-30,
             current_dte=28,
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=510.0,  # +6.25% (above EM 5.16%)
             current_time=datetime(2025, 3, 1, 14, 0),  # Same day as entry
         )
@@ -781,7 +781,7 @@ class TestUnderlyingInvalidation:
             combined_pnl=30,
             current_dte=25,
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=495.0,
             current_time=datetime(2025, 3, 12, 11, 0),
         )
@@ -1083,7 +1083,7 @@ class TestScanThrottle:
                 chain=dummy_chain,
                 qqq_price=480,
                 vix_current=18,
-                regime_score=52,
+                regime_score=68,
                 adx_value=15,
                 current_time=t1,
                 effective_portfolio_value=100000,
@@ -1098,7 +1098,7 @@ class TestScanThrottle:
                 chain=iter([]),
                 qqq_price=480,
                 vix_current=18,
-                regime_score=52,
+                regime_score=68,
                 adx_value=15,
                 current_time=t2,
                 effective_portfolio_value=100000,
@@ -1115,7 +1115,7 @@ class TestScanThrottle:
                 chain=iter([]),
                 qqq_price=480,
                 vix_current=18,
-                regime_score=52,
+                regime_score=68,
                 adx_value=15,
                 current_time=t1,
                 effective_portfolio_value=100000,
@@ -1126,7 +1126,7 @@ class TestScanThrottle:
                 chain=iter([]),
                 qqq_price=480,
                 vix_current=18,
-                regime_score=52,
+                regime_score=68,
                 adx_value=15,
                 current_time=t2,
                 effective_portfolio_value=100000,
@@ -1141,7 +1141,7 @@ class TestScanThrottle:
                 chain=iter([]),
                 qqq_price=480,
                 vix_current=18,
-                regime_score=52,
+                regime_score=68,
                 adx_value=15,
                 current_time=t1,
                 effective_portfolio_value=100000,
@@ -1151,7 +1151,7 @@ class TestScanThrottle:
                 chain=iter([]),
                 qqq_price=480,
                 vix_current=18,
-                regime_score=52,
+                regime_score=68,
                 adx_value=15,
                 current_time=t2,
                 effective_portfolio_value=100000,
@@ -1193,7 +1193,7 @@ class TestElasticDeltaWidening:
                 dte_max=35,
                 qqq_price=480,
                 vix_current=18,
-                regime_score=52,
+                regime_score=68,
                 adx_value=15,
                 current_time=datetime(2025, 3, 3, 11, 0),
                 effective_portfolio_value=100000,
@@ -1225,7 +1225,7 @@ class TestElasticDeltaWidening:
                 dte_max=35,
                 qqq_price=480,
                 vix_current=18,
-                regime_score=52,
+                regime_score=68,
                 adx_value=15,
                 current_time=datetime(2025, 3, 3, 11, 0),
                 effective_portfolio_value=100000,
@@ -1266,7 +1266,7 @@ class TestCWRelaxation:
                 tolerance=1,
                 qqq_price=480.0,
                 vix_current=18,
-                regime_score=52,
+                regime_score=68,
                 adx_value=15,
                 current_time=datetime(2025, 3, 3, 11, 0),
                 effective_portfolio_value=100000,
@@ -1302,7 +1302,7 @@ class TestCWRelaxation:
                 tolerance=1,
                 qqq_price=480.0,
                 vix_current=18,
-                regime_score=52,
+                regime_score=68,
                 adx_value=15,
                 current_time=datetime(2025, 3, 3, 11, 0),
                 effective_portfolio_value=100000,
@@ -1332,7 +1332,7 @@ class TestDTERangeFallback:
                     chain=["dummy"],
                     qqq_price=480,
                     vix_current=18,
-                    regime_score=52,
+                    regime_score=68,
                     adx_value=15,
                     current_time=datetime(2025, 3, 3, 11, 0),
                     effective_portfolio_value=100000,
@@ -1362,7 +1362,7 @@ class TestDTERangeFallback:
                     chain=["dummy"],
                     qqq_price=480,
                     vix_current=18,
-                    regime_score=52,
+                    regime_score=68,
                     adx_value=15,
                     current_time=datetime(2025, 3, 3, 11, 0),
                     effective_portfolio_value=100000,
@@ -1451,7 +1451,7 @@ class TestEndToEndSearch:
                     chain=["dummy"],
                     qqq_price=480,
                     vix_current=15,
-                    regime_score=52,
+                    regime_score=68,
                     adx_value=15,
                     current_time=datetime(2025, 3, 3, 11, 0),
                     effective_portfolio_value=100000,
@@ -1469,7 +1469,7 @@ class TestEndToEndSearch:
                 chain=None,
                 qqq_price=480,
                 vix_current=18,
-                regime_score=52,
+                regime_score=68,
                 adx_value=15,
                 current_time=datetime(2025, 3, 3, 11, 0),
                 effective_portfolio_value=100000,
@@ -1503,7 +1503,7 @@ class TestEndToEndSearch:
                     chain=["dummy"],
                     qqq_price=480,
                     vix_current=18,
-                    regime_score=52,
+                    regime_score=68,
                     adx_value=15,
                     current_time=datetime(2025, 3, 3, 11, 0),
                     effective_portfolio_value=100000,
@@ -1551,7 +1551,7 @@ class TestExpectedMoveGate:
                     chain=["dummy"],
                     qqq_price=480,
                     vix_current=20,
-                    regime_score=52,
+                    regime_score=68,
                     adx_value=15,
                     current_time=datetime(2025, 3, 3, 11, 0),
                     effective_portfolio_value=100000,
@@ -1584,7 +1584,7 @@ class TestExpectedMoveGate:
                     chain=["dummy"],
                     qqq_price=480,
                     vix_current=12,
-                    regime_score=52,
+                    regime_score=68,
                     adx_value=15,
                     current_time=datetime(2025, 3, 3, 11, 0),
                     effective_portfolio_value=100000,
@@ -1606,7 +1606,7 @@ class TestMFEOn14To21DTE:
             combined_pnl=combined_pnl,
             current_dte=condor.entry_dte - 3,  # 3 days into hold
             vix_current=condor.entry_vix,
-            regime_score=52,
+            regime_score=68,
             qqq_price=condor.entry_underlying_price,
             current_time=datetime(2025, 3, 8, 11, 0),  # Well past hold guard
         )
@@ -1678,7 +1678,7 @@ class TestCWScorePenalty:
         return dict(
             qqq_price=480.0,
             vix_current=18.0,
-            regime_score=52.0,
+            regime_score=68.0,
             adx_value=15.0,
             current_time=datetime(2025, 3, 5, 11, 0),
             effective_portfolio_value=100000,
@@ -1806,7 +1806,7 @@ class TestHoldGuard:
             combined_pnl=-130,  # 0.54x credit — would trigger P3 stop but held in guard
             current_dte=8,
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=480,
             current_time=datetime(2025, 3, 2, 11, 0),  # 1 day in (within hold)
         )
@@ -1825,7 +1825,7 @@ class TestHoldGuard:
                 combined_pnl=-50,  # 0.21x credit — below 0.50x stop
                 current_dte=8,
                 vix_current=18,
-                regime_score=52,
+                regime_score=68,
                 qqq_price=460,
                 current_time=datetime(2025, 3, 2, 11, 0),  # 1 day in (within hold)
             )
@@ -1861,7 +1861,7 @@ class TestHoldGuard:
                 combined_pnl=-20,
                 current_dte=13,  # < IC_FRIDAY_CLOSE_DTE=14
                 vix_current=18,
-                regime_score=52,
+                regime_score=68,
                 qqq_price=480,
                 current_time=datetime(2025, 3, 7, 11, 0),  # Friday, within hold
             )
@@ -1876,7 +1876,7 @@ class TestHoldGuard:
             combined_pnl=-50,
             current_dte=20,
             vix_current=35,  # >= IC_VIX_SPIKE_EXIT=30
-            regime_score=52,
+            regime_score=68,
             qqq_price=480,
             current_time=datetime(2025, 3, 2, 11, 0),  # 1 day after entry
         )
@@ -1894,7 +1894,7 @@ class TestHoldGuard:
             combined_pnl=-50,
             current_dte=2,  # <= IC_DIVIDEND_GUARD_DTE=3
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=469,  # Put short strike ITM
             current_time=datetime(2025, 3, 2, 11, 0),  # Within hold
         )
@@ -1912,7 +1912,7 @@ class TestHoldGuard:
             combined_pnl=-610,  # loss_pct = 610/240 = 2.54× > 2.5×
             current_dte=8,
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=480,
             current_time=datetime(2025, 3, 2, 11, 0),  # 1 day in (within hold)
         )
@@ -1932,7 +1932,7 @@ class TestHoldGuard:
             combined_pnl=-370,  # loss_pct = 370/240 = 1.54× > 1.5×
             current_dte=8,
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=480,
             current_time=datetime(2025, 3, 2, 15, 50),  # 15:50 = EOD, held > 4h, within hold
         )
@@ -1954,7 +1954,7 @@ class TestHoldGuard:
             combined_pnl=-370,  # Would trigger EOD gate if min hold met
             current_dte=20,
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=480,
             current_time=datetime(2025, 3, 1, 15, 50),  # Same day, 230 min
         )
@@ -1972,7 +1972,7 @@ class TestHoldGuard:
             combined_pnl=185,  # > 180 → profit target fires
             current_dte=20,
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=480,
             current_time=datetime(2025, 3, 4, 11, 0),  # Within hold, but profitable
         )
@@ -1991,7 +1991,7 @@ class TestHoldGuard:
             combined_pnl=-490,  # > 480 loss → stop fires
             current_dte=8,
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=480,
             current_time=datetime(2025, 3, 12, 11, 0),  # Day 11, past hold
         )
@@ -2011,7 +2011,7 @@ class TestHoldGuard:
             combined_pnl=-400,  # Would trigger stop (> 360) but not hold hard stop (< 480)
             current_dte=6,
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=480,
             current_time=datetime(2025, 3, 2, 11, 0),  # 1 day in
         )
@@ -2023,7 +2023,7 @@ class TestHoldGuard:
             combined_pnl=-400,
             current_dte=4,
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=480,
             current_time=datetime(2025, 3, 4, 11, 0),  # 3 days in, past 2-day hold
         )
@@ -2043,7 +2043,7 @@ class TestHoldGuard:
             combined_pnl=-400,
             current_dte=12,
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=480,
             current_time=datetime(2025, 3, 3, 11, 0),  # 2 days in
         )
@@ -2055,7 +2055,7 @@ class TestHoldGuard:
             combined_pnl=-400,
             current_dte=10,
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=480,
             current_time=datetime(2025, 3, 5, 11, 0),  # 4 days in, past 3-day hold
         )
@@ -2074,7 +2074,7 @@ class TestHoldGuard:
                 combined_pnl=-490,
                 current_dte=8,
                 vix_current=18,
-                regime_score=52,
+                regime_score=68,
                 qqq_price=480,
                 current_time=datetime(2025, 3, 4, 11, 0),  # Within hold window
             )
@@ -2100,7 +2100,7 @@ class TestMFELock:
             combined_pnl=combined_pnl,
             current_dte=20,
             vix_current=18,
-            regime_score=52,
+            regime_score=68,
             qqq_price=480,
             current_time=self.POST_HOLD,
         )
@@ -2247,7 +2247,7 @@ class TestStrikeReuseGuard:
         defaults = dict(
             qqq_price=480.0,
             vix_current=18.0,
-            regime_score=52.0,
+            regime_score=68.0,
             adx_value=15.0,
             current_time=datetime(2025, 3, 5, 11, 0),
             effective_portfolio_value=100000,
