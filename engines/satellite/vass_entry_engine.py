@@ -369,6 +369,7 @@ class VASSEntryEngine:
         if not bool(getattr(config, "VASS_REGIME_BREAK_EXIT_ENABLED", False)):
             return None
         ceiling = float(getattr(config, "VASS_REGIME_BREAK_BEAR_CEILING", 50.0))
+        ceiling += float(getattr(config, "VASS_REGIME_BREAK_BEAR_CEILING_CREDIT_BUFFER", 0.0))
         if regime_score > ceiling:
             return (
                 "R_VASS_BEAR_CREDIT_REGIME_BLOCK",

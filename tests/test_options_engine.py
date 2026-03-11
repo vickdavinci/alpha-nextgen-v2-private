@@ -5987,6 +5987,33 @@ class TestBearPutProfitTargetScoping:
         assert result is not None
         assert "VASS_REGIME_BREAK_BEAR" in str(result[0].reason)
 
+    def test_bear_call_credit_entry_uses_credit_buffer(self, engine, monkeypatch):
+        """BEAR_CALL_CREDIT entry should tolerate the same 1-point hysteresis buffer."""
+        monkeypatch.setattr(config, "VASS_REGIME_BREAK_EXIT_ENABLED", True)
+
+        result = engine._vass_entry_engine._bear_credit_block_details(
+            strategy=SpreadStrategy.BEAR_CALL_CREDIT,
+            regime_score=50.5,
+            overlay_state="DETERIORATION",
+            algorithm=SimpleNamespace(),
+        )
+
+        assert result is None
+
+    def test_bear_call_credit_entry_still_blocks_above_credit_buffer(self, engine, monkeypatch):
+        """BEAR_CALL_CREDIT entry should still block once regime exceeds the buffered ceiling."""
+        monkeypatch.setattr(config, "VASS_REGIME_BREAK_EXIT_ENABLED", True)
+
+        result = engine._vass_entry_engine._bear_credit_block_details(
+            strategy=SpreadStrategy.BEAR_CALL_CREDIT,
+            regime_score=51.1,
+            overlay_state="DETERIORATION",
+            algorithm=SimpleNamespace(),
+        )
+
+        assert result is not None
+        assert result[0] == "R_VASS_BEAR_CREDIT_REGIME_BLOCK"
+
     def test_bear_put_time_stop_skips_profitable_trade_with_meaningful_mfe(
         self, engine, monkeypatch
     ):
