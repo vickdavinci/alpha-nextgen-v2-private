@@ -2130,6 +2130,8 @@ class IronCondorEngine:
             "rejection_streak_first_at": str(self._rejection_streak_first_at)
             if self._rejection_streak_first_at
             else None,
+            "regime_score_history": list(self._regime_score_history),
+            "last_scan_time": self._last_scan_time,
         }
 
     def from_dict(self, state: Dict[str, Any]) -> None:
@@ -2190,6 +2192,16 @@ class IronCondorEngine:
             self._rejection_streak_first_at = datetime.fromisoformat(str(_rsfa)) if _rsfa else None
         except Exception:
             self._rejection_streak_first_at = None
+        # V12.36: Restore regime velocity history and scan throttle
+        raw_history = state.get("regime_score_history", [])
+        self._regime_score_history = []
+        for item in raw_history or []:
+            try:
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    self._regime_score_history.append((str(item[0]), float(item[1])))
+            except Exception:
+                continue
+        self._last_scan_time = state.get("last_scan_time")
 
     def reset_daily(self) -> None:
         """Reset intraday state at start of new trading day."""
