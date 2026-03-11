@@ -3973,6 +3973,9 @@ class PortfolioRouter:
             self._last_execution_minute = current_minute
 
         executed: List[OrderIntent] = []
+        # V12.36: Track IC condor IDs whose first side has been margin-checked this batch.
+        # IC margin = max(put_width, call_width), not sum — second side is margin-neutral.
+        _ic_condor_margin_checked: set = set()
 
         for order in orders:
             source_tag, trace_id = self._extract_trace_context(
@@ -4157,13 +4160,27 @@ class PortfolioRouter:
                                     trace_id=trace_id,
                                 )
                                 continue
+                        # V12.36: IC margin = max(put_width, call_width).
+                        # Second side of same condor is margin-neutral — bypass the check.
+                        _ic_condor_id = (order.metadata or {}).get("condor_id", "")
+                        _ic_second_side = bool(
+                            _ic_condor_id and _ic_condor_id in _ic_condor_margin_checked
+                        )
+                        if _ic_condor_id and not _ic_second_side:
+                            _ic_condor_margin_checked.add(_ic_condor_id)
+
                         combo_margin_buffer_pct = float(
                             getattr(config, "COMBO_MARGIN_SAFETY_BUFFER_PCT", 0.05)
                         )
                         combo_margin_buffer_pct = min(max(combo_margin_buffer_pct, 0.0), 0.25)
                         margin_remaining_safe = margin_remaining * (1.0 - combo_margin_buffer_pct)
                         required_margin = per_contract_margin * order.quantity
-                        if per_contract_margin > 0 and required_margin > margin_remaining_safe:
+                        if _ic_second_side and per_contract_margin > 0:
+                            self.log(
+                                f"ROUTER_IC_MARGIN_OFFSET: {order.symbol} | "
+                                f"CondorID={_ic_condor_id} | Second side — margin-neutral"
+                            )
+                        elif per_contract_margin > 0 and required_margin > margin_remaining_safe:
                             # V9.4 P0: Exit combos bypass margin check — closing a spread
                             # releases margin, it should never be blocked by margin requirements.
                             # This fixes the deadlock where exit signals fire every minute but
