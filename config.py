@@ -1902,9 +1902,9 @@ VASS_MFE_T2_FLOOR_HIGH_VIX = 0.25
 # The generic floors (12-25% of max_profit) protect only 16-20% of the debit paid;
 # these overrides bring profit protection to ~32-35% of debit, matching BULL_CALL
 # economics on a debit-relative basis.
-VASS_MFE_T2_FLOOR_BEAR_PUT_LOW_VIX = 0.25
-VASS_MFE_T2_FLOOR_BEAR_PUT_MED_VIX = 0.30
-VASS_MFE_T2_FLOOR_BEAR_PUT_HIGH_VIX = 0.35
+VASS_MFE_T2_FLOOR_BEAR_PUT_LOW_VIX = 0.35
+VASS_MFE_T2_FLOOR_BEAR_PUT_MED_VIX = 0.40
+VASS_MFE_T2_FLOOR_BEAR_PUT_HIGH_VIX = 0.45
 VASS_TAIL_RISK_CAP_ENABLED = True  # Emergency per-trade account-risk kill switch
 VASS_TAIL_RISK_CAP_PCT_EQUITY = 0.010  # V12.4: tighten cap to 1.0% of portfolio equity
 VASS_TAIL_RISK_CAP_USE_DTE_OVERLAY = True  # V12.6: make cap regime/DTE adaptive
