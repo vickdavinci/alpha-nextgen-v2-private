@@ -65,6 +65,7 @@ R_IC_PENDING_ENTRY = "R_IC_PENDING_ENTRY"
 R_IC_STRIKE_REUSE = "R_IC_STRIKE_REUSE"
 R_IC_REGIME_VELOCITY_BLOCK = "R_IC_REGIME_VELOCITY_BLOCK"
 R_IC_INSIDE_EXPECTED_MOVE = "R_IC_INSIDE_EXPECTED_MOVE"
+R_IC_CALL_OTM_TOO_TIGHT = "R_IC_CALL_OTM_TOO_TIGHT"
 R_IC_REJECTION_COOLDOWN = "R_IC_REJECTION_COOLDOWN"
 
 # ── Exit reason codes ──
@@ -1021,6 +1022,18 @@ class IronCondorEngine:
                         "buffer_mult": em_buffer,
                     },
                 )
+                return None
+
+        # ── ADX-aware call OTM floor (V12.36) ──
+        # When ADX > threshold, require the call short to be >= N% OTM.
+        # All 4 V12.35 winners had ADX < 18; losers IC-03/IC-13 had ADX > 18
+        # with call shorts at 2.7-2.8% OTM that were breached within 2 days.
+        adx_otm_threshold = float(getattr(config, "IC_ADX_CALL_OTM_ADX_THRESHOLD", 18.0))
+        if adx_value > adx_otm_threshold and qqq_price > 0:
+            min_call_otm_pct = float(getattr(config, "IC_ADX_CALL_OTM_MIN_PCT", 0.030))
+            call_otm_pct = (short_call.strike - qqq_price) / qqq_price if qqq_price > 0 else 0
+            if call_otm_pct < min_call_otm_pct:
+                self._record_drop(R_IC_CALL_OTM_TOO_TIGHT)
                 return None
 
         # ── Per-trade risk cap ──
