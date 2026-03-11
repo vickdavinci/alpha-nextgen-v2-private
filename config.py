@@ -2306,11 +2306,9 @@ IC_DTE_MIN = (
 IC_DTE_MAX = 14  # Maximum DTE (V12.37: revert to weekly condor window)
 
 # ── Strike selection: short-leg delta range ──
-IC_SHORT_DELTA_MIN = (
-    0.12  # Minimum abs delta (V12.34: was 0.16 — reopen safer farther-OTM shorts in neutral tape)
-)
+IC_SHORT_DELTA_MIN = 0.10  # Minimum abs delta (V12.37: reopen farther-OTM weekly shorts)
 IC_SHORT_DELTA_MAX = (
-    0.25  # Maximum abs delta (V12.28: was 0.12 — delta 0.20 center collects 3× more credit)
+    0.18  # Maximum abs delta (V12.37: cap weekly IC from selecting rich close strikes)
 )
 IC_DELTA_SYMMETRY_MAX = 0.05  # Max abs(|call_delta| - |put_delta|) for symmetry (V12.34: was 0.03)
 IC_WING_SYMMETRY_MAX = 1.0  # Max abs(call_width - put_width) in dollars
