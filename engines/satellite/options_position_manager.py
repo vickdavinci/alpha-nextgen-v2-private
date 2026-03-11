@@ -364,6 +364,11 @@ def register_spread_entry_impl(
             pending_strategy = str(getattr(tracker, "strategy", "") or "").strip()
         if not pending_reason:
             pending_reason = str(getattr(tracker, "signal_reason", "") or "").strip()
+    spread.signal_id = pending_signal_id
+    spread.trace_id = pending_trace_id
+    spread.signal_direction = pending_direction
+    spread.signal_strategy = pending_strategy or str(spread.spread_type or "")
+    spread.signal_reason = pending_reason
     if (
         algorithm is not None
         and pending_signal_id
@@ -632,6 +637,31 @@ def remove_spread_position_impl(
             f"Cooldown until {config.OPTIONS_POST_TRADE_COOLDOWN_MINUTES}min after exit",
             trades_only=True,
         )
+        algorithm = getattr(self, "algorithm", None)
+        signal_id = str(getattr(spread, "signal_id", "") or "").strip()
+        if (
+            algorithm is not None
+            and signal_id
+            and hasattr(algorithm, "_mark_engine_signal_event")
+            and hasattr(algorithm, "_record_signal_lifecycle_event")
+        ):
+            if algorithm._mark_engine_signal_event("CLOSED", signal_id):
+                algorithm._record_signal_lifecycle_event(
+                    engine="VASS",
+                    event="CLOSED",
+                    signal_id=signal_id,
+                    trace_id=str(getattr(spread, "trace_id", "") or "").strip(),
+                    direction=str(getattr(spread, "signal_direction", "") or "").strip(),
+                    strategy=str(
+                        getattr(spread, "signal_strategy", "") or getattr(spread, "spread_type", "")
+                    ).strip(),
+                    code="R_OK",
+                    gate_name="SPREAD_POSITION_REMOVED",
+                    reason=str(
+                        getattr(spread, "signal_reason", "") or "Spread position removed"
+                    ).strip(),
+                    contract_symbol=self._symbol_str(spread.long_leg.symbol),
+                )
         return spread
     return None
 

@@ -415,6 +415,47 @@ class TestSpreadFillTracker:
         assert data["strategy"] == "BEAR_PUT_DEBIT"
         assert data["signal_reason"] == "BEAR_PUT_DEBIT: synthetic test"
 
+    def test_spread_position_round_trips_signal_identity(self):
+        """SpreadPosition persistence should preserve lifecycle identity fields."""
+        contract = OptionContract(
+            symbol="QQQ 271231P00293000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=293.0,
+            expiry="2027-12-31",
+            delta=-0.60,
+            bid=10.20,
+            ask=10.50,
+            mid_price=10.35,
+            open_interest=5000,
+            days_to_expiry=34,
+        )
+        spread = SpreadPosition(
+            long_leg=contract,
+            short_leg=contract,
+            spread_type="BEAR_PUT",
+            net_debit=0.87,
+            max_profit=1.13,
+            width=2.0,
+            entry_time="2027-12-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=1,
+            regime_at_entry=40.0,
+            signal_id="sig-123",
+            trace_id="trace-123",
+            signal_direction="BEARISH",
+            signal_strategy="BEAR_PUT_DEBIT",
+            signal_reason="synthetic close test",
+        )
+
+        restored = SpreadPosition.from_dict(spread.to_dict())
+
+        assert restored.signal_id == "sig-123"
+        assert restored.trace_id == "trace-123"
+        assert restored.signal_direction == "BEARISH"
+        assert restored.signal_strategy == "BEAR_PUT_DEBIT"
+        assert restored.signal_reason == "synthetic close test"
+
 
 # =============================================================================
 # ENTRY SIGNAL TESTS
@@ -6235,6 +6276,86 @@ class TestBearPutProfitTargetScoping:
 
         assert result is not None
         assert "DTE_EXIT" in str(result[0].reason)
+
+
+class TestSpreadLifecycleCloseEvents:
+    """Tests for CLOSED lifecycle backfill on realized spread removal."""
+
+    def test_remove_spread_position_emits_closed_lifecycle(self):
+        """Removing a spread should emit a CLOSED lifecycle event when identity is present."""
+        engine = OptionsEngine(algorithm=None)
+        lifecycle = []
+        closed_ids = set()
+
+        def _mark_engine_signal_event(event_type, signal_id):
+            key = (str(event_type).upper(), signal_id)
+            if key in closed_ids:
+                return False
+            closed_ids.add(key)
+            return True
+
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 12, 10, 13, 0, 0),
+            Log=lambda *_args, **_kwargs: None,
+            _record_signal_lifecycle_event=lambda **kwargs: lifecycle.append(kwargs),
+            _mark_engine_signal_event=_mark_engine_signal_event,
+        )
+
+        long_put = OptionContract(
+            symbol="QQQ 271231P00293000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=293.0,
+            expiry="2027-12-31",
+            delta=-0.60,
+            bid=10.20,
+            ask=10.50,
+            mid_price=10.35,
+            open_interest=5000,
+            days_to_expiry=34,
+        )
+        short_put = OptionContract(
+            symbol="QQQ 271231P00291000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=291.0,
+            expiry="2027-12-31",
+            delta=-0.45,
+            bid=9.10,
+            ask=9.20,
+            mid_price=9.15,
+            open_interest=5000,
+            days_to_expiry=34,
+        )
+        spread = SpreadPosition(
+            long_leg=long_put,
+            short_leg=short_put,
+            spread_type="BEAR_PUT",
+            net_debit=0.87,
+            max_profit=1.13,
+            width=2.0,
+            entry_time="2027-12-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=1,
+            regime_at_entry=40.0,
+            signal_id="sig-closed-1",
+            trace_id="trace-closed-1",
+            signal_direction="BEARISH",
+            signal_strategy="BEAR_PUT_DEBIT",
+            signal_reason="synthetic close test",
+        )
+        engine._spread_positions = [spread]
+        engine._spread_position = spread
+
+        removed = engine.remove_spread_position(spread_key=engine._build_spread_key(spread))
+
+        assert removed is spread
+        assert lifecycle
+        event = lifecycle[-1]
+        assert event["event"] == "CLOSED"
+        assert event["signal_id"] == "sig-closed-1"
+        assert event["trace_id"] == "trace-closed-1"
+        assert event["strategy"] == "BEAR_PUT_DEBIT"
 
 
 class TestAssignmentMarginBufferScoping:

@@ -230,6 +230,11 @@ class SpreadPosition:
     thesis_soft_stop_streak: int = 0  # V12.27: consecutive thesis soft-stop breach bars
     assignment_incident_active: bool = False  # V12.28: idempotent partial-assignment lifecycle
     assignment_incident_id: Optional[str] = None  # V12.28: stable incident key for recovery
+    signal_id: str = ""
+    trace_id: str = ""
+    signal_direction: str = ""
+    signal_strategy: str = ""
+    signal_reason: str = ""
 
     @property
     def profit_target(self) -> float:
@@ -268,6 +273,11 @@ class SpreadPosition:
             "thesis_soft_stop_streak": self.thesis_soft_stop_streak,
             "assignment_incident_active": self.assignment_incident_active,
             "assignment_incident_id": self.assignment_incident_id,
+            "signal_id": self.signal_id,
+            "trace_id": self.trace_id,
+            "signal_direction": self.signal_direction,
+            "signal_strategy": self.signal_strategy,
+            "signal_reason": self.signal_reason,
         }
 
     @classmethod
@@ -294,6 +304,11 @@ class SpreadPosition:
             thesis_soft_stop_streak=int(data.get("thesis_soft_stop_streak", 0) or 0),
             assignment_incident_active=bool(data.get("assignment_incident_active", False)),
             assignment_incident_id=data.get("assignment_incident_id"),
+            signal_id=str(data.get("signal_id", "") or ""),
+            trace_id=str(data.get("trace_id", "") or ""),
+            signal_direction=str(data.get("signal_direction", "") or ""),
+            signal_strategy=str(data.get("signal_strategy", "") or ""),
+            signal_reason=str(data.get("signal_reason", "") or ""),
         )
 
 
