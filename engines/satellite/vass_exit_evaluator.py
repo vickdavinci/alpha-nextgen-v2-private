@@ -1248,6 +1248,51 @@ def check_spread_exit_signals_impl(
                             f"{close_floor:.2f} ({close_pct:.1%} below entry {entry_underlying:.2f})"
                         )
 
+        # V12.35: Thesis-first invalidation for BEAR_PUT_DEBIT based on underlying QQQ.
+        # Symmetric to BULL_CALL invalidation but tighter (3.5% vs 3.9%): IV crush on
+        # a rally accelerates put premium decay faster than call decay on a drop.
+        if (
+            exit_reason is None
+            and is_bearish_debit_spread
+            and bool(getattr(config, "VASS_BEAR_DEBIT_QQQ_INVALIDATION_ENABLED", False))
+        ):
+            entry_underlying = float(getattr(spread, "entry_underlying_price", 0.0) or 0.0)
+            current_underlying = float(underlying_price or 0.0)
+            if entry_underlying > 0 and current_underlying > 0:
+                intraday_pct = float(
+                    getattr(config, "VASS_BEAR_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT", 0.035)
+                )
+                close_pct = float(
+                    getattr(config, "VASS_BEAR_DEBIT_QQQ_INVALIDATION_CLOSE_PCT", 0.040)
+                )
+                # Bear thesis breaks when QQQ RALLIES above entry (opposite of bull)
+                intraday_ceiling = entry_underlying * (1.0 + max(0.0, intraday_pct))
+                close_ceiling = entry_underlying * (1.0 + max(0.0, close_pct))
+                if current_underlying >= intraday_ceiling:
+                    exit_reason = (
+                        f"QQQ_BEAR_INVALIDATION_INTRADAY: QQQ {current_underlying:.2f} >= "
+                        f"{intraday_ceiling:.2f} ({intraday_pct:.1%} above entry {entry_underlying:.2f})"
+                    )
+                elif self.algorithm is not None:
+                    close_time = str(
+                        getattr(config, "VASS_BEAR_DEBIT_QQQ_INVALIDATION_CLOSE_TIME", "15:45")
+                    )
+                    close_hour = 15
+                    close_minute = 45
+                    try:
+                        close_hour, close_minute = [int(x) for x in close_time.split(":", 1)]
+                    except Exception:
+                        pass
+                    now = self.algorithm.Time
+                    in_close_window = (now.hour > close_hour) or (
+                        now.hour == close_hour and now.minute >= close_minute
+                    )
+                    if in_close_window and current_underlying >= close_ceiling:
+                        exit_reason = (
+                            f"QQQ_BEAR_INVALIDATION_CLOSE: QQQ {current_underlying:.2f} >= "
+                            f"{close_ceiling:.2f} ({close_pct:.1%} above entry {entry_underlying:.2f})"
+                        )
+
         if (
             exit_reason is None
             and thesis_soft_stop_mode
