@@ -2454,13 +2454,9 @@ IC_HOLD_GUARD_MIN_DAYS = (
     1  # Minimum 1 calendar day hold (V12.37: weekly IC needs faster stop enforcement)
 )
 IC_HOLD_GUARD_MAX_DAYS = 2  # Maximum 2 calendar days hold (V12.37: prevent long protection windows on short-DTE positions)
-IC_HOLD_HARD_STOP_CREDIT_MULT = (
-    2.00  # During hold: exit only if loss > 2.0× credit (V12.34: was 2.5×)
-)
+IC_HOLD_HARD_STOP_CREDIT_MULT = 1.25  # During hold: exit if loss > 1.25× credit (V12.37: stop weekly condors before tail losses snowball)
 IC_HOLD_EOD_GATE_ENABLED = True  # EOD de-risk during hold
-IC_HOLD_EOD_GATE_CREDIT_MULT = (
-    1.25  # At EOD during hold: exit if loss > 1.25× credit (V12.34: was 1.5×)
-)
+IC_HOLD_EOD_GATE_CREDIT_MULT = 0.75  # At EOD during hold: exit if loss > 0.75× credit (V12.37: de-risk damaged weekly IC before overnight drift)
 IC_HOLD_EOD_GATE_MIN_MINUTES = 240  # Min hold before EOD gate can fire (4h)
 
 # ── IC MFE Lock (Maximum Favorable Excursion ratchet) ──
