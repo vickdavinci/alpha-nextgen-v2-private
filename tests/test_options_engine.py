@@ -4343,6 +4343,69 @@ class TestRejectionAwareSizing:
         assert event["trace_id"] == "VASS_20270115_103000_QQQ"
         assert event["gate_name"] == "SPREAD_ENTRY_FILL_BACKFILL"
 
+    def test_spread_fill_tracker_seed_preserves_signal_identity(self, engine):
+        """Tracker creation should preserve signal identity from the seed payload."""
+        long_leg = OptionContract(
+            symbol="QQQ 271231P00300000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=-0.40,
+            bid=4.80,
+            ask=5.00,
+            mid_price=4.90,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_leg = OptionContract(
+            symbol="QQQ 271231P00295000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=295.0,
+            expiry="2027-12-31",
+            delta=-0.22,
+            bid=2.90,
+            ask=3.10,
+            mid_price=3.00,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        engine._pending_spread_long_leg = long_leg
+        engine._pending_spread_short_leg = short_leg
+        engine._pending_spread_type = "BEAR_PUT_DEBIT"
+        engine._pending_num_contracts = 3
+        engine._pending_spread_signal_id = "VASS-20270115-1030-9"
+        engine._pending_spread_trace_id = "VASS_20270115_103000_QQQ"
+        engine._pending_spread_direction = "PUT"
+        engine._pending_spread_strategy = "BEAR_PUT_DEBIT"
+        engine._pending_spread_signal_reason = "BEAR_PUT_DEBIT: seed identity"
+
+        seed = engine.get_pending_spread_tracker_seed()
+        engine._pending_spread_signal_id = ""
+        engine._pending_spread_trace_id = ""
+        engine._pending_spread_direction = ""
+        engine._pending_spread_strategy = ""
+        engine._pending_spread_signal_reason = ""
+
+        tracker = options_engine_module.SpreadFillTracker(
+            long_leg_symbol=seed["long_leg_symbol"],
+            short_leg_symbol=seed["short_leg_symbol"],
+            expected_quantity=int(seed["expected_quantity"]),
+            spread_type=seed.get("spread_type"),
+            signal_id=str(seed.get("signal_id", "") or ""),
+            trace_id=str(seed.get("trace_id", "") or ""),
+            direction=str(seed.get("direction", "") or ""),
+            strategy=str(seed.get("strategy", "") or ""),
+            signal_reason=str(seed.get("signal_reason", "") or ""),
+        )
+
+        assert tracker.signal_id == "VASS-20270115-1030-9"
+        assert tracker.trace_id == "VASS_20270115_103000_QQQ"
+        assert tracker.direction == "PUT"
+        assert tracker.strategy == "BEAR_PUT_DEBIT"
+        assert tracker.signal_reason == "BEAR_PUT_DEBIT: seed identity"
+
     def test_rejection_cap_cleared_on_daily_reset(self, engine):
         """Rejection cap should be cleared on new trading day."""
         engine._rejection_margin_cap = 5000.0

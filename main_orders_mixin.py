@@ -3383,11 +3383,11 @@ class MainOrdersMixin:
                 timeout_minutes=config.SPREAD_FILL_TIMEOUT_MINUTES,
                 created_at=str(self.Time),
                 spread_type=seed.get("spread_type"),
-                signal_id=str(self._pending_spread_signal_id or ""),
-                trace_id=str(self._pending_spread_trace_id or ""),
-                direction=str(self._pending_spread_direction or ""),
-                strategy=str(self._pending_spread_strategy or ""),
-                signal_reason=str(self._pending_spread_signal_reason or ""),
+                signal_id=str(seed.get("signal_id", "") or ""),
+                trace_id=str(seed.get("trace_id", "") or ""),
+                direction=str(seed.get("direction", "") or ""),
+                strategy=str(seed.get("strategy", "") or ""),
+                signal_reason=str(seed.get("signal_reason", "") or ""),
             )
             self.Log(
                 f"SPREAD: Fill tracker created | "

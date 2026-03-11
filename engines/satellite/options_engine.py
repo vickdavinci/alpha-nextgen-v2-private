@@ -373,6 +373,20 @@ class OptionsEngine:
                 self.algorithm.Log(text)
             # In backtest mode with trades_only=False, skip logging (silent)
 
+    def _parse_hhmm_to_minutes(self, hhmm: str, default_minutes: int) -> int:
+        """Parse HH:MM into minutes-from-midnight; fallback to default on parse failure."""
+        try:
+            parts = str(hhmm).split(":")
+            if len(parts) != 2:
+                return default_minutes
+            hh = int(parts[0])
+            mm = int(parts[1])
+            if hh < 0 or hh > 23 or mm < 0 or mm > 59:
+                return default_minutes
+            return hh * 60 + mm
+        except Exception:
+            return default_minutes
+
     def _symbol_str(self, symbol) -> str:
         """Normalize QC Symbol/string-like values to plain string for TargetWeight."""
         if symbol is None:
@@ -4484,6 +4498,11 @@ class OptionsEngine:
             "short_leg_symbol": self._symbol_str(self._pending_spread_short_leg.symbol),
             "expected_quantity": int(self._pending_num_contracts or 1),
             "spread_type": self._pending_spread_type,
+            "signal_id": str(self._pending_spread_signal_id or ""),
+            "trace_id": str(self._pending_spread_trace_id or ""),
+            "direction": str(self._pending_spread_direction or ""),
+            "strategy": str(self._pending_spread_strategy or ""),
+            "signal_reason": str(self._pending_spread_signal_reason or ""),
         }
 
     def clear_pending_spread_state_hard(self) -> None:
