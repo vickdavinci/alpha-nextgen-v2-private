@@ -388,6 +388,34 @@ class TestOptionContract:
         assert restored.strike == sample_contract.strike
 
 
+class TestSpreadFillTracker:
+    """Tests for SpreadFillTracker serialization."""
+
+    def test_to_dict_includes_telemetry_identity_fields(self):
+        """Tracker debug serialization should preserve telemetry identity."""
+        tracker = options_engine_module.SpreadFillTracker(
+            long_leg_symbol="QQQ 271231P00293000",
+            short_leg_symbol="QQQ 271231P00291000",
+            expected_quantity=3,
+            created_at="2027-01-15 10:30:00",
+            spread_type="BEAR_PUT",
+            signal_id="sig-123",
+            trace_id="trace-123",
+            direction="BEARISH",
+            strategy="BEAR_PUT_DEBIT",
+            signal_reason="BEAR_PUT_DEBIT: synthetic test",
+        )
+
+        data = tracker.to_dict()
+
+        assert data["spread_type"] == "BEAR_PUT"
+        assert data["signal_id"] == "sig-123"
+        assert data["trace_id"] == "trace-123"
+        assert data["direction"] == "BEARISH"
+        assert data["strategy"] == "BEAR_PUT_DEBIT"
+        assert data["signal_reason"] == "BEAR_PUT_DEBIT: synthetic test"
+
+
 # =============================================================================
 # ENTRY SIGNAL TESTS
 # =============================================================================

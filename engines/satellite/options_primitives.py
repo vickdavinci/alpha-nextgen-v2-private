@@ -446,6 +446,12 @@ class SpreadFillTracker:
             "long_leg_symbol": self.long_leg_symbol,
             "short_leg_symbol": self.short_leg_symbol,
             "expected_quantity": self.expected_quantity,
+            "spread_type": self.spread_type or "",
+            "signal_id": self.signal_id,
+            "trace_id": self.trace_id,
+            "direction": self.direction,
+            "strategy": self.strategy,
+            "signal_reason": self.signal_reason,
             "long_fill": f"${self.long_fill_price:.2f} x{self.long_fill_qty}"
             if self.is_long_filled()
             else "PENDING",
