@@ -1702,6 +1702,36 @@ def check_spread_exit_signals_impl(
                     entry_dt = datetime.strptime(spread.entry_time[:19], "%Y-%m-%d %H:%M:%S")
                     held_days = (self.algorithm.Time.date() - entry_dt.date()).days
                     if held_days >= max_hold_days:
+                        if is_bearish_debit_spread:
+                            require_non_positive_pnl = bool(
+                                getattr(
+                                    config,
+                                    "VASS_BEAR_PUT_TIME_STOP_REQUIRE_NON_POSITIVE_PNL",
+                                    True,
+                                )
+                            )
+                            min_mfe_max_profit_pct = float(
+                                getattr(
+                                    config,
+                                    "VASS_BEAR_PUT_TIME_STOP_MIN_MFE_MAX_PROFIT_PCT",
+                                    0.25,
+                                )
+                            )
+                            if require_non_positive_pnl:
+                                current_tradeable_pnl = raw_tradeable_spread_value - entry_debit
+                                had_meaningful_mfe = (
+                                    float(
+                                        getattr(
+                                            spread,
+                                            "highest_pnl_max_profit_pct",
+                                            0.0,
+                                        )
+                                        or 0.0
+                                    )
+                                    >= min_mfe_max_profit_pct
+                                )
+                                if current_tradeable_pnl > 0 and had_meaningful_mfe:
+                                    return None
                         exit_reason = (
                             f"SPREAD_TIME_STOP ({held_days}d >= {max_hold_days}d max hold)"
                         )

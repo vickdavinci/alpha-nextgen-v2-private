@@ -1791,6 +1791,10 @@ VASS_DEBIT_MAX_HOLD_DAYS_LOW_VIX = 0  # V9.5: disable low-VIX debit time-stop ov
 # spikes — extended holds bleed theta on rich put premiums.  7-day cap forces
 # exits on stale bear theses before time decay dominates.
 VASS_BEAR_PUT_MAX_HOLD_DAYS = 7
+VASS_BEAR_PUT_TIME_STOP_REQUIRE_NON_POSITIVE_PNL = True
+VASS_BEAR_PUT_TIME_STOP_MIN_MFE_MAX_PROFIT_PCT = (
+    0.25  # Skip BEAR_PUT time-stop if trade stayed profitable and reached meaningful MFE.
+)
 VASS_DEBIT_LOW_VIX_THRESHOLD = 16.0
 
 # V10.5: Day-4 EOD decision for VASS debit spreads
