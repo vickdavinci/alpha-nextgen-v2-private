@@ -1666,6 +1666,14 @@ def check_spread_exit_signals_impl(
             and not disable_tactical_exits_for_thesis
         ):
             max_hold_days = int(getattr(config, "VASS_DEBIT_MAX_HOLD_DAYS", 0))
+            # V12.35: BEAR_PUT max hold cap — bear moves are fast, mean-reverting;
+            # extended holds bleed theta on rich put premiums.
+            if is_bearish_debit_spread:
+                bear_put_max = int(getattr(config, "VASS_BEAR_PUT_MAX_HOLD_DAYS", 0))
+                if bear_put_max > 0:
+                    max_hold_days = (
+                        min(max_hold_days, bear_put_max) if max_hold_days > 0 else bear_put_max
+                    )
             low_vix_days = int(getattr(config, "VASS_DEBIT_MAX_HOLD_DAYS_LOW_VIX", max_hold_days))
             low_vix_threshold = float(getattr(config, "VASS_DEBIT_LOW_VIX_THRESHOLD", 16.0))
             if (

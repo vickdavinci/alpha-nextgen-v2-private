@@ -1784,6 +1784,10 @@ SPREAD_DTE_MAX = 45  # V2.19: Widened from 21 to 45 to align with VASS_LOW_IV_DT
 SPREAD_DTE_EXIT = 5  # Close by 5 DTE remaining
 VASS_DEBIT_MAX_HOLD_DAYS = 0  # V9.5: disable debit spread time-stop force exit
 VASS_DEBIT_MAX_HOLD_DAYS_LOW_VIX = 0  # V9.5: disable low-VIX debit time-stop override
+# V12.35: BEAR_PUT-specific max hold cap.  Bear moves are fast, mean-reverting
+# spikes — extended holds bleed theta on rich put premiums.  7-day cap forces
+# exits on stale bear theses before time decay dominates.
+VASS_BEAR_PUT_MAX_HOLD_DAYS = 7
 VASS_DEBIT_LOW_VIX_THRESHOLD = 16.0
 
 # V10.5: Day-4 EOD decision for VASS debit spreads
