@@ -79,10 +79,19 @@ def _get_ogp_close_all_threshold(self, spread: Optional["SpreadPosition"]) -> fl
         return base_threshold
 
     spread_type = str(getattr(spread, "spread_type", "") or "").upper()
-    if spread_type not in {"BEAR_PUT", "BEAR_PUT_DEBIT"}:
+    if spread_type not in {"BEAR_CALL_CREDIT", "BEAR_PUT", "BEAR_PUT_DEBIT"}:
         return base_threshold
     if not _is_bearish_spread_fresh_ogp_exempt(self, spread):
         return base_threshold
+
+    if spread_type == "BEAR_CALL_CREDIT":
+        return float(
+            getattr(
+                config,
+                "BEAR_CALL_CREDIT_OVERNIGHT_VIX_CLOSE_ALL_BEAR_REGIME",
+                base_threshold,
+            )
+        )
 
     return float(
         getattr(

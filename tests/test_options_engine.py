@@ -6686,7 +6686,7 @@ class TestAssignmentMarginBufferScoping:
         assert signals[0].metadata["spread_exit_code"] == "OVERNIGHT_GAP_PROTECTION"
 
     def test_overnight_gap_exit_raises_bear_put_close_all_threshold_only(self, engine, monkeypatch):
-        """BEAR_PUT close-all OGP should be relaxed in bear regimes without changing other spreads."""
+        """BEAR_PUT close-all OGP should be relaxed in bear regimes without changing bullish spreads."""
         spread = self._make_credit_spread()
         spread.spread_type = "BEAR_PUT_DEBIT"
         spread.net_debit = 1.40
@@ -6701,7 +6701,10 @@ class TestAssignmentMarginBufferScoping:
 
         assert signals is None
 
-        engine._spread_position = self._make_credit_spread()
+        other_spread = self._make_credit_spread()
+        other_spread.spread_type = "BULL_PUT_CREDIT"
+        other_spread.net_debit = -1.25
+        engine._spread_position = other_spread
         engine._get_regime_transition_context = lambda: {"effective_score": 40.0}
         monkeypatch.setattr(config, "VASS_CREDIT_THETA_FIRST_ENABLED", False)
 
@@ -6712,6 +6715,33 @@ class TestAssignmentMarginBufferScoping:
 
         assert other_signals is not None
         assert len(other_signals) == 1
+
+    def test_overnight_gap_exit_raises_bear_call_credit_close_all_threshold(
+        self, engine, monkeypatch
+    ):
+        """BEAR_CALL_CREDIT close-all OGP should also be relaxed in bear regimes."""
+        spread = self._make_credit_spread()
+        spread.spread_type = "BEAR_CALL_CREDIT"
+        spread.net_debit = -1.25
+        engine._spread_position = spread
+        engine._get_regime_transition_context = lambda: {"effective_score": 40.0}
+        monkeypatch.setattr(config, "BEAR_CALL_CREDIT_OVERNIGHT_VIX_CLOSE_ALL_BEAR_REGIME", 40.0)
+        monkeypatch.setattr(config, "VASS_CREDIT_THETA_FIRST_ENABLED", False)
+
+        signals = engine.check_overnight_gap_protection_exit(
+            current_vix=30.0,
+            current_date="2024-08-07",
+        )
+
+        assert signals is None
+
+        signals = engine.check_overnight_gap_protection_exit(
+            current_vix=40.0,
+            current_date="2024-08-07",
+        )
+
+        assert signals is not None
+        assert len(signals) == 1
 
     def test_overnight_gap_exit_skips_fresh_bear_put_named_spread_in_bear_regime(self, engine):
         """Stored BEAR_PUT spread types should qualify for the fresh-trade bearish OGP exemption."""

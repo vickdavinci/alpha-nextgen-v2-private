@@ -3177,6 +3177,9 @@ SWING_OVERNIGHT_VIX_CLOSE_FRESH = 22.0  # Close fresh spreads if VIX >= 22 at EO
 BEAR_PUT_OVERNIGHT_VIX_CLOSE_ALL_BEAR_REGIME = (
     40.0  # V12.31: let BEAR_PUT_DEBIT survive elevated bear-regime VIX unless stress is extreme
 )
+BEAR_CALL_CREDIT_OVERNIGHT_VIX_CLOSE_ALL_BEAR_REGIME = (
+    40.0  # V12.37: let BEAR_CALL_CREDIT survive elevated bear-regime VIX unless stress is extreme
+)
 
 # -----------------------------------------------------------------------------
 # V2.1.1 QQQ MOVE TRIGGER THRESHOLDS BY REGIME
