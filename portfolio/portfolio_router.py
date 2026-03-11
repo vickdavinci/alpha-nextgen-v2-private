@@ -356,6 +356,7 @@ class PortfolioRouter:
             enabled_weights["OPT_INTRADAY"] = float(
                 getattr(config, "OPTIONS_INTRADAY_ALLOCATION", 0.0)
             )
+            enabled_weights["OPT_IC"] = float(getattr(config, "IC_OPEN_RISK_PCT", 0.0))
         if getattr(config, "ISOLATION_TREND_ENABLED", False):
             enabled_weights["TREND"] = float(getattr(config, "TREND_TOTAL_ALLOCATION", 0.0))
         if getattr(config, "ISOLATION_MR_ENABLED", False):
@@ -370,7 +371,7 @@ class PortfolioRouter:
             return
 
         # Zero out controllable engine budgets first.
-        for source in ("TREND", "OPT", "OPT_INTRADAY", "MR", "HEDGE", "COLD_START"):
+        for source in ("TREND", "OPT", "OPT_INTRADAY", "OPT_IC", "MR", "HEDGE", "COLD_START"):
             self._source_allocation_limits[source] = 0.0
 
         # Normalize enabled budgets to 100%.
@@ -3520,7 +3521,7 @@ class PortfolioRouter:
             # V2.3.24: Use lower threshold for intraday options
             # Single option contracts often $500-1,500, below the $2,000 MIN_TRADE_VALUE
             min_trade_value = config.MIN_TRADE_VALUE
-            if is_option and any(s in ("OPT_INTRADAY", "OPT") for s in agg.sources):
+            if is_option and any(s in ("OPT_INTRADAY", "OPT", "OPT_IC") for s in agg.sources):
                 min_trade_value = config.MIN_INTRADAY_OPTIONS_TRADE_VALUE
 
             # V10.7: Exempt close/protective option intents from min-trade floor.

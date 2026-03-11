@@ -17,6 +17,7 @@ from unittest.mock import ANY, MagicMock, call
 
 import pytest
 
+import portfolio.portfolio_router as portfolio_router_module
 from models.enums import Urgency
 from models.target_weight import TargetWeight
 from portfolio.portfolio_router import (
@@ -126,6 +127,25 @@ class TestPortfolioRouterInit:
         router = PortfolioRouter(algorithm=mock_algo)
 
         assert router.algorithm is mock_algo
+
+    def test_isolation_mode_normalizes_opt_ic_budget(self, monkeypatch):
+        """IC isolation should normalize OPT_IC alongside other options sources."""
+        monkeypatch.setattr(portfolio_router_module.config, "ISOLATION_TEST_MODE", True)
+        monkeypatch.setattr(portfolio_router_module.config, "ISOLATION_OPTIONS_ENABLED", True)
+        monkeypatch.setattr(portfolio_router_module.config, "ISOLATION_TREND_ENABLED", False)
+        monkeypatch.setattr(portfolio_router_module.config, "ISOLATION_MR_ENABLED", False)
+        monkeypatch.setattr(portfolio_router_module.config, "ISOLATION_HEDGE_ENABLED", False)
+        monkeypatch.setattr(portfolio_router_module.config, "ISOLATION_COLD_START_ENABLED", False)
+        monkeypatch.setattr(portfolio_router_module.config, "OPTIONS_SWING_ALLOCATION", 0.40)
+        monkeypatch.setattr(portfolio_router_module.config, "OPTIONS_INTRADAY_ALLOCATION", 0.10)
+        monkeypatch.setattr(portfolio_router_module.config, "IC_OPEN_RISK_PCT", 0.05)
+
+        router = PortfolioRouter()
+
+        total = 0.40 + 0.10 + 0.05
+        assert router._source_allocation_limits["OPT"] == pytest.approx(0.40 / total)
+        assert router._source_allocation_limits["OPT_INTRADAY"] == pytest.approx(0.10 / total)
+        assert router._source_allocation_limits["OPT_IC"] == pytest.approx(0.05 / total)
 
 
 class TestCollect:
@@ -411,6 +431,32 @@ class TestCalculateOrderIntents:
 
         # $1000 delta is below $2000 minimum
         assert len(orders) == 0
+
+    def test_opt_ic_uses_options_min_trade_floor(self, monkeypatch):
+        """IC option intents should use the lower options min-trade threshold."""
+        monkeypatch.setattr(portfolio_router_module.config, "MIN_TRADE_VALUE", 2000)
+        monkeypatch.setattr(portfolio_router_module.config, "MIN_INTRADAY_OPTIONS_TRADE_VALUE", 500)
+        router = PortfolioRouter()
+
+        option_symbol = "QQQ 260130P00500000"
+        aggregated = {
+            option_symbol: AggregatedWeight(
+                option_symbol,
+                0.01,
+                ["OPT_IC"],
+                Urgency.IMMEDIATE,
+                ["IC entry"],
+                metadata={"options_lane": "IC", "options_strategy": "IRON_CONDOR"},
+            ),
+        }
+        orders = router.calculate_order_intents(
+            aggregated=aggregated,
+            tradeable_equity=100000.0,
+            current_positions={},
+            current_prices={option_symbol: 2.5},
+        )
+
+        assert len(orders) == 1
 
     def test_skip_no_price(self):
         """Test symbols without prices are skipped."""
