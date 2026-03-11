@@ -5894,6 +5894,21 @@ class TestAssignmentMarginBufferScoping:
         assert other_signals is not None
         assert len(other_signals) == 1
 
+    def test_overnight_gap_exit_skips_fresh_bear_put_named_spread_in_bear_regime(self, engine):
+        """Stored BEAR_PUT spread types should qualify for the fresh-trade bearish OGP exemption."""
+        spread = self._make_credit_spread()
+        spread.spread_type = "BEAR_PUT"
+        spread.net_debit = 1.40
+        engine._spread_position = spread
+        engine._get_regime_transition_context = lambda: {"effective_score": 40.0}
+
+        signals = engine.check_overnight_gap_protection_exit(
+            current_vix=22.7,
+            current_date="2024-08-07",
+        )
+
+        assert signals is None
+
     def test_overnight_gap_exit_keeps_bear_put_disaster_rail_at_override(self, engine, monkeypatch):
         """BEAR_PUT bear-regime carveout should still close when the higher disaster rail is reached."""
         spread = self._make_credit_spread()

@@ -49,7 +49,7 @@ def _is_bearish_spread_fresh_ogp_exempt(self, spread: Optional["SpreadPosition"]
         return False
 
     spread_type = str(getattr(spread, "spread_type", "") or "").upper()
-    if spread_type not in {"BEAR_CALL_CREDIT", "BEAR_PUT_DEBIT"}:
+    if spread_type not in {"BEAR_CALL_CREDIT", "BEAR_PUT", "BEAR_PUT_DEBIT"}:
         return False
 
     regime_score = None
