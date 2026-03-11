@@ -36,6 +36,10 @@ class MainPremarketMixin:
         current_date_str = str(self.Time.date())
         self.options_engine.reset_daily(current_date_str)
 
+        # V12.36: Reset IC engine daily state (trade count, daily P&L, pending entries)
+        if hasattr(self.options_engine, "_iron_condor_engine"):
+            self.options_engine._iron_condor_engine.reset_daily()
+
         # V3.0 P0-C: Reset satellite engine daily state
         if hasattr(self, "hedge_engine") and self.hedge_engine:
             self.hedge_engine.reset()
