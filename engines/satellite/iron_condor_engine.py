@@ -2132,6 +2132,26 @@ class IronCondorEngine:
             else None,
             "regime_score_history": list(self._regime_score_history),
             "last_scan_time": self._last_scan_time,
+            # V12.36: Persist in-progress side fill trackers across restarts
+            "side_fill_trackers": {
+                side: {
+                    "long_leg_symbol": t.long_leg_symbol,
+                    "short_leg_symbol": t.short_leg_symbol,
+                    "expected_quantity": t.expected_quantity,
+                    "timeout_minutes": t.timeout_minutes,
+                    "long_fill_price": t.long_fill_price,
+                    "long_fill_qty": t.long_fill_qty,
+                    "long_fill_time": t.long_fill_time,
+                    "short_fill_price": t.short_fill_price,
+                    "short_fill_qty": t.short_fill_qty,
+                    "short_fill_time": t.short_fill_time,
+                    "created_at": t.created_at,
+                    "spread_type": t.spread_type,
+                    "ic_side": getattr(t, "_ic_side", side),
+                    "condor_id": getattr(t, "_condor_id", ""),
+                }
+                for side, t in self._side_fill_trackers.items()
+            },
         }
 
     def from_dict(self, state: Dict[str, Any]) -> None:
@@ -2202,6 +2222,31 @@ class IronCondorEngine:
             except Exception:
                 continue
         self._last_scan_time = state.get("last_scan_time")
+        # V12.36: Restore in-progress side fill trackers
+        self._side_fill_trackers = {}
+        for side, tdata in (state.get("side_fill_trackers") or {}).items():
+            try:
+                tracker = SpreadFillTracker(
+                    long_leg_symbol=str(tdata.get("long_leg_symbol", "")),
+                    short_leg_symbol=str(tdata.get("short_leg_symbol", "")),
+                    expected_quantity=int(tdata.get("expected_quantity", 0)),
+                    timeout_minutes=int(tdata.get("timeout_minutes", 5)),
+                    created_at=tdata.get("created_at"),
+                    spread_type=tdata.get("spread_type"),
+                )
+                if tdata.get("long_fill_price") is not None:
+                    tracker.long_fill_price = float(tdata["long_fill_price"])
+                    tracker.long_fill_qty = int(tdata.get("long_fill_qty", 0))
+                    tracker.long_fill_time = tdata.get("long_fill_time")
+                if tdata.get("short_fill_price") is not None:
+                    tracker.short_fill_price = float(tdata["short_fill_price"])
+                    tracker.short_fill_qty = int(tdata.get("short_fill_qty", 0))
+                    tracker.short_fill_time = tdata.get("short_fill_time")
+                tracker._ic_side = str(tdata.get("ic_side", side))
+                tracker._condor_id = str(tdata.get("condor_id", ""))
+                self._side_fill_trackers[side] = tracker
+            except Exception:
+                continue
 
     def reset_daily(self) -> None:
         """Reset intraday state at start of new trading day."""
