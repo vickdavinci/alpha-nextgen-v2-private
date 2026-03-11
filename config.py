@@ -1995,7 +1995,7 @@ VASS_BULL_DEBIT_THESIS_ONLY_DISABLE_VIX_SPIKE_EXITS = True
 # Symmetric to BULL_CALL QQQ invalidation but tighter (3.5% vs 3.9%) because
 # IV crush on a rally accelerates put premium decay faster than call decay on drops.
 VASS_BEAR_DEBIT_QQQ_INVALIDATION_ENABLED = True
-VASS_BEAR_DEBIT_QQQ_INVALIDATION_CLOSE_PCT = 0.040
+VASS_BEAR_DEBIT_QQQ_INVALIDATION_CLOSE_PCT = 0.035
 VASS_BEAR_DEBIT_QQQ_INVALIDATION_INTRADAY_PCT = 0.035
 VASS_BEAR_DEBIT_QQQ_INVALIDATION_CLOSE_TIME = "15:45"
 VASS_RECOVERY_RELAX_ENABLED = False  # V12.11: disabled — fires on ALL bullish entries (not just recovery), silently overrides D/W caps by +9%.
