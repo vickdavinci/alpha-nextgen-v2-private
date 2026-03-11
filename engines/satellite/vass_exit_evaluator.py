@@ -1447,7 +1447,11 @@ def check_spread_exit_signals_impl(
             elif spread.mfe_lock_tier >= 1 and not mfe_t1_in_confirmed_disabled:
                 floor_pnl = commission_per_share
 
-            if floor_pnl is not None and mfe_eval_pnl <= floor_pnl:
+            if (
+                floor_pnl is not None
+                and mfe_eval_pnl <= floor_pnl
+                and (not is_bearish_debit_spread or mfe_eval_pnl > 0)
+            ):
                 if self.algorithm is not None and hasattr(
                     self.algorithm, "_diag_vass_mfe_lock_exits"
                 ):

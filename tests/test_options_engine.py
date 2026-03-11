@@ -5698,6 +5698,65 @@ class TestBearPutProfitTargetScoping:
         assert spread.highest_pnl_max_profit_pct < 0.45
         assert spread.mfe_lock_tier == 0
 
+    def test_bear_put_mfe_lock_requires_positive_tradeable_pnl(self, engine, monkeypatch):
+        """BEAR_PUT MFE locks must not fire while tradeable P&L is still negative."""
+        long_put = OptionContract(
+            symbol="QQQ 271231P00293000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=293.0,
+            expiry="2027-12-31",
+            delta=-0.60,
+            bid=10.20,
+            ask=10.50,
+            mid_price=10.35,
+            open_interest=5000,
+            days_to_expiry=34,
+        )
+        short_put = OptionContract(
+            symbol="QQQ 271231P00291000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=291.0,
+            expiry="2027-12-31",
+            delta=-0.45,
+            bid=9.98,
+            ask=10.02,
+            mid_price=10.00,
+            open_interest=5000,
+            days_to_expiry=34,
+        )
+        spread = SpreadPosition(
+            long_leg=long_put,
+            short_leg=short_put,
+            spread_type="BEAR_PUT_DEBIT",
+            net_debit=0.87,
+            max_profit=1.13,
+            width=2.0,
+            entry_time="2027-12-01 10:00:00",
+            entry_score=4.0,
+            num_spreads=15,
+            regime_at_entry=40.0,
+        )
+        spread.highest_pnl_max_profit_pct = 0.55
+        spread.mfe_lock_tier = 2
+        engine._spread_position = spread
+        monkeypatch.setattr(config, "VASS_ENABLE_PROFIT_TARGET_EXITS", False)
+        monkeypatch.setattr(config, "SPREAD_NEUTRALITY_EXIT_ENABLED", False)
+        monkeypatch.setattr(config, "VASS_ENABLE_TAIL_CAP_EXITS", False)
+
+        result = engine.check_spread_exit_signals(
+            long_leg_price=10.35,
+            short_leg_price=10.00,
+            regime_score=40.0,
+            vix_current=20.0,
+            current_dte=34,
+            underlying_price=289.25,
+        )
+
+        assert result is None
+        assert spread.mfe_lock_tier == 2
+
     def test_bull_call_mfe_and_trail_still_use_existing_debit_path(self, engine, monkeypatch):
         """BULL_CALL trail/MFE tracking remains on the legacy debit mark path."""
         long_call = OptionContract(
