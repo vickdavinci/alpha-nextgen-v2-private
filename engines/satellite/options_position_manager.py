@@ -352,6 +352,18 @@ def register_spread_entry_impl(
     pending_direction = str(getattr(self, "_pending_spread_direction", "") or "").strip()
     pending_strategy = str(getattr(self, "_pending_spread_strategy", "") or "").strip()
     pending_reason = str(getattr(self, "_pending_spread_signal_reason", "") or "").strip()
+    tracker = getattr(algorithm, "_spread_fill_tracker", None) if algorithm is not None else None
+    if tracker is not None:
+        if not pending_signal_id:
+            pending_signal_id = str(getattr(tracker, "signal_id", "") or "").strip()
+        if not pending_trace_id:
+            pending_trace_id = str(getattr(tracker, "trace_id", "") or "").strip()
+        if not pending_direction:
+            pending_direction = str(getattr(tracker, "direction", "") or "").strip()
+        if not pending_strategy:
+            pending_strategy = str(getattr(tracker, "strategy", "") or "").strip()
+        if not pending_reason:
+            pending_reason = str(getattr(tracker, "signal_reason", "") or "").strip()
     if (
         algorithm is not None
         and pending_signal_id
@@ -372,6 +384,12 @@ def register_spread_entry_impl(
                 reason=pending_reason or "Backfilled on spread fill registration",
                 contract_symbol=self._symbol_str(spread.long_leg.symbol),
             )
+    elif algorithm is not None and hasattr(algorithm, "Log"):
+        algorithm.Log(
+            "SPREAD_APPROVAL_TELEMETRY_MISSING: "
+            f"Type={spread.spread_type} | Long={self._symbol_str(spread.long_leg.symbol)} | "
+            f"Short={self._symbol_str(spread.short_leg.symbol)}"
+        )
 
     # V2.9: Update trade counter (Bug #4 fix) - Spreads are always swing mode
     self._increment_trade_counter(OptionsMode.SWING)

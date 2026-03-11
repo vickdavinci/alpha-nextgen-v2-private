@@ -342,6 +342,11 @@ class SpreadFillTracker:
     # Tracker metadata
     created_at: Optional[str] = None
     spread_type: Optional[str] = None  # "BULL_CALL" or "BEAR_PUT"
+    signal_id: str = ""
+    trace_id: str = ""
+    direction: str = ""
+    strategy: str = ""
+    signal_reason: str = ""
 
     def record_long_fill(self, price: float, qty: int, time: str) -> None:
         """Record long leg fill (accumulates for partial fills)."""

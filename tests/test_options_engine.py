@@ -4136,6 +4136,97 @@ class TestRejectionAwareSizing:
 
         assert lifecycle == []
 
+    def test_spread_fill_backfills_approved_lifecycle_from_tracker_identity(self, engine):
+        """Spread fill should backfill APPROVED telemetry from tracker identity when pending state was cleared."""
+        lifecycle = []
+        approved_ids = set()
+        engine.algorithm = SimpleNamespace(
+            Time=datetime(2027, 1, 15, 10, 30, 0),
+            qqq=None,
+            Securities={},
+            Log=lambda *_args, **_kwargs: None,
+            _diag_intraday_approved_ids_logged=approved_ids,
+            _record_signal_lifecycle_event=lambda **kwargs: lifecycle.append(kwargs),
+        )
+
+        def _mark_engine_signal_event(event_type, signal_id):
+            event_key = str(event_type or "").upper()
+            sid = str(signal_id or "").strip()
+            if event_key != "APPROVED" or not sid:
+                return True
+            if sid in approved_ids:
+                return False
+            approved_ids.add(sid)
+            return True
+
+        engine.algorithm._mark_engine_signal_event = _mark_engine_signal_event
+
+        long_leg = OptionContract(
+            symbol="QQQ 271231P00300000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=300.0,
+            expiry="2027-12-31",
+            delta=-0.40,
+            bid=4.80,
+            ask=5.00,
+            mid_price=4.90,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        short_leg = OptionContract(
+            symbol="QQQ 271231P00295000",
+            underlying="QQQ",
+            direction=OptionDirection.PUT,
+            strike=295.0,
+            expiry="2027-12-31",
+            delta=-0.22,
+            bid=2.90,
+            ask=3.10,
+            mid_price=3.00,
+            open_interest=5000,
+            days_to_expiry=21,
+        )
+        engine._pending_spread_long_leg = long_leg
+        engine._pending_spread_short_leg = short_leg
+        engine._pending_spread_type = "BEAR_PUT_DEBIT"
+        engine._pending_net_debit = 1.90
+        engine._pending_max_profit = 3.10
+        engine._pending_spread_width = 5.0
+        engine._pending_num_contracts = 3
+        engine._pending_entry_score = 4.0
+        engine.algorithm._spread_fill_tracker = options_engine_module.SpreadFillTracker(
+            long_leg_symbol=long_leg.symbol,
+            short_leg_symbol=short_leg.symbol,
+            expected_quantity=3,
+            spread_type="BEAR_PUT_DEBIT",
+            signal_id="VASS-20270115-1030-3",
+            trace_id="VASS_20270115_103000_QQQ",
+            direction="PUT",
+            strategy="BEAR_PUT_DEBIT",
+            signal_reason="BEAR_PUT_DEBIT: tracker fallback",
+        )
+        engine._pending_spread_signal_id = ""
+        engine._pending_spread_trace_id = ""
+        engine._pending_spread_direction = ""
+        engine._pending_spread_strategy = ""
+        engine._pending_spread_signal_reason = ""
+
+        engine.register_spread_entry(
+            long_leg_fill_price=4.95,
+            short_leg_fill_price=3.05,
+            entry_time="2027-01-15 10:30:00",
+            current_date="2027-01-15",
+            regime_score=42.0,
+        )
+
+        assert len(lifecycle) == 1
+        event = lifecycle[0]
+        assert event["event"] == "APPROVED"
+        assert event["signal_id"] == "VASS-20270115-1030-3"
+        assert event["trace_id"] == "VASS_20270115_103000_QQQ"
+        assert event["gate_name"] == "SPREAD_ENTRY_FILL_BACKFILL"
+
     def test_rejection_cap_cleared_on_daily_reset(self, engine):
         """Rejection cap should be cleared on new trading day."""
         engine._rejection_margin_cap = 5000.0
