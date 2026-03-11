@@ -123,21 +123,47 @@ class OptionContract:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "OptionContract":
         """Deserialize from persistence."""
+        required_fields = [
+            "symbol",
+            "direction",
+            "strike",
+            "expiry",
+            "delta",
+            "bid",
+            "ask",
+            "mid_price",
+            "open_interest",
+            "days_to_expiry",
+        ]
+        missing_fields = [field for field in required_fields if data.get(field) is None]
+        if missing_fields:
+            raise ValueError(
+                "Corrupted OptionContract persistence: missing required fields "
+                + ", ".join(missing_fields)
+            )
+
+        try:
+            direction = OptionDirection(data.get("direction", OptionDirection.CALL.value))
+        except Exception as exc:
+            raise ValueError(
+                f"Corrupted OptionContract persistence: invalid direction {data.get('direction')!r}"
+            ) from exc
+
         return cls(
-            symbol=data["symbol"],
-            underlying=data.get("underlying", "QQQ"),
-            direction=OptionDirection(data["direction"]),
-            strike=data["strike"],
-            expiry=data["expiry"],
-            delta=data["delta"],
-            gamma=data.get("gamma", 0.0),  # V2.1: Default for backwards compat
-            vega=data.get("vega", 0.0),  # V2.1: Default for backwards compat
-            theta=data.get("theta", 0.0),  # V2.1: Default for backwards compat
-            bid=data["bid"],
-            ask=data["ask"],
-            mid_price=data["mid_price"],
-            open_interest=data["open_interest"],
-            days_to_expiry=data["days_to_expiry"],
+            symbol=str(data.get("symbol", "")),
+            underlying=str(data.get("underlying", "QQQ")),
+            direction=direction,
+            strike=float(data.get("strike", 0.0)),
+            expiry=str(data.get("expiry", "")),
+            delta=float(data.get("delta", 0.0)),
+            gamma=float(data.get("gamma", 0.0)),  # V2.1: Default for backwards compat
+            vega=float(data.get("vega", 0.0)),  # V2.1: Default for backwards compat
+            theta=float(data.get("theta", 0.0)),  # V2.1: Default for backwards compat
+            bid=float(data.get("bid", 0.0)),
+            ask=float(data.get("ask", 0.0)),
+            mid_price=float(data.get("mid_price", 0.0)),
+            open_interest=int(data.get("open_interest", 0)),
+            days_to_expiry=int(data.get("days_to_expiry", 0)),
         )
 
 

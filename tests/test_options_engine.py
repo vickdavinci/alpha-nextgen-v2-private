@@ -387,6 +387,14 @@ class TestOptionContract:
         assert restored.direction == sample_contract.direction
         assert restored.strike == sample_contract.strike
 
+    def test_from_dict_raises_clear_error_on_missing_required_field(self, sample_contract):
+        """Missing persisted contract fields should raise a clear corruption error."""
+        data = sample_contract.to_dict()
+        data.pop("symbol")
+
+        with pytest.raises(ValueError, match="Corrupted OptionContract persistence"):
+            OptionContract.from_dict(data)
+
 
 class TestSpreadFillTracker:
     """Tests for SpreadFillTracker serialization."""
