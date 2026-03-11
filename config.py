@@ -3125,7 +3125,7 @@ PROTECTIVE_PUTS_MAX_CONTRACTS = (
 # For Swing Mode (5+ DTE), use simple filters instead of Micro Regime
 
 SWING_TIME_WINDOW_START = "10:00"  # Entry window start
-SWING_TIME_WINDOW_END = "14:30"  # Entry window end
+SWING_TIME_WINDOW_END = "15:30"  # Entry window end
 
 # Gap Filter for Swing Mode
 SWING_GAP_THRESHOLD = 1.0  # Skip if SPY gaps > 1.0%

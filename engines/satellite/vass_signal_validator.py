@@ -500,12 +500,22 @@ def check_spread_entry_signal_impl(
         self.log("SPREAD: Entry blocked - vol shock active")
         return fail("VOL_SHOCK_BLOCK")
 
-    # Check time window (10:00 AM - 2:30 PM ET)
+    # Check time window (config-driven swing entry window)
     # V3.0: EOD scan at 15:45 bypasses time window — chain is valid at EOD
     time_minutes = current_hour * 60 + current_minute
-    if not is_eod_scan and not (10 * 60 <= time_minutes <= 14 * 60 + 30):
+    start_minutes = self._parse_hhmm_to_minutes(
+        str(getattr(config, "SWING_TIME_WINDOW_START", "10:00")), 10 * 60
+    )
+    end_minutes = self._parse_hhmm_to_minutes(
+        str(getattr(config, "SWING_TIME_WINDOW_END", "14:30")), 14 * 60 + 30
+    )
+    if not is_eod_scan and not (start_minutes <= time_minutes <= end_minutes):
         if not self._swing_time_warning_logged:
-            self.log("SPREAD: Entry blocked - outside time window (10:00-14:30)")
+            self.log(
+                "SPREAD: Entry blocked - outside time window "
+                f"({start_minutes // 60:02d}:{start_minutes % 60:02d}-"
+                f"{end_minutes // 60:02d}:{end_minutes % 60:02d})"
+            )
             self._swing_time_warning_logged = True
         return fail("TIME_WINDOW_BLOCK")
 
@@ -1404,10 +1414,16 @@ def check_credit_spread_entry_signal_impl(
         self.log("CREDIT_SPREAD: Entry blocked - vol shock active")
         return fail("VOL_SHOCK_BLOCK")
 
-    # Check time window (10:00 AM - 2:30 PM ET)
+    # Check time window (config-driven swing entry window)
     # V3.0: EOD scan at 15:45 bypasses time window — chain is valid at EOD
     time_minutes = current_hour * 60 + current_minute
-    if not is_eod_scan and not (10 * 60 <= time_minutes <= 14 * 60 + 30):
+    start_minutes = self._parse_hhmm_to_minutes(
+        str(getattr(config, "SWING_TIME_WINDOW_START", "10:00")), 10 * 60
+    )
+    end_minutes = self._parse_hhmm_to_minutes(
+        str(getattr(config, "SWING_TIME_WINDOW_END", "14:30")), 14 * 60 + 30
+    )
+    if not is_eod_scan and not (start_minutes <= time_minutes <= end_minutes):
         return fail("TIME_WINDOW_BLOCK")
 
     # Validate contracts

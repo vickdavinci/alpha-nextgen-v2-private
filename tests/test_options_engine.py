@@ -2621,27 +2621,27 @@ class TestSwingFilters:
         assert "time_window" in reason.lower()
 
     def test_swing_filter_blocks_outside_time_window_late(self, engine):
-        """Test swing filter blocks after 2:30 PM."""
+        """Test swing filter blocks after 3:30 PM."""
         can_enter, reason = engine.check_swing_filters(
             direction=OptionDirection.CALL,
             spy_gap_pct=0.0,
             spy_intraday_change_pct=0.0,
             vix_intraday_change_pct=0.0,
-            current_hour=14,
-            current_minute=45,  # After 14:30
+            current_hour=15,
+            current_minute=45,  # After 15:30
         )
 
         assert can_enter is False
         assert "time_window" in reason.lower()
 
     def test_swing_filter_allows_within_time_window(self, engine):
-        """Test swing filter allows within 10:00-14:30."""
+        """Test swing filter allows within 10:00-15:30."""
         can_enter, reason = engine.check_swing_filters(
             direction=OptionDirection.CALL,
             spy_gap_pct=0.0,
             spy_intraday_change_pct=0.0,
             vix_intraday_change_pct=0.0,
-            current_hour=11,
+            current_hour=15,
             current_minute=30,
         )
 
