@@ -2300,8 +2300,10 @@ IC_ENTRY_END_HOUR = 14  # Latest entry hour (ET)
 IC_ENTRY_END_MINUTE = 30  # Latest entry minute
 
 # ── DTE window ──
-IC_DTE_MIN = 14  # Minimum DTE (V12.33: was 7 — wider strikes need more theta accumulation time)
-IC_DTE_MAX = 21  # Maximum DTE (V12.33: was 14 — match theta acceleration curve peak)
+IC_DTE_MIN = (
+    7  # Minimum DTE (V12.37: revert to short-duration IC window for higher range-stay hit rate)
+)
+IC_DTE_MAX = 14  # Maximum DTE (V12.37: revert to weekly condor window)
 
 # ── Strike selection: short-leg delta range ──
 IC_SHORT_DELTA_MIN = (
@@ -2363,7 +2365,7 @@ IC_ELASTIC_DELTA_CEILING = (
 )
 
 # Multi-DTE range fallback: try primary range first, then fallback ranges
-IC_DTE_RANGES = [(14, 17), (17, 21)]  # V12.33: was (7,10)(10,14) — align with 14-21 DTE window
+IC_DTE_RANGES = [(7, 10), (10, 14)]  # V12.37: restore short-DTE fallback search ranges
 
 # C/W progressive relaxation: lower floor stepwise if no condors qualify
 IC_CW_RELAX_STEPS = [0.0, 0.03, 0.05]  # Subtract from C/W floor per step
