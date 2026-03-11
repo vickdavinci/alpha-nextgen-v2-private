@@ -2995,7 +2995,20 @@ class MainOrdersMixin:
         # Route 3: QQQ options
         elif "QQQ" in symbol and ("C" in symbol or "P" in symbol):
             symbol_norm = self._normalize_symbol_str(symbol)
-            if self.options_engine.cancel_pending_engine_exit(symbol_norm):
+            # V12.36: Check if this is an IC entry rejection — inform IC engine
+            _rej_tag = str(
+                getattr(order_event, "Tag", "") or self._get_order_tag(order_event) or ""
+            )
+            if "IC:" in _rej_tag or "OPT_IC" in _rej_tag:
+                is_bp = "buying power" in str(
+                    getattr(order_event, "Message", "") or ""
+                ).lower() or "Margin" in str(getattr(order_event, "Message", "") or "")
+                self.options_engine.record_ic_entry_rejection(self.Time, is_bp)
+                self.options_engine.cancel_pending_ic_entry()
+                self.Log(
+                    f"IC_REJECTION_RECOVERY: {symbol_norm} | " f"BP={is_bp} | Pending entry cleared"
+                )
+            elif self.options_engine.cancel_pending_engine_exit(symbol_norm):
                 self._clear_engine_close_guard(symbol_norm)
                 self.Log(
                     f"OPT_MICRO_EXIT_RECOVERY: Close rejected/canceled | "
