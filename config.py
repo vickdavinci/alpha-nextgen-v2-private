@@ -2414,7 +2414,7 @@ IC_UNDERLYING_INVALIDATION_PCT = (
 # Formula: min_distance = QQQ × (VIX/100) × √(DTE/365) × buffer_mult
 # buffer=1.0 → strikes at 1σ (~84% POP); auto-adapts to VIX and DTE.
 IC_EM_BUFFER_MULT = (
-    0.85  # 0.85× expected move (V12.34: was 1.0 — preserve EM anchor without starving neutral tape)
+    1.00  # 1.0× expected move (V12.37: restore full volatility-scaled distance floor for weekly IC)
 )
 
 # ── IC Strike Reuse Guard ──
