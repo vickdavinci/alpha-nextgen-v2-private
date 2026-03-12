@@ -83,6 +83,13 @@ EXIT_IC_HARD_STOP_HOLD = "IC_HARD_STOP_DURING_HOLD"
 EXIT_IC_EOD_HOLD_GATE = "IC_EOD_HOLD_RISK_GATE"
 EXIT_IC_MFE_LOCK = "IC_MFE_LOCK"
 EXIT_IC_UNDERLYING_INVALIDATION = "IC_UNDERLYING_INVALIDATION"
+EXIT_IC_ROLL_PUT = "IC_ROLL_PUT"
+EXIT_IC_ROLL_CALL = "IC_ROLL_CALL"
+
+# ── Roll rejection codes ──
+R_IC_ROLL_MAX_REACHED = "R_IC_ROLL_MAX_REACHED"
+R_IC_ROLL_NO_REPLACEMENT = "R_IC_ROLL_NO_REPLACEMENT"
+R_IC_ROLL_CREDIT_INSUFFICIENT = "R_IC_ROLL_CREDIT_INSUFFICIENT"
 
 
 class IronCondorEngine:
@@ -1239,6 +1246,8 @@ class IronCondorEngine:
         regime_score: float,
         qqq_price: float,
         current_time: datetime,
+        put_side_pnl: Optional[float] = None,
+        call_side_pnl: Optional[float] = None,
     ) -> Optional[Tuple[str, List[TargetWeight]]]:
         """Check exit conditions for a single condor. Returns (reason, signals) or None.
 
@@ -1263,9 +1272,10 @@ class IronCondorEngine:
             P6: Regime break → regime outside neutral zone + buffer
             P7: Friday close → DTE < 14 heading into weekend
 
-        No adjustments in v1: close only, never morph into single spread.
+        V12.37: P2C roll trigger inserted between MFE lock and stop loss.
+        Rolling closes only the tested side; untested side continues.
         """
-        if condor.is_closing:
+        if condor.is_closing or condor.is_rolling:
             return None
 
         credit_100 = condor.net_credit * 100 * condor.num_spreads
@@ -1443,6 +1453,23 @@ class IronCondorEngine:
                 )
                 return self._build_exit(condor, EXIT_IC_MFE_LOCK, current_time)
 
+        # ── P2C: Per-side roll trigger (preempts full stop) ── V12.37
+        if (
+            bool(getattr(config, "IC_ROLL_ENABLED", False))
+            and put_side_pnl is not None
+            and call_side_pnl is not None
+        ):
+            roll_result = self._check_roll_trigger(
+                condor=condor,
+                put_side_pnl=put_side_pnl,
+                call_side_pnl=call_side_pnl,
+                current_time=current_time,
+                vix_current=vix_current,
+                qqq_price=qqq_price,
+            )
+            if roll_result is not None:
+                return roll_result
+
         # ── P3: Stop loss (use entry-frozen multiplier if available) ──
         stop_mult = (
             condor.entry_stop_mult
@@ -1482,12 +1509,13 @@ class IronCondorEngine:
         current_time: datetime,
         get_dte_func: Callable[[str], int],
         get_pnl_func: Callable[[IronCondorPosition], float],
+        get_side_pnl_func: Optional[Callable[[IronCondorPosition, str], float]] = None,
     ) -> List[TargetWeight]:
         """Run exit checks on all open IC positions. Returns list of close signals."""
         all_signals: List[TargetWeight] = []
 
         for condor in list(self._positions):
-            if condor.is_closing:
+            if condor.is_closing or condor.is_rolling:
                 continue
 
             # Get current DTE from shortest leg
@@ -1496,8 +1524,12 @@ class IronCondorEngine:
                 get_dte_func(condor.short_call.expiry),
             )
 
-            # Get combined P&L
+            # Get combined P&L (campaign-aware for rolled condors)
             combined_pnl = get_pnl_func(condor)
+
+            # Get per-side P&L for roll trigger
+            put_pnl = get_side_pnl_func(condor, "PUT") if get_side_pnl_func else None
+            call_pnl = get_side_pnl_func(condor, "CALL") if get_side_pnl_func else None
 
             result = self.check_exit_signals(
                 condor=condor,
@@ -1507,26 +1539,32 @@ class IronCondorEngine:
                 regime_score=regime_score,
                 qqq_price=qqq_price,
                 current_time=current_time,
+                put_side_pnl=put_pnl,
+                call_side_pnl=call_pnl,
             )
 
             if result is not None:
                 reason, signals = result
-                condor.is_closing = True
-                condor.close_attempt_count = 0
-                condor.last_close_signal_time = None
+                # Roll triggers set is_rolling (not is_closing) — condor stays alive
+                is_roll = reason in (EXIT_IC_ROLL_PUT, EXIT_IC_ROLL_CALL)
+                if not is_roll:
+                    condor.is_closing = True
+                    condor.close_attempt_count = 0
+                    condor.last_close_signal_time = None
                 condor.exit_pnl_estimate = float(combined_pnl or 0.0)
                 all_signals.extend(signals)
                 self._diag_exit_reasons[reason] = self._diag_exit_reasons.get(reason, 0) + 1
 
                 self._emit_lifecycle(
-                    "EXIT",
+                    "EXIT" if not is_roll else "ROLL_TRIGGER",
                     signal_id=condor.condor_id,
                     trace_id=condor.condor_id,
                     code=reason,
                     reason=f"PnL=${combined_pnl:.2f} DTE={min_dte}",
                 )
                 self._log(
-                    f"EXIT_SIGNAL | condor_id={condor.condor_id} "
+                    f"{'EXIT' if not is_roll else 'ROLL'}_SIGNAL | "
+                    f"condor_id={condor.condor_id} "
                     f"| reason={reason} | PnL=${combined_pnl:.2f} "
                     f"| DTE={min_dte} | VIX={vix_current:.1f} | regime={regime_score:.1f}",
                     trades_only=True,
@@ -1597,6 +1635,121 @@ class IronCondorEngine:
         )
 
         return (reason, signals)
+
+    # ── V12.37: Per-side rolling methods ──
+
+    def _check_roll_trigger(
+        self,
+        *,
+        condor: IronCondorPosition,
+        put_side_pnl: float,
+        call_side_pnl: float,
+        current_time: datetime,
+        vix_current: float,
+        qqq_price: float,
+    ) -> Optional[Tuple[str, List[TargetWeight]]]:
+        """Check if a tested side qualifies for rolling instead of full stop."""
+        # Guard: rolling enabled, under max rolls, not already rolling
+        if condor.roll_count >= condor.max_rolls:
+            return None
+        if condor.is_rolling:
+            return None
+
+        trigger_mult = float(getattr(config, "IC_ROLL_TRIGGER_MULT", 0.75))
+
+        # Check each active side for roll trigger
+        for side, side_pnl, side_credit in [
+            ("PUT", put_side_pnl, condor.put_side_credit),
+            ("CALL", call_side_pnl, condor.call_side_credit),
+        ]:
+            if side == "PUT" and not condor.put_side_active:
+                continue
+            if side == "CALL" and not condor.call_side_active:
+                continue
+
+            side_credit_dollars = side_credit * 100 * condor.num_spreads
+            if side_credit_dollars <= 0:
+                continue
+
+            # Trigger: side is losing and loss exceeds threshold
+            if side_pnl < 0 and abs(side_pnl) >= trigger_mult * side_credit_dollars:
+                reason = EXIT_IC_ROLL_PUT if side == "PUT" else EXIT_IC_ROLL_CALL
+                self._log(
+                    f"IC_ROLL_TRIGGER: side={side} loss=${side_pnl:.0f} >= "
+                    f"{trigger_mult}x credit=${side_credit_dollars:.0f} | "
+                    f"roll #{condor.roll_count + 1} | id={condor.condor_id}",
+                    trades_only=True,
+                )
+                # Set rolling state (NOT is_closing — condor stays alive)
+                condor.is_rolling = True
+                condor.rolling_side = side
+                condor.roll_pending_since = current_time.strftime("%Y-%m-%d %H:%M:%S")
+
+                return self._build_side_close(condor, side, reason, current_time)
+
+        return None
+
+    def _build_side_close(
+        self,
+        condor: IronCondorPosition,
+        side: str,
+        reason: str,
+        current_time: datetime,
+    ) -> Tuple[str, List[TargetWeight]]:
+        """Build close signals for only one side (PUT or CALL) of the condor."""
+        timestamp = current_time.strftime("%Y-%m-%d %H:%M:%S")
+        base_meta = {
+            "options_lane": "IC",
+            "options_strategy": "IRON_CONDOR",
+            "trace_source": f"IC:{reason}",
+            "trace_id": condor.condor_id,
+            "condor_id": condor.condor_id,
+            "exit_reason": reason,
+            "transition_overlay": condor.entry_transition_overlay,
+            "is_roll_close": True,
+            "roll_side": side,
+        }
+
+        if side == "PUT":
+            meta = dict(base_meta)
+            meta["spread_side"] = "PUT_CREDIT_CLOSE"
+            meta["spread_type"] = "CREDIT_PUT"
+            meta["is_credit_spread"] = True
+            meta["spread_close_short"] = True
+            meta["spread_short_leg_symbol"] = condor.short_put.symbol
+            meta["spread_short_leg_quantity"] = condor.num_spreads
+            meta["spread_width"] = condor.put_wing_width
+            signal = TargetWeight(
+                symbol=condor.long_put.symbol,
+                target_weight=0.0,
+                source="OPT_IC",
+                urgency=Urgency.IMMEDIATE,
+                reason=f"IC_ROLL_CLOSE_PUT | {reason} | condor_id={condor.condor_id}",
+                timestamp=timestamp,
+                metadata=meta,
+                requested_quantity=condor.num_spreads,
+            )
+        else:
+            meta = dict(base_meta)
+            meta["spread_side"] = "CALL_CREDIT_CLOSE"
+            meta["spread_type"] = "CREDIT_CALL"
+            meta["is_credit_spread"] = True
+            meta["spread_close_short"] = True
+            meta["spread_short_leg_symbol"] = condor.short_call.symbol
+            meta["spread_short_leg_quantity"] = condor.num_spreads
+            meta["spread_width"] = condor.call_wing_width
+            signal = TargetWeight(
+                symbol=condor.long_call.symbol,
+                target_weight=0.0,
+                source="OPT_IC",
+                urgency=Urgency.IMMEDIATE,
+                reason=f"IC_ROLL_CLOSE_CALL | {reason} | condor_id={condor.condor_id}",
+                timestamp=timestamp,
+                metadata=meta,
+                requested_quantity=condor.num_spreads,
+            )
+
+        return (reason, [signal])
 
     def build_retry_close_signals(
         self,
