@@ -3487,6 +3487,65 @@ class TestAbandonRoll:
         }
 
 
+class TestRollReplacementSearch:
+    """Test replacement search quality filters."""
+
+    def test_search_replacement_skips_illiquid_rich_candidate(self):
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits()
+        condor.is_rolling = True
+        condor.rolling_side = "CALL"
+        engine._positions.append(condor)
+
+        rich_short = _make_contract(
+            495.0,
+            OptionDirection.CALL,
+            bid=0.80,
+            ask=1.20,  # spread_pct=0.40 -> should fail liquidity
+            oi=800,
+        )
+        rich_long = _make_contract(
+            501.0,
+            OptionDirection.CALL,
+            bid=0.15,
+            ask=0.45,  # spread_pct=1.00 -> should fail liquidity
+            oi=800,
+        )
+        clean_short = _make_contract(
+            496.0,
+            OptionDirection.CALL,
+            bid=0.68,
+            ask=0.72,
+            oi=800,
+        )
+        clean_long = _make_contract(
+            502.0,
+            OptionDirection.CALL,
+            bid=0.19,
+            ask=0.21,
+            oi=800,
+        )
+
+        with patch.object(
+            engine,
+            "_extract_chain_contracts",
+            return_value=[rich_short, rich_long, clean_short, clean_long],
+        ):
+            replacement = engine._search_replacement(
+                condor=condor,
+                chain=object(),
+                qqq_price=480.0,
+                vix_current=15.0,
+                current_time=datetime(2025, 3, 5, 12, 0, 0),
+            )
+
+        assert replacement is not None
+        new_short, new_long, new_credit = replacement
+        assert new_short.strike == 496.0
+        assert new_long.strike == 502.0
+        assert new_credit == pytest.approx(clean_short.mid_price - clean_long.mid_price)
+
+
 class TestBuildSideClose:
     """Test _build_side_close emits single-side close signals."""
 

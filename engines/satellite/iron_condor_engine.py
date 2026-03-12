@@ -2057,6 +2057,8 @@ class IronCondorEngine:
         min_credit = min_recovery * orig_side_credit
 
         wing_width = self._get_wing_width_for_vix(vix_current)
+        max_leg_spread_pct = float(getattr(config, "IC_MAX_SPREAD_PCT", 0.30))
+        max_combo_slippage = float(getattr(config, "IC_MAX_COMBO_SLIPPAGE", 0.15))
 
         # Collect all active strikes for strike reuse guard
         active_strikes = set()
@@ -2095,6 +2097,18 @@ class IronCondorEngine:
             # Find the protective wing
             long_cand = self._find_wing_leg(candidates, short_cand, wing_width, side, tolerance=1)
             if long_cand is None:
+                continue
+
+            # Keep replacement quality aligned with IC entry construction.
+            if (
+                short_cand.spread_pct > max_leg_spread_pct
+                or long_cand.spread_pct > max_leg_spread_pct
+            ):
+                self._record_drop(R_IC_LIQUIDITY_FAIL)
+                continue
+            avg_spread_pct = (short_cand.spread_pct + long_cand.spread_pct) / 2.0
+            if avg_spread_pct > max_combo_slippage:
+                self._record_drop(R_IC_SLIPPAGE_FAIL)
                 continue
 
             # Calculate credit
