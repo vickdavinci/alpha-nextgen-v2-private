@@ -2240,12 +2240,15 @@ class IronCondorEngine:
         entry_credit = float(getattr(tracker, "_roll_close_entry_credit", 0.0) or 0.0)
         close_debit = float(tracker.short_fill_price or 0.0) - float(tracker.long_fill_price or 0.0)
         realized_pnl = (entry_credit - close_debit) * 100.0 * int(condor.num_spreads)
+        is_final_campaign_close = bool(condor.is_closing and not condor.is_rolling)
 
         condor.pending_roll_close_realized_pnl = float(realized_pnl)
         if side == "PUT":
             condor.put_side_active = False
         elif side == "CALL":
             condor.call_side_active = False
+        if is_final_campaign_close:
+            condor.exit_pnl_estimate = float(condor.cumulative_realized_pnl + realized_pnl)
 
         self._log(
             f"IC_ROLL_CLOSE_FILL: side={side} | realized=${realized_pnl:.0f} | "

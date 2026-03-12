@@ -3468,6 +3468,39 @@ class TestAbandonRoll:
         assert condor.cumulative_realized_pnl == pytest.approx(-95.0)
         assert condor.pending_roll_close_realized_pnl == 0.0
 
+    def test_final_abandon_close_updates_campaign_exit_snapshot(self):
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits(net_credit=1.20, num_spreads=2)
+        condor.is_closing = True
+        condor.is_rolling = False
+        condor.rolling_side = ""
+        condor.cumulative_realized_pnl = -95.0
+
+        tracker = SpreadFillTracker(
+            long_leg_symbol=condor.long_call.symbol,
+            short_leg_symbol=condor.short_call.symbol,
+            expected_quantity=2,
+            timeout_minutes=5,
+            created_at="2025-03-05 13:00:00",
+            spread_type="CREDIT_CALL",
+        )
+        tracker._roll_side = "CALL"
+        tracker._roll_close_entry_credit = condor.call_side_credit
+        tracker.long_fill_price = 0.05
+        tracker.long_fill_qty = 2
+        tracker.short_fill_price = 0.70
+        tracker.short_fill_qty = 2
+
+        realized = engine.register_roll_close_fill(
+            condor=condor,
+            tracker=tracker,
+            current_time=datetime(2025, 3, 5, 13, 5, 0),
+        )
+
+        assert realized == pytest.approx((condor.call_side_credit - 0.65) * 100 * 2)
+        assert condor.pending_roll_close_realized_pnl == pytest.approx(realized)
+        assert condor.exit_pnl_estimate == pytest.approx(condor.cumulative_realized_pnl + realized)
+
     def test_handle_roll_close_failure_escalates_to_full_close(self):
         engine = _make_engine()
         condor = _make_condor_with_side_credits()
