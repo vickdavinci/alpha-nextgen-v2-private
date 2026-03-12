@@ -2267,6 +2267,7 @@ class IronCondorEngine:
             condor.put_side_active = False
         elif side == "CALL":
             condor.call_side_active = False
+        condor.max_loss = self._calculate_open_structure_max_loss(condor)
         if is_final_campaign_close:
             condor.exit_pnl_estimate = float(condor.cumulative_realized_pnl + realized_pnl)
 
@@ -2334,10 +2335,8 @@ class IronCondorEngine:
         condor.roll_trigger_side_pnl_estimate = 0.0
         condor.pending_roll_close_realized_pnl = 0.0
 
-        # Recalculate max_loss based on new wing widths
-        condor.max_loss = (
-            max(condor.put_wing_width, condor.call_wing_width) - condor.cumulative_credit
-        )
+        # Recalculate open-structure max loss from currently active sides only.
+        condor.max_loss = self._calculate_open_structure_max_loss(condor)
 
         self._log(
             f"IC_ROLL_ENTRY_FILL: roll #{condor.roll_count} complete | "
@@ -2368,6 +2367,20 @@ class IronCondorEngine:
         self._pending_condor = None
         self._pending_fills.clear()
         self._pending_entry_since = None
+
+    def _calculate_open_structure_max_loss(self, condor: IronCondorPosition) -> float:
+        """Return open-position max loss from currently active sides only."""
+        active_credit = 0.0
+        active_widths = []
+        if bool(getattr(condor, "put_side_active", True)):
+            active_credit += float(getattr(condor, "put_side_credit", 0.0) or 0.0)
+            active_widths.append(float(getattr(condor, "put_wing_width", 0.0) or 0.0))
+        if bool(getattr(condor, "call_side_active", True)):
+            active_credit += float(getattr(condor, "call_side_credit", 0.0) or 0.0)
+            active_widths.append(float(getattr(condor, "call_wing_width", 0.0) or 0.0))
+        if not active_widths:
+            return 0.0
+        return max(0.0, max(active_widths) - active_credit)
 
     def register_side_fill(self, spread_side: str) -> Optional[IronCondorPosition]:
         """Register one side of a pending IC combo fill.

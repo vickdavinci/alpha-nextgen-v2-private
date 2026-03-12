@@ -3328,6 +3328,7 @@ class TestRegisterRollFill:
         assert closed_condor is condor
         assert condor.put_side_active is False
         assert condor.pending_roll_close_realized_pnl == pytest.approx(-30.0)
+        assert condor.max_loss == pytest.approx(condor.call_wing_width - condor.call_side_credit)
 
     def test_register_roll_fill_updates_legs_and_accounting(self):
         engine = _make_engine()
@@ -3356,6 +3357,10 @@ class TestRegisterRollFill:
         assert condor.put_side_credit == 0.50
         assert condor.cumulative_credit == 1.70  # 1.20 + 0.50
         assert condor.cumulative_realized_pnl == -85.0
+        assert condor.max_loss == pytest.approx(
+            max(condor.put_wing_width, condor.call_wing_width)
+            - (condor.put_side_credit + condor.call_side_credit)
+        )
         assert condor.is_rolling is False
         assert condor.rolling_side == ""
         assert condor.roll_pending_since is None
