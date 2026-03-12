@@ -3040,6 +3040,60 @@ class TestRollRecord:
 class TestCondorRollingFields:
     """Test IronCondorPosition rolling field persistence."""
 
+    def test_new_condor_captures_configured_max_rolls(self):
+        engine = _make_engine()
+        chain = _make_option_chain(
+            put_delta=0.14,
+            call_delta=0.14,
+            put_credit=1.20,
+            call_credit=1.20,
+            wing_width=5,
+            dte=10,
+        )
+
+        with _patch_config(
+            IC_DTE_RANGES=[(7, 14)],
+            IC_SHORT_DELTA_MIN=_SEARCH_DEFAULTS["IC_SHORT_DELTA_MIN"],
+            IC_SHORT_DELTA_MAX=_SEARCH_DEFAULTS["IC_SHORT_DELTA_MAX"],
+            IC_ELASTIC_DELTA_STEPS=_SEARCH_DEFAULTS["IC_ELASTIC_DELTA_STEPS"],
+            IC_ELASTIC_DELTA_FLOOR=_SEARCH_DEFAULTS["IC_ELASTIC_DELTA_FLOOR"],
+            IC_ELASTIC_DELTA_CEILING=_SEARCH_DEFAULTS["IC_ELASTIC_DELTA_CEILING"],
+            IC_MIN_POOL_DEPTH=_SEARCH_DEFAULTS["IC_MIN_POOL_DEPTH"],
+            IC_CW_RELAX_STEPS=_SEARCH_DEFAULTS["IC_CW_RELAX_STEPS"],
+            IC_DELTA_SYMMETRY_MAX=_SEARCH_DEFAULTS["IC_DELTA_SYMMETRY_MAX"],
+            IC_MAX_COMBO_SLIPPAGE=_SEARCH_DEFAULTS["IC_MAX_COMBO_SLIPPAGE"],
+            IC_WING_WIDTH_FALLBACK_TOLERANCE=_SEARCH_DEFAULTS["IC_WING_WIDTH_FALLBACK_TOLERANCE"],
+            IC_MAX_CANDIDATE_COMBOS=_SEARCH_DEFAULTS["IC_MAX_CANDIDATE_COMBOS"],
+            IC_SCAN_THROTTLE_MINUTES=_SEARCH_DEFAULTS["IC_SCAN_THROTTLE_MINUTES"],
+            IC_WING_WIDTH_MID_VIX=_SEARCH_DEFAULTS["IC_WING_WIDTH_MID_VIX"],
+            IC_WING_SYMMETRY_MAX=_SEARCH_DEFAULTS["IC_WING_SYMMETRY_MAX"],
+            IC_PER_TRADE_RISK_PCT=_SEARCH_DEFAULTS["IC_PER_TRADE_RISK_PCT"],
+            IC_MIN_OPEN_INTEREST=_SEARCH_DEFAULTS["IC_MIN_OPEN_INTEREST"],
+            IC_MAX_SPREAD_PCT=_SEARCH_DEFAULTS["IC_MAX_SPREAD_PCT"],
+            IC_CW_FLOOR_MID_VIX=0.15,
+            IC_CW_ABSOLUTE_FLOOR=0.15,
+            IC_MAX_IMPLIED_WR=0.90,
+            IC_EM_BUFFER_MULT=0.0,
+            IC_ADX_CALL_OTM_ADX_THRESHOLD=999.0,
+            IC_ROLL_MAX_PER_CAMPAIGN=2,
+        ):
+            result = engine._search_single_dte_range(
+                contracts=chain,
+                dte_min=7,
+                dte_max=14,
+                qqq_price=480.0,
+                vix_current=18.0,
+                regime_score=60.0,
+                adx_value=15.0,
+                current_time=datetime(2025, 3, 5, 11, 0, 0),
+                effective_portfolio_value=100000,
+                fallback_stats=[],
+            )
+
+        assert result is not None
+        condor = result
+        assert condor.max_rolls == 2
+
     def test_rolling_fields_round_trip(self):
         condor = _make_condor_with_side_credits()
         condor.roll_count = 1

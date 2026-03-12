@@ -1109,6 +1109,7 @@ class IronCondorEngine:
             # V12.37: Per-side credit for rolling
             put_side_credit=put_credit,
             call_side_credit=call_credit,
+            max_rolls=int(getattr(config, "IC_ROLL_MAX_PER_CAMPAIGN", 1) or 1),
             cumulative_credit=net_credit,
             entry_stop_mult=stop_mult,
             entry_mfe_t1_trigger=float(getattr(config, "IC_MFE_T1_TRIGGER", 0.30)),
