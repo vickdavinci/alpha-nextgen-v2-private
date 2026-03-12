@@ -51,6 +51,7 @@ from engines.satellite.iron_condor_engine import (
     R_IC_REGIME_NOT_PERSISTENT,
     R_IC_REGIME_OUT_OF_RANGE,
     R_IC_REJECTION_COOLDOWN,
+    R_IC_ROLL_CREDIT_INSUFFICIENT,
     R_IC_ROLL_NO_REPLACEMENT,
     R_IC_STOP_DW_UNFEASIBLE,
     R_IC_STRIKE_REUSE,
@@ -58,7 +59,7 @@ from engines.satellite.iron_condor_engine import (
     R_IC_VIX_OUT_OF_RANGE,
     IronCondorEngine,
 )
-from engines.satellite.options_primitives import OptionContract
+from engines.satellite.options_primitives import OptionContract, SpreadFillTracker
 from models.enums import IntradayStrategy, OptionDirection, Urgency
 from models.target_weight import TargetWeight
 
@@ -3577,6 +3578,92 @@ class TestRollReplacementSearch:
         assert new_short.strike == 496.0
         assert new_long.strike == 502.0
         assert new_credit == pytest.approx(clean_short.mid_price - clean_long.mid_price)
+
+    def test_search_replacement_records_credit_insufficient_drop(self):
+        engine = _make_engine()
+        condor = _make_condor_with_side_credits()
+        condor.is_rolling = True
+        condor.rolling_side = "CALL"
+        engine._positions.append(condor)
+
+        low_short = _make_contract(
+            496.0,
+            OptionDirection.CALL,
+            bid=0.28,
+            ask=0.30,
+            oi=800,
+        )
+        low_long = _make_contract(
+            502.0,
+            OptionDirection.CALL,
+            bid=0.18,
+            ask=0.20,
+            oi=800,
+        )
+
+        with patch.object(
+            engine,
+            "_extract_chain_contracts",
+            return_value=[low_short, low_long],
+        ):
+            replacement = engine._search_replacement(
+                condor=condor,
+                chain=object(),
+                qqq_price=480.0,
+                vix_current=15.0,
+                current_time=datetime(2025, 3, 5, 12, 0, 0),
+            )
+
+        assert replacement is None
+        assert engine._diag_drop_codes.get(R_IC_ROLL_CREDIT_INSUFFICIENT, 0) > 0
+
+    def test_run_roll_follow_up_emits_replacement_lifecycle(self):
+        lifecycle_events = []
+        engine = IronCondorEngine(
+            log_func=lambda msg, trades_only=False: None,
+            signal_lifecycle_cb=lambda **kwargs: lifecycle_events.append(kwargs),
+        )
+        condor = _make_condor_with_side_credits()
+        condor.is_rolling = True
+        condor.rolling_side = "CALL"
+        condor.roll_pending_since = "2025-03-05 12:00:00"
+        engine._positions.append(condor)
+
+        clean_short = _make_contract(
+            496.0,
+            OptionDirection.CALL,
+            bid=0.68,
+            ask=0.72,
+            oi=800,
+        )
+        clean_long = _make_contract(
+            502.0,
+            OptionDirection.CALL,
+            bid=0.19,
+            ask=0.21,
+            oi=800,
+        )
+
+        with patch.object(
+            engine,
+            "_extract_chain_contracts",
+            return_value=[clean_short, clean_long],
+        ):
+            signals = engine.run_roll_follow_up(
+                condor=condor,
+                side_is_flat_func=lambda c, s: True,
+                chain=object(),
+                qqq_price=480.0,
+                vix_current=15.0,
+                current_time=datetime(2025, 3, 5, 12, 5, 0),
+                effective_portfolio_value=100000.0,
+            )
+
+        assert signals is not None
+        replacement_event = next(e for e in lifecycle_events if e["code"] == "IC_ROLL_REPLACEMENT")
+        assert replacement_event["event"] == "APPROVED"
+        assert replacement_event["gate_name"] == "IC_ROLL_REPLACEMENT"
+        assert "side=CALL" in replacement_event["reason"]
 
 
 class TestBuildSideClose:

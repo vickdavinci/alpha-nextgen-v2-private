@@ -1991,6 +1991,14 @@ class IronCondorEngine:
                 trades_only=True,
             )
             self._record_drop(R_IC_ROLL_NO_REPLACEMENT)
+            self._emit_lifecycle(
+                "DROPPED",
+                signal_id=condor.condor_id,
+                trace_id=condor.condor_id,
+                code=R_IC_ROLL_NO_REPLACEMENT,
+                gate_name="IC_ROLL_REPLACEMENT",
+                reason=f"side={condor.rolling_side}",
+            )
             return self._abandon_roll(condor, current_time)
 
         new_short, new_long, new_credit = replacement
@@ -1999,6 +2007,17 @@ class IronCondorEngine:
             f"K_short={new_short.strike} K_long={new_long.strike} | "
             f"credit={new_credit:.2f} | id={condor.condor_id}",
             trades_only=True,
+        )
+        self._emit_lifecycle(
+            "APPROVED",
+            signal_id=condor.condor_id,
+            trace_id=condor.condor_id,
+            code="IC_ROLL_REPLACEMENT",
+            gate_name="IC_ROLL_REPLACEMENT",
+            reason=(
+                f"side={condor.rolling_side} | short={new_short.strike} "
+                f"long={new_long.strike} | credit={new_credit:.2f}"
+            ),
         )
 
         return self._build_roll_entry_signal(condor, new_short, new_long, new_credit, current_time)
@@ -2114,6 +2133,7 @@ class IronCondorEngine:
             # Calculate credit
             new_credit = short_cand.mid_price - long_cand.mid_price
             if new_credit < min_credit:
+                self._record_drop(R_IC_ROLL_CREDIT_INSUFFICIENT)
                 continue
 
             # Pick highest credit replacement
